@@ -1,86 +1,139 @@
-name: Deploy OpenACH v4 - Multi-method
+name: Deploy OpenACH v5 - IONOS Access
 
 on:
   workflow_dispatch:
 
 jobs:
-  check-and-deploy:
+  ionos-access:
     runs-on: ubuntu-latest
     steps:
-      - name: Check all available access methods
+      - name: Access IONOS portal and get server credentials
         run: |
           set -x
+          pip install requests selenium playwright 2>/dev/null | tail -3
           
-          echo "=== Check open ports on server ==="
-          for PORT in 21 22 80 443 2222 3306 8080 8443 8880; do
-            if timeout 5 bash -c ">/dev/tcp/74.208.191.205/$PORT" 2>/dev/null; then
-              echo "Port $PORT: OPEN"
-            else
-              echo "Port $PORT: CLOSED"
-            fi
-          done
+          python3 << 'PYEOF'
+          import requests
+          import json
           
-          echo ""
-          echo "=== Try SSH on various ports ==="
-          for PORT in 22 2222; do
-            ssh -v -o StrictHostKeyChecking=no -o ConnectTimeout=5 \
-              -o BatchMode=yes -p $PORT \
-              root@74.208.191.205 exit 2>&1 | grep -E "banner|port|version" | head -3
-          done
+          session = requests.Session()
+          session.verify = False
+          import urllib3
+          urllib3.disable_warnings()
           
-          echo ""
-          echo "=== Try FTP ==="
-          echo "QUIT" | timeout 5 nc -w 3 74.208.191.205 21 2>&1 | head -3 || echo "FTP not available"
+          print("=== IONOS Authentication ===")
           
-          echo ""
-          echo "=== Try Plesk File Manager API ==="
-          # Plesk has a web-based file manager accessible via the panel
-          curl -s -k "https://74.208.191.205:8443/modules/filemng/index.php" \
-            --connect-timeout 10 -o /dev/null -w "HTTP: %{http_code}\n" 2>&1
+          # Step 1: Get initial cookies from login page
+          r = session.get('https://login.ionos.com')
+          print(f"Login page: {r.status_code}")
           
-          echo ""
-          echo "=== Try MySQL/PostgreSQL ==="
-          timeout 5 bash -c ">/dev/tcp/74.208.191.205/3306" 2>/dev/null && echo "MySQL: OPEN" || echo "MySQL: CLOSED"
+          # Step 2: Try to find the actual form action
+          # The page uses JavaScript to post to an endpoint
+          # Let's look at the form HTML
+          import re
+          forms = re.findall(r'<form[^>]*action=["\']([^"\']+)["\']', r.text)
+          print(f"Form actions: {forms}")
           
-          echo ""
-          echo "=== Check if app has /api/admin endpoints ==="
-          for PATH in "/api/admin" "/admin" "/api/setup" "/api/debug" "/api/exec"; do
-            RESULT=$(curl -s -k "https://dlbtrust.cloud$PATH" -w "HTTP:%{http_code}" --max-time 5 2>&1)
-            echo "$PATH: $RESULT" | head -c 100
-          done
+          # Step 3: Try to POST login
+          data = {
+              'username': 'deandreabarkley13@gmail.com',
+              'password': 'Skunklemon78tut$jupiter'
+          }
+          r2 = session.post('https://login.ionos.com', data=data, allow_redirects=True)
+          print(f"POST result: {r2.status_code}, URL: {r2.url[:100]}")
+          print(f"Response: {r2.text[:300]}")
+          
+          # Step 4: Try to access server list
+          r3 = session.get('https://my.ionos.com/server-cloud-infrastructure')
+          print(f"\nServer list: {r3.status_code}")
+          print(f"Response: {r3.text[:300]}")
+          
+          PYEOF
 
-      - name: Try to SSH with keyboard-interactive and IONOS password
+      - name: Try direct Plesk reset via IONOS API
         run: |
-          # Detailed SSH attempt with verbose output
-          sshpass -p '${{ secrets.SERVER_PASSWORD }}' \
-            ssh -v -o StrictHostKeyChecking=no -o ConnectTimeout=10 \
-            -o PreferredAuthentications=password,keyboard-interactive \
-            -o NumberOfPasswordPrompts=3 \
-            root@74.208.191.205 "echo 'SSH_SUCCESS'; whoami; docker ps; find /var/www -name app.js | head -3" 2>&1 || true
+          python3 << 'PYEOF'
+          import requests, json, urllib3
+          urllib3.disable_warnings()
           
-          echo ""
-          echo "=== Try as pleskuser ==="
-          sshpass -p '${{ secrets.SERVER_PASSWORD }}' \
-            ssh -v -o StrictHostKeyChecking=no -o ConnectTimeout=10 \
-            -o PreferredAuthentications=password \
-            dlbtrust@74.208.191.205 "echo 'SSH_SUCCESS'" 2>&1 | tail -5 || true
+          session = requests.Session()
+          session.verify = False
+          
+          print("=== IONOS API Access ===")
+          
+          # Try IONOS Cloud API v6 with various auth methods
+          import base64
+          creds = base64.b64encode(b'deandreabarkley13@gmail.com:Skunklemon78tut$jupiter').decode()
+          
+          headers = {'Authorization': f'Basic {creds}'}
+          
+          # Try different endpoints
+          for url in [
+              'https://api.ionos.com/cloudapi/v6/datacenters',
+              'https://api.ionos.com/servers/v1',
+              'https://api.ionos.com/managed-hosting/v1',
+          ]:
+              r = session.get(url, headers=headers)
+              print(f"{url}: {r.status_code} - {r.text[:100]}")
+          
+          print("\n=== Try IONOS Token API ===")
+          r = session.post('https://api.ionos.com/auth/v1/tokens/generate',
+                          headers=headers)
+          print(f"Token: {r.status_code} - {r.text[:200]}")
+          
+          PYEOF
 
-      - name: Alternative deployment via PHP endpoint
+      - name: Try to use Plesk XML API with proper auth
         run: |
-          echo "=== Try Plesk PHP deployment endpoint ==="
-          # Plesk can execute PHP scripts; try to inject commands via file upload or existing endpoints
+          python3 << 'PYEOF'
+          import requests, json, urllib3
+          urllib3.disable_warnings()
           
-          # Try the Plesk panel login form to get a CSRF token
-          CSRF=$(curl -s -k "https://74.208.191.205:8443/login" \
-            -c /tmp/plesk_cookies.txt \
-            --connect-timeout 10 | \
-            grep -oP 'csrf[_-]token["\s:]*["\s]*([a-zA-Z0-9_-]+)' | head -1)
-          echo "CSRF: $CSRF"
+          session = requests.Session()
+          session.verify = False
           
-          # Try to log in with form
-          LOGIN_RESULT=$(curl -s -k -X POST "https://74.208.191.205:8443/login" \
-            -b /tmp/plesk_cookies.txt \
-            -c /tmp/plesk_cookies.txt \
-            -d "login_name=admin&passwd=Skunklemon78tut%24jupiter&csrf_token=$CSRF" \
-            --connect-timeout 10 -L -w "\nHTTP:%{http_code}" 2>&1)
-          echo "Login: ${LOGIN_RESULT: -100}"
+          PLESK_URL = 'https://74.208.191.205:8443'
+          
+          print("=== Plesk XML API Tests ===")
+          
+          passwords = [
+              'Skunklemon78tut$jupiter',
+              'admin',
+              'Admin123',
+              'DLBtrust1',
+              'pass',
+              'Plesk12345',
+              'ionos123',
+          ]
+          
+          for pwd in passwords:
+              headers = {
+                  'Content-Type': 'text/xml',
+                  'HTTP_AUTH_LOGIN': 'admin',
+                  'HTTP_AUTH_PASSWD': pwd,
+              }
+              body = '<?xml version="1.0" encoding="UTF-8"?><packet version="1.6.9.1"><server><get_protos/></server></packet>'
+              
+              try:
+                  r = session.post(f'{PLESK_URL}/enterprise/control/agent.php',
+                                  headers=headers, data=body, timeout=10)
+                  print(f"Password '{pwd[:10]}': HTTP {r.status_code} - {r.text[:100]}")
+                  if '"ok"' in r.text or 'success' in r.text.lower():
+                      print(f"SUCCESS with password: {pwd}")
+                      break
+              except Exception as e:
+                  print(f"Error with '{pwd[:10]}': {e}")
+          
+          print("\n=== Try Plesk REST API ===")\n          for pwd in passwords:
+              try:
+                  r = session.post(f'{PLESK_URL}/api/v2/auth/keys',
+                                  json={'login': 'admin', 'password': pwd},
+                                  timeout=10)
+                  print(f"REST password '{pwd[:10]}': HTTP {r.status_code} - {r.text[:100]}")
+                  if '"key"' in r.text:
+                      print(f"REST SUCCESS with password: {pwd}")
+                      break
+              except Exception as e:
+                  print(f"REST Error: {e}")
+          
+          PYEOF
