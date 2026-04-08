@@ -12,122 +12,110 @@ jobs:
     steps:
       - run: apt-get install -y sshpass 2>/dev/null | tail -1 || true
 
-      - name: Deploy proxy server on port 3002
+      - name: Write proxy JS via SCP
         run: |
-          sshpass -p "$SSH_PASS" ssh -o StrictHostKeyChecking=no -o PasswordAuthentication=yes "$SSH_USER@$SERVER" 'bash -s' << 'REMOTEOF'
-          set -e
-          HD="/var/www/vhosts/dlbtrust.cloud/httpdocs"
-          export HOME=/var/www/vhosts/dlbtrust.cloud
-
-          echo "=== Cleaning up old processes ==="
-          pm2 delete server-proxy 2>/dev/null || true
-          pm2 delete dlbtrust-3002 2>/dev/null || true
-          fuser -k 3002/tcp 2>/dev/null || true
-          sleep 2
-
-          echo "=== Writing server-proxy.js ==="
-          cat > "$HD/server-proxy.js" << 'JSEOF'
+          cat > /tmp/server-proxy.js << 'JSEOF'
           'use strict';
           const http = require('http');
           const PORT = parseInt(process.argv[2]) || 3002;
           const server = http.createServer((req, res) => {
             const url = req.url || '/';
             if (url === '/api/ach/health' || url.startsWith('/api/ach/health?')) {
-              const body = JSON.stringify({
-                status: 'ok',
-                service: 'ach',
-                openach_connected: true,
-                openach_url: 'https://ach.dlbtrust.cloud/openach/',
-                api_token: '3caee1c2-c218-4959-b6d2-21d4b2a1b42e',
-                originator_id: 'd96503c1-f37a-4780-867f-afe0102ffdf1',
-                timestamp: new Date().toISOString()
-              });
-              res.writeHead(200, {'Content-Type':'application/json','Content-Length':Buffer.byteLength(body)});
+              const body = JSON.stringify({status:'ok',service:'ach',openach_connected:true,openach_url:'https://ach.dlbtrust.cloud/openach/',timestamp:new Date().toISOString()});
+              res.writeHead(200, {'Content-Type':'application/json'});
               return res.end(body);
             }
             if (url === '/api/analytics/summary' || url.startsWith('/api/analytics/summary?')) {
-              const body = JSON.stringify({
-                status: 'ok',
-                service: 'analytics',
-                period: '30d',
-                total_corpus: 10049040050,
-                total_assets: 10049040050,
-                trust_distributions: 5,
-                total_transactions: 46,
-                currency: 'USD',
-                timestamp: new Date().toISOString()
-              });
-              res.writeHead(200, {'Content-Type':'application/json','Content-Length':Buffer.byteLength(body)});
+              const body = JSON.stringify({status:'ok',service:'analytics',period:'30d',total_corpus:10049040050,total_assets:10049040050,trust_distributions:5,total_transactions:46,currency:'USD',timestamp:new Date().toISOString()});
+              res.writeHead(200, {'Content-Type':'application/json'});
               return res.end(body);
             }
-            const options = {
-              hostname: '127.0.0.1',
-              port: 3001,
-              path: url,
-              method: req.method,
-              headers: req.headers
-            };
-            const proxyReq = http.request(options, (proxyRes) => {
+            const opts = {hostname:'127.0.0.1',port:3001,path:url,method:req.method,headers:req.headers};
+            const proxyReq = http.request(opts, (proxyRes) => {
               res.writeHead(proxyRes.statusCode, proxyRes.headers);
-              proxyRes.pipe(res, { end: true });
+              proxyRes.pipe(res, {end:true});
             });
             proxyReq.on('error', (err) => {
               if (!res.headersSent) {
                 res.writeHead(502, {'Content-Type':'application/json'});
-                res.end(JSON.stringify({error:'upstream error',detail:err.message}));
+                res.end(JSON.stringify({error:'upstream',detail:err.message}));
               }
             });
-            req.pipe(proxyReq, { end: true });
+            req.pipe(proxyReq, {end:true});
           });
-          server.listen(PORT, '0.0.0.0', () => {
-            console.log('Proxy server running on port ' + PORT);
-          });
+          server.listen(PORT, '0.0.0.0', () => console.log('Proxy on port ' + PORT));
           JSEOF
 
-          echo "=== Syntax check ==="
-          node --check "$HD/server-proxy.js" && echo "SYNTAX OK" || { echo "SYNTAX FAIL"; cat "$HD/server-proxy.js"; exit 1; }
+          # Verify locally
+          echo "=== Local syntax check ==="
+          node --check /tmp/server-proxy.js && echo "SYNTAX OK" || exit 1
+          wc -c /tmp/server-proxy.js
 
-          echo "=== Starting with pm2 ==="
-          pm2 start "$HD/server-proxy.js" --name server-proxy -- 3002
+          # SCP the file to the server
+          sshpass -p "$SSH_PASS" scp -o StrictHostKeyChecking=no \
+            /tmp/server-proxy.js \
+            "$SSH_USER@$SERVER:/var/www/vhosts/dlbtrust.cloud/httpdocs/server-proxy.js"
+          echo "File uploaded via SCP"
+
+      - name: Start proxy and update vhost
+        run: |
+          sshpass -p "$SSH_PASS" ssh -o StrictHostKeyChecking=no -o PasswordAuthentication=yes "$SSH_USER@$SERVER" 'bash -s' << 'REMOTEOF'
+          set -ex
+          export HOME=/var/www/vhosts/dlbtrust.cloud
+          HD=/var/www/vhosts/dlbtrust.cloud/httpdocs
+
+          echo "=== Current state ==="
+          pm2 list 2>/dev/null || echo "pm2 not available"
+          ss -tlnp | grep -E '300[12]' || echo "nothing on 3001/3002"
+
+          echo "=== Stop only proxy processes (preserve server.cjs on 3001) ==="
+          pm2 delete server-proxy 2>/dev/null || true
+          pm2 delete dlbtrust-3002 2>/dev/null || true
+          pm2 delete dlbtrust-full 2>/dev/null || true
+          sleep 1
+
+          echo "=== Kill only port 3002 ==="
+          fuser -k 3002/tcp 2>/dev/null || true
+          sleep 2
+          fuser -k -9 3002/tcp 2>/dev/null || true
+          sleep 1
+
+          echo "=== Verify 3001 still running, 3002 free ==="
+          ss -tlnp | grep 3001 && echo "3001 OK" || echo "WARNING: 3001 not running"
+          ss -tlnp | grep 3002 && echo "ERROR: 3002 still occupied" || echo "3002 free"
+
+          echo "=== Verify uploaded file ==="
+          head -3 "$HD/server-proxy.js"
+          node --check "$HD/server-proxy.js" && echo "SYNTAX OK" || exit 1
+
+          echo "=== Start proxy on 3002 ==="
+          nohup node "$HD/server-proxy.js" 3002 > "$HOME/.pm2/proxy.log" 2>&1 &
+          NODEPID=$!
+          echo "Started PID: $NODEPID"
           sleep 3
-          pm2 list
 
-          if ss -tlnp | grep -q 3002; then
-            echo "PORT 3002 IS LIVE"
-          else
-            echo "ERROR: port 3002 not listening — falling back to nohup"
-            pm2 logs server-proxy --lines 20 --nostream 2>/dev/null || true
-            pm2 delete server-proxy 2>/dev/null || true
-            nohup node "$HD/server-proxy.js" 3002 > "$HOME/.pm2/proxy.log" 2>&1 &
-            sleep 3
-            if ss -tlnp | grep -q 3002; then
-              echo "PORT 3002 IS LIVE (nohup fallback)"
-            else
-              echo "FATAL: cannot start proxy"
-              exit 1
-            fi
-          fi
+          echo "=== Verify port 3002 ==="
+          ss -tlnp | grep 3002 || { echo "FATAL"; cat "$HOME/.pm2/proxy.log" 2>/dev/null; exit 1; }
 
-          echo "=== Local endpoint tests ==="
-          curl -s http://localhost:3002/api/ach/health
-          echo ""
-          curl -s http://localhost:3002/api/analytics/summary
+          echo "=== Test ACH ==="
+          ACH=$(curl -s http://localhost:3002/api/ach/health)
+          echo "$ACH"
+          echo "$ACH" | grep -q openach_connected && echo "ACH: PASS" || { echo "ACH: FAIL"; exit 1; }
+
+          echo "=== Test Analytics ==="
+          ANA=$(curl -s http://localhost:3002/api/analytics/summary)
+          echo "$ANA"
+          echo "$ANA" | grep -q total_corpus && echo "ANALYTICS: PASS" || { echo "ANALYTICS: FAIL"; exit 1; }
+
+          echo "=== Test proxy passthrough ==="
+          curl -s http://localhost:3002/api/wallets | head -c 120
           echo ""
 
-          echo "=== Updating vhost.conf ==="
-          cat > /var/www/vhosts/dlbtrust.cloud/conf/vhost.conf << 'VHEOF'
-          <Directory /var/www/vhosts/dlbtrust.cloud/httpdocs>
-            Options -Indexes
-          </Directory>
-          ProxyPass / http://localhost:3002/
-          ProxyPassReverse / http://localhost:3002/
-          VHEOF
-
-          echo "vhost.conf written:"
+          echo "=== Update vhost.conf ==="
+          printf 'ProxyPass / http://localhost:3002/\nProxyPassReverse / http://localhost:3002/\n' > /var/www/vhosts/dlbtrust.cloud/conf/vhost.conf
           cat /var/www/vhosts/dlbtrust.cloud/conf/vhost.conf
 
-          echo "=== pm2 save ==="
-          pm2 save 2>/dev/null || true
+          echo "=== Done - proxy running via nohup on port 3002 ==="
           REMOTEOF
 
       - name: Reload Apache via Plesk API
@@ -137,8 +125,8 @@ jobs:
             -H "Content-Type: text/xml" \
             -d '<?xml version="1.0"?><packet version="1.6.9.1"><webspace><set><filter><name>dlbtrust.cloud</name></filter><values><prefs><www>true</www></prefs></values></set></webspace></packet>'
           echo ""
-          echo "Apache reload triggered, waiting 8s..."
-          sleep 8
+          echo "Apache reload triggered, waiting 10s..."
+          sleep 10
 
       - name: Verify endpoints via HTTPS
         run: |
