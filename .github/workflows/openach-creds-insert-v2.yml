@@ -9,51 +9,47 @@ jobs:
       - name: Install sshpass
         run: sudo apt-get install -y sshpass 2>/dev/null | tail -1 || true
 
-      - name: Diagnose and insert credentials via root SSH
+      - name: Full diagnostic of OpenACH container
         run: |
-          echo "=== Root SSH diagnostic ==="
           sshpass -p "dP8RlShbOWNq" ssh -o StrictHostKeyChecking=no -o ConnectTimeout=15 -o PasswordAuthentication=yes root@$SERVER '
             CONT=$(docker ps --format "{{.Names}}" | grep -i openach | head -1)
             echo "Container: $CONT"
+            echo ""
 
-            echo "=== Find all .db files ==="
-            docker exec "$CONT" find /var/www -name "*.db" -type f 2>/dev/null
+            echo "=== Docker inspect (mounts) ==="
+            docker inspect "$CONT" --format="{{json .Mounts}}" 2>/dev/null | python3 -m json.tool 2>/dev/null || docker inspect "$CONT" --format="{{json .Mounts}}" 2>/dev/null
+            echo ""
 
-            echo "=== Check standard DB path ==="
-            docker exec "$CONT" ls -la /var/www/html/protected/runtime/db/ 2>/dev/null || echo "Path not found"
+            echo "=== Find ALL .db and .sqlite files ==="
+            docker exec "$CONT" find / -maxdepth 6 -name "*.db" -o -name "*.sqlite" -o -name "*.sqlite3" 2>/dev/null | head -20
+            echo ""
 
-            DB=$(docker exec "$CONT" find /var/www -name "openach.db" -type f 2>/dev/null | head -1)
-            echo "Found DB at: $DB"
+            echo "=== Check OpenACH config ==="
+            docker exec "$CONT" cat /var/www/html/protected/config/db.php 2>/dev/null || echo "No db.php"
+            docker exec "$CONT" cat /var/www/html/protected/config/main.php 2>/dev/null | grep -A3 "db" | head -10 || echo "No main.php db config"
+            echo ""
 
-            if [ -n "$DB" ]; then
-              echo "=== Tables ==="
-              docker exec "$CONT" sqlite3 "$DB" ".tables" 2>&1
+            echo "=== OpenACH runtime dir ==="
+            docker exec "$CONT" ls -laR /var/www/html/protected/runtime/ 2>/dev/null | head -30 || echo "No runtime dir"
+            echo ""
 
-              echo "=== user_api schema ==="
-              docker exec "$CONT" sqlite3 "$DB" ".schema user_api" 2>&1
+            echo "=== Check if OpenACH uses MySQL instead ==="
+            docker exec "$CONT" cat /var/www/html/protected/config/db.php 2>/dev/null | head -20
+            echo ""
 
-              echo "=== Current user_api rows ==="
-              docker exec "$CONT" sqlite3 "$DB" "SELECT * FROM user_api LIMIT 5;" 2>&1
+            echo "=== Docker compose / env vars ==="
+            docker inspect "$CONT" --format="{{json .Config.Env}}" 2>/dev/null | tr "," "\n"
+            echo ""
 
-              echo "=== Inserting ==="
-              docker exec "$CONT" sqlite3 "$DB" "INSERT OR IGNORE INTO user_api (user_api_user_id, user_api_datetime, user_api_originator_info_id, user_api_token, user_api_key, user_api_status) VALUES ('"'"'4fc86059-2e7b-4732-b94f-e7c3715ee8d7'"'"', datetime('"'"'now'"'"'), '"'"'0eb26e1d-5fcc-4978-a132-dd93c2655429'"'"', '"'"'3caee1c2-c218-4959-b6d2-21d4b2a1b42e'"'"', '"'"'b74966cf-5276-4d8b-8650-5bd57dcee272'"'"', '"'"'enabled'"'"');" 2>&1
-              echo "Insert exit code: $?"
-
-              echo "=== After insert ==="
-              docker exec "$CONT" sqlite3 "$DB" "SELECT * FROM user_api;" 2>&1
-            else
-              echo "No openach.db found!"
-              echo "=== All files in /var/www ==="
-              docker exec "$CONT" find /var/www -name "*.db" -o -name "*.sqlite" 2>/dev/null | head -20
-            fi
+            echo "=== Other containers ==="
+            docker ps --format "table {{.Names}}\t{{.Image}}\t{{.Status}}"
           ' 2>&1
           echo ""
-          echo "=== Diagnostic complete ==="
+          echo "=== Done ==="
 
       - name: Test API via HTTPS
         if: always()
         run: |
-          echo "=== Testing OpenACH API ==="
           curl -sk --max-time 15 \
             -X POST https://ach.dlbtrust.cloud/openach/api/connect \
             -d "user_api_token=3caee1c2-c218-4959-b6d2-21d4b2a1b42e&user_api_key=b74966cf-5276-4d8b-8650-5bd57dcee272" 2>&1 | head -c 500
