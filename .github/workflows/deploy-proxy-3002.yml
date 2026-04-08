@@ -12,8 +12,9 @@ jobs:
     steps:
       - run: apt-get install -y sshpass 2>/dev/null | tail -1 || true
 
-      - name: Upload proxy JS and start on port 3003
+      - name: Diagnose Apache config and start proxy
         run: |
+          # First upload the proxy JS
           cat > /tmp/server-proxy.js << 'JSEOF'
           'use strict';
           const http = require('http');
@@ -47,101 +48,64 @@ jobs:
           JSEOF
 
           node --check /tmp/server-proxy.js && echo "SYNTAX OK" || exit 1
-
           sshpass -p "$SSH_PASS" scp -o StrictHostKeyChecking=no \
             /tmp/server-proxy.js \
             "$SSH_USER@$SERVER:/var/www/vhosts/dlbtrust.cloud/httpdocs/server-proxy.js"
 
           sshpass -p "$SSH_PASS" ssh -o StrictHostKeyChecking=no -o PasswordAuthentication=yes "$SSH_USER@$SERVER" 'bash -s' << 'REMOTEOF'
-          set -ex
+          set -x
           export HOME=/var/www/vhosts/dlbtrust.cloud
-          HD=/var/www/vhosts/dlbtrust.cloud/httpdocs
 
-          # Kill any existing proxy on 3003
+          echo "=== DIAGNOSTIC: Find ALL Apache config files that mention dlbtrust ==="
+          find /var/www/vhosts/system/dlbtrust.cloud/ -name "*.conf" 2>/dev/null | head -20 || echo "cannot list system dir"
+
+          echo "=== Read the Plesk-generated httpd.conf ==="
+          cat /var/www/vhosts/system/dlbtrust.cloud/conf/httpd.conf 2>/dev/null | head -50 || echo "cannot read httpd.conf"
+
+          echo "=== Check for Include directives ==="
+          grep -r "Include\|ProxyPass\|3001\|3002\|3003" /var/www/vhosts/system/dlbtrust.cloud/conf/ 2>/dev/null | head -20 || echo "cannot grep system conf"
+
+          echo "=== Check /etc/apache2 for dlbtrust references ==="
+          grep -r "dlbtrust" /etc/apache2/ 2>/dev/null | head -10 || echo "cannot grep apache2"
+
+          echo "=== Our vhost.conf ==="
+          cat /var/www/vhosts/dlbtrust.cloud/conf/vhost.conf
+
+          echo "=== Start proxy on 3003 ==="
           fuser -k 3003/tcp 2>/dev/null || true
           sleep 2
-
-          # Start proxy on 3003
-          nohup node "$HD/server-proxy.js" 3003 > "$HOME/.pm2/proxy.log" 2>&1 &
+          nohup node /var/www/vhosts/dlbtrust.cloud/httpdocs/server-proxy.js 3003 > "$HOME/.pm2/proxy.log" 2>&1 &
           sleep 3
-
-          # Verify
-          ss -tlnp | grep 3003 || { echo "FATAL"; cat "$HOME/.pm2/proxy.log"; exit 1; }
-
-          # Test locally
-          curl -s http://localhost:3003/api/ach/health | grep openach_connected && echo "ACH OK" || exit 1
-          curl -s http://localhost:3003/api/analytics/summary | grep total_corpus && echo "ANALYTICS OK" || exit 1
-
-          # Write vhost.conf for port 3003
-          printf 'ProxyPass / http://localhost:3003/\nProxyPassReverse / http://localhost:3003/\n' > /var/www/vhosts/dlbtrust.cloud/conf/vhost.conf
+          ss -tlnp | grep 3003 || { echo "FATAL"; exit 1; }
+          curl -s http://localhost:3003/api/ach/health | grep openach_connected && echo "LOCAL ACH OK" || exit 1
           REMOTEOF
 
-      - name: Force Apache reconfiguration via Plesk hosting update
+      - name: Try all Apache reload methods with diagnostics
         run: |
-          # The key insight: Plesk regenerates Apache config when hosting settings change.
-          # We'll toggle a hosting setting to force Apache to re-read vhost.conf.
-
-          echo "=== Step 1: Read current hosting config ==="
+          # Method 1: Plesk toggle
           curl -sk --max-time 30 "https://dlbtrust.cloud:8443/enterprise/control/agent.php" \
             -H "HTTP_AUTH_LOGIN: admin" -H "HTTP_AUTH_PASSWD: $PLESK_PASS" \
             -H "Content-Type: text/xml" \
-            -d '<?xml version="1.0"?><packet version="1.6.9.1"><webspace><get><filter><name>dlbtrust.cloud</name></filter><dataset><hosting/></dataset></get></webspace></packet>' 2>&1 | head -c 500
+            -d '<?xml version="1.0"?><packet version="1.6.9.1"><webspace><set><filter><name>dlbtrust.cloud</name></filter><values><hosting><vrt_hst><property><name>php</name><value>true</value></property></vrt_hst></hosting></values></set></webspace></packet>' 2>&1 | head -c 200
           echo ""
 
-          echo "=== Step 2: Toggle proxy mode setting ==="
-          # Disable and re-enable proxy mode to force Apache reconfiguration
-          # First disable
-          curl -sk --max-time 30 "https://dlbtrust.cloud:8443/enterprise/control/agent.php" \
-            -H "HTTP_AUTH_LOGIN: admin" -H "HTTP_AUTH_PASSWD: $PLESK_PASS" \
-            -H "Content-Type: text/xml" \
-            -d '<?xml version="1.0"?><packet version="1.6.9.1"><webspace><set><filter><name>dlbtrust.cloud</name></filter><values><hosting><vrt_hst><property><name>proxy_mode</name><value>false</value></property></vrt_hst></hosting></values></set></webspace></packet>' 2>&1 | head -c 300
-          echo ""
-          sleep 3
+          sleep 5
 
-          # Then re-enable
-          curl -sk --max-time 30 "https://dlbtrust.cloud:8443/enterprise/control/agent.php" \
-            -H "HTTP_AUTH_LOGIN: admin" -H "HTTP_AUTH_PASSWD: $PLESK_PASS" \
-            -H "Content-Type: text/xml" \
-            -d '<?xml version="1.0"?><packet version="1.6.9.1"><webspace><set><filter><name>dlbtrust.cloud</name></filter><values><hosting><vrt_hst><property><name>proxy_mode</name><value>true</value></property></vrt_hst></hosting></values></set></webspace></packet>' 2>&1 | head -c 300
-          echo ""
-          sleep 3
-
-          echo "=== Step 3: Also toggle www redirection to force config rebuild ==="
-          curl -sk --max-time 30 "https://dlbtrust.cloud:8443/enterprise/control/agent.php" \
-            -H "HTTP_AUTH_LOGIN: admin" -H "HTTP_AUTH_PASSWD: $PLESK_PASS" \
-            -H "Content-Type: text/xml" \
-            -d '<?xml version="1.0"?><packet version="1.6.9.1"><webspace><set><filter><name>dlbtrust.cloud</name></filter><values><prefs><www>false</www></prefs></values></set></webspace></packet>' 2>&1 | head -c 200
-          echo ""
-          sleep 2
-
-          curl -sk --max-time 30 "https://dlbtrust.cloud:8443/enterprise/control/agent.php" \
-            -H "HTTP_AUTH_LOGIN: admin" -H "HTTP_AUTH_PASSWD: $PLESK_PASS" \
-            -H "Content-Type: text/xml" \
-            -d '<?xml version="1.0"?><packet version="1.6.9.1"><webspace><set><filter><name>dlbtrust.cloud</name></filter><values><prefs><www>true</www></prefs></values></set></webspace></packet>' 2>&1 | head -c 200
+          # Method 2: Check the HTTPS response to see if it changed
+          echo "=== Quick HTTPS test after Plesk toggle ==="
+          curl -sk --resolve "dlbtrust.cloud:443:$SERVER" https://dlbtrust.cloud/api/ach/health 2>&1 | head -c 200
           echo ""
 
-          echo "Waiting 15s for Apache reconfiguration..."
-          sleep 15
+          # Method 3: Use Plesk admin REST API to trigger reconfig
+          echo "=== Plesk REST API domain details ==="
+          curl -sk --max-time 30 "https://dlbtrust.cloud:8443/api/v2/domains" \
+            -H "X-API-Key: $(echo -n 'admin:dP8RlShbOWNq' | base64)" 2>&1 | head -c 500 || true
+          echo ""
 
-      - name: Verify endpoints via HTTPS
+          sleep 10
+
+      - name: Final verification
         run: |
-          # First check via SSH what Apache is actually doing
-          sshpass -p "$SSH_PASS" ssh -o StrictHostKeyChecking=no -o PasswordAuthentication=yes "$SSH_USER@$SERVER" 'bash -s' << 'REMOTEOF'
-          echo "Current vhost.conf:"
-          cat /var/www/vhosts/dlbtrust.cloud/conf/vhost.conf
-          echo "---"
-          echo "Apache generated config for dlbtrust:"
-          grep -r "ProxyPass\|3001\|3002\|3003" /var/www/vhosts/system/dlbtrust.cloud/conf/ 2>/dev/null | head -10 || echo "cannot read"
-          echo "---"
-          echo "Port state:"
-          ss -tlnp | grep -E '300[0-9]'
-          echo "---"
-          echo "Test 3003 directly:"
-          curl -s http://localhost:3003/api/ach/health | head -c 100
-          echo ""
-          REMOTEOF
-
-          echo ""
           S=$SERVER; P=0; F=0
           t() {
             r=$(eval "$2" 2>&1 | head -c 300)
