@@ -33,74 +33,52 @@ jobs:
             curl -s http://localhost:3003/api/ach/health | head -c 100
             echo ""
 
-      - name: Update Plesk additional-settings and force Apache reload
+      - name: Update Apache additional-settings with proper XML encoding
         run: |
-          echo "=== Step 1: Update additional-settings ==="
-          curl -sk --max-time 30 "https://dlbtrust.cloud:8443/enterprise/control/agent.php" \
+          echo "=== Update additional-settings with XML-encoded newlines ==="
+          XMLDATA='<?xml version="1.0" encoding="UTF-8"?><packet version="1.6.9.1"><webspace><set><filter><name>dlbtrust.cloud</name></filter><values><hosting><vrt_hst><property><name>additional-settings</name><value>ProxyPass /api/ach/ http://127.0.0.1:3003/api/ach/&#10;ProxyPassReverse /api/ach/ http://127.0.0.1:3003/api/ach/&#10;ProxyPass /api/analytics/ http://127.0.0.1:3003/api/analytics/&#10;ProxyPassReverse /api/analytics/ http://127.0.0.1:3003/api/analytics/&#10;ProxyPass /api/payment-gateway/ http://127.0.0.1:3002/api/payment-gateway/&#10;ProxyPassReverse /api/payment-gateway/ http://127.0.0.1:3002/api/payment-gateway/&#10;ProxyPass /api/ http://127.0.0.1:3002/api/&#10;ProxyPassReverse /api/ http://127.0.0.1:3002/api/</value></property></vrt_hst></hosting></values></set></webspace></packet>'
+
+          echo "Sending XML (length=${#XMLDATA})..."
+          RESPONSE=$(curl -sk --max-time 30 "https://dlbtrust.cloud:8443/enterprise/control/agent.php" \
             -H "HTTP_AUTH_LOGIN: admin" \
             -H "HTTP_AUTH_PASSWD: dP8RlShbOWNq" \
             -H "Content-Type: text/xml" \
-            -d '<?xml version="1.0" encoding="UTF-8"?><packet version="1.6.9.1"><webspace><set><filter><name>dlbtrust.cloud</name></filter><values><hosting><vrt_hst><property><name>additional-settings</name><value>ProxyPass /api/ach/ http://127.0.0.1:3003/api/ach/
-          ProxyPassReverse /api/ach/ http://127.0.0.1:3003/api/ach/
-          ProxyPass /api/analytics/ http://127.0.0.1:3003/api/analytics/
-          ProxyPassReverse /api/analytics/ http://127.0.0.1:3003/api/analytics/
-          ProxyPass /api/payment-gateway/ http://127.0.0.1:3002/api/payment-gateway/
-          ProxyPassReverse /api/payment-gateway/ http://127.0.0.1:3002/api/payment-gateway/
-          ProxyPass /api/ http://127.0.0.1:3002/api/
-          ProxyPassReverse /api/ http://127.0.0.1:3002/api/</value></property></vrt_hst></hosting></values></set></webspace></packet>'
-          echo ""
-          echo "additional-settings updated"
+            -d "$XMLDATA" 2>&1)
+          echo "Response: $RESPONSE"
           sleep 3
 
-          echo "=== Step 2: Toggle proxy_mode off to force Apache regen ==="
+          echo "=== Toggle PHP handler to force full Apache regen ==="
           curl -sk --max-time 30 "https://dlbtrust.cloud:8443/enterprise/control/agent.php" \
             -H "HTTP_AUTH_LOGIN: admin" \
             -H "HTTP_AUTH_PASSWD: dP8RlShbOWNq" \
             -H "Content-Type: text/xml" \
-            -d '<?xml version="1.0" encoding="UTF-8"?><packet version="1.6.9.1"><webspace><set><filter><name>dlbtrust.cloud</name></filter><values><hosting><vrt_hst><property><name>proxy_mode</name><value>false</value></property></vrt_hst></hosting></values></set></webspace></packet>'
+            -d '<?xml version="1.0" encoding="UTF-8"?><packet version="1.6.9.1"><webspace><set><filter><name>dlbtrust.cloud</name></filter><values><hosting><vrt_hst><property><name>php_handler_id</name><value>plesk-php84-cgi</value></property></vrt_hst></hosting></values></set></webspace></packet>'
           echo ""
           sleep 5
 
-          echo "=== Step 3: Toggle proxy_mode back on ==="
           curl -sk --max-time 30 "https://dlbtrust.cloud:8443/enterprise/control/agent.php" \
             -H "HTTP_AUTH_LOGIN: admin" \
             -H "HTTP_AUTH_PASSWD: dP8RlShbOWNq" \
             -H "Content-Type: text/xml" \
-            -d '<?xml version="1.0" encoding="UTF-8"?><packet version="1.6.9.1"><webspace><set><filter><name>dlbtrust.cloud</name></filter><values><hosting><vrt_hst><property><name>proxy_mode</name><value>true</value></property></vrt_hst></hosting></values></set></webspace></packet>'
-          echo ""
-          sleep 5
-
-          echo "=== Step 4: Also toggle SSI to force full webspace reconfigure ==="
-          curl -sk --max-time 30 "https://dlbtrust.cloud:8443/enterprise/control/agent.php" \
-            -H "HTTP_AUTH_LOGIN: admin" \
-            -H "HTTP_AUTH_PASSWD: dP8RlShbOWNq" \
-            -H "Content-Type: text/xml" \
-            -d '<?xml version="1.0" encoding="UTF-8"?><packet version="1.6.9.1"><webspace><set><filter><name>dlbtrust.cloud</name></filter><values><hosting><vrt_hst><property><name>ssi</name><value>true</value></property></vrt_hst></hosting></values></set></webspace></packet>'
-          echo ""
-          sleep 3
-
-          curl -sk --max-time 30 "https://dlbtrust.cloud:8443/enterprise/control/agent.php" \
-            -H "HTTP_AUTH_LOGIN: admin" \
-            -H "HTTP_AUTH_PASSWD: dP8RlShbOWNq" \
-            -H "Content-Type: text/xml" \
-            -d '<?xml version="1.0" encoding="UTF-8"?><packet version="1.6.9.1"><webspace><set><filter><name>dlbtrust.cloud</name></filter><values><hosting><vrt_hst><property><name>ssi</name><value>false</value></property></vrt_hst></hosting></values></set></webspace></packet>'
+            -d '<?xml version="1.0" encoding="UTF-8"?><packet version="1.6.9.1"><webspace><set><filter><name>dlbtrust.cloud</name></filter><values><hosting><vrt_hst><property><name>php_handler_id</name><value>plesk-php84-fpm</value></property></vrt_hst></hosting></values></set></webspace></packet>'
           echo ""
           sleep 10
 
-          echo "=== Step 5: Verify current additional-settings ==="
-          curl -sk --max-time 30 "https://dlbtrust.cloud:8443/enterprise/control/agent.php" \
+          echo "=== Verify additional-settings persisted ==="
+          HOSTDATA=$(curl -sk --max-time 30 "https://dlbtrust.cloud:8443/enterprise/control/agent.php" \
             -H "HTTP_AUTH_LOGIN: admin" \
             -H "HTTP_AUTH_PASSWD: dP8RlShbOWNq" \
             -H "Content-Type: text/xml" \
-            -d '<?xml version="1.0" encoding="UTF-8"?><packet version="1.6.9.1"><webspace><get><filter><name>dlbtrust.cloud</name></filter><dataset><hosting/></dataset></get></webspace></packet>' 2>&1 | grep -o 'additional-settings[^<]*<[^<]*' | head -5
+            -d '<?xml version="1.0" encoding="UTF-8"?><packet version="1.6.9.1"><webspace><get><filter><name>dlbtrust.cloud</name></filter><dataset><hosting/></dataset></get></webspace></packet>' 2>&1)
+          echo "$HOSTDATA" | grep -oP 'additional-settings.*?</property>' | head -1
           echo ""
 
-          echo "=== Step 6: Public tests ==="
+          echo "=== Public tests ==="
           curl -sk https://dlbtrust.cloud/api/ach/health | head -c 300
           echo ""
           curl -sk https://dlbtrust.cloud/api/analytics/summary | head -c 300
           echo ""
-          curl -sk https://dlbtrust.cloud/api/wallets | head -c 200
+          curl -sk https://dlbtrust.cloud/api/wallets | head -c 100
           echo ""
 
           echo "=== Field checks ==="
