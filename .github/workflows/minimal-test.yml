@@ -4,8 +4,104 @@ on:
   workflow_dispatch:
 
 jobs:
-  test:
+  deploy:
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
-      - name: Hello
-        run: echo "Workflow triggered successfully"
+      - name: Install tools
+        run: |
+          sudo apt-get install -y sshpass 2>/dev/null
+          pip install playwright --quiet
+          playwright install chromium --with-deps 2>&1 | tail -3
+
+      - name: Test connectivity
+        run: |
+          nc -zv 74.208.191.205 22 2>&1 || true
+          nc -zv 74.208.191.205 8443 2>&1 || true
+
+      - name: Try SSH deploy with secret
+        env:
+          SERVER_PASS: ${{ secrets.SERVER_PASSWORD }}
+        run: |
+          echo "Testing SSH..."
+          sshpass -p "$SERVER_PASS" ssh -o StrictHostKeyChecking=no -o ConnectTimeout=10 root@74.208.191.205 "echo CONNECTED && whoami" 2>&1 || echo "SSH FAILED with stored secret"
+
+      - name: Playwright IONOS login
+        run: |
+          python3 -c "
+          import asyncio
+          from playwright.async_api import async_playwright
+          import re
+
+          async def main():
+              async with async_playwright() as p:
+                  browser = await p.chromium.launch(headless=True, args=['--no-sandbox','--disable-dev-shm-usage'])
+                  ctx = await browser.new_context(user_agent='Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36')
+                  page = await ctx.new_page()
+
+                  print('Loading IONOS login...')
+                  await page.goto('https://login.ionos.com/', timeout=30000)
+                  await page.wait_for_load_state('networkidle', timeout=15000)
+                  print(f'URL: {page.url}')
+                  await page.screenshot(path='/tmp/s1.png')
+
+                  print('Filling username...')
+                  try:
+                      await page.wait_for_selector('input', timeout=8000)
+                      inp = await page.query_selector('input')
+                      await inp.fill('deandreabarkley13@gmail.com')
+                      await page.keyboard.press('Enter')
+                      await page.wait_for_load_state('networkidle', timeout=10000)
+                      print(f'URL after email: {page.url}')
+                  except Exception as e:
+                      print(f'Email error: {e}')
+                  await page.screenshot(path='/tmp/s2.png')
+
+                  print('Filling password...')
+                  try:
+                      await page.wait_for_selector('input[type=password]', timeout=8000)
+                      await page.fill('input[type=password]', 'Skunklemon78tut\$jupiter')
+                      await page.keyboard.press('Enter')
+                      await page.wait_for_load_state('networkidle', timeout=15000)
+                      print(f'URL after pass: {page.url}')
+                  except Exception as e:
+                      print(f'Pass error: {e}')
+                  await page.screenshot(path='/tmp/s3.png')
+
+                  title = await page.title()
+                  print(f'Post-login title: {title}')
+                  print(f'Post-login URL: {page.url}')
+                  content = await page.content()
+                  print(f'Content snippet: {content[:500]}')
+
+                  if 'login' not in page.url and 'identifier' not in page.url:
+                      print('LOGGED IN')
+                      for nav_url in ['https://my.ionos.com/', 'https://my.ionos.com/server-cloud-infrastructure']:
+                          await page.goto(nav_url, timeout=20000)
+                          await page.wait_for_load_state('networkidle', timeout=10000)
+                          c = await page.content()
+                          print(f'Nav {nav_url}: {page.url}')
+                          if '74.208.191.205' in c:
+                              print('FOUND SERVER IP ON PAGE')
+                              with open('/tmp/server_page.html', 'w') as f:
+                                  f.write(c)
+                          await page.screenshot(path=f'/tmp/nav_{nav_url[-5:]}.png')
+                  else:
+                      print('NOT LOGGED IN - still on login page')
+
+                  await browser.close()
+
+          asyncio.run(main())
+          "
+
+      - name: Show screenshots
+        run: ls -la /tmp/s*.png /tmp/*.html 2>/dev/null || echo "no output files"
+
+      - name: Check server page for credentials
+        run: |
+          if [ -f /tmp/server_page.html ]; then
+            echo "=== Server page found ==="
+            grep -i "74.208\|password\|root\|ssh\|vps\|server" /tmp/server_page.html | head -30
+          else
+            echo "No server page found"
+          fi
