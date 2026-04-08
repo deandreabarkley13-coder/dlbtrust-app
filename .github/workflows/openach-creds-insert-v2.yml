@@ -9,60 +9,44 @@ jobs:
       - name: Install sshpass
         run: sudo apt-get install -y sshpass 2>/dev/null | tail -1 || true
 
-      - name: Deep OpenACH investigation
+      - name: Insert API credentials into OpenACH
         run: |
           sshpass -p "dP8RlShbOWNq" ssh -o StrictHostKeyChecking=no -o ConnectTimeout=15 -o PasswordAuthentication=yes root@$SERVER '
             CONT=openach-web-1
+            DB=/home/www/openach/protected/runtime/db/openach.db
 
-            echo "=== Web root contents ==="
-            docker exec "$CONT" ls -la /home/www/openach/ 2>/dev/null | head -20
-            echo ""
+            echo "=== user_api table schema ==="
+            docker exec "$CONT" sqlite3 "$DB" ".schema user_api" 2>&1
 
-            echo "=== Config dir (mounted) ==="
-            docker exec "$CONT" ls -la /home/www/openach/protected/config/ 2>/dev/null | head -20
-            echo ""
+            echo "=== Current rows ==="
+            docker exec "$CONT" sqlite3 "$DB" "SELECT * FROM user_api LIMIT 5;" 2>&1
 
-            echo "=== All config files ==="
-            docker exec "$CONT" find /home/www/openach/protected/config -type f 2>/dev/null
-            echo ""
+            echo "=== Column info ==="
+            docker exec "$CONT" sqlite3 "$DB" "PRAGMA table_info(user_api);" 2>&1
 
-            echo "=== db.php ==="
-            docker exec "$CONT" cat /home/www/openach/protected/config/db.php 2>/dev/null || echo "Not found"
-            echo ""
+            echo "=== Inserting credentials ==="
+            docker exec "$CONT" sqlite3 "$DB" "INSERT OR IGNORE INTO user_api (user_api_user_id, user_api_datetime, user_api_originator_info_id, user_api_token, user_api_key, user_api_status) VALUES ('"'"'4fc86059-2e7b-4732-b94f-e7c3715ee8d7'"'"', datetime('"'"'now'"'"'), '"'"'0eb26e1d-5fcc-4978-a132-dd93c2655429'"'"', '"'"'3caee1c2-c218-4959-b6d2-21d4b2a1b42e'"'"', '"'"'b74966cf-5276-4d8b-8650-5bd57dcee272'"'"', '"'"'enabled'"'"');" 2>&1
+            echo "Insert exit code: $?"
 
-            echo "=== main.php (db section) ==="
-            docker exec "$CONT" cat /home/www/openach/protected/config/main.php 2>/dev/null | head -50
-            echo ""
+            echo "=== Verify insertion ==="
+            docker exec "$CONT" sqlite3 "$DB" "SELECT * FROM user_api WHERE user_api_token='"'"'3caee1c2-c218-4959-b6d2-21d4b2a1b42e'"'"';" 2>&1
 
-            echo "=== Runtime dir ==="
-            docker exec "$CONT" ls -laR /home/www/openach/protected/runtime/ 2>/dev/null | head -30
-            echo ""
-
-            echo "=== Host-side runtime dir ==="
-            ls -laR /opt/psa/var/modules/docker/stacks/openach/runtime/ 2>/dev/null | head -30
-            echo ""
-
-            echo "=== Host-side config dir ==="
-            ls -la /opt/psa/var/modules/docker/stacks/openach/config/ 2>/dev/null
-            cat /opt/psa/var/modules/docker/stacks/openach/config/db.php 2>/dev/null || echo "No db.php on host"
-            echo ""
-
-            echo "=== Find ALL db-related files in container ==="
-            docker exec "$CONT" find / -maxdepth 8 \( -name "*.db" -o -name "*.sqlite" -o -name "db.php" -o -name "database*" \) 2>/dev/null | grep -v proc | head -20
-            echo ""
-
-            echo "=== Check if MySQL is running in container ==="
-            docker exec "$CONT" ps aux 2>/dev/null | head -20
-            echo ""
-
-            echo "=== Check MySQL/MariaDB containers ==="
-            docker ps -a --format "table {{.Names}}\t{{.Image}}\t{{.Status}}"
+            echo "=== All rows after insert ==="
+            docker exec "$CONT" sqlite3 "$DB" "SELECT user_api_token, user_api_key, user_api_status FROM user_api;" 2>&1
           ' 2>&1
-          echo "=== Investigation complete ==="
+          echo "=== Done ==="
 
-      - name: Test API
+      - name: Test API via HTTPS
         if: always()
         run: |
-          curl -sk --max-time 15 -X POST https://ach.dlbtrust.cloud/openach/api/connect \
-            -d "user_api_token=3caee1c2-c218-4959-b6d2-21d4b2a1b42e&user_api_key=b74966cf-5276-4d8b-8650-5bd57dcee272" 2>&1 | head -c 500
-          echo ""
+          sleep 2
+          echo "=== Testing OpenACH API ==="
+          RESULT=$(curl -sk --max-time 15 \
+            -X POST https://ach.dlbtrust.cloud/openach/api/connect \
+            -d "user_api_token=3caee1c2-c218-4959-b6d2-21d4b2a1b42e&user_api_key=b74966cf-5276-4d8b-8650-5bd57dcee272" 2>&1)
+          echo "$RESULT"
+          if echo "$RESULT" | grep -q '"success":true'; then
+            echo "SUCCESS: API credentials working!"
+          else
+            echo "API credentials not yet working"
+          fi
