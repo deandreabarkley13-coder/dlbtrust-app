@@ -1,8 +1,8 @@
-name: FINAL 8/8 — Port 3002 + OpenACH Credentials
+name: FINAL 8/8 Deploy
 on:
   push:
     branches: [main]
-    paths: ['.github/workflows/final-8-8-master.yml']
+    paths: ['.github/workflows/final-8-8-master.yml', 'server/server-3002.js']
   workflow_dispatch:
 
 jobs:
@@ -18,295 +18,148 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
-      - run: apt-get install -y sshpass 2>/dev/null | tail -1 || true
 
-      # Step 1: Write server-3002.js on the server via heredoc-safe approach
-      # Use SCP to avoid YAML heredoc issues with JS content
-      - name: Create server-3002.js locally
-        run: |
-          cat > /tmp/server-3002.js << 'JSEOF'
-'use strict';
-const V2 = '/var/www/vhosts/dlbtrust.cloud/dlbtrust-v2';
-const HD = '/var/www/vhosts/dlbtrust.cloud/httpdocs';
-const express = require(V2 + '/node_modules/express');
-const path = require('path');
-const fs = require('fs');
-const app = express();
-const PORT = process.env.PORT || 3002;
+      - name: Install sshpass
+        run: apt-get install -y sshpass 2>/dev/null | tail -1 || true
 
-app.use(express.json());
-app.use(express.urlencoded({ extended: true }));
-
-// Auth routes from v2
-try { require(V2 + '/auth-routes.cjs')(app); console.log('[auth] loaded'); } catch(e) { console.warn('[auth]', e.message); }
-
-// API routes from v2 (wallets, transactions, etc.)
-try { require(V2 + '/api-routes.cjs')(app); console.log('[api] loaded'); } catch(e) { console.warn('[api]', e.message); }
-
-// OpenACH routes
-try { require(HD + '/server/openach-patch')(app, null); console.log('[openach] loaded'); } catch(e) { console.warn('[openach]', e.message); }
-
-// Analytics routes
-try { app.use('/api/analytics', require(HD + '/server/routes/analytics')); console.log('[analytics] loaded'); } catch(e) { console.warn('[analytics]', e.message); }
-
-// Static files from v2 dist
-app.use(express.static(path.join(V2, 'dist', 'public')));
-app.use('/assets', express.static(path.join(V2, 'dist', 'public', 'assets')));
-
-app.get('/', (req, res) => {
-  const l = path.join(V2, 'dist', 'public', 'landing.html');
-  fs.existsSync(l) ? res.sendFile(l) : res.redirect('/#/dashboard');
-});
-app.get('/login', (req, res) => {
-  const l = path.join(V2, 'dist', 'public', 'login.html');
-  fs.existsSync(l) ? res.sendFile(l) : res.status(404).send('Not found');
-});
-app.get('/login.html', (req, res) => res.redirect('/login'));
-app.get('*', (req, res) => {
-  const idx = path.join(V2, 'dist', 'public', 'index.html');
-  fs.existsSync(idx) ? res.sendFile(idx) : res.status(404).send('Not found');
-});
-
-app.listen(PORT, () => console.log('[dlbtrust-3002] running on port ' + PORT));
-JSEOF
-          echo "server-3002.js created locally:"
-          head -5 /tmp/server-3002.js
-
-      - name: SCP server-3002.js to httpdocs
+      - name: SCP server-3002.js to server
         run: |
           sshpass -p "$SSH_PASS" scp \
             -o StrictHostKeyChecking=no -o ConnectTimeout=15 \
-            /tmp/server-3002.js \
+            server/server-3002.js \
             "$SSH_USER@$SERVER:/var/www/vhosts/dlbtrust.cloud/httpdocs/server-3002.js"
-          echo "SCP done"
+          echo "SCP complete"
 
-      # Step 2: Start server on port 3002 and update vhost.conf
-      - name: Start server-3002 on port 3002 + update vhost.conf
+      - name: Start server-3002 on port 3002
         run: |
           sshpass -p "$SSH_PASS" ssh \
             -o StrictHostKeyChecking=no -o ConnectTimeout=15 \
             -o PasswordAuthentication=yes \
             "$SSH_USER@$SERVER" 'bash -s' << 'SSHEOF'
-HTTPDOCS="/var/www/vhosts/dlbtrust.cloud/httpdocs"
-VHOST_CONF="/var/www/vhosts/dlbtrust.cloud/conf/vhost.conf"
+          HTTPDOCS="/var/www/vhosts/dlbtrust.cloud/httpdocs"
+          echo "=== Stop old user pm2 processes ==="
+          pm2 delete dlbtrust 2>/dev/null || true
+          pm2 delete dlbtrust-3002 2>/dev/null || true
+          pm2 delete dlbtrust-full 2>/dev/null || true
+          sleep 2
+          echo "=== Start server-3002.js on port 3002 ==="
+          PORT=3002 pm2 start "$HTTPDOCS/server-3002.js" --name dlbtrust-3002
+          pm2 save
+          sleep 5
+          pm2 list
+          echo "=== Test port 3002 ==="
+          curl -s http://127.0.0.1:3002/api/ach/health 2>/dev/null | head -c 200
+          echo ""
+          curl -s http://127.0.0.1:3002/api/analytics/summary 2>/dev/null | head -c 200
+          echo ""
+          SSHEOF
 
-echo "=== Stop old user pm2 processes ==="
-pm2 delete dlbtrust 2>/dev/null || true
-pm2 delete dlbtrust-3002 2>/dev/null || true
-pm2 delete dlbtrust-full 2>/dev/null || true
-sleep 2
-
-echo "=== Start server-3002.js on port 3002 ==="
-PORT=3002 pm2 start "$HTTPDOCS/server-3002.js" --name dlbtrust-3002
-pm2 save
-sleep 5
-pm2 list
-
-echo "=== Test port 3002 directly ==="
-curl -s http://127.0.0.1:3002/api/ach/health 2>/dev/null | head -c 200
-echo ""
-curl -s http://127.0.0.1:3002/api/analytics/summary 2>/dev/null | head -c 200
-echo ""
-
-echo "=== Update vhost.conf to selective proxy ==="
-# Port 3001 serves root's server.cjs (auth + wallets + transactions + static)
-# Port 3002 serves our server-3002.js which has ACH + analytics + everything else
-# Strategy: proxy ALL to 3002 (it has all routes including auth, wallets, etc.)
-cat > "$VHOST_CONF" << 'VHEOF'
-ProxyRequests Off
-ProxyPreserveHost On
-
-# Proxy all traffic to port 3002 (has ACH + analytics + all other routes)
-ProxyPass / http://localhost:3002/
-ProxyPassReverse / http://localhost:3002/
-
-<Proxy *>
-    Order deny,allow
-    Allow from all
-    Require all granted
-</Proxy>
-
-RewriteEngine On
-RewriteCond %{HTTP:Upgrade} websocket [NC]
-RewriteRule ^/?(.*) ws://localhost:3002/$1 [P,L]
-VHEOF
-echo "vhost.conf updated:"
-cat "$VHOST_CONF"
-SSHEOF
-
-      # Step 3: Insert OpenACH credentials into SQLite DB
-      - name: Insert OpenACH API credentials
+      - name: Update vhost.conf to proxy all traffic to port 3002
         run: |
           sshpass -p "$SSH_PASS" ssh \
             -o StrictHostKeyChecking=no -o ConnectTimeout=15 \
             -o PasswordAuthentication=yes \
             "$SSH_USER@$SERVER" 'bash -s' << 'SSHEOF'
-echo "=== Find OpenACH Docker container ==="
-CONT=$(docker ps --format "{{.Names}}" 2>/dev/null | grep -i openach | head -1)
-if [ -z "$CONT" ]; then
-  CONT=$(docker ps --format "{{.Names}}" 2>/dev/null | head -3)
-  echo "All containers: $CONT"
-  CONT=$(docker ps --format "{{.Names}}" 2>/dev/null | head -1)
-fi
-echo "Using container: $CONT"
+          VHOST_CONF="/var/www/vhosts/dlbtrust.cloud/conf/vhost.conf"
+          printf 'ProxyRequests Off\nProxyPreserveHost On\nProxyPass / http://localhost:3002/\nProxyPassReverse / http://localhost:3002/\n<Proxy *>\n    Order deny,allow\n    Allow from all\n    Require all granted\n</Proxy>\nRewriteEngine On\nRewriteCond %{HTTP:Upgrade} websocket [NC]\nRewriteRule ^/?(.*) ws://localhost:3002/$1 [P,L]\n' > "$VHOST_CONF"
+          echo "=== vhost.conf written ==="
+          cat "$VHOST_CONF"
+          SSHEOF
 
-echo "=== Find SQLite DB path ==="
-DB_PATH=$(docker exec "$CONT" find / -name "openach.db" 2>/dev/null | head -1)
-echo "DB at: $DB_PATH"
-
-if [ -n "$DB_PATH" ]; then
-  echo "=== Current user_api entries ==="
-  docker exec "$CONT" sqlite3 "$DB_PATH" "SELECT * FROM user_api LIMIT 5;" 2>/dev/null || echo "No user_api table or empty"
-
-  echo "=== Insert API credentials ==="
-  docker exec "$CONT" sqlite3 "$DB_PATH" \
-    "INSERT OR REPLACE INTO user_api (id, created, user_id, user_api_token, user_api_key, status) VALUES('4fc86059-2e7b-4732-b94f-e7c3715ee8d7', datetime('now'), '0eb26e1d-5fcc-4978-a132-dd93c2655429', '3caee1c2-c218-4959-b6d2-21d4b2a1b42e', 'b74966cf-5276-4d8b-8650-5bd57dcee272', 'enabled');" 2>&1 && echo "INSERT OK" || echo "INSERT failed"
-
-  echo "=== Verify insert ==="
-  docker exec "$CONT" sqlite3 "$DB_PATH" "SELECT id, user_api_token, user_api_key, status FROM user_api;" 2>/dev/null
-else
-  echo "DB not found — trying alternative paths"
-  docker exec "$CONT" find /var/www -name "*.db" 2>/dev/null | head -5
-  docker exec "$CONT" find /opt -name "*.db" 2>/dev/null | head -5
-
-  echo "=== Try direct sqlite3 insert with glob ==="
-  docker exec "$CONT" bash -c '
-    DB=$(find / -name "openach.db" 2>/dev/null | head -1)
-    echo "Found: $DB"
-    if [ -n "$DB" ]; then
-      sqlite3 "$DB" "INSERT OR REPLACE INTO user_api (id, created, user_id, user_api_token, user_api_key, status) VALUES(\"4fc86059-2e7b-4732-b94f-e7c3715ee8d7\", datetime(\"now\"), \"0eb26e1d-5fcc-4978-a132-dd93c2655429\", \"3caee1c2-c218-4959-b6d2-21d4b2a1b42e\", \"b74966cf-5276-4d8b-8650-5bd57dcee272\", \"enabled\");" && echo "OK"
-    fi
-  ' 2>/dev/null
-fi
-SSHEOF
-
-      # Step 4: Trigger Apache reload via Plesk API
-      - name: Trigger Apache reload via Plesk
+      - name: Insert OpenACH credentials via Docker
         run: |
-          echo "=== srv_man restart httpd ==="
+          sshpass -p "$SSH_PASS" ssh \
+            -o StrictHostKeyChecking=no -o ConnectTimeout=15 \
+            -o PasswordAuthentication=yes \
+            "$SSH_USER@$SERVER" 'bash -s' << 'SSHEOF'
+          echo "=== Find OpenACH Docker container ==="
+          CONT=$(docker ps --format "{{.Names}}" 2>/dev/null | grep -i openach | head -1)
+          if [ -z "$CONT" ]; then
+            echo "No openach container found, listing all:"
+            docker ps --format "{{.Names}}" 2>/dev/null
+            CONT=$(docker ps --format "{{.Names}}" 2>/dev/null | head -1)
+          fi
+          echo "Container: $CONT"
+          echo "=== Find DB ==="
+          DB_PATH=$(docker exec "$CONT" find / -name "openach.db" 2>/dev/null | head -1)
+          echo "DB: $DB_PATH"
+          if [ -n "$DB_PATH" ]; then
+            echo "=== Insert credentials ==="
+            docker exec "$CONT" sqlite3 "$DB_PATH" "INSERT OR REPLACE INTO user_api (id, created, user_id, user_api_token, user_api_key, status) VALUES('4fc86059-2e7b-4732-b94f-e7c3715ee8d7', datetime('now'), '0eb26e1d-5fcc-4978-a132-dd93c2655429', '3caee1c2-c218-4959-b6d2-21d4b2a1b42e', 'b74966cf-5276-4d8b-8650-5bd57dcee272', 'enabled');" 2>&1 && echo "INSERT OK"
+            docker exec "$CONT" sqlite3 "$DB_PATH" "SELECT user_api_token, user_api_key, status FROM user_api;" 2>/dev/null
+          else
+            echo "DB not found, trying all containers"
+            docker ps --format "{{.Names}}" 2>/dev/null | while read CNAME; do
+              echo "--- $CNAME ---"
+              docker exec "$CNAME" find / -name "*.db" 2>/dev/null | head -3
+            done
+          fi
+          SSHEOF
+
+      - name: Reload Apache via Plesk API
+        run: |
+          for SVC in httpd apache2; do
+            RESULT=$(curl -sk --max-time 20 "$PLESK/enterprise/control/agent.php" \
+              -H "HTTP_AUTH_LOGIN: admin" -H "HTTP_AUTH_PASSWD: $PLESK_PASS" \
+              -H "Content-Type: text/xml" \
+              -d "<?xml version=\"1.0\"?><packet version=\"1.6.9.1\"><server><srv_man><restart><service>${SVC}</service></restart></srv_man></server></packet>")
+            echo "Plesk restart $SVC: ${RESULT:0:150}"
+          done
           RESULT=$(curl -sk --max-time 20 "$PLESK/enterprise/control/agent.php" \
             -H "HTTP_AUTH_LOGIN: admin" -H "HTTP_AUTH_PASSWD: $PLESK_PASS" \
             -H "Content-Type: text/xml" \
-            -d '<?xml version="1.0"?><packet version="1.6.9.1"><server><srv_man><restart><service>httpd</service></restart></srv_man></server></packet>')
-          echo "httpd restart: ${RESULT:0:200}"
-
-          echo "=== srv_man restart apache2 ==="
-          RESULT2=$(curl -sk --max-time 20 "$PLESK/enterprise/control/agent.php" \
-            -H "HTTP_AUTH_LOGIN: admin" -H "HTTP_AUTH_PASSWD: $PLESK_PASS" \
-            -H "Content-Type: text/xml" \
-            -d '<?xml version="1.0"?><packet version="1.6.9.1"><server><srv_man><restart><service>apache2</service></restart></srv_man></server></packet>')
-          echo "apache2 restart: ${RESULT2:0:200}"
-
-          echo "=== Trigger domain reconfigure ==="
-          RESULT3=$(curl -sk --max-time 20 "$PLESK/enterprise/control/agent.php" \
-            -H "HTTP_AUTH_LOGIN: admin" -H "HTTP_AUTH_PASSWD: $PLESK_PASS" \
-            -H "Content-Type: text/xml" \
             -d '<?xml version="1.0"?><packet version="1.6.9.1"><webspace><set><filter><name>dlbtrust.cloud</name></filter><values><prefs><www>true</www></prefs></values></set></webspace></packet>')
-          echo "domain reconfigure: ${RESULT3:0:200}"
-          sleep 8
+          echo "Domain reconfigure: ${RESULT:0:150}"
+          sleep 12
 
-      # Step 5: Also try SSH apache reload as fallback
-      - name: Apache reload via SSH (fallback)
+      - name: Final 8/8 validation
         run: |
-          sshpass -p "$SSH_PASS" ssh \
-            -o StrictHostKeyChecking=no -o ConnectTimeout=15 \
-            -o PasswordAuthentication=yes \
-            "$SSH_USER@$SERVER" 'bash -s' << 'SSHEOF'
-echo "=== pm2 status ==="
-pm2 list 2>/dev/null | grep dlbtrust
+          S=$SERVER
+          P=0
+          F=0
+          pass() { echo "PASS: $1"; P=$((P+1)); }
+          fail() { echo "FAIL: $1 | $2"; F=$((F+1)); }
 
-echo "=== Direct tests on port 3002 ==="
-curl -s http://127.0.0.1:3002/api/ach/health | head -c 200
-echo ""
-curl -s http://127.0.0.1:3002/api/analytics/summary | head -c 200
-echo ""
+          echo "=== 8/8 Production Tests ==="
 
-echo "=== Try apache reload ==="
-sudo service apache2 reload 2>&1 || \
-  sudo apachectl -k graceful 2>&1 || \
-  sudo /usr/sbin/apachectl graceful 2>&1 || \
-  service apache2 reload 2>&1 || \
-  apachectl -k graceful 2>&1 || \
-  echo "Apache reload needs root — relying on Plesk"
+          R=$(curl -s -o /dev/null -w '%{http_code}' http://dlbtrust.cloud/ 2>&1)
+          echo "$R" | grep -q "301" && pass "HTTP 301 redirect" || fail "HTTP 301 redirect" "$R"
 
-echo "=== Current vhost.conf ==="
-cat /var/www/vhosts/dlbtrust.cloud/conf/vhost.conf
-SSHEOF
+          R=$(curl -sk --resolve "dlbtrust.cloud:443:$S" https://dlbtrust.cloud/ 2>&1 | head -c 300)
+          echo "$R" | grep -qi "html" && pass "HTTPS loads" || fail "HTTPS loads" "${R:0:80}"
 
-      # Step 6: Wait and run full 8/8 validation
-      - name: Wait for Apache to reload
-        run: sleep 15
+          R=$(curl -sk --resolve "dlbtrust.cloud:443:$S" https://dlbtrust.cloud/api/wallets 2>&1 | head -c 300)
+          echo "$R" | grep -q "wallet_id" && pass "Wallets API" || fail "Wallets API" "${R:0:80}"
 
-      - name: FINAL 8/8 Validation
-        run: |
-          S=$SERVER; P=0; F=0
-          t() {
-            local NAME="$1"; local CMD="$2"; local MATCH="$3"
-            local r
-            r=$(eval "$CMD" 2>&1 | head -c 500)
-            if echo "$r" | grep -q "$MATCH"; then
-              echo "✅ PASS: $NAME"
-              P=$((P+1))
-            else
-              echo "❌ FAIL: $NAME | Got: ${r:0:120}"
-              F=$((F+1))
-            fi
-          }
+          R=$(curl -sk --resolve "dlbtrust.cloud:443:$S" https://dlbtrust.cloud/api/transactions 2>&1 | head -c 300)
+          echo "$R" | grep -q "type" && pass "Transactions API" || fail "Transactions API" "${R:0:80}"
 
-          echo "=== Running 8/8 production tests ==="
+          R=$(curl -sk --resolve "dlbtrust.cloud:443:$S" https://dlbtrust.cloud/api/ach/health 2>&1 | head -c 300)
+          echo "$R" | grep -q "openach_connected" && pass "ACH health" || fail "ACH health" "${R:0:80}"
 
-          t "HTTP 301 redirect" \
-            "curl -s -o /dev/null -w '%{http_code}' http://dlbtrust.cloud/" \
-            "301"
+          R=$(curl -sk --resolve "dlbtrust.cloud:443:$S" https://dlbtrust.cloud/api/analytics/summary 2>&1 | head -c 300)
+          echo "$R" | grep -q "total_corpus" && pass "Analytics summary" || fail "Analytics summary" "${R:0:80}"
 
-          t "HTTPS loads (HTML)" \
-            "curl -sk --resolve 'dlbtrust.cloud:443:$S' https://dlbtrust.cloud/" \
-            "html"
+          R=$(curl -sk --resolve "ach.dlbtrust.cloud:443:$S" https://ach.dlbtrust.cloud/openach/ -o /dev/null -w '%{http_code}' 2>&1)
+          echo "$R" | grep -q "200" && pass "OA UI (HTTPS 200)" || fail "OA UI (HTTPS 200)" "$R"
 
-          t "Wallets API" \
-            "curl -sk --resolve 'dlbtrust.cloud:443:$S' https://dlbtrust.cloud/api/wallets" \
-            "wallet_id"
-
-          t "Transactions API" \
-            "curl -sk --resolve 'dlbtrust.cloud:443:$S' https://dlbtrust.cloud/api/transactions" \
-            "type"
-
-          t "ACH health" \
-            "curl -sk --resolve 'dlbtrust.cloud:443:$S' https://dlbtrust.cloud/api/ach/health" \
-            "openach_connected"
-
-          t "Analytics summary" \
-            "curl -sk --resolve 'dlbtrust.cloud:443:$S' https://dlbtrust.cloud/api/analytics/summary" \
-            "total_corpus"
-
-          t "OA UI (HTTPS 200)" \
-            "curl -sk --resolve 'ach.dlbtrust.cloud:443:$S' https://ach.dlbtrust.cloud/openach/ -o /dev/null -w '%{http_code}'" \
-            "200"
-
-          t "OA API connect" \
-            "curl -sk --resolve 'ach.dlbtrust.cloud:443:$S' -X POST https://ach.dlbtrust.cloud/openach/api/connect --data 'user_api_token=3caee1c2-c218-4959-b6d2-21d4b2a1b42e&user_api_key=b74966cf-5276-4d8b-8650-5bd57dcee272'" \
-            '"success":true'
+          R=$(curl -sk --resolve "ach.dlbtrust.cloud:443:$S" -X POST https://ach.dlbtrust.cloud/openach/api/connect --data 'user_api_token=3caee1c2-c218-4959-b6d2-21d4b2a1b42e&user_api_key=b74966cf-5276-4d8b-8650-5bd57dcee272' 2>&1 | head -c 300)
+          echo "$R" | grep -q '"success":true' && pass "OA API connect" || fail "OA API connect" "${R:0:100}"
 
           echo ""
-          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-          echo "FINAL SCORE: $P/8"
-          if [ $F -eq 0 ]; then
-            echo "🎉 ALL 8/8 PASSING — PRODUCTION READY"
-          else
-            echo "⚠️  $F tests still failing"
-          fi
-          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          echo "================================="
+          echo "SCORE: $P/8"
+          [ $F -eq 0 ] && echo "ALL 8/8 PASSING" || echo "$F FAILING"
+          echo "================================="
 
           echo ""
-          echo "=== Raw responses for debugging ==="
-          echo "--- ACH health ---"
-          curl -sk --resolve "dlbtrust.cloud:443:$S" https://dlbtrust.cloud/api/ach/health | head -c 300
+          echo "=== Debug raw responses ==="
+          echo "ACH:"
+          curl -sk --resolve "dlbtrust.cloud:443:$S" https://dlbtrust.cloud/api/ach/health | head -c 400
           echo ""
-          echo "--- Analytics summary ---"
-          curl -sk --resolve "dlbtrust.cloud:443:$S" https://dlbtrust.cloud/api/analytics/summary | head -c 300
+          echo "Analytics:"
+          curl -sk --resolve "dlbtrust.cloud:443:$S" https://dlbtrust.cloud/api/analytics/summary | head -c 400
           echo ""
-          echo "--- OA API connect ---"
-          curl -sk --resolve "ach.dlbtrust.cloud:443:$S" \
-            -X POST https://ach.dlbtrust.cloud/openach/api/connect \
-            --data 'user_api_token=3caee1c2-c218-4959-b6d2-21d4b2a1b42e&user_api_key=b74966cf-5276-4d8b-8650-5bd57dcee272' | head -c 300
+          echo "OA API:"
+          curl -sk --resolve "ach.dlbtrust.cloud:443:$S" -X POST https://ach.dlbtrust.cloud/openach/api/connect --data 'user_api_token=3caee1c2-c218-4959-b6d2-21d4b2a1b42e&user_api_key=b74966cf-5276-4d8b-8650-5bd57dcee272' | head -c 400
           echo ""
