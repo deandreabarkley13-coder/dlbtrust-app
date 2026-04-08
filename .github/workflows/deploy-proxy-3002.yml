@@ -17,7 +17,7 @@ jobs:
           cat > /tmp/server-proxy.js << 'JSEOF'
           'use strict';
           const http = require('http');
-          const PORT = parseInt(process.argv[2]) || 3002;
+          const PORT = parseInt(process.argv[2]) || 3003;
           const server = http.createServer((req, res) => {
             const url = req.url || '/';
             if (url === '/api/ach/health' || url.startsWith('/api/ach/health?')) {
@@ -46,76 +46,66 @@ jobs:
           server.listen(PORT, '0.0.0.0', () => console.log('Proxy on port ' + PORT));
           JSEOF
 
-          # Verify locally
           echo "=== Local syntax check ==="
           node --check /tmp/server-proxy.js && echo "SYNTAX OK" || exit 1
-          wc -c /tmp/server-proxy.js
 
-          # SCP the file to the server
           sshpass -p "$SSH_PASS" scp -o StrictHostKeyChecking=no \
             /tmp/server-proxy.js \
             "$SSH_USER@$SERVER:/var/www/vhosts/dlbtrust.cloud/httpdocs/server-proxy.js"
           echo "File uploaded via SCP"
 
-      - name: Start proxy and update vhost
+      - name: Start proxy on port 3003 and update vhost
         run: |
           sshpass -p "$SSH_PASS" ssh -o StrictHostKeyChecking=no -o PasswordAuthentication=yes "$SSH_USER@$SERVER" 'bash -s' << 'REMOTEOF'
           set -ex
           export HOME=/var/www/vhosts/dlbtrust.cloud
           HD=/var/www/vhosts/dlbtrust.cloud/httpdocs
 
-          echo "=== Current state ==="
-          pm2 list 2>/dev/null || echo "pm2 not available"
-          ss -tlnp | grep -E '300[12]' || echo "nothing on 3001/3002"
+          echo "=== Current port state ==="
+          ss -tlnp | grep -E '300[0-9]' || echo "nothing on 300x"
 
-          echo "=== Stop only proxy processes (preserve server.cjs on 3001) ==="
+          echo "=== Kill old proxy processes ==="
           pm2 delete server-proxy 2>/dev/null || true
           pm2 delete dlbtrust-3002 2>/dev/null || true
-          pm2 delete dlbtrust-full 2>/dev/null || true
-          sleep 1
-
-          echo "=== Kill only port 3002 ==="
-          fuser -k 3002/tcp 2>/dev/null || true
+          pm2 delete dlbtrust-3003 2>/dev/null || true
+          fuser -k 3003/tcp 2>/dev/null || true
           sleep 2
-          fuser -k -9 3002/tcp 2>/dev/null || true
-          sleep 1
 
-          echo "=== Verify 3001 still running, 3002 free ==="
-          ss -tlnp | grep 3001 && echo "3001 OK" || echo "WARNING: 3001 not running"
-          ss -tlnp | grep 3002 && echo "ERROR: 3002 still occupied" || echo "3002 free"
+          echo "=== Verify 3003 is free ==="
+          ss -tlnp | grep 3003 && { echo "3003 still busy, force kill"; fuser -k -9 3003/tcp; sleep 2; } || echo "3003 is free - GOOD"
 
           echo "=== Verify uploaded file ==="
           head -3 "$HD/server-proxy.js"
           node --check "$HD/server-proxy.js" && echo "SYNTAX OK" || exit 1
 
-          echo "=== Start proxy on 3002 ==="
-          nohup node "$HD/server-proxy.js" 3002 > "$HOME/.pm2/proxy.log" 2>&1 &
+          echo "=== Start proxy on 3003 ==="
+          nohup node "$HD/server-proxy.js" 3003 > "$HOME/.pm2/proxy.log" 2>&1 &
           NODEPID=$!
           echo "Started PID: $NODEPID"
           sleep 3
 
-          echo "=== Verify port 3002 ==="
-          ss -tlnp | grep 3002 || { echo "FATAL"; cat "$HOME/.pm2/proxy.log" 2>/dev/null; exit 1; }
+          echo "=== Verify port 3003 ==="
+          ss -tlnp | grep 3003 || { echo "FATAL: proxy not on 3003"; cat "$HOME/.pm2/proxy.log" 2>/dev/null; exit 1; }
 
           echo "=== Test ACH ==="
-          ACH=$(curl -s http://localhost:3002/api/ach/health)
+          ACH=$(curl -s http://localhost:3003/api/ach/health)
           echo "$ACH"
-          echo "$ACH" | grep -q openach_connected && echo "ACH: PASS" || { echo "ACH: FAIL"; exit 1; }
+          echo "$ACH" | grep -q openach_connected && echo "ACH: PASS" || { echo "ACH: FAIL"; cat "$HOME/.pm2/proxy.log" 2>/dev/null; exit 1; }
 
           echo "=== Test Analytics ==="
-          ANA=$(curl -s http://localhost:3002/api/analytics/summary)
+          ANA=$(curl -s http://localhost:3003/api/analytics/summary)
           echo "$ANA"
           echo "$ANA" | grep -q total_corpus && echo "ANALYTICS: PASS" || { echo "ANALYTICS: FAIL"; exit 1; }
 
           echo "=== Test proxy passthrough ==="
-          curl -s http://localhost:3002/api/wallets | head -c 120
+          curl -s http://localhost:3003/api/wallets | head -c 120
           echo ""
 
-          echo "=== Update vhost.conf ==="
-          printf 'ProxyPass / http://localhost:3002/\nProxyPassReverse / http://localhost:3002/\n' > /var/www/vhosts/dlbtrust.cloud/conf/vhost.conf
+          echo "=== Update vhost.conf to proxy to 3003 ==="
+          printf 'ProxyPass / http://localhost:3003/\nProxyPassReverse / http://localhost:3003/\n' > /var/www/vhosts/dlbtrust.cloud/conf/vhost.conf
           cat /var/www/vhosts/dlbtrust.cloud/conf/vhost.conf
 
-          echo "=== Done - proxy running via nohup on port 3002 ==="
+          echo "DEPLOY COMPLETE"
           REMOTEOF
 
       - name: Reload Apache via Plesk API
