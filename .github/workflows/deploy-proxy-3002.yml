@@ -7,7 +7,7 @@ jobs:
   deploy:
     runs-on: ubuntu-latest
     steps:
-      - name: Find and patch the server on port 3002
+      - name: Investigate 3002 server and deploy fix
         uses: appleboy/ssh-action@v1.0.3
         with:
           host: 74.208.191.205
@@ -18,43 +18,36 @@ jobs:
           script: |
             set -e
             export HOME=/var/www/vhosts/dlbtrust.cloud
+            HD=/var/www/vhosts/dlbtrust.cloud/httpdocs
+            V2=/var/www/vhosts/dlbtrust.cloud/dlbtrust-v2
 
-            echo "=== What is running on port 3002? ==="
-            ss -tlnp 2>/dev/null | grep ':3002'
+            echo "=== What process is on port 3002? ==="
+            cat /proc/$(ss -tlnp 2>/dev/null | grep ':3002 ' | grep -oP 'pid=\K[0-9]+' || echo "0")/cmdline 2>/dev/null | tr '\0' ' ' || echo "Cannot identify 3002 process"
+
+            echo "=== Read payment-gateway.cjs ==="
+            head -60 "$V2/payment-gateway.cjs" 2>/dev/null || echo "Cannot read payment-gateway.cjs"
+
+            echo "=== Check openach-patch module ==="
+            cat "$HD/server/openach-patch.js" 2>/dev/null | head -30 || echo "Cannot read openach-patch.js"
+            ls -la "$HD/server/openach-patch.js" 2>/dev/null || echo "No openach-patch.js"
+            ls -la "$HD/server/openach-patch/index.js" 2>/dev/null || echo "No openach-patch/index.js"
+
+            echo "=== Check analytics routes module ==="
+            cat "$HD/server/routes/analytics.js" 2>/dev/null | head -30 || echo "Cannot read analytics.js"
+            ls -la "$HD/server/routes/analytics.js" 2>/dev/null || echo "No analytics.js"
+            ls -la "$HD/server/routes/analytics/index.js" 2>/dev/null || echo "No analytics/index.js"
+
+            echo "=== Check what the payment-gateway actually serves ==="
+            curl -s http://127.0.0.1:3002/api/ach/health 2>&1 | head -c 200
+            echo ""
+            curl -s http://127.0.0.1:3002/api/analytics/summary 2>&1 | head -c 200
+            echo ""
+            curl -s http://127.0.0.1:3002/api/wallets 2>&1 | head -c 200
             echo ""
 
-            echo "=== Find the server file for port 3002 ==="
-            grep -rl "3002" /var/www/vhosts/dlbtrust.cloud/httpdocs/*.js 2>/dev/null | head -5 || echo "Not in httpdocs"
-            grep -rl "3002" /var/www/vhosts/dlbtrust.cloud/dlbtrust-v2/*.cjs 2>/dev/null | head -5 || echo "Not in dlbtrust-v2 cjs"
-            grep -rl "3002" /var/www/vhosts/dlbtrust.cloud/dlbtrust-v2/*.js 2>/dev/null | head -5 || echo "Not in dlbtrust-v2 js"
+            echo "=== Check server.cjs on 3001 ==="
+            cat "$V2/server.cjs" 2>/dev/null || echo "Cannot read server.cjs"
 
-            echo "=== Check pm2 for root processes ==="
-            cat /root/.pm2/dump.pm2 2>/dev/null | python3 -c "import sys,json; d=json.load(sys.stdin); [print(f'{p[\"name\"]} pid={p[\"pid\"]} script={p.get(\"pm2_env\",{}).get(\"pm_exec_path\",\"\")}') for p in d]" 2>/dev/null || echo "Cannot read root pm2 dump"
-
-            echo "=== Check for node processes ==="
-            ps aux 2>/dev/null | grep "node " | grep -v grep | head -10
-
-            echo "=== Find what file runs the 3002 server ==="
-            ls -la /var/www/vhosts/dlbtrust.cloud/httpdocs/server*.js 2>/dev/null || echo "No server*.js in httpdocs"
-            ls -la /var/www/vhosts/dlbtrust.cloud/dlbtrust-v2/server*.* 2>/dev/null || echo "No server*.* in dlbtrust-v2"
-
-            echo "=== Can we write to httpdocs? ==="
-            touch /var/www/vhosts/dlbtrust.cloud/httpdocs/test-write-check && rm /var/www/vhosts/dlbtrust.cloud/httpdocs/test-write-check && echo "httpdocs is WRITABLE" || echo "httpdocs NOT writable"
-
-            echo "=== Read the server file for 3002 ==="
-            for f in /var/www/vhosts/dlbtrust.cloud/httpdocs/server*.js; do
-              if [ -f "$f" ]; then
-                echo "--- $f ---"
-                cat "$f" | head -50
-                echo "..."
-              fi
-            done
-
-            echo "=== Check if httpdocs has app.js or index.js ==="
-            ls -la /var/www/vhosts/dlbtrust.cloud/httpdocs/*.js 2>/dev/null | head -10
-            for f in /var/www/vhosts/dlbtrust.cloud/httpdocs/app.js /var/www/vhosts/dlbtrust.cloud/httpdocs/server.js; do
-              if [ -f "$f" ]; then
-                echo "--- $f ---"
-                head -20 "$f"
-              fi
-            done
+            echo "=== Check if server.cjs tries to load ACH/analytics routes ==="
+            grep -i "ach\|analytics\|openach" "$V2/server.cjs" 2>/dev/null || echo "No ACH/analytics in server.cjs"
+            grep -i "ach\|analytics\|openach" "$V2/payment-gateway.cjs" 2>/dev/null || echo "No ACH/analytics in payment-gateway.cjs"
