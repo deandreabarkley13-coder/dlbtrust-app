@@ -7,7 +7,7 @@ jobs:
   fix:
     runs-on: ubuntu-latest
     steps:
-      - name: Fix vhost + force Apache reload via Plesk reconfigure
+      - name: Fix vhost + plesk repair web to reload Apache
         uses: appleboy/ssh-action@v1.0.3
         with:
           host: 74.208.191.205
@@ -19,55 +19,40 @@ jobs:
             export HOME=/var/www/vhosts/dlbtrust.cloud
             VHOST=/var/www/vhosts/dlbtrust.cloud/conf/vhost.conf
 
-            echo "=== 1. Proxy3003 check ==="
-            curl -s --max-time 5 http://127.0.0.1:3003/api/ach/health | grep -q openach_connected && echo "proxy3003 OK"
+            echo "=== 1. Proxy3003 OK ==="
+            curl -s --max-time 5 http://127.0.0.1:3003/api/ach/health | grep -q openach_connected && echo "ACH proxy OK"
 
             echo "=== 2. Write vhost.conf ==="
-            printf '%s\n' '<Directory /var/www/vhosts/dlbtrust.cloud/httpdocs>' '  Options -Indexes' '</Directory>' 'ProxyPreserveHost On' 'ProxyPass /api/ach/health http://localhost:3003/api/ach/health' 'ProxyPassReverse /api/ach/health http://localhost:3003/api/ach/health' 'ProxyPass /api/analytics/summary http://localhost:3003/api/analytics/summary' 'ProxyPassReverse /api/analytics/summary http://localhost:3003/api/analytics/summary' 'ProxyPass / http://localhost:3002/' 'ProxyPassReverse / http://localhost:3002/' > $VHOST
-            cat $VHOST
+            printf '%s\n' \
+              '<Directory /var/www/vhosts/dlbtrust.cloud/httpdocs>' \
+              '  Options -Indexes' \
+              '</Directory>' \
+              'ProxyPreserveHost On' \
+              'ProxyPass /api/ach/health http://localhost:3003/api/ach/health' \
+              'ProxyPassReverse /api/ach/health http://localhost:3003/api/ach/health' \
+              'ProxyPass /api/analytics/summary http://localhost:3003/api/analytics/summary' \
+              'ProxyPassReverse /api/analytics/summary http://localhost:3003/api/analytics/summary' \
+              'ProxyPass / http://localhost:3002/' \
+              'ProxyPassReverse / http://localhost:3002/' > $VHOST
+            echo "vhost.conf written"; cat $VHOST
 
-            echo "=== 3. Try Plesk CLI tools (as system user) ==="
-            # Try plesk commands available to webspace users
-            ls /usr/local/psa/bin/ 2>/dev/null | head -20 || true
-            which plesk 2>/dev/null || true
-
-            echo "=== 4. Try Plesk XML API - reconfigure webspace ==="
-            # This triggers Plesk to regenerate Apache config from its DB + vhost.conf
-            curl -sk --max-time 30 \
-              "https://dlbtrust.cloud:8443/enterprise/control/agent.php" \
-              -H "HTTP_AUTH_LOGIN: admin" \
-              -H "HTTP_AUTH_PASSWD: dP8RlShbOWNq" \
-              -H "Content-Type: text/xml" \
-              -d '<?xml version="1.0"?><packet version="1.6.9.1"><webspace><set><filter><name>dlbtrust.cloud</name></filter><values><prefs><www>false</www></prefs></values></set></webspace></packet>'
-            sleep 2
-            curl -sk --max-time 30 \
-              "https://dlbtrust.cloud:8443/enterprise/control/agent.php" \
-              -H "HTTP_AUTH_LOGIN: admin" \
-              -H "HTTP_AUTH_PASSWD: dP8RlShbOWNq" \
-              -H "Content-Type: text/xml" \
-              -d '<?xml version="1.0"?><packet version="1.6.9.1"><webspace><set><filter><name>dlbtrust.cloud</name></filter><values><prefs><www>true</www></prefs></values></set></webspace></packet>'
-            sleep 2
-
-            echo "=== 5. Try server reconfigure API ==="
-            curl -sk --max-time 30 \
-              "https://dlbtrust.cloud:8443/enterprise/control/agent.php" \
-              -H "HTTP_AUTH_LOGIN: admin" \
-              -H "HTTP_AUTH_PASSWD: dP8RlShbOWNq" \
-              -H "Content-Type: text/xml" \
-              -d '<?xml version="1.0"?><packet version="1.6.9.1"><server><reconfigure/></server></packet>'
-            echo ""
-
-            echo "=== 6. Check if vhost.conf is in included Apache configs ==="
-            find /etc/apache2 /etc/httpd -name "*.conf" 2>/dev/null | xargs grep -l "dlbtrust.cloud" 2>/dev/null | head -5 || true
-            find /var/www/vhosts/dlbtrust.cloud/conf -name "*.conf" 2>/dev/null | head -10 || true
-
-            echo "=== 7. Check what Apache is currently serving from ==="
-            # Read the actual generated Apache config for this vhost
-            find /etc/apache2/plesk.conf.d /etc/httpd/conf.d -name "*dlbtrust*" 2>/dev/null | head -5 | xargs cat 2>/dev/null | grep -E "ProxyPass|proxy" | head -20 || true
-            find /var/www/vhosts/system/dlbtrust.cloud/conf -name "*.conf" 2>/dev/null | head -5 | xargs cat 2>/dev/null | grep -E "ProxyPass|proxy" | head -20 || true
-
+            echo "=== 3. Run plesk repair web ==="
+            /usr/sbin/plesk repair web dlbtrust.cloud -y 2>&1 || true
             sleep 5
-            echo "=== 8. Final public test ==="
-            curl -sk --max-time 10 https://dlbtrust.cloud/api/ach/health | grep -q openach_connected && echo "PUBLIC ACH: PASS" || echo "PUBLIC ACH: FAIL"
-            curl -sk --max-time 10 https://dlbtrust.cloud/api/analytics/summary | grep -q total_corpus && echo "PUBLIC ANALYTICS: PASS" || echo "PUBLIC ANALYTICS: FAIL"
+
+            echo "=== 4. Test public endpoints ==="
+            ACH=$(curl -sk --max-time 15 https://dlbtrust.cloud/api/ach/health)
+            ANA=$(curl -sk --max-time 15 https://dlbtrust.cloud/api/analytics/summary)
+            echo "ACH: $ACH" | head -c 200; echo ""
+            echo "ANA: $ANA" | head -c 200; echo ""
+            echo "$ACH" | grep -q openach_connected && echo "PUBLIC ACH: PASS" || echo "PUBLIC ACH: FAIL (plesk repair failed)"
+            echo "$ANA" | grep -q total_corpus && echo "PUBLIC ANALYTICS: PASS" || echo "PUBLIC ANALYTICS: FAIL (plesk repair failed)"
+
+            if ! echo "$ACH" | grep -q openach_connected; then
+              echo "=== 5. plesk repair failed — try Plesk bin tools ==="
+              ls /usr/local/psa/bin/ | grep -E "apache|web|reconf|domain" | head -10 || true
+              /usr/local/psa/bin/httpdmng --reconfigure-vhost dlbtrust.cloud 2>&1 || true
+              sleep 5
+              curl -sk --max-time 10 https://dlbtrust.cloud/api/ach/health | grep -q openach_connected && echo "PUBLIC ACH: PASS (httpdmng)" || echo "PUBLIC ACH: STILL FAIL"
+            fi
             echo "=== DONE ==="
