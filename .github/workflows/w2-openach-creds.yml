@@ -7,15 +7,18 @@ on:
 jobs:
   fix:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 15
     env:
       SERVER: "74.208.191.205"
       PLESK_PASS: "dP8RlShbOWNq"
     steps:
       - run: sudo apt-get install -y sshpass 2>/dev/null | tail -1 || true
       
-      - name: Try Plesk XML API - Get session and run CLI
+      - name: Try Plesk XML API from GH Actions runner
         run: |
+          echo "=== Our IP ==="
+          curl -s --max-time 5 https://api.ipify.org
+          echo ""
           echo "=== Plesk XML API test ==="
           RESULT=$(curl -sk --max-time 20 \
             "https://$SERVER:8443/enterprise/control/agent.php" \
@@ -30,68 +33,45 @@ jobs:
     </get>
   </server>
 </packet>' 2>&1)
-          echo "Result length: ${#RESULT}"
-          echo "$RESULT" | head -c 300
+          echo "Result: ${RESULT:0:500}"
           
-      - name: Try Plesk CLI via XML - execute command
+      - name: Try root SSH with SERVER_PASSWORD
+        env:
+          PASS: ${{ secrets.SERVER_PASSWORD }}
         run: |
-          echo "=== Execute via Plesk XML ==="
-          RESULT=$(curl -sk --max-time 30 \
-            "https://$SERVER:8443/enterprise/control/agent.php" \
-            -H "HTTP_AUTH_LOGIN: admin" \
-            -H "HTTP_AUTH_PASSWD: $PLESK_PASS" \
-            -H "Content-Type: text/xml" \
-            -d '<?xml version="1.0" encoding="UTF-8"?>
-<packet version="1.6.9.1">
-  <server>
-    <execute>
-      <cmd>docker ps --format {{.Names}} 2>/dev/null | head -5</cmd>
-    </execute>
-  </server>
-</packet>' 2>&1)
-          echo "Execute result: $RESULT" | head -c 500
+          echo "=== Root SSH attempt ==="
+          if [ -n "$PASS" ]; then
+            RESULT=$(sshpass -p "$PASS" ssh -o StrictHostKeyChecking=no \
+              -o ConnectTimeout=15 -o PasswordAuthentication=yes \
+              root@$SERVER \
+              'echo SSH_ROOT_OK && docker ps --format "{{.Names}}" 2>/dev/null' 2>&1)
+            echo "$RESULT"
+          else
+            echo "SERVER_PASSWORD not set"
+          fi
           
-      - name: Try root SSH with SSH_PRIVATE_KEY secret
+      - name: Try SSH with private key (root)
         env:
           SSH_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
         run: |
           if [ -n "$SSH_KEY" ]; then
             echo "$SSH_KEY" > /tmp/id_rsa
             chmod 600 /tmp/id_rsa
-            echo "=== Trying root SSH with key ==="
-            ssh -i /tmp/id_rsa -o StrictHostKeyChecking=no \
-              -o ConnectTimeout=10 -o BatchMode=yes \
+            echo "=== Root SSH with key ==="
+            RESULT=$(ssh -i /tmp/id_rsa \
+              -o StrictHostKeyChecking=no \
+              -o ConnectTimeout=15 \
+              -o BatchMode=yes \
               root@$SERVER \
-              'echo OK && docker ps --format "{{.Names}}" | head -10' 2>&1 || echo "root key SSH failed"
-            
-            echo "=== Try with other users ==="
-            for USER in admin ubuntu plesk; do
-              ssh -i /tmp/id_rsa -o StrictHostKeyChecking=no \
-                -o ConnectTimeout=5 -o BatchMode=yes \
-                $USER@$SERVER 'echo ok' 2>&1 | head -2 && echo "USER $USER works" || true
-            done
-          else
-            echo "No SSH key secret available"
-          fi
-          
-      - name: Try root SSH with SERVER_PASSWORD
-        env:
-          PASS: ${{ secrets.SERVER_PASSWORD }}
-        run: |
-          if [ -n "$PASS" ]; then
-            echo "=== Trying root SSH with SERVER_PASSWORD ==="
-            RESULT=$(sshpass -p "$PASS" ssh -o StrictHostKeyChecking=no \
-              -o ConnectTimeout=10 -o PasswordAuthentication=yes \
-              root@$SERVER \
-              'echo SSH_OK && CONT=$(docker ps --format "{{.Names}}" | head -5) && echo "Containers: $CONT" && docker exec $(docker ps --format "{{.Names}}" | grep -i openach | head -1) sqlite3 /var/www/html/protected/runtime/db/openach.db "INSERT OR IGNORE INTO user_api (user_api_user_id, user_api_datetime, user_api_originator_info_id, user_api_token, user_api_key, user_api_status) VALUES ('"'"'4fc86059-2e7b-4732-b94f-e7c3715ee8d7'"'"', datetime('"'"'now'"'"'), '"'"'0eb26e1d-5fcc-4978-a132-dd93c2655429'"'"', '"'"'3caee1c2-c218-4959-b6d2-21d4b2a1b42e'"'"', '"'"'b74966cf-5276-4d8b-8650-5bd57dcee272'"'"', '"'"'enabled'"'"');" 2>/dev/null && docker exec $(docker ps --format "{{.Names}}" | grep -i openach | head -1) sqlite3 /var/www/html/protected/runtime/db/openach.db "SELECT user_api_token, user_api_status FROM user_api;" 2>/dev/null' 2>&1)
+              'echo SSH_KEY_OK && docker ps --format "{{.Names}}" 2>/dev/null | head -20 && CONT=$(docker ps --format "{{.Names}}" | grep -i openach | head -1) && echo "OpenACH container: $CONT" && if [ -n "$CONT" ]; then docker exec "$CONT" sqlite3 /var/www/html/protected/runtime/db/openach.db "INSERT OR IGNORE INTO user_api (user_api_user_id, user_api_datetime, user_api_originator_info_id, user_api_token, user_api_key, user_api_status) VALUES ('"'"'4fc86059-2e7b-4732-b94f-e7c3715ee8d7'"'"', datetime('"'"'now'"'"'), '"'"'0eb26e1d-5fcc-4978-a132-dd93c2655429'"'"', '"'"'3caee1c2-c218-4959-b6d2-21d4b2a1b42e'"'"', '"'"'b74966cf-5276-4d8b-8650-5bd57dcee272'"'"', '"'"'enabled'"'"');" && docker exec "$CONT" sqlite3 /var/www/html/protected/runtime/db/openach.db "SELECT user_api_token,user_api_status FROM user_api;" && echo "INSERT_SUCCESS"; fi' 2>&1)
             echo "$RESULT"
+            rm -f /tmp/id_rsa
           else
-            echo "No SERVER_PASSWORD secret available"
+            echo "SSH_PRIVATE_KEY not set"
           fi
           
       - name: Test OA API via HTTPS
         run: |
-          S=$SERVER
-          curl -sk --resolve "ach.dlbtrust.cloud:443:$S" \
+          curl -sk --resolve "ach.dlbtrust.cloud:443:$SERVER" \
             -X POST "https://ach.dlbtrust.cloud/openach/api/connect" \
-            --data "user_api_token=3caee1c2-c218-4959-b6d2-21d4b2a1b42e&user_api_key=b74966cf-5276-4d8b-8650-5bd57dcee272"
+            --data "user_api_token=3caee1c2-c218-4959-b6d2-21d4b2a1b42e&user_api_key=b74966cf-5276-4d8b-8650-5bd57dcee272" || true
