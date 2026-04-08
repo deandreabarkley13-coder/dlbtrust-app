@@ -7,78 +7,71 @@ jobs:
   deploy:
     runs-on: ubuntu-latest
     steps:
-      - name: Force Apache reconfiguration via Plesk APIs
+      - name: Diagnose Apache config and Node.js app setup
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: 74.208.191.205
+          username: dlbtrust.cloud_h6zkwzag1ya
+          password: Deploy2026!
+          port: 22
+          command_timeout: 180s
+          script: |
+            set -e
+            export HOME=/var/www/vhosts/dlbtrust.cloud
+
+            echo "=== Plesk httpd.include (auto-generated Apache config) ==="
+            find /var/www/vhosts/system/ -name "httpd*" -type f 2>/dev/null | head -10 || echo "Cannot find system httpd files"
+            cat /etc/apache2/plesk.conf.d/vhosts/dlbtrust.cloud.conf 2>/dev/null | head -50 || echo "Cannot read plesk Apache vhost 1"
+            cat /etc/httpd/conf.d/zz0*dlbtrust* 2>/dev/null | head -50 || echo "Cannot read plesk Apache vhost 2"
+
+            echo "=== Find Apache includes ==="
+            grep -r "dlbtrust" /etc/apache2/ 2>/dev/null | grep -v "Binary" | head -20 || echo "No matches in /etc/apache2"
+            grep -r "dlbtrust" /etc/httpd/ 2>/dev/null | grep -v "Binary" | head -20 || echo "No matches in /etc/httpd"
+            find /etc/apache2 -name "*.conf" -type f 2>/dev/null | head -20 || echo "Cannot list apache2 conf"
+
+            echo "=== Check Apache config test ==="
+            apachectl -S 2>/dev/null | head -20 || echo "Cannot run apachectl -S"
+            apache2ctl -S 2>/dev/null | head -20 || echo "Cannot run apache2ctl -S"
+
+            echo "=== Find Plesk node.js config ==="
+            find /var/www/vhosts/ -name "*.nodejs*" -o -name "*node*conf*" 2>/dev/null | head -10 || echo "no nodejs configs found"
+
+            echo "=== Check what the existing server on port 3001 is ==="
+            ls -la /var/www/vhosts/dlbtrust.cloud/dlbtrust-v2/server.cjs 2>/dev/null || echo "Cannot ls server.cjs"
+            head -5 /var/www/vhosts/dlbtrust.cloud/dlbtrust-v2/server.cjs 2>/dev/null || echo "Cannot read server.cjs"
+
+            echo "=== Check what is on port 3002 ==="
+            curl -s http://127.0.0.1:3002/ 2>&1 | head -c 200 || echo "Nothing on 3002"
+            curl -s http://127.0.0.1:3002/api/wallets 2>&1 | head -c 200 || echo "3002 wallets failed"
+
+            echo "=== Check existing Node.js app via Plesk REST API ==="
+            curl -sk "https://dlbtrust.cloud:8443/api/v2/domains/1" -u "admin:dP8RlShbOWNq" -H "Accept: application/json" 2>&1 | head -c 2000
+            echo ""
+
+            echo "=== Plesk extensions list ==="
+            curl -sk "https://dlbtrust.cloud:8443/api/v2/extensions" -u "admin:dP8RlShbOWNq" -H "Accept: application/json" 2>&1 | head -c 2000
+            echo ""
+
+      - name: Try Plesk Node.js extension API
         run: |
-          echo "=== Try Plesk REST API v2 - update domain hosting to trigger Apache regen ==="
-
-          echo "--- Get current hosting config ---"
-          curl -sk --max-time 15 "https://dlbtrust.cloud:8443/api/v2/domains/1/hosting" \
+          echo "=== Get Node.js config for domain ==="
+          curl -sk "https://dlbtrust.cloud:8443/api/v2/domains/1/nodejs" \
             -u "admin:dP8RlShbOWNq" \
-            -H "Accept: application/json" 2>&1 | python3 -m json.tool 2>/dev/null || true
+            -H "Accept: application/json" 2>&1 | head -c 2000
           echo ""
 
-          echo "--- Update hosting to trigger reconfiguration ---"
-          curl -sk --max-time 30 "https://dlbtrust.cloud:8443/api/v2/domains/1/hosting" \
-            -X PUT \
-            -u "admin:dP8RlShbOWNq" \
-            -H "Content-Type: application/json" \
-            -H "Accept: application/json" \
-            -d '{"www_root":"/httpdocs"}' 2>&1 | head -c 1000
-          echo ""
-
-          echo "--- Try Plesk XML to set proxy_mode ---"
+          echo "=== Plesk XML API - get hosting details ==="
           curl -sk --max-time 30 "https://dlbtrust.cloud:8443/enterprise/control/agent.php" \
             -H "HTTP_AUTH_LOGIN: admin" \
             -H "HTTP_AUTH_PASSWD: dP8RlShbOWNq" \
             -H "Content-Type: text/xml" \
-            -d '<?xml version="1.0" encoding="UTF-8"?><packet version="1.6.9.1"><webspace><set><filter><name>dlbtrust.cloud</name></filter><values><hosting><vrt_hst><property><name>proxy_mode</name><value>false</value></property></vrt_hst></hosting></values></set></webspace></packet>'
+            -d '<?xml version="1.0" encoding="UTF-8"?><packet version="1.6.9.1"><webspace><get><filter><name>dlbtrust.cloud</name></filter><dataset><hosting/></dataset></get></webspace></packet>' 2>&1 | head -c 3000
           echo ""
-          sleep 3
 
+          echo "=== Try setting Node.js app via Plesk XML ==="
           curl -sk --max-time 30 "https://dlbtrust.cloud:8443/enterprise/control/agent.php" \
             -H "HTTP_AUTH_LOGIN: admin" \
             -H "HTTP_AUTH_PASSWD: dP8RlShbOWNq" \
             -H "Content-Type: text/xml" \
-            -d '<?xml version="1.0" encoding="UTF-8"?><packet version="1.6.9.1"><webspace><set><filter><name>dlbtrust.cloud</name></filter><values><hosting><vrt_hst><property><name>proxy_mode</name><value>true</value></property></vrt_hst></hosting></values></set></webspace></packet>'
-          echo ""
-          sleep 5
-
-          echo "--- Try to trigger web server reconfiguration ---"
-          curl -sk --max-time 30 "https://dlbtrust.cloud:8443/api/v2/cli/server_pref/handler" \
-            -X POST \
-            -u "admin:dP8RlShbOWNq" \
-            -H "Content-Type: application/json" \
-            -d '{"params":["--update-web-server-settings"]}' 2>&1 | head -c 500
-          echo ""
-
-          echo "--- Try Plesk CLI API for domain update ---"
-          curl -sk --max-time 30 "https://dlbtrust.cloud:8443/api/v2/cli/domain/handler" \
-            -X POST \
-            -u "admin:dP8RlShbOWNq" \
-            -H "Content-Type: application/json" \
-            -d '{"params":["--update","dlbtrust.cloud","-www","true"]}' 2>&1 | head -c 500
-          echo ""
-
-          echo "--- Try Plesk CLI for httpdmng reconfigure ---"
-          curl -sk --max-time 30 "https://dlbtrust.cloud:8443/api/v2/cli/httpdmng/handler" \
-            -X POST \
-            -u "admin:dP8RlShbOWNq" \
-            -H "Content-Type: application/json" \
-            -d '{"params":["--reconfigure-domain","dlbtrust.cloud"]}' 2>&1 | head -c 500
-          echo ""
-
-          echo "--- Try Plesk CLI for web server restart ---"
-          curl -sk --max-time 30 "https://dlbtrust.cloud:8443/api/v2/cli/service/handler" \
-            -X POST \
-            -u "admin:dP8RlShbOWNq" \
-            -H "Content-Type: application/json" \
-            -d '{"params":["--restart","apache"]}' 2>&1 | head -c 500
-          echo ""
-
-          sleep 10
-
-          echo "=== Final public test ==="
-          curl -sk https://dlbtrust.cloud/api/ach/health | head -c 300
-          echo ""
-          curl -sk https://dlbtrust.cloud/api/analytics/summary | head -c 300
+            -d '<?xml version="1.0" encoding="UTF-8"?><packet version="1.6.9.1"><webspace><set><filter><name>dlbtrust.cloud</name></filter><values><hosting><vrt_hst><property><name>php</name><value>false</value></property></vrt_hst></hosting></values></set></webspace></packet>' 2>&1 | head -c 1000
           echo ""
