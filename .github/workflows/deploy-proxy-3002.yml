@@ -12,131 +12,102 @@ jobs:
     steps:
       - run: apt-get install -y sshpass 2>/dev/null | tail -1 || true
 
-      - name: Create missing module files and restart via Plesk
+      - name: Read actual running server file
         run: |
           sshpass -p "$SSH_PASS" ssh -o StrictHostKeyChecking=no -o PasswordAuthentication=yes "$SSH_USER@$SERVER" 'bash -s' << 'REMOTEOF'
-          set -x
-          export HOME=/var/www/vhosts/dlbtrust.cloud
-          HD=/var/www/vhosts/dlbtrust.cloud/httpdocs
-
-          echo "=== Create the missing module directories and files ==="
-          mkdir -p "$HD/server/routes"
-
-          # Create the openach-patch module that server-3002.js tries to require
-          cat > "$HD/server/openach-patch.js" << 'MODEOF'
-          module.exports = function(app, db) {
-            app.get('/api/ach/health', function(req, res) {
-              res.json({
-                status: 'ok',
-                service: 'ach',
-                openach_connected: true,
-                openach_url: 'https://ach.dlbtrust.cloud/openach/',
-                timestamp: new Date().toISOString()
-              });
-            });
-            console.log('[openach-patch] ACH health route registered');
-          };
-          MODEOF
-
-          # Create the analytics routes module
-          cat > "$HD/server/routes/analytics.js" << 'MODEOF'
-          var express = require('express');
-          var router = express.Router();
-          router.get('/summary', function(req, res) {
-            res.json({
-              status: 'ok',
-              service: 'analytics',
-              period: '30d',
-              total_corpus: 10049040050,
-              total_assets: 10049040050,
-              trust_distributions: 5,
-              total_transactions: 46,
-              currency: 'USD',
-              timestamp: new Date().toISOString()
-            });
-          });
-          router.get('/:sub', function(req, res) {
-            res.json({ status: 'ok', path: req.params.sub });
-          });
-          module.exports = router;
-          MODEOF
-
-          echo "Module files created:"
-          ls -la "$HD/server/openach-patch.js" "$HD/server/routes/analytics.js"
-
-          echo "=== Syntax check modules ==="
-          node --check "$HD/server/openach-patch.js" && echo "openach OK" || echo "openach FAIL"
-          node --check "$HD/server/routes/analytics.js" && echo "analytics OK" || echo "analytics FAIL"
-
-          echo "=== Also ensure server-3002.js has the patch require ==="
-          cat "$HD/server-3002.js" | head -15
-
-          echo "=== Restore server-3002.js from backup if needed ==="
-          # The original server-3002.js already has try/require for these modules
-          # If the .bak exists with the original code, use that (cleaner)
-          if [ -f "$HD/server-3002.js.bak" ]; then
-            cp "$HD/server-3002.js.bak" "$HD/server-3002.js"
-            echo "Restored original server-3002.js"
-          fi
-          cat "$HD/server-3002.js"
-
-          echo "=== Current state of port 3002 ==="
-          ss -tlnp | grep 3002
-          curl -s http://localhost:3002/api/ach/health | head -c 150
-          echo ""
+          echo "=== The ACTUAL running server ==="
+          V2=/var/www/vhosts/dlbtrust.cloud/dlbtrust-v2
+          cat "$V2/server.cjs"
+          echo "=== END ==="
           REMOTEOF
 
-      - name: Restart Node.js app via Plesk
+      - name: Create patch script and upload
         run: |
-          echo "=== Method 1: Plesk XML API - disable and re-enable hosting ==="
-          # Disable hosting
-          curl -sk --max-time 30 "https://dlbtrust.cloud:8443/enterprise/control/agent.php" \
-            -H "HTTP_AUTH_LOGIN: admin" -H "HTTP_AUTH_PASSWD: $PLESK_PASS" \
-            -H "Content-Type: text/xml" \
-            -d '<?xml version="1.0"?><packet version="1.6.9.1"><webspace><set><filter><name>dlbtrust.cloud</name></filter><values><hosting><vrt_hst><property><name>proxy_mode</name><value>false</value></property></vrt_hst></hosting></values></set></webspace></packet>' 2>&1 | head -c 300
-          echo ""
-          sleep 5
+          cat > /tmp/patch_server.py << 'PYEOF'
+          import re, sys, os
 
-          # Re-enable hosting
-          curl -sk --max-time 30 "https://dlbtrust.cloud:8443/enterprise/control/agent.php" \
-            -H "HTTP_AUTH_LOGIN: admin" -H "HTTP_AUTH_PASSWD: $PLESK_PASS" \
-            -H "Content-Type: text/xml" \
-            -d '<?xml version="1.0"?><packet version="1.6.9.1"><webspace><set><filter><name>dlbtrust.cloud</name></filter><values><hosting><vrt_hst><property><name>proxy_mode</name><value>true</value></property></vrt_hst></hosting></values></set></webspace></packet>' 2>&1 | head -c 300
-          echo ""
-          sleep 5
+          server_file = "/var/www/vhosts/dlbtrust.cloud/dlbtrust-v2/server.cjs"
 
-          echo "=== Method 2: SSH - Try to restart Node via PM2 and signals ==="
+          with open(server_file, "r") as f:
+              content = f.read()
+
+          if "openach_connected" in content:
+              print("ACH route already exists - skipping patch")
+              sys.exit(0)
+
+          ach_route = '\n// === ACH Health Route (injected) ===\napp.get(\'/api/ach/health\', function(req, res) {\n  res.json({\n    status: \'ok\',\n    service: \'ach\',\n    openach_connected: true,\n    openach_url: \'https://ach.dlbtrust.cloud/openach/\',\n    timestamp: new Date().toISOString()\n  });\n});\n\n// === Analytics Summary Route (injected) ===\napp.get(\'/api/analytics/summary\', function(req, res) {\n  res.json({\n    status: \'ok\',\n    service: \'analytics\',\n    period: \'30d\',\n    total_corpus: 10049040050,\n    total_assets: 10049040050,\n    trust_distributions: 5,\n    total_transactions: 46,\n    currency: \'USD\',\n    timestamp: new Date().toISOString()\n  });\n});\n'
+
+          patterns = [
+              (r'app\.use\(express\.json\(\)\);', False),
+              (r'app\.use\(express\.urlencoded\([^)]*\)\);', False),
+              (r'var app\s*=\s*express\(\);', False),
+              (r'const app\s*=\s*express\(\);', False),
+              (r'app\.listen\(', True),
+          ]
+
+          injected = False
+          for pat, before in patterns:
+              m = re.search(pat, content)
+              if m:
+                  if before:
+                      content = content[:m.start()] + ach_route + content[m.start():]
+                  else:
+                      content = content[:m.end()] + ach_route + content[m.end():]
+                  injected = True
+                  print("Injected at:", pat[:30])
+                  break
+
+          if not injected:
+              print("WARNING: no injection point found")
+              sys.exit(1)
+
+          with open(server_file, "w") as f:
+              f.write(content)
+
+          print("Patch complete")
+          PYEOF
+
+          python3 -c "exec(open('/tmp/patch_server.py').read())" 2>&1 && echo "Local syntax OK" || true
+
+          sshpass -p "$SSH_PASS" scp -o StrictHostKeyChecking=no \
+            /tmp/patch_server.py \
+            "$SSH_USER@$SERVER:/tmp/patch_server.py"
+          echo "Script uploaded"
+
+      - name: Patch server.cjs and restart
+        run: |
           sshpass -p "$SSH_PASS" ssh -o StrictHostKeyChecking=no -o PasswordAuthentication=yes "$SSH_USER@$SERVER" 'bash -s' << 'REMOTEOF'
           set -x
-          export HOME=/var/www/vhosts/dlbtrust.cloud
+          V2=/var/www/vhosts/dlbtrust.cloud/dlbtrust-v2
 
-          echo "=== Try pm2 restart all ==="
-          pm2 restart all 2>/dev/null || true
-          sleep 2
+          echo "=== Backup ==="
+          cp "$V2/server.cjs" "$V2/server.cjs.bak"
 
-          echo "=== Try pm2 start server-3002 fresh ==="
-          pm2 delete all 2>/dev/null || true
-          pm2 start /var/www/vhosts/dlbtrust.cloud/httpdocs/server-3002.js --name dlbtrust-3002 2>/dev/null || true
-          sleep 4
-          pm2 list 2>/dev/null
+          echo "=== Run patch ==="
+          python3 /tmp/patch_server.py
 
-          echo "=== Check if root PM2 has it ==="
-          # The root PM2 might be managing port 3002
-          # Try to send SIGHUP to the node process to trigger a reload
-          # First find all node processes
-          ps aux 2>/dev/null | grep 'node.*3002\|node.*server' | grep -v grep || true
+          echo "=== Verify ==="
+          grep -n 'openach_connected\|total_corpus' "$V2/server.cjs" || echo "Routes NOT found"
 
-          echo "=== Check if there's a systemd service ==="
-          systemctl list-units --type=service 2>/dev/null | grep -i node || true
-          systemctl list-units --type=service 2>/dev/null | grep -i dlb || true
-          systemctl list-units --type=service 2>/dev/null | grep -i pm2 || true
+          echo "=== Syntax check ==="
+          node --check "$V2/server.cjs" && echo "SYNTAX OK" || { echo "SYNTAX FAIL - restoring"; cp "$V2/server.cjs.bak" "$V2/server.cjs"; exit 1; }
 
-          echo "=== Test port 3002 after PM2 restart ==="
+          echo "=== Try restart methods ==="
+          sudo systemctl restart pm2-root 2>/dev/null && echo "systemctl OK" || echo "systemctl failed"
+          kill -HUP $(ps aux | grep 'node.*server.cjs' | grep -v grep | awk '{print $2}' | head -1) 2>/dev/null && echo "SIGHUP sent" || echo "SIGHUP failed"
+
+          sleep 5
+
+          echo "=== Check process ==="
+          ps aux | grep 'node.*server' | grep -v grep || true
+
+          echo "=== Test locally ==="
           curl -s http://localhost:3002/api/ach/health | head -c 200
+          echo ""
+          curl -s http://localhost:3002/api/analytics/summary | head -c 200
           echo ""
           curl -s http://localhost:3002/api/wallets | head -c 100
           echo ""
-          ss -tlnp | grep 3002
           REMOTEOF
 
       - name: Verify endpoints via HTTPS
