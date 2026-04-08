@@ -1,0 +1,109 @@
+name: Final Restore and Fix
+on:
+  push:
+    branches: [main]
+    paths: ['.github/workflows/final-restore-and-fix.yml']
+  workflow_dispatch:
+
+jobs:
+  fix:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      SERVER: "74.208.191.205"
+      SSH_USER: "dlbtrust.cloud_h6zkwzag1ya"
+      SSH_PASS: "Deploy2026!"
+      PLESK_PASS: "dP8RlShbOWNq"
+      PLESK: "https://74.208.191.205:8443"
+
+    steps:
+      - uses: actions/checkout@v4
+      - run: apt-get install -y sshpass 2>/dev/null | tail -1 || true
+
+      - name: Check current state and restore vhost
+        run: |
+          sshpass -p "$SSH_PASS" ssh \
+            -o StrictHostKeyChecking=no -o ConnectTimeout=10 \
+            -o PasswordAuthentication=yes \
+            "$SSH_USER@$SERVER" << 'SSHEOF'
+            echo "=== Current vhost.conf ==="
+            cat /var/www/vhosts/dlbtrust.cloud/conf/vhost.conf 2>/dev/null
+
+            echo "=== Process on port 3001 ==="
+            PID=$(ss -tlnp 2>/dev/null | grep 3001 | grep -oP 'pid=\K[0-9]+' | head -1)
+            echo "Port 3001 PID: $PID"
+            [ -n "$PID" ] && cat /proc/$PID/cmdline 2>/dev/null | tr '\0' ' ' && echo ""
+
+            echo "=== Restoring vhost.conf to ProxyPass 3001 ==="
+            cat > /var/www/vhosts/dlbtrust.cloud/conf/vhost.conf << 'VHEOF'
+ProxyRequests Off
+ProxyPreserveHost On
+ProxyPass / http://localhost:3001/
+ProxyPassReverse / http://localhost:3001/
+<Proxy *>
+    Require all granted
+</Proxy>
+VHEOF
+            echo "✅ vhost.conf restored"
+
+            echo "=== Test 3001 direct ==="
+            curl -s http://localhost:3001/api/wallets 2>/dev/null | head -c 100
+            curl -s http://localhost:3001/api/ach/health 2>/dev/null | head -c 100
+          SSHEOF
+
+      - name: Rebuild Apache and reload via Plesk
+        run: |
+          echo "Rebuilding Apache config via Plesk httpdmng..."
+          
+          # Get Plesk session
+          RUNNER_IP=$(curl -s https://api.ipify.org)
+          IP_B64=$(echo -n "$RUNNER_IP" | base64 -w0)
+          SID=$(curl -sk --max-time 10 "$PLESK/enterprise/control/agent.php" \
+            -H "HTTP_AUTH_LOGIN: admin" -H "HTTP_AUTH_PASSWD: $PLESK_PASS" \
+            -H "Content-Type: text/xml" \
+            -d "<packet version=\"1.6.9.1\"><server><create_session><login>admin</login><data><user_ip>$IP_B64</user_ip><source_server></source_server></data></create_session></server></packet>" \
+            | grep -oP '(?<=<id>)[^<]+' | head -1)
+          echo "Session: $SID"
+          
+          # Trigger Apache rebuild via Plesk webspace set (forces httpdmng to run)
+          RESULT=$(curl -sk --max-time 30 "$PLESK/enterprise/control/agent.php" \
+            -H "HTTP_AUTH_LOGIN: admin" -H "HTTP_AUTH_PASSWD: $PLESK_PASS" \
+            -H "Content-Type: text/xml" \
+            -d '<?xml version="1.0"?><packet version="1.6.9.1">
+              <webspace>
+                <set>
+                  <filter><name>dlbtrust.cloud</name></filter>
+                  <values><prefs><www>true</www></prefs></values>
+                </set>
+              </webspace>
+            </packet>')
+          echo "Webspace set: $RESULT" | grep -oP '<status>[^<]+'
+          
+          # Also try srv_man restart
+          RESULT2=$(curl -sk --max-time 15 "$PLESK/enterprise/control/agent.php" \
+            -H "HTTP_AUTH_LOGIN: admin" -H "HTTP_AUTH_PASSWD: $PLESK_PASS" \
+            -H "Content-Type: text/xml" \
+            -d '<?xml version="1.0"?><packet version="1.6.9.1"><server><srv_man><restart><service>httpd</service></restart></srv_man></server></packet>')
+          echo "srv_man restart httpd: $RESULT2" | grep -oP '<status>[^<]+'
+          
+          sleep 8
+
+      - name: Full 8-test validation
+        run: |
+          S=$SERVER; P=0; F=0
+          t() { r=$(eval "$2" 2>&1|head -c 200); echo "$r"|grep -q "$3" && { echo "✅ $1"; P=$((P+1)); } || { echo "❌ $1|${r:0:70}"; F=$((F+1)); }; }
+          
+          t "HTTP 301"    "curl -s -o/dev/null -w '%{http_code}' http://dlbtrust.cloud/"                                                       "301"
+          t "HTTPS loads" "curl -sk --resolve 'dlbtrust.cloud:443:$S' https://dlbtrust.cloud/"                                                "html"
+          t "Wallets"     "curl -sk --resolve 'dlbtrust.cloud:443:$S' https://dlbtrust.cloud/api/wallets"                                     "wallet_id"
+          t "Transactions" "curl -sk --resolve 'dlbtrust.cloud:443:$S' https://dlbtrust.cloud/api/transactions"                               "type"
+          t "ACH health"  "curl -sk --resolve 'dlbtrust.cloud:443:$S' https://dlbtrust.cloud/api/ach/health"                                 "openach_connected"
+          t "Analytics"   "curl -sk --resolve 'dlbtrust.cloud:443:$S' https://dlbtrust.cloud/api/analytics/summary"                          "total_corpus"
+          t "OA UI"       "curl -sk --resolve 'ach.dlbtrust.cloud:443:$S' https://ach.dlbtrust.cloud/openach/ -o/dev/null -w '%{http_code}'" "200"
+          t "OA API"      "curl -sk --resolve 'ach.dlbtrust.cloud:443:$S' -X POST https://ach.dlbtrust.cloud/openach/api/connect --data 'user_api_token=3caee1c2-c218-4959-b6d2-21d4b2a1b42e&user_api_key=b74966cf-5276-4d8b-8650-5bd57dcee272'" '"success":true'
+          
+          echo ""
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          echo "SCORE: $P/8"
+          [ $F -eq 0 ] && echo "🎉 8/8 — 100% PRODUCTION READY — dlbtrust.cloud IS LIVE" || echo "⚠️ $F still failing"
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
