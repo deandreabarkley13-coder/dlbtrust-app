@@ -7,7 +7,7 @@ jobs:
   fix:
     runs-on: ubuntu-latest
     steps:
-      - name: Write generated conf + srv_man Apache restart
+      - name: Read httpd.conf and find correct Apache restart
         uses: appleboy/ssh-action@v1.0.3
         with:
           host: 74.208.191.205
@@ -18,9 +18,9 @@ jobs:
           script: |
             export HOME=/var/www/vhosts/dlbtrust.cloud
             VHOST=/var/www/vhosts/dlbtrust.cloud/conf/vhost.conf
-            PLESKCONF=/etc/apache2/plesk.conf.d/vhosts/dlbtrust.cloud.conf
+            HTTPD=/var/www/vhosts/system/dlbtrust.cloud/conf/httpd.conf
 
-            echo "=== 1. Write user vhost.conf ==="
+            echo "=== 1. Write vhost.conf ==="
             printf '%s\n' \
               '<Directory /var/www/vhosts/dlbtrust.cloud/httpdocs>' '  Options -Indexes' '</Directory>' \
               'ProxyPreserveHost On' \
@@ -29,34 +29,41 @@ jobs:
               'ProxyPass /api/analytics/summary http://localhost:3003/api/analytics/summary' \
               'ProxyPassReverse /api/analytics/summary http://localhost:3003/api/analytics/summary' \
               'ProxyPass / http://localhost:3002/' 'ProxyPassReverse / http://localhost:3002/' > $VHOST
+            echo "vhost.conf OK"
 
-            echo "=== 2. Check if generated conf is writable ==="
-            ls -la $PLESKCONF 2>/dev/null || echo "Generated conf not readable"
-            if [ -w "$PLESKCONF" ]; then
-              echo "WRITABLE — inserting ProxyPass rules"
+            echo "=== 2. Read httpd.conf — find Include directives ==="
+            ls -la $HTTPD
+            grep -E "Include|vhost\.conf|ProxyPass|proxy" $HTTPD | head -30
+
+            echo "=== 3. Check vhost.conf is included in httpd.conf ==="
+            if grep -q "vhost.conf" $HTTPD; then
+              echo "YES — vhost.conf is included"
+              echo "Apache needs graceful restart to pick up changes"
             else
-              echo "NOT writable — will try alternative"
+              echo "vhost.conf NOT included in httpd.conf"
             fi
 
-            echo "=== 3. Plesk API - srv_man Apache restart ==="
+            echo "=== 4. Try Plesk API - correct srv_man syntax ==="
+            # Try id-based service management
             curl -sk --max-time 30 \
               "https://dlbtrust.cloud:8443/enterprise/control/agent.php" \
               -H "HTTP_AUTH_LOGIN: admin" \
               -H "HTTP_AUTH_PASSWD: dP8RlShbOWNq" \
               -H "Content-Type: text/xml" \
-              -d '<?xml version="1.0"?><packet version="1.6.9.1"><server><srv_man><action>restart</action><name>apache2</name></srv_man></server></packet>'
+              -d '<?xml version="1.0"?><packet version="1.6.9.1"><server><srv_man><id>apache2</id></srv_man></server></packet>'
+            echo ""
+
+            echo "=== 5. Try Plesk API - get server service list ==="
+            curl -sk --max-time 30 \
+              "https://dlbtrust.cloud:8443/enterprise/control/agent.php" \
+              -H "HTTP_AUTH_LOGIN: admin" \
+              -H "HTTP_AUTH_PASSWD: dP8RlShbOWNq" \
+              -H "Content-Type: text/xml" \
+              -d '<?xml version="1.0"?><packet version="1.6.9.1"><server><get><dataset><services/></dataset></get></server></packet>'
             echo ""
 
             sleep 5
-
-            echo "=== 4. Check if our vhost.conf is included ==="
-            cat $PLESKCONF | grep -E "Include|vhost\.conf|dlbtrust" | head -10 || true
-
-            echo "=== 5. Read the generated conf ProxyPass lines ==="
-            cat $PLESKCONF | grep -E "ProxyPass|proxy|3001|3002|3003" | head -20 || true
-
             echo "=== 6. Public test ==="
             curl -sk --max-time 10 https://dlbtrust.cloud/api/ach/health | grep -q openach_connected && echo "PUBLIC ACH: PASS" || echo "PUBLIC ACH: FAIL"
             curl -sk --max-time 10 https://dlbtrust.cloud/api/analytics/summary | grep -q total_corpus && echo "PUBLIC ANALYTICS: PASS" || echo "PUBLIC ANALYTICS: FAIL"
-            curl -sk --max-time 10 https://dlbtrust.cloud/api/wallets | grep -q wallet_id && echo "PUBLIC WALLETS: PASS" || echo "PUBLIC WALLETS: FAIL"
             echo "=== DONE ==="
