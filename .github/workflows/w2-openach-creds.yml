@@ -1,0 +1,53 @@
+name: W2 OpenACH Credentials Insert
+on:
+  push:
+    branches: [main]
+    paths: ['.github/workflows/w2-openach-creds.yml']
+  workflow_dispatch:
+jobs:
+  fix:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      SERVER: "74.208.191.205"
+      SSH_USER: "dlbtrust.cloud_h6zkwzag1ya"
+      SSH_PASS: "Deploy2026!"
+    steps:
+      - run: apt-get install -y sshpass 2>/dev/null | tail -1 || true
+      - name: Insert credentials via all possible methods
+        run: |
+          sshpass -p "$SSH_PASS" ssh -o StrictHostKeyChecking=no \
+            -o ConnectTimeout=10 -o PasswordAuthentication=yes \
+            "$SSH_USER@$SERVER" << 'SSHEOF'
+          # Find the OpenACH DB directly (no docker needed if sqlite3 accessible)
+          CONT=$(docker ps --format "{{.Names}}" 2>/dev/null | grep -i openach | head -1)
+          echo "Container: $CONT"
+          
+          if [ -n "$CONT" ]; then
+            # Try to find DB path
+            DB=$(docker exec "$CONT" find /var/www/html -name "openach.db" 2>/dev/null | head -1)
+            DB=${DB:-"/var/www/html/protected/runtime/db/openach.db"}
+            echo "DB: $DB"
+            
+            # Insert credentials
+            docker exec "$CONT" sqlite3 "$DB" \
+              "INSERT OR IGNORE INTO user_api (user_api_user_id, user_api_datetime, user_api_originator_info_id, user_api_token, user_api_key, user_api_status) VALUES ('4fc86059-2e7b-4732-b94f-e7c3715ee8d7', datetime('now'), '0eb26e1d-5fcc-4978-a132-dd93c2655429', '3caee1c2-c218-4959-b6d2-21d4b2a1b42e', 'b74966cf-5276-4d8b-8650-5bd57dcee272', 'enabled');" 2>/dev/null
+            
+            VERIFY=$(docker exec "$CONT" sqlite3 "$DB" "SELECT user_api_token, user_api_status FROM user_api;" 2>/dev/null)
+            echo "✅ Credentials: $VERIFY"
+            
+            # Test immediately
+            curl -s -X POST http://localhost/openach/api/connect \
+              -H "Host: ach.dlbtrust.cloud" \
+              --data "user_api_token=3caee1c2-c218-4959-b6d2-21d4b2a1b42e&user_api_key=b74966cf-5276-4d8b-8650-5bd57dcee272" 2>/dev/null
+          else
+            echo "❌ No openach container"
+            docker ps -a 2>/dev/null | head -10
+          fi
+          SSHEOF
+      - name: Test OA API via HTTPS
+        run: |
+          S=$SERVER
+          curl -sk --resolve "ach.dlbtrust.cloud:443:$S" \
+            -X POST "https://ach.dlbtrust.cloud/openach/api/connect" \
+            --data "user_api_token=3caee1c2-c218-4959-b6d2-21d4b2a1b42e&user_api_key=b74966cf-5276-4d8b-8650-5bd57dcee272"

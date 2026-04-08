@@ -1,0 +1,58 @@
+name: W3 Fix server-3002.js
+on:
+  push:
+    branches: [main]
+    paths: ['.github/workflows/w3-fix-3002.yml']
+  workflow_dispatch:
+jobs:
+  fix:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      SERVER: "74.208.191.205"
+      SSH_USER: "dlbtrust.cloud_h6zkwzag1ya"
+      SSH_PASS: "Deploy2026!"
+    steps:
+      - run: apt-get install -y sshpass 2>/dev/null | tail -1 || true
+      - name: Check 3002 status and fix crash
+        run: |
+          sshpass -p "$SSH_PASS" ssh -o StrictHostKeyChecking=no \
+            -o ConnectTimeout=10 -o PasswordAuthentication=yes \
+            "$SSH_USER@$SERVER" << 'SSHEOF'
+          HTTPDOCS="/var/www/vhosts/dlbtrust.cloud/httpdocs"
+          
+          echo "=== pm2 status ==="
+          pm2 list 2>/dev/null
+          
+          echo "=== 3002 error log ==="
+          cat /var/www/vhosts/dlbtrust.cloud/.pm2/logs/dlbtrust-3002-error.log 2>/dev/null | tail -20
+          
+          echo "=== node_modules check ==="
+          node -e "require('express'); console.log('express OK')" 2>&1
+          
+          echo "=== Test require auth-routes from v2 ==="
+          node -e "
+          try {
+            const fn = require('/var/www/vhosts/dlbtrust.cloud/dlbtrust-v2/auth-routes.cjs');
+            console.log('auth-routes OK, type:', typeof fn);
+          } catch(e) { console.log('auth-routes FAIL:', e.message); }
+          " 2>&1
+          
+          echo "=== Test require api-routes from v2 ==="
+          node -e "
+          try {
+            const fn = require('/var/www/vhosts/dlbtrust.cloud/dlbtrust-v2/api-routes.cjs');
+            console.log('api-routes OK, type:', typeof fn);
+          } catch(e) { console.log('api-routes FAIL:', e.message); }
+          " 2>&1
+          
+          echo "=== Restart 3002 ==="
+          pm2 restart dlbtrust-3002 2>/dev/null || PORT=3002 pm2 start "$HTTPDOCS/server-3002.js" --name dlbtrust-3002
+          sleep 5
+          pm2 list | grep dlbtrust
+          
+          echo "=== Test ==="
+          curl -s http://localhost:3002/api/ach/health
+          echo ""
+          curl -s http://localhost:3002/api/wallets | head -c 80
+          SSHEOF
