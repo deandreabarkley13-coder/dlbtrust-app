@@ -4,97 +4,79 @@ on:
   workflow_dispatch:
 
 jobs:
-  restart:
+  test:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - name: Check server and restart services
-        env:
-          SERVER_PASS: ${{ secrets.SERVER_PASSWORD }}
+      - name: Test with proper SNI
         run: |
           SERVER="74.208.191.205"
-          PLESK="https://$SERVER:8443/enterprise/control/agent.php"
           
-          echo "=== PORT CHECK (no hanging ports) ==="
-          nc -zv $SERVER 22 2>&1 | head -1
-          nc -zv $SERVER 80 2>&1 | head -1
-          nc -zv $SERVER 443 2>&1 | head -1
-          nc -zv $SERVER 8443 2>&1 | head -1
+          echo "=== HTTP with proper Host ==="
+          curl -v --max-time 10 -L "http://$SERVER/" \
+            -H "Host: dlbtrust.cloud" 2>&1 | grep -E "< HTTP|Location:|Content-Length|Connected|Empty|timed"
           
           echo ""
-          echo "=== CURL HTTP WITH VERBOSE TIMING ==="
-          curl -v --max-time 5 "http://$SERVER/api/wallets" \
-            -H "Host: dlbtrust.cloud" 2>&1 | grep -E "< HTTP|< Content|Connected|Empty|bytes|timed"
+          echo "=== HTTPS with proper SNI via --resolve ==="
+          curl -v --max-time 10 -k \
+            --resolve "dlbtrust.cloud:443:$SERVER" \
+            "https://dlbtrust.cloud/api/wallets" 2>&1 | grep -E "< HTTP|< Content|Connected|Empty|bytes|timed|TLS"
           
           echo ""
-          echo "=== CURL HTTPS WITH VERBOSE TIMING ==="
-          curl -v -k --max-time 5 "https://$SERVER/api/wallets" \
-            -H "Host: dlbtrust.cloud" 2>&1 | grep -E "< HTTP|< Content|Connected|Empty|bytes|timed|TLS"
+          echo "=== HTTPS wallets full response ==="
+          curl -s --max-time 10 \
+            --resolve "dlbtrust.cloud:443:$SERVER" \
+            "https://dlbtrust.cloud/api/wallets" | head -c 500
           
           echo ""
-          echo "=== PLESK XML API - service restart commands ==="
-          XML_RESTART='<?xml version="1.0"?><packet><site><get><filter><name>dlbtrust.cloud</name></filter><dataset><hosting/><prefs/></dataset></get></site></packet>'
-          
-          for PASS in "Skunklemon78tut\$jupiter" "admin" "Admin123!" "DlbTrust1!" "dlbtrust.cloud"; do
-            RESULT=$(curl -s --max-time 8 -k "$PLESK" \
-              -H "HTTP_AUTH_LOGIN: admin" \
-              -H "HTTP_AUTH_PASSWD: $PASS" \
-              -H "Content-Type: text/xml" \
-              -d "$XML_RESTART" 2>&1)
-            CODE=$(echo "$RESULT" | grep -o "errcode>[0-9]*" | head -1)
-            if [ "$CODE" != "errcode>1001" ] && [ "$CODE" != "errcode>1010" ]; then
-              echo "FOUND WORKING PASS: $PASS | $CODE | $RESULT"
-            else
-              echo "Pass attempt: $CODE"
-            fi
-          done
+          echo "=== HTTPS main page ==="
+          curl -s --max-time 10 \
+            --resolve "dlbtrust.cloud:443:$SERVER" \
+            "https://dlbtrust.cloud/" | head -c 300
           
           echo ""
-          echo "=== PLESK REST API ==="
-          # Try Plesk REST API secret key (sometimes accessible without auth on localhost redirect)
-          curl -s --max-time 8 -k "https://$SERVER:8443/api/v2/servers/localhost" \
-            -H "Accept: application/json" | head -c 200
+          echo "=== ACH health with SNI ==="
+          curl -s --max-time 10 \
+            --resolve "dlbtrust.cloud:443:$SERVER" \
+            "https://dlbtrust.cloud/api/ach/health"
           
           echo ""
-          echo "=== SSH with expanded password list ==="
-          for PASS in "Skunklemon78tut\$jupiter" "Skunklemon78tut\$Jupiter" "skunklemon78tut\$jupiter" "dlbtrust" "dlbTrust1!" "root" "toor" "ionos123" "hosting123"; do
-            RESULT=$(sshpass -p "$PASS" ssh -o StrictHostKeyChecking=no -o ConnectTimeout=5 -o BatchMode=no root@$SERVER "echo SSH_OK && whoami && pm2 list 2>/dev/null | head -5" 2>&1)
-            if echo "$RESULT" | grep -q "SSH_OK\|online\|stopped"; then
-              echo "SSH SUCCESS with pass: $PASS"
-              echo "$RESULT"
-              
-              # Run fix commands
-              sshpass -p "$PASS" ssh -o StrictHostKeyChecking=no -o ConnectTimeout=10 root@$SERVER "
-                echo '=== Running fixes ==='
-                pm2 restart all 2>/dev/null || true
-                sleep 3
-                pm2 list
-                curl -s http://localhost:3000/api/wallets 2>/dev/null | head -c 200 || true
-                curl -s http://localhost:3001/api/wallets 2>/dev/null | head -c 200 || true
-              " 2>&1
-              break
-            else
-              echo "Pass failed: ${RESULT:0:50}"
-            fi
-          done
+          echo "=== OpenACH with SNI ==="
+          curl -s --max-time 10 \
+            --resolve "ach.dlbtrust.cloud:443:$SERVER" \
+            "https://ach.dlbtrust.cloud/openach/api/connect" \
+            -X POST \
+            --data "user_api_token=3caee1c2-c218-4959-b6d2-21d4b2a1b42e&user_api_key=b74966cf-5276-4d8b-8650-5bd57dcee272"
+          
+          echo ""
+          echo "=== Check if Node is responding on port 3000 via 127.0.0.1 internal ==="
+          # Can't reach internal ports directly, but let's check apache proxy status
+          curl -v --max-time 8 \
+            --resolve "dlbtrust.cloud:443:$SERVER" \
+            "https://dlbtrust.cloud/api/wallets" 2>&1 | tail -20
 
-      - name: Try Plesk password reset via SSH
-        env:
-          SERVER_PASS: ${{ secrets.SERVER_PASSWORD }}
+      - name: Try to get Apache/Node logs via HTTP
         run: |
-          echo "=== Try SSH as root to reset Plesk admin password ==="
           SERVER="74.208.191.205"
           
-          # If we can SSH, reset Plesk admin password
-          RESULT=$(sshpass -p "$SERVER_PASS" ssh -o StrictHostKeyChecking=no -o ConnectTimeout=8 root@$SERVER \
-            "plesk bin admin --set-admin-password -passwd 'Deploy2026!' 2>&1; echo STATUS: $?" 2>&1)
-          echo "Plesk reset result: $RESULT"
+          echo "=== Check .htaccess or app status endpoints ==="
+          curl -s --max-time 8 \
+            --resolve "dlbtrust.cloud:443:$SERVER" \
+            "https://dlbtrust.cloud/api/status" | head -c 200
           
           echo ""
-          echo "=== Apache2 status via Plesk XML ==="
-          curl -s --max-time 8 -k \
-            "https://$SERVER:8443/enterprise/control/agent.php" \
-            -H "HTTP_AUTH_LOGIN: admin" \
-            -H "HTTP_AUTH_PASSWD: Deploy2026!" \
-            -H "Content-Type: text/xml" \
-            -d '<?xml version="1.0"?><packet><server><get_protos/></server></packet>' | head -c 300
+          curl -s --max-time 8 \
+            --resolve "dlbtrust.cloud:443:$SERVER" \
+            "https://dlbtrust.cloud/api/health" | head -c 200
+          
+          echo ""
+          echo "=== Try Plesk with SNI ==="
+          curl -s --max-time 10 \
+            --resolve "dlbtrust.cloud:8443:$SERVER" \
+            "https://dlbtrust.cloud:8443/" | head -c 300
+          
+          echo ""
+          echo "=== Try OpenACH admin login ==="
+          curl -s --max-time 10 \
+            --resolve "ach.dlbtrust.cloud:443:$SERVER" \
+            "https://ach.dlbtrust.cloud/openach/" | head -c 400
