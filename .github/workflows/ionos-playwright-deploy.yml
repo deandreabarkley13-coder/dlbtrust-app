@@ -1,35 +1,132 @@
-name: Simple SSH Deploy
+name: IONOS Portal Login
 
 on:
   workflow_dispatch:
-    inputs:
-      action:
-        description: "Action to run"
-        required: false
-        default: "deploy"
 
 jobs:
-  deploy:
+  get-server-password:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 20
     steps:
-      - name: Install sshpass
-        run: sudo apt-get install -y sshpass
-
-      - name: Test SSH connection
+      - name: Install Playwright
         run: |
-          echo "Testing connectivity to dlbtrust.cloud server"
-          nc -zv 74.208.191.205 22 2>&1 || echo "Port 22 check done"
-          ssh-keyscan -H 74.208.191.205 2>/dev/null | head -5 || true
+          pip install playwright --quiet
+          playwright install chromium --with-deps 2>&1 | tail -3
 
-      - name: Try SSH with stored secret
-        env:
-          SERVER_PASS: ${{ secrets.SERVER_PASSWORD }}
+      - name: Write Python script
         run: |
-          echo "Attempting SSH..."
-          sshpass -p "$SERVER_PASS" ssh -o StrictHostKeyChecking=no -o ConnectTimeout=10 root@74.208.191.205 "
-            echo CONNECTED
-            whoami
-            docker ps --format {{.Names}} | grep openach | head -1
-          " 2>&1 || echo "SSH attempt done"
+          cat > /tmp/ionos.py << 'SCRIPTEOF'
+import asyncio, json, re, os
+from playwright.async_api import async_playwright
 
+EMAIL = 'deandreabarkley13@gmail.com'
+PASS = 'Skunklemon78tut$jupiter'
+TARGET_IP = '74.208.191.205'
+
+async def main():
+    async with async_playwright() as p:
+        browser = await p.chromium.launch(
+            headless=True,
+            args=['--no-sandbox','--disable-dev-shm-usage','--disable-blink-features=AutomationControlled']
+        )
+        ctx = await browser.new_context(
+            user_agent='Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36',
+            viewport={'width':1280,'height':800}
+        )
+        page = await ctx.new_page()
+        
+        print("STEP1: Loading IONOS login page")
+        await page.goto('https://login.ionos.com/', timeout=30000)
+        await page.wait_for_load_state('networkidle', timeout=15000)
+        print(f"  URL: {page.url}")
+        await page.screenshot(path='/tmp/s1.png')
+        
+        print("STEP2: Filling username")
+        try:
+            await page.wait_for_selector('input', timeout=8000)
+            await page.fill('input', EMAIL, timeout=5000)
+            await page.keyboard.press('Enter')
+            await page.wait_for_load_state('networkidle', timeout=10000)
+            print(f"  URL after username: {page.url}")
+        except Exception as e:
+            print(f"  Error: {e}")
+        await page.screenshot(path='/tmp/s2.png')
+        
+        print("STEP3: Filling password")
+        try:
+            await page.wait_for_selector('input[type=password]', timeout=8000)
+            await page.fill('input[type=password]', PASS, timeout=5000)
+            await page.keyboard.press('Enter')
+            await page.wait_for_load_state('networkidle', timeout=15000)
+            print(f"  URL after password: {page.url}")
+        except Exception as e:
+            print(f"  Error: {e}")
+        await page.screenshot(path='/tmp/s3.png')
+        
+        print(f"STEP4: Post-login URL: {page.url}")
+        title = await page.title()
+        print(f"  Title: {title}")
+        
+        # Check if logged in
+        content = await page.content()
+        if 'login' in page.url.lower() or 'identifier' in page.url.lower():
+            print("  STILL ON LOGIN PAGE - auth failed or 2FA needed")
+            print(f"  Page content snippet: {content[:500]}")
+        else:
+            print("  LOGGED IN SUCCESSFULLY")
+            
+            # Navigate to VPS/server section
+            print("STEP5: Navigate to server management")
+            for url in [
+                'https://my.ionos.com/server-cloud-infrastructure',
+                'https://my.ionos.com/virtual-servers',
+                'https://my.ionos.com/'
+            ]:
+                try:
+                    await page.goto(url, timeout=20000)
+                    await page.wait_for_load_state('networkidle', timeout=10000)
+                    curr = page.url
+                    print(f"  Tried {url} -> {curr}")
+                    content = await page.content()
+                    if TARGET_IP in content:
+                        print(f"  FOUND TARGET IP {TARGET_IP} on this page!")
+                        with open('/tmp/server_page.html','w') as f:
+                            f.write(content)
+                        await page.screenshot(path='/tmp/s5_found.png')
+                        break
+                except Exception as e:
+                    print(f"  Error: {e}")
+            
+            # Try clicking on manage/details for our server
+            print("STEP6: Looking for server details/password")
+            try:
+                # Find any element with our IP
+                await page.wait_for_selector(f'text={TARGET_IP}', timeout=5000)
+                await page.click(f'text={TARGET_IP}')
+                await page.wait_for_load_state('networkidle', timeout=10000)
+                print(f"  Clicked IP, URL: {page.url}")
+                await page.screenshot(path='/tmp/s6.png')
+            except:
+                print("  IP not found as clickable element")
+        
+        print("STEP7: Saving all screenshots info")
+        import subprocess
+        result = subprocess.run(['ls','-la','/tmp/'], capture_output=True, text=True)
+        print(result.stdout)
+        
+        await browser.close()
+
+asyncio.run(main())
+SCRIPTEOF
+          echo "Script written"
+
+      - name: Run IONOS Playwright script
+        run: python3 /tmp/ionos.py
+
+      - name: Show results
+        run: |
+          ls -la /tmp/s*.png /tmp/*.html 2>/dev/null || echo "no files"
+          if [ -f /tmp/server_page.html ]; then
+            echo "=== Server page content ==="
+            cat /tmp/server_page.html | grep -i "password\|passwd\|root\|ssh\|credential\|74.208" | head -30
+          fi
