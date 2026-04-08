@@ -9,48 +9,60 @@ jobs:
       - name: Install sshpass
         run: sudo apt-get install -y sshpass 2>/dev/null | tail -1 || true
 
-      - name: Full diagnostic of OpenACH container
+      - name: Deep OpenACH investigation
         run: |
           sshpass -p "dP8RlShbOWNq" ssh -o StrictHostKeyChecking=no -o ConnectTimeout=15 -o PasswordAuthentication=yes root@$SERVER '
-            CONT=$(docker ps --format "{{.Names}}" | grep -i openach | head -1)
-            echo "Container: $CONT"
+            CONT=openach-web-1
+
+            echo "=== Web root contents ==="
+            docker exec "$CONT" ls -la /home/www/openach/ 2>/dev/null | head -20
             echo ""
 
-            echo "=== Docker inspect (mounts) ==="
-            docker inspect "$CONT" --format="{{json .Mounts}}" 2>/dev/null | python3 -m json.tool 2>/dev/null || docker inspect "$CONT" --format="{{json .Mounts}}" 2>/dev/null
+            echo "=== Config dir (mounted) ==="
+            docker exec "$CONT" ls -la /home/www/openach/protected/config/ 2>/dev/null | head -20
             echo ""
 
-            echo "=== Find ALL .db and .sqlite files ==="
-            docker exec "$CONT" find / -maxdepth 6 -name "*.db" -o -name "*.sqlite" -o -name "*.sqlite3" 2>/dev/null | head -20
+            echo "=== All config files ==="
+            docker exec "$CONT" find /home/www/openach/protected/config -type f 2>/dev/null
             echo ""
 
-            echo "=== Check OpenACH config ==="
-            docker exec "$CONT" cat /var/www/html/protected/config/db.php 2>/dev/null || echo "No db.php"
-            docker exec "$CONT" cat /var/www/html/protected/config/main.php 2>/dev/null | grep -A3 "db" | head -10 || echo "No main.php db config"
+            echo "=== db.php ==="
+            docker exec "$CONT" cat /home/www/openach/protected/config/db.php 2>/dev/null || echo "Not found"
             echo ""
 
-            echo "=== OpenACH runtime dir ==="
-            docker exec "$CONT" ls -laR /var/www/html/protected/runtime/ 2>/dev/null | head -30 || echo "No runtime dir"
+            echo "=== main.php (db section) ==="
+            docker exec "$CONT" cat /home/www/openach/protected/config/main.php 2>/dev/null | head -50
             echo ""
 
-            echo "=== Check if OpenACH uses MySQL instead ==="
-            docker exec "$CONT" cat /var/www/html/protected/config/db.php 2>/dev/null | head -20
+            echo "=== Runtime dir ==="
+            docker exec "$CONT" ls -laR /home/www/openach/protected/runtime/ 2>/dev/null | head -30
             echo ""
 
-            echo "=== Docker compose / env vars ==="
-            docker inspect "$CONT" --format="{{json .Config.Env}}" 2>/dev/null | tr "," "\n"
+            echo "=== Host-side runtime dir ==="
+            ls -laR /opt/psa/var/modules/docker/stacks/openach/runtime/ 2>/dev/null | head -30
             echo ""
 
-            echo "=== Other containers ==="
-            docker ps --format "table {{.Names}}\t{{.Image}}\t{{.Status}}"
+            echo "=== Host-side config dir ==="
+            ls -la /opt/psa/var/modules/docker/stacks/openach/config/ 2>/dev/null
+            cat /opt/psa/var/modules/docker/stacks/openach/config/db.php 2>/dev/null || echo "No db.php on host"
+            echo ""
+
+            echo "=== Find ALL db-related files in container ==="
+            docker exec "$CONT" find / -maxdepth 8 \( -name "*.db" -o -name "*.sqlite" -o -name "db.php" -o -name "database*" \) 2>/dev/null | grep -v proc | head -20
+            echo ""
+
+            echo "=== Check if MySQL is running in container ==="
+            docker exec "$CONT" ps aux 2>/dev/null | head -20
+            echo ""
+
+            echo "=== Check MySQL/MariaDB containers ==="
+            docker ps -a --format "table {{.Names}}\t{{.Image}}\t{{.Status}}"
           ' 2>&1
-          echo ""
-          echo "=== Done ==="
+          echo "=== Investigation complete ==="
 
-      - name: Test API via HTTPS
+      - name: Test API
         if: always()
         run: |
-          curl -sk --max-time 15 \
-            -X POST https://ach.dlbtrust.cloud/openach/api/connect \
+          curl -sk --max-time 15 -X POST https://ach.dlbtrust.cloud/openach/api/connect \
             -d "user_api_token=3caee1c2-c218-4959-b6d2-21d4b2a1b42e&user_api_key=b74966cf-5276-4d8b-8650-5bd57dcee272" 2>&1 | head -c 500
           echo ""
