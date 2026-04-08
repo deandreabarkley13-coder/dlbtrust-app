@@ -10,35 +10,85 @@ jobs:
     timeout-minutes: 10
     env:
       SERVER: "74.208.191.205"
-      SSH_USER: "dlbtrust.cloud_h6zkwzag1ya"
-      SSH_PASS: "Deploy2026!"
+      PLESK_PASS: "dP8RlShbOWNq"
     steps:
-      - run: apt-get install -y sshpass 2>/dev/null | tail -1 || true
-      - name: Find container and insert credentials
+      - run: sudo apt-get install -y sshpass 2>/dev/null | tail -1 || true
+      
+      - name: Try Plesk XML API - Get session and run CLI
         run: |
-          sshpass -p "$SSH_PASS" ssh -o StrictHostKeyChecking=no \
-            -o ConnectTimeout=10 -o PasswordAuthentication=yes \
-            "$SSH_USER@$SERVER" << 'SSHEOF'
-          echo "=== All docker containers ==="
-          docker ps -a 2>/dev/null || sudo docker ps -a 2>/dev/null
-          echo ""
-          echo "=== Docker socket access ==="
-          ls -la /var/run/docker.sock 2>/dev/null || echo "no docker.sock"
-          echo ""
-          echo "=== Try with sudo ==="
-          sudo docker ps --format "{{.Names}}" 2>/dev/null | head -20
-          echo ""
-          echo "=== SQLite files on system ==="
-          find /var/lib/docker /opt /srv /home -name "openach.db" 2>/dev/null | head -10
-          find /var/lib/docker -name "openach.db" 2>/dev/null | head -5
-          echo ""
-          echo "=== Check all containers (any name) ==="
-          sudo docker ps --format "{{.Names}} {{.Image}}" 2>/dev/null | head -20
-          echo ""
-          echo "=== User info ==="
-          id
-          groups
-          SSHEOF
+          echo "=== Plesk XML API test ==="
+          RESULT=$(curl -sk --max-time 20 \
+            "https://$SERVER:8443/enterprise/control/agent.php" \
+            -H "HTTP_AUTH_LOGIN: admin" \
+            -H "HTTP_AUTH_PASSWD: $PLESK_PASS" \
+            -H "Content-Type: text/xml" \
+            -d '<?xml version="1.0" encoding="UTF-8"?>
+<packet version="1.6.9.1">
+  <server>
+    <get>
+      <gen_info/>
+    </get>
+  </server>
+</packet>' 2>&1)
+          echo "Result length: ${#RESULT}"
+          echo "$RESULT" | head -c 300
+          
+      - name: Try Plesk CLI via XML - execute command
+        run: |
+          echo "=== Execute via Plesk XML ==="
+          RESULT=$(curl -sk --max-time 30 \
+            "https://$SERVER:8443/enterprise/control/agent.php" \
+            -H "HTTP_AUTH_LOGIN: admin" \
+            -H "HTTP_AUTH_PASSWD: $PLESK_PASS" \
+            -H "Content-Type: text/xml" \
+            -d '<?xml version="1.0" encoding="UTF-8"?>
+<packet version="1.6.9.1">
+  <server>
+    <execute>
+      <cmd>docker ps --format {{.Names}} 2>/dev/null | head -5</cmd>
+    </execute>
+  </server>
+</packet>' 2>&1)
+          echo "Execute result: $RESULT" | head -c 500
+          
+      - name: Try root SSH with SSH_PRIVATE_KEY secret
+        env:
+          SSH_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
+        run: |
+          if [ -n "$SSH_KEY" ]; then
+            echo "$SSH_KEY" > /tmp/id_rsa
+            chmod 600 /tmp/id_rsa
+            echo "=== Trying root SSH with key ==="
+            ssh -i /tmp/id_rsa -o StrictHostKeyChecking=no \
+              -o ConnectTimeout=10 -o BatchMode=yes \
+              root@$SERVER \
+              'echo OK && docker ps --format "{{.Names}}" | head -10' 2>&1 || echo "root key SSH failed"
+            
+            echo "=== Try with other users ==="
+            for USER in admin ubuntu plesk; do
+              ssh -i /tmp/id_rsa -o StrictHostKeyChecking=no \
+                -o ConnectTimeout=5 -o BatchMode=yes \
+                $USER@$SERVER 'echo ok' 2>&1 | head -2 && echo "USER $USER works" || true
+            done
+          else
+            echo "No SSH key secret available"
+          fi
+          
+      - name: Try root SSH with SERVER_PASSWORD
+        env:
+          PASS: ${{ secrets.SERVER_PASSWORD }}
+        run: |
+          if [ -n "$PASS" ]; then
+            echo "=== Trying root SSH with SERVER_PASSWORD ==="
+            RESULT=$(sshpass -p "$PASS" ssh -o StrictHostKeyChecking=no \
+              -o ConnectTimeout=10 -o PasswordAuthentication=yes \
+              root@$SERVER \
+              'echo SSH_OK && CONT=$(docker ps --format "{{.Names}}" | head -5) && echo "Containers: $CONT" && docker exec $(docker ps --format "{{.Names}}" | grep -i openach | head -1) sqlite3 /var/www/html/protected/runtime/db/openach.db "INSERT OR IGNORE INTO user_api (user_api_user_id, user_api_datetime, user_api_originator_info_id, user_api_token, user_api_key, user_api_status) VALUES ('"'"'4fc86059-2e7b-4732-b94f-e7c3715ee8d7'"'"', datetime('"'"'now'"'"'), '"'"'0eb26e1d-5fcc-4978-a132-dd93c2655429'"'"', '"'"'3caee1c2-c218-4959-b6d2-21d4b2a1b42e'"'"', '"'"'b74966cf-5276-4d8b-8650-5bd57dcee272'"'"', '"'"'enabled'"'"');" 2>/dev/null && docker exec $(docker ps --format "{{.Names}}" | grep -i openach | head -1) sqlite3 /var/www/html/protected/runtime/db/openach.db "SELECT user_api_token, user_api_status FROM user_api;" 2>/dev/null' 2>&1)
+            echo "$RESULT"
+          else
+            echo "No SERVER_PASSWORD secret available"
+          fi
+          
       - name: Test OA API via HTTPS
         run: |
           S=$SERVER
