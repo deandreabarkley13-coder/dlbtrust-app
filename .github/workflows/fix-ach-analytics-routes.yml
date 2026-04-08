@@ -7,34 +7,43 @@ jobs:
   fix:
     runs-on: ubuntu-latest
     steps:
-      - name: Check pm2 watch status and try file-based restart trigger
-        uses: appleboy/ssh-action@v1.0.3
-        with:
-          host: 74.208.191.205
-          username: dlbtrust.cloud_h6zkwzag1ya
-          password: Deploy2026!
-          port: 22
-          command_timeout: 60s
-          script: |
-            echo "=== Root pm2 list (from system env) ==="
-            # Check root's pm2 dump/config
-            ls /root/.pm2/ 2>/dev/null | head -10 || echo "cannot list /root/.pm2"
-            cat /root/.pm2/dump.pm2 2>/dev/null | python3 -c "import json,sys; [print(p['name'],p.get('watch',False),p.get('pid')) for p in json.load(sys.stdin)] " 2>/dev/null || echo "cannot read dump"
-            
-            echo "=== Check if api-routes.cjs is root-owned but group-writable ==="
-            ls -la /var/www/vhosts/dlbtrust.cloud/dlbtrust-v2/api-routes.cjs
-            id
-            
-            echo "=== Try writing via cp trick ==="
-            # Copy the file to a temp location, modify, then try to overwrite via cp
-            cp /var/www/vhosts/dlbtrust.cloud/dlbtrust-v2/api-routes.cjs /tmp/api-routes-orig.cjs 2>/dev/null && echo "READ OK" || echo "READ FAILED"
-            
-            echo "=== Check if server.cjs is actually reading from dlbtrust-v2 ==="
-            head -10 /var/www/vhosts/dlbtrust.cloud/dlbtrust-v2/server.cjs 2>/dev/null || echo "cannot read server.cjs"
-            
-            echo "=== Try to write to api-routes.cjs directly ==="
-            echo "test" >> /var/www/vhosts/dlbtrust.cloud/dlbtrust-v2/api-routes.cjs 2>&1 && echo "WRITE OK" || echo "WRITE DENIED (expected)"
-            
-            echo "=== Check if there is a writable location that server.cjs loads from ==="
-            # server.cjs might load from a relative path we can control
-            ls -la /var/www/vhosts/dlbtrust.cloud/dlbtrust-v2/ 2>/dev/null | head -20
+      - name: Try correct Plesk Apache additional settings + get file API
+        run: |
+          echo "=== Read current webspace hosting config ==="
+          curl -sk --max-time 30 \
+            "https://dlbtrust.cloud:8443/enterprise/control/agent.php" \
+            -H "HTTP_AUTH_LOGIN: admin" \
+            -H "HTTP_AUTH_PASSWD: dP8RlShbOWNq" \
+            -H "Content-Type: text/xml" \
+            -d '<?xml version="1.0"?><packet version="1.6.9.1"><webspace><get><filter><name>dlbtrust.cloud</name></filter><dataset><hosting/></dataset></get></webspace></packet>' | python3 -c "
+          import sys
+          data = sys.stdin.read()
+          # Print all property names and values
+          import re
+          props = re.findall(r'<name>([^<]+)</name>\s*<value>([^<]*)</value>', data)
+          for name, val in props:
+            print(f'{name}: {val[:80]}')
+          "
+          echo ""
+
+          echo "=== Try get-file on httpd.conf via Plesk API ==="
+          RESP=$(curl -sk --max-time 30 \
+            "https://dlbtrust.cloud:8443/enterprise/control/agent.php" \
+            -H "HTTP_AUTH_LOGIN: admin" \
+            -H "HTTP_AUTH_PASSWD: dP8RlShbOWNq" \
+            -H "Content-Type: text/xml" \
+            -d '<?xml version="1.0"?><packet version="1.6.9.1"><webspace><get><filter><name>dlbtrust.cloud</name></filter><dataset><diskspace/></dataset></get></webspace></packet>')
+          echo "$RESP" | head -c 500
+          echo ""
+
+          echo "=== Try Plesk API to set apache-proxy settings ==="
+          # Try the 'apache_settings' or 'additional_apache_directives' property
+          for PROPNAME in "apache_settings" "additional_apache_directives" "apache-additional-directives" "apache-reverse-proxy" "proxy-settings"; do
+            echo -n "Testing $PROPNAME: "
+            curl -sk --max-time 10 \
+              "https://dlbtrust.cloud:8443/enterprise/control/agent.php" \
+              -H "HTTP_AUTH_LOGIN: admin" \
+              -H "HTTP_AUTH_PASSWD: dP8RlShbOWNq" \
+              -H "Content-Type: text/xml" \
+              -d "<?xml version=\"1.0\"?><packet version=\"1.6.9.1\"><webspace><set><filter><name>dlbtrust.cloud</name></filter><values><hosting><vrt_hst><property><name>${PROPNAME}</name><value>test</value></property></vrt_hst></hosting></values></set></webspace></packet>" | grep -oP 'status>\K[^<]+|errtext>\K[^<]+'
+          done
