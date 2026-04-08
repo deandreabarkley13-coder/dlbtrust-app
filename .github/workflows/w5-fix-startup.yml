@@ -1,0 +1,154 @@
+name: W5 Fix 3002 Startup
+on:
+  push:
+    branches: [main]
+    paths: ['.github/workflows/w5-fix-startup.yml']
+  workflow_dispatch:
+
+jobs:
+  fix:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      SERVER: "74.208.191.205"
+      SSH_USER: "dlbtrust.cloud_h6zkwzag1ya"
+      SSH_PASS: "Deploy2026!"
+      PLESK_PASS: "dP8RlShbOWNq"
+
+    steps:
+      - uses: actions/checkout@v4
+      - run: apt-get install -y sshpass 2>/dev/null | tail -1 || true
+
+      - name: Debug crash and fix
+        run: |
+          sshpass -p "$SSH_PASS" ssh -o StrictHostKeyChecking=no \
+            -o PasswordAuthentication=yes "$SSH_USER@$SERVER" << 'SSHEOF'
+          HTTPDOCS="/var/www/vhosts/dlbtrust.cloud/httpdocs"
+          
+          echo "=== 3002 error log ==="
+          cat /var/www/vhosts/dlbtrust.cloud/.pm2/logs/dlbtrust-3002-error.log 2>/dev/null | tail -30
+          
+          echo "=== Test server-3002.js syntax ==="
+          node --check "$HTTPDOCS/server-3002.js" 2>&1
+          
+          echo "=== Test running server-3002.js manually ==="
+          PORT=3002 timeout 5 node "$HTTPDOCS/server-3002.js" 2>&1 || echo "Exited"
+          
+          echo "=== Start with explicit port in js file ==="
+          # Check first line of server-3002.js
+          head -5 "$HTTPDOCS/server-3002.js"
+          SSHEOF
+
+      - name: Fix server-3002.js to hardcode port 3002 and SCP
+        run: |
+          # The issue: PORT env var not being passed to pm2 process
+          # Fix: hardcode PORT=3002 directly in the JS file
+          sed 's/process.env.PORT || .3002./3002/g' server/templates/server-3002-minimal.js > /tmp/server-3002-fixed.js
+          
+          # Verify fix
+          grep "PORT" /tmp/server-3002-fixed.js | head -3
+          
+          # SCP fixed version
+          sshpass -p "$SSH_PASS" scp -o StrictHostKeyChecking=no \
+            /tmp/server-3002-fixed.js \
+            "$SSH_USER@$SERVER:/var/www/vhosts/dlbtrust.cloud/httpdocs/server-3002.js"
+          echo "SCP done"
+
+      - name: Start with env file instead of env var
+        run: |
+          sshpass -p "$SSH_PASS" ssh -o StrictHostKeyChecking=no \
+            -o PasswordAuthentication=yes "$SSH_USER@$SERVER" << 'SSHEOF'
+          HTTPDOCS="/var/www/vhosts/dlbtrust.cloud/httpdocs"
+          
+          echo "=== Test manual node run ==="
+          timeout 8 node "$HTTPDOCS/server-3002.js" &
+          NODE_PID=$!
+          sleep 5
+          echo "PID: $NODE_PID"
+          kill $NODE_PID 2>/dev/null
+          
+          echo "=== Error check ==="
+          cat /var/www/vhosts/dlbtrust.cloud/.pm2/logs/dlbtrust-3002-error.log 2>/dev/null | tail -20
+          
+          echo "=== Start via pm2 with env file ==="
+          # Write .env file for pm2 ecosystem
+          cat > "$HTTPDOCS/ecosystem.config.js" << 'ECOEOF'
+module.exports = {
+  apps: [{
+    name: 'dlbtrust-3002',
+    script: '/var/www/vhosts/dlbtrust.cloud/httpdocs/server-3002.js',
+    env: { PORT: 3002, NODE_ENV: 'production' },
+    max_restarts: 3,
+    restart_delay: 2000
+  }]
+};
+ECOEOF
+          pm2 delete dlbtrust-3002 2>/dev/null || true
+          pm2 start "$HTTPDOCS/ecosystem.config.js"
+          pm2 save
+          sleep 8
+          pm2 list | grep dlbtrust
+          
+          echo "=== Test 3002 ==="
+          curl -s http://localhost:3002/api/ach/health
+          echo ""
+          curl -s http://localhost:3002/api/wallets | head -c 80
+          
+          echo "=== 3002 error log after start ==="
+          cat /var/www/vhosts/dlbtrust.cloud/.pm2/logs/dlbtrust-3002-error.log 2>/dev/null | tail -15
+          SSHEOF
+
+      - name: Update vhost + reload Apache
+        run: |
+          sshpass -p "$SSH_PASS" ssh -o StrictHostKeyChecking=no \
+            -o PasswordAuthentication=yes "$SSH_USER@$SERVER" << 'SSHEOF'
+          # Only update vhost if 3002 is actually running
+          pm2 list | grep "dlbtrust-3002" | grep -q "online" && {
+            cat > /var/www/vhosts/dlbtrust.cloud/conf/vhost.conf << 'VHEOF'
+ProxyRequests Off
+ProxyPreserveHost On
+ProxyPass / http://localhost:3002/
+ProxyPassReverse / http://localhost:3002/
+<Proxy *>
+    Require all granted
+</Proxy>
+VHEOF
+            echo "✅ vhost → 3002"
+          } || {
+            # Revert to 3001 (root's process) — at least keep 4/8
+            cat > /var/www/vhosts/dlbtrust.cloud/conf/vhost.conf << 'VHEOF'
+ProxyRequests Off
+ProxyPreserveHost On
+ProxyPass / http://localhost:3001/
+ProxyPassReverse / http://localhost:3001/
+<Proxy *>
+    Require all granted
+</Proxy>
+VHEOF
+            echo "⚠️  Reverted vhost → 3001 (3002 not stable)"
+          }
+          SSHEOF
+          
+          # Reload via Plesk
+          curl -sk --max-time 20 "https://dlbtrust.cloud:8443/enterprise/control/agent.php" \
+            -H "HTTP_AUTH_LOGIN: admin" -H "HTTP_AUTH_PASSWD: $PLESK_PASS" \
+            -H "Content-Type: text/xml" \
+            -d '<?xml version="1.0"?><packet version="1.6.9.1"><webspace><set><filter><name>dlbtrust.cloud</name></filter><values><prefs><www>true</www></prefs></values></set></webspace></packet>' \
+            | grep -oP '<status>[^<]+'
+          sleep 8
+
+      - name: Final 8/8 score
+        run: |
+          S=$SERVER; P=0; F=0
+          t() { r=$(eval "$2" 2>&1|head -c 200); echo "$r"|grep -q "$3" && { echo "✅ $1"; P=$((P+1)); } || { echo "❌ $1|${r:0:60}"; F=$((F+1)); }; }
+          t "HTTP 301"    "curl -s -o/dev/null -w '%{http_code}' http://dlbtrust.cloud/"                                           "301"
+          t "Wallets"     "curl -sk --resolve 'dlbtrust.cloud:443:$S' https://dlbtrust.cloud/api/wallets"                         "wallet_id"
+          t "Transactions" "curl -sk --resolve 'dlbtrust.cloud:443:$S' https://dlbtrust.cloud/api/transactions"                   "type"
+          t "ACH health"  "curl -sk --resolve 'dlbtrust.cloud:443:$S' https://dlbtrust.cloud/api/ach/health"                     "openach_connected"
+          t "Analytics"   "curl -sk --resolve 'dlbtrust.cloud:443:$S' https://dlbtrust.cloud/api/analytics/summary"              "total_corpus"
+          t "OA UI"       "curl -sk --resolve 'ach.dlbtrust.cloud:443:$S' https://ach.dlbtrust.cloud/openach/ -o/dev/null -w '%{http_code}'" "200"
+          t "OA API"      "curl -sk --resolve 'ach.dlbtrust.cloud:443:$S' -X POST https://ach.dlbtrust.cloud/openach/api/connect --data 'user_api_token=3caee1c2-c218-4959-b6d2-21d4b2a1b42e&user_api_key=b74966cf-5276-4d8b-8650-5bd57dcee272'" '"success":true'
+          echo ""; echo "━━━━━━━━━━━━━━━━━━━━━━━━"
+          echo "SCORE: $P/7"
+          [ $F -eq 0 ] && echo "🎉 PRODUCTION READY" || echo "⚠️ $F failing"
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━"
