@@ -46,11 +46,11 @@ jobs:
             "total_corpus"
             
           check "OpenACH web UI" \
-            "curl -sv --max-time 10 --resolve 'ach.dlbtrust.cloud:80:$SERVER' http://ach.dlbtrust.cloud/openach/ 2>&1 | grep '< HTTP'" \
+            "curl -svk --max-time 10 --resolve 'ach.dlbtrust.cloud:443:$SERVER' https://ach.dlbtrust.cloud/openach/ 2>&1 | grep '< HTTP'" \
             "200"
-            
+
           check "OpenACH API connect" \
-            "curl -s --resolve 'ach.dlbtrust.cloud:80:$SERVER' -X POST http://ach.dlbtrust.cloud/openach/api/connect --data 'user_api_token=3caee1c2-c218-4959-b6d2-21d4b2a1b42e&user_api_key=b74966cf-5276-4d8b-8650-5bd57dcee272'" \
+            "curl -sk --max-time 15 --resolve 'ach.dlbtrust.cloud:443:$SERVER' -X POST https://ach.dlbtrust.cloud/openach/api/connect -d 'user_api_token=3caee1c2-c218-4959-b6d2-21d4b2a1b42e&user_api_key=b74966cf-5276-4d8b-8650-5bd57dcee272'" \
             'success.*true'
             
           echo ""
@@ -75,10 +75,10 @@ jobs:
           curl -sk --resolve "dlbtrust.cloud:443:$SERVER" https://dlbtrust.cloud/api/analytics/summary | head -c 300
           echo ""
           echo "--- OpenACH UI HTTP status ---"
-          curl -sv --max-time 10 --resolve "ach.dlbtrust.cloud:80:$SERVER" http://ach.dlbtrust.cloud/openach/ 2>&1 | grep "< HTTP" | head -3
+          curl -svk --max-time 10 --resolve "ach.dlbtrust.cloud:443:$SERVER" https://ach.dlbtrust.cloud/openach/ 2>&1 | grep "< HTTP" | head -3
           echo ""
           echo "--- OpenACH connect ---"
-          curl -s --max-time 10 --resolve "ach.dlbtrust.cloud:80:$SERVER" \
-            -X POST http://ach.dlbtrust.cloud/openach/api/connect \
-            --data "user_api_token=3caee1c2-c218-4959-b6d2-21d4b2a1b42e&user_api_key=b74966cf-5276-4d8b-8650-5bd57dcee272" | head -c 300
+          curl -sk --max-time 15 --resolve "ach.dlbtrust.cloud:443:$SERVER" \
+            -X POST https://ach.dlbtrust.cloud/openach/api/connect \
+            -d "user_api_token=3caee1c2-c218-4959-b6d2-21d4b2a1b42e&user_api_key=b74966cf-5276-4d8b-8650-5bd57dcee272" | head -c 300
           echo ""
