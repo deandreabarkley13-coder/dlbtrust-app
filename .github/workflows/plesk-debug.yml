@@ -1,0 +1,90 @@
+name: Debug Plesk and OpenACH Admin
+
+on:
+  workflow_dispatch:
+
+jobs:
+  debug:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Full Plesk debug and OpenACH admin insert
+        shell: bash
+        run: |
+          set +e
+          SERVER="74.208.191.205"
+          
+          echo "=== Runner IP and Region ==="
+          curl -s ifconfig.me
+          echo ""
+          
+          echo "=== Pre-state check ==="
+          curl -s --max-time 10 --resolve "dlbtrust.cloud:443:$SERVER" "https://dlbtrust.cloud/api/wallets" | head -c 100
+          echo ""
+          
+          echo "=== FULL Plesk XML Response for each password ==="
+          for PASS in "admin" "Admin123!" "Skunklemon78tut\$jupiter" "DLBtrust1!" "ionos123" "Ionos123!" "admin1" "password" "12345"; do
+            echo "--- Testing: ${PASS:0:15} ---"
+            RESULT=$(curl -sk --max-time 15 \
+              --resolve "dlbtrust.cloud:8443:$SERVER" \
+              "https://dlbtrust.cloud:8443/enterprise/control/agent.php" \
+              -H "HTTP_AUTH_LOGIN: admin" \
+              -H "HTTP_AUTH_PASSWD: $PASS" \
+              -H "Content-Type: text/xml" \
+              -d '<?xml version="1.0"?><packet version="1.6.7.0"><server><get_protos/></server></packet>' 2>&1)
+            echo "RESPONSE: $RESULT"
+            echo ""
+          done
+          
+          echo "=== Try Plesk REST API (different auth method) ==="
+          for PASS in "admin" "Admin123!" "Skunklemon78tut\$jupiter"; do
+            RESULT=$(curl -sk --max-time 15 \
+              --resolve "dlbtrust.cloud:8443:$SERVER" \
+              "https://dlbtrust.cloud:8443/api/v2/server" \
+              -H "Authorization: Basic $(echo -n "admin:$PASS" | base64)" 2>&1)
+            echo "REST $PASS: $RESULT" | head -c 200
+            echo ""
+          done
+          
+          echo "=== Try OpenACH Admin Login (admin/admin) ==="
+          # Login to get session
+          LOGIN=$(curl -sk --max-time 15 \
+            --resolve "ach.dlbtrust.cloud:443:$SERVER" \
+            -X POST "https://ach.dlbtrust.cloud/openach/index.php?r=site/login" \
+            -c /tmp/openach_session.txt \
+            -d "LoginForm[username]=admin&LoginForm[password]=admin&YII_CSRF_TOKEN=" 2>&1)
+          echo "Login response (first 300): ${LOGIN:0:300}"
+          echo ""
+          
+          echo "=== Check OpenACH session ==="
+          cat /tmp/openach_session.txt 2>/dev/null
+          echo ""
+          
+          echo "=== OpenACH API with admin/admin (HTTP Basic) ==="
+          OPENACH=$(curl -sk --max-time 15 \
+            --resolve "ach.dlbtrust.cloud:443:$SERVER" \
+            -X POST "https://ach.dlbtrust.cloud/openach/api/connect" \
+            -u "admin:admin" \
+            -c /tmp/oa2.txt \
+            --data "user_api_token=3caee1c2-c218-4959-b6d2-21d4b2a1b42e&user_api_key=b74966cf-5276-4d8b-8650-5bd57dcee272" 2>&1)
+          echo "OpenACH basic auth: $OPENACH"
+          echo ""
+          
+          echo "=== Try OpenACH user_api management endpoint ==="
+          # Try to access the admin panel user API page directly
+          ADMIN_API=$(curl -sk --max-time 15 \
+            --resolve "ach.dlbtrust.cloud:443:$SERVER" \
+            "https://ach.dlbtrust.cloud/openach/index.php?r=userApi/admin" \
+            -b /tmp/openach_session.txt 2>&1)
+          echo "Admin API page (first 500): ${ADMIN_API:0:500}"
+          echo ""
+          
+          echo "=== Try IONOS REST API for VPS console ==="
+          # IONOS VPS API - try to get server list
+          IONOS=$(curl -sk --max-time 15 \
+            "https://api.ionos.com/cloudapi/v6/servers" \
+            -H "Authorization: Basic $(echo -n "deandreabarkley13@gmail.com:Skunklemon78tut\$jupiter" | base64)" 2>&1)
+          echo "IONOS API: ${IONOS:0:300}"
+          echo ""
+          
+          echo "=== Summary done ==="
