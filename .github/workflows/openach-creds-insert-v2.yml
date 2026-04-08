@@ -15,25 +15,25 @@ jobs:
           script: |
             set -e
             echo "=== Finding OpenACH Docker container ==="
-            CONTAINER=$(docker ps --format "{{.Names}}" | grep -i openach | head -1)
+            CONTAINER=$(sudo docker ps --format "{{.Names}}" | grep -i openach | head -1)
             echo "Container: $CONTAINER"
 
             if [ -z "$CONTAINER" ]; then
               echo "No openach named container. Trying by image..."
-              CONTAINER=$(docker ps --format "{{.Names}}" | head -5)
+              CONTAINER=$(sudo docker ps --format "{{.Names}}" | head -5)
               echo "All containers: $CONTAINER"
               # Try generic approach - list all containers
-              docker ps
+              sudo docker ps
               exit 1
             fi
 
             echo "=== Inserting API credentials ==="
-            docker exec "$CONTAINER" sqlite3 \
+            sudo docker exec "$CONTAINER" sqlite3 \
               /var/www/html/protected/runtime/db/openach.db \
               "INSERT OR IGNORE INTO user_api VALUES('4fc86059-2e7b-4732-b94f-e7c3715ee8d7',datetime('now'),'0eb26e1d-5fcc-4978-a132-dd93c2655429','3caee1c2-c218-4959-b6d2-21d4b2a1b42e','b74966cf-5276-4d8b-8650-5bd57dcee272','enabled');"
 
             echo "=== Verifying insertion ==="
-            docker exec "$CONTAINER" sqlite3 \
+            sudo docker exec "$CONTAINER" sqlite3 \
               /var/www/html/protected/runtime/db/openach.db \
               "SELECT user_id, api_token, api_key, status FROM user_api WHERE user_id='4fc86059-2e7b-4732-b94f-e7c3715ee8d7';"
 
