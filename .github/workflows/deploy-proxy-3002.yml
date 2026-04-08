@@ -12,9 +12,8 @@ jobs:
     steps:
       - run: apt-get install -y sshpass 2>/dev/null | tail -1 || true
 
-      - name: Diagnose Apache config and start proxy
+      - name: Upload proxy and configure server
         run: |
-          # First upload the proxy JS
           cat > /tmp/server-proxy.js << 'JSEOF'
           'use strict';
           const http = require('http');
@@ -55,57 +54,106 @@ jobs:
           sshpass -p "$SSH_PASS" ssh -o StrictHostKeyChecking=no -o PasswordAuthentication=yes "$SSH_USER@$SERVER" 'bash -s' << 'REMOTEOF'
           set -x
           export HOME=/var/www/vhosts/dlbtrust.cloud
+          HD=/var/www/vhosts/dlbtrust.cloud/httpdocs
+          CONF=/var/www/vhosts/dlbtrust.cloud/conf
 
-          echo "=== DIAGNOSTIC: Find ALL Apache config files that mention dlbtrust ==="
-          find /var/www/vhosts/system/dlbtrust.cloud/ -name "*.conf" 2>/dev/null | head -20 || echo "cannot list system dir"
+          echo "=== Check if nginx or apache is front-end ==="
+          curl -sI http://localhost:80 -H "Host: dlbtrust.cloud" 2>/dev/null | head -5 || echo "no port 80"
+          curl -sI https://localhost:443 -H "Host: dlbtrust.cloud" -k 2>/dev/null | head -5 || echo "no port 443"
 
-          echo "=== Read the Plesk-generated httpd.conf ==="
-          cat /var/www/vhosts/system/dlbtrust.cloud/conf/httpd.conf 2>/dev/null | head -50 || echo "cannot read httpd.conf"
+          echo "=== Check nginx config directory ==="
+          ls -la $CONF/ 2>/dev/null
+          cat $CONF/vhost_nginx.conf 2>/dev/null && echo "--- nginx conf exists ---" || echo "no vhost_nginx.conf"
+          cat $CONF/vhost.conf 2>/dev/null && echo "--- apache conf exists ---" || echo "no vhost.conf"
 
-          echo "=== Check for Include directives ==="
-          grep -r "Include\|ProxyPass\|3001\|3002\|3003" /var/www/vhosts/system/dlbtrust.cloud/conf/ 2>/dev/null | head -20 || echo "cannot grep system conf"
-
-          echo "=== Check /etc/apache2 for dlbtrust references ==="
-          grep -r "dlbtrust" /etc/apache2/ 2>/dev/null | head -10 || echo "cannot grep apache2"
-
-          echo "=== Our vhost.conf ==="
-          cat /var/www/vhosts/dlbtrust.cloud/conf/vhost.conf
+          echo "=== List ALL conf files ==="
+          find $CONF -type f 2>/dev/null
 
           echo "=== Start proxy on 3003 ==="
           fuser -k 3003/tcp 2>/dev/null || true
           sleep 2
-          nohup node /var/www/vhosts/dlbtrust.cloud/httpdocs/server-proxy.js 3003 > "$HOME/.pm2/proxy.log" 2>&1 &
+          nohup node "$HD/server-proxy.js" 3003 > "$HOME/.pm2/proxy.log" 2>&1 &
           sleep 3
-          ss -tlnp | grep 3003 || { echo "FATAL"; exit 1; }
-          curl -s http://localhost:3003/api/ach/health | grep openach_connected && echo "LOCAL ACH OK" || exit 1
+          ss -tlnp | grep 3003 || exit 1
+          curl -s http://localhost:3003/api/ach/health | grep openach_connected && echo "LOCAL OK" || exit 1
+
+          echo "=== Write BOTH Apache and Nginx configs ==="
+          # Apache vhost.conf
+          printf 'ProxyPass / http://localhost:3003/\nProxyPassReverse / http://localhost:3003/\n' > $CONF/vhost.conf
+
+          # Nginx vhost_nginx.conf - Plesk includes this in nginx server block
+          cat > $CONF/vhost_nginx.conf << 'NGINXEOF'
+          location / {
+              proxy_pass http://localhost:3003;
+              proxy_http_version 1.1;
+              proxy_set_header Upgrade $http_upgrade;
+              proxy_set_header Connection 'upgrade';
+              proxy_set_header Host $host;
+              proxy_set_header X-Real-IP $remote_addr;
+              proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+              proxy_set_header X-Forwarded-Proto $scheme;
+              proxy_cache_bypass $http_upgrade;
+          }
+          NGINXEOF
+
+          echo "Configs written:"
+          cat $CONF/vhost.conf
+          echo "---"
+          cat $CONF/vhost_nginx.conf
           REMOTEOF
 
-      - name: Try all Apache reload methods with diagnostics
+      - name: Force Plesk to rebuild web server configs
         run: |
-          # Method 1: Plesk toggle
+          # Toggle multiple settings to force both Apache AND Nginx reconfiguration
+          echo "=== Toggle hosting settings ==="
+          # Toggle PHP
           curl -sk --max-time 30 "https://dlbtrust.cloud:8443/enterprise/control/agent.php" \
             -H "HTTP_AUTH_LOGIN: admin" -H "HTTP_AUTH_PASSWD: $PLESK_PASS" \
             -H "Content-Type: text/xml" \
-            -d '<?xml version="1.0"?><packet version="1.6.9.1"><webspace><set><filter><name>dlbtrust.cloud</name></filter><values><hosting><vrt_hst><property><name>php</name><value>true</value></property></vrt_hst></hosting></values></set></webspace></packet>' 2>&1 | head -c 200
-          echo ""
+            -d '<?xml version="1.0"?><packet version="1.6.9.1"><webspace><set><filter><name>dlbtrust.cloud</name></filter><values><hosting><vrt_hst><property><name>php</name><value>false</value></property></vrt_hst></hosting></values></set></webspace></packet>' 2>&1 | grep -o '<status>[^<]*'
+          sleep 3
+          curl -sk --max-time 30 "https://dlbtrust.cloud:8443/enterprise/control/agent.php" \
+            -H "HTTP_AUTH_LOGIN: admin" -H "HTTP_AUTH_PASSWD: $PLESK_PASS" \
+            -H "Content-Type: text/xml" \
+            -d '<?xml version="1.0"?><packet version="1.6.9.1"><webspace><set><filter><name>dlbtrust.cloud</name></filter><values><hosting><vrt_hst><property><name>php</name><value>true</value></property></vrt_hst></hosting></values></set></webspace></packet>' 2>&1 | grep -o '<status>[^<]*'
+          sleep 3
 
-          sleep 5
+          # Toggle SSL
+          curl -sk --max-time 30 "https://dlbtrust.cloud:8443/enterprise/control/agent.php" \
+            -H "HTTP_AUTH_LOGIN: admin" -H "HTTP_AUTH_PASSWD: $PLESK_PASS" \
+            -H "Content-Type: text/xml" \
+            -d '<?xml version="1.0"?><packet version="1.6.9.1"><webspace><set><filter><name>dlbtrust.cloud</name></filter><values><hosting><vrt_hst><property><name>ssl</name><value>false</value></property></vrt_hst></hosting></values></set></webspace></packet>' 2>&1 | grep -o '<status>[^<]*'
+          sleep 3
+          curl -sk --max-time 30 "https://dlbtrust.cloud:8443/enterprise/control/agent.php" \
+            -H "HTTP_AUTH_LOGIN: admin" -H "HTTP_AUTH_PASSWD: $PLESK_PASS" \
+            -H "Content-Type: text/xml" \
+            -d '<?xml version="1.0"?><packet version="1.6.9.1"><webspace><set><filter><name>dlbtrust.cloud</name></filter><values><hosting><vrt_hst><property><name>ssl</name><value>true</value></property></vrt_hst></hosting></values></set></webspace></packet>' 2>&1 | grep -o '<status>[^<]*'
 
-          # Method 2: Check the HTTPS response to see if it changed
-          echo "=== Quick HTTPS test after Plesk toggle ==="
-          curl -sk --resolve "dlbtrust.cloud:443:$SERVER" https://dlbtrust.cloud/api/ach/health 2>&1 | head -c 200
-          echo ""
+          echo "Settings toggled, waiting 15s for web server reconfiguration..."
+          sleep 15
 
-          # Method 3: Use Plesk admin REST API to trigger reconfig
-          echo "=== Plesk REST API domain details ==="
-          curl -sk --max-time 30 "https://dlbtrust.cloud:8443/api/v2/domains" \
-            -H "X-API-Key: $(echo -n 'admin:dP8RlShbOWNq' | base64)" 2>&1 | head -c 500 || true
-          echo ""
-
-          sleep 10
-
-      - name: Final verification
+      - name: Verify endpoints via HTTPS
         run: |
+          # SSH diagnostic first
+          sshpass -p "$SSH_PASS" ssh -o StrictHostKeyChecking=no -o PasswordAuthentication=yes "$SSH_USER@$SERVER" 'bash -s' << 'REMOTEOF'
+          echo "Port state:"
+          ss -tlnp | grep -E '300[0-9]'
+          echo "---"
+          echo "ACH on 3003:"
+          curl -s http://localhost:3003/api/ach/health | head -c 100
+          echo ""
+          echo "ACH on 3002:"
+          curl -s http://localhost:3002/api/ach/health | head -c 100
+          echo ""
+          echo "ACH via Host header (Apache):"
+          curl -s http://localhost -H "Host: dlbtrust.cloud" 2>/dev/null | head -c 100 || echo "cannot connect port 80"
+          echo ""
+          echo "nginx conf:"
+          cat /var/www/vhosts/dlbtrust.cloud/conf/vhost_nginx.conf 2>/dev/null || echo "not found"
+          REMOTEOF
+
+          echo ""
+          echo "=== HTTPS Tests ==="
           S=$SERVER; P=0; F=0
           t() {
             r=$(eval "$2" 2>&1 | head -c 300)
