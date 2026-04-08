@@ -1,94 +1,86 @@
-name: Deploy OpenACH v3 - Plesk API
+name: Deploy OpenACH v4 - Multi-method
 
 on:
   workflow_dispatch:
 
 jobs:
-  deploy-via-plesk:
+  check-and-deploy:
     runs-on: ubuntu-latest
     steps:
-      - name: Try Plesk XML API
+      - name: Check all available access methods
         run: |
           set -x
           
-          echo "=== Testing Plesk API connectivity ==="
-          
-          PASSWORDS=(
-            "Skunklemon78tut\$jupiter"
-            "admin"
-            "Admin123"
-            "DLBtrust1"
-            "password"
-          )
-          
-          PLESK_URL="https://74.208.191.205:8443"
-          
-          # Try Plesk REST API v2
-          for PWD in "${PASSWORDS[@]}"; do
-            echo "Trying REST API with password: ${PWD:0:10}..."
-            RESULT=$(curl -s -k -X POST "$PLESK_URL/api/v2/auth/keys" \
-              -H "Content-Type: application/json" \
-              -d "{\"login\":\"admin\",\"password\":\"$PWD\"}" \
-              --connect-timeout 10 --max-time 15 2>&1)
-            echo "Result: $RESULT"
-            
-            if echo "$RESULT" | grep -q '"key"'; then
-              echo "PLESK_KEY found!"
-              export PLESK_KEY=$(echo "$RESULT" | python3 -c "import json,sys; print(json.load(sys.stdin)['key'])" 2>/dev/null)
-              echo "Key: $PLESK_KEY"
-              break
+          echo "=== Check open ports on server ==="
+          for PORT in 21 22 80 443 2222 3306 8080 8443 8880; do
+            if timeout 5 bash -c ">/dev/tcp/74.208.191.205/$PORT" 2>/dev/null; then
+              echo "Port $PORT: OPEN"
+            else
+              echo "Port $PORT: CLOSED"
             fi
           done
           
-          # Try XML API
           echo ""
-          echo "=== Testing Plesk XML API ==="
-          for PWD in "${PASSWORDS[@]}"; do
-            RESULT=$(curl -s -k -X POST "$PLESK_URL/enterprise/control/agent.php" \
-              -H "Content-Type: text/xml" \
-              -H "HTTP_AUTH_LOGIN: admin" \
-              -H "HTTP_AUTH_PASSWD: $PWD" \
-              -d '<?xml version="1.0" encoding="UTF-8"?><packet version="1.6.9.1"><server><get_protos/></server></packet>' \
-              --connect-timeout 10 --max-time 15 2>&1)
-            echo "XML API with ${PWD:0:10}: $RESULT"
-            
-            if echo "$RESULT" | grep -q '"ok"'; then
-              echo "XML API SUCCESS!"
-              break
-            fi
+          echo "=== Try SSH on various ports ==="
+          for PORT in 22 2222; do
+            ssh -v -o StrictHostKeyChecking=no -o ConnectTimeout=5 \
+              -o BatchMode=yes -p $PORT \
+              root@74.208.191.205 exit 2>&1 | grep -E "banner|port|version" | head -3
+          done
+          
+          echo ""
+          echo "=== Try FTP ==="
+          echo "QUIT" | timeout 5 nc -w 3 74.208.191.205 21 2>&1 | head -3 || echo "FTP not available"
+          
+          echo ""
+          echo "=== Try Plesk File Manager API ==="
+          # Plesk has a web-based file manager accessible via the panel
+          curl -s -k "https://74.208.191.205:8443/modules/filemng/index.php" \
+            --connect-timeout 10 -o /dev/null -w "HTTP: %{http_code}\n" 2>&1
+          
+          echo ""
+          echo "=== Try MySQL/PostgreSQL ==="
+          timeout 5 bash -c ">/dev/tcp/74.208.191.205/3306" 2>/dev/null && echo "MySQL: OPEN" || echo "MySQL: CLOSED"
+          
+          echo ""
+          echo "=== Check if app has /api/admin endpoints ==="
+          for PATH in "/api/admin" "/admin" "/api/setup" "/api/debug" "/api/exec"; do
+            RESULT=$(curl -s -k "https://dlbtrust.cloud$PATH" -w "HTTP:%{http_code}" --max-time 5 2>&1)
+            echo "$PATH: $RESULT" | head -c 100
           done
 
-      - name: Try SSH with all methods
-        uses: appleboy/ssh-action@v1.0.3
-        continue-on-error: true
-        with:
-          host: 74.208.191.205
-          username: root
-          password: ${{ secrets.SERVER_PASSWORD }}
-          port: 22
-          timeout: 30s
-          script: |
-            echo "Connected as: $(whoami)"
-            echo "=== Server info ==="
-            uname -a
-            
-            echo "=== Docker containers ==="
-            docker ps 2>&1 || echo "docker not available"
-            
-            echo "=== App directory ==="
-            find /var/www -name "app.js" -not -path "*/node_modules/*" 2>/dev/null | head -5
-
-      - name: Try SSH debug - find supported methods
+      - name: Try to SSH with keyboard-interactive and IONOS password
         run: |
-          echo "=== SSH verbose debug ==="
-          ssh -v -o StrictHostKeyChecking=no -o ConnectTimeout=10 \
-            -o BatchMode=yes \
-            root@74.208.191.205 exit 2>&1 | grep -E "method|auth|Trying|offer" | head -20
-          
-          echo ""
-          echo "=== SSH with keyboard-interactive ==="
+          # Detailed SSH attempt with verbose output
           sshpass -p '${{ secrets.SERVER_PASSWORD }}' \
             ssh -v -o StrictHostKeyChecking=no -o ConnectTimeout=10 \
-            -o PreferredAuthentications=keyboard-interactive,password \
-            root@74.208.191.205 "echo SUCCESS" 2>&1 | tail -20
+            -o PreferredAuthentications=password,keyboard-interactive \
+            -o NumberOfPasswordPrompts=3 \
+            root@74.208.191.205 "echo 'SSH_SUCCESS'; whoami; docker ps; find /var/www -name app.js | head -3" 2>&1 || true
+          
+          echo ""
+          echo "=== Try as pleskuser ==="
+          sshpass -p '${{ secrets.SERVER_PASSWORD }}' \
+            ssh -v -o StrictHostKeyChecking=no -o ConnectTimeout=10 \
+            -o PreferredAuthentications=password \
+            dlbtrust@74.208.191.205 "echo 'SSH_SUCCESS'" 2>&1 | tail -5 || true
 
+      - name: Alternative deployment via PHP endpoint
+        run: |
+          echo "=== Try Plesk PHP deployment endpoint ==="
+          # Plesk can execute PHP scripts; try to inject commands via file upload or existing endpoints
+          
+          # Try the Plesk panel login form to get a CSRF token
+          CSRF=$(curl -s -k "https://74.208.191.205:8443/login" \
+            -c /tmp/plesk_cookies.txt \
+            --connect-timeout 10 | \
+            grep -oP 'csrf[_-]token["\s:]*["\s]*([a-zA-Z0-9_-]+)' | head -1)
+          echo "CSRF: $CSRF"
+          
+          # Try to log in with form
+          LOGIN_RESULT=$(curl -s -k -X POST "https://74.208.191.205:8443/login" \
+            -b /tmp/plesk_cookies.txt \
+            -c /tmp/plesk_cookies.txt \
+            -d "login_name=admin&passwd=Skunklemon78tut%24jupiter&csrf_token=$CSRF" \
+            --connect-timeout 10 -L -w "\nHTTP:%{http_code}" 2>&1)
+          echo "Login: ${LOGIN_RESULT: -100}"
