@@ -1,0 +1,44 @@
+name: Fresh Plesk Session URL
+on:
+  push:
+    branches: [main]
+    paths: ['.github/workflows/fresh-plesk-session.yml']
+  workflow_dispatch:
+
+jobs:
+  session:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      PLESK: "https://74.208.191.205:8443"
+      PLESK_PASS: "dP8RlShbOWNq"
+    steps:
+      - name: Generate fresh session URL
+        run: |
+          IP=$(curl -s https://api.ipify.org)
+          IP_B64=$(echo -n "$IP" | base64 -w0)
+          echo "Runner IP: $IP (b64: $IP_B64)"
+          
+          SESSION=$(curl -sk --max-time 10 "$PLESK/enterprise/control/agent.php" \
+            -H "HTTP_AUTH_LOGIN: admin" -H "HTTP_AUTH_PASSWD: $PLESK_PASS" \
+            -H "Content-Type: text/xml" \
+            -d "<packet version=\"1.6.9.1\"><server><create_session><login>admin</login><data><user_ip>$IP_B64</user_ip><source_server></source_server></data></create_session></server></packet>")
+          
+          SID=$(echo "$SESSION" | grep -oP '(?<=<id>)[^<]+' | head -1)
+          echo ""
+          echo "════════════════════════════════════════"
+          echo "SESSION TOKEN: $SID"
+          echo "RUNNER IP: $IP"
+          echo ""
+          echo "TERMINAL URL:"
+          echo "https://dlbtrust.cloud:8443/enterprise/rsession_init.php?PHPSESSID=$SID&success_redirect_url=/admin/server/tools-and-settings"
+          echo ""
+          echo "DIRECT TERMINAL (if available):"
+          echo "https://dlbtrust.cloud:8443/enterprise/rsession_init.php?PHPSESSID=$SID&success_redirect_url=/modules/terminal/index.php"
+          echo "════════════════════════════════════════"
+          
+          # Test if URL works
+          CODE=$(curl -sk --max-time 8 \
+            "https://74.208.191.205:8443/enterprise/rsession_init.php?PHPSESSID=$SID" \
+            -o /dev/null -w "%{http_code}")
+          echo "Session URL HTTP: $CODE"
