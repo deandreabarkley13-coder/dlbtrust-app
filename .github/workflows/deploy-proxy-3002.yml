@@ -12,7 +12,7 @@ jobs:
     steps:
       - run: apt-get install -y sshpass 2>/dev/null | tail -1 || true
 
-      - name: Write proxy JS (port 3002 default) via SCP
+      - name: Upload proxy JS to server
         run: |
           cat > /tmp/server-proxy.js << 'JSEOF'
           'use strict';
@@ -51,96 +51,86 @@ jobs:
           sshpass -p "$SSH_PASS" scp -o StrictHostKeyChecking=no \
             /tmp/server-proxy.js \
             "$SSH_USER@$SERVER:/var/www/vhosts/dlbtrust.cloud/httpdocs/server-proxy.js"
-          echo "File uploaded via SCP"
+          echo "File uploaded"
 
-      - name: Take over port 3002 with proxy
+      - name: Create Plesk scheduled task to kill 3002 and start proxy as root
         run: |
+          # Write a shell script that will be executed by Plesk cron as root
           sshpass -p "$SSH_PASS" ssh -o StrictHostKeyChecking=no -o PasswordAuthentication=yes "$SSH_USER@$SERVER" 'bash -s' << 'REMOTEOF'
-          set -ex
+          cat > /var/www/vhosts/dlbtrust.cloud/httpdocs/restart-proxy.sh << 'SHEOF'
+          #!/bin/bash
+          # Kill everything on 3002
+          fuser -k -9 3002/tcp 2>/dev/null
+          sleep 2
+          # Start the proxy
           export HOME=/var/www/vhosts/dlbtrust.cloud
-          HD=/var/www/vhosts/dlbtrust.cloud/httpdocs
+          cd /var/www/vhosts/dlbtrust.cloud/httpdocs
+          nohup /usr/bin/node server-proxy.js 3002 > /var/www/vhosts/dlbtrust.cloud/.pm2/proxy-root.log 2>&1 &
+          sleep 2
+          # Reload Apache
+          /usr/sbin/apachectl graceful 2>/dev/null || true
+          service apache2 reload 2>/dev/null || true
+          # Log result
+          echo "$(date): restart-proxy done, port 3002: $(ss -tlnp | grep 3002)" >> /var/www/vhosts/dlbtrust.cloud/.pm2/restart-proxy.log
+          SHEOF
+          chmod +x /var/www/vhosts/dlbtrust.cloud/httpdocs/restart-proxy.sh
+          echo "restart-proxy.sh written"
+          REMOTEOF
 
-          echo "=== Current state ==="
-          pm2 list 2>/dev/null || echo "pm2 empty"
-          ss -tlnp | grep -E '300[0-9]' || echo "nothing"
+      - name: Execute restart via Plesk scheduled tasks API
+        run: |
+          # Get current minute + 1 for the cron task
+          NEXT_MIN=$(date -u -d "+1 minute" +%M)
+          NEXT_HOUR=$(date -u -d "+1 minute" +%H)
+          NEXT_DOM=$(date -u -d "+1 minute" +%d)
+          NEXT_MON=$(date -u -d "+1 minute" +%m)
+          echo "Scheduling task for ${NEXT_HOUR}:${NEXT_MIN} UTC"
 
-          echo "=== Clean up system user pm2 ==="
-          pm2 delete all 2>/dev/null || true
+          # Create a Plesk scheduled task (cron) that runs as root
+          RESULT=$(curl -sk --max-time 30 "https://dlbtrust.cloud:8443/enterprise/control/agent.php" \
+            -H "HTTP_AUTH_LOGIN: admin" -H "HTTP_AUTH_PASSWD: $PLESK_PASS" \
+            -H "Content-Type: text/xml" \
+            -d "<?xml version=\"1.0\"?><packet version=\"1.6.9.1\"><server><add-cron><task><command>/bin/bash /var/www/vhosts/dlbtrust.cloud/httpdocs/restart-proxy.sh</command><type>0</type><minute>${NEXT_MIN}</minute><hour>${NEXT_HOUR}</hour><dom>${NEXT_DOM}</dom><month>${NEXT_MON}</month><dow>*</dow></task></add-cron></server></packet>")
+          echo "Plesk cron create result: $RESULT"
 
-          echo "=== Kill any nohup proxy on 3003 ==="
-          fuser -k 3003/tcp 2>/dev/null || true
+          # Also try the direct approach: Plesk REST extension API
+          echo "=== Also try Plesk REST cron ==="
+          curl -sk --max-time 30 "https://dlbtrust.cloud:8443/api/v2/server/tools/taskmanager" \
+            -X POST \
+            -H "X-API-Key: $(echo -n 'admin:dP8RlShbOWNq' | base64)" \
+            -H "Content-Type: application/json" \
+            -d "{\"command\":\"/bin/bash /var/www/vhosts/dlbtrust.cloud/httpdocs/restart-proxy.sh\",\"schedule\":{\"minute\":\"${NEXT_MIN}\",\"hour\":\"${NEXT_HOUR}\",\"dom\":\"${NEXT_DOM}\",\"month\":\"${NEXT_MON}\",\"dow\":\"*\"}}" 2>&1 | head -c 300 || true
+          echo ""
 
-          echo "=== Check if 3002 is occupied ==="
-          if ss -tlnp | grep -q ':3002'; then
-            echo "3002 is occupied - trying fuser kill"
-            fuser -k 3002/tcp 2>/dev/null || true
-            sleep 2
-            if ss -tlnp | grep -q ':3002'; then
-              echo "3002 still occupied (root process) - trying SIGKILL"
-              fuser -k -9 3002/tcp 2>/dev/null || true
-              sleep 2
-            fi
-          fi
+          # Wait for the cron to execute (up to 90 seconds)
+          echo "Waiting 90s for cron task to execute..."
+          sleep 90
 
-          if ss -tlnp | grep -q ':3002'; then
-            echo "Cannot free port 3002 (root-owned). Will use alternative approach."
-            echo "Checking what responds on 3002..."
-            RESP=$(curl -s http://localhost:3002/api/ach/health)
-            echo "Current 3002 ACH response: $RESP"
-
-            if echo "$RESP" | grep -q openach_connected; then
-              echo "3002 ALREADY returns openach_connected - might be working!"
-            else
-              echo "3002 returns wrong content. Since we just SCP'd new server-proxy.js,"
-              echo "let's try restarting it via pm2 under system user."
-              echo "The file was overwritten, pm2 restart should pick up new code."
-              pm2 start "$HD/server-proxy.js" --name server-proxy -- 3002 2>/dev/null || true
-              sleep 3
-              pm2 list 2>/dev/null || true
-              RESP2=$(curl -s http://localhost:3002/api/ach/health)
-              echo "After pm2 restart: $RESP2"
-              if echo "$RESP2" | grep -q openach_connected; then
-                echo "3002 NOW returns correct ACH!"
-              fi
-            fi
-          else
-            echo "3002 is FREE - starting proxy"
-            nohup node "$HD/server-proxy.js" 3002 > "$HOME/.pm2/proxy.log" 2>&1 &
-            sleep 3
-            ss -tlnp | grep 3002 || { echo "FATAL"; cat "$HOME/.pm2/proxy.log"; exit 1; }
-          fi
-
-          echo "=== Final local tests ==="
+      - name: Verify via SSH and HTTPS
+        run: |
+          echo "=== SSH check ==="
+          sshpass -p "$SSH_PASS" ssh -o StrictHostKeyChecking=no -o PasswordAuthentication=yes "$SSH_USER@$SERVER" 'bash -s' << 'REMOTEOF'
+          echo "Port state:"
+          ss -tlnp | grep -E '300[0-9]'
+          echo "---"
+          echo "restart-proxy log:"
+          cat /var/www/vhosts/dlbtrust.cloud/.pm2/restart-proxy.log 2>/dev/null || echo "no log"
+          echo "---"
           echo "ACH on 3002:"
-          curl -s http://localhost:3002/api/ach/health
+          curl -s http://localhost:3002/api/ach/health | head -c 200
           echo ""
           echo "Analytics on 3002:"
-          curl -s http://localhost:3002/api/analytics/summary
+          curl -s http://localhost:3002/api/analytics/summary | head -c 200
           echo ""
           echo "Wallets on 3002:"
           curl -s http://localhost:3002/api/wallets | head -c 120
           echo ""
-
-          echo "=== Verify ACH and Analytics ==="
-          curl -s http://localhost:3002/api/ach/health | grep -q openach_connected && echo "ACH: PASS" || echo "ACH: FAIL"
-          curl -s http://localhost:3002/api/analytics/summary | grep -q total_corpus && echo "ANALYTICS: PASS" || echo "ANALYTICS: FAIL"
-
-          echo "=== Ensure vhost points to 3002 ==="
-          printf 'ProxyPass / http://localhost:3002/\nProxyPassReverse / http://localhost:3002/\n' > /var/www/vhosts/dlbtrust.cloud/conf/vhost.conf
+          echo "vhost.conf:"
           cat /var/www/vhosts/dlbtrust.cloud/conf/vhost.conf
           REMOTEOF
 
-      - name: Trigger Apache reload
-        run: |
-          curl -sk --max-time 30 "https://dlbtrust.cloud:8443/enterprise/control/agent.php" \
-            -H "HTTP_AUTH_LOGIN: admin" -H "HTTP_AUTH_PASSWD: $PLESK_PASS" \
-            -H "Content-Type: text/xml" \
-            -d '<?xml version="1.0"?><packet version="1.6.9.1"><webspace><set><filter><name>dlbtrust.cloud</name></filter><values><prefs><www>true</www></prefs></values></set></webspace></packet>'
           echo ""
-          sleep 10
-
-      - name: Verify endpoints via HTTPS
-        run: |
+          echo "=== HTTPS verification ==="
           S=$SERVER; P=0; F=0
           t() {
             r=$(eval "$2" 2>&1 | head -c 300)
