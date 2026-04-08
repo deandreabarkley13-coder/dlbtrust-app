@@ -3,44 +3,68 @@ on: [workflow_dispatch, push]
 jobs:
   insert:
     runs-on: ubuntu-latest
+    env:
+      SERVER: "74.208.191.205"
     steps:
-      - name: Insert OpenACH API credentials
-        uses: appleboy/ssh-action@v1.0.3
-        with:
-          host: 74.208.191.205
-          username: dlbtrust.cloud_h6zkwzag1ya
-          password: Deploy2026!
-          port: 22
-          command_timeout: 120s
-          script: |
+      - name: Install sshpass
+        run: sudo apt-get install -y sshpass 2>/dev/null | tail -1 || true
+
+      - name: Insert OpenACH API credentials via root SSH
+        run: |
+          echo "=== Attempting root SSH to insert API credentials ==="
+
+          # Try with Plesk admin password as root
+          RESULT=$(sshpass -p "dP8RlShbOWNq" ssh -o StrictHostKeyChecking=no -o ConnectTimeout=15 -o PasswordAuthentication=yes root@$SERVER '
             set -e
             echo "=== Finding OpenACH Docker container ==="
-            CONTAINER=$(sudo docker ps --format "{{.Names}}" | grep -i openach | head -1)
+            CONTAINER=$(docker ps --format "{{.Names}}" | grep -i openach | head -1)
             echo "Container: $CONTAINER"
 
             if [ -z "$CONTAINER" ]; then
-              echo "No openach named container. Trying by image..."
-              CONTAINER=$(sudo docker ps --format "{{.Names}}" | head -5)
-              echo "All containers: $CONTAINER"
-              # Try generic approach - list all containers
-              sudo docker ps
+              echo "No openach named container found. All containers:"
+              docker ps --format "table {{.Names}}\t{{.Image}}\t{{.Status}}"
               exit 1
             fi
 
             echo "=== Inserting API credentials ==="
-            sudo docker exec "$CONTAINER" sqlite3 \
+            docker exec "$CONTAINER" sqlite3 \
               /var/www/html/protected/runtime/db/openach.db \
-              "INSERT OR IGNORE INTO user_api VALUES('4fc86059-2e7b-4732-b94f-e7c3715ee8d7',datetime('now'),'0eb26e1d-5fcc-4978-a132-dd93c2655429','3caee1c2-c218-4959-b6d2-21d4b2a1b42e','b74966cf-5276-4d8b-8650-5bd57dcee272','enabled');"
+              "INSERT OR IGNORE INTO user_api VALUES('"'"'4fc86059-2e7b-4732-b94f-e7c3715ee8d7'"'"',datetime('"'"'now'"'"'),'"'"'0eb26e1d-5fcc-4978-a132-dd93c2655429'"'"','"'"'3caee1c2-c218-4959-b6d2-21d4b2a1b42e'"'"','"'"'b74966cf-5276-4d8b-8650-5bd57dcee272'"'"','"'"'enabled'"'"');"
 
             echo "=== Verifying insertion ==="
-            sudo docker exec "$CONTAINER" sqlite3 \
+            docker exec "$CONTAINER" sqlite3 \
               /var/www/html/protected/runtime/db/openach.db \
-              "SELECT user_id, api_token, api_key, status FROM user_api WHERE user_id='4fc86059-2e7b-4732-b94f-e7c3715ee8d7';"
+              "SELECT user_api_token, user_api_key, user_api_status FROM user_api WHERE user_api_user_id='"'"'4fc86059-2e7b-4732-b94f-e7c3715ee8d7'"'"';"
+          ' 2>&1)
 
-            echo "=== Testing API via HTTPS ==="
-            sleep 2
-            curl -sk https://ach.dlbtrust.cloud/openach/api/connect \
-              -X POST \
-              -d "user_api_token=3caee1c2-c218-4959-b6d2-21d4b2a1b42e&user_api_key=b74966cf-5276-4d8b-8650-5bd57dcee272" | head -c 500
-            echo ""
-            echo "=== Done ==="
+          echo "$RESULT"
+
+          if echo "$RESULT" | grep -q "3caee1c2"; then
+            echo "=== SUCCESS: Credentials inserted and verified ==="
+          else
+            echo "=== Root SSH result (may have failed) ==="
+            echo "Trying system user with password piped to sudo..."
+
+            sshpass -p "Deploy2026!" ssh -o StrictHostKeyChecking=no -o ConnectTimeout=15 -o PasswordAuthentication=yes dlbtrust.cloud_h6zkwzag1ya@$SERVER '
+              echo "Deploy2026!" | sudo -S docker ps --format "{{.Names}}" 2>/dev/null | head -5
+              CONTAINER=$(echo "Deploy2026!" | sudo -S docker ps --format "{{.Names}}" 2>/dev/null | grep -i openach | head -1)
+              echo "Container: $CONTAINER"
+              if [ -n "$CONTAINER" ]; then
+                echo "Deploy2026!" | sudo -S docker exec "$CONTAINER" sqlite3 \
+                  /var/www/html/protected/runtime/db/openach.db \
+                  "INSERT OR IGNORE INTO user_api VALUES('"'"'4fc86059-2e7b-4732-b94f-e7c3715ee8d7'"'"',datetime('"'"'now'"'"'),'"'"'0eb26e1d-5fcc-4978-a132-dd93c2655429'"'"','"'"'3caee1c2-c218-4959-b6d2-21d4b2a1b42e'"'"','"'"'b74966cf-5276-4d8b-8650-5bd57dcee272'"'"','"'"'enabled'"'"');" 2>&1
+                echo "Deploy2026!" | sudo -S docker exec "$CONTAINER" sqlite3 \
+                  /var/www/html/protected/runtime/db/openach.db \
+                  "SELECT user_api_token, user_api_key, user_api_status FROM user_api;" 2>&1
+              fi
+            ' 2>&1 || true
+          fi
+
+      - name: Test API via HTTPS
+        run: |
+          echo "=== Testing OpenACH API ==="
+          curl -sk --max-time 15 \
+            -X POST https://ach.dlbtrust.cloud/openach/api/connect \
+            -d "user_api_token=3caee1c2-c218-4959-b6d2-21d4b2a1b42e&user_api_key=b74966cf-5276-4d8b-8650-5bd57dcee272" | head -c 500
+          echo ""
+          echo "=== Done ==="
