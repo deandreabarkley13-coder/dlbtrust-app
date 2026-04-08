@@ -7,76 +7,68 @@ jobs:
   deploy:
     runs-on: ubuntu-latest
     steps:
-      - name: Diagnose and fix ACH + Analytics routes
+      - name: Diagnose port 3002 Express app and find fix path
         uses: appleboy/ssh-action@v1.0.3
         with:
           host: 74.208.191.205
-          username: dlbtrust.cloud_lxsxzgaoaw94
-          password: ${{ secrets.SSH_PASSWORD }}
+          username: dlbtrust.cloud_h6zkwzag1ya
+          password: Deploy2026!
+          port: 22
           command_timeout: 180s
           script: |
             set -x
             BASEDIR="/var/www/vhosts/dlbtrust.cloud"
 
-            echo "=== 1. What does port 3002 return for ACH/analytics? ==="
+            echo "=== 1. Port 3002 ACH/analytics responses ==="
             curl -s http://127.0.0.1:3002/api/ach/health 2>&1 | head -c 300
             echo ""
             curl -s http://127.0.0.1:3002/api/analytics/summary 2>&1 | head -c 300
             echo ""
 
-            echo "=== 2. What modules does payment-gateway.cjs load? ==="
-            grep -n "require" "$BASEDIR/dlbtrust-v2/payment-gateway.cjs" 2>/dev/null | head -30
+            echo "=== 2. Port 3003 ACH/analytics responses ==="
+            curl -s http://127.0.0.1:3003/api/ach/health 2>&1 | head -c 300
+            echo ""
+            curl -s http://127.0.0.1:3003/api/analytics/summary 2>&1 | head -c 300
             echo ""
 
-            echo "=== 3. Find all files payment-gateway might load ==="
-            for mod in wallet-endpoints walletconnect-endpoints auth-endpoints api-routes auth-routes openach analytics; do
-              echo "--- Looking for $mod ---"
-              find "$BASEDIR" -name "${mod}*" -type f 2>/dev/null
-            done
+            echo "=== 3. payment-gateway.cjs require lines ==="
+            grep -n "require" "$BASEDIR/dlbtrust-v2/payment-gateway.cjs" 2>/dev/null | head -40
             echo ""
 
-            echo "=== 4. Check ownership and permissions of loaded modules ==="
-            for f in $(grep -oP "require\(['\"]\./(.*?)['\"]\)" "$BASEDIR/dlbtrust-v2/payment-gateway.cjs" 2>/dev/null | sed "s/require(['\"]\.\/\(.*\)['\"])/\1/"); do
-              FULL="$BASEDIR/dlbtrust-v2/$f"
-              echo "Module: $f"
-              ls -la "$FULL" 2>/dev/null || echo "  NOT FOUND at $FULL"
-              ls -la "${FULL}.cjs" 2>/dev/null || true
-              ls -la "${FULL}.js" 2>/dev/null || true
-            done
-            echo ""
-
-            echo "=== 5. List all files in dlbtrust-v2 ==="
-            ls -la "$BASEDIR/dlbtrust-v2/" 2>/dev/null
-            echo ""
-
-            echo "=== 6. Check api-routes.cjs content ==="
-            cat "$BASEDIR/dlbtrust-v2/api-routes.cjs" 2>/dev/null | head -50
-            echo ""
-
-            echo "=== 7. Check if we can write to dlbtrust-v2 directory ==="
-            touch "$BASEDIR/dlbtrust-v2/.write-test-$$" 2>&1 && rm "$BASEDIR/dlbtrust-v2/.write-test-$$" && echo "WRITABLE" || echo "NOT WRITABLE"
-
-            echo "=== 8. Check httpdocs server files ==="
-            ls -la "$BASEDIR/httpdocs/server/" 2>/dev/null
-            echo ""
-
-            echo "=== 9. What is the FULL payment-gateway.cjs? ==="
+            echo "=== 4. Full payment-gateway.cjs content ==="
             cat "$BASEDIR/dlbtrust-v2/payment-gateway.cjs" 2>/dev/null
             echo ""
 
-            echo "=== 10. Check Apache config files we can read ==="
+            echo "=== 5. File permissions in dlbtrust-v2 ==="
+            ls -la "$BASEDIR/dlbtrust-v2/" 2>/dev/null
+            echo ""
+
+            echo "=== 6. All api-routes files ==="
+            find "$BASEDIR" -name "api-routes*" -type f 2>/dev/null -exec echo "FILE: {}" \; -exec ls -la {} \; -exec head -30 {} \;
+            echo ""
+
+            echo "=== 7. All .cjs files ==="
+            find "$BASEDIR" -name "*.cjs" -type f 2>/dev/null -exec echo "FILE: {}" \; -exec ls -la {} \;
+            echo ""
+
+            echo "=== 8. Apache config files in conf/ ==="
             find "$BASEDIR/conf" -type f 2>/dev/null -exec echo "FILE: {}" \; -exec cat {} \;
             echo ""
 
-            echo "=== 11. Check for any .htaccess ==="
-            find "$BASEDIR/httpdocs" -name ".htaccess" -type f 2>/dev/null -exec echo "FILE: {}" \; -exec cat {} \;
+            echo "=== 9. .htaccess in httpdocs ==="
+            cat "$BASEDIR/httpdocs/.htaccess" 2>/dev/null || echo "No .htaccess"
+
+            echo "=== 10. PM2 processes ==="
+            pm2 list 2>/dev/null || true
+
+            echo "=== 11. What ports are listening ==="
+            ss -tlnp 2>/dev/null | grep -E "300[0-9]" || netstat -tlnp 2>/dev/null | grep -E "300[0-9]" || true
+
+            echo "=== 12. External test ==="
+            curl -sk https://dlbtrust.cloud/api/ach/health 2>&1 | head -c 300
+            echo ""
+            curl -sk https://dlbtrust.cloud/api/analytics/summary 2>&1 | head -c 300
             echo ""
 
-            echo "=== 12. What Apache modules are loaded? ==="
-            apache2ctl -M 2>/dev/null | grep -i proxy || httpd -M 2>/dev/null | grep -i proxy || echo "Cannot check Apache modules"
-
-            echo "=== 13. Current processes on port 3002 and 3003 ==="
-            ss -tlnp | grep -E "300[23]" 2>/dev/null || netstat -tlnp | grep -E "300[23]" 2>/dev/null || echo "Cannot check ports"
-
-            echo "=== 14. PM2 status ==="
-            pm2 list 2>/dev/null || echo "pm2 not available"
+            echo "=== 13. Check httpdocs/server directory ==="
+            ls -la "$BASEDIR/httpdocs/server/" 2>/dev/null || echo "No server dir"
