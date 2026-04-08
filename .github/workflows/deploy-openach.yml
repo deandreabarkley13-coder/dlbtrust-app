@@ -1,0 +1,186 @@
+name: Deploy OpenACH to Production
+
+on:
+  workflow_dispatch:
+    inputs:
+      run_id:
+        description: 'Run identifier'
+        required: false
+        default: 'deploy-openach'
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Full deployment via SSH
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: 74.208.191.205
+          username: root
+          password: ${{ secrets.SERVER_PASSWORD }}
+          port: 22
+          timeout: 120s
+          script_stop: false
+          script: |
+            echo "=== DEPLOY STARTED ==="
+            echo "Date: $(date)"
+            echo "Hostname: $(hostname)"
+            echo "User: $(whoami)"
+            
+            # ---- STEP 1: Insert OpenACH API credentials ----
+            echo ""
+            echo "=== STEP 1: Insert OpenACH credentials ==="
+            CONTAINER=$(docker ps --format "{{.Names}}" | grep -i openach | head -1)
+            echo "Container: $CONTAINER"
+            
+            if [ -n "$CONTAINER" ]; then
+              DB=$(docker exec "$CONTAINER" find /var/www/html -name "openach.db" 2>/dev/null | head -1)
+              DB=${DB:-"/var/www/html/protected/runtime/db/openach.db"}
+              echo "DB: $DB"
+              
+              docker exec "$CONTAINER" sqlite3 "$DB" "INSERT OR IGNORE INTO user_api (user_api_user_id, user_api_datetime, user_api_originator_info_id, user_api_token, user_api_key, user_api_status) VALUES ('4fc86059-2e7b-4732-b94f-e7c3715ee8d7', datetime('now'), '0eb26e1d-5fcc-4978-a132-dd93c2655429', '3caee1c2-c218-4959-b6d2-21d4b2a1b42e', 'b74966cf-5276-4d8b-8650-5bd57dcee272', 'enabled');"
+              
+              VERIFY=$(docker exec "$CONTAINER" sqlite3 "$DB" "SELECT user_api_token FROM user_api WHERE user_api_token='3caee1c2-c218-4959-b6d2-21d4b2a1b42e';")
+              echo "Verify: $VERIFY"
+              [ -n "$VERIFY" ] && echo "CREDENTIALS_INSERTED=SUCCESS" || echo "CREDENTIALS_INSERTED=FAILED"
+            else
+              echo "ERROR: No OpenACH container found"
+              docker ps
+            fi
+            
+            # ---- STEP 2: Find app directory ----
+            echo ""
+            echo "=== STEP 2: Find app directory ==="
+            APP_DIR=$(find /var/www/vhosts/dlbtrust.cloud -name "app.js" -not -path "*/node_modules/*" 2>/dev/null | head -1 | xargs dirname 2>/dev/null)
+            if [ -z "$APP_DIR" ]; then
+              APP_DIR=$(find /var/www/vhosts/dlbtrust.cloud -name "server.js" -not -path "*/node_modules/*" 2>/dev/null | head -1 | xargs dirname 2>/dev/null)
+            fi
+            if [ -z "$APP_DIR" ]; then
+              APP_DIR="/var/www/vhosts/dlbtrust.cloud/httpdocs"
+            fi
+            echo "App dir: $APP_DIR"
+            ls "$APP_DIR" 2>/dev/null | head -20
+            
+            # ---- STEP 3: Git pull ----
+            echo ""
+            echo "=== STEP 3: Git pull ==="
+            cd "$APP_DIR" || exit 1
+            git pull origin main 2>&1 || echo "git pull failed - continuing"
+            
+            # Check for app.js vs server.js
+            ls *.js 2>/dev/null | head -5
+            
+            # ---- STEP 4: Determine entry point ----
+            echo ""
+            echo "=== STEP 4: Entry point ==="
+            if [ -f "app.js" ]; then
+              ENTRY="app.js"
+              echo "Entry: app.js"
+            elif [ -f "server.js" ]; then
+              ENTRY="server.js"  
+              echo "Entry: server.js"
+            else
+              ENTRY=$(ls *.js 2>/dev/null | head -1)
+              echo "Entry (guessed): $ENTRY"
+            fi
+            
+            # ---- STEP 5: Patch the entry file ----
+            echo ""
+            echo "=== STEP 5: Patch $ENTRY ==="
+            if grep -q "openach-patch" "$ENTRY" 2>/dev/null; then
+              echo "Already patched - skipping"
+            else
+              if grep -q "app\.listen" "$ENTRY" 2>/dev/null; then
+                sed -i "s|app\.listen|require('./server/openach-patch')(app, typeof db !== 'undefined' ? db : app.locals.db);\napp.listen|" "$ENTRY"
+                echo "Patched $ENTRY (app.listen hook)"
+              elif grep -q "server\.listen" "$ENTRY" 2>/dev/null; then
+                sed -i "s|server\.listen|require('./server/openach-patch')(app, typeof db !== 'undefined' ? db : app.locals.db);\nserver.listen|" "$ENTRY"
+                echo "Patched $ENTRY (server.listen hook)"
+              else
+                echo "WARNING: Could not auto-patch - app.listen not found"
+                echo "Last 20 lines of $ENTRY:"
+                tail -20 "$ENTRY"
+              fi
+            fi
+            
+            # ---- STEP 6: Update .env ----
+            echo ""
+            echo "=== STEP 6: Update .env ==="
+            if [ ! -f ".env" ]; then
+              touch .env
+              echo "Created .env"
+            fi
+            
+            grep -q "OPENACH_BASE_URL" .env 2>/dev/null || echo "OPENACH_BASE_URL=https://ach.dlbtrust.cloud/openach/api" >> .env
+            grep -q "OPENACH_API_TOKEN" .env 2>/dev/null || echo "OPENACH_API_TOKEN=3caee1c2-c218-4959-b6d2-21d4b2a1b42e" >> .env
+            grep -q "OPENACH_API_KEY" .env 2>/dev/null || echo "OPENACH_API_KEY=b74966cf-5276-4d8b-8650-5bd57dcee272" >> .env
+            
+            echo "Current .env OpenACH vars:"
+            grep -i "openach\|ach" .env 2>/dev/null || echo "(none)"
+            
+            # ---- STEP 7: Restart app ----
+            echo ""
+            echo "=== STEP 7: Restart app ==="
+            if command -v pm2 &>/dev/null; then
+              pm2 restart all 2>&1 && echo "PM2 RESTARTED"
+              sleep 4
+              pm2 list 2>&1
+            else
+              pkill -f "node app" 2>/dev/null || pkill -f "node server" 2>/dev/null || true
+              sleep 2
+              nohup node "$ENTRY" > /tmp/dlbtrust.log 2>&1 &
+              echo "Started: $!"
+            fi
+            
+            # ---- STEP 8: Health checks ----
+            echo ""
+            echo "=== STEP 8: Health checks ==="
+            sleep 5
+            
+            echo "--- OpenACH API test ---"
+            curl -s -X POST "http://localhost/openach/api/connect" \
+              -H "Host: ach.dlbtrust.cloud" \
+              --data "user_api_token=3caee1c2-c218-4959-b6d2-21d4b2a1b42e&user_api_key=b74966cf-5276-4d8b-8650-5bd57dcee272" \
+              2>/dev/null || echo "(localhost test failed)"
+            
+            echo ""
+            echo "--- ACH health endpoint ---"
+            curl -s "http://localhost:3000/api/ach/health" 2>/dev/null || \
+            curl -s "http://localhost:3001/api/ach/health" 2>/dev/null || \
+            curl -s "http://localhost/api/ach/health" 2>/dev/null || \
+            echo "(ACH health check failed)"
+            
+            echo ""
+            echo "--- Wallets API ---"
+            curl -s "http://localhost:3000/api/wallets" 2>/dev/null | head -c 100 || \
+            curl -s "http://localhost:3001/api/wallets" 2>/dev/null | head -c 100 || \
+            echo "(wallets check failed)"
+            
+            # ---- STEP 9: Get payment types ----
+            echo ""
+            echo "=== STEP 9: Get payment types ==="
+            CONNECT=$(curl -s --max-time 10 \
+              -X POST "http://localhost/openach/api/connect" \
+              -H "Host: ach.dlbtrust.cloud" \
+              --data "user_api_token=3caee1c2-c218-4959-b6d2-21d4b2a1b42e&user_api_key=b74966cf-5276-4d8b-8650-5bd57dcee272" 2>/dev/null)
+            
+            echo "Connect result: $CONNECT"
+            
+            SESSION=$(echo "$CONNECT" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('session_id',''))" 2>/dev/null || echo "")
+            
+            if [ -n "$SESSION" ]; then
+              echo "Session: $SESSION"
+              TYPES=$(curl -s --max-time 10 \
+                -X POST "http://localhost/openach/api/getPaymentTypes" \
+                -H "Host: ach.dlbtrust.cloud" \
+                -H "Cookie: PHPSESSID=$SESSION" 2>/dev/null)
+              echo "Payment types: $TYPES"
+              
+              # Disconnect
+              curl -s "http://localhost/openach/api/disconnect" \
+                -H "Host: ach.dlbtrust.cloud" \
+                -H "Cookie: PHPSESSID=$SESSION" > /dev/null 2>&1
+            fi
+            
+            echo ""
+            echo "=== DEPLOY COMPLETE ==="
