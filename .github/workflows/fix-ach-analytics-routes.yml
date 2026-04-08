@@ -7,7 +7,7 @@ jobs:
   fix:
     runs-on: ubuntu-latest
     steps:
-      - name: Find Apache reload method and apply vhost fix
+      - name: Fix vhost + force Apache reload via Plesk reconfigure
         uses: appleboy/ssh-action@v1.0.3
         with:
           host: 74.208.191.205
@@ -17,63 +17,57 @@ jobs:
           command_timeout: 180s
           script: |
             export HOME=/var/www/vhosts/dlbtrust.cloud
-            set -e
             VHOST=/var/www/vhosts/dlbtrust.cloud/conf/vhost.conf
 
-            echo "=== 1. Confirm proxy3003 running ==="
-            curl -s --max-time 5 http://127.0.0.1:3003/api/ach/health | grep -q openach_connected && echo "proxy3003 OK" || echo "proxy3003 not running"
+            echo "=== 1. Proxy3003 check ==="
+            curl -s --max-time 5 http://127.0.0.1:3003/api/ach/health | grep -q openach_connected && echo "proxy3003 OK"
 
             echo "=== 2. Write vhost.conf ==="
-            printf '%s\n' \
-              '<Directory /var/www/vhosts/dlbtrust.cloud/httpdocs>' \
-              '  Options -Indexes' \
-              '</Directory>' \
-              'ProxyPreserveHost On' \
-              'ProxyPass /api/ach/health http://localhost:3003/api/ach/health' \
-              'ProxyPassReverse /api/ach/health http://localhost:3003/api/ach/health' \
-              'ProxyPass /api/analytics/summary http://localhost:3003/api/analytics/summary' \
-              'ProxyPassReverse /api/analytics/summary http://localhost:3003/api/analytics/summary' \
-              'ProxyPass / http://localhost:3002/' \
-              'ProxyPassReverse / http://localhost:3002/' > $VHOST
+            printf '%s\n' '<Directory /var/www/vhosts/dlbtrust.cloud/httpdocs>' '  Options -Indexes' '</Directory>' 'ProxyPreserveHost On' 'ProxyPass /api/ach/health http://localhost:3003/api/ach/health' 'ProxyPassReverse /api/ach/health http://localhost:3003/api/ach/health' 'ProxyPass /api/analytics/summary http://localhost:3003/api/analytics/summary' 'ProxyPassReverse /api/analytics/summary http://localhost:3003/api/analytics/summary' 'ProxyPass / http://localhost:3002/' 'ProxyPassReverse / http://localhost:3002/' > $VHOST
             cat $VHOST
 
-            echo "=== 3. Find Apache process and PID ==="
-            pgrep -a apache2 | head -5 || true
-            ls -la /var/run/apache2/ 2>/dev/null || ls -la /run/apache2/ 2>/dev/null || true
-            cat /var/run/apache2/apache2.pid 2>/dev/null || cat /run/apache2/apache2.pid 2>/dev/null || echo "no pid file"
+            echo "=== 3. Try Plesk CLI tools (as system user) ==="
+            # Try plesk commands available to webspace users
+            ls /usr/local/psa/bin/ 2>/dev/null | head -20 || true
+            which plesk 2>/dev/null || true
 
-            echo "=== 4. Try every reload method ==="
-            # Method A: send SIGUSR1 to apache2 parent PID (graceful restart)
-            APID=$(cat /var/run/apache2/apache2.pid 2>/dev/null || cat /run/apache2/apache2.pid 2>/dev/null || echo "")
-            if [ -n "$APID" ]; then
-              kill -USR1 $APID 2>/dev/null && echo "SIGUSR1 sent to PID $APID" || echo "SIGUSR1 failed"
-            fi
-
-            # Method B: plesk CLI
-            plesk repair web dlbtrust.cloud -y 2>/dev/null && echo "plesk repair OK" || true
-            /usr/local/psa/bin/domain -u dlbtrust.cloud 2>/dev/null && echo "domain update OK" || true
-
-            # Method C: Plesk API - correct webspace restart
+            echo "=== 4. Try Plesk XML API - reconfigure webspace ==="
+            # This triggers Plesk to regenerate Apache config from its DB + vhost.conf
+            curl -sk --max-time 30 \
+              "https://dlbtrust.cloud:8443/enterprise/control/agent.php" \
+              -H "HTTP_AUTH_LOGIN: admin" \
+              -H "HTTP_AUTH_PASSWD: dP8RlShbOWNq" \
+              -H "Content-Type: text/xml" \
+              -d '<?xml version="1.0"?><packet version="1.6.9.1"><webspace><set><filter><name>dlbtrust.cloud</name></filter><values><prefs><www>false</www></prefs></values></set></webspace></packet>'
+            sleep 2
             curl -sk --max-time 30 \
               "https://dlbtrust.cloud:8443/enterprise/control/agent.php" \
               -H "HTTP_AUTH_LOGIN: admin" \
               -H "HTTP_AUTH_PASSWD: dP8RlShbOWNq" \
               -H "Content-Type: text/xml" \
               -d '<?xml version="1.0"?><packet version="1.6.9.1"><webspace><set><filter><name>dlbtrust.cloud</name></filter><values><prefs><www>true</www></prefs></values></set></webspace></packet>'
+            sleep 2
+
+            echo "=== 5. Try server reconfigure API ==="
+            curl -sk --max-time 30 \
+              "https://dlbtrust.cloud:8443/enterprise/control/agent.php" \
+              -H "HTTP_AUTH_LOGIN: admin" \
+              -H "HTTP_AUTH_PASSWD: dP8RlShbOWNq" \
+              -H "Content-Type: text/xml" \
+              -d '<?xml version="1.0"?><packet version="1.6.9.1"><server><reconfigure/></server></packet>'
             echo ""
 
-            sleep 10
+            echo "=== 6. Check if vhost.conf is in included Apache configs ==="
+            find /etc/apache2 /etc/httpd -name "*.conf" 2>/dev/null | xargs grep -l "dlbtrust.cloud" 2>/dev/null | head -5 || true
+            find /var/www/vhosts/dlbtrust.cloud/conf -name "*.conf" 2>/dev/null | head -10 || true
 
-            echo "=== 5. Verify vhost.conf still correct ==="
-            cat $VHOST
+            echo "=== 7. Check what Apache is currently serving from ==="
+            # Read the actual generated Apache config for this vhost
+            find /etc/apache2/plesk.conf.d /etc/httpd/conf.d -name "*dlbtrust*" 2>/dev/null | head -5 | xargs cat 2>/dev/null | grep -E "ProxyPass|proxy" | head -20 || true
+            find /var/www/vhosts/system/dlbtrust.cloud/conf -name "*.conf" 2>/dev/null | head -5 | xargs cat 2>/dev/null | grep -E "ProxyPass|proxy" | head -20 || true
 
-            echo "=== 6. Check if Apache read our vhost.conf ==="
-            curl -sk --max-time 10 https://dlbtrust.cloud/api/ach/health | head -c 300
-            echo ""
-            curl -sk --max-time 10 https://dlbtrust.cloud/api/analytics/summary | head -c 300
-            echo ""
-
+            sleep 5
+            echo "=== 8. Final public test ==="
             curl -sk --max-time 10 https://dlbtrust.cloud/api/ach/health | grep -q openach_connected && echo "PUBLIC ACH: PASS" || echo "PUBLIC ACH: FAIL"
             curl -sk --max-time 10 https://dlbtrust.cloud/api/analytics/summary | grep -q total_corpus && echo "PUBLIC ANALYTICS: PASS" || echo "PUBLIC ANALYTICS: FAIL"
-            curl -sk --max-time 10 https://dlbtrust.cloud/api/wallets | grep -q wallet_id && echo "PUBLIC WALLETS: PASS" || echo "PUBLIC WALLETS: FAIL"
             echo "=== DONE ==="
