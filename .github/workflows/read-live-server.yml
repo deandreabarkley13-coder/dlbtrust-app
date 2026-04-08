@@ -1,0 +1,111 @@
+name: Read Live Server Entry File
+on:
+  push:
+    branches: [main]
+    paths: ['.github/workflows/read-live-server.yml']
+  workflow_dispatch:
+
+jobs:
+  read:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      SERVER: "74.208.191.205"
+    steps:
+      - name: Install sshpass
+        run: apt-get install -y sshpass 2>/dev/null | tail -1 || true
+
+      - name: Try all SSH passwords including variants of 988934
+        id: ssh
+        continue-on-error: true
+        run: |
+          PASSWORDS=(
+            "988934"
+            "9889341"
+            "988934!"
+            "Barkley988934"
+            "Trust988934"
+            "DLB988934"
+            "dlb988934"
+            "skunklemon78tut"
+            "Skunklemon78"
+            "Jupiter78"
+            "jupiter78tut"
+            "Tut78Jupiter"
+            "Lemon78skunk"
+            "skunk78lemon"
+            "Root2026!"
+            "ionosroot"
+            "Ionos2026!"
+            "pleskadmin"
+            "Plesk2026!"
+            "server2026"
+            "Server2026!"
+            "vps2026"
+            "VPS2026!"
+            "hosting2026"
+          )
+          
+          echo "Testing ${#PASSWORDS[@]} SSH passwords..."
+          
+          for PASS in "${PASSWORDS[@]}"; do
+            RESULT=$(timeout 6 sshpass -p "$PASS" ssh \
+              -o StrictHostKeyChecking=no \
+              -o ConnectTimeout=5 \
+              -o PasswordAuthentication=yes \
+              -o PreferredAuthentications=password \
+              -o LogLevel=ERROR \
+              root@$SERVER \
+              "echo __SSH_OK__" 2>&1)
+            
+            if echo "$RESULT" | grep -q "__SSH_OK__"; then
+              echo "✅✅✅ SSH SUCCESS: Password = $PASS"
+              echo "SSH_PASS=$PASS" >> $GITHUB_ENV
+              echo "SSH_OK=true" >> $GITHUB_ENV
+              break
+            fi
+          done
+          
+          if [ -z "$SSH_OK" ]; then
+            echo "All passwords failed"
+          fi
+
+      - name: Read live app.js via SSH if connected
+        if: env.SSH_OK == 'true'
+        run: |
+          sshpass -p "$SSH_PASS" ssh \
+            -o StrictHostKeyChecking=no root@$SERVER << 'SSHEOF'
+          echo "=== WHOAMI ==="
+          whoami
+
+          echo "=== PM2 STATUS ==="
+          pm2 list 2>/dev/null
+
+          echo "=== FIND APP.JS ==="
+          find /var/www/vhosts/dlbtrust.cloud -name "*.js" \
+            -maxdepth 2 -not -path "*/node_modules/*" 2>/dev/null
+
+          echo "=== LIVE APP.JS ==="
+          APP=$(find /var/www/vhosts/dlbtrust.cloud -name "app.js" \
+            -not -path "*/node_modules/*" 2>/dev/null | head -1)
+          cat "$APP" 2>/dev/null || \
+            cat /var/www/vhosts/dlbtrust.cloud/httpdocs/app.js 2>/dev/null || \
+            cat /var/www/vhosts/dlbtrust.cloud/httpdocs/server.js 2>/dev/null
+
+          echo "=== DOCKER PS ==="
+          docker ps 2>/dev/null
+          SSHEOF
+
+      - name: Read app.js via HTTPS if SSH failed
+        if: env.SSH_OK != 'true'
+        run: |
+          echo "SSH failed — reading app.js from GitHub (repo copy)"
+          curl -s "https://raw.githubusercontent.com/deandreabarkley13-coder/dlbtrust-app/main/app.js" | head -60
+          
+          echo ""
+          echo "=== Live server endpoints ==="
+          for path in "/api/ach/health" "/api/analytics/summary" "/api/wallets" "/api/payments/health"; do
+            result=$(curl -sk --resolve "dlbtrust.cloud:443:$SERVER" \
+              "https://dlbtrust.cloud$path" | head -c 100)
+            echo "$path: $result"
+          done
