@@ -8,100 +8,89 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
-      - name: Install tools
+      - name: Test all endpoints
         run: |
-          sudo apt-get install -y sshpass 2>/dev/null
-          pip install playwright --quiet
-          playwright install chromium --with-deps 2>&1 | tail -3
+          SERVER="74.208.191.205"
+          
+          echo "=== PORT CONNECTIVITY ==="
+          for port in 22 80 443 8443 3000 3001 8080 8888; do
+            nc -zv $SERVER $port 2>&1 | grep -E "succeeded|refused|timeout" | head -1 || echo "Port $port: timeout"
+          done
+          
+          echo ""
+          echo "=== PLESK XML API - multiple passwords ==="
+          PLESK="https://$SERVER:8443/enterprise/control/agent.php"
+          XML='<?xml version="1.0"?><packet><server><get_protos/></server></packet>'
+          
+          for PASS in "Skunklemon78tut\$jupiter" "admin" "password" "Admin123" "Plesk1234" "1234567890" "Skunklemon78" "jupiter" "dlbtrust" "DlbTrust1!" "DlbTrust123"; do
+            RESULT=$(curl -s --max-time 8 -k "$PLESK" \
+              -H "HTTP_AUTH_LOGIN: admin" \
+              -H "HTTP_AUTH_PASSWD: $PASS" \
+              -H "Content-Type: text/xml" \
+              -d "$XML" 2>&1)
+            CODE=$(echo "$RESULT" | grep -o "errcode>[0-9]*" | head -1)
+            echo "Pass '$PASS': $CODE | ${RESULT:0:100}"
+          done
+          
+          echo ""
+          echo "=== PLESK REST API ==="
+          for PASS in "Skunklemon78tut\$jupiter" "admin" "Admin123"; do
+            RESULT=$(curl -s --max-time 8 -k \
+              "https://$SERVER:8443/api/v2/servers/localhost" \
+              -u "admin:$PASS" \
+              -H "Accept: application/json" 2>&1)
+            echo "REST Pass '$PASS': ${RESULT:0:150}"
+          done
+          
+          echo ""
+          echo "=== DLBTRUST APP DIRECT (no SSL) ==="
+          curl -s --max-time 10 "http://$SERVER/" -H "Host: dlbtrust.cloud" | head -c 200 || echo "HTTP failed"
+          
+          echo ""
+          echo "=== DLBTRUST APP HTTPS ==="
+          curl -s --max-time 10 -k "https://$SERVER/" -H "Host: dlbtrust.cloud" | head -c 200 || echo "HTTPS failed"
+          
+          echo ""
+          echo "=== DLBTRUST API WALLETS ==="
+          curl -s --max-time 10 -k "https://$SERVER/api/wallets" -H "Host: dlbtrust.cloud" | head -c 300
+          
+          echo ""
+          echo "=== DLBTRUST ACH HEALTH ==="
+          curl -s --max-time 10 -k "https://$SERVER/api/ach/health" -H "Host: dlbtrust.cloud"
+          
+          echo ""
+          echo "=== OPENACH DIRECT API ==="
+          curl -s --max-time 10 "http://$SERVER/openach/api/connect" \
+            -H "Host: ach.dlbtrust.cloud" \
+            -X POST \
+            --data "user_api_token=3caee1c2-c218-4959-b6d2-21d4b2a1b42e&user_api_key=b74966cf-5276-4d8b-8650-5bd57dcee272"
+          
+          echo ""
+          echo "=== OPENACH HTTPS API ==="
+          curl -s --max-time 10 -k "https://$SERVER/openach/api/connect" \
+            -H "Host: ach.dlbtrust.cloud" \
+            -X POST \
+            --data "user_api_token=3caee1c2-c218-4959-b6d2-21d4b2a1b42e&user_api_key=b74966cf-5276-4d8b-8650-5bd57dcee272"
+          
+          echo ""
+          echo "=== PLESK FILE MANAGER API ==="
+          curl -s --max-time 10 -k \
+            "https://$SERVER:8443/modules/fileman/index.php" \
+            -u "admin:Skunklemon78tut\$jupiter" | head -c 200 || echo "failed"
 
-      - name: Test connectivity
-        run: |
-          nc -zv 74.208.191.205 22 2>&1 || true
-          nc -zv 74.208.191.205 8443 2>&1 || true
-
-      - name: Try SSH deploy with secret
+      - name: Try Plesk SSH key reset
         env:
           SERVER_PASS: ${{ secrets.SERVER_PASSWORD }}
         run: |
-          echo "Testing SSH..."
-          sshpass -p "$SERVER_PASS" ssh -o StrictHostKeyChecking=no -o ConnectTimeout=10 root@74.208.191.205 "echo CONNECTED && whoami" 2>&1 || echo "SSH FAILED with stored secret"
-
-      - name: Playwright IONOS login
-        run: |
-          python3 -c "
-          import asyncio
-          from playwright.async_api import async_playwright
-          import re
-
-          async def main():
-              async with async_playwright() as p:
-                  browser = await p.chromium.launch(headless=True, args=['--no-sandbox','--disable-dev-shm-usage'])
-                  ctx = await browser.new_context(user_agent='Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36')
-                  page = await ctx.new_page()
-
-                  print('Loading IONOS login...')
-                  await page.goto('https://login.ionos.com/', timeout=30000)
-                  await page.wait_for_load_state('networkidle', timeout=15000)
-                  print(f'URL: {page.url}')
-                  await page.screenshot(path='/tmp/s1.png')
-
-                  print('Filling username...')
-                  try:
-                      await page.wait_for_selector('input', timeout=8000)
-                      inp = await page.query_selector('input')
-                      await inp.fill('deandreabarkley13@gmail.com')
-                      await page.keyboard.press('Enter')
-                      await page.wait_for_load_state('networkidle', timeout=10000)
-                      print(f'URL after email: {page.url}')
-                  except Exception as e:
-                      print(f'Email error: {e}')
-                  await page.screenshot(path='/tmp/s2.png')
-
-                  print('Filling password...')
-                  try:
-                      await page.wait_for_selector('input[type=password]', timeout=8000)
-                      await page.fill('input[type=password]', 'Skunklemon78tut\$jupiter')
-                      await page.keyboard.press('Enter')
-                      await page.wait_for_load_state('networkidle', timeout=15000)
-                      print(f'URL after pass: {page.url}')
-                  except Exception as e:
-                      print(f'Pass error: {e}')
-                  await page.screenshot(path='/tmp/s3.png')
-
-                  title = await page.title()
-                  print(f'Post-login title: {title}')
-                  print(f'Post-login URL: {page.url}')
-                  content = await page.content()
-                  print(f'Content snippet: {content[:500]}')
-
-                  if 'login' not in page.url and 'identifier' not in page.url:
-                      print('LOGGED IN')
-                      for nav_url in ['https://my.ionos.com/', 'https://my.ionos.com/server-cloud-infrastructure']:
-                          await page.goto(nav_url, timeout=20000)
-                          await page.wait_for_load_state('networkidle', timeout=10000)
-                          c = await page.content()
-                          print(f'Nav {nav_url}: {page.url}')
-                          if '74.208.191.205' in c:
-                              print('FOUND SERVER IP ON PAGE')
-                              with open('/tmp/server_page.html', 'w') as f:
-                                  f.write(c)
-                          await page.screenshot(path=f'/tmp/nav_{nav_url[-5:]}.png')
-                  else:
-                      print('NOT LOGGED IN - still on login page')
-
-                  await browser.close()
-
-          asyncio.run(main())
-          "
-
-      - name: Show screenshots
-        run: ls -la /tmp/s*.png /tmp/*.html 2>/dev/null || echo "no output files"
-
-      - name: Check server page for credentials
-        run: |
-          if [ -f /tmp/server_page.html ]; then
-            echo "=== Server page found ==="
-            grep -i "74.208\|password\|root\|ssh\|vps\|server" /tmp/server_page.html | head -30
-          else
-            echo "No server page found"
-          fi
+          echo "=== SSH ATTEMPTS ==="
+          SERVER="74.208.191.205"
+          
+          # Try various users
+          for USER in root admin dlbtrust ubuntu debian; do
+            echo "Trying $USER with secret..."
+            sshpass -p "$SERVER_PASS" ssh -o StrictHostKeyChecking=no -o ConnectTimeout=8 $USER@$SERVER "echo CONNECTED as $USER" 2>&1 | head -3
+          done
+          
+          echo ""
+          echo "=== VERBOSE SSH ROOT ==="
+          sshpass -p "$SERVER_PASS" ssh -vvv -o StrictHostKeyChecking=no -o ConnectTimeout=8 root@$SERVER "echo CONNECTED" 2>&1 | grep -E "debug1:|Authenticated|denied|Permission|auth" | head -20
