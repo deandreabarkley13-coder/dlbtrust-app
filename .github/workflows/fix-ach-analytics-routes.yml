@@ -7,33 +7,30 @@ jobs:
   fix:
     runs-on: ubuntu-latest
     steps:
-      - name: Set additional-settings and find where they go
+      - name: Try Plesk REST API and CLI endpoint
         run: |
-          echo "=== Set additional-settings ==="
+          echo "=== Plesk REST API - domains list ==="
           curl -sk --max-time 30 \
-            "https://dlbtrust.cloud:8443/enterprise/control/agent.php" \
-            -H "HTTP_AUTH_LOGIN: admin" \
-            -H "HTTP_AUTH_PASSWD: dP8RlShbOWNq" \
-            -H "Content-Type: text/xml" \
-            -d '<?xml version="1.0" encoding="UTF-8"?><packet version="1.6.9.1"><webspace><set><filter><name>dlbtrust.cloud</name></filter><values><hosting><vrt_hst><property><name>additional-settings</name><value>ProxyPass /api/ach/health http://localhost:3003/api/ach/health&#10;ProxyPassReverse /api/ach/health http://localhost:3003/api/ach/health&#10;ProxyPass /api/analytics/summary http://localhost:3003/api/analytics/summary&#10;ProxyPassReverse /api/analytics/summary http://localhost:3003/api/analytics/summary</value></property></vrt_hst></hosting></values></set></webspace></packet>'
+            "https://dlbtrust.cloud:8443/api/v2/domains" \
+            -u "admin:dP8RlShbOWNq" | head -c 500
           echo ""
 
-      - name: SSH and find where additional-settings landed in Apache config
-        uses: appleboy/ssh-action@v1.0.3
-        with:
-          host: 74.208.191.205
-          username: dlbtrust.cloud_h6zkwzag1ya
-          password: Deploy2026!
-          port: 22
-          command_timeout: 60s
-          script: |
-            echo "=== Find files changed in last 2 minutes ==="
-            find /etc/apache2 /var/www/vhosts/system /var/www/vhosts/dlbtrust.cloud/conf \
-              -newer /tmp -type f 2>/dev/null | head -20 || true
-            echo "=== Find files containing 3003 ProxyPass ==="
-            grep -r "3003" /etc/apache2 /var/www/vhosts/system 2>/dev/null | grep -i proxy | head -10 || true
-            echo "=== Find Plesk additional settings storage ==="
-            find /etc/apache2 -name "*.conf" 2>/dev/null | xargs grep -l "additional" 2>/dev/null | head -5 || true
-            find /var/www/vhosts -name "*.conf" 2>/dev/null | xargs grep -l "additional" 2>/dev/null | head -5 || true
-            echo "=== Test ==="
-            curl -sk --max-time 15 https://dlbtrust.cloud/api/ach/health | grep -q openach_connected && echo "PUBLIC ACH: PASS" || echo "PUBLIC ACH: FAIL"
+          echo "=== Plesk REST API - domain info ==="
+          DOMAIN_ID=$(curl -sk --max-time 30 \
+            "https://dlbtrust.cloud:8443/api/v2/domains" \
+            -u "admin:dP8RlShbOWNq" | python3 -c "import json,sys; data=json.load(sys.stdin); print(next((d['id'] for d in data if d.get('name')=='dlbtrust.cloud'),''))" 2>/dev/null || echo "")
+          echo "Domain ID: $DOMAIN_ID"
+
+          if [ -n "$DOMAIN_ID" ]; then
+            echo "=== Try to reconfigure domain via REST ==="
+            curl -sk --max-time 30 \
+              -X PUT "https://dlbtrust.cloud:8443/api/v2/domains/$DOMAIN_ID" \
+              -u "admin:dP8RlShbOWNq" \
+              -H "Content-Type: application/json" \
+              -d '{}' | head -c 200
+          fi
+
+          echo ""
+          echo "=== Test ==="
+          curl -sk --max-time 15 https://dlbtrust.cloud/api/ach/health | grep -q openach_connected && echo "PUBLIC ACH: PASS" || echo "PUBLIC ACH: FAIL"
+          curl -sk --max-time 15 https://dlbtrust.cloud/api/analytics/summary | grep -q total_corpus && echo "PUBLIC ANALYTICS: PASS" || echo "PUBLIC ANALYTICS: FAIL"
