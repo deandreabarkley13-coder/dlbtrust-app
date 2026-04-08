@@ -1,5 +1,8 @@
 name: FINAL 8/8 — Port 3002 + OpenACH Credentials
 on:
+  push:
+    branches: [main]
+    paths: ['.github/workflows/final-8-8-master.yml']
   workflow_dispatch:
 
 jobs:
