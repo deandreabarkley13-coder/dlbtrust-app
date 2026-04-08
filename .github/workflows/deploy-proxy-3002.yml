@@ -7,7 +7,7 @@ jobs:
   deploy:
     runs-on: ubuntu-latest
     steps:
-      - name: Ensure proxy on port 3003 is running
+      - name: Find and patch the server on port 3002
         uses: appleboy/ssh-action@v1.0.3
         with:
           host: 74.208.191.205
@@ -18,71 +18,43 @@ jobs:
           script: |
             set -e
             export HOME=/var/www/vhosts/dlbtrust.cloud
-            DEST=/var/www/vhosts/dlbtrust.cloud/httpdocs
-            if curl -s --max-time 3 http://localhost:3003/api/ach/health | grep -q openach_connected; then
-              echo "Proxy healthy on 3003"
-            else
-              echo "Starting proxy..."
-              pm2 kill 2>/dev/null || true
-              fuser -k 3003/tcp 2>/dev/null || true
-              sleep 1
-              echo "J3VzZSBzdHJpY3QnOwpjb25zdCBodHRwID0gcmVxdWlyZSgnaHR0cCcpOwpjb25zdCBQT1JUID0gMzAwMzsKCmNvbnN0IHNlcnZlciA9IGh0dHAuY3JlYXRlU2VydmVyKGZ1bmN0aW9uKHJlcSwgcmVzKSB7CiAgY29uc3QgdXJsID0gcmVxLnVybCB8fCAnLyc7CgogIGlmICh1cmwgPT09ICcvYXBpL2FjaC9oZWFsdGgnIHx8IHVybC5zdGFydHNXaXRoKCcvYXBpL2FjaC9oZWFsdGg/JykpIHsKICAgIGNvbnN0IGJvZHkgPSBKU09OLnN0cmluZ2lmeSh7CiAgICAgIHN0YXR1czogJ29rJywKICAgICAgc2VydmljZTogJ2FjaCcsCiAgICAgIG9wZW5hY2hfY29ubmVjdGVkOiB0cnVlLAogICAgICBvcGVuYWNoX3VybDogJ2h0dHBzOi8vYWNoLmRsYnRydXN0LmNsb3VkL29wZW5hY2gvJywKICAgICAgYXBpX3Rva2VuOiAnM2NhZWUxYzItYzIxOC00OTU5LWI2ZDItMjFkNGIyYTFiNDJlJywKICAgICAgb3JpZ2luYXRvcl9pZDogJ2Q5NjUwM2MxLWYzN2EtNDc4MC04NjdmLWFmZTAxMDJmZmRmMScsCiAgICAgIHRpbWVzdGFtcDogbmV3IERhdGUoKS50b0lTT1N0cmluZygpCiAgICB9KTsKICAgIHJlcy53cml0ZUhlYWQoMjAwLCB7ICdDb250ZW50LVR5cGUnOiAnYXBwbGljYXRpb24vanNvbicgfSk7CiAgICByZXR1cm4gcmVzLmVuZChib2R5KTsKICB9CgogIGlmICh1cmwgPT09ICcvYXBpL2FuYWx5dGljcy9zdW1tYXJ5JyB8fCB1cmwuc3RhcnRzV2l0aCgnL2FwaS9hbmFseXRpY3Mvc3VtbWFyeT8nKSkgewogICAgY29uc3QgYm9keSA9IEpTT04uc3RyaW5naWZ5KHsKICAgICAgc3RhdHVzOiAnb2snLAogICAgICBzZXJ2aWNlOiAnYW5hbHl0aWNzJywKICAgICAgcGVyaW9kOiAnMzBkJywKICAgICAgdG90YWxfY29ycHVzOiAxMDA0OTA0MDA1MCwKICAgICAgdG90YWxfYXNzZXRzOiAxMDA0OTA0MDA1MCwKICAgICAgdHJ1c3RfZGlzdHJpYnV0aW9uczogNSwKICAgICAgdG90YWxfdHJhbnNhY3Rpb25zOiA0NiwKICAgICAgY3VycmVuY3k6ICdVU0QnLAogICAgICB0aW1lc3RhbXA6IG5ldyBEYXRlKCkudG9JU09TdHJpbmcoKQogICAgfSk7CiAgICByZXMud3JpdGVIZWFkKDIwMCwgeyAnQ29udGVudC1UeXBlJzogJ2FwcGxpY2F0aW9uL2pzb24nIH0pOwogICAgcmV0dXJuIHJlcy5lbmQoYm9keSk7CiAgfQoKICAvLyBQcm94eSB0byBwb3J0IDMwMDEKICBjb25zdCBvcHRzID0gewogICAgaG9zdG5hbWU6ICcxMjcuMC4wLjEnLAogICAgcG9ydDogMzAwMSwKICAgIHBhdGg6IHVybCwKICAgIG1ldGhvZDogcmVxLm1ldGhvZCwKICAgIGhlYWRlcnM6IE9iamVjdC5hc3NpZ24oe30sIHJlcS5oZWFkZXJzLCB7IGhvc3Q6ICdsb2NhbGhvc3QnIH0pCiAgfTsKICBjb25zdCBwcm94eSA9IGh0dHAucmVxdWVzdChvcHRzLCBmdW5jdGlvbihwcikgewogICAgcmVzLndyaXRlSGVhZChwci5zdGF0dXNDb2RlLCBwci5oZWFkZXJzKTsKICAgIHByLnBpcGUocmVzLCB7IGVuZDogdHJ1ZSB9KTsKICB9KTsKICBwcm94eS5vbignZXJyb3InLCBmdW5jdGlvbihlKSB7CiAgICBpZiAoIXJlcy5oZWFkZXJzU2VudCkgewogICAgICByZXMud3JpdGVIZWFkKDUwMiwgeyAnQ29udGVudC1UeXBlJzogJ2FwcGxpY2F0aW9uL2pzb24nIH0pOwogICAgICByZXMuZW5kKEpTT04uc3RyaW5naWZ5KHsgZXJyb3I6ICd1cHN0cmVhbV9lcnJvcicsIGRldGFpbDogZS5tZXNzYWdlIH0pKTsKICAgIH0KICB9KTsKICByZXEucGlwZShwcm94eSwgeyBlbmQ6IHRydWUgfSk7Cn0pOwoKc2VydmVyLmxpc3RlbihQT1JULCAnMC4wLjAuMCcsIGZ1bmN0aW9uKCkgewogIGNvbnNvbGUubG9nKCdQcm94eSBsaXN0ZW5pbmcgb24gcG9ydCAnICsgUE9SVCk7Cn0pOwo=" | base64 -d > "$DEST/server-proxy.js"
-              pm2 start "$DEST/server-proxy.js" --name server-proxy --no-autorestart
-              sleep 3
-            fi
-            curl -s http://localhost:3003/api/ach/health | head -c 100
+
+            echo "=== What is running on port 3002? ==="
+            ss -tlnp 2>/dev/null | grep ':3002'
             echo ""
 
-      - name: Update Apache additional-settings with proper XML encoding
-        run: |
-          echo "=== Update additional-settings with XML-encoded newlines ==="
-          XMLDATA='<?xml version="1.0" encoding="UTF-8"?><packet version="1.6.9.1"><webspace><set><filter><name>dlbtrust.cloud</name></filter><values><hosting><vrt_hst><property><name>additional-settings</name><value>ProxyPass /api/ach/ http://127.0.0.1:3003/api/ach/&#10;ProxyPassReverse /api/ach/ http://127.0.0.1:3003/api/ach/&#10;ProxyPass /api/analytics/ http://127.0.0.1:3003/api/analytics/&#10;ProxyPassReverse /api/analytics/ http://127.0.0.1:3003/api/analytics/&#10;ProxyPass /api/payment-gateway/ http://127.0.0.1:3002/api/payment-gateway/&#10;ProxyPassReverse /api/payment-gateway/ http://127.0.0.1:3002/api/payment-gateway/&#10;ProxyPass /api/ http://127.0.0.1:3002/api/&#10;ProxyPassReverse /api/ http://127.0.0.1:3002/api/</value></property></vrt_hst></hosting></values></set></webspace></packet>'
+            echo "=== Find the server file for port 3002 ==="
+            grep -rl "3002" /var/www/vhosts/dlbtrust.cloud/httpdocs/*.js 2>/dev/null | head -5 || echo "Not in httpdocs"
+            grep -rl "3002" /var/www/vhosts/dlbtrust.cloud/dlbtrust-v2/*.cjs 2>/dev/null | head -5 || echo "Not in dlbtrust-v2 cjs"
+            grep -rl "3002" /var/www/vhosts/dlbtrust.cloud/dlbtrust-v2/*.js 2>/dev/null | head -5 || echo "Not in dlbtrust-v2 js"
 
-          echo "Sending XML (length=${#XMLDATA})..."
-          RESPONSE=$(curl -sk --max-time 30 "https://dlbtrust.cloud:8443/enterprise/control/agent.php" \
-            -H "HTTP_AUTH_LOGIN: admin" \
-            -H "HTTP_AUTH_PASSWD: dP8RlShbOWNq" \
-            -H "Content-Type: text/xml" \
-            -d "$XMLDATA" 2>&1)
-          echo "Response: $RESPONSE"
-          sleep 3
+            echo "=== Check pm2 for root processes ==="
+            cat /root/.pm2/dump.pm2 2>/dev/null | python3 -c "import sys,json; d=json.load(sys.stdin); [print(f'{p[\"name\"]} pid={p[\"pid\"]} script={p.get(\"pm2_env\",{}).get(\"pm_exec_path\",\"\")}') for p in d]" 2>/dev/null || echo "Cannot read root pm2 dump"
 
-          echo "=== Toggle PHP handler to force full Apache regen ==="
-          curl -sk --max-time 30 "https://dlbtrust.cloud:8443/enterprise/control/agent.php" \
-            -H "HTTP_AUTH_LOGIN: admin" \
-            -H "HTTP_AUTH_PASSWD: dP8RlShbOWNq" \
-            -H "Content-Type: text/xml" \
-            -d '<?xml version="1.0" encoding="UTF-8"?><packet version="1.6.9.1"><webspace><set><filter><name>dlbtrust.cloud</name></filter><values><hosting><vrt_hst><property><name>php_handler_id</name><value>plesk-php84-cgi</value></property></vrt_hst></hosting></values></set></webspace></packet>'
-          echo ""
-          sleep 5
+            echo "=== Check for node processes ==="
+            ps aux 2>/dev/null | grep "node " | grep -v grep | head -10
 
-          curl -sk --max-time 30 "https://dlbtrust.cloud:8443/enterprise/control/agent.php" \
-            -H "HTTP_AUTH_LOGIN: admin" \
-            -H "HTTP_AUTH_PASSWD: dP8RlShbOWNq" \
-            -H "Content-Type: text/xml" \
-            -d '<?xml version="1.0" encoding="UTF-8"?><packet version="1.6.9.1"><webspace><set><filter><name>dlbtrust.cloud</name></filter><values><hosting><vrt_hst><property><name>php_handler_id</name><value>plesk-php84-fpm</value></property></vrt_hst></hosting></values></set></webspace></packet>'
-          echo ""
-          sleep 10
+            echo "=== Find what file runs the 3002 server ==="
+            ls -la /var/www/vhosts/dlbtrust.cloud/httpdocs/server*.js 2>/dev/null || echo "No server*.js in httpdocs"
+            ls -la /var/www/vhosts/dlbtrust.cloud/dlbtrust-v2/server*.* 2>/dev/null || echo "No server*.* in dlbtrust-v2"
 
-          echo "=== Verify additional-settings persisted ==="
-          HOSTDATA=$(curl -sk --max-time 30 "https://dlbtrust.cloud:8443/enterprise/control/agent.php" \
-            -H "HTTP_AUTH_LOGIN: admin" \
-            -H "HTTP_AUTH_PASSWD: dP8RlShbOWNq" \
-            -H "Content-Type: text/xml" \
-            -d '<?xml version="1.0" encoding="UTF-8"?><packet version="1.6.9.1"><webspace><get><filter><name>dlbtrust.cloud</name></filter><dataset><hosting/></dataset></get></webspace></packet>' 2>&1)
-          echo "$HOSTDATA" | grep -oP 'additional-settings.*?</property>' | head -1
-          echo ""
+            echo "=== Can we write to httpdocs? ==="
+            touch /var/www/vhosts/dlbtrust.cloud/httpdocs/test-write-check && rm /var/www/vhosts/dlbtrust.cloud/httpdocs/test-write-check && echo "httpdocs is WRITABLE" || echo "httpdocs NOT writable"
 
-          echo "=== Public tests ==="
-          curl -sk https://dlbtrust.cloud/api/ach/health | head -c 300
-          echo ""
-          curl -sk https://dlbtrust.cloud/api/analytics/summary | head -c 300
-          echo ""
-          curl -sk https://dlbtrust.cloud/api/wallets | head -c 100
-          echo ""
+            echo "=== Read the server file for 3002 ==="
+            for f in /var/www/vhosts/dlbtrust.cloud/httpdocs/server*.js; do
+              if [ -f "$f" ]; then
+                echo "--- $f ---"
+                cat "$f" | head -50
+                echo "..."
+              fi
+            done
 
-          echo "=== Field checks ==="
-          curl -sk https://dlbtrust.cloud/api/ach/health | grep -q openach_connected && echo "ACH: PASS" || echo "ACH: FAIL"
-          curl -sk https://dlbtrust.cloud/api/analytics/summary | grep -q total_corpus && echo "ANALYTICS: PASS" || echo "ANALYTICS: FAIL"
-          curl -sk https://dlbtrust.cloud/api/wallets | grep -q wallet_id && echo "WALLETS: PASS" || echo "WALLETS: FAIL"
-          echo "=== DONE ==="
+            echo "=== Check if httpdocs has app.js or index.js ==="
+            ls -la /var/www/vhosts/dlbtrust.cloud/httpdocs/*.js 2>/dev/null | head -10
+            for f in /var/www/vhosts/dlbtrust.cloud/httpdocs/app.js /var/www/vhosts/dlbtrust.cloud/httpdocs/server.js; do
+              if [ -f "$f" ]; then
+                echo "--- $f ---"
+                head -20 "$f"
+              fi
+            done
