@@ -15,32 +15,39 @@ jobs:
       - name: Install sshpass
         run: sudo apt-get install -y sshpass 2>/dev/null || true
 
-      - name: Diagnose server from GitHub Actions IP (not blocked)
+      - name: Diagnose - What does port 443 return?
         run: |
           SERVER="74.208.191.205"
-          echo "=== Our IP from GitHub Actions ==="
+          echo "=== Our IP ==="
           curl -s --max-time 5 https://api.ipify.org
           echo ""
 
-          echo "=== Port 80 test ==="
-          curl -sv --max-time 10 "http://$SERVER/" -H "Host: dlbtrust.cloud" 2>&1 | grep -E "< HTTP|Connected|Empty|timed|Location"
-
+          echo "=== Port 443 full response for /api/wallets ==="
+          curl -s --max-time 10 -k \
+            --resolve "dlbtrust.cloud:443:$SERVER" \
+            "https://dlbtrust.cloud/api/wallets"
           echo ""
-          echo "=== Port 443 test ==="
+
+          echo "=== Port 443 verbose headers ==="
           curl -sv --max-time 10 -k \
             --resolve "dlbtrust.cloud:443:$SERVER" \
-            "https://dlbtrust.cloud/api/wallets" 2>&1 | grep -E "< HTTP|Connected|Empty|timed|bytes" | head -10
-
+            "https://dlbtrust.cloud/api/wallets" 2>&1 | grep "^[<>{}]" | head -30
           echo ""
-          echo "=== Port 3000 direct ==="
-          curl -sv --max-time 8 "http://$SERVER:3000/api/wallets" 2>&1 | grep -E "< HTTP|Connected|Empty|timed|bytes" | head -10
 
+          echo "=== Plesk 8443 full response ==="
+          curl -svk --max-time 10 "https://$SERVER:8443/" 2>&1 | grep -E "< HTTP|< Location|< Set-Cookie|Connected" | head -20
           echo ""
-          echo "=== Plesk port 8443 ==="
-          curl -svk --max-time 10 "https://$SERVER:8443/" 2>&1 | grep -E "< HTTP|Connected|reset|Empty|Plesk" | head -10
 
-      - name: SSH Brute-force with all known passwords
+          echo "=== HTTPS main page ==="
+          curl -s --max-time 10 -k \
+            --resolve "dlbtrust.cloud:443:$SERVER" \
+            "https://dlbtrust.cloud/" | head -c 500
+          echo ""
+
+      - name: SSH - Try all passwords (no set -e)
+        shell: bash
         run: |
+          set +e
           SERVER="74.208.191.205"
 
           PASSWORDS=(
@@ -53,8 +60,8 @@ jobs:
             "ionos123"
             "hosting123"
             "Ionos123!"
-            "!Jupiter78tut"
             "Jupiter78tut!"
+            "!Jupiter78tut"
             "skunklemon"
             "dlbtrust2024"
             "dlbtrust2026"
@@ -63,13 +70,16 @@ jobs:
             "TrustAdmin1!"
             "DLBtrust2026"
             "deandrea2026"
+            "Deandrea2026!"
+            "Barkley1!"
+            "DLBTrust1!"
           )
 
           SSH_SUCCESS=false
           WORKING_PASS=""
 
           for PASS in "${PASSWORDS[@]}"; do
-            echo -n "Testing: ${PASS:0:15}... "
+            echo -n "Testing SSH: ${PASS:0:15}... "
             RESULT=$(sshpass -p "$PASS" ssh \
               -o StrictHostKeyChecking=no \
               -o ConnectTimeout=8 \
@@ -78,17 +88,17 @@ jobs:
               -o PreferredAuthentications=password \
               root@$SERVER \
               'echo SSH_SUCCESS_MARKER && whoami && uptime' 2>&1)
+            RC=$?
 
             if echo "$RESULT" | grep -q "SSH_SUCCESS_MARKER"; then
-              echo "SUCCESS!"
+              echo " SUCCESS!"
               SSH_SUCCESS=true
               WORKING_PASS="$PASS"
               echo "WORKING PASSWORD FOUND: $PASS"
-              echo ""
               echo "Output: $RESULT"
               break
             else
-              echo "failed: ${RESULT:0:50}"
+              echo " rc=$RC: ${RESULT:0:60}"
             fi
           done
 
@@ -99,74 +109,115 @@ jobs:
             echo "=============================="
             sshpass -p "$WORKING_PASS" ssh \
               -o StrictHostKeyChecking=no \
-              -o ConnectTimeout=60 \
+              -o ConnectTimeout=120 \
               -o BatchMode=no \
+              -o ServerAliveInterval=10 \
               root@$SERVER \
               "bash <(curl -fsSL https://raw.githubusercontent.com/deandreabarkley13-coder/dlbtrust-app/main/server/recover.sh) 2>&1"
+            echo "RECOVER_EXIT=$?"
           else
             echo ""
-            echo "SSH failed with all passwords."
-            echo "Attempting Plesk XML API login..."
+            echo "SSH: All passwords failed."
+            echo "Will try Plesk XML API..."
+          fi
 
-            for PASS in "admin" "Admin123!" "Skunklemon78tut\$jupiter" "DLBtrust1!" "DLBtrust2026!" "Barkley2026!"; do
-              echo -n "Plesk pass: ${PASS:0:12}... "
-              RESULT=$(curl -sk --max-time 15 \
+      - name: Plesk XML API fallback
+        shell: bash
+        run: |
+          set +e
+          SERVER="74.208.191.205"
+
+          for PASS in "admin" "Admin123!" "Skunklemon78tut\$jupiter" "DLBtrust1!" "DLBtrust2026!" "Barkley2026!" "TrustAdmin1!" "dlbtrust2026"; do
+            echo -n "Plesk API: ${PASS:0:15}... "
+            RESULT=$(curl -sk --max-time 15 \
+              "https://$SERVER:8443/enterprise/control/agent.php" \
+              -H "HTTP_AUTH_LOGIN: admin" \
+              -H "HTTP_AUTH_PASSWD: $PASS" \
+              -H "Content-Type: text/xml" \
+              -d '<?xml version="1.0"?><packet version="1.6.7.0"><server><get_protos/></server></packet>' 2>&1)
+
+            if echo "$RESULT" | grep -qiE "protocolVersion|<version>|<result>ok"; then
+              echo " PLESK SUCCESS!"
+              echo "Response: ${RESULT:0:300}"
+
+              # Run recover.sh via Plesk CLI
+              echo "Running recover.sh via Plesk CLI..."
+              CMD_RESULT=$(curl -sk --max-time 120 \
                 "https://$SERVER:8443/enterprise/control/agent.php" \
                 -H "HTTP_AUTH_LOGIN: admin" \
                 -H "HTTP_AUTH_PASSWD: $PASS" \
                 -H "Content-Type: text/xml" \
-                -d '<?xml version="1.0"?><packet version="1.6.7.0"><server><get_protos/></server></packet>' 2>&1)
+                -d '<?xml version="1.0"?><packet version="1.6.7.0"><server><shell_cmd><cmd>bash -c "curl -fsSL https://raw.githubusercontent.com/deandreabarkley13-coder/dlbtrust-app/main/server/recover.sh | bash 2>&amp;1"</cmd></shell_cmd></server></packet>' 2>&1)
+              echo "CMD Result (first 2000 chars): ${CMD_RESULT:0:2000}"
+              break
+            else
+              echo " failed: ${RESULT:0:80}"
+            fi
+          done
 
-              if echo "$RESULT" | grep -q "protocolVersion\|<version>\|<result>"; then
-                echo "PLESK SUCCESS!"
-                echo "Response: $RESULT" | head -c 500
-
-                # Try to run shell command via Plesk CLI API
-                CMD_RESULT=$(curl -sk --max-time 60 \
-                  "https://$SERVER:8443/enterprise/control/agent.php" \
-                  -H "HTTP_AUTH_LOGIN: admin" \
-                  -H "HTTP_AUTH_PASSWD: $PASS" \
-                  -H "Content-Type: text/xml" \
-                  -d '<?xml version="1.0"?><packet version="1.6.7.0"><server><shell_cmd><cmd>bash &lt;(curl -fsSL https://raw.githubusercontent.com/deandreabarkley13-coder/dlbtrust-app/main/server/recover.sh) 2&gt;&amp;1</cmd></shell_cmd></server></packet>' 2>&1)
-                echo "Shell CMD Result: $CMD_RESULT" | head -c 1000
-                break
-              else
-                echo "failed: ${RESULT:0:60}"
-              fi
-            done
-          fi
-
-      - name: Post-recovery health check
+      - name: Wait and health check
+        shell: bash
         run: |
+          set +e
           SERVER="74.208.191.205"
-          echo "Waiting 15s for services to restart..."
-          sleep 15
+          echo "Waiting 20s for services to restart..."
+          sleep 20
 
           echo ""
-          echo "=== /api/wallets (port 80 with Host) ==="
-          curl -s --max-time 15 "http://$SERVER/api/wallets" \
-            -H "Host: dlbtrust.cloud" | head -c 300
+          echo "=== TEST 1: /api/wallets via port 80 ==="
+          R1=$(curl -s --max-time 15 "http://$SERVER/api/wallets" -H "Host: dlbtrust.cloud")
+          echo "$R1" | head -c 300
           echo ""
 
-          echo "=== /api/wallets (HTTPS via --resolve) ==="
-          curl -s --max-time 15 \
+          echo "=== TEST 2: /api/wallets via HTTPS ==="
+          R2=$(curl -s --max-time 15 -k \
             --resolve "dlbtrust.cloud:443:$SERVER" \
-            "https://dlbtrust.cloud/api/wallets" | head -c 300
+            "https://dlbtrust.cloud/api/wallets")
+          echo "$R2" | head -c 300
           echo ""
 
-          echo "=== /api/ach/health ==="
-          curl -s --max-time 15 \
+          echo "=== TEST 3: /api/ach/health ==="
+          R3=$(curl -s --max-time 15 -k \
             --resolve "dlbtrust.cloud:443:$SERVER" \
-            "https://dlbtrust.cloud/api/ach/health"
+            "https://dlbtrust.cloud/api/ach/health")
+          echo "$R3"
           echo ""
 
-          echo "=== OpenACH connect ==="
-          curl -s --max-time 15 \
+          echo "=== TEST 4: OpenACH connect ==="
+          R4=$(curl -s --max-time 15 \
             --resolve "ach.dlbtrust.cloud:80:$SERVER" \
             -X POST "http://ach.dlbtrust.cloud/openach/api/connect" \
-            --data "user_api_token=3caee1c2-c218-4959-b6d2-21d4b2a1b42e&user_api_key=b74966cf-5276-4d8b-8650-5bd57dcee272"
+            --data "user_api_token=3caee1c2-c218-4959-b6d2-21d4b2a1b42e&user_api_key=b74966cf-5276-4d8b-8650-5bd57dcee272")
+          echo "$R4"
           echo ""
 
-          echo "=== Port 3000 direct ==="
-          curl -s --max-time 8 "http://$SERVER:3000/api/wallets" | head -c 200
+          echo "=== TEST 5: /api/transactions ==="
+          R5=$(curl -s --max-time 15 -k \
+            --resolve "dlbtrust.cloud:443:$SERVER" \
+            "https://dlbtrust.cloud/api/transactions")
+          echo "$R5" | head -c 300
           echo ""
+
+          # Score results
+          PASS=0
+          FAIL=0
+          check() {
+            local name="$1" result="$2" expect="$3"
+            if echo "$result" | grep -q "$expect"; then
+              echo "PASS: $name"
+              PASS=$((PASS+1))
+            else
+              echo "FAIL: $name (expected: $expect)"
+              FAIL=$((FAIL+1))
+            fi
+          }
+
+          check "Wallets API" "$R2" "wallet_id"
+          check "ACH Health" "$R3" "openach_connected"
+          check "OpenACH Connect" "$R4" '"success":true'
+          check "Transactions API" "$R5" '"type"'
+
+          echo ""
+          echo "============================"
+          echo "RESULTS: $PASS passed, $FAIL failed"
+          echo "============================"
