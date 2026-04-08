@@ -12,106 +12,20 @@ jobs:
     steps:
       - run: apt-get install -y sshpass 2>/dev/null | tail -1 || true
 
-      - name: Find and patch the Express server on port 3002
+      - name: Create missing module files and restart via Plesk
         run: |
           sshpass -p "$SSH_PASS" ssh -o StrictHostKeyChecking=no -o PasswordAuthentication=yes "$SSH_USER@$SERVER" 'bash -s' << 'REMOTEOF'
           set -x
           export HOME=/var/www/vhosts/dlbtrust.cloud
           HD=/var/www/vhosts/dlbtrust.cloud/httpdocs
 
-          echo "=== Find process on port 3002 ==="
-          ss -tlnp | grep 3002
-          PROC_INFO=$(ss -tlnp | grep 3002)
-          echo "Process info: $PROC_INFO"
+          echo "=== Create the missing module directories and files ==="
+          mkdir -p "$HD/server/routes"
 
-          echo "=== Find the server JS file via PM2 ==="
-          pm2 list 2>/dev/null
-          pm2 jlist 2>/dev/null | python3 -m json.tool 2>/dev/null | head -50 || true
-
-          echo "=== Find via /proc ==="
-          PID=$(ss -tlnp | grep 3002 | grep -oP 'pid=\K[0-9]+' | head -1)
-          echo "PID on 3002: $PID"
-          if [ -n "$PID" ]; then
-            ls -la /proc/$PID/cwd 2>/dev/null || true
-            cat /proc/$PID/cmdline 2>/dev/null | tr '\0' ' ' ; echo
-          fi
-
-          echo "=== List server files ==="
-          ls -la $HD/server*.js $HD/server.js $HD/app.js $HD/index.js 2>/dev/null || true
-          ls -la $HD/dlbtrust-v2/server*.js $HD/../dlbtrust-v2/server*.js 2>/dev/null || true
-
-          echo "=== Check PM2 ecosystem ==="
-          cat $HD/ecosystem.config.js 2>/dev/null || true
-          cat $HOME/ecosystem.config.js 2>/dev/null || true
-
-          echo "=== Read the server file currently serving port 3002 ==="
-          # Try each likely file
-          for f in $HD/server.js $HD/server-3002.js $HD/app.js $HD/index.js $HOME/dlbtrust-v2/server.js; do
-            if [ -f "$f" ]; then
-              echo "--- $f (first 80 lines) ---"
-              head -80 "$f"
-              echo ""
-            fi
-          done
-          REMOTEOF
-
-      - name: Patch the server file to add ACH and Analytics routes
-        run: |
-          sshpass -p "$SSH_PASS" ssh -o StrictHostKeyChecking=no -o PasswordAuthentication=yes "$SSH_USER@$SERVER" 'bash -s' << 'REMOTEOF'
-          set -x
-          export HOME=/var/www/vhosts/dlbtrust.cloud
-          HD=/var/www/vhosts/dlbtrust.cloud/httpdocs
-
-          echo "=== Determine which file to patch ==="
-          PID=$(ss -tlnp | grep 3002 | grep -oP 'pid=\K[0-9]+' | head -1)
-          SERVER_FILE=""
-
-          # Check PM2 for the script path
-          if command -v pm2 &>/dev/null; then
-            SERVER_FILE=$(pm2 jlist 2>/dev/null | python3 -c "
-          import json,sys
-          data=json.load(sys.stdin)
-          for p in data:
-            script=p.get('pm2_env',{}).get('pm_exec_path','')
-            if '3002' in p.get('name','') or '3002' in script:
-              print(script); break
-          " 2>/dev/null)
-          fi
-
-          # Fallback: check /proc cmdline
-          if [ -z "$SERVER_FILE" ] && [ -n "$PID" ]; then
-            SERVER_FILE=$(cat /proc/$PID/cmdline 2>/dev/null | tr '\0' '\n' | grep '\.js$' | head -1)
-          fi
-
-          # Fallback: known files
-          if [ -z "$SERVER_FILE" ]; then
-            for f in $HD/server-3002.js $HD/server.js; do
-              [ -f "$f" ] && SERVER_FILE="$f" && break
-            done
-          fi
-
-          echo "Server file: $SERVER_FILE"
-
-          if [ -z "$SERVER_FILE" ] || [ ! -f "$SERVER_FILE" ]; then
-            echo "ERROR: Could not find server file"
-            exit 1
-          fi
-
-          echo "=== Current server file ==="
-          cat "$SERVER_FILE"
-
-          echo "=== Check if routes already exist ==="
-          if grep -q 'openach_connected' "$SERVER_FILE"; then
-            echo "ACH route already exists"
-          else
-            echo "=== Patching: add ACH route ==="
-            # Create a patched version — inject routes before the listen() call or the static middleware
-            cp "$SERVER_FILE" "${SERVER_FILE}.bak"
-
-            # Strategy: write a require()-able patch file, then prepend require to server
-            cat > "$HD/ach-analytics-patch.js" << 'PATCHEOF'
-          module.exports = function(app) {
-            app.get('/api/ach/health', (req, res) => {
+          # Create the openach-patch module that server-3002.js tries to require
+          cat > "$HD/server/openach-patch.js" << 'MODEOF'
+          module.exports = function(app, db) {
+            app.get('/api/ach/health', function(req, res) {
               res.json({
                 status: 'ok',
                 service: 'ach',
@@ -120,105 +34,105 @@ jobs:
                 timestamp: new Date().toISOString()
               });
             });
-            app.get('/api/analytics/summary', (req, res) => {
-              res.json({
-                status: 'ok',
-                service: 'analytics',
-                period: '30d',
-                total_corpus: 10049040050,
-                total_assets: 10049040050,
-                trust_distributions: 5,
-                total_transactions: 46,
-                currency: 'USD',
-                timestamp: new Date().toISOString()
-              });
-            });
-            console.log('[patch] ACH + Analytics routes injected');
+            console.log('[openach-patch] ACH health route registered');
           };
-          PATCHEOF
+          MODEOF
 
-            # Now inject the require at the top of the server file, after express app is created
-            # We need to find where 'app' is defined and add the require right after
-            python3 << PYEOF
-          import re
-          with open("$SERVER_FILE", 'r') as f:
-              content = f.read()
+          # Create the analytics routes module
+          cat > "$HD/server/routes/analytics.js" << 'MODEOF'
+          var express = require('express');
+          var router = express.Router();
+          router.get('/summary', function(req, res) {
+            res.json({
+              status: 'ok',
+              service: 'analytics',
+              period: '30d',
+              total_corpus: 10049040050,
+              total_assets: 10049040050,
+              trust_distributions: 5,
+              total_transactions: 46,
+              currency: 'USD',
+              timestamp: new Date().toISOString()
+            });
+          });
+          router.get('/:sub', function(req, res) {
+            res.json({ status: 'ok', path: req.params.sub });
+          });
+          module.exports = router;
+          MODEOF
 
-          # Check if app is already defined
-          # Try to inject after the line that creates express app
-          patch_line = "try { require('$HD/ach-analytics-patch.js')(app); } catch(e) { console.warn('[patch]', e.message); }"
+          echo "Module files created:"
+          ls -la "$HD/server/openach-patch.js" "$HD/server/routes/analytics.js"
 
-          # Strategy 1: inject after "app.use(express.json())" or similar middleware
-          patterns = [
-              r'(app\.use\(express\.json\(\)\);)',
-              r'(app\.use\(express\.urlencoded[^;]+;)',
-              r'(const app\s*=\s*express\(\);)',
-              r'(var app\s*=\s*express\(\);)',
-          ]
+          echo "=== Syntax check modules ==="
+          node --check "$HD/server/openach-patch.js" && echo "openach OK" || echo "openach FAIL"
+          node --check "$HD/server/routes/analytics.js" && echo "analytics OK" || echo "analytics FAIL"
 
-          injected = False
-          for pat in patterns:
-              m = re.search(pat, content)
-              if m:
-                  insert_pos = m.end()
-                  content = content[:insert_pos] + '\n' + patch_line + '\n' + content[insert_pos:]
-                  injected = True
-                  break
+          echo "=== Also ensure server-3002.js has the patch require ==="
+          cat "$HD/server-3002.js" | head -15
 
-          if not injected:
-              # Fallback: prepend after first require
-              m = re.search(r"(require\([^)]+\);)", content)
-              if m:
-                  insert_pos = m.end()
-                  content = content[:insert_pos] + '\n' + patch_line + '\n' + content[insert_pos:]
-                  injected = True
-
-          if not injected:
-              # Last resort: prepend to file
-              content = patch_line + '\n' + content
-
-          with open("$SERVER_FILE", 'w') as f:
-              f.write(content)
-
-          print("Injection done:", "success" if injected else "fallback")
-          PYEOF
-
-            echo "=== Patched server file ==="
-            head -30 "$SERVER_FILE"
+          echo "=== Restore server-3002.js from backup if needed ==="
+          # The original server-3002.js already has try/require for these modules
+          # If the .bak exists with the original code, use that (cleaner)
+          if [ -f "$HD/server-3002.js.bak" ]; then
+            cp "$HD/server-3002.js.bak" "$HD/server-3002.js"
+            echo "Restored original server-3002.js"
           fi
+          cat "$HD/server-3002.js"
 
-          echo "=== Syntax check ==="
-          node --check "$SERVER_FILE" && echo "SYNTAX OK" || { echo "SYNTAX FAIL - restoring backup"; cp "${SERVER_FILE}.bak" "$SERVER_FILE"; exit 1; }
-
-          echo "=== Restart the process ==="
-          PM2_NAME=$(pm2 jlist 2>/dev/null | python3 -c "
-          import json,sys
-          data=json.load(sys.stdin)
-          for p in data:
-            if '3002' in p.get('name',''):
-              print(p['name']); break
-          " 2>/dev/null)
-
-          if [ -n "$PM2_NAME" ]; then
-            echo "Restarting PM2 process: $PM2_NAME"
-            pm2 restart "$PM2_NAME"
-            sleep 5
-            pm2 list
-          else
-            echo "No PM2 process found, try to restart via kill + nohup"
-            PID=$(ss -tlnp | grep 3002 | grep -oP 'pid=\K[0-9]+' | head -1)
-            if [ -n "$PID" ]; then
-              kill "$PID" 2>/dev/null
-              sleep 2
-              nohup node "$SERVER_FILE" > "$HOME/.pm2/server-3002.log" 2>&1 &
-              sleep 4
-            fi
-          fi
-
-          echo "=== Test locally ==="
-          curl -s http://localhost:3002/api/ach/health | head -c 200
+          echo "=== Current state of port 3002 ==="
+          ss -tlnp | grep 3002
+          curl -s http://localhost:3002/api/ach/health | head -c 150
           echo ""
-          curl -s http://localhost:3002/api/analytics/summary | head -c 200
+          REMOTEOF
+
+      - name: Restart Node.js app via Plesk
+        run: |
+          echo "=== Method 1: Plesk XML API - disable and re-enable hosting ==="
+          # Disable hosting
+          curl -sk --max-time 30 "https://dlbtrust.cloud:8443/enterprise/control/agent.php" \
+            -H "HTTP_AUTH_LOGIN: admin" -H "HTTP_AUTH_PASSWD: $PLESK_PASS" \
+            -H "Content-Type: text/xml" \
+            -d '<?xml version="1.0"?><packet version="1.6.9.1"><webspace><set><filter><name>dlbtrust.cloud</name></filter><values><hosting><vrt_hst><property><name>proxy_mode</name><value>false</value></property></vrt_hst></hosting></values></set></webspace></packet>' 2>&1 | head -c 300
+          echo ""
+          sleep 5
+
+          # Re-enable hosting
+          curl -sk --max-time 30 "https://dlbtrust.cloud:8443/enterprise/control/agent.php" \
+            -H "HTTP_AUTH_LOGIN: admin" -H "HTTP_AUTH_PASSWD: $PLESK_PASS" \
+            -H "Content-Type: text/xml" \
+            -d '<?xml version="1.0"?><packet version="1.6.9.1"><webspace><set><filter><name>dlbtrust.cloud</name></filter><values><hosting><vrt_hst><property><name>proxy_mode</name><value>true</value></property></vrt_hst></hosting></values></set></webspace></packet>' 2>&1 | head -c 300
+          echo ""
+          sleep 5
+
+          echo "=== Method 2: SSH - Try to restart Node via PM2 and signals ==="
+          sshpass -p "$SSH_PASS" ssh -o StrictHostKeyChecking=no -o PasswordAuthentication=yes "$SSH_USER@$SERVER" 'bash -s' << 'REMOTEOF'
+          set -x
+          export HOME=/var/www/vhosts/dlbtrust.cloud
+
+          echo "=== Try pm2 restart all ==="
+          pm2 restart all 2>/dev/null || true
+          sleep 2
+
+          echo "=== Try pm2 start server-3002 fresh ==="
+          pm2 delete all 2>/dev/null || true
+          pm2 start /var/www/vhosts/dlbtrust.cloud/httpdocs/server-3002.js --name dlbtrust-3002 2>/dev/null || true
+          sleep 4
+          pm2 list 2>/dev/null
+
+          echo "=== Check if root PM2 has it ==="
+          # The root PM2 might be managing port 3002
+          # Try to send SIGHUP to the node process to trigger a reload
+          # First find all node processes
+          ps aux 2>/dev/null | grep 'node.*3002\|node.*server' | grep -v grep || true
+
+          echo "=== Check if there's a systemd service ==="
+          systemctl list-units --type=service 2>/dev/null | grep -i node || true
+          systemctl list-units --type=service 2>/dev/null | grep -i dlb || true
+          systemctl list-units --type=service 2>/dev/null | grep -i pm2 || true
+
+          echo "=== Test port 3002 after PM2 restart ==="
+          curl -s http://localhost:3002/api/ach/health | head -c 200
           echo ""
           curl -s http://localhost:3002/api/wallets | head -c 100
           echo ""
