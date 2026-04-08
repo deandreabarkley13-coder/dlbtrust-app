@@ -1,0 +1,89 @@
+name: Diagnose Port 3001 Process
+on:
+  push:
+    branches: [main]
+    paths: ['.github/workflows/diagnose-port-3001.yml']
+  workflow_dispatch:
+
+jobs:
+  diagnose:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      SERVER: "74.208.191.205"
+      SSH_USER: "dlbtrust.cloud_h6zkwzag1ya"
+      SSH_PASS: "Deploy2026!"
+
+    steps:
+      - uses: actions/checkout@v4
+      - run: apt-get install -y sshpass 2>/dev/null | tail -1 || true
+
+      - name: Check what is actually serving on port 3001
+        run: |
+          sshpass -p "$SSH_PASS" ssh \
+            -o StrictHostKeyChecking=no -o ConnectTimeout=10 \
+            -o PasswordAuthentication=yes \
+            "$SSH_USER@$SERVER" << 'SSHEOF'
+            echo "=== ss port 3001 ==="
+            ss -tlnp | grep 3001
+            
+            echo "=== All pm2 processes ==="
+            pm2 list 2>/dev/null
+            
+            echo "=== All node processes ==="
+            ps aux | grep node | grep -v grep
+            
+            echo "=== What process owns port 3001 ==="
+            PID=$(ss -tlnp | grep 3001 | grep -oP 'pid=\K[0-9]+' | head -1)
+            echo "PID: $PID"
+            if [ -n "$PID" ]; then
+              cat /proc/$PID/cmdline | tr '\0' ' '
+              echo ""
+              ls -la /proc/$PID/exe 2>/dev/null
+              cat /proc/$PID/environ | tr '\0' '\n' | grep -E "PORT|NODE|PM2|PATH" | head -10
+            fi
+            
+            echo "=== Test port 3001 directly ==="
+            curl -s http://localhost:3001/api/wallets | head -c 80
+            echo ""
+            curl -s http://localhost:3001/api/ach/health | head -c 80
+            echo ""
+            curl -s http://localhost:3001/ | head -c 100
+            
+            echo "=== Apache proxy config for dlbtrust.cloud ==="
+            cat /var/www/vhosts/dlbtrust.cloud/conf/vhost.conf 2>/dev/null | head -20
+            cat /etc/apache2/conf-enabled/zz010_psa_httpd.conf 2>/dev/null | grep -A5 "dlbtrust" | head -20
+          SSHEOF
+
+      - name: Check pm2 logs for running process
+        run: |
+          sshpass -p "$SSH_PASS" ssh \
+            -o StrictHostKeyChecking=no -o ConnectTimeout=10 \
+            -o PasswordAuthentication=yes \
+            "$SSH_USER@$SERVER" << 'SSHEOF'
+            echo "=== server-new.js error log ==="
+            cat /var/www/vhosts/dlbtrust.cloud/.pm2/logs/dlbtrust-full-error.log 2>/dev/null | tail -20 || echo "no log"
+            
+            echo "=== dlbtrust-v2 error log ==="
+            cat /var/www/vhosts/dlbtrust.cloud/.pm2/logs/dlbtrust-v2-error.log 2>/dev/null | tail -10 || \
+              ls /var/www/vhosts/dlbtrust.cloud/.pm2/logs/ 2>/dev/null
+            
+            echo "=== Check if original root-owned pm2 is still running ==="
+            # The original process was started by root, so its pm2 is at /root/.pm2
+            # Our user can't see root's pm2
+            # But we can check if PID is owned by root
+            PID=$(ss -tlnp | grep 3001 | grep -oP 'pid=\K[0-9]+' | head -1)
+            if [ -n "$PID" ]; then
+              echo "Port 3001 process owner: $(ps -p $PID -o user= 2>/dev/null)"
+              echo "Process cmd: $(cat /proc/$PID/cmdline 2>/dev/null | tr '\0' ' ')"
+            fi
+          SSHEOF
+
+      - name: Score
+        run: |
+          S=$SERVER; P=0; F=0
+          t() { r=$(eval "$2" 2>&1|head -c 200); echo "$r"|grep -q "$3" && { echo "✅ $1"; P=$((P+1)); } || { echo "❌ $1|${r:0:60}"; F=$((F+1)); }; }
+          t "Wallets"    "curl -sk --resolve 'dlbtrust.cloud:443:$S' https://dlbtrust.cloud/api/wallets"              "wallet_id"
+          t "ACH health" "curl -sk --resolve 'dlbtrust.cloud:443:$S' https://dlbtrust.cloud/api/ach/health"          "openach_connected"
+          t "Analytics"  "curl -sk --resolve 'dlbtrust.cloud:443:$S' https://dlbtrust.cloud/api/analytics/summary"   "total_corpus"
+          echo "━━━ $P/3 ━━━"
