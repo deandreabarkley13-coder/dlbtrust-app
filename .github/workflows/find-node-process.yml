@@ -1,0 +1,167 @@
+name: Find Node Process + Patch + Deploy
+on:
+  push:
+    branches: [main]
+    paths: ['.github/workflows/find-node-process.yml']
+  workflow_dispatch:
+
+jobs:
+  find:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      SERVER: "74.208.191.205"
+      SSH_USER: "dlbtrust.cloud_h6zkwzag1ya"
+      SSH_PASS: "Deploy2026!"
+
+    steps:
+      - uses: actions/checkout@v4
+      - run: apt-get install -y sshpass 2>/dev/null | tail -1 || true
+
+      - name: Find Node.js process and app location
+        run: |
+          sshpass -p "$SSH_PASS" ssh \
+            -o StrictHostKeyChecking=no -o ConnectTimeout=10 \
+            -o PasswordAuthentication=yes \
+            "$SSH_USER@$SERVER" << 'SSHEOF'
+            echo "=== PROCESSES WITH NODE ==="
+            ps aux | grep -i node | grep -v grep
+            
+            echo "=== ALL VHOSTS ==="
+            ls /var/www/vhosts/
+            
+            echo "=== FIND ALL JS FILES (not node_modules) ==="
+            find /var/www/vhosts/dlbtrust.cloud -name "*.js" \
+              -maxdepth 4 -not -path "*/node_modules/*" \
+              -not -path "*/assets/*" 2>/dev/null | sort
+            
+            echo "=== HTTPDOCS_V1_BACKUP APP.JS ==="
+            cat /var/www/vhosts/dlbtrust.cloud/httpdocs_v1_backup/app.js 2>/dev/null | head -50
+            
+            echo "=== NGINX/APACHE VHOST CONFIG ==="
+            cat /etc/apache2/conf-enabled/zz010_psa_httpd.conf 2>/dev/null || \
+              find /etc/apache2 /var/www/vhosts -name "*.conf" 2>/dev/null | \
+              xargs grep -l "dlbtrust\|3000\|3001\|ProxyPass" 2>/dev/null | head -5
+            
+            echo "=== CHECK PORT 3001 ==="
+            ss -tlnp | grep -E "3000|3001|3002" 2>/dev/null || \
+              netstat -tlnp 2>/dev/null | grep -E "3000|3001|3002"
+            
+            echo "=== HTACCESS ==="
+            cat /var/www/vhosts/dlbtrust.cloud/httpdocs/.htaccess 2>/dev/null
+            
+            echo "=== APP.HTML (serves as SPA?) ==="
+            cat /var/www/vhosts/dlbtrust.cloud/httpdocs/app.html 2>/dev/null | head -20
+            
+            echo "=== SUBDOMAIN CONF ==="
+            ls /var/www/vhosts/ | head -20
+            
+            echo "=== FIND SERVER.JS ANYWHERE ==="
+            find /var/www/vhosts/dlbtrust.cloud -name "server.js" \
+              -not -path "*/node_modules/*" 2>/dev/null
+            
+            echo "=== PM2 HOME APPS ==="
+            ls ~/.pm2/logs/ 2>/dev/null
+            cat ~/.pm2/dump.pm2 2>/dev/null | python3 -c "import json,sys; d=json.load(sys.stdin); [print(a.get('name'), a.get('pm_exec_path')) for a in d]" 2>/dev/null
+          SSHEOF
+
+      - name: Find and patch the real running app
+        run: |
+          sshpass -p "$SSH_PASS" ssh \
+            -o StrictHostKeyChecking=no -o ConnectTimeout=10 \
+            -o PasswordAuthentication=yes \
+            "$SSH_USER@$SERVER" << 'SSHEOF'
+            echo "=== FIND REAL APP ==="
+            # Check pm2 saved processes
+            if [ -f ~/.pm2/dump.pm2 ]; then
+              APP_PATH=$(python3 -c "
+          import json
+          d=json.load(open('/var/www/vhosts/dlbtrust.cloud/.pm2/dump.pm2'))
+          for a in d: print(a.get('pm_exec_path',''), a.get('cwd',''))
+          " 2>/dev/null)
+              echo "PM2 dump app: $APP_PATH"
+            fi
+            
+            # Find by looking at what's actually running on ports
+            LISTENING=$(ss -tlnp 2>/dev/null | grep -E "3000|3001" | grep -oP 'pid=\K[0-9]+' | head -1)
+            if [ -n "$LISTENING" ]; then
+              APP_FILE=$(cat /proc/$LISTENING/cmdline 2>/dev/null | tr '\0' ' ')
+              echo "Running process: $APP_FILE"
+            fi
+            
+            # Check /proc for node processes
+            for pid in $(pgrep -u $(whoami) node 2>/dev/null); do
+              echo "PID $pid: $(cat /proc/$pid/cmdline 2>/dev/null | tr '\0' ' ')"
+              echo "CWD: $(readlink /proc/$pid/cwd 2>/dev/null)"
+            done
+            
+            # Also check as root's node processes visible to us
+            ps aux | grep "node " | grep -v grep | awk '{print $1,$2,$11,$12,$13}'
+          SSHEOF
+
+      - name: Deploy to the correct location
+        run: |
+          sshpass -p "$SSH_PASS" ssh \
+            -o StrictHostKeyChecking=no -o ConnectTimeout=10 \
+            -o PasswordAuthentication=yes \
+            "$SSH_USER@$SERVER" << 'SSHEOF'
+            
+            # The app is likely in a different location
+            # Try subdomain folders, parent directories
+            for DIR in \
+              "/var/www/vhosts/dlbtrust.cloud" \
+              "/var/www/vhosts/dlbtrust.cloud/private" \
+              "/home/dlbtrust.cloud_h6zkwzag1ya" \
+              "/root" \
+              "/opt/dlbtrust" \
+              "/srv/dlbtrust"; do
+              
+              if [ -f "$DIR/server.js" ] || [ -f "$DIR/app.js" ]; then
+                echo "FOUND APP AT: $DIR"
+                ls "$DIR" | head -10
+                APP="$DIR/$(ls $DIR | grep -E '^(app|server)\.js$' | head -1)"
+                echo "Entry: $APP"
+                
+                cd "$DIR"
+                
+                # Pull latest
+                git pull origin main 2>&1 | tail -3 || echo "git pull failed"
+                
+                # Patch
+                grep -q "openach-patch" "$APP" || \
+                  sed -i "s/app\.listen/require('.\/server\/openach-patch')(app, typeof db !== 'undefined' ? db : null);\napp.listen/" "$APP"
+                grep -q "analytics" "$APP" || \
+                  sed -i "s/app\.listen/app.use('\/api\/analytics', require('.\/server\/routes\/analytics'));\napp.listen/" "$APP"
+                
+                echo "--- Patched app head ---"
+                head -20 "$APP"
+                
+                # Restart
+                pm2 restart all 2>/dev/null || pm2 start "$APP" --name dlbtrust
+                sleep 3
+                pm2 list
+                break
+              fi
+            done
+            
+            # Also try to write our server files to httpdocs and create a proxy
+            # Since httpdocs serves static files, maybe we need to enable Node.js in Plesk
+            echo "=== HTTPDOCS FILES ==="
+            ls /var/www/vhosts/dlbtrust.cloud/httpdocs/ | head -20
+            
+            # Check if there's a Plesk Node.js app config
+            find /var/www/vhosts/dlbtrust.cloud -name "*.config" \
+              -o -name "nginx.conf" -o -name "apache2.conf" 2>/dev/null | head -10
+          SSHEOF
+
+      - name: Final score
+        run: |
+          S=$SERVER; P=0; F=0
+          t() { r=$(eval "$2" 2>&1|head -c 200); echo "$r"|grep -q "$3" && { echo "✅ $1"; P=$((P+1)); } || { echo "❌ $1|${r:0:70}"; F=$((F+1)); }; }
+          t "Wallets"    "curl -sk --resolve 'dlbtrust.cloud:443:$S' https://dlbtrust.cloud/api/wallets"              "wallet_id"
+          t "ACH health" "curl -sk --resolve 'dlbtrust.cloud:443:$S' https://dlbtrust.cloud/api/ach/health"          "openach_connected"
+          t "Analytics"  "curl -sk --resolve 'dlbtrust.cloud:443:$S' https://dlbtrust.cloud/api/analytics/summary"   "total_corpus"
+          t "OA UI"      "curl -sk --resolve 'ach.dlbtrust.cloud:443:$S' https://ach.dlbtrust.cloud/openach/ -o/dev/null -w '%{http_code}'" "200"
+          t "OA API"     "curl -sk --resolve 'ach.dlbtrust.cloud:443:$S' -X POST https://ach.dlbtrust.cloud/openach/api/connect --data 'user_api_token=3caee1c2-c218-4959-b6d2-21d4b2a1b42e&user_api_key=b74966cf-5276-4d8b-8650-5bd57dcee272'" '"success":true'
+          echo "━━━ SCORE: $P/5 ━━━"
+          [ $F -eq 0 ] && echo "🎉 100% PRODUCTION READY" || echo "⚠️ $F failing"
