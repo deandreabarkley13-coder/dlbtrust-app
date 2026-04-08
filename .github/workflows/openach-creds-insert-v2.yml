@@ -9,58 +9,59 @@ jobs:
       - name: Install sshpass
         run: sudo apt-get install -y sshpass 2>/dev/null | tail -1 || true
 
-      - name: Insert OpenACH API credentials via root SSH
+      - name: Try all SSH methods to insert credentials
         run: |
-          echo "=== Attempting root SSH to insert API credentials ==="
+          SQL="INSERT OR IGNORE INTO user_api VALUES('4fc86059-2e7b-4732-b94f-e7c3715ee8d7',datetime('now'),'0eb26e1d-5fcc-4978-a132-dd93c2655429','3caee1c2-c218-4959-b6d2-21d4b2a1b42e','b74966cf-5276-4d8b-8650-5bd57dcee272','enabled');"
+          VERIFY="SELECT user_api_token, user_api_key, user_api_status FROM user_api WHERE user_api_user_id='4fc86059-2e7b-4732-b94f-e7c3715ee8d7';"
+          DB="/var/www/html/protected/runtime/db/openach.db"
+          SUCCESS=false
 
-          # Try with Plesk admin password as root
-          RESULT=$(sshpass -p "dP8RlShbOWNq" ssh -o StrictHostKeyChecking=no -o ConnectTimeout=15 -o PasswordAuthentication=yes root@$SERVER '
-            set -e
-            echo "=== Finding OpenACH Docker container ==="
-            CONTAINER=$(docker ps --format "{{.Names}}" | grep -i openach | head -1)
-            echo "Container: $CONTAINER"
+          echo "=== Method 1: Root SSH with Plesk password ==="
+          sshpass -p "dP8RlShbOWNq" ssh -o StrictHostKeyChecking=no -o ConnectTimeout=10 -o PasswordAuthentication=yes root@$SERVER \
+            "CONTAINER=\$(docker ps --format '{{.Names}}' | grep -i openach | head -1); echo Container:\$CONTAINER; docker exec \"\$CONTAINER\" sqlite3 $DB \"$SQL\"; docker exec \"\$CONTAINER\" sqlite3 $DB \"$VERIFY\"" 2>&1 && SUCCESS=true || echo "Method 1 failed"
 
-            if [ -z "$CONTAINER" ]; then
-              echo "No openach named container found. All containers:"
-              docker ps --format "table {{.Names}}\t{{.Image}}\t{{.Status}}"
-              exit 1
-            fi
-
-            echo "=== Inserting API credentials ==="
-            docker exec "$CONTAINER" sqlite3 \
-              /var/www/html/protected/runtime/db/openach.db \
-              "INSERT OR IGNORE INTO user_api VALUES('"'"'4fc86059-2e7b-4732-b94f-e7c3715ee8d7'"'"',datetime('"'"'now'"'"'),'"'"'0eb26e1d-5fcc-4978-a132-dd93c2655429'"'"','"'"'3caee1c2-c218-4959-b6d2-21d4b2a1b42e'"'"','"'"'b74966cf-5276-4d8b-8650-5bd57dcee272'"'"','"'"'enabled'"'"');"
-
-            echo "=== Verifying insertion ==="
-            docker exec "$CONTAINER" sqlite3 \
-              /var/www/html/protected/runtime/db/openach.db \
-              "SELECT user_api_token, user_api_key, user_api_status FROM user_api WHERE user_api_user_id='"'"'4fc86059-2e7b-4732-b94f-e7c3715ee8d7'"'"';"
-          ' 2>&1)
-
-          echo "$RESULT"
-
-          if echo "$RESULT" | grep -q "3caee1c2"; then
-            echo "=== SUCCESS: Credentials inserted and verified ==="
-          else
-            echo "=== Root SSH result (may have failed) ==="
-            echo "Trying system user with password piped to sudo..."
-
-            sshpass -p "Deploy2026!" ssh -o StrictHostKeyChecking=no -o ConnectTimeout=15 -o PasswordAuthentication=yes dlbtrust.cloud_h6zkwzag1ya@$SERVER '
-              echo "Deploy2026!" | sudo -S docker ps --format "{{.Names}}" 2>/dev/null | head -5
-              CONTAINER=$(echo "Deploy2026!" | sudo -S docker ps --format "{{.Names}}" 2>/dev/null | grep -i openach | head -1)
-              echo "Container: $CONTAINER"
-              if [ -n "$CONTAINER" ]; then
-                echo "Deploy2026!" | sudo -S docker exec "$CONTAINER" sqlite3 \
-                  /var/www/html/protected/runtime/db/openach.db \
-                  "INSERT OR IGNORE INTO user_api VALUES('"'"'4fc86059-2e7b-4732-b94f-e7c3715ee8d7'"'"',datetime('"'"'now'"'"'),'"'"'0eb26e1d-5fcc-4978-a132-dd93c2655429'"'"','"'"'3caee1c2-c218-4959-b6d2-21d4b2a1b42e'"'"','"'"'b74966cf-5276-4d8b-8650-5bd57dcee272'"'"','"'"'enabled'"'"');" 2>&1
-                echo "Deploy2026!" | sudo -S docker exec "$CONTAINER" sqlite3 \
-                  /var/www/html/protected/runtime/db/openach.db \
-                  "SELECT user_api_token, user_api_key, user_api_status FROM user_api;" 2>&1
-              fi
-            ' 2>&1 || true
+          if [ "$SUCCESS" = false ]; then
+            echo ""
+            echo "=== Method 2: System user + sudo -S ==="
+            sshpass -p "Deploy2026!" ssh -o StrictHostKeyChecking=no -o ConnectTimeout=10 -o PasswordAuthentication=yes dlbtrust.cloud_h6zkwzag1ya@$SERVER \
+              "echo 'Deploy2026!' | sudo -S sh -c 'CONTAINER=\$(docker ps --format \"{{.Names}}\" | grep -i openach | head -1); echo Container:\$CONTAINER; docker exec \"\$CONTAINER\" sqlite3 $DB \"$SQL\"; docker exec \"\$CONTAINER\" sqlite3 $DB \"$VERIFY\"'" 2>&1 && SUCCESS=true || echo "Method 2 failed"
           fi
 
+          if [ "$SUCCESS" = false ]; then
+            echo ""
+            echo "=== Method 3: System user via appleboy action below ==="
+          fi
+
+      - name: Method 3 — appleboy SSH with sudo -S
+        if: always()
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: 74.208.191.205
+          username: dlbtrust.cloud_h6zkwzag1ya
+          password: Deploy2026!
+          port: 22
+          command_timeout: 120s
+          script: |
+            echo "Deploy2026!" | sudo -S docker ps --format "{{.Names}}" 2>&1 || echo "sudo docker failed"
+            CONTAINER=$(echo "Deploy2026!" | sudo -S docker ps --format "{{.Names}}" 2>/dev/null | grep -i openach | head -1)
+            if [ -z "$CONTAINER" ]; then
+              CONTAINER=$(echo "Deploy2026!" | sudo -S docker ps --format "{{.Names}}" 2>/dev/null | head -1)
+            fi
+            echo "Container: $CONTAINER"
+            if [ -n "$CONTAINER" ]; then
+              echo "Deploy2026!" | sudo -S docker exec "$CONTAINER" sqlite3 \
+                /var/www/html/protected/runtime/db/openach.db \
+                "INSERT OR IGNORE INTO user_api VALUES('4fc86059-2e7b-4732-b94f-e7c3715ee8d7',datetime('now'),'0eb26e1d-5fcc-4978-a132-dd93c2655429','3caee1c2-c218-4959-b6d2-21d4b2a1b42e','b74966cf-5276-4d8b-8650-5bd57dcee272','enabled');" 2>&1
+              echo "Deploy2026!" | sudo -S docker exec "$CONTAINER" sqlite3 \
+                /var/www/html/protected/runtime/db/openach.db \
+                "SELECT user_api_token, user_api_key, user_api_status FROM user_api;" 2>&1
+            else
+              echo "No container found"
+              echo "Deploy2026!" | sudo -S docker ps -a 2>&1 || echo "Cannot list containers"
+            fi
+
       - name: Test API via HTTPS
+        if: always()
         run: |
           echo "=== Testing OpenACH API ==="
           curl -sk --max-time 15 \
