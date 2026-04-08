@@ -7,7 +7,7 @@ jobs:
   fix:
     runs-on: ubuntu-latest
     steps:
-      - name: Fix vhost + plesk repair web to reload Apache
+      - name: Fix vhost + reconfigurator + domain update
         uses: appleboy/ssh-action@v1.0.3
         with:
           host: 74.208.191.205
@@ -19,10 +19,7 @@ jobs:
             export HOME=/var/www/vhosts/dlbtrust.cloud
             VHOST=/var/www/vhosts/dlbtrust.cloud/conf/vhost.conf
 
-            echo "=== 1. Proxy3003 OK ==="
-            curl -s --max-time 5 http://127.0.0.1:3003/api/ach/health | grep -q openach_connected && echo "ACH proxy OK"
-
-            echo "=== 2. Write vhost.conf ==="
+            echo "=== 1. Write vhost.conf ==="
             printf '%s\n' \
               '<Directory /var/www/vhosts/dlbtrust.cloud/httpdocs>' \
               '  Options -Indexes' \
@@ -34,25 +31,27 @@ jobs:
               'ProxyPassReverse /api/analytics/summary http://localhost:3003/api/analytics/summary' \
               'ProxyPass / http://localhost:3002/' \
               'ProxyPassReverse / http://localhost:3002/' > $VHOST
-            echo "vhost.conf written"; cat $VHOST
+            cat $VHOST
 
-            echo "=== 3. Run plesk repair web ==="
-            /usr/sbin/plesk repair web dlbtrust.cloud -y 2>&1 || true
+            echo "=== 2. Try reconfigurator ==="
+            /usr/local/psa/bin/reconfigurator 2>&1 | head -10 || true
+            /usr/local/psa/bin/reconfigurator.pl 2>&1 | head -10 || true
+
+            echo "=== 3. Try domain update ==="
+            /usr/local/psa/bin/domain -u dlbtrust.cloud 2>&1 || true
+
+            echo "=== 4. Look for generated Apache config ==="
+            find /etc/apache2 -name "*dlbtrust*" 2>/dev/null | head -5
+            find /var/www/vhosts/system/dlbtrust.cloud -name "*.conf" 2>/dev/null | head -5
+            ls /var/www/vhosts/system/dlbtrust.cloud/conf/ 2>/dev/null || true
+
+            echo "=== 5. Read the ACTUAL Apache config Plesk generates ==="
+            cat /var/www/vhosts/system/dlbtrust.cloud/conf/vhost.conf 2>/dev/null | grep -E "ProxyPass|proxy|3001|3002|3003" | head -20 || true
+            cat /etc/apache2/plesk.conf.d/vhosts/dlbtrust.cloud.conf 2>/dev/null | grep -E "ProxyPass|proxy|3001|3002|3003" | head -20 || true
+            find /etc/apache2 -name "*.conf" 2>/dev/null | xargs grep -l "dlbtrust" 2>/dev/null | head -5 | xargs cat 2>/dev/null | grep -E "ProxyPass|3001|3002" | head -20 || true
+
             sleep 5
-
-            echo "=== 4. Test public endpoints ==="
-            ACH=$(curl -sk --max-time 15 https://dlbtrust.cloud/api/ach/health)
-            ANA=$(curl -sk --max-time 15 https://dlbtrust.cloud/api/analytics/summary)
-            echo "ACH: $ACH" | head -c 200; echo ""
-            echo "ANA: $ANA" | head -c 200; echo ""
-            echo "$ACH" | grep -q openach_connected && echo "PUBLIC ACH: PASS" || echo "PUBLIC ACH: FAIL (plesk repair failed)"
-            echo "$ANA" | grep -q total_corpus && echo "PUBLIC ANALYTICS: PASS" || echo "PUBLIC ANALYTICS: FAIL (plesk repair failed)"
-
-            if ! echo "$ACH" | grep -q openach_connected; then
-              echo "=== 5. plesk repair failed — try Plesk bin tools ==="
-              ls /usr/local/psa/bin/ | grep -E "apache|web|reconf|domain" | head -10 || true
-              /usr/local/psa/bin/httpdmng --reconfigure-vhost dlbtrust.cloud 2>&1 || true
-              sleep 5
-              curl -sk --max-time 10 https://dlbtrust.cloud/api/ach/health | grep -q openach_connected && echo "PUBLIC ACH: PASS (httpdmng)" || echo "PUBLIC ACH: STILL FAIL"
-            fi
+            echo "=== 6. Public test ==="
+            curl -sk --max-time 10 https://dlbtrust.cloud/api/ach/health | grep -q openach_connected && echo "PUBLIC ACH: PASS" || echo "PUBLIC ACH: FAIL"
+            curl -sk --max-time 10 https://dlbtrust.cloud/api/analytics/summary | grep -q total_corpus && echo "PUBLIC ANALYTICS: PASS" || echo "PUBLIC ANALYTICS: FAIL"
             echo "=== DONE ==="
