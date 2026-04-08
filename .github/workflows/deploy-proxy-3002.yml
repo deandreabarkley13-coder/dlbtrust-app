@@ -7,17 +7,18 @@ jobs:
   deploy:
     runs-on: ubuntu-latest
     steps:
-      - name: Ensure proxy and fix routing
+      - name: Ensure proxy on 3003
         uses: appleboy/ssh-action@v1.0.3
         with:
           host: 74.208.191.205
           username: dlbtrust.cloud_h6zkwzag1ya
           password: Deploy2026!
           port: 22
-          command_timeout: 120s
+          command_timeout: 60s
           script: |
-            echo "=== Ensure proxy on 3003 ==="
-            if ! curl -s --max-time 3 http://127.0.0.1:3003/api/ach/health 2>/dev/null | grep -q openach_connected; then
+            if curl -s --max-time 3 http://127.0.0.1:3003/api/ach/health 2>/dev/null | grep -q openach_connected; then
+              echo "Proxy healthy"
+            else
               cd /var/www/vhosts/dlbtrust.cloud/httpdocs
               pm2 delete server-proxy 2>/dev/null || true
               fuser -k 3003/tcp 2>/dev/null || true
@@ -26,125 +27,85 @@ jobs:
               pm2 start server-proxy.js --name server-proxy
               sleep 3
             fi
-            echo "Proxy check:"
             curl -s http://127.0.0.1:3003/api/ach/health | head -c 80
-            echo ""
 
-      - name: Update Plesk additional-settings and force reconfigure
+      - name: Update Plesk additional-settings via XML payload file
         run: |
-          PLESK="https://dlbtrust.cloud:8443"
-          AUTH_USER="admin"
-          AUTH_PASS="dP8RlShbOWNq"
+          # Write the XML payload to a file to avoid shell escaping issues
+          cat > /tmp/plesk_set.xml << 'XMLEOF'
+          <?xml version="1.0" encoding="UTF-8"?>
+          <packet version="1.6.9.1">
+            <webspace>
+              <set>
+                <filter><name>dlbtrust.cloud</name></filter>
+                <values>
+                  <hosting>
+                    <vrt_hst>
+                      <property>
+                        <name>additional-settings</name>
+                        <value>ProxyPreserveHost On&#10;&#10;ProxyPass /api/ach/health http://127.0.0.1:3003/api/ach/health&#10;ProxyPassReverse /api/ach/health http://127.0.0.1:3003/api/ach/health&#10;&#10;ProxyPass /api/analytics/summary http://127.0.0.1:3003/api/analytics/summary&#10;ProxyPassReverse /api/analytics/summary http://127.0.0.1:3003/api/analytics/summary&#10;&#10;ProxyPass /api/payment-gateway/ http://127.0.0.1:3002/api/payment-gateway/&#10;ProxyPassReverse /api/payment-gateway/ http://127.0.0.1:3002/api/payment-gateway/&#10;&#10;ProxyPass /api/ http://127.0.0.1:3002/api/&#10;ProxyPassReverse /api/ http://127.0.0.1:3002/api/&#10;&#10;ProxyPass /openach/ http://127.0.0.1:8080/openach/&#10;ProxyPassReverse /openach/ http://127.0.0.1:8080/openach/</value>
+                      </property>
+                    </vrt_hst>
+                  </hosting>
+                </values>
+              </set>
+            </webspace>
+          </packet>
+          XMLEOF
 
-          echo "=== 1. Read current additional-settings ==="
-          RESPONSE=$(curl -sk "$PLESK/enterprise/control/agent.php" \
-            -H "HTTP_AUTH_LOGIN: $AUTH_USER" \
-            -H "HTTP_AUTH_PASSWD: $AUTH_PASS" \
+          echo "=== XML payload ==="
+          cat /tmp/plesk_set.xml
+          echo ""
+
+          echo "=== Send to Plesk ==="
+          RESPONSE=$(curl -sk "https://dlbtrust.cloud:8443/enterprise/control/agent.php" \
+            -H "HTTP_AUTH_LOGIN: admin" \
+            -H "HTTP_AUTH_PASSWD: dP8RlShbOWNq" \
+            -H "Content-Type: text/xml" \
+            -d @/tmp/plesk_set.xml)
+
+          echo "Response: $RESPONSE"
+
+          echo ""
+          echo "=== Verify ==="
+          VERIFY=$(curl -sk "https://dlbtrust.cloud:8443/enterprise/control/agent.php" \
+            -H "HTTP_AUTH_LOGIN: admin" \
+            -H "HTTP_AUTH_PASSWD: dP8RlShbOWNq" \
             -H "Content-Type: text/xml" \
             -d '<?xml version="1.0" encoding="UTF-8"?><packet version="1.6.9.1"><webspace><get><filter><name>dlbtrust.cloud</name></filter><dataset><hosting/></dataset></get></webspace></packet>')
 
-          echo "Current additional-settings:"
+          # Extract just the additional-settings value
+          python3 << 'PYEOF'
+          import re, sys
+          data = """PLACEHOLDER"""
+          PYEOF
+
+          # Use a temp file approach for python
+          echo "$VERIFY" > /tmp/plesk_verify.xml
           python3 -c "
           import re
-          data = '''$RESPONSE'''
+          with open('/tmp/plesk_verify.xml') as f:
+              data = f.read()
           m = re.search(r'additional-settings</name><value>(.*?)</value>', data, re.DOTALL)
           if m:
-              val = m.group(1).replace('&#10;', '\n').replace('&amp;', '&').replace('&lt;', '<').replace('&gt;', '>')
+              val = m.group(1).replace('&#10;', chr(10)).replace('&amp;', '&')
+              print('SAVED VALUE:')
               print(val)
+              if '3003' in val:
+                  print('SUCCESS: Port 3003 routes are in the saved config!')
+              else:
+                  print('FAILURE: Port 3003 routes NOT saved')
           else:
-              print('NOT FOUND')
-              print('Excerpt:', data[:500])
-          " 2>/dev/null || echo "Parse failed"
+              print('Could not parse additional-settings from response')
+              print('Response preview:', data[:300])
+          "
 
           echo ""
-          echo "=== 2. Set additional-settings with specific port 3003 routes ==="
-          # The settings need specific /api/ach/health and /api/analytics/summary ProxyPass
-          # BEFORE the generic /api/ ProxyPass to port 3002
-          SETTINGS_ENCODED="ProxyPreserveHost On&#10;ProxyPass /api/ach/health http://127.0.0.1:3003/api/ach/health&#10;ProxyPassReverse /api/ach/health http://127.0.0.1:3003/api/ach/health&#10;ProxyPass /api/analytics/summary http://127.0.0.1:3003/api/analytics/summary&#10;ProxyPassReverse /api/analytics/summary http://127.0.0.1:3003/api/analytics/summary&#10;ProxyPass /api/ http://127.0.0.1:3002/api/&#10;ProxyPassReverse /api/ http://127.0.0.1:3002/api/&#10;ProxyPass / http://127.0.0.1:3001/&#10;ProxyPassReverse / http://127.0.0.1:3001/"
-
-          SET_RESPONSE=$(curl -sk "$PLESK/enterprise/control/agent.php" \
-            -H "HTTP_AUTH_LOGIN: $AUTH_USER" \
-            -H "HTTP_AUTH_PASSWD: $AUTH_PASS" \
-            -H "Content-Type: text/xml" \
-            -d "<?xml version=\"1.0\" encoding=\"UTF-8\"?><packet version=\"1.6.9.1\"><webspace><set><filter><name>dlbtrust.cloud</name></filter><values><hosting><vrt_hst><property><name>additional-settings</name><value>${SETTINGS_ENCODED}</value></property></vrt_hst></hosting></values></set></webspace></packet>")
-
-          echo "Set response:"
-          echo "$SET_RESPONSE" | head -c 300
-          echo ""
-
-          echo ""
-          echo "=== 3. Verify it was saved ==="
-          VERIFY=$(curl -sk "$PLESK/enterprise/control/agent.php" \
-            -H "HTTP_AUTH_LOGIN: $AUTH_USER" \
-            -H "HTTP_AUTH_PASSWD: $AUTH_PASS" \
-            -H "Content-Type: text/xml" \
-            -d '<?xml version="1.0" encoding="UTF-8"?><packet version="1.6.9.1"><webspace><get><filter><name>dlbtrust.cloud</name></filter><dataset><hosting/></dataset></get></webspace></packet>')
-
-          echo "Verified additional-settings:"
-          python3 -c "
-          import re
-          data = '''$(echo "$VERIFY" | sed "s/'/\\\\'/g")'''
-          m = re.search(r'additional-settings</name><value>(.*?)</value>', data, re.DOTALL)
-          if m:
-              val = m.group(1).replace('&#10;', '\n').replace('&amp;', '&')
-              print(val)
-          else:
-              print('NOT FOUND')
-          " 2>/dev/null || echo "Parse failed"
-
-          echo ""
-          echo "=== 4. Force Plesk to reconfigure webserver ==="
-
-          # Method 1: REST API v2 - reconfigure domain
-          echo "Method 1: REST API domain update..."
-          curl -sk -X PUT "$PLESK/api/v2/domains/1" \
-            -u "$AUTH_USER:$AUTH_PASS" \
-            -H "Content-Type: application/json" \
-            -d '{"hosting_type":"virtual"}' 2>&1 | head -c 300
-          echo ""
-
-          # Method 2: REST API CLI - websrvmng
-          echo "Method 2: CLI API websrvmng..."
-          curl -sk -X POST "$PLESK/api/v2/cli/commands/execute" \
-            -u "$AUTH_USER:$AUTH_PASS" \
-            -H "Content-Type: application/json" \
-            -d '{"command":"websrvmng","params":["--reconfigure-domain","dlbtrust.cloud"]}' 2>&1 | head -c 500
-          echo ""
-
-          # Method 3: REST API CLI - httpdmng
-          echo "Method 3: CLI API httpdmng..."
-          curl -sk -X POST "$PLESK/api/v2/cli/commands/execute" \
-            -u "$AUTH_USER:$AUTH_PASS" \
-            -H "Content-Type: application/json" \
-            -d '{"command":"httpdmng","params":["--reconfigure-domain","dlbtrust.cloud"]}' 2>&1 | head -c 500
-          echo ""
-
-          # Method 4: REST API CLI - service apache reload
-          echo "Method 4: CLI API apache reload..."
-          curl -sk -X POST "$PLESK/api/v2/cli/commands/execute" \
-            -u "$AUTH_USER:$AUTH_PASS" \
-            -H "Content-Type: application/json" \
-            -d '{"command":"service","params":["apache2","reload"]}' 2>&1 | head -c 500
-          echo ""
-
-          # Method 5: REST API CLI - plesk bin domain
-          echo "Method 5: CLI API plesk bin domain..."
-          curl -sk -X POST "$PLESK/api/v2/cli/commands/execute" \
-            -u "$AUTH_USER:$AUTH_PASS" \
-            -H "Content-Type: application/json" \
-            -d '{"command":"/usr/local/psa/admin/sbin/websrvmng","params":["-a","-v"]}' 2>&1 | head -c 500
-          echo ""
-
-          sleep 5
-
-          echo ""
-          echo "=== 5. Final external test ==="
+          echo "=== Test endpoints ==="
+          sleep 3
           echo "ACH:"
           curl -sk https://dlbtrust.cloud/api/ach/health | head -c 300
           echo ""
           echo "Analytics:"
           curl -sk https://dlbtrust.cloud/api/analytics/summary | head -c 300
-          echo ""
-          echo "Wallets:"
-          curl -sk https://dlbtrust.cloud/api/wallets | head -c 100
           echo ""
