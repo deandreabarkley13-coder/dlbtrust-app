@@ -22,47 +22,51 @@ jobs:
             CONF=/var/www/vhosts/dlbtrust.cloud/conf/vhost.conf
             RAW=https://raw.githubusercontent.com/deandreabarkley13-coder/dlbtrust-app/main/server/server-proxy.js
 
-            echo "=== Step 1: Stop old proxy ==="
-            pm2 delete server-proxy 2>/dev/null || true
+            echo "=== Step 0: Diagnose ports ==="
+            ss -tlnp 2>/dev/null | grep -E ':300[0-9] ' || echo "no 300x ports visible via ss"
+            netstat -tlnp 2>/dev/null | grep -E ':300[0-9] ' || echo "no 300x ports visible via netstat"
+
+            echo "=== Step 1: Kill ALL old pm2 processes ==="
+            pm2 kill 2>/dev/null || true
             sleep 1
             fuser -k 3002/tcp 2>/dev/null || true
+            fuser -k 3003/tcp 2>/dev/null || true
             sleep 2
+
+            echo "=== After cleanup ==="
+            ss -tlnp 2>/dev/null | grep -E ':300[0-9] ' || echo "no 300x ports after cleanup"
 
             echo "=== Step 2: Download proxy JS from repo ==="
             curl -sL "$RAW" -o "$DEST/server-proxy.js"
-            echo "Downloaded, first 5 lines:"
+            echo "Downloaded. First 5 lines:"
             head -5 "$DEST/server-proxy.js"
+            echo "Port line:"
+            grep "PORT" "$DEST/server-proxy.js" | head -2
 
             echo "=== Step 3: Start with pm2 ==="
-            pm2 start "$DEST/server-proxy.js" --name server-proxy
-            sleep 4
+            pm2 start "$DEST/server-proxy.js" --name server-proxy --no-autorestart
+            sleep 3
             pm2 list
+            pm2 logs server-proxy --lines 10 --nostream 2>/dev/null || true
 
-            if ss -tlnp 2>/dev/null | grep -q ':3002 '; then
-              echo "PORT 3002 UP"
-            elif netstat -tlnp 2>/dev/null | grep -q ':3002 '; then
-              echo "PORT 3002 UP (netstat)"
-            else
-              echo "Port 3002 not detected via ss/netstat, trying nohup fallback..."
-              pm2 logs server-proxy --lines 20 --nostream || true
-              nohup node "$DEST/server-proxy.js" > /tmp/proxy.log 2>&1 &
-              sleep 3
-              tail -5 /tmp/proxy.log || true
-            fi
+            echo "=== Port check ==="
+            ss -tlnp 2>/dev/null | grep ':3003 ' && echo "PORT 3003 UP" || echo "PORT 3003 not via ss"
+            netstat -tlnp 2>/dev/null | grep ':3003 ' && echo "PORT 3003 UP (netstat)" || echo "PORT 3003 not via netstat"
+            curl -s --max-time 3 http://localhost:3003/ > /dev/null 2>&1 && echo "PORT 3003 responds" || echo "PORT 3003 no response"
 
             echo "=== Step 4: Test locally ==="
             echo "--- ACH health ---"
-            curl -s http://localhost:3002/api/ach/health || echo "CURL FAILED"
+            curl -s --max-time 5 http://localhost:3003/api/ach/health || echo "CURL FAILED"
             echo ""
             echo "--- Analytics summary ---"
-            curl -s http://localhost:3002/api/analytics/summary || echo "CURL FAILED"
+            curl -s --max-time 5 http://localhost:3003/api/analytics/summary || echo "CURL FAILED"
             echo ""
-            curl -s http://localhost:3002/api/ach/health | grep -q openach_connected && echo "ACH FIELD: OK" || echo "ACH FIELD: MISSING"
-            curl -s http://localhost:3002/api/analytics/summary | grep -q total_corpus && echo "ANALYTICS FIELD: OK" || echo "ANALYTICS FIELD: MISSING"
+            curl -s --max-time 5 http://localhost:3003/api/ach/health | grep -q openach_connected && echo "ACH FIELD: OK" || echo "ACH FIELD: MISSING"
+            curl -s --max-time 5 http://localhost:3003/api/analytics/summary | grep -q total_corpus && echo "ANALYTICS FIELD: OK" || echo "ANALYTICS FIELD: MISSING"
 
             echo "=== Step 5: Update vhost.conf ==="
-            printf '<Directory /var/www/vhosts/dlbtrust.cloud/httpdocs>\n  Options -Indexes\n</Directory>\nProxyPass / http://localhost:3002/\nProxyPassReverse / http://localhost:3002/\n' > "$CONF"
-            echo "vhost.conf contents:"
+            printf '<Directory /var/www/vhosts/dlbtrust.cloud/httpdocs>\n  Options -Indexes\n</Directory>\nProxyPass / http://localhost:3003/\nProxyPassReverse / http://localhost:3003/\n' > "$CONF"
+            echo "vhost.conf:"
             cat "$CONF"
 
             echo "=== Step 6: Reload Apache via Plesk ==="
@@ -77,8 +81,8 @@ jobs:
             sleep 5
 
             echo "=== Step 7: Public HTTPS test ==="
-            curl -sk https://dlbtrust.cloud/api/ach/health | head -c 200
+            curl -sk https://dlbtrust.cloud/api/ach/health | head -c 300
             echo ""
-            curl -sk https://dlbtrust.cloud/api/analytics/summary | head -c 200
+            curl -sk https://dlbtrust.cloud/api/analytics/summary | head -c 300
             echo ""
             echo "=== DONE ==="

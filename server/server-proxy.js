@@ -1,6 +1,6 @@
 'use strict';
 const http = require('http');
-const PORT = 3002;
+const PORT = 3003;
 
 const server = http.createServer(function(req, res) {
   const url = req.url || '/';
