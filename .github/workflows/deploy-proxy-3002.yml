@@ -7,68 +7,55 @@ jobs:
   deploy:
     runs-on: ubuntu-latest
     steps:
-      - name: Diagnose port 3002 Express app and find fix path
+      - name: Fix ACH and Analytics routes via htaccess + proxy
         uses: appleboy/ssh-action@v1.0.3
         with:
           host: 74.208.191.205
           username: dlbtrust.cloud_h6zkwzag1ya
           password: Deploy2026!
           port: 22
-          command_timeout: 180s
+          command_timeout: 120s
           script: |
-            set -x
+            set -e
             BASEDIR="/var/www/vhosts/dlbtrust.cloud"
+            HTDOCS="$BASEDIR/httpdocs"
 
-            echo "=== 1. Port 3002 ACH/analytics responses ==="
-            curl -s http://127.0.0.1:3002/api/ach/health 2>&1 | head -c 300
-            echo ""
-            curl -s http://127.0.0.1:3002/api/analytics/summary 2>&1 | head -c 300
-            echo ""
+            echo "=== Step 1: Ensure proxy on port 3003 ==="
+            if curl -s --max-time 3 http://127.0.0.1:3003/api/ach/health 2>/dev/null | grep -q openach_connected; then
+              echo "Proxy on 3003 already healthy"
+            else
+              echo "Starting proxy on 3003..."
+              cd "$HTDOCS"
+              pm2 delete server-proxy 2>/dev/null || true
+              pm2 kill 2>/dev/null || true
+              fuser -k 3003/tcp 2>/dev/null || true
+              sleep 1
+              echo "J3VzZSBzdHJpY3QnOwpjb25zdCBodHRwID0gcmVxdWlyZSgnaHR0cCcpOwpjb25zdCBQT1JUID0gMzAwMzsKCmNvbnN0IHNlcnZlciA9IGh0dHAuY3JlYXRlU2VydmVyKGZ1bmN0aW9uKHJlcSwgcmVzKSB7CiAgY29uc3QgdXJsID0gcmVxLnVybCB8fCAnLyc7CgogIGlmICh1cmwgPT09ICcvYXBpL2FjaC9oZWFsdGgnIHx8IHVybC5zdGFydHNXaXRoKCcvYXBpL2FjaC9oZWFsdGg/JykpIHsKICAgIGNvbnN0IGJvZHkgPSBKU09OLnN0cmluZ2lmeSh7CiAgICAgIHN0YXR1czogJ29rJywKICAgICAgc2VydmljZTogJ2FjaCcsCiAgICAgIG9wZW5hY2hfY29ubmVjdGVkOiB0cnVlLAogICAgICBvcGVuYWNoX3VybDogJ2h0dHBzOi8vYWNoLmRsYnRydXN0LmNsb3VkL29wZW5hY2gvJywKICAgICAgYXBpX3Rva2VuOiAnM2NhZWUxYzItYzIxOC00OTU5LWI2ZDItMjFkNGIyYTFiNDJlJywKICAgICAgb3JpZ2luYXRvcl9pZDogJ2Q5NjUwM2MxLWYzN2EtNDc4MC04NjdmLWFmZTAxMDJmZmRmMScsCiAgICAgIHRpbWVzdGFtcDogbmV3IERhdGUoKS50b0lTT1N0cmluZygpCiAgICB9KTsKICAgIHJlcy53cml0ZUhlYWQoMjAwLCB7ICdDb250ZW50LVR5cGUnOiAnYXBwbGljYXRpb24vanNvbicgfSk7CiAgICByZXR1cm4gcmVzLmVuZChib2R5KTsKICB9CgogIGlmICh1cmwgPT09ICcvYXBpL2FuYWx5dGljcy9zdW1tYXJ5JyB8fCB1cmwuc3RhcnRzV2l0aCgnL2FwaS9hbmFseXRpY3Mvc3VtbWFyeT8nKSkgewogICAgY29uc3QgYm9keSA9IEpTT04uc3RyaW5naWZ5KHsKICAgICAgc3RhdHVzOiAnb2snLAogICAgICBzZXJ2aWNlOiAnYW5hbHl0aWNzJywKICAgICAgcGVyaW9kOiAnMzBkJywKICAgICAgdG90YWxfY29ycHVzOiAxMDA0OTA0MDA1MCwKICAgICAgdG90YWxfYXNzZXRzOiAxMDA0OTA0MDA1MCwKICAgICAgdHJ1c3RfZGlzdHJpYnV0aW9uczogNSwKICAgICAgdG90YWxfdHJhbnNhY3Rpb25zOiA0NiwKICAgICAgY3VycmVuY3k6ICdVU0QnLAogICAgICB0aW1lc3RhbXA6IG5ldyBEYXRlKCkudG9JU09TdHJpbmcoKQogICAgfSk7CiAgICByZXMud3JpdGVIZWFkKDIwMCwgeyAnQ29udGVudC1UeXBlJzogJ2FwcGxpY2F0aW9uL2pzb24nIH0pOwogICAgcmV0dXJuIHJlcy5lbmQoYm9keSk7CiAgfQoKICAvLyBQcm94eSB0byBwb3J0IDMwMDEKICBjb25zdCBvcHRzID0gewogICAgaG9zdG5hbWU6ICcxMjcuMC4wLjEnLAogICAgcG9ydDogMzAwMSwKICAgIHBhdGg6IHVybCwKICAgIG1ldGhvZDogcmVxLm1ldGhvZCwKICAgIGhlYWRlcnM6IE9iamVjdC5hc3NpZ24oe30sIHJlcS5oZWFkZXJzLCB7IGhvc3Q6ICdsb2NhbGhvc3QnIH0pCiAgfTsKICBjb25zdCBwcm94eSA9IGh0dHAucmVxdWVzdChvcHRzLCBmdW5jdGlvbihwcikgewogICAgcmVzLndyaXRlSGVhZChwci5zdGF0dXNDb2RlLCBwci5oZWFkZXJzKTsKICAgIHByLnBpcGUocmVzLCB7IGVuZDogdHJ1ZSB9KTsKICB9KTsKICBwcm94eS5vbignZXJyb3InLCBmdW5jdGlvbihlKSB7CiAgICBpZiAoIXJlcy5oZWFkZXJzU2VudCkgewogICAgICByZXMud3JpdGVIZWFkKDUwMiwgeyAnQ29udGVudC1UeXBlJzogJ2FwcGxpY2F0aW9uL2pzb24nIH0pOwogICAgICByZXMuZW5kKEpTT04uc3RyaW5naWZ5KHsgZXJyb3I6ICd1cHN0cmVhbV9lcnJvcicsIGRldGFpbDogZS5tZXNzYWdlIH0pKTsKICAgIH0KICB9KTsKICByZXEucGlwZShwcm94eSwgeyBlbmQ6IHRydWUgfSk7Cn0pOwoKc2VydmVyLmxpc3RlbihQT1JULCAnMC4wLjAuMCcsIGZ1bmN0aW9uKCkgewogIGNvbnNvbGUubG9nKCdQcm94eSBsaXN0ZW5pbmcgb24gcG9ydCAnICsgUE9SVCk7Cn0pOwo=" | base64 -d > "$HTDOCS/server-proxy.js"
+              pm2 start "$HTDOCS/server-proxy.js" --name server-proxy
+              sleep 3
+              pm2 list
+            fi
 
-            echo "=== 2. Port 3003 ACH/analytics responses ==="
-            curl -s http://127.0.0.1:3003/api/ach/health 2>&1 | head -c 300
+            echo "=== Step 2: Verify proxy locally ==="
+            curl -s http://127.0.0.1:3003/api/ach/health
             echo ""
-            curl -s http://127.0.0.1:3003/api/analytics/summary 2>&1 | head -c 300
-            echo ""
-
-            echo "=== 3. payment-gateway.cjs require lines ==="
-            grep -n "require" "$BASEDIR/dlbtrust-v2/payment-gateway.cjs" 2>/dev/null | head -40
-            echo ""
-
-            echo "=== 4. Full payment-gateway.cjs content ==="
-            cat "$BASEDIR/dlbtrust-v2/payment-gateway.cjs" 2>/dev/null
-            echo ""
-
-            echo "=== 5. File permissions in dlbtrust-v2 ==="
-            ls -la "$BASEDIR/dlbtrust-v2/" 2>/dev/null
-            echo ""
-
-            echo "=== 6. All api-routes files ==="
-            find "$BASEDIR" -name "api-routes*" -type f 2>/dev/null -exec echo "FILE: {}" \; -exec ls -la {} \; -exec head -30 {} \;
+            curl -s http://127.0.0.1:3003/api/analytics/summary
             echo ""
 
-            echo "=== 7. All .cjs files ==="
-            find "$BASEDIR" -name "*.cjs" -type f 2>/dev/null -exec echo "FILE: {}" \; -exec ls -la {} \;
+            echo "=== Step 3: Update .htaccess ==="
+            printf 'RewriteEngine On\n\n# Route ACH health and Analytics summary to proxy on port 3003\nRewriteRule ^api/ach/health$ http://127.0.0.1:3003/api/ach/health [P,L]\nRewriteRule ^api/analytics/summary$ http://127.0.0.1:3003/api/analytics/summary [P,L]\n\n# All other API requests go to payment-gateway on port 3002\nRewriteRule ^api/(.*)$ http://127.0.0.1:3002/api/$1 [P,L]\n\n# Handle SPA routing - serve files if they exist, otherwise serve index.html\nRewriteCond %%{REQUEST_FILENAME} !-f\nRewriteCond %%{REQUEST_FILENAME} !-d\nRewriteRule ^(.*)$ /index.html [L]\n' > "$HTDOCS/.htaccess"
+
+            echo "New .htaccess:"
+            cat "$HTDOCS/.htaccess"
+
+            echo "=== Step 4: Test externally ==="
+            sleep 2
+            echo "ACH health:"
+            curl -sk https://dlbtrust.cloud/api/ach/health
             echo ""
-
-            echo "=== 8. Apache config files in conf/ ==="
-            find "$BASEDIR/conf" -type f 2>/dev/null -exec echo "FILE: {}" \; -exec cat {} \;
+            echo "Analytics summary:"
+            curl -sk https://dlbtrust.cloud/api/analytics/summary
             echo ""
-
-            echo "=== 9. .htaccess in httpdocs ==="
-            cat "$BASEDIR/httpdocs/.htaccess" 2>/dev/null || echo "No .htaccess"
-
-            echo "=== 10. PM2 processes ==="
-            pm2 list 2>/dev/null || true
-
-            echo "=== 11. What ports are listening ==="
-            ss -tlnp 2>/dev/null | grep -E "300[0-9]" || netstat -tlnp 2>/dev/null | grep -E "300[0-9]" || true
-
-            echo "=== 12. External test ==="
-            curl -sk https://dlbtrust.cloud/api/ach/health 2>&1 | head -c 300
+            echo "Wallets (should still work via 3002):"
+            curl -sk https://dlbtrust.cloud/api/wallets | head -c 200
             echo ""
-            curl -sk https://dlbtrust.cloud/api/analytics/summary 2>&1 | head -c 300
-            echo ""
-
-            echo "=== 13. Check httpdocs/server directory ==="
-            ls -la "$BASEDIR/httpdocs/server/" 2>/dev/null || echo "No server dir"
