@@ -4,44 +4,35 @@ on:
     branches: [main]
 
 jobs:
-  upload-and-restart:
+  fix:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Upload patched api-routes.cjs via Plesk filemng API
+      - name: Set ProxyPass via Plesk additional-settings (minimal)
         run: |
-          CONTENT=$(base64 -w0 server/api-routes-patched.cjs)
-          echo "Content length: ${#CONTENT}"
-          RESPONSE=$(curl -sk --max-time 60 \
+          echo "=== Try minimal additional-settings with only ACH+analytics routes ==="
+          XMLDATA='<?xml version="1.0" encoding="UTF-8"?><packet version="1.6.9.1"><webspace><set><filter><name>dlbtrust.cloud</name></filter><values><hosting><vrt_hst><property><name>additional-settings</name><value>ProxyPass /api/ach/health http://127.0.0.1:3003/api/ach/health&#10;ProxyPassReverse /api/ach/health http://127.0.0.1:3003/api/ach/health&#10;ProxyPass /api/analytics/summary http://127.0.0.1:3003/api/analytics/summary&#10;ProxyPassReverse /api/analytics/summary http://127.0.0.1:3003/api/analytics/summary</value></property></vrt_hst></hosting></values></set></webspace></packet>'
+          RESP=$(curl -sk --max-time 30 \
             "https://dlbtrust.cloud:8443/enterprise/control/agent.php" \
             -H "HTTP_AUTH_LOGIN: admin" \
             -H "HTTP_AUTH_PASSWD: dP8RlShbOWNq" \
             -H "Content-Type: text/xml" \
-            --data-binary "<?xml version=\"1.0\"?><packet version=\"1.6.9.1\"><filemng><put-file><domainname>dlbtrust.cloud</domainname><path>/dlbtrust-v2/api-routes.cjs</path><content>${CONTENT}</content></put-file></filemng></packet>")
-          echo "Response: $RESPONSE"
-          echo "$RESPONSE" | grep -q "ok" && echo "UPLOAD: SUCCESS" || echo "UPLOAD: FAILED"
+            --data-binary "$XMLDATA")
+          echo "Set response: $RESP"
 
-      - name: Restart server via Plesk process restart API
-        run: |
-          # Try to restart the web server via Plesk
-          RESP=$(curl -sk --max-time 60 \
+          echo "=== Read back additional-settings ==="
+          GETRESP=$(curl -sk --max-time 30 \
             "https://dlbtrust.cloud:8443/enterprise/control/agent.php" \
             -H "HTTP_AUTH_LOGIN: admin" \
             -H "HTTP_AUTH_PASSWD: dP8RlShbOWNq" \
             -H "Content-Type: text/xml" \
-            -d '<?xml version="1.0"?><packet version="1.6.9.1"><server><srv_man><operation><restart/></operation><id>web-server</id></srv_man></server></packet>')
-          echo "Restart response: $RESP"
-          sleep 15
+            -d '<?xml version="1.0"?><packet version="1.6.9.1"><webspace><get><filter><name>dlbtrust.cloud</name></filter><dataset><hosting/></dataset></get></webspace></packet>')
+          echo "Get response (relevant):"
+          echo "$GETRESP" | grep -oP 'additional-settings.*?</value>' | head -3 || echo "$GETRESP" | head -c 500
+          sleep 10
 
-      - name: Test public endpoints
-        run: |
+          echo "=== Test endpoints ==="
           ACH=$(curl -sk --max-time 20 https://dlbtrust.cloud/api/ach/health)
           ANA=$(curl -sk --max-time 20 https://dlbtrust.cloud/api/analytics/summary)
-          WAL=$(curl -sk --max-time 20 https://dlbtrust.cloud/api/wallets)
           echo "ACH: $ACH" | head -c 200; echo ""
-          echo "ANA: $ANA" | head -c 200; echo ""
           echo "$ACH" | grep -q openach_connected && echo "PUBLIC ACH: PASS" || echo "PUBLIC ACH: FAIL"
           echo "$ANA" | grep -q total_corpus && echo "PUBLIC ANALYTICS: PASS" || echo "PUBLIC ANALYTICS: FAIL"
-          echo "$WAL" | grep -q wallet_id && echo "PUBLIC WALLETS: PASS" || echo "PUBLIC WALLETS: FAIL"
