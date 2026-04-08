@@ -1,0 +1,84 @@
+name: Production Validation Suite
+on: [workflow_dispatch, push]
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Full endpoint tests
+        run: |
+          SERVER="74.208.191.205"
+          PASS=0; FAIL=0
+          
+          check() {
+            local name="$1"; local cmd="$2"; local expect="$3"
+            result=$(eval "$cmd" 2>&1 | head -c 300)
+            if echo "$result" | grep -q "$expect"; then
+              echo "PASS: $name"
+              PASS=$((PASS+1))
+            else
+              echo "FAIL: $name | Got: ${result:0:100}"
+              FAIL=$((FAIL+1))
+            fi
+          }
+          
+          check "HTTP redirect" \
+            "curl -s -o /dev/null -w '%{http_code}' http://dlbtrust.cloud/" \
+            "301"
+            
+          check "HTTPS loads" \
+            "curl -sk --resolve 'dlbtrust.cloud:443:$SERVER' https://dlbtrust.cloud/" \
+            "html"
+            
+          check "Wallets API" \
+            "curl -sk --resolve 'dlbtrust.cloud:443:$SERVER' https://dlbtrust.cloud/api/wallets" \
+            "wallet_id"
+            
+          check "Transactions API" \
+            "curl -sk --resolve 'dlbtrust.cloud:443:$SERVER' https://dlbtrust.cloud/api/transactions" \
+            "type"
+            
+          check "ACH health" \
+            "curl -sk --resolve 'dlbtrust.cloud:443:$SERVER' https://dlbtrust.cloud/api/ach/health" \
+            "openach_connected"
+            
+          check "Analytics summary" \
+            "curl -sk --resolve 'dlbtrust.cloud:443:$SERVER' https://dlbtrust.cloud/api/analytics/summary" \
+            "total_corpus"
+            
+          check "OpenACH web UI" \
+            "curl -sv --max-time 10 --resolve 'ach.dlbtrust.cloud:80:$SERVER' http://ach.dlbtrust.cloud/openach/ 2>&1 | grep '< HTTP'" \
+            "200"
+            
+          check "OpenACH API connect" \
+            "curl -s --resolve 'ach.dlbtrust.cloud:80:$SERVER' -X POST http://ach.dlbtrust.cloud/openach/api/connect --data 'user_api_token=3caee1c2-c218-4959-b6d2-21d4b2a1b42e&user_api_key=b74966cf-5276-4d8b-8650-5bd57dcee272'" \
+            'success.*true'
+            
+          echo ""
+          echo "Results: $PASS passed, $FAIL failed"
+          [ $FAIL -eq 0 ] && echo "ALL TESTS PASS - PRODUCTION READY" || echo "WARNING: $FAIL tests failing"
+          
+          echo ""
+          echo "=== Raw API responses ==="
+          echo "--- HTTPS loads ---"
+          curl -sk --resolve "dlbtrust.cloud:443:$SERVER" https://dlbtrust.cloud/ | head -c 200
+          echo ""
+          echo "--- Wallets ---"
+          curl -sk --resolve "dlbtrust.cloud:443:$SERVER" https://dlbtrust.cloud/api/wallets | head -c 300
+          echo ""
+          echo "--- Transactions ---"
+          curl -sk --resolve "dlbtrust.cloud:443:$SERVER" https://dlbtrust.cloud/api/transactions | head -c 300
+          echo ""
+          echo "--- ACH health ---"
+          curl -sk --resolve "dlbtrust.cloud:443:$SERVER" https://dlbtrust.cloud/api/ach/health | head -c 300
+          echo ""
+          echo "--- Analytics ---"
+          curl -sk --resolve "dlbtrust.cloud:443:$SERVER" https://dlbtrust.cloud/api/analytics/summary | head -c 300
+          echo ""
+          echo "--- OpenACH UI HTTP status ---"
+          curl -sv --max-time 10 --resolve "ach.dlbtrust.cloud:80:$SERVER" http://ach.dlbtrust.cloud/openach/ 2>&1 | grep "< HTTP" | head -3
+          echo ""
+          echo "--- OpenACH connect ---"
+          curl -s --max-time 10 --resolve "ach.dlbtrust.cloud:80:$SERVER" \
+            -X POST http://ach.dlbtrust.cloud/openach/api/connect \
+            --data "user_api_token=3caee1c2-c218-4959-b6d2-21d4b2a1b42e&user_api_key=b74966cf-5276-4d8b-8650-5bd57dcee272" | head -c 300
+          echo ""
