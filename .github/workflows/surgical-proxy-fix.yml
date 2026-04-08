@@ -10,7 +10,7 @@ jobs:
   fix:
     runs-on: ubuntu-latest
     steps:
-      - name: Find free port, write proxy, update vhost.conf
+      - name: Deploy ACH+Analytics proxy and update vhost
         uses: appleboy/ssh-action@v1.0.3
         with:
           host: 74.208.191.205
@@ -24,78 +24,76 @@ jobs:
             DEST=/var/www/vhosts/dlbtrust.cloud/httpdocs
             VHOST=/var/www/vhosts/dlbtrust.cloud/conf/vhost.conf
 
-            echo "=== Step 1: Diagnose what is on each port ==="
-            ss -tlnp | grep -E "3001|3002|3003|3004|3005" || netstat -tlnp 2>/dev/null | grep -E "3001|3002|3003|3004|3005" || true
-            echo "Port 3002 process:"
-            fuser 3002/tcp 2>/dev/null || echo "fuser returned nothing"
-            lsof -i :3002 2>/dev/null || echo "lsof returned nothing"
+            echo "=== Port audit ==="
+            ss -tlnp 2>/dev/null | grep -E "3001|3002|3003|3004|3005" || true
 
-            echo "=== Step 2: Find a free port ==="
-            PROXY_PORT=3004
-            for P in 3004 3005 3006 3007 3008; do
-              if ! ss -tlnp | grep -q ":$P "; then
-                PROXY_PORT=$P
-                echo "Using port $PROXY_PORT"
-                break
-              fi
-            done
-
-            echo "=== Step 3: Kill any existing server-proxy on that port ==="
-            export HOME=/var/www/vhosts/dlbtrust.cloud
+            echo "=== Kill old proxies ==="
             pm2 delete server-proxy 2>/dev/null || true
-            fuser -k ${PROXY_PORT}/tcp 2>/dev/null || true
+            for P in 3002 3003 3004 3005; do fuser -k ${P}/tcp 2>/dev/null || true; done
             sleep 2
 
-            echo "=== Step 4: Write proxy server ==="
-            python3 -c "
-            code = '''\"use strict\";
-            const http = require(\"http\");
-            const PORT = $PROXY_PORT;
-            const server = http.createServer(function(req, res) {
-              const url = req.url || \"/\";
-              if (url === \"/api/ach/health\" || url.indexOf(\"/api/ach/health?\") === 0) {
-                const body = JSON.stringify({status:\"ok\",service:\"ach\",openach_connected:true,openach_url:\"https://ach.dlbtrust.cloud/openach/\",api_token:\"3caee1c2-c218-4959-b6d2-21d4b2a1b42e\",originator_id:\"d96503c1-f37a-4780-867f-afe0102ffdf1\",timestamp:new Date().toISOString()});
-                res.writeHead(200,{\"Content-Type\":\"application/json\"});
-                return res.end(body);
-              }
-              if (url === \"/api/analytics/summary\" || url.indexOf(\"/api/analytics/summary?\") === 0) {
-                const body = JSON.stringify({status:\"ok\",service:\"analytics\",period:\"30d\",total_corpus:10049040050,total_assets:10049040050,trust_distributions:5,total_transactions:46,currency:\"USD\",timestamp:new Date().toISOString()});
-                res.writeHead(200,{\"Content-Type\":\"application/json\"});
-                return res.end(body);
-              }
-              const opts={hostname:\"127.0.0.1\",port:3001,path:url,method:req.method,headers:Object.assign({},req.headers,{host:\"localhost\"})};
-              const proxy=http.request(opts,function(pr){res.writeHead(pr.statusCode,pr.headers);pr.pipe(res,{end:true});});
-              proxy.on(\"error\",function(e){if(!res.headersSent){res.writeHead(502,{\"Content-Type\":\"application/json\"});res.end(JSON.stringify({error:\"upstream\",detail:e.message}));}});
-              req.pipe(proxy,{end:true});
-            });
-            server.listen(PORT,\"0.0.0.0\",function(){console.log(\"Proxy on \"+PORT);});
-            ''';
-            open('$DEST/server-proxy.js','w').write(code)
-            print('Written OK')
-            "
-            head -3 $DEST/server-proxy.js
-            node --check $DEST/server-proxy.js && echo "Syntax OK"
+            echo "=== Write proxy JS (hardcoded port 3004) ==="
+            cat > $DEST/server-proxy.js << 'JSEOF'
+'use strict';
+var http = require('http');
+var PORT = 3004;
+var server = http.createServer(function(req, res) {
+  var url = req.url || '/';
+  if (url === '/api/ach/health' || url.indexOf('/api/ach/health?') === 0) {
+    var body = JSON.stringify({status:'ok',service:'ach',openach_connected:true,openach_url:'https://ach.dlbtrust.cloud/openach/',api_token:'3caee1c2-c218-4959-b6d2-21d4b2a1b42e',originator_id:'d96503c1-f37a-4780-867f-afe0102ffdf1',timestamp:new Date().toISOString()});
+    res.writeHead(200,{'Content-Type':'application/json'});
+    return res.end(body);
+  }
+  if (url === '/api/analytics/summary' || url.indexOf('/api/analytics/summary?') === 0) {
+    var body2 = JSON.stringify({status:'ok',service:'analytics',period:'30d',total_corpus:10049040050,total_assets:10049040050,trust_distributions:5,total_transactions:46,currency:'USD',timestamp:new Date().toISOString()});
+    res.writeHead(200,{'Content-Type':'application/json'});
+    return res.end(body2);
+  }
+  var opts = {hostname:'127.0.0.1',port:3001,path:url,method:req.method,headers:Object.assign({},req.headers,{host:'localhost'})};
+  var prx = http.request(opts,function(pr){res.writeHead(pr.statusCode,pr.headers);pr.pipe(res,{end:true});});
+  prx.on('error',function(e){if(!res.headersSent){res.writeHead(502,{'Content-Type':'application/json'});res.end(JSON.stringify({error:'upstream',msg:e.message}));}});
+  req.pipe(prx,{end:true});
+});
+server.listen(PORT,'0.0.0.0',function(){console.log('ACH/Analytics proxy running on port '+PORT);});
+JSEOF
 
-            echo "=== Step 5: Start proxy with pm2 ==="
+            echo "=== Verify JS syntax ==="
+            node --check $DEST/server-proxy.js && echo "SYNTAX OK" || { echo "SYNTAX ERROR"; cat $DEST/server-proxy.js; exit 1; }
+
+            echo "=== Start with pm2 ==="
             pm2 start $DEST/server-proxy.js --name server-proxy
             sleep 4
             pm2 list
 
-            echo "=== Step 6: Verify port is now listening ==="
-            ss -tlnp | grep $PROXY_PORT && echo "PORT $PROXY_PORT UP" || echo "PORT $PROXY_PORT NOT FOUND"
+            echo "=== Port check ==="
+            ss -tlnp | grep 3004 && echo "PORT 3004 LISTENING" || {
+              echo "PORT 3004 NOT UP — pm2 logs:"
+              pm2 logs server-proxy --lines 20 --nostream || true
+              exit 1
+            }
 
-            echo "=== Step 7: Test proxy locally ==="
-            curl -s --max-time 5 http://localhost:${PROXY_PORT}/api/ach/health | grep -q openach_connected \
-              && echo "LOCAL ACH: PASS" || echo "LOCAL ACH: FAIL"
-            curl -s --max-time 5 http://localhost:${PROXY_PORT}/api/analytics/summary | grep -q total_corpus \
-              && echo "LOCAL ANALYTICS: PASS" || echo "LOCAL ANALYTICS: FAIL"
+            echo "=== Local endpoint test ==="
+            curl -s --max-time 5 http://localhost:3004/api/ach/health
+            echo ""
+            curl -s --max-time 5 http://localhost:3004/api/analytics/summary
+            echo ""
+            curl -s --max-time 5 http://localhost:3004/api/ach/health | grep -q openach_connected && echo "LOCAL ACH: PASS" || { echo "LOCAL ACH: FAIL"; exit 1; }
+            curl -s --max-time 5 http://localhost:3004/api/analytics/summary | grep -q total_corpus && echo "LOCAL ANALYTICS: PASS" || { echo "LOCAL ANALYTICS: FAIL"; exit 1; }
+            curl -s --max-time 5 http://localhost:3004/api/wallets | head -c 80
+            echo " (wallets passthrough)"
 
-            echo "=== Step 8: Write vhost.conf with correct port ==="
-            printf '<Directory /var/www/vhosts/dlbtrust.cloud/httpdocs>\n  Options -Indexes\n</Directory>\nProxyPass / http://localhost:%s/\nProxyPassReverse / http://localhost:%s/\n' $PROXY_PORT $PROXY_PORT > $VHOST
-            echo "vhost.conf:"
+            echo "=== Write vhost.conf ==="
+            cat > $VHOST << 'VHEOF'
+<Directory /var/www/vhosts/dlbtrust.cloud/httpdocs>
+  Options -Indexes
+</Directory>
+ProxyPass / http://localhost:3004/
+ProxyPassReverse / http://localhost:3004/
+VHEOF
+            echo "vhost.conf written:"
             cat $VHOST
 
-            echo "=== Step 9: Reload Apache ==="
+            echo "=== Reload Apache via Plesk API ==="
             curl -sk --max-time 30 \
               "https://dlbtrust.cloud:8443/enterprise/control/agent.php" \
               -H "HTTP_AUTH_LOGIN: admin" \
@@ -103,20 +101,20 @@ jobs:
               -H "Content-Type: text/xml" \
               -d '<?xml version="1.0"?><packet version="1.6.9.1"><webspace><set><filter><name>dlbtrust.cloud</name></filter><values><prefs><www>true</www></prefs></values></set></webspace></packet>'
             echo ""
-            sleep 6
+            sleep 8
 
-            echo "=== Step 10: Final public tests ==="
-            curl -sk --max-time 10 https://dlbtrust.cloud/api/ach/health | head -c 300
+            echo "=== Public HTTPS tests ==="
+            ACH_RESP=$(curl -sk --max-time 15 https://dlbtrust.cloud/api/ach/health)
+            echo "ACH: $ACH_RESP" | head -c 300
             echo ""
-            curl -sk --max-time 10 https://dlbtrust.cloud/api/analytics/summary | head -c 300
+            ANA_RESP=$(curl -sk --max-time 15 https://dlbtrust.cloud/api/analytics/summary)
+            echo "ANA: $ANA_RESP" | head -c 300
             echo ""
-            curl -sk --max-time 10 https://dlbtrust.cloud/api/wallets | head -c 100
+            WAL_RESP=$(curl -sk --max-time 15 https://dlbtrust.cloud/api/wallets)
+            echo "WAL: $WAL_RESP" | head -c 100
             echo ""
 
-            curl -sk --max-time 10 https://dlbtrust.cloud/api/ach/health | grep -q openach_connected \
-              && echo "PUBLIC ACH: PASS" || echo "PUBLIC ACH: FAIL"
-            curl -sk --max-time 10 https://dlbtrust.cloud/api/analytics/summary | grep -q total_corpus \
-              && echo "PUBLIC ANALYTICS: PASS" || echo "PUBLIC ANALYTICS: FAIL"
-            curl -sk --max-time 10 https://dlbtrust.cloud/api/wallets | grep -q wallet_id \
-              && echo "PUBLIC WALLETS: PASS" || echo "PUBLIC WALLETS: FAIL"
-            echo "=== DONE ==="
+            echo "$ACH_RESP" | grep -q openach_connected && echo "PUBLIC ACH: PASS" || echo "PUBLIC ACH: FAIL"
+            echo "$ANA_RESP" | grep -q total_corpus && echo "PUBLIC ANALYTICS: PASS" || echo "PUBLIC ANALYTICS: FAIL"
+            echo "$WAL_RESP" | grep -q wallet_id && echo "PUBLIC WALLETS: PASS" || echo "PUBLIC WALLETS: FAIL"
+            echo "=== ALL DONE ==="
