@@ -1,0 +1,43 @@
+name: Generate Plesk Login URL
+on:
+  push:
+    branches: [main]
+    paths: ['.github/workflows/generate-plesk-url.yml']
+  workflow_dispatch:
+
+jobs:
+  url:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      PLESK: "https://74.208.191.205:8443"
+      PLESK_PASS: "dP8RlShbOWNq"
+    steps:
+      - name: Generate session and print login URL
+        run: |
+          RUNNER_IP=$(curl -s https://api.ipify.org)
+          IP_B64=$(echo -n "$RUNNER_IP" | base64 -w0)
+          
+          SESSION=$(curl -sk --max-time 10 "$PLESK/enterprise/control/agent.php" \
+            -H "HTTP_AUTH_LOGIN: admin" \
+            -H "HTTP_AUTH_PASSWD: $PLESK_PASS" \
+            -H "Content-Type: text/xml" \
+            -d "<packet version=\"1.6.9.1\"><server><create_session><login>admin</login><data><user_ip>$IP_B64</user_ip><source_server></source_server></data></create_session></server></packet>")
+          
+          SID=$(echo "$SESSION" | grep -oP '(?<=<id>)[^<]+' | head -1)
+          echo ""
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          echo "PLESK SESSION: $SID"
+          echo ""
+          echo "LOGIN URL (one-time, expires ~1 hour):"
+          echo "https://dlbtrust.cloud:8443/enterprise/rsession_init.php?PHPSESSID=$SID&success_redirect_url=/admin/server/tools-and-settings"
+          echo ""
+          echo "FILE MANAGER URL (direct to dlbtrust-v2):"
+          echo "https://dlbtrust.cloud:8443/enterprise/rsession_init.php?PHPSESSID=$SID&success_redirect_url=/modules/fileman/index.php?path=/dlbtrust-v2/"
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          
+          # Also test the URL works
+          HTTP_CODE=$(curl -sk --max-time 10 \
+            "https://74.208.191.205:8443/enterprise/rsession_init.php?PHPSESSID=$SID" \
+            -o /dev/null -w "%{http_code}")
+          echo "Session URL test: HTTP $HTTP_CODE"
