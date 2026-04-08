@@ -4,13 +4,20 @@
  * 
  * DEANDREA LAVAR BARKLEY TRUST — Real Money Movement via ACH
  * ODFI: Eaton Family Credit Union (routing: 241075470)
+ * 
+ * NOTE: Uses HTTP via localhost to avoid TLS certificate issues.
+ * The Docker container is accessible at http://localhost with Host header.
+ * Set OPENACH_BASE_URL=http://localhost/openach/api in production .env
  */
 
 const https = require('https');
 const http = require('http');
 const { URL } = require('url');
 
-const OPENACH_BASE_URL = process.env.OPENACH_BASE_URL || 'https://ach.dlbtrust.cloud/openach/api';
+// Default to HTTP localhost to avoid TLS issues from server-side calls
+// When calling from the server itself, Apache proxies ach.dlbtrust.cloud -> localhost
+const OPENACH_BASE_URL = process.env.OPENACH_BASE_URL || 'http://localhost/openach/api';
+const OPENACH_HOST_HEADER = process.env.OPENACH_HOST_HEADER || 'ach.dlbtrust.cloud';
 const OPENACH_API_TOKEN = process.env.OPENACH_API_TOKEN;
 const OPENACH_API_KEY   = process.env.OPENACH_API_KEY;
 
@@ -29,6 +36,11 @@ function openachRequest(endpoint, params = {}, sessionCookie = null) {
       'Content-Length': Buffer.byteLength(body),
       'Accept': 'application/json',
     };
+
+    // Always send Host header so Apache can route correctly
+    if (OPENACH_HOST_HEADER) {
+      headers['Host'] = OPENACH_HOST_HEADER;
+    }
 
     if (sessionCookie) {
       headers['Cookie'] = sessionCookie;
@@ -65,6 +77,9 @@ function openachRequest(endpoint, params = {}, sessionCookie = null) {
     });
 
     req.on('error', reject);
+    req.setTimeout(15000, () => {
+      req.destroy(new Error('OpenACH request timed out after 15s'));
+    });
     req.write(body);
     req.end();
   });
@@ -95,7 +110,7 @@ class OpenACHSession {
     });
 
     if (!res.success) {
-      throw new Error(`OpenACH connect failed: ${res.error}`);
+      throw new Error(`OpenACH connect failed: ${res.error || JSON.stringify(res)}`);
     }
 
     this.sessionId = res.session_id;
@@ -106,7 +121,9 @@ class OpenACHSession {
 
   async disconnect() {
     if (!this.connected) return;
-    await openachRequest('disconnect', {}, this.sessionCookie);
+    try {
+      await openachRequest('disconnect', {}, this.sessionCookie);
+    } catch (_) { /* non-fatal */ }
     this.connected = false;
     this.sessionCookie = null;
     this.sessionId = null;
@@ -141,11 +158,6 @@ class OpenACHClient {
 
   /**
    * Create a Payment Profile for a beneficiary
-   * @param {Object} profile
-   * @param {string} profile.first_name
-   * @param {string} profile.last_name
-   * @param {string} profile.email
-   * @param {string} profile.external_id  - your internal beneficiary ID
    */
   static async createPaymentProfile({ first_name, last_name, email, external_id }) {
     const session = new OpenACHSession();
@@ -166,7 +178,6 @@ class OpenACHClient {
 
   /**
    * Get payment profile by your external (internal) ID
-   * @param {string} externalId  - your beneficiary/user ID
    */
   static async getPaymentProfileByExternalId(externalId) {
     const session = new OpenACHSession();
@@ -184,17 +195,6 @@ class OpenACHClient {
 
   /**
    * Add a bank account (external account) to a payment profile
-   * @param {Object} account
-   * @param {string} account.payment_profile_id  - from createPaymentProfile
-   * @param {string} account.bank_name           - e.g. "Chase Bank"
-   * @param {string} account.routing_number      - 9-digit ABA routing
-   * @param {string} account.account_number      - bank account number
-   * @param {string} account.account_holder      - full name on account
-   * @param {string} account.account_type        - "Checking" or "Savings"
-   * @param {string} account.billing_address
-   * @param {string} account.billing_city
-   * @param {string} account.billing_state
-   * @param {string} account.billing_zip
    */
   static async addExternalAccount({
     payment_profile_id,
@@ -236,15 +236,6 @@ class OpenACHClient {
 
   /**
    * Schedule a one-time ACH credit disbursement (real money movement)
-   * This sends funds FROM the trust TO the beneficiary's bank account
-   * @param {Object} schedule
-   * @param {string} schedule.external_account_id  - from addExternalAccount
-   * @param {string} schedule.payment_type_id      - from getPaymentTypes (Trust Dist)
-   * @param {number} schedule.amount               - dollars, e.g. 500.00
-   * @param {string} schedule.send_date            - YYYY-MM-DD, must be future business day
-   * @param {string} schedule.currency_code        - default "USD"
-   * @param {number} schedule.occurrences          - 1 for one-time, 0 for indefinite
-   * @param {string} schedule.frequency            - "once", "weekly", "monthly", etc.
    */
   static async schedulePayment({
     external_account_id,
@@ -278,7 +269,6 @@ class OpenACHClient {
 
   /**
    * Get all payment schedules for a payment profile
-   * @param {string} payment_profile_id
    */
   static async getPaymentSchedules(payment_profile_id) {
     const session = new OpenACHSession();
@@ -294,7 +284,6 @@ class OpenACHClient {
 
   /**
    * Get all external accounts (bank accounts) for a payment profile
-   * @param {string} payment_profile_id
    */
   static async getExternalAccounts(payment_profile_id) {
     const session = new OpenACHSession();
@@ -310,7 +299,6 @@ class OpenACHClient {
 
   /**
    * Full disbursement workflow — creates profile + bank account + schedules payment
-   * Use this to onboard a new beneficiary and send their first disbursement in one call
    */
   static async disburseToBeneficiary({
     // Beneficiary info
@@ -330,7 +318,7 @@ class OpenACHClient {
     // Payment
     amount,
     send_date,
-    payment_type_id,       // "Trust Dist" type ID — get from getPaymentTypes()
+    payment_type_id,
     frequency = 'once',
     occurrences = 1,
   }) {
