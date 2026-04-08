@@ -4,30 +4,55 @@ on:
     branches: [main]
 
 jobs:
-  fix:
+  write-vhost:
     runs-on: ubuntu-latest
     steps:
-      - name: Check if nginx is running and reload it
+      - name: Write vhost.conf via SSH
         uses: appleboy/ssh-action@v1.0.3
         with:
           host: 74.208.191.205
           username: dlbtrust.cloud_h6zkwzag1ya
           password: Deploy2026!
           port: 22
-          command_timeout: 60s
+          command_timeout: 30s
           script: |
             export HOME=/var/www/vhosts/dlbtrust.cloud
-            echo "=== 1. Is nginx running? ==="
-            ps aux | grep nginx | grep -v grep | head -5 || echo "nginx NOT found in ps"
-            ss -tlnp | grep -E "80|443|nginx" | head -10 || true
-            echo "=== 2. Who is listening on 443? ==="
-            ss -tlnp | grep 443 || true
-            echo "=== 3. nginx or apache handling port 80? ==="
-            ss -tlnp | grep ':80 ' || true
-            echo "=== 4. Check nginx status ==="
-            systemctl status nginx 2>/dev/null | head -5 || service nginx status 2>/dev/null | head -5 || echo "nginx service not found"
-            echo "=== 5. Nginx reload via Plesk API ==="
-            echo "will try from runner"
-            echo "=== 6. Verify proxy3003 still running ==="
-            pm2 list
-            curl -s http://127.0.0.1:3003/api/ach/health | grep -q openach_connected && echo "3003 ACH: still OK" || echo "3003 ACH: LOST"
+            printf '%s\n' '<Directory /var/www/vhosts/dlbtrust.cloud/httpdocs>' '  Options -Indexes' '</Directory>' 'ProxyPreserveHost On' 'ProxyPass /api/ach/health http://localhost:3003/api/ach/health' 'ProxyPassReverse /api/ach/health http://localhost:3003/api/ach/health' 'ProxyPass /api/analytics/summary http://localhost:3003/api/analytics/summary' 'ProxyPassReverse /api/analytics/summary http://localhost:3003/api/analytics/summary' 'ProxyPass / http://localhost:3002/' 'ProxyPassReverse / http://localhost:3002/' > /var/www/vhosts/dlbtrust.cloud/conf/vhost.conf
+            echo "vhost.conf written"; cat /var/www/vhosts/dlbtrust.cloud/conf/vhost.conf
+
+  toggle-apache:
+    runs-on: ubuntu-latest
+    needs: write-vhost
+    steps:
+      - name: Toggle www off then on to trigger Apache restart
+        run: |
+          echo "=== Disable website ==="
+          curl -sk --max-time 30 \
+            "https://dlbtrust.cloud:8443/enterprise/control/agent.php" \
+            -H "HTTP_AUTH_LOGIN: admin" \
+            -H "HTTP_AUTH_PASSWD: dP8RlShbOWNq" \
+            -H "Content-Type: text/xml" \
+            -d '<?xml version="1.0"?><packet version="1.6.9.1"><webspace><set><filter><name>dlbtrust.cloud</name></filter><values><prefs><www>false</www></prefs></values></set></webspace></packet>'
+          sleep 5
+          echo "=== Re-enable website ==="
+          curl -sk --max-time 30 \
+            "https://dlbtrust.cloud:8443/enterprise/control/agent.php" \
+            -H "HTTP_AUTH_LOGIN: admin" \
+            -H "HTTP_AUTH_PASSWD: dP8RlShbOWNq" \
+            -H "Content-Type: text/xml" \
+            -d '<?xml version="1.0"?><packet version="1.6.9.1"><webspace><set><filter><name>dlbtrust.cloud</name></filter><values><prefs><www>true</www></prefs></values></set></webspace></packet>'
+          echo ""
+          echo "Waiting 20s for Apache to restart..."
+          sleep 20
+
+      - name: Test endpoints
+        run: |
+          echo "=== Testing after Apache restart ==="
+          ACH=$(curl -sk --max-time 20 https://dlbtrust.cloud/api/ach/health)
+          ANA=$(curl -sk --max-time 20 https://dlbtrust.cloud/api/analytics/summary)
+          WAL=$(curl -sk --max-time 20 https://dlbtrust.cloud/api/wallets)
+          echo "ACH: $ACH" | head -c 200; echo ""
+          echo "ANA: $ANA" | head -c 200; echo ""
+          echo "$ACH" | grep -q openach_connected && echo "PUBLIC ACH: PASS" || echo "PUBLIC ACH: FAIL"
+          echo "$ANA" | grep -q total_corpus && echo "PUBLIC ANALYTICS: PASS" || echo "PUBLIC ANALYTICS: FAIL"
+          echo "$WAL" | grep -q wallet_id && echo "PUBLIC WALLETS: PASS" || echo "PUBLIC WALLETS: FAIL"
