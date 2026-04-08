@@ -16,39 +16,65 @@ echo "============================================================"
 echo " dlbtrust.cloud — OpenACH Deploy + Activate"
 echo "============================================================"
 
-# Find app directory
-APP_DIR=$(find /var/www/vhosts/dlbtrust.cloud -name "server.js" \
-  -not -path "*/node_modules/*" 2>/dev/null | head -1 | xargs dirname 2>/dev/null)
+# Find app directory — check for app.js or server.js
+APP_DIR=""
+for ENTRY in app.js server.js; do
+  FOUND=$(find /var/www/vhosts/dlbtrust.cloud -name "$ENTRY" \
+    -not -path "*/node_modules/*" 2>/dev/null | head -1 | xargs dirname 2>/dev/null)
+  if [ -n "$FOUND" ]; then
+    APP_DIR="$FOUND"
+    ENTRY_FILE="$ENTRY"
+    break
+  fi
+done
 
 if [ -z "$APP_DIR" ]; then
   APP_DIR="/var/www/vhosts/dlbtrust.cloud/httpdocs"
+  # Prefer app.js (newly committed) over server.js
+  if [ -f "$APP_DIR/app.js" ]; then
+    ENTRY_FILE="app.js"
+  else
+    ENTRY_FILE="server.js"
+  fi
 fi
 
 echo ""
 echo "[1] App directory: $APP_DIR"
+echo "    Entry file: $ENTRY_FILE"
 cd "$APP_DIR"
 
 # Pull latest code
 echo "[2] Pulling latest code from GitHub..."
 git pull origin main 2>&1 || echo "    git pull failed — continuing with local files"
 
-# Patch server.js if not already patched
+# Install dependencies
 echo ""
-echo "[3] Patching server.js with OpenACH routes..."
-if grep -q "openach-patch" server.js 2>/dev/null; then
+echo "[2b] Installing Node.js dependencies..."
+npm install --production 2>&1 || echo "    npm install failed — check manually"
+
+# Patch entry file if not already patched
+echo ""
+echo "[3] Patching $ENTRY_FILE with OpenACH routes..."
+if grep -q "openach-patch" "$ENTRY_FILE" 2>/dev/null; then
   echo "    Already patched — skipping"
 else
-  if grep -q "app\.listen" server.js 2>/dev/null; then
-    sed -i "s|app\.listen|require('./server/openach-patch')(app, typeof db !== 'undefined' ? db : app.locals.db);\napp.listen|" server.js
+  if grep -q "app\.listen" "$ENTRY_FILE" 2>/dev/null; then
+    sed -i "s|app\.listen|require('./server/openach-patch')(app, typeof db !== 'undefined' ? db : app.locals.db);\napp.listen|" "$ENTRY_FILE"
     echo "    Patched successfully (app.listen hook)"
-  elif grep -q "server\.listen" server.js 2>/dev/null; then
-    sed -i "s|server\.listen|require('./server/openach-patch')(app, typeof db !== 'undefined' ? db : app.locals.db);\nserver.listen|" server.js
+  elif grep -q "server\.listen" "$ENTRY_FILE" 2>/dev/null; then
+    sed -i "s|server\.listen|require('./server/openach-patch')(app, typeof db !== 'undefined' ? db : app.locals.db);\nserver.listen|" "$ENTRY_FILE"
     echo "    Patched successfully (server.listen hook)"
   else
-    echo "    WARNING: Could not auto-patch server.js"
+    echo "    WARNING: Could not auto-patch $ENTRY_FILE"
     echo "    Manually add this line before your app.listen():"
     echo "      require('./server/openach-patch')(app, db);"
   fi
+fi
+
+# Ensure dotenv is loaded at top of entry file
+if ! grep -q "dotenv" "$ENTRY_FILE" 2>/dev/null; then
+  sed -i "1s|^|require('dotenv').config();\n|" "$ENTRY_FILE"
+  echo "    Added dotenv.config() at top of $ENTRY_FILE"
 fi
 
 # Insert OpenACH API credentials into Docker container DB
@@ -59,30 +85,57 @@ CONTAINER=$(docker ps --format "{{.Names}}" | grep -i openach | head -1)
 if [ -z "$CONTAINER" ]; then
   echo "    ERROR: No OpenACH Docker container found"
   docker ps
-  exit 1
-fi
-echo "    Container: $CONTAINER"
-
-DB=$(docker exec "$CONTAINER" find /var/www/html -name "openach.db" 2>/dev/null | head -1)
-DB=${DB:-"/var/www/html/protected/runtime/db/openach.db"}
-echo "    Database: $DB"
-
-SQL="INSERT OR IGNORE INTO user_api (user_api_user_id, user_api_datetime, user_api_originator_info_id, user_api_token, user_api_key, user_api_status) VALUES ('4fc86059-2e7b-4732-b94f-e7c3715ee8d7', datetime('now'), '0eb26e1d-5fcc-4978-a132-dd93c2655429', '3caee1c2-c218-4959-b6d2-21d4b2a1b42e', 'b74966cf-5276-4d8b-8650-5bd57dcee272', 'enabled');"
-
-docker exec "$CONTAINER" sqlite3 "$DB" "$SQL"
-
-VERIFY=$(docker exec "$CONTAINER" sqlite3 "$DB" \
-  "SELECT 'FOUND:' || user_api_token FROM user_api WHERE user_api_token='3caee1c2-c218-4959-b6d2-21d4b2a1b42e';")
-
-if echo "$VERIFY" | grep -q "FOUND"; then
-  echo "    ✅ Credentials active: $VERIFY"
+  echo "    Skipping credential insertion..."
 else
-  echo "    ❌ Credential insert may have failed. Output: $VERIFY"
+  echo "    Container: $CONTAINER"
+
+  DB=$(docker exec "$CONTAINER" find /var/www/html -name "openach.db" 2>/dev/null | head -1)
+  DB=${DB:-"/var/www/html/protected/runtime/db/openach.db"}
+  echo "    Database: $DB"
+
+  SQL="INSERT OR IGNORE INTO user_api (user_api_user_id, user_api_datetime, user_api_originator_info_id, user_api_token, user_api_key, user_api_status) VALUES ('4fc86059-2e7b-4732-b94f-e7c3715ee8d7', datetime('now'), '0eb26e1d-5fcc-4978-a132-dd93c2655429', '3caee1c2-c218-4959-b6d2-21d4b2a1b42e', 'b74966cf-5276-4d8b-8650-5bd57dcee272', 'enabled');"
+
+  docker exec "$CONTAINER" sqlite3 "$DB" "$SQL"
+
+  VERIFY=$(docker exec "$CONTAINER" sqlite3 "$DB" \
+    "SELECT 'FOUND:' || user_api_token FROM user_api WHERE user_api_token='3caee1c2-c218-4959-b6d2-21d4b2a1b42e';")
+
+  if echo "$VERIFY" | grep -q "FOUND"; then
+    echo "    ✅ Credentials active: $VERIFY"
+  else
+    echo "    ❌ Credential insert may have failed. Output: $VERIFY"
+  fi
 fi
+
+# Update .env with OpenACH settings
+echo ""
+echo "[5] Updating .env with OpenACH settings..."
+ENV_FILE="$APP_DIR/.env"
+
+if [ ! -f "$ENV_FILE" ]; then
+  touch "$ENV_FILE"
+  echo "    Created new .env file"
+fi
+
+add_env_var() {
+  local key="$1"
+  local val="$2"
+  if grep -q "^${key}=" "$ENV_FILE" 2>/dev/null; then
+    echo "    $key already set"
+  else
+    echo "${key}=${val}" >> "$ENV_FILE"
+    echo "    Added: ${key}=${val}"
+  fi
+}
+
+add_env_var "OPENACH_BASE_URL" "http://localhost/openach/api"
+add_env_var "OPENACH_HOST_HEADER" "ach.dlbtrust.cloud"
+add_env_var "OPENACH_API_TOKEN" "3caee1c2-c218-4959-b6d2-21d4b2a1b42e"
+add_env_var "OPENACH_API_KEY" "b74966cf-5276-4d8b-8650-5bd57dcee272"
 
 # Get payment type ID for Trust Dist
 echo ""
-echo "[5] Fetching Trust Dist payment type ID..."
+echo "[6] Fetching Trust Dist payment type ID..."
 CONNECT=$(curl -s --max-time 8 \
   -X POST "http://localhost/openach/api/connect" \
   -H "Host: ach.dlbtrust.cloud" \
@@ -99,7 +152,7 @@ if [ -n "$SESSION" ]; then
   echo "    Payment types: $TYPES"
   
   # Disconnect
-  curl -s --max-time 5 "http://localhost/openach/api/disconnect" \
+  curl -s --max-time 5 -X POST "http://localhost/openach/api/disconnect" \
     -H "Host: ach.dlbtrust.cloud" \
     -H "Cookie: PHPSESSID=$SESSION" > /dev/null 2>&1
   
@@ -107,23 +160,24 @@ if [ -n "$SESSION" ]; then
   PT_ID=$(echo "$TYPES" | grep -oP '"payment_type_id"\s*:\s*"[^"]*"' | head -1 | grep -oP '"[^"]*"$' | tr -d '"')
   if [ -n "$PT_ID" ]; then
     echo "    ✅ Payment Type ID: $PT_ID"
-    echo ""
-    echo "    Add to .env:  OPENACH_PAYMENT_TYPE_ID=$PT_ID"
+    add_env_var "OPENACH_PAYMENT_TYPE_ID" "$PT_ID"
   fi
 fi
 
 # Restart the Node.js app
 echo ""
-echo "[6] Restarting Node.js app..."
+echo "[7] Restarting Node.js app..."
 if command -v pm2 &>/dev/null; then
-  pm2 restart all
-  echo "    pm2 restarted"
+  pm2 delete dlbtrust 2>/dev/null || true
+  pm2 start "$ENTRY_FILE" --name dlbtrust --env production
+  pm2 save
+  echo "    pm2 started dlbtrust"
 else
   PIDFILE="/tmp/dlbtrust.pid"
   if [ -f "$PIDFILE" ]; then
     kill $(cat "$PIDFILE") 2>/dev/null || true
   fi
-  nohup node server.js > /tmp/dlbtrust.log 2>&1 &
+  nohup node "$ENTRY_FILE" > /tmp/dlbtrust.log 2>&1 &
   echo $! > "$PIDFILE"
   echo "    Started PID $(cat $PIDFILE)"
 fi
@@ -132,7 +186,7 @@ sleep 4
 
 # Final health check
 echo ""
-echo "[7] Health checks..."
+echo "[8] Health checks..."
 echo -n "    OpenACH API:  "
 curl -s --max-time 8 \
   -X POST "http://localhost/openach/api/connect" \
