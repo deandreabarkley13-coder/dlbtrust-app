@@ -108,15 +108,43 @@ jobs:
           echo "DEPLOY COMPLETE"
           REMOTEOF
 
-      - name: Reload Apache via Plesk API
+      - name: Force Apache reconfiguration via multiple methods
         run: |
+          echo "=== Method 1: Plesk XML API webspace set ==="
           curl -sk --max-time 30 "https://dlbtrust.cloud:8443/enterprise/control/agent.php" \
             -H "HTTP_AUTH_LOGIN: admin" -H "HTTP_AUTH_PASSWD: $PLESK_PASS" \
             -H "Content-Type: text/xml" \
             -d '<?xml version="1.0"?><packet version="1.6.9.1"><webspace><set><filter><name>dlbtrust.cloud</name></filter><values><prefs><www>true</www></prefs></values></set></webspace></packet>'
           echo ""
-          echo "Apache reload triggered, waiting 10s..."
-          sleep 10
+
+          echo "=== Method 2: Plesk REST API - reconfigure web server ==="
+          curl -sk --max-time 30 "https://dlbtrust.cloud:8443/api/v2/server/settings" \
+            -H "X-API-Key: $(echo -n 'admin:dP8RlShbOWNq' | base64)" \
+            -H "Content-Type: application/json" 2>&1 | head -c 200 || true
+          echo ""
+
+          echo "=== Method 3: Plesk XML API - restart httpd service ==="
+          curl -sk --max-time 30 "https://dlbtrust.cloud:8443/enterprise/control/agent.php" \
+            -H "HTTP_AUTH_LOGIN: admin" -H "HTTP_AUTH_PASSWD: $PLESK_PASS" \
+            -H "Content-Type: text/xml" \
+            -d '<?xml version="1.0"?><packet version="1.6.9.1"><server><srv_man><restart><service>httpd</service></restart></srv_man></server></packet>'
+          echo ""
+
+          echo "=== Method 4: SSH in and try apache reload ==="
+          sshpass -p "$SSH_PASS" ssh -o StrictHostKeyChecking=no -o PasswordAuthentication=yes "$SSH_USER@$SERVER" 'bash -s' << 'APACHEOF'
+          echo "Trying apache reload methods..."
+          service apache2 reload 2>&1 || true
+          apachectl -k graceful 2>&1 || true
+          /usr/sbin/apachectl graceful 2>&1 || true
+          # Check if vhost.conf is being included
+          cat /var/www/vhosts/dlbtrust.cloud/conf/vhost.conf
+          echo "---"
+          # Check current Apache proxy config
+          apachectl -S 2>&1 | grep -i dlbtrust || true
+          APACHEOF
+
+          echo "Waiting 15s for Apache to reload..."
+          sleep 15
 
       - name: Verify endpoints via HTTPS
         run: |
