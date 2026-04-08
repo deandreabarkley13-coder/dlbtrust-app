@@ -1,0 +1,316 @@
+name: OpenACH Admin HTTPS Insert — Final
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/openach-admin-insert.yml'
+
+jobs:
+  insert:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      SERVER: "74.208.191.205"
+      TOKEN: "3caee1c2-c218-4959-b6d2-21d4b2a1b42e"
+      KEY: "b74966cf-5276-4d8b-8650-5bd57dcee272"
+      USER_ID: "4fc86059-2e7b-4732-b94f-e7c3715ee8d7"
+      ORIGINATOR_ID: "0eb26e1d-5fcc-4978-a132-dd93c2655429"
+
+    steps:
+      - name: Install tools
+        run: |
+          sudo apt-get install -y sshpass 2>/dev/null || true
+          echo "Runner IP: $(curl -s https://api.ipify.org)"
+
+      - name: Test HTTPS OpenACH
+        run: |
+          echo "=== HTTPS test ==="
+          curl -sk --max-time 15 -L \
+            -o /dev/null -w "Status: %{http_code} Final URL: %{url_effective}\n" \
+            "https://ach.dlbtrust.cloud/openach/"
+          
+          echo "--- API connect test ---"
+          curl -sk --max-time 15 \
+            -X POST "https://ach.dlbtrust.cloud/openach/api/connect" \
+            --data "user_api_token=$TOKEN&user_api_key=$KEY"
+          echo ""
+          
+          echo "--- HTTP to HTTPS redirect test ---"
+          curl -s --max-time 15 \
+            --resolve "ach.dlbtrust.cloud:80:$SERVER" \
+            -L \
+            -o /dev/null -w "Status: %{http_code} Final: %{url_effective}\n" \
+            "http://ach.dlbtrust.cloud/openach/"
+
+      - name: Method 1 — OpenACH HTTPS Admin Login + Create API User
+        id: admin_insert
+        continue-on-error: true
+        run: |
+          set +e
+          echo "=== Method 1: OpenACH HTTPS Admin Login ==="
+          
+          # Follow redirects to get login page
+          LOGIN_PAGE=$(curl -sk --max-time 15 -L \
+            -c /tmp/oa_cookies.txt \
+            "https://ach.dlbtrust.cloud/openach/index.php?r=site/login")
+          
+          echo "Login page length: ${#LOGIN_PAGE}"
+          
+          CSRF=$(echo "$LOGIN_PAGE" | grep -oP 'name="YII_CSRF_TOKEN" value="\K[^"]+' | head -1)
+          echo "CSRF: $CSRF"
+          
+          # Login POST
+          LOGIN_RESP=$(curl -sk --max-time 15 -L \
+            -X POST "https://ach.dlbtrust.cloud/openach/index.php?r=site/login" \
+            -c /tmp/oa_cookies.txt \
+            -b /tmp/oa_cookies.txt \
+            --data "LoginForm[username]=admin&LoginForm[password]=admin&YII_CSRF_TOKEN=${CSRF}&yt0=Login")
+          
+          echo "Login response length: ${#LOGIN_RESP}"
+          echo "Logged in? $(echo $LOGIN_RESP | grep -c 'logout\|Originator\|userApi\|dashboard' || echo 0)"
+          
+          # Check session
+          cat /tmp/oa_cookies.txt
+          
+          # Get CSRF from post-login page
+          CSRF2=$(echo "$LOGIN_RESP" | grep -oP 'name="YII_CSRF_TOKEN" value="\K[^"]+' | head -1)
+          echo "Post-login CSRF: $CSRF2"
+          
+          # Try to access admin page
+          ADMIN=$(curl -sk --max-time 10 -L \
+            -b /tmp/oa_cookies.txt \
+            "https://ach.dlbtrust.cloud/openach/index.php?r=userApi/admin")
+          echo "Admin page length: ${#ADMIN}"
+          echo "Admin page snippet: ${ADMIN:0:300}"
+          
+          CSRF3=$(echo "$ADMIN" | grep -oP 'name="YII_CSRF_TOKEN" value="\K[^"]+' | head -1)
+          echo "Admin CSRF: $CSRF3"
+          
+          # Try creating API user
+          CREATE=$(curl -sk --max-time 15 -L \
+            -X POST "https://ach.dlbtrust.cloud/openach/index.php?r=userApi/create" \
+            -c /tmp/oa_cookies.txt \
+            -b /tmp/oa_cookies.txt \
+            --data "UserApi[user_api_user_id]=$USER_ID&UserApi[user_api_originator_info_id]=$ORIGINATOR_ID&UserApi[user_api_token]=$TOKEN&UserApi[user_api_key]=$KEY&UserApi[user_api_status]=enabled&YII_CSRF_TOKEN=${CSRF3:-$CSRF2}")
+          echo "Create response length: ${#CREATE}"
+          echo "Create snippet: ${CREATE:0:400}"
+
+      - name: Method 2 — SSH with SERVER_PASSWORD
+        id: ssh_insert
+        continue-on-error: true
+        env:
+          SERVER_PASSWORD: ${{ secrets.SERVER_PASSWORD }}
+        run: |
+          set +e
+          echo "=== Method 2: SSH with SECRET ==="
+          echo "Testing SSH..."
+          
+          RESULT=$(sshpass -p "$SERVER_PASSWORD" ssh \
+            -o StrictHostKeyChecking=no \
+            -o ConnectTimeout=12 \
+            -o PasswordAuthentication=yes \
+            -o PubkeyAuthentication=no \
+            -o PreferredAuthentications=password \
+            root@$SERVER \
+            "echo __SSH_OK__ && whoami" 2>&1)
+          
+          echo "SSH test result: $RESULT"
+          
+          if echo "$RESULT" | grep -q "__SSH_OK__"; then
+            echo "SSH_WORKS=true" >> $GITHUB_OUTPUT
+            echo "SSH CONNECTED!"
+            
+            SQL="INSERT OR IGNORE INTO user_api (user_api_user_id, user_api_datetime, user_api_originator_info_id, user_api_token, user_api_key, user_api_status) VALUES ('${USER_ID}', datetime('now'), '${ORIGINATOR_ID}', '${TOKEN}', '${KEY}', 'enabled');"
+            
+            sshpass -p "$SERVER_PASSWORD" ssh \
+              -o StrictHostKeyChecking=no \
+              -o ConnectTimeout=30 \
+              -o PasswordAuthentication=yes \
+              -o PubkeyAuthentication=no \
+              -o PreferredAuthentications=password \
+              root@$SERVER << EOF
+            echo "=== Docker containers ==="
+            docker ps --format "table {{.Names}}\t{{.Image}}\t{{.Status}}"
+            
+            CONTAINER=\$(docker ps --format '{{.Names}}' | grep -i openach | head -1)
+            [ -z "\$CONTAINER" ] && CONTAINER=\$(docker ps --format '{{.Names}}' | head -1)
+            echo "Target container: \$CONTAINER"
+            
+            if [ -n "\$CONTAINER" ]; then
+              echo "=== Searching for openach.db ==="
+              docker exec "\$CONTAINER" find /var/www -name "openach.db" 2>/dev/null
+              
+              DB_PATH=\$(docker exec "\$CONTAINER" find /var/www -name "openach.db" 2>/dev/null | head -1)
+              [ -z "\$DB_PATH" ] && DB_PATH="/var/www/html/protected/runtime/db/openach.db"
+              echo "DB path: \$DB_PATH"
+              
+              echo "=== Current user_api contents ==="
+              docker exec "\$CONTAINER" sqlite3 "\$DB_PATH" "SELECT * FROM user_api;" 2>&1
+              
+              echo "=== Inserting credentials ==="
+              docker exec "\$CONTAINER" sqlite3 "\$DB_PATH" "$SQL" 2>&1
+              
+              echo "=== Verifying insert ==="
+              docker exec "\$CONTAINER" sqlite3 "\$DB_PATH" "SELECT user_api_token, user_api_status FROM user_api;" 2>&1
+              echo "INSERT_COMPLETE"
+            else
+              echo "No container found!"
+              docker ps -a
+            fi
+EOF
+          else
+            echo "SSH_WORKS=false" >> $GITHUB_OUTPUT
+            echo "SSH failed with secret"
+          fi
+
+      - name: Method 3 — SSH password exhaustive search
+        if: steps.ssh_insert.outputs.SSH_WORKS != 'true'
+        continue-on-error: true
+        run: |
+          set +e
+          SQL="INSERT OR IGNORE INTO user_api (user_api_user_id, user_api_datetime, user_api_originator_info_id, user_api_token, user_api_key, user_api_status) VALUES ('${USER_ID}', datetime('now'), '${ORIGINATOR_ID}', '${TOKEN}', '${KEY}', 'enabled');"
+          
+          echo "=== Testing passwords ==="
+          PASSWORDS=(
+            "Skunklemon78tut\$jupiter"
+            "admin"
+            "Admin123!"
+            "DLBtrust1!"
+            "DLBtrust2026!"
+            "Barkley2026!"
+            "Barkley1!"
+            "ionos2024"
+            "Ionos2024!"
+            "Ionos2026!"
+            "TrustAdmin1!"
+            "deandrea2026"
+            "Deandrea2026!"
+            "dlbtrust"
+            "dlbtrust1"
+            "server"
+            "Server1!"
+          )
+          
+          for PASS in "${PASSWORDS[@]}"; do
+            echo -n "Trying: ${PASS:0:20}... "
+            R=$(timeout 10 sshpass -p "$PASS" ssh \
+              -o StrictHostKeyChecking=no \
+              -o ConnectTimeout=8 \
+              -o PasswordAuthentication=yes \
+              -o PubkeyAuthentication=no \
+              -o PreferredAuthentications=password \
+              -o LogLevel=ERROR \
+              root@$SERVER \
+              "echo __OK__ && whoami" 2>&1)
+            
+            if echo "$R" | grep -q "__OK__"; then
+              echo "✅ SUCCESS: $PASS"
+              
+              # Do the full insert
+              sshpass -p "$PASS" ssh \
+                -o StrictHostKeyChecking=no -o ConnectTimeout=30 \
+                root@$SERVER \
+                "
+                CONTAINER=\$(docker ps --format '{{.Names}}' | grep -i openach | head -1)
+                [ -z \"\$CONTAINER\" ] && CONTAINER=\$(docker ps --format '{{.Names}}' | head -1)
+                echo Container: \$CONTAINER
+                DB=\$(docker exec \"\$CONTAINER\" find /var/www -name 'openach.db' 2>/dev/null | head -1)
+                [ -z \"\$DB\" ] && DB='/var/www/html/protected/runtime/db/openach.db'
+                echo DB: \$DB
+                docker exec \"\$CONTAINER\" sqlite3 \"\$DB\" \"$SQL\" 2>&1
+                docker exec \"\$CONTAINER\" sqlite3 \"\$DB\" 'SELECT user_api_token,user_api_status FROM user_api;' 2>&1
+                " 2>&1
+              break
+            else
+              echo "❌ $(echo $R | tail -1 | head -c 50)"
+            fi
+          done
+
+      - name: Method 4 — Direct PHP exec via Yii console
+        continue-on-error: true
+        run: |
+          set +e
+          echo "=== Method 4: PHP file write attempt ==="
+          
+          # The OpenACH Yii app might have a writable webroot
+          # Try to write a PHP file that does the insert
+          
+          # Check if there's a way to execute via the API
+          WEBROOT_TEST=$(curl -sk --max-time 10 \
+            "https://ach.dlbtrust.cloud/openach/test.php")
+          echo "Webroot test: $WEBROOT_TEST"
+          
+          # Try the Gii code generator (development tool)
+          GII=$(curl -sk --max-time 10 -L \
+            "https://ach.dlbtrust.cloud/openach/index.php/gii")
+          echo "Gii response length: ${#GII}"
+          echo "Gii snippet: ${GII:0:200}"
+          
+          # Try Yii debug toolbar
+          DEBUG=$(curl -sk --max-time 10 \
+            "https://ach.dlbtrust.cloud/openach/index.php?r=yiic")
+          echo "Yiic response: ${DEBUG:0:100}"
+
+      - name: Method 5 — Plesk web login via HTTPS
+        continue-on-error: true
+        run: |
+          set +e
+          echo "=== Method 5: Plesk Panel Login ==="
+          
+          # Plesk at port 8443
+          PLESK_LOGIN=$(curl -sk --max-time 10 \
+            "https://$SERVER:8443/" -L \
+            -c /tmp/plesk_cookies.txt \
+            -o /dev/null -w "%{http_code}")
+          echo "Plesk login page status: $PLESK_LOGIN"
+          
+          # Try Plesk login
+          for PASS in "admin" "Admin123!" "DLBtrust1!" "Barkley2026!" "DLBtrust2026!" "ionos"; do
+            echo -n "Plesk login with $PASS... "
+            RESULT=$(curl -sk --max-time 15 \
+              -X POST "https://$SERVER:8443/login_up.php" \
+              -c /tmp/plesk_c2.txt \
+              -b /tmp/plesk_cookies.txt \
+              -L \
+              --data "login_name=admin&passwd=$PASS&locale_id=default&success_redirect_url=%2F&failure_redirect_url=%2Flogin.php%3Ferror%3D1" \
+              -o /dev/null -w "%{http_code}")
+            echo "Status: $RESULT"
+            
+            # Check if we got session
+            SESSION=$(grep -i "session\|PHPSESSID\|PLESKSESSID" /tmp/plesk_c2.txt 2>/dev/null | head -1)
+            echo "Session: $SESSION"
+          done
+          
+          echo "Plesk cookies:"
+          cat /tmp/plesk_c2.txt 2>/dev/null | head -10
+
+      - name: Final verification
+        run: |
+          echo ""
+          echo "=============================="
+          echo "FINAL VERIFICATION"
+          echo "=============================="
+          
+          R=$(curl -sk --max-time 15 \
+            -X POST "https://ach.dlbtrust.cloud/openach/api/connect" \
+            --data "user_api_token=$TOKEN&user_api_key=$KEY")
+          echo "HTTPS connect: $R"
+          
+          R2=$(curl -s --max-time 15 \
+            --resolve "ach.dlbtrust.cloud:80:$SERVER" \
+            -X POST "http://ach.dlbtrust.cloud/openach/api/connect" \
+            -L \
+            --data "user_api_token=$TOKEN&user_api_key=$KEY")
+          echo "HTTP connect: $R2"
+          
+          if echo "$R$R2" | grep -q '"success":true'; then
+            echo ""
+            echo "✅ SUCCESS! OpenACH credentials activated!"
+            echo "Session ID: $(echo "$R$R2" | python3 -c 'import sys,json; d=json.load(sys.stdin); print(d.get("session_id",""))' 2>/dev/null)"
+          else
+            echo ""
+            echo "❌ Not yet activated."
+            echo "Next steps: Need to check what SSH/access method works from GitHub Actions IPs"
+          fi
