@@ -7,33 +7,24 @@ jobs:
   fix:
     runs-on: ubuntu-latest
     steps:
-      - name: Try Plesk CLI execute API for Apache restart
+      - name: Fetch Plesk REST API spec and test webserver endpoints
         run: |
-          echo "=== Try Plesk server/execute API ==="
-          curl -sk --max-time 30 \
-            "https://dlbtrust.cloud:8443/api/v2/cli/run" \
-            -u "admin:dP8RlShbOWNq" \
-            -H "Content-Type: application/json" \
-            -d '{"params": ["service", "apache2", "graceful"]}' | head -c 300
+          echo "=== Plesk REST API paths ==="
+          curl -sk --max-time 30 "https://dlbtrust.cloud:8443/api/v2/swagger.json" \
+            -u "admin:dP8RlShbOWNq" | python3 -c "
+          import json,sys
+          try:
+            data=json.load(sys.stdin)
+            paths=list(data.get('paths',{}).keys())
+            for p in sorted(paths): print(p)
+          except: print('failed to parse')
+          " 2>&1 | head -60
           echo ""
 
-          echo "=== Try POST to server restart ==="
-          curl -sk --max-time 30 \
-            -X POST "https://dlbtrust.cloud:8443/api/v2/server/webserver/restart" \
-            -u "admin:dP8RlShbOWNq" | head -c 200
-          echo ""
-
-          echo "=== Try GET Plesk server status ==="
-          curl -sk --max-time 30 \
-            "https://dlbtrust.cloud:8443/api/v2/server" \
-            -u "admin:dP8RlShbOWNq" | head -c 300
-          echo ""
-
-          echo "=== Try Plesk API extensions ==="
-          curl -sk --max-time 30 \
-            "https://dlbtrust.cloud:8443/api/v2/" \
-            -u "admin:dP8RlShbOWNq" | head -c 500
-          echo ""
-
-          sleep 5
-          curl -sk --max-time 15 https://dlbtrust.cloud/api/ach/health | grep -q openach_connected && echo "PUBLIC ACH: PASS" || echo "PUBLIC ACH: FAIL"
+          echo "=== Try server webserver endpoints ==="
+          for ep in "server/webserver" "webserver" "server/services" "services" "server/restart" "domains/1/web-server" "domains/1/reconfigure"; do
+            echo -n "$ep: "
+            curl -sk --max-time 10 "https://dlbtrust.cloud:8443/api/v2/$ep" \
+              -u "admin:dP8RlShbOWNq" | head -c 80
+            echo ""
+          done
