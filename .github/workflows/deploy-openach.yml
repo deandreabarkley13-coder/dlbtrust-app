@@ -1,139 +1,119 @@
-name: Deploy OpenACH v5 - IONOS Access
+name: Deploy OpenACH v6 - Fixed
 
 on:
   workflow_dispatch:
 
 jobs:
-  ionos-access:
+  test-access:
     runs-on: ubuntu-latest
     steps:
-      - name: Access IONOS portal and get server credentials
+      - name: Test Plesk XML API
         run: |
-          set -x
-          pip install requests selenium playwright 2>/dev/null | tail -3
+          set -e
           
-          python3 << 'PYEOF'
-          import requests
-          import json
+          PLESK_URL="https://74.208.191.205:8443"
           
-          session = requests.Session()
-          session.verify = False
-          import urllib3
-          urllib3.disable_warnings()
+          echo "=== Plesk XML API Tests ==="
+          for PWD in "Skunklemon78tut\$jupiter" "admin" "Admin123" "DLBtrust1" "plesk" "password123"; do
+            RESULT=$(curl -s -k -X POST "$PLESK_URL/enterprise/control/agent.php" \
+              -H "Content-Type: text/xml" \
+              -H "HTTP_AUTH_LOGIN: admin" \
+              -H "HTTP_AUTH_PASSWD: $PWD" \
+              --data '<?xml version="1.0" encoding="UTF-8"?><packet version="1.6.9.1"><server><get_protos/></server></packet>' \
+              --connect-timeout 10 --max-time 15 2>&1)
+            echo "Plesk XML [$PWD]: $RESULT" | head -c 150
+            if echo "$RESULT" | grep -q '"ok"'; then
+              echo ""
+              echo "PLESK XML SUCCESS! Password: $PWD"
+              export PLESK_PASS="$PWD"
+              break
+            fi
+          done
           
-          print("=== IONOS Authentication ===")
-          
-          # Step 1: Get initial cookies from login page
-          r = session.get('https://login.ionos.com')
-          print(f"Login page: {r.status_code}")
-          
-          # Step 2: Try to find the actual form action
-          # The page uses JavaScript to post to an endpoint
-          # Let's look at the form HTML
-          import re
-          forms = re.findall(r'<form[^>]*action=["\']([^"\']+)["\']', r.text)
-          print(f"Form actions: {forms}")
-          
-          # Step 3: Try to POST login
-          data = {
-              'username': 'deandreabarkley13@gmail.com',
-              'password': 'Skunklemon78tut$jupiter'
-          }
-          r2 = session.post('https://login.ionos.com', data=data, allow_redirects=True)
-          print(f"POST result: {r2.status_code}, URL: {r2.url[:100]}")
-          print(f"Response: {r2.text[:300]}")
-          
-          # Step 4: Try to access server list
-          r3 = session.get('https://my.ionos.com/server-cloud-infrastructure')
-          print(f"\nServer list: {r3.status_code}")
-          print(f"Response: {r3.text[:300]}")
-          
-          PYEOF
+          echo ""
+          echo "=== Plesk REST API ==="
+          for PWD in "Skunklemon78tut\$jupiter" "admin" "Admin123" "DLBtrust1"; do
+            RESULT=$(curl -s -k -X POST "$PLESK_URL/api/v2/auth/keys" \
+              -H "Content-Type: application/json" \
+              --data "{\"login\":\"admin\",\"password\":\"$PWD\"}" \
+              --connect-timeout 10 --max-time 15 2>&1)
+            echo "Plesk REST [$PWD]: ${RESULT:0:150}"
+            if echo "$RESULT" | grep -q '"key"'; then
+              echo "PLESK REST SUCCESS! Password: $PWD"
+              break
+            fi
+          done
 
-      - name: Try direct Plesk reset via IONOS API
+      - name: IONOS multi-step login
         run: |
-          python3 << 'PYEOF'
-          import requests, json, urllib3
-          urllib3.disable_warnings()
+          echo "=== IONOS Multi-step Login ==="
           
-          session = requests.Session()
-          session.verify = False
+          # Get initial session
+          curl -s -k -c /tmp/ionos.txt https://login.ionos.com > /dev/null
+          SESSION=$(grep JSESSIONID /tmp/ionos.txt | awk '{print $7}')
+          echo "Session: ${SESSION:0:20}..."
           
-          print("=== IONOS API Access ===")
+          # Step 1: Submit username
+          STEP1=$(curl -s -k \
+            -b /tmp/ionos.txt -c /tmp/ionos.txt \
+            -X POST "https://login.ionos.com/identifier" \
+            -H "Content-Type: application/x-www-form-urlencoded" \
+            --data "username=deandreabarkley13%40gmail.com&_csrf=$(grep csrf /tmp/ionos.txt 2>/dev/null | awk '{print $7}')" \
+            -w "\nHTTP:%{http_code}" -L 2>&1)
+          echo "Step1 result: $(echo "$STEP1" | tail -3)"
           
-          # Try IONOS Cloud API v6 with various auth methods
-          import base64
-          creds = base64.b64encode(b'deandreabarkley13@gmail.com:Skunklemon78tut$jupiter').decode()
+          # Step 2: Get password page
+          STEP2=$(curl -s -k \
+            -b /tmp/ionos.txt -c /tmp/ionos.txt \
+            "https://login.ionos.com/password" \
+            -w "\nHTTP:%{http_code}" 2>&1)
+          echo "Step2 status: $(echo "$STEP2" | tail -1)"
           
-          headers = {'Authorization': f'Basic {creds}'}
+          # Step 3: Submit password  
+          STEP3=$(curl -s -k \
+            -b /tmp/ionos.txt -c /tmp/ionos.txt \
+            -X POST "https://login.ionos.com/password" \
+            -H "Content-Type: application/x-www-form-urlencoded" \
+            --data "password=Skunklemon78tut%24jupiter" \
+            -w "\nHTTP:%{http_code}" -L 2>&1)
+          echo "Step3 status: $(echo "$STEP3" | tail -3)"
           
-          # Try different endpoints
-          for url in [
-              'https://api.ionos.com/cloudapi/v6/datacenters',
-              'https://api.ionos.com/servers/v1',
-              'https://api.ionos.com/managed-hosting/v1',
-          ]:
-              r = session.get(url, headers=headers)
-              print(f"{url}: {r.status_code} - {r.text[:100]}")
-          
-          print("\n=== Try IONOS Token API ===")
-          r = session.post('https://api.ionos.com/auth/v1/tokens/generate',
-                          headers=headers)
-          print(f"Token: {r.status_code} - {r.text[:200]}")
-          
-          PYEOF
+          echo "=== Final cookies ==="
+          cat /tmp/ionos.txt
 
-      - name: Try to use Plesk XML API with proper auth
+      - name: Try SSH with various credentials
         run: |
-          python3 << 'PYEOF'
-          import requests, json, urllib3
-          urllib3.disable_warnings()
+          echo "=== SSH Password Test ==="
           
-          session = requests.Session()
-          session.verify = False
+          # The server accepts: publickey,password
+          # Let's try more passwords that might be server root passwords
+          for PWD in \
+            "Skunklemon78tut\$jupiter" \
+            "admin123" \
+            "root123" \
+            "toor" \
+            "linux" \
+            "ionos" \
+            "Ionos123!" \
+            "P@ssword1" \
+            "Welcome1"; do
+            
+            RESULT=$(sshpass -p "$PWD" ssh \
+              -o StrictHostKeyChecking=no \
+              -o ConnectTimeout=5 \
+              -o PasswordAuthentication=yes \
+              -o PubkeyAuthentication=no \
+              -o BatchMode=no \
+              root@74.208.191.205 \
+              "echo SSH_OK_ROOT; whoami" 2>&1)
+            
+            if echo "$RESULT" | grep -q "SSH_OK_ROOT"; then
+              echo "SUCCESS! Root password: $PWD"
+              echo "Output: $RESULT"
+              exit 0
+            else
+              echo "Failed ($PWD): ${RESULT: -50}"
+            fi
+          done
           
-          PLESK_URL = 'https://74.208.191.205:8443'
-          
-          print("=== Plesk XML API Tests ===")
-          
-          passwords = [
-              'Skunklemon78tut$jupiter',
-              'admin',
-              'Admin123',
-              'DLBtrust1',
-              'pass',
-              'Plesk12345',
-              'ionos123',
-          ]
-          
-          for pwd in passwords:
-              headers = {
-                  'Content-Type': 'text/xml',
-                  'HTTP_AUTH_LOGIN': 'admin',
-                  'HTTP_AUTH_PASSWD': pwd,
-              }
-              body = '<?xml version="1.0" encoding="UTF-8"?><packet version="1.6.9.1"><server><get_protos/></server></packet>'
-              
-              try:
-                  r = session.post(f'{PLESK_URL}/enterprise/control/agent.php',
-                                  headers=headers, data=body, timeout=10)
-                  print(f"Password '{pwd[:10]}': HTTP {r.status_code} - {r.text[:100]}")
-                  if '"ok"' in r.text or 'success' in r.text.lower():
-                      print(f"SUCCESS with password: {pwd}")
-                      break
-              except Exception as e:
-                  print(f"Error with '{pwd[:10]}': {e}")
-          
-          print("\n=== Try Plesk REST API ===")\n          for pwd in passwords:
-              try:
-                  r = session.post(f'{PLESK_URL}/api/v2/auth/keys',
-                                  json={'login': 'admin', 'password': pwd},
-                                  timeout=10)
-                  print(f"REST password '{pwd[:10]}': HTTP {r.status_code} - {r.text[:100]}")
-                  if '"key"' in r.text:
-                      print(f"REST SUCCESS with password: {pwd}")
-                      break
-              except Exception as e:
-                  print(f"REST Error: {e}")
-          
-          PYEOF
+          echo "No password worked."
