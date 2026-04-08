@@ -1,0 +1,54 @@
+name: Check htaccess and write patch
+on: [workflow_dispatch]
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      SERVER: "74.208.191.205"
+      SSH_USER: "dlbtrust.cloud_h6zkwzag1ya"
+      SSH_PASS: "Deploy2026!"
+    steps:
+      - run: apt-get install -y sshpass 2>/dev/null | tail -1 || true
+      - name: Check and patch via mod_rewrite proxy
+        run: |
+          sshpass -p "$SSH_PASS" ssh \
+            -o StrictHostKeyChecking=no -o ConnectTimeout=15 \
+            -o PasswordAuthentication=yes \
+            "$SSH_USER@$SERVER" << 'SSHEOF'
+            
+            echo "=== Current .htaccess ==="
+            cat /var/www/vhosts/dlbtrust.cloud/httpdocs/.htaccess 2>/dev/null
+            
+            echo ""
+            echo "=== Apache modules ==="
+            apache2ctl -M 2>/dev/null | grep -E "proxy|rewrite" || \
+              apachectl -M 2>/dev/null | grep -E "proxy|rewrite" || \
+              echo "Can't check modules"
+            
+            echo ""
+            echo "=== Check if PM2 user process can be started ==="
+            pm2 list 2>/dev/null | head -5
+            which pm2 2>/dev/null || ls ~/.nodenv/shims/pm2 2>/dev/null || ls ~/.npm/bin/pm2 2>/dev/null
+            
+            echo ""
+            echo "=== ecosystem configs ==="
+            ls /var/www/vhosts/dlbtrust.cloud/dlbtrust-v2/*.config.cjs 2>/dev/null
+            cat /var/www/vhosts/dlbtrust.cloud/dlbtrust-v2/ecosystem.config.cjs 2>/dev/null
+            
+            echo ""
+            echo "=== Check who is running pm2 ==="
+            ps aux | grep pm2 | head -5
+            ps aux | grep node | head -5
+            
+            echo ""
+            echo "=== Check port 3001 ==="
+            ss -tlnp | grep 3001 || netstat -tlnp 2>/dev/null | grep 3001 || echo "Can't check"
+            
+            echo ""
+            echo "=== Check any writable service files ==="
+            find /etc/supervisor.d /etc/supervisor/conf.d 2>/dev/null -type f -name "*.conf" 2>/dev/null | head -5
+            ls -la /etc/supervisor* 2>/dev/null | head -5 || echo "No supervisor"
+            
+          SSHEOF
