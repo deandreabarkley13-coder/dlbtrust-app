@@ -3,8 +3,6 @@ on:
   workflow_dispatch:
   push:
     branches: [main]
-    paths:
-      - '.github/workflows/surgical-proxy-fix.yml'
 
 jobs:
   fix:
@@ -118,3 +116,4 @@ VHEOF
             echo "$ANA_RESP" | grep -q total_corpus && echo "PUBLIC ANALYTICS: PASS" || echo "PUBLIC ANALYTICS: FAIL"
             echo "$WAL_RESP" | grep -q wallet_id && echo "PUBLIC WALLETS: PASS" || echo "PUBLIC WALLETS: FAIL"
             echo "=== ALL DONE ==="
+# updated: Wed Apr  8 21:33:43 UTC 2026
