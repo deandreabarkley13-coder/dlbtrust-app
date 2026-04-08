@@ -187,13 +187,28 @@ router.post('/:id/approve', requireAuth, requireRole('admin', 'trustee'), async 
         });
 
         db.prepare(`
-          UPDATE disbursements SET status = 'processing', ach_transaction_id = ?, updated_at = datetime('now') WHERE id = ?
-        `).run(result.transactionId, id);
+          UPDATE disbursements 
+          SET status = 'processing',
+              ach_transaction_id = ?,
+              openach_profile_id = ?,
+              openach_account_id = ?,
+              updated_at = datetime('now')
+          WHERE id = ?
+        `).run(result.transactionId, result.profileId, result.accountId, id);
 
-        logAudit(req.user!.userId, 'initiate_ach', 'disbursement', id, `ACH TX: ${result.transactionId}`);
+        logAudit(
+          req.user!.userId,
+          'initiate_ach',
+          'disbursement',
+          id,
+          `ACH TX: ${result.transactionId} | Profile: ${result.profileId} | ${result.message}`
+        );
       }
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Unknown error';
+      // Mark as failed so it shows up in the dashboard
+      db.prepare(`UPDATE disbursements SET status = 'failed', rejection_reason = ?, updated_at = datetime('now') WHERE id = ?`)
+        .run(`ACH error: ${message}`, id);
       logAudit(req.user!.userId, 'ach_error', 'disbursement', id, message);
     }
   }

@@ -56,6 +56,8 @@ CREATE TABLE IF NOT EXISTS disbursements (
   requested_by TEXT NOT NULL REFERENCES users(id),
   approved_by TEXT REFERENCES users(id),
   ach_transaction_id TEXT,
+  openach_profile_id TEXT,
+  openach_account_id TEXT,
   rejection_reason TEXT,
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
   updated_at TEXT NOT NULL DEFAULT (datetime('now'))
