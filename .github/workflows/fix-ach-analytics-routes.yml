@@ -7,22 +7,33 @@ jobs:
   fix:
     runs-on: ubuntu-latest
     steps:
-      - name: Explore Plesk REST API for hosting reconfigure
+      - name: Try Plesk CLI execute API for Apache restart
         run: |
-          echo "=== Domain 1 hosting info ==="
-          curl -sk --max-time 30 "https://dlbtrust.cloud:8443/api/v2/domains/1/hosting/virtual" \
+          echo "=== Try Plesk server/execute API ==="
+          curl -sk --max-time 30 \
+            "https://dlbtrust.cloud:8443/api/v2/cli/run" \
+            -u "admin:dP8RlShbOWNq" \
+            -H "Content-Type: application/json" \
+            -d '{"params": ["service", "apache2", "graceful"]}' | head -c 300
+          echo ""
+
+          echo "=== Try POST to server restart ==="
+          curl -sk --max-time 30 \
+            -X POST "https://dlbtrust.cloud:8443/api/v2/server/webserver/restart" \
+            -u "admin:dP8RlShbOWNq" | head -c 200
+          echo ""
+
+          echo "=== Try GET Plesk server status ==="
+          curl -sk --max-time 30 \
+            "https://dlbtrust.cloud:8443/api/v2/server" \
+            -u "admin:dP8RlShbOWNq" | head -c 300
+          echo ""
+
+          echo "=== Try Plesk API extensions ==="
+          curl -sk --max-time 30 \
+            "https://dlbtrust.cloud:8443/api/v2/" \
             -u "admin:dP8RlShbOWNq" | head -c 500
           echo ""
 
-          echo "=== Try hosting apply/reconfigure ==="
-          curl -sk --max-time 30 \
-            -X PUT "https://dlbtrust.cloud:8443/api/v2/domains/1/hosting/virtual" \
-            -u "admin:dP8RlShbOWNq" \
-            -H "Content-Type: application/json" \
-            -d '{"www_root": "/var/www/vhosts/dlbtrust.cloud/httpdocs"}' | head -c 300
-          echo ""
-          sleep 10
-
-          echo "=== Test after REST hosting update ==="
+          sleep 5
           curl -sk --max-time 15 https://dlbtrust.cloud/api/ach/health | grep -q openach_connected && echo "PUBLIC ACH: PASS" || echo "PUBLIC ACH: FAIL"
-          curl -sk --max-time 15 https://dlbtrust.cloud/api/analytics/summary | grep -q total_corpus && echo "PUBLIC ANALYTICS: PASS" || echo "PUBLIC ANALYTICS: FAIL"
