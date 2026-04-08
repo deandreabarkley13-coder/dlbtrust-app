@@ -1,184 +1,35 @@
-name: IONOS Playwright Deploy
+name: Simple SSH Deploy
 
 on:
   workflow_dispatch:
+    inputs:
+      action:
+        description: "Action to run"
+        required: false
+        default: "deploy"
 
 jobs:
-  playwright-deploy:
+  deploy:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 10
     steps:
-      - name: Setup Playwright
+      - name: Install sshpass
+        run: sudo apt-get install -y sshpass
+
+      - name: Test SSH connection
         run: |
-          pip install playwright --quiet
-          playwright install chromium --with-deps 2>&1 | tail -3
+          echo "Testing connectivity to dlbtrust.cloud server"
+          nc -zv 74.208.191.205 22 2>&1 || echo "Port 22 check done"
+          ssh-keyscan -H 74.208.191.205 2>/dev/null | head -5 || true
 
-      - name: Login to IONOS and extract server info
+      - name: Try SSH with stored secret
+        env:
+          SERVER_PASS: ${{ secrets.SERVER_PASSWORD }}
         run: |
-          python3 << 'PYEOF'
-import asyncio
-from playwright.async_api import async_playwright
-import json, re
+          echo "Attempting SSH..."
+          sshpass -p "$SERVER_PASS" ssh -o StrictHostKeyChecking=no -o ConnectTimeout=10 root@74.208.191.205 "
+            echo CONNECTED
+            whoami
+            docker ps --format {{.Names}} | grep openach | head -1
+          " 2>&1 || echo "SSH attempt done"
 
-async def main():
-    async with async_playwright() as p:
-        browser = await p.chromium.launch(
-            headless=True,
-            args=['--no-sandbox', '--disable-dev-shm-usage']
-        )
-        context = await browser.new_context(
-            user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
-        )
-        page = await context.new_page()
-
-        print("=== Loading IONOS login ===")
-        await page.goto('https://login.ionos.com/', timeout=30000)
-        await page.wait_for_load_state('networkidle', timeout=15000)
-        print(f"URL: {page.url}")
-        print(f"Title: {await page.title()}")
-
-        # Find username field
-        print("\n=== Entering username ===")
-        try:
-            await page.wait_for_selector('input', timeout=10000)
-            inputs = await page.query_selector_all('input')
-            print(f"Found {len(inputs)} inputs")
-            for inp in inputs:
-                itype = await inp.get_attribute('type') or ''
-                iname = await inp.get_attribute('name') or ''
-                iid = await inp.get_attribute('id') or ''
-                print(f"  Input: type={itype} name={iname} id={iid}")
-        except Exception as e:
-            print(f"Input scan error: {e}")
-
-        try:
-            # Try multiple selectors for username
-            for sel in ['input[name="username"]', 'input[type="email"]', 'input[autocomplete="username"]', '#username', 'input:first-of-type']:
-                try:
-                    await page.fill(sel, 'deandreabarkley13@gmail.com', timeout=3000)
-                    print(f"Filled username with selector: {sel}")
-                    break
-                except:
-                    pass
-
-            # Submit
-            for sel in ['button[type="submit"]', 'input[type="submit"]', 'button:has-text("Next")', 'button:has-text("Log in")', 'button:has-text("Continue")']:
-                try:
-                    await page.click(sel, timeout=3000)
-                    print(f"Clicked with selector: {sel}")
-                    break
-                except:
-                    pass
-
-            await page.wait_for_load_state('networkidle', timeout=10000)
-            print(f"URL after username: {page.url}")
-
-        except Exception as e:
-            print(f"Username error: {e}")
-
-        # Password step
-        print("\n=== Entering password ===")
-        try:
-            await page.wait_for_selector('input[type="password"]', timeout=10000)
-            await page.fill('input[type="password"]', 'Skunklemon78tut$jupiter', timeout=5000)
-            print("Password entered")
-
-            for sel in ['button[type="submit"]', 'input[type="submit"]', 'button:has-text("Log in")', 'button:has-text("Login")']:
-                try:
-                    await page.click(sel, timeout=3000)
-                    print(f"Clicked login with: {sel}")
-                    break
-                except:
-                    pass
-
-            await page.wait_for_load_state('networkidle', timeout=15000)
-            print(f"URL after login: {page.url}")
-            print(f"Title: {await page.title()}")
-
-        except Exception as e:
-            print(f"Password error: {e}")
-
-        await page.screenshot(path='/tmp/after_login.png')
-
-        # Check if logged in and navigate
-        print("\n=== Post-login state ===")
-        current_url = page.url
-        print(f"Current URL: {current_url}")
-        
-        content = await page.content()
-        # Look for password/credential info in the page
-        if 'password' in content.lower() or 'server' in content.lower():
-            print("Page contains server/password references")
-
-        print("\n=== Navigating to VPS servers ===")
-        try:
-            # Try direct URL for VPS
-            await page.goto('https://my.ionos.com/server-cloud-infrastructure', timeout=30000)
-            await page.wait_for_load_state('networkidle', timeout=15000)
-            print(f"VPS URL: {page.url}")
-            
-            content = await page.content()
-            # Find IP addresses
-            ips = re.findall(r'\b74\.208\.\d+\.\d+\b', content)
-            print(f"Found IPs: {ips}")
-            
-            # Save content
-            with open('/tmp/server_page.html', 'w') as f:
-                f.write(content[:50000])
-            print("Saved server page HTML")
-            
-            await page.screenshot(path='/tmp/server_page.png')
-
-        except Exception as e:
-            print(f"Navigation error: {e}")
-
-        # Try clicking on server details
-        print("\n=== Looking for server 74.208.191.205 ===")
-        try:
-            # Search for any link or button with our server IP
-            elements = await page.query_selector_all('text=74.208.191.205')
-            print(f"Found {len(elements)} elements with IP")
-            
-            if elements:
-                await elements[0].click()
-                await page.wait_for_load_state('networkidle', timeout=10000)
-                print(f"Clicked server, URL: {page.url}")
-                await page.screenshot(path='/tmp/server_detail.png')
-                content = await page.content()
-                with open('/tmp/server_detail.html', 'w') as f:
-                    f.write(content[:50000])
-                    
-        except Exception as e:
-            print(f"Server detail error: {e}")
-
-        await browser.close()
-        print("\n=== Done ===")
-
-asyncio.run(main())
-PYEOF
-
-      - name: Show screenshots info
-        run: |
-          ls -la /tmp/*.png /tmp/*.html 2>/dev/null || echo "No files"
-          if [ -f /tmp/server_page.html ]; then
-            echo "=== Server page HTML excerpt ==="
-            grep -i "74.208\|password\|root\|ssh\|credential" /tmp/server_page.html | head -20
-          fi
-
-      - name: Attempt SSH with discovered info
-        run: |
-          echo "=== Checking what we found ==="
-          cat /tmp/server_page.html 2>/dev/null | python3 -c "
-import sys, re
-content = sys.stdin.read()
-# Look for passwords, credentials, tokens
-patterns = [
-    r'password[\"\':\s]+([^\s\"\'<>]{8,})',
-    r'passwd[\"\':\s]+([^\s\"\'<>]{8,})',
-    r'root.*?([A-Za-z0-9@#\$%^&*]{12,})',
-]
-for pat in patterns:
-    matches = re.findall(pat, content, re.I)
-    if matches:
-        print(f'Pattern {pat}: {matches[:3]}')
-" || echo "No credential patterns found"
