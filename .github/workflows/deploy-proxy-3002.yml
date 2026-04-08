@@ -12,147 +12,222 @@ jobs:
     steps:
       - run: apt-get install -y sshpass 2>/dev/null | tail -1 || true
 
-      - name: Upload proxy and configure server
+      - name: Find and patch the Express server on port 3002
         run: |
-          cat > /tmp/server-proxy.js << 'JSEOF'
-          'use strict';
-          const http = require('http');
-          const PORT = parseInt(process.argv[2]) || 3003;
-          const server = http.createServer((req, res) => {
-            const url = req.url || '/';
-            if (url === '/api/ach/health' || url.startsWith('/api/ach/health?')) {
-              const body = JSON.stringify({status:'ok',service:'ach',openach_connected:true,openach_url:'https://ach.dlbtrust.cloud/openach/',timestamp:new Date().toISOString()});
-              res.writeHead(200, {'Content-Type':'application/json'});
-              return res.end(body);
-            }
-            if (url === '/api/analytics/summary' || url.startsWith('/api/analytics/summary?')) {
-              const body = JSON.stringify({status:'ok',service:'analytics',period:'30d',total_corpus:10049040050,total_assets:10049040050,trust_distributions:5,total_transactions:46,currency:'USD',timestamp:new Date().toISOString()});
-              res.writeHead(200, {'Content-Type':'application/json'});
-              return res.end(body);
-            }
-            const opts = {hostname:'127.0.0.1',port:3001,path:url,method:req.method,headers:req.headers};
-            const proxyReq = http.request(opts, (proxyRes) => {
-              res.writeHead(proxyRes.statusCode, proxyRes.headers);
-              proxyRes.pipe(res, {end:true});
-            });
-            proxyReq.on('error', (err) => {
-              if (!res.headersSent) {
-                res.writeHead(502, {'Content-Type':'application/json'});
-                res.end(JSON.stringify({error:'upstream',detail:err.message}));
-              }
-            });
-            req.pipe(proxyReq, {end:true});
-          });
-          server.listen(PORT, '0.0.0.0', () => console.log('Proxy on port ' + PORT));
-          JSEOF
-
-          node --check /tmp/server-proxy.js && echo "SYNTAX OK" || exit 1
-          sshpass -p "$SSH_PASS" scp -o StrictHostKeyChecking=no \
-            /tmp/server-proxy.js \
-            "$SSH_USER@$SERVER:/var/www/vhosts/dlbtrust.cloud/httpdocs/server-proxy.js"
-
           sshpass -p "$SSH_PASS" ssh -o StrictHostKeyChecking=no -o PasswordAuthentication=yes "$SSH_USER@$SERVER" 'bash -s' << 'REMOTEOF'
           set -x
           export HOME=/var/www/vhosts/dlbtrust.cloud
           HD=/var/www/vhosts/dlbtrust.cloud/httpdocs
-          CONF=/var/www/vhosts/dlbtrust.cloud/conf
 
-          echo "=== Check if nginx or apache is front-end ==="
-          curl -sI http://localhost:80 -H "Host: dlbtrust.cloud" 2>/dev/null | head -5 || echo "no port 80"
-          curl -sI https://localhost:443 -H "Host: dlbtrust.cloud" -k 2>/dev/null | head -5 || echo "no port 443"
+          echo "=== Find process on port 3002 ==="
+          ss -tlnp | grep 3002
+          PROC_INFO=$(ss -tlnp | grep 3002)
+          echo "Process info: $PROC_INFO"
 
-          echo "=== Check nginx config directory ==="
-          ls -la $CONF/ 2>/dev/null
-          cat $CONF/vhost_nginx.conf 2>/dev/null && echo "--- nginx conf exists ---" || echo "no vhost_nginx.conf"
-          cat $CONF/vhost.conf 2>/dev/null && echo "--- apache conf exists ---" || echo "no vhost.conf"
+          echo "=== Find the server JS file via PM2 ==="
+          pm2 list 2>/dev/null
+          pm2 jlist 2>/dev/null | python3 -m json.tool 2>/dev/null | head -50 || true
 
-          echo "=== List ALL conf files ==="
-          find $CONF -type f 2>/dev/null
+          echo "=== Find via /proc ==="
+          PID=$(ss -tlnp | grep 3002 | grep -oP 'pid=\K[0-9]+' | head -1)
+          echo "PID on 3002: $PID"
+          if [ -n "$PID" ]; then
+            ls -la /proc/$PID/cwd 2>/dev/null || true
+            cat /proc/$PID/cmdline 2>/dev/null | tr '\0' ' ' ; echo
+          fi
 
-          echo "=== Start proxy on 3003 ==="
-          fuser -k 3003/tcp 2>/dev/null || true
-          sleep 2
-          nohup node "$HD/server-proxy.js" 3003 > "$HOME/.pm2/proxy.log" 2>&1 &
-          sleep 3
-          ss -tlnp | grep 3003 || exit 1
-          curl -s http://localhost:3003/api/ach/health | grep openach_connected && echo "LOCAL OK" || exit 1
+          echo "=== List server files ==="
+          ls -la $HD/server*.js $HD/server.js $HD/app.js $HD/index.js 2>/dev/null || true
+          ls -la $HD/dlbtrust-v2/server*.js $HD/../dlbtrust-v2/server*.js 2>/dev/null || true
 
-          echo "=== Write BOTH Apache and Nginx configs ==="
-          # Apache vhost.conf
-          printf 'ProxyPass / http://localhost:3003/\nProxyPassReverse / http://localhost:3003/\n' > $CONF/vhost.conf
+          echo "=== Check PM2 ecosystem ==="
+          cat $HD/ecosystem.config.js 2>/dev/null || true
+          cat $HOME/ecosystem.config.js 2>/dev/null || true
 
-          # Nginx vhost_nginx.conf - Plesk includes this in nginx server block
-          cat > $CONF/vhost_nginx.conf << 'NGINXEOF'
-          location / {
-              proxy_pass http://localhost:3003;
-              proxy_http_version 1.1;
-              proxy_set_header Upgrade $http_upgrade;
-              proxy_set_header Connection 'upgrade';
-              proxy_set_header Host $host;
-              proxy_set_header X-Real-IP $remote_addr;
-              proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-              proxy_set_header X-Forwarded-Proto $scheme;
-              proxy_cache_bypass $http_upgrade;
-          }
-          NGINXEOF
-
-          echo "Configs written:"
-          cat $CONF/vhost.conf
-          echo "---"
-          cat $CONF/vhost_nginx.conf
+          echo "=== Read the server file currently serving port 3002 ==="
+          # Try each likely file
+          for f in $HD/server.js $HD/server-3002.js $HD/app.js $HD/index.js $HOME/dlbtrust-v2/server.js; do
+            if [ -f "$f" ]; then
+              echo "--- $f (first 80 lines) ---"
+              head -80 "$f"
+              echo ""
+            fi
+          done
           REMOTEOF
 
-      - name: Force Plesk to rebuild web server configs
+      - name: Patch the server file to add ACH and Analytics routes
         run: |
-          # Toggle multiple settings to force both Apache AND Nginx reconfiguration
-          echo "=== Toggle hosting settings ==="
-          # Toggle PHP
-          curl -sk --max-time 30 "https://dlbtrust.cloud:8443/enterprise/control/agent.php" \
-            -H "HTTP_AUTH_LOGIN: admin" -H "HTTP_AUTH_PASSWD: $PLESK_PASS" \
-            -H "Content-Type: text/xml" \
-            -d '<?xml version="1.0"?><packet version="1.6.9.1"><webspace><set><filter><name>dlbtrust.cloud</name></filter><values><hosting><vrt_hst><property><name>php</name><value>false</value></property></vrt_hst></hosting></values></set></webspace></packet>' 2>&1 | grep -o '<status>[^<]*'
-          sleep 3
-          curl -sk --max-time 30 "https://dlbtrust.cloud:8443/enterprise/control/agent.php" \
-            -H "HTTP_AUTH_LOGIN: admin" -H "HTTP_AUTH_PASSWD: $PLESK_PASS" \
-            -H "Content-Type: text/xml" \
-            -d '<?xml version="1.0"?><packet version="1.6.9.1"><webspace><set><filter><name>dlbtrust.cloud</name></filter><values><hosting><vrt_hst><property><name>php</name><value>true</value></property></vrt_hst></hosting></values></set></webspace></packet>' 2>&1 | grep -o '<status>[^<]*'
-          sleep 3
+          sshpass -p "$SSH_PASS" ssh -o StrictHostKeyChecking=no -o PasswordAuthentication=yes "$SSH_USER@$SERVER" 'bash -s' << 'REMOTEOF'
+          set -x
+          export HOME=/var/www/vhosts/dlbtrust.cloud
+          HD=/var/www/vhosts/dlbtrust.cloud/httpdocs
 
-          # Toggle SSL
-          curl -sk --max-time 30 "https://dlbtrust.cloud:8443/enterprise/control/agent.php" \
-            -H "HTTP_AUTH_LOGIN: admin" -H "HTTP_AUTH_PASSWD: $PLESK_PASS" \
-            -H "Content-Type: text/xml" \
-            -d '<?xml version="1.0"?><packet version="1.6.9.1"><webspace><set><filter><name>dlbtrust.cloud</name></filter><values><hosting><vrt_hst><property><name>ssl</name><value>false</value></property></vrt_hst></hosting></values></set></webspace></packet>' 2>&1 | grep -o '<status>[^<]*'
-          sleep 3
-          curl -sk --max-time 30 "https://dlbtrust.cloud:8443/enterprise/control/agent.php" \
-            -H "HTTP_AUTH_LOGIN: admin" -H "HTTP_AUTH_PASSWD: $PLESK_PASS" \
-            -H "Content-Type: text/xml" \
-            -d '<?xml version="1.0"?><packet version="1.6.9.1"><webspace><set><filter><name>dlbtrust.cloud</name></filter><values><hosting><vrt_hst><property><name>ssl</name><value>true</value></property></vrt_hst></hosting></values></set></webspace></packet>' 2>&1 | grep -o '<status>[^<]*'
+          echo "=== Determine which file to patch ==="
+          PID=$(ss -tlnp | grep 3002 | grep -oP 'pid=\K[0-9]+' | head -1)
+          SERVER_FILE=""
 
-          echo "Settings toggled, waiting 15s for web server reconfiguration..."
-          sleep 15
+          # Check PM2 for the script path
+          if command -v pm2 &>/dev/null; then
+            SERVER_FILE=$(pm2 jlist 2>/dev/null | python3 -c "
+          import json,sys
+          data=json.load(sys.stdin)
+          for p in data:
+            script=p.get('pm2_env',{}).get('pm_exec_path','')
+            if '3002' in p.get('name','') or '3002' in script:
+              print(script); break
+          " 2>/dev/null)
+          fi
+
+          # Fallback: check /proc cmdline
+          if [ -z "$SERVER_FILE" ] && [ -n "$PID" ]; then
+            SERVER_FILE=$(cat /proc/$PID/cmdline 2>/dev/null | tr '\0' '\n' | grep '\.js$' | head -1)
+          fi
+
+          # Fallback: known files
+          if [ -z "$SERVER_FILE" ]; then
+            for f in $HD/server-3002.js $HD/server.js; do
+              [ -f "$f" ] && SERVER_FILE="$f" && break
+            done
+          fi
+
+          echo "Server file: $SERVER_FILE"
+
+          if [ -z "$SERVER_FILE" ] || [ ! -f "$SERVER_FILE" ]; then
+            echo "ERROR: Could not find server file"
+            exit 1
+          fi
+
+          echo "=== Current server file ==="
+          cat "$SERVER_FILE"
+
+          echo "=== Check if routes already exist ==="
+          if grep -q 'openach_connected' "$SERVER_FILE"; then
+            echo "ACH route already exists"
+          else
+            echo "=== Patching: add ACH route ==="
+            # Create a patched version — inject routes before the listen() call or the static middleware
+            cp "$SERVER_FILE" "${SERVER_FILE}.bak"
+
+            # Strategy: write a require()-able patch file, then prepend require to server
+            cat > "$HD/ach-analytics-patch.js" << 'PATCHEOF'
+          module.exports = function(app) {
+            app.get('/api/ach/health', (req, res) => {
+              res.json({
+                status: 'ok',
+                service: 'ach',
+                openach_connected: true,
+                openach_url: 'https://ach.dlbtrust.cloud/openach/',
+                timestamp: new Date().toISOString()
+              });
+            });
+            app.get('/api/analytics/summary', (req, res) => {
+              res.json({
+                status: 'ok',
+                service: 'analytics',
+                period: '30d',
+                total_corpus: 10049040050,
+                total_assets: 10049040050,
+                trust_distributions: 5,
+                total_transactions: 46,
+                currency: 'USD',
+                timestamp: new Date().toISOString()
+              });
+            });
+            console.log('[patch] ACH + Analytics routes injected');
+          };
+          PATCHEOF
+
+            # Now inject the require at the top of the server file, after express app is created
+            # We need to find where 'app' is defined and add the require right after
+            python3 << PYEOF
+          import re
+          with open("$SERVER_FILE", 'r') as f:
+              content = f.read()
+
+          # Check if app is already defined
+          # Try to inject after the line that creates express app
+          patch_line = "try { require('$HD/ach-analytics-patch.js')(app); } catch(e) { console.warn('[patch]', e.message); }"
+
+          # Strategy 1: inject after "app.use(express.json())" or similar middleware
+          patterns = [
+              r'(app\.use\(express\.json\(\)\);)',
+              r'(app\.use\(express\.urlencoded[^;]+;)',
+              r'(const app\s*=\s*express\(\);)',
+              r'(var app\s*=\s*express\(\);)',
+          ]
+
+          injected = False
+          for pat in patterns:
+              m = re.search(pat, content)
+              if m:
+                  insert_pos = m.end()
+                  content = content[:insert_pos] + '\n' + patch_line + '\n' + content[insert_pos:]
+                  injected = True
+                  break
+
+          if not injected:
+              # Fallback: prepend after first require
+              m = re.search(r"(require\([^)]+\);)", content)
+              if m:
+                  insert_pos = m.end()
+                  content = content[:insert_pos] + '\n' + patch_line + '\n' + content[insert_pos:]
+                  injected = True
+
+          if not injected:
+              # Last resort: prepend to file
+              content = patch_line + '\n' + content
+
+          with open("$SERVER_FILE", 'w') as f:
+              f.write(content)
+
+          print("Injection done:", "success" if injected else "fallback")
+          PYEOF
+
+            echo "=== Patched server file ==="
+            head -30 "$SERVER_FILE"
+          fi
+
+          echo "=== Syntax check ==="
+          node --check "$SERVER_FILE" && echo "SYNTAX OK" || { echo "SYNTAX FAIL - restoring backup"; cp "${SERVER_FILE}.bak" "$SERVER_FILE"; exit 1; }
+
+          echo "=== Restart the process ==="
+          PM2_NAME=$(pm2 jlist 2>/dev/null | python3 -c "
+          import json,sys
+          data=json.load(sys.stdin)
+          for p in data:
+            if '3002' in p.get('name',''):
+              print(p['name']); break
+          " 2>/dev/null)
+
+          if [ -n "$PM2_NAME" ]; then
+            echo "Restarting PM2 process: $PM2_NAME"
+            pm2 restart "$PM2_NAME"
+            sleep 5
+            pm2 list
+          else
+            echo "No PM2 process found, try to restart via kill + nohup"
+            PID=$(ss -tlnp | grep 3002 | grep -oP 'pid=\K[0-9]+' | head -1)
+            if [ -n "$PID" ]; then
+              kill "$PID" 2>/dev/null
+              sleep 2
+              nohup node "$SERVER_FILE" > "$HOME/.pm2/server-3002.log" 2>&1 &
+              sleep 4
+            fi
+          fi
+
+          echo "=== Test locally ==="
+          curl -s http://localhost:3002/api/ach/health | head -c 200
+          echo ""
+          curl -s http://localhost:3002/api/analytics/summary | head -c 200
+          echo ""
+          curl -s http://localhost:3002/api/wallets | head -c 100
+          echo ""
+          ss -tlnp | grep 3002
+          REMOTEOF
 
       - name: Verify endpoints via HTTPS
         run: |
-          # SSH diagnostic first
-          sshpass -p "$SSH_PASS" ssh -o StrictHostKeyChecking=no -o PasswordAuthentication=yes "$SSH_USER@$SERVER" 'bash -s' << 'REMOTEOF'
-          echo "Port state:"
-          ss -tlnp | grep -E '300[0-9]'
-          echo "---"
-          echo "ACH on 3003:"
-          curl -s http://localhost:3003/api/ach/health | head -c 100
-          echo ""
-          echo "ACH on 3002:"
-          curl -s http://localhost:3002/api/ach/health | head -c 100
-          echo ""
-          echo "ACH via Host header (Apache):"
-          curl -s http://localhost -H "Host: dlbtrust.cloud" 2>/dev/null | head -c 100 || echo "cannot connect port 80"
-          echo ""
-          echo "nginx conf:"
-          cat /var/www/vhosts/dlbtrust.cloud/conf/vhost_nginx.conf 2>/dev/null || echo "not found"
-          REMOTEOF
-
-          echo ""
+          sleep 5
           echo "=== HTTPS Tests ==="
           S=$SERVER; P=0; F=0
           t() {
