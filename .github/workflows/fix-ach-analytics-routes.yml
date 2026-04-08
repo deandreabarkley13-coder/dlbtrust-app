@@ -7,30 +7,22 @@ jobs:
   fix:
     runs-on: ubuntu-latest
     steps:
-      - name: Try Plesk REST API and CLI endpoint
+      - name: Explore Plesk REST API for hosting reconfigure
         run: |
-          echo "=== Plesk REST API - domains list ==="
-          curl -sk --max-time 30 \
-            "https://dlbtrust.cloud:8443/api/v2/domains" \
+          echo "=== Domain 1 hosting info ==="
+          curl -sk --max-time 30 "https://dlbtrust.cloud:8443/api/v2/domains/1/hosting/virtual" \
             -u "admin:dP8RlShbOWNq" | head -c 500
           echo ""
 
-          echo "=== Plesk REST API - domain info ==="
-          DOMAIN_ID=$(curl -sk --max-time 30 \
-            "https://dlbtrust.cloud:8443/api/v2/domains" \
-            -u "admin:dP8RlShbOWNq" | python3 -c "import json,sys; data=json.load(sys.stdin); print(next((d['id'] for d in data if d.get('name')=='dlbtrust.cloud'),''))" 2>/dev/null || echo "")
-          echo "Domain ID: $DOMAIN_ID"
-
-          if [ -n "$DOMAIN_ID" ]; then
-            echo "=== Try to reconfigure domain via REST ==="
-            curl -sk --max-time 30 \
-              -X PUT "https://dlbtrust.cloud:8443/api/v2/domains/$DOMAIN_ID" \
-              -u "admin:dP8RlShbOWNq" \
-              -H "Content-Type: application/json" \
-              -d '{}' | head -c 200
-          fi
-
+          echo "=== Try hosting apply/reconfigure ==="
+          curl -sk --max-time 30 \
+            -X PUT "https://dlbtrust.cloud:8443/api/v2/domains/1/hosting/virtual" \
+            -u "admin:dP8RlShbOWNq" \
+            -H "Content-Type: application/json" \
+            -d '{"www_root": "/var/www/vhosts/dlbtrust.cloud/httpdocs"}' | head -c 300
           echo ""
-          echo "=== Test ==="
+          sleep 10
+
+          echo "=== Test after REST hosting update ==="
           curl -sk --max-time 15 https://dlbtrust.cloud/api/ach/health | grep -q openach_connected && echo "PUBLIC ACH: PASS" || echo "PUBLIC ACH: FAIL"
           curl -sk --max-time 15 https://dlbtrust.cloud/api/analytics/summary | grep -q total_corpus && echo "PUBLIC ANALYTICS: PASS" || echo "PUBLIC ANALYTICS: FAIL"
