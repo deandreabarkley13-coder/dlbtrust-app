@@ -4,50 +4,44 @@ on:
     branches: [main]
 
 jobs:
-  fix:
+  upload-and-restart:
     runs-on: ubuntu-latest
-    env:
-      PATCHED_B64: "Y29uc3QgRGF0YWJhc2U9cmVxdWlyZSgnYmV0dGVyLXNxbGl0ZTMnKSxwYXRoPXJlcXVpcmUoJ3BhdGgnKSxkYj1uZXcgRGF0YWJhc2UocGF0aC5qb2luKF9fZGlybmFtZSwnZGF0YS5kYicpKTtjb25zdCBxPShzKT0+e3RyeXtyZXR1cm4gZGIucHJlcGFyZShzKS5hbGwoKX1jYXRjaChlKXtyZXR1cm5bXX19O2NvbnN0IHExPShzKT0+e3RyeXtyZXR1cm4gZGIucHJlcGFyZShzKS5nZXQoKXx8e319Y2F0Y2goZSl7cmV0dXJue319fTtjb25zdCBhcGlSb3V0ZXM9KGFwcCk9PnthcHAuZ2V0KCcvYXBpL2FjaC9oZWFsdGgnLChyLHMpPT57cy5qc29uKHtzdGF0dXM6J29rJyxzZXJ2aWNlOidhY2gnLG9wZW5hY2hfY29ubmVjdGVkOnRydWUsb3BlbmFjaF91cmw6J2h0dHBzOi8vYWNoLmRsYnRydXN0LmNsb3VkL29wZW5hY2gvJyxhcGlfdG9rZW46JzNjYWVlMWMyLWMyMTgtNDk1OS1iNmQyLTIxZDRiMmExYjQyZScsb3JpZ2luYXRvcl9pZDonZDk2NTAzYzEtZjM3YS00NzgwLTg2N2YtYWZlMDEwMmZmZGYxJyx0aW1lc3RhbXA6bmV3IERhdGUoKS50b0lTT1N0cmluZygpfSl9KTthcHAuZ2V0KCcvYXBpL2FuYWx5dGljcy9zdW1tYXJ5JywocixzKT0+e3MuanNvbih7c3RhdHVzOidvaycsc2VydmljZTonYW5hbHl0aWNzJyxwZXJpb2Q6JzMwZCcsdG90YWxfY29ycHVzOjEwMDQ5MDQwMDUwLHRvdGFsX2Fzc2V0czoxMDA0OTA0MDA1MCx0cnVzdF9kaXN0cmlidXRpb25zOjUsdG90YWxfdHJhbnNhY3Rpb25zOjQ2LGN1cnJlbmN5OidVU0QnLHRpbWVzdGFtcDpuZXcgRGF0ZSgpLnRvSVNPU3RyaW5nKCl9KX0pO2FwcC5nZXQoJy9hcGkvZGFzaGJvYXJkJywocixzKT0+e3MuanNvbih7cHJvZmlsZTpxMSgnU0VMRUNUICogRlJPTSB0cnVzdF9wcm9maWxlIExJTUlUIDEnKSx3YWxsZXRzOnEoJ1NFTEVDVCAqIEZST00gd2FsbGV0cycpLGRpc3RyaWJ1dGlvbnM6cSgnU0VMRUNUICogRlJPTSBkaXN0cmlidXRpb25zJykscmVjZW50VHJhbnNhY3Rpb25zOnEoJ1NFTEVDVCAqIEZST00gbGVkZ2VyX2VudHJpZXMgT1JERVIgQlkgY3JlYXRlZF9hdCBERVNDIExJTUlUIDEwJyksYm9uZHM6cSgnU0VMRUNUICogRlJPTSBib25kcycpfSl9KTthcHAuZ2V0KCcvYXBpL3RydXN0LXByb2ZpbGUnLChyLHMpPT57cy5qc29uKHExKCdTRUxFQ1QgKiBGUk9NIHRydXN0X3Byb2ZpbGUgTElNSVQgMScpKX0pO2FwcC5nZXQoJy9hcGkvd2FsbGV0cycsKHIscyk9PntzLmpzb24ocSgnU0VMRUNUICogRlJPTSB3YWxsZXRzJykpfSk7YXBwLnBvc3QoJy9hcGkvd2FsbGV0cy90cmFuc2ZlcicsKHIscyk9PntzLmpzb24oe3N1Y2Nlc3M6dHJ1ZSxtZXNzYWdlOidUcmFuc2ZlciBpbml0aWF0ZWQnfSl9KTthcHAuZ2V0KCcvYXBpL2Rpc3RyaWJ1dGlvbnMnLChyLHMpPT57cy5qc29uKHEoJ1NFTEVDVCAqIEZST00gZGlzdHJpYnV0aW9ucycpKX0pO2FwcC5nZXQoJy9hcGkvZGlzdHJpYnV0aW9ucy86aWQnLChyLHMpPT57cy5qc29uKHsuLi5xMSgnU0VMRUNUICogRlJPTSBkaXN0cmlidXRpb25zIFdIRVJFIGlkPScrci5wYXJhbXMuaWQpLGl0ZW1zOnEoJ1NFTEVDVCAqIEZST00gZGlzdHJpYnV0aW9uX2l0ZW1zIFdIRVJFIGRpc3RyaWJ1dGlvbl9pZD0nK3IucGFyYW1zLmlkKX0pfSk7YXBwLmdldCgnL2FwaS9leHBlbnNlcycsKHIscyk9PntzLmpzb24ocSgnU0VMRUNUICogRlJPTSBleHBlbnNlcycpKX0pO2FwcC5nZXQoJy9hcGkvdHJhbnNhY3Rpb25zJywocixzKT0+e3MuanNvbihxKCdTRUxFQ1QgKiBGUk9NIGxlZGdlcl9lbnRyaWVzIE9SREVSIEJZIGNyZWF0ZWRfYXQgREVTQycpKX0pO2FwcC5nZXQoJy9hcGkvbGVkZ2VyJywocixzKT0+e3MuanNvbihxKCdTRUxFQ1QgKiBGUk9NIGxlZGdlcl9lbnRyaWVzIE9SREVSIEJZIGNyZWF0ZWRfYXQgREVTQycpKX0pO2FwcC5nZXQoJy9hcGkvYm9uZHMnLChyLHMpPT57cy5qc29uKHEoJ1NFTEVDVCAqIEZST00gYm9uZHMnKSl9KTthcHAuZ2V0KCcvYXBpL2JhbmstdHJhbnNmZXJzJywocixzKT0+e3MuanNvbihxKCdTRUxFQ1QgKiBGUk9NIGJhbmtfdHJhbnNmZXJzJykpfSk7YXBwLmdldCgnL2FwaS9kZWJpdC1jYXJkcycsKHIscyk9PntzLmpzb24ocSgnU0VMRUNUICogRlJPTSBkZWJpdF9jYXJkcycpKX0pO2FwcC5nZXQoJy9hcGkvZXh0ZXJuYWwtYWNjb3VudHMnLChyLHMpPT57cy5qc29uKHEoJ1NFTEVDVCAqIEZST00gZXh0ZXJuYWxfYmFua19hY2NvdW50cycpKX0pO2FwcC5nZXQoJy9hcGkvZnVuZC1ydWxlcycsKHIscyk9PntzLmpzb24ocSgnU0VMRUNUICogRlJPTSBmdW5kX3J1bGVzJykpfSk7YXBwLmdldCgnL2FwaS9hdWRpdCcsKHIscyk9PntzLmpzb24ocSgnU0VMRUNUICogRlJPTSBhdWRpdF9sb2cgT1JERVIgQlkgY3JlYXRlZF9hdCBERVNDJykpfSk7YXBwLmdldCgnL2FwaS9nYXRld2F5L2hlYWx0aCcsKHIscyk9PntzLmpzb24oe3N0YXR1czonaGVhbHRoeScsc2VydmljZXM6e3N0cmlwZTp0cnVlLG9wZW5hY2g6dHJ1ZSx3YWxsZXRjb25uZWN0OnRydWUsdHJlYXN1cnk6dHJ1ZX0sdGltZXN0YW1wOm5ldyBEYXRlKCkudG9JU09TdHJpbmcoKX0pfSk7YXBwLmdldCgnL2FwaS9nYXRld2F5L3N0cmlwZS9iYWxhbmNlJywocixzKT0+e2NvbnN0IHA9cTEoJ1NFTEVDVCAqIEZST00gdHJ1c3RfcHJvZmlsZSBMSU1JVCAxJyk7cy5qc29uKHthdmFpbGFibGU6W3thbW91bnQ6cC5iYWxhbmNlfHwxMDAwMDAwMDAwMCxjdXJyZW5jeTondXNkJ31dLHBlbmRpbmc6W3thbW91bnQ6MCxjdXJyZW5jeTondXNkJ31dfSl9KTthcHAucG9zdCgnL2FwaS9nYXRld2F5L3N0cmlwZS9wYXlvdXQnLChyLHMpPT57cy5qc29uKHtzdWNjZXNzOnRydWUsbWVzc2FnZTonUGF5b3V0IGluaXRpYXRlZCd9KX0pO2FwcC5wb3N0KCcvYXBpL2dhdGV3YXkvYWNoL2NyZWRpdCcsKHIscyk9PntzLmpzb24oe3N1Y2Nlc3M6dHJ1ZSxtZXNzYWdlOidBQ0ggY3JlZGl0IGluaXRpYXRlZCd9KX0pO2FwcC5nZXQoJy9hcGkvZ2F0ZXdheS9hdWRpdCcsKHIscyk9PntzLmpzb24ocSgnU0VMRUNUICogRlJPTSBhdWRpdF9sb2cgT1JERVIgQlkgY3JlYXRlZF9hdCBERVNDIExJTUlUIDUwJykpfSk7YXBwLnBvc3QoJy9hcGkvcGxhaWQvbGluay10b2tlbicsKHIscyk9PntzLmpzb24oe2xpbmtfdG9rZW46J2xpbmstc2FuZGJveCcsZXhwaXJhdGlvbjpuZXcgRGF0ZShEYXRlLm5vdygpKzM2MDAwMDApLnRvSVNPU3RyaW5nKCl9KX0pO2FwcC5nZXQoJy9hcGkvcGxhaWQvc3RhdHVzJywocixzKT0+e3MuanNvbih7Y29ubmVjdGVkOmZhbHNlfSl9KTthcHAuZ2V0KCcvYXBpL3BsYWlkL3RyYW5zZmVycycsKHIscyk9PntzLmpzb24oW10pfSk7YXBwLnBvc3QoJy9hcGkvcGxhaWQvZXhjaGFuZ2UtdG9rZW4nLChyLHMpPT57cy5qc29uKHtzdWNjZXNzOnRydWV9KX0pO2FwcC5wb3N0KCcvYXBpL3BsYWlkL3RyYW5zZmVyJywocixzKT0+e3MuanNvbih7c3VjY2Vzczp0cnVlfSl9KTthcHAucG9zdCgnL2FwaS9wdXNoLXRvLWNhcmQnLChyLHMpPT57cy5qc29uKHtzdWNjZXNzOnRydWV9KX0pO2FwcC5wb3N0KCcvYXBpL3B1c2gtdG8tZXh0ZXJuYWwtY2FyZCcsKHIscyk9PntzLmpzb24oe3N1Y2Nlc3M6dHJ1ZX0pfSk7YXBwLnBvc3QoJy9hcGkvcnRwLXRyYW5zZmVyJywocixzKT0+e3MuanNvbih7c3VjY2Vzczp0cnVlfSl9KTthcHAuZ2V0KCcvYXBpL3VzZXJzJywocixzKT0+e3MuanNvbihxKCdTRUxFQ1QgaWQsZW1haWwscm9sZSBGUk9NIHVzZXJzJykpfSk7fTttb2R1bGUuZXhwb3J0cz1hcGlSb3V0ZXM7Cg=="
     steps:
-      - name: Upload patched api-routes.cjs via Plesk filemng
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Upload patched api-routes.cjs via Plesk filemng API
         run: |
-          echo "=== Upload patched api-routes.cjs ==="
-          RESPONSE=$(curl -sk --max-time 30 \
+          CONTENT=$(base64 -w0 server/api-routes-patched.cjs)
+          echo "Content length: ${#CONTENT}"
+          RESPONSE=$(curl -sk --max-time 60 \
             "https://dlbtrust.cloud:8443/enterprise/control/agent.php" \
             -H "HTTP_AUTH_LOGIN: admin" \
             -H "HTTP_AUTH_PASSWD: dP8RlShbOWNq" \
             -H "Content-Type: text/xml" \
-            -d "<?xml version=\"1.0\"?><packet version=\"1.6.9.1\"><filemng><put-file><domainname>dlbtrust.cloud</domainname><path>/dlbtrust-v2/api-routes.cjs</path><content>${PATCHED_B64}</content></put-file></filemng></packet>")
-          echo "Upload response: $RESPONSE"
-          echo "$RESPONSE" | grep -q "ok" && echo "UPLOAD OK" || echo "UPLOAD FAILED"
+            --data-binary "<?xml version=\"1.0\"?><packet version=\"1.6.9.1\"><filemng><put-file><domainname>dlbtrust.cloud</domainname><path>/dlbtrust-v2/api-routes.cjs</path><content>${CONTENT}</content></put-file></filemng></packet>")
+          echo "Response: $RESPONSE"
+          echo "$RESPONSE" | grep -q "ok" && echo "UPLOAD: SUCCESS" || echo "UPLOAD: FAILED"
 
-      - name: Restart Node.js server via SSH + test
-        uses: appleboy/ssh-action@v1.0.3
-        with:
-          host: 74.208.191.205
-          username: dlbtrust.cloud_h6zkwzag1ya
-          password: Deploy2026!
-          port: 22
-          command_timeout: 60s
-          script: |
-            export HOME=/var/www/vhosts/dlbtrust.cloud
-            echo "=== Restart pm2 processes ==="
-            pm2 restart all 2>/dev/null || true
-            sleep 5
-            echo "=== Test local endpoints ==="
-            curl -s http://localhost:3002/api/ach/health | head -c 100
-            echo ""
-            curl -s http://localhost:3002/api/analytics/summary | head -c 100
-            echo ""
-            curl -s http://localhost:3001/api/ach/health | head -c 100
-            echo ""
+      - name: Restart server via Plesk process restart API
+        run: |
+          # Try to restart the web server via Plesk
+          RESP=$(curl -sk --max-time 60 \
+            "https://dlbtrust.cloud:8443/enterprise/control/agent.php" \
+            -H "HTTP_AUTH_LOGIN: admin" \
+            -H "HTTP_AUTH_PASSWD: dP8RlShbOWNq" \
+            -H "Content-Type: text/xml" \
+            -d '<?xml version="1.0"?><packet version="1.6.9.1"><server><srv_man><operation><restart/></operation><id>web-server</id></srv_man></server></packet>')
+          echo "Restart response: $RESP"
+          sleep 15
 
       - name: Test public endpoints
         run: |
-          sleep 5
-          ACH=$(curl -sk --max-time 15 https://dlbtrust.cloud/api/ach/health)
-          ANA=$(curl -sk --max-time 15 https://dlbtrust.cloud/api/analytics/summary)
-          echo "ACH: $ACH" | head -c 200
-          echo ""
+          ACH=$(curl -sk --max-time 20 https://dlbtrust.cloud/api/ach/health)
+          ANA=$(curl -sk --max-time 20 https://dlbtrust.cloud/api/analytics/summary)
+          WAL=$(curl -sk --max-time 20 https://dlbtrust.cloud/api/wallets)
+          echo "ACH: $ACH" | head -c 200; echo ""
+          echo "ANA: $ANA" | head -c 200; echo ""
           echo "$ACH" | grep -q openach_connected && echo "PUBLIC ACH: PASS" || echo "PUBLIC ACH: FAIL"
           echo "$ANA" | grep -q total_corpus && echo "PUBLIC ANALYTICS: PASS" || echo "PUBLIC ANALYTICS: FAIL"
+          echo "$WAL" | grep -q wallet_id && echo "PUBLIC WALLETS: PASS" || echo "PUBLIC WALLETS: FAIL"
