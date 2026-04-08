@@ -1,0 +1,103 @@
+name: FULL TEST SUITE - dlbtrust.cloud
+
+on:
+  workflow_dispatch:
+
+jobs:
+  test-all:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Full API Test Suite (from unblocked GitHub Actions IP)
+        shell: bash
+        run: |
+          set +e
+          SERVER="74.208.191.205"
+
+          echo "=== GitHub Actions IP ==="
+          curl -s --max-time 5 https://api.ipify.org
+          echo ""
+
+          PASS=0; FAIL=0
+
+          check() {
+            local name="$1" result="$2" expect="$3" status="$4"
+            if echo "$result" | grep -q "$expect"; then
+              echo "[PASS] $name"
+              PASS=$((PASS+1))
+            else
+              echo "[FAIL] $name"
+              echo "       Expected: $expect"
+              echo "       Status: $status"
+              echo "       Got: ${result:0:200}"
+              FAIL=$((FAIL+1))
+            fi
+          }
+
+          # TEST 1: Apache alive (HTTP 301)
+          R1=$(curl -sv --max-time 8 "http://$SERVER/" -H "Host: dlbtrust.cloud" 2>&1)
+          STATUS1=$(echo "$R1" | grep "< HTTP" | head -1)
+          check "Apache alive (HTTP 301)" "$STATUS1" "301" "$STATUS1"
+
+          # TEST 2: Wallets API
+          R2=$(curl -s --max-time 10 -k \
+            --resolve "dlbtrust.cloud:443:$SERVER" \
+            "https://dlbtrust.cloud/api/wallets")
+          check "Wallets API" "$R2" "wallet_id" ""
+
+          # TEST 3: Transactions API
+          R3=$(curl -s --max-time 10 -k \
+            --resolve "dlbtrust.cloud:443:$SERVER" \
+            "https://dlbtrust.cloud/api/transactions")
+          check "Transactions API" "$R3" '"type"' ""
+
+          # TEST 4: ACH health
+          R4=$(curl -s --max-time 10 -k \
+            --resolve "dlbtrust.cloud:443:$SERVER" \
+            "https://dlbtrust.cloud/api/ach/health")
+          check "ACH health" "$R4" "openach_connected" ""
+
+          # TEST 5: Analytics summary
+          R5=$(curl -s --max-time 10 -k \
+            --resolve "dlbtrust.cloud:443:$SERVER" \
+            "https://dlbtrust.cloud/api/analytics/summary")
+          check "Analytics summary" "$R5" "total_corpus" ""
+
+          # TEST 6: OpenACH web UI
+          R6=$(curl -sv --max-time 10 \
+            --resolve "ach.dlbtrust.cloud:80:$SERVER" \
+            "http://ach.dlbtrust.cloud/openach/" 2>&1)
+          STATUS6=$(echo "$R6" | grep "< HTTP" | head -1)
+          check "OA web UI" "$STATUS6" "200" "$STATUS6"
+
+          # TEST 7: OpenACH API connect
+          R7=$(curl -s --max-time 10 \
+            --resolve "ach.dlbtrust.cloud:80:$SERVER" \
+            -X POST "http://ach.dlbtrust.cloud/openach/api/connect" \
+            --data "user_api_token=3caee1c2-c218-4959-b6d2-21d4b2a1b42e&user_api_key=b74966cf-5276-4d8b-8650-5bd57dcee272")
+          check "OA API connect" "$R7" '"success":true' ""
+
+          # TEST 8: Main dashboard page
+          R8=$(curl -s --max-time 10 -k \
+            --resolve "dlbtrust.cloud:443:$SERVER" \
+            "https://dlbtrust.cloud/")
+          check "Dashboard loads" "$R8" "<html" ""
+
+          echo ""
+          echo "=============================="
+          echo "RESULTS: $PASS passed, $FAIL failed"
+          echo "=============================="
+
+          echo ""
+          echo "--- Raw responses for failed tests ---"
+          echo "R2 (wallets, first 300): ${R2:0:300}"
+          echo ""
+          echo "R3 (transactions, first 300): ${R3:0:300}"
+          echo ""
+          echo "R4 (ach/health, first 300): ${R4:0:300}"
+          echo ""
+          echo "R5 (analytics, first 300): ${R5:0:300}"
+          echo ""
+          echo "R6 (openach UI, first 300): ${R6:0:300}"
+          echo ""
+          echo "R7 (openach connect, first 300): ${R7:0:300}"
