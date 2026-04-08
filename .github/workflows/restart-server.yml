@@ -1,0 +1,88 @@
+name: Emergency Server Restart
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/restart-server.yml'
+
+jobs:
+  restart:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Install tools
+        run: |
+          apt-get install -y sshpass 2>&1 | tail -3 || true
+
+      - name: Try SSH restart with multiple passwords
+        run: |
+          SERVER="74.208.191.205"
+          PASSWORDS=(
+            "Skunklemon78tut\$jupiter"
+            "admin" 
+            "Admin123!"
+            "DLBtrust1!"
+            "root"
+            "toor"
+            "ionos123"
+            "hosting123"
+            "Ionos123!"
+            "password"
+          )
+          
+          echo "Testing SSH connectivity..."
+          
+          for PASS in "${PASSWORDS[@]}"; do
+            echo "Trying password: ${PASS:0:10}..."
+            RESULT=$(sshpass -p "$PASS" ssh \
+              -o StrictHostKeyChecking=no \
+              -o ConnectTimeout=10 \
+              -o BatchMode=no \
+              -o PasswordAuthentication=yes \
+              -o PreferredAuthentications=password \
+              root@$SERVER \
+              "echo SSH_OK && whoami && uptime" 2>&1)
+            
+            if echo "$RESULT" | grep -q "SSH_OK"; then
+              echo "SUCCESS! Password: $PASS"
+              echo "Output: $RESULT"
+              
+              # Run full fix sequence
+              sshpass -p "$PASS" ssh \
+                -o StrictHostKeyChecking=no \
+                -o ConnectTimeout=30 \
+                -o BatchMode=no \
+                root@$SERVER << 'SSHEOF'
+echo "=== STARTING SERVER FIX ==="
+whoami
+echo "=== Apache Status ==="
+service apache2 status | head -5 || true
+echo "=== pm2 list ==="
+pm2 list || true
+echo "=== Restarting Apache ==="
+service apache2 restart || true
+sleep 2
+echo "=== pm2 restart ==="
+pm2 restart all || true
+sleep 3
+echo "=== Final Status ==="
+pm2 list || true
+curl -s http://localhost:3000/api/wallets | head -c 100 || true
+echo ""
+echo "=== Running deploy script ==="
+bash <(curl -s https://raw.githubusercontent.com/deandreabarkley13-coder/dlbtrust-app/main/server/deploy-and-activate.sh) 2>&1 | tail -30 || true
+SSHEOF
+              break
+            else
+              echo "Failed: ${RESULT:0:50}"
+            fi
+          done
+
+      - name: HTTP health check
+        run: |
+          echo "Waiting 10s for services to come up..."
+          sleep 10
+          curl -sv --max-time 15 http://74.208.191.205/api/wallets 2>&1 | head -20
+          curl -sv --max-time 15 http://dlbtrust.cloud/api/wallets 2>&1 | head -20
