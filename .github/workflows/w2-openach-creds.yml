@@ -13,65 +13,53 @@ jobs:
       PLESK_PASS: "dP8RlShbOWNq"
     steps:
       - run: sudo apt-get install -y sshpass 2>/dev/null | tail -1 || true
-      
+
       - name: Try Plesk XML API from GH Actions runner
         run: |
           echo "=== Our IP ==="
           curl -s --max-time 5 https://api.ipify.org
           echo ""
           echo "=== Plesk XML API test ==="
-          RESULT=$(curl -sk --max-time 20 \
-            "https://$SERVER:8443/enterprise/control/agent.php" \
-            -H "HTTP_AUTH_LOGIN: admin" \
-            -H "HTTP_AUTH_PASSWD: $PLESK_PASS" \
-            -H "Content-Type: text/xml" \
-            -d '<?xml version="1.0" encoding="UTF-8"?>
-<packet version="1.6.9.1">
-  <server>
-    <get>
-      <gen_info/>
-    </get>
-  </server>
-</packet>' 2>&1)
-          echo "Result: ${RESULT:0:500}"
-          
+          XMLBODY='<?xml version="1.0" encoding="UTF-8"?><packet version="1.6.9.1"><server><get><gen_info/></get></server></packet>'
+          RESULT=$(curl -sk --max-time 20 "https://$SERVER:8443/enterprise/control/agent.php" -H "HTTP_AUTH_LOGIN: admin" -H "HTTP_AUTH_PASSWD: $PLESK_PASS" -H "Content-Type: text/xml" -d "$XMLBODY" 2>&1)
+          echo "Plesk result length: ${#RESULT}"
+          echo "${RESULT:0:500}"
+
       - name: Try root SSH with SERVER_PASSWORD
         env:
           PASS: ${{ secrets.SERVER_PASSWORD }}
         run: |
           echo "=== Root SSH attempt ==="
           if [ -n "$PASS" ]; then
-            RESULT=$(sshpass -p "$PASS" ssh -o StrictHostKeyChecking=no \
-              -o ConnectTimeout=15 -o PasswordAuthentication=yes \
-              root@$SERVER \
-              'echo SSH_ROOT_OK && docker ps --format "{{.Names}}" 2>/dev/null' 2>&1)
+            RESULT=$(sshpass -p "$PASS" ssh -o StrictHostKeyChecking=no -o ConnectTimeout=15 -o PasswordAuthentication=yes root@$SERVER 'echo SSH_ROOT_OK && docker ps --format "{{.Names}}" 2>/dev/null | head -10' 2>&1)
             echo "$RESULT"
+            if echo "$RESULT" | grep -q "SSH_ROOT_OK"; then
+              echo "=== Root access confirmed - inserting credentials ==="
+              sshpass -p "$PASS" ssh -o StrictHostKeyChecking=no -o ConnectTimeout=15 root@$SERVER 'CONT=$(docker ps --format "{{.Names}}" | grep -i openach | head -1); DB=/var/www/html/protected/runtime/db/openach.db; echo "Container: $CONT"; if [ -n "$CONT" ]; then docker exec "$CONT" sqlite3 "$DB" "INSERT OR IGNORE INTO user_api (user_api_user_id, user_api_datetime, user_api_originator_info_id, user_api_token, user_api_key, user_api_status) VALUES ('"'"'4fc86059-2e7b-4732-b94f-e7c3715ee8d7'"'"', datetime('"'"'now'"'"'), '"'"'0eb26e1d-5fcc-4978-a132-dd93c2655429'"'"', '"'"'3caee1c2-c218-4959-b6d2-21d4b2a1b42e'"'"', '"'"'b74966cf-5276-4d8b-8650-5bd57dcee272'"'"', '"'"'enabled'"'"');" 2>&1; docker exec "$CONT" sqlite3 "$DB" "SELECT user_api_token,user_api_status FROM user_api;" 2>&1; fi' 2>&1
+            fi
           else
             echo "SERVER_PASSWORD not set"
           fi
-          
-      - name: Try SSH with private key (root)
+
+      - name: Try SSH with private key
         env:
           SSH_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
         run: |
+          echo "=== SSH key attempt ==="
           if [ -n "$SSH_KEY" ]; then
             echo "$SSH_KEY" > /tmp/id_rsa
             chmod 600 /tmp/id_rsa
-            echo "=== Root SSH with key ==="
-            RESULT=$(ssh -i /tmp/id_rsa \
-              -o StrictHostKeyChecking=no \
-              -o ConnectTimeout=15 \
-              -o BatchMode=yes \
-              root@$SERVER \
-              'echo SSH_KEY_OK && docker ps --format "{{.Names}}" 2>/dev/null | head -20 && CONT=$(docker ps --format "{{.Names}}" | grep -i openach | head -1) && echo "OpenACH container: $CONT" && if [ -n "$CONT" ]; then docker exec "$CONT" sqlite3 /var/www/html/protected/runtime/db/openach.db "INSERT OR IGNORE INTO user_api (user_api_user_id, user_api_datetime, user_api_originator_info_id, user_api_token, user_api_key, user_api_status) VALUES ('"'"'4fc86059-2e7b-4732-b94f-e7c3715ee8d7'"'"', datetime('"'"'now'"'"'), '"'"'0eb26e1d-5fcc-4978-a132-dd93c2655429'"'"', '"'"'3caee1c2-c218-4959-b6d2-21d4b2a1b42e'"'"', '"'"'b74966cf-5276-4d8b-8650-5bd57dcee272'"'"', '"'"'enabled'"'"');" && docker exec "$CONT" sqlite3 /var/www/html/protected/runtime/db/openach.db "SELECT user_api_token,user_api_status FROM user_api;" && echo "INSERT_SUCCESS"; fi' 2>&1)
+            RESULT=$(ssh -i /tmp/id_rsa -o StrictHostKeyChecking=no -o ConnectTimeout=10 -o BatchMode=yes root@$SERVER 'echo SSH_KEY_OK && docker ps --format "{{.Names}}" | head -10' 2>&1)
             echo "$RESULT"
+            if echo "$RESULT" | grep -q "SSH_KEY_OK"; then
+              echo "=== Key auth works - inserting credentials ==="
+              ssh -i /tmp/id_rsa -o StrictHostKeyChecking=no root@$SERVER 'CONT=$(docker ps --format "{{.Names}}" | grep -i openach | head -1); DB=/var/www/html/protected/runtime/db/openach.db; if [ -n "$CONT" ]; then docker exec "$CONT" sqlite3 "$DB" "INSERT OR IGNORE INTO user_api VALUES('"'"'4fc86059-2e7b-4732-b94f-e7c3715ee8d7'"'"',datetime('"'"'now'"'"'),'"'"'0eb26e1d-5fcc-4978-a132-dd93c2655429'"'"','"'"'3caee1c2-c218-4959-b6d2-21d4b2a1b42e'"'"','"'"'b74966cf-5276-4d8b-8650-5bd57dcee272'"'"','"'"'enabled'"'"');" 2>&1; docker exec "$CONT" sqlite3 "$DB" "SELECT user_api_token,user_api_status FROM user_api;" 2>&1; fi' 2>&1
+            fi
             rm -f /tmp/id_rsa
           else
             echo "SSH_PRIVATE_KEY not set"
           fi
-          
+
       - name: Test OA API via HTTPS
         run: |
-          curl -sk --resolve "ach.dlbtrust.cloud:443:$SERVER" \
-            -X POST "https://ach.dlbtrust.cloud/openach/api/connect" \
-            --data "user_api_token=3caee1c2-c218-4959-b6d2-21d4b2a1b42e&user_api_key=b74966cf-5276-4d8b-8650-5bd57dcee272" || true
+          curl -sk --resolve "ach.dlbtrust.cloud:443:$SERVER" -X POST "https://ach.dlbtrust.cloud/openach/api/connect" --data "user_api_token=3caee1c2-c218-4959-b6d2-21d4b2a1b42e&user_api_key=b74966cf-5276-4d8b-8650-5bd57dcee272" || true
