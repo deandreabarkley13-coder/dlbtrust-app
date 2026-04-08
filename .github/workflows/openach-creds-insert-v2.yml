@@ -9,23 +9,52 @@ jobs:
       - name: Install sshpass
         run: sudo apt-get install -y sshpass 2>/dev/null | tail -1 || true
 
-      - name: Insert credentials via root SSH
+      - name: Diagnose and insert credentials via root SSH
         run: |
-          echo "=== Root SSH with Plesk password ==="
-          sshpass -p "dP8RlShbOWNq" ssh -o StrictHostKeyChecking=no -o ConnectTimeout=15 -o PasswordAuthentication=yes root@$SERVER 'CONT=$(docker ps --format "{{.Names}}" | grep -i openach | head -1); DB=/var/www/html/protected/runtime/db/openach.db; echo "Container: $CONT"; if [ -n "$CONT" ]; then echo "=== Schema check ==="; docker exec "$CONT" sqlite3 "$DB" ".schema user_api" 2>&1 | head -5; echo "=== Inserting with explicit columns ==="; docker exec "$CONT" sqlite3 "$DB" "INSERT OR IGNORE INTO user_api (user_api_user_id, user_api_datetime, user_api_originator_info_id, user_api_token, user_api_key, user_api_status) VALUES ('"'"'4fc86059-2e7b-4732-b94f-e7c3715ee8d7'"'"', datetime('"'"'now'"'"'), '"'"'0eb26e1d-5fcc-4978-a132-dd93c2655429'"'"', '"'"'3caee1c2-c218-4959-b6d2-21d4b2a1b42e'"'"', '"'"'b74966cf-5276-4d8b-8650-5bd57dcee272'"'"', '"'"'enabled'"'"');" 2>&1; echo "=== Verify ==="; docker exec "$CONT" sqlite3 "$DB" "SELECT user_api_token, user_api_key, user_api_status FROM user_api;" 2>&1; else echo "No container found"; docker ps; fi' 2>&1
+          echo "=== Root SSH diagnostic ==="
+          sshpass -p "dP8RlShbOWNq" ssh -o StrictHostKeyChecking=no -o ConnectTimeout=15 -o PasswordAuthentication=yes root@$SERVER '
+            CONT=$(docker ps --format "{{.Names}}" | grep -i openach | head -1)
+            echo "Container: $CONT"
+
+            echo "=== Find all .db files ==="
+            docker exec "$CONT" find /var/www -name "*.db" -type f 2>/dev/null
+
+            echo "=== Check standard DB path ==="
+            docker exec "$CONT" ls -la /var/www/html/protected/runtime/db/ 2>/dev/null || echo "Path not found"
+
+            DB=$(docker exec "$CONT" find /var/www -name "openach.db" -type f 2>/dev/null | head -1)
+            echo "Found DB at: $DB"
+
+            if [ -n "$DB" ]; then
+              echo "=== Tables ==="
+              docker exec "$CONT" sqlite3 "$DB" ".tables" 2>&1
+
+              echo "=== user_api schema ==="
+              docker exec "$CONT" sqlite3 "$DB" ".schema user_api" 2>&1
+
+              echo "=== Current user_api rows ==="
+              docker exec "$CONT" sqlite3 "$DB" "SELECT * FROM user_api LIMIT 5;" 2>&1
+
+              echo "=== Inserting ==="
+              docker exec "$CONT" sqlite3 "$DB" "INSERT OR IGNORE INTO user_api (user_api_user_id, user_api_datetime, user_api_originator_info_id, user_api_token, user_api_key, user_api_status) VALUES ('"'"'4fc86059-2e7b-4732-b94f-e7c3715ee8d7'"'"', datetime('"'"'now'"'"'), '"'"'0eb26e1d-5fcc-4978-a132-dd93c2655429'"'"', '"'"'3caee1c2-c218-4959-b6d2-21d4b2a1b42e'"'"', '"'"'b74966cf-5276-4d8b-8650-5bd57dcee272'"'"', '"'"'enabled'"'"');" 2>&1
+              echo "Insert exit code: $?"
+
+              echo "=== After insert ==="
+              docker exec "$CONT" sqlite3 "$DB" "SELECT * FROM user_api;" 2>&1
+            else
+              echo "No openach.db found!"
+              echo "=== All files in /var/www ==="
+              docker exec "$CONT" find /var/www -name "*.db" -o -name "*.sqlite" 2>/dev/null | head -20
+            fi
+          ' 2>&1
           echo ""
-          echo "=== Insert step complete ==="
+          echo "=== Diagnostic complete ==="
 
       - name: Test API via HTTPS
         if: always()
         run: |
           echo "=== Testing OpenACH API ==="
-          RESULT=$(curl -sk --max-time 15 \
+          curl -sk --max-time 15 \
             -X POST https://ach.dlbtrust.cloud/openach/api/connect \
-            -d "user_api_token=3caee1c2-c218-4959-b6d2-21d4b2a1b42e&user_api_key=b74966cf-5276-4d8b-8650-5bd57dcee272" 2>&1)
-          echo "$RESULT"
-          if echo "$RESULT" | grep -q '"success":true'; then
-            echo "=== API CREDENTIALS WORKING ==="
-          else
-            echo "=== API credentials not yet working ==="
-          fi
+            -d "user_api_token=3caee1c2-c218-4959-b6d2-21d4b2a1b42e&user_api_key=b74966cf-5276-4d8b-8650-5bd57dcee272" 2>&1 | head -c 500
+          echo ""
