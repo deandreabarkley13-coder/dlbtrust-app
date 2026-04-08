@@ -7,32 +7,22 @@ jobs:
   fix:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Try FTP upload to dlbtrust-v2/api-routes.cjs + srv_man restart
-        run: |
-          echo "=== 1. FTP upload patched api-routes.cjs ==="
-          # FTP as dlbtrust.cloud_h6zkwzag1ya should land in /var/www/vhosts/dlbtrust.cloud/
-          # The dlbtrust-v2/ directory should be accessible
-          curl -v --max-time 60 \
-            --ftp-create-dirs \
-            -u "dlbtrust.cloud_h6zkwzag1ya:Deploy2026!" \
-            "ftp://74.208.191.205/dlbtrust-v2/api-routes.cjs" \
-            --upload-file server/api-routes-patched.cjs 2>&1 | tail -20
-          echo ""
-
-          echo "=== 2. Try srv_man with operation as text ==="
-          curl -sk --max-time 30 \
-            "https://dlbtrust.cloud:8443/enterprise/control/agent.php" \
-            -H "HTTP_AUTH_LOGIN: admin" \
-            -H "HTTP_AUTH_PASSWD: dP8RlShbOWNq" \
-            -H "Content-Type: text/xml" \
-            -d '<?xml version="1.0"?><packet version="1.6.9.1"><server><srv_man><operation>restart</operation><id>web-server</id></srv_man></server></packet>'
-          echo ""
-
-          echo "=== 3. Test endpoints after FTP upload ==="
-          sleep 15
-          curl -sk --max-time 20 https://dlbtrust.cloud/api/ach/health | head -c 100; echo ""
-          curl -sk --max-time 20 https://dlbtrust.cloud/api/ach/health | grep -q openach_connected && echo "PUBLIC ACH: PASS" || echo "PUBLIC ACH: FAIL"
-          curl -sk --max-time 20 https://dlbtrust.cloud/api/analytics/summary | grep -q total_corpus && echo "PUBLIC ANALYTICS: PASS" || echo "PUBLIC ANALYTICS: FAIL"
+      - name: Read httpd.conf + try Plesk get-file API
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: 74.208.191.205
+          username: dlbtrust.cloud_h6zkwzag1ya
+          password: Deploy2026!
+          port: 22
+          command_timeout: 60s
+          script: |
+            echo "=== 1. Read actual httpd.conf ==="
+            cat /var/www/vhosts/system/dlbtrust.cloud/conf/httpd.conf 2>/dev/null || echo "(cannot read)"
+            echo "=== 2. Read vhost_nginx.conf ==="
+            cat /var/www/vhosts/dlbtrust.cloud/conf/vhost_nginx.conf 2>/dev/null || echo "(no nginx vhost)"
+            echo "=== 3. List system conf dir ==="
+            ls -la /var/www/vhosts/system/dlbtrust.cloud/conf/ 2>/dev/null || echo "(no system conf)"
+            echo "=== 4. Check what process owns port 3002 ==="
+            ss -tlnp | grep 3002 || true
+            echo "=== 5. List pm2 processes for all users ==="
+            ps aux | grep -E "pm2|node" | grep -v grep | head -10
