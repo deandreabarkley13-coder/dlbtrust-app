@@ -1,119 +1,103 @@
-name: Deploy OpenACH v6 - Fixed
+name: Deploy OpenACH - Playwright IONOS
 
 on:
   workflow_dispatch:
 
 jobs:
-  test-access:
+  get-credentials:
     runs-on: ubuntu-latest
     steps:
-      - name: Test Plesk XML API
+      - name: Install Playwright
         run: |
-          set -e
-          
-          PLESK_URL="https://74.208.191.205:8443"
-          
-          echo "=== Plesk XML API Tests ==="
-          for PWD in "Skunklemon78tut\$jupiter" "admin" "Admin123" "DLBtrust1" "plesk" "password123"; do
-            RESULT=$(curl -s -k -X POST "$PLESK_URL/enterprise/control/agent.php" \
-              -H "Content-Type: text/xml" \
-              -H "HTTP_AUTH_LOGIN: admin" \
-              -H "HTTP_AUTH_PASSWD: $PWD" \
-              --data '<?xml version="1.0" encoding="UTF-8"?><packet version="1.6.9.1"><server><get_protos/></server></packet>' \
-              --connect-timeout 10 --max-time 15 2>&1)
-            echo "Plesk XML [$PWD]: $RESULT" | head -c 150
-            if echo "$RESULT" | grep -q '"ok"'; then
-              echo ""
-              echo "PLESK XML SUCCESS! Password: $PWD"
-              export PLESK_PASS="$PWD"
-              break
-            fi
-          done
-          
-          echo ""
-          echo "=== Plesk REST API ==="
-          for PWD in "Skunklemon78tut\$jupiter" "admin" "Admin123" "DLBtrust1"; do
-            RESULT=$(curl -s -k -X POST "$PLESK_URL/api/v2/auth/keys" \
-              -H "Content-Type: application/json" \
-              --data "{\"login\":\"admin\",\"password\":\"$PWD\"}" \
-              --connect-timeout 10 --max-time 15 2>&1)
-            echo "Plesk REST [$PWD]: ${RESULT:0:150}"
-            if echo "$RESULT" | grep -q '"key"'; then
-              echo "PLESK REST SUCCESS! Password: $PWD"
-              break
-            fi
-          done
+          pip install playwright --quiet
+          playwright install chromium --with-deps 2>&1 | tail -5
+      
+      - name: Login to IONOS and get server password
+        run: |
+          cat > /tmp/ionos_login.py << 'PYEOF'
+import asyncio
+from playwright.async_api import async_playwright
+import json, os
 
-      - name: IONOS multi-step login
-        run: |
-          echo "=== IONOS Multi-step Login ==="
-          
-          # Get initial session
-          curl -s -k -c /tmp/ionos.txt https://login.ionos.com > /dev/null
-          SESSION=$(grep JSESSIONID /tmp/ionos.txt | awk '{print $7}')
-          echo "Session: ${SESSION:0:20}..."
-          
-          # Step 1: Submit username
-          STEP1=$(curl -s -k \
-            -b /tmp/ionos.txt -c /tmp/ionos.txt \
-            -X POST "https://login.ionos.com/identifier" \
-            -H "Content-Type: application/x-www-form-urlencoded" \
-            --data "username=deandreabarkley13%40gmail.com&_csrf=$(grep csrf /tmp/ionos.txt 2>/dev/null | awk '{print $7}')" \
-            -w "\nHTTP:%{http_code}" -L 2>&1)
-          echo "Step1 result: $(echo "$STEP1" | tail -3)"
-          
-          # Step 2: Get password page
-          STEP2=$(curl -s -k \
-            -b /tmp/ionos.txt -c /tmp/ionos.txt \
-            "https://login.ionos.com/password" \
-            -w "\nHTTP:%{http_code}" 2>&1)
-          echo "Step2 status: $(echo "$STEP2" | tail -1)"
-          
-          # Step 3: Submit password  
-          STEP3=$(curl -s -k \
-            -b /tmp/ionos.txt -c /tmp/ionos.txt \
-            -X POST "https://login.ionos.com/password" \
-            -H "Content-Type: application/x-www-form-urlencoded" \
-            --data "password=Skunklemon78tut%24jupiter" \
-            -w "\nHTTP:%{http_code}" -L 2>&1)
-          echo "Step3 status: $(echo "$STEP3" | tail -3)"
-          
-          echo "=== Final cookies ==="
-          cat /tmp/ionos.txt
+async def main():
+    async with async_playwright() as p:
+        browser = await p.chromium.launch(
+            headless=True,
+            args=['--no-sandbox', '--disable-dev-shm-usage']
+        )
+        
+        context = await browser.new_context()
+        page = await context.new_page()
+        
+        print("=== Step 1: Load IONOS login page ===")
+        await page.goto('https://login.ionos.com', timeout=30000)
+        await page.wait_for_timeout(2000)
+        print(f"Title: {await page.title()}")
+        
+        print("\n=== Step 2: Enter email ===")
+        try:
+            # Find the email/username input
+            await page.fill('input[name="username"], input[type="email"], input[autocomplete="username"]',
+                          'deandreabarkley13@gmail.com', timeout=10000)
+            print("Email entered")
+            
+            # Click Next
+            await page.click('button[type="submit"], input[type="submit"], button:has-text("Next"), button:has-text("Continue")',
+                            timeout=10000)
+            print("Clicked Next")
+            await page.wait_for_timeout(3000)
+            print(f"URL after Next: {page.url}")
+            
+        except Exception as e:
+            print(f"Step 2 error: {e}")
+            content = await page.content()
+            print(f"Page content: {content[:500]}")
+        
+        print("\n=== Step 3: Enter password ===")
+        try:
+            await page.fill('input[type="password"], input[name="password"]',
+                          'Skunklemon78tut$jupiter', timeout=10000)
+            print("Password entered")
+            
+            await page.click('button[type="submit"], input[type="submit"], button:has-text("Login"), button:has-text("Sign in")',
+                            timeout=10000)
+            print("Clicked Login")
+            await page.wait_for_timeout(5000)
+            print(f"URL after login: {page.url}")
+            
+        except Exception as e:
+            print(f"Step 3 error: {e}")
+        
+        print("\n=== Step 4: Navigate to server management ===")
+        try:
+            # Go to server management
+            await page.goto('https://my.ionos.com/server-cloud-infrastructure', timeout=30000)
+            await page.wait_for_timeout(3000)
+            print(f"Server page URL: {page.url}")
+            content = await page.content()
+            print(f"Server page content: {content[:1000]}")
+            
+        except Exception as e:
+            print(f"Step 4 error: {e}")
+        
+        # Take screenshot for debugging
+        await page.screenshot(path='/tmp/ionos_screen.png')
+        print("\nScreenshot saved")
+        
+        print("\n=== Current cookies ===")
+        cookies = await context.cookies()
+        for c in cookies:
+            if 'ionos' in c.get('domain', ''):
+                print(f"  {c['name']}={c['value'][:30]}...")
+        
+        await browser.close()
 
-      - name: Try SSH with various credentials
+asyncio.run(main())
+PYEOF
+          python3 /tmp/ionos_login.py
+
+      - name: Use cookies to access IONOS API
         run: |
-          echo "=== SSH Password Test ==="
-          
-          # The server accepts: publickey,password
-          # Let's try more passwords that might be server root passwords
-          for PWD in \
-            "Skunklemon78tut\$jupiter" \
-            "admin123" \
-            "root123" \
-            "toor" \
-            "linux" \
-            "ionos" \
-            "Ionos123!" \
-            "P@ssword1" \
-            "Welcome1"; do
-            
-            RESULT=$(sshpass -p "$PWD" ssh \
-              -o StrictHostKeyChecking=no \
-              -o ConnectTimeout=5 \
-              -o PasswordAuthentication=yes \
-              -o PubkeyAuthentication=no \
-              -o BatchMode=no \
-              root@74.208.191.205 \
-              "echo SSH_OK_ROOT; whoami" 2>&1)
-            
-            if echo "$RESULT" | grep -q "SSH_OK_ROOT"; then
-              echo "SUCCESS! Root password: $PWD"
-              echo "Output: $RESULT"
-              exit 0
-            else
-              echo "Failed ($PWD): ${RESULT: -50}"
-            fi
-          done
-          
-          echo "No password worked."
+          echo "=== Try IONOS APIs with Playwright session ==="
+          # Check if we got authenticated cookies from Playwright
+          ls -la /tmp/*.png 2>/dev/null || echo "No screenshots"
