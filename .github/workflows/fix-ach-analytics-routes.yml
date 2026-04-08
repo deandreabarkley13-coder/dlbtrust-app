@@ -7,55 +7,44 @@ jobs:
   fix:
     runs-on: ubuntu-latest
     steps:
-      - name: Write vhost.conf, toggle domain status via REST, long wait
+      - name: Write vhost.conf then disable+enable domain
         run: |
-          echo "=== Step 1: Write vhost.conf via Plesk API ==="
+          echo "=== 1. Write correct vhost.conf via Plesk additional-settings ==="
+          # This time we'll try writing a minimal additional-settings (just our two routes)
+          # BEFORE disabling the domain, to ensure Plesk regenerates config with our rules
           curl -sk --max-time 30 \
             "https://dlbtrust.cloud:8443/enterprise/control/agent.php" \
             -H "HTTP_AUTH_LOGIN: admin" \
             -H "HTTP_AUTH_PASSWD: dP8RlShbOWNq" \
             -H "Content-Type: text/xml" \
-            -d '<?xml version="1.0"?><packet version="1.6.9.1"><webspace><set><filter><name>dlbtrust.cloud</name></filter><values><prefs><www>false</www></prefs></values></set></webspace></packet>'
-          sleep 8
+            -d '<?xml version="1.0" encoding="UTF-8"?><packet version="1.6.9.1"><webspace><set><filter><name>dlbtrust.cloud</name></filter><values><hosting><vrt_hst><property><name>additional-settings</name><value>ProxyPass /api/ach/health http://localhost:3003/api/ach/health&#10;ProxyPassReverse /api/ach/health http://localhost:3003/api/ach/health&#10;ProxyPass /api/analytics/summary http://localhost:3003/api/analytics/summary&#10;ProxyPassReverse /api/analytics/summary http://localhost:3003/api/analytics/summary</value></property></vrt_hst></hosting></values></set></webspace></packet>'
+          sleep 3
 
-          echo "=== Step 2: Re-enable ==="
-          curl -sk --max-time 30 \
-            "https://dlbtrust.cloud:8443/enterprise/control/agent.php" \
-            -H "HTTP_AUTH_LOGIN: admin" \
-            -H "HTTP_AUTH_PASSWD: dP8RlShbOWNq" \
-            -H "Content-Type: text/xml" \
-            -d '<?xml version="1.0"?><packet version="1.6.9.1"><webspace><set><filter><name>dlbtrust.cloud</name></filter><values><prefs><www>true</www></prefs></values></set></webspace></packet>'
-          sleep 15
-
-          echo "=== Step 3: Check domain status via REST ==="
-          curl -sk --max-time 30 \
-            "https://dlbtrust.cloud:8443/api/v2/domains/1/status" \
-            -u "admin:dP8RlShbOWNq" | head -c 200
           echo ""
-
-          echo "=== Step 4: Disable via REST ==="
+          echo "=== 2. Disable domain (triggers Apache reload) ==="
           curl -sk --max-time 30 -X PUT \
             "https://dlbtrust.cloud:8443/api/v2/domains/1/status" \
             -u "admin:dP8RlShbOWNq" \
             -H "Content-Type: application/json" \
-            -d '{"status": "disabled"}' | head -c 200
-          sleep 8
-          
+            -d '{"status": "disabled"}' | head -c 100
+          sleep 6
+
           echo ""
-          echo "=== Step 5: Enable via REST ==="
+          echo "=== 3. Re-enable domain ==="
           curl -sk --max-time 30 -X PUT \
             "https://dlbtrust.cloud:8443/api/v2/domains/1/status" \
             -u "admin:dP8RlShbOWNq" \
             -H "Content-Type: application/json" \
-            -d '{"status": "enabled"}' | head -c 200
+            -d '{"status": "active"}' | head -c 100
           sleep 20
 
           echo ""
-          echo "=== Step 6: Test ==="
+          echo "=== 4. Test endpoints ==="
           ACH=$(curl -sk --max-time 15 https://dlbtrust.cloud/api/ach/health)
           ANA=$(curl -sk --max-time 15 https://dlbtrust.cloud/api/analytics/summary)
           WAL=$(curl -sk --max-time 15 https://dlbtrust.cloud/api/wallets)
           echo "ACH: $ACH" | head -c 200; echo ""
+          echo "ANA: $ANA" | head -c 200; echo ""
           echo "$ACH" | grep -q openach_connected && echo "PUBLIC ACH: PASS" || echo "PUBLIC ACH: FAIL"
           echo "$ANA" | grep -q total_corpus && echo "PUBLIC ANALYTICS: PASS" || echo "PUBLIC ANALYTICS: FAIL"
           echo "$WAL" | grep -q wallet_id && echo "PUBLIC WALLETS: PASS" || echo "PUBLIC WALLETS: FAIL"
