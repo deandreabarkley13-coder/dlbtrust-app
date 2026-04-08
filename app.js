@@ -34,6 +34,9 @@ try {
 // ─── OpenACH Integration ──────────────────────────────────────────────────────
 require('./server/openach-patch')(app, typeof db !== 'undefined' ? db : null);
 
+// ─── Analytics Routes ─────────────────────────────────────────────────────────
+app.use('/api/analytics', require('./server/routes/analytics'));
+
 // ─── Start Server ─────────────────────────────────────────────────────────────
 const PORT = process.env.PORT || 3001;
 app.listen(PORT, () => {
