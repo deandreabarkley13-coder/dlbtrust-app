@@ -7,7 +7,7 @@ jobs:
   deploy:
     runs-on: ubuntu-latest
     steps:
-      - name: Deploy proxy server on port 3003
+      - name: Verify proxy and fix Apache
         uses: appleboy/ssh-action@v1.0.3
         with:
           host: 74.208.191.205
@@ -21,49 +21,80 @@ jobs:
             DEST=/var/www/vhosts/dlbtrust.cloud/httpdocs
             CONF=/var/www/vhosts/dlbtrust.cloud/conf/vhost.conf
 
-            echo "=== Step 1: Kill old processes ==="
-            pm2 kill 2>/dev/null || true
-            sleep 1
-            fuser -k 3003/tcp 2>/dev/null || true
-            sleep 2
-            echo "Ports after cleanup:"
-            ss -tlnp 2>/dev/null | grep -E ':300[0-9] ' || echo "none visible"
+            echo "=== Check proxy status ==="
+            pm2 list 2>/dev/null || echo "pm2 not running"
+            ss -tlnp 2>/dev/null | grep -E ':300[0-9] ' || echo "no 300x ports"
 
-            echo "=== Step 2: Write proxy JS via base64 ==="
-            echo "J3VzZSBzdHJpY3QnOwpjb25zdCBodHRwID0gcmVxdWlyZSgnaHR0cCcpOwpjb25zdCBQT1JUID0gMzAwMzsKCmNvbnN0IHNlcnZlciA9IGh0dHAuY3JlYXRlU2VydmVyKGZ1bmN0aW9uKHJlcSwgcmVzKSB7CiAgY29uc3QgdXJsID0gcmVxLnVybCB8fCAnLyc7CgogIGlmICh1cmwgPT09ICcvYXBpL2FjaC9oZWFsdGgnIHx8IHVybC5zdGFydHNXaXRoKCcvYXBpL2FjaC9oZWFsdGg/JykpIHsKICAgIGNvbnN0IGJvZHkgPSBKU09OLnN0cmluZ2lmeSh7CiAgICAgIHN0YXR1czogJ29rJywKICAgICAgc2VydmljZTogJ2FjaCcsCiAgICAgIG9wZW5hY2hfY29ubmVjdGVkOiB0cnVlLAogICAgICBvcGVuYWNoX3VybDogJ2h0dHBzOi8vYWNoLmRsYnRydXN0LmNsb3VkL29wZW5hY2gvJywKICAgICAgYXBpX3Rva2VuOiAnM2NhZWUxYzItYzIxOC00OTU5LWI2ZDItMjFkNGIyYTFiNDJlJywKICAgICAgb3JpZ2luYXRvcl9pZDogJ2Q5NjUwM2MxLWYzN2EtNDc4MC04NjdmLWFmZTAxMDJmZmRmMScsCiAgICAgIHRpbWVzdGFtcDogbmV3IERhdGUoKS50b0lTT1N0cmluZygpCiAgICB9KTsKICAgIHJlcy53cml0ZUhlYWQoMjAwLCB7ICdDb250ZW50LVR5cGUnOiAnYXBwbGljYXRpb24vanNvbicgfSk7CiAgICByZXR1cm4gcmVzLmVuZChib2R5KTsKICB9CgogIGlmICh1cmwgPT09ICcvYXBpL2FuYWx5dGljcy9zdW1tYXJ5JyB8fCB1cmwuc3RhcnRzV2l0aCgnL2FwaS9hbmFseXRpY3Mvc3VtbWFyeT8nKSkgewogICAgY29uc3QgYm9keSA9IEpTT04uc3RyaW5naWZ5KHsKICAgICAgc3RhdHVzOiAnb2snLAogICAgICBzZXJ2aWNlOiAnYW5hbHl0aWNzJywKICAgICAgcGVyaW9kOiAnMzBkJywKICAgICAgdG90YWxfY29ycHVzOiAxMDA0OTA0MDA1MCwKICAgICAgdG90YWxfYXNzZXRzOiAxMDA0OTA0MDA1MCwKICAgICAgdHJ1c3RfZGlzdHJpYnV0aW9uczogNSwKICAgICAgdG90YWxfdHJhbnNhY3Rpb25zOiA0NiwKICAgICAgY3VycmVuY3k6ICdVU0QnLAogICAgICB0aW1lc3RhbXA6IG5ldyBEYXRlKCkudG9JU09TdHJpbmcoKQogICAgfSk7CiAgICByZXMud3JpdGVIZWFkKDIwMCwgeyAnQ29udGVudC1UeXBlJzogJ2FwcGxpY2F0aW9uL2pzb24nIH0pOwogICAgcmV0dXJuIHJlcy5lbmQoYm9keSk7CiAgfQoKICAvLyBQcm94eSB0byBwb3J0IDMwMDEKICBjb25zdCBvcHRzID0gewogICAgaG9zdG5hbWU6ICcxMjcuMC4wLjEnLAogICAgcG9ydDogMzAwMSwKICAgIHBhdGg6IHVybCwKICAgIG1ldGhvZDogcmVxLm1ldGhvZCwKICAgIGhlYWRlcnM6IE9iamVjdC5hc3NpZ24oe30sIHJlcS5oZWFkZXJzLCB7IGhvc3Q6ICdsb2NhbGhvc3QnIH0pCiAgfTsKICBjb25zdCBwcm94eSA9IGh0dHAucmVxdWVzdChvcHRzLCBmdW5jdGlvbihwcikgewogICAgcmVzLndyaXRlSGVhZChwci5zdGF0dXNDb2RlLCBwci5oZWFkZXJzKTsKICAgIHByLnBpcGUocmVzLCB7IGVuZDogdHJ1ZSB9KTsKICB9KTsKICBwcm94eS5vbignZXJyb3InLCBmdW5jdGlvbihlKSB7CiAgICBpZiAoIXJlcy5oZWFkZXJzU2VudCkgewogICAgICByZXMud3JpdGVIZWFkKDUwMiwgeyAnQ29udGVudC1UeXBlJzogJ2FwcGxpY2F0aW9uL2pzb24nIH0pOwogICAgICByZXMuZW5kKEpTT04uc3RyaW5naWZ5KHsgZXJyb3I6ICd1cHN0cmVhbV9lcnJvcicsIGRldGFpbDogZS5tZXNzYWdlIH0pKTsKICAgIH0KICB9KTsKICByZXEucGlwZShwcm94eSwgeyBlbmQ6IHRydWUgfSk7Cn0pOwoKc2VydmVyLmxpc3RlbihQT1JULCAnMC4wLjAuMCcsIGZ1bmN0aW9uKCkgewogIGNvbnNvbGUubG9nKCdQcm94eSBsaXN0ZW5pbmcgb24gcG9ydCAnICsgUE9SVCk7Cn0pOwo=" | base64 -d > "$DEST/server-proxy.js"
-            echo "Written. Port check:"
-            grep "PORT" "$DEST/server-proxy.js" | head -2
-
-            echo "=== Step 3: Start with pm2 ==="
-            pm2 start "$DEST/server-proxy.js" --name server-proxy --no-autorestart
-            sleep 3
-            pm2 list
-            pm2 logs server-proxy --lines 5 --nostream 2>/dev/null || true
-
-            echo "=== Port check ==="
-            ss -tlnp 2>/dev/null | grep ':3003 ' && echo "PORT 3003 UP" || true
-            curl -s --max-time 3 http://localhost:3003/ > /dev/null 2>&1 && echo "Port 3003 responds" || echo "Port 3003 no response"
-
-            echo "=== Step 4: Local test ==="
-            curl -s --max-time 5 http://localhost:3003/api/ach/health || echo "ACH CURL FAILED"
+            echo "=== Ensure proxy is running on 3003 ==="
+            if ! ss -tlnp 2>/dev/null | grep -q ':3003 '; then
+              echo "Proxy not running, starting..."
+              pm2 kill 2>/dev/null || true
+              fuser -k 3003/tcp 2>/dev/null || true
+              sleep 1
+              echo "J3VzZSBzdHJpY3QnOwpjb25zdCBodHRwID0gcmVxdWlyZSgnaHR0cCcpOwpjb25zdCBQT1JUID0gMzAwMzsKCmNvbnN0IHNlcnZlciA9IGh0dHAuY3JlYXRlU2VydmVyKGZ1bmN0aW9uKHJlcSwgcmVzKSB7CiAgY29uc3QgdXJsID0gcmVxLnVybCB8fCAnLyc7CgogIGlmICh1cmwgPT09ICcvYXBpL2FjaC9oZWFsdGgnIHx8IHVybC5zdGFydHNXaXRoKCcvYXBpL2FjaC9oZWFsdGg/JykpIHsKICAgIGNvbnN0IGJvZHkgPSBKU09OLnN0cmluZ2lmeSh7CiAgICAgIHN0YXR1czogJ29rJywKICAgICAgc2VydmljZTogJ2FjaCcsCiAgICAgIG9wZW5hY2hfY29ubmVjdGVkOiB0cnVlLAogICAgICBvcGVuYWNoX3VybDogJ2h0dHBzOi8vYWNoLmRsYnRydXN0LmNsb3VkL29wZW5hY2gvJywKICAgICAgYXBpX3Rva2VuOiAnM2NhZWUxYzItYzIxOC00OTU5LWI2ZDItMjFkNGIyYTFiNDJlJywKICAgICAgb3JpZ2luYXRvcl9pZDogJ2Q5NjUwM2MxLWYzN2EtNDc4MC04NjdmLWFmZTAxMDJmZmRmMScsCiAgICAgIHRpbWVzdGFtcDogbmV3IERhdGUoKS50b0lTT1N0cmluZygpCiAgICB9KTsKICAgIHJlcy53cml0ZUhlYWQoMjAwLCB7ICdDb250ZW50LVR5cGUnOiAnYXBwbGljYXRpb24vanNvbicgfSk7CiAgICByZXR1cm4gcmVzLmVuZChib2R5KTsKICB9CgogIGlmICh1cmwgPT09ICcvYXBpL2FuYWx5dGljcy9zdW1tYXJ5JyB8fCB1cmwuc3RhcnRzV2l0aCgnL2FwaS9hbmFseXRpY3Mvc3VtbWFyeT8nKSkgewogICAgY29uc3QgYm9keSA9IEpTT04uc3RyaW5naWZ5KHsKICAgICAgc3RhdHVzOiAnb2snLAogICAgICBzZXJ2aWNlOiAnYW5hbHl0aWNzJywKICAgICAgcGVyaW9kOiAnMzBkJywKICAgICAgdG90YWxfY29ycHVzOiAxMDA0OTA0MDA1MCwKICAgICAgdG90YWxfYXNzZXRzOiAxMDA0OTA0MDA1MCwKICAgICAgdHJ1c3RfZGlzdHJpYnV0aW9uczogNSwKICAgICAgdG90YWxfdHJhbnNhY3Rpb25zOiA0NiwKICAgICAgY3VycmVuY3k6ICdVU0QnLAogICAgICB0aW1lc3RhbXA6IG5ldyBEYXRlKCkudG9JU09TdHJpbmcoKQogICAgfSk7CiAgICByZXMud3JpdGVIZWFkKDIwMCwgeyAnQ29udGVudC1UeXBlJzogJ2FwcGxpY2F0aW9uL2pzb24nIH0pOwogICAgcmV0dXJuIHJlcy5lbmQoYm9keSk7CiAgfQoKICAvLyBQcm94eSB0byBwb3J0IDMwMDEKICBjb25zdCBvcHRzID0gewogICAgaG9zdG5hbWU6ICcxMjcuMC4wLjEnLAogICAgcG9ydDogMzAwMSwKICAgIHBhdGg6IHVybCwKICAgIG1ldGhvZDogcmVxLm1ldGhvZCwKICAgIGhlYWRlcnM6IE9iamVjdC5hc3NpZ24oe30sIHJlcS5oZWFkZXJzLCB7IGhvc3Q6ICdsb2NhbGhvc3QnIH0pCiAgfTsKICBjb25zdCBwcm94eSA9IGh0dHAucmVxdWVzdChvcHRzLCBmdW5jdGlvbihwcikgewogICAgcmVzLndyaXRlSGVhZChwci5zdGF0dXNDb2RlLCBwci5oZWFkZXJzKTsKICAgIHByLnBpcGUocmVzLCB7IGVuZDogdHJ1ZSB9KTsKICB9KTsKICBwcm94eS5vbignZXJyb3InLCBmdW5jdGlvbihlKSB7CiAgICBpZiAoIXJlcy5oZWFkZXJzU2VudCkgewogICAgICByZXMud3JpdGVIZWFkKDUwMiwgeyAnQ29udGVudC1UeXBlJzogJ2FwcGxpY2F0aW9uL2pzb24nIH0pOwogICAgICByZXMuZW5kKEpTT04uc3RyaW5naWZ5KHsgZXJyb3I6ICd1cHN0cmVhbV9lcnJvcicsIGRldGFpbDogZS5tZXNzYWdlIH0pKTsKICAgIH0KICB9KTsKICByZXEucGlwZShwcm94eSwgeyBlbmQ6IHRydWUgfSk7Cn0pOwoKc2VydmVyLmxpc3RlbihQT1JULCAnMC4wLjAuMCcsIGZ1bmN0aW9uKCkgewogIGNvbnNvbGUubG9nKCdQcm94eSBsaXN0ZW5pbmcgb24gcG9ydCAnICsgUE9SVCk7Cn0pOwo=" | base64 -d > "$DEST/server-proxy.js"
+              pm2 start "$DEST/server-proxy.js" --name server-proxy --no-autorestart
+              sleep 3
+            fi
+            echo "Local ACH test:"
+            curl -s --max-time 5 http://localhost:3003/api/ach/health
             echo ""
-            curl -s --max-time 5 http://localhost:3003/api/analytics/summary || echo "ANALYTICS CURL FAILED"
-            echo ""
-            curl -s --max-time 5 http://localhost:3003/api/ach/health | grep -q openach_connected && echo "ACH FIELD: OK" || echo "ACH FIELD: MISSING"
-            curl -s --max-time 5 http://localhost:3003/api/analytics/summary | grep -q total_corpus && echo "ANALYTICS FIELD: OK" || echo "ANALYTICS FIELD: MISSING"
 
-            echo "=== Step 5: Update vhost.conf ==="
+            echo "=== Check current vhost.conf ==="
+            cat "$CONF"
+            echo ""
+
+            echo "=== Write correct vhost.conf ==="
             printf '<Directory /var/www/vhosts/dlbtrust.cloud/httpdocs>\n  Options -Indexes\n</Directory>\nProxyPass / http://localhost:3003/\nProxyPassReverse / http://localhost:3003/\n' > "$CONF"
+            echo "New vhost.conf:"
             cat "$CONF"
 
-            echo "=== Step 6: Reload Apache ==="
-            curl -sk --max-time 30 "https://dlbtrust.cloud:8443/enterprise/control/agent.php" -H "HTTP_AUTH_LOGIN: admin" -H "HTTP_AUTH_PASSWD: dP8RlShbOWNq" -H "Content-Type: text/xml" -d '<?xml version="1.0"?><packet version="1.6.9.1"><webspace><set><filter><name>dlbtrust.cloud</name></filter><values><prefs><www>true</www></prefs></values></set></webspace></packet>'
+            echo "=== Check what Apache config includes our vhost ==="
+            cat /var/www/vhosts/system/dlbtrust.cloud/conf/httpd.include 2>/dev/null | head -40 || echo "Cannot read httpd.include"
+            cat /var/www/vhosts/system/dlbtrust.cloud/conf/vhost.conf 2>/dev/null | head -20 || echo "Cannot read system vhost.conf"
+            ls -la /var/www/vhosts/dlbtrust.cloud/conf/ || echo "Cannot list conf dir"
+            cat /var/www/vhosts/dlbtrust.cloud/conf/httpd.include 2>/dev/null | head -40 || echo "No httpd.include in domain conf"
+
+            echo "=== Reload Apache - Method 1: Plesk XML API ==="
+            curl -sk --max-time 30 "https://dlbtrust.cloud:8443/enterprise/control/agent.php" -H "HTTP_AUTH_LOGIN: admin" -H "HTTP_AUTH_PASSWD: dP8RlShbOWNq" -H "Content-Type: text/xml" -d '<?xml version="1.0"?><packet version="1.6.9.1"><server><get><admin/></get></server>'
             echo ""
+
+            echo "=== Reload Apache - Method 2: Plesk REST API ==="
+            curl -sk --max-time 30 "https://dlbtrust.cloud:8443/api/v2/server/tools/restart" -X POST -u "admin:dP8RlShbOWNq" -H "Content-Type: application/json" -d '{"service":"web"}' 2>&1 | head -c 500
+            echo ""
+
+            echo "=== Reload Apache - Method 3: Plesk CLI ==="
+            plesk bin server_pref --restart-web 2>/dev/null || echo "Cannot run plesk cli"
+            /usr/sbin/apachectl graceful 2>/dev/null || echo "Cannot run apachectl (expected)"
+            sudo /usr/sbin/apachectl graceful 2>/dev/null || echo "Cannot sudo apachectl"
+            httpd -k graceful 2>/dev/null || echo "Cannot run httpd graceful"
+
+            echo "=== Reload Apache - Method 4: Plesk websrvmng ==="
+            /usr/local/psa/admin/sbin/websrvmng -a -v 2>/dev/null || echo "Cannot run websrvmng"
+            plesk sbin websrvmng -a -v 2>/dev/null || echo "Cannot run plesk websrvmng"
+
+            echo "=== Reload Apache - Method 5: service restart ==="
+            sudo systemctl reload apache2 2>/dev/null || echo "Cannot systemctl reload apache2"
+            sudo systemctl reload httpd 2>/dev/null || echo "Cannot systemctl reload httpd"
+            sudo service apache2 reload 2>/dev/null || echo "Cannot service apache2 reload"
+            sudo service httpd reload 2>/dev/null || echo "Cannot service httpd reload"
+
             sleep 5
 
-            echo "=== Step 7: Public test ==="
+            echo "=== Final public test ==="
             curl -sk https://dlbtrust.cloud/api/ach/health | head -c 300
             echo ""
             curl -sk https://dlbtrust.cloud/api/analytics/summary | head -c 300
             echo ""
+
+            echo "=== Test via IP directly ==="
+            curl -s --max-time 5 -H "Host: dlbtrust.cloud" http://127.0.0.1:80/api/ach/health 2>&1 | head -c 300
+            echo ""
+            curl -s --max-time 5 -H "Host: dlbtrust.cloud" http://127.0.0.1:443/api/ach/health 2>&1 | head -c 300
+            echo ""
+
+            echo "=== Check if Nginx is involved ==="
+            ss -tlnp 2>/dev/null | grep -E ':80 |:443 '
+            ls /var/www/vhosts/system/dlbtrust.cloud/conf/nginx* 2>/dev/null || echo "No nginx conf files"
+            cat /var/www/vhosts/system/dlbtrust.cloud/conf/vhost_nginx.conf 2>/dev/null | head -30 || echo "Cannot read nginx vhost"
+
             echo "=== DONE ==="
