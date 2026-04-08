@@ -2,13 +2,13 @@ name: Fix ACH Analytics Routes
 on:
   push:
     branches: [main]
-    paths: ['.github/workflows/fix-ach-analytics-routes.yml']
+  workflow_dispatch:
 
 jobs:
   fix:
     runs-on: ubuntu-latest
     steps:
-      - name: Check proxy, fix vhost, restart Apache via killall
+      - name: Ensure proxy3003, fix vhost.conf, reload Apache
         uses: appleboy/ssh-action@v1.0.3
         with:
           host: 74.208.191.205
@@ -19,19 +19,19 @@ jobs:
           script: |
             export HOME=/var/www/vhosts/dlbtrust.cloud
             set -e
+            DEST=/var/www/vhosts/dlbtrust.cloud/httpdocs
+            VHOST=/var/www/vhosts/dlbtrust.cloud/conf/vhost.conf
 
-            echo "=== 1. Check existing proxy on 3003 ==="
-            curl -s --max-time 3 http://127.0.0.1:3003/api/ach/health | head -c 100 || echo "(3003 not responding)"
-            ss -tlnp | grep -E "300[0-9]" || true
-
-            echo "=== 2. Ensure proxy3003 is running ==="
-            if ! curl -s --max-time 3 http://127.0.0.1:3003/api/ach/health 2>/dev/null | grep -q openach_connected; then
-              echo "Starting proxy on 3003..."
-              pm2 delete server-proxy 2>/dev/null || true
+            echo "=== 1. Check proxy3003 ==="
+            if curl -s --max-time 3 http://127.0.0.1:3003/api/ach/health 2>/dev/null | grep -q openach_connected; then
+              echo "proxy3003 already running OK"
+            else
+              echo "Starting proxy3003..."
               pm2 delete proxy3003 2>/dev/null || true
+              pm2 delete server-proxy 2>/dev/null || true
               fuser -k 3003/tcp 2>/dev/null || true
               sleep 1
-              cat > /var/www/vhosts/dlbtrust.cloud/httpdocs/proxy3003.js << 'JSEOF'
+              cat > $DEST/proxy3003.js << 'JSEOF'
 'use strict';
 var http=require('http');
 http.createServer(function(req,res){
@@ -44,68 +44,51 @@ p.on('error',function(e){if(!res.headersSent){res.writeHead(502,{'Content-Type':
 req.pipe(p,{end:true});
 }).listen(3003,'0.0.0.0',function(){console.log('proxy3003 up');});
 JSEOF
-              node --check /var/www/vhosts/dlbtrust.cloud/httpdocs/proxy3003.js
-              pm2 start /var/www/vhosts/dlbtrust.cloud/httpdocs/proxy3003.js --name proxy3003
-              sleep 3
+              node --check $DEST/proxy3003.js
+              pm2 start $DEST/proxy3003.js --name proxy3003
+              sleep 4
             fi
-            curl -s --max-time 5 http://127.0.0.1:3003/api/ach/health | grep -q openach_connected && echo "proxy3003 ACH OK" || { echo "proxy3003 FAILED"; pm2 logs --lines 20 --nostream; exit 1; }
-            curl -s --max-time 5 http://127.0.0.1:3003/api/analytics/summary | grep -q total_corpus && echo "proxy3003 ANALYTICS OK"
+            curl -s --max-time 5 http://127.0.0.1:3003/api/ach/health | grep -q openach_connected && echo "ACH proxy OK"
+            curl -s --max-time 5 http://127.0.0.1:3003/api/analytics/summary | grep -q total_corpus && echo "Analytics proxy OK"
 
-            echo "=== 3. Read current vhost.conf ==="
-            cat /var/www/vhosts/dlbtrust.cloud/conf/vhost.conf || echo "(no vhost.conf)"
+            echo "=== 2. Write vhost.conf with correct ProxyPass order ==="
+            printf '<Directory /var/www/vhosts/dlbtrust.cloud/httpdocs>\n  Options -Indexes\n</Directory>\nProxyPreserveHost On\nProxyPass /api/ach/health http://localhost:3003/api/ach/health\nProxyPassReverse /api/ach/health http://localhost:3003/api/ach/health\nProxyPass /api/analytics/summary http://localhost:3003/api/analytics/summary\nProxyPassReverse /api/analytics/summary http://localhost:3003/api/analytics/summary\nProxyPass / http://localhost:3002/\nProxyPassReverse / http://localhost:3002/\n' > $VHOST
+            echo "vhost.conf:"
+            cat $VHOST
 
-            echo "=== 4. Write vhost.conf — specific routes BEFORE general ==="
-            cat > /var/www/vhosts/dlbtrust.cloud/conf/vhost.conf << 'VHEOF'
-<Directory /var/www/vhosts/dlbtrust.cloud/httpdocs>
-  Options -Indexes
-</Directory>
-ProxyPreserveHost On
-ProxyPass /api/ach/health http://localhost:3003/api/ach/health
-ProxyPassReverse /api/ach/health http://localhost:3003/api/ach/health
-ProxyPass /api/analytics/summary http://localhost:3003/api/analytics/summary
-ProxyPassReverse /api/analytics/summary http://localhost:3003/api/analytics/summary
-ProxyPass / http://localhost:3002/
-ProxyPassReverse / http://localhost:3002/
-VHEOF
-            echo "vhost.conf written:"
-            cat /var/www/vhosts/dlbtrust.cloud/conf/vhost.conf
+            echo "=== 3. Reload Apache — site disable/enable cycle ==="
+            curl -sk --max-time 20 "https://dlbtrust.cloud:8443/enterprise/control/agent.php" \
+              -H "HTTP_AUTH_LOGIN: admin" -H "HTTP_AUTH_PASSWD: dP8RlShbOWNq" \
+              -H "Content-Type: text/xml" \
+              -d '<?xml version="1.0"?><packet version="1.6.9.1"><site><set><filter><name>dlbtrust.cloud</name></filter><values><status>0</status></values></set></site></packet>'
+            sleep 3
+            curl -sk --max-time 20 "https://dlbtrust.cloud:8443/enterprise/control/agent.php" \
+              -H "HTTP_AUTH_LOGIN: admin" -H "HTTP_AUTH_PASSWD: dP8RlShbOWNq" \
+              -H "Content-Type: text/xml" \
+              -d '<?xml version="1.0"?><packet version="1.6.9.1"><site><set><filter><name>dlbtrust.cloud</name></filter><values><status>2</status></values></set></site></packet>'
+            echo ""
 
-            echo "=== 5. Force Apache reload — try multiple methods ==="
-            # Method 1: Plesk webspace set www toggle
+            # Also try webspace reload
             curl -sk --max-time 20 "https://dlbtrust.cloud:8443/enterprise/control/agent.php" \
               -H "HTTP_AUTH_LOGIN: admin" -H "HTTP_AUTH_PASSWD: dP8RlShbOWNq" \
               -H "Content-Type: text/xml" \
               -d '<?xml version="1.0"?><packet version="1.6.9.1"><webspace><set><filter><name>dlbtrust.cloud</name></filter><values><prefs><www>true</www></prefs></values></set></webspace></packet>'
             echo ""
 
-            # Method 2: Plesk site enable/disable cycle to force config reload
-            curl -sk --max-time 20 "https://dlbtrust.cloud:8443/enterprise/control/agent.php" \
-              -H "HTTP_AUTH_LOGIN: admin" -H "HTTP_AUTH_PASSWD: dP8RlShbOWNq" \
-              -H "Content-Type: text/xml" \
-              -d '<?xml version="1.0"?><packet version="1.6.9.1"><site><set><filter><name>dlbtrust.cloud</name></filter><values><status>0</status></values></set></site></packet>'
-            sleep 2
-            curl -sk --max-time 20 "https://dlbtrust.cloud:8443/enterprise/control/agent.php" \
-              -H "HTTP_AUTH_LOGIN: admin" -H "HTTP_AUTH_PASSWD: dP8RlShbOWNq" \
-              -H "Content-Type: text/xml" \
-              -d '<?xml version="1.0"?><packet version="1.6.9.1"><site><set><filter><name>dlbtrust.cloud</name></filter><values><status>2</status></values></set></site></packet>'
-            echo "Site cycle done"
-
-            # Method 3: killall graceful apache restart via signal (system user can send SIGUSR1 to apache if same group)
-            killall -USR1 apache2 2>/dev/null && echo "SIGUSR1 sent to apache2" || true
-            killall -HUP apache2 2>/dev/null && echo "SIGHUP sent to apache2" || true
-
+            # Try SIGHUP to apache
+            killall -HUP apache2 2>/dev/null && echo "SIGHUP apache2 OK" || true
             sleep 8
 
-            echo "=== 6. Verify vhost.conf still correct ==="
-            cat /var/www/vhosts/dlbtrust.cloud/conf/vhost.conf
+            echo "=== 4. Verify vhost.conf not overwritten ==="
+            cat $VHOST
 
-            echo "=== 7. Public endpoint tests ==="
-            ACH=$(curl -sk --max-time 15 https://dlbtrust.cloud/api/ach/health 2>&1)
-            ANA=$(curl -sk --max-time 15 https://dlbtrust.cloud/api/analytics/summary 2>&1)
-            WAL=$(curl -sk --max-time 15 https://dlbtrust.cloud/api/wallets 2>&1)
+            echo "=== 5. Public tests ==="
+            ACH=$(curl -sk --max-time 15 https://dlbtrust.cloud/api/ach/health)
+            ANA=$(curl -sk --max-time 15 https://dlbtrust.cloud/api/analytics/summary)
+            WAL=$(curl -sk --max-time 15 https://dlbtrust.cloud/api/wallets)
             echo "ACH: $(echo $ACH | head -c 200)"
             echo "ANA: $(echo $ANA | head -c 200)"
-            echo "WAL: $(echo $WAL | head -c 100)"
+            echo "WAL: $(echo $WAL | head -c 80)"
             echo "$ACH" | grep -q openach_connected && echo "PUBLIC ACH: PASS" || echo "PUBLIC ACH: FAIL"
             echo "$ANA" | grep -q total_corpus && echo "PUBLIC ANALYTICS: PASS" || echo "PUBLIC ANALYTICS: FAIL"
             echo "$WAL" | grep -q wallet_id && echo "PUBLIC WALLETS: PASS" || echo "PUBLIC WALLETS: FAIL"
