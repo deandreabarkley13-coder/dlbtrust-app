@@ -78,6 +78,7 @@ function loadView(view) {
     case 'accounts': loadAccounts(); break;
     case 'transfers': loadTransfers(); break;
     case 'contacts': loadContacts(); break;
+    case 'payments': loadPayments(); break;
     case 'compliance': loadCompliance(); break;
     case 'activity': loadActivity(); break;
   }
@@ -707,6 +708,218 @@ async function loadActivity() {
   } catch (err) {
     $('#audit-log-table').innerHTML = `<p style="padding:20px;color:var(--danger)">Error: ${err.message}</p>`;
   }
+}
+
+// --- External Payments ---
+
+async function loadPayments() {
+  try {
+    const filter = document.getElementById('payment-status-filter')?.value || '';
+    const statusParam = filter ? `?status=${filter}` : '';
+
+    const [paymentsData, summary] = await Promise.all([
+      api(`/external-transfers${statusParam}`),
+      api('/external-transfers/summary'),
+    ]);
+
+    // Metrics
+    document.getElementById('payment-metrics').innerHTML = `
+      <div class="metric-card primary">
+        <span class="metric-label">Total Paid</span>
+        <span class="metric-value">$${Number(summary.total_paid_usd || 0).toLocaleString('en-US', { minimumFractionDigits: 2 })}</span>
+      </div>
+      <div class="metric-card warn">
+        <span class="metric-label">Pending Approval</span>
+        <span class="metric-value">${summary.pending_approval || 0}</span>
+      </div>
+      <div class="metric-card">
+        <span class="metric-label">In Transit</span>
+        <span class="metric-value">${summary.in_transit || 0}</span>
+      </div>
+      <div class="metric-card">
+        <span class="metric-label">Completed</span>
+        <span class="metric-value">${summary.completed_count || 0}</span>
+      </div>
+      <div class="metric-card">
+        <span class="metric-label">Total Fees</span>
+        <span class="metric-value">$${Number(summary.total_fees_usd || 0).toLocaleString('en-US', { minimumFractionDigits: 2 })}</span>
+      </div>
+      <div class="metric-card">
+        <span class="metric-label">Total Transfers</span>
+        <span class="metric-value">${summary.total_transfers || 0}</span>
+      </div>`;
+
+    // Table
+    const payments = paymentsData.transfers || [];
+    let html = `<table>
+      <thead><tr>
+        <th>Transfer #</th><th>Recipient</th><th>Type</th><th>Amount</th><th>Fee</th><th>Method</th><th>Status</th><th>Date</th><th>Actions</th>
+      </tr></thead><tbody>`;
+
+    if (payments.length === 0) {
+      html += '<tr><td colspan="9" style="text-align:center;color:var(--text-secondary);padding:40px">No external payments yet. Click "+ New Payment" to send funds to a vendor or beneficiary.</td></tr>';
+    } else {
+      for (const p of payments) {
+        const typeBadge = p.payment_type === 'vendor_payment' ? 'badge-reversed' : p.payment_type === 'beneficiary_distribution' ? 'badge-approved' : 'badge-frozen';
+        html += `<tr>
+          <td><strong>${p.transfer_number}</strong></td>
+          <td>${p.contact_name || 'Contact #' + p.contact_id}${p.contact_type ? '<br><small style="color:var(--text-secondary)">' + p.contact_type + '</small>' : ''}</td>
+          <td><span class="badge ${typeBadge}">${(p.payment_type || '').replace(/_/g, ' ')}</span></td>
+          <td>${formatUSD(p.amount_cents)}</td>
+          <td>${p.fee_cents > 0 ? formatUSD(p.fee_cents) : '—'}</td>
+          <td>${(p.payment_method || 'ach').toUpperCase()}</td>
+          <td>${badge(p.status)}</td>
+          <td>${formatDate(p.created_at)}</td>
+          <td>${paymentActions(p)}</td>
+        </tr>`;
+      }
+    }
+    html += '</tbody></table>';
+    document.getElementById('payments-table').innerHTML = html;
+  } catch (err) {
+    document.getElementById('payments-table').innerHTML = `<p style="padding:20px;color:var(--danger)">Error: ${err.message}</p>`;
+  }
+}
+
+function paymentActions(p) {
+  let btns = '';
+  if (p.status === 'draft') {
+    btns += `<button class="btn btn-sm btn-success" onclick="approvePayment(${p.id})">Approve</button> `;
+    btns += `<button class="btn btn-sm btn-danger" onclick="rejectPayment(${p.id})">Reject</button> `;
+  }
+  if (p.status === 'pending_approval') {
+    btns += `<button class="btn btn-sm btn-success" onclick="approvePayment(${p.id})">Approve</button> `;
+    btns += `<button class="btn btn-sm btn-danger" onclick="rejectPayment(${p.id})">Reject</button> `;
+  }
+  if (p.status === 'approved') {
+    btns += `<button class="btn btn-sm btn-primary" onclick="processPayment(${p.id})">Process</button> `;
+    btns += `<button class="btn btn-sm btn-danger" onclick="cancelPayment(${p.id})">Cancel</button> `;
+  }
+  if (p.status === 'processing') {
+    btns += `<button class="btn btn-sm btn-success" onclick="completePayment(${p.id})">Complete</button> `;
+  }
+  if (p.status === 'failed' || p.status === 'returned') {
+    btns += `<button class="btn btn-sm" onclick="retryPayment(${p.id})">Retry</button> `;
+  }
+  return btns || '—';
+}
+
+async function approvePayment(id) {
+  try {
+    const data = await api(`/external-transfers/${id}/approve`, { method: 'POST', body: JSON.stringify({ approved_by: 'dashboard_user' }) });
+    showToast(data.message || 'Payment approved');
+    loadPayments();
+  } catch (err) { showToast(err.message, 'error'); }
+}
+
+async function rejectPayment(id) {
+  const reason = prompt('Rejection reason (optional):');
+  if (reason === null) return;
+  try {
+    await api(`/external-transfers/${id}/reject`, { method: 'POST', body: JSON.stringify({ reason }) });
+    showToast('Payment rejected');
+    loadPayments();
+  } catch (err) { showToast(err.message, 'error'); }
+}
+
+async function processPayment(id) {
+  try {
+    const data = await api(`/external-transfers/${id}/process`, { method: 'POST' });
+    showToast(data.message || 'Payment processing — funds debited');
+    loadPayments();
+  } catch (err) { showToast(err.message, 'error'); }
+}
+
+async function completePayment(id) {
+  try {
+    await api(`/external-transfers/${id}/complete`, { method: 'POST' });
+    showToast('Payment completed');
+    loadPayments();
+  } catch (err) { showToast(err.message, 'error'); }
+}
+
+async function cancelPayment(id) {
+  if (!confirm('Cancel this payment?')) return;
+  try {
+    await api(`/external-transfers/${id}/cancel`, { method: 'POST', body: JSON.stringify({ reason: 'Cancelled by user' }) });
+    showToast('Payment cancelled');
+    loadPayments();
+  } catch (err) { showToast(err.message, 'error'); }
+}
+
+async function retryPayment(id) {
+  try {
+    await api(`/external-transfers/${id}/retry`, { method: 'POST' });
+    showToast('Payment reset to draft — you can re-approve and process');
+    loadPayments();
+  } catch (err) { showToast(err.message, 'error'); }
+}
+
+async function showCreatePayment() {
+  // Populate contacts dropdown (active vendors + beneficiaries + trustees)
+  const contactsData = await api('/crm/contacts?status=active');
+  const contacts = (contactsData.contacts || []).filter(c => c.status === 'active');
+  const contactOpts = contacts.map(c => `<option value="${c.id}">${c.display_name || (c.first_name + ' ' + c.last_name)} (${c.contact_type})</option>`).join('');
+  document.getElementById('payment-contact').innerHTML = '<option value="">Select a contact...</option>' + contactOpts;
+  document.getElementById('payment-pm').innerHTML = '<option value="">Use default method</option>';
+
+  // Populate source accounts dropdown
+  const accountsData = await api('/accounts');
+  const active = (accountsData.accounts || []).filter(a => a.status === 'active');
+  const acctOpts = active.map(a => `<option value="${a.id}">${a.account_number} — ${a.account_name} (${formatUSD(a.balance_cents)})</option>`).join('');
+  document.getElementById('payment-from-account').innerHTML = acctOpts;
+
+  document.getElementById('create-payment-modal').classList.remove('hidden');
+}
+
+async function loadContactPaymentMethods() {
+  const contactId = document.getElementById('payment-contact').value;
+  const pmSelect = document.getElementById('payment-pm');
+  if (!contactId) {
+    pmSelect.innerHTML = '<option value="">Use default method</option>';
+    return;
+  }
+  try {
+    const data = await api(`/crm/contacts/${contactId}/payment-methods`);
+    const methods = data.payment_methods || [];
+    let opts = '<option value="">Use default method</option>';
+    for (const m of methods) {
+      if (m.status !== 'active') continue;
+      const acctDisplay = m.account_number ? ' (' + (m.account_number.length > 4 ? '****' + m.account_number.slice(-4) : m.account_number) + ')' : '';
+      opts += `<option value="${m.id}">${m.label} — ${m.method_type.toUpperCase()}${m.bank_name ? ' @ ' + m.bank_name : ''}${acctDisplay}${m.is_default ? ' [Default]' : ''}</option>`;
+    }
+    pmSelect.innerHTML = opts;
+  } catch (err) {
+    pmSelect.innerHTML = '<option value="">Use default method</option>';
+  }
+}
+
+async function createPayment(e) {
+  e.preventDefault();
+  const form = new FormData(e.target);
+  const body = {
+    contact_id: parseInt(form.get('contact_id')),
+    from_account_id: parseInt(form.get('from_account_id')),
+    amount: parseFloat(form.get('amount')),
+    payment_type: form.get('payment_type'),
+    payment_method: form.get('payment_method'),
+    priority: form.get('priority'),
+    description: form.get('description') || null,
+    memo: form.get('memo') || null,
+    invoice_number: form.get('invoice_number') || null,
+    scheduled_date: form.get('scheduled_date') || null,
+  };
+  const pmId = form.get('payment_method_id');
+  if (pmId) body.payment_method_id = parseInt(pmId);
+
+  try {
+    const data = await api('/external-transfers', { method: 'POST', body: JSON.stringify(body) });
+    const msg = data.auto_approved ? `Payment created & auto-approved (${data.transfer_number})` : `Payment created — ${data.approval_tier} approval required (${data.transfer_number})`;
+    showToast(msg);
+    hideModal('create-payment-modal');
+    e.target.reset();
+    loadPayments();
+  } catch (err) { showToast(err.message, 'error'); }
 }
 
 // --- Helpers ---
