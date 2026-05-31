@@ -253,6 +253,15 @@ tr:hover td {
 .badge-failed { background: rgba(239, 83, 80, 0.15); color: var(--danger); }
 .badge-cancelled { background: rgba(239, 83, 80, 0.15); color: var(--danger); }
 .badge-reversed { background: rgba(156, 39, 176, 0.15); color: #ba68c8; }
+.badge-inactive { background: rgba(136, 153, 170, 0.15); color: var(--text-secondary); }
+.badge-suspended { background: rgba(239, 83, 80, 0.15); color: var(--danger); }
+.badge-pending_kyc { background: rgba(255, 167, 38, 0.15); color: var(--warning); }
+.badge-verified { background: rgba(102, 187, 106, 0.15); color: var(--success); }
+.badge-expired { background: rgba(239, 83, 80, 0.15); color: var(--danger); }
+.badge-trustee { background: rgba(79, 195, 247, 0.15); color: var(--accent); }
+.badge-beneficiary { background: rgba(102, 187, 106, 0.15); color: var(--success); }
+.badge-vendor { background: rgba(156, 39, 176, 0.15); color: #ba68c8; }
+.badge-terminated { background: rgba(136, 153, 170, 0.15); color: var(--text-secondary); }
 
 /* Buttons */
 .btn {

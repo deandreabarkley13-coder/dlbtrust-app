@@ -77,6 +77,7 @@ function loadView(view) {
     case 'dashboard': loadDashboard(); break;
     case 'accounts': loadAccounts(); break;
     case 'transfers': loadTransfers(); break;
+    case 'contacts': loadContacts(); break;
     case 'compliance': loadCompliance(); break;
     case 'activity': loadActivity(); break;
   }
@@ -364,6 +365,267 @@ async function createTransfer(e) {
     hideModal('create-transfer-modal');
     e.target.reset();
     loadTransfers();
+  } catch (err) { showToast(err.message, 'error'); }
+}
+
+// --- Contacts / CRM ---
+
+async function loadContacts() {
+  try {
+    const filter = document.getElementById('contact-filter')?.value || '';
+    const typeParam = filter ? `?type=${filter}` : '';
+
+    const [contactsData, dashboard] = await Promise.all([
+      api(`/crm/contacts${typeParam}`),
+      api('/crm/dashboard'),
+    ]);
+
+    // CRM Metrics
+    const byType = {};
+    (dashboard.by_type || []).forEach(t => { byType[t.contact_type] = t.count; });
+
+    document.getElementById('crm-metrics').innerHTML = `
+      <div class="metric-card primary">
+        <span class="metric-label">Total Contacts</span>
+        <span class="metric-value">${dashboard.total_contacts || 0}</span>
+      </div>
+      <div class="metric-card">
+        <span class="metric-label">Trustees</span>
+        <span class="metric-value">${byType.trustee || 0}</span>
+      </div>
+      <div class="metric-card">
+        <span class="metric-label">Beneficiaries</span>
+        <span class="metric-value">${byType.beneficiary || 0}</span>
+      </div>
+      <div class="metric-card">
+        <span class="metric-label">Vendors</span>
+        <span class="metric-value">${byType.vendor || 0}</span>
+      </div>
+      <div class="metric-card warn">
+        <span class="metric-label">Pending KYC</span>
+        <span class="metric-value">${dashboard.pending_kyc || 0}</span>
+      </div>
+      <div class="metric-card">
+        <span class="metric-label">Payment Methods</span>
+        <span class="metric-value">${dashboard.total_payment_methods || 0}</span>
+      </div>`;
+
+    // Contacts Table
+    const contacts = contactsData.contacts || [];
+    let html = `<table>
+      <thead><tr>
+        <th>Name</th><th>Type</th><th>Email</th><th>Phone</th><th>Status</th><th>KYC</th><th>Actions</th>
+      </tr></thead><tbody>`;
+
+    if (contacts.length === 0) {
+      html += '<tr><td colspan="7" style="text-align:center;color:var(--text-secondary);padding:40px">No contacts yet. Click "+ New Contact" to add your first trustee, beneficiary, or vendor.</td></tr>';
+    } else {
+      for (const c of contacts) {
+        const typeBadge = c.contact_type === 'trustee' ? 'badge-frozen' : c.contact_type === 'vendor' ? 'badge-reversed' : 'badge-approved';
+        html += `<tr style="cursor:pointer" onclick="viewContact(${c.id})">
+          <td><strong>${c.display_name || (c.first_name + ' ' + c.last_name)}</strong>
+            ${c.company_name ? `<br><small style="color:var(--text-secondary)">${c.company_name}</small>` : ''}</td>
+          <td><span class="badge ${typeBadge}">${c.contact_type}</span></td>
+          <td>${c.email || '—'}</td>
+          <td>${c.phone || '—'}</td>
+          <td>${badge(c.status)}</td>
+          <td>${badge(c.kyc_status)}</td>
+          <td>
+            <button class="btn btn-sm" onclick="event.stopPropagation();viewContact(${c.id})">View</button>
+            <button class="btn btn-sm" onclick="event.stopPropagation();showAddPayment(${c.id})">+ Payment</button>
+            ${c.status === 'active' ? `<button class="btn btn-sm btn-danger" onclick="event.stopPropagation();deactivateContact(${c.id})">Deactivate</button>` : ''}
+          </td>
+        </tr>`;
+      }
+    }
+    html += '</tbody></table>';
+    document.getElementById('contacts-table').innerHTML = html;
+
+    // Hide detail panel when reloading list
+    document.getElementById('contact-detail-panel').classList.add('hidden');
+  } catch (err) {
+    document.getElementById('contacts-table').innerHTML = `<p style="padding:20px;color:var(--danger)">Error: ${err.message}</p>`;
+  }
+}
+
+async function viewContact(id) {
+  try {
+    const c = await api(`/crm/contacts/${id}`);
+    const panel = document.getElementById('contact-detail-panel');
+    panel.classList.remove('hidden');
+
+    let html = `
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px">
+        <h3 style="margin:0">${c.display_name || (c.first_name + ' ' + c.last_name)}</h3>
+        <button class="btn btn-sm" onclick="document.getElementById('contact-detail-panel').classList.add('hidden')">Close</button>
+      </div>
+      <div class="panels-row">
+        <div>
+          <p><strong>Type:</strong> ${badge(c.contact_type)}</p>
+          <p><strong>Status:</strong> ${badge(c.status)}</p>
+          <p><strong>Email:</strong> ${c.email || '—'}</p>
+          <p><strong>Phone:</strong> ${c.phone || '—'}</p>
+          ${c.company_name ? `<p><strong>Company:</strong> ${c.company_name}</p>` : ''}
+          ${c.address_line1 ? `<p><strong>Address:</strong> ${c.address_line1}${c.city ? ', ' + c.city : ''}${c.state ? ', ' + c.state : ''} ${c.zip || ''}</p>` : ''}
+          <p><strong>KYC:</strong> ${badge(c.kyc_status)} | <strong>AML Risk:</strong> ${c.aml_risk_rating}</p>
+        </div>
+        <div>`;
+
+    // Type-specific fields
+    if (c.contact_type === 'beneficiary') {
+      html += `<p><strong>Class:</strong> ${c.beneficiary_class || '—'}</p>
+               <p><strong>Distribution %:</strong> ${c.distribution_pct || 0}%</p>`;
+    } else if (c.contact_type === 'trustee') {
+      html += `<p><strong>Role:</strong> ${c.trustee_role || '—'}</p>
+               <p><strong>Start:</strong> ${formatDate(c.trustee_start_date)}</p>`;
+    } else if (c.contact_type === 'vendor') {
+      html += `<p><strong>Category:</strong> ${c.vendor_category || '—'}</p>
+               <p><strong>Terms:</strong> ${c.payment_terms || '—'}</p>`;
+    }
+
+    html += `</div></div>`;
+
+    // Payment Methods
+    const pms = c.payment_methods || [];
+    html += `<h4 style="margin:16px 0 8px">Payment Methods (${pms.length})</h4>`;
+    if (pms.length) {
+      html += '<table><thead><tr><th>Label</th><th>Type</th><th>Bank</th><th>Account</th><th>Default</th><th>Verified</th></tr></thead><tbody>';
+      for (const pm of pms) {
+        html += `<tr>
+          <td>${pm.label}</td>
+          <td>${pm.method_type.toUpperCase()}</td>
+          <td>${pm.bank_name || '—'}</td>
+          <td>${pm.account_number || '—'} (${pm.account_type || ''})</td>
+          <td>${pm.is_default ? '<span style="color:var(--success)">Yes</span>' : 'No'}</td>
+          <td>${pm.verified ? '<span style="color:var(--success)">Verified</span>' : '<span style="color:var(--warning)">Pending</span>'}</td>
+        </tr>`;
+      }
+      html += '</tbody></table>';
+    } else {
+      html += '<p style="color:var(--text-secondary)">No payment methods configured</p>';
+    }
+    html += `<button class="btn btn-sm btn-primary" style="margin-top:8px" onclick="showAddPayment(${id})">+ Add Payment Method</button>`;
+
+    // Relationships
+    const rels = c.relationships || [];
+    html += `<h4 style="margin:16px 0 8px">Account Relationships (${rels.length})</h4>`;
+    if (rels.length) {
+      html += '<table><thead><tr><th>Relationship</th><th>Account</th><th>Role</th><th>Share %</th><th>Status</th></tr></thead><tbody>';
+      for (const r of rels) {
+        html += `<tr>
+          <td>${r.relationship_type}</td>
+          <td>${r.account_number || '—'} — ${r.account_name || '—'}</td>
+          <td>${r.role_detail || '—'}</td>
+          <td>${r.share_pct != null ? r.share_pct + '%' : '—'}</td>
+          <td>${badge(r.status)}</td>
+        </tr>`;
+      }
+      html += '</tbody></table>';
+    } else {
+      html += '<p style="color:var(--text-secondary)">No account relationships</p>';
+    }
+
+    // Documents
+    const docs = c.documents || [];
+    html += `<h4 style="margin:16px 0 8px">Documents (${docs.length})</h4>`;
+    if (docs.length) {
+      html += '<table><thead><tr><th>Type</th><th>Name</th><th>Issued</th><th>Expires</th><th>Status</th></tr></thead><tbody>';
+      for (const d of docs) {
+        html += `<tr>
+          <td>${d.document_type}</td>
+          <td>${d.document_name}</td>
+          <td>${formatDate(d.issue_date)}</td>
+          <td>${formatDate(d.expiry_date)}</td>
+          <td>${badge(d.status)}</td>
+        </tr>`;
+      }
+      html += '</tbody></table>';
+    } else {
+      html += '<p style="color:var(--text-secondary)">No documents on file</p>';
+    }
+
+    // Recent Notes
+    const notes = c.recent_notes || [];
+    html += `<h4 style="margin:16px 0 8px">Recent Notes (${notes.length})</h4>`;
+    if (notes.length) {
+      for (const n of notes) {
+        html += `<div class="activity-item">
+          <strong>${n.subject || n.note_type}</strong> — ${n.body}
+          <div class="activity-time">${formatTime(n.created_at)} by ${n.created_by}</div>
+        </div>`;
+      }
+    } else {
+      html += '<p style="color:var(--text-secondary)">No notes</p>';
+    }
+
+    document.getElementById('contact-detail-content').innerHTML = html;
+    panel.scrollIntoView({ behavior: 'smooth' });
+  } catch (err) {
+    showToast('Failed to load contact: ' + err.message, 'error');
+  }
+}
+
+function toggleContactFields() {
+  const type = document.getElementById('new-contact-type').value;
+  document.getElementById('beneficiary-fields').classList.toggle('hidden', type !== 'beneficiary');
+  document.getElementById('trustee-fields').classList.toggle('hidden', type !== 'trustee');
+  document.getElementById('vendor-fields').classList.toggle('hidden', type !== 'vendor');
+}
+
+function showCreateContact() {
+  document.getElementById('create-contact-modal').classList.remove('hidden');
+  toggleContactFields();
+}
+
+async function createContact(e) {
+  e.preventDefault();
+  const form = new FormData(e.target);
+  const body = {};
+  for (const [k, v] of form.entries()) {
+    if (v !== '') body[k] = v;
+  }
+  if (body.distribution_pct) body.distribution_pct = parseFloat(body.distribution_pct);
+  if (body.is_default) body.is_default = 1;
+
+  try {
+    await api('/crm/contacts', { method: 'POST', body: JSON.stringify(body) });
+    showToast('Contact created');
+    hideModal('create-contact-modal');
+    e.target.reset();
+    loadContacts();
+  } catch (err) { showToast(err.message, 'error'); }
+}
+
+async function deactivateContact(id) {
+  if (!confirm('Deactivate this contact?')) return;
+  try {
+    await api(`/crm/contacts/${id}`, { method: 'DELETE' });
+    showToast('Contact deactivated');
+    loadContacts();
+  } catch (err) { showToast(err.message, 'error'); }
+}
+
+function showAddPayment(contactId) {
+  document.getElementById('pm-contact-id').value = contactId;
+  document.getElementById('add-payment-modal').classList.remove('hidden');
+}
+
+async function addPaymentMethod(e) {
+  e.preventDefault();
+  const form = new FormData(e.target);
+  const contactId = form.get('contact_id');
+  const body = {};
+  for (const [k, v] of form.entries()) {
+    if (k !== 'contact_id' && v !== '') body[k] = v;
+  }
+  body.is_default = form.has('is_default') ? 1 : 0;
+
+  try {
+    await api(`/crm/contacts/${contactId}/payment-methods`, { method: 'POST', body: JSON.stringify(body) });
+    showToast('Payment method added');
+    hideModal('add-payment-modal');
+    e.target.reset();
+    viewContact(contactId);
   } catch (err) { showToast(err.message, 'error'); }
 }
 

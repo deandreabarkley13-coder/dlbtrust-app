@@ -42,6 +42,9 @@ app.use('/api/accounts',  require('./server/routes/accounts'));
 app.use('/api/transfers', require('./server/routes/transfers'));
 app.use('/api/wealth',    require('./server/routes/wealth'));
 
+// ─── CRM Engine Routes ──────────────────────────────────────────────────────
+app.use('/api/crm',       require('./server/routes/crm'));
+
 // ─── Frontend Dashboard ───────────────────────────────────────────────────────
 app.use(express.static(path.join(__dirname, 'frontend')));
 app.get('/', (req, res) => res.sendFile(path.join(__dirname, 'frontend', 'index.html')));
