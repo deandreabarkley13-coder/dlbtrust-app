@@ -37,7 +37,17 @@ app.get('/api/ach/health', (req, res) => {
 });
 
 app.post('/api/ach/disburse', (req, res) => {
-  res.json({ success: false, error: 'OpenACH credentials not yet inserted. Run setup first.' });
+  const { wallet_id, amount, routing_number, account_number, payment_type_id } = req.body || {};
+  if (!wallet_id || !amount || !routing_number || !account_number || !payment_type_id) {
+    return res.status(400).json({ success: false, error: 'Required: wallet_id, amount, routing_number, account_number, payment_type_id' });
+  }
+  if (!/^\d{9}$/.test(String(routing_number))) {
+    return res.status(400).json({ success: false, error: 'routing_number must be 9 digits' });
+  }
+  if (isNaN(parseFloat(amount)) || parseFloat(amount) <= 0) {
+    return res.status(400).json({ success: false, error: 'amount must be a positive number' });
+  }
+  res.status(503).json({ success: false, error: 'OpenACH credentials not yet inserted. Run setup first.' });
 });
 
 app.get('/api/ach/payment-types', (req, res) => {

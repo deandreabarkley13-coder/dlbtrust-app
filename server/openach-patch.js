@@ -45,7 +45,11 @@ module.exports = function patchOpenACH(app, db) {
       ).trim();
 
       if (!container) {
-        return res.status(500).json({ error: 'OpenACH container not found' });
+        return res.status(503).json({ error: 'OpenACH container not found' });
+      }
+
+      if (!/^[a-zA-Z0-9][a-zA-Z0-9_.-]+$/.test(container)) {
+        return res.status(500).json({ error: 'Invalid container name detected' });
       }
 
       // Find DB

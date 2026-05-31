@@ -94,7 +94,7 @@ router.post('/disburse', async (req, res) => {
       }
     }
 
-    res.json(result);
+    res.json({ success: true, ...result });
 
   } catch (err) {
     console.error('[payments/disburse]', err.message);
@@ -111,7 +111,7 @@ router.post('/profile', async (req, res) => {
       return res.status(400).json({ success: false, error: 'first_name and last_name are required' });
     }
     const result = await OpenACHClient.createPaymentProfile({ first_name, last_name, email, external_id });
-    res.json(result);
+    res.json({ success: true, ...result });
   } catch (err) {
     console.error('[payments/profile]', err.message);
     res.status(500).json({ success: false, error: err.message });
@@ -122,8 +122,20 @@ router.post('/profile', async (req, res) => {
 // Add a bank account to an existing payment profile
 router.post('/bank-account', async (req, res) => {
   try {
+    const { payment_profile_id, bank_name, routing_number, account_number, account_type } = req.body;
+
+    if (!payment_profile_id || !routing_number || !account_number) {
+      return res.status(400).json({ success: false, error: 'Required: payment_profile_id, routing_number, account_number' });
+    }
+    if (!/^\d{9}$/.test(String(routing_number))) {
+      return res.status(400).json({ success: false, error: 'routing_number must be exactly 9 digits' });
+    }
+    if (account_type && !['Checking', 'Savings'].includes(account_type)) {
+      return res.status(400).json({ success: false, error: "account_type must be 'Checking' or 'Savings'" });
+    }
+
     const result = await OpenACHClient.addExternalAccount(req.body);
-    res.json(result);
+    res.json({ success: true, ...result });
   } catch (err) {
     console.error('[payments/bank-account]', err.message);
     res.status(500).json({ success: false, error: err.message });
@@ -134,8 +146,26 @@ router.post('/bank-account', async (req, res) => {
 // Schedule an ACH payment for an existing external account
 router.post('/schedule', async (req, res) => {
   try {
+    const { external_account_id, payment_type_id, amount, send_date } = req.body;
+
+    if (!external_account_id || !payment_type_id || !amount || !send_date) {
+      return res.status(400).json({ success: false, error: 'Required: external_account_id, payment_type_id, amount, send_date' });
+    }
+    if (isNaN(parseFloat(amount)) || parseFloat(amount) <= 0) {
+      return res.status(400).json({ success: false, error: 'amount must be a positive number' });
+    }
+    const sendDateObj = new Date(send_date);
+    if (isNaN(sendDateObj.getTime())) {
+      return res.status(400).json({ success: false, error: 'send_date must be a valid date (YYYY-MM-DD)' });
+    }
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    if (sendDateObj < today) {
+      return res.status(400).json({ success: false, error: 'send_date must be today or a future date' });
+    }
+
     const result = await OpenACHClient.schedulePayment(req.body);
-    res.json(result);
+    res.json({ success: true, ...result });
   } catch (err) {
     console.error('[payments/schedule]', err.message);
     res.status(500).json({ success: false, error: err.message });
@@ -146,8 +176,12 @@ router.post('/schedule', async (req, res) => {
 // Get all payment schedules for a profile
 router.get('/schedules/:profileId', async (req, res) => {
   try {
-    const result = await OpenACHClient.getPaymentSchedules(req.params.profileId);
-    res.json(result);
+    const { profileId } = req.params;
+    if (!profileId || !profileId.trim()) {
+      return res.status(400).json({ success: false, error: 'profileId is required' });
+    }
+    const result = await OpenACHClient.getPaymentSchedules(profileId);
+    res.json({ success: true, ...result });
   } catch (err) {
     console.error('[payments/schedules]', err.message);
     res.status(500).json({ success: false, error: err.message });
@@ -158,8 +192,12 @@ router.get('/schedules/:profileId', async (req, res) => {
 // Get all bank accounts for a profile
 router.get('/accounts/:profileId', async (req, res) => {
   try {
-    const result = await OpenACHClient.getExternalAccounts(req.params.profileId);
-    res.json(result);
+    const { profileId } = req.params;
+    if (!profileId || !profileId.trim()) {
+      return res.status(400).json({ success: false, error: 'profileId is required' });
+    }
+    const result = await OpenACHClient.getExternalAccounts(profileId);
+    res.json({ success: true, ...result });
   } catch (err) {
     console.error('[payments/accounts]', err.message);
     res.status(500).json({ success: false, error: err.message });
@@ -170,8 +208,12 @@ router.get('/accounts/:profileId', async (req, res) => {
 // Look up a payment profile by your internal ID
 router.get('/profile/by-external/:externalId', async (req, res) => {
   try {
-    const result = await OpenACHClient.getPaymentProfileByExternalId(req.params.externalId);
-    res.json(result);
+    const { externalId } = req.params;
+    if (!externalId || !externalId.trim()) {
+      return res.status(400).json({ success: false, error: 'externalId is required' });
+    }
+    const result = await OpenACHClient.getPaymentProfileByExternalId(externalId);
+    res.json({ success: true, ...result });
   } catch (err) {
     console.error('[payments/profile/by-external]', err.message);
     res.status(500).json({ success: false, error: err.message });
