@@ -73,10 +73,8 @@ function validatePayout(data) {
     errors.push(`Invalid payment_method. Must be one of: ${validMethods.join(', ')}`);
   }
 
-  if (data.payment_method === 'ach' || data.payment_method === 'wire') {
-    if (data.bank_routing_number && !/^\d{9}$/.test(String(data.bank_routing_number))) {
-      errors.push('bank_routing_number must be exactly 9 digits');
-    }
+  if (data.bank_routing_number && !/^\d{9}$/.test(String(data.bank_routing_number))) {
+    errors.push('bank_routing_number must be exactly 9 digits');
   }
 
   if (data.scheduled_date) {
