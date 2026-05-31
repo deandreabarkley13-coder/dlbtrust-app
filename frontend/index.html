@@ -1,0 +1,188 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>DLB Trust — Private Wealth Management</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <nav class="sidebar">
+    <div class="logo">
+      <h1>DLB Trust</h1>
+      <span class="subtitle">Private Wealth Management</span>
+    </div>
+    <ul class="nav-links">
+      <li><a href="#" data-view="dashboard" class="active">Dashboard</a></li>
+      <li><a href="#" data-view="accounts">Accounts</a></li>
+      <li><a href="#" data-view="transfers">Transfers</a></li>
+      <li><a href="#" data-view="compliance">Compliance</a></li>
+      <li><a href="#" data-view="activity">Activity</a></li>
+    </ul>
+    <div class="nav-footer">
+      <div class="status-indicator">
+        <span class="dot"></span> <span id="api-status">Connected</span>
+      </div>
+    </div>
+  </nav>
+
+  <main class="content">
+    <!-- Dashboard View -->
+    <section id="view-dashboard" class="view active">
+      <header class="view-header">
+        <h2>Wealth Dashboard</h2>
+        <span class="timestamp" id="dashboard-time"></span>
+      </header>
+
+      <div class="metrics-grid">
+        <div class="metric-card primary">
+          <span class="metric-label">Total Net Worth</span>
+          <span class="metric-value" id="net-worth">—</span>
+        </div>
+        <div class="metric-card">
+          <span class="metric-label">Active Accounts</span>
+          <span class="metric-value" id="active-accounts">—</span>
+        </div>
+        <div class="metric-card">
+          <span class="metric-label">Pending Transfers</span>
+          <span class="metric-value" id="pending-transfers">—</span>
+        </div>
+        <div class="metric-card warn">
+          <span class="metric-label">Compliance Issues</span>
+          <span class="metric-value" id="compliance-issues">—</span>
+        </div>
+      </div>
+
+      <div class="panels-row">
+        <div class="panel">
+          <h3>Account Balances</h3>
+          <div id="account-balances-chart" class="chart-area"></div>
+        </div>
+        <div class="panel">
+          <h3>Recent Activity</h3>
+          <div id="recent-activity" class="activity-list"></div>
+        </div>
+      </div>
+
+      <div class="panel">
+        <h3>Trial Balance</h3>
+        <div id="trial-balance-summary" class="trial-balance"></div>
+      </div>
+    </section>
+
+    <!-- Accounts View -->
+    <section id="view-accounts" class="view">
+      <header class="view-header">
+        <h2>Trust Accounts</h2>
+        <button class="btn btn-primary" onclick="showCreateAccount()">+ New Account</button>
+      </header>
+      <div id="accounts-table" class="table-container"></div>
+
+      <!-- Create Account Modal -->
+      <div id="create-account-modal" class="modal hidden">
+        <div class="modal-content">
+          <h3>Open New Account</h3>
+          <form id="create-account-form" onsubmit="createAccount(event)">
+            <label>Account Name<input type="text" name="account_name" required></label>
+            <label>Account Type
+              <select name="account_type">
+                <option value="corpus">Corpus</option>
+                <option value="operating">Operating</option>
+                <option value="reserve">Reserve</option>
+                <option value="beneficiary">Beneficiary</option>
+                <option value="trustee_fee">Trustee Fee</option>
+                <option value="tax_escrow">Tax Escrow</option>
+                <option value="investment">Investment</option>
+                <option value="petty_cash">Petty Cash</option>
+              </select>
+            </label>
+            <label>Owner Type
+              <select name="owner_type">
+                <option value="trust">Trust</option>
+                <option value="beneficiary">Beneficiary</option>
+                <option value="trustee">Trustee</option>
+              </select>
+            </label>
+            <label>Initial Balance (USD)<input type="number" name="balance" step="0.01" value="0"></label>
+            <label>Interest Rate (bps)<input type="number" name="interest_rate_bps" value="0" min="0" max="10000"></label>
+            <div class="modal-actions">
+              <button type="button" class="btn" onclick="hideModal('create-account-modal')">Cancel</button>
+              <button type="submit" class="btn btn-primary">Create Account</button>
+            </div>
+          </form>
+        </div>
+      </div>
+    </section>
+
+    <!-- Transfers View -->
+    <section id="view-transfers" class="view">
+      <header class="view-header">
+        <h2>Internal Transfers</h2>
+        <button class="btn btn-primary" onclick="showCreateTransfer()">+ New Transfer</button>
+      </header>
+      <div id="transfers-table" class="table-container"></div>
+
+      <!-- Create Transfer Modal -->
+      <div id="create-transfer-modal" class="modal hidden">
+        <div class="modal-content">
+          <h3>Create Transfer</h3>
+          <form id="create-transfer-form" onsubmit="createTransfer(event)">
+            <label>From Account
+              <select name="from_account_id" id="transfer-from"></select>
+            </label>
+            <label>To Account
+              <select name="to_account_id" id="transfer-to"></select>
+            </label>
+            <label>Amount (USD)<input type="number" name="amount" step="0.01" min="0.01" required></label>
+            <label>Type
+              <select name="transfer_type">
+                <option value="standard">Standard</option>
+                <option value="distribution">Distribution</option>
+                <option value="fee_collection">Fee Collection</option>
+                <option value="tax_payment">Tax Payment</option>
+                <option value="rebalance">Rebalance</option>
+              </select>
+            </label>
+            <label>Description<input type="text" name="description"></label>
+            <div class="modal-actions">
+              <button type="button" class="btn" onclick="hideModal('create-transfer-modal')">Cancel</button>
+              <button type="submit" class="btn btn-primary">Submit Transfer</button>
+            </div>
+          </form>
+        </div>
+      </div>
+    </section>
+
+    <!-- Compliance View -->
+    <section id="view-compliance" class="view">
+      <header class="view-header">
+        <h2>Compliance & Tax Center</h2>
+      </header>
+      <div class="panels-row">
+        <div class="panel">
+          <h3>Compliance Issues</h3>
+          <div id="compliance-list"></div>
+        </div>
+        <div class="panel">
+          <h3>KYC Status</h3>
+          <div id="kyc-status-list"></div>
+        </div>
+      </div>
+      <div class="panel">
+        <h3>Tax Events</h3>
+        <div id="tax-events-list"></div>
+      </div>
+    </section>
+
+    <!-- Activity View -->
+    <section id="view-activity" class="view">
+      <header class="view-header">
+        <h2>Audit Trail</h2>
+      </header>
+      <div id="audit-log-table" class="table-container"></div>
+    </section>
+  </main>
+
+  <script src="app.js"></script>
+</body>
+</html>
