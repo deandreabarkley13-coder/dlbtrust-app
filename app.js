@@ -37,6 +37,11 @@ require('./server/openach-patch')(app, typeof db !== 'undefined' ? db : null);
 // ─── Analytics Routes ─────────────────────────────────────────────────────────
 app.use('/api/analytics', require('./server/routes/analytics'));
 
+// ─── Fixed Income Engine Routes ───────────────────────────────────────────────
+app.use('/api/fixed-income', require('./server/routes/fixed-income'));
+app.use('/api/ladder',       require('./server/routes/ladder'));
+app.use('/api/trust-policy', require('./server/routes/trust-policy'));
+
 // ─── Start Server ─────────────────────────────────────────────────────────────
 const PORT = process.env.PORT || 3001;
 app.listen(PORT, () => {
