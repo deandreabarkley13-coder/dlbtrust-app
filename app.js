@@ -37,6 +37,11 @@ require('./server/openach-patch')(app, typeof db !== 'undefined' ? db : null);
 // ─── Analytics Routes ─────────────────────────────────────────────────────────
 app.use('/api/analytics', require('./server/routes/analytics'));
 
+// ─── Core Banking Engine Routes ───────────────────────────────────────────────
+app.use('/api/accounts',  require('./server/routes/accounts'));
+app.use('/api/transfers', require('./server/routes/transfers'));
+app.use('/api/wealth',    require('./server/routes/wealth'));
+
 // ─── Start Server ─────────────────────────────────────────────────────────────
 const PORT = process.env.PORT || 3001;
 app.listen(PORT, () => {
