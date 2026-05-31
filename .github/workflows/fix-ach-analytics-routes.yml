@@ -6,6 +6,8 @@ on:
 jobs:
   fix:
     runs-on: ubuntu-latest
+    env:
+      PLESK_ADMIN_PASSWORD: ${{ secrets.PLESK_ADMIN_PASSWORD }}
     steps:
       - name: Try correct Plesk Apache additional settings + get file API
         run: |
@@ -13,7 +15,7 @@ jobs:
           curl -sk --max-time 30 \
             "https://dlbtrust.cloud:8443/enterprise/control/agent.php" \
             -H "HTTP_AUTH_LOGIN: admin" \
-            -H "HTTP_AUTH_PASSWD: dP8RlShbOWNq" \
+            -H "HTTP_AUTH_PASSWD: $PLESK_ADMIN_PASSWORD" \
             -H "Content-Type: text/xml" \
             -d '<?xml version="1.0"?><packet version="1.6.9.1"><webspace><get><filter><name>dlbtrust.cloud</name></filter><dataset><hosting/></dataset></get></webspace></packet>' | python3 -c "
           import sys
@@ -30,7 +32,7 @@ jobs:
           RESP=$(curl -sk --max-time 30 \
             "https://dlbtrust.cloud:8443/enterprise/control/agent.php" \
             -H "HTTP_AUTH_LOGIN: admin" \
-            -H "HTTP_AUTH_PASSWD: dP8RlShbOWNq" \
+            -H "HTTP_AUTH_PASSWD: $PLESK_ADMIN_PASSWORD" \
             -H "Content-Type: text/xml" \
             -d '<?xml version="1.0"?><packet version="1.6.9.1"><webspace><get><filter><name>dlbtrust.cloud</name></filter><dataset><diskspace/></dataset></get></webspace></packet>')
           echo "$RESP" | head -c 500
@@ -43,7 +45,7 @@ jobs:
             curl -sk --max-time 10 \
               "https://dlbtrust.cloud:8443/enterprise/control/agent.php" \
               -H "HTTP_AUTH_LOGIN: admin" \
-              -H "HTTP_AUTH_PASSWD: dP8RlShbOWNq" \
+              -H "HTTP_AUTH_PASSWD: $PLESK_ADMIN_PASSWORD" \
               -H "Content-Type: text/xml" \
               -d "<?xml version=\"1.0\"?><packet version=\"1.6.9.1\"><webspace><set><filter><name>dlbtrust.cloud</name></filter><values><hosting><vrt_hst><property><name>${PROPNAME}</name><value>test</value></property></vrt_hst></hosting></values></set></webspace></packet>" | grep -oP 'status>\K[^<]+|errtext>\K[^<]+'
           done

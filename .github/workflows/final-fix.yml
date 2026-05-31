@@ -11,6 +11,8 @@ jobs:
     timeout-minutes: 20
     env:
       SERVER: "74.208.191.205"
+      OPENACH_API_TOKEN: ${{ secrets.OPENACH_API_TOKEN }}
+      OPENACH_API_KEY: ${{ secrets.OPENACH_API_KEY }}
 
     steps:
       - uses: actions/checkout@v4
@@ -92,8 +94,8 @@ jobs:
             grep -q "OPENACH_API_TOKEN" .env 2>/dev/null || cat >> .env << 'ENV'
           OPENACH_BASE_URL=http://localhost/openach/api
           OPENACH_HOST_HEADER=ach.dlbtrust.cloud
-          OPENACH_API_TOKEN=3caee1c2-c218-4959-b6d2-21d4b2a1b42e
-          OPENACH_API_KEY=b74966cf-5276-4d8b-8650-5bd57dcee272
+          OPENACH_API_TOKEN=$OPENACH_API_TOKEN
+          OPENACH_API_KEY=$OPENACH_API_KEY
           PORT=3001
           ENV
             echo ".env updated"
@@ -112,7 +114,7 @@ jobs:
             docker start "$CONTAINER" 2>/dev/null || true
             sleep 2
             docker exec "$CONTAINER" sqlite3 /var/www/html/protected/runtime/db/openach.db \
-              "INSERT OR IGNORE INTO user_api (user_api_user_id, user_api_datetime, user_api_originator_info_id, user_api_token, user_api_key, user_api_status) VALUES ('4fc86059-2e7b-4732-b94f-e7c3715ee8d7', datetime('now'), '0eb26e1d-5fcc-4978-a132-dd93c2655429', '3caee1c2-c218-4959-b6d2-21d4b2a1b42e', 'b74966cf-5276-4d8b-8650-5bd57dcee272', 'enabled');" 2>/dev/null
+              "INSERT OR IGNORE INTO user_api (user_api_user_id, user_api_datetime, user_api_originator_info_id, user_api_token, user_api_key, user_api_status) VALUES ('4fc86059-2e7b-4732-b94f-e7c3715ee8d7', datetime('now'), '0eb26e1d-5fcc-4978-a132-dd93c2655429', '$OPENACH_API_TOKEN', '$OPENACH_API_KEY', 'enabled');" 2>/dev/null
             VERIFY=$(docker exec "$CONTAINER" sqlite3 /var/www/html/protected/runtime/db/openach.db \
               "SELECT user_api_token FROM user_api;" 2>/dev/null)
             echo "Credentials in DB: $VERIFY"
@@ -131,7 +133,7 @@ jobs:
           echo "OpenACH API:"
           curl -s -X POST http://localhost/openach/api/connect \
             -H "Host: ach.dlbtrust.cloud" \
-            --data "user_api_token=3caee1c2-c218-4959-b6d2-21d4b2a1b42e&user_api_key=b74966cf-5276-4d8b-8650-5bd57dcee272" 2>/dev/null
+            --data "user_api_token=$OPENACH_API_TOKEN&user_api_key=$OPENACH_API_KEY" 2>/dev/null
           SSHEOF
 
       - name: Fix OpenACH HTTPS redirect (always)
@@ -141,7 +143,7 @@ jobs:
           echo "Testing OpenACH via HTTPS..."
           curl -sk --resolve "ach.dlbtrust.cloud:443:$SERVER" \
             -X POST "https://ach.dlbtrust.cloud/openach/api/connect" \
-            --data "user_api_token=3caee1c2-c218-4959-b6d2-21d4b2a1b42e&user_api_key=b74966cf-5276-4d8b-8650-5bd57dcee272"
+            --data "user_api_token=$OPENACH_API_TOKEN&user_api_key=$OPENACH_API_KEY"
           echo ""
           
           curl -sk --resolve "ach.dlbtrust.cloud:443:$SERVER" \
@@ -171,7 +173,7 @@ jobs:
           check "ACH health"       "curl -sk --resolve 'dlbtrust.cloud:443:$S' https://dlbtrust.cloud/api/ach/health" "openach_connected"
           check "Analytics"        "curl -sk --resolve 'dlbtrust.cloud:443:$S' https://dlbtrust.cloud/api/analytics/summary" "total_corpus"
           check "OpenACH UI"       "curl -sk --resolve 'ach.dlbtrust.cloud:443:$S' https://ach.dlbtrust.cloud/openach/ -o/dev/null -w '%{http_code}'" "200"
-          check "OpenACH API"      "curl -sk --resolve 'ach.dlbtrust.cloud:443:$S' -X POST https://ach.dlbtrust.cloud/openach/api/connect --data 'user_api_token=3caee1c2-c218-4959-b6d2-21d4b2a1b42e&user_api_key=b74966cf-5276-4d8b-8650-5bd57dcee272'" 'true'
+          check "OpenACH API"      "curl -sk --resolve 'ach.dlbtrust.cloud:443:$S' -X POST https://ach.dlbtrust.cloud/openach/api/connect --data 'user_api_token=$OPENACH_API_TOKEN&user_api_key=$OPENACH_API_KEY'" 'true'
           
           echo ""
           echo "SCORE: $PASS/8 tests passing"

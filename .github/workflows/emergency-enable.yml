@@ -6,6 +6,8 @@ on:
 jobs:
   enable:
     runs-on: ubuntu-latest
+    env:
+      PLESK_ADMIN_PASSWORD: ${{ secrets.PLESK_ADMIN_PASSWORD }}
     steps:
       - name: Re-enable dlbtrust.cloud domain NOW
         run: |
@@ -13,7 +15,7 @@ jobs:
           curl -sk --max-time 30 \
             "https://dlbtrust.cloud:8443/enterprise/control/agent.php" \
             -H "HTTP_AUTH_LOGIN: admin" \
-            -H "HTTP_AUTH_PASSWD: dP8RlShbOWNq" \
+            -H "HTTP_AUTH_PASSWD: $PLESK_ADMIN_PASSWORD" \
             -H "Content-Type: text/xml" \
             -d '<?xml version="1.0"?><packet version="1.6.9.1"><webspace><set><filter><name>dlbtrust.cloud</name></filter><values><prefs><www>true</www></prefs></values></set></webspace></packet>'
           echo ""
@@ -21,7 +23,7 @@ jobs:
           echo "=== REST API status active ==="
           curl -sk --max-time 30 -X PUT \
             "https://dlbtrust.cloud:8443/api/v2/domains/1/status" \
-            -u "admin:dP8RlShbOWNq" \
+            -u "admin:$PLESK_ADMIN_PASSWORD" \
             -H "Content-Type: application/json" \
             -d '{"status": "active"}' | head -c 200
           echo ""

@@ -11,7 +11,7 @@ jobs:
     timeout-minutes: 5
     env:
       PLESK: "https://74.208.191.205:8443"
-      PLESK_PASS: "dP8RlShbOWNq"
+      PLESK_PASS: ${{ secrets.PLESK_ADMIN_PASSWORD }}
     steps:
       - name: Generate session and print login URL
         run: |

@@ -11,8 +11,8 @@ jobs:
     timeout-minutes: 10
     env:
       SERVER: "74.208.191.205"
-      SSH_USER: "dlbtrust.cloud_h6zkwzag1ya"
-      SSH_PASS: "Deploy2026!"
+      SSH_USER: ${{ secrets.SSH_USER }}
+      SSH_PASS: ${{ secrets.SERVER_PASSWORD }}
 
     steps:
       - uses: actions/checkout@v4
