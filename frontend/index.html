@@ -18,6 +18,7 @@
       <li><a href="#" data-view="transfers">Transfers</a></li>
       <li><a href="#" data-view="contacts">Contacts</a></li>
       <li><a href="#" data-view="payments">Payments</a></li>
+      <li><a href="#" data-view="accounting">Trust Accounting</a></li>
       <li><a href="#" data-view="compliance">Compliance</a></li>
       <li><a href="#" data-view="activity">Activity</a></li>
     </ul>
@@ -388,6 +389,207 @@
             <div class="modal-actions">
               <button type="button" class="btn" onclick="hideModal('create-payment-modal')">Cancel</button>
               <button type="submit" class="btn btn-primary">Create Payment</button>
+            </div>
+          </form>
+        </div>
+      </div>
+    </section>
+
+    <!-- Trust Accounting View -->
+    <section id="view-accounting" class="view">
+      <header class="view-header">
+        <h2>Trust Accounting</h2>
+        <div>
+          <select id="accounting-tab" onchange="switchAccountingTab()" style="margin-right:8px;padding:8px 12px;background:var(--bg-card);border:1px solid var(--border);border-radius:8px;color:var(--text-primary);font-size:0.85rem">
+            <option value="dashboard">Overview</option>
+            <option value="journal">Journal Entries</option>
+            <option value="ledger">General Ledger</option>
+            <option value="trial-balance">Trial Balance</option>
+            <option value="coa">Chart of Accounts</option>
+            <option value="allocations">Income/Principal</option>
+            <option value="reports">Reports</option>
+          </select>
+          <button class="btn btn-primary" onclick="showCreateJournalEntry()">+ Journal Entry</button>
+        </div>
+      </header>
+
+      <!-- Accounting Dashboard Sub-view -->
+      <div id="acct-dashboard" class="accounting-subview">
+        <div class="metrics-grid" id="acct-metrics" style="margin-bottom:20px"></div>
+        <div class="panels-row">
+          <div class="panel">
+            <h3>Trial Balance Check</h3>
+            <div id="acct-tb-check"></div>
+          </div>
+          <div class="panel">
+            <h3>Income vs Principal (YTD)</h3>
+            <div id="acct-alloc-summary"></div>
+          </div>
+        </div>
+        <div class="panel">
+          <h3>Recent Journal Entries</h3>
+          <div id="acct-recent-je"></div>
+        </div>
+      </div>
+
+      <!-- Journal Entries Sub-view -->
+      <div id="acct-journal" class="accounting-subview hidden">
+        <div id="journal-entries-table" class="table-container"></div>
+      </div>
+
+      <!-- General Ledger Sub-view -->
+      <div id="acct-ledger" class="accounting-subview hidden">
+        <div style="margin-bottom:12px">
+          <select id="gl-account-filter" onchange="loadGeneralLedger()" style="padding:8px 12px;background:var(--bg-card);border:1px solid var(--border);border-radius:8px;color:var(--text-primary);font-size:0.85rem">
+            <option value="">All Accounts</option>
+          </select>
+        </div>
+        <div id="general-ledger-table" class="table-container"></div>
+      </div>
+
+      <!-- Trial Balance Sub-view -->
+      <div id="acct-trial-balance" class="accounting-subview hidden">
+        <div id="formal-trial-balance" class="table-container"></div>
+      </div>
+
+      <!-- Chart of Accounts Sub-view -->
+      <div id="acct-coa" class="accounting-subview hidden">
+        <div id="coa-table" class="table-container"></div>
+      </div>
+
+      <!-- Income/Principal Allocations Sub-view -->
+      <div id="acct-allocations" class="accounting-subview hidden">
+        <div class="metrics-grid" id="alloc-metrics" style="margin-bottom:20px"></div>
+        <div id="allocations-table" class="table-container"></div>
+        <button class="btn btn-primary" onclick="showCreateAllocation()" style="margin-top:12px">+ Record Allocation</button>
+      </div>
+
+      <!-- Reports Sub-view -->
+      <div id="acct-reports" class="accounting-subview hidden">
+        <div class="metrics-grid" style="margin-bottom:20px">
+          <div class="metric-card" style="cursor:pointer" onclick="loadBalanceSheet()">
+            <span class="metric-label">Balance Sheet</span>
+            <span class="metric-value" style="font-size:1rem">Assets = L + Corpus</span>
+          </div>
+          <div class="metric-card" style="cursor:pointer" onclick="loadIncomeStatement()">
+            <span class="metric-label">Income Statement</span>
+            <span class="metric-value" style="font-size:1rem">Income - Expenses</span>
+          </div>
+          <div class="metric-card" style="cursor:pointer" onclick="loadDNIReport()">
+            <span class="metric-label">DNI Report</span>
+            <span class="metric-value" style="font-size:1rem">Distributable Net Income</span>
+          </div>
+          <div class="metric-card" style="cursor:pointer" onclick="loadK1Report()">
+            <span class="metric-label">K-1 Data</span>
+            <span class="metric-value" style="font-size:1rem">Beneficiary Allocations</span>
+          </div>
+        </div>
+        <div id="report-output" class="panel"></div>
+      </div>
+
+      <!-- Create Journal Entry Modal -->
+      <div id="create-je-modal" class="modal hidden">
+        <div class="modal-content" style="max-width:700px">
+          <h3>Create Journal Entry</h3>
+          <form id="create-je-form" onsubmit="createJournalEntry(event)">
+            <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+              <label>Entry Date<input type="date" name="entry_date" required></label>
+              <label>Entry Type
+                <select name="entry_type">
+                  <option value="standard">Standard</option>
+                  <option value="adjusting">Adjusting</option>
+                  <option value="closing">Closing</option>
+                  <option value="opening">Opening</option>
+                </select>
+              </label>
+            </div>
+            <label>Description<input type="text" name="description" required placeholder="e.g. Record interest income"></label>
+            <label>Memo<input type="text" name="memo" placeholder="Optional memo"></label>
+            <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+              <label>Reference Type
+                <select name="reference_type">
+                  <option value="">None</option>
+                  <option value="transfer">Transfer</option>
+                  <option value="payment">Payment</option>
+                  <option value="interest">Interest</option>
+                  <option value="fee">Fee</option>
+                  <option value="distribution">Distribution</option>
+                  <option value="receipt">Receipt</option>
+                  <option value="adjustment">Adjustment</option>
+                  <option value="tax">Tax</option>
+                </select>
+              </label>
+              <label>Source Engine
+                <select name="source_engine">
+                  <option value="">None</option>
+                  <option value="banking">Banking</option>
+                  <option value="payment">Payment</option>
+                  <option value="external_transfer">External Transfer</option>
+                  <option value="fixed_income">Fixed Income</option>
+                </select>
+              </label>
+            </div>
+
+            <h4 style="margin:16px 0 8px;color:var(--text-primary)">Journal Lines</h4>
+            <div id="je-lines">
+              <div class="je-line" style="display:grid;grid-template-columns:2fr 1fr 1fr;gap:8px;margin-bottom:8px">
+                <select name="line_account_0" class="je-account" required>
+                  <option value="">Select Account...</option>
+                </select>
+                <input type="number" name="line_debit_0" placeholder="Debit $" step="0.01" min="0">
+                <input type="number" name="line_credit_0" placeholder="Credit $" step="0.01" min="0">
+              </div>
+              <div class="je-line" style="display:grid;grid-template-columns:2fr 1fr 1fr;gap:8px;margin-bottom:8px">
+                <select name="line_account_1" class="je-account" required>
+                  <option value="">Select Account...</option>
+                </select>
+                <input type="number" name="line_debit_1" placeholder="Debit $" step="0.01" min="0">
+                <input type="number" name="line_credit_1" placeholder="Credit $" step="0.01" min="0">
+              </div>
+            </div>
+            <button type="button" class="btn" onclick="addJELine()" style="margin-bottom:12px">+ Add Line</button>
+            <div id="je-balance-check" style="padding:8px;border-radius:8px;font-size:0.85rem;margin-bottom:12px"></div>
+
+            <div class="modal-actions">
+              <button type="button" class="btn" onclick="hideModal('create-je-modal')">Cancel</button>
+              <button type="submit" class="btn btn-primary">Post Journal Entry</button>
+            </div>
+          </form>
+        </div>
+      </div>
+
+      <!-- Create Allocation Modal -->
+      <div id="create-alloc-modal" class="modal hidden">
+        <div class="modal-content">
+          <h3>Record Income/Principal Allocation</h3>
+          <form id="create-alloc-form" onsubmit="createAllocation(event)">
+            <label>Category
+              <select name="category" required>
+                <option value="interest">Interest</option>
+                <option value="dividend">Dividend</option>
+                <option value="capital_gain">Capital Gain</option>
+                <option value="rental">Rental Income</option>
+                <option value="royalty">Royalty</option>
+                <option value="trustee_fee">Trustee Fee</option>
+                <option value="tax">Tax</option>
+                <option value="legal_fee">Legal Fee</option>
+                <option value="accounting_fee">Accounting Fee</option>
+                <option value="misc_expense">Misc Expense</option>
+              </select>
+            </label>
+            <label>Classification
+              <select name="classification">
+                <option value="">Use UPIA Default</option>
+                <option value="principal">Principal</option>
+                <option value="income">Income</option>
+              </select>
+            </label>
+            <label>Amount (USD)<input type="number" name="amount" step="0.01" min="0.01" required></label>
+            <label>Date<input type="date" name="allocation_date"></label>
+            <label>Description<input type="text" name="description" placeholder="e.g. Q1 bond interest"></label>
+            <div class="modal-actions">
+              <button type="button" class="btn" onclick="hideModal('create-alloc-modal')">Cancel</button>
+              <button type="submit" class="btn btn-primary">Record Allocation</button>
             </div>
           </form>
         </div>

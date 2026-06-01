@@ -79,6 +79,7 @@ function loadView(view) {
     case 'transfers': loadTransfers(); break;
     case 'contacts': loadContacts(); break;
     case 'payments': loadPayments(); break;
+    case 'accounting': loadAccounting(); break;
     case 'compliance': loadCompliance(); break;
     case 'activity': loadActivity(); break;
   }
@@ -919,6 +920,583 @@ async function createPayment(e) {
     hideModal('create-payment-modal');
     e.target.reset();
     loadPayments();
+  } catch (err) { showToast(err.message, 'error'); }
+}
+
+// --- Trust Accounting ---
+
+function switchAccountingTab() {
+  const tab = $('#accounting-tab').value;
+  $$('.accounting-subview').forEach(v => v.classList.add('hidden'));
+  const target = document.getElementById(`acct-${tab}`);
+  if (target) target.classList.remove('hidden');
+
+  switch (tab) {
+    case 'dashboard': loadAccountingDashboard(); break;
+    case 'journal': loadJournalEntries(); break;
+    case 'ledger': loadGeneralLedger(); break;
+    case 'trial-balance': loadFormalTrialBalance(); break;
+    case 'coa': loadChartOfAccounts(); break;
+    case 'allocations': loadAllocations(); break;
+    case 'reports': break; // loaded on click
+  }
+}
+
+async function loadAccounting() {
+  $('#accounting-tab').value = 'dashboard';
+  $$('.accounting-subview').forEach(v => v.classList.add('hidden'));
+  $('#acct-dashboard').classList.remove('hidden');
+  loadAccountingDashboard();
+}
+
+async function loadAccountingDashboard() {
+  try {
+    const dash = await api('/trust-accounting/dashboard');
+
+    // Metrics
+    $('#acct-metrics').innerHTML = `
+      <div class="metric-card primary">
+        <span class="metric-label">Chart of Accounts</span>
+        <span class="metric-value">${dash.chart_of_accounts.total}</span>
+      </div>
+      <div class="metric-card">
+        <span class="metric-label">Journal Entries</span>
+        <span class="metric-value">${dash.journal_entries.total}</span>
+      </div>
+      <div class="metric-card">
+        <span class="metric-label">This Year</span>
+        <span class="metric-value">${dash.journal_entries.this_year}</span>
+      </div>
+      <div class="metric-card">
+        <span class="metric-label">Open Periods</span>
+        <span class="metric-value">${dash.open_periods.length}</span>
+      </div>
+    `;
+
+    // Trial balance check
+    const tbColor = dash.trial_balance.balanced ? 'var(--success)' : 'var(--danger)';
+    const tbIcon = dash.trial_balance.balanced ? '✓ Balanced' : '✗ Unbalanced';
+    $('#acct-tb-check').innerHTML = `
+      <div style="text-align:center;padding:20px">
+        <div style="font-size:1.5rem;font-weight:600;color:${tbColor};margin-bottom:12px">${tbIcon}</div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;font-size:0.9rem">
+          <div>
+            <div style="color:var(--text-secondary)">Total Debits</div>
+            <div style="font-weight:600">${dash.trial_balance.total_debit_usd}</div>
+          </div>
+          <div>
+            <div style="color:var(--text-secondary)">Total Credits</div>
+            <div style="font-weight:600">${dash.trial_balance.total_credit_usd}</div>
+          </div>
+        </div>
+      </div>
+    `;
+
+    // Income vs Principal YTD
+    const totalAlloc = (dash.ytd_allocations.principal_cents || 0) + (dash.ytd_allocations.income_cents || 0);
+    const pPct = totalAlloc > 0 ? Math.round(((dash.ytd_allocations.principal_cents || 0) / totalAlloc) * 100) : 0;
+    const iPct = totalAlloc > 0 ? 100 - pPct : 0;
+    $('#acct-alloc-summary').innerHTML = `
+      <div style="padding:20px">
+        <div style="display:flex;height:24px;border-radius:12px;overflow:hidden;margin-bottom:16px;background:var(--bg-hover)">
+          ${pPct > 0 ? `<div style="width:${pPct}%;background:var(--accent);display:flex;align-items:center;justify-content:center;font-size:0.75rem;color:#fff;font-weight:600">${pPct}%</div>` : ''}
+          ${iPct > 0 ? `<div style="width:${iPct}%;background:var(--success);display:flex;align-items:center;justify-content:center;font-size:0.75rem;color:#fff;font-weight:600">${iPct}%</div>` : ''}
+        </div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;font-size:0.9rem">
+          <div>
+            <div style="color:var(--accent);font-weight:600">● Principal</div>
+            <div>${dash.ytd_allocations.principal_usd}</div>
+          </div>
+          <div>
+            <div style="color:var(--success);font-weight:600">● Income</div>
+            <div>${dash.ytd_allocations.income_usd}</div>
+          </div>
+        </div>
+      </div>
+    `;
+
+    // Recent journal entries
+    if (dash.recent_entries && dash.recent_entries.length) {
+      let html = '<table><thead><tr><th>Entry #</th><th>Date</th><th>Type</th><th>Description</th><th>Debit</th><th>Credit</th></tr></thead><tbody>';
+      for (const je of dash.recent_entries) {
+        html += `<tr>
+          <td><code>${je.entry_number}</code></td>
+          <td>${formatDate(je.entry_date)}</td>
+          <td>${badge(je.entry_type)}</td>
+          <td>${je.description}</td>
+          <td>${formatUSD(je.total_debit_cents)}</td>
+          <td>${formatUSD(je.total_credit_cents)}</td>
+        </tr>`;
+      }
+      html += '</tbody></table>';
+      $('#acct-recent-je').innerHTML = html;
+    } else {
+      $('#acct-recent-je').innerHTML = '<p style="color:var(--text-secondary);padding:20px">No journal entries yet. Click "+ Journal Entry" to create one.</p>';
+    }
+  } catch (err) {
+    showToast('Failed to load accounting dashboard: ' + err.message, 'error');
+  }
+}
+
+async function loadJournalEntries() {
+  try {
+    const data = await api('/trust-accounting/journal-entries?limit=50');
+    if (!data.entries.length) {
+      $('#journal-entries-table').innerHTML = '<p style="color:var(--text-secondary);padding:20px">No journal entries yet.</p>';
+      return;
+    }
+    let html = '<table><thead><tr><th>Entry #</th><th>Date</th><th>Type</th><th>Description</th><th>Source</th><th>Debit</th><th>Credit</th><th>Status</th><th>Actions</th></tr></thead><tbody>';
+    for (const je of data.entries) {
+      const reversed = je.is_reversed ? '<span class="badge badge-cancelled">Reversed</span>' : '<span class="badge badge-active">Posted</span>';
+      html += `<tr>
+        <td><code>${je.entry_number}</code></td>
+        <td>${formatDate(je.entry_date)}</td>
+        <td>${badge(je.entry_type)}</td>
+        <td>${je.description}</td>
+        <td>${je.source_engine || '—'}</td>
+        <td>${formatUSD(je.total_debit_cents)}</td>
+        <td>${formatUSD(je.total_credit_cents)}</td>
+        <td>${reversed}</td>
+        <td>${!je.is_reversed ? `<button class="btn btn-sm btn-danger" onclick="reverseJournalEntry(${je.id})">Reverse</button>` : '—'}</td>
+      </tr>`;
+    }
+    html += '</tbody></table>';
+    $('#journal-entries-table').innerHTML = html;
+  } catch (err) {
+    showToast('Failed to load journal entries: ' + err.message, 'error');
+  }
+}
+
+async function loadGeneralLedger() {
+  try {
+    const accountFilter = $('#gl-account-filter').value;
+    const params = accountFilter ? `?account_id=${accountFilter}` : '';
+    const data = await api(`/trust-accounting/general-ledger${params}`);
+
+    // Populate filter if not yet done
+    if ($('#gl-account-filter').options.length <= 1) {
+      const coa = await api('/trust-accounting/chart-of-accounts?active=true');
+      for (const acct of coa.accounts) {
+        const opt = document.createElement('option');
+        opt.value = acct.id;
+        opt.textContent = `${acct.account_code} — ${acct.account_name}`;
+        $('#gl-account-filter').appendChild(opt);
+      }
+    }
+
+    let html = '';
+    for (const acct of data.accounts) {
+      if (acct.entry_count === 0 && !accountFilter) continue;
+      html += `<div class="panel" style="margin-bottom:12px">
+        <h3 style="margin-bottom:8px">${acct.account_code} — ${acct.account_name} <span style="font-weight:400;color:var(--text-secondary)">(${acct.account_type}, ${acct.normal_balance})</span> <span style="float:right;font-weight:600">${acct.balance_usd}</span></h3>`;
+      if (acct.entries.length) {
+        html += '<table><thead><tr><th>Date</th><th>Entry #</th><th>Description</th><th>Debit</th><th>Credit</th><th>Balance</th></tr></thead><tbody>';
+        for (const e of acct.entries) {
+          html += `<tr>
+            <td>${formatDate(e.entry_date)}</td>
+            <td><code>${e.entry_number}</code></td>
+            <td>${e.entry_description || e.description || '—'}</td>
+            <td>${e.debit_cents ? formatUSD(e.debit_cents) : '—'}</td>
+            <td>${e.credit_cents ? formatUSD(e.credit_cents) : '—'}</td>
+            <td style="font-weight:600">${e.running_balance_usd}</td>
+          </tr>`;
+        }
+        html += '</tbody></table>';
+      } else {
+        html += '<p style="color:var(--text-secondary)">No entries in this period</p>';
+      }
+      html += '</div>';
+    }
+    $('#general-ledger-table').innerHTML = html || '<p style="color:var(--text-secondary);padding:20px">No ledger entries found.</p>';
+  } catch (err) {
+    showToast('Failed to load general ledger: ' + err.message, 'error');
+  }
+}
+
+async function loadFormalTrialBalance() {
+  try {
+    const data = await api('/trust-accounting/trial-balance');
+    const balColor = data.balanced ? 'var(--success)' : 'var(--danger)';
+    let html = `<div style="text-align:center;margin-bottom:16px">
+      <h3>Trust Accounting Trial Balance</h3>
+      <span style="color:var(--text-secondary)">As of ${formatDate(data.as_of_date)}</span>
+      <span style="margin-left:12px;color:${balColor};font-weight:600">${data.balanced ? '✓ Balanced' : '✗ UNBALANCED'}</span>
+    </div>`;
+    html += '<table><thead><tr><th>Code</th><th>Account</th><th>Type</th><th style="text-align:right">Debit</th><th style="text-align:right">Credit</th></tr></thead><tbody>';
+    for (const row of data.rows) {
+      html += `<tr>
+        <td><code>${row.account_code}</code></td>
+        <td>${row.account_name}</td>
+        <td>${badge(row.account_type)}</td>
+        <td style="text-align:right">${row.debit_cents ? row.debit_usd : '—'}</td>
+        <td style="text-align:right">${row.credit_cents ? row.credit_usd : '—'}</td>
+      </tr>`;
+    }
+    html += `</tbody><tfoot><tr style="font-weight:700;border-top:2px solid var(--border)">
+      <td colspan="3">TOTALS</td>
+      <td style="text-align:right">${data.total_debit_usd}</td>
+      <td style="text-align:right">${data.total_credit_usd}</td>
+    </tr></tfoot></table>`;
+    $('#formal-trial-balance').innerHTML = html;
+  } catch (err) {
+    showToast('Failed to load trial balance: ' + err.message, 'error');
+  }
+}
+
+async function loadChartOfAccounts() {
+  try {
+    const data = await api('/trust-accounting/chart-of-accounts');
+    let html = '<table><thead><tr><th>Code</th><th>Name</th><th>Type</th><th>Sub-Type</th><th>Normal Balance</th><th>System</th></tr></thead><tbody>';
+    for (const acct of data.accounts) {
+      html += `<tr>
+        <td><code>${acct.account_code}</code></td>
+        <td>${acct.account_name}</td>
+        <td>${badge(acct.account_type)}</td>
+        <td>${acct.sub_type || '—'}</td>
+        <td>${acct.normal_balance}</td>
+        <td>${acct.is_system ? 'Yes' : 'No'}</td>
+      </tr>`;
+    }
+    html += '</tbody></table>';
+    $('#coa-table').innerHTML = html;
+  } catch (err) {
+    showToast('Failed to load chart of accounts: ' + err.message, 'error');
+  }
+}
+
+async function loadAllocations() {
+  try {
+    const data = await api('/trust-accounting/income-principal');
+
+    $('#alloc-metrics').innerHTML = `
+      <div class="metric-card">
+        <span class="metric-label">Total Allocations</span>
+        <span class="metric-value">${data.count}</span>
+      </div>
+      <div class="metric-card" style="border-left:3px solid var(--accent)">
+        <span class="metric-label">Principal</span>
+        <span class="metric-value">${data.principal_total_usd}</span>
+      </div>
+      <div class="metric-card" style="border-left:3px solid var(--success)">
+        <span class="metric-label">Income</span>
+        <span class="metric-value">${data.income_total_usd}</span>
+      </div>
+    `;
+
+    if (!data.allocations.length) {
+      $('#allocations-table').innerHTML = '<p style="color:var(--text-secondary);padding:20px">No allocations yet. Click "+ Record Allocation" to classify income vs principal.</p>';
+      return;
+    }
+
+    let html = '<table><thead><tr><th>Date</th><th>Category</th><th>Classification</th><th>Amount</th><th>Description</th><th>Rule</th></tr></thead><tbody>';
+    for (const a of data.allocations) {
+      const clsColor = a.classification === 'principal' ? 'var(--accent)' : 'var(--success)';
+      html += `<tr>
+        <td>${formatDate(a.allocation_date)}</td>
+        <td>${a.category}</td>
+        <td><span style="color:${clsColor};font-weight:600">${a.classification}</span></td>
+        <td>${formatUSD(a.amount_cents)}</td>
+        <td>${a.description || '—'}</td>
+        <td style="font-size:0.8rem;color:var(--text-secondary)">${a.rule_applied || '—'}</td>
+      </tr>`;
+    }
+    html += '</tbody></table>';
+    $('#allocations-table').innerHTML = html;
+  } catch (err) {
+    showToast('Failed to load allocations: ' + err.message, 'error');
+  }
+}
+
+// --- Report Loaders ---
+
+async function loadBalanceSheet() {
+  try {
+    const data = await api('/trust-accounting/reports/balance-sheet');
+    let html = `<h3 style="margin-bottom:4px">Balance Sheet — ${data.trust_name}</h3>
+      <span style="color:var(--text-secondary);font-size:0.85rem">As of ${formatDate(data.as_of_date)}</span>
+      <span style="margin-left:12px;color:${data.balanced ? 'var(--success)' : 'var(--danger)'};font-weight:600">${data.balanced ? '✓ Balanced' : '✗ Unbalanced'}</span>`;
+
+    const renderSection = (title, items, total) => {
+      let s = `<h4 style="margin:16px 0 8px;border-bottom:1px solid var(--border);padding-bottom:4px">${title}</h4>`;
+      if (items.length) {
+        for (const item of items) {
+          s += `<div style="display:flex;justify-content:space-between;padding:4px 0">
+            <span>${item.account_code} — ${item.account_name}</span>
+            <span style="font-weight:500">${item.balance_usd}</span>
+          </div>`;
+        }
+      } else {
+        s += '<div style="color:var(--text-secondary);padding:4px 0">No entries</div>';
+      }
+      s += `<div style="display:flex;justify-content:space-between;padding:8px 0;border-top:1px solid var(--border);font-weight:700">
+        <span>Total ${title}</span><span>${total}</span>
+      </div>`;
+      return s;
+    };
+
+    html += renderSection('Assets', data.assets.items, data.assets.total_usd);
+    html += renderSection('Liabilities', data.liabilities.items, data.liabilities.total_usd);
+    html += renderSection('Corpus (Principal)', data.corpus.items, data.corpus.total_usd);
+    html += `<div style="display:flex;justify-content:space-between;padding:12px 0;border-top:2px solid var(--border);font-weight:700;font-size:1.1rem;margin-top:8px">
+      <span>Total Liabilities + Corpus</span><span>${data.total_liabilities_and_corpus_usd}</span>
+    </div>`;
+
+    $('#report-output').innerHTML = html;
+  } catch (err) {
+    showToast('Failed to load balance sheet: ' + err.message, 'error');
+  }
+}
+
+async function loadIncomeStatement() {
+  try {
+    const data = await api('/trust-accounting/reports/income-statement');
+    let html = `<h3 style="margin-bottom:4px">Income Statement — ${data.trust_name}</h3>
+      <span style="color:var(--text-secondary);font-size:0.85rem">${formatDate(data.period.start_date)} to ${formatDate(data.period.end_date)}</span>`;
+
+    const renderSection = (title, items, total, color) => {
+      let s = `<h4 style="margin:16px 0 8px;border-bottom:1px solid var(--border);padding-bottom:4px">${title}</h4>`;
+      if (items.length) {
+        for (const item of items) {
+          s += `<div style="display:flex;justify-content:space-between;padding:4px 0">
+            <span>${item.account_code} — ${item.account_name}</span>
+            <span style="font-weight:500">${item.amount_usd}</span>
+          </div>`;
+        }
+      } else {
+        s += '<div style="color:var(--text-secondary);padding:4px 0">No entries</div>';
+      }
+      s += `<div style="display:flex;justify-content:space-between;padding:8px 0;border-top:1px solid var(--border);font-weight:700;color:${color}">
+        <span>Total ${title}</span><span>${total}</span>
+      </div>`;
+      return s;
+    };
+
+    html += renderSection('Income', data.income.items, data.income.total_usd, 'var(--success)');
+    html += renderSection('Expenses', data.expenses.items, data.expenses.total_usd, 'var(--danger)');
+    html += `<div style="display:flex;justify-content:space-between;padding:12px 0;border-top:2px solid var(--border);font-weight:700;font-size:1.1rem;margin-top:8px">
+      <span>Net Income</span><span style="color:${data.net_income_cents >= 0 ? 'var(--success)' : 'var(--danger)'}">${data.net_income_usd}</span>
+    </div>`;
+
+    $('#report-output').innerHTML = html;
+  } catch (err) {
+    showToast('Failed to load income statement: ' + err.message, 'error');
+  }
+}
+
+async function loadDNIReport() {
+  try {
+    const data = await api('/trust-accounting/reports/dni');
+    let html = `<h3 style="margin-bottom:4px">Distributable Net Income (DNI) — ${data.trust_name}</h3>
+      <span style="color:var(--text-secondary);font-size:0.85rem">${formatDate(data.period.start_date)} to ${formatDate(data.period.end_date)}</span>`;
+
+    html += '<div style="margin-top:16px">';
+    html += `<div style="display:flex;justify-content:space-between;padding:8px 0"><span>Gross Trust Income</span><span style="font-weight:600;color:var(--success)">${data.gross_income_usd}</span></div>`;
+
+    if (data.income_breakdown.length) {
+      for (const item of data.income_breakdown) {
+        html += `<div style="display:flex;justify-content:space-between;padding:4px 16px;font-size:0.9rem;color:var(--text-secondary)"><span>${item.category}</span><span>${item.amount_usd}</span></div>`;
+      }
+    }
+
+    html += `<div style="display:flex;justify-content:space-between;padding:8px 0"><span>Less: Deductible Expenses</span><span style="font-weight:600;color:var(--danger)">(${data.deductible_expenses_usd})</span></div>`;
+    html += `<div style="display:flex;justify-content:space-between;padding:12px 0;border-top:2px solid var(--border);font-weight:700;font-size:1.1rem;margin-top:8px">
+      <span>Distributable Net Income (IRC §643(a))</span><span>${data.distributable_net_income_usd}</span>
+    </div>`;
+    html += '</div>';
+
+    $('#report-output').innerHTML = html;
+  } catch (err) {
+    showToast('Failed to load DNI report: ' + err.message, 'error');
+  }
+}
+
+async function loadK1Report() {
+  try {
+    const data = await api('/trust-accounting/reports/k1-data');
+    let html = `<h3 style="margin-bottom:4px">Schedule K-1 Data — ${data.trust_name}</h3>
+      <span style="color:var(--text-secondary);font-size:0.85rem">${formatDate(data.period.start_date)} to ${formatDate(data.period.end_date)}</span>
+      <span style="margin-left:12px">Trust EIN: ${data.trust_ein}</span>`;
+
+    html += `<div style="margin-top:12px;padding:8px;background:var(--bg-hover);border-radius:8px;font-size:0.9rem">
+      <strong>DNI:</strong> ${data.dni.distributable_net_income_usd} | <strong>Total Distributed:</strong> ${data.total_distributed_usd}
+    </div>`;
+
+    if (data.beneficiaries.length) {
+      html += '<table style="margin-top:16px"><thead><tr><th>Beneficiary</th><th>Tax ID</th><th>Type</th><th>Distributions</th><th>% of DNI</th></tr></thead><tbody>';
+      for (const b of data.beneficiaries) {
+        html += `<tr>
+          <td>${b.beneficiary_name}</td>
+          <td>${b.tax_id_masked || '—'}</td>
+          <td>${b.tax_id_type || '—'}</td>
+          <td>${b.total_distributions_usd}</td>
+          <td>${b.share_of_dni}%</td>
+        </tr>`;
+      }
+      html += '</tbody></table>';
+    } else {
+      html += '<p style="color:var(--text-secondary);margin-top:12px">No active beneficiaries found in CRM.</p>';
+    }
+
+    $('#report-output').innerHTML = html;
+  } catch (err) {
+    showToast('Failed to load K-1 data: ' + err.message, 'error');
+  }
+}
+
+// --- Journal Entry Creation ---
+
+let jeLineCount = 2;
+
+async function showCreateJournalEntry() {
+  jeLineCount = 2;
+  document.getElementById('create-je-modal').classList.remove('hidden');
+  // Set default date to today
+  const today = new Date().toISOString().slice(0, 10);
+  document.querySelector('#create-je-form [name="entry_date"]').value = today;
+
+  // Populate account dropdowns
+  try {
+    const coa = await api('/trust-accounting/chart-of-accounts?active=true');
+    $$('.je-account').forEach(sel => {
+      sel.innerHTML = '<option value="">Select Account...</option>';
+      for (const acct of coa.accounts) {
+        const opt = document.createElement('option');
+        opt.value = acct.id;
+        opt.textContent = `${acct.account_code} — ${acct.account_name}`;
+        sel.appendChild(opt);
+      }
+    });
+  } catch (_) {}
+  updateJEBalanceCheck();
+}
+
+function addJELine() {
+  const container = document.getElementById('je-lines');
+  const div = document.createElement('div');
+  div.className = 'je-line';
+  div.style.cssText = 'display:grid;grid-template-columns:2fr 1fr 1fr;gap:8px;margin-bottom:8px';
+  div.innerHTML = `
+    <select name="line_account_${jeLineCount}" class="je-account" required>
+      <option value="">Select Account...</option>
+    </select>
+    <input type="number" name="line_debit_${jeLineCount}" placeholder="Debit $" step="0.01" min="0" oninput="updateJEBalanceCheck()">
+    <input type="number" name="line_credit_${jeLineCount}" placeholder="Credit $" step="0.01" min="0" oninput="updateJEBalanceCheck()">
+  `;
+  container.appendChild(div);
+
+  // Populate the new account dropdown
+  api('/trust-accounting/chart-of-accounts?active=true').then(coa => {
+    const sel = div.querySelector('.je-account');
+    for (const acct of coa.accounts) {
+      const opt = document.createElement('option');
+      opt.value = acct.id;
+      opt.textContent = `${acct.account_code} — ${acct.account_name}`;
+      sel.appendChild(opt);
+    }
+  }).catch(() => {});
+
+  jeLineCount++;
+}
+
+function updateJEBalanceCheck() {
+  let totalDebits = 0, totalCredits = 0;
+  for (let i = 0; i < jeLineCount; i++) {
+    const d = parseFloat(document.querySelector(`[name="line_debit_${i}"]`)?.value || 0);
+    const c = parseFloat(document.querySelector(`[name="line_credit_${i}"]`)?.value || 0);
+    totalDebits += d;
+    totalCredits += c;
+  }
+  const diff = Math.abs(totalDebits - totalCredits);
+  const el = $('#je-balance-check');
+  if (totalDebits === 0 && totalCredits === 0) {
+    el.innerHTML = '<span style="color:var(--text-secondary)">Enter debit and credit amounts</span>';
+  } else if (diff < 0.01) {
+    el.innerHTML = `<span style="color:var(--success);font-weight:600">✓ Balanced — Debits: $${totalDebits.toFixed(2)} = Credits: $${totalCredits.toFixed(2)}</span>`;
+    el.style.background = 'rgba(16,185,129,0.1)';
+  } else {
+    el.innerHTML = `<span style="color:var(--danger);font-weight:600">✗ Unbalanced — Debits: $${totalDebits.toFixed(2)} ≠ Credits: $${totalCredits.toFixed(2)} (diff: $${diff.toFixed(2)})</span>`;
+    el.style.background = 'rgba(239,68,68,0.1)';
+  }
+}
+
+// Add input listeners for balance check
+document.addEventListener('input', (e) => {
+  if (e.target.name && (e.target.name.startsWith('line_debit_') || e.target.name.startsWith('line_credit_'))) {
+    updateJEBalanceCheck();
+  }
+});
+
+async function createJournalEntry(e) {
+  e.preventDefault();
+  const form = new FormData(e.target);
+
+  const lines = [];
+  for (let i = 0; i < jeLineCount; i++) {
+    const accountId = form.get(`line_account_${i}`);
+    const debit = parseFloat(form.get(`line_debit_${i}`) || 0);
+    const credit = parseFloat(form.get(`line_credit_${i}`) || 0);
+    if (!accountId) continue;
+    if (debit === 0 && credit === 0) continue;
+    lines.push({
+      account_id: parseInt(accountId),
+      debit_cents: Math.round(debit * 100),
+      credit_cents: Math.round(credit * 100),
+    });
+  }
+
+  const body = {
+    entry_date: form.get('entry_date'),
+    entry_type: form.get('entry_type'),
+    description: form.get('description'),
+    memo: form.get('memo') || null,
+    reference_type: form.get('reference_type') || null,
+    source_engine: form.get('source_engine') || null,
+    lines,
+  };
+
+  try {
+    const data = await api('/trust-accounting/journal-entries', { method: 'POST', body: JSON.stringify(body) });
+    showToast(`Journal entry ${data.entry_number} posted`);
+    hideModal('create-je-modal');
+    e.target.reset();
+    loadAccounting();
+  } catch (err) { showToast(err.message, 'error'); }
+}
+
+async function reverseJournalEntry(id) {
+  if (!confirm('Are you sure you want to reverse this journal entry?')) return;
+  try {
+    const data = await api(`/trust-accounting/journal-entries/${id}/reverse`, { method: 'POST', body: JSON.stringify({}) });
+    showToast(data.message);
+    loadJournalEntries();
+  } catch (err) { showToast(err.message, 'error'); }
+}
+
+// --- Allocation Creation ---
+
+function showCreateAllocation() {
+  document.getElementById('create-alloc-modal').classList.remove('hidden');
+  const today = new Date().toISOString().slice(0, 10);
+  document.querySelector('#create-alloc-form [name="allocation_date"]').value = today;
+}
+
+async function createAllocation(e) {
+  e.preventDefault();
+  const form = new FormData(e.target);
+  const body = {
+    category: form.get('category'),
+    classification: form.get('classification') || null,
+    amount_cents: Math.round(parseFloat(form.get('amount')) * 100),
+    allocation_date: form.get('allocation_date') || null,
+    description: form.get('description') || null,
+  };
+
+  try {
+    const data = await api('/trust-accounting/income-principal', { method: 'POST', body: JSON.stringify(body) });
+    showToast(data.message);
+    hideModal('create-alloc-modal');
+    e.target.reset();
+    loadAllocations();
   } catch (err) { showToast(err.message, 'error'); }
 }
 
