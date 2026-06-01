@@ -45,6 +45,12 @@ app.use('/api/wealth',    require('./server/routes/wealth'));
 // ─── CRM Engine Routes ──────────────────────────────────────────────────────
 app.use('/api/crm',       require('./server/routes/crm'));
 
+// ─── External Transfer Routes ───────────────────────────────────────────────
+app.use('/api/external-transfers', require('./server/routes/external-transfers'));
+
+// ─── Trust Accounting Routes ────────────────────────────────────────────────
+app.use('/api/trust-accounting', require('./server/routes/trust-accounting'));
+
 // ─── Frontend Dashboard ───────────────────────────────────────────────────────
 app.use(express.static(path.join(__dirname, 'frontend')));
 app.get('/', (req, res) => res.sendFile(path.join(__dirname, 'frontend', 'index.html')));
