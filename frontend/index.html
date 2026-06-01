@@ -609,6 +609,11 @@
             <option value="rtp">RTP (Real-Time)</option>
             <option value="check">Check</option>
           </select>
+          <select id="rail-provider-filter" onchange="loadRailTransactions()" style="margin-right:8px;padding:8px 12px;background:var(--bg-card);border:1px solid var(--border);border-radius:8px;color:var(--text-primary);font-size:0.85rem">
+            <option value="">All Providers</option>
+            <option value="increase">Increase</option>
+            <option value="mercury">Mercury</option>
+          </select>
           <select id="rail-status-filter" onchange="loadRailTransactions()" style="margin-right:8px;padding:8px 12px;background:var(--bg-card);border:1px solid var(--border);border-radius:8px;color:var(--text-primary);font-size:0.85rem">
             <option value="">All Statuses</option>
             <option value="pending_submission">Pending Submission</option>
@@ -640,16 +645,24 @@
       <!-- Send Payment Modal -->
       <div id="send-rail-modal" class="modal hidden">
         <div class="modal-content" style="max-width:650px">
-          <h3>Send Real Payment via Increase</h3>
+          <h3>Send Payment via Increase or Mercury</h3>
           <form id="send-rail-form" onsubmit="sendRailPayment(event)">
-            <label>Payment Rail
-              <select name="rail" id="rail-select" onchange="toggleRailFields()" required>
-                <option value="ach">ACH (Free, 1-3 days)</option>
-                <option value="wire">Wire ($25 fee, same day)</option>
-                <option value="rtp">RTP — Real-Time ($1 fee, seconds)</option>
-                <option value="check">Check ($5 fee, 5-10 days)</option>
-              </select>
-            </label>
+            <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+              <label>Provider
+                <select name="provider" id="rail-provider-select" onchange="updateProviderRails()" required>
+                  <option value="increase">Increase (ACH, Wire, RTP, Check)</option>
+                  <option value="mercury">Mercury (ACH, Wire, Check)</option>
+                </select>
+              </label>
+              <label>Payment Rail
+                <select name="rail" id="rail-select" onchange="toggleRailFields()" required>
+                  <option value="ach">ACH (Free, 1-3 days)</option>
+                  <option value="wire">Wire ($25 fee, same day)</option>
+                  <option value="rtp">RTP — Real-Time Payment ($1.00)</option>
+                  <option value="check">Check ($5 fee, 5-10 days)</option>
+                </select>
+              </label>
+            </div>
             <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
               <label>Amount (USD)<input type="number" name="amount" step="0.01" min="0.01" required></label>
               <label>From Account
@@ -707,7 +720,7 @@
       <!-- Configuration Modal -->
       <div id="rail-config-modal" class="modal hidden">
         <div class="modal-content">
-          <h3>Payment Rail Configuration</h3>
+          <h3>Payment Rail Configuration — Multi-Provider</h3>
           <div id="rail-config-form"></div>
           <div class="modal-actions" style="margin-top:16px">
             <button class="btn" onclick="hideModal('rail-config-modal')">Close</button>

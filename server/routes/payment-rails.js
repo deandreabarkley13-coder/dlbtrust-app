@@ -1,27 +1,34 @@
 /**
- * Payment Rail Routes — Real Money Movement via Increase
- * DEANDREA LAVAR BARKLEY TRUST — Private Wealth Management Platform
+ * Payment Rail Routes — Multi-Provider (Increase + Mercury)
+ * DEANDREA LAVAR BARKLEY TRUST — Private Trust Payment Rails
+ *
+ * Supports Increase (ACH, Wire, RTP, Check) and Mercury (ACH, Wire, Check).
+ * Provider selection per-transaction enables routing through either system.
  *
  * Endpoints:
- *   GET    /api/payment-rails/dashboard         - Rail dashboard metrics
- *   GET    /api/payment-rails/config             - Get rail configuration
- *   PUT    /api/payment-rails/config             - Update rail configuration
- *   GET    /api/payment-rails/accounts           - List Increase accounts
- *   POST   /api/payment-rails/accounts/sync      - Sync accounts from Increase
- *   GET    /api/payment-rails/external-accounts  - List Increase external accounts
- *   POST   /api/payment-rails/external-accounts  - Create external account on Increase
- *   POST   /api/payment-rails/send               - Initiate a real payment (ACH/Wire/RTP/Check)
- *   GET    /api/payment-rails/transactions        - List rail transactions
- *   GET    /api/payment-rails/transactions/:id    - Transaction detail
- *   POST   /api/payment-rails/transactions/:id/approve  - Approve a pending transaction
- *   POST   /api/payment-rails/transactions/:id/cancel   - Cancel a transaction
- *   POST   /api/payment-rails/transactions/:id/sync     - Sync status from Increase
- *   GET    /api/payment-rails/reconciliation      - Daily reconciliation report
- *   POST   /api/payment-rails/reconciliation/run  - Run reconciliation for a date
- *   POST   /api/payment-rails/webhooks            - Increase webhook receiver
- *   GET    /api/payment-rails/webhooks/events      - List received webhook events
- *   GET    /api/payment-rails/rails                - Available payment rails info
- *   GET    /api/payment-rails/limits               - Daily limits & usage
+ *   GET    /api/payment-rails/dashboard              - Multi-provider dashboard metrics
+ *   GET    /api/payment-rails/providers               - List available providers & their rails
+ *   GET    /api/payment-rails/config                  - Get rail configuration (all providers)
+ *   PUT    /api/payment-rails/config                  - Update rail configuration
+ *   GET    /api/payment-rails/accounts                - List all provider accounts
+ *   POST   /api/payment-rails/accounts/sync           - Sync accounts from active providers
+ *   GET    /api/payment-rails/external-accounts       - List external accounts / recipients
+ *   POST   /api/payment-rails/external-accounts       - Create external account / recipient
+ *   POST   /api/payment-rails/send                    - Send payment via selected provider
+ *   GET    /api/payment-rails/transactions             - List rail transactions (filter by provider)
+ *   GET    /api/payment-rails/transactions/:id         - Transaction detail
+ *   POST   /api/payment-rails/transactions/:id/approve - Approve pending transaction
+ *   POST   /api/payment-rails/transactions/:id/cancel  - Cancel transaction
+ *   POST   /api/payment-rails/transactions/:id/sync    - Sync status from provider
+ *   GET    /api/payment-rails/reconciliation           - Reconciliation report
+ *   POST   /api/payment-rails/reconciliation/run       - Run reconciliation
+ *   POST   /api/payment-rails/webhooks                 - Webhook receiver
+ *   GET    /api/payment-rails/webhooks/events          - List webhook events
+ *   GET    /api/payment-rails/rails                    - Available payment rails info
+ *   GET    /api/payment-rails/limits                   - Daily limits & usage
+ *   POST   /api/payment-rails/mercury/recipients       - Create Mercury recipient
+ *   GET    /api/payment-rails/mercury/recipients       - List Mercury recipients
+ *   POST   /api/payment-rails/mercury/accounts/sync    - Sync Mercury accounts
  */
 
 'use strict';
@@ -33,23 +40,32 @@ const fs       = require('fs');
 const Database = require('better-sqlite3');
 
 const {
+  PROVIDERS,
   RAILS,
   ACH_SEC_CODES,
   ACH_RETURN_CODES,
   IncreaseClient,
+  MercuryClient,
   generateRailTxNumber,
   generateIdempotencyKey,
   buildACHPayload,
   buildWirePayload,
   buildRTPPayload,
   buildCheckPayload,
+  buildMercuryACHPayload,
+  buildMercuryWirePayload,
+  buildMercuryCheckPayload,
+  buildMercuryRecipientPayload,
   mapIncreaseStatus,
+  mapMercuryStatus,
   validateRailRequest,
   checkDailyLimit,
   calculateRailFee,
   maskAccountNumber,
   toDollars,
   buildRailAuditEntry,
+  isRailSupported,
+  getProviderInfo,
 } = require('../engines/payment-rail-engine');
 
 // --- DB Setup ---------------------------------------------------------------
@@ -67,6 +83,19 @@ function initSchema(db) {
     const p = path.join(__dirname, '..', 'db', 'migrations', file);
     if (fs.existsSync(p)) db.exec(fs.readFileSync(p, 'utf8'));
   }
+  // Add provider column if missing (migration for existing DBs)
+  try {
+    db.exec(`ALTER TABLE rail_transactions ADD COLUMN provider TEXT NOT NULL DEFAULT 'increase'`);
+  } catch (_) {} // column already exists
+  try {
+    db.exec(`ALTER TABLE rail_transactions ADD COLUMN mercury_tx_id TEXT`);
+  } catch (_) {}
+  try {
+    db.exec(`ALTER TABLE rail_transactions ADD COLUMN mercury_account_id TEXT`);
+  } catch (_) {}
+  try {
+    db.exec(`ALTER TABLE rail_transactions ADD COLUMN mercury_recipient_id TEXT`);
+  } catch (_) {}
   schemaInitialized = true;
 }
 
@@ -92,10 +121,30 @@ function getConfig(db, key) {
 }
 
 function getIncreaseClient(db) {
-  const apiKey = process.env.INCREASE_API_KEY || getConfig(db, 'api_key');
+  const apiKey = process.env.INCREASE_API_KEY || getConfig(db, 'increase_api_key') || getConfig(db, 'api_key');
   const env = getConfig(db, 'environment') || 'sandbox';
   if (!apiKey) return null;
   return new IncreaseClient(apiKey, env);
+}
+
+function getMercuryClient(db) {
+  const apiKey = process.env.MERCURY_API_KEY || getConfig(db, 'mercury_api_key');
+  if (!apiKey) return null;
+  return new MercuryClient(apiKey);
+}
+
+function getActiveProviders(db) {
+  const cfg = getConfig(db, 'active_providers') || 'increase,mercury';
+  return cfg.split(',').map(p => p.trim()).filter(Boolean);
+}
+
+function getDefaultProvider(db) {
+  return getConfig(db, 'default_provider') || 'increase';
+}
+
+function getProviderClient(db, provider) {
+  if (provider === 'mercury') return getMercuryClient(db);
+  return getIncreaseClient(db);
 }
 
 function insertAudit(db, entry) {
@@ -111,7 +160,7 @@ function insertAudit(db, entry) {
 // ROUTES
 // ============================================================================
 
-// --- GET /dashboard — Rail dashboard metrics --------------------------------
+// --- GET /dashboard — Multi-provider dashboard metrics ----------------------
 router.get('/dashboard', (req, res) => {
   try {
     const db = req.db;
@@ -124,6 +173,10 @@ router.get('/dashboard', (req, res) => {
     const byRail = db.prepare(`
       SELECT rail, COUNT(*) as count, COALESCE(SUM(amount_cents), 0) as total
       FROM rail_transactions GROUP BY rail
+    `).all();
+    const byProvider = db.prepare(`
+      SELECT provider, COUNT(*) as count, COALESCE(SUM(amount_cents), 0) as total
+      FROM rail_transactions GROUP BY provider
     `).all();
     const totalSent = db.prepare(`
       SELECT COALESCE(SUM(amount_cents), 0) as total FROM rail_transactions
@@ -140,41 +193,54 @@ router.get('/dashboard', (req, res) => {
       SELECT COUNT(*) as count FROM rail_transactions WHERE status IN ('failed', 'returned')
     `).get();
     const webhookCount = db.prepare('SELECT COUNT(*) as count FROM rail_webhook_events').get();
-    const increaseAccounts = db.prepare('SELECT COUNT(*) as count FROM increase_accounts').get();
-    const externalAccounts = db.prepare('SELECT COUNT(*) as count FROM increase_external_accounts').get();
 
     const env = getConfig(db, 'environment') || 'sandbox';
-    const provider = getConfig(db, 'provider') || 'increase';
-    const hasApiKey = !!(process.env.INCREASE_API_KEY || getConfig(db, 'api_key'));
+    const activeProviders = getActiveProviders(db);
+    const defaultProvider = getDefaultProvider(db);
+    const increaseConnected = !!getIncreaseClient(db);
+    const mercuryConnected = !!getMercuryClient(db);
+
+    // Per-provider account counts
+    let increaseAccountCount = 0;
+    let mercuryAccountCount = 0;
+    let externalAccountCount = 0;
+    let mercuryRecipientCount = 0;
+    try { increaseAccountCount = db.prepare('SELECT COUNT(*) as count FROM increase_accounts').get().count; } catch (_) {}
+    try { mercuryAccountCount = db.prepare('SELECT COUNT(*) as count FROM mercury_accounts').get().count; } catch (_) {}
+    try { externalAccountCount = db.prepare('SELECT COUNT(*) as count FROM increase_external_accounts').get().count; } catch (_) {}
+    try { mercuryRecipientCount = db.prepare('SELECT COUNT(*) as count FROM mercury_recipients').get().count; } catch (_) {}
 
     res.json({
-      provider,
+      active_providers: activeProviders,
+      default_provider: defaultProvider,
       environment: env,
-      api_connected: hasApiKey,
+      providers: {
+        increase: { connected: increaseConnected, accounts: increaseAccountCount, external_accounts: externalAccountCount, rails: PROVIDERS.increase.rails },
+        mercury:  { connected: mercuryConnected,  accounts: mercuryAccountCount,  recipients: mercuryRecipientCount,      rails: PROVIDERS.mercury.rails },
+      },
       total_transactions: totalTx.count,
       total_sent_usd: toDollars(totalSent.total),
       total_fees_usd: toDollars(totalFees.total),
       pending_count: pending.count,
       failed_count: failed.count,
-      increase_accounts: increaseAccounts.count,
-      external_accounts: externalAccounts.count,
       webhook_events: webhookCount.count,
       by_status: byStatus.map(r => ({ status: r.status, count: r.count, total_usd: toDollars(r.total) })),
       by_rail: byRail.map(r => ({ rail: r.rail, count: r.count, total_usd: toDollars(r.total) })),
+      by_provider: byProvider.map(r => ({ provider: r.provider, count: r.count, total_usd: toDollars(r.total) })),
     });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
 });
 
-// --- GET /config — Rail configuration ---------------------------------------
+// --- GET /config — Rail configuration (all providers) -----------------------
 router.get('/config', (req, res) => {
   try {
     const rows = req.db.prepare('SELECT config_key, config_value, description FROM rail_config').all();
-    // Mask sensitive values
+    const sensitiveKeys = ['increase_api_key', 'mercury_api_key', 'increase_webhook_secret', 'api_key', 'webhook_secret'];
     const config = rows.map(r => ({
       key: r.config_key,
-      value: r.config_key === 'api_key' || r.config_key === 'webhook_secret'
+      value: sensitiveKeys.includes(r.config_key)
         ? (r.config_value ? '****' + r.config_value.slice(-4) : '(not set)')
         : r.config_value,
       description: r.description,
@@ -192,9 +258,16 @@ router.put('/config', (req, res) => {
     if (!key || value === undefined) {
       return res.status(400).json({ error: 'key and value are required' });
     }
-    const allowed = ['environment', 'api_key', 'webhook_secret', 'default_ach_sec_code',
-      'default_wire_statement', 'auto_submit_threshold_cents', 'require_dual_approval_cents',
-      'daily_ach_limit_cents', 'daily_wire_limit_cents', 'api_base_url'];
+    const allowed = [
+      'environment', 'active_providers', 'default_provider',
+      'increase_api_key', 'increase_api_base_url', 'increase_webhook_secret',
+      'mercury_api_key',
+      'default_ach_sec_code', 'default_wire_statement',
+      'auto_submit_threshold_cents', 'require_dual_approval_cents',
+      'daily_ach_limit_cents', 'daily_wire_limit_cents',
+      // Legacy keys (backwards compat)
+      'api_key', 'api_base_url', 'webhook_secret',
+    ];
     if (!allowed.includes(key)) {
       return res.status(400).json({ error: `Config key '${key}' is not updatable` });
     }
@@ -205,24 +278,44 @@ router.put('/config', (req, res) => {
       ON CONFLICT(config_key) DO UPDATE SET config_value = excluded.config_value, updated_at = datetime('now')
     `).run(key, String(value), '');
 
-    insertAudit(req.db, buildRailAuditEntry('config_update', 0, 'update_config', req.body.actor || 'admin', { key, value: key.includes('key') || key.includes('secret') ? '****' : value }));
-    res.json({ message: `Config '${key}' updated`, key, value: key.includes('key') || key.includes('secret') ? '****' : value });
+    const isSensitive = key.includes('key') || key.includes('secret');
+    insertAudit(req.db, buildRailAuditEntry('config_update', 0, 'update_config', req.body.actor || 'admin', { key, value: isSensitive ? '****' : value }));
+    res.json({ message: `Config '${key}' updated`, key, value: isSensitive ? '****' : value });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
 });
 
+// --- GET /providers — List available providers and their capabilities --------
+router.get('/providers', (req, res) => {
+  const db = req.db;
+  const activeProviders = getActiveProviders(db);
+  const defaultProvider = getDefaultProvider(db);
+  const providers = Object.entries(PROVIDERS).map(([id, info]) => ({
+    id,
+    name: info.name,
+    description: info.description,
+    rails: info.rails,
+    active: activeProviders.includes(id),
+    is_default: id === defaultProvider,
+    connected: !!getProviderClient(db, id),
+  }));
+  res.json({ providers, default_provider: defaultProvider });
+});
+
 // --- GET /rails — Available payment rails info ------------------------------
 router.get('/rails', (req, res) => {
+  const db = req.db;
+  const activeProviders = getActiveProviders(db);
   const rails = Object.entries(RAILS).map(([id, info]) => ({
     id,
     name: info.name,
     speed: info.speed,
     fee_cents: info.fee,
     fee_usd: toDollars(info.fee),
-    endpoint: info.endpoint,
+    providers: activeProviders.filter(p => isRailSupported(p, id)),
   }));
-  res.json({ rails, sec_codes: ACH_SEC_CODES, return_codes: ACH_RETURN_CODES });
+  res.json({ rails, sec_codes: ACH_SEC_CODES, return_codes: ACH_RETURN_CODES, providers: PROVIDERS });
 });
 
 // --- GET /limits — Daily limits and usage -----------------------------------
@@ -384,7 +477,7 @@ router.post('/external-accounts', async (req, res) => {
   }
 });
 
-// --- POST /send — Initiate a real payment -----------------------------------
+// --- POST /send — Initiate a payment via selected provider ------------------
 router.post('/send', async (req, res) => {
   try {
     const db = req.db;
@@ -397,7 +490,17 @@ router.post('/send', async (req, res) => {
       recipient_name, recipient_routing, recipient_account, recipient_bank,
       description, memo, sec_code, settlement_schedule,
       mailing_address, external_transfer_id,
+      mercury_account_id, mercury_recipient_id,
     } = req.body;
+
+    // Determine provider (explicit or default)
+    const provider = req.body.provider || getDefaultProvider(db);
+    if (!PROVIDERS[provider]) {
+      return res.status(400).json({ error: `Unknown provider: ${provider}. Supported: ${Object.keys(PROVIDERS).join(', ')}` });
+    }
+    if (!isRailSupported(provider, rail)) {
+      return res.status(400).json({ error: `${PROVIDERS[provider].name} does not support ${rail.toUpperCase()} rail. Supported rails: ${PROVIDERS[provider].rails.join(', ')}` });
+    }
 
     const amountCents = amount_cents || Math.round(parseFloat(amount) * 100);
     const feeCents = calculateRailFee(rail);
@@ -416,119 +519,170 @@ router.post('/send', async (req, res) => {
       });
     }
 
-    // Resolve Increase account ID
+    // Resolve account IDs based on provider
     let resolvedIncreaseAcctId = increase_account_id;
-    if (!resolvedIncreaseAcctId && from_account_id) {
-      const linked = db.prepare('SELECT increase_account_id FROM increase_accounts WHERE trust_account_id = ?').get(from_account_id);
-      if (linked) resolvedIncreaseAcctId = linked.increase_account_id;
-    }
-
-    // Resolve Increase external account ID
     let resolvedExtAcctId = increase_ext_acct_id || external_account_id;
-    if (!resolvedExtAcctId && contact_id) {
-      const linked = db.prepare('SELECT increase_ext_acct_id FROM increase_external_accounts WHERE contact_id = ? LIMIT 1').get(contact_id);
-      if (linked) resolvedExtAcctId = linked.increase_ext_acct_id;
+    let resolvedMercuryAcctId = mercury_account_id;
+    let resolvedMercuryRecipId = mercury_recipient_id;
+
+    if (provider === 'increase') {
+      if (!resolvedIncreaseAcctId && from_account_id) {
+        const linked = db.prepare('SELECT increase_account_id FROM increase_accounts WHERE trust_account_id = ?').get(from_account_id);
+        if (linked) resolvedIncreaseAcctId = linked.increase_account_id;
+      }
+      if (!resolvedExtAcctId && contact_id) {
+        const linked = db.prepare('SELECT increase_ext_acct_id FROM increase_external_accounts WHERE contact_id = ? LIMIT 1').get(contact_id);
+        if (linked) resolvedExtAcctId = linked.increase_ext_acct_id;
+      }
+    } else if (provider === 'mercury') {
+      if (!resolvedMercuryAcctId && from_account_id) {
+        const linked = db.prepare('SELECT mercury_account_id FROM mercury_accounts WHERE trust_account_id = ?').get(from_account_id);
+        if (linked) resolvedMercuryAcctId = linked.mercury_account_id;
+      }
+      if (!resolvedMercuryRecipId && contact_id) {
+        const linked = db.prepare('SELECT mercury_recipient_id FROM mercury_recipients WHERE contact_id = ? LIMIT 1').get(contact_id);
+        if (linked) resolvedMercuryRecipId = linked.mercury_recipient_id;
+      }
     }
 
     // Create local rail transaction record
     db.prepare(`
       INSERT INTO rail_transactions (
         rail_tx_number, external_transfer_id, increase_account_id, increase_ext_acct_id,
-        rail, direction, amount_cents, currency,
+        provider, rail, direction, amount_cents, currency,
         sec_code, recipient_name, recipient_routing, recipient_account, recipient_bank,
+        mercury_account_id, mercury_recipient_id,
         status, fee_cents, idempotency_key, initiated_by
-      ) VALUES (?, ?, ?, ?, ?, 'credit', ?, 'USD', ?, ?, ?, ?, ?, 'pending_submission', ?, ?, ?)
+      ) VALUES (?, ?, ?, ?, ?, ?, 'credit', ?, 'USD', ?, ?, ?, ?, ?, ?, ?, 'pending_submission', ?, ?, ?)
     `).run(
       railTxNumber, external_transfer_id || null,
       resolvedIncreaseAcctId || null, resolvedExtAcctId || null,
-      rail, amountCents,
+      provider, rail, amountCents,
       sec_code || null,
       recipient_name || null, recipient_routing || null,
       maskAccountNumber(recipient_account) || null, recipient_bank || null,
+      resolvedMercuryAcctId || null, resolvedMercuryRecipId || null,
       feeCents, idemKey, req.body.actor || 'system'
     );
 
     const railTxId = db.prepare('SELECT last_insert_rowid() as id').get().id;
 
-    // Attempt to submit to Increase if API key configured
-    const client = getIncreaseClient(db);
-    let increaseResult = null;
+    let providerResult = null;
     let submitted = false;
 
-    if (client && resolvedIncreaseAcctId) {
-      try {
-        switch (rail) {
-          case 'ach':
-            increaseResult = await client.createACHTransfer(
-              buildACHPayload({
-                accountId: resolvedIncreaseAcctId,
-                externalAccountId: resolvedExtAcctId,
-                amount: amountCents,
-                description: description || 'DLB Trust Payment',
-                secCode: sec_code,
-                settlementSchedule: settlement_schedule,
-              }),
-              idemKey
-            );
-            break;
-          case 'wire':
-            increaseResult = await client.createWireTransfer(
-              buildWirePayload({
-                accountId: resolvedIncreaseAcctId,
-                externalAccountId: resolvedExtAcctId,
-                accountNumber: recipient_account,
-                routingNumber: recipient_routing,
-                amount: amountCents,
-                beneficiaryName: recipient_name,
-                memo: memo,
-              }),
-              idemKey
-            );
-            break;
-          case 'rtp':
-            increaseResult = await client.createRTPTransfer(
-              buildRTPPayload({
-                accountId: resolvedIncreaseAcctId,
-                externalAccountId: resolvedExtAcctId,
-                amount: amountCents,
-                creditorName: 'DLB Trust',
-                remittanceInfo: description || 'Payment',
-              }),
-              idemKey
-            );
-            break;
-          case 'check':
-            increaseResult = await client.createCheckTransfer(
-              buildCheckPayload({
-                accountId: resolvedIncreaseAcctId,
-                amount: amountCents,
-                recipientName: recipient_name,
-                mailingAddress: mailing_address,
-                memo: memo || description,
-              }),
-              idemKey
-            );
-            break;
-        }
+    // --- INCREASE submission ---
+    if (provider === 'increase') {
+      const client = getIncreaseClient(db);
+      if (client && resolvedIncreaseAcctId) {
+        try {
+          switch (rail) {
+            case 'ach':
+              providerResult = await client.createACHTransfer(
+                buildACHPayload({
+                  accountId: resolvedIncreaseAcctId,
+                  externalAccountId: resolvedExtAcctId,
+                  amount: amountCents,
+                  description: description || 'DLB Trust Payment',
+                  secCode: sec_code,
+                  settlementSchedule: settlement_schedule,
+                }),
+                idemKey
+              );
+              break;
+            case 'wire':
+              providerResult = await client.createWireTransfer(
+                buildWirePayload({
+                  accountId: resolvedIncreaseAcctId,
+                  externalAccountId: resolvedExtAcctId,
+                  accountNumber: recipient_account,
+                  routingNumber: recipient_routing,
+                  amount: amountCents,
+                  beneficiaryName: recipient_name,
+                  memo: memo,
+                }),
+                idemKey
+              );
+              break;
+            case 'rtp':
+              providerResult = await client.createRTPTransfer(
+                buildRTPPayload({
+                  accountId: resolvedIncreaseAcctId,
+                  externalAccountId: resolvedExtAcctId,
+                  amount: amountCents,
+                  creditorName: 'DLB Trust',
+                  remittanceInfo: description || 'Payment',
+                }),
+                idemKey
+              );
+              break;
+            case 'check':
+              providerResult = await client.createCheckTransfer(
+                buildCheckPayload({
+                  accountId: resolvedIncreaseAcctId,
+                  amount: amountCents,
+                  recipientName: recipient_name,
+                  mailingAddress: mailing_address,
+                  memo: memo || description,
+                }),
+                idemKey
+              );
+              break;
+          }
 
-        if (increaseResult) {
-          submitted = true;
-          const mappedStatus = mapIncreaseStatus(increaseResult.status) || 'submitted';
+          if (providerResult) {
+            submitted = true;
+            const mappedStatus = mapIncreaseStatus(providerResult.status) || 'submitted';
+            db.prepare(`
+              UPDATE rail_transactions SET
+                increase_transfer_id = ?, increase_tx_id = ?, status = ?,
+                submitted_at = datetime('now'), updated_at = datetime('now')
+              WHERE id = ?
+            `).run(providerResult.id, providerResult.transaction_id || null, mappedStatus, railTxId);
+          }
+        } catch (apiErr) {
           db.prepare(`
-            UPDATE rail_transactions SET
-              increase_transfer_id = ?,
-              increase_tx_id = ?,
-              status = ?,
-              submitted_at = datetime('now'),
-              updated_at = datetime('now')
+            UPDATE rail_transactions SET status = 'failed', failure_reason = ?, failed_at = datetime('now'), updated_at = datetime('now')
             WHERE id = ?
-          `).run(increaseResult.id, increaseResult.transaction_id || null, mappedStatus, railTxId);
+          `).run(apiErr.message, railTxId);
         }
-      } catch (apiErr) {
-        db.prepare(`
-          UPDATE rail_transactions SET status = 'failed', failure_reason = ?, failed_at = datetime('now'), updated_at = datetime('now')
-          WHERE id = ?
-        `).run(apiErr.message, railTxId);
+      }
+    }
+
+    // --- MERCURY submission ---
+    if (provider === 'mercury') {
+      const client = getMercuryClient(db);
+      if (client && resolvedMercuryAcctId && resolvedMercuryRecipId) {
+        try {
+          let payload;
+          switch (rail) {
+            case 'ach':
+              payload = buildMercuryACHPayload({ recipientId: resolvedMercuryRecipId, amount: amountCents, note: description || memo, idempotencyKey: idemKey });
+              break;
+            case 'wire':
+              payload = buildMercuryWirePayload({ recipientId: resolvedMercuryRecipId, amount: amountCents, note: description || memo, idempotencyKey: idemKey });
+              break;
+            case 'check':
+              payload = buildMercuryCheckPayload({ recipientId: resolvedMercuryRecipId, amount: amountCents, note: description || memo, idempotencyKey: idemKey });
+              break;
+          }
+
+          if (payload) {
+            providerResult = await client.createTransaction(resolvedMercuryAcctId, payload, idemKey);
+            submitted = true;
+            const mappedStatus = mapMercuryStatus(providerResult.status) || 'submitted';
+            db.prepare(`
+              UPDATE rail_transactions SET
+                mercury_tx_id = ?, status = ?,
+                submitted_at = datetime('now'), updated_at = datetime('now')
+              WHERE id = ?
+            `).run(providerResult.id, mappedStatus, railTxId);
+          }
+        } catch (apiErr) {
+          db.prepare(`
+            UPDATE rail_transactions SET status = 'failed', failure_reason = ?, failed_at = datetime('now'), updated_at = datetime('now')
+            WHERE id = ?
+          `).run(apiErr.message, railTxId);
+        }
       }
     }
 
@@ -540,8 +694,9 @@ router.post('/send', async (req, res) => {
       } catch (_) {}
     }
 
+    const providerName = PROVIDERS[provider]?.name || provider;
     insertAudit(db, buildRailAuditEntry('rail_payment_initiated', railTxId, 'send_payment', req.body.actor || 'system', {
-      rail, amount_usd: toDollars(amountCents), rail_tx: railTxNumber, submitted, increase_id: increaseResult?.id,
+      provider, rail, amount_usd: toDollars(amountCents), rail_tx: railTxNumber, submitted, provider_id: providerResult?.id,
     }));
 
     const tx = db.prepare('SELECT * FROM rail_transactions WHERE id = ?').get(railTxId);
@@ -549,9 +704,11 @@ router.post('/send', async (req, res) => {
     tx.fee_usd = toDollars(tx.fee_cents);
 
     res.status(201).json({
-      message: submitted ? `${RAILS[rail].name} payment submitted to Increase` : `${RAILS[rail].name} payment created (offline — connect API to submit)`,
+      message: submitted
+        ? `${RAILS[rail].name} payment submitted via ${providerName}`
+        : `${RAILS[rail].name} payment created (offline — connect ${providerName} API to submit)`,
       transaction: tx,
-      increase_response: increaseResult,
+      provider_response: providerResult,
       live: submitted,
     });
   } catch (err) {
@@ -559,15 +716,16 @@ router.post('/send', async (req, res) => {
   }
 });
 
-// --- GET /transactions — List rail transactions -----------------------------
+// --- GET /transactions — List rail transactions (filter by provider) --------
 router.get('/transactions', (req, res) => {
   try {
-    const { status, rail, limit, offset } = req.query;
+    const { status, rail, provider, limit, offset } = req.query;
     let where = [];
     let params = [];
 
     if (status) { where.push('rt.status = ?'); params.push(status); }
     if (rail) { where.push('rt.rail = ?'); params.push(rail); }
+    if (provider) { where.push('rt.provider = ?'); params.push(provider); }
 
     const whereClause = where.length > 0 ? 'WHERE ' + where.join(' AND ') : '';
     const lim = Math.min(parseInt(limit) || 100, 500);
@@ -688,63 +846,88 @@ router.post('/transactions/:id/cancel', async (req, res) => {
   }
 });
 
-// --- POST /transactions/:id/sync — Sync status from Increase ----------------
+// --- POST /transactions/:id/sync — Sync status from provider ----------------
 router.post('/transactions/:id/sync', async (req, res) => {
   try {
     const db = req.db;
     const tx = db.prepare('SELECT * FROM rail_transactions WHERE id = ?').get(req.params.id);
     if (!tx) return res.status(404).json({ error: 'Transaction not found' });
-    if (!tx.increase_transfer_id) {
-      return res.status(400).json({ error: 'No Increase transfer ID to sync' });
-    }
 
-    const client = getIncreaseClient(db);
-    if (!client) return res.status(400).json({ error: 'Increase API not configured' });
+    const txProvider = tx.provider || 'increase';
 
-    let increaseData;
-    switch (tx.rail) {
-      case 'ach': increaseData = await client.getACHTransfer(tx.increase_transfer_id); break;
-      case 'wire': increaseData = await client.getWireTransfer(tx.increase_transfer_id); break;
-      case 'rtp': increaseData = await client.getRTPTransfer(tx.increase_transfer_id); break;
-      case 'check': increaseData = await client.getCheckTransfer(tx.increase_transfer_id); break;
-    }
-
-    if (increaseData) {
-      const newStatus = mapIncreaseStatus(increaseData.status);
-      const updates = { status: newStatus };
-
-      if (increaseData.submission) {
-        updates.ach_trace_number = increaseData.submission.trace_number;
-        updates.expected_settlement = increaseData.submission.expected_funds_settlement_at;
+    // --- Sync via Increase ---
+    if (txProvider === 'increase') {
+      if (!tx.increase_transfer_id) {
+        return res.status(400).json({ error: 'No Increase transfer ID to sync' });
       }
-      if (increaseData.return) {
-        updates.ach_return_code = increaseData.return.return_reason_code;
-        updates.return_reason = increaseData.return.reason;
-      }
-      if (increaseData.transaction_id) {
-        updates.increase_tx_id = increaseData.transaction_id;
+      const client = getIncreaseClient(db);
+      if (!client) return res.status(400).json({ error: 'Increase API not configured' });
+
+      let increaseData;
+      switch (tx.rail) {
+        case 'ach': increaseData = await client.getACHTransfer(tx.increase_transfer_id); break;
+        case 'wire': increaseData = await client.getWireTransfer(tx.increase_transfer_id); break;
+        case 'rtp': increaseData = await client.getRTPTransfer(tx.increase_transfer_id); break;
+        case 'check': increaseData = await client.getCheckTransfer(tx.increase_transfer_id); break;
       }
 
-      db.prepare(`
-        UPDATE rail_transactions SET
-          status = ?, increase_tx_id = COALESCE(?, increase_tx_id),
-          ach_trace_number = COALESCE(?, ach_trace_number),
-          expected_settlement = COALESCE(?, expected_settlement),
-          ach_return_code = COALESCE(?, ach_return_code),
-          return_reason = COALESCE(?, return_reason),
-          updated_at = datetime('now')
-        WHERE id = ?
-      `).run(
-        updates.status, updates.increase_tx_id || null,
-        updates.ach_trace_number || null, updates.expected_settlement || null,
-        updates.ach_return_code || null, updates.return_reason || null,
-        tx.id
-      );
+      if (increaseData) {
+        const newStatus = mapIncreaseStatus(increaseData.status);
+        const updates = { status: newStatus };
 
-      res.json({ message: 'Transaction synced', status: updates.status, increase_status: increaseData.status });
-    } else {
-      res.json({ message: 'No data returned from Increase' });
+        if (increaseData.submission) {
+          updates.ach_trace_number = increaseData.submission.trace_number;
+          updates.expected_settlement = increaseData.submission.expected_funds_settlement_at;
+        }
+        if (increaseData.return) {
+          updates.ach_return_code = increaseData.return.return_reason_code;
+          updates.return_reason = increaseData.return.reason;
+        }
+        if (increaseData.transaction_id) {
+          updates.increase_tx_id = increaseData.transaction_id;
+        }
+
+        db.prepare(`
+          UPDATE rail_transactions SET
+            status = ?, increase_tx_id = COALESCE(?, increase_tx_id),
+            ach_trace_number = COALESCE(?, ach_trace_number),
+            expected_settlement = COALESCE(?, expected_settlement),
+            ach_return_code = COALESCE(?, ach_return_code),
+            return_reason = COALESCE(?, return_reason),
+            updated_at = datetime('now')
+          WHERE id = ?
+        `).run(
+          updates.status, updates.increase_tx_id || null,
+          updates.ach_trace_number || null, updates.expected_settlement || null,
+          updates.ach_return_code || null, updates.return_reason || null,
+          tx.id
+        );
+
+        return res.json({ message: 'Transaction synced via Increase', status: updates.status, provider_status: increaseData.status });
+      }
+      return res.json({ message: 'No data returned from Increase' });
     }
+
+    // --- Sync via Mercury ---
+    if (txProvider === 'mercury') {
+      if (!tx.mercury_tx_id) {
+        return res.status(400).json({ error: 'No Mercury transaction ID to sync' });
+      }
+      const client = getMercuryClient(db);
+      if (!client) return res.status(400).json({ error: 'Mercury API not configured' });
+
+      const mercuryData = await client.getTransaction(tx.mercury_tx_id);
+      if (mercuryData) {
+        const newStatus = mapMercuryStatus(mercuryData.status);
+        db.prepare(`
+          UPDATE rail_transactions SET status = ?, updated_at = datetime('now') WHERE id = ?
+        `).run(newStatus, tx.id);
+        return res.json({ message: 'Transaction synced via Mercury', status: newStatus, provider_status: mercuryData.status });
+      }
+      return res.json({ message: 'No data returned from Mercury' });
+    }
+
+    res.status(400).json({ error: `Unknown provider: ${txProvider}` });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -891,6 +1074,176 @@ router.post('/reconciliation/run', (req, res) => {
 
     insertAudit(db, buildRailAuditEntry('reconciliation_run', 0, 'run_reconciliation', req.body.actor || 'system', { date }));
     res.json({ message: `Reconciliation completed for ${date}` });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// =============================================================================
+// MERCURY-SPECIFIC ENDPOINTS
+// =============================================================================
+
+// --- POST /mercury/accounts/sync — Sync accounts from Mercury ---------------
+router.post('/mercury/accounts/sync', async (req, res) => {
+  try {
+    const client = getMercuryClient(req.db);
+    if (!client) {
+      return res.status(400).json({ error: 'Mercury API key not configured. Set MERCURY_API_KEY or update via /config' });
+    }
+
+    const result = await client.listAccounts();
+    const accounts = result.accounts || result || [];
+    let synced = 0;
+
+    for (const acct of accounts) {
+      const balanceCents = Math.round((acct.currentBalance || 0) * 100);
+      const availableCents = Math.round((acct.availableBalance || acct.currentBalance || 0) * 100);
+
+      req.db.prepare(`
+        INSERT INTO mercury_accounts (mercury_account_id, account_name, account_number, routing_number, account_type, status, balance_cents, available_balance_cents, last_synced_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+        ON CONFLICT(mercury_account_id) DO UPDATE SET
+          account_name = excluded.account_name,
+          account_number = excluded.account_number,
+          routing_number = excluded.routing_number,
+          account_type = excluded.account_type,
+          status = excluded.status,
+          balance_cents = excluded.balance_cents,
+          available_balance_cents = excluded.available_balance_cents,
+          last_synced_at = datetime('now'),
+          updated_at = datetime('now')
+      `).run(
+        acct.id,
+        acct.name || acct.nickname || 'Mercury Account',
+        maskAccountNumber(acct.accountNumber || ''),
+        acct.routingNumber || '',
+        acct.type || 'checking',
+        acct.status || 'active',
+        balanceCents,
+        availableCents
+      );
+      synced++;
+    }
+
+    insertAudit(req.db, buildRailAuditEntry('mercury_account_sync', 0, 'sync_mercury_accounts', 'system', { synced }));
+    res.json({ message: `Synced ${synced} Mercury accounts`, count: synced });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// --- GET /mercury/accounts — List Mercury accounts --------------------------
+router.get('/mercury/accounts', (req, res) => {
+  try {
+    const rows = req.db.prepare(`
+      SELECT ma.*, ta.account_number as trust_acct_number, ta.account_name as trust_acct_name
+      FROM mercury_accounts ma
+      LEFT JOIN trust_accounts ta ON ma.trust_account_id = ta.id
+      ORDER BY ma.created_at DESC
+    `).all();
+    res.json({ accounts: rows });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// --- POST /mercury/recipients — Create Mercury recipient --------------------
+router.post('/mercury/recipients', async (req, res) => {
+  try {
+    const { contact_id, name, email, routing_number, account_number, account_type } = req.body;
+    if (!name) return res.status(400).json({ error: 'name is required' });
+
+    const client = getMercuryClient(req.db);
+    const payload = buildMercuryRecipientPayload({
+      name,
+      email,
+      routingNumber: routing_number,
+      accountNumber: account_number,
+      accountType: account_type,
+    });
+
+    let mercuryResult = null;
+    if (client) {
+      mercuryResult = await client.createRecipient(payload);
+    }
+
+    const recipientId = mercuryResult ? mercuryResult.id : `local_merc_recip_${Date.now()}`;
+
+    req.db.prepare(`
+      INSERT INTO mercury_recipients (mercury_recipient_id, contact_id, name, email, account_number, routing_number, status)
+      VALUES (?, ?, ?, ?, ?, ?, 'active')
+    `).run(
+      recipientId,
+      contact_id || null,
+      name,
+      email || null,
+      maskAccountNumber(account_number || ''),
+      routing_number || null
+    );
+
+    insertAudit(req.db, buildRailAuditEntry('mercury_recipient_created', 0, 'create_mercury_recipient', 'system', { mercury_id: recipientId, name }));
+
+    res.status(201).json({
+      message: 'Mercury recipient created',
+      mercury_recipient_id: recipientId,
+      live: !!client,
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// --- GET /mercury/recipients — List Mercury recipients ----------------------
+router.get('/mercury/recipients', (req, res) => {
+  try {
+    const rows = req.db.prepare(`
+      SELECT mr.*, cc.display_name as contact_name, cc.contact_type
+      FROM mercury_recipients mr
+      LEFT JOIN crm_contacts cc ON mr.contact_id = cc.id
+      ORDER BY mr.created_at DESC
+    `).all();
+    res.json({ recipients: rows });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// --- POST /mercury/recipients/sync — Sync recipients from Mercury -----------
+router.post('/mercury/recipients/sync', async (req, res) => {
+  try {
+    const client = getMercuryClient(req.db);
+    if (!client) {
+      return res.status(400).json({ error: 'Mercury API key not configured' });
+    }
+
+    const result = await client.listRecipients();
+    const recipients = result.recipients || result || [];
+    let synced = 0;
+
+    for (const recip of recipients) {
+      req.db.prepare(`
+        INSERT INTO mercury_recipients (mercury_recipient_id, name, email, account_number, routing_number, payment_methods, status)
+        VALUES (?, ?, ?, ?, ?, ?, 'active')
+        ON CONFLICT(mercury_recipient_id) DO UPDATE SET
+          name = excluded.name,
+          email = excluded.email,
+          payment_methods = excluded.payment_methods,
+          status = excluded.status,
+          updated_at = datetime('now')
+      `).run(
+        recip.id,
+        recip.name,
+        recip.emails?.[0] || null,
+        maskAccountNumber(recip.electronicRoutingInfo?.accountNumber || ''),
+        recip.electronicRoutingInfo?.routingNumber || null,
+        JSON.stringify(recip.paymentMethod || []),
+        'active'
+      );
+      synced++;
+    }
+
+    insertAudit(req.db, buildRailAuditEntry('mercury_recipients_sync', 0, 'sync_mercury_recipients', 'system', { synced }));
+    res.json({ message: `Synced ${synced} Mercury recipients`, count: synced });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }

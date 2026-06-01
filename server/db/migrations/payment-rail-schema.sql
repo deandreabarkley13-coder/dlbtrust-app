@@ -1,6 +1,7 @@
 -- ---------------------------------------------------------------------------
 -- Payment Rail Engine Schema
--- DEANDREA LAVAR BARKLEY TRUST — Real Money Movement via Increase
+-- DEANDREA LAVAR BARKLEY TRUST — Multi-Provider Payment Rails
+-- Supports: Increase (ACH, Wire, RTP, Check) + Mercury (ACH, Wire, Check)
 -- ---------------------------------------------------------------------------
 
 -- --- Increase Accounts (Mirrors Increase accounts linked to trust) ----------
@@ -60,6 +61,8 @@ CREATE TABLE IF NOT EXISTS rail_transactions (
   increase_transfer_id  TEXT,                               -- Increase transfer ID (ach_transfer_xxx, wire_transfer_xxx, etc.)
   increase_account_id   TEXT,                               -- Increase source account
   increase_ext_acct_id  TEXT,                               -- Increase external account (destination)
+  -- Provider
+  provider              TEXT NOT NULL DEFAULT 'increase',   -- increase, mercury
   -- Rail details
   rail                  TEXT NOT NULL DEFAULT 'ach',        -- ach, wire, rtp, check
   direction             TEXT NOT NULL DEFAULT 'credit',     -- credit (send), debit (pull)
@@ -111,6 +114,10 @@ CREATE TABLE IF NOT EXISTS rail_transactions (
   -- Error
   failure_reason        TEXT,
   return_reason         TEXT,
+  -- Mercury-specific
+  mercury_tx_id         TEXT,                               -- Mercury transaction ID
+  mercury_account_id    TEXT,                               -- Mercury source account
+  mercury_recipient_id  TEXT,                               -- Mercury recipient ID
   -- Audit
   initiated_by          TEXT DEFAULT 'system',
   created_at            TEXT DEFAULT (datetime('now')),
@@ -124,6 +131,51 @@ CREATE INDEX IF NOT EXISTS idx_rail_tx_rail ON rail_transactions(rail);
 CREATE INDEX IF NOT EXISTS idx_rail_tx_increase ON rail_transactions(increase_transfer_id);
 CREATE INDEX IF NOT EXISTS idx_rail_tx_ext ON rail_transactions(external_transfer_id);
 CREATE INDEX IF NOT EXISTS idx_rail_tx_idempotency ON rail_transactions(idempotency_key);
+CREATE INDEX IF NOT EXISTS idx_rail_tx_provider ON rail_transactions(provider);
+CREATE INDEX IF NOT EXISTS idx_rail_tx_mercury ON rail_transactions(mercury_tx_id);
+
+-- --- Mercury Accounts (Mirrors Mercury accounts linked to trust) ------------
+CREATE TABLE IF NOT EXISTS mercury_accounts (
+  id                    INTEGER PRIMARY KEY AUTOINCREMENT,
+  mercury_account_id    TEXT NOT NULL UNIQUE,               -- Mercury's account UUID
+  trust_account_id      INTEGER,                            -- Link to local trust_accounts
+  account_name          TEXT NOT NULL,
+  account_number        TEXT,                               -- Masked bank account number
+  routing_number        TEXT,
+  account_type          TEXT DEFAULT 'checking',            -- checking, savings, mercury
+  status                TEXT NOT NULL DEFAULT 'active',     -- active, closed
+  currency              TEXT NOT NULL DEFAULT 'USD',
+  balance_cents         INTEGER NOT NULL DEFAULT 0,
+  available_balance_cents INTEGER NOT NULL DEFAULT 0,
+  last_synced_at        TEXT,
+  created_at            TEXT DEFAULT (datetime('now')),
+  updated_at            TEXT DEFAULT (datetime('now')),
+  FOREIGN KEY (trust_account_id) REFERENCES trust_accounts(id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_merc_acct_id ON mercury_accounts(mercury_account_id);
+CREATE INDEX IF NOT EXISTS idx_merc_acct_trust ON mercury_accounts(trust_account_id);
+
+-- --- Mercury Recipients (Counterparties on Mercury) -------------------------
+CREATE TABLE IF NOT EXISTS mercury_recipients (
+  id                    INTEGER PRIMARY KEY AUTOINCREMENT,
+  mercury_recipient_id  TEXT NOT NULL UNIQUE,               -- Mercury's recipient UUID
+  contact_id            INTEGER,                            -- Link to crm_contacts
+  payment_method_id     INTEGER,                            -- Link to crm_payment_methods
+  name                  TEXT NOT NULL,
+  email                 TEXT,
+  account_number        TEXT,                               -- Masked
+  routing_number        TEXT,
+  payment_methods       TEXT,                               -- JSON: available payment methods
+  status                TEXT NOT NULL DEFAULT 'active',     -- active, archived
+  created_at            TEXT DEFAULT (datetime('now')),
+  updated_at            TEXT DEFAULT (datetime('now')),
+  FOREIGN KEY (contact_id) REFERENCES crm_contacts(id),
+  FOREIGN KEY (payment_method_id) REFERENCES crm_payment_methods(id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_merc_recip_id ON mercury_recipients(mercury_recipient_id);
+CREATE INDEX IF NOT EXISTS idx_merc_recip_contact ON mercury_recipients(contact_id);
 
 -- --- Webhook Events (Incoming Increase webhooks) ----------------------------
 CREATE TABLE IF NOT EXISTS rail_webhook_events (
@@ -171,16 +223,28 @@ CREATE TABLE IF NOT EXISTS rail_config (
   updated_at            TEXT DEFAULT (datetime('now'))
 );
 
--- Seed default configuration
+-- Seed default configuration — multi-provider
 INSERT OR IGNORE INTO rail_config (config_key, config_value, description)
 VALUES
-  ('provider', 'increase', 'Payment rail provider'),
+  ('active_providers', 'increase,mercury', 'Comma-separated active providers'),
+  ('default_provider', 'increase', 'Default payment rail provider'),
   ('environment', 'sandbox', 'sandbox or production'),
-  ('api_base_url', 'https://sandbox.increase.com', 'Increase API base URL'),
-  ('webhook_secret', '', 'Webhook signature verification secret'),
+  -- Increase settings
+  ('increase_api_key', '', 'Increase API key'),
+  ('increase_api_base_url', 'https://sandbox.increase.com', 'Increase API base URL'),
+  ('increase_webhook_secret', '', 'Increase webhook signature secret'),
+  -- Mercury settings
+  ('mercury_api_key', '', 'Mercury API key'),
+  -- Shared settings
   ('default_ach_sec_code', 'CCD', 'Default SEC code for ACH (CCD=corporate, PPD=personal)'),
   ('default_wire_statement', 'DLB Trust Payment', 'Default wire statement descriptor'),
   ('auto_submit_threshold_cents', '100000', 'Auto-submit payments under this amount (cents)'),
   ('require_dual_approval_cents', '5000000', 'Require dual approval above this amount (cents)'),
   ('daily_ach_limit_cents', '50000000', 'Daily ACH outgoing limit (cents)'),
   ('daily_wire_limit_cents', '100000000', 'Daily wire outgoing limit (cents)');
+
+-- Migrate old single-provider config keys to new names (safe for fresh installs)
+UPDATE rail_config SET config_key = 'increase_api_key' WHERE config_key = 'api_key';
+UPDATE rail_config SET config_key = 'increase_api_base_url' WHERE config_key = 'api_base_url';
+UPDATE rail_config SET config_key = 'increase_webhook_secret' WHERE config_key = 'webhook_secret';
+DELETE FROM rail_config WHERE config_key = 'provider';

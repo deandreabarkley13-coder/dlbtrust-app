@@ -1510,15 +1510,19 @@ async function loadPaymentRails() {
       api('/payment-rails/limits'),
     ]);
 
-    // Connection status
+    // Connection status — multi-provider
     const connEl = document.getElementById('rail-connection-status');
     const envBadge = dashboard.environment === 'production'
       ? '<span class="badge badge-active" style="font-size:0.85rem">PRODUCTION — REAL MONEY</span>'
       : '<span class="badge badge-frozen" style="font-size:0.85rem">SANDBOX — Test Mode</span>';
-    const connBadge = dashboard.api_connected
-      ? '<span class="badge badge-active">Connected</span>'
-      : '<span class="badge badge-failed">Not Connected</span>';
-    connEl.innerHTML = `<strong>Provider:</strong> Increase &nbsp;|&nbsp; <strong>Environment:</strong> ${envBadge} &nbsp;|&nbsp; <strong>API:</strong> ${connBadge} &nbsp;|&nbsp; <button class="btn btn-sm" onclick="showRailConfig()" style="font-size:0.75rem">Configure</button> <button class="btn btn-sm" onclick="syncIncreaseAccounts()" style="font-size:0.75rem;margin-left:4px">Sync Accounts</button>`;
+    const providers = dashboard.providers || {};
+    const incBadge = providers.increase?.connected
+      ? '<span class="badge badge-active">Increase ✓</span>'
+      : '<span class="badge badge-failed">Increase ✗</span>';
+    const mercBadge = providers.mercury?.connected
+      ? '<span class="badge badge-active">Mercury ✓</span>'
+      : '<span class="badge badge-failed">Mercury ✗</span>';
+    connEl.innerHTML = `<strong>Providers:</strong> ${incBadge} ${mercBadge} &nbsp;|&nbsp; <strong>Default:</strong> ${(dashboard.default_provider || 'increase').charAt(0).toUpperCase() + (dashboard.default_provider || 'increase').slice(1)} &nbsp;|&nbsp; <strong>Env:</strong> ${envBadge} &nbsp;|&nbsp; <button class="btn btn-sm" onclick="showRailConfig()" style="font-size:0.75rem">Configure</button> <button class="btn btn-sm" onclick="syncProviderAccounts()" style="font-size:0.75rem;margin-left:4px">Sync Accounts</button>`;
 
     // Metrics
     document.getElementById('rail-metrics').innerHTML = `
@@ -1582,9 +1586,11 @@ async function loadRailTransactions() {
   try {
     const railFilter = document.getElementById('rail-filter')?.value || '';
     const statusFilter = document.getElementById('rail-status-filter')?.value || '';
+    const providerFilter = document.getElementById('rail-provider-filter')?.value || '';
     let params = [];
     if (railFilter) params.push(`rail=${railFilter}`);
     if (statusFilter) params.push(`status=${statusFilter}`);
+    if (providerFilter) params.push(`provider=${providerFilter}`);
     const qs = params.length > 0 ? '?' + params.join('&') : '';
 
     const data = await api(`/payment-rails/transactions${qs}`);
@@ -1592,22 +1598,26 @@ async function loadRailTransactions() {
 
     let html = `<table>
       <thead><tr>
-        <th>Rail TX #</th><th>Rail</th><th>Recipient</th><th>Amount</th><th>Fee</th><th>Status</th><th>Increase ID</th><th>Date</th><th>Actions</th>
+        <th>Rail TX #</th><th>Provider</th><th>Rail</th><th>Recipient</th><th>Amount</th><th>Fee</th><th>Status</th><th>Provider ID</th><th>Date</th><th>Actions</th>
       </tr></thead><tbody>`;
 
     if (txs.length === 0) {
-      html += '<tr><td colspan="9" style="text-align:center;color:var(--text-secondary);padding:40px">No payment rail transactions yet. Click "+ Send Payment" to move real money via ACH, Wire, RTP, or Check.</td></tr>';
+      html += '<tr><td colspan="10" style="text-align:center;color:var(--text-secondary);padding:40px">No payment rail transactions yet. Click "+ Send Payment" to move real money via ACH, Wire, RTP, or Check.</td></tr>';
     } else {
       for (const tx of txs) {
         const railBadge = tx.rail === 'ach' ? 'badge-active' : tx.rail === 'wire' ? 'badge-approved' : tx.rail === 'rtp' ? 'badge-open' : 'badge-frozen';
+        const provBadge = (tx.provider || 'increase') === 'mercury' ? 'badge-open' : 'badge-approved';
+        const providerLabel = (tx.provider || 'increase').charAt(0).toUpperCase() + (tx.provider || 'increase').slice(1);
+        const providerId = tx.increase_transfer_id || tx.mercury_tx_id || 'local';
         html += `<tr>
           <td><strong>${tx.rail_tx_number}</strong></td>
+          <td><span class="badge ${provBadge}">${providerLabel}</span></td>
           <td><span class="badge ${railBadge}">${(tx.rail || '').toUpperCase()}</span></td>
           <td>${tx.contact_name || tx.recipient_name || '—'}${tx.recipient_account ? '<br><small style="color:var(--text-secondary)">' + tx.recipient_account + '</small>' : ''}</td>
           <td>${formatUSD(tx.amount_cents)}</td>
           <td>${tx.fee_cents > 0 ? formatUSD(tx.fee_cents) : '—'}</td>
           <td>${badge(tx.status)}</td>
-          <td><small style="color:var(--text-secondary)">${tx.increase_transfer_id || 'local'}</small></td>
+          <td><small style="color:var(--text-secondary)">${providerId}</small></td>
           <td>${formatDate(tx.created_at)}</td>
           <td>${railTxActions(tx)}</td>
         </tr>`;
@@ -1629,7 +1639,7 @@ function railTxActions(tx) {
   if (cancellable.includes(tx.status)) {
     btns += `<button class="btn btn-sm btn-danger" onclick="cancelRailTx(${tx.id})">Cancel</button> `;
   }
-  if (tx.increase_transfer_id) {
+  if (tx.increase_transfer_id || tx.mercury_tx_id) {
     btns += `<button class="btn btn-sm" onclick="syncRailTx(${tx.id})">Sync</button> `;
   }
   return btns || '—';
@@ -1655,28 +1665,61 @@ async function cancelRailTx(id) {
 async function syncRailTx(id) {
   try {
     const data = await api(`/payment-rails/transactions/${id}/sync`, { method: 'POST' });
-    showToast(data.message || 'Synced with Increase');
+    showToast(data.message || 'Synced with provider');
     loadRailTransactions();
   } catch (err) { showToast(err.message, 'error'); }
 }
 
-async function syncIncreaseAccounts() {
+async function syncProviderAccounts() {
   try {
-    const data = await api('/payment-rails/accounts/sync', { method: 'POST' });
-    showToast(data.message || 'Accounts synced');
+    // Sync both providers
+    const results = [];
+    try {
+      const inc = await api('/payment-rails/accounts/sync', { method: 'POST' });
+      results.push(inc.message || 'Increase synced');
+    } catch (_) {}
+    try {
+      const merc = await api('/payment-rails/mercury/accounts/sync', { method: 'POST' });
+      results.push(merc.message || 'Mercury synced');
+    } catch (_) {}
+    showToast(results.length > 0 ? results.join('; ') : 'No providers configured');
     loadPaymentRails();
   } catch (err) { showToast(err.message, 'error'); }
 }
 
 function toggleRailFields() {
   const rail = document.getElementById('rail-select').value;
+  const provider = document.getElementById('rail-provider-select')?.value || 'increase';
   document.getElementById('rail-ach-fields').classList.toggle('hidden', rail !== 'ach');
   document.getElementById('rail-check-fields').classList.toggle('hidden', rail !== 'check');
 
   const fees = { ach: 0, wire: 25, rtp: 1, check: 5 };
   const speeds = { ach: '1-3 business days', wire: 'Same day', rtp: 'Seconds (real-time)', check: '5-10 business days' };
+  const providerLabel = provider.charAt(0).toUpperCase() + provider.slice(1);
   document.getElementById('rail-fee-preview').innerHTML =
-    `<strong>${rail.toUpperCase()}</strong> — Fee: <strong>$${fees[rail].toFixed(2)}</strong> &nbsp;|&nbsp; Speed: <strong>${speeds[rail]}</strong>`;
+    `<strong>${rail.toUpperCase()}</strong> via <strong>${providerLabel}</strong> — Fee: <strong>$${fees[rail].toFixed(2)}</strong> &nbsp;|&nbsp; Speed: <strong>${speeds[rail]}</strong>`;
+}
+
+function updateProviderRails() {
+  const provider = document.getElementById('rail-provider-select')?.value || 'increase';
+  const railSelect = document.getElementById('rail-select');
+  const mercuryRails = ['ach', 'wire', 'check'];
+  const increaseRails = ['ach', 'wire', 'rtp', 'check'];
+  const availableRails = provider === 'mercury' ? mercuryRails : increaseRails;
+
+  // Show/hide RTP option based on provider
+  for (const opt of railSelect.options) {
+    if (opt.value === 'rtp') {
+      opt.disabled = provider === 'mercury';
+      opt.textContent = provider === 'mercury' ? 'RTP (not available via Mercury)' : 'RTP — Real-Time Payment ($1.00)';
+    }
+  }
+
+  // If current selection not available, switch to ACH
+  if (!availableRails.includes(railSelect.value)) {
+    railSelect.value = 'ach';
+  }
+  toggleRailFields();
 }
 
 async function showSendPaymentRail() {
@@ -1730,6 +1773,7 @@ async function sendRailPayment(e) {
   e.preventDefault();
   const form = new FormData(e.target);
   const body = {
+    provider: form.get('provider') || 'increase',
     rail: form.get('rail'),
     amount: parseFloat(form.get('amount')),
     from_account_id: parseInt(form.get('from_account_id')),
@@ -1769,7 +1813,7 @@ async function showRailConfig() {
     const configs = data.config || [];
     let html = '<div style="display:grid;gap:12px">';
     for (const c of configs) {
-      const readonly = c.key === 'provider' ? 'readonly' : '';
+      const readonly = (c.key === 'active_providers') ? 'readonly' : '';
       html += `<label style="font-size:0.85rem">${c.key}<br><small style="color:var(--text-secondary)">${c.description || ''}</small>
         <input type="text" value="${c.value}" data-config-key="${c.key}" ${readonly}
           style="margin-top:4px;padding:8px;background:var(--bg-hover);border:1px solid var(--border);border-radius:6px;color:var(--text-primary);width:100%">

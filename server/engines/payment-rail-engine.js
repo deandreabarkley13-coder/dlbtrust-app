@@ -1,19 +1,40 @@
 /**
- * Payment Rail Engine — Increase Integration
- * DEANDREA LAVAR BARKLEY TRUST — Real Money Movement
+ * Payment Rail Engine — Multi-Provider (Increase + Mercury)
+ * DEANDREA LAVAR BARKLEY TRUST — Private Trust Payment Rails
  *
- * Provider-agnostic interface wrapping the Increase API for
- * ACH, Wire, RTP (Real-Time Payments), and Check transfers.
+ * Provider-agnostic abstraction supporting Increase and Mercury
+ * for ACH, Wire, RTP (Real-Time Payments), and Check transfers.
  *
- * All amounts are in cents. Idempotency keys prevent duplicate submissions.
+ * Increase: ACH, Wire, RTP, Check — developer-first, direct bank access
+ * Mercury:  ACH, Wire, Check      — business banking with API
+ *
+ * All internal amounts are in cents. Idempotency keys prevent duplicate submissions.
  */
 
 'use strict';
 
-// --- Constants ---------------------------------------------------------------
+// --- Provider Constants ------------------------------------------------------
+
+const PROVIDERS = {
+  increase: {
+    name: 'Increase',
+    rails: ['ach', 'wire', 'rtp', 'check'],
+    description: 'Developer-first banking API with direct bank access',
+    sandbox_url: 'https://sandbox.increase.com',
+    production_url: 'https://api.increase.com',
+  },
+  mercury: {
+    name: 'Mercury',
+    rails: ['ach', 'wire', 'check'],
+    description: 'Business banking with treasury management API',
+    production_url: 'https://api.mercury.com/api/v1',
+    sandbox_url: 'https://api.mercury.com/api/v1',  // Mercury uses same URL; sandbox via test tokens
+  },
+};
 
 const INCREASE_SANDBOX_URL = 'https://sandbox.increase.com';
 const INCREASE_PRODUCTION_URL = 'https://api.increase.com';
+const MERCURY_API_URL = 'https://api.mercury.com/api/v1';
 
 const RAILS = {
   ach:   { name: 'ACH',   endpoint: '/ach_transfers',                speed: '1-3 days',  fee: 0 },
@@ -418,25 +439,215 @@ function buildRailAuditEntry(eventType, railTxId, action, actor, details) {
   };
 }
 
+// =============================================================================
+// MERCURY API CLIENT
+// =============================================================================
+
+const MERCURY_STATUS_MAP = {
+  pending:   'pending_submission',
+  sent:      'submitted',
+  cancelled: 'cancelled',
+  failed:    'failed',
+  approved:  'approved',
+  denied:    'failed',
+  completed: 'completed',
+};
+
+class MercuryClient {
+  constructor(apiKey) {
+    this.apiKey = apiKey;
+    this.baseUrl = MERCURY_API_URL;
+  }
+
+  async request(method, path, body = null, idempotencyKey = null) {
+    const headers = {
+      'Authorization': `Bearer ${this.apiKey}`,
+      'Content-Type': 'application/json',
+      'Accept': 'application/json',
+    };
+    if (idempotencyKey) {
+      headers['Idempotency-Key'] = idempotencyKey;
+    }
+
+    const options = { method, headers };
+    if (body && (method === 'POST' || method === 'PATCH' || method === 'PUT')) {
+      options.body = JSON.stringify(body);
+    }
+
+    const url = `${this.baseUrl}${path}`;
+    const response = await fetch(url, options);
+    const data = await response.json();
+
+    if (!response.ok) {
+      const err = new Error(data.errors?.[0]?.message || data.message || `Mercury API error ${response.status}`);
+      err.status = response.status;
+      err.mercuryError = data;
+      throw err;
+    }
+    return data;
+  }
+
+  // --- Accounts ---
+
+  async listAccounts() {
+    return this.request('GET', '/accounts');
+  }
+
+  async getAccount(accountId) {
+    return this.request('GET', `/account/${accountId}`);
+  }
+
+  // --- Recipients ---
+
+  async createRecipient(body) {
+    return this.request('POST', '/recipients', body);
+  }
+
+  async listRecipients() {
+    return this.request('GET', '/recipients');
+  }
+
+  async getRecipient(recipientId) {
+    return this.request('GET', `/recipient/${recipientId}`);
+  }
+
+  // --- Transactions (Send Money) ---
+
+  async createTransaction(accountId, body, idempotencyKey) {
+    return this.request('POST', `/account/${accountId}/transactions`, body, idempotencyKey);
+  }
+
+  async listTransactions(accountId, params = {}) {
+    const qs = new URLSearchParams(params).toString();
+    return this.request('GET', `/account/${accountId}/transactions${qs ? '?' + qs : ''}`);
+  }
+
+  async getTransaction(transactionId) {
+    return this.request('GET', `/transaction/${transactionId}`);
+  }
+}
+
+// --- Mercury Payload Builders ------------------------------------------------
+
+function buildMercuryACHPayload({ recipientId, amount, note, idempotencyKey }) {
+  return {
+    recipientId,
+    amount: amount / 100,  // Mercury uses dollars, we store cents
+    paymentMethod: 'ach',
+    idempotencyKey,
+    note: note || 'DLB Trust Payment',
+  };
+}
+
+function buildMercuryWirePayload({ recipientId, amount, note, idempotencyKey, purpose }) {
+  return {
+    recipientId,
+    amount: amount / 100,
+    paymentMethod: 'domesticWire',
+    idempotencyKey,
+    note: note || 'DLB Trust Wire Payment',
+    purpose: purpose || { simple: { category: 'Vendor', additionalInfo: note || 'Trust distribution' } },
+  };
+}
+
+function buildMercuryCheckPayload({ recipientId, amount, note, idempotencyKey }) {
+  return {
+    recipientId,
+    amount: amount / 100,
+    paymentMethod: 'check',
+    idempotencyKey,
+    note: note || 'DLB Trust Check Payment',
+  };
+}
+
+function buildMercuryRecipientPayload({ name, email, routingNumber, accountNumber, accountType, wireRoutingNumber, wireAccountNumber, checkAddress }) {
+  const payload = {
+    name,
+    emails: email ? [email] : ['trust@dlbtrust.com'],
+  };
+
+  // ACH routing info
+  if (routingNumber && accountNumber) {
+    payload.electronicRoutingInfo = {
+      accountNumber,
+      routingNumber,
+      bankName: '',
+      electronicAccountType: accountType || 'businessChecking',
+    };
+  }
+
+  // Wire routing info (can differ from ACH)
+  if (wireRoutingNumber && wireAccountNumber) {
+    payload.domesticWireRoutingInfo = {
+      accountNumber: wireAccountNumber,
+      routingNumber: wireRoutingNumber,
+      address: { address1: '', city: '', region: 'OH', postalCode: '00000', country: 'US' },
+    };
+  } else if (routingNumber && accountNumber) {
+    payload.domesticWireRoutingInfo = {
+      accountNumber,
+      routingNumber,
+      address: { address1: '', city: '', region: 'OH', postalCode: '00000', country: 'US' },
+    };
+  }
+
+  // Check address
+  if (checkAddress) {
+    payload.checkInfo = { address: checkAddress };
+  }
+
+  return payload;
+}
+
+function mapMercuryStatus(mercuryStatus) {
+  return MERCURY_STATUS_MAP[mercuryStatus] || mercuryStatus;
+}
+
+// --- Provider-Agnostic Helpers -----------------------------------------------
+
+function getProviderRails(provider) {
+  return PROVIDERS[provider]?.rails || [];
+}
+
+function isRailSupported(provider, rail) {
+  return getProviderRails(provider).includes(rail);
+}
+
+function getProviderInfo(provider) {
+  return PROVIDERS[provider] || null;
+}
+
 module.exports = {
+  PROVIDERS,
   RAILS,
   ACH_SEC_CODES,
   ACH_RETURN_CODES,
   STATUS_MAP,
+  MERCURY_STATUS_MAP,
   INCREASE_SANDBOX_URL,
   INCREASE_PRODUCTION_URL,
+  MERCURY_API_URL,
   IncreaseClient,
+  MercuryClient,
   generateRailTxNumber,
   generateIdempotencyKey,
   buildACHPayload,
   buildWirePayload,
   buildRTPPayload,
   buildCheckPayload,
+  buildMercuryACHPayload,
+  buildMercuryWirePayload,
+  buildMercuryCheckPayload,
+  buildMercuryRecipientPayload,
   mapIncreaseStatus,
+  mapMercuryStatus,
   validateRailRequest,
   checkDailyLimit,
   calculateRailFee,
   maskAccountNumber,
   toDollars,
   buildRailAuditEntry,
+  getProviderRails,
+  isRailSupported,
+  getProviderInfo,
 };
