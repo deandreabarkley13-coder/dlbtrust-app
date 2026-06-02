@@ -834,7 +834,7 @@
               </div>
             </div>
             <div style="display:flex;gap:8px;margin-top:16px;justify-content:flex-end">
-              <button type="button" class="btn" onclick="closeModal('create-wallet-modal')">Cancel</button>
+              <button type="button" class="btn" onclick="hideModal('create-wallet-modal')">Cancel</button>
               <button type="submit" class="btn btn-primary">Create Wallet</button>
             </div>
           </form>
@@ -878,7 +878,7 @@
             </div>
             <div id="su-approval-notice" style="display:none;margin-top:12px;padding:10px;background:rgba(255,193,7,0.1);border:1px solid rgba(255,193,7,0.3);border-radius:8px;color:var(--warning);font-size:0.85rem"></div>
             <div style="display:flex;gap:8px;margin-top:16px;justify-content:flex-end">
-              <button type="button" class="btn" onclick="closeModal('send-usdc-modal')">Cancel</button>
+              <button type="button" class="btn" onclick="hideModal('send-usdc-modal')">Cancel</button>
               <button type="submit" class="btn btn-primary">Send USDC</button>
             </div>
           </form>
@@ -891,7 +891,7 @@
           <h3>Blockchain Configuration</h3>
           <div id="chain-config-form"></div>
           <div style="display:flex;gap:8px;margin-top:16px;justify-content:flex-end">
-            <button class="btn" onclick="closeModal('chain-config-modal')">Close</button>
+            <button class="btn" onclick="hideModal('chain-config-modal')">Close</button>
             <button class="btn btn-primary" onclick="saveChainConfig()">Save All</button>
           </div>
         </div>

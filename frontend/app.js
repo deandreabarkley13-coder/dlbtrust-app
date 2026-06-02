@@ -2020,7 +2020,7 @@ async function createWallet(e) {
         blockchain: $('#cw-blockchain').value,
       }),
     });
-    closeModal('create-wallet-modal');
+    hideModal('create-wallet-modal');
     showToast(`Wallet "${result.wallet.wallet_name}" created${result.circle_connected ? ' (Circle)' : ' (local)'}`, 'success');
     loadBlockchain();
   } catch (err) {
@@ -2086,7 +2086,7 @@ async function sendUsdc(e) {
         description: $('#su-description').value || undefined,
       }),
     });
-    closeModal('send-usdc-modal');
+    hideModal('send-usdc-modal');
     const msg = result.requires_approval
       ? `Transfer of $${parseFloat(result.transaction.amount).toFixed(2)} USDC requires approval`
       : `Transfer of $${parseFloat(result.transaction.amount).toFixed(2)} USDC ${result.circle_submitted ? 'submitted to Circle' : 'queued locally'}`;
@@ -2215,7 +2215,7 @@ async function saveChainConfig() {
       method: 'PUT',
       body: JSON.stringify({ updates }),
     });
-    closeModal('chain-config-modal');
+    hideModal('chain-config-modal');
     showToast(`${updates.length} config(s) saved`, 'success');
     loadBlockchain();
   } catch (err) {
