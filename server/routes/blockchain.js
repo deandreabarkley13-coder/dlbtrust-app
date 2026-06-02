@@ -70,7 +70,6 @@ function initSchema(db) {
     'banking-schema.sql',
     'crm-schema.sql',
     'external-transfers-schema.sql',
-    'payment-rail-schema.sql',
     'trust-accounting-schema.sql',
     'blockchain-schema.sql',
   ];
