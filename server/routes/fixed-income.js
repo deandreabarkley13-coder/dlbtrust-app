@@ -32,28 +32,19 @@ const { projectPortfolioCashFlows, forecastIncome } = require('../engines/cashfl
 const Database = require('better-sqlite3');
 
 function getDb() {
-  const dbPaths = [
-    path.join(__dirname, '..', '..', 'data', 'dlbtrust.db'),
-    path.join(__dirname, '..', 'trust.db'),
-    path.join(__dirname, '..', '..', 'trust.db'),
-    '/app/trust.db',
-  ];
-  for (const p of dbPaths) {
-    try {
-      return new Database(p);
-    } catch (_) {}
-  }
-  // Fallback: create in-memory for dev/testing
-  const memDb = new Database(':memory:');
-  initSchema(memDb);
-  return memDb;
+  const dbPath = process.env.DB_PATH || path.join(__dirname, '..', '..', 'data', 'dlbtrust.db');
+  return new Database(dbPath);
 }
 
+let schemaInitialized = false;
+
 function initSchema(db) {
+  if (schemaInitialized) return;
   const schemaPath = path.join(__dirname, '..', 'db', 'migrations', 'fixed-income-schema.sql');
   try {
     const sql = fs.readFileSync(schemaPath, 'utf8');
     db.exec(sql);
+    schemaInitialized = true;
   } catch (err) {
     console.warn('[fixed-income] Schema init warning:', err.message);
   }
@@ -65,6 +56,10 @@ router.use((req, res, next) => {
   try {
     req.fiDb = req.app.locals.db || getDb();
     initSchema(req.fiDb);
+    if (!req.app.locals.db) {
+      res.on('finish', () => { try { req.fiDb.close(); } catch (_) {} });
+      res.on('close',  () => { try { req.fiDb.close(); } catch (_) {} });
+    }
     next();
   } catch (err) {
     res.status(500).json({ error: 'Fixed income DB connection failed', detail: err.message });
@@ -670,7 +665,7 @@ router.post('/private-placements', (req, res) => {
       purchaseCents,
       b.purchase_date,
       b.settlement_date || b.purchase_date,
-      parseFloat(b.coupon_rate),
+      parseFloat(b.coupon_rate) / 100,
       b.coupon_frequency || 'semi-annual',
       b.maturity_date,
       b.day_count_convention || '30/360',
