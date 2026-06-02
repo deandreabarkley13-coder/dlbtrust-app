@@ -80,6 +80,7 @@ function loadView(view) {
     case 'contacts': loadContacts(); break;
     case 'payments': loadPayments(); break;
     case 'accounting': loadAccounting(); break;
+    case 'fixed-income': loadFixedIncome(); break;
     case 'blockchain': loadBlockchain(); break;
     case 'compliance': loadCompliance(); break;
     case 'activity': loadActivity(); break;
@@ -1498,6 +1499,116 @@ async function createAllocation(e) {
     hideModal('create-alloc-modal');
     e.target.reset();
     loadAllocations();
+  } catch (err) { showToast(err.message, 'error'); }
+}
+
+// --- Fixed Income / Private Placement Bonds ---
+
+async function loadFixedIncome() {
+  try {
+    const [summary, bonds] = await Promise.all([
+      api('/fixed-income/private-placements/summary').catch(() => ({ active_bonds: 0, total_par_value: '0.00', total_interest_paid: '0.00', by_series: [] })),
+      loadPrivatePlacements(),
+    ]);
+    const metricsEl = document.getElementById('fi-metrics');
+    metricsEl.innerHTML = `
+      <div class="metric-card"><div class="metric-value">${summary.active_bonds}</div><div class="metric-label">Active Bonds</div></div>
+      <div class="metric-card"><div class="metric-value">$${Number(summary.total_par_value).toLocaleString()}</div><div class="metric-label">Total Par Value</div></div>
+      <div class="metric-card"><div class="metric-value">$${Number(summary.total_interest_paid).toLocaleString()}</div><div class="metric-label">Total Interest Paid</div></div>
+      <div class="metric-card"><div class="metric-value">${summary.by_series?.length || 0}</div><div class="metric-label">Bond Series</div></div>
+    `;
+  } catch (err) { showToast(err.message, 'error'); }
+}
+
+async function loadPrivatePlacements() {
+  try {
+    const filter = document.getElementById('fi-filter')?.value || '';
+    const qs = filter ? `?status=${filter}` : '';
+    const data = await api(`/fixed-income/private-placements${qs}`);
+    const bonds = data.bonds || [];
+    const tableEl = document.getElementById('fi-bonds-table');
+    let html = `<table><thead><tr>
+      <th>Bond</th><th>Series</th><th>Par Value</th><th>Coupon</th><th>Maturity</th><th>Issuing Trust</th><th>Status</th><th>Actions</th>
+    </tr></thead><tbody>`;
+    if (bonds.length === 0) {
+      html += '<tr><td colspan="8" style="text-align:center;color:var(--text-secondary);padding:40px">No private placement bonds recorded yet. Click "+ Record Private Placement Bond" to add one.</td></tr>';
+    } else {
+      for (const b of bonds) {
+        const statusBadge = b.is_active ? '<span class="badge badge-active">active</span>' : '<span class="badge badge-failed">redeemed</span>';
+        html += `<tr>
+          <td><strong>${b.security_name}</strong></td>
+          <td>${b.bond_series}</td>
+          <td>$${Number(b.par_value).toLocaleString()}</td>
+          <td>${b.coupon_rate}%</td>
+          <td>${b.maturity_date}</td>
+          <td>${b.issuing_trust}</td>
+          <td>${statusBadge}</td>
+          <td>
+            ${b.is_active ? `<button class="btn btn-sm" onclick="recordBondPayment(${b.id})">Record Payment</button> <button class="btn btn-sm" onclick="redeemBond(${b.id})" style="color:var(--accent-red)">Redeem</button>` : ''}
+          </td>
+        </tr>`;
+      }
+    }
+    html += '</tbody></table>';
+    tableEl.innerHTML = html;
+    return data;
+  } catch (err) {
+    showToast(err.message, 'error');
+    return { bonds: [], total: 0 };
+  }
+}
+
+function showPrivatePlacementForm() {
+  document.getElementById('pp-bond-form').reset();
+  document.getElementById('pp-bond-modal').classList.remove('hidden');
+}
+
+async function submitPrivatePlacement(e) {
+  e.preventDefault();
+  try {
+    const form = e.target;
+    const fd = new FormData(form);
+    const body = {};
+    for (const [k, v] of fd.entries()) { body[k] = v; }
+    // Handle checkboxes (unchecked won't appear in FormData)
+    body.secured = form.querySelector('[name="secured"]').checked;
+    body.accredited_investors_only = form.querySelector('[name="accredited_investors_only"]').checked;
+    body.restricted_transfer = form.querySelector('[name="restricted_transfer"]').checked;
+    body.prudent_investor_compliant = form.querySelector('[name="prudent_investor_compliant"]').checked;
+
+    const data = await api('/fixed-income/private-placements', {
+      method: 'POST',
+      body: JSON.stringify(body),
+    });
+    showToast(data.message || 'Private placement bond recorded');
+    hideModal('pp-bond-modal');
+    loadFixedIncome();
+  } catch (err) { showToast(err.message, 'error'); }
+}
+
+async function recordBondPayment(id) {
+  const amount = prompt('Enter payment amount ($):');
+  if (!amount) return;
+  try {
+    const data = await api(`/fixed-income/private-placements/${id}/record-payment`, {
+      method: 'POST',
+      body: JSON.stringify({ amount, payment_type: 'interest' }),
+    });
+    showToast(data.message || 'Payment recorded');
+    loadFixedIncome();
+  } catch (err) { showToast(err.message, 'error'); }
+}
+
+async function redeemBond(id) {
+  if (!confirm('Redeem this bond? This marks it as matured/redeemed.')) return;
+  const reason = prompt('Redemption reason (optional):', 'Maturity');
+  try {
+    const data = await api(`/fixed-income/private-placements/${id}/redeem`, {
+      method: 'POST',
+      body: JSON.stringify({ reason }),
+    });
+    showToast(data.message || 'Bond redeemed');
+    loadFixedIncome();
   } catch (err) { showToast(err.message, 'error'); }
 }
 

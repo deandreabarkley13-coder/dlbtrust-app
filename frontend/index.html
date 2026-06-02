@@ -19,6 +19,7 @@
       <li><a href="#" data-view="contacts">Contacts</a></li>
       <li><a href="#" data-view="payments">Payments</a></li>
       <li><a href="#" data-view="accounting">Trust Accounting</a></li>
+      <li><a href="#" data-view="fixed-income">Fixed Income</a></li>
       <li><a href="#" data-view="blockchain">Crypto Rails</a></li>
       <li><a href="#" data-view="compliance">Compliance</a></li>
       <li><a href="#" data-view="activity">Activity</a></li>
@@ -591,6 +592,180 @@
             <div class="modal-actions">
               <button type="button" class="btn" onclick="hideModal('create-alloc-modal')">Cancel</button>
               <button type="submit" class="btn btn-primary">Record Allocation</button>
+            </div>
+          </form>
+        </div>
+      </div>
+    </section>
+
+    <!-- Fixed Income View -->
+    <section id="view-fixed-income" class="view">
+      <header class="view-header">
+        <h2>Fixed Income</h2>
+        <div>
+          <select id="fi-filter" onchange="loadPrivatePlacements()" style="margin-right:8px;padding:8px 12px;background:var(--bg-card);border:1px solid var(--border);border-radius:8px;color:var(--text-primary);font-size:0.85rem">
+            <option value="">All Bonds</option>
+            <option value="active">Active</option>
+            <option value="redeemed">Redeemed</option>
+          </select>
+          <button class="btn btn-primary" onclick="showPrivatePlacementForm()">+ Record Private Placement Bond</button>
+        </div>
+      </header>
+
+      <!-- Summary Metrics -->
+      <div class="metrics-grid" id="fi-metrics" style="margin-bottom:20px"></div>
+
+      <!-- Private Placement Bonds Table -->
+      <div class="table-container" id="fi-bonds-table"></div>
+
+      <!-- Record Private Placement Bond Modal -->
+      <div id="pp-bond-modal" class="modal hidden">
+        <div class="modal-content" style="max-width:800px">
+          <h3>Record Private Placement Bond</h3>
+          <p style="color:var(--text-secondary);font-size:0.85rem;margin-bottom:16px">Record a bond issued by the private trust company and held in trust as a fixed income asset.</p>
+          <form id="pp-bond-form" onsubmit="submitPrivatePlacement(event)">
+            <!-- Bond Identification -->
+            <fieldset style="border:1px solid var(--border);border-radius:8px;padding:16px;margin-bottom:16px">
+              <legend style="font-weight:600;padding:0 8px">Bond Identification</legend>
+              <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+                <label>Security Name *<input type="text" name="security_name" placeholder="e.g. DLB Trust Series A 5.25% 2030" required></label>
+                <label>Bond Series *<input type="text" name="bond_series" placeholder="e.g. Series A, Series 2026-1" required></label>
+              </div>
+              <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px">
+                <label>Par Value ($) *<input type="number" name="par_value" step="0.01" min="0.01" placeholder="100000.00" required></label>
+                <label>Purchase Price ($)<input type="number" name="purchase_price" step="0.01" min="0.01" placeholder="Same as par if blank"></label>
+                <label>Coupon Rate (%) *<input type="number" name="coupon_rate" step="0.001" min="0" max="100" placeholder="5.250" required></label>
+              </div>
+              <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px">
+                <label>Purchase Date *<input type="date" name="purchase_date" required></label>
+                <label>Maturity Date *<input type="date" name="maturity_date" required></label>
+                <label>Coupon Frequency
+                  <select name="coupon_frequency">
+                    <option value="semi-annual">Semi-Annual</option>
+                    <option value="quarterly">Quarterly</option>
+                    <option value="monthly">Monthly</option>
+                    <option value="annual">Annual</option>
+                    <option value="zero">Zero Coupon</option>
+                  </select>
+                </label>
+              </div>
+            </fieldset>
+
+            <!-- Trust & Issuer Details -->
+            <fieldset style="border:1px solid var(--border);border-radius:8px;padding:16px;margin-bottom:16px">
+              <legend style="font-weight:600;padding:0 8px">Trust & Issuer Details</legend>
+              <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+                <label>Issuing Trust *<input type="text" name="issuing_trust" placeholder="e.g. DeAndrea Lavar Barkley Trust" required></label>
+                <label>Trustee Name *<input type="text" name="trustee_name" placeholder="e.g. DeAndrea L. Barkley" required></label>
+              </div>
+              <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px">
+                <label>Trust EIN<input type="text" name="trust_ein" placeholder="XX-XXXXXXX"></label>
+                <label>Beneficiary Class<input type="text" name="beneficiary_class" placeholder="e.g. Family, Income Beneficiaries"></label>
+                <label>Ohio Trust Code Section<input type="text" name="ohio_trust_code_section" placeholder="e.g. ORC §1112"></label>
+              </div>
+            </fieldset>
+
+            <!-- Bond Terms -->
+            <fieldset style="border:1px solid var(--border);border-radius:8px;padding:16px;margin-bottom:16px">
+              <legend style="font-weight:600;padding:0 8px">Bond Terms & Structure</legend>
+              <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px">
+                <label>Offering Type
+                  <select name="offering_type">
+                    <option value="rule_506b">Rule 506(b) — Private</option>
+                    <option value="rule_506c">Rule 506(c) — Accredited Only</option>
+                    <option value="rule_144a">Rule 144A — QIB</option>
+                    <option value="intrastate">Intrastate (Ohio Only)</option>
+                    <option value="reg_s">Reg S — Offshore</option>
+                  </select>
+                </label>
+                <label>Subordination Level
+                  <select name="subordination_level">
+                    <option value="senior">Senior</option>
+                    <option value="mezzanine">Mezzanine</option>
+                    <option value="subordinated">Subordinated</option>
+                    <option value="equity_linked">Equity-Linked</option>
+                  </select>
+                </label>
+                <label>Interest Payment Method
+                  <select name="interest_payment_method">
+                    <option value="direct_deposit">Direct Deposit</option>
+                    <option value="check">Check</option>
+                    <option value="reinvest">Reinvest</option>
+                    <option value="accumulate">Accumulate</option>
+                  </select>
+                </label>
+              </div>
+              <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px">
+                <label>Principal Source
+                  <select name="principal_source">
+                    <option value="trust_income">Trust Income</option>
+                    <option value="trust_corpus">Trust Corpus</option>
+                    <option value="reserve_fund">Reserve Fund</option>
+                    <option value="new_issuance">New Issuance</option>
+                  </select>
+                </label>
+                <label>Valuation Method
+                  <select name="valuation_method">
+                    <option value="amortized_cost">Amortized Cost</option>
+                    <option value="fair_value">Fair Value</option>
+                    <option value="discounted_cashflow">Discounted Cash Flow</option>
+                    <option value="comparable_yield">Comparable Yield</option>
+                  </select>
+                </label>
+                <label>Day Count Convention
+                  <select name="day_count_convention">
+                    <option value="30/360">30/360</option>
+                    <option value="actual/365">Actual/365</option>
+                    <option value="actual/360">Actual/360</option>
+                    <option value="actual/actual">Actual/Actual</option>
+                  </select>
+                </label>
+              </div>
+              <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+                <label style="display:flex;align-items:center;gap:8px;margin-top:8px">
+                  <input type="checkbox" name="secured" value="1"> Secured (backed by collateral)
+                </label>
+                <label>Collateral Description<input type="text" name="collateral_description" placeholder="e.g. Trust real estate portfolio"></label>
+              </div>
+            </fieldset>
+
+            <!-- Regulatory & Compliance -->
+            <fieldset style="border:1px solid var(--border);border-radius:8px;padding:16px;margin-bottom:16px">
+              <legend style="font-weight:600;padding:0 8px">Regulatory & Compliance</legend>
+              <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px">
+                <label>Max Investors<input type="number" name="max_investors" value="35" min="1"></label>
+                <label>Current Investor Count<input type="number" name="current_investor_count" value="1" min="1"></label>
+                <label>Credit Rating
+                  <select name="credit_rating">
+                    <option value="NR">NR — Not Rated</option>
+                    <option value="AAA">AAA</option>
+                    <option value="AA">AA</option>
+                    <option value="A">A</option>
+                    <option value="BBB">BBB</option>
+                    <option value="BB">BB</option>
+                    <option value="B">B</option>
+                  </select>
+                </label>
+              </div>
+              <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px;margin-top:8px">
+                <label style="display:flex;align-items:center;gap:8px">
+                  <input type="checkbox" name="accredited_investors_only" value="1" checked> Accredited Investors Only
+                </label>
+                <label style="display:flex;align-items:center;gap:8px">
+                  <input type="checkbox" name="restricted_transfer" value="1" checked> Transfer Restricted
+                </label>
+                <label style="display:flex;align-items:center;gap:8px">
+                  <input type="checkbox" name="prudent_investor_compliant" value="1" checked> Prudent Investor Compliant
+                </label>
+              </div>
+              <label style="margin-top:12px">Offering Memorandum Reference<input type="text" name="offering_memorandum_ref" placeholder="e.g. OM-2026-001 or document ID"></label>
+            </fieldset>
+
+            <label>Notes<textarea name="notes" rows="2" placeholder="Additional notes about this bond issuance..."></textarea></label>
+
+            <div class="modal-actions">
+              <button type="button" class="btn" onclick="hideModal('pp-bond-modal')">Cancel</button>
+              <button type="submit" class="btn btn-primary">Record Bond</button>
             </div>
           </form>
         </div>

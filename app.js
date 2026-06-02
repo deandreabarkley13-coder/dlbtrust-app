@@ -51,6 +51,9 @@ app.use('/api/external-transfers', require('./server/routes/external-transfers')
 // ─── Trust Accounting Routes ────────────────────────────────────────────────
 app.use('/api/trust-accounting', require('./server/routes/trust-accounting'));
 
+// ─── Fixed Income Routes (Bond Portfolio + Private Placements) ──────────────
+app.use('/api/fixed-income', require('./server/routes/fixed-income'));
+
 // ─── Blockchain / Crypto Rails Routes (Circle + Polygon USDC) ──────────────
 app.use('/api/blockchain', require('./server/routes/blockchain'));
 

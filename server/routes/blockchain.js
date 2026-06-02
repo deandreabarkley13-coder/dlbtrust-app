@@ -71,6 +71,7 @@ function initSchema(db) {
     'crm-schema.sql',
     'external-transfers-schema.sql',
     'trust-accounting-schema.sql',
+    'fixed-income-schema.sql',
     'blockchain-schema.sql',
   ];
   for (const file of migrations) {
