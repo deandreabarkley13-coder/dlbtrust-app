@@ -126,11 +126,20 @@ function getProvider(db) {
 }
 
 function getMasterEncryptionKey(db) {
-  let key = process.env.WALLET_ENCRYPTION_KEY || getConfig(db, 'master_encryption_key');
-  if (!key) {
-    key = crypto.randomBytes(32).toString('hex');
-    setConfig(db, 'master_encryption_key', key);
+  let key = process.env.WALLET_ENCRYPTION_KEY;
+  if (key) return key;
+
+  // Fallback: check DB-stored key (less secure — key and ciphertext in same DB)
+  key = getConfig(db, 'master_encryption_key');
+  if (key) {
+    console.warn('[Security] Using DB-stored master encryption key. Set WALLET_ENCRYPTION_KEY env var for production.');
+    return key;
   }
+
+  // Auto-generate only for development/first-run convenience
+  console.warn('[Security] Auto-generating master encryption key and storing in DB. This is NOT recommended for production — set WALLET_ENCRYPTION_KEY env var instead.');
+  key = crypto.randomBytes(32).toString('hex');
+  setConfig(db, 'master_encryption_key', key);
   return key;
 }
 
@@ -435,8 +444,9 @@ router.post('/wallets/:id/sync', async (req, res) => {
       walletMgr.updateBalance(wallet.id, usdcBalance, nativeBalance);
     }
     const updated = walletMgr.getWallet(wallet.id);
+    const { encrypted_private_key: _epk, ...safeUpdated } = updated;
 
-    res.json({ wallet: updated, synced, provider: isPrivate ? 'private' : 'circle' });
+    res.json({ wallet: safeUpdated, synced, provider: isPrivate ? 'private' : 'circle' });
   } catch (err) {
     res.status(500).json({ error: 'Failed to sync wallet', detail: err.message });
   }
@@ -692,7 +702,8 @@ router.post('/transactions/:id/approve', async (req, res) => {
 
     const newStatus = (onChainSubmitted || circleTxId) ? 'submitted' : 'approved';
     txMgr.updateStatus(tx.id, newStatus, {
-      circleTxId: circleTxId || txHash,
+      circleTxId,
+      txHash,
       approvedBy: approved_by || 'trustee',
     });
 
