@@ -1,13 +1,13 @@
 -- ---------------------------------------------------------------------------
 -- Blockchain / Crypto Rails Schema
--- DEANDREA LAVAR BARKLEY TRUST — Circle + Polygon USDC Integration
--- Supports: Circle Programmable Wallets, USDC Transfers, Fiat On/Off Ramp
+-- DEANDREA LAVAR BARKLEY TRUST — Open-Source Private Stack + Circle Fallback
+-- Supports: Direct Polygon RPC (ethers.js), USDC Transfers, Role-Based Access
 -- ---------------------------------------------------------------------------
 
--- --- Blockchain Wallets (Circle Developer-Controlled Wallets) ---------------
+-- --- Blockchain Wallets (Private Stack + Circle Fallback) -------------------
 CREATE TABLE IF NOT EXISTS blockchain_wallets (
   id                    INTEGER PRIMARY KEY AUTOINCREMENT,
-  circle_wallet_id      TEXT UNIQUE,                          -- Circle wallet UUID
+  circle_wallet_id      TEXT UNIQUE,                          -- Circle wallet UUID (null for private stack)
   circle_wallet_set_id  TEXT,                                 -- Circle wallet set UUID
   trust_account_id      INTEGER,                              -- Link to local trust_accounts
   contact_id            INTEGER,                              -- Link to crm_contacts (beneficiary wallet)
@@ -18,6 +18,11 @@ CREATE TABLE IF NOT EXISTS blockchain_wallets (
   address_tag           TEXT,                                 -- For chains that need memo/tag
   wallet_state          TEXT NOT NULL DEFAULT 'live',         -- live, frozen
   custody_type          TEXT NOT NULL DEFAULT 'developer',    -- developer (api-controlled)
+  -- Provider
+  provider              TEXT NOT NULL DEFAULT 'private',      -- 'private' (direct RPC) or 'circle' (API)
+  -- Private Stack: Encrypted key storage
+  encrypted_private_key TEXT,                                 -- AES-256-GCM encrypted private key
+  key_derivation_path   TEXT,                                 -- BIP44 derivation path
   -- Balances (last synced from chain)
   usdc_balance          TEXT NOT NULL DEFAULT '0.00',         -- USDC balance (string for precision)
   native_balance        TEXT NOT NULL DEFAULT '0.00',         -- MATIC/ETH balance for gas
@@ -25,6 +30,8 @@ CREATE TABLE IF NOT EXISTS blockchain_wallets (
   spending_limit_daily  TEXT DEFAULT '50000.00',              -- Daily spending limit in USDC
   requires_approval     INTEGER NOT NULL DEFAULT 0,           -- 1 = transfers need trustee approval
   approval_threshold    TEXT DEFAULT '10000.00',              -- Amount above which approval is required
+  multisig_required     INTEGER NOT NULL DEFAULT 0,           -- 1 = requires multi-sig for transfers
+  multisig_threshold    INTEGER DEFAULT 2,                    -- Number of approvals needed
   -- Metadata
   status                TEXT NOT NULL DEFAULT 'active',       -- active, frozen, archived
   last_synced_at        TEXT,
@@ -67,6 +74,8 @@ CREATE TABLE IF NOT EXISTS blockchain_transactions (
   -- Status
   status                TEXT NOT NULL DEFAULT 'initiated',
   -- initiated, pending_approval, approved, submitted, confirming, confirmed, completed, failed, cancelled
+  -- Provider
+  provider              TEXT NOT NULL DEFAULT 'private',      -- 'private' or 'circle'
   -- Circle state mapping
   circle_state          TEXT,                                 -- Circle's native state
   -- Approval
@@ -157,18 +166,22 @@ CREATE TABLE IF NOT EXISTS blockchain_config (
 
 -- Seed default configuration
 INSERT OR IGNORE INTO blockchain_config (config_key, config_value, is_sensitive, description) VALUES
-  ('circle_api_key',       '',        1, 'Circle API key from console.circle.com'),
+  ('provider',             'private', 0, 'Active provider: private (direct RPC, no API key) or circle (API)'),
+  ('circle_api_key',       '',        1, 'Circle API key — only needed if provider=circle'),
   ('circle_entity_secret', '',        1, 'Circle entity secret for wallet operations'),
-  ('environment',          'sandbox', 0, 'sandbox or production'),
+  ('environment',          'testnet', 0, 'testnet or mainnet'),
   ('default_blockchain',   'MATIC-AMOY', 0, 'Default blockchain for new wallets (MATIC-AMOY for testnet, MATIC for mainnet)'),
   ('wallet_set_id',        '',        0, 'Circle wallet set ID for trust wallets'),
   ('master_wallet_id',     '',        0, 'Primary trust corpus wallet ID'),
   ('usdc_token_id',        '',        0, 'Circle USDC token ID for the selected blockchain'),
   ('daily_transfer_limit', '100000.00', 0, 'Maximum daily USDC transfer limit'),
   ('approval_threshold',   '10000.00',  0, 'Amount above which trustee approval is required'),
+  ('multisig_threshold',   '2',       0, 'Number of trustee approvals for multi-sig transactions'),
   ('auto_sync_enabled',    'true',    0, 'Auto-sync wallet balances on dashboard load'),
   ('gas_sponsor_enabled',  'true',    0, 'Sponsor gas fees for beneficiary wallets'),
-  ('fiat_gateway_enabled', 'true',    0, 'Enable fiat on/off ramp via Circle Mint');
+  ('fiat_gateway_enabled', 'true',    0, 'Enable fiat on/off ramp via Circle Mint'),
+  ('rpc_url_override',     '',        0, 'Custom RPC URL (leave blank for public endpoints)'),
+  ('master_encryption_key','',        1, 'Master key for encrypting wallet private keys (auto-generated if blank)');
 
 -- --- Blockchain Audit Log ---------------------------------------------------
 CREATE TABLE IF NOT EXISTS blockchain_audit_log (
@@ -184,3 +197,32 @@ CREATE TABLE IF NOT EXISTS blockchain_audit_log (
 
 CREATE INDEX IF NOT EXISTS idx_bal_event ON blockchain_audit_log(event_type);
 CREATE INDEX IF NOT EXISTS idx_bal_entity ON blockchain_audit_log(entity_type, entity_id);
+
+-- --- Wallet Access Roles (Trust Governance) ---------------------------------
+CREATE TABLE IF NOT EXISTS wallet_access_roles (
+  id                    INTEGER PRIMARY KEY AUTOINCREMENT,
+  wallet_id             INTEGER NOT NULL,
+  role                  TEXT NOT NULL DEFAULT 'trustee',      -- trustee, co_trustee, beneficiary, vendor, auditor
+  assigned_by           TEXT DEFAULT 'system',
+  created_at            TEXT DEFAULT (datetime('now')),
+  updated_at            TEXT DEFAULT (datetime('now')),
+  FOREIGN KEY (wallet_id) REFERENCES blockchain_wallets(id),
+  UNIQUE(wallet_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_war_wallet ON wallet_access_roles(wallet_id);
+CREATE INDEX IF NOT EXISTS idx_war_role ON wallet_access_roles(role);
+
+-- --- Multi-Sig Approvals ----------------------------------------------------
+CREATE TABLE IF NOT EXISTS multisig_approvals (
+  id                    INTEGER PRIMARY KEY AUTOINCREMENT,
+  tx_id                 INTEGER NOT NULL,
+  approver_wallet_id    INTEGER NOT NULL,
+  approved_at           TEXT DEFAULT (datetime('now')),
+  FOREIGN KEY (tx_id) REFERENCES blockchain_transactions(id),
+  FOREIGN KEY (approver_wallet_id) REFERENCES blockchain_wallets(id),
+  UNIQUE(tx_id, approver_wallet_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_msa_tx ON multisig_approvals(tx_id);
+CREATE INDEX IF NOT EXISTS idx_msa_approver ON multisig_approvals(approver_wallet_id);

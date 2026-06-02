@@ -1,12 +1,17 @@
 /**
- * Blockchain Engine — Circle + Polygon USDC Integration
+ * Blockchain Engine — Open-Source Private Stack + Circle Fallback
  * DEANDREA LAVAR BARKLEY TRUST — Crypto Rails for Private Trust Banking
  *
  * Unified engine for:
- *   1. Circle Programmable Wallets (developer-controlled)
- *   2. USDC transfers (wallet-to-wallet, on-chain)
- *   3. Fiat on/off ramp via Circle Mint (USD ↔ USDC)
- *   4. Trust governance (spending limits, approval thresholds)
+ *   1. PRIVATE STACK: Direct Polygon RPC via ethers.js (no API keys)
+ *      - HD wallet generation (BIP39/BIP44)
+ *      - Direct USDC contract interaction
+ *      - Role-based access control (trustee, beneficiary, vendor)
+ *      - Multi-sig approval for large transfers
+ *   2. CIRCLE FALLBACK: Circle Programmable Wallets
+ *   3. Trust governance (spending limits, approval thresholds)
+ *
+ * Provider modes: 'private' (open-source, no API keys) or 'circle' (API)
  *
  * All fiat amounts are strings with 2 decimal places for precision.
  * Internal cents conversions provided for ledger compatibility.
@@ -14,10 +19,63 @@
 
 'use strict';
 
+const { ethers } = require('ethers');
+const crypto = require('crypto');
+
 // --- Constants ---------------------------------------------------------------
 
 const CIRCLE_SANDBOX_URL = 'https://api-sandbox.circle.com';
 const CIRCLE_PRODUCTION_URL = 'https://api.circle.com';
+
+// --- RPC Endpoints (Public, Free — No API Keys) -----------------------------
+const RPC_ENDPOINTS = {
+  'MATIC':       'https://polygon-rpc.com',
+  'MATIC-AMOY':  'https://rpc-amoy.polygon.technology',
+  'ETH':         'https://ethereum-rpc.publicnode.com',
+  'ETH-SEPOLIA': 'https://ethereum-sepolia-rpc.publicnode.com',
+  'ARB':         'https://arb1.arbitrum.io/rpc',
+  'AVAX':        'https://api.avax.network/ext/bc/C/rpc',
+};
+
+// --- USDC Contract Addresses Per Chain --------------------------------------
+const USDC_CONTRACTS = {
+  'MATIC':       '0x3c499c542cEF5E3811e1192ce70d8cC03d5c3359',  // Native USDC on Polygon
+  'MATIC-AMOY':  '0x41E94Eb71898E8B51d8b2611b8F73eE29A0bDbC2',  // Testnet USDC
+  'ETH':         '0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48',  // USDC on Ethereum
+  'ETH-SEPOLIA': '0x1c7D4B196Cb0C7B01d743Fbc6116a902379C7238',  // Testnet USDC
+  'ARB':         '0xaf88d065e77c8cC2239327C5EDb3A432268e5831',  // USDC on Arbitrum
+  'AVAX':        '0xB97EF9Ef8734C71904D8002F8b6Bc66Dd9c48a6E',  // USDC on Avalanche
+};
+
+// --- ERC-20 ABI (minimal for USDC interaction) ------------------------------
+const ERC20_ABI = [
+  'function transfer(address to, uint256 amount) returns (bool)',
+  'function balanceOf(address account) view returns (uint256)',
+  'function decimals() view returns (uint8)',
+  'function symbol() view returns (string)',
+  'function name() view returns (string)',
+  'function approve(address spender, uint256 amount) returns (bool)',
+  'function allowance(address owner, address spender) view returns (uint256)',
+  'function totalSupply() view returns (uint256)',
+  'event Transfer(address indexed from, address indexed to, uint256 value)',
+];
+
+// --- Trust Access Roles -----------------------------------------------------
+const TRUST_ROLES = {
+  TRUSTEE:       'trustee',
+  BENEFICIARY:   'beneficiary',
+  VENDOR:        'vendor',
+  AUDITOR:       'auditor',
+  CO_TRUSTEE:    'co_trustee',
+};
+
+const ROLE_PERMISSIONS = {
+  trustee:       { canSend: true, canApprove: true, canFreeze: true, canCreateWallet: true, canViewAll: true, maxDailyUsd: null },
+  co_trustee:    { canSend: true, canApprove: true, canFreeze: true, canCreateWallet: true, canViewAll: true, maxDailyUsd: null },
+  beneficiary:   { canSend: false, canApprove: false, canFreeze: false, canCreateWallet: false, canViewAll: false, maxDailyUsd: 5000 },
+  vendor:        { canSend: false, canApprove: false, canFreeze: false, canCreateWallet: false, canViewAll: false, maxDailyUsd: 0 },
+  auditor:       { canSend: false, canApprove: false, canFreeze: false, canCreateWallet: false, canViewAll: true, maxDailyUsd: 0 },
+};
 
 const SUPPORTED_BLOCKCHAINS = {
   'MATIC':       { name: 'Polygon',         type: 'mainnet', native: 'MATIC',  explorer: 'https://polygonscan.com' },
@@ -505,6 +563,205 @@ class FiatGatewayManager {
   }
 }
 
+// =============================================================================
+// PRIVATE BLOCKCHAIN STACK — Open Source, No API Keys Required
+// =============================================================================
+
+// --- Key Encryption (for storing private keys in DB) -------------------------
+
+const ENCRYPTION_ALGO = 'aes-256-gcm';
+
+function deriveEncryptionKey(masterSecret) {
+  return crypto.scryptSync(masterSecret, 'dlbtrust-wallet-keys', 32);
+}
+
+function encryptPrivateKey(privateKey, masterSecret) {
+  const key = deriveEncryptionKey(masterSecret);
+  const iv = crypto.randomBytes(16);
+  const cipher = crypto.createCipheriv(ENCRYPTION_ALGO, key, iv);
+  let encrypted = cipher.update(privateKey, 'utf8', 'hex');
+  encrypted += cipher.final('hex');
+  const tag = cipher.getAuthTag().toString('hex');
+  return `${iv.toString('hex')}:${tag}:${encrypted}`;
+}
+
+function decryptPrivateKey(encryptedStr, masterSecret) {
+  const key = deriveEncryptionKey(masterSecret);
+  const [ivHex, tagHex, encrypted] = encryptedStr.split(':');
+  const iv = Buffer.from(ivHex, 'hex');
+  const tag = Buffer.from(tagHex, 'hex');
+  const decipher = crypto.createDecipheriv(ENCRYPTION_ALGO, key, iv);
+  decipher.setAuthTag(tag);
+  let decrypted = decipher.update(encrypted, 'hex', 'utf8');
+  decrypted += decipher.final('utf8');
+  return decrypted;
+}
+
+// --- Polygon Client (Direct RPC — No API Keys) ------------------------------
+
+class PolygonClient {
+  constructor(blockchain = 'MATIC-AMOY', customRpcUrl = null) {
+    this.blockchain = blockchain;
+    const rpcUrl = customRpcUrl || RPC_ENDPOINTS[blockchain];
+    if (!rpcUrl) throw new Error(`No RPC endpoint for blockchain: ${blockchain}`);
+    this.provider = new ethers.JsonRpcProvider(rpcUrl);
+    this.usdcAddress = USDC_CONTRACTS[blockchain] || null;
+  }
+
+  // Generate a new random wallet (returns address + encrypted private key)
+  generateWallet(masterSecret) {
+    const wallet = ethers.Wallet.createRandom();
+    const encryptedKey = encryptPrivateKey(wallet.privateKey, masterSecret);
+    return {
+      address: wallet.address,
+      encryptedPrivateKey: encryptedKey,
+    };
+  }
+
+  // Get a signer from encrypted private key
+  getSigner(encryptedPrivateKey, masterSecret) {
+    const privateKey = decryptPrivateKey(encryptedPrivateKey, masterSecret);
+    return new ethers.Wallet(privateKey, this.provider);
+  }
+
+  // Check USDC balance directly on-chain
+  async getUsdcBalance(address) {
+    if (!this.usdcAddress) return '0.00';
+    try {
+      const contract = new ethers.Contract(this.usdcAddress, ERC20_ABI, this.provider);
+      const balance = await contract.balanceOf(address);
+      const decimals = await contract.decimals();
+      return ethers.formatUnits(balance, decimals);
+    } catch (err) {
+      console.warn('[PolygonClient] USDC balance check failed:', err.message);
+      return '0.00';
+    }
+  }
+
+  // Check native token balance (MATIC/ETH for gas)
+  async getNativeBalance(address) {
+    try {
+      const balance = await this.provider.getBalance(address);
+      return ethers.formatEther(balance);
+    } catch (err) {
+      console.warn('[PolygonClient] Native balance check failed:', err.message);
+      return '0.00';
+    }
+  }
+
+  // Send USDC directly on-chain (signs locally, broadcasts to network)
+  async sendUsdc(encryptedPrivateKey, masterSecret, toAddress, amountUsd) {
+    if (!this.usdcAddress) throw new Error('USDC contract not configured for this chain');
+    const signer = this.getSigner(encryptedPrivateKey, masterSecret);
+    const contract = new ethers.Contract(this.usdcAddress, ERC20_ABI, signer);
+    const decimals = await contract.decimals();
+    const amountWei = ethers.parseUnits(amountUsd.toString(), decimals);
+
+    const tx = await contract.transfer(toAddress, amountWei);
+    return {
+      txHash: tx.hash,
+      from: signer.address,
+      to: toAddress,
+      amount: amountUsd,
+      blockchain: this.blockchain,
+    };
+  }
+
+  // Wait for transaction confirmation
+  async waitForConfirmation(txHash, confirmations = 1) {
+    const receipt = await this.provider.waitForTransaction(txHash, confirmations, 120000);
+    return {
+      confirmed: receipt.status === 1,
+      blockNumber: receipt.blockNumber,
+      gasUsed: receipt.gasUsed.toString(),
+      effectiveGasPrice: receipt.gasPrice ? ethers.formatUnits(receipt.gasPrice, 'gwei') : '0',
+    };
+  }
+
+  // Get transaction receipt
+  async getTransactionReceipt(txHash) {
+    return this.provider.getTransactionReceipt(txHash);
+  }
+
+  // Get current gas price
+  async getGasPrice() {
+    try {
+      const feeData = await this.provider.getFeeData();
+      return {
+        gasPrice: feeData.gasPrice ? ethers.formatUnits(feeData.gasPrice, 'gwei') : '0',
+        maxFeePerGas: feeData.maxFeePerGas ? ethers.formatUnits(feeData.maxFeePerGas, 'gwei') : null,
+      };
+    } catch {
+      return { gasPrice: '0', maxFeePerGas: null };
+    }
+  }
+
+  // Test RPC connectivity
+  async ping() {
+    try {
+      const blockNumber = await this.provider.getBlockNumber();
+      return { connected: true, blockNumber };
+    } catch (err) {
+      return { connected: false, error: err.message };
+    }
+  }
+}
+
+// --- Access Control Manager --------------------------------------------------
+
+class AccessControlManager {
+  constructor(db) {
+    this.db = db;
+  }
+
+  assignRole(walletId, role, assignedBy) {
+    this.db.prepare(`
+      INSERT OR REPLACE INTO wallet_access_roles (wallet_id, role, assigned_by, updated_at)
+      VALUES (?, ?, ?, datetime('now'))
+    `).run(walletId, role, assignedBy || 'system');
+  }
+
+  getRole(walletId) {
+    const row = this.db.prepare('SELECT role FROM wallet_access_roles WHERE wallet_id = ?').get(walletId);
+    return row ? row.role : 'trustee';
+  }
+
+  getPermissions(walletId) {
+    const role = this.getRole(walletId);
+    return { role, ...(ROLE_PERMISSIONS[role] || ROLE_PERMISSIONS.trustee) };
+  }
+
+  listRoles() {
+    return this.db.prepare('SELECT * FROM wallet_access_roles ORDER BY wallet_id').all();
+  }
+
+  checkPermission(walletId, action) {
+    const perms = this.getPermissions(walletId);
+    return perms[action] || false;
+  }
+
+  // Multi-sig: check if enough trustees have approved
+  checkMultiSigApproval(txId, requiredApprovals = 2) {
+    const row = this.db.prepare(
+      'SELECT COUNT(DISTINCT approver_wallet_id) as count FROM multisig_approvals WHERE tx_id = ?'
+    ).get(txId);
+    return (row ? row.count : 0) >= requiredApprovals;
+  }
+
+  addMultiSigApproval(txId, approverWalletId) {
+    this.db.prepare(`
+      INSERT OR IGNORE INTO multisig_approvals (tx_id, approver_wallet_id, approved_at)
+      VALUES (?, ?, datetime('now'))
+    `).run(txId, approverWalletId);
+  }
+
+  getMultiSigApprovals(txId) {
+    return this.db.prepare(
+      'SELECT * FROM multisig_approvals WHERE tx_id = ? ORDER BY approved_at'
+    ).all(txId);
+  }
+}
+
 // --- Audit Logger ------------------------------------------------------------
 
 function logAudit(db, { eventType, entityType, entityId, details, actor }) {
@@ -547,7 +804,14 @@ module.exports = {
   TRANSFER_TYPES,
   TX_STATUS_MAP,
   FIAT_STATUS_MAP,
+  TRUST_ROLES,
+  ROLE_PERMISSIONS,
+  RPC_ENDPOINTS,
+  USDC_CONTRACTS,
+  ERC20_ABI,
   CircleClient,
+  PolygonClient,
+  AccessControlManager,
   WalletManager,
   TransactionManager,
   FiatGatewayManager,
@@ -561,4 +825,6 @@ module.exports = {
   mapFiatStatus,
   maskAddress,
   getExplorerUrl,
+  encryptPrivateKey,
+  decryptPrivateKey,
 };
