@@ -3,9 +3,7 @@
  * Frontend integrating with Core Banking Engine API
  */
 
-const API_BASE = window.location.origin.includes('devinapps.com')
-  ? '' // Same-origin if served via proxy
-  : 'https://user:b114c30032cca392bcba6d9715de5182@9d72b291ab2c-tunnel-i1m085wt.devinapps.com';
+const API_BASE = ''; // Use relative paths — configured via API constant below
 
 // Use relative path if frontend is served from same origin as API
 const API = '/api';

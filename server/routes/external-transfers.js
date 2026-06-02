@@ -525,19 +525,22 @@ router.post('/:id/process', (req, res) => {
       return res.status(400).json({ error: 'Insufficient funds', available: toDollars(account.available_cents) });
     }
 
-    // Debit source account atomically
-    req.db.prepare(`
-      UPDATE trust_accounts SET
-        balance_cents = balance_cents - ?,
-        available_cents = available_cents - ?,
-        last_activity_date = date('now'),
-        updated_at = datetime('now')
-      WHERE id = ?
-    `).run(transfer.total_cents, transfer.total_cents, transfer.from_account_id);
+    // Debit source account and update status atomically
+    const processTransfer = req.db.transaction(() => {
+      req.db.prepare(`
+        UPDATE trust_accounts SET
+          balance_cents = balance_cents - ?,
+          available_cents = available_cents - ?,
+          last_activity_date = date('now'),
+          updated_at = datetime('now')
+        WHERE id = ?
+      `).run(transfer.total_cents, transfer.total_cents, transfer.from_account_id);
 
-    req.db.prepare(`
-      UPDATE external_transfers SET status = 'processing', sent_date = datetime('now'), updated_at = datetime('now') WHERE id = ?
-    `).run(req.params.id);
+      req.db.prepare(`
+        UPDATE external_transfers SET status = 'processing', sent_date = datetime('now'), updated_at = datetime('now') WHERE id = ?
+      `).run(req.params.id);
+    });
+    processTransfer();
 
     insertAudit(req.db, buildAuditEntry('external_transfer', req.params.id, 'processing',
       'dashboard_user', { amount: toDollars(transfer.total_cents), account: account.account_number }));
@@ -607,6 +610,9 @@ router.post('/:id/fail', (req, res) => {
   try {
     const transfer = req.db.prepare('SELECT * FROM external_transfers WHERE id = ?').get(req.params.id);
     if (!transfer) return res.status(404).json({ error: 'Transfer not found' });
+    if (!canTransition(transfer.status, 'failed')) {
+      return res.status(400).json({ error: `Cannot fail from status '${transfer.status}'` });
+    }
 
     // Refund if funds were debited
     if (['processing', 'sent'].includes(transfer.status)) {

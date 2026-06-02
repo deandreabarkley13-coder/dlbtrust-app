@@ -1083,7 +1083,7 @@ router.post('/swap', async (req, res) => {
     // Record the swap as a transaction
     const txMgr = new TransactionManager(req.db);
     const txNumber = generateChainTxNumber();
-    txMgr.createTransaction({
+    const tx = txMgr.createTransaction({
       txNumber,
       fromWalletId: wallet.id,
       toAddress: wallet.address,
@@ -1092,9 +1092,10 @@ router.post('/swap', async (req, res) => {
       transferType: 'swap',
       description: `DEX Swap: ${amount_pol} POL → USDC via QuickSwap`,
       idempotencyKey: generateIdempotencyKey('swap'),
-      status: 'completed',
-      txHash: result.txHash,
     });
+
+    // Update status to 'completed' with txHash (createTransaction defaults to 'initiated')
+    txMgr.updateStatus(tx.id, 'completed', { txHash: result.txHash, gasUsed: result.gasUsed });
 
     // Update wallet USDC balance
     const usdcBalance = await polygonClient.getUsdcBalance(wallet.address);
