@@ -37,6 +37,30 @@ require('./server/openach-patch')(app, typeof db !== 'undefined' ? db : null);
 // ─── Analytics Routes ─────────────────────────────────────────────────────────
 app.use('/api/analytics', require('./server/routes/analytics'));
 
+// ─── Core Banking Engine Routes ───────────────────────────────────────────────
+app.use('/api/accounts',  require('./server/routes/accounts'));
+app.use('/api/transfers', require('./server/routes/transfers'));
+app.use('/api/wealth',    require('./server/routes/wealth'));
+
+// ─── CRM Engine Routes ──────────────────────────────────────────────────────
+app.use('/api/crm',       require('./server/routes/crm'));
+
+// ─── External Transfer Routes ───────────────────────────────────────────────
+app.use('/api/external-transfers', require('./server/routes/external-transfers'));
+
+// ─── Trust Accounting Routes ────────────────────────────────────────────────
+app.use('/api/trust-accounting', require('./server/routes/trust-accounting'));
+
+// ─── Fixed Income Routes (Bond Portfolio + Private Placements) ──────────────
+app.use('/api/fixed-income', require('./server/routes/fixed-income'));
+
+// ─── Blockchain / Crypto Rails Routes (Circle + Polygon USDC) ──────────────
+app.use('/api/blockchain', require('./server/routes/blockchain'));
+
+// ─── Frontend Dashboard ───────────────────────────────────────────────────────
+app.use(express.static(path.join(__dirname, 'frontend')));
+app.get('/', (req, res) => res.sendFile(path.join(__dirname, 'frontend', 'index.html')));
+
 // ─── Start Server ─────────────────────────────────────────────────────────────
 const PORT = process.env.PORT || 3001;
 app.listen(PORT, () => {
