@@ -45,6 +45,8 @@ const {
   ROLE_PERMISSIONS,
   RPC_ENDPOINTS,
   USDC_CONTRACTS,
+  WPOL_CONTRACTS,
+  DEX_ROUTERS,
   CircleClient,
   PolygonClient,
   AccessControlManager,
@@ -1007,6 +1009,112 @@ router.post('/provider', (req, res) => {
     res.json({ success: true, provider });
   } catch (err) {
     res.status(500).json({ error: 'Failed to update provider', detail: err.message });
+  }
+});
+
+// ─── GET /swap/quote ────────────────────────────────────────────────────────
+
+router.get('/swap/quote', async (req, res) => {
+  try {
+    const { amount } = req.query;
+    if (!amount || isNaN(amount) || parseFloat(amount) <= 0) {
+      return res.status(400).json({ error: 'amount query parameter required (POL amount)' });
+    }
+
+    const polygonClient = getPolygonClient(req.db);
+    const blockchain = getConfig(req.db, 'default_blockchain') || 'MATIC-AMOY';
+    const wpolAddr = WPOL_CONTRACTS[blockchain];
+    const routerAddr = DEX_ROUTERS[blockchain];
+
+    if (!wpolAddr || !routerAddr) {
+      return res.json({ supported: false, reason: `DEX swap not available on ${blockchain}` });
+    }
+
+    const quote = await polygonClient.getSwapQuote(parseFloat(amount));
+    res.json(quote);
+  } catch (err) {
+    res.status(500).json({ error: 'Failed to get swap quote', detail: err.message });
+  }
+});
+
+// ─── POST /swap ─────────────────────────────────────────────────────────────
+
+router.post('/swap', async (req, res) => {
+  try {
+    const { wallet_id, amount_pol, slippage_bps } = req.body;
+    if (!wallet_id || !amount_pol) {
+      return res.status(400).json({ error: 'wallet_id and amount_pol are required' });
+    }
+    if (isNaN(amount_pol) || parseFloat(amount_pol) <= 0) {
+      return res.status(400).json({ error: 'amount_pol must be a positive number' });
+    }
+
+    const walletMgr = new WalletManager(req.db);
+    const wallet = walletMgr.getWallet(wallet_id);
+    if (!wallet) return res.status(404).json({ error: 'Wallet not found' });
+    if (wallet.status === 'frozen') return res.status(403).json({ error: 'Wallet is frozen' });
+
+    const isPrivate = wallet.circle_wallet_id && wallet.circle_wallet_id.startsWith('private_');
+    if (!isPrivate) {
+      return res.status(400).json({ error: 'DEX swap only available for Private Stack wallets' });
+    }
+
+    const blockchain = wallet.blockchain || getConfig(req.db, 'default_blockchain') || 'MATIC-AMOY';
+    if (!DEX_ROUTERS[blockchain]) {
+      return res.status(400).json({ error: `DEX swap not supported on ${blockchain}` });
+    }
+
+    // Get encrypted private key
+    const encKey = req.db.prepare('SELECT encrypted_private_key FROM blockchain_wallets WHERE id = ?').get(wallet.id);
+    if (!encKey || !encKey.encrypted_private_key) {
+      return res.status(400).json({ error: 'Wallet has no private key — cannot sign swap transaction' });
+    }
+
+    const masterKey = getMasterEncryptionKey(req.db);
+    const polygonClient = new PolygonClient(blockchain, getConfig(req.db, 'rpc_url_override') || null);
+
+    const result = await polygonClient.swapPolToUsdc(
+      encKey.encrypted_private_key,
+      masterKey,
+      parseFloat(amount_pol),
+      parseInt(slippage_bps) || 100
+    );
+
+    // Record the swap as a transaction
+    const txMgr = new TransactionManager(req.db);
+    const txNumber = generateChainTxNumber();
+    txMgr.createTransaction({
+      txNumber,
+      fromWalletId: wallet.id,
+      toAddress: wallet.address,
+      amount: result.usdcBalanceAfter,
+      blockchain,
+      transferType: 'swap',
+      description: `DEX Swap: ${amount_pol} POL → USDC via QuickSwap`,
+      idempotencyKey: generateIdempotencyKey('swap'),
+      status: 'completed',
+      txHash: result.txHash,
+    });
+
+    // Update wallet USDC balance
+    const usdcBalance = await polygonClient.getUsdcBalance(wallet.address);
+    const nativeBalance = await polygonClient.getNativeBalance(wallet.address);
+    walletMgr.updateBalance(wallet.id, usdcBalance, nativeBalance);
+
+    logAudit(req.db, {
+      eventType: 'dex_swap',
+      walletId: wallet.id,
+      details: { amountPolIn: amount_pol, txHash: result.txHash, router: result.router },
+    });
+
+    res.json({
+      success: true,
+      swap: result,
+      transaction: txNumber,
+      explorerUrl: getExplorerUrl(blockchain, result.txHash),
+    });
+  } catch (err) {
+    res.status(500).json({ error: 'Swap failed', detail: err.message });
   }
 });
 

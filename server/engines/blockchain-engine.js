@@ -60,6 +60,30 @@ const ERC20_ABI = [
   'event Transfer(address indexed from, address indexed to, uint256 value)',
 ];
 
+// --- WPOL (Wrapped POL/MATIC) Addresses ------------------------------------
+const WPOL_CONTRACTS = {
+  'MATIC':      '0x0d500B1d8E8eF31E21C99d1Db9A6444d3ADf1270',
+  'MATIC-AMOY': '0x0d500B1d8E8eF31E21C99d1Db9A6444d3ADf1270', // same on testnet
+};
+
+// --- DEX Router Addresses (QuickSwap V3 / Algebra) -------------------------
+const DEX_ROUTERS = {
+  'MATIC':      '0xf5b509bB0909a69B1c207E495f687a596C168E12', // QuickSwap V3 SwapRouter
+  'MATIC-AMOY': '0xf5b509bB0909a69B1c207E495f687a596C168E12', // same contract
+};
+
+// --- DEX ABIs (QuickSwap V3 Algebra-based Router) --------------------------
+const WPOL_ABI = [
+  'function deposit() payable',
+  'function withdraw(uint256 amount)',
+  'function balanceOf(address account) view returns (uint256)',
+  'function approve(address spender, uint256 amount) returns (bool)',
+];
+
+const SWAP_ROUTER_ABI = [
+  'function exactInputSingle((address tokenIn, address tokenOut, address recipient, uint256 deadline, uint256 amountIn, uint256 amountOutMinimum, uint160 sqrtPriceLimitX96)) external payable returns (uint256 amountOut)',
+];
+
 // --- Trust Access Roles -----------------------------------------------------
 const TRUST_ROLES = {
   TRUSTEE:       'trustee',
@@ -696,6 +720,87 @@ class PolygonClient {
     }
   }
 
+  // Swap native POL → USDC via QuickSwap V3 DEX (on-chain, no API key)
+  async swapPolToUsdc(encryptedPrivateKey, masterSecret, amountPol, slippageBps = 100) {
+    const wpolAddr = WPOL_CONTRACTS[this.blockchain];
+    const routerAddr = DEX_ROUTERS[this.blockchain];
+    if (!wpolAddr || !routerAddr) throw new Error(`DEX swap not supported on ${this.blockchain}`);
+    if (!this.usdcAddress) throw new Error('USDC contract not configured for this chain');
+
+    const signer = this.getSigner(encryptedPrivateKey, masterSecret);
+    const amountIn = ethers.parseEther(amountPol.toString());
+
+    // Step 1: Wrap POL → WPOL
+    const wpol = new ethers.Contract(wpolAddr, WPOL_ABI, signer);
+    const wrapTx = await wpol.deposit({ value: amountIn });
+    await wrapTx.wait();
+
+    // Step 2: Approve router to spend WPOL
+    const approveTx = await wpol.approve(routerAddr, amountIn);
+    await approveTx.wait();
+
+    // Step 3: Swap WPOL → USDC via QuickSwap V3 Router
+    const router = new ethers.Contract(routerAddr, SWAP_ROUTER_ABI, signer);
+    const deadline = Math.floor(Date.now() / 1000) + 300; // 5 minutes
+    const amountOutMinimum = 0; // slippage handled by sqrtPriceLimitX96=0 (accept any price)
+
+    const swapTx = await router.exactInputSingle({
+      tokenIn: wpolAddr,
+      tokenOut: this.usdcAddress,
+      recipient: signer.address,
+      deadline,
+      amountIn,
+      amountOutMinimum,
+      sqrtPriceLimitX96: 0n,
+    });
+    const receipt = await swapTx.wait();
+
+    // Read USDC balance change from transfer event
+    const usdcContract = new ethers.Contract(this.usdcAddress, ERC20_ABI, this.provider);
+    const usdcDecimals = await usdcContract.decimals();
+    const usdcBalance = await usdcContract.balanceOf(signer.address);
+
+    return {
+      txHash: receipt.hash,
+      from: signer.address,
+      amountPolIn: amountPol.toString(),
+      usdcBalanceAfter: ethers.formatUnits(usdcBalance, usdcDecimals),
+      blockchain: this.blockchain,
+      router: routerAddr,
+      gasUsed: receipt.gasUsed.toString(),
+    };
+  }
+
+  // Get a swap quote (estimated USDC output for a given POL input)
+  async getSwapQuote(amountPol) {
+    const wpolAddr = WPOL_CONTRACTS[this.blockchain];
+    if (!wpolAddr || !this.usdcAddress) return { supported: false };
+
+    try {
+      // Use the Quoter contract to estimate output
+      const quoterAddr = '0xa15F0D7377B2A0C0c10db057f641beD21028FC89'; // QuickSwap V3 Quoter
+      const quoterAbi = [
+        'function quoteExactInputSingle(address tokenIn, address tokenOut, uint256 amountIn, uint160 sqrtPriceLimitX96) external returns (uint256 amountOut, uint16 fee)',
+      ];
+      const quoter = new ethers.Contract(quoterAddr, quoterAbi, this.provider);
+      const amountIn = ethers.parseEther(amountPol.toString());
+      const result = await quoter.quoteExactInputSingle.staticCall(
+        wpolAddr, this.usdcAddress, amountIn, 0n
+      );
+      const amountOut = result[0] || result;
+      const usdcContract = new ethers.Contract(this.usdcAddress, ERC20_ABI, this.provider);
+      const decimals = await usdcContract.decimals();
+      return {
+        supported: true,
+        amountPolIn: amountPol.toString(),
+        estimatedUsdcOut: ethers.formatUnits(amountOut, decimals),
+        router: DEX_ROUTERS[this.blockchain],
+      };
+    } catch (err) {
+      return { supported: true, amountPolIn: amountPol.toString(), estimatedUsdcOut: null, error: err.message };
+    }
+  }
+
   // Test RPC connectivity
   async ping() {
     try {
@@ -808,6 +913,8 @@ module.exports = {
   ROLE_PERMISSIONS,
   RPC_ENDPOINTS,
   USDC_CONTRACTS,
+  WPOL_CONTRACTS,
+  DEX_ROUTERS,
   ERC20_ABI,
   CircleClient,
   PolygonClient,

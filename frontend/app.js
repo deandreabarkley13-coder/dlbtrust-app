@@ -1883,6 +1883,92 @@ async function sendUsdc(e) {
   }
 }
 
+// Swap POL → USDC
+
+async function showSwapModal() {
+  document.getElementById('swap-modal').classList.remove('hidden');
+  document.getElementById('swap-quote-display').style.display = 'none';
+  document.getElementById('swap-status').style.display = 'none';
+  document.getElementById('swap-amount').value = '';
+
+  // Populate wallet dropdown (private wallets only)
+  try {
+    const data = await api('/blockchain/wallets');
+    const select = document.getElementById('swap-wallet');
+    select.innerHTML = '<option value="">Select wallet...</option>';
+    (data.wallets || []).filter(w => w.circle_wallet_id && w.circle_wallet_id.startsWith('private_')).forEach(w => {
+      select.innerHTML += `<option value="${w.id}">${w.wallet_name} (${w.address ? w.address.slice(0,8) + '...' : 'no address'})</option>`;
+    });
+  } catch (err) {
+    showToast('Failed to load wallets', 'error');
+  }
+}
+
+async function getSwapQuote() {
+  const amount = document.getElementById('swap-amount').value;
+  if (!amount || parseFloat(amount) <= 0) {
+    showToast('Enter a POL amount first', 'error');
+    return;
+  }
+
+  const quoteDisplay = document.getElementById('swap-quote-display');
+  const quoteValue = document.getElementById('swap-quote-value');
+  quoteDisplay.style.display = 'block';
+  quoteValue.textContent = 'Loading...';
+
+  try {
+    const data = await api(`/blockchain/swap/quote?amount=${encodeURIComponent(amount)}`);
+    if (data.estimatedUsdcOut) {
+      quoteValue.textContent = `~${parseFloat(data.estimatedUsdcOut).toFixed(2)} USDC`;
+    } else if (data.error) {
+      quoteValue.textContent = 'Quote unavailable';
+    } else {
+      quoteValue.textContent = 'DEX not available on this network';
+    }
+  } catch (err) {
+    quoteValue.textContent = 'Error getting quote';
+  }
+}
+
+async function executeSwap(e) {
+  e.preventDefault();
+  const walletId = document.getElementById('swap-wallet').value;
+  const amount = document.getElementById('swap-amount').value;
+  if (!walletId || !amount) return;
+
+  const statusEl = document.getElementById('swap-status');
+  statusEl.style.display = 'block';
+  statusEl.style.background = 'rgba(139,92,246,0.1)';
+  statusEl.style.border = '1px solid rgba(139,92,246,0.3)';
+  statusEl.style.color = '#8b5cf6';
+  statusEl.textContent = 'Executing swap: Wrapping POL → Approving router → Swapping via QuickSwap...';
+  document.getElementById('swap-submit-btn').disabled = true;
+
+  try {
+    const result = await api('/blockchain/swap', {
+      method: 'POST',
+      body: JSON.stringify({
+        wallet_id: parseInt(walletId),
+        amount_pol: amount,
+      }),
+    });
+    hideModal('swap-modal');
+    const msg = `Swapped ${result.swap.amountPolIn} POL → ${parseFloat(result.swap.usdcBalanceAfter).toFixed(2)} USDC`;
+    showToast(msg, 'success');
+    if (result.explorerUrl) {
+      showToast(`View on explorer: ${result.explorerUrl}`, 'info');
+    }
+    loadBlockchain();
+  } catch (err) {
+    statusEl.style.background = 'rgba(244,67,54,0.1)';
+    statusEl.style.border = '1px solid rgba(244,67,54,0.3)';
+    statusEl.style.color = 'var(--danger)';
+    statusEl.textContent = `Swap failed: ${err.message}`;
+  } finally {
+    document.getElementById('swap-submit-btn').disabled = false;
+  }
+}
+
 // Transaction actions
 
 async function approveChainTx(id) {

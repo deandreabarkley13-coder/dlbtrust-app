@@ -788,6 +788,7 @@
             <option value="cancelled">Cancelled</option>
           </select>
           <button class="btn" onclick="showCreateWalletModal()" style="margin-right:8px">+ New Wallet</button>
+          <button class="btn" onclick="showSwapModal()" style="margin-right:8px;background:#8b5cf6;color:#fff">Swap POL → USDC</button>
           <button class="btn btn-primary" onclick="showSendUsdcModal()">Send USDC</button>
         </div>
       </header>
@@ -922,6 +923,41 @@
             <div style="display:flex;gap:8px;margin-top:16px;justify-content:flex-end">
               <button type="button" class="btn" onclick="hideModal('send-usdc-modal')">Cancel</button>
               <button type="submit" class="btn btn-primary">Send USDC</button>
+            </div>
+          </form>
+        </div>
+      </div>
+
+      <!-- Swap POL → USDC Modal -->
+      <div id="swap-modal" class="modal hidden">
+        <div class="modal-content" style="max-width:500px">
+          <h3 style="color:#8b5cf6">Swap POL → USDC</h3>
+          <p style="font-size:0.85rem;color:var(--text-secondary);margin-bottom:16px">Convert native POL tokens to USDC via QuickSwap DEX (on-chain, no intermediary)</p>
+          <form id="swap-form" onsubmit="executeSwap(event)">
+            <div style="display:grid;gap:12px">
+              <div>
+                <label>From Wallet *</label>
+                <select id="swap-wallet" required style="width:100%;padding:10px;background:var(--bg-card);border:1px solid var(--border);border-radius:8px;color:var(--text-primary)">
+                  <option value="">Select wallet...</option>
+                </select>
+              </div>
+              <div>
+                <label>Amount (POL) *</label>
+                <input type="number" id="swap-amount" step="0.001" min="0.001" required placeholder="100.0" style="width:100%;padding:10px;background:var(--bg-card);border:1px solid var(--border);border-radius:8px;color:var(--text-primary)">
+              </div>
+              <div id="swap-quote-display" style="display:none;padding:12px;background:rgba(139,92,246,0.1);border:1px solid rgba(139,92,246,0.3);border-radius:8px">
+                <div style="display:flex;justify-content:space-between;font-size:0.9rem">
+                  <span>Estimated USDC output:</span>
+                  <span id="swap-quote-value" style="font-weight:600;color:#8b5cf6">—</span>
+                </div>
+                <div style="font-size:0.75rem;color:var(--text-secondary);margin-top:4px">Route: POL → WPOL → USDC via QuickSwap V3</div>
+              </div>
+              <div id="swap-status" style="display:none;padding:10px;border-radius:8px;font-size:0.85rem"></div>
+            </div>
+            <div style="display:flex;gap:8px;margin-top:16px;justify-content:flex-end">
+              <button type="button" class="btn" onclick="hideModal('swap-modal')">Cancel</button>
+              <button type="button" class="btn" onclick="getSwapQuote()" style="background:#8b5cf6;color:#fff">Get Quote</button>
+              <button type="submit" class="btn btn-primary" id="swap-submit-btn">Swap</button>
             </div>
           </form>
         </div>
