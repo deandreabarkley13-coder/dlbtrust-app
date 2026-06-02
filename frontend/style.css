@@ -20,7 +20,8 @@ body {
   background: var(--bg-dark);
   color: var(--text-primary);
   display: flex;
-  min-height: 100vh;
+  height: 100vh;
+  overflow: hidden;
 }
 
 /* Sidebar */
@@ -119,6 +120,8 @@ body {
   justify-content: space-between;
   align-items: center;
   margin-bottom: 24px;
+  flex-wrap: wrap;
+  gap: 12px;
 }
 
 .view-header h2 {
@@ -204,7 +207,7 @@ body {
   background: var(--bg-card);
   border: 1px solid var(--border);
   border-radius: 12px;
-  overflow: hidden;
+  overflow-x: auto;
 }
 
 table {
@@ -317,6 +320,8 @@ tr:hover td {
   padding: 32px;
   min-width: 400px;
   max-width: 500px;
+  max-height: 90vh;
+  overflow-y: auto;
 }
 
 .modal-content h3 {
@@ -332,7 +337,8 @@ tr:hover td {
 }
 
 .modal-content input,
-.modal-content select {
+.modal-content select,
+.modal-content textarea {
   display: block;
   width: 100%;
   padding: 10px 12px;
@@ -342,10 +348,21 @@ tr:hover td {
   border-radius: 8px;
   color: var(--text-primary);
   font-size: 0.9rem;
+  font-family: inherit;
+  resize: vertical;
+}
+
+.modal-content input[type="checkbox"],
+.modal-content input[type="radio"] {
+  display: inline-block;
+  width: auto;
+  margin-top: 0;
+  padding: 0;
 }
 
 .modal-content input:focus,
-.modal-content select:focus {
+.modal-content select:focus,
+.modal-content textarea:focus {
   outline: none;
   border-color: var(--accent);
 }
