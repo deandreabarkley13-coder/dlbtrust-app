@@ -20,6 +20,7 @@
       <li><a href="#" data-view="payments">Payments</a></li>
       <li><a href="#" data-view="accounting">Trust Accounting</a></li>
       <li><a href="#" data-view="rails">Payment Rails</a></li>
+      <li><a href="#" data-view="blockchain">Crypto Rails</a></li>
       <li><a href="#" data-view="compliance">Compliance</a></li>
       <li><a href="#" data-view="activity">Activity</a></li>
     </ul>
@@ -724,6 +725,174 @@
           <div id="rail-config-form"></div>
           <div class="modal-actions" style="margin-top:16px">
             <button class="btn" onclick="hideModal('rail-config-modal')">Close</button>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Crypto Rails View (Circle + Polygon USDC) -->
+    <section id="view-blockchain" class="view">
+      <header class="view-header">
+        <h2>Crypto Rails</h2>
+        <div>
+          <select id="chain-tx-filter" onchange="loadBlockchainTransactions()" style="margin-right:8px;padding:8px 12px;background:var(--bg-card);border:1px solid var(--border);border-radius:8px;color:var(--text-primary);font-size:0.85rem">
+            <option value="">All Statuses</option>
+            <option value="initiated">Initiated</option>
+            <option value="pending_approval">Pending Approval</option>
+            <option value="submitted">Submitted</option>
+            <option value="confirming">Confirming</option>
+            <option value="completed">Completed</option>
+            <option value="failed">Failed</option>
+            <option value="cancelled">Cancelled</option>
+          </select>
+          <button class="btn" onclick="showCreateWalletModal()" style="margin-right:8px">+ New Wallet</button>
+          <button class="btn btn-primary" onclick="showSendUsdcModal()">Send USDC</button>
+        </div>
+      </header>
+
+      <!-- Dashboard Metrics -->
+      <div class="metrics-grid" id="chain-metrics" style="margin-bottom:20px"></div>
+
+      <!-- Connection & Network Status -->
+      <div id="chain-connection-status" class="panel" style="margin-bottom:16px;padding:12px 16px"></div>
+
+      <!-- Wallets Grid -->
+      <div class="panel" style="margin-bottom:16px">
+        <h3 style="margin-bottom:12px">Trust Wallets</h3>
+        <div id="chain-wallets-grid" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:12px"></div>
+      </div>
+
+      <!-- Fiat Gateway Panel -->
+      <div class="panels-row" style="margin-bottom:16px">
+        <div class="panel">
+          <h3>Fiat On-Ramp (USD → USDC)</h3>
+          <p style="color:var(--text-muted);font-size:0.85rem;margin-bottom:12px">Fund trust wallets by converting USD to USDC via Circle</p>
+          <form onsubmit="initOnRamp(event)" style="display:flex;gap:8px;align-items:end">
+            <div style="flex:1">
+              <label style="font-size:0.8rem;color:var(--text-muted)">Amount (USD)</label>
+              <input type="number" id="onramp-amount" step="0.01" min="1" placeholder="10,000.00" required style="width:100%;padding:8px;background:var(--bg-card);border:1px solid var(--border);border-radius:6px;color:var(--text-primary)">
+            </div>
+            <button class="btn btn-primary" type="submit">Fund Wallet</button>
+          </form>
+          <div id="onramp-result" style="margin-top:8px"></div>
+        </div>
+        <div class="panel">
+          <h3>Fiat Off-Ramp (USDC → USD)</h3>
+          <p style="color:var(--text-muted);font-size:0.85rem;margin-bottom:12px">Withdraw USDC to your bank account as USD via Circle</p>
+          <form onsubmit="initOffRamp(event)" style="display:flex;gap:8px;align-items:end">
+            <div style="flex:1">
+              <label style="font-size:0.8rem;color:var(--text-muted)">Amount (USDC)</label>
+              <input type="number" id="offramp-amount" step="0.01" min="1" placeholder="10,000.00" required style="width:100%;padding:8px;background:var(--bg-card);border:1px solid var(--border);border-radius:6px;color:var(--text-primary)">
+            </div>
+            <button class="btn" type="submit" style="background:var(--accent-secondary)">Withdraw to Bank</button>
+          </form>
+          <div id="offramp-result" style="margin-top:8px"></div>
+        </div>
+      </div>
+
+      <!-- Fiat Orders -->
+      <div class="panel" style="margin-bottom:16px">
+        <h3 style="margin-bottom:12px">Fiat Gateway Orders</h3>
+        <div id="fiat-orders-table" class="table-container"></div>
+      </div>
+
+      <!-- Blockchain Transactions -->
+      <div class="panel">
+        <h3 style="margin-bottom:12px">On-Chain Transactions</h3>
+        <div id="chain-transactions-table" class="table-container"></div>
+      </div>
+
+      <!-- Create Wallet Modal -->
+      <div id="create-wallet-modal" class="modal hidden">
+        <div class="modal-content" style="max-width:500px">
+          <h3>Create Trust Wallet</h3>
+          <form id="create-wallet-form" onsubmit="createWallet(event)">
+            <div style="display:grid;gap:12px">
+              <div>
+                <label>Wallet Name *</label>
+                <input type="text" id="cw-name" required placeholder="e.g., DLB Trust Corpus" style="width:100%;padding:10px;background:var(--bg-card);border:1px solid var(--border);border-radius:8px;color:var(--text-primary)">
+              </div>
+              <div>
+                <label>Wallet Type</label>
+                <select id="cw-type" style="width:100%;padding:10px;background:var(--bg-card);border:1px solid var(--border);border-radius:8px;color:var(--text-primary)">
+                  <option value="trust">Trust Corpus</option>
+                  <option value="beneficiary">Beneficiary</option>
+                  <option value="vendor">Vendor</option>
+                  <option value="expense">Expense</option>
+                  <option value="reserve">Reserve</option>
+                </select>
+              </div>
+              <div>
+                <label>Blockchain</label>
+                <select id="cw-blockchain" style="width:100%;padding:10px;background:var(--bg-card);border:1px solid var(--border);border-radius:8px;color:var(--text-primary)">
+                  <option value="MATIC-AMOY">Polygon Amoy (Testnet)</option>
+                  <option value="MATIC">Polygon (Mainnet)</option>
+                  <option value="ETH-SEPOLIA">Ethereum Sepolia (Testnet)</option>
+                  <option value="ETH">Ethereum (Mainnet)</option>
+                  <option value="ARB">Arbitrum</option>
+                </select>
+              </div>
+            </div>
+            <div style="display:flex;gap:8px;margin-top:16px;justify-content:flex-end">
+              <button type="button" class="btn" onclick="closeModal('create-wallet-modal')">Cancel</button>
+              <button type="submit" class="btn btn-primary">Create Wallet</button>
+            </div>
+          </form>
+        </div>
+      </div>
+
+      <!-- Send USDC Modal -->
+      <div id="send-usdc-modal" class="modal hidden">
+        <div class="modal-content" style="max-width:600px">
+          <h3>Send USDC</h3>
+          <form id="send-usdc-form" onsubmit="sendUsdc(event)">
+            <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+              <div style="grid-column:span 2">
+                <label>From Wallet *</label>
+                <select id="su-from-wallet" required style="width:100%;padding:10px;background:var(--bg-card);border:1px solid var(--border);border-radius:8px;color:var(--text-primary)">
+                  <option value="">Select wallet...</option>
+                </select>
+              </div>
+              <div style="grid-column:span 2">
+                <label>To Address *</label>
+                <input type="text" id="su-to-address" required placeholder="0x... or select wallet below" style="width:100%;padding:10px;background:var(--bg-card);border:1px solid var(--border);border-radius:8px;color:var(--text-primary)">
+              </div>
+              <div>
+                <label>Amount (USDC) *</label>
+                <input type="number" id="su-amount" step="0.01" min="0.01" required placeholder="1,000.00" style="width:100%;padding:10px;background:var(--bg-card);border:1px solid var(--border);border-radius:8px;color:var(--text-primary)">
+              </div>
+              <div>
+                <label>Transfer Type</label>
+                <select id="su-type" style="width:100%;padding:10px;background:var(--bg-card);border:1px solid var(--border);border-radius:8px;color:var(--text-primary)">
+                  <option value="internal">Internal Transfer</option>
+                  <option value="distribution">Beneficiary Distribution</option>
+                  <option value="vendor_payment">Vendor Payment</option>
+                  <option value="expense">Expense Payment</option>
+                  <option value="external">External Transfer</option>
+                </select>
+              </div>
+              <div style="grid-column:span 2">
+                <label>Description</label>
+                <input type="text" id="su-description" placeholder="e.g., Monthly distribution to beneficiary" style="width:100%;padding:10px;background:var(--bg-card);border:1px solid var(--border);border-radius:8px;color:var(--text-primary)">
+              </div>
+            </div>
+            <div id="su-approval-notice" style="display:none;margin-top:12px;padding:10px;background:rgba(255,193,7,0.1);border:1px solid rgba(255,193,7,0.3);border-radius:8px;color:var(--warning);font-size:0.85rem"></div>
+            <div style="display:flex;gap:8px;margin-top:16px;justify-content:flex-end">
+              <button type="button" class="btn" onclick="closeModal('send-usdc-modal')">Cancel</button>
+              <button type="submit" class="btn btn-primary">Send USDC</button>
+            </div>
+          </form>
+        </div>
+      </div>
+
+      <!-- Config Modal -->
+      <div id="chain-config-modal" class="modal hidden">
+        <div class="modal-content" style="max-width:600px">
+          <h3>Blockchain Configuration</h3>
+          <div id="chain-config-form"></div>
+          <div style="display:flex;gap:8px;margin-top:16px;justify-content:flex-end">
+            <button class="btn" onclick="closeModal('chain-config-modal')">Close</button>
+            <button class="btn btn-primary" onclick="saveChainConfig()">Save All</button>
           </div>
         </div>
       </div>

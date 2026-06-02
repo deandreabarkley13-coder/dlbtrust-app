@@ -81,6 +81,7 @@ function loadView(view) {
     case 'payments': loadPayments(); break;
     case 'accounting': loadAccounting(); break;
     case 'rails': loadPaymentRails(); break;
+    case 'blockchain': loadBlockchain(); break;
     case 'compliance': loadCompliance(); break;
     case 'activity': loadActivity(); break;
   }
@@ -1848,6 +1849,378 @@ async function saveRailConfigs() {
 
 function hideModal(id) {
   document.getElementById(id).classList.add('hidden');
+}
+
+// --- Blockchain / Crypto Rails ---
+
+async function loadBlockchain() {
+  try {
+    const [dashboard, wallets] = await Promise.all([
+      api('/blockchain/dashboard'),
+      api('/blockchain/wallets'),
+    ]);
+
+    // Metrics
+    const d = dashboard;
+    $('#chain-metrics').innerHTML = `
+      <div class="metric-card primary">
+        <span class="metric-label">Total USDC Balance</span>
+        <span class="metric-value">$${parseFloat(d.wallets.totalUsdc).toLocaleString('en-US', {minimumFractionDigits: 2})}</span>
+      </div>
+      <div class="metric-card">
+        <span class="metric-label">Active Wallets</span>
+        <span class="metric-value">${d.wallets.active}</span>
+      </div>
+      <div class="metric-card">
+        <span class="metric-label">Completed Transfers</span>
+        <span class="metric-value">${d.transactions.completed}</span>
+      </div>
+      <div class="metric-card">
+        <span class="metric-label">Pending</span>
+        <span class="metric-value">${d.transactions.pending}</span>
+      </div>
+    `;
+
+    // Connection status
+    const netInfo = d.network || {};
+    $('#chain-connection-status').innerHTML = `
+      <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px">
+        <div style="display:flex;gap:16px;align-items:center">
+          <span class="badge badge-${d.environment === 'production' ? 'active' : 'pending'}">${(d.environment || 'sandbox').toUpperCase()}</span>
+          <span style="font-size:0.85rem;color:var(--text-muted)">Network: <strong style="color:var(--text-primary)">${netInfo.name || d.blockchain}</strong></span>
+          <span style="font-size:0.85rem">Circle: <strong style="color:${d.connected ? 'var(--success)' : 'var(--danger)'}">${d.connected ? 'Connected' : 'Not Connected'}</strong></span>
+        </div>
+        <div style="display:flex;gap:8px">
+          <span style="font-size:0.8rem;color:var(--text-muted)">Daily Limit: $${parseFloat(d.dailyLimit).toLocaleString()}</span>
+          <span style="font-size:0.8rem;color:var(--text-muted)">Approval ≥ $${parseFloat(d.approvalThreshold).toLocaleString()}</span>
+          <button class="btn" onclick="showChainConfig()" style="font-size:0.8rem;padding:4px 10px">Configure</button>
+        </div>
+      </div>
+    `;
+
+    // Wallets grid
+    const walletsHtml = wallets.wallets.length === 0
+      ? '<p style="color:var(--text-muted);text-align:center;padding:20px">No wallets yet. Click "+ New Wallet" to create one.</p>'
+      : wallets.wallets.map(w => `
+        <div style="background:var(--bg-main);border:1px solid var(--border);border-radius:10px;padding:16px">
+          <div style="display:flex;justify-content:space-between;align-items:start;margin-bottom:8px">
+            <div>
+              <strong style="font-size:0.95rem">${w.wallet_name}</strong>
+              <span class="badge badge-${w.status === 'active' ? 'active' : 'frozen'}" style="margin-left:6px;font-size:0.7rem">${w.status}</span>
+            </div>
+            <span class="badge" style="font-size:0.7rem">${w.wallet_type_label || w.wallet_type}</span>
+          </div>
+          <div style="font-size:1.3rem;font-weight:600;color:var(--accent-primary);margin:8px 0">$${parseFloat(w.usdc_balance).toLocaleString('en-US', {minimumFractionDigits: 2})} <span style="font-size:0.75rem;color:var(--text-muted)">USDC</span></div>
+          <div style="font-size:0.75rem;color:var(--text-muted);font-family:monospace;margin-bottom:8px">${w.address_masked || '—'}</div>
+          <div style="font-size:0.75rem;color:var(--text-muted);margin-bottom:8px">${(w.blockchain_info && w.blockchain_info.name) || w.blockchain}</div>
+          <div style="display:flex;gap:6px">
+            <button class="btn" onclick="syncWallet(${w.id})" style="font-size:0.75rem;padding:3px 8px">Sync</button>
+            ${w.status === 'active'
+              ? `<button class="btn" onclick="freezeWallet(${w.id})" style="font-size:0.75rem;padding:3px 8px;color:var(--warning)">Freeze</button>`
+              : `<button class="btn" onclick="unfreezeWallet(${w.id})" style="font-size:0.75rem;padding:3px 8px;color:var(--success)">Unfreeze</button>`
+            }
+          </div>
+        </div>
+      `).join('');
+    $('#chain-wallets-grid').innerHTML = walletsHtml;
+
+    // Load transactions and fiat orders
+    loadBlockchainTransactions();
+    loadFiatOrders();
+  } catch (err) {
+    console.error('Failed to load blockchain dashboard:', err);
+    $('#chain-metrics').innerHTML = '<div class="metric-card"><span class="metric-label">Error loading dashboard</span></div>';
+  }
+}
+
+async function loadBlockchainTransactions() {
+  try {
+    const filter = document.getElementById('chain-tx-filter')?.value;
+    const params = filter ? `?status=${filter}` : '';
+    const data = await api(`/blockchain/transactions${params}`);
+
+    if (data.transactions.length === 0) {
+      $('#chain-transactions-table').innerHTML = '<p style="color:var(--text-muted);text-align:center;padding:16px">No on-chain transactions yet</p>';
+      return;
+    }
+
+    const rows = data.transactions.map(tx => `
+      <tr>
+        <td style="font-family:monospace;font-size:0.8rem">${tx.tx_number}</td>
+        <td>${tx.transfer_type_label || tx.transfer_type}</td>
+        <td style="font-family:monospace;font-size:0.8rem">${tx.from_address_masked || '—'}</td>
+        <td style="font-family:monospace;font-size:0.8rem">${tx.to_address_masked || '—'}</td>
+        <td style="font-weight:600">$${parseFloat(tx.amount).toLocaleString('en-US', {minimumFractionDigits: 2})} <span style="font-size:0.75rem;color:var(--text-muted)">${tx.token}</span></td>
+        <td>${badge(tx.status)}</td>
+        <td>${tx.tx_hash ? `<a href="${tx.explorer_url}" target="_blank" style="font-size:0.75rem;color:var(--accent-primary)">View</a>` : '—'}</td>
+        <td style="font-size:0.8rem">${formatTime(tx.created_at)}</td>
+        <td>
+          ${tx.status === 'pending_approval' ? `<button class="btn" onclick="approveChainTx(${tx.id})" style="font-size:0.75rem;padding:2px 8px;color:var(--success)">Approve</button>` : ''}
+          ${['initiated','pending_approval','submitted'].includes(tx.status) ? `<button class="btn" onclick="cancelChainTx(${tx.id})" style="font-size:0.75rem;padding:2px 8px;color:var(--danger)">Cancel</button>` : ''}
+          ${tx.circle_tx_id ? `<button class="btn" onclick="syncChainTx(${tx.id})" style="font-size:0.75rem;padding:2px 8px">Sync</button>` : ''}
+        </td>
+      </tr>
+    `).join('');
+
+    $('#chain-transactions-table').innerHTML = `
+      <table><thead><tr>
+        <th>TX #</th><th>Type</th><th>From</th><th>To</th><th>Amount</th><th>Status</th><th>Explorer</th><th>Date</th><th>Actions</th>
+      </tr></thead><tbody>${rows}</tbody></table>
+    `;
+  } catch (err) {
+    console.error('Failed to load blockchain transactions:', err);
+  }
+}
+
+async function loadFiatOrders() {
+  try {
+    const data = await api('/blockchain/fiat/orders');
+
+    if (data.orders.length === 0) {
+      $('#fiat-orders-table').innerHTML = '<p style="color:var(--text-muted);text-align:center;padding:12px">No fiat gateway orders yet</p>';
+      return;
+    }
+
+    const rows = data.orders.map(o => `
+      <tr>
+        <td style="font-family:monospace;font-size:0.8rem">${o.order_number}</td>
+        <td><span class="badge badge-${o.direction === 'on_ramp' ? 'active' : 'pending'}">${o.direction === 'on_ramp' ? 'USD → USDC' : 'USDC → USD'}</span></td>
+        <td style="font-weight:600">$${parseFloat(o.fiat_amount).toLocaleString('en-US', {minimumFractionDigits: 2})}</td>
+        <td>${o.crypto_amount ? `$${parseFloat(o.crypto_amount).toLocaleString('en-US', {minimumFractionDigits: 2})} USDC` : '—'}</td>
+        <td>${badge(o.status)}</td>
+        <td>${o.rail || '—'}</td>
+        <td style="font-size:0.8rem">${formatTime(o.created_at)}</td>
+      </tr>
+    `).join('');
+
+    $('#fiat-orders-table').innerHTML = `
+      <table><thead><tr>
+        <th>Order #</th><th>Direction</th><th>Fiat</th><th>Crypto</th><th>Status</th><th>Rail</th><th>Date</th>
+      </tr></thead><tbody>${rows}</tbody></table>
+    `;
+  } catch (err) {
+    console.error('Failed to load fiat orders:', err);
+  }
+}
+
+// Wallet actions
+
+function showCreateWalletModal() {
+  document.getElementById('create-wallet-modal').classList.remove('hidden');
+}
+
+async function createWallet(e) {
+  e.preventDefault();
+  try {
+    const result = await api('/blockchain/wallets', {
+      method: 'POST',
+      body: JSON.stringify({
+        wallet_name: $('#cw-name').value,
+        wallet_type: $('#cw-type').value,
+        blockchain: $('#cw-blockchain').value,
+      }),
+    });
+    closeModal('create-wallet-modal');
+    showToast(`Wallet "${result.wallet.wallet_name}" created${result.circle_connected ? ' (Circle)' : ' (local)'}`, 'success');
+    loadBlockchain();
+  } catch (err) {
+    showToast(`Failed: ${err.message}`, 'error');
+  }
+}
+
+async function syncWallet(id) {
+  try {
+    const result = await api(`/blockchain/wallets/${id}/sync`, { method: 'POST' });
+    showToast(result.synced ? 'Wallet synced' : 'Sync skipped: ' + (result.reason || 'unknown'), result.synced ? 'success' : 'info');
+    loadBlockchain();
+  } catch (err) {
+    showToast(`Sync failed: ${err.message}`, 'error');
+  }
+}
+
+async function freezeWallet(id) {
+  if (!confirm('Freeze this wallet? No transfers will be allowed.')) return;
+  try {
+    await api(`/blockchain/wallets/${id}/freeze`, { method: 'POST' });
+    showToast('Wallet frozen', 'success');
+    loadBlockchain();
+  } catch (err) {
+    showToast(`Failed: ${err.message}`, 'error');
+  }
+}
+
+async function unfreezeWallet(id) {
+  try {
+    await api(`/blockchain/wallets/${id}/unfreeze`, { method: 'POST' });
+    showToast('Wallet unfrozen', 'success');
+    loadBlockchain();
+  } catch (err) {
+    showToast(`Failed: ${err.message}`, 'error');
+  }
+}
+
+// Send USDC
+
+async function showSendUsdcModal() {
+  document.getElementById('send-usdc-modal').classList.remove('hidden');
+  try {
+    const data = await api('/blockchain/wallets?status=active');
+    const sel = document.getElementById('su-from-wallet');
+    sel.innerHTML = '<option value="">Select wallet...</option>' +
+      data.wallets.map(w => `<option value="${w.id}">${w.wallet_name} ($${parseFloat(w.usdc_balance).toFixed(2)} USDC)</option>`).join('');
+  } catch (err) {
+    console.error('Failed to load wallets for send modal:', err);
+  }
+}
+
+async function sendUsdc(e) {
+  e.preventDefault();
+  try {
+    const result = await api('/blockchain/send', {
+      method: 'POST',
+      body: JSON.stringify({
+        from_wallet_id: parseInt($('#su-from-wallet').value),
+        to_address: $('#su-to-address').value,
+        amount: $('#su-amount').value,
+        transfer_type: $('#su-type').value,
+        description: $('#su-description').value || undefined,
+      }),
+    });
+    closeModal('send-usdc-modal');
+    const msg = result.requires_approval
+      ? `Transfer of $${parseFloat(result.transaction.amount).toFixed(2)} USDC requires approval`
+      : `Transfer of $${parseFloat(result.transaction.amount).toFixed(2)} USDC ${result.circle_submitted ? 'submitted to Circle' : 'queued locally'}`;
+    showToast(msg, 'success');
+    loadBlockchain();
+  } catch (err) {
+    showToast(`Failed: ${err.message}`, 'error');
+  }
+}
+
+// Transaction actions
+
+async function approveChainTx(id) {
+  if (!confirm('Approve this USDC transfer?')) return;
+  try {
+    await api(`/blockchain/transactions/${id}/approve`, {
+      method: 'POST',
+      body: JSON.stringify({ approved_by: 'trustee' }),
+    });
+    showToast('Transfer approved', 'success');
+    loadBlockchainTransactions();
+  } catch (err) {
+    showToast(`Failed: ${err.message}`, 'error');
+  }
+}
+
+async function cancelChainTx(id) {
+  const reason = prompt('Cancellation reason (optional):');
+  if (reason === null) return;
+  try {
+    await api(`/blockchain/transactions/${id}/cancel`, {
+      method: 'POST',
+      body: JSON.stringify({ reason: reason || 'Cancelled by user' }),
+    });
+    showToast('Transfer cancelled', 'success');
+    loadBlockchainTransactions();
+  } catch (err) {
+    showToast(`Failed: ${err.message}`, 'error');
+  }
+}
+
+async function syncChainTx(id) {
+  try {
+    const result = await api(`/blockchain/transactions/${id}/sync`, { method: 'POST' });
+    showToast(result.synced ? 'Transaction synced from Circle' : 'Sync skipped', result.synced ? 'success' : 'info');
+    loadBlockchainTransactions();
+  } catch (err) {
+    showToast(`Sync failed: ${err.message}`, 'error');
+  }
+}
+
+// Fiat gateway
+
+async function initOnRamp(e) {
+  e.preventDefault();
+  try {
+    const amount = document.getElementById('onramp-amount').value;
+    const result = await api('/blockchain/fiat/on-ramp', {
+      method: 'POST',
+      body: JSON.stringify({ amount }),
+    });
+    const steps = result.instructions?.steps || [];
+    document.getElementById('onramp-result').innerHTML = `
+      <div style="background:rgba(76,175,80,0.1);border:1px solid rgba(76,175,80,0.3);border-radius:8px;padding:12px;font-size:0.85rem">
+        <strong style="color:var(--success)">On-ramp order ${result.order.order_number} created</strong>
+        <ol style="margin:8px 0 0 16px;color:var(--text-muted)">${steps.map(s => `<li>${s}</li>`).join('')}</ol>
+      </div>
+    `;
+    loadFiatOrders();
+  } catch (err) {
+    document.getElementById('onramp-result').innerHTML = `<span style="color:var(--danger)">${err.message}</span>`;
+  }
+}
+
+async function initOffRamp(e) {
+  e.preventDefault();
+  try {
+    const amount = document.getElementById('offramp-amount').value;
+    const result = await api('/blockchain/fiat/off-ramp', {
+      method: 'POST',
+      body: JSON.stringify({ amount }),
+    });
+    document.getElementById('offramp-result').innerHTML = `
+      <div style="background:rgba(33,150,243,0.1);border:1px solid rgba(33,150,243,0.3);border-radius:8px;padding:12px;font-size:0.85rem">
+        <strong style="color:var(--accent-primary)">Off-ramp order ${result.order.order_number} created</strong>
+        <p style="margin:4px 0 0;color:var(--text-muted)">${result.circle_submitted ? 'Submitted to Circle for processing' : 'Order queued — configure Circle payout destination to process'}</p>
+      </div>
+    `;
+    loadFiatOrders();
+  } catch (err) {
+    document.getElementById('offramp-result').innerHTML = `<span style="color:var(--danger)">${err.message}</span>`;
+  }
+}
+
+// Config
+
+async function showChainConfig() {
+  document.getElementById('chain-config-modal').classList.remove('hidden');
+  try {
+    const data = await api('/blockchain/config');
+    const html = data.config.map(c => `
+      <div style="margin-bottom:10px">
+        <label style="font-size:0.8rem;color:var(--text-muted)">${c.key} <span style="font-size:0.7rem">${c.description || ''}</span></label>
+        <input type="${c.is_sensitive ? 'password' : 'text'}" data-config-key="${c.key}" value="${c.value || ''}"
+          style="width:100%;padding:8px;background:var(--bg-card);border:1px solid var(--border);border-radius:6px;color:var(--text-primary);font-size:0.85rem"
+          placeholder="${c.is_sensitive ? '••••••••' : ''}">
+      </div>
+    `).join('');
+    document.getElementById('chain-config-form').innerHTML = html;
+  } catch (err) {
+    document.getElementById('chain-config-form').innerHTML = `<p style="color:var(--danger)">${err.message}</p>`;
+  }
+}
+
+async function saveChainConfig() {
+  try {
+    const inputs = document.querySelectorAll('#chain-config-form input[data-config-key]');
+    const updates = [];
+    inputs.forEach(inp => {
+      if (inp.value && inp.value !== '••••••••') {
+        updates.push({ key: inp.dataset.configKey, value: inp.value });
+      }
+    });
+    if (updates.length === 0) { showToast('No changes to save', 'info'); return; }
+    await api('/blockchain/config', {
+      method: 'PUT',
+      body: JSON.stringify({ updates }),
+    });
+    closeModal('chain-config-modal');
+    showToast(`${updates.length} config(s) saved`, 'success');
+    loadBlockchain();
+  } catch (err) {
+    showToast(`Failed: ${err.message}`, 'error');
+  }
 }
 
 // --- Init ---

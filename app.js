@@ -54,6 +54,9 @@ app.use('/api/trust-accounting', require('./server/routes/trust-accounting'));
 // ─── Payment Rail Routes (Increase Integration) ────────────────────────────
 app.use('/api/payment-rails', require('./server/routes/payment-rails'));
 
+// ─── Blockchain / Crypto Rails Routes (Circle + Polygon USDC) ──────────────
+app.use('/api/blockchain', require('./server/routes/blockchain'));
+
 // ─── Frontend Dashboard ───────────────────────────────────────────────────────
 app.use(express.static(path.join(__dirname, 'frontend')));
 app.get('/', (req, res) => res.sendFile(path.join(__dirname, 'frontend', 'index.html')));
