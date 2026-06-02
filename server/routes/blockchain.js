@@ -233,12 +233,15 @@ router.get('/wallets', (req, res) => {
     const walletMgr = new WalletManager(req.db);
     const wallets = walletMgr.listWallets(req.query);
     res.json({
-      wallets: wallets.map(w => ({
-        ...w,
-        address_masked: maskAddress(w.address),
-        blockchain_info: SUPPORTED_BLOCKCHAINS[w.blockchain] || {},
-        wallet_type_label: WALLET_TYPES[w.wallet_type] || w.wallet_type,
-      })),
+      wallets: wallets.map(w => {
+        const { encrypted_private_key, ...safeWallet } = w;
+        return {
+          ...safeWallet,
+          address_masked: maskAddress(w.address),
+          blockchain_info: SUPPORTED_BLOCKCHAINS[w.blockchain] || {},
+          wallet_type_label: WALLET_TYPES[w.wallet_type] || w.wallet_type,
+        };
+      }),
       count: wallets.length,
     });
   } catch (err) {
@@ -342,8 +345,9 @@ router.post('/wallets', async (req, res) => {
       details: { wallet_name, wallet_type, blockchain: chain, address, provider: encryptedPrivateKey ? 'private' : 'circle' },
     });
 
+    const { encrypted_private_key: _epk, ...safeNewWallet } = wallet;
     res.status(201).json({
-      wallet: { ...wallet, address_masked: maskAddress(wallet.address), provider: encryptedPrivateKey ? 'private' : 'circle' },
+      wallet: { ...safeNewWallet, address_masked: maskAddress(wallet.address), provider: encryptedPrivateKey ? 'private' : 'circle' },
       provider: encryptedPrivateKey ? 'private' : 'circle',
     });
   } catch (err) {
@@ -363,9 +367,10 @@ router.get('/wallets/:id', (req, res) => {
     const outbound = txMgr.listTransactions({ from_wallet_id: wallet.id, limit: '10' });
     const inbound = txMgr.listTransactions({ to_wallet_id: wallet.id, limit: '10' });
 
+    const { encrypted_private_key, ...safeWallet } = wallet;
     res.json({
       wallet: {
-        ...wallet,
+        ...safeWallet,
         address_masked: maskAddress(wallet.address),
         blockchain_info: SUPPORTED_BLOCKCHAINS[wallet.blockchain] || {},
         wallet_type_label: WALLET_TYPES[wallet.wallet_type] || wallet.wallet_type,
@@ -396,7 +401,7 @@ router.post('/wallets/:id/sync', async (req, res) => {
     if (isPrivate && wallet.address) {
       // --- PRIVATE STACK: Query blockchain directly via RPC ---
       try {
-        const polygonClient = getPolygonClient(req.db);
+        const polygonClient = new PolygonClient(wallet.blockchain, getConfig(req.db, 'rpc_url_override') || null);
         const [usdc, native] = await Promise.all([
           polygonClient.getUsdcBalance(wallet.address),
           polygonClient.getNativeBalance(wallet.address),
@@ -644,29 +649,50 @@ router.post('/transactions/:id/approve', async (req, res) => {
 
     const { approved_by, entity_secret_ciphertext } = req.body;
 
-    // Submit to Circle now that it's approved
-    const circle = getCircleClient(req.db);
-    let circleTxId = null;
-
+    // Submit on-chain or via Circle now that it's approved
     const walletMgr = new WalletManager(req.db);
     const fromWallet = tx.from_wallet_id ? walletMgr.getWallet(tx.from_wallet_id) : null;
+    const isPrivateWallet = fromWallet && fromWallet.circle_wallet_id && fromWallet.circle_wallet_id.startsWith('private_');
 
-    if (circle && fromWallet && !fromWallet.circle_wallet_id.startsWith('local_')) {
-      const tokenId = getConfig(req.db, 'usdc_token_id');
-      const result = await circle.createTransfer({
-        walletId: fromWallet.circle_wallet_id,
-        destinationAddress: tx.to_address,
-        amounts: [tx.amount],
-        tokenId: tokenId || undefined,
-        blockchain: tx.blockchain,
-        idempotencyKey: tx.idempotency_key,
-        entitySecretCiphertext: entity_secret_ciphertext || undefined,
-      });
-      circleTxId = result.data?.id;
+    let circleTxId = null;
+    let txHash = null;
+    let onChainSubmitted = false;
+
+    if (isPrivateWallet && fromWallet) {
+      // --- PRIVATE STACK: Sign & broadcast directly via ethers.js ---
+      const encKey = req.db.prepare('SELECT encrypted_private_key FROM blockchain_wallets WHERE id = ?').get(fromWallet.id);
+      if (encKey && encKey.encrypted_private_key) {
+        try {
+          const masterKey = getMasterEncryptionKey(req.db);
+          const polygonClient = new PolygonClient(fromWallet.blockchain, getConfig(req.db, 'rpc_url_override') || null);
+          const result = await polygonClient.sendUsdc(encKey.encrypted_private_key, masterKey, tx.to_address, tx.amount);
+          txHash = result.txHash;
+          onChainSubmitted = true;
+        } catch (sendErr) {
+          console.warn('[Blockchain] Private stack approve-send failed:', sendErr.message);
+        }
+      }
+    } else if (!isPrivateWallet && fromWallet) {
+      // --- CIRCLE FALLBACK ---
+      const circle = getCircleClient(req.db);
+      if (circle && fromWallet.circle_wallet_id) {
+        const tokenId = getConfig(req.db, 'usdc_token_id');
+        const result = await circle.createTransfer({
+          walletId: fromWallet.circle_wallet_id,
+          destinationAddress: tx.to_address,
+          amounts: [tx.amount],
+          tokenId: tokenId || undefined,
+          blockchain: tx.blockchain,
+          idempotencyKey: tx.idempotency_key,
+          entitySecretCiphertext: entity_secret_ciphertext || undefined,
+        });
+        circleTxId = result.data?.id;
+      }
     }
 
-    txMgr.updateStatus(tx.id, circleTxId ? 'submitted' : 'approved', {
-      circleTxId,
+    const newStatus = (onChainSubmitted || circleTxId) ? 'submitted' : 'approved';
+    txMgr.updateStatus(tx.id, newStatus, {
+      circleTxId: circleTxId || txHash,
       approvedBy: approved_by || 'trustee',
     });
 
@@ -677,7 +703,12 @@ router.post('/transactions/:id/approve', async (req, res) => {
       details: { approved_by: approved_by || 'trustee', amount: tx.amount },
     });
 
-    res.json({ transaction: txMgr.getTransaction(tx.id), circle_submitted: !!circleTxId });
+    res.json({
+      transaction: txMgr.getTransaction(tx.id),
+      circle_submitted: !!circleTxId,
+      on_chain_submitted: onChainSubmitted,
+      provider: isPrivateWallet ? 'private' : 'circle',
+    });
   } catch (err) {
     res.status(500).json({ error: 'Failed to approve transaction', detail: err.message });
   }
