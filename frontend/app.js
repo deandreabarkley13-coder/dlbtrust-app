@@ -1648,16 +1648,29 @@ async function loadBlockchain() {
       </div>
     `;
 
-    // Connection status
+    // Connection status + Provider selector
     const netInfo = d.network || {};
+    const isPrivate = d.provider === 'private';
+    const providerLabel = isPrivate ? 'Private Stack (Direct RPC)' : 'Circle API';
+    const providerColor = isPrivate ? 'var(--accent-primary)' : '#F7931A';
+    const envLabel = (d.environment || 'testnet').toUpperCase();
+    const connLabel = d.connected ? 'Connected' : 'Not Connected';
+    const connColor = d.connected ? 'var(--success)' : 'var(--danger)';
+
     $('#chain-connection-status').innerHTML = `
       <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px">
-        <div style="display:flex;gap:16px;align-items:center">
-          <span class="badge badge-${d.environment === 'production' ? 'active' : 'pending'}">${(d.environment || 'sandbox').toUpperCase()}</span>
+        <div style="display:flex;gap:12px;align-items:center;flex-wrap:wrap">
+          <select id="chain-provider-select" onchange="switchProvider(this.value)" style="padding:5px 10px;background:var(--bg-card);border:1px solid var(--border);border-radius:6px;color:var(--text-primary);font-size:0.8rem;font-weight:600">
+            <option value="private" ${isPrivate ? 'selected' : ''}>Private Stack (No API Key)</option>
+            <option value="circle" ${!isPrivate ? 'selected' : ''}>Circle API (Fallback)</option>
+          </select>
+          <span class="badge badge-${d.environment === 'mainnet' ? 'active' : 'pending'}">${envLabel}</span>
           <span style="font-size:0.85rem;color:var(--text-muted)">Network: <strong style="color:var(--text-primary)">${netInfo.name || d.blockchain}</strong></span>
-          <span style="font-size:0.85rem">Circle: <strong style="color:${d.connected ? 'var(--success)' : 'var(--danger)'}">${d.connected ? 'Connected' : 'Not Connected'}</strong></span>
+          <span style="font-size:0.85rem">Status: <strong style="color:${connColor}">${connLabel}</strong></span>
+          ${isPrivate ? `<span style="font-size:0.75rem;color:var(--text-muted)">USDC: <code style="font-size:0.7rem">${(d.usdcContract || '').slice(0,6)}...${(d.usdcContract || '').slice(-4)}</code></span>` : ''}
         </div>
-        <div style="display:flex;gap:8px">
+        <div style="display:flex;gap:8px;align-items:center">
+          ${isPrivate ? `<button class="btn" onclick="pingRpc()" style="font-size:0.75rem;padding:3px 8px">Test RPC</button>` : ''}
           <span style="font-size:0.8rem;color:var(--text-muted)">Daily Limit: $${parseFloat(d.dailyLimit).toLocaleString()}</span>
           <span style="font-size:0.8rem;color:var(--text-muted)">Approval ≥ $${parseFloat(d.approvalThreshold).toLocaleString()}</span>
           <button class="btn" onclick="showChainConfig()" style="font-size:0.8rem;padding:4px 10px">Configure</button>
@@ -1668,18 +1681,24 @@ async function loadBlockchain() {
     // Wallets grid
     const walletsHtml = wallets.wallets.length === 0
       ? '<p style="color:var(--text-muted);text-align:center;padding:20px">No wallets yet. Click "+ New Wallet" to create one.</p>'
-      : wallets.wallets.map(w => `
+      : wallets.wallets.map(w => {
+        const wProvider = (w.circle_wallet_id || '').startsWith('private_') ? 'private' : 'circle';
+        const provBadge = wProvider === 'private'
+          ? '<span style="background:var(--accent-primary);color:#fff;padding:2px 6px;border-radius:4px;font-size:0.65rem;font-weight:600">PRIVATE</span>'
+          : '<span style="background:#F7931A;color:#fff;padding:2px 6px;border-radius:4px;font-size:0.65rem;font-weight:600">CIRCLE</span>';
+        return `
         <div style="background:var(--bg-main);border:1px solid var(--border);border-radius:10px;padding:16px">
           <div style="display:flex;justify-content:space-between;align-items:start;margin-bottom:8px">
             <div>
               <strong style="font-size:0.95rem">${w.wallet_name}</strong>
               <span class="badge badge-${w.status === 'active' ? 'active' : 'frozen'}" style="margin-left:6px;font-size:0.7rem">${w.status}</span>
+              ${provBadge}
             </div>
             <span class="badge" style="font-size:0.7rem">${w.wallet_type_label || w.wallet_type}</span>
           </div>
           <div style="font-size:1.3rem;font-weight:600;color:var(--accent-primary);margin:8px 0">$${parseFloat(w.usdc_balance).toLocaleString('en-US', {minimumFractionDigits: 2})} <span style="font-size:0.75rem;color:var(--text-muted)">USDC</span></div>
           <div style="font-size:0.75rem;color:var(--text-muted);font-family:monospace;margin-bottom:8px">${w.address_masked || '—'}</div>
-          <div style="font-size:0.75rem;color:var(--text-muted);margin-bottom:8px">${(w.blockchain_info && w.blockchain_info.name) || w.blockchain}</div>
+          <div style="font-size:0.75rem;color:var(--text-muted);margin-bottom:8px">${(w.blockchain_info && w.blockchain_info.name) || w.blockchain} ${w.address ? `<a href="https://${w.blockchain === 'MATIC' ? '' : 'amoy.'}polygonscan.com/address/${w.address}" target="_blank" style="color:var(--accent-primary);font-size:0.7rem">View on Explorer</a>` : ''}</div>
           <div style="display:flex;gap:6px">
             <button class="btn" onclick="syncWallet(${w.id})" style="font-size:0.75rem;padding:3px 8px">Sync</button>
             ${w.status === 'active'
@@ -1688,7 +1707,7 @@ async function loadBlockchain() {
             }
           </div>
         </div>
-      `).join('');
+      `}).join('');
     $('#chain-wallets-grid').innerHTML = walletsHtml;
 
     // Load transactions and fiat orders
@@ -1987,6 +2006,32 @@ async function saveChainConfig() {
     loadBlockchain();
   } catch (err) {
     showToast(`Failed: ${err.message}`, 'error');
+  }
+}
+
+// --- Private Stack Functions ---
+
+async function switchProvider(provider) {
+  try {
+    await api('/blockchain/provider', { method: 'POST', body: JSON.stringify({ provider }) });
+    showToast(`Provider switched to ${provider === 'private' ? 'Private Stack' : 'Circle API'}`, 'success');
+    loadBlockchain();
+  } catch (err) {
+    showToast(`Failed to switch provider: ${err.message}`, 'error');
+  }
+}
+
+async function pingRpc() {
+  try {
+    showToast('Testing RPC connection...', 'info');
+    const result = await api('/blockchain/rpc/ping');
+    if (result.connected) {
+      showToast(`RPC Connected — Block #${result.blockNumber}, Gas: ${result.gasPrice?.gasPrice || '?'} Gwei`, 'success');
+    } else {
+      showToast(`RPC Failed: ${result.error || 'Unknown error'}`, 'error');
+    }
+  } catch (err) {
+    showToast(`RPC Ping failed: ${err.message}`, 'error');
   }
 }
 
