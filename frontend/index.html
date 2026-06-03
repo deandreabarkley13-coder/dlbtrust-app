@@ -21,6 +21,7 @@
       <li><a href="#" data-view="accounting">Trust Accounting</a></li>
       <li><a href="#" data-view="fixed-income">Fixed Income</a></li>
       <li><a href="#" data-view="blockchain">Crypto Rails</a></li>
+      <li><a href="#" data-view="cash-management">Cash Management</a></li>
       <li><a href="#" data-view="compliance">Compliance</a></li>
       <li><a href="#" data-view="activity">Activity</a></li>
     </ul>
@@ -973,6 +974,88 @@
             <button class="btn btn-primary" onclick="saveChainConfig()">Save All</button>
           </div>
         </div>
+      </div>
+    </section>
+
+    <!-- Cash Management System View -->
+    <section id="view-cash-management" class="view">
+      <header class="view-header">
+        <h2>Cash Management System</h2>
+        <div style="display:flex;gap:8px;flex-wrap:wrap">
+          <button class="btn btn-primary" onclick="loadCashPosition()">Refresh Position</button>
+          <button class="btn" onclick="saveCashSnapshot()">Save Snapshot</button>
+          <button class="btn" onclick="runReconciliation()">Run Reconciliation</button>
+        </div>
+      </header>
+
+      <!-- CMS Summary Metrics -->
+      <div class="metrics-grid">
+        <div class="metric-card primary">
+          <span class="metric-label">Total Liquid Assets</span>
+          <span class="metric-value" id="cms-total-liquid">—</span>
+        </div>
+        <div class="metric-card">
+          <span class="metric-label">Bank Accounts</span>
+          <span class="metric-value" id="cms-bank-total">—</span>
+        </div>
+        <div class="metric-card">
+          <span class="metric-label">Crypto (USDC)</span>
+          <span class="metric-value" id="cms-crypto-total">—</span>
+        </div>
+        <div class="metric-card">
+          <span class="metric-label">Fixed Income (Market)</span>
+          <span class="metric-value" id="cms-fi-total">—</span>
+        </div>
+        <div class="metric-card">
+          <span class="metric-label">Total Assets</span>
+          <span class="metric-value" id="cms-total-assets">—</span>
+        </div>
+        <div class="metric-card warn">
+          <span class="metric-label">Active Alerts</span>
+          <span class="metric-value" id="cms-alert-count">—</span>
+        </div>
+      </div>
+
+      <!-- Income vs Expense -->
+      <div class="panels-row">
+        <div class="panel">
+          <h3>Income vs Expense (Projected Annual)</h3>
+          <div id="cms-income-summary"></div>
+        </div>
+        <div class="panel">
+          <h3>Pending Activity</h3>
+          <div id="cms-pending-summary"></div>
+        </div>
+      </div>
+
+      <!-- Cash Position Detail -->
+      <div class="panel">
+        <h3>Cash Position by Source</h3>
+        <div id="cms-position-detail" class="table-container"></div>
+      </div>
+
+      <!-- Cash Flow Forecast -->
+      <div class="panel">
+        <h3>Cash Flow Forecast (90 Days)</h3>
+        <div id="cms-forecast-table" class="table-container"></div>
+      </div>
+
+      <!-- Reconciliation -->
+      <div class="panel">
+        <h3>Cross-Engine Reconciliation</h3>
+        <div id="cms-recon-results" class="table-container"></div>
+      </div>
+
+      <!-- Alerts -->
+      <div class="panel">
+        <h3>System Alerts</h3>
+        <div id="cms-alerts-list"></div>
+      </div>
+
+      <!-- Event Log -->
+      <div class="panel">
+        <h3>Event Bus (Recent Activity)</h3>
+        <div id="cms-event-log" class="table-container"></div>
       </div>
     </section>
 

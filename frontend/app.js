@@ -80,6 +80,7 @@ function loadView(view) {
     case 'accounting': loadAccounting(); break;
     case 'fixed-income': loadFixedIncome(); break;
     case 'blockchain': loadBlockchain(); break;
+    case 'cash-management': loadCashManagement(); break;
     case 'compliance': loadCompliance(); break;
     case 'activity': loadActivity(); break;
   }
@@ -2116,6 +2117,221 @@ async function pingRpc() {
     }
   } catch (err) {
     showToast(`RPC Ping failed: ${err.message}`, 'error');
+  }
+}
+
+// --- Cash Management System ---
+
+async function loadCashManagement() {
+  await Promise.all([
+    loadCashPosition(),
+    loadCashForecast(),
+    loadCashAlerts(),
+    loadCashIncomeSummary(),
+  ]);
+}
+
+async function loadCashPosition() {
+  try {
+    const pos = await api('/cash-management/position');
+    const s = pos.summary;
+
+    $('#cms-total-liquid').textContent = formatUSD(s.total_liquid_cents);
+    $('#cms-bank-total').textContent = formatUSD(s.bank_balance_cents);
+    $('#cms-crypto-total').textContent = formatUSD(s.crypto_balance_cents);
+    $('#cms-fi-total').textContent = formatUSD(s.fixed_income_market_cents);
+    $('#cms-total-assets').textContent = formatUSD(s.total_assets_cents);
+
+    // Pending summary
+    $('#cms-pending-summary').innerHTML = `
+      <div style="display:grid;gap:12px">
+        <div style="display:flex;justify-content:space-between;padding:8px 0;border-bottom:1px solid var(--border)">
+          <span>Pending Inflows</span>
+          <span style="color:var(--success);font-weight:600">+${formatUSD(pos.pending.inflow_cents)}</span>
+        </div>
+        <div style="display:flex;justify-content:space-between;padding:8px 0;border-bottom:1px solid var(--border)">
+          <span>Pending Outflows</span>
+          <span style="color:var(--danger);font-weight:600">-${formatUSD(pos.pending.outflow_cents)}</span>
+        </div>
+        <div style="display:flex;justify-content:space-between;padding:8px 0;font-weight:700">
+          <span>Net Pending</span>
+          <span style="color:${pos.pending.net_cents >= 0 ? 'var(--success)' : 'var(--danger)'}">${pos.pending.net_cents >= 0 ? '+' : ''}${formatUSD(pos.pending.net_cents)}</span>
+        </div>
+        <div style="display:flex;justify-content:space-between;padding:8px 0;border-top:1px solid var(--border);color:var(--text-secondary);font-size:0.85rem">
+          <span>Accounts: ${s.account_count} | Wallets: ${s.wallet_count} | Holdings: ${s.holding_count}</span>
+        </div>
+      </div>
+    `;
+
+    // Position detail table
+    let rows = '';
+    for (const item of pos.bank_accounts.items) {
+      rows += `<tr><td>${badge('active')}</td><td>${item.name}</td><td>Bank — ${item.type}</td><td>${formatUSD(item.balance_cents)}</td><td>${formatUSD(item.available_cents)}</td><td>${(item.interest_rate_bps / 100).toFixed(2)}%</td></tr>`;
+    }
+    for (const item of pos.crypto_wallets.items) {
+      rows += `<tr><td>${badge(item.provider)}</td><td>${item.name}</td><td>Crypto — ${item.blockchain}</td><td>${formatUSD(item.usdc_balance_cents)}</td><td>${formatUSD(item.usdc_balance_cents)}</td><td>—</td></tr>`;
+    }
+    for (const item of pos.fixed_income.items) {
+      rows += `<tr><td>${badge(item.type)}</td><td>${item.name}</td><td>Fixed Income</td><td>${formatUSD(item.market_value_cents)}</td><td>—</td><td>${(item.coupon_rate * 100).toFixed(2)}%</td></tr>`;
+    }
+
+    $('#cms-position-detail').innerHTML = rows ? `
+      <table>
+        <thead><tr><th>Type</th><th>Name</th><th>Category</th><th>Balance</th><th>Available</th><th>Rate</th></tr></thead>
+        <tbody>${rows}</tbody>
+      </table>
+    ` : '<p style="color:var(--text-secondary);padding:16px">No positions found. Create accounts, wallets, or record holdings to populate.</p>';
+
+  } catch (err) {
+    console.error('Cash position error:', err);
+    showToast('Failed to load cash position: ' + err.message, 'error');
+  }
+}
+
+async function loadCashForecast() {
+  try {
+    const fc = await api('/cash-management/forecast?horizon_days=90');
+
+    let rows = '';
+    for (const p of fc.periods) {
+      const netColor = p.net_flow_cents >= 0 ? 'var(--success)' : 'var(--danger)';
+      const balColor = p.projected_balance_cents >= 0 ? 'var(--text-primary)' : 'var(--danger)';
+      rows += `<tr>
+        <td>${p.start_date}</td>
+        <td style="color:var(--success)">+${formatUSD(p.total_inflow_cents)}</td>
+        <td style="color:var(--danger)">-${formatUSD(p.total_outflow_cents)}</td>
+        <td style="color:${netColor};font-weight:600">${p.net_flow_cents >= 0 ? '+' : ''}${formatUSD(p.net_flow_cents)}</td>
+        <td style="color:${balColor};font-weight:700">${formatUSD(p.projected_balance_cents)}</td>
+      </tr>`;
+    }
+
+    $('#cms-forecast-table').innerHTML = rows ? `
+      <div style="margin-bottom:12px;display:flex;gap:16px;flex-wrap:wrap;font-size:0.85rem;color:var(--text-secondary)">
+        <span>Current Liquid: <strong style="color:var(--text-primary)">${formatUSD(fc.current_liquid_cents)}</strong></span>
+        <span>Projected Inflow: <strong style="color:var(--success)">+${formatUSD(fc.summary.total_projected_inflow_cents)}</strong></span>
+        <span>Projected Outflow: <strong style="color:var(--danger)">-${formatUSD(fc.summary.total_projected_outflow_cents)}</strong></span>
+        <span>Ending Balance: <strong style="color:var(--text-primary)">${formatUSD(fc.summary.ending_projected_balance_cents)}</strong></span>
+        ${fc.summary.shortfall_periods > 0 ? `<span style="color:var(--danger)">&#9888; ${fc.summary.shortfall_periods} shortfall period(s)</span>` : ''}
+      </div>
+      <table>
+        <thead><tr><th>Period Start</th><th>Inflows</th><th>Outflows</th><th>Net Flow</th><th>Projected Balance</th></tr></thead>
+        <tbody>${rows}</tbody>
+      </table>
+    ` : '<p style="color:var(--text-secondary);padding:16px">No forecast data. Add accounts with balances or fixed income holdings to generate projections.</p>';
+
+  } catch (err) {
+    console.error('Forecast error:', err);
+  }
+}
+
+async function loadCashAlerts() {
+  try {
+    const data = await api('/cash-management/alerts');
+    $('#cms-alert-count').textContent = data.summary.total;
+
+    if (data.live_alerts.length === 0) {
+      $('#cms-alerts-list').innerHTML = '<p style="color:var(--text-secondary);padding:16px">No active alerts. All systems normal.</p>';
+      return;
+    }
+
+    const alertHtml = data.live_alerts.map(a => {
+      const icon = a.severity === 'critical' ? '&#9888;' : a.severity === 'warning' ? '&#9888;' : '&#8505;';
+      const color = a.severity === 'critical' ? 'var(--danger)' : a.severity === 'warning' ? '#f59e0b' : 'var(--text-secondary)';
+      return `
+        <div style="display:flex;align-items:flex-start;gap:12px;padding:12px;border-bottom:1px solid var(--border)">
+          <span style="color:${color};font-size:1.2rem;min-width:24px">${icon}</span>
+          <div>
+            <div style="font-weight:600;margin-bottom:4px">${badge(a.severity)} ${a.type.replace(/_/g, ' ')}</div>
+            <div style="color:var(--text-secondary);font-size:0.85rem">${a.message}</div>
+          </div>
+        </div>
+      `;
+    }).join('');
+
+    $('#cms-alerts-list').innerHTML = alertHtml;
+
+  } catch (err) {
+    console.error('Alerts error:', err);
+  }
+}
+
+async function loadCashIncomeSummary() {
+  try {
+    const data = await api('/cash-management/income-summary');
+
+    const netColor = data.net_projected_cents >= 0 ? 'var(--success)' : 'var(--danger)';
+
+    $('#cms-income-summary').innerHTML = `
+      <div style="display:grid;gap:12px">
+        <div style="display:flex;justify-content:space-between;padding:8px 0;border-bottom:1px solid var(--border)">
+          <span>Coupon Income (Annual)</span>
+          <span style="color:var(--success);font-weight:600">+${formatUSD(data.coupon_income_cents)}</span>
+        </div>
+        <div style="display:flex;justify-content:space-between;padding:8px 0;border-bottom:1px solid var(--border)">
+          <span>Interest Income (Annual)</span>
+          <span style="color:var(--success);font-weight:600">+${formatUSD(data.interest_income_cents)}</span>
+        </div>
+        <div style="display:flex;justify-content:space-between;padding:8px 0;border-bottom:1px solid var(--border);font-weight:600">
+          <span>Total Projected Income</span>
+          <span style="color:var(--success)">+${formatUSD(data.projected_annual_income_cents)}</span>
+        </div>
+        <div style="display:flex;justify-content:space-between;padding:8px 0;border-bottom:1px solid var(--border)">
+          <span>YTD Expenses</span>
+          <span style="color:var(--danger);font-weight:600">-${formatUSD(data.ytd_expenses_cents)}</span>
+        </div>
+        <div style="display:flex;justify-content:space-between;padding:8px 0;font-weight:700;font-size:1.1rem">
+          <span>Net Projected</span>
+          <span style="color:${netColor}">${data.net_projected_cents >= 0 ? '+' : ''}${formatUSD(data.net_projected_cents)}</span>
+        </div>
+      </div>
+    `;
+
+  } catch (err) {
+    console.error('Income summary error:', err);
+  }
+}
+
+async function saveCashSnapshot() {
+  try {
+    const result = await api('/cash-management/snapshot', { method: 'POST' });
+    showToast(`Position snapshot saved (ID: ${result.snapshot_id})`, 'success');
+  } catch (err) {
+    showToast('Failed to save snapshot: ' + err.message, 'error');
+  }
+}
+
+async function runReconciliation() {
+  try {
+    showToast('Running cross-engine reconciliation...', 'info');
+    const recon = await api('/cash-management/reconciliation');
+
+    let rows = '';
+    for (const item of recon.items) {
+      const statusColor = item.status === 'matched' ? 'var(--success)' : item.status === 'mismatch' ? 'var(--danger)' : '#f59e0b';
+      rows += `<tr>
+        <td>${item.check}</td>
+        <td>${item.description}</td>
+        <td><span style="color:${statusColor};font-weight:600">${item.status}</span></td>
+        <td>${badge(item.severity)}</td>
+        <td>${item.difference_cents !== undefined ? formatUSD(Math.abs(item.difference_cents)) : '—'}</td>
+      </tr>`;
+    }
+
+    $('#cms-recon-results').innerHTML = `
+      <div style="margin-bottom:12px;font-size:0.85rem;color:var(--text-secondary)">
+        Overall: <strong style="color:${recon.summary.overall_status === 'matched' ? 'var(--success)' : 'var(--danger)'}">${recon.summary.overall_status.toUpperCase()}</strong>
+        &nbsp;|&nbsp; Checks: ${recon.summary.total_checks} &nbsp;|&nbsp; Matched: ${recon.summary.matched} &nbsp;|&nbsp; Mismatched: ${recon.summary.mismatched} &nbsp;|&nbsp; Review: ${recon.summary.pending_review}
+      </div>
+      <table>
+        <thead><tr><th>Check</th><th>Description</th><th>Status</th><th>Severity</th><th>Difference</th></tr></thead>
+        <tbody>${rows}</tbody>
+      </table>
+    `;
+
+    showToast(`Reconciliation complete: ${recon.summary.overall_status}`, recon.summary.mismatched > 0 ? 'error' : 'success');
+
+  } catch (err) {
+    showToast('Reconciliation failed: ' + err.message, 'error');
   }
 }
 
