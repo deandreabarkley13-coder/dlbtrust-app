@@ -131,15 +131,22 @@ function getMasterEncryptionKey(db) {
   let key = process.env.WALLET_ENCRYPTION_KEY;
   if (key) return key;
 
-  // Fallback: check DB-stored key (less secure — key and ciphertext in same DB)
+  const env = getConfig(db, 'environment') || 'testnet';
+  const isMainnet = env === 'mainnet' || process.env.NODE_ENV === 'production';
+
+  if (isMainnet) {
+    throw new Error('WALLET_ENCRYPTION_KEY environment variable is required for mainnet/production. Set it via: fly secrets set WALLET_ENCRYPTION_KEY=$(openssl rand -hex 32) --app dlbtrust-app');
+  }
+
+  // Fallback: check DB-stored key (testnet only — less secure)
   key = getConfig(db, 'master_encryption_key');
   if (key) {
-    console.warn('[Security] Using DB-stored master encryption key. Set WALLET_ENCRYPTION_KEY env var for production.');
+    console.warn('[Security] Using DB-stored master encryption key (testnet). Set WALLET_ENCRYPTION_KEY env var for production.');
     return key;
   }
 
-  // Auto-generate only for development/first-run convenience
-  console.warn('[Security] Auto-generating master encryption key and storing in DB. This is NOT recommended for production — set WALLET_ENCRYPTION_KEY env var instead.');
+  // Auto-generate only for testnet/development convenience
+  console.warn('[Security] Auto-generating master encryption key for testnet. Set WALLET_ENCRYPTION_KEY env var before switching to mainnet.');
   key = crypto.randomBytes(32).toString('hex');
   setConfig(db, 'master_encryption_key', key);
   return key;

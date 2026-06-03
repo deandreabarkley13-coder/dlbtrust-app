@@ -1538,7 +1538,7 @@ async function loadPrivatePlacements() {
           <td><strong>${b.security_name}</strong></td>
           <td>${b.bond_series}</td>
           <td>$${Number(b.par_value).toLocaleString()}</td>
-          <td>${b.coupon_rate}%</td>
+          <td>${(b.coupon_rate * 100).toFixed(3)}%</td>
           <td>${b.maturity_date}</td>
           <td>${b.issuing_trust}</td>
           <td>${statusBadge}</td>

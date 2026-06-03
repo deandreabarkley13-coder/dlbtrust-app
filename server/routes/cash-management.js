@@ -71,34 +71,11 @@ function gatherPositionData(db) {
     holdings = db.prepare('SELECT * FROM fixed_income_holdings').all();
   } catch (e) { /* table may not exist */ }
 
-  // Private placement bonds → merge into holdings
-  let ppBonds = [];
-  try {
-    ppBonds = db.prepare('SELECT * FROM private_placement_bonds').all();
-    for (const pp of ppBonds) {
-      holdings.push({
-        id: `pp-${pp.id}`,
-        security_name: pp.bond_name || pp.series_name,
-        security_type: 'private_placement',
-        par_value_cents: pp.par_value_cents || 0,
-        market_value_cents: pp.par_value_cents || 0,
-        purchase_price_cents: pp.purchase_price_cents || pp.par_value_cents || 0,
-        coupon_rate: pp.coupon_rate || 0,
-        coupon_frequency: pp.coupon_frequency || 'semi-annual',
-        maturity_date: pp.maturity_date,
-        purchase_date: pp.issue_date || pp.created_at,
-        status: pp.status || 'active',
-        accrued_interest_cents: 0,
-        created_at: pp.created_at,
-      });
-    }
-  } catch (e) { /* table may not exist */ }
-
   // Pending transfers
   let pendingTransfers = [];
   try {
     pendingTransfers = db.prepare(
-      "SELECT * FROM trust_transfers WHERE status IN ('pending', 'approved', 'executing')"
+      "SELECT * FROM internal_transfers WHERE status IN ('pending', 'approved', 'executing')"
     ).all();
   } catch (e) { /* table may not exist */ }
 
@@ -120,7 +97,7 @@ function gatherForecastData(db) {
   let scheduledPayments = [];
   try {
     scheduledPayments = db.prepare(
-      "SELECT * FROM trust_payments WHERE status = 'scheduled'"
+      "SELECT * FROM external_transfers WHERE status IN ('draft', 'pending_approval', 'approved') AND scheduled_date IS NOT NULL"
     ).all();
   } catch (e) { /* table may not exist */ }
 
@@ -168,7 +145,7 @@ function gatherReconData(db) {
   // All transfers
   let transfers = [];
   try {
-    transfers = db.prepare('SELECT * FROM trust_transfers').all();
+    transfers = db.prepare('SELECT * FROM internal_transfers').all();
   } catch (e) { /* table may not exist */ }
 
   // All blockchain transactions
@@ -351,7 +328,7 @@ router.get('/income-summary', (req, res) => {
 
     let payments = [];
     try {
-      payments = db.prepare('SELECT * FROM trust_payments').all();
+      payments = db.prepare('SELECT * FROM external_transfers').all();
     } catch (e) { /* table may not exist */ }
 
     const summary = buildIncomeExpenseSummary({
