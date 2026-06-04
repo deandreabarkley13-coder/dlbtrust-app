@@ -383,6 +383,7 @@ async function executeSnapshot(db) {
   const { buildCashPosition } = require('./cash-management-engine');
   const posData = gatherPositionData(db);
   const position = buildCashPosition(posData);
+  const s = position.summary;
 
   // Save snapshot
   let snapshotId = null;
@@ -391,18 +392,18 @@ async function executeSnapshot(db) {
       INSERT INTO cms_position_snapshots (bank_balance_cents, bank_available_cents, bank_account_count, crypto_usdc_cents, crypto_wallet_count, fi_par_value_cents, fi_market_value_cents, fi_accrued_cents, fi_holding_count, pending_inflow_cents, pending_outflow_cents, total_liquid_cents, total_assets_cents)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
-      position.totals.bank_balance_cents, position.totals.bank_available_cents || 0, position.totals.bank_account_count || 0,
-      position.totals.crypto_usdc_cents, position.totals.crypto_wallet_count || 0,
-      position.totals.fi_par_value_cents || 0, position.totals.fi_market_value_cents || 0, position.totals.fi_accrued_cents || 0, position.totals.fi_holding_count || 0,
-      position.totals.pending_inflow_cents || 0, position.totals.pending_outflow_cents || 0,
-      position.totals.total_liquid_cents, position.totals.total_assets_cents
+      s.bank_balance_cents, position.bank_accounts.total_available_cents || 0, s.account_count || 0,
+      s.crypto_balance_cents, s.wallet_count || 0,
+      position.fixed_income.total_par_cents || 0, s.fixed_income_market_cents || 0, s.accrued_interest_cents || 0, s.holding_count || 0,
+      position.pending.inflow_cents || 0, position.pending.outflow_cents || 0,
+      s.total_liquid_cents, s.total_assets_cents
     );
     snapshotId = result.lastInsertRowid;
   } catch (e) { /* */ }
 
   return {
     summary: `Position snapshot saved${snapshotId ? ` (ID: ${snapshotId})` : ''}.\n` +
-      `Total Assets: $${(position.totals.total_assets_cents / 100).toFixed(2)}`,
+      `Total Assets: $${(s.total_assets_cents / 100).toFixed(2)}`,
     data: { snapshot_id: snapshotId, position },
   };
 }
@@ -411,17 +412,18 @@ async function executeRefreshPosition(db) {
   const { buildCashPosition } = require('./cash-management-engine');
   const posData = gatherPositionData(db);
   const position = buildCashPosition(posData);
+  const s = position.summary;
 
-  const bankTotal = (position.totals.bank_balance_cents / 100).toFixed(2);
-  const cryptoTotal = (position.totals.crypto_usdc_cents / 100).toFixed(2);
-  const fiTotal = (position.totals.fi_market_value_cents || 0) / 100;
-  const totalAssets = (position.totals.total_assets_cents / 100).toFixed(2);
+  const bankTotal = (s.bank_balance_cents / 100).toFixed(2);
+  const cryptoTotal = (s.crypto_balance_cents / 100).toFixed(2);
+  const fiTotal = (s.fixed_income_market_cents / 100).toFixed(2);
+  const totalAssets = (s.total_assets_cents / 100).toFixed(2);
 
   return {
     summary: `Cash Position:\n` +
       `• Bank Accounts: $${bankTotal}\n` +
       `• Crypto (USDC): $${cryptoTotal}\n` +
-      `• Fixed Income: $${fiTotal.toFixed(2)}\n` +
+      `• Fixed Income: $${fiTotal}\n` +
       `• Total Assets: $${totalAssets}`,
     data: position,
   };
@@ -478,7 +480,7 @@ async function executeListBonds(db) {
   }
 
   const summary = bonds.map(b =>
-    `• ${b.security_name} — Par: $${Number(b.par_value).toLocaleString()} | Coupon: ${(b.coupon_rate * 100).toFixed(2)}% | Maturity: ${b.maturity_date}`
+    `• ${b.security_name} — Par: $${(b.par_value_cents / 100).toLocaleString()} | Coupon: ${(b.coupon_rate * 100).toFixed(2)}% | Maturity: ${b.maturity_date}`
   ).join('\n');
 
   return {
@@ -539,10 +541,13 @@ async function executeCheckCompliance(db) {
 }
 
 async function executeIncomeSummary(db) {
-  const { buildCashPosition, buildIncomeExpenseSummary } = require('./cash-management-engine');
+  const { buildIncomeExpenseSummary } = require('./cash-management-engine');
   const posData = gatherPositionData(db);
-  const position = buildCashPosition(posData);
-  const income = buildIncomeExpenseSummary(position);
+
+  let payments = [];
+  try { payments = db.prepare('SELECT * FROM external_transfers').all(); } catch (e) { /* */ }
+
+  const income = buildIncomeExpenseSummary({ holdings: posData.holdings, accounts: posData.accounts, payments });
 
   return {
     summary: `Income Summary (Annual Projected):\n` +
