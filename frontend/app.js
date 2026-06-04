@@ -81,6 +81,8 @@ function loadView(view) {
     case 'fixed-income': loadFixedIncome(); break;
     case 'blockchain': loadBlockchain(); break;
     case 'cash-management': loadCashManagement(); break;
+    case 'documents': loadDocuments(); break;
+    case 'ai-agent': loadAIAgent(); break;
     case 'compliance': loadCompliance(); break;
     case 'activity': loadActivity(); break;
   }
@@ -2332,6 +2334,458 @@ async function runReconciliation() {
 
   } catch (err) {
     showToast('Reconciliation failed: ' + err.message, 'error');
+  }
+}
+
+// --- Document Management System ---
+
+async function loadDocuments() {
+  try {
+    const [stats, docs] = await Promise.all([
+      api('/documents/stats'),
+      api('/documents'),
+    ]);
+
+    // Update metrics
+    $('#dms-total-docs').textContent = stats.total_documents || 0;
+    const activeCount = (stats.by_status || []).find(s => s.status === 'active');
+    $('#dms-active-docs').textContent = activeCount ? activeCount.count : 0;
+    const reviewCount = (stats.by_status || []).find(s => s.status === 'under_review');
+    $('#dms-review-docs').textContent = reviewCount ? reviewCount.count : 0;
+    const draftCount = (stats.by_status || []).find(s => s.status === 'draft');
+    $('#dms-draft-docs').textContent = draftCount ? draftCount.count : 0;
+    $('#dms-expiring-docs').textContent = (stats.expiring_soon || []).length;
+
+    // Category filters
+    const categories = (stats.by_category || []);
+    $('#dms-category-filters').innerHTML = `
+      <button class="btn btn-sm" onclick="filterDocsByCategory('')" style="font-size:0.8rem;padding:4px 10px">All</button>
+      ${categories.map(c => `<button class="btn btn-sm" onclick="filterDocsByCategory('${c.category}')" style="font-size:0.8rem;padding:4px 10px">${c.category.replace(/_/g, ' ')} (${c.count})</button>`).join('')}
+    `;
+
+    // Document table
+    renderDocumentTable(docs.documents || []);
+
+    // Recent uploads
+    const recent = stats.recent_uploads || [];
+    $('#dms-recent-uploads').innerHTML = recent.length === 0
+      ? '<p style="color:var(--text-secondary)">No documents uploaded yet</p>'
+      : recent.map(d => `
+        <div style="display:flex;justify-content:space-between;align-items:center;padding:8px 0;border-bottom:1px solid var(--border)">
+          <div>
+            <strong>${d.title}</strong>
+            <span style="color:var(--text-secondary);font-size:0.8rem;margin-left:8px">${d.file_type.toUpperCase()} • ${formatFileSize(d.file_size_bytes)}</span>
+          </div>
+          <span style="color:var(--text-secondary);font-size:0.8rem">${formatTime(d.created_at)}</span>
+        </div>
+      `).join('');
+
+  } catch (err) {
+    showToast('Failed to load documents: ' + err.message, 'error');
+  }
+}
+
+function renderDocumentTable(docs) {
+  if (docs.length === 0) {
+    $('#dms-document-list').innerHTML = '<p style="color:var(--text-secondary)">No documents found. Click "Upload Document" to add your first trust document.</p>';
+    return;
+  }
+
+  const rows = docs.map(d => `
+    <tr>
+      <td><strong>${d.title}</strong></td>
+      <td>${badge(d.category.replace(/_/g, ' '))}</td>
+      <td>${d.file_type.toUpperCase()}</td>
+      <td>${formatFileSize(d.file_size_bytes)}</td>
+      <td>${badge(d.status)}</td>
+      <td>v${d.version}</td>
+      <td>${formatTime(d.created_at)}</td>
+      <td>
+        <button class="btn btn-sm" onclick="viewDocument(${d.id})" style="font-size:0.75rem;padding:2px 8px">View</button>
+        <button class="btn btn-sm" onclick="archiveDocument(${d.id})" style="font-size:0.75rem;padding:2px 8px">Archive</button>
+      </td>
+    </tr>
+  `).join('');
+
+  $('#dms-document-list').innerHTML = `
+    <table>
+      <thead><tr><th>Title</th><th>Category</th><th>Type</th><th>Size</th><th>Status</th><th>Version</th><th>Uploaded</th><th>Actions</th></tr></thead>
+      <tbody>${rows}</tbody>
+    </table>
+  `;
+}
+
+async function filterDocsByCategory(category) {
+  try {
+    const params = category ? `?category=${category}` : '';
+    const docs = await api(`/documents${params}`);
+    renderDocumentTable(docs.documents || []);
+  } catch (err) {
+    showToast('Filter failed: ' + err.message, 'error');
+  }
+}
+
+async function searchDocuments() {
+  const query = $('#dms-search-input').value.trim();
+  if (!query) { loadDocuments(); return; }
+  try {
+    const docs = await api(`/documents/search?q=${encodeURIComponent(query)}`);
+    renderDocumentTable(docs.documents || []);
+    showToast(`Found ${docs.count} document(s)`, 'success');
+  } catch (err) {
+    showToast('Search failed: ' + err.message, 'error');
+  }
+}
+
+function openUploadDocModal() {
+  const modal = document.createElement('div');
+  modal.className = 'modal-overlay';
+  modal.id = 'upload-doc-modal';
+  modal.innerHTML = `
+    <div class="modal" style="max-width:600px;max-height:90vh;overflow-y:auto">
+      <h2>Upload Trust Document</h2>
+      <form id="upload-doc-form" onsubmit="submitUploadDoc(event)">
+        <fieldset>
+          <legend>Document Information</legend>
+          <label>Title *<input type="text" name="title" required></label>
+          <label>Description<textarea name="description" rows="2" style="width:100%;padding:8px;border-radius:6px;border:1px solid var(--border);background:var(--bg-dark);color:var(--text-primary);resize:vertical"></textarea></label>
+          <label>Category *
+            <select name="category" required>
+              <option value="general">General</option>
+              <option value="trust_agreement">Trust Agreement</option>
+              <option value="amendment">Amendment</option>
+              <option value="certificate">Certificate</option>
+              <option value="offering_memorandum">Offering Memorandum</option>
+              <option value="compliance">Compliance</option>
+              <option value="tax">Tax</option>
+              <option value="financial_statement">Financial Statement</option>
+              <option value="correspondence">Correspondence</option>
+              <option value="board_resolution">Board Resolution</option>
+              <option value="beneficiary">Beneficiary</option>
+              <option value="vendor">Vendor</option>
+              <option value="regulatory">Regulatory</option>
+            </select>
+          </label>
+          <label>Tags (comma-separated)<input type="text" name="tags" placeholder="e.g. 2024, quarterly, series-a"></label>
+        </fieldset>
+        <fieldset>
+          <legend>File</legend>
+          <label>Select File *<input type="file" name="file" id="doc-file-input" required></label>
+        </fieldset>
+        <fieldset>
+          <legend>Optional</legend>
+          <label>Effective Date<input type="date" name="effective_date"></label>
+          <label>Expiration Date<input type="date" name="expiration_date"></label>
+          <label style="display:flex;align-items:center;gap:8px">
+            <input type="checkbox" name="requires_signature" style="width:auto"> Requires Signature
+          </label>
+        </fieldset>
+        <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:16px">
+          <button type="button" class="btn" onclick="document.getElementById('upload-doc-modal').remove()">Cancel</button>
+          <button type="submit" class="btn btn-primary">Upload Document</button>
+        </div>
+      </form>
+    </div>
+  `;
+  document.body.appendChild(modal);
+}
+
+async function submitUploadDoc(e) {
+  e.preventDefault();
+  const form = e.target;
+  const fileInput = form.querySelector('input[type="file"]');
+  const file = fileInput.files[0];
+
+  if (!file) { showToast('Please select a file', 'error'); return; }
+
+  // Read file as base64
+  const reader = new FileReader();
+  reader.onload = async () => {
+    const base64 = reader.result.split(',')[1]; // Remove data:... prefix
+    try {
+      const result = await api('/documents', {
+        method: 'POST',
+        body: JSON.stringify({
+          title: form.title.value,
+          description: form.description.value,
+          category: form.category.value,
+          tags: form.tags.value,
+          file_name: file.name,
+          file_type: file.name.split('.').pop(),
+          file_content: base64,
+          effective_date: form.effective_date.value || null,
+          expiration_date: form.expiration_date.value || null,
+          requires_signature: form.requires_signature.checked,
+        }),
+      });
+      showToast(result.message || 'Document uploaded!', 'success');
+      document.getElementById('upload-doc-modal').remove();
+      loadDocuments();
+    } catch (err) {
+      showToast('Upload failed: ' + err.message, 'error');
+    }
+  };
+  reader.readAsDataURL(file);
+}
+
+async function viewDocument(id) {
+  try {
+    const doc = await api(`/documents/${id}`);
+    const modal = document.createElement('div');
+    modal.className = 'modal-overlay';
+    modal.id = 'view-doc-modal';
+    modal.innerHTML = `
+      <div class="modal" style="max-width:600px;max-height:90vh;overflow-y:auto">
+        <h2>${doc.title}</h2>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;font-size:0.85rem;margin:12px 0">
+          <div><strong>Category:</strong> ${doc.category.replace(/_/g, ' ')}</div>
+          <div><strong>Status:</strong> ${badge(doc.status)}</div>
+          <div><strong>File:</strong> ${doc.file_name} (${doc.file_type.toUpperCase()})</div>
+          <div><strong>Size:</strong> ${formatFileSize(doc.file_size_bytes)}</div>
+          <div><strong>Version:</strong> v${doc.version}</div>
+          <div><strong>Uploaded:</strong> ${formatTime(doc.created_at)}</div>
+          ${doc.tags ? `<div><strong>Tags:</strong> ${doc.tags}</div>` : ''}
+          ${doc.effective_date ? `<div><strong>Effective:</strong> ${formatDate(doc.effective_date)}</div>` : ''}
+          ${doc.expiration_date ? `<div><strong>Expires:</strong> ${formatDate(doc.expiration_date)}</div>` : ''}
+          ${doc.signed_by ? `<div><strong>Signed by:</strong> ${doc.signed_by} (${formatTime(doc.signed_at)})</div>` : ''}
+          ${doc.approved_by ? `<div><strong>Approved by:</strong> ${doc.approved_by} (${formatTime(doc.approved_at)})</div>` : ''}
+        </div>
+        ${doc.description ? `<p style="color:var(--text-secondary);font-size:0.85rem">${doc.description}</p>` : ''}
+        <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:16px">
+          <button class="btn" onclick="approveDocument(${doc.id})">Approve</button>
+          <button class="btn" onclick="downloadDocument(${doc.id})">Download</button>
+          <button class="btn" onclick="document.getElementById('view-doc-modal').remove()">Close</button>
+        </div>
+      </div>
+    `;
+    document.body.appendChild(modal);
+  } catch (err) {
+    showToast('Failed to load document: ' + err.message, 'error');
+  }
+}
+
+async function approveDocument(id) {
+  try {
+    await api(`/documents/${id}/status`, { method: 'PATCH', body: JSON.stringify({ status: 'approved' }) });
+    showToast('Document approved', 'success');
+    const modal = document.getElementById('view-doc-modal');
+    if (modal) modal.remove();
+    loadDocuments();
+  } catch (err) {
+    showToast('Approve failed: ' + err.message, 'error');
+  }
+}
+
+async function archiveDocument(id) {
+  if (!confirm('Archive this document?')) return;
+  try {
+    await api(`/documents/${id}`, { method: 'DELETE' });
+    showToast('Document archived', 'success');
+    loadDocuments();
+  } catch (err) {
+    showToast('Archive failed: ' + err.message, 'error');
+  }
+}
+
+function downloadDocument(id) {
+  window.open(`${API}/documents/${id}/download`, '_blank');
+}
+
+function formatFileSize(bytes) {
+  if (!bytes || bytes === 0) return '0 B';
+  const sizes = ['B', 'KB', 'MB', 'GB'];
+  const i = Math.floor(Math.log(bytes) / Math.log(1024));
+  return `${(bytes / Math.pow(1024, i)).toFixed(1)} ${sizes[i]}`;
+}
+
+// --- AI Agent ---
+
+async function loadAIAgent() {
+  try {
+    const [conversation, tasks, capabilities] = await Promise.all([
+      api('/agent/conversation?limit=30'),
+      api('/agent/tasks?limit=10'),
+      api('/agent/capabilities'),
+    ]);
+
+    // Render conversation
+    renderAgentChat(conversation.messages || []);
+
+    // Render task history
+    renderAgentTasks(tasks.tasks || []);
+
+    // Render capabilities
+    renderAgentCapabilities(capabilities.capabilities || []);
+
+  } catch (err) {
+    // Agent tables may not exist yet — show welcome message
+    renderAgentChat([]);
+    $('#agent-task-history').innerHTML = '<p style="color:var(--text-secondary)">No tasks executed yet</p>';
+    renderAgentCapabilities([]);
+  }
+}
+
+function renderAgentChat(messages) {
+  const chatEl = $('#agent-chat-messages');
+  if (messages.length === 0) {
+    chatEl.innerHTML = `
+      <div style="text-align:center;padding:40px;color:var(--text-secondary)">
+        <p style="font-size:1.1rem;margin-bottom:8px">DLB Trust AI Agent</p>
+        <p style="font-size:0.85rem">Ask me to perform platform tasks. Try "Run reconciliation" or "Generate forecast".</p>
+      </div>
+    `;
+    return;
+  }
+
+  chatEl.innerHTML = messages.map(m => {
+    const isUser = m.role === 'user';
+    const bgColor = isUser ? 'var(--accent)' : 'var(--bg-card)';
+    const textColor = isUser ? '#000' : 'var(--text-primary)';
+    const align = isUser ? 'flex-end' : 'flex-start';
+    return `
+      <div style="display:flex;justify-content:${align};margin:6px 0">
+        <div style="max-width:80%;padding:10px 14px;border-radius:12px;background:${bgColor};color:${textColor};font-size:0.85rem;white-space:pre-wrap">${m.content}</div>
+      </div>
+    `;
+  }).join('');
+
+  chatEl.scrollTop = chatEl.scrollHeight;
+}
+
+function renderAgentTasks(tasks) {
+  if (tasks.length === 0) {
+    $('#agent-task-history').innerHTML = '<p style="color:var(--text-secondary)">No tasks executed yet</p>';
+    return;
+  }
+
+  const rows = tasks.map(t => `
+    <tr>
+      <td>${t.task_type}</td>
+      <td>${badge(t.status)}</td>
+      <td>${t.execution_time_ms ? t.execution_time_ms + 'ms' : '—'}</td>
+      <td style="max-width:300px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${t.prompt}</td>
+      <td>${formatTime(t.created_at)}</td>
+    </tr>
+  `).join('');
+
+  $('#agent-task-history').innerHTML = `
+    <table>
+      <thead><tr><th>Type</th><th>Status</th><th>Time</th><th>Prompt</th><th>When</th></tr></thead>
+      <tbody>${rows}</tbody>
+    </table>
+  `;
+}
+
+function renderAgentCapabilities(capabilities) {
+  if (capabilities.length === 0) {
+    $('#agent-capabilities-list').innerHTML = `
+      <div style="display:grid;grid-template-columns:repeat(auto-fit, minmax(250px, 1fr));gap:8px">
+        <div style="padding:12px;border:1px solid var(--border);border-radius:8px">Run Reconciliation</div>
+        <div style="padding:12px;border:1px solid var(--border);border-radius:8px">Generate Forecast</div>
+        <div style="padding:12px;border:1px solid var(--border);border-radius:8px">Save Snapshot</div>
+        <div style="padding:12px;border:1px solid var(--border);border-radius:8px">Check Alerts</div>
+        <div style="padding:12px;border:1px solid var(--border);border-radius:8px">List Accounts</div>
+        <div style="padding:12px;border:1px solid var(--border);border-radius:8px">List Documents</div>
+        <div style="padding:12px;border:1px solid var(--border);border-radius:8px">Check Compliance</div>
+        <div style="padding:12px;border:1px solid var(--border);border-radius:8px">Generate Report</div>
+      </div>
+    `;
+    return;
+  }
+
+  $('#agent-capabilities-list').innerHTML = `
+    <div style="display:grid;grid-template-columns:repeat(auto-fit, minmax(250px, 1fr));gap:8px">
+      ${capabilities.map(c => `
+        <div style="padding:12px;border:1px solid var(--border);border-radius:8px;cursor:pointer" onclick="quickAgentAction('${c.description}')">
+          <strong style="font-size:0.85rem">${c.description}</strong>
+          <div style="font-size:0.75rem;color:var(--text-secondary);margin-top:4px">Engine: ${c.engine}</div>
+        </div>
+      `).join('')}
+    </div>
+  `;
+}
+
+async function sendAgentPrompt() {
+  const input = $('#agent-prompt-input');
+  const prompt = input.value.trim();
+  if (!prompt) return;
+
+  input.value = '';
+
+  // Add user message to chat immediately
+  const chatEl = $('#agent-chat-messages');
+  chatEl.innerHTML += `
+    <div style="display:flex;justify-content:flex-end;margin:6px 0">
+      <div style="max-width:80%;padding:10px 14px;border-radius:12px;background:var(--accent);color:#000;font-size:0.85rem">${prompt}</div>
+    </div>
+  `;
+  chatEl.scrollTop = chatEl.scrollHeight;
+
+  // Show typing indicator
+  chatEl.innerHTML += `
+    <div id="agent-typing" style="display:flex;justify-content:flex-start;margin:6px 0">
+      <div style="padding:10px 14px;border-radius:12px;background:var(--bg-card);color:var(--text-secondary);font-size:0.85rem">Thinking...</div>
+    </div>
+  `;
+  chatEl.scrollTop = chatEl.scrollHeight;
+
+  try {
+    const result = await api('/agent/chat', {
+      method: 'POST',
+      body: JSON.stringify({ prompt }),
+    });
+
+    // Remove typing indicator
+    const typing = document.getElementById('agent-typing');
+    if (typing) typing.remove();
+
+    // Add agent response
+    chatEl.innerHTML += `
+      <div style="display:flex;justify-content:flex-start;margin:6px 0">
+        <div style="max-width:80%;padding:10px 14px;border-radius:12px;background:var(--bg-card);color:var(--text-primary);font-size:0.85rem;white-space:pre-wrap">${result.response}</div>
+      </div>
+    `;
+    chatEl.scrollTop = chatEl.scrollHeight;
+
+    // Show execution metadata
+    if (result.execution_time_ms) {
+      showToast(`Task completed in ${result.execution_time_ms}ms (${result.intent})`, 'success');
+    }
+
+  } catch (err) {
+    const typing = document.getElementById('agent-typing');
+    if (typing) typing.remove();
+
+    chatEl.innerHTML += `
+      <div style="display:flex;justify-content:flex-start;margin:6px 0">
+        <div style="max-width:80%;padding:10px 14px;border-radius:12px;background:var(--danger);color:#fff;font-size:0.85rem">Error: ${err.message}</div>
+      </div>
+    `;
+    chatEl.scrollTop = chatEl.scrollHeight;
+  }
+}
+
+function quickAgentAction(prompt) {
+  $('#agent-prompt-input').value = prompt;
+  sendAgentPrompt();
+}
+
+async function loadAgentCapabilities() {
+  try {
+    const data = await api('/agent/capabilities');
+    renderAgentCapabilities(data.capabilities || []);
+    showToast('Capabilities loaded', 'success');
+  } catch (err) {
+    showToast('Failed to load capabilities: ' + err.message, 'error');
+  }
+}
+
+async function loadAgentTasks() {
+  try {
+    const data = await api('/agent/tasks?limit=20');
+    renderAgentTasks(data.tasks || []);
+  } catch (err) {
+    showToast('Failed to load tasks: ' + err.message, 'error');
   }
 }
 

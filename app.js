@@ -15,8 +15,8 @@ const path    = require('path');
 const app     = express();
 
 // ─── Middleware ───────────────────────────────────────────────────────────────
-app.use(express.json());
-app.use(express.urlencoded({ extended: true }));
+app.use(express.json({ limit: '50mb' }));
+app.use(express.urlencoded({ extended: true, limit: '50mb' }));
 app.use(express.static(path.join(__dirname, 'public')));
 
 // ─── Database ─────────────────────────────────────────────────────────────────
@@ -59,6 +59,12 @@ app.use('/api/blockchain', require('./server/routes/blockchain'));
 
 // ─── Cash Management System Routes (Treasury & Liquidity) ──────────────────
 app.use('/api/cash-management', require('./server/routes/cash-management'));
+
+// ─── Document Management System Routes (Trust Documents) ────────────────────
+app.use('/api/documents', require('./server/routes/documents'));
+
+// ─── AI Agent Routes (Platform Assistant) ───────────────────────────────────
+app.use('/api/agent', require('./server/routes/ai-agent'));
 
 // ─── Frontend Dashboard ───────────────────────────────────────────────────────
 app.use(express.static(path.join(__dirname, 'frontend')));

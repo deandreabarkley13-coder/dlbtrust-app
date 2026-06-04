@@ -112,6 +112,17 @@ const EVENTS = {
   RECON_COMPLETED:     'cms.reconciliation.completed',
   ALERT_CREATED:       'cms.alert.created',
   RULE_TRIGGERED:      'cms.rule.triggered',
+
+  // Document Management
+  DOCUMENT_UPLOADED:   'dms.document.uploaded',
+  DOCUMENT_VERSIONED:  'dms.document.versioned',
+  DOCUMENT_APPROVED:   'dms.document.approved',
+  DOCUMENT_ARCHIVED:   'dms.document.archived',
+
+  // AI Agent
+  AGENT_TASK_COMPLETED: 'agent.task.completed',
+  AGENT_TASK_FAILED:    'agent.task.failed',
+  AGENT_SCHEDULED_RUN:  'agent.scheduled.run',
 };
 
 module.exports = { bus, EVENTS, EventBus };

@@ -22,6 +22,8 @@
       <li><a href="#" data-view="fixed-income">Fixed Income</a></li>
       <li><a href="#" data-view="blockchain">Crypto Rails</a></li>
       <li><a href="#" data-view="cash-management">Cash Management</a></li>
+      <li><a href="#" data-view="documents">Documents</a></li>
+      <li><a href="#" data-view="ai-agent">AI Agent</a></li>
       <li><a href="#" data-view="compliance">Compliance</a></li>
       <li><a href="#" data-view="activity">Activity</a></li>
     </ul>
@@ -1056,6 +1058,116 @@
       <div class="panel">
         <h3>Event Bus (Recent Activity)</h3>
         <div id="cms-event-log" class="table-container"></div>
+      </div>
+    </section>
+
+    <!-- Document Management System View -->
+    <section id="view-documents" class="view">
+      <header class="view-header">
+        <h2>Document Management</h2>
+        <div style="display:flex;gap:8px;flex-wrap:wrap">
+          <button class="btn btn-primary" onclick="openUploadDocModal()">Upload Document</button>
+          <button class="btn" onclick="loadDocuments()">Refresh</button>
+        </div>
+      </header>
+
+      <!-- DMS Summary Metrics -->
+      <div class="metrics-grid">
+        <div class="metric-card primary">
+          <span class="metric-label">Total Documents</span>
+          <span class="metric-value" id="dms-total-docs">—</span>
+        </div>
+        <div class="metric-card">
+          <span class="metric-label">Active</span>
+          <span class="metric-value" id="dms-active-docs">—</span>
+        </div>
+        <div class="metric-card">
+          <span class="metric-label">Under Review</span>
+          <span class="metric-value" id="dms-review-docs">—</span>
+        </div>
+        <div class="metric-card">
+          <span class="metric-label">Drafts</span>
+          <span class="metric-value" id="dms-draft-docs">—</span>
+        </div>
+        <div class="metric-card warn">
+          <span class="metric-label">Expiring Soon</span>
+          <span class="metric-value" id="dms-expiring-docs">—</span>
+        </div>
+      </div>
+
+      <!-- Search -->
+      <div class="panel">
+        <div style="display:flex;gap:8px;align-items:center;margin-bottom:12px">
+          <input type="text" id="dms-search-input" placeholder="Search documents by title, tags, description..." style="flex:1;padding:10px 14px;border-radius:8px;border:1px solid var(--border);background:var(--bg-dark);color:var(--text-primary);font-size:0.9rem">
+          <button class="btn btn-primary" onclick="searchDocuments()">Search</button>
+        </div>
+      </div>
+
+      <!-- Category Filter -->
+      <div class="panel">
+        <h3>Filter by Category</h3>
+        <div id="dms-category-filters" style="display:flex;gap:8px;flex-wrap:wrap;margin-top:8px"></div>
+      </div>
+
+      <!-- Document List -->
+      <div class="panel">
+        <h3>Documents</h3>
+        <div id="dms-document-list" class="table-container"></div>
+      </div>
+
+      <!-- Recent Uploads -->
+      <div class="panel">
+        <h3>Recent Uploads</h3>
+        <div id="dms-recent-uploads"></div>
+      </div>
+    </section>
+
+    <!-- AI Agent View -->
+    <section id="view-ai-agent" class="view">
+      <header class="view-header">
+        <h2>AI Agent</h2>
+        <div style="display:flex;gap:8px;flex-wrap:wrap">
+          <button class="btn" onclick="loadAgentCapabilities()">Capabilities</button>
+          <button class="btn" onclick="loadAgentTasks()">Task History</button>
+        </div>
+      </header>
+
+      <!-- Agent Chat Interface -->
+      <div class="panel" style="height:400px;display:flex;flex-direction:column">
+        <h3>Chat with Agent</h3>
+        <div id="agent-chat-messages" style="flex:1;overflow-y:auto;padding:12px;border:1px solid var(--border);border-radius:8px;margin:8px 0;background:var(--bg-dark)"></div>
+        <div style="display:flex;gap:8px">
+          <input type="text" id="agent-prompt-input" placeholder="Ask me to run reconciliation, generate forecast, check alerts, list documents..." style="flex:1;padding:10px 14px;border-radius:8px;border:1px solid var(--border);background:var(--bg-dark);color:var(--text-primary);font-size:0.9rem" onkeydown="if(event.key==='Enter')sendAgentPrompt()">
+          <button class="btn btn-primary" onclick="sendAgentPrompt()">Send</button>
+        </div>
+      </div>
+
+      <!-- Quick Actions -->
+      <div class="panel">
+        <h3>Quick Actions</h3>
+        <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:8px">
+          <button class="btn" onclick="quickAgentAction('Run reconciliation')">Run Reconciliation</button>
+          <button class="btn" onclick="quickAgentAction('Generate forecast')">Generate Forecast</button>
+          <button class="btn" onclick="quickAgentAction('Save snapshot')">Save Snapshot</button>
+          <button class="btn" onclick="quickAgentAction('Check alerts')">Check Alerts</button>
+          <button class="btn" onclick="quickAgentAction('Show cash position')">Cash Position</button>
+          <button class="btn" onclick="quickAgentAction('Generate trust report')">Trust Report</button>
+          <button class="btn" onclick="quickAgentAction('List accounts')">List Accounts</button>
+          <button class="btn" onclick="quickAgentAction('List documents')">List Documents</button>
+          <button class="btn" onclick="quickAgentAction('Check compliance')">Compliance Check</button>
+        </div>
+      </div>
+
+      <!-- Task History -->
+      <div class="panel">
+        <h3>Recent Tasks</h3>
+        <div id="agent-task-history" class="table-container"></div>
+      </div>
+
+      <!-- Capabilities -->
+      <div class="panel">
+        <h3>Agent Capabilities</h3>
+        <div id="agent-capabilities-list"></div>
       </div>
     </section>
 
