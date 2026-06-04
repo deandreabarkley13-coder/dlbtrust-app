@@ -462,7 +462,7 @@ async function executeListAccounts(db) {
   }
 
   const summary = accounts.map(a =>
-    `• ${a.name} (${a.account_type}) — $${(a.balance_cents / 100).toFixed(2)} [${a.status}]`
+    `• ${a.account_name} (${a.account_type}) — $${(a.balance_cents / 100).toFixed(2)} [${a.status}]`
   ).join('\n');
 
   return {
