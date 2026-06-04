@@ -459,8 +459,8 @@ router.post('/coupons/:id/receive', (req, res) => {
     // 4. Update PP bond total_interest_paid if applicable
     const ppBond = db.prepare('SELECT * FROM private_placement_bonds WHERE holding_id = ?').get(coupon.holding_id);
     if (ppBond) {
-      db.prepare('UPDATE private_placement_bonds SET total_interest_paid_cents = total_interest_paid_cents + ?, total_payments_made_cents = total_payments_made_cents + 1 WHERE id = ?')
-        .run(coupon.amount_cents, ppBond.id);
+      db.prepare('UPDATE private_placement_bonds SET total_interest_paid_cents = total_interest_paid_cents + ?, total_payments_made_cents = total_payments_made_cents + ? WHERE id = ?')
+        .run(coupon.amount_cents, coupon.amount_cents, ppBond.id);
     }
 
     // 5. Emit event on bus

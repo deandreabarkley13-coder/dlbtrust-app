@@ -537,7 +537,7 @@ async function executeListWallets(db) {
   }
 
   const summary = wallets.map(w =>
-    `• ${w.name} (${w.blockchain}) — $${(w.usdc_balance_cents / 100).toFixed(2)} USDC [${w.provider}]`
+    `• ${w.wallet_name} (${w.blockchain}) — $${parseFloat(w.usdc_balance || '0').toFixed(2)} USDC [${w.provider}]`
   ).join('\n');
 
   return {
@@ -731,8 +731,8 @@ async function executeProcessCoupon(db) {
   try {
     const ppBond = db.prepare('SELECT * FROM private_placement_bonds WHERE holding_id = ?').get(coupon.holding_id);
     if (ppBond) {
-      db.prepare('UPDATE private_placement_bonds SET total_interest_paid_cents = total_interest_paid_cents + ?, total_payments_made_cents = total_payments_made_cents + 1 WHERE id = ?')
-        .run(coupon.amount_cents, ppBond.id);
+      db.prepare('UPDATE private_placement_bonds SET total_interest_paid_cents = total_interest_paid_cents + ?, total_payments_made_cents = total_payments_made_cents + ? WHERE id = ?')
+        .run(coupon.amount_cents, coupon.amount_cents, ppBond.id);
     }
   } catch (_) { /* optional */ }
 
