@@ -142,6 +142,36 @@ const INTENT_REGISTRY = [
     action: 'report',
   },
   {
+    intent: 'process_coupon',
+    patterns: [
+      /process.*coupon/i, /receive.*coupon/i, /collect.*coupon/i,
+      /coupon.*payment/i, /coupon.*income/i, /pay.*coupon/i,
+    ],
+    description: 'Process next due coupon payment (FI → Banking → GL)',
+    engine: 'fixed-income',
+    action: 'process-coupon',
+  },
+  {
+    intent: 'initialize_gl',
+    patterns: [
+      /init.*gl/i, /init.*ledger/i, /set.*up.*gl/i, /book.*initial/i,
+      /initialize.*accounting/i, /start.*accounting/i, /set.*up.*books/i,
+    ],
+    description: 'Initialize GL with journal entries for all existing data',
+    engine: 'cash-management',
+    action: 'initialize-gl',
+  },
+  {
+    intent: 'upcoming_coupons',
+    patterns: [
+      /upcoming.*coupon/i, /next.*coupon/i, /coupon.*schedule/i,
+      /coupon.*due/i, /when.*coupon/i, /coupon.*date/i,
+    ],
+    description: 'Show upcoming coupon payment dates',
+    engine: 'fixed-income',
+    action: 'upcoming-coupons',
+  },
+  {
     intent: 'help',
     patterns: [
       /help/i, /what.*can.*you/i, /capabilities/i, /commands/i,
@@ -239,6 +269,15 @@ async function executeTask(db, parsedIntent, prompt) {
         break;
       case 'generate_report':
         result = await executeGenerateReport(db);
+        break;
+      case 'process_coupon':
+        result = await executeProcessCoupon(db);
+        break;
+      case 'initialize_gl':
+        result = await executeInitializeGL(db);
+        break;
+      case 'upcoming_coupons':
+        result = await executeUpcomingCoupons(db);
         break;
       case 'help':
         result = executeHelp();
@@ -628,6 +667,195 @@ async function executeGenerateReport(db) {
     summary: `Trust Status Report (${new Date().toLocaleDateString()}):\n\n${sections.join('\n')}`,
     data: { sections, generated_at: new Date().toISOString() },
   };
+}
+
+async function executeProcessCoupon(db) {
+  // Find the next due coupon (accrued or scheduled, earliest date)
+  let coupons;
+  try {
+    coupons = db.prepare(`
+      SELECT cp.*, h.security_name
+      FROM coupon_payments cp
+      JOIN fixed_income_holdings h ON cp.holding_id = h.id
+      WHERE cp.status IN ('accrued', 'scheduled')
+      ORDER BY cp.payment_date ASC
+    `).all();
+  } catch (e) {
+    return { summary: 'No coupon schedule found. Try "generate coupon schedule" first.', data: null };
+  }
+
+  if (coupons.length === 0) {
+    return { summary: 'No pending coupons to process. All coupons have been received.', data: null };
+  }
+
+  const coupon = coupons[0];
+  const amountUsd = (coupon.amount_cents / 100).toFixed(2);
+
+  // Process the coupon: mark as received, credit bank account, post GL entry
+  db.prepare("UPDATE coupon_payments SET status = 'received', received_at = datetime('now') WHERE id = ?").run(coupon.id);
+
+  // Credit operating account
+  let creditedAccount = null;
+  const account = db.prepare("SELECT * FROM trust_accounts WHERE account_type = 'operating' AND status = 'active' ORDER BY id LIMIT 1").get();
+  if (account) {
+    db.prepare('UPDATE trust_accounts SET balance_cents = balance_cents + ?, available_cents = available_cents + ?, last_activity_date = date(?) WHERE id = ?')
+      .run(coupon.amount_cents, coupon.amount_cents, new Date().toISOString(), account.id);
+    creditedAccount = account.account_name;
+
+    try {
+      db.prepare("INSERT INTO cms_event_log (event_name, source_engine, event_data) VALUES ('coupon_received', 'fixed_income', ?)")
+        .run(JSON.stringify({ coupon_id: coupon.id, account_id: account.id, amount_cents: coupon.amount_cents, security_name: coupon.security_name }));
+    } catch (_) { /* event log optional */ }
+  }
+
+  // Post journal entry
+  let journalEntryId = null;
+  const cashAcct = db.prepare("SELECT id FROM trust_chart_of_accounts WHERE account_code = '1010' AND is_active = 1").get();
+  const incomeAcct = db.prepare("SELECT id FROM trust_chart_of_accounts WHERE account_code = '4000' AND is_active = 1").get();
+  if (cashAcct && incomeAcct) {
+    const entryNum = `CPN-${Date.now()}`;
+    const entryDate = new Date().toISOString().split('T')[0];
+    const result = db.prepare(`
+      INSERT INTO trust_journal_entries (entry_number, entry_date, entry_type, description, source_engine, is_posted, total_debit_cents, total_credit_cents, created_by)
+      VALUES (?, ?, 'coupon_income', ?, 'fixed_income', 1, ?, ?, 'system')
+    `).run(entryNum, entryDate, `Coupon income — ${coupon.security_name} (${coupon.payment_date})`, coupon.amount_cents, coupon.amount_cents);
+    journalEntryId = result.lastInsertRowid;
+
+    db.prepare('INSERT INTO trust_journal_lines (journal_entry_id, line_number, account_id, account_code, debit_cents, credit_cents, description) VALUES (?, 1, ?, ?, ?, 0, ?)')
+      .run(journalEntryId, cashAcct.id, '1010', coupon.amount_cents, 'Cash received — coupon');
+    db.prepare('INSERT INTO trust_journal_lines (journal_entry_id, line_number, account_id, account_code, debit_cents, credit_cents, description) VALUES (?, 2, ?, ?, 0, ?, ?)')
+      .run(journalEntryId, incomeAcct.id, '4000', coupon.amount_cents, 'Interest income — coupon');
+  }
+
+  // Update PP bond if applicable
+  try {
+    const ppBond = db.prepare('SELECT * FROM private_placement_bonds WHERE holding_id = ?').get(coupon.holding_id);
+    if (ppBond) {
+      db.prepare('UPDATE private_placement_bonds SET total_interest_paid_cents = total_interest_paid_cents + ?, total_payments_made_cents = total_payments_made_cents + 1 WHERE id = ?')
+        .run(coupon.amount_cents, ppBond.id);
+    }
+  } catch (_) { /* optional */ }
+
+  const remaining = coupons.length - 1;
+  let summary = `Coupon processed: $${amountUsd} from ${coupon.security_name}\n`;
+  summary += `• Payment date: ${coupon.payment_date}\n`;
+  if (creditedAccount) summary += `• Credited to: ${creditedAccount}\n`;
+  if (journalEntryId) summary += `• Journal entry: #${journalEntryId} (Debit Cash / Credit Interest Income)\n`;
+  summary += `• Remaining coupons: ${remaining}`;
+
+  return {
+    summary,
+    data: { coupon_id: coupon.id, amount_cents: coupon.amount_cents, credited_account: creditedAccount, journal_entry_id: journalEntryId, remaining_coupons: remaining },
+  };
+}
+
+async function executeInitializeGL(db) {
+  // Check if GL already has entries
+  const existingCount = db.prepare('SELECT COUNT(*) as cnt FROM trust_journal_entries').get().cnt;
+  if (existingCount > 0) {
+    return {
+      summary: `GL already initialized with ${existingCount} journal entries. Use the API directly with { "force": true } to re-initialize.`,
+      data: { existing_entries: existingCount },
+    };
+  }
+
+  // Resolve GL accounts
+  const glAccounts = {};
+  for (const code of ['1010', '1100', '1500', '3000', '4000']) {
+    const acct = db.prepare("SELECT id FROM trust_chart_of_accounts WHERE account_code = ? AND is_active = 1").get(code);
+    if (!acct) return { summary: `GL account ${code} not found in chart of accounts`, data: null };
+    glAccounts[code] = acct.id;
+  }
+
+  const now = new Date().toISOString().split('T')[0];
+  const entries = [];
+
+  const insertEntry = db.prepare(`
+    INSERT INTO trust_journal_entries (entry_number, entry_date, entry_type, description, source_engine, is_posted, total_debit_cents, total_credit_cents, created_by)
+    VALUES (?, ?, ?, ?, ?, 1, ?, ?, 'system')
+  `);
+  const insertLine = db.prepare(`
+    INSERT INTO trust_journal_lines (journal_entry_id, line_number, account_id, account_code, debit_cents, credit_cents, description)
+    VALUES (?, ?, ?, ?, ?, ?, ?)
+  `);
+
+  // Bank accounts → Debit Cash / Credit Corpus
+  const accounts = db.prepare("SELECT * FROM trust_accounts WHERE status = 'active'").all();
+  for (const acct of accounts) {
+    if (acct.balance_cents <= 0) continue;
+    const result = insertEntry.run(`INIT-BANK-${acct.id}-${Date.now()}`, now, 'initial_funding', `Initial funding — ${acct.account_name}`, 'banking', acct.balance_cents, acct.balance_cents);
+    const eid = result.lastInsertRowid;
+    insertLine.run(eid, 1, glAccounts['1010'], '1010', acct.balance_cents, 0, `Cash — ${acct.account_name}`);
+    insertLine.run(eid, 2, glAccounts['3000'], '3000', 0, acct.balance_cents, 'Trust corpus');
+    entries.push({ type: 'bank', name: acct.account_name, cents: acct.balance_cents });
+  }
+
+  // Holdings → Debit FI Investments / Credit Corpus
+  const holdings = db.prepare("SELECT * FROM fixed_income_holdings WHERE status = 'active'").all();
+  for (const h of holdings) {
+    const valueCents = h.purchase_price_cents || h.par_value_cents;
+    if (valueCents <= 0) continue;
+    const result = insertEntry.run(`INIT-FI-${h.id}-${Date.now()}`, h.purchase_date || now, 'bond_purchase', `Bond — ${h.security_name}`, 'fixed_income', valueCents, valueCents);
+    const eid = result.lastInsertRowid;
+    insertLine.run(eid, 1, glAccounts['1100'], '1100', valueCents, 0, `FI — ${h.security_name}`);
+    insertLine.run(eid, 2, glAccounts['3000'], '3000', 0, valueCents, 'Trust corpus');
+    entries.push({ type: 'bond', name: h.security_name, cents: valueCents });
+  }
+
+  // Accrued interest
+  let totalAccrued = 0;
+  try {
+    const { analyzeBond } = require('./fixed-income-engine');
+    for (const h of holdings) {
+      totalAccrued += (analyzeBond(h).accrued_interest_cents || 0);
+    }
+  } catch (_) { /* */ }
+
+  if (totalAccrued > 0) {
+    const result = insertEntry.run(`INIT-AI-${Date.now()}`, now, 'accrued_interest', 'Accrued interest receivable', 'fixed_income', totalAccrued, totalAccrued);
+    const eid = result.lastInsertRowid;
+    insertLine.run(eid, 1, glAccounts['1500'], '1500', totalAccrued, 0, 'Accrued interest');
+    insertLine.run(eid, 2, glAccounts['4000'], '4000', 0, totalAccrued, 'Interest income');
+    entries.push({ type: 'accrued', name: 'Accrued interest', cents: totalAccrued });
+  }
+
+  const totalCents = entries.reduce((s, e) => s + e.cents, 0);
+  let summary = `GL initialized with ${entries.length} journal entries:\n`;
+  for (const e of entries) {
+    summary += `• ${e.type}: ${e.name} — $${(e.cents / 100).toFixed(2)}\n`;
+  }
+  summary += `Total: $${(totalCents / 100).toFixed(2)}`;
+
+  return { summary, data: { entries, total_cents: totalCents } };
+}
+
+async function executeUpcomingCoupons(db) {
+  let coupons;
+  try {
+    const todayStr = new Date().toISOString().split('T')[0];
+    coupons = db.prepare(`
+      SELECT cp.*, h.security_name, h.coupon_rate
+      FROM coupon_payments cp
+      JOIN fixed_income_holdings h ON cp.holding_id = h.id
+      WHERE cp.status IN ('scheduled', 'accrued')
+      ORDER BY cp.payment_date ASC
+      LIMIT 10
+    `).all();
+  } catch (e) {
+    return { summary: 'No coupon schedule found. Try "generate coupon schedule" first.', data: null };
+  }
+
+  if (coupons.length === 0) {
+    return { summary: 'No upcoming coupons. All scheduled coupons have been received.', data: null };
+  }
+
+  const totalCents = coupons.reduce((s, c) => s + c.amount_cents, 0);
+  let summary = `${coupons.length} upcoming coupon(s) — Total: $${(totalCents / 100).toFixed(2)}\n\n`;
+  for (const c of coupons) {
+    summary += `• ${c.payment_date} — $${(c.amount_cents / 100).toFixed(2)} from ${c.security_name} [${c.status}]\n`;
+  }
+
+  return { summary, data: { coupons, total_cents: totalCents } };
 }
 
 function executeHelp() {

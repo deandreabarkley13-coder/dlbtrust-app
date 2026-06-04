@@ -391,6 +391,7 @@ router.get('/coupons', (req, res) => {
 });
 
 // ─── POST /coupons/:id/receive ────────────────────────────────────────────────
+// Cross-engine coupon processing: FI → Banking → Trust Accounting → Event Bus
 
 router.post('/coupons/:id/receive', (req, res) => {
   try {
@@ -399,16 +400,93 @@ router.post('/coupons/:id/receive', (req, res) => {
     if (!coupon) {
       return res.status(404).json({ error: 'Coupon payment not found' });
     }
+    if (coupon.status === 'received') {
+      return res.status(400).json({ error: 'Coupon already received' });
+    }
 
+    const holding = db.prepare('SELECT * FROM fixed_income_holdings WHERE id = ?').get(coupon.holding_id);
+    const targetAccountId = req.body.account_id || null;
+
+    // 1. Mark coupon as received in Fixed Income
     db.prepare(`
       UPDATE coupon_payments 
       SET status = 'received', received_at = datetime('now')
       WHERE id = ?
     `).run(req.params.id);
 
-    res.json({ success: true, message: `Coupon ${req.params.id} marked as received` });
+    // 2. Credit the target bank account (or first operating account)
+    let creditedAccount = null;
+    let account;
+    if (targetAccountId) {
+      account = db.prepare('SELECT * FROM trust_accounts WHERE id = ? AND status = ?').get(targetAccountId, 'active');
+    } else {
+      account = db.prepare("SELECT * FROM trust_accounts WHERE account_type = 'operating' AND status = 'active' ORDER BY id LIMIT 1").get();
+    }
+    if (account) {
+      db.prepare('UPDATE trust_accounts SET balance_cents = balance_cents + ?, available_cents = available_cents + ?, last_activity_date = date(?) WHERE id = ?')
+        .run(coupon.amount_cents, coupon.amount_cents, new Date().toISOString(), account.id);
+      creditedAccount = { id: account.id, name: account.account_name, amount_cents: coupon.amount_cents };
+
+      // Log activity event
+      try {
+        db.prepare("INSERT INTO cms_event_log (event_name, source_engine, event_data) VALUES ('coupon_received', 'fixed_income', ?)")
+          .run(JSON.stringify({ coupon_id: coupon.id, account_id: account.id, amount_cents: coupon.amount_cents, security_name: holding ? holding.security_name : null }));
+      } catch (_) { /* event log optional */ }
+    }
+
+    // 3. Post journal entry in Trust Accounting (Debit Cash, Credit Interest Income)
+    let journalEntryId = null;
+    const cashAccount = db.prepare("SELECT id FROM trust_chart_of_accounts WHERE account_code = '1010' AND is_active = 1").get();
+    const incomeAccount = db.prepare("SELECT id FROM trust_chart_of_accounts WHERE account_code = '4000' AND is_active = 1").get();
+    if (cashAccount && incomeAccount) {
+      const entryNumber = `CPN-${Date.now()}`;
+      const entryDate = new Date().toISOString().split('T')[0];
+      const desc = `Coupon income — ${holding ? holding.security_name : 'Bond'} (${coupon.payment_date})`;
+
+      const result = db.prepare(`
+        INSERT INTO trust_journal_entries (entry_number, entry_date, entry_type, description, source_engine, is_posted, total_debit_cents, total_credit_cents, created_by)
+        VALUES (?, ?, 'coupon_income', ?, 'fixed_income', 1, ?, ?, 'system')
+      `).run(entryNumber, entryDate, desc, coupon.amount_cents, coupon.amount_cents);
+
+      journalEntryId = result.lastInsertRowid;
+
+      db.prepare('INSERT INTO trust_journal_lines (journal_entry_id, line_number, account_id, account_code, debit_cents, credit_cents, description) VALUES (?, 1, ?, ?, ?, 0, ?)')
+        .run(journalEntryId, cashAccount.id, '1010', coupon.amount_cents, 'Cash received — coupon income');
+      db.prepare('INSERT INTO trust_journal_lines (journal_entry_id, line_number, account_id, account_code, debit_cents, credit_cents, description) VALUES (?, 2, ?, ?, 0, ?, ?)')
+        .run(journalEntryId, incomeAccount.id, '4000', coupon.amount_cents, 'Interest income — bond coupon');
+    }
+
+    // 4. Update PP bond total_interest_paid if applicable
+    const ppBond = db.prepare('SELECT * FROM private_placement_bonds WHERE holding_id = ?').get(coupon.holding_id);
+    if (ppBond) {
+      db.prepare('UPDATE private_placement_bonds SET total_interest_paid_cents = total_interest_paid_cents + ?, total_payments_made_cents = total_payments_made_cents + 1 WHERE id = ?')
+        .run(coupon.amount_cents, ppBond.id);
+    }
+
+    // 5. Emit event on bus
+    try {
+      const { bus, EVENTS } = require('../engines/event-bus');
+      bus.emit(EVENTS.COUPON_RECEIVED, {
+        coupon_id: coupon.id,
+        holding_id: coupon.holding_id,
+        amount_cents: coupon.amount_cents,
+        account_id: account ? account.id : null,
+        journal_entry_id: journalEntryId,
+      });
+    } catch (_) { /* event bus optional */ }
+
+    res.json({
+      success: true,
+      message: `Coupon processed: $${(coupon.amount_cents / 100).toFixed(2)} from ${holding ? holding.security_name : 'bond'}`,
+      coupon_id: coupon.id,
+      amount_cents: coupon.amount_cents,
+      amount_usd: (coupon.amount_cents / 100).toFixed(2),
+      credited_account: creditedAccount,
+      journal_entry_id: journalEntryId,
+      security_name: holding ? holding.security_name : null,
+    });
   } catch (err) {
-    res.status(500).json({ error: 'Failed to update coupon', detail: err.message });
+    res.status(500).json({ error: 'Failed to process coupon', detail: err.message });
   }
 });
 
@@ -705,10 +783,33 @@ router.post('/private-placements', (req, res) => {
       b.next_payment_date || null,
     );
 
+    // Auto-generate coupon schedule (same as POST /holdings)
+    const couponRate = parseFloat(b.coupon_rate) / 100;
+    const freq = b.coupon_frequency || 'semi-annual';
+    const couponDates = generateCouponDates(b.purchase_date, b.maturity_date, freq);
+    const ppy = periodsPerYear(freq);
+    if (ppy > 0 && couponDates.length > 0) {
+      const couponAmount = Math.round((parCents * couponRate) / ppy);
+      const insertCoupon = db.prepare(
+        'INSERT INTO coupon_payments (holding_id, payment_date, amount_cents, status) VALUES (?, ?, ?, ?)'
+      );
+      const todayStr = new Date().toISOString().split('T')[0];
+      for (const date of couponDates) {
+        const status = date <= todayStr ? 'accrued' : 'scheduled';
+        insertCoupon.run(holdingId, date, couponAmount, status);
+      }
+    }
+
+    // Create maturity event
+    db.prepare(
+      'INSERT INTO maturity_events (holding_id, event_type, event_date, par_amount_cents) VALUES (?, ?, ?, ?)'
+    ).run(holdingId, 'maturity', b.maturity_date, parCents);
+
     res.status(201).json({
       message: `Private placement bond "${b.security_name}" (Series ${b.bond_series}) recorded`,
       holding_id: holdingId,
       private_placement_id: ppResult.lastInsertRowid,
+      coupon_schedule_count: couponDates.length,
     });
   } catch (err) {
     res.status(500).json({ error: 'Failed to create private placement', detail: err.message });

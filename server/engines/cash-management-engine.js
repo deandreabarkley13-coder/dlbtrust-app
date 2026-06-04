@@ -89,21 +89,34 @@ function buildCashPosition(data) {
   };
   cryptoPosition.total_usdc_cents = cryptoPosition.items.reduce((s, i) => s + i.usdc_balance_cents, 0);
 
-  // 3. Fixed income (par value of active holdings)
+  // 3. Fixed income (par value of active holdings, dynamic accrued interest)
   const activeHoldings = holdings.filter(h => h.status === 'active');
+  let analyzeBond = null;
+  try { analyzeBond = require('./fixed-income-engine').analyzeBond; } catch (_) { /* optional */ }
+
   const fixedIncomePosition = {
     category: POSITION_CATEGORIES.FIXED_INCOME,
-    items: activeHoldings.map(h => ({
-      id: h.id,
-      name: h.security_name,
-      type: h.security_type,
-      par_value_cents: h.par_value_cents || 0,
-      market_value_cents: h.market_value_cents || h.par_value_cents || 0,
-      coupon_rate: h.coupon_rate || 0,
-      maturity_date: h.maturity_date,
-      accrued_interest_cents: h.accrued_interest_cents || 0,
-      source: 'fixed_income',
-    })),
+    items: activeHoldings.map(h => {
+      let accruedCents = h.accrued_interest_cents || 0;
+      if (analyzeBond) {
+        try {
+          const analytics = analyzeBond(h);
+          accruedCents = analytics.accrued_interest_cents || accruedCents;
+        } catch (_) { /* fallback to stored value */ }
+      }
+      return {
+        id: h.id,
+        name: h.security_name,
+        type: h.security_type,
+        par_value_cents: h.par_value_cents || 0,
+        market_value_cents: h.market_value_cents || h.par_value_cents || 0,
+        coupon_rate: h.coupon_rate || 0,
+        maturity_date: h.maturity_date,
+        accrued_interest_cents: accruedCents,
+        next_coupon_date: analyzeBond ? (() => { try { return analyzeBond(h).next_coupon_date || null; } catch (_) { return null; } })() : null,
+        source: 'fixed_income',
+      };
+    }),
   };
   fixedIncomePosition.total_par_cents = fixedIncomePosition.items.reduce((s, i) => s + i.par_value_cents, 0);
   fixedIncomePosition.total_market_cents = fixedIncomePosition.items.reduce((s, i) => s + i.market_value_cents, 0);
@@ -316,7 +329,7 @@ function buildForecast(data, horizonDays = 90) {
 // --- Cross-Engine Reconciliation --------------------------------------------
 
 function reconcile(data) {
-  const { accounts = [], wallets = [], glBalances = [], transfers = [], blockchainTxns = [] } = data;
+  const { accounts = [], wallets = [], holdings = [], glBalances = [], transfers = [], blockchainTxns = [] } = data;
   const now = new Date().toISOString();
   const items = [];
 
@@ -325,9 +338,9 @@ function reconcile(data) {
     .filter(a => a.status === 'active')
     .reduce((s, a) => s + (a.balance_cents || 0), 0);
 
-  // GL cash/asset totals
+  // GL cash-only totals (1000/1010/1020 — not investments/receivables)
   const glCashAssets = glBalances
-    .filter(gl => gl.account_type === 'asset' && (gl.sub_type === 'cash' || gl.account_code?.startsWith('1')))
+    .filter(gl => gl.account_type === 'asset' && gl.sub_type === 'cash')
     .reduce((s, gl) => s + (gl.balance_cents || 0), 0);
 
   if (glCashAssets > 0 || totalBankCents > 0) {
@@ -384,7 +397,30 @@ function reconcile(data) {
     severity: (pendingTransferCount + pendingBlockchainCount) > 10 ? 'warning' : 'info',
   });
 
-  // 4. Interest accrual check — accrued but not yet credited
+  // 4. Fixed income holdings vs GL investment accounts
+  const activeHoldings = holdings.filter(h => h.status === 'active');
+  const fiTotalCents = activeHoldings.reduce((s, h) => s + (h.purchase_price_cents || h.par_value_cents || 0), 0);
+  const glFIInvestments = glBalances
+    .filter(gl => gl.account_type === 'asset' && gl.sub_type === 'investments')
+    .reduce((s, gl) => s + (gl.balance_cents || 0), 0);
+
+  if (fiTotalCents > 0 || glFIInvestments > 0) {
+    const fiDiff = fiTotalCents - glFIInvestments;
+    items.push({
+      check: 'fi_vs_gl',
+      description: 'Fixed income holdings vs GL investment accounts',
+      fi_total_cents: fiTotalCents,
+      fi_total_usd: fiTotalCents / 100,
+      gl_investment_cents: glFIInvestments,
+      gl_investment_usd: glFIInvestments / 100,
+      difference_cents: fiDiff,
+      difference_usd: fiDiff / 100,
+      status: Math.abs(fiDiff) === 0 ? 'matched' : Math.abs(fiDiff) < 100 ? 'pending_review' : 'mismatch',
+      severity: Math.abs(fiDiff) === 0 ? 'info' : Math.abs(fiDiff) < 10000 ? 'warning' : 'critical',
+    });
+  }
+
+  // 5. Interest accrual check — accrued but not yet credited
   const totalAccrued = accounts.reduce((s, a) => s + (a.interest_accrued_cents || 0), 0);
   if (totalAccrued > 0) {
     items.push({
