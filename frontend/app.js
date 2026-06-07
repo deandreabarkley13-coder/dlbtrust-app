@@ -80,6 +80,10 @@ function loadView(view) {
     case 'accounting': loadAccounting(); break;
     case 'fixed-income': loadFixedIncome(); break;
     case 'blockchain': loadBlockchain(); break;
+    case 'cash-management': loadCashManagement(); break;
+    case 'documents': loadDocuments(); break;
+    case 'ai-agent': loadAIAgent(); break;
+    case 'integration': loadIntegration(); break;
     case 'compliance': loadCompliance(); break;
     case 'activity': loadActivity(); break;
   }
@@ -2117,6 +2121,399 @@ async function pingRpc() {
   } catch (err) {
     showToast(`RPC Ping failed: ${err.message}`, 'error');
   }
+}
+
+// --- Cash Management ---
+
+async function loadCashManagement() {
+  try {
+    const [position, forecast, reconciliation, alerts, income] = await Promise.all([
+      api('/cash-management/position'),
+      api('/cash-management/forecast'),
+      api('/cash-management/reconciliation'),
+      api('/cash-management/alerts'),
+      api('/cash-management/income-summary'),
+    ]);
+
+    const p = position.position || position;
+    const s = p.summary || {};
+    $('#cms-metrics').innerHTML = `
+      <div class="metric-card primary"><span class="metric-label">Total Assets</span><span class="metric-value">${formatUSD(s.total_assets_cents || 0)}</span></div>
+      <div class="metric-card"><span class="metric-label">Total Liquid</span><span class="metric-value">${formatUSD(s.total_liquid_cents || 0)}</span></div>
+      <div class="metric-card"><span class="metric-label">Fixed Income</span><span class="metric-value">${formatUSD(s.total_fixed_income_market_cents || 0)}</span></div>
+      <div class="metric-card"><span class="metric-label">Crypto (USDC)</span><span class="metric-value">${formatUSD(s.total_crypto_cents || 0)}</span></div>
+      <div class="metric-card"><span class="metric-label">Pending Activity</span><span class="metric-value">${formatUSD(s.total_pending_cents || 0)}</span></div>
+      <div class="metric-card ${(alerts.alerts || []).length > 0 ? 'warn' : ''}"><span class="metric-label">Alerts</span><span class="metric-value">${(alerts.alerts || []).length}</span></div>
+    `;
+
+    const details = p.detail || [];
+    $('#cms-position-table').innerHTML = details.length ? `<table><thead><tr><th>Source</th><th>Name</th><th>Type</th><th>Balance</th></tr></thead><tbody>${details.map(d =>
+      `<tr><td>${d.source}</td><td>${d.name}</td><td>${badge(d.type)}</td><td>${formatUSD(d.balance_cents)}</td></tr>`
+    ).join('')}</tbody></table>` : '<p>No position data</p>';
+
+    const periods = forecast.periods || forecast.forecast || [];
+    $('#cms-forecast-table').innerHTML = periods.length ? `<table><thead><tr><th>Period</th><th>Start</th><th>End</th><th>Inflows</th><th>Outflows</th><th>Net</th></tr></thead><tbody>${periods.map(f =>
+      `<tr><td>${f.period_number || f.period}</td><td>${f.start_date || '—'}</td><td>${f.end_date || '—'}</td><td>${formatUSD(f.total_inflow_cents || f.inflows_cents || 0)}</td><td>${formatUSD(f.total_outflow_cents || f.outflows_cents || 0)}</td><td>${formatUSD(f.net_flow_cents || f.net_cents || 0)}</td></tr>`
+    ).join('')}</tbody></table>` : '<p>No forecast data</p>';
+
+    const checks = reconciliation.checks || reconciliation.reconciliation || [];
+    $('#cms-reconciliation').innerHTML = checks.length ? checks.map(c =>
+      `<div class="alert alert-${c.status === 'matched' ? 'success' : c.status === 'mismatch' ? 'danger' : 'info'}" style="margin-bottom:8px;padding:12px;border-radius:8px;border:1px solid var(--border)">
+        <strong>${c.check}</strong>: ${badge(c.status)} ${c.difference_cents !== undefined ? `(Δ ${formatUSD(c.difference_cents)})` : ''}
+      </div>`
+    ).join('') : '<p>No reconciliation data — click "Run Reconciliation"</p>';
+
+    const alertList = alerts.alerts || [];
+    $('#cms-alerts').innerHTML = alertList.length ? alertList.map(a =>
+      `<div style="padding:8px;border-bottom:1px solid var(--border)"><strong>${a.type}</strong>: ${a.message} ${badge(a.severity)}</div>`
+    ).join('') : '<p>No active alerts</p>';
+
+    const inc = income.summary || income;
+    $('#cms-income-summary').innerHTML = `<p>Projected Annual Income: <strong>${formatUSD(inc.projected_annual_income_cents || 0)}</strong> | YTD Expenses: <strong>${formatUSD(inc.ytd_expenses_cents || 0)}</strong></p>`;
+  } catch (err) {
+    console.error('CMS load error:', err);
+  }
+}
+
+async function runCMSReconciliation() {
+  try {
+    showToast('Running reconciliation...', 'info');
+    await api('/cash-management/reconciliation');
+    await loadCashManagement();
+    showToast('Reconciliation complete', 'success');
+  } catch (err) { showToast(err.message, 'error'); }
+}
+
+async function saveCMSSnapshot() {
+  try {
+    const result = await api('/cash-management/snapshot', { method: 'POST' });
+    showToast(`Snapshot saved (ID: ${result.snapshot_id || result.id || '?'})`, 'success');
+  } catch (err) { showToast(err.message, 'error'); }
+}
+
+// --- Documents ---
+
+async function loadDocuments() {
+  try {
+    const data = await api('/documents');
+    const docs = data.documents || [];
+    const stats = data.stats || {};
+
+    $('#doc-metrics').innerHTML = `
+      <div class="metric-card primary"><span class="metric-label">Total Documents</span><span class="metric-value">${stats.total || docs.length}</span></div>
+      <div class="metric-card"><span class="metric-label">Active</span><span class="metric-value">${stats.active || 0}</span></div>
+      <div class="metric-card"><span class="metric-label">Draft</span><span class="metric-value">${stats.draft || 0}</span></div>
+      <div class="metric-card"><span class="metric-label">Archived</span><span class="metric-value">${stats.archived || 0}</span></div>
+    `;
+
+    $('#doc-table').innerHTML = docs.length ? `<table><thead><tr><th>Title</th><th>Category</th><th>Status</th><th>Created</th></tr></thead><tbody>${docs.map(d =>
+      `<tr><td>${d.title}</td><td>${d.category}</td><td>${badge(d.status)}</td><td>${formatDate(d.created_at)}</td></tr>`
+    ).join('')}</tbody></table>` : '<p>No documents yet — click "+ Upload Document" to add one</p>';
+  } catch (err) {
+    console.error('Documents load error:', err);
+  }
+}
+
+function showUploadDocument() {
+  const modal = $('#upload-doc-modal');
+  if (modal) modal.classList.remove('hidden');
+}
+
+async function uploadDocument(event) {
+  event.preventDefault();
+  const form = new FormData(event.target);
+  try {
+    await api('/documents', {
+      method: 'POST',
+      body: JSON.stringify({
+        title: form.get('title'),
+        category: form.get('category'),
+        description: form.get('description'),
+      }),
+    });
+    hideModal('upload-doc-modal');
+    event.target.reset();
+    showToast('Document uploaded', 'success');
+    loadDocuments();
+  } catch (err) { showToast(err.message, 'error'); }
+}
+
+// --- AI Agent ---
+
+async function loadAIAgent() {
+  try {
+    const data = await api('/agent/conversations');
+    const convos = data.conversations || [];
+    const history = data.task_history || [];
+
+    if (!$('#agent-chat').innerHTML || $('#agent-chat').innerHTML.trim() === '') {
+      $('#agent-chat').innerHTML = '<p style="color:var(--text-secondary)">Ask me anything — "run reconciliation", "list accounts", "generate forecast", "save snapshot"...</p>';
+    }
+
+    $('#agent-task-history').innerHTML = history.length ? history.slice(0, 10).map(t =>
+      `<div style="padding:6px;border-bottom:1px solid var(--border);font-size:13px"><strong>${t.intent || t.task}</strong> — ${badge(t.status)} <span style="color:var(--text-secondary)">${t.duration_ms ? t.duration_ms + 'ms' : ''}</span></div>`
+    ).join('') : '<p style="font-size:13px;color:var(--text-secondary)">No tasks yet</p>';
+  } catch (err) {
+    console.error('AI Agent load error:', err);
+  }
+}
+
+async function sendAgentMessage(event) {
+  event.preventDefault();
+  const input = $('#agent-input');
+  const message = input.value.trim();
+  if (!message) return;
+
+  const chat = $('#agent-chat');
+  chat.innerHTML += `<div style="margin:8px 0;padding:8px 12px;background:var(--primary);color:#fff;border-radius:12px 12px 4px 12px;display:inline-block;float:right;clear:both;max-width:80%">${message}</div><div style="clear:both"></div>`;
+  input.value = '';
+
+  try {
+    const result = await api('/agent/chat', { method: 'POST', body: JSON.stringify({ prompt: message }) });
+    const response = result.response || result.message || JSON.stringify(result);
+    chat.innerHTML += `<div style="margin:8px 0;padding:8px 12px;background:var(--surface);border:1px solid var(--border);border-radius:12px 12px 12px 4px;display:inline-block;clear:both;max-width:80%;white-space:pre-wrap">${response}</div><div style="clear:both"></div>`;
+    chat.scrollTop = chat.scrollHeight;
+    showToast('Task completed', 'success');
+  } catch (err) {
+    chat.innerHTML += `<div style="margin:8px 0;padding:8px 12px;background:#fee;border:1px solid #fcc;border-radius:12px;display:inline-block;clear:both">${err.message}</div><div style="clear:both"></div>`;
+  }
+}
+
+async function agentQuickAction(prompt) {
+  $('#agent-input').value = prompt;
+  const form = $('#agent-form');
+  form.dispatchEvent(new Event('submit'));
+}
+
+// --- Integration ---
+
+async function loadIntegration() {
+  try {
+    const [status, dataMap, events, executions] = await Promise.all([
+      api('/integration/status'),
+      api('/integration/data-map'),
+      api('/integration/events'),
+      api('/integration/executions'),
+    ]);
+
+    // Metrics
+    const engines = status.engines || [];
+    const connected = engines.filter(e => e.status === 'connected').length;
+    const total = engines.length;
+    const pipelineCount = status.total_executions || 0;
+    const recentFailed = status.recent_failed || 0;
+
+    $('#integration-metrics').innerHTML = `
+      <div class="metric-card primary"><span class="metric-label">Engines Connected</span><span class="metric-value">${connected}/${total}</span></div>
+      <div class="metric-card"><span class="metric-label">Pipelines Available</span><span class="metric-value">${(status.pipelines || []).length}</span></div>
+      <div class="metric-card"><span class="metric-label">Total Executions</span><span class="metric-value">${pipelineCount}</span></div>
+      <div class="metric-card ${recentFailed > 0 ? 'warn' : ''}"><span class="metric-label">Recent Failures</span><span class="metric-value">${recentFailed}</span></div>
+    `;
+
+    // Engine Status Table
+    $('#integration-engine-status').innerHTML = `<table><thead><tr><th>Engine</th><th>Status</th><th>Records</th></tr></thead><tbody>${engines.map(e =>
+      `<tr><td>${e.name}</td><td>${badge(e.status)}</td><td>${e.records}</td></tr>`
+    ).join('')}</tbody></table>`;
+
+    // Data Flow Map
+    const flows = dataMap.flows || [];
+    $('#integration-data-map').innerHTML = `
+      <div style="display:flex;flex-wrap:wrap;gap:8px;margin-bottom:16px">${(dataMap.engines || []).map(e =>
+        `<div style="padding:8px 12px;background:var(--surface);border:1px solid var(--border);border-radius:8px;font-size:13px">
+          <strong>${e.name}</strong><br>
+          ${(e.tables || []).map(t => `<span style="color:var(--text-secondary);font-size:11px">${typeof t === 'object' ? `${t.name} (${t.records})` : t}</span>`).join(', ')}
+        </div>`
+      ).join('')}</div>
+      <h4>Data Flows</h4>
+      <div style="max-height:200px;overflow-y:auto">${flows.map(f =>
+        `<div style="padding:4px 0;font-size:13px;border-bottom:1px solid var(--border)">
+          <strong>${f.from}</strong> → <strong>${f.to}</strong> <span style="color:var(--text-secondary)">(${f.trigger})</span>: ${f.data}
+        </div>`
+      ).join('')}</div>
+    `;
+
+    // Recent Events
+    const eventList = events.events || [];
+    $('#integration-events').innerHTML = eventList.length ? eventList.slice(-20).reverse().map(e =>
+      `<div style="padding:4px 0;font-size:12px;border-bottom:1px solid var(--border)">
+        <strong>${e.event}</strong><br><span style="color:var(--text-secondary)">${e.timestamp}</span>
+      </div>`
+    ).join('') : '<p style="font-size:13px;color:var(--text-secondary)">No events yet — execute a pipeline to see events</p>';
+
+    // Execution Log
+    const execs = executions.executions || [];
+    $('#integration-execution-log').innerHTML = execs.length ? `<table><thead><tr><th>ID</th><th>Pipeline</th><th>Trigger</th><th>Status</th><th>Started</th><th>Duration</th></tr></thead><tbody>${execs.map(e => {
+      const duration = e.started_at && e.completed_at ? ((new Date(e.completed_at) - new Date(e.started_at))) + 'ms' : '—';
+      return `<tr><td style="font-size:11px">${e.execution_id || e.id}</td><td>${e.pipeline}</td><td>${e.trigger_type || '—'}</td><td>${badge(e.status)}</td><td>${formatTime(e.started_at)}</td><td>${duration}</td></tr>`;
+    }).join('')}</tbody></table>` : '<p>No pipeline executions yet</p>';
+
+  } catch (err) {
+    console.error('Integration load error:', err);
+    $('#integration-metrics').innerHTML = '<div class="metric-card warn"><span class="metric-label">Error</span><span class="metric-value">' + err.message + '</span></div>';
+  }
+}
+
+// Integration Modal helpers
+
+function showIntegrationModal(type) {
+  const modalMap = {
+    'coupon': 'integration-coupon-modal',
+    'internal-transfer': 'integration-transfer-modal',
+    'external-payment': 'integration-payment-modal',
+    'crypto-send': 'integration-crypto-modal',
+    'dex-swap': 'integration-swap-modal',
+  };
+  const modalId = modalMap[type];
+  if (!modalId) return;
+
+  // Pre-populate dropdowns for transfer/payment modals
+  if (type === 'internal-transfer' || type === 'external-payment') {
+    loadAccountDropdowns();
+  }
+  if (type === 'crypto-send' || type === 'dex-swap') {
+    loadWalletDropdowns();
+  }
+
+  const modal = $(`#${modalId}`);
+  if (modal) modal.classList.remove('hidden');
+}
+
+async function loadAccountDropdowns() {
+  try {
+    const data = await api('/accounts');
+    const accounts = (data.accounts || []).filter(a => a.status === 'active');
+    const options = accounts.map(a => `<option value="${a.id}">${a.account_name} (${formatUSD(a.balance_cents)})</option>`).join('');
+    const selectors = ['#int-from-acct', '#int-to-acct', '#int-pay-from-acct'];
+    selectors.forEach(sel => { const el = $(sel); if (el) el.innerHTML = options; });
+  } catch (err) { console.error('Account dropdown error:', err); }
+}
+
+async function loadWalletDropdowns() {
+  try {
+    const data = await api('/blockchain/wallets');
+    const wallets = (data.wallets || []).filter(w => w.wallet_type === 'private');
+    const options = wallets.map(w => `<option value="${w.id}">${w.wallet_name || w.address} (${w.usdc_balance || '0'} USDC)</option>`).join('');
+    const selectors = ['#int-wallet', '#int-swap-wallet'];
+    selectors.forEach(sel => { const el = $(sel); if (el) el.innerHTML = options; });
+  } catch (err) { console.error('Wallet dropdown error:', err); }
+}
+
+async function executeCouponPipeline(event) {
+  event.preventDefault();
+  const form = new FormData(event.target);
+  try {
+    showToast('Executing Coupon → Cash pipeline...', 'info');
+    const result = await api('/integration/coupon-to-cash', {
+      method: 'POST',
+      body: JSON.stringify({
+        bond_id: parseInt(form.get('bond_id')),
+        coupon_id: form.get('coupon_id') ? parseInt(form.get('coupon_id')) : null,
+        amount_cents: parseInt(form.get('amount_cents')),
+      }),
+    });
+    hideModal('integration-coupon-modal');
+    showToast(`Pipeline ${result.status}: ${(result.results?.steps || []).length} steps`, 'success');
+    loadIntegration();
+  } catch (err) { showToast(err.message, 'error'); }
+}
+
+async function executeTransferPipeline(event) {
+  event.preventDefault();
+  const form = new FormData(event.target);
+  try {
+    showToast('Executing Internal Transfer pipeline...', 'info');
+    const result = await api('/integration/internal-transfer', {
+      method: 'POST',
+      body: JSON.stringify({
+        from_account_id: parseInt(form.get('from_account_id')),
+        to_account_id: parseInt(form.get('to_account_id')),
+        amount_cents: parseInt(form.get('amount_cents')),
+        transfer_type: form.get('transfer_type'),
+        description: form.get('description'),
+      }),
+    });
+    hideModal('integration-transfer-modal');
+    showToast(`Transfer ${result.status}: ${result.results?.steps?.[1]?.transfer_number || ''}`, 'success');
+    loadIntegration();
+  } catch (err) { showToast(err.message, 'error'); }
+}
+
+async function executePaymentPipeline(event) {
+  event.preventDefault();
+  const form = new FormData(event.target);
+  try {
+    showToast('Executing External Payment pipeline...', 'info');
+    const result = await api('/integration/external-payment', {
+      method: 'POST',
+      body: JSON.stringify({
+        from_account_id: parseInt(form.get('from_account_id')),
+        amount_cents: parseInt(form.get('amount_cents')),
+        rail: form.get('rail'),
+        description: form.get('description'),
+      }),
+    });
+    hideModal('integration-payment-modal');
+    const railInfo = result.results?.steps?.find(s => s.step === 'process_payment_rail');
+    showToast(`Payment ${result.status} via ${railInfo?.rail || 'ACH'} — ${railInfo?.settlement_time || ''}`, 'success');
+    loadIntegration();
+  } catch (err) { showToast(err.message, 'error'); }
+}
+
+async function executeCryptoPipeline(event) {
+  event.preventDefault();
+  const form = new FormData(event.target);
+  try {
+    showToast('Executing USDC Send pipeline...', 'info');
+    const result = await api('/integration/crypto-send', {
+      method: 'POST',
+      body: JSON.stringify({
+        wallet_id: parseInt(form.get('wallet_id')),
+        to_address: form.get('to_address'),
+        amount_usd: parseFloat(form.get('amount_usd')),
+      }),
+    });
+    hideModal('integration-crypto-modal');
+    showToast(`USDC Send ${result.status}`, 'success');
+    loadIntegration();
+  } catch (err) { showToast(err.message, 'error'); }
+}
+
+async function executeSwapPipeline(event) {
+  event.preventDefault();
+  const form = new FormData(event.target);
+  try {
+    showToast('Executing DEX Swap pipeline...', 'info');
+    const result = await api('/integration/dex-swap', {
+      method: 'POST',
+      body: JSON.stringify({
+        wallet_id: parseInt(form.get('wallet_id')),
+        amount_pol: parseFloat(form.get('amount_pol')),
+        slippage_bps: parseInt(form.get('slippage_bps')) || 100,
+      }),
+    });
+    hideModal('integration-swap-modal');
+    showToast(`Swap ${result.status}`, 'success');
+    loadIntegration();
+  } catch (err) { showToast(err.message, 'error'); }
+}
+
+async function runIntegrationReconciliation() {
+  try {
+    showToast('Running full system reconciliation...', 'info');
+    const result = await api('/integration/reconcile', { method: 'POST' });
+    showToast(`Reconciliation ${result.status}: ${result.results?.matched || 0}/${result.results?.total_checks || 0} matched`, 'success');
+    loadIntegration();
+  } catch (err) { showToast(err.message, 'error'); }
+}
+
+async function runDailySweep() {
+  try {
+    showToast('Executing daily sweep...', 'info');
+    const result = await api('/integration/daily-sweep', { method: 'POST' });
+    const sweeps = result.results?.sweeps || [];
+    showToast(`Sweep ${result.status}: ${sweeps.length} sweep(s) executed`, 'success');
+    loadIntegration();
+  } catch (err) { showToast(err.message, 'error'); }
 }
 
 // --- Init ---

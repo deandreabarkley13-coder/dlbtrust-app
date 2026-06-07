@@ -21,6 +21,10 @@
       <li><a href="#" data-view="accounting">Trust Accounting</a></li>
       <li><a href="#" data-view="fixed-income">Fixed Income</a></li>
       <li><a href="#" data-view="blockchain">Crypto Rails</a></li>
+      <li><a href="#" data-view="cash-management">Cash Management</a></li>
+      <li><a href="#" data-view="documents">Documents</a></li>
+      <li><a href="#" data-view="ai-agent">AI Agent</a></li>
+      <li><a href="#" data-view="integration">Integration</a></li>
       <li><a href="#" data-view="compliance">Compliance</a></li>
       <li><a href="#" data-view="activity">Activity</a></li>
     </ul>
@@ -994,6 +998,249 @@
       <div class="panel">
         <h3>Tax Events</h3>
         <div id="tax-events-list"></div>
+      </div>
+    </section>
+
+    <!-- Cash Management View -->
+    <section id="view-cash-management" class="view">
+      <div class="view-loader" style="display:none"><div class="spinner"></div></div>
+      <header class="view-header">
+        <h2>Cash Management</h2>
+        <div>
+          <button class="btn btn-primary" onclick="runCMSReconciliation()">Run Reconciliation</button>
+          <button class="btn" onclick="saveCMSSnapshot()">Save Snapshot</button>
+        </div>
+      </header>
+      <div class="metrics-grid" id="cms-metrics"></div>
+      <div class="panels-row">
+        <div class="panel"><h3>Position Detail</h3><div id="cms-position-table" class="table-container"></div></div>
+        <div class="panel"><h3>90-Day Forecast</h3><div id="cms-forecast-table" class="table-container"></div></div>
+      </div>
+      <div class="panels-row">
+        <div class="panel"><h3>Reconciliation</h3><div id="cms-reconciliation"></div></div>
+        <div class="panel"><h3>Alerts</h3><div id="cms-alerts"></div></div>
+      </div>
+      <div class="panel"><h3>Income vs Expense</h3><div id="cms-income-summary"></div></div>
+    </section>
+
+    <!-- Documents View -->
+    <section id="view-documents" class="view">
+      <div class="view-loader" style="display:none"><div class="spinner"></div></div>
+      <header class="view-header">
+        <h2>Document Management</h2>
+        <button class="btn btn-primary" onclick="showUploadDocument()">+ Upload Document</button>
+      </header>
+      <div class="metrics-grid" id="doc-metrics"></div>
+      <div id="doc-filters"></div>
+      <div id="doc-table" class="table-container"></div>
+      <div id="upload-doc-modal" class="modal hidden">
+        <div class="modal-content">
+          <h3>Upload Trust Document</h3>
+          <form id="upload-doc-form" onsubmit="uploadDocument(event)">
+            <label>Document Title<input type="text" name="title" required></label>
+            <label>Category
+              <select name="category">
+                <option value="trust_agreement">Trust Agreement</option>
+                <option value="amendment">Amendment</option>
+                <option value="certificate">Certificate</option>
+                <option value="compliance">Compliance</option>
+                <option value="tax">Tax</option>
+                <option value="financial_statement">Financial Statement</option>
+                <option value="correspondence">Correspondence</option>
+                <option value="legal">Legal</option>
+                <option value="investment">Investment</option>
+                <option value="insurance">Insurance</option>
+                <option value="beneficiary">Beneficiary</option>
+                <option value="trustee">Trustee</option>
+                <option value="other">Other</option>
+              </select>
+            </label>
+            <label>Description<textarea name="description" rows="3"></textarea></label>
+            <div class="modal-actions">
+              <button type="button" class="btn" onclick="hideModal('upload-doc-modal')">Cancel</button>
+              <button type="submit" class="btn btn-primary">Upload</button>
+            </div>
+          </form>
+        </div>
+      </div>
+    </section>
+
+    <!-- AI Agent View -->
+    <section id="view-ai-agent" class="view">
+      <div class="view-loader" style="display:none"><div class="spinner"></div></div>
+      <header class="view-header">
+        <h2>AI Agent</h2>
+      </header>
+      <div class="panels-row">
+        <div class="panel" style="flex:2">
+          <h3>Chat</h3>
+          <div id="agent-chat" style="min-height:300px;max-height:500px;overflow-y:auto;border:1px solid var(--border);border-radius:8px;padding:16px;margin-bottom:12px"></div>
+          <form id="agent-form" onsubmit="sendAgentMessage(event)" style="display:flex;gap:8px">
+            <input type="text" id="agent-input" placeholder="Ask the AI agent..." style="flex:1" required>
+            <button type="submit" class="btn btn-primary">Send</button>
+          </form>
+        </div>
+        <div class="panel" style="flex:1">
+          <h3>Quick Actions</h3>
+          <div id="agent-quick-actions" style="display:flex;flex-direction:column;gap:8px">
+            <button class="btn" onclick="agentQuickAction('run reconciliation')">Run Reconciliation</button>
+            <button class="btn" onclick="agentQuickAction('generate forecast')">Generate Forecast</button>
+            <button class="btn" onclick="agentQuickAction('save snapshot')">Save Snapshot</button>
+            <button class="btn" onclick="agentQuickAction('check alerts')">Check Alerts</button>
+            <button class="btn" onclick="agentQuickAction('list accounts')">List Accounts</button>
+            <button class="btn" onclick="agentQuickAction('list bonds')">List Bonds</button>
+            <button class="btn" onclick="agentQuickAction('list wallets')">List Wallets</button>
+            <button class="btn" onclick="agentQuickAction('list documents')">List Documents</button>
+            <button class="btn" onclick="agentQuickAction('generate trust report')">Trust Report</button>
+          </div>
+          <h3 style="margin-top:16px">Task History</h3>
+          <div id="agent-task-history"></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Integration View -->
+    <section id="view-integration" class="view">
+      <div class="view-loader" style="display:none"><div class="spinner"></div></div>
+      <header class="view-header">
+        <h2>Integration API</h2>
+        <div>
+          <button class="btn btn-primary" onclick="runIntegrationReconciliation()">Full Reconciliation</button>
+          <button class="btn" onclick="runDailySweep()">Daily Sweep</button>
+        </div>
+      </header>
+
+      <div class="metrics-grid" id="integration-metrics"></div>
+
+      <div class="panels-row">
+        <div class="panel" style="flex:1">
+          <h3>Engine Status</h3>
+          <div id="integration-engine-status" class="table-container"></div>
+        </div>
+        <div class="panel" style="flex:1">
+          <h3>Quick Pipelines</h3>
+          <div id="integration-pipelines" style="display:flex;flex-direction:column;gap:8px">
+            <button class="btn" onclick="showIntegrationModal('coupon')">Process Coupon → Cash</button>
+            <button class="btn" onclick="showIntegrationModal('internal-transfer')">Internal Transfer</button>
+            <button class="btn" onclick="showIntegrationModal('external-payment')">External Payment</button>
+            <button class="btn" onclick="showIntegrationModal('crypto-send')">USDC Send</button>
+            <button class="btn" onclick="showIntegrationModal('dex-swap')">DEX Swap (POL→USDC)</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="panels-row">
+        <div class="panel" style="flex:2">
+          <h3>Data Flow Map</h3>
+          <div id="integration-data-map"></div>
+        </div>
+        <div class="panel" style="flex:1">
+          <h3>Recent Events</h3>
+          <div id="integration-events" style="max-height:300px;overflow-y:auto"></div>
+        </div>
+      </div>
+
+      <div class="panel">
+        <h3>Pipeline Execution Log</h3>
+        <div id="integration-execution-log" class="table-container"></div>
+      </div>
+
+      <!-- Coupon Modal -->
+      <div id="integration-coupon-modal" class="modal hidden">
+        <div class="modal-content">
+          <h3>Process Coupon → Cash Pipeline</h3>
+          <form id="coupon-pipeline-form" onsubmit="executeCouponPipeline(event)">
+            <label>Bond ID<input type="number" name="bond_id" required></label>
+            <label>Coupon ID (optional)<input type="number" name="coupon_id"></label>
+            <label>Amount (cents)<input type="number" name="amount_cents" required></label>
+            <div class="modal-actions">
+              <button type="button" class="btn" onclick="hideModal('integration-coupon-modal')">Cancel</button>
+              <button type="submit" class="btn btn-primary">Execute Pipeline</button>
+            </div>
+          </form>
+        </div>
+      </div>
+
+      <!-- Internal Transfer Modal -->
+      <div id="integration-transfer-modal" class="modal hidden">
+        <div class="modal-content">
+          <h3>Internal Transfer Pipeline</h3>
+          <form id="transfer-pipeline-form" onsubmit="executeTransferPipeline(event)">
+            <label>From Account<select name="from_account_id" id="int-from-acct" required></select></label>
+            <label>To Account<select name="to_account_id" id="int-to-acct" required></select></label>
+            <label>Amount (cents)<input type="number" name="amount_cents" required></label>
+            <label>Type
+              <select name="transfer_type">
+                <option value="standard">Standard</option>
+                <option value="distribution">Distribution</option>
+                <option value="rebalance">Rebalance</option>
+                <option value="fee_collection">Fee Collection</option>
+              </select>
+            </label>
+            <label>Description<input type="text" name="description"></label>
+            <div class="modal-actions">
+              <button type="button" class="btn" onclick="hideModal('integration-transfer-modal')">Cancel</button>
+              <button type="submit" class="btn btn-primary">Execute Pipeline</button>
+            </div>
+          </form>
+        </div>
+      </div>
+
+      <!-- External Payment Modal -->
+      <div id="integration-payment-modal" class="modal hidden">
+        <div class="modal-content">
+          <h3>External Payment Pipeline</h3>
+          <form id="payment-pipeline-form" onsubmit="executePaymentPipeline(event)">
+            <label>From Account<select name="from_account_id" id="int-pay-from-acct" required></select></label>
+            <label>Amount (cents)<input type="number" name="amount_cents" required></label>
+            <label>Payment Rail
+              <select name="rail">
+                <option value="ach">ACH ($0.50 fee, 1-3 days)</option>
+                <option value="wire">Wire ($25.00 fee, same day)</option>
+                <option value="rtp">RTP ($1.00 fee, instant)</option>
+                <option value="check">Check ($2.00 fee, 5-7 days)</option>
+                <option value="usdc">USDC (free, ~2 seconds)</option>
+              </select>
+            </label>
+            <label>Description<input type="text" name="description"></label>
+            <div class="modal-actions">
+              <button type="button" class="btn" onclick="hideModal('integration-payment-modal')">Cancel</button>
+              <button type="submit" class="btn btn-primary">Execute Pipeline</button>
+            </div>
+          </form>
+        </div>
+      </div>
+
+      <!-- Crypto Send Modal -->
+      <div id="integration-crypto-modal" class="modal hidden">
+        <div class="modal-content">
+          <h3>USDC Send Pipeline</h3>
+          <form id="crypto-pipeline-form" onsubmit="executeCryptoPipeline(event)">
+            <label>Wallet<select name="wallet_id" id="int-wallet" required></select></label>
+            <label>To Address<input type="text" name="to_address" placeholder="0x..." required></label>
+            <label>Amount (USD)<input type="number" name="amount_usd" step="0.01" required></label>
+            <div class="modal-actions">
+              <button type="button" class="btn" onclick="hideModal('integration-crypto-modal')">Cancel</button>
+              <button type="submit" class="btn btn-primary">Execute Pipeline</button>
+            </div>
+          </form>
+        </div>
+      </div>
+
+      <!-- DEX Swap Modal -->
+      <div id="integration-swap-modal" class="modal hidden">
+        <div class="modal-content">
+          <h3>DEX Swap Pipeline (POL → USDC)</h3>
+          <form id="swap-pipeline-form" onsubmit="executeSwapPipeline(event)">
+            <label>Wallet<select name="wallet_id" id="int-swap-wallet" required></select></label>
+            <label>POL Amount<input type="number" name="amount_pol" step="0.001" required></label>
+            <label>Slippage (bps, default 100 = 1%)<input type="number" name="slippage_bps" value="100"></label>
+            <div class="modal-actions">
+              <button type="button" class="btn" onclick="hideModal('integration-swap-modal')">Cancel</button>
+              <button type="submit" class="btn btn-primary">Execute Pipeline</button>
+            </div>
+          </form>
+        </div>
       </div>
     </section>
 
