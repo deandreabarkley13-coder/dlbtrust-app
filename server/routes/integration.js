@@ -45,6 +45,7 @@ function ensureTables(db) {
     'banking-schema.sql', 'crm-schema.sql', 'external-transfers-schema.sql',
     'trust-accounting-schema.sql', 'fixed-income-schema.sql', 'blockchain-schema.sql',
     'cash-management-schema.sql', 'document-management-schema.sql', 'ai-agent-schema.sql',
+    'banking-crypto-bridge-schema.sql',
   ];
   for (const file of migrations) {
     const p = path.join(__dirname, '..', 'db', 'migrations', file);

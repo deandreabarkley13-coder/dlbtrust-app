@@ -1714,9 +1714,10 @@ async function loadBlockchain() {
       `}).join('');
     $('#chain-wallets-grid').innerHTML = walletsHtml;
 
-    // Load transactions and fiat orders
+    // Load transactions, fiat orders, and bridge orders
     loadBlockchainTransactions();
     loadFiatOrders();
+    loadBridgeOrders();
   } catch (err) {
     console.error('Failed to load blockchain dashboard:', err);
     $('#chain-metrics').innerHTML = '<div class="metric-card"><span class="metric-label">Error loading dashboard</span></div>';
@@ -1846,6 +1847,217 @@ async function unfreezeWallet(id) {
     loadBlockchain();
   } catch (err) {
     showToast(`Failed: ${err.message}`, 'error');
+  }
+}
+
+// --- Banking ↔ Crypto Bridge ---
+
+async function showBridgeModal(direction) {
+  const modal = document.getElementById('bridge-modal');
+  const dirInput = document.getElementById('bridge-direction');
+  dirInput.value = direction;
+
+  // Reset form
+  document.getElementById('bridge-form').reset();
+  document.getElementById('bridge-result').innerHTML = '';
+  document.getElementById('bridge-quote-panel').style.display = 'none';
+
+  if (direction === 'bank_to_crypto') {
+    document.getElementById('bridge-modal-title').textContent = 'Fund Wallet from Banking';
+    document.getElementById('bridge-modal-desc').textContent = 'Convert banking balance to real USDC via MoonPay on Polygon';
+    document.getElementById('bridge-submit-btn').textContent = 'Convert to USDC';
+    document.getElementById('bridge-amount-label').textContent = 'Amount (USD) *';
+
+    // Source = bank accounts, Dest = wallets
+    document.getElementById('bridge-source-section').innerHTML = `
+      <label>Source Banking Account *</label>
+      <select id="bridge-source-account" required style="width:100%;padding:10px;background:var(--bg-card);border:1px solid var(--border);border-radius:8px;color:var(--text-primary)">
+        <option value="">Loading accounts...</option>
+      </select>
+    `;
+    document.getElementById('bridge-dest-section').innerHTML = `
+      <label>Destination Wallet *</label>
+      <select id="bridge-dest-wallet" required style="width:100%;padding:10px;background:var(--bg-card);border:1px solid var(--border);border-radius:8px;color:var(--text-primary)">
+        <option value="">Loading wallets...</option>
+      </select>
+    `;
+  } else {
+    document.getElementById('bridge-modal-title').textContent = 'Sweep Crypto to Banking';
+    document.getElementById('bridge-modal-desc').textContent = 'Convert USDC back to USD and credit your banking account';
+    document.getElementById('bridge-submit-btn').textContent = 'Sweep to Bank';
+    document.getElementById('bridge-amount-label').textContent = 'Amount (USDC) *';
+
+    // Source = wallets, Dest = bank accounts
+    document.getElementById('bridge-source-section').innerHTML = `
+      <label>Source Wallet *</label>
+      <select id="bridge-source-wallet" required style="width:100%;padding:10px;background:var(--bg-card);border:1px solid var(--border);border-radius:8px;color:var(--text-primary)">
+        <option value="">Loading wallets...</option>
+      </select>
+    `;
+    document.getElementById('bridge-dest-section').innerHTML = `
+      <label>Destination Banking Account *</label>
+      <select id="bridge-dest-account" required style="width:100%;padding:10px;background:var(--bg-card);border:1px solid var(--border);border-radius:8px;color:var(--text-primary)">
+        <option value="">Loading accounts...</option>
+      </select>
+    `;
+  }
+
+  modal.classList.remove('hidden');
+
+  // Load bridge dashboard data for dropdowns
+  try {
+    const data = await api('/bridge/dashboard');
+
+    if (direction === 'bank_to_crypto') {
+      const accountSelect = document.getElementById('bridge-source-account');
+      accountSelect.innerHTML = '<option value="">— Select Account —</option>' +
+        data.accounts.map(a => `<option value="${a.id}">${a.account_name} ($${parseFloat(a.available_usd).toLocaleString('en-US', {minimumFractionDigits: 2})} available)</option>`).join('');
+
+      const walletSelect = document.getElementById('bridge-dest-wallet');
+      walletSelect.innerHTML = '<option value="">— Select Wallet —</option>' +
+        data.wallets.map(w => `<option value="${w.id}">${w.wallet_name} (${parseFloat(w.usdc_balance).toFixed(2)} USDC)</option>`).join('');
+    } else {
+      const walletSelect = document.getElementById('bridge-source-wallet');
+      walletSelect.innerHTML = '<option value="">— Select Wallet —</option>' +
+        data.wallets.map(w => `<option value="${w.id}">${w.wallet_name} (${parseFloat(w.usdc_balance).toFixed(2)} USDC)</option>`).join('');
+
+      const accountSelect = document.getElementById('bridge-dest-account');
+      accountSelect.innerHTML = '<option value="">— Select Account —</option>' +
+        data.accounts.map(a => `<option value="${a.id}">${a.account_name} ($${parseFloat(a.available_usd).toLocaleString('en-US', {minimumFractionDigits: 2})})</option>`).join('');
+    }
+
+    // Show MoonPay status
+    const statusEl = document.getElementById('bridge-moonpay-status');
+    if (statusEl) statusEl.textContent = data.moonpay_configured ? 'MoonPay: Live' : 'Mode: Ledger-Only (1:1)';
+  } catch (err) {
+    console.error('Failed to load bridge data:', err);
+  }
+}
+
+// Show quote when amount changes
+document.addEventListener('input', function(e) {
+  if (e.target.id === 'bridge-amount') {
+    const amt = parseFloat(e.target.value);
+    const panel = document.getElementById('bridge-quote-panel');
+    if (amt > 0) {
+      panel.style.display = 'block';
+      document.getElementById('bridge-receive-value').textContent = `~${amt.toLocaleString('en-US', {minimumFractionDigits: 2})} USDC`;
+    } else {
+      panel.style.display = 'none';
+    }
+  }
+});
+
+async function executeBridge(e) {
+  e.preventDefault();
+  const direction = document.getElementById('bridge-direction').value;
+  const amount = document.getElementById('bridge-amount').value;
+  const notes = document.getElementById('bridge-notes').value;
+  const btn = document.getElementById('bridge-submit-btn');
+  const resultEl = document.getElementById('bridge-result');
+
+  btn.disabled = true;
+  btn.textContent = 'Processing...';
+  resultEl.innerHTML = '';
+
+  try {
+    let body, endpoint;
+    if (direction === 'bank_to_crypto') {
+      const sourceAccountId = document.getElementById('bridge-source-account').value;
+      const destWalletId = document.getElementById('bridge-dest-wallet').value;
+      if (!sourceAccountId || !destWalletId) throw new Error('Select both source account and destination wallet');
+      endpoint = '/bridge/bank-to-crypto';
+      body = { source_account_id: sourceAccountId, destination_wallet_id: destWalletId, amount, notes };
+    } else {
+      const sourceWalletId = document.getElementById('bridge-source-wallet').value;
+      const destAccountId = document.getElementById('bridge-dest-account').value;
+      if (!sourceWalletId || !destAccountId) throw new Error('Select both source wallet and destination account');
+      endpoint = '/bridge/crypto-to-bank';
+      body = { source_wallet_id: sourceWalletId, destination_account_id: destAccountId, amount, notes };
+    }
+
+    const result = await api(endpoint, { method: 'POST', body: JSON.stringify(body) });
+
+    const order = result.order || {};
+    resultEl.innerHTML = `
+      <div style="background:rgba(0,200,83,0.1);border:1px solid #00C853;border-radius:8px;padding:12px;margin-top:8px">
+        <strong style="color:#00C853">Conversion Successful</strong>
+        <div style="margin-top:8px;font-size:0.85rem">
+          <div>Order: <code>${order.order_number || 'N/A'}</code></div>
+          <div>Amount: $${parseFloat(amount).toLocaleString('en-US', {minimumFractionDigits: 2})}</div>
+          <div>Status: <span class="badge badge-active">${order.status || 'completed'}</span></div>
+          ${order.moonpay_widget_url ? `<div style="margin-top:8px"><a href="${order.moonpay_widget_url}" target="_blank" class="btn btn-primary" style="font-size:0.8rem;padding:6px 12px">Complete on MoonPay →</a></div>` : ''}
+        </div>
+      </div>
+    `;
+    showToast(result.message || 'Bridge conversion completed', 'success');
+    loadBlockchain(); // Refresh balances
+    loadBridgeOrders(); // Refresh bridge orders table
+  } catch (err) {
+    resultEl.innerHTML = `<div style="color:var(--danger);font-size:0.85rem;margin-top:8px">${err.message}</div>`;
+    showToast(`Bridge failed: ${err.message}`, 'error');
+  } finally {
+    btn.disabled = false;
+    btn.textContent = direction === 'bank_to_crypto' ? 'Convert to USDC' : 'Sweep to Bank';
+  }
+}
+
+async function loadBridgeOrders() {
+  try {
+    const data = await api('/bridge/orders?limit=10');
+    const el = document.getElementById('bridge-orders-table');
+    if (!el) return;
+
+    if (!data.orders || data.orders.length === 0) {
+      el.innerHTML = '<p style="color:var(--text-muted);text-align:center;padding:12px">No bridge orders yet. Use "Fund Wallet" or "Sweep to Bank" to convert between banking and crypto.</p>';
+      return;
+    }
+
+    const rows = data.orders.map(o => `
+      <tr>
+        <td style="font-family:monospace;font-size:0.8rem">${o.order_number}</td>
+        <td><span class="badge badge-${o.direction === 'bank_to_crypto' ? 'active' : 'pending'}">${o.direction === 'bank_to_crypto' ? 'Bank → Crypto' : 'Crypto → Bank'}</span></td>
+        <td style="font-weight:600">$${(o.fiat_amount_cents / 100).toLocaleString('en-US', {minimumFractionDigits: 2})}</td>
+        <td>${o.crypto_amount ? `${parseFloat(o.crypto_amount).toFixed(2)} USDC` : '—'}</td>
+        <td>${badge(o.status)}</td>
+        <td style="font-size:0.8rem">${o.moonpay_transaction_id ? 'MoonPay' : 'Ledger'}</td>
+        <td style="font-size:0.8rem">${formatTime(o.created_at)}</td>
+        <td>
+          ${o.status === 'pending_approval' ? `<button class="btn" onclick="approveBridgeOrder(${o.id})" style="font-size:0.75rem;padding:2px 8px;color:var(--success)">Approve</button>` : ''}
+          ${!['completed','cancelled'].includes(o.status) ? `<button class="btn" onclick="cancelBridgeOrder(${o.id})" style="font-size:0.75rem;padding:2px 8px;color:var(--danger)">Cancel</button>` : ''}
+          ${o.moonpay_widget_url ? `<a href="${o.moonpay_widget_url}" target="_blank" style="font-size:0.75rem;color:var(--accent-primary)">MoonPay</a>` : ''}
+        </td>
+      </tr>
+    `).join('');
+
+    el.innerHTML = `
+      <table><thead><tr>
+        <th>Order #</th><th>Direction</th><th>Amount</th><th>USDC</th><th>Status</th><th>Provider</th><th>Date</th><th>Actions</th>
+      </tr></thead><tbody>${rows}</tbody></table>
+    `;
+  } catch (err) {
+    console.error('Failed to load bridge orders:', err);
+  }
+}
+
+async function approveBridgeOrder(id) {
+  try {
+    await api(`/bridge/orders/${id}/approve`, { method: 'POST', body: JSON.stringify({ approved_by: 'trustee' }) });
+    showToast('Bridge order approved', 'success');
+    loadBridgeOrders();
+  } catch (err) {
+    showToast(`Approval failed: ${err.message}`, 'error');
+  }
+}
+
+async function cancelBridgeOrder(id) {
+  if (!confirm('Cancel this bridge order? Funds will be returned.')) return;
+  try {
+    await api(`/bridge/orders/${id}/cancel`, { method: 'POST', body: JSON.stringify({ reason: 'Cancelled by user' }) });
+    showToast('Bridge order cancelled', 'success');
+    loadBridgeOrders();
+  } catch (err) {
+    showToast(`Cancel failed: ${err.message}`, 'error');
   }
 }
 

@@ -311,6 +311,38 @@ const INTENT_REGISTRY = [
     action: 'sync',
   },
   {
+    intent: 'fund_wallet',
+    patterns: [
+      /fund.*wallet/i, /bank.*to.*crypto/i, /convert.*usdc/i,
+      /bridge.*crypto/i, /move.*money.*wallet/i, /deposit.*wallet/i,
+      /buy.*usdc/i, /on.?ramp/i,
+    ],
+    description: 'Fund crypto wallet from banking balance (Banking→Crypto bridge)',
+    engine: 'bridge',
+    action: 'bank-to-crypto',
+  },
+  {
+    intent: 'sweep_to_bank',
+    patterns: [
+      /sweep.*bank/i, /crypto.*to.*bank/i, /sell.*usdc/i,
+      /withdraw.*bank/i, /off.?ramp/i, /convert.*bank/i,
+      /move.*crypto.*bank/i,
+    ],
+    description: 'Sweep USDC from wallet to banking balance (Crypto→Banking bridge)',
+    engine: 'bridge',
+    action: 'crypto-to-bank',
+  },
+  {
+    intent: 'bridge_status',
+    patterns: [
+      /bridge.*status/i, /bridge.*order/i, /conversion.*status/i,
+      /moonpay.*status/i, /crypto.*bridge/i, /show.*bridge/i,
+    ],
+    description: 'Check Banking↔Crypto bridge status and orders',
+    engine: 'bridge',
+    action: 'status',
+  },
+  {
     intent: 'help',
     patterns: [
       /help/i, /what.*can.*you/i, /capabilities/i, /commands/i,
@@ -447,6 +479,15 @@ async function executeTask(db, parsedIntent, prompt) {
         break;
       case 'fineract_sync':
         result = await executeFineractSync(db);
+        break;
+      case 'fund_wallet':
+        result = await executeBridgeFundWallet(db);
+        break;
+      case 'sweep_to_bank':
+        result = await executeBridgeSweepToBank(db);
+        break;
+      case 'bridge_status':
+        result = await executeBridgeStatus(db);
         break;
       default:
         result = {
@@ -1219,6 +1260,111 @@ async function executeFineractSync(db) {
       `• Newly synced to Fineract: ${result.synced}`,
     data: result,
   };
+}
+
+// --- Bridge Functions --------------------------------------------------------
+
+async function executeBridgeFundWallet(db) {
+  const { BridgeOrderManager } = require('./moonpay-engine');
+  const { engine: integrationEngine } = require('./integration-engine');
+
+  // Find first active account and wallet
+  const account = db.prepare("SELECT * FROM trust_accounts WHERE status = 'active' ORDER BY available_cents DESC LIMIT 1").get();
+  const wallet = db.prepare("SELECT * FROM blockchain_wallets WHERE status = 'active' LIMIT 1").get();
+
+  if (!account) return { summary: 'No active banking account found. Create one first.', data: null };
+  if (!wallet) return { summary: 'No active crypto wallet found. Create one first in Crypto Rails.', data: null };
+
+  // Default to $1000 conversion
+  const amountCents = 100000;
+  const result = await integrationEngine.executePipeline('BANK_TO_CRYPTO', db, {
+    source_account_id: account.id,
+    destination_wallet_id: wallet.id,
+    amount_cents: amountCents,
+  }, { type: 'manual', source: 'ai_agent' });
+
+  if (result.status === 'failed') {
+    return { summary: `Fund wallet failed: ${result.error}`, data: result.toJSON() };
+  }
+
+  const order = result.results.order;
+  return {
+    summary: `Banking→Crypto bridge executed successfully!\n\n` +
+      `• Order: ${order.order_number}\n` +
+      `• Source: ${account.account_name}\n` +
+      `• Destination: ${wallet.wallet_name}\n` +
+      `• Amount: $${(amountCents / 100).toFixed(2)} → ${(amountCents / 100).toFixed(2)} USDC\n` +
+      `• Status: ${order.status}\n` +
+      `• GL Journal Posted: Yes`,
+    data: result.toJSON(),
+  };
+}
+
+async function executeBridgeSweepToBank(db) {
+  const { engine: integrationEngine } = require('./integration-engine');
+
+  const wallet = db.prepare("SELECT * FROM blockchain_wallets WHERE status = 'active' AND CAST(usdc_balance AS REAL) > 0 ORDER BY CAST(usdc_balance AS REAL) DESC LIMIT 1").get();
+  const account = db.prepare("SELECT * FROM trust_accounts WHERE status = 'active' ORDER BY id LIMIT 1").get();
+
+  if (!wallet) return { summary: 'No wallet with USDC balance found.', data: null };
+  if (!account) return { summary: 'No active banking account found.', data: null };
+
+  const sweepAmount = Math.min(parseFloat(wallet.usdc_balance || '0'), 1000).toFixed(2);
+  if (parseFloat(sweepAmount) <= 0) return { summary: 'No USDC balance to sweep.', data: null };
+
+  const result = await integrationEngine.executePipeline('CRYPTO_TO_BANK', db, {
+    source_wallet_id: wallet.id,
+    destination_account_id: account.id,
+    amount_usdc: sweepAmount,
+  }, { type: 'manual', source: 'ai_agent' });
+
+  if (result.status === 'failed') {
+    return { summary: `Sweep failed: ${result.error}`, data: result.toJSON() };
+  }
+
+  const order = result.results.order;
+  return {
+    summary: `Crypto→Banking sweep executed successfully!\n\n` +
+      `• Order: ${order.order_number}\n` +
+      `• Source: ${wallet.wallet_name}\n` +
+      `• Destination: ${account.account_name}\n` +
+      `• Amount: ${sweepAmount} USDC → $${sweepAmount}\n` +
+      `• Status: ${order.status}\n` +
+      `• GL Journal Posted: Yes`,
+    data: result.toJSON(),
+  };
+}
+
+async function executeBridgeStatus(db) {
+  const { BridgeOrderManager, MoonPayClient } = require('./moonpay-engine');
+
+  // Ensure bridge schema exists
+  const path = require('path');
+  const fs = require('fs');
+  const schema = path.join(__dirname, '..', 'db', 'migrations', 'banking-crypto-bridge-schema.sql');
+  if (fs.existsSync(schema)) { try { db.exec(fs.readFileSync(schema, 'utf8')); } catch (_) {} }
+
+  const bridgeMgr = new BridgeOrderManager(db);
+  const moonpay = new MoonPayClient();
+  const stats = bridgeMgr.getStats();
+  const recentOrders = bridgeMgr.listOrders({ limit: 5 });
+
+  let summary = `Banking ↔ Crypto Bridge Status\n\n`;
+  summary += `• MoonPay: ${moonpay.isConfigured() ? 'Configured (Live)' : 'Not configured (Ledger-only mode)'}\n`;
+  summary += `• Total Orders: ${stats.total}\n`;
+  summary += `• Pending: ${stats.pending}\n`;
+  summary += `• Completed: ${stats.completedCount} ($${(stats.completedVolumeCents / 100).toFixed(2)} total)\n`;
+  summary += `• Bank→Crypto: ${stats.bankToCrypto.count} orders ($${(stats.bankToCrypto.volumeCents / 100).toFixed(2)})\n`;
+  summary += `• Crypto→Bank: ${stats.cryptoToBank.count} orders ($${(stats.cryptoToBank.volumeCents / 100).toFixed(2)})\n`;
+
+  if (recentOrders.length > 0) {
+    summary += `\nRecent Orders:\n`;
+    for (const o of recentOrders) {
+      summary += `  ${o.order_number} | ${o.direction} | $${(o.fiat_amount_cents / 100).toFixed(2)} | ${o.status}\n`;
+    }
+  }
+
+  return { summary, data: { stats, recent: recentOrders, moonpay_configured: moonpay.isConfigured() } };
 }
 
 module.exports = {

@@ -85,6 +85,9 @@ app.use('/api/integration', require('./server/routes/integration'));
 // ─── Fineract Banking Routes (Open-Source Core Banking) ──────────────────────
 app.use('/api/fineract', require('./server/routes/fineract'));
 
+// ─── Banking ↔ Crypto Bridge Routes (MoonPay + Polygon Real Money) ───────────
+app.use('/api/bridge', require('./server/routes/bridge'));
+
 // ─── Frontend Dashboard ───────────────────────────────────────────────────────
 app.use(express.static(path.join(__dirname, 'frontend')));
 app.get('/', (req, res) => res.sendFile(path.join(__dirname, 'frontend', 'index.html')));

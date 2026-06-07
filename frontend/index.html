@@ -794,6 +794,8 @@
             <option value="cancelled">Cancelled</option>
           </select>
           <button class="btn" onclick="showCreateWalletModal()" style="margin-right:8px">+ New Wallet</button>
+          <button class="btn" onclick="showBridgeModal('bank_to_crypto')" style="margin-right:8px;background:#00C853;color:#fff">Fund Wallet ↑</button>
+          <button class="btn" onclick="showBridgeModal('crypto_to_bank')" style="margin-right:8px;background:#FF6D00;color:#fff">Sweep to Bank ↓</button>
           <button class="btn" onclick="showSwapModal()" style="margin-right:8px;background:#8b5cf6;color:#fff">Swap POL → USDC</button>
           <button class="btn btn-primary" onclick="showSendUsdcModal()">Send USDC</button>
         </div>
@@ -811,7 +813,17 @@
         <div id="chain-wallets-grid" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:12px"></div>
       </div>
 
-      <!-- Fiat Gateway Panel -->
+      <!-- Banking ↔ Crypto Bridge Panel -->
+      <div class="panel" style="margin-bottom:16px">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
+          <h3>Banking ↔ Crypto Bridge <span style="font-size:0.75rem;background:#00C853;color:#fff;padding:2px 8px;border-radius:4px;margin-left:8px">MoonPay</span></h3>
+          <span id="bridge-moonpay-status" style="font-size:0.8rem;color:var(--text-muted)"></span>
+        </div>
+        <p style="color:var(--text-muted);font-size:0.85rem;margin-bottom:12px">Convert banking balances to real USDC on Polygon (or sweep USDC back to banking). Powered by MoonPay for fiat on/off-ramp.</p>
+        <div id="bridge-orders-table" class="table-container" style="margin-top:12px"></div>
+      </div>
+
+      <!-- Fiat Gateway Panel (Legacy Circle) -->
       <div class="panels-row" style="margin-bottom:16px">
         <div class="panel">
           <h3>Fiat On-Ramp (USD → USDC)</h3>
@@ -966,6 +978,67 @@
               <button type="submit" class="btn btn-primary" id="swap-submit-btn">Swap</button>
             </div>
           </form>
+        </div>
+      </div>
+
+      <!-- Banking ↔ Crypto Bridge Modal -->
+      <div id="bridge-modal" class="modal hidden">
+        <div class="modal-content" style="max-width:600px;max-height:90vh;overflow-y:auto">
+          <h3 id="bridge-modal-title">Fund Wallet from Banking</h3>
+          <p id="bridge-modal-desc" style="color:var(--text-muted);font-size:0.85rem;margin-bottom:16px">Convert banking balance to real USDC via MoonPay on Polygon</p>
+          <form id="bridge-form" onsubmit="executeBridge(event)">
+            <input type="hidden" id="bridge-direction" value="bank_to_crypto">
+            <div style="display:grid;gap:14px">
+              <!-- Source (changes based on direction) -->
+              <div id="bridge-source-section">
+                <label>Source Banking Account *</label>
+                <select id="bridge-source-account" required style="width:100%;padding:10px;background:var(--bg-card);border:1px solid var(--border);border-radius:8px;color:var(--text-primary)">
+                  <option value="">Loading accounts...</option>
+                </select>
+              </div>
+              <!-- Destination (changes based on direction) -->
+              <div id="bridge-dest-section">
+                <label>Destination Wallet *</label>
+                <select id="bridge-dest-wallet" style="width:100%;padding:10px;background:var(--bg-card);border:1px solid var(--border);border-radius:8px;color:var(--text-primary)">
+                  <option value="">Loading wallets...</option>
+                </select>
+              </div>
+              <!-- Amount -->
+              <div>
+                <label id="bridge-amount-label">Amount (USD) *</label>
+                <input type="number" id="bridge-amount" step="0.01" min="1" max="100000" placeholder="10,000.00" required style="width:100%;padding:10px;background:var(--bg-card);border:1px solid var(--border);border-radius:8px;color:var(--text-primary)">
+              </div>
+              <!-- Quote / Conversion Info -->
+              <div id="bridge-quote-panel" style="background:var(--bg-main);border:1px solid var(--border);border-radius:8px;padding:12px;display:none">
+                <div style="display:flex;justify-content:space-between;margin-bottom:4px">
+                  <span style="font-size:0.85rem;color:var(--text-muted)">Exchange Rate:</span>
+                  <span style="font-size:0.85rem;font-weight:600">1 USD = 1 USDC</span>
+                </div>
+                <div style="display:flex;justify-content:space-between;margin-bottom:4px">
+                  <span style="font-size:0.85rem;color:var(--text-muted)">Network:</span>
+                  <span style="font-size:0.85rem;font-weight:600">Polygon</span>
+                </div>
+                <div id="bridge-fee-row" style="display:flex;justify-content:space-between;margin-bottom:4px">
+                  <span style="font-size:0.85rem;color:var(--text-muted)">MoonPay Fee (est.):</span>
+                  <span id="bridge-fee-value" style="font-size:0.85rem;font-weight:600">~3.25%</span>
+                </div>
+                <div style="display:flex;justify-content:space-between">
+                  <span style="font-size:0.85rem;color:var(--text-muted)">You Receive:</span>
+                  <span id="bridge-receive-value" style="font-size:0.9rem;font-weight:700;color:var(--accent-primary)">—</span>
+                </div>
+              </div>
+              <!-- Notes -->
+              <div>
+                <label>Notes (optional)</label>
+                <input type="text" id="bridge-notes" placeholder="e.g., Monthly wallet funding" style="width:100%;padding:10px;background:var(--bg-card);border:1px solid var(--border);border-radius:8px;color:var(--text-primary)">
+              </div>
+            </div>
+            <div style="display:flex;gap:8px;margin-top:16px;justify-content:flex-end">
+              <button type="button" class="btn" onclick="hideModal('bridge-modal')">Cancel</button>
+              <button type="submit" class="btn btn-primary" id="bridge-submit-btn">Convert to USDC</button>
+            </div>
+          </form>
+          <div id="bridge-result" style="margin-top:12px"></div>
         </div>
       </div>
 

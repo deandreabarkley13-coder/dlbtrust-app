@@ -72,6 +72,14 @@ const PIPELINES = {
     name: 'Fineract Settlement Processing',
     steps: ['scan_clearing', 'settle_payments', 'post_gl_journals'],
   },
+  BANK_TO_CRYPTO: {
+    name: 'Banking → Crypto (Fund Wallet)',
+    steps: ['validate_source', 'debit_bank_account', 'initiate_moonpay', 'post_gl_journal', 'emit_event'],
+  },
+  CRYPTO_TO_BANK: {
+    name: 'Crypto → Banking (Sweep to Bank)',
+    steps: ['validate_wallet', 'initiate_sell', 'credit_bank_account', 'post_gl_journal', 'emit_event'],
+  },
 };
 
 // ─── Pipeline Execution Context ──────────────────────────────────────────────
@@ -754,6 +762,193 @@ class IntegrationEngine {
     `).run(result.reference, result.settlement_time, transferId);
 
     return result;
+  }
+
+  // ─── BANK_TO_CRYPTO ──────────────────────────────────────────────────────
+
+  async _execute_BANK_TO_CRYPTO(db, params) {
+    const { BridgeOrderManager, MoonPayClient } = require('./moonpay-engine');
+    const bridgeMgr = new BridgeOrderManager(db);
+    const moonpay = new MoonPayClient();
+
+    const { source_account_id, destination_wallet_id, amount_cents, destination_address, notes } = params;
+    if (!source_account_id || !amount_cents) throw new Error('source_account_id and amount_cents required');
+    if (!destination_wallet_id && !destination_address) throw new Error('destination_wallet_id or destination_address required');
+
+    const results = { steps: [] };
+
+    // 1. Validate source account
+    const account = db.prepare('SELECT * FROM trust_accounts WHERE id = ?').get(source_account_id);
+    if (!account) throw new Error('Source account not found');
+    if (account.status !== 'active') throw new Error(`Source account is ${account.status}`);
+    if (amount_cents > account.available_cents) {
+      throw new Error(`Insufficient funds. Available: $${(account.available_cents / 100).toFixed(2)}, requested: $${(amount_cents / 100).toFixed(2)}`);
+    }
+    results.steps.push({ step: 'validate_source', status: 'done', account: account.account_name, available: account.available_cents });
+
+    // Resolve destination address
+    let walletAddress = destination_address;
+    if (destination_wallet_id && !walletAddress) {
+      const wallet = db.prepare('SELECT * FROM blockchain_wallets WHERE id = ?').get(destination_wallet_id);
+      if (wallet) walletAddress = wallet.address;
+    }
+
+    // 2. Check approval threshold
+    const approvalThreshold = 1000000; // $10,000 in cents
+    const requiresApproval = amount_cents >= approvalThreshold;
+
+    // 3. Create bridge order
+    const order = bridgeMgr.createOrder({
+      direction: 'bank_to_crypto',
+      sourceAccountId: source_account_id,
+      destinationWalletId: destination_wallet_id || null,
+      fiatAmountCents: amount_cents,
+      destinationAddress: walletAddress,
+      requiresApproval,
+      initiatedBy: 'integration_api',
+      notes: notes || `Fund wallet from ${account.account_name}`,
+    });
+
+    // 4. Debit bank account (hold funds)
+    db.prepare(`
+      UPDATE trust_accounts SET
+        balance_cents = balance_cents - ?, available_cents = available_cents - ?,
+        last_activity_date = datetime('now'), updated_at = datetime('now')
+      WHERE id = ?
+    `).run(amount_cents, amount_cents, source_account_id);
+    results.steps.push({ step: 'debit_bank_account', status: 'done', amount_cents, account_id: source_account_id });
+
+    // 5. Generate MoonPay widget URL (if configured) or mark for direct conversion
+    const amountUsd = (amount_cents / 100).toFixed(2);
+    if (moonpay.isConfigured()) {
+      const widgetUrl = moonpay.generateBuyWidgetUrl({
+        walletAddress,
+        amount: amountUsd,
+        externalTransactionId: order.order_number,
+      });
+      bridgeMgr.updateStatus(order.id, 'moonpay_pending', { moonpayWidgetUrl: widgetUrl });
+      results.steps.push({ step: 'initiate_moonpay', status: 'done', widget_url: widgetUrl, order_number: order.order_number });
+    } else {
+      // Direct ledger conversion (MoonPay not configured — ledger-only mode)
+      // Credit wallet balance in DB
+      if (destination_wallet_id) {
+        db.prepare(`
+          UPDATE blockchain_wallets SET usdc_balance = CAST(CAST(usdc_balance AS REAL) + ? AS TEXT), updated_at = datetime('now') WHERE id = ?
+        `).run(parseFloat(amountUsd), destination_wallet_id);
+      }
+      bridgeMgr.updateStatus(order.id, 'completed', { cryptoAmount: amountUsd, exchangeRate: '1.000000' });
+      results.steps.push({ step: 'initiate_moonpay', status: 'done', mode: 'ledger_conversion', amount_usdc: amountUsd });
+    }
+
+    // 6. Post GL journal: Debit Crypto Assets (1500), Credit Cash (1000)
+    const journal = this._postGLJournal(db, {
+      description: `Bank→Crypto: $${amountUsd} USD → USDC — Order ${order.order_number}`,
+      reference_type: 'bridge_order',
+      reference_id: String(order.id),
+      entries: [
+        { account_code: '1500', description: 'Digital Asset Holdings (USDC)', debit_cents: amount_cents, credit_cents: 0 },
+        { account_code: '1000', description: 'Cash — Operating', debit_cents: 0, credit_cents: amount_cents },
+      ],
+    });
+    if (journal.id) bridgeMgr.updateStatus(order.id, order.status || 'completed', { journalEntryId: journal.id });
+    results.steps.push({ step: 'post_gl_journal', status: 'done', journal_id: journal.id });
+
+    bus.emit('bridge.bank_to_crypto', { order_id: order.id, amount_cents, order_number: order.order_number });
+    results.order = bridgeMgr.getOrder(order.id);
+    return results;
+  }
+
+  // ─── CRYPTO_TO_BANK ──────────────────────────────────────────────────────
+
+  async _execute_CRYPTO_TO_BANK(db, params) {
+    const { BridgeOrderManager, MoonPayClient } = require('./moonpay-engine');
+    const bridgeMgr = new BridgeOrderManager(db);
+    const moonpay = new MoonPayClient();
+
+    const { source_wallet_id, destination_account_id, amount_usdc, notes } = params;
+    if (!source_wallet_id || !destination_account_id || !amount_usdc) {
+      throw new Error('source_wallet_id, destination_account_id, and amount_usdc required');
+    }
+
+    const results = { steps: [] };
+
+    // 1. Validate wallet balance
+    const wallet = db.prepare('SELECT * FROM blockchain_wallets WHERE id = ?').get(source_wallet_id);
+    if (!wallet) throw new Error('Source wallet not found');
+    if (wallet.status !== 'active') throw new Error(`Wallet is ${wallet.status}`);
+    const walletBalance = parseFloat(wallet.usdc_balance || '0');
+    const amount = parseFloat(amount_usdc);
+    if (amount > walletBalance) {
+      throw new Error(`Insufficient USDC. Balance: $${walletBalance.toFixed(2)}, requested: $${amount.toFixed(2)}`);
+    }
+    results.steps.push({ step: 'validate_wallet', status: 'done', wallet: wallet.wallet_name, balance: walletBalance });
+
+    // 2. Validate destination account
+    const account = db.prepare('SELECT * FROM trust_accounts WHERE id = ?').get(destination_account_id);
+    if (!account) throw new Error('Destination account not found');
+    if (account.status !== 'active') throw new Error(`Destination account is ${account.status}`);
+    results.steps.push({ step: 'validate_destination', status: 'done', account: account.account_name });
+
+    const amountCents = Math.round(amount * 100);
+
+    // 3. Create bridge order
+    const order = bridgeMgr.createOrder({
+      direction: 'crypto_to_bank',
+      sourceWalletId: source_wallet_id,
+      destinationAccountId: destination_account_id,
+      fiatAmountCents: amountCents,
+      destinationAddress: null,
+      requiresApproval: amountCents >= 1000000,
+      initiatedBy: 'integration_api',
+      notes: notes || `Sweep USDC to ${account.account_name}`,
+    });
+
+    // 4. Debit wallet
+    db.prepare(`
+      UPDATE blockchain_wallets SET usdc_balance = CAST(CAST(usdc_balance AS REAL) - ? AS TEXT), updated_at = datetime('now') WHERE id = ?
+    `).run(amount, source_wallet_id);
+    results.steps.push({ step: 'debit_wallet', status: 'done', amount_usdc: amount.toFixed(2) });
+
+    // 5. Initiate sell (MoonPay off-ramp or ledger credit)
+    if (moonpay.isConfigured()) {
+      const widgetUrl = moonpay.generateSellWidgetUrl({
+        amount: amount.toFixed(2),
+        refundAddress: wallet.address,
+        externalTransactionId: order.order_number,
+      });
+      bridgeMgr.updateStatus(order.id, 'moonpay_pending', { moonpayWidgetUrl: widgetUrl });
+      results.steps.push({ step: 'initiate_sell', status: 'done', widget_url: widgetUrl });
+    } else {
+      // Direct ledger conversion
+      bridgeMgr.updateStatus(order.id, 'completed', { cryptoAmount: amount.toFixed(2), exchangeRate: '1.000000' });
+      results.steps.push({ step: 'initiate_sell', status: 'done', mode: 'ledger_conversion' });
+    }
+
+    // 6. Credit bank account
+    db.prepare(`
+      UPDATE trust_accounts SET
+        balance_cents = balance_cents + ?, available_cents = available_cents + ?,
+        last_activity_date = datetime('now'), updated_at = datetime('now')
+      WHERE id = ?
+    `).run(amountCents, amountCents, destination_account_id);
+    results.steps.push({ step: 'credit_bank_account', status: 'done', amount_cents: amountCents, account_id: destination_account_id });
+
+    // 7. Post GL journal: Debit Cash (1000), Credit Crypto Assets (1500)
+    const journal = this._postGLJournal(db, {
+      description: `Crypto→Bank: $${amount.toFixed(2)} USDC → USD — Order ${order.order_number}`,
+      reference_type: 'bridge_order',
+      reference_id: String(order.id),
+      entries: [
+        { account_code: '1000', description: 'Cash — Operating', debit_cents: amountCents, credit_cents: 0 },
+        { account_code: '1500', description: 'Digital Asset Holdings (USDC)', debit_cents: 0, credit_cents: amountCents },
+      ],
+    });
+    if (journal.id) bridgeMgr.updateStatus(order.id, 'completed', { journalEntryId: journal.id });
+    results.steps.push({ step: 'post_gl_journal', status: 'done', journal_id: journal.id });
+
+    bus.emit('bridge.crypto_to_bank', { order_id: order.id, amount_cents: amountCents, order_number: order.order_number });
+    results.order = bridgeMgr.getOrder(order.id);
+    return results;
   }
 
   _persistExecution(db, exec) {
