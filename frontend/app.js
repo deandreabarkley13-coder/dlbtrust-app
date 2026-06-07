@@ -85,6 +85,7 @@ function loadView(view) {
     case 'reports': loadReports(); break;
     case 'ai-agent': loadAIAgent(); break;
     case 'integration': loadIntegration(); break;
+    case 'fineract': loadFineract(); break;
     case 'compliance': loadCompliance(); break;
     case 'activity': loadActivity(); break;
   }
@@ -2654,6 +2655,174 @@ async function quickGenerate(reportType) {
     window.open(`/api/document-generation/preview/${result.document_id}`, '_blank');
   } catch (err) {
     showToast('Generation failed: ' + err.message, 'error');
+  }
+}
+
+// --- Fineract Banking ---
+
+async function loadFineract() {
+  try {
+    const [status, payments, batches, log] = await Promise.all([
+      api('/fineract/status'),
+      api('/fineract/payments'),
+      api('/fineract/ach/batches'),
+      api('/fineract/settlement-log'),
+    ]);
+
+    // Metrics
+    $('#fin-total').textContent = status.stats.total;
+    $('#fin-pending').textContent = status.stats.pending;
+    $('#fin-settled').textContent = status.stats.settled;
+    $('#fin-failed').textContent = status.stats.failed;
+    $('#fin-volume').textContent = `$${(status.stats.volume_today_cents / 100).toLocaleString()}`;
+    $('#fin-mode').textContent = status.mode.charAt(0).toUpperCase() + status.mode.slice(1);
+
+    // Rails table
+    const railsBody = $('#fineract-rails-body');
+    railsBody.innerHTML = status.available_rails.map(r => `
+      <tr>
+        <td><strong>${r.code}</strong></td>
+        <td>${r.name}</td>
+        <td>${r.fee}</td>
+        <td>${r.settlement}</td>
+        <td>${r.max_amount || 'No limit'}</td>
+        <td>${r.batch_eligible ? 'Yes' : 'No'}</td>
+      </tr>
+    `).join('');
+
+    // Payments table
+    const paymentsBody = $('#fineract-payments-body');
+    paymentsBody.innerHTML = payments.length ? payments.map(p => `
+      <tr>
+        <td><code>${p.payment_number}</code></td>
+        <td><span class="badge badge-${p.rail === 'WIRE' ? 'warning' : p.rail === 'RTP' ? 'success' : 'info'}">${p.rail}</span></td>
+        <td>$${(p.amount_cents / 100).toLocaleString()}</td>
+        <td>$${(p.fee_cents / 100).toFixed(2)}</td>
+        <td>${p.to_beneficiary_name || '—'}</td>
+        <td><span class="badge badge-${p.status === 'settled' ? 'success' : p.status === 'failed' ? 'danger' : 'warning'}">${p.status}</span></td>
+        <td>${p.settlement_date || '—'}</td>
+        <td>${new Date(p.created_at).toLocaleDateString()}</td>
+      </tr>
+    `).join('') : '<tr><td colspan="8" style="text-align:center;color:#666">No payments yet. Click "+ New Payment" to initiate.</td></tr>';
+
+    // Batches table
+    const batchesBody = $('#fineract-batches-body');
+    batchesBody.innerHTML = batches.length ? batches.map(b => `
+      <tr>
+        <td><code>${b.batch_number}</code></td>
+        <td>${b.batch_type}</td>
+        <td>${b.entry_count}</td>
+        <td>$${(b.total_debit_cents / 100).toLocaleString()}</td>
+        <td><span class="badge badge-${b.status === 'settled' ? 'success' : 'warning'}">${b.status}</span></td>
+        <td>${b.effective_date || '—'}</td>
+        <td>${b.status !== 'settled' ? `<button class="btn btn-sm btn-primary" onclick="fineractSettleBatch(${b.id})">Settle</button>` : '—'}</td>
+      </tr>
+    `).join('') : '<tr><td colspan="7" style="text-align:center;color:#666">No ACH batches</td></tr>';
+
+    // Settlement log
+    const logBody = $('#fineract-log-body');
+    logBody.innerHTML = log.slice(0, 20).map(l => `
+      <tr>
+        <td><code>${l.payment_number}</code></td>
+        <td>${l.rail}</td>
+        <td>${l.from_status}</td>
+        <td>${l.to_status}</td>
+        <td>${l.event_type}</td>
+        <td>${new Date(l.created_at).toLocaleString()}</td>
+      </tr>
+    `).join('') || '<tr><td colspan="6" style="text-align:center;color:#666">No settlement events</td></tr>';
+  } catch (err) {
+    showToast('Failed to load Fineract: ' + err.message, 'error');
+  }
+}
+
+function showFineractPaymentModal() {
+  document.getElementById('fineract-payment-modal').style.display = 'flex';
+  // Load accounts into dropdown
+  api('/accounts').then(accounts => {
+    const sel = document.getElementById('fin-from-account');
+    sel.innerHTML = accounts.filter(a => a.status === 'active').map(a =>
+      `<option value="${a.id}">${a.account_name} ($${(a.balance_cents / 100).toLocaleString()})</option>`
+    ).join('');
+  });
+}
+
+function closeFineractPaymentModal() {
+  document.getElementById('fineract-payment-modal').style.display = 'none';
+}
+
+function updateRailInfo() {}
+
+async function submitFineractPayment(e) {
+  e.preventDefault();
+  const payload = {
+    from_account_id: parseInt(document.getElementById('fin-from-account').value),
+    rail: document.getElementById('fin-rail').value,
+    amount_cents: Math.round(parseFloat(document.getElementById('fin-amount').value) * 100),
+    to_routing_number: document.getElementById('fin-routing').value,
+    to_account_number: document.getElementById('fin-account-num').value,
+    to_bank_name: document.getElementById('fin-bank-name').value,
+    to_beneficiary_name: document.getElementById('fin-beneficiary').value,
+    to_beneficiary_address: document.getElementById('fin-address').value,
+    memo: document.getElementById('fin-memo').value,
+    description: document.getElementById('fin-memo').value,
+  };
+
+  try {
+    const result = await api('/fineract/payments', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    showToast(`Payment initiated: ${result.payment_number} (${result.rail}, ${result.estimated_settlement})`, 'success');
+    closeFineractPaymentModal();
+    loadFineract();
+  } catch (err) {
+    showToast('Payment failed: ' + err.message, 'error');
+  }
+}
+
+async function fineractSync() {
+  try {
+    const result = await api('/fineract/sync', { method: 'POST' });
+    showToast(`Sync complete: ${result.synced} new accounts linked`, 'success');
+    loadFineract();
+  } catch (err) {
+    showToast('Sync failed: ' + err.message, 'error');
+  }
+}
+
+async function fineractProcessSettlements() {
+  try {
+    const result = await api('/fineract/settlements/process', { method: 'POST' });
+    showToast(`Settled ${result.processed} payments. ${result.remaining_clearing} still in clearing.`, 'success');
+    loadFineract();
+  } catch (err) {
+    showToast('Settlement processing failed: ' + err.message, 'error');
+  }
+}
+
+async function fineractCreateBatch() {
+  try {
+    const result = await api('/fineract/ach/batch', { method: 'POST' });
+    if (!result.batch_id) {
+      showToast('No pending ACH payments to batch', 'info');
+    } else {
+      showToast(`ACH Batch ${result.batch_number} created with ${result.entry_count} entries`, 'success');
+    }
+    loadFineract();
+  } catch (err) {
+    showToast('Batch creation failed: ' + err.message, 'error');
+  }
+}
+
+async function fineractSettleBatch(batchId) {
+  try {
+    const result = await api(`/fineract/ach/batch/${batchId}/settle`, { method: 'POST' });
+    showToast(`Batch settled: ${result.settled_count} payments`, 'success');
+    loadFineract();
+  } catch (err) {
+    showToast('Batch settlement failed: ' + err.message, 'error');
   }
 }
 

@@ -26,6 +26,7 @@
       <li><a href="#" data-view="reports">Reports</a></li>
       <li><a href="#" data-view="ai-agent">AI Agent</a></li>
       <li><a href="#" data-view="integration">Integration</a></li>
+      <li><a href="#" data-view="fineract">Fineract Banking</a></li>
       <li><a href="#" data-view="compliance">Compliance</a></li>
       <li><a href="#" data-view="activity">Activity</a></li>
     </ul>
@@ -1305,6 +1306,135 @@
         </div>
       </div>
     </section>
+
+    <!-- Fineract Banking View -->
+    <section id="view-fineract" class="view">
+      <header class="view-header">
+        <h2>Fineract Banking — Open-Source Core Banking</h2>
+        <div class="view-actions">
+          <button class="btn btn-primary" onclick="showFineractPaymentModal()">+ New Payment</button>
+          <button class="btn btn-secondary" onclick="fineractSync()">Sync Accounts</button>
+          <button class="btn btn-secondary" onclick="fineractProcessSettlements()">Process Settlements</button>
+        </div>
+      </header>
+
+      <!-- Status Metrics -->
+      <div class="metrics-grid" id="fineract-metrics">
+        <div class="metric-card"><div class="metric-label">Total Payments</div><div class="metric-value" id="fin-total">—</div></div>
+        <div class="metric-card"><div class="metric-label">Pending</div><div class="metric-value" id="fin-pending">—</div></div>
+        <div class="metric-card"><div class="metric-label">Settled</div><div class="metric-value" id="fin-settled">—</div></div>
+        <div class="metric-card"><div class="metric-label">Failed/Returned</div><div class="metric-value" id="fin-failed">—</div></div>
+        <div class="metric-card"><div class="metric-label">Today Volume</div><div class="metric-value" id="fin-volume">—</div></div>
+        <div class="metric-card"><div class="metric-label">Mode</div><div class="metric-value" id="fin-mode">—</div></div>
+      </div>
+
+      <!-- Available Rails -->
+      <div class="section-block">
+        <h3>Available Payment Rails</h3>
+        <div class="table-container">
+          <table id="fineract-rails-table">
+            <thead><tr><th>Rail</th><th>Name</th><th>Fee</th><th>Settlement</th><th>Max Amount</th><th>Batch</th></tr></thead>
+            <tbody id="fineract-rails-body"></tbody>
+          </table>
+        </div>
+      </div>
+
+      <!-- Payment History -->
+      <div class="section-block">
+        <h3>Payment History</h3>
+        <div class="table-container">
+          <table id="fineract-payments-table">
+            <thead><tr><th>Payment #</th><th>Rail</th><th>Amount</th><th>Fee</th><th>Beneficiary</th><th>Status</th><th>Settlement Date</th><th>Created</th></tr></thead>
+            <tbody id="fineract-payments-body"></tbody>
+          </table>
+        </div>
+      </div>
+
+      <!-- ACH Batches -->
+      <div class="section-block">
+        <h3>ACH Batches</h3>
+        <div class="view-actions" style="margin-bottom:10px">
+          <button class="btn btn-secondary btn-sm" onclick="fineractCreateBatch()">Create ACH Batch</button>
+        </div>
+        <div class="table-container">
+          <table id="fineract-batches-table">
+            <thead><tr><th>Batch #</th><th>Type</th><th>Entries</th><th>Total Debit</th><th>Status</th><th>Effective Date</th><th>Action</th></tr></thead>
+            <tbody id="fineract-batches-body"></tbody>
+          </table>
+        </div>
+      </div>
+
+      <!-- Settlement Log -->
+      <div class="section-block">
+        <h3>Settlement Log</h3>
+        <div class="table-container">
+          <table id="fineract-log-table">
+            <thead><tr><th>Payment #</th><th>Rail</th><th>From</th><th>To</th><th>Event</th><th>Time</th></tr></thead>
+            <tbody id="fineract-log-body"></tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+
+    <!-- Fineract Payment Modal -->
+    <div id="fineract-payment-modal" class="modal" style="display:none">
+      <div class="modal-content">
+        <div class="modal-header">
+          <h3>Initiate External Payment</h3>
+          <button class="modal-close" onclick="closeFineractPaymentModal()">&times;</button>
+        </div>
+        <form id="fineract-payment-form" onsubmit="submitFineractPayment(event)">
+          <div class="form-group">
+            <label>Source Account</label>
+            <select id="fin-from-account" required></select>
+          </div>
+          <div class="form-group">
+            <label>Payment Rail</label>
+            <select id="fin-rail" required onchange="updateRailInfo()">
+              <option value="ACH">ACH — Automated Clearing House ($0.50 fee, 2 days)</option>
+              <option value="WIRE">Wire — Fedwire ($25.00 fee, Same day)</option>
+              <option value="RTP">RTP — Real-Time Payments ($1.00 fee, Instant)</option>
+              <option value="CHECK">Check / Draft ($2.00 fee, 5 days)</option>
+            </select>
+          </div>
+          <div class="form-group">
+            <label>Amount ($)</label>
+            <input type="number" id="fin-amount" step="0.01" min="0.01" required placeholder="0.00">
+          </div>
+          <fieldset>
+            <legend>Destination</legend>
+            <div class="form-group">
+              <label>Routing Number (ABA)</label>
+              <input type="text" id="fin-routing" pattern="[0-9]{9}" placeholder="021000021" required>
+            </div>
+            <div class="form-group">
+              <label>Account Number</label>
+              <input type="text" id="fin-account-num" placeholder="123456789" required>
+            </div>
+            <div class="form-group">
+              <label>Bank Name</label>
+              <input type="text" id="fin-bank-name" placeholder="JP Morgan Chase">
+            </div>
+            <div class="form-group">
+              <label>Beneficiary Name</label>
+              <input type="text" id="fin-beneficiary" placeholder="John Smith" required>
+            </div>
+            <div class="form-group">
+              <label>Beneficiary Address</label>
+              <input type="text" id="fin-address" placeholder="123 Main St, New York, NY">
+            </div>
+          </fieldset>
+          <div class="form-group">
+            <label>Memo / Description</label>
+            <textarea id="fin-memo" rows="2" placeholder="Payment description"></textarea>
+          </div>
+          <div class="form-actions">
+            <button type="button" class="btn btn-secondary" onclick="closeFineractPaymentModal()">Cancel</button>
+            <button type="submit" class="btn btn-primary">Initiate Payment</button>
+          </div>
+        </form>
+      </div>
+    </div>
 
     <!-- Activity View -->
     <section id="view-activity" class="view">

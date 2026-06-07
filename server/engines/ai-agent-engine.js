@@ -260,6 +260,57 @@ const INTENT_REGISTRY = [
     action: 'upcoming-coupons',
   },
   {
+    intent: 'fineract_payment',
+    patterns: [
+      /send.*ach/i, /send.*wire/i, /initiate.*payment/i, /external.*payment/i,
+      /pay.*external/i, /fineract.*pay/i, /ach.*transfer/i, /wire.*transfer/i,
+      /send.*money/i, /transfer.*external/i, /rtp.*payment/i,
+    ],
+    description: 'Initiate external payment via Fineract (ACH/Wire/RTP)',
+    engine: 'fineract',
+    action: 'payment',
+  },
+  {
+    intent: 'fineract_status',
+    patterns: [
+      /fineract.*status/i, /payment.*status/i, /banking.*status/i,
+      /settlement.*status/i, /payment.*rails/i, /show.*payments/i,
+    ],
+    description: 'Check Fineract banking engine status',
+    engine: 'fineract',
+    action: 'status',
+  },
+  {
+    intent: 'fineract_settle',
+    patterns: [
+      /settle.*payment/i, /process.*settlement/i, /clear.*payment/i,
+      /run.*settlement/i, /fineract.*settle/i,
+    ],
+    description: 'Process pending payment settlements',
+    engine: 'fineract',
+    action: 'settle',
+  },
+  {
+    intent: 'fineract_batch',
+    patterns: [
+      /ach.*batch/i, /create.*batch/i, /batch.*payment/i,
+      /nacha.*batch/i, /fineract.*batch/i,
+    ],
+    description: 'Create ACH batch from pending payments',
+    engine: 'fineract',
+    action: 'batch',
+  },
+  {
+    intent: 'fineract_sync',
+    patterns: [
+      /sync.*account/i, /synchronize/i, /fineract.*sync/i,
+      /link.*account/i, /map.*account/i,
+    ],
+    description: 'Sync trust accounts with Fineract savings accounts',
+    engine: 'fineract',
+    action: 'sync',
+  },
+  {
     intent: 'help',
     patterns: [
       /help/i, /what.*can.*you/i, /capabilities/i, /commands/i,
@@ -381,6 +432,21 @@ async function executeTask(db, parsedIntent, prompt) {
       case 'generate_coupon_schedule_report':
       case 'generate_distribution_report':
         result = await executeDocumentGeneration(db, parsedIntent);
+        break;
+      case 'fineract_payment':
+        result = await executeFineractPayment(db, prompt);
+        break;
+      case 'fineract_status':
+        result = await executeFineractStatus(db);
+        break;
+      case 'fineract_settle':
+        result = await executeFineractSettle(db);
+        break;
+      case 'fineract_batch':
+        result = await executeFineractBatch(db);
+        break;
+      case 'fineract_sync':
+        result = await executeFineractSync(db);
         break;
       default:
         result = {
@@ -1042,6 +1108,116 @@ async function executeDocumentGeneration(db, parsedIntent) {
       duration_ms: result.duration_ms,
       preview_url: `/api/document-generation/preview/${result.document_id}`,
     },
+  };
+}
+
+// ─── Fineract Executor Functions ─────────────────────────────────────────────
+
+async function executeFineractStatus(db) {
+  const { fineractEngine } = require('./fineract-engine');
+  fineractEngine.initSchema(db);
+  const status = fineractEngine.getStatus(db);
+  const rails = status.available_rails.map(r => `• ${r.code}: ${r.name} (${r.fee}, ${r.settlement})`).join('\n');
+  return {
+    summary: `Fineract Banking Engine: ${status.mode} mode\n\n` +
+      `Payments: ${status.stats.total} total | ${status.stats.pending} pending | ${status.stats.settled} settled | ${status.stats.failed} failed\n` +
+      `Today: $${(status.stats.volume_today_cents / 100).toFixed(2)} volume | $${(status.stats.settled_today_cents / 100).toFixed(2)} settled\n` +
+      `Pending ACH Batches: ${status.pending_batches}\n\n` +
+      `Available Rails:\n${rails}`,
+    data: status,
+  };
+}
+
+async function executeFineractPayment(db, prompt) {
+  const { fineractEngine } = require('./fineract-engine');
+  fineractEngine.initSchema(db);
+
+  // Extract amount from prompt (look for $ amounts)
+  const amountMatch = prompt.match(/\$?([\d,]+\.?\d*)/);
+  const amount = amountMatch ? parseFloat(amountMatch[1].replace(/,/g, '')) : null;
+
+  // Determine rail from prompt
+  let rail = 'ACH';
+  if (/wire/i.test(prompt)) rail = 'WIRE';
+  else if (/rtp|real.?time/i.test(prompt)) rail = 'RTP';
+  else if (/check/i.test(prompt)) rail = 'CHECK';
+
+  // Find active account
+  const account = db.prepare("SELECT * FROM trust_accounts WHERE status = 'active' ORDER BY balance_cents DESC LIMIT 1").get();
+  if (!account) {
+    return { summary: 'No active trust account found to initiate payment from.', data: null };
+  }
+
+  if (!amount) {
+    return {
+      summary: `Ready to initiate ${rail} payment from ${account.account_name}.\n\n` +
+        `Please specify the amount (e.g., "send $5000 via ACH") and destination:\n` +
+        `• Routing number\n• Account number\n• Beneficiary name\n\n` +
+        `Or use the Fineract Banking UI to fill in all details.`,
+      data: { rail, from_account: account.account_name, balance: `$${(account.balance_cents / 100).toFixed(2)}` },
+    };
+  }
+
+  const amountCents = Math.round(amount * 100);
+  const payment = fineractEngine.initiatePayment(db, {
+    from_account_id: account.id,
+    amount_cents: amountCents,
+    rail,
+    to_routing_number: '021000021', // Placeholder — JP Morgan Chase
+    to_account_number: '000000000',
+    to_bank_name: 'External Bank',
+    to_beneficiary_name: 'External Recipient',
+    description: `AI Agent initiated ${rail} payment`,
+  });
+
+  return {
+    summary: `${rail} payment initiated: $${amount.toFixed(2)}\n\n` +
+      `• Payment #: ${payment.payment_number}\n` +
+      `• Status: ${payment.status}\n` +
+      `• Fee: $${(payment.fee_cents / 100).toFixed(2)}\n` +
+      `• Settlement: ${payment.estimated_settlement}\n` +
+      `• Approval: ${payment.approval_tier}`,
+    data: payment,
+  };
+}
+
+async function executeFineractSettle(db) {
+  const { fineractEngine } = require('./fineract-engine');
+  fineractEngine.initSchema(db);
+  const result = fineractEngine.processSettlements(db);
+  return {
+    summary: `Settlement processing complete.\n\n` +
+      `• Payments settled: ${result.processed}\n` +
+      `• Remaining in clearing: ${result.remaining_clearing}`,
+    data: result,
+  };
+}
+
+async function executeFineractBatch(db) {
+  const { fineractEngine } = require('./fineract-engine');
+  fineractEngine.initSchema(db);
+  const result = fineractEngine.createACHBatch(db);
+  if (!result.batch_id) {
+    return { summary: 'No pending ACH payments to batch.', data: result };
+  }
+  return {
+    summary: `ACH Batch created: ${result.batch_number}\n\n` +
+      `• Entries: ${result.entry_count}\n` +
+      `• Total Debit: $${(result.total_debit_cents / 100).toFixed(2)}\n` +
+      `• Effective Date: ${result.effective_date}`,
+    data: result,
+  };
+}
+
+async function executeFineractSync(db) {
+  const { fineractEngine } = require('./fineract-engine');
+  fineractEngine.initSchema(db);
+  const result = fineractEngine.syncTrustAccounts(db);
+  return {
+    summary: `Account sync complete.\n\n` +
+      `• Total trust accounts: ${result.total}\n` +
+      `• Newly synced to Fineract: ${result.synced}`,
+    data: result,
   };
 }
 

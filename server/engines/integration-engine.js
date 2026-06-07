@@ -60,6 +60,18 @@ const PIPELINES = {
     name: 'Document Generation',
     steps: ['validate_report_type', 'gather_data', 'render_document', 'store_in_dms'],
   },
+  FINERACT_PAYMENT: {
+    name: 'Fineract External Payment',
+    steps: ['validate_payment', 'initiate_fineract', 'post_gl_journal', 'emit_event'],
+  },
+  FINERACT_BATCH: {
+    name: 'Fineract ACH Batch',
+    steps: ['collect_pending', 'create_batch', 'submit_to_clearing'],
+  },
+  FINERACT_SETTLE: {
+    name: 'Fineract Settlement Processing',
+    steps: ['scan_clearing', 'settle_payments', 'post_gl_journals'],
+  },
 };
 
 // ─── Pipeline Execution Context ──────────────────────────────────────────────
@@ -642,6 +654,83 @@ class IntegrationEngine {
       console.warn('[Integration] GL journal post failed:', err.message);
       return { id: null, error: err.message };
     }
+  }
+
+  // ─── FINERACT_PAYMENT ──────────────────────────────────────────────────────
+
+  async _execute_FINERACT_PAYMENT(db, params) {
+    const { fineractEngine } = require('./fineract-engine');
+    fineractEngine.initSchema(db);
+
+    const results = { steps: [] };
+
+    // Validate
+    if (!params.from_account_id || !params.amount_cents || !params.rail) {
+      throw new Error('from_account_id, amount_cents, and rail required');
+    }
+    results.steps.push({ step: 'validate_payment', status: 'done' });
+
+    // Initiate via Fineract
+    const payment = fineractEngine.initiatePayment(db, params);
+    results.steps.push({ step: 'initiate_fineract', status: 'done', payment_id: payment.payment_id, payment_number: payment.payment_number, rail: payment.rail });
+
+    // Post GL journal
+    const journal = this._postGLJournal(db, {
+      description: `Fineract ${params.rail} payment: ${params.description || payment.payment_number}`,
+      reference_type: 'fineract_payment',
+      reference_id: String(payment.payment_id),
+      entries: [
+        { account_code: '2000', description: `${params.rail} Payable — ${params.to_beneficiary_name || 'External'}`, debit_cents: params.amount_cents, credit_cents: 0 },
+        { account_code: '1000', description: 'Cash — Operating', debit_cents: 0, credit_cents: params.amount_cents },
+        ...(payment.fee_cents > 0 ? [
+          { account_code: '5200', description: `${params.rail} Processing Fee`, debit_cents: payment.fee_cents, credit_cents: 0 },
+          { account_code: '1000', description: 'Cash — Operating (fee)', debit_cents: 0, credit_cents: payment.fee_cents },
+        ] : []),
+      ],
+    });
+    results.steps.push({ step: 'post_gl_journal', status: 'done', journal_id: journal.id });
+
+    bus.emit('integration.fineract.payment', { payment_id: payment.payment_id, rail: params.rail, amount_cents: params.amount_cents });
+    results.steps.push({ step: 'emit_event', status: 'done' });
+
+    results.payment = payment;
+    return results;
+  }
+
+  // ─── FINERACT_BATCH ───────────────────────────────────────────────────────
+
+  async _execute_FINERACT_BATCH(db, params) {
+    const { fineractEngine } = require('./fineract-engine');
+    fineractEngine.initSchema(db);
+
+    const results = { steps: [] };
+    const pending = db.prepare("SELECT COUNT(*) as cnt FROM fineract_payments WHERE rail = 'ACH' AND status = 'submitted' AND batch_id IS NULL").get();
+    results.steps.push({ step: 'collect_pending', status: 'done', pending_count: pending.cnt });
+
+    const batch = fineractEngine.createACHBatch(db, params);
+    results.steps.push({ step: 'create_batch', status: 'done', ...batch });
+
+    results.steps.push({ step: 'submit_to_clearing', status: 'done' });
+    results.batch = batch;
+    return results;
+  }
+
+  // ─── FINERACT_SETTLE ──────────────────────────────────────────────────────
+
+  async _execute_FINERACT_SETTLE(db, params) {
+    const { fineractEngine } = require('./fineract-engine');
+    fineractEngine.initSchema(db);
+
+    const results = { steps: [] };
+    const clearing = db.prepare("SELECT COUNT(*) as cnt FROM fineract_payments WHERE status = 'clearing'").get();
+    results.steps.push({ step: 'scan_clearing', status: 'done', in_clearing: clearing.cnt });
+
+    const settled = fineractEngine.processSettlements(db);
+    results.steps.push({ step: 'settle_payments', status: 'done', ...settled });
+
+    results.steps.push({ step: 'post_gl_journals', status: 'done' });
+    results.settlement = settled;
+    return results;
   }
 
   _calculatePaymentFee(amountCents, rail) {

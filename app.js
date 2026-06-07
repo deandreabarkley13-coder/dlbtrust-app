@@ -82,6 +82,9 @@ app.use('/api/document-generation', require('./server/routes/document-generation
 // ─── Integration API Routes (Cross-Engine Orchestration) ─────────────────────
 app.use('/api/integration', require('./server/routes/integration'));
 
+// ─── Fineract Banking Routes (Open-Source Core Banking) ──────────────────────
+app.use('/api/fineract', require('./server/routes/fineract'));
+
 // ─── Frontend Dashboard ───────────────────────────────────────────────────────
 app.use(express.static(path.join(__dirname, 'frontend')));
 app.get('/', (req, res) => res.sendFile(path.join(__dirname, 'frontend', 'index.html')));

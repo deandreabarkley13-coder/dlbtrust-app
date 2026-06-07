@@ -126,6 +126,7 @@ router.get('/status', (req, res) => {
       { name: 'AI Agent', table: 'agent_conversations', query: 'SELECT COUNT(*) as c FROM agent_conversations' },
       { name: 'Transfers', table: 'internal_transfers', query: 'SELECT COUNT(*) as c FROM internal_transfers' },
       { name: 'External Payments', table: 'external_transfers', query: 'SELECT COUNT(*) as c FROM external_transfers' },
+      { name: 'Fineract Banking', table: 'fineract_payments', query: 'SELECT COUNT(*) as c FROM fineract_payments' },
     ];
 
     for (const check of checks) {
