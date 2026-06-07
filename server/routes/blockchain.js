@@ -86,8 +86,17 @@ function initSchema(db) {
   ];
   for (const file of migrations) {
     const p = path.join(__dirname, '..', 'db', 'migrations', file);
-    if (fs.existsSync(p)) db.exec(fs.readFileSync(p, 'utf8'));
+    if (fs.existsSync(p)) {
+      try { db.exec(fs.readFileSync(p, 'utf8')); } catch (_) {}
+    }
   }
+  // Ensure columns added in later schema versions exist
+  const safeAlter = (sql) => { try { db.exec(sql); } catch (_) {} };
+  safeAlter("ALTER TABLE blockchain_wallets ADD COLUMN provider TEXT NOT NULL DEFAULT 'private'");
+  safeAlter("ALTER TABLE blockchain_wallets ADD COLUMN encrypted_private_key TEXT");
+  safeAlter("ALTER TABLE blockchain_wallets ADD COLUMN key_derivation_path TEXT");
+  safeAlter("ALTER TABLE blockchain_wallets ADD COLUMN usdc_balance TEXT NOT NULL DEFAULT '0.00'");
+  safeAlter("ALTER TABLE blockchain_wallets ADD COLUMN native_balance TEXT NOT NULL DEFAULT '0.00'");
   schemaInitialized = true;
 }
 

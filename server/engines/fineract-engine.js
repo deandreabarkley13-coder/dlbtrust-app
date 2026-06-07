@@ -323,51 +323,58 @@ class FineractEngine {
       throw new Error(`Amount exceeds ${rail} maximum of $${(railConfig.max_amount_cents / 100).toLocaleString()}`);
     }
 
-    // Verify source account
-    const account = db.prepare('SELECT * FROM trust_accounts WHERE id = ?').get(from_account_id);
-    if (!account) throw new Error('Source account not found');
-    if (account.status !== 'active') throw new Error(`Source account is ${account.status}`);
+    // Wrap in transaction to prevent TOCTOU race on balance check + debit
+    const txn = db.transaction(() => {
+      // Verify source account (inside transaction for atomicity)
+      const account = db.prepare('SELECT * FROM trust_accounts WHERE id = ?').get(from_account_id);
+      if (!account) throw new Error('Source account not found');
+      if (account.status !== 'active') throw new Error(`Source account is ${account.status}`);
 
-    const feeCents = railConfig.fee_cents;
-    const totalCents = amount_cents + feeCents;
+      const feeCents = railConfig.fee_cents;
+      const totalCents = amount_cents + feeCents;
 
-    if (totalCents > (account.available_cents || 0)) {
-      throw new Error(`Insufficient funds. Available: $${((account.available_cents || 0) / 100).toFixed(2)}, needed: $${(totalCents / 100).toFixed(2)}`);
-    }
+      if (totalCents > (account.available_cents || 0)) {
+        throw new Error(`Insufficient funds. Available: $${((account.available_cents || 0) / 100).toFixed(2)}, needed: $${(totalCents / 100).toFixed(2)}`);
+      }
 
-    // Determine approval tier
-    const approvalTier = amount_cents >= 5000000 ? 'dual' :
-                         amount_cents >= 1000000 ? 'single' : 'auto';
+      // Determine approval tier
+      const approvalTier = amount_cents >= 5000000 ? 'dual' :
+                           amount_cents >= 1000000 ? 'single' : 'auto';
 
-    const paymentNumber = `FIN-${rail.toUpperCase()}-${Date.now()}`;
-    const initialStatus = approvalTier === 'auto' ? PAYMENT_STATES.APPROVED : PAYMENT_STATES.PENDING_APPROVAL;
+      const paymentNumber = `FIN-${rail.toUpperCase()}-${Date.now()}`;
+      const initialStatus = approvalTier === 'auto' ? PAYMENT_STATES.APPROVED : PAYMENT_STATES.PENDING_APPROVAL;
 
-    // Calculate settlement date
-    const settlementDate = this._calculateSettlementDate(railConfig.settlement_days);
+      // Calculate settlement date
+      const settlementDate = this._calculateSettlementDate(railConfig.settlement_days);
 
-    const result = db.prepare(`
-      INSERT INTO fineract_payments
-        (payment_number, from_savings_id, from_trust_account_id, to_routing_number, to_account_number,
-         to_bank_name, to_beneficiary_name, to_beneficiary_address, amount_cents, fee_cents, total_cents,
-         currency, rail, status, approval_tier, settlement_date, memo, description, created_by)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'USD', ?, ?, ?, ?, ?, ?, ?)
-    `).run(
-      paymentNumber, null, from_account_id, to_routing_number || null, to_account_number || null,
-      to_bank_name || null, to_beneficiary_name || null, to_beneficiary_address || null,
-      amount_cents, feeCents, totalCents,
-      rail.toUpperCase(), initialStatus, approvalTier, settlementDate,
-      memo || null, description || null, created_by || 'system'
-    );
+      const result = db.prepare(`
+        INSERT INTO fineract_payments
+          (payment_number, from_savings_id, from_trust_account_id, to_routing_number, to_account_number,
+           to_bank_name, to_beneficiary_name, to_beneficiary_address, amount_cents, fee_cents, total_cents,
+           currency, rail, status, approval_tier, settlement_date, memo, description, created_by)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'USD', ?, ?, ?, ?, ?, ?, ?)
+      `).run(
+        paymentNumber, null, from_account_id, to_routing_number || null, to_account_number || null,
+        to_bank_name || null, to_beneficiary_name || null, to_beneficiary_address || null,
+        amount_cents, feeCents, totalCents,
+        rail.toUpperCase(), initialStatus, approvalTier, settlementDate,
+        memo || null, description || null, created_by || 'system'
+      );
 
-    const paymentId = result.lastInsertRowid;
+      const paymentId = result.lastInsertRowid;
 
-    // Log state transition
-    this._logSettlement(db, paymentId, 'none', initialStatus, 'payment_initiated', JSON.stringify({ rail, amount_cents, fee_cents: feeCents }));
+      // Log state transition
+      this._logSettlement(db, paymentId, 'none', initialStatus, 'payment_initiated', JSON.stringify({ rail, amount_cents, fee_cents: feeCents }));
 
-    // If auto-approved, immediately submit
-    if (approvalTier === 'auto') {
-      this._submitPayment(db, paymentId);
-    }
+      // If auto-approved, immediately submit (debit happens here atomically)
+      if (approvalTier === 'auto') {
+        this._submitPayment(db, paymentId);
+      }
+
+      return { paymentId, paymentNumber, feeCents, totalCents, initialStatus, approvalTier, settlementDate };
+    });
+
+    const { paymentId, paymentNumber, feeCents, totalCents, initialStatus, approvalTier, settlementDate } = txn();
 
     bus.emit('fineract.payment.initiated', { payment_id: paymentId, payment_number: paymentNumber, rail, amount_cents, status: initialStatus });
 
@@ -435,14 +442,14 @@ class FineractEngine {
       reference = this._generateWireIMAD();
       db.prepare('UPDATE fineract_payments SET wire_imad = ?, status = ?, submitted_at = datetime(\'now\'), updated_at = datetime(\'now\') WHERE id = ?')
         .run(reference, PAYMENT_STATES.SUBMITTED, paymentId);
-      // Wire settles same-day, move to clearing immediately
-      setTimeout(() => this._advanceToClearing(db, paymentId), 100);
+      // Wire settles same-day, advance synchronously
+      this._advanceToClearing(db, paymentId);
     } else if (rail === 'RTP') {
       reference = this._generateRTPMessageId();
       db.prepare('UPDATE fineract_payments SET rtp_message_id = ?, status = ?, submitted_at = datetime(\'now\'), updated_at = datetime(\'now\') WHERE id = ?')
         .run(reference, PAYMENT_STATES.SUBMITTED, paymentId);
-      // RTP settles instantly, move to settled
-      setTimeout(() => this._settlePayment(db, paymentId), 100);
+      // RTP settles instantly, settle synchronously
+      this._settlePayment(db, paymentId);
     } else if (rail === 'CHECK') {
       reference = `CHK-${String(Date.now()).slice(-8)}`;
       db.prepare('UPDATE fineract_payments SET reference_number = ?, status = ?, submitted_at = datetime(\'now\'), updated_at = datetime(\'now\') WHERE id = ?')
@@ -467,9 +474,9 @@ class FineractEngine {
         .run(PAYMENT_STATES.CLEARING, paymentId);
       this._logSettlement(db, paymentId, PAYMENT_STATES.SUBMITTED, PAYMENT_STATES.CLEARING, 'entered_clearing', null);
 
-      // Wire clears within seconds
+      // Wire clears immediately in our system
       if (payment.rail === 'WIRE') {
-        setTimeout(() => this._settlePayment(db, paymentId), 200);
+        this._settlePayment(db, paymentId);
       }
     } catch (_) {}
   }
