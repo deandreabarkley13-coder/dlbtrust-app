@@ -346,11 +346,11 @@ class IntegrationEngine {
     if (hasEncryptionKey && wallet.encrypted_private_key) {
       try {
         const { PolygonClient } = require('./blockchain-engine');
-        const configRow = db.prepare("SELECT value FROM blockchain_config WHERE key = 'default_blockchain'").get();
-        const blockchain = configRow ? configRow.value : 'MATIC';
+        const configRow = db.prepare("SELECT config_value FROM blockchain_config WHERE config_key = 'default_blockchain'").get();
+        const blockchain = configRow ? configRow.config_value : 'MATIC';
         const client = new PolygonClient(blockchain);
         const txResult = await client.sendUsdc(wallet.encrypted_private_key, process.env.WALLET_ENCRYPTION_KEY, to_address, amount_usd);
-        txHash = txResult.hash;
+        txHash = txResult.txHash;
         onChain = true;
 
         txId = db.prepare(`
@@ -408,11 +408,11 @@ class IntegrationEngine {
     if (hasEncryptionKey && wallet.encrypted_private_key) {
       try {
         const { PolygonClient } = require('./blockchain-engine');
-        const configRow = db.prepare("SELECT value FROM blockchain_config WHERE key = 'default_blockchain'").get();
-        const blockchain = configRow ? configRow.value : 'MATIC';
+        const configRow = db.prepare("SELECT config_value FROM blockchain_config WHERE config_key = 'default_blockchain'").get();
+        const blockchain = configRow ? configRow.config_value : 'MATIC';
         const client = new PolygonClient(blockchain);
         swapResult = await client.swapPolToUsdc(wallet.encrypted_private_key, process.env.WALLET_ENCRYPTION_KEY, amount_pol, slippage_bps || 100);
-        results.steps.push({ step: 'execute_swap', status: 'done', tx_hash: swapResult.hash, usdc_received: swapResult.amountOut });
+        results.steps.push({ step: 'execute_swap', status: 'done', tx_hash: swapResult.txHash, usdc_received: swapResult.usdcBalanceAfter });
       } catch (err) {
         results.steps.push({ step: 'execute_swap', status: 'failed', error: err.message });
         throw new Error(`Swap failed: ${err.message}`);
@@ -423,15 +423,17 @@ class IntegrationEngine {
     }
 
     if (swapResult) {
-      const newBalance = (parseFloat(wallet.usdc_balance || '0') + parseFloat(swapResult.amountOut || '0')).toFixed(6);
+      const preSwapBalance = parseFloat(wallet.usdc_balance || '0');
+      const newBalance = parseFloat(swapResult.usdcBalanceAfter || '0').toFixed(6);
+      const swapOutput = (parseFloat(newBalance) - preSwapBalance).toFixed(6);
       db.prepare("UPDATE blockchain_wallets SET usdc_balance = ?, updated_at = datetime('now') WHERE id = ?").run(newBalance, wallet_id);
       results.steps.push({ step: 'update_wallet_balance', status: 'done', new_balance: newBalance });
 
-      const amountCents = Math.round(parseFloat(swapResult.amountOut) * 100);
+      const amountCents = Math.round(parseFloat(swapOutput) * 100);
       const journal = this._postGLJournal(db, {
-        description: `DEX Swap: ${amount_pol} POL → ${swapResult.amountOut} USDC`,
+        description: `DEX Swap: ${amount_pol} POL → ${swapOutput} USDC`,
         reference_type: 'dex_swap',
-        reference_id: swapResult.hash || 'swap',
+        reference_id: swapResult.txHash || 'swap',
         entries: [
           { account_code: '1200', description: 'Digital Assets — USDC', debit_cents: amountCents, credit_cents: 0 },
           { account_code: '1210', description: 'Digital Assets — POL', debit_cents: 0, credit_cents: amountCents },
