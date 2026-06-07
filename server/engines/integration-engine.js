@@ -452,7 +452,7 @@ class IntegrationEngine {
     // Bank vs GL
     const bankAccounts = db.prepare("SELECT * FROM trust_accounts WHERE status = 'active'").all();
     let glEntries = [];
-    try { glEntries = db.prepare('SELECT * FROM gl_entries').all(); } catch (_) {}
+    try { glEntries = db.prepare('SELECT * FROM trust_journal_lines').all(); } catch (_) {}
 
     const bankTotal = bankAccounts.reduce((s, a) => s + (a.balance_cents || 0), 0);
     let glCash = 0;
@@ -574,29 +574,35 @@ class IntegrationEngine {
       const schemaPath = path.join(__dirname, '..', 'db', 'migrations', 'trust-accounting-schema.sql');
       if (fs.existsSync(schemaPath)) db.exec(fs.readFileSync(schemaPath, 'utf8'));
 
+      const entryNumber = `JE-${new Date().toISOString().slice(0,10).replace(/-/g,'')}-${Math.floor(1000 + Math.random() * 9000)}`;
+      const totalDebit = entries.reduce((s, e) => s + (e.debit_cents || 0), 0);
+      const totalCredit = entries.reduce((s, e) => s + (e.credit_cents || 0), 0);
+
       const result = db.prepare(`
-        INSERT INTO gl_journal_entries (entry_date, description, reference_type, reference_id, status, created_by, created_at)
-        VALUES (date('now'), ?, ?, ?, 'posted', 'integration_api', datetime('now'))
-      `).run(description, reference_type, reference_id);
+        INSERT INTO trust_journal_entries (entry_number, entry_date, description, reference_type, reference_id, source_engine, is_posted, total_debit_cents, total_credit_cents, created_by, created_at)
+        VALUES (?, date('now'), ?, ?, ?, 'integration_api', 1, ?, ?, 'integration_api', datetime('now'))
+      `).run(entryNumber, description, reference_type, reference_id, totalDebit, totalCredit);
 
       const journalId = result.lastInsertRowid;
 
+      let lineNum = 1;
       for (const entry of entries) {
-        const existing = db.prepare('SELECT id FROM gl_chart_of_accounts WHERE account_code = ?').get(entry.account_code);
-        if (!existing) {
-          db.prepare(`
-            INSERT OR IGNORE INTO gl_chart_of_accounts (account_code, account_name, account_type, normal_balance, is_active)
+        let acctRow = db.prepare('SELECT id FROM trust_chart_of_accounts WHERE account_code = ?').get(entry.account_code);
+        if (!acctRow) {
+          const ins = db.prepare(`
+            INSERT OR IGNORE INTO trust_chart_of_accounts (account_code, account_name, account_type, normal_balance, is_active)
             VALUES (?, ?, ?, ?, 1)
           `).run(entry.account_code, entry.description,
             entry.account_code.startsWith('1') ? 'asset' : entry.account_code.startsWith('2') ? 'liability' :
             entry.account_code.startsWith('4') ? 'revenue' : 'expense',
             entry.account_code.startsWith('1') || entry.account_code.startsWith('5') ? 'debit' : 'credit');
+          acctRow = { id: ins.lastInsertRowid };
         }
 
         db.prepare(`
-          INSERT INTO gl_entries (journal_entry_id, account_code, description, debit_cents, credit_cents, created_at)
-          VALUES (?, ?, ?, ?, ?, datetime('now'))
-        `).run(journalId, entry.account_code, entry.description, entry.debit_cents, entry.credit_cents);
+          INSERT INTO trust_journal_lines (journal_entry_id, line_number, account_id, account_code, description, debit_cents, credit_cents, created_at)
+          VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now'))
+        `).run(journalId, lineNum++, acctRow.id, entry.account_code, entry.description, entry.debit_cents, entry.credit_cents);
       }
 
       return { id: journalId };
