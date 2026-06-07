@@ -15,9 +15,19 @@ const path    = require('path');
 const app     = express();
 
 // ─── Middleware ───────────────────────────────────────────────────────────────
-app.use(express.json({ limit: '50mb' }));
-app.use(express.urlencoded({ extended: true, limit: '50mb' }));
+app.use(express.json({ limit: '10mb' }));
+app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 app.use(express.static(path.join(__dirname, 'public')));
+
+// Request timeout — prevent hung requests from freezing the server
+app.use((req, res, next) => {
+  res.setTimeout(30000, () => {
+    if (!res.headersSent) {
+      res.status(504).json({ error: 'Request timed out' });
+    }
+  });
+  next();
+});
 
 // ─── Database ─────────────────────────────────────────────────────────────────
 let db = null;

@@ -42,15 +42,24 @@ function showToast(message, type = 'success') {
 }
 
 async function api(path, options = {}) {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 15000);
   try {
     const res = await fetch(`${API}${path}`, {
       headers: { 'Content-Type': 'application/json', ...options.headers },
+      signal: controller.signal,
       ...options,
     });
+    clearTimeout(timeout);
     const data = await res.json();
     if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
     return data;
   } catch (err) {
+    clearTimeout(timeout);
+    if (err.name === 'AbortError') {
+      console.error(`API Timeout: ${path} (15s)`);
+      throw new Error('Request timed out — please try again');
+    }
     console.error(`API Error: ${path}`, err);
     throw err;
   }
@@ -71,21 +80,29 @@ $$('.nav-links a').forEach(link => {
 });
 
 function loadView(view) {
-  switch (view) {
-    case 'dashboard': loadDashboard(); break;
-    case 'accounts': loadAccounts(); break;
-    case 'transfers': loadTransfers(); break;
-    case 'contacts': loadContacts(); break;
-    case 'payments': loadPayments(); break;
-    case 'accounting': loadAccounting(); break;
-    case 'fixed-income': loadFixedIncome(); break;
-    case 'blockchain': loadBlockchain(); break;
-    case 'cash-management': loadCashManagement(); break;
-    case 'documents': loadDocuments(); break;
-    case 'ai-agent': loadAIAgent(); break;
-    case 'compliance': loadCompliance(); break;
-    case 'activity': loadActivity(); break;
+  const el = $(`#view-${view}`);
+  if (el) {
+    const loader = el.querySelector('.view-loader');
+    if (loader) loader.style.display = 'flex';
   }
+  const done = () => { if (el) { const l = el.querySelector('.view-loader'); if (l) l.style.display = 'none'; } };
+  let p;
+  switch (view) {
+    case 'dashboard': p = loadDashboard(); break;
+    case 'accounts': p = loadAccounts(); break;
+    case 'transfers': p = loadTransfers(); break;
+    case 'contacts': p = loadContacts(); break;
+    case 'payments': p = loadPayments(); break;
+    case 'accounting': p = loadAccounting(); break;
+    case 'fixed-income': p = loadFixedIncome(); break;
+    case 'blockchain': p = loadBlockchain(); break;
+    case 'cash-management': p = loadCashManagement(); break;
+    case 'documents': p = loadDocuments(); break;
+    case 'ai-agent': p = loadAIAgent(); break;
+    case 'compliance': p = loadCompliance(); break;
+    case 'activity': p = loadActivity(); break;
+  }
+  if (p && p.then) p.then(done).catch(done); else done();
 }
 
 // --- Dashboard ---
@@ -2792,6 +2809,17 @@ async function loadAgentTasks() {
 // --- Init ---
 
 document.addEventListener('DOMContentLoaded', () => {
+  // Inject loading indicators into each view
+  $$('.view').forEach(view => {
+    if (!view.querySelector('.view-loader')) {
+      const loader = document.createElement('div');
+      loader.className = 'view-loader';
+      loader.innerHTML = '<div class="spinner"></div> Loading\u2026';
+      loader.style.display = 'none';
+      view.appendChild(loader);
+    }
+  });
+
   loadDashboard();
 
   // Check API connectivity

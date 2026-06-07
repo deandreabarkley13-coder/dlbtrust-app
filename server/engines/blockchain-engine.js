@@ -628,7 +628,9 @@ class PolygonClient {
     this.blockchain = blockchain;
     const rpcUrl = customRpcUrl || RPC_ENDPOINTS[blockchain];
     if (!rpcUrl) throw new Error(`No RPC endpoint for blockchain: ${blockchain}`);
-    this.provider = new ethers.JsonRpcProvider(rpcUrl);
+    const fetchReq = new ethers.FetchRequest(rpcUrl);
+    fetchReq.timeout = 10000;
+    this.provider = new ethers.JsonRpcProvider(fetchReq);
     this.usdcAddress = USDC_CONTRACTS[blockchain] || null;
   }
 
