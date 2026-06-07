@@ -76,6 +76,9 @@ app.use('/api/documents', require('./server/routes/documents'));
 // ─── AI Agent Routes (Platform Assistant) ───────────────────────────────────
 app.use('/api/agent', require('./server/routes/ai-agent'));
 
+// ─── Document Generation Engine Routes (Automated Reports) ───────────────────
+app.use('/api/document-generation', require('./server/routes/document-generation'));
+
 // ─── Integration API Routes (Cross-Engine Orchestration) ─────────────────────
 app.use('/api/integration', require('./server/routes/integration'));
 

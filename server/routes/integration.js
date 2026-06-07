@@ -324,6 +324,23 @@ router.post('/daily-sweep', async (req, res) => {
   }
 });
 
+// --- POST /generate-document -- Generate a trust document -------------------
+router.post('/generate-document', async (req, res) => {
+  try {
+    const { report_type, params: report_params } = req.body;
+    if (!report_type) return res.status(400).json({ error: 'report_type is required' });
+
+    const result = await engine.executePipeline('GENERATE_DOCUMENT', req.db,
+      { report_type, report_params: report_params || {} },
+      { type: req.body.trigger_type || TRIGGER_TYPES.UI, source: 'api' }
+    );
+
+    res.json(result.toJSON());
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // --- GET /data-map -- Cross-engine data flow map ----------------------------
 router.get('/data-map', (req, res) => {
   try {
@@ -338,6 +355,7 @@ router.get('/data-map', (req, res) => {
         { id: 'agent', name: 'AI Agent', tables: ['agent_conversations', 'agent_task_history'] },
         { id: 'transfers', name: 'Transfers', tables: ['internal_transfers'] },
         { id: 'payments', name: 'External Payments', tables: ['external_transfers', 'external_transfer_approvals'] },
+        { id: 'doc_gen', name: 'Document Generation', tables: ['dms_documents'] },
       ],
       flows: [
         { from: 'fixed_income', to: 'banking', trigger: 'coupon_received', data: 'Coupon payment credits operating account' },
@@ -351,6 +369,8 @@ router.get('/data-map', (req, res) => {
         { from: 'cms', to: 'banking', trigger: 'sweep_rule', data: 'Auto-sweep excess cash between accounts' },
         { from: 'agent', to: '*', trigger: 'task_executed', data: 'AI Agent can query/trigger any engine' },
         { from: 'documents', to: 'accounting', trigger: 'doc_approved', data: 'Compliance attestation for audit trail' },
+        { from: 'doc_gen', to: 'documents', trigger: 'document_generated', data: 'Generated reports stored in DMS automatically' },
+        { from: 'doc_gen', to: '*', trigger: 'report_requested', data: 'Pulls live data from Banking, FI, Crypto, GL, CMS' },
       ],
       trigger_types: Object.values(TRIGGER_TYPES),
     };

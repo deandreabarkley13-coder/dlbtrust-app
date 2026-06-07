@@ -85,7 +85,7 @@ const INTENT_REGISTRY = [
     intent: 'list_bonds',
     patterns: [
       /list.*bond/i, /show.*bond/i, /fixed.*income/i,
-      /portfolio/i, /holdings/i, /private.*placement/i,
+      /list.*holdings/i, /show.*holdings/i, /private.*placement/i,
     ],
     description: 'List fixed income holdings',
     engine: 'fixed-income',
@@ -132,12 +132,100 @@ const INTENT_REGISTRY = [
     action: 'list',
   },
   {
+    intent: 'generate_statement',
+    patterns: [
+      /generate.*statement/i, /account.*statement/i, /create.*statement/i,
+      /produce.*statement/i, /print.*statement/i,
+    ],
+    description: 'Generate account statement document',
+    engine: 'document-generation',
+    action: 'generate',
+    report_type: 'ACCOUNT_STATEMENT',
+  },
+  {
+    intent: 'generate_portfolio_report',
+    patterns: [
+      /portfolio.*report/i, /generate.*portfolio/i, /asset.*report/i,
+      /holdings.*report/i, /investment.*report/i,
+    ],
+    description: 'Generate portfolio report across all asset classes',
+    engine: 'document-generation',
+    action: 'generate',
+    report_type: 'PORTFOLIO_REPORT',
+  },
+  {
+    intent: 'generate_tax_summary',
+    patterns: [
+      /tax.*summary/i, /tax.*report/i, /k-?1/i, /generate.*tax/i,
+      /annual.*tax/i, /tax.*document/i,
+    ],
+    description: 'Generate tax summary (K-1 worksheet)',
+    engine: 'document-generation',
+    action: 'generate',
+    report_type: 'TAX_SUMMARY',
+  },
+  {
+    intent: 'generate_trial_balance',
+    patterns: [
+      /trial.*balance/i, /generate.*trial/i, /tb.*report/i,
+      /chart.*of.*account.*report/i,
+    ],
+    description: 'Generate trial balance report',
+    engine: 'document-generation',
+    action: 'generate',
+    report_type: 'TRIAL_BALANCE',
+  },
+  {
+    intent: 'generate_compliance_cert',
+    patterns: [
+      /compliance.*cert/i, /generate.*cert/i, /attestation/i,
+      /compliance.*document/i, /regulatory.*cert/i,
+    ],
+    description: 'Generate compliance certificate',
+    engine: 'document-generation',
+    action: 'generate',
+    report_type: 'COMPLIANCE_CERTIFICATE',
+  },
+  {
+    intent: 'generate_recon_report',
+    patterns: [
+      /recon.*report/i, /reconciliation.*report/i, /generate.*recon/i,
+      /recon.*document/i,
+    ],
+    description: 'Generate reconciliation report',
+    engine: 'document-generation',
+    action: 'generate',
+    report_type: 'RECONCILIATION_REPORT',
+  },
+  {
+    intent: 'generate_coupon_schedule_report',
+    patterns: [
+      /coupon.*report/i, /coupon.*schedule.*report/i, /generate.*coupon.*doc/i,
+      /bond.*schedule.*report/i,
+    ],
+    description: 'Generate coupon schedule report',
+    engine: 'document-generation',
+    action: 'generate',
+    report_type: 'COUPON_SCHEDULE',
+  },
+  {
+    intent: 'generate_distribution_report',
+    patterns: [
+      /distribution.*report/i, /generate.*distribution/i, /payout.*report/i,
+      /beneficiary.*report/i,
+    ],
+    description: 'Generate distribution report',
+    engine: 'document-generation',
+    action: 'generate',
+    report_type: 'DISTRIBUTION_REPORT',
+  },
+  {
     intent: 'generate_report',
     patterns: [
-      /report/i, /summary/i, /overview/i, /status.*report/i,
-      /daily.*report/i, /trust.*report/i,
+      /status.*report/i, /daily.*report/i, /trust.*report/i,
+      /overview/i, /general.*report/i,
     ],
-    description: 'Generate a trust status report',
+    description: 'Generate a trust status report (text summary)',
     engine: 'agent',
     action: 'report',
   },
@@ -191,7 +279,7 @@ function parseIntent(prompt) {
   for (const entry of INTENT_REGISTRY) {
     for (const pattern of entry.patterns) {
       if (pattern.test(normalizedPrompt)) {
-        return {
+        const result = {
           intent: entry.intent,
           description: entry.description,
           engine: entry.engine,
@@ -199,6 +287,8 @@ function parseIntent(prompt) {
           confidence: 0.85,
           matched_pattern: pattern.toString(),
         };
+        if (entry.report_type) result.report_type = entry.report_type;
+        return result;
       }
     }
   }
@@ -281,6 +371,16 @@ async function executeTask(db, parsedIntent, prompt) {
         break;
       case 'help':
         result = executeHelp();
+        break;
+      case 'generate_statement':
+      case 'generate_portfolio_report':
+      case 'generate_tax_summary':
+      case 'generate_trial_balance':
+      case 'generate_compliance_cert':
+      case 'generate_recon_report':
+      case 'generate_coupon_schedule_report':
+      case 'generate_distribution_report':
+        result = await executeDocumentGeneration(db, parsedIntent);
         break;
       default:
         result = {
@@ -913,6 +1013,36 @@ function toggleScheduledTask(db, id, isActive) {
   db.prepare('UPDATE agent_scheduled_tasks SET is_active = ?, updated_at = datetime(\'now\') WHERE id = ?')
     .run(isActive ? 1 : 0, id);
   return { success: true };
+}
+
+// --- Document Generation Integration ----------------------------------------
+
+async function executeDocumentGeneration(db, parsedIntent) {
+  const { docGenEngine, REPORT_TYPES } = require('./document-generation-engine');
+  const reportType = parsedIntent.report_type;
+
+  if (!reportType || !REPORT_TYPES[reportType]) {
+    return { summary: `Unknown document type: ${reportType}`, data: null };
+  }
+
+  const template = REPORT_TYPES[reportType];
+  const result = await docGenEngine.generate(db, reportType, {});
+
+  return {
+    summary: `${template.name} generated successfully.\n\n` +
+      `• Document ID: ${result.document_id}\n` +
+      `• Stored in DMS as: ${template.category}\n` +
+      `• Duration: ${result.duration_ms}ms\n` +
+      `• Preview: /api/document-generation/preview/${result.document_id}`,
+    data: {
+      document_id: result.document_id,
+      report_type: reportType,
+      report_name: template.name,
+      category: template.category,
+      duration_ms: result.duration_ms,
+      preview_url: `/api/document-generation/preview/${result.document_id}`,
+    },
+  };
 }
 
 module.exports = {

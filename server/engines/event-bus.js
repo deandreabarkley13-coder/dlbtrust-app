@@ -112,6 +112,14 @@ const EVENTS = {
   RECON_COMPLETED:     'cms.reconciliation.completed',
   ALERT_CREATED:       'cms.alert.created',
   RULE_TRIGGERED:      'cms.rule.triggered',
+
+  // Document Management
+  DOCUMENT_UPLOADED:   'document.uploaded',
+  DOCUMENT_GENERATED:  'document.generated',
+
+  // Integration
+  PIPELINE_COMPLETED:  'integration.pipeline.completed',
+  PIPELINE_FAILED:     'integration.pipeline.failed',
 };
 
 module.exports = { bus, EVENTS, EventBus };

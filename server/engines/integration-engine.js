@@ -56,6 +56,10 @@ const PIPELINES = {
     name: 'Daily Cash Sweep',
     steps: ['check_sweep_rules', 'calculate_sweep_amounts', 'execute_sweeps', 'post_gl_journals'],
   },
+  GENERATE_DOCUMENT: {
+    name: 'Document Generation',
+    steps: ['validate_report_type', 'gather_data', 'render_document', 'store_in_dms'],
+  },
 };
 
 // ─── Pipeline Execution Context ──────────────────────────────────────────────
@@ -566,6 +570,32 @@ class IntegrationEngine {
     }
 
     results.steps.push({ step: 'execute_sweeps', status: 'done', count: results.sweeps.length });
+    return results;
+  }
+
+  // ─── GENERATE_DOCUMENT ───────────────────────────────────────────────────
+
+  async _execute_GENERATE_DOCUMENT(db, params) {
+    const { report_type, report_params } = params;
+    if (!report_type) throw new Error('report_type is required');
+
+    const { docGenEngine, REPORT_TYPES } = require('./document-generation-engine');
+    if (!REPORT_TYPES[report_type]) throw new Error(`Invalid report_type: ${report_type}`);
+
+    const results = { steps: [] };
+
+    results.steps.push({ step: 'validate_report_type', status: 'done', report_type });
+    results.steps.push({ step: 'gather_data', status: 'done', data_sources: REPORT_TYPES[report_type].data_sources });
+
+    const genResult = await docGenEngine.generate(db, report_type, report_params || {});
+    results.steps.push({ step: 'render_document', status: 'done', document_id: genResult.document_id });
+    results.steps.push({ step: 'store_in_dms', status: 'done', document_id: genResult.document_id });
+
+    results.document_id = genResult.document_id;
+    results.report_name = genResult.report_name;
+    results.duration_ms = genResult.duration_ms;
+
+    bus.emit('document.generated', { report_type, document_id: genResult.document_id });
     return results;
   }
 

@@ -82,6 +82,7 @@ function loadView(view) {
     case 'blockchain': loadBlockchain(); break;
     case 'cash-management': loadCashManagement(); break;
     case 'documents': loadDocuments(); break;
+    case 'reports': loadReports(); break;
     case 'ai-agent': loadAIAgent(); break;
     case 'integration': loadIntegration(); break;
     case 'compliance': loadCompliance(); break;
@@ -2514,6 +2515,146 @@ async function runDailySweep() {
     showToast(`Sweep ${result.status}: ${sweeps.length} sweep(s) executed`, 'success');
     loadIntegration();
   } catch (err) { showToast(err.message, 'error'); }
+}
+
+// --- Reports (Document Generation) ---
+
+let reportTypesCache = null;
+
+async function loadReports() {
+  try {
+    // Fetch report types
+    const typesData = await api('/document-generation/report-types');
+    reportTypesCache = typesData.report_types || [];
+
+    // Fetch generation log
+    const logData = await api('/document-generation/log');
+    const log = logData.log || [];
+
+    // Update metrics
+    $('#reports-generated-count').textContent = log.length;
+    $('#reports-template-count').textContent = reportTypesCache.length;
+    $('#reports-last-generated').textContent = log.length > 0
+      ? formatTime(log[0].started_at) : 'Never';
+
+    // Render template cards
+    const grid = $('#report-templates-grid');
+    grid.innerHTML = reportTypesCache.map(t => `
+      <div class="report-template-card" onclick="quickGenerate('${t.id}')">
+        <h4>${t.name}</h4>
+        <p>${t.description}</p>
+        <div class="template-meta">
+          <span class="badge badge-active">${t.category}</span>
+          <span class="data-sources">${(t.data_sources || []).join(', ')}</span>
+        </div>
+      </div>
+    `).join('');
+
+    // Render log
+    const tbody = $('#report-log-body');
+    if (log.length === 0) {
+      tbody.innerHTML = '<tr><td colspan="5" style="text-align:center;color:#999;">No reports generated yet. Click a template above or use "Generate Report" button.</td></tr>';
+    } else {
+      tbody.innerHTML = log.map(entry => `
+        <tr>
+          <td>${entry.report_type}</td>
+          <td>${badge(entry.status)}</td>
+          <td>${entry.document_id ? `<a href="/api/document-generation/preview/${entry.document_id}" target="_blank">#${entry.document_id}</a>` : '—'}</td>
+          <td>${entry.duration_ms ? entry.duration_ms + 'ms' : '—'}</td>
+          <td>${formatTime(entry.started_at)}</td>
+        </tr>
+      `).join('');
+    }
+  } catch (err) {
+    showToast('Failed to load reports: ' + err.message, 'error');
+  }
+}
+
+function openGenerateModal() {
+  const select = $('#gen-report-type');
+  select.innerHTML = '<option value="">— Select Report Type —</option>';
+  if (reportTypesCache) {
+    reportTypesCache.forEach(t => {
+      select.innerHTML += `<option value="${t.id}">${t.name}</option>`;
+    });
+  }
+  $('#gen-report-desc-wrap').style.display = 'none';
+  $('#gen-report-sources-wrap').style.display = 'none';
+  $('#gen-report-result').style.display = 'none';
+  $('#gen-report-btn').disabled = false;
+  $('#gen-report-btn').textContent = 'Generate';
+  $('#generate-report-modal').style.display = 'flex';
+}
+
+function closeGenerateModal() {
+  $('#generate-report-modal').style.display = 'none';
+}
+
+function updateReportDescription() {
+  const selected = $('#gen-report-type').value;
+  if (!selected || !reportTypesCache) {
+    $('#gen-report-desc-wrap').style.display = 'none';
+    $('#gen-report-sources-wrap').style.display = 'none';
+    return;
+  }
+  const template = reportTypesCache.find(t => t.id === selected);
+  if (template) {
+    $('#gen-report-desc').textContent = template.description;
+    $('#gen-report-desc-wrap').style.display = 'block';
+    $('#gen-report-sources').textContent = (template.data_sources || []).join(', ');
+    $('#gen-report-sources-wrap').style.display = 'block';
+  }
+}
+
+async function executeGenerateReport() {
+  const reportType = $('#gen-report-type').value;
+  if (!reportType) { showToast('Please select a report type', 'error'); return; }
+
+  const btn = $('#gen-report-btn');
+  btn.disabled = true;
+  btn.textContent = 'Generating...';
+  $('#gen-report-result').style.display = 'none';
+
+  try {
+    const result = await api('/document-generation/generate', {
+      method: 'POST',
+      body: JSON.stringify({ report_type: reportType, params: {} }),
+    });
+
+    btn.textContent = 'Done!';
+    const resultDiv = $('#gen-report-result');
+    resultDiv.style.display = 'block';
+    resultDiv.innerHTML = `
+      <div class="alert alert-success">
+        <strong>${result.report_name}</strong> generated successfully!<br>
+        Document ID: #${result.document_id} | Duration: ${result.duration_ms}ms<br>
+        <a href="/api/document-generation/preview/${result.document_id}" target="_blank" class="btn btn-sm btn-primary" style="margin-top:8px;">Preview Document</a>
+      </div>
+    `;
+
+    showToast(`${result.report_name} generated (ID: ${result.document_id})`, 'success');
+    loadReports();
+  } catch (err) {
+    btn.textContent = 'Generate';
+    btn.disabled = false;
+    showToast('Generation failed: ' + err.message, 'error');
+  }
+}
+
+async function quickGenerate(reportType) {
+  showToast('Generating report...', 'info');
+  try {
+    const result = await api('/document-generation/generate', {
+      method: 'POST',
+      body: JSON.stringify({ report_type: reportType, params: {} }),
+    });
+    showToast(`${result.report_name} generated — Document #${result.document_id}`, 'success');
+    loadReports();
+    // Open preview in new tab
+    window.open(`/api/document-generation/preview/${result.document_id}`, '_blank');
+  } catch (err) {
+    showToast('Generation failed: ' + err.message, 'error');
+  }
 }
 
 // --- Init ---

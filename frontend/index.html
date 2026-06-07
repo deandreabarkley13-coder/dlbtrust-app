@@ -23,6 +23,7 @@
       <li><a href="#" data-view="blockchain">Crypto Rails</a></li>
       <li><a href="#" data-view="cash-management">Cash Management</a></li>
       <li><a href="#" data-view="documents">Documents</a></li>
+      <li><a href="#" data-view="reports">Reports</a></li>
       <li><a href="#" data-view="ai-agent">AI Agent</a></li>
       <li><a href="#" data-view="integration">Integration</a></li>
       <li><a href="#" data-view="compliance">Compliance</a></li>
@@ -1061,6 +1062,67 @@
               <button type="submit" class="btn btn-primary">Upload</button>
             </div>
           </form>
+        </div>
+      </div>
+    </section>
+
+    <!-- Reports (Document Generation) View -->
+    <section id="view-reports" class="view">
+      <div class="view-loader" style="display:none"><div class="spinner"></div></div>
+      <header class="view-header">
+        <h2>Report Generation</h2>
+        <div class="header-actions">
+          <button class="btn btn-primary" onclick="openGenerateModal()">Generate Report</button>
+        </div>
+      </header>
+
+      <div class="metrics-grid" id="report-metrics">
+        <div class="metric-card primary"><span class="metric-label">Reports Generated</span><span class="metric-value" id="reports-generated-count">—</span></div>
+        <div class="metric-card"><span class="metric-label">Available Templates</span><span class="metric-value" id="reports-template-count">—</span></div>
+        <div class="metric-card"><span class="metric-label">Last Generated</span><span class="metric-value" id="reports-last-generated">—</span></div>
+      </div>
+
+      <div class="section">
+        <h3>Report Templates</h3>
+        <p class="section-desc">Select a template to generate a trust document. Reports pull live data from all engines and are stored in the Document Management System.</p>
+        <div class="report-templates-grid" id="report-templates-grid"></div>
+      </div>
+
+      <div class="section">
+        <h3>Generation History</h3>
+        <div class="table-scroll">
+          <table id="report-log-table">
+            <thead><tr><th>Report</th><th>Status</th><th>Document ID</th><th>Duration</th><th>Generated</th></tr></thead>
+            <tbody id="report-log-body"></tbody>
+          </table>
+        </div>
+      </div>
+
+      <!-- Generate Report Modal -->
+      <div class="modal-overlay" id="generate-report-modal" style="display:none">
+        <div class="modal">
+          <div class="modal-header"><h3>Generate Report</h3><button class="modal-close" onclick="closeGenerateModal()">&times;</button></div>
+          <div class="modal-body">
+            <div class="form-group">
+              <label>Report Type</label>
+              <select id="gen-report-type" onchange="updateReportDescription()">
+                <option value="">— Select Report Type —</option>
+              </select>
+            </div>
+            <div class="form-group" id="gen-report-desc-wrap" style="display:none">
+              <label>Description</label>
+              <p id="gen-report-desc" class="form-help"></p>
+            </div>
+            <div class="form-group" id="gen-report-sources-wrap" style="display:none">
+              <label>Data Sources</label>
+              <p id="gen-report-sources" class="form-help"></p>
+            </div>
+            <div id="gen-report-result" style="display:none"></div>
+          </div>
+          <div class="modal-footer">
+            <button class="btn btn-secondary" onclick="closeGenerateModal()">Cancel</button>
+            <button class="btn btn-primary" id="gen-report-btn" onclick="executeGenerateReport()">Generate</button>
+          </div>
         </div>
       </div>
     </section>
