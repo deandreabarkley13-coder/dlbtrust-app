@@ -14,10 +14,14 @@ const fs = require('fs');
 
 // --- Database & Schema Setup ------------------------------------------------
 
-function getDb(req) {
-  return req.app.locals && req.app.locals.db ? req.app.locals.db : require('better-sqlite3')(
+function getDb(req, res) {
+  if (req.app.locals && req.app.locals.db) return req.app.locals.db;
+  const db = require('better-sqlite3')(
     process.env.DB_PATH || path.join(__dirname, '..', '..', 'data', 'dlbtrust.db')
   );
+  // Close fresh connections when the response finishes
+  if (res) res.on('finish', () => { try { db.close(); } catch (_) { /* */ } });
+  return db;
 }
 
 function ensureSchema(db) {
@@ -28,8 +32,8 @@ function ensureSchema(db) {
 
 let schemaInitialized = false;
 
-function initDb(req) {
-  const db = getDb(req);
+function initDb(req, res) {
+  const db = getDb(req, res);
   if (!schemaInitialized) {
     ensureSchema(db);
     schemaInitialized = true;
@@ -46,7 +50,7 @@ const agentEngine = require('../engines/ai-agent-engine');
 // POST /api/agent/chat — main chat endpoint (send a prompt, get a response)
 router.post('/chat', async (req, res) => {
   try {
-    const db = initDb(req);
+    const db = initDb(req, res);
     const { prompt } = req.body;
 
     if (!prompt || !prompt.trim()) {
@@ -82,7 +86,7 @@ router.post('/chat', async (req, res) => {
 // GET /api/agent/conversation — get conversation history
 router.get('/conversation', (req, res) => {
   try {
-    const db = initDb(req);
+    const db = initDb(req, res);
     const limit = req.query.limit ? Number(req.query.limit) : 50;
     const history = agentEngine.getConversationHistory(db, limit);
     res.json({ messages: history });
@@ -94,7 +98,7 @@ router.get('/conversation', (req, res) => {
 // GET /api/agent/tasks — get task execution history
 router.get('/tasks', (req, res) => {
   try {
-    const db = initDb(req);
+    const db = initDb(req, res);
     const limit = req.query.limit ? Number(req.query.limit) : 20;
     const tasks = agentEngine.getTaskHistory(db, limit);
     res.json({ tasks });
@@ -117,7 +121,7 @@ router.get('/capabilities', (req, res) => {
 // GET /api/agent/scheduled — list scheduled tasks
 router.get('/scheduled', (req, res) => {
   try {
-    const db = initDb(req);
+    const db = initDb(req, res);
     const tasks = agentEngine.listScheduledTasks(db);
     res.json({ tasks });
   } catch (err) {
@@ -128,7 +132,7 @@ router.get('/scheduled', (req, res) => {
 // POST /api/agent/scheduled — create a scheduled task
 router.post('/scheduled', (req, res) => {
   try {
-    const db = initDb(req);
+    const db = initDb(req, res);
     const { name, task_type, schedule_cron, parameters } = req.body;
 
     if (!name || !task_type || !schedule_cron) {
@@ -145,7 +149,7 @@ router.post('/scheduled', (req, res) => {
 // PATCH /api/agent/scheduled/:id — toggle scheduled task
 router.patch('/scheduled/:id', (req, res) => {
   try {
-    const db = initDb(req);
+    const db = initDb(req, res);
     const { is_active } = req.body;
     agentEngine.toggleScheduledTask(db, Number(req.params.id), is_active);
     res.json({ success: true });

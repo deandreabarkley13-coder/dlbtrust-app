@@ -14,10 +14,13 @@ const fs = require('fs');
 
 // --- Database & Schema Setup ------------------------------------------------
 
-function getDb(req) {
-  return req.app.locals && req.app.locals.db ? req.app.locals.db : require('better-sqlite3')(
+function getDb(req, res) {
+  if (req.app.locals && req.app.locals.db) return req.app.locals.db;
+  const db = require('better-sqlite3')(
     process.env.DB_PATH || path.join(__dirname, '..', '..', 'data', 'dlbtrust.db')
   );
+  if (res) res.on('finish', () => { try { db.close(); } catch (_) { /* */ } });
+  return db;
 }
 
 function ensureSchema(db) {
@@ -28,8 +31,8 @@ function ensureSchema(db) {
 
 let schemaInitialized = false;
 
-function initDb(req) {
-  const db = getDb(req);
+function initDb(req, res) {
+  const db = getDb(req, res);
   if (!schemaInitialized) {
     ensureSchema(db);
     schemaInitialized = true;
@@ -46,7 +49,7 @@ const dmsEngine = require('../engines/document-management-engine');
 // GET /api/documents — list/search documents
 router.get('/', (req, res) => {
   try {
-    const db = initDb(req);
+    const db = initDb(req, res);
     const filters = {
       category: req.query.category || null,
       status: req.query.status || null,
@@ -65,7 +68,7 @@ router.get('/', (req, res) => {
 // GET /api/documents/stats — dashboard statistics
 router.get('/stats', (req, res) => {
   try {
-    const db = initDb(req);
+    const db = initDb(req, res);
     const stats = dmsEngine.getDocumentStats(db);
     res.json(stats);
   } catch (err) {
@@ -76,7 +79,7 @@ router.get('/stats', (req, res) => {
 // GET /api/documents/search?q=... — full-text search
 router.get('/search', (req, res) => {
   try {
-    const db = initDb(req);
+    const db = initDb(req, res);
     const query = req.query.q || '';
     if (!query) return res.json({ documents: [], count: 0 });
     const docs = dmsEngine.searchDocuments(db, query);
@@ -89,7 +92,7 @@ router.get('/search', (req, res) => {
 // GET /api/documents/templates — list templates
 router.get('/templates', (req, res) => {
   try {
-    const db = initDb(req);
+    const db = initDb(req, res);
     const templates = dmsEngine.listTemplates(db);
     res.json({ templates });
   } catch (err) {
@@ -100,7 +103,7 @@ router.get('/templates', (req, res) => {
 // POST /api/documents/templates — create template
 router.post('/templates', (req, res) => {
   try {
-    const db = initDb(req);
+    const db = initDb(req, res);
     const result = dmsEngine.createTemplate(db, req.body);
     res.json(result);
   } catch (err) {
@@ -111,7 +114,7 @@ router.post('/templates', (req, res) => {
 // GET /api/documents/retention-check — check retention policies
 router.get('/retention-check', (req, res) => {
   try {
-    const db = initDb(req);
+    const db = initDb(req, res);
     const alerts = dmsEngine.checkRetentionPolicies(db);
     res.json({ alerts, count: alerts.length });
   } catch (err) {
@@ -127,7 +130,7 @@ router.get('/categories', (req, res) => {
 // POST /api/documents — upload new document
 router.post('/', (req, res) => {
   try {
-    const db = initDb(req);
+    const db = initDb(req, res);
     const { title, description, category, sub_category, file_name, file_type,
             file_content, tags, related_entity_type, related_entity_id,
             requires_signature, effective_date, expiration_date, status } = req.body;
@@ -177,7 +180,7 @@ router.post('/', (req, res) => {
 // GET /api/documents/:id — get document metadata
 router.get('/:id', (req, res) => {
   try {
-    const db = initDb(req);
+    const db = initDb(req, res);
     const doc = dmsEngine.getDocumentWithoutContent(db, Number(req.params.id));
     if (!doc) return res.status(404).json({ error: 'Document not found' });
 
@@ -191,7 +194,7 @@ router.get('/:id', (req, res) => {
 // GET /api/documents/:id/download — download document file
 router.get('/:id/download', (req, res) => {
   try {
-    const db = initDb(req);
+    const db = initDb(req, res);
     const doc = dmsEngine.getDocument(db, Number(req.params.id));
     if (!doc) return res.status(404).json({ error: 'Document not found' });
 
@@ -212,7 +215,7 @@ router.get('/:id/download', (req, res) => {
 // GET /api/documents/:id/versions — version history
 router.get('/:id/versions', (req, res) => {
   try {
-    const db = initDb(req);
+    const db = initDb(req, res);
     const versions = dmsEngine.getVersionHistory(db, Number(req.params.id));
     res.json({ versions });
   } catch (err) {
@@ -223,7 +226,7 @@ router.get('/:id/versions', (req, res) => {
 // POST /api/documents/:id/version — upload new version
 router.post('/:id/version', (req, res) => {
   try {
-    const db = initDb(req);
+    const db = initDb(req, res);
     const { file_name, file_content, title, description, tags } = req.body;
 
     if (!file_name) {
@@ -259,7 +262,7 @@ router.post('/:id/version', (req, res) => {
 // PATCH /api/documents/:id/status — update document status
 router.patch('/:id/status', (req, res) => {
   try {
-    const db = initDb(req);
+    const db = initDb(req, res);
     const { status } = req.body;
     if (!status) return res.status(400).json({ error: 'status is required' });
 
@@ -275,7 +278,7 @@ router.patch('/:id/status', (req, res) => {
 // POST /api/documents/:id/sign — sign a document
 router.post('/:id/sign', (req, res) => {
   try {
-    const db = initDb(req);
+    const db = initDb(req, res);
     const { signed_by } = req.body;
     if (!signed_by) return res.status(400).json({ error: 'signed_by is required' });
 
@@ -291,7 +294,7 @@ router.post('/:id/sign', (req, res) => {
 // GET /api/documents/:id/access-log — document access history
 router.get('/:id/access-log', (req, res) => {
   try {
-    const db = initDb(req);
+    const db = initDb(req, res);
     const log = dmsEngine.getAccessLog(db, Number(req.params.id));
     res.json({ log });
   } catch (err) {
@@ -302,7 +305,7 @@ router.get('/:id/access-log', (req, res) => {
 // DELETE /api/documents/:id — archive a document
 router.delete('/:id', (req, res) => {
   try {
-    const db = initDb(req);
+    const db = initDb(req, res);
     dmsEngine.updateDocumentStatus(db, Number(req.params.id), 'archived', 'user');
     dmsEngine.logAccess(db, Number(req.params.id), 'archive', 'user');
     res.json({ success: true, message: 'Document archived' });

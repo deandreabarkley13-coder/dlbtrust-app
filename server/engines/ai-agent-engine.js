@@ -640,15 +640,15 @@ async function executeGenerateReport(db) {
   // Fixed Income
   try {
     const bonds = db.prepare("SELECT * FROM fixed_income_holdings WHERE status = 'active'").all();
-    const totalPar = bonds.reduce((sum, b) => sum + Number(b.par_value || 0), 0);
-    sections.push(`FIXED INCOME: ${bonds.length} active bond(s) | Total Par: $${totalPar.toLocaleString()}`);
+    const totalPar = bonds.reduce((sum, b) => sum + (b.par_value_cents || 0), 0);
+    sections.push(`FIXED INCOME: ${bonds.length} active bond(s) | Total Par: $${(totalPar / 100).toLocaleString()}`);
   } catch (e) { sections.push('FIXED INCOME: No data'); }
 
   // Crypto
   try {
     const wallets = db.prepare('SELECT * FROM blockchain_wallets').all();
-    const totalUSDC = wallets.reduce((sum, w) => sum + (w.usdc_balance_cents || 0), 0);
-    sections.push(`CRYPTO: ${wallets.length} wallet(s) | USDC Balance: $${(totalUSDC / 100).toFixed(2)}`);
+    const totalUSDC = wallets.reduce((sum, w) => sum + parseFloat(w.usdc_balance || '0'), 0);
+    sections.push(`CRYPTO: ${wallets.length} wallet(s) | USDC Balance: $${totalUSDC.toFixed(2)}`);
   } catch (e) { sections.push('CRYPTO: No data'); }
 
   // Documents
