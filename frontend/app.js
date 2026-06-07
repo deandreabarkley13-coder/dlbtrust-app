@@ -2739,7 +2739,8 @@ async function loadFineract() {
 function showFineractPaymentModal() {
   document.getElementById('fineract-payment-modal').style.display = 'flex';
   // Load accounts into dropdown
-  api('/accounts').then(accounts => {
+  api('/accounts').then(data => {
+    const accounts = Array.isArray(data) ? data : (data.accounts || []);
     const sel = document.getElementById('fin-from-account');
     sel.innerHTML = accounts.filter(a => a.status === 'active').map(a =>
       `<option value="${a.id}">${a.account_name} ($${(a.balance_cents / 100).toLocaleString()})</option>`
