@@ -30,6 +30,79 @@ const {
   getSigner, CDKConfigManager, ContractManager, TokenOperationsManager, LiquidityPoolManager, USDC_POLYGON,
 } = require('../engines/cdk-engine');
 const { ethers } = require('ethers');
+const { generateEntryNumber } = require('../engines/trust-accounting-engine');
+
+// ─── Cross-Engine Sync: posts journal entries, activity, CMS events ───────────
+
+function postCouponToAllEngines(db, coupon, txHash) {
+  const amountCents = coupon.amount_cents;
+  const securityName = coupon.security_name || 'DLBT-REGISTERED BOND';
+  const paymentDate = coupon.payment_date;
+
+  // 1. Trust Accounting — GL Journal Entry
+  //    Debit 1000 (Cash/Bank) | Credit 4000 (Interest Income)
+  try {
+    const entryNumber = generateEntryNumber();
+    const entryResult = db.prepare(`
+      INSERT INTO trust_journal_entries
+        (entry_number, entry_date, entry_type, description, source_engine, is_posted,
+         total_debit_cents, total_credit_cents, created_by, reference_type, reference_id)
+      VALUES (?, ?, 'standard', ?, 'fixed_income', 1, ?, ?, 'system', 'coupon', ?)
+    `).run(
+      entryNumber, paymentDate,
+      `Bond coupon received: ${securityName} — $${(amountCents / 100).toLocaleString()}`,
+      amountCents, amountCents, String(coupon.id)
+    );
+    const entryId = entryResult.lastInsertRowid;
+
+    // Line 1: Debit Cash (1000)
+    db.prepare(`
+      INSERT INTO trust_journal_lines (journal_entry_id, line_number, account_id, account_code, debit_cents, credit_cents, description)
+      VALUES (?, 1, (SELECT id FROM trust_chart_of_accounts WHERE account_code = '1000'), '1000', ?, 0, ?)
+    `).run(entryId, amountCents, `Coupon received: ${securityName}`);
+
+    // Line 2: Credit Interest Income (4000)
+    db.prepare(`
+      INSERT INTO trust_journal_lines (journal_entry_id, line_number, account_id, account_code, debit_cents, credit_cents, description)
+      VALUES (?, 2, (SELECT id FROM trust_chart_of_accounts WHERE account_code = '4000'), '4000', 0, ?, ?)
+    `).run(entryId, amountCents, `Interest income: ${securityName}`);
+  } catch (e) {
+    console.warn('[cross-engine] GL journal posting failed:', e.message);
+  }
+
+  // 2. CMS Event Log — record the cashflow event
+  try {
+    db.prepare(`
+      INSERT INTO cms_event_log (event_name, source_engine, event_data)
+      VALUES ('coupon_received', 'fixed_income', ?)
+    `).run(JSON.stringify({
+      coupon_id: coupon.id,
+      holding_id: coupon.holding_id,
+      amount_cents: amountCents,
+      security_name: securityName,
+      payment_date: paymentDate,
+      tx_hash: txHash || null,
+    }));
+  } catch (e) {
+    console.warn('[cross-engine] CMS event log failed:', e.message);
+  }
+
+  // 3. Banking Audit Log — record the income event
+  try {
+    db.prepare(`
+      INSERT INTO banking_audit_log (event_type, entity_type, entity_id, actor, action, details, created_at)
+      VALUES ('coupon_received', 'fixed_income', ?, 'system', 'receive_coupon', ?, datetime('now'))
+    `).run(String(coupon.id), JSON.stringify({
+      security_name: securityName,
+      amount_usd: (amountCents / 100).toFixed(2),
+      payment_date: paymentDate,
+      tx_hash: txHash || null,
+      on_chain: !!txHash,
+    }));
+  } catch (e) {
+    console.warn('[cross-engine] Banking audit log failed:', e.message);
+  }
+}
 
 // ─── Database Setup ───────────────────────────────────────────────────────────
 
@@ -480,7 +553,26 @@ router.post('/coupons/sync-totals', (req, res) => {
         updated++;
       }
     }
-    res.json({ success: true, bonds_updated: updated, totals: received });
+
+    // Also post GL entries for received coupons that don't have them yet
+    const receivedCoupons = db.prepare(`
+      SELECT cp.*, fih.security_name
+      FROM coupon_payments cp
+      JOIN fixed_income_holdings fih ON cp.holding_id = fih.id
+      WHERE cp.status = 'received'
+    `).all();
+
+    let journalsPosted = 0;
+    for (const coupon of receivedCoupons) {
+      // Check if GL entry already exists for this coupon
+      const existing = db.prepare("SELECT id FROM trust_journal_entries WHERE reference_type = 'coupon' AND reference_id = ?").get(String(coupon.id));
+      if (!existing) {
+        postCouponToAllEngines(db, coupon, null);
+        journalsPosted++;
+      }
+    }
+
+    res.json({ success: true, bonds_updated: updated, journals_posted: journalsPosted, totals: received });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -587,6 +679,9 @@ router.post('/coupons/:id/receive', async (req, res) => {
       console.warn('[fixed-income] Auto-tokenization skipped:', err.message);
     }
 
+    // Cross-engine sync: GL journal, CMS event, activity log
+    postCouponToAllEngines(db, coupon, mintResult ? mintResult.txHash : null);
+
     res.json({
       success: true,
       message: `Coupon ${req.params.id} received and processed`,
@@ -691,6 +786,9 @@ router.post('/coupons/process-all', async (req, res) => {
           console.warn(`[fixed-income] Mint failed for coupon ${coupon.id}:`, mintErr.message);
         }
       }
+
+      // Cross-engine sync: GL journal, CMS event, activity log
+      postCouponToAllEngines(db, coupon, mintResult ? mintResult.txHash : null);
 
       results.push({
         coupon_id: coupon.id,
