@@ -1,0 +1,1524 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>DLB Trust — Private Wealth Management</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <nav class="sidebar">
+    <div class="logo">
+      <h1>DLB Trust</h1>
+      <span class="subtitle">Private Wealth Management</span>
+    </div>
+    <ul class="nav-links">
+      <li><a href="#" data-view="dashboard" class="active">Dashboard</a></li>
+      <li><a href="#" data-view="accounts">Accounts</a></li>
+      <li><a href="#" data-view="transfers">Transfers</a></li>
+      <li><a href="#" data-view="contacts">Contacts</a></li>
+      <li><a href="#" data-view="payments">Payments</a></li>
+      <li><a href="#" data-view="accounting">Trust Accounting</a></li>
+      <li><a href="#" data-view="fixed-income">Fixed Income</a></li>
+      <li><a href="#" data-view="blockchain">Crypto Rails</a></li>
+      <li><a href="#" data-view="cash-management">Cash Management</a></li>
+      <li><a href="#" data-view="documents">Documents</a></li>
+      <li><a href="#" data-view="reports">Reports</a></li>
+      <li><a href="#" data-view="ai-agent">AI Agent</a></li>
+      <li><a href="#" data-view="integration">Integration</a></li>
+      <li><a href="#" data-view="fineract">Fineract Banking</a></li>
+      <li><a href="#" data-view="compliance">Compliance</a></li>
+      <li><a href="#" data-view="activity">Activity</a></li>
+    </ul>
+    <div class="nav-footer">
+      <div class="status-indicator">
+        <span class="dot"></span> <span id="api-status">Connected</span>
+      </div>
+    </div>
+  </nav>
+
+  <main class="content">
+    <!-- Dashboard View -->
+    <section id="view-dashboard" class="view active">
+      <header class="view-header">
+        <h2>Wealth Dashboard</h2>
+        <span class="timestamp" id="dashboard-time"></span>
+      </header>
+
+      <div class="metrics-grid">
+        <div class="metric-card primary">
+          <span class="metric-label">Total Net Worth</span>
+          <span class="metric-value" id="net-worth">—</span>
+        </div>
+        <div class="metric-card">
+          <span class="metric-label">Active Accounts</span>
+          <span class="metric-value" id="active-accounts">—</span>
+        </div>
+        <div class="metric-card">
+          <span class="metric-label">Pending Transfers</span>
+          <span class="metric-value" id="pending-transfers">—</span>
+        </div>
+        <div class="metric-card warn">
+          <span class="metric-label">Compliance Issues</span>
+          <span class="metric-value" id="compliance-issues">—</span>
+        </div>
+      </div>
+
+      <div class="panels-row">
+        <div class="panel">
+          <h3>Account Balances</h3>
+          <div id="account-balances-chart" class="chart-area"></div>
+        </div>
+        <div class="panel">
+          <h3>Recent Activity</h3>
+          <div id="recent-activity" class="activity-list"></div>
+        </div>
+      </div>
+
+      <div class="panel">
+        <h3>Trial Balance</h3>
+        <div id="trial-balance-summary" class="trial-balance"></div>
+      </div>
+    </section>
+
+    <!-- Accounts View -->
+    <section id="view-accounts" class="view">
+      <header class="view-header">
+        <h2>Trust Accounts</h2>
+        <button class="btn btn-primary" onclick="showCreateAccount()">+ New Account</button>
+      </header>
+      <div id="accounts-table" class="table-container"></div>
+
+      <!-- Create Account Modal -->
+      <div id="create-account-modal" class="modal hidden">
+        <div class="modal-content">
+          <h3>Open New Account</h3>
+          <form id="create-account-form" onsubmit="createAccount(event)">
+            <label>Account Name<input type="text" name="account_name" required></label>
+            <label>Account Type
+              <select name="account_type">
+                <option value="corpus">Corpus</option>
+                <option value="operating">Operating</option>
+                <option value="reserve">Reserve</option>
+                <option value="beneficiary">Beneficiary</option>
+                <option value="trustee_fee">Trustee Fee</option>
+                <option value="tax_escrow">Tax Escrow</option>
+                <option value="investment">Investment</option>
+                <option value="petty_cash">Petty Cash</option>
+              </select>
+            </label>
+            <label>Owner Type
+              <select name="owner_type">
+                <option value="trust">Trust</option>
+                <option value="beneficiary">Beneficiary</option>
+                <option value="trustee">Trustee</option>
+              </select>
+            </label>
+            <label>Initial Balance (USD)<input type="number" name="balance" step="0.01" value="0"></label>
+            <label>Interest Rate (bps)<input type="number" name="interest_rate_bps" value="0" min="0" max="10000"></label>
+            <div class="modal-actions">
+              <button type="button" class="btn" onclick="hideModal('create-account-modal')">Cancel</button>
+              <button type="submit" class="btn btn-primary">Create Account</button>
+            </div>
+          </form>
+        </div>
+      </div>
+    </section>
+
+    <!-- Transfers View -->
+    <section id="view-transfers" class="view">
+      <header class="view-header">
+        <h2>Internal Transfers</h2>
+        <button class="btn btn-primary" onclick="showCreateTransfer()">+ New Transfer</button>
+      </header>
+      <div id="transfers-table" class="table-container"></div>
+
+      <!-- Create Transfer Modal -->
+      <div id="create-transfer-modal" class="modal hidden">
+        <div class="modal-content">
+          <h3>Create Transfer</h3>
+          <form id="create-transfer-form" onsubmit="createTransfer(event)">
+            <label>From Account
+              <select name="from_account_id" id="transfer-from"></select>
+            </label>
+            <label>To Account
+              <select name="to_account_id" id="transfer-to"></select>
+            </label>
+            <label>Amount (USD)<input type="number" name="amount" step="0.01" min="0.01" required></label>
+            <label>Type
+              <select name="transfer_type">
+                <option value="standard">Standard</option>
+                <option value="distribution">Distribution</option>
+                <option value="fee_collection">Fee Collection</option>
+                <option value="tax_payment">Tax Payment</option>
+                <option value="rebalance">Rebalance</option>
+              </select>
+            </label>
+            <label>Description<input type="text" name="description"></label>
+            <div class="modal-actions">
+              <button type="button" class="btn" onclick="hideModal('create-transfer-modal')">Cancel</button>
+              <button type="submit" class="btn btn-primary">Submit Transfer</button>
+            </div>
+          </form>
+        </div>
+      </div>
+    </section>
+
+    <!-- Contacts / CRM View -->
+    <section id="view-contacts" class="view">
+      <header class="view-header">
+        <h2>Contacts & CRM</h2>
+        <div>
+          <select id="contact-filter" onchange="loadContacts()" style="margin-right:8px;padding:8px 12px;background:var(--bg-card);border:1px solid var(--border);border-radius:8px;color:var(--text-primary);font-size:0.85rem">
+            <option value="">All Types</option>
+            <option value="trustee">Trustees</option>
+            <option value="beneficiary">Beneficiaries</option>
+            <option value="vendor">Vendors</option>
+          </select>
+          <button class="btn btn-primary" onclick="showCreateContact()">+ New Contact</button>
+        </div>
+      </header>
+
+      <div class="metrics-grid" id="crm-metrics" style="margin-bottom:20px"></div>
+      <div id="contacts-table" class="table-container"></div>
+
+      <!-- Contact Detail Panel (shown when a contact is clicked) -->
+      <div id="contact-detail-panel" class="panel hidden" style="margin-top:16px">
+        <div id="contact-detail-content"></div>
+      </div>
+
+      <!-- Create Contact Modal -->
+      <div id="create-contact-modal" class="modal hidden">
+        <div class="modal-content" style="max-width:600px">
+          <h3>Add Contact</h3>
+          <form id="create-contact-form" onsubmit="createContact(event)">
+            <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+              <label>First Name<input type="text" name="first_name" required></label>
+              <label>Last Name<input type="text" name="last_name" required></label>
+            </div>
+            <label>Contact Type
+              <select name="contact_type" id="new-contact-type" onchange="toggleContactFields()">
+                <option value="beneficiary">Beneficiary</option>
+                <option value="trustee">Trustee</option>
+                <option value="vendor">Vendor</option>
+              </select>
+            </label>
+            <label>Company / Organization<input type="text" name="company_name"></label>
+            <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+              <label>Email<input type="email" name="email"></label>
+              <label>Phone<input type="tel" name="phone"></label>
+            </div>
+            <label>Address<input type="text" name="address_line1"></label>
+            <div style="display:grid;grid-template-columns:2fr 1fr 1fr;gap:12px">
+              <label>City<input type="text" name="city"></label>
+              <label>State<input type="text" name="state" maxlength="2"></label>
+              <label>ZIP<input type="text" name="zip"></label>
+            </div>
+            <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+              <label>Tax ID (SSN/EIN)<input type="text" name="tax_id"></label>
+              <label>Tax ID Type
+                <select name="tax_id_type">
+                  <option value="ssn">SSN</option>
+                  <option value="ein">EIN</option>
+                  <option value="itin">ITIN</option>
+                </select>
+              </label>
+            </div>
+            <!-- Beneficiary Fields -->
+            <div id="beneficiary-fields">
+              <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+                <label>Beneficiary Class
+                  <select name="beneficiary_class">
+                    <option value="income">Income</option>
+                    <option value="remainder">Remainder</option>
+                    <option value="contingent">Contingent</option>
+                    <option value="discretionary">Discretionary</option>
+                  </select>
+                </label>
+                <label>Distribution %<input type="number" name="distribution_pct" step="0.01" min="0" max="100" value="0"></label>
+              </div>
+            </div>
+            <!-- Trustee Fields -->
+            <div id="trustee-fields" class="hidden">
+              <label>Trustee Role
+                <select name="trustee_role">
+                  <option value="primary">Primary</option>
+                  <option value="successor">Successor</option>
+                  <option value="co-trustee">Co-Trustee</option>
+                  <option value="special">Special</option>
+                </select>
+              </label>
+            </div>
+            <!-- Vendor Fields -->
+            <div id="vendor-fields" class="hidden">
+              <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+                <label>Vendor Category
+                  <select name="vendor_category">
+                    <option value="legal">Legal</option>
+                    <option value="accounting">Accounting</option>
+                    <option value="property">Property Management</option>
+                    <option value="insurance">Insurance</option>
+                    <option value="financial">Financial Services</option>
+                    <option value="other">Other</option>
+                  </select>
+                </label>
+                <label>Payment Terms
+                  <select name="payment_terms">
+                    <option value="immediate">Immediate</option>
+                    <option value="net_15">Net 15</option>
+                    <option value="net_30" selected>Net 30</option>
+                    <option value="net_60">Net 60</option>
+                    <option value="net_90">Net 90</option>
+                  </select>
+                </label>
+              </div>
+            </div>
+            <label>Notes<input type="text" name="notes"></label>
+            <div class="modal-actions">
+              <button type="button" class="btn" onclick="hideModal('create-contact-modal')">Cancel</button>
+              <button type="submit" class="btn btn-primary">Create Contact</button>
+            </div>
+          </form>
+        </div>
+      </div>
+
+      <!-- Add Payment Method Modal -->
+      <div id="add-payment-modal" class="modal hidden">
+        <div class="modal-content">
+          <h3>Add Payment Method</h3>
+          <form id="add-payment-form" onsubmit="addPaymentMethod(event)">
+            <input type="hidden" name="contact_id" id="pm-contact-id">
+            <label>Method Type
+              <select name="method_type">
+                <option value="ach">ACH</option>
+                <option value="wire">Wire Transfer</option>
+                <option value="check">Check</option>
+                <option value="zelle">Zelle</option>
+              </select>
+            </label>
+            <label>Label<input type="text" name="label" value="Primary"></label>
+            <label>Bank Name<input type="text" name="bank_name"></label>
+            <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+              <label>Routing Number<input type="text" name="routing_number" maxlength="9" pattern="\d{9}"></label>
+              <label>Account Number<input type="text" name="account_number"></label>
+            </div>
+            <label>Account Type
+              <select name="account_type">
+                <option value="checking">Checking</option>
+                <option value="savings">Savings</option>
+              </select>
+            </label>
+            <label><input type="checkbox" name="is_default" value="1" style="width:auto;display:inline;margin-right:8px">Set as default payment method</label>
+            <div class="modal-actions">
+              <button type="button" class="btn" onclick="hideModal('add-payment-modal')">Cancel</button>
+              <button type="submit" class="btn btn-primary">Add Payment Method</button>
+            </div>
+          </form>
+        </div>
+      </div>
+    </section>
+
+    <!-- Payments / External Transfers View -->
+    <section id="view-payments" class="view">
+      <header class="view-header">
+        <h2>External Payments</h2>
+        <div>
+          <select id="payment-status-filter" onchange="loadPayments()" style="margin-right:8px;padding:8px 12px;background:var(--bg-card);border:1px solid var(--border);border-radius:8px;color:var(--text-primary);font-size:0.85rem">
+            <option value="">All Statuses</option>
+            <option value="draft">Draft</option>
+            <option value="pending_approval">Pending Approval</option>
+            <option value="approved">Approved</option>
+            <option value="processing">Processing</option>
+            <option value="completed">Completed</option>
+            <option value="failed">Failed</option>
+            <option value="cancelled">Cancelled</option>
+          </select>
+          <button class="btn btn-primary" onclick="showCreatePayment()">+ New Payment</button>
+        </div>
+      </header>
+
+      <div class="metrics-grid" id="payment-metrics" style="margin-bottom:20px"></div>
+      <div id="payments-table" class="table-container"></div>
+
+      <!-- Create Payment Modal -->
+      <div id="create-payment-modal" class="modal hidden">
+        <div class="modal-content" style="max-width:600px">
+          <h3>Create External Payment</h3>
+          <form id="create-payment-form" onsubmit="createPayment(event)">
+            <label>Recipient (Contact)
+              <select name="contact_id" id="payment-contact" onchange="loadContactPaymentMethods()" required>
+                <option value="">Select a contact...</option>
+              </select>
+            </label>
+            <label>Payment Method
+              <select name="payment_method_id" id="payment-pm">
+                <option value="">Use default method</option>
+              </select>
+            </label>
+            <label>From Account
+              <select name="from_account_id" id="payment-from-account" required></select>
+            </label>
+            <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+              <label>Amount (USD)<input type="number" name="amount" step="0.01" min="0.01" required></label>
+              <label>Payment Type
+                <select name="payment_type">
+                  <option value="vendor_payment">Vendor Payment</option>
+                  <option value="beneficiary_distribution">Beneficiary Distribution</option>
+                  <option value="expense">Expense</option>
+                  <option value="bill_payment">Bill Payment</option>
+                  <option value="tax_payment">Tax Payment</option>
+                  <option value="trustee_fee">Trustee Fee</option>
+                </select>
+              </label>
+            </div>
+            <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+              <label>Send Via
+                <select name="payment_method">
+                  <option value="ach">ACH (Free)</option>
+                  <option value="wire">Wire ($25 fee)</option>
+                  <option value="check">Check ($5 fee)</option>
+                  <option value="zelle">Zelle (Free)</option>
+                </select>
+              </label>
+              <label>Priority
+                <select name="priority">
+                  <option value="normal">Normal</option>
+                  <option value="high">High</option>
+                  <option value="urgent">Urgent</option>
+                </select>
+              </label>
+            </div>
+            <label>Description<input type="text" name="description" placeholder="e.g. Monthly legal retainer"></label>
+            <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+              <label>Memo<input type="text" name="memo" placeholder="Memo line on payment"></label>
+              <label>Invoice #<input type="text" name="invoice_number" placeholder="INV-001"></label>
+            </div>
+            <label>Scheduled Date (optional)<input type="date" name="scheduled_date"></label>
+            <div class="modal-actions">
+              <button type="button" class="btn" onclick="hideModal('create-payment-modal')">Cancel</button>
+              <button type="submit" class="btn btn-primary">Create Payment</button>
+            </div>
+          </form>
+        </div>
+      </div>
+    </section>
+
+    <!-- Trust Accounting View -->
+    <section id="view-accounting" class="view">
+      <header class="view-header">
+        <h2>Trust Accounting</h2>
+        <div>
+          <select id="accounting-tab" onchange="switchAccountingTab()" style="margin-right:8px;padding:8px 12px;background:var(--bg-card);border:1px solid var(--border);border-radius:8px;color:var(--text-primary);font-size:0.85rem">
+            <option value="dashboard">Overview</option>
+            <option value="journal">Journal Entries</option>
+            <option value="ledger">General Ledger</option>
+            <option value="trial-balance">Trial Balance</option>
+            <option value="coa">Chart of Accounts</option>
+            <option value="allocations">Income/Principal</option>
+            <option value="reports">Reports</option>
+          </select>
+          <button class="btn btn-primary" onclick="showCreateJournalEntry()">+ Journal Entry</button>
+          <button class="btn" onclick="initializeGL()">Initialize GL</button>
+        </div>
+      </header>
+
+      <!-- Accounting Dashboard Sub-view -->
+      <div id="acct-dashboard" class="accounting-subview">
+        <div class="metrics-grid" id="acct-metrics" style="margin-bottom:20px"></div>
+        <div class="panels-row">
+          <div class="panel">
+            <h3>Trial Balance Check</h3>
+            <div id="acct-tb-check"></div>
+          </div>
+          <div class="panel">
+            <h3>Income vs Principal (YTD)</h3>
+            <div id="acct-alloc-summary"></div>
+          </div>
+        </div>
+        <div class="panel">
+          <h3>Recent Journal Entries</h3>
+          <div id="acct-recent-je"></div>
+        </div>
+      </div>
+
+      <!-- Journal Entries Sub-view -->
+      <div id="acct-journal" class="accounting-subview hidden">
+        <div id="journal-entries-table" class="table-container"></div>
+      </div>
+
+      <!-- General Ledger Sub-view -->
+      <div id="acct-ledger" class="accounting-subview hidden">
+        <div style="margin-bottom:12px">
+          <select id="gl-account-filter" onchange="loadGeneralLedger()" style="padding:8px 12px;background:var(--bg-card);border:1px solid var(--border);border-radius:8px;color:var(--text-primary);font-size:0.85rem">
+            <option value="">All Accounts</option>
+          </select>
+        </div>
+        <div id="general-ledger-table" class="table-container"></div>
+      </div>
+
+      <!-- Trial Balance Sub-view -->
+      <div id="acct-trial-balance" class="accounting-subview hidden">
+        <div id="formal-trial-balance" class="table-container"></div>
+      </div>
+
+      <!-- Chart of Accounts Sub-view -->
+      <div id="acct-coa" class="accounting-subview hidden">
+        <div id="coa-table" class="table-container"></div>
+      </div>
+
+      <!-- Income/Principal Allocations Sub-view -->
+      <div id="acct-allocations" class="accounting-subview hidden">
+        <div class="metrics-grid" id="alloc-metrics" style="margin-bottom:20px"></div>
+        <div id="allocations-table" class="table-container"></div>
+        <button class="btn btn-primary" onclick="showCreateAllocation()" style="margin-top:12px">+ Record Allocation</button>
+      </div>
+
+      <!-- Reports Sub-view -->
+      <div id="acct-reports" class="accounting-subview hidden">
+        <div class="metrics-grid" style="margin-bottom:20px">
+          <div class="metric-card" style="cursor:pointer" onclick="loadBalanceSheet()">
+            <span class="metric-label">Balance Sheet</span>
+            <span class="metric-value" style="font-size:1rem">Assets = L + Corpus</span>
+          </div>
+          <div class="metric-card" style="cursor:pointer" onclick="loadIncomeStatement()">
+            <span class="metric-label">Income Statement</span>
+            <span class="metric-value" style="font-size:1rem">Income - Expenses</span>
+          </div>
+          <div class="metric-card" style="cursor:pointer" onclick="loadDNIReport()">
+            <span class="metric-label">DNI Report</span>
+            <span class="metric-value" style="font-size:1rem">Distributable Net Income</span>
+          </div>
+          <div class="metric-card" style="cursor:pointer" onclick="loadK1Report()">
+            <span class="metric-label">K-1 Data</span>
+            <span class="metric-value" style="font-size:1rem">Beneficiary Allocations</span>
+          </div>
+        </div>
+        <div id="report-output" class="panel"></div>
+      </div>
+
+      <!-- Create Journal Entry Modal -->
+      <div id="create-je-modal" class="modal hidden">
+        <div class="modal-content" style="max-width:700px">
+          <h3>Create Journal Entry</h3>
+          <form id="create-je-form" onsubmit="createJournalEntry(event)">
+            <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+              <label>Entry Date<input type="date" name="entry_date" required></label>
+              <label>Entry Type
+                <select name="entry_type">
+                  <option value="standard">Standard</option>
+                  <option value="adjusting">Adjusting</option>
+                  <option value="closing">Closing</option>
+                  <option value="opening">Opening</option>
+                </select>
+              </label>
+            </div>
+            <label>Description<input type="text" name="description" required placeholder="e.g. Record interest income"></label>
+            <label>Memo<input type="text" name="memo" placeholder="Optional memo"></label>
+            <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+              <label>Reference Type
+                <select name="reference_type">
+                  <option value="">None</option>
+                  <option value="transfer">Transfer</option>
+                  <option value="payment">Payment</option>
+                  <option value="interest">Interest</option>
+                  <option value="fee">Fee</option>
+                  <option value="distribution">Distribution</option>
+                  <option value="receipt">Receipt</option>
+                  <option value="adjustment">Adjustment</option>
+                  <option value="tax">Tax</option>
+                </select>
+              </label>
+              <label>Source Engine
+                <select name="source_engine">
+                  <option value="">None</option>
+                  <option value="banking">Banking</option>
+                  <option value="payment">Payment</option>
+                  <option value="external_transfer">External Transfer</option>
+                  <option value="fixed_income">Fixed Income</option>
+                </select>
+              </label>
+            </div>
+
+            <h4 style="margin:16px 0 8px;color:var(--text-primary)">Journal Lines</h4>
+            <div id="je-lines">
+              <div class="je-line" style="display:grid;grid-template-columns:2fr 1fr 1fr;gap:8px;margin-bottom:8px">
+                <select name="line_account_0" class="je-account" required>
+                  <option value="">Select Account...</option>
+                </select>
+                <input type="number" name="line_debit_0" placeholder="Debit $" step="0.01" min="0">
+                <input type="number" name="line_credit_0" placeholder="Credit $" step="0.01" min="0">
+              </div>
+              <div class="je-line" style="display:grid;grid-template-columns:2fr 1fr 1fr;gap:8px;margin-bottom:8px">
+                <select name="line_account_1" class="je-account" required>
+                  <option value="">Select Account...</option>
+                </select>
+                <input type="number" name="line_debit_1" placeholder="Debit $" step="0.01" min="0">
+                <input type="number" name="line_credit_1" placeholder="Credit $" step="0.01" min="0">
+              </div>
+            </div>
+            <button type="button" class="btn" onclick="addJELine()" style="margin-bottom:12px">+ Add Line</button>
+            <div id="je-balance-check" style="padding:8px;border-radius:8px;font-size:0.85rem;margin-bottom:12px"></div>
+
+            <div class="modal-actions">
+              <button type="button" class="btn" onclick="hideModal('create-je-modal')">Cancel</button>
+              <button type="submit" class="btn btn-primary">Post Journal Entry</button>
+            </div>
+          </form>
+        </div>
+      </div>
+
+      <!-- Create Allocation Modal -->
+      <div id="create-alloc-modal" class="modal hidden">
+        <div class="modal-content">
+          <h3>Record Income/Principal Allocation</h3>
+          <form id="create-alloc-form" onsubmit="createAllocation(event)">
+            <label>Category
+              <select name="category" required>
+                <option value="interest">Interest</option>
+                <option value="dividend">Dividend</option>
+                <option value="capital_gain">Capital Gain</option>
+                <option value="rental">Rental Income</option>
+                <option value="royalty">Royalty</option>
+                <option value="trustee_fee">Trustee Fee</option>
+                <option value="tax">Tax</option>
+                <option value="legal_fee">Legal Fee</option>
+                <option value="accounting_fee">Accounting Fee</option>
+                <option value="misc_expense">Misc Expense</option>
+              </select>
+            </label>
+            <label>Classification
+              <select name="classification">
+                <option value="">Use UPIA Default</option>
+                <option value="principal">Principal</option>
+                <option value="income">Income</option>
+              </select>
+            </label>
+            <label>Amount (USD)<input type="number" name="amount" step="0.01" min="0.01" required></label>
+            <label>Date<input type="date" name="allocation_date"></label>
+            <label>Description<input type="text" name="description" placeholder="e.g. Q1 bond interest"></label>
+            <div class="modal-actions">
+              <button type="button" class="btn" onclick="hideModal('create-alloc-modal')">Cancel</button>
+              <button type="submit" class="btn btn-primary">Record Allocation</button>
+            </div>
+          </form>
+        </div>
+      </div>
+    </section>
+
+    <!-- Fixed Income View -->
+    <section id="view-fixed-income" class="view">
+      <header class="view-header">
+        <h2>Fixed Income</h2>
+        <div>
+          <select id="fi-filter" onchange="loadPrivatePlacements()" style="margin-right:8px;padding:8px 12px;background:var(--bg-card);border:1px solid var(--border);border-radius:8px;color:var(--text-primary);font-size:0.85rem">
+            <option value="">All Bonds</option>
+            <option value="active">Active</option>
+            <option value="redeemed">Redeemed</option>
+          </select>
+          <button class="btn btn-primary" onclick="showPrivatePlacementForm()">+ Record Private Placement Bond</button>
+        </div>
+      </header>
+
+      <!-- Summary Metrics -->
+      <div class="metrics-grid" id="fi-metrics" style="margin-bottom:20px"></div>
+
+      <!-- Private Placement Bonds Table -->
+      <div class="table-container" id="fi-bonds-table"></div>
+
+      <!-- Record Private Placement Bond Modal -->
+      <div id="pp-bond-modal" class="modal hidden">
+        <div class="modal-content" style="max-width:800px">
+          <h3>Record Private Placement Bond</h3>
+          <p style="color:var(--text-secondary);font-size:0.85rem;margin-bottom:16px">Record a bond issued by the private trust company and held in trust as a fixed income asset.</p>
+          <form id="pp-bond-form" onsubmit="submitPrivatePlacement(event)">
+            <!-- Bond Identification -->
+            <fieldset style="border:1px solid var(--border);border-radius:8px;padding:16px;margin-bottom:16px">
+              <legend style="font-weight:600;padding:0 8px">Bond Identification</legend>
+              <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+                <label>Security Name *<input type="text" name="security_name" placeholder="e.g. DLB Trust Series A 5.25% 2030" required></label>
+                <label>Bond Series *<input type="text" name="bond_series" placeholder="e.g. Series A, Series 2026-1" required></label>
+              </div>
+              <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px">
+                <label>Par Value ($) *<input type="number" name="par_value" step="0.01" min="0.01" placeholder="100000.00" required></label>
+                <label>Purchase Price ($)<input type="number" name="purchase_price" step="0.01" min="0.01" placeholder="Same as par if blank"></label>
+                <label>Coupon Rate (%) *<input type="number" name="coupon_rate" step="0.001" min="0" max="100" placeholder="5.250" required></label>
+              </div>
+              <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px">
+                <label>Purchase Date *<input type="date" name="purchase_date" required></label>
+                <label>Maturity Date *<input type="date" name="maturity_date" required></label>
+                <label>Coupon Frequency
+                  <select name="coupon_frequency">
+                    <option value="semi-annual">Semi-Annual</option>
+                    <option value="quarterly">Quarterly</option>
+                    <option value="monthly">Monthly</option>
+                    <option value="annual">Annual</option>
+                    <option value="zero">Zero Coupon</option>
+                  </select>
+                </label>
+              </div>
+            </fieldset>
+
+            <!-- Trust & Issuer Details -->
+            <fieldset style="border:1px solid var(--border);border-radius:8px;padding:16px;margin-bottom:16px">
+              <legend style="font-weight:600;padding:0 8px">Trust & Issuer Details</legend>
+              <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+                <label>Issuing Trust *<input type="text" name="issuing_trust" placeholder="e.g. DeAndrea Lavar Barkley Trust" required></label>
+                <label>Trustee Name *<input type="text" name="trustee_name" placeholder="e.g. DeAndrea L. Barkley" required></label>
+              </div>
+              <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px">
+                <label>Trust EIN<input type="text" name="trust_ein" placeholder="XX-XXXXXXX"></label>
+                <label>Beneficiary Class<input type="text" name="beneficiary_class" placeholder="e.g. Family, Income Beneficiaries"></label>
+                <label>Ohio Trust Code Section<input type="text" name="ohio_trust_code_section" placeholder="e.g. ORC §1112"></label>
+              </div>
+            </fieldset>
+
+            <!-- Bond Terms -->
+            <fieldset style="border:1px solid var(--border);border-radius:8px;padding:16px;margin-bottom:16px">
+              <legend style="font-weight:600;padding:0 8px">Bond Terms & Structure</legend>
+              <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px">
+                <label>Offering Type
+                  <select name="offering_type">
+                    <option value="rule_506b">Rule 506(b) — Private</option>
+                    <option value="rule_506c">Rule 506(c) — Accredited Only</option>
+                    <option value="rule_144a">Rule 144A — QIB</option>
+                    <option value="intrastate">Intrastate (Ohio Only)</option>
+                    <option value="reg_s">Reg S — Offshore</option>
+                  </select>
+                </label>
+                <label>Subordination Level
+                  <select name="subordination_level">
+                    <option value="senior">Senior</option>
+                    <option value="mezzanine">Mezzanine</option>
+                    <option value="subordinated">Subordinated</option>
+                    <option value="equity_linked">Equity-Linked</option>
+                  </select>
+                </label>
+                <label>Interest Payment Method
+                  <select name="interest_payment_method">
+                    <option value="direct_deposit">Direct Deposit</option>
+                    <option value="check">Check</option>
+                    <option value="reinvest">Reinvest</option>
+                    <option value="accumulate">Accumulate</option>
+                  </select>
+                </label>
+              </div>
+              <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px">
+                <label>Principal Source
+                  <select name="principal_source">
+                    <option value="trust_income">Trust Income</option>
+                    <option value="trust_corpus">Trust Corpus</option>
+                    <option value="reserve_fund">Reserve Fund</option>
+                    <option value="new_issuance">New Issuance</option>
+                  </select>
+                </label>
+                <label>Valuation Method
+                  <select name="valuation_method">
+                    <option value="amortized_cost">Amortized Cost</option>
+                    <option value="fair_value">Fair Value</option>
+                    <option value="discounted_cashflow">Discounted Cash Flow</option>
+                    <option value="comparable_yield">Comparable Yield</option>
+                  </select>
+                </label>
+                <label>Day Count Convention
+                  <select name="day_count_convention">
+                    <option value="30/360">30/360</option>
+                    <option value="actual/365">Actual/365</option>
+                    <option value="actual/360">Actual/360</option>
+                    <option value="actual/actual">Actual/Actual</option>
+                  </select>
+                </label>
+              </div>
+              <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+                <label style="display:flex;align-items:center;gap:8px;margin-top:8px">
+                  <input type="checkbox" name="secured" value="1"> Secured (backed by collateral)
+                </label>
+                <label>Collateral Description<input type="text" name="collateral_description" placeholder="e.g. Trust real estate portfolio"></label>
+              </div>
+            </fieldset>
+
+            <!-- Regulatory & Compliance -->
+            <fieldset style="border:1px solid var(--border);border-radius:8px;padding:16px;margin-bottom:16px">
+              <legend style="font-weight:600;padding:0 8px">Regulatory & Compliance</legend>
+              <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px">
+                <label>Max Investors<input type="number" name="max_investors" value="35" min="1"></label>
+                <label>Current Investor Count<input type="number" name="current_investor_count" value="1" min="1"></label>
+                <label>Credit Rating
+                  <select name="credit_rating">
+                    <option value="NR">NR — Not Rated</option>
+                    <option value="AAA">AAA</option>
+                    <option value="AA">AA</option>
+                    <option value="A">A</option>
+                    <option value="BBB">BBB</option>
+                    <option value="BB">BB</option>
+                    <option value="B">B</option>
+                  </select>
+                </label>
+              </div>
+              <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px;margin-top:8px">
+                <label style="display:flex;align-items:center;gap:8px">
+                  <input type="checkbox" name="accredited_investors_only" value="1" checked> Accredited Investors Only
+                </label>
+                <label style="display:flex;align-items:center;gap:8px">
+                  <input type="checkbox" name="restricted_transfer" value="1" checked> Transfer Restricted
+                </label>
+                <label style="display:flex;align-items:center;gap:8px">
+                  <input type="checkbox" name="prudent_investor_compliant" value="1" checked> Prudent Investor Compliant
+                </label>
+              </div>
+              <label style="margin-top:12px">Offering Memorandum Reference<input type="text" name="offering_memorandum_ref" placeholder="e.g. OM-2026-001 or document ID"></label>
+            </fieldset>
+
+            <label>Notes<textarea name="notes" rows="2" placeholder="Additional notes about this bond issuance..."></textarea></label>
+
+            <div class="modal-actions">
+              <button type="button" class="btn" onclick="hideModal('pp-bond-modal')">Cancel</button>
+              <button type="submit" class="btn btn-primary">Record Bond</button>
+            </div>
+          </form>
+        </div>
+      </div>
+    </section>
+
+    <!-- Crypto Rails View (Circle + Polygon USDC) -->
+    <section id="view-blockchain" class="view">
+      <header class="view-header">
+        <h2>Crypto Rails</h2>
+        <div>
+          <select id="chain-tx-filter" onchange="loadBlockchainTransactions()" style="margin-right:8px;padding:8px 12px;background:var(--bg-card);border:1px solid var(--border);border-radius:8px;color:var(--text-primary);font-size:0.85rem">
+            <option value="">All Statuses</option>
+            <option value="initiated">Initiated</option>
+            <option value="pending_approval">Pending Approval</option>
+            <option value="submitted">Submitted</option>
+            <option value="confirming">Confirming</option>
+            <option value="completed">Completed</option>
+            <option value="failed">Failed</option>
+            <option value="cancelled">Cancelled</option>
+          </select>
+          <button class="btn" onclick="showCreateWalletModal()" style="margin-right:8px">+ New Wallet</button>
+          <button class="btn" onclick="showBridgeModal('bank_to_crypto')" style="margin-right:8px;background:#00C853;color:#fff">Fund Wallet ↑</button>
+          <button class="btn" onclick="showBridgeModal('crypto_to_bank')" style="margin-right:8px;background:#FF6D00;color:#fff">Sweep to Bank ↓</button>
+          <button class="btn" onclick="showSwapModal()" style="margin-right:8px;background:#8b5cf6;color:#fff">Swap POL → USDC</button>
+          <button class="btn btn-primary" onclick="showSendUsdcModal()">Send USDC</button>
+        </div>
+      </header>
+
+      <!-- Dashboard Metrics -->
+      <div class="metrics-grid" id="chain-metrics" style="margin-bottom:20px"></div>
+
+      <!-- Connection & Network Status -->
+      <div id="chain-connection-status" class="panel" style="margin-bottom:16px;padding:12px 16px"></div>
+
+      <!-- Wallets Grid -->
+      <div class="panel" style="margin-bottom:16px">
+        <h3 style="margin-bottom:12px">Trust Wallets</h3>
+        <div id="chain-wallets-grid" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:12px"></div>
+      </div>
+
+      <!-- Banking ↔ Crypto Bridge Panel -->
+      <div class="panel" style="margin-bottom:16px">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
+          <h3>Banking ↔ Crypto Bridge <span style="font-size:0.75rem;background:#00C853;color:#fff;padding:2px 8px;border-radius:4px;margin-left:8px">MoonPay</span></h3>
+          <span id="bridge-moonpay-status" style="font-size:0.8rem;color:var(--text-muted)"></span>
+        </div>
+        <p style="color:var(--text-muted);font-size:0.85rem;margin-bottom:12px">Convert banking balances to real USDC on Polygon (or sweep USDC back to banking). Powered by MoonPay for fiat on/off-ramp.</p>
+        <div id="bridge-orders-table" class="table-container" style="margin-top:12px"></div>
+      </div>
+
+      <!-- Fiat Gateway Panel (Legacy Circle) -->
+      <div class="panels-row" style="margin-bottom:16px">
+        <div class="panel">
+          <h3>Fiat On-Ramp (USD → USDC)</h3>
+          <p style="color:var(--text-muted);font-size:0.85rem;margin-bottom:12px">Fund trust wallets by converting USD to USDC via Circle</p>
+          <form onsubmit="initOnRamp(event)" style="display:flex;gap:8px;align-items:end">
+            <div style="flex:1">
+              <label style="font-size:0.8rem;color:var(--text-muted)">Amount (USD)</label>
+              <input type="number" id="onramp-amount" step="0.01" min="1" placeholder="10,000.00" required style="width:100%;padding:8px;background:var(--bg-card);border:1px solid var(--border);border-radius:6px;color:var(--text-primary)">
+            </div>
+            <button class="btn btn-primary" type="submit">Fund Wallet</button>
+          </form>
+          <div id="onramp-result" style="margin-top:8px"></div>
+        </div>
+        <div class="panel">
+          <h3>Fiat Off-Ramp (USDC → USD)</h3>
+          <p style="color:var(--text-muted);font-size:0.85rem;margin-bottom:12px">Withdraw USDC to your bank account as USD via Circle</p>
+          <form onsubmit="initOffRamp(event)" style="display:flex;gap:8px;align-items:end">
+            <div style="flex:1">
+              <label style="font-size:0.8rem;color:var(--text-muted)">Amount (USDC)</label>
+              <input type="number" id="offramp-amount" step="0.01" min="1" placeholder="10,000.00" required style="width:100%;padding:8px;background:var(--bg-card);border:1px solid var(--border);border-radius:6px;color:var(--text-primary)">
+            </div>
+            <button class="btn" type="submit" style="background:var(--accent-secondary)">Withdraw to Bank</button>
+          </form>
+          <div id="offramp-result" style="margin-top:8px"></div>
+        </div>
+      </div>
+
+      <!-- Fiat Orders -->
+      <div class="panel" style="margin-bottom:16px">
+        <h3 style="margin-bottom:12px">Fiat Gateway Orders</h3>
+        <div id="fiat-orders-table" class="table-container"></div>
+      </div>
+
+      <!-- Blockchain Transactions -->
+      <div class="panel">
+        <h3 style="margin-bottom:12px">On-Chain Transactions</h3>
+        <div id="chain-transactions-table" class="table-container"></div>
+      </div>
+
+      <!-- Create Wallet Modal -->
+      <div id="create-wallet-modal" class="modal hidden">
+        <div class="modal-content" style="max-width:500px">
+          <h3>Create Trust Wallet</h3>
+          <form id="create-wallet-form" onsubmit="createWallet(event)">
+            <div style="display:grid;gap:12px">
+              <div>
+                <label>Wallet Name *</label>
+                <input type="text" id="cw-name" required placeholder="e.g., DLB Trust Corpus" style="width:100%;padding:10px;background:var(--bg-card);border:1px solid var(--border);border-radius:8px;color:var(--text-primary)">
+              </div>
+              <div>
+                <label>Wallet Type</label>
+                <select id="cw-type" style="width:100%;padding:10px;background:var(--bg-card);border:1px solid var(--border);border-radius:8px;color:var(--text-primary)">
+                  <option value="trust">Trust Corpus</option>
+                  <option value="beneficiary">Beneficiary</option>
+                  <option value="vendor">Vendor</option>
+                  <option value="expense">Expense</option>
+                  <option value="reserve">Reserve</option>
+                </select>
+              </div>
+              <div>
+                <label>Blockchain</label>
+                <select id="cw-blockchain" style="width:100%;padding:10px;background:var(--bg-card);border:1px solid var(--border);border-radius:8px;color:var(--text-primary)">
+                  <option value="MATIC-AMOY">Polygon Amoy (Testnet)</option>
+                  <option value="MATIC">Polygon (Mainnet)</option>
+                  <option value="ETH-SEPOLIA">Ethereum Sepolia (Testnet)</option>
+                  <option value="ETH">Ethereum (Mainnet)</option>
+                  <option value="ARB">Arbitrum</option>
+                </select>
+              </div>
+            </div>
+            <div style="display:flex;gap:8px;margin-top:16px;justify-content:flex-end">
+              <button type="button" class="btn" onclick="hideModal('create-wallet-modal')">Cancel</button>
+              <button type="submit" class="btn btn-primary">Create Wallet</button>
+            </div>
+          </form>
+        </div>
+      </div>
+
+      <!-- Send USDC Modal -->
+      <div id="send-usdc-modal" class="modal hidden">
+        <div class="modal-content" style="max-width:600px">
+          <h3>Send USDC</h3>
+          <form id="send-usdc-form" onsubmit="sendUsdc(event)">
+            <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+              <div style="grid-column:span 2">
+                <label>From Wallet *</label>
+                <select id="su-from-wallet" required style="width:100%;padding:10px;background:var(--bg-card);border:1px solid var(--border);border-radius:8px;color:var(--text-primary)">
+                  <option value="">Select wallet...</option>
+                </select>
+              </div>
+              <div style="grid-column:span 2">
+                <label>To Address *</label>
+                <input type="text" id="su-to-address" required placeholder="0x... or select wallet below" style="width:100%;padding:10px;background:var(--bg-card);border:1px solid var(--border);border-radius:8px;color:var(--text-primary)">
+              </div>
+              <div>
+                <label>Amount (USDC) *</label>
+                <input type="number" id="su-amount" step="0.01" min="0.01" required placeholder="1,000.00" style="width:100%;padding:10px;background:var(--bg-card);border:1px solid var(--border);border-radius:8px;color:var(--text-primary)">
+              </div>
+              <div>
+                <label>Transfer Type</label>
+                <select id="su-type" style="width:100%;padding:10px;background:var(--bg-card);border:1px solid var(--border);border-radius:8px;color:var(--text-primary)">
+                  <option value="internal">Internal Transfer</option>
+                  <option value="distribution">Beneficiary Distribution</option>
+                  <option value="vendor_payment">Vendor Payment</option>
+                  <option value="expense">Expense Payment</option>
+                  <option value="external">External Transfer</option>
+                </select>
+              </div>
+              <div style="grid-column:span 2">
+                <label>Description</label>
+                <input type="text" id="su-description" placeholder="e.g., Monthly distribution to beneficiary" style="width:100%;padding:10px;background:var(--bg-card);border:1px solid var(--border);border-radius:8px;color:var(--text-primary)">
+              </div>
+            </div>
+            <div id="su-approval-notice" style="display:none;margin-top:12px;padding:10px;background:rgba(255,193,7,0.1);border:1px solid rgba(255,193,7,0.3);border-radius:8px;color:var(--warning);font-size:0.85rem"></div>
+            <div style="display:flex;gap:8px;margin-top:16px;justify-content:flex-end">
+              <button type="button" class="btn" onclick="hideModal('send-usdc-modal')">Cancel</button>
+              <button type="submit" class="btn btn-primary">Send USDC</button>
+            </div>
+          </form>
+        </div>
+      </div>
+
+      <!-- Swap POL → USDC Modal -->
+      <div id="swap-modal" class="modal hidden">
+        <div class="modal-content" style="max-width:500px">
+          <h3 style="color:#8b5cf6">Swap POL → USDC</h3>
+          <p style="font-size:0.85rem;color:var(--text-secondary);margin-bottom:16px">Convert native POL tokens to USDC via QuickSwap DEX (on-chain, no intermediary)</p>
+          <form id="swap-form" onsubmit="executeSwap(event)">
+            <div style="display:grid;gap:12px">
+              <div>
+                <label>From Wallet *</label>
+                <select id="swap-wallet" required style="width:100%;padding:10px;background:var(--bg-card);border:1px solid var(--border);border-radius:8px;color:var(--text-primary)">
+                  <option value="">Select wallet...</option>
+                </select>
+              </div>
+              <div>
+                <label>Amount (POL) *</label>
+                <input type="number" id="swap-amount" step="0.001" min="0.001" required placeholder="100.0" style="width:100%;padding:10px;background:var(--bg-card);border:1px solid var(--border);border-radius:8px;color:var(--text-primary)">
+              </div>
+              <div id="swap-quote-display" style="display:none;padding:12px;background:rgba(139,92,246,0.1);border:1px solid rgba(139,92,246,0.3);border-radius:8px">
+                <div style="display:flex;justify-content:space-between;font-size:0.9rem">
+                  <span>Estimated USDC output:</span>
+                  <span id="swap-quote-value" style="font-weight:600;color:#8b5cf6">—</span>
+                </div>
+                <div style="font-size:0.75rem;color:var(--text-secondary);margin-top:4px">Route: POL → WPOL → USDC via QuickSwap V3</div>
+              </div>
+              <div id="swap-status" style="display:none;padding:10px;border-radius:8px;font-size:0.85rem"></div>
+            </div>
+            <div style="display:flex;gap:8px;margin-top:16px;justify-content:flex-end">
+              <button type="button" class="btn" onclick="hideModal('swap-modal')">Cancel</button>
+              <button type="button" class="btn" onclick="getSwapQuote()" style="background:#8b5cf6;color:#fff">Get Quote</button>
+              <button type="submit" class="btn btn-primary" id="swap-submit-btn">Swap</button>
+            </div>
+          </form>
+        </div>
+      </div>
+
+      <!-- Banking ↔ Crypto Bridge Modal -->
+      <div id="bridge-modal" class="modal hidden">
+        <div class="modal-content" style="max-width:600px;max-height:90vh;overflow-y:auto">
+          <h3 id="bridge-modal-title">Fund Wallet from Banking</h3>
+          <p id="bridge-modal-desc" style="color:var(--text-muted);font-size:0.85rem;margin-bottom:16px">Convert banking balance to real USDC via MoonPay on Polygon</p>
+          <form id="bridge-form" onsubmit="executeBridge(event)">
+            <input type="hidden" id="bridge-direction" value="bank_to_crypto">
+            <div style="display:grid;gap:14px">
+              <!-- Source (changes based on direction) -->
+              <div id="bridge-source-section">
+                <label>Source Banking Account *</label>
+                <select id="bridge-source-account" required style="width:100%;padding:10px;background:var(--bg-card);border:1px solid var(--border);border-radius:8px;color:var(--text-primary)">
+                  <option value="">Loading accounts...</option>
+                </select>
+              </div>
+              <!-- Destination (changes based on direction) -->
+              <div id="bridge-dest-section">
+                <label>Destination Wallet *</label>
+                <select id="bridge-dest-wallet" style="width:100%;padding:10px;background:var(--bg-card);border:1px solid var(--border);border-radius:8px;color:var(--text-primary)">
+                  <option value="">Loading wallets...</option>
+                </select>
+              </div>
+              <!-- Amount -->
+              <div>
+                <label id="bridge-amount-label">Amount (USD) *</label>
+                <input type="number" id="bridge-amount" step="0.01" min="1" max="100000" placeholder="10,000.00" required style="width:100%;padding:10px;background:var(--bg-card);border:1px solid var(--border);border-radius:8px;color:var(--text-primary)">
+              </div>
+              <!-- Quote / Conversion Info -->
+              <div id="bridge-quote-panel" style="background:var(--bg-main);border:1px solid var(--border);border-radius:8px;padding:12px;display:none">
+                <div style="display:flex;justify-content:space-between;margin-bottom:4px">
+                  <span style="font-size:0.85rem;color:var(--text-muted)">Exchange Rate:</span>
+                  <span style="font-size:0.85rem;font-weight:600">1 USD = 1 USDC</span>
+                </div>
+                <div style="display:flex;justify-content:space-between;margin-bottom:4px">
+                  <span style="font-size:0.85rem;color:var(--text-muted)">Network:</span>
+                  <span style="font-size:0.85rem;font-weight:600">Polygon</span>
+                </div>
+                <div id="bridge-fee-row" style="display:flex;justify-content:space-between;margin-bottom:4px">
+                  <span style="font-size:0.85rem;color:var(--text-muted)">MoonPay Fee (est.):</span>
+                  <span id="bridge-fee-value" style="font-size:0.85rem;font-weight:600">~3.25%</span>
+                </div>
+                <div style="display:flex;justify-content:space-between">
+                  <span style="font-size:0.85rem;color:var(--text-muted)">You Receive:</span>
+                  <span id="bridge-receive-value" style="font-size:0.9rem;font-weight:700;color:var(--accent-primary)">—</span>
+                </div>
+              </div>
+              <!-- Notes -->
+              <div>
+                <label>Notes (optional)</label>
+                <input type="text" id="bridge-notes" placeholder="e.g., Monthly wallet funding" style="width:100%;padding:10px;background:var(--bg-card);border:1px solid var(--border);border-radius:8px;color:var(--text-primary)">
+              </div>
+            </div>
+            <div style="display:flex;gap:8px;margin-top:16px;justify-content:flex-end">
+              <button type="button" class="btn" onclick="hideModal('bridge-modal')">Cancel</button>
+              <button type="submit" class="btn btn-primary" id="bridge-submit-btn">Convert to USDC</button>
+            </div>
+          </form>
+          <div id="bridge-result" style="margin-top:12px"></div>
+        </div>
+      </div>
+
+      <!-- Config Modal -->
+      <div id="chain-config-modal" class="modal hidden">
+        <div class="modal-content" style="max-width:600px">
+          <h3>Blockchain Configuration</h3>
+          <div id="chain-config-form"></div>
+          <div style="display:flex;gap:8px;margin-top:16px;justify-content:flex-end">
+            <button class="btn" onclick="hideModal('chain-config-modal')">Close</button>
+            <button class="btn btn-primary" onclick="saveChainConfig()">Save All</button>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Compliance View -->
+    <section id="view-compliance" class="view">
+      <header class="view-header">
+        <h2>Compliance & Tax Center</h2>
+      </header>
+      <div class="panels-row">
+        <div class="panel">
+          <h3>Compliance Issues</h3>
+          <div id="compliance-list"></div>
+        </div>
+        <div class="panel">
+          <h3>KYC Status</h3>
+          <div id="kyc-status-list"></div>
+        </div>
+      </div>
+      <div class="panel">
+        <h3>Tax Events</h3>
+        <div id="tax-events-list"></div>
+      </div>
+    </section>
+
+    <!-- Cash Management View -->
+    <section id="view-cash-management" class="view">
+      <div class="view-loader" style="display:none"><div class="spinner"></div></div>
+      <header class="view-header">
+        <h2>Cash Management</h2>
+        <div>
+          <button class="btn btn-primary" onclick="runCMSReconciliation()">Run Reconciliation</button>
+          <button class="btn" onclick="saveCMSSnapshot()">Save Snapshot</button>
+        </div>
+      </header>
+      <div class="metrics-grid" id="cms-metrics"></div>
+      <div class="panels-row">
+        <div class="panel"><h3>Position Detail</h3><div id="cms-position-table" class="table-container"></div></div>
+        <div class="panel"><h3>90-Day Forecast</h3><div id="cms-forecast-table" class="table-container"></div></div>
+      </div>
+      <div class="panels-row">
+        <div class="panel"><h3>Reconciliation</h3><div id="cms-reconciliation"></div></div>
+        <div class="panel"><h3>Alerts</h3><div id="cms-alerts"></div></div>
+      </div>
+      <div class="panel"><h3>Income vs Expense</h3><div id="cms-income-summary"></div></div>
+    </section>
+
+    <!-- Documents View -->
+    <section id="view-documents" class="view">
+      <div class="view-loader" style="display:none"><div class="spinner"></div></div>
+      <header class="view-header">
+        <h2>Document Management</h2>
+        <button class="btn btn-primary" onclick="showUploadDocument()">+ Upload Document</button>
+      </header>
+      <div class="metrics-grid" id="doc-metrics"></div>
+      <div id="doc-filters"></div>
+      <div id="doc-table" class="table-container"></div>
+      <div id="upload-doc-modal" class="modal hidden">
+        <div class="modal-content">
+          <h3>Upload Trust Document</h3>
+          <form id="upload-doc-form" onsubmit="uploadDocument(event)">
+            <label>Document Title<input type="text" name="title" required></label>
+            <label>Category
+              <select name="category">
+                <option value="trust_agreement">Trust Agreement</option>
+                <option value="amendment">Amendment</option>
+                <option value="certificate">Certificate</option>
+                <option value="compliance">Compliance</option>
+                <option value="tax">Tax</option>
+                <option value="financial_statement">Financial Statement</option>
+                <option value="correspondence">Correspondence</option>
+                <option value="legal">Legal</option>
+                <option value="investment">Investment</option>
+                <option value="insurance">Insurance</option>
+                <option value="beneficiary">Beneficiary</option>
+                <option value="trustee">Trustee</option>
+                <option value="other">Other</option>
+              </select>
+            </label>
+            <label>Description<textarea name="description" rows="3"></textarea></label>
+            <div class="modal-actions">
+              <button type="button" class="btn" onclick="hideModal('upload-doc-modal')">Cancel</button>
+              <button type="submit" class="btn btn-primary">Upload</button>
+            </div>
+          </form>
+        </div>
+      </div>
+    </section>
+
+    <!-- Reports (Document Generation) View -->
+    <section id="view-reports" class="view">
+      <div class="view-loader" style="display:none"><div class="spinner"></div></div>
+      <header class="view-header">
+        <h2>Report Generation</h2>
+        <div class="header-actions">
+          <button class="btn btn-primary" onclick="openGenerateModal()">Generate Report</button>
+        </div>
+      </header>
+
+      <div class="metrics-grid" id="report-metrics">
+        <div class="metric-card primary"><span class="metric-label">Reports Generated</span><span class="metric-value" id="reports-generated-count">—</span></div>
+        <div class="metric-card"><span class="metric-label">Available Templates</span><span class="metric-value" id="reports-template-count">—</span></div>
+        <div class="metric-card"><span class="metric-label">Last Generated</span><span class="metric-value" id="reports-last-generated">—</span></div>
+      </div>
+
+      <div class="section">
+        <h3>Report Templates</h3>
+        <p class="section-desc">Select a template to generate a trust document. Reports pull live data from all engines and are stored in the Document Management System.</p>
+        <div class="report-templates-grid" id="report-templates-grid"></div>
+      </div>
+
+      <div class="section">
+        <h3>Generation History</h3>
+        <div class="table-scroll">
+          <table id="report-log-table">
+            <thead><tr><th>Report</th><th>Status</th><th>Document ID</th><th>Duration</th><th>Generated</th></tr></thead>
+            <tbody id="report-log-body"></tbody>
+          </table>
+        </div>
+      </div>
+
+      <!-- Generate Report Modal -->
+      <div class="modal-overlay" id="generate-report-modal" style="display:none">
+        <div class="modal">
+          <div class="modal-header"><h3>Generate Report</h3><button class="modal-close" onclick="closeGenerateModal()">&times;</button></div>
+          <div class="modal-body">
+            <div class="form-group">
+              <label>Report Type</label>
+              <select id="gen-report-type" onchange="updateReportDescription()">
+                <option value="">— Select Report Type —</option>
+              </select>
+            </div>
+            <div class="form-group" id="gen-report-desc-wrap" style="display:none">
+              <label>Description</label>
+              <p id="gen-report-desc" class="form-help"></p>
+            </div>
+            <div class="form-group" id="gen-report-sources-wrap" style="display:none">
+              <label>Data Sources</label>
+              <p id="gen-report-sources" class="form-help"></p>
+            </div>
+            <div id="gen-report-result" style="display:none"></div>
+          </div>
+          <div class="modal-footer">
+            <button class="btn btn-secondary" onclick="closeGenerateModal()">Cancel</button>
+            <button class="btn btn-primary" id="gen-report-btn" onclick="executeGenerateReport()">Generate</button>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- AI Agent View -->
+    <section id="view-ai-agent" class="view">
+      <div class="view-loader" style="display:none"><div class="spinner"></div></div>
+      <header class="view-header">
+        <h2>AI Agent</h2>
+      </header>
+      <div class="panels-row">
+        <div class="panel" style="flex:2">
+          <h3>Chat</h3>
+          <div id="agent-chat" style="min-height:300px;max-height:500px;overflow-y:auto;border:1px solid var(--border);border-radius:8px;padding:16px;margin-bottom:12px"></div>
+          <form id="agent-form" onsubmit="sendAgentMessage(event)" style="display:flex;gap:8px">
+            <input type="text" id="agent-input" placeholder="Ask the AI agent..." style="flex:1" required>
+            <button type="submit" class="btn btn-primary">Send</button>
+          </form>
+        </div>
+        <div class="panel" style="flex:1">
+          <h3>Quick Actions</h3>
+          <div id="agent-quick-actions" style="display:flex;flex-direction:column;gap:8px">
+            <button class="btn" onclick="agentQuickAction('run reconciliation')">Run Reconciliation</button>
+            <button class="btn" onclick="agentQuickAction('generate forecast')">Generate Forecast</button>
+            <button class="btn" onclick="agentQuickAction('save snapshot')">Save Snapshot</button>
+            <button class="btn" onclick="agentQuickAction('check alerts')">Check Alerts</button>
+            <button class="btn" onclick="agentQuickAction('list accounts')">List Accounts</button>
+            <button class="btn" onclick="agentQuickAction('list bonds')">List Bonds</button>
+            <button class="btn" onclick="agentQuickAction('list wallets')">List Wallets</button>
+            <button class="btn" onclick="agentQuickAction('list documents')">List Documents</button>
+            <button class="btn" onclick="agentQuickAction('generate trust report')">Trust Report</button>
+          </div>
+          <h3 style="margin-top:16px">Task History</h3>
+          <div id="agent-task-history"></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Integration View -->
+    <section id="view-integration" class="view">
+      <div class="view-loader" style="display:none"><div class="spinner"></div></div>
+      <header class="view-header">
+        <h2>Integration API</h2>
+        <div>
+          <button class="btn btn-primary" onclick="runIntegrationReconciliation()">Full Reconciliation</button>
+          <button class="btn" onclick="runDailySweep()">Daily Sweep</button>
+        </div>
+      </header>
+
+      <div class="metrics-grid" id="integration-metrics"></div>
+
+      <div class="panels-row">
+        <div class="panel" style="flex:1">
+          <h3>Engine Status</h3>
+          <div id="integration-engine-status" class="table-container"></div>
+        </div>
+        <div class="panel" style="flex:1">
+          <h3>Quick Pipelines</h3>
+          <div id="integration-pipelines" style="display:flex;flex-direction:column;gap:8px">
+            <button class="btn" onclick="showIntegrationModal('coupon')">Process Coupon → Cash</button>
+            <button class="btn" onclick="showIntegrationModal('internal-transfer')">Internal Transfer</button>
+            <button class="btn" onclick="showIntegrationModal('external-payment')">External Payment</button>
+            <button class="btn" onclick="showIntegrationModal('crypto-send')">USDC Send</button>
+            <button class="btn" onclick="showIntegrationModal('dex-swap')">DEX Swap (POL→USDC)</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="panels-row">
+        <div class="panel" style="flex:2">
+          <h3>Data Flow Map</h3>
+          <div id="integration-data-map"></div>
+        </div>
+        <div class="panel" style="flex:1">
+          <h3>Recent Events</h3>
+          <div id="integration-events" style="max-height:300px;overflow-y:auto"></div>
+        </div>
+      </div>
+
+      <div class="panel">
+        <h3>Pipeline Execution Log</h3>
+        <div id="integration-execution-log" class="table-container"></div>
+      </div>
+
+      <!-- Coupon Modal -->
+      <div id="integration-coupon-modal" class="modal hidden">
+        <div class="modal-content">
+          <h3>Process Coupon → Cash Pipeline</h3>
+          <form id="coupon-pipeline-form" onsubmit="executeCouponPipeline(event)">
+            <label>Bond ID<input type="number" name="bond_id" required></label>
+            <label>Coupon ID (optional)<input type="number" name="coupon_id"></label>
+            <label>Amount (cents)<input type="number" name="amount_cents" required></label>
+            <div class="modal-actions">
+              <button type="button" class="btn" onclick="hideModal('integration-coupon-modal')">Cancel</button>
+              <button type="submit" class="btn btn-primary">Execute Pipeline</button>
+            </div>
+          </form>
+        </div>
+      </div>
+
+      <!-- Internal Transfer Modal -->
+      <div id="integration-transfer-modal" class="modal hidden">
+        <div class="modal-content">
+          <h3>Internal Transfer Pipeline</h3>
+          <form id="transfer-pipeline-form" onsubmit="executeTransferPipeline(event)">
+            <label>From Account<select name="from_account_id" id="int-from-acct" required></select></label>
+            <label>To Account<select name="to_account_id" id="int-to-acct" required></select></label>
+            <label>Amount (cents)<input type="number" name="amount_cents" required></label>
+            <label>Type
+              <select name="transfer_type">
+                <option value="standard">Standard</option>
+                <option value="distribution">Distribution</option>
+                <option value="rebalance">Rebalance</option>
+                <option value="fee_collection">Fee Collection</option>
+              </select>
+            </label>
+            <label>Description<input type="text" name="description"></label>
+            <div class="modal-actions">
+              <button type="button" class="btn" onclick="hideModal('integration-transfer-modal')">Cancel</button>
+              <button type="submit" class="btn btn-primary">Execute Pipeline</button>
+            </div>
+          </form>
+        </div>
+      </div>
+
+      <!-- External Payment Modal -->
+      <div id="integration-payment-modal" class="modal hidden">
+        <div class="modal-content">
+          <h3>External Payment Pipeline</h3>
+          <form id="payment-pipeline-form" onsubmit="executePaymentPipeline(event)">
+            <label>From Account<select name="from_account_id" id="int-pay-from-acct" required></select></label>
+            <label>Amount (cents)<input type="number" name="amount_cents" required></label>
+            <label>Payment Rail
+              <select name="rail">
+                <option value="ach">ACH ($0.50 fee, 1-3 days)</option>
+                <option value="wire">Wire ($25.00 fee, same day)</option>
+                <option value="rtp">RTP ($1.00 fee, instant)</option>
+                <option value="check">Check ($2.00 fee, 5-7 days)</option>
+                <option value="usdc">USDC (free, ~2 seconds)</option>
+              </select>
+            </label>
+            <label>Description<input type="text" name="description"></label>
+            <div class="modal-actions">
+              <button type="button" class="btn" onclick="hideModal('integration-payment-modal')">Cancel</button>
+              <button type="submit" class="btn btn-primary">Execute Pipeline</button>
+            </div>
+          </form>
+        </div>
+      </div>
+
+      <!-- Crypto Send Modal -->
+      <div id="integration-crypto-modal" class="modal hidden">
+        <div class="modal-content">
+          <h3>USDC Send Pipeline</h3>
+          <form id="crypto-pipeline-form" onsubmit="executeCryptoPipeline(event)">
+            <label>Wallet<select name="wallet_id" id="int-wallet" required></select></label>
+            <label>To Address<input type="text" name="to_address" placeholder="0x..." required></label>
+            <label>Amount (USD)<input type="number" name="amount_usd" step="0.01" required></label>
+            <div class="modal-actions">
+              <button type="button" class="btn" onclick="hideModal('integration-crypto-modal')">Cancel</button>
+              <button type="submit" class="btn btn-primary">Execute Pipeline</button>
+            </div>
+          </form>
+        </div>
+      </div>
+
+      <!-- DEX Swap Modal -->
+      <div id="integration-swap-modal" class="modal hidden">
+        <div class="modal-content">
+          <h3>DEX Swap Pipeline (POL → USDC)</h3>
+          <form id="swap-pipeline-form" onsubmit="executeSwapPipeline(event)">
+            <label>Wallet<select name="wallet_id" id="int-swap-wallet" required></select></label>
+            <label>POL Amount<input type="number" name="amount_pol" step="0.001" required></label>
+            <label>Slippage (bps, default 100 = 1%)<input type="number" name="slippage_bps" value="100"></label>
+            <div class="modal-actions">
+              <button type="button" class="btn" onclick="hideModal('integration-swap-modal')">Cancel</button>
+              <button type="submit" class="btn btn-primary">Execute Pipeline</button>
+            </div>
+          </form>
+        </div>
+      </div>
+    </section>
+
+    <!-- Fineract Banking View -->
+    <section id="view-fineract" class="view">
+      <header class="view-header">
+        <h2>Fineract Banking — Open-Source Core Banking</h2>
+        <div class="view-actions">
+          <button class="btn btn-primary" onclick="showFineractPaymentModal()">+ New Payment</button>
+          <button class="btn btn-secondary" onclick="fineractSync()">Sync Accounts</button>
+          <button class="btn btn-secondary" onclick="fineractProcessSettlements()">Process Settlements</button>
+        </div>
+      </header>
+
+      <!-- Status Metrics -->
+      <div class="metrics-grid" id="fineract-metrics">
+        <div class="metric-card"><div class="metric-label">Total Payments</div><div class="metric-value" id="fin-total">—</div></div>
+        <div class="metric-card"><div class="metric-label">Pending</div><div class="metric-value" id="fin-pending">—</div></div>
+        <div class="metric-card"><div class="metric-label">Settled</div><div class="metric-value" id="fin-settled">—</div></div>
+        <div class="metric-card"><div class="metric-label">Failed/Returned</div><div class="metric-value" id="fin-failed">—</div></div>
+        <div class="metric-card"><div class="metric-label">Today Volume</div><div class="metric-value" id="fin-volume">—</div></div>
+        <div class="metric-card"><div class="metric-label">Mode</div><div class="metric-value" id="fin-mode">—</div></div>
+      </div>
+
+      <!-- Available Rails -->
+      <div class="section-block">
+        <h3>Available Payment Rails</h3>
+        <div class="table-container">
+          <table id="fineract-rails-table">
+            <thead><tr><th>Rail</th><th>Name</th><th>Fee</th><th>Settlement</th><th>Max Amount</th><th>Batch</th></tr></thead>
+            <tbody id="fineract-rails-body"></tbody>
+          </table>
+        </div>
+      </div>
+
+      <!-- Payment History -->
+      <div class="section-block">
+        <h3>Payment History</h3>
+        <div class="table-container">
+          <table id="fineract-payments-table">
+            <thead><tr><th>Payment #</th><th>Rail</th><th>Amount</th><th>Fee</th><th>Beneficiary</th><th>Status</th><th>Settlement Date</th><th>Created</th></tr></thead>
+            <tbody id="fineract-payments-body"></tbody>
+          </table>
+        </div>
+      </div>
+
+      <!-- ACH Batches -->
+      <div class="section-block">
+        <h3>ACH Batches</h3>
+        <div class="view-actions" style="margin-bottom:10px">
+          <button class="btn btn-secondary btn-sm" onclick="fineractCreateBatch()">Create ACH Batch</button>
+        </div>
+        <div class="table-container">
+          <table id="fineract-batches-table">
+            <thead><tr><th>Batch #</th><th>Type</th><th>Entries</th><th>Total Debit</th><th>Status</th><th>Effective Date</th><th>Action</th></tr></thead>
+            <tbody id="fineract-batches-body"></tbody>
+          </table>
+        </div>
+      </div>
+
+      <!-- Settlement Log -->
+      <div class="section-block">
+        <h3>Settlement Log</h3>
+        <div class="table-container">
+          <table id="fineract-log-table">
+            <thead><tr><th>Payment #</th><th>Rail</th><th>From</th><th>To</th><th>Event</th><th>Time</th></tr></thead>
+            <tbody id="fineract-log-body"></tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+
+    <!-- Fineract Payment Modal -->
+    <div id="fineract-payment-modal" class="modal" style="display:none">
+      <div class="modal-content">
+        <div class="modal-header">
+          <h3>Initiate External Payment</h3>
+          <button class="modal-close" onclick="closeFineractPaymentModal()">&times;</button>
+        </div>
+        <form id="fineract-payment-form" onsubmit="submitFineractPayment(event)">
+          <div class="form-group">
+            <label>Source Account</label>
+            <select id="fin-from-account" required></select>
+          </div>
+          <div class="form-group">
+            <label>Payment Rail</label>
+            <select id="fin-rail" required onchange="updateRailInfo()">
+              <option value="ACH">ACH — Automated Clearing House ($0.50 fee, 2 days)</option>
+              <option value="WIRE">Wire — Fedwire ($25.00 fee, Same day)</option>
+              <option value="RTP">RTP — Real-Time Payments ($1.00 fee, Instant)</option>
+              <option value="CHECK">Check / Draft ($2.00 fee, 5 days)</option>
+            </select>
+          </div>
+          <div class="form-group">
+            <label>Amount ($)</label>
+            <input type="number" id="fin-amount" step="0.01" min="0.01" required placeholder="0.00">
+          </div>
+          <fieldset>
+            <legend>Destination</legend>
+            <div class="form-group">
+              <label>Routing Number (ABA)</label>
+              <input type="text" id="fin-routing" pattern="[0-9]{9}" placeholder="021000021" required>
+            </div>
+            <div class="form-group">
+              <label>Account Number</label>
+              <input type="text" id="fin-account-num" placeholder="123456789" required>
+            </div>
+            <div class="form-group">
+              <label>Bank Name</label>
+              <input type="text" id="fin-bank-name" placeholder="JP Morgan Chase">
+            </div>
+            <div class="form-group">
+              <label>Beneficiary Name</label>
+              <input type="text" id="fin-beneficiary" placeholder="John Smith" required>
+            </div>
+            <div class="form-group">
+              <label>Beneficiary Address</label>
+              <input type="text" id="fin-address" placeholder="123 Main St, New York, NY">
+            </div>
+          </fieldset>
+          <div class="form-group">
+            <label>Memo / Description</label>
+            <textarea id="fin-memo" rows="2" placeholder="Payment description"></textarea>
+          </div>
+          <div class="form-actions">
+            <button type="button" class="btn btn-secondary" onclick="closeFineractPaymentModal()">Cancel</button>
+            <button type="submit" class="btn btn-primary">Initiate Payment</button>
+          </div>
+        </form>
+      </div>
+    </div>
+
+    <!-- Activity View -->
+    <section id="view-activity" class="view">
+      <header class="view-header">
+        <h2>Audit Trail</h2>
+      </header>
+      <div id="audit-log-table" class="table-container"></div>
+    </section>
+  </main>
+
+  <script src="app.js"></script>
+</body>
+</html>
