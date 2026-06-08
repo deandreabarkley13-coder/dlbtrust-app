@@ -831,11 +831,138 @@ async function rejectPayment(id) {
 }
 
 async function processPayment(id) {
+  // Show modal to collect banking details if not on file
+  const transfer = await api(`/external-transfers/${id}`);
+  const method = transfer.payment_method || 'ach';
+
+  // If payment method has banking details, process directly
+  if (transfer.payment_method_id) {
+    try {
+      const data = await api(`/external-transfers/${id}/process`, { method: 'POST' });
+      showToast(data.message || `${method.toUpperCase()} payment executed`);
+      if (data.payment_file) {
+        showPaymentFileResult(data);
+      }
+      loadPayments();
+    } catch (err) { showToast(err.message, 'error'); }
+    return;
+  }
+
+  // No payment method on file — prompt for banking details
+  const isWire = method === 'wire';
+  const html = `
+    <div class="modal-backdrop" id="process-payment-modal" onclick="if(event.target===this)hideModal('process-payment-modal')">
+      <div class="modal" style="max-width:500px">
+        <div class="modal-header">
+          <h3>${isWire ? '🏦 Wire Transfer Details' : '🏧 ACH Payment Details'}</h3>
+          <button class="modal-close" onclick="hideModal('process-payment-modal')">×</button>
+        </div>
+        <form onsubmit="executeProcessPayment(event, ${id})">
+          <div class="form-group">
+            <label>Recipient</label>
+            <input type="text" value="${transfer.contact_name || ''}" disabled style="background:#f3f4f6">
+          </div>
+          <div class="form-group">
+            <label>Amount</label>
+            <input type="text" value="$${(transfer.amount_cents/100).toFixed(2)}" disabled style="background:#f3f4f6">
+          </div>
+          ${isWire ? `
+            <div class="form-group">
+              <label>Routing Number (ABA) — domestic wire</label>
+              <input type="text" name="routing_number" placeholder="9-digit ABA routing number" maxlength="9" pattern="\\d{9}">
+            </div>
+            <div class="form-group">
+              <label>— OR — SWIFT/BIC Code (international)</label>
+              <input type="text" name="swift_bic" placeholder="e.g. CHASUS33" maxlength="11">
+            </div>
+          ` : `
+            <div class="form-group">
+              <label>Routing Number (ABA) *</label>
+              <input type="text" name="routing_number" placeholder="9-digit ABA routing number" maxlength="9" pattern="\\d{9}" required>
+            </div>
+          `}
+          <div class="form-group">
+            <label>Account Number *</label>
+            <input type="text" name="account_number" placeholder="Bank account number" required>
+          </div>
+          <div class="form-group">
+            <label>Account Type</label>
+            <select name="account_type">
+              <option value="checking">Checking</option>
+              <option value="savings">Savings</option>
+            </select>
+          </div>
+          ${isWire ? `
+            <div class="form-group">
+              <label>Beneficiary Bank Name</label>
+              <input type="text" name="bank_name" placeholder="e.g. Chase Bank">
+            </div>
+          ` : ''}
+          <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:16px">
+            <button type="button" class="btn" onclick="hideModal('process-payment-modal')">Cancel</button>
+            <button type="submit" class="btn btn-primary">Execute ${method.toUpperCase()} Payment</button>
+          </div>
+        </form>
+      </div>
+    </div>`;
+  document.body.insertAdjacentHTML('beforeend', html);
+}
+
+async function executeProcessPayment(e, id) {
+  e.preventDefault();
+  const form = new FormData(e.target);
+  const body = {};
+  if (form.get('routing_number')) body.routing_number = form.get('routing_number');
+  if (form.get('account_number')) body.account_number = form.get('account_number');
+  if (form.get('account_type')) body.account_type = form.get('account_type');
+  if (form.get('swift_bic')) body.swift_bic = form.get('swift_bic');
+  if (form.get('bank_name')) body.bank_name = form.get('bank_name');
+
   try {
-    const data = await api(`/external-transfers/${id}/process`, { method: 'POST' });
-    showToast(data.message || 'Payment processing — funds debited');
+    const data = await api(`/external-transfers/${id}/process`, { method: 'POST', body: JSON.stringify(body) });
+    hideModal('process-payment-modal');
+    showToast(data.message || 'Payment executed');
+    if (data.payment_file) {
+      showPaymentFileResult(data);
+    }
     loadPayments();
   } catch (err) { showToast(err.message, 'error'); }
+}
+
+function showPaymentFileResult(data) {
+  const file = data.payment_file;
+  const html = `
+    <div class="modal-backdrop" id="payment-result-modal" onclick="if(event.target===this)hideModal('payment-result-modal')">
+      <div class="modal" style="max-width:600px">
+        <div class="modal-header">
+          <h3>✅ Payment Executed</h3>
+          <button class="modal-close" onclick="hideModal('payment-result-modal')">×</button>
+        </div>
+        <div style="padding:20px">
+          <div style="background:#ecfdf5;border:1px solid #6ee7b7;border-radius:8px;padding:16px;margin-bottom:16px">
+            <strong>Confirmation:</strong> ${data.confirmation_id || 'N/A'}<br>
+            <strong>Amount Debited:</strong> $${data.debited}<br>
+            <strong>GL Posted:</strong> ${data.gl_posted ? 'Yes' : 'No'}
+          </div>
+          <h4>Generated ${file.format.toUpperCase()} File</h4>
+          <table style="width:100%;font-size:0.85rem">
+            <tr><td><strong>Filename</strong></td><td>${file.filename}</td></tr>
+            <tr><td><strong>Format</strong></td><td>${file.format}</td></tr>
+            ${file.metadata.beneficiary ? `<tr><td><strong>Beneficiary</strong></td><td>${file.metadata.beneficiary}</td></tr>` : ''}
+            ${file.metadata.amountUSD ? `<tr><td><strong>Amount</strong></td><td>$${file.metadata.amountUSD}</td></tr>` : ''}
+            ${file.metadata.odfi ? `<tr><td><strong>ODFI</strong></td><td>${file.metadata.odfi}</td></tr>` : ''}
+            ${file.metadata.imad ? `<tr><td><strong>IMAD</strong></td><td>${file.metadata.imad}</td></tr>` : ''}
+            ${file.metadata.reference ? `<tr><td><strong>Reference</strong></td><td>${file.metadata.reference}</td></tr>` : ''}
+          </table>
+          <p style="margin-top:16px;color:var(--text-secondary);font-size:0.85rem">
+            The ${file.format.toUpperCase()} file has been generated and stored. You can download it from the Payment Files tab
+            and submit it to your bank for processing.
+          </p>
+          <button class="btn btn-primary" onclick="loadPaymentFiles();hideModal('payment-result-modal')" style="margin-top:12px">View Payment Files</button>
+        </div>
+      </div>
+    </div>`;
+  document.body.insertAdjacentHTML('beforeend', html);
 }
 
 async function completePayment(id) {
@@ -927,6 +1054,97 @@ async function createPayment(e) {
     hideModal('create-payment-modal');
     e.target.reset();
     loadPayments();
+  } catch (err) { showToast(err.message, 'error'); }
+}
+
+// --- Payment Files ---
+
+async function loadPaymentFiles() {
+  try {
+    const files = await api('/external-transfers/files');
+    let html = `
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px">
+        <h3 style="margin:0">📁 Payment Files (NACHA / Wire)</h3>
+        <button class="btn" onclick="loadPayments()">← Back to Payments</button>
+      </div>
+      <table>
+        <thead><tr>
+          <th>File</th><th>Type</th><th>Transfer</th><th>Status</th><th>Created</th><th>Actions</th>
+        </tr></thead><tbody>`;
+
+    if (!files || files.length === 0) {
+      html += '<tr><td colspan="6" style="text-align:center;padding:40px;color:var(--text-secondary)">No payment files generated yet. Process an ACH or Wire payment to generate files.</td></tr>';
+    } else {
+      for (const f of files) {
+        const typeBadge = f.file_type === 'nacha' ? 'badge-approved' : 'badge-reversed';
+        const statusBadge = f.status === 'submitted' ? 'badge-approved' : f.status === 'generated' ? 'badge-frozen' : '';
+        html += `<tr>
+          <td><strong>${f.filename}</strong></td>
+          <td><span class="badge ${typeBadge}">${f.file_type.toUpperCase()}</span></td>
+          <td>${f.transfer_number || f.batch_id || '—'}</td>
+          <td><span class="badge ${statusBadge}">${f.status}</span></td>
+          <td>${formatDate(f.created_at)}</td>
+          <td>
+            <button class="btn btn-sm btn-primary" onclick="downloadPaymentFile(${f.id})">⬇ Download</button>
+            <button class="btn btn-sm" onclick="viewPaymentFile(${f.id})">👁 View</button>
+            ${f.status === 'generated' ? `<button class="btn btn-sm btn-success" onclick="markFileSubmitted(${f.id})">✓ Mark Submitted</button>` : ''}
+          </td>
+        </tr>`;
+      }
+    }
+    html += '</tbody></table>';
+    document.getElementById('payments-table').innerHTML = html;
+  } catch (err) {
+    showToast(`Error loading files: ${err.message}`, 'error');
+  }
+}
+
+async function downloadPaymentFile(fileId) {
+  try {
+    const resp = await fetch(`/api/external-transfers/files/${fileId}/download`);
+    if (!resp.ok) throw new Error('Download failed');
+    const blob = await resp.blob();
+    const filename = resp.headers.get('content-disposition')?.match(/filename="(.+)"/)?.[1] || 'payment-file.txt';
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url; a.download = filename; a.click();
+    URL.revokeObjectURL(url);
+    showToast(`Downloaded: ${filename}`);
+  } catch (err) { showToast(err.message, 'error'); }
+}
+
+async function viewPaymentFile(fileId) {
+  try {
+    const file = await api(`/external-transfers/files/${fileId}/content`);
+    const html = `
+      <div class="modal-backdrop" id="view-file-modal" onclick="if(event.target===this)hideModal('view-file-modal')">
+        <div class="modal" style="max-width:700px;max-height:80vh;overflow:auto">
+          <div class="modal-header">
+            <h3>${file.filename}</h3>
+            <button class="modal-close" onclick="hideModal('view-file-modal')">×</button>
+          </div>
+          <div style="padding:16px">
+            <div style="display:flex;gap:12px;margin-bottom:12px">
+              <span class="badge badge-approved">${file.file_type.toUpperCase()}</span>
+              <span class="badge">${file.status}</span>
+            </div>
+            ${file.metadata ? `<pre style="background:#f8fafc;border:1px solid #e2e8f0;border-radius:6px;padding:12px;font-size:0.8rem;overflow:auto;max-height:200px">${JSON.stringify(file.metadata, null, 2)}</pre>` : ''}
+            <h4 style="margin-top:12px">File Content:</h4>
+            <pre style="background:#1e293b;color:#e2e8f0;border-radius:6px;padding:12px;font-size:0.75rem;overflow:auto;max-height:300px;white-space:pre-wrap">${file.content}</pre>
+            <button class="btn btn-primary" onclick="downloadPaymentFile(${fileId})" style="margin-top:12px">⬇ Download File</button>
+          </div>
+        </div>
+      </div>`;
+    document.body.insertAdjacentHTML('beforeend', html);
+  } catch (err) { showToast(err.message, 'error'); }
+}
+
+async function markFileSubmitted(fileId) {
+  if (!confirm('Mark this file as submitted to the bank?')) return;
+  try {
+    await api(`/external-transfers/files/${fileId}/mark-submitted`, { method: 'POST' });
+    showToast('File marked as submitted — linked transfers moved to "sent" status');
+    loadPaymentFiles();
   } catch (err) { showToast(err.message, 'error'); }
 }
 

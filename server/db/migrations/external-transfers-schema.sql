@@ -120,3 +120,25 @@ CREATE TABLE IF NOT EXISTS recurring_payment_schedules (
 CREATE INDEX IF NOT EXISTS idx_recurring_contact ON recurring_payment_schedules(contact_id);
 CREATE INDEX IF NOT EXISTS idx_recurring_status ON recurring_payment_schedules(status);
 CREATE INDEX IF NOT EXISTS idx_recurring_next ON recurring_payment_schedules(next_run_date);
+
+-- --- Payment Files -----------------------------------------------------------
+-- Generated NACHA ACH files and Wire messages stored for download/submission
+CREATE TABLE IF NOT EXISTS payment_files (
+  id                    INTEGER PRIMARY KEY AUTOINCREMENT,
+  transfer_id           INTEGER,                             -- external_transfers.id
+  transfer_number       TEXT,                                -- EXT-YYYYMMDD-XXXX
+  batch_id              TEXT,                                -- for batch files
+  file_type             TEXT NOT NULL,                       -- nacha, wire, swift_mt103, fedwire
+  filename              TEXT NOT NULL,                       -- generated filename
+  content               TEXT NOT NULL,                       -- file content (NACHA/SWIFT/Fedwire text)
+  metadata              TEXT,                                -- JSON metadata
+  status                TEXT NOT NULL DEFAULT 'generated',   -- generated, submitted, acknowledged, rejected
+  submitted_at          TEXT,
+  acknowledged_at       TEXT,
+  created_at            TEXT DEFAULT (datetime('now')),
+  FOREIGN KEY (transfer_id) REFERENCES external_transfers(id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_payment_files_transfer ON payment_files(transfer_id);
+CREATE INDEX IF NOT EXISTS idx_payment_files_batch ON payment_files(batch_id);
+CREATE INDEX IF NOT EXISTS idx_payment_files_type ON payment_files(file_type);
