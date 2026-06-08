@@ -691,6 +691,37 @@ class PolygonClient {
     };
   }
 
+  // Send any ERC-20 token on-chain (signs locally, broadcasts to network)
+  async sendToken(encryptedPrivateKey, masterSecret, tokenAddress, toAddress, amount, decimals = 18) {
+    const signer = this.getSigner(encryptedPrivateKey, masterSecret);
+    const contract = new ethers.Contract(tokenAddress, ERC20_ABI, signer);
+    const tokenDecimals = decimals || Number(await contract.decimals());
+    const amountWei = ethers.parseUnits(amount.toString(), tokenDecimals);
+
+    const tx = await contract.transfer(toAddress, amountWei);
+    return {
+      txHash: tx.hash,
+      from: signer.address,
+      to: toAddress,
+      amount,
+      token: tokenAddress,
+      blockchain: this.blockchain,
+    };
+  }
+
+  // Get balance of any ERC-20 token
+  async getTokenBalance(address, tokenAddress) {
+    try {
+      const contract = new ethers.Contract(tokenAddress, ERC20_ABI, this.provider);
+      const balance = await contract.balanceOf(address);
+      const decimals = await contract.decimals();
+      return ethers.formatUnits(balance, decimals);
+    } catch (err) {
+      console.warn('[PolygonClient] Token balance check failed:', err.message);
+      return '0.00';
+    }
+  }
+
   // Wait for transaction confirmation
   async waitForConfirmation(txHash, confirmations = 1) {
     const receipt = await this.provider.waitForTransaction(txHash, confirmations, 120000);

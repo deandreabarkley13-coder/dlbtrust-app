@@ -403,6 +403,42 @@ router.get('/wallets/:id', (req, res) => {
   }
 });
 
+// ─── GET /wallets/:id/balances ───────────────────────────────────────────────
+
+router.get('/wallets/:id/balances', async (req, res) => {
+  try {
+    const walletMgr = new WalletManager(req.db);
+    const wallet = walletMgr.getWallet(req.params.id);
+    if (!wallet) return res.status(404).json({ error: 'Wallet not found' });
+
+    const polygonClient = new PolygonClient(wallet.blockchain, getConfig(req.db, 'rpc_url_override') || null);
+    const balances = {
+      pol: await polygonClient.getNativeBalance(wallet.address),
+      usdc: await polygonClient.getUsdcBalance(wallet.address),
+    };
+
+    // Check for DLBT token
+    let dlbtAddress = null;
+    try {
+      const dlbtRow = req.db.prepare("SELECT contract_address FROM cdk_contracts WHERE contract_type = 'token' AND status = 'deployed' ORDER BY id DESC LIMIT 1").get();
+      if (dlbtRow) {
+        dlbtAddress = dlbtRow.contract_address;
+        balances.dlbt = await polygonClient.getTokenBalance(wallet.address, dlbtAddress);
+      }
+    } catch (_) {}
+
+    res.json({
+      wallet_id: wallet.id,
+      address: wallet.address,
+      blockchain: wallet.blockchain,
+      balances,
+      dlbt_contract: dlbtAddress,
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // ─── POST /wallets/:id/sync ─────────────────────────────────────────────────
 
 router.post('/wallets/:id/sync', async (req, res) => {
@@ -544,9 +580,25 @@ router.post('/send', async (req, res) => {
         try {
           const masterKey = getMasterEncryptionKey(req.db);
           const polygonClient = new PolygonClient(fromWallet.blockchain, getConfig(req.db, 'rpc_url_override') || null);
-          const result = await polygonClient.sendUsdc(encKey.encrypted_private_key, masterKey, destAddress, amount);
-          txHash = result.txHash;
-          onChainSubmitted = true;
+
+          if (token && token !== 'USDC' && token !== 'POL') {
+            // Send custom ERC-20 token (e.g., DLBT)
+            let tokenAddress = token;
+            // Resolve DLBT to its contract address
+            if (token === 'DLBT') {
+              try {
+                const dlbtRow = req.db.prepare("SELECT contract_address FROM cdk_contracts WHERE contract_type = 'token' AND status = 'deployed' ORDER BY id DESC LIMIT 1").get();
+                if (dlbtRow) tokenAddress = dlbtRow.contract_address;
+              } catch (_) {}
+            }
+            const result = await polygonClient.sendToken(encKey.encrypted_private_key, masterKey, tokenAddress, destAddress, amount, 6);
+            txHash = result.txHash;
+            onChainSubmitted = true;
+          } else {
+            const result = await polygonClient.sendUsdc(encKey.encrypted_private_key, masterKey, destAddress, amount);
+            txHash = result.txHash;
+            onChainSubmitted = true;
+          }
         } catch (sendErr) {
           console.warn('[Blockchain] Private stack send failed:', sendErr.message);
         }

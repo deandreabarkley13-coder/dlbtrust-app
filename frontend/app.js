@@ -1714,10 +1714,15 @@ async function loadBlockchain() {
             <span class="badge" style="font-size:0.7rem">${w.wallet_type_label || w.wallet_type}</span>
           </div>
           <div style="font-size:1.3rem;font-weight:600;color:var(--accent-primary);margin:8px 0">$${parseFloat(w.usdc_balance).toLocaleString('en-US', {minimumFractionDigits: 2})} <span style="font-size:0.75rem;color:var(--text-muted)">USDC</span></div>
-          <div style="font-size:0.75rem;color:var(--text-muted);font-family:monospace;margin-bottom:8px">${w.address_masked || '—'}</div>
+          <div style="font-size:0.75rem;color:var(--text-muted);font-family:monospace;margin-bottom:4px;display:flex;align-items:center;gap:4px">
+            <span>${w.address_masked || '—'}</span>
+            ${w.address ? `<button onclick="copyAddress('${w.address}')" style="background:none;border:1px solid var(--border);border-radius:4px;cursor:pointer;padding:1px 6px;font-size:0.65rem;color:var(--text-muted)" title="Copy full address">Copy</button>` : ''}
+          </div>
           <div style="font-size:0.75rem;color:var(--text-muted);margin-bottom:8px">${(w.blockchain_info && w.blockchain_info.name) || w.blockchain} ${w.address ? `<a href="https://${w.blockchain === 'MATIC' ? '' : 'amoy.'}polygonscan.com/address/${w.address}" target="_blank" style="color:var(--accent-primary);font-size:0.7rem">View on Explorer</a>` : ''}</div>
-          <div style="display:flex;gap:6px">
+          <div style="display:flex;gap:6px;flex-wrap:wrap">
             <button class="btn" onclick="syncWallet(${w.id})" style="font-size:0.75rem;padding:3px 8px">Sync</button>
+            <button class="btn" onclick="showReceiveForWallet(${w.id}, '${w.wallet_name}', '${w.address}')" style="font-size:0.75rem;padding:3px 8px;color:#00897b">Receive</button>
+            <button class="btn" onclick="showSendFromWallet(${w.id})" style="font-size:0.75rem;padding:3px 8px;color:var(--accent-primary)">Send</button>
             ${w.status === 'active'
               ? `<button class="btn" onclick="freezeWallet(${w.id})" style="font-size:0.75rem;padding:3px 8px;color:var(--warning)">Freeze</button>`
               : `<button class="btn" onclick="unfreezeWallet(${w.id})" style="font-size:0.75rem;padding:3px 8px;color:var(--success)">Unfreeze</button>`
@@ -2105,6 +2110,132 @@ async function sendUsdc(e) {
     const msg = result.requires_approval
       ? `Transfer of $${parseFloat(result.transaction.amount).toFixed(2)} USDC requires approval`
       : `Transfer of $${parseFloat(result.transaction.amount).toFixed(2)} USDC ${result.circle_submitted ? 'submitted to Circle' : 'queued locally'}`;
+    showToast(msg, 'success');
+    loadBlockchain();
+  } catch (err) {
+    showToast(`Failed: ${err.message}`, 'error');
+  }
+}
+
+// --- Copy address helper ---
+function copyAddress(addr) {
+  navigator.clipboard.writeText(addr).then(() => showToast('Address copied!', 'success')).catch(() => {
+    const ta = document.createElement('textarea');
+    ta.value = addr;
+    document.body.appendChild(ta);
+    ta.select();
+    document.execCommand('copy');
+    document.body.removeChild(ta);
+    showToast('Address copied!', 'success');
+  });
+}
+
+// --- Receive Payment ---
+let _receiveWallets = [];
+
+async function showReceiveModal() {
+  document.getElementById('receive-modal').classList.remove('hidden');
+  document.getElementById('recv-address-display').style.display = 'none';
+  try {
+    const data = await api('/blockchain/wallets?status=active');
+    _receiveWallets = data.wallets || [];
+    const sel = document.getElementById('recv-wallet');
+    sel.innerHTML = '<option value="">Select wallet...</option>' +
+      _receiveWallets.map(w => `<option value="${w.id}" data-address="${w.address}">${w.wallet_name} (${w.address ? w.address.slice(0,10) + '...' : 'no addr'})</option>`).join('');
+  } catch (err) { showToast('Failed to load wallets', 'error'); }
+}
+
+function showReceiveForWallet(walletId, walletName, address) {
+  document.getElementById('receive-modal').classList.remove('hidden');
+  document.getElementById('recv-address-display').style.display = 'block';
+  document.getElementById('recv-address').textContent = address;
+  document.getElementById('recv-balances').innerHTML = '<span style="color:var(--text-muted)">Loading balances...</span>';
+
+  // Load balances
+  api(`/blockchain/wallets/${walletId}/balances`).then(data => {
+    const b = data.balances || {};
+    document.getElementById('recv-balances').innerHTML = `
+      <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px">
+        <div><strong>${parseFloat(b.pol || 0).toFixed(4)}</strong> <span style="color:var(--text-muted)">POL</span></div>
+        <div><strong>$${parseFloat(b.usdc || 0).toFixed(2)}</strong> <span style="color:var(--text-muted)">USDC</span></div>
+        <div><strong>${parseFloat(b.dlbt || 0).toFixed(2)}</strong> <span style="color:var(--text-muted)">DLBT</span></div>
+      </div>
+    `;
+  }).catch(() => {
+    document.getElementById('recv-balances').innerHTML = '<span style="color:var(--text-muted)">Could not load balances</span>';
+  });
+
+  // Also populate the dropdown
+  api('/blockchain/wallets?status=active').then(data => {
+    _receiveWallets = data.wallets || [];
+    const sel = document.getElementById('recv-wallet');
+    sel.innerHTML = '<option value="">Select wallet...</option>' +
+      _receiveWallets.map(w => `<option value="${w.id}" data-address="${w.address}" ${w.id === walletId ? 'selected' : ''}>${w.wallet_name} (${w.address ? w.address.slice(0,10) + '...' : 'no addr'})</option>`).join('');
+  }).catch(() => {});
+}
+
+function updateReceiveAddress() {
+  const sel = document.getElementById('recv-wallet');
+  const opt = sel.options[sel.selectedIndex];
+  const display = document.getElementById('recv-address-display');
+  if (!sel.value) { display.style.display = 'none'; return; }
+
+  const addr = opt.getAttribute('data-address');
+  display.style.display = 'block';
+  document.getElementById('recv-address').textContent = addr || 'No address';
+  document.getElementById('recv-balances').innerHTML = '<span style="color:var(--text-muted)">Loading balances...</span>';
+
+  api(`/blockchain/wallets/${sel.value}/balances`).then(data => {
+    const b = data.balances || {};
+    document.getElementById('recv-balances').innerHTML = `
+      <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px">
+        <div><strong>${parseFloat(b.pol || 0).toFixed(4)}</strong> <span style="color:var(--text-muted)">POL</span></div>
+        <div><strong>$${parseFloat(b.usdc || 0).toFixed(2)}</strong> <span style="color:var(--text-muted)">USDC</span></div>
+        <div><strong>${parseFloat(b.dlbt || 0).toFixed(2)}</strong> <span style="color:var(--text-muted)">DLBT</span></div>
+      </div>
+    `;
+  }).catch(() => {});
+}
+
+function copyReceiveAddress() {
+  const addr = document.getElementById('recv-address').textContent;
+  copyAddress(addr);
+}
+
+// --- Send DLBT ---
+async function showSendTokenModal(token) {
+  document.getElementById('send-dlbt-modal').classList.remove('hidden');
+  try {
+    const data = await api('/blockchain/wallets?status=active');
+    const sel = document.getElementById('sd-from-wallet');
+    sel.innerHTML = '<option value="">Select wallet...</option>' +
+      (data.wallets || []).map(w => `<option value="${w.id}">${w.wallet_name} (${w.address ? w.address.slice(0,10) + '...' : 'no addr'})</option>`).join('');
+  } catch (err) { showToast('Failed to load wallets', 'error'); }
+}
+
+function showSendFromWallet(walletId) {
+  showSendUsdcModal();
+  setTimeout(() => { document.getElementById('su-from-wallet').value = walletId; }, 300);
+}
+
+async function sendDlbt(e) {
+  e.preventDefault();
+  try {
+    const result = await api('/blockchain/send', {
+      method: 'POST',
+      body: JSON.stringify({
+        from_wallet_id: parseInt($('#sd-from-wallet').value),
+        to_address: $('#sd-to-address').value,
+        amount: $('#sd-amount').value,
+        token: 'DLBT',
+        transfer_type: $('#sd-type').value,
+        description: $('#sd-description').value || undefined,
+      }),
+    });
+    hideModal('send-dlbt-modal');
+    const msg = result.requires_approval
+      ? `Transfer of ${$('#sd-amount').value} DLBT requires approval`
+      : `Transfer of ${$('#sd-amount').value} DLBT ${result.on_chain_submitted ? 'sent on-chain' : 'queued'}`;
     showToast(msg, 'success');
     loadBlockchain();
   } catch (err) {
