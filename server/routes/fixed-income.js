@@ -854,21 +854,26 @@ router.post('/coupons/fund-pool', async (req, res) => {
     const db = req.fiDb;
 
     // Get CDK config
-    const config = new CDKConfigManager(db);
-    const chain = config.getChain();
-    const deployerWalletId = chain.deployer_wallet_id;
-    const deployerWallet = db.prepare('SELECT * FROM wallets WHERE id = ?').get(parseInt(deployerWalletId));
-    const token = db.prepare("SELECT * FROM cdk_contracts WHERE contract_type = 'token' AND blockchain = 'MATIC' ORDER BY id DESC LIMIT 1").get();
+    const cfg = new CDKConfigManager(db);
+    const deployerWalletId = cfg.get('deployer_wallet_id');
+    const mgr = new ContractManager(db);
+    const token = mgr.getDeployedToken();
     const poolRow = db.prepare("SELECT * FROM cdk_liquidity_pools WHERE status = 'active' ORDER BY id DESC LIMIT 1").get();
 
-    if (!deployerWallet || !token) {
+    if (!deployerWalletId || !token) {
       return res.status(400).json({ error: 'DLBT token or deployer wallet not configured' });
     }
     if (!poolRow) {
       return res.status(400).json({ error: 'No active liquidity pool. Create one first in Polygon CDK.' });
     }
 
-    const signer = getSigner(db, deployerWallet);
+    const network = cfg.get('network') || 'MATIC';
+    const deployerWallet = db.prepare('SELECT * FROM blockchain_wallets WHERE id = ?').get(parseInt(deployerWalletId));
+    if (!deployerWallet) {
+      return res.status(400).json({ error: 'Deployer wallet not found' });
+    }
+
+    const signer = getSigner(db, parseInt(deployerWalletId), network);
     if (!signer) {
       return res.status(400).json({ error: 'Cannot create signer for deployer wallet' });
     }
