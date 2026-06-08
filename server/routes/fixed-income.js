@@ -801,8 +801,9 @@ router.post('/coupons/process-all', async (req, res) => {
     }
 
     // After all minting, try to add liquidity to pool
-    // First check for existing USDC, then auto-swap POL→USDC if needed
+    // Auto-swap available POL → USDC, then pair with minted DLBT
     let poolFunded = null;
+    let poolError = null;
     if (signer && token && deployerWallet && totalMintedCents > 0) {
       try {
         const poolRow = db.prepare("SELECT * FROM cdk_liquidity_pools WHERE status = 'active' ORDER BY id DESC LIMIT 1").get();
@@ -814,18 +815,21 @@ router.post('/coupons/process-all', async (req, res) => {
           const totalMintedDollars = totalMintedCents / 100;
 
           const poolMgr = new LiquidityPoolManager(db);
-          if (usdcAvailable >= totalMintedDollars) {
-            poolFunded = await poolMgr.addLiquidity(signer, token.contract_address, totalMintedDollars, totalMintedDollars);
+          if (usdcAvailable >= 1.0) {
+            // Use existing USDC (up to what's available)
+            const amountToAdd = Math.min(usdcAvailable, totalMintedDollars);
+            poolFunded = await poolMgr.addLiquidity(signer, token.contract_address, amountToAdd, amountToAdd);
           } else {
-            // Auto-swap POL → USDC → fund pool
+            // Auto-swap available POL → USDC → fund pool (uses whatever POL is available)
             const autoResult = await poolMgr.autoFundFromPOL(signer, token.contract_address, totalMintedDollars);
-            if (autoResult.poolFunded) {
-              poolFunded = { autoFunded: true, steps: autoResult.steps, totalUSDC: autoResult.totalUSDC };
-            }
+            poolFunded = { autoFunded: true, steps: autoResult.steps, totalUSDC: autoResult.totalUSDC, poolFunded: autoResult.poolFunded };
           }
+        } else {
+          poolError = 'No active liquidity pool found';
         }
       } catch (poolErr) {
-        console.warn('[fixed-income] Pool funding after batch processing skipped:', poolErr.message);
+        poolError = poolErr.message;
+        console.warn('[fixed-income] Pool funding after batch processing failed:', poolErr.message);
       }
     }
 
@@ -834,11 +838,59 @@ router.post('/coupons/process-all', async (req, res) => {
       processed: results.length,
       total_minted: (totalMintedCents / 100).toFixed(2),
       account_credited: creditAccount ? creditAccount.account_name : null,
-      pool_funded: poolFunded ? { dlbt_added: (totalMintedCents / 100).toFixed(2), usdc_added: (totalMintedCents / 100).toFixed(2), tx_hash: poolFunded.txHash } : null,
+      pool_funded: poolFunded || null,
+      pool_error: poolError || null,
       coupons: results,
     });
   } catch (err) {
     res.status(500).json({ error: 'Failed to process coupons', detail: err.message });
+  }
+});
+
+// ─── POST /coupons/fund-pool — Use coupon interest to auto-fund liquidity pool
+// Swaps available POL → USDC and pairs with minted DLBT in pool
+router.post('/coupons/fund-pool', async (req, res) => {
+  try {
+    const db = req.fiDb;
+
+    // Get CDK config
+    const config = new CDKConfigManager(db);
+    const chain = config.getChain();
+    const deployerWalletId = chain.deployer_wallet_id;
+    const deployerWallet = db.prepare('SELECT * FROM wallets WHERE id = ?').get(parseInt(deployerWalletId));
+    const token = db.prepare("SELECT * FROM cdk_contracts WHERE contract_type = 'token' AND blockchain = 'MATIC' ORDER BY id DESC LIMIT 1").get();
+    const poolRow = db.prepare("SELECT * FROM cdk_liquidity_pools WHERE status = 'active' ORDER BY id DESC LIMIT 1").get();
+
+    if (!deployerWallet || !token) {
+      return res.status(400).json({ error: 'DLBT token or deployer wallet not configured' });
+    }
+    if (!poolRow) {
+      return res.status(400).json({ error: 'No active liquidity pool. Create one first in Polygon CDK.' });
+    }
+
+    const signer = getSigner(db, deployerWallet);
+    if (!signer) {
+      return res.status(400).json({ error: 'Cannot create signer for deployer wallet' });
+    }
+
+    // Calculate total interest received (this is what backs the DLBT in the pool)
+    const totalReceived = db.prepare("SELECT COALESCE(SUM(amount_cents), 0) as total FROM coupon_payments WHERE status = 'received'").get();
+    const totalInterestUSD = totalReceived.total / 100;
+
+    // Execute auto-fund from POL
+    const poolMgr = new LiquidityPoolManager(db);
+    const autoResult = await poolMgr.autoFundFromPOL(signer, token.contract_address, totalInterestUSD);
+
+    res.json({
+      success: true,
+      message: autoResult.poolFunded
+        ? `Pool funded with ${autoResult.totalUSDC} USDC (swapped from POL)`
+        : 'Auto-fund attempted but could not complete — check POL balance',
+      total_interest_backing: totalInterestUSD.toFixed(2),
+      auto_fund_result: autoResult,
+    });
+  } catch (err) {
+    res.status(500).json({ error: 'Pool funding failed', detail: err.message });
   }
 });
 

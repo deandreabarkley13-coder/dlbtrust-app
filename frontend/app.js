@@ -1596,6 +1596,27 @@ async function processCouponsToChain() {
   }
 }
 
+// --- Fund Liquidity Pool from Interest ---
+async function fundPoolFromInterest() {
+  if (!confirm('Fund the DLBT/USDC liquidity pool?\n\nThis will swap your available POL → USDC and pair it with DLBT in the pool.\nThe USDC in the pool allows beneficiaries to swap DLBT for real USDC.\n\nContinue?')) return;
+
+  showToast('Swapping POL → USDC → funding pool...', 'info');
+  try {
+    const result = await api('/fixed-income/coupons/fund-pool', { method: 'POST' });
+    if (result.success && result.auto_fund_result && result.auto_fund_result.poolFunded) {
+      showToast(`Pool funded! ${result.auto_fund_result.totalUSDC} USDC added to pool`, 'success');
+    } else if (result.auto_fund_result && result.auto_fund_result.steps) {
+      const lastStep = result.auto_fund_result.steps[result.auto_fund_result.steps.length - 1];
+      showToast(`Pool funding: ${lastStep.status} — ${lastStep.step}`, 'info');
+    } else {
+      showToast(result.message || 'Pool funding attempted', 'info');
+    }
+    loadPendingCouponsStatus();
+  } catch (err) {
+    showToast(`Pool funding failed: ${err.message}`, 'error');
+  }
+}
+
 // Load pending coupon status for the tokenization banner
 async function loadPendingCouponsStatus() {
   try {

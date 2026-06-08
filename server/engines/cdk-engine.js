@@ -551,7 +551,7 @@ class LiquidityPoolManager {
   }
 
   // Auto-fund pipeline: swap POL → USDC, then seed pool with minted DLBT + USDC
-  // This is the key method that converts bond cashflow (POL gas) into pool liquidity
+  // This swaps as much POL as available (minus gas reserve) into USDC and pairs with DLBT
   async autoFundFromPOL(signer, dlbtTokenAddress, amountUSD) {
     const provider = getProvider('MATIC');
     const results = { steps: [], totalUSDC: '0', poolFunded: false };
@@ -560,25 +560,27 @@ class LiquidityPoolManager {
     const polBalance = await provider.getBalance(signer.address);
     const polBalanceEth = parseFloat(ethers.formatEther(polBalance));
 
-    // We need enough POL to cover the USDC amount + gas
-    // Rough POL/USD rate estimation: use on-chain quoter
     const wpolContract = new ethers.Contract(WPOL_ADDRESS, [
       'function deposit() payable',
       'function approve(address spender, uint256 amount) returns (bool)',
     ], signer);
 
-    // Estimate POL needed (assume ~$0.40/POL conservatively — swap will get actual rate)
-    const polNeeded = Math.ceil(amountUSD / 0.35); // conservative estimate
-    if (polBalanceEth < polNeeded + 0.5) { // +0.5 for gas buffer
-      results.steps.push({ step: 'check_pol', status: 'insufficient', polBalance: polBalanceEth.toFixed(4), polNeeded: polNeeded.toFixed(2) });
+    // Reserve 2 POL for future gas, swap the rest
+    const gasReserve = 2.0;
+    if (polBalanceEth < gasReserve + 1.0) {
+      results.steps.push({ step: 'check_pol', status: 'insufficient', polBalance: polBalanceEth.toFixed(4), minRequired: (gasReserve + 1).toFixed(2) });
       return results;
     }
 
+    // Swap available POL (minus gas reserve) — don't require full coupon amount
+    const polToSwap = Math.floor((polBalanceEth - gasReserve) * 10) / 10; // round down to 0.1
+    results.steps.push({ step: 'check_pol', status: 'ok', polBalance: polBalanceEth.toFixed(4), polToSwap: polToSwap.toFixed(2) });
+
     // Step 2: Wrap POL → WPOL
-    const amountToSwap = ethers.parseEther(polNeeded.toString());
+    const amountToSwap = ethers.parseEther(polToSwap.toFixed(1));
     const wrapTx = await wpolContract.deposit({ value: amountToSwap });
     await wrapTx.wait();
-    results.steps.push({ step: 'wrap_pol', status: 'done', amount: polNeeded.toString() });
+    results.steps.push({ step: 'wrap_pol', status: 'done', amount: polToSwap.toFixed(1) });
 
     // Step 3: Approve router to spend WPOL
     const approveTx = await wpolContract.approve(QUICKSWAP_ROUTER, amountToSwap);
