@@ -409,6 +409,58 @@ router.get('/coupons', (req, res) => {
   }
 });
 
+// ─── POST /coupons/generate — Generate missing coupon schedules ───────────────
+// For bonds that exist but have no coupon_payments rows (e.g., created before
+// the auto-generation was added), this creates all scheduled and past-due coupons.
+
+router.post('/coupons/generate', (req, res) => {
+  try {
+    const db = req.fiDb;
+    const holdings = db.prepare("SELECT * FROM fixed_income_holdings WHERE status = 'active'").all();
+    const todayStr = new Date().toISOString().split('T')[0];
+    let totalGenerated = 0;
+    const results = [];
+
+    for (const holding of holdings) {
+      // Check if coupons already exist for this holding
+      const existingCount = db.prepare('SELECT COUNT(*) as cnt FROM coupon_payments WHERE holding_id = ?').get(holding.id).cnt;
+      if (existingCount > 0) {
+        results.push({ holding_id: holding.id, security: holding.security_name, status: 'already_has_coupons', count: existingCount });
+        continue;
+      }
+
+      const ppy = periodsPerYear(holding.coupon_frequency || 'semi-annual');
+      if (ppy <= 0 || !holding.coupon_rate || holding.coupon_rate <= 0) {
+        results.push({ holding_id: holding.id, security: holding.security_name, status: 'no_coupon' });
+        continue;
+      }
+
+      // Limit maturity to 5 years from now for practical coupon generation
+      const maxDate = new Date();
+      maxDate.setFullYear(maxDate.getFullYear() + 5);
+      const effectiveMaturity = holding.maturity_date < maxDate.toISOString().split('T')[0] ? holding.maturity_date : maxDate.toISOString().split('T')[0];
+
+      const couponDates = generateCouponDates(holding.purchase_date, effectiveMaturity, holding.coupon_frequency || 'semi-annual');
+      const couponAmount = Math.round((holding.par_value_cents * holding.coupon_rate) / ppy);
+
+      const insertCoupon = db.prepare('INSERT INTO coupon_payments (holding_id, payment_date, amount_cents, status) VALUES (?, ?, ?, ?)');
+
+      let generated = 0;
+      for (const date of couponDates) {
+        const status = date <= todayStr ? 'scheduled' : 'scheduled';
+        insertCoupon.run(holding.id, date, couponAmount, status);
+        generated++;
+      }
+      totalGenerated += generated;
+      results.push({ holding_id: holding.id, security: holding.security_name, status: 'generated', coupons_created: generated, coupon_amount_usd: (couponAmount / 100).toFixed(2) });
+    }
+
+    res.json({ success: true, total_generated: totalGenerated, holdings: results });
+  } catch (err) {
+    res.status(500).json({ error: 'Failed to generate coupons', detail: err.message });
+  }
+});
+
 // ─── POST /coupons/:id/receive ────────────────────────────────────────────────
 // When a coupon is received, automatically:
 // 1. Mark coupon as received

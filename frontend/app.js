@@ -1599,14 +1599,30 @@ async function processCouponsToChain() {
 // Load pending coupon status for the tokenization banner
 async function loadPendingCouponsStatus() {
   try {
-    const data = await api('/fixed-income/coupons?status=scheduled');
+    const data = await api('/fixed-income/coupons');
     const el = document.getElementById('fi-pending-coupons');
     if (el && data.coupons) {
+      if (data.coupons.length === 0) {
+        // No coupons exist — auto-generate them
+        el.innerHTML = '<span style="color:#f59e0b">Generating coupon schedule...</span>';
+        const genResult = await api('/fixed-income/coupons/generate', { method: 'POST' });
+        if (genResult.total_generated > 0) {
+          el.innerHTML = `<span style="color:#10b981">${genResult.total_generated} coupons generated!</span>`;
+          // Reload to show the generated coupons
+          setTimeout(() => loadPendingCouponsStatus(), 500);
+          return;
+        }
+      }
       const today = new Date().toISOString().split('T')[0];
-      const due = data.coupons.filter(c => c.payment_date <= today);
+      const due = data.coupons.filter(c => c.payment_date <= today && c.status === 'scheduled');
       const totalDue = due.reduce((s, c) => s + c.amount_cents, 0);
+      const received = data.coupons.filter(c => c.status === 'received');
+      const totalReceived = received.reduce((s, c) => s + c.amount_cents, 0);
       if (due.length > 0) {
-        el.innerHTML = `<span style="color:#7c3aed;font-weight:600">${due.length} coupon(s) due</span><br>$${(totalDue/100).toLocaleString()} ready to tokenize`;
+        el.innerHTML = `<span style="color:#7c3aed;font-weight:600">${due.length} coupon(s) due</span><br>$${(totalDue/100).toLocaleString()} ready to tokenize` +
+          (received.length > 0 ? `<br><span style="color:#10b981">${received.length} received ($${(totalReceived/100).toLocaleString()})</span>` : '');
+      } else if (received.length > 0) {
+        el.innerHTML = `<span style="color:#10b981">${received.length} received ($${(totalReceived/100).toLocaleString()})</span><br>${data.coupons.length - received.length} upcoming`;
       } else {
         el.innerHTML = `<span style="color:var(--text-muted)">${data.coupons.length} scheduled</span><br>None due yet`;
       }
