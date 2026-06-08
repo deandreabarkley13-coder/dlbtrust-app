@@ -234,29 +234,47 @@ class TokenOperationsManager {
         ? `CDK Mint: ${(amountCents / 100).toFixed(2)} DLBT — ${ref}`
         : `CDK Burn: ${(amountCents / 100).toFixed(2)} DLBT — ${ref}`;
 
-      this.db.prepare(`
-        INSERT INTO trust_journal_entries (entry_number, entry_date, entry_type, description, status, total_debit_cents, total_credit_cents)
-        VALUES (?, date('now'), 'standard', ?, 'posted', ?, ?)
+      const result = this.db.prepare(`
+        INSERT INTO trust_journal_entries (entry_number, entry_date, entry_type, description, reference_type, source_engine, is_posted, total_debit_cents, total_credit_cents, created_by, created_at)
+        VALUES (?, date('now'), 'standard', ?, 'cdk_operation', 'cdk_engine', 1, ?, ?, 'cdk_engine', datetime('now'))
       `).run(jeNum, desc, amountCents, amountCents);
 
-      const jeId = this.db.prepare("SELECT id FROM trust_journal_entries WHERE entry_number = ?").get(jeNum)?.id;
+      const jeId = result.lastInsertRowid;
       if (!jeId) return null;
 
-      if (opType === 'mint') {
-        // Debit 1200 (Digital Assets / DLBT Tokens), Credit 1000 (Cash & Equivalents)
-        this.db.prepare(`INSERT INTO trust_journal_lines (journal_entry_id, account_code, account_name, debit_cents, credit_cents, line_memo) VALUES (?, '1200', 'Digital Assets — DLBT', ?, 0, ?)`)
-          .run(jeId, amountCents, ref);
-        this.db.prepare(`INSERT INTO trust_journal_lines (journal_entry_id, account_code, account_name, debit_cents, credit_cents, line_memo) VALUES (?, '1000', 'Cash & Equivalents', 0, ?, ?)`)
-          .run(jeId, amountCents, ref);
-      } else {
-        // Debit 1000 (Cash), Credit 1200 (Digital Assets)
-        this.db.prepare(`INSERT INTO trust_journal_lines (journal_entry_id, account_code, account_name, debit_cents, credit_cents, line_memo) VALUES (?, '1000', 'Cash & Equivalents', ?, 0, ?)`)
-          .run(jeId, amountCents, ref);
-        this.db.prepare(`INSERT INTO trust_journal_lines (journal_entry_id, account_code, account_name, debit_cents, credit_cents, line_memo) VALUES (?, '1200', 'Digital Assets — DLBT', 0, ?, ?)`)
-          .run(jeId, amountCents, ref);
+      const lines = opType === 'mint'
+        ? [
+            { code: '1200', desc: 'Digital Assets — DLBT', debit: amountCents, credit: 0 },
+            { code: '1000', desc: 'Cash & Equivalents',    debit: 0,          credit: amountCents },
+          ]
+        : [
+            { code: '1000', desc: 'Cash & Equivalents',    debit: amountCents, credit: 0 },
+            { code: '1200', desc: 'Digital Assets — DLBT', debit: 0,          credit: amountCents },
+          ];
+
+      let lineNum = 1;
+      for (const line of lines) {
+        let acctRow = this.db.prepare('SELECT id FROM trust_chart_of_accounts WHERE account_code = ?').get(line.code);
+        if (!acctRow) {
+          const ins = this.db.prepare(`
+            INSERT OR IGNORE INTO trust_chart_of_accounts (account_code, account_name, account_type, normal_balance, is_active)
+            VALUES (?, ?, ?, ?, 1)
+          `).run(line.code, line.desc,
+            line.code.startsWith('1') ? 'asset' : 'expense',
+            line.code.startsWith('1') ? 'debit' : 'credit');
+          acctRow = { id: ins.lastInsertRowid };
+        }
+        this.db.prepare(`
+          INSERT INTO trust_journal_lines (journal_entry_id, line_number, account_id, account_code, description, debit_cents, credit_cents, created_at)
+          VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now'))
+        `).run(jeId, lineNum++, acctRow.id, line.code, line.desc, line.debit, line.credit);
       }
+
       return jeNum;
-    } catch (_) { return null; }
+    } catch (err) {
+      console.warn('[CDK] GL journal post failed:', err.message);
+      return null;
+    }
   }
 
   getOperations(filters = {}) {
