@@ -29,7 +29,7 @@ const CIRCLE_PRODUCTION_URL = 'https://api.circle.com';
 
 // --- RPC Endpoints (Public, Free — No API Keys) -----------------------------
 const RPC_ENDPOINTS = {
-  'MATIC':       'https://polygon-rpc.com',
+  'MATIC':       'https://polygon-bor-rpc.publicnode.com',
   'MATIC-AMOY':  'https://rpc-amoy.polygon.technology',
   'ETH':         'https://ethereum-rpc.publicnode.com',
   'ETH-SEPOLIA': 'https://ethereum-sepolia-rpc.publicnode.com',
