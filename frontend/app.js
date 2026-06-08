@@ -1534,6 +1534,7 @@ async function loadFixedIncome() {
       <div class="metric-card"><div class="metric-value">$${Number(summary.total_interest_paid).toLocaleString()}</div><div class="metric-label">Total Interest Paid</div></div>
       <div class="metric-card"><div class="metric-value">${summary.by_series?.length || 0}</div><div class="metric-label">Bond Series</div></div>
     `;
+    loadPendingCouponsStatus();
   } catch (err) { showToast(err.message, 'error'); }
 }
 
@@ -1573,6 +1574,44 @@ async function loadPrivatePlacements() {
     showToast(err.message, 'error');
     return { bonds: [], total: 0 };
   }
+}
+
+// --- Process Coupons → On-Chain (Auto-tokenize cashflow) ---
+async function processCouponsToChain() {
+  if (!confirm('Process all due coupon payments? This will:\n\n1. Mark due coupons as received\n2. Credit your trust account\n3. Mint DLBT tokens on Polygon\n4. Add to liquidity pool (if USDC available)\n\nContinue?')) return;
+
+  showToast('Processing coupons → tokenizing on-chain...', 'info');
+  try {
+    const result = await api('/fixed-income/coupons/process-all', { method: 'POST' });
+    if (result.processed === 0) {
+      showToast('No coupons due for processing', 'info');
+    } else {
+      const poolMsg = result.pool_funded ? ` | Pool funded: $${result.pool_funded.dlbt_added} DLBT + $${result.pool_funded.usdc_added} USDC` : '';
+      showToast(`${result.processed} coupons processed → $${result.total_minted} DLBT minted${poolMsg}`, 'success');
+    }
+    loadPrivatePlacements();
+    loadPendingCouponsStatus();
+  } catch (err) {
+    showToast(`Coupon processing failed: ${err.message}`, 'error');
+  }
+}
+
+// Load pending coupon status for the tokenization banner
+async function loadPendingCouponsStatus() {
+  try {
+    const data = await api('/fixed-income/coupons?status=scheduled');
+    const el = document.getElementById('fi-pending-coupons');
+    if (el && data.coupons) {
+      const today = new Date().toISOString().split('T')[0];
+      const due = data.coupons.filter(c => c.payment_date <= today);
+      const totalDue = due.reduce((s, c) => s + c.amount_cents, 0);
+      if (due.length > 0) {
+        el.innerHTML = `<span style="color:#7c3aed;font-weight:600">${due.length} coupon(s) due</span><br>$${(totalDue/100).toLocaleString()} ready to tokenize`;
+      } else {
+        el.innerHTML = `<span style="color:var(--text-muted)">${data.coupons.length} scheduled</span><br>None due yet`;
+      }
+    }
+  } catch (_) {}
 }
 
 function showPrivatePlacementForm() {

@@ -26,6 +26,10 @@ const fs = require('fs');
 
 const { analyzeBond, analyzePortfolio, calcYieldToMaturity, calcPriceFromYield, generateCouponDates, periodsPerYear } = require('../engines/fixed-income-engine');
 const { projectPortfolioCashFlows, forecastIncome } = require('../engines/cashflow-engine');
+const {
+  getSigner, CDKConfigManager, ContractManager, TokenOperationsManager, LiquidityPoolManager, USDC_POLYGON,
+} = require('../engines/cdk-engine');
+const { ethers } = require('ethers');
 
 // ─── Database Setup ───────────────────────────────────────────────────────────
 
@@ -406,8 +410,13 @@ router.get('/coupons', (req, res) => {
 });
 
 // ─── POST /coupons/:id/receive ────────────────────────────────────────────────
+// When a coupon is received, automatically:
+// 1. Mark coupon as received
+// 2. Credit the trust account
+// 3. Mint DLBT tokens on-chain (tokenize the cashflow)
+// 4. If USDC available in wallet, add both to the liquidity pool
 
-router.post('/coupons/:id/receive', (req, res) => {
+router.post('/coupons/:id/receive', async (req, res) => {
   try {
     const db = req.fiDb;
     const coupon = db.prepare('SELECT * FROM coupon_payments WHERE id = ?').get(req.params.id);
@@ -415,15 +424,226 @@ router.post('/coupons/:id/receive', (req, res) => {
       return res.status(404).json({ error: 'Coupon payment not found' });
     }
 
+    // Mark coupon as received
     db.prepare(`
       UPDATE coupon_payments 
       SET status = 'received', received_at = datetime('now')
       WHERE id = ?
     `).run(req.params.id);
 
-    res.json({ success: true, message: `Coupon ${req.params.id} marked as received` });
+    // Credit the holding's linked account (or first trust account) with the coupon income
+    const holding = db.prepare('SELECT * FROM fixed_income_holdings WHERE id = ?').get(coupon.holding_id);
+    const couponAmountDollars = (coupon.amount_cents / 100).toFixed(2);
+    const couponAmountCents = coupon.amount_cents;
+
+    // Find a trust account to credit (use the first active operating account)
+    const creditAccount = db.prepare("SELECT * FROM trust_accounts WHERE status = 'active' ORDER BY id ASC LIMIT 1").get();
+    if (creditAccount) {
+      db.prepare("UPDATE trust_accounts SET balance_cents = balance_cents + ?, available_cents = available_cents + ?, updated_at = datetime('now') WHERE id = ?")
+        .run(couponAmountCents, couponAmountCents, creditAccount.id);
+    }
+
+    // --- Auto-tokenize: Mint DLBT tokens for the coupon amount ---
+    let mintResult = null;
+    let poolResult = null;
+    let tokenizationError = null;
+
+    try {
+      const mgr = new ContractManager(db);
+      const token = mgr.getDeployedToken();
+
+      if (token) {
+        const cfg = new CDKConfigManager(db);
+        const deployerWalletId = cfg.get('deployer_wallet_id');
+        const network = cfg.get('network') || 'MATIC';
+
+        if (deployerWalletId) {
+          // Get the deployer wallet to mint to
+          const deployerWallet = db.prepare('SELECT * FROM blockchain_wallets WHERE id = ?').get(parseInt(deployerWalletId));
+          if (deployerWallet) {
+            const signer = getSigner(db, parseInt(deployerWalletId), network);
+            const ops = new TokenOperationsManager(db);
+
+            // Mint DLBT equal to coupon amount
+            mintResult = await ops.mint(
+              signer,
+              token.contract_address,
+              deployerWallet.address,
+              couponAmountDollars,
+              creditAccount ? creditAccount.id : null,
+              parseInt(deployerWalletId)
+            );
+
+            // --- Auto-fund liquidity pool if USDC is available ---
+            try {
+              const poolMgr = new LiquidityPoolManager(db);
+              const poolRow = db.prepare("SELECT * FROM cdk_liquidity_pools WHERE status = 'active' ORDER BY id DESC LIMIT 1").get();
+
+              if (poolRow) {
+                // Check USDC balance of the deployer wallet
+                const provider = new ethers.JsonRpcProvider('https://polygon-bor-rpc.publicnode.com');
+                const usdcContract = new ethers.Contract(USDC_POLYGON, ['function balanceOf(address) view returns (uint256)'], provider);
+                const usdcBalance = await usdcContract.balanceOf(deployerWallet.address);
+                const usdcAvailable = parseFloat(ethers.formatUnits(usdcBalance, 6));
+
+                // If wallet has enough USDC, add both to the pool
+                const couponAmount = parseFloat(couponAmountDollars);
+                if (usdcAvailable >= couponAmount && couponAmount > 0) {
+                  poolResult = await poolMgr.addLiquidity(signer, token.contract_address, couponAmount, couponAmount);
+                }
+              }
+            } catch (poolErr) {
+              // Pool funding is best-effort; don't fail the coupon processing
+              console.warn('[fixed-income] Auto pool funding skipped:', poolErr.message);
+            }
+          }
+        }
+      }
+    } catch (err) {
+      tokenizationError = err.message;
+      console.warn('[fixed-income] Auto-tokenization skipped:', err.message);
+    }
+
+    res.json({
+      success: true,
+      message: `Coupon ${req.params.id} received and processed`,
+      coupon_amount_usd: couponAmountDollars,
+      account_credited: creditAccount ? creditAccount.account_name : null,
+      tokenization: mintResult ? {
+        status: 'minted',
+        dlbt_minted: couponAmountDollars,
+        tx_hash: mintResult.txHash,
+        explorer_url: `https://polygonscan.com/tx/${mintResult.txHash}`,
+      } : {
+        status: 'skipped',
+        reason: tokenizationError || 'DLBT token not deployed or no deployer wallet configured',
+      },
+      pool_funding: poolResult ? {
+        status: 'funded',
+        dlbt_added: couponAmountDollars,
+        usdc_added: couponAmountDollars,
+        tx_hash: poolResult.txHash,
+      } : {
+        status: 'skipped',
+        reason: 'No pool exists or insufficient USDC balance in wallet',
+      },
+    });
   } catch (err) {
-    res.status(500).json({ error: 'Failed to update coupon', detail: err.message });
+    res.status(500).json({ error: 'Failed to process coupon', detail: err.message });
+  }
+});
+
+// ─── POST /coupons/process-all — Auto-tokenize all due coupons ───────────────
+// Finds all scheduled coupons with payment_date <= today, marks them received,
+// mints DLBT, and funds the pool. This is the automated cashflow→token pipeline.
+
+router.post('/coupons/process-all', async (req, res) => {
+  try {
+    const db = req.fiDb;
+    const today = new Date().toISOString().split('T')[0];
+
+    // Find all scheduled coupons due on or before today
+    const dueCoupons = db.prepare(`
+      SELECT cp.*, fih.security_name, fih.par_value_cents, fih.coupon_rate
+      FROM coupon_payments cp
+      JOIN fixed_income_holdings fih ON cp.holding_id = fih.id
+      WHERE cp.status = 'scheduled' AND cp.payment_date <= ?
+      ORDER BY cp.payment_date ASC
+    `).all(today);
+
+    if (dueCoupons.length === 0) {
+      return res.json({ message: 'No coupons due for processing', processed: 0, total_minted: '0.00' });
+    }
+
+    // Get CDK infrastructure
+    const mgr = new ContractManager(db);
+    const token = mgr.getDeployedToken();
+    const cfg = new CDKConfigManager(db);
+    const deployerWalletId = cfg.get('deployer_wallet_id');
+    const network = cfg.get('network') || 'MATIC';
+
+    let signer = null;
+    let deployerWallet = null;
+    if (token && deployerWalletId) {
+      deployerWallet = db.prepare('SELECT * FROM blockchain_wallets WHERE id = ?').get(parseInt(deployerWalletId));
+      if (deployerWallet) {
+        signer = getSigner(db, parseInt(deployerWalletId), network);
+      }
+    }
+
+    const creditAccount = db.prepare("SELECT * FROM trust_accounts WHERE status = 'active' ORDER BY id ASC LIMIT 1").get();
+    const results = [];
+    let totalMintedCents = 0;
+
+    for (const coupon of dueCoupons) {
+      const amountDollars = (coupon.amount_cents / 100).toFixed(2);
+
+      // Mark as received
+      db.prepare("UPDATE coupon_payments SET status = 'received', received_at = datetime('now') WHERE id = ?").run(coupon.id);
+
+      // Credit trust account
+      if (creditAccount) {
+        db.prepare("UPDATE trust_accounts SET balance_cents = balance_cents + ?, available_cents = available_cents + ?, updated_at = datetime('now') WHERE id = ?")
+          .run(coupon.amount_cents, coupon.amount_cents, creditAccount.id);
+      }
+
+      // Mint DLBT
+      let mintResult = null;
+      if (signer && token && deployerWallet) {
+        try {
+          const ops = new TokenOperationsManager(db);
+          mintResult = await ops.mint(
+            signer, token.contract_address, deployerWallet.address,
+            amountDollars, creditAccount ? creditAccount.id : null, parseInt(deployerWalletId)
+          );
+          totalMintedCents += coupon.amount_cents;
+        } catch (mintErr) {
+          console.warn(`[fixed-income] Mint failed for coupon ${coupon.id}:`, mintErr.message);
+        }
+      }
+
+      results.push({
+        coupon_id: coupon.id,
+        security: coupon.security_name,
+        payment_date: coupon.payment_date,
+        amount_usd: amountDollars,
+        minted: mintResult ? true : false,
+        tx_hash: mintResult ? mintResult.txHash : null,
+      });
+    }
+
+    // After all minting, try to add liquidity to pool with available USDC
+    let poolFunded = null;
+    if (signer && token && deployerWallet && totalMintedCents > 0) {
+      try {
+        const poolRow = db.prepare("SELECT * FROM cdk_liquidity_pools WHERE status = 'active' ORDER BY id DESC LIMIT 1").get();
+        if (poolRow) {
+          const provider = new ethers.JsonRpcProvider('https://polygon-bor-rpc.publicnode.com');
+          const usdcContract = new ethers.Contract(USDC_POLYGON, ['function balanceOf(address) view returns (uint256)'], provider);
+          const usdcBalance = await usdcContract.balanceOf(deployerWallet.address);
+          const usdcAvailable = parseFloat(ethers.formatUnits(usdcBalance, 6));
+          const totalMintedDollars = totalMintedCents / 100;
+
+          if (usdcAvailable >= totalMintedDollars) {
+            const poolMgr = new LiquidityPoolManager(db);
+            poolFunded = await poolMgr.addLiquidity(signer, token.contract_address, totalMintedDollars, totalMintedDollars);
+          }
+        }
+      } catch (poolErr) {
+        console.warn('[fixed-income] Pool funding after batch processing skipped:', poolErr.message);
+      }
+    }
+
+    res.json({
+      message: `Processed ${results.length} coupon payments`,
+      processed: results.length,
+      total_minted: (totalMintedCents / 100).toFixed(2),
+      account_credited: creditAccount ? creditAccount.account_name : null,
+      pool_funded: poolFunded ? { dlbt_added: (totalMintedCents / 100).toFixed(2), usdc_added: (totalMintedCents / 100).toFixed(2), tx_hash: poolFunded.txHash } : null,
+      coupons: results,
+    });
+  } catch (err) {
+    res.status(500).json({ error: 'Failed to process coupons', detail: err.message });
   }
 });
 

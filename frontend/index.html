@@ -619,9 +619,22 @@
             <option value="active">Active</option>
             <option value="redeemed">Redeemed</option>
           </select>
+          <button class="btn" onclick="processCouponsToChain()" style="margin-right:8px;background:#7c3aed;color:#fff">⛓️ Process Coupons → On-Chain</button>
           <button class="btn btn-primary" onclick="showPrivatePlacementForm()">+ Record Private Placement Bond</button>
         </div>
       </header>
+
+      <!-- Cashflow Tokenization Banner -->
+      <div id="fi-tokenization-banner" style="margin-bottom:16px;padding:14px 18px;background:linear-gradient(135deg,rgba(124,58,237,0.1),rgba(99,102,241,0.1));border:1px solid rgba(124,58,237,0.3);border-radius:12px;display:flex;align-items:center;gap:12px">
+        <span style="font-size:1.5rem">⛓️</span>
+        <div style="flex:1">
+          <strong style="color:#7c3aed">Cashflow → Token Pipeline</strong>
+          <p style="font-size:0.82rem;color:var(--text-muted);margin:2px 0 0">When coupon payments are received, they are automatically minted as DLBT tokens on Polygon and deposited into the liquidity pool (if USDC is available).</p>
+        </div>
+        <div id="fi-token-status" style="font-size:0.8rem;color:var(--text-muted);text-align:right">
+          <div id="fi-pending-coupons"></div>
+        </div>
+      </div>
 
       <!-- Summary Metrics -->
       <div class="metrics-grid" id="fi-metrics" style="margin-bottom:20px"></div>
