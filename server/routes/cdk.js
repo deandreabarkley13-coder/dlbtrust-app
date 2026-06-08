@@ -29,6 +29,7 @@ const Database = require('better-sqlite3');
 const {
   getProvider, getSigner, getTokenInfo, getTokenBalance,
   CDKConfigManager, ContractManager, TokenOperationsManager, DistributionManager,
+  LiquidityPoolManager, USDC_POLYGON,
 } = require('../engines/cdk-engine');
 
 // --- DB Setup ---------------------------------------------------------------
@@ -97,10 +98,20 @@ router.get('/dashboard', async (req, res) => {
     // Recent operations
     const recentOps = ops.getOperations({ limit: 10 });
 
+    // Pool info
+    let poolInfo = null;
+    if (token && token.contract_address) {
+      try {
+        const poolMgr = new LiquidityPoolManager(req.db);
+        poolInfo = await poolMgr.getPoolInfo(token.contract_address);
+      } catch (_) {}
+    }
+
     res.json({
       chain: config,
       token_contract: token || null,
       token_info: tokenInfo,
+      pool_info: poolInfo,
       stats,
       accounts: accounts.map(a => ({ ...a, balance_usd: (a.balance_cents / 100).toFixed(2) })),
       wallets: wallets.map(w => ({ ...w, usdc_balance: parseFloat(w.usdc_balance || '0').toFixed(2) })),
@@ -366,6 +377,124 @@ router.get('/bridge', (req, res) => {
     const rows = req.db.prepare('SELECT * FROM cdk_bridge_operations ORDER BY id DESC LIMIT 50').all();
     res.json({ count: rows.length, operations: rows });
   } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// --- POST /pool/create — Create DLBT/USDC liquidity pool on QuickSwap ------
+
+router.post('/pool/create', async (req, res) => {
+  try {
+    const { wallet_id } = req.body;
+
+    const mgr   = new ContractManager(req.db);
+    const token = mgr.getDeployedToken();
+    if (!token) return res.status(400).json({ error: 'DLBT token not deployed yet' });
+
+    const cfg     = new CDKConfigManager(req.db);
+    const network = cfg.get('network') || 'MATIC';
+    const wId     = wallet_id || cfg.get('deployer_wallet_id');
+    if (!wId) return res.status(400).json({ error: 'No deployer wallet configured' });
+
+    const signer = getSigner(req.db, parseInt(wId), network);
+    const pool   = new LiquidityPoolManager(req.db);
+    const result = await pool.createPool(signer, token.contract_address);
+
+    res.json({
+      message: result.alreadyExists ? 'Pool already exists' : 'DLBT/USDC pool created on QuickSwap V3',
+      ...result,
+      explorer_url: `https://polygonscan.com/address/${result.poolAddress}`,
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// --- POST /pool/add-liquidity — Add DLBT + USDC to pool --------------------
+
+router.post('/pool/add-liquidity', async (req, res) => {
+  try {
+    const { wallet_id, dlbt_amount, usdc_amount } = req.body;
+    if (!dlbt_amount || !usdc_amount) {
+      return res.status(400).json({ error: 'Required: dlbt_amount, usdc_amount' });
+    }
+
+    const mgr   = new ContractManager(req.db);
+    const token = mgr.getDeployedToken();
+    if (!token) return res.status(400).json({ error: 'DLBT token not deployed yet' });
+
+    const cfg     = new CDKConfigManager(req.db);
+    const network = cfg.get('network') || 'MATIC';
+    const wId     = wallet_id || cfg.get('deployer_wallet_id');
+    if (!wId) return res.status(400).json({ error: 'No deployer wallet configured' });
+
+    const signer = getSigner(req.db, parseInt(wId), network);
+    const pool   = new LiquidityPoolManager(req.db);
+    const result = await pool.addLiquidity(signer, token.contract_address, dlbt_amount, usdc_amount);
+
+    res.json({ message: 'Liquidity added to DLBT/USDC pool', ...result });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// --- POST /pool/swap — Swap DLBT ↔ USDC ------------------------------------
+
+router.post('/pool/swap', async (req, res) => {
+  try {
+    const { wallet_id, direction, amount } = req.body;
+    if (!direction || !amount) {
+      return res.status(400).json({ error: 'Required: direction (dlbt_to_usdc or usdc_to_dlbt), amount' });
+    }
+    if (!['dlbt_to_usdc', 'usdc_to_dlbt'].includes(direction)) {
+      return res.status(400).json({ error: 'direction must be dlbt_to_usdc or usdc_to_dlbt' });
+    }
+
+    const mgr   = new ContractManager(req.db);
+    const token = mgr.getDeployedToken();
+    if (!token) return res.status(400).json({ error: 'DLBT token not deployed yet' });
+
+    const cfg     = new CDKConfigManager(req.db);
+    const network = cfg.get('network') || 'MATIC';
+    const wId     = wallet_id || cfg.get('deployer_wallet_id');
+    if (!wId) return res.status(400).json({ error: 'No deployer wallet configured' });
+
+    const signer = getSigner(req.db, parseInt(wId), network);
+    const pool   = new LiquidityPoolManager(req.db);
+
+    let result;
+    if (direction === 'dlbt_to_usdc') {
+      result = await pool.swapDLBTtoUSDC(signer, token.contract_address, amount);
+    } else {
+      result = await pool.swapUSDCtoDLBT(signer, token.contract_address, amount);
+    }
+
+    res.json({ message: `Swap completed: ${direction.replace('_', ' → ').replace('_', ' ')}`, ...result });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// --- GET /pool — Pool info --------------------------------------------------
+
+router.get('/pool', async (req, res) => {
+  try {
+    const mgr   = new ContractManager(req.db);
+    const token = mgr.getDeployedToken();
+    if (!token) return res.json({ exists: false, message: 'DLBT token not deployed yet' });
+
+    const pool     = new LiquidityPoolManager(req.db);
+    const poolInfo = await pool.getPoolInfo(token.contract_address);
+    const dbPool   = pool.getPool();
+    const positions = pool.getPositions();
+
+    res.json({
+      ...poolInfo,
+      db_pool: dbPool || null,
+      positions: positions || [],
+      usdc_address: USDC_POLYGON,
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
 });
 
 module.exports = router;

@@ -137,3 +137,39 @@ CREATE TABLE IF NOT EXISTS cdk_distributions (
 
 CREATE INDEX IF NOT EXISTS idx_cdk_dist_type ON cdk_distributions(distribution_type);
 CREATE INDEX IF NOT EXISTS idx_cdk_dist_status ON cdk_distributions(status);
+
+-- --- Liquidity Pools (QuickSwap V3 / DEX) -----------------------------------
+CREATE TABLE IF NOT EXISTS cdk_liquidity_pools (
+  id              INTEGER PRIMARY KEY AUTOINCREMENT,
+  pool_address    TEXT NOT NULL,                     -- On-chain pool address
+  token0_address  TEXT NOT NULL,                     -- Token0 address (sorted by address)
+  token1_address  TEXT NOT NULL,                     -- Token1 address
+  dlbt_address    TEXT NOT NULL,                     -- DLBT token address
+  usdc_address    TEXT NOT NULL,                     -- USDC address
+  dex_name        TEXT NOT NULL DEFAULT 'QuickSwap V3',
+  status          TEXT NOT NULL DEFAULT 'active',    -- active, paused, removed
+  create_tx_hash  TEXT,
+  init_tx_hash    TEXT,
+  created_at      TEXT DEFAULT (datetime('now')),
+  updated_at      TEXT DEFAULT (datetime('now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_cdk_lp_pool ON cdk_liquidity_pools(pool_address);
+
+-- --- Liquidity Positions (NFT-based LP positions) ---------------------------
+CREATE TABLE IF NOT EXISTS cdk_liquidity_positions (
+  id              INTEGER PRIMARY KEY AUTOINCREMENT,
+  position_number TEXT NOT NULL UNIQUE,              -- LP-YYYYMMDD-XXXX
+  pool_address    TEXT NOT NULL,
+  nft_token_id    TEXT,                              -- NFT position token ID
+  dlbt_amount     TEXT NOT NULL DEFAULT '0',          -- DLBT deposited
+  usdc_amount     TEXT NOT NULL DEFAULT '0',          -- USDC deposited
+  tx_hash         TEXT,
+  status          TEXT NOT NULL DEFAULT 'active',    -- active, removed
+  owner_address   TEXT,
+  created_at      TEXT DEFAULT (datetime('now')),
+  updated_at      TEXT DEFAULT (datetime('now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_cdk_lpos_pool ON cdk_liquidity_positions(pool_address);
+CREATE INDEX IF NOT EXISTS idx_cdk_lpos_status ON cdk_liquidity_positions(status);

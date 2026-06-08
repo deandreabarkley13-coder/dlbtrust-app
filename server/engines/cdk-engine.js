@@ -389,6 +389,311 @@ async function getTokenBalance(contractAddress, walletAddress, network = 'MATIC'
   return { address: walletAddress, balance: ethers.formatUnits(bal, Number(dec)), balanceRaw: bal.toString() };
 }
 
+// --- Liquidity Pool Manager (QuickSwap V3 / Algebra on Polygon) -------------
+
+const QUICKSWAP_FACTORY   = '0x411b0fAcC3489691f28ad58c47006AF5E3Ab3A28';
+const QUICKSWAP_NFPM      = '0x8eF88E4c7CfbbaC1C163f7eddd4B578792201de6';
+const QUICKSWAP_ROUTER    = '0xf5b509bB0909a69B1c207E495f687a596C168E12';
+const USDC_POLYGON        = '0x3c499c542cEF5E3811e1192ce70d8cC03d5c3359';
+
+const ALGEBRA_FACTORY_ABI = [
+  'function createPool(address tokenA, address tokenB) external returns (address pool)',
+  'function poolByPair(address tokenA, address tokenB) external view returns (address pool)',
+];
+
+const ALGEBRA_POOL_ABI = [
+  'function globalState() external view returns (uint160 price, int24 tick, uint16 fee, uint8 pluginConfig, uint16 communityFee, bool unlocked)',
+  'function token0() external view returns (address)',
+  'function token1() external view returns (address)',
+  'function liquidity() external view returns (uint128)',
+  'function initialize(uint160 initialPrice) external',
+];
+
+const NFPM_ABI = [
+  'function mint((address token0, address token1, int24 tickLower, int24 tickUpper, uint256 amount0Desired, uint256 amount1Desired, uint256 amount0Min, uint256 amount1Min, address recipient, uint256 deadline)) external payable returns (uint256 tokenId, uint128 liquidity, uint256 amount0, uint256 amount1)',
+  'function positions(uint256 tokenId) external view returns (uint96 nonce, address operator, address token0, address token1, int24 tickLower, int24 tickUpper, uint128 liquidity, uint256 feeGrowthInside0LastX128, uint256 feeGrowthInside1LastX128, uint128 tokensOwed0, uint128 tokensOwed1)',
+];
+
+const SWAP_ROUTER_ABI_V3 = [
+  'function exactInputSingle((address tokenIn, address tokenOut, address recipient, uint256 deadline, uint256 amountIn, uint256 amountOutMinimum, uint160 sqrtPriceLimitX96)) external payable returns (uint256 amountOut)',
+];
+
+class LiquidityPoolManager {
+  constructor(db) { this.db = db; }
+
+  // Create DLBT/USDC pool on QuickSwap V3
+  async createPool(signer, dlbtTokenAddress) {
+    const factory = new ethers.Contract(QUICKSWAP_FACTORY, ALGEBRA_FACTORY_ABI, signer);
+
+    // Check if pool already exists
+    const existing = await factory.poolByPair(dlbtTokenAddress, USDC_POLYGON);
+    if (existing !== '0x0000000000000000000000000000000000000000') {
+      return { poolAddress: existing, alreadyExists: true };
+    }
+
+    // Create the pool
+    const tx = await factory.createPool(dlbtTokenAddress, USDC_POLYGON);
+    const receipt = await tx.wait();
+
+    // Get pool address from event or re-query
+    const poolAddress = await factory.poolByPair(dlbtTokenAddress, USDC_POLYGON);
+
+    // Initialize pool at 1:1 price (DLBT = $1 = 1 USDC)
+    // Both tokens have 6 decimals, so 1:1 ratio
+    // sqrtPriceX96 for 1:1 = 2^96 = 79228162514264337593543950336
+    const pool = new ethers.Contract(poolAddress, ALGEBRA_POOL_ABI, signer);
+    const token0 = await pool.token0();
+
+    // If DLBT is token0, price is USDC/DLBT = 1.0 → sqrtPriceX96 = 2^96
+    // If USDC is token0, price is DLBT/USDC = 1.0 → sqrtPriceX96 = 2^96
+    // Both 6 decimals, 1:1, so sqrtPriceX96 = 2^96 regardless
+    const sqrtPriceX96 = 79228162514264337593543950336n;
+    const initTx = await pool.initialize(sqrtPriceX96);
+    await initTx.wait();
+
+    // Store in DB
+    this.db.prepare(`
+      INSERT INTO cdk_liquidity_pools (pool_address, token0_address, token1_address, dlbt_address, usdc_address, dex_name, status, create_tx_hash, init_tx_hash)
+      VALUES (?, ?, ?, ?, ?, 'QuickSwap V3', 'active', ?, ?)
+    `).run(
+      poolAddress,
+      token0,
+      token0.toLowerCase() === dlbtTokenAddress.toLowerCase() ? USDC_POLYGON : dlbtTokenAddress,
+      dlbtTokenAddress,
+      USDC_POLYGON,
+      receipt.hash,
+      initTx.hash
+    );
+
+    return {
+      poolAddress,
+      token0,
+      token1: token0.toLowerCase() === dlbtTokenAddress.toLowerCase() ? USDC_POLYGON : dlbtTokenAddress,
+      createTxHash: receipt.hash,
+      initTxHash: initTx.hash,
+      alreadyExists: false,
+    };
+  }
+
+  // Add liquidity to DLBT/USDC pool
+  async addLiquidity(signer, dlbtTokenAddress, amountDLBT, amountUSDC) {
+    const factory = new ethers.Contract(QUICKSWAP_FACTORY, ALGEBRA_FACTORY_ABI, signer);
+    const poolAddress = await factory.poolByPair(dlbtTokenAddress, USDC_POLYGON);
+    if (poolAddress === '0x0000000000000000000000000000000000000000') {
+      throw new Error('Pool does not exist. Create pool first.');
+    }
+
+    const pool = new ethers.Contract(poolAddress, ALGEBRA_POOL_ABI, signer);
+    const token0 = await pool.token0();
+    const isToken0DLBT = token0.toLowerCase() === dlbtTokenAddress.toLowerCase();
+
+    const dlbtAmount = ethers.parseUnits(amountDLBT.toString(), 6);
+    const usdcAmount = ethers.parseUnits(amountUSDC.toString(), 6);
+
+    // Approve NFPM to spend both tokens
+    const dlbtContract = new ethers.Contract(dlbtTokenAddress, ERC20_ABI, signer);
+    const usdcContract = new ethers.Contract(USDC_POLYGON, ERC20_ABI, signer);
+
+    const approveDLBT = await dlbtContract.approve(QUICKSWAP_NFPM, dlbtAmount);
+    await approveDLBT.wait();
+    const approveUSDC = await usdcContract.approve(QUICKSWAP_NFPM, usdcAmount);
+    await approveUSDC.wait();
+
+    // Mint a liquidity position — full range (tick -887220 to 887220 for Algebra)
+    const nfpm = new ethers.Contract(QUICKSWAP_NFPM, NFPM_ABI, signer);
+    const deadline = Math.floor(Date.now() / 1000) + 600;
+
+    const amount0 = isToken0DLBT ? dlbtAmount : usdcAmount;
+    const amount1 = isToken0DLBT ? usdcAmount : dlbtAmount;
+    const token1 = isToken0DLBT ? USDC_POLYGON : dlbtTokenAddress;
+
+    const mintTx = await nfpm.mint({
+      token0,
+      token1,
+      tickLower: -887220,
+      tickUpper: 887220,
+      amount0Desired: amount0,
+      amount1Desired: amount1,
+      amount0Min: 0,
+      amount1Min: 0,
+      recipient: signer.address,
+      deadline,
+    });
+    const receipt = await mintTx.wait();
+
+    // Parse tokenId from Transfer event
+    let tokenId = null;
+    for (const log of receipt.logs) {
+      try {
+        if (log.topics[0] === ethers.id('Transfer(address,address,uint256)') && log.address.toLowerCase() === QUICKSWAP_NFPM.toLowerCase()) {
+          tokenId = BigInt(log.topics[3]).toString();
+        }
+      } catch (_) {}
+    }
+
+    // Store in DB
+    const opNum = generateOpNumber('LP');
+    this.db.prepare(`
+      INSERT INTO cdk_liquidity_positions (position_number, pool_address, nft_token_id, dlbt_amount, usdc_amount, tx_hash, status, owner_address)
+      VALUES (?, ?, ?, ?, ?, ?, 'active', ?)
+    `).run(opNum, poolAddress, tokenId, amountDLBT.toString(), amountUSDC.toString(), receipt.hash, signer.address);
+
+    return {
+      positionNumber: opNum,
+      tokenId,
+      poolAddress,
+      dlbtDeposited: amountDLBT.toString(),
+      usdcDeposited: amountUSDC.toString(),
+      txHash: receipt.hash,
+      gasUsed: receipt.gasUsed.toString(),
+    };
+  }
+
+  // Swap DLBT → USDC
+  async swapDLBTtoUSDC(signer, dlbtTokenAddress, amountDLBT) {
+    const dlbtContract = new ethers.Contract(dlbtTokenAddress, ERC20_ABI, signer);
+    const amount = ethers.parseUnits(amountDLBT.toString(), 6);
+
+    // Approve router
+    const approveTx = await dlbtContract.approve(QUICKSWAP_ROUTER, amount);
+    await approveTx.wait();
+
+    // Swap
+    const router = new ethers.Contract(QUICKSWAP_ROUTER, SWAP_ROUTER_ABI_V3, signer);
+    const deadline = Math.floor(Date.now() / 1000) + 300;
+
+    const swapTx = await router.exactInputSingle({
+      tokenIn: dlbtTokenAddress,
+      tokenOut: USDC_POLYGON,
+      recipient: signer.address,
+      deadline,
+      amountIn: amount,
+      amountOutMinimum: 0,
+      sqrtPriceLimitX96: 0n,
+    });
+    const receipt = await swapTx.wait();
+
+    // Read USDC balance after swap
+    const usdcContract = new ethers.Contract(USDC_POLYGON, ERC20_ABI, getProvider('MATIC'));
+    const usdcBalance = await usdcContract.balanceOf(signer.address);
+
+    const opNum = generateOpNumber('SWAP');
+    this.db.prepare(`
+      INSERT INTO cdk_token_operations (operation_type, operation_number, wallet_address, amount_cents, token_amount, contract_address, tx_hash, block_number, gas_used, status)
+      VALUES ('swap_dlbt_usdc', ?, ?, ?, ?, ?, ?, ?, ?, 'confirmed')
+    `).run(opNum, signer.address, Math.round(parseFloat(amountDLBT) * 100), amountDLBT.toString(), dlbtTokenAddress, receipt.hash, receipt.blockNumber, receipt.gasUsed.toString());
+
+    return {
+      opNumber: opNum,
+      txHash: receipt.hash,
+      amountDLBTIn: amountDLBT.toString(),
+      usdcBalanceAfter: ethers.formatUnits(usdcBalance, 6),
+      gasUsed: receipt.gasUsed.toString(),
+      explorerUrl: `https://polygonscan.com/tx/${receipt.hash}`,
+    };
+  }
+
+  // Swap USDC → DLBT
+  async swapUSDCtoDLBT(signer, dlbtTokenAddress, amountUSDC) {
+    const usdcContract = new ethers.Contract(USDC_POLYGON, ERC20_ABI, signer);
+    const amount = ethers.parseUnits(amountUSDC.toString(), 6);
+
+    const approveTx = await usdcContract.approve(QUICKSWAP_ROUTER, amount);
+    await approveTx.wait();
+
+    const router = new ethers.Contract(QUICKSWAP_ROUTER, SWAP_ROUTER_ABI_V3, signer);
+    const deadline = Math.floor(Date.now() / 1000) + 300;
+
+    const swapTx = await router.exactInputSingle({
+      tokenIn: USDC_POLYGON,
+      tokenOut: dlbtTokenAddress,
+      recipient: signer.address,
+      deadline,
+      amountIn: amount,
+      amountOutMinimum: 0,
+      sqrtPriceLimitX96: 0n,
+    });
+    const receipt = await swapTx.wait();
+
+    const dlbtContract = new ethers.Contract(dlbtTokenAddress, ERC20_ABI, getProvider('MATIC'));
+    const dlbtBalance = await dlbtContract.balanceOf(signer.address);
+
+    const opNum = generateOpNumber('SWAP');
+    this.db.prepare(`
+      INSERT INTO cdk_token_operations (operation_type, operation_number, wallet_address, amount_cents, token_amount, contract_address, tx_hash, block_number, gas_used, status)
+      VALUES ('swap_usdc_dlbt', ?, ?, ?, ?, ?, ?, ?, ?, 'confirmed')
+    `).run(opNum, signer.address, Math.round(parseFloat(amountUSDC) * 100), amountUSDC.toString(), dlbtTokenAddress, receipt.hash, receipt.blockNumber, receipt.gasUsed.toString());
+
+    return {
+      opNumber: opNum,
+      txHash: receipt.hash,
+      amountUSDCIn: amountUSDC.toString(),
+      dlbtBalanceAfter: ethers.formatUnits(dlbtBalance, 6),
+      gasUsed: receipt.gasUsed.toString(),
+      explorerUrl: `https://polygonscan.com/tx/${receipt.hash}`,
+    };
+  }
+
+  // Get pool info
+  async getPoolInfo(dlbtTokenAddress) {
+    const factory = new ethers.Contract(QUICKSWAP_FACTORY, ALGEBRA_FACTORY_ABI, getProvider('MATIC'));
+    const poolAddress = await factory.poolByPair(dlbtTokenAddress, USDC_POLYGON);
+
+    if (poolAddress === '0x0000000000000000000000000000000000000000') {
+      return { exists: false, poolAddress: null };
+    }
+
+    const pool = new ethers.Contract(poolAddress, ALGEBRA_POOL_ABI, getProvider('MATIC'));
+    const [globalState, token0, liquidity] = await Promise.all([
+      pool.globalState(),
+      pool.token0(),
+      pool.liquidity(),
+    ]);
+
+    const dlbtContract = new ethers.Contract(dlbtTokenAddress, ERC20_ABI, getProvider('MATIC'));
+    const usdcContract = new ethers.Contract(USDC_POLYGON, ERC20_ABI, getProvider('MATIC'));
+    const [dlbtInPool, usdcInPool] = await Promise.all([
+      dlbtContract.balanceOf(poolAddress),
+      usdcContract.balanceOf(poolAddress),
+    ]);
+
+    return {
+      exists: true,
+      poolAddress,
+      token0,
+      price: globalState[0].toString(),
+      tick: globalState[1],
+      fee: globalState[2],
+      liquidity: liquidity.toString(),
+      dlbtInPool: ethers.formatUnits(dlbtInPool, 6),
+      usdcInPool: ethers.formatUnits(usdcInPool, 6),
+      dex: 'QuickSwap V3',
+      explorerUrl: `https://polygonscan.com/address/${poolAddress}`,
+    };
+  }
+
+  // Get positions from DB
+  getPositions(limit = 50) {
+    return this.db.prepare('SELECT * FROM cdk_liquidity_positions ORDER BY id DESC LIMIT ?').all(limit);
+  }
+
+  // Get pool record from DB
+  getPool() {
+    return this.db.prepare("SELECT * FROM cdk_liquidity_pools WHERE status = 'active' ORDER BY id DESC LIMIT 1").get();
+  }
+}
+
+const ERC20_ABI = [
+  'function transfer(address to, uint256 amount) returns (bool)',
+  'function balanceOf(address account) view returns (uint256)',
+  'function decimals() view returns (uint8)',
+  'function symbol() view returns (string)',
+  'function name() view returns (string)',
+  'function approve(address spender, uint256 amount) returns (bool)',
+  'function allowance(address owner, address spender) view returns (uint256)',
+  'function totalSupply() view returns (uint256)',
+];
+
 // --- Exports -----------------------------------------------------------------
 
 module.exports = {
@@ -403,4 +708,6 @@ module.exports = {
   ContractManager,
   TokenOperationsManager,
   DistributionManager,
+  LiquidityPoolManager,
+  USDC_POLYGON,
 };

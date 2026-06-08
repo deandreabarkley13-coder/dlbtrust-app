@@ -3144,6 +3144,33 @@ async function loadCDK() {
       opsDiv.innerHTML = '<p style="color:#888;">No token operations yet. Deploy the DLBT token and start minting.</p>';
     }
 
+    // Pool info
+    const poolInfoDiv = document.getElementById('cdk-pool-info');
+    const poolActions = document.getElementById('cdk-pool-actions');
+    const poolForms   = document.getElementById('cdk-pool-forms');
+
+    if (data.pool_info && data.pool_info.exists) {
+      poolInfoDiv.innerHTML = `
+        <div class="info-grid" style="display:grid;grid-template-columns:1fr 1fr;gap:0.5rem;">
+          <div><strong>DEX:</strong> ${data.pool_info.dex || 'QuickSwap V3'}</div>
+          <div><strong>Fee:</strong> ${data.pool_info.fee ? (data.pool_info.fee / 10000).toFixed(2) + '%' : '—'}</div>
+          <div><strong>DLBT in Pool:</strong> ${parseFloat(data.pool_info.dlbtInPool || 0).toLocaleString('en-US', {minimumFractionDigits:2})} DLBT</div>
+          <div><strong>USDC in Pool:</strong> $${parseFloat(data.pool_info.usdcInPool || 0).toLocaleString('en-US', {minimumFractionDigits:2})}</div>
+          <div style="grid-column:span 2;"><strong>Pool:</strong> <a href="${data.pool_info.explorerUrl}" target="_blank"><code style="font-size:0.8rem;">${data.pool_info.poolAddress}</code></a></div>
+        </div>
+      `;
+      poolActions.style.display = 'none';
+      if (poolForms) poolForms.style.display = 'grid';
+    } else if (data.token_contract) {
+      poolInfoDiv.innerHTML = '<p>No liquidity pool created yet. Click <strong>Create Pool</strong> to set up DLBT/USDC trading on QuickSwap V3.</p>';
+      poolActions.style.display = 'flex';
+      if (poolForms) poolForms.style.display = 'none';
+    } else {
+      poolInfoDiv.innerHTML = '<p style="color:#888;">Deploy the DLBT token first, then create a liquidity pool.</p>';
+      poolActions.style.display = 'none';
+      if (poolForms) poolForms.style.display = 'none';
+    }
+
     // Encryption key warning
     if (!data.has_encryption_key) {
       showToast('WALLET_ENCRYPTION_KEY not set — cannot sign transactions', 'error');
@@ -3224,6 +3251,75 @@ async function burnDLBT() {
   } finally {
     btn.disabled = false;
     btn.textContent = 'Burn DLBT';
+  }
+}
+
+async function createPool() {
+  const btn = document.getElementById('cdk-create-pool-btn');
+  btn.disabled = true;
+  btn.textContent = 'Creating Pool...';
+
+  try {
+    const result = await api('/cdk/pool/create', { method: 'POST', body: JSON.stringify({}) });
+    if (result.alreadyExists) {
+      showToast('Pool already exists at ' + result.poolAddress, 'info');
+    } else {
+      showToast('DLBT/USDC pool created on QuickSwap V3!', 'success');
+    }
+    loadCDK();
+  } catch (err) {
+    showToast('Pool creation failed: ' + (err.error || err.message), 'error');
+    btn.disabled = false;
+    btn.textContent = 'Create DLBT/USDC Pool';
+  }
+}
+
+async function addLiquidity() {
+  const dlbtAmt = document.getElementById('cdk-lp-dlbt-amount').value;
+  const usdcAmt = document.getElementById('cdk-lp-usdc-amount').value;
+  if (!dlbtAmt || !usdcAmt) { showToast('Enter both DLBT and USDC amounts', 'error'); return; }
+
+  const btn = document.getElementById('cdk-add-liq-btn');
+  btn.disabled = true;
+  btn.textContent = 'Adding Liquidity...';
+
+  try {
+    const result = await api('/cdk/pool/add-liquidity', {
+      method: 'POST',
+      body: JSON.stringify({ dlbt_amount: dlbtAmt, usdc_amount: usdcAmt }),
+    });
+    showToast(`Liquidity added: ${dlbtAmt} DLBT + ${usdcAmt} USDC — TX: ${result.txHash ? result.txHash.slice(0, 16) + '...' : 'done'}`, 'success');
+    loadCDK();
+  } catch (err) {
+    showToast('Add liquidity failed: ' + (err.error || err.message), 'error');
+  } finally {
+    btn.disabled = false;
+    btn.textContent = 'Add Liquidity';
+  }
+}
+
+async function swapTokens() {
+  const direction = document.getElementById('cdk-swap-direction').value;
+  const amount    = document.getElementById('cdk-swap-amount').value;
+  if (!amount) { showToast('Enter an amount to swap', 'error'); return; }
+
+  const btn = document.getElementById('cdk-swap-btn');
+  btn.disabled = true;
+  btn.textContent = 'Swapping...';
+
+  try {
+    const result = await api('/cdk/pool/swap', {
+      method: 'POST',
+      body: JSON.stringify({ direction, amount }),
+    });
+    const label = direction === 'dlbt_to_usdc' ? `${amount} DLBT → USDC` : `${amount} USDC → DLBT`;
+    showToast(`Swap completed: ${label} — TX: ${result.txHash ? result.txHash.slice(0, 16) + '...' : 'done'}`, 'success');
+    loadCDK();
+  } catch (err) {
+    showToast('Swap failed: ' + (err.error || err.message), 'error');
+  } finally {
+    btn.disabled = false;
+    btn.textContent = 'Swap';
   }
 }
 
