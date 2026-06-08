@@ -759,8 +759,35 @@ async function loadPayments() {
       </div>
       <div class="metric-card ${deliveryStatus.connected ? 'primary' : 'warn'}">
         <span class="metric-label">Delivery</span>
-        <span class="metric-value" style="font-size:0.85rem">${deliveryStatus.delivery_method === 'openach' ? '🏦 OpenACH' : deliveryStatus.delivery_method === 'sftp' ? '📡 SFTP' : '📁 Manual'}</span>
+        <span class="metric-value" style="font-size:0.85rem">${
+          deliveryStatus.delivery_method === 'column' ? '🏦 Column API' :
+          deliveryStatus.delivery_method === 'dwolla' ? '🏦 Dwolla API' :
+          deliveryStatus.delivery_method === 'openach' ? '🏦 OpenACH' :
+          deliveryStatus.delivery_method === 'sftp' ? '📡 SFTP' : '📁 Manual'
+        }</span>
       </div>`;
+
+    // Delivery methods panel
+    if (deliveryStatus.all_methods) {
+      let methodsHtml = '<div style="margin-top:16px;padding:16px;background:var(--card-bg);border-radius:8px;border:1px solid var(--border-color)">';
+      methodsHtml += '<h4 style="margin:0 0 12px 0;font-size:0.95rem">🔌 Payment Delivery Channels</h4>';
+      methodsHtml += '<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:10px">';
+      for (const m of deliveryStatus.all_methods) {
+        const isActive = m.name === deliveryStatus.delivery_method;
+        const iconMap = { column: '🏦', dwolla: '💳', openach: '🔧', moov: '📦', sftp: '📡', manual: '📁' };
+        methodsHtml += `<div style="padding:10px;border-radius:6px;border:1px solid ${m.connected ? 'var(--success)' : m.configured ? 'var(--warning)' : 'var(--border-color)'};background:${isActive ? 'rgba(34,197,94,0.08)' : 'transparent'}">
+          <div style="display:flex;justify-content:space-between;align-items:center">
+            <strong>${iconMap[m.name] || '⚡'} ${m.label}</strong>
+            <span style="font-size:0.75rem;padding:2px 6px;border-radius:4px;background:${m.connected ? 'var(--success)' : m.configured ? 'var(--warning)' : 'var(--text-secondary)'};color:white">${m.connected ? 'CONNECTED' : m.configured ? 'CONFIGURED' : 'NOT SET'}</span>
+          </div>
+          <div style="font-size:0.8rem;color:var(--text-secondary);margin-top:4px">${m.description || ''}</div>
+          ${isActive ? '<div style="font-size:0.75rem;color:var(--success);margin-top:4px;font-weight:600">⚡ ACTIVE — payments route here first</div>' : ''}
+          ${m.message ? '<div style="font-size:0.75rem;color:var(--text-secondary);margin-top:2px">' + m.message + '</div>' : ''}
+        </div>`;
+      }
+      methodsHtml += '</div></div>';
+      document.getElementById('payment-metrics').insertAdjacentHTML('afterend', methodsHtml);
+    }
 
     // Table
     const payments = paymentsData.transfers || [];

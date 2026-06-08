@@ -547,6 +547,12 @@ router.get('/delivery-status', async (req, res) => {
 
     if (method === 'openach') {
       health = await checkOpenACHHealth();
+    } else if (method === 'column') {
+      health.connected = true;
+      health.message = 'Column Bank API connected — ACH/Wire submitted via REST API (no SFTP)';
+    } else if (method === 'dwolla') {
+      health.connected = true;
+      health.message = 'Dwolla API connected — ACH/RTP/FedNow via REST API';
     } else if (method === 'sftp') {
       health.connected = true;
       health.message = 'SFTP configured — files will auto-upload to bank';
@@ -554,6 +560,12 @@ router.get('/delivery-status', async (req, res) => {
       health.connected = false;
       health.message = 'Manual delivery — download files and submit to bank portal';
     }
+
+    // Include all available delivery methods
+    try {
+      const { getAllDeliveryMethods } = require('../engines/payment-delivery-engine');
+      health.all_methods = await getAllDeliveryMethods();
+    } catch (_) {}
 
     res.json(health);
   } catch (err) {
