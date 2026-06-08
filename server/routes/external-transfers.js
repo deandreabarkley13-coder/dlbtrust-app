@@ -390,6 +390,181 @@ router.post('/', (req, res) => {
   }
 });
 
+// ============================================================================
+// PAYMENT FILE ROUTES (must be before /:id catch-all)
+// ============================================================================
+
+// --- GET /files -- List payment files ----------------------------------------
+router.get('/files', (req, res) => {
+  try {
+    const { file_type, transfer_id, batch_id, status } = req.query;
+    let sql = 'SELECT id, transfer_id, transfer_number, batch_id, file_type, filename, metadata, status, created_at FROM payment_files WHERE 1=1';
+    const params = [];
+
+    if (file_type) { sql += ' AND file_type = ?'; params.push(file_type); }
+    if (transfer_id) { sql += ' AND transfer_id = ?'; params.push(transfer_id); }
+    if (batch_id) { sql += ' AND batch_id = ?'; params.push(batch_id); }
+    if (status) { sql += ' AND status = ?'; params.push(status); }
+    sql += ' ORDER BY created_at DESC LIMIT 100';
+
+    const files = req.db.prepare(sql).all(...params);
+    files.forEach(f => { if (f.metadata) f.metadata = JSON.parse(f.metadata); });
+    res.json(files);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// --- GET /files/:id/download -- Download a payment file ----------------------
+router.get('/files/:fileId/download', (req, res) => {
+  try {
+    const file = req.db.prepare('SELECT * FROM payment_files WHERE id = ?').get(req.params.fileId);
+    if (!file) return res.status(404).json({ error: 'File not found' });
+
+    res.setHeader('Content-Type', 'text/plain');
+    res.setHeader('Content-Disposition', `attachment; filename="${file.filename}"`);
+    res.send(file.content);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// --- GET /files/:id/content -- View file content (JSON) ----------------------
+router.get('/files/:fileId/content', (req, res) => {
+  try {
+    const file = req.db.prepare('SELECT * FROM payment_files WHERE id = ?').get(req.params.fileId);
+    if (!file) return res.status(404).json({ error: 'File not found' });
+
+    res.json({
+      id: file.id,
+      filename: file.filename,
+      file_type: file.file_type,
+      content: file.content,
+      metadata: file.metadata ? JSON.parse(file.metadata) : null,
+      status: file.status,
+      created_at: file.created_at,
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// --- POST /batch-process -- Process multiple approved transfers as batch ------
+router.post('/batch-process', (req, res) => {
+  try {
+    const { transfer_ids, payment_method } = req.body;
+    if (!transfer_ids || !transfer_ids.length) {
+      return res.status(400).json({ error: 'transfer_ids array is required' });
+    }
+
+    const method = payment_method || 'ach';
+    const batchId = `BATCH-${Date.now()}`;
+    const results = { processed: [], failed: [], batch_id: batchId };
+
+    if (method === 'ach') {
+      const payments = [];
+      const transferRows = [];
+
+      for (const id of transfer_ids) {
+        const transfer = req.db.prepare('SELECT * FROM external_transfers WHERE id = ?').get(id);
+        if (!transfer) { results.failed.push({ id, error: 'Not found' }); continue; }
+        if (transfer.status !== 'approved') { results.failed.push({ id, error: `Status is ${transfer.status}` }); continue; }
+
+        const account = req.db.prepare('SELECT * FROM trust_accounts WHERE id = ?').get(transfer.from_account_id);
+        if (account.available_cents < transfer.total_cents) {
+          results.failed.push({ id, error: 'Insufficient funds' }); continue;
+        }
+
+        const contact = req.db.prepare('SELECT * FROM crm_contacts WHERE id = ?').get(transfer.contact_id);
+        let pm = {};
+        if (transfer.payment_method_id) {
+          pm = req.db.prepare('SELECT * FROM crm_payment_methods WHERE id = ?').get(transfer.payment_method_id) || {};
+        }
+
+        if (!pm.routing_number || !pm.account_number) {
+          results.failed.push({ id, error: 'Missing routing/account number' }); continue;
+        }
+
+        payments.push({
+          routingNumber: pm.routing_number,
+          accountNumber: pm.account_number,
+          amountCents: transfer.amount_cents,
+          accountType: (pm.account_type || 'checking').toLowerCase(),
+          recipientName: (contact ? contact.display_name : 'UNKNOWN').slice(0, 22),
+          referenceId: transfer.transfer_number,
+        });
+        transferRows.push({ transfer, account });
+      }
+
+      if (payments.length > 0) {
+        const nachaFile = generateBatchACH(payments, { entryDescription: 'TRUST DIST' });
+
+        const batchProcess = req.db.transaction(() => {
+          req.db.prepare(`
+            INSERT INTO payment_files (batch_id, file_type, filename, content, metadata, created_at)
+            VALUES (?, 'nacha', ?, ?, ?, datetime('now'))
+          `).run(batchId, nachaFile.filename, nachaFile.content, JSON.stringify(nachaFile.metadata));
+
+          for (const { transfer, account } of transferRows) {
+            req.db.prepare(`
+              UPDATE trust_accounts SET balance_cents = balance_cents - ?, available_cents = available_cents - ?, updated_at = datetime('now')
+              WHERE id = ?
+            `).run(transfer.total_cents, transfer.total_cents, transfer.from_account_id);
+
+            req.db.prepare(`
+              UPDATE external_transfers SET status = 'processing', sent_date = datetime('now'), batch_id = ?, updated_at = datetime('now')
+              WHERE id = ?
+            `).run(batchId, transfer.id);
+
+            results.processed.push({ id: transfer.id, transfer_number: transfer.transfer_number });
+          }
+        });
+        batchProcess();
+
+        results.file = { filename: nachaFile.filename, entries: payments.length, metadata: nachaFile.metadata };
+      }
+    } else {
+      for (const id of transfer_ids) {
+        results.failed.push({ id, error: 'Wire transfers must be processed individually' });
+      }
+    }
+
+    res.json({
+      message: `Batch processed: ${results.processed.length} succeeded, ${results.failed.length} failed`,
+      ...results,
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// --- POST /files/:id/mark-submitted -- Mark file as submitted to bank --------
+router.post('/files/:fileId/mark-submitted', (req, res) => {
+  try {
+    const file = req.db.prepare('SELECT * FROM payment_files WHERE id = ?').get(req.params.fileId);
+    if (!file) return res.status(404).json({ error: 'File not found' });
+
+    req.db.prepare(`
+      UPDATE payment_files SET status = 'submitted', submitted_at = datetime('now') WHERE id = ?
+    `).run(req.params.fileId);
+
+    if (file.transfer_id) {
+      req.db.prepare(`
+        UPDATE external_transfers SET status = 'sent', updated_at = datetime('now') WHERE id = ? AND status = 'processing'
+      `).run(file.transfer_id);
+    }
+    if (file.batch_id) {
+      req.db.prepare(`
+        UPDATE external_transfers SET status = 'sent', updated_at = datetime('now') WHERE batch_id = ? AND status = 'processing'
+      `).run(file.batch_id);
+    }
+
+    res.json({ message: 'File marked as submitted to bank' });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // --- GET /:id -- Transfer detail --------------------------------------------
 router.get('/:id', (req, res) => {
   try {
@@ -803,189 +978,6 @@ router.post('/:id/retry', (req, res) => {
 
     insertAudit(req.db, buildAuditEntry('external_transfer', req.params.id, 'retried', 'dashboard_user', {}));
     res.json({ message: 'Transfer reset to draft for retry' });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
-// ============================================================================
-// PAYMENT FILE ROUTES
-// ============================================================================
-
-// --- GET /files -- List payment files ----------------------------------------
-router.get('/files', (req, res) => {
-  try {
-    const { file_type, transfer_id, batch_id, status } = req.query;
-    let sql = 'SELECT id, transfer_id, transfer_number, batch_id, file_type, filename, metadata, status, created_at FROM payment_files WHERE 1=1';
-    const params = [];
-
-    if (file_type) { sql += ' AND file_type = ?'; params.push(file_type); }
-    if (transfer_id) { sql += ' AND transfer_id = ?'; params.push(transfer_id); }
-    if (batch_id) { sql += ' AND batch_id = ?'; params.push(batch_id); }
-    if (status) { sql += ' AND status = ?'; params.push(status); }
-    sql += ' ORDER BY created_at DESC LIMIT 100';
-
-    const files = req.db.prepare(sql).all(...params);
-    files.forEach(f => { if (f.metadata) f.metadata = JSON.parse(f.metadata); });
-    res.json(files);
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
-// --- GET /files/:id/download -- Download a payment file ----------------------
-router.get('/files/:fileId/download', (req, res) => {
-  try {
-    const file = req.db.prepare('SELECT * FROM payment_files WHERE id = ?').get(req.params.fileId);
-    if (!file) return res.status(404).json({ error: 'File not found' });
-
-    const contentType = file.file_type === 'nacha' ? 'text/plain' : 'text/plain';
-    res.setHeader('Content-Type', contentType);
-    res.setHeader('Content-Disposition', `attachment; filename="${file.filename}"`);
-    res.send(file.content);
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
-// --- GET /files/:id/content -- View file content (JSON) ----------------------
-router.get('/files/:fileId/content', (req, res) => {
-  try {
-    const file = req.db.prepare('SELECT * FROM payment_files WHERE id = ?').get(req.params.fileId);
-    if (!file) return res.status(404).json({ error: 'File not found' });
-
-    res.json({
-      id: file.id,
-      filename: file.filename,
-      file_type: file.file_type,
-      content: file.content,
-      metadata: file.metadata ? JSON.parse(file.metadata) : null,
-      status: file.status,
-      created_at: file.created_at,
-    });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
-// --- POST /batch-process -- Process multiple approved transfers as batch ------
-router.post('/batch-process', (req, res) => {
-  try {
-    const { transfer_ids, payment_method } = req.body;
-    if (!transfer_ids || !transfer_ids.length) {
-      return res.status(400).json({ error: 'transfer_ids array is required' });
-    }
-
-    const method = payment_method || 'ach';
-    const batchId = `BATCH-${Date.now()}`;
-    const results = { processed: [], failed: [], batch_id: batchId };
-
-    // Only ACH supports true batch files (multiple entries in one NACHA file)
-    if (method === 'ach') {
-      const payments = [];
-      const transferRows = [];
-
-      for (const id of transfer_ids) {
-        const transfer = req.db.prepare('SELECT * FROM external_transfers WHERE id = ?').get(id);
-        if (!transfer) { results.failed.push({ id, error: 'Not found' }); continue; }
-        if (transfer.status !== 'approved') { results.failed.push({ id, error: `Status is ${transfer.status}` }); continue; }
-
-        const account = req.db.prepare('SELECT * FROM trust_accounts WHERE id = ?').get(transfer.from_account_id);
-        if (account.available_cents < transfer.total_cents) {
-          results.failed.push({ id, error: 'Insufficient funds' }); continue;
-        }
-
-        const contact = req.db.prepare('SELECT * FROM crm_contacts WHERE id = ?').get(transfer.contact_id);
-        let pm = {};
-        if (transfer.payment_method_id) {
-          pm = req.db.prepare('SELECT * FROM crm_payment_methods WHERE id = ?').get(transfer.payment_method_id) || {};
-        }
-
-        if (!pm.routing_number || !pm.account_number) {
-          results.failed.push({ id, error: 'Missing routing/account number' }); continue;
-        }
-
-        payments.push({
-          routingNumber: pm.routing_number,
-          accountNumber: pm.account_number,
-          amountCents: transfer.amount_cents,
-          accountType: (pm.account_type || 'checking').toLowerCase(),
-          recipientName: (contact ? contact.display_name : 'UNKNOWN').slice(0, 22),
-          referenceId: transfer.transfer_number,
-        });
-        transferRows.push({ transfer, account });
-      }
-
-      if (payments.length > 0) {
-        const nachaFile = generateBatchACH(payments, { entryDescription: 'TRUST DIST' });
-
-        // Process all in a transaction
-        const batchProcess = req.db.transaction(() => {
-          // Store the batch file
-          req.db.prepare(`
-            INSERT INTO payment_files (batch_id, file_type, filename, content, metadata, created_at)
-            VALUES (?, 'nacha', ?, ?, ?, datetime('now'))
-          `).run(batchId, nachaFile.filename, nachaFile.content, JSON.stringify(nachaFile.metadata));
-
-          for (const { transfer, account } of transferRows) {
-            // Debit account
-            req.db.prepare(`
-              UPDATE trust_accounts SET balance_cents = balance_cents - ?, available_cents = available_cents - ?, updated_at = datetime('now')
-              WHERE id = ?
-            `).run(transfer.total_cents, transfer.total_cents, transfer.from_account_id);
-
-            // Update transfer
-            req.db.prepare(`
-              UPDATE external_transfers SET status = 'processing', sent_date = datetime('now'), batch_id = ?, updated_at = datetime('now')
-              WHERE id = ?
-            `).run(batchId, transfer.id);
-
-            results.processed.push({ id: transfer.id, transfer_number: transfer.transfer_number });
-          }
-        });
-        batchProcess();
-
-        results.file = { filename: nachaFile.filename, entries: payments.length, metadata: nachaFile.metadata };
-      }
-    } else {
-      // Wire transfers are processed individually
-      for (const id of transfer_ids) {
-        results.failed.push({ id, error: 'Wire transfers must be processed individually' });
-      }
-    }
-
-    res.json({
-      message: `Batch processed: ${results.processed.length} succeeded, ${results.failed.length} failed`,
-      ...results,
-    });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
-// --- POST /files/:id/mark-submitted -- Mark file as submitted to bank --------
-router.post('/files/:fileId/mark-submitted', (req, res) => {
-  try {
-    const file = req.db.prepare('SELECT * FROM payment_files WHERE id = ?').get(req.params.fileId);
-    if (!file) return res.status(404).json({ error: 'File not found' });
-
-    req.db.prepare(`
-      UPDATE payment_files SET status = 'submitted', submitted_at = datetime('now') WHERE id = ?
-    `).run(req.params.fileId);
-
-    // Also update linked transfer(s) to 'sent'
-    if (file.transfer_id) {
-      req.db.prepare(`
-        UPDATE external_transfers SET status = 'sent', updated_at = datetime('now') WHERE id = ? AND status = 'processing'
-      `).run(file.transfer_id);
-    }
-    if (file.batch_id) {
-      req.db.prepare(`
-        UPDATE external_transfers SET status = 'sent', updated_at = datetime('now') WHERE batch_id = ? AND status = 'processing'
-      `).run(file.batch_id);
-    }
-
-    res.json({ message: 'File marked as submitted to bank' });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
