@@ -14,7 +14,7 @@ jobs:
           sshpass -p "dP8RlShbOWNq" ssh -o StrictHostKeyChecking=no -o ConnectTimeout=15 -o PasswordAuthentication=yes root@$SERVER '
             CONT=$(docker ps --format "{{.Names}}" | grep -i openach | head -1)
             [ -z "$CONT" ] && CONT=openach
-            DB=/opt/openach/db/openach.db
+            DB=/home/www/openach/protected/runtime/db/openach.db
 
             echo "=== user_api table schema ==="
             docker exec "$CONT" sqlite3 "$DB" ".schema user_api" 2>&1

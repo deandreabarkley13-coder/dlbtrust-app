@@ -42,7 +42,7 @@ const {
 
 const { generateSingleACH, generateBatchACH, validateRoutingNumber } = require('../engines/nacha-engine');
 const { generateWireMessage } = require('../engines/wire-engine');
-const { deliverPayment, deliverWire, checkOpenACHHealth, getAvailableDeliveryMethod } = require('../engines/payment-delivery-engine');
+const { deliverPayment, deliverWire, checkOpenACHHealth, getAvailableDeliveryMethod, getAllDeliveryMethods } = require('../engines/payment-delivery-engine');
 
 // --- DB Setup ---------------------------------------------------------------
 
@@ -563,7 +563,6 @@ router.get('/delivery-status', async (req, res) => {
 
     // Include all available delivery methods
     try {
-      const { getAllDeliveryMethods } = require('../engines/payment-delivery-engine');
       health.all_methods = await getAllDeliveryMethods();
     } catch (_) {}
 
