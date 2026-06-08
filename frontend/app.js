@@ -2149,6 +2149,7 @@ function showReceiveForWallet(walletId, walletName, address) {
   document.getElementById('receive-modal').classList.remove('hidden');
   document.getElementById('recv-address-display').style.display = 'block';
   document.getElementById('recv-address').textContent = address;
+  generateReceiveQR(address);
   document.getElementById('recv-balances').innerHTML = '<span style="color:var(--text-muted)">Loading balances...</span>';
 
   // Load balances
@@ -2183,6 +2184,7 @@ function updateReceiveAddress() {
   const addr = opt.getAttribute('data-address');
   display.style.display = 'block';
   document.getElementById('recv-address').textContent = addr || 'No address';
+  generateReceiveQR(addr);
   document.getElementById('recv-balances').innerHTML = '<span style="color:var(--text-muted)">Loading balances...</span>';
 
   api(`/blockchain/wallets/${sel.value}/balances`).then(data => {
@@ -2200,6 +2202,86 @@ function updateReceiveAddress() {
 function copyReceiveAddress() {
   const addr = document.getElementById('recv-address').textContent;
   copyAddress(addr);
+}
+
+// --- QR Code Generation (Receive) ---
+function generateReceiveQR(address) {
+  const canvas = document.getElementById('recv-qr-canvas');
+  if (!canvas || !address || !window.QRCode) return;
+  QRCode.toCanvas(canvas, address, {
+    width: 200,
+    margin: 2,
+    color: { dark: '#000000', light: '#ffffff' }
+  }, function(err) {
+    if (err) console.error('QR generation error:', err);
+  });
+}
+
+// --- QR Scanner (Send) ---
+let _qrScanner = null;
+let _qrTargetFieldId = null;
+
+function startQrScan(targetFieldId) {
+  _qrTargetFieldId = targetFieldId;
+  document.getElementById('qr-scanner-modal').classList.remove('hidden');
+  document.getElementById('qr-scan-result').style.display = 'none';
+
+  const readerEl = document.getElementById('qr-reader');
+  readerEl.innerHTML = '';
+
+  if (!window.Html5Qrcode) {
+    showToast('QR scanner library not loaded', 'error');
+    return;
+  }
+
+  _qrScanner = new Html5Qrcode('qr-reader');
+  _qrScanner.start(
+    { facingMode: 'environment' },
+    { fps: 10, qrbox: { width: 250, height: 250 } },
+    (decodedText) => {
+      // Extract address from various QR formats (ethereum:0x..., polygon:0x..., or plain 0x...)
+      let address = decodedText.trim();
+      if (address.includes(':')) {
+        const parts = address.split(':');
+        address = parts[parts.length - 1].split('?')[0].split('@')[0];
+      }
+      // Validate it looks like an Ethereum address
+      if (/^0x[a-fA-F0-9]{40}$/.test(address)) {
+        document.getElementById(_qrTargetFieldId).value = address;
+        document.getElementById('qr-scan-value').textContent = address;
+        document.getElementById('qr-scan-result').style.display = 'block';
+        showToast('Address scanned!', 'success');
+        setTimeout(() => stopQrScan(), 800);
+      } else {
+        // Try raw text anyway
+        document.getElementById(_qrTargetFieldId).value = decodedText;
+        document.getElementById('qr-scan-value').textContent = decodedText;
+        document.getElementById('qr-scan-result').style.display = 'block';
+        showToast('QR code scanned', 'success');
+        setTimeout(() => stopQrScan(), 800);
+      }
+    },
+    (errorMessage) => { /* scanning in progress, ignore frame errors */ }
+  ).catch((err) => {
+    console.error('QR scanner start error:', err);
+    readerEl.innerHTML = `
+      <div style="padding:24px;text-align:center;color:var(--text-muted)">
+        <p style="font-size:2rem;margin-bottom:8px">📷</p>
+        <p style="font-size:0.85rem">Camera access denied or not available.</p>
+        <p style="font-size:0.8rem;color:var(--text-muted)">Grant camera permission or paste the address manually.</p>
+      </div>
+    `;
+  });
+}
+
+function stopQrScan() {
+  if (_qrScanner) {
+    _qrScanner.stop().then(() => {
+      _qrScanner.clear();
+      _qrScanner = null;
+    }).catch(() => { _qrScanner = null; });
+  }
+  document.getElementById('qr-scanner-modal').classList.add('hidden');
 }
 
 // --- Send DLBT ---
