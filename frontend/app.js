@@ -725,9 +725,10 @@ async function loadPayments() {
     const filter = document.getElementById('payment-status-filter')?.value || '';
     const statusParam = filter ? `?status=${filter}` : '';
 
-    const [paymentsData, summary] = await Promise.all([
+    const [paymentsData, summary, deliveryStatus] = await Promise.all([
       api(`/external-transfers${statusParam}`),
       api('/external-transfers/summary'),
+      api('/external-transfers/delivery-status').catch(() => ({ delivery_method: 'manual', connected: false })),
     ]);
 
     // Metrics
@@ -755,6 +756,10 @@ async function loadPayments() {
       <div class="metric-card">
         <span class="metric-label">Total Transfers</span>
         <span class="metric-value">${summary.total_transfers || 0}</span>
+      </div>
+      <div class="metric-card ${deliveryStatus.connected ? 'primary' : 'warn'}">
+        <span class="metric-label">Delivery</span>
+        <span class="metric-value" style="font-size:0.85rem">${deliveryStatus.delivery_method === 'openach' ? '🏦 OpenACH' : deliveryStatus.delivery_method === 'sftp' ? '📡 SFTP' : '📁 Manual'}</span>
       </div>`;
 
     // Table
@@ -931,6 +936,20 @@ async function executeProcessPayment(e, id) {
 
 function showPaymentFileResult(data) {
   const file = data.payment_file;
+  const delivery = data.delivery || {};
+  const deliveryBadge = delivery.status === 'submitted'
+    ? '<span class="badge badge-approved">AUTO-SUBMITTED</span>'
+    : '<span class="badge badge-frozen">AWAITING MANUAL SUBMISSION</span>';
+  const deliveryInfo = delivery.status === 'submitted'
+    ? `<div style="background:#ecfdf5;border:1px solid #6ee7b7;border-radius:8px;padding:12px;margin-top:12px">
+        <strong>🏦 Auto-delivered via ${delivery.delivery_method === 'openach' ? 'OpenACH' : 'SFTP'}</strong><br>
+        <small>${delivery.message || ''}</small>
+       </div>`
+    : `<div style="background:#fef3c7;border:1px solid #fbbf24;border-radius:8px;padding:12px;margin-top:12px">
+        <strong>📁 Manual submission required</strong><br>
+        <small>Download the file below and submit to Eaton Family Credit Union via their business banking portal.</small>
+       </div>`;
+
   const html = `
     <div class="modal-backdrop" id="payment-result-modal" onclick="if(event.target===this)hideModal('payment-result-modal')">
       <div class="modal" style="max-width:600px">
@@ -942,7 +961,8 @@ function showPaymentFileResult(data) {
           <div style="background:#ecfdf5;border:1px solid #6ee7b7;border-radius:8px;padding:16px;margin-bottom:16px">
             <strong>Confirmation:</strong> ${data.confirmation_id || 'N/A'}<br>
             <strong>Amount Debited:</strong> $${data.debited}<br>
-            <strong>GL Posted:</strong> ${data.gl_posted ? 'Yes' : 'No'}
+            <strong>GL Posted:</strong> ${data.gl_posted ? 'Yes' : 'No'}<br>
+            <strong>Delivery:</strong> ${deliveryBadge}
           </div>
           <h4>Generated ${file.format.toUpperCase()} File</h4>
           <table style="width:100%;font-size:0.85rem">
@@ -954,10 +974,7 @@ function showPaymentFileResult(data) {
             ${file.metadata.imad ? `<tr><td><strong>IMAD</strong></td><td>${file.metadata.imad}</td></tr>` : ''}
             ${file.metadata.reference ? `<tr><td><strong>Reference</strong></td><td>${file.metadata.reference}</td></tr>` : ''}
           </table>
-          <p style="margin-top:16px;color:var(--text-secondary);font-size:0.85rem">
-            The ${file.format.toUpperCase()} file has been generated and stored. You can download it from the Payment Files tab
-            and submit it to your bank for processing.
-          </p>
+          ${deliveryInfo}
           <button class="btn btn-primary" onclick="loadPaymentFiles();hideModal('payment-result-modal')" style="margin-top:12px">View Payment Files</button>
         </div>
       </div>

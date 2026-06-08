@@ -42,6 +42,7 @@ const {
 
 const { generateSingleACH, generateBatchACH, validateRoutingNumber } = require('../engines/nacha-engine');
 const { generateWireMessage } = require('../engines/wire-engine');
+const { deliverPayment, deliverWire, checkOpenACHHealth, getAvailableDeliveryMethod } = require('../engines/payment-delivery-engine');
 
 // --- DB Setup ---------------------------------------------------------------
 
@@ -538,6 +539,28 @@ router.post('/batch-process', (req, res) => {
   }
 });
 
+// --- GET /delivery-status -- Check payment delivery configuration ------------
+router.get('/delivery-status', async (req, res) => {
+  try {
+    const method = getAvailableDeliveryMethod();
+    let health = { delivery_method: method };
+
+    if (method === 'openach') {
+      health = await checkOpenACHHealth();
+    } else if (method === 'sftp') {
+      health.connected = true;
+      health.message = 'SFTP configured — files will auto-upload to bank';
+    } else {
+      health.connected = false;
+      health.message = 'Manual delivery — download files and submit to bank portal';
+    }
+
+    res.json(health);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // --- POST /files/:id/mark-submitted -- Mark file as submitted to bank --------
 router.post('/files/:fileId/mark-submitted', (req, res) => {
   try {
@@ -689,7 +712,7 @@ router.post('/:id/reject', (req, res) => {
 });
 
 // --- POST /:id/process -- Execute payment (generate NACHA/Wire, debit account, post GL) ---
-router.post('/:id/process', (req, res) => {
+router.post('/:id/process', async (req, res) => {
   try {
     const transfer = req.db.prepare('SELECT * FROM external_transfers WHERE id = ?').get(req.params.id);
     if (!transfer) return res.status(404).json({ error: 'Transfer not found' });
@@ -860,6 +883,33 @@ router.post('/:id/process', (req, res) => {
     insertAudit(req.db, buildAuditEntry('external_transfer', req.params.id, 'processing',
       'dashboard_user', { amount: toDollars(transfer.total_cents), account: account.account_number, confirmation: confirmationId }));
 
+    // After committing the transaction, attempt auto-delivery (async, non-blocking)
+    let deliveryResult = null;
+    try {
+      if (transfer.payment_method === 'ach') {
+        const pmForDelivery = {
+          routing_number: paymentDetails.routing_number || req.body.routing_number,
+          account_number: paymentDetails.account_number || req.body.account_number,
+          account_type: paymentDetails.account_type || req.body.account_type || 'checking',
+          bank_name: paymentDetails.bank_name || req.body.bank_name || '',
+        };
+        deliveryResult = await deliverPayment(transfer, contact || {}, pmForDelivery, paymentFile);
+      } else if (transfer.payment_method === 'wire') {
+        deliveryResult = await deliverWire(transfer, paymentFile);
+      }
+
+      // Update status based on delivery result
+      if (deliveryResult && deliveryResult.success && deliveryResult.status === 'submitted') {
+        req.db.prepare(`UPDATE external_transfers SET status = 'sent', updated_at = datetime('now') WHERE id = ?`).run(req.params.id);
+        if (paymentFile) {
+          req.db.prepare(`UPDATE payment_files SET status = 'submitted', submitted_at = datetime('now') WHERE transfer_id = ?`).run(transfer.id);
+        }
+      }
+    } catch (deliveryErr) {
+      // Delivery failure is non-fatal — payment is still processed, file still stored
+      deliveryResult = { success: false, delivery_method: 'manual', error: deliveryErr.message };
+    }
+
     res.json({
       message: `${transfer.payment_method.toUpperCase()} payment executed — funds debited`,
       debited: toDollars(transfer.total_cents),
@@ -870,6 +920,7 @@ router.post('/:id/process', (req, res) => {
         metadata: paymentFile.metadata,
       } : null,
       gl_posted: true,
+      delivery: deliveryResult,
     });
   } catch (err) {
     res.status(500).json({ error: err.message });
