@@ -461,6 +461,31 @@ router.post('/coupons/generate', (req, res) => {
   }
 });
 
+// ─── POST /coupons/sync-totals — Recalculate interest totals from received coupons
+router.post('/coupons/sync-totals', (req, res) => {
+  try {
+    const db = req.fiDb;
+    const received = db.prepare(`
+      SELECT cp.holding_id, SUM(cp.amount_cents) as total_interest
+      FROM coupon_payments cp WHERE cp.status = 'received'
+      GROUP BY cp.holding_id
+    `).all();
+
+    let updated = 0;
+    for (const row of received) {
+      const ppBond = db.prepare('SELECT id FROM private_placement_bonds WHERE holding_id = ?').get(row.holding_id);
+      if (ppBond) {
+        db.prepare("UPDATE private_placement_bonds SET total_interest_paid_cents = ?, total_payments_made_cents = ?, updated_at = datetime('now') WHERE id = ?")
+          .run(row.total_interest, row.total_interest, ppBond.id);
+        updated++;
+      }
+    }
+    res.json({ success: true, bonds_updated: updated, totals: received });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // ─── POST /coupons/:id/receive ────────────────────────────────────────────────
 // When a coupon is received, automatically:
 // 1. Mark coupon as received
@@ -643,6 +668,13 @@ router.post('/coupons/process-all', async (req, res) => {
       if (creditAccount) {
         db.prepare("UPDATE trust_accounts SET balance_cents = balance_cents + ?, available_cents = available_cents + ?, updated_at = datetime('now') WHERE id = ?")
           .run(coupon.amount_cents, coupon.amount_cents, creditAccount.id);
+      }
+
+      // Update bond interest totals
+      const ppBond = db.prepare('SELECT id FROM private_placement_bonds WHERE holding_id = ?').get(coupon.holding_id);
+      if (ppBond) {
+        db.prepare("UPDATE private_placement_bonds SET total_interest_paid_cents = total_interest_paid_cents + ?, total_payments_made_cents = total_payments_made_cents + ?, updated_at = datetime('now') WHERE id = ?")
+          .run(coupon.amount_cents, coupon.amount_cents, ppBond.id);
       }
 
       // Mint DLBT
