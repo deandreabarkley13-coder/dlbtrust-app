@@ -27,6 +27,7 @@
       <li><a href="#" data-view="ai-agent">AI Agent</a></li>
       <li><a href="#" data-view="integration">Integration</a></li>
       <li><a href="#" data-view="fineract">Fineract Banking</a></li>
+      <li><a href="#" data-view="cdk">Polygon CDK</a></li>
       <li><a href="#" data-view="compliance">Compliance</a></li>
       <li><a href="#" data-view="activity">Activity</a></li>
     </ul>
@@ -1509,6 +1510,101 @@
         </form>
       </div>
     </div>
+
+    <!-- Polygon CDK Appchain View -->
+    <section id="view-cdk" class="view">
+      <header class="view-header">
+        <h2>Polygon CDK — Private Blockchain</h2>
+        <div class="view-actions">
+          <button class="btn btn-secondary" onclick="loadCDK()">Refresh</button>
+        </div>
+      </header>
+
+      <!-- Chain Status Metrics -->
+      <div class="metrics-grid" id="cdk-metrics">
+        <div class="metric-card primary">
+          <span class="metric-label">DLBT Total Supply</span>
+          <span class="metric-value" id="cdk-total-supply">$0.00</span>
+        </div>
+        <div class="metric-card">
+          <span class="metric-label">Total Minted</span>
+          <span class="metric-value" id="cdk-total-minted">$0.00</span>
+        </div>
+        <div class="metric-card">
+          <span class="metric-label">Total Burned</span>
+          <span class="metric-value" id="cdk-total-burned">$0.00</span>
+        </div>
+        <div class="metric-card">
+          <span class="metric-label">Operations</span>
+          <span class="metric-value" id="cdk-operations-count">0</span>
+        </div>
+      </div>
+
+      <!-- Token Contract Info -->
+      <div class="card" id="cdk-token-card">
+        <h3>DLBT Token Contract</h3>
+        <div id="cdk-token-info">
+          <p>No token deployed. Click <strong>Deploy DLBT Token</strong> to create the trust-backed token on Polygon.</p>
+        </div>
+        <div class="card-actions" id="cdk-deploy-actions">
+          <select id="cdk-deployer-wallet" class="form-select"></select>
+          <button class="btn btn-primary" onclick="deployDLBTToken()">Deploy DLBT Token</button>
+        </div>
+      </div>
+
+      <!-- Mint / Burn Actions -->
+      <div class="card-grid" style="grid-template-columns: 1fr 1fr; gap: 1rem; display: grid; margin-top: 1rem;">
+        <div class="card">
+          <h3>Mint DLBT ↑ (Bank → Token)</h3>
+          <p style="font-size:0.85rem;color:#888;margin-bottom:0.75rem;">Convert banking balance to real DLBT tokens on Polygon. Debits account, mints on-chain.</p>
+          <div class="form-group">
+            <label>From Account</label>
+            <select id="cdk-mint-account" class="form-select"></select>
+          </div>
+          <div class="form-group">
+            <label>To Wallet</label>
+            <select id="cdk-mint-wallet" class="form-select"></select>
+          </div>
+          <div class="form-group">
+            <label>Amount (USD)</label>
+            <input type="number" id="cdk-mint-amount" placeholder="10000" min="0.01" step="0.01">
+          </div>
+          <button class="btn btn-primary" onclick="mintDLBT()" id="cdk-mint-btn">Mint DLBT</button>
+        </div>
+
+        <div class="card">
+          <h3>Burn DLBT ↓ (Token → Bank)</h3>
+          <p style="font-size:0.85rem;color:#888;margin-bottom:0.75rem;">Burn DLBT tokens to credit banking balance. Burns on-chain, credits account.</p>
+          <div class="form-group">
+            <label>From Wallet</label>
+            <select id="cdk-burn-wallet" class="form-select"></select>
+          </div>
+          <div class="form-group">
+            <label>To Account</label>
+            <select id="cdk-burn-account" class="form-select"></select>
+          </div>
+          <div class="form-group">
+            <label>Amount (USD)</label>
+            <input type="number" id="cdk-burn-amount" placeholder="5000" min="0.01" step="0.01">
+          </div>
+          <button class="btn btn-primary" onclick="burnDLBT()" id="cdk-burn-btn">Burn DLBT</button>
+        </div>
+      </div>
+
+      <!-- Operations Table -->
+      <div class="card" style="margin-top:1rem;">
+        <h3>Token Operations</h3>
+        <div id="cdk-operations-table" class="table-container"></div>
+      </div>
+
+      <!-- Distributions Section -->
+      <div class="card" style="margin-top:1rem;">
+        <h3>Coupon Distributions</h3>
+        <div id="cdk-distributions-table" class="table-container">
+          <p style="color:#888;">No distributions yet. Coupon payments will appear here after minting.</p>
+        </div>
+      </div>
+    </section>
 
     <!-- Activity View -->
     <section id="view-activity" class="view">

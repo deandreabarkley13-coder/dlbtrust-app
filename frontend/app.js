@@ -86,6 +86,7 @@ function loadView(view) {
     case 'ai-agent': loadAIAgent(); break;
     case 'integration': loadIntegration(); break;
     case 'fineract': loadFineract(); break;
+    case 'cdk': loadCDK(); break;
     case 'compliance': loadCompliance(); break;
     case 'activity': loadActivity(); break;
   }
@@ -3053,6 +3054,176 @@ async function fineractSettleBatch(batchId) {
     loadFineract();
   } catch (err) {
     showToast('Batch settlement failed: ' + err.message, 'error');
+  }
+}
+
+// ==================== Polygon CDK Appchain ==================================
+
+async function loadCDK() {
+  try {
+    const data = await api('/cdk/dashboard');
+
+    // Metrics
+    const supply = data.token_info ? parseFloat(data.token_info.totalSupply || '0') : 0;
+    const mintedCents = data.stats?.mints_total_cents || 0;
+    const burnedCents = data.stats?.burns_total_cents || 0;
+    const totalOps = data.stats?.total || 0;
+
+    document.getElementById('cdk-total-supply').textContent = '$' + supply.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+    document.getElementById('cdk-total-minted').textContent = formatUSD(mintedCents);
+    document.getElementById('cdk-total-burned').textContent = formatUSD(burnedCents);
+    document.getElementById('cdk-operations-count').textContent = totalOps;
+
+    // Token contract info
+    const tokenInfoDiv = document.getElementById('cdk-token-info');
+    const deployActions = document.getElementById('cdk-deploy-actions');
+
+    if (data.token_contract && data.token_info && !data.token_info.error) {
+      tokenInfoDiv.innerHTML = `
+        <div class="info-grid" style="display:grid;grid-template-columns:1fr 1fr;gap:0.5rem;">
+          <div><strong>Name:</strong> ${data.token_info.name}</div>
+          <div><strong>Symbol:</strong> ${data.token_info.symbol}</div>
+          <div><strong>Decimals:</strong> ${data.token_info.decimals}</div>
+          <div><strong>Total Supply:</strong> ${parseFloat(data.token_info.totalSupply).toLocaleString('en-US', {minimumFractionDigits: 2})} DLBT</div>
+          <div><strong>Owner:</strong> <code style="font-size:0.8rem;">${data.token_info.owner}</code></div>
+          <div><strong>Paused:</strong> ${data.token_info.paused ? 'Yes' : 'No'}</div>
+          <div style="grid-column:span 2;"><strong>Contract:</strong> <a href="https://polygonscan.com/address/${data.token_contract.contract_address}" target="_blank"><code style="font-size:0.8rem;">${data.token_contract.contract_address}</code></a></div>
+          <div style="grid-column:span 2;"><strong>TX:</strong> <a href="https://polygonscan.com/tx/${data.token_contract.tx_hash}" target="_blank">${data.token_contract.tx_hash ? data.token_contract.tx_hash.slice(0, 20) + '...' : '—'}</a></div>
+        </div>
+      `;
+      deployActions.style.display = 'none';
+    } else if (data.token_contract && data.token_info && data.token_info.error) {
+      tokenInfoDiv.innerHTML = `
+        <p>Token deployed at <code>${data.token_contract.contract_address}</code> but unable to read on-chain info: ${data.token_info.error}</p>
+      `;
+      deployActions.style.display = 'none';
+    } else {
+      tokenInfoDiv.innerHTML = `<p>No token deployed. Click <strong>Deploy DLBT Token</strong> to create the trust-backed ERC-20 token on Polygon mainnet.</p>`;
+      deployActions.style.display = 'flex';
+    }
+
+    // Populate dropdowns
+    const accounts = data.accounts || [];
+    const wallets  = data.wallets  || [];
+
+    const mintAccountSel = document.getElementById('cdk-mint-account');
+    const burnAccountSel = document.getElementById('cdk-burn-account');
+    const mintWalletSel  = document.getElementById('cdk-mint-wallet');
+    const burnWalletSel  = document.getElementById('cdk-burn-wallet');
+    const deployerSel    = document.getElementById('cdk-deployer-wallet');
+
+    const accountOpts = accounts.map(a => `<option value="${a.id}">${a.account_name} ($${a.balance_usd})</option>`).join('');
+    const walletOpts  = wallets.map(w => `<option value="${w.id}">${w.wallet_name} (${w.address ? w.address.slice(0,10) + '...' : 'no addr'})</option>`).join('');
+
+    mintAccountSel.innerHTML = '<option value="">Select account...</option>' + accountOpts;
+    burnAccountSel.innerHTML = '<option value="">Select account...</option>' + accountOpts;
+    mintWalletSel.innerHTML  = '<option value="">Select wallet...</option>' + walletOpts;
+    burnWalletSel.innerHTML  = '<option value="">Select wallet...</option>' + walletOpts;
+    deployerSel.innerHTML    = '<option value="">Select deployer wallet...</option>' + walletOpts;
+
+    // Operations table
+    const ops = data.recent_operations || [];
+    const opsDiv = document.getElementById('cdk-operations-table');
+    if (ops.length) {
+      opsDiv.innerHTML = `
+        <table>
+          <thead><tr><th>Operation</th><th>Type</th><th>Amount</th><th>TX Hash</th><th>Status</th><th>Date</th></tr></thead>
+          <tbody>${ops.map(o => `
+            <tr>
+              <td><code style="font-size:0.8rem;">${o.operation_number}</code></td>
+              <td>${badge(o.operation_type)}</td>
+              <td>${formatUSD(o.amount_cents)}</td>
+              <td>${o.tx_hash ? `<a href="https://polygonscan.com/tx/${o.tx_hash}" target="_blank">${o.tx_hash.slice(0, 12)}...</a>` : '—'}</td>
+              <td>${badge(o.status)}</td>
+              <td>${formatTime(o.created_at)}</td>
+            </tr>
+          `).join('')}</tbody>
+        </table>
+      `;
+    } else {
+      opsDiv.innerHTML = '<p style="color:#888;">No token operations yet. Deploy the DLBT token and start minting.</p>';
+    }
+
+    // Encryption key warning
+    if (!data.has_encryption_key) {
+      showToast('WALLET_ENCRYPTION_KEY not set — cannot sign transactions', 'error');
+    }
+  } catch (err) {
+    showToast('Failed to load CDK dashboard: ' + err.message, 'error');
+  }
+}
+
+async function deployDLBTToken() {
+  const walletId = document.getElementById('cdk-deployer-wallet').value;
+  if (!walletId) { showToast('Select a deployer wallet first', 'error'); return; }
+
+  const btn = document.querySelector('#cdk-deploy-actions .btn-primary');
+  btn.disabled = true;
+  btn.textContent = 'Deploying...';
+
+  try {
+    const result = await api('/cdk/deploy-token', {
+      method: 'POST',
+      body: JSON.stringify({ wallet_id: walletId }),
+    });
+    showToast(`DLBT Token deployed at ${result.contract_address}`, 'success');
+    loadCDK();
+  } catch (err) {
+    showToast('Deploy failed: ' + (err.error || err.message), 'error');
+    btn.disabled = false;
+    btn.textContent = 'Deploy DLBT Token';
+  }
+}
+
+async function mintDLBT() {
+  const fromAccount = document.getElementById('cdk-mint-account').value;
+  const toWallet    = document.getElementById('cdk-mint-wallet').value;
+  const amount      = document.getElementById('cdk-mint-amount').value;
+
+  if (!fromAccount || !toWallet || !amount) { showToast('Fill all fields', 'error'); return; }
+
+  const btn = document.getElementById('cdk-mint-btn');
+  btn.disabled = true;
+  btn.textContent = 'Minting...';
+
+  try {
+    const result = await api('/cdk/mint', {
+      method: 'POST',
+      body: JSON.stringify({ from_account_id: parseInt(fromAccount), to_wallet_id: parseInt(toWallet), amount }),
+    });
+    showToast(`Minted ${amount} DLBT — TX: ${result.txHash ? result.txHash.slice(0, 16) + '...' : 'pending'}`, 'success');
+    loadCDK();
+  } catch (err) {
+    showToast('Mint failed: ' + (err.error || err.message), 'error');
+  } finally {
+    btn.disabled = false;
+    btn.textContent = 'Mint DLBT';
+  }
+}
+
+async function burnDLBT() {
+  const fromWallet = document.getElementById('cdk-burn-wallet').value;
+  const toAccount  = document.getElementById('cdk-burn-account').value;
+  const amount     = document.getElementById('cdk-burn-amount').value;
+
+  if (!fromWallet || !toAccount || !amount) { showToast('Fill all fields', 'error'); return; }
+
+  const btn = document.getElementById('cdk-burn-btn');
+  btn.disabled = true;
+  btn.textContent = 'Burning...';
+
+  try {
+    const result = await api('/cdk/burn', {
+      method: 'POST',
+      body: JSON.stringify({ from_wallet_id: parseInt(fromWallet), to_account_id: parseInt(toAccount), amount }),
+    });
+    showToast(`Burned ${amount} DLBT — credited to account`, 'success');
+    loadCDK();
+  } catch (err) {
+    showToast('Burn failed: ' + (err.error || err.message), 'error');
+  } finally {
+    btn.disabled = false;
+    btn.textContent = 'Burn DLBT';
   }
 }
 
