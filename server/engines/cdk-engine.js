@@ -395,6 +395,7 @@ const QUICKSWAP_FACTORY   = '0x411b0fAcC3489691f28ad58c47006AF5E3Ab3A28';
 const QUICKSWAP_NFPM      = '0x8eF88E4c7CfbbaC1C163f7eddd4B578792201de6';
 const QUICKSWAP_ROUTER    = '0xf5b509bB0909a69B1c207E495f687a596C168E12';
 const USDC_POLYGON        = '0x3c499c542cEF5E3811e1192ce70d8cC03d5c3359';
+const WPOL_ADDRESS        = '0x0d500B1d8E8eF31E21C99d1Db9A6444d3ADf1270';
 
 const ALGEBRA_FACTORY_ABI = [
   'function createPool(address tokenA, address tokenB) external returns (address pool)',
@@ -547,6 +548,85 @@ class LiquidityPoolManager {
       txHash: receipt.hash,
       gasUsed: receipt.gasUsed.toString(),
     };
+  }
+
+  // Auto-fund pipeline: swap POL → USDC, then seed pool with minted DLBT + USDC
+  // This is the key method that converts bond cashflow (POL gas) into pool liquidity
+  async autoFundFromPOL(signer, dlbtTokenAddress, amountUSD) {
+    const provider = getProvider('MATIC');
+    const results = { steps: [], totalUSDC: '0', poolFunded: false };
+
+    // Step 1: Check POL balance
+    const polBalance = await provider.getBalance(signer.address);
+    const polBalanceEth = parseFloat(ethers.formatEther(polBalance));
+
+    // We need enough POL to cover the USDC amount + gas
+    // Rough POL/USD rate estimation: use on-chain quoter
+    const wpolContract = new ethers.Contract(WPOL_ADDRESS, [
+      'function deposit() payable',
+      'function approve(address spender, uint256 amount) returns (bool)',
+    ], signer);
+
+    // Estimate POL needed (assume ~$0.40/POL conservatively — swap will get actual rate)
+    const polNeeded = Math.ceil(amountUSD / 0.35); // conservative estimate
+    if (polBalanceEth < polNeeded + 0.5) { // +0.5 for gas buffer
+      results.steps.push({ step: 'check_pol', status: 'insufficient', polBalance: polBalanceEth.toFixed(4), polNeeded: polNeeded.toFixed(2) });
+      return results;
+    }
+
+    // Step 2: Wrap POL → WPOL
+    const amountToSwap = ethers.parseEther(polNeeded.toString());
+    const wrapTx = await wpolContract.deposit({ value: amountToSwap });
+    await wrapTx.wait();
+    results.steps.push({ step: 'wrap_pol', status: 'done', amount: polNeeded.toString() });
+
+    // Step 3: Approve router to spend WPOL
+    const approveTx = await wpolContract.approve(QUICKSWAP_ROUTER, amountToSwap);
+    await approveTx.wait();
+    results.steps.push({ step: 'approve_wpol', status: 'done' });
+
+    // Step 4: Swap WPOL → USDC
+    const router = new ethers.Contract(QUICKSWAP_ROUTER, SWAP_ROUTER_ABI_V3, signer);
+    const deadline = Math.floor(Date.now() / 1000) + 300;
+    const swapTx = await router.exactInputSingle({
+      tokenIn: WPOL_ADDRESS,
+      tokenOut: USDC_POLYGON,
+      recipient: signer.address,
+      deadline,
+      amountIn: amountToSwap,
+      amountOutMinimum: 0,
+      sqrtPriceLimitX96: 0n,
+    });
+    const swapReceipt = await swapTx.wait();
+
+    // Check USDC received
+    const usdcContract = new ethers.Contract(USDC_POLYGON, ERC20_ABI, provider);
+    const usdcBalance = await usdcContract.balanceOf(signer.address);
+    const usdcReceived = parseFloat(ethers.formatUnits(usdcBalance, 6));
+    results.totalUSDC = usdcReceived.toFixed(6);
+    results.steps.push({ step: 'swap_pol_usdc', status: 'done', usdcReceived: usdcReceived.toFixed(6), txHash: swapReceipt.hash });
+
+    // Step 5: Add liquidity to pool (pair minted DLBT with swapped USDC)
+    // Use the lesser of: USDC received or requested amount
+    const amountToPool = Math.min(usdcReceived, amountUSD);
+    if (amountToPool > 0.01) { // minimum threshold
+      try {
+        const poolResult = await this.addLiquidity(signer, dlbtTokenAddress, amountToPool, amountToPool);
+        results.poolFunded = true;
+        results.steps.push({ step: 'add_liquidity', status: 'done', dlbt: amountToPool.toFixed(6), usdc: amountToPool.toFixed(6), txHash: poolResult.txHash });
+      } catch (poolErr) {
+        results.steps.push({ step: 'add_liquidity', status: 'failed', error: poolErr.message });
+      }
+    }
+
+    // Record operation
+    const opNum = generateOpNumber('AUTOFUND');
+    this.db.prepare(`
+      INSERT INTO cdk_token_operations (operation_type, operation_number, wallet_address, amount_cents, token_amount, contract_address, tx_hash, status)
+      VALUES ('auto_fund_pool', ?, ?, ?, ?, ?, ?, 'confirmed')
+    `).run(opNum, signer.address, Math.round(amountToPool * 100), amountToPool.toFixed(6), dlbtTokenAddress, swapReceipt.hash);
+
+    return results;
   }
 
   // Swap DLBT → USDC

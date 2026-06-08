@@ -474,22 +474,28 @@ router.post('/coupons/:id/receive', async (req, res) => {
               parseInt(deployerWalletId)
             );
 
-            // --- Auto-fund liquidity pool if USDC is available ---
+            // --- Auto-fund liquidity pool ---
+            // First check if USDC is available, if not auto-swap POL→USDC
             try {
               const poolMgr = new LiquidityPoolManager(db);
               const poolRow = db.prepare("SELECT * FROM cdk_liquidity_pools WHERE status = 'active' ORDER BY id DESC LIMIT 1").get();
 
               if (poolRow) {
-                // Check USDC balance of the deployer wallet
                 const provider = new ethers.JsonRpcProvider('https://polygon-bor-rpc.publicnode.com');
                 const usdcContract = new ethers.Contract(USDC_POLYGON, ['function balanceOf(address) view returns (uint256)'], provider);
                 const usdcBalance = await usdcContract.balanceOf(deployerWallet.address);
                 const usdcAvailable = parseFloat(ethers.formatUnits(usdcBalance, 6));
-
-                // If wallet has enough USDC, add both to the pool
                 const couponAmount = parseFloat(couponAmountDollars);
+
                 if (usdcAvailable >= couponAmount && couponAmount > 0) {
+                  // Enough USDC already — just add liquidity directly
                   poolResult = await poolMgr.addLiquidity(signer, token.contract_address, couponAmount, couponAmount);
+                } else if (couponAmount > 0) {
+                  // Not enough USDC — auto-swap POL → USDC → fund pool
+                  const autoResult = await poolMgr.autoFundFromPOL(signer, token.contract_address, couponAmount);
+                  if (autoResult.poolFunded) {
+                    poolResult = { autoFunded: true, steps: autoResult.steps, totalUSDC: autoResult.totalUSDC };
+                  }
                 }
               }
             } catch (poolErr) {
@@ -612,7 +618,8 @@ router.post('/coupons/process-all', async (req, res) => {
       });
     }
 
-    // After all minting, try to add liquidity to pool with available USDC
+    // After all minting, try to add liquidity to pool
+    // First check for existing USDC, then auto-swap POL→USDC if needed
     let poolFunded = null;
     if (signer && token && deployerWallet && totalMintedCents > 0) {
       try {
@@ -624,9 +631,15 @@ router.post('/coupons/process-all', async (req, res) => {
           const usdcAvailable = parseFloat(ethers.formatUnits(usdcBalance, 6));
           const totalMintedDollars = totalMintedCents / 100;
 
+          const poolMgr = new LiquidityPoolManager(db);
           if (usdcAvailable >= totalMintedDollars) {
-            const poolMgr = new LiquidityPoolManager(db);
             poolFunded = await poolMgr.addLiquidity(signer, token.contract_address, totalMintedDollars, totalMintedDollars);
+          } else {
+            // Auto-swap POL → USDC → fund pool
+            const autoResult = await poolMgr.autoFundFromPOL(signer, token.contract_address, totalMintedDollars);
+            if (autoResult.poolFunded) {
+              poolFunded = { autoFunded: true, steps: autoResult.steps, totalUSDC: autoResult.totalUSDC };
+            }
           }
         }
       } catch (poolErr) {

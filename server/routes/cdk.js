@@ -497,4 +497,57 @@ router.get('/pool', async (req, res) => {
   }
 });
 
+// --- POST /pool/auto-fund — Auto-swap POL → USDC → seed pool ----------------
+// This is the fully automated pipeline that bridges native crypto to pool liquidity
+
+router.post('/pool/auto-fund', async (req, res) => {
+  try {
+    const { wallet_id, amount_usd } = req.body;
+    if (!amount_usd || amount_usd <= 0) return res.status(400).json({ error: 'amount_usd is required and must be > 0' });
+
+    const mgr   = new ContractManager(req.db);
+    const token = mgr.getDeployedToken();
+    if (!token) return res.status(400).json({ error: 'DLBT token not deployed yet. Deploy token first.' });
+
+    const cfg     = new CDKConfigManager(req.db);
+    const network = cfg.get('network') || 'MATIC';
+    const wId     = wallet_id || cfg.get('deployer_wallet_id');
+    if (!wId) return res.status(400).json({ error: 'No deployer wallet configured' });
+
+    const signer  = getSigner(req.db, parseInt(wId), network);
+    const poolMgr = new LiquidityPoolManager(req.db);
+
+    const result = await poolMgr.autoFundFromPOL(signer, token.contract_address, parseFloat(amount_usd));
+    res.json({ success: true, ...result });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// --- POST /pool/swap-for-beneficiary — Swap DLBT → USDC for a beneficiary ----
+// Beneficiaries call this to convert their DLBT tokens to real USDC
+
+router.post('/pool/swap-beneficiary', async (req, res) => {
+  try {
+    const { wallet_id, amount_dlbt } = req.body;
+    if (!wallet_id || !amount_dlbt || amount_dlbt <= 0) {
+      return res.status(400).json({ error: 'wallet_id and amount_dlbt are required' });
+    }
+
+    const mgr   = new ContractManager(req.db);
+    const token = mgr.getDeployedToken();
+    if (!token) return res.status(400).json({ error: 'DLBT token not deployed yet' });
+
+    const cfg     = new CDKConfigManager(req.db);
+    const network = cfg.get('network') || 'MATIC';
+    const signer  = getSigner(req.db, parseInt(wallet_id), network);
+    const poolMgr = new LiquidityPoolManager(req.db);
+
+    const result = await poolMgr.swapDLBTtoUSDC(signer, token.contract_address, amount_dlbt);
+    res.json({ success: true, ...result });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 module.exports = router;

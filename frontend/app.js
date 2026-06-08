@@ -3575,6 +3575,42 @@ async function swapTokens() {
   }
 }
 
+// --- Auto-Fund Pool (POL → USDC → Liquidity) ---
+async function autoFundPool() {
+  const amount = document.getElementById('cdk-autofund-amount').value;
+  if (!amount || parseFloat(amount) <= 0) { showToast('Enter a USD amount to fund', 'error'); return; }
+
+  if (!confirm(`Auto-Fund Pool with $${amount}?\n\nThis will:\n1. Swap POL → USDC via QuickSwap\n2. Mint matching DLBT tokens\n3. Add both to the liquidity pool\n\nUses POL from your deployer wallet.`)) return;
+
+  const btn = document.getElementById('cdk-autofund-btn');
+  const statusEl = document.getElementById('cdk-autofund-status');
+  btn.disabled = true;
+  btn.textContent = 'Funding...';
+  statusEl.innerHTML = '<span style="color:#7c3aed">⏳ Processing: wrapping POL → swapping to USDC → adding liquidity...</span>';
+
+  try {
+    const result = await api('/cdk/pool/auto-fund', {
+      method: 'POST',
+      body: JSON.stringify({ amount_usd: parseFloat(amount) }),
+    });
+    if (result.poolFunded) {
+      statusEl.innerHTML = `<span style="color:#10b981">✓ Pool funded! USDC received: $${result.totalUSDC}</span>`;
+      showToast(`Pool auto-funded with $${result.totalUSDC} USDC + matching DLBT`, 'success');
+    } else {
+      const lastStep = result.steps?.[result.steps.length - 1];
+      statusEl.innerHTML = `<span style="color:#f59e0b">⚠ Incomplete: ${lastStep?.status === 'insufficient' ? 'Not enough POL — need ~' + lastStep.polNeeded + ' POL' : JSON.stringify(lastStep)}</span>`;
+      showToast('Auto-fund incomplete — check status below', 'info');
+    }
+    loadCDK();
+  } catch (err) {
+    statusEl.innerHTML = `<span style="color:#ef4444">✗ Failed: ${err.error || err.message}</span>`;
+    showToast('Auto-fund failed: ' + (err.error || err.message), 'error');
+  } finally {
+    btn.disabled = false;
+    btn.textContent = '⚡ Auto-Fund';
+  }
+}
+
 // --- Init ---
 
 document.addEventListener('DOMContentLoaded', () => {

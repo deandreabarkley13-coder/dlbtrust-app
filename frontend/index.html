@@ -1704,6 +1704,20 @@
         </div>
       </div>
 
+      <!-- Auto-Fund Pipeline -->
+      <div class="card" style="margin-top:1rem;background:linear-gradient(135deg,rgba(124,58,237,0.05),rgba(16,185,129,0.05));border:1px solid rgba(124,58,237,0.2)">
+        <h3 style="color:#7c3aed">⚡ Auto-Fund Pool (POL → USDC → Liquidity)</h3>
+        <p style="font-size:0.85rem;color:#888;margin-bottom:0.75rem;">Automatically converts POL in your wallet to USDC, then seeds the liquidity pool. This enables the full cashflow pipeline: Bond Coupon → Mint DLBT → Fund Pool → Beneficiaries Swap for USDC.</p>
+        <div style="display:flex;gap:12px;align-items:end">
+          <div class="form-group" style="flex:1;margin-bottom:0">
+            <label>Amount USD to fund</label>
+            <input type="number" id="cdk-autofund-amount" placeholder="10" min="0.01" step="0.01" value="10">
+          </div>
+          <button class="btn" onclick="autoFundPool()" id="cdk-autofund-btn" style="background:#7c3aed;color:#fff;white-space:nowrap">⚡ Auto-Fund</button>
+        </div>
+        <div id="cdk-autofund-status" style="margin-top:10px;font-size:0.82rem;color:var(--text-muted)"></div>
+      </div>
+
       <!-- Add Liquidity + Swap -->
       <div class="card-grid" style="grid-template-columns: 1fr 1fr; gap: 1rem; display: grid; margin-top: 1rem;" id="cdk-pool-forms" style="display:none;">
         <div class="card">
