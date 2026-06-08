@@ -399,7 +399,7 @@ function reconcile(data) {
 
   // 4. Fixed income holdings vs GL investment accounts
   const activeHoldings = holdings.filter(h => h.status === 'active');
-  const fiTotalCents = activeHoldings.reduce((s, h) => s + (h.purchase_price_cents || h.par_value_cents || 0), 0);
+  const fiTotalCents = activeHoldings.reduce((s, h) => s + (h.par_value_cents || h.market_value_cents || h.purchase_price_cents || 0), 0);
   const glFIInvestments = glBalances
     .filter(gl => gl.account_type === 'asset' && gl.sub_type === 'investments')
     .reduce((s, gl) => s + (gl.balance_cents || 0), 0);

@@ -803,4 +803,115 @@ router.get('/dashboard', (req, res) => {
   }
 });
 
+// POST /initialize-gl — Post opening balance journal entries from current banking + FI data
+router.post('/initialize-gl', (req, res) => {
+  const db = getDb();
+  try {
+    initSchema(db);
+
+    // Check if opening balances already posted
+    const existing = db.prepare(
+      "SELECT id FROM trust_journal_entries WHERE description LIKE '%Opening balance%' LIMIT 1"
+    ).get();
+    if (existing) {
+      return res.status(400).json({ error: 'Opening balances already posted. Reverse them first to re-initialize.' });
+    }
+
+    // Gather banking accounts
+    let accounts = [];
+    try { accounts = db.prepare("SELECT * FROM trust_accounts WHERE status = 'active'").all(); } catch (_) {}
+
+    // Gather FI holdings
+    let holdings = [];
+    try { holdings = db.prepare("SELECT * FROM fixed_income_holdings WHERE status = 'active'").all(); } catch (_) {}
+
+    const lines = [];
+    let totalDebitCents = 0;
+
+    // Map each banking account to a GL account
+    for (const acct of accounts) {
+      if ((acct.balance_cents || 0) <= 0) continue;
+      let glCode = '1000'; // default: Cash & Cash Equivalents
+      const type = (acct.account_type || '').toLowerCase();
+      if (type === 'operating') glCode = '1010';
+      else if (type === 'reserve') glCode = '1020';
+
+      lines.push({
+        account_code: glCode,
+        debit_cents: acct.balance_cents,
+        credit_cents: 0,
+        description: `Opening balance: ${acct.account_name}`,
+      });
+      totalDebitCents += acct.balance_cents;
+    }
+
+    // Fixed income investments
+    for (const h of holdings) {
+      const val = h.par_value_cents || h.market_value_cents || h.purchase_price_cents || 0;
+      if (val <= 0) continue;
+      lines.push({
+        account_code: '1100',
+        debit_cents: val,
+        credit_cents: 0,
+        description: `Opening balance: ${h.security_name}`,
+      });
+      totalDebitCents += val;
+    }
+
+    if (lines.length === 0) {
+      return res.json({ message: 'No balances to initialize', lines: 0 });
+    }
+
+    // Credit Trust Corpus to balance
+    lines.push({
+      account_code: '3000',
+      debit_cents: 0,
+      credit_cents: totalDebitCents,
+      description: 'Opening balance: Trust Corpus (principal)',
+    });
+
+    // Create the journal entry
+    const entryNumber = generateEntryNumber();
+    const now = new Date().toISOString().slice(0, 10);
+
+    const insertEntry = db.prepare(`
+      INSERT INTO trust_journal_entries
+        (entry_number, entry_date, entry_type, description, source_engine, is_posted,
+         total_debit_cents, total_credit_cents, created_by)
+      VALUES (?, ?, 'standard', 'Opening balance initialization', 'system', 1, ?, ?, 'system')
+    `);
+    const result = insertEntry.run(entryNumber, now, totalDebitCents, totalDebitCents);
+    const entryId = result.lastInsertRowid;
+
+    const insertLine = db.prepare(`
+      INSERT INTO trust_journal_lines
+        (journal_entry_id, line_number, account_id, account_code, debit_cents, credit_cents, description)
+      VALUES (?, ?, (SELECT id FROM trust_chart_of_accounts WHERE account_code = ?), ?, ?, ?, ?)
+    `);
+
+    const insertAll = db.transaction(() => {
+      for (let i = 0; i < lines.length; i++) {
+        const l = lines[i];
+        insertLine.run(entryId, i + 1, l.account_code, l.account_code, l.debit_cents, l.credit_cents, l.description);
+      }
+    });
+    insertAll();
+
+    res.json({
+      message: 'Opening balances posted',
+      entry_number: entryNumber,
+      entry_id: entryId,
+      total_debit_cents: totalDebitCents,
+      total_debit_usd: '$' + (totalDebitCents / 100).toLocaleString('en-US', { minimumFractionDigits: 2 }),
+      line_count: lines.length,
+      lines: lines.map(l => ({ account: l.account_code, debit: l.debit_cents / 100, credit: l.credit_cents / 100, desc: l.description })),
+    });
+  } catch (err) {
+    console.error('[Trust Accounting] GL init error:', err.message);
+    res.status(500).json({ error: err.message });
+  } finally {
+    db.close();
+  }
+});
+
 module.exports = router;

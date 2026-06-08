@@ -1351,6 +1351,18 @@ async function loadK1Report() {
 
 // --- Journal Entry Creation ---
 
+async function initializeGL() {
+  if (!confirm('Post opening balance journal entries from current banking and fixed income balances? This will create a journal entry to initialize the General Ledger.')) return;
+  try {
+    showToast('Initializing GL with opening balances...', 'info');
+    const data = await api('/trust-accounting/initialize-gl', { method: 'POST', body: JSON.stringify({}) });
+    showToast(`GL initialized: ${data.line_count} lines posted (${data.total_debit_usd})`, 'success');
+    loadAccountingDashboard();
+  } catch (err) {
+    showToast(err.message || 'GL initialization failed', 'error');
+  }
+}
+
 let jeLineCount = 2;
 
 async function showCreateJournalEntry() {
@@ -2354,13 +2366,18 @@ async function loadCashManagement() {
     $('#cms-metrics').innerHTML = `
       <div class="metric-card primary"><span class="metric-label">Total Assets</span><span class="metric-value">${formatUSD(s.total_assets_cents || 0)}</span></div>
       <div class="metric-card"><span class="metric-label">Total Liquid</span><span class="metric-value">${formatUSD(s.total_liquid_cents || 0)}</span></div>
-      <div class="metric-card"><span class="metric-label">Fixed Income</span><span class="metric-value">${formatUSD(s.total_fixed_income_market_cents || 0)}</span></div>
-      <div class="metric-card"><span class="metric-label">Crypto (USDC)</span><span class="metric-value">${formatUSD(s.total_crypto_cents || 0)}</span></div>
-      <div class="metric-card"><span class="metric-label">Pending Activity</span><span class="metric-value">${formatUSD(s.total_pending_cents || 0)}</span></div>
+      <div class="metric-card"><span class="metric-label">Fixed Income</span><span class="metric-value">${formatUSD(s.fixed_income_market_cents || s.total_fixed_income_market_cents || 0)}</span></div>
+      <div class="metric-card"><span class="metric-label">Crypto (USDC)</span><span class="metric-value">${formatUSD(s.crypto_balance_cents || s.total_crypto_cents || 0)}</span></div>
+      <div class="metric-card"><span class="metric-label">Pending Activity</span><span class="metric-value">${formatUSD(s.net_pending_cents || s.total_pending_cents || 0)}</span></div>
       <div class="metric-card ${(alerts.alerts || []).length > 0 ? 'warn' : ''}"><span class="metric-label">Alerts</span><span class="metric-value">${(alerts.alerts || []).length}</span></div>
     `;
 
-    const details = p.detail || [];
+    // Flatten bank_accounts, crypto_wallets, fixed_income into a single detail array
+    const details = p.detail || [
+      ...((p.bank_accounts?.items || []).map(i => ({ source: 'Banking', name: i.name, type: i.type, balance_cents: i.balance_cents }))),
+      ...((p.crypto_wallets?.items || []).map(i => ({ source: 'Crypto', name: i.name, type: i.type || 'wallet', balance_cents: i.usdc_balance_cents }))),
+      ...((p.fixed_income?.items || []).map(i => ({ source: 'Fixed Income', name: i.name, type: i.type, balance_cents: i.market_value_cents || i.par_value_cents }))),
+    ];
     $('#cms-position-table').innerHTML = details.length ? `<table><thead><tr><th>Source</th><th>Name</th><th>Type</th><th>Balance</th></tr></thead><tbody>${details.map(d =>
       `<tr><td>${d.source}</td><td>${d.name}</td><td>${badge(d.type)}</td><td>${formatUSD(d.balance_cents)}</td></tr>`
     ).join('')}</tbody></table>` : '<p>No position data</p>';
@@ -2370,7 +2387,7 @@ async function loadCashManagement() {
       `<tr><td>${f.period_number || f.period}</td><td>${f.start_date || '—'}</td><td>${f.end_date || '—'}</td><td>${formatUSD(f.total_inflow_cents || f.inflows_cents || 0)}</td><td>${formatUSD(f.total_outflow_cents || f.outflows_cents || 0)}</td><td>${formatUSD(f.net_flow_cents || f.net_cents || 0)}</td></tr>`
     ).join('')}</tbody></table>` : '<p>No forecast data</p>';
 
-    const checks = reconciliation.checks || reconciliation.reconciliation || [];
+    const checks = reconciliation.items || reconciliation.checks || reconciliation.reconciliation || [];
     $('#cms-reconciliation').innerHTML = checks.length ? checks.map(c =>
       `<div class="alert alert-${c.status === 'matched' ? 'success' : c.status === 'mismatch' ? 'danger' : 'info'}" style="margin-bottom:8px;padding:12px;border-radius:8px;border:1px solid var(--border)">
         <strong>${c.check}</strong>: ${badge(c.status)} ${c.difference_cents !== undefined ? `(Δ ${formatUSD(c.difference_cents)})` : ''}

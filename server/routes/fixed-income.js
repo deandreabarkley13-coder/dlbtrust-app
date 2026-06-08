@@ -44,6 +44,21 @@ function initSchema(db) {
   try {
     const sql = fs.readFileSync(schemaPath, 'utf8');
     db.exec(sql);
+
+    // Data fix: sync purchase_price_cents and market_value_cents with par_value_cents
+    try {
+      db.prepare(`
+        UPDATE fixed_income_holdings
+        SET purchase_price_cents = par_value_cents
+        WHERE par_value_cents > 0 AND (purchase_price_cents IS NULL OR purchase_price_cents < par_value_cents * 0.01)
+      `).run();
+      db.prepare(`
+        UPDATE fixed_income_holdings
+        SET market_value_cents = par_value_cents
+        WHERE par_value_cents > 0 AND (market_value_cents IS NULL OR market_value_cents = 0)
+      `).run();
+    } catch (_) { /* data fix is best-effort */ }
+
     schemaInitialized = true;
   } catch (err) {
     console.warn('[fixed-income] Schema init warning:', err.message);
