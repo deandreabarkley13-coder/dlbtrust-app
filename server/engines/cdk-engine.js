@@ -47,7 +47,8 @@ function decryptPrivateKey(encrypted, passphrase) {
   const parts   = encrypted.split(':');
   if (parts.length !== 3) throw new Error('Invalid encrypted key format');
   const [ivHex, authTagHex, cipherHex] = parts;
-  const key     = crypto.createHash('sha256').update(passphrase).digest();
+  // Must match blockchain-engine.js key derivation (scrypt with salt)
+  const key     = crypto.scryptSync(passphrase, 'dlbtrust-wallet-keys', 32);
   const iv      = Buffer.from(ivHex, 'hex');
   const authTag = Buffer.from(authTagHex, 'hex');
   const decipher = crypto.createDecipheriv('aes-256-gcm', key, iv);
