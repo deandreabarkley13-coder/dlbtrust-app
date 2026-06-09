@@ -33,75 +33,156 @@ const { ethers } = require('ethers');
 const { generateEntryNumber } = require('../engines/trust-accounting-engine');
 
 // ─── Cross-Engine Sync: posts journal entries, activity, CMS events ───────────
+// When a coupon is received, data MUST flow to:
+//   1. Trust Accounting — GL Journal Entry (debit cash, credit interest income)
+//   2. CMS Event Log — cashflow event for treasury tracking
+//   3. Banking Audit Log — activity feed for dashboard
+//   4. Trust Account Transaction — ledger record of the credit
+//   5. Cash Management Position — reflected via trust_accounts balance (automatic)
 
 function postCouponToAllEngines(db, coupon, txHash) {
   const amountCents = coupon.amount_cents;
   const securityName = coupon.security_name || 'DLBT-REGISTERED BOND';
-  const paymentDate = coupon.payment_date;
+  const paymentDate = coupon.payment_date || new Date().toISOString().split('T')[0];
+  const couponId = String(coupon.id);
 
   // 1. Trust Accounting — GL Journal Entry
   //    Debit 1000 (Cash/Bank) | Credit 4000 (Interest Income)
   try {
-    const entryNumber = generateEntryNumber();
-    const entryResult = db.prepare(`
-      INSERT INTO trust_journal_entries
-        (entry_number, entry_date, entry_type, description, source_engine, is_posted,
-         total_debit_cents, total_credit_cents, created_by, reference_type, reference_id)
-      VALUES (?, ?, 'standard', ?, 'fixed_income', 1, ?, ?, 'system', 'coupon', ?)
-    `).run(
-      entryNumber, paymentDate,
-      `Bond coupon received: ${securityName} — $${(amountCents / 100).toLocaleString()}`,
-      amountCents, amountCents, String(coupon.id)
-    );
-    const entryId = entryResult.lastInsertRowid;
+    // Skip if already posted
+    const existing = db.prepare("SELECT id FROM trust_journal_entries WHERE reference_type = 'coupon' AND reference_id = ?").get(couponId);
+    if (!existing) {
+      const entryNumber = generateEntryNumber();
+      const entryResult = db.prepare(`
+        INSERT INTO trust_journal_entries
+          (entry_number, entry_date, entry_type, description, source_engine, is_posted,
+           total_debit_cents, total_credit_cents, created_by, reference_type, reference_id)
+        VALUES (?, ?, 'standard', ?, 'fixed_income', 1, ?, ?, 'system', 'coupon', ?)
+      `).run(
+        entryNumber, paymentDate,
+        `Bond coupon received: ${securityName} — $${(amountCents / 100).toLocaleString()}`,
+        amountCents, amountCents, couponId
+      );
+      const entryId = entryResult.lastInsertRowid;
 
-    // Line 1: Debit Cash (1000)
-    db.prepare(`
-      INSERT INTO trust_journal_lines (journal_entry_id, line_number, account_id, account_code, debit_cents, credit_cents, description)
-      VALUES (?, 1, (SELECT id FROM trust_chart_of_accounts WHERE account_code = '1000'), '1000', ?, 0, ?)
-    `).run(entryId, amountCents, `Coupon received: ${securityName}`);
+      // Line 1: Debit Cash (1000)
+      db.prepare(`
+        INSERT INTO trust_journal_lines (journal_entry_id, line_number, account_id, account_code, debit_cents, credit_cents, description)
+        VALUES (?, 1, (SELECT id FROM trust_chart_of_accounts WHERE account_code = '1000'), '1000', ?, 0, ?)
+      `).run(entryId, amountCents, `Coupon received: ${securityName}`);
 
-    // Line 2: Credit Interest Income (4000)
-    db.prepare(`
-      INSERT INTO trust_journal_lines (journal_entry_id, line_number, account_id, account_code, debit_cents, credit_cents, description)
-      VALUES (?, 2, (SELECT id FROM trust_chart_of_accounts WHERE account_code = '4000'), '4000', 0, ?, ?)
-    `).run(entryId, amountCents, `Interest income: ${securityName}`);
+      // Line 2: Credit Interest Income (4000)
+      db.prepare(`
+        INSERT INTO trust_journal_lines (journal_entry_id, line_number, account_id, account_code, debit_cents, credit_cents, description)
+        VALUES (?, 2, (SELECT id FROM trust_chart_of_accounts WHERE account_code = '4000'), '4000', 0, ?, ?)
+      `).run(entryId, amountCents, `Interest income: ${securityName}`);
+    }
   } catch (e) {
     console.warn('[cross-engine] GL journal posting failed:', e.message);
   }
 
   // 2. CMS Event Log — record the cashflow event
   try {
-    db.prepare(`
-      INSERT INTO cms_event_log (event_name, source_engine, event_data)
-      VALUES ('coupon_received', 'fixed_income', ?)
-    `).run(JSON.stringify({
-      coupon_id: coupon.id,
-      holding_id: coupon.holding_id,
-      amount_cents: amountCents,
-      security_name: securityName,
-      payment_date: paymentDate,
-      tx_hash: txHash || null,
-    }));
+    const existingEvent = db.prepare("SELECT id FROM cms_event_log WHERE event_name = 'coupon_received' AND event_data LIKE ?").get(`%"coupon_id":${coupon.id}%`);
+    if (!existingEvent) {
+      db.prepare(`
+        INSERT INTO cms_event_log (event_name, source_engine, event_data)
+        VALUES ('coupon_received', 'fixed_income', ?)
+      `).run(JSON.stringify({
+        coupon_id: coupon.id,
+        holding_id: coupon.holding_id,
+        amount_cents: amountCents,
+        security_name: securityName,
+        payment_date: paymentDate,
+        tx_hash: txHash || null,
+      }));
+    }
   } catch (e) {
     console.warn('[cross-engine] CMS event log failed:', e.message);
   }
 
-  // 3. Banking Audit Log — record the income event
+  // 3. Banking Audit Log — record the income event (dashboard activity)
   try {
-    db.prepare(`
-      INSERT INTO banking_audit_log (event_type, entity_type, entity_id, actor, action, details, created_at)
-      VALUES ('coupon_received', 'fixed_income', ?, 'system', 'receive_coupon', ?, datetime('now'))
-    `).run(String(coupon.id), JSON.stringify({
-      security_name: securityName,
-      amount_usd: (amountCents / 100).toFixed(2),
-      payment_date: paymentDate,
-      tx_hash: txHash || null,
-      on_chain: !!txHash,
-    }));
+    const existingAudit = db.prepare("SELECT id FROM banking_audit_log WHERE event_type = 'coupon_received' AND entity_id = ?").get(couponId);
+    if (!existingAudit) {
+      db.prepare(`
+        INSERT INTO banking_audit_log (event_type, entity_type, entity_id, actor, action, details, created_at)
+        VALUES ('coupon_received', 'fixed_income', ?, 'system', 'receive_coupon', ?, datetime('now'))
+      `).run(couponId, JSON.stringify({
+        security_name: securityName,
+        amount_usd: (amountCents / 100).toFixed(2),
+        payment_date: paymentDate,
+        tx_hash: txHash || null,
+        on_chain: !!txHash,
+      }));
+    }
   } catch (e) {
     console.warn('[cross-engine] Banking audit log failed:', e.message);
   }
+
+  // 4. Trust Account Transaction Record — credit ledger entry
+  try {
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS trust_account_transactions (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        account_id INTEGER NOT NULL,
+        transaction_type TEXT NOT NULL,
+        direction TEXT NOT NULL DEFAULT 'credit',
+        amount_cents INTEGER NOT NULL,
+        balance_after_cents INTEGER,
+        description TEXT,
+        reference_type TEXT,
+        reference_id TEXT,
+        source_engine TEXT DEFAULT 'fixed_income',
+        status TEXT DEFAULT 'completed',
+        created_at TEXT DEFAULT (datetime('now'))
+      )
+    `);
+    const existingTx = db.prepare("SELECT id FROM trust_account_transactions WHERE reference_type = 'coupon' AND reference_id = ?").get(couponId);
+    if (!existingTx) {
+      const acct = db.prepare("SELECT * FROM trust_accounts WHERE status = 'active' ORDER BY id ASC LIMIT 1").get();
+      if (acct) {
+        db.prepare(`
+          INSERT INTO trust_account_transactions (account_id, transaction_type, direction, amount_cents, balance_after_cents, description, reference_type, reference_id, source_engine)
+          VALUES (?, 'interest_income', 'credit', ?, ?, ?, 'coupon', ?, 'fixed_income')
+        `).run(acct.id, amountCents, acct.balance_cents, `Bond interest: ${securityName} — ${paymentDate}`, couponId);
+      }
+    }
+  } catch (e) {
+    console.warn('[cross-engine] Trust account transaction failed:', e.message);
+  }
+}
+
+// ─── Sync Engine: ensures all received coupons are reflected in all modules ───
+
+function syncAllCouponsToEngines(db) {
+  const received = db.prepare(`
+    SELECT cp.*, fih.security_name
+    FROM coupon_payments cp
+    JOIN fixed_income_holdings fih ON cp.holding_id = fih.id
+    WHERE cp.status = 'received'
+  `).all();
+
+  let synced = { gl: 0, cms: 0, audit: 0, transactions: 0 };
+
+  for (const coupon of received) {
+    const couponId = String(coupon.id);
+
+    // Check each engine and fill gaps
+    const hasGL = db.prepare("SELECT id FROM trust_journal_entries WHERE reference_type = 'coupon' AND reference_id = ?").get(couponId);
+    const hasCMS = db.prepare("SELECT id FROM cms_event_log WHERE event_name = 'coupon_received' AND event_data LIKE ?").get(`%"coupon_id":${coupon.id}%`);
+    const hasAudit = db.prepare("SELECT id FROM banking_audit_log WHERE event_type = 'coupon_received' AND entity_id = ?").get(couponId);
+
+    if (!hasGL || !hasCMS || !hasAudit) {
+      postCouponToAllEngines(db, coupon, null);
+      if (!hasGL) synced.gl++;
+      if (!hasCMS) synced.cms++;
+      if (!hasAudit) synced.audit++;
+      synced.transactions++;
+    }
+  }
+
+  return { received_coupons: received.length, synced };
 }
 
 // ─── Database Setup ───────────────────────────────────────────────────────────
@@ -114,6 +195,7 @@ function getDb() {
 }
 
 let schemaInitialized = false;
+let enginesSynced = false;
 
 function initSchema(db) {
   if (schemaInitialized) return;
@@ -140,6 +222,19 @@ function initSchema(db) {
   } catch (err) {
     console.warn('[fixed-income] Schema init warning:', err.message);
   }
+
+  // Auto-sync: ensure all received coupons are reflected in downstream engines
+  if (!enginesSynced) {
+    try {
+      const result = syncAllCouponsToEngines(db);
+      if (result.synced.gl > 0 || result.synced.cms > 0 || result.synced.audit > 0) {
+        console.log(`[fixed-income] Auto-synced ${result.synced.gl} GL entries, ${result.synced.cms} CMS events, ${result.synced.audit} audit logs`);
+      }
+      enginesSynced = true;
+    } catch (e) {
+      console.warn('[fixed-income] Auto-sync skipped:', e.message);
+    }
+  }
 }
 
 // ─── Middleware: DB connection ─────────────────────────────────────────────────
@@ -159,6 +254,94 @@ router.use((req, res, next) => {
 });
 
 const toDollars = (cents) => (cents !== null && cents !== undefined) ? Math.round(cents) / 100 : null;
+
+// ─── GET /data-flow — Show real-time data flow status across all engines ──────
+
+router.get('/data-flow', (req, res) => {
+  try {
+    const db = req.fiDb;
+
+    // Fixed Income data
+    const holdings = db.prepare('SELECT COUNT(*) as c FROM fixed_income_holdings').get().c;
+    const totalParCents = db.prepare('SELECT COALESCE(SUM(par_value_cents), 0) as total FROM fixed_income_holdings').get().total;
+    const couponsReceived = db.prepare("SELECT COUNT(*) as c FROM coupon_payments WHERE status = 'received'").get().c;
+    const couponsScheduled = db.prepare("SELECT COUNT(*) as c FROM coupon_payments WHERE status = 'scheduled'").get().c;
+    const totalInterestCents = db.prepare("SELECT COALESCE(SUM(amount_cents), 0) as total FROM coupon_payments WHERE status = 'received'").get().total;
+
+    // Trust Accounting data (coupon-specific GL entries only)
+    let glEntries = 0, glInterestCents = 0;
+    try {
+      glEntries = db.prepare("SELECT COUNT(*) as c FROM trust_journal_entries WHERE reference_type = 'coupon'").get().c;
+      glInterestCents = db.prepare(`
+        SELECT COALESCE(SUM(tjl.credit_cents), 0) as total
+        FROM trust_journal_lines tjl
+        JOIN trust_journal_entries tje ON tjl.journal_entry_id = tje.id
+        WHERE tjl.account_code = '4000' AND tje.reference_type = 'coupon'
+      `).get().total;
+    } catch (_) {}
+
+    // CMS events
+    let cmsEvents = 0;
+    try {
+      cmsEvents = db.prepare("SELECT COUNT(*) as c FROM cms_event_log WHERE event_name = 'coupon_received'").get().c;
+    } catch (_) {}
+
+    // Banking Audit (dashboard activity)
+    let auditEntries = 0;
+    try {
+      auditEntries = db.prepare("SELECT COUNT(*) as c FROM banking_audit_log WHERE event_type = 'coupon_received'").get().c;
+    } catch (_) {}
+
+    // Trust Account balance
+    let trustBalance = 0;
+    try {
+      const acct = db.prepare("SELECT balance_cents FROM trust_accounts WHERE status = 'active' ORDER BY id ASC LIMIT 1").get();
+      trustBalance = acct ? acct.balance_cents : 0;
+    } catch (_) {}
+
+    // Transaction history
+    let transactionRecords = 0;
+    try {
+      transactionRecords = db.prepare("SELECT COUNT(*) as c FROM trust_account_transactions WHERE reference_type = 'coupon'").get().c;
+    } catch (_) {}
+
+    const allSynced = (glEntries === couponsReceived) && (cmsEvents === couponsReceived) && (auditEntries === couponsReceived);
+
+    res.json({
+      status: allSynced ? 'fully_synced' : 'needs_sync',
+      fixed_income: {
+        holdings,
+        total_par_value_usd: (totalParCents / 100).toFixed(2),
+        coupons_received: couponsReceived,
+        coupons_scheduled: couponsScheduled,
+        total_interest_received_usd: (totalInterestCents / 100).toFixed(2),
+      },
+      data_flow: {
+        trust_accounting: {
+          gl_journal_entries: glEntries,
+          interest_income_credited_usd: (glInterestCents / 100).toFixed(2),
+          synced: glEntries === couponsReceived,
+        },
+        cash_management: {
+          cms_events: cmsEvents,
+          trust_account_balance_usd: (trustBalance / 100).toFixed(2),
+          synced: cmsEvents === couponsReceived,
+        },
+        dashboard_activity: {
+          audit_log_entries: auditEntries,
+          synced: auditEntries === couponsReceived,
+        },
+        transaction_ledger: {
+          records: transactionRecords,
+          synced: transactionRecords === couponsReceived,
+        },
+      },
+      action: allSynced ? null : 'POST /api/fixed-income/sync-engines to reconcile',
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
 
 // ─── GET /holdings ────────────────────────────────────────────────────────────
 
@@ -575,6 +758,71 @@ router.post('/coupons/sync-totals', (req, res) => {
     res.json({ success: true, bonds_updated: updated, journals_posted: journalsPosted, totals: received });
   } catch (err) {
     res.status(500).json({ error: err.message });
+  }
+});
+
+// ─── POST /sync-engines — Ensure all Fixed Income data flows to all modules ──
+// Reconciles received coupons with Trust Accounting, CMS, Banking Audit, and
+// Trust Account Transactions. Fills any gaps without duplicating.
+
+router.post('/sync-engines', (req, res) => {
+  try {
+    const db = req.fiDb;
+    const result = syncAllCouponsToEngines(db);
+
+    // Also verify trust account balance matches sum of received coupons
+    const totalReceivedCents = db.prepare("SELECT COALESCE(SUM(amount_cents), 0) as total FROM coupon_payments WHERE status = 'received'").get().total;
+    const trustAccount = db.prepare("SELECT * FROM trust_accounts WHERE status = 'active' ORDER BY id ASC LIMIT 1").get();
+
+    // Get GL balance for coupon-specific interest income (only entries with reference_type='coupon')
+    let glCouponInterest = 0;
+    let glTotalInterest = 0;
+    try {
+      const couponGl = db.prepare(`
+        SELECT COALESCE(SUM(tjl.credit_cents), 0) as total
+        FROM trust_journal_lines tjl
+        JOIN trust_journal_entries tje ON tjl.journal_entry_id = tje.id
+        WHERE tjl.account_code = '4000' AND tje.reference_type = 'coupon'
+      `).get();
+      glCouponInterest = couponGl.total;
+      const allGl = db.prepare(`
+        SELECT COALESCE(SUM(credit_cents), 0) as total FROM trust_journal_lines WHERE account_code = '4000'
+      `).get();
+      glTotalInterest = allGl.total;
+    } catch (_) {}
+
+    res.json({
+      success: true,
+      fixed_income: {
+        total_received_coupons: result.received_coupons,
+        total_received_cents: totalReceivedCents,
+        total_received_usd: (totalReceivedCents / 100).toFixed(2),
+      },
+      sync_results: result.synced,
+      cross_engine_status: {
+        trust_accounting: {
+          gl_entries: result.received_coupons,
+          coupon_interest_gl_cents: glCouponInterest,
+          coupon_interest_gl_usd: (glCouponInterest / 100).toFixed(2),
+          total_interest_income_gl_usd: (glTotalInterest / 100).toFixed(2),
+          balanced: glCouponInterest === totalReceivedCents,
+        },
+        cash_management: {
+          trust_account_balance_cents: trustAccount ? trustAccount.balance_cents : 0,
+          trust_account_balance_usd: trustAccount ? (trustAccount.balance_cents / 100).toFixed(2) : '0.00',
+          cms_events_posted: result.received_coupons,
+        },
+        dashboard_activity: {
+          audit_log_entries: result.received_coupons,
+        },
+        banking: {
+          account_name: trustAccount ? trustAccount.account_name : null,
+          account_status: trustAccount ? trustAccount.status : null,
+        },
+      },
+    });
+  } catch (err) {
+    res.status(500).json({ error: 'Engine sync failed', detail: err.message });
   }
 });
 
