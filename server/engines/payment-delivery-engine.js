@@ -3,11 +3,11 @@
  * 
  * Bridges NACHA/Wire file generation → actual money movement
  * 
- * Delivery methods (in priority order):
- * 1. Column Bank API — direct Federal Reserve ACH/Wire via REST API (no SFTP needed)
- * 2. Dwolla API — ACH/RTP/FedNow via REST API (no SFTP needed)
- * 3. Open Banking Project (OBP) — standardised open banking APIs for payments
- * 4. OpenACH API — submit ACH through self-hosted OpenACH at ach.dlbtrust.cloud
+ * Delivery methods (in priority order — self-hosted first):
+ * 1. OpenACH API — self-hosted ACH origination (primary for ACH payments)
+ * 2. Open Banking Project (OBP) — self-hosted open banking APIs (primary for wires, fallback for ACH)
+ * 3. Column Bank API — direct Federal Reserve ACH/Wire via REST API
+ * 4. Dwolla API — ACH/RTP/FedNow via REST API
  * 5. Moov ACH — open-source ACH validation + file management
  * 6. SFTP — auto-upload NACHA files to bank's SFTP endpoint
  * 7. Manual — file stored for download + manual submission
@@ -38,18 +38,28 @@ const SFTP_PATH = process.env.BANK_SFTP_PATH || '/incoming/ach';
 const PAYMENT_TYPE_ID = process.env.OPENACH_PAYMENT_TYPE_ID || '';
 
 /**
- * Determine the best available delivery method
+ * Determine the best available delivery method (self-hosted first)
  */
-function getAvailableDeliveryMethod() {
+function getAvailableDeliveryMethod(paymentType) {
+  const OBP = loadOBP();
+  const obpReady = OBP && OBP.OBP_USERNAME && OBP.OBP_CONSUMER_KEY;
+  const openachReady = !!(process.env.OPENACH_API_TOKEN && process.env.OPENACH_API_KEY);
+
+  if (paymentType === 'wire') {
+    if (obpReady) return 'obp';
+    const Column = loadColumn();
+    if (Column && Column.COLUMN_API_KEY) return 'column';
+    if (SFTP_HOST && SFTP_USER) return 'sftp';
+    return 'manual';
+  }
+
+  // ACH: self-hosted first
+  if (openachReady) return 'openach';
+  if (obpReady) return 'obp';
   const Column = loadColumn();
   const Dwolla = loadDwolla();
-
-  const OBP = loadOBP();
-
   if (Column && Column.COLUMN_API_KEY) return 'column';
   if (Dwolla && Dwolla.DWOLLA_KEY && Dwolla.DWOLLA_SECRET) return 'dwolla';
-  if (OBP && OBP.OBP_USERNAME && OBP.OBP_CONSUMER_KEY) return 'obp';
-  if (process.env.OPENACH_API_TOKEN && process.env.OPENACH_API_KEY) return 'openach';
   if (SFTP_HOST && SFTP_USER) return 'sftp';
   return 'manual';
 }
@@ -454,13 +464,35 @@ async function submitViaSFTPSystem(nachaContent, filename) {
 
 /**
  * Deliver payment through the best available channel
- * Priority: Column → Dwolla → OBP → OpenACH → Moov → SFTP → Manual
+ * Priority: OpenACH → OBP → Column → Dwolla → Moov → SFTP → Manual
+ * Self-hosted channels (OpenACH, OBP) are prioritized over third-party APIs
  */
 async function deliverPayment(transfer, contact, paymentMethod, nachaFile) {
   const attempts = [];
   let result;
 
-  // 1. Column Bank API (direct Fed connection, no SFTP)
+  // 1. OpenACH (self-hosted, primary for ACH)
+  if (process.env.OPENACH_API_TOKEN && process.env.OPENACH_API_KEY && transfer.payment_method === 'ach') {
+    result = await submitViaOpenACH(transfer, contact, paymentMethod);
+    attempts.push({ method: 'openach', ...result });
+    if (result.success) {
+      result.attempts = attempts;
+      return result;
+    }
+  }
+
+  // 2. Open Banking Project (OBP) — self-hosted, works for ACH and wire
+  const OBP = loadOBP();
+  if (OBP && OBP.OBP_USERNAME && OBP.OBP_CONSUMER_KEY) {
+    result = await submitViaOBP(transfer, contact, paymentMethod);
+    attempts.push({ method: 'obp', ...result });
+    if (result.success) {
+      result.attempts = attempts;
+      return result;
+    }
+  }
+
+  // 3. Column Bank API (direct Fed connection)
   const Column = loadColumn();
   if (Column && Column.COLUMN_API_KEY && transfer.payment_method === 'ach') {
     result = await submitViaColumn(transfer, contact, paymentMethod);
@@ -471,32 +503,11 @@ async function deliverPayment(transfer, contact, paymentMethod, nachaFile) {
     }
   }
 
-  // 2. Dwolla API (ACH via REST, no SFTP)
+  // 4. Dwolla API (ACH via REST)
   const Dwolla = loadDwolla();
   if (Dwolla && Dwolla.DWOLLA_KEY && Dwolla.DWOLLA_SECRET && transfer.payment_method === 'ach') {
     result = await submitViaDwolla(transfer, contact, paymentMethod);
     attempts.push({ method: 'dwolla', ...result });
-    if (result.success) {
-      result.attempts = attempts;
-      return result;
-    }
-  }
-
-  // 3. Open Banking Project (OBP)
-  const OBP = loadOBP();
-  if (OBP && OBP.OBP_USERNAME && OBP.OBP_CONSUMER_KEY && transfer.payment_method === 'ach') {
-    result = await submitViaOBP(transfer, contact, paymentMethod);
-    attempts.push({ method: 'obp', ...result });
-    if (result.success) {
-      result.attempts = attempts;
-      return result;
-    }
-  }
-
-  // 4. OpenACH (self-hosted)
-  if (process.env.OPENACH_API_TOKEN && process.env.OPENACH_API_KEY && transfer.payment_method === 'ach') {
-    result = await submitViaOpenACH(transfer, contact, paymentMethod);
-    attempts.push({ method: 'openach', ...result });
     if (result.success) {
       result.attempts = attempts;
       return result;
@@ -537,10 +548,51 @@ async function deliverPayment(transfer, contact, paymentMethod, nachaFile) {
 }
 
 /**
- * Submit wire transfer (Column supports wires too)
+ * Submit wire transfer
+ * Priority: OBP (self-hosted) → Column → SFTP → Manual
  */
 async function deliverWire(transfer, wireMessage) {
-  // Try Column for wires
+  const attempts = [];
+
+  // 1. OBP (self-hosted, primary for wires)
+  const OBP = loadOBP();
+  if (OBP && OBP.OBP_USERNAME && OBP.OBP_CONSUMER_KEY) {
+    try {
+      const recipientName = wireMessage.metadata?.beneficiary?.name || 'Wire Recipient';
+      const routingNumber = wireMessage.metadata?.receiverBank?.routingNumber || '';
+      const accountNumber = wireMessage.metadata?.receiverBank?.accountNumber || '';
+
+      const result = await OBP.disbursement({
+        recipient_name: recipientName,
+        routing_number: routingNumber,
+        account_number: accountNumber,
+        amount_cents: transfer.amount_cents,
+        description: transfer.description || `Wire ${transfer.transfer_number}`,
+        to_bank_id: process.env.OBP_TO_BANK_ID || '',
+        to_account_id: process.env.OBP_TO_ACCOUNT_ID || '',
+      });
+
+      const deliveryResult = {
+        success: true,
+        delivery_method: 'obp',
+        status: 'submitted',
+        confirmation: {
+          transaction_request_id: result.id,
+          transaction_id: result.transaction_ids ? result.transaction_ids[0] : null,
+          status: result.status,
+          type: result.type,
+        },
+        message: `Wire submitted via Open Banking Project (${result.status || 'COMPLETED'})`,
+      };
+      attempts.push({ method: 'obp', ...deliveryResult });
+      deliveryResult.attempts = attempts;
+      return deliveryResult;
+    } catch (err) {
+      attempts.push({ method: 'obp', success: false, error: err.message });
+    }
+  }
+
+  // 2. Column Bank API
   const Column = loadColumn();
   if (Column && Column.COLUMN_API_KEY) {
     try {
@@ -559,19 +611,23 @@ async function deliverWire(transfer, wireMessage) {
           description: transfer.description || `Wire ${transfer.transfer_number}`,
         });
 
-        return {
+        const deliveryResult = {
           success: true,
           delivery_method: 'column',
           status: 'submitted',
           confirmation: { transfer_id: wire.id, sandbox: Column.COLUMN_API_KEY.startsWith('test_') },
           message: `Wire submitted via Column Bank API (${Column.COLUMN_API_KEY.startsWith('test_') ? 'sandbox' : 'LIVE'})`,
         };
+        attempts.push({ method: 'column', ...deliveryResult });
+        deliveryResult.attempts = attempts;
+        return deliveryResult;
       }
     } catch (err) {
-      // Fall through to manual
+      attempts.push({ method: 'column', success: false, error: err.message });
     }
   }
 
+  // 3. Manual fallback
   return {
     success: true,
     delivery_method: 'manual',
@@ -579,13 +635,34 @@ async function deliverWire(transfer, wireMessage) {
     confirmation: {
       filename: wireMessage.filename,
       format: wireMessage.format,
-      imad: wireMessage.metadata.imad,
+      imad: wireMessage.metadata?.imad,
       instruction: wireMessage.format === 'fedwire'
         ? 'Submit this Fedwire message through Eaton Family CU wire portal or call their wire desk.'
         : 'Submit this SWIFT MT103 message through your international wire correspondent bank.',
     },
     message: `${wireMessage.format.toUpperCase()} message generated — submit through bank wire desk`,
+    attempts,
   };
+}
+
+/**
+ * Check OBP health/connectivity
+ */
+async function checkOBPHealth() {
+  const OBP = loadOBP();
+  if (!OBP) return { connected: false, error: 'OBP client not available' };
+  try {
+    const health = await OBP.healthCheck();
+    return {
+      ...health,
+      delivery_method: 'obp',
+      message: health.connected
+        ? 'OBP (self-hosted) is live — payments submitted via Open Banking API'
+        : `OBP unavailable: ${health.error}`,
+    };
+  } catch (err) {
+    return { connected: false, error: err.message, delivery_method: 'obp' };
+  }
 }
 
 /**
@@ -626,6 +703,7 @@ module.exports = {
   deliverPayment,
   deliverWire,
   checkOpenACHHealth,
+  checkOBPHealth,
   getAvailableDeliveryMethod,
   getAllDeliveryMethods,
   submitViaColumn,

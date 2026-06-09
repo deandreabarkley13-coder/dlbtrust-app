@@ -42,7 +42,7 @@ const {
 
 const { generateSingleACH, generateBatchACH, validateRoutingNumber } = require('../engines/nacha-engine');
 const { generateWireMessage } = require('../engines/wire-engine');
-const { deliverPayment, deliverWire, checkOpenACHHealth, getAvailableDeliveryMethod, getAllDeliveryMethods } = require('../engines/payment-delivery-engine');
+const { deliverPayment, deliverWire, checkOpenACHHealth, checkOBPHealth, getAvailableDeliveryMethod, getAllDeliveryMethods } = require('../engines/payment-delivery-engine');
 
 // --- DB Setup ---------------------------------------------------------------
 
@@ -542,18 +542,22 @@ router.post('/batch-process', (req, res) => {
 // --- GET /delivery-status -- Check payment delivery configuration ------------
 router.get('/delivery-status', async (req, res) => {
   try {
-    const method = getAvailableDeliveryMethod();
-    let health = { delivery_method: method };
+    const achMethod = getAvailableDeliveryMethod('ach');
+    const wireMethod = getAvailableDeliveryMethod('wire');
+    let health = { delivery_method: achMethod, wire_method: wireMethod };
 
-    if (method === 'openach') {
-      health = await checkOpenACHHealth();
-    } else if (method === 'column') {
+    if (achMethod === 'openach') {
+      health = { ...health, ...(await checkOpenACHHealth()) };
+    } else if (achMethod === 'obp') {
+      health.connected = true;
+      health.message = 'OBP (self-hosted) connected — ACH/Wire submitted via Open Banking API';
+    } else if (achMethod === 'column') {
       health.connected = true;
       health.message = 'Column Bank API connected — ACH/Wire submitted via REST API (no SFTP)';
-    } else if (method === 'dwolla') {
+    } else if (achMethod === 'dwolla') {
       health.connected = true;
       health.message = 'Dwolla API connected — ACH/RTP/FedNow via REST API';
-    } else if (method === 'sftp') {
+    } else if (achMethod === 'sftp') {
       health.connected = true;
       health.message = 'SFTP configured — files will auto-upload to bank';
     } else {
