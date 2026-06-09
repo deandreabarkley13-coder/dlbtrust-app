@@ -442,12 +442,15 @@ async function healthCheck() {
       return { connected: false, error: 'OBP credentials not configured' };
     }
 
+    // Authenticate to verify credentials
     const token = await authenticate();
-    // Verify token works by getting current user
-    const user = await obpRequest('GET', '/users/current', null, token);
+    // Use /banks endpoint instead of /users/current to avoid OBP NULL-column bug
+    const banks = await obpRequest('GET', '/banks', null, token);
+    const bankList = banks.banks || [];
     return {
       connected: true,
-      user: user.username || user.user_id,
+      banks: bankList.length,
+      bank_id: OBP_BANK_ID,
       base_url: OBP_BASE_URL,
       api_version: OBP_API_VERSION,
     };
