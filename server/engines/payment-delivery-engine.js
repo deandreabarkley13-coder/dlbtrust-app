@@ -6,10 +6,11 @@
  * Delivery methods (in priority order):
  * 1. Column Bank API — direct Federal Reserve ACH/Wire via REST API (no SFTP needed)
  * 2. Dwolla API — ACH/RTP/FedNow via REST API (no SFTP needed)
- * 3. OpenACH API — submit ACH through self-hosted OpenACH at ach.dlbtrust.cloud
- * 4. Moov ACH — open-source ACH validation + file management
- * 5. SFTP — auto-upload NACHA files to bank's SFTP endpoint
- * 6. Manual — file stored for download + manual submission
+ * 3. Open Banking Project (OBP) — standardised open banking APIs for payments
+ * 4. OpenACH API — submit ACH through self-hosted OpenACH at ach.dlbtrust.cloud
+ * 5. Moov ACH — open-source ACH validation + file management
+ * 6. SFTP — auto-upload NACHA files to bank's SFTP endpoint
+ * 7. Manual — file stored for download + manual submission
  * 
  * ODFI: Eaton Family Credit Union (ABA 241075470)
  * Originator: DEANDREA LAVAR BARKLEY TRUST
@@ -23,6 +24,7 @@ const { OpenACHClient, OpenACHSession } = require('../integrations/openach/opena
 function loadColumn() { try { return require('../integrations/column/columnClient'); } catch (_) { return null; } }
 function loadDwolla() { try { return require('../integrations/dwolla/dwollaClient'); } catch (_) { return null; } }
 function loadMoov()   { try { return require('../integrations/moov/moovClient');     } catch (_) { return null; } }
+function loadOBP()    { try { return require('../integrations/obp/obpClient');      } catch (_) { return null; } }
 
 // SFTP config
 const SFTP_HOST = process.env.BANK_SFTP_HOST || '';
@@ -42,8 +44,11 @@ function getAvailableDeliveryMethod() {
   const Column = loadColumn();
   const Dwolla = loadDwolla();
 
+  const OBP = loadOBP();
+
   if (Column && Column.COLUMN_API_KEY) return 'column';
   if (Dwolla && Dwolla.DWOLLA_KEY && Dwolla.DWOLLA_SECRET) return 'dwolla';
+  if (OBP && OBP.OBP_USERNAME && OBP.OBP_CONSUMER_KEY) return 'obp';
   if (process.env.OPENACH_API_TOKEN && process.env.OPENACH_API_KEY) return 'openach';
   if (SFTP_HOST && SFTP_USER) return 'sftp';
   return 'manual';
@@ -79,6 +84,20 @@ async function getAllDeliveryMethods() {
       type: 'api',
       description: 'ACH, RTP, FedNow, Wire via REST API — no SFTP needed',
       configured: !!(Dwolla.DWOLLA_KEY && Dwolla.DWOLLA_SECRET),
+      ...health,
+    });
+  }
+
+  // Open Banking Project (OBP)
+  const OBP = loadOBP();
+  if (OBP) {
+    const health = await OBP.healthCheck();
+    methods.push({
+      name: 'obp',
+      label: 'Open Banking Project',
+      type: 'api',
+      description: 'Open-source standardised banking APIs — accounts, payments, transactions',
+      configured: !!(OBP.OBP_USERNAME && OBP.OBP_CONSUMER_KEY),
       ...health,
     });
   }
@@ -234,6 +253,43 @@ async function submitViaDwolla(transfer, contact, paymentMethod) {
     };
   } catch (err) {
     return { success: false, delivery_method: 'dwolla', error: err.message, fallback: 'openach' };
+  }
+}
+
+// ─── Open Banking Project (OBP) Delivery ────────────────────────────────────
+
+async function submitViaOBP(transfer, contact, paymentMethod) {
+  const OBP = loadOBP();
+  if (!OBP || !OBP.OBP_USERNAME || !OBP.OBP_CONSUMER_KEY) {
+    return { success: false, delivery_method: 'obp', error: 'OBP API not configured' };
+  }
+
+  try {
+    const result = await OBP.disbursement({
+      recipient_name: contact.display_name || `${contact.first_name} ${contact.last_name}`,
+      routing_number: paymentMethod.routing_number,
+      account_number: paymentMethod.account_number,
+      amount_cents: transfer.amount_cents,
+      description: transfer.description || `Payment ${transfer.transfer_number}`,
+      // If target OBP account is configured, use sandbox transfer
+      to_bank_id: process.env.OBP_TO_BANK_ID || '',
+      to_account_id: process.env.OBP_TO_ACCOUNT_ID || '',
+    });
+
+    return {
+      success: true,
+      delivery_method: 'obp',
+      status: 'submitted',
+      confirmation: {
+        transaction_request_id: result.id,
+        transaction_id: result.transaction_ids ? result.transaction_ids[0] : null,
+        status: result.status,
+        type: result.type,
+      },
+      message: `Payment submitted via Open Banking Project API (${result.status || 'COMPLETED'})`,
+    };
+  } catch (err) {
+    return { success: false, delivery_method: 'obp', error: err.message, fallback: 'openach' };
   }
 }
 
@@ -398,7 +454,7 @@ async function submitViaSFTPSystem(nachaContent, filename) {
 
 /**
  * Deliver payment through the best available channel
- * Priority: Column → Dwolla → OpenACH → Moov → SFTP → Manual
+ * Priority: Column → Dwolla → OBP → OpenACH → Moov → SFTP → Manual
  */
 async function deliverPayment(transfer, contact, paymentMethod, nachaFile) {
   const attempts = [];
@@ -426,7 +482,18 @@ async function deliverPayment(transfer, contact, paymentMethod, nachaFile) {
     }
   }
 
-  // 3. OpenACH (self-hosted)
+  // 3. Open Banking Project (OBP)
+  const OBP = loadOBP();
+  if (OBP && OBP.OBP_USERNAME && OBP.OBP_CONSUMER_KEY && transfer.payment_method === 'ach') {
+    result = await submitViaOBP(transfer, contact, paymentMethod);
+    attempts.push({ method: 'obp', ...result });
+    if (result.success) {
+      result.attempts = attempts;
+      return result;
+    }
+  }
+
+  // 4. OpenACH (self-hosted)
   if (process.env.OPENACH_API_TOKEN && process.env.OPENACH_API_KEY && transfer.payment_method === 'ach') {
     result = await submitViaOpenACH(transfer, contact, paymentMethod);
     attempts.push({ method: 'openach', ...result });
@@ -436,7 +503,7 @@ async function deliverPayment(transfer, contact, paymentMethod, nachaFile) {
     }
   }
 
-  // 4. Validate with Moov before SFTP/manual
+  // 5. Validate with Moov before SFTP/manual
   if (nachaFile) {
     const moovResult = await validateWithMoov(nachaFile.content);
     if (moovResult.validated) {
@@ -444,7 +511,7 @@ async function deliverPayment(transfer, contact, paymentMethod, nachaFile) {
     }
   }
 
-  // 5. SFTP delivery
+  // 6. SFTP delivery
   if (SFTP_HOST && SFTP_USER && nachaFile) {
     result = await submitViaSFTP(nachaFile.content, nachaFile.filename);
     attempts.push({ method: 'sftp', ...result });
@@ -454,7 +521,7 @@ async function deliverPayment(transfer, contact, paymentMethod, nachaFile) {
     }
   }
 
-  // 6. Manual fallback
+  // 7. Manual fallback
   return {
     success: true,
     delivery_method: 'manual',
@@ -563,6 +630,7 @@ module.exports = {
   getAllDeliveryMethods,
   submitViaColumn,
   submitViaDwolla,
+  submitViaOBP,
   submitViaOpenACH,
   submitViaSFTP,
   validateWithMoov,

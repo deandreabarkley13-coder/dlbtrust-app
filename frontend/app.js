@@ -762,6 +762,7 @@ async function loadPayments() {
         <span class="metric-value" style="font-size:0.85rem">${
           deliveryStatus.delivery_method === 'column' ? '🏦 Column API' :
           deliveryStatus.delivery_method === 'dwolla' ? '🏦 Dwolla API' :
+          deliveryStatus.delivery_method === 'obp' ? '🏛️ Open Banking' :
           deliveryStatus.delivery_method === 'openach' ? '🏦 OpenACH' :
           deliveryStatus.delivery_method === 'sftp' ? '📡 SFTP' : '📁 Manual'
         }</span>
@@ -774,7 +775,7 @@ async function loadPayments() {
       methodsHtml += '<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:10px">';
       for (const m of deliveryStatus.all_methods) {
         const isActive = m.name === deliveryStatus.delivery_method;
-        const iconMap = { column: '🏦', dwolla: '💳', openach: '🔧', moov: '📦', sftp: '📡', manual: '📁' };
+        const iconMap = { column: '🏦', dwolla: '💳', obp: '🏛️', openach: '🔧', moov: '📦', sftp: '📡', manual: '📁' };
         methodsHtml += `<div style="padding:10px;border-radius:6px;border:1px solid ${m.connected ? 'var(--success)' : m.configured ? 'var(--warning)' : 'var(--border-color)'};background:${isActive ? 'rgba(34,197,94,0.08)' : 'transparent'}">
           <div style="display:flex;justify-content:space-between;align-items:center">
             <strong>${iconMap[m.name] || '⚡'} ${m.label}</strong>
@@ -969,7 +970,7 @@ function showPaymentFileResult(data) {
     : '<span class="badge badge-frozen">AWAITING MANUAL SUBMISSION</span>';
   const deliveryInfo = delivery.status === 'submitted'
     ? `<div style="background:#ecfdf5;border:1px solid #6ee7b7;border-radius:8px;padding:12px;margin-top:12px">
-        <strong>🏦 Auto-delivered via ${delivery.delivery_method === 'openach' ? 'OpenACH' : 'SFTP'}</strong><br>
+        <strong>🏦 Auto-delivered via ${delivery.delivery_method === 'openach' ? 'OpenACH' : delivery.delivery_method === 'obp' ? 'Open Banking Project' : delivery.delivery_method === 'column' ? 'Column API' : delivery.delivery_method === 'dwolla' ? 'Dwolla API' : delivery.delivery_method}</strong><br>
         <small>${delivery.message || ''}</small>
        </div>`
     : `<div style="background:#fef3c7;border:1px solid #fbbf24;border-radius:8px;padding:12px;margin-top:12px">
