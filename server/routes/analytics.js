@@ -22,19 +22,8 @@ const Database = require('better-sqlite3');
 const path = require('path');
 
 function getDb() {
-  // Try common locations — adjust as needed
-  const dbPaths = [
-    path.join(__dirname, 'trust.db'),
-    path.join(__dirname, 'data', 'trust.db'),
-    path.join(__dirname, '..', 'trust.db'),
-    '/app/trust.db',
-  ];
-  for (const p of dbPaths) {
-    try {
-      return new Database(p, { readonly: true });
-    } catch (_) {}
-  }
-  throw new Error('Cannot find trust.db — update DB path in analytics-api-routes.js');
+  const dbPath = process.env.DB_PATH || path.join(__dirname, '..', '..', 'data', 'dlbtrust.db');
+  return new Database(dbPath);
 }
 
 // ─────────────────────────────────────────────────────────────
