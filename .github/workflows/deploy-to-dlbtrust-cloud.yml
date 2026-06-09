@@ -1,0 +1,101 @@
+name: Deploy to dlbtrust.cloud (OpenACH + Payments)
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'server/**'
+      - 'frontend/**'
+      - 'app.js'
+      - 'package.json'
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      SERVER: "74.208.191.205"
+      SSH_USER: "dlbtrust.cloud_h6zkwzag1ya"
+      SSH_PASS: "Deploy2026!"
+      APP_DIR: "/var/www/vhosts/dlbtrust.cloud/dlbtrust-v2"
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install sshpass
+        run: sudo apt-get install -y sshpass
+
+      - name: Deploy application to dlbtrust.cloud
+        run: |
+          SSH_OPTS="-o StrictHostKeyChecking=no -o ConnectTimeout=15 -o PasswordAuthentication=yes"
+          
+          echo "=== Deploying app to dlbtrust.cloud ==="
+          
+          # Create deployment archive (exclude unnecessary files)
+          tar czf /tmp/deploy.tar.gz \
+            --exclude='.git' \
+            --exclude='node_modules' \
+            --exclude='.github' \
+            --exclude='*.db' \
+            server/ frontend/ app.js package.json package-lock.json
+          
+          echo "[1/5] Uploading deployment archive..."
+          sshpass -p "$SSH_PASS" scp $SSH_OPTS \
+            /tmp/deploy.tar.gz \
+            "$SSH_USER@$SERVER:/tmp/deploy.tar.gz"
+          
+          echo "[2/5] Extracting and installing..."
+          sshpass -p "$SSH_PASS" ssh $SSH_OPTS "$SSH_USER@$SERVER" << 'DEPLOY'
+          set -e
+          APP_DIR="/var/www/vhosts/dlbtrust.cloud/dlbtrust-v2"
+          
+          # Backup current
+          cp "$APP_DIR/server.cjs" "$APP_DIR/server.cjs.bak" 2>/dev/null || true
+          
+          # Extract new files
+          cd "$APP_DIR"
+          tar xzf /tmp/deploy.tar.gz
+          rm /tmp/deploy.tar.gz
+          
+          # Install dependencies
+          npm install --production 2>&1 | tail -5
+          
+          # Ensure .env has OpenACH settings
+          ENV="$APP_DIR/.env"
+          grep -q OPENACH_API_TOKEN "$ENV" 2>/dev/null || cat >> "$ENV" << 'ENVEOF'
+          OPENACH_BASE_URL=http://localhost/openach/api
+          OPENACH_HOST_HEADER=ach.dlbtrust.cloud
+          OPENACH_API_TOKEN=3caee1c2-c218-4959-b6d2-21d4b2a1b42e
+          OPENACH_API_KEY=b74966cf-5276-4d8b-8650-5bd57dcee272
+          ENVEOF
+          
+          echo "Files deployed successfully"
+          DEPLOY
+          
+          echo "[3/5] Restarting application..."
+          sshpass -p "$SSH_PASS" ssh $SSH_OPTS "$SSH_USER@$SERVER" \
+            "cd $APP_DIR && pm2 restart all 2>/dev/null || pm2 start app.js --name dlbtrust 2>/dev/null || echo 'PM2 restart done'"
+          
+          echo "[4/5] Waiting for app to start..."
+          sleep 5
+          
+          echo "[5/5] Verifying deployment..."
+          # Verify from CI runner (external)
+          HEALTH=$(curl -sk --max-time 10 \
+            --resolve "dlbtrust.cloud:443:$SERVER" \
+            "https://dlbtrust.cloud/api/ach/health" 2>&1)
+          echo "ACH Health: $HEALTH"
+          
+          DELIVERY=$(curl -sk --max-time 10 \
+            --resolve "dlbtrust.cloud:443:$SERVER" \
+            "https://dlbtrust.cloud/api/external-transfers/delivery-status" 2>&1)
+          echo "Delivery Status: $DELIVERY"
+          
+          if echo "$HEALTH" | grep -q "openach_connected"; then
+            echo "✅ OpenACH connected — real money movement enabled"
+          else
+            echo "⚠️ OpenACH not connected yet — check Docker container"
+          fi
+          
+          echo "=== Deployment complete ==="

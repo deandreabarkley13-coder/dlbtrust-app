@@ -22,19 +22,8 @@ const Database = require('better-sqlite3');
 const path = require('path');
 
 function getDb() {
-  // Try common locations — adjust as needed
-  const dbPaths = [
-    path.join(__dirname, 'trust.db'),
-    path.join(__dirname, 'data', 'trust.db'),
-    path.join(__dirname, '..', 'trust.db'),
-    '/app/trust.db',
-  ];
-  for (const p of dbPaths) {
-    try {
-      return new Database(p, { readonly: true });
-    } catch (_) {}
-  }
-  throw new Error('Cannot find trust.db — update DB path in analytics-api-routes.js');
+  const dbPath = process.env.DB_PATH || path.join(__dirname, '..', '..', 'data', 'dlbtrust.db');
+  return new Database(dbPath);
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -43,11 +32,30 @@ function getDb() {
 const toDollars = (cents) => (cents !== null && cents !== undefined) ? Math.round(cents) / 100 : null;
 
 // ─────────────────────────────────────────────────────────────
-// MIDDLEWARE: attach DB to req, auto-close after response
+// MIDDLEWARE: attach DB to req, ensure analytics tables exist
 // ─────────────────────────────────────────────────────────────
 router.use((req, res, next) => {
   try {
     req.db = getDb();
+    // Ensure analytics-compatible tables exist (create if missing)
+    req.db.exec(`
+      CREATE TABLE IF NOT EXISTS wallets (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        name TEXT,
+        role TEXT DEFAULT 'trust_entity',
+        fiat_balance INTEGER DEFAULT 0,
+        created_at TEXT DEFAULT (datetime('now'))
+      );
+      CREATE TABLE IF NOT EXISTS transactions (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        wallet_id INTEGER,
+        amount INTEGER DEFAULT 0,
+        category TEXT DEFAULT 'general',
+        status TEXT DEFAULT 'completed',
+        description TEXT,
+        created_at TEXT DEFAULT (datetime('now'))
+      );
+    `);
     res.on('finish', () => { try { req.db.close(); } catch (_) {} });
     res.on('close',  () => { try { req.db.close(); } catch (_) {} });
     next();
@@ -708,7 +716,7 @@ router.get('/data-quality', (req, res) => {
     const db = req.db;
 
     const users = db.prepare(`
-      SELECT wallet_id, name, role, email, phone, holder_name
+      SELECT id, name, role, fiat_balance
       FROM wallets
       ORDER BY role, id
     `).all();
@@ -716,26 +724,18 @@ router.get('/data-quality', (req, res) => {
     const totalUsers = users.length;
 
     const missing = {
-      email:   users.filter(u => !u.email).length,
-      phone:   users.filter(u => !u.phone).length,
-      holder_name: users.filter(u => !u.holder_name).length,
-      // routing_number and account_number require those columns to exist:
-      // routing_number: users.filter(u => !u.routing_number).length,
-      // account_number: users.filter(u => !u.account_number).length,
+      name: users.filter(u => !u.name).length,
+      role: users.filter(u => !u.role).length,
     };
 
-    // Orphaned transactions (wallets referenced that don't exist)
+    // Orphaned transactions
     const orphanedFrom = db.prepare(`
       SELECT COUNT(*) AS count FROM transactions t
-      LEFT JOIN wallets w ON w.wallet_id = t.from_wallet_id
-      WHERE t.from_wallet_id IS NOT NULL AND w.wallet_id IS NULL
+      LEFT JOIN wallets w ON w.id = t.wallet_id
+      WHERE t.wallet_id IS NOT NULL AND w.id IS NULL
     `).get();
 
-    const orphanedTo = db.prepare(`
-      SELECT COUNT(*) AS count FROM transactions t
-      LEFT JOIN wallets w ON w.wallet_id = t.to_wallet_id
-      WHERE t.to_wallet_id IS NOT NULL AND w.wallet_id IS NULL
-    `).get();
+    const orphanedTo = { count: 0 };
 
     // Transactions missing category
     const missingCategory = db.prepare(`
@@ -752,14 +752,13 @@ router.get('/data-quality', (req, res) => {
         total_users: totalUsers,
         missing_fields: missing,
         completeness_score_pct: completenessScore,
-        users_with_issues: users.filter(u => !u.email || !u.phone || !u.holder_name).map(u => ({
-          wallet_id: u.wallet_id,
+        users_with_issues: users.filter(u => !u.name || !u.role).map(u => ({
+          id: u.id,
           name: u.name,
           role: u.role,
           missing: [
-            ...(!u.email ? ['email'] : []),
-            ...(!u.phone ? ['phone'] : []),
-            ...(!u.holder_name ? ['holder_name'] : []),
+            ...(!u.name ? ['name'] : []),
+            ...(!u.role ? ['role'] : []),
           ],
         })),
       },

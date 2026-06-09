@@ -12,7 +12,8 @@ jobs:
       - name: Insert API credentials into OpenACH
         run: |
           sshpass -p "dP8RlShbOWNq" ssh -o StrictHostKeyChecking=no -o ConnectTimeout=15 -o PasswordAuthentication=yes root@$SERVER '
-            CONT=openach-web-1
+            CONT=$(docker ps --format "{{.Names}}" | grep -i openach | head -1)
+            [ -z "$CONT" ] && CONT=openach
             DB=/home/www/openach/protected/runtime/db/openach.db
 
             echo "=== user_api table schema ==="

@@ -1,0 +1,36 @@
+app = "dlbtrust-app"
+primary_region = "iad"
+
+[build]
+
+[env]
+  NODE_ENV = "production"
+  DB_PATH = "/data/dlbtrust.db"
+  OPENACH_BASE_URL = "https://ach.dlbtrust.cloud/openach/api"
+  OPENACH_HOST_HEADER = "ach.dlbtrust.cloud"
+  OPENACH_API_TOKEN = "3caee1c2-c218-4959-b6d2-21d4b2a1b42e"
+  OPENACH_API_KEY = "b74966cf-5276-4d8b-8650-5bd57dcee272"
+  OBP_BASE_URL = "http://127.0.0.1:8080"
+  OBP_USERNAME = "dlbtrust_platform"
+  OBP_PASSWORD = "DLBTrust2026Platform!"
+  OBP_CONSUMER_KEY = "dlbtrustconsumerkey2026"
+  OBP_BANK_ID = "dlbtrust-eaton"
+  OBP_ACCOUNT_ID = "dlb-trust-operating"
+  OBP_TO_BANK_ID = "dlbtrust-eaton"
+  OBP_TO_ACCOUNT_ID = "dlb-vendor-payments"
+
+[http_service]
+  internal_port = 8080
+  force_https = true
+  auto_stop_machines = "stop"
+  auto_start_machines = true
+  min_machines_running = 1
+
+[mounts]
+  source = "dlbtrust_data"
+  destination = "/data"
+
+[[vm]]
+  memory = "512mb"
+  cpu_kind = "shared"
+  cpus = 1
