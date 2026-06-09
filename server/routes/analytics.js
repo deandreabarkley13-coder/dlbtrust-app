@@ -32,11 +32,30 @@ function getDb() {
 const toDollars = (cents) => (cents !== null && cents !== undefined) ? Math.round(cents) / 100 : null;
 
 // ─────────────────────────────────────────────────────────────
-// MIDDLEWARE: attach DB to req, auto-close after response
+// MIDDLEWARE: attach DB to req, ensure analytics tables exist
 // ─────────────────────────────────────────────────────────────
 router.use((req, res, next) => {
   try {
     req.db = getDb();
+    // Ensure analytics-compatible tables exist (create if missing)
+    req.db.exec(`
+      CREATE TABLE IF NOT EXISTS wallets (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        name TEXT,
+        role TEXT DEFAULT 'trust_entity',
+        fiat_balance INTEGER DEFAULT 0,
+        created_at TEXT DEFAULT (datetime('now'))
+      );
+      CREATE TABLE IF NOT EXISTS transactions (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        wallet_id INTEGER,
+        amount INTEGER DEFAULT 0,
+        category TEXT DEFAULT 'general',
+        status TEXT DEFAULT 'completed',
+        description TEXT,
+        created_at TEXT DEFAULT (datetime('now'))
+      );
+    `);
     res.on('finish', () => { try { req.db.close(); } catch (_) {} });
     res.on('close',  () => { try { req.db.close(); } catch (_) {} });
     next();
