@@ -165,6 +165,26 @@ function syncAllCouponsToEngines(db) {
 
   let synced = { gl: 0, cms: 0, audit: 0, transactions: 0 };
 
+  // Ensure trust_account_transactions table exists
+  try {
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS trust_account_transactions (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        account_id INTEGER NOT NULL,
+        transaction_type TEXT NOT NULL,
+        direction TEXT NOT NULL DEFAULT 'credit',
+        amount_cents INTEGER NOT NULL,
+        balance_after_cents INTEGER,
+        description TEXT,
+        reference_type TEXT,
+        reference_id TEXT,
+        source_engine TEXT DEFAULT 'fixed_income',
+        status TEXT DEFAULT 'completed',
+        created_at TEXT DEFAULT (datetime('now'))
+      )
+    `);
+  } catch (_) {}
+
   for (const coupon of received) {
     const couponId = String(coupon.id);
 
@@ -172,13 +192,15 @@ function syncAllCouponsToEngines(db) {
     const hasGL = db.prepare("SELECT id FROM trust_journal_entries WHERE reference_type = 'coupon' AND reference_id = ?").get(couponId);
     const hasCMS = db.prepare("SELECT id FROM cms_event_log WHERE event_name = 'coupon_received' AND event_data LIKE ?").get(`%"coupon_id":${coupon.id}%`);
     const hasAudit = db.prepare("SELECT id FROM banking_audit_log WHERE event_type = 'coupon_received' AND entity_id = ?").get(couponId);
+    let hasTx = false;
+    try { hasTx = !!db.prepare("SELECT id FROM trust_account_transactions WHERE reference_type = 'coupon' AND reference_id = ?").get(couponId); } catch (_) {}
 
-    if (!hasGL || !hasCMS || !hasAudit) {
+    if (!hasGL || !hasCMS || !hasAudit || !hasTx) {
       postCouponToAllEngines(db, coupon, null);
       if (!hasGL) synced.gl++;
       if (!hasCMS) synced.cms++;
       if (!hasAudit) synced.audit++;
-      synced.transactions++;
+      if (!hasTx) synced.transactions++;
     }
   }
 
@@ -305,7 +327,7 @@ router.get('/data-flow', (req, res) => {
       transactionRecords = db.prepare("SELECT COUNT(*) as c FROM trust_account_transactions WHERE reference_type = 'coupon'").get().c;
     } catch (_) {}
 
-    const allSynced = (glEntries === couponsReceived) && (cmsEvents === couponsReceived) && (auditEntries === couponsReceived);
+    const allSynced = (glEntries === couponsReceived) && (cmsEvents === couponsReceived) && (auditEntries === couponsReceived) && (transactionRecords === couponsReceived);
 
     res.json({
       status: allSynced ? 'fully_synced' : 'needs_sync',
