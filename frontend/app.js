@@ -720,6 +720,19 @@ async function loadActivity() {
 
 // --- External Payments ---
 
+async function obpSetup() {
+  const panel = document.getElementById('obp-panel');
+  if (panel) panel.innerHTML = '<h4 style="margin:0;font-size:0.95rem">\ud83c\udfdb\ufe0f Initializing OBP...</h4><div style="margin-top:8px"><div class="spinner"></div> Setting up bank, accounts, and payment pipeline...</div>';
+  try {
+    const result = await api('/obp/setup', { method: 'POST' });
+    showToast(result.success ? 'OBP initialized — self-hosted banking ready!' : 'OBP setup completed with warnings', result.success ? 'success' : 'warning');
+    loadPayments(); // Refresh to show updated status
+  } catch (err) {
+    showToast('OBP setup failed: ' + err.message, 'error');
+    if (panel) panel.innerHTML = '<h4 style="margin:0;font-size:0.95rem">\ud83c\udfdb\ufe0f OBP Setup Failed</h4><div style="color:var(--danger);margin-top:4px">' + err.message + '</div><button onclick="obpSetup()" style="margin-top:8px;padding:4px 12px;border-radius:4px;border:1px solid var(--border-color);cursor:pointer">Retry</button>';
+  }
+}
+
 async function loadPayments() {
   try {
     const filter = document.getElementById('payment-status-filter')?.value || '';
@@ -789,6 +802,33 @@ async function loadPayments() {
       methodsHtml += '</div></div>';
       document.getElementById('payment-metrics').insertAdjacentHTML('afterend', methodsHtml);
     }
+
+    // OBP Self-Hosted Control Panel
+    try {
+      const obpStatus = await api('/obp/status').catch(() => null);
+      if (obpStatus) {
+        let obpHtml = '<div id="obp-panel" style="margin-top:16px;padding:16px;background:var(--card-bg);border-radius:8px;border:1px solid var(--border-color)">';
+        obpHtml += '<h4 style="margin:0 0 12px 0;font-size:0.95rem">\ud83c\udfdb\ufe0f Open Banking Project (Self-Hosted)</h4>';
+        if (obpStatus.initialized) {
+          obpHtml += `<div style="display:flex;gap:12px;flex-wrap:wrap;align-items:center">
+            <span style="padding:4px 10px;border-radius:4px;background:var(--success);color:white;font-size:0.8rem;font-weight:600">RUNNING</span>
+            <span style="font-size:0.85rem;color:var(--text-secondary)">Bank: ${obpStatus.bank_id || 'N/A'} | Account: ${obpStatus.account_id || 'N/A'}</span>
+            <button onclick="obpSetup()" style="padding:4px 12px;border-radius:4px;border:1px solid var(--border-color);background:var(--card-bg);cursor:pointer;font-size:0.8rem">\u21bb Re-initialize</button>
+          </div>`;
+          obpHtml += `<div style="font-size:0.8rem;color:var(--text-secondary);margin-top:6px">${obpStatus.obp_url} \u2014 No external API keys. Full self-hosted control.</div>`;
+        } else {
+          obpHtml += `<div style="display:flex;gap:12px;flex-wrap:wrap;align-items:center">
+            <span style="padding:4px 10px;border-radius:4px;background:var(--warning);color:white;font-size:0.8rem;font-weight:600">NOT INITIALIZED</span>
+            <button onclick="obpSetup()" style="padding:6px 16px;border-radius:6px;border:none;background:var(--primary);color:white;cursor:pointer;font-weight:600;font-size:0.85rem">\ud83d\ude80 Initialize OBP</button>
+          </div>`;
+          obpHtml += '<div style="font-size:0.8rem;color:var(--text-secondary);margin-top:6px">Click to auto-create bank, accounts, and connect payment pipeline. No API keys needed.</div>';
+        }
+        obpHtml += '</div>';
+
+        const metricsEl = document.getElementById('payment-metrics');
+        if (metricsEl) metricsEl.insertAdjacentHTML('afterend', obpHtml);
+      }
+    } catch (_) {}
 
     // Table
     const payments = paymentsData.transfers || [];

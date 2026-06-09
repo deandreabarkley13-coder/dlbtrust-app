@@ -91,6 +91,9 @@ app.use('/api/bridge', require('./server/routes/bridge'));
 // ─── Polygon CDK Appchain Routes (Smart Contracts + Token Minting) ───────────
 app.use('/api/cdk', require('./server/routes/cdk'));
 
+// ─── Open Banking Project Routes (Self-Hosted OBP) ──────────────────────────
+app.use('/api/obp', require('./server/routes/obp'));
+
 // ─── Frontend Dashboard ───────────────────────────────────────────────────────
 app.use(express.static(path.join(__dirname, 'frontend')));
 app.get('/', (req, res) => res.sendFile(path.join(__dirname, 'frontend', 'index.html')));
