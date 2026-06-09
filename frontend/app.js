@@ -3988,13 +3988,13 @@ async function loadVirtualAccounts() {
         <span class="metric-label">Transactions</span>
         <span class="metric-value">${summary.total_transactions}</span>
       </div>
-      <div class="metric-card">
-        <span class="metric-label">Routing Number</span>
-        <span class="metric-value" style="font-size:0.9rem">${vaData.routing_number || '241075470'}</span>
+      <div class="metric-card primary">
+        <span class="metric-label">Master Bank</span>
+        <span class="metric-value" style="font-size:0.7rem">${vaData.platform_bank || 'DLB Trust Banking System'}</span>
       </div>
       <div class="metric-card">
-        <span class="metric-label">Bank</span>
-        <span class="metric-value" style="font-size:0.75rem">Eaton Family CU</span>
+        <span class="metric-label">Settlement Bank</span>
+        <span class="metric-value" style="font-size:0.7rem">${vaData.settlement_bank || 'Eaton Family CU'}</span>
       </div>
     `;
 
@@ -4018,7 +4018,7 @@ async function loadVirtualAccounts() {
     // Virtual accounts table
     let html = `<table>
       <thead><tr>
-        <th>Account Name</th><th>Virtual Account #</th><th>Routing</th><th>Type</th><th>Capabilities</th><th>Sent</th><th>Received</th><th>Status</th><th>Actions</th>
+        <th>Account Name</th><th>Virtual Account #</th><th>Master Account</th><th>Type</th><th>Capabilities</th><th>Sent</th><th>Received</th><th>Status</th><th>Actions</th>
       </tr></thead><tbody>`;
 
     if (accounts.length === 0) {
@@ -4029,7 +4029,7 @@ async function loadVirtualAccounts() {
         html += `<tr>
           <td><strong>${va.account_name}</strong><br><small style="color:var(--text-secondary)">${va.owner_name}</small></td>
           <td style="font-family:monospace;font-weight:600">${va.account_number}</td>
-          <td style="font-family:monospace">${va.routing_number}</td>
+          <td style="font-size:0.8rem">Core Banking #${va.platform_account_id}<br><small style="color:var(--text-secondary)">${va.bank_name}</small></td>
           <td><span class="badge badge-approved">${va.account_type}</span></td>
           <td style="font-size:0.8rem">${caps}${(va.capabilities||[]).length > 3 ? '...' : ''}</td>
           <td>$${(va.total_sent_cents / 100).toFixed(2)}</td>

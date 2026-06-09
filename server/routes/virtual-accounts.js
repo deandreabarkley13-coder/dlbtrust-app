@@ -33,7 +33,11 @@ const {
   backfillVirtualAccounts,
   sendExternalPayment,
   getTransactionHistory,
-  ODFI_ROUTING_NUMBER,
+  PLATFORM_BANK_NAME,
+  PLATFORM_ROUTING,
+  SETTLEMENT_BANK_NAME,
+  SETTLEMENT_ROUTING,
+  SETTLEMENT_ACCOUNT,
   ORIGINATOR_NAME,
 } = require('../engines/virtual-account-engine');
 
@@ -68,8 +72,10 @@ router.get('/', (req, res) => {
     res.json({
       accounts,
       count: accounts.length,
-      routing_number: ODFI_ROUTING_NUMBER,
-      bank: 'Eaton Family Credit Union',
+      platform_bank: PLATFORM_BANK_NAME,
+      platform_routing: PLATFORM_ROUTING,
+      settlement_bank: SETTLEMENT_BANK_NAME,
+      settlement_routing: SETTLEMENT_ROUTING,
       originator: ORIGINATOR_NAME,
     });
   } catch (err) {
@@ -91,8 +97,10 @@ router.get('/summary', (req, res) => {
       total_sent_usd: (totalSent / 100).toFixed(2),
       total_received_usd: (totalReceived / 100).toFixed(2),
       total_transactions: totalTx,
-      routing_number: ODFI_ROUTING_NUMBER,
-      bank: 'Eaton Family Credit Union',
+      platform_bank: PLATFORM_BANK_NAME,
+      platform_routing: PLATFORM_ROUTING,
+      settlement_bank: SETTLEMENT_BANK_NAME,
+      settlement_routing: SETTLEMENT_ROUTING,
       originator: ORIGINATOR_NAME,
       capabilities: ['ach_send', 'ach_receive', 'wire_send', 'wire_receive', 'internal_transfer'],
     });

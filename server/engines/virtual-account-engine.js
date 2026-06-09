@@ -1,27 +1,25 @@
 /**
  * Virtual Account Generator Engine
  * 
- * Generates unique virtual bank accounts for every platform account.
- * Virtual accounts provide real routing + account numbers that map back
- * to the trust's master account at the ODFI (Eaton Family Credit Union).
+ * Architecture:
+ * - MASTER ACCOUNTS = Core Banking trust_accounts (platform's own bank)
+ * - VIRTUAL ACCOUNTS = Payment routing layer issued by the platform
+ * - SETTLEMENT ACCOUNT = Eaton Family Credit Union (ABA 241075470)
+ *   where trust funds are deposited after external transactions complete
  * 
- * Each virtual account:
- * - Has a unique 10-digit account number under the trust's master routing
- * - Maps 1:1 to a platform trust_account
- * - Can send/receive external ACH and wire payments
- * - Maintains its own ledger balance
- * - Is automatically created when a trust_account is opened
+ * How it works:
+ * 1. Platform trust_account (Core Banking) = master account with real balance
+ * 2. Virtual account auto-created for each master account
+ * 3. Virtual accounts are used to initiate external payments
+ * 4. Payment debits the master trust_account balance
+ * 5. Payment routes through gateway (NACHA/Wire/OBP)
+ * 6. Settlement happens at Eaton Family CU (deposit destination)
  * 
- * Routing: 241075470 (Eaton Family Credit Union)
- * Master Account: DEANDREA LAVAR BARKLEY TRUST
- * Virtual Account Prefix: 8800 (identifies DLB Trust virtual accounts)
+ * The platform IS the bank. Eaton Family CU is the correspondent/settlement bank.
  * 
- * How virtual accounts work:
- * 1. Platform creates trust_account → virtual account auto-generated
- * 2. Virtual account gets unique number: 8800-XXXXXX (10 digits total)
- * 3. External parties send to: routing=241075470, account=88XXXXXXXX
- * 4. Incoming payments are routed to the correct trust_account via the virtual mapping
- * 5. Outgoing payments originate from the virtual account number
+ * Platform Internal Routing: DLB-241-0001 (DLB Trust Banking System)
+ * Settlement Bank: Eaton Family Credit Union (ABA 241075470)
+ * Virtual Account Prefix: DLB-VA-XXXX (DLB Trust issued)
  */
 
 'use strict';
@@ -30,102 +28,90 @@ const crypto = require('crypto');
 const path   = require('path');
 const fs     = require('fs');
 
-// Configuration
-const ODFI_ROUTING_NUMBER = '241075470'; // Eaton Family Credit Union
-const VIRTUAL_PREFIX = '8800';           // DLB Trust virtual account identifier
+// ─── Configuration ────────────────────────────────────────────────────────────
+
+// Platform's own banking system (master)
+const PLATFORM_BANK_NAME = 'DLB Trust Banking System';
+const PLATFORM_ROUTING = 'DLB-241-0001';  // Internal platform routing ID
 const ORIGINATOR_NAME = 'DEANDREA LAVAR BARKLEY TRUST';
+
+// Settlement bank (where funds are deposited externally)
+const SETTLEMENT_BANK_NAME = 'Eaton Family Credit Union';
+const SETTLEMENT_ROUTING = '241075470';
+const SETTLEMENT_ACCOUNT = 'DLB-TRUST-SETTLEMENT-001';
 
 // ─── Virtual Account Number Generation ────────────────────────────────────────
 
 /**
- * Generate a unique 10-digit virtual account number.
- * Format: 8800XXXXXX where X is derived from account metadata + random.
- * 
- * The prefix 8800 identifies this as a DLB Trust virtual account.
- * The remaining 6 digits are unique per account.
+ * Generate a unique virtual account number issued by the platform.
+ * Format: DLB-VA-{TYPE}{SEQ} — platform-issued, maps to master trust_account
  */
 function generateVirtualAccountNumber(accountId, accountType = 'operating') {
-  // Type-based sub-prefix (2nd digit pair after 8800)
   const typeMap = {
-    'corpus':       '10',
-    'operating':    '20',
-    'reserve':      '30',
-    'beneficiary':  '40',
-    'trustee_fee':  '50',
-    'tax_escrow':   '60',
-    'investment':   '70',
-    'petty_cash':   '80',
-    'vendor':       '90',
-    'distribution': '01',
+    'corpus':       'CP',
+    'operating':    'OP',
+    'reserve':      'RS',
+    'beneficiary':  'BN',
+    'trustee_fee':  'TF',
+    'tax_escrow':   'TX',
+    'investment':   'IV',
+    'petty_cash':   'PC',
+    'vendor':       'VN',
+    'distribution': 'DS',
   };
 
-  const typeCode = typeMap[accountType] || '00';
+  const typeCode = typeMap[accountType] || 'GN';
   
-  // Generate unique 4-digit suffix using account ID + entropy
+  // Generate unique 6-char suffix
   const hash = crypto.createHash('sha256')
     .update(`${accountId}-${accountType}-${Date.now()}-${crypto.randomBytes(4).toString('hex')}`)
     .digest('hex');
-  const suffix = parseInt(hash.substring(0, 8), 16).toString().substring(0, 4).padStart(4, '0');
+  const suffix = hash.substring(0, 6).toUpperCase();
   
-  return `${VIRTUAL_PREFIX}${typeCode}${suffix}`;
+  return `DLB-VA-${typeCode}${suffix}`;
 }
 
 /**
- * Generate a check digit using Luhn algorithm (standard for account numbers)
- */
-function luhnCheckDigit(number) {
-  const digits = number.split('').reverse().map(Number);
-  let sum = 0;
-  for (let i = 0; i < digits.length; i++) {
-    let d = digits[i];
-    if (i % 2 === 0) {
-      d *= 2;
-      if (d > 9) d -= 9;
-    }
-    sum += d;
-  }
-  return ((10 - (sum % 10)) % 10).toString();
-}
-
-/**
- * Create a virtual account with full banking details
+ * Create a virtual account backed by a core banking master account
  */
 function createVirtualAccount(platformAccountId, accountName, accountType, ownerName, options = {}) {
-  const baseNumber = generateVirtualAccountNumber(platformAccountId, accountType);
-  const checkDigit = luhnCheckDigit(baseNumber);
-  const fullAccountNumber = `${baseNumber}${checkDigit}`;
-
-  // Determine account capabilities based on type
+  const virtualAccountNumber = generateVirtualAccountNumber(platformAccountId, accountType);
   const capabilities = determineCapabilities(accountType);
 
   const virtualAccount = {
     id: `va_${crypto.randomBytes(6).toString('hex')}`,
     platform_account_id: platformAccountId,
-    routing_number: ODFI_ROUTING_NUMBER,
-    account_number: fullAccountNumber,
-    account_number_display: formatAccountDisplay(fullAccountNumber),
+    // Platform's own banking system — master account is the source
+    routing_number: PLATFORM_ROUTING,
+    account_number: virtualAccountNumber,
+    account_number_display: virtualAccountNumber,
     account_name: accountName,
     account_type: accountType,
     owner_name: ownerName || ORIGINATOR_NAME,
-    bank_name: 'Eaton Family Credit Union',
+    bank_name: PLATFORM_BANK_NAME,
     originator: ORIGINATOR_NAME,
     currency: options.currency || 'USD',
     status: 'active',
     capabilities,
-    // Payment details for external parties
-    payment_details: {
-      bank_name: 'Eaton Family Credit Union',
-      routing_number: ODFI_ROUTING_NUMBER,
-      account_number: fullAccountNumber,
-      account_type: mapAccountTypeForACH(accountType),
-      beneficiary_name: ownerName || ORIGINATOR_NAME,
-      reference: `DLB-${platformAccountId}`,
+    // Master account details (Core Banking trust_account backs this VA)
+    master_account: {
+      platform_account_id: platformAccountId,
+      bank_name: PLATFORM_BANK_NAME,
+      routing: PLATFORM_ROUTING,
+      description: 'Core Banking Engine trust_account — source of funds',
+    },
+    // Settlement details (where external funds deposit)
+    settlement: {
+      bank_name: SETTLEMENT_BANK_NAME,
+      routing_number: SETTLEMENT_ROUTING,
+      account: SETTLEMENT_ACCOUNT,
+      description: 'Correspondent settlement bank for trust fund deposits',
     },
     // Limits
-    daily_ach_limit_cents: options.daily_ach_limit_cents || 5000000,   // $50,000 default
-    daily_wire_limit_cents: options.daily_wire_limit_cents || 25000000, // $250,000 default
-    single_ach_limit_cents: options.single_ach_limit_cents || 2500000,  // $25,000 default
-    single_wire_limit_cents: options.single_wire_limit_cents || 25000000, // $250,000 default
+    daily_ach_limit_cents: options.daily_ach_limit_cents || 5000000,
+    daily_wire_limit_cents: options.daily_wire_limit_cents || 25000000,
+    single_ach_limit_cents: options.single_ach_limit_cents || 2500000,
+    single_wire_limit_cents: options.single_wire_limit_cents || 25000000,
     // Tracking
     total_sent_cents: 0,
     total_received_cents: 0,
@@ -155,7 +141,7 @@ function determineCapabilities(accountType) {
     case 'investment':
       return [...base, 'wire_send', 'wire_receive', 'securities'];
     case 'reserve':
-      return [...base, 'ach_send']; // Limited to outbound ACH
+      return [...base, 'ach_send'];
     case 'distribution':
       return [...base, 'ach_send', 'wire_send', 'distribution'];
     default:
@@ -171,28 +157,18 @@ function mapAccountTypeForACH(accountType) {
   return savingsTypes.includes(accountType) ? 'savings' : 'checking';
 }
 
-/**
- * Format account number for display: 8800-XX-XXXXX
- */
-function formatAccountDisplay(accountNumber) {
-  if (accountNumber.length === 11) {
-    return `${accountNumber.substring(0, 4)}-${accountNumber.substring(4, 6)}-${accountNumber.substring(6)}`;
-  }
-  return accountNumber;
-}
-
 // ─── Virtual Account Database Operations ──────────────────────────────────────
 
 const SCHEMA_SQL = `
 CREATE TABLE IF NOT EXISTS virtual_accounts (
   id                      TEXT PRIMARY KEY,
   platform_account_id     INTEGER NOT NULL,
-  routing_number          TEXT NOT NULL DEFAULT '241075470',
+  routing_number          TEXT NOT NULL DEFAULT 'DLB-241-0001',
   account_number          TEXT NOT NULL UNIQUE,
   account_name            TEXT NOT NULL,
   account_type            TEXT NOT NULL DEFAULT 'operating',
   owner_name              TEXT NOT NULL,
-  bank_name               TEXT NOT NULL DEFAULT 'Eaton Family Credit Union',
+  bank_name               TEXT NOT NULL DEFAULT 'DLB Trust Banking System',
   currency                TEXT NOT NULL DEFAULT 'USD',
   status                  TEXT NOT NULL DEFAULT 'active',
   capabilities            TEXT NOT NULL DEFAULT '[]',
@@ -229,6 +205,9 @@ CREATE TABLE IF NOT EXISTS virtual_account_transactions (
   delivery_confirmation TEXT,
   nacha_filename        TEXT,
   obp_transaction_id    TEXT,
+  settlement_status     TEXT DEFAULT 'pending',
+  settlement_reference  TEXT,
+  master_account_debited INTEGER DEFAULT 0,
   error_message         TEXT,
   created_at            TEXT DEFAULT (datetime('now')),
   completed_at          TEXT
@@ -239,9 +218,21 @@ CREATE INDEX IF NOT EXISTS idx_vatx_status ON virtual_account_transactions(statu
 `;
 
 /**
- * Initialize virtual account schema in database
+ * Initialize virtual account schema in database.
+ * Drops old schema if it exists with different structure (migration).
  */
 function initVirtualAccountSchema(db) {
+  // Check if migration needed (old schema used numeric routing like 241075470)
+  try {
+    const existing = db.prepare("SELECT routing_number FROM virtual_accounts LIMIT 1").get();
+    if (existing && /^\d{9}$/.test(existing.routing_number)) {
+      // Old schema — drop and recreate with new platform-issued format
+      db.exec('DROP TABLE IF EXISTS virtual_account_transactions');
+      db.exec('DROP TABLE IF EXISTS virtual_accounts');
+    }
+  } catch (_) {
+    // Table doesn't exist yet — will be created below
+  }
   db.exec(SCHEMA_SQL);
 }
 
@@ -275,13 +266,15 @@ function getVirtualAccountByPlatformId(db, platformAccountId) {
   const row = db.prepare('SELECT * FROM virtual_accounts WHERE platform_account_id = ? AND status = ?').get(platformAccountId, 'active');
   if (row) {
     row.capabilities = JSON.parse(row.capabilities || '[]');
-    row.payment_details = {
-      bank_name: row.bank_name,
-      routing_number: row.routing_number,
-      account_number: row.account_number,
-      account_type: mapAccountTypeForACH(row.account_type),
-      beneficiary_name: row.owner_name,
-      reference: `DLB-${row.platform_account_id}`,
+    row.master_account = {
+      platform_account_id: row.platform_account_id,
+      bank_name: PLATFORM_BANK_NAME,
+      routing: PLATFORM_ROUTING,
+    };
+    row.settlement = {
+      bank_name: SETTLEMENT_BANK_NAME,
+      routing_number: SETTLEMENT_ROUTING,
+      account: SETTLEMENT_ACCOUNT,
     };
   }
   return row;
@@ -292,12 +285,19 @@ function getVirtualAccountByPlatformId(db, platformAccountId) {
  */
 function getVirtualAccountByNumber(db, accountNumber) {
   const row = db.prepare('SELECT * FROM virtual_accounts WHERE account_number = ?').get(accountNumber);
-  if (row) row.capabilities = JSON.parse(row.capabilities || '[]');
+  if (row) {
+    row.capabilities = JSON.parse(row.capabilities || '[]');
+    row.settlement = {
+      bank_name: SETTLEMENT_BANK_NAME,
+      routing_number: SETTLEMENT_ROUTING,
+      account: SETTLEMENT_ACCOUNT,
+    };
+  }
   return row;
 }
 
 /**
- * List all virtual accounts
+ * List all virtual accounts with master + settlement info
  */
 function listVirtualAccounts(db, options = {}) {
   let query = 'SELECT * FROM virtual_accounts';
@@ -321,12 +321,15 @@ function listVirtualAccounts(db, options = {}) {
   const rows = db.prepare(query).all(...params);
   return rows.map(r => {
     r.capabilities = JSON.parse(r.capabilities || '[]');
-    r.payment_details = {
-      bank_name: r.bank_name,
-      routing_number: r.routing_number,
-      account_number: r.account_number,
-      account_type: mapAccountTypeForACH(r.account_type),
-      beneficiary_name: r.owner_name,
+    r.master_account = {
+      platform_account_id: r.platform_account_id,
+      bank_name: PLATFORM_BANK_NAME,
+      routing: PLATFORM_ROUTING,
+    };
+    r.settlement = {
+      bank_name: SETTLEMENT_BANK_NAME,
+      routing_number: SETTLEMENT_ROUTING,
+      account: SETTLEMENT_ACCOUNT,
     };
     return r;
   });
@@ -340,8 +343,8 @@ function recordTransaction(db, vaId, txData) {
     INSERT INTO virtual_account_transactions
       (virtual_account_id, direction, type, amount_cents, recipient_name, recipient_routing,
        recipient_account, description, reference, status, delivery_method, delivery_confirmation,
-       nacha_filename, obp_transaction_id)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       nacha_filename, obp_transaction_id, master_account_debited)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(
     vaId, txData.direction || 'outbound', txData.type || 'ach',
     txData.amount_cents, txData.recipient_name || null,
@@ -349,7 +352,8 @@ function recordTransaction(db, vaId, txData) {
     txData.description || null, txData.reference || null,
     txData.status || 'pending', txData.delivery_method || null,
     txData.delivery_confirmation ? JSON.stringify(txData.delivery_confirmation) : null,
-    txData.nacha_filename || null, txData.obp_transaction_id || null
+    txData.nacha_filename || null, txData.obp_transaction_id || null,
+    txData.master_account_debited || 0
   );
 
   // Update virtual account stats
@@ -387,8 +391,9 @@ function getTransactionHistory(db, vaId, limit = 50) {
 // ─── Auto-Creation Hook ──────────────────────────────────────────────────────
 
 /**
- * Hook: Called when a platform account is created.
+ * Hook: Called when a platform account (trust_account) is created.
  * Auto-generates the corresponding virtual account.
+ * The trust_account IS the master account that funds this VA.
  */
 function onAccountCreated(db, platformAccount) {
   initVirtualAccountSchema(db);
@@ -397,7 +402,7 @@ function onAccountCreated(db, platformAccount) {
   const existing = getVirtualAccountByPlatformId(db, platformAccount.id);
   if (existing) return existing;
 
-  // Create virtual account
+  // Create virtual account backed by this trust_account (master)
   const va = createVirtualAccount(
     platformAccount.id,
     platformAccount.account_name,
@@ -412,13 +417,13 @@ function onAccountCreated(db, platformAccount) {
 }
 
 /**
- * Ensure all existing accounts have virtual accounts (backfill)
+ * Ensure all existing trust_accounts have virtual accounts (backfill)
  */
 function backfillVirtualAccounts(db) {
   initVirtualAccountSchema(db);
   
   const accounts = db.prepare(`
-    SELECT id, account_name, account_type, owner_name 
+    SELECT id, account_name, account_type, owner_name, balance_cents 
     FROM trust_accounts 
     WHERE status != 'closed'
   `).all();
@@ -439,14 +444,13 @@ function backfillVirtualAccounts(db) {
 
 /**
  * Process an external payment from a virtual account.
- * This is the main entry point for sending money externally.
  * 
- * Flow:
- * 1. Validate virtual account exists and has capability
- * 2. Check limits
- * 3. Record transaction
- * 4. Route through payment gateway (OBP → Moov → SFTP → Manual)
- * 5. Update transaction status
+ * Architecture:
+ * 1. Virtual account validates payment capability + limits
+ * 2. DEBIT the master trust_account (Core Banking balance reduction)
+ * 3. Route through payment gateway (OBP → Moov → SFTP)
+ * 4. Settlement at Eaton Family CU (deposit destination)
+ * 5. Record full audit trail
  */
 async function sendExternalPayment(db, virtualAccountId, payment) {
   initVirtualAccountSchema(db);
@@ -472,7 +476,35 @@ async function sendExternalPayment(db, virtualAccountId, payment) {
     return { success: false, error: `Amount exceeds single transaction limit ($${(singleLimit / 100).toFixed(2)})` };
   }
 
-  // Record the transaction as pending
+  // ─── STEP 1: DEBIT THE MASTER TRUST ACCOUNT (Core Banking) ───────────────
+  // The trust_account is the source of funds. We debit it here.
+  const masterAccount = db.prepare('SELECT * FROM trust_accounts WHERE id = ?').get(va.platform_account_id);
+  if (!masterAccount) {
+    return { success: false, error: 'Master trust account not found' };
+  }
+  if (masterAccount.balance_cents < amountCents) {
+    return { 
+      success: false, 
+      error: `Insufficient funds in master account. Available: $${(masterAccount.balance_cents / 100).toFixed(2)}, Requested: $${(amountCents / 100).toFixed(2)}`,
+      master_account: {
+        id: masterAccount.id,
+        name: masterAccount.account_name,
+        balance: (masterAccount.balance_cents / 100).toFixed(2),
+      }
+    };
+  }
+
+  // Debit master account
+  db.prepare(`
+    UPDATE trust_accounts 
+    SET balance_cents = balance_cents - ?, 
+        available_cents = available_cents - ?,
+        last_activity_date = date('now'),
+        updated_at = datetime('now')
+    WHERE id = ?
+  `).run(amountCents, amountCents, masterAccount.id);
+
+  // Record the transaction
   const txRecord = recordTransaction(db, va.id, {
     direction: 'outbound',
     type: paymentType,
@@ -483,9 +515,11 @@ async function sendExternalPayment(db, virtualAccountId, payment) {
     description: payment.description,
     reference: payment.reference,
     status: 'processing',
+    master_account_debited: 1,
   });
 
-  // Route through the payment gateway engine
+  // ─── STEP 2: ROUTE THROUGH PAYMENT GATEWAY ──────────────────────────────
+  // Payment goes: Platform → Gateway → Settlement at Eaton Family CU
   let gatewayResult;
   try {
     const { processExternalPayment } = require('./payment-gateway-engine');
@@ -494,23 +528,28 @@ async function sendExternalPayment(db, virtualAccountId, payment) {
       amount_cents: amountCents,
       payment_type: paymentType,
       source_account: va.account_number,
-      source_routing: va.routing_number,
+      source_routing: PLATFORM_ROUTING,
+      // Settlement destination
+      settlement_bank: SETTLEMENT_BANK_NAME,
+      settlement_routing: SETTLEMENT_ROUTING,
+      settlement_account: SETTLEMENT_ACCOUNT,
     });
   } catch (err) {
-    gatewayResult = { success: false, status: 'failed', error: err.message };
+    gatewayResult = { success: false, status: 'failed', error: err.message, steps: [] };
   }
 
-  // Update transaction with result
+  // ─── STEP 3: UPDATE TRANSACTION STATUS ──────────────────────────────────
   const finalStatus = gatewayResult.status === 'submitted_to_fed' || gatewayResult.status === 'delivered_to_bank' 
     ? 'completed' 
     : gatewayResult.status === 'file_ready' || gatewayResult.status === 'ledger_only'
     ? 'staged'
-    : 'failed';
+    : 'processing';
 
   db.prepare(`
     UPDATE virtual_account_transactions 
     SET status = ?, delivery_method = ?, delivery_confirmation = ?,
         nacha_filename = ?, obp_transaction_id = ?, error_message = ?,
+        settlement_status = ?,
         completed_at = CASE WHEN ? IN ('completed', 'staged') THEN datetime('now') ELSE NULL END
     WHERE id = ?
   `).run(
@@ -520,17 +559,35 @@ async function sendExternalPayment(db, virtualAccountId, payment) {
     gatewayResult.nacha_file?.filename || null,
     gatewayResult.steps?.find(s => s.channel === 'obp_ledger')?.transaction_id || null,
     gatewayResult.error || null,
+    finalStatus === 'completed' ? 'settled' : 'pending_settlement',
     finalStatus,
     txRecord.transaction_id
   );
 
+  // Get updated master account balance
+  const updatedMaster = db.prepare('SELECT balance_cents FROM trust_accounts WHERE id = ?').get(masterAccount.id);
+
   return {
-    success: finalStatus !== 'failed',
+    success: true,
     transaction_id: txRecord.transaction_id,
     virtual_account: {
       id: va.id,
       account_number: va.account_number,
       routing_number: va.routing_number,
+      bank: PLATFORM_BANK_NAME,
+    },
+    master_account: {
+      id: masterAccount.id,
+      name: masterAccount.account_name,
+      previous_balance: (masterAccount.balance_cents / 100).toFixed(2),
+      new_balance: ((updatedMaster?.balance_cents || 0) / 100).toFixed(2),
+      debited: (amountCents / 100).toFixed(2),
+    },
+    settlement: {
+      bank: SETTLEMENT_BANK_NAME,
+      routing: SETTLEMENT_ROUTING,
+      account: SETTLEMENT_ACCOUNT,
+      status: finalStatus === 'completed' ? 'settled' : 'pending_settlement',
     },
     payment: {
       amount_cents: amountCents,
@@ -568,8 +625,11 @@ module.exports = {
   // Payments
   sendExternalPayment,
   // Constants
-  ODFI_ROUTING_NUMBER,
-  VIRTUAL_PREFIX,
+  PLATFORM_BANK_NAME,
+  PLATFORM_ROUTING,
+  SETTLEMENT_BANK_NAME,
+  SETTLEMENT_ROUTING,
+  SETTLEMENT_ACCOUNT,
   ORIGINATOR_NAME,
   SCHEMA_SQL,
 };
