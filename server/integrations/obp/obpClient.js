@@ -18,7 +18,7 @@ const https = require('https');
 const http  = require('http');
 
 // Config from environment
-const OBP_BASE_URL    = process.env.OBP_BASE_URL    || 'http://127.0.0.1:9090';
+const OBP_BASE_URL    = process.env.OBP_BASE_URL    || 'http://127.0.0.1:8080';
 const OBP_API_VERSION = process.env.OBP_API_VERSION  || 'v4.0.0';
 const OBP_USERNAME    = process.env.OBP_USERNAME     || '';
 const OBP_PASSWORD    = process.env.OBP_PASSWORD     || '';

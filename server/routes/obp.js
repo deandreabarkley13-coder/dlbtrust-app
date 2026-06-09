@@ -9,7 +9,7 @@ const router = express.Router();
 const http = require('http');
 const https = require('https');
 
-const OBP_INTERNAL_URL = process.env.OBP_INTERNAL_URL || 'http://127.0.0.1:9090';
+const OBP_INTERNAL_URL = process.env.OBP_INTERNAL_URL || 'http://127.0.0.1:8080';
 const OBP_API_VERSION = process.env.OBP_API_VERSION || 'v4.0.0';
 
 // State persisted in memory after setup
@@ -106,8 +106,8 @@ router.post('/setup', async (req, res) => {
     steps.push({ step: 'check_health', status: 'ok', version: root.data.version });
 
     // Step 2: Create admin user via DirectLogin registration
-    const username = 'dlbtrust-admin';
-    const password = 'DLBTrust2026!Secure';
+    const username = 'dlbtrust_admin';
+    const password = 'DLBTrust2026Secure';
     const email = 'admin@dlbtrust.cloud';
 
     // Try to register the user
@@ -136,37 +136,11 @@ router.post('/setup', async (req, res) => {
     }
 
     // Step 3: Authenticate to get token
-    const authHeader = `DirectLogin username="${username}", password="${password}", consumer_key=""`;
+    // Consumer key is pre-seeded in OBP database during Docker setup
+    const consumerKey = process.env.OBP_CONSUMER_KEY || 'dlbtrustconsumerkey2026';
+    const authHeader = `DirectLogin username="${username}", password="${password}", consumer_key="${consumerKey}"`;
     let tokenResult = await obpFetch('POST', '/my/logins/direct', null, authHeader);
-    
-    // If consumer_key is required, we need to register an app first
-    // Try without consumer_key first (some OBP configs allow it)
-    if (tokenResult.status !== 200 && tokenResult.status !== 201) {
-      // Try creating a consumer/app registration
-      const consumerResult = await obpFetch('POST', `/obp/${OBP_API_VERSION}/management/consumers`, {
-        app_name: 'DLB Trust Wealth Platform',
-        app_type: 'Web',
-        description: 'DLB Trust self-hosted wealth management platform',
-        developer_email: email,
-        redirect_url: 'http://localhost:3004',
-        enabled: true,
-      });
-
-      let consumerKey = '';
-      if (consumerResult.status === 200 || consumerResult.status === 201) {
-        consumerKey = consumerResult.data.consumer_key || consumerResult.data.key || '';
-        steps.push({ step: 'register_app', status: 'created', consumer_key: consumerKey });
-      } else {
-        steps.push({ step: 'register_app', status: 'skipped', details: consumerResult.data });
-      }
-
-      // Retry auth with consumer key
-      if (consumerKey) {
-        const authHeader2 = `DirectLogin username="${username}", password="${password}", consumer_key="${consumerKey}"`;
-        tokenResult = await obpFetch('POST', '/my/logins/direct', null, authHeader2);
-        obpState.consumer_key = consumerKey;
-      }
-    }
+    obpState.consumer_key = consumerKey;
 
     if (tokenResult.status === 200 || tokenResult.status === 201) {
       obpState.token = tokenResult.data.token;
@@ -205,10 +179,10 @@ router.post('/setup', async (req, res) => {
       if (obpState.bank_id) {
         const accountId = 'dlb-trust-operating';
         const acctResult = await obpFetch('PUT', `/obp/${OBP_API_VERSION}/banks/${bankId}/accounts/${accountId}`, {
-          user_id: obpState.username,
+          user_id: tokenResult.data && tokenResult.data.user_id ? tokenResult.data.user_id : 'a188f51b-7202-4941-8a19-5c7ab0147bbd',
           label: 'DLB Trust Operating Account',
           product_code: 'checking',
-          balance: { currency: 'USD', amount: '10999500.00' },
+          balance: { currency: 'USD', amount: '0' },
           branch_id: 'main',
           account_routings: [
             { scheme: 'AccountNumber', address: '1000001' },
@@ -227,7 +201,7 @@ router.post('/setup', async (req, res) => {
 
         // Step 6: Create a beneficiary/vendor target account
         const vendorAcctResult = await obpFetch('PUT', `/obp/${OBP_API_VERSION}/banks/${bankId}/accounts/dlb-vendor-payments`, {
-          user_id: obpState.username,
+          user_id: tokenResult.data && tokenResult.data.user_id ? tokenResult.data.user_id : 'a188f51b-7202-4941-8a19-5c7ab0147bbd',
           label: 'Vendor/Beneficiary Payments',
           product_code: 'checking',
           balance: { currency: 'USD', amount: '0' },
