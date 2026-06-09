@@ -467,7 +467,7 @@ async function processExternalPayment(payment) {
       routingNumber: routing_number,
       accountNumber: account_number,
       accountType: account_type,
-      amount: amountInDollars,
+      amountCents: amountInCents,
       description: description || `Payment to ${recipient_name}`,
       transferNumber: result.id,
     });
