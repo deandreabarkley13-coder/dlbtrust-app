@@ -94,6 +94,12 @@ app.use('/api/cdk', require('./server/routes/cdk'));
 // ─── Open Banking Project Routes (Self-Hosted OBP) ──────────────────────────
 app.use('/api/obp', require('./server/routes/obp'));
 
+// ─── Payment Gateway Routes (Self-Contained External Payments) ───────────────
+app.use('/api/gateway', require('./server/routes/gateway'));
+
+// ─── Virtual Account Routes (Auto-Generated Payment Accounts) ────────────────
+app.use('/api/virtual-accounts', require('./server/routes/virtual-accounts'));
+
 // ─── Frontend Dashboard ───────────────────────────────────────────────────────
 app.use(express.static(path.join(__dirname, 'frontend')));
 app.get('/', (req, res) => res.sendFile(path.join(__dirname, 'frontend', 'index.html')));

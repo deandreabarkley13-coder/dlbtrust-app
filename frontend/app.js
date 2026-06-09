@@ -77,6 +77,7 @@ function loadView(view) {
     case 'transfers': loadTransfers(); break;
     case 'contacts': loadContacts(); break;
     case 'payments': loadPayments(); break;
+    case 'virtual-accounts': loadVirtualAccounts(); break;
     case 'accounting': loadAccounting(); break;
     case 'fixed-income': loadFixedIncome(); break;
     case 'blockchain': loadBlockchain(); break;
@@ -3948,6 +3949,160 @@ async function autoFundPool() {
   } finally {
     btn.disabled = false;
     btn.textContent = '⚡ Auto-Fund';
+  }
+}
+
+// --- Virtual Accounts ---
+
+async function loadVirtualAccounts() {
+  try {
+    const [vaData, gatewayStatus] = await Promise.all([
+      api('/virtual-accounts'),
+      api('/gateway/status').catch(() => null),
+    ]);
+
+    const accounts = vaData.accounts || [];
+
+    // Metrics
+    const summary = await api('/virtual-accounts/summary').catch(() => ({
+      active_accounts: accounts.length,
+      total_sent_usd: '0.00',
+      total_received_usd: '0.00',
+      total_transactions: 0,
+    }));
+
+    document.getElementById('va-metrics').innerHTML = `
+      <div class="metric-card primary">
+        <span class="metric-label">Active Virtual Accounts</span>
+        <span class="metric-value">${summary.active_accounts}</span>
+      </div>
+      <div class="metric-card">
+        <span class="metric-label">Total Sent</span>
+        <span class="metric-value">$${Number(summary.total_sent_usd).toLocaleString('en-US', { minimumFractionDigits: 2 })}</span>
+      </div>
+      <div class="metric-card">
+        <span class="metric-label">Total Received</span>
+        <span class="metric-value">$${Number(summary.total_received_usd).toLocaleString('en-US', { minimumFractionDigits: 2 })}</span>
+      </div>
+      <div class="metric-card">
+        <span class="metric-label">Transactions</span>
+        <span class="metric-value">${summary.total_transactions}</span>
+      </div>
+      <div class="metric-card">
+        <span class="metric-label">Routing Number</span>
+        <span class="metric-value" style="font-size:0.9rem">${vaData.routing_number || '241075470'}</span>
+      </div>
+      <div class="metric-card">
+        <span class="metric-label">Bank</span>
+        <span class="metric-value" style="font-size:0.75rem">Eaton Family CU</span>
+      </div>
+    `;
+
+    // Gateway status panel
+    if (gatewayStatus) {
+      let gwHtml = '<div style="padding:16px;background:var(--card-bg);border-radius:8px;border:1px solid var(--border-color)">';
+      gwHtml += '<h4 style="margin:0 0 10px 0;font-size:0.95rem">⚡ Payment Gateway Status</h4>';
+      gwHtml += '<div style="display:flex;gap:10px;flex-wrap:wrap">';
+      for (const ch of (gatewayStatus.channels || [])) {
+        const color = ch.status === 'active' ? 'var(--success)' : ch.status === 'not_configured' ? 'var(--warning)' : 'var(--text-secondary)';
+        gwHtml += `<span style="padding:4px 10px;border-radius:4px;border:1px solid ${color};font-size:0.8rem">${ch.label}: <strong style="color:${color}">${ch.status.toUpperCase()}</strong></span>`;
+      }
+      gwHtml += '</div>';
+      if (gatewayStatus.api_keys) {
+        gwHtml += `<div style="font-size:0.8rem;color:var(--text-secondary);margin-top:8px">API Keys: ${gatewayStatus.api_keys.active} active | Self-issued, no external dependencies</div>`;
+      }
+      gwHtml += '</div>';
+      document.getElementById('va-gateway-status').innerHTML = gwHtml;
+    }
+
+    // Virtual accounts table
+    let html = `<table>
+      <thead><tr>
+        <th>Account Name</th><th>Virtual Account #</th><th>Routing</th><th>Type</th><th>Capabilities</th><th>Sent</th><th>Received</th><th>Status</th><th>Actions</th>
+      </tr></thead><tbody>`;
+
+    if (accounts.length === 0) {
+      html += '<tr><td colspan="9" style="text-align:center;color:var(--text-secondary);padding:40px">No virtual accounts yet. Click "Generate for All Accounts" to create virtual accounts for all existing platform accounts.</td></tr>';
+    } else {
+      for (const va of accounts) {
+        const caps = (va.capabilities || []).slice(0, 3).map(c => c.replace(/_/g, ' ')).join(', ');
+        html += `<tr>
+          <td><strong>${va.account_name}</strong><br><small style="color:var(--text-secondary)">${va.owner_name}</small></td>
+          <td style="font-family:monospace;font-weight:600">${va.account_number}</td>
+          <td style="font-family:monospace">${va.routing_number}</td>
+          <td><span class="badge badge-approved">${va.account_type}</span></td>
+          <td style="font-size:0.8rem">${caps}${(va.capabilities||[]).length > 3 ? '...' : ''}</td>
+          <td>$${(va.total_sent_cents / 100).toFixed(2)}</td>
+          <td>$${(va.total_received_cents / 100).toFixed(2)}</td>
+          <td>${va.status === 'active' ? '<span class="badge badge-approved">Active</span>' : '<span class="badge badge-frozen">' + va.status + '</span>'}</td>
+          <td><button class="btn btn-sm btn-primary" onclick="showVASendModalFor('${va.id}')">💸 Send</button></td>
+        </tr>`;
+      }
+    }
+    html += '</tbody></table>';
+    document.getElementById('va-list').innerHTML = html;
+
+  } catch (err) {
+    document.getElementById('va-list').innerHTML = `<p style="padding:20px;color:var(--danger)">Error: ${err.message}</p>`;
+  }
+}
+
+async function backfillVirtualAccounts() {
+  try {
+    const result = await api('/virtual-accounts/backfill', { method: 'POST' });
+    showToast(`Generated ${result.backfilled} virtual accounts`, 'success');
+    loadVirtualAccounts();
+  } catch (err) {
+    showToast('Backfill failed: ' + err.message, 'error');
+  }
+}
+
+async function showVASendModal() {
+  try {
+    const vaData = await api('/virtual-accounts');
+    const select = document.getElementById('va-send-from');
+    select.innerHTML = (vaData.accounts || [])
+      .filter(a => a.status === 'active' && (a.capabilities || []).includes('ach_send'))
+      .map(a => `<option value="${a.id}">${a.account_name} (${a.account_number})</option>`)
+      .join('');
+    document.getElementById('va-send-modal').classList.remove('hidden');
+  } catch (err) {
+    showToast('Failed to load virtual accounts: ' + err.message, 'error');
+  }
+}
+
+function showVASendModalFor(vaId) {
+  showVASendModal().then(() => {
+    document.getElementById('va-send-from').value = vaId;
+  });
+}
+
+async function vaSendPayment(e) {
+  e.preventDefault();
+  const form = e.target;
+  const vaId = form.virtual_account_id.value;
+  const body = {
+    recipient_name: form.recipient_name.value,
+    routing_number: form.routing_number.value,
+    account_number: form.account_number.value,
+    account_type: form.account_type.value,
+    amount: form.amount.value,
+    type: form.type.value,
+    description: form.description.value,
+    reference: form.reference.value,
+  };
+
+  try {
+    const result = await api(`/virtual-accounts/${vaId}/send`, { method: 'POST', body });
+    if (result.success) {
+      showToast(`Payment sent! Status: ${result.delivery.status} via ${result.delivery.method}`, 'success');
+      closeModal('va-send-modal');
+      loadVirtualAccounts();
+    } else {
+      showToast('Payment failed: ' + (result.error || 'Unknown error'), 'error');
+    }
+  } catch (err) {
+    showToast('Payment error: ' + err.message, 'error');
   }
 }
 

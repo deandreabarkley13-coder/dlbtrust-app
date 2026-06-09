@@ -41,6 +41,8 @@ const {
   VALID_ACCOUNT_STATUSES,
 } = require('../engines/banking-engine');
 
+const { onAccountCreated, initVirtualAccountSchema } = require('../engines/virtual-account-engine');
+
 // --- DB Setup ---------------------------------------------------------------
 
 function getDb() {
@@ -194,7 +196,15 @@ router.post('/', (req, res) => {
 
     insertAudit(req.db, buildAuditEntry('account_opened', 'account', account.id, 'create', req.body.created_by || 'system', { account_number, account_type }));
 
-    res.status(201).json(account);
+    // Auto-generate virtual account for external payments
+    let virtualAccount = null;
+    try {
+      virtualAccount = onAccountCreated(req.db, account);
+    } catch (vaErr) {
+      console.warn('[accounts] Virtual account creation warning:', vaErr.message);
+    }
+
+    res.status(201).json({ ...account, virtual_account: virtualAccount });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -216,12 +226,21 @@ router.get('/:id', (req, res) => {
       ORDER BY created_at DESC LIMIT 10
     `).all(req.params.id, req.params.id);
 
+    // Include virtual account details if available
+    let virtualAccount = null;
+    try {
+      const { getVirtualAccountByPlatformId } = require('../engines/virtual-account-engine');
+      initVirtualAccountSchema(req.db);
+      virtualAccount = getVirtualAccountByPlatformId(req.db, account.id);
+    } catch (_) {}
+
     res.json({
       ...account,
       balance_usd: toDollars(account.balance_cents),
       available_usd: toDollars(account.available_cents),
       active_holds: holds,
       recent_transfers: recentTransfers,
+      virtual_account: virtualAccount,
     });
   } catch (err) {
     res.status(500).json({ error: err.message });

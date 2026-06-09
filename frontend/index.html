@@ -21,6 +21,7 @@
       <li><a href="#" data-view="transfers">Transfers</a></li>
       <li><a href="#" data-view="contacts">Contacts</a></li>
       <li><a href="#" data-view="payments">Payments</a></li>
+      <li><a href="#" data-view="virtual-accounts">Virtual Accounts</a></li>
       <li><a href="#" data-view="accounting">Trust Accounting</a></li>
       <li><a href="#" data-view="fixed-income">Fixed Income</a></li>
       <li><a href="#" data-view="blockchain">Crypto Rails</a></li>
@@ -402,6 +403,69 @@
             <div class="modal-actions">
               <button type="button" class="btn" onclick="hideModal('create-payment-modal')">Cancel</button>
               <button type="submit" class="btn btn-primary">Create Payment</button>
+            </div>
+          </form>
+        </div>
+      </div>
+    </section>
+
+    <!-- Virtual Accounts View -->
+    <section id="view-virtual-accounts" class="view">
+      <header class="view-header">
+        <h2>Virtual Accounts</h2>
+        <div>
+          <button class="btn" onclick="backfillVirtualAccounts()" style="margin-right:8px;background:#6366f1;color:#fff">🔄 Generate for All Accounts</button>
+          <button class="btn btn-primary" onclick="showVASendModal()">💸 Send Payment</button>
+        </div>
+      </header>
+
+      <div class="metrics-grid" id="va-metrics" style="margin-bottom:20px"></div>
+
+      <div id="va-gateway-status" style="margin-bottom:16px"></div>
+
+      <div id="va-list" class="table-container"></div>
+
+      <!-- VA Send Payment Modal -->
+      <div id="va-send-modal" class="modal hidden">
+        <div class="modal-content" style="max-width:550px">
+          <h3>Send External Payment via Virtual Account</h3>
+          <form id="va-send-form" onsubmit="vaSendPayment(event)">
+            <label>From Virtual Account
+              <select name="virtual_account_id" id="va-send-from" required></select>
+            </label>
+            <label>Recipient Name
+              <input type="text" name="recipient_name" placeholder="John Smith" required>
+            </label>
+            <label>Routing Number (ABA)
+              <input type="text" name="routing_number" pattern="\d{9}" placeholder="021000021" required>
+            </label>
+            <label>Account Number
+              <input type="text" name="account_number" placeholder="123456789" required>
+            </label>
+            <label>Account Type
+              <select name="account_type">
+                <option value="checking">Checking</option>
+                <option value="savings">Savings</option>
+              </select>
+            </label>
+            <label>Amount ($)
+              <input type="number" name="amount" step="0.01" min="0.01" placeholder="500.00" required>
+            </label>
+            <label>Payment Type
+              <select name="type">
+                <option value="ach">ACH</option>
+                <option value="wire">Wire</option>
+              </select>
+            </label>
+            <label>Description
+              <input type="text" name="description" placeholder="Vendor payment INV-2026-001">
+            </label>
+            <label>Reference
+              <input type="text" name="reference" placeholder="INV-2026-001">
+            </label>
+            <div class="modal-actions">
+              <button type="button" class="btn" onclick="closeModal('va-send-modal')">Cancel</button>
+              <button type="submit" class="btn btn-primary">💸 Send Payment</button>
             </div>
           </form>
         </div>
