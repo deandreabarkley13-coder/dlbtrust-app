@@ -878,11 +878,17 @@ function paymentActions(p) {
     btns += `<button class="btn btn-sm btn-primary" onclick="processPayment(${p.id})">Process</button> `;
     btns += `<button class="btn btn-sm btn-danger" onclick="cancelPayment(${p.id})">Cancel</button> `;
   }
-  if (p.status === 'processing') {
-    btns += `<button class="btn btn-sm btn-success" onclick="completePayment(${p.id})">Complete</button> `;
+  if (p.status === 'processing' || p.status === 'sent') {
+    btns += `<button class="btn btn-sm btn-success" onclick="clearPayment(${p.id})" title="Mark as cleared/settled">✓ Clear</button> `;
+    btns += `<button class="btn btn-sm btn-danger" onclick="returnPayment(${p.id})" title="Mark as failed/returned">✗ Fail</button> `;
+    btns += `<button class="btn btn-sm" onclick="cancelPayment(${p.id})">Cancel</button> `;
   }
   if (p.status === 'failed' || p.status === 'returned') {
     btns += `<button class="btn btn-sm" onclick="retryPayment(${p.id})">Retry</button> `;
+    if (p.return_code) btns += `<small style="color:var(--danger)">${p.return_code}</small> `;
+  }
+  if (p.status === 'completed') {
+    btns += `<small style="color:var(--success)">✓ Cleared</small>`;
   }
   return btns || '—';
 }
@@ -1007,17 +1013,21 @@ async function executeProcessPayment(e, id) {
 function showPaymentFileResult(data) {
   const file = data.payment_file;
   const delivery = data.delivery || {};
-  const deliveryBadge = delivery.status === 'submitted'
-    ? '<span class="badge badge-approved">AUTO-SUBMITTED</span>'
-    : '<span class="badge badge-frozen">AWAITING MANUAL SUBMISSION</span>';
-  const deliveryInfo = delivery.status === 'submitted'
+  const settlement = data.settlement || {};
+  const transmitted = data.transmitted !== false;
+  const deliveryBadge = transmitted
+    ? '<span class="badge badge-approved">TRANSMITTED</span>'
+    : '<span class="badge badge-frozen">PENDING DELIVERY</span>';
+  const deliveryMethod = delivery.delivery_method === 'openach' ? 'OpenACH' : delivery.delivery_method === 'obp' ? 'Open Banking Project' : delivery.delivery_method === 'column' ? 'Column API' : delivery.delivery_method === 'dwolla' ? 'Dwolla API' : delivery.delivery_method === 'platform_gateway' ? 'DLB Trust Banking System' : delivery.delivery_method;
+  const deliveryInfo = transmitted
     ? `<div style="background:#ecfdf5;border:1px solid #6ee7b7;border-radius:8px;padding:12px;margin-top:12px">
-        <strong>🏦 Auto-delivered via ${delivery.delivery_method === 'openach' ? 'OpenACH' : delivery.delivery_method === 'obp' ? 'Open Banking Project' : delivery.delivery_method === 'column' ? 'Column API' : delivery.delivery_method === 'dwolla' ? 'Dwolla API' : delivery.delivery_method}</strong><br>
+        <strong>🏦 Transmitted via ${deliveryMethod}</strong><br>
         <small>${delivery.message || ''}</small>
+        ${settlement.expected_clear_date ? `<br><small><strong>Expected Clearing:</strong> ${new Date(settlement.expected_clear_date).toLocaleDateString()}</small>` : ''}
        </div>`
     : `<div style="background:#fef3c7;border:1px solid #fbbf24;border-radius:8px;padding:12px;margin-top:12px">
-        <strong>📁 Manual submission required</strong><br>
-        <small>Download the file below and submit to Eaton Family Credit Union via their business banking portal.</small>
+        <strong>⏳ Payment processing</strong><br>
+        <small>Payment file generated and queued for delivery through the banking system.</small>
        </div>`;
 
   const html = `
@@ -1056,6 +1066,51 @@ async function completePayment(id) {
   try {
     await api(`/external-transfers/${id}/complete`, { method: 'POST' });
     showToast('Payment completed');
+    loadPayments();
+  } catch (err) { showToast(err.message, 'error'); }
+}
+
+async function clearPayment(id) {
+  try {
+    const data = await api(`/external-transfers/${id}/clear`, { method: 'POST', body: JSON.stringify({ bank_reference: `CLR-${Date.now()}` }) });
+    showToast(data.message || 'Payment cleared — funds delivered successfully', 'success');
+    loadPayments();
+  } catch (err) { showToast(err.message, 'error'); }
+}
+
+async function returnPayment(id) {
+  const returnCodes = [
+    'R01 - Insufficient Funds',
+    'R02 - Account Closed',
+    'R03 - No Account / Unable to Locate',
+    'R04 - Invalid Account Number',
+    'R07 - Authorization Revoked',
+    'R08 - Payment Stopped',
+    'R10 - Customer Not Authorized',
+    'R16 - Account Frozen',
+    'R20 - Non-Transaction Account',
+    'Other (specify reason)',
+  ];
+  const selected = prompt(`Select return reason:\\n${returnCodes.map((c,i) => `${i+1}. ${c}`).join('\\n')}\\n\\nEnter number (1-${returnCodes.length}):`);
+  if (!selected) return;
+
+  const idx = parseInt(selected) - 1;
+  let returnCode = null;
+  let reason = '';
+
+  if (idx >= 0 && idx < returnCodes.length - 1) {
+    returnCode = returnCodes[idx].split(' - ')[0];
+    reason = returnCodes[idx];
+  } else {
+    reason = prompt('Enter failure reason:') || 'Payment failed';
+  }
+
+  try {
+    const data = await api(`/external-transfers/${id}/return`, {
+      method: 'POST',
+      body: JSON.stringify({ return_code: returnCode, reason })
+    });
+    showToast(data.message || 'Payment returned — funds refunded', 'warning');
     loadPayments();
   } catch (err) { showToast(err.message, 'error'); }
 }

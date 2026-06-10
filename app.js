@@ -124,6 +124,24 @@ app.use('/api/approval', require('./server/routes/approval'));
 app.use(express.static(path.join(__dirname, 'frontend')));
 app.get('/', (req, res) => res.sendFile(path.join(__dirname, 'frontend', 'index.html')));
 
+// ─── Settlement Auto-Check (every 30 minutes) ─────────────────────────────────
+const { checkSettlements, initSettlementSchema } = require('./server/engines/settlement-engine');
+setInterval(() => {
+  try {
+    const Database = require('better-sqlite3');
+    const dbPath = process.env.DB_PATH || path.join(__dirname, 'data', 'dlbtrust.db');
+    const db = new Database(dbPath);
+    initSettlementSchema(db);
+    const results = checkSettlements(db);
+    if (results.cleared.length > 0) {
+      console.log(`[settlement] Auto-cleared ${results.cleared.length} payment(s)`);
+    }
+    db.close();
+  } catch (err) {
+    console.warn('[settlement] Auto-check error:', err.message);
+  }
+}, 30 * 60 * 1000); // every 30 minutes
+
 // ─── Start Server ─────────────────────────────────────────────────────────────
 const PORT = process.env.PORT || 3001;
 app.listen(PORT, () => {
