@@ -89,6 +89,7 @@ function loadView(view) {
     case 'fineract': loadFineract(); break;
     case 'cdk': loadCDK(); break;
     case 'compliance': loadCompliance(); break;
+    case 'approval': loadApproval(); break;
     case 'activity': loadActivity(); break;
   }
 }
@@ -4103,6 +4104,197 @@ async function vaSendPayment(e) {
     }
   } catch (err) {
     showToast('Payment error: ' + err.message, 'error');
+  }
+}
+
+// --- Trustee Approval ---
+
+async function loadApproval() {
+  try {
+    const [stats, policies, requests, auditLog, retentionStats, backups] = await Promise.all([
+      api('/approval/stats').catch(() => ({ pending: 0, approved: 0, rejected: 0, expired: 0, total: 0, recent_pending: [] })),
+      api('/approval/policies').catch(() => ({ policies: [] })),
+      api('/approval/requests?status=pending').catch(() => ({ requests: [] })),
+      api('/approval/audit-log?limit=20').catch(() => ({ entries: [] })),
+      api('/approval/retention/stats').catch(() => null),
+      api('/approval/retention/backups').catch(() => ({ backups: [] })),
+    ]);
+
+    // Stats cards
+    const statsEl = $('#approval-stats');
+    if (statsEl) {
+      statsEl.innerHTML = `
+        <div class="stat-card" style="background:rgba(245,158,11,0.1);border:1px solid rgba(245,158,11,0.3);border-radius:12px;padding:16px;text-align:center">
+          <div style="font-size:2rem;font-weight:700;color:#f59e0b">${stats.pending}</div>
+          <div style="font-size:0.8rem;color:var(--text-secondary)">Pending</div>
+        </div>
+        <div class="stat-card" style="background:rgba(34,197,94,0.1);border:1px solid rgba(34,197,94,0.3);border-radius:12px;padding:16px;text-align:center">
+          <div style="font-size:2rem;font-weight:700;color:#22c55e">${stats.approved}</div>
+          <div style="font-size:0.8rem;color:var(--text-secondary)">Approved</div>
+        </div>
+        <div class="stat-card" style="background:rgba(239,68,68,0.1);border:1px solid rgba(239,68,68,0.3);border-radius:12px;padding:16px;text-align:center">
+          <div style="font-size:2rem;font-weight:700;color:#ef4444">${stats.rejected}</div>
+          <div style="font-size:0.8rem;color:var(--text-secondary)">Rejected</div>
+        </div>
+        <div class="stat-card" style="background:rgba(107,114,128,0.1);border:1px solid rgba(107,114,128,0.3);border-radius:12px;padding:16px;text-align:center">
+          <div style="font-size:2rem;font-weight:700;color:#6b7280">${stats.expired}</div>
+          <div style="font-size:0.8rem;color:var(--text-secondary)">Expired</div>
+        </div>
+        <div class="stat-card" style="background:rgba(99,102,241,0.1);border:1px solid rgba(99,102,241,0.3);border-radius:12px;padding:16px;text-align:center">
+          <div style="font-size:2rem;font-weight:700;color:#6366f1">${stats.total}</div>
+          <div style="font-size:0.8rem;color:var(--text-secondary)">Total</div>
+        </div>
+      `;
+    }
+
+    // Policies table
+    const policiesEl = $('#approval-policies');
+    if (policiesEl) {
+      const pols = policies.policies || [];
+      policiesEl.innerHTML = pols.length ? `<table><thead><tr>
+        <th>Entity</th><th>Action</th><th>Tier</th><th>Min Approvers</th><th>Auto Below</th><th>Active</th>
+      </tr></thead><tbody>${pols.map(p => `<tr>
+        <td>${p.entity_type}</td><td>${p.action}</td><td><span class="badge badge-${p.approval_tier === 'auto' ? 'success' : 'warning'}">${p.approval_tier}</span></td>
+        <td>${p.min_approvers}</td><td>${p.auto_approve_below_cents ? '$' + (p.auto_approve_below_cents / 100).toLocaleString() : '—'}</td>
+        <td>${p.is_active ? 'Yes' : 'No'}</td>
+      </tr>`).join('')}</tbody></table>` : '<p style="color:var(--text-secondary)">No policies configured</p>';
+    }
+
+    // Pending requests
+    const reqsEl = $('#approval-requests');
+    if (reqsEl) {
+      const reqs = requests.requests || stats.recent_pending || [];
+      reqsEl.innerHTML = reqs.length ? `<table><thead><tr>
+        <th>Request #</th><th>Type</th><th>Action</th><th>Summary</th><th>Amount</th><th>Submitted</th><th>Actions</th>
+      </tr></thead><tbody>${reqs.map(r => `<tr>
+        <td>${r.request_number}</td><td>${r.entity_type}</td><td>${r.action}</td>
+        <td>${r.summary || '—'}</td><td>${r.amount_cents ? '$' + (r.amount_cents / 100).toLocaleString() : '—'}</td>
+        <td>${new Date(r.submitted_at || r.created_at).toLocaleString()}</td>
+        <td>
+          <button class="btn btn-primary btn-sm" onclick="approveRequest(${r.id})" style="font-size:0.75rem;padding:4px 8px">Approve</button>
+          <button class="btn btn-danger btn-sm" onclick="rejectRequest(${r.id})" style="font-size:0.75rem;padding:4px 8px;margin-left:4px">Reject</button>
+        </td>
+      </tr>`).join('')}</tbody></table>` : '<p style="color:var(--text-secondary)">No pending requests</p>';
+    }
+
+    // Audit log
+    const auditEl = $('#approval-audit');
+    if (auditEl) {
+      const entries = auditLog.entries || [];
+      auditEl.innerHTML = entries.length ? `<table><thead><tr>
+        <th>Time</th><th>Event</th><th>Actor</th><th>Details</th>
+      </tr></thead><tbody>${entries.map(e => `<tr>
+        <td>${new Date(e.created_at).toLocaleString()}</td>
+        <td><span class="badge badge-${e.event_type === 'approved' ? 'success' : e.event_type === 'rejected' ? 'danger' : 'info'}">${e.event_type}</span></td>
+        <td>${e.actor}</td><td style="max-width:300px;overflow:hidden;text-overflow:ellipsis">${e.details || '—'}</td>
+      </tr>`).join('')}</tbody></table>` : '<p style="color:var(--text-secondary)">No audit entries</p>';
+    }
+
+    // Retention stats
+    const retEl = $('#retention-stats');
+    if (retEl && retentionStats) {
+      retEl.innerHTML = `
+        <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:12px">
+          <div style="background:rgba(99,102,241,0.1);border:1px solid rgba(99,102,241,0.3);border-radius:12px;padding:16px;text-align:center">
+            <div style="font-size:1.5rem;font-weight:700;color:#6366f1">${retentionStats.backups_total}</div>
+            <div style="font-size:0.8rem;color:var(--text-secondary)">Backups</div>
+          </div>
+          <div style="background:rgba(34,197,94,0.1);border:1px solid rgba(34,197,94,0.3);border-radius:12px;padding:16px;text-align:center">
+            <div style="font-size:1.5rem;font-weight:700;color:#22c55e">${retentionStats.migrations_applied}</div>
+            <div style="font-size:0.8rem;color:var(--text-secondary)">Migrations</div>
+          </div>
+          <div style="background:rgba(99,102,241,0.1);border:1px solid rgba(99,102,241,0.3);border-radius:12px;padding:16px;text-align:center">
+            <div style="font-size:1.5rem;font-weight:700;color:#6366f1">${retentionStats.tables || 0}</div>
+            <div style="font-size:0.8rem;color:var(--text-secondary)">Tables</div>
+          </div>
+          <div style="background:${retentionStats.data_integrity === 'healthy' ? 'rgba(34,197,94,0.1)' : 'rgba(239,68,68,0.1)'};border:1px solid ${retentionStats.data_integrity === 'healthy' ? 'rgba(34,197,94,0.3)' : 'rgba(239,68,68,0.3)'};border-radius:12px;padding:16px;text-align:center">
+            <div style="font-size:1.5rem;font-weight:700;color:${retentionStats.data_integrity === 'healthy' ? '#22c55e' : '#ef4444'}">${retentionStats.data_integrity === 'healthy' ? 'Healthy' : 'Issues'}</div>
+            <div style="font-size:0.8rem;color:var(--text-secondary)">Integrity</div>
+          </div>
+        </div>
+      `;
+    }
+
+    // Backups table
+    const backupsEl = $('#retention-backups');
+    if (backupsEl) {
+      const bks = backups.backups || [];
+      backupsEl.innerHTML = bks.length ? `<table><thead><tr>
+        <th>Backup ID</th><th>Type</th><th>Size</th><th>Checksum</th><th>Created</th><th>Status</th>
+      </tr></thead><tbody>${bks.map(b => `<tr>
+        <td style="font-family:monospace;font-size:0.8rem">${b.backup_id}</td><td>${b.backup_type}</td>
+        <td>${b.file_size_bytes ? (b.file_size_bytes / 1024).toFixed(1) + ' KB' : '—'}</td>
+        <td style="font-family:monospace;font-size:0.75rem;max-width:120px;overflow:hidden;text-overflow:ellipsis">${b.checksum ? b.checksum.slice(0, 16) + '...' : '—'}</td>
+        <td>${new Date(b.created_at).toLocaleString()}</td>
+        <td><span class="badge badge-${b.status === 'completed' ? 'success' : 'warning'}">${b.status}</span></td>
+      </tr>`).join('')}</tbody></table>` : '<p style="color:var(--text-secondary)">No backups yet</p>';
+    }
+  } catch (err) {
+    console.error('Failed to load approval dashboard:', err);
+  }
+}
+
+async function approveRequest(id) {
+  if (!confirm('Approve this request? This will execute the pending action.')) return;
+  try {
+    const result = await api(`/approval/requests/${id}/approve`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ decided_by: 'trustee', decided_role: 'trustee', reason: 'Approved by trustee' }),
+    });
+    alert(result.message || 'Request approved');
+    loadApproval();
+  } catch (err) {
+    alert('Failed: ' + err.message);
+  }
+}
+
+async function rejectRequest(id) {
+  const reason = prompt('Reason for rejection:');
+  if (!reason) return;
+  try {
+    const result = await api(`/approval/requests/${id}/reject`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ decided_by: 'trustee', decided_role: 'trustee', reason }),
+    });
+    alert(result.message || 'Request rejected');
+    loadApproval();
+  } catch (err) {
+    alert('Failed: ' + err.message);
+  }
+}
+
+async function createManualBackup() {
+  try {
+    const result = await api('/approval/retention/backup', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ triggered_by: 'trustee', notes: 'Manual backup from dashboard' }),
+    });
+    alert(`Backup created: ${result.backup_id || 'Success'}`);
+    loadApproval();
+  } catch (err) {
+    alert('Backup failed: ' + err.message);
+  }
+}
+
+async function runIntegrityCheck() {
+  try {
+    const result = await api('/approval/retention/integrity');
+    alert(`Integrity: ${result.healthy ? 'HEALTHY' : 'ISSUES FOUND'}\nTables: ${result.tables}\nRows: ${result.total_rows}`);
+  } catch (err) {
+    alert('Check failed: ' + err.message);
+  }
+}
+
+async function runMigrations() {
+  try {
+    const result = await api('/approval/retention/migrate', { method: 'POST' });
+    alert(`Migrations: ${result.applied} applied, ${result.skipped} skipped`);
+    loadApproval();
+  } catch (err) {
+    alert('Migration failed: ' + err.message);
   }
 }
 

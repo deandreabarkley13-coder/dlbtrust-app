@@ -42,6 +42,7 @@ const {
 } = require('../engines/banking-engine');
 
 const { onAccountCreated, initVirtualAccountSchema } = require('../engines/virtual-account-engine');
+const { initApprovalSchema, requiresApproval, submitApprovalRequest } = require('../engines/approval-engine');
 
 // --- DB Setup ---------------------------------------------------------------
 
@@ -59,6 +60,7 @@ function initSchema(db) {
     const sql = fs.readFileSync(schemaPath, 'utf8');
     db.exec(sql);
   }
+  try { initApprovalSchema(db); } catch (_) {}
   schemaInitialized = true;
 }
 
@@ -196,7 +198,30 @@ router.post('/', (req, res) => {
 
     insertAudit(req.db, buildAuditEntry('account_opened', 'account', account.id, 'create', req.body.created_by || 'system', { account_number, account_type }));
 
-    // Auto-generate virtual account for external payments
+    // Check if trustee approval is required for account creation
+    const approvalResult = submitApprovalRequest(req.db, {
+      entityType: 'account',
+      entityId: account.id,
+      action: 'create',
+      summary: `Open ${account_type} account: ${account_name}`,
+      details: { account_number, account_type, owner_type, balance_cents },
+      amountCents: balance_cents,
+      submittedBy: req.body.created_by || 'system',
+      priority: 'normal',
+    });
+
+    if (approvalResult.pending) {
+      // Mark account as pending_approval until trustee approves
+      req.db.prepare("UPDATE trust_accounts SET status = 'pending_approval', status_reason = 'Awaiting trustee approval', updated_at = datetime('now') WHERE id = ?").run(account.id);
+      const pendingAccount = req.db.prepare('SELECT * FROM trust_accounts WHERE id = ?').get(account.id);
+      return res.status(201).json({
+        ...pendingAccount,
+        approval: approvalResult,
+        message: `Account created — ${approvalResult.message}`,
+      });
+    }
+
+    // Auto-approved — generate virtual account for external payments
     let virtualAccount = null;
     try {
       virtualAccount = onAccountCreated(req.db, account);
@@ -204,7 +229,7 @@ router.post('/', (req, res) => {
       console.warn('[accounts] Virtual account creation warning:', vaErr.message);
     }
 
-    res.status(201).json({ ...account, virtual_account: virtualAccount });
+    res.status(201).json({ ...account, virtual_account: virtualAccount, approval: { auto: true, reason: approvalResult.reason } });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -301,6 +326,20 @@ router.post('/:id/freeze', (req, res) => {
       return res.status(400).json({ error: `Cannot freeze account in ${account.status} status` });
     }
 
+    // Check trustee approval
+    const approvalResult = submitApprovalRequest(req.db, {
+      entityType: 'account',
+      entityId: account.id,
+      action: 'freeze',
+      summary: `Freeze account: ${account.account_name} (${account.account_number})`,
+      details: { reason: req.body.reason, account_type: account.account_type, balance_cents: account.balance_cents },
+      submittedBy: req.body.actor || 'system',
+    });
+
+    if (approvalResult.pending) {
+      return res.json({ message: approvalResult.message, approval: approvalResult, account });
+    }
+
     req.db.prepare(`
       UPDATE trust_accounts SET status = 'frozen', status_reason = ?, updated_at = datetime('now') WHERE id = ?
     `).run(req.body.reason || 'Administrative freeze', req.params.id);
@@ -321,6 +360,20 @@ router.post('/:id/activate', (req, res) => {
     if (!account) return res.status(404).json({ error: 'Account not found' });
     if (!canTransitionAccount(account.status, 'active')) {
       return res.status(400).json({ error: `Cannot activate account in ${account.status} status` });
+    }
+
+    // Check trustee approval
+    const approvalResult = submitApprovalRequest(req.db, {
+      entityType: 'account',
+      entityId: account.id,
+      action: 'activate',
+      summary: `Activate account: ${account.account_name} (${account.account_number})`,
+      details: { previous_status: account.status, account_type: account.account_type },
+      submittedBy: req.body.actor || 'system',
+    });
+
+    if (approvalResult.pending) {
+      return res.json({ message: approvalResult.message, approval: approvalResult, account });
     }
 
     req.db.prepare(`
@@ -353,6 +406,22 @@ router.post('/:id/close', (req, res) => {
     `).get(req.params.id);
     if (activeHolds.count > 0) {
       return res.status(400).json({ error: `Account has ${activeHolds.count} active hold(s). Release all holds before closing.` });
+    }
+
+    // Check trustee approval
+    const approvalResult = submitApprovalRequest(req.db, {
+      entityType: 'account',
+      entityId: account.id,
+      action: 'close',
+      summary: `Close account: ${account.account_name} (${account.account_number})`,
+      details: { reason: req.body.reason, account_type: account.account_type, balance_cents: account.balance_cents },
+      submittedBy: req.body.actor || 'system',
+    });
+
+    if (approvalResult.pending) {
+      req.db.prepare("UPDATE trust_accounts SET status = 'pending_approval', status_reason = 'Awaiting trustee approval to close', updated_at = datetime('now') WHERE id = ?").run(account.id);
+      const pendingAccount = req.db.prepare('SELECT * FROM trust_accounts WHERE id = ?').get(req.params.id);
+      return res.json({ message: approvalResult.message, approval: approvalResult, account: pendingAccount });
     }
 
     req.db.prepare(`

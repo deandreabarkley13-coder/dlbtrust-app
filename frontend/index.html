@@ -33,6 +33,7 @@
       <li><a href="#" data-view="fineract">Fineract Banking</a></li>
       <li><a href="#" data-view="cdk">Polygon CDK</a></li>
       <li><a href="#" data-view="compliance">Compliance</a></li>
+      <li><a href="#" data-view="approval">Trustee Approval</a></li>
       <li><a href="#" data-view="activity">Activity</a></li>
     </ul>
     <div class="nav-footer">
@@ -1834,6 +1835,49 @@
     </section>
 
     <!-- Activity View -->
+    <!-- ═══ Trustee Approval ═══ -->
+    <section id="view-approval" class="view">
+      <header class="view-header">
+        <h2>Trustee Approval Dashboard</h2>
+        <div class="header-actions">
+          <button class="btn btn-secondary" onclick="loadApproval()">Refresh</button>
+        </div>
+      </header>
+
+      <!-- Stats -->
+      <div id="approval-stats" class="stats-grid" style="display:grid;grid-template-columns:repeat(5,1fr);gap:12px;margin-bottom:20px"></div>
+
+      <!-- Policies -->
+      <div style="margin-bottom:20px">
+        <h3 style="margin-bottom:10px">Approval Policies</h3>
+        <div id="approval-policies" class="table-container"></div>
+      </div>
+
+      <!-- Pending Requests -->
+      <div style="margin-bottom:20px">
+        <h3 style="margin-bottom:10px">Pending Approval Requests</h3>
+        <div id="approval-requests" class="table-container"></div>
+      </div>
+
+      <!-- Audit Log -->
+      <div style="margin-bottom:20px">
+        <h3 style="margin-bottom:10px">Approval Audit Log</h3>
+        <div id="approval-audit" class="table-container"></div>
+      </div>
+
+      <!-- Data Retention -->
+      <div style="margin-bottom:20px">
+        <h3 style="margin-bottom:10px">Data Retention & Backups</h3>
+        <div id="retention-stats" style="margin-bottom:12px"></div>
+        <div class="header-actions" style="margin-bottom:12px">
+          <button class="btn btn-primary" onclick="createManualBackup()">Create Backup</button>
+          <button class="btn btn-secondary" onclick="runIntegrityCheck()">Check Integrity</button>
+          <button class="btn btn-secondary" onclick="runMigrations()">Run Migrations</button>
+        </div>
+        <div id="retention-backups" class="table-container"></div>
+      </div>
+    </section>
+
     <section id="view-activity" class="view">
       <header class="view-header">
         <h2>Audit Trail</h2>

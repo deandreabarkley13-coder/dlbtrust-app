@@ -10,14 +10,16 @@
 
 // --- Account Lifecycle -----------------------------------------------------
 
-const VALID_ACCOUNT_STATUSES = ['pending', 'active', 'frozen', 'dormant', 'closed'];
+const VALID_ACCOUNT_STATUSES = ['pending', 'pending_approval', 'active', 'frozen', 'dormant', 'closed', 'rejected'];
 
 const ALLOWED_ACCOUNT_TRANSITIONS = {
-  pending:  ['active', 'closed'],
-  active:   ['frozen', 'dormant', 'closed'],
-  frozen:   ['active', 'closed'],
-  dormant:  ['active', 'closed'],
-  closed:   [],
+  pending:           ['active', 'pending_approval', 'closed'],
+  pending_approval:  ['active', 'rejected', 'closed', 'frozen'],
+  active:            ['frozen', 'dormant', 'closed', 'pending_approval'],
+  frozen:            ['active', 'closed'],
+  dormant:           ['active', 'closed'],
+  rejected:          ['pending', 'closed'],
+  closed:            [],
 };
 
 function canTransitionAccount(currentStatus, newStatus) {

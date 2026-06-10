@@ -41,6 +41,23 @@ try {
   console.warn('[DB] SQLite not available:', err.message);
 }
 
+// ─── Data Retention — Run migrations on startup, auto-backup pre-deploy ──────
+if (db) {
+  try {
+    const { runMigrations, createBackup } = require('./server/engines/data-retention-engine');
+    const { initApprovalSchema } = require('./server/engines/approval-engine');
+    initApprovalSchema(db);
+    const migrationResult = runMigrations(db);
+    console.log(`[retention] Migrations: ${migrationResult.applied} applied, ${migrationResult.skipped} skipped`);
+    if (process.env.PRE_DEPLOY_BACKUP === 'true') {
+      const backup = createBackup(db, { backupType: 'pre_deploy', triggeredBy: 'startup' });
+      console.log(`[retention] Pre-deploy backup: ${backup.backup_id}`);
+    }
+  } catch (err) {
+    console.warn('[retention] Startup init warning:', err.message);
+  }
+}
+
 // ─── OpenACH Integration ──────────────────────────────────────────────────────
 require('./server/openach-patch')(app, typeof db !== 'undefined' ? db : null);
 
@@ -99,6 +116,9 @@ app.use('/api/gateway', require('./server/routes/gateway'));
 
 // ─── Virtual Account Routes (Auto-Generated Payment Accounts) ────────────────
 app.use('/api/virtual-accounts', require('./server/routes/virtual-accounts'));
+
+// ─── Trustee Approval & Data Retention Routes ────────────────────────────────
+app.use('/api/approval', require('./server/routes/approval'));
 
 // ─── Frontend Dashboard ───────────────────────────────────────────────────────
 app.use(express.static(path.join(__dirname, 'frontend')));

@@ -43,6 +43,7 @@ const {
 const { generateSingleACH, generateBatchACH, validateRoutingNumber } = require('../engines/nacha-engine');
 const { generateWireMessage } = require('../engines/wire-engine');
 const { deliverPayment, deliverWire, checkOpenACHHealth, checkOBPHealth, getAvailableDeliveryMethod, getAllDeliveryMethods } = require('../engines/payment-delivery-engine');
+const { initApprovalSchema, submitApprovalRequest } = require('../engines/approval-engine');
 
 // --- DB Setup ---------------------------------------------------------------
 
@@ -60,6 +61,7 @@ function initSchema(db) {
     const p = path.join(__dirname, '..', 'db', 'migrations', file);
     if (fs.existsSync(p)) db.exec(fs.readFileSync(p, 'utf8'));
   }
+  try { initApprovalSchema(db); } catch (_) {}
   schemaInitialized = true;
 }
 
@@ -366,13 +368,29 @@ router.post('/', (req, res) => {
       'dashboard_user'
     );
 
-    if (autoApprove) {
+    // Check trustee approval for external transfers
+    const approvalCheck = submitApprovalRequest(req.db, {
+      entityType: 'external_transfer',
+      entityId: result.lastInsertRowid,
+      action: 'create',
+      summary: `${method.toUpperCase()} payment: $${(amountCents / 100).toFixed(2)} to ${contact.display_name}`,
+      details: { amount_cents: amountCents, method, contact: contact.display_name, transfer_number: transferNumber },
+      amountCents,
+      submittedBy: 'dashboard_user',
+      priority,
+    });
+
+    if (approvalCheck.pending) {
+      // Trustee approval required — mark as pending_approval
+      req.db.prepare("UPDATE external_transfers SET status = 'pending_approval', requires_approval = 1, approval_tier = ? WHERE id = ?")
+        .run(approvalCheck.tier, result.lastInsertRowid);
+    } else if (autoApprove || approvalCheck.auto) {
       req.db.prepare("UPDATE external_transfers SET approved_by = 'auto', approved_date = datetime('now') WHERE id = ?")
         .run(result.lastInsertRowid);
     }
 
     insertAudit(req.db, buildAuditEntry('external_transfer', result.lastInsertRowid,
-      autoApprove ? 'created_and_auto_approved' : 'created',
+      approvalCheck.pending ? 'created_pending_approval' : (autoApprove ? 'created_and_auto_approved' : 'created'),
       'dashboard_user',
       { amount: toDollars(amountCents), method, tier, contact: contact.display_name }
     ));
@@ -382,9 +400,10 @@ router.post('/', (req, res) => {
 
     res.status(201).json({
       ...transfer,
-      auto_approved: autoApprove,
-      approval_tier: tier,
-      message: autoApprove ? 'Transfer created and auto-approved' : `Transfer created — requires ${tier} approval`,
+      auto_approved: !approvalCheck.pending && (autoApprove || approvalCheck.auto),
+      approval_tier: approvalCheck.tier || tier,
+      approval: approvalCheck,
+      message: approvalCheck.pending ? `Transfer created — ${approvalCheck.message}` : (autoApprove ? 'Transfer created and auto-approved' : `Transfer created — requires ${tier} approval`),
     });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -733,6 +752,22 @@ router.post('/:id/process', async (req, res) => {
     if (!transfer) return res.status(404).json({ error: 'Transfer not found' });
     if (!canTransition(transfer.status, 'processing')) {
       return res.status(400).json({ error: `Cannot process from status '${transfer.status}'` });
+    }
+
+    // Check trustee approval for processing
+    const processApproval = submitApprovalRequest(req.db, {
+      entityType: 'external_transfer',
+      entityId: transfer.id,
+      action: 'process',
+      summary: `Process ${transfer.payment_method.toUpperCase()} $${(transfer.amount_cents / 100).toFixed(2)} (${transfer.transfer_number})`,
+      details: { transfer_number: transfer.transfer_number, amount_cents: transfer.amount_cents, method: transfer.payment_method },
+      amountCents: transfer.amount_cents,
+      submittedBy: req.body.processed_by || 'dashboard_user',
+    });
+
+    if (processApproval.pending) {
+      req.db.prepare("UPDATE external_transfers SET status = 'pending_approval', updated_at = datetime('now') WHERE id = ?").run(transfer.id);
+      return res.json({ message: processApproval.message, approval: processApproval, transfer });
     }
 
     // Verify funds again
