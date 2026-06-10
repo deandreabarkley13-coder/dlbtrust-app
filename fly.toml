@@ -4,6 +4,7 @@ primary_region = "iad"
 [build]
 
 [env]
+  PORT = "8080"
   NODE_ENV = "production"
   DB_PATH = "/data/dlbtrust.db"
   OPENACH_BASE_URL = "https://ach.dlbtrust.cloud/openach/api"
