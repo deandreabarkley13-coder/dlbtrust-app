@@ -97,6 +97,22 @@ function submitApprovalRequest(db, { entityType, entityId, action, summary, deta
     return { approved: true, auto: true, reason: check.reason };
   }
 
+  // Deduplication: return existing pending request instead of creating a duplicate
+  const existing = db.prepare(
+    "SELECT * FROM approval_requests WHERE entity_type = ? AND entity_id = ? AND action = ? AND status IN ('pending', 'escalated')"
+  ).get(entityType, entityId, action);
+  if (existing) {
+    return {
+      approved: false,
+      pending: true,
+      request: existing,
+      tier: check.tier,
+      min_approvers: check.min_approvers,
+      message: `Existing ${check.tier} approval request pending (${existing.request_number})`,
+      duplicate: true,
+    };
+  }
+
   const requestNumber = generateRequestNumber();
   const expiryHours = getPlatformConfig(db, 'approval_expiry_hours') || 48;
   const expiresAt = new Date(Date.now() + expiryHours * 3600000).toISOString();

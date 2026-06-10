@@ -385,7 +385,7 @@ router.post('/', (req, res) => {
       req.db.prepare("UPDATE external_transfers SET status = 'pending_approval', requires_approval = 1, approval_tier = ? WHERE id = ?")
         .run(approvalCheck.tier, result.lastInsertRowid);
     } else if (autoApprove || approvalCheck.auto) {
-      req.db.prepare("UPDATE external_transfers SET approved_by = 'auto', approved_date = datetime('now') WHERE id = ?")
+      req.db.prepare("UPDATE external_transfers SET status = 'approved', approved_by = 'auto', approved_date = datetime('now') WHERE id = ?")
         .run(result.lastInsertRowid);
     }
 
