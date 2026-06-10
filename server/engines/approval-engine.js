@@ -243,9 +243,13 @@ function executeApprovedAction(db, request) {
     }
 
     if (entity_type === 'external_transfer') {
-      if (action === 'create' || action === 'process') {
+      if (action === 'create') {
         db.prepare("UPDATE external_transfers SET status = 'approved', approved_by = 'trustee', approved_date = datetime('now'), updated_at = datetime('now') WHERE id = ?").run(entity_id);
         return { executed: true, message: 'Transfer approved for processing' };
+      }
+      if (action === 'process') {
+        db.prepare("UPDATE external_transfers SET status = 'processing', approved_by = 'trustee', approved_date = datetime('now'), updated_at = datetime('now') WHERE id = ?").run(entity_id);
+        return { executed: true, message: 'Transfer approved — now processing' };
       }
     }
 
