@@ -377,6 +377,7 @@ class OpenACHClient {
         payment_schedule_amount: parseFloat(amount).toFixed(2),
         payment_schedule_currency_code: 'USD',
         payment_schedule_next_date: send_date,
+        payment_schedule_end_date: send_date,
         payment_schedule_frequency: frequency,
         payment_schedule_remaining_occurrences: occurrences,
       });
