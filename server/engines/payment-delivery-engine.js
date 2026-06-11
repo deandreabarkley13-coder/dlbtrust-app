@@ -450,8 +450,8 @@ async function submitViaSFTPSystem(nachaContent, filename) {
     writeFileSync(tmpFile, nachaContent);
     const dest = `${SFTP_USER}@${SFTP_HOST}:${SFTP_PATH}/${filename}`;
     const cmd = SFTP_KEY
-      ? `scp -i "${SFTP_KEY}" -P ${SFTP_PORT} "${tmpFile}" "${dest}"`
-      : `sshpass -p "${SFTP_PASS}" scp -P ${SFTP_PORT} "${tmpFile}" "${dest}"`;
+      ? `scp -o StrictHostKeyChecking=no -i "${SFTP_KEY}" -P ${SFTP_PORT} "${tmpFile}" "${dest}"`
+      : `sshpass -p "${SFTP_PASS}" scp -o StrictHostKeyChecking=no -P ${SFTP_PORT} "${tmpFile}" "${dest}"`;
     execSync(cmd, { timeout: 30000 });
 
     return {
