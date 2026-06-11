@@ -10,12 +10,12 @@ const https = require('https');
 
 const MOOV_ACH_URL = process.env.MOOV_ACH_URL || 'http://127.0.0.1:9091';
 
-function moovRequest(method, path, body = null) {
+function moovRequest(method, path, body = null, contentType = 'application/json') {
   return new Promise((resolve, reject) => {
     const parsed = new URL(`${MOOV_ACH_URL}${path}`);
     const headers = { 'Accept': 'application/json' };
     if (body) {
-      headers['Content-Type'] = 'application/json';
+      headers['Content-Type'] = contentType;
     }
 
     const options = {
@@ -60,11 +60,11 @@ async function ping() {
 }
 
 /**
- * Validate a NACHA file content
- * Returns validation result with any errors
+ * Validate a NACHA file content (raw text format)
+ * Moov expects NACHA files as text/plain, not JSON
  */
 async function validateFile(nachaContent) {
-  return moovRequest('POST', '/files/validate', nachaContent);
+  return moovRequest('POST', '/files/create', nachaContent, 'text/plain');
 }
 
 /**

@@ -380,7 +380,16 @@ async function validateWithMoov(nachaContent) {
 
   try {
     const result = await Moov.validateFile(nachaContent);
-    return { validated: true, result };
+    // Moov returns {File: {...}, ID: "...", error: "..."} 
+    // If there's a file ID and no critical error, it's validated
+    const fileId = result.ID || (result.File && result.File.id);
+    const hasError = result.error && result.error.length > 0;
+    return { 
+      validated: !!fileId, 
+      file_id: fileId || null,
+      warnings: hasError ? result.error : null,
+      result 
+    };
   } catch (err) {
     return { validated: false, error: err.message };
   }
