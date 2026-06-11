@@ -333,8 +333,8 @@ class OpenACHClient {
           const existing = await session.request('getPaymentProfileByExtId', {
             payment_profile_external_id: external_id,
           });
-          if (existing.success && existing.payment_profile_id) {
-            profileId = existing.payment_profile_id;
+          if (existing.success) {
+            profileId = existing.payment_profile_id || (existing.data && existing.data.payment_profile_id);
           }
         } catch (_) { /* not found, will create */ }
       }
@@ -347,7 +347,7 @@ class OpenACHClient {
           payment_profile_external_id: external_id || '',
         });
         if (!profileRes.success) throw new Error(`Profile creation failed: ${profileRes.error}`);
-        profileId = profileRes.payment_profile_id;
+        profileId = profileRes.payment_profile_id || (profileRes.data && profileRes.data.payment_profile_id);
       }
 
       // Step 2: Add bank account
@@ -368,7 +368,7 @@ class OpenACHClient {
         external_account_business: '0',
       });
       if (!accountRes.success) throw new Error(`Bank account creation failed: ${accountRes.error}`);
-      const externalAccountId = accountRes.external_account_id;
+      const externalAccountId = accountRes.external_account_id || (accountRes.data && accountRes.data.external_account_id);
 
       // Step 3: Schedule payment
       const scheduleRes = await session.request('savePaymentSchedule', {
@@ -377,16 +377,18 @@ class OpenACHClient {
         payment_schedule_amount: parseFloat(amount).toFixed(2),
         payment_schedule_currency_code: 'USD',
         payment_schedule_next_date: send_date,
+        payment_schedule_end_date: send_date,
         payment_schedule_frequency: frequency,
         payment_schedule_remaining_occurrences: occurrences,
       });
       if (!scheduleRes.success) throw new Error(`Payment scheduling failed: ${scheduleRes.error}`);
+      const scheduleId = scheduleRes.payment_schedule_id || (scheduleRes.data && scheduleRes.data.payment_schedule_id);
 
       return {
         success: true,
         payment_profile_id: profileId,
         external_account_id: externalAccountId,
-        payment_schedule_id: scheduleRes.payment_schedule_id,
+        payment_schedule_id: scheduleId,
         amount,
         send_date,
         message: `ACH credit of $${amount} scheduled for ${send_date} to ${first_name} ${last_name} at ${bank_name}`,

@@ -101,10 +101,10 @@ function calculateETA(paymentMethod, priority) {
 // --- Status Transitions ------------------------------------------------------
 
 const VALID_TRANSITIONS = {
-  draft:            ['pending_approval', 'cancelled'],
+  draft:            ['pending_approval', 'approved', 'cancelled'],
   pending_approval: ['approved', 'cancelled'],
-  approved:         ['processing', 'cancelled'],
-  processing:       ['sent', 'failed', 'cancelled'],
+  approved:         ['processing', 'sent', 'cancelled'],
+  processing:       ['sent', 'completed', 'failed', 'returned', 'cancelled'],
   sent:             ['completed', 'returned', 'failed'],
   completed:        [],
   failed:           ['draft'],   // can retry

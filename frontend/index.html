@@ -33,6 +33,8 @@
       <li><a href="#" data-view="fineract">Fineract Banking</a></li>
       <li><a href="#" data-view="cdk">Polygon CDK</a></li>
       <li><a href="#" data-view="compliance">Compliance</a></li>
+      <li><a href="#" data-view="trustee-assignments">Trustee Assignments</a></li>
+      <li><a href="#" data-view="approval">Trustee Approval</a></li>
       <li><a href="#" data-view="activity">Activity</a></li>
     </ul>
     <div class="nav-footer">
@@ -1833,7 +1835,85 @@
       </div>
     </section>
 
+    <!-- ═══ Trustee Assignments & Expense Management ═══ -->
+    <section id="view-trustee-assignments" class="view">
+      <header class="view-header">
+        <h2>Trustee Assignments & Expense Management</h2>
+        <div class="header-actions">
+          <button class="btn btn-primary" onclick="showAssignModal()">+ Assign Trustee/Beneficiary</button>
+          <button class="btn btn-secondary" onclick="loadAssignments()">Refresh</button>
+        </div>
+      </header>
+      <div class="panel-row" id="assignment-summary-cards" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:16px;margin-bottom:20px;"></div>
+      <div class="panel-row" style="display:grid;grid-template-columns:1fr 1fr;gap:20px;">
+        <div class="panel">
+          <h3>Active Assignments</h3>
+          <table class="data-table" id="assignments-table">
+            <thead><tr><th>Contact</th><th>Account</th><th>Role</th><th>Limits</th><th>Actions</th></tr></thead>
+            <tbody></tbody>
+          </table>
+        </div>
+        <div class="panel">
+          <h3>Pending Expense Requests</h3>
+          <table class="data-table" id="pending-expenses-table">
+            <thead><tr><th>#</th><th>Requester</th><th>Amount</th><th>Category</th><th>Actions</th></tr></thead>
+            <tbody></tbody>
+          </table>
+        </div>
+      </div>
+      <div class="panel" style="margin-top:20px;">
+        <h3>Expense History</h3>
+        <table class="data-table" id="expense-history-table">
+          <thead><tr><th>#</th><th>Requester</th><th>Account</th><th>Amount</th><th>Category</th><th>Status</th><th>Date</th></tr></thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </section>
+
     <!-- Activity View -->
+    <!-- ═══ Trustee Approval ═══ -->
+    <section id="view-approval" class="view">
+      <header class="view-header">
+        <h2>Trustee Approval Dashboard</h2>
+        <div class="header-actions">
+          <button class="btn btn-secondary" onclick="loadApproval()">Refresh</button>
+        </div>
+      </header>
+
+      <!-- Stats -->
+      <div id="approval-stats" class="stats-grid" style="display:grid;grid-template-columns:repeat(5,1fr);gap:12px;margin-bottom:20px"></div>
+
+      <!-- Policies -->
+      <div style="margin-bottom:20px">
+        <h3 style="margin-bottom:10px">Approval Policies</h3>
+        <div id="approval-policies" class="table-container"></div>
+      </div>
+
+      <!-- Pending Requests -->
+      <div style="margin-bottom:20px">
+        <h3 style="margin-bottom:10px">Pending Approval Requests</h3>
+        <div id="approval-requests" class="table-container"></div>
+      </div>
+
+      <!-- Audit Log -->
+      <div style="margin-bottom:20px">
+        <h3 style="margin-bottom:10px">Approval Audit Log</h3>
+        <div id="approval-audit" class="table-container"></div>
+      </div>
+
+      <!-- Data Retention -->
+      <div style="margin-bottom:20px">
+        <h3 style="margin-bottom:10px">Data Retention & Backups</h3>
+        <div id="retention-stats" style="margin-bottom:12px"></div>
+        <div class="header-actions" style="margin-bottom:12px">
+          <button class="btn btn-primary" onclick="createManualBackup()">Create Backup</button>
+          <button class="btn btn-secondary" onclick="runIntegrityCheck()">Check Integrity</button>
+          <button class="btn btn-secondary" onclick="runMigrations()">Run Migrations</button>
+        </div>
+        <div id="retention-backups" class="table-container"></div>
+      </div>
+    </section>
+
     <section id="view-activity" class="view">
       <header class="view-header">
         <h2>Audit Trail</h2>
@@ -1854,6 +1934,14 @@
       <div style="display:flex;gap:8px;margin-top:16px;justify-content:flex-end">
         <button type="button" class="btn" onclick="stopQrScan()">Cancel</button>
       </div>
+    </div>
+  </div>
+
+  <!-- Generic Dynamic Modal (used by showModal/closeModal) -->
+  <div id="generic-modal" class="modal hidden" onclick="if(event.target===this)closeModal()">
+    <div class="modal-content" style="max-width:600px">
+      <h3 id="generic-modal-title"></h3>
+      <div id="generic-modal-body"></div>
     </div>
   </div>
 

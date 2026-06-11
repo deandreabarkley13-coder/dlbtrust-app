@@ -89,6 +89,8 @@ function loadView(view) {
     case 'fineract': loadFineract(); break;
     case 'cdk': loadCDK(); break;
     case 'compliance': loadCompliance(); break;
+    case 'trustee-assignments': loadAssignments(); break;
+    case 'approval': loadApproval(); break;
     case 'activity': loadActivity(); break;
   }
 }
@@ -877,11 +879,17 @@ function paymentActions(p) {
     btns += `<button class="btn btn-sm btn-primary" onclick="processPayment(${p.id})">Process</button> `;
     btns += `<button class="btn btn-sm btn-danger" onclick="cancelPayment(${p.id})">Cancel</button> `;
   }
-  if (p.status === 'processing') {
-    btns += `<button class="btn btn-sm btn-success" onclick="completePayment(${p.id})">Complete</button> `;
+  if (p.status === 'processing' || p.status === 'sent') {
+    btns += `<button class="btn btn-sm btn-success" onclick="clearPayment(${p.id})" title="Mark as cleared/settled">✓ Clear</button> `;
+    btns += `<button class="btn btn-sm btn-danger" onclick="returnPayment(${p.id})" title="Mark as failed/returned">✗ Fail</button> `;
+    btns += `<button class="btn btn-sm" onclick="cancelPayment(${p.id})">Cancel</button> `;
   }
   if (p.status === 'failed' || p.status === 'returned') {
     btns += `<button class="btn btn-sm" onclick="retryPayment(${p.id})">Retry</button> `;
+    if (p.return_code) btns += `<small style="color:var(--danger)">${p.return_code}</small> `;
+  }
+  if (p.status === 'completed') {
+    btns += `<small style="color:var(--success)">✓ Cleared</small>`;
   }
   return btns || '—';
 }
@@ -1006,17 +1014,21 @@ async function executeProcessPayment(e, id) {
 function showPaymentFileResult(data) {
   const file = data.payment_file;
   const delivery = data.delivery || {};
-  const deliveryBadge = delivery.status === 'submitted'
-    ? '<span class="badge badge-approved">AUTO-SUBMITTED</span>'
-    : '<span class="badge badge-frozen">AWAITING MANUAL SUBMISSION</span>';
-  const deliveryInfo = delivery.status === 'submitted'
+  const settlement = data.settlement || {};
+  const transmitted = data.transmitted !== false;
+  const deliveryBadge = transmitted
+    ? '<span class="badge badge-approved">TRANSMITTED</span>'
+    : '<span class="badge badge-frozen">PENDING DELIVERY</span>';
+  const deliveryMethod = delivery.delivery_method === 'openach' ? 'OpenACH' : delivery.delivery_method === 'obp' ? 'Open Banking Project' : delivery.delivery_method === 'column' ? 'Column API' : delivery.delivery_method === 'dwolla' ? 'Dwolla API' : delivery.delivery_method === 'platform_gateway' ? 'DLB Trust Banking System' : delivery.delivery_method;
+  const deliveryInfo = transmitted
     ? `<div style="background:#ecfdf5;border:1px solid #6ee7b7;border-radius:8px;padding:12px;margin-top:12px">
-        <strong>🏦 Auto-delivered via ${delivery.delivery_method === 'openach' ? 'OpenACH' : delivery.delivery_method === 'obp' ? 'Open Banking Project' : delivery.delivery_method === 'column' ? 'Column API' : delivery.delivery_method === 'dwolla' ? 'Dwolla API' : delivery.delivery_method}</strong><br>
+        <strong>🏦 Transmitted via ${deliveryMethod}</strong><br>
         <small>${delivery.message || ''}</small>
+        ${settlement.expected_clear_date ? `<br><small><strong>Expected Clearing:</strong> ${new Date(settlement.expected_clear_date).toLocaleDateString()}</small>` : ''}
        </div>`
     : `<div style="background:#fef3c7;border:1px solid #fbbf24;border-radius:8px;padding:12px;margin-top:12px">
-        <strong>📁 Manual submission required</strong><br>
-        <small>Download the file below and submit to Eaton Family Credit Union via their business banking portal.</small>
+        <strong>⏳ Payment processing</strong><br>
+        <small>Payment file generated and queued for delivery through the banking system.</small>
        </div>`;
 
   const html = `
@@ -1055,6 +1067,51 @@ async function completePayment(id) {
   try {
     await api(`/external-transfers/${id}/complete`, { method: 'POST' });
     showToast('Payment completed');
+    loadPayments();
+  } catch (err) { showToast(err.message, 'error'); }
+}
+
+async function clearPayment(id) {
+  try {
+    const data = await api(`/external-transfers/${id}/clear`, { method: 'POST', body: JSON.stringify({ bank_reference: `CLR-${Date.now()}` }) });
+    showToast(data.message || 'Payment cleared — funds delivered successfully', 'success');
+    loadPayments();
+  } catch (err) { showToast(err.message, 'error'); }
+}
+
+async function returnPayment(id) {
+  const returnCodes = [
+    'R01 - Insufficient Funds',
+    'R02 - Account Closed',
+    'R03 - No Account / Unable to Locate',
+    'R04 - Invalid Account Number',
+    'R07 - Authorization Revoked',
+    'R08 - Payment Stopped',
+    'R10 - Customer Not Authorized',
+    'R16 - Account Frozen',
+    'R20 - Non-Transaction Account',
+    'Other (specify reason)',
+  ];
+  const selected = prompt(`Select return reason:\\n${returnCodes.map((c,i) => `${i+1}. ${c}`).join('\\n')}\\n\\nEnter number (1-${returnCodes.length}):`);
+  if (!selected) return;
+
+  const idx = parseInt(selected) - 1;
+  let returnCode = null;
+  let reason = '';
+
+  if (idx >= 0 && idx < returnCodes.length - 1) {
+    returnCode = returnCodes[idx].split(' - ')[0];
+    reason = returnCodes[idx];
+  } else {
+    reason = prompt('Enter failure reason:') || 'Payment failed';
+  }
+
+  try {
+    const data = await api(`/external-transfers/${id}/return`, {
+      method: 'POST',
+      body: JSON.stringify({ return_code: returnCode, reason })
+    });
+    showToast(data.message || 'Payment returned — funds refunded', 'warning');
     loadPayments();
   } catch (err) { showToast(err.message, 'error'); }
 }
@@ -2013,6 +2070,17 @@ async function redeemBond(id) {
 
 function hideModal(id) {
   document.getElementById(id).classList.add('hidden');
+}
+
+function showModal(title, bodyHtml) {
+  document.getElementById('generic-modal-title').textContent = title;
+  document.getElementById('generic-modal-body').innerHTML = bodyHtml;
+  document.getElementById('generic-modal').classList.remove('hidden');
+}
+
+function closeModal(id) {
+  const el = id ? document.getElementById(id) : document.getElementById('generic-modal');
+  if (el) el.classList.add('hidden');
 }
 
 // --- Blockchain / Crypto Rails ---
@@ -4103,6 +4171,364 @@ async function vaSendPayment(e) {
     }
   } catch (err) {
     showToast('Payment error: ' + err.message, 'error');
+  }
+}
+
+// --- Trustee Assignments & Expense Management ---
+
+async function loadAssignments() {
+  try {
+    const [dashboard, list, expenses, pendingExp] = await Promise.all([
+      fetch('/api/trustee-assignments/dashboard').then(r => r.json()),
+      fetch('/api/trustee-assignments?status=active').then(r => r.json()),
+      fetch('/api/trustee-assignments/expenses?limit=20').then(r => r.json()),
+      fetch('/api/trustee-assignments/expenses/pending').then(r => r.json()),
+    ]);
+
+    // Summary cards
+    const cards = document.getElementById('assignment-summary-cards');
+    if (cards) {
+      cards.innerHTML = `
+        <div class="stat-card"><h4>Active Assignments</h4><p class="stat-value">${dashboard.total_assignments}</p></div>
+        <div class="stat-card"><h4>Trustee Assignments</h4><p class="stat-value">${dashboard.trustee_assignments}</p></div>
+        <div class="stat-card"><h4>Beneficiary Assignments</h4><p class="stat-value">${dashboard.beneficiary_assignments}</p></div>
+        <div class="stat-card"><h4>Pending Expenses</h4><p class="stat-value">${dashboard.pending_expenses}</p></div>
+        <div class="stat-card"><h4>Monthly Spend</h4><p class="stat-value">$${dashboard.monthly_spend}</p></div>
+      `;
+    }
+
+    // Assignments table
+    const atb = document.querySelector('#assignments-table tbody');
+    if (atb) {
+      const assignments = list.assignments || [];
+      atb.innerHTML = assignments.length === 0 ? '<tr><td colspan="5" style="text-align:center;opacity:.6">No active assignments</td></tr>' : assignments.map(a => {
+        const perms = JSON.parse(a.permissions || '[]');
+        const limitStr = a.spending_limit_cents ? `$${(a.spending_limit_cents/100).toFixed(0)}/txn` : (a.monthly_limit_cents ? `$${(a.monthly_limit_cents/100).toFixed(0)}/mo` : 'No limit');
+        const roleBadge = a.role.includes('trustee') ? `<span class="badge badge-info">${a.role.replace(/_/g,' ')}</span>` : `<span class="badge badge-success">${a.role.replace(/_/g,' ')}</span>`;
+        return `<tr>
+          <td><strong>${a.contact_name}</strong><br><small>${a.contact_type}</small></td>
+          <td>${a.account_name}<br><small>${a.account_number}</small></td>
+          <td>${roleBadge}</td>
+          <td>${limitStr}<br><small>${perms.join(', ')}</small></td>
+          <td><button class="btn btn-sm btn-danger" onclick="revokeAssignment(${a.id})">Revoke</button></td>
+        </tr>`;
+      }).join('');
+    }
+
+    // Pending expenses table
+    const pet = document.querySelector('#pending-expenses-table tbody');
+    if (pet) {
+      pet.innerHTML = pendingExp.length === 0 ? '<tr><td colspan="5" style="text-align:center;opacity:.6">No pending expenses</td></tr>' : pendingExp.map(e => `<tr>
+        <td>${e.request_number}</td>
+        <td>${e.requester_name}</td>
+        <td>$${(e.amount_cents/100).toFixed(2)}</td>
+        <td><span class="badge">${e.category}</span></td>
+        <td>
+          <button class="btn btn-sm btn-success" onclick="approveExpenseReq(${e.id})">Approve</button>
+          <button class="btn btn-sm btn-danger" onclick="rejectExpenseReq(${e.id})">Reject</button>
+        </td>
+      </tr>`).join('');
+    }
+
+    // Expense history table
+    const eht = document.querySelector('#expense-history-table tbody');
+    if (eht) {
+      eht.innerHTML = expenses.length === 0 ? '<tr><td colspan="7" style="text-align:center;opacity:.6">No expenses yet</td></tr>' : expenses.map(e => {
+        const statusCls = e.status === 'paid' ? 'badge-success' : e.status === 'approved' ? 'badge-info' : e.status === 'rejected' ? 'badge-danger' : 'badge-warning';
+        return `<tr>
+          <td>${e.request_number}</td>
+          <td>${e.requester_name}</td>
+          <td>${e.account_name}</td>
+          <td>$${(e.amount_cents/100).toFixed(2)}</td>
+          <td>${e.category}</td>
+          <td><span class="badge ${statusCls}">${e.status}</span></td>
+          <td>${new Date(e.submitted_at).toLocaleDateString()}</td>
+        </tr>`;
+      }).join('');
+    }
+  } catch (err) {
+    console.error('loadAssignments error:', err);
+  }
+}
+
+async function showAssignModal() {
+  try {
+    const [contacts, accounts] = await Promise.all([
+      fetch('/api/crm/contacts').then(r => r.json()),
+      fetch('/api/accounts').then(r => r.json()),
+    ]);
+    const contactList = contacts.contacts || contacts || [];
+    const accountList = accounts.accounts || accounts || [];
+
+    const roles = ['primary_trustee', 'co_trustee', 'successor_trustee', 'beneficiary', 'expense_manager'];
+
+    const html = `
+      <div style="display:grid;gap:12px;">
+        <label>Contact:<select id="assign-contact">${contactList.map(c => `<option value="${c.id}">${c.display_name || (c.first_name + ' ' + c.last_name)} (${c.contact_type})</option>`).join('')}</select></label>
+        <label>Account:<select id="assign-account">${accountList.map(a => `<option value="${a.id}">${a.account_name} (${a.account_number})</option>`).join('')}</select></label>
+        <label>Role:<select id="assign-role">${roles.map(r => `<option value="${r}">${r.replace(/_/g, ' ')}</option>`).join('')}</select></label>
+        <label>Spending Limit ($/txn):<input id="assign-spend-limit" type="number" placeholder="Leave blank for no limit"></label>
+        <label>Monthly Limit ($):<input id="assign-monthly-limit" type="number" placeholder="Leave blank for no limit"></label>
+        <label>Auto-approve below ($):<input id="assign-auto-threshold" type="number" placeholder="Leave blank to always require approval"></label>
+        <label>Notes:<input id="assign-notes" type="text" placeholder="Optional"></label>
+        <button class="btn btn-primary" onclick="submitAssignment()">Assign</button>
+      </div>
+    `;
+    showModal('Assign Trustee / Beneficiary to Account', html);
+  } catch (err) {
+    showToast('Failed to load data: ' + err.message, 'error');
+  }
+}
+
+async function submitAssignment() {
+  try {
+    const body = {
+      contact_id: parseInt(document.getElementById('assign-contact').value),
+      account_id: parseInt(document.getElementById('assign-account').value),
+      role: document.getElementById('assign-role').value,
+      spending_limit_cents: document.getElementById('assign-spend-limit').value ? parseInt(document.getElementById('assign-spend-limit').value) * 100 : null,
+      monthly_limit_cents: document.getElementById('assign-monthly-limit').value ? parseInt(document.getElementById('assign-monthly-limit').value) * 100 : null,
+      approval_threshold_cents: document.getElementById('assign-auto-threshold').value ? parseInt(document.getElementById('assign-auto-threshold').value) * 100 : null,
+      notes: document.getElementById('assign-notes').value || null,
+    };
+    const res = await fetch('/api/trustee-assignments', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(body) });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error);
+    showToast(data.message || 'Assignment created', 'success');
+    closeModal();
+    loadAssignments();
+  } catch (err) {
+    showToast(err.message, 'error');
+  }
+}
+
+async function revokeAssignment(id) {
+  if (!confirm('Revoke this assignment?')) return;
+  try {
+    const res = await fetch(`/api/trustee-assignments/${id}/revoke`, { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ actor: 'primary_trustee', reason: 'Revoked via dashboard' }) });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error);
+    showToast('Assignment revoked', 'success');
+    loadAssignments();
+  } catch (err) {
+    showToast(err.message, 'error');
+  }
+}
+
+async function approveExpenseReq(id) {
+  try {
+    const res = await fetch(`/api/trustee-assignments/expenses/${id}/approve`, { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ actor: 'primary_trustee' }) });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error);
+    showToast('Expense approved', 'success');
+    loadAssignments();
+  } catch (err) {
+    showToast(err.message, 'error');
+  }
+}
+
+async function rejectExpenseReq(id) {
+  const reason = prompt('Rejection reason:');
+  if (reason === null) return;
+  try {
+    const res = await fetch(`/api/trustee-assignments/expenses/${id}/reject`, { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ actor: 'primary_trustee', reason }) });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error);
+    showToast('Expense rejected', 'success');
+    loadAssignments();
+  } catch (err) {
+    showToast(err.message, 'error');
+  }
+}
+
+// --- Trustee Approval ---
+
+async function loadApproval() {
+  try {
+    const [stats, policies, requests, auditLog, retentionStats, backups] = await Promise.all([
+      api('/approval/stats').catch(() => ({ pending: 0, approved: 0, rejected: 0, expired: 0, total: 0, recent_pending: [] })),
+      api('/approval/policies').catch(() => ({ policies: [] })),
+      api('/approval/requests?status=pending').catch(() => ({ requests: [] })),
+      api('/approval/audit-log?limit=20').catch(() => ({ entries: [] })),
+      api('/approval/retention/stats').catch(() => null),
+      api('/approval/retention/backups').catch(() => ({ backups: [] })),
+    ]);
+
+    // Stats cards
+    const statsEl = $('#approval-stats');
+    if (statsEl) {
+      statsEl.innerHTML = `
+        <div class="stat-card" style="background:rgba(245,158,11,0.1);border:1px solid rgba(245,158,11,0.3);border-radius:12px;padding:16px;text-align:center">
+          <div style="font-size:2rem;font-weight:700;color:#f59e0b">${stats.pending}</div>
+          <div style="font-size:0.8rem;color:var(--text-secondary)">Pending</div>
+        </div>
+        <div class="stat-card" style="background:rgba(34,197,94,0.1);border:1px solid rgba(34,197,94,0.3);border-radius:12px;padding:16px;text-align:center">
+          <div style="font-size:2rem;font-weight:700;color:#22c55e">${stats.approved}</div>
+          <div style="font-size:0.8rem;color:var(--text-secondary)">Approved</div>
+        </div>
+        <div class="stat-card" style="background:rgba(239,68,68,0.1);border:1px solid rgba(239,68,68,0.3);border-radius:12px;padding:16px;text-align:center">
+          <div style="font-size:2rem;font-weight:700;color:#ef4444">${stats.rejected}</div>
+          <div style="font-size:0.8rem;color:var(--text-secondary)">Rejected</div>
+        </div>
+        <div class="stat-card" style="background:rgba(107,114,128,0.1);border:1px solid rgba(107,114,128,0.3);border-radius:12px;padding:16px;text-align:center">
+          <div style="font-size:2rem;font-weight:700;color:#6b7280">${stats.expired}</div>
+          <div style="font-size:0.8rem;color:var(--text-secondary)">Expired</div>
+        </div>
+        <div class="stat-card" style="background:rgba(99,102,241,0.1);border:1px solid rgba(99,102,241,0.3);border-radius:12px;padding:16px;text-align:center">
+          <div style="font-size:2rem;font-weight:700;color:#6366f1">${stats.total}</div>
+          <div style="font-size:0.8rem;color:var(--text-secondary)">Total</div>
+        </div>
+      `;
+    }
+
+    // Policies table
+    const policiesEl = $('#approval-policies');
+    if (policiesEl) {
+      const pols = policies.policies || [];
+      policiesEl.innerHTML = pols.length ? `<table><thead><tr>
+        <th>Entity</th><th>Action</th><th>Tier</th><th>Min Approvers</th><th>Auto Below</th><th>Active</th>
+      </tr></thead><tbody>${pols.map(p => `<tr>
+        <td>${p.entity_type}</td><td>${p.action}</td><td><span class="badge badge-${p.approval_tier === 'auto' ? 'success' : 'warning'}">${p.approval_tier}</span></td>
+        <td>${p.min_approvers}</td><td>${p.auto_approve_below_cents ? '$' + (p.auto_approve_below_cents / 100).toLocaleString() : '—'}</td>
+        <td>${p.is_active ? 'Yes' : 'No'}</td>
+      </tr>`).join('')}</tbody></table>` : '<p style="color:var(--text-secondary)">No policies configured</p>';
+    }
+
+    // Pending requests
+    const reqsEl = $('#approval-requests');
+    if (reqsEl) {
+      const reqs = requests.requests || stats.recent_pending || [];
+      reqsEl.innerHTML = reqs.length ? `<table><thead><tr>
+        <th>Request #</th><th>Type</th><th>Action</th><th>Summary</th><th>Amount</th><th>Submitted</th><th>Actions</th>
+      </tr></thead><tbody>${reqs.map(r => `<tr>
+        <td>${r.request_number}</td><td>${r.entity_type}</td><td>${r.action}</td>
+        <td>${r.summary || '—'}</td><td>${r.amount_cents ? '$' + (r.amount_cents / 100).toLocaleString() : '—'}</td>
+        <td>${new Date(r.submitted_at || r.created_at).toLocaleString()}</td>
+        <td>
+          <button class="btn btn-primary btn-sm" onclick="approveRequest(${r.id})" style="font-size:0.75rem;padding:4px 8px">Approve</button>
+          <button class="btn btn-danger btn-sm" onclick="rejectRequest(${r.id})" style="font-size:0.75rem;padding:4px 8px;margin-left:4px">Reject</button>
+        </td>
+      </tr>`).join('')}</tbody></table>` : '<p style="color:var(--text-secondary)">No pending requests</p>';
+    }
+
+    // Audit log
+    const auditEl = $('#approval-audit');
+    if (auditEl) {
+      const entries = auditLog.entries || [];
+      auditEl.innerHTML = entries.length ? `<table><thead><tr>
+        <th>Time</th><th>Event</th><th>Actor</th><th>Details</th>
+      </tr></thead><tbody>${entries.map(e => `<tr>
+        <td>${new Date(e.created_at).toLocaleString()}</td>
+        <td><span class="badge badge-${e.event_type === 'approved' ? 'success' : e.event_type === 'rejected' ? 'danger' : 'info'}">${e.event_type}</span></td>
+        <td>${e.actor}</td><td style="max-width:300px;overflow:hidden;text-overflow:ellipsis">${e.details || '—'}</td>
+      </tr>`).join('')}</tbody></table>` : '<p style="color:var(--text-secondary)">No audit entries</p>';
+    }
+
+    // Retention stats
+    const retEl = $('#retention-stats');
+    if (retEl && retentionStats) {
+      retEl.innerHTML = `
+        <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:12px">
+          <div style="background:rgba(99,102,241,0.1);border:1px solid rgba(99,102,241,0.3);border-radius:12px;padding:16px;text-align:center">
+            <div style="font-size:1.5rem;font-weight:700;color:#6366f1">${retentionStats.backups_total}</div>
+            <div style="font-size:0.8rem;color:var(--text-secondary)">Backups</div>
+          </div>
+          <div style="background:rgba(34,197,94,0.1);border:1px solid rgba(34,197,94,0.3);border-radius:12px;padding:16px;text-align:center">
+            <div style="font-size:1.5rem;font-weight:700;color:#22c55e">${retentionStats.migrations_applied}</div>
+            <div style="font-size:0.8rem;color:var(--text-secondary)">Migrations</div>
+          </div>
+          <div style="background:rgba(99,102,241,0.1);border:1px solid rgba(99,102,241,0.3);border-radius:12px;padding:16px;text-align:center">
+            <div style="font-size:1.5rem;font-weight:700;color:#6366f1">${retentionStats.tables || 0}</div>
+            <div style="font-size:0.8rem;color:var(--text-secondary)">Tables</div>
+          </div>
+          <div style="background:${retentionStats.data_integrity === 'healthy' ? 'rgba(34,197,94,0.1)' : 'rgba(239,68,68,0.1)'};border:1px solid ${retentionStats.data_integrity === 'healthy' ? 'rgba(34,197,94,0.3)' : 'rgba(239,68,68,0.3)'};border-radius:12px;padding:16px;text-align:center">
+            <div style="font-size:1.5rem;font-weight:700;color:${retentionStats.data_integrity === 'healthy' ? '#22c55e' : '#ef4444'}">${retentionStats.data_integrity === 'healthy' ? 'Healthy' : 'Issues'}</div>
+            <div style="font-size:0.8rem;color:var(--text-secondary)">Integrity</div>
+          </div>
+        </div>
+      `;
+    }
+
+    // Backups table
+    const backupsEl = $('#retention-backups');
+    if (backupsEl) {
+      const bks = backups.backups || [];
+      backupsEl.innerHTML = bks.length ? `<table><thead><tr>
+        <th>Backup ID</th><th>Type</th><th>Size</th><th>Checksum</th><th>Created</th><th>Status</th>
+      </tr></thead><tbody>${bks.map(b => `<tr>
+        <td style="font-family:monospace;font-size:0.8rem">${b.backup_id}</td><td>${b.backup_type}</td>
+        <td>${b.file_size_bytes ? (b.file_size_bytes / 1024).toFixed(1) + ' KB' : '—'}</td>
+        <td style="font-family:monospace;font-size:0.75rem;max-width:120px;overflow:hidden;text-overflow:ellipsis">${b.checksum ? b.checksum.slice(0, 16) + '...' : '—'}</td>
+        <td>${new Date(b.created_at).toLocaleString()}</td>
+        <td><span class="badge badge-${b.status === 'completed' ? 'success' : 'warning'}">${b.status}</span></td>
+      </tr>`).join('')}</tbody></table>` : '<p style="color:var(--text-secondary)">No backups yet</p>';
+    }
+  } catch (err) {
+    console.error('Failed to load approval dashboard:', err);
+  }
+}
+
+async function approveRequest(id) {
+  if (!confirm('Approve this request? This will execute the pending action.')) return;
+  try {
+    const result = await api(`/approval/requests/${id}/approve`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ decided_by: 'trustee', decided_role: 'trustee', reason: 'Approved by trustee' }),
+    });
+    alert(result.message || 'Request approved');
+    loadApproval();
+  } catch (err) {
+    alert('Failed: ' + err.message);
+  }
+}
+
+async function rejectRequest(id) {
+  const reason = prompt('Reason for rejection:');
+  if (!reason) return;
+  try {
+    const result = await api(`/approval/requests/${id}/reject`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ decided_by: 'trustee', decided_role: 'trustee', reason }),
+    });
+    alert(result.message || 'Request rejected');
+    loadApproval();
+  } catch (err) {
+    alert('Failed: ' + err.message);
+  }
+}
+
+async function createManualBackup() {
+  try {
+    const result = await api('/approval/retention/backup', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ triggered_by: 'trustee', notes: 'Manual backup from dashboard' }),
+    });
+    alert(`Backup created: ${result.backup_id || 'Success'}`);
+    loadApproval();
+  } catch (err) {
+    alert('Backup failed: ' + err.message);
+  }
+}
+
+async function runIntegrityCheck() {
+  try {
+    const result = await api('/approval/retention/integrity');
+    alert(`Integrity: ${result.healthy ? 'HEALTHY' : 'ISSUES FOUND'}\nTables: ${result.tables}\nRows: ${result.total_rows}`);
+  } catch (err) {
+    alert('Check failed: ' + err.message);
+  }
+}
+
+async function runMigrations() {
+  try {
+    const result = await api('/approval/retention/migrate', { method: 'POST' });
+    alert(`Migrations: ${result.applied} applied, ${result.skipped} skipped`);
+    loadApproval();
+  } catch (err) {
+    alert('Migration failed: ' + err.message);
   }
 }
 

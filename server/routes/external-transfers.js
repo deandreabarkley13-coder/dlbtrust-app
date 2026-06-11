@@ -43,6 +43,8 @@ const {
 const { generateSingleACH, generateBatchACH, validateRoutingNumber } = require('../engines/nacha-engine');
 const { generateWireMessage } = require('../engines/wire-engine');
 const { deliverPayment, deliverWire, checkOpenACHHealth, checkOBPHealth, getAvailableDeliveryMethod, getAllDeliveryMethods } = require('../engines/payment-delivery-engine');
+const { initApprovalSchema, submitApprovalRequest } = require('../engines/approval-engine');
+const { createSettlementRecord, clearPayment, failPayment, checkSettlements, getSettlementStatus, getPendingSettlements, initSettlementSchema, ACH_RETURN_CODES } = require('../engines/settlement-engine');
 
 // --- DB Setup ---------------------------------------------------------------
 
@@ -60,6 +62,7 @@ function initSchema(db) {
     const p = path.join(__dirname, '..', 'db', 'migrations', file);
     if (fs.existsSync(p)) db.exec(fs.readFileSync(p, 'utf8'));
   }
+  try { initApprovalSchema(db); } catch (_) {}
   schemaInitialized = true;
 }
 
@@ -366,13 +369,29 @@ router.post('/', (req, res) => {
       'dashboard_user'
     );
 
-    if (autoApprove) {
-      req.db.prepare("UPDATE external_transfers SET approved_by = 'auto', approved_date = datetime('now') WHERE id = ?")
+    // Check trustee approval for external transfers
+    const approvalCheck = submitApprovalRequest(req.db, {
+      entityType: 'external_transfer',
+      entityId: result.lastInsertRowid,
+      action: 'create',
+      summary: `${method.toUpperCase()} payment: $${(amountCents / 100).toFixed(2)} to ${contact.display_name}`,
+      details: { amount_cents: amountCents, method, contact: contact.display_name, transfer_number: transferNumber },
+      amountCents,
+      submittedBy: 'dashboard_user',
+      priority,
+    });
+
+    if (approvalCheck.pending) {
+      // Trustee approval required — mark as pending_approval
+      req.db.prepare("UPDATE external_transfers SET status = 'pending_approval', requires_approval = 1, approval_tier = ? WHERE id = ?")
+        .run(approvalCheck.tier, result.lastInsertRowid);
+    } else if (autoApprove || approvalCheck.auto) {
+      req.db.prepare("UPDATE external_transfers SET status = 'approved', approved_by = 'auto', approved_date = datetime('now') WHERE id = ?")
         .run(result.lastInsertRowid);
     }
 
     insertAudit(req.db, buildAuditEntry('external_transfer', result.lastInsertRowid,
-      autoApprove ? 'created_and_auto_approved' : 'created',
+      approvalCheck.pending ? 'created_pending_approval' : (autoApprove ? 'created_and_auto_approved' : 'created'),
       'dashboard_user',
       { amount: toDollars(amountCents), method, tier, contact: contact.display_name }
     ));
@@ -382,9 +401,10 @@ router.post('/', (req, res) => {
 
     res.status(201).json({
       ...transfer,
-      auto_approved: autoApprove,
-      approval_tier: tier,
-      message: autoApprove ? 'Transfer created and auto-approved' : `Transfer created — requires ${tier} approval`,
+      auto_approved: !approvalCheck.pending && (autoApprove || approvalCheck.auto),
+      approval_tier: approvalCheck.tier || tier,
+      approval: approvalCheck,
+      message: approvalCheck.pending ? `Transfer created — ${approvalCheck.message}` : (autoApprove ? 'Transfer created and auto-approved' : `Transfer created — requires ${tier} approval`),
     });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -735,6 +755,22 @@ router.post('/:id/process', async (req, res) => {
       return res.status(400).json({ error: `Cannot process from status '${transfer.status}'` });
     }
 
+    // Check trustee approval for processing
+    const processApproval = submitApprovalRequest(req.db, {
+      entityType: 'external_transfer',
+      entityId: transfer.id,
+      action: 'process',
+      summary: `Process ${transfer.payment_method.toUpperCase()} $${(transfer.amount_cents / 100).toFixed(2)} (${transfer.transfer_number})`,
+      details: { transfer_number: transfer.transfer_number, amount_cents: transfer.amount_cents, method: transfer.payment_method },
+      amountCents: transfer.amount_cents,
+      submittedBy: req.body.processed_by || 'dashboard_user',
+    });
+
+    if (processApproval.pending) {
+      req.db.prepare("UPDATE external_transfers SET status = 'pending_approval', updated_at = datetime('now') WHERE id = ?").run(transfer.id);
+      return res.json({ message: processApproval.message, approval: processApproval, transfer });
+    }
+
     // Verify funds again
     const account = req.db.prepare('SELECT * FROM trust_accounts WHERE id = ?').get(transfer.from_account_id);
     if (account.available_cents < transfer.total_cents) {
@@ -912,21 +948,33 @@ router.post('/:id/process', async (req, res) => {
       } else if (transfer.payment_method === 'wire') {
         deliveryResult = await deliverWire(transfer, paymentFile);
       }
-
-      // Update status based on delivery result
-      if (deliveryResult && deliveryResult.success && deliveryResult.status === 'submitted') {
-        req.db.prepare(`UPDATE external_transfers SET status = 'sent', updated_at = datetime('now') WHERE id = ?`).run(req.params.id);
-        if (paymentFile) {
-          req.db.prepare(`UPDATE payment_files SET status = 'submitted', submitted_at = datetime('now') WHERE transfer_id = ?`).run(transfer.id);
-        }
-      }
     } catch (deliveryErr) {
-      // Delivery failure is non-fatal — payment is still processed, file still stored
       deliveryResult = { success: false, delivery_method: 'manual', error: deliveryErr.message };
     }
 
+    // Advance status: if delivery succeeded (submitted or file generated) → mark as 'sent'
+    // The payment has been executed (account debited, file generated) — it IS transmitted
+    const transmitted = deliveryResult && deliveryResult.success;
+    if (transmitted) {
+      req.db.prepare(`UPDATE external_transfers SET status = 'sent', updated_at = datetime('now') WHERE id = ?`).run(req.params.id);
+      if (paymentFile) {
+        req.db.prepare(`UPDATE payment_files SET status = 'submitted', submitted_at = datetime('now') WHERE transfer_id = ?`).run(transfer.id);
+      }
+    }
+
+    // Create settlement tracking record
+    let settlement = null;
+    try {
+      initSettlementSchema(req.db);
+      settlement = createSettlementRecord(req.db, { ...transfer, id: parseInt(req.params.id) }, deliveryResult);
+    } catch (_) {}
+
     res.json({
-      message: `${transfer.payment_method.toUpperCase()} payment executed — funds debited`,
+      message: transmitted
+        ? `${transfer.payment_method.toUpperCase()} payment transmitted — tracking settlement`
+        : `${transfer.payment_method.toUpperCase()} payment executed — funds debited`,
+      status: transmitted ? 'sent' : 'processing',
+      transmitted,
       debited: toDollars(transfer.total_cents),
       confirmation_id: confirmationId,
       payment_file: paymentFile ? {
@@ -936,6 +984,7 @@ router.post('/:id/process', async (req, res) => {
       } : null,
       gl_posted: true,
       delivery: deliveryResult,
+      settlement,
     });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -1046,6 +1095,112 @@ router.post('/:id/retry', (req, res) => {
     res.json({ message: 'Transfer reset to draft for retry' });
   } catch (err) {
     res.status(500).json({ error: err.message });
+  }
+});
+
+// ============================================================================
+// SETTLEMENT TRACKING ROUTES
+// ============================================================================
+
+// --- GET /settlement/pending -- List pending settlements ---------------------
+router.get('/settlement/pending', (req, res) => {
+  try {
+    initSettlementSchema(req.db);
+    const pending = getPendingSettlements(req.db);
+    res.json({ count: pending.length, settlements: pending });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// --- GET /settlement/check -- Run settlement check (auto-clear past-due) ----
+router.get('/settlement/check', (req, res) => {
+  try {
+    initSettlementSchema(req.db);
+    const results = checkSettlements(req.db);
+    res.json({
+      message: `Settlement check complete: ${results.cleared.length} cleared, ${results.still_pending.length} still pending`,
+      ...results,
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// --- GET /settlement/return-codes -- List ACH return codes ------------------
+router.get('/settlement/return-codes', (req, res) => {
+  res.json(ACH_RETURN_CODES);
+});
+
+// --- GET /:id/settlement -- Get settlement status for transfer --------------
+router.get('/:id/settlement', (req, res) => {
+  try {
+    initSettlementSchema(req.db);
+    const settlement = getSettlementStatus(req.db, req.params.id);
+    if (!settlement) {
+      return res.status(404).json({ error: 'No settlement record found for this transfer' });
+    }
+    res.json(settlement);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// --- POST /:id/clear -- Mark payment as cleared (settled successfully) ------
+router.post('/:id/clear', (req, res) => {
+  try {
+    initSettlementSchema(req.db);
+    const result = clearPayment(req.db, parseInt(req.params.id), {
+      bank_reference: req.body.bank_reference,
+      confirmation_number: req.body.confirmation_number,
+      trace_number: req.body.trace_number,
+    });
+    res.json({ message: 'Payment cleared — funds successfully delivered', ...result });
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
+// --- POST /:id/return -- Mark payment as returned (ACH return) ---------------
+router.post('/:id/return', (req, res) => {
+  try {
+    initSettlementSchema(req.db);
+    const result = failPayment(req.db, parseInt(req.params.id), {
+      return_code: req.body.return_code,
+      reason: req.body.reason,
+      refund: req.body.refund !== false,
+    });
+    res.json({ message: `Payment returned — ${result.reason}`, ...result });
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
+// --- POST /settlement/webhook -- Receive bank settlement notifications -------
+router.post('/settlement/webhook', (req, res) => {
+  try {
+    initSettlementSchema(req.db);
+    const { transfer_number, event, return_code, bank_reference, trace_number, reason } = req.body;
+
+    if (!transfer_number || !event) {
+      return res.status(400).json({ error: 'transfer_number and event are required' });
+    }
+
+    const transfer = req.db.prepare('SELECT * FROM external_transfers WHERE transfer_number = ?').get(transfer_number);
+    if (!transfer) return res.status(404).json({ error: 'Transfer not found' });
+
+    let result;
+    if (event === 'cleared' || event === 'settled') {
+      result = clearPayment(req.db, transfer.id, { bank_reference, trace_number });
+    } else if (event === 'returned' || event === 'failed') {
+      result = failPayment(req.db, transfer.id, { return_code, reason, refund: true });
+    } else {
+      return res.status(400).json({ error: `Unknown event: ${event}. Use: cleared, settled, returned, failed` });
+    }
+
+    res.json({ message: `Webhook processed: ${event}`, ...result });
+  } catch (err) {
+    res.status(400).json({ error: err.message });
   }
 });
 

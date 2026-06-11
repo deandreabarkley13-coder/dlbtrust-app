@@ -41,6 +41,23 @@ try {
   console.warn('[DB] SQLite not available:', err.message);
 }
 
+// ─── Data Retention — Run migrations on startup, auto-backup pre-deploy ──────
+if (db) {
+  try {
+    const { runMigrations, createBackup } = require('./server/engines/data-retention-engine');
+    const { initApprovalSchema } = require('./server/engines/approval-engine');
+    initApprovalSchema(db);
+    const migrationResult = runMigrations(db);
+    console.log(`[retention] Migrations: ${migrationResult.applied} applied, ${migrationResult.skipped} skipped`);
+    if (process.env.PRE_DEPLOY_BACKUP === 'true') {
+      const backup = createBackup(db, { backupType: 'pre_deploy', triggeredBy: 'startup' });
+      console.log(`[retention] Pre-deploy backup: ${backup.backup_id}`);
+    }
+  } catch (err) {
+    console.warn('[retention] Startup init warning:', err.message);
+  }
+}
+
 // ─── OpenACH Integration ──────────────────────────────────────────────────────
 require('./server/openach-patch')(app, typeof db !== 'undefined' ? db : null);
 
@@ -100,9 +117,33 @@ app.use('/api/gateway', require('./server/routes/gateway'));
 // ─── Virtual Account Routes (Auto-Generated Payment Accounts) ────────────────
 app.use('/api/virtual-accounts', require('./server/routes/virtual-accounts'));
 
+// ─── Trustee Approval & Data Retention Routes ────────────────────────────────
+app.use('/api/approval', require('./server/routes/approval'));
+
+// ─── Trustee Assignment & Beneficiary Expense Management ─────────────────────
+app.use('/api/trustee-assignments', require('./server/routes/trustee-assignments'));
+
 // ─── Frontend Dashboard ───────────────────────────────────────────────────────
 app.use(express.static(path.join(__dirname, 'frontend')));
 app.get('/', (req, res) => res.sendFile(path.join(__dirname, 'frontend', 'index.html')));
+
+// ─── Settlement Auto-Check (every 30 minutes) ─────────────────────────────────
+const { checkSettlements, initSettlementSchema } = require('./server/engines/settlement-engine');
+setInterval(() => {
+  try {
+    const Database = require('better-sqlite3');
+    const dbPath = process.env.DB_PATH || path.join(__dirname, 'data', 'dlbtrust.db');
+    const db = new Database(dbPath);
+    initSettlementSchema(db);
+    const results = checkSettlements(db);
+    if (results.cleared.length > 0) {
+      console.log(`[settlement] Auto-cleared ${results.cleared.length} payment(s)`);
+    }
+    db.close();
+  } catch (err) {
+    console.warn('[settlement] Auto-check error:', err.message);
+  }
+}, 30 * 60 * 1000); // every 30 minutes
 
 // ─── Start Server ─────────────────────────────────────────────────────────────
 const PORT = process.env.PORT || 3001;
