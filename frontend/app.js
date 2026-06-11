@@ -2072,6 +2072,17 @@ function hideModal(id) {
   document.getElementById(id).classList.add('hidden');
 }
 
+function showModal(title, bodyHtml) {
+  document.getElementById('generic-modal-title').textContent = title;
+  document.getElementById('generic-modal-body').innerHTML = bodyHtml;
+  document.getElementById('generic-modal').classList.remove('hidden');
+}
+
+function closeModal(id) {
+  const el = id ? document.getElementById(id) : document.getElementById('generic-modal');
+  if (el) el.classList.add('hidden');
+}
+
 // --- Blockchain / Crypto Rails ---
 
 async function loadBlockchain() {
@@ -4243,7 +4254,7 @@ async function loadAssignments() {
 async function showAssignModal() {
   try {
     const [contacts, accounts] = await Promise.all([
-      fetch('/api/crm').then(r => r.json()),
+      fetch('/api/crm/contacts').then(r => r.json()),
       fetch('/api/accounts').then(r => r.json()),
     ]);
     const contactList = contacts.contacts || contacts || [];

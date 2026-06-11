@@ -1937,6 +1937,14 @@
     </div>
   </div>
 
+  <!-- Generic Dynamic Modal (used by showModal/closeModal) -->
+  <div id="generic-modal" class="modal hidden" onclick="if(event.target===this)closeModal()">
+    <div class="modal-content" style="max-width:600px">
+      <h3 id="generic-modal-title"></h3>
+      <div id="generic-modal-body"></div>
+    </div>
+  </div>
+
   <script src="app.js"></script>
 </body>
 </html>
