@@ -120,6 +120,9 @@ app.use('/api/virtual-accounts', require('./server/routes/virtual-accounts'));
 // ─── Trustee Approval & Data Retention Routes ────────────────────────────────
 app.use('/api/approval', require('./server/routes/approval'));
 
+// ─── Trustee Assignment & Beneficiary Expense Management ─────────────────────
+app.use('/api/trustee-assignments', require('./server/routes/trustee-assignments'));
+
 // ─── Frontend Dashboard ───────────────────────────────────────────────────────
 app.use(express.static(path.join(__dirname, 'frontend')));
 app.get('/', (req, res) => res.sendFile(path.join(__dirname, 'frontend', 'index.html')));

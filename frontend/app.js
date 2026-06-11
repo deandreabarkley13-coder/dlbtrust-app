@@ -89,6 +89,7 @@ function loadView(view) {
     case 'fineract': loadFineract(); break;
     case 'cdk': loadCDK(); break;
     case 'compliance': loadCompliance(); break;
+    case 'trustee-assignments': loadAssignments(); break;
     case 'approval': loadApproval(); break;
     case 'activity': loadActivity(); break;
   }
@@ -4159,6 +4160,173 @@ async function vaSendPayment(e) {
     }
   } catch (err) {
     showToast('Payment error: ' + err.message, 'error');
+  }
+}
+
+// --- Trustee Assignments & Expense Management ---
+
+async function loadAssignments() {
+  try {
+    const [dashboard, list, expenses, pendingExp] = await Promise.all([
+      fetch('/api/trustee-assignments/dashboard').then(r => r.json()),
+      fetch('/api/trustee-assignments?status=active').then(r => r.json()),
+      fetch('/api/trustee-assignments/expenses?limit=20').then(r => r.json()),
+      fetch('/api/trustee-assignments/expenses/pending').then(r => r.json()),
+    ]);
+
+    // Summary cards
+    const cards = document.getElementById('assignment-summary-cards');
+    if (cards) {
+      cards.innerHTML = `
+        <div class="stat-card"><h4>Active Assignments</h4><p class="stat-value">${dashboard.total_assignments}</p></div>
+        <div class="stat-card"><h4>Trustee Assignments</h4><p class="stat-value">${dashboard.trustee_assignments}</p></div>
+        <div class="stat-card"><h4>Beneficiary Assignments</h4><p class="stat-value">${dashboard.beneficiary_assignments}</p></div>
+        <div class="stat-card"><h4>Pending Expenses</h4><p class="stat-value">${dashboard.pending_expenses}</p></div>
+        <div class="stat-card"><h4>Monthly Spend</h4><p class="stat-value">$${dashboard.monthly_spend}</p></div>
+      `;
+    }
+
+    // Assignments table
+    const atb = document.querySelector('#assignments-table tbody');
+    if (atb) {
+      const assignments = list.assignments || [];
+      atb.innerHTML = assignments.length === 0 ? '<tr><td colspan="5" style="text-align:center;opacity:.6">No active assignments</td></tr>' : assignments.map(a => {
+        const perms = JSON.parse(a.permissions || '[]');
+        const limitStr = a.spending_limit_cents ? `$${(a.spending_limit_cents/100).toFixed(0)}/txn` : (a.monthly_limit_cents ? `$${(a.monthly_limit_cents/100).toFixed(0)}/mo` : 'No limit');
+        const roleBadge = a.role.includes('trustee') ? `<span class="badge badge-info">${a.role.replace(/_/g,' ')}</span>` : `<span class="badge badge-success">${a.role.replace(/_/g,' ')}</span>`;
+        return `<tr>
+          <td><strong>${a.contact_name}</strong><br><small>${a.contact_type}</small></td>
+          <td>${a.account_name}<br><small>${a.account_number}</small></td>
+          <td>${roleBadge}</td>
+          <td>${limitStr}<br><small>${perms.join(', ')}</small></td>
+          <td><button class="btn btn-sm btn-danger" onclick="revokeAssignment(${a.id})">Revoke</button></td>
+        </tr>`;
+      }).join('');
+    }
+
+    // Pending expenses table
+    const pet = document.querySelector('#pending-expenses-table tbody');
+    if (pet) {
+      pet.innerHTML = pendingExp.length === 0 ? '<tr><td colspan="5" style="text-align:center;opacity:.6">No pending expenses</td></tr>' : pendingExp.map(e => `<tr>
+        <td>${e.request_number}</td>
+        <td>${e.requester_name}</td>
+        <td>$${(e.amount_cents/100).toFixed(2)}</td>
+        <td><span class="badge">${e.category}</span></td>
+        <td>
+          <button class="btn btn-sm btn-success" onclick="approveExpenseReq(${e.id})">Approve</button>
+          <button class="btn btn-sm btn-danger" onclick="rejectExpenseReq(${e.id})">Reject</button>
+        </td>
+      </tr>`).join('');
+    }
+
+    // Expense history table
+    const eht = document.querySelector('#expense-history-table tbody');
+    if (eht) {
+      eht.innerHTML = expenses.length === 0 ? '<tr><td colspan="7" style="text-align:center;opacity:.6">No expenses yet</td></tr>' : expenses.map(e => {
+        const statusCls = e.status === 'paid' ? 'badge-success' : e.status === 'approved' ? 'badge-info' : e.status === 'rejected' ? 'badge-danger' : 'badge-warning';
+        return `<tr>
+          <td>${e.request_number}</td>
+          <td>${e.requester_name}</td>
+          <td>${e.account_name}</td>
+          <td>$${(e.amount_cents/100).toFixed(2)}</td>
+          <td>${e.category}</td>
+          <td><span class="badge ${statusCls}">${e.status}</span></td>
+          <td>${new Date(e.submitted_at).toLocaleDateString()}</td>
+        </tr>`;
+      }).join('');
+    }
+  } catch (err) {
+    console.error('loadAssignments error:', err);
+  }
+}
+
+async function showAssignModal() {
+  try {
+    const [contacts, accounts] = await Promise.all([
+      fetch('/api/crm').then(r => r.json()),
+      fetch('/api/accounts').then(r => r.json()),
+    ]);
+    const contactList = contacts.contacts || contacts || [];
+    const accountList = accounts.accounts || accounts || [];
+
+    const roles = ['primary_trustee', 'co_trustee', 'successor_trustee', 'beneficiary', 'expense_manager'];
+
+    const html = `
+      <div style="display:grid;gap:12px;">
+        <label>Contact:<select id="assign-contact">${contactList.map(c => `<option value="${c.id}">${c.display_name || (c.first_name + ' ' + c.last_name)} (${c.contact_type})</option>`).join('')}</select></label>
+        <label>Account:<select id="assign-account">${accountList.map(a => `<option value="${a.id}">${a.account_name} (${a.account_number})</option>`).join('')}</select></label>
+        <label>Role:<select id="assign-role">${roles.map(r => `<option value="${r}">${r.replace(/_/g, ' ')}</option>`).join('')}</select></label>
+        <label>Spending Limit ($/txn):<input id="assign-spend-limit" type="number" placeholder="Leave blank for no limit"></label>
+        <label>Monthly Limit ($):<input id="assign-monthly-limit" type="number" placeholder="Leave blank for no limit"></label>
+        <label>Auto-approve below ($):<input id="assign-auto-threshold" type="number" placeholder="Leave blank to always require approval"></label>
+        <label>Notes:<input id="assign-notes" type="text" placeholder="Optional"></label>
+        <button class="btn btn-primary" onclick="submitAssignment()">Assign</button>
+      </div>
+    `;
+    showModal('Assign Trustee / Beneficiary to Account', html);
+  } catch (err) {
+    showToast('Failed to load data: ' + err.message, 'error');
+  }
+}
+
+async function submitAssignment() {
+  try {
+    const body = {
+      contact_id: parseInt(document.getElementById('assign-contact').value),
+      account_id: parseInt(document.getElementById('assign-account').value),
+      role: document.getElementById('assign-role').value,
+      spending_limit_cents: document.getElementById('assign-spend-limit').value ? parseInt(document.getElementById('assign-spend-limit').value) * 100 : null,
+      monthly_limit_cents: document.getElementById('assign-monthly-limit').value ? parseInt(document.getElementById('assign-monthly-limit').value) * 100 : null,
+      approval_threshold_cents: document.getElementById('assign-auto-threshold').value ? parseInt(document.getElementById('assign-auto-threshold').value) * 100 : null,
+      notes: document.getElementById('assign-notes').value || null,
+    };
+    const res = await fetch('/api/trustee-assignments', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(body) });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error);
+    showToast(data.message || 'Assignment created', 'success');
+    closeModal();
+    loadAssignments();
+  } catch (err) {
+    showToast(err.message, 'error');
+  }
+}
+
+async function revokeAssignment(id) {
+  if (!confirm('Revoke this assignment?')) return;
+  try {
+    const res = await fetch(`/api/trustee-assignments/${id}/revoke`, { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ actor: 'primary_trustee', reason: 'Revoked via dashboard' }) });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error);
+    showToast('Assignment revoked', 'success');
+    loadAssignments();
+  } catch (err) {
+    showToast(err.message, 'error');
+  }
+}
+
+async function approveExpenseReq(id) {
+  try {
+    const res = await fetch(`/api/trustee-assignments/expenses/${id}/approve`, { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ actor: 'primary_trustee' }) });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error);
+    showToast('Expense approved', 'success');
+    loadAssignments();
+  } catch (err) {
+    showToast(err.message, 'error');
+  }
+}
+
+async function rejectExpenseReq(id) {
+  const reason = prompt('Rejection reason:');
+  if (reason === null) return;
+  try {
+    const res = await fetch(`/api/trustee-assignments/expenses/${id}/reject`, { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ actor: 'primary_trustee', reason }) });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error);
+    showToast('Expense rejected', 'success');
+    loadAssignments();
+  } catch (err) {
+    showToast(err.message, 'error');
   }
 }
 

@@ -33,6 +33,7 @@
       <li><a href="#" data-view="fineract">Fineract Banking</a></li>
       <li><a href="#" data-view="cdk">Polygon CDK</a></li>
       <li><a href="#" data-view="compliance">Compliance</a></li>
+      <li><a href="#" data-view="trustee-assignments">Trustee Assignments</a></li>
       <li><a href="#" data-view="approval">Trustee Approval</a></li>
       <li><a href="#" data-view="activity">Activity</a></li>
     </ul>
@@ -1831,6 +1832,41 @@
         <div id="cdk-distributions-table" class="table-container">
           <p style="color:#888;">No distributions yet. Coupon payments will appear here after minting.</p>
         </div>
+      </div>
+    </section>
+
+    <!-- ═══ Trustee Assignments & Expense Management ═══ -->
+    <section id="view-trustee-assignments" class="view">
+      <header class="view-header">
+        <h2>Trustee Assignments & Expense Management</h2>
+        <div class="header-actions">
+          <button class="btn btn-primary" onclick="showAssignModal()">+ Assign Trustee/Beneficiary</button>
+          <button class="btn btn-secondary" onclick="loadAssignments()">Refresh</button>
+        </div>
+      </header>
+      <div class="panel-row" id="assignment-summary-cards" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:16px;margin-bottom:20px;"></div>
+      <div class="panel-row" style="display:grid;grid-template-columns:1fr 1fr;gap:20px;">
+        <div class="panel">
+          <h3>Active Assignments</h3>
+          <table class="data-table" id="assignments-table">
+            <thead><tr><th>Contact</th><th>Account</th><th>Role</th><th>Limits</th><th>Actions</th></tr></thead>
+            <tbody></tbody>
+          </table>
+        </div>
+        <div class="panel">
+          <h3>Pending Expense Requests</h3>
+          <table class="data-table" id="pending-expenses-table">
+            <thead><tr><th>#</th><th>Requester</th><th>Amount</th><th>Category</th><th>Actions</th></tr></thead>
+            <tbody></tbody>
+          </table>
+        </div>
+      </div>
+      <div class="panel" style="margin-top:20px;">
+        <h3>Expense History</h3>
+        <table class="data-table" id="expense-history-table">
+          <thead><tr><th>#</th><th>Requester</th><th>Account</th><th>Amount</th><th>Category</th><th>Status</th><th>Date</th></tr></thead>
+          <tbody></tbody>
+        </table>
       </div>
     </section>
 
