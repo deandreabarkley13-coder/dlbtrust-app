@@ -138,11 +138,14 @@ router.post('/disburse', requireAdmin, async (req, res) => {
       occurrences:     1,
     });
 
-    // Log the disbursement to the transactions table
+    // Log the disbursement to the transactions table (wrapped in a transaction)
+    const client = await pool.connect();
     try {
-      // Get trust primary wallet (id=1) for debit
-      const { rows: [trustWallet] } = await pool.query(
-        'SELECT * FROM wallets WHERE role = $1 LIMIT 1', ['trust_entity']
+      await client.query('BEGIN');
+
+      // Get trust primary wallet with row lock
+      const { rows: [trustWallet] } = await client.query(
+        'SELECT * FROM wallets WHERE role = $1 LIMIT 1 FOR UPDATE', ['trust_entity']
       );
 
       if (trustWallet) {
@@ -151,13 +154,13 @@ router.post('/disburse', requireAdmin, async (req, res) => {
         const balanceAfter  = balanceBefore - amountCents;
 
         // Debit trust wallet
-        await pool.query(
+        await client.query(
           'UPDATE wallets SET fiat_balance = $1 WHERE id = $2',
           [balanceAfter, trustWallet.id]
         );
 
         // Record debit transaction for trust
-        await pool.query(`
+        await client.query(`
           INSERT INTO transactions 
             (wallet_id, type, amount, balance_before, balance_after, description, 
              counterparty_wallet_id, reference_id, status, created_at)
@@ -174,14 +177,14 @@ router.post('/disburse', requireAdmin, async (req, res) => {
 
         // Credit beneficiary wallet
         if (wallet_id) {
-          const { rows: [benWallet] } = await pool.query(
-            'SELECT * FROM wallets WHERE id = $1', [wallet_id]
+          const { rows: [benWallet] } = await client.query(
+            'SELECT * FROM wallets WHERE id = $1 FOR UPDATE', [wallet_id]
           );
           if (benWallet) {
             const benBefore = benWallet.fiat_balance;
             const benAfter  = benBefore + amountCents;
-            await pool.query('UPDATE wallets SET fiat_balance = $1 WHERE id = $2', [benAfter, wallet_id]);
-            await pool.query(`
+            await client.query('UPDATE wallets SET fiat_balance = $1 WHERE id = $2', [benAfter, wallet_id]);
+            await client.query(`
               INSERT INTO transactions 
                 (wallet_id, type, amount, balance_before, balance_after, description,
                  counterparty_wallet_id, reference_id, status, created_at)
@@ -198,8 +201,13 @@ router.post('/disburse', requireAdmin, async (req, res) => {
           }
         }
       }
+
+      await client.query('COMMIT');
     } catch (dbErr) {
+      await client.query('ROLLBACK');
       console.warn('[ach/disburse] DB log failed (non-fatal):', dbErr.message);
+    } finally {
+      client.release();
     }
 
     res.json({
