@@ -24,12 +24,6 @@ router.get('/types', async (req, res) => {
 
 // ─── POST /api/payments/disburse ────────────────────────────────────────────
 // Full one-step disbursement: creates profile + bank account + schedules ACH
-// Body: {
-//   first_name, last_name, email, external_id,
-//   bank_name, routing_number, account_number, account_type,
-//   billing_address, billing_city, billing_state, billing_zip,
-//   amount, send_date, payment_type_id, frequency, occurrences
-// }
 router.post('/disburse', async (req, res) => {
   try {
     const {
@@ -72,25 +66,25 @@ router.post('/disburse', async (req, res) => {
       amount, send_date, payment_type_id, frequency, occurrences,
     });
 
-    // Log disbursement to local DB if db is available
+    // Log disbursement to local DB if db is available (PostgreSQL)
     if (req.app.locals.db) {
       try {
-        req.app.locals.db.prepare(`
-          INSERT INTO disbursements 
+        await req.app.locals.db.query(
+          `INSERT INTO disbursements 
             (payment_schedule_id, external_account_id, payment_profile_id, amount, send_date, beneficiary_name, created_by, created_at)
-          VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now'))
-        `).run(
-          result.payment_schedule_id,
-          result.external_account_id,
-          result.payment_profile_id,
-          amount,
-          send_date,
-          `${first_name} ${last_name}`,
-          req.user?.id || 'system',
+           VALUES ($1, $2, $3, $4, $5, $6, $7, NOW())`,
+          [
+            result.payment_schedule_id,
+            result.external_account_id,
+            result.payment_profile_id,
+            amount,
+            send_date,
+            `${first_name} ${last_name}`,
+            req.user?.id || 'system',
+          ]
         );
       } catch (dbErr) {
         console.warn('[payments/disburse] DB log failed:', dbErr.message);
-        // Non-fatal — ACH was already scheduled
       }
     }
 
