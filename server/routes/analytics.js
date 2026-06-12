@@ -24,6 +24,9 @@ const path = require('path');
 function getDb() {
   // Try common locations — adjust as needed
   const dbPaths = [
+    path.join(__dirname, '..', '..', 'data', 'dlbtrust.db'),
+    '/var/www/vhosts/dlbtrust.cloud/httpdocs/data/dlbtrust.db',
+    '/var/www/vhosts/dlbtrust.cloud/httpdocs/dlbtrust.db',
     path.join(__dirname, 'trust.db'),
     path.join(__dirname, 'data', 'trust.db'),
     path.join(__dirname, '..', 'trust.db'),
@@ -34,7 +37,7 @@ function getDb() {
       return new Database(p, { readonly: true });
     } catch (_) {}
   }
-  throw new Error('Cannot find trust.db — update DB path in analytics-api-routes.js');
+  throw new Error('Cannot find dlbtrust.db or trust.db — update DB path in analytics-api-routes.js');
 }
 
 // ─────────────────────────────────────────────────────────────
