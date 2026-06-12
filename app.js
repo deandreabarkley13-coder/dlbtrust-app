@@ -20,19 +20,12 @@ app.use(express.urlencoded({ extended: true }));
 app.use(express.static(path.join(__dirname, 'public')));
 
 // ─── Database ─────────────────────────────────────────────────────────────────
-let db = null;
-try {
-  const Database = require('better-sqlite3');
-  const dbPath = process.env.DB_PATH || path.join(__dirname, 'data', 'dlbtrust.db');
-  db = new Database(dbPath);
-  db.pragma('journal_mode = WAL');
-  console.log('[DB] SQLite connected:', dbPath);
-} catch (err) {
-  console.warn('[DB] SQLite not available:', err.message);
-}
+const pool = require('./server/db');
+app.locals.db = pool;
+console.log('[DB] PostgreSQL pool initialized');
 
 // ─── OpenACH Integration ──────────────────────────────────────────────────────
-require('./server/openach-patch')(app, typeof db !== 'undefined' ? db : null);
+require('./server/openach-patch')(app, pool);
 
 // ─── Analytics Routes ─────────────────────────────────────────────────────────
 app.use('/api/analytics', require('./server/routes/analytics'));

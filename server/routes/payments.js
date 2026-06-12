@@ -8,10 +8,9 @@
 const express = require('express');
 const router = express.Router();
 const { OpenACHClient } = require('../integrations/openach/openachClient');
+const pool = require('../db');
 
 // ─── GET /api/payments/types ────────────────────────────────────────────────
-// Returns configured payment types (e.g. "Trust Dist")
-// Frontend uses these IDs when scheduling disbursements
 router.get('/types', async (req, res) => {
   try {
     const types = await OpenACHClient.getPaymentTypes();
@@ -23,13 +22,6 @@ router.get('/types', async (req, res) => {
 });
 
 // ─── POST /api/payments/disburse ────────────────────────────────────────────
-// Full one-step disbursement: creates profile + bank account + schedules ACH
-// Body: {
-//   first_name, last_name, email, external_id,
-//   bank_name, routing_number, account_number, account_type,
-//   billing_address, billing_city, billing_state, billing_zip,
-//   amount, send_date, payment_type_id, frequency, occurrences
-// }
 router.post('/disburse', async (req, res) => {
   try {
     const {
@@ -72,26 +64,23 @@ router.post('/disburse', async (req, res) => {
       amount, send_date, payment_type_id, frequency, occurrences,
     });
 
-    // Log disbursement to local DB if db is available
-    if (req.app.locals.db) {
-      try {
-        req.app.locals.db.prepare(`
-          INSERT INTO disbursements 
-            (payment_schedule_id, external_account_id, payment_profile_id, amount, send_date, beneficiary_name, created_by, created_at)
-          VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now'))
-        `).run(
-          result.payment_schedule_id,
-          result.external_account_id,
-          result.payment_profile_id,
-          amount,
-          send_date,
-          `${first_name} ${last_name}`,
-          req.user?.id || 'system',
-        );
-      } catch (dbErr) {
-        console.warn('[payments/disburse] DB log failed:', dbErr.message);
-        // Non-fatal — ACH was already scheduled
-      }
+    // Log disbursement to DB if pool is available
+    try {
+      await pool.query(`
+        INSERT INTO disbursements 
+          (payment_schedule_id, external_account_id, payment_profile_id, amount, send_date, beneficiary_name, created_by, created_at)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, NOW())
+      `, [
+        result.payment_schedule_id,
+        result.external_account_id,
+        result.payment_profile_id,
+        amount,
+        send_date,
+        `${first_name} ${last_name}`,
+        req.user?.id || 'system',
+      ]);
+    } catch (dbErr) {
+      console.warn('[payments/disburse] DB log failed:', dbErr.message);
     }
 
     res.json(result);
@@ -103,7 +92,6 @@ router.post('/disburse', async (req, res) => {
 });
 
 // ─── POST /api/payments/profile ─────────────────────────────────────────────
-// Create a payment profile only (no bank account yet)
 router.post('/profile', async (req, res) => {
   try {
     const { first_name, last_name, email, external_id } = req.body;
@@ -119,7 +107,6 @@ router.post('/profile', async (req, res) => {
 });
 
 // ─── POST /api/payments/bank-account ────────────────────────────────────────
-// Add a bank account to an existing payment profile
 router.post('/bank-account', async (req, res) => {
   try {
     const result = await OpenACHClient.addExternalAccount(req.body);
@@ -131,7 +118,6 @@ router.post('/bank-account', async (req, res) => {
 });
 
 // ─── POST /api/payments/schedule ────────────────────────────────────────────
-// Schedule an ACH payment for an existing external account
 router.post('/schedule', async (req, res) => {
   try {
     const result = await OpenACHClient.schedulePayment(req.body);
@@ -143,7 +129,6 @@ router.post('/schedule', async (req, res) => {
 });
 
 // ─── GET /api/payments/schedules/:profileId ─────────────────────────────────
-// Get all payment schedules for a profile
 router.get('/schedules/:profileId', async (req, res) => {
   try {
     const result = await OpenACHClient.getPaymentSchedules(req.params.profileId);
@@ -155,7 +140,6 @@ router.get('/schedules/:profileId', async (req, res) => {
 });
 
 // ─── GET /api/payments/accounts/:profileId ──────────────────────────────────
-// Get all bank accounts for a profile
 router.get('/accounts/:profileId', async (req, res) => {
   try {
     const result = await OpenACHClient.getExternalAccounts(req.params.profileId);
@@ -167,7 +151,6 @@ router.get('/accounts/:profileId', async (req, res) => {
 });
 
 // ─── GET /api/payments/profile/by-external/:externalId ──────────────────────
-// Look up a payment profile by your internal ID
 router.get('/profile/by-external/:externalId', async (req, res) => {
   try {
     const result = await OpenACHClient.getPaymentProfileByExternalId(req.params.externalId);
@@ -179,7 +162,6 @@ router.get('/profile/by-external/:externalId', async (req, res) => {
 });
 
 // ─── GET /api/payments/health ───────────────────────────────────────────────
-// Confirms OpenACH API is reachable and credentials are valid
 router.get('/health', async (req, res) => {
   try {
     const types = await OpenACHClient.getPaymentTypes();
