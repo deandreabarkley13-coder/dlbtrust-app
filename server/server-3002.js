@@ -22,6 +22,15 @@ try { require(HD + '/server/openach-patch')(app, null); console.log('[openach] l
 // Analytics routes
 try { app.use('/api/analytics', require(HD + '/server/routes/analytics')); console.log('[analytics] loaded'); } catch(e) { console.warn('[analytics]', e.message); }
 
+// ─── Bond Master Record Integration Routes ──────────────────────────────────
+try { app.use('/api/bonds', require('./routes/bonds')); console.log('[bonds] loaded'); } catch(e) { console.warn('[bonds]', e.message); }
+try { app.use('/api/docs', require('./routes/docs')); console.log('[docs] loaded'); } catch(e) { console.warn('[docs]', e.message); }
+
+// ─── Start Integration Listeners & Watchers ─────────────────────────────────
+try { require('./integrations/sftp/sftp-watcher').start(); console.log('[sftp-watcher] started'); } catch(e) { console.warn('[sftp-watcher]', e.message); }
+try { require('./integrations/fineract/bond-sync').init(); console.log('[fineract-sync] started'); } catch(e) { console.warn('[fineract-sync]', e.message); }
+try { require('./integrations/obp/account-sync').init(); console.log('[obp-sync] started'); } catch(e) { console.warn('[obp-sync]', e.message); }
+
 // Static files from v2 dist
 app.use(express.static(path.join(V2, 'dist', 'public')));
 app.use('/assets', express.static(path.join(V2, 'dist', 'public', 'assets')));
