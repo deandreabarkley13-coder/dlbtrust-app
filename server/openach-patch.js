@@ -26,7 +26,7 @@ const USER_ID      = '4fc86059-2e7b-4732-b94f-e7c3715ee8d7';
 const ORIGINATOR   = '0eb26e1d-5fcc-4978-a132-dd93c2655429';
 
 module.exports = function patchOpenACH(app, db) {
-  // Attach DB to app.locals so routes can use it
+  // Attach pg pool to app.locals so routes can use it
   if (db && !app.locals.db) {
     app.locals.db = db;
   }
