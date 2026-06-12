@@ -22,6 +22,14 @@ try { require(HD + '/server/openach-patch')(app, null); console.log('[openach] l
 // Analytics routes
 try { app.use('/api/analytics', require(HD + '/server/routes/analytics')); console.log('[analytics] loaded'); } catch(e) { console.warn('[analytics]', e.message); }
 
+// Payments routes (ACH disbursements)
+try {
+  app.use('/api/payments', require(HD + '/server/routes/payments'));
+  console.log('[payments] loaded');
+} catch(e) {
+  console.warn('[payments]', e.message);
+}
+
 // Static files from v2 dist
 app.use(express.static(path.join(V2, 'dist', 'public')));
 app.use('/assets', express.static(path.join(V2, 'dist', 'public', 'assets')));
