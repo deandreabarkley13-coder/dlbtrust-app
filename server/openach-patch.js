@@ -20,10 +20,10 @@
 const { execSync } = require('child_process');
 const achRouter = require('./routes/ach');
 
-const TOKEN = process.env.OPENACH_API_TOKEN || '3caee1c2-c218-4959-b6d2-21d4b2a1b42e';
-const KEY   = process.env.OPENACH_API_KEY   || 'b74966cf-5276-4d8b-8650-5bd57dcee272';
-const USER_ID      = '4fc86059-2e7b-4732-b94f-e7c3715ee8d7';
-const ORIGINATOR   = '0eb26e1d-5fcc-4978-a132-dd93c2655429';
+const TOKEN = process.env.OPENACH_API_TOKEN;
+const KEY   = process.env.OPENACH_API_KEY;
+const USER_ID      = process.env.OPENACH_USER_ID || '';
+const ORIGINATOR   = process.env.OPENACH_ORIGINATOR_ID || '';
 
 module.exports = function patchOpenACH(app, db) {
   // Attach DB to app.locals so routes can use it

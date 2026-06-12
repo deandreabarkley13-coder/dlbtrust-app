@@ -15,27 +15,8 @@ const express = require('express');
 const router = express.Router();
 
 // ─────────────────────────────────────────────────────────────
-// DATABASE CONNECTION
-// Adjust the path to match your actual DB file location
+// DATABASE CONNECTION — uses the shared db instance from app.locals
 // ─────────────────────────────────────────────────────────────
-const Database = require('better-sqlite3');
-const path = require('path');
-
-function getDb() {
-  // Try common locations — adjust as needed
-  const dbPaths = [
-    path.join(__dirname, 'trust.db'),
-    path.join(__dirname, 'data', 'trust.db'),
-    path.join(__dirname, '..', 'trust.db'),
-    '/app/trust.db',
-  ];
-  for (const p of dbPaths) {
-    try {
-      return new Database(p, { readonly: true });
-    } catch (_) {}
-  }
-  throw new Error('Cannot find trust.db — update DB path in analytics-api-routes.js');
-}
 
 // ─────────────────────────────────────────────────────────────
 // HELPER: cents → dollars
@@ -43,17 +24,15 @@ function getDb() {
 const toDollars = (cents) => (cents !== null && cents !== undefined) ? Math.round(cents) / 100 : null;
 
 // ─────────────────────────────────────────────────────────────
-// MIDDLEWARE: attach DB to req, auto-close after response
+// MIDDLEWARE: attach shared DB to req
 // ─────────────────────────────────────────────────────────────
 router.use((req, res, next) => {
-  try {
-    req.db = getDb();
-    res.on('finish', () => { try { req.db.close(); } catch (_) {} });
-    res.on('close',  () => { try { req.db.close(); } catch (_) {} });
-    next();
-  } catch (err) {
-    res.status(500).json({ error: 'Database connection failed', detail: err.message });
+  const db = req.app.locals.db;
+  if (!db) {
+    return res.status(500).json({ error: 'Database not initialized' });
   }
+  req.db = db;
+  next();
 });
 
 // ─────────────────────────────────────────────────────────────

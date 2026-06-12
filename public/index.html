@@ -1,0 +1,525 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>DLB Trust — Secure Wealth Management Portal</title>
+  <style>
+    :root {
+      --bg: #0a0e17;
+      --surface: #111827;
+      --border: #1f2937;
+      --accent: #3b82f6;
+      --accent-hover: #2563eb;
+      --green: #10b981;
+      --red: #ef4444;
+      --gold: #f59e0b;
+      --text: #f3f4f6;
+      --muted: #9ca3af;
+    }
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: var(--bg); color: var(--text); min-height: 100vh; }
+    
+    .header { background: var(--surface); border-bottom: 1px solid var(--border); padding: 1rem 2rem; display: flex; align-items: center; justify-content: space-between; }
+    .header h1 { font-size: 1.25rem; font-weight: 700; }
+    .header h1 span { color: var(--gold); }
+    .header .status { display: flex; gap: 0.5rem; align-items: center; font-size: 0.85rem; color: var(--muted); }
+    .header .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--green); }
+    
+    .nav { background: var(--surface); border-bottom: 1px solid var(--border); padding: 0 2rem; display: flex; gap: 0; }
+    .nav a { padding: 0.75rem 1.25rem; color: var(--muted); text-decoration: none; font-size: 0.9rem; border-bottom: 2px solid transparent; cursor: pointer; }
+    .nav a.active { color: var(--accent); border-bottom-color: var(--accent); }
+    .nav a:hover { color: var(--text); }
+    
+    .container { max-width: 1280px; margin: 0 auto; padding: 2rem; }
+    
+    .stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 1rem; margin-bottom: 2rem; }
+    .stat { background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 1.25rem; }
+    .stat .label { font-size: 0.8rem; color: var(--muted); text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 0.5rem; }
+    .stat .value { font-size: 1.5rem; font-weight: 700; }
+    .stat .sub { font-size: 0.8rem; color: var(--muted); margin-top: 0.25rem; }
+    
+    .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 1.5rem; margin-bottom: 2rem; }
+    @media (max-width: 768px) { .grid-2 { grid-template-columns: 1fr; } .stats { grid-template-columns: 1fr 1fr; } }
+    
+    .card { background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 1.5rem; }
+    .card h2 { font-size: 1rem; font-weight: 600; margin-bottom: 1rem; display: flex; align-items: center; gap: 0.5rem; }
+    
+    table { width: 100%; border-collapse: collapse; font-size: 0.85rem; }
+    th { text-align: left; padding: 0.5rem; color: var(--muted); font-weight: 500; border-bottom: 1px solid var(--border); }
+    td { padding: 0.5rem; border-bottom: 1px solid var(--border); }
+    tr:last-child td { border-bottom: none; }
+    
+    .badge { display: inline-block; padding: 0.15rem 0.5rem; border-radius: 4px; font-size: 0.75rem; font-weight: 600; }
+    .badge-green { background: rgba(16,185,129,0.15); color: var(--green); }
+    .badge-blue { background: rgba(59,130,246,0.15); color: var(--accent); }
+    .badge-gold { background: rgba(245,158,11,0.15); color: var(--gold); }
+    
+    .form-group { margin-bottom: 1rem; }
+    .form-group label { display: block; font-size: 0.85rem; color: var(--muted); margin-bottom: 0.3rem; }
+    .form-group input, .form-group select { width: 100%; padding: 0.6rem; background: var(--bg); border: 1px solid var(--border); border-radius: 6px; color: var(--text); font-size: 0.9rem; }
+    .form-group input:focus, .form-group select:focus { outline: none; border-color: var(--accent); }
+    .form-row { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; }
+    
+    .btn { padding: 0.65rem 1.5rem; border: none; border-radius: 6px; font-size: 0.9rem; font-weight: 600; cursor: pointer; transition: background 0.2s; }
+    .btn-primary { background: var(--accent); color: white; }
+    .btn-primary:hover { background: var(--accent-hover); }
+    .btn-primary:disabled { opacity: 0.5; cursor: not-allowed; }
+    .btn-green { background: var(--green); color: white; }
+    
+    .alert { padding: 1rem; border-radius: 6px; margin-bottom: 1rem; font-size: 0.85rem; }
+    .alert-success { background: rgba(16,185,129,0.15); border: 1px solid var(--green); color: var(--green); }
+    .alert-error { background: rgba(239,68,68,0.15); border: 1px solid var(--red); color: var(--red); }
+    
+    .section { display: none; }
+    .section.active { display: block; }
+    
+    .loading { text-align: center; padding: 2rem; color: var(--muted); }
+    .money { color: var(--green); }
+  </style>
+</head>
+<body>
+  <div class="header">
+    <h1><span>DLB</span> TRUST</h1>
+    <div class="status"><div class="dot" id="statusDot"></div><span id="statusText">Connecting...</span></div>
+  </div>
+  
+  <div class="nav">
+    <a class="active" data-section="dashboard">Dashboard</a>
+    <a data-section="wallets">Wallets</a>
+    <a data-section="payments">Payments</a>
+    <a data-section="transfers">Transfers</a>
+    <a data-section="ledger">Ledger</a>
+  </div>
+
+  <div class="container">
+    <!-- ───── DASHBOARD ───── -->
+    <div class="section active" id="dashboard">
+      <div class="stats">
+        <div class="stat"><div class="label">Total Corpus</div><div class="value money" id="totalCorpus">--</div></div>
+        <div class="stat"><div class="label">Trust Wallets</div><div class="value" id="walletCount">--</div></div>
+        <div class="stat"><div class="label">Transactions</div><div class="value" id="txCount">--</div></div>
+        <div class="stat"><div class="label">Trust Status</div><div class="value"><span class="badge badge-green">Active</span></div></div>
+      </div>
+      <div class="grid-2">
+        <div class="card">
+          <h2>Trust Profile</h2>
+          <div id="profileInfo"><div class="loading">Loading...</div></div>
+        </div>
+        <div class="card">
+          <h2>Recent Transactions</h2>
+          <div id="recentTx"><div class="loading">Loading...</div></div>
+        </div>
+      </div>
+      <div class="card">
+        <h2>Wallet Balances</h2>
+        <div id="walletTable"><div class="loading">Loading...</div></div>
+      </div>
+    </div>
+
+    <!-- ───── WALLETS ───── -->
+    <div class="section" id="wallets">
+      <div class="card">
+        <h2>All Wallets</h2>
+        <div id="allWallets"><div class="loading">Loading...</div></div>
+      </div>
+    </div>
+
+    <!-- ───── PAYMENTS (ACH) ───── -->
+    <div class="section" id="payments">
+      <div class="grid-2">
+        <div class="card">
+          <h2>ACH Disbursement</h2>
+          <div id="paymentAlert"></div>
+          <form id="disbursementForm">
+            <div class="form-group">
+              <label>From Wallet</label>
+              <select id="payFromWallet" required></select>
+            </div>
+            <div class="form-row">
+              <div class="form-group">
+                <label>Amount (USD)</label>
+                <input type="number" id="payAmount" step="0.01" min="0.01" placeholder="500.00" required>
+              </div>
+              <div class="form-group">
+                <label>Send Date</label>
+                <input type="date" id="paySendDate" required>
+              </div>
+            </div>
+            <div class="form-row">
+              <div class="form-group">
+                <label>Routing Number</label>
+                <input type="text" id="payRouting" maxlength="9" pattern="\d{9}" placeholder="241075470" required>
+              </div>
+              <div class="form-group">
+                <label>Account Number</label>
+                <input type="text" id="payAccount" placeholder="Account number" required>
+              </div>
+            </div>
+            <div class="form-row">
+              <div class="form-group">
+                <label>Account Type</label>
+                <select id="payAccountType">
+                  <option value="Checking">Checking</option>
+                  <option value="Savings">Savings</option>
+                </select>
+              </div>
+              <div class="form-group">
+                <label>Description</label>
+                <input type="text" id="payDesc" placeholder="Trust disbursement" value="Trust disbursement">
+              </div>
+            </div>
+            <button type="submit" class="btn btn-primary" id="paySubmit">Send ACH Payment</button>
+          </form>
+        </div>
+        <div class="card">
+          <h2>ACH System Status</h2>
+          <div id="achStatus"><div class="loading">Checking ACH connection...</div></div>
+          <h2 style="margin-top:1.5rem">Recent Disbursements</h2>
+          <div id="disbursementList"><div class="loading">Loading...</div></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ───── TRANSFERS ───── -->
+    <div class="section" id="transfers">
+      <div class="grid-2">
+        <div class="card">
+          <h2>Internal Transfer</h2>
+          <div id="transferAlert"></div>
+          <form id="transferForm">
+            <div class="form-group">
+              <label>From Wallet</label>
+              <select id="xferFrom" required></select>
+            </div>
+            <div class="form-group">
+              <label>To Wallet</label>
+              <select id="xferTo" required></select>
+            </div>
+            <div class="form-group">
+              <label>Amount (USD)</label>
+              <input type="number" id="xferAmount" step="0.01" min="0.01" placeholder="1000.00" required>
+            </div>
+            <div class="form-group">
+              <label>Description</label>
+              <input type="text" id="xferDesc" placeholder="Transfer description">
+            </div>
+            <button type="submit" class="btn btn-primary">Execute Transfer</button>
+          </form>
+        </div>
+        <div class="card">
+          <h2>Transfer History</h2>
+          <div id="transferHistory"><div class="loading">Loading...</div></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ───── LEDGER ───── -->
+    <div class="section" id="ledger">
+      <div class="card">
+        <h2>Full Ledger</h2>
+        <div id="fullLedger"><div class="loading">Loading...</div></div>
+      </div>
+    </div>
+  </div>
+
+<script>
+const API = '';
+
+function formatUSD(cents) {
+  if (cents === null || cents === undefined) return '$0.00';
+  return '$' + (cents / 100).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+}
+
+function formatDate(d) {
+  if (!d) return '--';
+  return new Date(d).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+}
+
+// ─── Navigation ──────────────────────────────────────────────
+document.querySelectorAll('.nav a').forEach(a => {
+  a.addEventListener('click', () => {
+    document.querySelectorAll('.nav a').forEach(x => x.classList.remove('active'));
+    document.querySelectorAll('.section').forEach(x => x.classList.remove('active'));
+    a.classList.add('active');
+    document.getElementById(a.dataset.section).classList.add('active');
+  });
+});
+
+// ─── Load Dashboard ──────────────────────────────────────────
+async function loadDashboard() {
+  try {
+    const [dashRes, healthRes] = await Promise.all([
+      fetch(API + '/api/dashboard').then(r => r.json()),
+      fetch(API + '/api/health').then(r => r.json()),
+    ]);
+
+    // Status
+    document.getElementById('statusText').textContent = healthRes.status === 'ok' ? 'System Online' : 'Error';
+    document.getElementById('statusDot').style.background = healthRes.status === 'ok' ? 'var(--green)' : 'var(--red)';
+
+    // Stats
+    const profile = dashRes.profile || {};
+    document.getElementById('totalCorpus').textContent = formatUSD(profile.total_corpus);
+    document.getElementById('walletCount').textContent = (dashRes.wallets || []).length;
+    document.getElementById('txCount').textContent = (dashRes.recentTransactions || []).length;
+
+    // Profile
+    document.getElementById('profileInfo').innerHTML = `
+      <table>
+        <tr><td style="color:var(--muted)">Trust Name</td><td>${profile.trust_name || '--'}</td></tr>
+        <tr><td style="color:var(--muted)">Trustee</td><td>${profile.trustee_name || '--'}</td></tr>
+        <tr><td style="color:var(--muted)">Jurisdiction</td><td>${profile.jurisdiction || '--'}</td></tr>
+        <tr><td style="color:var(--muted)">Status</td><td><span class="badge badge-green">${profile.status || 'active'}</span></td></tr>
+        <tr><td style="color:var(--muted)">Formation</td><td>${formatDate(profile.formation_date)}</td></tr>
+      </table>
+    `;
+
+    // Recent Transactions
+    const txs = dashRes.recentTransactions || [];
+    if (txs.length === 0) {
+      document.getElementById('recentTx').innerHTML = '<div style="color:var(--muted);padding:1rem">No transactions yet</div>';
+    } else {
+      document.getElementById('recentTx').innerHTML = `<table>
+        <tr><th>Type</th><th>Amount</th><th>Description</th><th>Date</th></tr>
+        ${txs.map(t => `<tr>
+          <td><span class="badge badge-blue">${t.entry_type || t.type || '--'}</span></td>
+          <td class="money">${formatUSD(t.amount)}</td>
+          <td>${t.description || '--'}</td>
+          <td>${formatDate(t.created_at)}</td>
+        </tr>`).join('')}
+      </table>`;
+    }
+
+    // Wallet table
+    const wallets = dashRes.wallets || [];
+    document.getElementById('walletTable').innerHTML = `<table>
+      <tr><th>Wallet</th><th>Holder</th><th>Role</th><th>Balance</th><th>Status</th></tr>
+      ${wallets.map(w => `<tr>
+        <td>${w.name}</td>
+        <td>${w.holder_name || '--'}</td>
+        <td><span class="badge badge-gold">${w.role}</span></td>
+        <td class="money">${formatUSD(w.fiat_balance)}</td>
+        <td><span class="badge badge-green">${w.status || 'active'}</span></td>
+      </tr>`).join('')}
+    </table>`;
+
+    // Populate dropdowns
+    populateWalletDropdowns(wallets);
+
+  } catch (err) {
+    document.getElementById('statusText').textContent = 'Connection Error';
+    document.getElementById('statusDot').style.background = 'var(--red)';
+    console.error('Dashboard error:', err);
+  }
+}
+
+function populateWalletDropdowns(wallets) {
+  const selects = ['payFromWallet', 'xferFrom', 'xferTo'];
+  selects.forEach(id => {
+    const el = document.getElementById(id);
+    if (!el) return;
+    el.innerHTML = wallets.map(w =>
+      `<option value="${w.id}">${w.name} — ${formatUSD(w.fiat_balance)}</option>`
+    ).join('');
+  });
+}
+
+// ─── Load Wallets ────────────────────────────────────────────
+async function loadWallets() {
+  try {
+    const wallets = await fetch(API + '/api/wallets').then(r => r.json());
+    document.getElementById('allWallets').innerHTML = `<table>
+      <tr><th>ID</th><th>Wallet ID</th><th>Name</th><th>Holder</th><th>Role</th><th>Balance</th><th>Status</th></tr>
+      ${wallets.map(w => `<tr>
+        <td>${w.id}</td>
+        <td style="font-family:monospace;font-size:0.8rem">${w.wallet_id || '--'}</td>
+        <td>${w.name}</td>
+        <td>${w.holder_name || '--'}</td>
+        <td><span class="badge badge-gold">${w.role}</span></td>
+        <td class="money">${formatUSD(w.fiat_balance)}</td>
+        <td><span class="badge badge-green">${w.status || 'active'}</span></td>
+      </tr>`).join('')}
+    </table>`;
+  } catch (err) {
+    document.getElementById('allWallets').innerHTML = '<div class="alert alert-error">Failed to load wallets</div>';
+  }
+}
+
+// ─── ACH Status ──────────────────────────────────────────────
+async function loadACHStatus() {
+  try {
+    const res = await fetch(API + '/api/ach/health').then(r => r.json());
+    const connected = res.success && res.openach_connected;
+    document.getElementById('achStatus').innerHTML = `
+      <table>
+        <tr><td style="color:var(--muted)">OpenACH</td><td><span class="badge ${connected ? 'badge-green' : 'badge-gold'}">${connected ? 'Connected' : 'Not Configured'}</span></td></tr>
+        <tr><td style="color:var(--muted)">Message</td><td>${res.message || res.error || '--'}</td></tr>
+      </table>
+    `;
+  } catch (err) {
+    document.getElementById('achStatus').innerHTML = `
+      <table>
+        <tr><td style="color:var(--muted)">OpenACH</td><td><span class="badge badge-gold">Not Configured</span></td></tr>
+        <tr><td style="color:var(--muted)">Note</td><td>Set OPENACH_API_TOKEN and OPENACH_API_KEY env vars to enable ACH</td></tr>
+      </table>
+    `;
+  }
+}
+
+// ─── Load Disbursements ──────────────────────────────────────
+async function loadDisbursements() {
+  try {
+    const disbs = await fetch(API + '/api/disbursements').then(r => r.json());
+    if (!disbs.length) {
+      document.getElementById('disbursementList').innerHTML = '<div style="color:var(--muted);padding:0.5rem">No disbursements yet</div>';
+      return;
+    }
+    document.getElementById('disbursementList').innerHTML = `<table>
+      <tr><th>Beneficiary</th><th>Amount</th><th>Date</th><th>Status</th></tr>
+      ${disbs.map(d => `<tr>
+        <td>${d.beneficiary_name || '--'}</td>
+        <td class="money">$${parseFloat(d.amount).toFixed(2)}</td>
+        <td>${formatDate(d.send_date)}</td>
+        <td><span class="badge badge-blue">${d.status}</span></td>
+      </tr>`).join('')}
+    </table>`;
+  } catch (_) {
+    document.getElementById('disbursementList').innerHTML = '<div style="color:var(--muted);padding:0.5rem">No disbursements yet</div>';
+  }
+}
+
+// ─── Load Ledger ─────────────────────────────────────────────
+async function loadLedger() {
+  try {
+    const entries = await fetch(API + '/api/ledger').then(r => r.json());
+    if (!entries.length) {
+      document.getElementById('fullLedger').innerHTML = '<div style="color:var(--muted);padding:1rem">No ledger entries yet</div>';
+      return;
+    }
+    document.getElementById('fullLedger').innerHTML = `<table>
+      <tr><th>ID</th><th>Type</th><th>Amount</th><th>Description</th><th>Status</th><th>Date</th></tr>
+      ${entries.map(e => `<tr>
+        <td>${e.id}</td>
+        <td><span class="badge badge-blue">${e.entry_type}</span></td>
+        <td class="money">${formatUSD(e.amount)}</td>
+        <td>${e.description || '--'}</td>
+        <td><span class="badge badge-green">${e.status}</span></td>
+        <td>${formatDate(e.created_at)}</td>
+      </tr>`).join('')}
+    </table>`;
+  } catch (err) {
+    document.getElementById('fullLedger').innerHTML = '<div class="alert alert-error">Failed to load ledger</div>';
+  }
+}
+
+// ─── Load Transfer History ───────────────────────────────────
+async function loadTransferHistory() {
+  try {
+    const txs = await fetch(API + '/api/transactions').then(r => r.json());
+    const transfers = txs.filter(t => t.type === 'transfer_out' || t.type === 'transfer_in');
+    if (!transfers.length) {
+      document.getElementById('transferHistory').innerHTML = '<div style="color:var(--muted);padding:0.5rem">No transfers yet</div>';
+      return;
+    }
+    document.getElementById('transferHistory').innerHTML = `<table>
+      <tr><th>Type</th><th>Amount</th><th>Description</th><th>Date</th></tr>
+      ${transfers.slice(0, 20).map(t => `<tr>
+        <td><span class="badge ${t.type === 'transfer_in' ? 'badge-green' : 'badge-blue'}">${t.type}</span></td>
+        <td class="money">${formatUSD(t.amount)}</td>
+        <td>${t.description || '--'}</td>
+        <td>${formatDate(t.created_at)}</td>
+      </tr>`).join('')}
+    </table>`;
+  } catch (_) {
+    document.getElementById('transferHistory').innerHTML = '<div style="color:var(--muted);padding:0.5rem">No transfers yet</div>';
+  }
+}
+
+// ─── ACH Disbursement Form ───────────────────────────────────
+document.getElementById('disbursementForm').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const btn = document.getElementById('paySubmit');
+  btn.disabled = true;
+  btn.textContent = 'Processing...';
+  document.getElementById('paymentAlert').innerHTML = '';
+
+  try {
+    const res = await fetch(API + '/api/ach/disburse', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        wallet_id: document.getElementById('payFromWallet').value,
+        amount: document.getElementById('payAmount').value,
+        routing_number: document.getElementById('payRouting').value,
+        account_number: document.getElementById('payAccount').value,
+        account_type: document.getElementById('payAccountType').value,
+        send_date: document.getElementById('paySendDate').value,
+        description: document.getElementById('payDesc').value,
+        payment_type_id: 'default',
+      }),
+    }).then(r => r.json());
+
+    if (res.success) {
+      document.getElementById('paymentAlert').innerHTML = `<div class="alert alert-success">ACH payment of $${res.amount_dollars} scheduled for ${res.send_date} to ${res.beneficiary}</div>`;
+      loadDisbursements();
+      loadDashboard();
+    } else {
+      document.getElementById('paymentAlert').innerHTML = `<div class="alert alert-error">${res.error}</div>`;
+    }
+  } catch (err) {
+    document.getElementById('paymentAlert').innerHTML = `<div class="alert alert-error">${err.message}</div>`;
+  }
+
+  btn.disabled = false;
+  btn.textContent = 'Send ACH Payment';
+});
+
+// Set default send date to next business day
+(function setDefaultDate() {
+  const d = new Date();
+  d.setDate(d.getDate() + 1);
+  while (d.getDay() === 0 || d.getDay() === 6) d.setDate(d.getDate() + 1);
+  document.getElementById('paySendDate').value = d.toISOString().split('T')[0];
+})();
+
+// ─── Transfer Form ───────────────────────────────────────────
+document.getElementById('transferForm').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  document.getElementById('transferAlert').innerHTML = '';
+
+  try {
+    const res = await fetch(API + '/api/wallets/transfer', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        from_wallet_id: parseInt(document.getElementById('xferFrom').value),
+        to_wallet_id: parseInt(document.getElementById('xferTo').value),
+        amount: document.getElementById('xferAmount').value,
+        description: document.getElementById('xferDesc').value,
+      }),
+    }).then(r => r.json());
+
+    if (res.success) {
+      document.getElementById('transferAlert').innerHTML = `<div class="alert alert-success">${res.message}</div>`;
+      loadDashboard();
+      loadWallets();
+      loadTransferHistory();
+    } else {
+      document.getElementById('transferAlert').innerHTML = `<div class="alert alert-error">${res.error}</div>`;
+    }
+  } catch (err) {
+    document.getElementById('transferAlert').innerHTML = `<div class="alert alert-error">${err.message}</div>`;
+  }
+});
+
+// ─── Init ────────────────────────────────────────────────────
+loadDashboard();
+loadWallets();
+loadACHStatus();
+loadDisbursements();
+loadLedger();
+loadTransferHistory();
+</script>
+</body>
+</html>
