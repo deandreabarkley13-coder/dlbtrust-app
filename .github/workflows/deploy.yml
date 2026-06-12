@@ -1,0 +1,94 @@
+name: Deploy & Validate 8/8
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Deploy via SSH
+        uses: appleboy/ssh-action@v1
+        with:
+          host: ${{ secrets.SSH_HOST }}
+          username: ${{ secrets.SSH_USER }}
+          key: ${{ secrets.SSH_KEY }}
+          script: |
+            set -e
+            cd /var/www/vhosts/dlbtrust.cloud/httpdocs && git pull origin main
+            npm install --production
+
+            # Write Apache vhost configs
+            cp server/apache-config/dlbtrust.cloud-vhost.conf /var/www/vhosts/dlbtrust.cloud/conf/vhost.conf
+            cp server/apache-config/ach.dlbtrust.cloud-vhost.conf /var/www/vhosts/ach.dlbtrust.cloud/conf/vhost.conf
+
+            # Reconfigure Apache domains
+            /usr/local/psa/admin/sbin/httpdmng --reconfigure-domain dlbtrust.cloud
+            /usr/local/psa/admin/sbin/httpdmng --reconfigure-domain ach.dlbtrust.cloud
+
+            # Restart app via PM2
+            pm2 delete dlbtrust 2>/dev/null || true
+            pm2 start /var/www/vhosts/dlbtrust.cloud/httpdocs/server-new-fixed.js --name dlbtrust
+            pm2 save
+            sleep 5
+
+      - name: 8/8 Validation Tests
+        env:
+          SERVER: ${{ secrets.SSH_HOST }}
+        run: |
+          P=0
+          F=0
+          pass() { echo "PASS: $1"; P=$((P+1)); }
+          fail() { echo "FAIL: $1 | $2"; F=$((F+1)); }
+
+          echo "=== 8/8 Production Tests ==="
+
+          # 1. HTTP 301 redirect
+          R=$(curl -s -o /dev/null -w '%{http_code}' http://dlbtrust.cloud/ 2>&1)
+          echo "$R" | grep -q "301" && pass "HTTP 301 redirect" || fail "HTTP 301 redirect" "$R"
+
+          # 2. HTTPS loads HTML
+          R=$(curl -sk --resolve "dlbtrust.cloud:443:$SERVER" https://dlbtrust.cloud/ 2>&1 | head -c 300)
+          echo "$R" | grep -qi "html" && pass "HTTPS loads HTML" || fail "HTTPS loads HTML" "${R:0:80}"
+
+          # 3. Wallets API returns wallet_id
+          R=$(curl -sk --resolve "dlbtrust.cloud:443:$SERVER" https://dlbtrust.cloud/api/wallets 2>&1 | head -c 300)
+          echo "$R" | grep -q "wallet_id" && pass "Wallets API" || fail "Wallets API" "${R:0:80}"
+
+          # 4. Transactions API returns type
+          R=$(curl -sk --resolve "dlbtrust.cloud:443:$SERVER" https://dlbtrust.cloud/api/transactions 2>&1 | head -c 300)
+          echo "$R" | grep -q "type" && pass "Transactions API" || fail "Transactions API" "${R:0:80}"
+
+          # 5. ACH health returns openach_connected
+          R=$(curl -sk --resolve "dlbtrust.cloud:443:$SERVER" https://dlbtrust.cloud/api/ach/health 2>&1 | head -c 300)
+          echo "$R" | grep -q "openach_connected" && pass "ACH health" || fail "ACH health" "${R:0:80}"
+
+          # 6. Analytics summary returns total_corpus
+          R=$(curl -sk --resolve "dlbtrust.cloud:443:$SERVER" https://dlbtrust.cloud/api/analytics/summary 2>&1 | head -c 300)
+          echo "$R" | grep -q "total_corpus" && pass "Analytics summary" || fail "Analytics summary" "${R:0:80}"
+
+          # 7. OpenACH UI returns HTTP 200
+          R=$(curl -sk --resolve "ach.dlbtrust.cloud:443:$SERVER" https://ach.dlbtrust.cloud/openach/ -o /dev/null -w '%{http_code}' 2>&1)
+          echo "$R" | grep -q "200" && pass "OpenACH UI (HTTPS 200)" || fail "OpenACH UI (HTTPS 200)" "$R"
+
+          # 8. OpenACH API connect returns success:true
+          R=$(curl -sk --resolve "ach.dlbtrust.cloud:443:$SERVER" -X POST https://ach.dlbtrust.cloud/openach/api/connect \
+            --data 'user_api_token=3caee1c2-c218-4959-b6d2-21d4b2a1b42e&user_api_key=b74966cf-5276-4d8b-8650-5bd57dcee272' 2>&1 | head -c 300)
+          echo "$R" | grep -q '"success":true' && pass "OpenACH API connect" || fail "OpenACH API connect" "${R:0:100}"
+
+          echo ""
+          echo "================================="
+          echo "SCORE: $P/8"
+          if [ $F -eq 0 ]; then
+            echo "ALL 8/8 PASSING"
+          else
+            echo "$F FAILING"
+            exit 1
+          fi
+          echo "================================="
