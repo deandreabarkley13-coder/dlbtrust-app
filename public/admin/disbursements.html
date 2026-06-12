@@ -1,0 +1,333 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>ACH Disbursements — DEANDREA LAVAR BARKLEY TRUST</title>
+  <style>
+    :root {
+      --bg: #0f172a; --surface: #1e293b; --border: #334155;
+      --text: #e2e8f0; --muted: #94a3b8; --accent: #3b82f6;
+      --accent-hover: #2563eb; --danger: #ef4444; --success: #22c55e;
+    }
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: system-ui, -apple-system, sans-serif; background: var(--bg); color: var(--text); min-height: 100vh; }
+    .container { max-width: 960px; margin: 0 auto; padding: 2rem 1rem; }
+    h1 { font-size: 1.5rem; margin-bottom: 0.25rem; }
+    .subtitle { color: var(--muted); font-size: 0.875rem; margin-bottom: 2rem; }
+    .card { background: var(--surface); border: 1px solid var(--border); border-radius: 0.75rem; padding: 1.5rem; margin-bottom: 1.5rem; }
+    .card h2 { font-size: 1.125rem; margin-bottom: 1rem; }
+    .form-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; }
+    .form-group { display: flex; flex-direction: column; gap: 0.25rem; }
+    .form-group.full { grid-column: 1 / -1; }
+    label { font-size: 0.8rem; color: var(--muted); font-weight: 500; }
+    input, select { background: var(--bg); border: 1px solid var(--border); border-radius: 0.5rem; padding: 0.625rem 0.75rem; color: var(--text); font-size: 0.875rem; }
+    input:focus, select:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 2px rgba(59,130,246,0.25); }
+    button { background: var(--accent); color: #fff; border: none; border-radius: 0.5rem; padding: 0.75rem 1.5rem; font-size: 0.875rem; font-weight: 600; cursor: pointer; transition: background 0.15s; }
+    button:hover { background: var(--accent-hover); }
+    button:disabled { opacity: 0.5; cursor: not-allowed; }
+    .btn-row { display: flex; gap: 0.75rem; margin-top: 1rem; }
+    .alert { padding: 0.75rem 1rem; border-radius: 0.5rem; font-size: 0.875rem; margin-bottom: 1rem; display: none; }
+    .alert-success { background: rgba(34,197,94,0.1); border: 1px solid var(--success); color: var(--success); }
+    .alert-error { background: rgba(239,68,68,0.1); border: 1px solid var(--danger); color: var(--danger); }
+    .alert-auth { background: rgba(239,68,68,0.1); border: 1px solid var(--danger); color: var(--danger); display: block; text-align: center; }
+    table { width: 100%; border-collapse: collapse; font-size: 0.8125rem; }
+    th, td { text-align: left; padding: 0.625rem 0.75rem; border-bottom: 1px solid var(--border); }
+    th { color: var(--muted); font-weight: 500; }
+    .badge { display: inline-block; padding: 0.125rem 0.5rem; border-radius: 9999px; font-size: 0.75rem; }
+    .badge-pending { background: rgba(251,191,36,0.15); color: #fbbf24; }
+    .badge-completed { background: rgba(34,197,94,0.15); color: #22c55e; }
+    .spinner { display: inline-block; width: 1rem; height: 1rem; border: 2px solid rgba(255,255,255,0.3); border-top-color: #fff; border-radius: 50%; animation: spin 0.6s linear infinite; margin-right: 0.5rem; vertical-align: middle; }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    .empty { color: var(--muted); text-align: center; padding: 2rem; font-size: 0.875rem; }
+    .hidden { display: none !important; }
+    @media (max-width: 640px) { .form-grid { grid-template-columns: 1fr; } }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h1>ACH Disbursements</h1>
+    <p class="subtitle">DEANDREA LAVAR BARKLEY TRUST — Admin Panel</p>
+
+    <!-- Auth gate -->
+    <div id="authGate" class="card hidden">
+      <div class="alert alert-auth">Admin access required. Please log in as an admin to use this page.</div>
+    </div>
+
+    <!-- Main content (hidden until auth verified) -->
+    <div id="mainContent" class="hidden">
+      <!-- Success/Error alerts -->
+      <div id="alertSuccess" class="alert alert-success"></div>
+      <div id="alertError" class="alert alert-error"></div>
+
+      <!-- Disbursement Form -->
+      <div class="card">
+        <h2>New Disbursement</h2>
+        <form id="disburseForm">
+          <div class="form-grid">
+            <div class="form-group">
+              <label for="wallet_id">Wallet / Beneficiary</label>
+              <select id="wallet_id" required>
+                <option value="">Select beneficiary…</option>
+              </select>
+            </div>
+            <div class="form-group">
+              <label for="payment_type_id">Payment Type</label>
+              <select id="payment_type_id" required>
+                <option value="">Loading…</option>
+              </select>
+            </div>
+            <div class="form-group">
+              <label for="amount">Amount ($)</label>
+              <input type="number" id="amount" step="0.01" min="0.01" placeholder="500.00" required>
+            </div>
+            <div class="form-group">
+              <label for="send_date">Send Date</label>
+              <input type="date" id="send_date" required>
+            </div>
+            <div class="form-group">
+              <label for="routing_number">Routing Number</label>
+              <input type="text" id="routing_number" pattern="\d{9}" maxlength="9" placeholder="241075470" required>
+            </div>
+            <div class="form-group">
+              <label for="account_number">Account Number</label>
+              <input type="text" id="account_number" placeholder="Account number" required>
+            </div>
+            <div class="form-group">
+              <label for="account_type">Account Type</label>
+              <select id="account_type">
+                <option value="Checking">Checking</option>
+                <option value="Savings">Savings</option>
+              </select>
+            </div>
+            <div class="form-group">
+              <label for="bank_name">Bank Name</label>
+              <input type="text" id="bank_name" placeholder="Recipient Bank">
+            </div>
+            <div class="form-group full">
+              <label for="description">Description / Memo</label>
+              <input type="text" id="description" placeholder="Trust disbursement">
+            </div>
+            <div class="form-group">
+              <label for="billing_address">Billing Address</label>
+              <input type="text" id="billing_address" placeholder="Optional">
+            </div>
+            <div class="form-group">
+              <label for="billing_city">City</label>
+              <input type="text" id="billing_city" placeholder="Optional">
+            </div>
+            <div class="form-group">
+              <label for="billing_state">State</label>
+              <input type="text" id="billing_state" value="OH" maxlength="2">
+            </div>
+            <div class="form-group">
+              <label for="billing_zip">ZIP</label>
+              <input type="text" id="billing_zip" placeholder="Optional" maxlength="10">
+            </div>
+          </div>
+          <div class="btn-row">
+            <button type="submit" id="submitBtn">Submit Disbursement</button>
+          </div>
+        </form>
+      </div>
+
+      <!-- Schedule History -->
+      <div class="card">
+        <h2>ACH Schedule History</h2>
+        <div class="form-grid" style="margin-bottom:1rem;">
+          <div class="form-group">
+            <label for="historyWallet">Wallet ID</label>
+            <select id="historyWallet">
+              <option value="">Select beneficiary…</option>
+            </select>
+          </div>
+          <div class="form-group" style="justify-content:flex-end;">
+            <button type="button" id="loadHistoryBtn" style="align-self:flex-end;">Load History</button>
+          </div>
+        </div>
+        <div id="historyTable">
+          <p class="empty">Select a beneficiary and click "Load History" to view ACH schedules.</p>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    const API = window.location.origin;
+
+    // ── Auth check ──────────────────────────────────────────────────────────
+    async function checkAuth() {
+      try {
+        const res = await fetch(API + '/api/auth/me', { credentials: 'include' });
+        if (!res.ok) return null;
+        const data = await res.json();
+        return data.user || data;
+      } catch { return null; }
+    }
+
+    // ── Init ────────────────────────────────────────────────────────────────
+    async function init() {
+      const user = await checkAuth();
+      if (!user || user.role !== 'admin') {
+        document.getElementById('authGate').classList.remove('hidden');
+        return;
+      }
+      document.getElementById('mainContent').classList.remove('hidden');
+
+      // Set default send date to next business day
+      const d = new Date();
+      d.setDate(d.getDate() + 1);
+      while (d.getDay() === 0 || d.getDay() === 6) d.setDate(d.getDate() + 1);
+      document.getElementById('send_date').value = d.toISOString().split('T')[0];
+
+      await Promise.all([loadPaymentTypes(), loadWallets()]);
+    }
+
+    // ── Load payment types ──────────────────────────────────────────────────
+    async function loadPaymentTypes() {
+      const sel = document.getElementById('payment_type_id');
+      try {
+        const res = await fetch(API + '/api/ach/payment-types', { credentials: 'include' });
+        const json = await res.json();
+        const types = json.data || json.payment_types || [];
+        sel.innerHTML = '';
+        if (!Array.isArray(types) || types.length === 0) {
+          sel.innerHTML = '<option value="">No payment types found</option>';
+          return;
+        }
+        types.forEach(function(t) {
+          var id = t.payment_type_id || t.id || t;
+          var name = t.payment_type_name || t.name || id;
+          var opt = document.createElement('option');
+          opt.value = id;
+          opt.textContent = name;
+          sel.appendChild(opt);
+        });
+      } catch (err) {
+        sel.innerHTML = '<option value="">Error loading types</option>';
+      }
+    }
+
+    // ── Load wallets ────────────────────────────────────────────────────────
+    async function loadWallets() {
+      var selMain = document.getElementById('wallet_id');
+      var selHist = document.getElementById('historyWallet');
+      try {
+        var res = await fetch(API + '/api/wallets', { credentials: 'include' });
+        var json = await res.json();
+        var wallets = json.wallets || json.data || json || [];
+        if (!Array.isArray(wallets)) wallets = [];
+        selMain.innerHTML = '<option value="">Select beneficiary\u2026</option>';
+        selHist.innerHTML = '<option value="">Select beneficiary\u2026</option>';
+        wallets.forEach(function(w) {
+          var id = w.id || w.wallet_id;
+          var label = w.holder_name || w.name || ('Wallet ' + id);
+          [selMain, selHist].forEach(function(s) {
+            var opt = document.createElement('option');
+            opt.value = id;
+            opt.textContent = id + ' \u2014 ' + label;
+            s.appendChild(opt);
+          });
+        });
+      } catch (err) {
+        selMain.innerHTML = '<option value="">Error loading wallets</option>';
+      }
+    }
+
+    // ── Show alerts ─────────────────────────────────────────────────────────
+    function showAlert(type, msg) {
+      var el = document.getElementById(type === 'success' ? 'alertSuccess' : 'alertError');
+      var other = document.getElementById(type === 'success' ? 'alertError' : 'alertSuccess');
+      el.textContent = msg;
+      el.style.display = 'block';
+      other.style.display = 'none';
+      setTimeout(function() { el.style.display = 'none'; }, 8000);
+    }
+
+    // ── Submit disbursement ─────────────────────────────────────────────────
+    document.getElementById('disburseForm').addEventListener('submit', async function(e) {
+      e.preventDefault();
+      var btn = document.getElementById('submitBtn');
+      btn.disabled = true;
+      btn.innerHTML = '<span class="spinner"></span>Processing\u2026';
+
+      var body = {
+        wallet_id:       document.getElementById('wallet_id').value,
+        amount:          document.getElementById('amount').value,
+        routing_number:  document.getElementById('routing_number').value,
+        account_number:  document.getElementById('account_number').value,
+        account_type:    document.getElementById('account_type').value,
+        payment_type_id: document.getElementById('payment_type_id').value,
+        send_date:       document.getElementById('send_date').value,
+        description:     document.getElementById('description').value || 'Trust disbursement',
+        bank_name:       document.getElementById('bank_name').value || 'Recipient Bank',
+        billing_address: document.getElementById('billing_address').value,
+        billing_city:    document.getElementById('billing_city').value,
+        billing_state:   document.getElementById('billing_state').value,
+        billing_zip:     document.getElementById('billing_zip').value,
+      };
+
+      try {
+        var res = await fetch(API + '/api/ach/disburse', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          credentials: 'include',
+          body: JSON.stringify(body),
+        });
+        var json = await res.json();
+        if (!res.ok || json.error) {
+          showAlert('error', json.error || 'Disbursement failed');
+        } else {
+          showAlert('success',
+            'Disbursement scheduled! Payment Schedule ID: ' + (json.payment_schedule_id || 'N/A') +
+            ' \u2014 ' + (json.beneficiary || '') + ' $' + (json.amount_dollars || body.amount)
+          );
+          document.getElementById('disburseForm').reset();
+          document.getElementById('billing_state').value = 'OH';
+        }
+      } catch (err) {
+        showAlert('error', 'Network error: ' + err.message);
+      } finally {
+        btn.disabled = false;
+        btn.textContent = 'Submit Disbursement';
+      }
+    });
+
+    // ── Load schedule history ───────────────────────────────────────────────
+    document.getElementById('loadHistoryBtn').addEventListener('click', async function() {
+      var walletId = document.getElementById('historyWallet').value;
+      if (!walletId) { showAlert('error', 'Select a beneficiary first'); return; }
+
+      var container = document.getElementById('historyTable');
+      container.innerHTML = '<p class="empty"><span class="spinner"></span>Loading\u2026</p>';
+
+      try {
+        var res = await fetch(API + '/api/ach/schedules/' + walletId, { credentials: 'include' });
+        var json = await res.json();
+        var schedules = json.data || [];
+        if (!Array.isArray(schedules) || schedules.length === 0) {
+          container.innerHTML = '<p class="empty">No ACH schedules found for this beneficiary.</p>';
+          return;
+        }
+        var html = '<table><thead><tr><th>Schedule ID</th><th>Amount</th><th>Frequency</th><th>Status</th><th>Next Date</th></tr></thead><tbody>';
+        schedules.forEach(function(s) {
+          var statusClass = (s.status || '').toLowerCase() === 'completed' ? 'badge-completed' : 'badge-pending';
+          html += '<tr>' +
+            '<td>' + (s.payment_schedule_id || s.id || '\u2014') + '</td>' +
+            '<td>$' + (parseFloat(s.payment_schedule_amount || s.amount || 0).toFixed(2)) + '</td>' +
+            '<td>' + (s.payment_schedule_frequency || s.frequency || 'once') + '</td>' +
+            '<td><span class="badge ' + statusClass + '">' + (s.payment_schedule_status || s.status || 'pending') + '</span></td>' +
+            '<td>' + (s.payment_schedule_next_date || s.next_date || '\u2014') + '</td>' +
+            '</tr>';
+        });
+        html += '</tbody></table>';
+        container.innerHTML = html;
+      } catch (err) {
+        container.innerHTML = '<p class="empty">Error loading history: ' + err.message + '</p>';
+      }
+    });
+
+    init();
+  </script>
+</body>
+</html>

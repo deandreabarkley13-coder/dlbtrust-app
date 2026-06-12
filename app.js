@@ -26,6 +26,23 @@ try {
   const dbPath = process.env.DB_PATH || path.join(__dirname, 'data', 'dlbtrust.db');
   db = new Database(dbPath);
   db.pragma('journal_mode = WAL');
+
+  // Ensure disbursements table exists
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS disbursements (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      payment_schedule_id TEXT,
+      external_account_id TEXT,
+      payment_profile_id TEXT,
+      amount REAL,
+      send_date TEXT,
+      beneficiary_name TEXT,
+      created_by TEXT,
+      created_at TEXT DEFAULT (datetime('now'))
+    )
+  `);
+
+  app.locals.db = db;
   console.log('[DB] SQLite connected:', dbPath);
 } catch (err) {
   console.warn('[DB] SQLite not available:', err.message);
@@ -37,7 +54,10 @@ require('./server/openach-patch')(app, typeof db !== 'undefined' ? db : null);
 // ─── Analytics Routes ─────────────────────────────────────────────────────────
 app.use('/api/analytics', require('./server/routes/analytics'));
 
-// ─── Start Server ─────────────────────────────────────────────────────────────
+// ─── Payment Routes ──────────────────────────────────────────────────────────
+try { app.use('/api/payments', require('./server/routes/payments')); console.log('[payments] loaded'); } catch(e) { console.warn('[payments]', e.message); }
+
+// ─── Start Server ─────────────────────────────────────────────────────────────────
 const PORT = process.env.PORT || 3001;
 app.listen(PORT, () => {
   console.log(`[dlbtrust] Server running on port ${PORT}`);

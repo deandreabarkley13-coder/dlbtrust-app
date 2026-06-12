@@ -17,9 +17,7 @@ const { OpenACHClient } = require('../integrations/openach/openachClient');
 
 // ─── Middleware: require admin auth ──────────────────────────────────────────
 function requireAdmin(req, res, next) {
-  // Compatible with whatever auth the live server uses
-  // If no auth middleware, skip — tighten later
-  if (typeof req.user !== 'undefined' && req.user.role !== 'admin') {
+  if (!req.user || req.user.role !== 'admin') {
     return res.status(403).json({ error: 'Admin access required' });
   }
   next();
@@ -85,6 +83,7 @@ router.post('/disburse', requireAdmin, async (req, res) => {
     billing_city = '',
     billing_state = 'OH',
     billing_zip = '',
+    bank_name = 'Recipient Bank',
   } = req.body;
 
   // Validation
@@ -142,7 +141,7 @@ router.post('/disburse', requireAdmin, async (req, res) => {
       external_id: `wallet_${wallet_id}`,
 
       // Bank
-      bank_name:       'Recipient Bank',
+      bank_name,
       routing_number,
       account_number,
       account_type,
