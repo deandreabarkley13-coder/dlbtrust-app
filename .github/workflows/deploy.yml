@@ -1,0 +1,64 @@
+name: Deploy to Production
+
+on:
+  push:
+    branches: [main]
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Deploy via SSH
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.SSH_HOST }}
+          username: ${{ secrets.SSH_USER }}
+          key: ${{ secrets.SSH_KEY }}
+          port: 22
+          script: |
+            cd /var/www/vhosts/dlbtrust.cloud/httpdocs
+            git pull origin main
+            npm install --production
+            pm2 delete dlbtrust 2>/dev/null || true
+            pm2 start server-new-fixed.js --name dlbtrust
+            pm2 save
+            sleep 5
+
+  validate:
+    runs-on: ubuntu-latest
+    needs: deploy
+    steps:
+      - name: Run 8/8 validation checks
+        run: |
+          S=${{ secrets.SSH_HOST }}
+          P=0; F=0
+          pass() { echo "PASS: $1"; P=$((P+1)); }
+          fail() { echo "FAIL: $1 — $2"; F=$((F+1)); }
+
+          R=$(curl -s -o /dev/null -w '%{http_code}' http://dlbtrust.cloud/)
+          echo "$R" | grep -q "301" && pass "HTTP 301" || fail "HTTP 301" "$R"
+
+          R=$(curl -sk https://dlbtrust.cloud/ | head -c 300)
+          echo "$R" | grep -qi "html" && pass "HTTPS HTML" || fail "HTTPS HTML" "${R:0:80}"
+
+          R=$(curl -sk https://dlbtrust.cloud/api/wallets | head -c 300)
+          echo "$R" | grep -q "wallet_id" && pass "Wallets API" || fail "Wallets API" "${R:0:80}"
+
+          R=$(curl -sk https://dlbtrust.cloud/api/transactions | head -c 300)
+          echo "$R" | grep -q "type" && pass "Transactions API" || fail "Transactions API" "${R:0:80}"
+
+          R=$(curl -sk https://dlbtrust.cloud/api/ach/health | head -c 300)
+          echo "$R" | grep -q "openach_connected" && pass "ACH health" || fail "ACH health" "${R:0:80}"
+
+          R=$(curl -sk https://dlbtrust.cloud/api/analytics/summary | head -c 300)
+          echo "$R" | grep -q "total_corpus" && pass "Analytics summary" || fail "Analytics summary" "${R:0:80}"
+
+          R=$(curl -sk https://ach.dlbtrust.cloud/openach/ -o /dev/null -w '%{http_code}')
+          echo "$R" | grep -q "200" && pass "OA UI" || fail "OA UI" "$R"
+
+          R=$(curl -sk -X POST https://ach.dlbtrust.cloud/openach/api/connect \
+            --data 'user_api_token=3caee1c2-c218-4959-b6d2-21d4b2a1b42e&user_api_key=b74966cf-5276-4d8b-8650-5bd57dcee272' | head -c 300)
+          echo "$R" | grep -q '"success":true' && pass "OA API connect" || fail "OA API connect" "${R:0:100}"
+
+          echo "SCORE: $P/8"
+          [ $F -eq 0 ] && echo "ALL 8/8 PASSING" || { echo "$F FAILING"; exit 1; }

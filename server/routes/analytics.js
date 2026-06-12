@@ -27,6 +27,11 @@ function getDb() {
     path.join(__dirname, 'trust.db'),
     path.join(__dirname, 'data', 'trust.db'),
     path.join(__dirname, '..', 'trust.db'),
+    path.join(__dirname, '..', 'data.db'),
+    path.join(__dirname, '..', '..', 'data.db'),
+    '/var/www/vhosts/dlbtrust.cloud/dlbtrust-v2/data.db',
+    '/var/www/vhosts/dlbtrust.cloud/httpdocs/data/dlbtrust.db',
+    '/var/www/vhosts/dlbtrust.cloud/httpdocs/data.db',
     '/app/trust.db',
   ];
   for (const p of dbPaths) {
@@ -125,6 +130,7 @@ router.get('/summary', (req, res) => {
 
     const summary = {
       generated_at: new Date().toISOString(),
+      total_corpus: toDollars(corpusRow.corpus_cents),
       trust_name: 'DeAndrea Lavar Barkley Trust',
       inception_date: inceptionRow?.inception_date || null,
 
