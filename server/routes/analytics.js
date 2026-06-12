@@ -1,41 +1,16 @@
 /**
  * DLB Trust Analytics API Routes
- * File: analytics-api-routes.js
+ * File: analytics.js
  *
- * Add these routes to your main Express server (e.g., server.js or app.js):
+ * PostgreSQL version — uses the shared pg pool from server/db.js
  *
- *   const analyticsRoutes = require('./analytics-api-routes');
- *   app.use('/api/analytics', analyticsRoutes);
- *
- * Requires: better-sqlite3 (already used by the main app)
- * Generated: 2026-04-08
+ * Mount in app.js:
+ *   app.use('/api/analytics', require('./server/routes/analytics'));
  */
 
 const express = require('express');
 const router = express.Router();
-
-// ─────────────────────────────────────────────────────────────
-// DATABASE CONNECTION
-// Adjust the path to match your actual DB file location
-// ─────────────────────────────────────────────────────────────
-const Database = require('better-sqlite3');
-const path = require('path');
-
-function getDb() {
-  // Try common locations — adjust as needed
-  const dbPaths = [
-    path.join(__dirname, 'trust.db'),
-    path.join(__dirname, 'data', 'trust.db'),
-    path.join(__dirname, '..', 'trust.db'),
-    '/app/trust.db',
-  ];
-  for (const p of dbPaths) {
-    try {
-      return new Database(p, { readonly: true });
-    } catch (_) {}
-  }
-  throw new Error('Cannot find trust.db — update DB path in analytics-api-routes.js');
-}
+const pool = require('../db');
 
 // ─────────────────────────────────────────────────────────────
 // HELPER: cents → dollars
@@ -43,29 +18,14 @@ function getDb() {
 const toDollars = (cents) => (cents !== null && cents !== undefined) ? Math.round(cents) / 100 : null;
 
 // ─────────────────────────────────────────────────────────────
-// MIDDLEWARE: attach DB to req, auto-close after response
-// ─────────────────────────────────────────────────────────────
-router.use((req, res, next) => {
-  try {
-    req.db = getDb();
-    res.on('finish', () => { try { req.db.close(); } catch (_) {} });
-    res.on('close',  () => { try { req.db.close(); } catch (_) {} });
-    next();
-  } catch (err) {
-    res.status(500).json({ error: 'Database connection failed', detail: err.message });
-  }
-});
-
-// ─────────────────────────────────────────────────────────────
 // GET /api/analytics/summary
 // Overall trust financial summary
 // ─────────────────────────────────────────────────────────────
-router.get('/summary', (req, res) => {
+router.get('/summary', async (req, res) => {
   try {
-    const db = req.db;
+    const db = pool;
 
-    // Total portfolio
-    const portfolioRow = db.prepare(`
+    const portfolioRow = (await db.query(`
       SELECT
         SUM(fiat_balance) AS total_portfolio_cents,
         COUNT(*) AS total_wallets,
@@ -73,10 +33,9 @@ router.get('/summary', (req, res) => {
         SUM(CASE WHEN role = 'trustee'      THEN fiat_balance ELSE 0 END) AS trustee_balance_cents,
         SUM(CASE WHEN role = 'beneficiary'  THEN fiat_balance ELSE 0 END) AS beneficiary_balance_cents
       FROM wallets
-    `).get();
+    `)).rows[0];
 
-    // Transaction aggregates
-    const txRow = db.prepare(`
+    const txRow = (await db.query(`
       SELECT
         COUNT(*) AS total_count,
         SUM(CASE WHEN amount >= 0 THEN amount ELSE 0 END) AS total_credits_cents,
@@ -85,43 +44,38 @@ router.get('/summary', (req, res) => {
         MIN(CASE WHEN amount < 0  THEN amount ELSE 0 END) AS largest_debit_cents_neg
       FROM transactions
       WHERE status = 'completed'
-    `).get();
+    `)).rows[0];
 
-    // Distribution totals
-    const distRow = db.prepare(`
+    const distRow = (await db.query(`
       SELECT
         COUNT(*) AS dist_count,
         SUM(ABS(amount)) AS total_dist_cents,
         AVG(ABS(amount)) AS avg_dist_cents
       FROM transactions
       WHERE category = 'distribution' AND status = 'completed'
-    `).get();
+    `)).rows[0];
 
-    // Interest income totals
-    const interestRow = db.prepare(`
+    const interestRow = (await db.query(`
       SELECT SUM(amount) AS total_interest_cents
       FROM transactions
       WHERE category IN ('interest', 'investment') AND status = 'completed'
-    `).get();
+    `)).rows[0];
 
-    // Management fee totals
-    const feeRow = db.prepare(`
+    const feeRow = (await db.query(`
       SELECT SUM(ABS(amount)) AS total_fees_cents
       FROM transactions
       WHERE category = 'fee' AND status = 'completed'
-    `).get();
+    `)).rows[0];
 
-    // Corpus
-    const corpusRow = db.prepare(`
+    const corpusRow = (await db.query(`
       SELECT SUM(amount) AS corpus_cents
       FROM transactions
       WHERE category = 'corpus'
-    `).get();
+    `)).rows[0];
 
-    // Inception date
-    const inceptionRow = db.prepare(`
+    const inceptionRow = (await db.query(`
       SELECT MIN(created_at) AS inception_date FROM transactions WHERE category = 'corpus'
-    `).get();
+    `)).rows[0];
 
     const summary = {
       generated_at: new Date().toISOString(),
@@ -191,39 +145,37 @@ router.get('/summary', (req, res) => {
 // GET /api/analytics/wallets
 // Per-wallet breakdown with flow stats
 // ─────────────────────────────────────────────────────────────
-router.get('/wallets', (req, res) => {
+router.get('/wallets', async (req, res) => {
   try {
-    const db = req.db;
+    const db = pool;
 
-    const wallets = db.prepare(`SELECT * FROM wallets ORDER BY id`).all();
+    const wallets = (await db.query('SELECT * FROM wallets ORDER BY id')).rows;
 
-    const walletStats = wallets.map(w => {
-      // Inflows to this wallet
-      const inflow = db.prepare(`
+    const walletStats = [];
+    for (const w of wallets) {
+      const inflow = (await db.query(`
         SELECT
           COUNT(*) AS count,
           COALESCE(SUM(ABS(amount)), 0) AS total_cents
         FROM transactions
-        WHERE to_wallet_id = ? AND status = 'completed'
-      `).get(w.wallet_id);
+        WHERE to_wallet_id = $1 AND status = 'completed'
+      `, [w.wallet_id])).rows[0];
 
-      // Outflows from this wallet
-      const outflow = db.prepare(`
+      const outflow = (await db.query(`
         SELECT
           COUNT(*) AS count,
           COALESCE(SUM(ABS(amount)), 0) AS total_cents
         FROM transactions
-        WHERE from_wallet_id = ? AND status = 'completed'
-      `).get(w.wallet_id);
+        WHERE from_wallet_id = $1 AND status = 'completed'
+      `, [w.wallet_id])).rows[0];
 
-      // Last transaction
-      const lastTx = db.prepare(`
+      const lastTx = (await db.query(`
         SELECT MAX(created_at) AS last_date
         FROM transactions
-        WHERE from_wallet_id = ? OR to_wallet_id = ?
-      `).get(w.wallet_id, w.wallet_id);
+        WHERE from_wallet_id = $1 OR to_wallet_id = $2
+      `, [w.wallet_id, w.wallet_id])).rows[0];
 
-      return {
+      walletStats.push({
         wallet_id: w.wallet_id,
         name: w.name,
         role: w.role,
@@ -243,8 +195,8 @@ router.get('/wallets', (req, res) => {
         outflow_count: outflow.count,
         transaction_count: inflow.count + outflow.count,
         last_activity: lastTx.last_date || null,
-      };
-    });
+      });
+    }
 
     res.json({
       generated_at: new Date().toISOString(),
@@ -261,24 +213,24 @@ router.get('/wallets', (req, res) => {
 // Aggregated transaction data — by category, method, month
 // Query params: ?category=distribution&method=ach&from=2024-01-01&to=2025-12-31
 // ─────────────────────────────────────────────────────────────
-router.get('/transactions', (req, res) => {
+router.get('/transactions', async (req, res) => {
   try {
-    const db = req.db;
+    const db = pool;
     const { category, method, from: fromDate, to: toDate, limit = 100, offset = 0 } = req.query;
 
-    // Build dynamic WHERE clause
+    let paramIdx = 1;
     const conditions = [];
     const params = [];
 
-    if (category) { conditions.push('category = ?'); params.push(category); }
-    if (method)   { conditions.push('payment_method = ?'); params.push(method); }
-    if (fromDate) { conditions.push('DATE(created_at) >= ?'); params.push(fromDate); }
-    if (toDate)   { conditions.push('DATE(created_at) <= ?'); params.push(toDate); }
+    if (category) { conditions.push(`category = $${paramIdx++}`); params.push(category); }
+    if (method)   { conditions.push(`payment_method = $${paramIdx++}`); params.push(method); }
+    if (fromDate) { conditions.push(`created_at::DATE >= $${paramIdx++}`); params.push(fromDate); }
+    if (toDate)   { conditions.push(`created_at::DATE <= $${paramIdx++}`); params.push(toDate); }
 
     const where = conditions.length ? 'WHERE ' + conditions.join(' AND ') : '';
 
     // Category breakdown
-    const byCategory = db.prepare(`
+    const byCategory = (await db.query(`
       SELECT
         category,
         COUNT(*) AS count,
@@ -290,10 +242,10 @@ router.get('/transactions', (req, res) => {
       ${where}
       GROUP BY category
       ORDER BY total_cents DESC
-    `).all(...params);
+    `, params)).rows;
 
     // Method breakdown
-    const byMethod = db.prepare(`
+    const byMethod = (await db.query(`
       SELECT
         payment_method AS method,
         COUNT(*) AS count,
@@ -302,12 +254,12 @@ router.get('/transactions', (req, res) => {
       ${where}
       GROUP BY payment_method
       ORDER BY count DESC
-    `).all(...params);
+    `, params)).rows;
 
     // Monthly flow
-    const byMonth = db.prepare(`
+    const byMonth = (await db.query(`
       SELECT
-        STRFTIME('%Y-%m', created_at) AS month,
+        TO_CHAR(created_at, 'YYYY-MM') AS month,
         SUM(CASE WHEN amount >= 0 THEN amount ELSE 0 END) AS credits_cents,
         SUM(CASE WHEN amount < 0  THEN ABS(amount) ELSE 0 END) AS debits_cents,
         COUNT(*) AS count
@@ -315,10 +267,13 @@ router.get('/transactions', (req, res) => {
       ${where}
       GROUP BY month
       ORDER BY month ASC
-    `).all(...params);
+    `, params)).rows;
 
     // Individual transactions (paginated)
-    const txList = db.prepare(`
+    const limitVal = parseInt(limit);
+    const offsetVal = parseInt(offset);
+    const txParams = [...params, limitVal, offsetVal];
+    const txList = (await db.query(`
       SELECT
         id,
         category,
@@ -332,19 +287,19 @@ router.get('/transactions', (req, res) => {
       FROM transactions
       ${where}
       ORDER BY created_at DESC
-      LIMIT ? OFFSET ?
-    `).all(...params, parseInt(limit), parseInt(offset));
+      LIMIT $${paramIdx++} OFFSET $${paramIdx++}
+    `, txParams)).rows;
 
     // Total count
-    const totalRow = db.prepare(`
+    const totalRow = (await db.query(`
       SELECT COUNT(*) AS total FROM transactions ${where}
-    `).get(...params);
+    `, params)).rows[0];
 
     res.json({
       generated_at: new Date().toISOString(),
       filters: { category: category || null, method: method || null, from: fromDate || null, to: toDate || null },
       total_count: totalRow.total,
-      page: { limit: parseInt(limit), offset: parseInt(offset) },
+      page: { limit: limitVal, offset: offsetVal },
 
       by_category: byCategory.map(r => ({
         category: r.category,
@@ -398,67 +353,61 @@ router.get('/transactions', (req, res) => {
 // GET /api/analytics/beneficiaries
 // Per-beneficiary balance, allocation, disbursement analysis
 // ─────────────────────────────────────────────────────────────
-router.get('/beneficiaries', (req, res) => {
+router.get('/beneficiaries', async (req, res) => {
   try {
-    const db = req.db;
+    const db = pool;
 
-    const beneficiaries = db.prepare(`
+    const beneficiaries = (await db.query(`
       SELECT * FROM wallets WHERE role = 'beneficiary' ORDER BY id
-    `).all();
+    `)).rows;
 
-    const result = beneficiaries.map(b => {
-      // Total received
-      const received = db.prepare(`
+    const result = [];
+    for (const b of beneficiaries) {
+      const received = (await db.query(`
         SELECT COALESCE(SUM(ABS(amount)), 0) AS total, COUNT(*) AS count
         FROM transactions
-        WHERE to_wallet_id = ? AND status = 'completed'
-      `).get(b.wallet_id);
+        WHERE to_wallet_id = $1 AND status = 'completed'
+      `, [b.wallet_id])).rows[0];
 
-      // Total disbursed
-      const disbursed = db.prepare(`
+      const disbursed = (await db.query(`
         SELECT COALESCE(SUM(ABS(amount)), 0) AS total, COUNT(*) AS count
         FROM transactions
-        WHERE from_wallet_id = ? AND status = 'completed'
-      `).get(b.wallet_id);
+        WHERE from_wallet_id = $1 AND status = 'completed'
+      `, [b.wallet_id])).rows[0];
 
-      // Last activity
-      const lastTx = db.prepare(`
-        SELECT MAX(created_at) AS last_date, category, payment_method
+      const lastTx = (await db.query(`
+        SELECT created_at AS last_date, category, payment_method
         FROM transactions
-        WHERE from_wallet_id = ? OR to_wallet_id = ?
+        WHERE from_wallet_id = $1 OR to_wallet_id = $2
         ORDER BY created_at DESC
         LIMIT 1
-      `).get(b.wallet_id, b.wallet_id);
+      `, [b.wallet_id, b.wallet_id])).rows[0];
 
-      // Payment methods used
-      const methods = db.prepare(`
+      const methods = (await db.query(`
         SELECT payment_method, COUNT(*) AS count
         FROM transactions
-        WHERE from_wallet_id = ? OR to_wallet_id = ?
+        WHERE from_wallet_id = $1 OR to_wallet_id = $2
         GROUP BY payment_method
-      `).all(b.wallet_id, b.wallet_id);
+      `, [b.wallet_id, b.wallet_id])).rows;
 
-      // Recent transactions (last 5)
-      const recentTx = db.prepare(`
+      const recentTx = (await db.query(`
         SELECT id, category, description, amount, payment_method, status, created_at
         FROM transactions
-        WHERE from_wallet_id = ? OR to_wallet_id = ?
+        WHERE from_wallet_id = $1 OR to_wallet_id = $2
         ORDER BY created_at DESC
         LIMIT 5
-      `).all(b.wallet_id, b.wallet_id);
+      `, [b.wallet_id, b.wallet_id])).rows;
 
-      return {
+      result.push({
         wallet_id: b.wallet_id,
         name: b.name,
         role: b.role,
         current_balance_cents: b.fiat_balance,
         current_balance_usd: toDollars(b.fiat_balance),
         currency: b.currency || 'USD',
-        // Profile completeness
         email: b.email || null,
         phone: b.phone || null,
         holder_name: b.holder_name || null,
-        // Financials
         total_received_cents: received.total,
         total_received_usd: toDollars(received.total),
         inflow_count: received.count,
@@ -467,7 +416,6 @@ router.get('/beneficiaries', (req, res) => {
         outflow_count: disbursed.count,
         net_position_cents: received.total - disbursed.total,
         net_position_usd: toDollars(received.total - disbursed.total),
-        // Activity
         last_activity: lastTx?.last_date || null,
         last_tx_category: lastTx?.category || null,
         last_tx_method: lastTx?.payment_method || null,
@@ -486,8 +434,8 @@ router.get('/beneficiaries', (req, res) => {
           status: t.status,
           date: t.created_at,
         })),
-      };
-    });
+      });
+    }
 
     res.json({
       generated_at: new Date().toISOString(),
@@ -507,12 +455,11 @@ router.get('/beneficiaries', (req, res) => {
 // GET /api/analytics/ach-readiness
 // Which beneficiaries can receive ACH disbursements
 // ─────────────────────────────────────────────────────────────
-router.get('/ach-readiness', (req, res) => {
+router.get('/ach-readiness', async (req, res) => {
   try {
-    const db = req.db;
+    const db = pool;
 
-    // Fetch all beneficiaries and trustees
-    const users = db.prepare(`
+    const users = (await db.query(`
       SELECT
         w.wallet_id,
         w.name,
@@ -521,9 +468,6 @@ router.get('/ach-readiness', (req, res) => {
         w.email,
         w.phone,
         w.holder_name,
-        -- These columns may not exist yet — use CASE to handle gracefully
-        -- Add routing_number and account_number columns to your wallets table
-        -- or create a separate bank_accounts table
         CASE WHEN EXISTS(
           SELECT 1 FROM wallets ba WHERE ba.wallet_id = w.wallet_id AND ba.routing_number IS NOT NULL
         ) THEN 1 ELSE 0 END AS has_routing,
@@ -532,11 +476,7 @@ router.get('/ach-readiness', (req, res) => {
         ) THEN 1 ELSE 0 END AS has_account
       FROM wallets w
       ORDER BY w.role, w.id
-    `).all();
-
-    // Alternate query if bank details are in a separate table:
-    // SELECT w.*, ba.routing_number, ba.account_number
-    // FROM wallets w LEFT JOIN bank_accounts ba ON ba.wallet_id = w.wallet_id
+    `)).rows;
 
     const withStatus = users.map(u => {
       const blockers = [];
@@ -597,17 +537,18 @@ router.get('/ach-readiness', (req, res) => {
 // GET /api/analytics/distributions
 // Distribution history with trends
 // ─────────────────────────────────────────────────────────────
-router.get('/distributions', (req, res) => {
+router.get('/distributions', async (req, res) => {
   try {
-    const db = req.db;
+    const db = pool;
     const { year } = req.query;
 
+    let paramIdx = 1;
     const conditions = ["category = 'distribution'", "status = 'completed'"];
     const params = [];
-    if (year) { conditions.push("STRFTIME('%Y', created_at) = ?"); params.push(year); }
+    if (year) { conditions.push(`TO_CHAR(created_at, 'YYYY') = $${paramIdx++}`); params.push(year); }
     const where = 'WHERE ' + conditions.join(' AND ');
 
-    const distributions = db.prepare(`
+    const distributions = (await db.query(`
       SELECT
         id,
         description,
@@ -617,31 +558,31 @@ router.get('/distributions', (req, res) => {
         to_wallet_id,
         status,
         created_at,
-        STRFTIME('%Y', created_at) AS year,
-        STRFTIME('%Y-%m', created_at) AS month,
-        STRFTIME('%Q', created_at) AS quarter
+        TO_CHAR(created_at, 'YYYY') AS year,
+        TO_CHAR(created_at, 'YYYY-MM') AS month,
+        EXTRACT(QUARTER FROM created_at)::TEXT AS quarter
       FROM transactions
       ${where}
       ORDER BY created_at DESC
-    `).all(...params);
+    `, params)).rows;
 
     // Annual totals
-    const byYear = db.prepare(`
+    const byYear = (await db.query(`
       SELECT
-        STRFTIME('%Y', created_at) AS year,
+        TO_CHAR(created_at, 'YYYY') AS year,
         COUNT(*) AS count,
         SUM(ABS(amount)) AS total_cents
       FROM transactions
       WHERE category = 'distribution' AND status = 'completed'
       GROUP BY year
       ORDER BY year
-    `).all();
+    `)).rows;
 
-    // Quarterly totals
-    const byQuarter = db.prepare(`
+    // Monthly totals
+    const byQuarter = (await db.query(`
       SELECT
-        STRFTIME('%Y', created_at) AS year,
-        STRFTIME('%m', created_at) AS month_num,
+        TO_CHAR(created_at, 'YYYY') AS year,
+        TO_CHAR(created_at, 'MM') AS month_num,
         COUNT(*) AS count,
         SUM(ABS(amount)) AS total_cents,
         AVG(ABS(amount)) AS avg_cents
@@ -649,7 +590,7 @@ router.get('/distributions', (req, res) => {
       WHERE category = 'distribution' AND status = 'completed'
       GROUP BY year, month_num
       ORDER BY year, month_num
-    `).all();
+    `)).rows;
 
     res.json({
       generated_at: new Date().toISOString(),
@@ -703,15 +644,15 @@ router.get('/distributions', (req, res) => {
 // GET /api/analytics/data-quality
 // Profile completeness and missing field audit
 // ─────────────────────────────────────────────────────────────
-router.get('/data-quality', (req, res) => {
+router.get('/data-quality', async (req, res) => {
   try {
-    const db = req.db;
+    const db = pool;
 
-    const users = db.prepare(`
+    const users = (await db.query(`
       SELECT wallet_id, name, role, email, phone, holder_name
       FROM wallets
       ORDER BY role, id
-    `).all();
+    `)).rows;
 
     const totalUsers = users.length;
 
@@ -719,32 +660,29 @@ router.get('/data-quality', (req, res) => {
       email:   users.filter(u => !u.email).length,
       phone:   users.filter(u => !u.phone).length,
       holder_name: users.filter(u => !u.holder_name).length,
-      // routing_number and account_number require those columns to exist:
-      // routing_number: users.filter(u => !u.routing_number).length,
-      // account_number: users.filter(u => !u.account_number).length,
     };
 
-    // Orphaned transactions (wallets referenced that don't exist)
-    const orphanedFrom = db.prepare(`
+    const orphanedFrom = (await db.query(`
       SELECT COUNT(*) AS count FROM transactions t
       LEFT JOIN wallets w ON w.wallet_id = t.from_wallet_id
       WHERE t.from_wallet_id IS NOT NULL AND w.wallet_id IS NULL
-    `).get();
+    `)).rows[0];
 
-    const orphanedTo = db.prepare(`
+    const orphanedTo = (await db.query(`
       SELECT COUNT(*) AS count FROM transactions t
       LEFT JOIN wallets w ON w.wallet_id = t.to_wallet_id
       WHERE t.to_wallet_id IS NOT NULL AND w.wallet_id IS NULL
-    `).get();
+    `)).rows[0];
 
-    // Transactions missing category
-    const missingCategory = db.prepare(`
+    const missingCategory = (await db.query(`
       SELECT COUNT(*) AS count FROM transactions WHERE category IS NULL OR category = ''
-    `).get();
+    `)).rows[0];
 
     const totalFields = totalUsers * Object.keys(missing).length;
     const missingTotal = Object.values(missing).reduce((a, b) => a + b, 0);
-    const completenessScore = Math.round(((totalFields - missingTotal) / totalFields) * 100);
+    const completenessScore = totalFields > 0
+      ? Math.round(((totalFields - missingTotal) / totalFields) * 100)
+      : 0;
 
     res.json({
       generated_at: new Date().toISOString(),
@@ -790,67 +728,3 @@ router.get('/data-quality', (req, res) => {
 // EXPORT
 // ─────────────────────────────────────────────────────────────
 module.exports = router;
-
-/*
- * ─────────────────────────────────────────────────────────────
- * INTEGRATION INSTRUCTIONS
- * ─────────────────────────────────────────────────────────────
- *
- * 1. Copy this file to your server directory (same level as server.js)
- *
- * 2. In server.js, add:
- *
- *      const analyticsRoutes = require('./analytics-api-routes');
- *      app.use('/api/analytics', analyticsRoutes);
- *
- * 3. Available endpoints:
- *
- *    GET /api/analytics/summary
- *      → Overall trust financial summary
- *
- *    GET /api/analytics/wallets
- *      → All 8 wallets with flow stats
- *
- *    GET /api/analytics/transactions
- *      → Aggregated by category/method/month + paginated list
- *      → Query params: category, method, from, to, limit, offset
- *
- *    GET /api/analytics/beneficiaries
- *      → Per-beneficiary balance, flows, recent transactions
- *
- *    GET /api/analytics/ach-readiness
- *      → Who can receive ACH, who is blocked and why
- *
- *    GET /api/analytics/distributions
- *      → Distribution history, annual/quarterly totals
- *      → Query param: year (e.g. ?year=2025)
- *
- *    GET /api/analytics/data-quality
- *      → Missing fields, schema recommendations
- *
- * 4. Column name assumptions:
- *    - wallets.wallet_id (TEXT PK)
- *    - wallets.fiat_balance (INTEGER, cents)
- *    - wallets.role (TEXT: 'trust_entity'|'trustee'|'beneficiary')
- *    - transactions.amount (INTEGER, cents; negative = debit)
- *    - transactions.category (TEXT)
- *    - transactions.payment_method (TEXT)
- *    - transactions.from_wallet_id (TEXT FK)
- *    - transactions.to_wallet_id (TEXT FK)
- *    - transactions.created_at (TEXT ISO date)
- *    - transactions.status (TEXT: 'completed'|'pending'|etc.)
- *
- *    If column names differ in your schema, update the SQL queries above.
- *
- * 5. Required schema additions for full ACH readiness:
- *    ALTER TABLE wallets ADD COLUMN routing_number TEXT;
- *    ALTER TABLE wallets ADD COLUMN account_number TEXT;
- *    ALTER TABLE wallets ADD COLUMN account_type TEXT DEFAULT 'checking';
- *    ALTER TABLE wallets ADD COLUMN kyc_verified INTEGER DEFAULT 0;
- *    ALTER TABLE wallets ADD COLUMN ssn_encrypted TEXT;
- *    ALTER TABLE wallets ADD COLUMN date_of_birth TEXT;
- *    ALTER TABLE wallets ADD COLUMN mailing_address TEXT;
- *    ALTER TABLE wallets ADD COLUMN preferred_payment_method TEXT DEFAULT 'ach';
- *    ALTER TABLE transactions ADD COLUMN is_test INTEGER DEFAULT 0;
- * ─────────────────────────────────────────────────────────────
- */
