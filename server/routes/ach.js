@@ -14,11 +14,10 @@
 const express = require('express');
 const router  = express.Router();
 const { OpenACHClient } = require('../integrations/openach/openachClient');
+const pool = require('../db');
 
 // ─── Middleware: require admin auth ──────────────────────────────────────────
 function requireAdmin(req, res, next) {
-  // Compatible with whatever auth the live server uses
-  // If no auth middleware, skip — tighten later
   if (typeof req.user !== 'undefined' && req.user.role !== 'admin') {
     return res.status(403).json({ error: 'Admin access required' });
   }
@@ -26,7 +25,6 @@ function requireAdmin(req, res, next) {
 }
 
 // ─── GET /api/ach/health ──────────────────────────────────────────────────────
-// Verify OpenACH API is reachable and credentials work
 router.get('/health', async (req, res) => {
   try {
     const types = await OpenACHClient.getPaymentTypes();
@@ -56,21 +54,6 @@ router.get('/payment-types', async (req, res) => {
 });
 
 // ─── POST /api/ach/disburse ───────────────────────────────────────────────────
-// Disburse funds from the trust to a beneficiary's bank account
-// Body: {
-//   wallet_id         - beneficiary wallet ID (1–8 from /api/wallets)
-//   amount            - dollars (e.g. 500.00)
-//   routing_number    - recipient's 9-digit ABA routing number
-//   account_number    - recipient's bank account number
-//   account_type      - "Checking" or "Savings"
-//   payment_type_id   - from /api/ach/payment-types (Trust Dist type)
-//   send_date         - YYYY-MM-DD (optional, defaults to next business day)
-//   description       - memo/description
-//   billing_address   - optional
-//   billing_city      - optional
-//   billing_state     - optional, default OH
-//   billing_zip       - optional
-// }
 router.post('/disburse', requireAdmin, async (req, res) => {
   const {
     wallet_id,
@@ -111,14 +94,10 @@ router.post('/disburse', requireAdmin, async (req, res) => {
   }
 
   // Look up wallet to get beneficiary info
-  let db;
   let wallet;
   try {
-    // Try to get DB from app locals (set by server.js)
-    db = req.app.locals.db;
-    if (db) {
-      wallet = db.prepare('SELECT * FROM wallets WHERE id = ?').get(wallet_id);
-    }
+    const { rows: [row] } = await pool.query('SELECT * FROM wallets WHERE id = $1', [wallet_id]);
+    wallet = row;
   } catch (_) { /* db access optional */ }
 
   // Parse beneficiary name from wallet or use generic
@@ -159,67 +138,68 @@ router.post('/disburse', requireAdmin, async (req, res) => {
       occurrences:     1,
     });
 
-    // Log the disbursement to the transactions table if DB is available
-    if (db) {
-      try {
-        // Get trust primary wallet (id=1) for debit
-        const trustWallet = db.prepare('SELECT * FROM wallets WHERE role = ? LIMIT 1').get('trust_entity');
+    // Log the disbursement to the transactions table
+    try {
+      // Get trust primary wallet (id=1) for debit
+      const { rows: [trustWallet] } = await pool.query(
+        'SELECT * FROM wallets WHERE role = $1 LIMIT 1', ['trust_entity']
+      );
 
-        if (trustWallet) {
-          const balanceBefore = trustWallet.fiat_balance;
-          const amountCents   = Math.round(amountNum * 100);
-          const balanceAfter  = balanceBefore - amountCents;
+      if (trustWallet) {
+        const balanceBefore = trustWallet.fiat_balance;
+        const amountCents   = Math.round(amountNum * 100);
+        const balanceAfter  = balanceBefore - amountCents;
 
-          // Debit trust wallet
-          db.prepare(`
-            UPDATE wallets SET fiat_balance = ? WHERE id = ?
-          `).run(balanceAfter, trustWallet.id);
+        // Debit trust wallet
+        await pool.query(
+          'UPDATE wallets SET fiat_balance = $1 WHERE id = $2',
+          [balanceAfter, trustWallet.id]
+        );
 
-          // Record debit transaction for trust
-          db.prepare(`
-            INSERT INTO transactions 
-              (wallet_id, type, amount, balance_before, balance_after, description, 
-               counterparty_wallet_id, reference_id, status, created_at)
-            VALUES (?, 'transfer_out', ?, ?, ?, ?, ?, ?, 'completed', datetime('now'))
-          `).run(
-            trustWallet.id,
-            amountCents,
-            balanceBefore,
-            balanceAfter,
-            `ACH disbursement to ${firstName} ${lastName}: ${description}`,
-            wallet_id,
-            result.payment_schedule_id,
-            'completed',
+        // Record debit transaction for trust
+        await pool.query(`
+          INSERT INTO transactions 
+            (wallet_id, type, amount, balance_before, balance_after, description, 
+             counterparty_wallet_id, reference_id, status, created_at)
+          VALUES ($1, 'transfer_out', $2, $3, $4, $5, $6, $7, 'completed', NOW())
+        `, [
+          trustWallet.id,
+          amountCents,
+          balanceBefore,
+          balanceAfter,
+          `ACH disbursement to ${firstName} ${lastName}: ${description}`,
+          wallet_id,
+          result.payment_schedule_id,
+        ]);
+
+        // Credit beneficiary wallet
+        if (wallet_id) {
+          const { rows: [benWallet] } = await pool.query(
+            'SELECT * FROM wallets WHERE id = $1', [wallet_id]
           );
-
-          // Credit beneficiary wallet
-          if (wallet_id) {
-            const benWallet = db.prepare('SELECT * FROM wallets WHERE id = ?').get(wallet_id);
-            if (benWallet) {
-              const benBefore = benWallet.fiat_balance;
-              const benAfter  = benBefore + amountCents;
-              db.prepare('UPDATE wallets SET fiat_balance = ? WHERE id = ?').run(benAfter, wallet_id);
-              db.prepare(`
-                INSERT INTO transactions 
-                  (wallet_id, type, amount, balance_before, balance_after, description,
-                   counterparty_wallet_id, reference_id, status, created_at)
-                VALUES (?, 'transfer_in', ?, ?, ?, ?, ?, ?, 'completed', datetime('now'))
-              `).run(
-                wallet_id,
-                amountCents,
-                benBefore,
-                benAfter,
-                `ACH disbursement from DEANDREA LAVAR BARKLEY TRUST`,
-                trustWallet.id,
-                result.payment_schedule_id,
-                'completed',
-              );
-            }
+          if (benWallet) {
+            const benBefore = benWallet.fiat_balance;
+            const benAfter  = benBefore + amountCents;
+            await pool.query('UPDATE wallets SET fiat_balance = $1 WHERE id = $2', [benAfter, wallet_id]);
+            await pool.query(`
+              INSERT INTO transactions 
+                (wallet_id, type, amount, balance_before, balance_after, description,
+                 counterparty_wallet_id, reference_id, status, created_at)
+              VALUES ($1, 'transfer_in', $2, $3, $4, $5, $6, $7, 'completed', NOW())
+            `, [
+              wallet_id,
+              amountCents,
+              benBefore,
+              benAfter,
+              'ACH disbursement from DEANDREA LAVAR BARKLEY TRUST',
+              trustWallet.id,
+              result.payment_schedule_id,
+            ]);
           }
         }
-      } catch (dbErr) {
-        console.warn('[ach/disburse] DB log failed (non-fatal):', dbErr.message);
       }
+    } catch (dbErr) {
+      console.warn('[ach/disburse] DB log failed (non-fatal):', dbErr.message);
     }
 
     res.json({
@@ -237,7 +217,6 @@ router.post('/disburse', requireAdmin, async (req, res) => {
 });
 
 // ─── GET /api/ach/schedules/:walletId ─────────────────────────────────────────
-// Get all ACH payment schedules for a beneficiary by wallet ID
 router.get('/schedules/:walletId', async (req, res) => {
   try {
     const profile = await OpenACHClient.getPaymentProfileByExternalId(
