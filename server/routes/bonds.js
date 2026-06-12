@@ -13,6 +13,16 @@ const router  = express.Router();
 const pool    = require('../db/postgres');
 const bus     = require('../event-bus');
 
+// ─── Middleware: require admin auth ──────────────────────────────────────────
+function requireAdmin(req, res, next) {
+  if (typeof req.user !== 'undefined' && req.user.role !== 'admin') {
+    return res.status(403).json({ error: 'Admin access required' });
+  }
+  next();
+}
+
+router.use(requireAdmin);
+
 // ─── GET /api/bonds/:id ────────────────────────────────────────────────────
 // Fetch full bond master record with joined trust account and documents
 router.get('/:id', async (req, res) => {

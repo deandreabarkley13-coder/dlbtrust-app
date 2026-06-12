@@ -16,7 +16,6 @@ const router  = express.Router();
 const { OpenACHClient } = require('../integrations/openach/openachClient');
 const pool = require('../db/postgres');
 const bus  = require('../event-bus');
-const { uploadNACHAFile } = require('../integrations/sftp/sftp-uploader');
 
 // ─── Middleware: require admin auth ──────────────────────────────────────────
 function requireAdmin(req, res, next) {
@@ -307,25 +306,28 @@ router.post('/bond-coupon-disburse', requireAdmin, async (req, res) => {
       }
     }
 
-    // Update bond record with last payment date
+    // Only update bond record if at least one disbursement succeeded
+    const successCount = results.filter(r => r.success).length;
     const today = new Date().toISOString().split('T')[0];
-    await pool.query(
-      `UPDATE bond_master_records
-       SET last_payment_date = $1, updated_at = now(), updated_by_module = 'openach'
-       WHERE bond_id = $2`,
-      [today, bond_id]
-    );
+    if (successCount > 0) {
+      await pool.query(
+        `UPDATE bond_master_records
+         SET last_payment_date = $1, updated_at = now(), updated_by_module = 'openach'
+         WHERE bond_id = $2`,
+        [today, bond_id]
+      );
 
-    await pool.query(
-      `INSERT INTO bond_audit_log (bond_id, source, changes) VALUES ($1,'openach',$2)`,
-      [bond_id, JSON.stringify({ last_payment_date: today, disbursements: results.length })]
-    );
+      await pool.query(
+        `INSERT INTO bond_audit_log (bond_id, source, changes) VALUES ($1,'openach',$2)`,
+        [bond_id, JSON.stringify({ last_payment_date: today, disbursements: successCount })]
+      );
 
-    bus.emit('bond:updated', {
-      bond_id,
-      source: 'openach',
-      changes: { last_payment_date: today },
-    });
+      bus.emit('bond:updated', {
+        bond_id,
+        source: 'openach',
+        changes: { last_payment_date: today },
+      });
+    }
 
     res.json({
       success: true,

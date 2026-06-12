@@ -59,27 +59,40 @@ async function pollReturns() {
           }
         }
 
-        // Update bond records that reference this file
+        // Match returns to bonds via original_trace stored in last_sftp_file
+        // Only update bonds whose last_sftp_file contains a matching trace number
         if (returnCodes.length > 0) {
-          const { rows: bonds } = await pool.query(
-            "SELECT bond_id FROM bond_master_records WHERE last_sftp_file IS NOT NULL LIMIT 100"
-          );
-          for (const bond of bonds) {
-            await pool.query(
-              `UPDATE bond_master_records
-               SET last_sftp_file = $1, updated_at = now(), updated_by_module = 'sftp'
-               WHERE bond_id = $2`,
-              [file.name, bond.bond_id]
+          const traces = returnCodes.map(r => r.original_trace).filter(Boolean);
+          if (traces.length > 0) {
+            // Find bonds whose last_sftp_file contains one of the returned trace numbers
+            const placeholders = traces.map((_, i) => `$${i + 1}`).join(', ');
+            const { rows: bonds } = await pool.query(
+              `SELECT bond_id FROM bond_master_records
+               WHERE last_sftp_file = ANY($1::text[])`,
+              [traces]
             );
-            await pool.query(
-              `INSERT INTO bond_audit_log (bond_id, source, changes) VALUES ($1,'sftp',$2)`,
-              [bond.bond_id, JSON.stringify({ last_sftp_file: file.name, return_codes: returnCodes })]
-            );
-            bus.emit('bond:updated', {
-              bond_id: bond.bond_id,
-              source: 'sftp',
-              changes: { last_sftp_file: file.name, return_codes: returnCodes },
-            });
+
+            for (const bond of bonds) {
+              await pool.query(
+                `UPDATE bond_master_records
+                 SET last_sftp_file = $1, updated_at = now(), updated_by_module = 'sftp'
+                 WHERE bond_id = $2`,
+                [file.name, bond.bond_id]
+              );
+              await pool.query(
+                `INSERT INTO bond_audit_log (bond_id, source, changes) VALUES ($1,'sftp',$2)`,
+                [bond.bond_id, JSON.stringify({ last_sftp_file: file.name, return_codes: returnCodes })]
+              );
+              bus.emit('bond:updated', {
+                bond_id: bond.bond_id,
+                source: 'sftp',
+                changes: { last_sftp_file: file.name, return_codes: returnCodes },
+              });
+            }
+
+            if (bonds.length === 0) {
+              console.warn(`[sftp-watcher] return file ${file.name}: no matching bonds for traces ${traces.join(', ')}`);
+            }
           }
         }
 

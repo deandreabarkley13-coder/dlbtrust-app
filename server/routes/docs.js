@@ -11,6 +11,16 @@ const dms     = require('../integrations/docs/dms-client');
 const docgen  = require('../integrations/docs/docgen-client');
 const pool    = require('../db/postgres');
 
+// ─── Middleware: require admin auth ──────────────────────────────────────────
+function requireAdmin(req, res, next) {
+  if (typeof req.user !== 'undefined' && req.user.role !== 'admin') {
+    return res.status(403).json({ error: 'Admin access required' });
+  }
+  next();
+}
+
+router.use(requireAdmin);
+
 // ─── GET /api/docs/:id ──────────────────────────────────────────────────────
 router.get('/:id', async (req, res) => {
   try {
