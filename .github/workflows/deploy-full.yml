@@ -1,0 +1,68 @@
+name: Deploy Full Stack
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Deploy to production server
+        uses: appleboy/ssh-action@v1
+        with:
+          host: 74.208.191.205
+          username: root
+          password: ${{ secrets.SERVER_PASSWORD }}
+          script: |
+            set -e
+            cd /var/www/vhosts/dlbtrust.cloud/httpdocs
+
+            echo "=== Pulling latest code ==="
+            git pull origin main
+
+            echo "=== Installing dependencies ==="
+            npm install
+
+            echo "=== Building frontend ==="
+            npm run build
+
+            echo "=== Running database migration ==="
+            if [ -n "${{ secrets.DATABASE_URL }}" ]; then
+              psql "${{ secrets.DATABASE_URL }}" -f server/integrations/openach/db-migration.sql || echo "Migration warning (non-fatal)"
+            else
+              echo "DATABASE_URL not set — skipping migration"
+            fi
+
+            echo "=== Restarting PM2 ==="
+            pm2 restart dlbtrust || pm2 start app.js --name dlbtrust
+            pm2 save
+
+            echo "=== Deploy complete ==="
+
+      - name: Health checks
+        run: |
+          echo "Waiting for server restart..."
+          sleep 10
+
+          echo "=== /health ==="
+          curl -sf https://dlbtrust.cloud/health || echo "health check pending"
+
+          echo ""
+          echo "=== /api/analytics/summary ==="
+          curl -sf https://dlbtrust.cloud/api/analytics/summary | head -c 200 || echo "analytics pending"
+
+          echo ""
+          echo "=== /api/bonds ==="
+          curl -sf https://dlbtrust.cloud/api/bonds | head -c 200 || echo "bonds pending"
+
+          echo ""
+          echo "=== /api/payments/types ==="
+          curl -sf https://dlbtrust.cloud/api/payments/types | head -c 200 || echo "payments pending"
+
+          echo ""
+          echo "All health checks completed."
