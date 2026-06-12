@@ -1,0 +1,94 @@
+/**
+ * OBP Account Sync
+ * Creates Open Bank Project accounts for trust beneficiaries
+ * and writes obp_account_id back to bond_master_records.
+ */
+
+'use strict';
+
+const pool = require('../../db/postgres');
+const bus  = require('../../event-bus');
+const obp  = require('./client');
+
+// Per-bond mutex to prevent concurrent syncs creating duplicate accounts
+const activeSyncs = new Map();
+
+function withLock(bond_id, fn) {
+  const prev = activeSyncs.get(bond_id) || Promise.resolve();
+  const next = prev.then(fn, fn);
+  activeSyncs.set(bond_id, next);
+  return next;
+}
+
+/**
+ * Sync beneficiaries to OBP for a given bond
+ */
+async function syncBeneficiariesToOBP(bond_id) {
+  return withLock(bond_id, async () => {
+    const { rows: [bond] } = await pool.query(
+      `SELECT b.*, t.beneficiary_ids
+       FROM bond_master_records b
+       LEFT JOIN trust_accounts t ON b.trust_account_id = t.id
+       WHERE b.bond_id = $1`,
+      [bond_id]
+    );
+    if (!bond) throw new Error(`Bond ${bond_id} not found`);
+
+    const beneficiaries = bond.beneficiary_ids || [];
+    let obpAccountId = bond.obp_account_id;
+
+    for (const ben of beneficiaries) {
+      try {
+        const account = await obp.createAccount(
+          typeof ben === 'string' ? { id: ben, name: ben } : ben
+        );
+        if (!obpAccountId) obpAccountId = account.id || account.account_id;
+      } catch (err) {
+        console.error(`[obp-sync] failed to create account for beneficiary:`, err.message);
+      }
+    }
+
+    if (obpAccountId && obpAccountId !== bond.obp_account_id) {
+      // Conditional update to avoid races
+      const { rowCount } = await pool.query(
+        `UPDATE bond_master_records
+         SET obp_account_id = $1, updated_at = now(), updated_by_module = 'obp'
+         WHERE bond_id = $2 AND obp_account_id IS DISTINCT FROM $1`,
+        [obpAccountId, bond_id]
+      );
+
+      if (rowCount > 0) {
+        await pool.query(
+          `INSERT INTO bond_audit_log (bond_id, source, changes) VALUES ($1,'obp',$2)`,
+          [bond_id, JSON.stringify({ obp_account_id: obpAccountId })]
+        );
+
+        bus.emit('bond:updated', {
+          bond_id,
+          source: 'obp',
+          changes: { obp_account_id: obpAccountId },
+        });
+      }
+    }
+
+    return { obpAccountId };
+  });
+}
+
+/**
+ * Initialize listener
+ */
+function init() {
+  bus.on('bond:updated', async ({ bond_id, source }) => {
+    if (source === 'obp') return;
+    try {
+      await syncBeneficiariesToOBP(bond_id);
+      console.log(`[obp-sync] synced bond ${bond_id}`);
+    } catch (err) {
+      console.error(`[obp-sync] failed for ${bond_id}:`, err.message);
+    }
+  });
+  console.log('[obp-sync] listener initialized');
+}
+
+module.exports = { syncBeneficiariesToOBP, init };

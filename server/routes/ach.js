@@ -14,6 +14,8 @@
 const express = require('express');
 const router  = express.Router();
 const { OpenACHClient } = require('../integrations/openach/openachClient');
+const pool = require('../db/postgres');
+const bus  = require('../event-bus');
 
 // ─── Middleware: require admin auth ──────────────────────────────────────────
 function requireAdmin(req, res, next) {
@@ -249,6 +251,93 @@ router.get('/schedules/:walletId', async (req, res) => {
     const schedules = await OpenACHClient.getPaymentSchedules(profile.payment_profile_id);
     res.json({ success: true, data: schedules });
   } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// ─── POST /api/ach/bond-coupon-disburse ─────────────────────────────────────
+// Disburse coupon payments for a private placement bond to all beneficiaries
+router.post('/bond-coupon-disburse', requireAdmin, async (req, res) => {
+  const { bond_id } = req.body;
+  if (!bond_id) return res.status(400).json({ error: 'bond_id is required' });
+
+  try {
+    // Fetch bond + trust account data from PostgreSQL
+    const { rows: [bond] } = await pool.query(
+      `SELECT b.*, t.beneficiary_ids
+       FROM bond_master_records b
+       LEFT JOIN trust_accounts t ON b.trust_account_id = t.id
+       WHERE b.bond_id = $1`,
+      [bond_id]
+    );
+    if (!bond) return res.status(404).json({ error: 'Bond not found' });
+
+    const beneficiaries = bond.beneficiary_ids || [];
+    if (beneficiaries.length === 0) {
+      return res.status(400).json({ error: 'No beneficiaries on trust account' });
+    }
+
+    // Calculate coupon amount per beneficiary (semi-annual)
+    const annualCoupon = parseFloat(bond.face_value) * parseFloat(bond.coupon_rate);
+    const perBeneficiary = annualCoupon / 2 / beneficiaries.length;
+
+    const results = [];
+    for (const ben of beneficiaries) {
+      const benData = typeof ben === 'string' ? { id: ben, name: ben } : ben;
+      try {
+        const result = await OpenACHClient.disburseToBeneficiary({
+          first_name: benData.first_name || benData.name || 'Beneficiary',
+          last_name: benData.last_name || benData.id || '',
+          email: benData.email || '',
+          external_id: `bond_${bond_id}_ben_${benData.id}`,
+          bank_name: benData.bank_name || 'Beneficiary Bank',
+          routing_number: benData.routing_number || '',
+          account_number: benData.account_number || '',
+          account_type: benData.account_type || 'Checking',
+          amount: perBeneficiary,
+          send_date: getNextBusinessDay(),
+          payment_type_id: benData.payment_type_id || req.body.payment_type_id || '',
+          frequency: 'once',
+          occurrences: 1,
+        });
+        results.push({ beneficiary: benData.id, success: true, ...result });
+      } catch (err) {
+        results.push({ beneficiary: benData.id, success: false, error: err.message });
+      }
+    }
+
+    // Only update bond record if at least one disbursement succeeded
+    const successCount = results.filter(r => r.success).length;
+    const today = new Date().toISOString().split('T')[0];
+    if (successCount > 0) {
+      await pool.query(
+        `UPDATE bond_master_records
+         SET last_payment_date = $1, updated_at = now(), updated_by_module = 'openach'
+         WHERE bond_id = $2`,
+        [today, bond_id]
+      );
+
+      await pool.query(
+        `INSERT INTO bond_audit_log (bond_id, source, changes) VALUES ($1,'openach',$2)`,
+        [bond_id, JSON.stringify({ last_payment_date: today, disbursements: successCount })]
+      );
+
+      bus.emit('bond:updated', {
+        bond_id,
+        source: 'openach',
+        changes: { last_payment_date: today },
+      });
+    }
+
+    res.json({
+      success: true,
+      bond_id,
+      coupon_per_beneficiary: perBeneficiary,
+      total_beneficiaries: beneficiaries.length,
+      results,
+    });
+  } catch (err) {
+    console.error('[ach/bond-coupon-disburse]', err.message);
     res.status(500).json({ success: false, error: err.message });
   }
 });
