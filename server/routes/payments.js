@@ -72,14 +72,14 @@ router.post('/disburse', async (req, res) => {
       amount, send_date, payment_type_id, frequency, occurrences,
     });
 
-    // Log disbursement to local DB if db is available
+    // Log disbursement to local DB if pg pool is available
     if (req.app.locals.db) {
       try {
-        req.app.locals.db.prepare(`
+        await req.app.locals.db.query(`
           INSERT INTO disbursements 
             (payment_schedule_id, external_account_id, payment_profile_id, amount, send_date, beneficiary_name, created_by, created_at)
-          VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now'))
-        `).run(
+          VALUES ($1, $2, $3, $4, $5, $6, $7, NOW())
+        `, [
           result.payment_schedule_id,
           result.external_account_id,
           result.payment_profile_id,
@@ -87,7 +87,7 @@ router.post('/disburse', async (req, res) => {
           send_date,
           `${first_name} ${last_name}`,
           req.user?.id || 'system',
-        );
+        ]);
       } catch (dbErr) {
         console.warn('[payments/disburse] DB log failed:', dbErr.message);
         // Non-fatal — ACH was already scheduled

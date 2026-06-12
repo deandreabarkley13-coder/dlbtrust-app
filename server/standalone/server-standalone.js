@@ -35,42 +35,24 @@ function achHealth(req, res) {
 }
 
 // ─── analytics summary route ──────────────────────────────────
+var pool = require('../db');
 function analyticsSummary(req, res) {
-  // Try to use better-sqlite3 from the dlbtrust-v2 node_modules
-  try {
-    var V2 = '/var/www/vhosts/dlbtrust.cloud/dlbtrust-v2';
-    var Database;
-    try { Database = require(path.join(V2, 'node_modules', 'better-sqlite3')); }
-    catch(e) { Database = require('better-sqlite3'); }
-
-    var dbPaths = [
-      path.join(V2, 'data', 'trust.db'),
-      path.join(V2, 'trust.db'),
-      '/var/www/vhosts/dlbtrust.cloud/httpdocs/trust.db',
-      '/var/www/vhosts/dlbtrust.cloud/httpdocs/data/trust.db',
-    ];
-    var db = null;
-    for (var i = 0; i < dbPaths.length; i++) {
-      try { db = new Database(dbPaths[i], { readonly: true }); break; } catch(e) {}
-    }
-    if (!db) {
+  pool.query('SELECT COUNT(*) as count, COALESCE(SUM(fiat_balance),0) as total FROM wallets')
+    .then(function(r) {
+      var row = r.rows[0];
+      return pool.query('SELECT COUNT(*) as count FROM transactions').then(function(r2) {
+        json(res, 200, {
+          total_corpus: parseInt(row.total),
+          wallet_count: parseInt(row.count),
+          transaction_count: parseInt(r2.rows[0].count),
+          generated_at: new Date().toISOString()
+        });
+      });
+    })
+    .catch(function(err) {
       json(res, 200, { total_corpus: 0, wallet_count: 0, transaction_count: 0,
-                       generated_at: new Date().toISOString(), note: 'DB not found' });
-      return;
-    }
-    var wallets = db.prepare('SELECT COUNT(*) as count, COALESCE(SUM(balance),0) as total FROM wallets').get();
-    var txCount = db.prepare('SELECT COUNT(*) as count FROM transactions').get();
-    db.close();
-    json(res, 200, {
-      total_corpus: wallets ? wallets.total : 0,
-      wallet_count: wallets ? wallets.count : 0,
-      transaction_count: txCount ? txCount.count : 0,
-      generated_at: new Date().toISOString()
+                       generated_at: new Date().toISOString(), note: err.message });
     });
-  } catch(err) {
-    json(res, 200, { total_corpus: 0, wallet_count: 0, transaction_count: 0,
-                     generated_at: new Date().toISOString(), note: err.message });
-  }
 }
 
 // ─── proxy all other requests to port 3001 ───────────────────

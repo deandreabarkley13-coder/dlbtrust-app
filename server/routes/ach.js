@@ -111,13 +111,12 @@ router.post('/disburse', requireAdmin, async (req, res) => {
   }
 
   // Look up wallet to get beneficiary info
-  let db;
+  const pool = req.app.locals.db;
   let wallet;
   try {
-    // Try to get DB from app locals (set by server.js)
-    db = req.app.locals.db;
-    if (db) {
-      wallet = db.prepare('SELECT * FROM wallets WHERE id = ?').get(wallet_id);
+    // Try to get pg pool from app locals (set by app.js)
+    if (pool) {
+      wallet = (await pool.query('SELECT * FROM wallets WHERE id = $1', [wallet_id])).rows[0];
     }
   } catch (_) { /* db access optional */ }
 
@@ -160,10 +159,10 @@ router.post('/disburse', requireAdmin, async (req, res) => {
     });
 
     // Log the disbursement to the transactions table if DB is available
-    if (db) {
+    if (pool) {
       try {
         // Get trust primary wallet (id=1) for debit
-        const trustWallet = db.prepare('SELECT * FROM wallets WHERE role = ? LIMIT 1').get('trust_entity');
+        const trustWallet = (await pool.query('SELECT * FROM wallets WHERE role = $1 LIMIT 1', ['trust_entity'])).rows[0];
 
         if (trustWallet) {
           const balanceBefore = trustWallet.fiat_balance;
@@ -171,17 +170,18 @@ router.post('/disburse', requireAdmin, async (req, res) => {
           const balanceAfter  = balanceBefore - amountCents;
 
           // Debit trust wallet
-          db.prepare(`
-            UPDATE wallets SET fiat_balance = ? WHERE id = ?
-          `).run(balanceAfter, trustWallet.id);
+          await pool.query(
+            'UPDATE wallets SET fiat_balance = $1 WHERE id = $2',
+            [balanceAfter, trustWallet.id]
+          );
 
           // Record debit transaction for trust
-          db.prepare(`
+          await pool.query(`
             INSERT INTO transactions 
               (wallet_id, type, amount, balance_before, balance_after, description, 
                counterparty_wallet_id, reference_id, status, created_at)
-            VALUES (?, 'transfer_out', ?, ?, ?, ?, ?, ?, 'completed', datetime('now'))
-          `).run(
+            VALUES ($1, 'transfer_out', $2, $3, $4, $5, $6, $7, 'completed', NOW())
+          `, [
             trustWallet.id,
             amountCents,
             balanceBefore,
@@ -189,31 +189,29 @@ router.post('/disburse', requireAdmin, async (req, res) => {
             `ACH disbursement to ${firstName} ${lastName}: ${description}`,
             wallet_id,
             result.payment_schedule_id,
-            'completed',
-          );
+          ]);
 
           // Credit beneficiary wallet
           if (wallet_id) {
-            const benWallet = db.prepare('SELECT * FROM wallets WHERE id = ?').get(wallet_id);
+            const benWallet = (await pool.query('SELECT * FROM wallets WHERE id = $1', [wallet_id])).rows[0];
             if (benWallet) {
               const benBefore = benWallet.fiat_balance;
               const benAfter  = benBefore + amountCents;
-              db.prepare('UPDATE wallets SET fiat_balance = ? WHERE id = ?').run(benAfter, wallet_id);
-              db.prepare(`
+              await pool.query('UPDATE wallets SET fiat_balance = $1 WHERE id = $2', [benAfter, wallet_id]);
+              await pool.query(`
                 INSERT INTO transactions 
                   (wallet_id, type, amount, balance_before, balance_after, description,
                    counterparty_wallet_id, reference_id, status, created_at)
-                VALUES (?, 'transfer_in', ?, ?, ?, ?, ?, ?, 'completed', datetime('now'))
-              `).run(
+                VALUES ($1, 'transfer_in', $2, $3, $4, $5, $6, $7, 'completed', NOW())
+              `, [
                 wallet_id,
                 amountCents,
                 benBefore,
                 benAfter,
-                `ACH disbursement from DEANDREA LAVAR BARKLEY TRUST`,
+                'ACH disbursement from DEANDREA LAVAR BARKLEY TRUST',
                 trustWallet.id,
                 result.payment_schedule_id,
-                'completed',
-              );
+              ]);
             }
           }
         }
