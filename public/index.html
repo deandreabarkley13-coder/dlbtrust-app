@@ -1,0 +1,339 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>DLB Trust — Treasury Management System</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+:root{--bg:#0a0e1a;--surface:#111827;--surface2:#1f2937;--border:#374151;--primary:#3b82f6;--primary-hover:#2563eb;--success:#10b981;--warning:#f59e0b;--danger:#ef4444;--text:#f9fafb;--text-muted:#9ca3af;--gold:#d4af37}
+body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:var(--bg);color:var(--text);min-height:100vh}
+.app{display:grid;grid-template-columns:260px 1fr;min-height:100vh}
+.sidebar{background:var(--surface);border-right:1px solid var(--border);padding:1.5rem 0;display:flex;flex-direction:column}
+.sidebar-header{padding:0 1.5rem 1.5rem;border-bottom:1px solid var(--border)}
+.sidebar-header h1{font-size:0.9rem;color:var(--gold);letter-spacing:0.5px;text-transform:uppercase}
+.sidebar-header p{font-size:0.75rem;color:var(--text-muted);margin-top:0.25rem}
+.nav{flex:1;padding:1rem 0}
+.nav-item{display:flex;align-items:center;gap:0.75rem;padding:0.75rem 1.5rem;cursor:pointer;transition:all 0.2s;font-size:0.875rem;color:var(--text-muted)}
+.nav-item:hover,.nav-item.active{background:var(--surface2);color:var(--text)}
+.nav-item.active{border-left:3px solid var(--primary)}
+.nav-item svg{width:18px;height:18px}
+.main{padding:2rem;overflow-y:auto}
+.page-header{display:flex;justify-content:space-between;align-items:center;margin-bottom:2rem}
+.page-header h2{font-size:1.5rem;font-weight:600}
+.stats-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:1.25rem;margin-bottom:2rem}
+.stat-card{background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:1.25rem}
+.stat-card .label{font-size:0.75rem;color:var(--text-muted);text-transform:uppercase;letter-spacing:0.5px}
+.stat-card .value{font-size:1.75rem;font-weight:700;margin:0.5rem 0;color:var(--text)}
+.stat-card .sub{font-size:0.75rem;color:var(--text-muted)}
+.stat-card.highlight{border-color:var(--gold);background:linear-gradient(135deg,var(--surface),rgba(212,175,55,0.05))}
+.card{background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:1.5rem;margin-bottom:1.5rem}
+.card h3{font-size:1rem;font-weight:600;margin-bottom:1rem;display:flex;align-items:center;gap:0.5rem}
+table{width:100%;border-collapse:collapse;font-size:0.85rem}
+th,td{text-align:left;padding:0.75rem;border-bottom:1px solid var(--border)}
+th{color:var(--text-muted);font-weight:500;text-transform:uppercase;font-size:0.7rem;letter-spacing:0.5px}
+.badge{display:inline-block;padding:0.2rem 0.6rem;border-radius:999px;font-size:0.7rem;font-weight:600}
+.badge-active{background:rgba(16,185,129,0.15);color:var(--success)}
+.badge-pending{background:rgba(245,158,11,0.15);color:var(--warning)}
+.badge-failed{background:rgba(239,68,68,0.15);color:var(--danger)}
+.btn{padding:0.5rem 1rem;border-radius:8px;border:none;font-size:0.8rem;font-weight:500;cursor:pointer;transition:all 0.2s}
+.btn-primary{background:var(--primary);color:#fff}.btn-primary:hover{background:var(--primary-hover)}
+.btn-outline{background:transparent;border:1px solid var(--border);color:var(--text)}.btn-outline:hover{border-color:var(--primary)}
+.loading{text-align:center;padding:3rem;color:var(--text-muted)}
+.bond-detail{display:grid;grid-template-columns:1fr 1fr;gap:1rem;margin-bottom:1rem}
+.bond-field{padding:0.75rem;background:var(--surface2);border-radius:8px}
+.bond-field .label{font-size:0.7rem;color:var(--text-muted);text-transform:uppercase}
+.bond-field .value{font-size:1rem;font-weight:600;margin-top:0.25rem}
+.actions{display:flex;gap:0.75rem;margin-top:1rem}
+#toast{position:fixed;top:1rem;right:1rem;padding:1rem 1.5rem;border-radius:8px;display:none;z-index:9999;font-size:0.85rem}
+#toast.success{display:block;background:var(--success);color:#fff}
+#toast.error{display:block;background:var(--danger);color:#fff}
+</style>
+</head>
+<body>
+<div class="app">
+  <aside class="sidebar">
+    <div class="sidebar-header">
+      <h1>DLB Trust</h1>
+      <p>Treasury Management</p>
+    </div>
+    <nav class="nav">
+      <div class="nav-item active" data-page="dashboard">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/></svg>
+        Dashboard
+      </div>
+      <div class="nav-item" data-page="bonds">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2v20M17 5H9.5a3.5 3.5 0 000 7h5a3.5 3.5 0 010 7H6"/></svg>
+        Bond Portfolio
+      </div>
+      <div class="nav-item" data-page="beneficiaries">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M17 21v-2a4 4 0 00-4-4H5a4 4 0 00-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 00-3-3.87"/><path d="M16 3.13a4 4 0 010 7.75"/></svg>
+        Beneficiaries
+      </div>
+      <div class="nav-item" data-page="distributions">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>
+        Distributions
+      </div>
+      <div class="nav-item" data-page="payments">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="1" y="4" width="22" height="16" rx="2" ry="2"/><line x1="1" y1="10" x2="23" y2="10"/></svg>
+        Payments
+      </div>
+      <div class="nav-item" data-page="ledger">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
+        General Ledger
+      </div>
+      <div class="nav-item" data-page="wallets">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 12V7H5a2 2 0 010-4h14v4"/><path d="M3 5v14a2 2 0 002 2h16v-5"/><path d="M18 12a2 2 0 100 4 2 2 0 000-4z"/></svg>
+        Wallets
+      </div>
+    </nav>
+  </aside>
+  <main class="main" id="content">
+    <div class="loading">Loading Treasury Management System...</div>
+  </main>
+</div>
+<div id="toast"></div>
+<script>
+const API = '';
+const fmt = (cents) => '$' + (cents/100).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2});
+const fmtDate = (d) => d ? new Date(d).toLocaleDateString('en-US',{year:'numeric',month:'short',day:'numeric'}) : '—';
+const badge = (status) => `<span class="badge badge-${status==='active'||status==='posted'||status==='settled'||status==='completed'||status==='received'?'active':status==='failed'||status==='returned'?'failed':'pending'}">${status}</span>`;
+
+function toast(msg,type='success'){const t=document.getElementById('toast');t.textContent=msg;t.className=type;setTimeout(()=>t.className='',3000)}
+
+document.querySelectorAll('.nav-item').forEach(item=>{
+  item.addEventListener('click',()=>{
+    document.querySelectorAll('.nav-item').forEach(i=>i.classList.remove('active'));
+    item.classList.add('active');
+    loadPage(item.dataset.page);
+  });
+});
+
+async function api(path,opts){
+  const r=await fetch(API+path,opts);
+  return r.json();
+}
+
+async function loadPage(page){
+  const c=document.getElementById('content');
+  c.innerHTML='<div class="loading">Loading...</div>';
+  try{
+    switch(page){
+      case 'dashboard': await renderDashboard(c); break;
+      case 'bonds': await renderBonds(c); break;
+      case 'beneficiaries': await renderBeneficiaries(c); break;
+      case 'distributions': await renderDistributions(c); break;
+      case 'payments': await renderPayments(c); break;
+      case 'ledger': await renderLedger(c); break;
+      case 'wallets': await renderWallets(c); break;
+    }
+  }catch(e){c.innerHTML=`<div class="card"><h3>Error</h3><p>${e.message}</p></div>`}
+}
+
+async function renderDashboard(c){
+  const d=await api('/api/treasury/trust/dashboard');
+  const trust=d.trust||{};
+  const bonds=await api('/api/treasury/bonds');
+  const bond=(bonds.data||[])[0]||{};
+  const annualIncome=bond.face_value?Math.round(bond.face_value*bond.coupon_rate/100):0;
+
+  c.innerHTML=`
+    <div class="page-header"><h2>Trust Dashboard</h2><span style="color:var(--text-muted);font-size:0.8rem">${trust.trust_name||''}</span></div>
+    <div class="stats-grid">
+      <div class="stat-card highlight">
+        <div class="label">Total Corpus</div>
+        <div class="value">${fmt(trust.total_corpus||0)}</div>
+        <div class="sub">${trust.trust_type||'irrevocable'} trust • ${trust.jurisdiction||''}</div>
+      </div>
+      <div class="stat-card">
+        <div class="label">Annual Bond Income</div>
+        <div class="value">${fmt(annualIncome)}</div>
+        <div class="sub">${bond.coupon_rate||0}% coupon • ${bond.coupon_frequency||'semi_annual'}</div>
+      </div>
+      <div class="stat-card">
+        <div class="label">Next Coupon</div>
+        <div class="value">${fmtDate(bond.next_coupon_date)}</div>
+        <div class="sub">${fmt(annualIncome/2)} per semi-annual payment</div>
+      </div>
+      <div class="stat-card">
+        <div class="label">Wallets</div>
+        <div class="value">${(d.wallet_summary||[]).reduce((s,w)=>s+parseInt(w.count),0)}</div>
+        <div class="sub">${(d.wallet_summary||[]).map(w=>w.wallet_type).join(', ')}</div>
+      </div>
+    </div>
+    <div class="card">
+      <h3>Wallet Balances</h3>
+      <table><thead><tr><th>Type</th><th>Count</th><th>Total Balance</th></tr></thead><tbody>
+      ${(d.wallet_summary||[]).map(w=>`<tr><td>${w.wallet_type}</td><td>${w.count}</td><td>${fmt(parseInt(w.total_balance)||0)}</td></tr>`).join('')}
+      </tbody></table>
+    </div>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:1.5rem">
+      <div class="card">
+        <h3>Upcoming Coupons</h3>
+        ${(d.upcoming_coupons||[]).length?`<table><thead><tr><th>Date</th><th>Amount</th><th>Bond</th></tr></thead><tbody>
+        ${(d.upcoming_coupons||[]).map(cp=>`<tr><td>${fmtDate(cp.payment_date)}</td><td>${fmt(cp.coupon_amount)}</td><td>${cp.bond_name}</td></tr>`).join('')}
+        </tbody></table>`:'<p style="color:var(--text-muted)">No scheduled coupons — generate coupon schedule from Bond Portfolio</p>'}
+      </div>
+      <div class="card">
+        <h3>Recent Ledger Entries</h3>
+        ${(d.recent_ledger||[]).length?`<table><thead><tr><th>Date</th><th>Type</th><th>Amount</th><th>Status</th></tr></thead><tbody>
+        ${(d.recent_ledger||[]).map(e=>`<tr><td>${fmtDate(e.entry_date)}</td><td>${e.entry_type}</td><td>${fmt(e.amount)}</td><td>${badge(e.status)}</td></tr>`).join('')}
+        </tbody></table>`:'<p style="color:var(--text-muted)">No ledger entries yet</p>'}
+      </div>
+    </div>
+  `;
+}
+
+async function renderBonds(c){
+  const data=await api('/api/treasury/bonds');
+  const bonds=data.data||[];
+  if(!bonds.length){c.innerHTML='<div class="card"><h3>No bonds found</h3></div>';return}
+  const b=bonds[0];
+  c.innerHTML=`
+    <div class="page-header"><h2>Bond Portfolio</h2></div>
+    <div class="card">
+      <h3>${b.bond_name}</h3>
+      <div class="bond-detail">
+        <div class="bond-field"><div class="label">Issuer</div><div class="value">${b.issuer}</div></div>
+        <div class="bond-field"><div class="label">Type</div><div class="value">${b.bond_type}</div></div>
+        <div class="bond-field"><div class="label">Face Value</div><div class="value">${fmt(b.face_value)}</div></div>
+        <div class="bond-field"><div class="label">Coupon Rate</div><div class="value">${b.coupon_rate}%</div></div>
+        <div class="bond-field"><div class="label">Frequency</div><div class="value">${b.coupon_frequency}</div></div>
+        <div class="bond-field"><div class="label">Annual Income</div><div class="value">${fmt(b.annual_income||0)}</div></div>
+        <div class="bond-field"><div class="label">Issue Date</div><div class="value">${fmtDate(b.issue_date)}</div></div>
+        <div class="bond-field"><div class="label">Maturity</div><div class="value">${fmtDate(b.maturity_date)}</div></div>
+        <div class="bond-field"><div class="label">Next Coupon</div><div class="value">${fmtDate(b.next_coupon_date)}</div></div>
+        <div class="bond-field"><div class="label">Status</div><div class="value">${badge(b.status)}</div></div>
+        <div class="bond-field"><div class="label">Coupons Received</div><div class="value">${b.coupons_received||0}</div></div>
+        <div class="bond-field"><div class="label">Total Received</div><div class="value">${fmt(parseInt(b.total_received)||0)}</div></div>
+      </div>
+      <div class="actions">
+        <button class="btn btn-primary" onclick="generateCoupons('${b.id}')">Generate Coupon Schedule</button>
+        <button class="btn btn-outline" onclick="receiveCoupon('${b.id}')">Record Coupon Received</button>
+      </div>
+    </div>
+  `;
+}
+
+async function generateCoupons(bondId){
+  const r=await api(`/api/treasury/bonds/${bondId}/generate-coupons`,{method:'POST'});
+  if(r.success)toast(`Generated ${r.inserted} new coupons (${fmt(r.coupon_amount)} each)`);
+  else toast(r.error||'Failed','error');
+}
+
+async function receiveCoupon(bondId){
+  const r=await api(`/api/treasury/bonds/${bondId}/receive-coupon`,{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'});
+  if(r.success)toast(r.message);
+  else toast(r.error||'No coupon to receive','error');
+  loadPage('bonds');
+}
+
+async function renderBeneficiaries(c){
+  const data=await api('/api/treasury/beneficiaries');
+  const bens=data.data||[];
+  c.innerHTML=`
+    <div class="page-header"><h2>Beneficiaries</h2><button class="btn btn-primary" onclick="showAddBeneficiary()">+ Add Beneficiary</button></div>
+    <div class="card">
+      <table><thead><tr><th>Name</th><th>Type</th><th>Distribution %</th><th>Bank Accounts</th><th>Total Received</th><th>Status</th></tr></thead><tbody>
+      ${bens.map(b=>`<tr><td>${b.name}</td><td>${b.beneficiary_type}</td><td>${b.distribution_pct}%</td><td>${b.bank_account_count||0}</td><td>${fmt(parseInt(b.total_received)||0)}</td><td>${badge(b.status)}</td></tr>`).join('')}
+      </tbody></table>
+    </div>
+  `;
+}
+
+function showAddBeneficiary(){
+  toast('Beneficiary management — use POST /api/treasury/beneficiaries');
+}
+
+async function renderDistributions(c){
+  const [schedData,distData]=await Promise.all([api('/api/treasury/distributions/schedules'),api('/api/treasury/distributions')]);
+  c.innerHTML=`
+    <div class="page-header"><h2>Distributions</h2><button class="btn btn-primary" onclick="showCreateSchedule()">+ New Schedule</button></div>
+    <div class="card">
+      <h3>Distribution Schedules</h3>
+      ${(schedData.data||[]).length?`<table><thead><tr><th>Name</th><th>Frequency</th><th>Basis</th><th>Next</th><th>Total Paid</th><th>Status</th></tr></thead><tbody>
+      ${(schedData.data||[]).map(s=>`<tr><td>${s.name}</td><td>${s.frequency}</td><td>${s.distribution_basis}</td><td>${fmtDate(s.next_distribution)}</td><td>${fmt(parseInt(s.total_distributed)||0)}</td><td>${badge(s.status)}</td></tr>`).join('')}
+      </tbody></table>`:'<p style="color:var(--text-muted)">No distribution schedules configured</p>'}
+    </div>
+    <div class="card">
+      <h3>Distribution History</h3>
+      ${(distData.data||[]).length?`<table><thead><tr><th>Date</th><th>Total</th><th>Net</th><th>Tax</th><th>Status</th></tr></thead><tbody>
+      ${(distData.data||[]).map(d=>`<tr><td>${fmtDate(d.distribution_date)}</td><td>${fmt(parseInt(d.total_amount)||0)}</td><td>${fmt(parseInt(d.net_amount)||0)}</td><td>${fmt(parseInt(d.tax_withheld)||0)}</td><td>${badge(d.status)}</td></tr>`).join('')}
+      </tbody></table>`:'<p style="color:var(--text-muted)">No distributions executed yet</p>'}
+    </div>
+  `;
+}
+
+function showCreateSchedule(){
+  toast('Use POST /api/treasury/distributions/schedules to create a schedule');
+}
+
+async function renderPayments(c){
+  const data=await api('/api/treasury/payments');
+  c.innerHTML=`
+    <div class="page-header"><h2>Payments</h2></div>
+    <div class="card">
+      <h3>Payment Instructions</h3>
+      ${(data.data||[]).length?`<table><thead><tr><th>Beneficiary</th><th>Rail</th><th>Amount</th><th>Date</th><th>Status</th></tr></thead><tbody>
+      ${(data.data||[]).map(p=>`<tr><td>${p.beneficiary_name||p.beneficiary_name_lookup||'—'}</td><td>${p.payment_rail}</td><td>${fmt(parseInt(p.amount)||0)}</td><td>${fmtDate(p.effective_date)}</td><td>${badge(p.status)}</td></tr>`).join('')}
+      </tbody></table>`:'<p style="color:var(--text-muted)">No payment instructions yet. Execute a distribution to create payments.</p>'}
+    </div>
+  `;
+}
+
+async function renderLedger(c){
+  const data=await api('/api/treasury/ledger');
+  c.innerHTML=`
+    <div class="page-header"><h2>General Ledger</h2></div>
+    <div class="stats-grid">
+      <div class="stat-card"><div class="label">Total Income</div><div class="value">${fmt(parseInt(data.summary?.total_income)||0)}</div></div>
+      <div class="stat-card"><div class="label">Total Distributed</div><div class="value">${fmt(parseInt(data.summary?.total_distributed)||0)}</div></div>
+      <div class="stat-card"><div class="label">Total Expenses</div><div class="value">${fmt(parseInt(data.summary?.total_expenses)||0)}</div></div>
+      <div class="stat-card"><div class="label">Entries</div><div class="value">${data.summary?.total_entries||0}</div></div>
+    </div>
+    <div class="card">
+      <table><thead><tr><th>Date</th><th>Type</th><th>Debit</th><th>Credit</th><th>Amount</th><th>Description</th><th>Status</th></tr></thead><tbody>
+      ${(data.data||[]).map(e=>`<tr><td>${fmtDate(e.entry_date)}</td><td>${e.entry_type}</td><td>${e.debit_wallet_name||'—'}</td><td>${e.credit_wallet_name||'—'}</td><td>${fmt(e.amount)}</td><td>${e.description||''}</td><td>${badge(e.status)}</td></tr>`).join('')}
+      </tbody></table>
+    </div>
+  `;
+}
+
+async function renderWallets(c){
+  const data=await api('/api/treasury/wallets');
+  const wallets=data.data||[];
+  c.innerHTML=`
+    <div class="page-header"><h2>Wallets</h2></div>
+    <div class="card">
+      <table><thead><tr><th>Code</th><th>Name</th><th>Type</th><th>Balance</th><th>Status</th></tr></thead><tbody>
+      ${wallets.map(w=>`<tr><td><code>${w.wallet_code}</code></td><td>${w.name}</td><td>${w.wallet_type}</td><td style="font-weight:600">${fmt(parseInt(w.balance)||0)}</td><td>${badge(w.status)}</td></tr>`).join('')}
+      </tbody></table>
+    </div>
+    <div class="card">
+      <h3>Internal Transfer</h3>
+      <form onsubmit="doTransfer(event)" style="display:flex;gap:0.75rem;align-items:end;flex-wrap:wrap">
+        <div><label style="font-size:0.75rem;color:var(--text-muted)">From</label><br><select id="tf-from" style="padding:0.5rem;background:var(--surface2);border:1px solid var(--border);border-radius:6px;color:var(--text)">${wallets.map(w=>`<option value="${w.id}">${w.name} (${fmt(parseInt(w.balance)||0)})</option>`).join('')}</select></div>
+        <div><label style="font-size:0.75rem;color:var(--text-muted)">To</label><br><select id="tf-to" style="padding:0.5rem;background:var(--surface2);border:1px solid var(--border);border-radius:6px;color:var(--text)">${wallets.map(w=>`<option value="${w.id}">${w.name}</option>`).join('')}</select></div>
+        <div><label style="font-size:0.75rem;color:var(--text-muted)">Amount ($)</label><br><input id="tf-amt" type="number" step="0.01" min="0.01" style="padding:0.5rem;width:120px;background:var(--surface2);border:1px solid var(--border);border-radius:6px;color:var(--text)"></div>
+        <button type="submit" class="btn btn-primary">Transfer</button>
+      </form>
+    </div>
+  `;
+}
+
+async function doTransfer(e){
+  e.preventDefault();
+  const from=document.getElementById('tf-from').value;
+  const to=document.getElementById('tf-to').value;
+  const amount=document.getElementById('tf-amt').value;
+  if(from===to){toast('Cannot transfer to same wallet','error');return}
+  if(!amount||parseFloat(amount)<=0){toast('Enter valid amount','error');return}
+  const r=await api('/api/treasury/wallets/transfer',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({from_wallet_id:from,to_wallet_id:to,amount,description:'Manual transfer'})});
+  if(r.success){toast('Transfer completed');loadPage('wallets')}
+  else toast(r.error||'Transfer failed','error');
+}
+
+loadPage('dashboard');
+</script>
+</body>
+</html>
