@@ -228,8 +228,13 @@ function calculateNextDistribution(frequency, dayOfMonth) {
   if (next <= now) next.setMonth(next.getMonth() + 1);
 
   const freqMap = { weekly: 0, bi_weekly: 0, monthly: 1, quarterly: 3, semi_annual: 6, annual: 12 };
-  const addMonths = freqMap[frequency] || 1;
-  next.setMonth(next.getMonth() + addMonths - 1);
+  const addMonths = frequency in freqMap ? freqMap[frequency] : 1;
+  if (addMonths === 0) {
+    const addDays = frequency === 'weekly' ? 7 : 14;
+    next.setDate(next.getDate() + addDays);
+  } else {
+    next.setMonth(next.getMonth() + addMonths - 1);
+  }
   return next.toISOString().split('T')[0];
 }
 

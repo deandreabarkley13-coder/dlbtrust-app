@@ -40,6 +40,11 @@ router.post('/transfer', async (req, res) => {
     }
 
     await db.transaction(async (client) => {
+      // Lock source wallet row to prevent concurrent overdrafts
+      const { rows: [locked] } = await client.query('SELECT balance FROM wallets WHERE id = $1 FOR UPDATE', [from_wallet_id]);
+      if (locked.balance < amountCents) {
+        throw new Error('Insufficient funds (concurrent request detected)');
+      }
       await client.query('UPDATE wallets SET balance = balance - $1, updated_at = NOW() WHERE id = $2', [amountCents, from_wallet_id]);
       await client.query('UPDATE wallets SET balance = balance + $1, updated_at = NOW() WHERE id = $2', [amountCents, to_wallet_id]);
 

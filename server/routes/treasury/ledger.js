@@ -71,19 +71,22 @@ router.post('/entry', async (req, res) => {
       return res.status(400).json({ error: 'amount must be positive' });
     }
 
-    const entry = await db.queryOne(`
-      INSERT INTO ledger_entries (trust_id, entry_date, entry_type, debit_wallet_id, credit_wallet_id, amount, description, status, posted_by)
-      VALUES ($1, $2, $3, $4, $5, $6, $7, 'posted', 'manual')
-      RETURNING *
-    `, [trust.id, entry_date || new Date().toISOString().split('T')[0], entry_type, debit_wallet_id, credit_wallet_id, amount, description]);
+    const entry = await db.transaction(async (client) => {
+      const { rows: [ledgerEntry] } = await client.query(`
+        INSERT INTO ledger_entries (trust_id, entry_date, entry_type, debit_wallet_id, credit_wallet_id, amount, description, status, posted_by)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, 'posted', 'manual')
+        RETURNING *
+      `, [trust.id, entry_date || new Date().toISOString().split('T')[0], entry_type, debit_wallet_id, credit_wallet_id, amount, description]);
 
-    // Update wallet balances if wallets specified
-    if (debit_wallet_id) {
-      await db.query('UPDATE wallets SET balance = balance - $1, updated_at = NOW() WHERE id = $2', [amount, debit_wallet_id]);
-    }
-    if (credit_wallet_id) {
-      await db.query('UPDATE wallets SET balance = balance + $1, updated_at = NOW() WHERE id = $2', [amount, credit_wallet_id]);
-    }
+      if (debit_wallet_id) {
+        await client.query('UPDATE wallets SET balance = balance - $1, updated_at = NOW() WHERE id = $2', [amount, debit_wallet_id]);
+      }
+      if (credit_wallet_id) {
+        await client.query('UPDATE wallets SET balance = balance + $1, updated_at = NOW() WHERE id = $2', [amount, credit_wallet_id]);
+      }
+
+      return ledgerEntry;
+    });
 
     res.status(201).json({ success: true, data: entry });
   } catch (err) {
