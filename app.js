@@ -136,6 +136,7 @@ app.get('/api/distributions', (req, res) => {
 app.get('/api/distributions/:id', (req, res) => {
   try {
     const dist = db.prepare('SELECT * FROM distributions WHERE id = ?').get(req.params.id);
+    if (!dist) return res.status(404).json({ error: 'Distribution not found' });
     const items = db.prepare('SELECT * FROM distribution_items WHERE distribution_id = ?').all(req.params.id);
     res.json({ ...dist, items });
   } catch (err) {
@@ -228,11 +229,11 @@ app.get('/api/health', (req, res) => {
 // ─── SPA Fallback ─────────────────────────────────────────────────────────────
 app.get('*', (req, res) => {
   const indexPath = path.join(__dirname, 'public', 'index.html');
-  try {
-    res.sendFile(indexPath);
-  } catch (_) {
-    res.status(404).json({ error: 'Not found' });
-  }
+  res.sendFile(indexPath, (err) => {
+    if (err) {
+      res.status(404).json({ error: 'Not found' });
+    }
+  });
 });
 
 // ─── Start Server ─────────────────────────────────────────────────────────────
