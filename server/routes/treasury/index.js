@@ -15,5 +15,6 @@ router.use('/distributions', require('./distributions'));
 router.use('/payments', require('./payments'));
 router.use('/ledger', require('./ledger'));
 router.use('/wallets', require('./wallets'));
+router.use('/mft', require('./mft'));
 
 module.exports = router;

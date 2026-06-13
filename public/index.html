@@ -48,6 +48,15 @@ th{color:var(--text-muted);font-weight:500;text-transform:uppercase;font-size:0.
 #toast{position:fixed;top:1rem;right:1rem;padding:1rem 1.5rem;border-radius:8px;display:none;z-index:9999;font-size:0.85rem}
 #toast.success{display:block;background:var(--success);color:#fff}
 #toast.error{display:block;background:var(--danger);color:#fff}
+.modal-overlay{position:fixed;inset:0;background:rgba(0,0,0,0.6);display:flex;align-items:center;justify-content:center;z-index:9998}
+.modal{background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:2rem;width:90%;max-width:500px;max-height:80vh;overflow-y:auto}
+.modal h3{margin-bottom:1.25rem;font-size:1.1rem}
+.form-group{margin-bottom:1rem}
+.form-group label{display:block;font-size:0.75rem;color:var(--text-muted);text-transform:uppercase;letter-spacing:0.5px;margin-bottom:0.35rem}
+.form-group input,.form-group select{width:100%;padding:0.6rem;background:var(--surface2);border:1px solid var(--border);border-radius:6px;color:var(--text);font-size:0.85rem}
+.form-group input:focus,.form-group select:focus{outline:none;border-color:var(--primary)}
+.form-row{display:grid;grid-template-columns:1fr 1fr;gap:1rem}
+.modal-actions{display:flex;justify-content:flex-end;gap:0.75rem;margin-top:1.5rem}
 </style>
 </head>
 <body>
@@ -85,6 +94,10 @@ th{color:var(--text-muted);font-weight:500;text-transform:uppercase;font-size:0.
       <div class="nav-item" data-page="wallets">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 12V7H5a2 2 0 010-4h14v4"/><path d="M3 5v14a2 2 0 002 2h16v-5"/><path d="M18 12a2 2 0 100 4 2 2 0 000-4z"/></svg>
         Wallets
+      </div>
+      <div class="nav-item" data-page="mft">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+        File Transfer
       </div>
     </nav>
   </aside>
@@ -126,6 +139,7 @@ async function loadPage(page){
       case 'payments': await renderPayments(c); break;
       case 'ledger': await renderLedger(c); break;
       case 'wallets': await renderWallets(c); break;
+      case 'mft': await renderMFT(c); break;
     }
   }catch(e){c.innerHTML=`<div class="card"><h3>Error</h3><p>${e.message}</p></div>`}
 }
@@ -242,7 +256,44 @@ async function renderBeneficiaries(c){
 }
 
 function showAddBeneficiary(){
-  toast('Beneficiary management — use POST /api/treasury/beneficiaries');
+  const overlay=document.createElement('div');
+  overlay.className='modal-overlay';
+  overlay.innerHTML=`<div class="modal">
+    <h3>Add Beneficiary</h3>
+    <form id="add-ben-form">
+      <div class="form-group"><label>Name *</label><input id="ben-name" required placeholder="Full legal name"></div>
+      <div class="form-row">
+        <div class="form-group"><label>Type</label><select id="ben-type"><option value="income">Income</option><option value="principal">Principal</option><option value="remainder">Remainder</option></select></div>
+        <div class="form-group"><label>Classification</label><select id="ben-class"><option value="individual">Individual</option><option value="entity">Entity</option><option value="charity">Charity</option></select></div>
+      </div>
+      <div class="form-row">
+        <div class="form-group"><label>Email</label><input id="ben-email" type="email" placeholder="email@example.com"></div>
+        <div class="form-group"><label>Phone</label><input id="ben-phone" placeholder="(555) 123-4567"></div>
+      </div>
+      <div class="form-group"><label>Address</label><input id="ben-address" placeholder="Street address"></div>
+      <div class="form-row">
+        <div class="form-group"><label>City</label><input id="ben-city" placeholder="City"></div>
+        <div class="form-group"><label>State</label><input id="ben-state" placeholder="OH" maxlength="2"></div>
+      </div>
+      <div class="form-row">
+        <div class="form-group"><label>ZIP</label><input id="ben-zip" placeholder="44101"></div>
+        <div class="form-group"><label>Distribution %</label><input id="ben-pct" type="number" step="0.01" min="0" max="100" placeholder="16.67"></div>
+      </div>
+      <div class="modal-actions">
+        <button type="button" class="btn btn-outline" onclick="this.closest('.modal-overlay').remove()">Cancel</button>
+        <button type="submit" class="btn btn-primary">Add Beneficiary</button>
+      </div>
+    </form>
+  </div>`;
+  document.body.appendChild(overlay);
+  overlay.addEventListener('click',e=>{if(e.target===overlay)overlay.remove()});
+  document.getElementById('add-ben-form').addEventListener('submit',async e=>{
+    e.preventDefault();
+    const body={name:document.getElementById('ben-name').value,beneficiary_type:document.getElementById('ben-type').value,classification:document.getElementById('ben-class').value,email:document.getElementById('ben-email').value||undefined,phone:document.getElementById('ben-phone').value||undefined,address:document.getElementById('ben-address').value||undefined,city:document.getElementById('ben-city').value||undefined,state:document.getElementById('ben-state').value||undefined,zip:document.getElementById('ben-zip').value||undefined,distribution_pct:parseFloat(document.getElementById('ben-pct').value)||0};
+    const r=await api('/api/treasury/beneficiaries',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+    if(r.success){toast('Beneficiary added successfully');overlay.remove();loadPage('beneficiaries')}
+    else toast(r.error||'Failed to add beneficiary','error');
+  });
 }
 
 async function renderDistributions(c){
@@ -251,8 +302,8 @@ async function renderDistributions(c){
     <div class="page-header"><h2>Distributions</h2><button class="btn btn-primary" onclick="showCreateSchedule()">+ New Schedule</button></div>
     <div class="card">
       <h3>Distribution Schedules</h3>
-      ${(schedData.data||[]).length?`<table><thead><tr><th>Name</th><th>Frequency</th><th>Basis</th><th>Next</th><th>Total Paid</th><th>Status</th></tr></thead><tbody>
-      ${(schedData.data||[]).map(s=>`<tr><td>${s.name}</td><td>${s.frequency}</td><td>${s.distribution_basis}</td><td>${fmtDate(s.next_distribution)}</td><td>${fmt(parseInt(s.total_distributed)||0)}</td><td>${badge(s.status)}</td></tr>`).join('')}
+      ${(schedData.data||[]).length?`<table><thead><tr><th>Name</th><th>Frequency</th><th>Basis</th><th>Next</th><th>Total Paid</th><th>Status</th><th>Actions</th></tr></thead><tbody>
+      ${(schedData.data||[]).map(s=>`<tr><td>${s.name}</td><td>${s.frequency}</td><td>${s.distribution_basis}</td><td>${fmtDate(s.next_distribution)}</td><td>${fmt(parseInt(s.total_distributed)||0)}</td><td>${badge(s.status)}</td><td><button class="btn btn-primary" style="padding:0.3rem 0.6rem;font-size:0.7rem" onclick="executeDistribution('${s.id}','${s.name}')">Execute</button></td></tr>`).join('')}
       </tbody></table>`:'<p style="color:var(--text-muted)">No distribution schedules configured</p>'}
     </div>
     <div class="card">
@@ -265,7 +316,43 @@ async function renderDistributions(c){
 }
 
 function showCreateSchedule(){
-  toast('Use POST /api/treasury/distributions/schedules to create a schedule');
+  const overlay=document.createElement('div');
+  overlay.className='modal-overlay';
+  overlay.innerHTML=`<div class="modal">
+    <h3>Create Distribution Schedule</h3>
+    <form id="sched-form">
+      <div class="form-group"><label>Schedule Name *</label><input id="sched-name" required placeholder="e.g. Monthly Income Distribution"></div>
+      <div class="form-row">
+        <div class="form-group"><label>Frequency</label><select id="sched-freq"><option value="monthly">Monthly</option><option value="quarterly">Quarterly</option><option value="semi_annual">Semi-Annual</option><option value="annual">Annual</option><option value="weekly">Weekly</option><option value="bi_weekly">Bi-Weekly</option></select></div>
+        <div class="form-group"><label>Basis</label><select id="sched-basis"><option value="fixed">Fixed Amount</option><option value="percentage">Percentage of Income</option></select></div>
+      </div>
+      <div class="form-row">
+        <div class="form-group"><label>Day of Month</label><input id="sched-day" type="number" min="1" max="28" value="1"></div>
+        <div class="form-group"><label>Approval Threshold ($)</label><input id="sched-threshold" type="number" min="0" value="100000"></div>
+      </div>
+      <div class="form-group"><label>Requires Approval</label><select id="sched-approval"><option value="true">Yes — require trustee approval</option><option value="false">No — auto-approve</option></select></div>
+      <div class="modal-actions">
+        <button type="button" class="btn btn-outline" onclick="this.closest('.modal-overlay').remove()">Cancel</button>
+        <button type="submit" class="btn btn-primary">Create Schedule</button>
+      </div>
+    </form>
+  </div>`;
+  document.body.appendChild(overlay);
+  overlay.addEventListener('click',e=>{if(e.target===overlay)overlay.remove()});
+  document.getElementById('sched-form').addEventListener('submit',async e=>{
+    e.preventDefault();
+    const body={name:document.getElementById('sched-name').value,frequency:document.getElementById('sched-freq').value,distribution_basis:document.getElementById('sched-basis').value,day_of_month:parseInt(document.getElementById('sched-day').value)||1,requires_approval:document.getElementById('sched-approval').value==='true',approval_threshold:parseInt(document.getElementById('sched-threshold').value)||100000};
+    const r=await api('/api/treasury/distributions/schedules',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+    if(r.success){toast('Distribution schedule created');overlay.remove();loadPage('distributions')}
+    else toast(r.error||'Failed to create schedule','error');
+  });
+}
+
+async function executeDistribution(scheduleId, scheduleName){
+  if(!confirm(`Execute distribution for schedule: "${scheduleName}"? This will create payments for all beneficiaries with rules.`))return;
+  const r=await api('/api/treasury/distributions/execute',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({schedule_id:scheduleId})});
+  if(r.success){toast(`Distribution executed — ${r.payments?.length||0} payments created`);loadPage('distributions')}
+  else toast(r.error||'Failed to execute distribution','error');
 }
 
 async function renderPayments(c){
@@ -331,6 +418,73 @@ async function doTransfer(e){
   const r=await api('/api/treasury/wallets/transfer',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({from_wallet_id:from,to_wallet_id:to,amount,description:'Manual transfer'})});
   if(r.success){toast('Transfer completed');loadPage('wallets')}
   else toast(r.error||'Transfer failed','error');
+}
+
+async function renderMFT(c){
+  const data=await api('/api/treasury/mft/files');
+  const config=await api('/api/treasury/mft/config');
+  c.innerHTML=`
+    <div class="page-header"><h2>Managed File Transfer</h2><button class="btn btn-primary" onclick="generateNACHA()">Generate NACHA File</button></div>
+    <div class="stats-grid">
+      <div class="stat-card">
+        <div class="label">SFTP Status</div>
+        <div class="value" style="font-size:1.2rem">${config.sftp_configured?'<span style="color:var(--success)">Configured</span>':'<span style="color:var(--warning)">Not Configured</span>'}</div>
+        <div class="sub">${config.sftp_host||'No SFTP host set'}</div>
+      </div>
+      <div class="stat-card">
+        <div class="label">Files Generated</div>
+        <div class="value">${(data.data||[]).length}</div>
+        <div class="sub">NACHA ACH payment files</div>
+      </div>
+      <div class="stat-card">
+        <div class="label">Files Delivered</div>
+        <div class="value">${(data.data||[]).filter(f=>f.status==='delivered').length}</div>
+        <div class="sub">Successfully transmitted via SFTP</div>
+      </div>
+      <div class="stat-card">
+        <div class="label">Pending Delivery</div>
+        <div class="value">${(data.data||[]).filter(f=>f.status==='pending'||f.status==='generated').length}</div>
+        <div class="sub">Awaiting transmission</div>
+      </div>
+    </div>
+    <div class="card">
+      <h3>SFTP Configuration</h3>
+      <form onsubmit="saveSFTPConfig(event)" style="display:flex;gap:0.75rem;align-items:end;flex-wrap:wrap">
+        <div><label style="font-size:0.75rem;color:var(--text-muted)">Host</label><br><input id="sftp-host" value="${config.sftp_host||''}" placeholder="sftp.bank.com" style="padding:0.5rem;background:var(--surface2);border:1px solid var(--border);border-radius:6px;color:var(--text);width:180px"></div>
+        <div><label style="font-size:0.75rem;color:var(--text-muted)">Port</label><br><input id="sftp-port" value="${config.sftp_port||22}" type="number" style="padding:0.5rem;background:var(--surface2);border:1px solid var(--border);border-radius:6px;color:var(--text);width:70px"></div>
+        <div><label style="font-size:0.75rem;color:var(--text-muted)">Username</label><br><input id="sftp-user" value="${config.sftp_username||''}" placeholder="ach_upload" style="padding:0.5rem;background:var(--surface2);border:1px solid var(--border);border-radius:6px;color:var(--text);width:140px"></div>
+        <div><label style="font-size:0.75rem;color:var(--text-muted)">Remote Path</label><br><input id="sftp-path" value="${config.sftp_path||'/incoming'}" placeholder="/incoming" style="padding:0.5rem;background:var(--surface2);border:1px solid var(--border);border-radius:6px;color:var(--text);width:140px"></div>
+        <button type="submit" class="btn btn-primary">Save Config</button>
+      </form>
+    </div>
+    <div class="card">
+      <h3>Payment Files</h3>
+      ${(data.data||[]).length?`<table><thead><tr><th>File</th><th>Type</th><th>Records</th><th>Amount</th><th>Generated</th><th>Status</th><th>Actions</th></tr></thead><tbody>
+      ${(data.data||[]).map(f=>`<tr><td><code>${f.filename}</code></td><td>${f.file_type}</td><td>${f.record_count||0}</td><td>${fmt(parseInt(f.total_amount)||0)}</td><td>${fmtDate(f.created_at)}</td><td>${badge(f.status)}</td><td>${f.status==='generated'||f.status==='pending'?`<button class="btn btn-outline" style="padding:0.3rem 0.6rem;font-size:0.7rem" onclick="deliverFile('${f.id}')">Deliver</button>`:f.status==='delivered'?'<span style="color:var(--success);font-size:0.75rem">Sent</span>':''}</td></tr>`).join('')}
+      </tbody></table>`:'<p style="color:var(--text-muted)">No payment files generated yet. Generate a NACHA file from completed distributions.</p>'}
+    </div>
+  `;
+}
+
+async function generateNACHA(){
+  const r=await api('/api/treasury/mft/generate-nacha',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'});
+  if(r.success){toast(`NACHA file generated: ${r.data?.filename||'ACH file'}`);loadPage('mft')}
+  else toast(r.error||'Failed to generate NACHA file','error');
+}
+
+async function deliverFile(fileId){
+  if(!confirm('Deliver this file via SFTP to the configured endpoint?'))return;
+  const r=await api(`/api/treasury/mft/deliver/${fileId}`,{method:'POST'});
+  if(r.success){toast('File delivered successfully via SFTP');loadPage('mft')}
+  else toast(r.error||'Delivery failed — check SFTP configuration','error');
+}
+
+async function saveSFTPConfig(e){
+  e.preventDefault();
+  const body={sftp_host:document.getElementById('sftp-host').value,sftp_port:parseInt(document.getElementById('sftp-port').value)||22,sftp_username:document.getElementById('sftp-user').value,sftp_path:document.getElementById('sftp-path').value};
+  const r=await api('/api/treasury/mft/config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+  if(r.success)toast('SFTP configuration saved');
+  else toast(r.error||'Failed to save config','error');
 }
 
 loadPage('dashboard');

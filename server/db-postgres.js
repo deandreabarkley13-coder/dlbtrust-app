@@ -346,6 +346,37 @@ CREATE TABLE IF NOT EXISTS tax_records (
 );
 
 -- ═══════════════════════════════════════════════════════════════════════════════
+-- MANAGED FILE TRANSFER (MFT)
+-- ═══════════════════════════════════════════════════════════════════════════════
+
+CREATE TABLE IF NOT EXISTS mft_config (
+  id              UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  trust_id        UUID REFERENCES trusts(id),
+  sftp_host       TEXT,
+  sftp_port       INTEGER DEFAULT 22,
+  sftp_username   TEXT,
+  sftp_path       TEXT DEFAULT '/incoming',
+  company_id      TEXT,
+  originator_name TEXT,
+  created_at      TIMESTAMPTZ DEFAULT NOW(),
+  updated_at      TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS mft_files (
+  id              UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  trust_id        UUID REFERENCES trusts(id),
+  filename        TEXT NOT NULL,
+  file_type       TEXT DEFAULT 'NACHA' CHECK (file_type IN ('NACHA','CSV','ISO20022','SWIFT','CUSTOM')),
+  content         TEXT,
+  record_count    INTEGER DEFAULT 0,
+  total_amount    BIGINT DEFAULT 0,
+  status          TEXT DEFAULT 'generated' CHECK (status IN ('generated','pending','delivering','delivered','failed')),
+  delivery_error  TEXT,
+  delivered_at    TIMESTAMPTZ,
+  created_at      TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- ═══════════════════════════════════════════════════════════════════════════════
 -- INDEXES
 -- ═══════════════════════════════════════════════════════════════════════════════
 
