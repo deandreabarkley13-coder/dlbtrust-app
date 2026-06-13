@@ -350,6 +350,52 @@ CREATE TABLE IF NOT EXISTS tax_records (
 );
 
 -- ═══════════════════════════════════════════════════════════════════════════════
+-- ACH GATEWAY — Direct Payment Origination
+-- ═══════════════════════════════════════════════════════════════════════════════
+
+CREATE TABLE IF NOT EXISTS ach_batches (
+  id              UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  trust_id        UUID REFERENCES trusts(id),
+  sec_code        TEXT DEFAULT 'PPD' CHECK (sec_code IN ('PPD','CCD','WEB','TEL','WIRE')),
+  entry_count     INTEGER DEFAULT 0,
+  total_credit    BIGINT DEFAULT 0,
+  total_debit     BIGINT DEFAULT 0,
+  effective_date  DATE DEFAULT CURRENT_DATE,
+  source_wallet_id UUID REFERENCES wallets(id),
+  nacha_file_id   UUID,
+  status          TEXT DEFAULT 'created' CHECK (status IN ('created','originated','submitted','settled','returned','failed')),
+  created_at      TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS ach_transactions (
+  id              UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  trust_id        UUID REFERENCES trusts(id),
+  batch_id        UUID REFERENCES ach_batches(id),
+  transaction_type TEXT DEFAULT 'credit' CHECK (transaction_type IN ('credit','debit','wire')),
+  sec_code        TEXT DEFAULT 'PPD',
+  beneficiary_name TEXT NOT NULL,
+  routing_number  TEXT NOT NULL,
+  account_number  TEXT NOT NULL,
+  account_type    TEXT DEFAULT 'checking',
+  amount          BIGINT NOT NULL CHECK (amount > 0),
+  memo            TEXT,
+  effective_date  DATE DEFAULT CURRENT_DATE,
+  source_wallet_id UUID REFERENCES wallets(id),
+  trace_number    TEXT,
+  status          TEXT DEFAULT 'originated' CHECK (status IN ('originated','submitted','processing','settled','returned','failed','cancelled')),
+  return_code     TEXT,
+  return_reason   TEXT,
+  returned_at     TIMESTAMPTZ,
+  settled_at      TIMESTAMPTZ,
+  created_at      TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_ach_txns_trust ON ach_transactions(trust_id);
+CREATE INDEX IF NOT EXISTS idx_ach_txns_status ON ach_transactions(status);
+CREATE INDEX IF NOT EXISTS idx_ach_txns_batch ON ach_transactions(batch_id);
+CREATE INDEX IF NOT EXISTS idx_ach_batches_trust ON ach_batches(trust_id);
+
+-- ═══════════════════════════════════════════════════════════════════════════════
 -- PAYMENT BATCHES (Self-Processing Engine)
 -- ═══════════════════════════════════════════════════════════════════════════════
 

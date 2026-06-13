@@ -85,7 +85,7 @@ th{color:var(--text-muted);font-weight:500;text-transform:uppercase;font-size:0.
       </div>
       <div class="nav-item" data-page="payments">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="1" y="4" width="22" height="16" rx="2" ry="2"/><line x1="1" y1="10" x2="23" y2="10"/></svg>
-        Payments
+        ACH Gateway
       </div>
       <div class="nav-item" data-page="ledger">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
@@ -361,16 +361,118 @@ async function executeDistribution(scheduleId, scheduleName){
 }
 
 async function renderPayments(c){
-  const data=await api('/api/treasury/payments');
+  const [gwStatus,txns,batches]=await Promise.all([api('/api/treasury/ach/status'),api('/api/treasury/ach/transactions?limit=20'),api('/api/treasury/ach/batches')]);
+  const s=gwStatus.stats||{};
   c.innerHTML=`
-    <div class="page-header"><h2>Payments</h2></div>
+    <div class="page-header"><h2>ACH Gateway</h2>
+      <div style="display:flex;gap:0.5rem">
+        <button class="btn btn-primary" onclick="showACHOriginate()">+ ACH Payment</button>
+        <button class="btn btn-outline" onclick="showWireOriginate()">+ Wire Transfer</button>
+      </div>
+    </div>
+    <div class="stats-grid">
+      <div class="stat-card"><div class="label">Gateway</div><div class="value" style="font-size:1rem;color:var(--success)">Active</div><div class="sub">ODFI: ${gwStatus.odfi||'Eaton Family CU'}</div></div>
+      <div class="stat-card"><div class="label">Originated</div><div class="value">${s.originated||0}</div><div class="sub">Pending settlement</div></div>
+      <div class="stat-card"><div class="label">Settled</div><div class="value" style="color:var(--success)">${s.settled||0}</div><div class="sub">Completed</div></div>
+      <div class="stat-card"><div class="label">Returns</div><div class="value" style="color:${s.returned?'var(--danger)':'var(--text-muted)'}">${s.returned||0}</div><div class="sub">R-codes processed</div></div>
+      <div class="stat-card"><div class="label">Total Volume</div><div class="value">${fmt(s.total_volume||0)}</div><div class="sub">All transactions</div></div>
+      <div class="stat-card"><div class="label">Batches</div><div class="value">${s.total_batches||0}</div><div class="sub">NACHA files generated</div></div>
+    </div>
     <div class="card">
-      <h3>Payment Instructions</h3>
-      ${(data.data||[]).length?`<table><thead><tr><th>Beneficiary</th><th>Rail</th><th>Amount</th><th>Date</th><th>Status</th></tr></thead><tbody>
-      ${(data.data||[]).map(p=>`<tr><td>${p.beneficiary_name||p.beneficiary_name_lookup||'—'}</td><td>${p.payment_rail}</td><td>${fmt(parseInt(p.amount)||0)}</td><td>${fmtDate(p.effective_date)}</td><td>${badge(p.status)}</td></tr>`).join('')}
-      </tbody></table>`:'<p style="color:var(--text-muted)">No payment instructions yet. Execute a distribution to create payments.</p>'}
+      <h3>ACH Transactions</h3>
+      ${(txns.data||[]).length?`<table><thead><tr><th>Beneficiary</th><th>Type</th><th>Routing</th><th>Amount</th><th>Date</th><th>Status</th><th>Actions</th></tr></thead><tbody>
+      ${(txns.data||[]).map(t=>`<tr><td>${t.beneficiary_name}</td><td>${t.transaction_type}</td><td>${t.routing_number}</td><td>${fmt(parseInt(t.amount)||0)}</td><td>${fmtDate(t.effective_date)}</td><td>${badge(t.status)}</td><td>${t.status==='originated'?`<button class="btn btn-primary" style="padding:0.2rem 0.5rem;font-size:0.7rem" onclick="settleACHTxn('${t.id}')">Settle</button> <button class="btn btn-outline" style="padding:0.2rem 0.5rem;font-size:0.7rem" onclick="returnACHTxn('${t.id}')">Return</button>`:''}</td></tr>`).join('')}
+      </tbody></table>`:'<p style="color:var(--text-muted)">No ACH transactions yet. Originate a payment to get started.</p>'}
+    </div>
+    <div class="card" style="border-color:var(--gold)">
+      <h3 style="color:var(--gold)">Direct ACH Origination</h3>
+      <p style="color:var(--text-muted);font-size:0.85rem">Self-originated payments via built-in ACH API. No third-party processor required. NACHA files generated automatically for ODFI submission. Supports ACH Credit, ACH Debit, and Fedwire transfers.</p>
+      <div style="margin-top:0.75rem;font-size:0.75rem;color:var(--text-muted)">
+        <strong>Capabilities:</strong> ${(gwStatus.capabilities||[]).join(' • ')}
+      </div>
     </div>
   `;
+}
+
+function showACHOriginate(){
+  const overlay=document.createElement('div');
+  overlay.className='modal-overlay';
+  overlay.innerHTML=`<div class="modal">
+    <h3>Originate ACH Payment</h3>
+    <form id="ach-form">
+      <div class="form-group"><label>Beneficiary Name *</label><input id="ach-name" required placeholder="Payee name"></div>
+      <div class="form-row">
+        <div class="form-group"><label>Routing Number *</label><input id="ach-routing" required placeholder="241075470" maxlength="9"></div>
+        <div class="form-group"><label>Account Number *</label><input id="ach-account" required placeholder="Account number"></div>
+      </div>
+      <div class="form-row">
+        <div class="form-group"><label>Account Type</label><select id="ach-accttype"><option value="checking">Checking</option><option value="savings">Savings</option></select></div>
+        <div class="form-group"><label>Amount ($) *</label><input id="ach-amount" type="number" step="0.01" min="0.01" required placeholder="0.00"></div>
+      </div>
+      <div class="form-row">
+        <div class="form-group"><label>SEC Code</label><select id="ach-sec"><option value="PPD">PPD (Personal)</option><option value="CCD">CCD (Corporate)</option></select></div>
+        <div class="form-group"><label>Effective Date</label><input id="ach-date" type="date" value="${new Date().toISOString().split('T')[0]}"></div>
+      </div>
+      <div class="form-group"><label>Memo</label><input id="ach-memo" placeholder="Trust distribution"></div>
+      <div class="modal-actions">
+        <button type="button" class="btn btn-outline" onclick="this.closest('.modal-overlay').remove()">Cancel</button>
+        <button type="submit" class="btn btn-primary">Originate ACH</button>
+      </div>
+    </form>
+  </div>`;
+  document.body.appendChild(overlay);
+  overlay.addEventListener('click',e=>{if(e.target===overlay)overlay.remove()});
+  document.getElementById('ach-form').addEventListener('submit',async e=>{
+    e.preventDefault();
+    const body={beneficiary_name:document.getElementById('ach-name').value,routing_number:document.getElementById('ach-routing').value,account_number:document.getElementById('ach-account').value,account_type:document.getElementById('ach-accttype').value,amount:parseFloat(document.getElementById('ach-amount').value),sec_code:document.getElementById('ach-sec').value,effective_date:document.getElementById('ach-date').value,memo:document.getElementById('ach-memo').value||undefined};
+    const r=await api('/api/treasury/ach/originate',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+    if(r.success){toast(r.message||'ACH payment originated');overlay.remove();loadPage('payments')}
+    else toast(r.error||'Failed','error');
+  });
+}
+
+function showWireOriginate(){
+  const overlay=document.createElement('div');
+  overlay.className='modal-overlay';
+  overlay.innerHTML=`<div class="modal">
+    <h3>Originate Wire Transfer</h3>
+    <form id="wire-form">
+      <div class="form-group"><label>Beneficiary Name *</label><input id="wire-name" required placeholder="Payee name"></div>
+      <div class="form-row">
+        <div class="form-group"><label>Routing Number *</label><input id="wire-routing" required placeholder="ABA routing" maxlength="9"></div>
+        <div class="form-group"><label>Account Number *</label><input id="wire-account" required placeholder="Account number"></div>
+      </div>
+      <div class="form-group"><label>Amount ($) *</label><input id="wire-amount" type="number" step="0.01" min="0.01" required placeholder="0.00"></div>
+      <div class="form-group"><label>Purpose / Memo</label><input id="wire-memo" placeholder="Trust distribution"></div>
+      <div class="modal-actions">
+        <button type="button" class="btn btn-outline" onclick="this.closest('.modal-overlay').remove()">Cancel</button>
+        <button type="submit" class="btn btn-primary">Originate Wire</button>
+      </div>
+    </form>
+  </div>`;
+  document.body.appendChild(overlay);
+  overlay.addEventListener('click',e=>{if(e.target===overlay)overlay.remove()});
+  document.getElementById('wire-form').addEventListener('submit',async e=>{
+    e.preventDefault();
+    const body={beneficiary_name:document.getElementById('wire-name').value,routing_number:document.getElementById('wire-routing').value,account_number:document.getElementById('wire-account').value,amount:parseFloat(document.getElementById('wire-amount').value),memo:document.getElementById('wire-memo').value||undefined};
+    const r=await api('/api/treasury/ach/wire/originate',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+    if(r.success){toast(r.message||'Wire transfer originated');overlay.remove();loadPage('payments')}
+    else toast(r.error||'Failed','error');
+  });
+}
+
+async function settleACHTxn(id){
+  const r=await api(`/api/treasury/ach/settle/${id}`,{method:'POST'});
+  if(r.success){toast('Transaction settled');loadPage('payments')}
+  else toast(r.error||'Failed','error');
+}
+
+async function returnACHTxn(id){
+  const code=prompt('Enter return code (e.g. R01, R02, R03):','R01');
+  if(!code)return;
+  const r=await api(`/api/treasury/ach/return/${id}`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({return_code:code})});
+  if(r.success){toast(r.message||'Return processed');loadPage('payments')}
+  else toast(r.error||'Failed','error');
 }
 
 async function renderLedger(c){
