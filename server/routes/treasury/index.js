@@ -16,5 +16,6 @@ router.use('/payments', require('./payments'));
 router.use('/ledger', require('./ledger'));
 router.use('/wallets', require('./wallets'));
 router.use('/mft', require('./mft'));
+router.use('/engine', require('./payment-engine'));
 
 module.exports = router;

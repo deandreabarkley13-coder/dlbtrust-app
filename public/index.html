@@ -95,6 +95,10 @@ th{color:var(--text-muted);font-weight:500;text-transform:uppercase;font-size:0.
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 12V7H5a2 2 0 010-4h14v4"/><path d="M3 5v14a2 2 0 002 2h16v-5"/><path d="M18 12a2 2 0 100 4 2 2 0 000-4z"/></svg>
         Wallets
       </div>
+      <div class="nav-item" data-page="engine">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 010 2.83 2 2 0 01-2.83 0l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 01-4 0v-.09A1.65 1.65 0 009 19.4a1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 01-2.83-2.83l.06-.06A1.65 1.65 0 004.68 15 1.65 1.65 0 003.17 14H3a2 2 0 010-4h.09A1.65 1.65 0 004.6 9a1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 012.83-2.83l.06.06A1.65 1.65 0 009 4.68 1.65 1.65 0 0010 3.17V3a2 2 0 014 0v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 012.83 2.83l-.06.06A1.65 1.65 0 0019.4 9a1.65 1.65 0 001.51 1H21a2 2 0 010 4h-.09a1.65 1.65 0 00-1.51 1z"/></svg>
+        Payment Engine
+      </div>
       <div class="nav-item" data-page="mft">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
         File Transfer
@@ -139,6 +143,7 @@ async function loadPage(page){
       case 'payments': await renderPayments(c); break;
       case 'ledger': await renderLedger(c); break;
       case 'wallets': await renderWallets(c); break;
+      case 'engine': await renderEngine(c); break;
       case 'mft': await renderMFT(c); break;
     }
   }catch(e){c.innerHTML=`<div class="card"><h3>Error</h3><p>${e.message}</p></div>`}
@@ -418,6 +423,132 @@ async function doTransfer(e){
   const r=await api('/api/treasury/wallets/transfer',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({from_wallet_id:from,to_wallet_id:to,amount,description:'Manual transfer'})});
   if(r.success){toast('Transfer completed');loadPage('wallets')}
   else toast(r.error||'Transfer failed','error');
+}
+
+async function renderEngine(c){
+  const status=await api('/api/treasury/engine/status');
+  const payments=await api('/api/treasury/payments?limit=20');
+  const p=status.pipeline||{};
+  c.innerHTML=`
+    <div class="page-header"><h2>Payment Engine</h2>
+      <div style="display:flex;gap:0.5rem">
+        <button class="btn btn-primary" onclick="showInitiatePayment()">+ New Payment</button>
+        <button class="btn btn-outline" onclick="autoProcessPayments()">Auto-Process All</button>
+      </div>
+    </div>
+    <div class="stats-grid">
+      <div class="stat-card"><div class="label">Pending Approval</div><div class="value">${p.pending_approval?.count||0}</div><div class="sub">${fmt(p.pending_approval?.total||0)}</div></div>
+      <div class="stat-card"><div class="label">Approved (Ready)</div><div class="value" style="color:var(--success)">${p.approved?.count||0}</div><div class="sub">${fmt(p.approved?.total||0)}</div></div>
+      <div class="stat-card"><div class="label">Batched</div><div class="value">${p.batched?.count||0}</div><div class="sub">${fmt(p.batched?.total||0)}</div></div>
+      <div class="stat-card"><div class="label">Processing</div><div class="value" style="color:var(--warning)">${p.processing?.count||0}</div><div class="sub">${fmt(p.processing?.total||0)}</div></div>
+      <div class="stat-card"><div class="label">Settled</div><div class="value" style="color:var(--success)">${p.settled?.count||0}</div><div class="sub">${fmt(p.settled?.total||0)}</div></div>
+      <div class="stat-card"><div class="label">Failed</div><div class="value" style="color:var(--danger)">${p.failed?.count||0}</div><div class="sub">${fmt(p.failed?.total||0)}</div></div>
+    </div>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:1.5rem">
+      <div class="card">
+        <h3>Supported Payment Rails</h3>
+        <table><thead><tr><th>Rail</th><th>Format</th><th>Settlement</th></tr></thead><tbody>
+          <tr><td>ACH Credit</td><td>NACHA</td><td>1-2 days</td></tr>
+          <tr><td>ACH Debit</td><td>NACHA</td><td>1-2 days</td></tr>
+          <tr><td>Wire Transfer</td><td>Fedwire</td><td>Same day</td></tr>
+          <tr><td>Book Transfer</td><td>Internal</td><td>Instant</td></tr>
+          <tr><td>Check Issuance</td><td>CSV/Print</td><td>3-5 days</td></tr>
+          <tr><td>RTP (FedNow)</td><td>ISO 20022</td><td>Instant</td></tr>
+        </tbody></table>
+      </div>
+      <div class="card">
+        <h3>Recent Batches</h3>
+        ${(status.recent_batches||[]).length?`<table><thead><tr><th>Rail</th><th>Count</th><th>Amount</th><th>Status</th><th>Actions</th></tr></thead><tbody>
+        ${(status.recent_batches||[]).map(b=>`<tr><td>${b.payment_rail}</td><td>${b.payment_count}</td><td>${fmt(parseInt(b.total_amount)||0)}</td><td>${badge(b.status)}</td><td>${b.status==='created'?`<button class="btn btn-primary" style="padding:0.2rem 0.5rem;font-size:0.7rem" onclick="processBatch('${b.id}')">Process</button>`:b.status==='processed'?`<button class="btn btn-outline" style="padding:0.2rem 0.5rem;font-size:0.7rem" onclick="settleBatch('${b.id}')">Settle</button>`:''}</td></tr>`).join('')}
+        </tbody></table>`:'<p style="color:var(--text-muted)">No batches yet — initiate payments to get started</p>'}
+      </div>
+    </div>
+    <div class="card">
+      <h3>Payment Queue</h3>
+      ${(payments.data||[]).length?`<table><thead><tr><th>Beneficiary</th><th>Rail</th><th>Amount</th><th>Date</th><th>Priority</th><th>Status</th><th>Actions</th></tr></thead><tbody>
+      ${(payments.data||[]).map(pi=>`<tr><td>${pi.beneficiary_name||pi.beneficiary_name_lookup||'—'}</td><td>${pi.payment_rail}</td><td>${fmt(parseInt(pi.amount)||0)}</td><td>${fmtDate(pi.effective_date)}</td><td>${pi.priority||'normal'}</td><td>${badge(pi.status)}</td><td>${pi.status==='pending_approval'?`<button class="btn btn-primary" style="padding:0.2rem 0.5rem;font-size:0.7rem" onclick="approvePayment('${pi.id}')">Approve</button>`:(pi.status==='approved'?`<button class="btn btn-outline" style="padding:0.2rem 0.5rem;font-size:0.7rem" onclick="batchPayment('${pi.id}','${pi.payment_rail}')">Batch</button>`:'')}</td></tr>`).join('')}
+      </tbody></table>`:'<p style="color:var(--text-muted)">No payment instructions in queue</p>'}
+    </div>
+    <div class="card" style="border-color:var(--gold)">
+      <h3 style="color:var(--gold)">Self-Processing Engine</h3>
+      <p style="color:var(--text-muted);font-size:0.85rem">Ohio PTC self-originated payments. No third-party processor required. The trust generates NACHA/Fedwire/ISO20022 files and delivers them directly to the ODFI via SFTP.</p>
+      <div style="margin-top:0.75rem;display:flex;gap:0.5rem">
+        <span class="badge" style="background:var(--success);color:#fff;padding:0.3rem 0.6rem;border-radius:4px;font-size:0.7rem">Engine Active</span>
+        <span class="badge" style="background:var(--surface2);padding:0.3rem 0.6rem;border-radius:4px;font-size:0.7rem">${status.engine||'v1.0'}</span>
+      </div>
+    </div>
+  `;
+}
+
+function showInitiatePayment(){
+  const overlay=document.createElement('div');
+  overlay.className='modal-overlay';
+  overlay.innerHTML=`<div class="modal">
+    <h3>Initiate Payment</h3>
+    <form id="pay-form">
+      <div class="form-group"><label>Beneficiary Name *</label><input id="pay-name" required placeholder="Payee name"></div>
+      <div class="form-row">
+        <div class="form-group"><label>Payment Rail *</label><select id="pay-rail"><option value="ach_credit">ACH Credit</option><option value="wire">Wire Transfer</option><option value="book_transfer">Book Transfer</option><option value="check">Check</option><option value="rtp">RTP (FedNow)</option><option value="ach_debit">ACH Debit</option></select></div>
+        <div class="form-group"><label>Amount ($) *</label><input id="pay-amount" type="number" step="0.01" min="0.01" required placeholder="0.00"></div>
+      </div>
+      <div class="form-row">
+        <div class="form-group"><label>Routing Number</label><input id="pay-routing" placeholder="241075470" maxlength="9"></div>
+        <div class="form-group"><label>Account Number</label><input id="pay-account" placeholder="Account number"></div>
+      </div>
+      <div class="form-row">
+        <div class="form-group"><label>Account Type</label><select id="pay-accttype"><option value="checking">Checking</option><option value="savings">Savings</option></select></div>
+        <div class="form-group"><label>Priority</label><select id="pay-priority"><option value="normal">Normal</option><option value="high">High</option><option value="urgent">Urgent</option></select></div>
+      </div>
+      <div class="form-group"><label>Memo</label><input id="pay-memo" placeholder="Trust distribution"></div>
+      <div class="form-group"><label>Effective Date</label><input id="pay-date" type="date" value="${new Date().toISOString().split('T')[0]}"></div>
+      <div class="form-group"><label>Requires Approval</label><select id="pay-approval"><option value="true">Yes — trustee must approve</option><option value="false">No — auto-approve</option></select></div>
+      <div class="modal-actions">
+        <button type="button" class="btn btn-outline" onclick="this.closest('.modal-overlay').remove()">Cancel</button>
+        <button type="submit" class="btn btn-primary">Initiate Payment</button>
+      </div>
+    </form>
+  </div>`;
+  document.body.appendChild(overlay);
+  overlay.addEventListener('click',e=>{if(e.target===overlay)overlay.remove()});
+  document.getElementById('pay-form').addEventListener('submit',async e=>{
+    e.preventDefault();
+    const body={beneficiary_name:document.getElementById('pay-name').value,payment_rail:document.getElementById('pay-rail').value,amount:parseFloat(document.getElementById('pay-amount').value),routing_number:document.getElementById('pay-routing').value||undefined,account_number:document.getElementById('pay-account').value||undefined,account_type:document.getElementById('pay-accttype').value,priority:document.getElementById('pay-priority').value,memo:document.getElementById('pay-memo').value||undefined,effective_date:document.getElementById('pay-date').value,requires_approval:document.getElementById('pay-approval').value==='true'};
+    const r=await api('/api/treasury/engine/initiate',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+    if(r.success){toast(r.message||'Payment initiated');overlay.remove();loadPage('engine')}
+    else toast(r.error||'Failed','error');
+  });
+}
+
+async function approvePayment(id){
+  const r=await api(`/api/treasury/engine/approve/${id}`,{method:'POST'});
+  if(r.success){toast('Payment approved');loadPage('engine')}
+  else toast(r.error||'Failed','error');
+}
+
+async function batchPayment(id,rail){
+  const r=await api('/api/treasury/engine/batch',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({payment_ids:[id],payment_rail:rail})});
+  if(r.success){toast(r.message||'Payment batched');loadPage('engine')}
+  else toast(r.error||'Failed','error');
+}
+
+async function processBatch(id){
+  const r=await api(`/api/treasury/engine/process-batch/${id}`,{method:'POST'});
+  if(r.success){toast(r.message||'Batch processed');loadPage('engine')}
+  else toast(r.error||'Failed','error');
+}
+
+async function settleBatch(id){
+  if(!confirm('Mark this batch as settled? This will create ledger entries for all payments.'))return;
+  const r=await api(`/api/treasury/engine/settle-batch/${id}`,{method:'POST'});
+  if(r.success){toast('Batch settled and reconciled');loadPage('engine')}
+  else toast(r.error||'Failed','error');
+}
+
+async function autoProcessPayments(){
+  if(!confirm('Auto-process all approved payments? This will batch and generate files for all payment rails.'))return;
+  const r=await api('/api/treasury/engine/auto-process',{method:'POST'});
+  if(r.success){toast(r.message||'All payments processed');loadPage('engine')}
+  else toast(r.error||'No approved payments to process','error');
 }
 
 async function renderMFT(c){

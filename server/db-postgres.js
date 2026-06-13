@@ -272,7 +272,7 @@ CREATE TABLE IF NOT EXISTS payment_instructions (
   id                  UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
   trust_id            UUID NOT NULL REFERENCES trusts(id),
   distribution_payment_id UUID REFERENCES distribution_payments(id),
-  payment_rail        TEXT NOT NULL CHECK (payment_rail IN ('ach_credit','ach_debit','wire','check','internal','rtp')),
+  payment_rail        TEXT NOT NULL CHECK (payment_rail IN ('ach_credit','ach_debit','wire','check','internal','rtp','book_transfer')),
   amount              BIGINT NOT NULL,
   currency            TEXT DEFAULT 'USD',
   beneficiary_name    TEXT NOT NULL,
@@ -284,7 +284,11 @@ CREATE TABLE IF NOT EXISTS payment_instructions (
   effective_date      DATE,
   batch_id            TEXT,
   external_ref        TEXT,
-  status              TEXT DEFAULT 'created' CHECK (status IN ('created','queued','submitted','accepted','settled','returned','failed','cancelled')),
+  source_wallet_id    UUID REFERENCES wallets(id),
+  priority            TEXT DEFAULT 'normal' CHECK (priority IN ('normal','high','urgent')),
+  approved_at         TIMESTAMPTZ,
+  approved_by         TEXT,
+  status              TEXT DEFAULT 'created' CHECK (status IN ('created','queued','submitted','accepted','settled','returned','failed','cancelled','pending_approval','approved','batched','processing','rejected')),
   submitted_at        TIMESTAMPTZ,
   settled_at          TIMESTAMPTZ,
   failure_code        TEXT,
@@ -343,6 +347,25 @@ CREATE TABLE IF NOT EXISTS tax_records (
   net_distributed   BIGINT DEFAULT 0,
   status            TEXT DEFAULT 'draft' CHECK (status IN ('draft','filed','amended','void')),
   created_at        TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- ═══════════════════════════════════════════════════════════════════════════════
+-- PAYMENT BATCHES (Self-Processing Engine)
+-- ═══════════════════════════════════════════════════════════════════════════════
+
+CREATE TABLE IF NOT EXISTS payment_batches (
+  id              UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  trust_id        UUID REFERENCES trusts(id),
+  batch_type      TEXT DEFAULT 'standard' CHECK (batch_type IN ('standard','auto','recurring','priority')),
+  payment_rail    TEXT NOT NULL CHECK (payment_rail IN ('ach_credit','ach_debit','wire','book_transfer','check','rtp')),
+  payment_count   INTEGER DEFAULT 0,
+  total_amount    BIGINT DEFAULT 0,
+  status          TEXT DEFAULT 'created' CHECK (status IN ('created','processing','processed','settled','failed')),
+  file_id         UUID,
+  error_message   TEXT,
+  processed_at    TIMESTAMPTZ,
+  settled_at      TIMESTAMPTZ,
+  created_at      TIMESTAMPTZ DEFAULT NOW()
 );
 
 -- ═══════════════════════════════════════════════════════════════════════════════
@@ -406,6 +429,9 @@ async function initializeDatabase() {
     await client.query(SCHEMA_SQL);
     console.log('[DB] PostgreSQL schema initialized');
 
+    // Migrations for existing databases
+    await runMigrations(client);
+
     // Seed trust if not exists
     const { rows } = await client.query('SELECT COUNT(*) AS count FROM trusts');
     if (parseInt(rows[0].count) === 0) {
@@ -414,6 +440,36 @@ async function initializeDatabase() {
   } finally {
     client.release();
   }
+}
+
+// ─── Migrations (additive, idempotent) ────────────────────────────────────────
+async function runMigrations(client) {
+  const migrations = [
+    // Payment engine columns
+    "ALTER TABLE payment_instructions ADD COLUMN IF NOT EXISTS source_wallet_id UUID REFERENCES wallets(id)",
+    "ALTER TABLE payment_instructions ADD COLUMN IF NOT EXISTS priority TEXT DEFAULT 'normal'",
+    "ALTER TABLE payment_instructions ADD COLUMN IF NOT EXISTS approved_at TIMESTAMPTZ",
+    "ALTER TABLE payment_instructions ADD COLUMN IF NOT EXISTS approved_by TEXT",
+    // Drop old CHECK constraint and re-add with new values
+    `DO $$ BEGIN
+      ALTER TABLE payment_instructions DROP CONSTRAINT IF EXISTS payment_instructions_status_check;
+      ALTER TABLE payment_instructions ADD CONSTRAINT payment_instructions_status_check
+        CHECK (status IN ('created','queued','submitted','accepted','settled','returned','failed','cancelled','pending_approval','approved','batched','processing','rejected'));
+    EXCEPTION WHEN OTHERS THEN NULL;
+    END $$`,
+    // Add book_transfer to payment_rail constraint
+    `DO $$ BEGIN
+      ALTER TABLE payment_instructions DROP CONSTRAINT IF EXISTS payment_instructions_payment_rail_check;
+      ALTER TABLE payment_instructions ADD CONSTRAINT payment_instructions_payment_rail_check
+        CHECK (payment_rail IN ('ach_credit','ach_debit','wire','check','internal','rtp','book_transfer'));
+    EXCEPTION WHEN OTHERS THEN NULL;
+    END $$`,
+  ];
+
+  for (const sql of migrations) {
+    try { await client.query(sql); } catch (e) { /* ignore duplicate */ }
+  }
+  console.log('[DB] Migrations applied');
 }
 
 // ─── Seed Data ────────────────────────────────────────────────────────────────
