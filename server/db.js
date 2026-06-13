@@ -163,6 +163,7 @@ db.exec(`
 `);
 
 // ─── Migrations: add columns that may be missing on existing DBs ─────────────
+addColumnIfMissing('transactions', 'type', "TEXT DEFAULT 'transfer'");
 addColumnIfMissing('transactions', 'from_wallet_id', 'TEXT');
 addColumnIfMissing('transactions', 'to_wallet_id', 'TEXT');
 addColumnIfMissing('transactions', 'category', "TEXT DEFAULT 'transfer'");
@@ -173,7 +174,11 @@ addColumnIfMissing('transactions', 'counterparty_wallet_id', 'INTEGER');
 addColumnIfMissing('transactions', 'reference_id', 'TEXT');
 addColumnIfMissing('wallets', 'wallet_id', 'TEXT');
 addColumnIfMissing('wallets', 'holder_name', 'TEXT');
+addColumnIfMissing('wallets', 'currency', "TEXT DEFAULT 'USD'");
+addColumnIfMissing('wallets', 'email', 'TEXT');
+addColumnIfMissing('wallets', 'phone', 'TEXT');
 addColumnIfMissing('wallets', 'public_address', 'TEXT');
+addColumnIfMissing('wallets', 'status', "TEXT DEFAULT 'active'");
 addColumnIfMissing('wallets', 'updated_at', "TEXT DEFAULT (datetime('now'))");
 
 // Create indexes that depend on migrated columns (safe to run after migration)
