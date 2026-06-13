@@ -250,7 +250,7 @@ router.get('/transactions', (req, res) => {
     const params = [];
 
     if (category) { conditions.push('category = ?'); params.push(category); }
-    if (method)   { conditions.push('payment_method = ?'); params.push(method); }
+    if (method)   { conditions.push('method = ?'); params.push(method); }
     if (fromDate) { conditions.push('DATE(created_at) >= ?'); params.push(fromDate); }
     if (toDate)   { conditions.push('DATE(created_at) <= ?'); params.push(toDate); }
 
@@ -274,12 +274,12 @@ router.get('/transactions', (req, res) => {
     // Method breakdown
     const byMethod = db.prepare(`
       SELECT
-        payment_method AS method,
+        method,
         COUNT(*) AS count,
         SUM(ABS(amount)) AS total_cents
       FROM transactions
       ${where}
-      GROUP BY payment_method
+      GROUP BY method
       ORDER BY count DESC
     `).all(...params);
 
@@ -303,7 +303,7 @@ router.get('/transactions', (req, res) => {
         category,
         description,
         amount,
-        payment_method,
+        method,
         from_wallet_id,
         to_wallet_id,
         status,
@@ -361,7 +361,7 @@ router.get('/transactions', (req, res) => {
         amount_cents: t.amount,
         amount_usd: toDollars(Math.abs(t.amount)),
         direction: t.amount >= 0 ? 'credit' : 'debit',
-        method: t.payment_method,
+        method: t.method,
         from_wallet: t.from_wallet_id,
         to_wallet: t.to_wallet_id,
         status: t.status,
@@ -402,7 +402,7 @@ router.get('/beneficiaries', (req, res) => {
 
       // Last activity
       const lastTx = db.prepare(`
-        SELECT MAX(created_at) AS last_date, category, payment_method
+        SELECT MAX(created_at) AS last_date, category, method
         FROM transactions
         WHERE from_wallet_id = ? OR to_wallet_id = ?
         ORDER BY created_at DESC
@@ -411,15 +411,15 @@ router.get('/beneficiaries', (req, res) => {
 
       // Payment methods used
       const methods = db.prepare(`
-        SELECT payment_method, COUNT(*) AS count
+        SELECT method, COUNT(*) AS count
         FROM transactions
         WHERE from_wallet_id = ? OR to_wallet_id = ?
-        GROUP BY payment_method
+        GROUP BY method
       `).all(b.wallet_id, b.wallet_id);
 
       // Recent transactions (last 5)
       const recentTx = db.prepare(`
-        SELECT id, category, description, amount, payment_method, status, created_at
+        SELECT id, category, description, amount, method, status, created_at
         FROM transactions
         WHERE from_wallet_id = ? OR to_wallet_id = ?
         ORDER BY created_at DESC
@@ -449,9 +449,9 @@ router.get('/beneficiaries', (req, res) => {
         // Activity
         last_activity: lastTx?.last_date || null,
         last_tx_category: lastTx?.category || null,
-        last_tx_method: lastTx?.payment_method || null,
+        last_tx_method: lastTx?.method || null,
         payment_methods_used: methods.reduce((acc, m) => {
-          acc[m.payment_method] = m.count;
+          acc[m.method] = m.count;
           return acc;
         }, {}),
         recent_transactions: recentTx.map(t => ({
@@ -461,7 +461,7 @@ router.get('/beneficiaries', (req, res) => {
           amount_cents: t.amount,
           amount_usd: toDollars(Math.abs(t.amount)),
           direction: t.amount >= 0 ? 'credit' : 'debit',
-          method: t.payment_method,
+          method: t.method,
           status: t.status,
           date: t.created_at,
         })),
@@ -591,7 +591,7 @@ router.get('/distributions', (req, res) => {
         id,
         description,
         amount,
-        payment_method,
+        method,
         from_wallet_id,
         to_wallet_id,
         status,
@@ -664,7 +664,7 @@ router.get('/distributions', (req, res) => {
         description: d.description,
         amount_cents: Math.abs(d.amount),
         amount_usd: toDollars(Math.abs(d.amount)),
-        method: d.payment_method,
+        method: d.method,
         from_wallet: d.from_wallet_id,
         to_wallet: d.to_wallet_id,
         status: d.status,

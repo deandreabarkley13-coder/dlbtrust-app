@@ -16,6 +16,15 @@ const db = new Database(DB_PATH);
 db.pragma('journal_mode = WAL');
 db.pragma('foreign_keys = ON');
 
+// ─── Helper: add column if it doesn't exist ──────────────────────────────────
+function addColumnIfMissing(table, column, type) {
+  const cols = db.prepare(`PRAGMA table_info(${table})`).all();
+  if (!cols.find(c => c.name === column)) {
+    db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${type}`);
+    console.log(`[DB] Added column ${table}.${column}`);
+  }
+}
+
 // ─── Schema Initialization ────────────────────────────────────────────────────
 db.exec(`
   CREATE TABLE IF NOT EXISTS trust_profile (
@@ -147,13 +156,31 @@ db.exec(`
   CREATE INDEX IF NOT EXISTS idx_transactions_wallet ON transactions(wallet_id);
   CREATE INDEX IF NOT EXISTS idx_transactions_status ON transactions(status);
   CREATE INDEX IF NOT EXISTS idx_transactions_category ON transactions(category);
-  CREATE INDEX IF NOT EXISTS idx_transactions_from ON transactions(from_wallet_id);
-  CREATE INDEX IF NOT EXISTS idx_transactions_to ON transactions(to_wallet_id);
   CREATE INDEX IF NOT EXISTS idx_ledger_wallet ON ledger_entries(wallet_id);
   CREATE INDEX IF NOT EXISTS idx_disbursements_profile ON disbursements(payment_profile_id);
   CREATE INDEX IF NOT EXISTS idx_disbursements_status ON disbursements(status);
   CREATE INDEX IF NOT EXISTS idx_disbursements_date ON disbursements(send_date);
 `);
+
+// ─── Migrations: add columns that may be missing on existing DBs ─────────────
+addColumnIfMissing('transactions', 'from_wallet_id', 'TEXT');
+addColumnIfMissing('transactions', 'to_wallet_id', 'TEXT');
+addColumnIfMissing('transactions', 'category', "TEXT DEFAULT 'transfer'");
+addColumnIfMissing('transactions', 'method', "TEXT DEFAULT 'internal'");
+addColumnIfMissing('transactions', 'balance_before', 'INTEGER');
+addColumnIfMissing('transactions', 'balance_after', 'INTEGER');
+addColumnIfMissing('transactions', 'counterparty_wallet_id', 'INTEGER');
+addColumnIfMissing('transactions', 'reference_id', 'TEXT');
+addColumnIfMissing('wallets', 'wallet_id', 'TEXT');
+addColumnIfMissing('wallets', 'holder_name', 'TEXT');
+addColumnIfMissing('wallets', 'public_address', 'TEXT');
+addColumnIfMissing('wallets', 'updated_at', "TEXT DEFAULT (datetime('now'))");
+
+// Create indexes that depend on migrated columns (safe to run after migration)
+try {
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_transactions_from ON transactions(from_wallet_id)`);
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_transactions_to ON transactions(to_wallet_id)`);
+} catch (_) { /* indexes may already exist */ }
 
 // ─── Seed trust profile if empty ──────────────────────────────────────────────
 const profileCount = db.prepare('SELECT COUNT(*) AS count FROM trust_profile').get();
