@@ -16,7 +16,7 @@ const { URL } = require('url');
 
 // Default to HTTP localhost to avoid TLS issues from server-side calls
 // When calling from the server itself, Apache proxies ach.dlbtrust.cloud -> localhost
-const OPENACH_BASE_URL = process.env.OPENACH_BASE_URL || 'http://localhost/openach/api';
+const OPENACH_BASE_URL = process.env.OPENACH_BASE_URL || 'https://ach.dlbtrust.cloud/api';
 const OPENACH_HOST_HEADER = process.env.OPENACH_HOST_HEADER || 'ach.dlbtrust.cloud';
 const OPENACH_API_TOKEN = process.env.OPENACH_API_TOKEN;
 const OPENACH_API_KEY   = process.env.OPENACH_API_KEY;
