@@ -791,7 +791,7 @@ router.get('/data-quality', (req, res) => {
 // ─────────────────────────────────────────────────────────────
 router.get('/bond-portfolio', (req, res) => {
   try {
-    const db = req.db;
+    const db = req.app.locals.db || req.db;
     const bond = db.prepare('SELECT * FROM bond_portfolio ORDER BY id DESC LIMIT 1').get();
     if (!bond) return res.status(404).json({ error: 'No bond portfolio record found' });
 
