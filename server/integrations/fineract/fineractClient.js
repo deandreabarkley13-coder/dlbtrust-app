@@ -32,7 +32,7 @@ function fineractRequest(method, endpoint, body = null) {
 
     const headers = {
       'Authorization': `Basic ${basicAuth}`,
-      'X-Fineract-Platform-TenantId': FINERACT_TENANT_ID,
+      'Fineract-Platform-TenantId': FINERACT_TENANT_ID,
       'Accept': 'application/json',
     };
 
