@@ -396,6 +396,24 @@ class OpenACHClient {
       await session.disconnect();
     }
   }
+
+  /**
+   * Export the current pending ACH file from OpenACH
+   * Returns the raw NACHA-formatted file content
+   */
+  static async exportAchFile() {
+    const session = new OpenACHSession();
+    await session.connect();
+    try {
+      // Try getAchFiles or exportFile endpoint — adjust endpoint name
+      // based on what your OpenACH version exposes
+      const res = await session.request('getAchFiles', {});
+      if (!res.success) throw new Error(`exportAchFile failed: ${res.error}`);
+      return res;
+    } finally {
+      await session.disconnect();
+    }
+  }
 }
 
 module.exports = { OpenACHClient, OpenACHSession, openachRequest };
