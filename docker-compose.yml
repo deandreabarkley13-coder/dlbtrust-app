@@ -1,5 +1,5 @@
 # dlbtrust-app — Docker Compose
-# Adds Apache Fineract (core banking GL) + MySQL alongside the existing app.
+# Adds Apache Fineract (core banking GL) + PostgreSQL alongside the existing app.
 # OpenACH containers are managed separately (existing setup).
 #
 # Usage:
@@ -7,25 +7,22 @@
 #   Wait ~60s for Fineract to finish initialization, then:
 #   curl -k https://localhost:8443/fineract-provider/api/v1/offices?tenantIdentifier=default
 
-version: '3.8'
-
 services:
-  # ─── MySQL 8 — Fineract database ──────────────────────────────────────────
-  fineract-mysql:
-    image: mysql:8.0
-    container_name: fineract-mysql
+  # ─── PostgreSQL 16 — Fineract database ────────────────────────────────────
+  fineract-db:
+    image: postgres:16
+    container_name: fineract-db
     restart: unless-stopped
     environment:
-      MYSQL_ROOT_PASSWORD: ${FINERACT_MYSQL_ROOT_PASSWORD:-fineract_root}
-      MYSQL_DATABASE: fineract_tenants
-      MYSQL_USER: ${FINERACT_DB_USER:-fineract}
-      MYSQL_PASSWORD: ${FINERACT_DB_PASSWORD:-fineract_pass}
+      POSTGRES_USER: ${FINERACT_DB_USER:-postgres}
+      POSTGRES_PASSWORD: ${FINERACT_DB_PASSWORD:-postgres}
+      POSTGRES_DB: fineract_tenants
     ports:
-      - "3306:3306"
+      - "5432:5432"
     volumes:
-      - fineract-mysql-data:/var/lib/mysql
+      - fineract-db-data:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "root", "-p${FINERACT_MYSQL_ROOT_PASSWORD:-fineract_root}"]
+      test: ["CMD-SHELL", "pg_isready -U ${FINERACT_DB_USER:-postgres}"]
       interval: 10s
       timeout: 5s
       retries: 10
@@ -36,16 +33,17 @@ services:
     container_name: fineract
     restart: unless-stopped
     depends_on:
-      fineract-mysql:
+      fineract-db:
         condition: service_healthy
     environment:
-      - FINERACT_HIKARI_JDBC_URL=jdbc:mysql://fineract-mysql:3306/fineract_tenants
-      - FINERACT_HIKARI_USERNAME=${FINERACT_DB_USER:-fineract}
-      - FINERACT_HIKARI_PASSWORD=${FINERACT_DB_PASSWORD:-fineract_pass}
-      - FINERACT_DEFAULT_TENANTDB_HOSTNAME=fineract-mysql
-      - FINERACT_DEFAULT_TENANTDB_PORT=3306
-      - FINERACT_DEFAULT_TENANTDB_UID=${FINERACT_DB_USER:-fineract}
-      - FINERACT_DEFAULT_TENANTDB_PWD=${FINERACT_DB_PASSWORD:-fineract_pass}
+      - FINERACT_HIKARI_JDBC_URL=jdbc:postgresql://fineract-db:5432/fineract_tenants
+      - FINERACT_HIKARI_USERNAME=${FINERACT_DB_USER:-postgres}
+      - FINERACT_HIKARI_PASSWORD=${FINERACT_DB_PASSWORD:-postgres}
+      - FINERACT_HIKARI_DRIVER_SOURCE_CLASS_NAME=org.postgresql.Driver
+      - FINERACT_DEFAULT_TENANTDB_HOSTNAME=fineract-db
+      - FINERACT_DEFAULT_TENANTDB_PORT=5432
+      - FINERACT_DEFAULT_TENANTDB_UID=${FINERACT_DB_USER:-postgres}
+      - FINERACT_DEFAULT_TENANTDB_PWD=${FINERACT_DB_PASSWORD:-postgres}
       - FINERACT_DEFAULT_TENANTDB_NAME=fineract_default
       - JAVA_TOOL_OPTIONS=-Xmx512m
     ports:
@@ -55,7 +53,7 @@ services:
       interval: 15s
       timeout: 10s
       retries: 15
-      start_period: 90s
+      start_period: 120s
 
 volumes:
-  fineract-mysql-data:
+  fineract-db-data:
