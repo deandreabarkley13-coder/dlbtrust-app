@@ -787,6 +787,65 @@ router.get('/data-quality', (req, res) => {
 });
 
 // ─────────────────────────────────────────────────────────────
+// GET /api/analytics/gl-summary
+// Fineract-backed GL summary (principal vs. income with double-entry data)
+// Falls back to SQLite-based summary if Fineract is unavailable
+// ─────────────────────────────────────────────────────────────
+router.get('/gl-summary', async (req, res) => {
+  try {
+    const { FineractClient } = require('../integrations/fineract/fineractClient');
+    const summary = await FineractClient.getGLSummary();
+
+    res.json({
+      source: 'fineract',
+      generated_at: summary.generated_at,
+      total_assets: summary.total_assets,
+      total_liabilities: summary.total_liabilities,
+      total_equity: summary.total_equity,
+      total_income: summary.total_income,
+      total_expenses: summary.total_expenses,
+      accounts: summary.accounts,
+    });
+  } catch (fineractErr) {
+    // Fallback: derive a rough GL summary from SQLite
+    try {
+      const db = req.db;
+
+      const portfolio = db.prepare(`
+        SELECT
+          SUM(fiat_balance) AS total_balance_cents,
+          SUM(CASE WHEN role = 'trust_entity' THEN fiat_balance ELSE 0 END) AS principal_cents,
+          SUM(CASE WHEN role IN ('trustee', 'beneficiary') THEN fiat_balance ELSE 0 END) AS distributed_cents
+        FROM wallets
+      `).get();
+
+      const income = db.prepare(`
+        SELECT COALESCE(SUM(amount), 0) AS total_cents
+        FROM transactions
+        WHERE category IN ('interest', 'investment') AND status = 'completed'
+      `).get();
+
+      res.json({
+        source: 'sqlite_fallback',
+        fineract_error: fineractErr.message,
+        generated_at: new Date().toISOString(),
+        total_assets: toDollars(portfolio.total_balance_cents),
+        principal_usd: toDollars(portfolio.principal_cents),
+        distributed_usd: toDollars(portfolio.distributed_cents),
+        income_usd: toDollars(income.total_cents),
+        note: 'Fineract unavailable — showing SQLite approximation without double-entry verification',
+      });
+    } catch (sqliteErr) {
+      res.status(500).json({
+        error: 'GL summary unavailable from both Fineract and SQLite',
+        fineract_error: fineractErr.message,
+        sqlite_error: sqliteErr.message,
+      });
+    }
+  }
+});
+
+// ─────────────────────────────────────────────────────────────
 // EXPORT
 // ─────────────────────────────────────────────────────────────
 module.exports = router;
