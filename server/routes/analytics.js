@@ -50,10 +50,11 @@ router.use((req, res, next) => {
     req.db = getDb();
     res.on('finish', () => { try { req.db.close(); } catch (_) {} });
     res.on('close',  () => { try { req.db.close(); } catch (_) {} });
-    next();
   } catch (err) {
-    res.status(500).json({ error: 'Database connection failed', detail: err.message });
+    req.db = null;
+    req.dbError = err.message;
   }
+  next();
 });
 
 // ─────────────────────────────────────────────────────────────
