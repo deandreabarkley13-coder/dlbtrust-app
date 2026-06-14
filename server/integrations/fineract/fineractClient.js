@@ -104,6 +104,7 @@ class FineractClient {
     const officeId = 1; // Head office (default Fineract setup)
     const payload = {
       officeId,
+      legalFormId: 1, // 1 = Person (required by Fineract)
       firstname: firstName,
       lastname: lastName,
       externalId: externalId || undefined,
