@@ -1,0 +1,792 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>DLB Trust — Treasury Management System</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+:root{--bg:#0a0e1a;--surface:#111827;--surface2:#1f2937;--border:#374151;--primary:#3b82f6;--primary-hover:#2563eb;--success:#10b981;--warning:#f59e0b;--danger:#ef4444;--text:#f9fafb;--text-muted:#9ca3af;--gold:#d4af37}
+body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:var(--bg);color:var(--text);min-height:100vh}
+.app{display:grid;grid-template-columns:260px 1fr;min-height:100vh}
+.sidebar{background:var(--surface);border-right:1px solid var(--border);padding:1.5rem 0;display:flex;flex-direction:column}
+.sidebar-header{padding:0 1.5rem 1.5rem;border-bottom:1px solid var(--border)}
+.sidebar-header h1{font-size:0.9rem;color:var(--gold);letter-spacing:0.5px;text-transform:uppercase}
+.sidebar-header p{font-size:0.75rem;color:var(--text-muted);margin-top:0.25rem}
+.nav{flex:1;padding:1rem 0}
+.nav-item{display:flex;align-items:center;gap:0.75rem;padding:0.75rem 1.5rem;cursor:pointer;transition:all 0.2s;font-size:0.875rem;color:var(--text-muted)}
+.nav-item:hover,.nav-item.active{background:var(--surface2);color:var(--text)}
+.nav-item.active{border-left:3px solid var(--primary)}
+.nav-item svg{width:18px;height:18px}
+.main{padding:2rem;overflow-y:auto}
+.page-header{display:flex;justify-content:space-between;align-items:center;margin-bottom:2rem}
+.page-header h2{font-size:1.5rem;font-weight:600}
+.stats-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:1.25rem;margin-bottom:2rem}
+.stat-card{background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:1.25rem}
+.stat-card .label{font-size:0.75rem;color:var(--text-muted);text-transform:uppercase;letter-spacing:0.5px}
+.stat-card .value{font-size:1.75rem;font-weight:700;margin:0.5rem 0;color:var(--text)}
+.stat-card .sub{font-size:0.75rem;color:var(--text-muted)}
+.stat-card.highlight{border-color:var(--gold);background:linear-gradient(135deg,var(--surface),rgba(212,175,55,0.05))}
+.card{background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:1.5rem;margin-bottom:1.5rem}
+.card h3{font-size:1rem;font-weight:600;margin-bottom:1rem;display:flex;align-items:center;gap:0.5rem}
+table{width:100%;border-collapse:collapse;font-size:0.85rem}
+th,td{text-align:left;padding:0.75rem;border-bottom:1px solid var(--border)}
+th{color:var(--text-muted);font-weight:500;text-transform:uppercase;font-size:0.7rem;letter-spacing:0.5px}
+.badge{display:inline-block;padding:0.2rem 0.6rem;border-radius:999px;font-size:0.7rem;font-weight:600}
+.badge-active{background:rgba(16,185,129,0.15);color:var(--success)}
+.badge-pending{background:rgba(245,158,11,0.15);color:var(--warning)}
+.badge-failed{background:rgba(239,68,68,0.15);color:var(--danger)}
+.btn{padding:0.5rem 1rem;border-radius:8px;border:none;font-size:0.8rem;font-weight:500;cursor:pointer;transition:all 0.2s}
+.btn-primary{background:var(--primary);color:#fff}.btn-primary:hover{background:var(--primary-hover)}
+.btn-outline{background:transparent;border:1px solid var(--border);color:var(--text)}.btn-outline:hover{border-color:var(--primary)}
+.loading{text-align:center;padding:3rem;color:var(--text-muted)}
+.bond-detail{display:grid;grid-template-columns:1fr 1fr;gap:1rem;margin-bottom:1rem}
+.bond-field{padding:0.75rem;background:var(--surface2);border-radius:8px}
+.bond-field .label{font-size:0.7rem;color:var(--text-muted);text-transform:uppercase}
+.bond-field .value{font-size:1rem;font-weight:600;margin-top:0.25rem}
+.actions{display:flex;gap:0.75rem;margin-top:1rem}
+#toast{position:fixed;top:1rem;right:1rem;padding:1rem 1.5rem;border-radius:8px;display:none;z-index:9999;font-size:0.85rem}
+#toast.success{display:block;background:var(--success);color:#fff}
+#toast.error{display:block;background:var(--danger);color:#fff}
+.modal-overlay{position:fixed;inset:0;background:rgba(0,0,0,0.6);display:flex;align-items:center;justify-content:center;z-index:9998}
+.modal{background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:2rem;width:90%;max-width:500px;max-height:80vh;overflow-y:auto}
+.modal h3{margin-bottom:1.25rem;font-size:1.1rem}
+.form-group{margin-bottom:1rem}
+.form-group label{display:block;font-size:0.75rem;color:var(--text-muted);text-transform:uppercase;letter-spacing:0.5px;margin-bottom:0.35rem}
+.form-group input,.form-group select{width:100%;padding:0.6rem;background:var(--surface2);border:1px solid var(--border);border-radius:6px;color:var(--text);font-size:0.85rem}
+.form-group input:focus,.form-group select:focus{outline:none;border-color:var(--primary)}
+.form-row{display:grid;grid-template-columns:1fr 1fr;gap:1rem}
+.modal-actions{display:flex;justify-content:flex-end;gap:0.75rem;margin-top:1.5rem}
+</style>
+</head>
+<body>
+<div class="app">
+  <aside class="sidebar">
+    <div class="sidebar-header">
+      <h1>DLB Trust</h1>
+      <p>Treasury Management</p>
+    </div>
+    <nav class="nav">
+      <div class="nav-item active" data-page="dashboard">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/></svg>
+        Dashboard
+      </div>
+      <div class="nav-item" data-page="bonds">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2v20M17 5H9.5a3.5 3.5 0 000 7h5a3.5 3.5 0 010 7H6"/></svg>
+        Bond Portfolio
+      </div>
+      <div class="nav-item" data-page="beneficiaries">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M17 21v-2a4 4 0 00-4-4H5a4 4 0 00-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 00-3-3.87"/><path d="M16 3.13a4 4 0 010 7.75"/></svg>
+        Beneficiaries
+      </div>
+      <div class="nav-item" data-page="distributions">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>
+        Distributions
+      </div>
+      <div class="nav-item" data-page="payments">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="1" y="4" width="22" height="16" rx="2" ry="2"/><line x1="1" y1="10" x2="23" y2="10"/></svg>
+        ACH Gateway
+      </div>
+      <div class="nav-item" data-page="ledger">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
+        General Ledger
+      </div>
+      <div class="nav-item" data-page="wallets">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 12V7H5a2 2 0 010-4h14v4"/><path d="M3 5v14a2 2 0 002 2h16v-5"/><path d="M18 12a2 2 0 100 4 2 2 0 000-4z"/></svg>
+        Wallets
+      </div>
+      <div class="nav-item" data-page="engine">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 010 2.83 2 2 0 01-2.83 0l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 01-4 0v-.09A1.65 1.65 0 009 19.4a1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 01-2.83-2.83l.06-.06A1.65 1.65 0 004.68 15 1.65 1.65 0 003.17 14H3a2 2 0 010-4h.09A1.65 1.65 0 004.6 9a1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 012.83-2.83l.06.06A1.65 1.65 0 009 4.68 1.65 1.65 0 0010 3.17V3a2 2 0 014 0v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 012.83 2.83l-.06.06A1.65 1.65 0 0019.4 9a1.65 1.65 0 001.51 1H21a2 2 0 010 4h-.09a1.65 1.65 0 00-1.51 1z"/></svg>
+        Payment Engine
+      </div>
+      <div class="nav-item" data-page="mft">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+        File Transfer
+      </div>
+      <div class="nav-item" data-page="corebanking">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 21h18M3 10h18M5 6l7-3 7 3M4 10v11M20 10v11M8 14v3M12 14v3M16 14v3"/></svg>
+        Core Banking
+      </div>
+    </nav>
+  </aside>
+  <main class="main" id="content">
+    <div class="loading">Loading Treasury Management System...</div>
+  </main>
+</div>
+<div id="toast"></div>
+<script>
+const API = '';
+const fmt = (cents) => '$' + (cents/100).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2});
+const fmtDate = (d) => d ? new Date(d).toLocaleDateString('en-US',{year:'numeric',month:'short',day:'numeric'}) : '—';
+const badge = (status) => `<span class="badge badge-${status==='active'||status==='posted'||status==='settled'||status==='completed'||status==='received'?'active':status==='failed'||status==='returned'?'failed':'pending'}">${status}</span>`;
+
+function toast(msg,type='success'){const t=document.getElementById('toast');t.textContent=msg;t.className=type;setTimeout(()=>t.className='',3000)}
+
+document.querySelectorAll('.nav-item').forEach(item=>{
+  item.addEventListener('click',()=>{
+    document.querySelectorAll('.nav-item').forEach(i=>i.classList.remove('active'));
+    item.classList.add('active');
+    loadPage(item.dataset.page);
+  });
+});
+
+async function api(path,opts){
+  const r=await fetch(API+path,opts);
+  return r.json();
+}
+
+async function loadPage(page){
+  const c=document.getElementById('content');
+  c.innerHTML='<div class="loading">Loading...</div>';
+  try{
+    switch(page){
+      case 'dashboard': await renderDashboard(c); break;
+      case 'bonds': await renderBonds(c); break;
+      case 'beneficiaries': await renderBeneficiaries(c); break;
+      case 'distributions': await renderDistributions(c); break;
+      case 'payments': await renderPayments(c); break;
+      case 'ledger': await renderLedger(c); break;
+      case 'wallets': await renderWallets(c); break;
+      case 'engine': await renderEngine(c); break;
+      case 'mft': await renderMFT(c); break;
+      case 'corebanking': await renderCoreBanking(c); break;
+    }
+  }catch(e){c.innerHTML=`<div class="card"><h3>Error</h3><p>${e.message}</p></div>`}
+}
+
+async function renderDashboard(c){
+  const d=await api('/api/treasury/trust/dashboard');
+  const trust=d.trust||{};
+  const bonds=await api('/api/treasury/bonds');
+  const bond=(bonds.data||[])[0]||{};
+  const annualIncome=bond.face_value?Math.round(bond.face_value*bond.coupon_rate/100):0;
+
+  c.innerHTML=`
+    <div class="page-header"><h2>Trust Dashboard</h2><span style="color:var(--text-muted);font-size:0.8rem">${trust.trust_name||''}</span></div>
+    <div class="stats-grid">
+      <div class="stat-card highlight">
+        <div class="label">Total Corpus</div>
+        <div class="value">${fmt(trust.total_corpus||0)}</div>
+        <div class="sub">${trust.trust_type||'irrevocable'} trust • ${trust.jurisdiction||''}</div>
+      </div>
+      <div class="stat-card">
+        <div class="label">Annual Bond Income</div>
+        <div class="value">${fmt(annualIncome)}</div>
+        <div class="sub">${bond.coupon_rate||0}% coupon • ${bond.coupon_frequency||'semi_annual'}</div>
+      </div>
+      <div class="stat-card">
+        <div class="label">Next Coupon</div>
+        <div class="value">${fmtDate(bond.next_coupon_date)}</div>
+        <div class="sub">${fmt(annualIncome/2)} per semi-annual payment</div>
+      </div>
+      <div class="stat-card">
+        <div class="label">Wallets</div>
+        <div class="value">${(d.wallet_summary||[]).reduce((s,w)=>s+parseInt(w.count),0)}</div>
+        <div class="sub">${(d.wallet_summary||[]).map(w=>w.wallet_type).join(', ')}</div>
+      </div>
+    </div>
+    <div class="card">
+      <h3>Wallet Balances</h3>
+      <table><thead><tr><th>Type</th><th>Count</th><th>Total Balance</th></tr></thead><tbody>
+      ${(d.wallet_summary||[]).map(w=>`<tr><td>${w.wallet_type}</td><td>${w.count}</td><td>${fmt(parseInt(w.total_balance)||0)}</td></tr>`).join('')}
+      </tbody></table>
+    </div>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:1.5rem">
+      <div class="card">
+        <h3>Upcoming Coupons</h3>
+        ${(d.upcoming_coupons||[]).length?`<table><thead><tr><th>Date</th><th>Amount</th><th>Bond</th></tr></thead><tbody>
+        ${(d.upcoming_coupons||[]).map(cp=>`<tr><td>${fmtDate(cp.payment_date)}</td><td>${fmt(cp.coupon_amount)}</td><td>${cp.bond_name}</td></tr>`).join('')}
+        </tbody></table>`:'<p style="color:var(--text-muted)">No scheduled coupons — generate coupon schedule from Bond Portfolio</p>'}
+      </div>
+      <div class="card">
+        <h3>Recent Ledger Entries</h3>
+        ${(d.recent_ledger||[]).length?`<table><thead><tr><th>Date</th><th>Type</th><th>Amount</th><th>Status</th></tr></thead><tbody>
+        ${(d.recent_ledger||[]).map(e=>`<tr><td>${fmtDate(e.entry_date)}</td><td>${e.entry_type}</td><td>${fmt(e.amount)}</td><td>${badge(e.status)}</td></tr>`).join('')}
+        </tbody></table>`:'<p style="color:var(--text-muted)">No ledger entries yet</p>'}
+      </div>
+    </div>
+  `;
+}
+
+async function renderBonds(c){
+  const data=await api('/api/treasury/bonds');
+  const bonds=data.data||[];
+  if(!bonds.length){c.innerHTML='<div class="card"><h3>No bonds found</h3></div>';return}
+  const b=bonds[0];
+  c.innerHTML=`
+    <div class="page-header"><h2>Bond Portfolio</h2></div>
+    <div class="card">
+      <h3>${b.bond_name}</h3>
+      <div class="bond-detail">
+        <div class="bond-field"><div class="label">Issuer</div><div class="value">${b.issuer}</div></div>
+        <div class="bond-field"><div class="label">Type</div><div class="value">${b.bond_type}</div></div>
+        <div class="bond-field"><div class="label">Face Value</div><div class="value">${fmt(b.face_value)}</div></div>
+        <div class="bond-field"><div class="label">Coupon Rate</div><div class="value">${b.coupon_rate}%</div></div>
+        <div class="bond-field"><div class="label">Frequency</div><div class="value">${b.coupon_frequency}</div></div>
+        <div class="bond-field"><div class="label">Annual Income</div><div class="value">${fmt(b.annual_income||0)}</div></div>
+        <div class="bond-field"><div class="label">Issue Date</div><div class="value">${fmtDate(b.issue_date)}</div></div>
+        <div class="bond-field"><div class="label">Maturity</div><div class="value">${fmtDate(b.maturity_date)}</div></div>
+        <div class="bond-field"><div class="label">Next Coupon</div><div class="value">${fmtDate(b.next_coupon_date)}</div></div>
+        <div class="bond-field"><div class="label">Status</div><div class="value">${badge(b.status)}</div></div>
+        <div class="bond-field"><div class="label">Coupons Received</div><div class="value">${b.coupons_received||0}</div></div>
+        <div class="bond-field"><div class="label">Total Received</div><div class="value">${fmt(parseInt(b.total_received)||0)}</div></div>
+      </div>
+      <div class="actions">
+        <button class="btn btn-primary" onclick="generateCoupons('${b.id}')">Generate Coupon Schedule</button>
+        <button class="btn btn-outline" onclick="receiveCoupon('${b.id}')">Record Coupon Received</button>
+      </div>
+    </div>
+  `;
+}
+
+async function generateCoupons(bondId){
+  const r=await api(`/api/treasury/bonds/${bondId}/generate-coupons`,{method:'POST'});
+  if(r.success)toast(`Generated ${r.inserted} new coupons (${fmt(r.coupon_amount)} each)`);
+  else toast(r.error||'Failed','error');
+}
+
+async function receiveCoupon(bondId){
+  const r=await api(`/api/treasury/bonds/${bondId}/receive-coupon`,{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'});
+  if(r.success)toast(r.message);
+  else toast(r.error||'No coupon to receive','error');
+  loadPage('bonds');
+}
+
+async function renderBeneficiaries(c){
+  const data=await api('/api/treasury/beneficiaries');
+  const bens=data.data||[];
+  c.innerHTML=`
+    <div class="page-header"><h2>Beneficiaries</h2><button class="btn btn-primary" onclick="showAddBeneficiary()">+ Add Beneficiary</button></div>
+    <div class="card">
+      <table><thead><tr><th>Name</th><th>Type</th><th>Distribution %</th><th>Bank Accounts</th><th>Total Received</th><th>Status</th></tr></thead><tbody>
+      ${bens.map(b=>`<tr><td>${b.name}</td><td>${b.beneficiary_type}</td><td>${b.distribution_pct}%</td><td>${b.bank_account_count||0}</td><td>${fmt(parseInt(b.total_received)||0)}</td><td>${badge(b.status)}</td></tr>`).join('')}
+      </tbody></table>
+    </div>
+  `;
+}
+
+function showAddBeneficiary(){
+  const overlay=document.createElement('div');
+  overlay.className='modal-overlay';
+  overlay.innerHTML=`<div class="modal">
+    <h3>Add Beneficiary</h3>
+    <form id="add-ben-form">
+      <div class="form-group"><label>Name *</label><input id="ben-name" required placeholder="Full legal name"></div>
+      <div class="form-row">
+        <div class="form-group"><label>Type</label><select id="ben-type"><option value="income">Income</option><option value="principal">Principal</option><option value="remainder">Remainder</option></select></div>
+        <div class="form-group"><label>Classification</label><select id="ben-class"><option value="individual">Individual</option><option value="entity">Entity</option><option value="charity">Charity</option></select></div>
+      </div>
+      <div class="form-row">
+        <div class="form-group"><label>Email</label><input id="ben-email" type="email" placeholder="email@example.com"></div>
+        <div class="form-group"><label>Phone</label><input id="ben-phone" placeholder="(555) 123-4567"></div>
+      </div>
+      <div class="form-group"><label>Address</label><input id="ben-address" placeholder="Street address"></div>
+      <div class="form-row">
+        <div class="form-group"><label>City</label><input id="ben-city" placeholder="City"></div>
+        <div class="form-group"><label>State</label><input id="ben-state" placeholder="OH" maxlength="2"></div>
+      </div>
+      <div class="form-row">
+        <div class="form-group"><label>ZIP</label><input id="ben-zip" placeholder="44101"></div>
+        <div class="form-group"><label>Distribution %</label><input id="ben-pct" type="number" step="0.01" min="0" max="100" placeholder="16.67"></div>
+      </div>
+      <div class="modal-actions">
+        <button type="button" class="btn btn-outline" onclick="this.closest('.modal-overlay').remove()">Cancel</button>
+        <button type="submit" class="btn btn-primary">Add Beneficiary</button>
+      </div>
+    </form>
+  </div>`;
+  document.body.appendChild(overlay);
+  overlay.addEventListener('click',e=>{if(e.target===overlay)overlay.remove()});
+  document.getElementById('add-ben-form').addEventListener('submit',async e=>{
+    e.preventDefault();
+    const body={name:document.getElementById('ben-name').value,beneficiary_type:document.getElementById('ben-type').value,classification:document.getElementById('ben-class').value,email:document.getElementById('ben-email').value||undefined,phone:document.getElementById('ben-phone').value||undefined,address:document.getElementById('ben-address').value||undefined,city:document.getElementById('ben-city').value||undefined,state:document.getElementById('ben-state').value||undefined,zip:document.getElementById('ben-zip').value||undefined,distribution_pct:parseFloat(document.getElementById('ben-pct').value)||0};
+    const r=await api('/api/treasury/beneficiaries',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+    if(r.success){toast('Beneficiary added successfully');overlay.remove();loadPage('beneficiaries')}
+    else toast(r.error||'Failed to add beneficiary','error');
+  });
+}
+
+async function renderDistributions(c){
+  const [schedData,distData]=await Promise.all([api('/api/treasury/distributions/schedules'),api('/api/treasury/distributions')]);
+  c.innerHTML=`
+    <div class="page-header"><h2>Distributions</h2><button class="btn btn-primary" onclick="showCreateSchedule()">+ New Schedule</button></div>
+    <div class="card">
+      <h3>Distribution Schedules</h3>
+      ${(schedData.data||[]).length?`<table><thead><tr><th>Name</th><th>Frequency</th><th>Basis</th><th>Next</th><th>Total Paid</th><th>Status</th><th>Actions</th></tr></thead><tbody>
+      ${(schedData.data||[]).map(s=>`<tr><td>${s.name}</td><td>${s.frequency}</td><td>${s.distribution_basis}</td><td>${fmtDate(s.next_distribution)}</td><td>${fmt(parseInt(s.total_distributed)||0)}</td><td>${badge(s.status)}</td><td><button class="btn btn-primary" style="padding:0.3rem 0.6rem;font-size:0.7rem" onclick="executeDistribution('${s.id}','${s.name}')">Execute</button></td></tr>`).join('')}
+      </tbody></table>`:'<p style="color:var(--text-muted)">No distribution schedules configured</p>'}
+    </div>
+    <div class="card">
+      <h3>Distribution History</h3>
+      ${(distData.data||[]).length?`<table><thead><tr><th>Date</th><th>Total</th><th>Net</th><th>Tax</th><th>Status</th></tr></thead><tbody>
+      ${(distData.data||[]).map(d=>`<tr><td>${fmtDate(d.distribution_date)}</td><td>${fmt(parseInt(d.total_amount)||0)}</td><td>${fmt(parseInt(d.net_amount)||0)}</td><td>${fmt(parseInt(d.tax_withheld)||0)}</td><td>${badge(d.status)}</td></tr>`).join('')}
+      </tbody></table>`:'<p style="color:var(--text-muted)">No distributions executed yet</p>'}
+    </div>
+  `;
+}
+
+function showCreateSchedule(){
+  const overlay=document.createElement('div');
+  overlay.className='modal-overlay';
+  overlay.innerHTML=`<div class="modal">
+    <h3>Create Distribution Schedule</h3>
+    <form id="sched-form">
+      <div class="form-group"><label>Schedule Name *</label><input id="sched-name" required placeholder="e.g. Monthly Income Distribution"></div>
+      <div class="form-row">
+        <div class="form-group"><label>Frequency</label><select id="sched-freq"><option value="monthly">Monthly</option><option value="quarterly">Quarterly</option><option value="semi_annual">Semi-Annual</option><option value="annual">Annual</option><option value="weekly">Weekly</option><option value="bi_weekly">Bi-Weekly</option></select></div>
+        <div class="form-group"><label>Basis</label><select id="sched-basis"><option value="fixed">Fixed Amount</option><option value="percentage">Percentage of Income</option></select></div>
+      </div>
+      <div class="form-row">
+        <div class="form-group"><label>Day of Month</label><input id="sched-day" type="number" min="1" max="28" value="1"></div>
+        <div class="form-group"><label>Approval Threshold ($)</label><input id="sched-threshold" type="number" min="0" value="100000"></div>
+      </div>
+      <div class="form-group"><label>Requires Approval</label><select id="sched-approval"><option value="true">Yes — require trustee approval</option><option value="false">No — auto-approve</option></select></div>
+      <div class="modal-actions">
+        <button type="button" class="btn btn-outline" onclick="this.closest('.modal-overlay').remove()">Cancel</button>
+        <button type="submit" class="btn btn-primary">Create Schedule</button>
+      </div>
+    </form>
+  </div>`;
+  document.body.appendChild(overlay);
+  overlay.addEventListener('click',e=>{if(e.target===overlay)overlay.remove()});
+  document.getElementById('sched-form').addEventListener('submit',async e=>{
+    e.preventDefault();
+    const body={name:document.getElementById('sched-name').value,frequency:document.getElementById('sched-freq').value,distribution_basis:document.getElementById('sched-basis').value,day_of_month:parseInt(document.getElementById('sched-day').value)||1,requires_approval:document.getElementById('sched-approval').value==='true',approval_threshold:parseInt(document.getElementById('sched-threshold').value)||100000};
+    const r=await api('/api/treasury/distributions/schedules',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+    if(r.success){toast('Distribution schedule created');overlay.remove();loadPage('distributions')}
+    else toast(r.error||'Failed to create schedule','error');
+  });
+}
+
+async function executeDistribution(scheduleId, scheduleName){
+  if(!confirm(`Execute distribution for schedule: "${scheduleName}"? This will create payments for all beneficiaries with rules.`))return;
+  const r=await api('/api/treasury/distributions/execute',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({schedule_id:scheduleId})});
+  if(r.success){toast(`Distribution executed — ${r.payments?.length||0} payments created`);loadPage('distributions')}
+  else toast(r.error||'Failed to execute distribution','error');
+}
+
+async function renderPayments(c){
+  const [gwStatus,txns,batches]=await Promise.all([api('/api/treasury/ach/status'),api('/api/treasury/ach/transactions?limit=20'),api('/api/treasury/ach/batches')]);
+  const s=gwStatus.stats||{};
+  c.innerHTML=`
+    <div class="page-header"><h2>ACH Gateway</h2>
+      <div style="display:flex;gap:0.5rem">
+        <button class="btn btn-primary" onclick="showACHOriginate()">+ ACH Payment</button>
+        <button class="btn btn-outline" onclick="showWireOriginate()">+ Wire Transfer</button>
+      </div>
+    </div>
+    <div class="stats-grid">
+      <div class="stat-card"><div class="label">Gateway</div><div class="value" style="font-size:1rem;color:var(--success)">Active</div><div class="sub">ODFI: ${gwStatus.odfi||'Eaton Family CU'}</div></div>
+      <div class="stat-card"><div class="label">Originated</div><div class="value">${s.originated||0}</div><div class="sub">Pending settlement</div></div>
+      <div class="stat-card"><div class="label">Settled</div><div class="value" style="color:var(--success)">${s.settled||0}</div><div class="sub">Completed</div></div>
+      <div class="stat-card"><div class="label">Returns</div><div class="value" style="color:${s.returned?'var(--danger)':'var(--text-muted)'}">${s.returned||0}</div><div class="sub">R-codes processed</div></div>
+      <div class="stat-card"><div class="label">Total Volume</div><div class="value">${fmt(s.total_volume||0)}</div><div class="sub">All transactions</div></div>
+      <div class="stat-card"><div class="label">Batches</div><div class="value">${s.total_batches||0}</div><div class="sub">NACHA files generated</div></div>
+    </div>
+    <div class="card">
+      <h3>ACH Transactions</h3>
+      ${(txns.data||[]).length?`<table><thead><tr><th>Beneficiary</th><th>Type</th><th>Routing</th><th>Amount</th><th>Date</th><th>Status</th><th>Actions</th></tr></thead><tbody>
+      ${(txns.data||[]).map(t=>`<tr><td>${t.beneficiary_name}</td><td>${t.transaction_type}</td><td>${t.routing_number}</td><td>${fmt(parseInt(t.amount)||0)}</td><td>${fmtDate(t.effective_date)}</td><td>${badge(t.status)}</td><td>${t.status==='originated'?`<button class="btn btn-primary" style="padding:0.2rem 0.5rem;font-size:0.7rem" onclick="settleACHTxn('${t.id}')">Settle</button> <button class="btn btn-outline" style="padding:0.2rem 0.5rem;font-size:0.7rem" onclick="returnACHTxn('${t.id}')">Return</button>`:''}</td></tr>`).join('')}
+      </tbody></table>`:'<p style="color:var(--text-muted)">No ACH transactions yet. Originate a payment to get started.</p>'}
+    </div>
+    <div class="card" style="border-color:var(--gold)">
+      <h3 style="color:var(--gold)">Direct ACH Origination</h3>
+      <p style="color:var(--text-muted);font-size:0.85rem">Self-originated payments via built-in ACH API. No third-party processor required. NACHA files generated automatically for ODFI submission. Supports ACH Credit, ACH Debit, and Fedwire transfers.</p>
+      <div style="margin-top:0.75rem;font-size:0.75rem;color:var(--text-muted)">
+        <strong>Capabilities:</strong> ${(gwStatus.capabilities||[]).join(' • ')}
+      </div>
+    </div>
+  `;
+}
+
+function showACHOriginate(){
+  const overlay=document.createElement('div');
+  overlay.className='modal-overlay';
+  overlay.innerHTML=`<div class="modal">
+    <h3>Originate ACH Payment</h3>
+    <form id="ach-form">
+      <div class="form-group"><label>Beneficiary Name *</label><input id="ach-name" required placeholder="Payee name"></div>
+      <div class="form-row">
+        <div class="form-group"><label>Routing Number *</label><input id="ach-routing" required placeholder="241075470" maxlength="9"></div>
+        <div class="form-group"><label>Account Number *</label><input id="ach-account" required placeholder="Account number"></div>
+      </div>
+      <div class="form-row">
+        <div class="form-group"><label>Account Type</label><select id="ach-accttype"><option value="checking">Checking</option><option value="savings">Savings</option></select></div>
+        <div class="form-group"><label>Amount ($) *</label><input id="ach-amount" type="number" step="0.01" min="0.01" required placeholder="0.00"></div>
+      </div>
+      <div class="form-row">
+        <div class="form-group"><label>SEC Code</label><select id="ach-sec"><option value="PPD">PPD (Personal)</option><option value="CCD">CCD (Corporate)</option></select></div>
+        <div class="form-group"><label>Effective Date</label><input id="ach-date" type="date" value="${new Date().toISOString().split('T')[0]}"></div>
+      </div>
+      <div class="form-group"><label>Memo</label><input id="ach-memo" placeholder="Trust distribution"></div>
+      <div class="modal-actions">
+        <button type="button" class="btn btn-outline" onclick="this.closest('.modal-overlay').remove()">Cancel</button>
+        <button type="submit" class="btn btn-primary">Originate ACH</button>
+      </div>
+    </form>
+  </div>`;
+  document.body.appendChild(overlay);
+  overlay.addEventListener('click',e=>{if(e.target===overlay)overlay.remove()});
+  document.getElementById('ach-form').addEventListener('submit',async e=>{
+    e.preventDefault();
+    const body={beneficiary_name:document.getElementById('ach-name').value,routing_number:document.getElementById('ach-routing').value,account_number:document.getElementById('ach-account').value,account_type:document.getElementById('ach-accttype').value,amount:parseFloat(document.getElementById('ach-amount').value),sec_code:document.getElementById('ach-sec').value,effective_date:document.getElementById('ach-date').value,memo:document.getElementById('ach-memo').value||undefined};
+    const r=await api('/api/treasury/ach/originate',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+    if(r.success){toast(r.message||'ACH payment originated');overlay.remove();loadPage('payments')}
+    else toast(r.error||'Failed','error');
+  });
+}
+
+function showWireOriginate(){
+  const overlay=document.createElement('div');
+  overlay.className='modal-overlay';
+  overlay.innerHTML=`<div class="modal">
+    <h3>Originate Wire Transfer</h3>
+    <form id="wire-form">
+      <div class="form-group"><label>Beneficiary Name *</label><input id="wire-name" required placeholder="Payee name"></div>
+      <div class="form-row">
+        <div class="form-group"><label>Routing Number *</label><input id="wire-routing" required placeholder="ABA routing" maxlength="9"></div>
+        <div class="form-group"><label>Account Number *</label><input id="wire-account" required placeholder="Account number"></div>
+      </div>
+      <div class="form-group"><label>Amount ($) *</label><input id="wire-amount" type="number" step="0.01" min="0.01" required placeholder="0.00"></div>
+      <div class="form-group"><label>Purpose / Memo</label><input id="wire-memo" placeholder="Trust distribution"></div>
+      <div class="modal-actions">
+        <button type="button" class="btn btn-outline" onclick="this.closest('.modal-overlay').remove()">Cancel</button>
+        <button type="submit" class="btn btn-primary">Originate Wire</button>
+      </div>
+    </form>
+  </div>`;
+  document.body.appendChild(overlay);
+  overlay.addEventListener('click',e=>{if(e.target===overlay)overlay.remove()});
+  document.getElementById('wire-form').addEventListener('submit',async e=>{
+    e.preventDefault();
+    const body={beneficiary_name:document.getElementById('wire-name').value,routing_number:document.getElementById('wire-routing').value,account_number:document.getElementById('wire-account').value,amount:parseFloat(document.getElementById('wire-amount').value),memo:document.getElementById('wire-memo').value||undefined};
+    const r=await api('/api/treasury/ach/wire/originate',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+    if(r.success){toast(r.message||'Wire transfer originated');overlay.remove();loadPage('payments')}
+    else toast(r.error||'Failed','error');
+  });
+}
+
+async function settleACHTxn(id){
+  const r=await api(`/api/treasury/ach/settle/${id}`,{method:'POST'});
+  if(r.success){toast('Transaction settled');loadPage('payments')}
+  else toast(r.error||'Failed','error');
+}
+
+async function returnACHTxn(id){
+  const code=prompt('Enter return code (e.g. R01, R02, R03):','R01');
+  if(!code)return;
+  const r=await api(`/api/treasury/ach/return/${id}`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({return_code:code})});
+  if(r.success){toast(r.message||'Return processed');loadPage('payments')}
+  else toast(r.error||'Failed','error');
+}
+
+async function renderLedger(c){
+  const data=await api('/api/treasury/ledger');
+  c.innerHTML=`
+    <div class="page-header"><h2>General Ledger</h2></div>
+    <div class="stats-grid">
+      <div class="stat-card"><div class="label">Total Income</div><div class="value">${fmt(parseInt(data.summary?.total_income)||0)}</div></div>
+      <div class="stat-card"><div class="label">Total Distributed</div><div class="value">${fmt(parseInt(data.summary?.total_distributed)||0)}</div></div>
+      <div class="stat-card"><div class="label">Total Expenses</div><div class="value">${fmt(parseInt(data.summary?.total_expenses)||0)}</div></div>
+      <div class="stat-card"><div class="label">Entries</div><div class="value">${data.summary?.total_entries||0}</div></div>
+    </div>
+    <div class="card">
+      <table><thead><tr><th>Date</th><th>Type</th><th>Debit</th><th>Credit</th><th>Amount</th><th>Description</th><th>Status</th></tr></thead><tbody>
+      ${(data.data||[]).map(e=>`<tr><td>${fmtDate(e.entry_date)}</td><td>${e.entry_type}</td><td>${e.debit_wallet_name||'—'}</td><td>${e.credit_wallet_name||'—'}</td><td>${fmt(e.amount)}</td><td>${e.description||''}</td><td>${badge(e.status)}</td></tr>`).join('')}
+      </tbody></table>
+    </div>
+  `;
+}
+
+async function renderWallets(c){
+  const data=await api('/api/treasury/wallets');
+  const wallets=data.data||[];
+  c.innerHTML=`
+    <div class="page-header"><h2>Wallets</h2></div>
+    <div class="card">
+      <table><thead><tr><th>Code</th><th>Name</th><th>Type</th><th>Balance</th><th>Status</th></tr></thead><tbody>
+      ${wallets.map(w=>`<tr><td><code>${w.wallet_code}</code></td><td>${w.name}</td><td>${w.wallet_type}</td><td style="font-weight:600">${fmt(parseInt(w.balance)||0)}</td><td>${badge(w.status)}</td></tr>`).join('')}
+      </tbody></table>
+    </div>
+    <div class="card">
+      <h3>Internal Transfer</h3>
+      <form onsubmit="doTransfer(event)" style="display:flex;gap:0.75rem;align-items:end;flex-wrap:wrap">
+        <div><label style="font-size:0.75rem;color:var(--text-muted)">From</label><br><select id="tf-from" style="padding:0.5rem;background:var(--surface2);border:1px solid var(--border);border-radius:6px;color:var(--text)">${wallets.map(w=>`<option value="${w.id}">${w.name} (${fmt(parseInt(w.balance)||0)})</option>`).join('')}</select></div>
+        <div><label style="font-size:0.75rem;color:var(--text-muted)">To</label><br><select id="tf-to" style="padding:0.5rem;background:var(--surface2);border:1px solid var(--border);border-radius:6px;color:var(--text)">${wallets.map(w=>`<option value="${w.id}">${w.name}</option>`).join('')}</select></div>
+        <div><label style="font-size:0.75rem;color:var(--text-muted)">Amount ($)</label><br><input id="tf-amt" type="number" step="0.01" min="0.01" style="padding:0.5rem;width:120px;background:var(--surface2);border:1px solid var(--border);border-radius:6px;color:var(--text)"></div>
+        <button type="submit" class="btn btn-primary">Transfer</button>
+      </form>
+    </div>
+  `;
+}
+
+async function doTransfer(e){
+  e.preventDefault();
+  const from=document.getElementById('tf-from').value;
+  const to=document.getElementById('tf-to').value;
+  const amount=document.getElementById('tf-amt').value;
+  if(from===to){toast('Cannot transfer to same wallet','error');return}
+  if(!amount||parseFloat(amount)<=0){toast('Enter valid amount','error');return}
+  const r=await api('/api/treasury/wallets/transfer',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({from_wallet_id:from,to_wallet_id:to,amount,description:'Manual transfer'})});
+  if(r.success){toast('Transfer completed');loadPage('wallets')}
+  else toast(r.error||'Transfer failed','error');
+}
+
+async function renderEngine(c){
+  const status=await api('/api/treasury/engine/status');
+  const payments=await api('/api/treasury/payments?limit=20');
+  const p=status.pipeline||{};
+  c.innerHTML=`
+    <div class="page-header"><h2>Payment Engine</h2>
+      <div style="display:flex;gap:0.5rem">
+        <button class="btn btn-primary" onclick="showInitiatePayment()">+ New Payment</button>
+        <button class="btn btn-outline" onclick="autoProcessPayments()">Auto-Process All</button>
+      </div>
+    </div>
+    <div class="stats-grid">
+      <div class="stat-card"><div class="label">Pending Approval</div><div class="value">${p.pending_approval?.count||0}</div><div class="sub">${fmt(p.pending_approval?.total||0)}</div></div>
+      <div class="stat-card"><div class="label">Approved (Ready)</div><div class="value" style="color:var(--success)">${p.approved?.count||0}</div><div class="sub">${fmt(p.approved?.total||0)}</div></div>
+      <div class="stat-card"><div class="label">Batched</div><div class="value">${p.batched?.count||0}</div><div class="sub">${fmt(p.batched?.total||0)}</div></div>
+      <div class="stat-card"><div class="label">Processing</div><div class="value" style="color:var(--warning)">${p.processing?.count||0}</div><div class="sub">${fmt(p.processing?.total||0)}</div></div>
+      <div class="stat-card"><div class="label">Settled</div><div class="value" style="color:var(--success)">${p.settled?.count||0}</div><div class="sub">${fmt(p.settled?.total||0)}</div></div>
+      <div class="stat-card"><div class="label">Failed</div><div class="value" style="color:var(--danger)">${p.failed?.count||0}</div><div class="sub">${fmt(p.failed?.total||0)}</div></div>
+    </div>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:1.5rem">
+      <div class="card">
+        <h3>Supported Payment Rails</h3>
+        <table><thead><tr><th>Rail</th><th>Format</th><th>Settlement</th></tr></thead><tbody>
+          <tr><td>ACH Credit</td><td>NACHA</td><td>1-2 days</td></tr>
+          <tr><td>ACH Debit</td><td>NACHA</td><td>1-2 days</td></tr>
+          <tr><td>Wire Transfer</td><td>Fedwire</td><td>Same day</td></tr>
+          <tr><td>Book Transfer</td><td>Internal</td><td>Instant</td></tr>
+          <tr><td>Check Issuance</td><td>CSV/Print</td><td>3-5 days</td></tr>
+          <tr><td>RTP (FedNow)</td><td>ISO 20022</td><td>Instant</td></tr>
+        </tbody></table>
+      </div>
+      <div class="card">
+        <h3>Recent Batches</h3>
+        ${(status.recent_batches||[]).length?`<table><thead><tr><th>Rail</th><th>Count</th><th>Amount</th><th>Status</th><th>Actions</th></tr></thead><tbody>
+        ${(status.recent_batches||[]).map(b=>`<tr><td>${b.payment_rail}</td><td>${b.payment_count}</td><td>${fmt(parseInt(b.total_amount)||0)}</td><td>${badge(b.status)}</td><td>${b.status==='created'?`<button class="btn btn-primary" style="padding:0.2rem 0.5rem;font-size:0.7rem" onclick="processBatch('${b.id}')">Process</button>`:b.status==='processed'?`<button class="btn btn-outline" style="padding:0.2rem 0.5rem;font-size:0.7rem" onclick="settleBatch('${b.id}')">Settle</button>`:''}</td></tr>`).join('')}
+        </tbody></table>`:'<p style="color:var(--text-muted)">No batches yet — initiate payments to get started</p>'}
+      </div>
+    </div>
+    <div class="card">
+      <h3>Payment Queue</h3>
+      ${(payments.data||[]).length?`<table><thead><tr><th>Beneficiary</th><th>Rail</th><th>Amount</th><th>Date</th><th>Priority</th><th>Status</th><th>Actions</th></tr></thead><tbody>
+      ${(payments.data||[]).map(pi=>`<tr><td>${pi.beneficiary_name||pi.beneficiary_name_lookup||'—'}</td><td>${pi.payment_rail}</td><td>${fmt(parseInt(pi.amount)||0)}</td><td>${fmtDate(pi.effective_date)}</td><td>${pi.priority||'normal'}</td><td>${badge(pi.status)}</td><td>${pi.status==='pending_approval'?`<button class="btn btn-primary" style="padding:0.2rem 0.5rem;font-size:0.7rem" onclick="approvePayment('${pi.id}')">Approve</button>`:(pi.status==='approved'?`<button class="btn btn-outline" style="padding:0.2rem 0.5rem;font-size:0.7rem" onclick="batchPayment('${pi.id}','${pi.payment_rail}')">Batch</button>`:'')}</td></tr>`).join('')}
+      </tbody></table>`:'<p style="color:var(--text-muted)">No payment instructions in queue</p>'}
+    </div>
+    <div class="card" style="border-color:var(--gold)">
+      <h3 style="color:var(--gold)">Self-Processing Engine</h3>
+      <p style="color:var(--text-muted);font-size:0.85rem">Ohio PTC self-originated payments. No third-party processor required. The trust generates NACHA/Fedwire/ISO20022 files and delivers them directly to the ODFI via SFTP.</p>
+      <div style="margin-top:0.75rem;display:flex;gap:0.5rem">
+        <span class="badge" style="background:var(--success);color:#fff;padding:0.3rem 0.6rem;border-radius:4px;font-size:0.7rem">Engine Active</span>
+        <span class="badge" style="background:var(--surface2);padding:0.3rem 0.6rem;border-radius:4px;font-size:0.7rem">${status.engine||'v1.0'}</span>
+      </div>
+    </div>
+  `;
+}
+
+function showInitiatePayment(){
+  const overlay=document.createElement('div');
+  overlay.className='modal-overlay';
+  overlay.innerHTML=`<div class="modal">
+    <h3>Initiate Payment</h3>
+    <form id="pay-form">
+      <div class="form-group"><label>Beneficiary Name *</label><input id="pay-name" required placeholder="Payee name"></div>
+      <div class="form-row">
+        <div class="form-group"><label>Payment Rail *</label><select id="pay-rail"><option value="ach_credit">ACH Credit</option><option value="wire">Wire Transfer</option><option value="book_transfer">Book Transfer</option><option value="check">Check</option><option value="rtp">RTP (FedNow)</option><option value="ach_debit">ACH Debit</option></select></div>
+        <div class="form-group"><label>Amount ($) *</label><input id="pay-amount" type="number" step="0.01" min="0.01" required placeholder="0.00"></div>
+      </div>
+      <div class="form-row">
+        <div class="form-group"><label>Routing Number</label><input id="pay-routing" placeholder="241075470" maxlength="9"></div>
+        <div class="form-group"><label>Account Number</label><input id="pay-account" placeholder="Account number"></div>
+      </div>
+      <div class="form-row">
+        <div class="form-group"><label>Account Type</label><select id="pay-accttype"><option value="checking">Checking</option><option value="savings">Savings</option></select></div>
+        <div class="form-group"><label>Priority</label><select id="pay-priority"><option value="normal">Normal</option><option value="high">High</option><option value="urgent">Urgent</option></select></div>
+      </div>
+      <div class="form-group"><label>Memo</label><input id="pay-memo" placeholder="Trust distribution"></div>
+      <div class="form-group"><label>Effective Date</label><input id="pay-date" type="date" value="${new Date().toISOString().split('T')[0]}"></div>
+      <div class="form-group"><label>Requires Approval</label><select id="pay-approval"><option value="true">Yes — trustee must approve</option><option value="false">No — auto-approve</option></select></div>
+      <div class="modal-actions">
+        <button type="button" class="btn btn-outline" onclick="this.closest('.modal-overlay').remove()">Cancel</button>
+        <button type="submit" class="btn btn-primary">Initiate Payment</button>
+      </div>
+    </form>
+  </div>`;
+  document.body.appendChild(overlay);
+  overlay.addEventListener('click',e=>{if(e.target===overlay)overlay.remove()});
+  document.getElementById('pay-form').addEventListener('submit',async e=>{
+    e.preventDefault();
+    const body={beneficiary_name:document.getElementById('pay-name').value,payment_rail:document.getElementById('pay-rail').value,amount:parseFloat(document.getElementById('pay-amount').value),routing_number:document.getElementById('pay-routing').value||undefined,account_number:document.getElementById('pay-account').value||undefined,account_type:document.getElementById('pay-accttype').value,priority:document.getElementById('pay-priority').value,memo:document.getElementById('pay-memo').value||undefined,effective_date:document.getElementById('pay-date').value,requires_approval:document.getElementById('pay-approval').value==='true'};
+    const r=await api('/api/treasury/engine/initiate',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+    if(r.success){toast(r.message||'Payment initiated');overlay.remove();loadPage('engine')}
+    else toast(r.error||'Failed','error');
+  });
+}
+
+async function approvePayment(id){
+  const r=await api(`/api/treasury/engine/approve/${id}`,{method:'POST'});
+  if(r.success){toast('Payment approved');loadPage('engine')}
+  else toast(r.error||'Failed','error');
+}
+
+async function batchPayment(id,rail){
+  const r=await api('/api/treasury/engine/batch',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({payment_ids:[id],payment_rail:rail})});
+  if(r.success){toast(r.message||'Payment batched');loadPage('engine')}
+  else toast(r.error||'Failed','error');
+}
+
+async function processBatch(id){
+  const r=await api(`/api/treasury/engine/process-batch/${id}`,{method:'POST'});
+  if(r.success){toast(r.message||'Batch processed');loadPage('engine')}
+  else toast(r.error||'Failed','error');
+}
+
+async function settleBatch(id){
+  if(!confirm('Mark this batch as settled? This will create ledger entries for all payments.'))return;
+  const r=await api(`/api/treasury/engine/settle-batch/${id}`,{method:'POST'});
+  if(r.success){toast('Batch settled and reconciled');loadPage('engine')}
+  else toast(r.error||'Failed','error');
+}
+
+async function autoProcessPayments(){
+  if(!confirm('Auto-process all approved payments? This will batch and generate files for all payment rails.'))return;
+  const r=await api('/api/treasury/engine/auto-process',{method:'POST'});
+  if(r.success){toast(r.message||'All payments processed');loadPage('engine')}
+  else toast(r.error||'No approved payments to process','error');
+}
+
+async function renderMFT(c){
+  const data=await api('/api/treasury/mft/files');
+  const config=await api('/api/treasury/mft/config');
+  c.innerHTML=`
+    <div class="page-header"><h2>Managed File Transfer</h2><button class="btn btn-primary" onclick="generateNACHA()">Generate NACHA File</button></div>
+    <div class="stats-grid">
+      <div class="stat-card">
+        <div class="label">SFTP Status</div>
+        <div class="value" style="font-size:1.2rem">${config.sftp_configured?'<span style="color:var(--success)">Configured</span>':'<span style="color:var(--warning)">Not Configured</span>'}</div>
+        <div class="sub">${config.sftp_host||'No SFTP host set'}</div>
+      </div>
+      <div class="stat-card">
+        <div class="label">Files Generated</div>
+        <div class="value">${(data.data||[]).length}</div>
+        <div class="sub">NACHA ACH payment files</div>
+      </div>
+      <div class="stat-card">
+        <div class="label">Files Delivered</div>
+        <div class="value">${(data.data||[]).filter(f=>f.status==='delivered').length}</div>
+        <div class="sub">Successfully transmitted via SFTP</div>
+      </div>
+      <div class="stat-card">
+        <div class="label">Pending Delivery</div>
+        <div class="value">${(data.data||[]).filter(f=>f.status==='pending'||f.status==='generated').length}</div>
+        <div class="sub">Awaiting transmission</div>
+      </div>
+    </div>
+    <div class="card">
+      <h3>SFTP Configuration</h3>
+      <form onsubmit="saveSFTPConfig(event)" style="display:flex;gap:0.75rem;align-items:end;flex-wrap:wrap">
+        <div><label style="font-size:0.75rem;color:var(--text-muted)">Host</label><br><input id="sftp-host" value="${config.sftp_host||''}" placeholder="sftp.bank.com" style="padding:0.5rem;background:var(--surface2);border:1px solid var(--border);border-radius:6px;color:var(--text);width:180px"></div>
+        <div><label style="font-size:0.75rem;color:var(--text-muted)">Port</label><br><input id="sftp-port" value="${config.sftp_port||22}" type="number" style="padding:0.5rem;background:var(--surface2);border:1px solid var(--border);border-radius:6px;color:var(--text);width:70px"></div>
+        <div><label style="font-size:0.75rem;color:var(--text-muted)">Username</label><br><input id="sftp-user" value="${config.sftp_username||''}" placeholder="ach_upload" style="padding:0.5rem;background:var(--surface2);border:1px solid var(--border);border-radius:6px;color:var(--text);width:140px"></div>
+        <div><label style="font-size:0.75rem;color:var(--text-muted)">Remote Path</label><br><input id="sftp-path" value="${config.sftp_path||'/incoming'}" placeholder="/incoming" style="padding:0.5rem;background:var(--surface2);border:1px solid var(--border);border-radius:6px;color:var(--text);width:140px"></div>
+        <button type="submit" class="btn btn-primary">Save Config</button>
+      </form>
+    </div>
+    <div class="card">
+      <h3>Payment Files</h3>
+      ${(data.data||[]).length?`<table><thead><tr><th>File</th><th>Type</th><th>Records</th><th>Amount</th><th>Generated</th><th>Status</th><th>Actions</th></tr></thead><tbody>
+      ${(data.data||[]).map(f=>`<tr><td><code>${f.filename}</code></td><td>${f.file_type}</td><td>${f.record_count||0}</td><td>${fmt(parseInt(f.total_amount)||0)}</td><td>${fmtDate(f.created_at)}</td><td>${badge(f.status)}</td><td>${f.status==='generated'||f.status==='pending'?`<button class="btn btn-outline" style="padding:0.3rem 0.6rem;font-size:0.7rem" onclick="deliverFile('${f.id}')">Deliver</button>`:f.status==='delivered'?'<span style="color:var(--success);font-size:0.75rem">Sent</span>':''}</td></tr>`).join('')}
+      </tbody></table>`:'<p style="color:var(--text-muted)">No payment files generated yet. Generate a NACHA file from completed distributions.</p>'}
+    </div>
+  `;
+}
+
+async function generateNACHA(){
+  const r=await api('/api/treasury/mft/generate-nacha',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'});
+  if(r.success){toast(`NACHA file generated: ${r.data?.filename||'ACH file'}`);loadPage('mft')}
+  else toast(r.error||'Failed to generate NACHA file','error');
+}
+
+async function deliverFile(fileId){
+  if(!confirm('Deliver this file via SFTP to the configured endpoint?'))return;
+  const r=await api(`/api/treasury/mft/deliver/${fileId}`,{method:'POST'});
+  if(r.success){toast('File delivered successfully via SFTP');loadPage('mft')}
+  else toast(r.error||'Delivery failed — check SFTP configuration','error');
+}
+
+async function saveSFTPConfig(e){
+  e.preventDefault();
+  const body={sftp_host:document.getElementById('sftp-host').value,sftp_port:parseInt(document.getElementById('sftp-port').value)||22,sftp_username:document.getElementById('sftp-user').value,sftp_path:document.getElementById('sftp-path').value};
+  const r=await api('/api/treasury/mft/config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+  if(r.success)toast('SFTP configuration saved');
+  else toast(r.error||'Failed to save config','error');
+}
+
+async function renderCoreBanking(c){
+  const [bondsData,fineractHealth]=await Promise.all([api('/api/bonds'),api('/api/fineract/health').catch(()=>({}))]);
+  const bonds=(bondsData.success?bondsData.data:bondsData.data)||[];
+  let totalPrincipal=0,totalAccrued=0,totalPaid=0,activeCount=0;
+  bonds.forEach(b=>{totalPrincipal+=parseFloat(b.principal_balance||0);totalAccrued+=parseFloat(b.accrued_interest||0);totalPaid+=parseFloat(b.total_interest_paid||0);if(b.status==='active')activeCount++});
+  const connected=fineractHealth&&fineractHealth.fineract_connected;
+  const fmtMoney=(n)=>n==null?'—':'$'+Number(n).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2});
+  const pctFmt=(n)=>(Number(n)*100).toFixed(2)+'%';
+  const bondBadge=(s)=>s==='active'?'badge-active':s==='matured'?'badge-pending':'';
+
+  c.innerHTML=`
+    <div class="page-header"><h2>Core Banking — Fixed Income Engine</h2>
+      <span class="badge ${connected?'badge-active':'badge-failed'}" style="padding:0.4rem 0.8rem;font-size:0.75rem">${connected?'Fineract: Connected':'Fineract: Disconnected'}</span>
+    </div>
+    <div class="stats-grid">
+      <div class="stat-card highlight"><div class="label">Total Principal</div><div class="value">${fmtMoney(totalPrincipal)}</div><div class="sub">Active bond principal outstanding</div></div>
+      <div class="stat-card"><div class="label">Accrued Interest</div><div class="value">${fmtMoney(totalAccrued)}</div><div class="sub">Unpaid interest accumulated</div></div>
+      <div class="stat-card"><div class="label">Total Interest Paid</div><div class="value">${fmtMoney(totalPaid)}</div><div class="sub">Lifetime distributions</div></div>
+      <div class="stat-card"><div class="label">Active Bonds</div><div class="value">${activeCount}</div><div class="sub">Currently accruing</div></div>
+    </div>
+    <div class="card">
+      <h3>Bond Portfolio (Private Placement)</h3>
+      ${bonds.length?`<table><thead><tr><th>Bond Name</th><th>Face Value</th><th>Coupon</th><th>Day Count</th><th>Principal Balance</th><th>Accrued Interest</th><th>Status</th><th>Issue Date</th></tr></thead><tbody>
+      ${bonds.map(b=>`<tr><td><strong>${esc(b.bond_name)}</strong></td><td>${fmtMoney(b.face_value)}</td><td>${pctFmt(b.coupon_rate)}</td><td>${esc(b.day_count)}</td><td>${fmtMoney(b.principal_balance)}</td><td>${fmtMoney(b.accrued_interest)}</td><td>${badge(b.status)}</td><td>${fmtDate(b.issue_date)}</td></tr>`).join('')}
+      </tbody></table>`:'<p style="color:var(--text-muted)">No bonds created yet</p>'}
+    </div>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:1.5rem">
+      <div class="card">
+        <h3>Recent Transactions</h3>
+        <div id="cb-txns"><p style="color:var(--text-muted)">Loading...</p></div>
+      </div>
+      <div class="card">
+        <h3>Fineract GL Summary</h3>
+        <div id="cb-gl"><p style="color:var(--text-muted)">${connected?'Loading...':'Connect Fineract to view GL accounts'}</p></div>
+      </div>
+    </div>
+  `;
+  if(bonds.length>0){
+    const txnData=await api('/api/bonds/'+bonds[0].id+'/transactions');
+    const txns=(txnData.success?txnData.data:[])||[];
+    const txnEl=document.getElementById('cb-txns');
+    if(txns.length){
+      txnEl.innerHTML=`<table><thead><tr><th>Date</th><th>Type</th><th>Amount</th><th>Balance</th></tr></thead><tbody>
+      ${txns.slice(0,8).map(t=>`<tr><td>${fmtDate(t.transaction_date)}</td><td><span class="badge ${t.transaction_type.includes('payment')?'badge-active':t.transaction_type==='issuance'?'badge-pending':'badge-active'}">${esc(t.transaction_type.replace(/_/g,' '))}</span></td><td>${fmtMoney(t.amount)}</td><td>${fmtMoney(t.running_balance)}</td></tr>`).join('')}
+      </tbody></table>`;
+    }else{txnEl.innerHTML='<p style="color:var(--text-muted)">No transactions recorded</p>'}
+  }
+  if(connected){
+    const glData=await api('/api/fineract/gl/summary').catch(()=>({error:true}));
+    const glEl=document.getElementById('cb-gl');
+    if(glData&&glData.success&&glData.data){
+      const cats=glData.data.categories||glData.data.gl_categories||[];
+      if(cats.length){
+        glEl.innerHTML=`<table><thead><tr><th>Account</th><th>Balance</th></tr></thead><tbody>${cats.map(c=>`<tr><td>${esc(c.name||c.category)}</td><td>${fmtMoney(c.balance)}</td></tr>`).join('')}</tbody></table>`;
+      }else{glEl.innerHTML='<p style="color:var(--text-muted)">No GL accounts configured</p>'}
+    }else{glEl.innerHTML='<p style="color:var(--text-muted)">GL data unavailable</p>'}
+  }
+}
+
+function esc(str){if(str==null)return '';const d=document.createElement('div');d.textContent=String(str);return d.innerHTML}
+
+loadPage('dashboard');
+</script>
+</body>
+</html>

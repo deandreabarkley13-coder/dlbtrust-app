@@ -28,6 +28,10 @@ try { app.use("/api/fineract", require(HD + "/server/routes/fineract")); console
 // Fixed Income / Bond routes
 try { app.use("/api/bonds", require(HD + "/server/routes/bonds")); console.log("[bonds] loaded"); } catch(e) { console.warn("[bonds]", e.message); }
 
+// Treasury dashboard (served from httpdocs/public)
+app.use("/treasury", express.static(path.join(HD, "public")));
+app.get("/treasury", (req, res) => res.sendFile(path.join(HD, "public", "dashboard.html")));
+
 // Static files from v2
 app.use(express.static(path.join(V2, "dist", "public")));
 app.use("/assets", express.static(path.join(V2, "dist", "public", "assets")));
