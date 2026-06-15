@@ -58,20 +58,26 @@ const bondPool = require('./server/integrations/bonds/pgPool');
         status VARCHAR(20) NOT NULL DEFAULT 'active',
         created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
       );
+    `);
+    await bondPool.query(`
       CREATE TABLE IF NOT EXISTS bond_balances (
-        id SERIAL PRIMARY KEY, bond_id INTEGER NOT NULL REFERENCES bonds(id),
+        id SERIAL PRIMARY KEY, bond_id INTEGER NOT NULL,
         principal_balance NUMERIC(18,2) NOT NULL, accrued_interest NUMERIC(18,2) NOT NULL DEFAULT 0,
         total_interest_paid NUMERIC(18,2) NOT NULL DEFAULT 0, total_principal_paid NUMERIC(18,2) NOT NULL DEFAULT 0,
         last_accrual_date DATE, last_payment_date DATE,
         updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), UNIQUE(bond_id)
       );
+    `);
+    await bondPool.query(`
       CREATE TABLE IF NOT EXISTS bond_transactions (
-        id SERIAL PRIMARY KEY, bond_id INTEGER NOT NULL REFERENCES bonds(id),
+        id SERIAL PRIMARY KEY, bond_id INTEGER NOT NULL,
         transaction_type VARCHAR(30) NOT NULL, amount NUMERIC(18,2) NOT NULL,
         running_balance NUMERIC(18,2) NOT NULL, accrued_interest NUMERIC(18,2) NOT NULL DEFAULT 0,
         description TEXT, fineract_txn_id VARCHAR(100),
         transaction_date DATE NOT NULL, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
       );
+    `);
+    await bondPool.query(`
       CREATE INDEX IF NOT EXISTS idx_bond_txn_bond_id ON bond_transactions(bond_id);
       CREATE INDEX IF NOT EXISTS idx_bond_txn_date ON bond_transactions(transaction_date);
       CREATE INDEX IF NOT EXISTS idx_bond_txn_type ON bond_transactions(transaction_type);
