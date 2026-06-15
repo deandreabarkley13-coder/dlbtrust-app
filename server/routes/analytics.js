@@ -788,6 +788,37 @@ router.get('/data-quality', (req, res) => {
 });
 
 // ─────────────────────────────────────────────────────────────
+// GET /api/analytics/bond-portfolio
+// ─────────────────────────────────────────────────────────────
+router.get('/bond-portfolio', (req, res) => {
+  try {
+    const db = req.app.locals.db || req.db;
+    const bond = db.prepare('SELECT * FROM bond_portfolio ORDER BY id DESC LIMIT 1').get();
+    if (!bond) return res.status(404).json({ error: 'No bond portfolio record found' });
+
+    const annualInterestCents = Math.round(bond.face_value_cents * (bond.coupon_rate_pct / 100));
+
+    res.json({
+      generated_at: new Date().toISOString(),
+      bond_portfolio: {
+        instrument_name: bond.instrument_name,
+        face_value_cents: bond.face_value_cents,
+        face_value_usd: bond.face_value_cents / 100,
+        coupon_rate_pct: bond.coupon_rate_pct,
+        annual_interest_cents: annualInterestCents,
+        annual_interest_usd: annualInterestCents / 100,
+        issue_date: bond.issue_date,
+        maturity_date: bond.maturity_date,
+        term_years: 100,
+        currency: bond.currency,
+      },
+    });
+  } catch (err) {
+    res.status(500).json({ error: 'Bond portfolio query failed', detail: err.message });
+  }
+});
+
+// ─────────────────────────────────────────────────────────────
 // GET /api/analytics/gl-summary
 // Fineract-backed GL summary (principal vs. income with double-entry data)
 // Falls back to SQLite-based summary if Fineract is unavailable
