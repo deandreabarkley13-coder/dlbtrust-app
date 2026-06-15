@@ -127,34 +127,47 @@ class BondEngine {
    * Posts a Fineract GL journal entry if GL account IDs are provided.
    */
   static async accrueInterest(bondId, toDate, { glDebitAccountId, glCreditAccountId } = {}) {
-    const bond = await this.getBond(bondId);
-    if (!bond) throw new Error(`Bond ${bondId} not found`);
-    if (bond.status !== 'active') throw new Error(`Bond ${bondId} is ${bond.status}, cannot accrue`);
-
-    const fromDate = bond.last_accrual_date;
-    const to = new Date(toDate || new Date());
-    const from = new Date(fromDate);
-
-    if (to <= from) {
-      return { accrued: 0, message: 'Already accrued up to this date' };
-    }
-
-    const days = daysBetween(from, to, bond.day_count);
-    if (days <= 0) {
-      return { accrued: 0, message: 'No days to accrue' };
-    }
-
-    const rate = dailyRate(parseFloat(bond.coupon_rate), bond.day_count, to.getFullYear());
-    const principalBalance = parseFloat(bond.principal_balance);
-    const accrual = Math.round(principalBalance * rate * days * 100) / 100;
-
-    if (accrual <= 0) {
-      return { accrued: 0, message: 'Accrual amount is zero' };
-    }
-
     const client = await pool.connect();
     try {
       await client.query('BEGIN');
+
+      // Lock bond row to prevent concurrent accrual race conditions
+      const bondResult = await client.query(
+        `SELECT b.*, bb.principal_balance, bb.accrued_interest, bb.total_interest_paid,
+                bb.total_principal_paid, bb.last_accrual_date, bb.last_payment_date
+         FROM bonds b
+         JOIN bond_balances bb ON bb.bond_id = b.id
+         WHERE b.id = $1
+         FOR UPDATE OF bb`,
+        [bondId]
+      );
+      const bond = bondResult.rows[0];
+      if (!bond) { await client.query('ROLLBACK'); throw new Error(`Bond ${bondId} not found`); }
+      if (bond.status !== 'active') { await client.query('ROLLBACK'); throw new Error(`Bond ${bondId} is ${bond.status}, cannot accrue`); }
+
+      const fromDate = bond.last_accrual_date;
+      const to = new Date(toDate || new Date());
+      const from = new Date(fromDate);
+
+      if (to <= from) {
+        await client.query('ROLLBACK');
+        return { accrued: 0, message: 'Already accrued up to this date' };
+      }
+
+      const days = daysBetween(from, to, bond.day_count);
+      if (days <= 0) {
+        await client.query('ROLLBACK');
+        return { accrued: 0, message: 'No days to accrue' };
+      }
+
+      const rate = dailyRate(parseFloat(bond.coupon_rate), bond.day_count, to.getFullYear());
+      const principalBalance = parseFloat(bond.principal_balance);
+      const accrual = Math.round(principalBalance * rate * days * 100) / 100;
+
+      if (accrual <= 0) {
+        await client.query('ROLLBACK');
+        return { accrued: 0, message: 'Accrual amount is zero' };
+      }
 
       const newAccrued = parseFloat(bond.accrued_interest) + accrual;
 
@@ -222,18 +235,29 @@ class BondEngine {
    * Process an interest payment — reduces accrued interest, records the payment.
    */
   static async payInterest(bondId, amount, { glDebitAccountId, glCreditAccountId } = {}) {
-    const bond = await this.getBond(bondId);
-    if (!bond) throw new Error(`Bond ${bondId} not found`);
-
-    const payAmount = amount || parseFloat(bond.accrued_interest);
-    if (payAmount <= 0) throw new Error('No accrued interest to pay');
-    if (payAmount > parseFloat(bond.accrued_interest)) {
-      throw new Error(`Payment $${payAmount} exceeds accrued interest $${bond.accrued_interest}`);
-    }
-
     const client = await pool.connect();
     try {
       await client.query('BEGIN');
+
+      // Lock bond row to prevent concurrent payment race conditions
+      const bondResult = await client.query(
+        `SELECT b.*, bb.principal_balance, bb.accrued_interest, bb.total_interest_paid,
+                bb.total_principal_paid, bb.last_accrual_date, bb.last_payment_date
+         FROM bonds b
+         JOIN bond_balances bb ON bb.bond_id = b.id
+         WHERE b.id = $1
+         FOR UPDATE OF bb`,
+        [bondId]
+      );
+      const bond = bondResult.rows[0];
+      if (!bond) { await client.query('ROLLBACK'); throw new Error(`Bond ${bondId} not found`); }
+
+      const payAmount = amount || parseFloat(bond.accrued_interest);
+      if (payAmount <= 0) { await client.query('ROLLBACK'); throw new Error('No accrued interest to pay'); }
+      if (payAmount > parseFloat(bond.accrued_interest)) {
+        await client.query('ROLLBACK');
+        throw new Error(`Payment $${payAmount} exceeds accrued interest $${bond.accrued_interest}`);
+      }
 
       const newAccrued = parseFloat(bond.accrued_interest) - payAmount;
       const newTotalPaid = parseFloat(bond.total_interest_paid) + payAmount;
@@ -267,6 +291,13 @@ class BondEngine {
             comments: `Bond ${bond.bond_name} — interest payment`,
           });
           fineractTxnId = glResult && glResult.resourceId ? String(glResult.resourceId) : null;
+
+          if (fineractTxnId) {
+            await pool.query(
+              `UPDATE bond_transactions SET fineract_txn_id = $1 WHERE id = $2`,
+              [fineractTxnId, txnResult.rows[0].id]
+            );
+          }
         } catch (glErr) {
           console.warn('[BondEngine] Fineract GL post failed (payment still recorded):', glErr.message);
         }
@@ -291,20 +322,30 @@ class BondEngine {
    * Process a principal payment (partial or full).
    */
   static async payPrincipal(bondId, amount, { glDebitAccountId, glCreditAccountId } = {}) {
-    const bond = await this.getBond(bondId);
-    if (!bond) throw new Error(`Bond ${bondId} not found`);
-
-    const principalBalance = parseFloat(bond.principal_balance);
-    if (amount > principalBalance) {
-      throw new Error(`Payment $${amount} exceeds principal balance $${principalBalance}`);
-    }
-
-    const newBalance = principalBalance - amount;
-
     const client = await pool.connect();
     try {
       await client.query('BEGIN');
 
+      // Lock bond row to prevent concurrent payment race conditions
+      const bondResult = await client.query(
+        `SELECT b.*, bb.principal_balance, bb.accrued_interest, bb.total_interest_paid,
+                bb.total_principal_paid, bb.last_accrual_date, bb.last_payment_date
+         FROM bonds b
+         JOIN bond_balances bb ON bb.bond_id = b.id
+         WHERE b.id = $1
+         FOR UPDATE OF bb`,
+        [bondId]
+      );
+      const bond = bondResult.rows[0];
+      if (!bond) { await client.query('ROLLBACK'); throw new Error(`Bond ${bondId} not found`); }
+
+      const principalBalance = parseFloat(bond.principal_balance);
+      if (amount > principalBalance) {
+        await client.query('ROLLBACK');
+        throw new Error(`Payment $${amount} exceeds principal balance $${principalBalance}`);
+      }
+
+      const newBalance = principalBalance - amount;
       const newTotalPrincipalPaid = parseFloat(bond.total_principal_paid) + amount;
 
       await client.query(
@@ -345,6 +386,13 @@ class BondEngine {
             comments: `Bond ${bond.bond_name} — principal payment`,
           });
           fineractTxnId = glResult && glResult.resourceId ? String(glResult.resourceId) : null;
+
+          if (fineractTxnId) {
+            await pool.query(
+              `UPDATE bond_transactions SET fineract_txn_id = $1 WHERE id = $2`,
+              [fineractTxnId, txnResult.rows[0].id]
+            );
+          }
         } catch (glErr) {
           console.warn('[BondEngine] Fineract GL post failed (payment still recorded):', glErr.message);
         }
