@@ -37,8 +37,11 @@ require('./server/openach-patch')(app, typeof db !== 'undefined' ? db : null);
 // ─── Analytics Routes ─────────────────────────────────────────────────────────
 app.use('/api/analytics', require('./server/routes/analytics'));
 
-// ─── Fineract Core Banking Routes ─────────────────────────────────────────
+// ─── Fineract Core Banking Routes ─────────────────────────────────────────────
 app.use('/api/fineract', require('./server/routes/fineract'));
+
+// ─── Fixed Income / Bond Routes ───────────────────────────────────────────────
+app.use('/api/bonds', require('./server/routes/bonds'));
 
 // ─── Start Server ─────────────────────────────────────────────────────────────
 const PORT = process.env.PORT || 3001;
