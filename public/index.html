@@ -116,7 +116,7 @@ th{color:var(--text-muted);font-weight:500;text-transform:uppercase;font-size:0.
 <div id="toast"></div>
 <script>
 const API = '';
-const fmt = (cents) => '$' + (cents/100).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2});
+const fmt = (v) => '$' + Number(v||0).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2});
 const fmtDate = (d) => d ? new Date(d).toLocaleDateString('en-US',{year:'numeric',month:'short',day:'numeric'}) : '—';
 const badge = (status) => `<span class="badge badge-${status==='active'||status==='posted'||status==='settled'||status==='completed'||status==='received'?'active':status==='failed'||status==='returned'?'failed':'pending'}">${status}</span>`;
 
@@ -132,7 +132,8 @@ document.querySelectorAll('.nav-item').forEach(item=>{
 
 async function api(path,opts){
   const r=await fetch(API+path,opts);
-  return r.json();
+  const text=await r.text();
+  try{return JSON.parse(text)}catch(e){return {success:false,data:[],error:'Invalid response'}}
 }
 
 async function loadPage(page){
@@ -151,7 +152,7 @@ async function loadPage(page){
       case 'mft': await renderMFT(c); break;
       case 'corebanking': await renderCoreBanking(c); break;
     }
-  }catch(e){c.innerHTML=`<div class="card"><h3>Module Unavailable</h3><p style="color:var(--text-muted)">This module requires the full Treasury API backend. Currently available modules: <strong>Dashboard</strong> and <strong>Core Banking</strong>.</p><p style="margin-top:0.5rem"><button class="btn btn-primary" onclick="document.querySelectorAll('.nav-item').forEach(i=>i.classList.remove('active'));document.querySelectorAll('.nav-item')[9].classList.add('active');loadPage('corebanking')">Go to Core Banking</button></p></div>`}
+  }catch(e){c.innerHTML=`<div class="card"><h3>Error Loading Module</h3><p style="color:var(--text-muted)">${esc(e.message||'An unexpected error occurred')}</p><p style="margin-top:0.5rem"><button class="btn btn-outline" onclick="loadPage('dashboard')">Back to Dashboard</button></p></div>`}
 }
 
 async function renderDashboard(c){
@@ -208,25 +209,25 @@ async function renderDashboard(c){
 async function renderBonds(c){
   const data=await api('/api/treasury/bonds');
   const bonds=data.data||[];
-  if(!bonds.length){c.innerHTML='<div class="card"><h3>No bonds found</h3></div>';return}
+  if(!bonds.length){c.innerHTML='<div class="card"><h3>No bonds found</h3><p style="color:var(--text-muted)">Go to Core Banking to create bonds</p></div>';return}
   const b=bonds[0];
   c.innerHTML=`
     <div class="page-header"><h2>Bond Portfolio</h2></div>
     <div class="card">
-      <h3>${b.bond_name}</h3>
+      <h3>${esc(b.bond_name)}</h3>
       <div class="bond-detail">
-        <div class="bond-field"><div class="label">Issuer</div><div class="value">${b.issuer}</div></div>
-        <div class="bond-field"><div class="label">Type</div><div class="value">${b.bond_type}</div></div>
+        <div class="bond-field"><div class="label">Issuer</div><div class="value">${esc(b.issuer)}</div></div>
+        <div class="bond-field"><div class="label">Type</div><div class="value">${esc(b.bond_type)}</div></div>
         <div class="bond-field"><div class="label">Face Value</div><div class="value">${fmt(b.face_value)}</div></div>
-        <div class="bond-field"><div class="label">Coupon Rate</div><div class="value">${b.coupon_rate}%</div></div>
-        <div class="bond-field"><div class="label">Frequency</div><div class="value">${b.coupon_frequency}</div></div>
+        <div class="bond-field"><div class="label">Coupon Rate</div><div class="value">${esc(b.coupon_rate)}%</div></div>
+        <div class="bond-field"><div class="label">Frequency</div><div class="value">${esc(b.coupon_frequency)}</div></div>
         <div class="bond-field"><div class="label">Annual Income</div><div class="value">${fmt(b.annual_income||0)}</div></div>
         <div class="bond-field"><div class="label">Issue Date</div><div class="value">${fmtDate(b.issue_date)}</div></div>
         <div class="bond-field"><div class="label">Maturity</div><div class="value">${fmtDate(b.maturity_date)}</div></div>
         <div class="bond-field"><div class="label">Next Coupon</div><div class="value">${fmtDate(b.next_coupon_date)}</div></div>
         <div class="bond-field"><div class="label">Status</div><div class="value">${badge(b.status)}</div></div>
         <div class="bond-field"><div class="label">Coupons Received</div><div class="value">${b.coupons_received||0}</div></div>
-        <div class="bond-field"><div class="label">Total Received</div><div class="value">${fmt(parseInt(b.total_received)||0)}</div></div>
+        <div class="bond-field"><div class="label">Total Received</div><div class="value">${fmt(b.total_received||0)}</div></div>
       </div>
       <div class="actions">
         <button class="btn btn-primary" onclick="generateCoupons('${b.id}')">Generate Coupon Schedule</button>
@@ -256,7 +257,7 @@ async function renderBeneficiaries(c){
     <div class="page-header"><h2>Beneficiaries</h2><button class="btn btn-primary" onclick="showAddBeneficiary()">+ Add Beneficiary</button></div>
     <div class="card">
       <table><thead><tr><th>Name</th><th>Type</th><th>Distribution %</th><th>Bank Accounts</th><th>Total Received</th><th>Status</th></tr></thead><tbody>
-      ${bens.map(b=>`<tr><td>${b.name}</td><td>${b.beneficiary_type}</td><td>${b.distribution_pct}%</td><td>${b.bank_account_count||0}</td><td>${fmt(parseInt(b.total_received)||0)}</td><td>${badge(b.status)}</td></tr>`).join('')}
+      ${bens.map(b=>`<tr><td>${esc(b.name)}</td><td>${esc(b.beneficiary_type)}</td><td>${b.distribution_pct}%</td><td>${b.bank_account_count||0}</td><td>${fmt(b.total_received||0)}</td><td>${badge(b.status)}</td></tr>`).join('')}
       </tbody></table>
     </div>
   `;
@@ -310,13 +311,13 @@ async function renderDistributions(c){
     <div class="card">
       <h3>Distribution Schedules</h3>
       ${(schedData.data||[]).length?`<table><thead><tr><th>Name</th><th>Frequency</th><th>Basis</th><th>Next</th><th>Total Paid</th><th>Status</th><th>Actions</th></tr></thead><tbody>
-      ${(schedData.data||[]).map(s=>`<tr><td>${s.name}</td><td>${s.frequency}</td><td>${s.distribution_basis}</td><td>${fmtDate(s.next_distribution)}</td><td>${fmt(parseInt(s.total_distributed)||0)}</td><td>${badge(s.status)}</td><td><button class="btn btn-primary" style="padding:0.3rem 0.6rem;font-size:0.7rem" onclick="executeDistribution('${s.id}','${s.name}')">Execute</button></td></tr>`).join('')}
+      ${(schedData.data||[]).map(s=>`<tr><td>${esc(s.name)}</td><td>${esc(s.frequency)}</td><td>${esc(s.distribution_basis)}</td><td>${fmtDate(s.next_distribution)}</td><td>${fmt(s.total_distributed||0)}</td><td>${badge(s.status)}</td><td><button class="btn btn-primary" style="padding:0.3rem 0.6rem;font-size:0.7rem" onclick="executeDistribution('${s.id}','${esc(s.name)}')">Execute</button></td></tr>`).join('')}
       </tbody></table>`:'<p style="color:var(--text-muted)">No distribution schedules configured</p>'}
     </div>
     <div class="card">
       <h3>Distribution History</h3>
       ${(distData.data||[]).length?`<table><thead><tr><th>Date</th><th>Total</th><th>Net</th><th>Tax</th><th>Status</th></tr></thead><tbody>
-      ${(distData.data||[]).map(d=>`<tr><td>${fmtDate(d.distribution_date)}</td><td>${fmt(parseInt(d.total_amount)||0)}</td><td>${fmt(parseInt(d.net_amount)||0)}</td><td>${fmt(parseInt(d.tax_withheld)||0)}</td><td>${badge(d.status)}</td></tr>`).join('')}
+      ${(distData.data||[]).map(d=>`<tr><td>${fmtDate(d.distribution_date)}</td><td>${fmt(d.total_amount||0)}</td><td>${fmt(d.net_amount||0)}</td><td>${fmt(d.tax_withheld||0)}</td><td>${badge(d.status)}</td></tr>`).join('')}
       </tbody></table>`:'<p style="color:var(--text-muted)">No distributions executed yet</p>'}
     </div>
   `;
@@ -378,12 +379,13 @@ async function renderPayments(c){
       <div class="stat-card"><div class="label">Settled</div><div class="value" style="color:var(--success)">${s.settled||0}</div><div class="sub">Completed</div></div>
       <div class="stat-card"><div class="label">Returns</div><div class="value" style="color:${s.returned?'var(--danger)':'var(--text-muted)'}">${s.returned||0}</div><div class="sub">R-codes processed</div></div>
       <div class="stat-card"><div class="label">Total Volume</div><div class="value">${fmt(s.total_volume||0)}</div><div class="sub">All transactions</div></div>
+
       <div class="stat-card"><div class="label">Batches</div><div class="value">${s.total_batches||0}</div><div class="sub">NACHA files generated</div></div>
     </div>
     <div class="card">
       <h3>ACH Transactions</h3>
       ${(txns.data||[]).length?`<table><thead><tr><th>Beneficiary</th><th>Type</th><th>Routing</th><th>Amount</th><th>Date</th><th>Status</th><th>Actions</th></tr></thead><tbody>
-      ${(txns.data||[]).map(t=>`<tr><td>${t.beneficiary_name}</td><td>${t.transaction_type}</td><td>${t.routing_number}</td><td>${fmt(parseInt(t.amount)||0)}</td><td>${fmtDate(t.effective_date)}</td><td>${badge(t.status)}</td><td>${t.status==='originated'?`<button class="btn btn-primary" style="padding:0.2rem 0.5rem;font-size:0.7rem" onclick="settleACHTxn('${t.id}')">Settle</button> <button class="btn btn-outline" style="padding:0.2rem 0.5rem;font-size:0.7rem" onclick="returnACHTxn('${t.id}')">Return</button>`:''}</td></tr>`).join('')}
+      ${(txns.data||[]).map(t=>`<tr><td>${esc(t.beneficiary_name)}</td><td>${esc(t.transaction_type)}</td><td>${esc(t.routing_number)}</td><td>${fmt(t.amount||0)}</td><td>${fmtDate(t.effective_date)}</td><td>${badge(t.status)}</td><td>${t.status==='originated'?`<button class="btn btn-primary" style="padding:0.2rem 0.5rem;font-size:0.7rem" onclick="settleACHTxn('${t.id}')">Settle</button> <button class="btn btn-outline" style="padding:0.2rem 0.5rem;font-size:0.7rem" onclick="returnACHTxn('${t.id}')">Return</button>`:''}</td></tr>`).join('')}
       </tbody></table>`:'<p style="color:var(--text-muted)">No ACH transactions yet. Originate a payment to get started.</p>'}
     </div>
     <div class="card" style="border-color:var(--gold)">
@@ -482,14 +484,14 @@ async function renderLedger(c){
   c.innerHTML=`
     <div class="page-header"><h2>General Ledger</h2></div>
     <div class="stats-grid">
-      <div class="stat-card"><div class="label">Total Income</div><div class="value">${fmt(parseInt(data.summary?.total_income)||0)}</div></div>
-      <div class="stat-card"><div class="label">Total Distributed</div><div class="value">${fmt(parseInt(data.summary?.total_distributed)||0)}</div></div>
-      <div class="stat-card"><div class="label">Total Expenses</div><div class="value">${fmt(parseInt(data.summary?.total_expenses)||0)}</div></div>
+      <div class="stat-card"><div class="label">Total Income</div><div class="value">${fmt(data.summary?.total_income||0)}</div></div>
+      <div class="stat-card"><div class="label">Total Distributed</div><div class="value">${fmt(data.summary?.total_distributed||0)}</div></div>
+      <div class="stat-card"><div class="label">Total Expenses</div><div class="value">${fmt(data.summary?.total_expenses||0)}</div></div>
       <div class="stat-card"><div class="label">Entries</div><div class="value">${data.summary?.total_entries||0}</div></div>
     </div>
     <div class="card">
       <table><thead><tr><th>Date</th><th>Type</th><th>Debit</th><th>Credit</th><th>Amount</th><th>Description</th><th>Status</th></tr></thead><tbody>
-      ${(data.data||[]).map(e=>`<tr><td>${fmtDate(e.entry_date)}</td><td>${e.entry_type}</td><td>${e.debit_wallet_name||'—'}</td><td>${e.credit_wallet_name||'—'}</td><td>${fmt(e.amount)}</td><td>${e.description||''}</td><td>${badge(e.status)}</td></tr>`).join('')}
+      ${(data.data||[]).map(e=>`<tr><td>${fmtDate(e.entry_date)}</td><td>${esc(e.entry_type)}</td><td>${esc(e.debit_wallet_name||'—')}</td><td>${esc(e.credit_wallet_name||'—')}</td><td>${fmt(e.amount)}</td><td>${esc(e.description||'')}</td><td>${badge(e.status)}</td></tr>`).join('')}
       </tbody></table>
     </div>
   `;
@@ -502,14 +504,14 @@ async function renderWallets(c){
     <div class="page-header"><h2>Wallets</h2></div>
     <div class="card">
       <table><thead><tr><th>Code</th><th>Name</th><th>Type</th><th>Balance</th><th>Status</th></tr></thead><tbody>
-      ${wallets.map(w=>`<tr><td><code>${w.wallet_code}</code></td><td>${w.name}</td><td>${w.wallet_type}</td><td style="font-weight:600">${fmt(parseInt(w.balance)||0)}</td><td>${badge(w.status)}</td></tr>`).join('')}
+      ${wallets.map(w=>`<tr><td><code>${esc(w.wallet_code)}</code></td><td>${esc(w.name)}</td><td>${esc(w.wallet_type)}</td><td style="font-weight:600">${fmt(w.balance||0)}</td><td>${badge(w.status)}</td></tr>`).join('')}
       </tbody></table>
     </div>
     <div class="card">
       <h3>Internal Transfer</h3>
       <form onsubmit="doTransfer(event)" style="display:flex;gap:0.75rem;align-items:end;flex-wrap:wrap">
-        <div><label style="font-size:0.75rem;color:var(--text-muted)">From</label><br><select id="tf-from" style="padding:0.5rem;background:var(--surface2);border:1px solid var(--border);border-radius:6px;color:var(--text)">${wallets.map(w=>`<option value="${w.id}">${w.name} (${fmt(parseInt(w.balance)||0)})</option>`).join('')}</select></div>
-        <div><label style="font-size:0.75rem;color:var(--text-muted)">To</label><br><select id="tf-to" style="padding:0.5rem;background:var(--surface2);border:1px solid var(--border);border-radius:6px;color:var(--text)">${wallets.map(w=>`<option value="${w.id}">${w.name}</option>`).join('')}</select></div>
+        <div><label style="font-size:0.75rem;color:var(--text-muted)">From</label><br><select id="tf-from" style="padding:0.5rem;background:var(--surface2);border:1px solid var(--border);border-radius:6px;color:var(--text)">${wallets.map(w=>`<option value="${w.id}">${esc(w.name)} (${fmt(w.balance||0)})</option>`).join('')}</select></div>
+        <div><label style="font-size:0.75rem;color:var(--text-muted)">To</label><br><select id="tf-to" style="padding:0.5rem;background:var(--surface2);border:1px solid var(--border);border-radius:6px;color:var(--text)">${wallets.map(w=>`<option value="${w.id}">${esc(w.name)}</option>`).join('')}</select></div>
         <div><label style="font-size:0.75rem;color:var(--text-muted)">Amount ($)</label><br><input id="tf-amt" type="number" step="0.01" min="0.01" style="padding:0.5rem;width:120px;background:var(--surface2);border:1px solid var(--border);border-radius:6px;color:var(--text)"></div>
         <button type="submit" class="btn btn-primary">Transfer</button>
       </form>
@@ -542,7 +544,7 @@ async function renderEngine(c){
     </div>
     <div class="stats-grid">
       <div class="stat-card"><div class="label">Pending Approval</div><div class="value">${p.pending_approval?.count||0}</div><div class="sub">${fmt(p.pending_approval?.total||0)}</div></div>
-      <div class="stat-card"><div class="label">Approved (Ready)</div><div class="value" style="color:var(--success)">${p.approved?.count||0}</div><div class="sub">${fmt(p.approved?.total||0)}</div></div>
+      <div class="stat-card"><div class="label">Approved</div><div class="value" style="color:var(--success)">${p.approved?.count||0}</div><div class="sub">${fmt(p.approved?.total||0)}</div></div>
       <div class="stat-card"><div class="label">Batched</div><div class="value">${p.batched?.count||0}</div><div class="sub">${fmt(p.batched?.total||0)}</div></div>
       <div class="stat-card"><div class="label">Processing</div><div class="value" style="color:var(--warning)">${p.processing?.count||0}</div><div class="sub">${fmt(p.processing?.total||0)}</div></div>
       <div class="stat-card"><div class="label">Settled</div><div class="value" style="color:var(--success)">${p.settled?.count||0}</div><div class="sub">${fmt(p.settled?.total||0)}</div></div>
@@ -563,14 +565,14 @@ async function renderEngine(c){
       <div class="card">
         <h3>Recent Batches</h3>
         ${(status.recent_batches||[]).length?`<table><thead><tr><th>Rail</th><th>Count</th><th>Amount</th><th>Status</th><th>Actions</th></tr></thead><tbody>
-        ${(status.recent_batches||[]).map(b=>`<tr><td>${b.payment_rail}</td><td>${b.payment_count}</td><td>${fmt(parseInt(b.total_amount)||0)}</td><td>${badge(b.status)}</td><td>${b.status==='created'?`<button class="btn btn-primary" style="padding:0.2rem 0.5rem;font-size:0.7rem" onclick="processBatch('${b.id}')">Process</button>`:b.status==='processed'?`<button class="btn btn-outline" style="padding:0.2rem 0.5rem;font-size:0.7rem" onclick="settleBatch('${b.id}')">Settle</button>`:''}</td></tr>`).join('')}
+        ${(status.recent_batches||[]).map(b=>`<tr><td>${esc(b.payment_rail)}</td><td>${b.payment_count}</td><td>${fmt(b.total_amount||0)}</td><td>${badge(b.status)}</td><td>${b.status==='created'?`<button class="btn btn-primary" style="padding:0.2rem 0.5rem;font-size:0.7rem" onclick="processBatch('${b.id}')">Process</button>`:b.status==='processed'?`<button class="btn btn-outline" style="padding:0.2rem 0.5rem;font-size:0.7rem" onclick="settleBatch('${b.id}')">Settle</button>`:''}</td></tr>`).join('')}
         </tbody></table>`:'<p style="color:var(--text-muted)">No batches yet — initiate payments to get started</p>'}
       </div>
     </div>
     <div class="card">
       <h3>Payment Queue</h3>
       ${(payments.data||[]).length?`<table><thead><tr><th>Beneficiary</th><th>Rail</th><th>Amount</th><th>Date</th><th>Priority</th><th>Status</th><th>Actions</th></tr></thead><tbody>
-      ${(payments.data||[]).map(pi=>`<tr><td>${pi.beneficiary_name||pi.beneficiary_name_lookup||'—'}</td><td>${pi.payment_rail}</td><td>${fmt(parseInt(pi.amount)||0)}</td><td>${fmtDate(pi.effective_date)}</td><td>${pi.priority||'normal'}</td><td>${badge(pi.status)}</td><td>${pi.status==='pending_approval'?`<button class="btn btn-primary" style="padding:0.2rem 0.5rem;font-size:0.7rem" onclick="approvePayment('${pi.id}')">Approve</button>`:(pi.status==='approved'?`<button class="btn btn-outline" style="padding:0.2rem 0.5rem;font-size:0.7rem" onclick="batchPayment('${pi.id}','${pi.payment_rail}')">Batch</button>`:'')}</td></tr>`).join('')}
+      ${(payments.data||[]).map(pi=>`<tr><td>${esc(pi.beneficiary_name||'—')}</td><td>${esc(pi.payment_rail)}</td><td>${fmt(pi.amount||0)}</td><td>${fmtDate(pi.effective_date)}</td><td>${esc(pi.priority||'normal')}</td><td>${badge(pi.status)}</td><td>${pi.status==='pending_approval'?`<button class="btn btn-primary" style="padding:0.2rem 0.5rem;font-size:0.7rem" onclick="approvePayment('${pi.id}')">Approve</button>`:(pi.status==='approved'?`<button class="btn btn-outline" style="padding:0.2rem 0.5rem;font-size:0.7rem" onclick="batchPayment('${pi.id}','${esc(pi.payment_rail)}')">Batch</button>`:'')}</td></tr>`).join('')}
       </tbody></table>`:'<p style="color:var(--text-muted)">No payment instructions in queue</p>'}
     </div>
     <div class="card" style="border-color:var(--gold)">
@@ -695,7 +697,7 @@ async function renderMFT(c){
     <div class="card">
       <h3>Payment Files</h3>
       ${(data.data||[]).length?`<table><thead><tr><th>File</th><th>Type</th><th>Records</th><th>Amount</th><th>Generated</th><th>Status</th><th>Actions</th></tr></thead><tbody>
-      ${(data.data||[]).map(f=>`<tr><td><code>${f.filename}</code></td><td>${f.file_type}</td><td>${f.record_count||0}</td><td>${fmt(parseInt(f.total_amount)||0)}</td><td>${fmtDate(f.created_at)}</td><td>${badge(f.status)}</td><td>${f.status==='generated'||f.status==='pending'?`<button class="btn btn-outline" style="padding:0.3rem 0.6rem;font-size:0.7rem" onclick="deliverFile('${f.id}')">Deliver</button>`:f.status==='delivered'?'<span style="color:var(--success);font-size:0.75rem">Sent</span>':''}</td></tr>`).join('')}
+      ${(data.data||[]).map(f=>`<tr><td><code>${esc(f.filename)}</code></td><td>${esc(f.file_type)}</td><td>${f.record_count||0}</td><td>${fmt(f.total_amount||0)}</td><td>${fmtDate(f.created_at)}</td><td>${badge(f.status)}</td><td>${f.status==='generated'||f.status==='pending'?`<button class="btn btn-outline" style="padding:0.3rem 0.6rem;font-size:0.7rem" onclick="deliverFile('${f.id}')">Deliver</button>`:f.status==='delivered'?'<span style="color:var(--success);font-size:0.75rem">Sent</span>':''}</td></tr>`).join('')}
       </tbody></table>`:'<p style="color:var(--text-muted)">No payment files generated yet. Generate a NACHA file from completed distributions.</p>'}
     </div>
   `;

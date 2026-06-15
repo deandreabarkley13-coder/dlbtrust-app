@@ -43,6 +43,9 @@ app.use('/api/fineract', require('./server/routes/fineract'));
 // ─── Fixed Income / Bond Routes ───────────────────────────────────────────────
 app.use('/api/bonds', require('./server/routes/bonds'));
 
+// ─── Treasury Management Routes ───────────────────────────────────────────────
+app.use('/api/treasury', require('./server/routes/treasury'));
+
 // ─── Bond Schema Auto-Init ────────────────────────────────────────────────────
 const bondPool = require('./server/integrations/bonds/pgPool');
 (async () => {
