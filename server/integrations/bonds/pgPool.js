@@ -9,15 +9,24 @@
 
 const { Pool } = require('pg');
 
-const pool = new Pool({
-  host:     process.env.FINERACT_DB_HOST || 'localhost',
-  port:     parseInt(process.env.FINERACT_DB_PORT || '5432', 10),
-  user:     process.env.FINERACT_DB_USER || 'postgres',
-  password: process.env.FINERACT_DB_PASSWORD || 'postgres',
-  database: process.env.BOND_DB_NAME || 'fineract_tenants',
-  max:      5,
-  idleTimeoutMillis: 30000,
-});
+const poolConfig = process.env.DATABASE_URL
+  ? {
+      connectionString: process.env.DATABASE_URL,
+      ssl: process.env.DB_SSL === 'true' ? { rejectUnauthorized: false } : false,
+      max: 5,
+      idleTimeoutMillis: 30000,
+    }
+  : {
+      host:     process.env.FINERACT_DB_HOST || 'localhost',
+      port:     parseInt(process.env.FINERACT_DB_PORT || '5432', 10),
+      user:     process.env.FINERACT_DB_USER || 'postgres',
+      password: process.env.FINERACT_DB_PASSWORD || 'postgres',
+      database: process.env.BOND_DB_NAME || 'fineract_tenants',
+      max:      5,
+      idleTimeoutMillis: 30000,
+    };
+
+const pool = new Pool(poolConfig);
 
 pool.on('error', (err) => {
   console.error('[BondDB] Unexpected pool error:', err.message);
