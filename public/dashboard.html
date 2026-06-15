@@ -1,0 +1,446 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>DLB Trust — Treasury Dashboard</title>
+  <style>
+    :root {
+      --bg: #0f1117;
+      --card: #1a1d27;
+      --border: #2a2d37;
+      --text: #e4e4e7;
+      --muted: #9ca3af;
+      --accent: #3b82f6;
+      --green: #10b981;
+      --red: #ef4444;
+      --gold: #f59e0b;
+    }
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      min-height: 100vh;
+      padding: 24px;
+    }
+    .header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 32px;
+    }
+    .header h1 { font-size: 24px; font-weight: 600; }
+    .header .subtitle { color: var(--muted); font-size: 14px; margin-top: 4px; }
+    .status-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 6px 12px;
+      border-radius: 20px;
+      font-size: 12px;
+      font-weight: 500;
+    }
+    .status-badge.connected { background: rgba(16,185,129,0.15); color: var(--green); }
+    .status-badge.disconnected { background: rgba(239,68,68,0.15); color: var(--red); }
+    .status-dot {
+      width: 8px; height: 8px;
+      border-radius: 50%;
+      background: currentColor;
+    }
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+      gap: 16px;
+      margin-bottom: 32px;
+    }
+    .card {
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 20px;
+    }
+    .card-title {
+      font-size: 12px;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      color: var(--muted);
+      margin-bottom: 8px;
+    }
+    .card-value {
+      font-size: 28px;
+      font-weight: 700;
+      font-variant-numeric: tabular-nums;
+    }
+    .card-sub {
+      font-size: 13px;
+      color: var(--muted);
+      margin-top: 4px;
+    }
+    .section-title {
+      font-size: 18px;
+      font-weight: 600;
+      margin-bottom: 16px;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+    .section-title .icon { font-size: 20px; }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 14px;
+    }
+    thead th {
+      text-align: left;
+      padding: 12px 16px;
+      border-bottom: 1px solid var(--border);
+      color: var(--muted);
+      font-weight: 500;
+      font-size: 12px;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+    }
+    tbody td {
+      padding: 12px 16px;
+      border-bottom: 1px solid var(--border);
+    }
+    tbody tr:last-child td { border-bottom: none; }
+    tbody tr:hover { background: rgba(59,130,246,0.05); }
+    .badge {
+      display: inline-block;
+      padding: 2px 8px;
+      border-radius: 4px;
+      font-size: 11px;
+      font-weight: 600;
+      text-transform: uppercase;
+    }
+    .badge-active { background: rgba(16,185,129,0.15); color: var(--green); }
+    .badge-matured { background: rgba(245,158,11,0.15); color: var(--gold); }
+    .badge-accrual { background: rgba(59,130,246,0.15); color: var(--accent); }
+    .badge-payment { background: rgba(16,185,129,0.15); color: var(--green); }
+    .badge-issuance { background: rgba(245,158,11,0.15); color: var(--gold); }
+    .badge-maturity { background: rgba(168,85,247,0.15); color: #a855f7; }
+    .money { font-variant-numeric: tabular-nums; }
+    .money.positive { color: var(--green); }
+    .money.negative { color: var(--red); }
+    .gl-bar {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin-bottom: 8px;
+    }
+    .gl-bar-label { font-size: 13px; min-width: 140px; }
+    .gl-bar-track {
+      flex: 1;
+      height: 8px;
+      background: var(--border);
+      border-radius: 4px;
+      overflow: hidden;
+    }
+    .gl-bar-fill {
+      height: 100%;
+      border-radius: 4px;
+      transition: width 0.5s;
+    }
+    .gl-bar-value { font-size: 13px; min-width: 100px; text-align: right; font-variant-numeric: tabular-nums; }
+    .refresh-btn {
+      background: var(--accent);
+      color: white;
+      border: none;
+      padding: 8px 16px;
+      border-radius: 8px;
+      font-size: 13px;
+      cursor: pointer;
+      font-weight: 500;
+    }
+    .refresh-btn:hover { opacity: 0.9; }
+    .loading { color: var(--muted); font-style: italic; padding: 20px; }
+    .error-msg { color: var(--red); padding: 12px; background: rgba(239,68,68,0.1); border-radius: 8px; }
+    .two-col { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+    @media (max-width: 768px) { .two-col { grid-template-columns: 1fr; } }
+  </style>
+</head>
+<body>
+  <div class="header">
+    <div>
+      <h1>Treasury Management Dashboard</h1>
+      <div class="subtitle">DEANDREA LAVAR BARKLEY TRUST — Core Banking & Fixed Income</div>
+    </div>
+    <div style="display:flex;gap:12px;align-items:center;">
+      <span id="fineract-status" class="status-badge disconnected">
+        <span class="status-dot"></span>Fineract: Checking...
+      </span>
+      <button class="refresh-btn" onclick="loadAll()">Refresh</button>
+    </div>
+  </div>
+
+  <!-- Summary Cards -->
+  <div class="grid" id="summary-cards">
+    <div class="card">
+      <div class="card-title">Total Principal</div>
+      <div class="card-value" id="total-principal">—</div>
+      <div class="card-sub">Active bond principal outstanding</div>
+    </div>
+    <div class="card">
+      <div class="card-title">Accrued Interest</div>
+      <div class="card-value" id="total-accrued">—</div>
+      <div class="card-sub">Unpaid interest accumulated</div>
+    </div>
+    <div class="card">
+      <div class="card-title">Total Interest Paid</div>
+      <div class="card-value" id="total-interest-paid">—</div>
+      <div class="card-sub">Lifetime distributions</div>
+    </div>
+    <div class="card">
+      <div class="card-title">Active Bonds</div>
+      <div class="card-value" id="active-bonds">—</div>
+      <div class="card-sub">Currently accruing</div>
+    </div>
+  </div>
+
+  <!-- GL Summary -->
+  <div class="card" style="margin-bottom:32px;">
+    <div class="section-title"><span class="icon">📊</span> General Ledger Summary</div>
+    <div id="gl-summary"><p class="loading">Loading GL data...</p></div>
+  </div>
+
+  <!-- Bonds Table -->
+  <div class="card" style="margin-bottom:32px;">
+    <div class="section-title"><span class="icon">📋</span> Bond Portfolio</div>
+    <div style="overflow-x:auto;">
+      <table>
+        <thead>
+          <tr>
+            <th>Bond Name</th>
+            <th>Face Value</th>
+            <th>Coupon</th>
+            <th>Day Count</th>
+            <th>Principal Balance</th>
+            <th>Accrued Interest</th>
+            <th>Status</th>
+            <th>Issue Date</th>
+          </tr>
+        </thead>
+        <tbody id="bonds-table"><tr><td colspan="8" class="loading">Loading bonds...</td></tr></tbody>
+      </table>
+    </div>
+  </div>
+
+  <!-- Two Column: Transactions + Fineract Clients -->
+  <div class="two-col">
+    <div class="card">
+      <div class="section-title"><span class="icon">📜</span> Recent Transactions</div>
+      <div style="overflow-x:auto;">
+        <table>
+          <thead>
+            <tr>
+              <th>Date</th>
+              <th>Type</th>
+              <th>Amount</th>
+              <th>Balance</th>
+            </tr>
+          </thead>
+          <tbody id="txn-table"><tr><td colspan="4" class="loading">Loading...</td></tr></tbody>
+        </table>
+      </div>
+    </div>
+    <div class="card">
+      <div class="section-title"><span class="icon">🏦</span> Fineract GL Accounts</div>
+      <div id="fineract-gl"><p class="loading">Loading GL accounts...</p></div>
+    </div>
+  </div>
+
+  <script>
+    const API = window.location.origin;
+
+    function fmt(n) {
+      if (n == null) return '—';
+      return '$' + Number(n).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+    }
+
+    function pct(n) {
+      return (Number(n) * 100).toFixed(2) + '%';
+    }
+
+    function badgeClass(type) {
+      if (type === 'active') return 'badge-active';
+      if (type === 'matured') return 'badge-matured';
+      if (type === 'interest_accrual') return 'badge-accrual';
+      if (type === 'interest_payment' || type === 'principal_payment') return 'badge-payment';
+      if (type === 'issuance') return 'badge-issuance';
+      if (type === 'maturity') return 'badge-maturity';
+      return '';
+    }
+
+    async function fetchJSON(url) {
+      try {
+        const r = await fetch(url);
+        return await r.json();
+      } catch (e) {
+        return { error: e.message };
+      }
+    }
+
+    async function loadFineractStatus() {
+      const el = document.getElementById('fineract-status');
+      const data = await fetchJSON(API + '/api/fineract/health');
+      if (data && data.fineract_connected) {
+        el.className = 'status-badge connected';
+        el.innerHTML = '<span class="status-dot"></span>Fineract: Connected';
+      } else {
+        el.className = 'status-badge disconnected';
+        el.innerHTML = '<span class="status-dot"></span>Fineract: Disconnected';
+      }
+    }
+
+    async function loadBonds() {
+      const data = await fetchJSON(API + '/api/bonds');
+      if (data.error || !data.success) {
+        document.getElementById('bonds-table').innerHTML = `<tr><td colspan="8" class="error-msg">${data.error || 'Failed to load'}</td></tr>`;
+        return;
+      }
+
+      const bonds = data.data || [];
+      let totalPrincipal = 0, totalAccrued = 0, totalPaid = 0, activeCount = 0;
+
+      bonds.forEach(b => {
+        totalPrincipal += parseFloat(b.principal_balance || 0);
+        totalAccrued += parseFloat(b.accrued_interest || 0);
+        totalPaid += parseFloat(b.total_interest_paid || 0);
+        if (b.status === 'active') activeCount++;
+      });
+
+      document.getElementById('total-principal').textContent = fmt(totalPrincipal);
+      document.getElementById('total-accrued').textContent = fmt(totalAccrued);
+      document.getElementById('total-interest-paid').textContent = fmt(totalPaid);
+      document.getElementById('active-bonds').textContent = activeCount;
+
+      if (bonds.length === 0) {
+        document.getElementById('bonds-table').innerHTML = '<tr><td colspan="8" style="color:var(--muted)">No bonds created yet</td></tr>';
+        return;
+      }
+
+      document.getElementById('bonds-table').innerHTML = bonds.map(b => `
+        <tr>
+          <td><strong>${b.bond_name}</strong></td>
+          <td class="money">${fmt(b.face_value)}</td>
+          <td>${pct(b.coupon_rate)}</td>
+          <td>${b.day_count}</td>
+          <td class="money">${fmt(b.principal_balance)}</td>
+          <td class="money">${fmt(b.accrued_interest)}</td>
+          <td><span class="badge ${badgeClass(b.status)}">${b.status}</span></td>
+          <td>${b.issue_date ? new Date(b.issue_date).toLocaleDateString() : '—'}</td>
+        </tr>
+      `).join('');
+
+      // Load transactions for first bond
+      if (bonds.length > 0) loadTransactions(bonds[0].id);
+    }
+
+    async function loadTransactions(bondId) {
+      const data = await fetchJSON(API + `/api/bonds/${bondId}/transactions`);
+      if (data.error || !data.success) {
+        document.getElementById('txn-table').innerHTML = `<tr><td colspan="4" class="error-msg">${data.error || 'Failed'}</td></tr>`;
+        return;
+      }
+      const txns = data.data || [];
+      if (txns.length === 0) {
+        document.getElementById('txn-table').innerHTML = '<tr><td colspan="4" style="color:var(--muted)">No transactions</td></tr>';
+        return;
+      }
+      document.getElementById('txn-table').innerHTML = txns.slice(0, 10).map(t => `
+        <tr>
+          <td>${t.transaction_date ? new Date(t.transaction_date).toLocaleDateString() : '—'}</td>
+          <td><span class="badge ${badgeClass(t.transaction_type)}">${t.transaction_type.replace('_', ' ')}</span></td>
+          <td class="money">${fmt(t.amount)}</td>
+          <td class="money">${fmt(t.running_balance)}</td>
+        </tr>
+      `).join('');
+    }
+
+    async function loadGLSummary() {
+      const data = await fetchJSON(API + '/api/fineract/gl/summary');
+      const el = document.getElementById('gl-summary');
+
+      if (data.error || !data.success) {
+        // Try analytics fallback
+        const fallback = await fetchJSON(API + '/api/analytics/gl-summary');
+        if (fallback.error || !fallback.success) {
+          el.innerHTML = '<p class="error-msg">GL data unavailable — Fineract not connected</p>';
+          return;
+        }
+        renderGL(el, fallback.data || fallback);
+        return;
+      }
+      renderGL(el, data.data || data);
+    }
+
+    function renderGL(el, data) {
+      const categories = data.categories || data.gl_categories || [];
+      if (categories.length === 0 && data.principal_balance != null) {
+        // Simple format from analytics
+        const items = [
+          { label: 'Principal', value: data.principal_balance, color: '#3b82f6' },
+          { label: 'Income', value: data.income_balance || 0, color: '#10b981' },
+          { label: 'Expenses', value: data.expense_balance || 0, color: '#ef4444' },
+        ];
+        const max = Math.max(...items.map(i => Math.abs(Number(i.value) || 0)), 1);
+        el.innerHTML = items.map(i => `
+          <div class="gl-bar">
+            <span class="gl-bar-label">${i.label}</span>
+            <div class="gl-bar-track"><div class="gl-bar-fill" style="width:${(Math.abs(Number(i.value))/max*100).toFixed(1)}%;background:${i.color}"></div></div>
+            <span class="gl-bar-value">${fmt(i.value)}</span>
+          </div>
+        `).join('');
+        return;
+      }
+
+      if (categories.length > 0) {
+        const max = Math.max(...categories.map(c => Math.abs(Number(c.balance) || 0)), 1);
+        const colors = ['#3b82f6', '#10b981', '#f59e0b', '#ef4444', '#a855f7'];
+        el.innerHTML = categories.map((c, i) => `
+          <div class="gl-bar">
+            <span class="gl-bar-label">${c.name || c.category}</span>
+            <div class="gl-bar-track"><div class="gl-bar-fill" style="width:${(Math.abs(Number(c.balance))/max*100).toFixed(1)}%;background:${colors[i % colors.length]}"></div></div>
+            <span class="gl-bar-value">${fmt(c.balance)}</span>
+          </div>
+        `).join('');
+        return;
+      }
+
+      el.innerHTML = '<p style="color:var(--muted)">No GL data available</p>';
+    }
+
+    async function loadFineractGL() {
+      const el = document.getElementById('fineract-gl');
+      const data = await fetchJSON(API + '/api/fineract/gl/summary');
+      if (data.error || !data.success) {
+        el.innerHTML = '<p style="color:var(--muted)">Connect Fineract to view GL accounts</p>';
+        return;
+      }
+      const d = data.data || data;
+      const cats = d.categories || d.gl_categories || [];
+      if (cats.length === 0) {
+        el.innerHTML = '<p style="color:var(--muted)">No GL accounts configured</p>';
+        return;
+      }
+      el.innerHTML = '<table style="width:100%"><thead><tr><th>Account</th><th>Balance</th></tr></thead><tbody>' +
+        cats.map(c => `<tr><td>${c.name || c.category}</td><td class="money">${fmt(c.balance)}</td></tr>`).join('') +
+        '</tbody></table>';
+    }
+
+    async function loadAll() {
+      await Promise.all([
+        loadFineractStatus(),
+        loadBonds(),
+        loadGLSummary(),
+        loadFineractGL(),
+      ]);
+    }
+
+    loadAll();
+    setInterval(loadAll, 30000);
+  </script>
+</body>
+</html>
