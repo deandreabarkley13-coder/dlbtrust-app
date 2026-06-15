@@ -22,6 +22,12 @@ try { require(HD + "/server/openach-patch")(app, null); console.log("[openach] l
 // Analytics routes
 try { app.use("/api/analytics", require(HD + "/server/routes/analytics")); console.log("[analytics] loaded"); } catch(e) { console.warn("[analytics]", e.message); }
 
+// Fineract core banking routes
+try { app.use("/api/fineract", require(HD + "/server/routes/fineract")); console.log("[fineract] loaded"); } catch(e) { console.warn("[fineract]", e.message); }
+
+// Fixed Income / Bond routes
+try { app.use("/api/bonds", require(HD + "/server/routes/bonds")); console.log("[bonds] loaded"); } catch(e) { console.warn("[bonds]", e.message); }
+
 // Static files from v2
 app.use(express.static(path.join(V2, "dist", "public")));
 app.use("/assets", express.static(path.join(V2, "dist", "public", "assets")));
