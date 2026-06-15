@@ -69,6 +69,10 @@ app.use('/api/analytics', require('./server/routes/analytics'));
 // ─── ACH File Queue Routes ────────────────────────────────────────────────────
 app.use('/api/ach-queue', require('./server/routes/ach-queue'));
 
+// ─── Fineract Core Banking Routes ─────────────────────────────────────────
+app.use('/api/fineract', require('./server/routes/fineract'));
+
+
 // ─── Start Server ─────────────────────────────────────────────────────────────
 const PORT = process.env.PORT || 3001;
 app.listen(PORT, () => {
