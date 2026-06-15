@@ -47,6 +47,18 @@ app.use('/api/bonds', require('./server/routes/bonds'));
 const bondPool = require('./server/integrations/bonds/pgPool');
 (async () => {
   try {
+    // Check if bonds table exists with wrong column type (UUID vs INTEGER)
+    const check = await bondPool.query(`
+      SELECT data_type FROM information_schema.columns
+      WHERE table_name = 'bonds' AND column_name = 'id'
+    `).catch(() => ({ rows: [] }));
+    if (check.rows.length > 0 && check.rows[0].data_type === 'uuid') {
+      console.log('[BondDB] Migrating: dropping legacy UUID-based bond tables');
+      await bondPool.query('DROP TABLE IF EXISTS bond_transactions CASCADE');
+      await bondPool.query('DROP TABLE IF EXISTS bond_balances CASCADE');
+      await bondPool.query('DROP TABLE IF EXISTS bonds CASCADE');
+    }
+
     await bondPool.query(`
       CREATE TABLE IF NOT EXISTS bonds (
         id SERIAL PRIMARY KEY, bond_name VARCHAR(255) NOT NULL, isin VARCHAR(20),
