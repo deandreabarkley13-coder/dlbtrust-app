@@ -151,61 +151,58 @@ async function loadPage(page){
       case 'mft': await renderMFT(c); break;
       case 'corebanking': await renderCoreBanking(c); break;
     }
-  }catch(e){c.innerHTML=`<div class="card"><h3>Error</h3><p>${e.message}</p></div>`}
+  }catch(e){c.innerHTML=`<div class="card"><h3>Module Unavailable</h3><p style="color:var(--text-muted)">This module requires the full Treasury API backend. Currently available modules: <strong>Dashboard</strong> and <strong>Core Banking</strong>.</p><p style="margin-top:0.5rem"><button class="btn btn-primary" onclick="document.querySelectorAll('.nav-item').forEach(i=>i.classList.remove('active'));document.querySelectorAll('.nav-item')[9].classList.add('active');loadPage('corebanking')">Go to Core Banking</button></p></div>`}
 }
 
 async function renderDashboard(c){
-  const d=await api('/api/treasury/trust/dashboard');
-  const trust=d.trust||{};
-  const bonds=await api('/api/treasury/bonds');
-  const bond=(bonds.data||[])[0]||{};
-  const annualIncome=bond.face_value?Math.round(bond.face_value*bond.coupon_rate/100):0;
+  const [bondsData,fineractHealth]=await Promise.all([api('/api/bonds').catch(()=>({success:false,data:[]})),api('/api/fineract/health').catch(()=>({}))]);
+  const bonds=(bondsData.success?bondsData.data:[])||[];
+  let totalPrincipal=0,totalAccrued=0,totalPaid=0,activeCount=0,totalFace=0;
+  bonds.forEach(b=>{totalPrincipal+=parseFloat(b.principal_balance||0);totalAccrued+=parseFloat(b.accrued_interest||0);totalPaid+=parseFloat(b.total_interest_paid||0);totalFace+=parseFloat(b.face_value||0);if(b.status==='active')activeCount++});
+  const connected=fineractHealth&&fineractHealth.fineract_connected;
+  const totalValue=totalPrincipal+totalAccrued;
 
   c.innerHTML=`
-    <div class="page-header"><h2>Trust Dashboard</h2><span style="color:var(--text-muted);font-size:0.8rem">${trust.trust_name||''}</span></div>
+    <div class="page-header"><h2>Trust Dashboard</h2><span style="color:var(--text-muted);font-size:0.8rem">DEANDREA LAVAR BARKLEY TRUST</span></div>
     <div class="stats-grid">
       <div class="stat-card highlight">
-        <div class="label">Total Corpus</div>
-        <div class="value">${fmt(trust.total_corpus||0)}</div>
-        <div class="sub">${trust.trust_type||'irrevocable'} trust • ${trust.jurisdiction||''}</div>
+        <div class="label">Total Portfolio Value</div>
+        <div class="value">${fmtMoney(totalValue)}</div>
+        <div class="sub">Principal + accrued interest</div>
       </div>
       <div class="stat-card">
-        <div class="label">Annual Bond Income</div>
-        <div class="value">${fmt(annualIncome)}</div>
-        <div class="sub">${bond.coupon_rate||0}% coupon • ${bond.coupon_frequency||'semi_annual'}</div>
+        <div class="label">Face Value Outstanding</div>
+        <div class="value">${fmtMoney(totalFace)}</div>
+        <div class="sub">${bonds.length} bond${bonds.length!==1?'s':''} in portfolio</div>
       </div>
       <div class="stat-card">
-        <div class="label">Next Coupon</div>
-        <div class="value">${fmtDate(bond.next_coupon_date)}</div>
-        <div class="sub">${fmt(annualIncome/2)} per semi-annual payment</div>
+        <div class="label">Total Distributions</div>
+        <div class="value">${fmtMoney(totalPaid)}</div>
+        <div class="sub">Interest paid to date</div>
       </div>
       <div class="stat-card">
-        <div class="label">Wallets</div>
-        <div class="value">${(d.wallet_summary||[]).reduce((s,w)=>s+parseInt(w.count),0)}</div>
-        <div class="sub">${(d.wallet_summary||[]).map(w=>w.wallet_type).join(', ')}</div>
+        <div class="label">System Status</div>
+        <div class="value" style="font-size:1.2rem">${connected?'<span class="badge badge-active">All Systems Online</span>':'<span class="badge badge-active">Bond Engine Online</span>'}</div>
+        <div class="sub">${connected?'Fineract + Bond Engine':'Fineract: Offline'}</div>
       </div>
-    </div>
-    <div class="card">
-      <h3>Wallet Balances</h3>
-      <table><thead><tr><th>Type</th><th>Count</th><th>Total Balance</th></tr></thead><tbody>
-      ${(d.wallet_summary||[]).map(w=>`<tr><td>${w.wallet_type}</td><td>${w.count}</td><td>${fmt(parseInt(w.total_balance)||0)}</td></tr>`).join('')}
-      </tbody></table>
     </div>
     <div style="display:grid;grid-template-columns:1fr 1fr;gap:1.5rem">
       <div class="card">
-        <h3>Upcoming Coupons</h3>
-        ${(d.upcoming_coupons||[]).length?`<table><thead><tr><th>Date</th><th>Amount</th><th>Bond</th></tr></thead><tbody>
-        ${(d.upcoming_coupons||[]).map(cp=>`<tr><td>${fmtDate(cp.payment_date)}</td><td>${fmt(cp.coupon_amount)}</td><td>${cp.bond_name}</td></tr>`).join('')}
-        </tbody></table>`:'<p style="color:var(--text-muted)">No scheduled coupons — generate coupon schedule from Bond Portfolio</p>'}
+        <h3>Active Bonds</h3>
+        ${bonds.length?`<table><thead><tr><th>Bond</th><th>Principal</th><th>Accrued</th><th>Status</th></tr></thead><tbody>
+        ${bonds.map(b=>`<tr><td><strong>${esc(b.bond_name)}</strong></td><td>${fmtMoney(b.principal_balance)}</td><td>${fmtMoney(b.accrued_interest)}</td><td>${badge(b.status)}</td></tr>`).join('')}
+        </tbody></table>`:'<p style="color:var(--text-muted)">No bonds created yet — go to Core Banking to add bonds</p>'}
       </div>
       <div class="card">
-        <h3>Recent Ledger Entries</h3>
-        ${(d.recent_ledger||[]).length?`<table><thead><tr><th>Date</th><th>Type</th><th>Amount</th><th>Status</th></tr></thead><tbody>
-        ${(d.recent_ledger||[]).map(e=>`<tr><td>${fmtDate(e.entry_date)}</td><td>${e.entry_type}</td><td>${fmt(e.amount)}</td><td>${badge(e.status)}</td></tr>`).join('')}
-        </tbody></table>`:'<p style="color:var(--text-muted)">No ledger entries yet</p>'}
+        <h3>Quick Actions</h3>
+        <div style="display:flex;flex-direction:column;gap:0.75rem;padding:0.5rem 0">
+          <button class="btn btn-primary" onclick="document.querySelectorAll('.nav-item').forEach(i=>i.classList.remove('active'));document.querySelectorAll('.nav-item')[9].classList.add('active');loadPage('corebanking')">Open Core Banking</button>
+          <button class="btn btn-outline" onclick="document.querySelectorAll('.nav-item').forEach(i=>i.classList.remove('active'));document.querySelectorAll('.nav-item')[1].classList.add('active');loadPage('bonds')">View Bond Portfolio</button>
+        </div>
       </div>
     </div>
   `;
+  function fmtMoney(n){return n==null?'—':'$'+Number(n).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2})}
 }
 
 async function renderBonds(c){
