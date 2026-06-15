@@ -103,10 +103,6 @@ th{color:var(--text-muted);font-weight:500;text-transform:uppercase;font-size:0.
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
         File Transfer
       </div>
-      <div class="nav-item" data-page="corebanking">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 21h18M3 10h18M5 6l7-3 7 3M4 10v11M20 10v11M8 14v3M12 14v3M16 14v3"/></svg>
-        Core Banking
-      </div>
     </nav>
   </aside>
   <main class="main" id="content">
@@ -149,7 +145,6 @@ async function loadPage(page){
       case 'wallets': await renderWallets(c); break;
       case 'engine': await renderEngine(c); break;
       case 'mft': await renderMFT(c); break;
-      case 'corebanking': await renderCoreBanking(c); break;
     }
   }catch(e){c.innerHTML=`<div class="card"><h3>Error</h3><p>${e.message}</p></div>`}
 }
@@ -724,67 +719,6 @@ async function saveSFTPConfig(e){
   if(r.success)toast('SFTP configuration saved');
   else toast(r.error||'Failed to save config','error');
 }
-
-async function renderCoreBanking(c){
-  const [bondsData,fineractHealth]=await Promise.all([api('/api/bonds'),api('/api/fineract/health').catch(()=>({}))]);
-  const bonds=(bondsData.success?bondsData.data:bondsData.data)||[];
-  let totalPrincipal=0,totalAccrued=0,totalPaid=0,activeCount=0;
-  bonds.forEach(b=>{totalPrincipal+=parseFloat(b.principal_balance||0);totalAccrued+=parseFloat(b.accrued_interest||0);totalPaid+=parseFloat(b.total_interest_paid||0);if(b.status==='active')activeCount++});
-  const connected=fineractHealth&&fineractHealth.fineract_connected;
-  const fmtMoney=(n)=>n==null?'—':'$'+Number(n).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2});
-  const pctFmt=(n)=>(Number(n)*100).toFixed(2)+'%';
-  const bondBadge=(s)=>s==='active'?'badge-active':s==='matured'?'badge-pending':'';
-
-  c.innerHTML=`
-    <div class="page-header"><h2>Core Banking — Fixed Income Engine</h2>
-      <span class="badge ${connected?'badge-active':'badge-failed'}" style="padding:0.4rem 0.8rem;font-size:0.75rem">${connected?'Fineract: Connected':'Fineract: Disconnected'}</span>
-    </div>
-    <div class="stats-grid">
-      <div class="stat-card highlight"><div class="label">Total Principal</div><div class="value">${fmtMoney(totalPrincipal)}</div><div class="sub">Active bond principal outstanding</div></div>
-      <div class="stat-card"><div class="label">Accrued Interest</div><div class="value">${fmtMoney(totalAccrued)}</div><div class="sub">Unpaid interest accumulated</div></div>
-      <div class="stat-card"><div class="label">Total Interest Paid</div><div class="value">${fmtMoney(totalPaid)}</div><div class="sub">Lifetime distributions</div></div>
-      <div class="stat-card"><div class="label">Active Bonds</div><div class="value">${activeCount}</div><div class="sub">Currently accruing</div></div>
-    </div>
-    <div class="card">
-      <h3>Bond Portfolio (Private Placement)</h3>
-      ${bonds.length?`<table><thead><tr><th>Bond Name</th><th>Face Value</th><th>Coupon</th><th>Day Count</th><th>Principal Balance</th><th>Accrued Interest</th><th>Status</th><th>Issue Date</th></tr></thead><tbody>
-      ${bonds.map(b=>`<tr><td><strong>${esc(b.bond_name)}</strong></td><td>${fmtMoney(b.face_value)}</td><td>${pctFmt(b.coupon_rate)}</td><td>${esc(b.day_count)}</td><td>${fmtMoney(b.principal_balance)}</td><td>${fmtMoney(b.accrued_interest)}</td><td>${badge(b.status)}</td><td>${fmtDate(b.issue_date)}</td></tr>`).join('')}
-      </tbody></table>`:'<p style="color:var(--text-muted)">No bonds created yet</p>'}
-    </div>
-    <div style="display:grid;grid-template-columns:1fr 1fr;gap:1.5rem">
-      <div class="card">
-        <h3>Recent Transactions</h3>
-        <div id="cb-txns"><p style="color:var(--text-muted)">Loading...</p></div>
-      </div>
-      <div class="card">
-        <h3>Fineract GL Summary</h3>
-        <div id="cb-gl"><p style="color:var(--text-muted)">${connected?'Loading...':'Connect Fineract to view GL accounts'}</p></div>
-      </div>
-    </div>
-  `;
-  if(bonds.length>0){
-    const txnData=await api('/api/bonds/'+bonds[0].id+'/transactions');
-    const txns=(txnData.success?txnData.data:[])||[];
-    const txnEl=document.getElementById('cb-txns');
-    if(txns.length){
-      txnEl.innerHTML=`<table><thead><tr><th>Date</th><th>Type</th><th>Amount</th><th>Balance</th></tr></thead><tbody>
-      ${txns.slice(0,8).map(t=>`<tr><td>${fmtDate(t.transaction_date)}</td><td><span class="badge ${t.transaction_type.includes('payment')?'badge-active':t.transaction_type==='issuance'?'badge-pending':'badge-active'}">${esc(t.transaction_type.replace(/_/g,' '))}</span></td><td>${fmtMoney(t.amount)}</td><td>${fmtMoney(t.running_balance)}</td></tr>`).join('')}
-      </tbody></table>`;
-    }else{txnEl.innerHTML='<p style="color:var(--text-muted)">No transactions recorded</p>'}
-  }
-  if(connected){
-    const glData=await api('/api/fineract/gl/summary').catch(()=>({error:true}));
-    const glEl=document.getElementById('cb-gl');
-    if(glData&&glData.success&&glData.data){
-      const cats=glData.data.categories||glData.data.gl_categories||[];
-      if(cats.length){
-        glEl.innerHTML=`<table><thead><tr><th>Account</th><th>Balance</th></tr></thead><tbody>${cats.map(c=>`<tr><td>${esc(c.name||c.category)}</td><td>${fmtMoney(c.balance)}</td></tr>`).join('')}</tbody></table>`;
-      }else{glEl.innerHTML='<p style="color:var(--text-muted)">No GL accounts configured</p>'}
-    }else{glEl.innerHTML='<p style="color:var(--text-muted)">GL data unavailable</p>'}
-  }
-}
-
-function esc(str){if(str==null)return '';const d=document.createElement('div');d.textContent=String(str);return d.innerHTML}
 
 loadPage('dashboard');
 </script>
