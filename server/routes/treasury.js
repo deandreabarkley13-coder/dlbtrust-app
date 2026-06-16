@@ -237,10 +237,14 @@ router.post('/beneficiaries', async (req, res) => {
   try {
     const { name, beneficiary_type, classification, email, phone, address, city, state, zip, distribution_pct } = req.body;
     if (!name) return res.status(400).json({ success: false, error: 'Name is required' });
+    const trustRow = await pool.query(`SELECT trust_id FROM beneficiaries LIMIT 1`).catch(() => null);
+    const trustId = trustRow?.rows?.[0]?.trust_id || null;
+    const cols = ['name','beneficiary_type','classification','email','phone','address','city','state','zip','distribution_pct'];
+    const vals = [name, beneficiary_type || 'income', classification || 'individual', email, phone, address, city, state, zip, distribution_pct || 0];
+    if (trustId) { cols.push('trust_id'); vals.push(trustId); }
+    const placeholders = vals.map((_, i) => `$${i + 1}`).join(',');
     const result = await pool.query(
-      `INSERT INTO beneficiaries (name, beneficiary_type, classification, email, phone, address, city, state, zip, distribution_pct)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) RETURNING *`,
-      [name, beneficiary_type || 'income', classification || 'individual', email, phone, address, city, state, zip, distribution_pct || 0]
+      `INSERT INTO beneficiaries (${cols.join(',')}) VALUES (${placeholders}) RETURNING *`, vals
     );
     res.json({ success: true, data: result.rows[0] });
   } catch (err) {
