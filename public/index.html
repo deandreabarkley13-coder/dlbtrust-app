@@ -116,7 +116,7 @@ th{color:var(--text-muted);font-weight:500;text-transform:uppercase;font-size:0.
 <div id="toast"></div>
 <script>
 const API = '';
-const fmt = (cents) => '$' + (cents/100).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2});
+const fmt = (v) => '$' + Number(v||0).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2});
 const fmtDate = (d) => d ? new Date(d).toLocaleDateString('en-US',{year:'numeric',month:'short',day:'numeric'}) : '—';
 const badge = (status) => `<span class="badge badge-${status==='active'||status==='posted'||status==='settled'||status==='completed'||status==='received'?'active':status==='failed'||status==='returned'?'failed':'pending'}">${status}</span>`;
 
@@ -132,7 +132,8 @@ document.querySelectorAll('.nav-item').forEach(item=>{
 
 async function api(path,opts){
   const r=await fetch(API+path,opts);
-  return r.json();
+  const text=await r.text();
+  try{return JSON.parse(text)}catch(e){return {success:false,data:[],error:'Invalid response'}}
 }
 
 async function loadPage(page){
@@ -151,85 +152,82 @@ async function loadPage(page){
       case 'mft': await renderMFT(c); break;
       case 'corebanking': await renderCoreBanking(c); break;
     }
-  }catch(e){c.innerHTML=`<div class="card"><h3>Error</h3><p>${e.message}</p></div>`}
+  }catch(e){c.innerHTML=`<div class="card"><h3>Error Loading Module</h3><p style="color:var(--text-muted)">${esc(e.message||'An unexpected error occurred')}</p><p style="margin-top:0.5rem"><button class="btn btn-outline" onclick="loadPage('dashboard')">Back to Dashboard</button></p></div>`}
 }
 
 async function renderDashboard(c){
-  const d=await api('/api/treasury/trust/dashboard');
-  const trust=d.trust||{};
-  const bonds=await api('/api/treasury/bonds');
-  const bond=(bonds.data||[])[0]||{};
-  const annualIncome=bond.face_value?Math.round(bond.face_value*bond.coupon_rate/100):0;
+  const [bondsData,fineractHealth]=await Promise.all([api('/api/bonds').catch(()=>({success:false,data:[]})),api('/api/fineract/health').catch(()=>({}))]);
+  const bonds=(bondsData.success?bondsData.data:[])||[];
+  let totalPrincipal=0,totalAccrued=0,totalPaid=0,activeCount=0,totalFace=0;
+  bonds.forEach(b=>{totalPrincipal+=parseFloat(b.principal_balance||0);totalAccrued+=parseFloat(b.accrued_interest||0);totalPaid+=parseFloat(b.total_interest_paid||0);totalFace+=parseFloat(b.face_value||0);if(b.status==='active')activeCount++});
+  const connected=fineractHealth&&fineractHealth.fineract_connected;
+  const totalValue=totalPrincipal+totalAccrued;
 
   c.innerHTML=`
-    <div class="page-header"><h2>Trust Dashboard</h2><span style="color:var(--text-muted);font-size:0.8rem">${trust.trust_name||''}</span></div>
+    <div class="page-header"><h2>Trust Dashboard</h2><span style="color:var(--text-muted);font-size:0.8rem">DEANDREA LAVAR BARKLEY TRUST</span></div>
     <div class="stats-grid">
       <div class="stat-card highlight">
-        <div class="label">Total Corpus</div>
-        <div class="value">${fmt(trust.total_corpus||0)}</div>
-        <div class="sub">${trust.trust_type||'irrevocable'} trust • ${trust.jurisdiction||''}</div>
+        <div class="label">Total Portfolio Value</div>
+        <div class="value">${fmtMoney(totalValue)}</div>
+        <div class="sub">Principal + accrued interest</div>
       </div>
       <div class="stat-card">
-        <div class="label">Annual Bond Income</div>
-        <div class="value">${fmt(annualIncome)}</div>
-        <div class="sub">${bond.coupon_rate||0}% coupon • ${bond.coupon_frequency||'semi_annual'}</div>
+        <div class="label">Face Value Outstanding</div>
+        <div class="value">${fmtMoney(totalFace)}</div>
+        <div class="sub">${bonds.length} bond${bonds.length!==1?'s':''} in portfolio</div>
       </div>
       <div class="stat-card">
-        <div class="label">Next Coupon</div>
-        <div class="value">${fmtDate(bond.next_coupon_date)}</div>
-        <div class="sub">${fmt(annualIncome/2)} per semi-annual payment</div>
+        <div class="label">Total Distributions</div>
+        <div class="value">${fmtMoney(totalPaid)}</div>
+        <div class="sub">Interest paid to date</div>
       </div>
       <div class="stat-card">
-        <div class="label">Wallets</div>
-        <div class="value">${(d.wallet_summary||[]).reduce((s,w)=>s+parseInt(w.count),0)}</div>
-        <div class="sub">${(d.wallet_summary||[]).map(w=>w.wallet_type).join(', ')}</div>
+        <div class="label">System Status</div>
+        <div class="value" style="font-size:1.2rem">${connected?'<span class="badge badge-active">All Systems Online</span>':'<span class="badge badge-active">Bond Engine Online</span>'}</div>
+        <div class="sub">${connected?'Fineract + Bond Engine':'Fineract: Offline'}</div>
       </div>
-    </div>
-    <div class="card">
-      <h3>Wallet Balances</h3>
-      <table><thead><tr><th>Type</th><th>Count</th><th>Total Balance</th></tr></thead><tbody>
-      ${(d.wallet_summary||[]).map(w=>`<tr><td>${w.wallet_type}</td><td>${w.count}</td><td>${fmt(parseInt(w.total_balance)||0)}</td></tr>`).join('')}
-      </tbody></table>
     </div>
     <div style="display:grid;grid-template-columns:1fr 1fr;gap:1.5rem">
       <div class="card">
-        <h3>Upcoming Coupons</h3>
-        ${(d.upcoming_coupons||[]).length?`<table><thead><tr><th>Date</th><th>Amount</th><th>Bond</th></tr></thead><tbody>
-        ${(d.upcoming_coupons||[]).map(cp=>`<tr><td>${fmtDate(cp.payment_date)}</td><td>${fmt(cp.coupon_amount)}</td><td>${cp.bond_name}</td></tr>`).join('')}
-        </tbody></table>`:'<p style="color:var(--text-muted)">No scheduled coupons — generate coupon schedule from Bond Portfolio</p>'}
+        <h3>Active Bonds</h3>
+        ${bonds.length?`<table><thead><tr><th>Bond</th><th>Principal</th><th>Accrued</th><th>Status</th></tr></thead><tbody>
+        ${bonds.map(b=>`<tr><td><strong>${esc(b.bond_name)}</strong></td><td>${fmtMoney(b.principal_balance)}</td><td>${fmtMoney(b.accrued_interest)}</td><td>${badge(b.status)}</td></tr>`).join('')}
+        </tbody></table>`:'<p style="color:var(--text-muted)">No bonds created yet — go to Core Banking to add bonds</p>'}
       </div>
       <div class="card">
-        <h3>Recent Ledger Entries</h3>
-        ${(d.recent_ledger||[]).length?`<table><thead><tr><th>Date</th><th>Type</th><th>Amount</th><th>Status</th></tr></thead><tbody>
-        ${(d.recent_ledger||[]).map(e=>`<tr><td>${fmtDate(e.entry_date)}</td><td>${e.entry_type}</td><td>${fmt(e.amount)}</td><td>${badge(e.status)}</td></tr>`).join('')}
-        </tbody></table>`:'<p style="color:var(--text-muted)">No ledger entries yet</p>'}
+        <h3>Quick Actions</h3>
+        <div style="display:flex;flex-direction:column;gap:0.75rem;padding:0.5rem 0">
+          <button class="btn btn-primary" onclick="document.querySelectorAll('.nav-item').forEach(i=>i.classList.remove('active'));document.querySelectorAll('.nav-item')[9].classList.add('active');loadPage('corebanking')">Open Core Banking</button>
+          <button class="btn btn-outline" onclick="document.querySelectorAll('.nav-item').forEach(i=>i.classList.remove('active'));document.querySelectorAll('.nav-item')[1].classList.add('active');loadPage('bonds')">View Bond Portfolio</button>
+        </div>
       </div>
     </div>
   `;
+  function fmtMoney(n){return n==null?'—':'$'+Number(n).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2})}
 }
 
 async function renderBonds(c){
   const data=await api('/api/treasury/bonds');
   const bonds=data.data||[];
-  if(!bonds.length){c.innerHTML='<div class="card"><h3>No bonds found</h3></div>';return}
+  if(!bonds.length){c.innerHTML='<div class="card"><h3>No bonds found</h3><p style="color:var(--text-muted)">Go to Core Banking to create bonds</p></div>';return}
   const b=bonds[0];
   c.innerHTML=`
     <div class="page-header"><h2>Bond Portfolio</h2></div>
     <div class="card">
-      <h3>${b.bond_name}</h3>
+      <h3>${esc(b.bond_name)}</h3>
       <div class="bond-detail">
-        <div class="bond-field"><div class="label">Issuer</div><div class="value">${b.issuer}</div></div>
-        <div class="bond-field"><div class="label">Type</div><div class="value">${b.bond_type}</div></div>
+        <div class="bond-field"><div class="label">Issuer</div><div class="value">${esc(b.issuer)}</div></div>
+        <div class="bond-field"><div class="label">Type</div><div class="value">${esc(b.bond_type)}</div></div>
         <div class="bond-field"><div class="label">Face Value</div><div class="value">${fmt(b.face_value)}</div></div>
-        <div class="bond-field"><div class="label">Coupon Rate</div><div class="value">${b.coupon_rate}%</div></div>
-        <div class="bond-field"><div class="label">Frequency</div><div class="value">${b.coupon_frequency}</div></div>
+        <div class="bond-field"><div class="label">Coupon Rate</div><div class="value">${esc(b.coupon_rate)}%</div></div>
+        <div class="bond-field"><div class="label">Frequency</div><div class="value">${esc(b.coupon_frequency)}</div></div>
         <div class="bond-field"><div class="label">Annual Income</div><div class="value">${fmt(b.annual_income||0)}</div></div>
         <div class="bond-field"><div class="label">Issue Date</div><div class="value">${fmtDate(b.issue_date)}</div></div>
         <div class="bond-field"><div class="label">Maturity</div><div class="value">${fmtDate(b.maturity_date)}</div></div>
         <div class="bond-field"><div class="label">Next Coupon</div><div class="value">${fmtDate(b.next_coupon_date)}</div></div>
         <div class="bond-field"><div class="label">Status</div><div class="value">${badge(b.status)}</div></div>
         <div class="bond-field"><div class="label">Coupons Received</div><div class="value">${b.coupons_received||0}</div></div>
-        <div class="bond-field"><div class="label">Total Received</div><div class="value">${fmt(parseInt(b.total_received)||0)}</div></div>
+        <div class="bond-field"><div class="label">Total Received</div><div class="value">${fmt(b.total_received||0)}</div></div>
       </div>
       <div class="actions">
         <button class="btn btn-primary" onclick="generateCoupons('${b.id}')">Generate Coupon Schedule</button>
@@ -259,7 +257,7 @@ async function renderBeneficiaries(c){
     <div class="page-header"><h2>Beneficiaries</h2><button class="btn btn-primary" onclick="showAddBeneficiary()">+ Add Beneficiary</button></div>
     <div class="card">
       <table><thead><tr><th>Name</th><th>Type</th><th>Distribution %</th><th>Bank Accounts</th><th>Total Received</th><th>Status</th></tr></thead><tbody>
-      ${bens.map(b=>`<tr><td>${b.name}</td><td>${b.beneficiary_type}</td><td>${b.distribution_pct}%</td><td>${b.bank_account_count||0}</td><td>${fmt(parseInt(b.total_received)||0)}</td><td>${badge(b.status)}</td></tr>`).join('')}
+      ${bens.map(b=>`<tr><td>${esc(b.name)}</td><td>${esc(b.beneficiary_type)}</td><td>${b.distribution_pct}%</td><td>${b.bank_account_count||0}</td><td>${fmt(b.total_received||0)}</td><td>${badge(b.status)}</td></tr>`).join('')}
       </tbody></table>
     </div>
   `;
@@ -313,13 +311,13 @@ async function renderDistributions(c){
     <div class="card">
       <h3>Distribution Schedules</h3>
       ${(schedData.data||[]).length?`<table><thead><tr><th>Name</th><th>Frequency</th><th>Basis</th><th>Next</th><th>Total Paid</th><th>Status</th><th>Actions</th></tr></thead><tbody>
-      ${(schedData.data||[]).map(s=>`<tr><td>${s.name}</td><td>${s.frequency}</td><td>${s.distribution_basis}</td><td>${fmtDate(s.next_distribution)}</td><td>${fmt(parseInt(s.total_distributed)||0)}</td><td>${badge(s.status)}</td><td><button class="btn btn-primary" style="padding:0.3rem 0.6rem;font-size:0.7rem" onclick="executeDistribution('${s.id}','${s.name}')">Execute</button></td></tr>`).join('')}
+      ${(schedData.data||[]).map(s=>`<tr><td>${esc(s.name)}</td><td>${esc(s.frequency)}</td><td>${esc(s.distribution_basis)}</td><td>${fmtDate(s.next_distribution)}</td><td>${fmt(s.total_distributed||0)}</td><td>${badge(s.status)}</td><td><button class="btn btn-primary" style="padding:0.3rem 0.6rem;font-size:0.7rem" onclick="executeDistribution('${s.id}','${esc(s.name)}')">Execute</button></td></tr>`).join('')}
       </tbody></table>`:'<p style="color:var(--text-muted)">No distribution schedules configured</p>'}
     </div>
     <div class="card">
       <h3>Distribution History</h3>
       ${(distData.data||[]).length?`<table><thead><tr><th>Date</th><th>Total</th><th>Net</th><th>Tax</th><th>Status</th></tr></thead><tbody>
-      ${(distData.data||[]).map(d=>`<tr><td>${fmtDate(d.distribution_date)}</td><td>${fmt(parseInt(d.total_amount)||0)}</td><td>${fmt(parseInt(d.net_amount)||0)}</td><td>${fmt(parseInt(d.tax_withheld)||0)}</td><td>${badge(d.status)}</td></tr>`).join('')}
+      ${(distData.data||[]).map(d=>`<tr><td>${fmtDate(d.distribution_date)}</td><td>${fmt(d.total_amount||0)}</td><td>${fmt(d.net_amount||0)}</td><td>${fmt(d.tax_withheld||0)}</td><td>${badge(d.status)}</td></tr>`).join('')}
       </tbody></table>`:'<p style="color:var(--text-muted)">No distributions executed yet</p>'}
     </div>
   `;
@@ -381,12 +379,13 @@ async function renderPayments(c){
       <div class="stat-card"><div class="label">Settled</div><div class="value" style="color:var(--success)">${s.settled||0}</div><div class="sub">Completed</div></div>
       <div class="stat-card"><div class="label">Returns</div><div class="value" style="color:${s.returned?'var(--danger)':'var(--text-muted)'}">${s.returned||0}</div><div class="sub">R-codes processed</div></div>
       <div class="stat-card"><div class="label">Total Volume</div><div class="value">${fmt(s.total_volume||0)}</div><div class="sub">All transactions</div></div>
+
       <div class="stat-card"><div class="label">Batches</div><div class="value">${s.total_batches||0}</div><div class="sub">NACHA files generated</div></div>
     </div>
     <div class="card">
       <h3>ACH Transactions</h3>
       ${(txns.data||[]).length?`<table><thead><tr><th>Beneficiary</th><th>Type</th><th>Routing</th><th>Amount</th><th>Date</th><th>Status</th><th>Actions</th></tr></thead><tbody>
-      ${(txns.data||[]).map(t=>`<tr><td>${t.beneficiary_name}</td><td>${t.transaction_type}</td><td>${t.routing_number}</td><td>${fmt(parseInt(t.amount)||0)}</td><td>${fmtDate(t.effective_date)}</td><td>${badge(t.status)}</td><td>${t.status==='originated'?`<button class="btn btn-primary" style="padding:0.2rem 0.5rem;font-size:0.7rem" onclick="settleACHTxn('${t.id}')">Settle</button> <button class="btn btn-outline" style="padding:0.2rem 0.5rem;font-size:0.7rem" onclick="returnACHTxn('${t.id}')">Return</button>`:''}</td></tr>`).join('')}
+      ${(txns.data||[]).map(t=>`<tr><td>${esc(t.beneficiary_name)}</td><td>${esc(t.transaction_type)}</td><td>${esc(t.routing_number)}</td><td>${fmt(t.amount||0)}</td><td>${fmtDate(t.effective_date)}</td><td>${badge(t.status)}</td><td>${t.status==='originated'?`<button class="btn btn-primary" style="padding:0.2rem 0.5rem;font-size:0.7rem" onclick="settleACHTxn('${t.id}')">Settle</button> <button class="btn btn-outline" style="padding:0.2rem 0.5rem;font-size:0.7rem" onclick="returnACHTxn('${t.id}')">Return</button>`:''}</td></tr>`).join('')}
       </tbody></table>`:'<p style="color:var(--text-muted)">No ACH transactions yet. Originate a payment to get started.</p>'}
     </div>
     <div class="card" style="border-color:var(--gold)">
@@ -485,14 +484,14 @@ async function renderLedger(c){
   c.innerHTML=`
     <div class="page-header"><h2>General Ledger</h2></div>
     <div class="stats-grid">
-      <div class="stat-card"><div class="label">Total Income</div><div class="value">${fmt(parseInt(data.summary?.total_income)||0)}</div></div>
-      <div class="stat-card"><div class="label">Total Distributed</div><div class="value">${fmt(parseInt(data.summary?.total_distributed)||0)}</div></div>
-      <div class="stat-card"><div class="label">Total Expenses</div><div class="value">${fmt(parseInt(data.summary?.total_expenses)||0)}</div></div>
+      <div class="stat-card"><div class="label">Total Income</div><div class="value">${fmt(data.summary?.total_income||0)}</div></div>
+      <div class="stat-card"><div class="label">Total Distributed</div><div class="value">${fmt(data.summary?.total_distributed||0)}</div></div>
+      <div class="stat-card"><div class="label">Total Expenses</div><div class="value">${fmt(data.summary?.total_expenses||0)}</div></div>
       <div class="stat-card"><div class="label">Entries</div><div class="value">${data.summary?.total_entries||0}</div></div>
     </div>
     <div class="card">
       <table><thead><tr><th>Date</th><th>Type</th><th>Debit</th><th>Credit</th><th>Amount</th><th>Description</th><th>Status</th></tr></thead><tbody>
-      ${(data.data||[]).map(e=>`<tr><td>${fmtDate(e.entry_date)}</td><td>${e.entry_type}</td><td>${e.debit_wallet_name||'—'}</td><td>${e.credit_wallet_name||'—'}</td><td>${fmt(e.amount)}</td><td>${e.description||''}</td><td>${badge(e.status)}</td></tr>`).join('')}
+      ${(data.data||[]).map(e=>`<tr><td>${fmtDate(e.entry_date)}</td><td>${esc(e.entry_type)}</td><td>${esc(e.debit_wallet_name||'—')}</td><td>${esc(e.credit_wallet_name||'—')}</td><td>${fmt(e.amount)}</td><td>${esc(e.description||'')}</td><td>${badge(e.status)}</td></tr>`).join('')}
       </tbody></table>
     </div>
   `;
@@ -505,14 +504,14 @@ async function renderWallets(c){
     <div class="page-header"><h2>Wallets</h2></div>
     <div class="card">
       <table><thead><tr><th>Code</th><th>Name</th><th>Type</th><th>Balance</th><th>Status</th></tr></thead><tbody>
-      ${wallets.map(w=>`<tr><td><code>${w.wallet_code}</code></td><td>${w.name}</td><td>${w.wallet_type}</td><td style="font-weight:600">${fmt(parseInt(w.balance)||0)}</td><td>${badge(w.status)}</td></tr>`).join('')}
+      ${wallets.map(w=>`<tr><td><code>${esc(w.wallet_code)}</code></td><td>${esc(w.name)}</td><td>${esc(w.wallet_type)}</td><td style="font-weight:600">${fmt(w.balance||0)}</td><td>${badge(w.status)}</td></tr>`).join('')}
       </tbody></table>
     </div>
     <div class="card">
       <h3>Internal Transfer</h3>
       <form onsubmit="doTransfer(event)" style="display:flex;gap:0.75rem;align-items:end;flex-wrap:wrap">
-        <div><label style="font-size:0.75rem;color:var(--text-muted)">From</label><br><select id="tf-from" style="padding:0.5rem;background:var(--surface2);border:1px solid var(--border);border-radius:6px;color:var(--text)">${wallets.map(w=>`<option value="${w.id}">${w.name} (${fmt(parseInt(w.balance)||0)})</option>`).join('')}</select></div>
-        <div><label style="font-size:0.75rem;color:var(--text-muted)">To</label><br><select id="tf-to" style="padding:0.5rem;background:var(--surface2);border:1px solid var(--border);border-radius:6px;color:var(--text)">${wallets.map(w=>`<option value="${w.id}">${w.name}</option>`).join('')}</select></div>
+        <div><label style="font-size:0.75rem;color:var(--text-muted)">From</label><br><select id="tf-from" style="padding:0.5rem;background:var(--surface2);border:1px solid var(--border);border-radius:6px;color:var(--text)">${wallets.map(w=>`<option value="${w.id}">${esc(w.name)} (${fmt(w.balance||0)})</option>`).join('')}</select></div>
+        <div><label style="font-size:0.75rem;color:var(--text-muted)">To</label><br><select id="tf-to" style="padding:0.5rem;background:var(--surface2);border:1px solid var(--border);border-radius:6px;color:var(--text)">${wallets.map(w=>`<option value="${w.id}">${esc(w.name)}</option>`).join('')}</select></div>
         <div><label style="font-size:0.75rem;color:var(--text-muted)">Amount ($)</label><br><input id="tf-amt" type="number" step="0.01" min="0.01" style="padding:0.5rem;width:120px;background:var(--surface2);border:1px solid var(--border);border-radius:6px;color:var(--text)"></div>
         <button type="submit" class="btn btn-primary">Transfer</button>
       </form>
@@ -545,7 +544,7 @@ async function renderEngine(c){
     </div>
     <div class="stats-grid">
       <div class="stat-card"><div class="label">Pending Approval</div><div class="value">${p.pending_approval?.count||0}</div><div class="sub">${fmt(p.pending_approval?.total||0)}</div></div>
-      <div class="stat-card"><div class="label">Approved (Ready)</div><div class="value" style="color:var(--success)">${p.approved?.count||0}</div><div class="sub">${fmt(p.approved?.total||0)}</div></div>
+      <div class="stat-card"><div class="label">Approved</div><div class="value" style="color:var(--success)">${p.approved?.count||0}</div><div class="sub">${fmt(p.approved?.total||0)}</div></div>
       <div class="stat-card"><div class="label">Batched</div><div class="value">${p.batched?.count||0}</div><div class="sub">${fmt(p.batched?.total||0)}</div></div>
       <div class="stat-card"><div class="label">Processing</div><div class="value" style="color:var(--warning)">${p.processing?.count||0}</div><div class="sub">${fmt(p.processing?.total||0)}</div></div>
       <div class="stat-card"><div class="label">Settled</div><div class="value" style="color:var(--success)">${p.settled?.count||0}</div><div class="sub">${fmt(p.settled?.total||0)}</div></div>
@@ -566,14 +565,14 @@ async function renderEngine(c){
       <div class="card">
         <h3>Recent Batches</h3>
         ${(status.recent_batches||[]).length?`<table><thead><tr><th>Rail</th><th>Count</th><th>Amount</th><th>Status</th><th>Actions</th></tr></thead><tbody>
-        ${(status.recent_batches||[]).map(b=>`<tr><td>${b.payment_rail}</td><td>${b.payment_count}</td><td>${fmt(parseInt(b.total_amount)||0)}</td><td>${badge(b.status)}</td><td>${b.status==='created'?`<button class="btn btn-primary" style="padding:0.2rem 0.5rem;font-size:0.7rem" onclick="processBatch('${b.id}')">Process</button>`:b.status==='processed'?`<button class="btn btn-outline" style="padding:0.2rem 0.5rem;font-size:0.7rem" onclick="settleBatch('${b.id}')">Settle</button>`:''}</td></tr>`).join('')}
+        ${(status.recent_batches||[]).map(b=>`<tr><td>${esc(b.payment_rail)}</td><td>${b.payment_count}</td><td>${fmt(b.total_amount||0)}</td><td>${badge(b.status)}</td><td>${b.status==='created'?`<button class="btn btn-primary" style="padding:0.2rem 0.5rem;font-size:0.7rem" onclick="processBatch('${b.id}')">Process</button>`:b.status==='processed'?`<button class="btn btn-outline" style="padding:0.2rem 0.5rem;font-size:0.7rem" onclick="settleBatch('${b.id}')">Settle</button>`:''}</td></tr>`).join('')}
         </tbody></table>`:'<p style="color:var(--text-muted)">No batches yet — initiate payments to get started</p>'}
       </div>
     </div>
     <div class="card">
       <h3>Payment Queue</h3>
       ${(payments.data||[]).length?`<table><thead><tr><th>Beneficiary</th><th>Rail</th><th>Amount</th><th>Date</th><th>Priority</th><th>Status</th><th>Actions</th></tr></thead><tbody>
-      ${(payments.data||[]).map(pi=>`<tr><td>${pi.beneficiary_name||pi.beneficiary_name_lookup||'—'}</td><td>${pi.payment_rail}</td><td>${fmt(parseInt(pi.amount)||0)}</td><td>${fmtDate(pi.effective_date)}</td><td>${pi.priority||'normal'}</td><td>${badge(pi.status)}</td><td>${pi.status==='pending_approval'?`<button class="btn btn-primary" style="padding:0.2rem 0.5rem;font-size:0.7rem" onclick="approvePayment('${pi.id}')">Approve</button>`:(pi.status==='approved'?`<button class="btn btn-outline" style="padding:0.2rem 0.5rem;font-size:0.7rem" onclick="batchPayment('${pi.id}','${pi.payment_rail}')">Batch</button>`:'')}</td></tr>`).join('')}
+      ${(payments.data||[]).map(pi=>`<tr><td>${esc(pi.beneficiary_name||'—')}</td><td>${esc(pi.payment_rail)}</td><td>${fmt(pi.amount||0)}</td><td>${fmtDate(pi.effective_date)}</td><td>${esc(pi.priority||'normal')}</td><td>${badge(pi.status)}</td><td>${pi.status==='pending_approval'?`<button class="btn btn-primary" style="padding:0.2rem 0.5rem;font-size:0.7rem" onclick="approvePayment('${pi.id}')">Approve</button>`:(pi.status==='approved'?`<button class="btn btn-outline" style="padding:0.2rem 0.5rem;font-size:0.7rem" onclick="batchPayment('${pi.id}','${esc(pi.payment_rail)}')">Batch</button>`:'')}</td></tr>`).join('')}
       </tbody></table>`:'<p style="color:var(--text-muted)">No payment instructions in queue</p>'}
     </div>
     <div class="card" style="border-color:var(--gold)">
@@ -659,48 +658,117 @@ async function autoProcessPayments(){
 }
 
 async function renderMFT(c){
-  const data=await api('/api/treasury/mft/files');
-  const config=await api('/api/treasury/mft/config');
+  const [data,config,as2Config,as2Partners,as2Messages]=await Promise.all([
+    api('/api/treasury/mft/files'),
+    api('/api/treasury/mft/config'),
+    api('/api/treasury/as2/config').catch(()=>({data:{}})),
+    api('/api/treasury/as2/partners').catch(()=>({data:[]})),
+    api('/api/treasury/as2/messages').catch(()=>({data:[]}))
+  ]);
+  const files=data.data||[];
+  const partners=(as2Partners.data||[]).filter(p=>p.status==='active');
+  const messages=as2Messages.data||[];
+  const as2Cfg=as2Config.data||{};
+  const hasCert=!!as2Cfg.signing_cert;
   c.innerHTML=`
-    <div class="page-header"><h2>Managed File Transfer</h2><button class="btn btn-primary" onclick="generateNACHA()">Generate NACHA File</button></div>
+    <div class="page-header"><h2>Managed File Transfer</h2>
+      <div style="display:flex;gap:0.5rem">
+        <button class="btn btn-primary" onclick="generateNACHA()">Generate NACHA File</button>
+      </div>
+    </div>
     <div class="stats-grid">
       <div class="stat-card">
         <div class="label">SFTP Status</div>
         <div class="value" style="font-size:1.2rem">${config.sftp_configured?'<span style="color:var(--success)">Configured</span>':'<span style="color:var(--warning)">Not Configured</span>'}</div>
-        <div class="sub">${config.sftp_host||'No SFTP host set'}</div>
+        <div class="sub">${esc(config.sftp_host)||'No SFTP host set'}</div>
+      </div>
+      <div class="stat-card">
+        <div class="label">AS2 Gateway</div>
+        <div class="value" style="font-size:1.2rem">${hasCert?'<span style="color:var(--success)">Active</span>':'<span style="color:var(--warning)">Setup Required</span>'}</div>
+        <div class="sub">ID: ${esc(as2Cfg.as2_id||'DLBTrust')} · ${partners.length} partner${partners.length!==1?'s':''}</div>
       </div>
       <div class="stat-card">
         <div class="label">Files Generated</div>
-        <div class="value">${(data.data||[]).length}</div>
-        <div class="sub">NACHA ACH payment files</div>
+        <div class="value">${files.length}</div>
+        <div class="sub">NACHA &amp; payment files</div>
       </div>
       <div class="stat-card">
-        <div class="label">Files Delivered</div>
-        <div class="value">${(data.data||[]).filter(f=>f.status==='delivered').length}</div>
-        <div class="sub">Successfully transmitted via SFTP</div>
-      </div>
-      <div class="stat-card">
-        <div class="label">Pending Delivery</div>
-        <div class="value">${(data.data||[]).filter(f=>f.status==='pending'||f.status==='generated').length}</div>
-        <div class="sub">Awaiting transmission</div>
+        <div class="label">AS2 Deliveries</div>
+        <div class="value">${messages.filter(m=>m.mdn_status==='confirmed').length} / ${messages.length}</div>
+        <div class="sub">Confirmed / Total sent</div>
       </div>
     </div>
+
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:1.5rem">
+      <div class="card">
+        <h3>SFTP Configuration</h3>
+        <form onsubmit="saveSFTPConfig(event)" style="display:flex;gap:0.75rem;align-items:end;flex-wrap:wrap">
+          <div><label style="font-size:0.75rem;color:var(--text-muted)">Host</label><br><input id="sftp-host" value="${esc(config.sftp_host)||''}" placeholder="sftp.bank.com" style="padding:0.5rem;background:var(--surface2);border:1px solid var(--border);border-radius:6px;color:var(--text);width:160px"></div>
+          <div><label style="font-size:0.75rem;color:var(--text-muted)">Port</label><br><input id="sftp-port" value="${config.sftp_port||22}" type="number" style="padding:0.5rem;background:var(--surface2);border:1px solid var(--border);border-radius:6px;color:var(--text);width:60px"></div>
+          <div><label style="font-size:0.75rem;color:var(--text-muted)">Username</label><br><input id="sftp-user" value="${esc(config.sftp_username)||''}" placeholder="ach_upload" style="padding:0.5rem;background:var(--surface2);border:1px solid var(--border);border-radius:6px;color:var(--text);width:120px"></div>
+          <div><label style="font-size:0.75rem;color:var(--text-muted)">Remote Path</label><br><input id="sftp-path" value="${esc(config.sftp_path)||'/incoming'}" placeholder="/incoming" style="padding:0.5rem;background:var(--surface2);border:1px solid var(--border);border-radius:6px;color:var(--text);width:120px"></div>
+          <button type="submit" class="btn btn-primary">Save</button>
+        </form>
+      </div>
+      <div class="card">
+        <h3>AS2 Configuration <span style="font-size:0.7rem;color:var(--text-muted);font-weight:normal">RFC 4130</span></h3>
+        <form onsubmit="saveAS2Config(event)" style="display:flex;gap:0.75rem;align-items:end;flex-wrap:wrap">
+          <div><label style="font-size:0.75rem;color:var(--text-muted)">AS2 ID</label><br><input id="as2-id" value="${esc(as2Cfg.as2_id)||'DLBTrust'}" style="padding:0.5rem;background:var(--surface2);border:1px solid var(--border);border-radius:6px;color:var(--text);width:140px"></div>
+          <div><label style="font-size:0.75rem;color:var(--text-muted)">MDN URL</label><br><input id="as2-mdn-url" value="${esc(as2Cfg.mdn_url)||''}" placeholder="https://..." style="padding:0.5rem;background:var(--surface2);border:1px solid var(--border);border-radius:6px;color:var(--text);width:200px"></div>
+          <button type="submit" class="btn btn-primary">Save</button>
+          <button type="button" class="btn btn-outline" onclick="regenAS2Cert()" style="font-size:0.75rem">Regen Cert</button>
+          <a href="/api/treasury/as2/certificate" class="btn btn-outline" style="font-size:0.75rem;text-decoration:none;padding:0.5rem 0.7rem" download>Export Cert</a>
+        </form>
+        ${hasCert?'<p style="font-size:0.7rem;color:var(--success);margin-top:0.5rem">✔ Signing certificate active</p>':'<p style="font-size:0.7rem;color:var(--warning);margin-top:0.5rem">No signing certificate — click Regen Cert to generate one</p>'}
+      </div>
+    </div>
+
     <div class="card">
-      <h3>SFTP Configuration</h3>
-      <form onsubmit="saveSFTPConfig(event)" style="display:flex;gap:0.75rem;align-items:end;flex-wrap:wrap">
-        <div><label style="font-size:0.75rem;color:var(--text-muted)">Host</label><br><input id="sftp-host" value="${config.sftp_host||''}" placeholder="sftp.bank.com" style="padding:0.5rem;background:var(--surface2);border:1px solid var(--border);border-radius:6px;color:var(--text);width:180px"></div>
-        <div><label style="font-size:0.75rem;color:var(--text-muted)">Port</label><br><input id="sftp-port" value="${config.sftp_port||22}" type="number" style="padding:0.5rem;background:var(--surface2);border:1px solid var(--border);border-radius:6px;color:var(--text);width:70px"></div>
-        <div><label style="font-size:0.75rem;color:var(--text-muted)">Username</label><br><input id="sftp-user" value="${config.sftp_username||''}" placeholder="ach_upload" style="padding:0.5rem;background:var(--surface2);border:1px solid var(--border);border-radius:6px;color:var(--text);width:140px"></div>
-        <div><label style="font-size:0.75rem;color:var(--text-muted)">Remote Path</label><br><input id="sftp-path" value="${config.sftp_path||'/incoming'}" placeholder="/incoming" style="padding:0.5rem;background:var(--surface2);border:1px solid var(--border);border-radius:6px;color:var(--text);width:140px"></div>
-        <button type="submit" class="btn btn-primary">Save Config</button>
-      </form>
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:1rem">
+        <h3 style="margin:0">AS2 Trading Partners</h3>
+        <button class="btn btn-primary" onclick="showAddPartner()">+ Add Partner</button>
+      </div>
+      ${partners.length?`<table><thead><tr><th>Name</th><th>AS2 ID</th><th>URL</th><th>Encryption</th><th>MDN</th><th>Status</th><th>Actions</th></tr></thead><tbody>
+      ${partners.map(p=>`<tr>
+        <td><strong>${esc(p.name)}</strong></td>
+        <td><code>${esc(p.as2_id)}</code></td>
+        <td style="max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(p.url)}">${esc(p.url)}</td>
+        <td>${p.certificate?'<span style="color:var(--success)">Encrypted</span>':'<span style="color:var(--text-muted)">None</span>'}</td>
+        <td>${p.request_mdn?esc(p.mdn_mode||'sync'):'off'}</td>
+        <td>${badge(p.status)}</td>
+        <td>
+          <button class="btn btn-outline" style="padding:0.3rem 0.6rem;font-size:0.7rem" onclick="testAS2Partner('${p.id}')">Test</button>
+          <button class="btn btn-outline" style="padding:0.3rem 0.6rem;font-size:0.7rem;color:var(--danger)" onclick="deleteAS2Partner('${p.id}')">Remove</button>
+        </td>
+      </tr>`).join('')}
+      </tbody></table>`:'<p style="color:var(--text-muted)">No AS2 trading partners configured. Add a partner to enable secure file delivery.</p>'}
     </div>
+
     <div class="card">
       <h3>Payment Files</h3>
-      ${(data.data||[]).length?`<table><thead><tr><th>File</th><th>Type</th><th>Records</th><th>Amount</th><th>Generated</th><th>Status</th><th>Actions</th></tr></thead><tbody>
-      ${(data.data||[]).map(f=>`<tr><td><code>${f.filename}</code></td><td>${f.file_type}</td><td>${f.record_count||0}</td><td>${fmt(parseInt(f.total_amount)||0)}</td><td>${fmtDate(f.created_at)}</td><td>${badge(f.status)}</td><td>${f.status==='generated'||f.status==='pending'?`<button class="btn btn-outline" style="padding:0.3rem 0.6rem;font-size:0.7rem" onclick="deliverFile('${f.id}')">Deliver</button>`:f.status==='delivered'?'<span style="color:var(--success);font-size:0.75rem">Sent</span>':''}</td></tr>`).join('')}
+      ${files.length?`<table><thead><tr><th>File</th><th>Type</th><th>Records</th><th>Amount</th><th>Generated</th><th>Status</th><th>Actions</th></tr></thead><tbody>
+      ${files.map(f=>`<tr><td><code>${esc(f.filename)}</code></td><td>${esc(f.file_type)}</td><td>${f.record_count||0}</td><td>${fmt(f.total_amount||0)}</td><td>${fmtDate(f.created_at)}</td><td>${badge(f.status)}</td><td style="white-space:nowrap">
+        ${f.status==='generated'||f.status==='pending'?`
+          <button class="btn btn-outline" style="padding:0.3rem 0.6rem;font-size:0.7rem" onclick="deliverFile('${f.id}')">SFTP</button>
+          ${partners.length?`<button class="btn btn-primary" style="padding:0.3rem 0.6rem;font-size:0.7rem" onclick="sendAS2File('${f.id}')">AS2</button>`:''}
+        `:f.status==='delivered'?'<span style="color:var(--success);font-size:0.75rem">Delivered</span>':f.status==='delivery_failed'?'<span style="color:var(--danger);font-size:0.75rem">Failed</span>':''}
+      </td></tr>`).join('')}
       </tbody></table>`:'<p style="color:var(--text-muted)">No payment files generated yet. Generate a NACHA file from completed distributions.</p>'}
     </div>
+
+    ${messages.length?`<div class="card">
+      <h3>AS2 Message History</h3>
+      <table><thead><tr><th>Date</th><th>Partner</th><th>File</th><th>Message ID</th><th>MIC</th><th>MDN Status</th></tr></thead><tbody>
+      ${messages.slice(0,20).map(m=>`<tr>
+        <td>${fmtDate(m.sent_at)}</td>
+        <td>${esc(m.partner_name||'—')}</td>
+        <td><code>${esc(m.filename||'—')}</code></td>
+        <td style="max-width:180px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:0.7rem" title="${esc(m.message_id)}">${esc(m.message_id||'—')}</td>
+        <td style="font-size:0.7rem">${esc(m.mic_algorithm||'')}${m.mic?': '+esc(m.mic.slice(0,12))+'…':''}</td>
+        <td>${m.mdn_status==='confirmed'?'<span class="badge badge-active">Confirmed</span>':m.mdn_status==='failed'||m.mdn_status==='error'?'<span class="badge badge-failed">'+esc(m.mdn_status)+'</span>':'<span class="badge badge-pending">'+esc(m.mdn_status||'pending')+'</span>'}</td>
+      </tr>`).join('')}
+      </tbody></table>
+    </div>`:''}
   `;
 }
 
@@ -723,6 +791,99 @@ async function saveSFTPConfig(e){
   const r=await api('/api/treasury/mft/config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
   if(r.success)toast('SFTP configuration saved');
   else toast(r.error||'Failed to save config','error');
+}
+
+// ─── AS2 Functions ─────────────────────────────────────────────────
+async function saveAS2Config(e){
+  e.preventDefault();
+  const body={as2_id:document.getElementById('as2-id').value,mdn_url:document.getElementById('as2-mdn-url').value};
+  const r=await api('/api/treasury/as2/config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+  if(r.success)toast('AS2 configuration saved');
+  else toast(r.error||'Failed to save AS2 config','error');
+}
+
+async function regenAS2Cert(){
+  if(!confirm('Regenerate AS2 signing certificate? Partners will need to re-import your public cert.'))return;
+  const r=await api('/api/treasury/as2/regenerate-cert',{method:'POST'});
+  if(r.success){toast('AS2 signing certificate regenerated');loadPage('mft')}
+  else toast(r.error||'Failed to regenerate certificate','error');
+}
+
+function showAddPartner(){
+  const modal=document.createElement('div');
+  modal.className='modal-overlay';
+  modal.innerHTML=`<div class="modal">
+    <h3>Add AS2 Trading Partner</h3>
+    <form onsubmit="addAS2Partner(event,this)">
+      <label>Partner Name *</label><input name="name" placeholder="Bank Name / Processor" required style="width:100%;padding:0.5rem;background:var(--surface2);border:1px solid var(--border);border-radius:6px;color:var(--text);margin-bottom:0.75rem">
+      <label>AS2 ID *</label><input name="as2_id" placeholder="PARTNERID" required style="width:100%;padding:0.5rem;background:var(--surface2);border:1px solid var(--border);border-radius:6px;color:var(--text);margin-bottom:0.75rem">
+      <label>Receiver URL *</label><input name="url" placeholder="https://partner.com/as2/receive" required style="width:100%;padding:0.5rem;background:var(--surface2);border:1px solid var(--border);border-radius:6px;color:var(--text);margin-bottom:0.75rem">
+      <label>Partner Certificate (PEM) <span style="font-size:0.7rem;color:var(--text-muted)">for encryption</span></label><textarea name="certificate" placeholder="-----BEGIN CERTIFICATE-----&#10;...&#10;-----END CERTIFICATE-----" rows="4" style="width:100%;padding:0.5rem;background:var(--surface2);border:1px solid var(--border);border-radius:6px;color:var(--text);font-family:monospace;font-size:0.75rem;margin-bottom:0.75rem"></textarea>
+      <div style="display:flex;gap:1rem;margin-bottom:0.75rem">
+        <div style="flex:1"><label style="font-size:0.75rem">Encryption</label><select name="encryption_algorithm" style="width:100%;padding:0.5rem;background:var(--surface2);border:1px solid var(--border);border-radius:6px;color:var(--text)"><option value="aes256">AES-256</option><option value="aes128">AES-128</option><option value="3des">3DES</option></select></div>
+        <div style="flex:1"><label style="font-size:0.75rem">Signature</label><select name="signature_algorithm" style="width:100%;padding:0.5rem;background:var(--surface2);border:1px solid var(--border);border-radius:6px;color:var(--text)"><option value="sha256">SHA-256</option><option value="sha1">SHA-1</option><option value="sha512">SHA-512</option></select></div>
+        <div style="flex:1"><label style="font-size:0.75rem">MDN Mode</label><select name="mdn_mode" style="width:100%;padding:0.5rem;background:var(--surface2);border:1px solid var(--border);border-radius:6px;color:var(--text)"><option value="sync">Synchronous</option><option value="async">Asynchronous</option></select></div>
+      </div>
+      <div style="display:flex;justify-content:flex-end;gap:0.75rem;margin-top:1rem">
+        <button type="button" class="btn btn-outline" onclick="this.closest('.modal-overlay').remove()">Cancel</button>
+        <button type="submit" class="btn btn-primary">Add Partner</button>
+      </div>
+    </form>
+  </div>`;
+  document.body.appendChild(modal);
+}
+
+async function addAS2Partner(e,form){
+  e.preventDefault();
+  const fd=new FormData(form);
+  const body={name:fd.get('name'),as2_id:fd.get('as2_id'),url:fd.get('url'),certificate:fd.get('certificate')||null,encryption_algorithm:fd.get('encryption_algorithm'),signature_algorithm:fd.get('signature_algorithm'),mdn_mode:fd.get('mdn_mode')};
+  const r=await api('/api/treasury/as2/partners',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+  if(r.success){toast('AS2 trading partner added');document.querySelector('.modal-overlay')?.remove();loadPage('mft')}
+  else toast(r.error||'Failed to add partner','error');
+}
+
+async function testAS2Partner(partnerId){
+  toast('Sending AS2 connectivity test...','info');
+  const r=await api(`/api/treasury/as2/test/${partnerId}`,{method:'POST'});
+  if(r.success)toast(r.message||'AS2 test successful');
+  else toast(r.error||'AS2 test failed','error');
+}
+
+async function deleteAS2Partner(partnerId){
+  if(!confirm('Remove this AS2 trading partner?'))return;
+  const r=await api(`/api/treasury/as2/partners/${partnerId}`,{method:'DELETE'});
+  if(r.success){toast('Partner removed');loadPage('mft')}
+  else toast(r.error||'Failed to remove partner','error');
+}
+
+async function sendAS2File(fileId){
+  // Get partners and let user pick one
+  const pData=await api('/api/treasury/as2/partners');
+  const partners=(pData.data||[]).filter(p=>p.status==='active');
+  if(!partners.length){toast('No AS2 partners configured — add a partner first','error');return}
+  if(partners.length===1){
+    if(!confirm(`Send file via AS2 to ${partners[0].name}?`))return;
+    doAS2Send(fileId,partners[0].id);
+  }else{
+    const modal=document.createElement('div');
+    modal.className='modal-overlay';
+    modal.innerHTML=`<div class="modal">
+      <h3>Send via AS2</h3>
+      <p style="color:var(--text-muted);margin-bottom:1rem">Select a trading partner to deliver this file:</p>
+      ${partners.map(p=>`<button class="btn btn-outline" style="width:100%;margin-bottom:0.5rem;text-align:left;padding:0.75rem" onclick="this.closest('.modal-overlay').remove();doAS2Send('${fileId}','${p.id}')">
+        <strong>${esc(p.name)}</strong> <span style="color:var(--text-muted);font-size:0.75rem">(${esc(p.as2_id)})</span>
+      </button>`).join('')}
+      <button class="btn btn-outline" style="margin-top:0.5rem" onclick="this.closest('.modal-overlay').remove()">Cancel</button>
+    </div>`;
+    document.body.appendChild(modal);
+  }
+}
+
+async function doAS2Send(fileId,partnerId){
+  toast('Sending file via AS2 with S/MIME encryption...','info');
+  const r=await api(`/api/treasury/as2/send/${fileId}`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({partner_id:partnerId})});
+  if(r.success){toast(r.message||'File sent via AS2');loadPage('mft')}
+  else toast(r.error||'AS2 delivery failed','error');
 }
 
 async function renderCoreBanking(c){

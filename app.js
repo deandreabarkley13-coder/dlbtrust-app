@@ -43,6 +43,66 @@ app.use('/api/fineract', require('./server/routes/fineract'));
 // ─── Fixed Income / Bond Routes ───────────────────────────────────────────────
 app.use('/api/bonds', require('./server/routes/bonds'));
 
+// ─── Treasury Management Routes ───────────────────────────────────────────────
+app.use('/api/treasury', require('./server/routes/treasury'));
+
+// ─── Bond Schema Auto-Init ────────────────────────────────────────────────────
+const bondPool = require('./server/integrations/bonds/pgPool');
+(async () => {
+  try {
+    // Check if bonds table exists with wrong column type (UUID vs INTEGER)
+    const check = await bondPool.query(`
+      SELECT data_type FROM information_schema.columns
+      WHERE table_name = 'bonds' AND column_name = 'id'
+    `).catch(() => ({ rows: [] }));
+    if (check.rows.length > 0 && check.rows[0].data_type === 'uuid') {
+      console.log('[BondDB] Migrating: dropping legacy UUID-based bond tables');
+      await bondPool.query('DROP TABLE IF EXISTS bond_transactions CASCADE');
+      await bondPool.query('DROP TABLE IF EXISTS bond_balances CASCADE');
+      await bondPool.query('DROP TABLE IF EXISTS bonds CASCADE');
+    }
+
+    await bondPool.query(`
+      CREATE TABLE IF NOT EXISTS bonds (
+        id SERIAL PRIMARY KEY, bond_name VARCHAR(255) NOT NULL, isin VARCHAR(20),
+        face_value NUMERIC(18,2) NOT NULL, coupon_rate NUMERIC(8,6) NOT NULL,
+        issue_date DATE NOT NULL, maturity_date DATE NOT NULL,
+        payment_freq VARCHAR(20) NOT NULL DEFAULT 'monthly',
+        day_count VARCHAR(20) NOT NULL DEFAULT '30/360',
+        currency VARCHAR(3) NOT NULL DEFAULT 'USD',
+        status VARCHAR(20) NOT NULL DEFAULT 'active',
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      );
+    `);
+    await bondPool.query(`
+      CREATE TABLE IF NOT EXISTS bond_balances (
+        id SERIAL PRIMARY KEY, bond_id INTEGER NOT NULL,
+        principal_balance NUMERIC(18,2) NOT NULL, accrued_interest NUMERIC(18,2) NOT NULL DEFAULT 0,
+        total_interest_paid NUMERIC(18,2) NOT NULL DEFAULT 0, total_principal_paid NUMERIC(18,2) NOT NULL DEFAULT 0,
+        last_accrual_date DATE, last_payment_date DATE,
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), UNIQUE(bond_id)
+      );
+    `);
+    await bondPool.query(`
+      CREATE TABLE IF NOT EXISTS bond_transactions (
+        id SERIAL PRIMARY KEY, bond_id INTEGER NOT NULL,
+        transaction_type VARCHAR(30) NOT NULL, amount NUMERIC(18,2) NOT NULL,
+        running_balance NUMERIC(18,2) NOT NULL, accrued_interest NUMERIC(18,2) NOT NULL DEFAULT 0,
+        description TEXT, fineract_txn_id VARCHAR(100),
+        transaction_date DATE NOT NULL, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      );
+    `);
+    await bondPool.query(`
+      CREATE INDEX IF NOT EXISTS idx_bond_txn_bond_id ON bond_transactions(bond_id);
+      CREATE INDEX IF NOT EXISTS idx_bond_txn_date ON bond_transactions(transaction_date);
+      CREATE INDEX IF NOT EXISTS idx_bond_txn_type ON bond_transactions(transaction_type);
+    `);
+    console.log('[BondDB] Schema initialized successfully');
+  } catch (err) {
+    console.warn('[BondDB] Schema init skipped:', err.message);
+  }
+})();
+
 // ─── Start Server ─────────────────────────────────────────────────────────────
 const PORT = process.env.PORT || 3001;
 app.listen(PORT, () => {
