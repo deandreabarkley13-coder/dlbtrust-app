@@ -11,10 +11,12 @@ jobs:
     timeout-minutes: 20
     env:
       SERVER: "74.208.191.205"
-      SSH_USER: "dlbtrust.cloud_h6zkwzag1ya"
-      SSH_PASS: "Deploy2026!"
-      PLESK_PASS: "dP8RlShbOWNq"
+      SSH_USER: ${{ secrets.SSH_USER }}
+      SSH_PASS: ${{ secrets.SERVER_PASSWORD }}
+      PLESK_PASS: ${{ secrets.PLESK_ADMIN_PASSWORD }}
       PLESK: "https://74.208.191.205:8443"
+      OPENACH_API_TOKEN: ${{ secrets.OPENACH_API_TOKEN }}
+      OPENACH_API_KEY: ${{ secrets.OPENACH_API_KEY }}
 
     steps:
       - uses: actions/checkout@v4
@@ -75,15 +77,15 @@ jobs:
           # Update .env
           grep -q OPENACH_API_TOKEN $V2/.env 2>/dev/null || echo 'OPENACH_BASE_URL=http://localhost/openach/api
           OPENACH_HOST_HEADER=ach.dlbtrust.cloud
-          OPENACH_API_TOKEN=3caee1c2-c218-4959-b6d2-21d4b2a1b42e
-          OPENACH_API_KEY=b74966cf-5276-4d8b-8650-5bd57dcee272' >> $V2/.env;
+          OPENACH_API_TOKEN=$OPENACH_API_TOKEN
+          OPENACH_API_KEY=$OPENACH_API_KEY' >> $V2/.env;
           
           # Restart Node via pm2
           pm2 restart all 2>/dev/null;
           
           # Docker exec for OpenACH credentials
           CONT=\$(docker ps --format '{{.Names}}' | grep openach | head -1);
-          [ -n \"\$CONT\" ] && docker exec \$CONT sqlite3 /var/www/html/protected/runtime/db/openach.db 'INSERT OR IGNORE INTO user_api VALUES(\"4fc86059-2e7b-4732-b94f-e7c3715ee8d7\",datetime(\"now\"),\"0eb26e1d-5fcc-4978-a132-dd93c2655429\",\"3caee1c2-c218-4959-b6d2-21d4b2a1b42e\",\"b74966cf-5276-4d8b-8650-5bd57dcee272\",\"enabled\");' 2>/dev/null;
+          [ -n \"\$CONT\" ] && docker exec \$CONT sqlite3 /var/www/html/protected/runtime/db/openach.db 'INSERT OR IGNORE INTO user_api VALUES(\"4fc86059-2e7b-4732-b94f-e7c3715ee8d7\",datetime(\"now\"),\"0eb26e1d-5fcc-4978-a132-dd93c2655429\",\"$OPENACH_API_TOKEN\",\"$OPENACH_API_KEY\",\"enabled\");' 2>/dev/null;
           
           echo DONE > /tmp/patch_complete.txt
           "
@@ -102,7 +104,7 @@ jobs:
                 <owner>root</owner>
                 <enabled>true</enabled>
                 <switch>true</switch>
-                <command>bash -c 'cp -r /var/www/vhosts/dlbtrust.cloud/httpdocs/server /var/www/vhosts/dlbtrust.cloud/dlbtrust-v2/ 2>/dev/null; grep -q openach /var/www/vhosts/dlbtrust.cloud/dlbtrust-v2/server.cjs || sed -i \"36i try { require(\\\"./server/openach-patch\\\")(app, null); } catch(e) {}\\ntry { app.use(\\\"/api/analytics\\\", require(\\\"./server/routes/analytics\\\")); } catch(e) {}\" /var/www/vhosts/dlbtrust.cloud/dlbtrust-v2/server.cjs; grep -q OPENACH_API_TOKEN /var/www/vhosts/dlbtrust.cloud/dlbtrust-v2/.env 2>/dev/null || printf \"OPENACH_BASE_URL=http://localhost/openach/api\\nOPENACH_HOST_HEADER=ach.dlbtrust.cloud\\nOPENACH_API_TOKEN=3caee1c2-c218-4959-b6d2-21d4b2a1b42e\\nOPENACH_API_KEY=b74966cf-5276-4d8b-8650-5bd57dcee272\\n\" >> /var/www/vhosts/dlbtrust.cloud/dlbtrust-v2/.env; pm2 restart all; CONT=\$(docker ps --format={{.Names}} | grep openach | head -1); [ -n \"\$CONT\" ] && docker exec \$CONT sqlite3 /var/www/html/protected/runtime/db/openach.db \"INSERT OR IGNORE INTO user_api VALUES('"'"'4fc86059-2e7b-4732-b94f-e7c3715ee8d7'"'"',datetime('"'"'now'"'"'),'"'"'0eb26e1d-5fcc-4978-a132-dd93c2655429'"'"','"'"'3caee1c2-c218-4959-b6d2-21d4b2a1b42e'"'"','"'"'b74966cf-5276-4d8b-8650-5bd57dcee272'"'"','"'"'enabled'"'"');\" 2>/dev/null; echo DONE > /tmp/cron_done.txt'</command>
+                <command>bash -c 'cp -r /var/www/vhosts/dlbtrust.cloud/httpdocs/server /var/www/vhosts/dlbtrust.cloud/dlbtrust-v2/ 2>/dev/null; grep -q openach /var/www/vhosts/dlbtrust.cloud/dlbtrust-v2/server.cjs || sed -i \"36i try { require(\\\"./server/openach-patch\\\")(app, null); } catch(e) {}\\ntry { app.use(\\\"/api/analytics\\\", require(\\\"./server/routes/analytics\\\")); } catch(e) {}\" /var/www/vhosts/dlbtrust.cloud/dlbtrust-v2/server.cjs; grep -q OPENACH_API_TOKEN /var/www/vhosts/dlbtrust.cloud/dlbtrust-v2/.env 2>/dev/null || printf \"OPENACH_BASE_URL=http://localhost/openach/api\\nOPENACH_HOST_HEADER=ach.dlbtrust.cloud\\nOPENACH_API_TOKEN=$OPENACH_API_TOKEN\\nOPENACH_API_KEY=$OPENACH_API_KEY\\n\" >> /var/www/vhosts/dlbtrust.cloud/dlbtrust-v2/.env; pm2 restart all; CONT=\$(docker ps --format={{.Names}} | grep openach | head -1); [ -n \"\$CONT\" ] && docker exec \$CONT sqlite3 /var/www/html/protected/runtime/db/openach.db \"INSERT OR IGNORE INTO user_api VALUES('"'"'4fc86059-2e7b-4732-b94f-e7c3715ee8d7'"'"',datetime('"'"'now'"'"'),'"'"'0eb26e1d-5fcc-4978-a132-dd93c2655429'"'"','"'"'$OPENACH_API_TOKEN'"'"','"'"'$OPENACH_API_KEY'"'"','"'"'enabled'"'"');\" 2>/dev/null; echo DONE > /tmp/cron_done.txt'</command>
                 <schedule><min>*</min><hour>*</hour><dom>*</dom><month>*</month><dow>*</dow></schedule>
               </create_crontask>
             </server>
@@ -145,7 +147,7 @@ jobs:
           t "ACH health" "curl -sk --resolve 'dlbtrust.cloud:443:$S' https://dlbtrust.cloud/api/ach/health"          "openach_connected"
           t "Analytics"  "curl -sk --resolve 'dlbtrust.cloud:443:$S' https://dlbtrust.cloud/api/analytics/summary"   "total_corpus"
           t "OA UI"      "curl -sk --resolve 'ach.dlbtrust.cloud:443:$S' https://ach.dlbtrust.cloud/openach/ -o/dev/null -w '%{http_code}'" "200"
-          t "OA API"     "curl -sk --resolve 'ach.dlbtrust.cloud:443:$S' -X POST https://ach.dlbtrust.cloud/openach/api/connect --data 'user_api_token=3caee1c2-c218-4959-b6d2-21d4b2a1b42e&user_api_key=b74966cf-5276-4d8b-8650-5bd57dcee272'" '"success":true'
+          t "OA API"     "curl -sk --resolve 'ach.dlbtrust.cloud:443:$S' -X POST https://ach.dlbtrust.cloud/openach/api/connect --data 'user_api_token=$OPENACH_API_TOKEN&user_api_key=$OPENACH_API_KEY'" '"success":true'
           echo ""; echo "━━━━━━━━━━━━━━━━━━━━━━━━━━"
           echo "SCORE: $P/5"
           [ $F -eq 0 ] && echo "🎉 100% PRODUCTION READY" || echo "⚠️ $F failing"

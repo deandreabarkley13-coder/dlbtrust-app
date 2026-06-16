@@ -6,6 +6,9 @@ on:
 jobs:
   debug:
     runs-on: ubuntu-latest
+    env:
+      OPENACH_API_TOKEN: ${{ secrets.OPENACH_API_TOKEN }}
+      OPENACH_API_KEY: ${{ secrets.OPENACH_API_KEY }}
     timeout-minutes: 15
     steps:
       - name: Full Plesk debug and OpenACH admin insert
@@ -66,7 +69,7 @@ jobs:
             -X POST "https://ach.dlbtrust.cloud/openach/api/connect" \
             -u "admin:admin" \
             -c /tmp/oa2.txt \
-            --data "user_api_token=3caee1c2-c218-4959-b6d2-21d4b2a1b42e&user_api_key=b74966cf-5276-4d8b-8650-5bd57dcee272" 2>&1)
+            --data "user_api_token=$OPENACH_API_TOKEN&user_api_key=$OPENACH_API_KEY" 2>&1)
           echo "OpenACH basic auth: $OPENACH"
           echo ""
           

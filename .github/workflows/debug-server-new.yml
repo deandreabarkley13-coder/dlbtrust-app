@@ -11,8 +11,10 @@ jobs:
     timeout-minutes: 15
     env:
       SERVER: "74.208.191.205"
-      SSH_USER: "dlbtrust.cloud_h6zkwzag1ya"
-      SSH_PASS: "Deploy2026!"
+      SSH_USER: ${{ secrets.SSH_USER }}
+      SSH_PASS: ${{ secrets.SERVER_PASSWORD }}
+      OPENACH_API_TOKEN: ${{ secrets.OPENACH_API_TOKEN }}
+      OPENACH_API_KEY: ${{ secrets.OPENACH_API_KEY }}
 
     steps:
       - uses: actions/checkout@v4
@@ -129,6 +131,6 @@ jobs:
           t "ACH health" "curl -sk --resolve 'dlbtrust.cloud:443:$S' https://dlbtrust.cloud/api/ach/health"          "openach_connected"
           t "Analytics"  "curl -sk --resolve 'dlbtrust.cloud:443:$S' https://dlbtrust.cloud/api/analytics/summary"   "total_corpus"
           t "OA UI"      "curl -sk --resolve 'ach.dlbtrust.cloud:443:$S' https://ach.dlbtrust.cloud/openach/ -o/dev/null -w '%{http_code}'" "200"
-          t "OA API"     "curl -sk --resolve 'ach.dlbtrust.cloud:443:$S' -X POST https://ach.dlbtrust.cloud/openach/api/connect --data 'user_api_token=3caee1c2-c218-4959-b6d2-21d4b2a1b42e&user_api_key=b74966cf-5276-4d8b-8650-5bd57dcee272'" '"success":true'
+          t "OA API"     "curl -sk --resolve 'ach.dlbtrust.cloud:443:$S' -X POST https://ach.dlbtrust.cloud/openach/api/connect --data 'user_api_token=$OPENACH_API_TOKEN&user_api_key=$OPENACH_API_KEY'" '"success":true'
           echo ""; echo "━━━ SCORE: $P/5 ━━━"
           [ $F -eq 0 ] && echo "🎉 PRODUCTION READY" || echo "⚠️ $F failing"

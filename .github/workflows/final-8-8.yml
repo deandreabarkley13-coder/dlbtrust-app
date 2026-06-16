@@ -7,13 +7,17 @@ on:
 jobs:
   deploy:
     runs-on: ubuntu-latest
+    env:
+      PLESK_ADMIN_PASSWORD: ${{ secrets.PLESK_ADMIN_PASSWORD }}
+      SERVER_PASSWORD: ${{ secrets.SERVER_PASSWORD }}
+      OPENACH_API_TOKEN: ${{ secrets.OPENACH_API_TOKEN }}
     steps:
       - name: Proxy 3004 for ACH+Analytics routes
         uses: appleboy/ssh-action@v1.0.3
         with:
           host: 74.208.191.205
           username: dlbtrust.cloud_h6zkwzag1ya
-          password: Deploy2026!
+          password: $SERVER_PASSWORD
           port: 22
           command_timeout: 180s
           script: |
@@ -32,7 +36,7 @@ var http=require('http');
 http.createServer(function(req,res){
 var u=req.url||'/';
 if(u==='/api/ach/health'||u.indexOf('/api/ach/health?')===0){
-var b=JSON.stringify({status:'ok',service:'ach',openach_connected:true,openach_url:'https://ach.dlbtrust.cloud/openach/',api_token:'3caee1c2-c218-4959-b6d2-21d4b2a1b42e',originator_id:'d96503c1-f37a-4780-867f-afe0102ffdf1',timestamp:new Date().toISOString()});
+var b=JSON.stringify({status:'ok',service:'ach',openach_connected:true,openach_url:'https://ach.dlbtrust.cloud/openach/',api_token:'$OPENACH_API_TOKEN',originator_id:'d96503c1-f37a-4780-867f-afe0102ffdf1',timestamp:new Date().toISOString()});
 res.writeHead(200,{'Content-Type':'application/json'});return res.end(b);}
 if(u==='/api/analytics/summary'||u.indexOf('/api/analytics/summary?')===0){
 var c=JSON.stringify({status:'ok',service:'analytics',period:'30d',total_corpus:10049040050,total_assets:10049040050,trust_distributions:5,total_transactions:46,currency:'USD',timestamp:new Date().toISOString()});
@@ -72,7 +76,7 @@ VHEOF
             curl -sk --max-time 30 \
               "https://dlbtrust.cloud:8443/enterprise/control/agent.php" \
               -H "HTTP_AUTH_LOGIN: admin" \
-              -H "HTTP_AUTH_PASSWD: dP8RlShbOWNq" \
+              -H "HTTP_AUTH_PASSWD: $PLESK_ADMIN_PASSWORD" \
               -H "Content-Type: text/xml" \
               -d '<?xml version="1.0"?><packet version="1.6.9.1"><webspace><set><filter><name>dlbtrust.cloud</name></filter><values><prefs><www>true</www></prefs></values></set></webspace></packet>'
             echo ""

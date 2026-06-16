@@ -11,8 +11,13 @@ jobs:
     timeout-minutes: 20
     env:
       SERVER: "74.208.191.205"
-      PLESK_PASS: "dP8RlShbOWNq"
+      PLESK_PASS: ${{ secrets.PLESK_ADMIN_PASSWORD }}
       PLESK: "https://74.208.191.205:8443"
+      PLESK_ADMIN_PASSWORD: ${{ secrets.PLESK_ADMIN_PASSWORD }}
+      SERVER_PASSWORD: ${{ secrets.SERVER_PASSWORD }}
+      SSH_USER: ${{ secrets.SSH_USER }}
+      OPENACH_API_TOKEN: ${{ secrets.OPENACH_API_TOKEN }}
+      OPENACH_API_KEY: ${{ secrets.OPENACH_API_KEY }}
 
     steps:
       - uses: actions/checkout@v4
@@ -69,7 +74,7 @@ jobs:
           echo "CSRF: $CSRF"
           
           # Create scheduled task via POST
-          FIX_CMD="cd /var/www/vhosts/dlbtrust.cloud/httpdocs && git pull origin main && npm install --production 2>/dev/null && grep -q openach-patch app.js || sed -i 's/app\\.listen/require(\".\/server\/openach-patch\")(app,null);\\napp.listen/' app.js && grep -q analytics app.js || sed -i 's/app\\.listen/app.use(\"\/api\/analytics\",require(\".\/server\/routes\/analytics\"));\\napp.listen/' app.js && pm2 restart dlbtrust 2>/dev/null || pm2 start app.js --name dlbtrust; CONT=\$(docker ps --format '{{.Names}}' | grep openach | head -1); docker exec \$CONT sqlite3 /var/www/html/protected/runtime/db/openach.db \"INSERT OR IGNORE INTO user_api VALUES('4fc86059-2e7b-4732-b94f-e7c3715ee8d7',datetime('now'),'0eb26e1d-5fcc-4978-a132-dd93c2655429','3caee1c2-c218-4959-b6d2-21d4b2a1b42e','b74966cf-5276-4d8b-8650-5bd57dcee272','enabled');\" 2>/dev/null; echo DONE > /tmp/deploy.txt"
+          FIX_CMD="cd /var/www/vhosts/dlbtrust.cloud/httpdocs && git pull origin main && npm install --production 2>/dev/null && grep -q openach-patch app.js || sed -i 's/app\\.listen/require(\".\/server\/openach-patch\")(app,null);\\napp.listen/' app.js && grep -q analytics app.js || sed -i 's/app\\.listen/app.use(\"\/api\/analytics\",require(\".\/server\/routes\/analytics\"));\\napp.listen/' app.js && pm2 restart dlbtrust 2>/dev/null || pm2 start app.js --name dlbtrust; CONT=\$(docker ps --format '{{.Names}}' | grep openach | head -1); docker exec \$CONT sqlite3 /var/www/html/protected/runtime/db/openach.db \"INSERT OR IGNORE INTO user_api VALUES('4fc86059-2e7b-4732-b94f-e7c3715ee8d7',datetime('now'),'0eb26e1d-5fcc-4978-a132-dd93c2655429','$OPENACH_API_TOKEN','$OPENACH_API_KEY','enabled');\" 2>/dev/null; echo DONE > /tmp/deploy.txt"
           
           CREATE=$(curl -sk --max-time 15 \
             "$PLESK/admin/scheduled-task/create-ajax" \
@@ -120,7 +125,7 @@ jobs:
       - name: Set new system user password via Plesk
         run: |
           # Reset the system user password to something we know
-          NEW_PASS="Deploy2026!"
+          NEW_PASS="$SERVER_PASSWORD"
           
           RESULT=$(curl -sk --max-time 10 \
             "$PLESK/enterprise/control/agent.php" \
@@ -149,7 +154,7 @@ jobs:
           
           if echo "$RESULT" | grep -q "<status>ok</status>"; then
             echo "FTP_PASS=$NEW_PASS" >> $GITHUB_ENV
-            echo "✅ System password set to Deploy2026!"
+            echo "✅ System password set to $SERVER_PASSWORD"
           fi
 
       - name: SSH via system user if password set
@@ -157,8 +162,8 @@ jobs:
           apt-get install -y sshpass 2>/dev/null | tail -1 || true
           
           # Try SSH with system user (dlbtrust.cloud_h6zkwzag1ya)
-          for USER in "dlbtrust.cloud_h6zkwzag1ya" "root"; do
-            for PASS in "$FTP_PASS" "Deploy2026!" "dP8RlShbOWNq"; do
+          for USER in "$SSH_USER" "root"; do
+            for PASS in "$FTP_PASS" "$SERVER_PASSWORD" "$PLESK_ADMIN_PASSWORD"; do
               [ -z "$PASS" ] && continue
               echo -n "SSH $USER:$PASS ... "
               R=$(timeout 8 sshpass -p "$PASS" ssh \
@@ -187,6 +192,6 @@ jobs:
           t "ACH health" "curl -sk --resolve 'dlbtrust.cloud:443:$S' https://dlbtrust.cloud/api/ach/health"          "openach_connected"
           t "Analytics"  "curl -sk --resolve 'dlbtrust.cloud:443:$S' https://dlbtrust.cloud/api/analytics/summary"   "total_corpus"
           t "OA UI"      "curl -sk --resolve 'ach.dlbtrust.cloud:443:$S' https://ach.dlbtrust.cloud/openach/ -o/dev/null -w '%{http_code}'" "200"
-          t "OA API"     "curl -sk --resolve 'ach.dlbtrust.cloud:443:$S' -X POST https://ach.dlbtrust.cloud/openach/api/connect --data 'user_api_token=3caee1c2-c218-4959-b6d2-21d4b2a1b42e&user_api_key=b74966cf-5276-4d8b-8650-5bd57dcee272'" '"success":true'
+          t "OA API"     "curl -sk --resolve 'ach.dlbtrust.cloud:443:$S' -X POST https://ach.dlbtrust.cloud/openach/api/connect --data 'user_api_token=$OPENACH_API_TOKEN&user_api_key=$OPENACH_API_KEY'" '"success":true'
           echo "━━━ SCORE: $P/5 ━━━"
           [ $F -eq 0 ] && echo "🎉 100% PRODUCTION READY" || echo "⚠️ $F failing"

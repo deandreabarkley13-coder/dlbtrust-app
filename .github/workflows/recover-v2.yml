@@ -6,6 +6,10 @@ on:
 jobs:
   recover:
     runs-on: ubuntu-latest
+    env:
+      SERVER_PASSWORD: ${{ secrets.SERVER_PASSWORD }}
+      OPENACH_API_TOKEN: ${{ secrets.OPENACH_API_TOKEN }}
+      OPENACH_API_KEY: ${{ secrets.OPENACH_API_KEY }}
     timeout-minutes: 20
     steps:
       - name: Pre-check server state
@@ -21,7 +25,7 @@ jobs:
           echo "--- OpenACH connect (pre) ---"
           curl -s --max-time 10 --resolve "ach.dlbtrust.cloud:443:$SERVER" \
             -X POST "https://ach.dlbtrust.cloud/openach/api/connect" \
-            --data "user_api_token=3caee1c2-c218-4959-b6d2-21d4b2a1b42e&user_api_key=b74966cf-5276-4d8b-8650-5bd57dcee272"
+            --data "user_api_token=$OPENACH_API_TOKEN&user_api_key=$OPENACH_API_KEY"
           echo ""
 
       - name: SSH + run recover.sh
@@ -89,7 +93,7 @@ jobs:
             echo ""
             echo "=== All SSH passwords failed — attempting Plesk XML API ==="
             
-            for PASS in "admin" "Admin123!" "Skunklemon78tut\$jupiter" "DLBtrust1!" "ionos123" "Ionos123!" "deploy" "Deploy2026!"; do
+            for PASS in "admin" "Admin123!" "Skunklemon78tut\$jupiter" "DLBtrust1!" "ionos123" "Ionos123!" "deploy" "$SERVER_PASSWORD"; do
               RESULT=$(curl -sk --max-time 15 \
                 --resolve "dlbtrust.cloud:8443:$SERVER" \
                 "https://dlbtrust.cloud:8443/enterprise/control/agent.php" \
@@ -142,7 +146,7 @@ jobs:
             --resolve "ach.dlbtrust.cloud:443:$SERVER" \
             -X POST "https://ach.dlbtrust.cloud/openach/api/connect" \
             -c /tmp/oa_cookies.txt \
-            --data "user_api_token=3caee1c2-c218-4959-b6d2-21d4b2a1b42e&user_api_key=b74966cf-5276-4d8b-8650-5bd57dcee272")
+            --data "user_api_token=$OPENACH_API_TOKEN&user_api_key=$OPENACH_API_KEY")
           echo "$OPENACH"
           echo ""
           

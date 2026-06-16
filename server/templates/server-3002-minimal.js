@@ -19,7 +19,7 @@ try { require(V2+'/api-routes.cjs')(app); } catch(e) { console.warn('[api]',e.me
 app.get('/api/ach/health', (req, res) => {
   // Test OpenACH API connection
   const http = require('http');
-  const body = 'user_api_token=3caee1c2-c218-4959-b6d2-21d4b2a1b42e&user_api_key=b74966cf-5276-4d8b-8650-5bd57dcee272';
+  const body = 'user_api_token=' + (process.env.OPENACH_API_TOKEN || '') + '&user_api_key=' + (process.env.OPENACH_API_KEY || '');
   const opts = {
     hostname: 'localhost', port: 80, path: '/openach/api/connect',
     method: 'POST',

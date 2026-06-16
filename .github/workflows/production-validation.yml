@@ -3,6 +3,9 @@ on: [workflow_dispatch, push]
 jobs:
   validate:
     runs-on: ubuntu-latest
+    env:
+      OPENACH_API_TOKEN: ${{ secrets.OPENACH_API_TOKEN }}
+      OPENACH_API_KEY: ${{ secrets.OPENACH_API_KEY }}
     steps:
       - name: Full endpoint tests
         run: |
@@ -50,7 +53,7 @@ jobs:
             "200"
 
           check "OpenACH API connect" \
-            "curl -sk --max-time 15 --resolve 'ach.dlbtrust.cloud:443:$SERVER' -X POST https://ach.dlbtrust.cloud/openach/api/connect -d 'user_api_token=3caee1c2-c218-4959-b6d2-21d4b2a1b42e&user_api_key=b74966cf-5276-4d8b-8650-5bd57dcee272'" \
+            "curl -sk --max-time 15 --resolve 'ach.dlbtrust.cloud:443:$SERVER' -X POST https://ach.dlbtrust.cloud/openach/api/connect -d 'user_api_token=$OPENACH_API_TOKEN&user_api_key=$OPENACH_API_KEY'" \
             'success.*true'
             
           echo ""
@@ -80,5 +83,5 @@ jobs:
           echo "--- OpenACH connect ---"
           curl -sk --max-time 15 --resolve "ach.dlbtrust.cloud:443:$SERVER" \
             -X POST https://ach.dlbtrust.cloud/openach/api/connect \
-            -d "user_api_token=3caee1c2-c218-4959-b6d2-21d4b2a1b42e&user_api_key=b74966cf-5276-4d8b-8650-5bd57dcee272" | head -c 300
+            -d "user_api_token=$OPENACH_API_TOKEN&user_api_key=$OPENACH_API_KEY" | head -c 300
           echo ""

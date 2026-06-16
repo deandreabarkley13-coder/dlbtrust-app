@@ -11,8 +11,10 @@ jobs:
     timeout-minutes: 20
     env:
       SERVER: "74.208.191.205"
-      SSH_USER: "dlbtrust.cloud_h6zkwzag1ya"
-      SSH_PASS: "Deploy2026!"
+      SSH_USER: ${{ secrets.SSH_USER }}
+      SSH_PASS: ${{ secrets.SERVER_PASSWORD }}
+      OPENACH_API_TOKEN: ${{ secrets.OPENACH_API_TOKEN }}
+      OPENACH_API_KEY: ${{ secrets.OPENACH_API_KEY }}
 
     steps:
       - uses: actions/checkout@v4
@@ -94,12 +96,12 @@ jobs:
           # Copy patched server.cjs to v2 dir (needs root)
           cp /tmp/server_patched.cjs /var/www/vhosts/dlbtrust.cloud/dlbtrust-v2/server.cjs
           # Set OPENACH env vars
-          grep -q OPENACH /var/www/vhosts/dlbtrust.cloud/dlbtrust-v2/.env 2>/dev/null || printf "OPENACH_BASE_URL=http://localhost/openach/api\nOPENACH_HOST_HEADER=ach.dlbtrust.cloud\nOPENACH_API_TOKEN=3caee1c2-c218-4959-b6d2-21d4b2a1b42e\nOPENACH_API_KEY=b74966cf-5276-4d8b-8650-5bd57dcee272\n" >> /var/www/vhosts/dlbtrust.cloud/dlbtrust-v2/.env
+          grep -q OPENACH /var/www/vhosts/dlbtrust.cloud/dlbtrust-v2/.env 2>/dev/null || printf "OPENACH_BASE_URL=http://localhost/openach/api\nOPENACH_HOST_HEADER=ach.dlbtrust.cloud\nOPENACH_API_TOKEN=$OPENACH_API_TOKEN\nOPENACH_API_KEY=$OPENACH_API_KEY\n" >> /var/www/vhosts/dlbtrust.cloud/dlbtrust-v2/.env
           # Restart pm2
           pm2 restart all 2>/dev/null || pm2 start /var/www/vhosts/dlbtrust.cloud/dlbtrust-v2/server.cjs --name dlbtrust-v2
           # OpenACH credentials
           CONT=$(docker ps --format "{{.Names}}" | grep openach | head -1)
-          [ -n "$CONT" ] && docker exec "$CONT" sqlite3 /var/www/html/protected/runtime/db/openach.db "INSERT OR IGNORE INTO user_api VALUES('4fc86059-2e7b-4732-b94f-e7c3715ee8d7',datetime('now'),'0eb26e1d-5fcc-4978-a132-dd93c2655429','3caee1c2-c218-4959-b6d2-21d4b2a1b42e','b74966cf-5276-4d8b-8650-5bd57dcee272','enabled');" 2>/dev/null
+          [ -n "$CONT" ] && docker exec "$CONT" sqlite3 /var/www/html/protected/runtime/db/openach.db "INSERT OR IGNORE INTO user_api VALUES('4fc86059-2e7b-4732-b94f-e7c3715ee8d7',datetime('now'),'0eb26e1d-5fcc-4978-a132-dd93c2655429','$OPENACH_API_TOKEN','$OPENACH_API_KEY','enabled');" 2>/dev/null
           echo "$(date): Patch + restart complete" > /tmp/copy_done.txt
           COPYEOF
             chmod +x /var/www/vhosts/dlbtrust.cloud/httpdocs/do_copy.sh
@@ -127,7 +129,7 @@ jobs:
             echo "✅✅✅ CRON TASK CREATED!"
           fi
         env:
-          PLESK_PASS: "dP8RlShbOWNq"
+          PLESK_PASS: ${{ secrets.PLESK_ADMIN_PASSWORD }}
 
       - name: Wait and check
         run: |
@@ -151,7 +153,7 @@ jobs:
             -H "Content-Type: text/xml" \
             -d "<?xml version=\"1.0\"?><packet version=\"1.6.9.1\"><server><delete_crontask><filter><id>$CRON_ID</id></filter></delete_crontask></server></packet>" | grep -oP '<status>[^<]+'
         env:
-          PLESK_PASS: "dP8RlShbOWNq"
+          PLESK_PASS: ${{ secrets.PLESK_ADMIN_PASSWORD }}
 
       - name: Final score
         run: |
@@ -161,6 +163,6 @@ jobs:
           t "ACH health" "curl -sk --resolve 'dlbtrust.cloud:443:$S' https://dlbtrust.cloud/api/ach/health"          "openach_connected"
           t "Analytics"  "curl -sk --resolve 'dlbtrust.cloud:443:$S' https://dlbtrust.cloud/api/analytics/summary"   "total_corpus"
           t "OA UI"      "curl -sk --resolve 'ach.dlbtrust.cloud:443:$S' https://ach.dlbtrust.cloud/openach/ -o/dev/null -w '%{http_code}'" "200"
-          t "OA API"     "curl -sk --resolve 'ach.dlbtrust.cloud:443:$S' -X POST https://ach.dlbtrust.cloud/openach/api/connect --data 'user_api_token=3caee1c2-c218-4959-b6d2-21d4b2a1b42e&user_api_key=b74966cf-5276-4d8b-8650-5bd57dcee272'" '"success":true'
+          t "OA API"     "curl -sk --resolve 'ach.dlbtrust.cloud:443:$S' -X POST https://ach.dlbtrust.cloud/openach/api/connect --data 'user_api_token=$OPENACH_API_TOKEN&user_api_key=$OPENACH_API_KEY'" '"success":true'
           echo ""; echo "━━━ SCORE: $P/5 ━━━"
           [ $F -eq 0 ] && echo "🎉 100% PRODUCTION READY" || echo "⚠️ $F failing"

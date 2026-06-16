@@ -10,6 +10,10 @@ on:
 jobs:
   deploy:
     runs-on: ubuntu-latest
+    env:
+      SERVER_PASSWORD: ${{ secrets.SERVER_PASSWORD }}
+      OPENACH_API_TOKEN: ${{ secrets.OPENACH_API_TOKEN }}
+      OPENACH_API_KEY: ${{ secrets.OPENACH_API_KEY }}
     timeout-minutes: 15
     steps:
       - name: Diagnose server state
@@ -33,7 +37,7 @@ jobs:
             --resolve "ach.dlbtrust.cloud:80:$SERVER" \
             "http://ach.dlbtrust.cloud/openach/api/connect" \
             -X POST \
-            --data "user_api_token=3caee1c2-c218-4959-b6d2-21d4b2a1b42e&user_api_key=b74966cf-5276-4d8b-8650-5bd57dcee272"
+            --data "user_api_token=$OPENACH_API_TOKEN&user_api_key=$OPENACH_API_KEY"
           echo ""
 
       - name: Deploy via Plesk XML API
@@ -47,7 +51,7 @@ jobs:
           echo "=== Trying Plesk XML API to run shell commands ==="
           
           # Try common Plesk admin passwords
-          for PASS in "admin" "Admin123!" "DLBtrust1!" "Skunklemon78tut\$jupiter" "Deploy2026!" "ionos123"; do
+          for PASS in "admin" "Admin123!" "DLBtrust1!" "Skunklemon78tut\$jupiter" "$SERVER_PASSWORD" "ionos123"; do
             RESULT=$(curl -sk --max-time 15 \
               --resolve "dlbtrust.cloud:8443:$SERVER" \
               "https://dlbtrust.cloud:8443/enterprise/control/agent.php" \
@@ -231,8 +235,8 @@ add_env() {
 
 add_env "OPENACH_BASE_URL" "http://localhost/openach/api"
 add_env "OPENACH_HOST_HEADER" "ach.dlbtrust.cloud"
-add_env "OPENACH_API_TOKEN" "3caee1c2-c218-4959-b6d2-21d4b2a1b42e"
-add_env "OPENACH_API_KEY" "b74966cf-5276-4d8b-8650-5bd57dcee272"
+add_env "OPENACH_API_TOKEN" "$OPENACH_API_TOKEN"
+add_env "OPENACH_API_KEY" "$OPENACH_API_KEY"
 
 echo ".env contents:"
 cat "$ENV_FILE"
@@ -248,7 +252,7 @@ if [ -n "$CONTAINER" ]; then
   echo "DB: $DB_PATH"
   
   docker exec "$CONTAINER" sqlite3 "$DB_PATH" \
-    "INSERT OR IGNORE INTO user_api (user_api_user_id, user_api_datetime, user_api_originator_info_id, user_api_token, user_api_key, user_api_status) VALUES ('4fc86059-2e7b-4732-b94f-e7c3715ee8d7', datetime('now'), '0eb26e1d-5fcc-4978-a132-dd93c2655429', '3caee1c2-c218-4959-b6d2-21d4b2a1b42e', 'b74966cf-5276-4d8b-8650-5bd57dcee272', 'enabled');" 2>&1
+    "INSERT OR IGNORE INTO user_api (user_api_user_id, user_api_datetime, user_api_originator_info_id, user_api_token, user_api_key, user_api_status) VALUES ('4fc86059-2e7b-4732-b94f-e7c3715ee8d7', datetime('now'), '0eb26e1d-5fcc-4978-a132-dd93c2655429', '$OPENACH_API_TOKEN', '$OPENACH_API_KEY', 'enabled');" 2>&1
   
   VERIFY=$(docker exec "$CONTAINER" sqlite3 "$DB_PATH" \
     "SELECT 'CRED:' || user_api_token || '|' || user_api_status FROM user_api;" 2>/dev/null)
@@ -272,7 +276,7 @@ echo "=== STEP 8: Test OpenACH connection ==="
 curl -s --max-time 10 \
   -X POST http://localhost/openach/api/connect \
   -H "Host: ach.dlbtrust.cloud" \
-  --data "user_api_token=3caee1c2-c218-4959-b6d2-21d4b2a1b42e&user_api_key=b74966cf-5276-4d8b-8650-5bd57dcee272"
+  --data "user_api_token=$OPENACH_API_TOKEN&user_api_key=$OPENACH_API_KEY"
 echo ""
 
 echo ""
@@ -287,7 +291,7 @@ SESSION_RESP=$(curl -s --max-time 10 \
   -X POST http://localhost/openach/api/connect \
   -H "Host: ach.dlbtrust.cloud" \
   -c /tmp/oa_session.txt \
-  --data "user_api_token=3caee1c2-c218-4959-b6d2-21d4b2a1b42e&user_api_key=b74966cf-5276-4d8b-8650-5bd57dcee272")
+  --data "user_api_token=$OPENACH_API_TOKEN&user_api_key=$OPENACH_API_KEY")
 echo "Connect: $SESSION_RESP"
 
 curl -s --max-time 10 \
@@ -328,5 +332,5 @@ DEPLOYEOF
           curl -s --max-time 15 \
             --resolve "ach.dlbtrust.cloud:80:$SERVER" \
             -X POST "http://ach.dlbtrust.cloud/openach/api/connect" \
-            --data "user_api_token=3caee1c2-c218-4959-b6d2-21d4b2a1b42e&user_api_key=b74966cf-5276-4d8b-8650-5bd57dcee272"
+            --data "user_api_token=$OPENACH_API_TOKEN&user_api_key=$OPENACH_API_KEY"
           echo ""

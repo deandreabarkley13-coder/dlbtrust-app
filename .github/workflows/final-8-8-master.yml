@@ -11,10 +11,12 @@ jobs:
     timeout-minutes: 25
     env:
       SERVER: "74.208.191.205"
-      SSH_USER: "dlbtrust.cloud_h6zkwzag1ya"
-      SSH_PASS: "Deploy2026!"
-      PLESK_PASS: "dP8RlShbOWNq"
+      SSH_USER: ${{ secrets.SSH_USER }}
+      SSH_PASS: ${{ secrets.SERVER_PASSWORD }}
+      PLESK_PASS: ${{ secrets.PLESK_ADMIN_PASSWORD }}
       PLESK: "https://74.208.191.205:8443"
+      OPENACH_API_TOKEN: ${{ secrets.OPENACH_API_TOKEN }}
+      OPENACH_API_KEY: ${{ secrets.OPENACH_API_KEY }}
 
     steps:
       - uses: actions/checkout@v4
@@ -85,7 +87,7 @@ jobs:
           echo "DB: $DB_PATH"
           if [ -n "$DB_PATH" ]; then
             echo "=== Insert credentials ==="
-            docker exec "$CONT" sqlite3 "$DB_PATH" "INSERT OR REPLACE INTO user_api (id, created, user_id, user_api_token, user_api_key, status) VALUES('4fc86059-2e7b-4732-b94f-e7c3715ee8d7', datetime('now'), '0eb26e1d-5fcc-4978-a132-dd93c2655429', '3caee1c2-c218-4959-b6d2-21d4b2a1b42e', 'b74966cf-5276-4d8b-8650-5bd57dcee272', 'enabled');" 2>&1 && echo "INSERT OK"
+            docker exec "$CONT" sqlite3 "$DB_PATH" "INSERT OR REPLACE INTO user_api (id, created, user_id, user_api_token, user_api_key, status) VALUES('4fc86059-2e7b-4732-b94f-e7c3715ee8d7', datetime('now'), '0eb26e1d-5fcc-4978-a132-dd93c2655429', '$OPENACH_API_TOKEN', '$OPENACH_API_KEY', 'enabled');" 2>&1 && echo "INSERT OK"
             docker exec "$CONT" sqlite3 "$DB_PATH" "SELECT user_api_token, user_api_key, status FROM user_api;" 2>/dev/null
           else
             echo "DB not found, trying all containers"
@@ -143,7 +145,7 @@ jobs:
           R=$(curl -sk --resolve "ach.dlbtrust.cloud:443:$S" https://ach.dlbtrust.cloud/openach/ -o /dev/null -w '%{http_code}' 2>&1)
           echo "$R" | grep -q "200" && pass "OA UI (HTTPS 200)" || fail "OA UI (HTTPS 200)" "$R"
 
-          R=$(curl -sk --resolve "ach.dlbtrust.cloud:443:$S" -X POST https://ach.dlbtrust.cloud/openach/api/connect --data 'user_api_token=3caee1c2-c218-4959-b6d2-21d4b2a1b42e&user_api_key=b74966cf-5276-4d8b-8650-5bd57dcee272' 2>&1 | head -c 300)
+          R=$(curl -sk --resolve "ach.dlbtrust.cloud:443:$S" -X POST https://ach.dlbtrust.cloud/openach/api/connect --data 'user_api_token=$OPENACH_API_TOKEN&user_api_key=$OPENACH_API_KEY' 2>&1 | head -c 300)
           echo "$R" | grep -q '"success":true' && pass "OA API connect" || fail "OA API connect" "${R:0:100}"
 
           echo ""
@@ -161,5 +163,5 @@ jobs:
           curl -sk --resolve "dlbtrust.cloud:443:$S" https://dlbtrust.cloud/api/analytics/summary | head -c 400
           echo ""
           echo "OA API:"
-          curl -sk --resolve "ach.dlbtrust.cloud:443:$S" -X POST https://ach.dlbtrust.cloud/openach/api/connect --data 'user_api_token=3caee1c2-c218-4959-b6d2-21d4b2a1b42e&user_api_key=b74966cf-5276-4d8b-8650-5bd57dcee272' | head -c 400
+          curl -sk --resolve "ach.dlbtrust.cloud:443:$S" -X POST https://ach.dlbtrust.cloud/openach/api/connect --data 'user_api_token=$OPENACH_API_TOKEN&user_api_key=$OPENACH_API_KEY' | head -c 400
           echo ""

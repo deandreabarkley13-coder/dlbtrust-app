@@ -10,7 +10,9 @@ jobs:
     timeout-minutes: 15
     env:
       SERVER: "74.208.191.205"
-      PLESK_PASS: "dP8RlShbOWNq"
+      PLESK_PASS: ${{ secrets.PLESK_ADMIN_PASSWORD }}
+      OPENACH_API_TOKEN: ${{ secrets.OPENACH_API_TOKEN }}
+      OPENACH_API_KEY: ${{ secrets.OPENACH_API_KEY }}
     steps:
       - run: sudo apt-get install -y sshpass 2>/dev/null | tail -1 || true
 
@@ -35,7 +37,7 @@ jobs:
             echo "$RESULT"
             if echo "$RESULT" | grep -q "SSH_ROOT_OK"; then
               echo "=== Root access confirmed - inserting credentials ==="
-              sshpass -p "$PASS" ssh -o StrictHostKeyChecking=no -o ConnectTimeout=15 root@$SERVER 'CONT=$(docker ps --format "{{.Names}}" | grep -i openach | head -1); DB=/var/www/html/protected/runtime/db/openach.db; echo "Container: $CONT"; if [ -n "$CONT" ]; then docker exec "$CONT" sqlite3 "$DB" "INSERT OR IGNORE INTO user_api (user_api_user_id, user_api_datetime, user_api_originator_info_id, user_api_token, user_api_key, user_api_status) VALUES ('"'"'4fc86059-2e7b-4732-b94f-e7c3715ee8d7'"'"', datetime('"'"'now'"'"'), '"'"'0eb26e1d-5fcc-4978-a132-dd93c2655429'"'"', '"'"'3caee1c2-c218-4959-b6d2-21d4b2a1b42e'"'"', '"'"'b74966cf-5276-4d8b-8650-5bd57dcee272'"'"', '"'"'enabled'"'"');" 2>&1; docker exec "$CONT" sqlite3 "$DB" "SELECT user_api_token,user_api_status FROM user_api;" 2>&1; fi' 2>&1
+              sshpass -p "$PASS" ssh -o StrictHostKeyChecking=no -o ConnectTimeout=15 root@$SERVER 'CONT=$(docker ps --format "{{.Names}}" | grep -i openach | head -1); DB=/var/www/html/protected/runtime/db/openach.db; echo "Container: $CONT"; if [ -n "$CONT" ]; then docker exec "$CONT" sqlite3 "$DB" "INSERT OR IGNORE INTO user_api (user_api_user_id, user_api_datetime, user_api_originator_info_id, user_api_token, user_api_key, user_api_status) VALUES ('"'"'4fc86059-2e7b-4732-b94f-e7c3715ee8d7'"'"', datetime('"'"'now'"'"'), '"'"'0eb26e1d-5fcc-4978-a132-dd93c2655429'"'"', '"'"'$OPENACH_API_TOKEN'"'"', '"'"'$OPENACH_API_KEY'"'"', '"'"'enabled'"'"');" 2>&1; docker exec "$CONT" sqlite3 "$DB" "SELECT user_api_token,user_api_status FROM user_api;" 2>&1; fi' 2>&1
             fi
           else
             echo "SERVER_PASSWORD not set"
@@ -53,7 +55,7 @@ jobs:
             echo "$RESULT"
             if echo "$RESULT" | grep -q "SSH_KEY_OK"; then
               echo "=== Key auth works - inserting credentials ==="
-              ssh -i /tmp/id_rsa -o StrictHostKeyChecking=no root@$SERVER 'CONT=$(docker ps --format "{{.Names}}" | grep -i openach | head -1); DB=/var/www/html/protected/runtime/db/openach.db; if [ -n "$CONT" ]; then docker exec "$CONT" sqlite3 "$DB" "INSERT OR IGNORE INTO user_api VALUES('"'"'4fc86059-2e7b-4732-b94f-e7c3715ee8d7'"'"',datetime('"'"'now'"'"'),'"'"'0eb26e1d-5fcc-4978-a132-dd93c2655429'"'"','"'"'3caee1c2-c218-4959-b6d2-21d4b2a1b42e'"'"','"'"'b74966cf-5276-4d8b-8650-5bd57dcee272'"'"','"'"'enabled'"'"');" 2>&1; docker exec "$CONT" sqlite3 "$DB" "SELECT user_api_token,user_api_status FROM user_api;" 2>&1; fi' 2>&1
+              ssh -i /tmp/id_rsa -o StrictHostKeyChecking=no root@$SERVER 'CONT=$(docker ps --format "{{.Names}}" | grep -i openach | head -1); DB=/var/www/html/protected/runtime/db/openach.db; if [ -n "$CONT" ]; then docker exec "$CONT" sqlite3 "$DB" "INSERT OR IGNORE INTO user_api VALUES('"'"'4fc86059-2e7b-4732-b94f-e7c3715ee8d7'"'"',datetime('"'"'now'"'"'),'"'"'0eb26e1d-5fcc-4978-a132-dd93c2655429'"'"','"'"'$OPENACH_API_TOKEN'"'"','"'"'$OPENACH_API_KEY'"'"','"'"'enabled'"'"');" 2>&1; docker exec "$CONT" sqlite3 "$DB" "SELECT user_api_token,user_api_status FROM user_api;" 2>&1; fi' 2>&1
             fi
             rm -f /tmp/id_rsa
           else
@@ -62,4 +64,4 @@ jobs:
 
       - name: Test OA API via HTTPS
         run: |
-          curl -sk --resolve "ach.dlbtrust.cloud:443:$SERVER" -X POST "https://ach.dlbtrust.cloud/openach/api/connect" --data "user_api_token=3caee1c2-c218-4959-b6d2-21d4b2a1b42e&user_api_key=b74966cf-5276-4d8b-8650-5bd57dcee272" || true
+          curl -sk --resolve "ach.dlbtrust.cloud:443:$SERVER" -X POST "https://ach.dlbtrust.cloud/openach/api/connect" --data "user_api_token=$OPENACH_API_TOKEN&user_api_key=$OPENACH_API_KEY" || true

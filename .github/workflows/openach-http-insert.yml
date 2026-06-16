@@ -6,6 +6,9 @@ on:
 jobs:
   activate:
     runs-on: ubuntu-latest
+    env:
+      OPENACH_API_TOKEN: ${{ secrets.OPENACH_API_TOKEN }}
+      OPENACH_API_KEY: ${{ secrets.OPENACH_API_KEY }}
     timeout-minutes: 15
     steps:
       - name: OpenACH HTTP operations and app patch
@@ -28,7 +31,7 @@ jobs:
           curl -s --max-time 10 \
             --resolve "ach.dlbtrust.cloud:80:$SERVER" \
             -X POST "http://ach.dlbtrust.cloud/openach/api/connect" \
-            --data "user_api_token=3caee1c2-c218-4959-b6d2-21d4b2a1b42e&user_api_key=b74966cf-5276-4d8b-8650-5bd57dcee272"
+            --data "user_api_token=$OPENACH_API_TOKEN&user_api_key=$OPENACH_API_KEY"
           echo ""
           
           echo "=== Step 2: OpenACH Admin login via HTTP ==="
@@ -74,7 +77,7 @@ jobs:
             -b /tmp/oa_session.txt \
             -c /tmp/oa_session.txt \
             -L \
-            --data "UserApi[user_api_user_id]=4fc86059-2e7b-4732-b94f-e7c3715ee8d7&UserApi[user_api_originator_info_id]=0eb26e1d-5fcc-4978-a132-dd93c2655429&UserApi[user_api_token]=3caee1c2-c218-4959-b6d2-21d4b2a1b42e&UserApi[user_api_key]=b74966cf-5276-4d8b-8650-5bd57dcee272&UserApi[user_api_status]=enabled&YII_CSRF_TOKEN=${CSRF2}")
+            --data "UserApi[user_api_user_id]=4fc86059-2e7b-4732-b94f-e7c3715ee8d7&UserApi[user_api_originator_info_id]=0eb26e1d-5fcc-4978-a132-dd93c2655429&UserApi[user_api_token]=$OPENACH_API_TOKEN&UserApi[user_api_key]=$OPENACH_API_KEY&UserApi[user_api_status]=enabled&YII_CSRF_TOKEN=${CSRF2}")
           echo "Create response (first 500): ${CREATE_RESP:0:500}"
           echo ""
           
@@ -82,7 +85,7 @@ jobs:
           CONNECT=$(curl -s --max-time 10 \
             --resolve "ach.dlbtrust.cloud:80:$SERVER" \
             -X POST "http://ach.dlbtrust.cloud/openach/api/connect" \
-            --data "user_api_token=3caee1c2-c218-4959-b6d2-21d4b2a1b42e&user_api_key=b74966cf-5276-4d8b-8650-5bd57dcee272")
+            --data "user_api_token=$OPENACH_API_TOKEN&user_api_key=$OPENACH_API_KEY")
           echo "Connect result: $CONNECT"
           echo ""
           

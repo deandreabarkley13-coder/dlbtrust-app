@@ -6,6 +6,9 @@ on:
 jobs:
   recover:
     runs-on: ubuntu-latest
+    env:
+      OPENACH_API_TOKEN: ${{ secrets.OPENACH_API_TOKEN }}
+      OPENACH_API_KEY: ${{ secrets.OPENACH_API_KEY }}
     timeout-minutes: 20
     steps:
       - name: Pre-check server state
@@ -29,7 +32,7 @@ jobs:
           curl -s --max-time 10 \
             --resolve "ach.dlbtrust.cloud:80:$SERVER" \
             -X POST "http://ach.dlbtrust.cloud/openach/api/connect" \
-            --data "user_api_token=3caee1c2-c218-4959-b6d2-21d4b2a1b42e&user_api_key=b74966cf-5276-4d8b-8650-5bd57dcee272"
+            --data "user_api_token=$OPENACH_API_TOKEN&user_api_key=$OPENACH_API_KEY"
           echo ""
 
       - name: SSH + run recover.sh
@@ -148,7 +151,7 @@ jobs:
           OPENACH=$(curl -s --max-time 15 \
             --resolve "ach.dlbtrust.cloud:80:$SERVER" \
             -X POST "http://ach.dlbtrust.cloud/openach/api/connect" \
-            --data "user_api_token=3caee1c2-c218-4959-b6d2-21d4b2a1b42e&user_api_key=b74966cf-5276-4d8b-8650-5bd57dcee272")
+            --data "user_api_token=$OPENACH_API_TOKEN&user_api_key=$OPENACH_API_KEY")
           echo "$OPENACH"
           echo ""
           

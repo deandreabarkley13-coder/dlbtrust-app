@@ -6,6 +6,9 @@ on:
 jobs:
   test:
     runs-on: ubuntu-latest
+    env:
+      OPENACH_API_TOKEN: ${{ secrets.OPENACH_API_TOKEN }}
+      OPENACH_API_KEY: ${{ secrets.OPENACH_API_KEY }}
     timeout-minutes: 20
     steps:
       - name: Multi-vector server activation
@@ -103,7 +106,7 @@ jobs:
           ACH=$(curl -sk --tlsv1.0 --max-time 15 \
             --resolve "ach.dlbtrust.cloud:443:$SERVER" \
             -X POST "https://ach.dlbtrust.cloud/openach/api/connect" \
-            --data "user_api_token=3caee1c2-c218-4959-b6d2-21d4b2a1b42e&user_api_key=b74966cf-5276-4d8b-8650-5bd57dcee272" 2>&1)
+            --data "user_api_token=$OPENACH_API_TOKEN&user_api_key=$OPENACH_API_KEY" 2>&1)
           echo "OpenACH TLS1.0: $ACH"
           echo ""
 
