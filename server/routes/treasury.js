@@ -3,6 +3,7 @@
 const express = require('express');
 const router = express.Router();
 const pool = require('../integrations/bonds/pgPool');
+const as2Client = require('../integrations/as2/as2Client');
 
 // ─── Schema Auto-Init ────────────────────────────────────────────────────────
 (async () => {
@@ -137,7 +138,62 @@ const pool = require('../integrations/bonds/pgPool');
         sftp_configured BOOLEAN DEFAULT false,
         updated_at TIMESTAMPTZ DEFAULT NOW()
       );
+
+      CREATE TABLE IF NOT EXISTS as2_config (
+        id SERIAL PRIMARY KEY,
+        as2_id VARCHAR(255) NOT NULL DEFAULT 'DLBTrust',
+        signing_cert TEXT,
+        signing_key TEXT,
+        mdn_url VARCHAR(512),
+        created_at TIMESTAMPTZ DEFAULT NOW(),
+        updated_at TIMESTAMPTZ DEFAULT NOW()
+      );
+
+      CREATE TABLE IF NOT EXISTS as2_partners (
+        id SERIAL PRIMARY KEY,
+        name VARCHAR(255) NOT NULL,
+        as2_id VARCHAR(255) NOT NULL,
+        url VARCHAR(512) NOT NULL,
+        certificate TEXT,
+        encryption_algorithm VARCHAR(50) DEFAULT 'aes256',
+        signature_algorithm VARCHAR(50) DEFAULT 'sha256',
+        request_mdn BOOLEAN DEFAULT true,
+        mdn_mode VARCHAR(20) DEFAULT 'sync',
+        content_type VARCHAR(100) DEFAULT 'application/octet-stream',
+        status VARCHAR(20) DEFAULT 'active',
+        created_at TIMESTAMPTZ DEFAULT NOW(),
+        updated_at TIMESTAMPTZ DEFAULT NOW()
+      );
+
+      CREATE TABLE IF NOT EXISTS as2_messages (
+        id SERIAL PRIMARY KEY,
+        message_id VARCHAR(512),
+        partner_id INTEGER REFERENCES as2_partners(id),
+        file_id INTEGER REFERENCES mft_files(id),
+        direction VARCHAR(10) DEFAULT 'outbound',
+        filename VARCHAR(255),
+        content_type VARCHAR(100),
+        mic VARCHAR(255),
+        mic_algorithm VARCHAR(50),
+        mdn_status VARCHAR(30) DEFAULT 'pending',
+        mdn_disposition TEXT,
+        mdn_received_at TIMESTAMPTZ,
+        error_message TEXT,
+        sent_at TIMESTAMPTZ DEFAULT NOW(),
+        created_at TIMESTAMPTZ DEFAULT NOW()
+      );
     `);
+
+    // Seed default AS2 config if empty
+    const as2Count = await pool.query('SELECT COUNT(*) FROM as2_config');
+    if (parseInt(as2Count.rows[0].count) === 0) {
+      const certs = as2Client.generateSelfSignedCert('DLB Trust AS2');
+      await pool.query(
+        `INSERT INTO as2_config (as2_id, signing_cert, signing_key) VALUES ($1, $2, $3)`,
+        ['DLBTrust', certs.certificate, certs.privateKey]
+      );
+      console.log('[AS2] Generated self-signed certificate and seeded AS2 config');
+    }
 
     // Seed initial data if empty
     const walletCount = await pool.query('SELECT COUNT(*) FROM wallets');
@@ -701,6 +757,266 @@ router.post('/mft/deliver/:id', async (req, res) => {
     res.json({ success: true });
   } catch (err) {
     res.json({ success: false, error: err.message });
+  }
+});
+
+// ─── AS2 (Applicability Statement 2) ──────────────────────────────────────────
+
+// Get local AS2 configuration
+router.get('/as2/config', async (req, res) => {
+  try {
+    const result = await pool.query('SELECT id, as2_id, signing_cert, mdn_url, created_at, updated_at FROM as2_config ORDER BY id LIMIT 1');
+    const config = result.rows[0] || { as2_id: 'DLBTrust', signing_cert: null, mdn_url: null };
+    // Never return the private key to the frontend
+    res.json({ success: true, data: config });
+  } catch (err) {
+    res.json({ success: true, data: { as2_id: 'DLBTrust', signing_cert: null, mdn_url: null } });
+  }
+});
+
+// Update local AS2 configuration
+router.post('/as2/config', async (req, res) => {
+  try {
+    const { as2_id, mdn_url } = req.body;
+    if (!as2_id) return res.status(400).json({ success: false, error: 'AS2 ID is required' });
+    const existing = await pool.query('SELECT id FROM as2_config ORDER BY id LIMIT 1');
+    if (existing.rows.length) {
+      await pool.query(
+        'UPDATE as2_config SET as2_id = $1, mdn_url = $2, updated_at = NOW() WHERE id = $3',
+        [as2_id, mdn_url || null, existing.rows[0].id]
+      );
+    } else {
+      const certs = as2Client.generateSelfSignedCert(as2_id);
+      await pool.query(
+        'INSERT INTO as2_config (as2_id, signing_cert, signing_key, mdn_url) VALUES ($1, $2, $3, $4)',
+        [as2_id, certs.certificate, certs.privateKey, mdn_url || null]
+      );
+    }
+    res.json({ success: true });
+  } catch (err) {
+    res.json({ success: false, error: err.message });
+  }
+});
+
+// Regenerate AS2 signing certificate
+router.post('/as2/regenerate-cert', async (req, res) => {
+  try {
+    const configRow = await pool.query('SELECT * FROM as2_config ORDER BY id LIMIT 1');
+    const as2Id = configRow.rows[0]?.as2_id || 'DLBTrust';
+    const certs = as2Client.generateSelfSignedCert(`${as2Id} AS2`);
+    await pool.query(
+      'UPDATE as2_config SET signing_cert = $1, signing_key = $2, updated_at = NOW() WHERE id = $3',
+      [certs.certificate, certs.privateKey, configRow.rows[0]?.id || 1]
+    );
+    res.json({ success: true, message: 'AS2 signing certificate regenerated', certificate: certs.certificate });
+  } catch (err) {
+    res.json({ success: false, error: err.message });
+  }
+});
+
+// List AS2 trading partners
+router.get('/as2/partners', async (req, res) => {
+  try {
+    const result = await pool.query('SELECT * FROM as2_partners ORDER BY created_at DESC');
+    res.json({ success: true, data: result.rows });
+  } catch (err) {
+    res.json({ success: true, data: [] });
+  }
+});
+
+// Add AS2 trading partner
+router.post('/as2/partners', async (req, res) => {
+  try {
+    const { name, as2_id, url, certificate, encryption_algorithm, signature_algorithm, request_mdn, mdn_mode, content_type } = req.body;
+    if (!name || !as2_id || !url) {
+      return res.status(400).json({ success: false, error: 'Name, AS2 ID, and URL are required' });
+    }
+    const result = await pool.query(
+      `INSERT INTO as2_partners (name, as2_id, url, certificate, encryption_algorithm, signature_algorithm, request_mdn, mdn_mode, content_type)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING *`,
+      [name, as2_id, url, certificate || null, encryption_algorithm || 'aes256', signature_algorithm || 'sha256',
+       request_mdn !== false, mdn_mode || 'sync', content_type || 'application/octet-stream']
+    );
+    res.json({ success: true, data: result.rows[0] });
+  } catch (err) {
+    res.json({ success: false, error: err.message });
+  }
+});
+
+// Update AS2 trading partner
+router.put('/as2/partners/:id', async (req, res) => {
+  try {
+    const { name, as2_id, url, certificate, encryption_algorithm, signature_algorithm, request_mdn, mdn_mode, content_type, status } = req.body;
+    await pool.query(
+      `UPDATE as2_partners SET name=COALESCE($1,name), as2_id=COALESCE($2,as2_id), url=COALESCE($3,url),
+       certificate=COALESCE($4,certificate), encryption_algorithm=COALESCE($5,encryption_algorithm),
+       signature_algorithm=COALESCE($6,signature_algorithm), request_mdn=COALESCE($7,request_mdn),
+       mdn_mode=COALESCE($8,mdn_mode), content_type=COALESCE($9,content_type), status=COALESCE($10,status),
+       updated_at=NOW() WHERE id=$11`,
+      [name, as2_id, url, certificate, encryption_algorithm, signature_algorithm, request_mdn, mdn_mode, content_type, status, req.params.id]
+    );
+    res.json({ success: true });
+  } catch (err) {
+    res.json({ success: false, error: err.message });
+  }
+});
+
+// Delete AS2 trading partner
+router.delete('/as2/partners/:id', async (req, res) => {
+  try {
+    await pool.query('UPDATE as2_partners SET status = $1 WHERE id = $2', ['deleted', req.params.id]);
+    res.json({ success: true });
+  } catch (err) {
+    res.json({ success: false, error: err.message });
+  }
+});
+
+// Send file to AS2 partner
+router.post('/as2/send/:fileId', async (req, res) => {
+  try {
+    const { partner_id } = req.body;
+    if (!partner_id) return res.status(400).json({ success: false, error: 'partner_id is required' });
+
+    // Get the file
+    const fileResult = await pool.query('SELECT * FROM mft_files WHERE id = $1', [req.params.fileId]);
+    if (!fileResult.rows.length) return res.status(404).json({ success: false, error: 'File not found' });
+    const file = fileResult.rows[0];
+
+    // Get the partner
+    const partnerResult = await pool.query('SELECT * FROM as2_partners WHERE id = $1 AND status = $2', [partner_id, 'active']);
+    if (!partnerResult.rows.length) return res.status(404).json({ success: false, error: 'AS2 partner not found or inactive' });
+    const partner = partnerResult.rows[0];
+
+    // Get our AS2 config
+    const configResult = await pool.query('SELECT * FROM as2_config ORDER BY id LIMIT 1');
+    if (!configResult.rows.length) return res.status(500).json({ success: false, error: 'AS2 not configured — generate signing certificate first' });
+    const config = configResult.rows[0];
+
+    // Build the payload — generate a synthetic NACHA-like payload
+    const amt = parseFloat(file.total_amount || 0).toFixed(2);
+    const payload = [
+      `101 ${file.filename} ${new Date().toISOString().slice(0,10).replace(/-/g,'')}`,
+      `5220DLB TRUST                           ${file.id.toString().padStart(10,'0')}PPD`,
+      `6270000000001234567890        ${amt.padStart(12,'0')}`,
+      `82200000010000000000${amt.padStart(12,'0')}`,
+      `9000001000001000000010000000000${amt.padStart(12,'0')}`
+    ].join('\n');
+
+    // Send via AS2
+    const result = await as2Client.sendAs2Message({
+      url: partner.url,
+      as2From: config.as2_id,
+      as2To: partner.as2_id,
+      filename: file.filename,
+      payload,
+      contentType: partner.content_type || 'application/octet-stream',
+      signingKey: config.signing_key,
+      signingCert: config.signing_cert,
+      encryptionCert: partner.certificate || null,
+      requestMdn: partner.request_mdn,
+      micAlgorithm: partner.signature_algorithm || 'sha256'
+    });
+
+    // Log the message
+    await pool.query(
+      `INSERT INTO as2_messages (message_id, partner_id, file_id, direction, filename, content_type, mic, mic_algorithm, mdn_status, mdn_disposition, sent_at)
+       VALUES ($1,$2,$3,'outbound',$4,$5,$6,$7,$8,$9,NOW())`,
+      [result.messageId, partner_id, file.id, file.filename, partner.content_type,
+       result.mic, result.micAlgorithm, result.mdn.status, result.mdn.disposition]
+    );
+
+    // Update file status
+    const newStatus = result.mdn.status === 'confirmed' ? 'delivered' : result.mdn.status === 'failed' ? 'delivery_failed' : 'sent';
+    await pool.query('UPDATE mft_files SET status = $1 WHERE id = $2', [newStatus, file.id]);
+
+    res.json({
+      success: true,
+      message: result.mdn.status === 'confirmed'
+        ? `File delivered via AS2 to ${partner.name} — MDN confirmed`
+        : result.mdn.status === 'failed'
+          ? `AS2 delivery failed — MDN indicates error: ${result.mdn.disposition}`
+          : `File sent via AS2 to ${partner.name} — awaiting MDN`,
+      data: {
+        messageId: result.messageId,
+        mic: result.mic,
+        mdnStatus: result.mdn.status,
+        mdnDisposition: result.mdn.disposition
+      }
+    });
+  } catch (err) {
+    // Log the failed attempt
+    const { partner_id } = req.body || {};
+    if (partner_id) {
+      await pool.query(
+        `INSERT INTO as2_messages (partner_id, file_id, direction, filename, mdn_status, error_message, sent_at)
+         VALUES ($1,$2,'outbound',$3,'error',$4,NOW())`,
+        [partner_id, req.params.fileId, 'unknown', err.message]
+      ).catch(() => {});
+    }
+    res.json({ success: false, error: `AS2 delivery failed: ${err.message}` });
+  }
+});
+
+// List AS2 message history
+router.get('/as2/messages', async (req, res) => {
+  try {
+    const result = await pool.query(
+      `SELECT m.*, p.name as partner_name, p.as2_id as partner_as2_id
+       FROM as2_messages m LEFT JOIN as2_partners p ON m.partner_id = p.id
+       ORDER BY m.created_at DESC LIMIT 50`
+    );
+    res.json({ success: true, data: result.rows });
+  } catch (err) {
+    res.json({ success: true, data: [] });
+  }
+});
+
+// AS2 connectivity test — send a ping to the partner
+router.post('/as2/test/:partnerId', async (req, res) => {
+  try {
+    const partnerResult = await pool.query('SELECT * FROM as2_partners WHERE id = $1', [req.params.partnerId]);
+    if (!partnerResult.rows.length) return res.status(404).json({ success: false, error: 'Partner not found' });
+    const partner = partnerResult.rows[0];
+
+    const configResult = await pool.query('SELECT * FROM as2_config ORDER BY id LIMIT 1');
+    const config = configResult.rows[0];
+
+    const result = await as2Client.sendAs2Message({
+      url: partner.url,
+      as2From: config?.as2_id || 'DLBTrust',
+      as2To: partner.as2_id,
+      filename: 'as2-connectivity-test.txt',
+      payload: `AS2 connectivity test from ${config?.as2_id || 'DLBTrust'} at ${new Date().toISOString()}`,
+      contentType: 'text/plain',
+      signingKey: config?.signing_key,
+      signingCert: config?.signing_cert,
+      requestMdn: true
+    });
+
+    res.json({
+      success: true,
+      message: result.mdn.status === 'confirmed'
+        ? `AS2 connection to ${partner.name} successful — MDN received`
+        : `AS2 message sent, MDN status: ${result.mdn.status}`,
+      data: { messageId: result.messageId, mdnStatus: result.mdn.status, statusCode: result.mdn.statusCode }
+    });
+  } catch (err) {
+    res.json({ success: false, error: `AS2 test failed: ${err.message}` });
+  }
+});
+
+// Download our public signing certificate (for partners to import)
+router.get('/as2/certificate', async (req, res) => {
+  try {
+    const configResult = await pool.query('SELECT signing_cert FROM as2_config ORDER BY id LIMIT 1');
+    if (!configResult.rows.length || !configResult.rows[0].signing_cert) {
+      return res.status(404).json({ success: false, error: 'No AS2 certificate configured' });
+    }
+    res.setHeader('Content-Type', 'application/x-pem-file');
+    res.setHeader('Content-Disposition', 'attachment; filename="dlbtrust-as2.pem"');
+    res.send(configResult.rows[0].signing_cert);
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
   }
 });
 

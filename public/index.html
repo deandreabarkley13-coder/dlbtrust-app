@@ -658,48 +658,117 @@ async function autoProcessPayments(){
 }
 
 async function renderMFT(c){
-  const data=await api('/api/treasury/mft/files');
-  const config=await api('/api/treasury/mft/config');
+  const [data,config,as2Config,as2Partners,as2Messages]=await Promise.all([
+    api('/api/treasury/mft/files'),
+    api('/api/treasury/mft/config'),
+    api('/api/treasury/as2/config').catch(()=>({data:{}})),
+    api('/api/treasury/as2/partners').catch(()=>({data:[]})),
+    api('/api/treasury/as2/messages').catch(()=>({data:[]}))
+  ]);
+  const files=data.data||[];
+  const partners=(as2Partners.data||[]).filter(p=>p.status==='active');
+  const messages=as2Messages.data||[];
+  const as2Cfg=as2Config.data||{};
+  const hasCert=!!as2Cfg.signing_cert;
   c.innerHTML=`
-    <div class="page-header"><h2>Managed File Transfer</h2><button class="btn btn-primary" onclick="generateNACHA()">Generate NACHA File</button></div>
+    <div class="page-header"><h2>Managed File Transfer</h2>
+      <div style="display:flex;gap:0.5rem">
+        <button class="btn btn-primary" onclick="generateNACHA()">Generate NACHA File</button>
+      </div>
+    </div>
     <div class="stats-grid">
       <div class="stat-card">
         <div class="label">SFTP Status</div>
         <div class="value" style="font-size:1.2rem">${config.sftp_configured?'<span style="color:var(--success)">Configured</span>':'<span style="color:var(--warning)">Not Configured</span>'}</div>
-        <div class="sub">${config.sftp_host||'No SFTP host set'}</div>
+        <div class="sub">${esc(config.sftp_host)||'No SFTP host set'}</div>
+      </div>
+      <div class="stat-card">
+        <div class="label">AS2 Gateway</div>
+        <div class="value" style="font-size:1.2rem">${hasCert?'<span style="color:var(--success)">Active</span>':'<span style="color:var(--warning)">Setup Required</span>'}</div>
+        <div class="sub">ID: ${esc(as2Cfg.as2_id||'DLBTrust')} · ${partners.length} partner${partners.length!==1?'s':''}</div>
       </div>
       <div class="stat-card">
         <div class="label">Files Generated</div>
-        <div class="value">${(data.data||[]).length}</div>
-        <div class="sub">NACHA ACH payment files</div>
+        <div class="value">${files.length}</div>
+        <div class="sub">NACHA &amp; payment files</div>
       </div>
       <div class="stat-card">
-        <div class="label">Files Delivered</div>
-        <div class="value">${(data.data||[]).filter(f=>f.status==='delivered').length}</div>
-        <div class="sub">Successfully transmitted via SFTP</div>
-      </div>
-      <div class="stat-card">
-        <div class="label">Pending Delivery</div>
-        <div class="value">${(data.data||[]).filter(f=>f.status==='pending'||f.status==='generated').length}</div>
-        <div class="sub">Awaiting transmission</div>
+        <div class="label">AS2 Deliveries</div>
+        <div class="value">${messages.filter(m=>m.mdn_status==='confirmed').length} / ${messages.length}</div>
+        <div class="sub">Confirmed / Total sent</div>
       </div>
     </div>
+
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:1.5rem">
+      <div class="card">
+        <h3>SFTP Configuration</h3>
+        <form onsubmit="saveSFTPConfig(event)" style="display:flex;gap:0.75rem;align-items:end;flex-wrap:wrap">
+          <div><label style="font-size:0.75rem;color:var(--text-muted)">Host</label><br><input id="sftp-host" value="${esc(config.sftp_host)||''}" placeholder="sftp.bank.com" style="padding:0.5rem;background:var(--surface2);border:1px solid var(--border);border-radius:6px;color:var(--text);width:160px"></div>
+          <div><label style="font-size:0.75rem;color:var(--text-muted)">Port</label><br><input id="sftp-port" value="${config.sftp_port||22}" type="number" style="padding:0.5rem;background:var(--surface2);border:1px solid var(--border);border-radius:6px;color:var(--text);width:60px"></div>
+          <div><label style="font-size:0.75rem;color:var(--text-muted)">Username</label><br><input id="sftp-user" value="${esc(config.sftp_username)||''}" placeholder="ach_upload" style="padding:0.5rem;background:var(--surface2);border:1px solid var(--border);border-radius:6px;color:var(--text);width:120px"></div>
+          <div><label style="font-size:0.75rem;color:var(--text-muted)">Remote Path</label><br><input id="sftp-path" value="${esc(config.sftp_path)||'/incoming'}" placeholder="/incoming" style="padding:0.5rem;background:var(--surface2);border:1px solid var(--border);border-radius:6px;color:var(--text);width:120px"></div>
+          <button type="submit" class="btn btn-primary">Save</button>
+        </form>
+      </div>
+      <div class="card">
+        <h3>AS2 Configuration <span style="font-size:0.7rem;color:var(--text-muted);font-weight:normal">RFC 4130</span></h3>
+        <form onsubmit="saveAS2Config(event)" style="display:flex;gap:0.75rem;align-items:end;flex-wrap:wrap">
+          <div><label style="font-size:0.75rem;color:var(--text-muted)">AS2 ID</label><br><input id="as2-id" value="${esc(as2Cfg.as2_id)||'DLBTrust'}" style="padding:0.5rem;background:var(--surface2);border:1px solid var(--border);border-radius:6px;color:var(--text);width:140px"></div>
+          <div><label style="font-size:0.75rem;color:var(--text-muted)">MDN URL</label><br><input id="as2-mdn-url" value="${esc(as2Cfg.mdn_url)||''}" placeholder="https://..." style="padding:0.5rem;background:var(--surface2);border:1px solid var(--border);border-radius:6px;color:var(--text);width:200px"></div>
+          <button type="submit" class="btn btn-primary">Save</button>
+          <button type="button" class="btn btn-outline" onclick="regenAS2Cert()" style="font-size:0.75rem">Regen Cert</button>
+          <a href="/api/treasury/as2/certificate" class="btn btn-outline" style="font-size:0.75rem;text-decoration:none;padding:0.5rem 0.7rem" download>Export Cert</a>
+        </form>
+        ${hasCert?'<p style="font-size:0.7rem;color:var(--success);margin-top:0.5rem">✔ Signing certificate active</p>':'<p style="font-size:0.7rem;color:var(--warning);margin-top:0.5rem">No signing certificate — click Regen Cert to generate one</p>'}
+      </div>
+    </div>
+
     <div class="card">
-      <h3>SFTP Configuration</h3>
-      <form onsubmit="saveSFTPConfig(event)" style="display:flex;gap:0.75rem;align-items:end;flex-wrap:wrap">
-        <div><label style="font-size:0.75rem;color:var(--text-muted)">Host</label><br><input id="sftp-host" value="${config.sftp_host||''}" placeholder="sftp.bank.com" style="padding:0.5rem;background:var(--surface2);border:1px solid var(--border);border-radius:6px;color:var(--text);width:180px"></div>
-        <div><label style="font-size:0.75rem;color:var(--text-muted)">Port</label><br><input id="sftp-port" value="${config.sftp_port||22}" type="number" style="padding:0.5rem;background:var(--surface2);border:1px solid var(--border);border-radius:6px;color:var(--text);width:70px"></div>
-        <div><label style="font-size:0.75rem;color:var(--text-muted)">Username</label><br><input id="sftp-user" value="${config.sftp_username||''}" placeholder="ach_upload" style="padding:0.5rem;background:var(--surface2);border:1px solid var(--border);border-radius:6px;color:var(--text);width:140px"></div>
-        <div><label style="font-size:0.75rem;color:var(--text-muted)">Remote Path</label><br><input id="sftp-path" value="${config.sftp_path||'/incoming'}" placeholder="/incoming" style="padding:0.5rem;background:var(--surface2);border:1px solid var(--border);border-radius:6px;color:var(--text);width:140px"></div>
-        <button type="submit" class="btn btn-primary">Save Config</button>
-      </form>
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:1rem">
+        <h3 style="margin:0">AS2 Trading Partners</h3>
+        <button class="btn btn-primary" onclick="showAddPartner()">+ Add Partner</button>
+      </div>
+      ${partners.length?`<table><thead><tr><th>Name</th><th>AS2 ID</th><th>URL</th><th>Encryption</th><th>MDN</th><th>Status</th><th>Actions</th></tr></thead><tbody>
+      ${partners.map(p=>`<tr>
+        <td><strong>${esc(p.name)}</strong></td>
+        <td><code>${esc(p.as2_id)}</code></td>
+        <td style="max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(p.url)}">${esc(p.url)}</td>
+        <td>${p.certificate?'<span style="color:var(--success)">Encrypted</span>':'<span style="color:var(--text-muted)">None</span>'}</td>
+        <td>${p.request_mdn?esc(p.mdn_mode||'sync'):'off'}</td>
+        <td>${badge(p.status)}</td>
+        <td>
+          <button class="btn btn-outline" style="padding:0.3rem 0.6rem;font-size:0.7rem" onclick="testAS2Partner('${p.id}')">Test</button>
+          <button class="btn btn-outline" style="padding:0.3rem 0.6rem;font-size:0.7rem;color:var(--danger)" onclick="deleteAS2Partner('${p.id}')">Remove</button>
+        </td>
+      </tr>`).join('')}
+      </tbody></table>`:'<p style="color:var(--text-muted)">No AS2 trading partners configured. Add a partner to enable secure file delivery.</p>'}
     </div>
+
     <div class="card">
       <h3>Payment Files</h3>
-      ${(data.data||[]).length?`<table><thead><tr><th>File</th><th>Type</th><th>Records</th><th>Amount</th><th>Generated</th><th>Status</th><th>Actions</th></tr></thead><tbody>
-      ${(data.data||[]).map(f=>`<tr><td><code>${esc(f.filename)}</code></td><td>${esc(f.file_type)}</td><td>${f.record_count||0}</td><td>${fmt(f.total_amount||0)}</td><td>${fmtDate(f.created_at)}</td><td>${badge(f.status)}</td><td>${f.status==='generated'||f.status==='pending'?`<button class="btn btn-outline" style="padding:0.3rem 0.6rem;font-size:0.7rem" onclick="deliverFile('${f.id}')">Deliver</button>`:f.status==='delivered'?'<span style="color:var(--success);font-size:0.75rem">Sent</span>':''}</td></tr>`).join('')}
+      ${files.length?`<table><thead><tr><th>File</th><th>Type</th><th>Records</th><th>Amount</th><th>Generated</th><th>Status</th><th>Actions</th></tr></thead><tbody>
+      ${files.map(f=>`<tr><td><code>${esc(f.filename)}</code></td><td>${esc(f.file_type)}</td><td>${f.record_count||0}</td><td>${fmt(f.total_amount||0)}</td><td>${fmtDate(f.created_at)}</td><td>${badge(f.status)}</td><td style="white-space:nowrap">
+        ${f.status==='generated'||f.status==='pending'?`
+          <button class="btn btn-outline" style="padding:0.3rem 0.6rem;font-size:0.7rem" onclick="deliverFile('${f.id}')">SFTP</button>
+          ${partners.length?`<button class="btn btn-primary" style="padding:0.3rem 0.6rem;font-size:0.7rem" onclick="sendAS2File('${f.id}')">AS2</button>`:''}
+        `:f.status==='delivered'?'<span style="color:var(--success);font-size:0.75rem">Delivered</span>':f.status==='delivery_failed'?'<span style="color:var(--danger);font-size:0.75rem">Failed</span>':''}
+      </td></tr>`).join('')}
       </tbody></table>`:'<p style="color:var(--text-muted)">No payment files generated yet. Generate a NACHA file from completed distributions.</p>'}
     </div>
+
+    ${messages.length?`<div class="card">
+      <h3>AS2 Message History</h3>
+      <table><thead><tr><th>Date</th><th>Partner</th><th>File</th><th>Message ID</th><th>MIC</th><th>MDN Status</th></tr></thead><tbody>
+      ${messages.slice(0,20).map(m=>`<tr>
+        <td>${fmtDate(m.sent_at)}</td>
+        <td>${esc(m.partner_name||'—')}</td>
+        <td><code>${esc(m.filename||'—')}</code></td>
+        <td style="max-width:180px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:0.7rem" title="${esc(m.message_id)}">${esc(m.message_id||'—')}</td>
+        <td style="font-size:0.7rem">${esc(m.mic_algorithm||'')}${m.mic?': '+esc(m.mic.slice(0,12))+'…':''}</td>
+        <td>${m.mdn_status==='confirmed'?'<span class="badge badge-active">Confirmed</span>':m.mdn_status==='failed'||m.mdn_status==='error'?'<span class="badge badge-failed">'+esc(m.mdn_status)+'</span>':'<span class="badge badge-pending">'+esc(m.mdn_status||'pending')+'</span>'}</td>
+      </tr>`).join('')}
+      </tbody></table>
+    </div>`:''}
   `;
 }
 
@@ -722,6 +791,99 @@ async function saveSFTPConfig(e){
   const r=await api('/api/treasury/mft/config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
   if(r.success)toast('SFTP configuration saved');
   else toast(r.error||'Failed to save config','error');
+}
+
+// ─── AS2 Functions ─────────────────────────────────────────────────
+async function saveAS2Config(e){
+  e.preventDefault();
+  const body={as2_id:document.getElementById('as2-id').value,mdn_url:document.getElementById('as2-mdn-url').value};
+  const r=await api('/api/treasury/as2/config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+  if(r.success)toast('AS2 configuration saved');
+  else toast(r.error||'Failed to save AS2 config','error');
+}
+
+async function regenAS2Cert(){
+  if(!confirm('Regenerate AS2 signing certificate? Partners will need to re-import your public cert.'))return;
+  const r=await api('/api/treasury/as2/regenerate-cert',{method:'POST'});
+  if(r.success){toast('AS2 signing certificate regenerated');loadPage('mft')}
+  else toast(r.error||'Failed to regenerate certificate','error');
+}
+
+function showAddPartner(){
+  const modal=document.createElement('div');
+  modal.className='modal-overlay';
+  modal.innerHTML=`<div class="modal">
+    <h3>Add AS2 Trading Partner</h3>
+    <form onsubmit="addAS2Partner(event,this)">
+      <label>Partner Name *</label><input name="name" placeholder="Bank Name / Processor" required style="width:100%;padding:0.5rem;background:var(--surface2);border:1px solid var(--border);border-radius:6px;color:var(--text);margin-bottom:0.75rem">
+      <label>AS2 ID *</label><input name="as2_id" placeholder="PARTNERID" required style="width:100%;padding:0.5rem;background:var(--surface2);border:1px solid var(--border);border-radius:6px;color:var(--text);margin-bottom:0.75rem">
+      <label>Receiver URL *</label><input name="url" placeholder="https://partner.com/as2/receive" required style="width:100%;padding:0.5rem;background:var(--surface2);border:1px solid var(--border);border-radius:6px;color:var(--text);margin-bottom:0.75rem">
+      <label>Partner Certificate (PEM) <span style="font-size:0.7rem;color:var(--text-muted)">for encryption</span></label><textarea name="certificate" placeholder="-----BEGIN CERTIFICATE-----&#10;...&#10;-----END CERTIFICATE-----" rows="4" style="width:100%;padding:0.5rem;background:var(--surface2);border:1px solid var(--border);border-radius:6px;color:var(--text);font-family:monospace;font-size:0.75rem;margin-bottom:0.75rem"></textarea>
+      <div style="display:flex;gap:1rem;margin-bottom:0.75rem">
+        <div style="flex:1"><label style="font-size:0.75rem">Encryption</label><select name="encryption_algorithm" style="width:100%;padding:0.5rem;background:var(--surface2);border:1px solid var(--border);border-radius:6px;color:var(--text)"><option value="aes256">AES-256</option><option value="aes128">AES-128</option><option value="3des">3DES</option></select></div>
+        <div style="flex:1"><label style="font-size:0.75rem">Signature</label><select name="signature_algorithm" style="width:100%;padding:0.5rem;background:var(--surface2);border:1px solid var(--border);border-radius:6px;color:var(--text)"><option value="sha256">SHA-256</option><option value="sha1">SHA-1</option><option value="sha512">SHA-512</option></select></div>
+        <div style="flex:1"><label style="font-size:0.75rem">MDN Mode</label><select name="mdn_mode" style="width:100%;padding:0.5rem;background:var(--surface2);border:1px solid var(--border);border-radius:6px;color:var(--text)"><option value="sync">Synchronous</option><option value="async">Asynchronous</option></select></div>
+      </div>
+      <div style="display:flex;justify-content:flex-end;gap:0.75rem;margin-top:1rem">
+        <button type="button" class="btn btn-outline" onclick="this.closest('.modal-overlay').remove()">Cancel</button>
+        <button type="submit" class="btn btn-primary">Add Partner</button>
+      </div>
+    </form>
+  </div>`;
+  document.body.appendChild(modal);
+}
+
+async function addAS2Partner(e,form){
+  e.preventDefault();
+  const fd=new FormData(form);
+  const body={name:fd.get('name'),as2_id:fd.get('as2_id'),url:fd.get('url'),certificate:fd.get('certificate')||null,encryption_algorithm:fd.get('encryption_algorithm'),signature_algorithm:fd.get('signature_algorithm'),mdn_mode:fd.get('mdn_mode')};
+  const r=await api('/api/treasury/as2/partners',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+  if(r.success){toast('AS2 trading partner added');document.querySelector('.modal-overlay')?.remove();loadPage('mft')}
+  else toast(r.error||'Failed to add partner','error');
+}
+
+async function testAS2Partner(partnerId){
+  toast('Sending AS2 connectivity test...','info');
+  const r=await api(`/api/treasury/as2/test/${partnerId}`,{method:'POST'});
+  if(r.success)toast(r.message||'AS2 test successful');
+  else toast(r.error||'AS2 test failed','error');
+}
+
+async function deleteAS2Partner(partnerId){
+  if(!confirm('Remove this AS2 trading partner?'))return;
+  const r=await api(`/api/treasury/as2/partners/${partnerId}`,{method:'DELETE'});
+  if(r.success){toast('Partner removed');loadPage('mft')}
+  else toast(r.error||'Failed to remove partner','error');
+}
+
+async function sendAS2File(fileId){
+  // Get partners and let user pick one
+  const pData=await api('/api/treasury/as2/partners');
+  const partners=(pData.data||[]).filter(p=>p.status==='active');
+  if(!partners.length){toast('No AS2 partners configured — add a partner first','error');return}
+  if(partners.length===1){
+    if(!confirm(`Send file via AS2 to ${partners[0].name}?`))return;
+    doAS2Send(fileId,partners[0].id);
+  }else{
+    const modal=document.createElement('div');
+    modal.className='modal-overlay';
+    modal.innerHTML=`<div class="modal">
+      <h3>Send via AS2</h3>
+      <p style="color:var(--text-muted);margin-bottom:1rem">Select a trading partner to deliver this file:</p>
+      ${partners.map(p=>`<button class="btn btn-outline" style="width:100%;margin-bottom:0.5rem;text-align:left;padding:0.75rem" onclick="this.closest('.modal-overlay').remove();doAS2Send('${fileId}','${p.id}')">
+        <strong>${esc(p.name)}</strong> <span style="color:var(--text-muted);font-size:0.75rem">(${esc(p.as2_id)})</span>
+      </button>`).join('')}
+      <button class="btn btn-outline" style="margin-top:0.5rem" onclick="this.closest('.modal-overlay').remove()">Cancel</button>
+    </div>`;
+    document.body.appendChild(modal);
+  }
+}
+
+async function doAS2Send(fileId,partnerId){
+  toast('Sending file via AS2 with S/MIME encryption...','info');
+  const r=await api(`/api/treasury/as2/send/${fileId}`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({partner_id:partnerId})});
+  if(r.success){toast(r.message||'File sent via AS2');loadPage('mft')}
+  else toast(r.error||'AS2 delivery failed','error');
 }
 
 async function renderCoreBanking(c){
