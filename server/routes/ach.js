@@ -77,7 +77,7 @@ router.post('/disburse', requireAdmin, async (req, res) => {
     amount,
     routing_number,
     account_number,
-    account_type = 'Checking',
+    account_type,
     payment_type_id,
     send_date,
     description = 'Trust disbursement',
@@ -90,24 +90,33 @@ router.post('/disburse', requireAdmin, async (req, res) => {
   // Validation
   if (!wallet_id || !amount || !routing_number || !account_number || !payment_type_id) {
     return res.status(400).json({
+      success: false,
       error: 'Required: wallet_id, amount, routing_number, account_number, payment_type_id',
     });
   }
 
   if (!/^\d{9}$/.test(String(routing_number))) {
-    return res.status(400).json({ error: 'routing_number must be 9 digits' });
+    return res.status(400).json({ success: false, error: 'routing_number must be 9 digits' });
+  }
+
+  const validAccountType = account_type || 'Checking';
+  if (!['Checking', 'Savings'].includes(validAccountType)) {
+    return res.status(400).json({ success: false, error: "account_type must be 'Checking' or 'Savings'" });
   }
 
   const amountNum = parseFloat(amount);
   if (isNaN(amountNum) || amountNum <= 0) {
-    return res.status(400).json({ error: 'amount must be a positive number' });
+    return res.status(400).json({ success: false, error: 'amount must be a positive number' });
   }
 
   // Determine send date
   const disbursementDate = send_date || getNextBusinessDay();
   const dateObj = new Date(disbursementDate);
+  if (isNaN(dateObj.getTime())) {
+    return res.status(400).json({ success: false, error: 'send_date must be a valid date (YYYY-MM-DD)' });
+  }
   if (dateObj < new Date(new Date().setHours(0,0,0,0))) {
-    return res.status(400).json({ error: 'send_date must be today or future' });
+    return res.status(400).json({ success: false, error: 'send_date must be today or future' });
   }
 
   // Look up wallet to get beneficiary info
@@ -145,7 +154,7 @@ router.post('/disburse', requireAdmin, async (req, res) => {
       bank_name:       'Recipient Bank',
       routing_number,
       account_number,
-      account_type,
+      account_type:   validAccountType,
       billing_address,
       billing_city,
       billing_state,
@@ -240,8 +249,15 @@ router.post('/disburse', requireAdmin, async (req, res) => {
 // Get all ACH payment schedules for a beneficiary by wallet ID
 router.get('/schedules/:walletId', async (req, res) => {
   try {
+    const { walletId } = req.params;
+    if (!walletId || !walletId.trim()) {
+      return res.status(400).json({ success: false, error: 'walletId is required' });
+    }
+    if (!/^\d+$/.test(walletId)) {
+      return res.status(400).json({ success: false, error: 'walletId must be a numeric ID' });
+    }
     const profile = await OpenACHClient.getPaymentProfileByExternalId(
-      `wallet_${req.params.walletId}`
+      `wallet_${walletId}`
     );
     if (!profile.success || !profile.payment_profile_id) {
       return res.json({ success: true, data: [], message: 'No ACH profile found for this wallet' });

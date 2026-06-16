@@ -11,8 +11,6 @@ const server = http.createServer(function(req, res) {
       service: 'ach',
       openach_connected: true,
       openach_url: 'https://ach.dlbtrust.cloud/openach/',
-      api_token: '3caee1c2-c218-4959-b6d2-21d4b2a1b42e',
-      originator_id: 'd96503c1-f37a-4780-867f-afe0102ffdf1',
       timestamp: new Date().toISOString()
     });
     res.writeHead(200, { 'Content-Type': 'application/json' });
