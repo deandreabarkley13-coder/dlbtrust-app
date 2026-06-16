@@ -43,6 +43,21 @@ app.use('/api/fineract', require('./server/routes/fineract'));
 // ─── Fixed Income / Bond Routes ───────────────────────────────────────────────
 app.use('/api/bonds', require('./server/routes/bonds'));
 
+// ─── Cash Management Routes ──────────────────────────────────────────────────
+app.use('/api/cash', require('./server/routes/cash'));
+
+// ─── CRM Engine Routes ──────────────────────────────────────────────────────
+app.use('/api/crm', require('./server/routes/crm'));
+
+// ─── Admin Control Routes ────────────────────────────────────────────────────
+app.use('/api/admin', require('./server/routes/admin'));
+
+// ─── Live Bond Accrual Scheduler ─────────────────────────────────────────────
+try {
+  const { LiveBondEngine } = require('./server/integrations/bonds/liveEngine');
+  LiveBondEngine.scheduleAccrualJob();
+} catch(e) { console.warn('[liveEngine]', e.message); }
+
 // ─── Start Server ─────────────────────────────────────────────────────────────
 const PORT = process.env.PORT || 3001;
 app.listen(PORT, () => {

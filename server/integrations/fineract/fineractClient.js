@@ -216,6 +216,28 @@ class FineractClient {
   }
 
   /**
+   * Send a command to a savings account (activate, block, close, etc.).
+   */
+  static async commandSavingsAccount(accountId, command) {
+    return fineractRequest('POST', `savingsaccounts/${accountId}?command=${command}`, {});
+  }
+
+  /**
+   * List Fineract clients with pagination.
+   */
+  static async listClients({ offset = 0, limit = 100 } = {}) {
+    return fineractRequest('GET', `clients?offset=${offset}&limit=${limit}`);
+  }
+
+  /**
+   * List savings accounts with optional client filter.
+   */
+  static async listSavingsAccounts({ clientId, offset = 0, limit = 100 } = {}) {
+    const qs = clientId ? `clientId=${clientId}&offset=${offset}&limit=${limit}` : `offset=${offset}&limit=${limit}`;
+    return fineractRequest('GET', `savingsaccounts?${qs}`);
+  }
+
+  /**
    * Get GL accounts (chart of accounts).
    */
   static async getGLAccounts() {
