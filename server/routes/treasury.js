@@ -139,6 +139,10 @@ const as2Client = require('../integrations/as2/as2Client');
         updated_at TIMESTAMPTZ DEFAULT NOW()
       );
 
+    `);
+
+    // AS2 tables — separate query to avoid FK conflicts with legacy UUID mft_files
+    await pool.query(`
       CREATE TABLE IF NOT EXISTS as2_config (
         id SERIAL PRIMARY KEY,
         as2_id VARCHAR(255) NOT NULL DEFAULT 'DLBTrust',
@@ -168,8 +172,8 @@ const as2Client = require('../integrations/as2/as2Client');
       CREATE TABLE IF NOT EXISTS as2_messages (
         id SERIAL PRIMARY KEY,
         message_id VARCHAR(512),
-        partner_id INTEGER REFERENCES as2_partners(id),
-        file_id INTEGER REFERENCES mft_files(id),
+        partner_id INTEGER,
+        file_id VARCHAR(255),
         direction VARCHAR(10) DEFAULT 'outbound',
         filename VARCHAR(255),
         content_type VARCHAR(100),
