@@ -17,9 +17,10 @@ const { OpenACHClient } = require('../integrations/openach/openachClient');
 
 // ─── Middleware: require admin auth ──────────────────────────────────────────
 function requireAdmin(req, res, next) {
-  // Compatible with whatever auth the live server uses
-  // If no auth middleware, skip — tighten later
-  if (typeof req.user !== 'undefined' && req.user.role !== 'admin') {
+  if (typeof req.user === 'undefined') {
+    return res.status(401).json({ error: 'Authentication required' });
+  }
+  if (req.user.role !== 'admin') {
     return res.status(403).json({ error: 'Admin access required' });
   }
   next();

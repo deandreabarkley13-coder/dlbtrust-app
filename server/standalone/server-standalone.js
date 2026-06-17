@@ -7,14 +7,21 @@ var path = require('path');
 var PORT = parseInt(process.env.PORT || '3003', 10);
 
 // ─── helpers ──────────────────────────────────────────────────
-function json(res, code, obj) {
+var ALLOWED_ORIGINS = (process.env.CORS_ALLOWED_ORIGINS || 'https://dlbtrust.cloud').split(',');
+
+function json(res, code, obj, reqOrigin) {
   var body = JSON.stringify(obj);
-  res.writeHead(code, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' });
+  var headers = { 'Content-Type': 'application/json' };
+  if (reqOrigin && ALLOWED_ORIGINS.indexOf(reqOrigin) !== -1) {
+    headers['Access-Control-Allow-Origin'] = reqOrigin;
+  }
+  res.writeHead(code, headers);
   res.end(body);
 }
 
 // ─── ACH health route ─────────────────────────────────────────
 function achHealth(req, res) {
+  var origin = req.headers.origin;
   // Probe OpenACH via internal Apache
   var opts = { host: '127.0.0.1', port: 80, path: '/openach/api/health_check',
                headers: { Host: 'ach.dlbtrust.cloud' }, timeout: 4000 };
@@ -22,20 +29,21 @@ function achHealth(req, res) {
     var d = '';
     probeRes.on('data', function(c) { d += c; });
     probeRes.on('end', function() {
-      json(res, 200, { openach_connected: true, status: 'ok', probe: d.substring(0, 100) });
+      json(res, 200, { openach_connected: true, status: 'ok', probe: d.substring(0, 100) }, origin);
     });
   });
   probeReq.on('error', function() {
-    json(res, 200, { openach_connected: true, status: 'ok', note: 'OpenACH on ach.dlbtrust.cloud' });
+    json(res, 200, { openach_connected: true, status: 'ok', note: 'OpenACH on ach.dlbtrust.cloud' }, origin);
   });
   probeReq.setTimeout(4000, function() {
     probeReq.destroy();
-    json(res, 200, { openach_connected: true, status: 'ok', note: 'probe timeout' });
+    json(res, 200, { openach_connected: true, status: 'ok', note: 'probe timeout' }, origin);
   });
 }
 
 // ─── analytics summary route ──────────────────────────────────
 function analyticsSummary(req, res) {
+  var origin = req.headers.origin;
   // Try to use better-sqlite3 from the dlbtrust-v2 node_modules
   try {
     var V2 = '/var/www/vhosts/dlbtrust.cloud/dlbtrust-v2';
@@ -55,7 +63,7 @@ function analyticsSummary(req, res) {
     }
     if (!db) {
       json(res, 200, { total_corpus: 0, wallet_count: 0, transaction_count: 0,
-                       generated_at: new Date().toISOString(), note: 'DB not found' });
+                       generated_at: new Date().toISOString(), note: 'DB not found' }, origin);
       return;
     }
     var wallets = db.prepare('SELECT COUNT(*) as count, COALESCE(SUM(balance),0) as total FROM wallets').get();
@@ -66,10 +74,10 @@ function analyticsSummary(req, res) {
       wallet_count: wallets ? wallets.count : 0,
       transaction_count: txCount ? txCount.count : 0,
       generated_at: new Date().toISOString()
-    });
+    }, origin);
   } catch(err) {
     json(res, 200, { total_corpus: 0, wallet_count: 0, transaction_count: 0,
-                     generated_at: new Date().toISOString(), note: err.message });
+                     generated_at: new Date().toISOString(), note: err.message }, origin);
   }
 }
 
@@ -84,7 +92,7 @@ function proxyTo3001(req, res) {
     pRes.pipe(res);
   });
   pReq.on('error', function(e) {
-    json(res, 502, { error: 'Upstream error', detail: e.message });
+    json(res, 502, { error: 'Upstream error' }, req.headers.origin);
   });
   req.pipe(pReq);
 }
