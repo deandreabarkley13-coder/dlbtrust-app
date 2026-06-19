@@ -1,9 +1,9 @@
 /**
  * dlbtrust.cloud — Express Application Entry Point
- * DEANDREA LAVAR BARKLEY TRUST — Secure Wealth Management Portal
+ * DEANDREA LAVAR BARKLEY TRUST — Treasury Management System
  * 
  * This file is the fallback/reference app.js.
- * The live server may use server.js — both are patched identically.
+ * The live server uses server-new-fixed.js — both are patched identically.
  */
 
 'use strict';
