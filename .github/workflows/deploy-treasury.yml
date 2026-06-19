@@ -28,14 +28,11 @@ jobs:
             REPO_URL="https://github.com/deandreabarkley13-coder/dlbtrust-app.git"
 
             echo "=== Stop ALL old processes first ==="
-            pm2 delete dlbtrust-treasury 2>/dev/null || true
-            pm2 delete dlbtrust-3002 2>/dev/null || true
-            pm2 delete dlbtrust 2>/dev/null || true
-            pm2 delete dlbtrust-full 2>/dev/null || true
-            pm2 delete wealth-platform 2>/dev/null || true
-            pm2 delete server-proxy 2>/dev/null || true
-            pm2 delete proxy3004 2>/dev/null || true
+            pm2 delete all 2>/dev/null || true
             pm2 kill 2>/dev/null || true
+            PM2_HOME="/var/www/vhosts/dlbtrust.cloud/.pm2"
+            rm -f "$PM2_HOME/dump.pm2" 2>/dev/null || true
+            rm -f "$PM2_HOME/dump.pm2.bak" 2>/dev/null || true
             fuser -k 3002/tcp 2>/dev/null || true
             fuser -k 3001/tcp 2>/dev/null || true
             sleep 2
@@ -108,16 +105,18 @@ jobs:
             curl -s http://localhost:3002/api/as2/dashboard | head -c 200
             echo ""
 
-      - name: Update Apache vhost to proxy to treasury
+      - name: Configure nginx + Apache to proxy to treasury
         uses: appleboy/ssh-action@v1.0.3
         with:
           host: 74.208.191.205
           username: dlbtrust.cloud_h6zkwzag1ya
           password: Deploy2026!
           port: 22
-          command_timeout: 30s
+          command_timeout: 60s
           script: |
-            cat > /var/www/vhosts/dlbtrust.cloud/conf/vhost.conf << 'VHOSTEOF'
+            CONF_DIR="/var/www/vhosts/dlbtrust.cloud/conf"
+
+            cat > "$CONF_DIR/vhost.conf" << 'VHOSTEOF'
             ProxyRequests Off
             ProxyPreserveHost On
             ProxyPass / http://localhost:3002/
@@ -131,9 +130,29 @@ jobs:
             RewriteCond %{HTTP:Upgrade} websocket [NC]
             RewriteRule ^/?(.*) ws://localhost:3002/$1 [P,L]
             VHOSTEOF
-            echo "vhost.conf updated — proxying all traffic to treasury on port 3002"
+            echo "Apache vhost.conf updated"
 
-      - name: Rebuild Apache via Plesk
+            cat > "$CONF_DIR/vhost_nginx.conf" << 'NGINXEOF'
+            location / {
+                proxy_pass http://127.0.0.1:3002;
+                proxy_http_version 1.1;
+                proxy_set_header Upgrade $http_upgrade;
+                proxy_set_header Connection "upgrade";
+                proxy_set_header Host $host;
+                proxy_set_header X-Real-IP $remote_addr;
+                proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+                proxy_set_header X-Forwarded-Proto $scheme;
+                proxy_cache off;
+                proxy_buffering off;
+            }
+            NGINXEOF
+            echo "Nginx vhost_nginx.conf updated — ALL traffic proxied to Express:3002"
+
+            rm -rf /var/cache/nginx/* 2>/dev/null || true
+            rm -rf /tmp/nginx_cache/* 2>/dev/null || true
+            echo "Nginx cache cleared"
+
+      - name: Rebuild Apache + Nginx via Plesk
         run: |
           curl -sk --max-time 30 \
             "https://$SERVER:8443/enterprise/control/agent.php" \
@@ -143,20 +162,14 @@ jobs:
               <server><srv_man><restart><service>httpd</service></restart></srv_man></server>
             </packet>' | head -c 200
           echo ""
-
-      - name: Clear nginx proxy cache
-        uses: appleboy/ssh-action@v1.0.3
-        with:
-          host: 74.208.191.205
-          username: dlbtrust.cloud_h6zkwzag1ya
-          password: Deploy2026!
-          port: 22
-          command_timeout: 30s
-          script: |
-            rm -rf /var/cache/nginx/* 2>/dev/null || true
-            rm -rf /tmp/nginx_cache/* 2>/dev/null || true
-            nginx -s reload 2>/dev/null || true
-            echo "nginx cache cleared and reloaded"
+          curl -sk --max-time 30 \
+            "https://$SERVER:8443/enterprise/control/agent.php" \
+            -H "HTTP_AUTH_LOGIN: admin" -H "HTTP_AUTH_PASSWD: $PLESK_PASS" \
+            -H "Content-Type: text/xml" \
+            -d '<?xml version="1.0"?><packet version="1.6.9.1">
+              <server><srv_man><restart><service>nginx</service></restart></srv_man></server>
+            </packet>' | head -c 200
+          echo ""
 
       - name: Final verification
         run: |
