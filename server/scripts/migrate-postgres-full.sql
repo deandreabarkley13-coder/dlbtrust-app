@@ -21,28 +21,37 @@ CREATE TABLE IF NOT EXISTS bonds (
   updated_at      TIMESTAMPTZ DEFAULT NOW()
 );
 
--- ─── Bond Balances ───────────────────────────────────────────────────────────
+-- ─── Bond Balances (running state) ───────────────────────────────────────────
 CREATE TABLE IF NOT EXISTS bond_balances (
-  id                SERIAL PRIMARY KEY,
-  bond_id           INTEGER NOT NULL REFERENCES bonds(id) ON DELETE CASCADE,
-  principal_balance NUMERIC(18,2) NOT NULL DEFAULT 0,
-  accrued_interest  NUMERIC(18,2) NOT NULL DEFAULT 0,
-  last_accrual_date DATE,
-  created_at        TIMESTAMPTZ DEFAULT NOW(),
-  updated_at        TIMESTAMPTZ DEFAULT NOW()
+  id                   SERIAL PRIMARY KEY,
+  bond_id              INTEGER NOT NULL REFERENCES bonds(id),
+  principal_balance    NUMERIC(18,2) NOT NULL,
+  accrued_interest     NUMERIC(18,2) NOT NULL DEFAULT 0,
+  total_interest_paid  NUMERIC(18,2) NOT NULL DEFAULT 0,
+  total_principal_paid NUMERIC(18,2) NOT NULL DEFAULT 0,
+  last_accrual_date    DATE,
+  last_payment_date    DATE,
+  updated_at           TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  UNIQUE(bond_id)
 );
 
--- ─── Bond Transactions ──────────────────────────────────────────────────────
+-- ─── Bond Transactions (immutable ledger) ────────────────────────────────────
 CREATE TABLE IF NOT EXISTS bond_transactions (
-  id                SERIAL PRIMARY KEY,
-  bond_id           INTEGER NOT NULL REFERENCES bonds(id) ON DELETE CASCADE,
-  transaction_type  TEXT NOT NULL,
-  amount            NUMERIC(18,2) NOT NULL,
-  running_balance   NUMERIC(18,2),
-  description       TEXT,
-  transaction_date  DATE NOT NULL,
-  created_at        TIMESTAMPTZ DEFAULT NOW()
+  id               SERIAL PRIMARY KEY,
+  bond_id          INTEGER NOT NULL REFERENCES bonds(id),
+  transaction_type VARCHAR(30) NOT NULL,
+  amount           NUMERIC(18,2) NOT NULL,
+  running_balance  NUMERIC(18,2) NOT NULL,
+  accrued_interest NUMERIC(18,2) NOT NULL DEFAULT 0,
+  description      TEXT,
+  fineract_txn_id  VARCHAR(100),
+  transaction_date DATE NOT NULL,
+  created_at       TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+
+CREATE INDEX IF NOT EXISTS idx_bond_txn_bond_id ON bond_transactions(bond_id);
+CREATE INDEX IF NOT EXISTS idx_bond_txn_date ON bond_transactions(transaction_date);
+CREATE INDEX IF NOT EXISTS idx_bond_txn_type ON bond_transactions(transaction_type);
 
 -- ─── Bond Trustees ────────────────────────────────────────────────────────────
 CREATE TABLE IF NOT EXISTS bond_trustees (

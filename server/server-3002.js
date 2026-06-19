@@ -50,6 +50,7 @@ try { app.use('/api/as2', require(path.join(HD, 'server', 'routes', 'as2'))); co
 
 // Treasury Management System — serve dashboard at root, static files from public/
 app.get('/', function(req, res) {
+  res.set('Cache-Control', 'no-cache, no-store, must-revalidate');
   res.sendFile(path.join(HD, 'public', 'dashboard.html'));
 });
 app.get('/treasury', function(req, res) {
