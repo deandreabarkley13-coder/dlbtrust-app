@@ -21,8 +21,8 @@ const TRUST_TAX_BRACKETS = [
   { limit: Infinity, rate: 0.37 },
 ];
 
-// Personal exemption: $300 for complex trusts, $0 if required to distribute
-const COMPLEX_TRUST_EXEMPTION = 300;
+// Personal exemption: $100 for complex trusts, $300 for simple trusts (IRS Form 1041)
+const COMPLEX_TRUST_EXEMPTION = 100;
 const SIMPLE_TRUST_EXEMPTION = 300;
 
 class TaxEngine {
@@ -78,11 +78,11 @@ class TaxEngine {
           END
         ), 0) AS net_amount
       FROM trust_accounts ta
-      LEFT JOIN trust_journal_lines jl ON jl.account_code = ta.account_code
-      LEFT JOIN trust_journal_entries je ON je.entry_id = jl.entry_id
+      INNER JOIN trust_journal_lines jl ON jl.account_code = ta.account_code
+      INNER JOIN trust_journal_entries je ON je.entry_id = jl.entry_id
+      WHERE ta.is_active = TRUE AND ta.account_type IN ('income', 'expense')
         AND je.status = 'posted'
         AND je.entry_date >= $1 AND je.entry_date <= $2
-      WHERE ta.is_active = TRUE AND ta.account_type IN ('income', 'expense')
       GROUP BY ta.account_code, ta.account_name, ta.account_type, ta.sub_type
       ORDER BY ta.account_code
     `, [startDate, endDate]);
@@ -325,8 +325,10 @@ class TaxEngine {
            total_income, deductions, distributions_paid,
            status)
         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,'computed')
-        ON CONFLICT (k1_id) DO UPDATE SET
+        ON CONFLICT (return_id, beneficiary_contact_id) DO UPDATE SET
+          k1_id=$1,
           allocation_percentage=$7,
+          beneficiary_name=$5, beneficiary_tin_last4=$6,
           interest_income=$8, dividend_income=$9, capital_gains=$10,
           rental_income=$11, other_income=$12, total_income=$13,
           deductions=$14, distributions_paid=$15,
