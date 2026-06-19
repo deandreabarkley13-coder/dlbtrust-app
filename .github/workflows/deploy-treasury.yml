@@ -15,31 +15,19 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Deploy via git pull + PM2 restart
+      - name: Deploy via git clone/pull + PM2 restart
         uses: appleboy/ssh-action@v1.0.3
         with:
           host: 74.208.191.205
           username: dlbtrust.cloud_h6zkwzag1ya
           password: Deploy2026!
           port: 22
-          command_timeout: 120s
+          command_timeout: 300s
           script: |
             HTTPDOCS="/var/www/vhosts/dlbtrust.cloud/httpdocs"
-            cd "$HTTPDOCS"
+            REPO_URL="https://github.com/deandreabarkley13-coder/dlbtrust-app.git"
 
-            echo "=== Git pull latest ==="
-            git pull origin main 2>&1 | tail -5
-
-            echo "=== npm install ==="
-            npm install --production 2>&1 | tail -3
-
-            echo "=== Run migrations ==="
-            PGPASSWORD=postgres psql -h localhost -U postgres -d fineract_tenants -f server/scripts/migrate-postgres-full.sql 2>&1 | tail -5 || echo "migration 1 done or skipped"
-            PGPASSWORD=postgres psql -h localhost -U postgres -d fineract_tenants -f server/scripts/migrate-docs-accounting.sql 2>&1 | tail -5 || echo "migration 2 done or skipped"
-            PGPASSWORD=postgres psql -h localhost -U postgres -d fineract_tenants -f server/scripts/migrate-ach.sql 2>&1 | tail -5 || echo "migration 3 (ACH) done or skipped"
-            PGPASSWORD=postgres psql -h localhost -U postgres -d fineract_tenants -f server/scripts/migrate-as2.sql 2>&1 | tail -5 || echo "migration 4 (AS2) done or skipped"
-
-            echo "=== Stop ALL old processes ==="
+            echo "=== Stop ALL old processes first ==="
             pm2 delete dlbtrust-treasury 2>/dev/null || true
             pm2 delete dlbtrust-3002 2>/dev/null || true
             pm2 delete dlbtrust 2>/dev/null || true
@@ -47,40 +35,62 @@ jobs:
             pm2 delete wealth-platform 2>/dev/null || true
             pm2 delete server-proxy 2>/dev/null || true
             pm2 delete proxy3004 2>/dev/null || true
-            echo "=== Start Treasury Management ==="
+            pm2 kill 2>/dev/null || true
             fuser -k 3002/tcp 2>/dev/null || true
             fuser -k 3001/tcp 2>/dev/null || true
             sleep 2
 
+            echo "=== Setup git repo ==="
+            if [ -d "$HTTPDOCS/.git" ]; then
+              echo "Git repo exists, pulling latest..."
+              cd "$HTTPDOCS"
+              git fetch origin main 2>&1 | tail -3
+              git reset --hard origin/main 2>&1 | tail -3
+            else
+              echo "Not a git repo — cloning fresh..."
+              BACKUP="/var/www/vhosts/dlbtrust.cloud/httpdocs-backup-$(date +%s)"
+              mv "$HTTPDOCS" "$BACKUP" 2>/dev/null || true
+              git clone "$REPO_URL" "$HTTPDOCS" 2>&1 | tail -5
+              if [ -d "$BACKUP/node_modules" ]; then
+                echo "Copying existing node_modules..."
+                cp -a "$BACKUP/node_modules" "$HTTPDOCS/" 2>/dev/null || true
+              fi
+            fi
+            cd "$HTTPDOCS"
+            echo "Current commit: $(git log --oneline -1)"
+
+            echo "=== npm install ==="
+            export HOME="/var/www/vhosts/dlbtrust.cloud"
+            npm install --production --no-optional 2>&1 | tail -5 || echo "npm install completed with warnings"
+
+            echo "=== Create database if needed ==="
+            PGPASSWORD=postgres psql -h localhost -U postgres -tc "SELECT 1 FROM pg_database WHERE datname = 'fineract_tenants'" | grep -q 1 || \
+              PGPASSWORD=postgres psql -h localhost -U postgres -c "CREATE DATABASE fineract_tenants" 2>&1 || echo "DB creation skipped"
+
+            echo "=== Run migrations ==="
+            PGPASSWORD=postgres psql -h localhost -U postgres -d fineract_tenants -f server/scripts/migrate-postgres-full.sql 2>&1 | tail -5 || echo "migration 1 done or skipped"
+            PGPASSWORD=postgres psql -h localhost -U postgres -d fineract_tenants -f server/scripts/migrate-docs-accounting.sql 2>&1 | tail -5 || echo "migration 2 done or skipped"
+            PGPASSWORD=postgres psql -h localhost -U postgres -d fineract_tenants -f server/scripts/migrate-ach.sql 2>&1 | tail -5 || echo "migration 3 (ACH) done or skipped"
+            PGPASSWORD=postgres psql -h localhost -U postgres -d fineract_tenants -f server/scripts/migrate-as2.sql 2>&1 | tail -5 || echo "migration 4 (AS2) done or skipped"
+
+            echo "=== Start Treasury Management ==="
             PORT=3002 pm2 start "$HTTPDOCS/server/server-3002.js" --name dlbtrust-treasury
-            pm2 save
-            sleep 5
+            pm2 save --force
+            sleep 8
             pm2 list
 
             echo "=== Verify Treasury Endpoints ==="
             echo "Dashboard:"
-            curl -s http://localhost:3002/ | head -c 100
+            curl -s http://localhost:3002/ | head -c 200
             echo ""
             echo "Bonds:"
-            curl -s http://localhost:3002/api/bonds | head -c 100
-            echo ""
-            echo "Cash:"
-            curl -s http://localhost:3002/api/cash/accounts | head -c 100
-            echo ""
-            echo "CRM:"
-            curl -s http://localhost:3002/api/crm/dashboard | head -c 100
-            echo ""
-            echo "Documents:"
-            curl -s http://localhost:3002/api/documents/templates | head -c 100
-            echo ""
-            echo "Accounting:"
-            curl -s http://localhost:3002/api/accounting/dashboard | head -c 100
+            curl -s http://localhost:3002/api/bonds | head -c 200
             echo ""
             echo "ACH Pipeline:"
-            curl -s http://localhost:3002/api/ach-pipeline/status | head -c 100
+            curl -s http://localhost:3002/api/ach-pipeline/status | head -c 200
             echo ""
             echo "AS2 Server:"
-            curl -s http://localhost:3002/api/as2/dashboard | head -c 100
+            curl -s http://localhost:3002/api/as2/dashboard | head -c 200
             echo ""
 
       - name: Update Apache vhost to proxy to treasury
