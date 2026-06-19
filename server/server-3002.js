@@ -48,15 +48,27 @@ try { app.use('/api/ach-pipeline', require(path.join(HD, 'server', 'routes', 'ac
 // AS2 Server — open source AS2 messaging (certs, partners, send/receive)
 try { app.use('/api/as2', require(path.join(HD, 'server', 'routes', 'as2'))); console.log('[as2] loaded'); } catch(e) { console.warn('[as2]', e.message); }
 
+// Tax Engine — Form 1041 & K-1 generation
+try { app.use('/api/tax', require(path.join(HD, 'server', 'routes', 'tax'))); console.log('[tax] loaded'); } catch(e) { console.warn('[tax]', e.message); }
+
 // Treasury Management System — serve dashboard at root, static files from public/
 app.get('/', function(req, res) {
   res.set('Cache-Control', 'no-cache, no-store, must-revalidate');
   res.sendFile(path.join(HD, 'public', 'dashboard.html'));
 });
 app.get('/treasury', function(req, res) {
+  res.set('Cache-Control', 'no-cache, no-store, must-revalidate');
   res.sendFile(path.join(HD, 'public', 'dashboard.html'));
 });
-app.use(express.static(path.join(HD, 'public')));
+app.use(express.static(path.join(HD, 'public'), {
+  etag: false,
+  maxAge: 0,
+  setHeaders: function(res, filePath) {
+    if (filePath.endsWith('.html')) {
+      res.set('Cache-Control', 'no-cache, no-store, must-revalidate');
+    }
+  }
+}));
 app.get('*', function(req, res) {
   var idx = path.join(HD, 'public', 'index.html');
   fs.existsSync(idx) ? res.sendFile(idx) : res.status(404).send('Not found');
