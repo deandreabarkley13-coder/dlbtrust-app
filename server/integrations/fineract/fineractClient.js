@@ -245,6 +245,22 @@ class FineractClient {
   }
 
   /**
+   * Create a GL account in Fineract.
+   * type: 1=ASSET, 2=LIABILITY, 3=EQUITY, 4=INCOME, 5=EXPENSE
+   * usage: 1=HEADER, 2=DETAIL
+   */
+  static async createGLAccount({ name, glCode, type, usage, description, manualEntriesAllowed }) {
+    return fineractRequest('POST', 'glaccounts', {
+      name,
+      glCode,
+      type,
+      usage: usage || 2,
+      description: description || '',
+      manualEntriesAllowed: manualEntriesAllowed !== false,
+    });
+  }
+
+  /**
    * Get GL accounts (chart of accounts).
    */
   static async getGLAccounts() {

@@ -287,4 +287,84 @@ router.get('/crm/dashboard', async (req, res) => {
   }
 });
 
+// ─── POST /api/admin/fineract/seed-gl ──────────────────────────────────────────
+// Creates GL accounts in Fineract mirroring trust chart of accounts,
+// then populates fineract_gl_mappings table.
+router.post('/fineract/seed-gl', async (req, res) => {
+  const TYPE_MAP = { asset: 1, liability: 2, equity: 3, income: 4, expense: 5 };
+
+  try {
+    // Verify Fineract is reachable
+    await FineractClient.healthCheck();
+
+    // Get existing GL accounts to avoid duplicates
+    const existingAccounts = await FineractClient.getGLAccounts();
+    const existingCodes = new Set(
+      Array.isArray(existingAccounts) ? existingAccounts.map(a => a.glCode) : []
+    );
+
+    // Read trust chart of accounts
+    const { rows: trustAccounts } = await pool.query(
+      'SELECT account_code, account_name, account_type, sub_type FROM trust_accounts ORDER BY account_code'
+    );
+
+    const results = [];
+    let created = 0;
+    let skipped = 0;
+
+    for (const acct of trustAccounts) {
+      const glCode = acct.account_code;
+
+      if (existingCodes.has(glCode)) {
+        const existing = existingAccounts.find(a => a.glCode === glCode);
+        results.push({ glCode, name: acct.account_name, action: 'skipped', fineractGlId: existing.id });
+        skipped++;
+
+        // Still ensure mapping exists
+        await pool.query(`
+          INSERT INTO fineract_gl_mappings (mapping_type, trust_account_code, fineract_gl_id, description)
+          SELECT $1, $2, $3, $4
+          WHERE NOT EXISTS (
+            SELECT 1 FROM fineract_gl_mappings WHERE mapping_type = $1 AND trust_account_code = $2
+          )
+        `, ['trust_journal', glCode, existing.id, `${acct.account_name} (${acct.account_type})`]);
+        await pool.query(`
+          UPDATE fineract_gl_mappings SET fineract_gl_id = $1, description = $2, updated_at = NOW()
+          WHERE mapping_type = 'trust_journal' AND trust_account_code = $3
+        `, [existing.id, `${acct.account_name} (${acct.account_type})`, glCode]);
+        continue;
+      }
+
+      const fineractType = TYPE_MAP[acct.account_type];
+      if (!fineractType) continue;
+
+      const result = await FineractClient.createGLAccount({
+        name: acct.account_name,
+        glCode,
+        type: fineractType,
+        usage: 2,
+        description: `Trust account: ${acct.account_name} (${acct.sub_type || acct.account_type})`,
+      });
+
+      const fineractGlId = result.resourceId || result.id;
+      results.push({ glCode, name: acct.account_name, action: 'created', fineractGlId });
+      created++;
+
+      // Write mapping
+      await pool.query(`
+        INSERT INTO fineract_gl_mappings (mapping_type, trust_account_code, fineract_gl_id, description)
+        SELECT $1, $2, $3, $4
+        WHERE NOT EXISTS (
+          SELECT 1 FROM fineract_gl_mappings WHERE mapping_type = $1 AND trust_account_code = $2
+        )
+      `, ['trust_journal', glCode, fineractGlId, `${acct.account_name} (${acct.account_type})`]);
+    }
+
+    await logAdminAction(req, 'seed_fineract_gl', 'fineract', null, null, { created, skipped });
+    res.json({ success: true, created, skipped, total: results.length, data: results });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
 module.exports = router;

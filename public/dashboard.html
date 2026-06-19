@@ -484,6 +484,12 @@
         <div class="form-row"><div class="form-group"><label>Token</label><input type="password" id="admin-token" placeholder="Enter admin token" value=""></div><button class="btn btn-outline btn-sm" style="align-self:flex-end" onclick="saveAdminToken()">Set Token</button></div>
         <p class="text-muted" style="font-size:11px;margin-top:4px;">Required for admin operations (health check, accrue-all, audit log)</p>
       </div>
+      <div class="card mb-16">
+        <div class="section-title">Fineract GL Sync</div>
+        <p class="text-muted" style="font-size:12px;margin-bottom:8px;">Creates GL accounts in Apache Fineract that mirror the trust chart of accounts, and populates the fineract_gl_mappings table.</p>
+        <button class="btn btn-success btn-sm" onclick="seedFineractGL()">Seed Fineract GL</button>
+        <div id="seed-gl-result" style="margin-top:8px;"></div>
+      </div>
       <div class="card"><div class="section-title">Audit Log</div><div class="table-wrap" id="admin-audit-wrap"><p class="loading">Loading...</p></div></div>
     </div>
   </div>
@@ -980,6 +986,18 @@
       if (!adminToken) { alert('Set admin token first'); return; }
       const r = await fetchJSON(API + '/api/admin/bonds/accrue-all', { method: 'POST', headers: adminHeaders() });
       alert(r.success ? 'Accrual complete!' : 'Error: ' + (r.error || 'Failed'));
+    }
+
+    async function seedFineractGL() {
+      if (!adminToken) { alert('Set admin token first'); return; }
+      el('seed-gl-result').innerHTML = '<p class="loading">Seeding GL accounts...</p>';
+      const r = await fetchJSON(API + '/api/admin/fineract/seed-gl', { method: 'POST', headers: adminHeaders() });
+      if (r.success) {
+        el('seed-gl-result').innerHTML = '<p class="success-msg">Synced! Created: ' + r.created + ', Skipped: ' + r.skipped + ' (already existed), Total: ' + r.total + '</p>' + '<table><thead><tr><th>GL Code</th><th>Account</th><th>Action</th><th>Fineract ID</th></tr></thead><tbody>' + (r.data || []).map(d => '<tr><td><code>' + esc(d.glCode) + '</code></td><td>' + esc(d.name) + '</td><td><span class="badge ' + (d.action === 'created' ? 'badge-active' : 'badge-info') + '">' + esc(d.action) + '</span></td><td>' + d.fineractGlId + '</td></tr>').join('') + '</tbody></table>';
+        loadAdmin();
+      } else {
+        el('seed-gl-result').innerHTML = '<p class="error-msg">' + esc(r.error || 'Failed') + '</p>';
+      }
     }
 
     // ─── FINERACT ──────────────────────────────────────────────────────────────
