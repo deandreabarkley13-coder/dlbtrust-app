@@ -92,15 +92,12 @@ jobs:
             echo "Passenger restart signaled"
 
             echo "=== Start Treasury Management on port 3007 ==="
-            PORT=3007 FINERACT_URL=https://localhost:8443 pm2 start "$HTTPDOCS/server/server-3002.js" --name dlbtrust-treasury
+            PORT=3007 FINERACT_URL=https://localhost:8443/fineract-provider/api/v1 pm2 start "$HTTPDOCS/server/server-3002.js" --name dlbtrust-treasury
             pm2 save --force
             sleep 8
             pm2 list
 
-            echo "=== Seed Fineract GL (idempotent — skips existing) ==="
-            PORT=3007 FINERACT_URL=https://localhost:8443 node "$HTTPDOCS/server/scripts/seed-fineract-gl.js" 2>&1 | tail -5 || echo "GL seed skipped (Fineract may not be ready)"
-
-            echo "=== Verify Treasury Endpoints ==="
+            echo "=== Verify Treasury Endpoints (pre-Fineract) ==="
             echo "Dashboard:"
             curl -s http://localhost:3007/ | head -c 200
             echo ""
@@ -112,9 +109,6 @@ jobs:
             echo ""
             echo "AS2 Server:"
             curl -s http://localhost:3007/api/as2/dashboard | head -c 200
-            echo ""
-            echo "Fineract Health:"
-            curl -s http://localhost:3007/api/fineract/health | head -c 200
             echo ""
             echo "Tax Engine:"
             curl -s http://localhost:3007/api/tax/dashboard | head -c 200
@@ -222,6 +216,17 @@ jobs:
 
             echo "=== Verify Fineract ==="
             wget -qO- --no-check-certificate https://localhost:8443/fineract-provider/actuator/health 2>&1 | head -c 100 || echo "Fineract still initializing (will retry on next deploy)"
+
+            echo "=== Seed Fineract GL (idempotent — skips existing) ==="
+            FINERACT_URL=https://localhost:8443/fineract-provider/api/v1 node "$HTTPDOCS/server/scripts/seed-fineract-gl.js" 2>&1 | tail -5 || echo "GL seed skipped (Fineract may not be ready)"
+
+            echo "=== Restart PM2 so Fineract connection is live ==="
+            pm2 restart dlbtrust-treasury 2>/dev/null || true
+            sleep 5
+
+            echo "=== Verify Fineract via Express ==="
+            curl -s http://localhost:3007/api/fineract/health | head -c 200
+            echo ""
 
       - name: Final verification
         run: |
