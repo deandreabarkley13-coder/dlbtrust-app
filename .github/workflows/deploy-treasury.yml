@@ -221,7 +221,7 @@ jobs:
             FINERACT_URL=https://localhost:8443/fineract-provider/api/v1 node "$HTTPDOCS/server/scripts/seed-fineract-gl.js" 2>&1 | tail -5 || echo "GL seed skipped (Fineract may not be ready)"
 
             echo "=== Restart PM2 so Fineract connection is live ==="
-            pm2 restart dlbtrust-treasury 2>/dev/null || true
+            su - dlbtrust.cloud_h6zkwzag1ya -c 'pm2 restart dlbtrust-treasury' 2>/dev/null || true
             sleep 5
 
             echo "=== Verify Fineract via Express ==="
