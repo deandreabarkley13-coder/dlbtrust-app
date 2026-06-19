@@ -1,5 +1,5 @@
-name: OpenACH API Credentials Insert v2
-on: [workflow_dispatch, push]
+name: OpenACH API Credentials Insert v2 (DEPRECATED)
+on: [workflow_dispatch]
 jobs:
   insert:
     runs-on: ubuntu-latest

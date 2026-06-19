@@ -43,6 +43,12 @@ try { app.use("/api/documents", require(HD + "/server/routes/documents")); conso
 // Trust Accounting routes
 try { app.use("/api/accounting", require(HD + "/server/routes/accounting")); console.log("[accounting] loaded"); } catch(e) { console.warn("[accounting]", e.message); }
 
+// ACH Pipeline — NACHA generation + AS2 transmission
+try { app.use("/api/ach-pipeline", require(HD + "/server/routes/achPipeline")); console.log("[ach-pipeline] loaded"); } catch(e) { console.warn("[ach-pipeline]", e.message); }
+
+// AS2 Server — open source AS2 messaging
+try { app.use("/api/as2", require(HD + "/server/routes/as2")); console.log("[as2] loaded"); } catch(e) { console.warn("[as2]", e.message); }
+
 // Start live bond accrual scheduler
 try {
   const { LiveBondEngine } = require(HD + "/server/integrations/bonds/liveEngine");

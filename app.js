@@ -58,6 +58,12 @@ app.use('/api/documents', require('./server/routes/documents'));
 // ─── Trust Accounting Routes ─────────────────────────────────────────────────
 app.use('/api/accounting', require('./server/routes/accounting'));
 
+// ─── ACH Pipeline — NACHA generation + AS2 transmission ─────────────────────
+app.use('/api/ach-pipeline', require('./server/routes/achPipeline'));
+
+// ─── AS2 Server — open source AS2 messaging ─────────────────────────────────
+app.use('/api/as2', require('./server/routes/as2'));
+
 // ─── Live Bond Accrual Scheduler ─────────────────────────────────────────────
 try {
   const { LiveBondEngine } = require('./server/integrations/bonds/liveEngine');
