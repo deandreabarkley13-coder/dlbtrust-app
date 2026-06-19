@@ -127,6 +127,20 @@ class TrustAccountingEngine {
       throw new Error(`Debits ($${totalDebits.toFixed(2)}) must equal credits ($${totalCredits.toFixed(2)})`);
     }
 
+    // Validate GL mappings up front when Fineract posting is requested
+    if (postToFineract) {
+      const missingMappings = lines.filter(
+        l => !l.fineractGlId && (parseFloat(l.debitAmount || 0) > 0 || parseFloat(l.creditAmount || 0) > 0)
+      );
+      if (missingMappings.length > 0) {
+        const missingCodes = missingMappings.map(l => l.accountCode).join(', ');
+        throw new Error(
+          `Fineract GL post requested but fineractGlId is missing for account(s): ${missingCodes}. ` +
+          'Provide a fineractGlId on every journal line or set postToFineract to false.'
+        );
+      }
+    }
+
     const entryId = 'JRN-' + Date.now() + '-'
       + Math.random().toString(36).slice(2, 8).toUpperCase();
 
@@ -190,10 +204,10 @@ class TrustAccountingEngine {
         try {
           const fineractDebits = lines
             .filter(l => parseFloat(l.debitAmount || 0) > 0)
-            .map(l => ({ glAccountId: parseInt(l.fineractGlId || 1), amount: parseFloat(l.debitAmount) }));
+            .map(l => ({ glAccountId: parseInt(l.fineractGlId), amount: parseFloat(l.debitAmount) }));
           const fineractCredits = lines
             .filter(l => parseFloat(l.creditAmount || 0) > 0)
-            .map(l => ({ glAccountId: parseInt(l.fineractGlId || 2), amount: parseFloat(l.creditAmount) }));
+            .map(l => ({ glAccountId: parseInt(l.fineractGlId), amount: parseFloat(l.creditAmount) }));
 
           if (fineractDebits.length > 0 && fineractCredits.length > 0) {
             const glResult = await FineractClient.postJournalEntry({
@@ -479,6 +493,101 @@ class TrustAccountingEngine {
       total_income: Math.round(totalIncome * 100) / 100,
       total_expenses: Math.round(totalExpenses * 100) / 100,
       net_income: Math.round(netIncome * 100) / 100,
+      generated_at: new Date().toISOString(),
+    };
+  }
+
+  // ─── Cashflow Statement ────────────────────────────────────────────────────
+
+  static async getCashflowStatement({ fromDate, toDate } = {}) {
+    const dateConditions = ["je.status = 'posted'"];
+    const params = [];
+    let idx = 1;
+
+    if (fromDate) { dateConditions.push(`je.entry_date >= $${idx++}`); params.push(fromDate); }
+    if (toDate) { dateConditions.push(`je.entry_date <= $${idx++}`); params.push(toDate); }
+    const dateFilter = dateConditions.join(' AND ');
+
+    // Operating: cash movements tied to income/expense accounts
+    const operating = await pool.query(`
+      SELECT ta.account_code, ta.account_name, ta.account_type, ta.sub_type,
+        COALESCE(SUM(CASE WHEN ta.account_type = 'expense'
+                      THEN jl.debit_amount - jl.credit_amount
+                      ELSE jl.credit_amount - jl.debit_amount END), 0) AS net_flow
+      FROM trust_journal_lines jl
+      JOIN trust_journal_entries je ON je.entry_id = jl.entry_id
+      JOIN trust_accounts ta ON ta.account_code = jl.account_code
+      WHERE ${dateFilter} AND ta.account_type IN ('income','expense')
+      GROUP BY ta.account_code, ta.account_name, ta.account_type, ta.sub_type
+      ORDER BY ta.account_code
+    `, params);
+
+    // Investing: movements on investment / receivable asset accounts
+    const investing = await pool.query(`
+      SELECT ta.account_code, ta.account_name, ta.sub_type,
+        COALESCE(SUM(jl.debit_amount - jl.credit_amount), 0) AS net_flow
+      FROM trust_journal_lines jl
+      JOIN trust_journal_entries je ON je.entry_id = jl.entry_id
+      JOIN trust_accounts ta ON ta.account_code = jl.account_code
+      WHERE ${dateFilter} AND ta.account_type = 'asset'
+        AND ta.sub_type IN ('investment','receivable')
+      GROUP BY ta.account_code, ta.account_name, ta.sub_type
+      ORDER BY ta.account_code
+    `, params);
+
+    // Financing: movements on liability / equity accounts
+    const financing = await pool.query(`
+      SELECT ta.account_code, ta.account_name, ta.account_type, ta.sub_type,
+        COALESCE(SUM(jl.credit_amount - jl.debit_amount), 0) AS net_flow
+      FROM trust_journal_lines jl
+      JOIN trust_journal_entries je ON je.entry_id = jl.entry_id
+      JOIN trust_accounts ta ON ta.account_code = jl.account_code
+      WHERE ${dateFilter} AND ta.account_type IN ('liability','equity')
+      GROUP BY ta.account_code, ta.account_name, ta.account_type, ta.sub_type
+      ORDER BY ta.account_code
+    `, params);
+
+    // Cash account movements
+    const cashAcct = await pool.query(`
+      SELECT ta.account_code, ta.account_name,
+        COALESCE(SUM(jl.debit_amount - jl.credit_amount), 0) AS net_flow
+      FROM trust_journal_lines jl
+      JOIN trust_journal_entries je ON je.entry_id = jl.entry_id
+      JOIN trust_accounts ta ON ta.account_code = jl.account_code
+      WHERE ${dateFilter} AND ta.account_type = 'asset' AND ta.sub_type = 'cash'
+      GROUP BY ta.account_code, ta.account_name
+      ORDER BY ta.account_code
+    `, params);
+
+    const sumFlow = (rows) => rows.reduce((s, r) => s + parseFloat(r.net_flow), 0);
+    const mapRow = (r) => ({
+      account_code: r.account_code,
+      account_name: r.account_name,
+      sub_type: r.sub_type,
+      net_flow: Math.round(parseFloat(r.net_flow) * 100) / 100,
+    });
+
+    const totalOperating = sumFlow(operating.rows);
+    const totalInvesting = sumFlow(investing.rows);
+    const totalFinancing = sumFlow(financing.rows);
+    const netCashChange = sumFlow(cashAcct.rows);
+
+    return {
+      period_start: fromDate || null,
+      period_end: toDate || new Date().toISOString().split('T')[0],
+      operating_activities: {
+        items: operating.rows.map(mapRow),
+        total: Math.round(totalOperating * 100) / 100,
+      },
+      investing_activities: {
+        items: investing.rows.map(mapRow),
+        total: Math.round(totalInvesting * 100) / 100,
+      },
+      financing_activities: {
+        items: financing.rows.map(mapRow),
+        total: Math.round(totalFinancing * 100) / 100,
+      },
+      net_cash_change: Math.round(netCashChange * 100) / 100,
       generated_at: new Date().toISOString(),
     };
   }

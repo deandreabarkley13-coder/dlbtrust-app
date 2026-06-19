@@ -181,6 +181,19 @@ router.get('/reports/income-statement', async (req, res) => {
   }
 });
 
+// ─── GET /api/accounting/reports/cashflow ─────────────────────────────────────
+router.get('/reports/cashflow', async (req, res) => {
+  try {
+    const cf = await TrustAccountingEngine.getCashflowStatement({
+      fromDate: req.query.fromDate,
+      toDate: req.query.toDate,
+    });
+    res.json({ success: true, data: cf });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
 // ═══════════════════════════════════════════════════════════════════════════════
 // ACCOUNTING PERIODS
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -221,6 +234,62 @@ router.post('/periods/:id/close', async (req, res) => {
   } catch (err) {
     const status = err.message.includes('not found') ? 404 : 500;
     res.status(status).json({ success: false, error: err.message });
+  }
+});
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// STATEMENT GENERATION
+// ═══════════════════════════════════════════════════════════════════════════════
+
+// ─── POST /api/accounting/statements/generate ─────────────────────────────────
+router.post('/statements/generate', async (req, res) => {
+  const { reportType, fromDate, toDate, bondId, contactId, format } = req.body;
+  const validTypes = ['balance_sheet', 'income_statement', 'cashflow', 'trial_balance', 'bond_statement'];
+  if (!reportType || !validTypes.includes(reportType)) {
+    return res.status(400).json({ error: `Required: reportType (one of ${validTypes.join(', ')})` });
+  }
+  try {
+    const { GenerationEngine } = require('../integrations/documents/generationEngine');
+    const result = await GenerationEngine.generateStatement({
+      reportType,
+      fromDate: fromDate || null,
+      toDate: toDate || null,
+      bondId: bondId || null,
+      contactId: contactId || null,
+      format: format || 'html',
+      generatedBy: req.body.generatedBy || null,
+    });
+    res.json({ success: true, data: result });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// ─── GET /api/accounting/statements ───────────────────────────────────────────
+router.get('/statements', async (req, res) => {
+  try {
+    const { GenerationEngine } = require('../integrations/documents/generationEngine');
+    const statements = await GenerationEngine.listStatements({
+      reportType: req.query.reportType,
+      status: req.query.status,
+      limit: req.query.limit,
+      offset: req.query.offset,
+    });
+    res.json({ success: true, count: statements.length, data: statements });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// ─── GET /api/accounting/statements/:id ───────────────────────────────────────
+router.get('/statements/:id', async (req, res) => {
+  try {
+    const { GenerationEngine } = require('../integrations/documents/generationEngine');
+    const statement = await GenerationEngine.getStatement(req.params.id);
+    if (!statement) return res.status(404).json({ success: false, error: `Statement ${req.params.id} not found` });
+    res.json({ success: true, data: statement });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
   }
 });
 

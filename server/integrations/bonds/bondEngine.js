@@ -126,7 +126,18 @@ class BondEngine {
    * Accrue interest from the last accrual date to the target date.
    * Posts a Fineract GL journal entry if GL account IDs are provided.
    */
-  static async accrueInterest(bondId, toDate, { glDebitAccountId, glCreditAccountId } = {}) {
+  static async accrueInterest(bondId, toDate, { glDebitAccountId, glCreditAccountId, requireFineractPost } = {}) {
+    // Validate GL mapping: if either GL ID is provided, both must be present
+    if (glDebitAccountId && !glCreditAccountId) {
+      throw new Error('GL mapping incomplete: glDebitAccountId provided but glCreditAccountId is missing');
+    }
+    if (!glDebitAccountId && glCreditAccountId) {
+      throw new Error('GL mapping incomplete: glCreditAccountId provided but glDebitAccountId is missing');
+    }
+    if (requireFineractPost && (!glDebitAccountId || !glCreditAccountId)) {
+      throw new Error('Fineract GL post required but GL account mappings are missing — provide both glDebitAccountId and glCreditAccountId');
+    }
+
     const client = await pool.connect();
     try {
       await client.query('BEGIN');
@@ -234,7 +245,17 @@ class BondEngine {
   /**
    * Process an interest payment — reduces accrued interest, records the payment.
    */
-  static async payInterest(bondId, amount, { glDebitAccountId, glCreditAccountId } = {}) {
+  static async payInterest(bondId, amount, { glDebitAccountId, glCreditAccountId, requireFineractPost } = {}) {
+    if (glDebitAccountId && !glCreditAccountId) {
+      throw new Error('GL mapping incomplete: glDebitAccountId provided but glCreditAccountId is missing');
+    }
+    if (!glDebitAccountId && glCreditAccountId) {
+      throw new Error('GL mapping incomplete: glCreditAccountId provided but glDebitAccountId is missing');
+    }
+    if (requireFineractPost && (!glDebitAccountId || !glCreditAccountId)) {
+      throw new Error('Fineract GL post required but GL account mappings are missing — provide both glDebitAccountId and glCreditAccountId');
+    }
+
     const client = await pool.connect();
     try {
       await client.query('BEGIN');
@@ -321,7 +342,17 @@ class BondEngine {
   /**
    * Process a principal payment (partial or full).
    */
-  static async payPrincipal(bondId, amount, { glDebitAccountId, glCreditAccountId } = {}) {
+  static async payPrincipal(bondId, amount, { glDebitAccountId, glCreditAccountId, requireFineractPost } = {}) {
+    if (glDebitAccountId && !glCreditAccountId) {
+      throw new Error('GL mapping incomplete: glDebitAccountId provided but glCreditAccountId is missing');
+    }
+    if (!glDebitAccountId && glCreditAccountId) {
+      throw new Error('GL mapping incomplete: glCreditAccountId provided but glDebitAccountId is missing');
+    }
+    if (requireFineractPost && (!glDebitAccountId || !glCreditAccountId)) {
+      throw new Error('Fineract GL post required but GL account mappings are missing — provide both glDebitAccountId and glCreditAccountId');
+    }
+
     const client = await pool.connect();
     try {
       await client.query('BEGIN');

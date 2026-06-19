@@ -223,6 +223,77 @@ router.get('/generations/:id', async (req, res) => {
 });
 
 // ═══════════════════════════════════════════════════════════════════════════════
+// REPORT DELIVERY — render statements for printing / export
+// ═══════════════════════════════════════════════════════════════════════════════
+
+// ─── GET /api/documents/statements/:id/render ─────────────────────────────────
+router.get('/statements/:id/render', async (req, res) => {
+  try {
+    const stmt = await GenerationEngine.getStatement(req.params.id);
+    if (!stmt) return res.status(404).json({ success: false, error: `Statement ${req.params.id} not found` });
+
+    const format = req.query.format || stmt.output_format || 'html';
+
+    if (format === 'json') {
+      res.setHeader('Content-Type', 'application/json');
+      res.setHeader('Content-Disposition', `attachment; filename="statement-${stmt.job_id}.json"`);
+      return res.send(stmt.rendered_output);
+    }
+
+    // Default: serve as HTML (print-ready)
+    const html = `<!DOCTYPE html>
+<html lang="en"><head><meta charset="UTF-8"><title>${stmt.report_type} — DLB Trust</title>
+<style>
+  body { font-family: 'Georgia', serif; margin: 40px; color: #1a1a1a; }
+  h1 { font-size: 20px; border-bottom: 2px solid #333; padding-bottom: 8px; }
+  table { width: 100%; border-collapse: collapse; margin: 12px 0; font-size: 13px; }
+  th, td { padding: 6px 10px; border-bottom: 1px solid #ddd; text-align: left; }
+  th { background: #f5f5f5; font-weight: 600; text-transform: uppercase; font-size: 11px; }
+  .total { font-weight: bold; border-top: 2px solid #333; }
+  .footer { margin-top: 32px; font-size: 11px; color: #666; border-top: 1px solid #ccc; padding-top: 8px; }
+  @media print { body { margin: 20px; } }
+</style></head><body>
+<h1>${stmt.report_type.replace(/_/g, ' ').toUpperCase()} — DLB Trust</h1>
+<p>Generated: ${stmt.generated_at || ''}</p>
+${stmt.rendered_output}
+<div class="footer">DEANDREA LAVAR BARKLEY TRUST — Confidential</div>
+</body></html>`;
+
+    res.setHeader('Content-Type', 'text/html');
+    res.send(html);
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// ─── GET /api/documents/generations/:id/render ────────────────────────────────
+router.get('/generations/:id/render', async (req, res) => {
+  try {
+    const gen = await GenerationEngine.getGeneration(req.params.id);
+    if (!gen) return res.status(404).json({ success: false, error: `Generation ${req.params.id} not found` });
+
+    const html = `<!DOCTYPE html>
+<html lang="en"><head><meta charset="UTF-8"><title>${gen.template_name || 'Document'} — DLB Trust</title>
+<style>
+  body { font-family: 'Georgia', serif; margin: 40px; color: #1a1a1a; }
+  h1 { font-size: 20px; }
+  table { width: 100%; border-collapse: collapse; margin: 12px 0; font-size: 13px; }
+  th, td { padding: 6px 10px; border-bottom: 1px solid #ddd; text-align: left; }
+  .footer { margin-top: 32px; font-size: 11px; color: #666; border-top: 1px solid #ccc; padding-top: 8px; }
+  @media print { body { margin: 20px; } }
+</style></head><body>
+${gen.rendered_content}
+<div class="footer">DEANDREA LAVAR BARKLEY TRUST — Confidential</div>
+</body></html>`;
+
+    res.setHeader('Content-Type', 'text/html');
+    res.send(html);
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// ═══════════════════════════════════════════════════════════════════════════════
 // DOCUMENT CRUD (parameterized routes last)
 // ═══════════════════════════════════════════════════════════════════════════════
 

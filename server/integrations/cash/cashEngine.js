@@ -61,7 +61,19 @@ class CashEngine {
   static async transfer({
     fromAccountId, toAccountId, amountCents, movementType, memo,
     referenceId, referenceType, initiatedBy, glDebitAccountId, glCreditAccountId,
+    requireFineractPost,
   }) {
+    // Validate GL mapping: if either GL ID is provided, both must be present
+    if (glDebitAccountId && !glCreditAccountId) {
+      throw new Error('GL mapping incomplete: glDebitAccountId provided but glCreditAccountId is missing');
+    }
+    if (!glDebitAccountId && glCreditAccountId) {
+      throw new Error('GL mapping incomplete: glCreditAccountId provided but glDebitAccountId is missing');
+    }
+    if (requireFineractPost && (!glDebitAccountId || !glCreditAccountId)) {
+      throw new Error('Fineract GL post required but GL account mappings are missing — provide both glDebitAccountId and glCreditAccountId');
+    }
+
     const client = await pool.connect();
     try {
       await client.query('BEGIN');
