@@ -85,6 +85,11 @@ jobs:
             PGPASSWORD=postgres psql -h localhost -U postgres -d fineract_tenants -f server/scripts/migrate-ach.sql 2>&1 | tail -5 || echo "migration 3 (ACH) done or skipped"
             PGPASSWORD=postgres psql -h localhost -U postgres -d fineract_tenants -f server/scripts/migrate-as2.sql 2>&1 | tail -5 || echo "migration 4 (AS2) done or skipped"
 
+            echo "=== Restart Passenger (Plesk Node.js) ==="
+            mkdir -p "$HTTPDOCS/tmp"
+            touch "$HTTPDOCS/tmp/restart.txt"
+            echo "Passenger restart signaled"
+
             echo "=== Start Treasury Management ==="
             PORT=3002 pm2 start "$HTTPDOCS/server/server-3002.js" --name dlbtrust-treasury
             pm2 save --force

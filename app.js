@@ -12,12 +12,12 @@ require('dotenv').config();
 
 const express = require('express');
 const path    = require('path');
+const fs      = require('fs');
 const app     = express();
 
 // ─── Middleware ───────────────────────────────────────────────────────────────
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
-app.use(express.static(path.join(__dirname, 'public')));
 
 // ─── Database ─────────────────────────────────────────────────────────────────
 let db = null;
@@ -69,6 +69,20 @@ try {
   const { LiveBondEngine } = require('./server/integrations/bonds/liveEngine');
   LiveBondEngine.scheduleAccrualJob();
 } catch(e) { console.warn('[liveEngine]', e.message); }
+
+// ─── Treasury Dashboard (must be before express.static) ────────────────────
+app.get('/', (req, res) => {
+  res.set('Cache-Control', 'no-cache, no-store, must-revalidate');
+  res.sendFile(path.join(__dirname, 'public', 'dashboard.html'));
+});
+app.get('/treasury', (req, res) => {
+  res.sendFile(path.join(__dirname, 'public', 'dashboard.html'));
+});
+app.use(express.static(path.join(__dirname, 'public')));
+app.get('*', (req, res) => {
+  const idx = path.join(__dirname, 'public', 'index.html');
+  fs.existsSync(idx) ? res.sendFile(idx) : res.status(404).send('Not found');
+});
 
 // ─── Start Server ─────────────────────────────────────────────────────────────
 const PORT = process.env.PORT || 3001;
