@@ -395,14 +395,30 @@
         <div class="tab" data-tab="acct-trial">Trial Balance</div>
         <div class="tab" data-tab="acct-balance">Balance Sheet</div>
         <div class="tab" data-tab="acct-income">Income Statement</div>
+        <div class="tab" data-tab="acct-cashflow">Cashflow</div>
         <div class="tab" data-tab="acct-periods">Periods</div>
+        <div class="tab" data-tab="acct-statements">Statements</div>
       </div>
       <div id="acct-accounts" class="tab-content active"><div class="card"><div class="table-wrap" id="acct-accounts-wrap"><p class="loading">Loading...</p></div></div></div>
       <div id="acct-journal" class="tab-content"><div class="card"><div class="table-wrap" id="acct-journal-wrap"><p class="loading">Loading...</p></div></div></div>
       <div id="acct-trial" class="tab-content"><div class="card" id="acct-trial-wrap"><p class="loading">Loading...</p></div></div>
       <div id="acct-balance" class="tab-content"><div class="card" id="acct-balance-wrap"><p class="loading">Loading...</p></div></div>
       <div id="acct-income" class="tab-content"><div class="card" id="acct-income-wrap"><p class="loading">Loading...</p></div></div>
+      <div id="acct-cashflow" class="tab-content"><div class="card" id="acct-cashflow-wrap"><p class="loading">Loading...</p></div></div>
       <div id="acct-periods" class="tab-content"><div class="card"><div class="table-wrap" id="acct-periods-wrap"><p class="loading">Loading...</p></div></div></div>
+      <div id="acct-statements" class="tab-content">
+        <div class="card">
+          <div class="section-title">Generate Statement</div>
+          <div class="form-row">
+            <div class="form-group"><label>Report Type</label><select id="stmt-type"><option value="balance_sheet">Balance Sheet</option><option value="income_statement">Income Statement</option><option value="cashflow">Cashflow</option><option value="trial_balance">Trial Balance</option><option value="bond_statement">Bond Statement</option></select></div>
+            <div class="form-group"><label>From Date</label><input type="date" id="stmt-from"></div>
+            <div class="form-group"><label>To Date</label><input type="date" id="stmt-to"></div>
+          </div>
+          <button class="btn btn-success" onclick="generateStatement()">Generate</button>
+          <div id="stmt-result"></div>
+        </div>
+        <div class="card mt-16"><div class="section-title">Generated Statements</div><div class="table-wrap" id="stmt-list-wrap"><p class="loading">Loading...</p></div></div>
+      </div>
     </div>
 
     <!-- FINERACT GL PAGE -->
@@ -838,14 +854,16 @@
 
     // ─── ACCOUNTING ────────────────────────────────────────────────────────────
     async function loadAccounting() {
-      const [dashboard, accounts, journal, trial, balance, income, periods] = await Promise.all([
+      const [dashboard, accounts, journal, trial, balance, income, cashflow, periods, statements] = await Promise.all([
         fetchJSON(API + '/api/accounting/dashboard'),
         fetchJSON(API + '/api/accounting/accounts'),
         fetchJSON(API + '/api/accounting/journal'),
         fetchJSON(API + '/api/accounting/reports/trial-balance'),
         fetchJSON(API + '/api/accounting/reports/balance-sheet'),
         fetchJSON(API + '/api/accounting/reports/income-statement'),
+        fetchJSON(API + '/api/accounting/reports/cashflow'),
         fetchJSON(API + '/api/accounting/periods'),
+        fetchJSON(API + '/api/accounting/statements'),
       ]);
       const d = dashboard.data || {};
       el('acct-summary').innerHTML = `
@@ -886,9 +904,45 @@
         <tr style="border-top:2px solid var(--border)"><td><strong>Net Income</strong></td><td class="money"><strong>${fmt(iData.net_income)}</strong></td></tr>
       </tbody></table>`;
 
+      // Cashflow
+      const cfData = cashflow.data || {};
+      const renderCfSection = (title, section) => {
+        let html = `<tr><td><strong>${title}</strong></td><td class="money"><strong>${fmt((section || {}).total)}</strong></td></tr>`;
+        for (const item of (section || {}).items || []) { html += `<tr><td style="padding-left:24px">${esc(item.account_name)}</td><td class="money">${fmt(item.net_flow)}</td></tr>`; }
+        return html;
+      };
+      el('acct-cashflow-wrap').innerHTML = `<table><tbody>
+        ${renderCfSection('Operating Activities', cfData.operating_activities)}
+        ${renderCfSection('Investing Activities', cfData.investing_activities)}
+        ${renderCfSection('Financing Activities', cfData.financing_activities)}
+        <tr style="border-top:2px solid var(--border)"><td><strong>Net Cash Change</strong></td><td class="money"><strong>${fmt(cfData.net_cash_change)}</strong></td></tr>
+      </tbody></table>`;
+
       // Periods
       const pData = periods.data || [];
       el('acct-periods-wrap').innerHTML = pData.length ? '<table><thead><tr><th>Period</th><th>Start</th><th>End</th><th>Status</th></tr></thead><tbody>' + pData.map(p => `<tr><td>${esc(p.period_name)}</td><td>${shortDate(p.start_date)}</td><td>${shortDate(p.end_date)}</td><td><span class="badge ${p.status === 'open' ? 'badge-active' : 'badge-pending'}">${esc(p.status)}</span></td></tr>`).join('') + '</tbody></table>' : '<p class="text-muted">No periods</p>';
+
+      // Statements
+      const sData = (statements.data || []);
+      el('stmt-list-wrap').innerHTML = sData.length ? '<table><thead><tr><th>ID</th><th>Type</th><th>Status</th><th>Format</th><th>Generated</th><th>Actions</th></tr></thead><tbody>' + sData.map(s => `<tr><td><code style="font-size:10px">${esc(s.job_id)}</code></td><td><span class="badge badge-info">${esc((s.report_type || '').replace(/_/g, ' '))}</span></td><td><span class="badge badge-active">${esc(s.status)}</span></td><td>${esc(s.output_format)}</td><td>${shortDate(s.generated_at)}</td><td><a href="${API}/api/documents/statements/${encodeURIComponent(s.job_id)}/render" target="_blank" class="btn btn-outline btn-sm">View</a></td></tr>`).join('') + '</tbody></table>' : '<p class="text-muted">No statements generated yet. Use the form above.</p>';
+    }
+
+    async function generateStatement() {
+      const reportType = el('stmt-type').value;
+      const fromDate = el('stmt-from').value || undefined;
+      const toDate = el('stmt-to').value || undefined;
+      const r = await fetchJSON(API + '/api/accounting/statements/generate', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ reportType, fromDate, toDate, format: 'html' }),
+      });
+      if (r.success) {
+        const jobId = (r.data || {}).job_id;
+        el('stmt-result').innerHTML = '<p class="success-msg">Statement generated! <a href="' + API + '/api/documents/statements/' + encodeURIComponent(jobId) + '/render" target="_blank">View / Print</a></p>';
+        loadAccounting();
+      } else {
+        el('stmt-result').innerHTML = '<p class="error-msg">' + esc(r.error || 'Failed') + '</p>';
+      }
     }
 
     // ─── ADMIN ─────────────────────────────────────────────────────────────────
@@ -896,22 +950,29 @@
       if (!adminToken) { el('admin-health').innerHTML = '<p class="error-msg">Set admin token to view system health</p>'; el('admin-audit-wrap').innerHTML = ''; return; }
       const [health, audit] = await Promise.all([
         fetchJSON(API + '/api/admin/system/health', { headers: adminHeaders() }),
-        fetchJSON(API + '/api/admin/audit', { headers: adminHeaders() }),
+        fetchJSON(API + '/api/admin/audit-log', { headers: adminHeaders() }),
       ]);
       if (health.success) {
         const h = health.data || {};
+        const pgStatus = (h.postgresql || {}).status || 'unknown';
+        const finStatus = (h.fineract || {}).status || 'disconnected';
+        const bondStatus = (h.bond_engine || {}).status || 'unknown';
+        const cashStatus = (h.cash_engine || {}).status || 'unknown';
+        const crmStatus = (h.crm || {}).status || 'unknown';
         el('admin-health').innerHTML = `<table><tbody>
-          <tr><td>PostgreSQL</td><td><span class="badge ${h.postgres === 'connected' ? 'badge-active' : 'badge-error'}">${esc(h.postgres)}</span></td></tr>
-          <tr><td>Fineract</td><td><span class="badge ${h.fineract && h.fineract.status === 'connected' ? 'badge-active' : 'badge-pending'}">${esc((h.fineract || {}).status || 'disconnected')}</span></td></tr>
-          <tr><td>Bond Engine</td><td><span class="badge ${h.bond_engine === 'ok' ? 'badge-active' : 'badge-error'}">${esc(h.bond_engine)}</span></td></tr>
-          <tr><td>Cash Engine</td><td><span class="badge badge-active">ok</span></td></tr>
-          <tr><td>Active Bonds</td><td>${h.active_bonds || 0}</td></tr>
-          <tr><td>Uptime</td><td>${h.uptime_seconds ? Math.floor(h.uptime_seconds / 60) + ' min' : '—'}</td></tr>
+          <tr><td>PostgreSQL</td><td><span class="badge ${pgStatus === 'connected' ? 'badge-active' : 'badge-error'}">${esc(pgStatus)}</span></td></tr>
+          <tr><td>Fineract</td><td><span class="badge ${finStatus === 'connected' ? 'badge-active' : 'badge-pending'}">${esc(finStatus)}</span></td></tr>
+          <tr><td>Bond Engine</td><td><span class="badge ${bondStatus === 'ok' ? 'badge-active' : 'badge-error'}">${esc(bondStatus)}</span></td></tr>
+          <tr><td>Cash Engine</td><td><span class="badge ${cashStatus === 'ok' ? 'badge-active' : 'badge-error'}">${esc(cashStatus)}</span></td></tr>
+          <tr><td>CRM</td><td><span class="badge ${crmStatus === 'ok' ? 'badge-active' : 'badge-error'}">${esc(crmStatus)}</span></td></tr>
+          <tr><td>Active Bonds</td><td>${(h.bond_engine || {}).active_bonds || 0}</td></tr>
+          <tr><td>Total Contacts</td><td>${(h.crm || {}).total_contacts || 0}</td></tr>
+          <tr><td>Generated At</td><td>${esc(h.generated_at || '—')}</td></tr>
         </tbody></table>`;
       } else { el('admin-health').innerHTML = '<p class="error-msg">' + esc(health.error || 'Auth failed — check token') + '</p>'; }
 
       const aData = (audit.data || []);
-      el('admin-audit-wrap').innerHTML = aData.length ? '<table><thead><tr><th>Time</th><th>Action</th><th>User</th><th>Details</th></tr></thead><tbody>' + aData.slice(0, 30).map(a => `<tr><td>${shortDate(a.created_at)}</td><td><span class="badge badge-info">${esc(a.action)}</span></td><td>${esc(a.user_id || 'system')}</td><td style="max-width:300px;overflow:hidden;text-overflow:ellipsis">${esc(a.details || '')}</td></tr>`).join('') + '</tbody></table>' : '<p class="text-muted">No audit entries</p>';
+      el('admin-audit-wrap').innerHTML = aData.length ? '<table><thead><tr><th>Time</th><th>Action</th><th>User</th><th>Resource</th><th>IP</th></tr></thead><tbody>' + aData.slice(0, 30).map(a => `<tr><td>${shortDate(a.created_at)}</td><td><span class="badge badge-info">${esc(a.action)}</span></td><td>${esc(a.admin_user || 'system')}</td><td style="max-width:200px;overflow:hidden;text-overflow:ellipsis">${esc(a.resource_type ? (a.resource_type + (a.resource_id ? ':' + a.resource_id : '')) : '—')}</td><td>${esc(a.ip_address || '—')}</td></tr>`).join('') + '</tbody></table>' : '<p class="text-muted">No audit entries</p>';
     }
 
     function saveAdminToken() { adminToken = el('admin-token').value; localStorage.setItem('dlb_admin_token', adminToken); loadAdmin(); }

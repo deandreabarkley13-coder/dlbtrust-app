@@ -12,6 +12,7 @@
 const pool = require('../bonds/pgPool');
 const { TemplateEngine } = require('./templateEngine');
 const { DocumentEngine } = require('./documentEngine');
+const { TrustAccountingEngine } = require('../accounting/trustAccountingEngine');
 
 class GenerationEngine {
 
@@ -200,6 +201,211 @@ class GenerationEngine {
       contacts_covered: parseInt(stats.contacts_covered),
       by_template: byTemplate.rows,
     };
+  }
+  // ─── Statement / Report Generation ─────────────────────────────────────────
+
+  static async generateStatement({
+    reportType, fromDate, toDate, bondId, contactId, format, generatedBy,
+  }) {
+    let reportData;
+    let renderedOutput;
+
+    switch (reportType) {
+      case 'balance_sheet':
+        reportData = await TrustAccountingEngine.getBalanceSheet({ asOfDate: toDate });
+        renderedOutput = GenerationEngine._renderBalanceSheet(reportData);
+        break;
+      case 'income_statement':
+        reportData = await TrustAccountingEngine.getIncomeStatement({ fromDate, toDate });
+        renderedOutput = GenerationEngine._renderIncomeStatement(reportData);
+        break;
+      case 'cashflow':
+        reportData = await TrustAccountingEngine.getCashflowStatement({ fromDate, toDate });
+        renderedOutput = GenerationEngine._renderCashflow(reportData);
+        break;
+      case 'trial_balance':
+        reportData = await TrustAccountingEngine.getTrialBalance({ asOfDate: toDate });
+        renderedOutput = GenerationEngine._renderTrialBalance(reportData);
+        break;
+      case 'bond_statement': {
+        if (!bondId) throw new Error('bondId is required for bond_statement report');
+        const bondResult = await pool.query(
+          `SELECT b.*, bb.principal_balance, bb.accrued_interest,
+                  bb.total_interest_paid, bb.total_principal_paid,
+                  bb.last_accrual_date, bb.last_payment_date
+           FROM bonds b
+           JOIN bond_balances bb ON bb.bond_id = b.id
+           WHERE b.id = $1`,
+          [bondId]
+        );
+        if (bondResult.rows.length === 0) throw new Error(`Bond ${bondId} not found`);
+        const txnConditions = ['bond_id = $1'];
+        const txnParams = [bondId];
+        let txnIdx = 2;
+        if (fromDate) { txnConditions.push(`transaction_date >= $${txnIdx++}`); txnParams.push(fromDate); }
+        if (toDate) { txnConditions.push(`transaction_date <= $${txnIdx++}`); txnParams.push(toDate); }
+        const txnResult = await pool.query(
+          `SELECT * FROM bond_transactions WHERE ${txnConditions.join(' AND ')}
+           ORDER BY transaction_date DESC, id DESC LIMIT 100`,
+          txnParams
+        );
+        reportData = { bond: bondResult.rows[0], transactions: txnResult.rows };
+        renderedOutput = GenerationEngine._renderBondStatement(reportData, fromDate, toDate);
+        break;
+      }
+      default:
+        throw new Error(`Unsupported report type: ${reportType}`);
+    }
+
+    const jobId = 'RPT-' + Date.now() + '-'
+      + Math.random().toString(36).slice(2, 8).toUpperCase();
+
+    const result = await pool.query(
+      `INSERT INTO report_jobs
+         (job_id, report_type, parameters, status, output_format,
+          rendered_output, generated_by)
+       VALUES ($1, $2, $3, 'completed', $4, $5, $6)
+       RETURNING *`,
+      [
+        jobId, reportType,
+        JSON.stringify({ fromDate, toDate, bondId, contactId }),
+        format || 'html',
+        renderedOutput,
+        generatedBy || null,
+      ]
+    );
+
+    return result.rows[0];
+  }
+
+  static async getStatement(jobId) {
+    const result = await pool.query(
+      `SELECT * FROM report_jobs WHERE job_id = $1`,
+      [jobId]
+    );
+    return result.rows[0] || null;
+  }
+
+  static async listStatements({ reportType, status, limit, offset } = {}) {
+    const conditions = [];
+    const params = [];
+    let idx = 1;
+
+    if (reportType) { conditions.push(`report_type = $${idx++}`); params.push(reportType); }
+    if (status) { conditions.push(`status = $${idx++}`); params.push(status); }
+
+    const where = conditions.length > 0 ? 'WHERE ' + conditions.join(' AND ') : '';
+    const lim = parseInt(limit) || 50;
+    const off = parseInt(offset) || 0;
+
+    params.push(lim, off);
+    const result = await pool.query(
+      `SELECT job_id, report_type, parameters, status, output_format,
+              generated_by, generated_at
+       FROM report_jobs ${where}
+       ORDER BY generated_at DESC
+       LIMIT $${idx++} OFFSET $${idx++}`,
+      params
+    );
+    return result.rows;
+  }
+
+  // ─── HTML Renderers ───────────────────────────────────────────────────────
+
+  static _fmt(n) {
+    if (n == null) return '—';
+    return '$' + Number(n).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  }
+
+  static _renderBalanceSheet(data) {
+    const f = GenerationEngine._fmt;
+    const renderSection = (title, items, total) => {
+      let html = `<tr><td><strong>${title}</strong></td><td class="total"><strong>${f(total)}</strong></td></tr>`;
+      for (const a of items || []) {
+        html += `<tr><td style="padding-left:24px">${a.account_name}</td><td>${f(a.balance)}</td></tr>`;
+      }
+      return html;
+    };
+    return `<table><tbody>
+      ${renderSection('Assets', data.assets, data.total_assets)}
+      ${renderSection('Liabilities', data.liabilities, data.total_liabilities)}
+      ${renderSection('Equity', data.equity, data.total_equity)}
+      <tr class="total"><td><strong>L + E</strong></td><td><strong>${f(data.total_liabilities_and_equity)}</strong></td></tr>
+    </tbody></table>
+    <p>Balanced: ${data.is_balanced ? 'Yes' : 'No'} | As of: ${data.as_of_date}</p>`;
+  }
+
+  static _renderIncomeStatement(data) {
+    const f = GenerationEngine._fmt;
+    let html = '<table><tbody>';
+    html += `<tr><td><strong>Revenue</strong></td><td class="total"><strong>${f(data.total_income)}</strong></td></tr>`;
+    for (const i of data.income || []) { html += `<tr><td style="padding-left:24px">${i.account_name}</td><td>${f(i.balance)}</td></tr>`; }
+    html += `<tr><td><strong>Expenses</strong></td><td class="total"><strong>${f(data.total_expenses)}</strong></td></tr>`;
+    for (const e of data.expenses || []) { html += `<tr><td style="padding-left:24px">${e.account_name}</td><td>${f(e.balance)}</td></tr>`; }
+    html += `<tr class="total"><td><strong>Net Income</strong></td><td><strong>${f(data.net_income)}</strong></td></tr>`;
+    html += '</tbody></table>';
+    html += `<p>Period: ${data.period_start || 'inception'} — ${data.period_end}</p>`;
+    return html;
+  }
+
+  static _renderCashflow(data) {
+    const f = GenerationEngine._fmt;
+    const renderSection = (title, section) => {
+      let html = `<tr><td><strong>${title}</strong></td><td class="total"><strong>${f(section.total)}</strong></td></tr>`;
+      for (const item of section.items || []) {
+        html += `<tr><td style="padding-left:24px">${item.account_name}</td><td>${f(item.net_flow)}</td></tr>`;
+      }
+      return html;
+    };
+    return `<table><tbody>
+      ${renderSection('Operating Activities', data.operating_activities)}
+      ${renderSection('Investing Activities', data.investing_activities)}
+      ${renderSection('Financing Activities', data.financing_activities)}
+      <tr class="total"><td><strong>Net Cash Change</strong></td><td><strong>${f(data.net_cash_change)}</strong></td></tr>
+    </tbody></table>
+    <p>Period: ${data.period_start || 'inception'} — ${data.period_end}</p>`;
+  }
+
+  static _renderTrialBalance(data) {
+    const f = GenerationEngine._fmt;
+    let html = '<table><thead><tr><th>Account</th><th>Code</th><th>Debits</th><th>Credits</th><th>Balance</th></tr></thead><tbody>';
+    for (const a of data.accounts || []) {
+      html += `<tr><td>${a.account_name}</td><td>${a.account_code}</td><td>${f(a.total_debits)}</td><td>${f(a.total_credits)}</td><td>${f(a.current_balance)}</td></tr>`;
+    }
+    html += `<tr class="total"><td colspan="2"><strong>Totals</strong></td><td><strong>${f(data.total_debits)}</strong></td><td><strong>${f(data.total_credits)}</strong></td><td></td></tr>`;
+    html += '</tbody></table>';
+    html += `<p>Balanced: ${data.is_balanced ? 'Yes' : 'No'} | As of: ${data.as_of_date}</p>`;
+    return html;
+  }
+
+  static _renderBondStatement(data, fromDate, toDate) {
+    const f = GenerationEngine._fmt;
+    const b = data.bond;
+    let html = `<table><tbody>
+      <tr><td>Bond</td><td><strong>${b.bond_name}</strong></td></tr>
+      <tr><td>ISIN</td><td>${b.isin || '—'}</td></tr>
+      <tr><td>Face Value</td><td>${f(b.face_value)}</td></tr>
+      <tr><td>Coupon Rate</td><td>${(parseFloat(b.coupon_rate) * 100).toFixed(4)}%</td></tr>
+      <tr><td>Issue Date</td><td>${b.issue_date}</td></tr>
+      <tr><td>Maturity Date</td><td>${b.maturity_date}</td></tr>
+      <tr><td>Principal Balance</td><td>${f(b.principal_balance)}</td></tr>
+      <tr><td>Accrued Interest</td><td>${f(b.accrued_interest)}</td></tr>
+      <tr><td>Total Interest Paid</td><td>${f(b.total_interest_paid)}</td></tr>
+      <tr><td>Status</td><td>${b.status}</td></tr>
+    </tbody></table>`;
+
+    const txns = data.transactions || [];
+    if (txns.length > 0) {
+      html += '<h2>Transactions</h2>';
+      html += '<table><thead><tr><th>Date</th><th>Type</th><th>Amount</th><th>Balance</th><th>Description</th></tr></thead><tbody>';
+      for (const t of txns) {
+        html += `<tr><td>${t.transaction_date}</td><td>${(t.transaction_type || '').replace(/_/g, ' ')}</td><td>${f(t.amount)}</td><td>${f(t.running_balance)}</td><td>${t.description || ''}</td></tr>`;
+      }
+      html += '</tbody></table>';
+    }
+
+    html += `<p>Period: ${fromDate || 'inception'} — ${toDate || 'current'}</p>`;
+    return html;
   }
 }
 

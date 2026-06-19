@@ -52,13 +52,24 @@ try {
 } catch(e) { console.warn("[liveEngine]", e.message); }
 
 // Treasury Management System — serve dashboard at root, static files from public/
+// Disable browser caching on HTML so deploys are picked up immediately
 app.get("/", (req, res) => {
+  res.set('Cache-Control', 'no-cache, no-store, must-revalidate');
   res.sendFile(path.join(HD, "public", "dashboard.html"));
 });
 app.get("/treasury", (req, res) => {
+  res.set('Cache-Control', 'no-cache, no-store, must-revalidate');
   res.sendFile(path.join(HD, "public", "dashboard.html"));
 });
-app.use(express.static(path.join(HD, "public")));
+app.use(express.static(path.join(HD, "public"), {
+  etag: false,
+  maxAge: 0,
+  setHeaders: (res, filePath) => {
+    if (filePath.endsWith('.html')) {
+      res.set('Cache-Control', 'no-cache, no-store, must-revalidate');
+    }
+  },
+}));
 app.get("*", (req, res) => {
   const idx = path.join(HD, "public", "index.html");
   fs.existsSync(idx) ? res.sendFile(idx) : res.status(404).send("Not found");
