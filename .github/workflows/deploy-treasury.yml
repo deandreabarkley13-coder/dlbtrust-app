@@ -156,37 +156,69 @@ jobs:
             rm -rf /tmp/nginx_cache/* 2>/dev/null || true
             echo "Nginx cache cleared"
 
-      - name: Update Plesk nginx proxy target to port 3007
-        uses: appleboy/ssh-action@v1.0.3
-        with:
-          host: 74.208.191.205
-          username: admin
-          password: ${{ env.PLESK_PASS }}
-          port: 22
-          command_timeout: 60s
-          script: |
-            NGINX_CONF="/etc/nginx/plesk.conf.d/vhosts/dlbtrust.cloud.conf"
-            echo "=== Current proxy_pass targets ==="
-            grep -n "proxy_pass" "$NGINX_CONF" 2>/dev/null | head -10 || echo "config not found"
-
-            echo "=== Updating proxy_pass from 3005 to 3007 ==="
-            sed -i 's|proxy_pass http://127.0.0.1:3005;|proxy_pass http://127.0.0.1:3007;|g' "$NGINX_CONF" 2>/dev/null || echo "sed failed"
-
-            echo "=== Verify update ==="
-            grep -n "proxy_pass" "$NGINX_CONF" 2>/dev/null | head -10
-
-            echo "=== Restart nginx ==="
-            systemctl reload nginx 2>/dev/null || nginx -s reload 2>/dev/null || service nginx restart 2>/dev/null || echo "nginx restart via systemctl"
-
-      - name: Rebuild Apache via Plesk
+      - name: Update Plesk proxy target to port 3007 via REST API
         run: |
+          echo "=== Step 1: Get domain info from Plesk ==="
+          DOMAIN_LIST=$(curl -sk -u "admin:$PLESK_PASS" "https://$SERVER:8443/api/v2/domains" 2>&1)
+          echo "$DOMAIN_LIST" | head -c 500
+          echo ""
+
+          DOMAIN_ID=$(echo "$DOMAIN_LIST" | python3 -c "
+          import sys, json
+          try:
+              domains = json.load(sys.stdin)
+              for d in domains:
+                  if 'dlbtrust' in d.get('name', ''):
+                      print(d['id'])
+                      break
+          except: print('')
+          " 2>/dev/null)
+          echo "Domain ID: $DOMAIN_ID"
+
+          if [ -n "$DOMAIN_ID" ]; then
+            echo "=== Step 2: Get current hosting config ==="
+            curl -sk -u "admin:$PLESK_PASS" "https://$SERVER:8443/api/v2/domains/$DOMAIN_ID/hosting" 2>&1 | head -c 500
+            echo ""
+
+            echo "=== Step 3: Update nginx proxy via Plesk CLI API ==="
+            curl -sk -u "admin:$PLESK_PASS" -X POST \
+              "https://$SERVER:8443/api/v2/cli/server/request" \
+              -H "Content-Type: application/json" \
+              -d "{\"params\": [\"-nginx-proxy-mode\", \"true\"]}" 2>&1 | head -c 500
+            echo ""
+          fi
+
+          echo "=== Step 4: Update Plesk nginx custom directives via XML API ==="
+          curl -sk --max-time 30 \
+            "https://$SERVER:8443/enterprise/control/agent.php" \
+            -H "HTTP_AUTH_LOGIN: admin" -H "HTTP_AUTH_PASSWD: $PLESK_PASS" \
+            -H "Content-Type: text/xml" \
+            -d '<?xml version="1.0"?><packet version="1.6.9.1">
+              <site><set>
+                <filter><name>dlbtrust.cloud</name></filter>
+                <values><hosting><vrt_hst>
+                  <property><name>proxy_target</name><value>http://127.0.0.1:3007</value></property>
+                </vrt_hst></hosting></values>
+              </set></site>
+            </packet>' 2>&1 | head -c 500
+          echo ""
+
+          echo "=== Step 5: Restart Apache + Nginx via Plesk XML API ==="
           curl -sk --max-time 30 \
             "https://$SERVER:8443/enterprise/control/agent.php" \
             -H "HTTP_AUTH_LOGIN: admin" -H "HTTP_AUTH_PASSWD: $PLESK_PASS" \
             -H "Content-Type: text/xml" \
             -d '<?xml version="1.0"?><packet version="1.6.9.1">
               <server><srv_man><restart><service>httpd</service></restart></srv_man></server>
-            </packet>' | head -c 200
+            </packet>' 2>&1 | head -c 200
+          echo ""
+          curl -sk --max-time 30 \
+            "https://$SERVER:8443/enterprise/control/agent.php" \
+            -H "HTTP_AUTH_LOGIN: admin" -H "HTTP_AUTH_PASSWD: $PLESK_PASS" \
+            -H "Content-Type: text/xml" \
+            -d '<?xml version="1.0"?><packet version="1.6.9.1">
+              <server><srv_man><restart><service>nginx</service></restart></srv_man></server>
+            </packet>' 2>&1 | head -c 200
           echo ""
 
       - name: Final verification
