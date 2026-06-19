@@ -1,0 +1,125 @@
+name: Deploy Treasury Management System
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      SERVER: "74.208.191.205"
+      SSH_USER: "dlbtrust.cloud_h6zkwzag1ya"
+      SSH_PASS: "Deploy2026!"
+      PLESK_PASS: "dP8RlShbOWNq"
+
+    steps:
+      - uses: actions/checkout@v4
+      - run: apt-get install -y sshpass 2>/dev/null | tail -1 || true
+
+      - name: Deploy via git pull + PM2 restart
+        run: |
+          sshpass -p "$SSH_PASS" ssh \
+            -o StrictHostKeyChecking=no -o ConnectTimeout=10 \
+            -o PasswordAuthentication=yes \
+            "$SSH_USER@$SERVER" << 'SSHEOF'
+            HTTPDOCS="/var/www/vhosts/dlbtrust.cloud/httpdocs"
+            cd "$HTTPDOCS"
+
+            echo "=== Git pull latest ==="
+            git pull origin main 2>&1 | tail -5
+
+            echo "=== npm install ==="
+            npm install --production 2>&1 | tail -3
+
+            echo "=== Run migrations ==="
+            PGPASSWORD=postgres psql -h localhost -U postgres -d fineract_tenants \
+              -f server/scripts/migrate-postgres-full.sql 2>&1 | tail -5 || echo "migration 1 done or skipped"
+            PGPASSWORD=postgres psql -h localhost -U postgres -d fineract_tenants \
+              -f server/scripts/migrate-docs-accounting.sql 2>&1 | tail -5 || echo "migration 2 done or skipped"
+
+            echo "=== Restart server-3002 (Treasury Management) ==="
+            pm2 delete dlbtrust-3002 2>/dev/null || true
+            pm2 delete dlbtrust 2>/dev/null || true
+            pm2 delete dlbtrust-full 2>/dev/null || true
+            fuser -k 3002/tcp 2>/dev/null || true
+            fuser -k 3001/tcp 2>/dev/null || true
+            sleep 2
+
+            PORT=3002 pm2 start "$HTTPDOCS/server/server-3002.js" --name dlbtrust-treasury
+            pm2 save
+            sleep 5
+            pm2 list
+
+            echo "=== Verify Treasury Endpoints ==="
+            echo "Dashboard:"
+            curl -s http://localhost:3002/ | head -c 100
+            echo ""
+            echo "Bonds:"
+            curl -s http://localhost:3002/api/bonds | head -c 100
+            echo ""
+            echo "Cash:"
+            curl -s http://localhost:3002/api/cash/accounts | head -c 100
+            echo ""
+            echo "CRM:"
+            curl -s http://localhost:3002/api/crm/dashboard | head -c 100
+            echo ""
+            echo "Documents:"
+            curl -s http://localhost:3002/api/documents/templates | head -c 100
+            echo ""
+            echo "Accounting:"
+            curl -s http://localhost:3002/api/accounting/dashboard | head -c 100
+            echo ""
+          SSHEOF
+
+      - name: Update Apache vhost to proxy to treasury
+        run: |
+          sshpass -p "$SSH_PASS" ssh \
+            -o StrictHostKeyChecking=no -o ConnectTimeout=10 \
+            -o PasswordAuthentication=yes \
+            "$SSH_USER@$SERVER" << 'SSHEOF'
+            cat > /var/www/vhosts/dlbtrust.cloud/conf/vhost.conf << 'VHOSTEOF'
+ProxyRequests Off
+ProxyPreserveHost On
+ProxyPass / http://localhost:3002/
+ProxyPassReverse / http://localhost:3002/
+<Proxy *>
+    Order deny,allow
+    Allow from all
+    Require all granted
+</Proxy>
+RewriteEngine On
+RewriteCond %{HTTP:Upgrade} websocket [NC]
+RewriteRule ^/?(.*) ws://localhost:3002/$1 [P,L]
+VHOSTEOF
+            echo "vhost.conf updated — proxying all traffic to treasury on port 3002"
+          SSHEOF
+
+      - name: Rebuild Apache via Plesk
+        run: |
+          curl -sk --max-time 30 \
+            "https://$SERVER:8443/enterprise/control/agent.php" \
+            -H "HTTP_AUTH_LOGIN: admin" -H "HTTP_AUTH_PASSWD: $PLESK_PASS" \
+            -H "Content-Type: text/xml" \
+            -d '<?xml version="1.0"?><packet version="1.6.9.1">
+              <server><srv_man><restart><service>httpd</service></restart></srv_man></server>
+            </packet>' | head -c 200
+          echo ""
+
+      - name: Final verification
+        run: |
+          sleep 8
+          S=$SERVER
+          echo "=== Treasury System Verification ==="
+          echo "Homepage:"
+          curl -sk --resolve "dlbtrust.cloud:443:$S" https://dlbtrust.cloud/ -o /dev/null -w "HTTP %{http_code}\n"
+          echo "Bonds API:"
+          curl -sk --resolve "dlbtrust.cloud:443:$S" https://dlbtrust.cloud/api/bonds | head -c 100
+          echo ""
+          echo "Documents API:"
+          curl -sk --resolve "dlbtrust.cloud:443:$S" https://dlbtrust.cloud/api/documents/templates | head -c 100
+          echo ""
+          echo "Accounting API:"
+          curl -sk --resolve "dlbtrust.cloud:443:$S" https://dlbtrust.cloud/api/accounting/dashboard | head -c 100
+          echo ""

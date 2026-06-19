@@ -43,10 +43,6 @@ try { app.use("/api/documents", require(HD + "/server/routes/documents")); conso
 // Trust Accounting routes
 try { app.use("/api/accounting", require(HD + "/server/routes/accounting")); console.log("[accounting] loaded"); } catch(e) { console.warn("[accounting]", e.message); }
 
-// Treasury dashboard (served from httpdocs/public)
-app.use("/treasury", express.static(path.join(HD, "public")));
-app.get("/treasury", (req, res) => res.sendFile(path.join(HD, "public", "dashboard.html")));
-
 // Start live bond accrual scheduler
 try {
   const { LiveBondEngine } = require(HD + "/server/integrations/bonds/liveEngine");
@@ -54,21 +50,14 @@ try {
   console.log("[liveEngine] daily accrual scheduler started");
 } catch(e) { console.warn("[liveEngine]", e.message); }
 
-// Static files from v2
-app.use(express.static(path.join(V2, "dist", "public")));
-app.use("/assets", express.static(path.join(V2, "dist", "public", "assets")));
+// Treasury Management System — static files from httpdocs/public
+app.use(express.static(path.join(HD, "public")));
 
 app.get("/", (req, res) => {
-  const l = path.join(V2, "dist", "public", "landing.html");
-  fs.existsSync(l) ? res.sendFile(l) : res.redirect("/#/dashboard");
+  res.sendFile(path.join(HD, "public", "dashboard.html"));
 });
-app.get("/login", (req, res) => {
-  const l = path.join(V2, "dist", "public", "login.html");
-  fs.existsSync(l) ? res.sendFile(l) : res.status(404).send("Not found");
-});
-app.get("/login.html", (req, res) => res.redirect("/login"));
 app.get("*", (req, res) => {
-  const idx = path.join(V2, "dist", "public", "index.html");
+  const idx = path.join(HD, "public", "index.html");
   fs.existsSync(idx) ? res.sendFile(idx) : res.status(404).send("Not found");
 });
 
