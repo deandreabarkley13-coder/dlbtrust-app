@@ -43,10 +43,6 @@ try { app.use("/api/documents", require(HD + "/server/routes/documents")); conso
 // Trust Accounting routes
 try { app.use("/api/accounting", require(HD + "/server/routes/accounting")); console.log("[accounting] loaded"); } catch(e) { console.warn("[accounting]", e.message); }
 
-// Treasury dashboard (served from httpdocs/public)
-app.use("/treasury", express.static(path.join(HD, "public")));
-app.get("/treasury", (req, res) => res.sendFile(path.join(HD, "public", "dashboard.html")));
-
 // Start live bond accrual scheduler
 try {
   const { LiveBondEngine } = require(HD + "/server/integrations/bonds/liveEngine");
