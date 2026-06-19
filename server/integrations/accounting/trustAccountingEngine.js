@@ -322,14 +322,14 @@ class TrustAccountingEngine {
   // ─── Financial Reports ────────────────────────────────────────────────────
 
   static async getTrialBalance({ asOfDate } = {}) {
-    let dateFilter = '';
+    let joinFilter = '';
     const params = [];
 
     if (asOfDate) {
-      dateFilter = 'WHERE je.entry_date <= $1 AND je.status = \'posted\'';
+      joinFilter = 'AND je.entry_date <= $1 AND je.status = \'posted\'';
       params.push(asOfDate);
     } else {
-      dateFilter = 'WHERE je.status = \'posted\'';
+      joinFilter = 'AND je.status = \'posted\'';
     }
 
     const result = await pool.query(`
@@ -344,7 +344,7 @@ class TrustAccountingEngine {
       FROM trust_accounts ta
       LEFT JOIN trust_journal_lines jl ON jl.account_code = ta.account_code
       LEFT JOIN trust_journal_entries je ON je.entry_id = jl.entry_id
-        ${dateFilter}
+        ${joinFilter}
       WHERE ta.is_active = TRUE
       GROUP BY ta.account_code, ta.account_name, ta.account_type, ta.sub_type, ta.balance
       ORDER BY ta.account_code
