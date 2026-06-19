@@ -130,4 +130,76 @@ router.get('/gl/summary', async (req, res) => {
   }
 });
 
+// ─── GET /api/fineract/gl/accounts ────────────────────────────────────────────
+router.get('/gl/accounts', async (req, res) => {
+  try {
+    const accounts = await FineractClient.getGLAccounts();
+    res.json({ success: true, data: Array.isArray(accounts) ? accounts : [] });
+  } catch (err) {
+    res.status(err.status || 500).json({
+      success: false,
+      error: err.message,
+      detail: err.detail || null,
+    });
+  }
+});
+
+// ─── GET /api/fineract/clients ────────────────────────────────────────────────
+router.get('/clients', async (req, res) => {
+  try {
+    const { offset, limit } = req.query;
+    const result = await FineractClient.listClients({
+      offset: parseInt(offset, 10) || 0,
+      limit: parseInt(limit, 10) || 100,
+    });
+    res.json({ success: true, data: result });
+  } catch (err) {
+    res.status(err.status || 500).json({
+      success: false,
+      error: err.message,
+      detail: err.detail || null,
+    });
+  }
+});
+
+// ─── GET /api/fineract/journal ────────────────────────────────────────────────
+router.get('/journal', async (req, res) => {
+  try {
+    const { accountId, fromDate, toDate, offset, limit } = req.query;
+    const result = await FineractClient.getJournalEntries({
+      accountId: accountId ? parseInt(accountId, 10) : undefined,
+      fromDate: fromDate ? new Date(fromDate) : undefined,
+      toDate: toDate ? new Date(toDate) : undefined,
+      offset: parseInt(offset, 10) || 0,
+      limit: parseInt(limit, 10) || 50,
+    });
+    res.json({ success: true, data: result });
+  } catch (err) {
+    res.status(err.status || 500).json({
+      success: false,
+      error: err.message,
+      detail: err.detail || null,
+    });
+  }
+});
+
+// ─── GET /api/fineract/savings ────────────────────────────────────────────────
+router.get('/savings', async (req, res) => {
+  try {
+    const { clientId, offset, limit } = req.query;
+    const result = await FineractClient.listSavingsAccounts({
+      clientId: clientId ? parseInt(clientId, 10) : undefined,
+      offset: parseInt(offset, 10) || 0,
+      limit: parseInt(limit, 10) || 100,
+    });
+    res.json({ success: true, data: result });
+  } catch (err) {
+    res.status(err.status || 500).json({
+      success: false,
+      error: err.message,
+      detail: err.detail || null,
+    });
+  }
+});
+
 module.exports = router;

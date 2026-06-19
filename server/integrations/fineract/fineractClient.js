@@ -74,7 +74,14 @@ function fineractRequest(method, endpoint, body = null) {
       });
     });
 
-    req.on('error', reject);
+    req.on('error', (err) => {
+      if (err.code === 'ECONNREFUSED') {
+        const e = new Error('Fineract not reachable — start with: docker compose up -d');
+        e.status = 503;
+        return reject(e);
+      }
+      reject(err);
+    });
     req.setTimeout(30000, () => {
       req.destroy(new Error('Fineract request timed out after 30s'));
     });

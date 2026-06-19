@@ -7,6 +7,7 @@
   <style>
     :root {
       --bg: #0f1117;
+      --sidebar: #161922;
       --card: #1a1d27;
       --border: #2a2d37;
       --text: #e4e4e7;
@@ -15,439 +16,971 @@
       --green: #10b981;
       --red: #ef4444;
       --gold: #f59e0b;
+      --purple: #a855f7;
     }
     * { margin: 0; padding: 0; box-sizing: border-box; }
     body {
       font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
       background: var(--bg);
       color: var(--text);
+      display: flex;
       min-height: 100vh;
-      padding: 24px;
     }
-    .header {
+
+    /* Sidebar */
+    .sidebar {
+      width: 240px;
+      background: var(--sidebar);
+      border-right: 1px solid var(--border);
+      padding: 20px 0;
+      position: fixed;
+      top: 0;
+      left: 0;
+      bottom: 0;
+      overflow-y: auto;
+      z-index: 100;
+    }
+    .sidebar-logo {
+      padding: 0 20px 20px;
+      border-bottom: 1px solid var(--border);
+      margin-bottom: 12px;
+    }
+    .sidebar-logo h2 { font-size: 16px; font-weight: 700; color: var(--accent); }
+    .sidebar-logo p { font-size: 11px; color: var(--muted); margin-top: 4px; }
+    .nav-section { padding: 8px 12px 4px; font-size: 10px; text-transform: uppercase; letter-spacing: 0.1em; color: var(--muted); }
+    .nav-item {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 10px 20px;
+      cursor: pointer;
+      font-size: 13px;
+      color: var(--muted);
+      transition: all 0.15s;
+      border-left: 3px solid transparent;
+    }
+    .nav-item:hover { background: rgba(59,130,246,0.08); color: var(--text); }
+    .nav-item.active { background: rgba(59,130,246,0.12); color: var(--accent); border-left-color: var(--accent); font-weight: 500; }
+    .nav-item .icon { font-size: 16px; width: 20px; text-align: center; }
+
+    /* Main */
+    .main { margin-left: 240px; flex: 1; padding: 24px 32px; min-height: 100vh; }
+    .page-header {
       display: flex;
       justify-content: space-between;
       align-items: center;
-      margin-bottom: 32px;
+      margin-bottom: 24px;
     }
-    .header h1 { font-size: 24px; font-weight: 600; }
-    .header .subtitle { color: var(--muted); font-size: 14px; margin-top: 4px; }
-    .status-badge {
-      display: inline-flex;
-      align-items: center;
-      gap: 6px;
-      padding: 6px 12px;
-      border-radius: 20px;
-      font-size: 12px;
-      font-weight: 500;
-    }
-    .status-badge.connected { background: rgba(16,185,129,0.15); color: var(--green); }
-    .status-badge.disconnected { background: rgba(239,68,68,0.15); color: var(--red); }
-    .status-dot {
-      width: 8px; height: 8px;
-      border-radius: 50%;
-      background: currentColor;
-    }
-    .grid {
-      display: grid;
-      grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
-      gap: 16px;
-      margin-bottom: 32px;
-    }
-    .card {
-      background: var(--card);
-      border: 1px solid var(--border);
-      border-radius: 12px;
-      padding: 20px;
-    }
-    .card-title {
-      font-size: 12px;
-      text-transform: uppercase;
-      letter-spacing: 0.05em;
-      color: var(--muted);
-      margin-bottom: 8px;
-    }
-    .card-value {
-      font-size: 28px;
-      font-weight: 700;
-      font-variant-numeric: tabular-nums;
-    }
-    .card-sub {
-      font-size: 13px;
-      color: var(--muted);
-      margin-top: 4px;
-    }
-    .section-title {
-      font-size: 18px;
-      font-weight: 600;
-      margin-bottom: 16px;
-      display: flex;
-      align-items: center;
-      gap: 8px;
-    }
-    .section-title .icon { font-size: 20px; }
-    table {
-      width: 100%;
-      border-collapse: collapse;
-      font-size: 14px;
-    }
-    thead th {
-      text-align: left;
-      padding: 12px 16px;
-      border-bottom: 1px solid var(--border);
-      color: var(--muted);
-      font-weight: 500;
-      font-size: 12px;
-      text-transform: uppercase;
-      letter-spacing: 0.05em;
-    }
-    tbody td {
-      padding: 12px 16px;
-      border-bottom: 1px solid var(--border);
-    }
+    .page-header h1 { font-size: 22px; font-weight: 600; }
+    .page-header .subtitle { font-size: 13px; color: var(--muted); margin-top: 2px; }
+
+    /* Cards */
+    .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 14px; margin-bottom: 24px; }
+    .card { background: var(--card); border: 1px solid var(--border); border-radius: 10px; padding: 18px; }
+    .card-title { font-size: 11px; text-transform: uppercase; letter-spacing: 0.05em; color: var(--muted); margin-bottom: 6px; }
+    .card-value { font-size: 24px; font-weight: 700; font-variant-numeric: tabular-nums; }
+    .card-sub { font-size: 12px; color: var(--muted); margin-top: 4px; }
+
+    /* Tables */
+    .table-wrap { overflow-x: auto; }
+    table { width: 100%; border-collapse: collapse; font-size: 13px; }
+    thead th { text-align: left; padding: 10px 14px; border-bottom: 1px solid var(--border); color: var(--muted); font-weight: 500; font-size: 11px; text-transform: uppercase; letter-spacing: 0.05em; }
+    tbody td { padding: 10px 14px; border-bottom: 1px solid var(--border); }
     tbody tr:last-child td { border-bottom: none; }
-    tbody tr:hover { background: rgba(59,130,246,0.05); }
-    .badge {
-      display: inline-block;
-      padding: 2px 8px;
-      border-radius: 4px;
-      font-size: 11px;
-      font-weight: 600;
-      text-transform: uppercase;
-    }
+    tbody tr:hover { background: rgba(59,130,246,0.04); }
+
+    /* Badges */
+    .badge { display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 11px; font-weight: 600; text-transform: uppercase; }
     .badge-active { background: rgba(16,185,129,0.15); color: var(--green); }
-    .badge-matured { background: rgba(245,158,11,0.15); color: var(--gold); }
-    .badge-accrual { background: rgba(59,130,246,0.15); color: var(--accent); }
-    .badge-payment { background: rgba(16,185,129,0.15); color: var(--green); }
-    .badge-issuance { background: rgba(245,158,11,0.15); color: var(--gold); }
-    .badge-maturity { background: rgba(168,85,247,0.15); color: #a855f7; }
-    .money { font-variant-numeric: tabular-nums; }
-    .money.positive { color: var(--green); }
-    .money.negative { color: var(--red); }
-    .gl-bar {
-      display: flex;
-      align-items: center;
-      gap: 8px;
-      margin-bottom: 8px;
-    }
-    .gl-bar-label { font-size: 13px; min-width: 140px; }
-    .gl-bar-track {
-      flex: 1;
-      height: 8px;
-      background: var(--border);
-      border-radius: 4px;
-      overflow: hidden;
-    }
-    .gl-bar-fill {
-      height: 100%;
-      border-radius: 4px;
-      transition: width 0.5s;
-    }
-    .gl-bar-value { font-size: 13px; min-width: 100px; text-align: right; font-variant-numeric: tabular-nums; }
-    .refresh-btn {
-      background: var(--accent);
-      color: white;
-      border: none;
-      padding: 8px 16px;
-      border-radius: 8px;
+    .badge-pending { background: rgba(245,158,11,0.15); color: var(--gold); }
+    .badge-error { background: rgba(239,68,68,0.15); color: var(--red); }
+    .badge-info { background: rgba(59,130,246,0.15); color: var(--accent); }
+    .badge-purple { background: rgba(168,85,247,0.15); color: var(--purple); }
+
+    /* Forms */
+    .form-row { display: flex; gap: 12px; margin-bottom: 12px; flex-wrap: wrap; }
+    .form-group { display: flex; flex-direction: column; flex: 1; min-width: 180px; }
+    .form-group label { font-size: 11px; color: var(--muted); margin-bottom: 4px; text-transform: uppercase; letter-spacing: 0.05em; }
+    .form-group input, .form-group select, .form-group textarea {
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 8px 12px;
+      color: var(--text);
       font-size: 13px;
-      cursor: pointer;
-      font-weight: 500;
     }
-    .refresh-btn:hover { opacity: 0.9; }
-    .loading { color: var(--muted); font-style: italic; padding: 20px; }
-    .error-msg { color: var(--red); padding: 12px; background: rgba(239,68,68,0.1); border-radius: 8px; }
+    .form-group textarea { min-height: 80px; resize: vertical; }
+
+    /* Buttons */
+    .btn { padding: 8px 16px; border-radius: 6px; font-size: 13px; font-weight: 500; cursor: pointer; border: none; transition: opacity 0.15s; }
+    .btn:hover { opacity: 0.85; }
+    .btn-primary { background: var(--accent); color: white; }
+    .btn-success { background: var(--green); color: white; }
+    .btn-danger { background: var(--red); color: white; }
+    .btn-outline { background: transparent; border: 1px solid var(--border); color: var(--text); }
+    .btn-sm { padding: 5px 10px; font-size: 11px; }
+
+    /* Utility */
+    .money { font-variant-numeric: tabular-nums; }
+    .text-green { color: var(--green); }
+    .text-red { color: var(--red); }
+    .text-muted { color: var(--muted); }
+    .text-accent { color: var(--accent); }
+    .mt-16 { margin-top: 16px; }
+    .mb-16 { margin-bottom: 16px; }
+    .flex { display: flex; }
+    .gap-12 { gap: 12px; }
+    .items-center { align-items: center; }
+    .justify-between { justify-content: space-between; }
+    .hidden { display: none !important; }
+    .loading { color: var(--muted); font-style: italic; padding: 16px; }
+    .error-msg { color: var(--red); padding: 12px; background: rgba(239,68,68,0.1); border-radius: 8px; margin: 8px 0; }
+    .success-msg { color: var(--green); padding: 12px; background: rgba(16,185,129,0.1); border-radius: 8px; margin: 8px 0; }
     .two-col { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
-    @media (max-width: 768px) { .two-col { grid-template-columns: 1fr; } }
+    @media (max-width: 900px) { .two-col { grid-template-columns: 1fr; } .sidebar { display: none; } .main { margin-left: 0; } }
+
+    /* Status indicators */
+    .status-dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; }
+    .status-dot.online { background: var(--green); }
+    .status-dot.offline { background: var(--red); }
+    .status-dot.pending { background: var(--gold); }
+
+    /* Section */
+    .section { margin-bottom: 24px; }
+    .section-title { font-size: 16px; font-weight: 600; margin-bottom: 14px; display: flex; align-items: center; gap: 8px; }
+    .section-title .icon { font-size: 18px; }
+
+    /* Tabs */
+    .tabs { display: flex; gap: 4px; margin-bottom: 16px; border-bottom: 1px solid var(--border); padding-bottom: 8px; }
+    .tab { padding: 6px 14px; font-size: 12px; color: var(--muted); cursor: pointer; border-radius: 6px 6px 0 0; }
+    .tab.active { color: var(--accent); background: rgba(59,130,246,0.1); font-weight: 500; }
+    .tab-content { display: none; }
+    .tab-content.active { display: block; }
   </style>
 </head>
 <body>
-  <div class="header">
-    <div>
-      <h1>Treasury Management Dashboard</h1>
-      <div class="subtitle">DEANDREA LAVAR BARKLEY TRUST — Core Banking & Fixed Income</div>
+  <!-- Sidebar Navigation -->
+  <nav class="sidebar">
+    <div class="sidebar-logo">
+      <h2>DLB Trust</h2>
+      <p>Treasury Management System</p>
     </div>
-    <div style="display:flex;gap:12px;align-items:center;">
-      <span id="fineract-status" class="status-badge disconnected">
-        <span class="status-dot"></span>Fineract: Checking...
-      </span>
-      <button class="refresh-btn" onclick="loadAll()">Refresh</button>
-    </div>
-  </div>
+    <div class="nav-section">Overview</div>
+    <div class="nav-item active" data-page="overview"><span class="icon">📊</span> Dashboard</div>
+    <div class="nav-section">Fixed Income</div>
+    <div class="nav-item" data-page="bonds"><span class="icon">📋</span> Bond Portfolio</div>
+    <div class="nav-section">Banking</div>
+    <div class="nav-item" data-page="cash"><span class="icon">💰</span> Cash Management</div>
+    <div class="nav-item" data-page="payments"><span class="icon">💸</span> Payments & Disbursements</div>
+    <div class="nav-item" data-page="ach"><span class="icon">🏦</span> ACH Pipeline</div>
+    <div class="nav-item" data-page="as2"><span class="icon">🔗</span> AS2 Server</div>
+    <div class="nav-section">Operations</div>
+    <div class="nav-item" data-page="crm"><span class="icon">👥</span> CRM & Investors</div>
+    <div class="nav-item" data-page="documents"><span class="icon">📄</span> Documents</div>
+    <div class="nav-item" data-page="accounting"><span class="icon">📒</span> Trust Accounting</div>
+    <div class="nav-section">Core Banking</div>
+    <div class="nav-item" data-page="fineract"><span class="icon">🏛️</span> Fineract GL</div>
+    <div class="nav-section">System</div>
+    <div class="nav-item" data-page="admin"><span class="icon">⚙️</span> Admin Controls</div>
+  </nav>
 
-  <!-- Summary Cards -->
-  <div class="grid" id="summary-cards">
-    <div class="card">
-      <div class="card-title">Total Principal</div>
-      <div class="card-value" id="total-principal">—</div>
-      <div class="card-sub">Active bond principal outstanding</div>
-    </div>
-    <div class="card">
-      <div class="card-title">Accrued Interest</div>
-      <div class="card-value" id="total-accrued">—</div>
-      <div class="card-sub">Unpaid interest accumulated</div>
-    </div>
-    <div class="card">
-      <div class="card-title">Total Interest Paid</div>
-      <div class="card-value" id="total-interest-paid">—</div>
-      <div class="card-sub">Lifetime distributions</div>
-    </div>
-    <div class="card">
-      <div class="card-title">Active Bonds</div>
-      <div class="card-value" id="active-bonds">—</div>
-      <div class="card-sub">Currently accruing</div>
-    </div>
-  </div>
-
-  <!-- GL Summary -->
-  <div class="card" style="margin-bottom:32px;">
-    <div class="section-title"><span class="icon">📊</span> General Ledger Summary</div>
-    <div id="gl-summary"><p class="loading">Loading GL data...</p></div>
-  </div>
-
-  <!-- Bonds Table -->
-  <div class="card" style="margin-bottom:32px;">
-    <div class="section-title"><span class="icon">📋</span> Bond Portfolio</div>
-    <div style="overflow-x:auto;">
-      <table>
-        <thead>
-          <tr>
-            <th>Bond Name</th>
-            <th>Face Value</th>
-            <th>Coupon</th>
-            <th>Day Count</th>
-            <th>Principal Balance</th>
-            <th>Accrued Interest</th>
-            <th>Status</th>
-            <th>Issue Date</th>
-          </tr>
-        </thead>
-        <tbody id="bonds-table"><tr><td colspan="8" class="loading">Loading bonds...</td></tr></tbody>
-      </table>
-    </div>
-  </div>
-
-  <!-- Two Column: Transactions + Fineract Clients -->
-  <div class="two-col">
-    <div class="card">
-      <div class="section-title"><span class="icon">📜</span> Recent Transactions</div>
-      <div style="overflow-x:auto;">
-        <table>
-          <thead>
-            <tr>
-              <th>Date</th>
-              <th>Type</th>
-              <th>Amount</th>
-              <th>Balance</th>
-            </tr>
-          </thead>
-          <tbody id="txn-table"><tr><td colspan="4" class="loading">Loading...</td></tr></tbody>
-        </table>
+  <!-- Main Content -->
+  <div class="main">
+    <!-- OVERVIEW PAGE -->
+    <div id="page-overview" class="page">
+      <div class="page-header">
+        <div>
+          <h1>Treasury Dashboard</h1>
+          <div class="subtitle">DEANDREA LAVAR BARKLEY TRUST — Real-time Overview</div>
+        </div>
+        <button class="btn btn-primary" onclick="loadOverview()">Refresh</button>
+      </div>
+      <div class="grid" id="overview-cards"></div>
+      <div class="two-col">
+        <div class="card">
+          <div class="section-title"><span class="icon">📋</span> Bond Portfolio</div>
+          <div id="overview-bonds" class="loading">Loading...</div>
+        </div>
+        <div class="card">
+          <div class="section-title"><span class="icon">💰</span> Cash Position</div>
+          <div id="overview-cash" class="loading">Loading...</div>
+        </div>
+      </div>
+      <div class="two-col mt-16">
+        <div class="card">
+          <div class="section-title"><span class="icon">📒</span> Accounting Summary</div>
+          <div id="overview-accounting" class="loading">Loading...</div>
+        </div>
+        <div class="card">
+          <div class="section-title"><span class="icon">⚙️</span> System Status</div>
+          <div id="overview-status" class="loading">Loading...</div>
+        </div>
       </div>
     </div>
-    <div class="card">
-      <div class="section-title"><span class="icon">🏦</span> Fineract GL Accounts</div>
-      <div id="fineract-gl"><p class="loading">Loading GL accounts...</p></div>
+
+    <!-- BONDS PAGE -->
+    <div id="page-bonds" class="page hidden">
+      <div class="page-header">
+        <div><h1>Bond Portfolio</h1><div class="subtitle">Fixed Income — Live Metrics & Management</div></div>
+        <div class="flex gap-12"><button class="btn btn-success btn-sm" onclick="accrueAll()">Run Accrual</button><button class="btn btn-primary btn-sm" onclick="loadBonds()">Refresh</button></div>
+      </div>
+      <div class="grid" id="bonds-summary"></div>
+      <div class="card"><div class="section-title">Portfolio Holdings</div><div class="table-wrap" id="bonds-table-wrap"><p class="loading">Loading...</p></div></div>
+      <div class="card mt-16"><div class="section-title">Live Bond Metrics</div><div id="bonds-live" class="loading">Loading...</div></div>
+      <div class="card mt-16"><div class="section-title">Recent Transactions</div><div class="table-wrap" id="bonds-txn-wrap"><p class="loading">Loading...</p></div></div>
+    </div>
+
+    <!-- CASH PAGE -->
+    <div id="page-cash" class="page hidden">
+      <div class="page-header">
+        <div><h1>Cash Management</h1><div class="subtitle">Accounts, Transfers & Position Summary</div></div>
+        <button class="btn btn-primary btn-sm" onclick="loadCash()">Refresh</button>
+      </div>
+      <div class="grid" id="cash-summary"></div>
+      <div class="card"><div class="section-title">Cash Accounts</div><div class="table-wrap" id="cash-accounts-wrap"><p class="loading">Loading...</p></div></div>
+      <div class="two-col mt-16">
+        <div class="card">
+          <div class="section-title">Transfer Funds</div>
+          <div class="form-row"><div class="form-group"><label>From Account</label><select id="transfer-from"></select></div><div class="form-group"><label>To Account</label><select id="transfer-to"></select></div></div>
+          <div class="form-row"><div class="form-group"><label>Amount ($)</label><input type="number" id="transfer-amount" placeholder="50000"></div></div>
+          <div class="form-row"><div class="form-group"><label>Description</label><input type="text" id="transfer-desc" placeholder="Operating fund transfer"></div></div>
+          <button class="btn btn-primary" onclick="doTransfer()">Execute Transfer</button>
+          <div id="transfer-result"></div>
+        </div>
+        <div class="card">
+          <div class="section-title">Record Deposit</div>
+          <div class="form-row"><div class="form-group"><label>Account</label><select id="deposit-account"></select></div></div>
+          <div class="form-row"><div class="form-group"><label>Amount ($)</label><input type="number" id="deposit-amount" placeholder="10000"></div></div>
+          <div class="form-row"><div class="form-group"><label>Source</label><input type="text" id="deposit-source" placeholder="Wire from JPMorgan"></div></div>
+          <button class="btn btn-success" onclick="doDeposit()">Record Deposit</button>
+          <div id="deposit-result"></div>
+        </div>
+      </div>
+      <div class="card mt-16"><div class="section-title">Movement History</div><div class="table-wrap" id="cash-movements-wrap"><p class="loading">Loading...</p></div></div>
+    </div>
+
+    <!-- PAYMENTS & DISBURSEMENTS PAGE -->
+    <div id="page-payments" class="page hidden">
+      <div class="page-header">
+        <div><h1>Payments & Disbursements</h1><div class="subtitle">ACH Disbursements, Trust Distributions & Payment Scheduling</div></div>
+      </div>
+      <div class="card">
+        <div class="section-title">New Disbursement</div>
+        <p class="text-muted mb-16" style="font-size:12px;">Create a NACHA file and transmit via AS2 to originating bank</p>
+        <div class="form-row">
+          <div class="form-group"><label>Beneficiary First Name</label><input type="text" id="disb-first" placeholder="John"></div>
+          <div class="form-group"><label>Beneficiary Last Name</label><input type="text" id="disb-last" placeholder="Smith"></div>
+          <div class="form-group"><label>Email</label><input type="email" id="disb-email" placeholder="john@example.com"></div>
+        </div>
+        <div class="form-row">
+          <div class="form-group"><label>Bank Name</label><input type="text" id="disb-bank" placeholder="Chase"></div>
+          <div class="form-group"><label>Routing Number (9 digits)</label><input type="text" id="disb-routing" placeholder="021000021" maxlength="9"></div>
+          <div class="form-group"><label>Account Number</label><input type="text" id="disb-acct" placeholder="123456789"></div>
+        </div>
+        <div class="form-row">
+          <div class="form-group"><label>Account Type</label><select id="disb-accttype"><option value="checking">Checking</option><option value="savings">Savings</option></select></div>
+          <div class="form-group"><label>Amount ($)</label><input type="number" id="disb-amount" placeholder="5000.00" step="0.01"></div>
+          <div class="form-group"><label>Send Date</label><input type="date" id="disb-date"></div>
+        </div>
+        <div class="form-row">
+          <div class="form-group"><label>Payment Type</label><select id="disb-type"><option value="trust_distribution">Trust Distribution</option><option value="vendor_payment">Vendor Payment</option><option value="interest_payment">Interest Payment</option><option value="principal_return">Principal Return</option></select></div>
+          <div class="form-group"><label>Memo / Description</label><input type="text" id="disb-memo" placeholder="Q2 2026 Trust Distribution"></div>
+        </div>
+        <button class="btn btn-success" onclick="createDisbursement()">Create Disbursement Batch</button>
+        <div id="disb-result"></div>
+      </div>
+      <div class="card mt-16">
+        <div class="section-title">Recent Batches</div>
+        <div class="table-wrap" id="payment-batches-wrap"><p class="loading">Loading...</p></div>
+      </div>
+    </div>
+
+    <!-- ACH PIPELINE PAGE -->
+    <div id="page-ach" class="page hidden">
+      <div class="page-header">
+        <div><h1>ACH Pipeline</h1><div class="subtitle">NACHA File Generation & AS2 Bank Transmission</div></div>
+        <button class="btn btn-primary btn-sm" onclick="loadACH()">Refresh</button>
+      </div>
+      <div class="grid" id="ach-status-cards"></div>
+      <div class="card"><div class="section-title">ACH Batches</div><div class="table-wrap" id="ach-batches-wrap"><p class="loading">Loading...</p></div></div>
+    </div>
+
+    <!-- AS2 PAGE -->
+    <div id="page-as2" class="page hidden">
+      <div class="page-header">
+        <div><h1>AS2 Server</h1><div class="subtitle">Open Source AS2 — Certificates, Partners & Message History</div></div>
+        <button class="btn btn-primary btn-sm" onclick="loadAS2()">Refresh</button>
+      </div>
+      <div class="grid" id="as2-status-cards"></div>
+      <div class="two-col">
+        <div class="card">
+          <div class="section-title">Trading Partners</div>
+          <div id="as2-partners-wrap"><p class="loading">Loading...</p></div>
+          <button class="btn btn-outline btn-sm mt-16" onclick="showAddPartner()">+ Add Partner</button>
+          <div id="as2-add-partner" class="hidden mt-16">
+            <div class="form-row"><div class="form-group"><label>Partner Name</label><input type="text" id="as2-partner-name" placeholder="Bank ABC"></div><div class="form-group"><label>AS2 ID</label><input type="text" id="as2-partner-id" placeholder="BANK-ABC-AS2"></div></div>
+            <div class="form-row"><div class="form-group"><label>Endpoint URL</label><input type="text" id="as2-partner-url" placeholder="https://bank.example.com/as2/receive"></div></div>
+            <button class="btn btn-success btn-sm" onclick="addAS2Partner()">Save Partner</button>
+          </div>
+        </div>
+        <div class="card">
+          <div class="section-title">Certificates</div>
+          <div id="as2-certs-wrap"><p class="loading">Loading...</p></div>
+          <button class="btn btn-outline btn-sm mt-16" onclick="generateCert()">Generate Keypair</button>
+        </div>
+      </div>
+      <div class="card mt-16"><div class="section-title">Message History</div><div class="table-wrap" id="as2-messages-wrap"><p class="loading">Loading...</p></div></div>
+    </div>
+
+    <!-- CRM PAGE -->
+    <div id="page-crm" class="page hidden">
+      <div class="page-header">
+        <div><h1>CRM & Investors</h1><div class="subtitle">Contact Management, KYC/AML, Interactions & Subscriptions</div></div>
+        <button class="btn btn-primary btn-sm" onclick="loadCRM()">Refresh</button>
+      </div>
+      <div class="grid" id="crm-summary"></div>
+      <div class="card">
+        <div class="section-title">Contacts</div>
+        <div class="table-wrap" id="crm-contacts-wrap"><p class="loading">Loading...</p></div>
+        <button class="btn btn-outline btn-sm mt-16" onclick="showAddContact()">+ Add Contact</button>
+        <div id="crm-add-contact" class="hidden mt-16">
+          <div class="form-row"><div class="form-group"><label>First Name</label><input type="text" id="crm-first"></div><div class="form-group"><label>Last Name</label><input type="text" id="crm-last"></div></div>
+          <div class="form-row"><div class="form-group"><label>Email</label><input type="email" id="crm-email"></div><div class="form-group"><label>Type</label><select id="crm-type"><option value="investor">Investor</option><option value="beneficiary">Beneficiary</option><option value="trustee">Trustee</option><option value="vendor">Vendor</option></select></div></div>
+          <div class="form-row"><div class="form-group"><label>Company</label><input type="text" id="crm-company"></div><div class="form-group"><label>Phone</label><input type="text" id="crm-phone"></div></div>
+          <button class="btn btn-success btn-sm" onclick="addContact()">Save Contact</button>
+          <div id="crm-add-result"></div>
+        </div>
+      </div>
+      <div class="card mt-16"><div class="section-title">Bond Subscriptions</div><div class="table-wrap" id="crm-subs-wrap"><p class="loading">Loading...</p></div></div>
+    </div>
+
+    <!-- DOCUMENTS PAGE -->
+    <div id="page-documents" class="page hidden">
+      <div class="page-header">
+        <div><h1>Document Management</h1><div class="subtitle">Templates, Generation & Archive</div></div>
+        <button class="btn btn-primary btn-sm" onclick="loadDocuments()">Refresh</button>
+      </div>
+      <div class="tabs">
+        <div class="tab active" data-tab="doc-templates">Templates</div>
+        <div class="tab" data-tab="doc-generated">Generated Documents</div>
+        <div class="tab" data-tab="doc-generate">Generate New</div>
+      </div>
+      <div id="doc-templates" class="tab-content active">
+        <div class="card"><div class="table-wrap" id="doc-templates-wrap"><p class="loading">Loading...</p></div></div>
+      </div>
+      <div id="doc-generated" class="tab-content">
+        <div class="card"><div class="table-wrap" id="doc-generated-wrap"><p class="loading">Loading...</p></div></div>
+      </div>
+      <div id="doc-generate" class="tab-content">
+        <div class="card">
+          <div class="section-title">Generate Document from Template</div>
+          <div class="form-row"><div class="form-group"><label>Template</label><select id="gen-template"></select></div></div>
+          <div class="form-row"><div class="form-group"><label>Title</label><input type="text" id="gen-title" placeholder="Trust Agreement — Q2 2026"></div></div>
+          <button class="btn btn-success" onclick="generateDocument()">Generate</button>
+          <div id="gen-result"></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ACCOUNTING PAGE -->
+    <div id="page-accounting" class="page hidden">
+      <div class="page-header">
+        <div><h1>Trust Accounting</h1><div class="subtitle">Double-Entry Ledger, Reports & Periods</div></div>
+        <button class="btn btn-primary btn-sm" onclick="loadAccounting()">Refresh</button>
+      </div>
+      <div class="grid" id="acct-summary"></div>
+      <div class="tabs">
+        <div class="tab active" data-tab="acct-accounts">Chart of Accounts</div>
+        <div class="tab" data-tab="acct-journal">Journal Entries</div>
+        <div class="tab" data-tab="acct-trial">Trial Balance</div>
+        <div class="tab" data-tab="acct-balance">Balance Sheet</div>
+        <div class="tab" data-tab="acct-income">Income Statement</div>
+        <div class="tab" data-tab="acct-periods">Periods</div>
+      </div>
+      <div id="acct-accounts" class="tab-content active"><div class="card"><div class="table-wrap" id="acct-accounts-wrap"><p class="loading">Loading...</p></div></div></div>
+      <div id="acct-journal" class="tab-content"><div class="card"><div class="table-wrap" id="acct-journal-wrap"><p class="loading">Loading...</p></div></div></div>
+      <div id="acct-trial" class="tab-content"><div class="card" id="acct-trial-wrap"><p class="loading">Loading...</p></div></div>
+      <div id="acct-balance" class="tab-content"><div class="card" id="acct-balance-wrap"><p class="loading">Loading...</p></div></div>
+      <div id="acct-income" class="tab-content"><div class="card" id="acct-income-wrap"><p class="loading">Loading...</p></div></div>
+      <div id="acct-periods" class="tab-content"><div class="card"><div class="table-wrap" id="acct-periods-wrap"><p class="loading">Loading...</p></div></div></div>
+    </div>
+
+    <!-- FINERACT GL PAGE -->
+    <div id="page-fineract" class="page hidden">
+      <div class="page-header">
+        <div><h1>Apache Fineract — Core Banking GL</h1><div class="subtitle">General Ledger, Clients, Savings Accounts & Journal Entries</div></div>
+        <button class="btn btn-primary btn-sm" onclick="loadFineract()">Refresh</button>
+      </div>
+      <div class="grid" id="fineract-status-cards"></div>
+      <div class="two-col">
+        <div class="card">
+          <div class="section-title">GL Account Summary</div>
+          <div id="fineract-gl-summary"><p class="loading">Loading...</p></div>
+        </div>
+        <div class="card">
+          <div class="section-title">Connection Config</div>
+          <table><tbody>
+            <tr><td>Fineract URL</td><td id="fin-url" class="text-muted">—</td></tr>
+            <tr><td>Tenant ID</td><td id="fin-tenant" class="text-muted">—</td></tr>
+            <tr><td>Docker Setup</td><td><code>docker compose up -d</code></td></tr>
+            <tr><td>Default Login</td><td><code>mifos / password</code></td></tr>
+          </tbody></table>
+          <p class="text-muted mt-16" style="font-size:11px">Fineract runs via Docker (docker-compose.yml). When connected, GL data syncs automatically. Local Trust Accounting engine works independently as a fallback.</p>
+        </div>
+      </div>
+      <div class="card mt-16">
+        <div class="section-title">Post Journal Entry</div>
+        <div class="form-row">
+          <div class="form-group"><label>Debit GL Account ID</label><input type="number" id="fin-debit-acct" placeholder="1"></div>
+          <div class="form-group"><label>Credit GL Account ID</label><input type="number" id="fin-credit-acct" placeholder="2"></div>
+          <div class="form-group"><label>Amount ($)</label><input type="number" id="fin-amount" placeholder="1000" step="0.01"></div>
+        </div>
+        <div class="form-row"><div class="form-group"><label>Comments</label><input type="text" id="fin-comments" placeholder="Bond interest payment"></div></div>
+        <button class="btn btn-success" onclick="postFineractJournal()">Post Entry</button>
+        <div id="fin-journal-result"></div>
+      </div>
+      <div class="card mt-16">
+        <div class="section-title">Fineract Clients</div>
+        <div class="table-wrap" id="fineract-clients-wrap"><p class="loading">Loading...</p></div>
+        <div class="mt-16">
+          <div class="form-row"><div class="form-group"><label>First Name</label><input type="text" id="fin-first"></div><div class="form-group"><label>Last Name</label><input type="text" id="fin-last"></div><div class="form-group"><label>External ID</label><input type="text" id="fin-extid"></div></div>
+          <button class="btn btn-outline btn-sm" onclick="createFineractClient()">+ Create Client</button>
+          <div id="fin-client-result"></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ADMIN PAGE -->
+    <div id="page-admin" class="page hidden">
+      <div class="page-header">
+        <div><h1>Admin Controls</h1><div class="subtitle">System Health, Audit Log & Bond Administration</div></div>
+        <div class="flex gap-12">
+          <button class="btn btn-success btn-sm" onclick="triggerAccrueAll()">Run Accrual</button>
+          <button class="btn btn-primary btn-sm" onclick="loadAdmin()">Refresh</button>
+        </div>
+      </div>
+      <div class="card mb-16">
+        <div class="section-title">System Health</div>
+        <div id="admin-health"><p class="loading">Loading...</p></div>
+      </div>
+      <div class="card mb-16">
+        <div class="section-title">Admin Token</div>
+        <div class="form-row"><div class="form-group"><label>Token</label><input type="password" id="admin-token" placeholder="Enter admin token" value=""></div><button class="btn btn-outline btn-sm" style="align-self:flex-end" onclick="saveAdminToken()">Set Token</button></div>
+        <p class="text-muted" style="font-size:11px;margin-top:4px;">Required for admin operations (health check, accrue-all, audit log)</p>
+      </div>
+      <div class="card"><div class="section-title">Audit Log</div><div class="table-wrap" id="admin-audit-wrap"><p class="loading">Loading...</p></div></div>
     </div>
   </div>
 
   <script>
     const API = window.location.origin;
+    let adminToken = localStorage.getItem('dlb_admin_token') || '';
 
-    function esc(str) {
-      if (str == null) return '';
-      const div = document.createElement('div');
-      div.textContent = String(str);
-      return div.innerHTML;
-    }
-
-    function fmt(n) {
-      if (n == null) return '—';
-      return '$' + Number(n).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
-    }
-
-    function pct(n) {
-      return (Number(n) * 100).toFixed(2) + '%';
-    }
-
-    function badgeClass(type) {
-      if (type === 'active') return 'badge-active';
-      if (type === 'matured') return 'badge-matured';
-      if (type === 'interest_accrual') return 'badge-accrual';
-      if (type === 'interest_payment' || type === 'principal_payment') return 'badge-payment';
-      if (type === 'issuance') return 'badge-issuance';
-      if (type === 'maturity') return 'badge-maturity';
-      return '';
-    }
-
-    async function fetchJSON(url) {
+    // ─── Utilities ─────────────────────────────────────────────────────────────
+    function esc(s) { if (s == null) return ''; const d = document.createElement('div'); d.textContent = String(s); return d.innerHTML; }
+    function fmt(n) { if (n == null || n === '') return '—'; return '$' + Number(n).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 }); }
+    function fmtCents(n) { return fmt(Number(n || 0) / 100); }
+    function pct(n) { return (Number(n) * 100).toFixed(2) + '%'; }
+    function shortDate(d) { return d ? new Date(d).toLocaleDateString() : '—'; }
+    async function fetchJSON(url, opts = {}) {
       try {
-        const r = await fetch(url);
+        const r = await fetch(url, opts);
         return await r.json();
-      } catch (e) {
-        return { error: e.message };
-      }
+      } catch (e) { return { error: e.message }; }
     }
+    function adminHeaders() { return { 'Content-Type': 'application/json', 'x-admin-token': adminToken }; }
+    function el(id) { return document.getElementById(id); }
 
-    async function loadFineractStatus() {
-      const el = document.getElementById('fineract-status');
-      const data = await fetchJSON(API + '/api/fineract/health');
-      if (data && data.fineract_connected) {
-        el.className = 'status-badge connected';
-        el.innerHTML = '<span class="status-dot"></span>Fineract: Connected';
-      } else {
-        el.className = 'status-badge disconnected';
-        el.innerHTML = '<span class="status-dot"></span>Fineract: Disconnected';
-      }
-    }
-
-    async function loadBonds() {
-      const data = await fetchJSON(API + '/api/bonds');
-      if (data.error || !data.success) {
-        document.getElementById('bonds-table').innerHTML = `<tr><td colspan="8" class="error-msg">${esc(data.error) || 'Failed to load'}</td></tr>`;
-        return;
-      }
-
-      const bonds = data.data || [];
-      let totalPrincipal = 0, totalAccrued = 0, totalPaid = 0, activeCount = 0;
-
-      bonds.forEach(b => {
-        totalPrincipal += parseFloat(b.principal_balance || 0);
-        totalAccrued += parseFloat(b.accrued_interest || 0);
-        totalPaid += parseFloat(b.total_interest_paid || 0);
-        if (b.status === 'active') activeCount++;
+    // ─── Navigation ────────────────────────────────────────────────────────────
+    document.querySelectorAll('.nav-item').forEach(item => {
+      item.addEventListener('click', () => {
+        document.querySelectorAll('.nav-item').forEach(i => i.classList.remove('active'));
+        item.classList.add('active');
+        const page = item.dataset.page;
+        document.querySelectorAll('.page').forEach(p => p.classList.add('hidden'));
+        document.getElementById('page-' + page).classList.remove('hidden');
+        // Load data for page
+        const loaders = { overview: loadOverview, bonds: loadBonds, cash: loadCash, payments: loadPayments, ach: loadACH, as2: loadAS2, crm: loadCRM, documents: loadDocuments, accounting: loadAccounting, fineract: loadFineract, admin: loadAdmin };
+        if (loaders[page]) loaders[page]();
       });
+    });
 
-      document.getElementById('total-principal').textContent = fmt(totalPrincipal);
-      document.getElementById('total-accrued').textContent = fmt(totalAccrued);
-      document.getElementById('total-interest-paid').textContent = fmt(totalPaid);
-      document.getElementById('active-bonds').textContent = activeCount;
+    // Tabs
+    document.querySelectorAll('.tabs').forEach(tabBar => {
+      tabBar.querySelectorAll('.tab').forEach(tab => {
+        tab.addEventListener('click', () => {
+          tabBar.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+          tab.classList.add('active');
+          const parent = tabBar.parentElement;
+          parent.querySelectorAll('.tab-content').forEach(tc => tc.classList.remove('active'));
+          parent.querySelector('#' + tab.dataset.tab).classList.add('active');
+        });
+      });
+    });
 
-      if (bonds.length === 0) {
-        document.getElementById('bonds-table').innerHTML = '<tr><td colspan="8" style="color:var(--muted)">No bonds created yet</td></tr>';
-        return;
-      }
-
-      document.getElementById('bonds-table').innerHTML = bonds.map(b => `
-        <tr>
-          <td><strong>${esc(b.bond_name)}</strong></td>
-          <td class="money">${fmt(b.face_value)}</td>
-          <td>${pct(b.coupon_rate)}</td>
-          <td>${esc(b.day_count)}</td>
-          <td class="money">${fmt(b.principal_balance)}</td>
-          <td class="money">${fmt(b.accrued_interest)}</td>
-          <td><span class="badge ${badgeClass(b.status)}">${esc(b.status)}</span></td>
-          <td>${b.issue_date ? new Date(b.issue_date).toLocaleDateString() : '—'}</td>
-        </tr>
-      `).join('');
-
-      // Load transactions for first bond
-      if (bonds.length > 0) loadTransactions(bonds[0].id);
-    }
-
-    async function loadTransactions(bondId) {
-      const data = await fetchJSON(API + `/api/bonds/${bondId}/transactions`);
-      if (data.error || !data.success) {
-        document.getElementById('txn-table').innerHTML = `<tr><td colspan="4" class="error-msg">${esc(data.error) || 'Failed'}</td></tr>`;
-        return;
-      }
-      const txns = data.data || [];
-      if (txns.length === 0) {
-        document.getElementById('txn-table').innerHTML = '<tr><td colspan="4" style="color:var(--muted)">No transactions</td></tr>';
-        return;
-      }
-      document.getElementById('txn-table').innerHTML = txns.slice(0, 10).map(t => `
-        <tr>
-          <td>${t.transaction_date ? new Date(t.transaction_date).toLocaleDateString() : '—'}</td>
-          <td><span class="badge ${badgeClass(t.transaction_type)}">${esc(t.transaction_type.replace('_', ' '))}</span></td>
-          <td class="money">${fmt(t.amount)}</td>
-          <td class="money">${fmt(t.running_balance)}</td>
-        </tr>
-      `).join('');
-    }
-
-    async function loadGLSummary() {
-      const data = await fetchJSON(API + '/api/fineract/gl/summary');
-      const el = document.getElementById('gl-summary');
-
-      if (data.error || !data.success) {
-        // Try analytics fallback
-        const fallback = await fetchJSON(API + '/api/analytics/gl-summary');
-        if (fallback.error) {
-          el.innerHTML = '<p class="error-msg">GL data unavailable — Fineract not connected</p>';
-          return;
-        }
-        renderGL(el, fallback.data || fallback);
-        return;
-      }
-      renderGL(el, data.data || data);
-    }
-
-    function renderGL(el, data) {
-      const categories = data.categories || data.gl_categories || [];
-      if (categories.length === 0 && data.principal_balance != null) {
-        // Simple format from analytics
-        const items = [
-          { label: 'Principal', value: data.principal_balance, color: '#3b82f6' },
-          { label: 'Income', value: data.income_balance || 0, color: '#10b981' },
-          { label: 'Expenses', value: data.expense_balance || 0, color: '#ef4444' },
-        ];
-        const max = Math.max(...items.map(i => Math.abs(Number(i.value) || 0)), 1);
-        el.innerHTML = items.map(i => `
-          <div class="gl-bar">
-            <span class="gl-bar-label">${i.label}</span>
-            <div class="gl-bar-track"><div class="gl-bar-fill" style="width:${(Math.abs(Number(i.value))/max*100).toFixed(1)}%;background:${i.color}"></div></div>
-            <span class="gl-bar-value">${fmt(i.value)}</span>
-          </div>
-        `).join('');
-        return;
-      }
-
-      if (categories.length > 0) {
-        const max = Math.max(...categories.map(c => Math.abs(Number(c.balance) || 0)), 1);
-        const colors = ['#3b82f6', '#10b981', '#f59e0b', '#ef4444', '#a855f7'];
-        el.innerHTML = categories.map((c, i) => `
-          <div class="gl-bar">
-            <span class="gl-bar-label">${esc(c.name || c.category)}</span>
-            <div class="gl-bar-track"><div class="gl-bar-fill" style="width:${(Math.abs(Number(c.balance))/max*100).toFixed(1)}%;background:${colors[i % colors.length]}"></div></div>
-            <span class="gl-bar-value">${fmt(c.balance)}</span>
-          </div>
-        `).join('');
-        return;
-      }
-
-      el.innerHTML = '<p style="color:var(--muted)">No GL data available</p>';
-    }
-
-    async function loadFineractGL() {
-      const el = document.getElementById('fineract-gl');
-      const data = await fetchJSON(API + '/api/fineract/gl/summary');
-      if (data.error || !data.success) {
-        el.innerHTML = '<p style="color:var(--muted)">Connect Fineract to view GL accounts</p>';
-        return;
-      }
-      const d = data.data || data;
-      const cats = d.categories || d.gl_categories || [];
-      if (cats.length === 0) {
-        el.innerHTML = '<p style="color:var(--muted)">No GL accounts configured</p>';
-        return;
-      }
-      el.innerHTML = '<table style="width:100%"><thead><tr><th>Account</th><th>Balance</th></tr></thead><tbody>' +
-        cats.map(c => `<tr><td>${esc(c.name || c.category)}</td><td class="money">${fmt(c.balance)}</td></tr>`).join('') +
-        '</tbody></table>';
-    }
-
-    async function loadAll() {
-      await Promise.all([
-        loadFineractStatus(),
-        loadBonds(),
-        loadGLSummary(),
-        loadFineractGL(),
+    // ─── OVERVIEW ──────────────────────────────────────────────────────────────
+    async function loadOverview() {
+      const [bonds, cash, acct, ach, as2, crm, finHealth] = await Promise.all([
+        fetchJSON(API + '/api/bonds'),
+        fetchJSON(API + '/api/cash/accounts'),
+        fetchJSON(API + '/api/accounting/dashboard'),
+        fetchJSON(API + '/api/ach-pipeline/status'),
+        fetchJSON(API + '/api/as2/dashboard'),
+        fetchJSON(API + '/api/crm/contacts'),
+        fetchJSON(API + '/api/fineract/health'),
       ]);
+
+      // Summary cards
+      const bondData = bonds.data || [];
+      const totalPrincipal = bondData.reduce((s, b) => s + parseFloat(b.principal_balance || 0), 0);
+      const totalAccrued = bondData.reduce((s, b) => s + parseFloat(b.accrued_interest || 0), 0);
+      const cashData = cash.data || [];
+      const totalCash = cashData.reduce((s, a) => s + Number(a.balance_cents || 0), 0) / 100;
+      const acctData = acct.data || {};
+
+      el('overview-cards').innerHTML = `
+        <div class="card"><div class="card-title">Total Principal</div><div class="card-value">${fmt(totalPrincipal)}</div><div class="card-sub">${bondData.length} active bond(s)</div></div>
+        <div class="card"><div class="card-title">Accrued Interest</div><div class="card-value">${fmt(totalAccrued)}</div><div class="card-sub">Unpaid interest</div></div>
+        <div class="card"><div class="card-title">Cash Position</div><div class="card-value">${fmt(totalCash)}</div><div class="card-sub">${cashData.length} accounts</div></div>
+        <div class="card"><div class="card-title">Trust Accounts</div><div class="card-value">${acctData.account_count || 0}</div><div class="card-sub">Net income: ${fmt(acctData.net_income)}</div></div>
+        <div class="card"><div class="card-title">Contacts</div><div class="card-value">${crm.count || 0}</div><div class="card-sub">CRM contacts</div></div>
+        <div class="card"><div class="card-title">AS2 Messages</div><div class="card-value">${(as2.data || {}).total_messages || 0}</div><div class="card-sub">${(as2.data || {}).active_partners || 0} partners</div></div>
+      `;
+
+      // Bonds mini table
+      el('overview-bonds').innerHTML = bondData.length ? '<table><thead><tr><th>Bond</th><th>Face</th><th>Coupon</th><th>Status</th></tr></thead><tbody>' + bondData.map(b => `<tr><td><strong>${esc(b.bond_name)}</strong></td><td class="money">${fmt(b.face_value)}</td><td>${pct(b.coupon_rate)}</td><td><span class="badge badge-active">${esc(b.status)}</span></td></tr>`).join('') + '</tbody></table>' : '<p class="text-muted">No bonds</p>';
+
+      // Cash mini
+      el('overview-cash').innerHTML = cashData.length ? '<table><thead><tr><th>Account</th><th>Balance</th></tr></thead><tbody>' + cashData.map(a => `<tr><td>${esc(a.account_name)}</td><td class="money">${fmtCents(a.balance_cents)}</td></tr>`).join('') + '</tbody></table>' : '<p class="text-muted">No accounts</p>';
+
+      // Accounting mini
+      el('overview-accounting').innerHTML = `<table><tbody>
+        <tr><td>Total Assets</td><td class="money">${fmt(acctData.total_assets)}</td></tr>
+        <tr><td>Total Liabilities</td><td class="money">${fmt(acctData.total_liabilities)}</td></tr>
+        <tr><td>Total Equity</td><td class="money">${fmt(acctData.total_equity)}</td></tr>
+        <tr><td>Net Income</td><td class="money">${fmt(acctData.net_income)}</td></tr>
+        <tr><td>Journal Entries</td><td>${acctData.journal_entries_count || 0}</td></tr>
+      </tbody></table>`;
+
+      // System status
+      const achStatus = ach.data || {};
+      const finConnected = finHealth.fineract_connected === true;
+      el('overview-status').innerHTML = `<table><tbody>
+        <tr><td>Bond Engine</td><td><span class="status-dot online"></span> Active</td></tr>
+        <tr><td>Cash Engine</td><td><span class="status-dot online"></span> Active</td></tr>
+        <tr><td>ACH Pipeline</td><td><span class="status-dot ${achStatus.configured !== false ? 'online' : 'pending'}"></span> ${achStatus.configured !== false ? 'Ready' : 'Not configured'}</td></tr>
+        <tr><td>AS2 Server</td><td><span class="status-dot online"></span> Active</td></tr>
+        <tr><td>Trust Accounting</td><td><span class="status-dot online"></span> Active</td></tr>
+        <tr><td>Apache Fineract GL</td><td><span class="status-dot ${finConnected ? 'online' : 'offline'}"></span> ${finConnected ? 'Connected' : 'Disconnected'}</td></tr>
+      </tbody></table>`;
     }
 
-    loadAll();
-    setInterval(loadAll, 30000);
+    // ─── BONDS ─────────────────────────────────────────────────────────────────
+    async function loadBonds() {
+      const [bonds, live] = await Promise.all([
+        fetchJSON(API + '/api/bonds'),
+        fetchJSON(API + '/api/bonds/portfolio/live'),
+      ]);
+      const data = bonds.data || [];
+      let totalPrincipal = 0, totalAccrued = 0, totalPaid = 0;
+      data.forEach(b => { totalPrincipal += parseFloat(b.principal_balance || 0); totalAccrued += parseFloat(b.accrued_interest || 0); totalPaid += parseFloat(b.total_interest_paid || 0); });
+
+      el('bonds-summary').innerHTML = `
+        <div class="card"><div class="card-title">Principal Outstanding</div><div class="card-value">${fmt(totalPrincipal)}</div></div>
+        <div class="card"><div class="card-title">Accrued Interest</div><div class="card-value">${fmt(totalAccrued)}</div></div>
+        <div class="card"><div class="card-title">Total Interest Paid</div><div class="card-value">${fmt(totalPaid)}</div></div>
+        <div class="card"><div class="card-title">Active Bonds</div><div class="card-value">${data.filter(b => b.status === 'active').length}</div></div>
+      `;
+
+      el('bonds-table-wrap').innerHTML = data.length ? '<table><thead><tr><th>Bond</th><th>ISIN</th><th>Face Value</th><th>Coupon</th><th>Principal</th><th>Accrued</th><th>Status</th><th>Issue</th><th>Maturity</th></tr></thead><tbody>' + data.map(b => `<tr><td><strong>${esc(b.bond_name)}</strong></td><td>${esc(b.isin)}</td><td class="money">${fmt(b.face_value)}</td><td>${pct(b.coupon_rate)}</td><td class="money">${fmt(b.principal_balance)}</td><td class="money">${fmt(b.accrued_interest)}</td><td><span class="badge badge-active">${esc(b.status)}</span></td><td>${shortDate(b.issue_date)}</td><td>${shortDate(b.maturity_date)}</td></tr>`).join('') + '</tbody></table>' : '<p class="text-muted">No bonds</p>';
+
+      // Live metrics
+      if (live.success && live.data) {
+        const lv = live.data;
+        el('bonds-live').innerHTML = `<table><thead><tr><th>Metric</th><th>Value</th></tr></thead><tbody>
+          <tr><td>Yield to Maturity (YTM)</td><td>${lv.ytm_pct != null ? lv.ytm_pct + '%' : '—'}</td></tr>
+          <tr><td>Current Price</td><td>${lv.current_price_decimal != null ? '$' + Number(lv.current_price_decimal).toFixed(4) : '—'}</td></tr>
+          <tr><td>Macaulay Duration</td><td>${lv.macaulay_duration_years != null ? lv.macaulay_duration_years.toFixed(2) + ' years' : '—'}</td></tr>
+          <tr><td>Modified Duration</td><td>${lv.modified_duration != null ? lv.modified_duration.toFixed(4) : '—'}</td></tr>
+          <tr><td>DV01 (Dollar Value of 01)</td><td>${lv.dv01 != null ? fmt(lv.dv01) : '—'}</td></tr>
+          <tr><td>Daily Accrual</td><td>${lv.daily_accrual != null ? fmt(lv.daily_accrual) : '—'}</td></tr>
+          <tr><td>Weighted Yield</td><td>${lv.weighted_yield_pct != null ? lv.weighted_yield_pct + '%' : '—'}</td></tr>
+          <tr><td>Total Current Value</td><td>${lv.total_current_value != null ? fmt(lv.total_current_value) : '—'}</td></tr>
+        </tbody></table>`;
+      } else { el('bonds-live').innerHTML = '<p class="text-muted">Live metrics unavailable</p>'; }
+
+      // Transactions
+      if (data.length > 0) {
+        const txns = await fetchJSON(API + '/api/bonds/' + data[0].id + '/transactions');
+        const txnData = txns.data || [];
+        el('bonds-txn-wrap').innerHTML = txnData.length ? '<table><thead><tr><th>Date</th><th>Type</th><th>Amount</th><th>Balance</th></tr></thead><tbody>' + txnData.slice(0, 20).map(t => `<tr><td>${shortDate(t.transaction_date)}</td><td><span class="badge badge-info">${esc((t.transaction_type || '').replace(/_/g, ' '))}</span></td><td class="money">${fmt(t.amount)}</td><td class="money">${fmt(t.running_balance)}</td></tr>`).join('') + '</tbody></table>' : '<p class="text-muted">No transactions</p>';
+      }
+    }
+
+    async function accrueAll() {
+      if (!adminToken) { alert('Set admin token first (Admin Controls page)'); return; }
+      const r = await fetchJSON(API + '/api/admin/bonds/accrue-all', { method: 'POST', headers: adminHeaders() });
+      alert(r.success ? 'Accrual complete: ' + JSON.stringify(r.data) : 'Error: ' + (r.error || 'Failed'));
+      loadBonds();
+    }
+
+    // ─── CASH ──────────────────────────────────────────────────────────────────
+    async function loadCash() {
+      const [accounts, position, movements] = await Promise.all([
+        fetchJSON(API + '/api/cash/accounts'),
+        fetchJSON(API + '/api/cash/position'),
+        fetchJSON(API + '/api/cash/movements'),
+      ]);
+
+      const accts = accounts.data || [];
+      const totalCash = accts.reduce((s, a) => s + Number(a.balance_cents || 0), 0) / 100;
+      el('cash-summary').innerHTML = `
+        <div class="card"><div class="card-title">Total Cash</div><div class="card-value">${fmt(totalCash)}</div></div>
+        <div class="card"><div class="card-title">Accounts</div><div class="card-value">${accts.length}</div></div>
+      `;
+
+      el('cash-accounts-wrap').innerHTML = accts.length ? '<table><thead><tr><th>Account ID</th><th>Name</th><th>Type</th><th>Balance</th><th>Status</th></tr></thead><tbody>' + accts.map(a => `<tr><td><code>${esc(a.account_id)}</code></td><td>${esc(a.account_name)}</td><td><span class="badge badge-info">${esc(a.account_type)}</span></td><td class="money">${fmtCents(a.balance_cents)}</td><td><span class="badge badge-active">${esc(a.status)}</span></td></tr>`).join('') + '</tbody></table>' : '<p class="text-muted">No accounts</p>';
+
+      // Populate dropdowns
+      const opts = accts.map(a => `<option value="${esc(a.account_id)}">${esc(a.account_name)} (${fmtCents(a.balance_cents)})</option>`).join('');
+      el('transfer-from').innerHTML = opts;
+      el('transfer-to').innerHTML = opts;
+      el('deposit-account').innerHTML = opts;
+
+      // Movements
+      const mvs = movements.data || [];
+      el('cash-movements-wrap').innerHTML = mvs.length ? '<table><thead><tr><th>Date</th><th>Type</th><th>From</th><th>To</th><th>Amount</th><th>Description</th></tr></thead><tbody>' + mvs.slice(0, 20).map(m => `<tr><td>${shortDate(m.created_at)}</td><td><span class="badge badge-info">${esc(m.movement_type)}</span></td><td>${esc(m.from_account_id || '—')}</td><td>${esc(m.to_account_id || '—')}</td><td class="money">${fmtCents(m.amount_cents)}</td><td>${esc(m.description)}</td></tr>`).join('') + '</tbody></table>' : '<p class="text-muted">No movements yet</p>';
+    }
+
+    async function doTransfer() {
+      const from = el('transfer-from').value, to = el('transfer-to').value;
+      const amount = parseFloat(el('transfer-amount').value);
+      const desc = el('transfer-desc').value;
+      if (!amount || amount <= 0) { el('transfer-result').innerHTML = '<p class="error-msg">Enter a valid amount</p>'; return; }
+      if (from === to) { el('transfer-result').innerHTML = '<p class="error-msg">From and To must be different</p>'; return; }
+      const r = await fetchJSON(API + '/api/cash/accounts/' + encodeURIComponent(from) + '/transfer', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ toAccountId: to, amountCents: Math.round(amount * 100), memo: desc }) });
+      el('transfer-result').innerHTML = r.success ? '<p class="success-msg">Transfer complete! ID: ' + esc((r.data || {}).movement_id || '') + '</p>' : '<p class="error-msg">' + esc(r.error || 'Failed') + '</p>';
+      if (r.success) loadCash();
+    }
+
+    async function doDeposit() {
+      const acct = el('deposit-account').value;
+      const amount = parseFloat(el('deposit-amount').value);
+      const source = el('deposit-source').value;
+      if (!amount || amount <= 0) { el('deposit-result').innerHTML = '<p class="error-msg">Enter a valid amount</p>'; return; }
+      const r = await fetchJSON(API + '/api/cash/accounts/' + encodeURIComponent(acct) + '/deposit', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ amountCents: Math.round(amount * 100), memo: source }) });
+      el('deposit-result').innerHTML = r.success ? '<p class="success-msg">Deposit recorded! ID: ' + esc((r.data || {}).movement_id || '') + '</p>' : '<p class="error-msg">' + esc(r.error || 'Failed') + '</p>';
+      if (r.success) loadCash();
+    }
+
+    // ─── PAYMENTS & DISBURSEMENTS ──────────────────────────────────────────────
+    async function loadPayments() {
+      const batches = await fetchJSON(API + '/api/ach-pipeline/batches');
+      const data = batches.data || [];
+      el('payment-batches-wrap').innerHTML = data.length ? '<table><thead><tr><th>ID</th><th>Payee</th><th>Amount</th><th>Type</th><th>Status</th><th>Created</th><th>Actions</th></tr></thead><tbody>' + data.map(b => `<tr><td><code>${esc(b.batch_id || b.id)}</code></td><td>${esc(b.payee_name || b.originator_name || '—')}</td><td class="money">${fmt(b.total_amount || b.amount)}</td><td><span class="badge badge-info">${esc(b.payment_type || b.entry_class || 'PPD')}</span></td><td><span class="badge ${b.status === 'generated' ? 'badge-active' : b.status === 'transmitted' ? 'badge-purple' : 'badge-pending'}">${esc(b.status)}</span></td><td>${shortDate(b.created_at)}</td><td>${b.status === 'generated' ? '<button class="btn btn-success btn-sm" onclick="transmitBatch(\'' + esc(b.id) + '\')">Transmit</button>' : '—'}</td></tr>`).join('') + '</tbody></table>' : '<p class="text-muted">No payment batches yet. Create a disbursement above.</p>';
+      // Set default date
+      if (!el('disb-date').value) { const d = new Date(); d.setDate(d.getDate() + 1); el('disb-date').value = d.toISOString().split('T')[0]; }
+    }
+
+    async function createDisbursement() {
+      const name = (el('disb-first').value + ' ' + el('disb-last').value).trim();
+      const routing = el('disb-routing').value;
+      const account = el('disb-acct').value;
+      const amount = parseFloat(el('disb-amount').value);
+      const memo = el('disb-memo').value || el('disb-type').value.replace(/_/g, ' ');
+      const payType = el('disb-type').value.replace(/_/g, ' ').toUpperCase().substring(0, 10);
+
+      if (!name || name === ' ') { el('disb-result').innerHTML = '<p class="error-msg">Beneficiary name required</p>'; return; }
+      if (!/^\d{9}$/.test(routing)) { el('disb-result').innerHTML = '<p class="error-msg">Routing number must be 9 digits</p>'; return; }
+      if (!account) { el('disb-result').innerHTML = '<p class="error-msg">Account number required</p>'; return; }
+      if (!amount || amount <= 0) { el('disb-result').innerHTML = '<p class="error-msg">Amount must be positive</p>'; return; }
+
+      const data = {
+        entries: [{
+          receivingRouting: routing,
+          accountNumber: account,
+          amountCents: Math.round(amount * 100),
+          individualName: name,
+          individualId: name.replace(/\s+/g, '').substring(0, 15).toUpperCase(),
+          transactionCode: el('disb-accttype').value === 'savings' ? '32' : '22',
+          memo: memo,
+        }],
+        effectiveDate: el('disb-date').value,
+        secCode: 'PPD',
+        description: payType,
+      };
+
+      const r = await fetchJSON(API + '/api/ach-pipeline/batches', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(data) });
+      if (r.success) {
+        el('disb-result').innerHTML = '<p class="success-msg">Disbursement batch created! Batch ID: ' + esc(r.data.batch_id || r.data.id) + '<br>NACHA file generated: ' + esc(r.data.filename) + '</p>';
+        loadPayments();
+      } else {
+        el('disb-result').innerHTML = '<p class="error-msg">' + esc(r.error || 'Failed') + '</p>';
+      }
+    }
+
+    async function transmitBatch(id) {
+      const r = await fetchJSON(API + '/api/ach-pipeline/batches/' + id + '/transmit', { method: 'POST', headers: { 'Content-Type': 'application/json' } });
+      alert(r.success ? 'Transmitted via AS2!' : 'Error: ' + (r.error || 'AS2 partner not configured'));
+      loadPayments();
+    }
+
+    // ─── ACH ───────────────────────────────────────────────────────────────────
+    async function loadACH() {
+      const [status, batches] = await Promise.all([
+        fetchJSON(API + '/api/ach-pipeline/status'),
+        fetchJSON(API + '/api/ach-pipeline/batches'),
+      ]);
+      const s = status.data || {};
+      const as2cfg = s.as2_config || {};
+      el('ach-status-cards').innerHTML = `
+        <div class="card"><div class="card-title">AS2 Configured</div><div class="card-value">${as2cfg.configured ? 'Yes' : 'No'}</div></div>
+        <div class="card"><div class="card-title">Partner AS2 ID</div><div class="card-value" style="font-size:14px">${esc(as2cfg.partner_as2_id || '—')}</div></div>
+        <div class="card"><div class="card-title">Signing Cert</div><div class="card-value">${as2cfg.has_signing_cert ? 'Yes' : 'No'}</div></div>
+        <div class="card"><div class="card-title">ODFI Routing</div><div class="card-value" style="font-size:14px">${esc(s.odfi_routing || '241075470')}</div></div>
+      `;
+
+      const data = batches.data || [];
+      el('ach-batches-wrap').innerHTML = data.length ? '<table><thead><tr><th>Batch</th><th>Entries</th><th>Total</th><th>Class</th><th>Status</th><th>Created</th><th>Actions</th></tr></thead><tbody>' + data.map(b => `<tr><td><code>${esc(b.batch_id || b.id)}</code></td><td>${b.entry_count || (b.entries || []).length || 1}</td><td class="money">${fmt(b.total_amount)}</td><td><span class="badge badge-info">${esc(b.entry_class || 'PPD')}</span></td><td><span class="badge ${b.status === 'generated' ? 'badge-active' : b.status === 'transmitted' ? 'badge-purple' : 'badge-pending'}">${esc(b.status)}</span></td><td>${shortDate(b.created_at)}</td><td>${b.status === 'generated' ? '<button class="btn btn-success btn-sm" onclick="transmitBatch(\'' + esc(b.id) + '\')">Send</button> <a href="' + API + '/api/ach-pipeline/batches/' + b.id + '/download" class="btn btn-outline btn-sm">Download</a>' : '—'}</td></tr>`).join('') + '</tbody></table>' : '<p class="text-muted">No ACH batches</p>';
+    }
+
+    // ─── AS2 ───────────────────────────────────────────────────────────────────
+    async function loadAS2() {
+      const [dashboard, partners, certs, messages] = await Promise.all([
+        fetchJSON(API + '/api/as2/dashboard'),
+        fetchJSON(API + '/api/as2/partners'),
+        fetchJSON(API + '/api/as2/certs'),
+        fetchJSON(API + '/api/as2/messages'),
+      ]);
+      const d = dashboard.data || {};
+      el('as2-status-cards').innerHTML = `
+        <div class="card"><div class="card-title">Local AS2 ID</div><div class="card-value" style="font-size:14px">${esc(d.local_as2_id || 'DLBTRUST-AS2')}</div></div>
+        <div class="card"><div class="card-title">Partners</div><div class="card-value">${d.active_partners || 0}</div></div>
+        <div class="card"><div class="card-title">Certificates</div><div class="card-value">${d.active_certificates || 0}</div></div>
+        <div class="card"><div class="card-title">Messages</div><div class="card-value">${d.total_messages || 0}</div><div class="card-sub">${d.messages_sent || 0} sent / ${d.messages_received || 0} received</div></div>
+      `;
+
+      const pData = partners.data || [];
+      el('as2-partners-wrap').innerHTML = pData.length ? '<table><thead><tr><th>Name</th><th>AS2 ID</th><th>URL</th><th>Status</th></tr></thead><tbody>' + pData.map(p => `<tr><td>${esc(p.partner_name)}</td><td><code>${esc(p.as2_id)}</code></td><td style="max-width:200px;overflow:hidden;text-overflow:ellipsis">${esc(p.endpoint_url)}</td><td><span class="badge badge-active">${esc(p.status || 'active')}</span></td></tr>`).join('') + '</tbody></table>' : '<p class="text-muted">No trading partners configured</p>';
+
+      const cData = certs.data || [];
+      el('as2-certs-wrap').innerHTML = cData.length ? '<table><thead><tr><th>Alias</th><th>Type</th><th>Created</th></tr></thead><tbody>' + cData.map(c => `<tr><td><code>${esc(c.alias)}</code></td><td>${esc(c.type || 'RSA')}</td><td>${shortDate(c.created_at)}</td></tr>`).join('') + '</tbody></table>' : '<p class="text-muted">No certificates. Generate a keypair to get started.</p>';
+
+      const mData = messages.data || [];
+      el('as2-messages-wrap').innerHTML = mData.length ? '<table><thead><tr><th>ID</th><th>Direction</th><th>Partner</th><th>Status</th><th>Date</th></tr></thead><tbody>' + mData.slice(0, 20).map(m => `<tr><td><code>${esc(m.message_id || m.id)}</code></td><td><span class="badge ${m.direction === 'outbound' ? 'badge-info' : 'badge-purple'}">${esc(m.direction)}</span></td><td>${esc(m.partner_as2_id || m.partner_id || '—')}</td><td><span class="badge ${m.status === 'delivered' ? 'badge-active' : 'badge-pending'}">${esc(m.status)}</span></td><td>${shortDate(m.created_at)}</td></tr>`).join('') + '</tbody></table>' : '<p class="text-muted">No messages</p>';
+    }
+
+    function showAddPartner() { el('as2-add-partner').classList.toggle('hidden'); }
+    async function addAS2Partner() {
+      const r = await fetchJSON(API + '/api/as2/partners', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ partner_name: el('as2-partner-name').value, as2_id: el('as2-partner-id').value, endpoint_url: el('as2-partner-url').value }) });
+      if (r.success) { el('as2-add-partner').classList.add('hidden'); loadAS2(); } else { alert('Error: ' + (r.error || 'Failed')); }
+    }
+    async function generateCert() {
+      const r = await fetchJSON(API + '/api/as2/certs/generate', { method: 'POST', headers: { 'Content-Type': 'application/json' } });
+      alert(r.success ? 'Keypair generated! Alias: ' + (r.data || {}).alias : 'Error: ' + (r.error || 'Failed'));
+      loadAS2();
+    }
+
+    // ─── CRM ───────────────────────────────────────────────────────────────────
+    async function loadCRM() {
+      const [contacts, dashboard, subs] = await Promise.all([
+        fetchJSON(API + '/api/crm/contacts'),
+        fetchJSON(API + '/api/crm/dashboard'),
+        fetchJSON(API + '/api/crm/subscriptions'),
+      ]);
+      const cData = contacts.data || [];
+      const dData = dashboard.data || {};
+      el('crm-summary').innerHTML = `
+        <div class="card"><div class="card-title">Total Contacts</div><div class="card-value">${contacts.count || cData.length}</div></div>
+        <div class="card"><div class="card-title">KYC Verified</div><div class="card-value">${dData.kyc_verified || 0}</div></div>
+        <div class="card"><div class="card-title">Subscriptions</div><div class="card-value">${dData.total_subscriptions || 0}</div></div>
+        <div class="card"><div class="card-title">Total Subscribed</div><div class="card-value">${fmt(dData.total_subscription_amount)}</div></div>
+      `;
+
+      el('crm-contacts-wrap').innerHTML = cData.length ? '<table><thead><tr><th>ID</th><th>Name</th><th>Type</th><th>Email</th><th>KYC</th><th>Company</th></tr></thead><tbody>' + cData.map(c => `<tr><td><code style="font-size:10px">${esc(c.contact_id)}</code></td><td>${esc(c.first_name)} ${esc(c.last_name)}</td><td><span class="badge badge-info">${esc(c.contact_type)}</span></td><td>${esc(c.email || '—')}</td><td><span class="badge ${c.kyc_status === 'verified' ? 'badge-active' : 'badge-pending'}">${esc(c.kyc_status)}</span></td><td>${esc(c.company || '—')}</td></tr>`).join('') + '</tbody></table>' : '<p class="text-muted">No contacts</p>';
+
+      const sData = subs.data || [];
+      el('crm-subs-wrap').innerHTML = sData.length ? '<table><thead><tr><th>ID</th><th>Contact</th><th>Bond</th><th>Amount</th><th>Status</th><th>Date</th></tr></thead><tbody>' + sData.map(s => `<tr><td><code style="font-size:10px">${esc(s.subscription_id)}</code></td><td>${esc(s.contact_id)}</td><td>${esc(s.bond_id || s.bond_name || '—')}</td><td class="money">${fmt(s.amount)}</td><td><span class="badge ${s.status === 'active' ? 'badge-active' : 'badge-pending'}">${esc(s.status)}</span></td><td>${shortDate(s.created_at)}</td></tr>`).join('') + '</tbody></table>' : '<p class="text-muted">No subscriptions</p>';
+    }
+
+    function showAddContact() { el('crm-add-contact').classList.toggle('hidden'); }
+    async function addContact() {
+      const r = await fetchJSON(API + '/api/crm/contacts', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ first_name: el('crm-first').value, last_name: el('crm-last').value, email: el('crm-email').value, contact_type: el('crm-type').value, company: el('crm-company').value, phone: el('crm-phone').value }) });
+      el('crm-add-result').innerHTML = r.success ? '<p class="success-msg">Contact created: ' + esc((r.data || {}).contact_id) + '</p>' : '<p class="error-msg">' + esc(r.error || 'Failed') + '</p>';
+      if (r.success) { el('crm-add-contact').classList.add('hidden'); loadCRM(); }
+    }
+
+    // ─── DOCUMENTS ─────────────────────────────────────────────────────────────
+    async function loadDocuments() {
+      const [templates, docs, genStats] = await Promise.all([
+        fetchJSON(API + '/api/documents/templates'),
+        fetchJSON(API + '/api/documents/'),
+        fetchJSON(API + '/api/documents/generation/stats'),
+      ]);
+      const tData = templates.data || [];
+      el('doc-templates-wrap').innerHTML = tData.length ? '<table><thead><tr><th>ID</th><th>Name</th><th>Type</th><th>Category</th><th>Version</th></tr></thead><tbody>' + tData.map(t => `<tr><td><code>${esc(t.template_id)}</code></td><td>${esc(t.template_name)}</td><td><span class="badge badge-info">${esc(t.template_type)}</span></td><td>${esc(t.category)}</td><td>v${t.version || 1}</td></tr>`).join('') + '</tbody></table>' : '<p class="text-muted">No templates</p>';
+
+      const dData = docs.data || [];
+      el('doc-generated-wrap').innerHTML = dData.length ? '<table><thead><tr><th>Title</th><th>Template</th><th>Status</th><th>Created</th></tr></thead><tbody>' + dData.map(d => `<tr><td>${esc(d.title || d.document_title)}</td><td>${esc(d.template_id || '—')}</td><td><span class="badge badge-active">${esc(d.status || 'active')}</span></td><td>${shortDate(d.created_at)}</td></tr>`).join('') + '</tbody></table>' : '<p class="text-muted">No documents generated yet</p>';
+
+      // Populate template select
+      el('gen-template').innerHTML = tData.map(t => `<option value="${t.template_id}">${esc(t.template_name)}</option>`).join('');
+    }
+
+    async function generateDocument() {
+      const templateId = el('gen-template').value;
+      const title = el('gen-title').value;
+      if (!templateId) { el('gen-result').innerHTML = '<p class="error-msg">Select a template</p>'; return; }
+      const r = await fetchJSON(API + '/api/documents/generate', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ template_id: parseInt(templateId), title: title || 'Generated Document', variables: {} }) });
+      el('gen-result').innerHTML = r.success ? '<p class="success-msg">Document generated!</p>' : '<p class="error-msg">' + esc(r.error || 'Failed') + '</p>';
+      if (r.success) loadDocuments();
+    }
+
+    // ─── ACCOUNTING ────────────────────────────────────────────────────────────
+    async function loadAccounting() {
+      const [dashboard, accounts, journal, trial, balance, income, periods] = await Promise.all([
+        fetchJSON(API + '/api/accounting/dashboard'),
+        fetchJSON(API + '/api/accounting/accounts'),
+        fetchJSON(API + '/api/accounting/journal'),
+        fetchJSON(API + '/api/accounting/reports/trial-balance'),
+        fetchJSON(API + '/api/accounting/reports/balance-sheet'),
+        fetchJSON(API + '/api/accounting/reports/income-statement'),
+        fetchJSON(API + '/api/accounting/periods'),
+      ]);
+      const d = dashboard.data || {};
+      el('acct-summary').innerHTML = `
+        <div class="card"><div class="card-title">Assets</div><div class="card-value">${fmt(d.total_assets)}</div></div>
+        <div class="card"><div class="card-title">Liabilities</div><div class="card-value">${fmt(d.total_liabilities)}</div></div>
+        <div class="card"><div class="card-title">Equity</div><div class="card-value">${fmt(d.total_equity)}</div></div>
+        <div class="card"><div class="card-title">Net Income</div><div class="card-value">${fmt(d.net_income)}</div></div>
+      `;
+
+      const aData = accounts.data || [];
+      el('acct-accounts-wrap').innerHTML = aData.length ? '<table><thead><tr><th>Code</th><th>Name</th><th>Type</th><th>Normal</th><th>Balance</th></tr></thead><tbody>' + aData.map(a => `<tr><td><code>${esc(a.account_code)}</code></td><td>${esc(a.account_name)}</td><td><span class="badge badge-info">${esc(a.account_type)}</span></td><td>${esc(a.normal_balance)}</td><td class="money">${fmt(a.balance)}</td></tr>`).join('') + '</tbody></table>' : '<p class="text-muted">No accounts</p>';
+
+      const jData = journal.data || [];
+      el('acct-journal-wrap').innerHTML = jData.length ? '<table><thead><tr><th>ID</th><th>Date</th><th>Description</th><th>Debit</th><th>Credit</th><th>Status</th></tr></thead><tbody>' + jData.slice(0, 30).map(j => `<tr><td>${j.id}</td><td>${shortDate(j.entry_date || j.created_at)}</td><td>${esc(j.description)}</td><td class="money">${fmt(j.debit_total || j.amount)}</td><td class="money">${fmt(j.credit_total || j.amount)}</td><td><span class="badge ${j.status === 'posted' ? 'badge-active' : j.status === 'reversed' ? 'badge-error' : 'badge-pending'}">${esc(j.status)}</span></td></tr>`).join('') + '</tbody></table>' : '<p class="text-muted">No journal entries</p>';
+
+      // Trial balance
+      const tData = trial.data || [];
+      el('acct-trial-wrap').innerHTML = tData.length ? '<table><thead><tr><th>Account</th><th>Debit</th><th>Credit</th></tr></thead><tbody>' + tData.map(t => `<tr><td>${esc(t.account_name || t.account_code)}</td><td class="money">${t.debit ? fmt(t.debit) : '—'}</td><td class="money">${t.credit ? fmt(t.credit) : '—'}</td></tr>`).join('') + '</tbody></table>' : '<p class="text-muted">Run journal entries to see trial balance</p>';
+
+      // Balance sheet
+      const bData = balance.data || {};
+      el('acct-balance-wrap').innerHTML = `<table><tbody>
+        <tr><td><strong>Assets</strong></td><td class="money"><strong>${fmt(bData.total_assets)}</strong></td></tr>
+        ${(bData.assets || []).map(a => `<tr><td style="padding-left:24px">${esc(a.account_name)}</td><td class="money">${fmt(a.balance)}</td></tr>`).join('')}
+        <tr><td><strong>Liabilities</strong></td><td class="money"><strong>${fmt(bData.total_liabilities)}</strong></td></tr>
+        ${(bData.liabilities || []).map(l => `<tr><td style="padding-left:24px">${esc(l.account_name)}</td><td class="money">${fmt(l.balance)}</td></tr>`).join('')}
+        <tr><td><strong>Equity</strong></td><td class="money"><strong>${fmt(bData.total_equity)}</strong></td></tr>
+        ${(bData.equity || []).map(e => `<tr><td style="padding-left:24px">${esc(e.account_name)}</td><td class="money">${fmt(e.balance)}</td></tr>`).join('')}
+      </tbody></table>`;
+
+      // Income statement
+      const iData = income.data || {};
+      el('acct-income-wrap').innerHTML = `<table><tbody>
+        <tr><td><strong>Revenue</strong></td><td class="money"><strong>${fmt(iData.total_income || iData.total_revenue)}</strong></td></tr>
+        ${(iData.income || iData.revenue || []).map(i => `<tr><td style="padding-left:24px">${esc(i.account_name)}</td><td class="money">${fmt(i.balance)}</td></tr>`).join('')}
+        <tr><td><strong>Expenses</strong></td><td class="money"><strong>${fmt(iData.total_expenses)}</strong></td></tr>
+        ${(iData.expenses || []).map(e => `<tr><td style="padding-left:24px">${esc(e.account_name)}</td><td class="money">${fmt(e.balance)}</td></tr>`).join('')}
+        <tr style="border-top:2px solid var(--border)"><td><strong>Net Income</strong></td><td class="money"><strong>${fmt(iData.net_income)}</strong></td></tr>
+      </tbody></table>`;
+
+      // Periods
+      const pData = periods.data || [];
+      el('acct-periods-wrap').innerHTML = pData.length ? '<table><thead><tr><th>Period</th><th>Start</th><th>End</th><th>Status</th></tr></thead><tbody>' + pData.map(p => `<tr><td>${esc(p.period_name)}</td><td>${shortDate(p.start_date)}</td><td>${shortDate(p.end_date)}</td><td><span class="badge ${p.status === 'open' ? 'badge-active' : 'badge-pending'}">${esc(p.status)}</span></td></tr>`).join('') + '</tbody></table>' : '<p class="text-muted">No periods</p>';
+    }
+
+    // ─── ADMIN ─────────────────────────────────────────────────────────────────
+    async function loadAdmin() {
+      if (!adminToken) { el('admin-health').innerHTML = '<p class="error-msg">Set admin token to view system health</p>'; el('admin-audit-wrap').innerHTML = ''; return; }
+      const [health, audit] = await Promise.all([
+        fetchJSON(API + '/api/admin/system/health', { headers: adminHeaders() }),
+        fetchJSON(API + '/api/admin/audit', { headers: adminHeaders() }),
+      ]);
+      if (health.success) {
+        const h = health.data || {};
+        el('admin-health').innerHTML = `<table><tbody>
+          <tr><td>PostgreSQL</td><td><span class="badge ${h.postgres === 'connected' ? 'badge-active' : 'badge-error'}">${esc(h.postgres)}</span></td></tr>
+          <tr><td>Fineract</td><td><span class="badge ${h.fineract && h.fineract.status === 'connected' ? 'badge-active' : 'badge-pending'}">${esc((h.fineract || {}).status || 'disconnected')}</span></td></tr>
+          <tr><td>Bond Engine</td><td><span class="badge ${h.bond_engine === 'ok' ? 'badge-active' : 'badge-error'}">${esc(h.bond_engine)}</span></td></tr>
+          <tr><td>Cash Engine</td><td><span class="badge badge-active">ok</span></td></tr>
+          <tr><td>Active Bonds</td><td>${h.active_bonds || 0}</td></tr>
+          <tr><td>Uptime</td><td>${h.uptime_seconds ? Math.floor(h.uptime_seconds / 60) + ' min' : '—'}</td></tr>
+        </tbody></table>`;
+      } else { el('admin-health').innerHTML = '<p class="error-msg">' + esc(health.error || 'Auth failed — check token') + '</p>'; }
+
+      const aData = (audit.data || []);
+      el('admin-audit-wrap').innerHTML = aData.length ? '<table><thead><tr><th>Time</th><th>Action</th><th>User</th><th>Details</th></tr></thead><tbody>' + aData.slice(0, 30).map(a => `<tr><td>${shortDate(a.created_at)}</td><td><span class="badge badge-info">${esc(a.action)}</span></td><td>${esc(a.user_id || 'system')}</td><td style="max-width:300px;overflow:hidden;text-overflow:ellipsis">${esc(a.details || '')}</td></tr>`).join('') + '</tbody></table>' : '<p class="text-muted">No audit entries</p>';
+    }
+
+    function saveAdminToken() { adminToken = el('admin-token').value; localStorage.setItem('dlb_admin_token', adminToken); loadAdmin(); }
+    async function triggerAccrueAll() {
+      if (!adminToken) { alert('Set admin token first'); return; }
+      const r = await fetchJSON(API + '/api/admin/bonds/accrue-all', { method: 'POST', headers: adminHeaders() });
+      alert(r.success ? 'Accrual complete!' : 'Error: ' + (r.error || 'Failed'));
+    }
+
+    // ─── FINERACT ──────────────────────────────────────────────────────────────
+    async function loadFineract() {
+      const [health, gl] = await Promise.all([
+        fetchJSON(API + '/api/fineract/health'),
+        fetchJSON(API + '/api/fineract/gl/summary'),
+      ]);
+      const connected = health.fineract_connected === true;
+      el('fineract-status-cards').innerHTML = `
+        <div class="card"><div class="card-title">Connection</div><div class="card-value"><span class="status-dot ${connected ? 'online' : 'offline'}"></span> ${connected ? 'Connected' : 'Disconnected'}</div><div class="card-sub">${connected ? health.office_count + ' office(s)' : (health.error || 'Start Docker: docker compose up -d')}</div></div>
+        <div class="card"><div class="card-title">GL Assets</div><div class="card-value">${gl.success ? fmt((gl.data || {}).total_assets) : '—'}</div></div>
+        <div class="card"><div class="card-title">GL Liabilities</div><div class="card-value">${gl.success ? fmt((gl.data || {}).total_liabilities) : '—'}</div></div>
+        <div class="card"><div class="card-title">GL Equity</div><div class="card-value">${gl.success ? fmt((gl.data || {}).total_equity) : '—'}</div></div>
+      `;
+
+      el('fin-url').textContent = '(env: FINERACT_URL)';
+      el('fin-tenant').textContent = 'default';
+
+      if (gl.success && gl.data) {
+        const d = gl.data;
+        const accts = d.accounts || {};
+        let rows = '';
+        for (const [type, list] of Object.entries(accts)) {
+          if (Array.isArray(list)) { list.forEach(a => { rows += `<tr><td><code>${esc(a.glCode)}</code></td><td>${esc(a.name)}</td><td><span class="badge badge-info">${type.toUpperCase()}</span></td><td class="money">${fmt(a.balance)}</td></tr>`; }); }
+        }
+        el('fineract-gl-summary').innerHTML = rows ? '<table><thead><tr><th>GL Code</th><th>Account</th><th>Type</th><th>Balance</th></tr></thead><tbody>' + rows + '</tbody></table>' : '<p class="text-muted">No GL accounts found</p>';
+      } else {
+        el('fineract-gl-summary').innerHTML = '<p class="text-muted">' + (connected ? 'No GL data available' : 'Fineract not connected — GL data managed by local Trust Accounting engine') + '</p>';
+      }
+
+      // Clients
+      if (connected) {
+        try {
+          const clientsRes = await fetchJSON(API + '/api/fineract/clients');
+          const clients = (clientsRes.data && clientsRes.data.pageItems) || clientsRes.data || [];
+          el('fineract-clients-wrap').innerHTML = clients.length ? '<table><thead><tr><th>ID</th><th>Name</th><th>External ID</th><th>Status</th></tr></thead><tbody>' + clients.map(c => `<tr><td>${c.id}</td><td>${esc(c.displayName || (c.firstname + ' ' + c.lastname))}</td><td>${esc(c.externalId || '—')}</td><td><span class="badge badge-active">${esc((c.status || {}).value || 'active')}</span></td></tr>`).join('') + '</tbody></table>' : '<p class="text-muted">No clients yet. Use the form below to create one.</p>';
+        } catch (e) { el('fineract-clients-wrap').innerHTML = '<p class="text-muted">Could not load clients</p>'; }
+      } else {
+        el('fineract-clients-wrap').innerHTML = '<p class="text-muted">Connect Fineract to manage clients</p>';
+      }
+    }
+
+    async function postFineractJournal() {
+      const debitId = parseInt(el('fin-debit-acct').value);
+      const creditId = parseInt(el('fin-credit-acct').value);
+      const amount = parseFloat(el('fin-amount').value);
+      const comments = el('fin-comments').value;
+      if (!debitId || !creditId || !amount) { el('fin-journal-result').innerHTML = '<p class="error-msg">All fields required</p>'; return; }
+      const r = await fetchJSON(API + '/api/fineract/journal', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ debits: [{ glAccountId: debitId, amount }], credits: [{ glAccountId: creditId, amount }], comments }) });
+      el('fin-journal-result').innerHTML = r.success ? '<p class="success-msg">Journal entry posted!</p>' : '<p class="error-msg">' + esc(r.error || 'Failed — is Fineract connected?') + '</p>';
+      if (r.success) loadFineract();
+    }
+
+    async function createFineractClient() {
+      const r = await fetchJSON(API + '/api/fineract/clients', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ firstName: el('fin-first').value, lastName: el('fin-last').value, externalId: el('fin-extid').value }) });
+      el('fin-client-result').innerHTML = r.success ? '<p class="success-msg">Client created! ID: ' + (r.data || {}).clientId + '</p>' : '<p class="error-msg">' + esc(r.error || 'Failed — is Fineract connected?') + '</p>';
+    }
+
+    // ─── Init ──────────────────────────────────────────────────────────────────
+    loadOverview();
+    if (adminToken) el('admin-token').value = adminToken;
   </script>
 </body>
 </html>
