@@ -37,6 +37,7 @@ jobs:
             PGPASSWORD=postgres psql -h localhost -U postgres -d fineract_tenants -f server/scripts/migrate-postgres-full.sql 2>&1 | tail -5 || echo "migration 1 done or skipped"
             PGPASSWORD=postgres psql -h localhost -U postgres -d fineract_tenants -f server/scripts/migrate-docs-accounting.sql 2>&1 | tail -5 || echo "migration 2 done or skipped"
             PGPASSWORD=postgres psql -h localhost -U postgres -d fineract_tenants -f server/scripts/migrate-ach.sql 2>&1 | tail -5 || echo "migration 3 (ACH) done or skipped"
+            PGPASSWORD=postgres psql -h localhost -U postgres -d fineract_tenants -f server/scripts/migrate-as2.sql 2>&1 | tail -5 || echo "migration 4 (AS2) done or skipped"
 
             echo "=== Stop ALL old processes ==="
             pm2 delete dlbtrust-treasury 2>/dev/null || true
@@ -77,6 +78,9 @@ jobs:
             echo ""
             echo "ACH Pipeline:"
             curl -s http://localhost:3002/api/ach-pipeline/status | head -c 100
+            echo ""
+            echo "AS2 Server:"
+            curl -s http://localhost:3002/api/as2/dashboard | head -c 100
             echo ""
 
       - name: Update Apache vhost to proxy to treasury

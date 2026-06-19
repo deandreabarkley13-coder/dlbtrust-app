@@ -50,6 +50,9 @@ try { app.use('/api/accounting', require(path.join(HD, 'server', 'routes', 'acco
 // ACH Pipeline — NACHA generation + AS2 transmission
 try { app.use('/api/ach-pipeline', require(path.join(HD, 'server', 'routes', 'achPipeline'))); console.log('[ach-pipeline] loaded'); } catch(e) { console.warn('[ach-pipeline]', e.message); }
 
+// AS2 Server — open source AS2 messaging (certs, partners, send/receive)
+try { app.use('/api/as2', require(path.join(HD, 'server', 'routes', 'as2'))); console.log('[as2] loaded'); } catch(e) { console.warn('[as2]', e.message); }
+
 // Treasury Management System — static files from public/
 app.use(express.static(path.join(HD, 'public')));
 
