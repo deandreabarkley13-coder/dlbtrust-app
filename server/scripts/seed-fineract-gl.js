@@ -18,7 +18,7 @@
 
 const path = require('path');
 const { FineractClient } = require(path.join(__dirname, '..', 'integrations', 'fineract', 'fineractClient'));
-const pool = require(path.join(__dirname, '..', 'integrations', 'db', 'pgPool'));
+const pool = require(path.join(__dirname, '..', 'integrations', 'bonds', 'pgPool'));
 
 // Fineract type codes: 1=ASSET, 2=LIABILITY, 3=EQUITY, 4=INCOME, 5=EXPENSE
 const TYPE_MAP = {
