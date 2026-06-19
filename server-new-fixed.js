@@ -28,9 +28,31 @@ try { app.use("/api/fineract", require(HD + "/server/routes/fineract")); console
 // Fixed Income / Bond routes
 try { app.use("/api/bonds", require(HD + "/server/routes/bonds")); console.log("[bonds] loaded"); } catch(e) { console.warn("[bonds]", e.message); }
 
+// Cash Management routes
+try { app.use("/api/cash", require(HD + "/server/routes/cash")); console.log("[cash] loaded"); } catch(e) { console.warn("[cash]", e.message); }
+
+// CRM Engine routes
+try { app.use("/api/crm", require(HD + "/server/routes/crm")); console.log("[crm] loaded"); } catch(e) { console.warn("[crm]", e.message); }
+
+// Admin Control routes
+try { app.use("/api/admin", require(HD + "/server/routes/admin")); console.log("[admin] loaded"); } catch(e) { console.warn("[admin]", e.message); }
+
+// Document Management routes
+try { app.use("/api/documents", require(HD + "/server/routes/documents")); console.log("[documents] loaded"); } catch(e) { console.warn("[documents]", e.message); }
+
+// Trust Accounting routes
+try { app.use("/api/accounting", require(HD + "/server/routes/accounting")); console.log("[accounting] loaded"); } catch(e) { console.warn("[accounting]", e.message); }
+
 // Treasury dashboard (served from httpdocs/public)
 app.use("/treasury", express.static(path.join(HD, "public")));
 app.get("/treasury", (req, res) => res.sendFile(path.join(HD, "public", "dashboard.html")));
+
+// Start live bond accrual scheduler
+try {
+  const { LiveBondEngine } = require(HD + "/server/integrations/bonds/liveEngine");
+  LiveBondEngine.scheduleAccrualJob();
+  console.log("[liveEngine] daily accrual scheduler started");
+} catch(e) { console.warn("[liveEngine]", e.message); }
 
 // Static files from v2
 app.use(express.static(path.join(V2, "dist", "public")));
