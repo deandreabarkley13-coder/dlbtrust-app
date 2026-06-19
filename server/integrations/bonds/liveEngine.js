@@ -194,7 +194,7 @@ class LiveBondEngine {
       dv01: Math.round(dv01 * 100) / 100,
       current_price_decimal: Math.round(currentPrice * 1000000) / 1000000,
       market_value: Math.round(marketValue * 100) / 100,
-      total_current_value: Math.round((marketValue + accruedLive) * 100) / 100,
+      total_current_value: Math.round((marketValue + parseFloat(bond.accrued_interest) + accruedLive) * 100) / 100,
       generated_at: new Date().toISOString(),
     };
   }

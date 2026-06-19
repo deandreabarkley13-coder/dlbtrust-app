@@ -93,8 +93,19 @@ class CashEngine {
 
       const movementId = 'MOV-' + Date.now() + '-' + Math.random().toString(36).slice(2, 8).toUpperCase();
 
-      // Post GL entry if account IDs provided
-      let glJournalId = null;
+      const movResult = await client.query(
+        `INSERT INTO cash_movements
+           (movement_id, from_account_id, to_account_id, amount_cents, movement_type,
+            reference_id, reference_type, gl_journal_id, memo, initiated_by)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+         RETURNING *`,
+        [movementId, fromAccountId, toAccountId, amountCents, movementType || 'transfer',
+         referenceId || null, referenceType || null, null, memo || null, initiatedBy || null]
+      );
+
+      await client.query('COMMIT');
+
+      // Post GL entry after commit to avoid inconsistency on rollback
       if (glDebitAccountId && glCreditAccountId) {
         try {
           const amountDollars = amountCents / 100;
@@ -105,23 +116,18 @@ class CashEngine {
             debits: [{ glAccountId: glDebitAccountId, amount: amountDollars }],
             comments: `Cash transfer ${movementId}: ${fromAccountId} → ${toAccountId}`,
           });
-          glJournalId = glResult && glResult.resourceId ? String(glResult.resourceId) : null;
+          const glJournalId = glResult && glResult.resourceId ? String(glResult.resourceId) : null;
+          if (glJournalId) {
+            await pool.query(
+              `UPDATE cash_movements SET gl_journal_id = $1 WHERE movement_id = $2`,
+              [glJournalId, movementId]
+            );
+          }
         } catch (glErr) {
-          console.warn('[CashEngine] GL post failed:', glErr.message);
+          console.warn('[CashEngine] GL post failed (transfer still recorded):', glErr.message);
         }
       }
 
-      const movResult = await client.query(
-        `INSERT INTO cash_movements
-           (movement_id, from_account_id, to_account_id, amount_cents, movement_type,
-            reference_id, reference_type, gl_journal_id, memo, initiated_by)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
-         RETURNING *`,
-        [movementId, fromAccountId, toAccountId, amountCents, movementType || 'transfer',
-         referenceId || null, referenceType || null, glJournalId, memo || null, initiatedBy || null]
-      );
-
-      await client.query('COMMIT');
       return movResult.rows[0];
     } catch (err) {
       await client.query('ROLLBACK');

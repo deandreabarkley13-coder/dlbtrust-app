@@ -93,7 +93,7 @@ router.post('/contacts/:id/interactions', async (req, res) => {
   const { interactionType } = req.body;
   if (!interactionType) return res.status(400).json({ error: 'Required: interactionType' });
   try {
-    const interaction = await CrmEngine.logInteraction({ contactId: req.params.id, ...req.body });
+    const interaction = await CrmEngine.logInteraction({ ...req.body, contactId: req.params.id });
     res.json({ success: true, data: interaction });
   } catch (err) {
     res.status(500).json({ success: false, error: err.message });
