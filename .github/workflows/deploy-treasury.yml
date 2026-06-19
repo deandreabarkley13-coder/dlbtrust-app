@@ -10,20 +10,20 @@ jobs:
     timeout-minutes: 15
     env:
       SERVER: "74.208.191.205"
-      SSH_USER: "dlbtrust.cloud_h6zkwzag1ya"
-      SSH_PASS: "Deploy2026!"
       PLESK_PASS: "dP8RlShbOWNq"
 
     steps:
       - uses: actions/checkout@v4
-      - run: apt-get install -y sshpass 2>/dev/null | tail -1 || true
 
       - name: Deploy via git pull + PM2 restart
-        run: |
-          sshpass -p "$SSH_PASS" ssh \
-            -o StrictHostKeyChecking=no -o ConnectTimeout=10 \
-            -o PasswordAuthentication=yes \
-            "$SSH_USER@$SERVER" << 'SSHEOF'
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: 74.208.191.205
+          username: dlbtrust.cloud_h6zkwzag1ya
+          password: Deploy2026!
+          port: 22
+          command_timeout: 120s
+          script: |
             HTTPDOCS="/var/www/vhosts/dlbtrust.cloud/httpdocs"
             cd "$HTTPDOCS"
 
@@ -34,12 +34,11 @@ jobs:
             npm install --production 2>&1 | tail -3
 
             echo "=== Run migrations ==="
-            PGPASSWORD=postgres psql -h localhost -U postgres -d fineract_tenants \
-              -f server/scripts/migrate-postgres-full.sql 2>&1 | tail -5 || echo "migration 1 done or skipped"
-            PGPASSWORD=postgres psql -h localhost -U postgres -d fineract_tenants \
-              -f server/scripts/migrate-docs-accounting.sql 2>&1 | tail -5 || echo "migration 2 done or skipped"
+            PGPASSWORD=postgres psql -h localhost -U postgres -d fineract_tenants -f server/scripts/migrate-postgres-full.sql 2>&1 | tail -5 || echo "migration 1 done or skipped"
+            PGPASSWORD=postgres psql -h localhost -U postgres -d fineract_tenants -f server/scripts/migrate-docs-accounting.sql 2>&1 | tail -5 || echo "migration 2 done or skipped"
 
             echo "=== Restart server-3002 (Treasury Management) ==="
+            pm2 delete dlbtrust-treasury 2>/dev/null || true
             pm2 delete dlbtrust-3002 2>/dev/null || true
             pm2 delete dlbtrust 2>/dev/null || true
             pm2 delete dlbtrust-full 2>/dev/null || true
@@ -71,30 +70,31 @@ jobs:
             echo "Accounting:"
             curl -s http://localhost:3002/api/accounting/dashboard | head -c 100
             echo ""
-          SSHEOF
 
       - name: Update Apache vhost to proxy to treasury
-        run: |
-          sshpass -p "$SSH_PASS" ssh \
-            -o StrictHostKeyChecking=no -o ConnectTimeout=10 \
-            -o PasswordAuthentication=yes \
-            "$SSH_USER@$SERVER" << 'SSHEOF'
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: 74.208.191.205
+          username: dlbtrust.cloud_h6zkwzag1ya
+          password: Deploy2026!
+          port: 22
+          command_timeout: 30s
+          script: |
             cat > /var/www/vhosts/dlbtrust.cloud/conf/vhost.conf << 'VHOSTEOF'
-ProxyRequests Off
-ProxyPreserveHost On
-ProxyPass / http://localhost:3002/
-ProxyPassReverse / http://localhost:3002/
-<Proxy *>
-    Order deny,allow
-    Allow from all
-    Require all granted
-</Proxy>
-RewriteEngine On
-RewriteCond %{HTTP:Upgrade} websocket [NC]
-RewriteRule ^/?(.*) ws://localhost:3002/$1 [P,L]
-VHOSTEOF
+            ProxyRequests Off
+            ProxyPreserveHost On
+            ProxyPass / http://localhost:3002/
+            ProxyPassReverse / http://localhost:3002/
+            <Proxy *>
+                Order deny,allow
+                Allow from all
+                Require all granted
+            </Proxy>
+            RewriteEngine On
+            RewriteCond %{HTTP:Upgrade} websocket [NC]
+            RewriteRule ^/?(.*) ws://localhost:3002/$1 [P,L]
+            VHOSTEOF
             echo "vhost.conf updated — proxying all traffic to treasury on port 3002"
-          SSHEOF
 
       - name: Rebuild Apache via Plesk
         run: |
