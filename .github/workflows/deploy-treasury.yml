@@ -83,6 +83,8 @@ jobs:
             PGPASSWORD=postgres psql -h localhost -U postgres -d fineract_tenants -f server/scripts/migrate-docs-accounting.sql 2>&1 | tail -5 || echo "migration 2 done or skipped"
             PGPASSWORD=postgres psql -h localhost -U postgres -d fineract_tenants -f server/scripts/migrate-ach.sql 2>&1 | tail -5 || echo "migration 3 (ACH) done or skipped"
             PGPASSWORD=postgres psql -h localhost -U postgres -d fineract_tenants -f server/scripts/migrate-as2.sql 2>&1 | tail -5 || echo "migration 4 (AS2) done or skipped"
+            PGPASSWORD=postgres psql -h localhost -U postgres -d fineract_tenants -f server/scripts/migrate-reports-gl-mappings.sql 2>&1 | tail -5 || echo "migration 5 (reports/GL mappings) done or skipped"
+            PGPASSWORD=postgres psql -h localhost -U postgres -d fineract_tenants -f server/scripts/migrate-tax-engine.sql 2>&1 | tail -5 || echo "migration 6 (tax engine) done or skipped"
 
             echo "=== Restart Passenger (Plesk Node.js) ==="
             mkdir -p "$HTTPDOCS/tmp"
@@ -90,10 +92,13 @@ jobs:
             echo "Passenger restart signaled"
 
             echo "=== Start Treasury Management on port 3007 ==="
-            PORT=3007 pm2 start "$HTTPDOCS/server/server-3002.js" --name dlbtrust-treasury
+            PORT=3007 FINERACT_URL=https://localhost:8443 pm2 start "$HTTPDOCS/server/server-3002.js" --name dlbtrust-treasury
             pm2 save --force
             sleep 8
             pm2 list
+
+            echo "=== Seed Fineract GL (idempotent — skips existing) ==="
+            PORT=3007 FINERACT_URL=https://localhost:8443 node "$HTTPDOCS/server/scripts/seed-fineract-gl.js" 2>&1 | tail -5 || echo "GL seed skipped (Fineract may not be ready)"
 
             echo "=== Verify Treasury Endpoints ==="
             echo "Dashboard:"
@@ -107,6 +112,12 @@ jobs:
             echo ""
             echo "AS2 Server:"
             curl -s http://localhost:3007/api/as2/dashboard | head -c 200
+            echo ""
+            echo "Fineract Health:"
+            curl -s http://localhost:3007/api/fineract/health | head -c 200
+            echo ""
+            echo "Tax Engine:"
+            curl -s http://localhost:3007/api/tax/dashboard | head -c 200
             echo ""
 
       - name: Configure nginx + Apache to proxy to treasury
@@ -181,6 +192,37 @@ jobs:
             systemctl restart httpd 2>/dev/null || systemctl restart apache2 2>/dev/null || echo "Apache restart skipped"
             echo "Apache restart exit: $?"
 
+      - name: Install Docker and start Fineract on production
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: 74.208.191.205
+          username: root
+          password: ${{ env.PLESK_PASS }}
+          port: 22
+          command_timeout: 300s
+          script: |
+            echo "=== Check Docker ==="
+            if ! command -v docker &>/dev/null; then
+              echo "Installing Docker..."
+              curl -fsSL https://get.docker.com | sh
+              systemctl enable docker
+              systemctl start docker
+              echo "Docker installed"
+            else
+              echo "Docker already installed: $(docker --version)"
+            fi
+
+            echo "=== Start Fineract containers ==="
+            HTTPDOCS="/var/www/vhosts/dlbtrust.cloud/httpdocs"
+            cd "$HTTPDOCS"
+            docker compose up -d 2>&1 | tail -10
+            echo "Waiting 60s for Fineract to initialize..."
+            sleep 60
+            docker ps --format 'table {{.Names}}\t{{.Status}}' | head -5
+
+            echo "=== Verify Fineract ==="
+            wget -qO- --no-check-certificate https://localhost:8443/fineract-provider/actuator/health 2>&1 | head -c 100 || echo "Fineract still initializing (will retry on next deploy)"
+
       - name: Final verification
         run: |
           sleep 8
@@ -199,4 +241,10 @@ jobs:
           echo ""
           echo "ACH Pipeline API:"
           curl -sk --resolve "dlbtrust.cloud:443:$S" https://dlbtrust.cloud/api/ach-pipeline/status | head -c 100
+          echo ""
+          echo "Fineract Health:"
+          curl -sk --resolve "dlbtrust.cloud:443:$S" https://dlbtrust.cloud/api/fineract/health | head -c 200
+          echo ""
+          echo "Tax Engine:"
+          curl -sk --resolve "dlbtrust.cloud:443:$S" https://dlbtrust.cloud/api/tax/dashboard | head -c 200
           echo ""
