@@ -178,6 +178,8 @@
     <div class="nav-item" data-page="crm"><span class="icon">👥</span> CRM & Investors</div>
     <div class="nav-item" data-page="documents"><span class="icon">📄</span> Documents</div>
     <div class="nav-item" data-page="accounting"><span class="icon">📒</span> Trust Accounting</div>
+    <div class="nav-section">Tax & Compliance</div>
+    <div class="nav-item" data-page="tax"><span class="icon">📑</span> Tax Engine</div>
     <div class="nav-section">Core Banking</div>
     <div class="nav-item" data-page="fineract"><span class="icon">🏛️</span> Fineract GL</div>
     <div class="nav-section">System</div>
@@ -191,7 +193,7 @@
       <div class="page-header">
         <div>
           <h1>Treasury Dashboard</h1>
-          <div class="subtitle">DEANDREA LAVAR BARKLEY TRUST — Real-time Overview</div>
+          <div class="subtitle">DEANDREA LAVAR BARKLEY TRUST — EIN 99-6411566 — Real-time Overview</div>
         </div>
         <button class="btn btn-primary" onclick="loadOverview()">Refresh</button>
       </div>
@@ -421,6 +423,91 @@
       </div>
     </div>
 
+    <!-- TAX ENGINE PAGE -->
+    <div id="page-tax" class="page hidden">
+      <div class="page-header">
+        <div><h1>Tax Engine</h1><div class="subtitle">IRS Form 1041 &amp; Schedule K-1 — EIN 99-6411566</div></div>
+        <div class="flex gap-12">
+          <button class="btn btn-primary btn-sm" onclick="loadTax()">Refresh</button>
+        </div>
+      </div>
+      <div class="grid" id="tax-summary"></div>
+      <div class="tabs">
+        <div class="tab active" data-tab="tax-1041">Form 1041</div>
+        <div class="tab" data-tab="tax-k1">K-1 Schedules</div>
+        <div class="tab" data-tab="tax-payments">Tax Payments</div>
+        <div class="tab" data-tab="tax-config">Trust Config</div>
+      </div>
+      <div id="tax-1041" class="tab-content active">
+        <div class="card">
+          <div class="section-title">Compute Form 1041</div>
+          <div class="form-row">
+            <div class="form-group"><label>Tax Year</label><input type="number" id="tax-year" placeholder="2025" value="2025"></div>
+            <div class="form-group" style="padding-top:22px"><button class="btn btn-primary" onclick="computeForm1041()">Compute 1041</button></div>
+          </div>
+          <div id="tax-1041-result"></div>
+        </div>
+        <div class="card mt-16">
+          <div class="section-title">Tax Returns</div>
+          <div class="table-wrap" id="tax-returns-wrap"><p class="loading">Loading...</p></div>
+        </div>
+        <div class="card mt-16" id="tax-1041-detail-card" style="display:none">
+          <div class="section-title">Form 1041 Detail</div>
+          <div id="tax-1041-detail"></div>
+        </div>
+      </div>
+      <div id="tax-k1" class="tab-content">
+        <div class="card">
+          <div class="section-title">Generate K-1 Schedules</div>
+          <div class="form-row">
+            <div class="form-group"><label>Return ID</label><input type="text" id="k1-return-id" placeholder="Select from returns table"></div>
+            <div class="form-group" style="padding-top:22px"><button class="btn btn-primary" onclick="generateK1s()">Generate K-1s</button></div>
+          </div>
+          <div id="k1-generate-result"></div>
+        </div>
+        <div class="card mt-16">
+          <div class="section-title">K-1 Schedules</div>
+          <div class="table-wrap" id="tax-k1-wrap"><p class="text-muted">Compute a Form 1041 first, then generate K-1s</p></div>
+        </div>
+      </div>
+      <div id="tax-payments" class="tab-content">
+        <div class="card">
+          <div class="section-title">Record Tax Payment</div>
+          <div class="form-row">
+            <div class="form-group"><label>Tax Year</label><input type="number" id="tp-year" placeholder="2025" value="2025"></div>
+            <div class="form-group"><label>Quarter</label><select id="tp-quarter"><option value="1">Q1</option><option value="2">Q2</option><option value="3">Q3</option><option value="4">Q4</option></select></div>
+            <div class="form-group"><label>Type</label><select id="tp-type"><option value="estimated">Estimated</option><option value="extension">Extension</option><option value="final">Final</option></select></div>
+          </div>
+          <div class="form-row">
+            <div class="form-group"><label>Amount ($)</label><input type="number" id="tp-amount" placeholder="25000"></div>
+            <div class="form-group"><label>Payment Date</label><input type="date" id="tp-date"></div>
+            <div class="form-group"><label>Reference</label><input type="text" id="tp-ref" placeholder="EFTPS confirmation #"></div>
+          </div>
+          <button class="btn btn-primary" onclick="recordTaxPayment()">Record Payment</button>
+          <div id="tp-result"></div>
+        </div>
+        <div class="card mt-16">
+          <div class="section-title">Payment History</div>
+          <div class="table-wrap" id="tax-payments-wrap"><p class="loading">Loading...</p></div>
+        </div>
+      </div>
+      <div id="tax-config" class="tab-content">
+        <div class="card">
+          <div class="section-title">Trust Configuration</div>
+          <div class="table-wrap" id="tax-config-wrap"><p class="loading">Loading...</p></div>
+        </div>
+        <div class="card mt-16">
+          <div class="section-title">Update Configuration</div>
+          <div class="form-row">
+            <div class="form-group"><label>Config Key</label><select id="cfg-key"><option value="ein">EIN</option><option value="trust_name">Trust Name</option><option value="trust_type">Trust Type</option><option value="fiscal_year_end">Fiscal Year End</option><option value="state">State</option></select></div>
+            <div class="form-group"><label>Value</label><input type="text" id="cfg-value" placeholder="New value"></div>
+          </div>
+          <button class="btn btn-primary" onclick="updateTaxConfig()">Update</button>
+          <div id="cfg-result"></div>
+        </div>
+      </div>
+    </div>
+
     <!-- FINERACT GL PAGE -->
     <div id="page-fineract" class="page hidden">
       <div class="page-header">
@@ -522,7 +609,7 @@
         document.querySelectorAll('.page').forEach(p => p.classList.add('hidden'));
         document.getElementById('page-' + page).classList.remove('hidden');
         // Load data for page
-        const loaders = { overview: loadOverview, bonds: loadBonds, cash: loadCash, payments: loadPayments, ach: loadACH, as2: loadAS2, crm: loadCRM, documents: loadDocuments, accounting: loadAccounting, fineract: loadFineract, admin: loadAdmin };
+        const loaders = { overview: loadOverview, bonds: loadBonds, cash: loadCash, payments: loadPayments, ach: loadACH, as2: loadAS2, crm: loadCRM, documents: loadDocuments, accounting: loadAccounting, tax: loadTax, fineract: loadFineract, admin: loadAdmin };
         if (loaders[page]) loaders[page]();
       });
     });
@@ -997,6 +1084,150 @@
         loadAdmin();
       } else {
         el('seed-gl-result').innerHTML = '<p class="error-msg">' + esc(r.error || 'Failed') + '</p>';
+      }
+    }
+
+    // ─── TAX ENGINE ─────────────────────────────────────────────────────────────
+    async function loadTax() {
+      const [dashboard, returns, config] = await Promise.all([
+        fetchJSON(API + '/api/tax/dashboard'),
+        fetchJSON(API + '/api/tax/1041/returns'),
+        fetchJSON(API + '/api/tax/config'),
+      ]);
+      const d = dashboard.data || {};
+      const latestReturn = d.latest_return;
+      el('tax-summary').innerHTML = `
+        <div class="card"><div class="card-title">EIN</div><div class="card-value" style="font-size:18px">${esc(d.ein || '—')}</div><div class="card-sub">${esc(d.trust_name || '')}</div></div>
+        <div class="card"><div class="card-title">Trust Type</div><div class="card-value" style="font-size:18px">${esc((d.trust_type || '').toUpperCase())}</div><div class="card-sub">Tax Year ${d.tax_year}</div></div>
+        <div class="card"><div class="card-title">Beneficiaries</div><div class="card-value">${d.beneficiary_count || 0}</div><div class="card-sub">${d.k1_count || 0} K-1(s) generated</div></div>
+        <div class="card"><div class="card-title">Est. Payments</div><div class="card-value">${fmt(d.estimated_payments)}</div><div class="card-sub">${(d.payments || []).length} payment(s)</div></div>
+        <div class="card"><div class="card-title">Tax Liability</div><div class="card-value">${latestReturn ? fmt(latestReturn.tax_liability) : '—'}</div><div class="card-sub">${latestReturn ? 'Tax due: ' + fmt(latestReturn.tax_due) : 'Not yet computed'}</div></div>
+      `;
+
+      // Returns table
+      const rData = returns.data || [];
+      el('tax-returns-wrap').innerHTML = rData.length ? '<table><thead><tr><th>Return ID</th><th>Year</th><th>Total Income</th><th>Deductions</th><th>DNI</th><th>Taxable</th><th>Tax</th><th>Status</th><th>Actions</th></tr></thead><tbody>' + rData.map(r => `<tr><td><code style="font-size:10px">${esc(r.return_id)}</code></td><td>${r.tax_year}</td><td class="money">${fmt(r.total_income)}</td><td class="money">${fmt(r.total_deductions)}</td><td class="money">${fmt(r.distributable_net_income)}</td><td class="money">${fmt(r.taxable_income)}</td><td class="money">${fmt(r.tax_liability)}</td><td><span class="badge ${r.status === 'filed' ? 'badge-active' : r.status === 'computed' ? 'badge-info' : 'badge-pending'}">${esc(r.status)}</span></td><td><button class="btn btn-outline btn-sm" onclick="viewReturn('${esc(r.return_id)}')">View</button> <button class="btn btn-outline btn-sm" onclick="selectReturnForK1('${esc(r.return_id)}')">K-1s</button></td></tr>`).join('') + '</tbody></table>' : '<p class="text-muted">No tax returns computed yet</p>';
+
+      // Config table
+      const cfgRows = (config.data || {}).rows || [];
+      el('tax-config-wrap').innerHTML = cfgRows.length ? '<table><thead><tr><th>Key</th><th>Value</th><th>Description</th><th>Updated</th></tr></thead><tbody>' + cfgRows.map(c => `<tr><td><code>${esc(c.config_key)}</code></td><td><strong>${esc(c.config_value)}</strong></td><td>${esc(c.description || '—')}</td><td>${shortDate(c.updated_at)}</td></tr>`).join('') + '</tbody></table>' : '<p class="text-muted">No configuration</p>';
+
+      // Payments
+      const pData = (d.payments || []);
+      el('tax-payments-wrap').innerHTML = pData.length ? '<table><thead><tr><th>ID</th><th>Year</th><th>Quarter</th><th>Type</th><th>Amount</th><th>Date</th><th>Reference</th></tr></thead><tbody>' + pData.map(p => `<tr><td><code style="font-size:10px">${esc(p.payment_id)}</code></td><td>${p.tax_year}</td><td>${p.quarter ? 'Q' + p.quarter : '—'}</td><td><span class="badge badge-info">${esc(p.payment_type)}</span></td><td class="money">${fmt(p.amount)}</td><td>${shortDate(p.payment_date)}</td><td>${esc(p.reference || '—')}</td></tr>`).join('') + '</tbody></table>' : '<p class="text-muted">No payments recorded</p>';
+
+      // Load K-1s if we have a return
+      if (latestReturn) {
+        const k1s = await fetchJSON(API + '/api/tax/k1/' + encodeURIComponent(latestReturn.return_id));
+        const k1Data = k1s.data || [];
+        el('tax-k1-wrap').innerHTML = k1Data.length ? '<table><thead><tr><th>K-1 ID</th><th>Beneficiary</th><th>Allocation</th><th>Interest</th><th>Dividends</th><th>Cap Gains</th><th>Total Income</th><th>Deductions</th><th>Distributions</th><th>Status</th></tr></thead><tbody>' + k1Data.map(k => `<tr><td><code style="font-size:10px">${esc(k.k1_id)}</code></td><td>${esc(k.beneficiary_name)}</td><td>${parseFloat(k.allocation_percentage).toFixed(2)}%</td><td class="money">${fmt(k.interest_income)}</td><td class="money">${fmt(k.dividend_income)}</td><td class="money">${fmt(k.capital_gains)}</td><td class="money">${fmt(k.total_income)}</td><td class="money">${fmt(k.deductions)}</td><td class="money">${fmt(k.distributions_paid)}</td><td><span class="badge ${k.status === 'issued' ? 'badge-active' : k.status === 'computed' ? 'badge-info' : 'badge-pending'}">${esc(k.status)}</span></td></tr>`).join('') + '</tbody></table>' : '<p class="text-muted">No K-1 schedules generated for this return</p>';
+      }
+    }
+
+    async function computeForm1041() {
+      const taxYear = el('tax-year').value;
+      if (!taxYear) { el('tax-1041-result').innerHTML = '<p class="error-msg">Enter a tax year</p>'; return; }
+      el('tax-1041-result').innerHTML = '<p class="loading">Computing Form 1041...</p>';
+      const r = await fetchJSON(API + '/api/tax/1041/compute', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ taxYear: parseInt(taxYear, 10) }) });
+      if (r.success) {
+        const d = r.data;
+        el('tax-1041-result').innerHTML = '<p class="success-msg">Form 1041 computed! Return ID: ' + esc(d.return_id) + '</p>';
+        viewReturn(d.return_id);
+        loadTax();
+      } else {
+        el('tax-1041-result').innerHTML = '<p class="error-msg">' + esc(r.error || 'Failed') + '</p>';
+      }
+    }
+
+    async function viewReturn(returnId) {
+      const r = await fetchJSON(API + '/api/tax/1041/returns/' + encodeURIComponent(returnId));
+      if (!r.success) return;
+      const d = r.data;
+      el('tax-1041-detail-card').style.display = 'block';
+      el('tax-1041-detail').innerHTML = `
+        <table><tbody>
+          <tr><td colspan="2" style="padding:8px 14px"><strong>Part I \u2014 Income</strong></td></tr>
+          <tr><td style="padding-left:24px">Line 1: Interest income</td><td class="money">${fmt(d.interest_income)}</td></tr>
+          <tr><td style="padding-left:24px">Line 2a: Ordinary dividends</td><td class="money">${fmt(d.dividend_income)}</td></tr>
+          <tr><td style="padding-left:24px">Line 4: Capital gain (loss)</td><td class="money">${fmt(d.capital_gains)}</td></tr>
+          <tr><td style="padding-left:24px">Line 5: Rental income</td><td class="money">${fmt(d.rental_income)}</td></tr>
+          <tr><td style="padding-left:24px">Line 8: Other income</td><td class="money">${fmt(d.other_income)}</td></tr>
+          <tr style="border-top:1px solid var(--border)"><td><strong>Line 9: Total income</strong></td><td class="money"><strong>${fmt(d.total_income)}</strong></td></tr>
+          <tr><td colspan="2" style="padding:8px 14px"><strong>Part II \u2014 Deductions</strong></td></tr>
+          <tr><td style="padding-left:24px">Line 12: Fiduciary fees</td><td class="money">${fmt(d.trustee_fees)}</td></tr>
+          <tr><td style="padding-left:24px">Line 14: Attorney/accountant fees</td><td class="money">${fmt(parseFloat(d.legal_fees) + parseFloat(d.tax_prep_fees))}</td></tr>
+          <tr><td style="padding-left:24px">Line 15a: Other deductions</td><td class="money">${fmt(d.other_deductions)}</td></tr>
+          <tr style="border-top:1px solid var(--border)"><td><strong>Line 16: Total deductions</strong></td><td class="money"><strong>${fmt(d.total_deductions)}</strong></td></tr>
+          <tr><td><strong>Line 17: Adjusted total income</strong></td><td class="money"><strong>${fmt(d.adjusted_total_income)}</strong></td></tr>
+          <tr><td colspan="2" style="padding:8px 14px"><strong>Part III \u2014 Tax Computation</strong></td></tr>
+          <tr><td style="padding-left:24px">Distributable net income (DNI)</td><td class="money">${fmt(d.distributable_net_income)}</td></tr>
+          <tr><td style="padding-left:24px">Income distribution deduction</td><td class="money">${fmt(d.income_distribution_deduction)}</td></tr>
+          <tr><td style="padding-left:24px">Personal exemption</td><td class="money">${fmt(d.personal_exemption)}</td></tr>
+          <tr style="border-top:1px solid var(--border)"><td><strong>Taxable income</strong></td><td class="money"><strong>${fmt(d.taxable_income)}</strong></td></tr>
+          <tr><td><strong>Tax liability</strong></td><td class="money"><strong>${fmt(d.tax_liability)}</strong></td></tr>
+          <tr><td style="padding-left:24px">Less: Estimated payments</td><td class="money">(${fmt(d.estimated_payments)})</td></tr>
+          <tr style="border-top:2px solid var(--border)"><td><strong>Tax due (overpayment)</strong></td><td class="money"><strong>${fmt(d.tax_due)}</strong></td></tr>
+        </tbody></table>
+        <div style="margin-top:12px;font-size:11px;color:var(--muted)">
+          EIN: ${esc(d.ein)} | Trust: ${esc(d.trust_name)} | Status: <span class="badge ${d.status === 'filed' ? 'badge-active' : 'badge-info'}">${esc(d.status)}</span> | Computed: ${shortDate(d.computed_at)}
+        </div>
+      `;
+    }
+
+    function selectReturnForK1(returnId) {
+      el('k1-return-id').value = returnId;
+      // Switch to K-1 tab
+      const taxPage = document.getElementById('page-tax');
+      taxPage.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+      taxPage.querySelectorAll('.tab-content').forEach(tc => tc.classList.remove('active'));
+      taxPage.querySelector('[data-tab="tax-k1"]').classList.add('active');
+      document.getElementById('tax-k1').classList.add('active');
+    }
+
+    async function generateK1s() {
+      const returnId = el('k1-return-id').value;
+      if (!returnId) { el('k1-generate-result').innerHTML = '<p class="error-msg">Enter or select a Return ID</p>'; return; }
+      el('k1-generate-result').innerHTML = '<p class="loading">Generating K-1 schedules...</p>';
+      const r = await fetchJSON(API + '/api/tax/k1/generate', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ returnId }) });
+      if (r.success) {
+        const d = r.data;
+        el('k1-generate-result').innerHTML = '<p class="success-msg">Generated ' + d.k1_count + ' K-1 schedule(s) for tax year ' + d.tax_year + '</p>';
+        loadTax();
+      } else {
+        el('k1-generate-result').innerHTML = '<p class="error-msg">' + esc(r.error || 'Failed') + '</p>';
+      }
+    }
+
+    async function recordTaxPayment() {
+      const data = {
+        taxYear: parseInt(el('tp-year').value, 10),
+        quarter: parseInt(el('tp-quarter').value, 10),
+        paymentType: el('tp-type').value,
+        amount: parseFloat(el('tp-amount').value),
+        paymentDate: el('tp-date').value,
+        reference: el('tp-ref').value || undefined,
+      };
+      if (!data.taxYear || !data.amount || !data.paymentDate) { el('tp-result').innerHTML = '<p class="error-msg">Year, amount, and date required</p>'; return; }
+      const r = await fetchJSON(API + '/api/tax/payments', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(data) });
+      if (r.success) {
+        el('tp-result').innerHTML = '<p class="success-msg">Payment recorded: ' + esc((r.data || {}).payment_id) + '</p>';
+        loadTax();
+      } else {
+        el('tp-result').innerHTML = '<p class="error-msg">' + esc(r.error || 'Failed') + '</p>';
+      }
+    }
+
+    async function updateTaxConfig() {
+      const key = el('cfg-key').value;
+      const value = el('cfg-value').value;
+      if (!value) { el('cfg-result').innerHTML = '<p class="error-msg">Enter a value</p>'; return; }
+      const r = await fetchJSON(API + '/api/tax/config/' + encodeURIComponent(key), { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ value }) });
+      if (r.success) {
+        el('cfg-result').innerHTML = '<p class="success-msg">Updated ' + esc(key) + ' = ' + esc(value) + '</p>';
+        el('cfg-value').value = '';
+        loadTax();
+      } else {
+        el('cfg-result').innerHTML = '<p class="error-msg">' + esc(r.error || 'Failed') + '</p>';
       }
     }
 
