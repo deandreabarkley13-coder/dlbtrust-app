@@ -230,6 +230,7 @@ class ACHEngine {
     // Check for any active DB-managed partner
     const partners = await PartnerManager.listPartners({ status: 'active' });
     if (partners.length > 0) {
+      if (!partners[0].endpoint_url) throw new Error(`AS2 partner ${partners[0].name} has no endpoint URL`);
       return { type: 'as2server', partnerId: partners[0].partner_id };
     }
 
@@ -285,15 +286,20 @@ class ACHEngine {
     const hasDbPartner = dbPartners.length > 0;
     const configured = hasDbPartner || envConfig.configured;
 
+    // Check connectivity — DB partner takes priority (matches _resolveTransport behavior)
     let connectivity = { connected: false, error: 'Not tested' };
-    if (envConfig.configured) {
+    if (hasDbPartner) {
+      if (dbPartners[0].endpoint_url) {
+        connectivity = { connected: true, source: 'database', partner: dbPartners[0].name };
+      } else {
+        connectivity = { connected: false, error: `Partner ${dbPartners[0].name} has no endpoint URL` };
+      }
+    } else if (envConfig.configured) {
       try {
         connectivity = await AS2Client.testConnection();
       } catch (e) {
         connectivity = { connected: false, error: e.message };
       }
-    } else if (hasDbPartner) {
-      connectivity = { connected: true, source: 'database', partner: dbPartners[0].name };
     }
 
     const pendingBatches = await pool.query(
