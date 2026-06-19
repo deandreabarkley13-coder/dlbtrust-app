@@ -209,16 +209,28 @@ jobs:
             echo "=== Start Fineract containers ==="
             HTTPDOCS="/var/www/vhosts/dlbtrust.cloud/httpdocs"
             cd "$HTTPDOCS"
-            docker compose up -d 2>&1 | tail -10
-            echo "Waiting 60s for Fineract to initialize..."
-            sleep 60
-            docker ps --format 'table {{.Names}}\t{{.Status}}' | head -5
+
+            echo "Cleaning up stale containers..."
+            docker compose down 2>&1 | tail -5 || true
+            docker rm -f fineract fineract-db 2>/dev/null || true
+
+            echo "Starting Fineract..."
+            docker compose up -d --force-recreate 2>&1 | tail -10
+            echo "Waiting 90s for Fineract to initialize..."
+            sleep 90
+            docker ps --format 'table {{.Names}}\t{{.Status}}' | head -10
 
             echo "=== Verify Fineract ==="
-            wget -qO- --no-check-certificate https://localhost:8443/fineract-provider/actuator/health 2>&1 | head -c 100 || echo "Fineract still initializing (will retry on next deploy)"
+            for i in 1 2 3; do
+              echo "Health check attempt $i..."
+              HEALTH=$(wget -qO- --no-check-certificate https://localhost:8443/fineract-provider/actuator/health 2>&1 | head -c 200)
+              echo "$HEALTH"
+              echo "$HEALTH" | grep -q '"UP"' && break
+              [ "$i" -lt 3 ] && sleep 30
+            done
 
             echo "=== Seed Fineract GL (idempotent — skips existing) ==="
-            FINERACT_URL=https://localhost:8443/fineract-provider/api/v1 node "$HTTPDOCS/server/scripts/seed-fineract-gl.js" 2>&1 | tail -5 || echo "GL seed skipped (Fineract may not be ready)"
+            FINERACT_URL=https://localhost:8443/fineract-provider/api/v1 node "$HTTPDOCS/server/scripts/seed-fineract-gl.js" 2>&1 | tail -10 || echo "GL seed skipped (Fineract may not be ready)"
 
             echo "=== Restart PM2 so Fineract connection is live ==="
             su - dlbtrust.cloud_h6zkwzag1ya -c 'pm2 restart dlbtrust-treasury' 2>/dev/null || true
