@@ -37,11 +37,15 @@ jobs:
             PGPASSWORD=postgres psql -h localhost -U postgres -d fineract_tenants -f server/scripts/migrate-postgres-full.sql 2>&1 | tail -5 || echo "migration 1 done or skipped"
             PGPASSWORD=postgres psql -h localhost -U postgres -d fineract_tenants -f server/scripts/migrate-docs-accounting.sql 2>&1 | tail -5 || echo "migration 2 done or skipped"
 
-            echo "=== Restart server-3002 (Treasury Management) ==="
+            echo "=== Stop ALL old processes ==="
             pm2 delete dlbtrust-treasury 2>/dev/null || true
             pm2 delete dlbtrust-3002 2>/dev/null || true
             pm2 delete dlbtrust 2>/dev/null || true
             pm2 delete dlbtrust-full 2>/dev/null || true
+            pm2 delete wealth-platform 2>/dev/null || true
+            pm2 delete server-proxy 2>/dev/null || true
+            pm2 delete proxy3004 2>/dev/null || true
+            echo "=== Start Treasury Management ==="
             fuser -k 3002/tcp 2>/dev/null || true
             fuser -k 3001/tcp 2>/dev/null || true
             sleep 2
