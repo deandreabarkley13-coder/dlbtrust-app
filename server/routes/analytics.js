@@ -54,6 +54,14 @@ router.use((req, res, next) => {
     req.db = null;
     req.dbError = err.message;
   }
+  // Guard: if SQLite DB is unavailable, return a clear message instead of crashing
+  if (!req.db) {
+    return res.status(503).json({
+      success: false,
+      error: 'Analytics database not available',
+      detail: req.dbError || 'trust.db not found — analytics module requires SQLite migration to PostgreSQL',
+    });
+  }
   next();
 });
 
