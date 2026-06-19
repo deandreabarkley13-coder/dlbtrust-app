@@ -17,8 +17,8 @@ services:
       POSTGRES_USER: ${FINERACT_DB_USER:-postgres}
       POSTGRES_PASSWORD: ${FINERACT_DB_PASSWORD:-postgres}
       POSTGRES_DB: fineract_tenants
-    ports:
-      - "5433:5432"
+    # No external port — Fineract connects via Docker internal network (fineract-db:5432)
+    # Avoids port conflicts with other PostgreSQL instances on the host
     volumes:
       - fineract-db-data:/var/lib/postgresql/data
       - ./docker/postgres-init:/docker-entrypoint-initdb.d
