@@ -1,7 +1,6 @@
 "use strict";
-const V2 = "/var/www/vhosts/dlbtrust.cloud/dlbtrust-v2";
-const HD = "/var/www/vhosts/dlbtrust.cloud/httpdocs";
-const express = require(V2 + "/node_modules/express");
+const HD = require("path").resolve(__dirname);
+const express = require("express");
 const path = require("path");
 const fs = require("fs");
 const app = express();
@@ -10,11 +9,7 @@ const PORT = process.env.PORT || 3001;
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
-// Auth routes from v2
-try { require(V2 + "/auth-routes.cjs")(app); console.log("[auth] loaded"); } catch(e) { console.warn("[auth]", e.message); }
-
-// API routes from v2  
-try { require(V2 + "/api-routes.cjs")(app); console.log("[api] loaded"); } catch(e) { console.warn("[api]", e.message); }
+// V2 wealth management routes REMOVED — treasury system is the only platform now
 
 // OpenACH integration
 try { require(HD + "/server/openach-patch")(app, null); console.log("[openach] loaded"); } catch(e) { console.warn("[openach]", e.message); }
@@ -56,12 +51,14 @@ try {
   console.log("[liveEngine] daily accrual scheduler started");
 } catch(e) { console.warn("[liveEngine]", e.message); }
 
-// Treasury Management System — static files from httpdocs/public
-app.use(express.static(path.join(HD, "public")));
-
+// Treasury Management System — serve dashboard at root, static files from public/
 app.get("/", (req, res) => {
   res.sendFile(path.join(HD, "public", "dashboard.html"));
 });
+app.get("/treasury", (req, res) => {
+  res.sendFile(path.join(HD, "public", "dashboard.html"));
+});
+app.use(express.static(path.join(HD, "public")));
 app.get("*", (req, res) => {
   const idx = path.join(HD, "public", "index.html");
   fs.existsSync(idx) ? res.sendFile(idx) : res.status(404).send("Not found");

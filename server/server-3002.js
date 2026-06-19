@@ -4,7 +4,6 @@ var fs = require('fs');
 
 // HD = repo root (httpdocs on production, __dirname/.. locally)
 var HD = path.resolve(__dirname, '..');
-var V2 = '/var/www/vhosts/dlbtrust.cloud/dlbtrust-v2';
 
 // Use local express (installed via npm install in HD)
 var express = require('express');
@@ -14,11 +13,7 @@ var PORT = process.env.PORT || 3002;
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
-// Auth routes from v2 (optional — will warn if v2 not present)
-try { require(V2 + '/auth-routes.cjs')(app); console.log('[auth] loaded'); } catch(e) { console.warn('[auth]', e.message); }
-
-// API routes from v2 (optional — wallets, transactions, etc.)
-try { require(V2 + '/api-routes.cjs')(app); console.log('[api] loaded'); } catch(e) { console.warn('[api]', e.message); }
+// V2 wealth management routes REMOVED — treasury system is the only platform now
 
 // OpenACH routes (legacy — kept for backward compat)
 try { require(path.join(HD, 'server', 'openach-patch'))(app, null); console.log('[openach] loaded'); } catch(e) { console.warn('[openach]', e.message); }
@@ -53,15 +48,14 @@ try { app.use('/api/ach-pipeline', require(path.join(HD, 'server', 'routes', 'ac
 // AS2 Server — open source AS2 messaging (certs, partners, send/receive)
 try { app.use('/api/as2', require(path.join(HD, 'server', 'routes', 'as2'))); console.log('[as2] loaded'); } catch(e) { console.warn('[as2]', e.message); }
 
-// Treasury Management System — static files from public/
-app.use(express.static(path.join(HD, 'public')));
-
+// Treasury Management System — serve dashboard at root, static files from public/
 app.get('/', function(req, res) {
   res.sendFile(path.join(HD, 'public', 'dashboard.html'));
 });
 app.get('/treasury', function(req, res) {
   res.sendFile(path.join(HD, 'public', 'dashboard.html'));
 });
+app.use(express.static(path.join(HD, 'public')));
 app.get('*', function(req, res) {
   var idx = path.join(HD, 'public', 'index.html');
   fs.existsSync(idx) ? res.sendFile(idx) : res.status(404).send('Not found');
