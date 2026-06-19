@@ -168,7 +168,7 @@
     <div class="nav-section">Overview</div>
     <div class="nav-item active" data-page="overview"><span class="icon">📊</span> Dashboard</div>
     <div class="nav-section">Fixed Income</div>
-    <div class="nav-item" data-page="bonds"><span class="icon">📋</span> Bond Portfolio</div>
+    <div class="nav-item" data-page="bonds"><span class="icon">📋</span> Fixed Income Engine</div>
     <div class="nav-section">Banking</div>
     <div class="nav-item" data-page="cash"><span class="icon">💰</span> Cash Management</div>
     <div class="nav-item" data-page="payments"><span class="icon">💸</span> Payments & Disbursements</div>
@@ -223,13 +223,21 @@
     <!-- BONDS PAGE -->
     <div id="page-bonds" class="page hidden">
       <div class="page-header">
-        <div><h1>Bond Portfolio</h1><div class="subtitle">Fixed Income — Live Metrics & Management</div></div>
-        <div class="flex gap-12"><button class="btn btn-success btn-sm" onclick="accrueAll()">Run Accrual</button><button class="btn btn-primary btn-sm" onclick="loadBonds()">Refresh</button></div>
+        <div><h1>Fixed Income Engine</h1><div class="subtitle">Bond Portfolio — Live Metrics, Cashflow & GL Integration</div></div>
+        <div class="flex gap-12"><button class="btn btn-success btn-sm" onclick="accrueAll()">Run Accrual (GL+Accounting)</button><button class="btn btn-primary btn-sm" onclick="loadBonds()">Refresh</button></div>
       </div>
       <div class="grid" id="bonds-summary"></div>
-      <div class="card"><div class="section-title">Portfolio Holdings</div><div class="table-wrap" id="bonds-table-wrap"><p class="loading">Loading...</p></div></div>
-      <div class="card mt-16"><div class="section-title">Live Bond Metrics</div><div id="bonds-live" class="loading">Loading...</div></div>
-      <div class="card mt-16"><div class="section-title">Recent Transactions</div><div class="table-wrap" id="bonds-txn-wrap"><p class="loading">Loading...</p></div></div>
+      <div class="card" id="bonds-gl-status"></div>
+      <div class="tabs mt-16">
+        <div class="tab active" data-tab="bonds-holdings">Holdings</div>
+        <div class="tab" data-tab="bonds-metrics">Live Metrics</div>
+        <div class="tab" data-tab="bonds-cashflow">Cashflow</div>
+        <div class="tab" data-tab="bonds-txns">Transactions</div>
+      </div>
+      <div id="bonds-holdings" class="tab-content active"><div class="card"><div class="section-title">Portfolio Holdings</div><div class="table-wrap" id="bonds-table-wrap"><p class="loading">Loading...</p></div></div></div>
+      <div id="bonds-metrics" class="tab-content"><div class="card"><div class="section-title">Live Bond Metrics</div><div id="bonds-live" class="loading">Loading...</div></div></div>
+      <div id="bonds-cashflow" class="tab-content"><div class="card"><div class="section-title">Integrated Cashflow</div><div id="bonds-cashflow-wrap" class="loading">Loading...</div></div></div>
+      <div id="bonds-txns" class="tab-content"><div class="card"><div class="section-title">Recent Transactions</div><div class="table-wrap" id="bonds-txn-wrap"><p class="loading">Loading...</p></div></div></div>
     </div>
 
     <!-- CASH PAGE -->
@@ -684,52 +692,97 @@
       </tbody></table>`;
     }
 
-    // ─── BONDS ─────────────────────────────────────────────────────────────────
+    // ─── FIXED INCOME ENGINE ──────────────────────────────────────────────────
     async function loadBonds() {
-      const [bonds, live] = await Promise.all([
+      const [bonds, live, fiDash, cashflow] = await Promise.all([
         fetchJSON(API + '/api/bonds'),
         fetchJSON(API + '/api/bonds/portfolio/live'),
+        fetchJSON(API + '/api/bonds/fixed-income/dashboard'),
+        fetchJSON(API + '/api/bonds/fixed-income/cashflow'),
       ]);
       const data = bonds.data || [];
-      let totalPrincipal = 0, totalAccrued = 0, totalPaid = 0;
-      data.forEach(b => { totalPrincipal += parseFloat(b.principal_balance || 0); totalAccrued += parseFloat(b.accrued_interest || 0); totalPaid += parseFloat(b.total_interest_paid || 0); });
+      const portfolio = (fiDash.data || {}).portfolio || {};
+      const glInfo = (fiDash.data || {}).gl_integration || {};
 
       el('bonds-summary').innerHTML = `
-        <div class="card"><div class="card-title">Principal Outstanding</div><div class="card-value">${fmt(totalPrincipal)}</div></div>
-        <div class="card"><div class="card-title">Accrued Interest</div><div class="card-value">${fmt(totalAccrued)}</div></div>
-        <div class="card"><div class="card-title">Total Interest Paid</div><div class="card-value">${fmt(totalPaid)}</div></div>
-        <div class="card"><div class="card-title">Active Bonds</div><div class="card-value">${data.filter(b => b.status === 'active').length}</div></div>
+        <div class="card"><div class="card-title">Principal Outstanding</div><div class="card-value">${fmt(portfolio.total_principal || 0)}</div></div>
+        <div class="card"><div class="card-title">Accrued Interest</div><div class="card-value">${fmt(portfolio.total_accrued_interest || 0)}</div></div>
+        <div class="card"><div class="card-title">Daily Accrual</div><div class="card-value">${fmt(portfolio.daily_accrual || 0)}</div><div class="card-sub">Annual: ${fmt(portfolio.annual_income_estimate || 0)}</div></div>
+        <div class="card"><div class="card-title">Total Interest Paid</div><div class="card-value">${fmt(portfolio.total_interest_paid || 0)}</div></div>
+        <div class="card"><div class="card-title">Wtd Avg Coupon</div><div class="card-value">${portfolio.weighted_avg_coupon_pct || 0}%</div></div>
+        <div class="card"><div class="card-title">Active Bonds</div><div class="card-value">${portfolio.active_bonds || 0}</div></div>
       `;
 
-      el('bonds-table-wrap').innerHTML = data.length ? '<table><thead><tr><th>Bond</th><th>ISIN</th><th>Face Value</th><th>Coupon</th><th>Principal</th><th>Accrued</th><th>Status</th><th>Issue</th><th>Maturity</th></tr></thead><tbody>' + data.map(b => `<tr><td><strong>${esc(b.bond_name)}</strong></td><td>${esc(b.isin)}</td><td class="money">${fmt(b.face_value)}</td><td>${pct(b.coupon_rate)}</td><td class="money">${fmt(b.principal_balance)}</td><td class="money">${fmt(b.accrued_interest)}</td><td><span class="badge badge-active">${esc(b.status)}</span></td><td>${shortDate(b.issue_date)}</td><td>${shortDate(b.maturity_date)}</td></tr>`).join('') + '</tbody></table>' : '<p class="text-muted">No bonds</p>';
+      // GL integration status
+      const glBadge = glInfo.status === 'connected'
+        ? '<span class="badge badge-active">GL Connected</span>'
+        : '<span class="badge badge-error">GL Not Configured</span>';
+      el('bonds-gl-status').innerHTML = `<div class="flex gap-12" style="align-items:center;">${glBadge} <span class="text-muted">${glInfo.journal_mappings || 0} GL mappings active</span></div>`;
 
-      // Live metrics
+      // Holdings table
+      el('bonds-table-wrap').innerHTML = data.length ? '<table><thead><tr><th>Bond</th><th>ISIN</th><th>Face Value</th><th>Coupon</th><th>Principal</th><th>Accrued</th><th>Status</th><th>Issue</th><th>Maturity</th></tr></thead><tbody>' + data.map(b => `<tr><td><strong>${esc(b.bond_name)}</strong></td><td>${esc(b.isin || '')}</td><td class="money">${fmt(b.face_value)}</td><td>${pct(b.coupon_rate)}</td><td class="money">${fmt(b.principal_balance)}</td><td class="money">${fmt(b.accrued_interest)}</td><td><span class="badge badge-active">${esc(b.status)}</span></td><td>${shortDate(b.issue_date)}</td><td>${shortDate(b.maturity_date)}</td></tr>`).join('') + '</tbody></table>' : '<p class="text-muted">No bonds — create one to start generating cashflow</p>';
+
+      // Live metrics — use portfolio-level data from LiveBondEngine
       if (live.success && live.data) {
         const lv = live.data;
         el('bonds-live').innerHTML = `<table><thead><tr><th>Metric</th><th>Value</th></tr></thead><tbody>
-          <tr><td>Yield to Maturity (YTM)</td><td>${lv.ytm_pct != null ? lv.ytm_pct + '%' : '—'}</td></tr>
-          <tr><td>Current Price</td><td>${lv.current_price_decimal != null ? '$' + Number(lv.current_price_decimal).toFixed(4) : '—'}</td></tr>
-          <tr><td>Macaulay Duration</td><td>${lv.macaulay_duration_years != null ? lv.macaulay_duration_years.toFixed(2) + ' years' : '—'}</td></tr>
-          <tr><td>Modified Duration</td><td>${lv.modified_duration != null ? lv.modified_duration.toFixed(4) : '—'}</td></tr>
-          <tr><td>DV01 (Dollar Value of 01)</td><td>${lv.dv01 != null ? fmt(lv.dv01) : '—'}</td></tr>
-          <tr><td>Daily Accrual</td><td>${lv.daily_accrual != null ? fmt(lv.daily_accrual) : '—'}</td></tr>
-          <tr><td>Weighted Yield</td><td>${lv.weighted_yield_pct != null ? lv.weighted_yield_pct + '%' : '—'}</td></tr>
-          <tr><td>Total Current Value</td><td>${lv.total_current_value != null ? fmt(lv.total_current_value) : '—'}</td></tr>
+          <tr><td>Total Face Value</td><td>${fmt(lv.total_face_value || 0)}</td></tr>
+          <tr><td>Total Market Value</td><td>${fmt(lv.total_market_value || 0)}</td></tr>
+          <tr><td>Total Accrued (Live)</td><td>${fmt(lv.total_accrued_interest || 0)}</td></tr>
+          <tr><td>Weighted Avg Coupon</td><td>${lv.weighted_avg_coupon_pct != null ? lv.weighted_avg_coupon_pct + '%' : '—'}</td></tr>
+          <tr><td>Weighted Modified Duration</td><td>${lv.weighted_avg_modified_duration != null ? lv.weighted_avg_modified_duration.toFixed(4) : '—'}</td></tr>
+          <tr><td>Portfolio DV01</td><td>${lv.total_dv01 != null ? fmt(lv.total_dv01) : '—'}</td></tr>
+          <tr><td>Daily Accrual</td><td>${fmt(portfolio.daily_accrual || 0)}</td></tr>
+          <tr><td>Annual Income Estimate</td><td>${fmt(portfolio.annual_income_estimate || 0)}</td></tr>
         </tbody></table>`;
-      } else { el('bonds-live').innerHTML = '<p class="text-muted">Live metrics unavailable</p>'; }
+        // Per-bond metrics
+        if (lv.bonds && lv.bonds.length > 0) {
+          el('bonds-live').innerHTML += '<div class="section-title mt-16">Per-Bond Metrics</div><table><thead><tr><th>Bond</th><th>YTM</th><th>Price</th><th>Duration</th><th>DV01</th><th>Market Value</th></tr></thead><tbody>' + lv.bonds.map(b => `<tr><td><strong>${esc(b.bond_name)}</strong></td><td>${b.ytm_pct}%</td><td>${Number(b.current_price_decimal).toFixed(4)}</td><td>${b.macaulay_duration_years.toFixed(2)}y</td><td>${fmt(b.dv01)}</td><td class="money">${fmt(b.market_value)}</td></tr>`).join('') + '</tbody></table>';
+        }
+      } else { el('bonds-live').innerHTML = '<p class="text-muted">Live metrics unavailable — no active bonds</p>'; }
+
+      // Integrated Cashflow
+      if (cashflow.success && cashflow.data) {
+        const cf = cashflow.data;
+        let cfHtml = '<table><thead><tr><th>Category</th><th>Amount</th></tr></thead><tbody>';
+        cfHtml += `<tr><td><strong>Operating (Bond Interest)</strong></td><td class="money"><strong>${fmt(cf.operating.total)}</strong></td></tr>`;
+        (cf.operating.items || []).forEach(i => {
+          cfHtml += `<tr><td style="padding-left:24px">${esc(i.description)}</td><td class="money">${fmt(i.amount)}</td></tr>`;
+        });
+        cfHtml += `<tr><td><strong>Investing (Principal)</strong></td><td class="money"><strong>${fmt(cf.investing.total)}</strong></td></tr>`;
+        (cf.investing.items || []).forEach(i => {
+          cfHtml += `<tr><td style="padding-left:24px">${esc(i.description)}</td><td class="money">${fmt(i.amount)}</td></tr>`;
+        });
+        if (cf.cash_movements) {
+          cfHtml += `<tr><td><strong>Cash Movements</strong></td><td class="money"><strong>${fmt(cf.cash_movements.net)}</strong></td></tr>`;
+          cfHtml += `<tr><td style="padding-left:24px">Deposits</td><td class="money">${fmt(cf.cash_movements.deposits)}</td></tr>`;
+          cfHtml += `<tr><td style="padding-left:24px">Transfers</td><td class="money">${fmt(cf.cash_movements.transfers)}</td></tr>`;
+        }
+        cfHtml += `<tr style="border-top:2px solid var(--border)"><td><strong>Net Cashflow</strong></td><td class="money"><strong>${fmt(cf.net_cashflow)}</strong></td></tr>`;
+        cfHtml += '</tbody></table>';
+        cfHtml += `<p class="text-muted mt-8">${cf.bond_transactions_count} bond transactions, ${cf.cash_movements_count} cash movements</p>`;
+        el('bonds-cashflow-wrap').innerHTML = cfHtml;
+      } else {
+        el('bonds-cashflow-wrap').innerHTML = '<p class="text-muted">No cashflow data — run accrual or record a payment to generate cashflow</p>';
+      }
 
       // Transactions
       if (data.length > 0) {
         const txns = await fetchJSON(API + '/api/bonds/' + data[0].id + '/transactions');
         const txnData = txns.data || [];
-        el('bonds-txn-wrap').innerHTML = txnData.length ? '<table><thead><tr><th>Date</th><th>Type</th><th>Amount</th><th>Balance</th></tr></thead><tbody>' + txnData.slice(0, 20).map(t => `<tr><td>${shortDate(t.transaction_date)}</td><td><span class="badge badge-info">${esc((t.transaction_type || '').replace(/_/g, ' '))}</span></td><td class="money">${fmt(t.amount)}</td><td class="money">${fmt(t.running_balance)}</td></tr>`).join('') + '</tbody></table>' : '<p class="text-muted">No transactions</p>';
+        el('bonds-txn-wrap').innerHTML = txnData.length ? '<table><thead><tr><th>Date</th><th>Type</th><th>Amount</th><th>Balance</th><th>GL</th></tr></thead><tbody>' + txnData.slice(0, 20).map(t => `<tr><td>${shortDate(t.transaction_date)}</td><td><span class="badge badge-info">${esc((t.transaction_type || '').replace(/_/g, ' '))}</span></td><td class="money">${fmt(t.amount)}</td><td class="money">${fmt(t.running_balance)}</td><td>${t.fineract_txn_id ? '<span class="badge badge-active">GL</span>' : '<span class="text-muted">—</span>'}</td></tr>`).join('') + '</tbody></table>' : '<p class="text-muted">No transactions</p>';
       }
     }
 
     async function accrueAll() {
       if (!adminToken) { alert('Set admin token first (Admin Controls page)'); return; }
-      const r = await fetchJSON(API + '/api/admin/bonds/accrue-all', { method: 'POST', headers: adminHeaders() });
-      alert(r.success ? 'Accrual complete: ' + JSON.stringify(r.data) : 'Error: ' + (r.error || 'Failed'));
+      const r = await fetchJSON(API + '/api/admin/system/accrue-all', { method: 'POST', headers: adminHeaders() });
+      if (r.success) {
+        const d = r.data || {};
+        alert(`Accrual complete: ${d.bonds_processed || 0} bonds, +${fmt(d.total_accrued || 0)} (GL + Accounting integrated)`);
+      } else {
+        alert('Error: ' + (r.error || 'Failed'));
+      }
       loadBonds();
     }
 
@@ -997,19 +1050,32 @@
         <tr style="border-top:2px solid var(--border)"><td><strong>Net Income</strong></td><td class="money"><strong>${fmt(iData.net_income)}</strong></td></tr>
       </tbody></table>`;
 
-      // Cashflow
+      // Cashflow (enriched with bond cashflow from Fixed Income Engine)
       const cfData = cashflow.data || {};
+      const bondCf = cfData.bond_cashflow || {};
       const renderCfSection = (title, section) => {
         let html = `<tr><td><strong>${title}</strong></td><td class="money"><strong>${fmt((section || {}).total)}</strong></td></tr>`;
-        for (const item of (section || {}).items || []) { html += `<tr><td style="padding-left:24px">${esc(item.account_name)}</td><td class="money">${fmt(item.net_flow)}</td></tr>`; }
+        for (const item of (section || {}).items || []) { html += `<tr><td style="padding-left:24px">${esc(item.account_name || item.description)}</td><td class="money">${fmt(item.net_flow || item.amount)}</td></tr>`; }
         return html;
       };
-      el('acct-cashflow-wrap').innerHTML = `<table><tbody>
-        ${renderCfSection('Operating Activities', cfData.operating_activities)}
-        ${renderCfSection('Investing Activities', cfData.investing_activities)}
-        ${renderCfSection('Financing Activities', cfData.financing_activities)}
-        <tr style="border-top:2px solid var(--border)"><td><strong>Net Cash Change</strong></td><td class="money"><strong>${fmt(cfData.net_cash_change)}</strong></td></tr>
-      </tbody></table>`;
+      let cfHtml = '<table><tbody>';
+      cfHtml += renderCfSection('Operating Activities (Journal)', cfData.operating_activities);
+      if (bondCf.operating) {
+        cfHtml += renderCfSection('Operating Activities (Bond Interest)', bondCf.operating);
+      }
+      cfHtml += renderCfSection('Investing Activities (Journal)', cfData.investing_activities);
+      if (bondCf.investing) {
+        cfHtml += renderCfSection('Investing Activities (Bond Principal)', bondCf.investing);
+      }
+      cfHtml += renderCfSection('Financing Activities', cfData.financing_activities);
+      if (bondCf.cash_movements) {
+        cfHtml += `<tr><td><strong>Cash Movements</strong></td><td class="money"><strong>${fmt(bondCf.cash_movements.net)}</strong></td></tr>`;
+        cfHtml += `<tr><td style="padding-left:24px">Deposits</td><td class="money">${fmt(bondCf.cash_movements.deposits)}</td></tr>`;
+        cfHtml += `<tr><td style="padding-left:24px">Transfers</td><td class="money">${fmt(bondCf.cash_movements.transfers)}</td></tr>`;
+      }
+      cfHtml += `<tr style="border-top:2px solid var(--border)"><td><strong>Integrated Net Cashflow</strong></td><td class="money"><strong>${fmt(cfData.integrated_net_cashflow || cfData.net_cash_change)}</strong></td></tr>`;
+      cfHtml += '</tbody></table>';
+      el('acct-cashflow-wrap').innerHTML = cfHtml;
 
       // Periods
       const pData = periods.data || [];

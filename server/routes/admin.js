@@ -16,6 +16,7 @@ const { CashEngine } = require('../integrations/cash/cashEngine');
 const { CrmEngine } = require('../integrations/crm/crmEngine');
 const { LiveBondEngine } = require('../integrations/bonds/liveEngine');
 const { BondEngine } = require('../integrations/bonds/bondEngine');
+const { FixedIncomeOrchestrator } = require('../integrations/bonds/fixedIncomeOrchestrator');
 
 // ─── Admin Auth Middleware ────────────────────────────────────────────────────
 const requireAdmin = (req, res, next) => {
@@ -109,18 +110,12 @@ router.get('/system/gl-summary', async (req, res) => {
 // ─── POST /api/admin/system/accrue-all ────────────────────────────────────────
 router.post('/system/accrue-all', async (req, res) => {
   try {
-    const bonds = await pool.query(`SELECT id, bond_name FROM bonds WHERE status = 'active'`);
-    const results = [];
-    for (const bond of bonds.rows) {
-      try {
-        const r = await BondEngine.accrueInterest(bond.id);
-        results.push({ bond_id: bond.id, bond_name: bond.bond_name, accrued: r.accrued, days: r.days });
-      } catch (err) {
-        results.push({ bond_id: bond.id, bond_name: bond.bond_name, error: err.message });
-      }
-    }
-    await logAdminAction(req, 'accrue_all', 'bonds', null, null, { count: results.length });
-    res.json({ success: true, data: results });
+    const summary = await FixedIncomeOrchestrator.accrueAllWithGL(req.body.toDate);
+    await logAdminAction(req, 'accrue_all', 'bonds', null, null, {
+      count: summary.bonds_processed,
+      total_accrued: summary.total_accrued,
+    });
+    res.json({ success: true, data: summary });
   } catch (err) {
     res.status(500).json({ success: false, error: err.message });
   }
