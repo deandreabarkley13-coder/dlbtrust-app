@@ -210,14 +210,26 @@ jobs:
             HTTPDOCS="/var/www/vhosts/dlbtrust.cloud/httpdocs"
             cd "$HTTPDOCS"
 
-            echo "Cleaning up stale containers..."
-            docker compose down 2>&1 | tail -5 || true
-            docker rm -f fineract fineract-db 2>/dev/null || true
+            # Check if Fineract is already running and healthy — skip recreate if so
+            FINERACT_STATUS=$(docker inspect --format='{{.State.Health.Status}}' fineract 2>/dev/null || echo "missing")
+            echo "Current Fineract status: $FINERACT_STATUS"
 
-            echo "Starting Fineract..."
-            FINERACT_HOST_PORT=8444 docker compose up -d --force-recreate 2>&1 | tail -10
-            echo "Waiting 90s for Fineract to initialize..."
-            sleep 90
+            if [ "$FINERACT_STATUS" = "healthy" ]; then
+              echo "Fineract is already healthy — skipping container recreate"
+              FINERACT_HOST_PORT=8444 docker compose up -d 2>&1 | tail -5
+            else
+              echo "Fineract not healthy ($FINERACT_STATUS) — full recreate..."
+              docker compose down 2>&1 | tail -5 || true
+              docker rm -f fineract fineract-db 2>/dev/null || true
+              FINERACT_HOST_PORT=8444 docker compose up -d --force-recreate 2>&1 | tail -10
+              echo "Waiting for Fineract to initialize (up to 5 min)..."
+              for w in $(seq 1 10); do
+                sleep 30
+                S=$(docker inspect --format='{{.State.Health.Status}}' fineract 2>/dev/null || echo "missing")
+                echo "  [$w/10] Fineract: $S"
+                [ "$S" = "healthy" ] && break
+              done
+            fi
             docker ps --format 'table {{.Names}}\t{{.Status}}' | head -10
 
             echo "=== Verify Fineract ==="
