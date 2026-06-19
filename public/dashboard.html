@@ -824,7 +824,7 @@
       el('doc-generated-wrap').innerHTML = dData.length ? '<table><thead><tr><th>Title</th><th>Template</th><th>Status</th><th>Created</th></tr></thead><tbody>' + dData.map(d => `<tr><td>${esc(d.title || d.document_title)}</td><td>${esc(d.template_id || '—')}</td><td><span class="badge badge-active">${esc(d.status || 'active')}</span></td><td>${shortDate(d.created_at)}</td></tr>`).join('') + '</tbody></table>' : '<p class="text-muted">No documents generated yet</p>';
 
       // Populate template select
-      el('gen-template').innerHTML = tData.map(t => `<option value="${t.id}">${esc(t.template_name)}</option>`).join('');
+      el('gen-template').innerHTML = tData.map(t => `<option value="${t.template_id}">${esc(t.template_name)}</option>`).join('');
     }
 
     async function generateDocument() {
@@ -953,9 +953,10 @@
       // Clients
       if (connected) {
         try {
-          // Fineract /clients not exposed as a route yet — show placeholder
-          el('fineract-clients-wrap').innerHTML = '<p class="text-muted">Fineract connected. Use POST /api/fineract/clients to create clients.</p>';
-        } catch (e) { el('fineract-clients-wrap').innerHTML = '<p class="text-muted">Clients not loaded</p>'; }
+          const clientsRes = await fetchJSON(API + '/api/fineract/clients');
+          const clients = (clientsRes.data && clientsRes.data.pageItems) || clientsRes.data || [];
+          el('fineract-clients-wrap').innerHTML = clients.length ? '<table><thead><tr><th>ID</th><th>Name</th><th>External ID</th><th>Status</th></tr></thead><tbody>' + clients.map(c => `<tr><td>${c.id}</td><td>${esc(c.displayName || (c.firstname + ' ' + c.lastname))}</td><td>${esc(c.externalId || '—')}</td><td><span class="badge badge-active">${esc((c.status || {}).value || 'active')}</span></td></tr>`).join('') + '</tbody></table>' : '<p class="text-muted">No clients yet. Use the form below to create one.</p>';
+        } catch (e) { el('fineract-clients-wrap').innerHTML = '<p class="text-muted">Could not load clients</p>'; }
       } else {
         el('fineract-clients-wrap').innerHTML = '<p class="text-muted">Connect Fineract to manage clients</p>';
       }
