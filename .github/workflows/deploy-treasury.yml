@@ -33,8 +33,10 @@ jobs:
             PM2_HOME="/var/www/vhosts/dlbtrust.cloud/.pm2"
             rm -f "$PM2_HOME/dump.pm2" 2>/dev/null || true
             rm -f "$PM2_HOME/dump.pm2.bak" 2>/dev/null || true
+            fuser -k 3005/tcp 2>/dev/null || true
             fuser -k 3002/tcp 2>/dev/null || true
             fuser -k 3001/tcp 2>/dev/null || true
+            kill $(pgrep -f '/opt/dlbtrust-app/app.js') 2>/dev/null || true
             sleep 2
 
             echo "=== Setup git repo ==="
@@ -91,61 +93,24 @@ jobs:
             echo "Passenger restart signaled"
 
             echo "=== Start Treasury Management ==="
-            PORT=3002 pm2 start "$HTTPDOCS/server/server-3002.js" --name dlbtrust-treasury
+            PORT=3005 pm2 start "$HTTPDOCS/server/server-3002.js" --name dlbtrust-treasury
             pm2 save --force
             sleep 8
             pm2 list
 
             echo "=== Verify Treasury Endpoints ==="
             echo "Dashboard:"
-            curl -s http://localhost:3002/ | head -c 200
+            curl -s http://localhost:3005/ | head -c 200
             echo ""
             echo "Bonds:"
-            curl -s http://localhost:3002/api/bonds | head -c 200
+            curl -s http://localhost:3005/api/bonds | head -c 200
             echo ""
             echo "ACH Pipeline:"
-            curl -s http://localhost:3002/api/ach-pipeline/status | head -c 200
+            curl -s http://localhost:3005/api/ach-pipeline/status | head -c 200
             echo ""
             echo "AS2 Server:"
-            curl -s http://localhost:3002/api/as2/dashboard | head -c 200
+            curl -s http://localhost:3005/api/as2/dashboard | head -c 200
             echo ""
-
-      - name: Diagnose nginx routing
-        uses: appleboy/ssh-action@v1.0.3
-        with:
-          host: 74.208.191.205
-          username: dlbtrust.cloud_h6zkwzag1ya
-          password: Deploy2026!
-          port: 22
-          command_timeout: 60s
-          script: |
-            HTTPDOCS="/var/www/vhosts/dlbtrust.cloud/httpdocs"
-            echo "=== All HTML files over 50KB ==="
-            find "$HTTPDOCS" -name "*.html" -size +50k -exec ls -la {} \; 2>/dev/null
-            echo ""
-            echo "=== All index.html files ==="
-            find "$HTTPDOCS" -name "index.html" -exec ls -la {} \; 2>/dev/null
-            echo ""
-            echo "=== Root directory listing ==="
-            ls -la "$HTTPDOCS/" | head -20
-            echo ""
-            echo "=== Nginx config for this domain ==="
-            cat /etc/nginx/plesk.conf.d/vhosts/dlbtrust.cloud.conf 2>/dev/null | head -60 || echo "no plesk nginx vhost config"
-            echo ""
-            echo "=== Plesk nginx includes ==="
-            find /var/www/vhosts/dlbtrust.cloud/conf/ -type f -exec ls -la {} \; 2>/dev/null
-            echo ""
-            echo "=== vhost_nginx.conf content ==="
-            cat /var/www/vhosts/dlbtrust.cloud/conf/vhost_nginx.conf 2>/dev/null || echo "no vhost_nginx.conf"
-            echo ""
-            echo "=== Listening ports ==="
-            ss -tlnp 2>/dev/null | grep -E "300[12]|8080" || netstat -tlnp 2>/dev/null | grep -E "300[12]|8080" || echo "cannot check ports"
-            echo ""
-            echo "=== Passenger status ==="
-            passenger-status 2>/dev/null || echo "no passenger found"
-            echo ""
-            echo "=== Node processes ==="
-            pgrep -a node 2>/dev/null || echo "no node processes"
 
       - name: Configure nginx + Apache to proxy to treasury
         uses: appleboy/ssh-action@v1.0.3
