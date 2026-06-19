@@ -4,6 +4,46 @@
 -- Creates CRM, Cash Management, Trustee, and Admin tables + seeds DLB-PRB bond.
 -- ─────────────────────────────────────────────────────────────────────────────
 
+-- ─── Bonds (core table) ──────────────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS bonds (
+  id              SERIAL PRIMARY KEY,
+  bond_name       TEXT UNIQUE NOT NULL,
+  isin            TEXT,
+  face_value      NUMERIC(18,2) NOT NULL DEFAULT 0,
+  coupon_rate     NUMERIC(10,6) NOT NULL DEFAULT 0,
+  issue_date      DATE NOT NULL,
+  maturity_date   DATE NOT NULL,
+  payment_freq    TEXT DEFAULT 'monthly' CHECK (payment_freq IN ('monthly','quarterly','semi-annual','annual')),
+  day_count       TEXT DEFAULT '30/360',
+  currency        TEXT DEFAULT 'USD',
+  status          TEXT DEFAULT 'active' CHECK (status IN ('active','matured','called','defaulted')),
+  created_at      TIMESTAMPTZ DEFAULT NOW(),
+  updated_at      TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- ─── Bond Balances ───────────────────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS bond_balances (
+  id                SERIAL PRIMARY KEY,
+  bond_id           INTEGER NOT NULL REFERENCES bonds(id) ON DELETE CASCADE,
+  principal_balance NUMERIC(18,2) NOT NULL DEFAULT 0,
+  accrued_interest  NUMERIC(18,2) NOT NULL DEFAULT 0,
+  last_accrual_date DATE,
+  created_at        TIMESTAMPTZ DEFAULT NOW(),
+  updated_at        TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- ─── Bond Transactions ──────────────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS bond_transactions (
+  id                SERIAL PRIMARY KEY,
+  bond_id           INTEGER NOT NULL REFERENCES bonds(id) ON DELETE CASCADE,
+  transaction_type  TEXT NOT NULL,
+  amount            NUMERIC(18,2) NOT NULL,
+  running_balance   NUMERIC(18,2),
+  description       TEXT,
+  transaction_date  DATE NOT NULL,
+  created_at        TIMESTAMPTZ DEFAULT NOW()
+);
+
 -- ─── Bond Trustees ────────────────────────────────────────────────────────────
 CREATE TABLE IF NOT EXISTS bond_trustees (
   id              SERIAL PRIMARY KEY,

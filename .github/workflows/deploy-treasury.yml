@@ -51,6 +51,12 @@ jobs:
               BACKUP="/var/www/vhosts/dlbtrust.cloud/httpdocs-backup-$(date +%s)"
               mv "$HTTPDOCS" "$BACKUP" 2>/dev/null || true
               git clone "$REPO_URL" "$HTTPDOCS" 2>&1 | tail -5
+              if [ $? -ne 0 ]; then
+                echo "ERROR: git clone failed — restoring backup"
+                rm -rf "$HTTPDOCS" 2>/dev/null || true
+                mv "$BACKUP" "$HTTPDOCS"
+                exit 1
+              fi
               if [ -d "$BACKUP/node_modules" ]; then
                 echo "Copying existing node_modules..."
                 cp -a "$BACKUP/node_modules" "$HTTPDOCS/" 2>/dev/null || true
