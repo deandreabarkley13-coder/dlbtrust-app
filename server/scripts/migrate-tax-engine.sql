@@ -109,6 +109,12 @@ CREATE INDEX IF NOT EXISTS idx_k1_return ON k1_schedules(return_id);
 CREATE INDEX IF NOT EXISTS idx_k1_beneficiary ON k1_schedules(beneficiary_contact_id);
 CREATE INDEX IF NOT EXISTS idx_k1_year ON k1_schedules(tax_year);
 
+-- Clean up any duplicate K-1 rows from prior buggy upsert (ON CONFLICT k1_id never triggered)
+DELETE FROM k1_schedules a USING k1_schedules b
+WHERE a.return_id = b.return_id
+  AND a.beneficiary_contact_id = b.beneficiary_contact_id
+  AND a.id < b.id;
+
 -- Unique constraint for upsert on K-1 regeneration (prevents duplicate rows per beneficiary per return)
 DO $$ BEGIN
   IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'uq_k1_return_beneficiary') THEN
