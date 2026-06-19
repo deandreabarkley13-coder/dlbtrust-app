@@ -109,6 +109,13 @@ CREATE INDEX IF NOT EXISTS idx_k1_return ON k1_schedules(return_id);
 CREATE INDEX IF NOT EXISTS idx_k1_beneficiary ON k1_schedules(beneficiary_contact_id);
 CREATE INDEX IF NOT EXISTS idx_k1_year ON k1_schedules(tax_year);
 
+-- Unique constraint for upsert on K-1 regeneration (prevents duplicate rows per beneficiary per return)
+DO $$ BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'uq_k1_return_beneficiary') THEN
+    ALTER TABLE k1_schedules ADD CONSTRAINT uq_k1_return_beneficiary UNIQUE (return_id, beneficiary_contact_id);
+  END IF;
+END $$;
+
 -- ─── Tax Payments / Estimated Payments ──────────────────────────────────────
 CREATE TABLE IF NOT EXISTS tax_payments (
   id              SERIAL PRIMARY KEY,
