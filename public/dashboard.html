@@ -757,7 +757,7 @@
       const as2cfg = s.as2_config || {};
       el('ach-status-cards').innerHTML = `
         <div class="card"><div class="card-title">AS2 Configured</div><div class="card-value">${as2cfg.configured ? 'Yes' : 'No'}</div></div>
-        <div class="card"><div class="card-title">Partner AS2 ID</div><div class="card-value" style="font-size:14px">${esc(as2cfg.partner_as2_id || '—')}</div></div>
+        <div class="card"><div class="card-title">Partner AS2 ID</div><div class="card-value" style="font-size:14px">${esc(as2cfg.active_partner ? as2cfg.active_partner.as2_id : as2cfg.partner_as2_id || '—')}</div><div class="card-sub">${as2cfg.db_partners ? as2cfg.db_partners + ' DB partner(s)' : ''}</div></div>
         <div class="card"><div class="card-title">Signing Cert</div><div class="card-value">${as2cfg.has_signing_cert ? 'Yes' : 'No'}</div></div>
         <div class="card"><div class="card-title">ODFI Routing</div><div class="card-value" style="font-size:14px">${esc(s.odfi_routing || '241075470')}</div></div>
       `;
@@ -783,7 +783,7 @@
       `;
 
       const pData = partners.data || [];
-      el('as2-partners-wrap').innerHTML = pData.length ? '<table><thead><tr><th>Name</th><th>AS2 ID</th><th>URL</th><th>Status</th></tr></thead><tbody>' + pData.map(p => `<tr><td>${esc(p.partner_name)}</td><td><code>${esc(p.as2_id)}</code></td><td style="max-width:200px;overflow:hidden;text-overflow:ellipsis">${esc(p.endpoint_url)}</td><td><span class="badge badge-active">${esc(p.status || 'active')}</span></td></tr>`).join('') + '</tbody></table>' : '<p class="text-muted">No trading partners configured</p>';
+      el('as2-partners-wrap').innerHTML = pData.length ? '<table><thead><tr><th>Name</th><th>AS2 ID</th><th>URL</th><th>Status</th></tr></thead><tbody>' + pData.map(p => `<tr><td>${esc(p.name)}</td><td><code>${esc(p.as2_identifier)}</code></td><td style="max-width:200px;overflow:hidden;text-overflow:ellipsis">${esc(p.endpoint_url)}</td><td><span class="badge badge-active">${esc(p.status || 'active')}</span></td></tr>`).join('') + '</tbody></table>' : '<p class="text-muted">No trading partners configured</p>';
 
       const cData = certs.data || [];
       el('as2-certs-wrap').innerHTML = cData.length ? '<table><thead><tr><th>Alias</th><th>Type</th><th>Created</th></tr></thead><tbody>' + cData.map(c => `<tr><td><code>${esc(c.alias)}</code></td><td>${esc(c.type || 'RSA')}</td><td>${shortDate(c.created_at)}</td></tr>`).join('') + '</tbody></table>' : '<p class="text-muted">No certificates. Generate a keypair to get started.</p>';
@@ -794,7 +794,7 @@
 
     function showAddPartner() { el('as2-add-partner').classList.toggle('hidden'); }
     async function addAS2Partner() {
-      const r = await fetchJSON(API + '/api/as2/partners', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ partner_name: el('as2-partner-name').value, as2_id: el('as2-partner-id').value, endpoint_url: el('as2-partner-url').value }) });
+      const r = await fetchJSON(API + '/api/as2/partners', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: el('as2-partner-name').value, as2Id: el('as2-partner-id').value, url: el('as2-partner-url').value }) });
       if (r.success) { el('as2-add-partner').classList.add('hidden'); loadAS2(); } else { alert('Error: ' + (r.error || 'Failed')); }
     }
     async function generateCert() {
