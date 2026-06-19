@@ -1,8 +1,6 @@
-name: Deploy Proxy 3002
+name: Deploy Proxy 3002 (DEPRECATED — use deploy-treasury.yml)
 on:
   workflow_dispatch:
-  push:
-    branches: [main]
 jobs:
   deploy:
     runs-on: ubuntu-latest
