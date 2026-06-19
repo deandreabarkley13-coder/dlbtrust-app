@@ -27,26 +27,14 @@ jobs:
             HTTPDOCS="/var/www/vhosts/dlbtrust.cloud/httpdocs"
             REPO_URL="https://github.com/deandreabarkley13-coder/dlbtrust-app.git"
 
-            echo "=== Stop ALL old processes ==="
+            echo "=== Stop our PM2 processes ==="
             pm2 delete all 2>/dev/null || true
             pm2 kill 2>/dev/null || true
             PM2_HOME="/var/www/vhosts/dlbtrust.cloud/.pm2"
             rm -f "$PM2_HOME/dump.pm2" 2>/dev/null || true
             rm -f "$PM2_HOME/dump.pm2.bak" 2>/dev/null || true
-
-            echo "=== Kill whatever is on port 3005 (SIGKILL) ==="
-            STALE_PID=$(fuser 3005/tcp 2>/dev/null | awk '{print $1}')
-            if [ -n "$STALE_PID" ]; then
-              echo "Port 3005 owned by PID $STALE_PID — killing with SIGKILL"
-              kill -9 $STALE_PID 2>/dev/null || true
-              sleep 2
-            fi
-            fuser -k -9 3005/tcp 2>/dev/null || true
-            fuser -k 3002/tcp 2>/dev/null || true
-            fuser -k 3001/tcp 2>/dev/null || true
-            sleep 2
-            echo "Port 3005 after cleanup:"
-            ss -tlnp 2>/dev/null | grep 3005 && echo "WARNING: port 3005 still in use!" || echo "port 3005 is clear"
+            fuser -k 3007/tcp 2>/dev/null || true
+            sleep 1
 
             echo "=== Setup git repo ==="
             if [ -d "$HTTPDOCS/.git" ]; then
@@ -101,29 +89,24 @@ jobs:
             touch "$HTTPDOCS/tmp/restart.txt"
             echo "Passenger restart signaled"
 
-            echo "=== Final port 3005 check before start ==="
-            fuser -k 3005/tcp 2>/dev/null || true
-            sleep 1
-            ss -tlnp 2>/dev/null | grep 3005 && echo "WARNING: port 3005 still occupied!" || echo "Port 3005 is clear — starting treasury"
-
-            echo "=== Start Treasury Management ==="
-            PORT=3005 pm2 start "$HTTPDOCS/server/server-3002.js" --name dlbtrust-treasury --env PORT=3005
+            echo "=== Start Treasury Management on port 3007 ==="
+            PORT=3007 pm2 start "$HTTPDOCS/server/server-3002.js" --name dlbtrust-treasury
             pm2 save --force
             sleep 8
             pm2 list
 
             echo "=== Verify Treasury Endpoints ==="
             echo "Dashboard:"
-            curl -s http://localhost:3005/ | head -c 200
+            curl -s http://localhost:3007/ | head -c 200
             echo ""
             echo "Bonds:"
-            curl -s http://localhost:3005/api/bonds | head -c 200
+            curl -s http://localhost:3007/api/bonds | head -c 200
             echo ""
             echo "ACH Pipeline:"
-            curl -s http://localhost:3005/api/ach-pipeline/status | head -c 200
+            curl -s http://localhost:3007/api/ach-pipeline/status | head -c 200
             echo ""
             echo "AS2 Server:"
-            curl -s http://localhost:3005/api/as2/dashboard | head -c 200
+            curl -s http://localhost:3007/api/as2/dashboard | head -c 200
             echo ""
 
       - name: Configure nginx + Apache to proxy to treasury
@@ -140,8 +123,8 @@ jobs:
             cat > "$CONF_DIR/vhost.conf" << 'VHOSTEOF'
             ProxyRequests Off
             ProxyPreserveHost On
-            ProxyPass / http://localhost:3005/
-            ProxyPassReverse / http://localhost:3005/
+            ProxyPass / http://localhost:3007/
+            ProxyPassReverse / http://localhost:3007/
             <Proxy *>
                 Order deny,allow
                 Allow from all
@@ -149,13 +132,13 @@ jobs:
             </Proxy>
             RewriteEngine On
             RewriteCond %{HTTP:Upgrade} websocket [NC]
-            RewriteRule ^/?(.*) ws://localhost:3005/$1 [P,L]
+            RewriteRule ^/?(.*) ws://localhost:3007/$1 [P,L]
             VHOSTEOF
             echo "Apache vhost.conf updated"
 
             cat > "$CONF_DIR/vhost_nginx.conf" << 'NGINXEOF'
             location / {
-                proxy_pass http://127.0.0.1:3005;
+                proxy_pass http://127.0.0.1:3007;
                 proxy_http_version 1.1;
                 proxy_set_header Upgrade $http_upgrade;
                 proxy_set_header Connection "upgrade";
@@ -167,13 +150,35 @@ jobs:
                 proxy_buffering off;
             }
             NGINXEOF
-            echo "Nginx vhost_nginx.conf updated — ALL traffic proxied to Express:3005"
+            echo "Nginx vhost_nginx.conf updated — ALL traffic proxied to Express:3007"
 
             rm -rf /var/cache/nginx/* 2>/dev/null || true
             rm -rf /tmp/nginx_cache/* 2>/dev/null || true
             echo "Nginx cache cleared"
 
-      - name: Rebuild Apache + Nginx via Plesk
+      - name: Update Plesk nginx proxy target to port 3007
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: 74.208.191.205
+          username: admin
+          password: ${{ env.PLESK_PASS }}
+          port: 22
+          command_timeout: 60s
+          script: |
+            NGINX_CONF="/etc/nginx/plesk.conf.d/vhosts/dlbtrust.cloud.conf"
+            echo "=== Current proxy_pass targets ==="
+            grep -n "proxy_pass" "$NGINX_CONF" 2>/dev/null | head -10 || echo "config not found"
+
+            echo "=== Updating proxy_pass from 3005 to 3007 ==="
+            sed -i 's|proxy_pass http://127.0.0.1:3005;|proxy_pass http://127.0.0.1:3007;|g' "$NGINX_CONF" 2>/dev/null || echo "sed failed"
+
+            echo "=== Verify update ==="
+            grep -n "proxy_pass" "$NGINX_CONF" 2>/dev/null | head -10
+
+            echo "=== Restart nginx ==="
+            systemctl reload nginx 2>/dev/null || nginx -s reload 2>/dev/null || service nginx restart 2>/dev/null || echo "nginx restart via systemctl"
+
+      - name: Rebuild Apache via Plesk
         run: |
           curl -sk --max-time 30 \
             "https://$SERVER:8443/enterprise/control/agent.php" \
@@ -181,14 +186,6 @@ jobs:
             -H "Content-Type: text/xml" \
             -d '<?xml version="1.0"?><packet version="1.6.9.1">
               <server><srv_man><restart><service>httpd</service></restart></srv_man></server>
-            </packet>' | head -c 200
-          echo ""
-          curl -sk --max-time 30 \
-            "https://$SERVER:8443/enterprise/control/agent.php" \
-            -H "HTTP_AUTH_LOGIN: admin" -H "HTTP_AUTH_PASSWD: $PLESK_PASS" \
-            -H "Content-Type: text/xml" \
-            -d '<?xml version="1.0"?><packet version="1.6.9.1">
-              <server><srv_man><restart><service>nginx</service></restart></srv_man></server>
             </packet>' | head -c 200
           echo ""
 
