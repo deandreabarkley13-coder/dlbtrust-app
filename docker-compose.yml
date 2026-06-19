@@ -5,7 +5,7 @@
 # Usage:
 #   docker compose up -d
 #   Wait ~60s for Fineract to finish initialization, then:
-#   curl -k https://localhost:8443/fineract-provider/api/v1/offices?tenantIdentifier=default
+#   curl -k https://localhost:8444/fineract-provider/api/v1/offices?tenantIdentifier=default
 
 services:
   # ─── PostgreSQL 16 — Fineract database ────────────────────────────────────
@@ -48,7 +48,7 @@ services:
       - FINERACT_DEFAULT_TENANTDB_NAME=fineract_default
       - JAVA_TOOL_OPTIONS=-Xmx512m
     ports:
-      - "8443:8443"
+      - "${FINERACT_HOST_PORT:-8443}:8443"  # Use 8444 on production (8443 taken by OBP)
     healthcheck:
       test: ["CMD-SHELL", "wget -qO- --no-check-certificate https://localhost:8443/fineract-provider/actuator/health || exit 1"]
       interval: 15s
