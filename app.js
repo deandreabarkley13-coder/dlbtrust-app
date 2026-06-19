@@ -52,6 +52,12 @@ app.use('/api/crm', require('./server/routes/crm'));
 // ─── Admin Control Routes ────────────────────────────────────────────────────
 app.use('/api/admin', require('./server/routes/admin'));
 
+// ─── Document Management Routes ──────────────────────────────────────────────
+app.use('/api/documents', require('./server/routes/documents'));
+
+// ─── Trust Accounting Routes ─────────────────────────────────────────────────
+app.use('/api/accounting', require('./server/routes/accounting'));
+
 // ─── Live Bond Accrual Scheduler ─────────────────────────────────────────────
 try {
   const { LiveBondEngine } = require('./server/integrations/bonds/liveEngine');

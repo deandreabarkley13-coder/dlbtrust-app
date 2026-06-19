@@ -37,6 +37,12 @@ try { app.use('/api/crm', require(HD + '/server/routes/crm')); console.log('[crm
 // Admin Control routes
 try { app.use('/api/admin', require(HD + '/server/routes/admin')); console.log('[admin] loaded'); } catch(e) { console.warn('[admin]', e.message); }
 
+// Document Management routes
+try { app.use('/api/documents', require(HD + '/server/routes/documents')); console.log('[documents] loaded'); } catch(e) { console.warn('[documents]', e.message); }
+
+// Trust Accounting routes
+try { app.use('/api/accounting', require(HD + '/server/routes/accounting')); console.log('[accounting] loaded'); } catch(e) { console.warn('[accounting]', e.message); }
+
 // Static files from v2 dist
 app.use(express.static(path.join(V2, 'dist', 'public')));
 app.use('/assets', express.static(path.join(V2, 'dist', 'public', 'assets')));
