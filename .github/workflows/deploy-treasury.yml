@@ -126,8 +126,8 @@ jobs:
             cat > "$CONF_DIR/vhost.conf" << 'VHOSTEOF'
             ProxyRequests Off
             ProxyPreserveHost On
-            ProxyPass / http://localhost:3002/
-            ProxyPassReverse / http://localhost:3002/
+            ProxyPass / http://localhost:3005/
+            ProxyPassReverse / http://localhost:3005/
             <Proxy *>
                 Order deny,allow
                 Allow from all
@@ -135,13 +135,13 @@ jobs:
             </Proxy>
             RewriteEngine On
             RewriteCond %{HTTP:Upgrade} websocket [NC]
-            RewriteRule ^/?(.*) ws://localhost:3002/$1 [P,L]
+            RewriteRule ^/?(.*) ws://localhost:3005/$1 [P,L]
             VHOSTEOF
             echo "Apache vhost.conf updated"
 
             cat > "$CONF_DIR/vhost_nginx.conf" << 'NGINXEOF'
             location / {
-                proxy_pass http://127.0.0.1:3002;
+                proxy_pass http://127.0.0.1:3005;
                 proxy_http_version 1.1;
                 proxy_set_header Upgrade $http_upgrade;
                 proxy_set_header Connection "upgrade";
@@ -153,7 +153,7 @@ jobs:
                 proxy_buffering off;
             }
             NGINXEOF
-            echo "Nginx vhost_nginx.conf updated — ALL traffic proxied to Express:3002"
+            echo "Nginx vhost_nginx.conf updated — ALL traffic proxied to Express:3005"
 
             rm -rf /var/cache/nginx/* 2>/dev/null || true
             rm -rf /tmp/nginx_cache/* 2>/dev/null || true
