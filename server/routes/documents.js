@@ -149,41 +149,8 @@ router.post('/', async (req, res) => {
   }
 });
 
-// ─── GET /api/documents/:id ──────────────────────────────────────────────────
-router.get('/:id', async (req, res) => {
-  try {
-    const doc = await DocumentEngine.getDocument(req.params.id);
-    if (!doc) return res.status(404).json({ success: false, error: `Document ${req.params.id} not found` });
-    res.json({ success: true, data: doc });
-  } catch (err) {
-    res.status(500).json({ success: false, error: err.message });
-  }
-});
-
-// ─── PUT /api/documents/:id ──────────────────────────────────────────────────
-router.put('/:id', async (req, res) => {
-  try {
-    const doc = await DocumentEngine.updateDocument(req.params.id, req.body);
-    res.json({ success: true, data: doc });
-  } catch (err) {
-    const status = err.message.includes('not found') ? 404 : 500;
-    res.status(status).json({ success: false, error: err.message });
-  }
-});
-
-// ─── POST /api/documents/:id/archive ─────────────────────────────────────────
-router.post('/:id/archive', async (req, res) => {
-  try {
-    const doc = await DocumentEngine.archiveDocument(req.params.id);
-    res.json({ success: true, data: doc });
-  } catch (err) {
-    const status = err.message.includes('not found') ? 404 : 500;
-    res.status(status).json({ success: false, error: err.message });
-  }
-});
-
 // ═══════════════════════════════════════════════════════════════════════════════
-// GENERATION
+// GENERATION (registered before /:id to avoid Express param shadowing)
 // ═══════════════════════════════════════════════════════════════════════════════
 
 // ─── GET /api/documents/generation/stats ──────────────────────────────────────
@@ -252,6 +219,43 @@ router.get('/generations/:id', async (req, res) => {
     res.json({ success: true, data: gen });
   } catch (err) {
     res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// DOCUMENT CRUD (parameterized routes last)
+// ═══════════════════════════════════════════════════════════════════════════════
+
+// ─── GET /api/documents/:id ──────────────────────────────────────────────────
+router.get('/:id', async (req, res) => {
+  try {
+    const doc = await DocumentEngine.getDocument(req.params.id);
+    if (!doc) return res.status(404).json({ success: false, error: `Document ${req.params.id} not found` });
+    res.json({ success: true, data: doc });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// ─── PUT /api/documents/:id ──────────────────────────────────────────────────
+router.put('/:id', async (req, res) => {
+  try {
+    const doc = await DocumentEngine.updateDocument(req.params.id, req.body);
+    res.json({ success: true, data: doc });
+  } catch (err) {
+    const status = err.message.includes('not found') ? 404 : 500;
+    res.status(status).json({ success: false, error: err.message });
+  }
+});
+
+// ─── POST /api/documents/:id/archive ─────────────────────────────────────────
+router.post('/:id/archive', async (req, res) => {
+  try {
+    const doc = await DocumentEngine.archiveDocument(req.params.id);
+    res.json({ success: true, data: doc });
+  } catch (err) {
+    const status = err.message.includes('not found') ? 404 : 500;
+    res.status(status).json({ success: false, error: err.message });
   }
 });
 

@@ -364,24 +364,60 @@ class TrustAccountingEngine {
     };
   }
 
+  static async getAccountBalancesAsOf(asOfDate, accountTypes) {
+    const typeList = accountTypes.map((_, i) => `$${i + 1}`).join(', ');
+    const params = [...accountTypes];
+    let dateFilter = '';
+    if (asOfDate) {
+      dateFilter = `AND je.entry_date <= $${params.length + 1}`;
+      params.push(asOfDate);
+    }
+
+    const result = await pool.query(`
+      SELECT
+        ta.account_code,
+        ta.account_name,
+        ta.account_type,
+        ta.sub_type,
+        COALESCE(SUM(
+          CASE WHEN ta.account_type IN ('asset','expense')
+               THEN jl.debit_amount - jl.credit_amount
+               ELSE jl.credit_amount - jl.debit_amount
+          END
+        ), 0) AS computed_balance
+      FROM trust_accounts ta
+      LEFT JOIN trust_journal_lines jl ON jl.account_code = ta.account_code
+      LEFT JOIN trust_journal_entries je ON je.entry_id = jl.entry_id
+        AND je.status = 'posted' ${dateFilter}
+      WHERE ta.is_active = TRUE AND ta.account_type IN (${typeList})
+      GROUP BY ta.account_code, ta.account_name, ta.account_type, ta.sub_type
+      ORDER BY ta.account_code
+    `, params);
+    return result.rows;
+  }
+
   static async getBalanceSheet({ asOfDate } = {}) {
-    const accounts = await TrustAccountingEngine.listAccounts({ isActive: true });
+    const accounts = await TrustAccountingEngine.getAccountBalancesAsOf(
+      asOfDate, ['asset', 'liability', 'equity']
+    );
 
     const assets = accounts.filter(a => a.account_type === 'asset');
     const liabilities = accounts.filter(a => a.account_type === 'liability');
     const equity = accounts.filter(a => a.account_type === 'equity');
 
-    const sumBalance = (arr) => arr.reduce((s, a) => s + parseFloat(a.balance), 0);
+    const sumBalance = (arr) => arr.reduce((s, a) => s + parseFloat(a.computed_balance), 0);
 
     const totalAssets = sumBalance(assets);
     const totalLiabilities = sumBalance(liabilities);
     const totalEquity = sumBalance(equity);
 
+    const mapAcct = (a) => ({ account_code: a.account_code, account_name: a.account_name, sub_type: a.sub_type, balance: parseFloat(a.computed_balance) });
+
     return {
       as_of_date: asOfDate || new Date().toISOString().split('T')[0],
-      assets: assets.map(a => ({ account_code: a.account_code, account_name: a.account_name, sub_type: a.sub_type, balance: parseFloat(a.balance) })),
-      liabilities: liabilities.map(a => ({ account_code: a.account_code, account_name: a.account_name, sub_type: a.sub_type, balance: parseFloat(a.balance) })),
-      equity: equity.map(a => ({ account_code: a.account_code, account_name: a.account_name, sub_type: a.sub_type, balance: parseFloat(a.balance) })),
+      assets: assets.map(mapAcct),
+      liabilities: liabilities.map(mapAcct),
+      equity: equity.map(mapAcct),
       total_assets: Math.round(totalAssets * 100) / 100,
       total_liabilities: Math.round(totalLiabilities * 100) / 100,
       total_equity: Math.round(totalEquity * 100) / 100,
@@ -392,22 +428,54 @@ class TrustAccountingEngine {
   }
 
   static async getIncomeStatement({ fromDate, toDate } = {}) {
-    const accounts = await TrustAccountingEngine.listAccounts({ isActive: true });
+    const conditions = ['je.status = \'posted\''];
+    const params = ['income', 'expense'];
+    let idx = 3;
 
-    const income = accounts.filter(a => a.account_type === 'income');
-    const expenses = accounts.filter(a => a.account_type === 'expense');
+    if (fromDate) { conditions.push(`je.entry_date >= $${idx++}`); params.push(fromDate); }
+    if (toDate) { conditions.push(`je.entry_date <= $${idx++}`); params.push(toDate); }
 
-    const sumBalance = (arr) => arr.reduce((s, a) => s + parseFloat(a.balance), 0);
+    const dateFilter = conditions.length > 1
+      ? 'AND ' + conditions.slice(1).join(' AND ')
+      : '';
+
+    const result = await pool.query(`
+      SELECT
+        ta.account_code,
+        ta.account_name,
+        ta.account_type,
+        ta.sub_type,
+        COALESCE(SUM(
+          CASE WHEN ta.account_type = 'expense'
+               THEN jl.debit_amount - jl.credit_amount
+               ELSE jl.credit_amount - jl.debit_amount
+          END
+        ), 0) AS computed_balance
+      FROM trust_accounts ta
+      LEFT JOIN trust_journal_lines jl ON jl.account_code = ta.account_code
+      LEFT JOIN trust_journal_entries je ON je.entry_id = jl.entry_id
+        AND je.status = 'posted' ${dateFilter}
+      WHERE ta.is_active = TRUE AND ta.account_type IN ($1, $2)
+      GROUP BY ta.account_code, ta.account_name, ta.account_type, ta.sub_type
+      ORDER BY ta.account_code
+    `, params);
+
+    const income = result.rows.filter(a => a.account_type === 'income');
+    const expenses = result.rows.filter(a => a.account_type === 'expense');
+
+    const sumBalance = (arr) => arr.reduce((s, a) => s + parseFloat(a.computed_balance), 0);
 
     const totalIncome = sumBalance(income);
     const totalExpenses = sumBalance(expenses);
     const netIncome = totalIncome - totalExpenses;
 
+    const mapAcct = (a) => ({ account_code: a.account_code, account_name: a.account_name, sub_type: a.sub_type, balance: parseFloat(a.computed_balance) });
+
     return {
       period_start: fromDate || null,
       period_end: toDate || new Date().toISOString().split('T')[0],
-      income: income.map(a => ({ account_code: a.account_code, account_name: a.account_name, sub_type: a.sub_type, balance: parseFloat(a.balance) })),
-      expenses: expenses.map(a => ({ account_code: a.account_code, account_name: a.account_name, sub_type: a.sub_type, balance: parseFloat(a.balance) })),
+      income: income.map(mapAcct),
+      expenses: expenses.map(mapAcct),
       total_income: Math.round(totalIncome * 100) / 100,
       total_expenses: Math.round(totalExpenses * 100) / 100,
       net_income: Math.round(netIncome * 100) / 100,

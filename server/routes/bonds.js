@@ -196,8 +196,9 @@ router.post('/:id/issue', async (req, res) => {
     return res.status(400).json({ error: 'Required: investorContactId, settlementDate, subscriptionAmount' });
   }
 
-  const client = await pool.connect();
+  let client;
   try {
+    client = await pool.connect();
     await client.query('BEGIN');
 
     const bondId = parseInt(req.params.id, 10);
@@ -219,7 +220,9 @@ router.post('/:id/issue', async (req, res) => {
       );
     }
 
-    // Post GL entry for issuance
+    await client.query('COMMIT');
+
+    // Post GL entry after commit (follows BondEngine pattern)
     try {
       await FineractClient.postJournalEntry({
         officeId: 1,
@@ -232,13 +235,12 @@ router.post('/:id/issue', async (req, res) => {
       console.warn('[bonds/issue] GL post failed:', glErr.message);
     }
 
-    await client.query('COMMIT');
     res.json({ success: true, data: { subscription_id: subscriptionId, bond_id: bondId } });
   } catch (err) {
-    await client.query('ROLLBACK');
+    if (client) await client.query('ROLLBACK');
     res.status(500).json({ success: false, error: err.message });
   } finally {
-    client.release();
+    if (client) client.release();
   }
 });
 
