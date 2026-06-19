@@ -509,11 +509,12 @@ class TrustAccountingEngine {
     const dateFilter = dateConditions.join(' AND ');
 
     // Operating: cash movements tied to income/expense accounts
+    // Use credit - debit for all: income accounts naturally have net positive
+    // (credits > debits), expense accounts naturally have net negative
+    // (debits > credits), giving correct cashflow sign convention.
     const operating = await pool.query(`
       SELECT ta.account_code, ta.account_name, ta.account_type, ta.sub_type,
-        COALESCE(SUM(CASE WHEN ta.account_type = 'expense'
-                      THEN jl.debit_amount - jl.credit_amount
-                      ELSE jl.credit_amount - jl.debit_amount END), 0) AS net_flow
+        COALESCE(SUM(jl.credit_amount - jl.debit_amount), 0) AS net_flow
       FROM trust_journal_lines jl
       JOIN trust_journal_entries je ON je.entry_id = jl.entry_id
       JOIN trust_accounts ta ON ta.account_code = jl.account_code

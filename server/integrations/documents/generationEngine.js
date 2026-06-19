@@ -239,12 +239,15 @@ class GenerationEngine {
           [bondId]
         );
         if (bondResult.rows.length === 0) throw new Error(`Bond ${bondId} not found`);
+        const txnConditions = ['bond_id = $1'];
+        const txnParams = [bondId];
+        let txnIdx = 2;
+        if (fromDate) { txnConditions.push(`transaction_date >= $${txnIdx++}`); txnParams.push(fromDate); }
+        if (toDate) { txnConditions.push(`transaction_date <= $${txnIdx++}`); txnParams.push(toDate); }
         const txnResult = await pool.query(
-          `SELECT * FROM bond_transactions WHERE bond_id = $1
-           ${fromDate ? "AND transaction_date >= '" + fromDate + "'" : ''}
-           ${toDate ? "AND transaction_date <= '" + toDate + "'" : ''}
+          `SELECT * FROM bond_transactions WHERE ${txnConditions.join(' AND ')}
            ORDER BY transaction_date DESC, id DESC LIMIT 100`,
-          [bondId]
+          txnParams
         );
         reportData = { bond: bondResult.rows[0], transactions: txnResult.rows };
         renderedOutput = GenerationEngine._renderBondStatement(reportData, fromDate, toDate);
