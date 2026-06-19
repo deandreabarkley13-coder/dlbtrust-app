@@ -36,12 +36,17 @@ jobs:
             echo "=== Run migrations ==="
             PGPASSWORD=postgres psql -h localhost -U postgres -d fineract_tenants -f server/scripts/migrate-postgres-full.sql 2>&1 | tail -5 || echo "migration 1 done or skipped"
             PGPASSWORD=postgres psql -h localhost -U postgres -d fineract_tenants -f server/scripts/migrate-docs-accounting.sql 2>&1 | tail -5 || echo "migration 2 done or skipped"
+            PGPASSWORD=postgres psql -h localhost -U postgres -d fineract_tenants -f server/scripts/migrate-ach.sql 2>&1 | tail -5 || echo "migration 3 (ACH) done or skipped"
 
-            echo "=== Restart server-3002 (Treasury Management) ==="
+            echo "=== Stop ALL old processes ==="
             pm2 delete dlbtrust-treasury 2>/dev/null || true
             pm2 delete dlbtrust-3002 2>/dev/null || true
             pm2 delete dlbtrust 2>/dev/null || true
             pm2 delete dlbtrust-full 2>/dev/null || true
+            pm2 delete wealth-platform 2>/dev/null || true
+            pm2 delete server-proxy 2>/dev/null || true
+            pm2 delete proxy3004 2>/dev/null || true
+            echo "=== Start Treasury Management ==="
             fuser -k 3002/tcp 2>/dev/null || true
             fuser -k 3001/tcp 2>/dev/null || true
             sleep 2
@@ -69,6 +74,9 @@ jobs:
             echo ""
             echo "Accounting:"
             curl -s http://localhost:3002/api/accounting/dashboard | head -c 100
+            echo ""
+            echo "ACH Pipeline:"
+            curl -s http://localhost:3002/api/ach-pipeline/status | head -c 100
             echo ""
 
       - name: Update Apache vhost to proxy to treasury
@@ -122,4 +130,7 @@ jobs:
           echo ""
           echo "Accounting API:"
           curl -sk --resolve "dlbtrust.cloud:443:$S" https://dlbtrust.cloud/api/accounting/dashboard | head -c 100
+          echo ""
+          echo "ACH Pipeline API:"
+          curl -sk --resolve "dlbtrust.cloud:443:$S" https://dlbtrust.cloud/api/ach-pipeline/status | head -c 100
           echo ""

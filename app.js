@@ -58,6 +58,9 @@ app.use('/api/documents', require('./server/routes/documents'));
 // ─── Trust Accounting Routes ─────────────────────────────────────────────────
 app.use('/api/accounting', require('./server/routes/accounting'));
 
+// ─── ACH Pipeline — NACHA generation + AS2 transmission ─────────────────────
+app.use('/api/ach-pipeline', require('./server/routes/achPipeline'));
+
 // ─── Live Bond Accrual Scheduler ─────────────────────────────────────────────
 try {
   const { LiveBondEngine } = require('./server/integrations/bonds/liveEngine');
