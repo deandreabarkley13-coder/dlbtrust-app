@@ -27,55 +27,26 @@ jobs:
             HTTPDOCS="/var/www/vhosts/dlbtrust.cloud/httpdocs"
             REPO_URL="https://github.com/deandreabarkley13-coder/dlbtrust-app.git"
 
-            echo "=== Diagnose stale process ==="
-            echo "Processes on port 3005:"
-            ss -tlnp 2>/dev/null | grep 3005 || echo "nothing on 3005"
-            echo "Node processes:"
-            pgrep -a node 2>/dev/null | head -10 || echo "no node"
-            echo "Systemd services with dlbtrust or app.js:"
-            systemctl list-units --type=service --all 2>/dev/null | grep -iE "dlb|node|app" | head -10 || echo "none found"
-            echo "PM2 instances (all users):"
-            find /root /home /opt /var -name "pm2.pid" -o -name "dump.pm2" 2>/dev/null | head -10 || echo "no pm2 homes"
-            echo "Process tree for node:"
-            pstree -ap $(pgrep -f '/opt/dlbtrust-app/app.js' | head -1) 2>/dev/null | head -5 || echo "no /opt process tree"
-            cat /proc/$(pgrep -f '/opt/dlbtrust-app/app.js' | head -1)/environ 2>/dev/null | tr '\0' '\n' | grep -E "PM2|PORT|HOME" | head -10 || echo "cant read environ"
-
-            echo "=== Stop ALL old processes first ==="
+            echo "=== Stop ALL old processes ==="
             pm2 delete all 2>/dev/null || true
             pm2 kill 2>/dev/null || true
             PM2_HOME="/var/www/vhosts/dlbtrust.cloud/.pm2"
             rm -f "$PM2_HOME/dump.pm2" 2>/dev/null || true
             rm -f "$PM2_HOME/dump.pm2.bak" 2>/dev/null || true
 
-            echo "=== Kill stale /opt/dlbtrust-app process ==="
-            for STALE_PID in $(pgrep -f '/opt/dlbtrust-app' 2>/dev/null); do
-              echo "Killing stale PID $STALE_PID"
-              kill -9 "$STALE_PID" 2>/dev/null || true
-            done
-            fuser -k 3005/tcp 2>/dev/null || true
+            echo "=== Kill whatever is on port 3005 (SIGKILL) ==="
+            STALE_PID=$(fuser 3005/tcp 2>/dev/null | awk '{print $1}')
+            if [ -n "$STALE_PID" ]; then
+              echo "Port 3005 owned by PID $STALE_PID — killing with SIGKILL"
+              kill -9 $STALE_PID 2>/dev/null || true
+              sleep 2
+            fi
+            fuser -k -9 3005/tcp 2>/dev/null || true
             fuser -k 3002/tcp 2>/dev/null || true
             fuser -k 3001/tcp 2>/dev/null || true
-
-            echo "=== Disable stale service (if systemd) ==="
-            for SVC in $(systemctl list-units --type=service --all 2>/dev/null | grep -iE "dlbtrust-app|dlbtrust.app" | awk '{print $1}'); do
-              echo "Disabling $SVC"
-              systemctl stop "$SVC" 2>/dev/null || true
-              systemctl disable "$SVC" 2>/dev/null || true
-            done
-
-            echo "=== Check/kill any other PM2 managing stale app ==="
-            for PM2HOME in $(find /root /opt /home -name ".pm2" -type d 2>/dev/null); do
-              echo "Found PM2 home: $PM2HOME"
-              PM2_HOME="$PM2HOME" pm2 list 2>/dev/null | head -5
-              PM2_HOME="$PM2HOME" pm2 delete all 2>/dev/null || true
-              PM2_HOME="$PM2HOME" pm2 kill 2>/dev/null || true
-              rm -f "$PM2HOME/dump.pm2" "$PM2HOME/dump.pm2.bak" 2>/dev/null || true
-            done
-
-            fuser -k 3005/tcp 2>/dev/null || true
-            sleep 3
+            sleep 2
             echo "Port 3005 after cleanup:"
-            ss -tlnp 2>/dev/null | grep 3005 || echo "port 3005 is clear"
+            ss -tlnp 2>/dev/null | grep 3005 && echo "WARNING: port 3005 still in use!" || echo "port 3005 is clear"
 
             echo "=== Setup git repo ==="
             if [ -d "$HTTPDOCS/.git" ]; then
