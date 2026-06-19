@@ -43,21 +43,17 @@ try { app.use('/api/documents', require(HD + '/server/routes/documents')); conso
 // Trust Accounting routes
 try { app.use('/api/accounting', require(HD + '/server/routes/accounting')); console.log('[accounting] loaded'); } catch(e) { console.warn('[accounting]', e.message); }
 
-// Static files from v2 dist
-app.use(express.static(path.join(V2, 'dist', 'public')));
-app.use('/assets', express.static(path.join(V2, 'dist', 'public', 'assets')));
+// Treasury Management System — static files from httpdocs/public
+app.use(express.static(path.join(HD, 'public')));
 
 app.get('/', function(req, res) {
-  var l = path.join(V2, 'dist', 'public', 'landing.html');
-  fs.existsSync(l) ? res.sendFile(l) : res.redirect('/#/dashboard');
+  res.sendFile(path.join(HD, 'public', 'dashboard.html'));
 });
-app.get('/login', function(req, res) {
-  var l = path.join(V2, 'dist', 'public', 'login.html');
-  fs.existsSync(l) ? res.sendFile(l) : res.status(404).send('Not found');
+app.get('/treasury', function(req, res) {
+  res.sendFile(path.join(HD, 'public', 'dashboard.html'));
 });
-app.get('/login.html', function(req, res) { res.redirect('/login'); });
 app.get('*', function(req, res) {
-  var idx = path.join(V2, 'dist', 'public', 'index.html');
+  var idx = path.join(HD, 'public', 'index.html');
   fs.existsSync(idx) ? res.sendFile(idx) : res.status(404).send('Not found');
 });
 
