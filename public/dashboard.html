@@ -642,7 +642,7 @@
 
     // ─── OVERVIEW ──────────────────────────────────────────────────────────────
     async function loadOverview() {
-      const [bonds, cash, acct, ach, as2, crm, finHealth] = await Promise.all([
+      const [bonds, cash, acct, ach, as2, crm, finHealth, health] = await Promise.all([
         fetchJSON(API + '/api/bonds'),
         fetchJSON(API + '/api/cash/accounts'),
         fetchJSON(API + '/api/accounting/dashboard'),
@@ -650,6 +650,7 @@
         fetchJSON(API + '/api/as2/dashboard'),
         fetchJSON(API + '/api/crm/contacts'),
         fetchJSON(API + '/api/fineract/health'),
+        adminToken ? fetchJSON(API + '/api/admin/system/health', { headers: adminHeaders() }) : Promise.resolve({}),
       ]);
 
       // Summary cards
