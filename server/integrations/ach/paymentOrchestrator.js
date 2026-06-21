@@ -114,7 +114,7 @@ class PaymentOrchestrator {
            (event_type, category, amount, direction, description, event_date, created_at)
          VALUES ($1, $2, $3, $4, $5, $6, NOW())`,
         [
-          'ach_disbursement',
+          paymentType === 'trust_distribution' ? 'distribution' : 'other',
           paymentType === 'trust_distribution' ? 'financing' : 'operating',
           totalDollars,
           'outflow',
