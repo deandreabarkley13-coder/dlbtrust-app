@@ -12,6 +12,7 @@ const express = require('express');
 const router = express.Router();
 const { ACHEngine } = require('../integrations/ach/achEngine');
 const { AS2Client } = require('../integrations/ach/as2Client');
+const { PaymentOrchestrator } = require('../integrations/ach/paymentOrchestrator');
 const { validateRouting } = require('../integrations/ach/nachaGenerator');
 
 // ─── GET /api/ach-pipeline/status ─────────────────────────────────────────────
@@ -61,16 +62,22 @@ router.get('/as2/test', async (req, res) => {
 // }
 router.post('/batches', async (req, res) => {
   try {
-    const { effectiveDate, secCode, description, entries, createdBy } = req.body;
+    const { effectiveDate, secCode, description, entries, createdBy, paymentType } = req.body;
     if (!entries || !Array.isArray(entries) || !entries.length) {
       return res.status(400).json({ success: false, error: 'entries array is required' });
     }
 
-    const batch = await ACHEngine.createBatch(
-      { effectiveDate, secCode, description, createdBy },
-      entries
-    );
-    res.json({ success: true, data: batch });
+    const result = await PaymentOrchestrator.createDisbursementWithAccounting({
+      entries, effectiveDate, secCode, description,
+      paymentType: paymentType || 'vendor_payment',
+      createdBy,
+    });
+    res.json({
+      success: true,
+      data: result.batch,
+      journal_entry: result.journal_entry ? { entry_id: result.journal_entry.entry_id } : null,
+      accounting_integrated: result.accounting_integrated,
+    });
   } catch (err) {
     res.status(400).json({ success: false, error: err.message });
   }
@@ -85,6 +92,38 @@ router.post('/batches/disburse', async (req, res) => {
     res.json({ success: true, data: batch });
   } catch (err) {
     res.status(400).json({ success: false, error: err.message });
+  }
+});
+
+// ─── POST /api/ach-pipeline/k1-disburse ─────────────────────────────────────
+// Disburse K-1 amounts to beneficiaries via ACH
+// Body: { returnId, taxYear, effectiveDate }
+router.post('/k1-disburse', async (req, res) => {
+  try {
+    const { returnId, taxYear, effectiveDate } = req.body;
+    if (!returnId) {
+      return res.status(400).json({ success: false, error: 'returnId is required' });
+    }
+    const result = await PaymentOrchestrator.disburseK1({
+      returnId,
+      taxYear: taxYear || new Date().getFullYear(),
+      effectiveDate,
+      createdBy: 'admin',
+    });
+    res.json({ success: true, data: result });
+  } catch (err) {
+    res.status(400).json({ success: false, error: err.message });
+  }
+});
+
+// ─── GET /api/ach-pipeline/payment-summary ──────────────────────────────────
+// Payment summary for dashboard
+router.get('/payment-summary', async (req, res) => {
+  try {
+    const summary = await PaymentOrchestrator.getPaymentSummary();
+    res.json({ success: true, data: summary });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
   }
 });
 

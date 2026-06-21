@@ -265,7 +265,9 @@
     <div id="page-payments" class="page hidden">
       <div class="page-header">
         <div><h1>Payments & Disbursements</h1><div class="subtitle">ACH Disbursements, Trust Distributions & Payment Scheduling</div></div>
+        <button class="btn btn-primary btn-sm" onclick="loadPayments()">Refresh</button>
       </div>
+      <div class="grid" id="payment-summary-cards"></div>
       <div class="card">
         <div class="section-title">New Disbursement</div>
         <p class="text-muted mb-16" style="font-size:12px;">Create a NACHA file and transmit via AS2 to originating bank</p>
@@ -466,6 +468,17 @@
           <div id="k1-generate-result"></div>
         </div>
         <div class="card mt-16">
+          <div class="section-title">K-1 Distribution</div>
+          <p class="text-muted mb-16" style="font-size:12px;">Disburse K-1 amounts to beneficiaries via ACH. Creates NACHA file + trust journal entry.</p>
+          <div class="form-row">
+            <div class="form-group"><label>Return ID</label><input type="text" id="k1-disburse-return-id" placeholder="Select from returns table"></div>
+            <div class="form-group"><label>Tax Year</label><input type="number" id="k1-disburse-year" placeholder="2025"></div>
+            <div class="form-group"><label>Send Date</label><input type="date" id="k1-disburse-date"></div>
+            <div class="form-group" style="padding-top:22px"><button class="btn btn-success" onclick="disburseK1s()">Disburse K-1 via ACH</button></div>
+          </div>
+          <div id="k1-disburse-result"></div>
+        </div>
+        <div class="card mt-16">
           <div class="section-title">K-1 Schedules</div>
           <div class="table-wrap" id="tax-k1-wrap"><p class="text-muted">Compute a Form 1041 first, then generate K-1s</p></div>
         </div>
@@ -629,7 +642,7 @@
 
     // ─── OVERVIEW ──────────────────────────────────────────────────────────────
     async function loadOverview() {
-      const [bonds, cash, acct, ach, as2, crm, finHealth] = await Promise.all([
+      const [bonds, cash, acct, ach, as2, crm, finHealth, health] = await Promise.all([
         fetchJSON(API + '/api/bonds'),
         fetchJSON(API + '/api/cash/accounts'),
         fetchJSON(API + '/api/accounting/dashboard'),
@@ -637,6 +650,7 @@
         fetchJSON(API + '/api/as2/dashboard'),
         fetchJSON(API + '/api/crm/contacts'),
         fetchJSON(API + '/api/fineract/health'),
+        adminToken ? fetchJSON(API + '/api/admin/system/health', { headers: adminHeaders() }) : Promise.resolve({}),
       ]);
 
       // Summary cards
@@ -674,7 +688,10 @@
       // System status
       const achStatus = ach.data || {};
       const finConnected = finHealth.fineract_connected === true;
+      const ps = (health.data || {}).payment_system || {};
+      const payMode = ps.mode || 'sandbox';
       el('overview-status').innerHTML = `<table><tbody>
+        <tr><td>Payment Mode</td><td><span class="badge ${payMode === 'production' ? 'badge-active' : 'badge-warning'}">${payMode.toUpperCase()}</span></td></tr>
         <tr><td>Bond Engine</td><td><span class="status-dot online"></span> Active</td></tr>
         <tr><td>Cash Engine</td><td><span class="status-dot online"></span> Active</td></tr>
         <tr><td>ACH Pipeline</td><td><span class="status-dot ${achStatus.configured !== false ? 'online' : 'pending'}"></span> ${achStatus.configured !== false ? 'Ready' : 'Not configured'}</td></tr>
@@ -784,9 +801,28 @@
 
     // ─── PAYMENTS & DISBURSEMENTS ──────────────────────────────────────────────
     async function loadPayments() {
+      // Load payment summary cards
+      try {
+        const summary = await fetchJSON(API + '/api/ach-pipeline/payment-summary');
+        const s = summary.data || {};
+        el('payment-summary-cards').innerHTML = `
+          <div class="card"><div class="card-title">Total Batches</div><div class="card-value">${s.total_batches || 0}</div><div class="card-sub">${s.pending_batches || 0} pending</div></div>
+          <div class="card"><div class="card-title">Transmitted</div><div class="card-value">${s.transmitted_batches || 0}</div><div class="card-sub">Sent to bank</div></div>
+          <div class="card"><div class="card-title">Total Disbursed</div><div class="card-value">${fmt(s.total_disbursed_dollars || 0)}</div><div class="card-sub">ACH payments</div></div>
+          <div class="card"><div class="card-title">ODFI</div><div class="card-value" style="font-size:14px">241075470</div><div class="card-sub">Eaton Family CU</div></div>
+        `;
+      } catch (e) {
+        el('payment-summary-cards').innerHTML = '';
+      }
       const batches = await fetchJSON(API + '/api/ach-pipeline/batches');
       const data = batches.data || [];
-      el('payment-batches-wrap').innerHTML = data.length ? '<table><thead><tr><th>ID</th><th>Payee</th><th>Amount</th><th>Type</th><th>Status</th><th>Created</th><th>Actions</th></tr></thead><tbody>' + data.map(b => `<tr><td><code>${esc(b.batch_id || b.id)}</code></td><td>${esc(b.payee_name || b.originator_name || '—')}</td><td class="money">${fmt(b.total_amount || b.amount)}</td><td><span class="badge badge-info">${esc(b.payment_type || b.entry_class || 'PPD')}</span></td><td><span class="badge ${b.status === 'generated' ? 'badge-active' : b.status === 'transmitted' ? 'badge-purple' : 'badge-pending'}">${esc(b.status)}</span></td><td>${shortDate(b.created_at)}</td><td>${b.status === 'generated' ? '<button class="btn btn-success btn-sm" onclick="transmitBatch(\'' + esc(b.id) + '\')">Transmit</button>' : '—'}</td></tr>`).join('') + '</tbody></table>' : '<p class="text-muted">No payment batches yet. Create a disbursement above.</p>';
+      el('payment-batches-wrap').innerHTML = data.length ? '<table><thead><tr><th>Batch ID</th><th>Description</th><th>Entries</th><th>Amount</th><th>SEC</th><th>Status</th><th>Created</th><th>Actions</th></tr></thead><tbody>' + data.map(b => {
+        const batchId = b.batch_id || b.id;
+        const amountDollars = b.total_amount_cents ? (parseInt(b.total_amount_cents, 10) / 100) : (b.total_amount || 0);
+        const canTransmit = b.status === 'pending' || b.status === 'generated';
+        const canCancel = b.status === 'pending';
+        return `<tr><td><code>${esc(batchId)}</code></td><td>${esc(b.entry_description || b.description || '—')}</td><td>${b.entry_count || 0}</td><td class="money">${fmt(amountDollars)}</td><td><span class="badge badge-info">${esc(b.sec_code || 'PPD')}</span></td><td><span class="badge ${b.status === 'transmitted' ? 'badge-purple' : b.status === 'failed' ? 'badge-error' : b.status === 'cancelled' ? 'badge-warning' : 'badge-active'}">${esc(b.status)}</span></td><td>${shortDate(b.created_at)}</td><td>${canTransmit ? '<button class="btn btn-success btn-sm" onclick="transmitBatch(\'' + esc(batchId) + '\')" title="Send via AS2">Transmit</button>' : ''} ${canCancel ? '<button class="btn btn-outline btn-sm" onclick="cancelBatch(\'' + esc(batchId) + '\')" title="Cancel batch">Cancel</button>' : ''} ${!canTransmit && !canCancel ? '—' : ''}</td></tr>`;
+      }).join('') + '</tbody></table>' : '<p class="text-muted">No payment batches yet. Create a disbursement above.</p>';
       // Set default date
       if (!el('disb-date').value) { const d = new Date(); d.setDate(d.getDate() + 1); el('disb-date').value = d.toISOString().split('T')[0]; }
     }
@@ -817,6 +853,7 @@
         effectiveDate: el('disb-date').value,
         secCode: 'PPD',
         description: payType,
+        paymentType: el('disb-type').value,
       };
 
       const r = await fetchJSON(API + '/api/ach-pipeline/batches', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(data) });
@@ -829,8 +866,16 @@
     }
 
     async function transmitBatch(id) {
+      if (!confirm('Transmit batch ' + id + ' via AS2 to the bank? This will initiate real ACH payment processing.')) return;
       const r = await fetchJSON(API + '/api/ach-pipeline/batches/' + id + '/transmit', { method: 'POST', headers: { 'Content-Type': 'application/json' } });
-      alert(r.success ? 'Transmitted via AS2!' : 'Error: ' + (r.error || 'AS2 partner not configured'));
+      alert(r.success ? 'Transmitted via AS2! Message ID: ' + ((r.data || {}).message_id || 'N/A') : 'Error: ' + (r.error || 'AS2 partner not configured'));
+      loadPayments();
+    }
+
+    async function cancelBatch(id) {
+      if (!confirm('Cancel batch ' + id + '? This cannot be undone.')) return;
+      const r = await fetchJSON(API + '/api/ach-pipeline/batches/' + id + '/cancel', { method: 'POST', headers: { 'Content-Type': 'application/json' } });
+      alert(r.success ? 'Batch cancelled.' : 'Error: ' + (r.error || 'Failed'));
       loadPayments();
     }
 
@@ -850,7 +895,7 @@
       `;
 
       const data = batches.data || [];
-      el('ach-batches-wrap').innerHTML = data.length ? '<table><thead><tr><th>Batch</th><th>Entries</th><th>Total</th><th>Class</th><th>Status</th><th>Created</th><th>Actions</th></tr></thead><tbody>' + data.map(b => `<tr><td><code>${esc(b.batch_id || b.id)}</code></td><td>${b.entry_count || (b.entries || []).length || 1}</td><td class="money">${fmt(b.total_amount)}</td><td><span class="badge badge-info">${esc(b.entry_class || 'PPD')}</span></td><td><span class="badge ${b.status === 'generated' ? 'badge-active' : b.status === 'transmitted' ? 'badge-purple' : 'badge-pending'}">${esc(b.status)}</span></td><td>${shortDate(b.created_at)}</td><td>${b.status === 'generated' ? '<button class="btn btn-success btn-sm" onclick="transmitBatch(\'' + esc(b.id) + '\')">Send</button> <a href="' + API + '/api/ach-pipeline/batches/' + b.id + '/download" class="btn btn-outline btn-sm">Download</a>' : '—'}</td></tr>`).join('') + '</tbody></table>' : '<p class="text-muted">No ACH batches</p>';
+      el('ach-batches-wrap').innerHTML = data.length ? '<table><thead><tr><th>Batch</th><th>Entries</th><th>Total</th><th>SEC</th><th>Status</th><th>Created</th><th>Actions</th></tr></thead><tbody>' + data.map(b => { const batchId = b.batch_id || b.id; const amountDollars = b.total_amount_cents ? (parseInt(b.total_amount_cents, 10) / 100) : (b.total_amount || 0); const canSend = b.status === 'pending' || b.status === 'generated'; return `<tr><td><code>${esc(batchId)}</code></td><td>${b.entry_count || 0}</td><td class="money">${fmt(amountDollars)}</td><td><span class="badge badge-info">${esc(b.sec_code || 'PPD')}</span></td><td><span class="badge ${b.status === 'transmitted' ? 'badge-purple' : b.status === 'failed' ? 'badge-error' : b.status === 'cancelled' ? 'badge-warning' : 'badge-active'}">${esc(b.status)}</span></td><td>${shortDate(b.created_at)}</td><td>${canSend ? '<button class="btn btn-success btn-sm" onclick="transmitBatch(\'' + esc(batchId) + '\')">Send</button> ' : ''}<a href="' + API + '/api/ach-pipeline/batches/' + batchId + '/download" class="btn btn-outline btn-sm">Download</a></td></tr>`; }).join('') + '</tbody></table>' : '<p class="text-muted">No ACH batches</p>';
     }
 
     // ─── AS2 ───────────────────────────────────────────────────────────────────
@@ -1176,6 +1221,10 @@
 
     function selectReturnForK1(returnId) {
       el('k1-return-id').value = returnId;
+      el('k1-disburse-return-id').value = returnId;
+      // Set default disbursement date to tomorrow
+      const tomorrow = new Date(); tomorrow.setDate(tomorrow.getDate() + 1);
+      if (!el('k1-disburse-date').value) el('k1-disburse-date').value = tomorrow.toISOString().split('T')[0];
       // Switch to K-1 tab
       const taxPage = document.getElementById('page-tax');
       taxPage.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
@@ -1195,6 +1244,24 @@
         loadTax();
       } else {
         el('k1-generate-result').innerHTML = '<p class="error-msg">' + esc(r.error || 'Failed') + '</p>';
+      }
+    }
+
+    async function disburseK1s() {
+      const returnId = el('k1-disburse-return-id').value;
+      if (!returnId) { el('k1-disburse-result').innerHTML = '<p class="error-msg">Enter or select a Return ID</p>'; return; }
+      const taxYear = parseInt(el('k1-disburse-year').value, 10) || new Date().getFullYear();
+      const effectiveDate = el('k1-disburse-date').value;
+      if (!effectiveDate) { el('k1-disburse-result').innerHTML = '<p class="error-msg">Select a send date</p>'; return; }
+      if (!confirm('Disburse K-1 amounts to beneficiaries via ACH for tax year ' + taxYear + '? This will create a real ACH batch.')) return;
+      el('k1-disburse-result').innerHTML = '<p class="loading">Creating ACH disbursement batch...</p>';
+      const r = await fetchJSON(API + '/api/ach-pipeline/k1-disburse', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ returnId, taxYear, effectiveDate }) });
+      if (r.success) {
+        const d = r.data;
+        el('k1-disburse-result').innerHTML = '<p class="success-msg">K-1 distribution batch created!<br>Batch ID: ' + esc(d.batch.batch_id) + '<br>Beneficiaries paid: ' + d.beneficiaries_paid + '<br>Amount: $' + (d.total_amount || 0).toLocaleString('en-US', {minimumFractionDigits: 2}) + '<br>Accounting: ' + (d.accounting_integrated ? 'Journal entry created' : 'Pending') + (d.beneficiaries_skipped && d.beneficiaries_skipped.length ? '<br><small>Skipped: ' + d.beneficiaries_skipped.map(s => esc(s.name + ' (' + s.reason + ')')).join(', ') + '</small>' : '') + '</p>';
+        loadTax();
+      } else {
+        el('k1-disburse-result').innerHTML = '<p class="error-msg">' + esc(r.error || 'Failed') + '</p>';
       }
     }
 

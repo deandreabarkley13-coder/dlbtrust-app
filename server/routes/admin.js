@@ -92,6 +92,14 @@ router.get('/system/health', async (req, res) => {
     health.crm = { status: 'error', message: err.message };
   }
 
+  // Payment system mode
+  const paymentMode = process.env.PAYMENT_MODE || 'sandbox';
+  health.payment_system = {
+    mode: paymentMode,
+    as2_configured: !!process.env.AS2_PARTNER_URL,
+    admin_token_secure: process.env.ADMIN_SECRET_TOKEN !== 'test-admin-token-123',
+  };
+
   await logAdminAction(req, 'health_check', 'system', null, null, health);
   res.json({ success: true, data: health });
 });
