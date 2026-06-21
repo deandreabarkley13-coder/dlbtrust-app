@@ -8,6 +8,8 @@
 const pool = require('../bonds/pgPool');
 const { generateNACHAFile, parseNACHAFile, validateRouting, ODFI_ROUTING, ORIGINATOR_ID } = require('./nachaGenerator');
 const { AS2Client } = require('./as2Client');
+const { AS2Server } = require('../as2/as2Server');
+const { PartnerManager } = require('../as2/partnerManager');
 const path = require('path');
 const fs = require('fs');
 
@@ -147,8 +149,13 @@ class ACHEngine {
 
   /**
    * Transmit a batch via AS2 to the bank.
+   *
+   * Transmission strategy (in priority order):
+   *  1. DB-managed partner — uses AS2Server.sendMessage() with PartnerManager
+   *  2. Env-var config   — uses AS2Client.transmit() with AS2_PARTNER_URL etc.
+   *  3. Error            — no AS2 configuration found
    */
-  static async transmitBatch(batchId) {
+  static async transmitBatch(batchId, { partnerId } = {}) {
     const batch = await ACHEngine.getBatch(batchId);
     if (!batch) throw new Error(`Batch not found: ${batchId}`);
     if (batch.status === 'transmitted') throw new Error(`Batch already transmitted: ${batchId}`);
@@ -157,6 +164,9 @@ class ACHEngine {
     const nachaContent = batch.nacha_content;
     if (!nachaContent) throw new Error('Batch has no NACHA content');
 
+    // Resolve which AS2 transport to use
+    const transport = await ACHEngine._resolveTransport(partnerId);
+
     // Update status to transmitting
     await pool.query(
       `UPDATE ach_batches SET status = 'transmitting', updated_at = NOW() WHERE batch_id = $1`,
@@ -164,7 +174,15 @@ class ACHEngine {
     );
 
     try {
-      const result = await AS2Client.transmit(nachaContent, batch.filename);
+      let result;
+
+      if (transport.type === 'as2server') {
+        result = await AS2Server.sendMessage(
+          transport.partnerId, nachaContent, batch.filename, 'application/octet-stream'
+        );
+      } else {
+        result = await AS2Client.transmit(nachaContent, batch.filename);
+      }
 
       // Record transmission
       await pool.query(
@@ -175,8 +193,8 @@ class ACHEngine {
         [batchId,
          'TX-' + Date.now(),
          result.message_id,
-         result.status_code,
-         result.mdn_received,
+         result.status_code || 200,
+         result.mdn_received || !!result.mdn,
          result.response_body || '']
       );
 
@@ -186,7 +204,7 @@ class ACHEngine {
         [newStatus, batchId]
       );
 
-      return { ...result, batch_id: batchId, batch_status: newStatus };
+      return { ...result, batch_id: batchId, batch_status: newStatus, transport: transport.type };
     } catch (err) {
       await pool.query(
         `UPDATE ach_batches SET status = 'failed', error_message = $1, updated_at = NOW() WHERE batch_id = $2`,
@@ -194,6 +212,38 @@ class ACHEngine {
       );
       throw err;
     }
+  }
+
+  /**
+   * Determine which AS2 transport to use.
+   * Prefers DB-managed partners over env-var config.
+   */
+  static async _resolveTransport(partnerId) {
+    // If a specific partner was requested, use it
+    if (partnerId) {
+      const partner = await PartnerManager.getPartner(partnerId);
+      if (!partner) throw new Error(`AS2 partner not found: ${partnerId}`);
+      if (!partner.endpoint_url) throw new Error(`AS2 partner ${partner.name} has no endpoint URL`);
+      return { type: 'as2server', partnerId: partner.partner_id };
+    }
+
+    // Check for any active DB-managed partner
+    const partners = await PartnerManager.listPartners({ status: 'active' });
+    if (partners.length > 0) {
+      if (!partners[0].endpoint_url) throw new Error(`AS2 partner ${partners[0].name} has no endpoint URL`);
+      return { type: 'as2server', partnerId: partners[0].partner_id };
+    }
+
+    // Fall back to env-var AS2Client config
+    const envConfig = AS2Client.getConfigStatus();
+    if (envConfig.configured) {
+      return { type: 'as2client' };
+    }
+
+    throw new Error(
+      'No AS2 configuration found. Either add a trading partner via the AS2 Server page ' +
+      'in the dashboard, or set AS2_PARTNER_URL environment variable.'
+    );
   }
 
   /**
@@ -222,12 +272,29 @@ class ACHEngine {
 
   /**
    * Get AS2 pipeline status — config + connectivity.
+   * Checks both DB-managed partners and env-var config.
    */
   static async getPipelineStatus() {
-    const config = AS2Client.getConfigStatus();
-    let connectivity = { connected: false, error: 'Not tested' };
+    const envConfig = AS2Client.getConfigStatus();
 
-    if (config.configured) {
+    // Check DB-managed partners
+    let dbPartners = [];
+    try {
+      dbPartners = await PartnerManager.listPartners({ status: 'active' });
+    } catch (_) {}
+
+    const hasDbPartner = dbPartners.length > 0;
+    const configured = hasDbPartner || envConfig.configured;
+
+    // Check connectivity — DB partner takes priority (matches _resolveTransport behavior)
+    let connectivity = { connected: false, error: 'Not tested' };
+    if (hasDbPartner) {
+      if (dbPartners[0].endpoint_url) {
+        connectivity = { connected: true, source: 'database', partner: dbPartners[0].name };
+      } else {
+        connectivity = { connected: false, error: `Partner ${dbPartners[0].name} has no endpoint URL` };
+      }
+    } else if (envConfig.configured) {
       try {
         connectivity = await AS2Client.testConnection();
       } catch (e) {
@@ -246,7 +313,13 @@ class ACHEngine {
     );
 
     return {
-      as2_config: config,
+      configured,
+      as2_config: {
+        ...envConfig,
+        configured,
+        db_partners: dbPartners.length,
+        active_partner: hasDbPartner ? { name: dbPartners[0].name, as2_id: dbPartners[0].as2_identifier } : null,
+      },
       as2_connectivity: connectivity,
       pipeline: {
         pending_batches: parseInt(pendingBatches.rows[0].count, 10),
