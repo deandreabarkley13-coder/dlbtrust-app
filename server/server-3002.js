@@ -42,6 +42,9 @@ try { app.use('/api/documents', require(path.join(HD, 'server', 'routes', 'docum
 // Trust Accounting routes
 try { app.use('/api/accounting', require(path.join(HD, 'server', 'routes', 'accounting'))); console.log('[accounting] loaded'); } catch(e) { console.warn('[accounting]', e.message); }
 
+// Payments & Disbursements — OpenACH-powered ACH disbursements
+try { app.use('/api/payments', require(path.join(HD, 'server', 'routes', 'payments'))); console.log('[payments] loaded'); } catch(e) { console.warn('[payments]', e.message); }
+
 // ACH Pipeline — NACHA generation + AS2 transmission
 try { app.use('/api/ach-pipeline', require(path.join(HD, 'server', 'routes', 'achPipeline'))); console.log('[ach-pipeline] loaded'); } catch(e) { console.warn('[ach-pipeline]', e.message); }
 
