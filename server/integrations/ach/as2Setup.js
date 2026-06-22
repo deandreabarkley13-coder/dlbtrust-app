@@ -14,6 +14,7 @@ const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
 const pool = require('../bonds/pgPool');
+const { AS2Client } = require('./as2Client');
 
 const CERTS_DIR = path.join(__dirname, '..', '..', '..', 'data', 'as2-certs');
 
@@ -89,14 +90,14 @@ class AS2Setup {
       ['partner_url', partnerUrl],
       ['partner_as2_id', partnerAs2Id],
       ['local_as2_id', localAs2Id || 'DLBTRUST-AS2'],
-      ['signing_cert_path', certPaths.signingCert || ''],
-      ['signing_key_path', certPaths.signingKey || ''],
-      ['partner_cert_path', certPaths.partnerCert || ''],
       ['encryption_alg', encryptionAlg || 'aes256-cbc'],
       ['signing_alg', signingAlg || 'sha256'],
       ['request_mdn', requestMdn !== false ? 'true' : 'false'],
       ['mdn_url', mdnUrl || ''],
     ];
+    if (certPaths.signingCert) entries.push(['signing_cert_path', certPaths.signingCert]);
+    if (certPaths.signingKey) entries.push(['signing_key_path', certPaths.signingKey]);
+    if (certPaths.partnerCert) entries.push(['partner_cert_path', certPaths.partnerCert]);
 
     for (const [key, value] of entries) {
       await pool.query(
@@ -118,6 +119,8 @@ class AS2Setup {
     process.env.AS2_SIGNING_ALG = signingAlg || 'sha256';
     process.env.AS2_REQUEST_MDN = requestMdn !== false ? 'true' : 'false';
     if (mdnUrl) process.env.AS2_MDN_URL = mdnUrl;
+
+    AS2Client.reloadConfig();
 
     return {
       partner_url: partnerUrl,
@@ -175,7 +178,17 @@ class AS2Setup {
         }
       }
 
-      return config;
+      AS2Client.reloadConfig();
+
+      const redacted = {};
+      for (const [key, value] of Object.entries(config)) {
+        if (key === 'signing_key_path' || key === 'signing_cert_path' || key === 'partner_cert_path') {
+          redacted['has_' + key.replace('_path', '')] = !!value;
+        } else {
+          redacted[key] = value;
+        }
+      }
+      return redacted;
     } catch (err) {
       console.warn('[AS2Setup] Could not load saved config:', err.message);
       return null;
@@ -250,9 +263,10 @@ class AS2Setup {
       fs.writeFileSync(keyPath, privateKey, 'utf8');
       fs.chmodSync(keyPath, 0o600);
 
-      // Update env
+      // Update env and reload AS2Client config
       process.env.AS2_SIGNING_CERT = certPath;
       process.env.AS2_SIGNING_KEY = keyPath;
+      AS2Client.reloadConfig();
 
       // Persist paths to DB
       pool.query(

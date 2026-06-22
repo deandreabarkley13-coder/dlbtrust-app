@@ -57,6 +57,23 @@ function generateMessageId() {
 
 class AS2Client {
   /**
+   * Reload AS2 configuration from current process.env values.
+   * Must be called after updating env vars at runtime (e.g. via AS2Setup.saveConfig).
+   */
+  static reloadConfig() {
+    AS2_CONFIG.partnerUrl      = process.env.AS2_PARTNER_URL || '';
+    AS2_CONFIG.partnerAs2Id    = process.env.AS2_PARTNER_AS2_ID || 'BANK-AS2-ID';
+    AS2_CONFIG.localAs2Id      = process.env.AS2_LOCAL_AS2_ID || 'DLBTRUST-AS2';
+    AS2_CONFIG.signingCertPath = process.env.AS2_SIGNING_CERT || '';
+    AS2_CONFIG.signingKeyPath  = process.env.AS2_SIGNING_KEY || '';
+    AS2_CONFIG.partnerCertPath = process.env.AS2_PARTNER_CERT || '';
+    AS2_CONFIG.encryptionAlg   = process.env.AS2_ENCRYPTION_ALG || 'aes256-cbc';
+    AS2_CONFIG.signingAlg      = process.env.AS2_SIGNING_ALG || 'sha256';
+    AS2_CONFIG.requestMdn      = process.env.AS2_REQUEST_MDN !== 'false';
+    AS2_CONFIG.mdnUrl          = process.env.AS2_MDN_URL || '';
+  }
+
+  /**
    * Get current AS2 configuration status.
    */
   static getConfigStatus() {
