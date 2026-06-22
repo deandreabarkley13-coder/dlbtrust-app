@@ -79,12 +79,16 @@ class ACHReconciliation {
           );
           entriesSettled += parseInt(entryCount.rows[0].count, 10);
         } else if (batch.status === 'settled') {
-          // Already settled — verify date matches
-          if (item.settlementDate && batch.settlement_date &&
-              item.settlementDate !== batch.settlement_date.toISOString().split('T')[0]) {
-            discrepancies.push(
-              `Settlement date mismatch for ${item.batchId}: local=${batch.settlement_date}, bank=${item.settlementDate}`
-            );
+          // Already settled — verify date matches (use local date to avoid timezone shift)
+          if (item.settlementDate && batch.settlement_date) {
+            const localDate = batch.settlement_date instanceof Date
+              ? `${batch.settlement_date.getFullYear()}-${String(batch.settlement_date.getMonth() + 1).padStart(2, '0')}-${String(batch.settlement_date.getDate()).padStart(2, '0')}`
+              : String(batch.settlement_date).split('T')[0];
+            if (item.settlementDate !== localDate) {
+              discrepancies.push(
+                `Settlement date mismatch for ${item.batchId}: local=${localDate}, bank=${item.settlementDate}`
+              );
+            }
           }
         }
       }

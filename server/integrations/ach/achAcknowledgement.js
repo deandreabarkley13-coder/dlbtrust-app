@@ -46,7 +46,7 @@ class ACHAcknowledgement {
                        disposition.toLowerCase().includes('error') ||
                        disposition.toLowerCase().includes('rejected');
 
-    const ackStatus = isRejected ? 'rejected' : 'accepted';
+    const ackStatus = isRejected ? 'rejected' : (isAccepted ? 'accepted' : 'partial');
     const ackType = 'mdn';
 
     const result = await pool.query(
@@ -74,6 +74,7 @@ class ACHAcknowledgement {
         ackType: 'mdn',
         disposition,
         rawResponse: rawContent,
+        skipAckRecord: true,
       });
     }
 
@@ -146,6 +147,7 @@ class ACHAcknowledgement {
         ackType: 'bank_ack',
         rawResponse,
         disposition,
+        skipAckRecord: true,
       });
     }
 

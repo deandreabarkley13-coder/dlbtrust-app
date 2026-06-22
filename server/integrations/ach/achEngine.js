@@ -226,8 +226,8 @@ class ACHEngine {
       [batchId]
     );
 
-    // Record acknowledgement
-    if (metadata.transmissionId || metadata.messageId) {
+    // Record acknowledgement (skip if caller already inserted one)
+    if (!metadata.skipAckRecord && (metadata.transmissionId || metadata.messageId)) {
       await pool.query(
         `INSERT INTO ach_acknowledgements
           (batch_id, transmission_id, ack_type, ack_status, message_id, raw_response, disposition, received_at)
