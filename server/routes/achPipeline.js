@@ -13,6 +13,8 @@ const router = express.Router();
 const { ACHEngine } = require('../integrations/ach/achEngine');
 const { AS2Client } = require('../integrations/ach/as2Client');
 const { PaymentOrchestrator } = require('../integrations/ach/paymentOrchestrator');
+const { ACHAcknowledgement } = require('../integrations/ach/achAcknowledgement');
+const { ACHReconciliation } = require('../integrations/ach/achReconciliation');
 const { validateRouting } = require('../integrations/ach/nachaGenerator');
 
 // ─── GET /api/ach-pipeline/status ─────────────────────────────────────────────
@@ -223,6 +225,235 @@ router.post('/validate-routing', (req, res) => {
   if (!routingNumber) return res.status(400).json({ success: false, error: 'routingNumber required' });
   const valid = validateRouting(String(routingNumber));
   res.json({ success: true, data: { routing_number: routingNumber, valid } });
+});
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// ACH LIFECYCLE — Acceptance, Settlement, Returns, Reconciliation
+// ═══════════════════════════════════════════════════════════════════════════════
+
+// ─── POST /api/ach-pipeline/batches/:id/accept ────────────────────────────────
+// Record bank acceptance for a transmitted batch
+router.post('/batches/:id/accept', async (req, res) => {
+  try {
+    const { transmissionId, messageId, ackType, disposition, rawResponse } = req.body;
+    const batch = await ACHEngine.acceptBatch(req.params.id, {
+      transmissionId, messageId, ackType, disposition, rawResponse,
+    });
+    res.json({ success: true, data: batch });
+  } catch (err) {
+    res.status(400).json({ success: false, error: err.message });
+  }
+});
+
+// ─── POST /api/ach-pipeline/batches/:id/settle ────────────────────────────────
+// Record settlement for an accepted/transmitted batch
+router.post('/batches/:id/settle', async (req, res) => {
+  try {
+    const { settlementDate } = req.body;
+    const batch = await ACHEngine.settleBatch(req.params.id, { settlementDate });
+    res.json({ success: true, data: batch });
+  } catch (err) {
+    res.status(400).json({ success: false, error: err.message });
+  }
+});
+
+// ─── POST /api/ach-pipeline/batches/:id/returns ───────────────────────────────
+// Ingest return entries for a batch
+// Body: { returns: [{ entrySequence, traceNumber, returnCode, returnReason, returnAmountCents, returnDate, addendaInfo }], returnFileRef }
+router.post('/batches/:id/returns', async (req, res) => {
+  try {
+    const { returns, returnFileRef } = req.body;
+    if (!returns || !Array.isArray(returns) || !returns.length) {
+      return res.status(400).json({ success: false, error: 'returns array is required' });
+    }
+    for (const ret of returns) {
+      if (!ret.returnCode || !ret.returnReason) {
+        return res.status(400).json({ success: false, error: 'Each return requires returnCode and returnReason' });
+      }
+    }
+    const result = await ACHEngine.processReturns(req.params.id, returns, { returnFileRef });
+    res.json({ success: true, data: result });
+  } catch (err) {
+    res.status(400).json({ success: false, error: err.message });
+  }
+});
+
+// ─── GET /api/ach-pipeline/batches/:id/returns ────────────────────────────────
+// Get return history for a batch
+router.get('/batches/:id/returns', async (req, res) => {
+  try {
+    const returns = await ACHEngine.getReturns(req.params.id);
+    res.json({ success: true, data: returns });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// ─── GET /api/ach-pipeline/batches/:id/entries ────────────────────────────────
+// Get entry-level status for a batch (including return info)
+router.get('/batches/:id/entries', async (req, res) => {
+  try {
+    const entries = await ACHEngine.getEntryStatuses(req.params.id);
+    res.json({ success: true, count: entries.length, data: entries });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// ─── GET /api/ach-pipeline/batches/:id/acknowledgements ───────────────────────
+// Get acknowledgement history for a batch
+router.get('/batches/:id/acknowledgements', async (req, res) => {
+  try {
+    const acks = await ACHAcknowledgement.listForBatch(req.params.id);
+    res.json({ success: true, data: acks });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// ─── POST /api/ach-pipeline/acknowledgements/mdn ─────────────────────────────
+// Ingest an AS2 MDN (delivery receipt) from the bank
+// Body: { batchId, messageId, disposition, rawContent, transmissionId }
+router.post('/acknowledgements/mdn', async (req, res) => {
+  try {
+    const { batchId, messageId, disposition, rawContent, transmissionId } = req.body;
+    if (!batchId || !disposition) {
+      return res.status(400).json({ success: false, error: 'batchId and disposition are required' });
+    }
+    const ack = await ACHAcknowledgement.processMDN({
+      batchId, messageId, disposition, rawContent, transmissionId,
+    });
+    res.json({ success: true, data: ack });
+  } catch (err) {
+    res.status(400).json({ success: false, error: err.message });
+  }
+});
+
+// ─── POST /api/ach-pipeline/acknowledgements/file-ack ─────────────────────────
+// Ingest a bank file-level acknowledgement
+// Body: { batchId, status, rawResponse, errorDescription }
+router.post('/acknowledgements/file-ack', async (req, res) => {
+  try {
+    const { batchId, status, rawResponse, errorDescription } = req.body;
+    if (!batchId) {
+      return res.status(400).json({ success: false, error: 'batchId is required' });
+    }
+    const ack = await ACHAcknowledgement.processFileAck({
+      batchId, status, rawResponse, errorDescription,
+    });
+    res.json({ success: true, data: ack });
+  } catch (err) {
+    res.status(400).json({ success: false, error: err.message });
+  }
+});
+
+// ─── POST /api/ach-pipeline/acknowledgements/bank-ack ─────────────────────────
+// Ingest a bank-level batch acknowledgement
+// Body: { batchId, status, messageId, rawResponse, disposition, errorDescription }
+router.post('/acknowledgements/bank-ack', async (req, res) => {
+  try {
+    const { batchId, status, messageId, rawResponse, disposition, errorDescription } = req.body;
+    if (!batchId) {
+      return res.status(400).json({ success: false, error: 'batchId is required' });
+    }
+    const ack = await ACHAcknowledgement.processBankAck({
+      batchId, status, messageId, rawResponse, disposition, errorDescription,
+    });
+    res.json({ success: true, data: ack });
+  } catch (err) {
+    res.status(400).json({ success: false, error: err.message });
+  }
+});
+
+// ─── POST /api/ach-pipeline/returns/ingest ────────────────────────────────────
+// Bulk ingest a return file containing returns for multiple batches
+// Body: { returns: [{ batchId, entries: [{ entrySequence, traceNumber, returnCode, returnReason, ... }] }], returnFileRef }
+router.post('/returns/ingest', async (req, res) => {
+  try {
+    const { returns, returnFileRef } = req.body;
+    if (!returns || !Array.isArray(returns) || !returns.length) {
+      return res.status(400).json({ success: false, error: 'returns array is required' });
+    }
+
+    const results = [];
+    const errors = [];
+
+    for (const batch of returns) {
+      if (!batch.batchId || !batch.entries || !batch.entries.length) {
+        errors.push({ batchId: batch.batchId || 'unknown', error: 'batchId and entries are required' });
+        continue;
+      }
+      try {
+        const result = await ACHEngine.processReturns(batch.batchId, batch.entries, { returnFileRef });
+        results.push(result);
+      } catch (err) {
+        errors.push({ batchId: batch.batchId, error: err.message });
+      }
+    }
+
+    res.json({
+      success: true,
+      data: {
+        processed: results.length,
+        failed: errors.length,
+        results,
+        errors: errors.length ? errors : undefined,
+      },
+    });
+  } catch (err) {
+    res.status(400).json({ success: false, error: err.message });
+  }
+});
+
+// ─── GET /api/ach-pipeline/settlement/status ──────────────────────────────────
+// Settlement overview for dashboard
+router.get('/settlement/status', async (req, res) => {
+  try {
+    const overview = await ACHReconciliation.getSettlementOverview();
+    res.json({ success: true, data: overview });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// ─── POST /api/ach-pipeline/reconciliation/run ────────────────────────────────
+// Trigger a settlement reconciliation job
+// Body: { settledItems: [{ batchId, settlementDate, settledAmountCents }], returnedItems: [{ batchId, entries }] }
+router.post('/reconciliation/run', async (req, res) => {
+  try {
+    const { settledItems, returnedItems } = req.body;
+    const result = await ACHReconciliation.runReconciliation({ settledItems, returnedItems });
+    res.json({ success: true, data: result });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// ─── GET /api/ach-pipeline/reconciliation/history ─────────────────────────────
+// List reconciliation run history
+router.get('/reconciliation/history', async (req, res) => {
+  try {
+    const { limit, offset } = req.query;
+    const reconciliations = await ACHReconciliation.listReconciliations({
+      limit: parseInt(limit, 10) || 20,
+      offset: parseInt(offset, 10) || 0,
+    });
+    res.json({ success: true, count: reconciliations.length, data: reconciliations });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// ─── GET /api/ach-pipeline/reconciliation/:id ─────────────────────────────────
+// Get details of a specific reconciliation run
+router.get('/reconciliation/:id', async (req, res) => {
+  try {
+    const recon = await ACHReconciliation.getReconciliation(req.params.id);
+    if (!recon) return res.status(404).json({ success: false, error: 'Reconciliation not found' });
+    res.json({ success: true, data: recon });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
 });
 
 module.exports = router;

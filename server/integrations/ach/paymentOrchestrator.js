@@ -229,23 +229,61 @@ class PaymentOrchestrator {
 
   /**
    * Get payment summary for dashboard display.
+   * Reports across all lifecycle states: pending, transmitted, accepted, settled, returned.
    */
   static async getPaymentSummary() {
-    const [totalBatches, pendingBatches, transmittedBatches, totalDisbursed, recentPayments] = await Promise.all([
+    const [
+      totalBatches,
+      pendingBatches,
+      transmittedBatches,
+      acceptedBatches,
+      settledBatches,
+      returnedBatches,
+      failedBatches,
+      totalDisbursed,
+      totalSettled,
+      totalReturned,
+      recentPayments,
+    ] = await Promise.all([
       pool.query('SELECT COUNT(*) as count FROM ach_batches'),
       pool.query("SELECT COUNT(*) as count FROM ach_batches WHERE status = 'pending'"),
       pool.query("SELECT COUNT(*) as count FROM ach_batches WHERE status = 'transmitted'"),
-      pool.query("SELECT COALESCE(SUM(total_amount_cents), 0) as total FROM ach_batches WHERE status = 'transmitted'"),
-      pool.query(`SELECT batch_id, entry_description, total_amount_cents, status, entry_count, created_at
+      pool.query("SELECT COUNT(*) as count FROM ach_batches WHERE status = 'accepted'"),
+      pool.query("SELECT COUNT(*) as count FROM ach_batches WHERE status = 'settled'"),
+      pool.query("SELECT COUNT(*) as count FROM ach_batches WHERE status = 'returned'"),
+      pool.query("SELECT COUNT(*) as count FROM ach_batches WHERE status = 'failed'"),
+      pool.query("SELECT COALESCE(SUM(total_amount_cents), 0) as total FROM ach_batches WHERE status IN ('transmitted','accepted','settled')"),
+      pool.query("SELECT COALESCE(SUM(total_amount_cents), 0) as total FROM ach_batches WHERE status = 'settled'"),
+      pool.query("SELECT COALESCE(SUM(return_amount_cents), 0) as total FROM ach_returns"),
+      pool.query(`SELECT batch_id, entry_description, total_amount_cents, status, entry_count,
+                         settled_at, returned_at, return_code, created_at
                   FROM ach_batches ORDER BY created_at DESC LIMIT 10`),
     ]);
+
+    const disbursedCents = parseInt(totalDisbursed.rows[0].total, 10);
+    const settledCents = parseInt(totalSettled.rows[0].total, 10);
+    const returnedCents = parseInt(totalReturned.rows[0].total, 10);
 
     return {
       total_batches: parseInt(totalBatches.rows[0].count, 10),
       pending_batches: parseInt(pendingBatches.rows[0].count, 10),
       transmitted_batches: parseInt(transmittedBatches.rows[0].count, 10),
-      total_disbursed_cents: parseInt(totalDisbursed.rows[0].total, 10),
-      total_disbursed_dollars: parseInt(totalDisbursed.rows[0].total, 10) / 100,
+      accepted_batches: parseInt(acceptedBatches.rows[0].count, 10),
+      settled_batches: parseInt(settledBatches.rows[0].count, 10),
+      returned_batches: parseInt(returnedBatches.rows[0].count, 10),
+      failed_batches: parseInt(failedBatches.rows[0].count, 10),
+      total_disbursed_cents: disbursedCents,
+      total_disbursed_dollars: disbursedCents / 100,
+      total_settled_cents: settledCents,
+      total_settled_dollars: settledCents / 100,
+      total_returned_cents: returnedCents,
+      total_returned_dollars: returnedCents / 100,
+      settlement_rate: disbursedCents > 0
+        ? Math.round((settledCents / disbursedCents) * 10000) / 100
+        : 0,
+      return_rate: disbursedCents > 0
+        ? Math.round((returnedCents / disbursedCents) * 10000) / 100
+        : 0,
       recent_payments: recentPayments.rows,
     };
   }
