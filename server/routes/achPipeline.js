@@ -18,6 +18,7 @@ const { ACHReconciliation } = require('../integrations/ach/achReconciliation');
 const { AS2Setup } = require('../integrations/ach/as2Setup');
 const { AS2Partners } = require('../integrations/ach/as2Partners');
 const { OpenBankApi } = require('../integrations/ach/openBankApi');
+const pool = require('../integrations/bonds/pgPool');
 const { validateRouting } = require('../integrations/ach/nachaGenerator');
 const { ApiCredentials } = require('../integrations/ach/apiCredentials');
 
@@ -221,6 +222,29 @@ router.post('/batches/:id/transmit', requireAdmin, async (req, res) => {
   try {
     const result = await ACHEngine.transmitBatch(req.params.id);
     res.json({ success: true, data: result });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// ─── POST /api/ach-pipeline/batches/:id/retry ──────────────────────────────────
+// Reset a failed batch back to pending so it can be retransmitted
+router.post('/batches/:id/retry', requireAdmin, async (req, res) => {
+  try {
+    const batch = await ACHEngine.getBatch(req.params.id);
+    if (!batch) return res.status(404).json({ success: false, error: 'Batch not found' });
+    if (batch.status !== 'failed') {
+      return res.status(400).json({ success: false, error: `Cannot retry batch in '${batch.status}' status — only 'failed' batches can be retried` });
+    }
+    const result = await pool.query(
+      `UPDATE ach_batches SET status = 'pending', error_message = NULL, updated_at = NOW() WHERE batch_id = $1 RETURNING *`,
+      [req.params.id]
+    );
+    await pool.query(
+      `UPDATE ach_entries SET status = 'pending' WHERE batch_id = $1 AND status != 'settled'`,
+      [req.params.id]
+    );
+    res.json({ success: true, data: result.rows[0] });
   } catch (err) {
     res.status(500).json({ success: false, error: err.message });
   }

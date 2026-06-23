@@ -966,6 +966,14 @@
       loadPayments();
     }
 
+    async function retryBatch(id) {
+      if (!confirm('Retry batch ' + id + '? This will reset it to pending so you can transmit again.')) return;
+      const r = await fetchJSON(API + '/api/ach-pipeline/batches/' + id + '/retry', { method: 'POST', headers: adminHeaders() });
+      if (r.success) { alert('Batch reset to pending — you can now transmit it again.'); }
+      else { alert('Error: ' + (r.error || 'Retry failed')); }
+      loadPayments();
+    }
+
     async function cancelBatch(id) {
       if (!confirm('Cancel batch ' + id + '? This cannot be undone.')) return;
       const r = await fetchJSON(API + '/api/ach-pipeline/batches/' + id + '/cancel', { method: 'POST', headers: { 'Content-Type': 'application/json' } });
@@ -992,7 +1000,7 @@
       `;
 
       const data = batches.data || [];
-      el('ach-batches-wrap').innerHTML = data.length ? '<table><thead><tr><th>Batch</th><th>Partner</th><th>Entries</th><th>Total</th><th>SEC</th><th>Status</th><th>Created</th><th>Actions</th></tr></thead><tbody>' + data.map(b => { const batchId = b.batch_id || b.id; const amountDollars = b.total_amount_cents ? (parseInt(b.total_amount_cents, 10) / 100) : (b.total_amount || 0); const canSend = b.status === 'pending' || b.status === 'generated'; const statusClass = {'transmitted':'badge-purple','failed':'badge-error','cancelled':'badge-warning','accepted':'badge-info','settled':'badge-active','returned':'badge-error'}[b.status] || 'badge-active'; return `<tr><td><code>${esc(batchId)}</code></td><td>${esc(b.partner_id || 'default')}</td><td>${b.entry_count || 0}</td><td class="money">${fmt(amountDollars)}</td><td><span class="badge badge-info">${esc(b.sec_code || 'PPD')}</span></td><td><span class="badge ${statusClass}">${esc(b.status)}</span></td><td>${shortDate(b.created_at)}</td><td>${canSend ? '<button class="btn btn-success btn-sm" onclick="transmitBatch(\'' + esc(batchId) + '\')">Transmit</button> ' : ''}<a href="${API}/api/ach-pipeline/batches/${batchId}/download" class="btn btn-outline btn-sm">NACHA</a></td></tr>`; }).join('') + '</tbody></table>' : '<p class="text-muted">No ACH batches</p>';
+      el('ach-batches-wrap').innerHTML = data.length ? '<table><thead><tr><th>Batch</th><th>Partner</th><th>Entries</th><th>Total</th><th>SEC</th><th>Status</th><th>Created</th><th>Actions</th></tr></thead><tbody>' + data.map(b => { const batchId = b.batch_id || b.id; const amountDollars = b.total_amount_cents ? (parseInt(b.total_amount_cents, 10) / 100) : (b.total_amount || 0); const canSend = b.status === 'pending' || b.status === 'generated'; const canRetry = b.status === 'failed'; const statusClass = {'transmitted':'badge-purple','failed':'badge-error','cancelled':'badge-warning','accepted':'badge-info','settled':'badge-active','returned':'badge-error'}[b.status] || 'badge-active'; return `<tr><td><code>${esc(batchId)}</code></td><td>${esc(b.partner_id || 'default')}</td><td>${b.entry_count || 0}</td><td class="money">${fmt(amountDollars)}</td><td><span class="badge badge-info">${esc(b.sec_code || 'PPD')}</span></td><td><span class="badge ${statusClass}">${esc(b.status)}</span></td><td>${shortDate(b.created_at)}</td><td>${canSend ? '<button class="btn btn-success btn-sm" onclick="transmitBatch(\'' + esc(batchId) + '\')">Transmit</button> ' : ''}${canRetry ? '<button class="btn btn-warning btn-sm" onclick="retryBatch(\'' + esc(batchId) + '\')">Retry</button> ' : ''}<a href="${API}/api/ach-pipeline/batches/${batchId}/download" class="btn btn-outline btn-sm">NACHA</a></td></tr>`; }).join('') + '</tbody></table>' : '<p class="text-muted">No ACH batches</p>';
 
       // Exports tab
       const expData = exports.data || [];

@@ -165,10 +165,20 @@ class ACHEngine {
     let partnerConfig = null;
     if (batch.partner_id) {
       partnerConfig = await AS2Partners.getPartnerConfig(batch.partner_id);
-      if (!partnerConfig) throw new Error(`AS2 partner not found or inactive: ${batch.partner_id}`);
+      if (!partnerConfig) throw new Error(`Partner not found or inactive: ${batch.partner_id}`);
     } else {
       partnerConfig = await AS2Partners.getDefaultPartnerConfig();
-      // partnerConfig may be null — AS2Client.transmit will fall back to global AS2_CONFIG
+    }
+
+    // When no partner is configured, default to HTTPS REST API self-transmit
+    if (!partnerConfig) {
+      partnerConfig = {
+        partnerId: 'DLBTRUST-DIRECT',
+        partnerName: 'DLB Trust Direct',
+        protocol: 'rest_api',
+        apiBaseUrl: 'direct',
+        localAs2Id: 'DLBTRUST-AS2',
+      };
     }
 
     // Update status to transmitting
@@ -178,8 +188,8 @@ class ACHEngine {
     );
 
     try {
-      // Route to AS2 or REST API based on partner protocol
-      const protocol = partnerConfig ? (partnerConfig.protocol || 'as2') : 'as2';
+      // Route to AS2 or REST API based on partner protocol — default is rest_api (HTTPS)
+      const protocol = partnerConfig.protocol || 'rest_api';
       const result = protocol === 'rest_api'
         ? await OpenBankApi.transmit(nachaContent, batch.filename, partnerConfig)
         : await AS2Client.transmit(nachaContent, batch.filename, partnerConfig);
