@@ -182,6 +182,7 @@ class ACHEngine {
     }
 
     // Update status to transmitting
+    console.log(`[ACH] transmitBatch(${batchId}): partner=${partnerConfig.partnerId}, protocol=${partnerConfig.protocol}`);
     await pool.query(
       `UPDATE ach_batches SET status = 'transmitting', updated_at = NOW() WHERE batch_id = $1`,
       [batchId]
@@ -190,9 +191,12 @@ class ACHEngine {
     try {
       // Route to AS2 or REST API based on partner protocol — default is rest_api (HTTPS)
       const protocol = partnerConfig.protocol || 'rest_api';
+      console.log(`[ACH] transmitBatch(${batchId}): calling ${protocol} transmit`);
       const result = protocol === 'rest_api'
         ? await OpenBankApi.transmit(nachaContent, batch.filename, partnerConfig)
         : await AS2Client.transmit(nachaContent, batch.filename, partnerConfig);
+
+      console.log(`[ACH] transmitBatch(${batchId}): transmit result success=${result.success}, mode=${result.mode}`);
 
       // Record transmission
       await pool.query(
@@ -224,10 +228,11 @@ class ACHEngine {
 
       return { ...result, batch_id: batchId, batch_status: newStatus };
     } catch (err) {
+      console.error(`[ACH] transmitBatch(${batchId}) FAILED:`, err.message);
       await pool.query(
         `UPDATE ach_batches SET status = 'failed', error_message = $1, updated_at = NOW() WHERE batch_id = $2`,
         [err.message, batchId]
-      );
+      ).catch(e => console.error(`[ACH] Failed to set batch status to failed:`, e.message));
       throw err;
     }
   }

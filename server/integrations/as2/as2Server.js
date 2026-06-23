@@ -388,8 +388,10 @@ class AS2Server {
   // ─── Dashboard / Status ───────────────────────────────────────────────────
 
   static async getDashboard() {
+    // Use 'active' boolean column (added by migrate-ach.sql) with fallback to 'status' text column (migrate-as2.sql)
     const [partners, certs, messages, sent, received, failed] = await Promise.all([
-      pool.query("SELECT COUNT(*) as count FROM as2_partners WHERE status = 'active'"),
+      pool.query("SELECT COUNT(*) as count FROM as2_partners WHERE active = TRUE").catch(() =>
+        pool.query("SELECT COUNT(*) as count FROM as2_partners WHERE status = 'active'")),
       pool.query("SELECT COUNT(*) as count FROM as2_certificates WHERE status = 'active'"),
       pool.query('SELECT COUNT(*) as count FROM as2_messages'),
       pool.query("SELECT COUNT(*) as count FROM as2_messages WHERE direction = 'outbound' AND status = 'sent'"),
