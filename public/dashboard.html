@@ -173,6 +173,8 @@
     <div class="nav-item" data-page="cash"><span class="icon">💰</span> Cash Management</div>
     <div class="nav-item" data-page="payments"><span class="icon">💸</span> Payments & Disbursements</div>
     <div class="nav-item" data-page="ach"><span class="icon">🏦</span> ACH Pipeline</div>
+    <div class="nav-item" data-page="partners"><span class="icon">🤝</span> Partners</div>
+    <div class="nav-item" data-page="apikeys"><span class="icon">🔑</span> API Keys</div>
     <div class="nav-item" data-page="as2"><span class="icon">🔗</span> AS2 Server</div>
     <div class="nav-section">Operations</div>
     <div class="nav-item" data-page="crm"><span class="icon">👥</span> CRM & Investors</div>
@@ -302,11 +304,93 @@
     <!-- ACH PIPELINE PAGE -->
     <div id="page-ach" class="page hidden">
       <div class="page-header">
-        <div><h1>ACH Pipeline</h1><div class="subtitle">NACHA File Generation & AS2 Bank Transmission</div></div>
+        <div><h1>ACH Pipeline</h1><div class="subtitle">NACHA File Generation, Transmission & Exports</div></div>
         <button class="btn btn-primary btn-sm" onclick="loadACH()">Refresh</button>
       </div>
       <div class="grid" id="ach-status-cards"></div>
-      <div class="card"><div class="section-title">ACH Batches</div><div class="table-wrap" id="ach-batches-wrap"><p class="loading">Loading...</p></div></div>
+      <div class="tabs">
+        <div class="tab active" data-tab="ach-batches-tab">Batches</div>
+        <div class="tab" data-tab="ach-exports-tab">Exported Files</div>
+      </div>
+      <div id="ach-batches-tab" class="tab-content active">
+        <div class="card"><div class="section-title">ACH Batches</div><div class="table-wrap" id="ach-batches-wrap"><p class="loading">Loading...</p></div></div>
+      </div>
+      <div id="ach-exports-tab" class="tab-content">
+        <div class="card">
+          <div class="section-title">Exported NACHA Files</div>
+          <p class="text-muted mb-16" style="font-size:12px;">Files exported during transmission — download for manual bank upload or verify delivery.</p>
+          <div class="table-wrap" id="ach-exports-wrap"><p class="loading">Loading...</p></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- PARTNERS PAGE -->
+    <div id="page-partners" class="page hidden">
+      <div class="page-header">
+        <div><h1>Partners</h1><div class="subtitle">Bank & Merchant Connections — AS2 and REST API Routing</div></div>
+        <button class="btn btn-primary btn-sm" onclick="loadPartners()">Refresh</button>
+      </div>
+      <div class="grid" id="partners-summary-cards"></div>
+      <div class="card">
+        <div class="section-title">Registered Partners</div>
+        <div class="table-wrap" id="partners-table-wrap"><p class="loading">Loading...</p></div>
+        <button class="btn btn-outline btn-sm mt-16" onclick="toggleAddPartner()">+ Register Partner</button>
+        <div id="add-partner-form" class="hidden mt-16">
+          <div class="form-row">
+            <div class="form-group"><label>Partner ID</label><input type="text" id="partner-id" placeholder="BANK-XYZ"></div>
+            <div class="form-group"><label>Partner Name</label><input type="text" id="partner-name" placeholder="Eaton Family CU"></div>
+          </div>
+          <div class="form-row">
+            <div class="form-group"><label>Protocol</label><select id="partner-protocol"><option value="rest_api">REST API</option><option value="as2">AS2</option></select></div>
+            <div class="form-group"><label>API Base URL</label><input type="text" id="partner-api-url" placeholder="direct (for local) or https://api.bank.com"></div>
+          </div>
+          <div class="form-row">
+            <div class="form-group"><label>API Key</label><input type="text" id="partner-api-key" placeholder="(Optional) Bank API key"></div>
+            <div class="form-group"><label>API Secret</label><input type="password" id="partner-api-secret" placeholder="(Optional) Bank API secret"></div>
+          </div>
+          <div class="form-row">
+            <div class="form-group"><label>Auth Type</label><select id="partner-auth-type"><option value="bearer">Bearer Token</option><option value="basic">Basic Auth</option><option value="api_key">API Key Header</option><option value="hmac">HMAC Signature</option></select></div>
+            <div class="form-group"><label>Default?</label><select id="partner-default"><option value="false">No</option><option value="true">Yes — use for batches without partnerId</option></select></div>
+          </div>
+          <button class="btn btn-success btn-sm" onclick="registerPartner()">Register Partner</button>
+          <div id="partner-add-result"></div>
+        </div>
+      </div>
+      <div id="partner-detail-card" class="card mt-16" style="display:none">
+        <div class="section-title" id="partner-detail-title">Partner Details</div>
+        <div id="partner-detail-content"></div>
+      </div>
+    </div>
+
+    <!-- API KEYS PAGE -->
+    <div id="page-apikeys" class="page hidden">
+      <div class="page-header">
+        <div><h1>API Keys</h1><div class="subtitle">REST API Credentials — Generate & Manage Access Keys</div></div>
+        <button class="btn btn-primary btn-sm" onclick="loadApiKeys()">Refresh</button>
+      </div>
+      <div class="grid" id="apikeys-summary-cards"></div>
+      <div class="card">
+        <div class="section-title">Active API Credentials</div>
+        <div class="table-wrap" id="apikeys-table-wrap"><p class="loading">Loading...</p></div>
+      </div>
+      <div class="card mt-16">
+        <div class="section-title">Generate New API Key</div>
+        <p class="text-muted mb-16" style="font-size:12px;">Generate a key pair for REST API authentication. The secret is shown only once — save it immediately.</p>
+        <div class="form-row">
+          <div class="form-group"><label>Label</label><input type="text" id="apikey-label" placeholder="Production Key"></div>
+          <div class="form-group"><label>Expiry</label><select id="apikey-expiry"><option value="">Never</option><option value="30d">30 days</option><option value="90d">90 days</option><option value="1y">1 year</option></select></div>
+        </div>
+        <button class="btn btn-success" onclick="generateApiKey()">Generate Key Pair</button>
+        <div id="apikey-generate-result"></div>
+      </div>
+      <div class="card mt-16">
+        <div class="section-title">Usage</div>
+        <table><tbody>
+          <tr><td>Header (Bearer)</td><td><code>Authorization: Bearer dlb_key_...</code></td></tr>
+          <tr><td>Header (API Key)</td><td><code>X-API-Key: dlb_key_...</code></td></tr>
+          <tr><td>Admin Token (legacy)</td><td><code>x-admin-token: &lt;token&gt;</code></td></tr>
+        </tbody></table>
+      </div>
     </div>
 
     <!-- AS2 PAGE -->
@@ -622,7 +706,7 @@
         document.querySelectorAll('.page').forEach(p => p.classList.add('hidden'));
         document.getElementById('page-' + page).classList.remove('hidden');
         // Load data for page
-        const loaders = { overview: loadOverview, bonds: loadBonds, cash: loadCash, payments: loadPayments, ach: loadACH, as2: loadAS2, crm: loadCRM, documents: loadDocuments, accounting: loadAccounting, tax: loadTax, fineract: loadFineract, admin: loadAdmin };
+        const loaders = { overview: loadOverview, bonds: loadBonds, cash: loadCash, payments: loadPayments, ach: loadACH, partners: loadPartners, apikeys: loadApiKeys, as2: loadAS2, crm: loadCRM, documents: loadDocuments, accounting: loadAccounting, tax: loadTax, fineract: loadFineract, admin: loadAdmin };
         if (loaders[page]) loaders[page]();
       });
     });
@@ -866,9 +950,15 @@
     }
 
     async function transmitBatch(id) {
-      if (!confirm('Transmit batch ' + id + ' via AS2 to the bank? This will initiate real ACH payment processing.')) return;
-      const r = await fetchJSON(API + '/api/ach-pipeline/batches/' + id + '/transmit', { method: 'POST', headers: { 'Content-Type': 'application/json' } });
-      alert(r.success ? 'Transmitted via AS2! Message ID: ' + ((r.data || {}).message_id || 'N/A') : 'Error: ' + (r.error || 'AS2 partner not configured'));
+      if (!confirm('Transmit batch ' + id + '? This will generate and export the NACHA file for bank delivery.')) return;
+      const r = await fetchJSON(API + '/api/ach-pipeline/batches/' + id + '/transmit', { method: 'POST', headers: adminHeaders() });
+      if (r.success) {
+        const d = r.data || {};
+        const mode = d.mode || 'unknown';
+        alert('Transmitted! Mode: ' + mode + '\nMessage ID: ' + (d.message_id || 'N/A') + (d.export_path ? '\nExported to: ' + d.export_path : ''));
+      } else {
+        alert('Error: ' + (r.error || 'Transmission failed — check partner config'));
+      }
       loadPayments();
     }
 
@@ -881,21 +971,179 @@
 
     // ─── ACH ───────────────────────────────────────────────────────────────────
     async function loadACH() {
-      const [status, batches] = await Promise.all([
+      const [status, batches, summary, exports] = await Promise.all([
         fetchJSON(API + '/api/ach-pipeline/status'),
         fetchJSON(API + '/api/ach-pipeline/batches'),
+        fetchJSON(API + '/api/ach-pipeline/payment-summary'),
+        adminToken ? fetchJSON(API + '/api/ach-pipeline/exports', { headers: adminHeaders() }) : Promise.resolve({ data: [] }),
       ]);
       const s = status.data || {};
-      const as2cfg = s.as2_config || {};
+      const sm = summary.data || {};
       el('ach-status-cards').innerHTML = `
-        <div class="card"><div class="card-title">AS2 Configured</div><div class="card-value">${as2cfg.configured ? 'Yes' : 'No'}</div></div>
-        <div class="card"><div class="card-title">Partner AS2 ID</div><div class="card-value" style="font-size:14px">${esc(as2cfg.partner_as2_id || '—')}</div></div>
-        <div class="card"><div class="card-title">Signing Cert</div><div class="card-value">${as2cfg.has_signing_cert ? 'Yes' : 'No'}</div></div>
-        <div class="card"><div class="card-title">ODFI Routing</div><div class="card-value" style="font-size:14px">${esc(s.odfi_routing || '241075470')}</div></div>
+        <div class="card"><div class="card-title">Total Batches</div><div class="card-value">${sm.total_batches || 0}</div><div class="card-sub">${sm.pending_batches || 0} pending</div></div>
+        <div class="card"><div class="card-title">Transmitted</div><div class="card-value">${sm.transmitted_batches || 0}</div><div class="card-sub">Sent to bank</div></div>
+        <div class="card"><div class="card-title">Settled</div><div class="card-value text-green">${sm.settled_batches || 0}</div><div class="card-sub">Rate: ${sm.settlement_rate || 0}%</div></div>
+        <div class="card"><div class="card-title">Returned</div><div class="card-value text-red">${sm.returned_batches || 0}</div><div class="card-sub">Rate: ${sm.return_rate || 0}%</div></div>
+        <div class="card"><div class="card-title">Total Disbursed</div><div class="card-value">${fmt(sm.total_disbursed_dollars || 0)}</div><div class="card-sub">ACH payments</div></div>
       `;
 
       const data = batches.data || [];
-      el('ach-batches-wrap').innerHTML = data.length ? '<table><thead><tr><th>Batch</th><th>Entries</th><th>Total</th><th>SEC</th><th>Status</th><th>Created</th><th>Actions</th></tr></thead><tbody>' + data.map(b => { const batchId = b.batch_id || b.id; const amountDollars = b.total_amount_cents ? (parseInt(b.total_amount_cents, 10) / 100) : (b.total_amount || 0); const canSend = b.status === 'pending' || b.status === 'generated'; return `<tr><td><code>${esc(batchId)}</code></td><td>${b.entry_count || 0}</td><td class="money">${fmt(amountDollars)}</td><td><span class="badge badge-info">${esc(b.sec_code || 'PPD')}</span></td><td><span class="badge ${b.status === 'transmitted' ? 'badge-purple' : b.status === 'failed' ? 'badge-error' : b.status === 'cancelled' ? 'badge-warning' : 'badge-active'}">${esc(b.status)}</span></td><td>${shortDate(b.created_at)}</td><td>${canSend ? '<button class="btn btn-success btn-sm" onclick="transmitBatch(\'' + esc(batchId) + '\')">Send</button> ' : ''}<a href="' + API + '/api/ach-pipeline/batches/' + batchId + '/download" class="btn btn-outline btn-sm">Download</a></td></tr>`; }).join('') + '</tbody></table>' : '<p class="text-muted">No ACH batches</p>';
+      el('ach-batches-wrap').innerHTML = data.length ? '<table><thead><tr><th>Batch</th><th>Partner</th><th>Entries</th><th>Total</th><th>SEC</th><th>Status</th><th>Created</th><th>Actions</th></tr></thead><tbody>' + data.map(b => { const batchId = b.batch_id || b.id; const amountDollars = b.total_amount_cents ? (parseInt(b.total_amount_cents, 10) / 100) : (b.total_amount || 0); const canSend = b.status === 'pending' || b.status === 'generated'; const statusClass = {'transmitted':'badge-purple','failed':'badge-error','cancelled':'badge-warning','accepted':'badge-info','settled':'badge-active','returned':'badge-error'}[b.status] || 'badge-active'; return `<tr><td><code>${esc(batchId)}</code></td><td>${esc(b.partner_id || 'default')}</td><td>${b.entry_count || 0}</td><td class="money">${fmt(amountDollars)}</td><td><span class="badge badge-info">${esc(b.sec_code || 'PPD')}</span></td><td><span class="badge ${statusClass}">${esc(b.status)}</span></td><td>${shortDate(b.created_at)}</td><td>${canSend ? '<button class="btn btn-success btn-sm" onclick="transmitBatch(\'' + esc(batchId) + '\')">Transmit</button> ' : ''}<a href="${API}/api/ach-pipeline/batches/${batchId}/download" class="btn btn-outline btn-sm">NACHA</a></td></tr>`; }).join('') + '</tbody></table>' : '<p class="text-muted">No ACH batches</p>';
+
+      // Exports tab
+      const expData = exports.data || [];
+      el('ach-exports-wrap').innerHTML = expData.length ? '<table><thead><tr><th>Filename</th><th>Partner</th><th>Date</th><th>Size</th><th>Exported</th><th>Actions</th></tr></thead><tbody>' + expData.map(e => `<tr><td><code>${esc(e.filename)}</code></td><td>${esc(e.partner_id)}</td><td>${esc(e.date)}</td><td>${e.size} bytes</td><td>${shortDate(e.exported_at)}</td><td><a href="${API}/api/ach-pipeline/exports/${encodeURIComponent(e.partner_id)}/${encodeURIComponent(e.date)}/${encodeURIComponent(e.filename)}" class="btn btn-outline btn-sm" target="_blank">Download</a></td></tr>`).join('') + '</tbody></table>' : '<p class="text-muted">No exported files yet. Transmit a batch to generate exports.</p>';
+    }
+
+    // ─── PARTNERS ───────────────────────────────────────────────────────────────
+    async function loadPartners() {
+      const partners = await fetchJSON(API + '/api/ach-pipeline/partners');
+      const data = partners.data || [];
+      const active = data.filter(p => p.active);
+      const restApi = data.filter(p => p.protocol === 'rest_api');
+      const as2 = data.filter(p => p.protocol === 'as2');
+
+      el('partners-summary-cards').innerHTML = `
+        <div class="card"><div class="card-title">Total Partners</div><div class="card-value">${data.length}</div><div class="card-sub">${active.length} active</div></div>
+        <div class="card"><div class="card-title">REST API</div><div class="card-value">${restApi.length}</div><div class="card-sub">Direct / SFTP / Remote</div></div>
+        <div class="card"><div class="card-title">AS2</div><div class="card-value">${as2.length}</div><div class="card-sub">Certificate-based EDI</div></div>
+        <div class="card"><div class="card-title">Default</div><div class="card-value" style="font-size:14px">${esc((data.find(p => p.is_default) || {}).partner_id || 'None')}</div></div>
+      `;
+
+      el('partners-table-wrap').innerHTML = data.length ? '<table><thead><tr><th>Partner ID</th><th>Name</th><th>Protocol</th><th>URL / Mode</th><th>Default</th><th>Status</th><th>Actions</th></tr></thead><tbody>' + data.map(p => {
+        const url = p.api_base_url || p.partner_url || '—';
+        const mode = (!url || url === 'direct' || url === 'local') ? 'Direct' : url.startsWith('sftp://') ? 'SFTP' : url.length > 30 ? url.substring(0, 30) + '...' : url;
+        return `<tr><td><code>${esc(p.partner_id)}</code></td><td>${esc(p.partner_name)}</td><td><span class="badge ${p.protocol === 'rest_api' ? 'badge-info' : 'badge-purple'}">${esc(p.protocol)}</span></td><td>${esc(mode)}</td><td>${p.is_default ? '<span class="badge badge-active">DEFAULT</span>' : '—'}</td><td><span class="badge ${p.active ? 'badge-active' : 'badge-error'}">${p.active ? 'Active' : 'Inactive'}</span></td><td><button class="btn btn-outline btn-sm" onclick="viewPartner('${esc(p.partner_id)}')">Details</button> <button class="btn btn-outline btn-sm" onclick="testPartner('${esc(p.partner_id)}')">Test</button> ${p.active ? '<button class="btn btn-danger btn-sm" onclick="deactivatePartner(\'' + esc(p.partner_id) + '\')">Deactivate</button>' : '<button class="btn btn-success btn-sm" onclick="activatePartner(\'' + esc(p.partner_id) + '\')">Activate</button>'}</td></tr>`;
+      }).join('') + '</tbody></table>' : '<p class="text-muted">No partners registered. Add one below.</p>';
+    }
+
+    function toggleAddPartner() { el('add-partner-form').classList.toggle('hidden'); }
+
+    async function registerPartner() {
+      const data = {
+        partnerId: el('partner-id').value,
+        partnerName: el('partner-name').value,
+        protocol: el('partner-protocol').value,
+        apiBaseUrl: el('partner-api-url').value || 'direct',
+        partnerUrl: el('partner-api-url').value || 'direct',
+        apiKey: el('partner-api-key').value || undefined,
+        apiSecret: el('partner-api-secret').value || undefined,
+        apiAuthType: el('partner-auth-type').value,
+        isDefault: el('partner-default').value === 'true',
+      };
+      if (!data.partnerId || !data.partnerName) {
+        el('partner-add-result').innerHTML = '<p class="error-msg">Partner ID and name required</p>';
+        return;
+      }
+      const r = await fetchJSON(API + '/api/ach-pipeline/partners', { method: 'POST', headers: adminHeaders(), body: JSON.stringify(data) });
+      if (r.success) {
+        el('partner-add-result').innerHTML = '<p class="success-msg">Partner registered: ' + esc(r.data.partner_id) + '</p>';
+        el('add-partner-form').classList.add('hidden');
+        loadPartners();
+      } else {
+        el('partner-add-result').innerHTML = '<p class="error-msg">' + esc(r.error || 'Failed') + '</p>';
+      }
+    }
+
+    async function viewPartner(partnerId) {
+      const [detail, validation] = await Promise.all([
+        fetchJSON(API + '/api/ach-pipeline/partners/' + encodeURIComponent(partnerId)),
+        fetchJSON(API + '/api/ach-pipeline/partners/' + encodeURIComponent(partnerId) + '/validate', { headers: adminHeaders() }),
+      ]);
+      const p = (detail.data || detail);
+      const v = validation.data || {};
+      el('partner-detail-card').style.display = 'block';
+      el('partner-detail-title').textContent = (p.partner_name || partnerId) + ' Details';
+      el('partner-detail-content').innerHTML = `
+        <table><tbody>
+          <tr><td>Partner ID</td><td><code>${esc(p.partner_id)}</code></td></tr>
+          <tr><td>Protocol</td><td><span class="badge ${p.protocol === 'rest_api' ? 'badge-info' : 'badge-purple'}">${esc(p.protocol)}</span></td></tr>
+          <tr><td>API Base URL</td><td>${esc(p.api_base_url || p.partner_url || '—')}</td></tr>
+          <tr><td>API Key</td><td>${p.has_api_key ? '<span class="badge badge-active">Set</span>' : '<span class="badge badge-pending">Not set</span>'}</td></tr>
+          <tr><td>Default Partner</td><td>${p.is_default ? 'Yes' : 'No'}</td></tr>
+          <tr><td>Active</td><td><span class="badge ${p.active ? 'badge-active' : 'badge-error'}">${p.active ? 'Yes' : 'No'}</span></td></tr>
+          <tr><td>Created</td><td>${shortDate(p.created_at)}</td></tr>
+          <tr><td>Ready</td><td><span class="badge ${v.ready ? 'badge-active' : 'badge-error'}">${v.ready ? 'Ready' : 'Not Ready'}</span></td></tr>
+          ${(v.issues || []).length ? '<tr><td>Issues</td><td class="text-red">' + v.issues.join(', ') + '</td></tr>' : ''}
+        </tbody></table>`;
+    }
+
+    async function testPartner(partnerId) {
+      const r = await fetchJSON(API + '/api/ach-pipeline/partners/' + encodeURIComponent(partnerId) + '/test', { method: 'POST', headers: adminHeaders() });
+      if (r.success && r.data) {
+        const d = r.data;
+        alert('Connection Test: ' + (d.connected ? 'SUCCESS' : 'FAILED') + '\nMode: ' + (d.mode || 'unknown') + '\n' + (d.message || d.error || ''));
+      } else {
+        alert('Test failed: ' + (r.error || 'Unknown error'));
+      }
+    }
+
+    async function deactivatePartner(partnerId) {
+      if (!confirm('Deactivate partner ' + partnerId + '?')) return;
+      await fetchJSON(API + '/api/ach-pipeline/partners/' + encodeURIComponent(partnerId), { method: 'DELETE', headers: adminHeaders() });
+      loadPartners();
+    }
+
+    async function activatePartner(partnerId) {
+      await fetchJSON(API + '/api/ach-pipeline/partners/' + encodeURIComponent(partnerId) + '/activate', { method: 'POST', headers: adminHeaders() });
+      loadPartners();
+    }
+
+    // ─── API KEYS ───────────────────────────────────────────────────────────────
+    async function loadApiKeys() {
+      const creds = await fetchJSON(API + '/api/ach-pipeline/credentials?active=true', { headers: adminHeaders() });
+      const data = creds.data || [];
+
+      el('apikeys-summary-cards').innerHTML = `
+        <div class="card"><div class="card-title">Active Keys</div><div class="card-value">${data.filter(c => c.active).length}</div></div>
+        <div class="card"><div class="card-title">Total Issued</div><div class="card-value">${data.length}</div></div>
+      `;
+
+      el('apikeys-table-wrap').innerHTML = data.length ? '<table><thead><tr><th>Key ID</th><th>Label</th><th>Key Preview</th><th>Scopes</th><th>Last Used</th><th>Expires</th><th>Status</th><th>Actions</th></tr></thead><tbody>' + data.map(c => {
+        const preview = c.api_key_preview || (c.api_key ? c.api_key.substring(0, 16) + '...' : '—');
+        return `<tr><td><code style="font-size:10px">${esc(c.key_id)}</code></td><td>${esc(c.label)}</td><td><code>${esc(preview)}</code></td><td>${(c.scopes || []).map(s => '<span class="badge badge-info" style="margin:1px">' + esc(s) + '</span>').join(' ')}</td><td>${c.last_used_at ? shortDate(c.last_used_at) : 'Never'}</td><td>${c.expires_at ? shortDate(c.expires_at) : 'Never'}</td><td><span class="badge ${c.active ? 'badge-active' : 'badge-error'}">${c.active ? 'Active' : 'Revoked'}</span></td><td><button class="btn btn-outline btn-sm" onclick="rotateApiKey('${esc(c.key_id)}')">Rotate</button> <button class="btn btn-danger btn-sm" onclick="revokeApiKey('${esc(c.key_id)}')">Revoke</button></td></tr>`;
+      }).join('') + '</tbody></table>' : '<p class="text-muted">No API keys. Generate one below.</p>';
+    }
+
+    async function generateApiKey() {
+      const label = el('apikey-label').value || 'API Key';
+      const expiresIn = el('apikey-expiry').value || undefined;
+      const r = await fetchJSON(API + '/api/ach-pipeline/credentials', { method: 'POST', headers: adminHeaders(), body: JSON.stringify({ label, expiresIn }) });
+      if (r.success) {
+        const d = r.data;
+        el('apikey-generate-result').innerHTML = `
+          <div class="success-msg">
+            <strong>API Key Generated!</strong><br>
+            <table style="margin-top:8px"><tbody>
+              <tr><td>Key ID</td><td><code>${esc(d.key_id)}</code></td></tr>
+              <tr><td>API Key</td><td><code style="word-break:break-all;user-select:all">${esc(d.api_key)}</code></td></tr>
+              <tr><td>API Secret</td><td><code style="word-break:break-all;color:var(--red);user-select:all">${esc(d.api_secret)}</code></td></tr>
+            </tbody></table>
+            <p style="margin-top:8px;color:var(--red);font-weight:600">Save the secret now &mdash; it cannot be retrieved again.</p>
+          </div>`;
+        loadApiKeys();
+      } else {
+        el('apikey-generate-result').innerHTML = '<p class="error-msg">' + esc(r.error || 'Failed') + '</p>';
+      }
+    }
+
+    async function revokeApiKey(keyId) {
+      if (!confirm('Revoke API key ' + keyId + '? This cannot be undone.')) return;
+      const r = await fetchJSON(API + '/api/ach-pipeline/credentials/' + encodeURIComponent(keyId), { method: 'DELETE', headers: adminHeaders() });
+      alert(r.success ? 'Key revoked.' : 'Error: ' + (r.error || 'Failed'));
+      loadApiKeys();
+    }
+
+    async function rotateApiKey(keyId) {
+      if (!confirm('Rotate API key ' + keyId + '? The old key will be revoked and a new one generated.')) return;
+      const r = await fetchJSON(API + '/api/ach-pipeline/credentials/' + encodeURIComponent(keyId) + '/rotate', { method: 'POST', headers: adminHeaders() });
+      if (r.success) {
+        const d = r.data.new_credential;
+        alert('Key rotated! New key: ' + d.api_key + '\nNew secret: ' + d.api_secret + '\n\nSAVE THE SECRET NOW.');
+        loadApiKeys();
+      } else {
+        alert('Error: ' + (r.error || 'Failed'));
+      }
     }
 
     // ─── AS2 ───────────────────────────────────────────────────────────────────
