@@ -155,8 +155,10 @@ class ACHEngine {
   static async transmitBatch(batchId) {
     const batch = await ACHEngine.getBatch(batchId);
     if (!batch) throw new Error(`Batch not found: ${batchId}`);
-    if (batch.status === 'transmitted') throw new Error(`Batch already transmitted: ${batchId}`);
-    if (batch.status === 'cancelled') throw new Error(`Batch is cancelled: ${batchId}`);
+    const nonTransmittable = ['transmitting', 'transmitted', 'accepted', 'settled', 'returned', 'cancelled'];
+    if (nonTransmittable.includes(batch.status)) {
+      throw new Error(`Cannot transmit batch in '${batch.status}' status — only 'pending' or 'failed' batches can be transmitted`);
+    }
 
     const nachaContent = batch.nacha_content;
     if (!nachaContent) throw new Error('Batch has no NACHA content');
@@ -259,16 +261,22 @@ class ACHEngine {
       [batchId]
     );
 
-    // Record acknowledgement (skip if caller already inserted one)
+    // Record acknowledgement (best-effort — don't fail the accept if ack insert has constraint issues)
     if (!metadata.skipAckRecord && (metadata.transmissionId || metadata.messageId)) {
-      await pool.query(
-        `INSERT INTO ach_acknowledgements
-          (batch_id, transmission_id, ack_type, ack_status, message_id, raw_response, disposition, received_at)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, NOW())`,
-        [batchId, metadata.transmissionId || null, metadata.ackType || 'bank_ack',
-         'accepted', metadata.messageId || null,
-         metadata.rawResponse || null, metadata.disposition || null]
-      );
+      const validAckTypes = ['mdn', 'file_ack', 'bank_ack'];
+      const ackType = validAckTypes.includes(metadata.ackType) ? metadata.ackType : 'bank_ack';
+      try {
+        await pool.query(
+          `INSERT INTO ach_acknowledgements
+            (batch_id, transmission_id, ack_type, ack_status, message_id, raw_response, disposition, received_at)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, NOW())`,
+          [batchId, metadata.transmissionId || null, ackType,
+           'accepted', metadata.messageId || null,
+           metadata.rawResponse || null, metadata.disposition || null]
+        );
+      } catch (ackErr) {
+        console.warn(`[ACH] acceptBatch(${batchId}): ack record insert failed (non-fatal):`, ackErr.message);
+      }
     }
 
     const updated = await pool.query('SELECT * FROM ach_batches WHERE batch_id = $1', [batchId]);
