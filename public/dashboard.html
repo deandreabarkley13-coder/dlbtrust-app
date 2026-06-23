@@ -907,9 +907,10 @@
       el('payment-batches-wrap').innerHTML = data.length ? '<table><thead><tr><th>Batch ID</th><th>Description</th><th>Entries</th><th>Amount</th><th>SEC</th><th>Status</th><th>Created</th><th>Actions</th></tr></thead><tbody>' + data.map(b => {
         const batchId = b.batch_id || b.id;
         const amountDollars = b.total_amount_cents ? (parseInt(b.total_amount_cents, 10) / 100) : (b.total_amount || 0);
-        const canTransmit = b.status === 'pending' || b.status === 'generated';
+        const canTransmit = b.status === 'pending' || b.status === 'generated' || b.status === 'failed';
         const canCancel = b.status === 'pending';
-        return `<tr><td><code>${esc(batchId)}</code></td><td>${esc(b.entry_description || b.description || '—')}</td><td>${b.entry_count || 0}</td><td class="money">${fmt(amountDollars)}</td><td><span class="badge badge-info">${esc(b.sec_code || 'PPD')}</span></td><td><span class="badge ${b.status === 'transmitted' ? 'badge-purple' : b.status === 'failed' ? 'badge-error' : b.status === 'cancelled' ? 'badge-warning' : 'badge-active'}">${esc(b.status)}</span></td><td>${shortDate(b.created_at)}</td><td>${canTransmit ? '<button class="btn btn-success btn-sm" onclick="transmitBatch(\'' + esc(batchId) + '\')" title="Send via AS2">Transmit</button>' : ''} ${canCancel ? '<button class="btn btn-outline btn-sm" onclick="cancelBatch(\'' + esc(batchId) + '\')" title="Cancel batch">Cancel</button>' : ''} ${!canTransmit && !canCancel ? '—' : ''}</td></tr>`;
+        const statusBadge = b.status === 'accepted' ? 'badge-success' : b.status === 'transmitted' ? 'badge-purple' : b.status === 'settled' ? 'badge-success' : b.status === 'returned' ? 'badge-error' : b.status === 'failed' ? 'badge-error' : b.status === 'cancelled' ? 'badge-warning' : 'badge-active';
+        return `<tr><td><code>${esc(batchId)}</code></td><td>${esc(b.entry_description || b.description || '—')}</td><td>${b.entry_count || 0}</td><td class="money">${fmt(amountDollars)}</td><td><span class="badge badge-info">${esc(b.sec_code || 'PPD')}</span></td><td><span class="badge ${statusBadge}">${esc(b.status)}</span></td><td>${shortDate(b.created_at)}</td><td>${canTransmit ? '<button class="btn btn-success btn-sm" onclick="transmitBatch(\'' + esc(batchId) + '\')" title="Send via HTTPS">' + (b.status === 'failed' ? 'Retry' : 'Transmit') + '</button>' : ''} ${canCancel ? '<button class="btn btn-outline btn-sm" onclick="cancelBatch(\'' + esc(batchId) + '\')" title="Cancel batch">Cancel</button>' : ''} ${!canTransmit && !canCancel ? '—' : ''}</td></tr>`;
       }).join('') + '</tbody></table>' : '<p class="text-muted">No payment batches yet. Create a disbursement above.</p>';
       // Set default date
       if (!el('disb-date').value) { const d = new Date(); d.setDate(d.getDate() + 1); el('disb-date').value = d.toISOString().split('T')[0]; }
@@ -959,7 +960,8 @@
       if (r.success) {
         const d = r.data || {};
         const mode = d.mode || 'unknown';
-        alert('Transmitted! Mode: ' + mode + '\nMessage ID: ' + (d.message_id || 'N/A') + (d.export_path ? '\nExported to: ' + d.export_path : ''));
+        const autoAccepted = d.auto_accepted ? '\n✓ Auto-accepted — payment processed end-to-end' : '';
+        alert('Transmitted via HTTPS! Status: ' + (d.batch_status || 'transmitted') + '\nMode: ' + mode + '\nMessage ID: ' + (d.message_id || 'N/A') + autoAccepted + (d.export_path ? '\nExported to: ' + d.export_path : ''));
       } else {
         alert('Error: ' + (r.error || 'Transmission failed — check partner config'));
       }

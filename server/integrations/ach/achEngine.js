@@ -226,6 +226,21 @@ class ACHEngine {
           `UPDATE ach_entries SET status = 'transmitted' WHERE batch_id = $1 AND status = 'pending'`,
           [batchId]
         );
+
+        // Auto-accept on self-transmit — the system processed the file end-to-end
+        const isSelfTransmit = result.mode === 'remote' && partnerConfig.partnerId === 'DLBTRUST-DIRECT';
+        if (isSelfTransmit) {
+          console.log(`[ACH] transmitBatch(${batchId}): self-transmit success → auto-accepting`);
+          await pool.query(
+            `UPDATE ach_batches SET status = 'accepted', accepted_at = NOW(), updated_at = NOW() WHERE batch_id = $1`,
+            [batchId]
+          );
+          await pool.query(
+            `UPDATE ach_entries SET status = 'accepted' WHERE batch_id = $1 AND status = 'transmitted'`,
+            [batchId]
+          );
+          return { ...result, batch_id: batchId, batch_status: 'accepted', auto_accepted: true };
+        }
       }
 
       return { ...result, batch_id: batchId, batch_status: newStatus };
