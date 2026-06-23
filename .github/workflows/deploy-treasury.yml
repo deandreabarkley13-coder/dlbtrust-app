@@ -89,9 +89,19 @@ jobs:
             echo "Passenger restart signaled"
 
             echo "=== Start Treasury Management on port 3007 ==="
+            TOKEN_FILE="/var/www/vhosts/dlbtrust.cloud/.admin_token"
+            if [ -f "$TOKEN_FILE" ] && [ -s "$TOKEN_FILE" ]; then
+              SAVED_TOKEN=$(cat "$TOKEN_FILE" | tr -d '[:space:]')
+              echo "Using persisted admin token from $TOKEN_FILE"
+            else
+              SAVED_TOKEN="dlb-admin-2026-trust"
+              echo "$SAVED_TOKEN" > "$TOKEN_FILE"
+              chmod 600 "$TOKEN_FILE"
+              echo "Set default admin token and saved to $TOKEN_FILE"
+            fi
             export PORT=3007
             export FINERACT_URL=https://localhost:8444/fineract-provider/api/v1
-            export ADMIN_SECRET_TOKEN="${ADMIN_SECRET_TOKEN:-$(openssl rand -hex 16)}"
+            export ADMIN_SECRET_TOKEN="$SAVED_TOKEN"
             export PGPASSWORD=postgres
             export FINERACT_DB_HOST=localhost
             export FINERACT_DB_USER=postgres
