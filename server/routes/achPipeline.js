@@ -826,4 +826,58 @@ router.get('/exports/:partnerId/:date/:filename', requireAdmin, (req, res) => {
   res.download(safePath, filename);
 });
 
+// ═══════════════════════════════════════════════════════════════════════════════
+// ─── HTTPS Receive Endpoint (Self-Hosted REST API) ───────────────────────────
+// ═══════════════════════════════════════════════════════════════════════════════
+
+// POST /api/ach-pipeline/receive — Accept NACHA file via HTTPS
+// This is the platform's own secure REST API endpoint for receiving ACH files.
+// Used when the default transmission mode is 'remote' and the partner URL
+// points to the platform itself (self-transmit via HTTPS).
+router.post('/receive', requireAdmin, async (req, res) => {
+  try {
+    const { filename, content, content_type, originator_id, submitted_at, metadata } = req.body;
+    if (!content) {
+      return res.status(400).json({ success: false, error: 'Missing NACHA file content' });
+    }
+
+    const nachaFilename = filename || `ACH-${Date.now()}.ach`;
+    const partnerId = (metadata && metadata.partner_id) || originator_id || 'DLBTRUST-DIRECT';
+
+    // Validate NACHA structure
+    const validation = OpenBankApi._validateNacha ? OpenBankApi._validateNacha(content) : { valid: true };
+    if (!validation.valid) {
+      return res.status(400).json({
+        success: false,
+        error: 'NACHA validation failed',
+        issues: validation.issues,
+      });
+    }
+
+    // Export the file securely
+    const exportResult = OpenBankApi._exportFile(content, nachaFilename, partnerId);
+
+    const receiptId = `RCV-${Date.now()}-${Math.random().toString(36).substring(2, 8)}`;
+    console.log(`[Receive] HTTPS file received: ${nachaFilename} from ${partnerId} → ${exportResult.export_path}`);
+
+    res.json({
+      success: true,
+      status: 'received',
+      receipt_id: receiptId,
+      batch_id: receiptId,
+      filename: nachaFilename,
+      export_path: exportResult.export_path,
+      file_size: exportResult.file_size,
+      entry_count: validation.entryCount || 0,
+      total_debit: validation.totalDebit || 0,
+      total_credit: validation.totalCredit || 0,
+      received_at: new Date().toISOString(),
+      protocol: 'https',
+      message: 'NACHA file received and exported via secure HTTPS REST API.',
+    });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
 module.exports = router;

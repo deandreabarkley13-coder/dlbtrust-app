@@ -272,7 +272,7 @@
       <div class="grid" id="payment-summary-cards"></div>
       <div class="card">
         <div class="section-title">New Disbursement</div>
-        <p class="text-muted mb-16" style="font-size:12px;">Create a NACHA file and transmit via AS2 to originating bank</p>
+        <p class="text-muted mb-16" style="font-size:12px;">Create a NACHA file and transmit securely via HTTPS REST API</p>
         <div class="form-row">
           <div class="form-group"><label>Beneficiary First Name</label><input type="text" id="disb-first" placeholder="John"></div>
           <div class="form-group"><label>Beneficiary Last Name</label><input type="text" id="disb-last" placeholder="Smith"></div>
@@ -304,7 +304,7 @@
     <!-- ACH PIPELINE PAGE -->
     <div id="page-ach" class="page hidden">
       <div class="page-header">
-        <div><h1>ACH Pipeline</h1><div class="subtitle">NACHA File Generation, Transmission & Exports</div></div>
+        <div><h1>ACH Pipeline</h1><div class="subtitle">NACHA File Generation, HTTPS Transmission & Exports</div></div>
         <button class="btn btn-primary btn-sm" onclick="loadACH()">Refresh</button>
       </div>
       <div class="grid" id="ach-status-cards"></div>
@@ -665,8 +665,9 @@
       </div>
       <div class="card mb-16">
         <div class="section-title">Admin Token</div>
+        <div id="admin-token-status" style="margin-bottom:8px;"></div>
         <div class="form-row"><div class="form-group"><label>Token</label><input type="password" id="admin-token" placeholder="Enter admin token" value=""></div><button class="btn btn-outline btn-sm" style="align-self:flex-end" onclick="saveAdminToken()">Set Token</button></div>
-        <p class="text-muted" style="font-size:11px;margin-top:4px;">Required for admin operations (health check, accrue-all, audit log)</p>
+        <p class="text-muted" style="font-size:11px;margin-top:4px;">Required for admin operations and ACH file transmission. You can also use API keys generated on the API Keys page.</p>
       </div>
       <div class="card mb-16">
         <div class="section-title">Fineract GL Sync</div>
@@ -950,7 +951,7 @@
     }
 
     async function transmitBatch(id) {
-      if (!confirm('Transmit batch ' + id + '? This will generate and export the NACHA file for bank delivery.')) return;
+      if (!confirm('Transmit batch ' + id + '? This will securely transmit the NACHA file via HTTPS REST API.')) return;
       const r = await fetchJSON(API + '/api/ach-pipeline/batches/' + id + '/transmit', { method: 'POST', headers: adminHeaders() });
       if (r.success) {
         const d = r.data || {};
@@ -1333,7 +1334,7 @@
 
     // ─── ADMIN ─────────────────────────────────────────────────────────────────
     async function loadAdmin() {
-      if (!adminToken) { el('admin-health').innerHTML = '<p class="error-msg">Set admin token to view system health</p>'; el('admin-audit-wrap').innerHTML = ''; return; }
+      if (!adminToken) { el('admin-health').innerHTML = '<p class="error-msg">Enter your admin token above and click Set Token to view system health and enable ACH transmission.</p>'; el('admin-audit-wrap').innerHTML = ''; el('admin-token-status').innerHTML = '<div style="padding:8px 12px;background:rgba(245,158,11,0.1);border:1px solid var(--gold);border-radius:6px;font-size:12px;"><strong style="color:var(--gold)">Authentication required</strong> — Enter your admin token to unlock all dashboard features including ACH file transmission.</div>'; return; }
       const [health, audit] = await Promise.all([
         fetchJSON(API + '/api/admin/system/health', { headers: adminHeaders() }),
         fetchJSON(API + '/api/admin/audit-log', { headers: adminHeaders() }),
@@ -1361,7 +1362,7 @@
       el('admin-audit-wrap').innerHTML = aData.length ? '<table><thead><tr><th>Time</th><th>Action</th><th>User</th><th>Resource</th><th>IP</th></tr></thead><tbody>' + aData.slice(0, 30).map(a => `<tr><td>${shortDate(a.created_at)}</td><td><span class="badge badge-info">${esc(a.action)}</span></td><td>${esc(a.admin_user || 'system')}</td><td style="max-width:200px;overflow:hidden;text-overflow:ellipsis">${esc(a.resource_type ? (a.resource_type + (a.resource_id ? ':' + a.resource_id : '')) : '—')}</td><td>${esc(a.ip_address || '—')}</td></tr>`).join('') + '</tbody></table>' : '<p class="text-muted">No audit entries</p>';
     }
 
-    function saveAdminToken() { adminToken = el('admin-token').value; localStorage.setItem('dlb_admin_token', adminToken); loadAdmin(); }
+    function saveAdminToken() { adminToken = el('admin-token').value; localStorage.setItem('dlb_admin_token', adminToken); el('admin-token-status').innerHTML = adminToken ? '<div style="padding:8px 12px;background:rgba(16,185,129,0.1);border:1px solid var(--green);border-radius:6px;font-size:12px;"><strong style="color:var(--green)">Authenticated</strong> — Admin token set. All dashboard features are enabled.</div>' : ''; loadAdmin(); }
     async function triggerAccrueAll() {
       if (!adminToken) { alert('Set admin token first'); return; }
       const r = await fetchJSON(API + '/api/admin/bonds/accrue-all', { method: 'POST', headers: adminHeaders() });
@@ -1605,7 +1606,10 @@
 
     // ─── Init ──────────────────────────────────────────────────────────────────
     loadOverview();
-    if (adminToken) el('admin-token').value = adminToken;
+    if (adminToken) {
+      el('admin-token').value = adminToken;
+      el('admin-token-status').innerHTML = '<div style="padding:8px 12px;background:rgba(16,185,129,0.1);border:1px solid var(--green);border-radius:6px;font-size:12px;"><strong style="color:var(--green)">Authenticated</strong> — Admin token set. All dashboard features are enabled.</div>';
+    }
   </script>
 </body>
 </html>
