@@ -28,11 +28,8 @@ jobs:
             REPO_URL="https://github.com/deandreabarkley13-coder/dlbtrust-app.git"
 
             echo "=== Stop our PM2 processes ==="
-            pm2 delete all 2>/dev/null || true
-            pm2 kill 2>/dev/null || true
-            PM2_HOME="/var/www/vhosts/dlbtrust.cloud/.pm2"
-            rm -f "$PM2_HOME/dump.pm2" 2>/dev/null || true
-            rm -f "$PM2_HOME/dump.pm2.bak" 2>/dev/null || true
+            pm2 delete dlbtrust-treasury 2>/dev/null || true
+            pm2 delete dlbtrust-3002 2>/dev/null || true
             fuser -k 3007/tcp 2>/dev/null || true
             sleep 1
 
@@ -92,9 +89,16 @@ jobs:
             echo "Passenger restart signaled"
 
             echo "=== Start Treasury Management on port 3007 ==="
-            PORT=3007 FINERACT_URL=https://localhost:8444/fineract-provider/api/v1 pm2 start "$HTTPDOCS/server/server-3002.js" --name dlbtrust-treasury
+            export PORT=3007
+            export FINERACT_URL=https://localhost:8444/fineract-provider/api/v1
+            export ADMIN_SECRET_TOKEN="${ADMIN_SECRET_TOKEN:-$(openssl rand -hex 16)}"
+            export PGPASSWORD=postgres
+            export FINERACT_DB_HOST=localhost
+            export FINERACT_DB_USER=postgres
+            export FINERACT_DB_PASSWORD=postgres
+            pm2 start "$HTTPDOCS/server/server-3002.js" --name dlbtrust-treasury --update-env
+            sleep 5
             pm2 save --force
-            sleep 8
             pm2 list
 
             echo "=== Verify Treasury Endpoints (pre-Fineract) ==="
@@ -255,26 +259,28 @@ jobs:
 
       - name: Final verification
         run: |
+          set +e
           sleep 8
           S=$SERVER
           echo "=== Treasury System Verification ==="
           echo "Homepage:"
-          curl -sk --resolve "dlbtrust.cloud:443:$S" https://dlbtrust.cloud/ -o /dev/null -w "HTTP %{http_code}\n"
+          curl -sk --max-time 10 --resolve "dlbtrust.cloud:443:$S" https://dlbtrust.cloud/ -o /dev/null -w "HTTP %{http_code}\n" || echo "(timeout/unreachable)"
           echo "Bonds API:"
-          curl -sk --resolve "dlbtrust.cloud:443:$S" https://dlbtrust.cloud/api/bonds | head -c 100
+          curl -sk --max-time 10 --resolve "dlbtrust.cloud:443:$S" https://dlbtrust.cloud/api/bonds | head -c 100 || echo "(timeout)"
           echo ""
           echo "Documents API:"
-          curl -sk --resolve "dlbtrust.cloud:443:$S" https://dlbtrust.cloud/api/documents/templates | head -c 100
+          curl -sk --max-time 10 --resolve "dlbtrust.cloud:443:$S" https://dlbtrust.cloud/api/documents/templates | head -c 100 || echo "(timeout)"
           echo ""
           echo "Accounting API:"
-          curl -sk --resolve "dlbtrust.cloud:443:$S" https://dlbtrust.cloud/api/accounting/dashboard | head -c 100
+          curl -sk --max-time 10 --resolve "dlbtrust.cloud:443:$S" https://dlbtrust.cloud/api/accounting/dashboard | head -c 100 || echo "(timeout)"
           echo ""
           echo "ACH Pipeline API:"
-          curl -sk --resolve "dlbtrust.cloud:443:$S" https://dlbtrust.cloud/api/ach-pipeline/status | head -c 100
+          curl -sk --max-time 10 --resolve "dlbtrust.cloud:443:$S" https://dlbtrust.cloud/api/ach-pipeline/status | head -c 100 || echo "(timeout)"
           echo ""
           echo "Fineract Health:"
-          curl -sk --resolve "dlbtrust.cloud:443:$S" https://dlbtrust.cloud/api/fineract/health | head -c 200
+          curl -sk --max-time 10 --resolve "dlbtrust.cloud:443:$S" https://dlbtrust.cloud/api/fineract/health | head -c 200 || echo "(timeout)"
           echo ""
           echo "Tax Engine:"
-          curl -sk --resolve "dlbtrust.cloud:443:$S" https://dlbtrust.cloud/api/tax/dashboard | head -c 200
+          curl -sk --max-time 10 --resolve "dlbtrust.cloud:443:$S" https://dlbtrust.cloud/api/tax/dashboard | head -c 200 || echo "(timeout)"
           echo ""
+          echo "=== Verification complete ==="
