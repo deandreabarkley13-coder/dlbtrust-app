@@ -123,8 +123,70 @@ CREATE TABLE IF NOT EXISTS ach_reconciliations (
   completed_at        TIMESTAMPTZ
 );
 
+-- ─── Partner Registry ────────────────────────────────────────────────────────
+-- Stores connection configs for multiple bank/merchant partners.
+-- Supports both AS2 (EDI) and REST API transmission protocols.
+
+CREATE TABLE IF NOT EXISTS as2_partners (
+  id                  SERIAL PRIMARY KEY,
+  partner_id          TEXT UNIQUE NOT NULL,
+  partner_name        TEXT NOT NULL,
+  protocol            TEXT NOT NULL DEFAULT 'as2'
+                        CHECK (protocol IN ('as2','rest_api')),
+  -- AS2 fields
+  partner_url         TEXT NOT NULL,
+  partner_as2_id      TEXT,
+  local_as2_id        TEXT NOT NULL DEFAULT 'DLBTRUST-AS2',
+  signing_cert_path   TEXT,
+  signing_key_path    TEXT,
+  partner_cert_path   TEXT,
+  encryption_alg      TEXT NOT NULL DEFAULT 'aes256-cbc',
+  signing_alg         TEXT NOT NULL DEFAULT 'sha256',
+  request_mdn         BOOLEAN NOT NULL DEFAULT TRUE,
+  mdn_url             TEXT,
+  -- REST API fields
+  api_base_url        TEXT,
+  api_key             TEXT,
+  api_secret          TEXT,
+  api_auth_type       TEXT DEFAULT 'bearer'
+                        CHECK (api_auth_type IN ('bearer','basic','api_key','hmac')),
+  webhook_secret      TEXT,
+  -- Common fields
+  is_default          BOOLEAN NOT NULL DEFAULT FALSE,
+  active              BOOLEAN NOT NULL DEFAULT TRUE,
+  notes               TEXT,
+  created_at          TIMESTAMPTZ DEFAULT NOW(),
+  updated_at          TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- Add protocol and API columns if table already exists (idempotent migration)
+DO $$ BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM information_schema.columns
+    WHERE table_name = 'as2_partners' AND column_name = 'protocol'
+  ) THEN
+    ALTER TABLE as2_partners ADD COLUMN protocol TEXT NOT NULL DEFAULT 'as2';
+    ALTER TABLE as2_partners ADD COLUMN api_base_url TEXT;
+    ALTER TABLE as2_partners ADD COLUMN api_key TEXT;
+    ALTER TABLE as2_partners ADD COLUMN api_secret TEXT;
+    ALTER TABLE as2_partners ADD COLUMN api_auth_type TEXT DEFAULT 'bearer';
+    ALTER TABLE as2_partners ADD COLUMN webhook_secret TEXT;
+  END IF;
+END $$;
+
+-- Add partner_id to ach_batches (nullable for backwards compat with existing batches)
+DO $$ BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM information_schema.columns
+    WHERE table_name = 'ach_batches' AND column_name = 'partner_id'
+  ) THEN
+    ALTER TABLE ach_batches ADD COLUMN partner_id TEXT;
+  END IF;
+END $$;
+
 CREATE INDEX IF NOT EXISTS idx_ach_batches_status ON ach_batches(status);
 CREATE INDEX IF NOT EXISTS idx_ach_batches_created ON ach_batches(created_at);
+CREATE INDEX IF NOT EXISTS idx_ach_batches_partner ON ach_batches(partner_id);
 CREATE INDEX IF NOT EXISTS idx_ach_entries_batch ON ach_entries(batch_id);
 CREATE INDEX IF NOT EXISTS idx_ach_entries_status ON ach_entries(status);
 CREATE INDEX IF NOT EXISTS idx_ach_transmissions_batch ON ach_transmissions(batch_id);
@@ -132,3 +194,5 @@ CREATE INDEX IF NOT EXISTS idx_ach_acknowledgements_batch ON ach_acknowledgement
 CREATE INDEX IF NOT EXISTS idx_ach_returns_batch ON ach_returns(batch_id);
 CREATE INDEX IF NOT EXISTS idx_ach_returns_entry ON ach_returns(entry_id);
 CREATE INDEX IF NOT EXISTS idx_ach_reconciliations_date ON ach_reconciliations(run_date);
+CREATE INDEX IF NOT EXISTS idx_as2_partners_active ON as2_partners(active);
+CREATE INDEX IF NOT EXISTS idx_as2_partners_default ON as2_partners(is_default) WHERE is_default = TRUE;

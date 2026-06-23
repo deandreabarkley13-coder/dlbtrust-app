@@ -47,11 +47,11 @@ class PaymentOrchestrator {
    * @returns {Object} { batch, journal_entry }
    */
   static async createDisbursementWithAccounting(opts) {
-    const { entries, effectiveDate, secCode, description, paymentType, createdBy } = opts;
+    const { entries, effectiveDate, secCode, description, paymentType, createdBy, partnerId } = opts;
 
-    // 1. Create the ACH batch (NACHA file generation)
+    // 1. Create the ACH batch (NACHA file generation, with optional partner routing)
     const batch = await ACHEngine.createBatch(
-      { effectiveDate, secCode, description, createdBy },
+      { effectiveDate, secCode, description, createdBy, partnerId },
       entries
     );
 

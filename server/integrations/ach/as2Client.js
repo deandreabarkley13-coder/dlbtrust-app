@@ -94,12 +94,15 @@ class AS2Client {
   /**
    * Sign the NACHA file content using our private key.
    * Returns a detached PKCS#7 signature (base64).
+   * @param {string} content
+   * @param {Object} [config] - partner-specific config; falls back to global AS2_CONFIG
    */
-  static signPayload(content) {
-    const key = loadCert(AS2_CONFIG.signingKeyPath);
+  static signPayload(content, config) {
+    const cfg = config || AS2_CONFIG;
+    const key = loadCert(cfg.signingKeyPath);
     if (!key) return null;
 
-    const sign = crypto.createSign(AS2_CONFIG.signingAlg);
+    const sign = crypto.createSign(cfg.signingAlg || 'sha256');
     sign.update(content);
     return sign.sign(key, 'base64');
   }
@@ -108,11 +111,15 @@ class AS2Client {
    * Build the MIME multipart body for AS2 transmission.
    * Includes the NACHA file as application/octet-stream with
    * optional S/MIME signing.
+   * @param {string} nachaContent
+   * @param {string} filename
+   * @param {Object} [config] - partner-specific config; falls back to global AS2_CONFIG
    */
-  static buildAS2Body(nachaContent, filename) {
+  static buildAS2Body(nachaContent, filename, config) {
+    const cfg = config || AS2_CONFIG;
     const boundary = 'AS2-BOUNDARY-' + crypto.randomBytes(8).toString('hex');
     const messageId = generateMessageId();
-    const signature = AS2Client.signPayload(nachaContent);
+    const signature = AS2Client.signPayload(nachaContent, cfg);
 
     let body = '';
     body += `--${boundary}\r\n`;
@@ -135,32 +142,35 @@ class AS2Client {
     body += `--${boundary}--\r\n`;
 
     const contentType = signature
-      ? `multipart/signed; protocol="application/pkcs7-signature"; micalg=${AS2_CONFIG.signingAlg}; boundary="${boundary}"`
+      ? `multipart/signed; protocol="application/pkcs7-signature"; micalg=${cfg.signingAlg || 'sha256'}; boundary="${boundary}"`
       : `application/octet-stream; name="${filename}"`;
 
     return { body: signature ? body : nachaContent, contentType, messageId, boundary };
   }
 
   /**
-   * Transmit a NACHA file to the bank's AS2 endpoint.
+   * Transmit a NACHA file to an AS2 endpoint.
    *
    * @param {string} nachaContent — the NACHA file string
    * @param {string} filename — the filename (e.g. "ACH-2026-06-19-001.ach")
+   * @param {Object} [partnerConfig] — partner-specific config from AS2Partners.getPartnerConfig();
+   *                                   if omitted, uses global AS2_CONFIG (legacy single-partner mode)
    * @returns {Promise<Object>} transmission result
    */
-  static async transmit(nachaContent, filename) {
-    if (!AS2_CONFIG.partnerUrl) {
-      throw new Error('AS2_PARTNER_URL not configured. Set environment variable to bank AS2 endpoint.');
+  static async transmit(nachaContent, filename, partnerConfig) {
+    const cfg = partnerConfig || AS2_CONFIG;
+    if (!cfg.partnerUrl) {
+      throw new Error('AS2 partner URL not configured. Register a partner or set AS2_PARTNER_URL.');
     }
 
-    const { body, contentType, messageId } = AS2Client.buildAS2Body(nachaContent, filename);
-    const parsed = new URL(AS2_CONFIG.partnerUrl);
+    const { body, contentType, messageId } = AS2Client.buildAS2Body(nachaContent, filename, cfg);
+    const parsed = new URL(cfg.partnerUrl);
 
     const headers = {
       'Content-Type': contentType,
       'Content-Length': Buffer.byteLength(body),
-      'AS2-From': AS2_CONFIG.localAs2Id,
-      'AS2-To': AS2_CONFIG.partnerAs2Id,
+      'AS2-From': cfg.localAs2Id || 'DLBTRUST-AS2',
+      'AS2-To': cfg.partnerAs2Id,
       'AS2-Version': '1.2',
       'Message-ID': messageId,
       'Subject': filename,
@@ -168,10 +178,10 @@ class AS2Client {
       'Date': new Date().toUTCString(),
     };
 
-    if (AS2_CONFIG.requestMdn) {
-      headers['Disposition-Notification-To'] = AS2_CONFIG.mdnUrl || AS2_CONFIG.partnerUrl;
+    if (cfg.requestMdn !== false) {
+      headers['Disposition-Notification-To'] = cfg.mdnUrl || cfg.partnerUrl;
       headers['Disposition-Notification-Options'] =
-        `signed-receipt-protocol=required, pkcs7-signature; signed-receipt-micalg=required, ${AS2_CONFIG.signingAlg}`;
+        `signed-receipt-protocol=required, pkcs7-signature; signed-receipt-micalg=required, ${cfg.signingAlg || 'sha256'}`;
     }
 
     return new Promise((resolve, reject) => {
@@ -217,14 +227,16 @@ class AS2Client {
   }
 
   /**
-   * Test connectivity to the AS2 partner endpoint (HEAD request).
+   * Test connectivity to an AS2 partner endpoint (HEAD request).
+   * @param {Object} [partnerConfig] — partner config; if omitted, uses global AS2_CONFIG
    */
-  static async testConnection() {
-    if (!AS2_CONFIG.partnerUrl) {
-      return { connected: false, error: 'AS2_PARTNER_URL not configured' };
+  static async testConnection(partnerConfig) {
+    const cfg = partnerConfig || AS2_CONFIG;
+    if (!cfg.partnerUrl) {
+      return { connected: false, error: 'Partner URL not configured' };
     }
 
-    const parsed = new URL(AS2_CONFIG.partnerUrl);
+    const parsed = new URL(cfg.partnerUrl);
     return new Promise((resolve) => {
       const lib = parsed.protocol === 'https:' ? https : http;
       const req = lib.request({
@@ -238,8 +250,9 @@ class AS2Client {
         resolve({
           connected: true,
           status_code: res.statusCode,
-          partner_url: AS2_CONFIG.partnerUrl,
-          partner_as2_id: AS2_CONFIG.partnerAs2Id,
+          partner_url: cfg.partnerUrl,
+          partner_as2_id: cfg.partnerAs2Id,
+          partner_id: cfg.partnerId || null,
         });
       });
 
