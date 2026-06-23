@@ -108,7 +108,8 @@ jobs:
             export FINERACT_DB_HOST=localhost
             export FINERACT_DB_USER=postgres
             export FINERACT_DB_PASSWORD=postgres
-            pm2 start "$HTTPDOCS/server/server-3002.js" --name dlbtrust-treasury --update-env
+            pm2 delete dlbtrust-treasury 2>/dev/null || true
+            pm2 start "$HTTPDOCS/server/server-3002.js" --name dlbtrust-treasury
             sleep 5
             pm2 save --force
             pm2 list

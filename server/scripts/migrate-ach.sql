@@ -163,6 +163,9 @@ CREATE TABLE IF NOT EXISTS as2_partners (
 -- These handle the case where tables were created by older migration versions
 -- or by migrate-as2.sql with a different schema.
 
+-- Ensure ach_entries has status column (defensive — should exist from CREATE TABLE)
+ALTER TABLE ach_entries ADD COLUMN IF NOT EXISTS status TEXT DEFAULT 'pending';
+
 -- Add missing ach_batches lifecycle columns (added in PR #98)
 ALTER TABLE ach_batches ADD COLUMN IF NOT EXISTS accepted_at TIMESTAMPTZ;
 ALTER TABLE ach_batches ADD COLUMN IF NOT EXISTS returned_at TIMESTAMPTZ;

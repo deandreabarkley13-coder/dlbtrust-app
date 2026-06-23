@@ -267,6 +267,8 @@ class OpenBankApi {
       OpenBankApi._applyAuth(headers, payload, partnerConfig);
     }
 
+    console.log(`[OpenBankApi] _transmitRemote: ${transmitUrl} (self=${isSelfTransmit})`);
+
     return new Promise((resolve, reject) => {
       const options = {
         hostname: parsed.hostname,
@@ -274,7 +276,8 @@ class OpenBankApi {
         path: parsed.pathname + (parsed.search || ''),
         method: 'POST',
         headers,
-        rejectUnauthorized: true,
+        // Allow self-signed certs for self-transmit (loopback); verify for external partners
+        rejectUnauthorized: !isSelfTransmit,
       };
 
       const lib = parsed.protocol === 'https:' ? https : http;
