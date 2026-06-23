@@ -155,7 +155,7 @@ class ACHEngine {
   static async transmitBatch(batchId) {
     const batch = await ACHEngine.getBatch(batchId);
     if (!batch) throw new Error(`Batch not found: ${batchId}`);
-    const nonTransmittable = ['transmitted', 'accepted', 'settled', 'returned', 'cancelled'];
+    const nonTransmittable = ['transmitting', 'transmitted', 'accepted', 'settled', 'returned', 'cancelled'];
     if (nonTransmittable.includes(batch.status)) {
       throw new Error(`Cannot transmit batch in '${batch.status}' status — only 'pending' or 'failed' batches can be transmitted`);
     }
@@ -263,7 +263,7 @@ class ACHEngine {
 
     // Record acknowledgement (best-effort — don't fail the accept if ack insert has constraint issues)
     if (!metadata.skipAckRecord && (metadata.transmissionId || metadata.messageId)) {
-      const validAckTypes = ['mdn', 'file_ack', 'bank_ack', 'rejection'];
+      const validAckTypes = ['mdn', 'file_ack', 'bank_ack'];
       const ackType = validAckTypes.includes(metadata.ackType) ? metadata.ackType : 'bank_ack';
       try {
         await pool.query(

@@ -404,8 +404,8 @@ class AS2Partners {
           (partner_id, partner_name, partner_url, partner_as2_id, local_as2_id,
            signing_cert_path, signing_key_path, partner_cert_path,
            encryption_alg, signing_alg, request_mdn, mdn_url,
-           is_default, active, notes)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, TRUE, TRUE, $13)
+           is_default, active, notes, name, as2_identifier)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, TRUE, TRUE, $13, $14, $15)
          ON CONFLICT (partner_id) DO NOTHING`,
         [
           'LEGACY-DEFAULT',
@@ -421,6 +421,8 @@ class AS2Partners {
           config.request_mdn !== 'false',
           config.mdn_url || null,
           'Auto-migrated from single-partner as2_config table',
+          'Default Partner (migrated from as2_config)',
+          config.partner_as2_id || 'LEGACY-DEFAULT',
         ]
       );
 

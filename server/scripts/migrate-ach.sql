@@ -176,9 +176,18 @@ ALTER TABLE ach_batches ADD COLUMN IF NOT EXISTS settled_at TIMESTAMPTZ;
 ALTER TABLE ach_batches ADD COLUMN IF NOT EXISTS partner_id TEXT;
 
 -- Add missing as2_partners columns (migrate-as2.sql creates a different schema)
+-- Ensure name and as2_identifier columns exist (they come from migrate-as2.sql)
+ALTER TABLE as2_partners ADD COLUMN IF NOT EXISTS name TEXT;
+ALTER TABLE as2_partners ADD COLUMN IF NOT EXISTS as2_identifier TEXT;
 -- Relax NOT NULL constraints from migrate-as2.sql so REST API partners can be registered without AS2 fields
-ALTER TABLE as2_partners ALTER COLUMN as2_identifier DROP NOT NULL;
-ALTER TABLE as2_partners ALTER COLUMN name DROP NOT NULL;
+DO $$ BEGIN
+  IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'as2_partners' AND column_name = 'as2_identifier' AND is_nullable = 'NO') THEN
+    ALTER TABLE as2_partners ALTER COLUMN as2_identifier DROP NOT NULL;
+  END IF;
+  IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'as2_partners' AND column_name = 'name' AND is_nullable = 'NO') THEN
+    ALTER TABLE as2_partners ALTER COLUMN name DROP NOT NULL;
+  END IF;
+END $$;
 ALTER TABLE as2_partners ADD COLUMN IF NOT EXISTS partner_name TEXT;
 ALTER TABLE as2_partners ADD COLUMN IF NOT EXISTS protocol TEXT NOT NULL DEFAULT 'as2';
 ALTER TABLE as2_partners ADD COLUMN IF NOT EXISTS partner_url TEXT;
