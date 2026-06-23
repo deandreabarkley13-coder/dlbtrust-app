@@ -176,6 +176,9 @@ ALTER TABLE ach_batches ADD COLUMN IF NOT EXISTS settled_at TIMESTAMPTZ;
 ALTER TABLE ach_batches ADD COLUMN IF NOT EXISTS partner_id TEXT;
 
 -- Add missing as2_partners columns (migrate-as2.sql creates a different schema)
+-- Relax NOT NULL constraints from migrate-as2.sql so REST API partners can be registered without AS2 fields
+ALTER TABLE as2_partners ALTER COLUMN as2_identifier DROP NOT NULL;
+ALTER TABLE as2_partners ALTER COLUMN name DROP NOT NULL;
 ALTER TABLE as2_partners ADD COLUMN IF NOT EXISTS partner_name TEXT;
 ALTER TABLE as2_partners ADD COLUMN IF NOT EXISTS protocol TEXT NOT NULL DEFAULT 'as2';
 ALTER TABLE as2_partners ADD COLUMN IF NOT EXISTS partner_url TEXT;
@@ -215,6 +218,10 @@ DO $$ BEGIN
     UPDATE as2_partners SET partner_url = endpoint_url WHERE partner_url IS NULL;
   END IF;
 END $$;
+
+-- Drop the strict FK on ach_acknowledgements.transmission_id — accept calls may pass
+-- reference identifiers that don't match ach_transmissions auto-generated IDs
+ALTER TABLE ach_acknowledgements DROP CONSTRAINT IF EXISTS ach_acknowledgements_transmission_id_fkey;
 
 CREATE INDEX IF NOT EXISTS idx_ach_batches_status ON ach_batches(status);
 CREATE INDEX IF NOT EXISTS idx_ach_batches_created ON ach_batches(created_at);

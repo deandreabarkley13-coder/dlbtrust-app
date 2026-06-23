@@ -90,8 +90,8 @@ class AS2Partners {
          signing_cert_path, signing_key_path, partner_cert_path,
          encryption_alg, signing_alg, request_mdn, mdn_url,
          api_base_url, api_key, api_secret, api_auth_type, webhook_secret,
-         is_default, active, notes, created_at, updated_at)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, TRUE, $20, NOW(), NOW())
+         is_default, active, notes, name, as2_identifier, created_at, updated_at)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, TRUE, $20, $21, $22, NOW(), NOW())
        RETURNING *`,
       [
         partnerId, partnerName, proto,
@@ -112,6 +112,9 @@ class AS2Partners {
         webhookSecret || null,
         isDefault || false,
         notes || null,
+        // Legacy columns from migrate-as2.sql (backfill for compatibility)
+        partnerName || partnerId,
+        partnerAs2Id || partnerId,
       ]
     );
 
