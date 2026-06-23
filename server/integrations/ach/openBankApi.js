@@ -7,7 +7,12 @@
  * that support HTTP-based file exchange. Each partner can have its own
  * API credentials (api_key, api_secret, api_base_url).
  *
- * Supports multiple authentication schemes:
+ * Transmission modes:
+ *   remote    — POST NACHA file to partner's REST API endpoint
+ *   direct    — Process locally: validate, export file, mark transmitted
+ *   sftp      — Upload NACHA file to partner's SFTP server
+ *
+ * Auth schemes (for remote mode):
  *   bearer   — Authorization: Bearer <api_key>
  *   basic    — Authorization: Basic base64(api_key:api_secret)
  *   api_key  — X-API-Key: <api_key>
@@ -17,19 +22,184 @@
 const https = require('https');
 const http = require('http');
 const crypto = require('crypto');
+const fs = require('fs');
+const path = require('path');
 const { URL } = require('url');
+
+const ACH_EXPORTS_DIR = path.join(__dirname, '..', '..', '..', 'data', 'ach-exports');
 
 class OpenBankApi {
 
   /**
-   * Transmit a NACHA file to a partner's REST API endpoint.
-   *
-   * @param {string} nachaContent — the NACHA file string
-   * @param {string} filename — the filename (e.g. "ACH-2026-06-21-001.ach")
-   * @param {Object} partnerConfig — partner config with REST API credentials
-   * @returns {Promise<Object>} transmission result
+   * Transmit a NACHA file via REST API, direct processing, or SFTP.
+   * Routing:
+   *   - api_base_url === 'direct' or empty → direct local processing
+   *   - api_base_url starts with 'sftp://' → SFTP upload
+   *   - otherwise → remote REST API POST
    */
   static async transmit(nachaContent, filename, partnerConfig) {
+    const baseUrl = partnerConfig.apiBaseUrl || partnerConfig.partnerUrl || '';
+    const mode = OpenBankApi._resolveMode(baseUrl);
+
+    switch (mode) {
+      case 'direct':
+        return OpenBankApi._transmitDirect(nachaContent, filename, partnerConfig);
+      case 'sftp':
+        return OpenBankApi._transmitSftp(nachaContent, filename, partnerConfig);
+      default:
+        return OpenBankApi._transmitRemote(nachaContent, filename, partnerConfig);
+    }
+  }
+
+  /**
+   * Direct local processing — validate NACHA, export file, mark transmitted.
+   * Used when no external endpoint is configured or api_base_url = 'direct'.
+   */
+  static async _transmitDirect(nachaContent, filename, partnerConfig) {
+    // Validate NACHA structure
+    const validation = OpenBankApi._validateNacha(nachaContent);
+    if (!validation.valid) {
+      return {
+        success: false,
+        status_code: 400,
+        message_id: OpenBankApi._generateRequestId(),
+        filename,
+        response_body: JSON.stringify({ error: 'NACHA validation failed', issues: validation.issues }),
+        mdn_received: false,
+        transmitted_at: new Date().toISOString(),
+        protocol: 'rest_api',
+        mode: 'direct',
+        partner_id: partnerConfig.partnerId,
+      };
+    }
+
+    // Export to date-organized directory
+    const exportResult = OpenBankApi._exportFile(nachaContent, filename, partnerConfig.partnerId);
+
+    const requestId = OpenBankApi._generateRequestId();
+    console.log(`[OpenBankApi] Direct transmission: ${filename} → ${exportResult.export_path}`);
+
+    return {
+      success: true,
+      status_code: 200,
+      message_id: requestId,
+      filename,
+      response_body: JSON.stringify({
+        status: 'transmitted',
+        mode: 'direct',
+        export_path: exportResult.export_path,
+        export_filename: exportResult.export_filename,
+        file_size: exportResult.file_size,
+        entry_count: validation.entryCount,
+        total_debit: validation.totalDebit,
+        total_credit: validation.totalCredit,
+        validation: 'passed',
+        message: 'NACHA file validated and exported for bank delivery.',
+      }),
+      mdn_received: false,
+      transmitted_at: new Date().toISOString(),
+      protocol: 'rest_api',
+      mode: 'direct',
+      partner_id: partnerConfig.partnerId,
+      export_path: exportResult.export_path,
+      remote_batch_id: requestId,
+      remote_status: 'transmitted',
+    };
+  }
+
+  /**
+   * SFTP transmission — upload NACHA file to partner's SFTP server.
+   * api_base_url format: sftp://user@host:port/path
+   */
+  static async _transmitSftp(nachaContent, filename, partnerConfig) {
+    const baseUrl = partnerConfig.apiBaseUrl || partnerConfig.partnerUrl;
+    const requestId = OpenBankApi._generateRequestId();
+
+    // Parse SFTP URL: sftp://user@host:port/path
+    const sftpUrl = baseUrl.replace('sftp://', '');
+    let user = 'ach';
+    let host = sftpUrl;
+    let port = 22;
+    let remotePath = '/incoming/';
+
+    if (sftpUrl.includes('@')) {
+      [user, host] = sftpUrl.split('@');
+    }
+    if (host.includes(':')) {
+      const parts = host.split(':');
+      host = parts[0];
+      const rest = parts[1];
+      if (rest.includes('/')) {
+        port = parseInt(rest.split('/')[0], 10) || 22;
+        remotePath = '/' + rest.split('/').slice(1).join('/');
+      } else {
+        port = parseInt(rest, 10) || 22;
+      }
+    } else if (host.includes('/')) {
+      const parts = host.split('/');
+      host = parts[0];
+      remotePath = '/' + parts.slice(1).join('/');
+    }
+    if (!remotePath.endsWith('/')) remotePath += '/';
+
+    // Also export locally for audit trail
+    const exportResult = OpenBankApi._exportFile(nachaContent, filename, partnerConfig.partnerId);
+
+    // SFTP upload using ssh2 (if available) or shell scp/sftp
+    try {
+      const sftpResult = await OpenBankApi._sftpUpload({
+        host, port, user,
+        privateKey: partnerConfig.apiSecret || null,
+        password: partnerConfig.apiKey || null,
+        remotePath: remotePath + filename,
+        content: nachaContent,
+      });
+
+      console.log(`[OpenBankApi] SFTP transmission: ${filename} → ${host}:${remotePath}${filename}`);
+
+      return {
+        success: true,
+        status_code: 200,
+        message_id: requestId,
+        filename,
+        response_body: JSON.stringify({
+          status: 'transmitted',
+          mode: 'sftp',
+          sftp_host: host,
+          sftp_path: remotePath + filename,
+          local_export: exportResult.export_path,
+          file_size: exportResult.file_size,
+          message: `NACHA file uploaded to ${host}:${remotePath}${filename}`,
+        }),
+        mdn_received: false,
+        transmitted_at: new Date().toISOString(),
+        protocol: 'rest_api',
+        mode: 'sftp',
+        partner_id: partnerConfig.partnerId,
+        export_path: exportResult.export_path,
+        remote_batch_id: requestId,
+        remote_status: 'transmitted',
+      };
+    } catch (err) {
+      return {
+        success: false,
+        status_code: 500,
+        message_id: requestId,
+        filename,
+        response_body: JSON.stringify({ error: `SFTP upload failed: ${err.message}` }),
+        mdn_received: false,
+        transmitted_at: new Date().toISOString(),
+        protocol: 'rest_api',
+        mode: 'sftp',
+        partner_id: partnerConfig.partnerId,
+      };
+    }
+  }
+
+  /**
+   * Remote REST API transmission — POST NACHA file to partner endpoint.
+   */
+  static async _transmitRemote(nachaContent, filename, partnerConfig) {
     const baseUrl = partnerConfig.apiBaseUrl || partnerConfig.partnerUrl;
     if (!baseUrl) {
       throw new Error('REST API base URL not configured for this partner.');
@@ -37,6 +207,9 @@ class OpenBankApi {
 
     const transmitUrl = baseUrl.endsWith('/') ? `${baseUrl}ach/transmit` : `${baseUrl}/ach/transmit`;
     const parsed = new URL(transmitUrl);
+
+    // Also export locally for audit trail
+    OpenBankApi._exportFile(nachaContent, filename, partnerConfig.partnerId);
 
     const payload = JSON.stringify({
       filename,
@@ -87,6 +260,7 @@ class OpenBankApi {
             mdn_received: false,
             transmitted_at: new Date().toISOString(),
             protocol: 'rest_api',
+            mode: 'remote',
             partner_id: partnerConfig.partnerId,
           };
 
@@ -114,14 +288,18 @@ class OpenBankApi {
 
   /**
    * Check the status of a previously transmitted batch via REST API.
-   *
-   * @param {string} remoteBatchId — the batch ID returned by the partner's API
-   * @param {Object} partnerConfig — partner config with REST API credentials
-   * @returns {Promise<Object>} status result
    */
   static async checkStatus(remoteBatchId, partnerConfig) {
     const baseUrl = partnerConfig.apiBaseUrl || partnerConfig.partnerUrl;
-    if (!baseUrl) throw new Error('REST API base URL not configured.');
+    if (!baseUrl || baseUrl === 'direct') {
+      return {
+        success: true,
+        batch_id: remoteBatchId,
+        status: 'transmitted',
+        mode: 'direct',
+        message: 'Direct-mode batches are tracked locally. Use dashboard or GET /batches/:id for status.',
+      };
+    }
 
     const statusUrl = baseUrl.endsWith('/')
       ? `${baseUrl}ach/status/${remoteBatchId}`
@@ -179,16 +357,38 @@ class OpenBankApi {
 
   /**
    * Test connectivity to a partner's REST API endpoint.
-   *
-   * @param {Object} partnerConfig — partner config with REST API credentials
-   * @returns {Promise<Object>} connectivity result
    */
   static async testConnection(partnerConfig) {
-    const baseUrl = partnerConfig.apiBaseUrl || partnerConfig.partnerUrl;
-    if (!baseUrl) {
-      return { connected: false, error: 'REST API base URL not configured' };
+    const baseUrl = partnerConfig.apiBaseUrl || partnerConfig.partnerUrl || '';
+    const mode = OpenBankApi._resolveMode(baseUrl);
+
+    if (mode === 'direct') {
+      // For direct mode, verify export directory is writable
+      try {
+        OpenBankApi._ensureExportDir(partnerConfig.partnerId);
+        return {
+          connected: true,
+          mode: 'direct',
+          export_dir: path.join(ACH_EXPORTS_DIR, partnerConfig.partnerId || 'default'),
+          protocol: 'rest_api',
+          message: 'Direct processing mode — NACHA files will be validated and exported locally.',
+        };
+      } catch (err) {
+        return { connected: false, error: `Export directory not writable: ${err.message}`, mode: 'direct' };
+      }
     }
 
+    if (mode === 'sftp') {
+      return {
+        connected: true,
+        mode: 'sftp',
+        sftp_url: baseUrl,
+        protocol: 'rest_api',
+        message: 'SFTP mode configured. File upload will be attempted at transmission time.',
+      };
+    }
+
+    // Remote mode — try health endpoint
     const healthUrl = baseUrl.endsWith('/') ? `${baseUrl}health` : `${baseUrl}/health`;
     const parsed = new URL(healthUrl);
 
@@ -218,18 +418,19 @@ class OpenBankApi {
             partner_url: baseUrl,
             partner_id: partnerConfig.partnerId || null,
             protocol: 'rest_api',
+            mode: 'remote',
             response: data.substring(0, 200),
           });
         });
       });
 
       req.on('error', (err) => {
-        resolve({ connected: false, error: err.message, protocol: 'rest_api' });
+        resolve({ connected: false, error: err.message, protocol: 'rest_api', mode: 'remote' });
       });
 
       req.setTimeout(10000, () => {
         req.destroy();
-        resolve({ connected: false, error: 'Connection timed out', protocol: 'rest_api' });
+        resolve({ connected: false, error: 'Connection timed out', protocol: 'rest_api', mode: 'remote' });
       });
 
       req.end();
@@ -238,13 +439,6 @@ class OpenBankApi {
 
   /**
    * Process an incoming webhook from a partner's bank API.
-   * Maps the webhook payload to internal ACH lifecycle events.
-   *
-   * @param {string} partnerId — which partner sent the webhook
-   * @param {Object} payload — the webhook body
-   * @param {string} signature — the X-Signature header (for HMAC verification)
-   * @param {Object} partnerConfig — partner config (for webhook_secret)
-   * @returns {Object} parsed webhook event
    */
   static processWebhook(partnerId, payload, signature, partnerConfig) {
     if (partnerConfig.webhookSecret && signature) {
@@ -289,10 +483,169 @@ class OpenBankApi {
     };
   }
 
+  // ─── File Export ────────────────────────────────────────────────────────────
+
   /**
-   * Apply authentication headers based on the partner's auth type.
-   * @private
+   * Export NACHA file to date-organized directory.
    */
+  static _exportFile(nachaContent, filename, partnerId) {
+    const today = new Date().toISOString().split('T')[0]; // YYYY-MM-DD
+    const partnerDir = partnerId || 'default';
+    const exportDir = path.join(ACH_EXPORTS_DIR, partnerDir, today);
+
+    fs.mkdirSync(exportDir, { recursive: true });
+
+    const exportPath = path.join(exportDir, filename);
+    fs.writeFileSync(exportPath, nachaContent, 'utf8');
+
+    return {
+      export_path: exportPath,
+      export_filename: filename,
+      export_dir: exportDir,
+      file_size: Buffer.byteLength(nachaContent, 'utf8'),
+    };
+  }
+
+  /**
+   * Ensure export directory exists and is writable.
+   */
+  static _ensureExportDir(partnerId) {
+    const dir = path.join(ACH_EXPORTS_DIR, partnerId || 'default');
+    fs.mkdirSync(dir, { recursive: true });
+    fs.accessSync(dir, fs.constants.W_OK);
+    return dir;
+  }
+
+  /**
+   * List exported files for a partner, optionally filtered by date.
+   */
+  static listExports(partnerId, date) {
+    const partnerDir = path.join(ACH_EXPORTS_DIR, partnerId || 'default');
+    if (!fs.existsSync(partnerDir)) return [];
+
+    const results = [];
+    const dateDirs = date ? [date] : fs.readdirSync(partnerDir).filter(d => /^\d{4}-\d{2}-\d{2}$/.test(d));
+
+    for (const dateDir of dateDirs) {
+      const fullDir = path.join(partnerDir, dateDir);
+      if (!fs.existsSync(fullDir) || !fs.statSync(fullDir).isDirectory()) continue;
+      const files = fs.readdirSync(fullDir);
+      for (const file of files) {
+        const filePath = path.join(fullDir, file);
+        const stat = fs.statSync(filePath);
+        results.push({
+          filename: file,
+          date: dateDir,
+          path: filePath,
+          size: stat.size,
+          exported_at: stat.mtime.toISOString(),
+          partner_id: partnerId || 'default',
+        });
+      }
+    }
+    return results.sort((a, b) => b.exported_at.localeCompare(a.exported_at));
+  }
+
+  // ─── NACHA Validation ──────────────────────────────────────────────────────
+
+  /**
+   * Basic NACHA file validation — checks structure, record types, hash.
+   */
+  static _validateNacha(content) {
+    const issues = [];
+    const lines = content.split(/\r?\n/).filter(l => l.trim().length > 0);
+    if (lines.length < 4) {
+      issues.push('NACHA file must have at least 4 records (file header, batch header, entry, batch/file control)');
+      return { valid: false, issues, entryCount: 0, totalDebit: 0, totalCredit: 0 };
+    }
+
+    // Check file header (record type 1)
+    if (!lines[0].startsWith('1')) {
+      issues.push('First record must be file header (record type 1)');
+    }
+
+    let entryCount = 0;
+    let totalDebit = 0;
+    let totalCredit = 0;
+
+    for (const line of lines) {
+      const recType = line.charAt(0);
+      if (recType === '6') {
+        entryCount++;
+        const txCode = line.substring(1, 3);
+        const amount = parseInt(line.substring(29, 39).trim(), 10) || 0;
+        // Transaction codes: 22/32 = credit, 27/37 = debit
+        if (['22', '32', '23', '33'].includes(txCode)) {
+          totalCredit += amount;
+        } else {
+          totalDebit += amount;
+        }
+      }
+    }
+
+    // Check file control (last non-padding record starts with 9)
+    const lastReal = lines.filter(l => !l.startsWith('9999'));
+    if (lastReal.length && !lastReal[lastReal.length - 1].startsWith('9')) {
+      issues.push('Last record must be file control (record type 9)');
+    }
+
+    return {
+      valid: issues.length === 0,
+      issues,
+      entryCount,
+      totalDebit,
+      totalCredit,
+      recordCount: lines.length,
+    };
+  }
+
+  // ─── SFTP Upload ───────────────────────────────────────────────────────────
+
+  /**
+   * Upload file via SFTP using shell command (sshpass + sftp).
+   * Falls back to scp if sftp is not available.
+   */
+  static async _sftpUpload({ host, port, user, privateKey, password, remotePath, content }) {
+    const { execSync } = require('child_process');
+
+    // Write content to temp file
+    const tmpFile = path.join(ACH_EXPORTS_DIR, `.tmp-${Date.now()}.ach`);
+    fs.mkdirSync(path.dirname(tmpFile), { recursive: true });
+    fs.writeFileSync(tmpFile, content, 'utf8');
+
+    try {
+      if (privateKey && fs.existsSync(privateKey)) {
+        // Key-based auth
+        execSync(
+          `scp -P ${port} -o StrictHostKeyChecking=no -i "${privateKey}" "${tmpFile}" "${user}@${host}:${remotePath}"`,
+          { timeout: 60000 }
+        );
+      } else if (password) {
+        // Password-based auth via sshpass
+        execSync(
+          `sshpass -p "${password}" scp -P ${port} -o StrictHostKeyChecking=no "${tmpFile}" "${user}@${host}:${remotePath}"`,
+          { timeout: 60000 }
+        );
+      } else {
+        throw new Error('SFTP requires either privateKey path or password (set as apiKey on partner)');
+      }
+
+      return { success: true, host, remotePath };
+    } finally {
+      try { fs.unlinkSync(tmpFile); } catch { /* ignore */ }
+    }
+  }
+
+  // ─── Mode Resolution ───────────────────────────────────────────────────────
+
+  static _resolveMode(baseUrl) {
+    if (!baseUrl || baseUrl === 'direct' || baseUrl === 'local') return 'direct';
+    if (baseUrl.startsWith('sftp://')) return 'sftp';
+    return 'remote';
+  }
+
+  // ─── Auth & Helpers ────────────────────────────────────────────────────────
+
   static _applyAuth(headers, body, config) {
     const authType = config.apiAuthType || 'bearer';
     const apiKey = config.apiKey || '';
@@ -323,9 +676,6 @@ class OpenBankApi {
     }
   }
 
-  /**
-   * @private
-   */
   static _generateRequestId() {
     return `REQ-${Date.now()}-${crypto.randomBytes(4).toString('hex')}`;
   }

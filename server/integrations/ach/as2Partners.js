@@ -313,8 +313,12 @@ class AS2Partners {
         issues.push('Partner certificate not found — upload partner certificate');
       }
     } else if (proto === 'rest_api') {
-      if (!row.api_base_url && !row.partner_url) issues.push('API base URL not set');
-      if (!row.api_key) issues.push('API key not set');
+      const baseUrl = row.api_base_url || row.partner_url || '';
+      const mode = (!baseUrl || baseUrl === 'direct' || baseUrl === 'local') ? 'direct'
+        : baseUrl.startsWith('sftp://') ? 'sftp' : 'remote';
+      if (!baseUrl) issues.push('API base URL not set');
+      if (mode === 'remote' && !row.api_key) issues.push('API key not set — required for remote REST API');
+      if (mode === 'sftp' && !row.api_key && !row.api_secret) issues.push('SFTP credentials not set (use apiKey for password or apiSecret for key path)');
     }
 
     return {

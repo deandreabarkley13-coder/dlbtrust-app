@@ -797,4 +797,33 @@ router.post('/credentials/:keyId/rotate', requireAdmin, async (req, res) => {
   }
 });
 
+// ─── File Exports ───────────────────────────────────────────────────────────
+
+// GET /api/ach-pipeline/exports — List exported NACHA files
+router.get('/exports', requireAdmin, async (req, res) => {
+  try {
+    const { partnerId, date } = req.query;
+    const exports = OpenBankApi.listExports(partnerId, date);
+    res.json({ success: true, data: exports, count: exports.length });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// GET /api/ach-pipeline/exports/:partnerId/:date/:filename — Download exported file
+router.get('/exports/:partnerId/:date/:filename', requireAdmin, (req, res) => {
+  const { partnerId, date, filename } = req.params;
+  const nodePath = require('path');
+  const nodeFs = require('fs');
+  const exportBase = nodePath.resolve(nodePath.join(__dirname, '..', '..', 'data', 'ach-exports'));
+  const safePath = nodePath.resolve(nodePath.join(exportBase, partnerId, date, filename));
+  if (!safePath.startsWith(exportBase)) {
+    return res.status(403).json({ success: false, error: 'Access denied' });
+  }
+  if (!nodeFs.existsSync(safePath)) {
+    return res.status(404).json({ success: false, error: 'File not found' });
+  }
+  res.download(safePath, filename);
+});
+
 module.exports = router;
