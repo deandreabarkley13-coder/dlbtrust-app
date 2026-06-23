@@ -8,6 +8,8 @@
 const pool = require('../bonds/pgPool');
 const { generateNACHAFile, parseNACHAFile, validateRouting, ODFI_ROUTING, ORIGINATOR_ID } = require('./nachaGenerator');
 const { AS2Client } = require('./as2Client');
+const { AS2Partners } = require('./as2Partners');
+const { OpenBankApi } = require('./openBankApi');
 const path = require('path');
 const fs = require('fs');
 
@@ -72,17 +74,17 @@ class ACHEngine {
     const filePath = path.join(ACH_FILES_DIR, filename);
     fs.writeFileSync(filePath, nachaContent);
 
-    // Save to database
+    // Save to database (with optional partner_id for multi-partner routing)
     const result = await pool.query(
       `INSERT INTO ach_batches
         (batch_id, filename, status, sec_code, entry_description,
          effective_date, entry_count, total_amount_cents, nacha_content,
-         file_path, created_by, created_at)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, NOW())
+         file_path, created_by, partner_id, created_at)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, NOW())
        RETURNING *`,
       [batchId, filename, 'pending', secCode, description,
        effectiveDate, entries.length, totalCents, nachaContent,
-       filePath, opts.createdBy || 'system']
+       filePath, opts.createdBy || 'system', opts.partnerId || null]
     );
 
     // Save individual entries
@@ -147,6 +149,8 @@ class ACHEngine {
 
   /**
    * Transmit a batch via AS2 to the bank.
+   * Looks up batch.partner_id to route to the correct AS2 partner.
+   * Falls back to default partner or global AS2_CONFIG if no partner_id.
    */
   static async transmitBatch(batchId) {
     const batch = await ACHEngine.getBatch(batchId);
@@ -157,6 +161,16 @@ class ACHEngine {
     const nachaContent = batch.nacha_content;
     if (!nachaContent) throw new Error('Batch has no NACHA content');
 
+    // Resolve partner config for this batch
+    let partnerConfig = null;
+    if (batch.partner_id) {
+      partnerConfig = await AS2Partners.getPartnerConfig(batch.partner_id);
+      if (!partnerConfig) throw new Error(`AS2 partner not found or inactive: ${batch.partner_id}`);
+    } else {
+      partnerConfig = await AS2Partners.getDefaultPartnerConfig();
+      // partnerConfig may be null — AS2Client.transmit will fall back to global AS2_CONFIG
+    }
+
     // Update status to transmitting
     await pool.query(
       `UPDATE ach_batches SET status = 'transmitting', updated_at = NOW() WHERE batch_id = $1`,
@@ -164,7 +178,11 @@ class ACHEngine {
     );
 
     try {
-      const result = await AS2Client.transmit(nachaContent, batch.filename);
+      // Route to AS2 or REST API based on partner protocol
+      const protocol = partnerConfig ? (partnerConfig.protocol || 'as2') : 'as2';
+      const result = protocol === 'rest_api'
+        ? await OpenBankApi.transmit(nachaContent, batch.filename, partnerConfig)
+        : await AS2Client.transmit(nachaContent, batch.filename, partnerConfig);
 
       // Record transmission
       await pool.query(

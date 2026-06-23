@@ -16,17 +16,49 @@ const { PaymentOrchestrator } = require('../integrations/ach/paymentOrchestrator
 const { ACHAcknowledgement } = require('../integrations/ach/achAcknowledgement');
 const { ACHReconciliation } = require('../integrations/ach/achReconciliation');
 const { AS2Setup } = require('../integrations/ach/as2Setup');
+const { AS2Partners } = require('../integrations/ach/as2Partners');
+const { OpenBankApi } = require('../integrations/ach/openBankApi');
 const { validateRouting } = require('../integrations/ach/nachaGenerator');
+const { ApiCredentials } = require('../integrations/ach/apiCredentials');
 
-// ─── Admin Auth Middleware ────────────────────────────────────────────────────
-// Protects sensitive ACH operations (transmit, accept, settle, returns, reconciliation, AS2 config)
-const requireAdmin = (req, res, next) => {
-  const token = req.headers['x-admin-token'] || req.query.adminToken;
-  if (!token || token !== process.env.ADMIN_SECRET_TOKEN) {
-    return res.status(401).json({ success: false, error: 'Admin authentication required. Provide x-admin-token header.' });
+// ─── Auth Middleware ─────────────────────────────────────────────────────────
+// Accepts: x-admin-token header, Authorization: Bearer <api_key>, or X-API-Key header.
+const requireAuth = async (req, res, next) => {
+  // 1. Try admin token (legacy)
+  const adminToken = req.headers['x-admin-token'] || req.query.adminToken;
+  if (adminToken && adminToken === process.env.ADMIN_SECRET_TOKEN) {
+    req.authMethod = 'admin_token';
+    return next();
   }
-  next();
+
+  // 2. Try API key (Bearer or X-API-Key)
+  let apiKey = null;
+  const authHeader = req.headers['authorization'];
+  if (authHeader && authHeader.startsWith('Bearer ')) {
+    apiKey = authHeader.slice(7).trim();
+  } else if (req.headers['x-api-key']) {
+    apiKey = req.headers['x-api-key'];
+  }
+
+  if (apiKey) {
+    try {
+      const cred = await ApiCredentials.validate(apiKey);
+      if (cred) {
+        req.authMethod = 'api_key';
+        req.apiCredential = cred;
+        return next();
+      }
+    } catch (err) { /* fall through to 401 */ }
+  }
+
+  return res.status(401).json({
+    success: false,
+    error: 'Authentication required. Use x-admin-token, Authorization: Bearer <api_key>, or X-API-Key header.',
+  });
 };
+
+// Keep requireAdmin as alias for backwards compat
+const requireAdmin = requireAuth;
 
 // ─── GET /api/ach-pipeline/status ─────────────────────────────────────────────
 // Full pipeline status: AS2 config, connectivity, batch stats
@@ -75,7 +107,7 @@ router.get('/as2/test', async (req, res) => {
 // }
 router.post('/batches', requireAdmin, async (req, res) => {
   try {
-    const { effectiveDate, secCode, description, entries, createdBy, paymentType } = req.body;
+    const { effectiveDate, secCode, description, entries, createdBy, paymentType, partnerId } = req.body;
     if (!entries || !Array.isArray(entries) || !entries.length) {
       return res.status(400).json({ success: false, error: 'entries array is required' });
     }
@@ -83,7 +115,7 @@ router.post('/batches', requireAdmin, async (req, res) => {
     const result = await PaymentOrchestrator.createDisbursementWithAccounting({
       entries, effectiveDate, secCode, description,
       paymentType: paymentType || 'vendor_payment',
-      createdBy,
+      createdBy, partnerId,
     });
     res.json({
       success: true,
@@ -530,6 +562,268 @@ router.post('/as2/load-saved', requireAdmin, async (req, res) => {
   } catch (err) {
     res.status(500).json({ success: false, error: err.message });
   }
+});
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// ─── Multi-Partner Management (AS2 + REST API) ───────────────────────────────
+// ═══════════════════════════════════════════════════════════════════════════════
+
+// ─── POST /api/ach-pipeline/partners ──────────────────────────────────────────
+// Register a new AS2 partner
+router.post('/partners', requireAdmin, async (req, res) => {
+  try {
+    const partner = await AS2Partners.register(req.body);
+    res.json({ success: true, data: partner });
+  } catch (err) {
+    res.status(400).json({ success: false, error: err.message });
+  }
+});
+
+// ─── GET /api/ach-pipeline/partners ───────────────────────────────────────────
+// List all AS2 partners
+router.get('/partners', async (req, res) => {
+  try {
+    const activeOnly = req.query.active === 'true';
+    const partners = await AS2Partners.listPartners({ activeOnly });
+    res.json({ success: true, data: partners, count: partners.length });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// ─── GET /api/ach-pipeline/partners/:partnerId ────────────────────────────────
+// Get a specific partner's configuration
+router.get('/partners/:partnerId', async (req, res) => {
+  try {
+    const partner = await AS2Partners.getPartner(req.params.partnerId);
+    if (!partner) {
+      return res.status(404).json({ success: false, error: `Partner not found: ${req.params.partnerId}` });
+    }
+    res.json({ success: true, data: partner });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// ─── PUT /api/ach-pipeline/partners/:partnerId ────────────────────────────────
+// Update an existing partner's configuration
+router.put('/partners/:partnerId', requireAdmin, async (req, res) => {
+  try {
+    const partner = await AS2Partners.update(req.params.partnerId, req.body);
+    res.json({ success: true, data: partner });
+  } catch (err) {
+    res.status(400).json({ success: false, error: err.message });
+  }
+});
+
+// ─── DELETE /api/ach-pipeline/partners/:partnerId ─────────────────────────────
+// Deactivate a partner (soft delete)
+router.delete('/partners/:partnerId', requireAdmin, async (req, res) => {
+  try {
+    const partner = await AS2Partners.deactivate(req.params.partnerId);
+    res.json({ success: true, data: partner, message: 'Partner deactivated' });
+  } catch (err) {
+    res.status(400).json({ success: false, error: err.message });
+  }
+});
+
+// ─── POST /api/ach-pipeline/partners/:partnerId/activate ──────────────────────
+// Reactivate a deactivated partner
+router.post('/partners/:partnerId/activate', requireAdmin, async (req, res) => {
+  try {
+    const partner = await AS2Partners.activate(req.params.partnerId);
+    res.json({ success: true, data: partner, message: 'Partner reactivated' });
+  } catch (err) {
+    res.status(400).json({ success: false, error: err.message });
+  }
+});
+
+// ─── GET /api/ach-pipeline/partners/:partnerId/validate ───────────────────────
+// Check if a partner's config is complete for transmission
+router.get('/partners/:partnerId/validate', requireAdmin, async (req, res) => {
+  try {
+    const result = await AS2Partners.validatePartner(req.params.partnerId);
+    res.json({ success: true, data: result });
+  } catch (err) {
+    res.status(400).json({ success: false, error: err.message });
+  }
+});
+
+// ─── POST /api/ach-pipeline/partners/:partnerId/generate-cert ─────────────────
+// Generate a self-signed signing keypair for a specific partner
+router.post('/partners/:partnerId/generate-cert', requireAdmin, async (req, res) => {
+  try {
+    const { commonName } = req.body;
+    const result = await AS2Partners.generateCert(req.params.partnerId, { commonName });
+    res.json({ success: true, data: result });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// ─── POST /api/ach-pipeline/partners/:partnerId/test ──────────────────────────
+// Test connectivity to a partner's endpoint (AS2 or REST API)
+router.post('/partners/:partnerId/test', requireAdmin, async (req, res) => {
+  try {
+    const config = await AS2Partners.getPartnerConfig(req.params.partnerId);
+    if (!config) {
+      return res.status(404).json({ success: false, error: `Partner not found or inactive: ${req.params.partnerId}` });
+    }
+    const result = (config.protocol === 'rest_api')
+      ? await OpenBankApi.testConnection(config)
+      : await AS2Client.testConnection(config);
+    res.json({ success: true, data: result });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// ─── POST /api/ach-pipeline/partners/migrate-legacy ───────────────────────────
+// Migrate existing single-partner as2_config to the multi-partner registry
+router.post('/partners/migrate-legacy', requireAdmin, async (req, res) => {
+  try {
+    const result = await AS2Partners.migrateFromLegacyConfig();
+    if (result) {
+      res.json({ success: true, data: { migrated: true, partner_id: result } });
+    } else {
+      res.json({ success: true, data: { migrated: false, message: 'Nothing to migrate (no legacy config or partners already exist)' } });
+    }
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// ─── Webhook Receiver ─────────────────────────────────────────────────────────
+// ═══════════════════════════════════════════════════════════════════════════════
+
+// ─── POST /api/ach-pipeline/webhooks/:partnerId ───────────────────────────────
+// Receive status webhooks from bank/partner REST APIs.
+// No admin auth — uses webhook signature verification instead.
+router.post('/webhooks/:partnerId', async (req, res) => {
+  try {
+    const { partnerId } = req.params;
+    const config = await AS2Partners.getPartnerConfig(partnerId);
+    if (!config) {
+      return res.status(404).json({ success: false, error: 'Unknown partner' });
+    }
+
+    const signature = req.headers['x-signature'] || req.headers['x-hub-signature-256'] || '';
+    const event = OpenBankApi.processWebhook(partnerId, req.body, signature, config);
+
+    if (event.mapped_status && event.batch_id) {
+      const { ACHEngine: Engine } = require('../integrations/ach/achEngine');
+      try {
+        switch (event.mapped_status) {
+          case 'accepted':
+            await Engine.acceptBatch(event.batch_id, { source: 'webhook', skipAckRecord: false });
+            break;
+          case 'settled':
+            await Engine.settleBatch(event.batch_id, {
+              settlementDate: event.settlement_date || new Date().toISOString().split('T')[0],
+              source: 'webhook',
+            });
+            break;
+          case 'returned':
+            if (event.return_code) {
+              await Engine.processReturns(event.batch_id, [{
+                returnCode: event.return_code,
+                returnReason: event.return_reason || 'Bank return via webhook',
+                amountCents: event.amount_cents,
+              }], { source: 'webhook' });
+            }
+            break;
+        }
+      } catch (stateErr) {
+        console.warn(`[Webhook] State transition failed for ${event.batch_id}:`, stateErr.message);
+      }
+    }
+
+    res.json({ success: true, received: true, event_type: event.event_type, mapped_status: event.mapped_status });
+  } catch (err) {
+    if (err.message === 'Invalid webhook signature') {
+      return res.status(401).json({ success: false, error: 'Invalid webhook signature' });
+    }
+    res.status(400).json({ success: false, error: err.message });
+  }
+});
+
+// ─── API Credential Management ──────────────────────────────────────────────
+
+// POST /api/ach-pipeline/credentials — Generate new API key pair
+router.post('/credentials', requireAdmin, async (req, res) => {
+  try {
+    const { label, scopes, expiresIn } = req.body;
+    const result = await ApiCredentials.generate({
+      label: label || 'DLBTrust API Key',
+      scopes,
+      expiresIn,
+      createdBy: req.apiCredential ? req.apiCredential.label : 'admin',
+    });
+    res.json({ success: true, data: result });
+  } catch (err) {
+    res.status(400).json({ success: false, error: err.message });
+  }
+});
+
+// GET /api/ach-pipeline/credentials — List all API credentials
+router.get('/credentials', requireAdmin, async (req, res) => {
+  try {
+    const activeOnly = req.query.active === 'true';
+    const credentials = await ApiCredentials.list({ activeOnly });
+    res.json({ success: true, data: credentials });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// DELETE /api/ach-pipeline/credentials/:keyId — Revoke an API credential
+router.delete('/credentials/:keyId', requireAdmin, async (req, res) => {
+  try {
+    const result = await ApiCredentials.revoke(req.params.keyId);
+    res.json({ success: true, data: result });
+  } catch (err) {
+    res.status(404).json({ success: false, error: err.message });
+  }
+});
+
+// POST /api/ach-pipeline/credentials/:keyId/rotate — Rotate a credential
+router.post('/credentials/:keyId/rotate', requireAdmin, async (req, res) => {
+  try {
+    const result = await ApiCredentials.rotate(req.params.keyId);
+    res.json({ success: true, data: result });
+  } catch (err) {
+    res.status(404).json({ success: false, error: err.message });
+  }
+});
+
+// ─── File Exports ───────────────────────────────────────────────────────────
+
+// GET /api/ach-pipeline/exports — List exported NACHA files
+router.get('/exports', requireAdmin, async (req, res) => {
+  try {
+    const { partnerId, date } = req.query;
+    const exports = OpenBankApi.listExports(partnerId, date);
+    res.json({ success: true, data: exports, count: exports.length });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// GET /api/ach-pipeline/exports/:partnerId/:date/:filename — Download exported file
+router.get('/exports/:partnerId/:date/:filename', requireAdmin, (req, res) => {
+  const { partnerId, date, filename } = req.params;
+  const nodePath = require('path');
+  const nodeFs = require('fs');
+  const exportBase = nodePath.resolve(nodePath.join(__dirname, '..', '..', 'data', 'ach-exports'));
+  const safePath = nodePath.resolve(nodePath.join(exportBase, partnerId, date, filename));
+  if (!safePath.startsWith(exportBase)) {
+    return res.status(403).json({ success: false, error: 'Access denied' });
+  }
+  if (!nodeFs.existsSync(safePath)) {
+    return res.status(404).json({ success: false, error: 'File not found' });
+  }
+  res.download(safePath, filename);
 });
 
 module.exports = router;
