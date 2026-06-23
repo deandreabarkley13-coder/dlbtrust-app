@@ -159,28 +159,57 @@ CREATE TABLE IF NOT EXISTS as2_partners (
   updated_at          TIMESTAMPTZ DEFAULT NOW()
 );
 
--- Add protocol and API columns if table already exists (idempotent migration)
+-- ─── Idempotent column additions ────────────────────────────────────────────
+-- These handle the case where tables were created by older migration versions
+-- or by migrate-as2.sql with a different schema.
+
+-- Add missing ach_batches lifecycle columns (added in PR #98)
+ALTER TABLE ach_batches ADD COLUMN IF NOT EXISTS accepted_at TIMESTAMPTZ;
+ALTER TABLE ach_batches ADD COLUMN IF NOT EXISTS returned_at TIMESTAMPTZ;
+ALTER TABLE ach_batches ADD COLUMN IF NOT EXISTS settlement_date DATE;
+ALTER TABLE ach_batches ADD COLUMN IF NOT EXISTS return_code TEXT;
+ALTER TABLE ach_batches ADD COLUMN IF NOT EXISTS return_reason TEXT;
+ALTER TABLE ach_batches ADD COLUMN IF NOT EXISTS settled_at TIMESTAMPTZ;
+ALTER TABLE ach_batches ADD COLUMN IF NOT EXISTS partner_id TEXT;
+
+-- Add missing as2_partners columns (migrate-as2.sql creates a different schema)
+ALTER TABLE as2_partners ADD COLUMN IF NOT EXISTS partner_name TEXT;
+ALTER TABLE as2_partners ADD COLUMN IF NOT EXISTS protocol TEXT NOT NULL DEFAULT 'as2';
+ALTER TABLE as2_partners ADD COLUMN IF NOT EXISTS partner_url TEXT;
+ALTER TABLE as2_partners ADD COLUMN IF NOT EXISTS partner_as2_id TEXT;
+ALTER TABLE as2_partners ADD COLUMN IF NOT EXISTS local_as2_id TEXT NOT NULL DEFAULT 'DLBTRUST-AS2';
+ALTER TABLE as2_partners ADD COLUMN IF NOT EXISTS signing_cert_path TEXT;
+ALTER TABLE as2_partners ADD COLUMN IF NOT EXISTS signing_key_path TEXT;
+ALTER TABLE as2_partners ADD COLUMN IF NOT EXISTS partner_cert_path TEXT;
+ALTER TABLE as2_partners ADD COLUMN IF NOT EXISTS encryption_alg TEXT NOT NULL DEFAULT 'aes256-cbc';
+ALTER TABLE as2_partners ADD COLUMN IF NOT EXISTS signing_alg TEXT NOT NULL DEFAULT 'sha256';
+ALTER TABLE as2_partners ADD COLUMN IF NOT EXISTS mdn_url TEXT;
+ALTER TABLE as2_partners ADD COLUMN IF NOT EXISTS api_base_url TEXT;
+ALTER TABLE as2_partners ADD COLUMN IF NOT EXISTS api_key TEXT;
+ALTER TABLE as2_partners ADD COLUMN IF NOT EXISTS api_secret TEXT;
+ALTER TABLE as2_partners ADD COLUMN IF NOT EXISTS api_auth_type TEXT DEFAULT 'bearer';
+ALTER TABLE as2_partners ADD COLUMN IF NOT EXISTS webhook_secret TEXT;
+ALTER TABLE as2_partners ADD COLUMN IF NOT EXISTS is_default BOOLEAN NOT NULL DEFAULT FALSE;
+ALTER TABLE as2_partners ADD COLUMN IF NOT EXISTS active BOOLEAN NOT NULL DEFAULT TRUE;
+ALTER TABLE as2_partners ADD COLUMN IF NOT EXISTS notes TEXT;
+
+-- Backfill partner_name from 'name' column if it exists (migrate-as2.sql uses 'name')
 DO $$ BEGIN
-  IF NOT EXISTS (
+  IF EXISTS (
     SELECT 1 FROM information_schema.columns
-    WHERE table_name = 'as2_partners' AND column_name = 'protocol'
+    WHERE table_name = 'as2_partners' AND column_name = 'name'
   ) THEN
-    ALTER TABLE as2_partners ADD COLUMN protocol TEXT NOT NULL DEFAULT 'as2';
-    ALTER TABLE as2_partners ADD COLUMN api_base_url TEXT;
-    ALTER TABLE as2_partners ADD COLUMN api_key TEXT;
-    ALTER TABLE as2_partners ADD COLUMN api_secret TEXT;
-    ALTER TABLE as2_partners ADD COLUMN api_auth_type TEXT DEFAULT 'bearer';
-    ALTER TABLE as2_partners ADD COLUMN webhook_secret TEXT;
+    UPDATE as2_partners SET partner_name = name WHERE partner_name IS NULL;
   END IF;
 END $$;
 
--- Add partner_id to ach_batches (nullable for backwards compat with existing batches)
+-- Backfill partner_url from 'endpoint_url' column if it exists (migrate-as2.sql uses 'endpoint_url')
 DO $$ BEGIN
-  IF NOT EXISTS (
+  IF EXISTS (
     SELECT 1 FROM information_schema.columns
-    WHERE table_name = 'ach_batches' AND column_name = 'partner_id'
+    WHERE table_name = 'as2_partners' AND column_name = 'endpoint_url'
   ) THEN
-    ALTER TABLE ach_batches ADD COLUMN partner_id TEXT;
+    UPDATE as2_partners SET partner_url = endpoint_url WHERE partner_url IS NULL;
   END IF;
 END $$;
 

@@ -100,6 +100,8 @@ jobs:
               echo "Set default admin token and saved to $TOKEN_FILE"
             fi
             export PORT=3007
+            export APP_URL=https://dlbtrust.cloud
+            export NODE_ENV=production
             export FINERACT_URL=https://localhost:8444/fineract-provider/api/v1
             export ADMIN_SECRET_TOKEN="$SAVED_TOKEN"
             export PGPASSWORD=postgres
