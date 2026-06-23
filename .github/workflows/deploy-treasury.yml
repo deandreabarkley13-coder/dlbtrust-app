@@ -159,7 +159,8 @@ jobs:
 
             rm -rf /var/cache/nginx/* 2>/dev/null || true
             rm -rf /tmp/nginx_cache/* 2>/dev/null || true
-            echo "Nginx cache cleared"
+            rm -rf /var/www/vhosts/dlbtrust.cloud/httpdocs/tmp/cache/* 2>/dev/null || true
+            echo "Nginx and app caches cleared"
 
       - name: Update Plesk nginx proxy target to port 3007
         uses: appleboy/ssh-action@v1.0.3

@@ -57,19 +57,25 @@ try { app.use('/api/tax', require(path.join(HD, 'server', 'routes', 'tax'))); co
 // Treasury Management System — serve dashboard at root, static files from public/
 app.get('/', function(req, res) {
   res.set('Cache-Control', 'no-cache, no-store, must-revalidate');
+  res.set('Pragma', 'no-cache');
+  res.set('Expires', '0');
   res.sendFile(path.join(HD, 'public', 'dashboard.html'));
 });
 app.get('/treasury', function(req, res) {
   res.set('Cache-Control', 'no-cache, no-store, must-revalidate');
+  res.set('Pragma', 'no-cache');
+  res.set('Expires', '0');
   res.sendFile(path.join(HD, 'public', 'dashboard.html'));
 });
 app.use(express.static(path.join(HD, 'public'), {
   etag: false,
   maxAge: 0,
+  lastModified: true,
   setHeaders: function(res, filePath) {
-    if (filePath.endsWith('.html')) {
-      res.set('Cache-Control', 'no-cache, no-store, must-revalidate');
-    }
+    res.set('Cache-Control', 'no-cache, no-store, must-revalidate');
+    res.set('Pragma', 'no-cache');
+    res.set('Expires', '0');
+    res.set('Surrogate-Control', 'no-store');
   }
 }));
 app.get('*', function(req, res) {
