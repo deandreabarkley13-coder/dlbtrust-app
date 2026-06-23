@@ -19,16 +19,46 @@ const { AS2Setup } = require('../integrations/ach/as2Setup');
 const { AS2Partners } = require('../integrations/ach/as2Partners');
 const { OpenBankApi } = require('../integrations/ach/openBankApi');
 const { validateRouting } = require('../integrations/ach/nachaGenerator');
+const { ApiCredentials } = require('../integrations/ach/apiCredentials');
 
-// ─── Admin Auth Middleware ────────────────────────────────────────────────────
-// Protects sensitive ACH operations (transmit, accept, settle, returns, reconciliation, AS2 config)
-const requireAdmin = (req, res, next) => {
-  const token = req.headers['x-admin-token'] || req.query.adminToken;
-  if (!token || token !== process.env.ADMIN_SECRET_TOKEN) {
-    return res.status(401).json({ success: false, error: 'Admin authentication required. Provide x-admin-token header.' });
+// ─── Auth Middleware ─────────────────────────────────────────────────────────
+// Accepts: x-admin-token header, Authorization: Bearer <api_key>, or X-API-Key header.
+const requireAuth = async (req, res, next) => {
+  // 1. Try admin token (legacy)
+  const adminToken = req.headers['x-admin-token'] || req.query.adminToken;
+  if (adminToken && adminToken === process.env.ADMIN_SECRET_TOKEN) {
+    req.authMethod = 'admin_token';
+    return next();
   }
-  next();
+
+  // 2. Try API key (Bearer or X-API-Key)
+  let apiKey = null;
+  const authHeader = req.headers['authorization'];
+  if (authHeader && authHeader.startsWith('Bearer ')) {
+    apiKey = authHeader.slice(7).trim();
+  } else if (req.headers['x-api-key']) {
+    apiKey = req.headers['x-api-key'];
+  }
+
+  if (apiKey) {
+    try {
+      const cred = await ApiCredentials.validate(apiKey);
+      if (cred) {
+        req.authMethod = 'api_key';
+        req.apiCredential = cred;
+        return next();
+      }
+    } catch (err) { /* fall through to 401 */ }
+  }
+
+  return res.status(401).json({
+    success: false,
+    error: 'Authentication required. Use x-admin-token, Authorization: Bearer <api_key>, or X-API-Key header.',
+  });
 };
+
+// Keep requireAdmin as alias for backwards compat
+const requireAdmin = requireAuth;
 
 // ─── GET /api/ach-pipeline/status ─────────────────────────────────────────────
 // Full pipeline status: AS2 config, connectivity, batch stats
@@ -715,6 +745,55 @@ router.post('/webhooks/:partnerId', async (req, res) => {
       return res.status(401).json({ success: false, error: 'Invalid webhook signature' });
     }
     res.status(400).json({ success: false, error: err.message });
+  }
+});
+
+// ─── API Credential Management ──────────────────────────────────────────────
+
+// POST /api/ach-pipeline/credentials — Generate new API key pair
+router.post('/credentials', requireAdmin, async (req, res) => {
+  try {
+    const { label, scopes, expiresIn } = req.body;
+    const result = await ApiCredentials.generate({
+      label: label || 'DLBTrust API Key',
+      scopes,
+      expiresIn,
+      createdBy: req.apiCredential ? req.apiCredential.label : 'admin',
+    });
+    res.json({ success: true, data: result });
+  } catch (err) {
+    res.status(400).json({ success: false, error: err.message });
+  }
+});
+
+// GET /api/ach-pipeline/credentials — List all API credentials
+router.get('/credentials', requireAdmin, async (req, res) => {
+  try {
+    const activeOnly = req.query.active === 'true';
+    const credentials = await ApiCredentials.list({ activeOnly });
+    res.json({ success: true, data: credentials });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// DELETE /api/ach-pipeline/credentials/:keyId — Revoke an API credential
+router.delete('/credentials/:keyId', requireAdmin, async (req, res) => {
+  try {
+    const result = await ApiCredentials.revoke(req.params.keyId);
+    res.json({ success: true, data: result });
+  } catch (err) {
+    res.status(404).json({ success: false, error: err.message });
+  }
+});
+
+// POST /api/ach-pipeline/credentials/:keyId/rotate — Rotate a credential
+router.post('/credentials/:keyId/rotate', requireAdmin, async (req, res) => {
+  try {
+    const result = await ApiCredentials.rotate(req.params.keyId);
+    res.json({ success: true, data: result });
+  } catch (err) {
+    res.status(404).json({ success: false, error: err.message });
   }
 });
 

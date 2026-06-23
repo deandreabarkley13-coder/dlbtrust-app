@@ -196,3 +196,24 @@ CREATE INDEX IF NOT EXISTS idx_ach_returns_entry ON ach_returns(entry_id);
 CREATE INDEX IF NOT EXISTS idx_ach_reconciliations_date ON ach_reconciliations(run_date);
 CREATE INDEX IF NOT EXISTS idx_as2_partners_active ON as2_partners(active);
 CREATE INDEX IF NOT EXISTS idx_as2_partners_default ON as2_partners(is_default) WHERE is_default = TRUE;
+
+-- ─── API Credentials ────────────────────────────────────────────────────────
+-- API keys for authenticating to the DLBTrust platform REST API.
+
+CREATE TABLE IF NOT EXISTS api_credentials (
+  id              SERIAL PRIMARY KEY,
+  key_id          TEXT UNIQUE NOT NULL,
+  api_key         TEXT UNIQUE NOT NULL,
+  api_secret_hash TEXT NOT NULL,
+  label           TEXT NOT NULL,
+  scopes          TEXT[] NOT NULL DEFAULT '{batches,partners,pipeline}',
+  active          BOOLEAN NOT NULL DEFAULT TRUE,
+  last_used_at    TIMESTAMPTZ,
+  expires_at      TIMESTAMPTZ,
+  created_by      TEXT NOT NULL DEFAULT 'admin',
+  created_at      TIMESTAMPTZ DEFAULT NOW(),
+  revoked_at      TIMESTAMPTZ
+);
+
+CREATE INDEX IF NOT EXISTS idx_api_credentials_key ON api_credentials(api_key) WHERE active = TRUE;
+CREATE INDEX IF NOT EXISTS idx_api_credentials_active ON api_credentials(active);
