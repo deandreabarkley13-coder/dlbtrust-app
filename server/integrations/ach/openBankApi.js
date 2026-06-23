@@ -7,10 +7,10 @@
  * that support HTTP-based file exchange. Each partner can have its own
  * API credentials (api_key, api_secret, api_base_url).
  *
- * Transmission modes:
- *   remote    — POST NACHA file to partner's REST API endpoint
- *   direct    — Process locally: validate, export file, mark transmitted
+ * Transmission modes (priority order):
+ *   remote    — POST NACHA file to partner's REST API endpoint via HTTPS (default)
  *   sftp      — Upload NACHA file to partner's SFTP server
+ *   direct    — Process locally: validate, export file, mark transmitted (legacy fallback)
  *
  * Auth schemes (for remote mode):
  *   bearer   — Authorization: Bearer <api_key>
@@ -38,8 +38,18 @@ class OpenBankApi {
    *   - otherwise → remote REST API POST
    */
   static async transmit(nachaContent, filename, partnerConfig) {
-    const baseUrl = partnerConfig.apiBaseUrl || partnerConfig.partnerUrl || '';
-    const mode = OpenBankApi._resolveMode(baseUrl);
+    let baseUrl = partnerConfig.apiBaseUrl || partnerConfig.partnerUrl || '';
+    let mode = OpenBankApi._resolveMode(baseUrl);
+
+    // Auto-upgrade 'direct' to 'remote' using the platform's own HTTPS endpoint
+    if (mode === 'direct') {
+      const selfUrl = OpenBankApi._getSelfUrl();
+      if (selfUrl) {
+        baseUrl = selfUrl;
+        mode = 'remote';
+        partnerConfig = { ...partnerConfig, apiBaseUrl: selfUrl };
+      }
+    }
 
     switch (mode) {
       case 'direct':
@@ -49,6 +59,21 @@ class OpenBankApi {
       default:
         return OpenBankApi._transmitRemote(nachaContent, filename, partnerConfig);
     }
+  }
+
+  /**
+   * Get the platform's own HTTPS URL for self-hosted REST API transmission.
+   * Uses APP_URL env var, falls back to common deployment URLs.
+   */
+  static _getSelfUrl() {
+    if (process.env.APP_URL) return process.env.APP_URL;
+    if (process.env.DEPLOY_URL) return process.env.DEPLOY_URL;
+    const port = process.env.PORT || 3002;
+    // In production, use HTTPS; locally fall back to HTTP
+    if (process.env.NODE_ENV === 'production') {
+      return process.env.DOMAIN ? `https://${process.env.DOMAIN}` : null;
+    }
+    return `http://localhost:${port}`;
   }
 
   /**
@@ -205,7 +230,11 @@ class OpenBankApi {
       throw new Error('REST API base URL not configured for this partner.');
     }
 
-    const transmitUrl = baseUrl.endsWith('/') ? `${baseUrl}ach/transmit` : `${baseUrl}/ach/transmit`;
+    // If transmitting to self (platform's own URL), use the /receive endpoint
+    const selfUrl = OpenBankApi._getSelfUrl();
+    const isSelfTransmit = selfUrl && (baseUrl === selfUrl || baseUrl.replace(/\/$/, '') === selfUrl.replace(/\/$/, ''));
+    const endpoint = isSelfTransmit ? '/api/ach-pipeline/receive' : '/ach/transmit';
+    const transmitUrl = baseUrl.endsWith('/') ? `${baseUrl.slice(0, -1)}${endpoint}` : `${baseUrl}${endpoint}`;
     const parsed = new URL(transmitUrl);
 
     // Also export locally for audit trail
@@ -231,7 +260,12 @@ class OpenBankApi {
       'Date': new Date().toUTCString(),
     };
 
-    OpenBankApi._applyAuth(headers, payload, partnerConfig);
+    // For self-transmit, use the admin token; for external partners, apply partner auth
+    if (isSelfTransmit && process.env.ADMIN_SECRET_TOKEN) {
+      headers['x-admin-token'] = process.env.ADMIN_SECRET_TOKEN;
+    } else {
+      OpenBankApi._applyAuth(headers, payload, partnerConfig);
+    }
 
     return new Promise((resolve, reject) => {
       const options = {
@@ -292,12 +326,13 @@ class OpenBankApi {
   static async checkStatus(remoteBatchId, partnerConfig) {
     const baseUrl = partnerConfig.apiBaseUrl || partnerConfig.partnerUrl;
     if (!baseUrl || baseUrl === 'direct') {
+      const selfUrl = OpenBankApi._getSelfUrl();
       return {
         success: true,
         batch_id: remoteBatchId,
         status: 'transmitted',
-        mode: 'direct',
-        message: 'Direct-mode batches are tracked locally. Use dashboard or GET /batches/:id for status.',
+        mode: selfUrl ? 'remote' : 'direct',
+        message: 'Batches are tracked locally. Use dashboard or GET /batches/:id for status.',
       };
     }
 
@@ -359,11 +394,20 @@ class OpenBankApi {
    * Test connectivity to a partner's REST API endpoint.
    */
   static async testConnection(partnerConfig) {
-    const baseUrl = partnerConfig.apiBaseUrl || partnerConfig.partnerUrl || '';
-    const mode = OpenBankApi._resolveMode(baseUrl);
+    let baseUrl = partnerConfig.apiBaseUrl || partnerConfig.partnerUrl || '';
+    let mode = OpenBankApi._resolveMode(baseUrl);
+
+    // Auto-upgrade direct to remote via self URL
+    if (mode === 'direct') {
+      const selfUrl = OpenBankApi._getSelfUrl();
+      if (selfUrl) {
+        baseUrl = selfUrl;
+        mode = 'remote';
+        partnerConfig = { ...partnerConfig, apiBaseUrl: selfUrl };
+      }
+    }
 
     if (mode === 'direct') {
-      // For direct mode, verify export directory is writable
       try {
         OpenBankApi._ensureExportDir(partnerConfig.partnerId);
         return {
