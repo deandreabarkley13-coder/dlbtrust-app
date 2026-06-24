@@ -188,6 +188,28 @@ router.get('/reports/cashflow', async (req, res) => {
       fromDate: req.query.fromDate,
       toDate: req.query.toDate,
     });
+
+    // Enrich with bond cash flows from the fixed income orchestrator
+    try {
+      const { FixedIncomeOrchestrator } = require('../integrations/bonds/fixedIncomeOrchestrator');
+      const bondCashflow = await FixedIncomeOrchestrator.getIntegratedCashflow({
+        fromDate: req.query.fromDate,
+        toDate: req.query.toDate,
+      });
+      cf.bond_cashflow = {
+        operating: bondCashflow.operating,
+        investing: bondCashflow.investing,
+        cash_movements: bondCashflow.cash_movements,
+        net_bond_cashflow: bondCashflow.net_cashflow,
+      };
+      cf.integrated_net_cashflow = Math.round(
+        (cf.net_cash_change + bondCashflow.net_cashflow) * 100
+      ) / 100;
+    } catch (err) {
+      cf.bond_cashflow = null;
+      cf.integrated_net_cashflow = cf.net_cash_change;
+    }
+
     res.json({ success: true, data: cf });
   } catch (err) {
     res.status(500).json({ success: false, error: err.message });

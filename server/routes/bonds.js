@@ -14,6 +14,7 @@ const express = require('express');
 const router  = express.Router();
 const { BondEngine } = require('../integrations/bonds/bondEngine');
 const { LiveBondEngine } = require('../integrations/bonds/liveEngine');
+const { FixedIncomeOrchestrator } = require('../integrations/bonds/fixedIncomeOrchestrator');
 const pool = require('../integrations/bonds/pgPool');
 const { FineractClient } = require('../integrations/fineract/fineractClient');
 
@@ -22,6 +23,29 @@ router.get('/portfolio/live', async (req, res) => {
   try {
     const snapshot = await LiveBondEngine.getPortfolioSnapshot();
     res.json({ success: true, data: snapshot });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// ─── GET /api/bonds/fixed-income/dashboard ────────────────────────────────────
+router.get('/fixed-income/dashboard', async (req, res) => {
+  try {
+    const dashboard = await FixedIncomeOrchestrator.getDashboard();
+    res.json({ success: true, data: dashboard });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// ─── GET /api/bonds/fixed-income/cashflow ─────────────────────────────────────
+router.get('/fixed-income/cashflow', async (req, res) => {
+  try {
+    const cashflow = await FixedIncomeOrchestrator.getIntegratedCashflow({
+      fromDate: req.query.fromDate,
+      toDate: req.query.toDate,
+    });
+    res.json({ success: true, data: cashflow });
   } catch (err) {
     res.status(500).json({ success: false, error: err.message });
   }
@@ -103,13 +127,12 @@ router.get('/:id/dashboard', async (req, res) => {
 
 // ─── POST /api/bonds/:id/accrue ───────────────────────────────────────────────
 router.post('/:id/accrue', async (req, res) => {
-  const { toDate, glDebitAccountId, glCreditAccountId } = req.body;
+  const { toDate } = req.body;
 
   try {
-    const result = await BondEngine.accrueInterest(
+    const result = await FixedIncomeOrchestrator.accrueWithGL(
       req.params.id,
-      toDate || null,
-      { glDebitAccountId, glCreditAccountId }
+      toDate || null
     );
     res.json({ success: true, data: result });
   } catch (err) {
@@ -121,13 +144,12 @@ router.post('/:id/accrue', async (req, res) => {
 
 // ─── POST /api/bonds/:id/pay-interest ─────────────────────────────────────────
 router.post('/:id/pay-interest', async (req, res) => {
-  const { amount, glDebitAccountId, glCreditAccountId } = req.body;
+  const { amount } = req.body;
 
   try {
-    const result = await BondEngine.payInterest(
+    const result = await FixedIncomeOrchestrator.payInterestWithGL(
       req.params.id,
-      amount || undefined,
-      { glDebitAccountId, glCreditAccountId }
+      amount || undefined
     );
     res.json({ success: true, data: result });
   } catch (err) {
@@ -139,17 +161,16 @@ router.post('/:id/pay-interest', async (req, res) => {
 
 // ─── POST /api/bonds/:id/pay-principal ────────────────────────────────────────
 router.post('/:id/pay-principal', async (req, res) => {
-  const { amount, glDebitAccountId, glCreditAccountId } = req.body;
+  const { amount } = req.body;
 
   if (!amount || amount <= 0) {
     return res.status(400).json({ error: 'Required: amount (positive number)' });
   }
 
   try {
-    const result = await BondEngine.payPrincipal(
+    const result = await FixedIncomeOrchestrator.payPrincipalWithGL(
       req.params.id,
-      amount,
-      { glDebitAccountId, glCreditAccountId }
+      amount
     );
     res.json({ success: true, data: result });
   } catch (err) {
@@ -222,15 +243,22 @@ router.post('/:id/issue', async (req, res) => {
 
     await client.query('COMMIT');
 
-    // Post GL entry after commit (follows BondEngine pattern)
+    // Post GL entry after commit using resolved GL mappings
     try {
-      await FineractClient.postJournalEntry({
-        officeId: 1,
-        transactionDate: new Date(settlementDate),
-        credits: [{ glAccountId: 1, amount: subscriptionAmount }],
-        debits: [{ glAccountId: 2, amount: subscriptionAmount }],
-        comments: `PTC issuance — subscription ${subscriptionId} for bond ${bondId}`,
-      });
+      const { GLResolver } = require('../integrations/bonds/glResolver');
+      const [debitGlId, creditGlId] = await Promise.all([
+        GLResolver.resolveByAccountCode('1000'),
+        GLResolver.resolveByAccountCode('1100'),
+      ]);
+      if (debitGlId && creditGlId) {
+        await FineractClient.postJournalEntry({
+          officeId: 1,
+          transactionDate: new Date(settlementDate),
+          credits: [{ glAccountId: creditGlId, amount: subscriptionAmount }],
+          debits: [{ glAccountId: debitGlId, amount: subscriptionAmount }],
+          comments: `PTC issuance — subscription ${subscriptionId} for bond ${bondId}`,
+        });
+      }
     } catch (glErr) {
       console.warn('[bonds/issue] GL post failed:', glErr.message);
     }

@@ -240,17 +240,31 @@ class LiveBondEngine {
   }
 
   static scheduleAccrualJob() {
+    let orchestratorAvailable = false;
+    let FixedIncomeOrchestrator;
+    try {
+      FixedIncomeOrchestrator = require('./fixedIncomeOrchestrator').FixedIncomeOrchestrator;
+      orchestratorAvailable = true;
+    } catch (err) {
+      console.warn('[LiveEngine] Orchestrator not available, daily accrual will skip GL/accounting integration');
+    }
+
     const runAccrual = async () => {
       try {
-        const result = await pool.query(
-          `SELECT b.id, b.bond_name FROM bonds b WHERE b.status = 'active'`
-        );
-        for (const bond of result.rows) {
-          try {
-            const accrualResult = await BondEngine.accrueInterest(bond.id);
-            console.log(`[LiveEngine] Accrued bond ${bond.bond_name}: +$${accrualResult.accrued}`);
-          } catch (err) {
-            console.warn(`[LiveEngine] Accrual failed for ${bond.bond_name}: ${err.message}`);
+        if (orchestratorAvailable) {
+          const summary = await FixedIncomeOrchestrator.accrueAllWithGL();
+          console.log(`[LiveEngine] Accrual complete: ${summary.bonds_processed} bonds, +$${summary.total_accrued} (with GL + accounting)`);
+        } else {
+          const result = await pool.query(
+            `SELECT b.id, b.bond_name FROM bonds b WHERE b.status = 'active'`
+          );
+          for (const bond of result.rows) {
+            try {
+              const accrualResult = await BondEngine.accrueInterest(bond.id);
+              console.log(`[LiveEngine] Accrued bond ${bond.bond_name}: +$${accrualResult.accrued}`);
+            } catch (err) {
+              console.warn(`[LiveEngine] Accrual failed for ${bond.bond_name}: ${err.message}`);
+            }
           }
         }
       } catch (err) {
@@ -259,7 +273,7 @@ class LiveBondEngine {
     };
 
     setInterval(runAccrual, 24 * 60 * 60 * 1000);
-    console.log('[LiveEngine] Daily accrual job scheduled (24h interval)');
+    console.log('[LiveEngine] Daily accrual job scheduled (24h interval, GL integration: ' + (orchestratorAvailable ? 'enabled' : 'disabled') + ')');
   }
 }
 

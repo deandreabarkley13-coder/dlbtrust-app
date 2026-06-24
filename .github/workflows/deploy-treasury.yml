@@ -82,6 +82,7 @@ jobs:
             PGPASSWORD=postgres psql -h localhost -U postgres -d fineract_tenants -f server/scripts/migrate-as2.sql 2>&1 | tail -5 || echo "migration 4 (AS2) done or skipped"
             PGPASSWORD=postgres psql -h localhost -U postgres -d fineract_tenants -f server/scripts/migrate-reports-gl-mappings.sql 2>&1 | tail -5 || echo "migration 5 (reports/GL mappings) done or skipped"
             PGPASSWORD=postgres psql -h localhost -U postgres -d fineract_tenants -f server/scripts/migrate-tax-engine.sql 2>&1 | tail -5 || echo "migration 6 (tax engine) done or skipped"
+            PGPASSWORD=postgres psql -h localhost -U postgres -d fineract_tenants -f server/scripts/migrate-cashflow-events.sql 2>&1 | tail -5 || echo "migration 7 (cashflow events) done or skipped"
 
             echo "=== Restart Passenger (Plesk Node.js) ==="
             mkdir -p "$HTTPDOCS/tmp"
