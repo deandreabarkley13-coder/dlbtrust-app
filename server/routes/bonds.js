@@ -14,6 +14,7 @@ const express = require('express');
 const router  = express.Router();
 const { BondEngine } = require('../integrations/bonds/bondEngine');
 const { LiveBondEngine } = require('../integrations/bonds/liveEngine');
+const { CouponService } = require('../integrations/bonds/couponService');
 const pool = require('../integrations/bonds/pgPool');
 const { FineractClient } = require('../integrations/fineract/fineractClient');
 
@@ -273,6 +274,75 @@ router.post('/:id/trustee', async (req, res) => {
       [req.params.id, trusteeId, trusteeName || null, trusteeRole || 'primary', effectiveDate, notes || null]
     );
     res.json({ success: true, data: result.rows[0] });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// ─── POST /api/bonds/:id/deposit-coupon ───────────────────────────────────────
+// Deposits (pays) a coupon: creates ACH batch + GL entry + reduces accrued interest
+router.post('/:id/deposit-coupon', async (req, res) => {
+  const bondId = parseInt(req.params.id, 10);
+  const { amount, couponDate, autoTransmit } = req.body;
+
+  try {
+    const result = await CouponService.depositCoupon(bondId, {
+      amount: amount ? parseFloat(amount) : undefined,
+      couponDate: couponDate || undefined,
+      autoTransmit: autoTransmit !== false,
+    });
+    res.json({ success: true, data: result });
+  } catch (err) {
+    const status = err.message.includes('not found') ? 404 :
+                   err.message.includes('Insufficient') || err.message.includes('already') ||
+                   err.message.includes('No bondholder') || err.message.includes('positive') ? 400 : 500;
+    res.status(status).json({ success: false, error: err.message });
+  }
+});
+
+// ─── GET /api/bonds/:id/coupon-schedule ───────────────────────────────────────
+// Returns coupon schedule with upcoming dates, amounts, and payment history
+router.get('/:id/coupon-schedule', async (req, res) => {
+  try {
+    const schedule = await CouponService.getCouponSchedule(parseInt(req.params.id, 10));
+    res.json({ success: true, data: schedule });
+  } catch (err) {
+    const status = err.message.includes('not found') ? 404 : 500;
+    res.status(status).json({ success: false, error: err.message });
+  }
+});
+
+// ─── GET /api/bonds/:id/coupon-payments ───────────────────────────────────────
+// Returns coupon payment history for a bond
+router.get('/:id/coupon-payments', async (req, res) => {
+  try {
+    const payments = await CouponService.getCouponPayments(
+      parseInt(req.params.id, 10),
+      { limit: req.query.limit ? parseInt(req.query.limit, 10) : undefined }
+    );
+    res.json({ success: true, count: payments.length, data: payments });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// ─── GET /api/bonds/:id/bondholders ───────────────────────────────────────────
+// Returns bondholders eligible for coupon payments (investor contacts with bank details)
+router.get('/:id/bondholders', async (req, res) => {
+  try {
+    const bondholders = await CouponService.getBondholders(parseInt(req.params.id, 10));
+    res.json({ success: true, count: bondholders.length, data: bondholders });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// ─── POST /api/bonds/coupon-check ─────────────────────────────────────────────
+// Manually trigger coupon date check across all active bonds
+router.post('/coupon-check', async (req, res) => {
+  try {
+    const result = await CouponService.checkAndPayDueCoupons();
+    res.json({ success: true, data: result });
   } catch (err) {
     res.status(500).json({ success: false, error: err.message });
   }

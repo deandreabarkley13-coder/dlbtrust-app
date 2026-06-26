@@ -229,13 +229,20 @@
     <div id="page-bonds" class="page hidden">
       <div class="page-header">
         <div><h1>Bond Portfolio</h1><div class="subtitle">Fixed Income — Real-Time Accrual, Pricing & Risk Analytics</div></div>
-        <div class="flex gap-12"><button class="btn btn-success btn-sm" onclick="accrueAll()">Run Accrual</button><button class="btn btn-primary btn-sm" onclick="loadBonds()">Refresh</button></div>
+        <div class="flex gap-12"><button class="btn btn-success btn-sm" onclick="depositCoupon()">Deposit Coupon</button><button class="btn btn-success btn-sm" onclick="accrueAll()">Run Accrual</button><button class="btn btn-primary btn-sm" onclick="loadBonds()">Refresh</button></div>
       </div>
       <div class="grid" id="bonds-summary"></div>
       <div class="card"><div class="section-title">Real-Time Accrual Status</div><div id="bonds-accrual" class="loading">Loading...</div></div>
       <div class="card mt-16"><div class="section-title">Portfolio Holdings</div><div class="table-wrap" id="bonds-table-wrap"><p class="loading">Loading...</p></div></div>
       <div class="card mt-16"><div class="section-title">Yield, Duration & Risk Metrics</div><div id="bonds-live" class="loading">Loading...</div></div>
       <div class="card mt-16"><div class="section-title">Coupon Schedule & Income</div><div id="bonds-coupon" class="loading">Loading...</div></div>
+      <div class="card mt-16">
+        <div class="section-title">Coupon Deposit & Transmit</div>
+        <p class="text-muted mb-16" style="font-size:12px;">Deposit accrued interest to bondholders via ACH. Creates NACHA batch, posts GL entry (DR Accrued Interest 1200 / CR Cash 1000), reduces accrued balance, and transmits via HTTPS.</p>
+        <div id="coupon-schedule-info" class="loading">Loading coupon schedule...</div>
+        <div id="coupon-deposit-result"></div>
+      </div>
+      <div class="card mt-16"><div class="section-title">Coupon Payment History</div><div class="table-wrap" id="coupon-history-wrap"><p class="loading">Loading...</p></div></div>
       <div class="card mt-16"><div class="section-title">Recent Transactions</div><div class="table-wrap" id="bonds-txn-wrap"><p class="loading">Loading...</p></div></div>
     </div>
 
@@ -891,6 +898,9 @@
         const txnData = txns.data || [];
         el('bonds-txn-wrap').innerHTML = txnData.length ? '<table><thead><tr><th>Date</th><th>Type</th><th>Amount</th><th>Balance</th></tr></thead><tbody>' + txnData.slice(0, 20).map(t => `<tr><td>${shortDate(t.transaction_date)}</td><td><span class="badge badge-info">${esc((t.transaction_type || '').replace(/_/g, ' '))}</span></td><td class="money">${fmt(t.amount)}</td><td class="money">${fmt(t.running_balance)}</td></tr>`).join('') + '</tbody></table>' : '<p class="text-muted">No transactions</p>';
       }
+
+      // Load coupon deposit info and history
+      loadCouponInfo();
     }
 
     async function accrueAll() {
@@ -898,6 +908,117 @@
       const r = await fetchJSON(API + '/api/admin/system/accrue-all', { method: 'POST', headers: adminHeaders() });
       alert(r.success ? 'Accrual complete: ' + JSON.stringify(r.data) : 'Error: ' + (r.error || 'Failed'));
       loadBonds();
+    }
+
+    async function loadCouponInfo() {
+      const bonds = await fetchJSON(API + '/api/bonds');
+      const bondData = bonds.data || [];
+      if (!bondData.length) {
+        el('coupon-schedule-info').innerHTML = '<p class="text-muted">No active bonds</p>';
+        el('coupon-history-wrap').innerHTML = '<p class="text-muted">No bonds</p>';
+        return;
+      }
+      const bondId = bondData[0].id;
+      const [schedule, history] = await Promise.all([
+        fetchJSON(API + '/api/bonds/' + bondId + '/coupon-schedule'),
+        fetchJSON(API + '/api/bonds/' + bondId + '/coupon-payments'),
+      ]);
+      const s = (schedule.success && schedule.data) ? schedule.data : {};
+      const canPay = s.can_pay_coupon;
+      el('coupon-schedule-info').innerHTML = `
+        <div class="grid" style="margin-bottom:12px;">
+          <div class="card" style="border-color:${canPay ? 'var(--green)' : 'var(--gold)'};">
+            <div class="card-title">Next Coupon</div>
+            <div class="card-value" style="font-size:18px;">${s.next_coupon_date || '—'}</div>
+            <div class="card-sub">${s.payment_freq || 'monthly'} | ${fmt(s.coupon_per_period)} per period</div>
+          </div>
+          <div class="card">
+            <div class="card-title">Accrued Available</div>
+            <div class="card-value" style="font-size:18px;color:var(--green);">${fmt(s.accrued_interest_total)}</div>
+            <div class="card-sub">Daily: ${fmt(s.daily_accrual)}</div>
+          </div>
+          <div class="card">
+            <div class="card-title">Total Interest Paid</div>
+            <div class="card-value" style="font-size:18px;">${fmt(s.total_interest_paid)}</div>
+            <div class="card-sub">${(s.recent_payments || []).length} payment(s)</div>
+          </div>
+        </div>
+        <p style="font-size:12px;color:${canPay ? 'var(--green)' : 'var(--gold)'};">
+          ${canPay
+            ? 'Sufficient accrued interest for coupon payment ($' + Number(s.accrued_interest_total).toLocaleString('en-US', {minimumFractionDigits: 2}) + ' >= $' + Number(s.coupon_per_period).toLocaleString('en-US', {minimumFractionDigits: 2}) + ')'
+            : 'Insufficient accrued interest — need $' + Number(s.coupon_per_period).toLocaleString('en-US', {minimumFractionDigits: 2}) + ', have $' + Number(s.accrued_interest_total).toLocaleString('en-US', {minimumFractionDigits: 2})}
+        </p>
+      `;
+      // Payment history table
+      const payments = (history.success && history.data) ? history.data : [];
+      if (payments.length) {
+        el('coupon-history-wrap').innerHTML = '<table><thead><tr><th>Coupon ID</th><th>Coupon Date</th><th>Amount</th><th>Bondholders Paid</th><th>ACH Batch</th><th>Status</th><th>Created</th></tr></thead><tbody>' +
+          payments.map(p => `<tr>
+            <td><code>${esc(p.coupon_payment_id)}</code></td>
+            <td>${shortDate(p.coupon_date)}</td>
+            <td class="money">${fmt(p.amount)}</td>
+            <td>${p.bondholders_paid || 0}</td>
+            <td><code>${esc(p.ach_batch_id || '—')}</code></td>
+            <td><span class="badge ${p.status === 'paid' ? 'badge-active' : p.status === 'failed' ? 'badge-error' : 'badge-pending'}">${esc(p.status)}</span></td>
+            <td>${shortDate(p.created_at)}</td>
+          </tr>`).join('') + '</tbody></table>';
+      } else {
+        el('coupon-history-wrap').innerHTML = '<p class="text-muted">No coupon payments yet. Click "Deposit Coupon" to make the first payment.</p>';
+      }
+    }
+
+    async function depositCoupon() {
+      const bonds = await fetchJSON(API + '/api/bonds');
+      const bondData = bonds.data || [];
+      if (!bondData.length) { alert('No active bonds'); return; }
+      const bondId = bondData[0].id;
+      const bondName = bondData[0].bond_name;
+
+      // Get schedule to show amount
+      const schedule = await fetchJSON(API + '/api/bonds/' + bondId + '/coupon-schedule');
+      const s = (schedule.success && schedule.data) ? schedule.data : {};
+      const couponAmt = s.coupon_per_period || 0;
+      const accrued = s.accrued_interest_total || 0;
+      const nextDate = s.next_coupon_date || 'N/A';
+
+      if (!confirm(
+        'Deposit Coupon Payment for ' + bondName + '?\n\n' +
+        'Coupon Amount: $' + Number(couponAmt).toLocaleString('en-US', {minimumFractionDigits: 2}) + '\n' +
+        'Accrued Interest Available: $' + Number(accrued).toLocaleString('en-US', {minimumFractionDigits: 2}) + '\n' +
+        'Next Coupon Date: ' + nextDate + '\n\n' +
+        'This will:\n' +
+        '1. Create ACH batch for bondholder payment\n' +
+        '2. Post GL entry (DR Accrued Interest / CR Cash)\n' +
+        '3. Reduce accrued interest balance\n' +
+        '4. Transmit payment via HTTPS\n\n' +
+        'Proceed?'
+      )) return;
+
+      el('coupon-deposit-result').innerHTML = '<p class="loading">Processing coupon deposit...</p>';
+      const r = await fetchJSON(API + '/api/bonds/' + bondId + '/deposit-coupon', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({}),
+      });
+
+      if (r.success) {
+        const d = r.data;
+        el('coupon-deposit-result').innerHTML = `<div class="success-msg">
+          <strong>Coupon deposited successfully!</strong><br>
+          Coupon ID: ${esc(d.coupon_payment_id)}<br>
+          Amount: $${Number(d.payment_amount).toLocaleString('en-US', {minimumFractionDigits: 2})}<br>
+          Bondholders Paid: ${d.bondholders_paid}<br>
+          ACH Batch: ${esc(d.ach_batch_id)}<br>
+          ${d.journal_entry ? 'GL Entry: ' + esc(d.journal_entry.entry_id) + '<br>' : ''}
+          Accrued Before: $${Number(d.accrued_before).toLocaleString('en-US', {minimumFractionDigits: 2})}<br>
+          Accrued After: $${Number(d.accrued_after).toLocaleString('en-US', {minimumFractionDigits: 2})}<br>
+          Transmitted: ${d.transmitted ? 'Yes (HTTPS)' : 'Pending'}
+          ${d.bondholders_skipped && d.bondholders_skipped.length ? '<br><small>Skipped: ' + d.bondholders_skipped.map(s => esc(s.name + ' (' + s.reason + ')')).join(', ') + '</small>' : ''}
+        </div>`;
+        loadBonds();
+      } else {
+        el('coupon-deposit-result').innerHTML = '<p class="error-msg">' + esc(r.error || 'Coupon deposit failed') + '</p>';
+      }
     }
 
     // ─── CASH ──────────────────────────────────────────────────────────────────
