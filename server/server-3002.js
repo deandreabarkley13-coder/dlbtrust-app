@@ -90,6 +90,18 @@ try {
   console.log('[liveEngine] daily accrual scheduler started');
 } catch(e) { console.warn('[liveEngine]', e.message); }
 
+// Start coupon payment scheduler and seed bondholders
+try {
+  var CouponService = require(path.join(HD, 'server', 'integrations', 'bonds', 'couponService')).CouponService;
+  CouponService.ensureTable().then(function() {
+    console.log('[couponService] coupon_payments table ensured');
+    return CouponService.seedBondholders();
+  }).then(function(seedResult) {
+    if (seedResult.seeded) console.log('[couponService] Seeded ' + seedResult.count + ' bondholder(s)');
+    CouponService.scheduleCouponJob();
+  }).catch(function(e) { console.warn('[couponService] init:', e.message); });
+} catch(e) { console.warn('[couponService]', e.message); }
+
 app.listen(PORT, function() {
   console.log('[dlbtrust-treasury] running on port ' + PORT);
 
