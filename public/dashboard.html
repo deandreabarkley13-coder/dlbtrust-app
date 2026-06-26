@@ -228,12 +228,14 @@
     <!-- BONDS PAGE -->
     <div id="page-bonds" class="page hidden">
       <div class="page-header">
-        <div><h1>Bond Portfolio</h1><div class="subtitle">Fixed Income — Live Metrics & Management</div></div>
+        <div><h1>Bond Portfolio</h1><div class="subtitle">Fixed Income — Real-Time Accrual, Pricing & Risk Analytics</div></div>
         <div class="flex gap-12"><button class="btn btn-success btn-sm" onclick="accrueAll()">Run Accrual</button><button class="btn btn-primary btn-sm" onclick="loadBonds()">Refresh</button></div>
       </div>
       <div class="grid" id="bonds-summary"></div>
-      <div class="card"><div class="section-title">Portfolio Holdings</div><div class="table-wrap" id="bonds-table-wrap"><p class="loading">Loading...</p></div></div>
-      <div class="card mt-16"><div class="section-title">Live Bond Metrics</div><div id="bonds-live" class="loading">Loading...</div></div>
+      <div class="card"><div class="section-title">Real-Time Accrual Status</div><div id="bonds-accrual" class="loading">Loading...</div></div>
+      <div class="card mt-16"><div class="section-title">Portfolio Holdings</div><div class="table-wrap" id="bonds-table-wrap"><p class="loading">Loading...</p></div></div>
+      <div class="card mt-16"><div class="section-title">Yield, Duration & Risk Metrics</div><div id="bonds-live" class="loading">Loading...</div></div>
+      <div class="card mt-16"><div class="section-title">Coupon Schedule & Income</div><div id="bonds-coupon" class="loading">Loading...</div></div>
       <div class="card mt-16"><div class="section-title">Recent Transactions</div><div class="table-wrap" id="bonds-txn-wrap"><p class="loading">Loading...</p></div></div>
     </div>
 
@@ -744,14 +746,21 @@
       // Summary cards
       const bondData = bonds.data || [];
       const totalPrincipal = bondData.reduce((s, b) => s + parseFloat(b.principal_balance || 0), 0);
-      const totalAccrued = bondData.reduce((s, b) => s + parseFloat(b.accrued_interest || 0), 0);
+      // Fetch live accrued interest for the overview
+      let totalAccrued = bondData.reduce((s, b) => s + parseFloat(b.accrued_interest || 0), 0);
+      try {
+        const livePortfolio = await fetchJSON(API + '/api/bonds/portfolio/live');
+        if (livePortfolio.success && livePortfolio.data && livePortfolio.data.total_accrued_interest != null) {
+          totalAccrued = livePortfolio.data.total_accrued_interest;
+        }
+      } catch (e) { /* use DB fallback */ }
       const cashData = cash.data || [];
       const totalCash = cashData.reduce((s, a) => s + Number(a.balance_cents || 0), 0) / 100;
       const acctData = acct.data || {};
 
       el('overview-cards').innerHTML = `
         <div class="card"><div class="card-title">Total Principal</div><div class="card-value">${fmt(totalPrincipal)}</div><div class="card-sub">${bondData.length} active bond(s)</div></div>
-        <div class="card"><div class="card-title">Accrued Interest</div><div class="card-value">${fmt(totalAccrued)}</div><div class="card-sub">Unpaid interest</div></div>
+        <div class="card"><div class="card-title">Accrued Interest (Live)</div><div class="card-value" style="color:#2ecc71">${fmt(totalAccrued)}</div><div class="card-sub">Real-time 30/360</div></div>
         <div class="card"><div class="card-title">Cash Position</div><div class="card-value">${fmt(totalCash)}</div><div class="card-sub">${cashData.length} accounts</div></div>
         <div class="card"><div class="card-title">Trust Accounts</div><div class="card-value">${acctData.account_count || 0}</div><div class="card-sub">Net income: ${fmt(acctData.net_income)}</div></div>
         <div class="card"><div class="card-title">Contacts</div><div class="card-value">${crm.count || 0}</div><div class="card-sub">CRM contacts</div></div>
@@ -796,32 +805,85 @@
         fetchJSON(API + '/api/bonds/portfolio/live'),
       ]);
       const data = bonds.data || [];
-      let totalPrincipal = 0, totalAccrued = 0, totalPaid = 0;
-      data.forEach(b => { totalPrincipal += parseFloat(b.principal_balance || 0); totalAccrued += parseFloat(b.accrued_interest || 0); totalPaid += parseFloat(b.total_interest_paid || 0); });
+      const liveData = (live.success && live.data) ? live.data : null;
+      const liveBonds = liveData ? liveData.bonds || [] : [];
+
+      // Use live accrued interest (real-time) instead of stale DB values
+      const totalPrincipal = liveData ? liveData.total_face_value : data.reduce((s, b) => s + parseFloat(b.principal_balance || 0), 0);
+      const totalAccrued = liveData ? liveData.total_accrued_interest : data.reduce((s, b) => s + parseFloat(b.accrued_interest || 0), 0);
+      const totalPaid = data.reduce((s, b) => s + parseFloat(b.total_interest_paid || 0), 0);
+      const totalValue = liveData ? liveData.total_current_value : totalPrincipal + totalAccrued;
+      const dailyAccrual = liveData ? liveData.total_daily_accrual : 0;
 
       el('bonds-summary').innerHTML = `
         <div class="card"><div class="card-title">Principal Outstanding</div><div class="card-value">${fmt(totalPrincipal)}</div></div>
-        <div class="card"><div class="card-title">Accrued Interest</div><div class="card-value">${fmt(totalAccrued)}</div></div>
+        <div class="card"><div class="card-title">Accrued Interest (Live)</div><div class="card-value" style="color:#2ecc71">${fmt(totalAccrued)}</div><div class="card-sub">Real-time 30/360</div></div>
+        <div class="card"><div class="card-title">Total Current Value</div><div class="card-value">${fmt(totalValue)}</div></div>
+        <div class="card"><div class="card-title">Daily Accrual Rate</div><div class="card-value">${fmt(dailyAccrual)}</div><div class="card-sub">Per day (30/360)</div></div>
         <div class="card"><div class="card-title">Total Interest Paid</div><div class="card-value">${fmt(totalPaid)}</div></div>
         <div class="card"><div class="card-title">Active Bonds</div><div class="card-value">${data.filter(b => b.status === 'active').length}</div></div>
       `;
 
-      el('bonds-table-wrap').innerHTML = data.length ? '<table><thead><tr><th>Bond</th><th>ISIN</th><th>Face Value</th><th>Coupon</th><th>Principal</th><th>Accrued</th><th>Status</th><th>Issue</th><th>Maturity</th></tr></thead><tbody>' + data.map(b => `<tr><td><strong>${esc(b.bond_name)}</strong></td><td>${esc(b.isin)}</td><td class="money">${fmt(b.face_value)}</td><td>${pct(b.coupon_rate)}</td><td class="money">${fmt(b.principal_balance)}</td><td class="money">${fmt(b.accrued_interest)}</td><td><span class="badge badge-active">${esc(b.status)}</span></td><td>${shortDate(b.issue_date)}</td><td>${shortDate(b.maturity_date)}</td></tr>`).join('') + '</tbody></table>' : '<p class="text-muted">No bonds</p>';
+      // Real-time accrual status per bond
+      if (liveBonds.length) {
+        el('bonds-accrual').innerHTML = '<table><thead><tr><th>Bond</th><th>Recorded Accrual</th><th>Pending (Live)</th><th>Total Accrued</th><th>Daily Rate</th><th>Days Since Accrual</th><th>Last Accrual</th></tr></thead><tbody>' +
+          liveBonds.map(b => `<tr>
+            <td><strong>${esc(b.bond_name)}</strong></td>
+            <td class="money">${fmt(b.accrued_interest_db)}</td>
+            <td class="money" style="color:#e67e22">${fmt(b.accrued_interest_pending)}</td>
+            <td class="money" style="color:#2ecc71;font-weight:bold">${fmt(b.accrued_interest_total)}</td>
+            <td class="money">${fmt(b.daily_accrual)}</td>
+            <td>${b.days_since_last_accrual} days</td>
+            <td>${shortDate(b.last_accrual_date)}</td>
+          </tr>`).join('') + '</tbody></table>';
+      } else {
+        el('bonds-accrual').innerHTML = '<p class="text-muted">No live accrual data</p>';
+      }
 
-      // Live metrics
-      if (live.success && live.data) {
-        const lv = live.data;
-        el('bonds-live').innerHTML = `<table><thead><tr><th>Metric</th><th>Value</th></tr></thead><tbody>
-          <tr><td>Yield to Maturity (YTM)</td><td>${lv.ytm_pct != null ? lv.ytm_pct + '%' : '—'}</td></tr>
-          <tr><td>Current Price</td><td>${lv.current_price_decimal != null ? '$' + Number(lv.current_price_decimal).toFixed(4) : '—'}</td></tr>
-          <tr><td>Macaulay Duration</td><td>${lv.macaulay_duration_years != null ? lv.macaulay_duration_years.toFixed(2) + ' years' : '—'}</td></tr>
-          <tr><td>Modified Duration</td><td>${lv.modified_duration != null ? lv.modified_duration.toFixed(4) : '—'}</td></tr>
-          <tr><td>DV01 (Dollar Value of 01)</td><td>${lv.dv01 != null ? fmt(lv.dv01) : '—'}</td></tr>
-          <tr><td>Daily Accrual</td><td>${lv.daily_accrual != null ? fmt(lv.daily_accrual) : '—'}</td></tr>
-          <tr><td>Weighted Yield</td><td>${lv.weighted_yield_pct != null ? lv.weighted_yield_pct + '%' : '—'}</td></tr>
-          <tr><td>Total Current Value</td><td>${lv.total_current_value != null ? fmt(lv.total_current_value) : '—'}</td></tr>
-        </tbody></table>`;
+      // Holdings table uses live data
+      const tableData = liveBonds.length ? liveBonds : data;
+      el('bonds-table-wrap').innerHTML = tableData.length ? '<table><thead><tr><th>Bond</th><th>ISIN</th><th>Face Value</th><th>Coupon</th><th>Principal</th><th>Accrued (Live)</th><th>Market Value</th><th>Status</th><th>Maturity</th></tr></thead><tbody>' + tableData.map(b => `<tr>
+        <td><strong>${esc(b.bond_name)}</strong></td>
+        <td>${esc(b.isin || '')}</td>
+        <td class="money">${fmt(b.face_value)}</td>
+        <td>${b.coupon_rate_pct != null ? b.coupon_rate_pct + '%' : pct(b.coupon_rate)}</td>
+        <td class="money">${fmt(b.principal_balance)}</td>
+        <td class="money" style="color:#2ecc71">${fmt(b.accrued_interest_total || b.accrued_interest || 0)}</td>
+        <td class="money">${fmt(b.market_value || b.face_value)}</td>
+        <td><span class="badge badge-active">${esc(b.status || 'active')}</span></td>
+        <td>${shortDate(b.maturity_date)}</td>
+      </tr>`).join('') + '</tbody></table>' : '<p class="text-muted">No bonds</p>';
+
+      // Yield, duration & risk metrics
+      if (liveData && liveBonds.length) {
+        el('bonds-live').innerHTML = '<table><thead><tr><th>Metric</th>' + liveBonds.map(b => `<th>${esc(b.bond_name)}</th>`).join('') + (liveBonds.length > 1 ? '<th>Portfolio</th>' : '') + '</tr></thead><tbody>' +
+          `<tr><td>Yield to Maturity (YTM)</td>${liveBonds.map(b => `<td>${b.ytm_pct}%</td>`).join('')}${liveBonds.length > 1 ? `<td>${liveData.weighted_avg_ytm_pct}%</td>` : ''}</tr>` +
+          `<tr><td>Current Yield</td>${liveBonds.map(b => `<td>${b.current_yield_pct}%</td>`).join('')}${liveBonds.length > 1 ? '<td>—</td>' : ''}</tr>` +
+          `<tr><td>Current Price</td>${liveBonds.map(b => `<td>$${Number(b.current_price_decimal).toFixed(4)}</td>`).join('')}${liveBonds.length > 1 ? '<td>—</td>' : ''}</tr>` +
+          `<tr><td>Macaulay Duration</td>${liveBonds.map(b => `<td>${b.macaulay_duration_years} yrs</td>`).join('')}${liveBonds.length > 1 ? '<td>—</td>' : ''}</tr>` +
+          `<tr><td>Modified Duration</td>${liveBonds.map(b => `<td>${b.modified_duration}</td>`).join('')}${liveBonds.length > 1 ? `<td>${liveData.weighted_avg_modified_duration}</td>` : ''}</tr>` +
+          `<tr><td>DV01 (per BP)</td>${liveBonds.map(b => `<td>${fmt(b.dv01)}</td>`).join('')}${liveBonds.length > 1 ? `<td>${fmt(liveData.total_dv01)}</td>` : ''}</tr>` +
+          `<tr><td>Days to Maturity</td>${liveBonds.map(b => `<td>${b.days_to_maturity.toLocaleString()}</td>`).join('')}${liveBonds.length > 1 ? '<td>—</td>' : ''}</tr>` +
+          `<tr><td>Years to Maturity</td>${liveBonds.map(b => `<td>${b.years_to_maturity}</td>`).join('')}${liveBonds.length > 1 ? '<td>—</td>' : ''}</tr>` +
+        '</tbody></table>';
       } else { el('bonds-live').innerHTML = '<p class="text-muted">Live metrics unavailable</p>'; }
+
+      // Coupon schedule & income
+      if (liveBonds.length) {
+        el('bonds-coupon').innerHTML = '<table><thead><tr><th>Bond</th><th>Payment Freq</th><th>Day Count</th><th>Coupon/Period</th><th>Annual Income</th><th>Next Coupon Date</th><th>Currency</th></tr></thead><tbody>' +
+          liveBonds.map(b => `<tr>
+            <td><strong>${esc(b.bond_name)}</strong></td>
+            <td>${esc((b.payment_freq || 'monthly').charAt(0).toUpperCase() + (b.payment_freq || 'monthly').slice(1))}</td>
+            <td>${esc(b.day_count || '30/360')}</td>
+            <td class="money">${fmt(b.coupon_per_period)}</td>
+            <td class="money">${fmt(b.annual_coupon_income)}</td>
+            <td>${b.next_coupon_date || '—'}</td>
+            <td>${esc(b.currency || 'USD')}</td>
+          </tr>`).join('') + '</tbody></table>' +
+          (liveData.total_annual_income ? `<p style="margin-top:8px;color:#888">Total Annual Coupon Income: <strong style="color:#2ecc71">${fmt(liveData.total_annual_income)}</strong></p>` : '');
+      } else {
+        el('bonds-coupon').innerHTML = '<p class="text-muted">No coupon data</p>';
+      }
 
       // Transactions
       if (data.length > 0) {
@@ -833,7 +895,7 @@
 
     async function accrueAll() {
       if (!adminToken) { alert('Set admin token first (Admin Controls page)'); return; }
-      const r = await fetchJSON(API + '/api/admin/bonds/accrue-all', { method: 'POST', headers: adminHeaders() });
+      const r = await fetchJSON(API + '/api/admin/system/accrue-all', { method: 'POST', headers: adminHeaders() });
       alert(r.success ? 'Accrual complete: ' + JSON.stringify(r.data) : 'Error: ' + (r.error || 'Failed'));
       loadBonds();
     }
