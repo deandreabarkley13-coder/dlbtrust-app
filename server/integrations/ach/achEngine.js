@@ -167,15 +167,15 @@ class ACHEngine {
     let partnerConfig = null;
     if (batch.partner_id) {
       partnerConfig = await AS2Partners.getPartnerConfig(batch.partner_id);
-      if (!partnerConfig) throw new Error(`Partner not found or inactive: ${batch.partner_id}`);
-    } else {
+    }
+    if (!partnerConfig) {
       partnerConfig = await AS2Partners.getDefaultPartnerConfig();
     }
 
-    // When no partner is configured, default to HTTPS REST API self-transmit
+    // When no partner is configured (or built-in DLBTRUST-DIRECT), default to HTTPS REST API self-transmit
     if (!partnerConfig) {
       partnerConfig = {
-        partnerId: 'DLBTRUST-DIRECT',
+        partnerId: batch.partner_id || 'DLBTRUST-DIRECT',
         partnerName: 'DLB Trust Direct',
         protocol: 'rest_api',
         apiBaseUrl: 'direct',

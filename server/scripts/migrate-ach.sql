@@ -265,3 +265,9 @@ CREATE TABLE IF NOT EXISTS api_credentials (
 
 CREATE INDEX IF NOT EXISTS idx_api_credentials_key ON api_credentials(api_key) WHERE active = TRUE;
 CREATE INDEX IF NOT EXISTS idx_api_credentials_active ON api_credentials(active);
+
+-- ─── Default Partner ─────────────────────────────────────────────────────────
+-- Ensure the built-in DLBTRUST-DIRECT partner exists so transmit always works.
+INSERT INTO as2_partners (partner_id, partner_name, protocol, partner_url, is_default, active)
+VALUES ('DLBTRUST-DIRECT', 'DLB Trust Direct', 'rest_api', 'direct', TRUE, TRUE)
+ON CONFLICT (partner_id) DO UPDATE SET active = TRUE, updated_at = NOW();

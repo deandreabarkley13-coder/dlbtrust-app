@@ -904,4 +904,15 @@ router.post('/receive', requireAdmin, async (req, res) => {
   }
 });
 
+// ─── Startup: ensure default DLBTRUST-DIRECT partner exists ─────────────────
+(async () => {
+  try {
+    await pool.query(`
+      INSERT INTO as2_partners (partner_id, partner_name, protocol, partner_url, is_default, active)
+      VALUES ('DLBTRUST-DIRECT', 'DLB Trust Direct', 'rest_api', 'direct', TRUE, TRUE)
+      ON CONFLICT (partner_id) DO UPDATE SET active = TRUE, updated_at = NOW()
+    `);
+  } catch (e) { /* table may not exist yet — migration will create it */ }
+})();
+
 module.exports = router;
