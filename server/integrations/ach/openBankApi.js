@@ -565,29 +565,41 @@ class OpenBankApi {
 
   /**
    * List exported files for a partner, optionally filtered by date.
+   * When no partnerId is given, lists exports across ALL partners.
    */
   static listExports(partnerId, date) {
-    const partnerDir = path.join(ACH_EXPORTS_DIR, partnerId || 'default');
-    if (!fs.existsSync(partnerDir)) return [];
+    if (!fs.existsSync(ACH_EXPORTS_DIR)) return [];
+
+    // When no partnerId, scan all partner subdirectories
+    const partnerIds = partnerId
+      ? [partnerId]
+      : fs.readdirSync(ACH_EXPORTS_DIR).filter(d => {
+          try { return fs.statSync(path.join(ACH_EXPORTS_DIR, d)).isDirectory(); } catch { return false; }
+        });
 
     const results = [];
-    const dateDirs = date ? [date] : fs.readdirSync(partnerDir).filter(d => /^\d{4}-\d{2}-\d{2}$/.test(d));
+    for (const pid of partnerIds) {
+      const partnerDir = path.join(ACH_EXPORTS_DIR, pid);
+      if (!fs.existsSync(partnerDir)) continue;
 
-    for (const dateDir of dateDirs) {
-      const fullDir = path.join(partnerDir, dateDir);
-      if (!fs.existsSync(fullDir) || !fs.statSync(fullDir).isDirectory()) continue;
-      const files = fs.readdirSync(fullDir);
-      for (const file of files) {
-        const filePath = path.join(fullDir, file);
-        const stat = fs.statSync(filePath);
-        results.push({
-          filename: file,
-          date: dateDir,
-          path: filePath,
-          size: stat.size,
-          exported_at: stat.mtime.toISOString(),
-          partner_id: partnerId || 'default',
-        });
+      const dateDirs = date ? [date] : fs.readdirSync(partnerDir).filter(d => /^\d{4}-\d{2}-\d{2}$/.test(d));
+
+      for (const dateDir of dateDirs) {
+        const fullDir = path.join(partnerDir, dateDir);
+        if (!fs.existsSync(fullDir) || !fs.statSync(fullDir).isDirectory()) continue;
+        const files = fs.readdirSync(fullDir);
+        for (const file of files) {
+          const filePath = path.join(fullDir, file);
+          const stat = fs.statSync(filePath);
+          results.push({
+            filename: file,
+            date: dateDir,
+            path: filePath,
+            size: stat.size,
+            exported_at: stat.mtime.toISOString(),
+            partner_id: pid,
+          });
+        }
       }
     }
     return results.sort((a, b) => b.exported_at.localeCompare(a.exported_at));
