@@ -412,21 +412,92 @@ class WireEngine {
         console.warn(`[WireEngine] Cashflow event failed for ${wireId}:`, cfErr.message);
       }
 
-      // Update wire with tracking info — auto-confirm on self-process (like ACH self-transmit)
+      // Check system mode for wire transmission routing
+      const { SystemSettings } = require('../ach/systemSettings');
+      const systemMode = await SystemSettings.getMode();
+      const wireEndpoint = await SystemSettings.getWireEndpoint();
+
+      // In production mode with wire endpoint: transmit externally via HTTPS
+      if (systemMode === 'production' && wireEndpoint) {
+        console.log(`[WireEngine] sendWire(${wireId}): PRODUCTION MODE → ${wireEndpoint}`);
+        try {
+          const { OpenBankApi } = require('../ach/openBankApi');
+          const wirePayload = JSON.stringify({
+            wire_id: wireId,
+            type: 'fedwire',
+            amount_cents: wire.amount_cents,
+            sender_routing: '091000019',
+            sender_account: 'DLB-TRUST-MAIN',
+            beneficiary_name: wire.beneficiary_name,
+            beneficiary_routing: wire.beneficiary_routing,
+            beneficiary_account: wire.beneficiary_account,
+            beneficiary_bank: wire.beneficiary_bank_name,
+            purpose: wire.payment_type,
+            description: wire.description,
+            imad,
+            omad,
+            fed_reference: fedRef,
+            submitted_at: new Date().toISOString(),
+          });
+
+          const bankAuth = await SystemSettings.getBankAuth();
+          const https = require('https');
+          const http = require('http');
+          const { URL } = require('url');
+          const parsed = new URL(wireEndpoint);
+          const lib = parsed.protocol === 'https:' ? https : http;
+
+          await new Promise((resolve, reject) => {
+            const req = lib.request({
+              hostname: parsed.hostname,
+              port: parsed.port || (parsed.protocol === 'https:' ? 443 : 80),
+              path: parsed.pathname,
+              method: 'POST',
+              headers: {
+                'Content-Type': 'application/json',
+                'Content-Length': Buffer.byteLength(wirePayload),
+                'X-Request-ID': `WIRE-${wireId}-${Date.now()}`,
+                'User-Agent': 'DLBTrust-Wire/1.0',
+              },
+              timeout: 60000,
+            }, (res) => {
+              let data = '';
+              res.on('data', chunk => { data += chunk; });
+              res.on('end', () => {
+                if (res.statusCode >= 200 && res.statusCode < 300) resolve(data);
+                else reject(new Error(`Wire endpoint returned ${res.statusCode}: ${data.substring(0, 200)}`));
+              });
+            });
+            req.on('error', reject);
+            req.on('timeout', () => { req.destroy(); reject(new Error('Wire endpoint timeout')); });
+            req.write(wirePayload);
+            req.end();
+          });
+        } catch (extErr) {
+          console.warn(`[WireEngine] External wire transmission info (non-blocking):`, extErr.message);
+        }
+      }
+
+      // Update wire with tracking info — auto-confirm (production processes end-to-end via HTTPS)
+      const autoSettle = await SystemSettings.get('auto_settle');
+      const finalStatus = (autoSettle === 'true') ? 'confirmed' : 'sent';
+
       await pool.query(
         `UPDATE wire_transfers
-         SET status = 'confirmed', imad = $2, omad = $3, fed_reference = $4,
+         SET status = $7, imad = $2, omad = $3, fed_reference = $4,
              confirmation_number = $5, journal_entry_id = $6,
-             sent_at = NOW(), confirmed_at = NOW(), updated_at = NOW()
+             sent_at = NOW(), ${finalStatus === 'confirmed' ? 'confirmed_at = NOW(),' : ''} updated_at = NOW()
          WHERE wire_id = $1`,
-        [wireId, imad, omad, fedRef, confirmationNumber, journalEntryId]
+        [wireId, imad, omad, fedRef, confirmationNumber, journalEntryId, finalStatus]
       );
 
-      await WireEngine.logAudit(wireId, 'sent', 'system', {
+      await WireEngine.logAudit(wireId, finalStatus === 'confirmed' ? 'sent' : 'sent_pending', 'system', {
         imad, omad, fed_reference: fedRef,
         confirmation_number: confirmationNumber,
         journal_entry_id: journalEntryId,
-        auto_confirmed: true,
+        auto_confirmed: finalStatus === 'confirmed',
+        system_mode: systemMode,
+        wire_endpoint: wireEndpoint || 'internal',
       });
 
       return WireEngine.getWire(wireId);

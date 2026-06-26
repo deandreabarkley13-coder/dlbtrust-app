@@ -163,28 +163,42 @@ class ACHEngine {
     const nachaContent = batch.nacha_content;
     if (!nachaContent) throw new Error('Batch has no NACHA content');
 
+    // Check system mode — production routes to configured external bank endpoint
+    const { SystemSettings } = require('./systemSettings');
+    const systemMode = await SystemSettings.getMode();
+    const productionConfig = systemMode === 'production'
+      ? await SystemSettings.getProductionPartnerConfig()
+      : null;
+
     // Resolve partner config for this batch
     let partnerConfig = null;
-    if (batch.partner_id) {
-      partnerConfig = await AS2Partners.getPartnerConfig(batch.partner_id);
-    }
-    if (!partnerConfig) {
-      partnerConfig = await AS2Partners.getDefaultPartnerConfig();
-    }
+    if (productionConfig) {
+      // Production mode: use the configured external bank endpoint
+      partnerConfig = productionConfig;
+      console.log(`[ACH] transmitBatch(${batchId}): PRODUCTION MODE → ${productionConfig.partnerName}`);
+    } else {
+      // Sandbox mode: use partner-specific or default config
+      if (batch.partner_id) {
+        partnerConfig = await AS2Partners.getPartnerConfig(batch.partner_id);
+      }
+      if (!partnerConfig) {
+        partnerConfig = await AS2Partners.getDefaultPartnerConfig();
+      }
 
-    // When no partner is configured (or built-in DLBTRUST-DIRECT), default to HTTPS REST API self-transmit
-    if (!partnerConfig) {
-      partnerConfig = {
-        partnerId: batch.partner_id || 'DLBTRUST-DIRECT',
-        partnerName: 'DLB Trust Direct',
-        protocol: 'rest_api',
-        apiBaseUrl: 'direct',
-        localAs2Id: 'DLBTRUST-AS2',
-      };
+      // When no partner is configured, default to HTTPS REST API self-transmit
+      if (!partnerConfig) {
+        partnerConfig = {
+          partnerId: batch.partner_id || 'DLBTRUST-DIRECT',
+          partnerName: 'DLB Trust Direct',
+          protocol: 'rest_api',
+          apiBaseUrl: 'direct',
+          localAs2Id: 'DLBTRUST-AS2',
+        };
+      }
     }
 
     // Update status to transmitting
-    console.log(`[ACH] transmitBatch(${batchId}): partner=${partnerConfig.partnerId}, protocol=${partnerConfig.protocol}`);
+    console.log(`[ACH] transmitBatch(${batchId}): partner=${partnerConfig.partnerId}, protocol=${partnerConfig.protocol}, mode=${systemMode}`);
     await pool.query(
       `UPDATE ach_batches SET status = 'transmitting', updated_at = NOW() WHERE batch_id = $1`,
       [batchId]
@@ -200,7 +214,7 @@ class ACHEngine {
 
       console.log(`[ACH] transmitBatch(${batchId}): transmit result success=${result.success}, mode=${result.mode}`);
 
-      // Record transmission
+      // Record transmission with system mode
       await pool.query(
         `INSERT INTO ach_transmissions
           (batch_id, transmission_id, message_id, status_code,
@@ -227,7 +241,28 @@ class ACHEngine {
           [batchId]
         );
 
-        // Auto-accept on self-transmit — the system processed the file end-to-end
+        // In PRODUCTION mode: do NOT auto-accept — wait for external bank confirmation
+        // In SANDBOX mode: auto-accept on self-transmit
+        if (systemMode === 'production') {
+          console.log(`[ACH] transmitBatch(${batchId}): PRODUCTION — transmitted to external bank, awaiting confirmation`);
+          const autoSettle = await SystemSettings.get('auto_settle');
+          if (autoSettle === 'true') {
+            // Auto-settle in production for systems that process end-to-end
+            console.log(`[ACH] transmitBatch(${batchId}): auto_settle enabled → accepting`);
+            await pool.query(
+              `UPDATE ach_batches SET status = 'accepted', accepted_at = NOW(), updated_at = NOW() WHERE batch_id = $1`,
+              [batchId]
+            );
+            await pool.query(
+              `UPDATE ach_entries SET status = 'accepted' WHERE batch_id = $1 AND status = 'transmitted'`,
+              [batchId]
+            );
+            return { ...result, batch_id: batchId, batch_status: 'accepted', auto_accepted: true, system_mode: 'production' };
+          }
+          return { ...result, batch_id: batchId, batch_status: 'transmitted', system_mode: 'production', awaiting_confirmation: true };
+        }
+
+        // Sandbox: Auto-accept on self-transmit
         const isSelfTransmit = result.mode === 'remote' && partnerConfig.partnerId === 'DLBTRUST-DIRECT';
         if (isSelfTransmit) {
           console.log(`[ACH] transmitBatch(${batchId}): self-transmit success → auto-accepting`);
@@ -239,11 +274,11 @@ class ACHEngine {
             `UPDATE ach_entries SET status = 'accepted' WHERE batch_id = $1 AND status = 'transmitted'`,
             [batchId]
           );
-          return { ...result, batch_id: batchId, batch_status: 'accepted', auto_accepted: true };
+          return { ...result, batch_id: batchId, batch_status: 'accepted', auto_accepted: true, system_mode: 'sandbox' };
         }
       }
 
-      return { ...result, batch_id: batchId, batch_status: newStatus };
+      return { ...result, batch_id: batchId, batch_status: newStatus, system_mode: systemMode };
     } catch (err) {
       console.error(`[ACH] transmitBatch(${batchId}) FAILED:`, err.message);
       await pool.query(

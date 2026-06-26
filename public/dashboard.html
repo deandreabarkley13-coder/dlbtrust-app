@@ -189,6 +189,7 @@
     <div class="nav-section">Core Banking</div>
     <div class="nav-item" data-page="fineract"><span class="icon">🏛️</span> Fineract GL</div>
     <div class="nav-section">System</div>
+    <div class="nav-item" data-page="settings"><span class="icon">🌐</span> System Settings</div>
     <div class="nav-item" data-page="admin"><span class="icon">⚙️</span> Admin Controls</div>
   </nav>
 
@@ -726,6 +727,82 @@
     </div>
 
     <!-- ADMIN PAGE -->
+    <!-- SYSTEM SETTINGS PAGE -->
+    <div id="page-settings" class="page hidden">
+      <div class="page-header">
+        <div><h1>System Settings</h1><div class="subtitle">Production/Sandbox Mode & Bank Endpoint Configuration</div></div>
+        <div class="flex gap-12">
+          <span id="settings-mode-badge" class="badge" style="font-size:13px;padding:6px 14px;"></span>
+          <button class="btn btn-primary btn-sm" onclick="loadSettings()">Refresh</button>
+        </div>
+      </div>
+
+      <!-- Mode Toggle -->
+      <div class="card mb-16">
+        <div class="section-title">Transmission Mode</div>
+        <p class="text-muted" style="font-size:12px;margin-bottom:12px;">
+          <strong>PRODUCTION:</strong> NACHA files and wire instructions are transmitted to the configured external bank endpoint via HTTPS. No self-transmit.<br>
+          <strong>SANDBOX:</strong> Files are transmitted internally (self-transmit + auto-accept) for testing.
+        </p>
+        <div class="form-row" style="align-items:center;">
+          <button id="btn-mode-production" class="btn btn-success btn-sm" onclick="switchMode('production')">PRODUCTION</button>
+          <button id="btn-mode-sandbox" class="btn btn-outline btn-sm" onclick="switchMode('sandbox')">SANDBOX</button>
+          <span id="mode-status" class="text-muted" style="margin-left:12px;font-size:12px;"></span>
+        </div>
+      </div>
+
+      <!-- Bank Endpoint Configuration -->
+      <div class="card mb-16">
+        <div class="section-title">External Bank Endpoint</div>
+        <p class="text-muted" style="font-size:12px;margin-bottom:12px;">Configure the receiving bank's HTTPS endpoint. In Production mode, all ACH and wire transmissions route here via the Open Bank REST API.</p>
+        <div class="form-row">
+          <div class="form-group" style="flex:2"><label>Bank Name</label><input type="text" id="cfg-bank-name" placeholder="e.g. Eaton Family Credit Union"></div>
+          <div class="form-group" style="flex:3"><label>ACH Endpoint URL</label><input type="text" id="cfg-bank-endpoint" placeholder="https://api.bank.com/ach/receive"></div>
+        </div>
+        <div class="form-row">
+          <div class="form-group" style="flex:3"><label>Wire Endpoint URL</label><input type="text" id="cfg-wire-endpoint" placeholder="https://api.bank.com/wire/originate"></div>
+          <div class="form-group"><label>Auth Type</label>
+            <select id="cfg-auth-type" style="padding:8px;border-radius:6px;border:1px solid var(--border);background:var(--bg);color:var(--text);">
+              <option value="none">None (Open Banking)</option>
+              <option value="bearer">Bearer Token</option>
+              <option value="basic">Basic Auth</option>
+              <option value="api_key">API Key</option>
+              <option value="hmac">HMAC Signature</option>
+            </select>
+          </div>
+        </div>
+        <div class="form-row" id="cfg-auth-fields" style="display:none;">
+          <div class="form-group" style="flex:1"><label>API Key / Username</label><input type="text" id="cfg-api-key" placeholder="API key or username"></div>
+          <div class="form-group" style="flex:1"><label>API Secret / Password</label><input type="password" id="cfg-api-secret" placeholder="Secret or password"></div>
+        </div>
+        <div class="form-row" style="margin-top:8px;">
+          <button class="btn btn-success btn-sm" onclick="saveSettings()">Save Configuration</button>
+          <button class="btn btn-outline btn-sm" onclick="testConnection()">Test Connection</button>
+        </div>
+        <div id="settings-save-result" style="margin-top:8px;"></div>
+      </div>
+
+      <!-- Bank Registry (Templates) -->
+      <div class="card mb-16">
+        <div class="section-title">Bank Registry (Quick Setup)</div>
+        <p class="text-muted" style="font-size:12px;margin-bottom:12px;">Select a pre-configured bank template to auto-fill endpoint details. You can customize after applying.</p>
+        <div id="bank-registry-list"><p class="loading">Loading...</p></div>
+      </div>
+
+      <!-- Transmission Decision Logic -->
+      <div class="card">
+        <div class="section-title">Routing Decision Logic</div>
+        <div id="routing-logic" style="font-size:12px;line-height:1.8;">
+          <p><strong>Payment Amount &lt; $25,000:</strong> Routes to ACH Pipeline (batch processing)</p>
+          <p><strong>Payment Amount &ge; $25,000:</strong> Routes to Wire Transfer (real-time Fedwire)</p>
+          <p><strong>Urgent flag set:</strong> Forces Wire Transfer regardless of amount</p>
+          <hr style="border-color:var(--border);margin:8px 0;">
+          <p><strong>Production Mode:</strong> ACH → External bank endpoint over HTTPS | Wire → External wire endpoint</p>
+          <p><strong>Sandbox Mode:</strong> ACH → Self-transmit + auto-accept | Wire → Internal processing</p>
+        </div>
+      </div>
+    </div>
+
     <div id="page-admin" class="page hidden">
       <div class="page-header">
         <div><h1>Admin Controls</h1><div class="subtitle">System Health, Audit Log & Bond Administration</div></div>
@@ -782,7 +859,7 @@
         document.querySelectorAll('.page').forEach(p => p.classList.add('hidden'));
         document.getElementById('page-' + page).classList.remove('hidden');
         // Load data for page
-        const loaders = { overview: loadOverview, bonds: loadBonds, cash: loadCash, payments: loadPayments, ach: loadACH, wire: loadWire, partners: loadPartners, apikeys: loadApiKeys, as2: loadAS2, crm: loadCRM, documents: loadDocuments, accounting: loadAccounting, tax: loadTax, fineract: loadFineract, admin: loadAdmin };
+        const loaders = { overview: loadOverview, bonds: loadBonds, cash: loadCash, payments: loadPayments, ach: loadACH, wire: loadWire, partners: loadPartners, apikeys: loadApiKeys, as2: loadAS2, crm: loadCRM, documents: loadDocuments, accounting: loadAccounting, tax: loadTax, fineract: loadFineract, settings: loadSettings, admin: loadAdmin };
         if (loaders[page]) loaders[page]();
       });
     });
@@ -1713,6 +1790,140 @@
         loadAccounting();
       } else {
         el('stmt-result').innerHTML = '<p class="error-msg">' + esc(r.error || 'Failed') + '</p>';
+      }
+    }
+
+    // ─── SYSTEM SETTINGS ─────────────────────────────────────────────────────────
+    async function loadSettings() {
+      if (!adminToken) {
+        el('settings-mode-badge').textContent = 'AUTH REQUIRED';
+        el('settings-mode-badge').style.background = 'rgba(245,158,11,0.15)';
+        el('settings-mode-badge').style.color = 'var(--gold)';
+        el('bank-registry-list').innerHTML = '<p class="error-msg">Set admin token in Admin Controls first.</p>';
+        return;
+      }
+
+      const [settingsResp, registryResp] = await Promise.all([
+        fetchJSON(API + '/api/admin/system/settings', { headers: adminHeaders() }),
+        fetchJSON(API + '/api/admin/system/bank-registry', { headers: adminHeaders() }),
+      ]);
+
+      if (settingsResp.success) {
+        const s = settingsResp.settings || {};
+        const mode = settingsResp.system_mode || 'production';
+
+        // Mode badge
+        if (mode === 'production') {
+          el('settings-mode-badge').textContent = 'PRODUCTION';
+          el('settings-mode-badge').style.background = 'rgba(16,185,129,0.15)';
+          el('settings-mode-badge').style.color = 'var(--green)';
+          el('btn-mode-production').className = 'btn btn-success btn-sm';
+          el('btn-mode-sandbox').className = 'btn btn-outline btn-sm';
+        } else {
+          el('settings-mode-badge').textContent = 'SANDBOX';
+          el('settings-mode-badge').style.background = 'rgba(245,158,11,0.15)';
+          el('settings-mode-badge').style.color = 'var(--gold)';
+          el('btn-mode-production').className = 'btn btn-outline btn-sm';
+          el('btn-mode-sandbox').className = 'btn btn-success btn-sm';
+        }
+
+        el('mode-status').textContent = mode === 'production'
+          ? 'Files transmit to external bank endpoint over HTTPS'
+          : 'Files transmit internally (self-process for testing)';
+
+        // Fill form
+        el('cfg-bank-name').value = s.bank_name || '';
+        el('cfg-bank-endpoint').value = s.bank_endpoint || '';
+        el('cfg-wire-endpoint').value = s.wire_endpoint || '';
+        el('cfg-auth-type').value = s.bank_auth_type || 'none';
+        el('cfg-api-key').value = s.bank_api_key || '';
+        el('cfg-api-secret').value = s.bank_api_secret || '';
+
+        // Show/hide auth fields
+        toggleAuthFields();
+      }
+
+      // Bank registry
+      if (registryResp.success && registryResp.banks) {
+        el('bank-registry-list').innerHTML = registryResp.banks.map(b => `
+          <div style="display:flex;align-items:center;justify-content:space-between;padding:10px;border:1px solid var(--border);border-radius:6px;margin-bottom:8px;">
+            <div>
+              <strong style="font-size:13px;">${esc(b.name)}</strong>
+              <p class="text-muted" style="font-size:11px;margin-top:2px;">${esc(b.description)}</p>
+              <span class="text-muted" style="font-size:10px;">ACH: ${b.supports_ach ? 'Yes' : 'No'} | Wire: ${b.supports_wire ? 'Yes' : 'No'} | Auth: ${esc(b.auth_type)}</span>
+            </div>
+            <button class="btn btn-outline btn-sm" onclick="applyBankTemplate('${esc(b.id)}')">Apply</button>
+          </div>
+        `).join('');
+      }
+    }
+
+    function toggleAuthFields() {
+      const authType = el('cfg-auth-type').value;
+      el('cfg-auth-fields').style.display = (authType === 'none') ? 'none' : 'flex';
+    }
+    document.addEventListener('DOMContentLoaded', () => {
+      const authSelect = document.getElementById('cfg-auth-type');
+      if (authSelect) authSelect.addEventListener('change', toggleAuthFields);
+    });
+
+    async function switchMode(mode) {
+      if (!adminToken) { alert('Set admin token first'); return; }
+      const resp = await fetchJSON(API + '/api/admin/system/mode', {
+        method: 'POST', headers: adminHeaders(), body: JSON.stringify({ mode })
+      });
+      if (resp.success) {
+        alert(resp.message);
+        loadSettings();
+      } else {
+        alert('Error: ' + (resp.error || 'Failed to switch mode'));
+      }
+    }
+
+    async function saveSettings() {
+      if (!adminToken) { alert('Set admin token first'); return; }
+      const updates = {
+        bank_name: el('cfg-bank-name').value,
+        bank_endpoint: el('cfg-bank-endpoint').value,
+        wire_endpoint: el('cfg-wire-endpoint').value,
+        bank_auth_type: el('cfg-auth-type').value,
+        bank_api_key: el('cfg-api-key').value,
+        bank_api_secret: el('cfg-api-secret').value,
+      };
+      const resp = await fetchJSON(API + '/api/admin/system/settings', {
+        method: 'POST', headers: adminHeaders(), body: JSON.stringify(updates)
+      });
+      if (resp.success) {
+        el('settings-save-result').innerHTML = '<span style="color:var(--green);font-size:12px;">Configuration saved successfully.</span>';
+        loadSettings();
+      } else {
+        el('settings-save-result').innerHTML = '<span style="color:var(--red);font-size:12px;">Error: ' + esc(resp.error) + '</span>';
+      }
+    }
+
+    async function testConnection() {
+      if (!adminToken) { alert('Set admin token first'); return; }
+      el('settings-save-result').innerHTML = '<span class="text-muted" style="font-size:12px;">Testing connection...</span>';
+      const resp = await fetchJSON(API + '/api/admin/system/test-connection', {
+        method: 'POST', headers: adminHeaders()
+      });
+      if (resp.success && resp.connected) {
+        el('settings-save-result').innerHTML = `<span style="color:var(--green);font-size:12px;">Connected! Latency: ${resp.latency_ms}ms | Status: ${resp.status_code}</span>`;
+      } else {
+        el('settings-save-result').innerHTML = `<span style="color:var(--red);font-size:12px;">Connection failed: ${esc(resp.error || 'No endpoint configured')}</span>`;
+      }
+    }
+
+    async function applyBankTemplate(templateId) {
+      if (!adminToken) { alert('Set admin token first'); return; }
+      const resp = await fetchJSON(API + '/api/admin/system/bank-registry/apply', {
+        method: 'POST', headers: adminHeaders(), body: JSON.stringify({ templateId })
+      });
+      if (resp.success) {
+        alert('Template applied: ' + (resp.template || templateId));
+        loadSettings();
+      } else {
+        alert('Error: ' + (resp.error || 'Failed to apply template'));
       }
     }
 

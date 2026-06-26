@@ -375,4 +375,107 @@ router.post('/fineract/seed-gl', async (req, res) => {
   }
 });
 
+// ─── System Settings (Production/Sandbox Mode) ──────────────────────────────
+
+const { SystemSettings, BANK_REGISTRY } = require('../integrations/ach/systemSettings');
+
+/**
+ * GET /api/admin/system/settings — Get all system settings including mode
+ */
+router.get('/system/settings', async (req, res) => {
+  try {
+    const settings = await SystemSettings.getAll();
+    const mode = settings.system_mode || 'production';
+    const productionConfig = await SystemSettings.getProductionPartnerConfig();
+
+    res.json({
+      success: true,
+      system_mode: mode,
+      is_production: mode === 'production',
+      settings,
+      production_bank: productionConfig ? {
+        name: productionConfig.partnerName,
+        endpoint: productionConfig.apiBaseUrl,
+        auth_type: productionConfig.apiAuthType,
+        configured: true,
+      } : { configured: false },
+    });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+/**
+ * POST /api/admin/system/settings — Update system settings
+ */
+router.post('/system/settings', async (req, res) => {
+  try {
+    const updates = req.body;
+    if (!updates || typeof updates !== 'object') {
+      return res.status(400).json({ error: 'Request body must be a JSON object of key-value pairs' });
+    }
+
+    await SystemSettings.setMany(updates, req.headers['x-admin-user'] || 'admin');
+    await logAdminAction(req, 'update_system_settings', 'system', null, updates, { updated: Object.keys(updates) });
+
+    const settings = await SystemSettings.getAll();
+    res.json({ success: true, message: 'Settings updated', settings });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+/**
+ * POST /api/admin/system/mode — Switch system mode (production/sandbox)
+ */
+router.post('/system/mode', async (req, res) => {
+  try {
+    const { mode } = req.body;
+    if (!mode) return res.status(400).json({ error: 'mode is required (production or sandbox)' });
+
+    const result = await SystemSettings.setMode(mode, req.headers['x-admin-user'] || 'admin');
+    await logAdminAction(req, 'switch_system_mode', 'system', null, { mode }, { new_mode: result });
+
+    res.json({ success: true, system_mode: result, message: `System switched to ${result.toUpperCase()} mode` });
+  } catch (err) {
+    res.status(400).json({ success: false, error: err.message });
+  }
+});
+
+/**
+ * GET /api/admin/system/bank-registry — Get pre-configured bank templates
+ */
+router.get('/system/bank-registry', (req, res) => {
+  res.json({ success: true, banks: BANK_REGISTRY });
+});
+
+/**
+ * POST /api/admin/system/bank-registry/apply — Apply a bank template
+ */
+router.post('/system/bank-registry/apply', async (req, res) => {
+  try {
+    const { templateId, overrides } = req.body;
+    if (!templateId) return res.status(400).json({ error: 'templateId is required' });
+
+    const result = await SystemSettings.applyBankTemplate(templateId, overrides || {});
+    await logAdminAction(req, 'apply_bank_template', 'system', templateId, { overrides }, result);
+
+    res.json({ success: true, ...result });
+  } catch (err) {
+    res.status(400).json({ success: false, error: err.message });
+  }
+});
+
+/**
+ * POST /api/admin/system/test-connection — Test connectivity to configured bank endpoint
+ */
+router.post('/system/test-connection', async (req, res) => {
+  try {
+    const result = await SystemSettings.testBankConnection();
+    res.json({ success: true, ...result });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
 module.exports = router;
