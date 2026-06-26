@@ -350,7 +350,7 @@ router.post('/fineract/seed-gl', async (req, res) => {
         name: acct.account_name,
         glCode,
         type: fineractType,
-        usage: 2,
+        usage: 1,
         description: `Trust account: ${acct.account_name} (${acct.sub_type || acct.account_type})`,
       });
 
