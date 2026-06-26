@@ -176,6 +176,7 @@
     <div class="nav-item" data-page="cash"><span class="icon">💰</span> Cash Management</div>
     <div class="nav-item" data-page="payments"><span class="icon">💸</span> Payments & Disbursements</div>
     <div class="nav-item" data-page="ach"><span class="icon">🏦</span> ACH Pipeline</div>
+    <div class="nav-item" data-page="wire"><span class="icon">⚡</span> Wire Transfers</div>
     <div class="nav-item" data-page="partners"><span class="icon">🤝</span> Partners</div>
     <div class="nav-item" data-page="apikeys"><span class="icon">🔑</span> API Keys</div>
     <div class="nav-item" data-page="as2"><span class="icon">🔗</span> AS2 Server</div>
@@ -332,6 +333,68 @@
           <div class="section-title">Exported NACHA Files</div>
           <p class="text-muted mb-16" style="font-size:12px;">Files exported during transmission — download for manual bank upload or verify delivery.</p>
           <div class="table-wrap" id="ach-exports-wrap"><p class="loading">Loading...</p></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- WIRE TRANSFERS PAGE -->
+    <div id="page-wire" class="page hidden">
+      <div class="page-header">
+        <div><h1>Wire Transfers</h1><div class="subtitle">Fedwire Origination — Real-Time High-Value Payments</div></div>
+        <button class="btn btn-primary btn-sm" onclick="loadWire()">Refresh</button>
+      </div>
+      <div class="grid" id="wire-summary-cards"></div>
+      <div class="tabs">
+        <div class="tab active" data-tab="wire-initiate-tab">Initiate Wire</div>
+        <div class="tab" data-tab="wire-approvals-tab">Pending Approvals <span id="wire-approval-badge" class="badge badge-warn" style="display:none">0</span></div>
+        <div class="tab" data-tab="wire-history-tab">History</div>
+      </div>
+
+      <!-- Initiate Wire Tab -->
+      <div id="wire-initiate-tab" class="tab-content active">
+        <div class="card">
+          <div class="section-title">Initiate Wire Transfer</div>
+          <p class="text-muted mb-16" style="font-size:12px;">Create a Fedwire payment. Wires above the threshold require dual-approval (maker/checker).</p>
+          <div class="form-row">
+            <div class="form-group"><label>Amount ($)</label><input type="number" id="wire-amount" placeholder="50000.00" step="0.01" min="0.01"></div>
+            <div class="form-group"><label>Payment Type</label><select id="wire-payment-type"><option value="trust_distribution">Trust Distribution</option><option value="vendor_payment">Vendor Payment</option><option value="interest_payment">Interest Payment</option><option value="principal_return">Principal Return</option></select></div>
+          </div>
+          <div class="form-row">
+            <div class="form-group"><label>Beneficiary Name</label><input type="text" id="wire-beneficiary-name" placeholder="John Smith Trust"></div>
+            <div class="form-group"><label>Beneficiary Bank</label><input type="text" id="wire-beneficiary-bank" placeholder="Eaton Family Credit Union"></div>
+          </div>
+          <div class="form-row">
+            <div class="form-group"><label>Routing Number (ABA)</label><input type="text" id="wire-routing" placeholder="241075470" maxlength="9" pattern="\d{9}"></div>
+            <div class="form-group"><label>Account Number</label><input type="text" id="wire-account" placeholder="123456789"></div>
+          </div>
+          <div class="form-row">
+            <div class="form-group"><label>Purpose / Memo</label><input type="text" id="wire-purpose" placeholder="Q2 2026 Trust Distribution"></div>
+            <div class="form-group"><label>Description</label><input type="text" id="wire-description" placeholder="Monthly trust payment"></div>
+          </div>
+          <div class="form-row">
+            <div class="form-group"><label>Intermediary Bank (optional)</label><input type="text" id="wire-intermediary-name" placeholder=""></div>
+            <div class="form-group"><label>Intermediary Routing (optional)</label><input type="text" id="wire-intermediary-routing" placeholder="" maxlength="9"></div>
+          </div>
+          <div id="wire-route-preview" class="mt-16" style="display:none;padding:8px 12px;border-radius:6px;font-size:12px;"></div>
+          <button class="btn btn-success mt-16" onclick="initiateWire()">Initiate Wire Transfer</button>
+          <div id="wire-initiate-result" class="mt-16"></div>
+        </div>
+      </div>
+
+      <!-- Pending Approvals Tab -->
+      <div id="wire-approvals-tab" class="tab-content">
+        <div class="card">
+          <div class="section-title">Pending Approvals (Maker/Checker)</div>
+          <p class="text-muted mb-16" style="font-size:12px;">Wires requiring a second approver before transmission. The approver must be different from the initiator.</p>
+          <div class="table-wrap" id="wire-approvals-wrap"><p class="loading">Loading...</p></div>
+        </div>
+      </div>
+
+      <!-- History Tab -->
+      <div id="wire-history-tab" class="tab-content">
+        <div class="card">
+          <div class="section-title">Wire Transfer History</div>
+          <div class="table-wrap" id="wire-history-wrap"><p class="loading">Loading...</p></div>
         </div>
       </div>
     </div>
@@ -719,7 +782,7 @@
         document.querySelectorAll('.page').forEach(p => p.classList.add('hidden'));
         document.getElementById('page-' + page).classList.remove('hidden');
         // Load data for page
-        const loaders = { overview: loadOverview, bonds: loadBonds, cash: loadCash, payments: loadPayments, ach: loadACH, partners: loadPartners, apikeys: loadApiKeys, as2: loadAS2, crm: loadCRM, documents: loadDocuments, accounting: loadAccounting, tax: loadTax, fineract: loadFineract, admin: loadAdmin };
+        const loaders = { overview: loadOverview, bonds: loadBonds, cash: loadCash, payments: loadPayments, ach: loadACH, wire: loadWire, partners: loadPartners, apikeys: loadApiKeys, as2: loadAS2, crm: loadCRM, documents: loadDocuments, accounting: loadAccounting, tax: loadTax, fineract: loadFineract, admin: loadAdmin };
         if (loaders[page]) loaders[page]();
       });
     });
@@ -1190,6 +1253,131 @@
       // Exports tab
       const expData = exports.data || [];
       el('ach-exports-wrap').innerHTML = expData.length ? '<table><thead><tr><th>Filename</th><th>Partner</th><th>Date</th><th>Size</th><th>Exported</th><th>Actions</th></tr></thead><tbody>' + expData.map(e => `<tr><td><code>${esc(e.filename)}</code></td><td>${esc(e.partner_id)}</td><td>${esc(e.date)}</td><td>${e.size} bytes</td><td>${shortDate(e.exported_at)}</td><td><a href="${API}/api/ach-pipeline/exports/${encodeURIComponent(e.partner_id)}/${encodeURIComponent(e.date)}/${encodeURIComponent(e.filename)}" class="btn btn-outline btn-sm" target="_blank">Download</a></td></tr>`).join('') + '</tbody></table>' : '<p class="text-muted">No exported files yet. Transmit a batch to generate exports.</p>';
+    }
+
+    // ─── WIRE TRANSFERS ──────────────────────────────────────────────────────────
+    async function loadWire() {
+      const [summary, approvals, history] = await Promise.all([
+        fetchJSON(API + '/api/wire/summary'),
+        fetchJSON(API + '/api/wire/pending-approvals', { headers: adminHeaders() }).catch(() => ({ data: [] })),
+        fetchJSON(API + '/api/wire/transfers'),
+      ]);
+      const s = summary.data || {};
+      el('wire-summary-cards').innerHTML = `
+        <div class="card"><div class="card-title">Total Wires</div><div class="card-value">${s.total || 0}</div><div class="card-sub">${s.pending_approval || 0} awaiting approval</div></div>
+        <div class="card"><div class="card-title">Confirmed</div><div class="card-value text-green">${s.confirmed || 0}</div><div class="card-sub">IMAD/OMAD tracked</div></div>
+        <div class="card"><div class="card-title">Total Volume</div><div class="card-value">${fmt(s.total_amount_dollars || 0)}</div><div class="card-sub">Wire disbursements</div></div>
+        <div class="card"><div class="card-title">Wire Threshold</div><div class="card-value">${fmt(25000)}</div><div class="card-sub">Auto-route above this</div></div>
+      `;
+
+      // Approvals tab
+      const pendingApprovals = approvals.data || [];
+      const badge = el('wire-approval-badge');
+      if (pendingApprovals.length > 0) { badge.textContent = pendingApprovals.length; badge.style.display = 'inline'; }
+      else { badge.style.display = 'none'; }
+
+      el('wire-approvals-wrap').innerHTML = pendingApprovals.length ?
+        '<table><thead><tr><th>Wire ID</th><th>Amount</th><th>Beneficiary</th><th>Type</th><th>Initiated By</th><th>Created</th><th>Actions</th></tr></thead><tbody>' +
+        pendingApprovals.map(w => `<tr><td><code>${esc(w.wire_id)}</code></td><td class="money">${fmt(w.amount_cents / 100)}</td><td>${esc(w.beneficiary_name)}</td><td><span class="badge badge-info">${esc(w.payment_type)}</span></td><td>${esc(w.initiated_by)}</td><td>${shortDate(w.initiated_at || w.created_at)}</td><td><button class="btn btn-success btn-sm" onclick="approveWire('${esc(w.wire_id)}')">Approve</button> <button class="btn btn-danger btn-sm" onclick="rejectWire('${esc(w.wire_id)}')">Reject</button></td></tr>`).join('') +
+        '</tbody></table>' : '<p class="text-muted">No wires pending approval.</p>';
+
+      // History tab
+      const wires = history.data || [];
+      el('wire-history-wrap').innerHTML = wires.length ?
+        '<table><thead><tr><th>Wire ID</th><th>Amount</th><th>Beneficiary</th><th>Routing</th><th>Type</th><th>Status</th><th>IMAD</th><th>Confirmation</th><th>Created</th><th>Actions</th></tr></thead><tbody>' +
+        wires.map(w => {
+          const statusClass = {'confirmed':'badge-active','sent':'badge-purple','approved':'badge-info','pending_approval':'badge-warn','rejected':'badge-error','failed':'badge-error','cancelled':'badge-warning','returned':'badge-error','settled':'badge-active','sending':'badge-purple'}[w.status] || 'badge-pending';
+          const canSend = w.status === 'approved';
+          const canSettle = w.status === 'confirmed';
+          return `<tr><td><code>${esc(w.wire_id)}</code></td><td class="money">${fmt(w.amount_cents / 100)}</td><td>${esc(w.beneficiary_name)}</td><td>${esc(w.beneficiary_routing || '')}</td><td><span class="badge badge-info">${esc(w.payment_type)}</span></td><td><span class="badge ${statusClass}">${esc(w.status)}</span></td><td>${w.imad ? '<code>' + esc(w.imad) + '</code>' : '—'}</td><td>${w.confirmation_number ? '<code>' + esc(w.confirmation_number) + '</code>' : '—'}</td><td>${shortDate(w.created_at)}</td><td>${canSend ? '<button class="btn btn-success btn-sm" onclick="sendWire(\'' + esc(w.wire_id) + '\')">Send</button> ' : ''}${canSettle ? '<button class="btn btn-info btn-sm" onclick="settleWire(\'' + esc(w.wire_id) + '\')">Settle</button> ' : ''}<button class="btn btn-outline btn-sm" onclick="viewWireMessage(\'' + esc(w.wire_id) + '\')">Message</button></td></tr>`;
+        }).join('') + '</tbody></table>' : '<p class="text-muted">No wire transfers yet. Initiate one above.</p>';
+    }
+
+    // Wire amount preview — show routing decision
+    if (document.getElementById('wire-amount')) {
+      document.getElementById('wire-amount').addEventListener('input', async function() {
+        const val = parseFloat(this.value);
+        const preview = el('wire-route-preview');
+        if (!val || val <= 0) { preview.style.display = 'none'; return; }
+        const r = await fetchJSON(API + '/api/wire/route', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ amountDollars: val }) });
+        if (r.success && r.data) {
+          preview.style.display = 'block';
+          preview.style.background = r.data.channel === 'wire' ? '#e8f5e9' : '#e3f2fd';
+          preview.style.color = r.data.channel === 'wire' ? '#2e7d32' : '#1565c0';
+          preview.innerHTML = '<strong>Route: ' + r.data.channel.toUpperCase() + '</strong> — ' + esc(r.data.reason);
+        }
+      });
+    }
+
+    async function initiateWire() {
+      const amount = parseFloat(el('wire-amount').value);
+      if (!amount || amount <= 0) { el('wire-initiate-result').innerHTML = '<p class="error-msg">Enter a valid amount</p>'; return; }
+      const name = el('wire-beneficiary-name').value;
+      const routing = el('wire-routing').value;
+      const account = el('wire-account').value;
+      if (!name || !routing || !account) { el('wire-initiate-result').innerHTML = '<p class="error-msg">Beneficiary name, routing, and account are required</p>'; return; }
+      if (!/^\d{9}$/.test(routing)) { el('wire-initiate-result').innerHTML = '<p class="error-msg">Routing number must be 9 digits</p>'; return; }
+
+      const r = await fetchJSON(API + '/api/wire/initiate', {
+        method: 'POST', headers: { ...adminHeaders(), 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          amountDollars: amount,
+          beneficiaryName: name, beneficiaryRouting: routing, beneficiaryAccount: account,
+          beneficiaryBankName: el('wire-beneficiary-bank').value || undefined,
+          paymentType: el('wire-payment-type').value,
+          purpose: el('wire-purpose').value || undefined,
+          description: el('wire-description').value || undefined,
+          intermediaryName: el('wire-intermediary-name').value || undefined,
+          intermediaryRouting: el('wire-intermediary-routing').value || undefined,
+        })
+      });
+
+      if (r.success) {
+        const w = r.data;
+        el('wire-initiate-result').innerHTML = '<p class="success-msg">Wire initiated: <code>' + esc(w.wire_id) + '</code> — Status: <strong>' + esc(w.status) + '</strong></p>';
+        loadWire();
+      } else {
+        el('wire-initiate-result').innerHTML = '<p class="error-msg">' + esc(r.error || 'Failed') + '</p>';
+      }
+    }
+
+    async function approveWire(wireId) {
+      const r = await fetchJSON(API + '/api/wire/' + wireId + '/approve', { method: 'POST', headers: { ...adminHeaders(), 'Content-Type': 'application/json' }, body: JSON.stringify({ approvedBy: 'checker' }) });
+      if (r.success) {
+        alert('Wire ' + wireId + ' approved. Status: ' + r.data.status + '. Click Send to transmit.');
+        loadWire();
+      } else { alert('Approval failed: ' + (r.error || 'Unknown error')); }
+    }
+
+    async function rejectWire(wireId) {
+      const reason = prompt('Rejection reason:');
+      if (reason === null) return;
+      const r = await fetchJSON(API + '/api/wire/' + wireId + '/reject', { method: 'POST', headers: { ...adminHeaders(), 'Content-Type': 'application/json' }, body: JSON.stringify({ rejectedBy: 'checker', reason: reason }) });
+      if (r.success) { alert('Wire ' + wireId + ' rejected.'); loadWire(); }
+      else { alert('Rejection failed: ' + (r.error || 'Unknown error')); }
+    }
+
+    async function sendWire(wireId) {
+      if (!confirm('Send wire ' + wireId + '? This will post GL entries and transmit via Fedwire.')) return;
+      const r = await fetchJSON(API + '/api/wire/' + wireId + '/send', { method: 'POST', headers: adminHeaders() });
+      if (r.success) {
+        const w = r.data;
+        alert('Wire SENT!\n\nWire ID: ' + w.wire_id + '\nIMAD: ' + (w.imad || 'N/A') + '\nOMAD: ' + (w.omad || 'N/A') + '\nConfirmation: ' + (w.confirmation_number || 'N/A') + '\nStatus: ' + w.status + '\n\nGL journal entry posted. Cashflow event recorded.');
+        loadWire();
+      } else { alert('Send failed: ' + (r.error || 'Unknown error')); }
+    }
+
+    async function settleWire(wireId) {
+      const r = await fetchJSON(API + '/api/wire/' + wireId + '/settle', { method: 'POST', headers: adminHeaders() });
+      if (r.success) { alert('Wire ' + wireId + ' settled.'); loadWire(); }
+      else { alert('Settlement failed: ' + (r.error || 'Unknown error')); }
+    }
+
+    async function viewWireMessage(wireId) {
+      const r = await fetchJSON(API + '/api/wire/' + wireId + '/message');
+      if (r.success && r.data) {
+        alert('Fedwire Message:\n\n' + JSON.stringify(r.data, null, 2));
+      } else { alert('Failed to load wire message'); }
     }
 
     // ─── PARTNERS ───────────────────────────────────────────────────────────────

@@ -22,6 +22,8 @@
 const pool = require('../bonds/pgPool');
 const { ACHEngine } = require('./achEngine');
 const { TrustAccountingEngine } = require('../accounting/trustAccountingEngine');
+let WireEngine;
+try { WireEngine = require('../wire/wireEngine').WireEngine; } catch (e) { WireEngine = null; }
 
 const ACCOUNT_CODES = {
   CASH: '1000',
@@ -131,6 +133,69 @@ class PaymentOrchestrator {
       journal_entry: journalEntry,
       accounting_integrated: !!journalEntry,
       total_amount: totalDollars,
+    };
+  }
+
+  /**
+   * Smart payment routing — automatically chooses ACH or Wire based on amount/urgency.
+   * For wire-eligible payments, creates a wire transfer instead of an ACH batch.
+   *
+   * @param {Object} opts - same as createDisbursementWithAccounting, plus:
+   * @param {boolean} opts.urgent - force wire for same-day settlement
+   * @param {string} opts.forceChannel - 'ach' or 'wire' to override auto-routing
+   * @param {string} opts.beneficiaryRouting - required for wire
+   * @param {string} opts.beneficiaryAccount - required for wire
+   * @param {string} opts.beneficiaryBankName - optional
+   * @returns {Object} { channel, batch|wire, journal_entry, routing_reason }
+   */
+  static async routePayment(opts) {
+    const { entries, urgent, forceChannel } = opts;
+    const totalCents = entries.reduce((sum, e) => sum + Number(e.amountCents || 0), 0);
+
+    // Determine channel
+    let channel, reason;
+    if (forceChannel) {
+      channel = forceChannel;
+      reason = `Forced to ${forceChannel} by caller`;
+    } else if (WireEngine) {
+      const routing = WireEngine.routePayment(totalCents, { urgent });
+      channel = routing.channel;
+      reason = routing.reason;
+    } else {
+      channel = 'ach';
+      reason = 'Wire engine not available — defaulting to ACH';
+    }
+
+    if (channel === 'wire' && WireEngine) {
+      // Route to wire — use first entry as beneficiary (for single-payee wires)
+      const entry = entries[0];
+      const wire = await WireEngine.initiateWire({
+        amountCents: totalCents,
+        beneficiaryName: entry.individualName || opts.description || 'Beneficiary',
+        beneficiaryRouting: opts.beneficiaryRouting || entry.receivingRouting,
+        beneficiaryAccount: opts.beneficiaryAccount || entry.accountNumber,
+        beneficiaryBankName: opts.beneficiaryBankName || null,
+        paymentType: opts.paymentType || 'trust_distribution',
+        purpose: opts.description || 'Trust payment',
+        description: opts.description,
+        initiatedBy: opts.createdBy || 'system',
+        requiresApproval: true,
+      });
+
+      return {
+        channel: 'wire',
+        wire,
+        routing_reason: reason,
+        total_amount: totalCents / 100,
+      };
+    }
+
+    // Default: route to ACH
+    const result = await PaymentOrchestrator.createDisbursementWithAccounting(opts);
+    return {
+      channel: 'ach',
+      ...result,
+      routing_reason: reason,
     };
   }
 
