@@ -161,40 +161,101 @@ class LiveBondEngine {
     return pv / faceValue;
   }
 
+  static calcNextCouponDate(bond) {
+    const freq = freqPerYear(bond.payment_freq);
+    const monthsPerPeriod = 12 / freq;
+    const issueDate = new Date(bond.issue_date);
+    const now = new Date();
+
+    let next = new Date(issueDate);
+    while (next <= now) {
+      next.setMonth(next.getMonth() + monthsPerPeriod);
+    }
+    return next;
+  }
+
+  static calcDailyAccrual(bond) {
+    const principal = parseFloat(bond.principal_balance);
+    const couponRate = parseFloat(bond.coupon_rate);
+    return Math.round(principal * (couponRate / 360) * 100) / 100;
+  }
+
+  static calcDaysSinceLastAccrual(bond) {
+    const last = new Date(bond.last_accrual_date);
+    const now = new Date();
+    const d1 = last, d2 = now;
+    let y1 = d1.getFullYear(), m1 = d1.getMonth() + 1, day1 = Math.min(d1.getDate(), 30);
+    let y2 = d2.getFullYear(), m2 = d2.getMonth() + 1, day2 = Math.min(d2.getDate(), 30);
+    return Math.max(0, (y2 - y1) * 360 + (m2 - m1) * 30 + (day2 - day1));
+  }
+
   static async getBondLiveMetrics(bondId, marketYield) {
     const bond = await BondEngine.getBond(bondId);
     if (!bond) throw new Error(`Bond ${bondId} not found`);
 
     const couponRate = parseFloat(bond.coupon_rate);
     const faceValue = parseFloat(bond.face_value);
+    const principalBalance = parseFloat(bond.principal_balance);
+    const dbAccrued = parseFloat(bond.accrued_interest);
     const yield_ = marketYield !== undefined ? parseFloat(marketYield) : couponRate;
 
     const daysToMat = LiveBondEngine.calcDaysToMaturity(bond.maturity_date);
     const yearsToMat = daysToMat / 365.25;
     const accruedLive = LiveBondEngine.calcAccruedInterestLive(bond);
+    const totalAccrued = dbAccrued + accruedLive;
     const ytm = LiveBondEngine.calcYieldToMaturity(bond, 1.0);
     const macDuration = LiveBondEngine.calcMacaulayDuration(bond);
     const modDuration = LiveBondEngine.calcModifiedDuration(bond, ytm);
     const currentPrice = LiveBondEngine.calcCurrentPrice(bond, yield_);
     const marketValue = currentPrice * faceValue;
     const dv01 = LiveBondEngine.calcDV01(bond, modDuration, marketValue);
+    const dailyAccrual = LiveBondEngine.calcDailyAccrual(bond);
+    const nextCouponDate = LiveBondEngine.calcNextCouponDate(bond);
+    const daysSinceAccrual = LiveBondEngine.calcDaysSinceLastAccrual(bond);
+    const freq = freqPerYear(bond.payment_freq);
+    const annualCouponIncome = principalBalance * couponRate;
+    const couponPerPeriod = Math.round(annualCouponIncome / freq * 100) / 100;
+    const currentYield = marketValue > 0 ? (annualCouponIncome / marketValue) * 100 : 0;
 
     return {
+      bond_id: bond.id,
       bond_name: bond.bond_name,
+      isin: bond.isin,
       face_value: faceValue,
+      principal_balance: principalBalance,
       coupon_rate_pct: couponRate * 100,
+      payment_freq: bond.payment_freq,
+      day_count: bond.day_count,
+      currency: bond.currency,
+      status: bond.status,
       issue_date: bond.issue_date,
       maturity_date: bond.maturity_date,
       days_to_maturity: daysToMat,
       years_to_maturity: Math.round(yearsToMat * 100) / 100,
-      accrued_interest_live: Math.round(accruedLive * 100) / 100,
+      // Accrual metrics
+      accrued_interest_db: dbAccrued,
+      accrued_interest_pending: Math.round(accruedLive * 100) / 100,
+      accrued_interest_total: Math.round(totalAccrued * 100) / 100,
+      daily_accrual: dailyAccrual,
+      days_since_last_accrual: daysSinceAccrual,
+      last_accrual_date: bond.last_accrual_date,
+      // Coupon schedule
+      next_coupon_date: nextCouponDate.toISOString().split('T')[0],
+      coupon_per_period: couponPerPeriod,
+      annual_coupon_income: Math.round(annualCouponIncome * 100) / 100,
+      // Yield & pricing
       ytm_pct: Math.round(ytm * 10000) / 100,
+      current_yield_pct: Math.round(currentYield * 100) / 100,
+      current_price_decimal: Math.round(currentPrice * 1000000) / 1000000,
+      market_value: Math.round(marketValue * 100) / 100,
+      // Risk metrics
       macaulay_duration_years: Math.round(macDuration * 100) / 100,
       modified_duration: Math.round(modDuration * 100) / 100,
       dv01: Math.round(dv01 * 100) / 100,
-      current_price_decimal: Math.round(currentPrice * 1000000) / 1000000,
-      market_value: Math.round(marketValue * 100) / 100,
-      total_current_value: Math.round((marketValue + parseFloat(bond.accrued_interest) + accruedLive) * 100) / 100,
+      // Totals
+      total_interest_paid: parseFloat(bond.total_interest_paid),
+      total_principal_paid: parseFloat(bond.total_principal_paid),
+      total_current_value: Math.round((marketValue + totalAccrued) * 100) / 100,
       generated_at: new Date().toISOString(),
     };
   }
@@ -216,7 +277,7 @@ class LiveBondEngine {
 
     const totalFace = metrics.reduce((s, m) => s + m.face_value, 0);
     const totalMarket = metrics.reduce((s, m) => s + m.market_value, 0);
-    const totalAccrued = metrics.reduce((s, m) => s + m.accrued_interest_live, 0);
+    const totalAccrued = metrics.reduce((s, m) => s + m.accrued_interest_total, 0);
 
     const weightedCoupon = totalFace > 0
       ? metrics.reduce((s, m) => s + (m.coupon_rate_pct / 100) * m.face_value, 0) / totalFace
@@ -226,12 +287,23 @@ class LiveBondEngine {
       : 0;
     const totalDV01 = metrics.reduce((s, m) => s + m.dv01, 0);
 
+    const totalDailyAccrual = metrics.reduce((s, m) => s + m.daily_accrual, 0);
+    const totalAnnualIncome = metrics.reduce((s, m) => s + m.annual_coupon_income, 0);
+    const totalCurrentValue = metrics.reduce((s, m) => s + m.total_current_value, 0);
+    const weightedYTM = totalMarket > 0
+      ? metrics.reduce((s, m) => s + (m.ytm_pct / 100) * m.market_value, 0) / totalMarket
+      : 0;
+
     return {
       bond_count: metrics.length,
       total_face_value: totalFace,
       total_market_value: Math.round(totalMarket * 100) / 100,
       total_accrued_interest: Math.round(totalAccrued * 100) / 100,
+      total_current_value: Math.round(totalCurrentValue * 100) / 100,
+      total_daily_accrual: Math.round(totalDailyAccrual * 100) / 100,
+      total_annual_income: Math.round(totalAnnualIncome * 100) / 100,
       weighted_avg_coupon_pct: Math.round(weightedCoupon * 10000) / 100,
+      weighted_avg_ytm_pct: Math.round(weightedYTM * 10000) / 100,
       weighted_avg_modified_duration: Math.round(weightedModDuration * 100) / 100,
       total_dv01: Math.round(totalDV01 * 100) / 100,
       bonds: metrics,
@@ -248,7 +320,9 @@ class LiveBondEngine {
         for (const bond of result.rows) {
           try {
             const accrualResult = await BondEngine.accrueInterest(bond.id);
-            console.log(`[LiveEngine] Accrued bond ${bond.bond_name}: +$${accrualResult.accrued}`);
+            if (accrualResult.accrued > 0) {
+              console.log(`[LiveEngine] Accrued bond ${bond.bond_name}: +$${accrualResult.accrued} (${accrualResult.days} days)`);
+            }
           } catch (err) {
             console.warn(`[LiveEngine] Accrual failed for ${bond.bond_name}: ${err.message}`);
           }
@@ -258,8 +332,10 @@ class LiveBondEngine {
       }
     };
 
+    // Run immediately on startup, then every 24 hours
+    setTimeout(runAccrual, 3000);
     setInterval(runAccrual, 24 * 60 * 60 * 1000);
-    console.log('[LiveEngine] Daily accrual job scheduled (24h interval)');
+    console.log('[LiveEngine] Daily accrual job scheduled (runs on startup + 24h interval)');
   }
 }
 
