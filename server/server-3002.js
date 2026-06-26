@@ -94,6 +94,16 @@ try {
   }).catch(function(e) { console.warn('[wire] table init:', e.message); });
 } catch(e) { console.warn('[wire]', e.message); }
 
+// Ensure system settings table exists (production/sandbox mode config)
+try {
+  var SystemSettings = require(path.join(HD, 'server', 'integrations', 'ach', 'systemSettings')).SystemSettings;
+  SystemSettings.ensureTable().then(function() {
+    return SystemSettings.getMode();
+  }).then(function(mode) {
+    console.log('[system-settings] table ensured, mode=' + mode);
+  }).catch(function(e) { console.warn('[system-settings] init:', e.message); });
+} catch(e) { console.warn('[system-settings]', e.message); }
+
 // Start live bond accrual scheduler
 try {
   var LiveBondEngine = require(path.join(HD, 'server', 'integrations', 'bonds', 'liveEngine')).LiveBondEngine;

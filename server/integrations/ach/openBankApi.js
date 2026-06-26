@@ -230,11 +230,27 @@ class OpenBankApi {
       throw new Error('REST API base URL not configured for this partner.');
     }
 
+    // Production mode: send to external bank endpoint directly (no self-transmit)
+    const isProduction = partnerConfig.isProduction === true;
+
     // If transmitting to self (platform's own URL), use the /receive endpoint
     const selfUrl = OpenBankApi._getSelfUrl();
-    const isSelfTransmit = selfUrl && (baseUrl === selfUrl || baseUrl.replace(/\/$/, '') === selfUrl.replace(/\/$/, ''));
-    const endpoint = isSelfTransmit ? '/api/ach-pipeline/receive' : '/ach/transmit';
-    const transmitUrl = baseUrl.endsWith('/') ? `${baseUrl.slice(0, -1)}${endpoint}` : `${baseUrl}${endpoint}`;
+    const isSelfTransmit = !isProduction && selfUrl && (baseUrl === selfUrl || baseUrl.replace(/\/$/, '') === selfUrl.replace(/\/$/, ''));
+
+    // In production mode, use the bank's receive path; in sandbox, use self /receive
+    let endpoint;
+    if (isProduction) {
+      // Use the full baseUrl as-is for production (bank provides full endpoint)
+      endpoint = '';
+    } else if (isSelfTransmit) {
+      endpoint = '/api/ach-pipeline/receive';
+    } else {
+      endpoint = '/ach/transmit';
+    }
+
+    const transmitUrl = endpoint
+      ? (baseUrl.endsWith('/') ? `${baseUrl.slice(0, -1)}${endpoint}` : `${baseUrl}${endpoint}`)
+      : baseUrl;
     const parsed = new URL(transmitUrl);
 
     // Also export locally for audit trail
@@ -260,14 +276,15 @@ class OpenBankApi {
       'Date': new Date().toUTCString(),
     };
 
-    // For self-transmit, use the admin token; for external partners, apply partner auth
+    // For self-transmit, use the admin token; for external/production partners, apply partner auth
     if (isSelfTransmit && process.env.ADMIN_SECRET_TOKEN) {
       headers['x-admin-token'] = process.env.ADMIN_SECRET_TOKEN;
     } else {
       OpenBankApi._applyAuth(headers, payload, partnerConfig);
     }
 
-    console.log(`[OpenBankApi] _transmitRemote: ${transmitUrl} (self=${isSelfTransmit})`);
+    const modeLabel = isProduction ? 'PRODUCTION' : (isSelfTransmit ? 'SANDBOX/self' : 'external');
+    console.log(`[OpenBankApi] _transmitRemote: ${transmitUrl} (mode=${modeLabel})`);
 
     return new Promise((resolve, reject) => {
       const options = {
@@ -737,6 +754,63 @@ class OpenBankApi {
 
   static _generateRequestId() {
     return `REQ-${Date.now()}-${crypto.randomBytes(4).toString('hex')}`;
+  }
+
+  /**
+   * Test connectivity to an external bank endpoint.
+   * Sends a HEAD/OPTIONS request to verify the endpoint is reachable.
+   */
+  static async testConnection(partnerConfig) {
+    const baseUrl = partnerConfig.apiBaseUrl || partnerConfig.partnerUrl;
+    if (!baseUrl) return { connected: false, error: 'No endpoint configured' };
+
+    try {
+      const parsed = new URL(baseUrl);
+      const lib = parsed.protocol === 'https:' ? https : http;
+
+      return new Promise((resolve) => {
+        const req = lib.request({
+          hostname: parsed.hostname,
+          port: parsed.port || (parsed.protocol === 'https:' ? 443 : 80),
+          path: parsed.pathname || '/',
+          method: 'OPTIONS',
+          timeout: 10000,
+        }, (res) => {
+          resolve({
+            connected: true,
+            status_code: res.statusCode,
+            endpoint: baseUrl,
+            latency_ms: Date.now() - startTime,
+          });
+        });
+
+        const startTime = Date.now();
+        req.on('error', (err) => {
+          resolve({ connected: false, error: err.message, endpoint: baseUrl });
+        });
+        req.on('timeout', () => {
+          req.destroy();
+          resolve({ connected: false, error: 'Connection timed out', endpoint: baseUrl });
+        });
+        req.end();
+      });
+    } catch (err) {
+      return { connected: false, error: err.message };
+    }
+  }
+
+  /**
+   * Transmit using production mode settings from SystemSettings.
+   * This is the primary production entry point — reads the configured
+   * external bank endpoint and transmits the NACHA file over HTTPS.
+   */
+  static async transmitProduction(nachaContent, filename) {
+    const { SystemSettings } = require('./systemSettings');
+    const config = await SystemSettings.getProductionPartnerConfig();
+    if (!config) {
+      throw new Error('Production bank endpoint not configured. Set bank_endpoint in System Settings.');
+    }
+    return OpenBankApi.transmit(nachaContent, filename, config);
   }
 }
 
