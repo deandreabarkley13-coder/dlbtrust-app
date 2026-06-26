@@ -268,11 +268,37 @@ class FineractClient {
   }
 
   /**
-   * Get GL account summary with running balances.
+   * Get GL account summary with balances computed from journal entries.
+   * Fineract's organizationRunningBalance is unreliable in some versions,
+   * so we compute balances directly from journal entries.
    */
   static async getGLSummary() {
     const accounts = await fineractRequest('GET', 'glaccounts');
     if (!Array.isArray(accounts)) return { accounts: [] };
+
+    // Fetch all journal entries to compute balances
+    const balanceMap = {};
+    try {
+      const journalRes = await fineractRequest('GET', 'journalentries?limit=10000');
+      const entries = (journalRes && journalRes.pageItems) || [];
+      for (const je of entries) {
+        if (je.reversed) continue;
+        const acctId = je.glAccountId;
+        if (!balanceMap[acctId]) balanceMap[acctId] = 0;
+        const amt = je.amount || 0;
+        const isDebit = je.entryType && je.entryType.value === 'DEBIT';
+        const acctType = je.glAccountType && je.glAccountType.value;
+        // Assets/Expenses: debits increase, credits decrease
+        // Liabilities/Equity/Income: credits increase, debits decrease
+        if (acctType === 'ASSET' || acctType === 'EXPENSE') {
+          balanceMap[acctId] += isDebit ? amt : -amt;
+        } else {
+          balanceMap[acctId] += isDebit ? -amt : amt;
+        }
+      }
+    } catch (err) {
+      // Fall back to organizationRunningBalance if journal fetch fails
+    }
 
     const summary = {
       assets: [],
@@ -282,12 +308,14 @@ class FineractClient {
       expenses: [],
     };
 
+    // Only include DETAIL accounts (usage.id === 1) in summary
     for (const acct of accounts) {
+      if (acct.usage && acct.usage.id === 2) continue; // skip HEADER accounts
       const entry = {
         id: acct.id,
         name: acct.name,
         glCode: acct.glCode,
-        balance: acct.organizationRunningBalance || 0,
+        balance: balanceMap[acct.id] || acct.organizationRunningBalance || 0,
         manualEntriesAllowed: acct.manualEntriesAllowed,
       };
 
