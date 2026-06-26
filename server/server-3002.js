@@ -48,6 +48,9 @@ try { app.use('/api/payments', require(path.join(HD, 'server', 'routes', 'paymen
 // ACH Pipeline — NACHA generation + AS2 transmission
 try { app.use('/api/ach-pipeline', require(path.join(HD, 'server', 'routes', 'achPipeline'))); console.log('[ach-pipeline] loaded'); } catch(e) { console.warn('[ach-pipeline]', e.message); }
 
+// Wire Transfers — Fedwire origination + dual-approval workflow
+try { app.use('/api/wire', require(path.join(HD, 'server', 'routes', 'wire'))); console.log('[wire] loaded'); } catch(e) { console.warn('[wire]', e.message); }
+
 // AS2 Server — open source AS2 messaging (certs, partners, send/receive)
 try { app.use('/api/as2', require(path.join(HD, 'server', 'routes', 'as2'))); console.log('[as2] loaded'); } catch(e) { console.warn('[as2]', e.message); }
 
@@ -82,6 +85,14 @@ app.get('*', function(req, res) {
   var idx = path.join(HD, 'public', 'index.html');
   fs.existsSync(idx) ? res.sendFile(idx) : res.status(404).send('Not found');
 });
+
+// Ensure wire transfer tables exist
+try {
+  var WireEngine = require(path.join(HD, 'server', 'integrations', 'wire', 'wireEngine')).WireEngine;
+  WireEngine.ensureTables().then(function() {
+    console.log('[wire] tables ensured');
+  }).catch(function(e) { console.warn('[wire] table init:', e.message); });
+} catch(e) { console.warn('[wire]', e.message); }
 
 // Start live bond accrual scheduler
 try {
