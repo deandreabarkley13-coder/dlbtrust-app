@@ -10,8 +10,30 @@ var express = require('express');
 var app = express();
 var PORT = process.env.PORT || 3002;
 
-app.use(express.json());
-app.use(express.urlencoded({ extended: true }));
+// ─── Security Middleware ──────────────────────────────────────────────────────
+var security = require(path.join(HD, 'server', 'integrations', 'auth', 'securityMiddleware'));
+
+// Helmet.js security headers (XSS, clickjacking, MIME sniffing, CSP, HSTS)
+app.use(security.helmetMiddleware());
+
+// CORS lockdown
+app.use(security.corsMiddleware());
+
+// Global rate limiting (200 requests/min per IP)
+app.use(security.globalRateLimiter());
+
+// Request logging (slow requests and errors)
+app.use(security.requestLogger);
+
+// Body parsing
+app.use(express.json({ limit: '5mb' }));
+app.use(express.urlencoded({ extended: true, limit: '5mb' }));
+
+// Input sanitization (null bytes, oversized strings)
+app.use(security.sanitizeInput);
+
+// ─── Auth Routes (login, logout, user management) ────────────────────────────
+try { app.use('/api/auth', require(path.join(HD, 'server', 'routes', 'auth'))); console.log('[auth] loaded'); } catch(e) { console.warn('[auth]', e.message); }
 
 // V2 wealth management routes REMOVED — treasury system is the only platform now
 
@@ -93,6 +115,14 @@ try {
     console.log('[wire] tables ensured');
   }).catch(function(e) { console.warn('[wire] table init:', e.message); });
 } catch(e) { console.warn('[wire]', e.message); }
+
+// Ensure auth tables exist (users, sessions, security log)
+try {
+  var UserAuth = require(path.join(HD, 'server', 'integrations', 'auth', 'userAuth')).UserAuth;
+  UserAuth.ensureTables().then(function() {
+    console.log('[auth] tables ensured');
+  }).catch(function(e) { console.warn('[auth] table init:', e.message); });
+} catch(e) { console.warn('[auth]', e.message); }
 
 // Ensure system settings table exists (production/sandbox mode config)
 try {
