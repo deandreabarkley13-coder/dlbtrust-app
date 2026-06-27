@@ -18,12 +18,25 @@ const { LiveBondEngine } = require('../integrations/bonds/liveEngine');
 const { BondEngine } = require('../integrations/bonds/bondEngine');
 
 // ─── Admin Auth Middleware ────────────────────────────────────────────────────
-const requireAdmin = (req, res, next) => {
-  const token = req.headers['x-admin-token'] || req.query.adminToken;
-  if (!token || token !== process.env.ADMIN_SECRET_TOKEN) {
-    return res.status(401).json({ error: 'Admin authentication required' });
+const requireAdmin = async (req, res, next) => {
+  // 1. Check legacy x-admin-token
+  const legacyToken = req.headers['x-admin-token'] || req.query.adminToken;
+  if (legacyToken && legacyToken === process.env.ADMIN_SECRET_TOKEN) {
+    return next();
   }
-  next();
+  // 2. Check JWT Bearer token (admin role required)
+  const authHeader = req.headers.authorization;
+  if (authHeader && authHeader.startsWith('Bearer ')) {
+    try {
+      const { UserAuth } = require('../integrations/auth/userAuth');
+      const decoded = await UserAuth.verifyToken(authHeader.slice(7));
+      if (decoded && decoded.role === 'admin') {
+        req.user = decoded;
+        return next();
+      }
+    } catch (e) { /* fall through to 401 */ }
+  }
+  return res.status(401).json({ error: 'Admin authentication required' });
 };
 router.use(requireAdmin);
 
