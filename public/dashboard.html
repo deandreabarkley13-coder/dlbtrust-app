@@ -999,7 +999,7 @@
     }
 
     function doLogout() {
-      fetch(API + '/api/auth/logout', { method: 'POST', headers: authHeaders() });
+      fetch(API + '/api/auth/logout', { method: 'POST', headers: adminHeaders() });
       jwtToken = '';
       currentUser = null;
       adminToken = '';
@@ -2403,7 +2403,7 @@
     // ─── SECURITY PAGE ──────────────────────────────────────────────────────────
     async function loadSecurity() {
       // Load current session info
-      const me = await fetchJSON(API + '/api/auth/me', { headers: authHeaders() });
+      const me = await fetchJSON(API + '/api/auth/me', { headers: adminHeaders() });
       if (me.success) {
         const u = me.user;
         const roleClass = 'role-' + u.role;
@@ -2428,7 +2428,7 @@
     }
 
     async function loadUsers() {
-      const r = await fetchJSON(API + '/api/auth/users', { headers: authHeaders() });
+      const r = await fetchJSON(API + '/api/auth/users', { headers: adminHeaders() });
       if (!r.success) { el('users-table-wrap').innerHTML = '<p class="error-msg">' + esc(r.error) + '</p>'; return; }
       const users = r.data || [];
       let html = '<table><thead><tr><th>ID</th><th>Username</th><th>Display Name</th><th>Role</th><th>Status</th><th>Last Login</th><th>Actions</th></tr></thead><tbody>';
@@ -2454,7 +2454,7 @@
     async function loadSecurityLog() {
       const filter = el('sec-log-filter').value;
       const url = filter ? API + '/api/auth/security-log?eventType=' + filter : API + '/api/auth/security-log';
-      const r = await fetchJSON(url, { headers: authHeaders() });
+      const r = await fetchJSON(url, { headers: adminHeaders() });
       if (!r.success) { el('security-log-wrap').innerHTML = '<p class="error-msg">' + esc(r.error) + '</p>'; return; }
       const logs = r.data || [];
       let html = '<table><thead><tr><th>Time</th><th>Event</th><th>User</th><th>IP</th><th>Severity</th><th>Details</th></tr></thead><tbody>';
@@ -2474,7 +2474,7 @@
       const newPass = el('sec-new-pass').value;
       if (!oldPass || !newPass) { el('change-pass-result').innerHTML = '<p class="error-msg">Both fields required</p>'; return; }
       if (newPass.length < 8) { el('change-pass-result').innerHTML = '<p class="error-msg">Password must be at least 8 characters</p>'; return; }
-      const r = await fetchJSON(API + '/api/auth/change-password', { method: 'POST', headers: authHeaders(), body: JSON.stringify({ oldPassword: oldPass, newPassword: newPass }) });
+      const r = await fetchJSON(API + '/api/auth/change-password', { method: 'POST', headers: adminHeaders(), body: JSON.stringify({ oldPassword: oldPass, newPassword: newPass }) });
       if (r.success) {
         el('change-pass-result').innerHTML = '<p class="success-msg">' + esc(r.message) + '</p>';
         el('sec-old-pass').value = '';
@@ -2491,7 +2491,7 @@
       const displayName = el('new-user-display').value.trim();
       const role = el('new-user-role').value;
       if (!username || !password) { el('create-user-result').innerHTML = '<p class="error-msg">Username and password required</p>'; return; }
-      const r = await fetchJSON(API + '/api/auth/users', { method: 'POST', headers: authHeaders(), body: JSON.stringify({ username, password, displayName, role }) });
+      const r = await fetchJSON(API + '/api/auth/users', { method: 'POST', headers: adminHeaders(), body: JSON.stringify({ username, password, displayName, role }) });
       if (r.success) {
         el('create-user-result').innerHTML = '<p class="success-msg">User created: ' + esc(r.data.username) + '</p>';
         el('new-user-name').value = '';
@@ -2505,19 +2505,19 @@
 
     async function updateUserRole(userId, role) {
       if (!role) return;
-      const r = await fetchJSON(API + '/api/auth/users/' + userId + '/role', { method: 'PUT', headers: authHeaders(), body: JSON.stringify({ role }) });
+      const r = await fetchJSON(API + '/api/auth/users/' + userId + '/role', { method: 'PUT', headers: adminHeaders(), body: JSON.stringify({ role }) });
       alert(r.success ? 'Role updated' : (r.error || 'Failed'));
       loadUsers();
     }
 
     async function toggleUser(userId, active) {
-      const r = await fetchJSON(API + '/api/auth/users/' + userId + '/active', { method: 'PUT', headers: authHeaders(), body: JSON.stringify({ active }) });
+      const r = await fetchJSON(API + '/api/auth/users/' + userId + '/active', { method: 'PUT', headers: adminHeaders(), body: JSON.stringify({ active }) });
       alert(r.success ? (active ? 'User enabled' : 'User disabled') : (r.error || 'Failed'));
       loadUsers();
     }
 
     async function unlockUser(userId) {
-      const r = await fetchJSON(API + '/api/auth/users/' + userId + '/unlock', { method: 'POST', headers: authHeaders() });
+      const r = await fetchJSON(API + '/api/auth/users/' + userId + '/unlock', { method: 'POST', headers: adminHeaders() });
       alert(r.success ? 'Account unlocked' : (r.error || 'Failed'));
       loadUsers();
     }
