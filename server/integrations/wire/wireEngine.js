@@ -215,6 +215,31 @@ class WireEngine {
       throw new Error('beneficiaryRouting must be a 9-digit ABA routing number');
     }
 
+    // Security: per-transaction limit ($10M)
+    const PER_WIRE_LIMIT_CENTS = 1000000000; // $10M
+    if (amountCents > PER_WIRE_LIMIT_CENTS) {
+      throw new Error('Wire amount exceeds per-transaction limit of $10,000,000');
+    }
+
+    // Security: daily aggregate limit ($25M)
+    const DAILY_LIMIT_CENTS = 2500000000; // $25M
+    const todayTotal = await pool.query(
+      `SELECT COALESCE(SUM(amount_cents), 0) AS total FROM wire_transfers
+       WHERE DATE(created_at) = CURRENT_DATE AND status NOT IN ('cancelled', 'rejected', 'failed', 'returned')`
+    );
+    if (parseInt(todayTotal.rows[0].total, 10) + amountCents > DAILY_LIMIT_CENTS) {
+      throw new Error('Wire would exceed daily aggregate limit of $25,000,000. Current daily total: $' +
+        (parseInt(todayTotal.rows[0].total, 10) / 100).toLocaleString());
+    }
+
+    // Security: velocity check (max 20 wires per hour)
+    const hourCount = await pool.query(
+      `SELECT COUNT(*) AS cnt FROM wire_transfers WHERE created_at > NOW() - INTERVAL '1 hour'`
+    );
+    if (parseInt(hourCount.rows[0].cnt, 10) >= 20) {
+      throw new Error('Wire velocity limit exceeded: maximum 20 wires per hour');
+    }
+
     const wireId = WireEngine.generateWireId();
     const wType = wireType || 'funds_transfer';
     const typeInfo = WIRE_TYPE_CODES[wType] || WIRE_TYPE_CODES.funds_transfer;

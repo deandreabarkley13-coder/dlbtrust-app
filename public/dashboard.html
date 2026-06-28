@@ -159,9 +159,60 @@
     .tab.active { color: var(--accent); background: rgba(59,130,246,0.1); font-weight: 500; }
     .tab-content { display: none; }
     .tab-content.active { display: block; }
+    /* Login Screen */
+    .login-overlay {
+      position: fixed; top: 0; left: 0; right: 0; bottom: 0;
+      background: var(--bg); z-index: 9999;
+      display: flex; align-items: center; justify-content: center;
+    }
+    .login-overlay.hidden { display: none; }
+    .login-box {
+      background: var(--card); border: 1px solid var(--border);
+      border-radius: 12px; padding: 40px; width: 400px; max-width: 90vw;
+      box-shadow: 0 20px 60px rgba(0,0,0,0.5);
+    }
+    .login-box h1 { font-size: 24px; margin-bottom: 4px; text-align: center; }
+    .login-box .subtitle { text-align: center; color: var(--muted); margin-bottom: 24px; font-size: 13px; }
+    .login-box .form-group { margin-bottom: 16px; }
+    .login-box label { display: block; font-size: 12px; color: var(--muted); margin-bottom: 6px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px; }
+    .login-box input { width: 100%; padding: 10px 14px; background: var(--bg); border: 1px solid var(--border); border-radius: 6px; color: var(--text); font-size: 14px; }
+    .login-box input:focus { border-color: var(--accent); outline: none; }
+    .login-box .btn-login { width: 100%; padding: 12px; background: var(--accent); border: none; border-radius: 6px; color: white; font-size: 14px; font-weight: 600; cursor: pointer; margin-top: 8px; }
+    .login-box .btn-login:hover { background: #2563eb; }
+    .login-box .login-error { color: var(--red); font-size: 12px; margin-top: 8px; display: none; }
+    .login-box .login-info { color: var(--muted); font-size: 11px; margin-top: 16px; text-align: center; }
+    .user-badge { display: inline-flex; align-items: center; gap: 8px; padding: 6px 12px; background: rgba(59,130,246,0.1); border: 1px solid rgba(59,130,246,0.3); border-radius: 6px; font-size: 12px; cursor: pointer; }
+    .user-badge:hover { background: rgba(59,130,246,0.2); }
+    .user-menu { position: absolute; top: 100%; right: 0; background: var(--card); border: 1px solid var(--border); border-radius: 8px; padding: 8px 0; min-width: 180px; box-shadow: 0 8px 24px rgba(0,0,0,0.3); z-index: 200; display: none; }
+    .user-menu.show { display: block; }
+    .user-menu-item { padding: 8px 16px; cursor: pointer; font-size: 13px; }
+    .user-menu-item:hover { background: rgba(255,255,255,0.05); }
+    .role-badge { padding: 2px 8px; border-radius: 4px; font-size: 10px; font-weight: 600; text-transform: uppercase; }
+    .role-admin { background: rgba(239,68,68,0.15); color: var(--red); }
+    .role-operator { background: rgba(245,158,11,0.15); color: var(--gold); }
+    .role-viewer { background: rgba(59,130,246,0.15); color: var(--accent); }
   </style>
 </head>
 <body>
+  <!-- Login Screen Overlay -->
+  <div id="login-overlay" class="login-overlay">
+    <div class="login-box">
+      <h1>DLB Trust</h1>
+      <div class="subtitle">Treasury Management System</div>
+      <div class="form-group">
+        <label>Username</label>
+        <input type="text" id="login-username" placeholder="Enter username" autocomplete="username">
+      </div>
+      <div class="form-group">
+        <label>Password</label>
+        <input type="password" id="login-password" placeholder="Enter password" autocomplete="current-password">
+      </div>
+      <button class="btn-login" onclick="doLogin()">Sign In</button>
+      <div id="login-error" class="login-error"></div>
+      <div class="login-info">Default: admin / dlb-admin-2026-trust</div>
+    </div>
+  </div>
+
   <!-- Sidebar Navigation -->
   <nav class="sidebar">
     <div class="sidebar-logo">
@@ -190,7 +241,11 @@
     <div class="nav-item" data-page="fineract"><span class="icon">🏛️</span> Fineract GL</div>
     <div class="nav-section">System</div>
     <div class="nav-item" data-page="settings"><span class="icon">🌐</span> System Settings</div>
+    <div class="nav-item" data-page="security"><span class="icon">🛡️</span> Security</div>
     <div class="nav-item" data-page="admin"><span class="icon">⚙️</span> Admin Controls</div>
+    <div style="padding:12px 16px;margin-top:auto;border-top:1px solid var(--border);">
+      <div id="sidebar-user" style="font-size:12px;color:var(--muted);"></div>
+    </div>
   </nav>
 
   <!-- Main Content -->
@@ -803,6 +858,67 @@
       </div>
     </div>
 
+    <!-- SECURITY PAGE -->
+    <div id="page-security" class="page hidden">
+      <div class="page-header">
+        <div><h1>Security</h1><div class="subtitle">User Management, Sessions & Security Audit Log</div></div>
+        <button class="btn btn-primary btn-sm" onclick="loadSecurity()">Refresh</button>
+      </div>
+
+      <!-- Current User Info -->
+      <div class="card mb-16">
+        <div class="section-title">Current Session</div>
+        <div id="security-session-info"><p class="loading">Loading...</p></div>
+      </div>
+
+      <!-- Change Password -->
+      <div class="card mb-16">
+        <div class="section-title">Change Password</div>
+        <div class="form-row">
+          <div class="form-group"><label>Current Password</label><input type="password" id="sec-old-pass" placeholder="Current password"></div>
+          <div class="form-group"><label>New Password</label><input type="password" id="sec-new-pass" placeholder="New password (min 8 chars)"></div>
+          <button class="btn btn-outline btn-sm" style="align-self:flex-end" onclick="changePassword()">Update Password</button>
+        </div>
+        <div id="change-pass-result" style="margin-top:8px;"></div>
+      </div>
+
+      <!-- User Management (admin only) -->
+      <div id="user-mgmt-section" class="card mb-16" style="display:none;">
+        <div class="section-title">User Management</div>
+        <div style="margin-bottom:12px;">
+          <div class="form-row">
+            <div class="form-group"><label>Username</label><input type="text" id="new-user-name" placeholder="username"></div>
+            <div class="form-group"><label>Password</label><input type="password" id="new-user-pass" placeholder="password (min 8 chars)"></div>
+            <div class="form-group"><label>Display Name</label><input type="text" id="new-user-display" placeholder="Full Name"></div>
+            <div class="form-group"><label>Role</label>
+              <select id="new-user-role"><option value="viewer">Viewer</option><option value="operator">Operator</option><option value="admin">Admin</option></select>
+            </div>
+            <button class="btn btn-success btn-sm" style="align-self:flex-end" onclick="createUser()">Create User</button>
+          </div>
+          <div id="create-user-result" style="margin-top:8px;"></div>
+        </div>
+        <div class="table-wrap" id="users-table-wrap"><p class="loading">Loading...</p></div>
+      </div>
+
+      <!-- Security Audit Log (admin only) -->
+      <div id="security-log-section" class="card" style="display:none;">
+        <div class="section-title">Security Audit Log</div>
+        <div class="form-row" style="margin-bottom:8px;">
+          <div class="form-group"><label>Filter by Event</label>
+            <select id="sec-log-filter" onchange="loadSecurityLog()">
+              <option value="">All Events</option>
+              <option value="login_success">Login Success</option>
+              <option value="login_failed">Login Failed</option>
+              <option value="account_locked">Account Locked</option>
+              <option value="password_changed">Password Changed</option>
+              <option value="logout">Logout</option>
+            </select>
+          </div>
+        </div>
+        <div class="table-wrap" id="security-log-wrap"><p class="loading">Loading...</p></div>
+      </div>
+    </div>
+
     <div id="page-admin" class="page hidden">
       <div class="page-header">
         <div><h1>Admin Controls</h1><div class="subtitle">System Health, Audit Log & Bond Administration</div></div>
@@ -834,6 +950,83 @@
   <script>
     const API = window.location.origin;
     let adminToken = localStorage.getItem('dlb_admin_token') || '';
+    let jwtToken = localStorage.getItem('dlb_jwt_token') || '';
+    let currentUser = JSON.parse(localStorage.getItem('dlb_current_user') || 'null');
+
+    // ─── Login / Auth ─────────────────────────────────────────────────────────
+    function checkAuth() {
+      if (jwtToken && currentUser) {
+        el('login-overlay').classList.add('hidden');
+        adminToken = adminToken || 'jwt-session';
+        updateSidebarUser();
+      } else {
+        el('login-overlay').classList.remove('hidden');
+      }
+    }
+
+    async function doLogin() {
+      const username = el('login-username').value.trim();
+      const password = el('login-password').value;
+      if (!username || !password) { showLoginError('Please enter username and password'); return; }
+
+      el('login-error').style.display = 'none';
+      const r = await fetchJSON(API + '/api/auth/login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ username, password }),
+      });
+      if (r.success) {
+        jwtToken = r.token;
+        currentUser = r.user;
+        localStorage.setItem('dlb_jwt_token', jwtToken);
+        localStorage.setItem('dlb_current_user', JSON.stringify(currentUser));
+        // Also set legacy admin token for backward compat
+        if (!adminToken || adminToken === 'jwt-session') {
+          adminToken = 'jwt-session';
+          localStorage.setItem('dlb_admin_token', adminToken);
+        }
+        el('login-overlay').classList.add('hidden');
+        updateSidebarUser();
+        loadOverview();
+      } else {
+        showLoginError(r.error || 'Login failed');
+      }
+    }
+
+    function showLoginError(msg) {
+      el('login-error').textContent = msg;
+      el('login-error').style.display = 'block';
+    }
+
+    function doLogout() {
+      fetch(API + '/api/auth/logout', { method: 'POST', headers: adminHeaders() });
+      jwtToken = '';
+      currentUser = null;
+      adminToken = '';
+      localStorage.removeItem('dlb_jwt_token');
+      localStorage.removeItem('dlb_current_user');
+      localStorage.removeItem('dlb_admin_token');
+      el('login-overlay').classList.remove('hidden');
+      el('login-username').value = '';
+      el('login-password').value = '';
+      el('sidebar-user').innerHTML = '';
+    }
+
+    function updateSidebarUser() {
+      if (!currentUser) return;
+      const roleClass = 'role-' + currentUser.role;
+      el('sidebar-user').innerHTML = '<div style="display:flex;align-items:center;justify-content:space-between;">' +
+        '<span>' + esc(currentUser.displayName || currentUser.username) + '</span>' +
+        '<span class="role-badge ' + roleClass + '">' + esc(currentUser.role) + '</span>' +
+        '</div>' +
+        '<div style="margin-top:6px;"><a href="#" onclick="doLogout();return false;" style="color:var(--red);font-size:11px;text-decoration:none;">Sign Out</a></div>';
+    }
+
+    // Enter key triggers login
+    document.addEventListener('DOMContentLoaded', function() {
+      el('login-password').addEventListener('keypress', function(e) { if (e.key === 'Enter') doLogin(); });
+      el('login-username').addEventListener('keypress', function(e) { if (e.key === 'Enter') el('login-password').focus(); });
+    });
 
     // ─── Utilities ─────────────────────────────────────────────────────────────
     function esc(s) { if (s == null) return ''; const d = document.createElement('div'); d.textContent = String(s); return d.innerHTML; }
@@ -844,10 +1037,21 @@
     async function fetchJSON(url, opts = {}) {
       try {
         const r = await fetch(url, opts);
+        if (r.status === 401 && jwtToken) {
+          // Only force logout on auth endpoint 401 (token expired), not admin permission denials
+          if (url.includes('/api/auth/')) {
+            doLogout();
+            return { error: 'Session expired. Please log in again.' };
+          }
+          return { error: 'Insufficient permissions', status: 401 };
+        }
         return await r.json();
       } catch (e) { return { error: e.message }; }
     }
-    function adminHeaders() { return { 'Content-Type': 'application/json', 'x-admin-token': adminToken }; }
+    function adminHeaders() {
+      if (jwtToken) return { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + jwtToken };
+      return { 'Content-Type': 'application/json', 'x-admin-token': adminToken };
+    }
     function el(id) { return document.getElementById(id); }
 
     // ─── Navigation ────────────────────────────────────────────────────────────
@@ -859,7 +1063,7 @@
         document.querySelectorAll('.page').forEach(p => p.classList.add('hidden'));
         document.getElementById('page-' + page).classList.remove('hidden');
         // Load data for page
-        const loaders = { overview: loadOverview, bonds: loadBonds, cash: loadCash, payments: loadPayments, ach: loadACH, wire: loadWire, partners: loadPartners, apikeys: loadApiKeys, as2: loadAS2, crm: loadCRM, documents: loadDocuments, accounting: loadAccounting, tax: loadTax, fineract: loadFineract, settings: loadSettings, admin: loadAdmin };
+        const loaders = { overview: loadOverview, bonds: loadBonds, cash: loadCash, payments: loadPayments, ach: loadACH, wire: loadWire, partners: loadPartners, apikeys: loadApiKeys, as2: loadAS2, crm: loadCRM, documents: loadDocuments, accounting: loadAccounting, tax: loadTax, fineract: loadFineract, settings: loadSettings, security: loadSecurity, admin: loadAdmin };
         if (loaders[page]) loaders[page]();
       });
     });
@@ -887,7 +1091,7 @@
         fetchJSON(API + '/api/as2/dashboard'),
         fetchJSON(API + '/api/crm/contacts'),
         fetchJSON(API + '/api/fineract/health'),
-        adminToken ? fetchJSON(API + '/api/admin/system/health', { headers: adminHeaders() }) : Promise.resolve({}),
+        (adminToken && currentUser && currentUser.role === 'admin') ? fetchJSON(API + '/api/admin/system/health', { headers: adminHeaders() }) : Promise.resolve({}),
       ]);
 
       // Summary cards
@@ -2199,9 +2403,134 @@
       el('fin-client-result').innerHTML = r.success ? '<p class="success-msg">Client created! ID: ' + (r.data || {}).clientId + '</p>' : '<p class="error-msg">' + esc(r.error || 'Failed — is Fineract connected?') + '</p>';
     }
 
+    // ─── SECURITY PAGE ──────────────────────────────────────────────────────────
+    async function loadSecurity() {
+      // Load current session info
+      const me = await fetchJSON(API + '/api/auth/me', { headers: adminHeaders() });
+      if (me.success) {
+        const u = me.user;
+        const roleClass = 'role-' + u.role;
+        el('security-session-info').innerHTML =
+          '<div style="display:flex;gap:24px;flex-wrap:wrap;">' +
+          '<div><strong>User:</strong> ' + esc(u.username) + '</div>' +
+          '<div><strong>Role:</strong> <span class="role-badge ' + roleClass + '">' + esc(u.roleLabel || u.role) + '</span></div>' +
+          '<div><strong>Auth Method:</strong> ' + esc(me.authMethod) + '</div>' +
+          '<div><strong>Active Sessions:</strong> ' + me.activeSessions + '</div>' +
+          '</div>';
+
+        // Show admin-only sections
+        if (u.role === 'admin') {
+          el('user-mgmt-section').style.display = '';
+          el('security-log-section').style.display = '';
+          loadUsers();
+          loadSecurityLog();
+        }
+      } else {
+        el('security-session-info').innerHTML = '<p class="error-msg">' + esc(me.error || 'Not authenticated') + '</p>';
+      }
+    }
+
+    async function loadUsers() {
+      const r = await fetchJSON(API + '/api/auth/users', { headers: adminHeaders() });
+      if (!r.success) { el('users-table-wrap').innerHTML = '<p class="error-msg">' + esc(r.error) + '</p>'; return; }
+      const users = r.data || [];
+      let html = '<table><thead><tr><th>ID</th><th>Username</th><th>Display Name</th><th>Role</th><th>Status</th><th>Last Login</th><th>Actions</th></tr></thead><tbody>';
+      for (const u of users) {
+        const roleClass = 'role-' + u.role;
+        const isLocked = u.locked_until && new Date(u.locked_until) > new Date();
+        const status = !u.is_active ? '<span style="color:var(--red)">Disabled</span>' :
+                       isLocked ? '<span style="color:var(--gold)">Locked</span>' :
+                       '<span style="color:var(--green)">Active</span>';
+        html += '<tr><td>' + u.id + '</td><td>' + esc(u.username) + '</td><td>' + esc(u.display_name) + '</td>' +
+          '<td><span class="role-badge ' + roleClass + '">' + esc(u.role) + '</span></td>' +
+          '<td>' + status + '</td><td>' + shortDate(u.last_login) + '</td>' +
+          '<td><select onchange="updateUserRole(' + u.id + ',this.value)" style="background:var(--bg);color:var(--text);border:1px solid var(--border);border-radius:4px;padding:2px 6px;font-size:11px;">' +
+          '<option value="">Change Role</option><option value="viewer">Viewer</option><option value="operator">Operator</option><option value="admin">Admin</option></select> ' +
+          (u.is_active ? '<button class="btn btn-outline btn-sm" style="font-size:10px;padding:2px 6px;" onclick="toggleUser(' + u.id + ',false)">Disable</button>' : '<button class="btn btn-success btn-sm" style="font-size:10px;padding:2px 6px;" onclick="toggleUser(' + u.id + ',true)">Enable</button>') +
+          (isLocked ? ' <button class="btn btn-outline btn-sm" style="font-size:10px;padding:2px 6px;" onclick="unlockUser(' + u.id + ')">Unlock</button>' : '') +
+          '</td></tr>';
+      }
+      html += '</tbody></table>';
+      el('users-table-wrap').innerHTML = html;
+    }
+
+    async function loadSecurityLog() {
+      const filter = el('sec-log-filter').value;
+      const url = filter ? API + '/api/auth/security-log?eventType=' + filter : API + '/api/auth/security-log';
+      const r = await fetchJSON(url, { headers: adminHeaders() });
+      if (!r.success) { el('security-log-wrap').innerHTML = '<p class="error-msg">' + esc(r.error) + '</p>'; return; }
+      const logs = r.data || [];
+      let html = '<table><thead><tr><th>Time</th><th>Event</th><th>User</th><th>IP</th><th>Severity</th><th>Details</th></tr></thead><tbody>';
+      for (const log of logs.slice(0, 50)) {
+        const sevColor = log.severity === 'critical' ? 'var(--red)' : log.severity === 'warn' ? 'var(--gold)' : 'var(--muted)';
+        html += '<tr><td>' + shortDate(log.created_at) + ' ' + (log.created_at ? new Date(log.created_at).toLocaleTimeString() : '') + '</td>' +
+          '<td>' + esc(log.event_type) + '</td><td>' + esc(log.username || '—') + '</td><td>' + esc(log.ip_address || '—') + '</td>' +
+          '<td><span style="color:' + sevColor + '">' + esc(log.severity) + '</span></td>' +
+          '<td style="font-size:11px;">' + esc(log.details ? JSON.stringify(log.details) : '—') + '</td></tr>';
+      }
+      html += '</tbody></table>';
+      el('security-log-wrap').innerHTML = html;
+    }
+
+    async function changePassword() {
+      const oldPass = el('sec-old-pass').value;
+      const newPass = el('sec-new-pass').value;
+      if (!oldPass || !newPass) { el('change-pass-result').innerHTML = '<p class="error-msg">Both fields required</p>'; return; }
+      if (newPass.length < 8) { el('change-pass-result').innerHTML = '<p class="error-msg">Password must be at least 8 characters</p>'; return; }
+      const r = await fetchJSON(API + '/api/auth/change-password', { method: 'POST', headers: adminHeaders(), body: JSON.stringify({ oldPassword: oldPass, newPassword: newPass }) });
+      if (r.success) {
+        el('change-pass-result').innerHTML = '<p class="success-msg">' + esc(r.message) + '</p>';
+        el('sec-old-pass').value = '';
+        el('sec-new-pass').value = '';
+        setTimeout(doLogout, 2000);
+      } else {
+        el('change-pass-result').innerHTML = '<p class="error-msg">' + esc(r.error || 'Failed') + '</p>';
+      }
+    }
+
+    async function createUser() {
+      const username = el('new-user-name').value.trim();
+      const password = el('new-user-pass').value;
+      const displayName = el('new-user-display').value.trim();
+      const role = el('new-user-role').value;
+      if (!username || !password) { el('create-user-result').innerHTML = '<p class="error-msg">Username and password required</p>'; return; }
+      const r = await fetchJSON(API + '/api/auth/users', { method: 'POST', headers: adminHeaders(), body: JSON.stringify({ username, password, displayName, role }) });
+      if (r.success) {
+        el('create-user-result').innerHTML = '<p class="success-msg">User created: ' + esc(r.data.username) + '</p>';
+        el('new-user-name').value = '';
+        el('new-user-pass').value = '';
+        el('new-user-display').value = '';
+        loadUsers();
+      } else {
+        el('create-user-result').innerHTML = '<p class="error-msg">' + esc(r.error || 'Failed') + '</p>';
+      }
+    }
+
+    async function updateUserRole(userId, role) {
+      if (!role) return;
+      const r = await fetchJSON(API + '/api/auth/users/' + userId + '/role', { method: 'PUT', headers: adminHeaders(), body: JSON.stringify({ role }) });
+      alert(r.success ? 'Role updated' : (r.error || 'Failed'));
+      loadUsers();
+    }
+
+    async function toggleUser(userId, active) {
+      const r = await fetchJSON(API + '/api/auth/users/' + userId + '/active', { method: 'PUT', headers: adminHeaders(), body: JSON.stringify({ active }) });
+      alert(r.success ? (active ? 'User enabled' : 'User disabled') : (r.error || 'Failed'));
+      loadUsers();
+    }
+
+    async function unlockUser(userId) {
+      const r = await fetchJSON(API + '/api/auth/users/' + userId + '/unlock', { method: 'POST', headers: adminHeaders() });
+      alert(r.success ? 'Account unlocked' : (r.error || 'Failed'));
+      loadUsers();
+    }
+
     // ─── Init ──────────────────────────────────────────────────────────────────
-    loadOverview();
-    if (adminToken) {
+    checkAuth();
+    if (jwtToken && currentUser) {
+      loadOverview();
+    }
+    if (adminToken && adminToken !== 'jwt-session') {
       el('admin-token').value = adminToken;
       el('admin-token-status').innerHTML = '<div style="padding:8px 12px;background:rgba(16,185,129,0.1);border:1px solid var(--green);border-radius:6px;font-size:12px;"><strong style="color:var(--green)">Authenticated</strong> — Admin token set. All dashboard features are enabled.</div>';
     }
