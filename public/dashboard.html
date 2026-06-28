@@ -1038,9 +1038,12 @@
       try {
         const r = await fetch(url, opts);
         if (r.status === 401 && jwtToken) {
-          // Token expired — force re-login
-          doLogout();
-          return { error: 'Session expired. Please log in again.' };
+          // Only force logout on auth endpoint 401 (token expired), not admin permission denials
+          if (url.includes('/api/auth/')) {
+            doLogout();
+            return { error: 'Session expired. Please log in again.' };
+          }
+          return { error: 'Insufficient permissions', status: 401 };
         }
         return await r.json();
       } catch (e) { return { error: e.message }; }
@@ -1088,7 +1091,7 @@
         fetchJSON(API + '/api/as2/dashboard'),
         fetchJSON(API + '/api/crm/contacts'),
         fetchJSON(API + '/api/fineract/health'),
-        adminToken ? fetchJSON(API + '/api/admin/system/health', { headers: adminHeaders() }) : Promise.resolve({}),
+        (adminToken && currentUser && currentUser.role === 'admin') ? fetchJSON(API + '/api/admin/system/health', { headers: adminHeaders() }) : Promise.resolve({}),
       ]);
 
       // Summary cards
