@@ -6,6 +6,7 @@ primary_region = 'iad'
 [env]
   PORT = '3002'
   NODE_ENV = 'production'
+  FINERACT_URL = 'http://dlbtrust-fineract.internal:8443/fineract-provider/api/v1'
 
 [http_service]
   internal_port = 3002
