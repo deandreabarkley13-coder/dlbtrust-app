@@ -214,8 +214,8 @@ const requireAdminForResilience = async (req, res, next) => {
     try {
       const ApiCredentials = require('../integrations/ach/apiCredentials').ApiCredentials;
       const cred = await ApiCredentials.validate(authHeader.slice(7).trim());
-      if (cred) { req.user = cred.name || 'api_key'; return next(); }
-    } catch(e) {}
+      if (cred) { req.user = cred.label || 'api_key'; return next(); }
+    } catch(e) { console.warn('[fineract-resilience] API key validation error:', e.message); }
   }
   return res.status(401).json({ error: 'Authentication required' });
 };
