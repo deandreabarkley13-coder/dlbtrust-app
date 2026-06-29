@@ -85,12 +85,18 @@ function triggerRestart() {
   lastRestart = new Date().toISOString();
   consecutiveFailures = 0;
 
-  // Try PM2 restart first, fall back to direct process restart
-  exec('pm2 restart dlbtrust-api 2>/dev/null || (kill $(lsof -t -i:' + API_PORT + ') 2>/dev/null; sleep 2; cd ' + path.resolve(__dirname, '../../..') + ' && node server/server-3002.js &)', function(err, stdout, stderr) {
+  // Try PM2 restart (primary mechanism)
+  var { execFile } = require('child_process');
+  execFile('pm2', ['restart', 'dlbtrust-api'], function(err, stdout, stderr) {
     if (err) {
-      log('Restart command error: ' + err.message);
+      log('PM2 restart failed: ' + err.message + ' — attempting fuser fallback');
+      // Fallback: kill process on port and restart via node
+      exec('fuser -k ' + parseInt(API_PORT, 10) + '/tcp 2>/dev/null; sleep 2; cd ' + path.resolve(__dirname, '../../..') + ' && node server/server-3002.js &', function(err2) {
+        if (err2) log('Fallback restart error: ' + err2.message);
+        else log('Fallback restart triggered');
+      });
     } else {
-      log('Restart triggered successfully');
+      log('PM2 restart triggered successfully');
     }
   });
 }

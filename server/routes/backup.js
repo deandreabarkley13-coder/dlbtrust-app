@@ -21,8 +21,26 @@ var path = require('path');
 var backupEngine = require(path.join(__dirname, '../integrations/backup/backupEngine'));
 var journal = require(path.join(__dirname, '../integrations/backup/transactionJournal'));
 
+// Auth middleware — require admin token or API key for all backup operations
+var requireAdmin = async function(req, res, next) {
+  var adminToken = req.headers['x-admin-token'] || req.query.adminToken;
+  if (adminToken && adminToken === process.env.ADMIN_SECRET_TOKEN) {
+    req.user = 'admin';
+    return next();
+  }
+  var authHeader = req.headers['authorization'];
+  if (authHeader && authHeader.startsWith('Bearer ')) {
+    try {
+      var ApiCredentials = require(path.join(__dirname, '../integrations/ach/apiCredentials')).ApiCredentials;
+      var cred = await ApiCredentials.validate(authHeader.slice(7).trim());
+      if (cred) { req.user = cred.name || 'api_key'; return next(); }
+    } catch(e) {}
+  }
+  return res.status(401).json({ success: false, error: 'Authentication required' });
+};
+
 // ─── Backup Status ────────────────────────────────────────────────────────────
-router.get('/status', function(req, res) {
+router.get('/status', requireAdmin, function(req, res) {
   var backups = backupEngine.listBackups();
   var journalStats = journal.getStats();
 
@@ -52,7 +70,7 @@ router.get('/status', function(req, res) {
 });
 
 // ─── Trigger Manual Backup ────────────────────────────────────────────────────
-router.post('/run', async function(req, res) {
+router.post('/run', requireAdmin, async function(req, res) {
   try {
     var result = await backupEngine.runFullBackup();
     journal.record('backup_manual', { postgres: result.postgres.success, sqlite: result.sqlite.success }, req.user || 'admin');
@@ -63,7 +81,7 @@ router.post('/run', async function(req, res) {
 });
 
 // ─── Export Full System State ─────────────────────────────────────────────────
-router.post('/export', async function(req, res) {
+router.post('/export', requireAdmin, async function(req, res) {
   try {
     var result = await backupEngine.exportSystemState();
     if (result.success) {
@@ -76,13 +94,13 @@ router.post('/export', async function(req, res) {
 });
 
 // ─── List Backups ─────────────────────────────────────────────────────────────
-router.get('/list', function(req, res) {
+router.get('/list', requireAdmin, function(req, res) {
   var backups = backupEngine.listBackups();
   res.json({ success: true, data: backups });
 });
 
 // ─── Restore from Backup ──────────────────────────────────────────────────────
-router.post('/restore', function(req, res) {
+router.post('/restore', requireAdmin, function(req, res) {
   var file = req.body.file;
   if (!file) return res.status(400).json({ success: false, error: 'Required: file (backup filename)' });
 
@@ -99,7 +117,7 @@ router.post('/restore', function(req, res) {
 });
 
 // ─── Transaction Journal ──────────────────────────────────────────────────────
-router.get('/journal', function(req, res) {
+router.get('/journal', requireAdmin, function(req, res) {
   var options = {
     limit: parseInt(req.query.limit || '50', 10),
     type: req.query.type || null,
@@ -109,11 +127,11 @@ router.get('/journal', function(req, res) {
   res.json({ success: true, data: entries, count: entries.length });
 });
 
-router.get('/journal/stats', function(req, res) {
+router.get('/journal/stats', requireAdmin, function(req, res) {
   res.json({ success: true, data: journal.getStats() });
 });
 
-router.get('/journal/verify', function(req, res) {
+router.get('/journal/verify', requireAdmin, function(req, res) {
   var result = journal.verifyIntegrity();
   res.json({ success: true, data: result });
 });

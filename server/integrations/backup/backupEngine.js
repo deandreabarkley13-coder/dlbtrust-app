@@ -14,7 +14,7 @@
 
 var fs = require('fs');
 var path = require('path');
-var { execSync, exec } = require('child_process');
+var { execSync, execFileSync, exec } = require('child_process');
 
 var BACKUP_DIR = process.env.BACKUP_DIR || path.resolve(__dirname, '../../../backups');
 var PG_HOST = process.env.FINERACT_DB_HOST || 'localhost';
@@ -41,10 +41,10 @@ function backupPostgres() {
   var filepath = path.join(BACKUP_DIR, 'pg', filename);
 
   var env = Object.assign({}, process.env, { PGPASSWORD: PG_PASS });
-  var cmd = 'pg_dump -h ' + PG_HOST + ' -p ' + PG_PORT + ' -U ' + PG_USER + ' -d ' + PG_DB + ' --no-owner --no-acl -f ' + filepath;
+  var args = ['-h', PG_HOST, '-p', PG_PORT, '-U', PG_USER, '-d', PG_DB, '--no-owner', '--no-acl', '-f', filepath];
 
   try {
-    execSync(cmd, { env: env, timeout: 60000 });
+    execFileSync('pg_dump', args, { env: env, timeout: 60000 });
     var stats = fs.statSync(filepath);
     console.log('[backup] PostgreSQL backup complete: ' + filename + ' (' + (stats.size / 1024).toFixed(1) + ' KB)');
     return { success: true, file: filename, path: filepath, size: stats.size, timestamp: new Date().toISOString() };
@@ -74,7 +74,7 @@ function backupSQLite() {
     var dest = path.join(BACKUP_DIR, 'sqlite', dbFile.replace(/\.(db|sqlite)$/, '') + '-' + timestamp + '.db');
     try {
       // WAL checkpoint before copy
-      try { execSync('sqlite3 ' + src + ' "PRAGMA wal_checkpoint(TRUNCATE);"', { timeout: 10000 }); } catch(e) {}
+      try { execFileSync('sqlite3', [src, 'PRAGMA wal_checkpoint(TRUNCATE);'], { timeout: 10000 }); } catch(e) {}
       fs.copyFileSync(src, dest);
       var stats = fs.statSync(dest);
       results.push({ file: dbFile, backup: path.basename(dest), size: stats.size });
@@ -157,10 +157,10 @@ function restorePostgres(backupFile) {
   }
 
   var env = Object.assign({}, process.env, { PGPASSWORD: PG_PASS });
-  var cmd = 'psql -h ' + PG_HOST + ' -p ' + PG_PORT + ' -U ' + PG_USER + ' -d ' + PG_DB + ' -f ' + filepath;
+  var args = ['-h', PG_HOST, '-p', PG_PORT, '-U', PG_USER, '-d', PG_DB, '-f', filepath];
 
   try {
-    execSync(cmd, { env: env, timeout: 120000 });
+    execFileSync('psql', args, { env: env, timeout: 120000 });
     console.log('[backup] PostgreSQL restore complete from: ' + backupFile);
     return { success: true, restored_from: backupFile, timestamp: new Date().toISOString() };
   } catch (err) {
@@ -215,15 +215,13 @@ function applyRetention() {
 
   files.forEach(function(f, i) {
     var ageInDays = (now - f.mtime.getTime()) / DAY;
-    // Keep: last 7 days (all), weekly for 4 weeks, delete older
     if (ageInDays <= 7) return; // keep all from last 7 days
     if (ageInDays <= 28 && f.mtime.getDay() === 0) return; // keep Sunday backups for 4 weeks
-    if (ageInDays > 28) {
-      try {
-        fs.unlinkSync(path.join(pgDir, f.file));
-        deleted++;
-      } catch(e) {}
-    }
+    // Delete everything else (non-Sunday 8-28 days old + anything >28 days)
+    try {
+      fs.unlinkSync(path.join(pgDir, f.file));
+      deleted++;
+    } catch(e) {}
   });
 
   if (deleted > 0) console.log('[backup] Retention: deleted ' + deleted + ' old backup(s)');

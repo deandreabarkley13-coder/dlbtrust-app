@@ -221,8 +221,7 @@ router.get('/batches/:id/download', async (req, res) => {
 router.post('/batches/:id/transmit', requireAdmin, async (req, res) => {
   try {
     const result = await ACHEngine.transmitBatch(req.params.id);
-    // Record in transaction journal
-    try { var journal = require(path.join(HD, 'server', 'integrations', 'backup', 'transactionJournal')); journal.record('ach_transmit', { batch_id: req.params.id, result: result.status || 'transmitted' }, 'api'); } catch(e) {}
+    try { var journal = require('../integrations/backup/transactionJournal'); journal.record('ach_transmit', { batch_id: req.params.id, result: result.status || 'transmitted' }, 'api'); } catch(e) {}
     res.json({ success: true, data: result });
   } catch (err) {
     res.status(500).json({ success: false, error: err.message });
