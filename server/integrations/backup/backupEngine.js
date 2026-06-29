@@ -59,9 +59,11 @@ function backupPostgres() {
  */
 function backupFineractDB() {
   ensureBackupDir();
+  var fineractBackupDir = path.join(BACKUP_DIR, 'pg-fineract');
+  if (!fs.existsSync(fineractBackupDir)) fs.mkdirSync(fineractBackupDir, { recursive: true });
   var timestamp = new Date().toISOString().replace(/[:.]/g, '-');
   var filename = 'fineract-default-backup-' + timestamp + '.sql';
-  var filepath = path.join(BACKUP_DIR, 'pg', filename);
+  var filepath = path.join(fineractBackupDir, filename);
 
   var env = Object.assign({}, process.env, { PGPASSWORD: PG_PASS });
   var fineractDB = process.env.FINERACT_DEFAULT_DB || 'fineract_default';
@@ -199,11 +201,17 @@ function restorePostgres(backupFile) {
 function listBackups() {
   ensureBackupDir();
   var pgDir = path.join(BACKUP_DIR, 'pg');
+  var fineractDir = path.join(BACKUP_DIR, 'pg-fineract');
   var sqliteDir = path.join(BACKUP_DIR, 'sqlite');
   var exportsDir = path.join(BACKUP_DIR, 'exports');
 
   var pgFiles = fs.existsSync(pgDir) ? fs.readdirSync(pgDir).filter(function(f) { return f.endsWith('.sql'); }).map(function(f) {
     var s = fs.statSync(path.join(pgDir, f));
+    return { file: f, size: s.size, created: s.mtime.toISOString() };
+  }).sort(function(a, b) { return b.created.localeCompare(a.created); }) : [];
+
+  var fineractFiles = fs.existsSync(fineractDir) ? fs.readdirSync(fineractDir).filter(function(f) { return f.endsWith('.sql'); }).map(function(f) {
+    var s = fs.statSync(path.join(fineractDir, f));
     return { file: f, size: s.size, created: s.mtime.toISOString() };
   }).sort(function(a, b) { return b.created.localeCompare(a.created); }) : [];
 
@@ -217,7 +225,7 @@ function listBackups() {
     return { file: f, size: s.size, created: s.mtime.toISOString() };
   }).sort(function(a, b) { return b.created.localeCompare(a.created); }) : [];
 
-  return { postgres: pgFiles, sqlite: sqliteFiles, exports: exportFiles };
+  return { postgres: pgFiles, fineract: fineractFiles, sqlite: sqliteFiles, exports: exportFiles };
 }
 
 /**

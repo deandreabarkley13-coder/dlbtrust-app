@@ -132,24 +132,28 @@ async function attemptRecovery() {
  * This is needed when Fineract crashes during migration
  */
 async function cleanLiquibaseLocks() {
-  var pool;
-  try {
-    pool = require('../bonds/pgPool');
-  } catch(e) {
-    console.warn('[fineract-monitor] Cannot access pgPool:', e.message);
-    return { success: false, error: e.message };
-  }
-
   var databases = ['fineract_tenants', 'fineract_default'];
   var results = [];
 
   for (var i = 0; i < databases.length; i++) {
     var db = databases[i];
+    var { Pool } = require('pg');
+    var dbUrl = process.env.DATABASE_URL;
+    if (dbUrl) {
+      dbUrl = dbUrl.replace(/\/[^/?]+(\?|$)/, '/' + db + '$1');
+    } else {
+      dbUrl = 'postgresql://' + (process.env.FINERACT_DB_USER || 'dlbtrust_app') +
+        ':' + (process.env.FINERACT_DB_PASSWORD || '') +
+        '@' + (process.env.FINERACT_DB_HOST || 'localhost') +
+        ':' + (process.env.FINERACT_DB_PORT || '5432') +
+        '/' + db + '?sslmode=disable';
+    }
+
+    var tempPool = new Pool({ connectionString: dbUrl, ssl: false, max: 1 });
     try {
-      // Check if databasechangeloglock table exists
-      var tableCheck = await pool.query(
-        "SELECT EXISTS (SELECT FROM information_schema.tables WHERE table_catalog = $1 AND table_name = 'databasechangeloglock')",
-        [db]
+      // Check if databasechangeloglock table exists in the target database
+      var tableCheck = await tempPool.query(
+        "SELECT EXISTS (SELECT FROM information_schema.tables WHERE table_name = 'databasechangeloglock')"
       );
 
       if (!tableCheck.rows[0].exists) {
@@ -157,36 +161,20 @@ async function cleanLiquibaseLocks() {
         continue;
       }
 
-      // Connect to the specific database to clear locks
-      var { Pool } = require('pg');
-      var dbUrl = process.env.DATABASE_URL;
-      if (dbUrl) {
-        dbUrl = dbUrl.replace(/\/[^/?]+(\?|$)/, '/' + db + '$1');
+      var lockResult = await tempPool.query(
+        "UPDATE databasechangeloglock SET locked = false, lockgranted = NULL, lockedby = NULL WHERE locked = true"
+      );
+      if (lockResult.rowCount > 0) {
+        state.liquibaseLocksCleaned += lockResult.rowCount;
+        console.log('[fineract-monitor] Cleared ' + lockResult.rowCount + ' Liquibase lock(s) in ' + db);
+        results.push({ database: db, action: 'cleared', count: lockResult.rowCount });
       } else {
-        dbUrl = 'postgresql://' + (process.env.FINERACT_DB_USER || 'dlbtrust_app') +
-          ':' + (process.env.FINERACT_DB_PASSWORD || '') +
-          '@' + (process.env.FINERACT_DB_HOST || 'localhost') +
-          ':' + (process.env.FINERACT_DB_PORT || '5432') +
-          '/' + db + '?sslmode=disable';
-      }
-
-      var tempPool = new Pool({ connectionString: dbUrl, ssl: false, max: 1 });
-      try {
-        var lockResult = await tempPool.query(
-          "UPDATE databasechangeloglock SET locked = false, lockgranted = NULL, lockedby = NULL WHERE locked = true"
-        );
-        if (lockResult.rowCount > 0) {
-          state.liquibaseLocksCleaned += lockResult.rowCount;
-          console.log('[fineract-monitor] Cleared ' + lockResult.rowCount + ' Liquibase lock(s) in ' + db);
-          results.push({ database: db, action: 'cleared', count: lockResult.rowCount });
-        } else {
-          results.push({ database: db, action: 'no_locks' });
-        }
-      } finally {
-        await tempPool.end();
+        results.push({ database: db, action: 'no_locks' });
       }
     } catch(e) {
       results.push({ database: db, action: 'error', error: e.message });
+    } finally {
+      await tempPool.end();
     }
   }
 

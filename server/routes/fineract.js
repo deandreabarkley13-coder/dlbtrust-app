@@ -202,8 +202,22 @@ router.get('/savings', async (req, res) => {
   }
 });
 
+// Admin auth middleware for resilience endpoints
+const requireAdminForResilience = async (req, res, next) => {
+  const token = req.headers['x-admin-token'] || req.query.adminToken;
+  if (!token) return res.status(401).json({ error: 'Authentication required' });
+  try {
+    const { UserAuth } = require('../integrations/auth/userAuth');
+    const session = await UserAuth.validateToken(token);
+    if (!session || session.role !== 'admin') return res.status(403).json({ error: 'Admin access required' });
+    next();
+  } catch(e) {
+    return res.status(401).json({ error: 'Invalid token' });
+  }
+};
+
 // ─── GET /api/fineract/resilience ────────────────────────────────────────────
-router.get('/resilience', (req, res) => {
+router.get('/resilience', requireAdminForResilience, (req, res) => {
   try {
     const resilience = require('../integrations/fineract/fineractResilience');
     res.json({ success: true, ...resilience.getStatus() });
@@ -213,7 +227,7 @@ router.get('/resilience', (req, res) => {
 });
 
 // ─── POST /api/fineract/resilience/clean-locks ──────────────────────────────
-router.post('/resilience/clean-locks', async (req, res) => {
+router.post('/resilience/clean-locks', requireAdminForResilience, async (req, res) => {
   try {
     const resilience = require('../integrations/fineract/fineractResilience');
     const result = await resilience.cleanLiquibaseLocks();
