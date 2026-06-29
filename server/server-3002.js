@@ -92,6 +92,46 @@ app.get('/treasury', function(req, res) {
   res.set('Expires', '0');
   res.sendFile(path.join(HD, 'public', 'dashboard.html'));
 });
+// ─── Health / Data Integrity Endpoint ──────────────────────────────────────
+app.get('/api/health', async function(req, res) {
+  try {
+    var pool = require(path.join(HD, 'server', 'integrations', 'bonds', 'pgPool'));
+    var checks = {};
+
+    var bondRes = await pool.query("SELECT COUNT(*) as c, COALESCE(SUM(face_value),0) as total FROM bonds WHERE status = 'active'");
+    checks.bonds = { ok: bondRes.rows[0].c > 0, count: parseInt(bondRes.rows[0].c), totalValue: Number(bondRes.rows[0].total) };
+
+    var cashRes = await pool.query("SELECT COUNT(*) as c FROM cash_accounts WHERE status = 'active'");
+    checks.cashAccounts = { ok: cashRes.rows[0].c > 0, count: parseInt(cashRes.rows[0].c) };
+
+    var trustRes = await pool.query("SELECT COUNT(*) as c FROM trust_accounts");
+    checks.trustAccounts = { ok: trustRes.rows[0].c > 0, count: parseInt(trustRes.rows[0].c) };
+
+    var userRes = await pool.query("SELECT COUNT(*) as c FROM auth_users");
+    checks.authUsers = { ok: userRes.rows[0].c > 0, count: parseInt(userRes.rows[0].c) };
+
+    checks.database = { ok: true };
+
+    var fineractOk = false;
+    try {
+      var FineractClient = require(path.join(HD, 'server', 'integrations', 'fineract', 'fineractClient')).FineractClient;
+      await FineractClient.healthCheck();
+      fineractOk = true;
+    } catch(e) {}
+    checks.fineract = { ok: fineractOk };
+
+    var allOk = Object.keys(checks).every(function(k) { return checks[k].ok; });
+    res.json({
+      status: allOk ? 'healthy' : 'degraded',
+      uptime: process.uptime(),
+      startedAt: global.__dlb_startup || new Date().toISOString(),
+      checks: checks,
+    });
+  } catch (e) {
+    res.status(500).json({ status: 'unhealthy', error: e.message });
+  }
+});
+
 app.use(express.static(path.join(HD, 'public'), {
   etag: false,
   maxAge: 0,
@@ -156,8 +196,11 @@ try {
 app.listen(PORT, function() {
   console.log('[dlbtrust-treasury] running on port ' + PORT);
 
-  // Auto-seed Fineract GL accounts and post opening balance on startup
-  setTimeout(async function() {
+  // Auto-seed Fineract GL accounts and post opening balance on startup (with retry)
+  async function initFineract(attempt) {
+    attempt = attempt || 1;
+    var MAX_ATTEMPTS = 5;
+    var RETRY_DELAY = 10000; // 10 seconds between retries
     try {
       var FineractClient = require(path.join(HD, 'server', 'integrations', 'fineract', 'fineractClient')).FineractClient;
       var pool = require(path.join(HD, 'server', 'integrations', 'bonds', 'pgPool'));
@@ -235,7 +278,46 @@ app.listen(PORT, function() {
         }
       }
     } catch (initErr) {
-      console.warn('[fineract-init] Fineract not available — GL will be managed by local Trust Accounting engine. (' + initErr.message + ')');
+      if (attempt < MAX_ATTEMPTS) {
+        console.warn('[fineract-init] Attempt ' + attempt + '/' + MAX_ATTEMPTS + ' failed: ' + initErr.message + ' — retrying in ' + (RETRY_DELAY/1000) + 's');
+        setTimeout(function() { initFineract(attempt + 1); }, RETRY_DELAY);
+      } else {
+        console.warn('[fineract-init] All ' + MAX_ATTEMPTS + ' attempts failed. GL will be managed by local Trust Accounting engine. (' + initErr.message + ')');
+      }
     }
-  }, 5000);
+  }
+  setTimeout(function() { initFineract(1); }, 5000);
+
+  // ─── Data Integrity Check on Startup ────────────────────────────────────────
+  setTimeout(async function() {
+    try {
+      var pool = require(path.join(HD, 'server', 'integrations', 'bonds', 'pgPool'));
+      var checks = { bonds: false, cashAccounts: false, trustAccounts: false, users: false };
+
+      var bondRes = await pool.query("SELECT COUNT(*) as c, COALESCE(SUM(face_value),0) as total FROM bonds WHERE status = 'active'");
+      checks.bonds = bondRes.rows[0].c > 0;
+      console.log('[data-check] Bonds: ' + bondRes.rows[0].c + ' active ($' + Number(bondRes.rows[0].total).toLocaleString() + ')');
+
+      var cashRes = await pool.query("SELECT COUNT(*) as c FROM cash_accounts WHERE status = 'active'");
+      checks.cashAccounts = cashRes.rows[0].c > 0;
+      console.log('[data-check] Cash accounts: ' + cashRes.rows[0].c + ' active');
+
+      var trustRes = await pool.query("SELECT COUNT(*) as c FROM trust_accounts");
+      checks.trustAccounts = trustRes.rows[0].c > 0;
+      console.log('[data-check] Trust accounts: ' + trustRes.rows[0].c);
+
+      var userRes = await pool.query("SELECT COUNT(*) as c FROM auth_users");
+      checks.users = userRes.rows[0].c > 0;
+      console.log('[data-check] Auth users: ' + userRes.rows[0].c);
+
+      var allOk = Object.values(checks).every(function(v) { return v; });
+      console.log('[data-check] Data integrity: ' + (allOk ? 'ALL OK' : 'ISSUES DETECTED — ' + JSON.stringify(checks)));
+
+      // Store startup time for health endpoint
+      global.__dlb_startup = new Date().toISOString();
+      global.__dlb_data_integrity = checks;
+    } catch (e) {
+      console.warn('[data-check] Error:', e.message);
+    }
+  }, 3000);
 });
