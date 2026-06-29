@@ -123,9 +123,9 @@ app.get('/api/health', async function(req, res) {
     } catch(e) {}
     checks.fineract = { ok: fineractOk };
 
-    var allOk = Object.keys(checks).every(function(k) { return checks[k].ok; });
+    var coreOk = checks.bonds.ok && checks.cashAccounts.ok && checks.trustAccounts.ok && checks.authUsers.ok && checks.database.ok;
     res.json({
-      status: allOk ? 'healthy' : 'degraded',
+      status: coreOk ? 'healthy' : 'degraded',
       uptime: process.uptime(),
       startedAt: global.__dlb_startup || new Date().toISOString(),
       checks: checks,
