@@ -202,4 +202,25 @@ router.get('/savings', async (req, res) => {
   }
 });
 
+// ─── GET /api/fineract/resilience ────────────────────────────────────────────
+router.get('/resilience', (req, res) => {
+  try {
+    const resilience = require('../integrations/fineract/fineractResilience');
+    res.json({ success: true, ...resilience.getStatus() });
+  } catch (err) {
+    res.json({ success: false, error: err.message, monitoring: false });
+  }
+});
+
+// ─── POST /api/fineract/resilience/clean-locks ──────────────────────────────
+router.post('/resilience/clean-locks', async (req, res) => {
+  try {
+    const resilience = require('../integrations/fineract/fineractResilience');
+    const result = await resilience.cleanLiquibaseLocks();
+    res.json({ success: true, ...result });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
 module.exports = router;

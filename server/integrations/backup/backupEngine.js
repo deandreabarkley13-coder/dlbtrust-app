@@ -55,6 +55,30 @@ function backupPostgres() {
 }
 
 /**
+ * Backup Fineract GL database (fineract_default)
+ */
+function backupFineractDB() {
+  ensureBackupDir();
+  var timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+  var filename = 'fineract-default-backup-' + timestamp + '.sql';
+  var filepath = path.join(BACKUP_DIR, 'pg', filename);
+
+  var env = Object.assign({}, process.env, { PGPASSWORD: PG_PASS });
+  var fineractDB = process.env.FINERACT_DEFAULT_DB || 'fineract_default';
+  var args = ['-h', PG_HOST, '-p', PG_PORT, '-U', PG_USER, '-d', fineractDB, '--no-owner', '--no-acl', '-f', filepath];
+
+  try {
+    execFileSync('pg_dump', args, { env: env, timeout: 120000 });
+    var stats = fs.statSync(filepath);
+    console.log('[backup] Fineract DB backup complete: ' + filename + ' (' + (stats.size / 1024).toFixed(1) + ' KB)');
+    return { success: true, file: filename, path: filepath, size: stats.size, timestamp: new Date().toISOString() };
+  } catch (err) {
+    console.error('[backup] Fineract DB backup failed:', err.message);
+    return { success: false, error: err.message };
+  }
+}
+
+/**
  * Backup SQLite databases (trust accounting, etc.)
  */
 function backupSQLite() {
@@ -233,9 +257,10 @@ function applyRetention() {
  */
 async function runFullBackup() {
   var pg = backupPostgres();
+  var fineract = backupFineractDB();
   var sqlite = backupSQLite();
   var retention = applyRetention();
-  return { postgres: pg, sqlite: sqlite, retention: retention, timestamp: new Date().toISOString() };
+  return { postgres: pg, fineract: fineract, sqlite: sqlite, retention: retention, timestamp: new Date().toISOString() };
 }
 
 // Scheduled backup interval (default: every 6 hours)
@@ -255,6 +280,7 @@ function stopScheduledBackups() {
 
 module.exports = {
   backupPostgres: backupPostgres,
+  backupFineractDB: backupFineractDB,
   backupSQLite: backupSQLite,
   exportSystemState: exportSystemState,
   restorePostgres: restorePostgres,
