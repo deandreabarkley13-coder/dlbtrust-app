@@ -1089,6 +1089,7 @@
     function shortDate(d) { return d ? new Date(d).toLocaleDateString() : '—'; }
     async function fetchJSON(url, opts = {}) {
       try {
+        opts.credentials = 'include';
         const r = await fetch(url, opts);
         if (r.status === 401 && jwtToken) {
           // Only force logout on auth endpoint 401 (token expired), not admin permission denials
