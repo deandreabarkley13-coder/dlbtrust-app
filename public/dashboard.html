@@ -242,6 +242,7 @@
     <div class="nav-section">System</div>
     <div class="nav-item" data-page="settings"><span class="icon">🌐</span> System Settings</div>
     <div class="nav-item" data-page="security"><span class="icon">🛡️</span> Security</div>
+    <div class="nav-item" data-page="backup"><span class="icon">💾</span> Backup & Recovery</div>
     <div class="nav-item" data-page="admin"><span class="icon">⚙️</span> Admin Controls</div>
     <div style="padding:12px 16px;margin-top:auto;border-top:1px solid var(--border);">
       <div id="sidebar-user" style="font-size:12px;color:var(--muted);"></div>
@@ -941,6 +942,36 @@
       </div>
     </div>
 
+    <div id="page-backup" class="page hidden">
+      <div class="page-header">
+        <div><h1>Backup & Recovery</h1><div class="subtitle">System Resilience — Automated Backups, Watchdog, Transaction Journal</div></div>
+        <div class="flex gap-12">
+          <button class="btn btn-success btn-sm" onclick="triggerManualBackup()">Run Backup Now</button>
+          <button class="btn btn-primary btn-sm" onclick="loadBackupPage()">Refresh</button>
+        </div>
+      </div>
+      <div class="card mb-16">
+        <div class="section-title">System Status</div>
+        <div id="backup-status"><p class="loading">Loading...</p></div>
+      </div>
+      <div class="card mb-16">
+        <div class="section-title">Quick Actions</div>
+        <div class="flex gap-12" style="flex-wrap:wrap;">
+          <button class="btn btn-outline btn-sm" onclick="exportSystemState()">Export Full State</button>
+          <button class="btn btn-outline btn-sm" onclick="verifyJournal()">Verify Journal Integrity</button>
+        </div>
+        <div id="backup-action-result" style="margin-top:8px;"></div>
+      </div>
+      <div class="card mb-16">
+        <div class="section-title">Available Backups</div>
+        <div id="backup-list"><p class="loading">Loading...</p></div>
+      </div>
+      <div class="card mb-16">
+        <div class="section-title">Transaction Journal (Last 20 entries)</div>
+        <div class="table-wrap" id="backup-journal"><p class="loading">Loading...</p></div>
+      </div>
+    </div>
+
     <div id="page-admin" class="page hidden">
       <div class="page-header">
         <div><h1>Admin Controls</h1><div class="subtitle">System Health, Audit Log & Bond Administration</div></div>
@@ -1085,7 +1116,7 @@
         document.querySelectorAll('.page').forEach(p => p.classList.add('hidden'));
         document.getElementById('page-' + page).classList.remove('hidden');
         // Load data for page
-        const loaders = { overview: loadOverview, bonds: loadBonds, cash: loadCash, payments: loadPayments, ach: loadACH, wire: loadWire, partners: loadPartners, apikeys: loadApiKeys, as2: loadAS2, crm: loadCRM, documents: loadDocuments, accounting: loadAccounting, tax: loadTax, fineract: loadFineract, settings: loadSettings, security: loadSecurity, admin: loadAdmin };
+        const loaders = { overview: loadOverview, bonds: loadBonds, cash: loadCash, payments: loadPayments, ach: loadACH, wire: loadWire, partners: loadPartners, apikeys: loadApiKeys, as2: loadAS2, crm: loadCRM, documents: loadDocuments, accounting: loadAccounting, tax: loadTax, fineract: loadFineract, settings: loadSettings, security: loadSecurity, backup: loadBackupPage, admin: loadAdmin };
         if (loaders[page]) loaders[page]();
       });
     });
@@ -2227,6 +2258,113 @@
         loadSettings();
       } else {
         alert('Error: ' + (resp.error || 'Failed to apply template'));
+      }
+    }
+
+    // ─── BACKUP & RECOVERY ──────────────────────────────────────────────────────
+    async function loadBackupPage() {
+      var [statusR, listR, journalR] = await Promise.all([
+        fetchJSON(API + '/api/backup/status'),
+        fetchJSON(API + '/api/backup/list'),
+        fetchJSON(API + '/api/backup/journal?limit=20'),
+      ]);
+
+      // Status panel
+      if (statusR.success) {
+        var d = statusR.data;
+        var html = '<table><tbody>';
+        html += '<tr><td>Backup System</td><td><span class="badge badge-success">' + d.backup_system.toUpperCase() + '</span></td></tr>';
+        html += '<tr><td>Schedule</td><td>Every ' + d.schedule_interval + '</td></tr>';
+        html += '<tr><td>Retention Policy</td><td>' + d.retention_policy + '</td></tr>';
+        html += '<tr><td>PostgreSQL Backups</td><td>' + d.backups_available.postgres + ' file(s)</td></tr>';
+        html += '<tr><td>System Exports</td><td>' + d.backups_available.exports + ' file(s)</td></tr>';
+        html += '<tr><td>Watchdog</td><td><span class="badge badge-success">' + d.watchdog.status.toUpperCase() + '</span> (every ' + d.watchdog.interval + ', threshold: ' + d.watchdog.failures_threshold + ')</td></tr>';
+        html += '<tr><td>Graceful Shutdown</td><td><span class="badge badge-success">ENABLED</span></td></tr>';
+        html += '<tr><td>Transaction Journal</td><td>' + (d.journal.entries || 0) + ' entries (' + (d.journal.file_size_human || '0 KB') + ')</td></tr>';
+        if (d.recovery_state) {
+          html += '<tr><td>Last Recovery</td><td><span class="badge badge-gold">RECOVERED</span> from ' + d.recovery_state.shutdown_at + ' (' + (d.recovery_state.pending_operations || []).length + ' ops resumed)</td></tr>';
+        }
+        html += '</tbody></table>';
+        el('backup-status').innerHTML = html;
+      } else {
+        el('backup-status').innerHTML = '<p class="error-msg">' + esc(statusR.error || 'Failed to load') + '</p>';
+      }
+
+      // Backup list
+      if (listR.success) {
+        var pg = listR.data.postgres || [];
+        if (pg.length === 0) {
+          el('backup-list').innerHTML = '<p class="text-muted">No backups yet. Click "Run Backup Now" to create the first one.</p>';
+        } else {
+          var html = '<table><thead><tr><th>File</th><th>Size</th><th>Created</th><th>Actions</th></tr></thead><tbody>';
+          pg.slice(0, 10).forEach(function(b) {
+            html += '<tr><td><code style="font-size:11px;">' + esc(b.file) + '</code></td><td>' + (b.size / 1024).toFixed(1) + ' KB</td><td>' + new Date(b.created).toLocaleDateString() + '</td><td><button class="btn btn-outline btn-sm" onclick="restoreBackup(\'' + esc(b.file) + '\')">Restore</button></td></tr>';
+          });
+          html += '</tbody></table>';
+          el('backup-list').innerHTML = html;
+        }
+      }
+
+      // Journal
+      if (journalR.success && journalR.data.length > 0) {
+        var html = '<table><thead><tr><th>#</th><th>Time</th><th>Type</th><th>Actor</th><th>Details</th></tr></thead><tbody>';
+        journalR.data.forEach(function(e) {
+          var details = '';
+          if (e.data) { var keys = Object.keys(e.data).slice(0, 3); details = keys.map(function(k) { return k + '=' + JSON.stringify(e.data[k]).substring(0, 30); }).join(', '); }
+          html += '<tr><td>' + e.seq + '</td><td style="font-size:11px;">' + new Date(e.ts).toLocaleString() + '</td><td><span class="badge badge-info">' + esc(e.type) + '</span></td><td>' + esc(e.actor) + '</td><td style="font-size:11px;max-width:200px;overflow:hidden;text-overflow:ellipsis;">' + esc(details) + '</td></tr>';
+          });
+        html += '</tbody></table>';
+        el('backup-journal').innerHTML = html;
+      } else {
+        el('backup-journal').innerHTML = '<p class="text-muted">No journal entries yet.</p>';
+      }
+    }
+
+    async function triggerManualBackup() {
+      el('backup-action-result').innerHTML = '<p class="text-muted">Running backup...</p>';
+      var r = await fetchJSON(API + '/api/backup/run', { method: 'POST', headers: adminHeaders() });
+      if (r.success) {
+        el('backup-action-result').innerHTML = '<p class="success-msg">Backup complete! PostgreSQL: ' + (r.data.postgres.success ? 'OK' : 'FAILED') + '</p>';
+        loadBackupPage();
+      } else {
+        el('backup-action-result').innerHTML = '<p class="error-msg">' + esc(r.error || 'Backup failed') + '</p>';
+      }
+    }
+
+    async function exportSystemState() {
+      el('backup-action-result').innerHTML = '<p class="text-muted">Exporting system state...</p>';
+      var r = await fetchJSON(API + '/api/backup/export', { method: 'POST', headers: adminHeaders() });
+      if (r.success) {
+        el('backup-action-result').innerHTML = '<p class="success-msg">Export complete! File: ' + esc(r.data.file) + ' (' + (r.data.size / 1024).toFixed(1) + ' KB)</p>';
+        loadBackupPage();
+      } else {
+        el('backup-action-result').innerHTML = '<p class="error-msg">' + esc(r.error || 'Export failed') + '</p>';
+      }
+    }
+
+    async function verifyJournal() {
+      el('backup-action-result').innerHTML = '<p class="text-muted">Verifying journal integrity...</p>';
+      var r = await fetchJSON(API + '/api/backup/journal/verify');
+      if (r.success) {
+        var v = r.data;
+        if (v.valid) {
+          el('backup-action-result').innerHTML = '<p class="success-msg">Journal integrity VERIFIED. ' + v.entries + ' entries, hash chain intact.</p>';
+        } else {
+          el('backup-action-result').innerHTML = '<p class="error-msg">Journal integrity FAILED. ' + (v.errors || []).length + ' error(s) found.</p>';
+        }
+      } else {
+        el('backup-action-result').innerHTML = '<p class="error-msg">' + esc(r.error || 'Verification failed') + '</p>';
+      }
+    }
+
+    async function restoreBackup(filename) {
+      if (!confirm('Are you sure you want to restore from backup: ' + filename + '? This will overwrite current data.')) return;
+      el('backup-action-result').innerHTML = '<p class="text-muted">Restoring from ' + filename + '...</p>';
+      var r = await fetchJSON(API + '/api/backup/restore', { method: 'POST', headers: adminHeaders(), body: JSON.stringify({ file: filename }) });
+      if (r.success) {
+        el('backup-action-result').innerHTML = '<p class="success-msg">Restore complete from ' + esc(filename) + '</p>';
+      } else {
+        el('backup-action-result').innerHTML = '<p class="error-msg">' + esc(r.error || 'Restore failed') + '</p>';
       }
     }
 

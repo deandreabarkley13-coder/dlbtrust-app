@@ -79,6 +79,9 @@ try { app.use('/api/as2', require(path.join(HD, 'server', 'routes', 'as2'))); co
 // Tax Engine — Form 1041 & K-1 generation
 try { app.use('/api/tax', require(path.join(HD, 'server', 'routes', 'tax'))); console.log('[tax] loaded'); } catch(e) { console.warn('[tax]', e.message); }
 
+// Backup & System Resilience routes
+try { app.use('/api/backup', require(path.join(HD, 'server', 'routes', 'backup'))); console.log('[backup] loaded'); } catch(e) { console.warn('[backup]', e.message); }
+
 // Treasury Management System — serve dashboard at root, static files from public/
 app.get('/', function(req, res) {
   res.set('Cache-Control', 'no-cache, no-store, must-revalidate');
@@ -193,8 +196,29 @@ try {
   }).catch(function(e) { console.warn('[couponService] init:', e.message); });
 } catch(e) { console.warn('[couponService]', e.message); }
 
-app.listen(PORT, function() {
+// ─── Graceful Shutdown & Backup Initialization ─────────────────────────────
+try {
+  var gracefulShutdown = require(path.join(HD, 'server', 'integrations', 'backup', 'gracefulShutdown'));
+  gracefulShutdown.install();
+} catch(e) { console.warn('[graceful-shutdown]', e.message); }
+
+var server = app.listen(PORT, function() {
   console.log('[dlbtrust-treasury] running on port ' + PORT);
+
+  // Register server for graceful shutdown
+  try { gracefulShutdown.registerServer(server); } catch(e) {}
+
+  // Start scheduled backups (every 6 hours)
+  try {
+    var backupEngine = require(path.join(HD, 'server', 'integrations', 'backup', 'backupEngine'));
+    backupEngine.startScheduledBackups();
+  } catch(e) { console.warn('[backup-scheduler]', e.message); }
+
+  // Record server start in transaction journal
+  try {
+    var journal = require(path.join(HD, 'server', 'integrations', 'backup', 'transactionJournal'));
+    journal.record('server_start', { port: PORT, node_version: process.version, pid: process.pid }, 'system');
+  } catch(e) {}
 
   // Auto-seed Fineract GL accounts and post opening balance on startup (with retry)
   async function initFineract(attempt) {
