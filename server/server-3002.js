@@ -312,6 +312,19 @@ var server = app.listen(PORT, function() {
   }
   setTimeout(function() { initFineract(1); }, 5000);
 
+  // ─── Fineract Resilience Monitoring ─────────────────────────────────────────
+  try {
+    var fineractResilience = require(path.join(HD, 'server', 'integrations', 'fineract', 'fineractResilience'));
+    fineractResilience.startMonitoring();
+    // Clear any stale Liquibase locks on startup
+    fineractResilience.cleanLiquibaseLocks().then(function(result) {
+      if (result && result.results) {
+        var cleared = result.results.filter(function(r) { return r.action === 'cleared'; });
+        if (cleared.length > 0) console.log('[fineract-resilience] Cleared stale Liquibase locks on startup');
+      }
+    }).catch(function(e) { /* non-critical */ });
+  } catch(e) { console.warn('[fineract-resilience]', e.message); }
+
   // ─── Data Integrity Check on Startup ────────────────────────────────────────
   setTimeout(async function() {
     try {
