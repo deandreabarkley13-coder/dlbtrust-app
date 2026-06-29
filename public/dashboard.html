@@ -1135,6 +1135,7 @@
     });
 
     // ─── OVERVIEW ──────────────────────────────────────────────────────────────
+    var _overviewRetries = 0;
     async function loadOverview() {
       const [bonds, cash, acct, ach, as2, crm, finHealth, health] = await Promise.all([
         fetchJSON(API + '/api/bonds'),
@@ -1146,6 +1147,13 @@
         fetchJSON(API + '/api/fineract/health'),
         (adminToken && currentUser && currentUser.role === 'admin') ? fetchJSON(API + '/api/admin/system/health', { headers: adminHeaders() }) : Promise.resolve({}),
       ]);
+      // Auto-retry if all API calls returned errors (tunnel warm-up / interstitial redirect)
+      if (bonds.error && cash.error && _overviewRetries < 3) {
+        _overviewRetries++;
+        setTimeout(loadOverview, 2000);
+        return;
+      }
+      _overviewRetries = 0;
 
       // Summary cards
       const bondData = bonds.data || [];
