@@ -583,6 +583,7 @@
         <div class="tab active" data-tab="doc-templates">Templates</div>
         <div class="tab" data-tab="doc-generated">Generated Documents</div>
         <div class="tab" data-tab="doc-generate">Generate New</div>
+        <div class="tab" data-tab="doc-reports">Financial Reports</div>
       </div>
       <div id="doc-templates" class="tab-content active">
         <div class="card"><div class="table-wrap" id="doc-templates-wrap"><p class="loading">Loading...</p></div></div>
@@ -593,11 +594,32 @@
       <div id="doc-generate" class="tab-content">
         <div class="card">
           <div class="section-title">Generate Document from Template</div>
-          <div class="form-row"><div class="form-group"><label>Template</label><select id="gen-template"></select></div></div>
+          <div class="form-row">
+            <div class="form-group"><label>Template</label><select id="gen-template" onchange="onTemplateChange()"></select></div>
+            <div class="form-group"><label>Bond</label><select id="gen-bond"><option value="">— None —</option></select></div>
+            <div class="form-group"><label>Contact</label><select id="gen-contact"><option value="">— None —</option></select></div>
+          </div>
           <div class="form-row"><div class="form-group"><label>Title</label><input type="text" id="gen-title" placeholder="Trust Agreement — Q2 2026"></div></div>
-          <button class="btn btn-success" onclick="generateDocument()">Generate</button>
+          <div id="gen-variables" style="margin:12px 0;"></div>
+          <div class="form-row" style="gap:8px;">
+            <button class="btn btn-success" onclick="generateDocument()">Generate Document</button>
+            <label style="display:flex;align-items:center;gap:4px;font-size:12px;color:var(--muted);"><input type="checkbox" id="gen-save" checked> Save as managed document</label>
+          </div>
           <div id="gen-result"></div>
         </div>
+      </div>
+      <div id="doc-reports" class="tab-content">
+        <div class="card">
+          <div class="section-title">Generate Financial Report</div>
+          <div class="form-row">
+            <div class="form-group"><label>Report Type</label><select id="rpt-type"><option value="balance_sheet">Balance Sheet</option><option value="income_statement">Income Statement</option><option value="trial_balance">Trial Balance</option><option value="cashflow">Cashflow Statement</option><option value="bond_statement">Bond Statement</option></select></div>
+            <div class="form-group"><label>From Date</label><input type="date" id="rpt-from"></div>
+            <div class="form-group"><label>To Date</label><input type="date" id="rpt-to"></div>
+          </div>
+          <button class="btn btn-success" onclick="generateReport()">Generate Report</button>
+          <div id="rpt-result"></div>
+        </div>
+        <div class="card"><div class="section-title">Report History</div><div class="table-wrap" id="rpt-history-wrap"><p class="text-muted">No reports generated yet</p></div></div>
       </div>
     </div>
 
@@ -1879,29 +1901,106 @@
     }
 
     // ─── DOCUMENTS ─────────────────────────────────────────────────────────────
+    var _docTemplatesCache = [];
     async function loadDocuments() {
-      const [templates, docs, genStats] = await Promise.all([
+      var [templates, gens, genStats, bonds, contacts] = await Promise.all([
         fetchJSON(API + '/api/documents/templates'),
-        fetchJSON(API + '/api/documents/'),
+        fetchJSON(API + '/api/documents/generations'),
         fetchJSON(API + '/api/documents/generation/stats'),
+        fetchJSON(API + '/api/bonds'),
+        fetchJSON(API + '/api/crm/contacts'),
       ]);
-      const tData = templates.data || [];
-      el('doc-templates-wrap').innerHTML = tData.length ? '<table><thead><tr><th>ID</th><th>Name</th><th>Type</th><th>Category</th><th>Version</th></tr></thead><tbody>' + tData.map(t => `<tr><td><code>${esc(t.template_id)}</code></td><td>${esc(t.template_name)}</td><td><span class="badge badge-info">${esc(t.template_type)}</span></td><td>${esc(t.category)}</td><td>v${t.version || 1}</td></tr>`).join('') + '</tbody></table>' : '<p class="text-muted">No templates</p>';
+      var tData = templates.data || [];
+      _docTemplatesCache = tData;
+      el('doc-templates-wrap').innerHTML = tData.length ? '<table><thead><tr><th>ID</th><th>Name</th><th>Type</th><th>Category</th><th>Variables</th><th>Version</th></tr></thead><tbody>' + tData.map(function(t) { var vars = (t.variables || []); return '<tr><td><code>' + esc(t.template_id) + '</code></td><td>' + esc(t.template_name) + '</td><td><span class="badge badge-info">' + esc(t.template_type) + '</span></td><td>' + esc(t.category) + '</td><td><span style="font-size:11px;color:var(--muted);">' + vars.length + ' fields</span></td><td>v' + (t.version || 1) + '</td></tr>'; }).join('') + '</tbody></table>' : '<p class="text-muted">No templates</p>';
 
-      const dData = docs.data || [];
-      el('doc-generated-wrap').innerHTML = dData.length ? '<table><thead><tr><th>Title</th><th>Template</th><th>Status</th><th>Created</th></tr></thead><tbody>' + dData.map(d => `<tr><td>${esc(d.title || d.document_title)}</td><td>${esc(d.template_id || '—')}</td><td><span class="badge badge-active">${esc(d.status || 'active')}</span></td><td>${shortDate(d.created_at)}</td></tr>`).join('') + '</tbody></table>' : '<p class="text-muted">No documents generated yet</p>';
+      var gData = gens.data || [];
+      el('doc-generated-wrap').innerHTML = gData.length ? '<table><thead><tr><th>ID</th><th>Template</th><th>Type</th><th>Status</th><th>Generated</th><th>Actions</th></tr></thead><tbody>' + gData.map(function(g) { return '<tr><td><code style="font-size:10px">' + esc(g.generation_id) + '</code></td><td>' + esc(g.template_name || g.template_id) + '</td><td><span class="badge badge-info">' + esc((g.template_type || '').replace(/_/g, ' ')) + '</span></td><td><span class="badge badge-active">' + esc(g.status || 'completed') + '</span></td><td>' + shortDate(g.generated_at) + '</td><td><a href="' + API + '/api/documents/generations/' + encodeURIComponent(g.generation_id) + '/render" target="_blank" class="btn btn-outline btn-sm">View</a></td></tr>'; }).join('') + '</tbody></table>' : '<p class="text-muted">No documents generated yet</p>';
 
-      // Populate template select
-      el('gen-template').innerHTML = tData.map(t => `<option value="${t.template_id}">${esc(t.template_name)}</option>`).join('');
+      // Populate template, bond, and contact selects
+      el('gen-template').innerHTML = '<option value="">— Select Template —</option>' + tData.map(function(t) { return '<option value="' + t.template_id + '">' + esc(t.template_name) + ' (' + esc(t.template_type) + ')</option>'; }).join('');
+      var bData = bonds.data || [];
+      el('gen-bond').innerHTML = '<option value="">— None (manual) —</option>' + bData.map(function(b) { return '<option value="' + b.id + '">' + esc(b.bond_name) + ' ($' + Number(b.face_value).toLocaleString() + ')</option>'; }).join('');
+      var cData = contacts.data || [];
+      el('gen-contact').innerHTML = '<option value="">— None (manual) —</option>' + cData.map(function(c) { return '<option value="' + c.contact_id + '">' + esc((c.first_name || '') + ' ' + (c.last_name || '')) + '</option>'; }).join('');
+
+      // Load report history
+      loadReportHistory();
+    }
+
+    async function loadReportHistory() {
+      var rpts = await fetchJSON(API + '/api/accounting/statements');
+      var sData = (rpts.data || []);
+      el('rpt-history-wrap').innerHTML = sData.length ? '<table><thead><tr><th>ID</th><th>Type</th><th>Status</th><th>Format</th><th>Generated</th><th>Actions</th></tr></thead><tbody>' + sData.map(function(s) { return '<tr><td><code style="font-size:10px">' + esc(s.job_id) + '</code></td><td><span class="badge badge-info">' + esc((s.report_type || '').replace(/_/g, ' ')) + '</span></td><td><span class="badge badge-active">' + esc(s.status) + '</span></td><td>' + esc(s.output_format) + '</td><td>' + shortDate(s.generated_at) + '</td><td><a href="' + API + '/api/documents/statements/' + encodeURIComponent(s.job_id) + '/render" target="_blank" class="btn btn-outline btn-sm">View</a></td></tr>'; }).join('') + '</tbody></table>' : '<p class="text-muted">No reports generated yet</p>';
+    }
+
+    function onTemplateChange() {
+      var tid = el('gen-template').value;
+      var tpl = _docTemplatesCache.find(function(t) { return t.template_id === tid; });
+      var container = el('gen-variables');
+      if (!tpl || !tpl.variables || tpl.variables.length === 0) {
+        container.innerHTML = '';
+        return;
+      }
+      var vars = tpl.variables;
+      container.innerHTML = '<div class="section-title" style="margin-bottom:8px;">Template Variables <span style="font-size:11px;color:var(--muted);">(auto-filled when bond/contact selected)</span></div>' + vars.map(function(v) {
+        var label = v.replace(/([A-Z])/g, ' $1').replace(/^./, function(c) { return c.toUpperCase(); });
+        return '<div class="form-row"><div class="form-group"><label>' + esc(label) + '</label><input type="text" id="gen-var-' + v + '" placeholder="' + esc(v) + '" class="gen-var-input" data-var="' + v + '"></div></div>';
+      }).join('');
     }
 
     async function generateDocument() {
-      const templateId = el('gen-template').value;
-      const title = el('gen-title').value;
+      var templateId = el('gen-template').value;
+      var title = el('gen-title').value;
       if (!templateId) { el('gen-result').innerHTML = '<p class="error-msg">Select a template</p>'; return; }
-      const r = await fetchJSON(API + '/api/documents/generate', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ template_id: parseInt(templateId), title: title || 'Generated Document', variables: {} }) });
-      el('gen-result').innerHTML = r.success ? '<p class="success-msg">Document generated!</p>' : '<p class="error-msg">' + esc(r.error || 'Failed') + '</p>';
-      if (r.success) loadDocuments();
+      var bondId = el('gen-bond').value || undefined;
+      var contactId = el('gen-contact').value || undefined;
+      var saveAsDocument = el('gen-save').checked;
+      var variables = {};
+      var varInputs = document.querySelectorAll('.gen-var-input');
+      varInputs.forEach(function(inp) {
+        if (inp.value.trim()) variables[inp.getAttribute('data-var')] = inp.value.trim();
+      });
+      el('gen-result').innerHTML = '<p class="text-muted">Generating...</p>';
+      var r = await fetchJSON(API + '/api/documents/generate', {
+        method: 'POST',
+        headers: adminHeaders(),
+        body: JSON.stringify({
+          templateId: templateId,
+          bondId: bondId ? parseInt(bondId) : undefined,
+          contactId: contactId || undefined,
+          variables: variables,
+          saveAsDocument: saveAsDocument,
+          documentName: title || undefined,
+          generatedBy: currentUser ? currentUser.username : 'admin',
+        }),
+      });
+      if (r.success) {
+        var genId = r.data.generation_id;
+        el('gen-result').innerHTML = '<p class="success-msg">Document generated! <a href="' + API + '/api/documents/generations/' + encodeURIComponent(genId) + '/render" target="_blank" style="color:var(--green);">View Document</a></p>';
+        loadDocuments();
+      } else {
+        el('gen-result').innerHTML = '<p class="error-msg">' + esc(r.error || 'Generation failed') + '</p>';
+      }
+    }
+
+    async function generateReport() {
+      var reportType = el('rpt-type').value;
+      var fromDate = el('rpt-from').value || undefined;
+      var toDate = el('rpt-to').value || undefined;
+      el('rpt-result').innerHTML = '<p class="text-muted">Generating report...</p>';
+      var r = await fetchJSON(API + '/api/accounting/statements/generate', {
+        method: 'POST',
+        headers: adminHeaders(),
+        body: JSON.stringify({ reportType: reportType, fromDate: fromDate, toDate: toDate, format: 'html' }),
+      });
+      if (r.success) {
+        var jobId = r.data.job_id;
+        el('rpt-result').innerHTML = '<p class="success-msg">Report generated! <a href="' + API + '/api/documents/statements/' + encodeURIComponent(jobId) + '/render" target="_blank" style="color:var(--green);">View Report</a></p>';
+        loadReportHistory();
+      } else {
+        el('rpt-result').innerHTML = '<p class="error-msg">' + esc(r.error || 'Report generation failed') + '</p>';
+      }
     }
 
     // ─── ACCOUNTING ────────────────────────────────────────────────────────────
