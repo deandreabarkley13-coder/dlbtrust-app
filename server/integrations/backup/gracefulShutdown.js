@@ -122,7 +122,14 @@ function install() {
   process.on('uncaughtException', function(err) {
     console.error('[shutdown] Uncaught exception:', err.message);
     console.error(err.stack);
-    performGracefulShutdown('uncaughtException');
+    // Write marker synchronously (event loop may be corrupted) and exit with error code
+    try {
+      var state = { shutdown_at: new Date().toISOString(), signal: 'uncaughtException', uptime_seconds: Math.floor(process.uptime()), error: err.message, pending_operations: [] };
+      var dataDir = path.dirname(SHUTDOWN_MARKER);
+      if (!fs.existsSync(dataDir)) fs.mkdirSync(dataDir, { recursive: true });
+      fs.writeFileSync(SHUTDOWN_MARKER, JSON.stringify(state, null, 2));
+    } catch(e) {}
+    process.exit(1);
   });
   process.on('unhandledRejection', function(reason) {
     console.error('[shutdown] Unhandled rejection:', reason);
