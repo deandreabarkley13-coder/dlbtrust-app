@@ -202,18 +202,22 @@ router.get('/savings', async (req, res) => {
   }
 });
 
-// Admin auth middleware for resilience endpoints
+// Admin auth middleware for resilience endpoints (matches backup route pattern)
 const requireAdminForResilience = async (req, res, next) => {
   const token = req.headers['x-admin-token'] || req.query.adminToken;
-  if (!token) return res.status(401).json({ error: 'Authentication required' });
-  try {
-    const { UserAuth } = require('../integrations/auth/userAuth');
-    const session = await UserAuth.validateToken(token);
-    if (!session || session.role !== 'admin') return res.status(403).json({ error: 'Admin access required' });
-    next();
-  } catch(e) {
-    return res.status(401).json({ error: 'Invalid token' });
+  if (token && token === process.env.ADMIN_SECRET_TOKEN) {
+    req.user = 'admin';
+    return next();
   }
+  const authHeader = req.headers['authorization'];
+  if (authHeader && authHeader.startsWith('Bearer ')) {
+    try {
+      const ApiCredentials = require('../integrations/ach/apiCredentials').ApiCredentials;
+      const cred = await ApiCredentials.validate(authHeader.slice(7).trim());
+      if (cred) { req.user = cred.label || 'api_key'; return next(); }
+    } catch(e) { console.warn('[fineract-resilience] API key validation error:', e.message); }
+  }
+  return res.status(401).json({ error: 'Authentication required' });
 };
 
 // ─── GET /api/fineract/resilience ────────────────────────────────────────────
