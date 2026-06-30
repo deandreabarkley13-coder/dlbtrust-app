@@ -82,6 +82,9 @@ try { app.use('/api/tax', require(path.join(HD, 'server', 'routes', 'tax'))); co
 // Backup & System Resilience routes
 try { app.use('/api/backup', require(path.join(HD, 'server', 'routes', 'backup'))); console.log('[backup] loaded'); } catch(e) { console.warn('[backup]', e.message); }
 
+// BILL Cash Account integration
+try { app.use('/api/bill', require(path.join(HD, 'server', 'routes', 'bill'))); console.log('[bill] loaded'); } catch(e) { console.warn('[bill]', e.message); }
+
 // Treasury Management System — serve dashboard at root, static files from public/
 app.get('/', function(req, res) {
   res.set('Cache-Control', 'no-cache, no-store, must-revalidate');
@@ -122,6 +125,19 @@ app.get('/api/health', async function(req, res) {
       fineractOk = true;
     } catch(e) {}
     checks.fineract = { ok: fineractOk };
+
+    // BILL Cash Account status
+    var billOk = false;
+    try {
+      var billClient = require(path.join(HD, 'server', 'integrations', 'bill', 'billClient'));
+      if (billClient.isConfigured()) {
+        var billStatus = await billClient.getStatus();
+        billOk = billStatus.connected;
+        checks.bill = { ok: billOk, configured: true };
+      } else {
+        checks.bill = { ok: false, configured: false };
+      }
+    } catch(e) { checks.bill = { ok: false, configured: false, error: e.message }; }
 
     var coreOk = checks.bonds.ok && checks.cashAccounts.ok && checks.trustAccounts.ok && checks.authUsers.ok && checks.database.ok;
     res.json({
