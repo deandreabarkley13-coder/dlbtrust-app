@@ -107,6 +107,15 @@ class DataBridge {
     var errors = [];
 
     try {
+      // Check if bond_accruals table exists
+      var tableCheck = await pool.query(`
+        SELECT EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = 'bond_accruals') AS exists
+      `);
+      if (!tableCheck.rows[0].exists) {
+        await DataBridge._logSync(syncId, 'bond_to_accounting', 'bonds', 'trust_accounting', 0, 0, 0, []);
+        return { syncId: syncId, synced: 0, skipped: 0, failed: 0, errors: [], message: 'No bond_accruals table — bond accrual module not active' };
+      }
+
       // Find bond accruals that don't have matching trust journal entries
       var accruals = await pool.query(`
         SELECT ba.*, b.bond_id AS bond_code, b.issuer, b.face_value
@@ -361,7 +370,7 @@ class DataBridge {
 
       // Per-account comparison
       var cashAccounts = await pool.query(`
-        SELECT account_id, account_name, balance_cents, routing_number, account_number
+        SELECT account_id, account_name, balance_cents
         FROM cash_accounts WHERE status = 'active'
       `);
 
@@ -549,6 +558,12 @@ class DataBridge {
         }
       }
 
+      // If Fineract returned no accounts, it's likely not connected/configured
+      if (Object.keys(glMap).length === 0) {
+        await DataBridge._logSync(syncId, 'fineract_reconciliation', 'trust_accounting', 'fineract_gl', 0, 0, 0, []);
+        return { syncId: syncId, matched: 0, unmatched: 0, message: 'Fineract GL returned no accounts \u2014 verify Fineract connection', discrepancies: [] };
+      }
+
       // Compare mapped accounts
       for (var m = 0; m < mappings.rows.length; m++) {
         var mapping = mappings.rows[m];
@@ -634,16 +649,19 @@ class DataBridge {
     try {
       // Get unsynced journal entries
       var entries = await pool.query(`
-        SELECT je.*, json_agg(json_build_object(
-          'account_code', jl.account_code,
-          'debit_amount', jl.debit_amount,
-          'credit_amount', jl.credit_amount,
-          'memo', jl.memo
-        )) AS lines
+        SELECT je.id, je.entry_id, je.entry_date, je.description, je.reference_type,
+               je.reference_id, je.bond_id, je.posted_by, je.fineract_txn_id, je.status,
+               json_agg(json_build_object(
+                 'account_code', jl.account_code,
+                 'debit_amount', jl.debit_amount,
+                 'credit_amount', jl.credit_amount,
+                 'memo', jl.memo
+               )) AS lines
         FROM trust_journal_entries je
         JOIN trust_journal_lines jl ON jl.entry_id = je.entry_id
         WHERE je.status = 'posted' AND je.fineract_txn_id IS NULL
-        GROUP BY je.entry_id
+        GROUP BY je.id, je.entry_id, je.entry_date, je.description, je.reference_type,
+                 je.reference_id, je.bond_id, je.posted_by, je.fineract_txn_id, je.status
         ORDER BY je.entry_date ASC
         LIMIT 50
       `);
@@ -826,15 +844,20 @@ class DataBridge {
     try {
       // Bond status
       var bondCount = await pool.query(`SELECT COUNT(*) AS c, COALESCE(SUM(face_value),0) AS total FROM bonds WHERE status = 'active'`);
-      var accrualNoJE = await pool.query(`
-        SELECT COUNT(*) AS c FROM bond_accruals ba
-        WHERE ba.is_reversed = FALSE
-          AND NOT EXISTS (SELECT 1 FROM trust_journal_entries je WHERE je.reference_type = 'bond_accrual' AND je.reference_id = CAST(ba.id AS TEXT) AND je.status = 'posted')
-      `);
+      var bondAccrualTableExists = await pool.query(`SELECT EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = 'bond_accruals') AS exists`);
+      var unsyncedAccruals = 0;
+      if (bondAccrualTableExists.rows[0].exists) {
+        var accrualNoJE = await pool.query(`
+          SELECT COUNT(*) AS c FROM bond_accruals ba
+          WHERE ba.is_reversed = FALSE
+            AND NOT EXISTS (SELECT 1 FROM trust_journal_entries je WHERE je.reference_type = 'bond_accrual' AND je.reference_id = CAST(ba.id AS TEXT) AND je.status = 'posted')
+        `);
+        unsyncedAccruals = parseInt(accrualNoJE.rows[0].c);
+      }
       status.modules.bonds = {
         activeBonds: parseInt(bondCount.rows[0].c),
         totalFaceValue: parseFloat(bondCount.rows[0].total),
-        unsyncedAccruals: parseInt(accrualNoJE.rows[0].c),
+        unsyncedAccruals: unsyncedAccruals,
       };
     } catch (e) { status.modules.bonds = { error: e.message }; }
 
