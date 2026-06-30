@@ -1131,8 +1131,10 @@
       } catch (e) { return { error: e.message }; }
     }
     function adminHeaders() {
-      if (jwtToken) return { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + jwtToken };
-      return { 'Content-Type': 'application/json', 'x-admin-token': adminToken };
+      var h = { 'Content-Type': 'application/json' };
+      if (adminToken) h['x-admin-token'] = adminToken;
+      if (jwtToken) h['Authorization'] = 'Bearer ' + jwtToken;
+      return h;
     }
     function el(id) { return document.getElementById(id); }
 
