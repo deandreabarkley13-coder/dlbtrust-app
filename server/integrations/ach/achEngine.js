@@ -205,12 +205,35 @@ class ACHEngine {
     );
 
     try {
-      // Route to AS2 or REST API based on partner protocol — default is rest_api (HTTPS)
+      // Route based on partner protocol: bill_api, rest_api, or as2
       const protocol = partnerConfig.protocol || 'rest_api';
       console.log(`[ACH] transmitBatch(${batchId}): calling ${protocol} transmit`);
-      const result = protocol === 'rest_api'
-        ? await OpenBankApi.transmit(nachaContent, batch.filename, partnerConfig)
-        : await AS2Client.transmit(nachaContent, batch.filename, partnerConfig);
+
+      let result;
+      if (protocol === 'bill_api') {
+        // BILL Cash Account: submit via BILL's RecordARPayment API
+        const billClient = require('../bill/billClient');
+        const totalDollars = (batch.total_amount_cents || 0) / 100;
+        const billResult = await billClient.recordDeposit({
+          amount: totalDollars,
+          method: 'ach',
+          memo: batch.entry_description || ('ACH batch ' + batchId),
+        });
+        result = {
+          success: true,
+          mode: 'bill_api',
+          message_id: billResult.receivedPayId || ('BILL-' + Date.now()),
+          status_code: 200,
+          mdn_received: true,
+          response_body: JSON.stringify(billResult),
+          billRecord: billResult,
+        };
+        console.log(`[ACH] transmitBatch(${batchId}): BILL API → receivedPayId=${billResult.receivedPayId}`);
+      } else {
+        result = protocol === 'rest_api'
+          ? await OpenBankApi.transmit(nachaContent, batch.filename, partnerConfig)
+          : await AS2Client.transmit(nachaContent, batch.filename, partnerConfig);
+      }
 
       console.log(`[ACH] transmitBatch(${batchId}): transmit result success=${result.success}, mode=${result.mode}`);
 
