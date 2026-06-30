@@ -84,8 +84,12 @@ class TrusteeAgent {
       };
 
       // Check for matured bonds still active
-      var today = new Date().toISOString().split('T')[0];
-      var matured = bonds.rows.filter(function(b) { return b.maturity_date && b.maturity_date <= today; });
+      var today = new Date();
+      var matured = bonds.rows.filter(function(b) {
+        if (!b.maturity_date) return false;
+        var md = b.maturity_date instanceof Date ? b.maturity_date : new Date(b.maturity_date);
+        return md <= today;
+      });
       if (matured.length > 0) {
         findings.push({
           severity: 'high',
@@ -105,11 +109,11 @@ class TrusteeAgent {
       );
       summary.cash = {
         accounts: cash.rows.length,
-        totalBalance: cash.rows.reduce((s, c) => s + parseFloat(c.balance || 0), 0),
+        totalBalance: cash.rows.reduce((s, c) => s + Number(c.balance_cents || 0), 0) / 100,
       };
 
       // Flag low cash
-      var lowCash = cash.rows.filter(function(c) { return parseFloat(c.balance || 0) < 1000; });
+      var lowCash = cash.rows.filter(function(c) { return Number(c.balance_cents || 0) / 100 < 1000; });
       if (lowCash.length > 0) {
         findings.push({
           severity: 'normal',
@@ -345,7 +349,7 @@ class TrusteeAgent {
          FROM ach_batches b
          LEFT JOIN ach_entries e ON b.batch_id = e.batch_id
          WHERE b.status IN ('pending','created')
-         GROUP BY b.batch_id
+         GROUP BY b.id
          ORDER BY b.created_at DESC LIMIT 20`
       );
       batches.rows.forEach(function(b) {
@@ -577,8 +581,8 @@ class TrusteeAgent {
       health.bonds = parseInt(bondRes.rows[0].c);
     } catch (e) {}
     try {
-      var cashRes = await pool.query(`SELECT COUNT(*) as c, COALESCE(SUM(balance),0) as total FROM cash_accounts WHERE status = 'active'`);
-      health.cash = { accounts: parseInt(cashRes.rows[0].c), balance: parseFloat(cashRes.rows[0].total) };
+      var cashRes = await pool.query(`SELECT COUNT(*) as c, COALESCE(SUM(balance_cents),0) as total FROM cash_accounts WHERE status = 'active'`);
+      health.cash = { accounts: parseInt(cashRes.rows[0].c), balance: parseFloat(cashRes.rows[0].total) / 100 };
     } catch (e) {}
 
     return {
