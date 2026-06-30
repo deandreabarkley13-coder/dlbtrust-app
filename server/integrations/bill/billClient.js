@@ -122,7 +122,7 @@ async function listBankAccounts() {
   var result = await billRequest('/List/BankAccount.json', {
     devKey: devKey,
     sessionId: session,
-    data: {}
+    data: { start: 0, max: 999 }
   });
 
   if (result.response_status === 0 && result.response_data) {
@@ -136,7 +136,7 @@ async function listBankAccounts() {
     result = await billRequest('/List/BankAccount.json', {
       devKey: devKey,
       sessionId: session,
-      data: {}
+      data: { start: 0, max: 999 }
     });
     if (result.response_status === 0 && result.response_data) {
       return result.response_data;
