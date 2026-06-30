@@ -1039,7 +1039,6 @@
     function checkAuth() {
       if (jwtToken && currentUser) {
         el('login-overlay').classList.add('hidden');
-        adminToken = adminToken || 'jwt-session';
         updateSidebarUser();
       } else {
         el('login-overlay').classList.remove('hidden');
@@ -1062,11 +1061,9 @@
         currentUser = r.user;
         localStorage.setItem('dlb_jwt_token', jwtToken);
         localStorage.setItem('dlb_current_user', JSON.stringify(currentUser));
-        // Also set legacy admin token for backward compat
-        if (!adminToken || adminToken === 'jwt-session') {
-          adminToken = 'jwt-session';
-          localStorage.setItem('dlb_admin_token', adminToken);
-        }
+        // Store the login password as admin token (password = ADMIN_SECRET_TOKEN)
+        adminToken = password;
+        localStorage.setItem('dlb_admin_token', adminToken);
         el('login-overlay').classList.add('hidden');
         updateSidebarUser();
         loadOverview();
