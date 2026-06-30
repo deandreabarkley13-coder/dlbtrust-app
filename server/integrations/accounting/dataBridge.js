@@ -1078,18 +1078,32 @@ class DataBridge {
   }
 
   static async _logDiscrepancy(discId, type, moduleA, moduleB, accountCode, amountA, amountB, difference, severity) {
+    var client = await pool.connect();
     try {
-      await pool.query(
+      await client.query('BEGIN');
+      // Auto-resolve prior discrepancies of the same type/account so count doesn't grow
+      await client.query(
+        `UPDATE data_bridge_discrepancies
+         SET resolved = TRUE, resolved_at = NOW(), resolution = 'superseded'
+         WHERE discrepancy_type = $1 AND account_code = $2 AND resolved = FALSE`,
+        [type, accountCode]
+      );
+      await client.query(
         `INSERT INTO data_bridge_discrepancies
            (discrepancy_id, discrepancy_type, module_a, module_b, account_code,
-            amount_a, amount_b, difference, severity)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+            amount_a, amount_b, difference, severity, resolved)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, FALSE)
          ON CONFLICT (discrepancy_id) DO UPDATE SET
-           amount_a = $6, amount_b = $7, difference = $8, severity = $9`,
+           amount_a = $6, amount_b = $7, difference = $8, severity = $9,
+           resolved = FALSE, resolved_at = NULL, resolution = NULL`,
         [discId, type, moduleA, moduleB, accountCode, amountA, amountB, difference, severity]
       );
+      await client.query('COMMIT');
     } catch (e) {
+      await client.query('ROLLBACK');
       console.warn('[DataBridge] Failed to log discrepancy:', e.message);
+    } finally {
+      client.release();
     }
   }
 }
