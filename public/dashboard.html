@@ -433,6 +433,10 @@
             <div class="form-group"><label>Intermediary Bank (optional)</label><input type="text" id="wire-intermediary-name" placeholder=""></div>
             <div class="form-group"><label>Intermediary Routing (optional)</label><input type="text" id="wire-intermediary-routing" placeholder="" maxlength="9"></div>
           </div>
+          <div style="margin-top:12px;padding:8px 12px;background:rgba(59,130,246,0.08);border:1px solid rgba(59,130,246,0.2);border-radius:6px;font-size:12px;">
+            <strong>Quick Fill:</strong>
+            <button class="btn btn-outline btn-sm" style="font-size:11px;padding:3px 8px;margin-left:8px;" onclick="fillWireBill()">BILL/Betterment Account</button>
+          </div>
           <div id="wire-route-preview" class="mt-16" style="display:none;padding:8px 12px;border-radius:6px;font-size:12px;"></div>
           <button class="btn btn-success mt-16" onclick="initiateWire()">Initiate Wire Transfer</button>
           <div id="wire-initiate-result" class="mt-16"></div>
@@ -830,6 +834,39 @@
       <div class="card mt-16">
         <div class="section-title">Bank Balance</div>
         <div id="bill-balance"><p class="loading">Loading...</p></div>
+      </div>
+
+      <!-- Deposit Funds Section -->
+      <div class="card mt-16">
+        <div class="section-title">Deposit Funds to BILL Account</div>
+        <p class="text-muted" style="font-size:12px;margin-bottom:12px;">
+          Push funds from the Trust to your BILL-linked Betterment account via ACH credit or wire transfer.
+        </p>
+        <div class="form-row" style="gap:12px;flex-wrap:wrap;align-items:flex-end;">
+          <div>
+            <label style="font-size:11px;color:var(--text-muted);display:block;margin-bottom:4px;">Amount ($)</label>
+            <input id="bill-deposit-amount" type="number" min="0.01" step="0.01" placeholder="1000.00" style="width:160px;padding:8px 12px;border:1px solid var(--border);border-radius:6px;background:var(--bg-card);color:var(--text-primary);font-size:14px;">
+          </div>
+          <div>
+            <label style="font-size:11px;color:var(--text-muted);display:block;margin-bottom:4px;">Method</label>
+            <select id="bill-deposit-method" style="padding:8px 12px;border:1px solid var(--border);border-radius:6px;background:var(--bg-card);color:var(--text-primary);font-size:14px;">
+              <option value="ach">ACH Credit (1-2 business days)</option>
+              <option value="wire">Wire Transfer (same day, requires approval)</option>
+            </select>
+          </div>
+          <div>
+            <label style="font-size:11px;color:var(--text-muted);display:block;margin-bottom:4px;">Memo</label>
+            <input id="bill-deposit-memo" type="text" placeholder="Trust distribution" style="width:200px;padding:8px 12px;border:1px solid var(--border);border-radius:6px;background:var(--bg-card);color:var(--text-primary);font-size:14px;">
+          </div>
+          <button class="btn btn-success btn-sm" onclick="billDeposit()">Send Funds</button>
+        </div>
+        <div id="bill-deposit-result" style="margin-top:12px;"></div>
+      </div>
+
+      <!-- Deposit History -->
+      <div class="card mt-16">
+        <div class="section-title">Deposit History</div>
+        <div id="bill-deposit-history"><p class="text-muted">Loading...</p></div>
       </div>
     </div>
 
@@ -1680,6 +1717,16 @@
           preview.innerHTML = '<strong>Route: ' + r.data.channel.toUpperCase() + '</strong> — ' + esc(r.data.reason);
         }
       });
+    }
+
+    function fillWireBill() {
+      el('wire-beneficiary-name').value = 'DEANDREA LAVAR BARKLEY TRUST';
+      el('wire-beneficiary-bank').value = 'Betterment';
+      el('wire-routing').value = '101015347';
+      el('wire-account').value = '3054';
+      el('wire-purpose').value = 'BILL Cash Account Deposit';
+      el('wire-description').value = 'Trust fund deposit to BILL/Betterment';
+      el('wire-payment-type').value = 'trust_distribution';
     }
 
     async function initiateWire() {
@@ -2725,6 +2772,56 @@
         `;
       } else {
         el('bill-balance').innerHTML = '<p class="text-muted">' + esc((balance && balance.error) || 'Unable to load balance') + '</p>';
+      }
+
+      // Load deposit history
+      loadBillDeposits();
+    }
+
+    async function billDeposit() {
+      const amount = parseFloat(el('bill-deposit-amount').value);
+      const method = el('bill-deposit-method').value;
+      const memo = el('bill-deposit-memo').value || 'Trust distribution';
+
+      if (!amount || amount <= 0) {
+        el('bill-deposit-result').innerHTML = '<p class="error-msg">Enter a valid amount</p>';
+        return;
+      }
+
+      const confirmMsg = `Send $${amount.toLocaleString('en-US', {minimumFractionDigits:2})} via ${method === 'wire' ? 'Wire Transfer' : 'ACH Credit'} to your BILL/Betterment account?`;
+      if (!confirm(confirmMsg)) return;
+
+      el('bill-deposit-result').innerHTML = '<p class="text-muted">Processing...</p>';
+
+      const r = await fetchJSON(API + '/api/bill/deposit', {
+        method: 'POST',
+        headers: adminHeaders(),
+        body: JSON.stringify({ amount, method, memo })
+      });
+
+      if (r.success) {
+        el('bill-deposit-result').innerHTML = `
+          <div style="padding:12px;background:rgba(16,185,129,0.1);border:1px solid var(--green);border-radius:6px;">
+            <strong style="color:var(--green)">Deposit Initiated</strong><br>
+            <span style="font-size:13px;">$${amount.toLocaleString('en-US',{minimumFractionDigits:2})} → ${esc(r.destination || 'BILL Account')}</span><br>
+            <span style="font-size:12px;color:var(--text-muted);">Method: ${r.method === 'wire' ? 'Wire Transfer' : 'ACH Credit'} | ${r.method === 'wire' ? 'Wire ID: ' + r.wireId : 'Batch: ' + r.batchId} | Status: ${esc(r.status)}</span>
+          </div>`;
+        el('bill-deposit-amount').value = '';
+        el('bill-deposit-memo').value = '';
+        loadBillDeposits();
+      } else {
+        el('bill-deposit-result').innerHTML = '<p class="error-msg">' + esc(r.error || 'Deposit failed') + '</p>';
+      }
+    }
+
+    async function loadBillDeposits() {
+      const r = await fetchJSON(API + '/api/bill/deposits');
+      if (r.success && r.deposits && r.deposits.length > 0) {
+        el('bill-deposit-history').innerHTML = '<table><thead><tr><th>Date</th><th>Amount</th><th>Destination</th><th>Status</th><th>Batch/Wire</th></tr></thead><tbody>' +
+          r.deposits.map(d => `<tr><td>${new Date(d.date).toLocaleDateString()}</td><td style="font-weight:600;">$${Number(d.amount).toLocaleString('en-US',{minimumFractionDigits:2})}</td><td>${esc(d.destination || '—')}</td><td><span class="badge badge-${d.status === 'settled' ? 'active' : d.status === 'pending' ? 'info' : 'warning'}">${esc(d.status)}</span></td><td><code style="font-size:11px;">${esc(d.batchId || '—')}</code></td></tr>`).join('') +
+          '</tbody></table>';
+      } else {
+        el('bill-deposit-history').innerHTML = '<p class="text-muted">No deposits yet. Use the form above to send funds to your BILL account.</p>';
       }
     }
 
