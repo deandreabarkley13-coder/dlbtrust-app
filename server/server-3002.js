@@ -195,6 +195,14 @@ try {
   }).catch(function(e) { console.warn('[agents] table init:', e.message); });
 } catch(e) { console.warn('[agents]', e.message); }
 
+// Ensure DataBridge tables exist (cross-module sync & reconciliation)
+try {
+  var DataBridge = require(path.join(HD, 'server', 'integrations', 'accounting', 'dataBridge')).DataBridge;
+  DataBridge.ensureTables().then(function() {
+    console.log('[data-bridge] tables ensured');
+  }).catch(function(e) { console.warn('[data-bridge] table init:', e.message); });
+} catch(e) { console.warn('[data-bridge]', e.message); }
+
 // Ensure system settings table exists (production/sandbox mode config)
 try {
   var SystemSettings = require(path.join(HD, 'server', 'integrations', 'ach', 'systemSettings')).SystemSettings;

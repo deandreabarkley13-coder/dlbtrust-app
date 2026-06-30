@@ -240,6 +240,8 @@
     <div class="nav-section">Core Banking</div>
     <div class="nav-item" data-page="fineract"><span class="icon">🏛️</span> Fineract GL</div>
     <div class="nav-item" data-page="bill"><span class="icon">💳</span> BILL Cash</div>
+    <div class="nav-section">Data Bridge</div>
+    <div class="nav-item" data-page="data-bridge"><span class="icon">🔗</span> Data Bridge</div>
     <div class="nav-section">Agents</div>
     <div class="nav-item" data-page="trustee-agent"><span class="icon">🏛️</span> Trustee Agent</div>
     <div class="nav-item" data-page="bookkeeping-agent"><span class="icon">📖</span> Bookkeeping Agent</div>
@@ -976,6 +978,64 @@
       </div>
     </div>
 
+    <!-- DATA BRIDGE PAGE -->
+    <div id="page-data-bridge" class="page hidden">
+      <div class="page-header">
+        <div><h1>Data Bridge</h1><div class="subtitle">Cross-module data flow, sync, and reconciliation</div></div>
+        <div class="flex gap-12">
+          <button class="btn btn-primary btn-sm" onclick="loadDataBridge()">Refresh</button>
+          <button class="btn btn-sm" style="background:#059669;color:#fff;" onclick="runFullSync()">Run Full Sync</button>
+        </div>
+      </div>
+
+      <!-- Sync Health Banner -->
+      <div id="bridge-health-banner" class="card mt-16" style="border:1px solid var(--accent);"></div>
+
+      <!-- Module Status Cards -->
+      <div class="stats-grid mt-16">
+        <div class="stat-card"><div class="stat-label">Trust Accounting</div><div id="bridge-stat-accounting" class="stat-value">--</div></div>
+        <div class="stat-card"><div class="stat-label">Fineract GL</div><div id="bridge-stat-fineract" class="stat-value">--</div></div>
+        <div class="stat-card"><div class="stat-label">Cash Mgmt</div><div id="bridge-stat-cash" class="stat-value">--</div></div>
+        <div class="stat-card"><div class="stat-label">Discrepancies</div><div id="bridge-stat-discrepancies" class="stat-value">--</div></div>
+      </div>
+
+      <!-- Data Flow Map -->
+      <div class="card mt-16">
+        <div class="section-title">Data Flow Map</div>
+        <p class="text-muted" style="font-size:12px;margin-bottom:12px;">Shows data flow status between modules. Green = synced, yellow = needs sync, red = discrepancy.</p>
+        <div id="bridge-flow-map" style="display:grid;grid-template-columns:repeat(3,1fr);gap:12px;"></div>
+      </div>
+
+      <!-- Sync Actions -->
+      <div class="card mt-16">
+        <div class="section-title">Sync Actions</div>
+        <p class="text-muted" style="font-size:12px;margin-bottom:12px;">Sync individual modules or run a full cross-module sync.</p>
+        <div style="display:flex;flex-wrap:wrap;gap:8px;">
+          <button class="btn btn-primary btn-sm" onclick="bridgeSync('bonds')">Sync Bonds</button>
+          <button class="btn btn-primary btn-sm" onclick="bridgeSync('ach')">Sync ACH</button>
+          <button class="btn btn-primary btn-sm" onclick="bridgeSync('bill')">Sync BILL</button>
+          <button class="btn btn-primary btn-sm" onclick="bridgeSync('fineract')">Push to Fineract</button>
+          <button class="btn btn-sm" style="background:#7c3aed;color:#fff;" onclick="bridgeReconcile('cash')">Reconcile Cash</button>
+          <button class="btn btn-sm" style="background:#7c3aed;color:#fff;" onclick="bridgeReconcile('fineract')">Reconcile GL</button>
+          <button class="btn btn-sm" style="background:#7c3aed;color:#fff;" onclick="bridgeReconcile('wire')">Verify Wires</button>
+        </div>
+        <div id="bridge-sync-result" class="mt-16" style="display:none;"></div>
+      </div>
+
+      <!-- Reconciliation Report -->
+      <div class="card mt-16">
+        <div class="section-title">Reconciliation Report</div>
+        <button class="btn btn-sm mb-12" onclick="loadBridgeReport()">Generate Report</button>
+        <div id="bridge-recon-report"></div>
+      </div>
+
+      <!-- Sync History -->
+      <div class="card mt-16">
+        <div class="section-title">Sync History</div>
+        <div id="bridge-sync-history"><p class="text-muted">Click Refresh to load sync history.</p></div>
+      </div>
+    </div>
+
     <!-- ADMIN PAGE -->
     <!-- SYSTEM SETTINGS PAGE -->
     <div id="page-settings" class="page hidden">
@@ -1288,7 +1348,7 @@
         document.querySelectorAll('.page').forEach(p => p.classList.add('hidden'));
         document.getElementById('page-' + page).classList.remove('hidden');
         // Load data for page
-        const loaders = { overview: loadOverview, bonds: loadBonds, cash: loadCash, payments: loadPayments, ach: loadACH, wire: loadWire, partners: loadPartners, apikeys: loadApiKeys, as2: loadAS2, crm: loadCRM, documents: loadDocuments, accounting: loadAccounting, tax: loadTax, fineract: loadFineract, bill: loadBill, 'trustee-agent': loadTrusteeAgent, 'bookkeeping-agent': loadBookkeepingAgent, settings: loadSettings, security: loadSecurity, backup: loadBackupPage, admin: loadAdmin };
+        const loaders = { overview: loadOverview, bonds: loadBonds, cash: loadCash, payments: loadPayments, ach: loadACH, wire: loadWire, partners: loadPartners, apikeys: loadApiKeys, as2: loadAS2, crm: loadCRM, documents: loadDocuments, accounting: loadAccounting, tax: loadTax, fineract: loadFineract, bill: loadBill, 'trustee-agent': loadTrusteeAgent, 'bookkeeping-agent': loadBookkeepingAgent, 'data-bridge': loadDataBridge, settings: loadSettings, security: loadSecurity, backup: loadBackupPage, admin: loadAdmin };
         if (loaders[page]) loaders[page]();
       });
     });
@@ -3193,6 +3253,209 @@
         if (d.understood && !d.needsParam && !d.error) loadBookkeepingAgent();
       } else {
         appendPromptMessage('bookkeeping-prompt-history', 'agent', 'Error: ' + ((r && r.error) || 'Request failed'));
+      }
+    }
+
+    // ─── DATA BRIDGE ──────────────────────────────────────────────────────────
+    async function loadDataBridge() {
+      try {
+        var status = await fetchJSON(API + '/api/accounting/bridge/status');
+        if (!status || !status.success) {
+          el('bridge-health-banner').innerHTML = '<p class="text-muted">Failed to load data bridge status: ' + esc((status && status.error) || 'Unknown error') + '</p>';
+          return;
+        }
+        var d = status.data;
+
+        // Health banner
+        var healthColor = d.syncHealth === 'healthy' ? '#059669' : d.syncHealth === 'needs_sync' ? '#d97706' : '#dc2626';
+        var healthLabel = d.syncHealth === 'healthy' ? 'All Synced' : d.syncHealth === 'needs_sync' ? 'Needs Sync' : 'Critical';
+        el('bridge-health-banner').innerHTML =
+          '<div style="display:flex;align-items:center;gap:12px;">' +
+            '<span style="width:14px;height:14px;border-radius:50%;background:' + healthColor + ';display:inline-block;"></span>' +
+            '<span style="font-size:18px;font-weight:600;color:' + healthColor + ';">Sync Health: ' + healthLabel + '</span>' +
+            '<span class="text-muted" style="margin-left:auto;font-size:12px;">Last checked: ' + new Date(d.generatedAt).toLocaleString() + '</span>' +
+          '</div>';
+
+        // Stats
+        var ta = d.modules.trust_accounting || {};
+        el('bridge-stat-accounting').innerHTML = (ta.journalEntries || 0) + ' JEs<br><span style="font-size:12px;color:var(--muted);">' + (ta.unsyncedToFineract || 0) + ' unsynced</span>';
+        var fg = d.modules.fineract_gl || {};
+        el('bridge-stat-fineract').innerHTML = (fg.mappedAccounts || 0) + ' mapped<br><span style="font-size:12px;color:var(--muted);">GL accounts</span>';
+        var cm = d.modules.cash_management || {};
+        el('bridge-stat-cash').innerHTML = '$' + (cm.totalBalance || 0).toLocaleString('en-US', {minimumFractionDigits:2}) + '<br><span style="font-size:12px;color:var(--muted);">' + (cm.activeAccounts || 0) + ' accounts</span>';
+        el('bridge-stat-discrepancies').innerHTML = '<span style="color:' + (d.unresolvedDiscrepancies > 0 ? '#dc2626' : '#059669') + ';">' + (d.unresolvedDiscrepancies || 0) + '</span><br><span style="font-size:12px;color:var(--muted);">unresolved</span>';
+
+        // Data flow map
+        var flowItems = [];
+        var modules = d.modules || {};
+
+        function flowCard(title, statusText, color) {
+          return '<div style="background:var(--card);border:2px solid ' + color + ';border-radius:8px;padding:12px;text-align:center;">' +
+            '<div style="font-weight:600;font-size:13px;">' + title + '</div>' +
+            '<div style="font-size:11px;color:' + color + ';margin-top:4px;">' + statusText + '</div></div>';
+        }
+
+        var achUnsync = modules.ach ? modules.ach.unsyncedToAccounting || 0 : 0;
+        var bondUnsync = modules.bonds ? modules.bonds.unsyncedAccruals || 0 : 0;
+        var wireGaps = modules.wire ? modules.wire.missingJournalEntries || 0 : 0;
+        var jeUnsynced = ta.unsyncedToFineract || 0;
+
+        flowItems.push(flowCard('Bonds', bondUnsync > 0 ? bondUnsync + ' unsynced accruals' : 'Synced', bondUnsync > 0 ? '#d97706' : '#059669'));
+        flowItems.push(flowCard('ACH Pipeline', achUnsync > 0 ? achUnsync + ' unsynced batches' : 'Synced', achUnsync > 0 ? '#d97706' : '#059669'));
+        flowItems.push(flowCard('Wire Transfers', wireGaps > 0 ? wireGaps + ' missing JEs' : 'Synced', wireGaps > 0 ? '#dc2626' : '#059669'));
+        flowItems.push(flowCard('Trust Accounting', ta.journalEntries + ' journal entries', '#3b82f6'));
+        flowItems.push(flowCard('Cash Management', (cm.activeAccounts || 0) + ' accounts', '#3b82f6'));
+        flowItems.push(flowCard('Fineract GL', jeUnsynced > 0 ? jeUnsynced + ' pending push' : 'In sync', jeUnsynced > 0 ? '#d97706' : '#059669'));
+
+        el('bridge-flow-map').innerHTML = flowItems.join('');
+
+        // Sync history
+        var historyHtml = '';
+        if (d.recentSyncs && d.recentSyncs.length > 0) {
+          historyHtml = '<table><thead><tr><th>Time</th><th>Type</th><th>Source</th><th>Target</th><th>Synced</th><th>Failed</th><th>Status</th></tr></thead><tbody>';
+          for (var i = 0; i < d.recentSyncs.length; i++) {
+            var s = d.recentSyncs[i];
+            var sColor = s.status === 'completed' ? '#059669' : s.status === 'partial' ? '#d97706' : '#dc2626';
+            historyHtml += '<tr><td>' + new Date(s.created_at).toLocaleString() + '</td><td>' + esc(s.sync_type) + '</td><td>' + esc(s.source_module) + '</td><td>' + esc(s.target_module) + '</td><td>' + s.items_synced + '</td><td>' + s.items_failed + '</td><td><span style="color:' + sColor + ';">' + esc(s.status) + '</span></td></tr>';
+          }
+          historyHtml += '</tbody></table>';
+        } else {
+          historyHtml = '<p class="text-muted">No sync history yet. Run a sync to see results here.</p>';
+        }
+        el('bridge-sync-history').innerHTML = historyHtml;
+
+      } catch(err) {
+        el('bridge-health-banner').innerHTML = '<p class="text-muted">Error loading data bridge: ' + esc(err.message || String(err)) + '</p>';
+      }
+    }
+
+    async function runFullSync() {
+      if (!confirm('Run a full cross-module data sync? This will sync bonds, ACH, BILL, and push to Fineract GL.')) return;
+      el('bridge-sync-result').style.display = 'block';
+      el('bridge-sync-result').innerHTML = '<p style="color:#3b82f6;">Running full sync...</p>';
+      try {
+        var r = await fetchJSON(API + '/api/accounting/bridge/sync', { method: 'POST', headers: { 'Content-Type': 'application/json' } });
+        if (r && r.success) {
+          var d = r.data;
+          el('bridge-sync-result').innerHTML =
+            '<div style="padding:12px;background:rgba(5,150,105,0.1);border:1px solid #059669;border-radius:6px;">' +
+            '<strong>Full Sync Complete</strong> (' + d.durationMs + 'ms)<br>' +
+            'Total synced: ' + d.totalSynced + ' | Total failed: ' + d.totalFailed + '<br>' +
+            '<span style="font-size:12px;color:var(--muted);">' +
+              'Bonds: ' + (d.results.bonds.synced || 0) + ' synced | ' +
+              'ACH: ' + (d.results.ach.synced || 0) + ' synced | ' +
+              'BILL: ' + (d.results.bill.synced || 0) + ' synced | ' +
+              'Fineract push: ' + (d.results.fineractPush.synced || 0) + ' synced' +
+            '</span></div>';
+          loadDataBridge();
+        } else {
+          el('bridge-sync-result').innerHTML = '<p style="color:#dc2626;">Sync failed: ' + esc((r && r.error) || 'Unknown error') + '</p>';
+        }
+      } catch(err) {
+        el('bridge-sync-result').innerHTML = '<p style="color:#dc2626;">Error: ' + esc(err.message || String(err)) + '</p>';
+      }
+    }
+
+    async function bridgeSync(module) {
+      el('bridge-sync-result').style.display = 'block';
+      el('bridge-sync-result').innerHTML = '<p style="color:#3b82f6;">Syncing ' + module + '...</p>';
+      try {
+        var r = await fetchJSON(API + '/api/accounting/bridge/sync/' + module, { method: 'POST', headers: { 'Content-Type': 'application/json' } });
+        if (r && r.success) {
+          var d = r.data;
+          el('bridge-sync-result').innerHTML =
+            '<div style="padding:12px;background:rgba(5,150,105,0.1);border:1px solid #059669;border-radius:6px;">' +
+            '<strong>' + module.toUpperCase() + ' Sync Complete</strong><br>' +
+            'Synced: ' + (d.synced || 0) + ' | Skipped: ' + (d.skipped || 0) + ' | Failed: ' + (d.failed || 0) +
+            (d.message ? '<br><span class="text-muted">' + esc(d.message) + '</span>' : '') +
+            '</div>';
+          loadDataBridge();
+        } else {
+          el('bridge-sync-result').innerHTML = '<p style="color:#dc2626;">Sync failed: ' + esc((r && r.error) || 'Unknown error') + '</p>';
+        }
+      } catch(err) {
+        el('bridge-sync-result').innerHTML = '<p style="color:#dc2626;">Error: ' + esc(err.message || String(err)) + '</p>';
+      }
+    }
+
+    async function bridgeReconcile(type) {
+      el('bridge-sync-result').style.display = 'block';
+      el('bridge-sync-result').innerHTML = '<p style="color:#7c3aed;">Reconciling ' + type + '...</p>';
+      try {
+        var r = await fetchJSON(API + '/api/accounting/bridge/reconcile/' + type);
+        if (r && r.success) {
+          var d = r.data;
+          var html = '<div style="padding:12px;background:rgba(124,58,237,0.1);border:1px solid #7c3aed;border-radius:6px;">';
+          html += '<strong>' + type.toUpperCase() + ' Reconciliation</strong><br>';
+          if (type === 'cash') {
+            html += 'Cash module: $' + (d.cashModuleTotal || 0).toLocaleString('en-US', {minimumFractionDigits:2}) + '<br>';
+            html += 'Trust accounting: $' + (d.trustAccountingTotal || 0).toLocaleString('en-US', {minimumFractionDigits:2}) + '<br>';
+            html += 'Difference: $' + (d.difference || 0).toLocaleString('en-US', {minimumFractionDigits:2}) + '<br>';
+            html += d.isReconciled ? '<span style="color:#059669;">Reconciled</span>' : '<span style="color:#dc2626;">Discrepancies found: ' + d.discrepancies.length + '</span>';
+          } else if (type === 'fineract') {
+            html += 'Matched: ' + (d.matched || 0) + ' | Unmatched: ' + (d.unmatched || 0) + '<br>';
+            html += 'Unsynced JEs: ' + (d.unsyncedJournalEntries || 0);
+            if (d.error) html += '<br><span class="text-muted">' + esc(d.error) + '</span>';
+          } else if (type === 'wire') {
+            html += 'Wires without journal entries: ' + (d.totalWiresWithoutJE || 0);
+          }
+          html += '</div>';
+          el('bridge-sync-result').innerHTML = html;
+          loadDataBridge();
+        } else {
+          el('bridge-sync-result').innerHTML = '<p style="color:#dc2626;">Reconciliation failed: ' + esc((r && r.error) || 'Unknown error') + '</p>';
+        }
+      } catch(err) {
+        el('bridge-sync-result').innerHTML = '<p style="color:#dc2626;">Error: ' + esc(err.message || String(err)) + '</p>';
+      }
+    }
+
+    async function loadBridgeReport() {
+      el('bridge-recon-report').innerHTML = '<p style="color:#3b82f6;">Generating reconciliation report...</p>';
+      try {
+        var r = await fetchJSON(API + '/api/accounting/bridge/report');
+        if (r && r.success) {
+          var d = r.data;
+          var html = '<div style="font-size:12px;color:var(--muted);margin-bottom:12px;">Generated: ' + new Date(d.generatedAt).toLocaleString() + '</div>';
+
+          if (d.syncHealth) {
+            var hc = d.syncHealth === 'healthy' ? '#059669' : d.syncHealth === 'needs_sync' ? '#d97706' : '#dc2626';
+            html += '<div style="margin-bottom:12px;"><strong>Overall Health:</strong> <span style="color:' + hc + ';">' + esc(d.syncHealth) + '</span></div>';
+          }
+
+          for (var i = 0; i < (d.sections || []).length; i++) {
+            var sec = d.sections[i];
+            html += '<div style="padding:10px;margin-bottom:8px;background:var(--bg);border-radius:6px;border:1px solid var(--border);">';
+            html += '<strong>' + esc(sec.title) + '</strong><br>';
+            if (sec.error) {
+              html += '<span style="color:#dc2626;">' + esc(sec.error) + '</span>';
+            } else if (sec.isReconciled !== undefined) {
+              html += 'Cash: $' + (sec.cashModuleTotal || 0).toLocaleString('en-US', {minimumFractionDigits:2}) + ' | Trust: $' + (sec.trustAccountingTotal || 0).toLocaleString('en-US', {minimumFractionDigits:2}) + '<br>';
+              html += sec.isReconciled ? '<span style="color:#059669;">Reconciled</span>' : '<span style="color:#dc2626;">Difference: $' + (sec.difference || 0).toLocaleString('en-US', {minimumFractionDigits:2}) + '</span>';
+            } else if (sec.matched !== undefined) {
+              html += 'Matched: ' + sec.matched + ' | Unmatched: ' + sec.unmatched + ' | Unsynced JEs: ' + (sec.unsyncedJournalEntries || 0);
+            } else if (sec.achUnsyncedBatches !== undefined) {
+              html += 'ACH: ' + sec.achUnsyncedBatches + ' unsynced | Bonds: ' + sec.bondUnsyncedAccruals + ' unsynced | Wires: ' + sec.wiresMissingJE + ' missing JE | Fineract: ' + sec.journalEntriesNotInFineract + ' pending';
+            } else if (sec.count !== undefined) {
+              html += sec.count + ' unresolved discrepancies';
+              if (sec.items && sec.items.length > 0) {
+                html += '<table style="margin-top:8px;font-size:12px;"><thead><tr><th>Type</th><th>Modules</th><th>Account</th><th>Diff</th><th>Severity</th></tr></thead><tbody>';
+                for (var j = 0; j < sec.items.length; j++) {
+                  var it = sec.items[j];
+                  var sc = it.severity === 'critical' ? '#dc2626' : it.severity === 'high' ? '#d97706' : '#6b7280';
+                  html += '<tr><td>' + esc(it.discrepancy_type) + '</td><td>' + esc(it.module_a) + ' / ' + esc(it.module_b) + '</td><td>' + esc(it.account_code || '-') + '</td><td>$' + Number(it.difference || 0).toLocaleString('en-US', {minimumFractionDigits:2}) + '</td><td><span style="color:' + sc + ';">' + esc(it.severity) + '</span></td></tr>';
+                }
+                html += '</tbody></table>';
+              }
+            }
+            html += '</div>';
+          }
+          el('bridge-recon-report').innerHTML = html;
+        } else {
+          el('bridge-recon-report').innerHTML = '<p style="color:#dc2626;">Report failed: ' + esc((r && r.error) || 'Unknown error') + '</p>';
+        }
+      } catch(err) {
+        el('bridge-recon-report').innerHTML = '<p style="color:#dc2626;">Error: ' + esc(err.message || String(err)) + '</p>';
       }
     }
 
