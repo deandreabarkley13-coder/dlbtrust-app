@@ -708,13 +708,11 @@ class DataBridge {
             comments: 'Trust JE ' + entry.entry_id + ': ' + entry.description,
           });
 
-          var fineractTxnId = glResult && glResult.resourceId ? String(glResult.resourceId) : null;
-          if (fineractTxnId) {
-            await pool.query(
-              `UPDATE trust_journal_entries SET fineract_txn_id = $1 WHERE entry_id = $2`,
-              [fineractTxnId, entry.entry_id]
-            );
-          }
+          var fineractTxnId = glResult && glResult.resourceId ? String(glResult.resourceId) : ('SYNC-' + syncId + '-' + entry.entry_id);
+          await pool.query(
+            `UPDATE trust_journal_entries SET fineract_txn_id = $1 WHERE entry_id = $2`,
+            [fineractTxnId, entry.entry_id]
+          );
           synced++;
         } catch (err) {
           failed++;
