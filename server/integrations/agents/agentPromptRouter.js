@@ -175,6 +175,27 @@ var BOOKKEEPING_INTENTS = [
     description: 'Show bookkeeping dashboard summary',
     action: 'getDashboard',
   },
+  {
+    id: 'data_bridge_sync',
+    keywords: ['sync', 'bridge', 'data bridge', 'full sync', 'sync all', 'sync modules', 'cross module', 'data flow'],
+    phrases: ['run full sync', 'sync all modules', 'data bridge sync', 'sync everything', 'run data bridge', 'cross module sync', 'sync data flow', 'bridge the data', 'sync bonds and ach', 'sync all data'],
+    description: 'Run full cross-module data sync (bonds, ACH, BILL, Fineract)',
+    action: 'dataBridgeSync',
+  },
+  {
+    id: 'data_bridge_reconcile',
+    keywords: ['reconcile cash', 'reconcile gl', 'fineract reconcile', 'cash reconciliation', 'gl reconciliation', 'reconciliation report', 'data reconciliation'],
+    phrases: ['reconcile with fineract', 'reconcile cash balances', 'generate reconciliation report', 'check data reconciliation', 'cross module reconciliation', 'are modules in sync', 'check sync status', 'reconcile all modules'],
+    description: 'Reconcile trust accounting with cash management and Fineract GL',
+    action: 'dataBridgeReconcile',
+  },
+  {
+    id: 'data_bridge_status',
+    keywords: ['bridge status', 'sync status', 'data flow status', 'module status', 'sync health'],
+    phrases: ['show bridge status', 'data flow status', 'sync health', 'how is the sync', 'are modules synced', 'check sync health', 'data bridge status', 'show data flow'],
+    description: 'Show cross-module data flow status and sync health',
+    action: 'dataBridgeStatus',
+  },
 ];
 
 // ─── Scoring Engine ──────────────────────────────────────────────────────────
@@ -404,6 +425,18 @@ class AgentPromptRouter {
         case 'getDashboard':
           result = await BookkeepingAgent.getDashboard();
           break;
+        case 'dataBridgeSync':
+          var { DataBridge } = require(path.join(__dirname, '../accounting/dataBridge'));
+          result = await DataBridge.runFullSync();
+          break;
+        case 'dataBridgeReconcile':
+          var { DataBridge: DB2 } = require(path.join(__dirname, '../accounting/dataBridge'));
+          result = await DB2.getReconciliationReport();
+          break;
+        case 'dataBridgeStatus':
+          var { DataBridge: DB3 } = require(path.join(__dirname, '../accounting/dataBridge'));
+          result = await DB3.getDataFlowStatus();
+          break;
         default:
           return { understood: false, message: 'Action not implemented: ' + bestIntent.action };
       }
@@ -503,9 +536,10 @@ function formatBookkeepingResult(intent, result) {
       return 'Auto-Post Complete. ACH entries posted: ' + result.achPosted + '. Wire entries posted: ' + result.wirePosted + '. Errors: ' + result.errors + '.';
 
     case 'generateFinancialSummary':
+      var s = result.summary || result;
       var msg = 'Financial Summary: ';
-      if (result.balanceSheet) msg += 'Total Assets: ' + formatCurrency(result.balanceSheet.totalAssets) + '. Total Liabilities: ' + formatCurrency(result.balanceSheet.totalLiabilities) + '. Equity: ' + formatCurrency(result.balanceSheet.equity) + '. ';
-      if (result.trialBalance) msg += 'Trial Balance: ' + (result.trialBalance.isBalanced ? 'Balanced' : 'IMBALANCED') + '.';
+      if (s.balanceSheet) msg += 'Total Assets: ' + formatCurrency(s.balanceSheet.totalAssets) + '. Total Liabilities: ' + formatCurrency(s.balanceSheet.totalLiabilities) + '. Equity: ' + formatCurrency(s.balanceSheet.equity) + '. ';
+      if (s.trialBalance) msg += 'Trial Balance: ' + (s.trialBalance.isBalanced ? 'Balanced' : 'IMBALANCED') + '.';
       return msg;
 
     case 'detectAnomalies':
@@ -537,6 +571,29 @@ function formatBookkeepingResult(intent, result) {
     case 'getDashboard':
       return 'Bookkeeping Overview: ' + result.pendingTasks + ' pending task(s), ' + result.completedThisMonth + ' completed this month. ' +
         'Journal entries (7d): ' + result.journalsLast7Days + '. Recent reconciliations: ' + (result.recentReconciliations ? result.recentReconciliations.length : 0) + '.';
+
+    case 'dataBridgeSync':
+      return 'Full Sync Complete (' + result.durationMs + 'ms). Synced: ' + result.totalSynced + '. Failed: ' + result.totalFailed + '. ' +
+        'Bonds: ' + (result.results.bonds.synced || 0) + ' | ACH: ' + (result.results.ach.synced || 0) + ' | BILL: ' + (result.results.bill.synced || 0) + ' | Fineract push: ' + (result.results.fineractPush.synced || 0) + '.';
+
+    case 'dataBridgeReconcile':
+      var sections = result.sections || [];
+      var msgs = sections.map(function(s) {
+        if (s.error) return s.title + ': Error';
+        if (s.isReconciled !== undefined) return s.title + ': ' + (s.isReconciled ? 'Reconciled' : 'Diff $' + (s.difference || 0));
+        if (s.matched !== undefined) return s.title + ': ' + s.matched + ' matched, ' + s.unmatched + ' unmatched';
+        if (s.achUnsyncedBatches !== undefined) return 'Unsynced: ACH ' + s.achUnsyncedBatches + ', Bonds ' + s.bondUnsyncedAccruals + ', Wires ' + s.wiresMissingJE;
+        if (s.count !== undefined) return s.count + ' unresolved discrepancies';
+        return s.title;
+      });
+      return 'Reconciliation Report (' + (result.syncHealth || 'unknown') + '): ' + msgs.join('. ') + '.';
+
+    case 'dataBridgeStatus':
+      var health = result.syncHealth || 'unknown';
+      var ta = result.modules.trust_accounting || {};
+      var cashMod = result.modules.cash_management || {};
+      return 'Data Flow Status: ' + health.toUpperCase() + '. Trust JEs: ' + (ta.journalEntries || 0) + ' (' + (ta.unsyncedToFineract || 0) + ' unsynced). ' +
+        'Cash: ' + formatCurrency(cashMod.totalBalance || 0) + '. Discrepancies: ' + (result.unresolvedDiscrepancies || 0) + '.';
 
     default:
       return 'Action completed successfully.';

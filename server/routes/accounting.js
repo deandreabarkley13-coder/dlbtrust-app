@@ -11,6 +11,7 @@
 const express = require('express');
 const router  = express.Router();
 const { TrustAccountingEngine } = require('../integrations/accounting/trustAccountingEngine');
+const { DataBridge } = require('../integrations/accounting/dataBridge');
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // DASHBOARD
@@ -288,6 +289,123 @@ router.get('/statements/:id', async (req, res) => {
     const statement = await GenerationEngine.getStatement(req.params.id);
     if (!statement) return res.status(404).json({ success: false, error: `Statement ${req.params.id} not found` });
     res.json({ success: true, data: statement });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// DATA BRIDGE — Cross-Module Sync & Reconciliation
+// ═══════════════════════════════════════════════════════════════════════════════
+
+// ─── GET /api/accounting/bridge/status ────────────────────────────────────────
+router.get('/bridge/status', async (req, res) => {
+  try {
+    const status = await DataBridge.getDataFlowStatus();
+    res.json({ success: true, data: status });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// ─── POST /api/accounting/bridge/sync ─────────────────────────────────────────
+router.post('/bridge/sync', async (req, res) => {
+  try {
+    const results = await DataBridge.runFullSync();
+    res.json({ success: true, data: results });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// ─── POST /api/accounting/bridge/sync/bonds ───────────────────────────────────
+router.post('/bridge/sync/bonds', async (req, res) => {
+  try {
+    const result = await DataBridge.syncBondsToAccounting();
+    res.json({ success: true, data: result });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// ─── POST /api/accounting/bridge/sync/ach ─────────────────────────────────────
+router.post('/bridge/sync/ach', async (req, res) => {
+  try {
+    const result = await DataBridge.syncACHToAccounting();
+    res.json({ success: true, data: result });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// ─── POST /api/accounting/bridge/sync/bill ────────────────────────────────────
+router.post('/bridge/sync/bill', async (req, res) => {
+  try {
+    const result = await DataBridge.syncBILLToAccounting();
+    res.json({ success: true, data: result });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// ─── POST /api/accounting/bridge/sync/fineract ───────────────────────────────
+router.post('/bridge/sync/fineract', async (req, res) => {
+  try {
+    const result = await DataBridge.pushToFineract();
+    res.json({ success: true, data: result });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// ─── GET /api/accounting/bridge/reconcile/cash ────────────────────────────────
+router.get('/bridge/reconcile/cash', async (req, res) => {
+  try {
+    const result = await DataBridge.reconcileCashToAccounting();
+    res.json({ success: true, data: result });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// ─── GET /api/accounting/bridge/reconcile/fineract ────────────────────────────
+router.get('/bridge/reconcile/fineract', async (req, res) => {
+  try {
+    const result = await DataBridge.reconcileFineractGL();
+    res.json({ success: true, data: result });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// ─── GET /api/accounting/bridge/reconcile/wire ────────────────────────────────
+router.get('/bridge/reconcile/wire', async (req, res) => {
+  try {
+    const result = await DataBridge.verifyWireSync();
+    res.json({ success: true, data: result });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// ─── GET /api/accounting/bridge/report ────────────────────────────────────────
+router.get('/bridge/report', async (req, res) => {
+  try {
+    const report = await DataBridge.getReconciliationReport();
+    res.json({ success: true, data: report });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// ─── GET /api/accounting/bridge/history ───────────────────────────────────────
+router.get('/bridge/history', async (req, res) => {
+  try {
+    const history = await DataBridge.getSyncHistory({
+      limit: req.query.limit ? parseInt(req.query.limit) : undefined,
+      syncType: req.query.type,
+    });
+    res.json({ success: true, count: history.length, data: history });
   } catch (err) {
     res.status(500).json({ success: false, error: err.message });
   }
