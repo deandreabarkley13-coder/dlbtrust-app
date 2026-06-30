@@ -129,15 +129,16 @@ router.post('/deposit', requireAdmin, async function(req, res) {
     if (method === 'wire') {
       // Wire transfer to BILL account
       var WireEngine = require(path.join(__dirname, '../integrations/wire/wireEngine')).WireEngine;
-      var wire = await WireEngine.originateWire({
+      var wire = await WireEngine.initiateWire({
+        amountCents: Math.round(amount * 100),
         beneficiaryName: accountHolder,
         beneficiaryAccount: accountNumber,
         beneficiaryRouting: routing,
-        beneficiaryBank: targetAccount.bankName || 'Betterment',
-        amount: Math.round(amount * 100), // cents
+        beneficiaryBankName: targetAccount.bankName || 'Betterment',
         description: memo,
+        purpose: 'BILL Cash Account Deposit',
         paymentType: 'trust_distribution',
-        createdBy: req.user === 'admin' ? 'admin' : (req.user && req.user.username) || 'system'
+        initiatedBy: req.user === 'admin' ? 'admin' : (req.user && req.user.username) || 'system'
       });
       return res.json({
         success: true,
@@ -145,7 +146,7 @@ router.post('/deposit', requireAdmin, async function(req, res) {
         wireId: wire.wire_id,
         amount: amount,
         status: wire.status,
-        destination: targetAccount.bankName + ' ****' + accountNumber.slice(-4),
+        destination: (targetAccount.bankName || 'Betterment') + ' ****' + accountNumber.slice(-4),
         message: 'Wire transfer initiated. Requires approval before sending.'
       });
     }
