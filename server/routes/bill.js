@@ -189,11 +189,6 @@ router.post('/deposit', requireAdmin, async function(req, res) {
 // List deposit history to BILL accounts
 router.get('/deposits', async function(req, res) {
   try {
-    var pool = require(path.join(__dirname, '../integrations/ach/achEngine')).pool;
-    if (!pool) {
-      pool = require(path.join(__dirname, '../../server-3002')).pool;
-    }
-    // Get ACH batches that were sent to BILL bank account routing
     var billClient = require(path.join(__dirname, '../integrations/bill/billClient'));
     var accounts = [];
     try { accounts = await billClient.listBankAccounts(); } catch(e) {}
@@ -206,10 +201,8 @@ router.get('/deposits', async function(req, res) {
       return res.json({ success: true, deposits: [] });
     }
 
-    // Query ACH entries targeting BILL routing numbers
-    var { Pool } = require('pg');
-    var dbPool = new Pool({ connectionString: process.env.DATABASE_URL, ssl: process.env.DATABASE_URL && process.env.DATABASE_URL.includes('fly') ? { rejectUnauthorized: false } : false });
-    var result = await dbPool.query(
+    var pool = require(path.join(__dirname, '../integrations/bonds/pgPool'));
+    var result = await pool.query(
       `SELECT b.batch_id, b.status, b.total_amount_cents, b.created_at, b.entry_description,
               e.receiving_routing, e.account_number, e.amount_cents, e.individual_name
        FROM ach_batches b
@@ -219,7 +212,6 @@ router.get('/deposits', async function(req, res) {
        LIMIT 50`,
       [routings]
     );
-    await dbPool.end();
 
     var deposits = result.rows.map(function(r) {
       return {
