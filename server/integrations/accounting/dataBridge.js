@@ -174,13 +174,32 @@ class DataBridge {
           if (cpn.amount_cents) couponAmount = couponAmount / 100;
 
           if (couponAmount > 0) {
+            // Fetch accrued interest balance to cap the credit
+            var accruedResult = await pool.query(
+              'SELECT COALESCE(balance, 0) AS balance FROM trust_accounts WHERE account_code = $1',
+              [ACCOUNTS.ACCRUED_INTEREST]
+            );
+            var accruedBalance = accruedResult.rows.length > 0 ? parseFloat(accruedResult.rows[0].balance) : 0;
+            var settleAmount = Math.min(couponAmount, Math.max(accruedBalance, 0));
+            var excessAmount = couponAmount - settleAmount;
+
+            var couponLines = [
+              { accountCode: ACCOUNTS.CASH, debitAmount: couponAmount, creditAmount: 0, memo: 'Coupon received ' + cpn.bond_code },
+            ];
+            if (settleAmount > 0) {
+              couponLines.push({ accountCode: ACCOUNTS.ACCRUED_INTEREST, debitAmount: 0, creditAmount: settleAmount, memo: 'Accrued interest settled' });
+            }
+            if (excessAmount > 0.001) {
+              couponLines.push({ accountCode: ACCOUNTS.COUPON_INCOME, debitAmount: 0, creditAmount: excessAmount, memo: 'Coupon income (excess over accrued)' });
+            }
+            if (settleAmount <= 0) {
+              couponLines.push({ accountCode: ACCOUNTS.COUPON_INCOME, debitAmount: 0, creditAmount: couponAmount, memo: 'Coupon income ' + cpn.bond_code });
+            }
+
             await TrustAccountingEngine.postJournalEntry({
               entryDate: cpn.payment_date,
               description: 'Coupon payment received — ' + cpn.bond_code,
-              lines: [
-                { accountCode: ACCOUNTS.CASH, debitAmount: couponAmount, creditAmount: 0, memo: 'Coupon received ' + cpn.bond_code },
-                { accountCode: ACCOUNTS.ACCRUED_INTEREST, debitAmount: 0, creditAmount: Math.min(couponAmount, couponAmount), memo: 'Accrued interest settled' },
-              ],
+              lines: couponLines,
               referenceType: 'coupon_payment',
               referenceId: String(cpn.id),
               bondId: cpn.bond_code,
@@ -299,6 +318,8 @@ class DataBridge {
   static async reconcileCashToAccounting() {
     var syncId = 'RECON-CASH-' + Date.now() + '-' + Math.random().toString(36).slice(2, 6).toUpperCase();
     var discrepancies = [];
+    var cashModuleTotal = 0;
+    var trustCashBalance = 0;
 
     try {
       // Get total cash from cash_accounts table
@@ -307,7 +328,7 @@ class DataBridge {
         FROM cash_accounts
         WHERE status = 'active'
       `);
-      var cashModuleTotal = parseInt(cashResult.rows[0].total_cents) / 100;
+      cashModuleTotal = parseInt(cashResult.rows[0].total_cents) / 100;
 
       // Get cash balance from trust accounting
       var trustResult = await pool.query(`
@@ -315,7 +336,7 @@ class DataBridge {
         FROM trust_accounts
         WHERE account_code = $1
       `, [ACCOUNTS.CASH]);
-      var trustCashBalance = trustResult.rows.length > 0 ? parseFloat(trustResult.rows[0].balance) : 0;
+      trustCashBalance = trustResult.rows.length > 0 ? parseFloat(trustResult.rows[0].balance) : 0;
 
       var diff = Math.abs(cashModuleTotal - trustCashBalance);
 

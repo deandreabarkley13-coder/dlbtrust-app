@@ -3357,6 +3357,8 @@
     }
 
     async function bridgeSync(module) {
+      var allowed = ['bonds', 'ach', 'bill', 'fineract'];
+      if (allowed.indexOf(module) === -1) return;
       el('bridge-sync-result').style.display = 'block';
       el('bridge-sync-result').innerHTML = '<p style="color:#3b82f6;">Syncing ' + module + '...</p>';
       try {
@@ -3379,6 +3381,8 @@
     }
 
     async function bridgeReconcile(type) {
+      var allowed = ['cash', 'fineract', 'wire'];
+      if (allowed.indexOf(type) === -1) return;
       el('bridge-sync-result').style.display = 'block';
       el('bridge-sync-result').innerHTML = '<p style="color:#7c3aed;">Reconciling ' + type + '...</p>';
       try {
