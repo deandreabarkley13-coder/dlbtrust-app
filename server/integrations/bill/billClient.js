@@ -8,6 +8,7 @@
 
 var https = require('https');
 var http = require('http');
+var querystring = require('querystring');
 
 var BILL_API_BASE = process.env.BILL_API_URL || 'https://api.bill.com/api/v2';
 
@@ -18,11 +19,23 @@ var SESSION_TIMEOUT_MS = 30 * 60 * 1000; // 30 minutes (BILL expires at 35 min i
 /**
  * Make an HTTP POST request to the BILL API
  */
-function billRequest(endpoint, data) {
+function billRequest(endpoint, params) {
   return new Promise(function(resolve, reject) {
     var url = BILL_API_BASE + endpoint;
-    var postData = JSON.stringify(data);
     var parsed = new URL(url);
+
+    // BILL v2 API requires application/x-www-form-urlencoded
+    // Top-level fields (devKey, sessionId, userName, password, orgId) are form fields
+    // Nested objects go in the 'data' field as JSON string
+    var formFields = {};
+    Object.keys(params).forEach(function(key) {
+      if (typeof params[key] === 'object' && params[key] !== null) {
+        formFields[key] = JSON.stringify(params[key]);
+      } else {
+        formFields[key] = params[key];
+      }
+    });
+    var postData = querystring.stringify(formFields);
 
     var options = {
       hostname: parsed.hostname,
@@ -30,7 +43,7 @@ function billRequest(endpoint, data) {
       path: parsed.pathname,
       method: 'POST',
       headers: {
-        'Content-Type': 'application/json',
+        'Content-Type': 'application/x-www-form-urlencoded',
         'Content-Length': Buffer.byteLength(postData),
         'Accept': 'application/json'
       }
