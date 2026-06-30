@@ -118,7 +118,7 @@ class BookkeepingAgent {
       `INSERT INTO bookkeeping_reconciliations
          (recon_id, recon_type, items_matched, items_unmatched, total_matched, total_unmatched, details, status)
        VALUES ($1, $2, $3, $4, $5, $6, $7, 'final')`,
-      ['ach_reconciliation', reconId, matched.length, unmatched.length,
+      [reconId, 'ach_reconciliation', matched.length, unmatched.length,
        totalMatched, totalUnmatched,
        JSON.stringify({ matched: matched, unmatched: unmatched })]
     );
@@ -180,7 +180,18 @@ class BookkeepingAgent {
     var totalMatched = matched.reduce(function(s, m) { return s + m.amount; }, 0);
     var totalUnmatched = unmatched.reduce(function(s, u) { return s + u.amount; }, 0);
 
+    var reconId = 'RCN-WIRE-' + Date.now();
+    await pool.query(
+      `INSERT INTO bookkeeping_reconciliations
+         (recon_id, recon_type, items_matched, items_unmatched, total_matched, total_unmatched, details, status)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, 'final')`,
+      [reconId, 'wire_reconciliation', matched.length, unmatched.length,
+       totalMatched, totalUnmatched,
+       JSON.stringify({ matched: matched, unmatched: unmatched })]
+    );
+
     return {
+      reconId: reconId,
       type: 'wire',
       date: new Date().toISOString().split('T')[0],
       matched: matched.length,
