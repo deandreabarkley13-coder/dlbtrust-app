@@ -4,27 +4,33 @@ var express = require('express');
 var router = express.Router();
 var path = require('path');
 
-// Auth middleware — require admin token (same pattern as backup/resilience routes)
-var requireAdmin = function(req, res, next) {
+// Auth middleware — require admin token, JWT, or API key
+var requireAdmin = async function(req, res, next) {
+  // 1. Admin secret token (x-admin-token header)
   var adminToken = req.headers['x-admin-token'] || req.query.adminToken;
   if (adminToken && adminToken === process.env.ADMIN_SECRET_TOKEN) {
     req.user = 'admin';
     return next();
   }
+  // 2. Bearer token — try JWT first, then API key
   var authHeader = req.headers['authorization'];
   if (authHeader && authHeader.startsWith('Bearer ')) {
+    var token = authHeader.slice(7).trim();
+    // Try JWT from login session
+    try {
+      var UserAuth = require(path.join(__dirname, '../integrations/auth/userAuth')).UserAuth;
+      var decoded = await UserAuth.verifyToken(token);
+      if (decoded && decoded.role === 'admin') {
+        req.user = decoded;
+        return next();
+      }
+    } catch(e) { /* not a valid JWT, try API key next */ }
+    // Try API key
     try {
       var ApiCredentials = require(path.join(__dirname, '../integrations/ach/apiCredentials')).ApiCredentials;
-      ApiCredentials.validate(authHeader.slice(7).trim()).then(function(cred) {
-        if (cred) { req.user = cred.label || 'api_key'; return next(); }
-        return res.status(401).json({ error: 'Authentication required' });
-      }).catch(function() {
-        return res.status(401).json({ error: 'Authentication required' });
-      });
-    } catch(e) {
-      return res.status(401).json({ error: 'Authentication required' });
-    }
-    return;
+      var cred = await ApiCredentials.validate(token);
+      if (cred) { req.user = cred.label || 'api_key'; return next(); }
+    } catch(e) { /* not valid API key either */ }
   }
   return res.status(401).json({ error: 'Authentication required' });
 };
