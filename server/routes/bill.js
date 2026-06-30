@@ -37,7 +37,7 @@ var requireAdmin = async function(req, res, next) {
 
 // ─── GET /api/bill/status ─────────────────────────────────────────────────────
 // Returns BILL connection status
-router.get('/status', requireAdmin, async function(req, res) {
+router.get('/status', async function(req, res) {
   try {
     var billClient = require(path.join(__dirname, '../integrations/bill/billClient'));
     var status = await billClient.getStatus();
@@ -49,7 +49,7 @@ router.get('/status', requireAdmin, async function(req, res) {
 
 // ─── GET /api/bill/accounts ───────────────────────────────────────────────────
 // List all bank accounts
-router.get('/accounts', requireAdmin, async function(req, res) {
+router.get('/accounts', async function(req, res) {
   try {
     var billClient = require(path.join(__dirname, '../integrations/bill/billClient'));
     if (!billClient.isConfigured()) {
@@ -64,7 +64,7 @@ router.get('/accounts', requireAdmin, async function(req, res) {
 
 // ─── GET /api/bill/balance ────────────────────────────────────────────────────
 // Get organization bank balance
-router.get('/balance', requireAdmin, async function(req, res) {
+router.get('/balance', async function(req, res) {
   try {
     var billClient = require(path.join(__dirname, '../integrations/bill/billClient'));
     if (!billClient.isConfigured()) {
@@ -79,7 +79,7 @@ router.get('/balance', requireAdmin, async function(req, res) {
 
 // ─── GET /api/bill/account/:id ────────────────────────────────────────────────
 // Get specific bank account details
-router.get('/account/:id', requireAdmin, async function(req, res) {
+router.get('/account/:id', async function(req, res) {
   try {
     var billClient = require(path.join(__dirname, '../integrations/bill/billClient'));
     if (!billClient.isConfigured()) {

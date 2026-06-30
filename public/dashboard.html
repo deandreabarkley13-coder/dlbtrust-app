@@ -2682,9 +2682,9 @@
     // ─── BILL CASH ACCOUNT ────────────────────────────────────────────────────
     async function loadBill() {
       const [status, accounts, balance] = await Promise.all([
-        fetchJSON(API + '/api/bill/status', { headers: adminHeaders() }),
-        fetchJSON(API + '/api/bill/accounts', { headers: adminHeaders() }),
-        fetchJSON(API + '/api/bill/balance', { headers: adminHeaders() }),
+        fetchJSON(API + '/api/bill/status'),
+        fetchJSON(API + '/api/bill/accounts'),
+        fetchJSON(API + '/api/bill/balance'),
       ]);
 
       // Status cards
