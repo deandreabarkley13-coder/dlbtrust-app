@@ -2711,8 +2711,8 @@
         if (accts.length === 0) {
           el('bill-accounts').innerHTML = '<p class="text-muted">No bank accounts found</p>';
         } else {
-          el('bill-accounts').innerHTML = '<table><thead><tr><th>Name</th><th>Type</th><th>Account #</th><th>Status</th></tr></thead><tbody>' +
-            accts.map(a => `<tr><td>${esc(a.name || a.description || '—')}</td><td>${esc(a.accountType || '—')}</td><td>****${esc((a.accountNumber || '').slice(-4))}</td><td>${a.isActive !== false ? '<span class="badge badge-active">Active</span>' : '<span class="badge">Inactive</span>'}</td></tr>`).join('') +
+          el('bill-accounts').innerHTML = '<table><thead><tr><th>Bank</th><th>Account Holder</th><th>Account #</th><th>Balance</th><th>Status</th></tr></thead><tbody>' +
+            accts.map(a => `<tr><td>${esc(a.bankName || a.name || '—')}</td><td>${esc(a.nameOnAcct || a.description || '—')}</td><td>****${esc((a.accountNumber || '').slice(-4))}</td><td>${a.plaidBalance != null ? '$' + Number(a.plaidBalance).toLocaleString('en-US', {minimumFractionDigits:2}) : '—'}</td><td>${a.isActive === '1' || a.isActive === true ? '<span class="badge badge-active">Active</span>' : '<span class="badge">Inactive</span>'}</td></tr>`).join('') +
             '</tbody></table>';
         }
       } else {
