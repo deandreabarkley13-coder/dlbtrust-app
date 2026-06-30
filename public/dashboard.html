@@ -2800,11 +2800,13 @@
       });
 
       if (r.success) {
+        const billStatus = r.billRecord ? '✓ Submitted to BILL' : 'Local only';
+        const billRef = r.billRecord ? `<br><span style="font-size:11px;color:var(--green);">BILL Ref: ${esc(r.billRecord.receivedPayId)} | Visible in BILL Dashboard</span>` : '';
         el('bill-deposit-result').innerHTML = `
           <div style="padding:12px;background:rgba(16,185,129,0.1);border:1px solid var(--green);border-radius:6px;">
-            <strong style="color:var(--green)">Deposit Initiated</strong><br>
+            <strong style="color:var(--green)">Deposit Submitted to BILL</strong><br>
             <span style="font-size:13px;">$${amount.toLocaleString('en-US',{minimumFractionDigits:2})} → ${esc(r.destination || 'BILL Account')}</span><br>
-            <span style="font-size:12px;color:var(--text-muted);">Method: ${r.method === 'wire' ? 'Wire Transfer' : 'ACH Credit'} | ${r.method === 'wire' ? 'Wire ID: ' + r.wireId : 'Batch: ' + r.batchId} | Status: ${esc(r.status)}</span>
+            <span style="font-size:12px;color:var(--text-muted);">Method: ${r.method === 'wire' ? 'Wire Transfer' : 'ACH Credit'} | ${r.method === 'wire' ? 'Wire ID: ' + r.wireId : 'Batch: ' + r.batchId} | Status: ${esc(r.status)}</span>${billRef}
           </div>`;
         el('bill-deposit-amount').value = '';
         el('bill-deposit-memo').value = '';
@@ -2817,8 +2819,13 @@
     async function loadBillDeposits() {
       const r = await fetchJSON(API + '/api/bill/deposits');
       if (r.success && r.deposits && r.deposits.length > 0) {
-        el('bill-deposit-history').innerHTML = '<table><thead><tr><th>Date</th><th>Amount</th><th>Destination</th><th>Status</th><th>Batch/Wire</th></tr></thead><tbody>' +
-          r.deposits.map(d => `<tr><td>${new Date(d.date).toLocaleDateString()}</td><td style="font-weight:600;">$${Number(d.amount).toLocaleString('en-US',{minimumFractionDigits:2})}</td><td>${esc(d.destination || '—')}</td><td><span class="badge badge-${d.status === 'settled' ? 'active' : d.status === 'pending' ? 'info' : 'warning'}">${esc(d.status)}</span></td><td><code style="font-size:11px;">${esc(d.batchId || '—')}</code></td></tr>`).join('') +
+        el('bill-deposit-history').innerHTML = '<table><thead><tr><th>Date</th><th>Amount</th><th>Destination</th><th>Status</th><th>BILL Ref</th></tr></thead><tbody>' +
+          r.deposits.map(d => {
+            const statusClass = d.submittedToBill ? 'active' : (d.status === 'settled' ? 'active' : d.status === 'pending' ? 'info' : 'warning');
+            const statusText = d.submittedToBill ? 'Submitted to BILL' : d.status;
+            const refText = d.submittedToBill ? d.batchId : (d.batchId || '—');
+            return `<tr><td>${new Date(d.date).toLocaleDateString()}</td><td style="font-weight:600;">$${Number(d.amount).toLocaleString('en-US',{minimumFractionDigits:2})}</td><td>${esc(d.destination || '—')}</td><td><span class="badge badge-${statusClass}">${esc(statusText)}</span></td><td><code style="font-size:11px;">${esc(refText)}</code></td></tr>`;
+          }).join('') +
           '</tbody></table>';
       } else {
         el('bill-deposit-history').innerHTML = '<p class="text-muted">No deposits yet. Use the form above to send funds to your BILL account.</p>';
