@@ -239,6 +239,7 @@
     <div class="nav-item" data-page="tax"><span class="icon">📑</span> Tax Engine</div>
     <div class="nav-section">Core Banking</div>
     <div class="nav-item" data-page="fineract"><span class="icon">🏛️</span> Fineract GL</div>
+    <div class="nav-item" data-page="bill"><span class="icon">💳</span> BILL Cash</div>
     <div class="nav-section">System</div>
     <div class="nav-item" data-page="settings"><span class="icon">🌐</span> System Settings</div>
     <div class="nav-item" data-page="security"><span class="icon">🛡️</span> Security</div>
@@ -804,6 +805,34 @@
       </div>
     </div>
 
+    <!-- BILL CASH ACCOUNT PAGE -->
+    <div id="page-bill" class="page hidden">
+      <div class="page-header">
+        <div><h1>BILL Cash Account</h1><div class="subtitle">Bank account balance, payment network, and transaction sync</div></div>
+        <button class="btn btn-primary btn-sm" onclick="loadBill()">Refresh</button>
+      </div>
+      <div class="grid" id="bill-status-cards"></div>
+      <div class="two-col">
+        <div class="card">
+          <div class="section-title">Bank Accounts</div>
+          <div id="bill-accounts"><p class="loading">Loading...</p></div>
+        </div>
+        <div class="card">
+          <div class="section-title">Connection Info</div>
+          <table><tbody>
+            <tr><td>API Endpoint</td><td class="text-muted">api.bill.com/api/v2</td></tr>
+            <tr><td>Organization</td><td id="bill-org" class="text-muted">—</td></tr>
+            <tr><td>Payment Network ID</td><td id="bill-network-id" class="text-muted">0112727563261772</td></tr>
+            <tr><td>Status</td><td id="bill-conn-status" class="text-muted">Checking...</td></tr>
+          </tbody></table>
+        </div>
+      </div>
+      <div class="card mt-16">
+        <div class="section-title">Bank Balance</div>
+        <div id="bill-balance"><p class="loading">Loading...</p></div>
+      </div>
+    </div>
+
     <!-- ADMIN PAGE -->
     <!-- SYSTEM SETTINGS PAGE -->
     <div id="page-settings" class="page hidden">
@@ -1116,7 +1145,7 @@
         document.querySelectorAll('.page').forEach(p => p.classList.add('hidden'));
         document.getElementById('page-' + page).classList.remove('hidden');
         // Load data for page
-        const loaders = { overview: loadOverview, bonds: loadBonds, cash: loadCash, payments: loadPayments, ach: loadACH, wire: loadWire, partners: loadPartners, apikeys: loadApiKeys, as2: loadAS2, crm: loadCRM, documents: loadDocuments, accounting: loadAccounting, tax: loadTax, fineract: loadFineract, settings: loadSettings, security: loadSecurity, backup: loadBackupPage, admin: loadAdmin };
+        const loaders = { overview: loadOverview, bonds: loadBonds, cash: loadCash, payments: loadPayments, ach: loadACH, wire: loadWire, partners: loadPartners, apikeys: loadApiKeys, as2: loadAS2, crm: loadCRM, documents: loadDocuments, accounting: loadAccounting, tax: loadTax, fineract: loadFineract, bill: loadBill, settings: loadSettings, security: loadSecurity, backup: loadBackupPage, admin: loadAdmin };
         if (loaders[page]) loaders[page]();
       });
     });
@@ -1137,7 +1166,7 @@
     // ─── OVERVIEW ──────────────────────────────────────────────────────────────
     var _overviewRetries = 0;
     async function loadOverview() {
-      const [bonds, cash, acct, ach, as2, crm, finHealth, health] = await Promise.all([
+      const [bonds, cash, acct, ach, as2, crm, finHealth, health, sysHealth] = await Promise.all([
         fetchJSON(API + '/api/bonds'),
         fetchJSON(API + '/api/cash/accounts'),
         fetchJSON(API + '/api/accounting/dashboard'),
@@ -1146,7 +1175,9 @@
         fetchJSON(API + '/api/crm/contacts'),
         fetchJSON(API + '/api/fineract/health'),
         (adminToken && currentUser && currentUser.role === 'admin') ? fetchJSON(API + '/api/admin/system/health', { headers: adminHeaders() }) : Promise.resolve({}),
+        fetchJSON(API + '/api/health'),
       ]);
+      const healthChecks = (sysHealth && sysHealth.checks) || {};
       // Auto-retry if all API calls returned errors (tunnel warm-up / interstitial redirect)
       if (bonds.error && cash.error && _overviewRetries < 3) {
         _overviewRetries++;
@@ -1207,6 +1238,7 @@
         <tr><td>AS2 Server</td><td><span class="status-dot online"></span> Active</td></tr>
         <tr><td>Trust Accounting</td><td><span class="status-dot online"></span> Active</td></tr>
         <tr><td>Apache Fineract GL</td><td><span class="status-dot ${finConnected ? 'online' : 'offline'}"></span> ${finConnected ? 'Connected' : 'Disconnected'}</td></tr>
+        <tr><td>BILL Cash Account</td><td><span class="status-dot ${healthChecks.bill && healthChecks.bill.ok ? 'online' : healthChecks.bill && healthChecks.bill.configured ? 'pending' : 'offline'}"></span> ${healthChecks.bill && healthChecks.bill.ok ? 'Connected' : healthChecks.bill && healthChecks.bill.configured ? 'Connecting...' : 'Not configured'}</td></tr>
       </tbody></table>`;
     }
 
@@ -2646,6 +2678,55 @@
     async function createFineractClient() {
       const r = await fetchJSON(API + '/api/fineract/clients', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ firstName: el('fin-first').value, lastName: el('fin-last').value, externalId: el('fin-extid').value }) });
       el('fin-client-result').innerHTML = r.success ? '<p class="success-msg">Client created! ID: ' + (r.data || {}).clientId + '</p>' : '<p class="error-msg">' + esc(r.error || 'Failed — is Fineract connected?') + '</p>';
+    }
+
+    // ─── BILL CASH ACCOUNT ────────────────────────────────────────────────────
+    async function loadBill() {
+      const [status, accounts, balance] = await Promise.all([
+        fetchJSON(API + '/api/bill/status', { headers: adminHeaders() }),
+        fetchJSON(API + '/api/bill/accounts', { headers: adminHeaders() }),
+        fetchJSON(API + '/api/bill/balance', { headers: adminHeaders() }),
+      ]);
+
+      // Status cards
+      const billStatus = (status && status.bill) || {};
+      const connected = billStatus.connected === true;
+      el('bill-status-cards').innerHTML = `
+        <div class="card"><div class="stat-label">Connection</div><div class="stat-value" style="color:${connected ? '#27ae60' : '#e74c3c'}">${connected ? 'Connected' : 'Disconnected'}</div></div>
+        <div class="card"><div class="stat-label">Organization</div><div class="stat-value" style="font-size:14px">${esc(billStatus.orgId || 'Not configured')}</div></div>
+        <div class="card"><div class="stat-label">User</div><div class="stat-value" style="font-size:14px">${esc(billStatus.userName || '—')}</div></div>
+      `;
+
+      // Connection info
+      el('bill-org').textContent = billStatus.orgId || '—';
+      el('bill-conn-status').innerHTML = connected
+        ? '<span class="status-dot online"></span> Connected'
+        : '<span class="status-dot offline"></span> ' + esc(billStatus.reason || 'Disconnected');
+
+      // Bank accounts list
+      if (accounts && accounts.success && accounts.accounts) {
+        const accts = Array.isArray(accounts.accounts) ? accounts.accounts : [];
+        if (accts.length === 0) {
+          el('bill-accounts').innerHTML = '<p class="text-muted">No bank accounts found</p>';
+        } else {
+          el('bill-accounts').innerHTML = '<table><thead><tr><th>Name</th><th>Type</th><th>Account #</th><th>Status</th></tr></thead><tbody>' +
+            accts.map(a => `<tr><td>${esc(a.name || a.description || '—')}</td><td>${esc(a.accountType || '—')}</td><td>****${esc((a.accountNumber || '').slice(-4))}</td><td>${a.isActive !== false ? '<span class="badge badge-active">Active</span>' : '<span class="badge">Inactive</span>'}</td></tr>`).join('') +
+            '</tbody></table>';
+        }
+      } else {
+        el('bill-accounts').innerHTML = '<p class="text-muted">' + esc((accounts && accounts.error) || 'Unable to load accounts') + '</p>';
+      }
+
+      // Balance
+      if (balance && balance.success && balance.balance) {
+        const bal = balance.balance;
+        el('bill-balance').innerHTML = `
+          <div style="font-size:32px;font-weight:700;color:#2c3e50;">$${Number(bal.bankBalance || 0).toLocaleString('en-US', {minimumFractionDigits: 2})}</div>
+          <p class="text-muted" style="margin-top:4px;">Balance as of ${bal.bankBalanceDate || 'N/A'}</p>
+        `;
+      } else {
+        el('bill-balance').innerHTML = '<p class="text-muted">' + esc((balance && balance.error) || 'Unable to load balance') + '</p>';
+      }
     }
 
     // ─── SECURITY PAGE ──────────────────────────────────────────────────────────
