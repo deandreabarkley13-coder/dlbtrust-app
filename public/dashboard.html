@@ -882,6 +882,19 @@
 
       <div class="grid" id="trustee-dashboard-cards"></div>
 
+      <!-- Natural Language Prompt -->
+      <div class="card mt-16" style="border:1px solid var(--accent);background:linear-gradient(135deg,rgba(59,130,246,0.05),rgba(16,185,129,0.05));">
+        <div class="section-title" style="display:flex;align-items:center;gap:8px;">
+          <span style="font-size:18px;">🤖</span> Trustee Agent Prompt
+        </div>
+        <p class="text-muted" style="font-size:12px;margin-bottom:10px;">Ask the Trustee Agent to perform any fiduciary duty in natural language. Examples: "run an asset review", "check compliance", "are there any pending payments?", "generate today's duties"</p>
+        <div style="display:flex;gap:8px;">
+          <input type="text" id="trustee-prompt-input" placeholder="Ask the Trustee Agent anything..." style="flex:1;padding:10px 14px;background:var(--bg);border:1px solid var(--border);border-radius:6px;color:var(--text);font-size:14px;" onkeydown="if(event.key==='Enter')trusteeSubmitPrompt()">
+          <button class="btn btn-primary" onclick="trusteeSubmitPrompt()" style="white-space:nowrap;">Send</button>
+        </div>
+        <div id="trustee-prompt-history" style="margin-top:12px;max-height:400px;overflow-y:auto;"></div>
+      </div>
+
       <!-- Quick Actions -->
       <div class="card mt-16">
         <div class="section-title">Agent Actions</div>
@@ -917,10 +930,23 @@
 
       <div class="grid" id="bookkeeping-dashboard-cards"></div>
 
+      <!-- Natural Language Prompt -->
+      <div class="card mt-16" style="border:1px solid var(--accent);background:linear-gradient(135deg,rgba(59,130,246,0.05),rgba(16,185,129,0.05));">
+        <div class="section-title" style="display:flex;align-items:center;gap:8px;">
+          <span style="font-size:18px;">🤖</span> Bookkeeping Agent Prompt
+        </div>
+        <p class="text-muted" style="font-size:12px;margin-bottom:10px;">Ask the Bookkeeping Agent to perform any duty in natural language. Examples: "reconcile all payments", "generate financial summary", "scan for anomalies", "auto-post journal entries"</p>
+        <div style="display:flex;gap:8px;">
+          <input type="text" id="bookkeeping-prompt-input" placeholder="Ask the Bookkeeping Agent anything..." style="flex:1;padding:10px 14px;background:var(--bg);border:1px solid var(--border);border-radius:6px;color:var(--text);font-size:14px;" onkeydown="if(event.key==='Enter')bookkeepingSubmitPrompt()">
+          <button class="btn btn-primary" onclick="bookkeepingSubmitPrompt()" style="white-space:nowrap;">Send</button>
+        </div>
+        <div id="bookkeeping-prompt-history" style="margin-top:12px;max-height:400px;overflow-y:auto;"></div>
+      </div>
+
       <!-- Quick Actions -->
       <div class="card mt-16">
         <div class="section-title">Bookkeeping Actions</div>
-        <p class="text-muted" style="font-size:12px;margin-bottom:12px;">Reconcile payments, auto-post journal entries, generate reports, and scan for anomalies.</p>
+        <p class="text-muted" style="font-size:12px;margin-bottom:10px;">Reconcile payments, auto-post journal entries, generate reports, and scan for anomalies.</p>
         <div style="display:flex;gap:12px;flex-wrap:wrap;">
           <button class="btn btn-primary btn-sm" onclick="bkReconcileACH()">Reconcile ACH</button>
           <button class="btn btn-primary btn-sm" onclick="bkReconcileWires()">Reconcile Wires</button>
@@ -3078,6 +3104,95 @@
         loadBookkeepingAgent();
       } else {
         alert('Error: ' + (r.error || 'Failed'));
+      }
+    }
+
+    // ─── AGENT PROMPT FUNCTIONS ─────────────────────────────────────────────────
+    function appendPromptMessage(containerId, role, text, intent) {
+      var container = el(containerId);
+      var isUser = role === 'user';
+      var bubble = document.createElement('div');
+      bubble.style.cssText = 'display:flex;gap:8px;margin-bottom:10px;' + (isUser ? 'justify-content:flex-end;' : 'justify-content:flex-start;');
+      var avatar = isUser ? '👤' : '🤖';
+      var bgColor = isUser ? 'rgba(59,130,246,0.15)' : 'rgba(16,185,129,0.1)';
+      var borderColor = isUser ? 'rgba(59,130,246,0.3)' : 'rgba(16,185,129,0.3)';
+      var intentBadge = intent ? '<div style="margin-top:4px;"><span class="badge badge-info" style="font-size:10px;">' + esc(intent) + '</span></div>' : '';
+      bubble.innerHTML = (isUser ? '' : '<span style="font-size:16px;margin-top:4px;">' + avatar + '</span>') +
+        '<div style="max-width:85%;padding:10px 14px;background:' + bgColor + ';border:1px solid ' + borderColor + ';border-radius:10px;font-size:13px;line-height:1.5;">' +
+        esc(text) + intentBadge + '</div>' +
+        (isUser ? '<span style="font-size:16px;margin-top:4px;">' + avatar + '</span>' : '');
+      container.appendChild(bubble);
+      container.scrollTop = container.scrollHeight;
+    }
+
+    function appendPromptActions(containerId, actions) {
+      var container = el(containerId);
+      var wrap = document.createElement('div');
+      wrap.style.cssText = 'display:flex;gap:6px;flex-wrap:wrap;margin-bottom:10px;margin-left:28px;';
+      actions.forEach(function(a) {
+        var btn = document.createElement('button');
+        btn.className = 'btn btn-primary btn-sm';
+        btn.style.cssText = 'font-size:11px;padding:4px 10px;';
+        btn.textContent = a.example;
+        btn.onclick = function() {
+          var inputId = containerId.replace('-history', '-input');
+          el(inputId).value = a.example;
+          if (containerId.indexOf('trustee') !== -1) trusteeSubmitPrompt();
+          else bookkeepingSubmitPrompt();
+        };
+        wrap.appendChild(btn);
+      });
+      container.appendChild(wrap);
+      container.scrollTop = container.scrollHeight;
+    }
+
+    async function trusteeSubmitPrompt() {
+      var input = el('trustee-prompt-input');
+      var prompt = input.value.trim();
+      if (!prompt) return;
+      input.value = '';
+      appendPromptMessage('trustee-prompt-history', 'user', prompt);
+      appendPromptMessage('trustee-prompt-history', 'agent', 'Processing...');
+      var r = await fetchJSON(API + '/api/agents/trustee/prompt', {
+        method: 'POST',
+        headers: Object.assign({ 'Content-Type': 'application/json' }, adminHeaders()),
+        body: JSON.stringify({ prompt: prompt }),
+      });
+      // Remove "Processing..." bubble
+      var hist = el('trustee-prompt-history');
+      hist.removeChild(hist.lastChild);
+      if (r.success && r.data) {
+        var d = r.data;
+        appendPromptMessage('trustee-prompt-history', 'agent', d.message, d.understood ? d.intent : null);
+        if (d.availableActions) appendPromptActions('trustee-prompt-history', d.availableActions);
+        if (d.understood && !d.needsParam && !d.error) loadTrusteeAgent();
+      } else {
+        appendPromptMessage('trustee-prompt-history', 'agent', 'Error: ' + ((r && r.error) || 'Request failed'));
+      }
+    }
+
+    async function bookkeepingSubmitPrompt() {
+      var input = el('bookkeeping-prompt-input');
+      var prompt = input.value.trim();
+      if (!prompt) return;
+      input.value = '';
+      appendPromptMessage('bookkeeping-prompt-history', 'user', prompt);
+      appendPromptMessage('bookkeeping-prompt-history', 'agent', 'Processing...');
+      var r = await fetchJSON(API + '/api/agents/bookkeeping/prompt', {
+        method: 'POST',
+        headers: Object.assign({ 'Content-Type': 'application/json' }, adminHeaders()),
+        body: JSON.stringify({ prompt: prompt }),
+      });
+      // Remove "Processing..." bubble
+      var hist = el('bookkeeping-prompt-history');
+      hist.removeChild(hist.lastChild);
+      if (r.success && r.data) {
+        var d = r.data;
+        appendPromptMessage('bookkeeping-prompt-history', 'agent', d.message, d.understood ? d.intent : null);
+        if (d.availableActions) appendPromptActions('bookkeeping-prompt-history', d.availableActions);
+        if (d.understood && !d.needsParam && !d.error) loadBookkeepingAgent();
+      } else {
+        appendPromptMessage('bookkeeping-prompt-history', 'agent', 'Error: ' + ((r && r.error) || 'Request failed'));
       }
     }
 

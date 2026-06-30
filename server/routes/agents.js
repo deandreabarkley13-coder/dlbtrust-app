@@ -293,4 +293,34 @@ router.post('/bookkeeping/post-wire/:wireId', requireAdmin, async function(req, 
   }
 });
 
+// ═════════════════════════════════════════════════════════════════════════════
+// NATURAL LANGUAGE PROMPT
+// ═════════════════════════════════════════════════════════════════════════════
+
+// ─── POST /api/agents/trustee/prompt ─────────────────────────────────────────
+router.post('/trustee/prompt', requireAdmin, async function(req, res) {
+  try {
+    var prompt = (req.body.prompt || '').trim();
+    if (!prompt) return res.status(400).json({ success: false, error: 'Prompt is required' });
+    var { AgentPromptRouter } = require(path.join(__dirname, '../integrations/agents/agentPromptRouter'));
+    var response = await AgentPromptRouter.routeTrustee(prompt);
+    res.json({ success: true, data: response });
+  } catch(err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// ─── POST /api/agents/bookkeeping/prompt ─────────────────────────────────────
+router.post('/bookkeeping/prompt', requireAdmin, async function(req, res) {
+  try {
+    var prompt = (req.body.prompt || '').trim();
+    if (!prompt) return res.status(400).json({ success: false, error: 'Prompt is required' });
+    var { AgentPromptRouter } = require(path.join(__dirname, '../integrations/agents/agentPromptRouter'));
+    var response = await AgentPromptRouter.routeBookkeeping(prompt);
+    res.json({ success: true, data: response });
+  } catch(err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
 module.exports = router;
