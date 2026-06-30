@@ -503,9 +503,10 @@ function formatBookkeepingResult(intent, result) {
       return 'Auto-Post Complete. ACH entries posted: ' + result.achPosted + '. Wire entries posted: ' + result.wirePosted + '. Errors: ' + result.errors + '.';
 
     case 'generateFinancialSummary':
+      var s = result.summary || result;
       var msg = 'Financial Summary: ';
-      if (result.balanceSheet) msg += 'Total Assets: ' + formatCurrency(result.balanceSheet.totalAssets) + '. Total Liabilities: ' + formatCurrency(result.balanceSheet.totalLiabilities) + '. Equity: ' + formatCurrency(result.balanceSheet.equity) + '. ';
-      if (result.trialBalance) msg += 'Trial Balance: ' + (result.trialBalance.isBalanced ? 'Balanced' : 'IMBALANCED') + '.';
+      if (s.balanceSheet) msg += 'Total Assets: ' + formatCurrency(s.balanceSheet.totalAssets) + '. Total Liabilities: ' + formatCurrency(s.balanceSheet.totalLiabilities) + '. Equity: ' + formatCurrency(s.balanceSheet.equity) + '. ';
+      if (s.trialBalance) msg += 'Trial Balance: ' + (s.trialBalance.isBalanced ? 'Balanced' : 'IMBALANCED') + '.';
       return msg;
 
     case 'detectAnomalies':
