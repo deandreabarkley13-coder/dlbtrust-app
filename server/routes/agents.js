@@ -1,0 +1,296 @@
+'use strict';
+
+/**
+ * Agent Routes — dlbtrust.cloud
+ * Mounts at: /api/agents
+ *
+ * Trustee Agent: fiduciary oversight, compliance, asset reviews, distributions
+ * Bookkeeping Agent: reconciliation, journal automation, reporting, anomalies
+ */
+
+var express = require('express');
+var router = express.Router();
+var path = require('path');
+
+// Auth middleware — require admin token, JWT, or API key
+var requireAdmin = async function(req, res, next) {
+  var adminToken = req.headers['x-admin-token'] || req.query.adminToken;
+  if (adminToken && adminToken === process.env.ADMIN_SECRET_TOKEN) {
+    req.user = 'admin';
+    return next();
+  }
+  var authHeader = req.headers['authorization'];
+  if (authHeader && authHeader.startsWith('Bearer ')) {
+    var token = authHeader.slice(7).trim();
+    try {
+      var UserAuth = require(path.join(__dirname, '../integrations/auth/userAuth')).UserAuth;
+      var decoded = await UserAuth.verifyToken(token);
+      if (decoded && decoded.role === 'admin') {
+        req.user = decoded;
+        return next();
+      }
+    } catch(e) {}
+    try {
+      var ApiCredentials = require(path.join(__dirname, '../integrations/ach/apiCredentials')).ApiCredentials;
+      var cred = await ApiCredentials.validate(token);
+      if (cred) { req.user = cred.label || 'api_key'; return next(); }
+    } catch(e) {}
+  }
+  return res.status(401).json({ error: 'Authentication required' });
+};
+
+// ═════════════════════════════════════════════════════════════════════════════
+// TRUSTEE AGENT
+// ═════════════════════════════════════════════════════════════════════════════
+
+// ─── GET /api/agents/trustee/dashboard ───────────────────────────────────────
+router.get('/trustee/dashboard', async function(req, res) {
+  try {
+    var { TrusteeAgent } = require(path.join(__dirname, '../integrations/agents/trusteeAgent'));
+    var dashboard = await TrusteeAgent.getDashboard();
+    res.json({ success: true, data: dashboard });
+  } catch(err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// ─── POST /api/agents/trustee/asset-review ──────────────────────────────────
+router.post('/trustee/asset-review', requireAdmin, async function(req, res) {
+  try {
+    var { TrusteeAgent } = require(path.join(__dirname, '../integrations/agents/trusteeAgent'));
+    var review = await TrusteeAgent.runAssetReview();
+    res.json({ success: true, data: review });
+  } catch(err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// ─── POST /api/agents/trustee/compliance-check ──────────────────────────────
+router.post('/trustee/compliance-check', requireAdmin, async function(req, res) {
+  try {
+    var { TrusteeAgent } = require(path.join(__dirname, '../integrations/agents/trusteeAgent'));
+    var result = await TrusteeAgent.runComplianceCheck();
+    res.json({ success: true, data: result });
+  } catch(err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// ─── GET /api/agents/trustee/distributions ──────────────────────────────────
+router.get('/trustee/distributions', async function(req, res) {
+  try {
+    var { TrusteeAgent } = require(path.join(__dirname, '../integrations/agents/trusteeAgent'));
+    var result = await TrusteeAgent.reviewDistributions();
+    res.json({ success: true, data: result });
+  } catch(err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// ─── POST /api/agents/trustee/generate-duties ───────────────────────────────
+router.post('/trustee/generate-duties', requireAdmin, async function(req, res) {
+  try {
+    var { TrusteeAgent } = require(path.join(__dirname, '../integrations/agents/trusteeAgent'));
+    var result = await TrusteeAgent.generateDuties();
+    res.json({ success: true, data: result });
+  } catch(err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// ─── POST /api/agents/trustee/execute/:taskId ───────────────────────────────
+router.post('/trustee/execute/:taskId', requireAdmin, async function(req, res) {
+  try {
+    var { TrusteeAgent } = require(path.join(__dirname, '../integrations/agents/trusteeAgent'));
+    var result = await TrusteeAgent.executeTask(req.params.taskId);
+    res.json({ success: true, data: result });
+  } catch(err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// ─── GET /api/agents/trustee/tasks ──────────────────────────────────────────
+router.get('/trustee/tasks', async function(req, res) {
+  try {
+    var { TrusteeAgent } = require(path.join(__dirname, '../integrations/agents/trusteeAgent'));
+    var tasks = await TrusteeAgent.listTasks({
+      status: req.query.status,
+      category: req.query.category,
+      limit: req.query.limit,
+    });
+    res.json({ success: true, count: tasks.length, data: tasks });
+  } catch(err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// ─── GET /api/agents/trustee/reviews ────────────────────────────────────────
+router.get('/trustee/reviews', async function(req, res) {
+  try {
+    var { TrusteeAgent } = require(path.join(__dirname, '../integrations/agents/trusteeAgent'));
+    var reviews = await TrusteeAgent.listReviews({
+      reviewType: req.query.reviewType,
+      limit: req.query.limit,
+    });
+    res.json({ success: true, count: reviews.length, data: reviews });
+  } catch(err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// ─── GET /api/agents/trustee/reviews/:id ────────────────────────────────────
+router.get('/trustee/reviews/:id', async function(req, res) {
+  try {
+    var { TrusteeAgent } = require(path.join(__dirname, '../integrations/agents/trusteeAgent'));
+    var review = await TrusteeAgent.getReview(req.params.id);
+    if (!review) return res.status(404).json({ success: false, error: 'Review not found' });
+    res.json({ success: true, data: review });
+  } catch(err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// ═════════════════════════════════════════════════════════════════════════════
+// BOOKKEEPING AGENT
+// ═════════════════════════════════════════════════════════════════════════════
+
+// ─── GET /api/agents/bookkeeping/dashboard ──────────────────────────────────
+router.get('/bookkeeping/dashboard', async function(req, res) {
+  try {
+    var { BookkeepingAgent } = require(path.join(__dirname, '../integrations/agents/bookkeepingAgent'));
+    var dashboard = await BookkeepingAgent.getDashboard();
+    res.json({ success: true, data: dashboard });
+  } catch(err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// ─── POST /api/agents/bookkeeping/reconcile-ach ─────────────────────────────
+router.post('/bookkeeping/reconcile-ach', requireAdmin, async function(req, res) {
+  try {
+    var { BookkeepingAgent } = require(path.join(__dirname, '../integrations/agents/bookkeepingAgent'));
+    var result = await BookkeepingAgent.reconcileACH();
+    res.json({ success: true, data: result });
+  } catch(err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// ─── POST /api/agents/bookkeeping/reconcile-wires ───────────────────────────
+router.post('/bookkeeping/reconcile-wires', requireAdmin, async function(req, res) {
+  try {
+    var { BookkeepingAgent } = require(path.join(__dirname, '../integrations/agents/bookkeepingAgent'));
+    var result = await BookkeepingAgent.reconcileWires();
+    res.json({ success: true, data: result });
+  } catch(err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// ─── POST /api/agents/bookkeeping/auto-post ─────────────────────────────────
+router.post('/bookkeeping/auto-post', requireAdmin, async function(req, res) {
+  try {
+    var { BookkeepingAgent } = require(path.join(__dirname, '../integrations/agents/bookkeepingAgent'));
+    var result = await BookkeepingAgent.autoPostUnreconciled();
+    res.json({ success: true, data: result });
+  } catch(err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// ─── GET /api/agents/bookkeeping/financial-summary ──────────────────────────
+router.get('/bookkeeping/financial-summary', async function(req, res) {
+  try {
+    var { BookkeepingAgent } = require(path.join(__dirname, '../integrations/agents/bookkeepingAgent'));
+    var result = await BookkeepingAgent.generateFinancialSummary();
+    res.json({ success: true, data: result });
+  } catch(err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// ─── POST /api/agents/bookkeeping/anomaly-scan ──────────────────────────────
+router.post('/bookkeeping/anomaly-scan', requireAdmin, async function(req, res) {
+  try {
+    var { BookkeepingAgent } = require(path.join(__dirname, '../integrations/agents/bookkeepingAgent'));
+    var result = await BookkeepingAgent.detectAnomalies();
+    res.json({ success: true, data: result });
+  } catch(err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// ─── POST /api/agents/bookkeeping/generate-duties ───────────────────────────
+router.post('/bookkeeping/generate-duties', requireAdmin, async function(req, res) {
+  try {
+    var { BookkeepingAgent } = require(path.join(__dirname, '../integrations/agents/bookkeepingAgent'));
+    var result = await BookkeepingAgent.generateDuties();
+    res.json({ success: true, data: result });
+  } catch(err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// ─── POST /api/agents/bookkeeping/execute/:taskId ───────────────────────────
+router.post('/bookkeeping/execute/:taskId', requireAdmin, async function(req, res) {
+  try {
+    var { BookkeepingAgent } = require(path.join(__dirname, '../integrations/agents/bookkeepingAgent'));
+    var result = await BookkeepingAgent.executeTask(req.params.taskId);
+    res.json({ success: true, data: result });
+  } catch(err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// ─── GET /api/agents/bookkeeping/tasks ──────────────────────────────────────
+router.get('/bookkeeping/tasks', async function(req, res) {
+  try {
+    var { BookkeepingAgent } = require(path.join(__dirname, '../integrations/agents/bookkeepingAgent'));
+    var tasks = await BookkeepingAgent.listTasks({
+      status: req.query.status,
+      category: req.query.category,
+      limit: req.query.limit,
+    });
+    res.json({ success: true, count: tasks.length, data: tasks });
+  } catch(err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// ─── GET /api/agents/bookkeeping/reconciliations ────────────────────────────
+router.get('/bookkeeping/reconciliations', async function(req, res) {
+  try {
+    var { BookkeepingAgent } = require(path.join(__dirname, '../integrations/agents/bookkeepingAgent'));
+    var recons = await BookkeepingAgent.listReconciliations({
+      reconType: req.query.reconType,
+      limit: req.query.limit,
+    });
+    res.json({ success: true, count: recons.length, data: recons });
+  } catch(err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// ─── POST /api/agents/bookkeeping/post-ach/:batchId ─────────────────────────
+router.post('/bookkeeping/post-ach/:batchId', requireAdmin, async function(req, res) {
+  try {
+    var { BookkeepingAgent } = require(path.join(__dirname, '../integrations/agents/bookkeepingAgent'));
+    var result = await BookkeepingAgent.postACHJournalEntry(req.params.batchId);
+    res.json({ success: true, data: result });
+  } catch(err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// ─── POST /api/agents/bookkeeping/post-wire/:wireId ─────────────────────────
+router.post('/bookkeeping/post-wire/:wireId', requireAdmin, async function(req, res) {
+  try {
+    var { BookkeepingAgent } = require(path.join(__dirname, '../integrations/agents/bookkeepingAgent'));
+    var result = await BookkeepingAgent.postWireJournalEntry(req.params.wireId);
+    res.json({ success: true, data: result });
+  } catch(err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+module.exports = router;

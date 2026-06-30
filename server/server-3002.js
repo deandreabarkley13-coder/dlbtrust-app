@@ -85,6 +85,9 @@ try { app.use('/api/backup', require(path.join(HD, 'server', 'routes', 'backup')
 // BILL Cash Account integration
 try { app.use('/api/bill', require(path.join(HD, 'server', 'routes', 'bill'))); console.log('[bill] loaded'); } catch(e) { console.warn('[bill]', e.message); }
 
+// Trustee Agent & Bookkeeping Agent
+try { app.use('/api/agents', require(path.join(HD, 'server', 'routes', 'agents'))); console.log('[agents] loaded'); } catch(e) { console.warn('[agents]', e.message); }
+
 // Treasury Management System — serve dashboard at root, static files from public/
 app.get('/', function(req, res) {
   res.set('Cache-Control', 'no-cache, no-store, must-revalidate');
@@ -182,6 +185,15 @@ try {
     console.log('[auth] tables ensured');
   }).catch(function(e) { console.warn('[auth] table init:', e.message); });
 } catch(e) { console.warn('[auth]', e.message); }
+
+// Ensure agent tables exist (trustee + bookkeeping)
+try {
+  var TrusteeAgent = require(path.join(HD, 'server', 'integrations', 'agents', 'trusteeAgent')).TrusteeAgent;
+  var BookkeepingAgent = require(path.join(HD, 'server', 'integrations', 'agents', 'bookkeepingAgent')).BookkeepingAgent;
+  Promise.all([TrusteeAgent.ensureTables(), BookkeepingAgent.ensureTables()]).then(function() {
+    console.log('[agents] tables ensured (trustee + bookkeeping)');
+  }).catch(function(e) { console.warn('[agents] table init:', e.message); });
+} catch(e) { console.warn('[agents]', e.message); }
 
 // Ensure system settings table exists (production/sandbox mode config)
 try {
