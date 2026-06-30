@@ -442,11 +442,29 @@ class WireEngine {
       const systemMode = await SystemSettings.getMode();
       const wireEndpoint = await SystemSettings.getWireEndpoint();
 
-      // In production mode with wire endpoint: transmit externally via HTTPS
+      // In production mode with wire endpoint: transmit externally
       if (systemMode === 'production' && wireEndpoint) {
+        const productionConfig = await SystemSettings.getProductionPartnerConfig();
+        const isBill = productionConfig && productionConfig.isBill;
+
+        if (isBill) {
+          // BILL Cash Account: submit wire via BILL's RecordARPayment API
+          console.log(`[WireEngine] sendWire(${wireId}): PRODUCTION MODE → BILL Cash Account`);
+          try {
+            const billClient = require('../bill/billClient');
+            const totalDollars = wire.amount_cents / 100;
+            const billResult = await billClient.recordDeposit({
+              amount: totalDollars,
+              method: 'wire',
+              memo: wire.description || ('Wire ' + wireId),
+            });
+            console.log(`[WireEngine] sendWire(${wireId}): BILL API → receivedPayId=${billResult.receivedPayId}`);
+          } catch (billErr) {
+            console.warn(`[WireEngine] BILL API wire submission info (non-blocking):`, billErr.message);
+          }
+        } else {
         console.log(`[WireEngine] sendWire(${wireId}): PRODUCTION MODE → ${wireEndpoint}`);
         try {
-          const { OpenBankApi } = require('../ach/openBankApi');
           const wirePayload = JSON.stringify({
             wire_id: wireId,
             type: 'fedwire',
@@ -501,6 +519,7 @@ class WireEngine {
         } catch (extErr) {
           console.warn(`[WireEngine] External wire transmission info (non-blocking):`, extErr.message);
         }
+        } // close else (non-BILL)
       }
 
       // Update wire with tracking info — auto-confirm (production processes end-to-end via HTTPS)

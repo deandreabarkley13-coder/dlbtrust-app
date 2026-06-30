@@ -912,6 +912,7 @@
               <option value="basic">Basic Auth</option>
               <option value="api_key">API Key</option>
               <option value="hmac">HMAC Signature</option>
+              <option value="bill_api">BILL API (auto-configured)</option>
             </select>
           </div>
         </div>
@@ -2247,8 +2248,9 @@
           el('btn-mode-sandbox').className = 'btn btn-success btn-sm';
         }
 
+        var isBillActive = (s.bank_auth_type === 'bill_api');
         el('mode-status').textContent = mode === 'production'
-          ? 'Files transmit to external bank endpoint over HTTPS'
+          ? (isBillActive ? 'Files transmit to BILL Cash Account via BILL API' : 'Files transmit to external bank endpoint over HTTPS')
           : 'Files transmit internally (self-process for testing)';
 
         // Fill form
@@ -2265,22 +2267,35 @@
 
       // Bank registry
       if (registryResp.success && registryResp.banks) {
-        el('bank-registry-list').innerHTML = registryResp.banks.map(b => `
-          <div style="display:flex;align-items:center;justify-content:space-between;padding:10px;border:1px solid var(--border);border-radius:6px;margin-bottom:8px;">
+        var currentAuth = (settingsResp.settings || {}).bank_auth_type || '';
+        el('bank-registry-list').innerHTML = registryResp.banks.map(b => {
+          var isBill = b.id === 'bill-cash';
+          var isActive = isBill ? (currentAuth === 'bill_api') : false;
+          var borderColor = isActive ? 'var(--green)' : (isBill ? 'var(--accent)' : 'var(--border)');
+          var badge = isBill ? '<span class="badge badge-success" style="font-size:10px;margin-left:6px;">CONNECTED</span>' : '';
+          var authLabel = b.auth_type === 'bill_api' ? 'BILL API (auto-configured)' : esc(b.auth_type);
+          return `
+          <div style="display:flex;align-items:center;justify-content:space-between;padding:10px;border:1px solid ${borderColor};border-radius:6px;margin-bottom:8px;${isBill ? 'background:rgba(16,185,129,0.05);' : ''}">
             <div>
-              <strong style="font-size:13px;">${esc(b.name)}</strong>
+              <strong style="font-size:13px;">${esc(b.name)}${badge}</strong>
               <p class="text-muted" style="font-size:11px;margin-top:2px;">${esc(b.description)}</p>
-              <span class="text-muted" style="font-size:10px;">ACH: ${b.supports_ach ? 'Yes' : 'No'} | Wire: ${b.supports_wire ? 'Yes' : 'No'} | Auth: ${esc(b.auth_type)}</span>
+              <span class="text-muted" style="font-size:10px;">ACH: ${b.supports_ach ? 'Yes' : 'No'} | Wire: ${b.supports_wire ? 'Yes' : 'No'} | Auth: ${authLabel}</span>
             </div>
-            <button class="btn btn-outline btn-sm" onclick="applyBankTemplate('${esc(b.id)}')">Apply</button>
-          </div>
-        `).join('');
+            <button class="btn ${isActive ? 'btn-success' : 'btn-outline'} btn-sm" onclick="applyBankTemplate('${esc(b.id)}')">${isActive ? 'Active' : 'Apply'}</button>
+          </div>`;
+        }).join('');
       }
     }
 
     function toggleAuthFields() {
       const authType = el('cfg-auth-type').value;
-      el('cfg-auth-fields').style.display = (authType === 'none') ? 'none' : 'flex';
+      if (authType === 'bill_api') {
+        el('cfg-auth-fields').style.display = 'none';
+        el('settings-save-result').innerHTML = '<span style="color:var(--green);font-size:12px;">BILL API credentials are auto-configured from environment variables (BILL_DEV_KEY, BILL_USERNAME, BILL_ORG_ID). No manual API key needed.</span>';
+      } else {
+        el('cfg-auth-fields').style.display = (authType === 'none') ? 'none' : 'flex';
+        el('settings-save-result').innerHTML = '';
+      }
     }
     document.addEventListener('DOMContentLoaded', () => {
       const authSelect = document.getElementById('cfg-auth-type');
@@ -2328,7 +2343,10 @@
         method: 'POST', headers: adminHeaders()
       });
       if (resp.success && resp.connected) {
-        el('settings-save-result').innerHTML = `<span style="color:var(--green);font-size:12px;">Connected! Latency: ${resp.latency_ms}ms | Status: ${resp.status_code}</span>`;
+        var extra = resp.bank === 'BILL Cash Account'
+          ? ` | Bank: ${esc(resp.bank)} | Org: ${esc(resp.organization)} | User: ${esc(resp.user)} | Accounts: ${resp.accounts}`
+          : ` | Latency: ${resp.latency_ms}ms`;
+        el('settings-save-result').innerHTML = `<span style="color:var(--green);font-size:12px;">Connected! Status: ${resp.status_code}${extra}</span>`;
       } else {
         el('settings-save-result').innerHTML = `<span style="color:var(--red);font-size:12px;">Connection failed: ${esc(resp.error || 'No endpoint configured')}</span>`;
       }

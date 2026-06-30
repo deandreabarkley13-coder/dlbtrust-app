@@ -87,6 +87,17 @@ const BANK_REGISTRY = [
     settlement_mode: 'webhook',
   },
   {
+    id: 'bill-cash',
+    name: 'BILL Cash Account (Betterment)',
+    description: 'Route payments through BILL\'s RecordARPayment API. Deposits are recorded in your BILL dashboard and settle to your linked Betterment account (****3054). No NACHA file needed — BILL handles the ACH origination.',
+    endpoint_template: 'https://api.bill.com/api/v2',
+    wire_endpoint_template: 'https://api.bill.com/api/v2',
+    auth_type: 'bill_api',
+    supports_ach: true,
+    supports_wire: true,
+    settlement_mode: 'bill_api',
+  },
+  {
     id: 'custom',
     name: 'Custom Bank Endpoint',
     description: 'Configure any bank REST API endpoint that accepts NACHA file submissions.',
@@ -224,6 +235,8 @@ class SystemSettings {
   /**
    * Build a partner config object for external bank transmission.
    * This is what gets passed to OpenBankApi.transmit() in production mode.
+   * When the configured bank is BILL, sets protocol to 'bill_api' so the
+   * transmission engine routes through billClient.recordDeposit() instead.
    */
   static async getProductionPartnerConfig() {
     const mode = await SystemSettings.getMode();
@@ -237,16 +250,19 @@ class SystemSettings {
     const apiKey = await SystemSettings.get('bank_api_key') || '';
     const apiSecret = await SystemSettings.get('bank_api_secret') || '';
 
+    const isBill = authType === 'bill_api' || endpoint.indexOf('api.bill.com') !== -1;
+
     return {
-      partnerId: 'PRODUCTION-BANK',
+      partnerId: isBill ? 'BILL-CASH' : 'PRODUCTION-BANK',
       partnerName: bankName,
-      protocol: 'rest_api',
+      protocol: isBill ? 'bill_api' : 'rest_api',
       apiBaseUrl: endpoint,
-      apiAuthType: authType === 'none' ? 'bearer' : authType,
+      apiAuthType: isBill ? 'bill_api' : (authType === 'none' ? 'bearer' : authType),
       apiKey: apiKey,
       apiSecret: apiSecret,
       localAs2Id: 'DLBTRUST-AS2',
       isProduction: true,
+      isBill: isBill,
     };
   }
 
@@ -282,11 +298,31 @@ class SystemSettings {
 
   /**
    * Test connectivity to the configured bank endpoint.
+   * For BILL endpoints, uses billClient.getStatus() instead of HTTP ping.
    */
   static async testBankConnection() {
     const config = await SystemSettings.getProductionPartnerConfig();
     if (!config) {
       return { connected: false, error: 'No bank endpoint configured or system in sandbox mode' };
+    }
+
+    if (config.isBill) {
+      try {
+        const billClient = require('../bill/billClient');
+        const status = await billClient.getStatus();
+        return {
+          connected: status.connected,
+          status_code: status.connected ? 200 : 0,
+          latency_ms: 0,
+          bank: 'BILL Cash Account',
+          organization: status.organization || '',
+          user: status.user || '',
+          accounts: status.accounts || 0,
+          error: status.connected ? null : (status.error || 'BILL API not reachable'),
+        };
+      } catch (err) {
+        return { connected: false, error: 'BILL API error: ' + err.message };
+      }
     }
 
     const { OpenBankApi } = require('./openBankApi');
