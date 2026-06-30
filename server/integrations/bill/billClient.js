@@ -260,6 +260,210 @@ async function getStatus() {
   }
 }
 
+/**
+ * Record an incoming deposit to the BILL-linked bank account.
+ * Uses BILL's RecordARPayment API to create a ReceivedPay entry visible in the BILL dashboard.
+ * This records that funds were received into the Betterment account via ACH or wire.
+ *
+ * @param {Object} opts
+ * @param {number} opts.amount - Deposit amount in dollars
+ * @param {string} opts.method - 'ach' or 'wire'
+ * @param {string} opts.memo - Payment description
+ * @param {string} [opts.bankAccountId] - BILL bank account ID (auto-detected if omitted)
+ * @param {string} [opts.customerId] - BILL customer ID (auto-detected if omitted)
+ * @returns {Object} { receivedPayId, amount, status, paymentDate, description }
+ */
+async function recordDeposit(opts) {
+  var session = await getSession();
+  var devKey = process.env.BILL_DEV_KEY;
+
+  // Resolve bank account ID
+  var bankAccountId = opts.bankAccountId;
+  if (!bankAccountId) {
+    var accounts = await listBankAccounts();
+    var active = Array.isArray(accounts)
+      ? accounts.find(function(a) { return a.isActive === '1' || a.isActive === true; })
+      : null;
+    if (!active) throw new Error('No active BILL bank account found');
+    bankAccountId = active.id;
+  }
+
+  // Resolve customer ID (the Trust as the source of funds)
+  var customerId = opts.customerId;
+  if (!customerId) {
+    var customers = await listCustomers();
+    if (customers.length > 0) {
+      customerId = customers[0].id;
+    } else {
+      // Create the Trust as a customer if none exists
+      customerId = await createTrustCustomer();
+    }
+  }
+
+  // Map method to BILL paymentType: 1=Cash, 2=Check, 3=CreditCard, 4=ACH, 5=PayPal, 6=Other
+  var paymentType = opts.method === 'wire' ? '6' : '4'; // Wire=Other, ACH=ACH
+
+  var paymentDate = new Date().toISOString().split('T')[0];
+  var description = opts.memo || ('Trust ' + (opts.method === 'wire' ? 'wire' : 'ACH') + ' deposit');
+
+  var result = await billRequest('/RecordARPayment.json', {
+    devKey: devKey,
+    sessionId: session,
+    data: {
+      customerId: customerId,
+      paymentDate: paymentDate,
+      amount: opts.amount,
+      paymentType: paymentType,
+      depositToBankAccountId: bankAccountId,
+      description: description
+    }
+  });
+
+  if (result.response_status === 0 && result.response_data) {
+    return {
+      receivedPayId: result.response_data.id,
+      amount: result.response_data.amount,
+      status: result.response_data.status === '0' ? 'recorded' : 'processed',
+      paymentDate: result.response_data.paymentDate || paymentDate,
+      description: description,
+      paymentType: opts.method === 'wire' ? 'Wire Transfer' : 'ACH',
+      billDashboardVisible: true
+    };
+  }
+
+  // Session may have expired, retry once
+  if (result.response_status === 1) {
+    sessionId = null;
+    session = await getSession();
+    result = await billRequest('/RecordARPayment.json', {
+      devKey: devKey,
+      sessionId: session,
+      data: {
+        customerId: customerId,
+        paymentDate: paymentDate,
+        amount: opts.amount,
+        paymentType: paymentType,
+        depositToBankAccountId: bankAccountId,
+        description: description
+      }
+    });
+    if (result.response_status === 0 && result.response_data) {
+      return {
+        receivedPayId: result.response_data.id,
+        amount: result.response_data.amount,
+        status: 'recorded',
+        paymentDate: paymentDate,
+        description: description,
+        paymentType: opts.method === 'wire' ? 'Wire Transfer' : 'ACH',
+        billDashboardVisible: true
+      };
+    }
+  }
+
+  var errMsg = (result.response_data && result.response_data.error_message) ||
+    result.response_message || JSON.stringify(result);
+  throw new Error('BILL RecordARPayment failed: ' + errMsg);
+}
+
+/**
+ * List customers in the BILL organization
+ */
+async function listCustomers() {
+  var session = await getSession();
+  var devKey = process.env.BILL_DEV_KEY;
+
+  var result = await billRequest('/List/Customer.json', {
+    devKey: devKey,
+    sessionId: session,
+    data: { start: 0, max: 50 }
+  });
+
+  if (result.response_status === 0 && result.response_data) {
+    return result.response_data;
+  }
+
+  // Session retry
+  if (result.response_status === 1) {
+    sessionId = null;
+    session = await getSession();
+    result = await billRequest('/List/Customer.json', {
+      devKey: devKey,
+      sessionId: session,
+      data: { start: 0, max: 50 }
+    });
+    if (result.response_status === 0 && result.response_data) {
+      return result.response_data;
+    }
+  }
+
+  return [];
+}
+
+/**
+ * Create the Trust as a customer in BILL (for recording deposits)
+ */
+async function createTrustCustomer() {
+  var session = await getSession();
+  var devKey = process.env.BILL_DEV_KEY;
+
+  var result = await billRequest('/Crud/Create/Customer.json', {
+    devKey: devKey,
+    sessionId: session,
+    data: {
+      obj: {
+        entity: 'Customer',
+        name: 'DEANDREA LAVAR BARKLEY TRUST',
+        companyName: 'DEANDREA LAVAR BARKLEY TRUST',
+        isActive: '1'
+      }
+    }
+  });
+
+  if (result.response_status === 0 && result.response_data) {
+    return result.response_data.id;
+  }
+
+  throw new Error('Failed to create BILL customer: ' + JSON.stringify(result));
+}
+
+/**
+ * List sent payments (payments made from the BILL account)
+ */
+async function listSentPayments(max) {
+  var session = await getSession();
+  var devKey = process.env.BILL_DEV_KEY;
+
+  var result = await billRequest('/List/SentPay.json', {
+    devKey: devKey,
+    sessionId: session,
+    data: { start: 0, max: max || 20 }
+  });
+
+  if (result.response_status === 0 && result.response_data) {
+    return result.response_data;
+  }
+  return [];
+}
+
+/**
+ * List received payments (deposits recorded in BILL)
+ */
+async function listReceivedPayments(max) {
+  var session = await getSession();
+  var devKey = process.env.BILL_DEV_KEY;
+
+  var result = await billRequest('/List/ReceivedPay.json', {
+    devKey: devKey,
+    sessionId: session,
+    data: { start: 0, max: max || 20 }
+  });
+
+  if (result.response_status === 0 && result.response_data) {
+    return result.response_data;
+  }
+  return [];
+}
+
 module.exports = {
   login: login,
   listBankAccounts: listBankAccounts,
@@ -268,5 +472,9 @@ module.exports = {
   getSessionInfo: getSessionInfo,
   getStatus: getStatus,
   logout: logout,
-  isConfigured: isConfigured
+  isConfigured: isConfigured,
+  recordDeposit: recordDeposit,
+  listCustomers: listCustomers,
+  listSentPayments: listSentPayments,
+  listReceivedPayments: listReceivedPayments
 };

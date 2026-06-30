@@ -140,6 +140,20 @@ router.post('/deposit', requireAdmin, async function(req, res) {
         paymentType: 'trust_distribution',
         initiatedBy: req.user === 'admin' ? 'admin' : (req.user && req.user.username) || 'system'
       });
+
+      // Record the wire deposit in BILL's system via API
+      var billRecord = null;
+      try {
+        billRecord = await billClient.recordDeposit({
+          amount: amount,
+          method: 'wire',
+          memo: memo,
+          bankAccountId: targetAccount.id
+        });
+      } catch(billErr) {
+        console.error('[bill-deposit] BILL API recording failed (wire):', billErr.message);
+      }
+
       return res.json({
         success: true,
         method: 'wire',
@@ -147,7 +161,12 @@ router.post('/deposit', requireAdmin, async function(req, res) {
         amount: amount,
         status: wire.status,
         destination: (targetAccount.bankName || 'Betterment') + ' ****' + accountNumber.slice(-4),
-        message: 'Wire transfer initiated. Requires approval before sending.'
+        message: 'Wire transfer initiated and recorded in BILL.',
+        billRecord: billRecord ? {
+          receivedPayId: billRecord.receivedPayId,
+          billStatus: billRecord.status,
+          billDashboardVisible: true
+        } : null
       });
     }
 
@@ -172,6 +191,19 @@ router.post('/deposit', requireAdmin, async function(req, res) {
       }]
     );
 
+    // Record the ACH deposit in BILL's system via API
+    var billRecord = null;
+    try {
+      billRecord = await billClient.recordDeposit({
+        amount: amount,
+        method: 'ach',
+        memo: memo,
+        bankAccountId: targetAccount.id
+      });
+    } catch(billErr) {
+      console.error('[bill-deposit] BILL API recording failed (ach):', billErr.message);
+    }
+
     res.json({
       success: true,
       method: 'ach',
@@ -179,7 +211,12 @@ router.post('/deposit', requireAdmin, async function(req, res) {
       amount: amount,
       status: batch.status,
       destination: (targetAccount.bankName || 'Bank') + ' ****' + accountNumber.slice(-4),
-      message: 'ACH credit initiated to BILL bank account'
+      message: 'ACH credit initiated and recorded in BILL.',
+      billRecord: billRecord ? {
+        receivedPayId: billRecord.receivedPayId,
+        billStatus: billRecord.status,
+        billDashboardVisible: true
+      } : null
     });
   } catch(err) {
     res.status(500).json({ success: false, error: err.message });
@@ -187,7 +224,7 @@ router.post('/deposit', requireAdmin, async function(req, res) {
 });
 
 // ─── GET /api/bill/deposits ──────────────────────────────────────────────────
-// List deposit history to BILL accounts
+// List deposit history to BILL accounts (combines local ACH batches + BILL API records)
 router.get('/deposits', async function(req, res) {
   try {
     var billClient = require(path.join(__dirname, '../integrations/bill/billClient'));
@@ -198,37 +235,113 @@ router.get('/deposits', async function(req, res) {
       accounts.forEach(function(a) { if (a.routingNumber) routings.push(a.routingNumber); });
     }
 
-    if (routings.length === 0) {
-      return res.json({ success: true, deposits: [] });
+    var deposits = [];
+
+    // 1. Local ACH batch records
+    if (routings.length > 0) {
+      try {
+        var pool = require(path.join(__dirname, '../integrations/bonds/pgPool'));
+        var result = await pool.query(
+          `SELECT b.batch_id, b.status, b.total_amount_cents, b.created_at, b.entry_description,
+                  e.receiving_routing, e.account_number, e.amount_cents, e.individual_name
+           FROM ach_batches b
+           JOIN ach_entries e ON b.batch_id = e.batch_id
+           WHERE e.receiving_routing = ANY($1)
+           ORDER BY b.created_at DESC
+           LIMIT 50`,
+          [routings]
+        );
+
+        deposits = result.rows.map(function(r) {
+          return {
+            batchId: r.batch_id,
+            status: r.status,
+            amount: r.amount_cents / 100,
+            date: r.created_at,
+            description: r.entry_description,
+            destination: '****' + (r.account_number || '').slice(-4),
+            recipient: r.individual_name,
+            source: 'local',
+            submittedToBill: false
+          };
+        });
+      } catch(dbErr) {
+        console.error('[bill-deposits] DB query failed:', dbErr.message);
+      }
     }
 
-    var pool = require(path.join(__dirname, '../integrations/bonds/pgPool'));
-    var result = await pool.query(
-      `SELECT b.batch_id, b.status, b.total_amount_cents, b.created_at, b.entry_description,
-              e.receiving_routing, e.account_number, e.amount_cents, e.individual_name
-       FROM ach_batches b
-       JOIN ach_entries e ON b.batch_id = e.batch_id
-       WHERE e.receiving_routing = ANY($1)
-       ORDER BY b.created_at DESC
-       LIMIT 50`,
-      [routings]
-    );
+    // 2. BILL API received payments (shows what's actually recorded in BILL)
+    var billPayments = [];
+    try {
+      billPayments = await billClient.listReceivedPayments(20);
+    } catch(e) { /* BILL API might be unavailable */ }
 
-    var deposits = result.rows.map(function(r) {
-      return {
-        batchId: r.batch_id,
-        status: r.status,
-        amount: r.amount_cents / 100,
-        date: r.created_at,
-        description: r.entry_description,
-        destination: '****' + (r.account_number || '').slice(-4),
-        recipient: r.individual_name
-      };
+    if (billPayments.length > 0) {
+      billPayments.forEach(function(rp) {
+        deposits.push({
+          batchId: rp.id,
+          status: 'submitted_to_bill',
+          amount: rp.amount,
+          date: rp.createdTime || rp.paymentDate,
+          description: rp.description || 'BILL deposit',
+          destination: '****3054',
+          recipient: 'BILL Cash Account',
+          source: 'bill_api',
+          submittedToBill: true,
+          billPaymentType: rp.paymentType === '4' ? 'ACH' : (rp.paymentType === '6' ? 'Wire' : 'Other')
+        });
+      });
+    }
+
+    // Sort by date descending
+    deposits.sort(function(a, b) {
+      return new Date(b.date) - new Date(a.date);
     });
 
     res.json({ success: true, deposits: deposits });
   } catch(err) {
     res.json({ success: true, deposits: [], error: err.message });
+  }
+});
+
+// ─── GET /api/bill/transactions ──────────────────────────────────────────────
+// List BILL payment transactions directly from the BILL API
+router.get('/transactions', async function(req, res) {
+  try {
+    var billClient = require(path.join(__dirname, '../integrations/bill/billClient'));
+    if (!billClient.isConfigured()) {
+      return res.json({ success: false, error: 'BILL not configured' });
+    }
+
+    var received = [];
+    var sent = [];
+    try { received = await billClient.listReceivedPayments(20); } catch(e) {}
+    try { sent = await billClient.listSentPayments(20); } catch(e) {}
+
+    res.json({
+      success: true,
+      received: received.map(function(rp) {
+        return {
+          id: rp.id,
+          amount: rp.amount,
+          date: rp.paymentDate || rp.createdTime,
+          description: rp.description,
+          paymentType: rp.paymentType === '4' ? 'ACH' : (rp.paymentType === '6' ? 'Wire' : 'Other'),
+          status: rp.status === '0' ? 'recorded' : 'processed'
+        };
+      }),
+      sent: sent.map(function(sp) {
+        return {
+          id: sp.id,
+          amount: sp.amount,
+          date: sp.processDate || sp.createdTime,
+          name: sp.name,
+          status: sp.status
+        };
+      })
+    });
+  } catch(err) {
+    res.json({ success: false, error: err.message });
   }
 });
 
