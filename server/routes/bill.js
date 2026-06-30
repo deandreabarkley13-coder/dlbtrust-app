@@ -92,4 +92,151 @@ router.get('/account/:id', async function(req, res) {
   }
 });
 
+// ─── POST /api/bill/deposit ──────────────────────────────────────────────────
+// Deposit funds to the BILL-linked bank account via ACH credit
+router.post('/deposit', requireAdmin, async function(req, res) {
+  try {
+    var amount = parseFloat(req.body.amount);
+    var memo = req.body.memo || 'BILL Cash Deposit';
+    var method = req.body.method || 'ach'; // 'ach' or 'wire'
+
+    if (!amount || amount <= 0) {
+      return res.status(400).json({ success: false, error: 'Amount must be greater than 0' });
+    }
+    if (amount > 10000000) {
+      return res.status(400).json({ success: false, error: 'Amount exceeds maximum ($10,000,000)' });
+    }
+
+    var billClient = require(path.join(__dirname, '../integrations/bill/billClient'));
+    if (!billClient.isConfigured()) {
+      return res.json({ success: false, error: 'BILL not configured' });
+    }
+
+    // Get the first active bank account from BILL
+    var accounts = await billClient.listBankAccounts();
+    var targetAccount = null;
+    if (Array.isArray(accounts)) {
+      targetAccount = accounts.find(function(a) { return a.isActive === '1' || a.isActive === true; });
+    }
+    if (!targetAccount) {
+      return res.json({ success: false, error: 'No active BILL bank account found' });
+    }
+
+    var routing = targetAccount.routingNumber;
+    var accountNumber = targetAccount.accountNumber;
+    var accountHolder = targetAccount.nameOnAcct || 'DEANDREA LAVAR BARKLEY TRUST';
+
+    if (method === 'wire') {
+      // Wire transfer to BILL account
+      var WireEngine = require(path.join(__dirname, '../integrations/wire/wireEngine')).WireEngine;
+      var wire = await WireEngine.originateWire({
+        beneficiaryName: accountHolder,
+        beneficiaryAccount: accountNumber,
+        beneficiaryRouting: routing,
+        beneficiaryBank: targetAccount.bankName || 'Betterment',
+        amount: Math.round(amount * 100), // cents
+        description: memo,
+        paymentType: 'trust_distribution',
+        createdBy: req.user === 'admin' ? 'admin' : (req.user && req.user.username) || 'system'
+      });
+      return res.json({
+        success: true,
+        method: 'wire',
+        wireId: wire.wire_id,
+        amount: amount,
+        status: wire.status,
+        destination: targetAccount.bankName + ' ****' + accountNumber.slice(-4),
+        message: 'Wire transfer initiated. Requires approval before sending.'
+      });
+    }
+
+    // ACH credit deposit (default)
+    var ACHEngine = require(path.join(__dirname, '../integrations/ach/achEngine')).ACHEngine;
+    var amountCents = Math.round(amount * 100);
+    var batch = await ACHEngine.createBatch(
+      {
+        secCode: 'CCD',
+        description: memo.substring(0, 10).toUpperCase(),
+        effectiveDate: new Date().toISOString().split('T')[0],
+        createdBy: req.user === 'admin' ? 'admin' : (req.user && req.user.username) || 'system'
+      },
+      [{
+        receivingRouting: routing,
+        accountNumber: accountNumber,
+        amountCents: amountCents,
+        transactionCode: '22', // Checking credit
+        individualId: process.env.BILL_ORG_ID || '',
+        individualName: accountHolder.substring(0, 22),
+        memo: memo
+      }]
+    );
+
+    res.json({
+      success: true,
+      method: 'ach',
+      batchId: batch.batch_id,
+      amount: amount,
+      status: batch.status,
+      destination: (targetAccount.bankName || 'Bank') + ' ****' + accountNumber.slice(-4),
+      message: 'ACH credit initiated to BILL bank account'
+    });
+  } catch(err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// ─── GET /api/bill/deposits ──────────────────────────────────────────────────
+// List deposit history to BILL accounts
+router.get('/deposits', async function(req, res) {
+  try {
+    var pool = require(path.join(__dirname, '../integrations/ach/achEngine')).pool;
+    if (!pool) {
+      pool = require(path.join(__dirname, '../../server-3002')).pool;
+    }
+    // Get ACH batches that were sent to BILL bank account routing
+    var billClient = require(path.join(__dirname, '../integrations/bill/billClient'));
+    var accounts = [];
+    try { accounts = await billClient.listBankAccounts(); } catch(e) {}
+    var routings = [];
+    if (Array.isArray(accounts)) {
+      accounts.forEach(function(a) { if (a.routingNumber) routings.push(a.routingNumber); });
+    }
+
+    if (routings.length === 0) {
+      return res.json({ success: true, deposits: [] });
+    }
+
+    // Query ACH entries targeting BILL routing numbers
+    var { Pool } = require('pg');
+    var dbPool = new Pool({ connectionString: process.env.DATABASE_URL, ssl: process.env.DATABASE_URL && process.env.DATABASE_URL.includes('fly') ? { rejectUnauthorized: false } : false });
+    var result = await dbPool.query(
+      `SELECT b.batch_id, b.status, b.total_amount_cents, b.created_at, b.entry_description,
+              e.receiving_routing, e.account_number, e.amount_cents, e.individual_name
+       FROM ach_batches b
+       JOIN ach_entries e ON b.batch_id = e.batch_id
+       WHERE e.receiving_routing = ANY($1)
+       ORDER BY b.created_at DESC
+       LIMIT 50`,
+      [routings]
+    );
+    await dbPool.end();
+
+    var deposits = result.rows.map(function(r) {
+      return {
+        batchId: r.batch_id,
+        status: r.status,
+        amount: r.amount_cents / 100,
+        date: r.created_at,
+        description: r.entry_description,
+        destination: '****' + (r.account_number || '').slice(-4),
+        recipient: r.individual_name
+      };
+    });
+
+    res.json({ success: true, deposits: deposits });
+  } catch(err) {
+    res.json({ success: true, deposits: [], error: err.message });
+  }
+});
+
 module.exports = router;
