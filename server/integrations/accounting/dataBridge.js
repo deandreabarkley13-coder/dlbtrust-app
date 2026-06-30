@@ -1079,6 +1079,13 @@ class DataBridge {
 
   static async _logDiscrepancy(discId, type, moduleA, moduleB, accountCode, amountA, amountB, difference, severity) {
     try {
+      // Auto-resolve prior discrepancies of the same type/account so count doesn't grow
+      await pool.query(
+        `UPDATE data_bridge_discrepancies
+         SET resolved = TRUE, resolved_at = NOW(), resolution = 'superseded'
+         WHERE discrepancy_type = $1 AND account_code = $2 AND resolved = FALSE`,
+        [type, accountCode]
+      );
       await pool.query(
         `INSERT INTO data_bridge_discrepancies
            (discrepancy_id, discrepancy_type, module_a, module_b, account_code,
