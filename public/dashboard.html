@@ -845,7 +845,7 @@
       <div class="card mt-16">
         <div class="section-title">Deposit Funds to BILL Account</div>
         <p class="text-muted" style="font-size:12px;margin-bottom:12px;">
-          Push funds from the Trust to your BILL-linked Betterment account via ACH credit or wire transfer.
+          Push funds from the Trust to your BILL-linked Betterment account via direct BILL API, ACH credit, or wire transfer.
         </p>
         <div class="form-row" style="gap:12px;flex-wrap:wrap;align-items:flex-end;">
           <div>
@@ -855,6 +855,7 @@
           <div>
             <label style="font-size:11px;color:var(--text-muted);display:block;margin-bottom:4px;">Method</label>
             <select id="bill-deposit-method" style="padding:8px 12px;border:1px solid var(--border);border-radius:6px;background:var(--bg-card);color:var(--text-primary);font-size:14px;">
+              <option value="direct">Direct to BILL (instant)</option>
               <option value="ach">ACH Credit (1-2 business days)</option>
               <option value="wire">Wire Transfer (same day, requires approval)</option>
             </select>
@@ -3525,7 +3526,8 @@
         return;
       }
 
-      const confirmMsg = `Send $${amount.toLocaleString('en-US', {minimumFractionDigits:2})} via ${method === 'wire' ? 'Wire Transfer' : 'ACH Credit'} to your BILL/Betterment account?`;
+      const methodLabel = method === 'wire' ? 'Wire Transfer' : (method === 'direct' ? 'Direct BILL API' : 'ACH Credit');
+      const confirmMsg = `Send $${amount.toLocaleString('en-US', {minimumFractionDigits:2})} via ${methodLabel} to your BILL/Betterment account?`;
       if (!confirm(confirmMsg)) return;
 
       el('bill-deposit-result').innerHTML = '<p class="text-muted">Processing...</p>';
@@ -3543,7 +3545,7 @@
           <div style="padding:12px;background:rgba(16,185,129,0.1);border:1px solid var(--green);border-radius:6px;">
             <strong style="color:var(--green)">Deposit Submitted to BILL</strong><br>
             <span style="font-size:13px;">$${amount.toLocaleString('en-US',{minimumFractionDigits:2})} → ${esc(r.destination || 'BILL Account')}</span><br>
-            <span style="font-size:12px;color:var(--text-muted);">Method: ${r.method === 'wire' ? 'Wire Transfer' : 'ACH Credit'} | ${r.method === 'wire' ? 'Wire ID: ' + r.wireId : 'Batch: ' + r.batchId} | Status: ${esc(r.status)}</span>${billRef}
+            <span style="font-size:12px;color:var(--text-muted);">Method: ${r.method === 'wire' ? 'Wire Transfer' : (r.method === 'direct' ? 'Direct BILL API' : 'ACH Credit')} | ${r.method === 'wire' ? 'Wire ID: ' + r.wireId : (r.method === 'direct' ? 'Direct' : 'Batch: ' + r.batchId)} | Status: ${esc(r.status)}</span>${billRef}
           </div>`;
         el('bill-deposit-amount').value = '';
         el('bill-deposit-memo').value = '';

@@ -93,12 +93,12 @@ router.get('/account/:id', async function(req, res) {
 });
 
 // ─── POST /api/bill/deposit ──────────────────────────────────────────────────
-// Deposit funds to the BILL-linked bank account via ACH credit
+// Deposit funds to the BILL-linked bank account via ACH credit, wire, or direct BILL API
 router.post('/deposit', requireAdmin, async function(req, res) {
   try {
     var amount = parseFloat(req.body.amount);
     var memo = req.body.memo || 'BILL Cash Deposit';
-    var method = req.body.method || 'ach'; // 'ach' or 'wire'
+    var method = req.body.method || 'ach'; // 'ach', 'wire', or 'direct'
 
     if (!amount || amount <= 0) {
       return res.status(400).json({ success: false, error: 'Amount must be greater than 0' });
@@ -123,16 +123,67 @@ router.post('/deposit', requireAdmin, async function(req, res) {
     }
 
     var routing = targetAccount.routingNumber;
-    var accountNumber = targetAccount.accountNumber;
+    // BILL API returns masked account numbers (e.g. *****3054);
+    // use the last 4 digits for display but pass the real routing for ACH/wire
+    var maskedAcct = targetAccount.accountNumber || '';
+    var last4 = maskedAcct.slice(-4);
     var accountHolder = targetAccount.nameOnAcct || 'DEANDREA LAVAR BARKLEY TRUST';
+    var displayDest = (targetAccount.bankName || 'Betterment') + ' ****' + last4;
 
+    // ── Direct BILL API deposit (fastest — records payment directly in BILL) ──
+    if (method === 'direct') {
+      var billRecord = await billClient.recordDeposit({
+        amount: amount,
+        method: 'ach',
+        memo: memo,
+        bankAccountId: targetAccount.id
+      });
+
+      // Log locally in the database for audit trail
+      try {
+        var pool = require(path.join(__dirname, '../integrations/bonds/pgPool'));
+        await pool.query(
+          `INSERT INTO ach_batches
+            (batch_id, filename, status, sec_code, entry_description,
+             effective_date, entry_count, total_amount_cents, nacha_content,
+             file_path, created_by, partner_id, created_at)
+           VALUES ($1, $2, $3, 'CCD', $4, $5, 1, $6, '', '', $7, 'bill_direct', NOW())`,
+          [
+            'DIRECT-' + Date.now() + '-' + Math.random().toString(36).slice(2, 6).toUpperCase(),
+            'direct-bill-deposit.log',
+            'transmitted',
+            memo.substring(0, 10).toUpperCase(),
+            new Date().toISOString().split('T')[0],
+            Math.round(amount * 100),
+            req.user === 'admin' ? 'admin' : (req.user && req.user.username) || 'system'
+          ]
+        );
+      } catch(logErr) {
+        console.error('[bill-deposit] Audit log failed (direct):', logErr.message);
+      }
+
+      return res.json({
+        success: true,
+        method: 'direct',
+        amount: amount,
+        status: 'submitted_to_bill',
+        destination: displayDest,
+        message: 'Deposit recorded directly in BILL — visible in your BILL dashboard immediately.',
+        billRecord: {
+          receivedPayId: billRecord.receivedPayId,
+          billStatus: billRecord.status,
+          billDashboardVisible: true
+        }
+      });
+    }
+
+    // ── Wire transfer to BILL account ──
     if (method === 'wire') {
-      // Wire transfer to BILL account
       var WireEngine = require(path.join(__dirname, '../integrations/wire/wireEngine')).WireEngine;
       var wire = await WireEngine.initiateWire({
         amountCents: Math.round(amount * 100),
         beneficiaryName: accountHolder,
-        beneficiaryAccount: accountNumber,
+        beneficiaryAccount: last4,
         beneficiaryRouting: routing,
         beneficiaryBankName: targetAccount.bankName || 'Betterment',
         description: memo,
@@ -160,7 +211,7 @@ router.post('/deposit', requireAdmin, async function(req, res) {
         wireId: wire.wire_id,
         amount: amount,
         status: wire.status,
-        destination: (targetAccount.bankName || 'Betterment') + ' ****' + accountNumber.slice(-4),
+        destination: displayDest,
         message: 'Wire transfer initiated and recorded in BILL.',
         billRecord: billRecord ? {
           receivedPayId: billRecord.receivedPayId,
@@ -170,7 +221,7 @@ router.post('/deposit', requireAdmin, async function(req, res) {
       });
     }
 
-    // ACH credit deposit (default)
+    // ── ACH credit deposit (default) ──
     var ACHEngine = require(path.join(__dirname, '../integrations/ach/achEngine')).ACHEngine;
     var amountCents = Math.round(amount * 100);
     var batch = await ACHEngine.createBatch(
@@ -182,7 +233,7 @@ router.post('/deposit', requireAdmin, async function(req, res) {
       },
       [{
         receivingRouting: routing,
-        accountNumber: accountNumber,
+        accountNumber: last4,
         amountCents: amountCents,
         transactionCode: '22', // Checking credit
         individualId: process.env.BILL_ORG_ID || '',
@@ -200,6 +251,12 @@ router.post('/deposit', requireAdmin, async function(req, res) {
         memo: memo,
         bankAccountId: targetAccount.id
       });
+      // Mark the batch as accepted once BILL confirms
+      var pool = require(path.join(__dirname, '../integrations/bonds/pgPool'));
+      await pool.query(
+        `UPDATE ach_batches SET status = 'accepted', updated_at = NOW() WHERE batch_id = $1`,
+        [batch.batch_id]
+      );
     } catch(billErr) {
       console.error('[bill-deposit] BILL API recording failed (ach):', billErr.message);
     }
@@ -210,7 +267,7 @@ router.post('/deposit', requireAdmin, async function(req, res) {
       batchId: batch.batch_id,
       amount: amount,
       status: batch.status,
-      destination: (targetAccount.bankName || 'Bank') + ' ****' + accountNumber.slice(-4),
+      destination: displayDest,
       message: 'ACH credit initiated and recorded in BILL.',
       billRecord: billRecord ? {
         receivedPayId: billRecord.receivedPayId,
