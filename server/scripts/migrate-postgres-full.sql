@@ -173,10 +173,19 @@ CREATE TABLE IF NOT EXISTS admin_audit_log (
   created_at    TIMESTAMPTZ DEFAULT NOW()
 );
 
+-- ─── Bond Metadata Columns ───────────────────────────────────────────────────
+ALTER TABLE bonds ADD COLUMN IF NOT EXISTS bond_identifier TEXT;
+ALTER TABLE bonds ADD COLUMN IF NOT EXISTS bond_type TEXT DEFAULT 'corporate';
+ALTER TABLE bonds ADD COLUMN IF NOT EXISTS tax_exempt BOOLEAN DEFAULT FALSE;
+ALTER TABLE bonds ADD COLUMN IF NOT EXISTS tax_exempt_type TEXT;
+ALTER TABLE bonds ADD COLUMN IF NOT EXISTS placement_type TEXT DEFAULT 'public';
+ALTER TABLE bonds ADD COLUMN IF NOT EXISTS issuer TEXT;
+ALTER TABLE bonds ADD COLUMN IF NOT EXISTS issuer_state TEXT;
+
 -- ─── Seed DLB-PRB Bond ────────────────────────────────────────────────────────
 -- Only insert if it doesn't already exist
-INSERT INTO bonds (bond_name, isin, face_value, coupon_rate, issue_date, maturity_date, payment_freq, day_count, currency, status)
-SELECT 'DLB-PRB', 'US-DLB-PRB-2024', 100000000.00, 0.01, '2024-02-28', '2124-02-28', 'monthly', '30/360', 'USD', 'active'
+INSERT INTO bonds (bond_name, isin, face_value, coupon_rate, issue_date, maturity_date, payment_freq, day_count, currency, status, bond_identifier, bond_type, tax_exempt, tax_exempt_type, placement_type, issuer, issuer_state)
+SELECT 'DLB-PRB', 'US-DLB-PRB-2024', 100000000.00, 0.01, '2024-02-28', '2124-02-28', 'monthly', '30/360', 'USD', 'active', '19781443-DLB-PRB', 'municipal', TRUE, 'interest', 'private', 'DeAndrea Lavar Barkley Trust', 'CA'
 WHERE NOT EXISTS (SELECT 1 FROM bonds WHERE bond_name = 'DLB-PRB');
 
 -- Initialize bond_balances for DLB-PRB
