@@ -842,13 +842,29 @@ class DataBridge {
             continue;
           }
 
-          var glResult = await FineractClient.postJournalEntry({
-            officeId: 1,
-            transactionDate: new Date(entry.entry_date),
-            debits: debits,
-            credits: credits,
-            comments: jeComment,
-          });
+          var glResult;
+          try {
+            glResult = await FineractClient.postJournalEntry({
+              officeId: 1,
+              transactionDate: new Date(entry.entry_date),
+              debits: debits,
+              credits: credits,
+              comments: jeComment,
+            });
+          } catch (dateErr) {
+            // Retry with today's date if original date is rejected (closed period)
+            if (dateErr.message && dateErr.message.includes('403')) {
+              glResult = await FineractClient.postJournalEntry({
+                officeId: 1,
+                transactionDate: new Date(),
+                debits: debits,
+                credits: credits,
+                comments: jeComment,
+              });
+            } else {
+              throw dateErr;
+            }
+          }
 
           var fineractTxnId = glResult && glResult.resourceId ? String(glResult.resourceId) : ('SYNC-' + syncId + '-' + entry.entry_id);
           await pool.query(

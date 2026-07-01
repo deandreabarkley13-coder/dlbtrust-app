@@ -393,6 +393,21 @@ router.post('/fineract/seed-gl', async (req, res) => {
 const { DataBridge } = require('../integrations/accounting/dataBridge');
 
 /**
+ * POST /api/admin/fineract/reverse-entry — Reverse a specific Fineract journal entry
+ */
+router.post('/fineract/reverse-entry', async (req, res) => {
+  try {
+    const { transactionId } = req.body;
+    if (!transactionId) return res.status(400).json({ success: false, error: 'transactionId required' });
+    const result = await FineractClient.reverseJournalEntry(transactionId);
+    await logAdminAction(req, 'reverse_fineract_entry', 'fineract', transactionId, null, result);
+    res.json({ success: true, transactionId, result });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+/**
  * POST /api/admin/fineract/cleanup-duplicates — Reverse duplicate Fineract JEs
  */
 router.post('/fineract/cleanup-duplicates', async (req, res) => {
@@ -449,9 +464,27 @@ router.post('/fineract/resync-all', async (req, res) => {
       steps.reversedWrongJEs = reversed;
     } catch (e) { steps.reversedWrongJEs = { error: e.message }; }
 
-    // Step 2: Clean up duplicate Fineract JEs
-    try { steps.fineractCleanup = await DataBridge.cleanupFineractDuplicates(); }
-    catch (e) { steps.fineractCleanup = { error: e.message }; }
+    // Step 2: Clean up duplicate Fineract JEs + stale entries
+    try {
+      steps.fineractCleanup = await DataBridge.cleanupFineractDuplicates();
+
+      // Also reverse any Fineract entries not originating from trust accounting
+      const journalRes = await FineractClient.getJournalEntries({ limit: 10000 });
+      const fEntries = (journalRes && journalRes.pageItems) || [];
+      let staleReversed = 0;
+      for (const fe of fEntries) {
+        if (fe.reversed) continue;
+        const comment = (fe.comments || '').trim();
+        // Reverse entries posted directly to Fineract (not via trust JE push)
+        if (comment && !comment.startsWith('Trust JE ') && !comment.startsWith('Reversal entry')) {
+          try {
+            await FineractClient.reverseJournalEntry(fe.transactionId);
+            staleReversed++;
+          } catch (revErr) { /* already reversed or other issue */ }
+        }
+      }
+      steps.fineractCleanup.staleReversed = staleReversed;
+    } catch (e) { steps.fineractCleanup = { error: e.message }; }
 
     // Step 3: Post opening balances
     try { steps.openingBalances = await DataBridge.postOpeningBalances(); }
