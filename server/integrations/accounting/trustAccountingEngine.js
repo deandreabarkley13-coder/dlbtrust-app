@@ -411,12 +411,10 @@ class TrustAccountingEngine {
   }
 
   static async getBalanceSheet({ asOfDate } = {}) {
-    const accounts = await TrustAccountingEngine.getAccountBalancesAsOf(
-      asOfDate, ['asset', 'liability', 'equity']
-    );
-    const incomeExpense = await TrustAccountingEngine.getAccountBalancesAsOf(
-      asOfDate, ['income', 'expense']
-    );
+    const [accounts, incomeExpense] = await Promise.all([
+      TrustAccountingEngine.getAccountBalancesAsOf(asOfDate, ['asset', 'liability', 'equity']),
+      TrustAccountingEngine.getAccountBalancesAsOf(asOfDate, ['income', 'expense']),
+    ]);
 
     const assets = accounts.filter(a => a.account_type === 'asset');
     const liabilities = accounts.filter(a => a.account_type === 'liability');
@@ -525,57 +523,54 @@ class TrustAccountingEngine {
     if (toDate) { dateConditions.push(`je.entry_date <= $${idx++}`); params.push(toDate); }
     const dateFilter = dateConditions.join(' AND ');
 
-    // Operating: cash movements tied to income/expense accounts
-    // Use credit - debit for all: income accounts naturally have net positive
-    // (credits > debits), expense accounts naturally have net negative
-    // (debits > credits), giving correct cashflow sign convention.
-    const operating = await pool.query(`
-      SELECT ta.account_code, ta.account_name, ta.account_type, ta.sub_type,
-        COALESCE(SUM(jl.credit_amount - jl.debit_amount), 0) AS net_flow
-      FROM trust_journal_lines jl
-      JOIN trust_journal_entries je ON je.entry_id = jl.entry_id
-      JOIN trust_accounts ta ON ta.account_code = jl.account_code
-      WHERE ${dateFilter} AND ta.account_type IN ('income','expense')
-      GROUP BY ta.account_code, ta.account_name, ta.account_type, ta.sub_type
-      ORDER BY ta.account_code
-    `, params);
-
-    // Investing: movements on investment / receivable asset accounts
-    const investing = await pool.query(`
-      SELECT ta.account_code, ta.account_name, ta.sub_type,
-        COALESCE(SUM(jl.debit_amount - jl.credit_amount), 0) AS net_flow
-      FROM trust_journal_lines jl
-      JOIN trust_journal_entries je ON je.entry_id = jl.entry_id
-      JOIN trust_accounts ta ON ta.account_code = jl.account_code
-      WHERE ${dateFilter} AND ta.account_type = 'asset'
-        AND ta.sub_type IN ('investment','receivable')
-      GROUP BY ta.account_code, ta.account_name, ta.sub_type
-      ORDER BY ta.account_code
-    `, params);
-
-    // Financing: movements on liability / equity accounts
-    const financing = await pool.query(`
-      SELECT ta.account_code, ta.account_name, ta.account_type, ta.sub_type,
-        COALESCE(SUM(jl.credit_amount - jl.debit_amount), 0) AS net_flow
-      FROM trust_journal_lines jl
-      JOIN trust_journal_entries je ON je.entry_id = jl.entry_id
-      JOIN trust_accounts ta ON ta.account_code = jl.account_code
-      WHERE ${dateFilter} AND ta.account_type IN ('liability','equity')
-      GROUP BY ta.account_code, ta.account_name, ta.account_type, ta.sub_type
-      ORDER BY ta.account_code
-    `, params);
-
-    // Cash account movements
-    const cashAcct = await pool.query(`
-      SELECT ta.account_code, ta.account_name,
-        COALESCE(SUM(jl.debit_amount - jl.credit_amount), 0) AS net_flow
-      FROM trust_journal_lines jl
-      JOIN trust_journal_entries je ON je.entry_id = jl.entry_id
-      JOIN trust_accounts ta ON ta.account_code = jl.account_code
-      WHERE ${dateFilter} AND ta.account_type = 'asset' AND ta.sub_type = 'cash'
-      GROUP BY ta.account_code, ta.account_name
-      ORDER BY ta.account_code
-    `, params);
+    // Run all 4 cashflow queries in parallel
+    const [operating, investing, financing, cashAcct] = await Promise.all([
+      // Operating: cash movements tied to income/expense accounts
+      pool.query(`
+        SELECT ta.account_code, ta.account_name, ta.account_type, ta.sub_type,
+          COALESCE(SUM(jl.credit_amount - jl.debit_amount), 0) AS net_flow
+        FROM trust_journal_lines jl
+        JOIN trust_journal_entries je ON je.entry_id = jl.entry_id
+        JOIN trust_accounts ta ON ta.account_code = jl.account_code
+        WHERE ${dateFilter} AND ta.account_type IN ('income','expense')
+        GROUP BY ta.account_code, ta.account_name, ta.account_type, ta.sub_type
+        ORDER BY ta.account_code
+      `, params),
+      // Investing: movements on investment / receivable asset accounts
+      pool.query(`
+        SELECT ta.account_code, ta.account_name, ta.sub_type,
+          COALESCE(SUM(jl.debit_amount - jl.credit_amount), 0) AS net_flow
+        FROM trust_journal_lines jl
+        JOIN trust_journal_entries je ON je.entry_id = jl.entry_id
+        JOIN trust_accounts ta ON ta.account_code = jl.account_code
+        WHERE ${dateFilter} AND ta.account_type = 'asset'
+          AND ta.sub_type IN ('investment','receivable')
+        GROUP BY ta.account_code, ta.account_name, ta.sub_type
+        ORDER BY ta.account_code
+      `, params),
+      // Financing: movements on liability / equity accounts
+      pool.query(`
+        SELECT ta.account_code, ta.account_name, ta.account_type, ta.sub_type,
+          COALESCE(SUM(jl.credit_amount - jl.debit_amount), 0) AS net_flow
+        FROM trust_journal_lines jl
+        JOIN trust_journal_entries je ON je.entry_id = jl.entry_id
+        JOIN trust_accounts ta ON ta.account_code = jl.account_code
+        WHERE ${dateFilter} AND ta.account_type IN ('liability','equity')
+        GROUP BY ta.account_code, ta.account_name, ta.account_type, ta.sub_type
+        ORDER BY ta.account_code
+      `, params),
+      // Cash account movements
+      pool.query(`
+        SELECT ta.account_code, ta.account_name,
+          COALESCE(SUM(jl.debit_amount - jl.credit_amount), 0) AS net_flow
+        FROM trust_journal_lines jl
+        JOIN trust_journal_entries je ON je.entry_id = jl.entry_id
+        JOIN trust_accounts ta ON ta.account_code = jl.account_code
+        WHERE ${dateFilter} AND ta.account_type = 'asset' AND ta.sub_type = 'cash'
+        GROUP BY ta.account_code, ta.account_name
+        ORDER BY ta.account_code
+      `, params),
+    ]);
 
     const sumFlow = (rows) => rows.reduce((s, r) => s + parseFloat(r.net_flow), 0);
     const mapRow = (r) => ({
@@ -651,20 +646,18 @@ class TrustAccountingEngine {
   // ─── Accounting Dashboard ─────────────────────────────────────────────────
 
   static async getDashboard() {
-    const accounts = await TrustAccountingEngine.listAccounts({ isActive: true });
+    const [accounts, journalCount, periodCount] = await Promise.all([
+      TrustAccountingEngine.listAccounts({ isActive: true }),
+      pool.query(`SELECT COUNT(*) AS count FROM trust_journal_entries WHERE status = 'posted'`),
+      pool.query(`SELECT
+        COUNT(CASE WHEN status = 'open' THEN 1 END) AS open_periods,
+        COUNT(CASE WHEN status = 'closed' THEN 1 END) AS closed_periods
+       FROM trust_periods`),
+    ]);
+
     const sumByType = (type) => accounts
       .filter(a => a.account_type === type)
       .reduce((s, a) => s + parseFloat(a.balance), 0);
-
-    const journalCount = await pool.query(
-      `SELECT COUNT(*) AS count FROM trust_journal_entries WHERE status = 'posted'`
-    );
-    const periodCount = await pool.query(
-      `SELECT
-        COUNT(CASE WHEN status = 'open' THEN 1 END) AS open_periods,
-        COUNT(CASE WHEN status = 'closed' THEN 1 END) AS closed_periods
-       FROM trust_periods`
-    );
 
     return {
       total_assets: Math.round(sumByType('asset') * 100) / 100,
