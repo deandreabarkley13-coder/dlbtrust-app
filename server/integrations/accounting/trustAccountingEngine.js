@@ -440,7 +440,7 @@ class TrustAccountingEngine {
 
     const equityItems = equity.map(mapAcct);
     if (Math.abs(netIncome) > 0.005) {
-      equityItems.push({ account_code: 'NI', account_name: 'Net Income (Current Period)', sub_type: 'net_income', balance: netIncome });
+      equityItems.push({ account_code: 'NI', account_name: 'Retained Earnings (Net Income)', sub_type: 'net_income', balance: netIncome });
     }
 
     return {
