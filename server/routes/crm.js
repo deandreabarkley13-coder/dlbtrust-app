@@ -41,10 +41,15 @@ router.get('/contacts', async (req, res) => {
 
 // ─── POST /api/crm/contacts ──────────────────────────────────────────────────
 router.post('/contacts', async (req, res) => {
-  const { contactType, firstName, lastName } = req.body;
+  const contactType = req.body.contactType || req.body.contact_type;
+  const firstName   = req.body.firstName   || req.body.first_name;
+  const lastName    = req.body.lastName    || req.body.last_name;
   if (!contactType || !firstName || !lastName) {
     return res.status(400).json({ error: 'Required: contactType, firstName, lastName' });
   }
+  req.body.contactType = contactType;
+  req.body.firstName   = firstName;
+  req.body.lastName    = lastName;
   try {
     const contact = await CrmEngine.createContact(req.body);
     res.json({ success: true, data: contact });
