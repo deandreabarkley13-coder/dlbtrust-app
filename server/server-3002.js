@@ -421,6 +421,14 @@ var server = app.listen(PORT, function() {
           console.warn('[fineract-init] Could not find GL mappings for opening balance');
         }
       }
+
+      // Pre-warm GL summary cache so it's available when Fineract disconnects
+      try {
+        await FineractClient.getGLSummary();
+        console.log('[fineract-init] GL summary cache pre-warmed');
+      } catch (cacheErr) {
+        console.warn('[fineract-init] Cache pre-warm failed:', cacheErr.message);
+      }
     } catch (initErr) {
       if (attempt < MAX_ATTEMPTS) {
         console.warn('[fineract-init] Attempt ' + attempt + '/' + MAX_ATTEMPTS + ' failed: ' + initErr.message + ' — retrying in ' + (RETRY_DELAY/1000) + 's');

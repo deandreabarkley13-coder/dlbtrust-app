@@ -15,7 +15,7 @@ var https = require('https');
 var { URL } = require('url');
 
 var FINERACT_URL = process.env.FINERACT_URL || 'https://localhost:8443/fineract-provider/api/v1';
-var CHECK_INTERVAL = parseInt(process.env.FINERACT_CHECK_INTERVAL || '60000', 10); // 60s
+var CHECK_INTERVAL = parseInt(process.env.FINERACT_CHECK_INTERVAL || '30000', 10); // 30s
 var MAX_CONSECUTIVE_FAILURES = parseInt(process.env.FINERACT_FAILURE_THRESHOLD || '5', 10);
 
 var state = {
@@ -94,6 +94,13 @@ function onSuccess() {
   if (state.consecutiveFailures > 0) {
     state.totalRecoveries++;
     console.log('[fineract-monitor] RECOVERED after ' + state.consecutiveFailures + ' failure(s)');
+    // Refresh GL cache on recovery so stale data is replaced
+    try {
+      var FineractClient = require('./fineractClient').FineractClient;
+      FineractClient.getGLSummary().then(function() {
+        console.log('[fineract-monitor] GL cache refreshed after recovery');
+      }).catch(function() { /* ignore - best effort */ });
+    } catch(e) { /* ignore */ }
   }
   state.consecutiveFailures = 0;
   state.lastHealthy = new Date().toISOString();
@@ -188,11 +195,11 @@ function startMonitoring(intervalMs) {
   var interval = intervalMs || CHECK_INTERVAL;
   console.log('[fineract-monitor] Started — checking every ' + (interval / 1000) + 's (threshold: ' + MAX_CONSECUTIVE_FAILURES + ' failures)');
 
-  // First check after 30s (give Fineract time to boot)
+  // First check after 10s (Fineract is already warm from initFineract)
   setTimeout(function() {
     checkFineractHealth();
     _monitorInterval = setInterval(checkFineractHealth, interval);
-  }, 30000);
+  }, 10000);
 }
 
 /**
