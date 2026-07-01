@@ -498,6 +498,44 @@ router.post('/fineract/resync-all', async (req, res) => {
     try { steps.fineractPush = await DataBridge.pushToFineract(); }
     catch (e) { steps.fineractPush = { error: e.message }; }
 
+    // Step 6: Correct Fineract GL balances if opening balance was disrupted
+    try {
+      const glSummary = await FineractClient.getGLSummary();
+      const allAccounts = [
+        ...(glSummary.assets || []),
+        ...(glSummary.liabilities || []),
+        ...(glSummary.equity || []),
+        ...(glSummary.income || []),
+        ...(glSummary.expenses || []),
+      ];
+      const bonds = await pool.query("SELECT SUM(face_value) AS total FROM bonds WHERE status = 'active'");
+      const expectedFaceValue = parseFloat(bonds.rows[0].total || 0);
+
+      // Find current Bond Investments (1100) and Trust Corpus (3000) balances
+      let bondInvBal = 0, corpusBal = 0, bondInvId = null, corpusId = null;
+      for (const acct of allAccounts) {
+        if (acct.glCode === '1100') { bondInvBal = acct.balance || 0; bondInvId = acct.id; }
+        if (acct.glCode === '3000') { corpusBal = Math.abs(acct.balance || 0); corpusId = acct.id; }
+      }
+
+      const bondInvDiff = expectedFaceValue - bondInvBal;
+      const corpusDiff = expectedFaceValue - corpusBal;
+
+      if (bondInvDiff > 1 && corpusDiff > 1 && bondInvId && corpusId) {
+        // Post correction JE to restore opening balance
+        const correctionResult = await FineractClient.postJournalEntry({
+          officeId: 1,
+          transactionDate: new Date(),
+          debits: [{ glAccountId: bondInvId, amount: bondInvDiff }],
+          credits: [{ glAccountId: corpusId, amount: corpusDiff }],
+          comments: 'Balance correction: restore opening balance for active bonds',
+        });
+        steps.balanceCorrection = { corrected: true, bondInvDiff, corpusDiff, result: correctionResult };
+      } else {
+        steps.balanceCorrection = { corrected: false, bondInvBal, corpusBal, expected: expectedFaceValue };
+      }
+    } catch (e) { steps.balanceCorrection = { error: e.message }; }
+
     await logAdminAction(req, 'fineract_resync_all', 'fineract', null, null, steps);
     res.json({ success: true, steps });
   } catch (err) {
