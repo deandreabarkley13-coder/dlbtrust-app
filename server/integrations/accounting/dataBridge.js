@@ -110,7 +110,7 @@ class DataBridge {
       // Sync interest accrual transactions from bond_transactions
       var accruals = await pool.query(`
         SELECT bt.id, bt.bond_id, bt.amount, bt.transaction_date, bt.description,
-               b.bond_name AS bond_code, b.issuer
+               b.bond_name AS bond_code
         FROM bond_transactions bt
         JOIN bonds b ON b.id = bt.bond_id
         WHERE bt.transaction_type = 'interest_accrual'
@@ -132,27 +132,27 @@ class DataBridge {
 
           await TrustAccountingEngine.postJournalEntry({
             entryDate: acc.transaction_date,
-            description: 'Bond interest accrual — ' + acc.bond_code + ' (' + (acc.issuer || '') + ')',
+            description: 'Bond interest accrual — ' + acc.bond_code,
             lines: [
               { accountCode: ACCOUNTS.ACCRUED_INTEREST, debitAmount: accrualAmount, creditAmount: 0, memo: 'Interest accrued ' + acc.bond_code },
               { accountCode: ACCOUNTS.INTEREST_INCOME, debitAmount: 0, creditAmount: accrualAmount, memo: 'Interest income ' + acc.bond_code },
             ],
             referenceType: 'bond_accrual',
             referenceId: String(acc.id),
-            bondId: acc.bond_code,
+            bondId: acc.bond_id,
             postedBy: 'data_bridge',
             postToFineract: false,
           });
           synced++;
         } catch (err) {
           failed++;
-          errors.push({ accrualId: acc.id, bondId: acc.bond_code, error: err.message });
+          errors.push({ accrualId: acc.id, bondId: acc.bond_id, error: err.message });
         }
       }
 
       // Sync coupon payments
       var coupons = await pool.query(`
-        SELECT cp.*, b.bond_id AS bond_code, b.issuer
+        SELECT cp.*, b.bond_name AS bond_code
         FROM coupon_payments cp
         JOIN bonds b ON b.id = cp.bond_id
         WHERE cp.status = 'paid'
@@ -664,13 +664,13 @@ class DataBridge {
             ],
             referenceType: 'opening_balance',
             referenceId: 'BOND-' + bond.id,
-            bondId: bond.bond_name,
+            bondId: bond.id,
             postedBy: 'data_bridge',
             postToFineract: false,
           });
           synced++;
         } catch (err) {
-          errors.push({ bondId: bond.bond_name, error: err.message });
+          errors.push({ bondId: bond.id, error: err.message });
         }
       }
     } catch (outerErr) {
