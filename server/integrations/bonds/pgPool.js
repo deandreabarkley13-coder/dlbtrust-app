@@ -5,12 +5,13 @@
  * Bond tables live alongside Fineract's tenant metadata.
  *
  * Exports a resilient pool wrapper that automatically retries queries when
- * Fly.io's Postgres proxy terminates idle connections.
+ * Fly.io's Postgres proxy terminates idle connections. On retry, the pool
+ * is drained and rebuilt to ensure fresh connections.
  */
 
 'use strict';
 
-const { Pool } = require('pg');
+const { Pool, Client } = require('pg');
 
 const RETRY_ERRORS = [
   'Connection terminated unexpectedly',
@@ -18,7 +19,6 @@ const RETRY_ERRORS = [
   'connection is insecure',
   'Client has encountered a connection error',
   'terminating connection due to administrator command',
-  'sorry, too many clients already',
   'ECONNRESET',
   'ECONNREFUSED',
   'EPIPE',
@@ -41,7 +41,7 @@ if (process.env.DATABASE_URL) {
     ssl: process.env.DB_SSL === 'true' ? { rejectUnauthorized: false } : false,
     max: 8,
     idleTimeoutMillis: 10000,
-    connectionTimeoutMillis: 10000,
+    connectionTimeoutMillis: 5000,
     keepAlive: true,
     keepAliveInitialDelayMillis: 5000,
   };
@@ -54,27 +54,51 @@ if (process.env.DATABASE_URL) {
     database: process.env.BOND_DB_NAME || 'fineract_tenants',
     max:      8,
     idleTimeoutMillis: 10000,
-    connectionTimeoutMillis: 10000,
+    connectionTimeoutMillis: 5000,
     keepAlive: true,
     keepAliveInitialDelayMillis: 5000,
   };
 }
 
-const pool = new Pool(poolConfig);
+let pool = new Pool(poolConfig);
 
 pool.on('error', (err) => {
   console.error('[BondDB] Unexpected pool error:', err.message);
 });
 
-// Resilient wrapper: retries once on connection-level errors
+// Rebuild the pool with fresh connections
+function rebuildPool() {
+  console.warn('[BondDB] Rebuilding connection pool');
+  const oldPool = pool;
+  pool = new Pool(poolConfig);
+  pool.on('error', (err) => {
+    console.error('[BondDB] Unexpected pool error:', err.message);
+  });
+  oldPool.end().catch(() => {});
+}
+
+// Retry using a one-off Client (bypasses the potentially-all-dead pool)
+async function queryWithFreshClient(text, params) {
+  const client = new Client(poolConfig);
+  try {
+    await client.connect();
+    const result = await client.query(text, params);
+    return result;
+  } finally {
+    client.end().catch(() => {});
+  }
+}
+
+// Resilient wrapper: on connection error, rebuild pool and retry with fresh client
 const resilientPool = {
   async query(text, params) {
     try {
       return await pool.query(text, params);
     } catch (err) {
       if (isRetryable(err)) {
-        console.warn('[BondDB] Retrying query after:', err.message);
-        return await pool.query(text, params);
+        console.warn('[BondDB] Pool query failed:', err.message, '— rebuilding and retrying');
+        rebuildPool();
+        return await queryWithFreshClient(text, params);
       }
       throw err;
     }
@@ -84,7 +108,8 @@ const resilientPool = {
       return await pool.connect();
     } catch (err) {
       if (isRetryable(err)) {
-        console.warn('[BondDB] Retrying connect after:', err.message);
+        console.warn('[BondDB] Pool connect failed:', err.message, '— rebuilding and retrying');
+        rebuildPool();
         return await pool.connect();
       }
       throw err;
@@ -97,8 +122,10 @@ const resilientPool = {
 
 // Periodic keepalive prevents Fly.io proxy from killing idle connections
 const keepAliveTimer = setInterval(() => {
-  pool.query('SELECT 1').catch(() => {});
-}, 30000);
+  pool.query('SELECT 1').catch(() => {
+    rebuildPool();
+  });
+}, 15000);
 keepAliveTimer.unref();
 
 module.exports = resilientPool;
