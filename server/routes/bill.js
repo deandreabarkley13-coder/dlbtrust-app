@@ -292,6 +292,9 @@ router.get('/deposits', async function(req, res) {
     if (Array.isArray(accounts)) {
       accounts.forEach(function(a) { if (a.routingNumber) routings.push(a.routingNumber); });
     }
+    // Include the BILL Cash Account routing so deposits to it appear in history
+    var billCashRouting = process.env.BILL_CASH_ROUTING || '028000024';
+    if (routings.indexOf(billCashRouting) === -1) routings.push(billCashRouting);
 
     var deposits = [];
 
@@ -342,7 +345,7 @@ router.get('/deposits', async function(req, res) {
           amount: rp.amount,
           date: rp.createdTime || rp.paymentDate,
           description: rp.description || 'BILL deposit',
-          destination: '****3054',
+          destination: '****' + (process.env.BILL_CASH_ACCOUNT || '10141741110240').slice(-4),
           recipient: 'BILL Cash Account',
           source: 'bill_api',
           submittedToBill: true,
