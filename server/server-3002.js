@@ -145,6 +145,11 @@ app.get('/api/health', async function(req, res) {
       }
     } catch(e) { checks.bill = { ok: false, configured: false, error: e.message }; }
 
+    // Include DB circuit breaker status
+    if (pool.getCircuitStatus) {
+      checks.dbCircuit = pool.getCircuitStatus();
+    }
+
     var coreOk = checks.bonds.ok && checks.cashAccounts.ok && checks.trustAccounts.ok && checks.authUsers.ok && checks.database.ok;
     res.json({
       status: coreOk ? 'healthy' : 'degraded',
@@ -153,7 +158,10 @@ app.get('/api/health', async function(req, res) {
       checks: checks,
     });
   } catch (e) {
-    res.status(500).json({ status: 'unhealthy', error: e.message });
+    var pool2 = null;
+    try { pool2 = require(path.join(HD, 'server', 'integrations', 'bonds', 'pgPool')); } catch(x) {}
+    var circuitInfo = (pool2 && pool2.getCircuitStatus) ? pool2.getCircuitStatus() : null;
+    res.status(503).json({ status: 'unhealthy', error: e.message, dbCircuit: circuitInfo });
   }
 });
 
