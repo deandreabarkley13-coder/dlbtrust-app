@@ -198,6 +198,9 @@ class CrmEngine {
       `SELECT COUNT(*) AS active_count, COALESCE(SUM(subscription_amount), 0) AS total_amount
        FROM crm_bond_subscriptions WHERE status = 'active'`
     );
+    const totalSubscriptions = await pool.query(
+      `SELECT COUNT(*) AS total_count FROM crm_bond_subscriptions`
+    );
 
     const byType = {};
     for (const row of contactsByType.rows) {
@@ -211,7 +214,7 @@ class CrmEngine {
       kyc_verified: parseInt(kycVerified.rows[0].count, 10),
       aml_flagged_count: parseInt(amlFlagged.rows[0].count, 10),
       active_subscriptions: parseInt(subscriptionStats.rows[0].active_count, 10),
-      total_subscriptions: parseInt(subscriptionStats.rows[0].active_count, 10),
+      total_subscriptions: parseInt(totalSubscriptions.rows[0].total_count, 10),
       total_subscription_amount: parseFloat(subscriptionStats.rows[0].total_amount),
       generated_at: new Date().toISOString(),
     };
