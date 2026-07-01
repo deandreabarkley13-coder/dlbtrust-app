@@ -2285,7 +2285,7 @@
       sel.innerHTML = '<option value="">Loading bonds...</option>';
       var r = await fetchJSON(API + '/api/admin/bonds', { headers: adminHeaders() });
       var bonds = (r.data && r.data.bonds) || [];
-      if (bonds.length === 0) bonds = [{ bond_id: 1, bond_name: 'DLB-PRB', bond_identifier: '19781443-DLB-PRB' }];
+      if (bonds.length === 0) { sel.innerHTML = '<option value="">No bonds available</option>'; sel.dataset.loaded = '1'; return; }
       sel.innerHTML = bonds.map(function(b) { return '<option value="' + b.bond_id + '">' + esc(b.bond_name) + (b.bond_identifier ? ' (' + esc(b.bond_identifier) + ')' : '') + '</option>'; }).join('');
       sel.dataset.loaded = '1';
     }
@@ -2392,7 +2392,7 @@
       const bondId = reportType === 'bond_statement' ? (el('stmt-bond').value || undefined) : undefined;
       const r = await fetchJSON(API + '/api/accounting/statements/generate', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: adminHeaders(),
         body: JSON.stringify({ reportType, fromDate, toDate, bondId, format: 'html' }),
       });
       if (r.success) {
