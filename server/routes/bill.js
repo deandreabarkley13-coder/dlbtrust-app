@@ -222,6 +222,7 @@ router.post('/deposit', requireAdmin, async function(req, res) {
         description: memo,
         purpose: 'BILL Cash Account Deposit',
         paymentType: 'bill_deposit',
+        requiresApproval: false,
         initiatedBy: req.user === 'admin' ? 'admin' : (req.user && req.user.username) || 'system'
       });
 
