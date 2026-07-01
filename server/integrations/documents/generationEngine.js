@@ -420,7 +420,7 @@ class GenerationEngine {
       html += '<h2>Transactions</h2>';
       html += '<table><thead><tr><th>Date</th><th>Type</th><th>Amount</th><th>Balance</th><th>Description</th></tr></thead><tbody>';
       for (const t of txns) {
-        html += `<tr><td>${t.transaction_date}</td><td>${(t.transaction_type || '').replace(/_/g, ' ')}</td><td>${f(t.amount)}</td><td>${f(t.running_balance)}</td><td>${t.description || ''}</td></tr>`;
+        html += `<tr><td>${t.transaction_date}</td><td>${e((t.transaction_type || '').replace(/_/g, ' '))}</td><td>${f(t.amount)}</td><td>${f(t.running_balance)}</td><td>${e(t.description) || ''}</td></tr>`;
       }
       html += '</tbody></table>';
     }
