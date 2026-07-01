@@ -6,6 +6,13 @@
  *
  * Fineract API docs: https://fineract.apache.org/docs/current
  * Auth: HTTP Basic + X-Fineract-Platform-TenantId header
+ *
+ * Resilience features:
+ * - Circuit breaker: fast-fails when Fineract is known-down (no 30s hangs)
+ * - Retry with backoff: transient failures retry once after 2s
+ * - Response cache: GL summary cached 60s, serves stale on failure
+ * - Keep-alive agent: reuses TCP connections to reduce overhead
+ * - Short timeout: 10s per request (was 30s)
  */
 
 'use strict';
@@ -19,11 +26,69 @@ const FINERACT_TENANT_ID = process.env.FINERACT_TENANT_ID || 'default';
 const FINERACT_USERNAME  = process.env.FINERACT_USERNAME || 'mifos';
 const FINERACT_PASSWORD  = process.env.FINERACT_PASSWORD || 'password';
 
+// ─── Keep-Alive Agents (reuse TCP connections) ────────────────────────────────
+const httpsAgent = new https.Agent({ keepAlive: true, maxSockets: 4, rejectUnauthorized: false });
+const httpAgent = new http.Agent({ keepAlive: true, maxSockets: 4 });
+
+// ─── Circuit Breaker ──────────────────────────────────────────────────────────
+const circuitBreaker = {
+  failures: 0,
+  lastFailure: 0,
+  threshold: 3,        // open after 3 consecutive failures
+  resetTimeout: 30000, // try again after 30s
+  isOpen() {
+    if (this.failures < this.threshold) return false;
+    // Allow retry after resetTimeout
+    if (Date.now() - this.lastFailure > this.resetTimeout) {
+      this.failures = 0; // half-open: allow one request through
+      return false;
+    }
+    return true;
+  },
+  recordFailure() {
+    this.failures++;
+    this.lastFailure = Date.now();
+  },
+  recordSuccess() {
+    this.failures = 0;
+  },
+};
+
+// ─── Response Cache ───────────────────────────────────────────────────────────
+const responseCache = new Map();
+const CACHE_TTL = 60000; // 60s fresh TTL
+const STALE_TTL = 300000; // 5 min stale TTL (serve stale on failure)
+
+function getCached(key) {
+  const entry = responseCache.get(key);
+  if (!entry) return null;
+  const age = Date.now() - entry.timestamp;
+  if (age < CACHE_TTL) return { data: entry.data, fresh: true };
+  if (age < STALE_TTL) return { data: entry.data, fresh: false };
+  responseCache.delete(key);
+  return null;
+}
+
+function setCache(key, data) {
+  responseCache.set(key, { data, timestamp: Date.now() });
+}
+
 /**
  * Low-level HTTP request to Fineract REST API.
- * Handles Basic Auth, TenantId header, and TLS for self-signed certs.
+ * Handles Basic Auth, TenantId header, TLS, circuit breaker, and retry.
  */
-function fineractRequest(method, endpoint, body = null) {
+function fineractRequest(method, endpoint, body = null, opts = {}) {
+  const timeout = opts.timeout || 10000;
+  const skipCircuitBreaker = opts.skipCircuitBreaker || false;
+
+  // Circuit breaker: fast-fail if Fineract is known-down
+  if (!skipCircuitBreaker && circuitBreaker.isOpen()) {
+    const err = new Error('Fineract circuit breaker OPEN — service temporarily unavailable');
+    err.status = 503;
+    err.circuitOpen = true;
+    return Promise.reject(err);
+  }
+
   return new Promise((resolve, reject) => {
     const urlStr = `${FINERACT_URL}/${endpoint}`;
     const parsed = new URL(urlStr);
@@ -43,16 +108,18 @@ function fineractRequest(method, endpoint, body = null) {
       headers['Content-Length'] = Buffer.byteLength(payload);
     }
 
+    const isHttps = parsed.protocol === 'https:';
     const options = {
       hostname: parsed.hostname,
-      port: parsed.port || (parsed.protocol === 'https:' ? 443 : 80),
+      port: parsed.port || (isHttps ? 443 : 80),
       path: parsed.pathname + parsed.search,
       method,
       headers,
       rejectUnauthorized: false,
+      agent: isHttps ? httpsAgent : httpAgent,
     };
 
-    const lib = parsed.protocol === 'https:' ? https : http;
+    const lib = isHttps ? https : http;
     const req = lib.request(options, (res) => {
       let data = '';
       res.on('data', chunk => { data += chunk; });
@@ -63,8 +130,10 @@ function fineractRequest(method, endpoint, body = null) {
           const err = new Error(`Fineract ${method} ${endpoint} failed (${res.statusCode})`);
           err.status = res.statusCode;
           err.detail = detail;
+          circuitBreaker.recordFailure();
           return reject(err);
         }
+        circuitBreaker.recordSuccess();
         if (!data || data.trim() === '') return resolve(null);
         try {
           resolve(JSON.parse(data));
@@ -75,6 +144,7 @@ function fineractRequest(method, endpoint, body = null) {
     });
 
     req.on('error', (err) => {
+      circuitBreaker.recordFailure();
       if (err.code === 'ECONNREFUSED') {
         const e = new Error('Fineract not reachable — start with: docker compose up -d');
         e.status = 503;
@@ -82,12 +152,62 @@ function fineractRequest(method, endpoint, body = null) {
       }
       reject(err);
     });
-    req.setTimeout(30000, () => {
-      req.destroy(new Error('Fineract request timed out after 30s'));
+    req.setTimeout(timeout, () => {
+      req.destroy(new Error(`Fineract request timed out after ${timeout / 1000}s`));
     });
     if (payload) req.write(payload);
     req.end();
   });
+}
+
+/**
+ * Resilient request with single retry on transient failure.
+ * Returns cached/stale data if both attempts fail.
+ */
+async function resilientFineractRequest(method, endpoint, body = null, cacheKey = null) {
+  // Check fresh cache first (skip network entirely)
+  if (cacheKey && method === 'GET') {
+    const cached = getCached(cacheKey);
+    if (cached && cached.fresh) return cached.data;
+  }
+
+  try {
+    const result = await fineractRequest(method, endpoint, body);
+    if (cacheKey && method === 'GET') setCache(cacheKey, result);
+    return result;
+  } catch (firstErr) {
+    // If circuit is open, try stale cache immediately
+    if (firstErr.circuitOpen) {
+      if (cacheKey) {
+        const stale = getCached(cacheKey);
+        if (stale) return stale.data;
+      }
+      throw firstErr;
+    }
+
+    // Retry once after 2s for transient failures
+    if (firstErr.status === 503 || firstErr.message.includes('timeout') || firstErr.message.includes('socket hang up') || firstErr.message.includes('ECONNRESET')) {
+      await new Promise(r => setTimeout(r, 2000));
+      try {
+        const result = await fineractRequest(method, endpoint, body);
+        if (cacheKey && method === 'GET') setCache(cacheKey, result);
+        return result;
+      } catch (retryErr) {
+        // Fall through to stale cache
+      }
+    }
+
+    // Serve stale cache if available
+    if (cacheKey) {
+      const stale = getCached(cacheKey);
+      if (stale) {
+        console.warn('[fineract-client] Serving stale cache for ' + endpoint + ' (age: ' + Math.round((Date.now() - responseCache.get(cacheKey).timestamp) / 1000) + 's)');
+        return stale.data;
+      }
+    }
+
+    throw firstErr;
+  }
 }
 
 // ─── High-Level Client ────────────────────────────────────────────────────────
@@ -97,9 +217,10 @@ class FineractClient {
   /**
    * Health check — verify Fineract is reachable and authenticated.
    * Calls GET /offices to confirm connectivity.
+   * Uses shorter timeout and skips circuit breaker (used for recovery detection).
    */
   static async healthCheck() {
-    const offices = await fineractRequest('GET', 'offices');
+    const offices = await fineractRequest('GET', 'offices', null, { timeout: 8000, skipCircuitBreaker: true });
     return { connected: true, offices };
   }
 
@@ -177,6 +298,7 @@ class FineractClient {
   /**
    * Get journal entries with optional filters.
    * Maps to GET /journalentries
+   * Cached for frequently-used queries (no accountId filter).
    */
   static async getJournalEntries({ accountId, fromDate, toDate, offset, limit } = {}) {
     const params = new URLSearchParams();
@@ -189,7 +311,8 @@ class FineractClient {
     params.set('dateFormat', 'dd MMMM yyyy');
 
     const qs = params.toString();
-    return fineractRequest('GET', `journalentries?${qs}`);
+    const cacheKey = !accountId && !fromDate && !toDate ? 'journal_entries_' + (limit || 'all') : null;
+    return resilientFineractRequest('GET', `journalentries?${qs}`, null, cacheKey);
   }
 
   /**
@@ -270,24 +393,36 @@ class FineractClient {
 
   /**
    * Get GL accounts (chart of accounts).
+   * Cached for 60s, serves stale for up to 5min on failure.
    */
   static async getGLAccounts() {
-    return fineractRequest('GET', 'glaccounts');
+    return resilientFineractRequest('GET', 'glaccounts', null, 'gl_accounts');
   }
 
   /**
    * Get GL account summary with balances computed from journal entries.
    * Fineract's organizationRunningBalance is unreliable in some versions,
    * so we compute balances directly from journal entries.
+   *
+   * Uses resilient request with caching — serves stale data if Fineract is down.
    */
   static async getGLSummary() {
-    const accounts = await fineractRequest('GET', 'glaccounts');
-    if (!Array.isArray(accounts)) return { accounts: [] };
+    // Check fresh cache first (avoid expensive computation)
+    const cached = getCached('gl_summary');
+    if (cached && cached.fresh) return cached.data;
+
+    const accounts = await resilientFineractRequest('GET', 'glaccounts', null, 'gl_accounts_raw');
+    if (!Array.isArray(accounts)) {
+      // Try stale summary cache
+      const stale = getCached('gl_summary');
+      if (stale) return stale.data;
+      return { accounts: [] };
+    }
 
     // Fetch all journal entries to compute balances
     const balanceMap = {};
     try {
-      const journalRes = await fineractRequest('GET', 'journalentries?limit=10000');
+      const journalRes = await resilientFineractRequest('GET', 'journalentries?limit=10000', null, 'gl_journals');
       const entries = (journalRes && journalRes.pageItems) || [];
       for (const je of entries) {
         if (je.reversed) continue;
@@ -339,7 +474,7 @@ class FineractClient {
 
     const sumBalances = (arr) => arr.reduce((s, a) => s + a.balance, 0);
 
-    return {
+    const result = {
       generated_at: new Date().toISOString(),
       total_assets: sumBalances(summary.assets),
       total_liabilities: sumBalances(summary.liabilities),
@@ -347,6 +482,27 @@ class FineractClient {
       total_income: sumBalances(summary.income),
       total_expenses: sumBalances(summary.expenses),
       accounts: summary,
+    };
+
+    // Cache the computed summary
+    setCache('gl_summary', result);
+    return result;
+  }
+
+  /**
+   * Get circuit breaker and cache status for diagnostics.
+   */
+  static getResilienceStatus() {
+    return {
+      circuitBreaker: {
+        failures: circuitBreaker.failures,
+        isOpen: circuitBreaker.isOpen(),
+        lastFailure: circuitBreaker.lastFailure ? new Date(circuitBreaker.lastFailure).toISOString() : null,
+      },
+      cache: {
+        entries: responseCache.size,
+        keys: Array.from(responseCache.keys()),
+      },
     };
   }
 }
