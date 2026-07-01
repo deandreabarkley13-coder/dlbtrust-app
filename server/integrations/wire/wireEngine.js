@@ -454,8 +454,9 @@ class WireEngine {
         const productionConfig = await SystemSettings.getProductionPartnerConfig();
         const isBill = productionConfig && productionConfig.isBill;
 
-        if (isBill) {
+        if (isBill && wire.payment_type !== 'bill_deposit') {
           // BILL Cash Account: submit wire via BILL's RecordARPayment API
+          // Skip for bill_deposit wires — bill.js already recorded the deposit in BILL
           console.log(`[WireEngine] sendWire(${wireId}): PRODUCTION MODE → BILL Cash Account`);
           try {
             const billClient = require('../bill/billClient');
@@ -469,6 +470,8 @@ class WireEngine {
           } catch (billErr) {
             console.warn(`[WireEngine] BILL API wire submission info (non-blocking):`, billErr.message);
           }
+        } else if (isBill && wire.payment_type === 'bill_deposit') {
+          console.log(`[WireEngine] sendWire(${wireId}): Skipping BILL API call — already recorded by bill.js`);
         } else {
         console.log(`[WireEngine] sendWire(${wireId}): PRODUCTION MODE → ${wireEndpoint}`);
         try {

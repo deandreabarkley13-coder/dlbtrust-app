@@ -2198,20 +2198,20 @@
     }
     async function crmApprove(contactId) {
       if (!confirm('Approve contact ' + contactId + '?')) return;
-      const r = await fetchJSON(API + '/api/crm/contacts/' + contactId + '/approve', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ approvedBy: 'admin' }) });
+      const r = await fetchJSON(API + '/api/crm/contacts/' + encodeURIComponent(contactId) + '/approve', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ approvedBy: 'admin' }) });
       alert(r.success ? 'Contact approved' : 'Error: ' + (r.error || 'Failed'));
       loadCRM();
     }
     async function crmReject(contactId) {
       const reason = prompt('Rejection reason (optional):');
       if (reason === null) return;
-      const r = await fetchJSON(API + '/api/crm/contacts/' + contactId + '/reject', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ rejectedBy: 'admin', reason: reason || null }) });
+      const r = await fetchJSON(API + '/api/crm/contacts/' + encodeURIComponent(contactId) + '/reject', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ rejectedBy: 'admin', reason: reason || null }) });
       alert(r.success ? 'Contact rejected' : 'Error: ' + (r.error || 'Failed'));
       loadCRM();
     }
     async function crmVerifyKYC(contactId) {
       if (!confirm('Mark KYC as verified for ' + contactId + '?')) return;
-      const r = await fetchJSON(API + '/api/crm/contacts/' + contactId + '/kyc', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ kycStatus: 'verified' }) });
+      const r = await fetchJSON(API + '/api/crm/contacts/' + encodeURIComponent(contactId) + '/kyc', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ kycStatus: 'verified' }) });
       alert(r.success ? 'KYC verified' : 'Error: ' + (r.error || 'Failed'));
       loadCRM();
     }
