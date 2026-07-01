@@ -241,6 +241,7 @@
     <div class="nav-item" data-page="fineract"><span class="icon">🏛️</span> Fineract GL</div>
     <div class="nav-item" data-page="sub-ledgers"><span class="icon">📂</span> Sub-Ledgers</div>
     <div class="nav-item" data-page="bill"><span class="icon">💳</span> BILL Cash</div>
+    <div class="nav-item" data-page="vendor-payments"><span class="icon">💸</span> Vendor Payments</div>
     <div class="nav-section">Data Bridge</div>
     <div class="nav-item" data-page="data-bridge"><span class="icon">🔗</span> Data Bridge</div>
     <div class="nav-section">Agents</div>
@@ -990,6 +991,158 @@
       </div>
     </div>
 
+    <!-- VENDOR PAYMENTS PAGE -->
+    <div id="page-vendor-payments" class="page hidden">
+      <div class="page-header">
+        <div><h1>Vendor Payments</h1><div class="subtitle">Manage vendors, initiate payments via ACH/Wire/BILL, approval workflow, and execution</div></div>
+        <button class="btn btn-primary btn-sm" onclick="loadVendorPayments()">Refresh</button>
+      </div>
+      <div class="grid" id="vendor-stats"></div>
+
+      <!-- Approval Queue -->
+      <div class="card" id="vendor-approval-section" style="display:none">
+        <div class="section-title">Pending Approvals</div>
+        <div id="vendor-approval-queue"></div>
+      </div>
+
+      <div class="two-col">
+        <!-- Vendor List -->
+        <div class="card">
+          <div class="section-title">Vendors</div>
+          <div id="vendor-list"><p class="text-muted">Loading...</p></div>
+        </div>
+        <!-- Recent Payments -->
+        <div class="card">
+          <div class="section-title">Recent Payments</div>
+          <div id="vendor-recent-payments"><p class="text-muted">Loading...</p></div>
+        </div>
+      </div>
+
+      <!-- Add Vendor Form -->
+      <div class="card" style="margin-top:1rem">
+        <div class="section-title">Add Vendor</div>
+        <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:0.75rem;margin-bottom:1rem">
+          <div>
+            <label class="form-label">Vendor Name *</label>
+            <input type="text" id="vnd-name" class="form-control" placeholder="e.g. Smith & Associates LLP">
+          </div>
+          <div>
+            <label class="form-label">Vendor Type</label>
+            <select id="vnd-type" class="form-control">
+              <option value="general">General</option>
+              <option value="legal">Legal</option>
+              <option value="accounting">Accounting</option>
+              <option value="custodian">Custodian</option>
+              <option value="broker">Broker</option>
+              <option value="consultant">Consultant</option>
+              <option value="technology">Technology</option>
+              <option value="insurance">Insurance</option>
+              <option value="regulatory">Regulatory</option>
+              <option value="other">Other</option>
+            </select>
+          </div>
+          <div>
+            <label class="form-label">Contact Name</label>
+            <input type="text" id="vnd-contact" class="form-control" placeholder="Primary contact">
+          </div>
+        </div>
+        <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:0.75rem;margin-bottom:1rem">
+          <div>
+            <label class="form-label">Contact Email</label>
+            <input type="email" id="vnd-email" class="form-control" placeholder="vendor@example.com">
+          </div>
+          <div>
+            <label class="form-label">Bank Name</label>
+            <input type="text" id="vnd-bank" class="form-control" placeholder="e.g. Chase">
+          </div>
+          <div>
+            <label class="form-label">Payment Method</label>
+            <select id="vnd-method" class="form-control">
+              <option value="ach">ACH</option>
+              <option value="wire">Wire</option>
+              <option value="bill">BILL</option>
+            </select>
+          </div>
+        </div>
+        <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:0.75rem;margin-bottom:1rem">
+          <div>
+            <label class="form-label">Routing Number</label>
+            <input type="text" id="vnd-routing" class="form-control" placeholder="9 digits">
+          </div>
+          <div>
+            <label class="form-label">Account Number</label>
+            <input type="text" id="vnd-account" class="form-control" placeholder="Account number">
+          </div>
+          <div>
+            <label class="form-label">Tax ID (EIN/SSN)</label>
+            <input type="text" id="vnd-taxid" class="form-control" placeholder="XX-XXXXXXX">
+          </div>
+        </div>
+        <button class="btn btn-primary" onclick="createVendor()">Add Vendor</button>
+        <div id="vnd-create-result" style="margin-top:0.5rem"></div>
+      </div>
+
+      <!-- Initiate Payment Form -->
+      <div class="card" style="margin-top:1rem">
+        <div class="section-title">Initiate Payment</div>
+        <div style="display:grid;grid-template-columns:1fr 1fr 1fr 1fr;gap:0.75rem;margin-bottom:1rem">
+          <div>
+            <label class="form-label">Vendor *</label>
+            <select id="vpay-vendor" class="form-control"></select>
+          </div>
+          <div>
+            <label class="form-label">Amount ($) *</label>
+            <input type="number" id="vpay-amount" class="form-control" step="0.01" min="0.01" placeholder="0.00">
+          </div>
+          <div>
+            <label class="form-label">Payment Method</label>
+            <select id="vpay-method" class="form-control">
+              <option value="ach">ACH (1-2 days)</option>
+              <option value="wire">Wire (same day)</option>
+              <option value="bill">BILL</option>
+            </select>
+          </div>
+          <div>
+            <label class="form-label">Payment Type</label>
+            <select id="vpay-type" class="form-control">
+              <option value="vendor_payment">Vendor Payment</option>
+              <option value="fee_payment">Fee Payment</option>
+              <option value="legal_fee">Legal Fee</option>
+              <option value="insurance_premium">Insurance Premium</option>
+              <option value="regulatory_fee">Regulatory Fee</option>
+              <option value="trust_expense">Trust Expense</option>
+              <option value="other">Other</option>
+            </select>
+          </div>
+        </div>
+        <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:0.75rem;margin-bottom:1rem">
+          <div>
+            <label class="form-label">Description</label>
+            <input type="text" id="vpay-desc" class="form-control" placeholder="Payment description">
+          </div>
+          <div>
+            <label class="form-label">Invoice Number</label>
+            <input type="text" id="vpay-invoice" class="form-control" placeholder="INV-001">
+          </div>
+          <div>
+            <label class="form-label">Source Account</label>
+            <select id="vpay-source" class="form-control">
+              <option value="1000">1000 — Trust Cash</option>
+              <option value="1050">1050 — BILL Cash Account</option>
+            </select>
+          </div>
+        </div>
+        <button class="btn btn-primary" onclick="initiateVendorPayment()">Submit for Approval</button>
+        <div id="vpay-result" style="margin-top:0.5rem"></div>
+      </div>
+
+      <!-- Payment History -->
+      <div class="card" style="margin-top:1rem">
+        <div class="section-title">Payment History</div>
+        <div id="vendor-payment-history"><p class="text-muted">Loading...</p></div>
+      </div>
+    </div>
+
     <!-- TRUSTEE AGENT PAGE -->
     <div id="page-trustee-agent" class="page hidden">
       <div class="page-header">
@@ -1463,7 +1616,7 @@
         document.querySelectorAll('.page').forEach(p => p.classList.add('hidden'));
         document.getElementById('page-' + page).classList.remove('hidden');
         // Load data for page
-        const loaders = { overview: loadOverview, bonds: loadBonds, cash: loadCash, payments: loadPayments, ach: loadACH, wire: loadWire, partners: loadPartners, apikeys: loadApiKeys, as2: loadAS2, crm: loadCRM, documents: loadDocuments, accounting: loadAccounting, tax: loadTax, fineract: loadFineract, bill: loadBill, 'trustee-agent': loadTrusteeAgent, 'bookkeeping-agent': loadBookkeepingAgent, 'data-bridge': loadDataBridge, 'sub-ledgers': loadSubLedgers, settings: loadSettings, security: loadSecurity, backup: loadBackupPage, admin: loadAdmin };
+        const loaders = { overview: loadOverview, bonds: loadBonds, cash: loadCash, payments: loadPayments, ach: loadACH, wire: loadWire, partners: loadPartners, apikeys: loadApiKeys, as2: loadAS2, crm: loadCRM, documents: loadDocuments, accounting: loadAccounting, tax: loadTax, fineract: loadFineract, bill: loadBill, 'trustee-agent': loadTrusteeAgent, 'bookkeeping-agent': loadBookkeepingAgent, 'data-bridge': loadDataBridge, 'sub-ledgers': loadSubLedgers, 'vendor-payments': loadVendorPayments, settings: loadSettings, security: loadSecurity, backup: loadBackupPage, admin: loadAdmin };
         if (loaders[page]) loaders[page]();
       });
     });
@@ -3795,6 +3948,218 @@
         loadSubLedgers();
       } else {
         alert('Delete failed: ' + ((res && res.error) || 'Unknown error'));
+      }
+    }
+
+    // ─── VENDOR PAYMENTS ──────────────────────────────────────────────────────
+    async function loadVendorPayments() {
+      try {
+        var [dashboard, vendors, payments] = await Promise.all([
+          fetchJSON(API + '/api/vendors/dashboard'),
+          fetchJSON(API + '/api/vendors'),
+          fetchJSON(API + '/api/vendors/payments/list'),
+        ]);
+
+        var d = (dashboard && dashboard.data) || {};
+        var vStats = d.vendors || {};
+        var pStats = d.payments || {};
+
+        el('vendor-stats').innerHTML =
+          card('Total Vendors', vStats.total || 0, vStats.active + ' active') +
+          card('Total Paid', fmt(pStats.total_paid || 0), pStats.total + ' payments') +
+          card('Pending Approval', pStats.pending_count || 0, fmt(pStats.pending_amount || 0) + ' pending') +
+          card('Payment Methods', 'ACH/Wire/BILL', 'All channels active');
+
+        // Approval queue
+        var approvals = d.pending_approvals || [];
+        if (approvals.length > 0) {
+          el('vendor-approval-section').style.display = '';
+          var aq = '<table class="data-table"><tr><th>Payment</th><th>Vendor</th><th>Amount</th><th>Method</th><th>Description</th><th>Actions</th></tr>';
+          approvals.forEach(function(p) {
+            aq += '<tr><td>' + esc(p.payment_id) + '</td><td>' + esc(p.vendor_name || p.vendor_id) + '</td>' +
+              '<td class="money">' + fmt(p.amount) + '</td><td>' + esc(p.payment_method).toUpperCase() + '</td>' +
+              '<td>' + esc(p.description || '') + '</td>' +
+              '<td><button class="btn btn-sm" style="background:var(--green);margin-right:4px" onclick="approveVendorPayment(\'' + esc(p.payment_id) + '\')">Approve</button>' +
+              '<button class="btn btn-sm" style="background:var(--red)" onclick="rejectVendorPayment(\'' + esc(p.payment_id) + '\')">Reject</button></td></tr>';
+          });
+          aq += '</table>';
+          el('vendor-approval-queue').innerHTML = aq;
+        } else {
+          el('vendor-approval-section').style.display = 'none';
+        }
+
+        // Vendor list
+        var vList = (vendors && vendors.data) || [];
+        if (vList.length > 0) {
+          var vt = '<table class="data-table"><tr><th>ID</th><th>Name</th><th>Type</th><th>Method</th><th>Bank</th><th>Status</th><th></th></tr>';
+          vList.forEach(function(v) {
+            var mask = v.account_number ? '****' + v.account_number.slice(-4) : '—';
+            var statusBadge = v.status === 'active' ? '<span class="status-badge badge-active">Active</span>' : '<span class="status-badge badge-pending">' + esc(v.status) + '</span>';
+            vt += '<tr><td>' + esc(v.vendor_id) + '</td><td><strong>' + esc(v.vendor_name) + '</strong></td>' +
+              '<td>' + esc(v.vendor_type) + '</td><td>' + esc(v.payment_method).toUpperCase() + '</td>' +
+              '<td>' + esc(v.bank_name || '—') + ' ' + mask + '</td><td>' + statusBadge + '</td>' +
+              '<td><button class="btn btn-sm" style="background:var(--red);font-size:10px" onclick="deleteVendor(\'' + esc(v.vendor_id) + '\')">Delete</button></td></tr>';
+          });
+          vt += '</table>';
+          el('vendor-list').innerHTML = vt;
+        } else {
+          el('vendor-list').innerHTML = '<p class="text-muted">No vendors yet. Add one below.</p>';
+        }
+
+        // Populate vendor dropdown for payments
+        var sel = el('vpay-vendor');
+        sel.innerHTML = '<option value="">Select vendor...</option>';
+        vList.forEach(function(v) {
+          if (v.status === 'active') {
+            sel.innerHTML += '<option value="' + esc(v.vendor_id) + '">' + esc(v.vendor_name) + ' (' + esc(v.payment_method).toUpperCase() + ')</option>';
+          }
+        });
+
+        // Recent payments
+        var pList = (payments && payments.data) || [];
+        if (pList.length > 0) {
+          var pt = '<table class="data-table"><tr><th>Payment</th><th>Vendor</th><th>Amount</th><th>Method</th><th>Status</th><th>Date</th><th></th></tr>';
+          pList.forEach(function(p) {
+            var statusColor = p.status === 'executed' || p.status === 'settled' ? 'badge-active' :
+              p.status === 'pending_approval' ? 'badge-pending' :
+              p.status === 'approved' ? 'badge-active' :
+              p.status === 'rejected' || p.status === 'failed' ? 'badge-failed' : 'badge-pending';
+            var actions = '';
+            if (p.status === 'approved') {
+              actions = '<button class="btn btn-sm" onclick="executeVendorPayment(\'' + esc(p.payment_id) + '\')">Execute</button>';
+            }
+            pt += '<tr><td>' + esc(p.payment_id) + '</td><td>' + esc(p.vendor_name || p.vendor_id) + '</td>' +
+              '<td class="money">' + fmt(p.amount) + '</td><td>' + esc(p.payment_method).toUpperCase() + '</td>' +
+              '<td><span class="status-badge ' + statusColor + '">' + esc(p.status) + '</span></td>' +
+              '<td>' + (p.created_at ? new Date(p.created_at).toLocaleDateString() : '—') + '</td>' +
+              '<td>' + actions + '</td></tr>';
+          });
+          pt += '</table>';
+          el('vendor-recent-payments').innerHTML = pt;
+        } else {
+          el('vendor-recent-payments').innerHTML = '<p class="text-muted">No payments yet.</p>';
+        }
+
+        // Payment history
+        if (pList.length > 0) {
+          var ht = '<table class="data-table"><tr><th>ID</th><th>Vendor</th><th>Amount</th><th>Method</th><th>Type</th><th>Status</th><th>JE</th><th>ACH/Wire/BILL Ref</th><th>Date</th></tr>';
+          pList.forEach(function(p) {
+            var ref = p.ach_batch_id || p.wire_id || p.bill_payment_id || '—';
+            ht += '<tr><td>' + esc(p.payment_id) + '</td><td>' + esc(p.vendor_name || p.vendor_id) + '</td>' +
+              '<td class="money">' + fmt(p.amount) + '</td><td>' + esc(p.payment_method).toUpperCase() + '</td>' +
+              '<td>' + esc(p.payment_type) + '</td>' +
+              '<td>' + esc(p.status) + '</td>' +
+              '<td>' + esc(p.journal_entry_id || '—') + '</td>' +
+              '<td>' + esc(ref) + '</td>' +
+              '<td>' + (p.created_at ? new Date(p.created_at).toLocaleString() : '—') + '</td></tr>';
+          });
+          ht += '</table>';
+          el('vendor-payment-history').innerHTML = ht;
+        } else {
+          el('vendor-payment-history').innerHTML = '<p class="text-muted">No payment history.</p>';
+        }
+      } catch (err) {
+        el('vendor-stats').innerHTML = '<p style="color:var(--red)">Error loading vendor data: ' + esc(err.message) + '</p>';
+      }
+    }
+
+    async function createVendor() {
+      var name = el('vnd-name').value.trim();
+      if (!name) return alert('Vendor name is required');
+      var res = await fetchJSON(API + '/api/vendors', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          vendor_name: name,
+          vendor_type: el('vnd-type').value,
+          contact_name: el('vnd-contact').value.trim() || undefined,
+          contact_email: el('vnd-email').value.trim() || undefined,
+          bank_name: el('vnd-bank').value.trim() || undefined,
+          payment_method: el('vnd-method').value,
+          routing_number: el('vnd-routing').value.trim() || undefined,
+          account_number: el('vnd-account').value.trim() || undefined,
+          tax_id: el('vnd-taxid').value.trim() || undefined,
+        }),
+      });
+      if (res && res.success) {
+        el('vnd-create-result').innerHTML = '<span style="color:var(--green)">Vendor ' + esc(res.data.vendor_id) + ' created</span>';
+        el('vnd-name').value = ''; el('vnd-contact').value = ''; el('vnd-email').value = '';
+        el('vnd-bank').value = ''; el('vnd-routing').value = ''; el('vnd-account').value = ''; el('vnd-taxid').value = '';
+        loadVendorPayments();
+      } else {
+        el('vnd-create-result').innerHTML = '<span style="color:var(--red)">Error: ' + esc((res && res.error) || 'Unknown') + '</span>';
+      }
+    }
+
+    async function deleteVendor(vendorId) {
+      if (!confirm('Delete vendor ' + vendorId + '?')) return;
+      var res = await fetchJSON(API + '/api/vendors/' + encodeURIComponent(vendorId), { method: 'DELETE' });
+      if (res && res.success) { loadVendorPayments(); } else { alert('Delete failed: ' + ((res && res.error) || 'Unknown')); }
+    }
+
+    async function initiateVendorPayment() {
+      var vendorId = el('vpay-vendor').value;
+      var amount = parseFloat(el('vpay-amount').value);
+      if (!vendorId) return alert('Select a vendor');
+      if (!amount || amount <= 0) return alert('Enter a valid amount');
+      var res = await fetchJSON(API + '/api/vendors/payments/initiate', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          vendor_id: vendorId,
+          amount: amount,
+          payment_method: el('vpay-method').value,
+          payment_type: el('vpay-type').value,
+          description: el('vpay-desc').value.trim() || undefined,
+          invoice_number: el('vpay-invoice').value.trim() || undefined,
+          source_account_code: el('vpay-source').value,
+          initiated_by: 'admin',
+        }),
+      });
+      if (res && res.success) {
+        var p = res.data.payment || res.data;
+        el('vpay-result').innerHTML = '<span style="color:var(--green)">Payment ' + esc(p.payment_id) + ' submitted for approval (' + fmt(p.amount) + ')</span>';
+        el('vpay-amount').value = ''; el('vpay-desc').value = ''; el('vpay-invoice').value = '';
+        loadVendorPayments();
+      } else {
+        el('vpay-result').innerHTML = '<span style="color:var(--red)">Error: ' + esc((res && res.error) || 'Unknown') + '</span>';
+      }
+    }
+
+    async function approveVendorPayment(paymentId) {
+      var res = await fetchJSON(API + '/api/vendors/payments/' + encodeURIComponent(paymentId) + '/approve', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ approved_by: 'admin' }),
+      });
+      if (res && res.success) { alert('Payment ' + paymentId + ' approved'); loadVendorPayments(); }
+      else { alert('Approve failed: ' + ((res && res.error) || 'Unknown')); }
+    }
+
+    async function rejectVendorPayment(paymentId) {
+      var reason = prompt('Rejection reason:');
+      if (reason === null) return;
+      var res = await fetchJSON(API + '/api/vendors/payments/' + encodeURIComponent(paymentId) + '/reject', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ rejected_by: 'admin', reason: reason }),
+      });
+      if (res && res.success) { alert('Payment ' + paymentId + ' rejected'); loadVendorPayments(); }
+      else { alert('Reject failed: ' + ((res && res.error) || 'Unknown')); }
+    }
+
+    async function executeVendorPayment(paymentId) {
+      if (!confirm('Execute payment ' + paymentId + '? This will transmit funds via the selected method.')) return;
+      var res = await fetchJSON(API + '/api/vendors/payments/' + encodeURIComponent(paymentId) + '/execute', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ executed_by: 'admin' }),
+      });
+      if (res && res.success) {
+        var d = res.data;
+        alert('Payment executed!\n\nMethod: ' + (d.method || '').toUpperCase() + '\nAmount: $' + (d.amount || 0).toFixed(2) +
+          '\nVendor: ' + (d.vendor || '') +
+          (d.ach_batch_id ? '\nACH Batch: ' + d.ach_batch_id : '') +
+          (d.wire_id ? '\nWire ID: ' + d.wire_id : '') +
+          (d.bill_payment_id ? '\nBILL Ref: ' + d.bill_payment_id : '') +
+          (d.journal_entry ? '\nJournal Entry: ' + d.journal_entry : ''));
+        loadVendorPayments();
+      } else {
+        alert('Execute failed: ' + ((res && res.error) || 'Unknown'));
       }
     }
 
