@@ -399,7 +399,12 @@ router.post('/fineract/reverse-entry', async (req, res) => {
   try {
     const { transactionId } = req.body;
     if (!transactionId) return res.status(400).json({ success: false, error: 'transactionId required' });
-    const result = await FineractClient.reverseJournalEntry(transactionId);
+    if (typeof transactionId !== 'string' && typeof transactionId !== 'number') {
+      return res.status(400).json({ success: false, error: 'transactionId must be a string or number' });
+    }
+    const sanitizedId = String(transactionId).replace(/[^a-zA-Z0-9_-]/g, '');
+    if (!sanitizedId) return res.status(400).json({ success: false, error: 'Invalid transactionId' });
+    const result = await FineractClient.reverseJournalEntry(sanitizedId);
     await logAdminAction(req, 'reverse_fineract_entry', 'fineract', transactionId, null, result);
     res.json({ success: true, transactionId, result });
   } catch (err) {
@@ -529,17 +534,41 @@ router.post('/fineract/resync-all', async (req, res) => {
         const expectedFaceValue = parseFloat(bonds.rows[0].total || 0);
         const diff = expectedFaceValue - bondInvBal;
 
-        if (diff > 1) {
-          const yesterday = new Date();
-          yesterday.setDate(yesterday.getDate() - 1);
-          const correctionResult = await FineractClient.postJournalEntry({
-            officeId: 1,
-            transactionDate: yesterday,
-            debits: [{ glAccountId: bondInvId, amount: diff }],
-            credits: [{ glAccountId: corpusId, amount: diff }],
-            comments: 'Trust JE balance-correction: restore opening balance for active bonds',
-          });
-          steps.balanceCorrection = { corrected: true, diff, currentBal: bondInvBal, expected: expectedFaceValue, result: correctionResult };
+        if (Math.abs(diff) > 1) {
+          // Reverse any existing balance-correction entries to prevent overstatement
+          for (const je of entries) {
+            if (je.reversed) continue;
+            const c = (je.comments || '').trim();
+            if (c.startsWith('Trust JE balance-correction:')) {
+              try { await FineractClient.reverseJournalEntry(je.transactionId); } catch (e) { /* already reversed */ }
+            }
+          }
+          // Re-compute after reversals
+          let freshBal = 0;
+          const freshRes = await FineractClient.getJournalEntries({ limit: 10000 });
+          const freshEntries = (freshRes && freshRes.pageItems) || [];
+          for (const je of freshEntries) {
+            if (je.reversed) continue;
+            if (je.glAccountId === bondInvId) {
+              const isDebit = je.entryType && je.entryType.value === 'DEBIT';
+              freshBal += isDebit ? je.amount : -je.amount;
+            }
+          }
+          const freshDiff = expectedFaceValue - freshBal;
+          if (freshDiff > 1) {
+            const yesterday = new Date();
+            yesterday.setDate(yesterday.getDate() - 1);
+            const correctionResult = await FineractClient.postJournalEntry({
+              officeId: 1,
+              transactionDate: yesterday,
+              debits: [{ glAccountId: bondInvId, amount: freshDiff }],
+              credits: [{ glAccountId: corpusId, amount: freshDiff }],
+              comments: 'Trust JE balance-correction: restore opening balance for active bonds',
+            });
+            steps.balanceCorrection = { corrected: true, diff: freshDiff, currentBal: freshBal, expected: expectedFaceValue, result: correctionResult };
+          } else {
+            steps.balanceCorrection = { corrected: false, currentBal: freshBal, expected: expectedFaceValue, message: 'Balance already correct after reversing old corrections' };
+          }
         } else {
           steps.balanceCorrection = { corrected: false, currentBal: bondInvBal, expected: expectedFaceValue };
         }
