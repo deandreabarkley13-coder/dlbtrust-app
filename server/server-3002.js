@@ -88,6 +88,9 @@ try { app.use('/api/bill', require(path.join(HD, 'server', 'routes', 'bill'))); 
 // Sub-Ledger Accounts (per-client accounts within Core Banking)
 try { app.use('/api/sub-ledgers', require(path.join(HD, 'server', 'routes', 'subLedger'))); console.log('[sub-ledgers] loaded'); } catch(e) { console.warn('[sub-ledgers]', e.message); }
 
+// Vendor Payments (registry, approval workflow, ACH/Wire/BILL execution)
+try { app.use('/api/vendors', require(path.join(HD, 'server', 'routes', 'vendors'))); console.log('[vendors] loaded'); } catch(e) { console.warn('[vendors]', e.message); }
+
 // Trustee Agent & Bookkeeping Agent
 try { app.use('/api/agents', require(path.join(HD, 'server', 'routes', 'agents'))); console.log('[agents] loaded'); } catch(e) { console.warn('[agents]', e.message); }
 
@@ -248,6 +251,14 @@ try {
     console.log('[sub-ledgers] tables ensured');
   }).catch(function(e) { console.warn('[sub-ledgers] init:', e.message); });
 } catch(e) { console.warn('[sub-ledgers]', e.message); }
+
+// Vendor Payments tables
+try {
+  var VendorEngine = require(path.join(HD, 'server', 'integrations', 'vendors', 'vendorEngine')).VendorEngine;
+  VendorEngine.ensureTables().then(function() {
+    console.log('[vendors] tables ensured');
+  }).catch(function(e) { console.warn('[vendors] init:', e.message); });
+} catch(e) { console.warn('[vendors]', e.message); }
 
 // Ensure CRM contacts have approval workflow columns
 try {
