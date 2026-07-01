@@ -530,9 +530,11 @@ router.post('/fineract/resync-all', async (req, res) => {
         const diff = expectedFaceValue - bondInvBal;
 
         if (diff > 1) {
+          const yesterday = new Date();
+          yesterday.setDate(yesterday.getDate() - 1);
           const correctionResult = await FineractClient.postJournalEntry({
             officeId: 1,
-            transactionDate: new Date(),
+            transactionDate: yesterday,
             debits: [{ glAccountId: bondInvId, amount: diff }],
             credits: [{ glAccountId: corpusId, amount: diff }],
             comments: 'Balance correction: restore opening balance for active bonds',

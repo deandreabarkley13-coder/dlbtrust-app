@@ -852,11 +852,13 @@ class DataBridge {
               comments: jeComment,
             });
           } catch (dateErr) {
-            // Retry with today's date if original date is rejected (closed period)
+            // Retry with yesterday's date if original date is rejected (closed period)
             if (dateErr.message && dateErr.message.includes('403')) {
+              var yesterday = new Date();
+              yesterday.setDate(yesterday.getDate() - 1);
               glResult = await FineractClient.postJournalEntry({
                 officeId: 1,
-                transactionDate: new Date(),
+                transactionDate: yesterday,
                 debits: debits,
                 credits: credits,
                 comments: jeComment,
