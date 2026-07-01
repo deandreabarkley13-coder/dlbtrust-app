@@ -464,6 +464,19 @@ async function listReceivedPayments(max) {
   return [];
 }
 
+/**
+ * Record a payment (alias for recordDeposit, used by vendor payment engine)
+ */
+async function recordPayment(opts) {
+  return recordDeposit({
+    amount: opts.amount,
+    method: opts.method || 'ach',
+    memo: opts.description || opts.memo || 'Payment',
+    bankAccountId: opts.bankAccountId,
+    customerId: opts.customerId,
+  });
+}
+
 module.exports = {
   login: login,
   listBankAccounts: listBankAccounts,
@@ -474,6 +487,7 @@ module.exports = {
   logout: logout,
   isConfigured: isConfigured,
   recordDeposit: recordDeposit,
+  recordPayment: recordPayment,
   listCustomers: listCustomers,
   listSentPayments: listSentPayments,
   listReceivedPayments: listReceivedPayments

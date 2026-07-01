@@ -260,6 +260,18 @@ try {
   }).catch(function(e) { console.warn('[vendors] init:', e.message); });
 } catch(e) { console.warn('[vendors]', e.message); }
 
+// BILL Cash Sync tables
+try {
+  var BillSyncEngine = require(path.join(HD, 'server', 'integrations', 'bill', 'billSyncEngine')).BillSyncEngine;
+  BillSyncEngine.ensureTables().then(function() {
+    console.log('[bill-sync] tables ensured');
+    var billClientCheck = require(path.join(HD, 'server', 'integrations', 'bill', 'billClient'));
+    if (billClientCheck.isConfigured()) {
+      BillSyncEngine.startAutoSync(5 * 60 * 1000);
+    }
+  }).catch(function(e) { console.warn('[bill-sync] init:', e.message); });
+} catch(e) { console.warn('[bill-sync]', e.message); }
+
 // Ensure CRM contacts have approval workflow columns
 try {
   var pgPoolCrm = require(path.join(HD, 'server', 'integrations', 'bonds', 'pgPool'));
