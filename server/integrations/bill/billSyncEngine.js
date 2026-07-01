@@ -193,14 +193,29 @@ class BillSyncEngine {
   }
 
   // ═══════════════════════════════════════════════════════════════════════════
-  //  SYNC TRANSACTIONS FROM BILL
+  //  SYNC TRANSACTIONS FROM BILL (incremental via sync token when available)
   // ═══════════════════════════════════════════════════════════════════════════
 
   static async _syncTransactions() {
     var synced = 0;
     var received = [];
     var sent = [];
+    var incrementalChanges = [];
+    var nextSyncToken = null;
 
+    // Try incremental sync first (faster, uses sync token)
+    try {
+      var changeResult = await billClient.getEntityChanges();
+      if (changeResult && !changeResult.error && Array.isArray(changeResult.changes)) {
+        incrementalChanges = changeResult.changes;
+        nextSyncToken = changeResult.nextSyncToken;
+        console.log('[BillSync] Incremental sync: ' + incrementalChanges.length + ' changes, next token: ' + (nextSyncToken || 'none'));
+      }
+    } catch (e) {
+      console.warn('[BillSync] Incremental sync failed, falling back to full list:', e.message);
+    }
+
+    // Fall back to full list if incremental returned nothing
     try {
       received = await billClient.listReceivedPayments(50);
     } catch (e) {
@@ -220,7 +235,6 @@ class BillSyncEngine {
           `SELECT id FROM bill_settlement_queue WHERE bill_txn_id = $1`, [rp.id]
         );
         if (existing.rowCount === 0) {
-          // Check if this matches a pending deposit
           var pending = await pool.query(
             `SELECT * FROM bill_settlement_queue
              WHERE status IN ('pending', 'clearing')
@@ -246,6 +260,8 @@ class BillSyncEngine {
     return {
       received_count: received.length,
       sent_count: sent.length,
+      incremental_changes: incrementalChanges.length,
+      next_sync_token: nextSyncToken,
       synced: synced,
     };
   }
