@@ -208,10 +208,10 @@ try {
   var pgPool = require(path.join(HD, 'server', 'integrations', 'bonds', 'pgPool'));
   pgPool.query(`
     ALTER TABLE bonds ADD COLUMN IF NOT EXISTS bond_identifier TEXT;
-    ALTER TABLE bonds ADD COLUMN IF NOT EXISTS bond_type TEXT DEFAULT 'corporate';
+    ALTER TABLE bonds ADD COLUMN IF NOT EXISTS bond_type TEXT DEFAULT 'corporate' CHECK (bond_type IN ('corporate', 'municipal', 'treasury', 'agency', 'private_placement'));
     ALTER TABLE bonds ADD COLUMN IF NOT EXISTS tax_exempt BOOLEAN DEFAULT FALSE;
     ALTER TABLE bonds ADD COLUMN IF NOT EXISTS tax_exempt_type TEXT;
-    ALTER TABLE bonds ADD COLUMN IF NOT EXISTS placement_type TEXT DEFAULT 'public';
+    ALTER TABLE bonds ADD COLUMN IF NOT EXISTS placement_type TEXT DEFAULT 'public' CHECK (placement_type IN ('public', 'private'));
     ALTER TABLE bonds ADD COLUMN IF NOT EXISTS issuer TEXT;
     ALTER TABLE bonds ADD COLUMN IF NOT EXISTS issuer_state TEXT;
   `).then(function() {
