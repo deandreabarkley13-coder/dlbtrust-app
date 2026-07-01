@@ -3605,16 +3605,16 @@
         if (dashboard && dashboard.success) {
           var d = dashboard.data;
           el('sub-ledger-stats').innerHTML =
-            card('Total Accounts', d.activeAccounts) +
-            card('Unique Clients', d.uniqueClients) +
-            card('Total Balance', '$' + fmt(d.totalBalance)) +
-            card('Account Types', d.byType.length);
+            '<div class="card"><div class="card-title">Total Accounts</div><div class="card-value">' + d.activeAccounts + '</div></div>' +
+            '<div class="card"><div class="card-title">Unique Clients</div><div class="card-value">' + d.uniqueClients + '</div></div>' +
+            '<div class="card"><div class="card-title">Total Balance</div><div class="card-value">' + fmt(d.totalBalance) + '</div></div>' +
+            '<div class="card"><div class="card-title">Account Types</div><div class="card-value">' + d.byType.length + '</div></div>';
 
           // Account list by type
           var html = '<table class="data-table"><tr><th>Type</th><th>Count</th><th>Total Balance</th></tr>';
           for (var i = 0; i < d.byType.length; i++) {
             var t = d.byType[i];
-            html += '<tr><td>' + esc(t.type) + '</td><td>' + t.count + '</td><td>$' + fmt(t.totalBalance) + '</td></tr>';
+            html += '<tr><td>' + esc(t.type) + '</td><td>' + t.count + '</td><td>' + fmt(t.totalBalance) + '</td></tr>';
           }
           html += '</table>';
 
@@ -3629,7 +3629,7 @@
                 '<td>' + esc(clientName.trim() || sl.contact_id) + '</td>' +
                 '<td>' + esc(sl.parent_account_code) + ' — ' + esc(sl.parent_account_name || '') + '</td>' +
                 '<td>' + esc(sl.sub_account_type) + '</td>' +
-                '<td>$' + fmt(sl.balance) + '</td>' +
+                '<td>' + fmt(sl.balance) + '</td>' +
                 '<td><span class="badge ' + (sl.status === 'active' ? 'badge-green' : 'badge-red') + '">' + sl.status + '</span></td></tr>';
             }
             html += '</table>';
@@ -3647,7 +3647,7 @@
           }
           if (listRes && listRes.success) {
             txnLedgerSel.innerHTML = listRes.data.map(function(sl) {
-              return '<option value="' + esc(sl.sub_ledger_id) + '">' + esc(sl.sub_account_name) + ' ($' + fmt(sl.balance) + ')</option>';
+              return '<option value="' + esc(sl.sub_ledger_id) + '">' + esc(sl.sub_account_name) + ' (' + fmt(sl.balance) + ')</option>';
             }).join('');
           }
 
@@ -3659,8 +3659,8 @@
               txnHtml += '<tr><td>' + new Date(txn.created_at).toLocaleDateString() + '</td>' +
                 '<td>' + esc(txn.sub_account_name || txn.sub_ledger_id) + '</td>' +
                 '<td>' + esc(txn.transaction_type) + '</td>' +
-                '<td>$' + fmt(txn.amount) + '</td>' +
-                '<td>$' + fmt(txn.running_balance) + '</td>' +
+                '<td>' + fmt(txn.amount) + '</td>' +
+                '<td>' + fmt(txn.running_balance) + '</td>' +
                 '<td>' + esc(txn.description || '') + '</td></tr>';
             }
             txnHtml += '</table>';
@@ -3677,9 +3677,9 @@
             var row = rollup.data[r];
             rHtml += '<tr><td>' + esc(row.parentAccountCode) + ' — ' + esc(row.parentAccountName || '') + '</td>' +
               '<td>' + row.subLedgerCount + '</td>' +
-              '<td>$' + fmt(row.subLedgerTotal) + '</td>' +
-              '<td>$' + fmt(row.glBalance) + '</td>' +
-              '<td>$' + fmt(row.unallocated) + '</td>' +
+              '<td>' + fmt(row.subLedgerTotal) + '</td>' +
+              '<td>' + fmt(row.glBalance) + '</td>' +
+              '<td>' + fmt(row.unallocated) + '</td>' +
               '<td><span class="badge ' + (row.isReconciled ? 'badge-green' : 'badge-yellow') + '">' + (row.isReconciled ? 'Yes' : 'No') + '</span></td></tr>';
           }
           rHtml += '</table>';
@@ -3724,7 +3724,7 @@
         }),
       });
       if (res && res.success) {
-        el('sl-txn-result').innerHTML = '<span style="color:#059669">Posted: $' + fmt(res.data.amount) + ' — New balance: $' + fmt(res.data.newBalance) + '</span>';
+        el('sl-txn-result').innerHTML = '<span style="color:#059669">Posted: ' + fmt(res.data.amount) + ' — New balance: ' + fmt(res.data.newBalance) + '</span>';
         loadSubLedgers();
       } else {
         el('sl-txn-result').innerHTML = '<span style="color:#dc2626">Error: ' + esc((res && res.error) || 'Failed') + '</span>';
