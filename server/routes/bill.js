@@ -3,7 +3,7 @@
 var express = require('express');
 var router = express.Router();
 var path = require('path');
-var TrustAccountingEngine = require(path.join(__dirname, '../integrations/accounting/trustAccountingEngine'));
+var { TrustAccountingEngine } = require(path.join(__dirname, '../integrations/accounting/trustAccountingEngine'));
 
 // Auth middleware — require admin token, JWT, or API key
 var requireAdmin = async function(req, res, next) {
