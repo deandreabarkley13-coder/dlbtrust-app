@@ -112,7 +112,16 @@ router.post('/deposit', requireAdmin, async function(req, res) {
       return res.json({ success: false, error: 'BILL not configured' });
     }
 
-    // Get the first active bank account from BILL
+    // ── BILL Cash Account target (the actual BILL.com Cash Account, not a linked bank) ──
+    // This is the BILL Cash Account with its own routing and account number,
+    // distinct from any linked bank accounts (e.g. Betterment)
+    var billCashRouting = process.env.BILL_CASH_ROUTING || '028000024';
+    var billCashAccount = process.env.BILL_CASH_ACCOUNT || '10141741110240';
+    var billCashLast4 = billCashAccount.slice(-4);
+    var accountHolder = 'DEANDREA LAVAR BARKLEY TRUST';
+    var displayDest = 'BILL Cash ****' + billCashLast4;
+
+    // Also get the BILL API bank account (for recording deposits via RecordARPayment)
     var accounts = await billClient.listBankAccounts();
     var targetAccount = null;
     if (Array.isArray(accounts)) {
@@ -121,14 +130,6 @@ router.post('/deposit', requireAdmin, async function(req, res) {
     if (!targetAccount) {
       return res.json({ success: false, error: 'No active BILL bank account found' });
     }
-
-    var routing = targetAccount.routingNumber;
-    // BILL API returns masked account numbers (e.g. *****3054);
-    // use the last 4 digits for display but pass the real routing for ACH/wire
-    var maskedAcct = targetAccount.accountNumber || '';
-    var last4 = maskedAcct.slice(-4);
-    var accountHolder = targetAccount.nameOnAcct || 'DEANDREA LAVAR BARKLEY TRUST';
-    var displayDest = (targetAccount.bankName || 'Betterment') + ' ****' + last4;
 
     // ── Direct BILL API deposit (fastest — records payment directly in BILL) ──
     if (method === 'direct') {
@@ -183,9 +184,9 @@ router.post('/deposit', requireAdmin, async function(req, res) {
       var wire = await WireEngine.initiateWire({
         amountCents: Math.round(amount * 100),
         beneficiaryName: accountHolder,
-        beneficiaryAccount: last4,
-        beneficiaryRouting: routing,
-        beneficiaryBankName: targetAccount.bankName || 'Betterment',
+        beneficiaryAccount: billCashAccount,
+        beneficiaryRouting: billCashRouting,
+        beneficiaryBankName: 'Bill.com, LLC',
         description: memo,
         purpose: 'BILL Cash Account Deposit',
         paymentType: 'trust_distribution',
@@ -232,8 +233,8 @@ router.post('/deposit', requireAdmin, async function(req, res) {
         createdBy: req.user === 'admin' ? 'admin' : (req.user && req.user.username) || 'system'
       },
       [{
-        receivingRouting: routing,
-        accountNumber: last4,
+        receivingRouting: billCashRouting,
+        accountNumber: billCashAccount,
         amountCents: amountCents,
         transactionCode: '22', // Checking credit
         individualId: process.env.BILL_ORG_ID || '',
@@ -291,6 +292,9 @@ router.get('/deposits', async function(req, res) {
     if (Array.isArray(accounts)) {
       accounts.forEach(function(a) { if (a.routingNumber) routings.push(a.routingNumber); });
     }
+    // Include the BILL Cash Account routing so deposits to it appear in history
+    var billCashRouting = process.env.BILL_CASH_ROUTING || '028000024';
+    if (routings.indexOf(billCashRouting) === -1) routings.push(billCashRouting);
 
     var deposits = [];
 
@@ -341,7 +345,7 @@ router.get('/deposits', async function(req, res) {
           amount: rp.amount,
           date: rp.createdTime || rp.paymentDate,
           description: rp.description || 'BILL deposit',
-          destination: '****3054',
+          destination: '****' + (process.env.BILL_CASH_ACCOUNT || '10141741110240').slice(-4),
           recipient: 'BILL Cash Account',
           source: 'bill_api',
           submittedToBill: true,
