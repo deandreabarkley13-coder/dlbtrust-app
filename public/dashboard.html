@@ -845,7 +845,7 @@
       <div class="card mt-16">
         <div class="section-title">Deposit Funds to BILL Account</div>
         <p class="text-muted" style="font-size:12px;margin-bottom:12px;">
-          Push funds from the Trust to your BILL-linked Betterment account via direct BILL API, ACH credit, or wire transfer.
+          Push funds from the Trust to your BILL Cash Account (****0240) via direct BILL API, ACH credit, or wire transfer.
         </p>
         <div class="form-row" style="gap:12px;flex-wrap:wrap;align-items:flex-end;">
           <div>
@@ -3527,7 +3527,7 @@
       }
 
       const methodLabel = method === 'wire' ? 'Wire Transfer' : (method === 'direct' ? 'Direct BILL API' : 'ACH Credit');
-      const confirmMsg = `Send $${amount.toLocaleString('en-US', {minimumFractionDigits:2})} via ${methodLabel} to your BILL/Betterment account?`;
+      const confirmMsg = `Send $${amount.toLocaleString('en-US', {minimumFractionDigits:2})} via ${methodLabel} to your BILL Cash Account (****0240)?`;
       if (!confirm(confirmMsg)) return;
 
       el('bill-deposit-result').innerHTML = '<p class="text-muted">Processing...</p>';
