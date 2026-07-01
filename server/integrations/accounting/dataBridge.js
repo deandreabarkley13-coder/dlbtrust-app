@@ -636,13 +636,11 @@ class DataBridge {
     var errors = [];
 
     try {
-      // Check if opening balance JE already exists
+      // Check which bonds already have opening balance JEs posted
       var existing = await pool.query(
-        "SELECT 1 FROM trust_journal_entries WHERE reference_type = 'opening_balance' AND status = 'posted' LIMIT 1"
+        "SELECT reference_id FROM trust_journal_entries WHERE reference_type = 'opening_balance' AND status = 'posted'"
       );
-      if (existing.rows.length > 0) {
-        return { synced: 0, message: 'Opening balance already posted' };
-      }
+      var postedBondIds = new Set(existing.rows.map(function(r) { return r.reference_id; }));
 
       // Get active bonds for opening balance
       var bonds = await pool.query(
@@ -653,6 +651,7 @@ class DataBridge {
         var bond = bonds.rows[i];
         var faceValue = parseFloat(bond.face_value);
         if (faceValue <= 0) continue;
+        if (postedBondIds.has('BOND-' + bond.id)) continue;
 
         try {
           await TrustAccountingEngine.postJournalEntry({
@@ -1002,13 +1001,13 @@ class DataBridge {
     try {
       // Bond status
       var bondCount = await pool.query(`SELECT COUNT(*) AS c, COALESCE(SUM(face_value),0) AS total FROM bonds WHERE status = 'active'`);
-      var bondAccrualTableExists = await pool.query(`SELECT EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = 'bond_accruals') AS exists`);
+      var bondTxnTableExists = await pool.query(`SELECT EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = 'bond_transactions') AS exists`);
       var unsyncedAccruals = 0;
-      if (bondAccrualTableExists.rows[0].exists) {
+      if (bondTxnTableExists.rows[0].exists) {
         var accrualNoJE = await pool.query(`
-          SELECT COUNT(*) AS c FROM bond_accruals ba
-          WHERE ba.is_reversed = FALSE
-            AND NOT EXISTS (SELECT 1 FROM trust_journal_entries je WHERE je.reference_type = 'bond_accrual' AND je.reference_id = CAST(ba.id AS TEXT) AND je.status = 'posted')
+          SELECT COUNT(*) AS c FROM bond_transactions bt
+          WHERE bt.transaction_type = 'interest_accrual'
+            AND NOT EXISTS (SELECT 1 FROM trust_journal_entries je WHERE je.reference_type = 'bond_accrual' AND je.reference_id = CAST(bt.id AS TEXT) AND je.status = 'posted')
         `);
         unsyncedAccruals = parseInt(accrualNoJE.rows[0].c);
       }

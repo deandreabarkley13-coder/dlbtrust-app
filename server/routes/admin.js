@@ -537,7 +537,7 @@ router.post('/fineract/resync-all', async (req, res) => {
             transactionDate: yesterday,
             debits: [{ glAccountId: bondInvId, amount: diff }],
             credits: [{ glAccountId: corpusId, amount: diff }],
-            comments: 'Balance correction: restore opening balance for active bonds',
+            comments: 'Trust JE balance-correction: restore opening balance for active bonds',
           });
           steps.balanceCorrection = { corrected: true, diff, currentBal: bondInvBal, expected: expectedFaceValue, result: correctionResult };
         } else {

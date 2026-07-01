@@ -381,8 +381,8 @@ class WireEngine {
             journalDescription = `Wire distribution: ${wire.description || wire.beneficiary_name}`;
             break;
           case 'interest_payment':
-            debitAccountCode = ACCOUNT_CODES.ACCRUED_INTEREST;
-            journalDescription = `Wire interest payment: ${wire.description || wire.beneficiary_name}`;
+            debitAccountCode = ACCOUNT_CODES.DISTRIBUTIONS;
+            journalDescription = `Wire coupon distribution: ${wire.description || wire.beneficiary_name}`;
             break;
           case 'vendor_payment':
           case 'principal_return':
