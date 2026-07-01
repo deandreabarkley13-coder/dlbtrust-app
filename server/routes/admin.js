@@ -500,39 +500,47 @@ router.post('/fineract/resync-all', async (req, res) => {
 
     // Step 6: Correct Fineract GL balances if opening balance was disrupted
     try {
-      const glSummary = await FineractClient.getGLSummary();
-      const allAccounts = [
-        ...(glSummary.assets || []),
-        ...(glSummary.liabilities || []),
-        ...(glSummary.equity || []),
-        ...(glSummary.income || []),
-        ...(glSummary.expenses || []),
-      ];
-      const bonds = await pool.query("SELECT SUM(face_value) AS total FROM bonds WHERE status = 'active'");
-      const expectedFaceValue = parseFloat(bonds.rows[0].total || 0);
+      // Get GL account IDs from mappings
+      const mappings = await pool.query(
+        "SELECT trust_account_code, fineract_gl_id FROM fineract_gl_mappings WHERE mapping_type = 'trust_journal'"
+      );
+      const glMap = {};
+      for (const m of mappings.rows) glMap[m.trust_account_code] = parseInt(m.fineract_gl_id);
 
-      // Find current Bond Investments (1100) and Trust Corpus (3000) balances
-      let bondInvBal = 0, corpusBal = 0, bondInvId = null, corpusId = null;
-      for (const acct of allAccounts) {
-        if (acct.glCode === '1100') { bondInvBal = acct.balance || 0; bondInvId = acct.id; }
-        if (acct.glCode === '3000') { corpusBal = Math.abs(acct.balance || 0); corpusId = acct.id; }
-      }
+      const bondInvId = glMap['1100'];
+      const corpusId = glMap['3000'];
 
-      const bondInvDiff = expectedFaceValue - bondInvBal;
-      const corpusDiff = expectedFaceValue - corpusBal;
-
-      if (bondInvDiff > 1 && corpusDiff > 1 && bondInvId && corpusId) {
-        // Post correction JE to restore opening balance
-        const correctionResult = await FineractClient.postJournalEntry({
-          officeId: 1,
-          transactionDate: new Date(),
-          debits: [{ glAccountId: bondInvId, amount: bondInvDiff }],
-          credits: [{ glAccountId: corpusId, amount: corpusDiff }],
-          comments: 'Balance correction: restore opening balance for active bonds',
-        });
-        steps.balanceCorrection = { corrected: true, bondInvDiff, corpusDiff, result: correctionResult };
+      if (!bondInvId || !corpusId) {
+        steps.balanceCorrection = { corrected: false, error: 'Missing GL mappings for 1100 or 3000' };
       } else {
-        steps.balanceCorrection = { corrected: false, bondInvBal, corpusBal, expected: expectedFaceValue };
+        // Compute current Fineract balance for these accounts from journal entries
+        const journalRes = await FineractClient.getJournalEntries({ limit: 10000 });
+        const entries = (journalRes && journalRes.pageItems) || [];
+        let bondInvBal = 0;
+        for (const je of entries) {
+          if (je.reversed) continue;
+          if (je.glAccountId === bondInvId) {
+            const isDebit = je.entryType && je.entryType.value === 'DEBIT';
+            bondInvBal += isDebit ? je.amount : -je.amount;
+          }
+        }
+
+        const bonds = await pool.query("SELECT SUM(face_value) AS total FROM bonds WHERE status = 'active'");
+        const expectedFaceValue = parseFloat(bonds.rows[0].total || 0);
+        const diff = expectedFaceValue - bondInvBal;
+
+        if (diff > 1) {
+          const correctionResult = await FineractClient.postJournalEntry({
+            officeId: 1,
+            transactionDate: new Date(),
+            debits: [{ glAccountId: bondInvId, amount: diff }],
+            credits: [{ glAccountId: corpusId, amount: diff }],
+            comments: 'Balance correction: restore opening balance for active bonds',
+          });
+          steps.balanceCorrection = { corrected: true, diff, currentBal: bondInvBal, expected: expectedFaceValue, result: correctionResult };
+        } else {
+          steps.balanceCorrection = { corrected: false, currentBal: bondInvBal, expected: expectedFaceValue };
+        }
       }
     } catch (e) { steps.balanceCorrection = { error: e.message }; }
 
