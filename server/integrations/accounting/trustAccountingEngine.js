@@ -414,29 +414,46 @@ class TrustAccountingEngine {
     const accounts = await TrustAccountingEngine.getAccountBalancesAsOf(
       asOfDate, ['asset', 'liability', 'equity']
     );
+    const incomeExpense = await TrustAccountingEngine.getAccountBalancesAsOf(
+      asOfDate, ['income', 'expense']
+    );
 
     const assets = accounts.filter(a => a.account_type === 'asset');
     const liabilities = accounts.filter(a => a.account_type === 'liability');
     const equity = accounts.filter(a => a.account_type === 'equity');
 
+    const incomeAccounts = incomeExpense.filter(a => a.account_type === 'income');
+    const expenseAccounts = incomeExpense.filter(a => a.account_type === 'expense');
+
     const sumBalance = (arr) => arr.reduce((s, a) => s + parseFloat(a.computed_balance), 0);
+
+    const totalIncome = sumBalance(incomeAccounts);
+    const totalExpenses = sumBalance(expenseAccounts);
+    const netIncome = Math.round((totalIncome - totalExpenses) * 100) / 100;
 
     const totalAssets = sumBalance(assets);
     const totalLiabilities = sumBalance(liabilities);
-    const totalEquity = sumBalance(equity);
+    const equityFromAccounts = sumBalance(equity);
+    const totalEquity = equityFromAccounts + netIncome;
 
     const mapAcct = (a) => ({ account_code: a.account_code, account_name: a.account_name, sub_type: a.sub_type, balance: parseFloat(a.computed_balance) });
+
+    const equityItems = equity.map(mapAcct);
+    if (Math.abs(netIncome) > 0.005) {
+      equityItems.push({ account_code: 'NI', account_name: 'Net Income (Current Period)', sub_type: 'net_income', balance: netIncome });
+    }
 
     return {
       as_of_date: asOfDate || new Date().toISOString().split('T')[0],
       assets: assets.map(mapAcct),
       liabilities: liabilities.map(mapAcct),
-      equity: equity.map(mapAcct),
+      equity: equityItems,
       total_assets: Math.round(totalAssets * 100) / 100,
       total_liabilities: Math.round(totalLiabilities * 100) / 100,
       total_equity: Math.round(totalEquity * 100) / 100,
       total_liabilities_and_equity: Math.round((totalLiabilities + totalEquity) * 100) / 100,
       is_balanced: Math.abs(totalAssets - (totalLiabilities + totalEquity)) < 0.01,
+      net_income: netIncome,
       generated_at: new Date().toISOString(),
     };
   }
