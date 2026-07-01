@@ -70,8 +70,8 @@ class PaymentOrchestrator {
         journalDescription = `Trust distribution: ${description || 'Beneficiary payment'}`;
         break;
       case 'interest_payment':
-        debitAccountCode = ACCOUNT_CODES.ACCRUED_INTEREST;
-        journalDescription = `Interest payment: ${description || 'Bond interest'}`;
+        debitAccountCode = ACCOUNT_CODES.DISTRIBUTIONS;
+        journalDescription = `Coupon distribution: ${description || 'Bond interest'}`;
         break;
       case 'vendor_payment':
       case 'principal_return':

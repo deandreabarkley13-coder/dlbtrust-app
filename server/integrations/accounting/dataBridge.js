@@ -29,10 +29,10 @@ var pool = require('../bonds/pgPool');
 var ACCOUNTS = {
   CASH:              '1000',
   BOND_INVESTMENTS:  '1100',
-  ACCOUNTS_RECEIVABLE: '1200',
-  ACCRUED_INTEREST:  '1300',
-  ACCOUNTS_PAYABLE:  '2000',
-  DISTRIBUTIONS_PAYABLE: '2100',
+  ACCRUED_INTEREST:  '1200',
+  OTHER_RECEIVABLES: '1300',
+  DISTRIBUTIONS_PAYABLE: '2000',
+  FEES_PAYABLE:      '2100',
   TRUST_CORPUS:      '3000',
   RETAINED_EARNINGS: '3100',
   INTEREST_INCOME:   '4000',
@@ -107,43 +107,35 @@ class DataBridge {
     var errors = [];
 
     try {
-      // Check if bond_accruals table exists
-      var tableCheck = await pool.query(`
-        SELECT EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = 'bond_accruals') AS exists
-      `);
-      if (!tableCheck.rows[0].exists) {
-        await DataBridge._logSync(syncId, 'bond_to_accounting', 'bonds', 'trust_accounting', 0, 0, 0, []);
-        return { syncId: syncId, synced: 0, skipped: 0, failed: 0, errors: [], message: 'No bond_accruals table — bond accrual module not active' };
-      }
-
-      // Find bond accruals that don't have matching trust journal entries
+      // Sync interest accrual transactions from bond_transactions
       var accruals = await pool.query(`
-        SELECT ba.*, b.bond_id AS bond_code, b.issuer, b.face_value
-        FROM bond_accruals ba
-        JOIN bonds b ON b.id = ba.bond_id
-        WHERE ba.is_reversed = FALSE
+        SELECT bt.id, bt.bond_id, bt.amount, bt.transaction_date, bt.description,
+               b.bond_name AS bond_code, b.issuer
+        FROM bond_transactions bt
+        JOIN bonds b ON b.id = bt.bond_id
+        WHERE bt.transaction_type = 'interest_accrual'
           AND NOT EXISTS (
             SELECT 1 FROM trust_journal_entries je
             WHERE je.reference_type = 'bond_accrual'
-              AND je.reference_id = CAST(ba.id AS TEXT)
+              AND je.reference_id = CAST(bt.id AS TEXT)
               AND je.status = 'posted'
           )
-        ORDER BY ba.accrual_date ASC
+        ORDER BY bt.transaction_date ASC
         LIMIT 100
       `);
 
       for (var i = 0; i < accruals.rows.length; i++) {
         var acc = accruals.rows[i];
         try {
-          // Ensure accrued interest account exists
-          await DataBridge._ensureAccount(ACCOUNTS.ACCRUED_INTEREST, 'Accrued Interest Receivable', 'asset', 'current');
+          var accrualAmount = parseFloat(acc.amount);
+          if (accrualAmount <= 0) { skipped++; continue; }
 
           await TrustAccountingEngine.postJournalEntry({
-            entryDate: acc.accrual_date,
-            description: 'Bond interest accrual — ' + acc.bond_code + ' (' + acc.issuer + ')',
+            entryDate: acc.transaction_date,
+            description: 'Bond interest accrual — ' + acc.bond_code + ' (' + (acc.issuer || '') + ')',
             lines: [
-              { accountCode: ACCOUNTS.ACCRUED_INTEREST, debitAmount: parseFloat(acc.accrual_amount), creditAmount: 0, memo: 'Interest accrued ' + acc.accrual_date },
-              { accountCode: ACCOUNTS.INTEREST_INCOME, debitAmount: 0, creditAmount: parseFloat(acc.accrual_amount), memo: 'Interest income ' + acc.bond_code },
+              { accountCode: ACCOUNTS.ACCRUED_INTEREST, debitAmount: accrualAmount, creditAmount: 0, memo: 'Interest accrued ' + acc.bond_code },
+              { accountCode: ACCOUNTS.INTEREST_INCOME, debitAmount: 0, creditAmount: accrualAmount, memo: 'Interest income ' + acc.bond_code },
             ],
             referenceType: 'bond_accrual',
             referenceId: String(acc.id),
@@ -471,7 +463,7 @@ class DataBridge {
           if (txn.type === 'deposit') {
             lines = [
               { accountCode: ACCOUNTS.CASH, debitAmount: amount, creditAmount: 0, memo: 'BILL deposit ' + txn.transaction_id },
-              { accountCode: ACCOUNTS.ACCOUNTS_RECEIVABLE, debitAmount: 0, creditAmount: amount, memo: 'BILL deposit received' },
+              { accountCode: ACCOUNTS.OTHER_RECEIVABLES, debitAmount: 0, creditAmount: amount, memo: 'BILL deposit received' },
             ];
           } else {
             lines = [
@@ -634,7 +626,121 @@ class DataBridge {
   }
 
   /**
+   * Post opening balances for bond issuance if not already recorded.
+   * Creates trust JE: DR Bond Investments (1100) / CR Trust Corpus (3000)
+   */
+  static async postOpeningBalances() {
+    var { TrustAccountingEngine } = require('./trustAccountingEngine');
+
+    var synced = 0;
+    var errors = [];
+
+    try {
+      // Check if opening balance JE already exists
+      var existing = await pool.query(
+        "SELECT 1 FROM trust_journal_entries WHERE reference_type = 'opening_balance' AND status = 'posted' LIMIT 1"
+      );
+      if (existing.rows.length > 0) {
+        return { synced: 0, message: 'Opening balance already posted' };
+      }
+
+      // Get active bonds for opening balance
+      var bonds = await pool.query(
+        "SELECT id, bond_name, face_value, issue_date FROM bonds WHERE status = 'active'"
+      );
+
+      for (var i = 0; i < bonds.rows.length; i++) {
+        var bond = bonds.rows[i];
+        var faceValue = parseFloat(bond.face_value);
+        if (faceValue <= 0) continue;
+
+        try {
+          await TrustAccountingEngine.postJournalEntry({
+            entryDate: bond.issue_date || new Date(),
+            description: 'Opening balance — Bond ' + bond.bond_name + ' issuance',
+            lines: [
+              { accountCode: ACCOUNTS.BOND_INVESTMENTS, debitAmount: faceValue, creditAmount: 0, memo: 'Bond investment ' + bond.bond_name },
+              { accountCode: ACCOUNTS.TRUST_CORPUS, debitAmount: 0, creditAmount: faceValue, memo: 'Trust corpus — ' + bond.bond_name },
+            ],
+            referenceType: 'opening_balance',
+            referenceId: 'BOND-' + bond.id,
+            bondId: bond.bond_name,
+            postedBy: 'data_bridge',
+            postToFineract: false,
+          });
+          synced++;
+        } catch (err) {
+          errors.push({ bondId: bond.bond_name, error: err.message });
+        }
+      }
+    } catch (outerErr) {
+      errors.push({ phase: 'query', error: outerErr.message });
+    }
+
+    return { synced: synced, errors: errors };
+  }
+
+  /**
+   * Clean up duplicate journal entries in Fineract.
+   * Groups entries by transactionId, reverses duplicates keeping only the first.
+   */
+  static async cleanupFineractDuplicates() {
+    var { FineractClient } = require('../fineract/fineractClient');
+
+    var reversed = 0;
+    var errors = [];
+
+    try {
+      var journalRes = await FineractClient.getJournalEntries({ limit: 10000 });
+      var entries = (journalRes && journalRes.pageItems) || [];
+
+      // Group by transactionId — each transactionId represents one logical JE
+      var txnGroups = {};
+      for (var i = 0; i < entries.length; i++) {
+        var je = entries[i];
+        if (je.reversed) continue;
+        var txnId = je.transactionId;
+        if (!txnGroups[txnId]) txnGroups[txnId] = [];
+        txnGroups[txnId].push(je);
+      }
+
+      // Find duplicate comments — same comment text posted multiple times
+      var commentGroups = {};
+      var txnIds = Object.keys(txnGroups);
+      for (var t = 0; t < txnIds.length; t++) {
+        var group = txnGroups[txnIds[t]];
+        var comment = (group[0].comments || '').trim();
+        if (!comment) continue;
+        if (!commentGroups[comment]) commentGroups[comment] = [];
+        commentGroups[comment].push(txnIds[t]);
+      }
+
+      // Reverse all but the first occurrence of each duplicate comment
+      var commentKeys = Object.keys(commentGroups);
+      for (var c = 0; c < commentKeys.length; c++) {
+        var dupes = commentGroups[commentKeys[c]];
+        if (dupes.length <= 1) continue;
+
+        // Keep first, reverse the rest
+        for (var d = 1; d < dupes.length; d++) {
+          try {
+            await FineractClient.reverseJournalEntry(dupes[d]);
+            reversed++;
+          } catch (err) {
+            errors.push({ transactionId: dupes[d], error: err.message });
+          }
+        }
+      }
+    } catch (outerErr) {
+      errors.push({ phase: 'fetch', error: outerErr.message });
+    }
+
+    return { reversed: reversed, errors: errors };
+  }
+
+  /**
    * Push all unsynced trust journal entries to Fineract GL.
+   * Includes idempotency guard to prevent duplicate pushes.
    */
   static async pushToFineract() {
     var { TrustAccountingEngine } = require('./trustAccountingEngine');
@@ -647,7 +753,7 @@ class DataBridge {
     var errors = [];
 
     try {
-      // Get unsynced journal entries
+      // Get unsynced journal entries (only posted, not reversed)
       var entries = await pool.query(`
         SELECT je.id, je.entry_id, je.entry_date, je.description, je.reference_type,
                je.reference_id, je.bond_id, je.posted_by, je.fineract_txn_id, je.status,
@@ -676,6 +782,21 @@ class DataBridge {
         glMap[mappings.rows[m].trust_account_code] = parseInt(mappings.rows[m].fineract_gl_id);
       }
 
+      // Idempotency: fetch existing Fineract JE comments to avoid duplicates
+      var existingComments = new Set();
+      try {
+        var journalRes = await FineractClient.getJournalEntries({ limit: 10000 });
+        var existingEntries = (journalRes && journalRes.pageItems) || [];
+        for (var e = 0; e < existingEntries.length; e++) {
+          if (!existingEntries[e].reversed && existingEntries[e].comments) {
+            existingComments.add(existingEntries[e].comments.trim());
+          }
+        }
+      } catch (fetchErr) {
+        // If we can't fetch existing entries, proceed without idempotency check
+        console.warn('[DataBridge] Could not fetch existing Fineract JEs for idempotency check:', fetchErr.message);
+      }
+
       for (var i = 0; i < entries.rows.length; i++) {
         var entry = entries.rows[i];
         try {
@@ -700,17 +821,30 @@ class DataBridge {
           if (hasMissingMapping) { skipped++; continue; }
           if (debits.length === 0 || credits.length === 0) { skipped++; continue; }
 
+          var jeComment = 'Trust JE ' + entry.entry_id + ': ' + entry.description;
+
+          // Idempotency guard: skip if this JE was already pushed
+          if (existingComments.has(jeComment)) {
+            var idempotencyId = 'IDEM-' + syncId + '-' + entry.entry_id;
+            await pool.query(
+              'UPDATE trust_journal_entries SET fineract_txn_id = $1 WHERE entry_id = $2',
+              [idempotencyId, entry.entry_id]
+            );
+            skipped++;
+            continue;
+          }
+
           var glResult = await FineractClient.postJournalEntry({
             officeId: 1,
             transactionDate: new Date(entry.entry_date),
             debits: debits,
             credits: credits,
-            comments: 'Trust JE ' + entry.entry_id + ': ' + entry.description,
+            comments: jeComment,
           });
 
           var fineractTxnId = glResult && glResult.resourceId ? String(glResult.resourceId) : ('SYNC-' + syncId + '-' + entry.entry_id);
           await pool.query(
-            `UPDATE trust_journal_entries SET fineract_txn_id = $1 WHERE entry_id = $2`,
+            'UPDATE trust_journal_entries SET fineract_txn_id = $1 WHERE entry_id = $2',
             [fineractTxnId, entry.entry_id]
           );
           synced++;
@@ -902,6 +1036,10 @@ class DataBridge {
   static async runFullSync() {
     var startTime = Date.now();
     var results = {};
+
+    // 0. Post opening balances if not yet recorded
+    try { results.openingBalances = await DataBridge.postOpeningBalances(); }
+    catch (e) { results.openingBalances = { error: e.message }; }
 
     // 1. Sync bonds to accounting
     try { results.bonds = await DataBridge.syncBondsToAccounting(); }
