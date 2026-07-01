@@ -85,6 +85,9 @@ try { app.use('/api/backup', require(path.join(HD, 'server', 'routes', 'backup')
 // BILL Cash Account integration
 try { app.use('/api/bill', require(path.join(HD, 'server', 'routes', 'bill'))); console.log('[bill] loaded'); } catch(e) { console.warn('[bill]', e.message); }
 
+// Sub-Ledger Accounts (per-client accounts within Core Banking)
+try { app.use('/api/sub-ledgers', require(path.join(HD, 'server', 'routes', 'subLedger'))); console.log('[sub-ledgers] loaded'); } catch(e) { console.warn('[sub-ledgers]', e.message); }
+
 // Trustee Agent & Bookkeeping Agent
 try { app.use('/api/agents', require(path.join(HD, 'server', 'routes', 'agents'))); console.log('[agents] loaded'); } catch(e) { console.warn('[agents]', e.message); }
 
@@ -117,7 +120,6 @@ app.get('/api/health', async function(req, res) {
     checks.cashAccounts = { ok: cashRes.rows[0].c > 0, count: parseInt(cashRes.rows[0].c) };
     checks.trustAccounts = { ok: trustRes.rows[0].c > 0, count: parseInt(trustRes.rows[0].c) };
     checks.authUsers = { ok: userRes.rows[0].c > 0, count: parseInt(userRes.rows[0].c) };
-
     checks.database = { ok: true };
 
     var fineractOk = false;
@@ -128,7 +130,6 @@ app.get('/api/health', async function(req, res) {
     } catch(e) {}
     checks.fineract = { ok: fineractOk };
 
-    // BILL Cash Account status
     var billOk = false;
     try {
       var billClient = require(path.join(HD, 'server', 'integrations', 'bill', 'billClient'));
@@ -239,6 +240,28 @@ try {
     console.log('[system-settings] table ensured, mode=' + mode);
   }).catch(function(e) { console.warn('[system-settings] init:', e.message); });
 } catch(e) { console.warn('[system-settings]', e.message); }
+
+// Ensure sub-ledger tables exist
+try {
+  var SubLedgerEngine = require(path.join(HD, 'server', 'integrations', 'accounting', 'subLedgerEngine')).SubLedgerEngine;
+  SubLedgerEngine.ensureTables().then(function() {
+    console.log('[sub-ledgers] tables ensured');
+  }).catch(function(e) { console.warn('[sub-ledgers] init:', e.message); });
+} catch(e) { console.warn('[sub-ledgers]', e.message); }
+
+// Ensure CRM contacts have approval workflow columns
+try {
+  var pgPoolCrm = require(path.join(HD, 'server', 'integrations', 'bonds', 'pgPool'));
+  pgPoolCrm.query(`
+    ALTER TABLE crm_contacts ADD COLUMN IF NOT EXISTS approval_status TEXT DEFAULT 'pending_approval';
+    ALTER TABLE crm_contacts ADD COLUMN IF NOT EXISTS approved_by TEXT;
+    ALTER TABLE crm_contacts ADD COLUMN IF NOT EXISTS approved_at TIMESTAMPTZ;
+    ALTER TABLE crm_contacts ADD COLUMN IF NOT EXISTS rejected_by TEXT;
+    ALTER TABLE crm_contacts ADD COLUMN IF NOT EXISTS rejection_reason TEXT;
+  `).then(function() {
+    console.log('[crm] approval workflow columns ensured');
+  }).catch(function(e) { console.warn('[crm] approval migration:', e.message); });
+} catch(e) { console.warn('[crm]', e.message); }
 
 // Start live bond accrual scheduler
 try {

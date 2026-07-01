@@ -239,6 +239,7 @@
     <div class="nav-item" data-page="tax"><span class="icon">📑</span> Tax Engine</div>
     <div class="nav-section">Core Banking</div>
     <div class="nav-item" data-page="fineract"><span class="icon">🏛️</span> Fineract GL</div>
+    <div class="nav-item" data-page="sub-ledgers"><span class="icon">📂</span> Sub-Ledgers</div>
     <div class="nav-item" data-page="bill"><span class="icon">💳</span> BILL Cash</div>
     <div class="nav-section">Data Bridge</div>
     <div class="nav-item" data-page="data-bridge"><span class="icon">🔗</span> Data Bridge</div>
@@ -847,7 +848,7 @@
       <div class="card mt-16">
         <div class="section-title">Deposit Funds to BILL Account</div>
         <p class="text-muted" style="font-size:12px;margin-bottom:12px;">
-          Push funds from the Trust to your BILL Cash Account (****0240) via direct BILL API, ACH credit, or wire transfer.
+          Push funds from Trust Cash (1000) to BILL Cash Account (1050 — ****0240). Journal entry: DR 1050 BILL Cash / CR 1000 Trust Cash.
         </p>
         <div class="form-row" style="gap:12px;flex-wrap:wrap;align-items:flex-end;">
           <div>
@@ -875,6 +876,117 @@
       <div class="card mt-16">
         <div class="section-title">Deposit History</div>
         <div id="bill-deposit-history"><p class="text-muted">Loading...</p></div>
+      </div>
+    </div>
+
+    <!-- SUB-LEDGER ACCOUNTS PAGE -->
+    <div id="page-sub-ledgers" class="page hidden">
+      <div class="page-header">
+        <div><h1>Client Sub-Ledger Accounts</h1><div class="subtitle">Per-client breakdowns of trust GL accounts — bond investments, distributions, fees, escrow</div></div>
+        <div>
+          <button class="btn btn-sm" onclick="syncSubLedgerSubscriptions()">Sync from Subscriptions</button>
+          <button class="btn btn-sm" onclick="pushSubLedgersToFineract()">Push to Fineract</button>
+          <button class="btn btn-primary btn-sm" onclick="loadSubLedgers()">Refresh</button>
+        </div>
+      </div>
+      <div class="grid" id="sub-ledger-stats"></div>
+      <div class="two-col">
+        <div class="card">
+          <div class="section-title">Sub-Ledger Accounts</div>
+          <div id="sub-ledger-list"><p class="text-muted">Loading...</p></div>
+        </div>
+        <div class="card">
+          <div class="section-title">GL Rollup (Sub-Ledgers vs Parent Accounts)</div>
+          <div id="sub-ledger-rollup"><p class="text-muted">Loading...</p></div>
+        </div>
+      </div>
+      <div class="card" style="margin-top:1rem">
+        <div class="section-title">Create Sub-Ledger Account</div>
+        <div class="form-grid" style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:0.75rem;margin-bottom:1rem">
+          <div>
+            <label class="form-label">Client (Contact ID)</label>
+            <select id="sl-contact-id" class="form-control"></select>
+          </div>
+          <div>
+            <label class="form-label">Parent GL Account</label>
+            <select id="sl-parent-account" class="form-control">
+              <option value="1000">1000 — Trust Cash</option>
+              <option value="1050">1050 — BILL Cash Account</option>
+              <option value="1100" selected>1100 — Bond Investments</option>
+              <option value="1200">1200 — Accrued Interest</option>
+              <option value="1300">1300 — Other Receivables</option>
+              <option value="2000">2000 — Distributions Payable</option>
+              <option value="2100">2100 — Fees Payable</option>
+              <option value="3000">3000 — Trust Corpus</option>
+              <option value="3100">3100 — Retained Earnings</option>
+              <option value="4000">4000 — Interest Income</option>
+              <option value="4100">4100 — Fee Income</option>
+              <option value="5000">5000 — Management Fees</option>
+            </select>
+          </div>
+          <div>
+            <label class="form-label">Account Type</label>
+            <select id="sl-type" class="form-control">
+              <option value="bond_investment">Bond Investment</option>
+              <option value="distribution">Distribution</option>
+              <option value="accrued_interest">Accrued Interest</option>
+              <option value="fee">Fee</option>
+              <option value="escrow">Escrow</option>
+              <option value="operating">Operating</option>
+              <option value="general">General</option>
+            </select>
+          </div>
+        </div>
+        <div class="form-grid" style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:0.75rem;margin-bottom:1rem">
+          <div>
+            <label class="form-label">Account Name</label>
+            <input type="text" id="sl-name" class="form-control" placeholder="e.g. DeAndrea — DLB-PRB Investment">
+          </div>
+          <div>
+            <label class="form-label">Opening Balance ($)</label>
+            <input type="number" id="sl-opening-balance" class="form-control" value="0" step="0.01">
+          </div>
+          <div>
+            <label class="form-label">Notes</label>
+            <input type="text" id="sl-notes" class="form-control" placeholder="Optional notes">
+          </div>
+        </div>
+        <button class="btn btn-primary" onclick="createSubLedger()">Create Sub-Ledger</button>
+        <div id="sl-create-result" style="margin-top:0.5rem"></div>
+      </div>
+      <div class="card" style="margin-top:1rem">
+        <div class="section-title">Post Transaction</div>
+        <div class="form-grid" style="display:grid;grid-template-columns:1fr 1fr 1fr 1fr;gap:0.75rem;margin-bottom:1rem">
+          <div>
+            <label class="form-label">Sub-Ledger</label>
+            <select id="sl-txn-ledger" class="form-control"></select>
+          </div>
+          <div>
+            <label class="form-label">Type</label>
+            <select id="sl-txn-type" class="form-control">
+              <option value="credit">Credit</option>
+              <option value="debit">Debit</option>
+              <option value="distribution">Distribution</option>
+              <option value="fee">Fee</option>
+              <option value="interest">Interest</option>
+              <option value="adjustment">Adjustment</option>
+            </select>
+          </div>
+          <div>
+            <label class="form-label">Amount ($)</label>
+            <input type="number" id="sl-txn-amount" class="form-control" step="0.01" min="0.01">
+          </div>
+          <div>
+            <label class="form-label">Description</label>
+            <input type="text" id="sl-txn-desc" class="form-control" placeholder="Transaction memo">
+          </div>
+        </div>
+        <button class="btn btn-primary" onclick="postSubLedgerTxn()">Post Transaction</button>
+        <div id="sl-txn-result" style="margin-top:0.5rem"></div>
+      </div>
+      <div class="card" style="margin-top:1rem">
+        <div class="section-title">Recent Transactions</div>
+        <div id="sub-ledger-recent-txns"><p class="text-muted">Loading...</p></div>
       </div>
     </div>
 
@@ -1351,7 +1463,7 @@
         document.querySelectorAll('.page').forEach(p => p.classList.add('hidden'));
         document.getElementById('page-' + page).classList.remove('hidden');
         // Load data for page
-        const loaders = { overview: loadOverview, bonds: loadBonds, cash: loadCash, payments: loadPayments, ach: loadACH, wire: loadWire, partners: loadPartners, apikeys: loadApiKeys, as2: loadAS2, crm: loadCRM, documents: loadDocuments, accounting: loadAccounting, tax: loadTax, fineract: loadFineract, bill: loadBill, 'trustee-agent': loadTrusteeAgent, 'bookkeeping-agent': loadBookkeepingAgent, 'data-bridge': loadDataBridge, settings: loadSettings, security: loadSecurity, backup: loadBackupPage, admin: loadAdmin };
+        const loaders = { overview: loadOverview, bonds: loadBonds, cash: loadCash, payments: loadPayments, ach: loadACH, wire: loadWire, partners: loadPartners, apikeys: loadApiKeys, as2: loadAS2, crm: loadCRM, documents: loadDocuments, accounting: loadAccounting, tax: loadTax, fineract: loadFineract, bill: loadBill, 'trustee-agent': loadTrusteeAgent, 'bookkeeping-agent': loadBookkeepingAgent, 'data-bridge': loadDataBridge, 'sub-ledgers': loadSubLedgers, settings: loadSettings, security: loadSecurity, backup: loadBackupPage, admin: loadAdmin };
         if (loaders[page]) loaders[page]();
       });
     });
@@ -2169,12 +2281,22 @@
       const dData = dashboard.data || {};
       el('crm-summary').innerHTML = `
         <div class="card"><div class="card-title">Total Contacts</div><div class="card-value">${contacts.count || cData.length}</div></div>
+        <div class="card"><div class="card-title">Pending Approval</div><div class="card-value">${dData.pending_approval || 0}</div></div>
+        <div class="card"><div class="card-title">Approved</div><div class="card-value">${dData.approved_count || 0}</div></div>
         <div class="card"><div class="card-title">KYC Verified</div><div class="card-value">${dData.kyc_verified || 0}</div></div>
         <div class="card"><div class="card-title">Subscriptions</div><div class="card-value">${dData.total_subscriptions || 0}</div></div>
         <div class="card"><div class="card-title">Total Subscribed</div><div class="card-value">${fmt(dData.total_subscription_amount)}</div></div>
       `;
 
-      el('crm-contacts-wrap').innerHTML = cData.length ? '<table><thead><tr><th>ID</th><th>Name</th><th>Type</th><th>Email</th><th>KYC</th><th>Company</th></tr></thead><tbody>' + cData.map(c => `<tr><td><code style="font-size:10px">${esc(c.contact_id)}</code></td><td>${esc(c.first_name)} ${esc(c.last_name)}</td><td><span class="badge badge-info">${esc(c.contact_type)}</span></td><td>${esc(c.email || '—')}</td><td><span class="badge ${c.kyc_status === 'verified' ? 'badge-active' : 'badge-pending'}">${esc(c.kyc_status)}</span></td><td>${esc(c.company || '—')}</td></tr>`).join('') + '</tbody></table>' : '<p class="text-muted">No contacts</p>';
+      el('crm-contacts-wrap').innerHTML = cData.length ? '<table><thead><tr><th>ID</th><th>Name</th><th>Type</th><th>Email</th><th>Approval</th><th>KYC</th><th>Actions</th></tr></thead><tbody>' + cData.map(c => {
+        const approvalBadge = c.approval_status === 'approved' ? 'badge-active' : c.approval_status === 'rejected' ? 'badge-danger' : 'badge-pending';
+        const kycBadge = c.kyc_status === 'verified' ? 'badge-active' : 'badge-pending';
+        let actions = '';
+        if (c.approval_status !== 'approved') actions += `<button class="btn btn-success btn-sm" style="font-size:10px;padding:2px 8px;margin:1px;" onclick="crmApprove('${esc(c.contact_id)}')">Approve</button>`;
+        if (c.approval_status !== 'rejected') actions += `<button class="btn btn-outline btn-sm" style="font-size:10px;padding:2px 8px;margin:1px;border-color:#e74c3c;color:#e74c3c;" onclick="crmReject('${esc(c.contact_id)}')">Reject</button>`;
+        if (c.kyc_status !== 'verified') actions += `<button class="btn btn-outline btn-sm" style="font-size:10px;padding:2px 8px;margin:1px;" onclick="crmVerifyKYC('${esc(c.contact_id)}')">Verify KYC</button>`;
+        return `<tr><td><code style="font-size:10px">${esc(c.contact_id)}</code></td><td>${esc(c.first_name)} ${esc(c.last_name)}</td><td><span class="badge badge-info">${esc(c.contact_type)}</span></td><td>${esc(c.email || '—')}</td><td><span class="badge ${approvalBadge}">${esc(c.approval_status || 'pending_approval')}</span></td><td><span class="badge ${kycBadge}">${esc(c.kyc_status)}</span></td><td>${actions}</td></tr>`;
+      }).join('') + '</tbody></table>' : '<p class="text-muted">No contacts</p>';
 
       const sData = subs.data || [];
       el('crm-subs-wrap').innerHTML = sData.length ? '<table><thead><tr><th>ID</th><th>Contact</th><th>Bond</th><th>Amount</th><th>Status</th><th>Date</th></tr></thead><tbody>' + sData.map(s => `<tr><td><code style="font-size:10px">${esc(s.subscription_id)}</code></td><td>${esc((s.first_name && s.last_name) ? s.first_name + ' ' + s.last_name : s.contact_id)}</td><td>${esc(s.bond_name || s.bond_id || '—')}</td><td class="money">${fmt(s.subscription_amount)}</td><td><span class="badge ${s.status === 'active' ? 'badge-active' : 'badge-pending'}">${esc(s.status)}</span></td><td>${shortDate(s.settlement_date || s.created_at)}</td></tr>`).join('') + '</tbody></table>' : '<p class="text-muted">No subscriptions</p>';
@@ -2185,6 +2307,25 @@
       const r = await fetchJSON(API + '/api/crm/contacts', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ first_name: el('crm-first').value, last_name: el('crm-last').value, email: el('crm-email').value, contact_type: el('crm-type').value, company: el('crm-company').value, phone: el('crm-phone').value }) });
       el('crm-add-result').innerHTML = r.success ? '<p class="success-msg">Contact created: ' + esc((r.data || {}).contact_id) + '</p>' : '<p class="error-msg">' + esc(r.error || 'Failed') + '</p>';
       if (r.success) { el('crm-add-contact').classList.add('hidden'); loadCRM(); }
+    }
+    async function crmApprove(contactId) {
+      if (!confirm('Approve contact ' + contactId + '?')) return;
+      const r = await fetchJSON(API + '/api/crm/contacts/' + encodeURIComponent(contactId) + '/approve', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ approvedBy: 'admin' }) });
+      alert(r.success ? 'Contact approved' : 'Error: ' + (r.error || 'Failed'));
+      loadCRM();
+    }
+    async function crmReject(contactId) {
+      const reason = prompt('Rejection reason (optional):');
+      if (reason === null) return;
+      const r = await fetchJSON(API + '/api/crm/contacts/' + encodeURIComponent(contactId) + '/reject', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ rejectedBy: 'admin', reason: reason || null }) });
+      alert(r.success ? 'Contact rejected' : 'Error: ' + (r.error || 'Failed'));
+      loadCRM();
+    }
+    async function crmVerifyKYC(contactId) {
+      if (!confirm('Mark KYC as verified for ' + contactId + '?')) return;
+      const r = await fetchJSON(API + '/api/crm/contacts/' + encodeURIComponent(contactId) + '/kyc', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ kycStatus: 'verified' }) });
+      alert(r.success ? 'KYC verified' : 'Error: ' + (r.error || 'Failed'));
+      loadCRM();
     }
 
     // ─── DOCUMENTS ─────────────────────────────────────────────────────────────
@@ -3487,6 +3628,176 @@
       }
     }
 
+    // ─── SUB-LEDGER ACCOUNTS ────────────────────────────────────────────────────
+    async function loadSubLedgers() {
+      try {
+        var [dashboard, rollup] = await Promise.all([
+          fetchJSON(API + '/api/sub-ledgers/dashboard'),
+          fetchJSON(API + '/api/sub-ledgers/rollup'),
+        ]);
+
+        if (dashboard && dashboard.success) {
+          var d = dashboard.data;
+          el('sub-ledger-stats').innerHTML =
+            '<div class="card"><div class="card-title">Total Accounts</div><div class="card-value">' + d.activeAccounts + '</div></div>' +
+            '<div class="card"><div class="card-title">Unique Clients</div><div class="card-value">' + d.uniqueClients + '</div></div>' +
+            '<div class="card"><div class="card-title">Total Balance</div><div class="card-value">' + fmt(d.totalBalance) + '</div></div>' +
+            '<div class="card"><div class="card-title">Account Types</div><div class="card-value">' + d.byType.length + '</div></div>';
+
+          // Account list by type
+          var html = '<table class="data-table"><tr><th>Type</th><th>Count</th><th>Total Balance</th></tr>';
+          for (var i = 0; i < d.byType.length; i++) {
+            var t = d.byType[i];
+            html += '<tr><td>' + esc(t.type) + '</td><td>' + t.count + '</td><td>' + fmt(t.totalBalance) + '</td></tr>';
+          }
+          html += '</table>';
+
+          // Sub-ledger account detail list
+          var listRes = await fetchJSON(API + '/api/sub-ledgers?status=active');
+          if (listRes && listRes.success && listRes.data.length > 0) {
+            html += '<table class="data-table" style="margin-top:1rem"><tr><th>ID</th><th>Client</th><th>Parent</th><th>Type</th><th>Balance</th><th>Fineract</th><th>Status</th><th></th></tr>';
+            for (var j = 0; j < listRes.data.length; j++) {
+              var sl = listRes.data[j];
+              var clientName = (sl.first_name || '') + ' ' + (sl.last_name || '');
+              var fStatus = sl.fineract_savings_id ? '<span class="badge badge-green">Linked</span>' : '<span class="badge badge-yellow">Not linked</span>';
+              html += '<tr><td style="font-family:monospace;font-size:11px">' + esc(sl.sub_ledger_id) + '</td>' +
+                '<td>' + esc(clientName.trim() || sl.contact_id) + '</td>' +
+                '<td>' + esc(sl.parent_account_code) + ' — ' + esc(sl.parent_account_name || '') + '</td>' +
+                '<td>' + esc(sl.sub_account_type) + '</td>' +
+                '<td>' + fmt(sl.balance) + '</td>' +
+                '<td>' + fStatus + '</td>' +
+                '<td><span class="badge ' + (sl.status === 'active' ? 'badge-green' : 'badge-red') + '">' + sl.status + '</span></td>' +
+                '<td><button class="btn btn-sm" style="font-size:10px;padding:2px 6px;color:#dc2626" onclick="deleteSubLedger(\'' + esc(sl.sub_ledger_id) + '\')">Delete</button></td></tr>';
+            }
+            html += '</table>';
+          }
+          el('sub-ledger-list').innerHTML = html;
+
+          // Populate dropdowns
+          var contactSel = el('sl-contact-id');
+          var txnLedgerSel = el('sl-txn-ledger');
+          var contacts = await fetchJSON(API + '/api/crm/contacts');
+          if (contacts && contacts.success) {
+            contactSel.innerHTML = contacts.data.map(function(c) {
+              return '<option value="' + esc(c.contact_id) + '">' + esc(c.first_name + ' ' + c.last_name) + '</option>';
+            }).join('');
+          }
+          if (listRes && listRes.success) {
+            txnLedgerSel.innerHTML = listRes.data.map(function(sl) {
+              return '<option value="' + esc(sl.sub_ledger_id) + '">' + esc(sl.sub_account_name) + ' (' + fmt(sl.balance) + ')</option>';
+            }).join('');
+          }
+
+          // Recent transactions
+          if (d.recentTransactions && d.recentTransactions.length > 0) {
+            var txnHtml = '<table class="data-table"><tr><th>Date</th><th>Account</th><th>Type</th><th>Amount</th><th>Balance</th><th>Description</th></tr>';
+            for (var k = 0; k < d.recentTransactions.length; k++) {
+              var txn = d.recentTransactions[k];
+              txnHtml += '<tr><td>' + new Date(txn.created_at).toLocaleDateString() + '</td>' +
+                '<td>' + esc(txn.sub_account_name || txn.sub_ledger_id) + '</td>' +
+                '<td>' + esc(txn.transaction_type) + '</td>' +
+                '<td>' + fmt(txn.amount) + '</td>' +
+                '<td>' + fmt(txn.running_balance) + '</td>' +
+                '<td>' + esc(txn.description || '') + '</td></tr>';
+            }
+            txnHtml += '</table>';
+            el('sub-ledger-recent-txns').innerHTML = txnHtml;
+          } else {
+            el('sub-ledger-recent-txns').innerHTML = '<p class="text-muted">No transactions yet</p>';
+          }
+        }
+
+        // Rollup
+        if (rollup && rollup.success && rollup.data.length > 0) {
+          var rHtml = '<table class="data-table"><tr><th>Parent Account</th><th>Sub-Ledger Count</th><th>Sub-Ledger Total</th><th>GL Balance</th><th>Unallocated</th><th>Reconciled</th></tr>';
+          for (var r = 0; r < rollup.data.length; r++) {
+            var row = rollup.data[r];
+            rHtml += '<tr><td>' + esc(row.parentAccountCode) + ' — ' + esc(row.parentAccountName || '') + '</td>' +
+              '<td>' + row.subLedgerCount + '</td>' +
+              '<td>' + fmt(row.subLedgerTotal) + '</td>' +
+              '<td>' + fmt(row.glBalance) + '</td>' +
+              '<td>' + fmt(row.unallocated) + '</td>' +
+              '<td><span class="badge ' + (row.isReconciled ? 'badge-green' : 'badge-yellow') + '">' + (row.isReconciled ? 'Yes' : 'No') + '</span></td></tr>';
+          }
+          rHtml += '</table>';
+          el('sub-ledger-rollup').innerHTML = rHtml;
+        } else {
+          el('sub-ledger-rollup').innerHTML = '<p class="text-muted">No sub-ledger accounts yet — create one or sync from subscriptions</p>';
+        }
+      } catch (err) {
+        el('sub-ledger-stats').innerHTML = '<p class="text-muted">Error: ' + esc(err.message) + '</p>';
+      }
+    }
+
+    async function createSubLedger() {
+      var res = await fetchJSON(API + '/api/sub-ledgers', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          contactId: el('sl-contact-id').value,
+          parentAccountCode: el('sl-parent-account').value,
+          subAccountName: el('sl-name').value,
+          subAccountType: el('sl-type').value,
+          openingBalance: parseFloat(el('sl-opening-balance').value) || 0,
+          notes: el('sl-notes').value || null,
+        }),
+      });
+      if (res && res.success) {
+        el('sl-create-result').innerHTML = '<span style="color:#059669">Created: ' + esc(res.data.sub_ledger_id) + '</span>';
+        loadSubLedgers();
+      } else {
+        el('sl-create-result').innerHTML = '<span style="color:#dc2626">Error: ' + esc((res && res.error) || 'Failed') + '</span>';
+      }
+    }
+
+    async function postSubLedgerTxn() {
+      var res = await fetchJSON(API + '/api/sub-ledgers/' + el('sl-txn-ledger').value + '/transactions', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          transactionType: el('sl-txn-type').value,
+          amount: parseFloat(el('sl-txn-amount').value),
+          description: el('sl-txn-desc').value || null,
+        }),
+      });
+      if (res && res.success) {
+        el('sl-txn-result').innerHTML = '<span style="color:#059669">Posted: ' + fmt(res.data.amount) + ' — New balance: ' + fmt(res.data.newBalance) + '</span>';
+        loadSubLedgers();
+      } else {
+        el('sl-txn-result').innerHTML = '<span style="color:#dc2626">Error: ' + esc((res && res.error) || 'Failed') + '</span>';
+      }
+    }
+
+    async function syncSubLedgerSubscriptions() {
+      var res = await fetchJSON(API + '/api/sub-ledgers/sync-subscriptions', { method: 'POST' });
+      if (res && res.success) {
+        alert('Synced ' + (res.data.synced || 0) + ' sub-ledger(s) from bond subscriptions, ' + (res.data.skipped || 0) + ' already existed');
+        loadSubLedgers();
+      } else {
+        alert('Sync failed: ' + ((res && res.error) || 'Unknown error'));
+      }
+    }
+
+    async function pushSubLedgersToFineract() {
+      var res = await fetchJSON(API + '/api/sub-ledgers/push-to-fineract', { method: 'POST' });
+      if (res && res.success) {
+        alert('Pushed ' + (res.data.synced || 0) + ' sub-ledger(s) to Fineract GL, ' + (res.data.failed || 0) + ' failed');
+        loadSubLedgers();
+      } else {
+        alert('Push failed: ' + ((res && res.error) || 'Unknown error'));
+      }
+    }
+
+    async function deleteSubLedger(subLedgerId) {
+      if (!confirm('Delete sub-ledger ' + subLedgerId + '? This will remove all transactions.')) return;
+      var res = await fetchJSON(API + '/api/sub-ledgers/' + subLedgerId, { method: 'DELETE' });
+      if (res && res.success) {
+        loadSubLedgers();
+      } else {
+        alert('Delete failed: ' + ((res && res.error) || 'Unknown error'));
+      }
+    }
+
     // ─── BILL CASH ACCOUNT ────────────────────────────────────────────────────
     async function loadBill() {
       const [status, accounts, balance] = await Promise.all([
@@ -3564,11 +3875,13 @@
       if (r.success) {
         const billStatus = r.billRecord ? '✓ Submitted to BILL' : 'Local only';
         const billRef = r.billRecord ? `<br><span style="font-size:11px;color:var(--green);">BILL Ref: ${esc(r.billRecord.receivedPayId)} | Visible in BILL Dashboard</span>` : '';
+        const jeRef = r.journalEntry ? `<br><span style="font-size:11px;color:var(--blue);">JE: ${esc(r.journalEntry.entryId)} | DR 1050 BILL Cash / CR 1000 Trust Cash</span>` : '';
+
         el('bill-deposit-result').innerHTML = `
           <div style="padding:12px;background:rgba(16,185,129,0.1);border:1px solid var(--green);border-radius:6px;">
             <strong style="color:var(--green)">Deposit Submitted to BILL</strong><br>
             <span style="font-size:13px;">$${amount.toLocaleString('en-US',{minimumFractionDigits:2})} → ${esc(r.destination || 'BILL Account')}</span><br>
-            <span style="font-size:12px;color:var(--text-muted);">Method: ${r.method === 'wire' ? 'Wire Transfer' : (r.method === 'direct' ? 'Direct BILL API' : 'ACH Credit')} | ${r.method === 'wire' ? 'Wire ID: ' + r.wireId : (r.method === 'direct' ? 'Direct' : 'Batch: ' + r.batchId)} | Status: ${esc(r.status)}</span>${billRef}
+            <span style="font-size:12px;color:var(--text-muted);">Method: ${r.method === 'wire' ? 'Wire Transfer' : (r.method === 'direct' ? 'Direct BILL API' : 'ACH Credit')} | ${r.method === 'wire' ? 'Wire ID: ' + r.wireId : (r.method === 'direct' ? 'Direct' : 'Batch: ' + r.batchId)} | Status: ${esc(r.status)}</span>${billRef}${jeRef}
           </div>`;
         el('bill-deposit-amount').value = '';
         el('bill-deposit-memo').value = '';

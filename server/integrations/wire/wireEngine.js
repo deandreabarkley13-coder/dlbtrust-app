@@ -369,72 +369,79 @@ class WireEngine {
       const confirmationNumber = `CNF-${wireId}-${Date.now().toString(36).toUpperCase()}`;
 
       // Post GL journal entry (DR expense/distribution, CR cash)
+      // Skip for bill_deposit wires — bill.js already posts the correct JE (DR 1050 / CR 1000)
       let journalEntryId = null;
-      try {
-        const totalDollars = wire.amount_cents / 100;
-        let debitAccountCode;
-        let journalDescription;
+      if (wire.payment_type !== 'bill_deposit') {
+        try {
+          const totalDollars = wire.amount_cents / 100;
+          let debitAccountCode;
+          let journalDescription;
 
-        switch (wire.payment_type) {
-          case 'trust_distribution':
-            debitAccountCode = ACCOUNT_CODES.DISTRIBUTIONS;
-            journalDescription = `Wire distribution: ${wire.description || wire.beneficiary_name}`;
-            break;
-          case 'interest_payment':
-            debitAccountCode = ACCOUNT_CODES.DISTRIBUTIONS;
-            journalDescription = `Wire coupon distribution: ${wire.description || wire.beneficiary_name}`;
-            break;
-          case 'vendor_payment':
-          case 'principal_return':
-          default:
-            debitAccountCode = ACCOUNT_CODES.EXPENSES;
-            journalDescription = `Wire payment: ${wire.description || wire.beneficiary_name}`;
-            break;
+          switch (wire.payment_type) {
+            case 'trust_distribution':
+              debitAccountCode = ACCOUNT_CODES.DISTRIBUTIONS;
+              journalDescription = `Wire distribution: ${wire.description || wire.beneficiary_name}`;
+              break;
+            case 'interest_payment':
+              debitAccountCode = ACCOUNT_CODES.DISTRIBUTIONS;
+              journalDescription = `Wire coupon distribution: ${wire.description || wire.beneficiary_name}`;
+              break;
+            case 'vendor_payment':
+            case 'principal_return':
+            default:
+              debitAccountCode = ACCOUNT_CODES.EXPENSES;
+              journalDescription = `Wire payment: ${wire.description || wire.beneficiary_name}`;
+              break;
+          }
+
+          const journalEntry = await TrustAccountingEngine.postJournalEntry({
+            entryDate: new Date(),
+            description: journalDescription,
+            lines: [
+              {
+                accountCode: debitAccountCode,
+                debitAmount: totalDollars,
+                creditAmount: 0,
+                memo: `Wire ${wireId}: ${wire.description || wire.payment_type}`,
+              },
+              {
+                accountCode: ACCOUNT_CODES.CASH,
+                debitAmount: 0,
+                creditAmount: totalDollars,
+                memo: `Wire outflow: ${wireId}`,
+              },
+            ],
+            referenceType: 'wire_transfer',
+            referenceId: wireId,
+            postedBy: wire.initiated_by || 'system',
+          });
+
+          journalEntryId = journalEntry.entry_id;
+        } catch (glErr) {
+          console.warn(`[WireEngine] GL posting failed for ${wireId} (wire still sent):`, glErr.message);
         }
-
-        const journalEntry = await TrustAccountingEngine.postJournalEntry({
-          entryDate: new Date(),
-          description: journalDescription,
-          lines: [
-            {
-              accountCode: debitAccountCode,
-              debitAmount: totalDollars,
-              creditAmount: 0,
-              memo: `Wire ${wireId}: ${wire.description || wire.payment_type}`,
-            },
-            {
-              accountCode: ACCOUNT_CODES.CASH,
-              debitAmount: 0,
-              creditAmount: totalDollars,
-              memo: `Wire outflow: ${wireId}`,
-            },
-          ],
-          referenceType: 'wire_transfer',
-          referenceId: wireId,
-          postedBy: wire.initiated_by || 'system',
-        });
-
-        journalEntryId = journalEntry.entry_id;
-      } catch (glErr) {
-        console.warn(`[WireEngine] GL posting failed for ${wireId} (wire still sent):`, glErr.message);
+      } else {
+        console.log(`[WireEngine] Skipping GL posting for bill_deposit wire ${wireId} — handled by bill.js`);
       }
 
-      // Record cashflow event
-      try {
-        await pool.query(
-          `INSERT INTO cashflow_events
-             (event_type, category, amount, direction, description, event_date, created_at)
-           VALUES ($1, $2, $3, $4, $5, NOW(), NOW())`,
-          [
-            wire.payment_type === 'trust_distribution' ? 'distribution' : 'wire_payment',
-            wire.payment_type === 'trust_distribution' ? 'financing' : 'operating',
-            wire.amount_cents / 100,
-            'outflow',
-            `Wire ${wireId}: ${wire.description || wire.beneficiary_name}`,
-          ]
-        );
-      } catch (cfErr) {
-        console.warn(`[WireEngine] Cashflow event failed for ${wireId}:`, cfErr.message);
+      // Record cashflow event (skip for bill_deposit — bill.js already records it)
+      if (wire.payment_type !== 'bill_deposit') {
+        try {
+          await pool.query(
+            `INSERT INTO cashflow_events
+               (event_type, category, amount, direction, description, event_date, created_at)
+             VALUES ($1, $2, $3, $4, $5, NOW(), NOW())`,
+            [
+              wire.payment_type === 'trust_distribution' ? 'distribution' : 'wire_payment',
+              wire.payment_type === 'trust_distribution' ? 'financing' : 'operating',
+              wire.amount_cents / 100,
+              'outflow',
+              `Wire ${wireId}: ${wire.description || wire.beneficiary_name}`,
+            ]
+          );
+        } catch (cfErr) {
+          console.warn(`[WireEngine] Cashflow event failed for ${wireId}:`, cfErr.message);
+        }
       }
 
       // Check system mode for wire transmission routing
@@ -447,8 +454,9 @@ class WireEngine {
         const productionConfig = await SystemSettings.getProductionPartnerConfig();
         const isBill = productionConfig && productionConfig.isBill;
 
-        if (isBill) {
+        if (isBill && wire.payment_type !== 'bill_deposit') {
           // BILL Cash Account: submit wire via BILL's RecordARPayment API
+          // Skip for bill_deposit wires — bill.js already recorded the deposit in BILL
           console.log(`[WireEngine] sendWire(${wireId}): PRODUCTION MODE → BILL Cash Account`);
           try {
             const billClient = require('../bill/billClient');
@@ -462,6 +470,8 @@ class WireEngine {
           } catch (billErr) {
             console.warn(`[WireEngine] BILL API wire submission info (non-blocking):`, billErr.message);
           }
+        } else if (isBill && wire.payment_type === 'bill_deposit') {
+          console.log(`[WireEngine] sendWire(${wireId}): Skipping BILL API call — already recorded by bill.js`);
         } else {
         console.log(`[WireEngine] sendWire(${wireId}): PRODUCTION MODE → ${wireEndpoint}`);
         try {
@@ -490,18 +500,27 @@ class WireEngine {
           const parsed = new URL(wireEndpoint);
           const lib = parsed.protocol === 'https:' ? https : http;
 
+          const reqHeaders = {
+                'Content-Type': 'application/json',
+                'Content-Length': Buffer.byteLength(wirePayload),
+                'X-Request-ID': `WIRE-${wireId}-${Date.now()}`,
+                'User-Agent': 'DLBTrust-Wire/1.0',
+          };
+          if (bankAuth.authType === 'bearer' && bankAuth.apiKey) {
+            reqHeaders['Authorization'] = 'Bearer ' + bankAuth.apiKey;
+          } else if (bankAuth.authType === 'basic' && bankAuth.apiKey) {
+            reqHeaders['Authorization'] = 'Basic ' + Buffer.from(bankAuth.apiKey + ':' + (bankAuth.apiSecret || '')).toString('base64');
+          } else if (bankAuth.authType === 'api_key' && bankAuth.apiKey) {
+            reqHeaders['X-API-Key'] = bankAuth.apiKey;
+          }
+
           await new Promise((resolve, reject) => {
             const req = lib.request({
               hostname: parsed.hostname,
               port: parsed.port || (parsed.protocol === 'https:' ? 443 : 80),
               path: parsed.pathname,
               method: 'POST',
-              headers: {
-                'Content-Type': 'application/json',
-                'Content-Length': Buffer.byteLength(wirePayload),
-                'X-Request-ID': `WIRE-${wireId}-${Date.now()}`,
-                'User-Agent': 'DLBTrust-Wire/1.0',
-              },
+              headers: reqHeaders,
               timeout: 60000,
             }, (res) => {
               let data = '';

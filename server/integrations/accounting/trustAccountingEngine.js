@@ -419,7 +419,6 @@ class TrustAccountingEngine {
     const assets = accounts.filter(a => a.account_type === 'asset');
     const liabilities = accounts.filter(a => a.account_type === 'liability');
     const equity = accounts.filter(a => a.account_type === 'equity');
-
     const incomeAccounts = incomeExpense.filter(a => a.account_type === 'income');
     const expenseAccounts = incomeExpense.filter(a => a.account_type === 'expense');
 
@@ -437,8 +436,8 @@ class TrustAccountingEngine {
     const mapAcct = (a) => ({ account_code: a.account_code, account_name: a.account_name, sub_type: a.sub_type, balance: parseFloat(a.computed_balance) });
 
     const equityItems = equity.map(mapAcct);
-    if (Math.abs(netIncome) > 0.005) {
-      equityItems.push({ account_code: 'NI', account_name: 'Retained Earnings (Net Income)', sub_type: 'net_income', balance: netIncome });
+    if (Math.abs(netIncome) >= 0.01) {
+      equityItems.push({ account_code: '3999', account_name: 'Retained Earnings (Net Income)', sub_type: 'retained_earnings', balance: netIncome });
     }
 
     return {
@@ -446,12 +445,12 @@ class TrustAccountingEngine {
       assets: assets.map(mapAcct),
       liabilities: liabilities.map(mapAcct),
       equity: equityItems,
+      net_income: netIncome,
       total_assets: Math.round(totalAssets * 100) / 100,
       total_liabilities: Math.round(totalLiabilities * 100) / 100,
       total_equity: Math.round(totalEquity * 100) / 100,
       total_liabilities_and_equity: Math.round((totalLiabilities + totalEquity) * 100) / 100,
       is_balanced: Math.abs(totalAssets - (totalLiabilities + totalEquity)) < 0.01,
-      net_income: netIncome,
       generated_at: new Date().toISOString(),
     };
   }
@@ -523,9 +522,7 @@ class TrustAccountingEngine {
     if (toDate) { dateConditions.push(`je.entry_date <= $${idx++}`); params.push(toDate); }
     const dateFilter = dateConditions.join(' AND ');
 
-    // Run all 4 cashflow queries in parallel
     const [operating, investing, financing, cashAcct] = await Promise.all([
-      // Operating: cash movements tied to income/expense accounts
       pool.query(`
         SELECT ta.account_code, ta.account_name, ta.account_type, ta.sub_type,
           COALESCE(SUM(jl.credit_amount - jl.debit_amount), 0) AS net_flow
@@ -536,7 +533,6 @@ class TrustAccountingEngine {
         GROUP BY ta.account_code, ta.account_name, ta.account_type, ta.sub_type
         ORDER BY ta.account_code
       `, params),
-      // Investing: movements on investment / receivable asset accounts
       pool.query(`
         SELECT ta.account_code, ta.account_name, ta.sub_type,
           COALESCE(SUM(jl.debit_amount - jl.credit_amount), 0) AS net_flow
@@ -548,7 +544,6 @@ class TrustAccountingEngine {
         GROUP BY ta.account_code, ta.account_name, ta.sub_type
         ORDER BY ta.account_code
       `, params),
-      // Financing: movements on liability / equity accounts
       pool.query(`
         SELECT ta.account_code, ta.account_name, ta.account_type, ta.sub_type,
           COALESCE(SUM(jl.credit_amount - jl.debit_amount), 0) AS net_flow
@@ -559,7 +554,6 @@ class TrustAccountingEngine {
         GROUP BY ta.account_code, ta.account_name, ta.account_type, ta.sub_type
         ORDER BY ta.account_code
       `, params),
-      // Cash account movements
       pool.query(`
         SELECT ta.account_code, ta.account_name,
           COALESCE(SUM(jl.debit_amount - jl.credit_amount), 0) AS net_flow
@@ -654,7 +648,6 @@ class TrustAccountingEngine {
         COUNT(CASE WHEN status = 'closed' THEN 1 END) AS closed_periods
        FROM trust_periods`),
     ]);
-
     const sumByType = (type) => accounts
       .filter(a => a.account_type === type)
       .reduce((s, a) => s + parseFloat(a.balance), 0);
