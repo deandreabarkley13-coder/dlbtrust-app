@@ -110,18 +110,16 @@ app.get('/api/health', async function(req, res) {
     var pool = require(path.join(HD, 'server', 'integrations', 'bonds', 'pgPool'));
     var checks = {};
 
-    var bondRes = await pool.query("SELECT COUNT(*) as c, COALESCE(SUM(face_value),0) as total FROM bonds WHERE status = 'active'");
+    var [bondRes, cashRes, trustRes, userRes] = await Promise.all([
+      pool.query("SELECT COUNT(*) as c, COALESCE(SUM(face_value),0) as total FROM bonds WHERE status = 'active'"),
+      pool.query("SELECT COUNT(*) as c FROM cash_accounts WHERE status = 'active'"),
+      pool.query("SELECT COUNT(*) as c FROM trust_accounts"),
+      pool.query("SELECT COUNT(*) as c FROM auth_users"),
+    ]);
     checks.bonds = { ok: bondRes.rows[0].c > 0, count: parseInt(bondRes.rows[0].c), totalValue: Number(bondRes.rows[0].total) };
-
-    var cashRes = await pool.query("SELECT COUNT(*) as c FROM cash_accounts WHERE status = 'active'");
     checks.cashAccounts = { ok: cashRes.rows[0].c > 0, count: parseInt(cashRes.rows[0].c) };
-
-    var trustRes = await pool.query("SELECT COUNT(*) as c FROM trust_accounts");
     checks.trustAccounts = { ok: trustRes.rows[0].c > 0, count: parseInt(trustRes.rows[0].c) };
-
-    var userRes = await pool.query("SELECT COUNT(*) as c FROM auth_users");
     checks.authUsers = { ok: userRes.rows[0].c > 0, count: parseInt(userRes.rows[0].c) };
-
     checks.database = { ok: true };
 
     var fineractOk = false;
@@ -132,7 +130,6 @@ app.get('/api/health', async function(req, res) {
     } catch(e) {}
     checks.fineract = { ok: fineractOk };
 
-    // BILL Cash Account status
     var billOk = false;
     try {
       var billClient = require(path.join(HD, 'server', 'integrations', 'bill', 'billClient'));
