@@ -162,7 +162,7 @@ class DataBridge {
               AND je.reference_id = CAST(cp.id AS TEXT)
               AND je.status = 'posted'
           )
-        ORDER BY cp.payment_date ASC
+        ORDER BY cp.coupon_date ASC
         LIMIT 100
       `);
 
@@ -198,12 +198,12 @@ class DataBridge {
             }
 
             await TrustAccountingEngine.postJournalEntry({
-              entryDate: cpn.payment_date,
+              entryDate: cpn.coupon_date || cpn.created_at,
               description: 'Coupon payment received — ' + cpn.bond_code,
               lines: couponLines,
               referenceType: 'coupon_payment',
               referenceId: String(cpn.id),
-              bondId: cpn.bond_code,
+              bondId: cpn.bond_id,
               postedBy: 'data_bridge',
               postToFineract: false,
             });
@@ -753,7 +753,7 @@ class DataBridge {
     var errors = [];
 
     try {
-      // Get unsynced journal entries (only posted, not reversed)
+      // Get unsynced journal entries (only posted, not reversed, not reversals)
       var entries = await pool.query(`
         SELECT je.id, je.entry_id, je.entry_date, je.description, je.reference_type,
                je.reference_id, je.bond_id, je.posted_by, je.fineract_txn_id, je.status,
@@ -766,10 +766,18 @@ class DataBridge {
         FROM trust_journal_entries je
         JOIN trust_journal_lines jl ON jl.entry_id = je.entry_id
         WHERE je.status = 'posted' AND je.fineract_txn_id IS NULL
+          AND je.reference_type != 'reversal'
         GROUP BY je.id, je.entry_id, je.entry_date, je.description, je.reference_type,
                  je.reference_id, je.bond_id, je.posted_by, je.fineract_txn_id, je.status
         ORDER BY je.entry_date ASC
         LIMIT 50
+      `);
+
+      // Mark reversal entries as synced (they don't need to go to Fineract)
+      await pool.query(`
+        UPDATE trust_journal_entries
+        SET fineract_txn_id = 'REVERSAL-LOCAL'
+        WHERE status = 'posted' AND fineract_txn_id IS NULL AND reference_type = 'reversal'
       `);
 
       // Get GL mappings
