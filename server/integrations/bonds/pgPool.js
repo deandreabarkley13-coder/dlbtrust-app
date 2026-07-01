@@ -58,7 +58,7 @@ function rebuildPool() {
 }
 
 // Keepalive ping every 15s
-setInterval(async () => {
+const keepAliveTimer = setInterval(async () => {
   try {
     await pool.query('SELECT 1');
   } catch (e) {
@@ -66,13 +66,20 @@ setInterval(async () => {
     rebuildPool();
   }
 }, 15000);
+keepAliveTimer.unref();
 
-// Resilient query with 3-tier retry
+function isReadOnly(text) {
+  const trimmed = text.trim().toUpperCase();
+  return trimmed.startsWith('SELECT') || trimmed.startsWith('WITH');
+}
+
+// Resilient query with 3-tier retry (reads only; writes throw on first error)
 async function resilientQuery(text, params) {
   // Tier 1: normal pool query
   try {
     return await pool.query(text, params);
   } catch (err) {
+    if (!isReadOnly(text)) throw err;
     if (!err.message.includes('terminated') && !err.message.includes('Connection') && !err.message.includes('ECONNREFUSED')) {
       throw err;
     }
@@ -106,6 +113,6 @@ module.exports = {
   query: resilientQuery,
   // Expose pool for callers that need connect() for transactions
   connect: () => pool.connect(),
-  end: () => pool.end(),
+  end: () => { clearInterval(keepAliveTimer); return pool.end(); },
   on: (event, handler) => pool.on(event, handler),
 };
