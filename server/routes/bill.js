@@ -3,6 +3,7 @@
 var express = require('express');
 var router = express.Router();
 var path = require('path');
+var TrustAccountingEngine = require(path.join(__dirname, '../integrations/accounting/trustAccountingEngine'));
 
 // Auth middleware — require admin token, JWT, or API key
 var requireAdmin = async function(req, res, next) {
@@ -141,6 +142,7 @@ router.post('/deposit', requireAdmin, async function(req, res) {
       });
 
       // Log locally in the database for audit trail
+      var directBatchId = 'DIRECT-' + Date.now() + '-' + Math.random().toString(36).slice(2, 6).toUpperCase();
       try {
         var pool = require(path.join(__dirname, '../integrations/bonds/pgPool'));
         await pool.query(
@@ -150,7 +152,7 @@ router.post('/deposit', requireAdmin, async function(req, res) {
              file_path, created_by, partner_id, created_at)
            VALUES ($1, $2, $3, 'CCD', $4, $5, 1, $6, '', '', $7, 'bill_direct', NOW())`,
           [
-            'DIRECT-' + Date.now() + '-' + Math.random().toString(36).slice(2, 6).toUpperCase(),
+            directBatchId,
             'direct-bill-deposit.log',
             'transmitted',
             memo.substring(0, 10).toUpperCase(),
@@ -163,6 +165,25 @@ router.post('/deposit', requireAdmin, async function(req, res) {
         console.error('[bill-deposit] Audit log failed (direct):', logErr.message);
       }
 
+      // Post journal entry: DR BILL Cash (1050) / CR Trust Cash (1000)
+      var directJE = null;
+      try {
+        directJE = await TrustAccountingEngine.postJournalEntry({
+          entryDate: new Date(),
+          description: 'BILL Cash deposit (direct) — ' + memo,
+          lines: [
+            { accountCode: '1050', debitAmount: amount, creditAmount: 0, memo: 'Funds to BILL Cash ****' + billCashLast4 },
+            { accountCode: '1000', debitAmount: 0, creditAmount: amount, memo: 'Cash transferred to BILL' },
+          ],
+          referenceType: 'bill_deposit',
+          referenceId: directBatchId,
+          postedBy: 'bill_deposit',
+          postToFineract: false,
+        });
+      } catch(jeErr) {
+        console.error('[bill-deposit] Journal entry failed (direct):', jeErr.message);
+      }
+
       return res.json({
         success: true,
         method: 'direct',
@@ -170,6 +191,7 @@ router.post('/deposit', requireAdmin, async function(req, res) {
         status: 'submitted_to_bill',
         destination: displayDest,
         message: 'Deposit recorded directly in BILL — visible in your BILL dashboard immediately.',
+        journalEntry: directJE ? { entryId: directJE.entry_id, posted: true } : null,
         billRecord: {
           receivedPayId: billRecord.receivedPayId,
           billStatus: billRecord.status,
@@ -206,6 +228,25 @@ router.post('/deposit', requireAdmin, async function(req, res) {
         console.error('[bill-deposit] BILL API recording failed (wire):', billErr.message);
       }
 
+      // Post journal entry: DR BILL Cash (1050) / CR Trust Cash (1000)
+      var wireJE = null;
+      try {
+        wireJE = await TrustAccountingEngine.postJournalEntry({
+          entryDate: new Date(),
+          description: 'BILL Cash deposit (wire) — ' + memo,
+          lines: [
+            { accountCode: '1050', debitAmount: amount, creditAmount: 0, memo: 'Wire to BILL Cash ****' + billCashLast4 },
+            { accountCode: '1000', debitAmount: 0, creditAmount: amount, memo: 'Cash wired to BILL' },
+          ],
+          referenceType: 'bill_deposit',
+          referenceId: wire.wire_id,
+          postedBy: 'bill_deposit',
+          postToFineract: false,
+        });
+      } catch(jeErr) {
+        console.error('[bill-deposit] Journal entry failed (wire):', jeErr.message);
+      }
+
       return res.json({
         success: true,
         method: 'wire',
@@ -214,6 +255,7 @@ router.post('/deposit', requireAdmin, async function(req, res) {
         status: wire.status,
         destination: displayDest,
         message: 'Wire transfer initiated and recorded in BILL.',
+        journalEntry: wireJE ? { entryId: wireJE.entry_id, posted: true } : null,
         billRecord: billRecord ? {
           receivedPayId: billRecord.receivedPayId,
           billStatus: billRecord.status,
@@ -262,6 +304,25 @@ router.post('/deposit', requireAdmin, async function(req, res) {
       console.error('[bill-deposit] BILL API recording failed (ach):', billErr.message);
     }
 
+    // Post journal entry: DR BILL Cash (1050) / CR Trust Cash (1000)
+    var achJE = null;
+    try {
+      achJE = await TrustAccountingEngine.postJournalEntry({
+        entryDate: new Date(),
+        description: 'BILL Cash deposit (ACH) — ' + memo,
+        lines: [
+          { accountCode: '1050', debitAmount: amount, creditAmount: 0, memo: 'ACH to BILL Cash ****' + billCashLast4 },
+          { accountCode: '1000', debitAmount: 0, creditAmount: amount, memo: 'Cash transferred to BILL via ACH' },
+        ],
+        referenceType: 'bill_deposit',
+        referenceId: batch.batch_id,
+        postedBy: 'bill_deposit',
+        postToFineract: false,
+      });
+    } catch(jeErr) {
+      console.error('[bill-deposit] Journal entry failed (ach):', jeErr.message);
+    }
+
     res.json({
       success: true,
       method: 'ach',
@@ -270,6 +331,7 @@ router.post('/deposit', requireAdmin, async function(req, res) {
       status: batch.status,
       destination: displayDest,
       message: 'ACH credit initiated and recorded in BILL.',
+      journalEntry: achJE ? { entryId: achJE.entry_id, posted: true } : null,
       billRecord: billRecord ? {
         receivedPayId: billRecord.receivedPayId,
         billStatus: billRecord.status,

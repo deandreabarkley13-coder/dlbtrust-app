@@ -155,6 +155,33 @@ router.get('/client/:contactId/statement', async function(req, res) {
 });
 
 // ═══════════════════════════════════════════════════════════════════════════════
+// DELETE SUB-LEDGER
+// ═══════════════════════════════════════════════════════════════════════════════
+
+router.delete('/:id', async function(req, res) {
+  try {
+    var result = await SubLedgerEngine.deleteSubLedger(req.params.id);
+    res.json({ success: true, data: result });
+  } catch (err) {
+    var status = err.message.includes('not found') ? 404 : 500;
+    res.status(status).json({ success: false, error: err.message });
+  }
+});
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// PUSH TO FINERACT GL
+// ═══════════════════════════════════════════════════════════════════════════════
+
+router.post('/push-to-fineract', async function(req, res) {
+  try {
+    var result = await SubLedgerEngine.pushToFineract();
+    res.json({ success: true, data: result });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// ═══════════════════════════════════════════════════════════════════════════════
 // SYNC FROM BOND SUBSCRIPTIONS
 // ═══════════════════════════════════════════════════════════════════════════════
 

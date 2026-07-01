@@ -28,6 +28,7 @@ var pool = require('../bonds/pgPool');
 // Account code constants (matching trust chart of accounts)
 var ACCOUNTS = {
   CASH:              '1000',
+  BILL_CASH:         '1050',
   BOND_INVESTMENTS:  '1100',
   ACCRUED_INTEREST:  '1200',
   OTHER_RECEIVABLES: '1300',
@@ -87,6 +88,9 @@ class DataBridge {
         resolved_at     TIMESTAMPTZ
       )
     `);
+
+    // Ensure BILL Cash account exists in the chart of accounts
+    await DataBridge._ensureAccount(ACCOUNTS.BILL_CASH, 'BILL Cash Account', 'asset', 'cash');
   }
 
   // ═══════════════════════════════════════════════════════════════════════════
@@ -461,14 +465,16 @@ class DataBridge {
 
           var lines;
           if (txn.type === 'deposit') {
+            // Deposit TO BILL Cash: DR BILL Cash (1050) / CR Trust Cash (1000)
             lines = [
-              { accountCode: ACCOUNTS.CASH, debitAmount: amount, creditAmount: 0, memo: 'BILL deposit ' + txn.transaction_id },
-              { accountCode: ACCOUNTS.OTHER_RECEIVABLES, debitAmount: 0, creditAmount: amount, memo: 'BILL deposit received' },
+              { accountCode: ACCOUNTS.BILL_CASH, debitAmount: amount, creditAmount: 0, memo: 'BILL deposit ' + txn.transaction_id },
+              { accountCode: ACCOUNTS.CASH, debitAmount: 0, creditAmount: amount, memo: 'Cash transferred to BILL' },
             ];
           } else {
+            // Payment FROM BILL: DR Payment Expense / CR BILL Cash (1050)
             lines = [
               { accountCode: ACCOUNTS.PAYMENT_EXPENSE, debitAmount: amount, creditAmount: 0, memo: 'BILL payment ' + txn.transaction_id },
-              { accountCode: ACCOUNTS.CASH, debitAmount: 0, creditAmount: amount, memo: 'BILL payment sent' },
+              { accountCode: ACCOUNTS.BILL_CASH, debitAmount: 0, creditAmount: amount, memo: 'BILL payment sent' },
             ];
           }
 

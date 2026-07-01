@@ -848,7 +848,7 @@
       <div class="card mt-16">
         <div class="section-title">Deposit Funds to BILL Account</div>
         <p class="text-muted" style="font-size:12px;margin-bottom:12px;">
-          Push funds from the Trust to your BILL Cash Account (****0240) via direct BILL API, ACH credit, or wire transfer.
+          Push funds from Trust Cash (1000) to BILL Cash Account (1050 — ****0240). Journal entry: DR 1050 BILL Cash / CR 1000 Trust Cash.
         </p>
         <div class="form-row" style="gap:12px;flex-wrap:wrap;align-items:flex-end;">
           <div>
@@ -885,6 +885,7 @@
         <div><h1>Client Sub-Ledger Accounts</h1><div class="subtitle">Per-client breakdowns of trust GL accounts — bond investments, distributions, fees, escrow</div></div>
         <div>
           <button class="btn btn-sm" onclick="syncSubLedgerSubscriptions()">Sync from Subscriptions</button>
+          <button class="btn btn-sm" onclick="pushSubLedgersToFineract()">Push to Fineract</button>
           <button class="btn btn-primary btn-sm" onclick="loadSubLedgers()">Refresh</button>
         </div>
       </div>
@@ -910,6 +911,7 @@
             <label class="form-label">Parent GL Account</label>
             <select id="sl-parent-account" class="form-control">
               <option value="1000">1000 — Trust Cash</option>
+              <option value="1050">1050 — BILL Cash Account</option>
               <option value="1100" selected>1100 — Bond Investments</option>
               <option value="1200">1200 — Accrued Interest</option>
               <option value="1300">1300 — Other Receivables</option>
@@ -917,6 +919,9 @@
               <option value="2100">2100 — Fees Payable</option>
               <option value="3000">3000 — Trust Corpus</option>
               <option value="3100">3100 — Retained Earnings</option>
+              <option value="4000">4000 — Interest Income</option>
+              <option value="4100">4100 — Fee Income</option>
+              <option value="5000">5000 — Management Fees</option>
             </select>
           </div>
           <div>
@@ -3621,16 +3626,19 @@
           // Sub-ledger account detail list
           var listRes = await fetchJSON(API + '/api/sub-ledgers?status=active');
           if (listRes && listRes.success && listRes.data.length > 0) {
-            html += '<table class="data-table" style="margin-top:1rem"><tr><th>ID</th><th>Client</th><th>Parent</th><th>Type</th><th>Balance</th><th>Status</th></tr>';
+            html += '<table class="data-table" style="margin-top:1rem"><tr><th>ID</th><th>Client</th><th>Parent</th><th>Type</th><th>Balance</th><th>Fineract</th><th>Status</th><th></th></tr>';
             for (var j = 0; j < listRes.data.length; j++) {
               var sl = listRes.data[j];
               var clientName = (sl.first_name || '') + ' ' + (sl.last_name || '');
+              var fStatus = sl.fineract_savings_id ? '<span class="badge badge-green">Linked</span>' : '<span class="badge badge-yellow">Not linked</span>';
               html += '<tr><td style="font-family:monospace;font-size:11px">' + esc(sl.sub_ledger_id) + '</td>' +
                 '<td>' + esc(clientName.trim() || sl.contact_id) + '</td>' +
                 '<td>' + esc(sl.parent_account_code) + ' — ' + esc(sl.parent_account_name || '') + '</td>' +
                 '<td>' + esc(sl.sub_account_type) + '</td>' +
                 '<td>' + fmt(sl.balance) + '</td>' +
-                '<td><span class="badge ' + (sl.status === 'active' ? 'badge-green' : 'badge-red') + '">' + sl.status + '</span></td></tr>';
+                '<td>' + fStatus + '</td>' +
+                '<td><span class="badge ' + (sl.status === 'active' ? 'badge-green' : 'badge-red') + '">' + sl.status + '</span></td>' +
+                '<td><button class="btn btn-sm" style="font-size:10px;padding:2px 6px;color:#dc2626" onclick="deleteSubLedger(\'' + esc(sl.sub_ledger_id) + '\')">Delete</button></td></tr>';
             }
             html += '</table>';
           }
@@ -3741,6 +3749,26 @@
       }
     }
 
+    async function pushSubLedgersToFineract() {
+      var res = await fetchJSON(API + '/api/sub-ledgers/push-to-fineract', { method: 'POST' });
+      if (res && res.success) {
+        alert('Pushed ' + (res.data.synced || 0) + ' sub-ledger(s) to Fineract GL, ' + (res.data.failed || 0) + ' failed');
+        loadSubLedgers();
+      } else {
+        alert('Push failed: ' + ((res && res.error) || 'Unknown error'));
+      }
+    }
+
+    async function deleteSubLedger(subLedgerId) {
+      if (!confirm('Delete sub-ledger ' + subLedgerId + '? This will remove all transactions.')) return;
+      var res = await fetchJSON(API + '/api/sub-ledgers/' + subLedgerId, { method: 'DELETE' });
+      if (res && res.success) {
+        loadSubLedgers();
+      } else {
+        alert('Delete failed: ' + ((res && res.error) || 'Unknown error'));
+      }
+    }
+
     // ─── BILL CASH ACCOUNT ────────────────────────────────────────────────────
     async function loadBill() {
       const [status, accounts, balance] = await Promise.all([
@@ -3818,11 +3846,12 @@
       if (r.success) {
         const billStatus = r.billRecord ? '✓ Submitted to BILL' : 'Local only';
         const billRef = r.billRecord ? `<br><span style="font-size:11px;color:var(--green);">BILL Ref: ${esc(r.billRecord.receivedPayId)} | Visible in BILL Dashboard</span>` : '';
+        const jeRef = r.journalEntry ? `<br><span style="font-size:11px;color:var(--text-muted);">JE: ${esc(r.journalEntry.entryId)} | DR 1050 BILL Cash / CR 1000 Trust Cash</span>` : '';
         el('bill-deposit-result').innerHTML = `
           <div style="padding:12px;background:rgba(16,185,129,0.1);border:1px solid var(--green);border-radius:6px;">
             <strong style="color:var(--green)">Deposit Submitted to BILL</strong><br>
             <span style="font-size:13px;">$${amount.toLocaleString('en-US',{minimumFractionDigits:2})} → ${esc(r.destination || 'BILL Account')}</span><br>
-            <span style="font-size:12px;color:var(--text-muted);">Method: ${r.method === 'wire' ? 'Wire Transfer' : (r.method === 'direct' ? 'Direct BILL API' : 'ACH Credit')} | ${r.method === 'wire' ? 'Wire ID: ' + r.wireId : (r.method === 'direct' ? 'Direct' : 'Batch: ' + r.batchId)} | Status: ${esc(r.status)}</span>${billRef}
+            <span style="font-size:12px;color:var(--text-muted);">Method: ${r.method === 'wire' ? 'Wire Transfer' : (r.method === 'direct' ? 'Direct BILL API' : 'ACH Credit')} | ${r.method === 'wire' ? 'Wire ID: ' + r.wireId : (r.method === 'direct' ? 'Direct' : 'Batch: ' + r.batchId)} | Status: ${esc(r.status)}</span>${billRef}${jeRef}
           </div>`;
         el('bill-deposit-amount').value = '';
         el('bill-deposit-memo').value = '';

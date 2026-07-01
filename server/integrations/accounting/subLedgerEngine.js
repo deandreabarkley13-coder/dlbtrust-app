@@ -13,6 +13,7 @@
 'use strict';
 
 var pool = require('../bonds/pgPool');
+var { FineractClient } = require('../fineract/fineractClient');
 
 class SubLedgerEngine {
 
@@ -469,6 +470,103 @@ class SubLedgerEngine {
       recentTransactions: recentTxns.rows,
       generatedAt: new Date().toISOString(),
     };
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  //  DELETE SUB-LEDGER
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  static async deleteSubLedger(subLedgerId) {
+    var client = await pool.connect();
+    try {
+      await client.query('BEGIN');
+      await client.query('DELETE FROM sub_ledger_transactions WHERE sub_ledger_id = $1', [subLedgerId]);
+      var result = await client.query('DELETE FROM client_sub_ledgers WHERE sub_ledger_id = $1 RETURNING *', [subLedgerId]);
+      await client.query('COMMIT');
+      if (result.rows.length === 0) throw new Error('Sub-ledger ' + subLedgerId + ' not found');
+      return result.rows[0];
+    } catch (err) {
+      await client.query('ROLLBACK');
+      throw err;
+    } finally {
+      client.release();
+    }
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  //  PUSH SUB-LEDGERS TO FINERACT GL
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  /**
+   * Create corresponding Fineract GL sub-accounts for each sub-ledger.
+   * Maps sub-ledger parent account types to Fineract GL types:
+   *   asset=1, liability=2, equity=3, income=4, expense=5
+   */
+  static async pushToFineract() {
+    var synced = 0;
+    var skipped = 0;
+    var failed = 0;
+    var errors = [];
+
+    try {
+      var ledgers = await pool.query(`
+        SELECT sl.*, ta.account_type AS parent_type, ta.account_name AS parent_name
+        FROM client_sub_ledgers sl
+        LEFT JOIN trust_accounts ta ON ta.account_code = sl.parent_account_code
+        WHERE sl.status = 'active' AND (sl.fineract_savings_id IS NULL OR sl.fineract_savings_id = '')
+      `);
+
+      var typeMap = { asset: 1, liability: 2, equity: 3, income: 4, expense: 5 };
+
+      for (var i = 0; i < ledgers.rows.length; i++) {
+        var sl = ledgers.rows[i];
+        try {
+          var glType = typeMap[sl.parent_type] || 1;
+          var glCode = sl.parent_account_code + '-' + sl.sub_ledger_id.replace('SL-', '').substring(0, 12);
+
+          var fineractAcct = await FineractClient.createGLAccount({
+            name: sl.sub_account_name,
+            glCode: glCode,
+            type: glType,
+            usage: 2,
+            description: 'Sub-ledger: ' + sl.sub_account_name + ' (parent: ' + sl.parent_account_code + ')',
+            manualEntriesAllowed: true,
+          });
+
+          var fineractId = fineractAcct && (fineractAcct.resourceId || fineractAcct.id) ? String(fineractAcct.resourceId || fineractAcct.id) : glCode;
+
+          await pool.query(
+            'UPDATE client_sub_ledgers SET fineract_savings_id = $1, updated_at = NOW() WHERE sub_ledger_id = $2',
+            [fineractId, sl.sub_ledger_id]
+          );
+
+          // Post opening JE in Fineract if balance > 0
+          if (parseFloat(sl.balance) > 0) {
+            try {
+              await FineractClient.postJournalEntry({
+                officeId: 1,
+                transactionDate: new Date(),
+                comments: 'Sub-ledger opening balance: ' + sl.sub_account_name,
+                debits: [{ glAccountId: parseInt(fineractId) || 1, amount: parseFloat(sl.balance) }],
+                credits: [{ glAccountId: 1, amount: parseFloat(sl.balance) }],
+              });
+            } catch (jeErr) {
+              // Non-fatal — GL account exists but JE may fail if Fineract IDs aren't numeric
+              console.warn('[SubLedger] Fineract JE failed for ' + sl.sub_ledger_id + ':', jeErr.message);
+            }
+          }
+
+          synced++;
+        } catch (err) {
+          failed++;
+          errors.push({ subLedgerId: sl.sub_ledger_id, error: err.message });
+        }
+      }
+    } catch (outerErr) {
+      errors.push({ phase: 'query', error: outerErr.message });
+    }
+
+    return { synced: synced, skipped: skipped, failed: failed, errors: errors };
   }
 
   // ═══════════════════════════════════════════════════════════════════════════
