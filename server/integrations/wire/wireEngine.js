@@ -490,18 +490,27 @@ class WireEngine {
           const parsed = new URL(wireEndpoint);
           const lib = parsed.protocol === 'https:' ? https : http;
 
+          const reqHeaders = {
+                'Content-Type': 'application/json',
+                'Content-Length': Buffer.byteLength(wirePayload),
+                'X-Request-ID': `WIRE-${wireId}-${Date.now()}`,
+                'User-Agent': 'DLBTrust-Wire/1.0',
+          };
+          if (bankAuth.authType === 'bearer' && bankAuth.apiKey) {
+            reqHeaders['Authorization'] = 'Bearer ' + bankAuth.apiKey;
+          } else if (bankAuth.authType === 'basic' && bankAuth.apiKey) {
+            reqHeaders['Authorization'] = 'Basic ' + Buffer.from(bankAuth.apiKey + ':' + (bankAuth.apiSecret || '')).toString('base64');
+          } else if (bankAuth.authType === 'api_key' && bankAuth.apiKey) {
+            reqHeaders['X-API-Key'] = bankAuth.apiKey;
+          }
+
           await new Promise((resolve, reject) => {
             const req = lib.request({
               hostname: parsed.hostname,
               port: parsed.port || (parsed.protocol === 'https:' ? 443 : 80),
               path: parsed.pathname,
               method: 'POST',
-              headers: {
-                'Content-Type': 'application/json',
-                'Content-Length': Buffer.byteLength(wirePayload),
-                'X-Request-ID': `WIRE-${wireId}-${Date.now()}`,
-                'User-Agent': 'DLBTrust-Wire/1.0',
-              },
+              headers: reqHeaders,
               timeout: 60000,
             }, (res) => {
               let data = '';

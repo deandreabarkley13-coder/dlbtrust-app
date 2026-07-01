@@ -162,6 +162,22 @@ router.post('/k1-disburse', requireAdmin, async (req, res) => {
   }
 });
 
+// ─── POST /api/ach-pipeline/route-payment ────────────────────────────────────
+// Smart payment routing — auto-selects ACH or Wire based on amount/urgency
+// Body: { entries, effectiveDate, secCode, description, paymentType, urgent, forceChannel,
+//         beneficiaryRouting, beneficiaryAccount, beneficiaryBankName }
+router.post('/route-payment', requireAdmin, async (req, res) => {
+  try {
+    const result = await PaymentOrchestrator.routePayment({
+      ...req.body,
+      createdBy: 'admin',
+    });
+    res.json({ success: true, data: result });
+  } catch (err) {
+    res.status(400).json({ success: false, error: err.message });
+  }
+});
+
 // ─── GET /api/ach-pipeline/payment-summary ──────────────────────────────────
 // Payment summary for dashboard
 router.get('/payment-summary', async (req, res) => {
