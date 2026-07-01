@@ -38,7 +38,14 @@ class GenerationEngine {
       if (bondResult.rows.length > 0) {
         const bond = bondResult.rows[0];
         resolvedVars.bondName = resolvedVars.bondName || bond.bond_name;
+        resolvedVars.bondIdentifier = resolvedVars.bondIdentifier || bond.bond_identifier;
         resolvedVars.isin = resolvedVars.isin || bond.isin;
+        resolvedVars.bondType = resolvedVars.bondType || bond.bond_type;
+        resolvedVars.placementType = resolvedVars.placementType || bond.placement_type;
+        resolvedVars.taxExempt = resolvedVars.taxExempt !== undefined ? resolvedVars.taxExempt : bond.tax_exempt;
+        resolvedVars.taxExemptType = resolvedVars.taxExemptType || bond.tax_exempt_type;
+        resolvedVars.issuer = resolvedVars.issuer || bond.issuer;
+        resolvedVars.issuerState = resolvedVars.issuerState || bond.issuer_state;
         resolvedVars.faceValue = resolvedVars.faceValue || parseFloat(bond.face_value).toLocaleString('en-US', { minimumFractionDigits: 2 });
         resolvedVars.couponRate = resolvedVars.couponRate || (parseFloat(bond.coupon_rate) * 100).toFixed(2);
         resolvedVars.issueDate = resolvedVars.issueDate || bond.issue_date.toISOString().split('T')[0];
@@ -381,9 +388,17 @@ class GenerationEngine {
   static _renderBondStatement(data, fromDate, toDate) {
     const f = GenerationEngine._fmt;
     const b = data.bond;
+    const taxStatus = b.tax_exempt ? `Tax-Exempt (${b.tax_exempt_type || 'interest'})` : 'Taxable';
+    const bondTypeLabel = (b.bond_type || 'corporate').replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
+    const placementLabel = (b.placement_type || 'public') === 'private' ? 'Private Placement' : 'Public Offering';
     let html = `<table><tbody>
       <tr><td>Bond</td><td><strong>${b.bond_name}</strong></td></tr>
+      <tr><td>Bond Identifier</td><td>${b.bond_identifier || '—'}</td></tr>
       <tr><td>ISIN</td><td>${b.isin || '—'}</td></tr>
+      <tr><td>Bond Type</td><td>${bondTypeLabel}</td></tr>
+      <tr><td>Placement</td><td>${placementLabel}</td></tr>
+      <tr><td>Tax Status</td><td>${taxStatus}</td></tr>
+      ${b.issuer ? `<tr><td>Issuer</td><td>${b.issuer}${b.issuer_state ? ' (' + b.issuer_state + ')' : ''}</td></tr>` : ''}
       <tr><td>Face Value</td><td>${f(b.face_value)}</td></tr>
       <tr><td>Coupon Rate</td><td>${(parseFloat(b.coupon_rate) * 100).toFixed(4)}%</td></tr>
       <tr><td>Issue Date</td><td>${b.issue_date}</td></tr>

@@ -203,6 +203,34 @@ try {
   }).catch(function(e) { console.warn('[data-bridge] table init:', e.message); });
 } catch(e) { console.warn('[data-bridge]', e.message); }
 
+// Ensure bond metadata columns exist (identifier, type, tax status)
+try {
+  var pgPool = require(path.join(HD, 'server', 'integrations', 'bonds', 'pgPool'));
+  pgPool.query(`
+    ALTER TABLE bonds ADD COLUMN IF NOT EXISTS bond_identifier TEXT;
+    ALTER TABLE bonds ADD COLUMN IF NOT EXISTS bond_type TEXT DEFAULT 'corporate';
+    ALTER TABLE bonds ADD COLUMN IF NOT EXISTS tax_exempt BOOLEAN DEFAULT FALSE;
+    ALTER TABLE bonds ADD COLUMN IF NOT EXISTS tax_exempt_type TEXT;
+    ALTER TABLE bonds ADD COLUMN IF NOT EXISTS placement_type TEXT DEFAULT 'public';
+    ALTER TABLE bonds ADD COLUMN IF NOT EXISTS issuer TEXT;
+    ALTER TABLE bonds ADD COLUMN IF NOT EXISTS issuer_state TEXT;
+  `).then(function() {
+    return pgPool.query(`
+      UPDATE bonds SET
+        bond_identifier = '19781443-DLB-PRB',
+        bond_type = 'municipal',
+        tax_exempt = TRUE,
+        tax_exempt_type = 'interest',
+        placement_type = 'private',
+        issuer = 'DeAndrea Lavar Barkley Trust',
+        issuer_state = 'CA'
+      WHERE bond_name = 'DLB-PRB' AND bond_identifier IS NULL
+    `);
+  }).then(function() {
+    console.log('[bonds] metadata columns ensured (identifier, type, tax status)');
+  }).catch(function(e) { console.warn('[bonds] metadata migration:', e.message); });
+} catch(e) { console.warn('[bonds]', e.message); }
+
 // Ensure system settings table exists (production/sandbox mode config)
 try {
   var SystemSettings = require(path.join(HD, 'server', 'integrations', 'ach', 'systemSettings')).SystemSettings;
