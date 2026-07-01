@@ -927,6 +927,75 @@ class DataBridge {
   }
 
   // ═══════════════════════════════════════════════════════════════════════════
+  //  SUB-LEDGER → TRUST ACCOUNTING RECONCILIATION
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  /**
+   * Reconcile client sub-ledger totals against parent GL accounts.
+   * Flags any parent account where sub-ledger sum doesn't match GL balance.
+   */
+  static async reconcileSubLedgers() {
+    var syncId = 'RECON-SL-' + Date.now() + '-' + Math.random().toString(36).slice(2, 6).toUpperCase();
+    var matched = 0;
+    var unmatched = 0;
+    var discrepancies = [];
+
+    try {
+      var { SubLedgerEngine } = require('./subLedgerEngine');
+      var rollup = await SubLedgerEngine.getSubLedgerRollup();
+
+      for (var i = 0; i < rollup.length; i++) {
+        var row = rollup[i];
+        if (row.isReconciled) {
+          matched++;
+        } else {
+          unmatched++;
+          var discId = 'DISC-SL-' + Date.now() + '-' + row.parentAccountCode;
+          discrepancies.push({
+            discrepancyId: discId,
+            type: 'sub_ledger_mismatch',
+            parentAccountCode: row.parentAccountCode,
+            parentAccountName: row.parentAccountName,
+            glBalance: row.glBalance,
+            subLedgerTotal: row.subLedgerTotal,
+            unallocated: row.unallocated,
+            subLedgerCount: row.subLedgerCount,
+            severity: Math.abs(row.unallocated) > 100000 ? 'high' : Math.abs(row.unallocated) > 1000 ? 'normal' : 'low',
+          });
+
+          await DataBridge._logDiscrepancy(discId, 'sub_ledger_mismatch', 'sub_ledgers', 'trust_accounting',
+            row.parentAccountCode, row.subLedgerTotal, row.glBalance, row.unallocated,
+            Math.abs(row.unallocated) > 100000 ? 'high' : Math.abs(row.unallocated) > 1000 ? 'normal' : 'low');
+        }
+      }
+    } catch (outerErr) {
+      discrepancies.push({ type: 'error', error: outerErr.message });
+    }
+
+    await DataBridge._logSync(syncId, 'sub_ledger_reconciliation', 'sub_ledgers', 'trust_accounting', matched, 0, unmatched, discrepancies);
+
+    return { syncId: syncId, matched: matched, unmatched: unmatched, discrepancies: discrepancies };
+  }
+
+  /**
+   * Auto-create sub-ledger accounts from active bond subscriptions.
+   */
+  static async syncSubscriptionsToSubLedgers() {
+    var { SubLedgerEngine } = require('./subLedgerEngine');
+    var syncId = 'SYNC-SL-SUB-' + Date.now() + '-' + Math.random().toString(36).slice(2, 6).toUpperCase();
+
+    try {
+      var result = await SubLedgerEngine.syncFromSubscriptions();
+      await DataBridge._logSync(syncId, 'subscription_to_sub_ledger', 'crm', 'sub_ledgers',
+        result.synced, result.skipped, result.errors.length, result.errors);
+      return { syncId: syncId, ...result };
+    } catch (err) {
+      await DataBridge._logSync(syncId, 'subscription_to_sub_ledger', 'crm', 'sub_ledgers', 0, 0, 1, [{ error: err.message }]);
+      return { syncId: syncId, synced: 0, skipped: 0, errors: [{ error: err.message }] };
+    }
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════
   //  UNIFIED DATA FLOW STATUS
   // ═══════════════════════════════════════════════════════════════════════════
 
@@ -1019,6 +1088,28 @@ class DataBridge {
     } catch (e) { status.modules.bonds = { error: e.message }; }
 
     try {
+      // Sub-ledger status
+      var slTableExists = await pool.query(`SELECT EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = 'client_sub_ledgers') AS exists`);
+      if (slTableExists.rows[0].exists) {
+        var slStats = await pool.query(`
+          SELECT COUNT(*) AS total,
+                 COUNT(CASE WHEN status = 'active' THEN 1 END) AS active,
+                 COALESCE(SUM(CASE WHEN status = 'active' THEN balance END), 0) AS total_balance,
+                 COUNT(DISTINCT contact_id) AS unique_clients
+          FROM client_sub_ledgers
+        `);
+        status.modules.sub_ledgers = {
+          totalAccounts: parseInt(slStats.rows[0].total),
+          activeAccounts: parseInt(slStats.rows[0].active),
+          totalBalance: parseFloat(slStats.rows[0].total_balance),
+          uniqueClients: parseInt(slStats.rows[0].unique_clients),
+        };
+      } else {
+        status.modules.sub_ledgers = { totalAccounts: 0, message: 'Sub-ledger module not initialized' };
+      }
+    } catch (e) { status.modules.sub_ledgers = { error: e.message }; }
+
+    try {
       // Discrepancies
       var discCount = await pool.query(`SELECT COUNT(*) AS total, COUNT(CASE WHEN resolved = FALSE THEN 1 END) AS unresolved FROM data_bridge_discrepancies`);
       status.totalDiscrepancies = parseInt(discCount.rows[0].total);
@@ -1094,12 +1185,20 @@ class DataBridge {
     try { results.fineractPush = await DataBridge.pushToFineract(); }
     catch (e) { results.fineractPush = { error: e.message }; }
 
+    // 8. Sync bond subscriptions to sub-ledgers
+    try { results.subLedgerSync = await DataBridge.syncSubscriptionsToSubLedgers(); }
+    catch (e) { results.subLedgerSync = { error: e.message }; }
+
+    // 9. Reconcile sub-ledgers against trust GL
+    try { results.subLedgerRecon = await DataBridge.reconcileSubLedgers(); }
+    catch (e) { results.subLedgerRecon = { error: e.message }; }
+
     var elapsed = Date.now() - startTime;
 
     var totalSynced = (results.openingBalances.synced || 0) + (results.bonds.synced || 0) + (results.ach.synced || 0) +
-      (results.bill.synced || 0) + (results.fineractPush.synced || 0);
+      (results.bill.synced || 0) + (results.fineractPush.synced || 0) + (results.subLedgerSync.synced || 0);
     var totalFailed = (results.openingBalances.failed || 0) + (results.bonds.failed || 0) + (results.ach.failed || 0) +
-      (results.bill.failed || 0) + (results.fineractPush.failed || 0);
+      (results.bill.failed || 0) + (results.fineractPush.failed || 0) + ((results.subLedgerSync.errors || []).length || 0);
 
     return {
       timestamp: new Date().toISOString(),
