@@ -18,17 +18,21 @@ const { FineractClient } = require('../integrations/fineract/fineractClient');
 router.get('/health', async (req, res) => {
   try {
     const result = await FineractClient.healthCheck();
+    const resilience = FineractClient.getResilienceStatus ? FineractClient.getResilienceStatus() : {};
     res.json({
       success: true,
       fineract_connected: true,
       office_count: Array.isArray(result.offices) ? result.offices.length : 0,
       message: 'Fineract API is live and authenticated',
+      resilience,
     });
   } catch (err) {
+    const resilience = FineractClient.getResilienceStatus ? FineractClient.getResilienceStatus() : {};
     res.status(503).json({
       success: false,
       fineract_connected: false,
       error: err.message,
+      resilience,
     });
   }
 });
