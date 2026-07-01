@@ -4,8 +4,12 @@
  * Connects via DATABASE_URL (Fly.io, Render, etc.) or individual env vars.
  * Bond tables live alongside Fineract's tenant metadata.
  *
- * Resilient pool: auto-rebuilds on dead connections, 3-tier retry,
- * keepalive ping to prevent Fly.io proxy from killing idle connections.
+ * Resilience features:
+ * - 3-tier retry: pool → rebuild pool → fresh one-off client
+ * - Circuit breaker: fast-fails when Postgres is known-down (prevents 15s hangs)
+ * - Keepalive ping every 15s to detect and recover from idle disconnections
+ * - connectionTimeoutMillis: 3s (fail fast on unreachable DB)
+ * - statement_timeout: 15s (prevent runaway queries from blocking)
  */
 
 'use strict';
@@ -19,7 +23,8 @@ if (process.env.DATABASE_URL) {
     ssl: process.env.DB_SSL === 'true' ? { rejectUnauthorized: false } : false,
     max: 8,
     idleTimeoutMillis: 10000,
-    connectionTimeoutMillis: 5000,
+    connectionTimeoutMillis: 3000,
+    statement_timeout: 15000,
     keepAlive: true,
     keepAliveInitialDelayMillis: 10000,
   };
@@ -32,7 +37,8 @@ if (process.env.DATABASE_URL) {
     database: process.env.BOND_DB_NAME || 'fineract_tenants',
     max:      8,
     idleTimeoutMillis: 10000,
-    connectionTimeoutMillis: 5000,
+    connectionTimeoutMillis: 3000,
+    statement_timeout: 15000,
     keepAlive: true,
     keepAliveInitialDelayMillis: 10000,
   };
@@ -45,9 +51,40 @@ pool.on('error', (err) => {
   console.error('[BondDB] Pool error:', err.message);
 });
 
+// ─── Circuit Breaker ──────────────────────────────────────────────────────────
+// When all 3 tiers fail repeatedly, stop trying for a cooldown period.
+// Prevents 15s+ hangs when Postgres is completely unreachable.
+const dbCircuit = {
+  failures: 0,
+  lastFailure: 0,
+  threshold: 3,       // open after 3 full 3-tier failures
+  cooldown: 10000,    // try again after 10s
+  isOpen() {
+    if (this.failures < this.threshold) return false;
+    if (Date.now() - this.lastFailure > this.cooldown) {
+      this.failures = 0; // half-open: allow one request through
+      return false;
+    }
+    return true;
+  },
+  recordFailure() {
+    this.failures++;
+    this.lastFailure = Date.now();
+    if (this.failures === this.threshold) {
+      console.error('[BondDB] Circuit breaker OPEN — Postgres unreachable, fast-failing for ' + (this.cooldown / 1000) + 's');
+    }
+  },
+  recordSuccess() {
+    if (this.failures > 0) {
+      console.log('[BondDB] Circuit breaker CLOSED — Postgres recovered');
+    }
+    this.failures = 0;
+  },
+};
+
 function rebuildPool() {
   const now = Date.now();
-  if (now - lastRebuild < 1000) return;
+  if (now - lastRebuild < 2000) return; // debounce: max 1 rebuild per 2s
   lastRebuild = now;
   console.warn('[BondDB] Rebuilding connection pool');
   try { pool.end().catch(() => {}); } catch (e) { /* ignore */ }
@@ -61,6 +98,7 @@ function rebuildPool() {
 const keepAliveTimer = setInterval(async () => {
   try {
     await pool.query('SELECT 1');
+    dbCircuit.recordSuccess();
   } catch (e) {
     console.warn('[BondDB] Keepalive ping failed, rebuilding pool:', e.message);
     rebuildPool();
@@ -73,37 +111,58 @@ function isReadOnly(text) {
   return trimmed.startsWith('SELECT') || trimmed.startsWith('WITH');
 }
 
-// Resilient query with 3-tier retry (reads only; writes throw on first error)
+function isConnectionError(err) {
+  const msg = err.message || '';
+  return msg.includes('terminated') || msg.includes('Connection') ||
+         msg.includes('ECONNREFUSED') || msg.includes('timeout') ||
+         msg.includes('ECONNRESET');
+}
+
+// Resilient query with 3-tier retry + circuit breaker
 async function resilientQuery(text, params) {
+  // Circuit breaker: fast-fail if Postgres is known-down
+  if (dbCircuit.isOpen()) {
+    const err = new Error('Database circuit breaker OPEN — Postgres temporarily unavailable');
+    err.code = 'CIRCUIT_OPEN';
+    throw err;
+  }
+
   // Tier 1: normal pool query
   try {
-    return await pool.query(text, params);
+    const result = await pool.query(text, params);
+    dbCircuit.recordSuccess();
+    return result;
   } catch (err) {
     if (!isReadOnly(text)) throw err;
-    if (!err.message.includes('terminated') && !err.message.includes('Connection') && !err.message.includes('ECONNREFUSED')) {
-      throw err;
-    }
+    if (!isConnectionError(err)) throw err;
     console.warn('[BondDB] Tier 1 failed:', err.message);
   }
 
   // Tier 2: rebuild pool and retry
   rebuildPool();
   try {
-    return await pool.query(text, params);
+    const result = await pool.query(text, params);
+    dbCircuit.recordSuccess();
+    return result;
   } catch (err2) {
-    if (!err2.message.includes('terminated') && !err2.message.includes('Connection') && !err2.message.includes('ECONNREFUSED')) {
-      throw err2;
-    }
+    if (!isConnectionError(err2)) throw err2;
     console.warn('[BondDB] Tier 2 failed:', err2.message);
   }
 
-  // Tier 3: fresh one-off client
+  // Tier 3: fresh one-off client with shorter timeout
   console.warn('[BondDB] Tier 3: using fresh client');
-  const client = new Client(poolConfig.connectionString ? { connectionString: poolConfig.connectionString, ssl: poolConfig.ssl } : poolConfig);
+  const clientConfig = poolConfig.connectionString
+    ? { connectionString: poolConfig.connectionString, ssl: poolConfig.ssl, connectionTimeoutMillis: 3000 }
+    : { ...poolConfig, connectionTimeoutMillis: 3000 };
+  const client = new Client(clientConfig);
   try {
     await client.connect();
     const result = await client.query(text, params);
+    dbCircuit.recordSuccess();
     return result;
+  } catch (err3) {
+    dbCircuit.recordFailure();
+    throw err3;
   } finally {
     try { await client.end(); } catch (e) { /* ignore */ }
   }
@@ -115,4 +174,5 @@ module.exports = {
   connect: () => pool.connect(),
   end: () => { clearInterval(keepAliveTimer); return pool.end(); },
   on: (event, handler) => pool.on(event, handler),
+  getCircuitStatus: () => ({ failures: dbCircuit.failures, isOpen: dbCircuit.isOpen(), lastFailure: dbCircuit.lastFailure ? new Date(dbCircuit.lastFailure).toISOString() : null }),
 };
