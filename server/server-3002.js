@@ -252,6 +252,20 @@ try {
   }).catch(function(e) { console.warn('[sub-ledgers] init:', e.message); });
 } catch(e) { console.warn('[sub-ledgers]', e.message); }
 
+// Ensure CRM contacts have approval workflow columns
+try {
+  var pgPoolCrm = require(path.join(HD, 'server', 'integrations', 'bonds', 'pgPool'));
+  pgPoolCrm.query(`
+    ALTER TABLE crm_contacts ADD COLUMN IF NOT EXISTS approval_status TEXT DEFAULT 'pending_approval';
+    ALTER TABLE crm_contacts ADD COLUMN IF NOT EXISTS approved_by TEXT;
+    ALTER TABLE crm_contacts ADD COLUMN IF NOT EXISTS approved_at TIMESTAMPTZ;
+    ALTER TABLE crm_contacts ADD COLUMN IF NOT EXISTS rejected_by TEXT;
+    ALTER TABLE crm_contacts ADD COLUMN IF NOT EXISTS rejection_reason TEXT;
+  `).then(function() {
+    console.log('[crm] approval workflow columns ensured');
+  }).catch(function(e) { console.warn('[crm] approval migration:', e.message); });
+} catch(e) { console.warn('[crm]', e.message); }
+
 // Start live bond accrual scheduler
 try {
   var LiveBondEngine = require(path.join(HD, 'server', 'integrations', 'bonds', 'liveEngine')).LiveBondEngine;

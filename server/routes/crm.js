@@ -80,6 +80,28 @@ router.put('/contacts/:id', async (req, res) => {
   }
 });
 
+// ─── POST /api/crm/contacts/:id/approve ──────────────────────────────────────
+router.post('/contacts/:id/approve', async (req, res) => {
+  try {
+    const contact = await CrmEngine.approveContact(req.params.id, req.body.approvedBy || 'admin');
+    res.json({ success: true, data: contact });
+  } catch (err) {
+    const status = err.message.includes('not found') ? 404 : 500;
+    res.status(status).json({ success: false, error: err.message });
+  }
+});
+
+// ─── POST /api/crm/contacts/:id/reject ───────────────────────────────────────
+router.post('/contacts/:id/reject', async (req, res) => {
+  try {
+    const contact = await CrmEngine.rejectContact(req.params.id, req.body.rejectedBy || 'admin', req.body.reason);
+    res.json({ success: true, data: contact });
+  } catch (err) {
+    const status = err.message.includes('not found') ? 404 : 500;
+    res.status(status).json({ success: false, error: err.message });
+  }
+});
+
 // ─── POST /api/crm/contacts/:id/kyc ──────────────────────────────────────────
 router.post('/contacts/:id/kyc', async (req, res) => {
   const { kycStatus } = req.body;

@@ -2281,12 +2281,22 @@
       const dData = dashboard.data || {};
       el('crm-summary').innerHTML = `
         <div class="card"><div class="card-title">Total Contacts</div><div class="card-value">${contacts.count || cData.length}</div></div>
+        <div class="card"><div class="card-title">Pending Approval</div><div class="card-value">${dData.pending_approval || 0}</div></div>
+        <div class="card"><div class="card-title">Approved</div><div class="card-value">${dData.approved_count || 0}</div></div>
         <div class="card"><div class="card-title">KYC Verified</div><div class="card-value">${dData.kyc_verified || 0}</div></div>
         <div class="card"><div class="card-title">Subscriptions</div><div class="card-value">${dData.total_subscriptions || 0}</div></div>
         <div class="card"><div class="card-title">Total Subscribed</div><div class="card-value">${fmt(dData.total_subscription_amount)}</div></div>
       `;
 
-      el('crm-contacts-wrap').innerHTML = cData.length ? '<table><thead><tr><th>ID</th><th>Name</th><th>Type</th><th>Email</th><th>KYC</th><th>Company</th></tr></thead><tbody>' + cData.map(c => `<tr><td><code style="font-size:10px">${esc(c.contact_id)}</code></td><td>${esc(c.first_name)} ${esc(c.last_name)}</td><td><span class="badge badge-info">${esc(c.contact_type)}</span></td><td>${esc(c.email || '—')}</td><td><span class="badge ${c.kyc_status === 'verified' ? 'badge-active' : 'badge-pending'}">${esc(c.kyc_status)}</span></td><td>${esc(c.company || '—')}</td></tr>`).join('') + '</tbody></table>' : '<p class="text-muted">No contacts</p>';
+      el('crm-contacts-wrap').innerHTML = cData.length ? '<table><thead><tr><th>ID</th><th>Name</th><th>Type</th><th>Email</th><th>Approval</th><th>KYC</th><th>Actions</th></tr></thead><tbody>' + cData.map(c => {
+        const approvalBadge = c.approval_status === 'approved' ? 'badge-active' : c.approval_status === 'rejected' ? 'badge-danger' : 'badge-pending';
+        const kycBadge = c.kyc_status === 'verified' ? 'badge-active' : 'badge-pending';
+        let actions = '';
+        if (c.approval_status !== 'approved') actions += `<button class="btn btn-success btn-sm" style="font-size:10px;padding:2px 8px;margin:1px;" onclick="crmApprove('${esc(c.contact_id)}')">Approve</button>`;
+        if (c.approval_status !== 'rejected') actions += `<button class="btn btn-outline btn-sm" style="font-size:10px;padding:2px 8px;margin:1px;border-color:#e74c3c;color:#e74c3c;" onclick="crmReject('${esc(c.contact_id)}')">Reject</button>`;
+        if (c.kyc_status !== 'verified') actions += `<button class="btn btn-outline btn-sm" style="font-size:10px;padding:2px 8px;margin:1px;" onclick="crmVerifyKYC('${esc(c.contact_id)}')">Verify KYC</button>`;
+        return `<tr><td><code style="font-size:10px">${esc(c.contact_id)}</code></td><td>${esc(c.first_name)} ${esc(c.last_name)}</td><td><span class="badge badge-info">${esc(c.contact_type)}</span></td><td>${esc(c.email || '—')}</td><td><span class="badge ${approvalBadge}">${esc(c.approval_status || 'pending_approval')}</span></td><td><span class="badge ${kycBadge}">${esc(c.kyc_status)}</span></td><td>${actions}</td></tr>`;
+      }).join('') + '</tbody></table>' : '<p class="text-muted">No contacts</p>';
 
       const sData = subs.data || [];
       el('crm-subs-wrap').innerHTML = sData.length ? '<table><thead><tr><th>ID</th><th>Contact</th><th>Bond</th><th>Amount</th><th>Status</th><th>Date</th></tr></thead><tbody>' + sData.map(s => `<tr><td><code style="font-size:10px">${esc(s.subscription_id)}</code></td><td>${esc((s.first_name && s.last_name) ? s.first_name + ' ' + s.last_name : s.contact_id)}</td><td>${esc(s.bond_name || s.bond_id || '—')}</td><td class="money">${fmt(s.subscription_amount)}</td><td><span class="badge ${s.status === 'active' ? 'badge-active' : 'badge-pending'}">${esc(s.status)}</span></td><td>${shortDate(s.settlement_date || s.created_at)}</td></tr>`).join('') + '</tbody></table>' : '<p class="text-muted">No subscriptions</p>';
@@ -2297,6 +2307,25 @@
       const r = await fetchJSON(API + '/api/crm/contacts', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ first_name: el('crm-first').value, last_name: el('crm-last').value, email: el('crm-email').value, contact_type: el('crm-type').value, company: el('crm-company').value, phone: el('crm-phone').value }) });
       el('crm-add-result').innerHTML = r.success ? '<p class="success-msg">Contact created: ' + esc((r.data || {}).contact_id) + '</p>' : '<p class="error-msg">' + esc(r.error || 'Failed') + '</p>';
       if (r.success) { el('crm-add-contact').classList.add('hidden'); loadCRM(); }
+    }
+    async function crmApprove(contactId) {
+      if (!confirm('Approve contact ' + contactId + '?')) return;
+      const r = await fetchJSON(API + '/api/crm/contacts/' + contactId + '/approve', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ approvedBy: 'admin' }) });
+      alert(r.success ? 'Contact approved' : 'Error: ' + (r.error || 'Failed'));
+      loadCRM();
+    }
+    async function crmReject(contactId) {
+      const reason = prompt('Rejection reason (optional):');
+      if (reason === null) return;
+      const r = await fetchJSON(API + '/api/crm/contacts/' + contactId + '/reject', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ rejectedBy: 'admin', reason: reason || null }) });
+      alert(r.success ? 'Contact rejected' : 'Error: ' + (r.error || 'Failed'));
+      loadCRM();
+    }
+    async function crmVerifyKYC(contactId) {
+      if (!confirm('Mark KYC as verified for ' + contactId + '?')) return;
+      const r = await fetchJSON(API + '/api/crm/contacts/' + contactId + '/kyc', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ kycStatus: 'verified' }) });
+      alert(r.success ? 'KYC verified' : 'Error: ' + (r.error || 'Failed'));
+      loadCRM();
     }
 
     // ─── DOCUMENTS ─────────────────────────────────────────────────────────────
@@ -3846,7 +3875,8 @@
       if (r.success) {
         const billStatus = r.billRecord ? '✓ Submitted to BILL' : 'Local only';
         const billRef = r.billRecord ? `<br><span style="font-size:11px;color:var(--green);">BILL Ref: ${esc(r.billRecord.receivedPayId)} | Visible in BILL Dashboard</span>` : '';
-        const jeRef = r.journalEntry ? `<br><span style="font-size:11px;color:var(--text-muted);">JE: ${esc(r.journalEntry.entryId)} | DR 1050 BILL Cash / CR 1000 Trust Cash</span>` : '';
+        const jeRef = r.journalEntry ? `<br><span style="font-size:11px;color:var(--blue);">JE: ${esc(r.journalEntry.entryId)} | DR 1050 BILL Cash / CR 1000 Trust Cash</span>` : '';
+
         el('bill-deposit-result').innerHTML = `
           <div style="padding:12px;background:rgba(16,185,129,0.1);border:1px solid var(--green);border-radius:6px;">
             <strong style="color:var(--green)">Deposit Submitted to BILL</strong><br>

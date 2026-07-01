@@ -184,6 +184,16 @@ router.post('/deposit', requireAdmin, async function(req, res) {
         console.error('[bill-deposit] Journal entry failed (direct):', jeErr.message);
       }
 
+      // Record cashflow event
+      try {
+        var pool2 = require(path.join(__dirname, '../integrations/bonds/pgPool'));
+        await pool2.query(
+          `INSERT INTO cashflow_events (event_type, category, amount, direction, description, event_date, created_at)
+           VALUES ($1, $2, $3, $4, $5, NOW(), NOW())`,
+          ['bill_deposit', 'investing', amount, 'outflow', 'BILL Cash deposit (direct): ' + memo]
+        );
+      } catch(cfErr) { console.warn('[bill-deposit] cashflow event failed:', cfErr.message); }
+
       return res.json({
         success: true,
         method: 'direct',
@@ -211,7 +221,7 @@ router.post('/deposit', requireAdmin, async function(req, res) {
         beneficiaryBankName: 'Bill.com, LLC',
         description: memo,
         purpose: 'BILL Cash Account Deposit',
-        paymentType: 'trust_distribution',
+        paymentType: 'bill_deposit',
         initiatedBy: req.user === 'admin' ? 'admin' : (req.user && req.user.username) || 'system'
       });
 
@@ -246,6 +256,16 @@ router.post('/deposit', requireAdmin, async function(req, res) {
       } catch(jeErr) {
         console.error('[bill-deposit] Journal entry failed (wire):', jeErr.message);
       }
+
+      // Record cashflow event
+      try {
+        var pool3 = require(path.join(__dirname, '../integrations/bonds/pgPool'));
+        await pool3.query(
+          `INSERT INTO cashflow_events (event_type, category, amount, direction, description, event_date, created_at)
+           VALUES ($1, $2, $3, $4, $5, NOW(), NOW())`,
+          ['bill_deposit', 'investing', amount, 'outflow', 'BILL Cash deposit (wire): ' + memo]
+        );
+      } catch(cfErr) { console.warn('[bill-deposit] cashflow event failed:', cfErr.message); }
 
       return res.json({
         success: true,
@@ -322,6 +342,16 @@ router.post('/deposit', requireAdmin, async function(req, res) {
     } catch(jeErr) {
       console.error('[bill-deposit] Journal entry failed (ach):', jeErr.message);
     }
+
+    // Record cashflow event
+    try {
+      var pool4 = require(path.join(__dirname, '../integrations/bonds/pgPool'));
+      await pool4.query(
+        `INSERT INTO cashflow_events (event_type, category, amount, direction, description, event_date, created_at)
+         VALUES ($1, $2, $3, $4, $5, NOW(), NOW())`,
+        ['bill_deposit', 'investing', amount, 'outflow', 'BILL Cash deposit (ACH): ' + memo]
+      );
+    } catch(cfErr) { console.warn('[bill-deposit] cashflow event failed:', cfErr.message); }
 
     res.json({
       success: true,
