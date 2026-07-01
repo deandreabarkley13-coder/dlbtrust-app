@@ -188,6 +188,9 @@ class CrmEngine {
     const kycPending = await pool.query(
       `SELECT COUNT(*) AS count FROM crm_contacts WHERE kyc_status = 'pending'`
     );
+    const kycVerified = await pool.query(
+      `SELECT COUNT(*) AS count FROM crm_contacts WHERE kyc_status = 'verified'`
+    );
     const amlFlagged = await pool.query(
       `SELECT COUNT(*) AS count FROM crm_contacts WHERE aml_status = 'flagged'`
     );
@@ -205,8 +208,10 @@ class CrmEngine {
       contacts_by_type: byType,
       total_contacts: Object.values(byType).reduce((s, v) => s + v, 0),
       kyc_pending_count: parseInt(kycPending.rows[0].count, 10),
+      kyc_verified: parseInt(kycVerified.rows[0].count, 10),
       aml_flagged_count: parseInt(amlFlagged.rows[0].count, 10),
       active_subscriptions: parseInt(subscriptionStats.rows[0].active_count, 10),
+      total_subscriptions: parseInt(subscriptionStats.rows[0].active_count, 10),
       total_subscription_amount: parseFloat(subscriptionStats.rows[0].total_amount),
       generated_at: new Date().toISOString(),
     };
