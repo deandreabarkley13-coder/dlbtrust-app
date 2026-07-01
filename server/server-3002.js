@@ -173,52 +173,78 @@ app.get('*', function(req, res) {
   fs.existsSync(idx) ? res.sendFile(idx) : res.status(404).send('Not found');
 });
 
-// Ensure wire transfer tables exist
-try {
-  var WireEngine = require(path.join(HD, 'server', 'integrations', 'wire', 'wireEngine')).WireEngine;
-  WireEngine.ensureTables().then(function() {
-    console.log('[wire] tables ensured');
-  }).catch(function(e) { console.warn('[wire] table init:', e.message); });
-} catch(e) { console.warn('[wire]', e.message); }
+// ─── Sequential Database Initialization ───────────────────────────────────────
+// Runs all migrations serially to avoid connection storms on Fly.io cold boot.
+// Fly.io's Postgres proxy kills idle connections; simultaneous init queries from
+// 12+ modules overwhelm it. Sequential init with warmup prevents this.
+async function initializeDatabase() {
+  var pool = require(path.join(HD, 'server', 'integrations', 'bonds', 'pgPool'));
 
-// Ensure auth tables exist (users, sessions, security log)
-try {
-  var UserAuth = require(path.join(HD, 'server', 'integrations', 'auth', 'userAuth')).UserAuth;
-  UserAuth.ensureTables().then(function() {
+  // Step 0: Warmup — establish a live connection before running migrations
+  var warmupAttempts = 0;
+  var MAX_WARMUP = 5;
+  while (warmupAttempts < MAX_WARMUP) {
+    try {
+      await pool.query('SELECT 1');
+      console.log('[startup] Database connection warm (' + (warmupAttempts + 1) + '/' + MAX_WARMUP + ' attempts)');
+      break;
+    } catch (e) {
+      warmupAttempts++;
+      if (warmupAttempts >= MAX_WARMUP) {
+        console.error('[startup] Database warmup failed after ' + MAX_WARMUP + ' attempts:', e.message);
+        return; // Skip migrations — app will still serve requests, pool will recover via keepalive
+      }
+      console.warn('[startup] Warmup attempt ' + warmupAttempts + ' failed: ' + e.message + ' — retrying in 2s');
+      await new Promise(function(r) { setTimeout(r, 2000); });
+    }
+  }
+
+  // Step 1: Core tables (auth, wire, agents)
+  try {
+    var UserAuth = require(path.join(HD, 'server', 'integrations', 'auth', 'userAuth')).UserAuth;
+    await UserAuth.ensureTables();
     console.log('[auth] tables ensured');
-  }).catch(function(e) { console.warn('[auth] table init:', e.message); });
-} catch(e) { console.warn('[auth]', e.message); }
+  } catch(e) { console.warn('[auth] table init:', e.message); }
 
-// Ensure agent tables exist (trustee + bookkeeping)
-try {
-  var TrusteeAgent = require(path.join(HD, 'server', 'integrations', 'agents', 'trusteeAgent')).TrusteeAgent;
-  var BookkeepingAgent = require(path.join(HD, 'server', 'integrations', 'agents', 'bookkeepingAgent')).BookkeepingAgent;
-  Promise.all([TrusteeAgent.ensureTables(), BookkeepingAgent.ensureTables()]).then(function() {
+  try {
+    var WireEngine = require(path.join(HD, 'server', 'integrations', 'wire', 'wireEngine')).WireEngine;
+    await WireEngine.ensureTables();
+    console.log('[wire] tables ensured');
+  } catch(e) { console.warn('[wire] table init:', e.message); }
+
+  try {
+    var TrusteeAgent = require(path.join(HD, 'server', 'integrations', 'agents', 'trusteeAgent')).TrusteeAgent;
+    var BookkeepingAgent = require(path.join(HD, 'server', 'integrations', 'agents', 'bookkeepingAgent')).BookkeepingAgent;
+    await TrusteeAgent.ensureTables();
+    await BookkeepingAgent.ensureTables();
     console.log('[agents] tables ensured (trustee + bookkeeping)');
-  }).catch(function(e) { console.warn('[agents] table init:', e.message); });
-} catch(e) { console.warn('[agents]', e.message); }
+  } catch(e) { console.warn('[agents] table init:', e.message); }
 
-// Ensure DataBridge tables exist (cross-module sync & reconciliation)
-try {
-  var DataBridge = require(path.join(HD, 'server', 'integrations', 'accounting', 'dataBridge')).DataBridge;
-  DataBridge.ensureTables().then(function() {
+  // Step 2: Data infrastructure (DataBridge, system settings, bonds metadata)
+  try {
+    var DataBridge = require(path.join(HD, 'server', 'integrations', 'accounting', 'dataBridge')).DataBridge;
+    await DataBridge.ensureTables();
     console.log('[data-bridge] tables ensured');
-  }).catch(function(e) { console.warn('[data-bridge] table init:', e.message); });
-} catch(e) { console.warn('[data-bridge]', e.message); }
+  } catch(e) { console.warn('[data-bridge] table init:', e.message); }
 
-// Ensure bond metadata columns exist (identifier, type, tax status)
-try {
-  var pgPool = require(path.join(HD, 'server', 'integrations', 'bonds', 'pgPool'));
-  pgPool.query(`
-    ALTER TABLE bonds ADD COLUMN IF NOT EXISTS bond_identifier TEXT;
-    ALTER TABLE bonds ADD COLUMN IF NOT EXISTS bond_type TEXT DEFAULT 'corporate';
-    ALTER TABLE bonds ADD COLUMN IF NOT EXISTS tax_exempt BOOLEAN DEFAULT FALSE;
-    ALTER TABLE bonds ADD COLUMN IF NOT EXISTS tax_exempt_type TEXT;
-    ALTER TABLE bonds ADD COLUMN IF NOT EXISTS placement_type TEXT DEFAULT 'public';
-    ALTER TABLE bonds ADD COLUMN IF NOT EXISTS issuer TEXT;
-    ALTER TABLE bonds ADD COLUMN IF NOT EXISTS issuer_state TEXT;
-  `).then(function() {
-    return pgPool.query(`
+  try {
+    var SystemSettings = require(path.join(HD, 'server', 'integrations', 'ach', 'systemSettings')).SystemSettings;
+    await SystemSettings.ensureTable();
+    var mode = await SystemSettings.getMode();
+    console.log('[system-settings] table ensured, mode=' + mode);
+  } catch(e) { console.warn('[system-settings] init:', e.message); }
+
+  try {
+    await pool.query(`
+      ALTER TABLE bonds ADD COLUMN IF NOT EXISTS bond_identifier TEXT;
+      ALTER TABLE bonds ADD COLUMN IF NOT EXISTS bond_type TEXT DEFAULT 'corporate';
+      ALTER TABLE bonds ADD COLUMN IF NOT EXISTS tax_exempt BOOLEAN DEFAULT FALSE;
+      ALTER TABLE bonds ADD COLUMN IF NOT EXISTS tax_exempt_type TEXT;
+      ALTER TABLE bonds ADD COLUMN IF NOT EXISTS placement_type TEXT DEFAULT 'public';
+      ALTER TABLE bonds ADD COLUMN IF NOT EXISTS issuer TEXT;
+      ALTER TABLE bonds ADD COLUMN IF NOT EXISTS issuer_state TEXT;
+    `);
+    await pool.query(`
       UPDATE bonds SET
         bond_identifier = '19781443-DLB-PRB',
         bond_type = 'municipal',
@@ -229,81 +255,66 @@ try {
         issuer_state = 'CA'
       WHERE bond_name = 'DLB-PRB' AND bond_identifier IS NULL
     `);
-  }).then(function() {
     console.log('[bonds] metadata columns ensured (identifier, type, tax status)');
-  }).catch(function(e) { console.warn('[bonds] metadata migration:', e.message); });
-} catch(e) { console.warn('[bonds]', e.message); }
+  } catch(e) { console.warn('[bonds] metadata migration:', e.message); }
 
-// Ensure system settings table exists (production/sandbox mode config)
-try {
-  var SystemSettings = require(path.join(HD, 'server', 'integrations', 'ach', 'systemSettings')).SystemSettings;
-  SystemSettings.ensureTable().then(function() {
-    return SystemSettings.getMode();
-  }).then(function(mode) {
-    console.log('[system-settings] table ensured, mode=' + mode);
-  }).catch(function(e) { console.warn('[system-settings] init:', e.message); });
-} catch(e) { console.warn('[system-settings]', e.message); }
-
-// Ensure sub-ledger tables exist
-try {
-  var SubLedgerEngine = require(path.join(HD, 'server', 'integrations', 'accounting', 'subLedgerEngine')).SubLedgerEngine;
-  SubLedgerEngine.ensureTables().then(function() {
+  // Step 3: Module tables (sub-ledgers, vendors, BILL sync, CRM)
+  try {
+    var SubLedgerEngine = require(path.join(HD, 'server', 'integrations', 'accounting', 'subLedgerEngine')).SubLedgerEngine;
+    await SubLedgerEngine.ensureTables();
     console.log('[sub-ledgers] tables ensured');
-  }).catch(function(e) { console.warn('[sub-ledgers] init:', e.message); });
-} catch(e) { console.warn('[sub-ledgers]', e.message); }
+  } catch(e) { console.warn('[sub-ledgers] init:', e.message); }
 
-// Vendor Payments tables
-try {
-  var VendorEngine = require(path.join(HD, 'server', 'integrations', 'vendors', 'vendorEngine')).VendorEngine;
-  VendorEngine.ensureTables().then(function() {
+  try {
+    var VendorEngine = require(path.join(HD, 'server', 'integrations', 'vendors', 'vendorEngine')).VendorEngine;
+    await VendorEngine.ensureTables();
     console.log('[vendors] tables ensured');
-  }).catch(function(e) { console.warn('[vendors] init:', e.message); });
-} catch(e) { console.warn('[vendors]', e.message); }
+  } catch(e) { console.warn('[vendors] init:', e.message); }
 
-// BILL Cash Sync tables
-try {
-  var BillSyncEngine = require(path.join(HD, 'server', 'integrations', 'bill', 'billSyncEngine')).BillSyncEngine;
-  BillSyncEngine.ensureTables().then(function() {
+  try {
+    var BillSyncEngine = require(path.join(HD, 'server', 'integrations', 'bill', 'billSyncEngine')).BillSyncEngine;
+    await BillSyncEngine.ensureTables();
     console.log('[bill-sync] tables ensured');
     var billClientCheck = require(path.join(HD, 'server', 'integrations', 'bill', 'billClient'));
     if (billClientCheck.isConfigured()) {
       BillSyncEngine.startAutoSync(5 * 60 * 1000);
     }
-  }).catch(function(e) { console.warn('[bill-sync] init:', e.message); });
-} catch(e) { console.warn('[bill-sync]', e.message); }
+  } catch(e) { console.warn('[bill-sync] init:', e.message); }
 
-// Ensure CRM contacts have approval workflow columns
-try {
-  var pgPoolCrm = require(path.join(HD, 'server', 'integrations', 'bonds', 'pgPool'));
-  pgPoolCrm.query(`
-    ALTER TABLE crm_contacts ADD COLUMN IF NOT EXISTS approval_status TEXT DEFAULT 'pending_approval';
-    ALTER TABLE crm_contacts ADD COLUMN IF NOT EXISTS approved_by TEXT;
-    ALTER TABLE crm_contacts ADD COLUMN IF NOT EXISTS approved_at TIMESTAMPTZ;
-    ALTER TABLE crm_contacts ADD COLUMN IF NOT EXISTS rejected_by TEXT;
-    ALTER TABLE crm_contacts ADD COLUMN IF NOT EXISTS rejection_reason TEXT;
-  `).then(function() {
+  try {
+    await pool.query(`
+      ALTER TABLE crm_contacts ADD COLUMN IF NOT EXISTS approval_status TEXT DEFAULT 'pending_approval';
+      ALTER TABLE crm_contacts ADD COLUMN IF NOT EXISTS approved_by TEXT;
+      ALTER TABLE crm_contacts ADD COLUMN IF NOT EXISTS approved_at TIMESTAMPTZ;
+      ALTER TABLE crm_contacts ADD COLUMN IF NOT EXISTS rejected_by TEXT;
+      ALTER TABLE crm_contacts ADD COLUMN IF NOT EXISTS rejection_reason TEXT;
+    `);
     console.log('[crm] approval workflow columns ensured');
-  }).catch(function(e) { console.warn('[crm] approval migration:', e.message); });
-} catch(e) { console.warn('[crm]', e.message); }
+  } catch(e) { console.warn('[crm] approval migration:', e.message); }
 
-// Start live bond accrual scheduler
-try {
-  var LiveBondEngine = require(path.join(HD, 'server', 'integrations', 'bonds', 'liveEngine')).LiveBondEngine;
-  LiveBondEngine.scheduleAccrualJob();
-  console.log('[liveEngine] daily accrual scheduler started');
-} catch(e) { console.warn('[liveEngine]', e.message); }
+  // Step 4: Schedulers (bond accrual, coupon service)
+  try {
+    var LiveBondEngine = require(path.join(HD, 'server', 'integrations', 'bonds', 'liveEngine')).LiveBondEngine;
+    LiveBondEngine.scheduleAccrualJob();
+    console.log('[liveEngine] daily accrual scheduler started');
+  } catch(e) { console.warn('[liveEngine]', e.message); }
 
-// Start coupon payment scheduler and seed bondholders
-try {
-  var CouponService = require(path.join(HD, 'server', 'integrations', 'bonds', 'couponService')).CouponService;
-  CouponService.ensureTable().then(function() {
+  try {
+    var CouponService = require(path.join(HD, 'server', 'integrations', 'bonds', 'couponService')).CouponService;
+    await CouponService.ensureTable();
     console.log('[couponService] coupon_payments table ensured');
-    return CouponService.seedBondholders();
-  }).then(function(seedResult) {
+    var seedResult = await CouponService.seedBondholders();
     if (seedResult.seeded) console.log('[couponService] Seeded ' + seedResult.count + ' bondholder(s)');
     CouponService.scheduleCouponJob();
-  }).catch(function(e) { console.warn('[couponService] init:', e.message); });
-} catch(e) { console.warn('[couponService]', e.message); }
+  } catch(e) { console.warn('[couponService] init:', e.message); }
+
+  console.log('[startup] All database migrations complete');
+}
+
+// Kick off sequential init (non-blocking — server is already listening)
+initializeDatabase().catch(function(e) {
+  console.error('[startup] Fatal init error:', e.message);
+});
 
 // ─── Graceful Shutdown & Backup Initialization ─────────────────────────────
 try {
