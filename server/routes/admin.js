@@ -388,6 +388,171 @@ router.post('/fineract/seed-gl', async (req, res) => {
   }
 });
 
+// ─── Fineract GL Cleanup & Resync ────────────────────────────────────────────
+
+const { DataBridge } = require('../integrations/accounting/dataBridge');
+
+/**
+ * POST /api/admin/fineract/reverse-entry — Reverse a specific Fineract journal entry
+ */
+router.post('/fineract/reverse-entry', async (req, res) => {
+  try {
+    const { transactionId } = req.body;
+    if (!transactionId) return res.status(400).json({ success: false, error: 'transactionId required' });
+    const result = await FineractClient.reverseJournalEntry(transactionId);
+    await logAdminAction(req, 'reverse_fineract_entry', 'fineract', transactionId, null, result);
+    res.json({ success: true, transactionId, result });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+/**
+ * POST /api/admin/fineract/cleanup-duplicates — Reverse duplicate Fineract JEs
+ */
+router.post('/fineract/cleanup-duplicates', async (req, res) => {
+  try {
+    const result = await DataBridge.cleanupFineractDuplicates();
+    await logAdminAction(req, 'cleanup_fineract_duplicates', 'fineract', null, null, result);
+    res.json({ success: true, ...result });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+/**
+ * POST /api/admin/fineract/post-opening-balances — Post missing opening balance JEs
+ */
+router.post('/fineract/post-opening-balances', async (req, res) => {
+  try {
+    const result = await DataBridge.postOpeningBalances();
+    await logAdminAction(req, 'post_opening_balances', 'trust_accounting', null, null, result);
+    res.json({ success: true, ...result });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+/**
+ * POST /api/admin/fineract/resync-all — Cleanup duplicates, post opening balances,
+ * sync bond accruals, and push everything to Fineract GL.
+ */
+router.post('/fineract/resync-all', async (req, res) => {
+  try {
+    const steps = {};
+
+    // Step 1: Reverse wrong trust JEs (the old coupon payment that debited 1200)
+    try {
+      const { TrustAccountingEngine } = require('../integrations/accounting/trustAccountingEngine');
+      const wrongJEs = await pool.query(`
+        SELECT je.entry_id FROM trust_journal_entries je
+        JOIN trust_journal_lines jl ON jl.entry_id = je.entry_id
+        WHERE je.status = 'posted'
+          AND je.reference_type = 'ach_disbursement'
+          AND jl.account_code = '1200'
+          AND jl.debit_amount > 0
+      `);
+      let reversed = 0;
+      for (const row of wrongJEs.rows) {
+        try {
+          await TrustAccountingEngine.reverseJournalEntry(row.entry_id, { postedBy: 'admin-resync' });
+          reversed++;
+        } catch (revErr) {
+          // Already reversed or other issue — skip
+        }
+      }
+      steps.reversedWrongJEs = reversed;
+    } catch (e) { steps.reversedWrongJEs = { error: e.message }; }
+
+    // Step 2: Clean up duplicate Fineract JEs + stale entries
+    try {
+      steps.fineractCleanup = await DataBridge.cleanupFineractDuplicates();
+
+      // Also reverse any Fineract entries not originating from trust accounting
+      const journalRes = await FineractClient.getJournalEntries({ limit: 10000 });
+      const fEntries = (journalRes && journalRes.pageItems) || [];
+      let staleReversed = 0;
+      for (const fe of fEntries) {
+        if (fe.reversed) continue;
+        const comment = (fe.comments || '').trim();
+        // Reverse entries posted directly to Fineract (not via trust JE push)
+        if (comment && !comment.startsWith('Trust JE ') && !comment.startsWith('Reversal entry')) {
+          try {
+            await FineractClient.reverseJournalEntry(fe.transactionId);
+            staleReversed++;
+          } catch (revErr) { /* already reversed or other issue */ }
+        }
+      }
+      steps.fineractCleanup.staleReversed = staleReversed;
+    } catch (e) { steps.fineractCleanup = { error: e.message }; }
+
+    // Step 3: Post opening balances
+    try { steps.openingBalances = await DataBridge.postOpeningBalances(); }
+    catch (e) { steps.openingBalances = { error: e.message }; }
+
+    // Step 4: Sync bond accruals to trust accounting
+    try { steps.bondSync = await DataBridge.syncBondsToAccounting(); }
+    catch (e) { steps.bondSync = { error: e.message }; }
+
+    // Step 5: Push all trust JEs to Fineract
+    try { steps.fineractPush = await DataBridge.pushToFineract(); }
+    catch (e) { steps.fineractPush = { error: e.message }; }
+
+    // Step 6: Correct Fineract GL balances if opening balance was disrupted
+    try {
+      // Get GL account IDs from mappings
+      const mappings = await pool.query(
+        "SELECT trust_account_code, fineract_gl_id FROM fineract_gl_mappings WHERE mapping_type = 'trust_journal'"
+      );
+      const glMap = {};
+      for (const m of mappings.rows) glMap[m.trust_account_code] = parseInt(m.fineract_gl_id);
+
+      const bondInvId = glMap['1100'];
+      const corpusId = glMap['3000'];
+
+      if (!bondInvId || !corpusId) {
+        steps.balanceCorrection = { corrected: false, error: 'Missing GL mappings for 1100 or 3000' };
+      } else {
+        // Compute current Fineract balance for these accounts from journal entries
+        const journalRes = await FineractClient.getJournalEntries({ limit: 10000 });
+        const entries = (journalRes && journalRes.pageItems) || [];
+        let bondInvBal = 0;
+        for (const je of entries) {
+          if (je.reversed) continue;
+          if (je.glAccountId === bondInvId) {
+            const isDebit = je.entryType && je.entryType.value === 'DEBIT';
+            bondInvBal += isDebit ? je.amount : -je.amount;
+          }
+        }
+
+        const bonds = await pool.query("SELECT SUM(face_value) AS total FROM bonds WHERE status = 'active'");
+        const expectedFaceValue = parseFloat(bonds.rows[0].total || 0);
+        const diff = expectedFaceValue - bondInvBal;
+
+        if (diff > 1) {
+          const yesterday = new Date();
+          yesterday.setDate(yesterday.getDate() - 1);
+          const correctionResult = await FineractClient.postJournalEntry({
+            officeId: 1,
+            transactionDate: yesterday,
+            debits: [{ glAccountId: bondInvId, amount: diff }],
+            credits: [{ glAccountId: corpusId, amount: diff }],
+            comments: 'Trust JE balance-correction: restore opening balance for active bonds',
+          });
+          steps.balanceCorrection = { corrected: true, diff, currentBal: bondInvBal, expected: expectedFaceValue, result: correctionResult };
+        } else {
+          steps.balanceCorrection = { corrected: false, currentBal: bondInvBal, expected: expectedFaceValue };
+        }
+      }
+    } catch (e) { steps.balanceCorrection = { error: e.message }; }
+
+    await logAdminAction(req, 'fineract_resync_all', 'fineract', null, null, steps);
+    res.json({ success: true, steps });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
 // ─── System Settings (Production/Sandbox Mode) ──────────────────────────────
 
 const { SystemSettings, BANK_REGISTRY } = require('../integrations/ach/systemSettings');

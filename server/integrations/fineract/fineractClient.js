@@ -261,6 +261,14 @@ class FineractClient {
   }
 
   /**
+   * Reverse a journal entry in Fineract.
+   * Maps to POST /journalentries/{transactionId}?command=reverse
+   */
+  static async reverseJournalEntry(transactionId) {
+    return fineractRequest('POST', `journalentries/${transactionId}?command=reverse`, {});
+  }
+
+  /**
    * Get GL accounts (chart of accounts).
    */
   static async getGLAccounts() {
