@@ -237,11 +237,14 @@ class GenerationEngine {
       case 'bond_statement': {
         if (!bondId) throw new Error('bondId is required for bond_statement report');
         const bondResult = await pool.query(
-          `SELECT b.*, bb.principal_balance, bb.accrued_interest,
-                  bb.total_interest_paid, bb.total_principal_paid,
+          `SELECT b.*,
+                  COALESCE(bb.principal_balance, b.face_value) AS principal_balance,
+                  COALESCE(bb.accrued_interest, 0) AS accrued_interest,
+                  COALESCE(bb.total_interest_paid, 0) AS total_interest_paid,
+                  COALESCE(bb.total_principal_paid, 0) AS total_principal_paid,
                   bb.last_accrual_date, bb.last_payment_date
            FROM bonds b
-           JOIN bond_balances bb ON bb.bond_id = b.id
+           LEFT JOIN bond_balances bb ON bb.bond_id = b.id
            WHERE b.id = $1`,
           [bondId]
         );

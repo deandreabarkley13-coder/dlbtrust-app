@@ -16,6 +16,9 @@ if (process.env.DATABASE_URL) {
     ssl: process.env.DB_SSL === 'true' ? { rejectUnauthorized: false } : false,
     max: 5,
     idleTimeoutMillis: 30000,
+    connectionTimeoutMillis: 10000,
+    keepAlive: true,
+    keepAliveInitialDelayMillis: 10000,
   };
 } else {
   poolConfig = {
@@ -26,6 +29,9 @@ if (process.env.DATABASE_URL) {
     database: process.env.BOND_DB_NAME || 'fineract_tenants',
     max:      5,
     idleTimeoutMillis: 30000,
+    connectionTimeoutMillis: 10000,
+    keepAlive: true,
+    keepAliveInitialDelayMillis: 10000,
   };
 }
 
