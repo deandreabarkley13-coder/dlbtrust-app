@@ -221,7 +221,7 @@ router.post('/deposit', requireAdmin, async function(req, res) {
         beneficiaryBankName: 'Bill.com, LLC',
         description: memo,
         purpose: 'BILL Cash Account Deposit',
-        paymentType: 'trust_distribution',
+        paymentType: 'bill_deposit',
         initiatedBy: req.user === 'admin' ? 'admin' : (req.user && req.user.username) || 'system'
       });
 
