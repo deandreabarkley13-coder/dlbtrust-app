@@ -623,7 +623,8 @@
         <div class="card">
           <div class="section-title">Generate Financial Report</div>
           <div class="form-row">
-            <div class="form-group"><label>Report Type</label><select id="rpt-type"><option value="balance_sheet">Balance Sheet</option><option value="income_statement">Income Statement</option><option value="trial_balance">Trial Balance</option><option value="cashflow">Cashflow Statement</option><option value="bond_statement">Bond Statement</option></select></div>
+            <div class="form-group"><label>Report Type</label><select id="rpt-type" onchange="toggleRptBondSelect()"><option value="balance_sheet">Balance Sheet</option><option value="income_statement">Income Statement</option><option value="trial_balance">Trial Balance</option><option value="cashflow">Cashflow Statement</option><option value="bond_statement">Bond Statement</option></select></div>
+            <div class="form-group" id="rpt-bond-group" style="display:none"><label>Bond</label><select id="rpt-bond"><option value="">Loading...</option></select></div>
             <div class="form-group"><label>From Date</label><input type="date" id="rpt-from"></div>
             <div class="form-group"><label>To Date</label><input type="date" id="rpt-to"></div>
           </div>
@@ -662,7 +663,8 @@
         <div class="card">
           <div class="section-title">Generate Statement</div>
           <div class="form-row">
-            <div class="form-group"><label>Report Type</label><select id="stmt-type"><option value="balance_sheet">Balance Sheet</option><option value="income_statement">Income Statement</option><option value="cashflow">Cashflow</option><option value="trial_balance">Trial Balance</option><option value="bond_statement">Bond Statement</option></select></div>
+            <div class="form-group"><label>Report Type</label><select id="stmt-type" onchange="toggleStmtBondSelect()"><option value="balance_sheet">Balance Sheet</option><option value="income_statement">Income Statement</option><option value="cashflow">Cashflow</option><option value="trial_balance">Trial Balance</option><option value="bond_statement">Bond Statement</option></select></div>
+            <div class="form-group" id="stmt-bond-group" style="display:none"><label>Bond</label><select id="stmt-bond"><option value="">Loading...</option></select></div>
             <div class="form-group"><label>From Date</label><input type="date" id="stmt-from"></div>
             <div class="form-group"><label>To Date</label><input type="date" id="stmt-to"></div>
           </div>
@@ -2269,15 +2271,35 @@
       }
     }
 
+    function toggleRptBondSelect() {
+      var g = el('rpt-bond-group');
+      if (el('rpt-type').value === 'bond_statement') { g.style.display = ''; loadBondSelect('rpt-bond'); } else { g.style.display = 'none'; }
+    }
+    function toggleStmtBondSelect() {
+      var g = el('stmt-bond-group');
+      if (el('stmt-type').value === 'bond_statement') { g.style.display = ''; loadBondSelect('stmt-bond'); } else { g.style.display = 'none'; }
+    }
+    async function loadBondSelect(selectId) {
+      var sel = el(selectId);
+      if (sel.dataset.loaded) return;
+      sel.innerHTML = '<option value="">Loading bonds...</option>';
+      var r = await fetchJSON(API + '/api/admin/bonds', { headers: adminHeaders() });
+      var bonds = (r.data && r.data.bonds) || [];
+      if (bonds.length === 0) bonds = [{ bond_id: 1, bond_name: 'DLB-PRB', bond_identifier: '19781443-DLB-PRB' }];
+      sel.innerHTML = bonds.map(function(b) { return '<option value="' + b.bond_id + '">' + esc(b.bond_name) + (b.bond_identifier ? ' (' + esc(b.bond_identifier) + ')' : '') + '</option>'; }).join('');
+      sel.dataset.loaded = '1';
+    }
+
     async function generateReport() {
       var reportType = el('rpt-type').value;
       var fromDate = el('rpt-from').value || undefined;
       var toDate = el('rpt-to').value || undefined;
+      var bondId = reportType === 'bond_statement' ? (el('rpt-bond').value || undefined) : undefined;
       el('rpt-result').innerHTML = '<p class="text-muted">Generating report...</p>';
       var r = await fetchJSON(API + '/api/accounting/statements/generate', {
         method: 'POST',
         headers: adminHeaders(),
-        body: JSON.stringify({ reportType: reportType, fromDate: fromDate, toDate: toDate, format: 'html' }),
+        body: JSON.stringify({ reportType: reportType, fromDate: fromDate, toDate: toDate, bondId: bondId, format: 'html' }),
       });
       if (r.success) {
         var jobId = r.data.job_id;
@@ -2367,10 +2389,11 @@
       const reportType = el('stmt-type').value;
       const fromDate = el('stmt-from').value || undefined;
       const toDate = el('stmt-to').value || undefined;
+      const bondId = reportType === 'bond_statement' ? (el('stmt-bond').value || undefined) : undefined;
       const r = await fetchJSON(API + '/api/accounting/statements/generate', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ reportType, fromDate, toDate, format: 'html' }),
+        body: JSON.stringify({ reportType, fromDate, toDate, bondId, format: 'html' }),
       });
       if (r.success) {
         const jobId = (r.data || {}).job_id;
