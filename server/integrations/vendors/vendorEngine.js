@@ -191,6 +191,15 @@ class VendorEngine {
   }
 
   static async deleteVendor(vendorId) {
+    const payments = await pool.query(
+      `SELECT COUNT(*) as cnt FROM vendor_payments WHERE vendor_id = $1`, [vendorId]
+    );
+    if (parseInt(payments.rows[0].cnt) > 0) {
+      await pool.query(
+        `UPDATE vendors SET status = 'inactive', updated_at = NOW() WHERE vendor_id = $1`, [vendorId]
+      );
+      return true;
+    }
     const res = await pool.query(`DELETE FROM vendors WHERE vendor_id = $1 RETURNING vendor_id`, [vendorId]);
     return res.rowCount > 0;
   }
@@ -416,7 +425,7 @@ class VendorEngine {
       },
       [{
         receivingRouting: vendor.routing_number,
-        receivingAccount: vendor.account_number,
+        accountNumber: vendor.account_number,
         receivingName: vendor.vendor_name,
         amountCents: Math.round(parseFloat(payment.amount) * 100),
         transactionCode: vendor.account_type === 'savings' ? '32' : '22',

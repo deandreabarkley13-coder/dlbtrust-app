@@ -878,6 +878,34 @@
         <div class="section-title">Deposit History</div>
         <div id="bill-deposit-history"><p class="text-muted">Loading...</p></div>
       </div>
+
+      <!-- BILL Cash Sync Section -->
+      <div class="card mt-16" style="border-left:3px solid var(--green);">
+        <div class="section-title" style="display:flex;justify-content:space-between;align-items:center;">
+          <span>Real-Time Sync Engine</span>
+          <div style="display:flex;gap:8px;">
+            <button class="btn btn-sm" onclick="runBillSync()">Sync Now</button>
+            <button class="btn btn-sm" id="bill-auto-sync-btn" onclick="toggleBillAutoSync()">Start Auto-Sync</button>
+          </div>
+        </div>
+        <div class="grid" id="bill-sync-stats"></div>
+        <div id="bill-sync-status" style="margin-top:8px;"></div>
+      </div>
+
+      <!-- Settlement Queue -->
+      <div class="card mt-16">
+        <div class="section-title">Settlement Queue</div>
+        <p class="text-muted" style="font-size:12px;margin-bottom:8px;">
+          Tracks deposit clearing: ACH (1-2 days) · Wire (same day) · Direct (instant)
+        </p>
+        <div id="bill-settlement-queue"><p class="text-muted">Loading...</p></div>
+      </div>
+
+      <!-- Sync History -->
+      <div class="card mt-16">
+        <div class="section-title">Sync History</div>
+        <div id="bill-sync-history"><p class="text-muted">Loading...</p></div>
+      </div>
     </div>
 
     <!-- SUB-LEDGER ACCOUNTS PAGE -->
@@ -1606,6 +1634,9 @@
       return h;
     }
     function el(id) { return document.getElementById(id); }
+    function card(title, value, sub) {
+      return '<div class="card"><div class="card-title">' + esc(title) + '</div><div class="card-value">' + value + '</div><div class="card-sub">' + esc(sub) + '</div></div>';
+    }
 
     // ─── Navigation ────────────────────────────────────────────────────────────
     document.querySelectorAll('.nav-item').forEach(item => {
@@ -4211,8 +4242,9 @@
         el('bill-balance').innerHTML = '<p class="text-muted">' + esc((balance && balance.error) || 'Unable to load balance') + '</p>';
       }
 
-      // Load deposit history
+      // Load deposit history + sync dashboard
       loadBillDeposits();
+      loadBillSync();
     }
 
     async function billDeposit() {
@@ -4241,16 +4273,18 @@
         const billStatus = r.billRecord ? '✓ Submitted to BILL' : 'Local only';
         const billRef = r.billRecord ? `<br><span style="font-size:11px;color:var(--green);">BILL Ref: ${esc(r.billRecord.receivedPayId)} | Visible in BILL Dashboard</span>` : '';
         const jeRef = r.journalEntry ? `<br><span style="font-size:11px;color:var(--blue);">JE: ${esc(r.journalEntry.entryId)} | DR 1050 BILL Cash / CR 1000 Trust Cash</span>` : '';
+        const stlRef = r.settlement ? `<br><span style="font-size:11px;color:#8b5cf6;">Settlement: ${esc(r.settlement.settlement_id)} | Expected: ${new Date(r.settlement.expected_settle).toLocaleString()}</span>` : '';
 
         el('bill-deposit-result').innerHTML = `
           <div style="padding:12px;background:rgba(16,185,129,0.1);border:1px solid var(--green);border-radius:6px;">
             <strong style="color:var(--green)">Deposit Submitted to BILL</strong><br>
             <span style="font-size:13px;">$${amount.toLocaleString('en-US',{minimumFractionDigits:2})} → ${esc(r.destination || 'BILL Account')}</span><br>
-            <span style="font-size:12px;color:var(--text-muted);">Method: ${r.method === 'wire' ? 'Wire Transfer' : (r.method === 'direct' ? 'Direct BILL API' : 'ACH Credit')} | ${r.method === 'wire' ? 'Wire ID: ' + r.wireId : (r.method === 'direct' ? 'Direct' : 'Batch: ' + r.batchId)} | Status: ${esc(r.status)}</span>${billRef}${jeRef}
+            <span style="font-size:12px;color:var(--text-muted);">Method: ${r.method === 'wire' ? 'Wire Transfer' : (r.method === 'direct' ? 'Direct BILL API' : 'ACH Credit')} | ${r.method === 'wire' ? 'Wire ID: ' + r.wireId : (r.method === 'direct' ? 'Direct' : 'Batch: ' + r.batchId)} | Status: ${esc(r.status)}</span>${billRef}${jeRef}${stlRef}
           </div>`;
         el('bill-deposit-amount').value = '';
         el('bill-deposit-memo').value = '';
         loadBillDeposits();
+        loadBillSync();
       } else {
         el('bill-deposit-result').innerHTML = '<p class="error-msg">' + esc(r.error || 'Deposit failed') + '</p>';
       }
@@ -4269,6 +4303,126 @@
           '</tbody></table>';
       } else {
         el('bill-deposit-history').innerHTML = '<p class="text-muted">No deposits yet. Use the form above to send funds to your BILL account.</p>';
+      }
+    }
+
+    // ─── BILL CASH SYNC ──────────────────────────────────────────────────────────
+    var billAutoSyncActive = false;
+
+    async function loadBillSync() {
+      try {
+        var r = await fetchJSON(API + '/api/bill/sync/dashboard');
+        if (!r.success) { el('bill-sync-stats').innerHTML = '<p class="text-muted">Sync engine initializing...</p>'; return; }
+        var d = r.data || {};
+        var last = d.last_sync;
+        var stats = d.settlement_stats || {};
+
+        el('bill-sync-stats').innerHTML =
+          card('BILL Balance', last ? fmt(last.bill_balance) : '—', last ? (last.balance_matched ? 'Matched with GL' : 'Mismatch with GL') : 'Not synced') +
+          card('GL 1050 Balance', last ? fmt(last.gl_balance) : '—', 'BILL Cash Account') +
+          card('Pending Settlement', stats.pending + stats.clearing, fmt(stats.total_pending) + ' in transit') +
+          card('Total Settled', stats.settled, fmt(stats.total_settled) + ' confirmed');
+
+        if (last) {
+          var ago = Math.round((Date.now() - new Date(last.completed_at || last.started_at).getTime()) / 1000);
+          var agoText = ago < 60 ? ago + 's ago' : Math.round(ago / 60) + 'm ago';
+          var statusColor = last.status === 'completed' ? 'var(--green)' : last.status === 'failed' ? 'var(--red)' : 'var(--blue)';
+          var matchIcon = last.balance_matched ? '✓' : '⚠';
+          var matchColor = last.balance_matched ? 'var(--green)' : '#f59e0b';
+          el('bill-sync-status').innerHTML =
+            '<div style="font-size:12px;color:var(--text-muted);">' +
+              'Last sync: <strong style="color:' + statusColor + '">' + esc(last.status) + '</strong> ' + agoText +
+              ' · Synced: ' + (last.deposits_synced || 0) + ' deposits' +
+              ' · Settled: ' + (last.settlements_found || 0) +
+              ' · <span style="color:' + matchColor + '">' + matchIcon + ' Balance ' + (last.balance_matched ? 'matched' : 'mismatch: ' + fmt(Math.abs((last.bill_balance || 0) - (last.gl_balance || 0)))) + '</span>' +
+              ' · Triggered by: ' + esc(last.triggered_by || 'system') +
+            '</div>';
+        } else {
+          el('bill-sync-status').innerHTML = '<p class="text-muted" style="font-size:12px;">No sync has been run yet. Click "Sync Now" to start.</p>';
+        }
+
+        // Settlement queue
+        var queue = d.settlement_queue || [];
+        if (queue.length > 0) {
+          var qt = '<table class="data-table"><tr><th>ID</th><th>Deposit</th><th>Method</th><th>Amount</th><th>Status</th><th>Expected</th><th>BILL Txn</th></tr>';
+          queue.forEach(function(s) {
+            var badgeClass = s.status === 'settled' ? 'badge-active' : s.status === 'clearing' ? 'badge-info' : s.status === 'failed' || s.status === 'expired' ? 'badge-failed' : 'badge-pending';
+            qt += '<tr><td><code style="font-size:11px;">' + esc(s.settlement_id) + '</code></td>' +
+              '<td><code style="font-size:11px;">' + esc(s.deposit_ref) + '</code></td>' +
+              '<td>' + esc(s.deposit_method).toUpperCase() + '</td>' +
+              '<td class="money">' + fmt(s.amount) + '</td>' +
+              '<td><span class="status-badge ' + badgeClass + '">' + esc(s.status) + '</span></td>' +
+              '<td>' + (s.expected_settle ? new Date(s.expected_settle).toLocaleString() : '—') + '</td>' +
+              '<td>' + (s.bill_txn_id ? '<code style="font-size:11px;">' + esc(s.bill_txn_id) + '</code>' : '—') + '</td></tr>';
+          });
+          qt += '</table>';
+          el('bill-settlement-queue').innerHTML = qt;
+        } else {
+          el('bill-settlement-queue').innerHTML = '<p class="text-muted">No pending settlements. Deposits clear automatically.</p>';
+        }
+
+        // Sync history
+        var history = d.sync_history || [];
+        if (history.length > 0) {
+          var ht = '<table class="data-table"><tr><th>Sync ID</th><th>Type</th><th>Status</th><th>BILL Balance</th><th>GL Balance</th><th>Match</th><th>Synced</th><th>Settled</th><th>Time</th></tr>';
+          history.forEach(function(h) {
+            var badgeClass = h.status === 'completed' ? 'badge-active' : h.status === 'failed' ? 'badge-failed' : 'badge-pending';
+            var matchBadge = h.balance_matched ? '<span style="color:var(--green);">✓</span>' : '<span style="color:#f59e0b;">⚠</span>';
+            ht += '<tr><td><code style="font-size:11px;">' + esc(h.sync_id) + '</code></td>' +
+              '<td>' + esc(h.sync_type) + '</td>' +
+              '<td><span class="status-badge ' + badgeClass + '">' + esc(h.status) + '</span></td>' +
+              '<td class="money">' + fmt(h.bill_balance) + '</td>' +
+              '<td class="money">' + fmt(h.gl_balance) + '</td>' +
+              '<td>' + matchBadge + '</td>' +
+              '<td>' + (h.deposits_synced || 0) + '</td>' +
+              '<td>' + (h.settlements_found || 0) + '</td>' +
+              '<td>' + (h.completed_at ? new Date(h.completed_at).toLocaleString() : 'running...') + '</td></tr>';
+          });
+          ht += '</table>';
+          el('bill-sync-history').innerHTML = ht;
+        } else {
+          el('bill-sync-history').innerHTML = '<p class="text-muted">No sync history yet.</p>';
+        }
+
+      } catch(e) {
+        el('bill-sync-stats').innerHTML = '<p class="text-muted">Sync engine not available: ' + esc(e.message) + '</p>';
+      }
+    }
+
+    async function runBillSync() {
+      el('bill-sync-status').innerHTML = '<p class="text-muted" style="font-size:12px;">Syncing with BILL...</p>';
+      try {
+        var r = await fetchJSON(API + '/api/bill/sync/run', {
+          method: 'POST',
+          headers: adminHeaders(),
+          body: JSON.stringify({ triggered_by: 'manual' })
+        });
+        if (r.success) {
+          loadBillSync();
+        } else {
+          el('bill-sync-status').innerHTML = '<p class="error-msg" style="font-size:12px;">Sync failed: ' + esc(r.error) + '</p>';
+        }
+      } catch(e) {
+        el('bill-sync-status').innerHTML = '<p class="error-msg" style="font-size:12px;">Sync error: ' + esc(e.message) + '</p>';
+      }
+    }
+
+    async function toggleBillAutoSync() {
+      var btn = el('bill-auto-sync-btn');
+      if (billAutoSyncActive) {
+        await fetchJSON(API + '/api/bill/sync/auto-stop', { method: 'POST', headers: adminHeaders(), body: '{}' });
+        billAutoSyncActive = false;
+        btn.textContent = 'Start Auto-Sync';
+        btn.style.background = '';
+      } else {
+        await fetchJSON(API + '/api/bill/sync/auto-start', {
+          method: 'POST',
+          headers: adminHeaders(),
+          body: JSON.stringify({ interval_seconds: 300 })
+        });
+        billAutoSyncActive = true;
+        btn.textContent = 'Stop Auto-Sync';
+        btn.style.background = 'var(--green)';
       }
     }
 
