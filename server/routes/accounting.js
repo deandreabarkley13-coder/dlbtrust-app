@@ -388,6 +388,26 @@ router.get('/bridge/reconcile/wire', async (req, res) => {
   }
 });
 
+// ─── GET /api/accounting/bridge/reconcile/sub-ledgers ──────────────────────────
+router.get('/bridge/reconcile/sub-ledgers', async (req, res) => {
+  try {
+    const result = await DataBridge.reconcileSubLedgers();
+    res.json({ success: true, data: result });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// ─── POST /api/accounting/bridge/sync/sub-ledgers ─────────────────────────────
+router.post('/bridge/sync/sub-ledgers', async (req, res) => {
+  try {
+    const result = await DataBridge.syncSubscriptionsToSubLedgers();
+    res.json({ success: true, data: result });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
 // ─── GET /api/accounting/bridge/report ────────────────────────────────────────
 router.get('/bridge/report', async (req, res) => {
   try {

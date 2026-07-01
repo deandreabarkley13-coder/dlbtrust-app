@@ -464,6 +464,73 @@ async function listReceivedPayments(max) {
   return [];
 }
 
+/**
+ * Record a payment (alias for recordDeposit, used by vendor payment engine)
+ */
+async function recordPayment(opts) {
+  return recordDeposit({
+    amount: opts.amount,
+    method: opts.method || 'ach',
+    memo: opts.description || opts.memo || 'Payment',
+    bankAccountId: opts.bankAccountId,
+    customerId: opts.customerId,
+  });
+}
+
+/**
+ * Get entity changes since the last sync token (incremental sync).
+ * Uses BILL's GetEntityChanges endpoint for faster polling.
+ * @param {string} [syncToken] - Sync token from previous call (uses env BILL_SYNC_TOKEN if omitted)
+ * @returns {{ changes: Array, nextSyncToken: string }}
+ */
+async function getEntityChanges(syncToken) {
+  var session = await getSession();
+  var devKey = process.env.BILL_DEV_KEY;
+  var token = syncToken || process.env.BILL_SYNC_TOKEN;
+
+  if (!token) {
+    return { changes: [], nextSyncToken: null, error: 'No sync token configured' };
+  }
+
+  var result = await billRequest('/GetEntityChanges.json', {
+    devKey: devKey,
+    sessionId: session,
+    data: {
+      syncToken: token,
+      entityTypes: ['ReceivedPay', 'SentPay', 'BankAccount']
+    }
+  });
+
+  if (result.response_status === 0 && result.response_data) {
+    return {
+      changes: result.response_data.changes || result.response_data || [],
+      nextSyncToken: result.response_data.syncToken || result.response_data.nextSyncToken || token
+    };
+  }
+
+  // Session retry
+  if (result.response_status === 1) {
+    sessionId = null;
+    session = await getSession();
+    result = await billRequest('/GetEntityChanges.json', {
+      devKey: devKey,
+      sessionId: session,
+      data: {
+        syncToken: token,
+        entityTypes: ['ReceivedPay', 'SentPay', 'BankAccount']
+      }
+    });
+    if (result.response_status === 0 && result.response_data) {
+      return {
+        changes: result.response_data.changes || result.response_data || [],
+        nextSyncToken: result.response_data.syncToken || result.response_data.nextSyncToken || token
+      };
+    }
+  }
+
+  return { changes: [], nextSyncToken: token, error: result.response_message || 'Unknown error' };
+}
+
 module.exports = {
   login: login,
   listBankAccounts: listBankAccounts,
@@ -474,7 +541,9 @@ module.exports = {
   logout: logout,
   isConfigured: isConfigured,
   recordDeposit: recordDeposit,
+  recordPayment: recordPayment,
   listCustomers: listCustomers,
   listSentPayments: listSentPayments,
-  listReceivedPayments: listReceivedPayments
+  listReceivedPayments: listReceivedPayments,
+  getEntityChanges: getEntityChanges
 };

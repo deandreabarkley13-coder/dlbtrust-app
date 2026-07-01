@@ -41,10 +41,15 @@ router.get('/contacts', async (req, res) => {
 
 // ─── POST /api/crm/contacts ──────────────────────────────────────────────────
 router.post('/contacts', async (req, res) => {
-  const { contactType, firstName, lastName } = req.body;
+  const contactType = req.body.contactType || req.body.contact_type;
+  const firstName   = req.body.firstName   || req.body.first_name;
+  const lastName    = req.body.lastName    || req.body.last_name;
   if (!contactType || !firstName || !lastName) {
     return res.status(400).json({ error: 'Required: contactType, firstName, lastName' });
   }
+  req.body.contactType = contactType;
+  req.body.firstName   = firstName;
+  req.body.lastName    = lastName;
   try {
     const contact = await CrmEngine.createContact(req.body);
     res.json({ success: true, data: contact });
@@ -68,6 +73,28 @@ router.get('/contacts/:id', async (req, res) => {
 router.put('/contacts/:id', async (req, res) => {
   try {
     const contact = await CrmEngine.updateContact(req.params.id, req.body);
+    res.json({ success: true, data: contact });
+  } catch (err) {
+    const status = err.message.includes('not found') ? 404 : 500;
+    res.status(status).json({ success: false, error: err.message });
+  }
+});
+
+// ─── POST /api/crm/contacts/:id/approve ──────────────────────────────────────
+router.post('/contacts/:id/approve', async (req, res) => {
+  try {
+    const contact = await CrmEngine.approveContact(req.params.id, req.body.approvedBy || 'admin');
+    res.json({ success: true, data: contact });
+  } catch (err) {
+    const status = err.message.includes('not found') ? 404 : 500;
+    res.status(status).json({ success: false, error: err.message });
+  }
+});
+
+// ─── POST /api/crm/contacts/:id/reject ───────────────────────────────────────
+router.post('/contacts/:id/reject', async (req, res) => {
+  try {
+    const contact = await CrmEngine.rejectContact(req.params.id, req.body.rejectedBy || 'admin', req.body.reason);
     res.json({ success: true, data: contact });
   } catch (err) {
     const status = err.message.includes('not found') ? 404 : 500;

@@ -123,6 +123,28 @@ class CrmEngine {
     return result.rows[0];
   }
 
+  static async approveContact(contactId, approvedBy) {
+    const result = await pool.query(
+      `UPDATE crm_contacts
+       SET approval_status = 'approved', approved_by = $2, approved_at = NOW(), updated_at = NOW()
+       WHERE contact_id = $1 RETURNING *`,
+      [contactId, approvedBy || 'admin']
+    );
+    if (result.rows.length === 0) throw new Error(`Contact ${contactId} not found`);
+    return result.rows[0];
+  }
+
+  static async rejectContact(contactId, rejectedBy, reason) {
+    const result = await pool.query(
+      `UPDATE crm_contacts
+       SET approval_status = 'rejected', rejected_by = $2, rejection_reason = $3, updated_at = NOW()
+       WHERE contact_id = $1 RETURNING *`,
+      [contactId, rejectedBy || 'admin', reason || null]
+    );
+    if (result.rows.length === 0) throw new Error(`Contact ${contactId} not found`);
+    return result.rows[0];
+  }
+
   static async logInteraction({ contactId, interactionType, subject, body, direction, outcome, followUpDate, createdBy }) {
     const interactionId = 'INT-' + Date.now() + '-' + Math.random().toString(36).slice(2, 6).toUpperCase();
     const result = await pool.query(
@@ -188,12 +210,24 @@ class CrmEngine {
     const kycPending = await pool.query(
       `SELECT COUNT(*) AS count FROM crm_contacts WHERE kyc_status = 'pending'`
     );
+    const kycVerified = await pool.query(
+      `SELECT COUNT(*) AS count FROM crm_contacts WHERE kyc_status = 'verified'`
+    );
     const amlFlagged = await pool.query(
       `SELECT COUNT(*) AS count FROM crm_contacts WHERE aml_status = 'flagged'`
+    );
+    const pendingApproval = await pool.query(
+      `SELECT COUNT(*) AS count FROM crm_contacts WHERE approval_status = 'pending_approval'`
+    );
+    const approved = await pool.query(
+      `SELECT COUNT(*) AS count FROM crm_contacts WHERE approval_status = 'approved'`
     );
     const subscriptionStats = await pool.query(
       `SELECT COUNT(*) AS active_count, COALESCE(SUM(subscription_amount), 0) AS total_amount
        FROM crm_bond_subscriptions WHERE status = 'active'`
+    );
+    const totalSubscriptions = await pool.query(
+      `SELECT COUNT(*) AS total_count FROM crm_bond_subscriptions`
     );
 
     const byType = {};
@@ -205,8 +239,12 @@ class CrmEngine {
       contacts_by_type: byType,
       total_contacts: Object.values(byType).reduce((s, v) => s + v, 0),
       kyc_pending_count: parseInt(kycPending.rows[0].count, 10),
+      kyc_verified: parseInt(kycVerified.rows[0].count, 10),
       aml_flagged_count: parseInt(amlFlagged.rows[0].count, 10),
+      pending_approval: parseInt(pendingApproval.rows[0].count, 10),
+      approved_count: parseInt(approved.rows[0].count, 10),
       active_subscriptions: parseInt(subscriptionStats.rows[0].active_count, 10),
+      total_subscriptions: parseInt(totalSubscriptions.rows[0].total_count, 10),
       total_subscription_amount: parseFloat(subscriptionStats.rows[0].total_amount),
       generated_at: new Date().toISOString(),
     };
