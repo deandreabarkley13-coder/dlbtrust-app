@@ -661,34 +661,56 @@ async function executePaymentByMethod(method, opts) {
 }
 
 /**
- * Execute via BILL API — outbound vendor payment flow.
- * Creates vendor (if new) → creates bill → pays bill → funds move from BILL Cash to vendor.
+ * Execute via BILL API.
+ * Routes based on payment_type:
+ *   - 'deposit' / 'bill_cash_deposit': RecordARPayment → funds INTO BILL Cash Account
+ *   - 'vendor_payment' / 'trust_distribution': PayBills → funds OUT of BILL Cash to vendor
  */
 async function executeBILLPayment(opts) {
   if (!billClient) throw new Error('BILL client not available');
 
-  // Use outbound PayBills flow to actually send funds to the vendor
-  var paymentResult = await billClient.sendVendorPayment({
-    payee_name: opts.payee_name,
-    amount: opts.amount,
-    description: opts.description || 'Electronic settlement payment',
-    invoiceNumber: 'ES-' + Date.now().toString(36).toUpperCase(),
-    email: opts.payee_email || undefined,
-  });
+  var isDeposit = opts.payment_type === 'deposit' || opts.payment_type === 'bill_cash_deposit';
+
+  var paymentResult;
+  if (isDeposit) {
+    // Deposit INTO BILL Cash Account via RecordARPayment
+    paymentResult = await billClient.recordPayment({
+      amount: opts.amount,
+      description: opts.description || 'Electronic settlement deposit',
+      paymentDate: new Date().toISOString().split('T')[0],
+    });
+  } else {
+    // Outbound vendor payment via PayBills
+    paymentResult = await billClient.sendVendorPayment({
+      payee_name: opts.payee_name,
+      amount: opts.amount,
+      description: opts.description || 'Electronic settlement payment',
+      invoiceNumber: 'ES-' + Date.now().toString(36).toUpperCase(),
+      email: opts.payee_email || undefined,
+    });
+  }
 
   var journalEntryId = null;
   if (TrustAccountingEngine) {
     try {
-      var debitCode = opts.payment_type === 'trust_distribution' ? ACCOUNT_CODES.DISTRIBUTIONS : ACCOUNT_CODES.EXPENSES;
-      var creditCode = opts.source_account_code || ACCOUNT_CODES.BILL_CASH;
+      var debitCode, creditCode;
+      if (isDeposit) {
+        // Deposit: DR BILL Cash (1050) / CR source account
+        debitCode = ACCOUNT_CODES.BILL_CASH;
+        creditCode = opts.source_account_code || ACCOUNT_CODES.CASH;
+      } else {
+        // Vendor payment: DR Expenses / CR source account
+        debitCode = opts.payment_type === 'trust_distribution' ? ACCOUNT_CODES.DISTRIBUTIONS : ACCOUNT_CODES.EXPENSES;
+        creditCode = opts.source_account_code || ACCOUNT_CODES.BILL_CASH;
+      }
       var je = await TrustAccountingEngine.postJournalEntry({
         entryDate: new Date(),
         description: 'Electronic settlement: ' + (opts.description || opts.payee_name),
         lines: [
           { accountCode: debitCode, debitAmount: opts.amount, creditAmount: 0,
-            memo: 'ESTL ' + opts.settlementId + ' — ' + opts.payee_name },
+            memo: 'ESTL ' + opts.settlementId + ' — ' + (opts.payee_name || 'BILL Cash deposit') },
           { accountCode: creditCode, debitAmount: 0, creditAmount: opts.amount,
-            memo: 'Electronic settlement outflow: ' + opts.paymentRef },
+            memo: 'Electronic settlement ' + (isDeposit ? 'deposit' : 'outflow') + ': ' + opts.paymentRef },
         ],
         referenceType: 'electronic_settlement',
         referenceId: opts.settlementId,
@@ -700,22 +722,26 @@ async function executeBILLPayment(opts) {
     }
   }
 
+  var billRef = isDeposit
+    ? (paymentResult.receivedPayId || paymentResult.id || null)
+    : (paymentResult.sentPayId || paymentResult.billId || null);
+
   var fileContent = JSON.stringify({
-    method: 'bill_api', endpoint: '/api/v2/PayBills',
+    method: 'bill_api',
+    endpoint: isDeposit ? '/api/v2/RecordARPayment' : '/api/v2/PayBills',
+    type: isDeposit ? 'deposit' : 'vendor_payment',
     amount: opts.amount,
-    vendorId: paymentResult.vendorId,
-    billId: paymentResult.billId,
-    sentPayId: paymentResult.sentPayId,
+    ref: billRef,
     timestamp: new Date().toISOString(),
   });
 
   return {
-    bill_ref: paymentResult.sentPayId || paymentResult.billId || null,
-    bill_vendor_id: paymentResult.vendorId || null,
-    bill_id: paymentResult.billId || null,
+    bill_ref: billRef,
+    bill_vendor_id: isDeposit ? null : (paymentResult.vendorId || null),
+    bill_id: isDeposit ? null : (paymentResult.billId || null),
     journal_entry_id: journalEntryId,
-    transmission_ref: paymentResult.sentPayId || opts.paymentRef,
-    processor_ref: paymentResult.sentPayId || null,
+    transmission_ref: billRef || opts.paymentRef,
+    processor_ref: billRef,
     payment_file_hash: computePaymentFileHash(fileContent),
   };
 }
