@@ -1280,19 +1280,29 @@ async function completeMFASettlement(opts) {
   if (!settlement) throw new Error('Settlement not found: ' + settlementId);
   if (settlement.status !== 'failed') throw new Error('Settlement is not in failed state');
 
-  // 2. Verify MFA code
+  // 2. Verify MFA code (session becomes trusted — DO NOT re-login)
   var mfaResult = await billClient.verifyMFACode(code, challengeId);
   if (!mfaResult.success) throw new Error('MFA verification failed');
 
-  // 3. Retry the vendor payment via PayBills
-  var paymentResult = await billClient.sendVendorPayment({
-    payee_name: settlement.payee_name,
+  // 3. Create vendor + bill using the MFA-verified session, then pay directly
+  var vendor = await billClient.findVendor(settlement.payee_name);
+  if (!vendor) {
+    vendor = await billClient.createVendor({ name: settlement.payee_name });
+  }
+  var bill = await billClient.createBill({
+    vendorId: vendor.id,
     amount: parseFloat(settlement.amount),
-    description: settlement.description || 'Electronic settlement payment',
     invoiceNumber: 'ES-' + Date.now().toString(36).toUpperCase(),
+    description: settlement.description || 'Electronic settlement payment to ' + settlement.payee_name,
   });
 
-  var billRef = paymentResult.sentPayId || paymentResult.billId || null;
+  // 4. Pay using the MFA-verified session directly (no getSession/re-login)
+  var paymentResult = await billClient.payBillDirect({
+    billId: bill.id,
+    amount: parseFloat(settlement.amount),
+  });
+
+  var billRef = paymentResult.sentPayId || bill.id || null;
 
   // 4. Post journal entry
   var journalEntryId = null;

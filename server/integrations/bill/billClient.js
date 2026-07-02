@@ -793,6 +793,53 @@ async function payBill(opts) {
 }
 
 /**
+ * Pay a bill using the CURRENT session directly (no getSession/re-login).
+ * Used after MFA verification to preserve the trusted session.
+ */
+async function payBillDirect(opts) {
+  if (!sessionId) throw new Error('No active session — login first');
+  var devKey = process.env.BILL_DEV_KEY;
+
+  var payBillsData = {
+    billPays: [{
+      billId: opts.billId,
+      amount: opts.amount,
+    }],
+  };
+
+  console.log('[bill-client] payBillDirect using session=' + sessionId);
+  var result = await billRequest('/PayBills.json', {
+    devKey: devKey,
+    sessionId: sessionId,
+    data: JSON.stringify(payBillsData),
+  });
+
+  if (result.response_status === 0 && result.response_data) {
+    var payData = result.response_data;
+    var sentPayId = null;
+    if (payData.sentPays && Array.isArray(payData.sentPays) && payData.sentPays[0]) {
+      sentPayId = payData.sentPays[0].id;
+    } else if (Array.isArray(payData)) {
+      sentPayId = payData[0] && payData[0].id ? payData[0].id : (payData[0] || null);
+    } else if (payData.id) {
+      sentPayId = payData.id;
+    }
+    return {
+      sentPayId: sentPayId,
+      billId: opts.billId,
+      amount: opts.amount,
+      processDate: opts.processDate || new Date().toISOString().split('T')[0],
+      status: 'scheduled',
+      raw: payData,
+    };
+  }
+
+  var errMsg = (result.response_data && result.response_data.error_message) ||
+    result.response_message || JSON.stringify(result);
+  throw new Error('BILL PayBills failed: ' + errMsg);
+}
+
+/**
  * Full outbound vendor payment flow:
  * 1. Find or create vendor in BILL
  * 2. Create bill (payable) for the vendor
@@ -895,18 +942,8 @@ async function verifyMFACode(code, challengeId) {
       deviceId = result.response_data.mfaId;
       console.log('[bill-client] MFA verified, using mfaId as deviceId=' + deviceId);
     }
-    // Force re-login with deviceId to create a trusted session for PayBills
-    if (deviceId) {
-      sessionId = null;
-      sessionExpiry = null;
-      try {
-        await login();
-        console.log('[bill-client] Re-logged in with deviceId for trusted session');
-      } catch (reLoginErr) {
-        console.warn('[bill-client] Re-login with deviceId failed:', reLoginErr.message);
-      }
-    }
-    return { success: true, deviceId: deviceId, machineName: machineName, raw: result.response_data };
+    console.log('[bill-client] MFA verified, session=' + sessionId + ', deviceId=' + deviceId);
+    return { success: true, deviceId: deviceId, sessionId: sessionId, machineName: machineName, raw: result.response_data };
   }
   var errDetail = (result.response_data && result.response_data.error_message) ||
     result.response_message || JSON.stringify(result);
@@ -949,6 +986,7 @@ module.exports = {
   createBill: createBill,
   payBill: payBill,
   sendVendorPayment: sendVendorPayment,
+  payBillDirect: payBillDirect,
   getMFAStatus: getMFAStatus,
   sendMFAChallenge: sendMFAChallenge,
   verifyMFACode: verifyMFACode,
