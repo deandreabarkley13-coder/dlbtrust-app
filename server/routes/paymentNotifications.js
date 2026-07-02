@@ -116,6 +116,8 @@ router.get('/receipt/:trackingId', requireAdmin, async function(req, res) {
 });
 
 router.get('/receipt/:trackingId/html', requireAdmin, async function(req, res) {
+  // Override CSP frame-ancestors to allow same-origin iframe embedding
+  res.setHeader('Content-Security-Policy', "default-src 'self'; style-src 'unsafe-inline'; frame-ancestors 'self'");
   try {
     var receipt = await notifEngine.generateReceipt(req.params.trackingId);
     if (!receipt) return res.status(404).send('<html><body><h1>Receipt Not Found</h1></body></html>');
