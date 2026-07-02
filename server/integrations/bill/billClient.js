@@ -734,23 +734,22 @@ async function payBill(opts) {
     }],
   };
 
-  console.log('[bill-client] PayBills using session:', session ? session.substring(0, 10) + '...' : 'null');
   var result = await billRequest('/PayBills.json', {
     devKey: devKey,
     sessionId: session,
     data: JSON.stringify(payBillsData),
   });
-  console.log('[bill-client] PayBills response:', JSON.stringify(result).substring(0, 500));
 
   if (result.response_status === 0 && result.response_data) {
     var payData = result.response_data;
     var sentPayId = null;
-    if (Array.isArray(payData)) {
+    // BILL returns { sentPays: [{ id, ... }] }
+    if (payData.sentPays && Array.isArray(payData.sentPays) && payData.sentPays[0]) {
+      sentPayId = payData.sentPays[0].id;
+    } else if (Array.isArray(payData)) {
       sentPayId = payData[0] && payData[0].id ? payData[0].id : (payData[0] || null);
     } else if (payData.id) {
       sentPayId = payData.id;
-    } else if (typeof payData === 'string') {
-      sentPayId = payData;
     }
     return {
       sentPayId: sentPayId,
@@ -875,13 +874,10 @@ async function verifyMFACode(code, challengeId) {
     devKey: devKey, sessionId: session,
     data: JSON.stringify(authData)
   });
-  console.log('[bill-client] MFA authenticate raw response:', JSON.stringify(result));
   if (result.response_status === 0 && result.response_data) {
-    // Capture new sessionId if BILL returns one
     if (result.response_data.sessionId) {
       sessionId = result.response_data.sessionId;
       sessionExpiry = Date.now() + SESSION_TIMEOUT_MS;
-      console.log('[bill-client] MFA returned new trusted sessionId');
     }
     if (result.response_data.deviceId) {
       deviceId = result.response_data.deviceId;
