@@ -419,9 +419,11 @@ async function syncToDataBridge(settlementId) {
     }
   }
 
-  // Only mark as synced if all module syncs succeeded
-  var allModulesSynced = Object.keys(syncResults.modules).every(function(k) {
-    return syncResults.modules[k].synced !== false;
+  // Mark as synced if core modules succeed (trust accounting + sub-ledger)
+  // Fineract/cash reconciliation failures should not block sync status
+  var coreModules = ['trust_accounting', 'sub_ledger'];
+  var allModulesSynced = coreModules.every(function(k) {
+    return !syncResults.modules[k] || syncResults.modules[k].synced !== false;
   });
 
   if (allModulesSynced) {
