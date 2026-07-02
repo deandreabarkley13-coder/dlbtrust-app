@@ -14,6 +14,7 @@ var BILL_API_BASE = process.env.BILL_API_URL || 'https://api.bill.com/api/v2';
 
 var sessionId = null;
 var sessionExpiry = null;
+var deviceId = process.env.BILL_DEVICE_ID || null;
 var SESSION_TIMEOUT_MS = 30 * 60 * 1000; // 30 minutes (BILL expires at 35 min idle)
 
 /**
@@ -83,17 +84,21 @@ async function login() {
     throw new Error('Missing BILL credentials: BILL_DEV_KEY, BILL_USERNAME, BILL_PASSWORD, BILL_ORG_ID required');
   }
 
-  var result = await billRequest('/Login.json', {
+  var loginParams = {
     devKey: devKey,
     userName: userName,
     password: password,
     orgId: orgId
-  });
+  };
+  if (deviceId) loginParams.deviceId = deviceId;
+
+  var result = await billRequest('/Login.json', loginParams);
 
   if (result.response_status === 0 && result.response_data && result.response_data.sessionId) {
     sessionId = result.response_data.sessionId;
     sessionExpiry = Date.now() + SESSION_TIMEOUT_MS;
-    console.log('[bill-client] Login successful, session expires in 30 min');
+    var trusted = deviceId ? ' (trusted device)' : ' (untrusted)';
+    console.log('[bill-client] Login successful, session expires in 30 min' + trusted);
     return sessionId;
   }
 
@@ -839,6 +844,66 @@ async function sendVendorPayment(opts) {
   };
 }
 
+/**
+ * Check MFA status for current session
+ */
+async function getMFAStatus() {
+  var session = await getSession();
+  var devKey = process.env.BILL_DEV_KEY;
+  var result = await billRequest('/MFAStatus.json', { devKey: devKey, sessionId: session });
+  if (result.response_status === 0) return result.response_data;
+  throw new Error('MFA status check failed: ' + (result.response_message || JSON.stringify(result)));
+}
+
+/**
+ * Send MFA challenge (code to user's phone/email)
+ */
+async function sendMFAChallenge(method) {
+  var session = await getSession();
+  var devKey = process.env.BILL_DEV_KEY;
+  var result = await billRequest('/MFAChallenge.json', {
+    devKey: devKey, sessionId: session,
+    data: JSON.stringify({ useBackup: method === 'backup' ? true : false })
+  });
+  if (result.response_status === 0) return result.response_data;
+  throw new Error('MFA challenge failed: ' + (result.response_message || JSON.stringify(result)));
+}
+
+/**
+ * Verify MFA code and trust this device
+ */
+async function verifyMFACode(code) {
+  var session = await getSession();
+  var devKey = process.env.BILL_DEV_KEY;
+  var machineName = 'dlbtrust-server-' + Date.now().toString(36);
+  var result = await billRequest('/MFAAuthenticate.json', {
+    devKey: devKey, sessionId: session,
+    data: JSON.stringify({ token: code, machineName: machineName, rememberMe: true })
+  });
+  if (result.response_status === 0 && result.response_data) {
+    if (result.response_data.deviceId) {
+      deviceId = result.response_data.deviceId;
+      console.log('[bill-client] MFA verified, deviceId=' + deviceId);
+    }
+    return { success: true, deviceId: deviceId, machineName: machineName };
+  }
+  throw new Error('MFA verification failed: ' + (result.response_message || JSON.stringify(result)));
+}
+
+/**
+ * Get current MFA/device trust info
+ */
+function getMFATrustInfo() {
+  return { deviceId: deviceId, hasTrustedDevice: !!deviceId };
+}
+
+/**
+ * Set device ID for trusted sessions
+ */
+function setDeviceId(id) {
+  deviceId = id;
+}
+
 module.exports = {
   login: login,
   listBankAccounts: listBankAccounts,
@@ -860,4 +925,9 @@ module.exports = {
   createBill: createBill,
   payBill: payBill,
   sendVendorPayment: sendVendorPayment,
+  getMFAStatus: getMFAStatus,
+  sendMFAChallenge: sendMFAChallenge,
+  verifyMFACode: verifyMFACode,
+  getMFATrustInfo: getMFATrustInfo,
+  setDeviceId: setDeviceId,
 };
