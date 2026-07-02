@@ -1327,9 +1327,11 @@ class DataBridge {
     var elapsed = Date.now() - startTime;
 
     var totalSynced = (results.openingBalances.synced || 0) + (results.bonds.synced || 0) + (results.ach.synced || 0) +
-      (results.bill.synced || 0) + (results.fineractPush.synced || 0) + (results.subLedgerSync.synced || 0);
+      (results.bill.synced || 0) + (results.fineractPush.synced || 0) + (results.subLedgerSync.synced || 0) +
+      (results.electronicSettlements.synced || 0);
     var totalFailed = (results.openingBalances.failed || 0) + (results.bonds.failed || 0) + (results.ach.failed || 0) +
-      (results.bill.failed || 0) + (results.fineractPush.failed || 0) + ((results.subLedgerSync.errors || []).length || 0);
+      (results.bill.failed || 0) + (results.fineractPush.failed || 0) + ((results.subLedgerSync.errors || []).length || 0) +
+      (results.electronicSettlements.error ? 1 : 0);
 
     return {
       timestamp: new Date().toISOString(),

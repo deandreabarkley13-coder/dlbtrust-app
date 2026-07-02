@@ -429,13 +429,14 @@ async function submitElectronicPayment(opts) {
     crypto.randomBytes(2).toString('hex').toUpperCase();
   var slaDeadline = new Date(Date.now() + priorityConfig.sla_hours * 60 * 60 * 1000);
   var sourceCode = opts.source_account_code || ACCOUNT_CODES.CASH;
+  var submittedAt = new Date();
 
   var integrityHash = computeIntegrityHash({
     settlement_id: settlementId,
     amount: amount,
     payee_name: opts.payee_name,
     payment_ref: paymentRef,
-    submitted_at: new Date().toISOString(),
+    submitted_at: submittedAt.toISOString(),
   });
 
   // 1. If sub-ledger specified, debit it first (funds source)
@@ -461,14 +462,14 @@ async function submitElectronicPayment(opts) {
       (settlement_id, payment_ref, payment_type, payment_method, priority,
        payer_account, payee_name, payee_account, payee_routing, payee_bank_name,
        sub_ledger_id, sub_ledger_txn_id, source_account_code,
-       amount, integrity_hash, sla_deadline, initiated_by, description, memo, vendor_id)
-    VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20)
+       amount, integrity_hash, sla_deadline, submitted_at, initiated_by, description, memo, vendor_id)
+    VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21)
   `, [
     settlementId, paymentRef, opts.payment_type || 'vendor_payment', method, priority,
     sourceCode, opts.payee_name, opts.payee_account || null,
     opts.payee_routing || null, opts.payee_bank_name || null,
     opts.sub_ledger_id || null, subLedgerTxnId, sourceCode,
-    amount, integrityHash, slaDeadline, opts.initiated_by || 'admin',
+    amount, integrityHash, slaDeadline, submittedAt, opts.initiated_by || 'admin',
     opts.description || ('Electronic payment to ' + opts.payee_name),
     opts.memo || null, opts.vendor_id || null,
   ]);
