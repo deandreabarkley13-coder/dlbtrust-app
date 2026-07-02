@@ -672,7 +672,7 @@ async function executeBILLPayment(opts) {
     payee_name: opts.payee_name,
     amount: opts.amount,
     description: opts.description || 'Electronic settlement payment',
-    invoiceNumber: opts.settlementId,
+    invoiceNumber: opts.settlementId + '-' + Date.now(),
     email: opts.payee_email || undefined,
   });
 
