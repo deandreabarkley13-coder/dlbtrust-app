@@ -887,7 +887,9 @@ async function verifyMFACode(code) {
     }
     return { success: true, deviceId: deviceId, machineName: machineName };
   }
-  throw new Error('MFA verification failed: ' + (result.response_message || JSON.stringify(result)));
+  var errDetail = (result.response_data && result.response_data.error_message) ||
+    result.response_message || JSON.stringify(result);
+  throw new Error('MFA verification failed: ' + errDetail);
 }
 
 /**
