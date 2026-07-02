@@ -176,6 +176,77 @@ var BOOKKEEPING_INTENTS = [
     action: 'getDashboard',
   },
   {
+    id: 'reverse_transaction',
+    keywords: ['reverse', 'reversal', 'void', 'undo', 'cancel entry', 'reverse entry', 'reverse transaction', 'undo transaction'],
+    phrases: ['reverse transaction', 'reverse entry', 'reverse this entry', 'void transaction', 'undo transaction', 'cancel journal entry', 'reverse the last entry', 'reverse the duplicate', 'void the entry', 'undo the posting'],
+    description: 'Reverse a journal entry (creates mirror reversal entry)',
+    action: 'reverseTransaction',
+    requiresParam: 'entryId',
+    paramPattern: /(?:entry|id|JRN)\s*[:#]?\s*(JRN-[A-Z0-9-]+|[A-Z0-9_-]+)/i,
+    altPattern: /\b(JRN-[A-Z0-9-]+)\b/i,
+  },
+  {
+    id: 'detect_duplicates',
+    keywords: ['duplicate', 'duplicates', 'double', 'double posted', 'double entry', 'find duplicates', 'detect duplicates'],
+    phrases: ['detect duplicates', 'find duplicates', 'scan for duplicates', 'check for duplicates', 'is there a duplicate', 'find double posted', 'double posted transaction', 'i double posted', 'duplicate detection', 'check for double entries'],
+    description: 'Scan for duplicate transactions by amount and timing',
+    action: 'detectDuplicates',
+  },
+  {
+    id: 'reverse_duplicate',
+    keywords: ['reverse duplicate', 'fix duplicate', 'correct duplicate', 'undo duplicate'],
+    phrases: ['reverse the duplicate', 'fix the duplicate', 'correct the duplicate', 'reverse duplicate transaction', 'undo the duplicate', 'fix double posting'],
+    description: 'Find and reverse a duplicate transaction by amount',
+    action: 'reverseDuplicate',
+    requiresParam: 'amount',
+    paramPattern: /\$?\s*([\d,]+(?:\.\d{2})?)/,
+  },
+  {
+    id: 'post_adjustment',
+    keywords: ['adjustment', 'adjusting entry', 'correction', 'correct', 'reclassify', 'write off', 'accrual'],
+    phrases: ['post adjustment', 'post adjusting entry', 'make a correction', 'post correction', 'reclassify entry', 'write off', 'post accrual', 'adjusting journal entry', 'correct the entry'],
+    description: 'Post an adjusting/correcting journal entry',
+    action: 'postAdjustment',
+  },
+  {
+    id: 'reconcile_bill',
+    keywords: ['reconcile bill', 'bill reconciliation', 'bill cash reconciliation', 'reconcile bill cash', 'match bill'],
+    phrases: ['reconcile bill cash', 'run bill reconciliation', 'match bill deposits', 'reconcile bill.com', 'bill cash reconciliation', 'check bill reconciliation'],
+    description: 'Reconcile BILL Cash deposits with journal entries',
+    action: 'reconcileBILLCash',
+  },
+  {
+    id: 'monthly_close',
+    keywords: ['monthly close', 'close month', 'period close', 'month end', 'close the books', 'close period'],
+    phrases: ['monthly close', 'close the month', 'run monthly close', 'month end close', 'close the books', 'close this period', 'period close procedures', 'end of month', 'run close procedures'],
+    description: 'Run monthly close procedures (reconcile all, post accruals, generate reports)',
+    action: 'monthlyClose',
+  },
+  {
+    id: 'approve_payment',
+    keywords: ['approve payment', 'approve', 'payment approval', 'authorize payment'],
+    phrases: ['approve payment', 'approve the payment', 'authorize payment', 'approve vendor payment', 'approve pending payment'],
+    description: 'Approve a pending vendor payment',
+    action: 'approvePayment',
+    requiresParam: 'paymentId',
+    paramPattern: /(?:payment|id)\s*[:#]?\s*([A-Z0-9_-]+)/i,
+    altPattern: /\b(VP-[A-Z0-9-]+)\b/i,
+  },
+  {
+    id: 'process_payments',
+    keywords: ['process payments', 'execute payments', 'run payments', 'send payments', 'pay vendors'],
+    phrases: ['process payments', 'process pending payments', 'execute approved payments', 'run vendor payments', 'pay the vendors', 'process all payments', 'send the payments'],
+    description: 'Process and execute all approved vendor payments',
+    action: 'processPendingPayments',
+  },
+  {
+    id: 'pending_payments',
+    keywords: ['pending payments', 'awaiting approval', 'payment queue', 'unapproved payments'],
+    phrases: ['show pending payments', 'list pending payments', 'what payments are pending', 'payments awaiting approval', 'payment queue', 'unapproved payments', 'payments needing approval'],
+    description: 'Show payments awaiting approval',
+    action: 'getPendingPayments',
+  },
+  {
     id: 'data_bridge_sync',
     keywords: ['sync', 'bridge', 'data bridge', 'full sync', 'sync all', 'sync modules', 'cross module', 'data flow'],
     phrases: ['run full sync', 'sync all modules', 'data bridge sync', 'sync everything', 'run data bridge', 'cross module sync', 'sync data flow', 'bridge the data', 'sync bonds and ach', 'sync all data'],
@@ -424,6 +495,34 @@ class AgentPromptRouter {
           break;
         case 'getDashboard':
           result = await BookkeepingAgent.getDashboard();
+          break;
+        case 'reverseTransaction':
+          result = await BookkeepingAgent.reverseTransaction(param, { reason: 'Reversed via prompt', approvedBy: 'admin' });
+          break;
+        case 'detectDuplicates':
+          result = await BookkeepingAgent.detectDuplicates({ windowHours: 168, minAmount: 1000 });
+          break;
+        case 'reverseDuplicate':
+          var amt = param ? parseFloat(param.replace(/,/g, '')) : null;
+          if (!amt) return { understood: true, needsParam: true, intent: 'reverse_duplicate', message: 'I need the dollar amount of the duplicate to reverse.' };
+          result = await BookkeepingAgent.reverseDuplicate(amt, { reason: 'Duplicate reversal via prompt' });
+          break;
+        case 'postAdjustment':
+          return { understood: true, needsParam: true, intent: 'post_adjustment', message: 'To post an adjustment, please use the Bookkeeping panel and specify: description, accounts, amounts, and reason.' };
+        case 'reconcileBILLCash':
+          result = await BookkeepingAgent.reconcileBILLCash();
+          break;
+        case 'monthlyClose':
+          result = await BookkeepingAgent.monthlyClose({ closedBy: 'admin' });
+          break;
+        case 'approvePayment':
+          result = await BookkeepingAgent.approvePayment(param, { approvedBy: 'admin' });
+          break;
+        case 'processPendingPayments':
+          result = await BookkeepingAgent.processPendingPayments();
+          break;
+        case 'getPendingPayments':
+          result = await BookkeepingAgent.getPendingPayments();
           break;
         case 'dataBridgeSync':
           var { DataBridge } = require(path.join(__dirname, '../accounting/dataBridge'));

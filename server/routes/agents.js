@@ -293,6 +293,170 @@ router.post('/bookkeeping/post-wire/:wireId', requireAdmin, async function(req, 
   }
 });
 
+// ─── POST /api/agents/bookkeeping/reverse/:entryId ──────────────────────────
+router.post('/bookkeeping/reverse/:entryId', requireAdmin, async function(req, res) {
+  try {
+    var { BookkeepingAgent } = require(path.join(__dirname, '../integrations/agents/bookkeepingAgent'));
+    var result = await BookkeepingAgent.reverseTransaction(req.params.entryId, {
+      reason: req.body.reason,
+      approvedBy: req.body.approvedBy || 'admin',
+    });
+    res.json({ success: true, data: result });
+  } catch(err) {
+    var status = err.message.includes('not found') ? 404 : 500;
+    res.status(status).json({ success: false, error: err.message });
+  }
+});
+
+// ─── POST /api/agents/bookkeeping/adjustment ────────────────────────────────
+router.post('/bookkeeping/adjustment', requireAdmin, async function(req, res) {
+  try {
+    var { BookkeepingAgent } = require(path.join(__dirname, '../integrations/agents/bookkeepingAgent'));
+    var result = await BookkeepingAgent.postAdjustment({
+      description: req.body.description,
+      lines: req.body.lines,
+      reason: req.body.reason,
+      adjustmentType: req.body.adjustmentType,
+      originalEntryId: req.body.originalEntryId,
+      approvedBy: req.body.approvedBy || 'admin',
+    });
+    res.json({ success: true, data: result });
+  } catch(err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// ─── GET /api/agents/bookkeeping/adjustments ────────────────────────────────
+router.get('/bookkeeping/adjustments', async function(req, res) {
+  try {
+    var { BookkeepingAgent } = require(path.join(__dirname, '../integrations/agents/bookkeepingAgent'));
+    var adjustments = await BookkeepingAgent.listAdjustments({
+      status: req.query.status,
+      adjustmentType: req.query.type,
+      limit: req.query.limit,
+    });
+    res.json({ success: true, count: adjustments.length, data: adjustments });
+  } catch(err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// ─── POST /api/agents/bookkeeping/detect-duplicates ─────────────────────────
+router.post('/bookkeeping/detect-duplicates', requireAdmin, async function(req, res) {
+  try {
+    var { BookkeepingAgent } = require(path.join(__dirname, '../integrations/agents/bookkeepingAgent'));
+    var result = await BookkeepingAgent.detectDuplicates({
+      amount: req.body.amount,
+      windowHours: req.body.windowHours,
+      minAmount: req.body.minAmount,
+    });
+    res.json({ success: true, data: result });
+  } catch(err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// ─── POST /api/agents/bookkeeping/reverse-duplicate ─────────────────────────
+router.post('/bookkeeping/reverse-duplicate', requireAdmin, async function(req, res) {
+  try {
+    var { BookkeepingAgent } = require(path.join(__dirname, '../integrations/agents/bookkeepingAgent'));
+    var result = await BookkeepingAgent.reverseDuplicate(req.body.amount, {
+      reason: req.body.reason,
+      keepEntryId: req.body.keepEntryId,
+    });
+    res.json({ success: true, data: result });
+  } catch(err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// ─── POST /api/agents/bookkeeping/reconcile-bill ────────────────────────────
+router.post('/bookkeeping/reconcile-bill', requireAdmin, async function(req, res) {
+  try {
+    var { BookkeepingAgent } = require(path.join(__dirname, '../integrations/agents/bookkeepingAgent'));
+    var result = await BookkeepingAgent.reconcileBILLCash();
+    res.json({ success: true, data: result });
+  } catch(err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// ─── POST /api/agents/bookkeeping/monthly-close ─────────────────────────────
+router.post('/bookkeeping/monthly-close', requireAdmin, async function(req, res) {
+  try {
+    var { BookkeepingAgent } = require(path.join(__dirname, '../integrations/agents/bookkeepingAgent'));
+    var result = await BookkeepingAgent.monthlyClose({
+      periodName: req.body.periodName,
+      closedBy: req.body.closedBy || 'admin',
+    });
+    res.json({ success: true, data: result });
+  } catch(err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// ─── POST /api/agents/bookkeeping/approve-payment/:paymentId ────────────────
+router.post('/bookkeeping/approve-payment/:paymentId', requireAdmin, async function(req, res) {
+  try {
+    var { BookkeepingAgent } = require(path.join(__dirname, '../integrations/agents/bookkeepingAgent'));
+    var result = await BookkeepingAgent.approvePayment(req.params.paymentId, {
+      approvedBy: req.body.approvedBy || 'admin',
+    });
+    res.json({ success: true, data: result });
+  } catch(err) {
+    var status = err.message.includes('not found') ? 404 : 500;
+    res.status(status).json({ success: false, error: err.message });
+  }
+});
+
+// ─── POST /api/agents/bookkeeping/reject-payment/:paymentId ─────────────────
+router.post('/bookkeeping/reject-payment/:paymentId', requireAdmin, async function(req, res) {
+  try {
+    var { BookkeepingAgent } = require(path.join(__dirname, '../integrations/agents/bookkeepingAgent'));
+    var result = await BookkeepingAgent.rejectPayment(req.params.paymentId, {
+      rejectedBy: req.body.rejectedBy || 'admin',
+      reason: req.body.reason,
+    });
+    res.json({ success: true, data: result });
+  } catch(err) {
+    var status = err.message.includes('not found') ? 404 : 500;
+    res.status(status).json({ success: false, error: err.message });
+  }
+});
+
+// ─── POST /api/agents/bookkeeping/process-payment/:paymentId ────────────────
+router.post('/bookkeeping/process-payment/:paymentId', requireAdmin, async function(req, res) {
+  try {
+    var { BookkeepingAgent } = require(path.join(__dirname, '../integrations/agents/bookkeepingAgent'));
+    var result = await BookkeepingAgent.processVendorPayment(req.params.paymentId);
+    res.json({ success: true, data: result });
+  } catch(err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// ─── GET /api/agents/bookkeeping/pending-payments ───────────────────────────
+router.get('/bookkeeping/pending-payments', async function(req, res) {
+  try {
+    var { BookkeepingAgent } = require(path.join(__dirname, '../integrations/agents/bookkeepingAgent'));
+    var result = await BookkeepingAgent.getPendingPayments();
+    res.json({ success: true, count: result.length, data: result });
+  } catch(err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// ─── POST /api/agents/bookkeeping/process-pending ───────────────────────────
+router.post('/bookkeeping/process-pending', requireAdmin, async function(req, res) {
+  try {
+    var { BookkeepingAgent } = require(path.join(__dirname, '../integrations/agents/bookkeepingAgent'));
+    var result = await BookkeepingAgent.processPendingPayments();
+    res.json({ success: true, data: result });
+  } catch(err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
 // ═════════════════════════════════════════════════════════════════════════════
 // NATURAL LANGUAGE PROMPT
 // ═════════════════════════════════════════════════════════════════════════════
