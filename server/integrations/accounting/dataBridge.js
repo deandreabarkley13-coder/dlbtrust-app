@@ -1293,6 +1293,7 @@ class DataBridge {
         UPDATE data_bridge_discrepancies
         SET resolved = TRUE, resolved_at = NOW(), resolution = 'auto_expired'
         WHERE resolved = FALSE AND created_at < NOW() - INTERVAL '7 days'
+          AND severity NOT IN ('high', 'critical')
         RETURNING discrepancy_id
       `);
       results.staleCleanup = { resolved: cleaned.rowCount };
