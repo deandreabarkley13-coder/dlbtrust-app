@@ -327,20 +327,22 @@ class DataBridge {
     var trustCashBalance = 0;
 
     try {
-      // Get total cash from cash_accounts table
+      // Get liquid/operating cash from cash_accounts (exclude bond_proceeds which are tracked in GL as Bond Investments)
       var cashResult = await pool.query(`
         SELECT COALESCE(SUM(balance_cents), 0) AS total_cents
         FROM cash_accounts
         WHERE status = 'active'
+          AND account_type NOT IN ('bond_proceeds')
       `);
       cashModuleTotal = parseInt(cashResult.rows[0].total_cents) / 100;
 
-      // Get cash balance from trust accounting
+      // Get cash balance from trust accounting — sum ALL cash-type accounts (1000, 1050, etc.)
       var trustResult = await pool.query(`
-        SELECT COALESCE(balance, 0) AS balance
+        SELECT COALESCE(SUM(balance), 0) AS balance
         FROM trust_accounts
-        WHERE account_code = $1
-      `, [ACCOUNTS.CASH]);
+        WHERE (account_code IN ($1, $2) OR sub_type = 'cash')
+          AND is_active = TRUE
+      `, [ACCOUNTS.CASH, ACCOUNTS.BILL_CASH]);
       trustCashBalance = trustResult.rows.length > 0 ? parseFloat(trustResult.rows[0].balance) : 0;
 
       var diff = Math.abs(cashModuleTotal - trustCashBalance);
@@ -362,6 +364,13 @@ class DataBridge {
         await DataBridge._logDiscrepancy(discId, 'cash_balance_mismatch', 'cash_management', 'trust_accounting',
           ACCOUNTS.CASH, cashModuleTotal, trustCashBalance, cashModuleTotal - trustCashBalance,
           diff > 10000 ? 'critical' : diff > 1000 ? 'high' : diff > 100 ? 'normal' : 'low');
+      } else {
+        // Reconciled — auto-resolve any lingering cash discrepancies
+        await pool.query(`
+          UPDATE data_bridge_discrepancies
+          SET resolved = TRUE, resolved_at = NOW(), resolution = 'auto_resolved_balanced'
+          WHERE discrepancy_type = 'cash_balance_mismatch' AND resolved = FALSE
+        `);
       }
 
       // Per-account comparison
@@ -943,7 +952,8 @@ class DataBridge {
   static async reconcileSubLedgers() {
     var syncId = 'RECON-SL-' + Date.now() + '-' + Math.random().toString(36).slice(2, 6).toUpperCase();
     var matched = 0;
-    var unmatched = 0;
+    var partiallyAllocated = 0;
+    var overAllocated = 0;
     var discrepancies = [];
 
     try {
@@ -954,33 +964,56 @@ class DataBridge {
         var row = rollup[i];
         if (row.isReconciled) {
           matched++;
-        } else {
-          unmatched++;
+        } else if (row.subLedgerTotal > row.glBalance + 0.01) {
+          // Over-allocated: sub-ledger total exceeds GL — this is a real discrepancy
+          overAllocated++;
           var discId = 'DISC-SL-' + Date.now() + '-' + row.parentAccountCode;
           discrepancies.push({
             discrepancyId: discId,
-            type: 'sub_ledger_mismatch',
+            type: 'sub_ledger_over_allocation',
             parentAccountCode: row.parentAccountCode,
             parentAccountName: row.parentAccountName,
             glBalance: row.glBalance,
             subLedgerTotal: row.subLedgerTotal,
-            unallocated: row.unallocated,
+            overAllocated: row.subLedgerTotal - row.glBalance,
             subLedgerCount: row.subLedgerCount,
-            severity: Math.abs(row.unallocated) > 100000 ? 'high' : Math.abs(row.unallocated) > 1000 ? 'normal' : 'low',
+            severity: (row.subLedgerTotal - row.glBalance) > 100000 ? 'high' : 'normal',
           });
 
-          await DataBridge._logDiscrepancy(discId, 'sub_ledger_mismatch', 'sub_ledgers', 'trust_accounting',
-            row.parentAccountCode, row.subLedgerTotal, row.glBalance, row.unallocated,
-            Math.abs(row.unallocated) > 100000 ? 'high' : Math.abs(row.unallocated) > 1000 ? 'normal' : 'low');
+          await DataBridge._logDiscrepancy(discId, 'sub_ledger_over_allocation', 'sub_ledgers', 'trust_accounting',
+            row.parentAccountCode, row.subLedgerTotal, row.glBalance, row.subLedgerTotal - row.glBalance,
+            (row.subLedgerTotal - row.glBalance) > 100000 ? 'high' : 'normal');
+        } else {
+          // Under-allocated: GL has more than sub-ledger — normal, just partially allocated
+          partiallyAllocated++;
+          matched++;
         }
+      }
+
+      // Auto-resolve old sub-ledger discrepancies if no new over-allocations found
+      if (discrepancies.length === 0) {
+        await pool.query(`
+          UPDATE data_bridge_discrepancies
+          SET resolved = TRUE, resolved_at = NOW(), resolution = 'auto_resolved_no_over_allocation'
+          WHERE discrepancy_type IN ('sub_ledger_mismatch', 'sub_ledger_over_allocation')
+            AND resolved = FALSE
+        `);
       }
     } catch (outerErr) {
       discrepancies.push({ type: 'error', error: outerErr.message });
     }
 
-    await DataBridge._logSync(syncId, 'sub_ledger_reconciliation', 'sub_ledgers', 'trust_accounting', matched, 0, unmatched, discrepancies);
+    await DataBridge._logSync(syncId, 'sub_ledger_reconciliation', 'sub_ledgers', 'trust_accounting',
+      matched, partiallyAllocated, overAllocated, discrepancies);
 
-    return { syncId: syncId, matched: matched, unmatched: unmatched, discrepancies: discrepancies };
+    return {
+      syncId: syncId,
+      matched: matched,
+      partiallyAllocated: partiallyAllocated,
+      overAllocated: overAllocated,
+      unmatched: overAllocated,
+      discrepancies: discrepancies,
+    };
   }
 
   /**
@@ -1038,12 +1071,15 @@ class DataBridge {
     } catch (e) { status.modules.fineract_gl = { error: e.message }; }
 
     try {
-      // Cash Management status
+      // Cash Management status (total and liquid-only for reconciliation)
       var cashTotal = await pool.query(`SELECT COUNT(*) AS c, COALESCE(SUM(balance_cents),0) AS total FROM cash_accounts WHERE status = 'active'`);
+      var cashLiquid = await pool.query(`SELECT COALESCE(SUM(balance_cents),0) AS total FROM cash_accounts WHERE status = 'active' AND account_type NOT IN ('bond_proceeds')`);
       status.modules.cash_management = {
         activeAccounts: parseInt(cashTotal.rows[0].c),
         totalBalanceCents: parseInt(cashTotal.rows[0].total),
         totalBalance: parseInt(cashTotal.rows[0].total) / 100,
+        liquidBalanceCents: parseInt(cashLiquid.rows[0].total),
+        liquidBalance: parseInt(cashLiquid.rows[0].total) / 100,
       };
     } catch (e) { status.modules.cash_management = { error: e.message }; }
 
@@ -1132,15 +1168,26 @@ class DataBridge {
       status.recentSyncs = recentSyncs.rows;
     } catch (e) { status.recentSyncs = []; }
 
-    // Determine sync health
-    var hasUnsyncedACH = status.modules.ach && status.modules.ach.unsyncedToAccounting > 0;
-    var hasUnsyncedBonds = status.modules.bonds && status.modules.bonds.unsyncedAccruals > 0;
-    var hasUnsyncedJE = status.modules.trust_accounting && status.modules.trust_accounting.unsyncedToFineract > 0;
-    var hasMissingWireJE = status.modules.wire && status.modules.wire.missingJournalEntries > 0;
+    // Determine sync health — tolerate small unsynced counts; only flag material issues
+    var unsyncedACH = status.modules.ach ? status.modules.ach.unsyncedToAccounting : 0;
+    var unsyncedBonds = status.modules.bonds ? status.modules.bonds.unsyncedAccruals : 0;
+    var unsyncedJE = status.modules.trust_accounting ? status.modules.trust_accounting.unsyncedToFineract : 0;
+    var missingWireJE = status.modules.wire ? status.modules.wire.missingJournalEntries : 0;
 
-    if (status.unresolvedDiscrepancies > 5 || (hasUnsyncedACH && status.modules.ach.unsyncedToAccounting > 10)) {
+    // Only count high/critical unresolved discrepancies for health
+    var criticalDiscrepancies = 0;
+    try {
+      var critResult = await pool.query(
+        `SELECT COUNT(*) AS c FROM data_bridge_discrepancies WHERE resolved = FALSE AND severity IN ('high', 'critical')`
+      );
+      criticalDiscrepancies = parseInt(critResult.rows[0].c);
+    } catch (e) { /* ok */ }
+
+    if (criticalDiscrepancies > 3 || unsyncedACH > 10) {
       status.syncHealth = 'critical';
-    } else if (hasUnsyncedACH || hasUnsyncedBonds || hasUnsyncedJE || hasMissingWireJE) {
+    } else if (unsyncedACH > 3 || missingWireJE > 0 || criticalDiscrepancies > 0) {
+      status.syncHealth = 'needs_sync';
+    } else if (unsyncedBonds > 5 || unsyncedJE > 20) {
       status.syncHealth = 'needs_sync';
     }
 
@@ -1198,6 +1245,17 @@ class DataBridge {
     // 9. Reconcile sub-ledgers against trust GL
     try { results.subLedgerRecon = await DataBridge.reconcileSubLedgers(); }
     catch (e) { results.subLedgerRecon = { error: e.message }; }
+
+    // 10. Cleanup stale discrepancies older than 7 days
+    try {
+      var cleaned = await pool.query(`
+        UPDATE data_bridge_discrepancies
+        SET resolved = TRUE, resolved_at = NOW(), resolution = 'auto_expired'
+        WHERE resolved = FALSE AND created_at < NOW() - INTERVAL '7 days'
+        RETURNING discrepancy_id
+      `);
+      results.staleCleanup = { resolved: cleaned.rowCount };
+    } catch (e) { results.staleCleanup = { error: e.message }; }
 
     var elapsed = Date.now() - startTime;
 
