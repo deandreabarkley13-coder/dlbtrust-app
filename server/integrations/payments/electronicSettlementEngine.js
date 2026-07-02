@@ -606,6 +606,8 @@ async function submitElectronicPayment(opts) {
       source_account: sourceCode,
       integrity_hash: integrityHash,
       bill_ref: executionResult.bill_ref || null,
+      bill_vendor_id: executionResult.bill_vendor_id || null,
+      bill_id: executionResult.bill_id || null,
       ach_batch_id: executionResult.ach_batch_id || null,
       wire_id: executionResult.wire_id || null,
       journal_entry_id: executionResult.journal_entry_id || null,
@@ -653,15 +655,19 @@ async function executePaymentByMethod(method, opts) {
 }
 
 /**
- * Execute via BILL API.
+ * Execute via BILL API — outbound vendor payment flow.
+ * Creates vendor (if new) → creates bill → pays bill → funds move from BILL Cash to vendor.
  */
 async function executeBILLPayment(opts) {
   if (!billClient) throw new Error('BILL client not available');
 
-  var depositResult = await billClient.recordDeposit({
+  // Use outbound PayBills flow to actually send funds to the vendor
+  var paymentResult = await billClient.sendVendorPayment({
+    payee_name: opts.payee_name,
     amount: opts.amount,
-    method: 'direct',
-    memo: opts.description || 'Electronic settlement payment',
+    description: opts.description || 'Electronic settlement payment',
+    invoiceNumber: opts.settlementId,
+    email: opts.payee_email || undefined,
   });
 
   var journalEntryId = null;
@@ -689,16 +695,21 @@ async function executeBILLPayment(opts) {
   }
 
   var fileContent = JSON.stringify({
-    method: 'bill_api', endpoint: '/api/v2/RecordARPayment',
-    amount: opts.amount, ref: depositResult.receivedPayId,
+    method: 'bill_api', endpoint: '/api/v2/PayBills',
+    amount: opts.amount,
+    vendorId: paymentResult.vendorId,
+    billId: paymentResult.billId,
+    sentPayId: paymentResult.sentPayId,
     timestamp: new Date().toISOString(),
   });
 
   return {
-    bill_ref: depositResult.receivedPayId || null,
+    bill_ref: paymentResult.sentPayId || paymentResult.billId || null,
+    bill_vendor_id: paymentResult.vendorId || null,
+    bill_id: paymentResult.billId || null,
     journal_entry_id: journalEntryId,
-    transmission_ref: depositResult.receivedPayId || opts.paymentRef,
-    processor_ref: depositResult.receivedPayId || null,
+    transmission_ref: paymentResult.sentPayId || opts.paymentRef,
+    processor_ref: paymentResult.sentPayId || null,
     payment_file_hash: computePaymentFileHash(fileContent),
   };
 }
@@ -953,6 +964,7 @@ async function pollSettlements() {
       if (s.bill_ref && (s.status === 'transmitted' || s.status === 'accepted')) {
         if (s.status === 'transmitted') {
           await advanceSettlementStatus(s.settlement_id, 'accepted');
+          s.status = 'accepted';
           results.advanced++;
           results.details.push({ settlement_id: s.settlement_id, from: 'transmitted', to: 'accepted' });
         }
@@ -964,8 +976,9 @@ async function pollSettlements() {
           await advanceSettlementStatus(s.settlement_id, 'settled', {
             settlement_ref: s.bill_ref || s.processor_ref,
           });
+          s.status = 'settled';
           results.advanced++;
-          results.details.push({ settlement_id: s.settlement_id, from: s.status, to: 'settled' });
+          results.details.push({ settlement_id: s.settlement_id, from: 'accepted', to: 'settled' });
 
           if (s.payment_method === 'bill') {
             var confirmResult = await confirmSettlement(s.settlement_id);
@@ -977,6 +990,7 @@ async function pollSettlements() {
           }
         } else if (s.status === 'accepted') {
           await advanceSettlementStatus(s.settlement_id, 'clearing');
+          s.status = 'clearing';
           results.advanced++;
           results.details.push({ settlement_id: s.settlement_id, from: 'accepted', to: 'clearing' });
         }
@@ -986,10 +1000,12 @@ async function pollSettlements() {
         var elapsed = (Date.now() - new Date(s.submitted_at).getTime()) / 60000;
         if (s.status === 'transmitted' && elapsed >= 2) {
           await advanceSettlementStatus(s.settlement_id, 'accepted', { processor_ref: s.wire_id || s.ach_batch_id });
+          s.status = 'accepted';
           results.advanced++;
         }
         if (s.status === 'accepted' && elapsed >= 5) {
           await advanceSettlementStatus(s.settlement_id, 'clearing');
+          s.status = 'clearing';
           results.advanced++;
         }
       }

@@ -4785,7 +4785,8 @@
             'Settlement: ' + esc(d.settlement_id) + ' | Ref: ' + esc(d.payment_ref) + '<br>' +
             'Method: ' + esc(d.method) + ' | Priority: ' + esc(d.priority_label) + '<br>' +
             (d.sub_ledger_id ? 'Funded from: ' + esc(d.sub_ledger_id) + '<br>' : (d.source_account && d.source_account !== '1000' ? 'Funded from: GL ' + esc(d.source_account) + '<br>' : '')) +
-            (d.bill_ref ? 'BILL Ref: ' + esc(d.bill_ref) + '<br>' : '') +
+            (d.bill_ref ? 'BILL Payment: ' + esc(d.bill_ref) + '<br>' : '') +
+            (d.bill_vendor_id ? 'BILL Vendor: ' + esc(d.bill_vendor_id) + '<br>' : '') +
             (d.journal_entry_id ? 'JE: ' + esc(d.journal_entry_id) + '<br>' : '') +
             'SLA: ' + esc(d.sla_deadline) + '</div>';
           document.getElementById('es-payee-name').value = '';
