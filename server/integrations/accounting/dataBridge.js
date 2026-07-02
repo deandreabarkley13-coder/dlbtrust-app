@@ -1287,7 +1287,32 @@ class DataBridge {
     try { results.subLedgerRecon = await DataBridge.reconcileSubLedgers(); }
     catch (e) { results.subLedgerRecon = { error: e.message }; }
 
-    // 10. Cleanup stale discrepancies older than 7 days
+    // 10. Sync electronic settlements
+    try {
+      var esRes = await pool.query(
+        "SELECT COUNT(*) as total, COUNT(CASE WHEN data_bridge_synced = TRUE THEN 1 END) as synced FROM electronic_settlements"
+      );
+      var esRow = esRes.rows[0] || {};
+      var unsynced = parseInt(esRow.total || 0) - parseInt(esRow.synced || 0);
+      if (unsynced > 0) {
+        var unsyncedRows = await pool.query(
+          "SELECT settlement_id FROM electronic_settlements WHERE data_bridge_synced = FALSE AND status IN ('confirmed','finalized') LIMIT 10"
+        );
+        var esSynced = 0;
+        for (var ei = 0; ei < unsyncedRows.rows.length; ei++) {
+          try {
+            var esEngine = require('../payments/electronicSettlementEngine');
+            await esEngine.syncToDataBridge(unsyncedRows.rows[ei].settlement_id);
+            esSynced++;
+          } catch (esErr) { /* skip individual */ }
+        }
+        results.electronicSettlements = { total: parseInt(esRow.total), synced: esSynced, unsynced: unsynced };
+      } else {
+        results.electronicSettlements = { total: parseInt(esRow.total || 0), synced: 0, unsynced: 0 };
+      }
+    } catch (e) { results.electronicSettlements = { error: e.message }; }
+
+    // 11. Cleanup stale discrepancies older than 7 days
     try {
       var cleaned = await pool.query(`
         UPDATE data_bridge_discrepancies
