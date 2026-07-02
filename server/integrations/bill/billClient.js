@@ -672,7 +672,7 @@ async function createBill(opts) {
     sessionId: session,
     data: {
       obj: billObj,
-      lineItems: [billLineItem]
+      billLineItems: [billLineItem]
     }
   });
 
@@ -688,7 +688,7 @@ async function createBill(opts) {
       sessionId: session,
       data: {
         obj: billObj,
-        lineItems: [billLineItem]
+        billLineItems: [billLineItem]
       }
     });
     if (result.response_status === 0 && result.response_data) {
