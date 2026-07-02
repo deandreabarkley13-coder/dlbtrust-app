@@ -642,6 +642,29 @@ async function createVendor(opts) {
 }
 
 /**
+ * Update an existing vendor in BILL (e.g. add payment address).
+ */
+async function updateVendor(vendorId, updates) {
+  var session = await getSession();
+  var devKey = process.env.BILL_DEV_KEY;
+  var vendorObj = { entity: 'Vendor', id: vendorId };
+  if (updates.address1) vendorObj.address1 = updates.address1;
+  if (updates.city) vendorObj.addressCity = updates.city;
+  if (updates.state) vendorObj.addressState = updates.state;
+  if (updates.zip) vendorObj.addressZip = updates.zip;
+  if (updates.email) vendorObj.email = updates.email;
+  if (updates.paymentType !== undefined) vendorObj.paymentType = String(updates.paymentType);
+
+  var result = await billRequest('/Crud/Update/Vendor.json', {
+    devKey: devKey, sessionId: session,
+    data: { obj: vendorObj }
+  });
+  if (result.response_status === 0 && result.response_data) return result.response_data;
+  var errMsg = (result.response_data && result.response_data.error_message) || result.response_message || JSON.stringify(result);
+  throw new Error('BILL Update Vendor failed: ' + errMsg);
+}
+
+/**
  * Create a bill (payable/invoice) for a vendor in BILL.
  * This is the first step of the outbound payment flow.
  * @param {Object} opts
@@ -854,12 +877,17 @@ async function payBillDirect(opts) {
  * @returns {Object} { vendorId, billId, sentPayId, amount, status }
  */
 async function sendVendorPayment(opts) {
-  // 1. Find or create vendor
+  // 1. Find or create vendor (with default address for PayBills compatibility)
   var vendor = await findVendor(opts.payee_name);
   if (!vendor) {
     vendor = await createVendor({
       name: opts.payee_name,
       email: opts.email || undefined,
+      address1: opts.address1 || '1 Trust Way',
+      city: opts.city || 'Wilmington',
+      state: opts.state || 'DE',
+      zip: opts.zip || '19801',
+      paymentType: '0',
     });
   }
   var vendorId = vendor.id;
@@ -987,6 +1015,7 @@ module.exports = {
   payBill: payBill,
   sendVendorPayment: sendVendorPayment,
   payBillDirect: payBillDirect,
+  updateVendor: updateVendor,
   getMFAStatus: getMFAStatus,
   sendMFAChallenge: sendMFAChallenge,
   verifyMFACode: verifyMFACode,

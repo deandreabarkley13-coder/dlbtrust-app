@@ -1287,7 +1287,21 @@ async function completeMFASettlement(opts) {
   // 3. Create vendor + bill using the MFA-verified session, then pay directly
   var vendor = await billClient.findVendor(settlement.payee_name);
   if (!vendor) {
-    vendor = await billClient.createVendor({ name: settlement.payee_name });
+    vendor = await billClient.createVendor({
+      name: settlement.payee_name,
+      address1: '1 Trust Way',
+      city: 'Wilmington',
+      state: 'DE',
+      zip: '19801',
+      paymentType: '0',
+    });
+  } else if (!vendor.address1) {
+    // Existing vendor missing address — update it for PayBills compatibility
+    try {
+      await billClient.updateVendor(vendor.id, {
+        address1: '1 Trust Way', city: 'Wilmington', state: 'DE', zip: '19801', paymentType: '0',
+      });
+    } catch (updErr) { console.warn('[ElectronicSettlement] vendor address update failed:', updErr.message); }
   }
   var bill = await billClient.createBill({
     vendorId: vendor.id,
