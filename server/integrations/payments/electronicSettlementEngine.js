@@ -961,7 +961,7 @@ async function pollSettlements() {
     results.checked++;
 
     try {
-      if (s.bill_ref && (s.status === 'transmitted' || s.status === 'accepted')) {
+      if (s.bill_ref && (s.status === 'transmitted' || s.status === 'accepted' || s.status === 'clearing')) {
         if (s.status === 'transmitted') {
           await advanceSettlementStatus(s.settlement_id, 'accepted');
           s.status = 'accepted';
