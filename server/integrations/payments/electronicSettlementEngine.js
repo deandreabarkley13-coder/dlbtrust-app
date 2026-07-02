@@ -631,8 +631,10 @@ async function executePaymentByMethod(method, opts) {
 async function executeBILLPayment(opts) {
   if (!billClient) throw new Error('BILL client not available');
 
-  var depositResult = await billClient.recordDeposit(opts.amount, 'direct', {
-    description: opts.description || 'Electronic settlement payment',
+  var depositResult = await billClient.recordDeposit({
+    amount: opts.amount,
+    method: 'direct',
+    memo: opts.description || 'Electronic settlement payment',
   });
 
   var journalEntryId = null;
@@ -783,8 +785,10 @@ async function executeACHPayment(opts) {
   var billRef = null;
   if (billClient) {
     try {
-      var billResult = await billClient.recordDeposit(opts.amount, 'ach', {
-        description: 'ACH settlement: ' + (opts.description || opts.payee_name),
+      var billResult = await billClient.recordDeposit({
+        amount: opts.amount,
+        method: 'ach',
+        memo: 'ACH settlement: ' + (opts.description || opts.payee_name),
       });
       billRef = billResult.receivedPayId || null;
     } catch (err) {
