@@ -242,6 +242,7 @@
     <div class="nav-item" data-page="sub-ledgers"><span class="icon">📂</span> Sub-Ledgers</div>
     <div class="nav-item" data-page="bill"><span class="icon">💳</span> BILL Cash</div>
     <div class="nav-item" data-page="vendor-payments"><span class="icon">💸</span> Vendor Payments</div>
+    <div class="nav-item" data-page="electronic-settlement"><span class="icon">⚡</span> Electronic Settlement</div>
     <div class="nav-section">Data Bridge</div>
     <div class="nav-item" data-page="data-bridge"><span class="icon">🔗</span> Data Bridge</div>
     <div class="nav-section">Agents</div>
@@ -1274,6 +1275,93 @@
       </div>
     </div>
 
+    <!-- ELECTRONIC SETTLEMENT PAGE -->
+    <div id="page-electronic-settlement" class="page hidden">
+      <div class="page-header">
+        <div><h1>Electronic Settlement</h1><div class="subtitle">Instant payment transmission, secure settlement tracking, and sub-ledger funded payments</div></div>
+        <div>
+          <button class="btn btn-sm" onclick="esRetryFailed()" title="Retry failed settlements">Retry Failed</button>
+          <button class="btn btn-sm" onclick="esPollSettlements()" title="Poll BILL for updates">Poll Updates</button>
+          <button class="btn btn-primary btn-sm" onclick="loadElectronicSettlement()">Refresh</button>
+        </div>
+      </div>
+
+      <!-- Stats -->
+      <div class="grid" id="es-stats"></div>
+
+      <!-- Circuit Breaker Status -->
+      <div class="card" id="es-circuit-card" style="display:none">
+        <div class="section-title">Circuit Breaker</div>
+        <div id="es-circuit-status"></div>
+      </div>
+
+      <!-- Submit Payment Form -->
+      <div class="card">
+        <div class="section-title">Submit Electronic Payment</div>
+        <div class="grid" style="gap:8px">
+          <div>
+            <label style="font-size:12px;color:var(--text-secondary)">Payee Name *</label>
+            <input type="text" id="es-payee-name" class="form-control" placeholder="Vendor or recipient name">
+          </div>
+          <div>
+            <label style="font-size:12px;color:var(--text-secondary)">Amount ($) *</label>
+            <input type="number" id="es-amount" class="form-control" step="0.01" min="0.01" placeholder="0.00">
+          </div>
+          <div>
+            <label style="font-size:12px;color:var(--text-secondary)">Priority</label>
+            <select id="es-priority" class="form-control">
+              <option value="standard">Standard (48h SLA)</option>
+              <option value="express">Express (24h SLA)</option>
+              <option value="urgent">Urgent (4h SLA)</option>
+              <option value="immediate">Immediate (1h SLA)</option>
+            </select>
+          </div>
+          <div>
+            <label style="font-size:12px;color:var(--text-secondary)">Payment Method</label>
+            <select id="es-method" class="form-control">
+              <option value="">Auto (best for priority)</option>
+              <option value="bill">BILL API (instant)</option>
+              <option value="wire">Wire (same-day)</option>
+              <option value="ach">ACH (1-2 days)</option>
+            </select>
+          </div>
+          <div>
+            <label style="font-size:12px;color:var(--text-secondary)">Funding Source (Client Account)</label>
+            <select id="es-sub-ledger" class="form-control">
+              <option value="">Trust Cash (1000) — default</option>
+            </select>
+          </div>
+          <div>
+            <label style="font-size:12px;color:var(--text-secondary)">Payment Type</label>
+            <select id="es-payment-type" class="form-control">
+              <option value="vendor_payment">Vendor Payment</option>
+              <option value="trust_distribution">Trust Distribution</option>
+              <option value="disbursement">Disbursement</option>
+              <option value="fee_payment">Fee Payment</option>
+            </select>
+          </div>
+          <div style="grid-column:1/-1">
+            <label style="font-size:12px;color:var(--text-secondary)">Description</label>
+            <input type="text" id="es-description" class="form-control" placeholder="Payment description (optional)">
+          </div>
+        </div>
+        <button class="btn btn-primary" style="margin-top:12px" onclick="esSubmitPayment()">Submit Electronic Payment</button>
+        <div id="es-submit-result" style="margin-top:8px"></div>
+      </div>
+
+      <!-- Recent Settlements -->
+      <div class="card">
+        <div class="section-title">Recent Settlements</div>
+        <div id="es-recent-table"><p class="text-muted">Loading...</p></div>
+      </div>
+
+      <!-- Pending / SLA -->
+      <div class="card" id="es-pending-card" style="display:none">
+        <div class="section-title">Pending Settlements (SLA Order)</div>
+        <div id="es-pending-table"></div>
+      </div>
+    </div>
+
     <!-- DATA BRIDGE PAGE -->
     <div id="page-data-bridge" class="page hidden">
       <div class="page-header">
@@ -1647,7 +1735,7 @@
         document.querySelectorAll('.page').forEach(p => p.classList.add('hidden'));
         document.getElementById('page-' + page).classList.remove('hidden');
         // Load data for page
-        const loaders = { overview: loadOverview, bonds: loadBonds, cash: loadCash, payments: loadPayments, ach: loadACH, wire: loadWire, partners: loadPartners, apikeys: loadApiKeys, as2: loadAS2, crm: loadCRM, documents: loadDocuments, accounting: loadAccounting, tax: loadTax, fineract: loadFineract, bill: loadBill, 'trustee-agent': loadTrusteeAgent, 'bookkeeping-agent': loadBookkeepingAgent, 'data-bridge': loadDataBridge, 'sub-ledgers': loadSubLedgers, 'vendor-payments': loadVendorPayments, settings: loadSettings, security: loadSecurity, backup: loadBackupPage, admin: loadAdmin };
+        const loaders = { overview: loadOverview, bonds: loadBonds, cash: loadCash, payments: loadPayments, ach: loadACH, wire: loadWire, partners: loadPartners, apikeys: loadApiKeys, as2: loadAS2, crm: loadCRM, documents: loadDocuments, accounting: loadAccounting, tax: loadTax, fineract: loadFineract, bill: loadBill, 'trustee-agent': loadTrusteeAgent, 'bookkeeping-agent': loadBookkeepingAgent, 'data-bridge': loadDataBridge, 'sub-ledgers': loadSubLedgers, 'vendor-payments': loadVendorPayments, 'electronic-settlement': loadElectronicSettlement, settings: loadSettings, security: loadSecurity, backup: loadBackupPage, admin: loadAdmin };
         if (loaders[page]) loaders[page]();
       });
     });
@@ -4546,6 +4634,246 @@
       const r = await fetchJSON(API + '/api/auth/users/' + userId + '/unlock', { method: 'POST', headers: adminHeaders() });
       alert(r.success ? 'Account unlocked' : (r.error || 'Failed'));
       loadUsers();
+    }
+
+    // ─── Electronic Settlement ───────────────────────────────────────────────
+
+    async function loadElectronicSettlement() {
+      try {
+        const [dashRes, fundingRes] = await Promise.all([
+          fetchJSON(API + '/api/electronic-settlement/dashboard', { headers: adminHeaders() }),
+          fetchJSON(API + '/api/electronic-settlement/funding-accounts', { headers: adminHeaders() }),
+        ]);
+
+        if (dashRes.success) {
+          const d = dashRes.data;
+          el('es-stats').innerHTML =
+            card('Total', d.total_settlements, 'Settlements') +
+            card('Completed', d.completed, '$' + Number(d.confirmed_amount).toLocaleString()) +
+            card('Pending', d.pending, '$' + Number(d.pending_amount).toLocaleString()) +
+            card('Failed', d.failed, d.sla_breaches + ' SLA breaches') +
+            card('Avg Settlement', (d.avg_settlement_minutes || '—') + ' min', d.settled_awaiting_confirm + ' awaiting confirm');
+
+          // Circuit breaker
+          if (d.circuit_breaker && d.circuit_breaker.open) {
+            el('es-circuit-card').style.display = '';
+            el('es-circuit-status').innerHTML = '<div style="padding:8px 12px;background:rgba(239,68,68,0.1);border:1px solid var(--red);border-radius:6px;font-size:12px">' +
+              '<strong style="color:var(--red)">CIRCUIT OPEN</strong> — ' + d.circuit_breaker.failures + ' failures. Resets in ' + d.circuit_breaker.reset_in_seconds + 's</div>';
+          } else {
+            el('es-circuit-card').style.display = 'none';
+          }
+
+          // Recent settlements table
+          if (d.recent_settlements && d.recent_settlements.length > 0) {
+            let html = '<table><thead><tr><th>Settlement ID</th><th>Payee</th><th>Amount</th><th>Method</th><th>Priority</th><th>Funding Source</th><th>Status</th><th>Time</th><th>Actions</th></tr></thead><tbody>';
+            for (const s of d.recent_settlements) {
+              const statusColor = s.status === 'confirmed' || s.status === 'finalized' ? 'var(--green)' :
+                s.status === 'failed' ? 'var(--red)' :
+                s.status === 'returned' ? 'var(--gold)' : 'var(--blue)';
+              html += '<tr><td style="font-family:monospace;font-size:11px">' + esc(s.settlement_id) + '</td>' +
+                '<td>' + esc(s.payee_name) + '</td>' +
+                '<td>$' + Number(s.amount).toLocaleString(undefined, {minimumFractionDigits:2}) + '</td>' +
+                '<td>' + esc(s.payment_method) + '</td>' +
+                '<td>' + esc(s.priority) + '</td>' +
+                '<td style="font-size:11px">' + (s.sub_ledger_id ? esc(s.sub_ledger_id) : (s.source_account_code && s.source_account_code !== '1000' ? 'GL ' + esc(s.source_account_code) : '<span class="text-muted">Trust Cash</span>')) + '</td>' +
+                '<td><span style="color:' + statusColor + ';font-weight:600">' + esc(s.status) + '</span></td>' +
+                '<td style="font-size:11px">' + shortDate(s.created_at) + '</td>' +
+                '<td>';
+              if (s.status === 'settled' || s.status === 'clearing') {
+                html += '<button class="btn btn-sm" onclick="esConfirm(\'' + s.settlement_id + '\')">Confirm</button> ';
+              }
+              if (s.status === 'confirmed') {
+                html += '<button class="btn btn-sm" onclick="esFinalize(\'' + s.settlement_id + '\')">Finalize</button> ';
+              }
+              if (s.status !== 'failed' && s.status !== 'returned' && s.status !== 'finalized') {
+                html += '<button class="btn btn-sm" onclick="esSyncBridge(\'' + s.settlement_id + '\')">Sync</button>';
+              }
+              html += '</td></tr>';
+            }
+            html += '</tbody></table>';
+            el('es-recent-table').innerHTML = html;
+          } else {
+            el('es-recent-table').innerHTML = '<p class="text-muted">No settlements yet. Submit your first electronic payment above.</p>';
+          }
+
+          // Pending settlements
+          if (d.pending_settlements && d.pending_settlements.length > 0) {
+            el('es-pending-card').style.display = '';
+            let phtml = '<table><thead><tr><th>Settlement</th><th>Payee</th><th>Amount</th><th>Status</th><th>SLA Deadline</th></tr></thead><tbody>';
+            for (const p of d.pending_settlements) {
+              const overdue = p.sla_deadline && new Date(p.sla_deadline) < new Date();
+              phtml += '<tr><td style="font-family:monospace;font-size:11px">' + esc(p.settlement_id) + '</td>' +
+                '<td>' + esc(p.payee_name) + '</td>' +
+                '<td>$' + Number(p.amount).toLocaleString(undefined, {minimumFractionDigits:2}) + '</td>' +
+                '<td>' + esc(p.status) + '</td>' +
+                '<td style="color:' + (overdue ? 'var(--red)' : 'var(--text-secondary)') + '">' + shortDate(p.sla_deadline) + (overdue ? ' OVERDUE' : '') + '</td></tr>';
+            }
+            phtml += '</tbody></table>';
+            el('es-pending-table').innerHTML = phtml;
+          } else {
+            el('es-pending-card').style.display = 'none';
+          }
+        } else {
+          el('es-stats').innerHTML = '<div class="card"><p class="error-msg">' + esc(dashRes.error) + '</p></div>';
+        }
+
+        // Populate funding accounts dropdown — client accounts + trust GL accounts
+        if (fundingRes.success && fundingRes.data) {
+          const sel = document.getElementById('es-sub-ledger');
+          const current = sel.value;
+          var opts = '<option value="">— Select Funding Source —</option>';
+          var fd = fundingRes.data;
+          // Client sub-ledger accounts
+          if (fd.clientAccounts && fd.clientAccounts.length > 0) {
+            opts += '<optgroup label="Client Accounts">';
+            for (const a of fd.clientAccounts) {
+              opts += '<option value="' + esc(a.sub_ledger_id) + '">' +
+                esc(a.name) + ' (' + esc(a.parent_account) + ') — $' + Number(a.balance).toLocaleString(undefined, {minimumFractionDigits:2}) + '</option>';
+            }
+            opts += '</optgroup>';
+          }
+          // Trust GL asset accounts
+          if (fd.trustAccounts && fd.trustAccounts.length > 0) {
+            opts += '<optgroup label="Trust Accounts">';
+            for (const t of fd.trustAccounts) {
+              opts += '<option value="trust:' + esc(t.account_code) + '">' +
+                esc(t.name) + ' (' + esc(t.account_code) + ') — $' + Number(t.balance).toLocaleString(undefined, {minimumFractionDigits:2}) + '</option>';
+            }
+            opts += '</optgroup>';
+          }
+          sel.innerHTML = opts;
+          if (current) sel.value = current;
+        }
+      } catch (err) {
+        el('es-stats').innerHTML = '<div class="card"><p class="error-msg">' + esc(err.message) + '</p></div>';
+      }
+    }
+
+    async function esSubmitPayment() {
+      const payee = document.getElementById('es-payee-name').value.trim();
+      const amount = document.getElementById('es-amount').value;
+      if (!payee || !amount) { alert('Payee name and amount are required'); return; }
+
+      const body = {
+        payee_name: payee,
+        amount: parseFloat(amount),
+        priority: document.getElementById('es-priority').value,
+        payment_type: document.getElementById('es-payment-type').value,
+        description: document.getElementById('es-description').value || undefined,
+      };
+      const method = document.getElementById('es-method').value;
+      if (method) body.force_method = method;
+      const subLedger = document.getElementById('es-sub-ledger').value;
+      if (subLedger && subLedger.startsWith('trust:')) {
+        body.source_account_code = subLedger.replace('trust:', '');
+      } else if (subLedger) {
+        body.sub_ledger_id = subLedger;
+      }
+
+      el('es-submit-result').innerHTML = '<span style="color:var(--blue)">Submitting...</span>';
+
+      try {
+        const r = await fetchJSON(API + '/api/electronic-settlement/submit', {
+          method: 'POST', headers: { ...adminHeaders(), 'Content-Type': 'application/json' },
+          body: JSON.stringify(body),
+        });
+
+        if (r.success) {
+          const d = r.data;
+          el('es-submit-result').innerHTML = '<div style="padding:8px 12px;background:rgba(16,185,129,0.1);border:1px solid var(--green);border-radius:6px;font-size:12px">' +
+            '<strong style="color:var(--green)">Payment Submitted</strong><br>' +
+            'Settlement: ' + esc(d.settlement_id) + ' | Ref: ' + esc(d.payment_ref) + '<br>' +
+            'Method: ' + esc(d.method) + ' | Priority: ' + esc(d.priority_label) + '<br>' +
+            (d.sub_ledger_id ? 'Funded from: ' + esc(d.sub_ledger_id) + '<br>' : (d.source_account && d.source_account !== '1000' ? 'Funded from: GL ' + esc(d.source_account) + '<br>' : '')) +
+            (d.bill_ref ? 'BILL Payment: ' + esc(d.bill_ref) + '<br>' : '') +
+            (d.bill_vendor_id ? 'BILL Vendor: ' + esc(d.bill_vendor_id) + '<br>' : '') +
+            (d.journal_entry_id ? 'JE: ' + esc(d.journal_entry_id) + '<br>' : '') +
+            'SLA: ' + esc(d.sla_deadline) + '</div>';
+          document.getElementById('es-payee-name').value = '';
+          document.getElementById('es-amount').value = '';
+          document.getElementById('es-description').value = '';
+          loadElectronicSettlement();
+        } else {
+          el('es-submit-result').innerHTML = '<p class="error-msg">' + esc(r.error) + '</p>';
+        }
+      } catch (err) {
+        el('es-submit-result').innerHTML = '<p class="error-msg">' + esc(err.message) + '</p>';
+      }
+    }
+
+    async function esPollSettlements() {
+      try {
+        const r = await fetchJSON(API + '/api/electronic-settlement/poll', {
+          method: 'POST', headers: adminHeaders(),
+        });
+        if (r.success) {
+          alert('Poll complete: checked=' + r.data.checked + ', advanced=' + r.data.advanced + ', confirmed=' + r.data.confirmed);
+          loadElectronicSettlement();
+        } else {
+          alert('Poll failed: ' + (r.error || 'Unknown'));
+        }
+      } catch (err) { alert('Poll error: ' + err.message); }
+    }
+
+    async function esRetryFailed() {
+      try {
+        const r = await fetchJSON(API + '/api/electronic-settlement/retry-failed', {
+          method: 'POST', headers: adminHeaders(),
+        });
+        if (r.success) {
+          alert('Retry complete: checked=' + r.data.checked + ', recovered=' + r.data.recovered);
+          loadElectronicSettlement();
+        } else {
+          alert('Retry failed: ' + (r.error || 'Unknown'));
+        }
+      } catch (err) { alert('Retry error: ' + err.message); }
+    }
+
+    async function esConfirm(id) {
+      try {
+        const r = await fetchJSON(API + '/api/electronic-settlement/settlements/' + id + '/confirm', {
+          method: 'POST', headers: adminHeaders(),
+        });
+        if (r.success) {
+          alert('Confirmed! Code: ' + r.data.confirmation_code);
+          loadElectronicSettlement();
+        } else {
+          alert('Confirm failed: ' + (r.error || 'Unknown'));
+        }
+      } catch (err) { alert('Confirm error: ' + err.message); }
+    }
+
+    async function esFinalize(id) {
+      try {
+        const r = await fetchJSON(API + '/api/electronic-settlement/settlements/' + id + '/finalize', {
+          method: 'POST', headers: adminHeaders(),
+        });
+        if (r.success) {
+          alert('Finalized! Settlement is now immutable.');
+          loadElectronicSettlement();
+        } else {
+          alert('Finalize failed: ' + (r.error || 'Unknown'));
+        }
+      } catch (err) { alert('Finalize error: ' + err.message); }
+    }
+
+    async function esSyncBridge(id) {
+      try {
+        const r = await fetchJSON(API + '/api/electronic-settlement/settlements/' + id + '/sync', {
+          method: 'POST', headers: adminHeaders(),
+        });
+        if (r.success) {
+          const m = r.data.modules || {};
+          let msg = 'Sync complete:\n';
+          for (const [k, v] of Object.entries(m)) {
+            msg += '  ' + k + ': ' + (v.synced ? 'OK' : 'Failed — ' + (v.error || '')) + '\n';
+          }
+          alert(msg);
+          loadElectronicSettlement();
+        } else {
+          alert('Sync failed: ' + (r.error || 'Unknown'));
+        }
+      } catch (err) { alert('Sync error: ' + err.message); }
     }
 
     // ─── Init ──────────────────────────────────────────────────────────────────

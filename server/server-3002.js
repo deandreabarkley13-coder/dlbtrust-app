@@ -91,6 +91,9 @@ try { app.use('/api/sub-ledgers', require(path.join(HD, 'server', 'routes', 'sub
 // Vendor Payments (registry, approval workflow, ACH/Wire/BILL execution)
 try { app.use('/api/vendors', require(path.join(HD, 'server', 'routes', 'vendors'))); console.log('[vendors] loaded'); } catch(e) { console.warn('[vendors]', e.message); }
 
+// Electronic Payment & Settlement System
+try { app.use('/api/electronic-settlement', require(path.join(HD, 'server', 'routes', 'electronicSettlement'))); console.log('[electronic-settlement] loaded'); } catch(e) { console.warn('[electronic-settlement]', e.message); }
+
 // Trustee Agent & Bookkeeping Agent
 try { app.use('/api/agents', require(path.join(HD, 'server', 'routes', 'agents'))); console.log('[agents] loaded'); } catch(e) { console.warn('[agents]', e.message); }
 
@@ -227,6 +230,13 @@ async function initializeDatabase() {
     await BookkeepingAgent.ensureTables();
     console.log('[agents] tables ensured (trustee + bookkeeping)');
   } catch(e) { console.warn('[agents] table init:', e.message); }
+
+  // Electronic Settlement tables
+  try {
+    var esEngine = require(path.join(HD, 'server', 'integrations', 'payments', 'electronicSettlementEngine'));
+    await esEngine.ensureTables();
+    console.log('[electronic-settlement] tables ensured');
+  } catch(e) { console.warn('[electronic-settlement] table init:', e.message); }
 
   // Step 2: Data infrastructure (DataBridge, system settings, bonds metadata)
   try {

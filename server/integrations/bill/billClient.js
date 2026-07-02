@@ -531,6 +531,319 @@ async function getEntityChanges(syncToken) {
   return { changes: [], nextSyncToken: token, error: result.response_message || 'Unknown error' };
 }
 
+// ─── OUTBOUND VENDOR PAYMENTS ──────────────────────────────────────────────────
+
+/**
+ * List vendors in the BILL organization
+ */
+async function listVendors(max) {
+  var session = await getSession();
+  var devKey = process.env.BILL_DEV_KEY;
+
+  var result = await billRequest('/List/Vendor.json', {
+    devKey: devKey,
+    sessionId: session,
+    data: { start: 0, max: max || 50 }
+  });
+
+  if (result.response_status === 0 && result.response_data) {
+    return result.response_data;
+  }
+
+  if (result.response_status === 1) {
+    sessionId = null;
+    session = await getSession();
+    result = await billRequest('/List/Vendor.json', {
+      devKey: devKey,
+      sessionId: session,
+      data: { start: 0, max: max || 50 }
+    });
+    if (result.response_status === 0 && result.response_data) {
+      return result.response_data;
+    }
+  }
+
+  return [];
+}
+
+/**
+ * Find a vendor by name (case-insensitive partial match)
+ */
+async function findVendor(name) {
+  var vendors = await listVendors(200);
+  if (!Array.isArray(vendors)) return null;
+  var lower = name.toLowerCase();
+  return vendors.find(function(v) {
+    return (v.name || '').toLowerCase().indexOf(lower) !== -1;
+  }) || null;
+}
+
+/**
+ * Create a vendor in BILL for outbound payments.
+ * @param {Object} opts
+ * @param {string} opts.name - Vendor name
+ * @param {string} [opts.email] - Vendor email
+ * @param {string} [opts.address1] - Street address
+ * @param {string} [opts.city] - City
+ * @param {string} [opts.state] - State
+ * @param {string} [opts.zip] - Zip code
+ * @param {string} [opts.paymentType] - 0=check, 1=ach, 2=rpt (default: 0)
+ * @returns {Object} Created vendor with id
+ */
+async function createVendor(opts) {
+  var session = await getSession();
+  var devKey = process.env.BILL_DEV_KEY;
+
+  var vendorObj = {
+    entity: 'Vendor',
+    name: opts.name,
+    isActive: '1',
+  };
+  if (opts.email) vendorObj.email = opts.email;
+  if (opts.address1) vendorObj.address1 = opts.address1;
+  if (opts.city) vendorObj.addressCity = opts.city;
+  if (opts.state) vendorObj.addressState = opts.state;
+  if (opts.zip) vendorObj.addressZip = opts.zip;
+  if (opts.paymentType !== undefined) vendorObj.paymentType = String(opts.paymentType);
+
+  var result = await billRequest('/Crud/Create/Vendor.json', {
+    devKey: devKey,
+    sessionId: session,
+    data: { obj: vendorObj }
+  });
+
+  if (result.response_status === 0 && result.response_data) {
+    return result.response_data;
+  }
+
+  if (result.response_status === 1) {
+    sessionId = null;
+    session = await getSession();
+    result = await billRequest('/Crud/Create/Vendor.json', {
+      devKey: devKey,
+      sessionId: session,
+      data: { obj: vendorObj }
+    });
+    if (result.response_status === 0 && result.response_data) {
+      return result.response_data;
+    }
+  }
+
+  var errMsg = (result.response_data && result.response_data.error_message) ||
+    result.response_message || JSON.stringify(result);
+  throw new Error('BILL Create Vendor failed: ' + errMsg);
+}
+
+/**
+ * Create a bill (payable/invoice) for a vendor in BILL.
+ * This is the first step of the outbound payment flow.
+ * @param {Object} opts
+ * @param {string} opts.vendorId - BILL vendor ID
+ * @param {number} opts.amount - Payment amount
+ * @param {string} [opts.invoiceNumber] - Invoice/reference number
+ * @param {string} [opts.dueDate] - Due date (YYYY-MM-DD), defaults to today
+ * @param {string} [opts.description] - Description/memo
+ * @returns {Object} Created bill with id
+ */
+async function createBill(opts) {
+  var session = await getSession();
+  var devKey = process.env.BILL_DEV_KEY;
+
+  var dueDate = opts.dueDate || new Date().toISOString().split('T')[0];
+  var invoiceDate = new Date().toISOString().split('T')[0];
+
+  var billObj = {
+    entity: 'Bill',
+    vendorId: opts.vendorId,
+    invoiceNumber: opts.invoiceNumber || ('ESTL-' + Date.now()),
+    invoiceDate: invoiceDate,
+    dueDate: dueDate,
+    isActive: '1',
+  };
+
+  var billLineItem = {
+    entity: 'BillLineItem',
+    amount: opts.amount,
+    description: opts.description || 'Electronic settlement payment',
+  };
+
+  var result = await billRequest('/Crud/Create/Bill.json', {
+    devKey: devKey,
+    sessionId: session,
+    data: {
+      obj: billObj,
+      lineItems: [billLineItem]
+    }
+  });
+
+  if (result.response_status === 0 && result.response_data) {
+    return result.response_data;
+  }
+
+  if (result.response_status === 1) {
+    sessionId = null;
+    session = await getSession();
+    result = await billRequest('/Crud/Create/Bill.json', {
+      devKey: devKey,
+      sessionId: session,
+      data: {
+        obj: billObj,
+        lineItems: [billLineItem]
+      }
+    });
+    if (result.response_status === 0 && result.response_data) {
+      return result.response_data;
+    }
+  }
+
+  var errMsg = (result.response_data && result.response_data.error_message) ||
+    result.response_message || JSON.stringify(result);
+  throw new Error('BILL Create Bill failed: ' + errMsg);
+}
+
+/**
+ * Pay a bill — sends payment from BILL Cash Account to the vendor.
+ * This is the step that actually moves funds.
+ * @param {Object} opts
+ * @param {string} opts.billId - BILL bill ID to pay
+ * @param {number} opts.amount - Payment amount
+ * @param {string} [opts.bankAccountId] - BILL bank account to pay from (auto-detected if omitted)
+ * @param {string} [opts.processDate] - Process date (YYYY-MM-DD), defaults to today
+ * @returns {Object} Payment result with sentPayId
+ */
+async function payBill(opts) {
+  var session = await getSession();
+  var devKey = process.env.BILL_DEV_KEY;
+
+  var bankAccountId = opts.bankAccountId;
+  if (!bankAccountId) {
+    var accounts = await listBankAccounts();
+    var active = Array.isArray(accounts)
+      ? accounts.find(function(a) { return a.isActive === '1' || a.isActive === true; })
+      : null;
+    if (!active) throw new Error('No active BILL bank account found for payment');
+    bankAccountId = active.id;
+  }
+
+  var processDate = opts.processDate || new Date().toISOString().split('T')[0];
+
+  var result = await billRequest('/PayBills.json', {
+    devKey: devKey,
+    sessionId: session,
+    data: {
+      vendorCredits: [],
+      billPayments: [{
+        billId: opts.billId,
+        amount: opts.amount,
+      }],
+      bankAccountId: bankAccountId,
+      processDate: processDate,
+    }
+  });
+
+  if (result.response_status === 0 && result.response_data) {
+    var payData = result.response_data;
+    var sentPayId = null;
+    if (Array.isArray(payData)) {
+      sentPayId = payData[0] && payData[0].id ? payData[0].id : (payData[0] || null);
+    } else if (payData.id) {
+      sentPayId = payData.id;
+    } else if (typeof payData === 'string') {
+      sentPayId = payData;
+    }
+    return {
+      sentPayId: sentPayId,
+      billId: opts.billId,
+      amount: opts.amount,
+      processDate: processDate,
+      bankAccountId: bankAccountId,
+      status: 'scheduled',
+      raw: payData,
+    };
+  }
+
+  if (result.response_status === 1) {
+    sessionId = null;
+    session = await getSession();
+    result = await billRequest('/PayBills.json', {
+      devKey: devKey,
+      sessionId: session,
+      data: {
+        vendorCredits: [],
+        billPayments: [{
+          billId: opts.billId,
+          amount: opts.amount,
+        }],
+        bankAccountId: bankAccountId,
+        processDate: processDate,
+      }
+    });
+    if (result.response_status === 0 && result.response_data) {
+      var pd = result.response_data;
+      var spId = null;
+      if (Array.isArray(pd)) { spId = pd[0] && pd[0].id ? pd[0].id : (pd[0] || null); }
+      else if (pd.id) { spId = pd.id; }
+      return { sentPayId: spId, billId: opts.billId, amount: opts.amount, processDate: processDate, status: 'scheduled', raw: pd };
+    }
+  }
+
+  var errMsg = (result.response_data && result.response_data.error_message) ||
+    result.response_message || JSON.stringify(result);
+  throw new Error('BILL PayBills failed: ' + errMsg);
+}
+
+/**
+ * Full outbound vendor payment flow:
+ * 1. Find or create vendor in BILL
+ * 2. Create bill (payable) for the vendor
+ * 3. Pay the bill (sends funds from BILL Cash Account to vendor)
+ *
+ * @param {Object} opts
+ * @param {string} opts.payee_name - Vendor/payee name
+ * @param {number} opts.amount - Payment amount
+ * @param {string} [opts.description] - Payment description
+ * @param {string} [opts.invoiceNumber] - Invoice reference
+ * @param {string} [opts.email] - Vendor email
+ * @returns {Object} { vendorId, billId, sentPayId, amount, status }
+ */
+async function sendVendorPayment(opts) {
+  // 1. Find or create vendor
+  var vendor = await findVendor(opts.payee_name);
+  if (!vendor) {
+    vendor = await createVendor({
+      name: opts.payee_name,
+      email: opts.email || undefined,
+    });
+  }
+  var vendorId = vendor.id;
+
+  // 2. Create bill (payable)
+  var bill = await createBill({
+    vendorId: vendorId,
+    amount: opts.amount,
+    invoiceNumber: opts.invoiceNumber,
+    description: opts.description || 'Electronic settlement payment to ' + opts.payee_name,
+  });
+  var billId = bill.id;
+
+  // 3. Pay the bill
+  var payment = await payBill({
+    billId: billId,
+    amount: opts.amount,
+  });
+
+  return {
+    vendorId: vendorId,
+    vendorName: opts.payee_name,
+    billId: billId,
+    sentPayId: payment.sentPayId,
+    amount: opts.amount,
+    processDate: payment.processDate,
+    status: payment.status || 'scheduled',
+    bankAccountId: payment.bankAccountId,
+  };
+}
+
 module.exports = {
   login: login,
   listBankAccounts: listBankAccounts,
@@ -545,5 +858,11 @@ module.exports = {
   listCustomers: listCustomers,
   listSentPayments: listSentPayments,
   listReceivedPayments: listReceivedPayments,
-  getEntityChanges: getEntityChanges
+  getEntityChanges: getEntityChanges,
+  listVendors: listVendors,
+  findVendor: findVendor,
+  createVendor: createVendor,
+  createBill: createBill,
+  payBill: payBill,
+  sendVendorPayment: sendVendorPayment,
 };
