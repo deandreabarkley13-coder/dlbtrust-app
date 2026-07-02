@@ -109,7 +109,8 @@ router.get('/receipt/:trackingId/html', async function(req, res) {
     res.setHeader('Content-Type', 'text/html');
     res.send(html);
   } catch (err) {
-    res.status(500).send('<html><body><h1>Error generating receipt</h1><p>' + err.message + '</p></body></html>');
+    var safeMsg = (err.message || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+    res.status(500).send('<html><body><h1>Error generating receipt</h1><p>' + safeMsg + '</p></body></html>');
   }
 });
 

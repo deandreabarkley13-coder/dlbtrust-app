@@ -4259,10 +4259,10 @@
       el('notif-stats').innerHTML =
         card('Total Payments', total) +
         card('Total Amount', '$' + totalAmt.toLocaleString('en-US', {minimumFractionDigits:2})) +
-        card('Completed', completed, completed > 0 ? '#22c55e' : null) +
-        card('Pending', pending, pending > 0 ? '#f59e0b' : null) +
-        card('Failed', failed, failed > 0 ? '#ef4444' : null) +
-        card('Unread Notifications', unread, unread > 0 ? '#ef4444' : null);
+        card('Completed', completed, completed > 0 ? 'Settled payments' : 'No completed payments') +
+        card('Pending', pending, pending > 0 ? 'Awaiting settlement' : 'No pending payments') +
+        card('Failed', failed, failed > 0 ? 'Requires attention' : 'No failures') +
+        card('Unread Notifications', unread, unread > 0 ? 'New alerts' : 'All read');
 
       // Notification feed
       var feedItems = (notifs && notifs.data) || [];

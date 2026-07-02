@@ -336,13 +336,15 @@ async function pollBillConfirmations() {
   } catch (e) {}
 
   var allBillPayments = receivedPayments.concat(sentPayments);
+  var matchedBillIds = {};
 
   for (var i = 0; i < pendingPayments.rows.length; i++) {
     var payment = pendingPayments.rows[i];
     var billMatch = allBillPayments.find(function(bp) {
-      return bp.id === payment.bill_ref ||
-        (bp.amount && Math.abs(parseFloat(bp.amount) - parseFloat(payment.amount)) < 0.01);
+      if (matchedBillIds[bp.id]) return false;
+      return bp.id === payment.bill_ref;
     });
+    if (billMatch) matchedBillIds[billMatch.id] = true;
 
     if (billMatch) {
       var settlementRef = billMatch.id;
