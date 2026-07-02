@@ -625,6 +625,28 @@ router.post('/mfa/verify', requireAdmin, async function(req, res) {
   }
 });
 
+// Create vendor + bill only (no payment, no MFA needed)
+router.post('/create-bill', requireAdmin, async function(req, res) {
+  try {
+    var billClient = require(path.join(__dirname, '../integrations/bill/billClient'));
+    var payeeName = req.body.payee_name;
+    var amount = req.body.amount;
+    if (!payeeName || !amount) return res.json({ success: false, error: 'payee_name and amount required' });
+    var vendor = await billClient.findVendor(payeeName);
+    if (!vendor) vendor = await billClient.createVendor({ name: payeeName, email: req.body.email });
+    var vendorId = vendor.id || vendor;
+    var bill = await billClient.createBill({
+      vendorId: vendorId, amount: amount,
+      description: req.body.description || 'Electronic settlement payment',
+      invoiceNumber: 'ES-' + Date.now().toString(36).toUpperCase()
+    });
+    var billId = bill.id || (bill.response_data && bill.response_data.id) || bill;
+    res.json({ success: true, vendorId: vendorId, billId: billId, amount: amount });
+  } catch(err) {
+    res.json({ success: false, error: err.message });
+  }
+});
+
 // Combined: MFA verify + immediate PayBill in one atomic call
 router.post('/mfa/pay', requireAdmin, async function(req, res) {
   try {
