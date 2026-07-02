@@ -863,7 +863,7 @@ async function sendMFAChallenge(method) {
   var devKey = process.env.BILL_DEV_KEY;
   var result = await billRequest('/MFAChallenge.json', {
     devKey: devKey, sessionId: session,
-    data: JSON.stringify({ useBackup: method === 'backup' ? true : false })
+    useBackup: method === 'backup' ? 'true' : 'false'
   });
   if (result.response_status === 0) return result.response_data;
   throw new Error('MFA challenge failed: ' + (result.response_message || JSON.stringify(result)));
@@ -876,12 +876,12 @@ async function verifyMFACode(code, challengeId) {
   var session = await getSession();
   var devKey = process.env.BILL_DEV_KEY;
   var machineName = 'dlbtrust-server-' + Date.now().toString(36);
-  var authData = { token: code, machineName: machineName, rememberMe: true };
-  if (challengeId) authData.challengeId = challengeId;
-  var result = await billRequest('/MFAAuthenticate.json', {
+  var params = {
     devKey: devKey, sessionId: session,
-    data: JSON.stringify(authData)
-  });
+    token: code, machineName: machineName, rememberMe: 'true'
+  };
+  if (challengeId) params.challengeId = challengeId;
+  var result = await billRequest('/MFAAuthenticate.json', params);
   if (result.response_status === 0 && result.response_data) {
     if (result.response_data.deviceId) {
       deviceId = result.response_data.deviceId;

@@ -625,4 +625,21 @@ router.post('/mfa/verify', requireAdmin, async function(req, res) {
   }
 });
 
+// Combined: MFA verify + immediate PayBill in one atomic call
+router.post('/mfa/pay', requireAdmin, async function(req, res) {
+  try {
+    var code = req.body.code;
+    var challengeId = req.body.challengeId;
+    var billId = req.body.billId;
+    var amount = req.body.amount;
+    if (!code || !billId || !amount) return res.json({ success: false, error: 'code, billId, and amount required' });
+    var billClient = require(path.join(__dirname, '../integrations/bill/billClient'));
+    var mfaResult = await billClient.verifyMFACode(code, challengeId);
+    var payResult = await billClient.payBill({ billId: billId, amount: amount });
+    res.json({ success: true, mfa: mfaResult, payment: payResult });
+  } catch(err) {
+    res.json({ success: false, error: err.message });
+  }
+});
+
 module.exports = router;
