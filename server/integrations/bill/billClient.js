@@ -652,6 +652,12 @@ async function createBill(opts) {
   var dueDate = opts.dueDate || new Date().toISOString().split('T')[0];
   var invoiceDate = new Date().toISOString().split('T')[0];
 
+  var billLineItem = {
+    entity: 'BillLineItem',
+    amount: opts.amount,
+    description: opts.description || 'Electronic settlement payment',
+  };
+
   var billObj = {
     entity: 'Bill',
     vendorId: opts.vendorId,
@@ -659,21 +665,13 @@ async function createBill(opts) {
     invoiceDate: invoiceDate,
     dueDate: dueDate,
     isActive: '1',
-  };
-
-  var billLineItem = {
-    entity: 'BillLineItem',
-    amount: opts.amount,
-    description: opts.description || 'Electronic settlement payment',
+    billLineItems: [billLineItem],
   };
 
   var result = await billRequest('/Crud/Create/Bill.json', {
     devKey: devKey,
     sessionId: session,
-    data: {
-      obj: billObj,
-      billLineItems: [billLineItem]
-    }
+    data: JSON.stringify({ obj: billObj })
   });
 
   if (result.response_status === 0 && result.response_data) {
@@ -686,10 +684,7 @@ async function createBill(opts) {
     result = await billRequest('/Crud/Create/Bill.json', {
       devKey: devKey,
       sessionId: session,
-      data: {
-        obj: billObj,
-        billLineItems: [billLineItem]
-      }
+      data: JSON.stringify({ obj: billObj })
     });
     if (result.response_status === 0 && result.response_data) {
       return result.response_data;
