@@ -688,7 +688,48 @@ class DataBridge {
         }
       }
     } catch (outerErr) {
-      errors.push({ phase: 'query', error: outerErr.message });
+      errors.push({ phase: 'bond_query', error: outerErr.message });
+    }
+
+    // Post opening balances for cash accounts (operating, reserve, etc.) that have seeded balances
+    try {
+      var postedCashIds = new Set(
+        (await pool.query("SELECT reference_id FROM trust_journal_entries WHERE reference_type = 'opening_balance' AND status = 'posted' AND reference_id LIKE 'CASH-%'"))
+          .rows.map(function(r) { return r.reference_id; })
+      );
+
+      var cashAccounts = await pool.query(
+        "SELECT account_id, account_name, account_type, balance_cents FROM cash_accounts WHERE status = 'active' AND account_type NOT IN ('bond_proceeds') AND balance_cents > 0"
+      );
+
+      for (var ci = 0; ci < cashAccounts.rows.length; ci++) {
+        var ca = cashAccounts.rows[ci];
+        var refId = 'CASH-' + ca.account_id;
+        if (postedCashIds.has(refId)) continue;
+
+        var cashAmount = parseInt(ca.balance_cents) / 100;
+        if (cashAmount <= 0) continue;
+
+        try {
+          await TrustAccountingEngine.postJournalEntry({
+            entryDate: new Date(),
+            description: 'Opening balance — ' + ca.account_name,
+            lines: [
+              { accountCode: ACCOUNTS.CASH, debitAmount: cashAmount, creditAmount: 0, memo: ca.account_name + ' initial balance' },
+              { accountCode: ACCOUNTS.TRUST_CORPUS, debitAmount: 0, creditAmount: cashAmount, memo: 'Trust corpus — ' + ca.account_name },
+            ],
+            referenceType: 'opening_balance',
+            referenceId: refId,
+            postedBy: 'data_bridge',
+            postToFineract: false,
+          });
+          synced++;
+        } catch (err) {
+          errors.push({ cashAccountId: ca.account_id, error: err.message });
+        }
+      }
+    } catch (outerErr) {
+      errors.push({ phase: 'cash_query', error: outerErr.message });
     }
 
     return { synced: synced, errors: errors };
