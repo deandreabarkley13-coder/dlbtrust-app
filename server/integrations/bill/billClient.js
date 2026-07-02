@@ -15,7 +15,9 @@ var BILL_API_BASE = process.env.BILL_API_URL || 'https://api.bill.com/api/v2';
 var sessionId = null;
 var sessionExpiry = null;
 var deviceId = process.env.BILL_DEVICE_ID || null;
+var mfaVerifiedAt = null; // Timestamp of last MFA verification
 var SESSION_TIMEOUT_MS = 30 * 60 * 1000; // 30 minutes (BILL expires at 35 min idle)
+var MFA_TRUST_WINDOW_MS = 25 * 60 * 1000; // 25 min — MFA trust window (shorter than session)
 
 /**
  * Make an HTTP POST request to the BILL API
@@ -763,6 +765,7 @@ async function payBill(opts) {
   }
 
   if (result.response_status === 1) {
+    // Session expired — re-login and retry
     sessionId = null;
     session = await getSession();
     result = await billRequest('/PayBills.json', {
@@ -773,7 +776,8 @@ async function payBill(opts) {
     if (result.response_status === 0 && result.response_data) {
       var pd = result.response_data;
       var spId = null;
-      if (Array.isArray(pd)) { spId = pd[0] && pd[0].id ? pd[0].id : (pd[0] || null); }
+      if (pd.sentPays && Array.isArray(pd.sentPays) && pd.sentPays[0]) { spId = pd.sentPays[0].id; }
+      else if (Array.isArray(pd)) { spId = pd[0] && pd[0].id ? pd[0].id : (pd[0] || null); }
       else if (pd.id) { spId = pd.id; }
       return { sentPayId: spId, billId: opts.billId, amount: opts.amount, processDate: processDate, status: 'scheduled', raw: pd };
     }
@@ -781,6 +785,10 @@ async function payBill(opts) {
 
   var errMsg = (result.response_data && result.response_data.error_message) ||
     result.response_message || JSON.stringify(result);
+  // Provide actionable guidance for untrusted session errors
+  if (errMsg && errMsg.indexOf('ntrusted') !== -1) {
+    throw new Error('BILL PayBills failed: Untrusted session. MFA re-authentication required — call POST /api/bill/mfa/challenge then POST /api/bill/mfa/verify with the code.');
+  }
   throw new Error('BILL PayBills failed: ' + errMsg);
 }
 
@@ -879,9 +887,14 @@ async function verifyMFACode(code, challengeId) {
       sessionId = result.response_data.sessionId;
       sessionExpiry = Date.now() + SESSION_TIMEOUT_MS;
     }
+    mfaVerifiedAt = Date.now();
     if (result.response_data.deviceId) {
       deviceId = result.response_data.deviceId;
       console.log('[bill-client] MFA verified, deviceId=' + deviceId);
+    } else if (result.response_data.mfaId && !deviceId) {
+      // Use mfaId as deviceId for future logins when no deviceId was returned
+      deviceId = result.response_data.mfaId;
+      console.log('[bill-client] MFA verified, using mfaId as deviceId=' + deviceId);
     }
     return { success: true, deviceId: deviceId, machineName: machineName, raw: result.response_data };
   }
@@ -894,7 +907,8 @@ async function verifyMFACode(code, challengeId) {
  * Get current MFA/device trust info
  */
 function getMFATrustInfo() {
-  return { deviceId: deviceId, hasTrustedDevice: !!deviceId };
+  var isTrusted = !!deviceId || (mfaVerifiedAt && (Date.now() - mfaVerifiedAt) < MFA_TRUST_WINDOW_MS);
+  return { deviceId: deviceId, hasTrustedDevice: !!deviceId, mfaTrusted: isTrusted, mfaVerifiedAt: mfaVerifiedAt };
 }
 
 /**
