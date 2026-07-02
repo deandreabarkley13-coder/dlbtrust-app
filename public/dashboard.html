@@ -1326,7 +1326,7 @@
             </select>
           </div>
           <div>
-            <label style="font-size:12px;color:var(--text-secondary)">Funding Source (Sub-Ledger)</label>
+            <label style="font-size:12px;color:var(--text-secondary)">Funding Source (Client Account)</label>
             <select id="es-sub-ledger" class="form-control">
               <option value="">Trust Cash (1000) — default</option>
             </select>
@@ -4665,7 +4665,7 @@
 
           // Recent settlements table
           if (d.recent_settlements && d.recent_settlements.length > 0) {
-            let html = '<table><thead><tr><th>Settlement ID</th><th>Payee</th><th>Amount</th><th>Method</th><th>Priority</th><th>Sub-Ledger</th><th>Status</th><th>Time</th><th>Actions</th></tr></thead><tbody>';
+            let html = '<table><thead><tr><th>Settlement ID</th><th>Payee</th><th>Amount</th><th>Method</th><th>Priority</th><th>Funding Source</th><th>Status</th><th>Time</th><th>Actions</th></tr></thead><tbody>';
             for (const s of d.recent_settlements) {
               const statusColor = s.status === 'confirmed' || s.status === 'finalized' ? 'var(--green)' :
                 s.status === 'failed' ? 'var(--red)' :
@@ -4675,7 +4675,7 @@
                 '<td>$' + Number(s.amount).toLocaleString(undefined, {minimumFractionDigits:2}) + '</td>' +
                 '<td>' + esc(s.payment_method) + '</td>' +
                 '<td>' + esc(s.priority) + '</td>' +
-                '<td style="font-size:11px">' + (s.sub_ledger_id ? esc(s.sub_ledger_id) : '<span class="text-muted">Trust Cash</span>') + '</td>' +
+                '<td style="font-size:11px">' + (s.sub_ledger_id ? esc(s.sub_ledger_id) : (s.source_account_code && s.source_account_code !== '1000' ? 'GL ' + esc(s.source_account_code) : '<span class="text-muted">Trust Cash</span>')) + '</td>' +
                 '<td><span style="color:' + statusColor + ';font-weight:600">' + esc(s.status) + '</span></td>' +
                 '<td style="font-size:11px">' + shortDate(s.created_at) + '</td>' +
                 '<td>';
@@ -4717,15 +4717,31 @@
           el('es-stats').innerHTML = '<div class="card"><p class="error-msg">' + esc(dashRes.error) + '</p></div>';
         }
 
-        // Populate funding accounts dropdown
+        // Populate funding accounts dropdown — client accounts + trust GL accounts
         if (fundingRes.success && fundingRes.data) {
           const sel = document.getElementById('es-sub-ledger');
           const current = sel.value;
-          sel.innerHTML = '<option value="">Trust Cash (1000) — default</option>';
-          for (const a of fundingRes.data) {
-            sel.innerHTML += '<option value="' + esc(a.sub_ledger_id) + '">' +
-              esc(a.name) + ' (' + esc(a.parent_account) + ') — $' + a.balance.toLocaleString(undefined, {minimumFractionDigits:2}) + '</option>';
+          var opts = '<option value="">— Select Funding Source —</option>';
+          var fd = fundingRes.data;
+          // Client sub-ledger accounts
+          if (fd.clientAccounts && fd.clientAccounts.length > 0) {
+            opts += '<optgroup label="Client Accounts">';
+            for (const a of fd.clientAccounts) {
+              opts += '<option value="' + esc(a.sub_ledger_id) + '">' +
+                esc(a.name) + ' (' + esc(a.parent_account) + ') — $' + Number(a.balance).toLocaleString(undefined, {minimumFractionDigits:2}) + '</option>';
+            }
+            opts += '</optgroup>';
           }
+          // Trust GL asset accounts
+          if (fd.trustAccounts && fd.trustAccounts.length > 0) {
+            opts += '<optgroup label="Trust Accounts">';
+            for (const t of fd.trustAccounts) {
+              opts += '<option value="trust:' + esc(t.account_code) + '">' +
+                esc(t.name) + ' (' + esc(t.account_code) + ') — $' + Number(t.balance).toLocaleString(undefined, {minimumFractionDigits:2}) + '</option>';
+            }
+            opts += '</optgroup>';
+          }
+          sel.innerHTML = opts;
           if (current) sel.value = current;
         }
       } catch (err) {
@@ -4748,7 +4764,11 @@
       const method = document.getElementById('es-method').value;
       if (method) body.force_method = method;
       const subLedger = document.getElementById('es-sub-ledger').value;
-      if (subLedger) body.sub_ledger_id = subLedger;
+      if (subLedger && subLedger.startsWith('trust:')) {
+        body.source_account_code = subLedger.replace('trust:', '');
+      } else if (subLedger) {
+        body.sub_ledger_id = subLedger;
+      }
 
       el('es-submit-result').innerHTML = '<span style="color:var(--blue)">Submitting...</span>';
 
@@ -4764,7 +4784,7 @@
             '<strong style="color:var(--green)">Payment Submitted</strong><br>' +
             'Settlement: ' + esc(d.settlement_id) + ' | Ref: ' + esc(d.payment_ref) + '<br>' +
             'Method: ' + esc(d.method) + ' | Priority: ' + esc(d.priority_label) + '<br>' +
-            (d.sub_ledger_id ? 'Funded from: ' + esc(d.sub_ledger_id) + '<br>' : '') +
+            (d.sub_ledger_id ? 'Funded from: ' + esc(d.sub_ledger_id) + '<br>' : (d.source_account && d.source_account !== '1000' ? 'Funded from: GL ' + esc(d.source_account) + '<br>' : '')) +
             (d.bill_ref ? 'BILL Ref: ' + esc(d.bill_ref) + '<br>' : '') +
             (d.journal_entry_id ? 'JE: ' + esc(d.journal_entry_id) + '<br>' : '') +
             'SLA: ' + esc(d.sla_deadline) + '</div>';

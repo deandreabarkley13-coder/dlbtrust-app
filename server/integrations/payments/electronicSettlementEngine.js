@@ -308,28 +308,55 @@ async function reverseSubLedgerDebit(subLedgerId, amount, settlementId) {
 }
 
 /**
- * List available sub-ledger accounts for funding payments.
+ * List all available client accounts for funding payments.
+ * Returns both sub-ledger (client) accounts and trust GL accounts.
  */
 async function listFundingAccounts() {
-  if (!SubLedgerEngine) return [];
+  var results = { clientAccounts: [], trustAccounts: [] };
+
+  // 1. Sub-ledger (client) accounts — all active accounts, any balance
+  if (SubLedgerEngine) {
+    try {
+      var accounts = await SubLedgerEngine.listSubLedgers({});
+      results.clientAccounts = accounts.filter(function(a) {
+        return a.status === 'active';
+      }).map(function(a) {
+        return {
+          sub_ledger_id: a.sub_ledger_id,
+          name: a.sub_account_name,
+          parent_account: a.parent_account_code,
+          balance: parseFloat(a.balance),
+          type: a.sub_account_type,
+          contact_id: a.contact_id,
+          source: 'client',
+        };
+      });
+    } catch (err) {
+      console.warn('[ElectronicSettlement] listFundingAccounts sub-ledger failed:', err.message);
+    }
+  }
+
+  // 2. Trust GL accounts (asset accounts that can fund payments)
   try {
-    var accounts = await SubLedgerEngine.listSubLedgers({});
-    return accounts.filter(function(a) {
-      return a.status === 'active' && parseFloat(a.balance) > 0;
-    }).map(function(a) {
+    var glRows = await pool.query(
+      `SELECT account_code, account_name, account_type, balance
+       FROM trust_accounts
+       WHERE account_type = 'asset'
+       ORDER BY account_code`
+    );
+    results.trustAccounts = (glRows.rows || []).map(function(r) {
       return {
-        sub_ledger_id: a.sub_ledger_id,
-        name: a.sub_account_name,
-        parent_account: a.parent_account_code,
-        balance: parseFloat(a.balance),
-        type: a.sub_account_type,
-        contact_id: a.contact_id,
+        account_code: r.account_code,
+        name: r.account_name,
+        balance: parseFloat(r.balance || 0),
+        source: 'trust',
       };
     });
   } catch (err) {
-    console.warn('[ElectronicSettlement] listFundingAccounts failed:', err.message);
-    return [];
+    console.warn('[ElectronicSettlement] listFundingAccounts trust GL failed:', err.message);
   }
+
+  return results;
 }
 
 // ─── DATA BRIDGE SYNC ─────────────────────────────────────────────────────────
