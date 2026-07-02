@@ -409,13 +409,19 @@ async function syncToDataBridge(settlementId) {
     }
   }
 
-  // Mark settlement as synced
-  await pool.query(
-    'UPDATE electronic_settlements SET data_bridge_synced = TRUE, updated_at = NOW() WHERE settlement_id = $1',
-    [settlementId]
-  );
+  // Only mark as synced if all module syncs succeeded
+  var allModulesSynced = Object.keys(syncResults.modules).every(function(k) {
+    return syncResults.modules[k].synced !== false;
+  });
 
-  syncResults.synced = true;
+  if (allModulesSynced) {
+    await pool.query(
+      'UPDATE electronic_settlements SET data_bridge_synced = TRUE, updated_at = NOW() WHERE settlement_id = $1',
+      [settlementId]
+    );
+  }
+
+  syncResults.synced = allModulesSynced;
   return syncResults;
 }
 
@@ -1037,6 +1043,14 @@ async function retryFailedSettlements() {
     results.details.push({ settlement_id: s.settlement_id, attempt: s.retry_count + 1 });
 
     try {
+      // Skip retry if payment was already executed externally (prevents duplicates)
+      if (s.bill_ref || s.wire_id || s.ach_batch_id) {
+        console.warn('[ElectronicSettlement] skipping retry for ' + s.settlement_id + ' — external ref exists (bill_ref=' + s.bill_ref + ', wire_id=' + s.wire_id + ', ach_batch_id=' + s.ach_batch_id + ')');
+        results.details[results.details.length - 1].skipped = true;
+        results.details[results.details.length - 1].reason = 'external_ref_exists';
+        continue;
+      }
+
       // Reset to submitted and re-execute
       await pool.query(
         'UPDATE electronic_settlements SET status = $2, retry_count = retry_count + 1, last_error = NULL, updated_at = NOW() WHERE settlement_id = $1',
