@@ -14,11 +14,25 @@ var path = require('path');
 
 var notifEngine = require(path.join(__dirname, '../integrations/payments/paymentNotificationEngine'));
 
+// Auth middleware (same pattern as bill.js)
+var requireAdmin = async function(req, res, next) {
+  var adminToken = req.headers['x-admin-token'] || req.query.adminToken;
+  if (adminToken && adminToken === process.env.ADMIN_SECRET_TOKEN) { req.user = 'admin'; return next(); }
+  var authHeader = req.headers['authorization'];
+  if (authHeader && authHeader.startsWith('Bearer ')) {
+    var token = authHeader.slice(7);
+    if (token === process.env.ADMIN_SECRET_TOKEN || token === process.env.API_KEY) { req.user = 'admin'; return next(); }
+  }
+  // Allow if no ADMIN_SECRET_TOKEN configured (dev/testing)
+  if (!process.env.ADMIN_SECRET_TOKEN) { req.user = 'admin'; return next(); }
+  return res.status(401).json({ success: false, error: 'Authentication required' });
+};
+
 // ═══════════════════════════════════════════════════════════════════════════════
 // DASHBOARD
 // ═══════════════════════════════════════════════════════════════════════════════
 
-router.get('/dashboard', async function(req, res) {
+router.get('/dashboard', requireAdmin, async function(req, res) {
   try {
     var dashboard = await notifEngine.getPaymentDashboard();
     res.json({ success: true, data: dashboard });
@@ -31,7 +45,7 @@ router.get('/dashboard', async function(req, res) {
 // NOTIFICATIONS
 // ═══════════════════════════════════════════════════════════════════════════════
 
-router.get('/notifications', async function(req, res) {
+router.get('/notifications', requireAdmin, async function(req, res) {
   try {
     var notifications = await notifEngine.getNotifications({
       unread_only: req.query.unread === 'true',
@@ -46,7 +60,7 @@ router.get('/notifications', async function(req, res) {
   }
 });
 
-router.get('/notifications/count', async function(req, res) {
+router.get('/notifications/count', requireAdmin, async function(req, res) {
   try {
     var count = await notifEngine.getUnreadCount();
     res.json({ success: true, unread_count: count });
@@ -55,7 +69,7 @@ router.get('/notifications/count', async function(req, res) {
   }
 });
 
-router.post('/notifications/:notificationId/read', async function(req, res) {
+router.post('/notifications/:notificationId/read', requireAdmin, async function(req, res) {
   try {
     await notifEngine.markNotificationRead(req.params.notificationId);
     res.json({ success: true });
@@ -64,7 +78,7 @@ router.post('/notifications/:notificationId/read', async function(req, res) {
   }
 });
 
-router.post('/notifications/read-all', async function(req, res) {
+router.post('/notifications/read-all', requireAdmin, async function(req, res) {
   try {
     var count = await notifEngine.markAllRead();
     res.json({ success: true, marked_read: count });
@@ -77,7 +91,7 @@ router.post('/notifications/read-all', async function(req, res) {
 // PAYMENT TRACKING
 // ═══════════════════════════════════════════════════════════════════════════════
 
-router.get('/track/:trackingId', async function(req, res) {
+router.get('/track/:trackingId', requireAdmin, async function(req, res) {
   try {
     var detail = await notifEngine.getPaymentDetail(req.params.trackingId);
     if (!detail) return res.status(404).json({ success: false, error: 'Payment not found' });
@@ -91,7 +105,7 @@ router.get('/track/:trackingId', async function(req, res) {
 // RECEIPT
 // ═══════════════════════════════════════════════════════════════════════════════
 
-router.get('/receipt/:trackingId', async function(req, res) {
+router.get('/receipt/:trackingId', requireAdmin, async function(req, res) {
   try {
     var receipt = await notifEngine.generateReceipt(req.params.trackingId);
     if (!receipt) return res.status(404).json({ success: false, error: 'Payment not found' });
@@ -101,7 +115,7 @@ router.get('/receipt/:trackingId', async function(req, res) {
   }
 });
 
-router.get('/receipt/:trackingId/html', async function(req, res) {
+router.get('/receipt/:trackingId/html', requireAdmin, async function(req, res) {
   try {
     var receipt = await notifEngine.generateReceipt(req.params.trackingId);
     if (!receipt) return res.status(404).send('<html><body><h1>Receipt Not Found</h1></body></html>');
@@ -118,7 +132,7 @@ router.get('/receipt/:trackingId/html', async function(req, res) {
 // SETTLEMENT POLLING
 // ═══════════════════════════════════════════════════════════════════════════════
 
-router.post('/poll-settlements', async function(req, res) {
+router.post('/poll-settlements', requireAdmin, async function(req, res) {
   try {
     var result = await notifEngine.pollBillConfirmations();
     res.json({ success: true, data: result });
