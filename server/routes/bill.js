@@ -616,7 +616,7 @@ router.post('/mfa/verify', requireAdmin, async function(req, res) {
     var code = req.body.code;
     if (!code) return res.json({ success: false, error: 'MFA code required' });
     var billClient = require(path.join(__dirname, '../integrations/bill/billClient'));
-    var result = await billClient.verifyMFACode(code);
+    var result = await billClient.verifyMFACode(code, req.body.challengeId);
     res.json({ success: true, data: result,
       note: result.deviceId ? 'Save this deviceId as BILL_DEVICE_ID env var for future trusted sessions: ' + result.deviceId : 'No deviceId returned'
     });

@@ -872,13 +872,15 @@ async function sendMFAChallenge(method) {
 /**
  * Verify MFA code and trust this device
  */
-async function verifyMFACode(code) {
+async function verifyMFACode(code, challengeId) {
   var session = await getSession();
   var devKey = process.env.BILL_DEV_KEY;
   var machineName = 'dlbtrust-server-' + Date.now().toString(36);
+  var authData = { token: code, machineName: machineName, rememberMe: true };
+  if (challengeId) authData.challengeId = challengeId;
   var result = await billRequest('/MFAAuthenticate.json', {
     devKey: devKey, sessionId: session,
-    data: JSON.stringify({ token: code, machineName: machineName, rememberMe: true })
+    data: JSON.stringify(authData)
   });
   if (result.response_status === 0 && result.response_data) {
     if (result.response_data.deviceId) {
