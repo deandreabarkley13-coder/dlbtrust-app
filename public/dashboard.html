@@ -4794,6 +4794,46 @@
           document.getElementById('es-amount').value = '';
           document.getElementById('es-description').value = '';
           loadElectronicSettlement();
+        } else if (r.mfa_required) {
+          // Show MFA input dialog
+          el('es-submit-result').innerHTML =
+            '<div style="padding:12px;background:rgba(245,158,11,0.1);border:1px solid var(--amber,#f59e0b);border-radius:6px;font-size:13px">' +
+            '<strong style="color:#f59e0b">MFA Verification Required</strong><br>' +
+            '<p style="margin:6px 0">BILL sent a verification code to your phone/email. Enter it below to complete the $' + Number(r.amount).toFixed(2) + ' payment to ' + esc(r.payee_name) + '.</p>' +
+            '<div style="display:flex;gap:8px;align-items:center">' +
+            '<input type="text" id="es-mfa-code" class="form-control" placeholder="Enter MFA code" style="max-width:180px;font-size:16px;letter-spacing:4px;text-align:center">' +
+            '<button class="btn btn-primary" onclick="esCompleteMFA(\'' + esc(r.settlementId) + '\',\'' + esc(r.challengeId || '') + '\')">Verify &amp; Pay</button>' +
+            '</div></div>';
+          document.getElementById('es-mfa-code').focus();
+        } else {
+          el('es-submit-result').innerHTML = '<p class="error-msg">' + esc(r.error) + '</p>';
+        }
+      } catch (err) {
+        el('es-submit-result').innerHTML = '<p class="error-msg">' + esc(err.message) + '</p>';
+      }
+    }
+
+    async function esCompleteMFA(settlementId, challengeId) {
+      const code = document.getElementById('es-mfa-code').value.trim();
+      if (!code) { alert('Enter the MFA code'); return; }
+      el('es-submit-result').innerHTML = '<span style="color:var(--blue)">Verifying MFA and completing payment...</span>';
+      try {
+        const r = await fetchJSON(API + '/api/electronic-settlement/complete-mfa', {
+          method: 'POST', headers: { ...adminHeaders(), 'Content-Type': 'application/json' },
+          body: JSON.stringify({ code: code, challengeId: challengeId || undefined, settlementId: settlementId }),
+        });
+        if (r.success) {
+          const d = r.data;
+          el('es-submit-result').innerHTML = '<div style="padding:8px 12px;background:rgba(16,185,129,0.1);border:1px solid var(--green);border-radius:6px;font-size:12px">' +
+            '<strong style="color:var(--green)">Payment Completed (MFA Verified)</strong><br>' +
+            'Settlement: ' + esc(d.settlement_id) + ' | Ref: ' + esc(d.payment_ref) + '<br>' +
+            (d.bill_ref ? 'BILL Payment: ' + esc(d.bill_ref) + '<br>' : '') +
+            (d.journal_entry_id ? 'JE: ' + esc(d.journal_entry_id) + '<br>' : '') +
+            'Amount: $' + Number(d.amount).toFixed(2) + ' | Payee: ' + esc(d.payee) + '</div>';
+          document.getElementById('es-payee-name').value = '';
+          document.getElementById('es-amount').value = '';
+          document.getElementById('es-description').value = '';
+          loadElectronicSettlement();
         } else {
           el('es-submit-result').innerHTML = '<p class="error-msg">' + esc(r.error) + '</p>';
         }

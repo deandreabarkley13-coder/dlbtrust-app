@@ -693,13 +693,33 @@ async function executeBILLPayment(opts) {
     });
   } else {
     // Outbound vendor payment via PayBills
-    paymentResult = await billClient.sendVendorPayment({
-      payee_name: opts.payee_name,
-      amount: opts.amount,
-      description: opts.description || 'Electronic settlement payment',
-      invoiceNumber: 'ES-' + Date.now().toString(36).toUpperCase(),
-      email: opts.payee_email || undefined,
-    });
+    try {
+      paymentResult = await billClient.sendVendorPayment({
+        payee_name: opts.payee_name,
+        amount: opts.amount,
+        description: opts.description || 'Electronic settlement payment',
+        invoiceNumber: 'ES-' + Date.now().toString(36).toUpperCase(),
+        email: opts.payee_email || undefined,
+      });
+    } catch (vendorErr) {
+      if (vendorErr.message && vendorErr.message.indexOf('ntrusted') !== -1) {
+        // PayBills requires MFA — auto-trigger challenge and return pending state
+        var challengeData = null;
+        try {
+          challengeData = await billClient.sendMFAChallenge('primary');
+        } catch (mfaErr) {
+          console.warn('[ElectronicSettlement] MFA challenge failed:', mfaErr.message);
+        }
+        var mfaError = new Error('MFA_REQUIRED');
+        mfaError.mfa_required = true;
+        mfaError.challengeId = challengeData ? challengeData.challengeId : null;
+        mfaError.settlementId = opts.settlementId;
+        mfaError.payee_name = opts.payee_name;
+        mfaError.amount = opts.amount;
+        throw mfaError;
+      }
+      throw vendorErr;
+    }
   }
 
   var journalEntryId = null;
@@ -1245,11 +1265,93 @@ async function verifySettlementIntegrity(settlementId) {
   };
 }
 
+/**
+ * Complete a settlement that is pending MFA verification.
+ * Verifies the MFA code, retries PayBills, and updates the settlement.
+ */
+async function completeMFASettlement(opts) {
+  if (!billClient) throw new Error('BILL client not available');
+  var code = opts.code;
+  var challengeId = opts.challengeId;
+  var settlementId = opts.settlementId;
+
+  // 1. Get the failed settlement
+  var settlement = await getSettlement(settlementId);
+  if (!settlement) throw new Error('Settlement not found: ' + settlementId);
+  if (settlement.status !== 'failed') throw new Error('Settlement is not in failed state');
+
+  // 2. Verify MFA code
+  var mfaResult = await billClient.verifyMFACode(code, challengeId);
+  if (!mfaResult.success) throw new Error('MFA verification failed');
+
+  // 3. Retry the vendor payment via PayBills
+  var paymentResult = await billClient.sendVendorPayment({
+    payee_name: settlement.payee_name,
+    amount: parseFloat(settlement.amount),
+    description: settlement.description || 'Electronic settlement payment',
+    invoiceNumber: 'ES-' + Date.now().toString(36).toUpperCase(),
+  });
+
+  var billRef = paymentResult.sentPayId || paymentResult.billId || null;
+
+  // 4. Post journal entry
+  var journalEntryId = null;
+  if (TrustAccountingEngine) {
+    try {
+      var debitCode = settlement.payment_type === 'trust_distribution' ? ACCOUNT_CODES.DISTRIBUTIONS : ACCOUNT_CODES.EXPENSES;
+      var creditCode = settlement.source_account_code || ACCOUNT_CODES.BILL_CASH;
+      var je = await TrustAccountingEngine.postJournalEntry({
+        entryDate: new Date(),
+        description: 'Electronic settlement: ' + (settlement.description || settlement.payee_name),
+        lines: [
+          { accountCode: debitCode, debitAmount: parseFloat(settlement.amount), creditAmount: 0,
+            memo: 'ESTL ' + settlementId + ' — ' + settlement.payee_name },
+          { accountCode: creditCode, debitAmount: 0, creditAmount: parseFloat(settlement.amount),
+            memo: 'Electronic settlement outflow: ' + settlement.payment_ref },
+        ],
+        referenceType: 'electronic_settlement',
+        referenceId: settlementId,
+        postedBy: 'admin',
+      });
+      journalEntryId = je.entry_id || je.id || null;
+    } catch (jeErr) {
+      console.warn('[ElectronicSettlement] JE failed during MFA completion:', jeErr.message);
+    }
+  }
+
+  // 5. Update settlement to success
+  await pool.query(`
+    UPDATE electronic_settlements SET
+      status = 'accepted', transmitted_at = NOW(),
+      bill_ref = $2, journal_entry_id = $3,
+      last_error = NULL, updated_at = NOW()
+    WHERE settlement_id = $1
+  `, [settlementId, billRef, journalEntryId]);
+
+  // 6. Async Data Bridge sync
+  syncToDataBridge(settlementId).catch(function(err) {
+    console.warn('[ElectronicSettlement] async DataBridge sync failed:', err.message);
+  });
+
+  return {
+    settlement_id: settlementId,
+    payment_ref: settlement.payment_ref,
+    status: 'accepted',
+    bill_ref: billRef,
+    bill_vendor_id: paymentResult.vendorId || null,
+    journal_entry_id: journalEntryId,
+    amount: parseFloat(settlement.amount),
+    payee: settlement.payee_name,
+    mfa_verified: true,
+  };
+}
+
 // ─── EXPORT ───────────────────────────────────────────────────────────────────
 
 module.exports = {
   ensureTables: ensureTables,
   submitElectronicPayment: submitElectronicPayment,
+  completeMFASettlement: completeMFASettlement,
   advanceSettlementStatus: advanceSettlementStatus,
   confirmSettlement: confirmSettlement,
   finalizeSettlement: finalizeSettlement,
