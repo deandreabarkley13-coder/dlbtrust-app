@@ -892,9 +892,19 @@ async function verifyMFACode(code, challengeId) {
       deviceId = result.response_data.deviceId;
       console.log('[bill-client] MFA verified, deviceId=' + deviceId);
     } else if (result.response_data.mfaId && !deviceId) {
-      // Use mfaId as deviceId for future logins when no deviceId was returned
       deviceId = result.response_data.mfaId;
       console.log('[bill-client] MFA verified, using mfaId as deviceId=' + deviceId);
+    }
+    // Force re-login with deviceId to create a trusted session for PayBills
+    if (deviceId) {
+      sessionId = null;
+      sessionExpiry = null;
+      try {
+        await login();
+        console.log('[bill-client] Re-logged in with deviceId for trusted session');
+      } catch (reLoginErr) {
+        console.warn('[bill-client] Re-login with deviceId failed:', reLoginErr.message);
+      }
     }
     return { success: true, deviceId: deviceId, machineName: machineName, raw: result.response_data };
   }
