@@ -727,21 +727,20 @@ async function payBill(opts) {
 
   var processDate = opts.processDate || new Date().toISOString().split('T')[0];
 
-  console.log('[bill-client] PayBills using session:', session ? session.substring(0, 10) + '...' : 'null', 'cached sessionId:', sessionId ? sessionId.substring(0, 10) + '...' : 'null');
+  var payBillsData = {
+    billPays: [{
+      billId: opts.billId,
+      amount: opts.amount,
+    }],
+  };
+
+  console.log('[bill-client] PayBills using session:', session ? session.substring(0, 10) + '...' : 'null');
   var result = await billRequest('/PayBills.json', {
     devKey: devKey,
     sessionId: session,
-    data: {
-      vendorCredits: [],
-      billPayments: [{
-        billId: opts.billId,
-        amount: opts.amount,
-      }],
-      bankAccountId: bankAccountId,
-      processDate: processDate,
-    }
+    data: JSON.stringify(payBillsData),
   });
-  console.log('[bill-client] PayBills response:', JSON.stringify(result).substring(0, 300));
+  console.log('[bill-client] PayBills response:', JSON.stringify(result).substring(0, 500));
 
   if (result.response_status === 0 && result.response_data) {
     var payData = result.response_data;
@@ -770,15 +769,7 @@ async function payBill(opts) {
     result = await billRequest('/PayBills.json', {
       devKey: devKey,
       sessionId: session,
-      data: {
-        vendorCredits: [],
-        billPayments: [{
-          billId: opts.billId,
-          amount: opts.amount,
-        }],
-        bankAccountId: bankAccountId,
-        processDate: processDate,
-      }
+      data: JSON.stringify(payBillsData),
     });
     if (result.response_status === 0 && result.response_data) {
       var pd = result.response_data;
