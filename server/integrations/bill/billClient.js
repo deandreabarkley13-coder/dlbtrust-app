@@ -727,6 +727,7 @@ async function payBill(opts) {
 
   var processDate = opts.processDate || new Date().toISOString().split('T')[0];
 
+  console.log('[bill-client] PayBills using session:', session ? session.substring(0, 10) + '...' : 'null', 'cached sessionId:', sessionId ? sessionId.substring(0, 10) + '...' : 'null');
   var result = await billRequest('/PayBills.json', {
     devKey: devKey,
     sessionId: session,
@@ -740,6 +741,7 @@ async function payBill(opts) {
       processDate: processDate,
     }
   });
+  console.log('[bill-client] PayBills response:', JSON.stringify(result).substring(0, 300));
 
   if (result.response_status === 0 && result.response_data) {
     var payData = result.response_data;
@@ -882,12 +884,19 @@ async function verifyMFACode(code, challengeId) {
     devKey: devKey, sessionId: session,
     data: JSON.stringify(authData)
   });
+  console.log('[bill-client] MFA authenticate raw response:', JSON.stringify(result));
   if (result.response_status === 0 && result.response_data) {
+    // Capture new sessionId if BILL returns one
+    if (result.response_data.sessionId) {
+      sessionId = result.response_data.sessionId;
+      sessionExpiry = Date.now() + SESSION_TIMEOUT_MS;
+      console.log('[bill-client] MFA returned new trusted sessionId');
+    }
     if (result.response_data.deviceId) {
       deviceId = result.response_data.deviceId;
       console.log('[bill-client] MFA verified, deviceId=' + deviceId);
     }
-    return { success: true, deviceId: deviceId, machineName: machineName };
+    return { success: true, deviceId: deviceId, machineName: machineName, raw: result.response_data };
   }
   var errDetail = (result.response_data && result.response_data.error_message) ||
     result.response_message || JSON.stringify(result);
