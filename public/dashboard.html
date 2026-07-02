@@ -4236,9 +4236,9 @@
     // ─── PAYMENT NOTIFICATIONS ────────────────────────────────────────────────
     async function loadPaymentNotifications() {
       const [dashboard, notifs] = await Promise.all([
-        fetchJSON(API + '/api/payment-notifications/dashboard'),
+        fetchJSON(API + '/api/payment-notifications/dashboard', { headers: adminHeaders() }),
         fetchJSON(API + '/api/payment-notifications/notifications?limit=50' +
-          (el('notif-unread-only') && el('notif-unread-only').checked ? '&unread=true' : ''))
+          (el('notif-unread-only') && el('notif-unread-only').checked ? '&unread=true' : ''), { headers: adminHeaders() })
       ]);
 
       // Update nav badge
@@ -4312,17 +4312,17 @@
     }
 
     async function markNotifRead(notifId) {
-      await fetchJSON(API + '/api/payment-notifications/notifications/' + notifId + '/read', { method: 'POST' });
+      await fetchJSON(API + '/api/payment-notifications/notifications/' + notifId + '/read', { method: 'POST', headers: adminHeaders() });
       loadPaymentNotifications();
     }
 
     async function markAllNotifRead() {
-      var res = await fetchJSON(API + '/api/payment-notifications/notifications/read-all', { method: 'POST' });
+      var res = await fetchJSON(API + '/api/payment-notifications/notifications/read-all', { method: 'POST', headers: adminHeaders() });
       if (res && res.success) loadPaymentNotifications();
     }
 
     async function pollSettlements() {
-      var res = await fetchJSON(API + '/api/payment-notifications/poll-settlements', { method: 'POST' });
+      var res = await fetchJSON(API + '/api/payment-notifications/poll-settlements', { method: 'POST', headers: adminHeaders() });
       if (res && res.success) {
         alert('Settlement poll complete: checked ' + (res.data.checked || 0) + ', confirmed ' + (res.data.confirmed || 0));
         loadPaymentNotifications();
@@ -4332,7 +4332,8 @@
     }
 
     function viewReceipt(trackingId) {
-      el('receipt-iframe').src = API + '/api/payment-notifications/receipt/' + trackingId + '/html';
+      var authParam = adminToken ? '?adminToken=' + encodeURIComponent(adminToken) : '';
+      el('receipt-iframe').src = API + '/api/payment-notifications/receipt/' + trackingId + '/html' + authParam;
       el('receipt-modal').style.display = 'block';
     }
 
@@ -4344,7 +4345,7 @@
     // Poll for notification count every 30 seconds
     setInterval(async function() {
       try {
-        var res = await fetchJSON(API + '/api/payment-notifications/notifications/count');
+        var res = await fetchJSON(API + '/api/payment-notifications/notifications/count', { headers: adminHeaders() });
         if (res && res.success) {
           var badge = el('nav-notif-badge');
           if (badge) {
