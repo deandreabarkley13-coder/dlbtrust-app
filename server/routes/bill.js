@@ -4,6 +4,8 @@ var express = require('express');
 var router = express.Router();
 var path = require('path');
 var { TrustAccountingEngine } = require(path.join(__dirname, '../integrations/accounting/trustAccountingEngine'));
+var notifEngine;
+try { notifEngine = require(path.join(__dirname, '../integrations/payments/paymentNotificationEngine')); } catch(e) { notifEngine = null; }
 
 // Auth middleware — require admin token, JWT, or API key
 var requireAdmin = async function(req, res, next) {
@@ -201,19 +203,47 @@ router.post('/deposit', requireAdmin, async function(req, res) {
         directSettlement = await BillSyncEngine.queueForSettlement(directBatchId, 'direct', amount);
       } catch(stlErr) { console.warn('[bill-deposit] settlement queue failed:', stlErr.message); }
 
+      // Track payment with notifications
+      var directTrackingId = null;
+      try {
+        if (notifEngine) {
+          directTrackingId = await notifEngine.trackPayment({
+            payment_type: 'deposit', payment_method: 'direct', direction: 'outbound',
+            amount: amount, source_account: '1000 Trust Cash',
+            destination_account: 'BILL Cash ****' + billCashLast4, destination_name: 'BILL Cash Account',
+            internal_ref: directBatchId, bill_ref: billRecord.receivedPayId,
+            journal_entry_id: directJE ? directJE.entry_id : null,
+            settlement_id: directSettlement ? directSettlement.settlement_id : null,
+            description: memo, initiated_by: req.user === 'admin' ? 'admin' : 'system'
+          });
+          await notifEngine.updatePaymentStatus(directTrackingId, 'submitted', { bill_ref: billRecord.receivedPayId });
+          if (directJE) await notifEngine.updatePaymentStatus(directTrackingId, 'posted', { journal_entry_id: directJE.entry_id });
+          await notifEngine.updatePaymentStatus(directTrackingId, 'settled', {
+            bill_settlement_ref: billRecord.refNumber || billRecord.confirmationNumber || billRecord.transactionNumber || billRecord.receivedPayId,
+            confirmation_code: notifEngine.generateConfirmationCode()
+          });
+        }
+      } catch(trkErr) { console.warn('[bill-deposit] tracking failed:', trkErr.message); }
+
       return res.json({
         success: true,
         method: 'direct',
         amount: amount,
         status: 'submitted_to_bill',
         destination: displayDest,
+        tracking_id: directTrackingId,
         message: 'Deposit recorded directly in BILL — visible in your BILL dashboard immediately.',
         journalEntry: directJE ? { entryId: directJE.entry_id, posted: true } : null,
         settlement: directSettlement,
         billRecord: {
           receivedPayId: billRecord.receivedPayId,
           billStatus: billRecord.status,
-          billDashboardVisible: true
+          billDashboardVisible: true,
+          refNumber: billRecord.refNumber,
+          confirmationNumber: billRecord.confirmationNumber,
+          transactionNumber: billRecord.transactionNumber,
+          settlementDate: billRecord.settlementDate,
+          clearingDate: billRecord.clearingDate
         }
       });
     }
@@ -283,6 +313,26 @@ router.post('/deposit', requireAdmin, async function(req, res) {
         wireSettlement = await BillSyncEngine.queueForSettlement(wire.wire_id, 'wire', amount);
       } catch(stlErr) { console.warn('[bill-deposit] settlement queue failed:', stlErr.message); }
 
+      // Track payment with notifications
+      var wireTrackingId = null;
+      try {
+        if (notifEngine) {
+          wireTrackingId = await notifEngine.trackPayment({
+            payment_type: 'deposit', payment_method: 'wire', direction: 'outbound',
+            amount: amount, source_account: '1000 Trust Cash',
+            destination_account: 'BILL Cash ****' + billCashLast4, destination_name: 'BILL Cash Account',
+            internal_ref: wire.wire_id, wire_id: wire.wire_id,
+            bill_ref: billRecord ? billRecord.receivedPayId : null,
+            journal_entry_id: wireJE ? wireJE.entry_id : null,
+            settlement_id: wireSettlement ? wireSettlement.settlement_id : null,
+            description: memo, initiated_by: req.user === 'admin' ? 'admin' : 'system'
+          });
+          await notifEngine.updatePaymentStatus(wireTrackingId, 'processing');
+          if (billRecord) await notifEngine.updatePaymentStatus(wireTrackingId, 'submitted', { bill_ref: billRecord.receivedPayId });
+          if (wireJE) await notifEngine.updatePaymentStatus(wireTrackingId, 'posted', { journal_entry_id: wireJE.entry_id });
+        }
+      } catch(trkErr) { console.warn('[bill-deposit] tracking failed:', trkErr.message); }
+
       return res.json({
         success: true,
         method: 'wire',
@@ -290,6 +340,7 @@ router.post('/deposit', requireAdmin, async function(req, res) {
         amount: amount,
         status: wire.status,
         destination: displayDest,
+        tracking_id: wireTrackingId,
         message: 'Wire transfer initiated and recorded in BILL.',
         journalEntry: wireJE ? { entryId: wireJE.entry_id, posted: true } : null,
         settlement: wireSettlement,
@@ -377,6 +428,26 @@ router.post('/deposit', requireAdmin, async function(req, res) {
       achSettlement = await BillSyncEngine.queueForSettlement(batch.batch_id, 'ach', amount);
     } catch(stlErr) { console.warn('[bill-deposit] settlement queue failed:', stlErr.message); }
 
+    // Track payment with notifications
+    var achTrackingId = null;
+    try {
+      if (notifEngine) {
+        achTrackingId = await notifEngine.trackPayment({
+          payment_type: 'deposit', payment_method: 'ach', direction: 'outbound',
+          amount: amount, source_account: '1000 Trust Cash',
+          destination_account: 'BILL Cash ****' + billCashLast4, destination_name: 'BILL Cash Account',
+          internal_ref: batch.batch_id, ach_batch_id: batch.batch_id,
+          bill_ref: billRecord ? billRecord.receivedPayId : null,
+          journal_entry_id: achJE ? achJE.entry_id : null,
+          settlement_id: achSettlement ? achSettlement.settlement_id : null,
+          description: memo, initiated_by: req.user === 'admin' ? 'admin' : 'system'
+        });
+        await notifEngine.updatePaymentStatus(achTrackingId, 'processing');
+        if (billRecord) await notifEngine.updatePaymentStatus(achTrackingId, 'submitted', { bill_ref: billRecord.receivedPayId });
+        if (achJE) await notifEngine.updatePaymentStatus(achTrackingId, 'posted', { journal_entry_id: achJE.entry_id });
+      }
+    } catch(trkErr) { console.warn('[bill-deposit] tracking failed:', trkErr.message); }
+
     res.json({
       success: true,
       method: 'ach',
@@ -384,6 +455,7 @@ router.post('/deposit', requireAdmin, async function(req, res) {
       amount: amount,
       status: batch.status,
       destination: displayDest,
+      tracking_id: achTrackingId,
       message: 'ACH credit initiated and recorded in BILL.',
       journalEntry: achJE ? { entryId: achJE.entry_id, posted: true } : null,
       settlement: achSettlement,

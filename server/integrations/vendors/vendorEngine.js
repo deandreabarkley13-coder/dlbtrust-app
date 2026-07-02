@@ -15,10 +15,11 @@
 
 const pool = require('../bonds/pgPool');
 const { TrustAccountingEngine } = require('../accounting/trustAccountingEngine');
-let ACHEngine, WireEngine, billClient;
+let ACHEngine, WireEngine, billClient, notifEngine;
 try { ACHEngine = require('../ach/achEngine').ACHEngine; } catch (e) { ACHEngine = null; }
 try { WireEngine = require('../wire/wireEngine').WireEngine; } catch (e) { WireEngine = null; }
 try { billClient = require('../bill/billClient'); } catch (e) { billClient = null; }
+try { notifEngine = require('../payments/paymentNotificationEngine'); } catch (e) { notifEngine = null; }
 
 const PAYMENT_STATUSES = ['pending_approval', 'approved', 'rejected', 'processing', 'executed', 'settled', 'failed', 'cancelled'];
 const PAYMENT_METHODS = ['ach', 'wire', 'bill', 'auto'];
@@ -393,12 +394,48 @@ class VendorEngine {
         journalEntry ? (journalEntry.entry_id || journalEntry.id || null) : null,
       ]);
 
+      // Track payment with notifications
+      var trackingId = null;
+      try {
+        if (notifEngine) {
+          trackingId = await notifEngine.trackPayment({
+            payment_type: 'vendor_payment',
+            payment_method: payment.payment_method,
+            direction: 'outbound',
+            amount: parseFloat(payment.amount),
+            source_account: payment.source_account_code,
+            destination_name: vendor.vendor_name,
+            vendor_id: vendor.vendor_id,
+            vendor_name: vendor.vendor_name,
+            internal_ref: paymentId,
+            bill_ref: executionRef.bill_payment_id || null,
+            ach_batch_id: executionRef.ach_batch_id || null,
+            wire_id: executionRef.wire_id || null,
+            journal_entry_id: journalEntry ? (journalEntry.entry_id || journalEntry.id) : null,
+            description: payment.description || ('Payment to ' + vendor.vendor_name),
+            initiated_by: executedBy || 'system'
+          });
+          await notifEngine.updatePaymentStatus(trackingId, 'processing');
+          await notifEngine.updatePaymentStatus(trackingId, 'submitted', {
+            bill_ref: executionRef.bill_payment_id || executionRef.ach_batch_id || executionRef.wire_id || null
+          });
+          if (journalEntry) {
+            await notifEngine.updatePaymentStatus(trackingId, 'posted', {
+              journal_entry_id: journalEntry.entry_id || journalEntry.id
+            });
+          }
+        }
+      } catch (trkErr) {
+        console.warn('[VendorEngine] payment tracking failed:', trkErr.message);
+      }
+
       return {
         payment_id: paymentId,
         status: 'executed',
         method: payment.payment_method,
         amount: parseFloat(payment.amount),
         vendor: vendor.vendor_name,
+        tracking_id: trackingId,
         ...executionRef,
         journal_entry: journalEntry ? (journalEntry.entry_id || journalEntry.id) : null,
       };

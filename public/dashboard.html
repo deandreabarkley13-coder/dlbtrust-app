@@ -245,6 +245,7 @@
     <div class="nav-item" data-page="electronic-settlement"><span class="icon">⚡</span> Electronic Settlement</div>
     <div class="nav-section">Data Bridge</div>
     <div class="nav-item" data-page="data-bridge"><span class="icon">🔗</span> Data Bridge</div>
+    <div class="nav-item" data-page="payment-notifications"><span class="icon">🔔</span> Notifications <span id="nav-notif-badge" style="background:#ef4444;color:#fff;border-radius:10px;padding:1px 6px;font-size:10px;margin-left:4px;display:none;">0</span></div>
     <div class="nav-section">Agents</div>
     <div class="nav-item" data-page="trustee-agent"><span class="icon">🏛️</span> Trustee Agent</div>
     <div class="nav-item" data-page="bookkeeping-agent"><span class="icon">📖</span> Bookkeeping Agent</div>
@@ -1172,6 +1173,44 @@
       </div>
     </div>
 
+    <!-- PAYMENT NOTIFICATIONS PAGE -->
+    <div id="page-payment-notifications" class="page hidden">
+      <div class="page-header">
+        <div><h1>Payment Notifications</h1><div class="subtitle">Real-time payment status tracking, settlement confirmations, and digital receipts</div></div>
+        <div style="display:flex;gap:8px;">
+          <button class="btn btn-sm" style="background:var(--green);color:#fff;" onclick="pollSettlements()">Poll Settlements</button>
+          <button class="btn btn-sm" onclick="markAllNotifRead()">Mark All Read</button>
+          <button class="btn btn-primary btn-sm" onclick="loadPaymentNotifications()">Refresh</button>
+        </div>
+      </div>
+
+      <!-- Stats -->
+      <div class="grid" id="notif-stats"></div>
+
+      <!-- Notification Feed -->
+      <div class="card" style="margin-top:1rem">
+        <div class="section-title" style="display:flex;justify-content:space-between;align-items:center;">
+          <span>Notification Feed</span>
+          <label style="font-size:12px;font-weight:normal;"><input type="checkbox" id="notif-unread-only" onchange="loadPaymentNotifications()"> Unread only</label>
+        </div>
+        <div id="notif-feed"><p class="text-muted">Loading...</p></div>
+      </div>
+
+      <!-- Payment Tracker -->
+      <div class="card" style="margin-top:1rem">
+        <div class="section-title">Recent Payments</div>
+        <div id="notif-payment-tracker"><p class="text-muted">Loading...</p></div>
+      </div>
+
+      <!-- Receipt Viewer Modal -->
+      <div id="receipt-modal" style="display:none;position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.6);z-index:1000;overflow-y:auto;">
+        <div style="max-width:750px;margin:32px auto;background:#fff;border-radius:8px;position:relative;">
+          <button onclick="closeReceiptModal()" style="position:absolute;top:12px;right:16px;background:none;border:none;font-size:24px;cursor:pointer;color:#666;z-index:1001;">&times;</button>
+          <iframe id="receipt-iframe" style="width:100%;height:80vh;border:none;border-radius:8px;"></iframe>
+        </div>
+      </div>
+    </div>
+
     <!-- TRUSTEE AGENT PAGE -->
     <div id="page-trustee-agent" class="page hidden">
       <div class="page-header">
@@ -1735,7 +1774,7 @@
         document.querySelectorAll('.page').forEach(p => p.classList.add('hidden'));
         document.getElementById('page-' + page).classList.remove('hidden');
         // Load data for page
-        const loaders = { overview: loadOverview, bonds: loadBonds, cash: loadCash, payments: loadPayments, ach: loadACH, wire: loadWire, partners: loadPartners, apikeys: loadApiKeys, as2: loadAS2, crm: loadCRM, documents: loadDocuments, accounting: loadAccounting, tax: loadTax, fineract: loadFineract, bill: loadBill, 'trustee-agent': loadTrusteeAgent, 'bookkeeping-agent': loadBookkeepingAgent, 'data-bridge': loadDataBridge, 'sub-ledgers': loadSubLedgers, 'vendor-payments': loadVendorPayments, 'electronic-settlement': loadElectronicSettlement, settings: loadSettings, security: loadSecurity, backup: loadBackupPage, admin: loadAdmin };
+        const loaders = { overview: loadOverview, bonds: loadBonds, cash: loadCash, payments: loadPayments, ach: loadACH, wire: loadWire, partners: loadPartners, apikeys: loadApiKeys, as2: loadAS2, crm: loadCRM, documents: loadDocuments, accounting: loadAccounting, tax: loadTax, fineract: loadFineract, bill: loadBill, 'trustee-agent': loadTrusteeAgent, 'bookkeeping-agent': loadBookkeepingAgent, 'data-bridge': loadDataBridge, 'sub-ledgers': loadSubLedgers, 'vendor-payments': loadVendorPayments, 'payment-notifications': loadPaymentNotifications, 'electronic-settlement': loadElectronicSettlement, settings: loadSettings, security: loadSecurity, backup: loadBackupPage, admin: loadAdmin };
         if (loaders[page]) loaders[page]();
       });
     });
@@ -4282,6 +4321,129 @@
       }
     }
 
+    // ─── PAYMENT NOTIFICATIONS ────────────────────────────────────────────────
+    async function loadPaymentNotifications() {
+      const [dashboard, notifs] = await Promise.all([
+        fetchJSON(API + '/api/payment-notifications/dashboard', { headers: adminHeaders() }),
+        fetchJSON(API + '/api/payment-notifications/notifications?limit=50' +
+          (el('notif-unread-only') && el('notif-unread-only').checked ? '&unread=true' : ''), { headers: adminHeaders() })
+      ]);
+
+      // Update nav badge
+      var unread = (dashboard && dashboard.data) ? dashboard.data.unread_notifications : 0;
+      var badge = el('nav-notif-badge');
+      if (badge) {
+        badge.textContent = unread;
+        badge.style.display = unread > 0 ? 'inline' : 'none';
+      }
+
+      // Stats cards
+      var bd = (dashboard && dashboard.data && dashboard.data.status_breakdown) || {};
+      var total = 0, totalAmt = 0;
+      Object.values(bd).forEach(function(v) { total += v.count; totalAmt += v.total; });
+      var completed = (bd.completed || {}).count || 0;
+      var pending = ((bd.initiated || {}).count || 0) + ((bd.processing || {}).count || 0) + ((bd.submitted || {}).count || 0) + ((bd.clearing || {}).count || 0);
+      var failed = (bd.failed || {}).count || 0;
+      el('notif-stats').innerHTML =
+        card('Total Payments', total) +
+        card('Total Amount', '$' + totalAmt.toLocaleString('en-US', {minimumFractionDigits:2})) +
+        card('Completed', completed, completed > 0 ? 'Settled payments' : 'No completed payments') +
+        card('Pending', pending, pending > 0 ? 'Awaiting settlement' : 'No pending payments') +
+        card('Failed', failed, failed > 0 ? 'Requires attention' : 'No failures') +
+        card('Unread Notifications', unread, unread > 0 ? 'New alerts' : 'All read');
+
+      // Notification feed
+      var feedItems = (notifs && notifs.data) || [];
+      if (feedItems.length === 0) {
+        el('notif-feed').innerHTML = '<p class="text-muted">No notifications yet. Deposit or pay a vendor to start tracking.</p>';
+      } else {
+        el('notif-feed').innerHTML = '<table class="data-table"><thead><tr><th>Time</th><th>Type</th><th>Title</th><th>Message</th><th>Status</th><th></th></tr></thead><tbody>' +
+          feedItems.map(function(n) {
+            var sevColor = n.severity === 'success' ? '#22c55e' : n.severity === 'error' ? '#ef4444' : n.severity === 'warning' ? '#f59e0b' : '#3b82f6';
+            return '<tr style="' + (n.is_read ? '' : 'background:#f0f7ff;') + '">' +
+              '<td style="white-space:nowrap;font-size:12px;">' + new Date(n.created_at).toLocaleString() + '</td>' +
+              '<td><span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:' + sevColor + ';margin-right:4px;"></span>' + esc(n.notification_type.replace(/_/g,' ')) + '</td>' +
+              '<td><strong>' + esc(n.title) + '</strong></td>' +
+              '<td style="font-size:13px;color:#666;">' + esc(n.message) + '</td>' +
+              '<td>' + (n.is_read ? '<span style="color:#999;">Read</span>' : '<span style="color:#3b82f6;font-weight:500;">Unread</span>') + '</td>' +
+              '<td>' + (!n.is_read ? '<button class="btn btn-sm" onclick="markNotifRead(\'' + esc(n.notification_id) + '\')">Mark Read</button>' : '') + '</td>' +
+              '</tr>';
+          }).join('') +
+          '</tbody></table>';
+      }
+
+      // Payment tracker table
+      var payments = (dashboard && dashboard.data && dashboard.data.recent_payments) || [];
+      if (payments.length === 0) {
+        el('notif-payment-tracker').innerHTML = '<p class="text-muted">No tracked payments yet.</p>';
+      } else {
+        el('notif-payment-tracker').innerHTML = '<table class="data-table"><thead><tr><th>Tracking ID</th><th>Type</th><th>Method</th><th>Amount</th><th>Destination</th><th>Status</th><th>BILL Ref</th><th>Confirmation</th><th>Initiated</th><th></th></tr></thead><tbody>' +
+          payments.map(function(p) {
+            var stColor = p.status === 'completed' ? '#22c55e' : p.status === 'settled' ? '#22c55e' : p.status === 'failed' ? '#ef4444' : p.status === 'reversed' ? '#f59e0b' : '#3b82f6';
+            return '<tr>' +
+              '<td style="font-family:monospace;font-size:12px;">' + esc(p.tracking_id) + '</td>' +
+              '<td>' + esc((p.payment_type || '').replace(/_/g,' ')) + '</td>' +
+              '<td>' + esc((p.payment_method || '').toUpperCase()) + '</td>' +
+              '<td style="font-weight:600;">$' + parseFloat(p.amount).toLocaleString('en-US',{minimumFractionDigits:2}) + '</td>' +
+              '<td>' + esc(p.destination_name || p.vendor_name || '—') + '</td>' +
+              '<td><span style="background:' + stColor + ';color:#fff;padding:2px 8px;border-radius:4px;font-size:11px;">' + esc(p.status) + '</span></td>' +
+              '<td style="font-family:monospace;font-size:11px;">' + esc(p.bill_ref || '—') + '</td>' +
+              '<td style="font-family:monospace;font-size:11px;color:#22c55e;">' + esc(p.confirmation_code || '—') + '</td>' +
+              '<td style="font-size:12px;">' + new Date(p.created_at).toLocaleString() + '</td>' +
+              '<td>' +
+                (p.status === 'completed' || p.status === 'settled' ? '<button class="btn btn-sm" style="background:var(--green);color:#fff;" onclick="viewReceipt(\'' + esc(p.tracking_id) + '\')">Receipt</button>' : '') +
+              '</td>' +
+              '</tr>';
+          }).join('') +
+          '</tbody></table>';
+      }
+    }
+
+    async function markNotifRead(notifId) {
+      await fetchJSON(API + '/api/payment-notifications/notifications/' + notifId + '/read', { method: 'POST', headers: adminHeaders() });
+      loadPaymentNotifications();
+    }
+
+    async function markAllNotifRead() {
+      var res = await fetchJSON(API + '/api/payment-notifications/notifications/read-all', { method: 'POST', headers: adminHeaders() });
+      if (res && res.success) loadPaymentNotifications();
+    }
+
+    async function pollSettlements() {
+      var res = await fetchJSON(API + '/api/payment-notifications/poll-settlements', { method: 'POST', headers: adminHeaders() });
+      if (res && res.success) {
+        alert('Settlement poll complete: checked ' + (res.data.checked || 0) + ', confirmed ' + (res.data.confirmed || 0));
+        loadPaymentNotifications();
+      } else {
+        alert('Poll failed: ' + ((res && res.error) || 'Unknown'));
+      }
+    }
+
+    function viewReceipt(trackingId) {
+      var authParam = adminToken ? '?adminToken=' + encodeURIComponent(adminToken) : '';
+      el('receipt-iframe').src = API + '/api/payment-notifications/receipt/' + trackingId + '/html' + authParam;
+      el('receipt-modal').style.display = 'block';
+    }
+
+    function closeReceiptModal() {
+      el('receipt-modal').style.display = 'none';
+      el('receipt-iframe').src = '';
+    }
+
+    // Poll for notification count every 30 seconds
+    setInterval(async function() {
+      try {
+        var res = await fetchJSON(API + '/api/payment-notifications/notifications/count', { headers: adminHeaders() });
+        if (res && res.success) {
+          var badge = el('nav-notif-badge');
+          if (badge) {
+            badge.textContent = res.unread_count;
+            badge.style.display = res.unread_count > 0 ? 'inline' : 'none';
+          }
+        }
+      } catch(e) {}
+    }, 30000);
+
     // ─── BILL CASH ACCOUNT ────────────────────────────────────────────────────
     async function loadBill() {
       const [status, accounts, balance] = await Promise.all([
@@ -4362,12 +4524,13 @@
         const billRef = r.billRecord ? `<br><span style="font-size:11px;color:var(--green);">BILL Ref: ${esc(r.billRecord.receivedPayId)} | Visible in BILL Dashboard</span>` : '';
         const jeRef = r.journalEntry ? `<br><span style="font-size:11px;color:var(--blue);">JE: ${esc(r.journalEntry.entryId)} | DR 1050 BILL Cash / CR 1000 Trust Cash</span>` : '';
         const stlRef = r.settlement ? `<br><span style="font-size:11px;color:#8b5cf6;">Settlement: ${esc(r.settlement.settlement_id)} | Expected: ${new Date(r.settlement.expected_settle).toLocaleString()}</span>` : '';
+        const trkRef = r.tracking_id ? `<br><span style="font-size:11px;color:#3b82f6;">Tracking: ${esc(r.tracking_id)} | <a href="#" onclick="viewReceipt('${esc(r.tracking_id)}');return false;" style="color:var(--green);">View Receipt</a></span>` : '';
 
         el('bill-deposit-result').innerHTML = `
           <div style="padding:12px;background:rgba(16,185,129,0.1);border:1px solid var(--green);border-radius:6px;">
-            <strong style="color:var(--green)">Deposit Submitted to BILL</strong><br>
+            <strong style="color:var(--green)">Payment Successful — Deposit Submitted to BILL</strong><br>
             <span style="font-size:13px;">$${amount.toLocaleString('en-US',{minimumFractionDigits:2})} → ${esc(r.destination || 'BILL Account')}</span><br>
-            <span style="font-size:12px;color:var(--text-muted);">Method: ${r.method === 'wire' ? 'Wire Transfer' : (r.method === 'direct' ? 'Direct BILL API' : 'ACH Credit')} | ${r.method === 'wire' ? 'Wire ID: ' + r.wireId : (r.method === 'direct' ? 'Direct' : 'Batch: ' + r.batchId)} | Status: ${esc(r.status)}</span>${billRef}${jeRef}${stlRef}
+            <span style="font-size:12px;color:var(--text-muted);">Method: ${r.method === 'wire' ? 'Wire Transfer' : (r.method === 'direct' ? 'Direct BILL API' : 'ACH Credit')} | ${r.method === 'wire' ? 'Wire ID: ' + r.wireId : (r.method === 'direct' ? 'Direct' : 'Batch: ' + r.batchId)} | Status: ${esc(r.status)}</span>${billRef}${jeRef}${stlRef}${trkRef}
           </div>`;
         el('bill-deposit-amount').value = '';
         el('bill-deposit-memo').value = '';

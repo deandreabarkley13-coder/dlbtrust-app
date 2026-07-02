@@ -320,14 +320,26 @@ async function recordDeposit(opts) {
   });
 
   if (result.response_status === 0 && result.response_data) {
+    var rd = result.response_data;
     return {
-      receivedPayId: result.response_data.id,
-      amount: result.response_data.amount,
-      status: result.response_data.status === '0' ? 'recorded' : 'processed',
-      paymentDate: result.response_data.paymentDate || paymentDate,
+      receivedPayId: rd.id,
+      amount: rd.amount,
+      status: rd.status === '0' ? 'recorded' : 'processed',
+      paymentDate: rd.paymentDate || paymentDate,
       description: description,
       paymentType: opts.method === 'wire' ? 'Wire Transfer' : 'ACH',
-      billDashboardVisible: true
+      billDashboardVisible: true,
+      // Settlement reference fields from BILL API response
+      refNumber: rd.refNumber || null,
+      confirmationNumber: rd.confirmationNumber || null,
+      transactionNumber: rd.transactionNumber || null,
+      checkNumber: rd.checkNumber || null,
+      depositStatus: rd.depositStatus || rd.status,
+      clearingDate: rd.clearingDate || null,
+      settlementDate: rd.settlementDate || null,
+      billCreatedTime: rd.createdTime || null,
+      billUpdatedTime: rd.updatedTime || null,
+      rawResponse: rd
     };
   }
 
@@ -348,14 +360,25 @@ async function recordDeposit(opts) {
       }
     });
     if (result.response_status === 0 && result.response_data) {
+      var rd2 = result.response_data;
       return {
-        receivedPayId: result.response_data.id,
-        amount: result.response_data.amount,
+        receivedPayId: rd2.id,
+        amount: rd2.amount,
         status: 'recorded',
         paymentDate: paymentDate,
         description: description,
         paymentType: opts.method === 'wire' ? 'Wire Transfer' : 'ACH',
-        billDashboardVisible: true
+        billDashboardVisible: true,
+        refNumber: rd2.refNumber || null,
+        confirmationNumber: rd2.confirmationNumber || null,
+        transactionNumber: rd2.transactionNumber || null,
+        checkNumber: rd2.checkNumber || null,
+        depositStatus: rd2.depositStatus || rd2.status,
+        clearingDate: rd2.clearingDate || null,
+        settlementDate: rd2.settlementDate || null,
+        billCreatedTime: rd2.createdTime || null,
+        billUpdatedTime: rd2.updatedTime || null,
+        rawResponse: rd2
       };
     }
   }

@@ -91,6 +91,9 @@ try { app.use('/api/sub-ledgers', require(path.join(HD, 'server', 'routes', 'sub
 // Vendor Payments (registry, approval workflow, ACH/Wire/BILL execution)
 try { app.use('/api/vendors', require(path.join(HD, 'server', 'routes', 'vendors'))); console.log('[vendors] loaded'); } catch(e) { console.warn('[vendors]', e.message); }
 
+// Payment Notifications & Receipts
+try { app.use('/api/payment-notifications', require(path.join(HD, 'server', 'routes', 'paymentNotifications'))); console.log('[payment-notifications] loaded'); } catch(e) { console.warn('[payment-notifications]', e.message); }
+
 // Electronic Payment & Settlement System
 try { app.use('/api/electronic-settlement', require(path.join(HD, 'server', 'routes', 'electronicSettlement'))); console.log('[electronic-settlement] loaded'); } catch(e) { console.warn('[electronic-settlement]', e.message); }
 
@@ -298,6 +301,12 @@ async function initializeDatabase() {
       BillSyncEngine.startAutoSync(5 * 60 * 1000);
     }
   } catch(e) { console.warn('[bill-sync] init:', e.message); }
+
+  try {
+    var notifEngine = require(path.join(HD, 'server', 'integrations', 'payments', 'paymentNotificationEngine'));
+    await notifEngine.ensureTables();
+    console.log('[payment-notifications] tables ensured');
+  } catch(e) { console.warn('[payment-notifications] init:', e.message); }
 
   try {
     await pool.query(`
