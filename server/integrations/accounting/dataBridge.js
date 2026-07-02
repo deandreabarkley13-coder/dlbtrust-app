@@ -1296,7 +1296,7 @@ class DataBridge {
       var unsynced = parseInt(esRow.total || 0) - parseInt(esRow.synced || 0);
       if (unsynced > 0) {
         var unsyncedRows = await pool.query(
-          "SELECT settlement_id FROM electronic_settlements WHERE data_bridge_synced = FALSE AND status IN ('confirmed','finalized') LIMIT 10"
+          "SELECT settlement_id FROM electronic_settlements WHERE data_bridge_synced = FALSE AND status IN ('transmitted','accepted','clearing','settled','confirmed','finalized') LIMIT 10"
         );
         var esSynced = 0;
         for (var ei = 0; ei < unsyncedRows.rows.length; ei++) {

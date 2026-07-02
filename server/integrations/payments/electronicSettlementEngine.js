@@ -272,6 +272,16 @@ async function debitSubLedger(subLedgerId, amount, settlementId, description) {
     return null;
   }
 
+  // Validate sufficient balance before debiting
+  try {
+    var ledger = await SubLedgerEngine.getSubLedger(subLedgerId);
+    if (ledger && parseFloat(ledger.balance) < amount) {
+      throw new Error('Insufficient sub-ledger balance: $' + parseFloat(ledger.balance).toFixed(2) + ' available, $' + amount.toFixed(2) + ' required');
+    }
+  } catch (balErr) {
+    if (balErr.message.startsWith('Insufficient')) throw balErr;
+  }
+
   var txn = await SubLedgerEngine.postTransaction({
     subLedgerId: subLedgerId,
     transactionType: 'debit',
