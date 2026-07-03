@@ -664,4 +664,51 @@ router.post('/mfa/pay', requireAdmin, async function(req, res) {
   }
 });
 
+// Update bank account details (e.g. rename from Betterment to BILL Cash Account)
+router.post('/update-bank-account', requireAdmin, async function(req, res) {
+  try {
+    var billClient = require(path.join(__dirname, '../integrations/bill/billClient'));
+    var accountId = req.body.accountId;
+    var bankName = req.body.bankName;
+    if (!accountId) return res.json({ success: false, error: 'accountId required' });
+    var session = await billClient.login();
+    var devKey = process.env.BILL_DEV_KEY;
+    var querystring = require('querystring');
+    var https = require('https');
+
+    var updateObj = { entity: 'BankAccount', id: accountId };
+    if (bankName) updateObj.bankName = bankName;
+
+    var BILL_API_BASE = process.env.BILL_API_URL || 'https://api.bill.com/api/v2';
+    var postData = querystring.stringify({
+      devKey: devKey,
+      sessionId: session,
+      data: JSON.stringify({ obj: updateObj })
+    });
+
+    var parsed = new URL(BILL_API_BASE + '/Crud/Update/BankAccount.json');
+    var result = await new Promise(function(resolve, reject) {
+      var req2 = https.request({
+        hostname: parsed.hostname, port: 443, path: parsed.pathname, method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'Content-Length': Buffer.byteLength(postData) }
+      }, function(resp) {
+        var body = '';
+        resp.on('data', function(c) { body += c; });
+        resp.on('end', function() { try { resolve(JSON.parse(body)); } catch(e) { reject(new Error('Non-JSON: ' + body.substring(0,200))); } });
+      });
+      req2.on('error', reject);
+      req2.write(postData);
+      req2.end();
+    });
+
+    if (result.response_status === 0) {
+      res.json({ success: true, data: result.response_data });
+    } else {
+      res.json({ success: false, error: result.response_data && result.response_data.error_message || result.response_message || JSON.stringify(result) });
+    }
+  } catch(err) {
+    res.json({ success: false, error: err.message });
+  }
+});
+
 module.exports = router;
