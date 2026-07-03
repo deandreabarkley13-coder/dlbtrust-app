@@ -588,4 +588,127 @@ router.get('/transactions', async function(req, res) {
   }
 });
 
+// ─── MFA Trust Setup ────────────────────────────────────────────
+
+router.get('/mfa/status', requireAdmin, async function(req, res) {
+  try {
+    var billClient = require(path.join(__dirname, '../integrations/bill/billClient'));
+    var trustInfo = billClient.getMFATrustInfo();
+    var mfaStatus = await billClient.getMFAStatus();
+    res.json({ success: true, trust: trustInfo, mfa: mfaStatus });
+  } catch(err) {
+    res.json({ success: false, error: err.message });
+  }
+});
+
+router.post('/mfa/challenge', requireAdmin, async function(req, res) {
+  try {
+    var billClient = require(path.join(__dirname, '../integrations/bill/billClient'));
+    var result = await billClient.sendMFAChallenge(req.body.method || 'primary');
+    res.json({ success: true, data: result });
+  } catch(err) {
+    res.json({ success: false, error: err.message });
+  }
+});
+
+router.post('/mfa/verify', requireAdmin, async function(req, res) {
+  try {
+    var code = req.body.code;
+    if (!code) return res.json({ success: false, error: 'MFA code required' });
+    var billClient = require(path.join(__dirname, '../integrations/bill/billClient'));
+    var result = await billClient.verifyMFACode(code, req.body.challengeId);
+    res.json({ success: true, data: result,
+      note: result.deviceId ? 'Save this deviceId as BILL_DEVICE_ID env var for future trusted sessions: ' + result.deviceId : 'No deviceId returned'
+    });
+  } catch(err) {
+    res.json({ success: false, error: err.message });
+  }
+});
+
+// Create vendor + bill only (no payment, no MFA needed)
+router.post('/create-bill', requireAdmin, async function(req, res) {
+  try {
+    var billClient = require(path.join(__dirname, '../integrations/bill/billClient'));
+    var payeeName = req.body.payee_name;
+    var amount = req.body.amount;
+    if (!payeeName || !amount) return res.json({ success: false, error: 'payee_name and amount required' });
+    var vendor = await billClient.findVendor(payeeName);
+    if (!vendor) vendor = await billClient.createVendor({ name: payeeName, email: req.body.email });
+    var vendorId = vendor.id || vendor;
+    var bill = await billClient.createBill({
+      vendorId: vendorId, amount: amount,
+      description: req.body.description || 'Electronic settlement payment',
+      invoiceNumber: 'ES-' + Date.now().toString(36).toUpperCase()
+    });
+    var billId = bill.id || (bill.response_data && bill.response_data.id) || bill;
+    res.json({ success: true, vendorId: vendorId, billId: billId, amount: amount });
+  } catch(err) {
+    res.json({ success: false, error: err.message });
+  }
+});
+
+// Combined: MFA verify + immediate PayBill in one atomic call
+router.post('/mfa/pay', requireAdmin, async function(req, res) {
+  try {
+    var code = req.body.code;
+    var challengeId = req.body.challengeId;
+    var billId = req.body.billId;
+    var amount = req.body.amount;
+    if (!code || !billId || !amount) return res.json({ success: false, error: 'code, billId, and amount required' });
+    var billClient = require(path.join(__dirname, '../integrations/bill/billClient'));
+    var mfaResult = await billClient.verifyMFACode(code, challengeId);
+    var payResult = await billClient.payBill({ billId: billId, amount: amount });
+    res.json({ success: true, mfa: mfaResult, payment: payResult });
+  } catch(err) {
+    res.json({ success: false, error: err.message });
+  }
+});
+
+// Update bank account details (e.g. rename from Betterment to BILL Cash Account)
+router.post('/update-bank-account', requireAdmin, async function(req, res) {
+  try {
+    var billClient = require(path.join(__dirname, '../integrations/bill/billClient'));
+    var accountId = req.body.accountId;
+    var bankName = req.body.bankName;
+    if (!accountId) return res.json({ success: false, error: 'accountId required' });
+    var session = await billClient.login();
+    var devKey = process.env.BILL_DEV_KEY;
+    var querystring = require('querystring');
+    var https = require('https');
+
+    var updateObj = { entity: 'BankAccount', id: accountId };
+    if (bankName) updateObj.bankName = bankName;
+
+    var BILL_API_BASE = process.env.BILL_API_URL || 'https://api.bill.com/api/v2';
+    var postData = querystring.stringify({
+      devKey: devKey,
+      sessionId: session,
+      data: JSON.stringify({ obj: updateObj })
+    });
+
+    var parsed = new URL(BILL_API_BASE + '/Crud/Update/BankAccount.json');
+    var result = await new Promise(function(resolve, reject) {
+      var req2 = https.request({
+        hostname: parsed.hostname, port: 443, path: parsed.pathname, method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'Content-Length': Buffer.byteLength(postData) }
+      }, function(resp) {
+        var body = '';
+        resp.on('data', function(c) { body += c; });
+        resp.on('end', function() { try { resolve(JSON.parse(body)); } catch(e) { reject(new Error('Non-JSON: ' + body.substring(0,200))); } });
+      });
+      req2.on('error', reject);
+      req2.write(postData);
+      req2.end();
+    });
+
+    if (result.response_status === 0) {
+      res.json({ success: true, data: result.response_data });
+    } else {
+      res.json({ success: false, error: result.response_data && result.response_data.error_message || result.response_message || JSON.stringify(result) });
+    }
+  } catch(err) {
+    res.json({ success: false, error: err.message });
+  }
+});
+
 module.exports = router;

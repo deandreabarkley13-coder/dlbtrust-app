@@ -36,6 +36,34 @@ router.post('/submit', requireAdmin, async function(req, res) {
     var result = await settlementEngine.submitElectronicPayment(req.body);
     res.json({ success: true, data: result });
   } catch (err) {
+    if (err.mfa_required) {
+      // PayBills needs MFA — return structured response so UI can prompt for code
+      return res.json({
+        success: false,
+        mfa_required: true,
+        challengeId: err.challengeId,
+        settlementId: err.settlementId,
+        payee_name: err.payee_name,
+        amount: err.amount,
+        error: 'BILL requires MFA verification for vendor payments. Enter the code sent to your phone/email.'
+      });
+    }
+    res.status(400).json({ success: false, error: err.message });
+  }
+});
+
+// Complete MFA-pending settlement (verify MFA + retry PayBills)
+router.post('/complete-mfa', requireAdmin, async function(req, res) {
+  try {
+    var code = req.body.code;
+    var challengeId = req.body.challengeId;
+    var settlementId = req.body.settlementId;
+    if (!code || !settlementId) {
+      return res.json({ success: false, error: 'code and settlementId required' });
+    }
+    var result = await settlementEngine.completeMFASettlement({ code: code, challengeId: challengeId, settlementId: settlementId });
+    res.json({ success: true, data: result });
+  } catch (err) {
     res.status(400).json({ success: false, error: err.message });
   }
 });

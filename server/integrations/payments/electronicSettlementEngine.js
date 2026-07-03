@@ -272,6 +272,16 @@ async function debitSubLedger(subLedgerId, amount, settlementId, description) {
     return null;
   }
 
+  // Validate sufficient balance before debiting
+  try {
+    var ledger = await SubLedgerEngine.getSubLedger(subLedgerId);
+    if (ledger && parseFloat(ledger.balance) < amount) {
+      throw new Error('Insufficient sub-ledger balance: $' + parseFloat(ledger.balance).toFixed(2) + ' available, $' + amount.toFixed(2) + ' required');
+    }
+  } catch (balErr) {
+    if (balErr.message.startsWith('Insufficient')) throw balErr;
+  }
+
   var txn = await SubLedgerEngine.postTransaction({
     subLedgerId: subLedgerId,
     transactionType: 'debit',
@@ -409,9 +419,11 @@ async function syncToDataBridge(settlementId) {
     }
   }
 
-  // Only mark as synced if all module syncs succeeded
-  var allModulesSynced = Object.keys(syncResults.modules).every(function(k) {
-    return syncResults.modules[k].synced !== false;
+  // Mark as synced if core modules succeed (trust accounting + sub-ledger)
+  // Fineract/cash reconciliation failures should not block sync status
+  var coreModules = ['trust_accounting', 'sub_ledger'];
+  var allModulesSynced = coreModules.every(function(k) {
+    return !syncResults.modules[k] || syncResults.modules[k].synced !== false;
   });
 
   if (allModulesSynced) {
@@ -661,34 +673,76 @@ async function executePaymentByMethod(method, opts) {
 }
 
 /**
- * Execute via BILL API — outbound vendor payment flow.
- * Creates vendor (if new) → creates bill → pays bill → funds move from BILL Cash to vendor.
+ * Execute via BILL API.
+ * Routes based on payment_type:
+ *   - 'deposit' / 'bill_cash_deposit': RecordARPayment → funds INTO BILL Cash Account
+ *   - 'vendor_payment' / 'trust_distribution': PayBills → funds OUT of BILL Cash to vendor
  */
 async function executeBILLPayment(opts) {
   if (!billClient) throw new Error('BILL client not available');
 
-  // Use outbound PayBills flow to actually send funds to the vendor
-  var paymentResult = await billClient.sendVendorPayment({
-    payee_name: opts.payee_name,
-    amount: opts.amount,
-    description: opts.description || 'Electronic settlement payment',
-    invoiceNumber: opts.settlementId,
-    email: opts.payee_email || undefined,
-  });
+  var isDeposit = opts.payment_type === 'deposit' || opts.payment_type === 'bill_cash_deposit';
+
+  var paymentResult;
+  if (isDeposit) {
+    // Deposit INTO BILL Cash Account via RecordARPayment
+    paymentResult = await billClient.recordPayment({
+      amount: opts.amount,
+      description: opts.description || 'Electronic settlement deposit',
+      paymentDate: new Date().toISOString().split('T')[0],
+    });
+  } else {
+    // Outbound vendor payment via PayBills
+    try {
+      paymentResult = await billClient.sendVendorPayment({
+        payee_name: opts.payee_name,
+        amount: opts.amount,
+        description: opts.description || 'Electronic settlement payment',
+        invoiceNumber: 'ES-' + Date.now().toString(36).toUpperCase(),
+        email: opts.payee_email || undefined,
+      });
+    } catch (vendorErr) {
+      if (vendorErr.message && vendorErr.message.indexOf('ntrusted') !== -1) {
+        // PayBills requires MFA — auto-trigger challenge and return pending state
+        var challengeData = null;
+        try {
+          challengeData = await billClient.sendMFAChallenge('primary');
+        } catch (mfaErr) {
+          console.warn('[ElectronicSettlement] MFA challenge failed:', mfaErr.message);
+        }
+        var mfaError = new Error('MFA_REQUIRED');
+        mfaError.mfa_required = true;
+        mfaError.challengeId = challengeData ? challengeData.challengeId : null;
+        mfaError.settlementId = opts.settlementId;
+        mfaError.payee_name = opts.payee_name;
+        mfaError.amount = opts.amount;
+        throw mfaError;
+      }
+      throw vendorErr;
+    }
+  }
 
   var journalEntryId = null;
   if (TrustAccountingEngine) {
     try {
-      var debitCode = opts.payment_type === 'trust_distribution' ? ACCOUNT_CODES.DISTRIBUTIONS : ACCOUNT_CODES.EXPENSES;
-      var creditCode = opts.source_account_code || ACCOUNT_CODES.BILL_CASH;
+      var debitCode, creditCode;
+      if (isDeposit) {
+        // Deposit: DR BILL Cash (1050) / CR source account
+        debitCode = ACCOUNT_CODES.BILL_CASH;
+        creditCode = opts.source_account_code || ACCOUNT_CODES.CASH;
+      } else {
+        // Vendor payment: DR Expenses / CR source account
+        debitCode = opts.payment_type === 'trust_distribution' ? ACCOUNT_CODES.DISTRIBUTIONS : ACCOUNT_CODES.EXPENSES;
+        creditCode = opts.source_account_code || ACCOUNT_CODES.BILL_CASH;
+      }
       var je = await TrustAccountingEngine.postJournalEntry({
         entryDate: new Date(),
         description: 'Electronic settlement: ' + (opts.description || opts.payee_name),
         lines: [
           { accountCode: debitCode, debitAmount: opts.amount, creditAmount: 0,
-            memo: 'ESTL ' + opts.settlementId + ' — ' + opts.payee_name },
+            memo: 'ESTL ' + opts.settlementId + ' — ' + (opts.payee_name || 'BILL Cash deposit') },
           { accountCode: creditCode, debitAmount: 0, creditAmount: opts.amount,
-            memo: 'Electronic settlement outflow: ' + opts.paymentRef },
+            memo: 'Electronic settlement ' + (isDeposit ? 'deposit' : 'outflow') + ': ' + opts.paymentRef },
         ],
         referenceType: 'electronic_settlement',
         referenceId: opts.settlementId,
@@ -700,22 +754,26 @@ async function executeBILLPayment(opts) {
     }
   }
 
+  var billRef = isDeposit
+    ? (paymentResult.receivedPayId || paymentResult.id || null)
+    : (paymentResult.sentPayId || paymentResult.billId || null);
+
   var fileContent = JSON.stringify({
-    method: 'bill_api', endpoint: '/api/v2/PayBills',
+    method: 'bill_api',
+    endpoint: isDeposit ? '/api/v2/RecordARPayment' : '/api/v2/PayBills',
+    type: isDeposit ? 'deposit' : 'vendor_payment',
     amount: opts.amount,
-    vendorId: paymentResult.vendorId,
-    billId: paymentResult.billId,
-    sentPayId: paymentResult.sentPayId,
+    ref: billRef,
     timestamp: new Date().toISOString(),
   });
 
   return {
-    bill_ref: paymentResult.sentPayId || paymentResult.billId || null,
-    bill_vendor_id: paymentResult.vendorId || null,
-    bill_id: paymentResult.billId || null,
+    bill_ref: billRef,
+    bill_vendor_id: isDeposit ? null : (paymentResult.vendorId || null),
+    bill_id: isDeposit ? null : (paymentResult.billId || null),
     journal_entry_id: journalEntryId,
-    transmission_ref: paymentResult.sentPayId || opts.paymentRef,
-    processor_ref: paymentResult.sentPayId || null,
+    transmission_ref: billRef || opts.paymentRef,
+    processor_ref: billRef,
     payment_file_hash: computePaymentFileHash(fileContent),
   };
 }
@@ -1207,11 +1265,117 @@ async function verifySettlementIntegrity(settlementId) {
   };
 }
 
+/**
+ * Complete a settlement that is pending MFA verification.
+ * Verifies the MFA code, retries PayBills, and updates the settlement.
+ */
+async function completeMFASettlement(opts) {
+  if (!billClient) throw new Error('BILL client not available');
+  var code = opts.code;
+  var challengeId = opts.challengeId;
+  var settlementId = opts.settlementId;
+
+  // 1. Get the failed settlement
+  var settlement = await getSettlement(settlementId);
+  if (!settlement) throw new Error('Settlement not found: ' + settlementId);
+  if (settlement.status !== 'failed') throw new Error('Settlement is not in failed state');
+
+  // 2. Verify MFA code (session becomes trusted — DO NOT re-login)
+  var mfaResult = await billClient.verifyMFACode(code, challengeId);
+  if (!mfaResult.success) throw new Error('MFA verification failed');
+
+  // 3. Create vendor + bill using the MFA-verified session, then pay directly
+  var vendor = await billClient.findVendor(settlement.payee_name);
+  if (!vendor) {
+    vendor = await billClient.createVendor({
+      name: settlement.payee_name,
+      address1: '1 Trust Way',
+      city: 'Wilmington',
+      state: 'DE',
+      zip: '19801',
+      paymentType: '0',
+    });
+  } else if (!vendor.address1) {
+    // Existing vendor missing address — update it for PayBills compatibility
+    try {
+      await billClient.updateVendor(vendor.id, {
+        address1: '1 Trust Way', city: 'Wilmington', state: 'DE', zip: '19801', paymentType: '0',
+      });
+    } catch (updErr) { console.warn('[ElectronicSettlement] vendor address update failed:', updErr.message); }
+  }
+  var bill = await billClient.createBill({
+    vendorId: vendor.id,
+    amount: parseFloat(settlement.amount),
+    invoiceNumber: 'ES-' + Date.now().toString(36).toUpperCase(),
+    description: settlement.description || 'Electronic settlement payment to ' + settlement.payee_name,
+  });
+
+  // 4. Pay using the MFA-verified session directly (no getSession/re-login)
+  var paymentResult = await billClient.payBillDirect({
+    billId: bill.id,
+    amount: parseFloat(settlement.amount),
+  });
+
+  var billRef = paymentResult.sentPayId || bill.id || null;
+
+  // 4. Post journal entry
+  var journalEntryId = null;
+  if (TrustAccountingEngine) {
+    try {
+      var debitCode = settlement.payment_type === 'trust_distribution' ? ACCOUNT_CODES.DISTRIBUTIONS : ACCOUNT_CODES.EXPENSES;
+      var creditCode = settlement.source_account_code || ACCOUNT_CODES.BILL_CASH;
+      var je = await TrustAccountingEngine.postJournalEntry({
+        entryDate: new Date(),
+        description: 'Electronic settlement: ' + (settlement.description || settlement.payee_name),
+        lines: [
+          { accountCode: debitCode, debitAmount: parseFloat(settlement.amount), creditAmount: 0,
+            memo: 'ESTL ' + settlementId + ' — ' + settlement.payee_name },
+          { accountCode: creditCode, debitAmount: 0, creditAmount: parseFloat(settlement.amount),
+            memo: 'Electronic settlement outflow: ' + settlement.payment_ref },
+        ],
+        referenceType: 'electronic_settlement',
+        referenceId: settlementId,
+        postedBy: 'admin',
+      });
+      journalEntryId = je.entry_id || je.id || null;
+    } catch (jeErr) {
+      console.warn('[ElectronicSettlement] JE failed during MFA completion:', jeErr.message);
+    }
+  }
+
+  // 5. Update settlement to success
+  await pool.query(`
+    UPDATE electronic_settlements SET
+      status = 'accepted', transmitted_at = NOW(),
+      bill_ref = $2, journal_entry_id = $3,
+      last_error = NULL, updated_at = NOW()
+    WHERE settlement_id = $1
+  `, [settlementId, billRef, journalEntryId]);
+
+  // 6. Async Data Bridge sync
+  syncToDataBridge(settlementId).catch(function(err) {
+    console.warn('[ElectronicSettlement] async DataBridge sync failed:', err.message);
+  });
+
+  return {
+    settlement_id: settlementId,
+    payment_ref: settlement.payment_ref,
+    status: 'accepted',
+    bill_ref: billRef,
+    bill_vendor_id: paymentResult.vendorId || null,
+    journal_entry_id: journalEntryId,
+    amount: parseFloat(settlement.amount),
+    payee: settlement.payee_name,
+    mfa_verified: true,
+  };
+}
+
 // ─── EXPORT ───────────────────────────────────────────────────────────────────
 
 module.exports = {
   ensureTables: ensureTables,
   submitElectronicPayment: submitElectronicPayment,
+  completeMFASettlement: completeMFASettlement,
   advanceSettlementStatus: advanceSettlementStatus,
   confirmSettlement: confirmSettlement,
   finalizeSettlement: finalizeSettlement,
