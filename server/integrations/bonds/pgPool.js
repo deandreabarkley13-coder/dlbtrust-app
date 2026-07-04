@@ -7,7 +7,8 @@
  * Resilience features:
  * - 3-tier retry: pool → rebuild pool → fresh one-off client
  * - Circuit breaker: fast-fails when Postgres is known-down (prevents 15s hangs)
- * - Keepalive ping every 15s to detect and recover from idle disconnections
+ * - Auto-recovery probe: 3s rapid polling when circuit is OPEN (vs 15s normal)
+ * - Auto pool rebuild on half-open transition for clean connections
  * - connectionTimeoutMillis: 3s (fail fast on unreachable DB)
  * - statement_timeout: 15s (prevent runaway queries from blocking)
  */
@@ -59,10 +60,14 @@ const dbCircuit = {
   lastFailure: 0,
   threshold: 3,       // open after 3 full 3-tier failures
   cooldown: 10000,    // try again after 10s
+  _wasOpen: false,    // track state transitions for auto-recovery
   isOpen() {
     if (this.failures < this.threshold) return false;
     if (Date.now() - this.lastFailure > this.cooldown) {
-      this.failures = 0; // half-open: allow one request through
+      // Half-open: rebuild pool for clean connections before allowing request
+      console.log('[BondDB] Circuit breaker HALF-OPEN — rebuilding pool for recovery attempt');
+      rebuildPool();
+      this.failures = 0;
       return false;
     }
     return true;
@@ -71,14 +76,27 @@ const dbCircuit = {
     this.failures++;
     this.lastFailure = Date.now();
     if (this.failures === this.threshold) {
+      this._wasOpen = true;
       console.error('[BondDB] Circuit breaker OPEN — Postgres unreachable, fast-failing for ' + (this.cooldown / 1000) + 's');
+      console.error('[BondDB] Auto-recovery probe activated (every 3s)');
+      startRecoveryProbe();
     }
   },
   recordSuccess() {
-    if (this.failures > 0) {
+    if (this.failures > 0 || this._wasOpen) {
       console.log('[BondDB] Circuit breaker CLOSED — Postgres recovered');
+      this._wasOpen = false;
+      stopRecoveryProbe();
     }
     this.failures = 0;
+  },
+  forceReset() {
+    console.log('[BondDB] Circuit breaker FORCE RESET by admin');
+    this.failures = 0;
+    this.lastFailure = 0;
+    this._wasOpen = false;
+    stopRecoveryProbe();
+    rebuildPool();
   },
 };
 
@@ -94,7 +112,32 @@ function rebuildPool() {
   });
 }
 
-// Keepalive ping every 15s
+// ─── Auto-Recovery Probe ──────────────────────────────────────────────────────
+// When circuit is OPEN, probe every 3s to detect DB recovery ASAP.
+// Replaces the normal 15s keepalive during outages for faster recovery.
+let recoveryTimer = null;
+function startRecoveryProbe() {
+  if (recoveryTimer) return; // already running
+  recoveryTimer = setInterval(async () => {
+    try {
+      rebuildPool();
+      await pool.query('SELECT 1');
+      console.log('[BondDB] Recovery probe: Postgres is back!');
+      dbCircuit.recordSuccess();
+    } catch (e) {
+      console.warn('[BondDB] Recovery probe: still down —', e.message);
+    }
+  }, 3000);
+  recoveryTimer.unref();
+}
+function stopRecoveryProbe() {
+  if (recoveryTimer) {
+    clearInterval(recoveryTimer);
+    recoveryTimer = null;
+  }
+}
+
+// Keepalive ping every 15s (normal operation)
 const keepAliveTimer = setInterval(async () => {
   try {
     await pool.query('SELECT 1');
@@ -122,8 +165,10 @@ function isConnectionError(err) {
 async function resilientQuery(text, params) {
   // Circuit breaker: fast-fail if Postgres is known-down
   if (dbCircuit.isOpen()) {
-    const err = new Error('Database circuit breaker OPEN — Postgres temporarily unavailable');
+    const secsLeft = Math.max(0, Math.ceil((dbCircuit.cooldown - (Date.now() - dbCircuit.lastFailure)) / 1000));
+    const err = new Error('Database temporarily unavailable — auto-recovering (retry in ' + secsLeft + 's)');
     err.code = 'CIRCUIT_OPEN';
+    err.retryAfter = secsLeft;
     throw err;
   }
 
@@ -172,7 +217,14 @@ module.exports = {
   query: resilientQuery,
   // Expose pool for callers that need connect() for transactions
   connect: () => pool.connect(),
-  end: () => { clearInterval(keepAliveTimer); return pool.end(); },
+  end: () => { clearInterval(keepAliveTimer); stopRecoveryProbe(); return pool.end(); },
   on: (event, handler) => pool.on(event, handler),
-  getCircuitStatus: () => ({ failures: dbCircuit.failures, isOpen: dbCircuit.isOpen(), lastFailure: dbCircuit.lastFailure ? new Date(dbCircuit.lastFailure).toISOString() : null }),
+  getCircuitStatus: () => ({
+    failures: dbCircuit.failures,
+    isOpen: dbCircuit.isOpen(),
+    lastFailure: dbCircuit.lastFailure ? new Date(dbCircuit.lastFailure).toISOString() : null,
+    recoveryProbeActive: !!recoveryTimer,
+    cooldownSeconds: dbCircuit.cooldown / 1000,
+  }),
+  resetCircuit: () => { dbCircuit.forceReset(); },
 };
