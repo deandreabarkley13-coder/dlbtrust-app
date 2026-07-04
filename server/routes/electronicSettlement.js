@@ -174,4 +174,42 @@ router.get('/circuit-status', requireAdmin, async function(req, res) {
   res.json({ success: true, data: settlementEngine.getCircuitStatus() });
 });
 
+// ─── STP (Straight-Through Processing) Routes ────────────────────────────────
+
+var stpEngine;
+try { stpEngine = require('../integrations/payments/stpEngine'); } catch (e) { stpEngine = null; }
+
+// STP Dashboard
+router.get('/stp/dashboard', requireAdmin, async function(req, res) {
+  try {
+    if (!stpEngine) return res.json({ success: false, error: 'STP engine not available' });
+    var data = await stpEngine.getDashboard();
+    res.json({ success: true, data: data });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// STP Poll BILL statuses (actual API-based polling, not time-based)
+router.post('/stp/poll', requireAdmin, async function(req, res) {
+  try {
+    if (!stpEngine) return res.json({ success: false, error: 'STP engine not available' });
+    var results = await stpEngine.pollBILLStatuses();
+    res.json({ success: true, data: results });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// STP Check availability (T+1 settlement)
+router.post('/stp/check-availability', requireAdmin, async function(req, res) {
+  try {
+    if (!stpEngine) return res.json({ success: false, error: 'STP engine not available' });
+    var results = await stpEngine.checkAvailability();
+    res.json({ success: true, data: results });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
 module.exports = router;

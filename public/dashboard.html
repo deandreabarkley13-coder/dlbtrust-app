@@ -1359,6 +1359,30 @@
         <div id="es-recent-table"><p class="text-muted">Loading...</p></div>
       </div>
 
+      <!-- STP — Straight-Through Processing -->
+      <div class="card">
+        <div class="section-title" style="display:flex;justify-content:space-between;align-items:center">
+          <span>Straight-Through Processing (STP)</span>
+          <div>
+            <button class="btn btn-sm" onclick="stpPollBILL()" title="Poll BILL for actual payment statuses">Poll BILL Status</button>
+            <button class="btn btn-sm" onclick="stpCheckAvail()" title="Check T+1 availability">Check T+1</button>
+          </div>
+        </div>
+        <div class="grid grid-4" id="stp-stats" style="margin-bottom:12px">
+          <div class="card"><div class="stat-label">Clearing</div><div class="stat-value" id="stp-clearing">—</div></div>
+          <div class="card"><div class="stat-label">Cleared</div><div class="stat-value" id="stp-cleared">—</div></div>
+          <div class="card"><div class="stat-label">Posted</div><div class="stat-value" id="stp-posted">—</div></div>
+          <div class="card"><div class="stat-label">Available (T+1)</div><div class="stat-value" id="stp-available">—</div></div>
+        </div>
+        <div class="grid" style="margin-bottom:12px">
+          <div class="card"><div class="stat-label">Cleared Volume</div><div class="stat-value" id="stp-cleared-vol">$0.00</div></div>
+          <div class="card"><div class="stat-label">Pending Volume</div><div class="stat-value" id="stp-pending-vol">$0.00</div></div>
+          <div class="card"><div class="stat-label">Failed</div><div class="stat-value" id="stp-failed">0</div></div>
+        </div>
+        <div id="stp-recent-table"><p class="text-muted">Loading STP data...</p></div>
+        <div id="stp-poll-result" style="margin-top:8px"></div>
+      </div>
+
       <!-- Pending / SLA -->
       <div class="card" id="es-pending-card" style="display:none">
         <div class="section-title">Pending Settlements (SLA Order)</div>
@@ -4927,6 +4951,9 @@
           el('es-stats').innerHTML = '<div class="card"><p class="error-msg">' + esc(dashRes.error) + '</p></div>';
         }
 
+        // Load STP dashboard
+        loadSTPDashboard();
+
         // Populate funding accounts dropdown — client accounts + trust GL accounts
         if (fundingRes.success && fundingRes.data) {
           const sel = document.getElementById('es-sub-ledger');
@@ -4998,6 +5025,10 @@
             (d.bill_ref ? 'BILL Payment: ' + esc(d.bill_ref) + '<br>' : '') +
             (d.bill_vendor_id ? 'BILL Vendor: ' + esc(d.bill_vendor_id) + '<br>' : '') +
             (d.journal_entry_id ? 'JE: ' + esc(d.journal_entry_id) + '<br>' : '') +
+            (d.stp_id ? 'STP: ' + esc(d.stp_id) + ' | ' : '') +
+            (d.settlement_date ? 'Settlement: ' + esc(d.settlement_date) + ' | ' : '') +
+            (d.availability_date ? 'Available: ' + esc(d.availability_date) + ' | ' : '') +
+            (d.chart_of_account ? 'COA: ' + esc(d.chart_of_account) + '<br>' : '') +
             'SLA: ' + esc(d.sla_deadline) + '</div>';
           document.getElementById('es-payee-name').value = '';
           document.getElementById('es-amount').value = '';
@@ -5124,6 +5155,82 @@
           alert('Sync failed: ' + (r.error || 'Unknown'));
         }
       } catch (err) { alert('Sync error: ' + err.message); }
+    }
+
+    // ─── Straight-Through Processing (STP) ─────────────────────────────────────
+
+    async function loadSTPDashboard() {
+      try {
+        const r = await fetchJSON(API + '/api/electronic-settlement/stp/dashboard', { headers: adminHeaders() });
+        if (r.success && r.data) {
+          const d = r.data;
+          el('stp-clearing').textContent = d.clearing || 0;
+          el('stp-cleared').textContent = d.cleared || 0;
+          el('stp-posted').textContent = d.posted || 0;
+          el('stp-available').textContent = d.available || 0;
+          el('stp-cleared-vol').textContent = '$' + Number(d.cleared_volume || 0).toLocaleString(undefined, {minimumFractionDigits:2});
+          el('stp-pending-vol').textContent = '$' + Number(d.pending_volume || 0).toLocaleString(undefined, {minimumFractionDigits:2});
+          el('stp-failed').textContent = d.failed || 0;
+
+          if (d.recent && d.recent.length > 0) {
+            let html = '<table><thead><tr><th>STP ID</th><th>Type</th><th>Amount</th><th>COA</th><th>Settlement Date</th><th>Availability</th><th>Status</th></tr></thead><tbody>';
+            for (const s of d.recent) {
+              const sc = s.stp_status === 'available' || s.stp_status === 'posted' ? 'var(--green)' :
+                s.stp_status === 'failed' ? 'var(--red)' : 'var(--blue)';
+              html += '<tr>' +
+                '<td style="font-family:monospace;font-size:11px">' + esc(s.stp_id) + '</td>' +
+                '<td>' + esc(s.payment_type || '—') + '</td>' +
+                '<td>$' + Number(s.amount || 0).toLocaleString(undefined, {minimumFractionDigits:2}) + '</td>' +
+                '<td style="font-size:11px">' + esc(s.bill_chart_of_acct || '—') + '</td>' +
+                '<td style="font-size:11px">' + (s.settlement_date ? shortDate(s.settlement_date) : '—') + '</td>' +
+                '<td style="font-size:11px">' + (s.availability_date ? shortDate(s.availability_date) : '—') + '</td>' +
+                '<td><span style="color:' + sc + ';font-weight:600">' + esc(s.stp_status) + '</span></td>' +
+                '</tr>';
+            }
+            html += '</tbody></table>';
+            el('stp-recent-table').innerHTML = html;
+          } else {
+            el('stp-recent-table').innerHTML = '<p class="text-muted">No STP entries yet. Submit a payment above — STP will enrich data automatically.</p>';
+          }
+        }
+      } catch (err) {
+        el('stp-recent-table').innerHTML = '<p class="text-muted">STP dashboard unavailable</p>';
+      }
+    }
+
+    async function stpPollBILL() {
+      el('stp-poll-result').innerHTML = '<span style="color:var(--blue)">Polling BILL API for actual statuses...</span>';
+      try {
+        const r = await fetchJSON(API + '/api/electronic-settlement/stp/poll', {
+          method: 'POST', headers: adminHeaders(),
+        });
+        if (r.success) {
+          el('stp-poll-result').innerHTML = '<span style="color:var(--green)">Poll complete: checked=' + (r.data.checked || 0) + ', advanced=' + (r.data.advanced || 0) + '</span>';
+          loadSTPDashboard();
+        } else {
+          el('stp-poll-result').innerHTML = '<span style="color:var(--red)">' + esc(r.error) + '</span>';
+        }
+      } catch (err) {
+        el('stp-poll-result').innerHTML = '<span style="color:var(--red)">' + esc(err.message) + '</span>';
+      }
+    }
+
+    async function stpCheckAvail() {
+      el('stp-poll-result').innerHTML = '<span style="color:var(--blue)">Checking T+1 availability...</span>';
+      try {
+        const r = await fetchJSON(API + '/api/electronic-settlement/stp/check-availability', {
+          method: 'POST', headers: adminHeaders(),
+        });
+        if (r.success) {
+          const d = r.data;
+          el('stp-poll-result').innerHTML = '<span style="color:var(--green)">T+1 check: ' + (d.made_available || 0) + ' payments now available, ' + (d.checked || 0) + ' checked</span>';
+          loadSTPDashboard();
+        } else {
+          el('stp-poll-result').innerHTML = '<span style="color:var(--red)">' + esc(r.error) + '</span>';
+        }
+      } catch (err) {
+        el('stp-poll-result').innerHTML = '<span style="color:var(--red)">' + esc(err.message) + '</span>';
+      }
     }
 
     // ─── Init ──────────────────────────────────────────────────────────────────

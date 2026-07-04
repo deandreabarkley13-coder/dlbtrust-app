@@ -49,6 +49,9 @@ try { ACHEngine = require('../ach/achEngine').ACHEngine; } catch (e) { ACHEngine
 var WireEngine;
 try { WireEngine = require('../wire/wireEngine').WireEngine; } catch (e) { WireEngine = null; }
 
+var STPEngine;
+try { STPEngine = require('./stpEngine'); } catch (e) { STPEngine = null; }
+
 // ─── CONSTANTS ────────────────────────────────────────────────────────────────
 
 var SETTLEMENT_STATUSES = [
@@ -203,6 +206,13 @@ async function ensureTables() {
   ];
   for (var i = 0; i < migrations.length; i++) {
     try { await pool.query(migrations[i]); } catch (e) { /* column exists */ }
+  }
+
+  // Ensure STP table exists
+  if (STPEngine && STPEngine.ensureSTPTable) {
+    try { await STPEngine.ensureSTPTable(); } catch (e) {
+      console.warn('[ElectronicSettlement] STP table init failed:', e.message);
+    }
   }
 }
 
@@ -631,6 +641,14 @@ async function submitElectronicPayment(opts) {
       journal_entry_id: executionResult.journal_entry_id || null,
       transmission_ref: executionResult.transmission_ref || null,
       payment_file_hash: executionResult.payment_file_hash || null,
+      // STP enrichment data
+      stp_id: executionResult.stp_id || null,
+      settlement_date: executionResult.settlement_date || null,
+      availability_date: executionResult.availability_date || null,
+      settlement_timing: executionResult.settlement_timing || null,
+      enrichment_complete: executionResult.enrichment_complete || false,
+      chart_of_account: executionResult.chart_of_account || null,
+      invoice_number: executionResult.invoice_number || null,
     };
 
   } catch (err) {
@@ -673,26 +691,124 @@ async function executePaymentByMethod(method, opts) {
 }
 
 /**
- * Execute via BILL API.
+ * Execute via BILL API with Straight-Through Processing (STP).
  * Routes based on payment_type:
  *   - 'deposit' / 'bill_cash_deposit': RecordARPayment → funds INTO BILL Cash Account
  *   - 'vendor_payment' / 'trust_distribution': PayBills → funds OUT of BILL Cash to vendor
+ *
+ * STP enrichment ensures ALL required fields for clearing are present:
+ *   - Chart of Account mapping for GL posting
+ *   - Payment terms (Net 0 for immediate)
+ *   - Due date, GL posting date
+ *   - Invoice linkage (for deposits)
+ *   - Vendor address (for PayBills)
+ *   - T+1 settlement/availability dates
  */
 async function executeBILLPayment(opts) {
   if (!billClient) throw new Error('BILL client not available');
 
   var isDeposit = opts.payment_type === 'deposit' || opts.payment_type === 'bill_cash_deposit';
 
+  // ─── STP ENRICHMENT ──────────────────────────────────────────
+  // Use STP engine if available for enriched payment processing
+  var stpResult = null;
+  if (STPEngine) {
+    try {
+      stpResult = await STPEngine.processPayment({
+        settlement_id: opts.settlementId,
+        payment_type: opts.payment_type,
+        payment_method: 'bill',
+        amount: opts.amount,
+        payee_name: opts.payee_name,
+        payee_email: opts.payee_email,
+        description: opts.description,
+        priority: opts.priority,
+        method: isDeposit ? 'ach' : 'bill',
+      });
+
+      if (stpResult.status === 'transmitted' && !stpResult.error) {
+        // STP successfully executed and transmitted — use its results
+        var journalEntryId = null;
+        if (TrustAccountingEngine) {
+          try {
+            var debitCode, creditCode;
+            if (isDeposit) {
+              debitCode = ACCOUNT_CODES.BILL_CASH;
+              creditCode = opts.source_account_code || ACCOUNT_CODES.CASH;
+            } else {
+              debitCode = opts.payment_type === 'trust_distribution' ? ACCOUNT_CODES.DISTRIBUTIONS : ACCOUNT_CODES.EXPENSES;
+              creditCode = opts.source_account_code || ACCOUNT_CODES.BILL_CASH;
+            }
+            var je = await TrustAccountingEngine.postJournalEntry({
+              entryDate: new Date(),
+              description: 'STP settlement: ' + (opts.description || opts.payee_name),
+              lines: [
+                { accountCode: debitCode, debitAmount: opts.amount, creditAmount: 0,
+                  memo: 'ESTL ' + opts.settlementId + ' — ' + (opts.payee_name || 'BILL Cash deposit') +
+                    ' [STP ' + stpResult.stp_id + ', settle ' + (stpResult.settlement_date || 'pending') +
+                    ', avail ' + (stpResult.availability_date || 'T+1') + ']' },
+                { accountCode: creditCode, debitAmount: 0, creditAmount: opts.amount,
+                  memo: 'Electronic settlement ' + (isDeposit ? 'deposit' : 'outflow') + ': ' + opts.paymentRef },
+              ],
+              referenceType: 'electronic_settlement',
+              referenceId: opts.settlementId,
+              postedBy: opts.initiated_by || 'system',
+            });
+            journalEntryId = je.entry_id || je.id || null;
+          } catch (err) {
+            console.warn('[ElectronicSettlement] JE failed:', err.message);
+          }
+        }
+
+        var billRef = stpResult.bill_ref;
+        var fileContent = JSON.stringify({
+          method: 'bill_api_stp',
+          stp_id: stpResult.stp_id,
+          endpoint: isDeposit ? '/api/v2/RecordARPayment' : '/api/v2/PayBills',
+          type: isDeposit ? 'deposit' : 'vendor_payment',
+          amount: opts.amount,
+          ref: billRef,
+          chart_of_account: stpResult.chart_of_account,
+          gl_posting_date: stpResult.gl_posting_date,
+          settlement_date: stpResult.settlement_date,
+          availability_date: stpResult.availability_date,
+          settlement_timing: stpResult.settlement_timing,
+          timestamp: new Date().toISOString(),
+        });
+
+        return {
+          bill_ref: billRef,
+          bill_vendor_id: isDeposit ? null : (stpResult.bill_vendor_id || null),
+          bill_id: isDeposit ? null : (stpResult.bill_id || null),
+          journal_entry_id: journalEntryId,
+          transmission_ref: billRef || opts.paymentRef,
+          processor_ref: billRef,
+          payment_file_hash: computePaymentFileHash(fileContent),
+          stp_id: stpResult.stp_id,
+          settlement_date: stpResult.settlement_date,
+          availability_date: stpResult.availability_date,
+          settlement_timing: stpResult.settlement_timing,
+          enrichment_complete: stpResult.enrichment_complete,
+          chart_of_account: stpResult.chart_of_account,
+          invoice_number: stpResult.invoice_number,
+        };
+      }
+    } catch (stpErr) {
+      // Re-throw MFA errors
+      if (stpErr.mfa_required) throw stpErr;
+      console.warn('[ElectronicSettlement] STP processing failed, falling back to direct:', stpErr.message);
+    }
+  }
+
+  // ─── FALLBACK: Direct BILL execution (non-STP) ──────────────
   var paymentResult;
   if (isDeposit) {
-    // Deposit INTO BILL Cash Account via invoice-linked flow (clears and posts)
     paymentResult = await billClient.depositToBillCash({
       amount: opts.amount,
       method: 'ach',
       memo: opts.description || 'Electronic settlement deposit',
     });
   } else {
-    // Outbound vendor payment via PayBills
     try {
       paymentResult = await billClient.sendVendorPayment({
         payee_name: opts.payee_name,
@@ -703,7 +819,6 @@ async function executeBILLPayment(opts) {
       });
     } catch (vendorErr) {
       if (vendorErr.message && vendorErr.message.indexOf('ntrusted') !== -1) {
-        // PayBills requires MFA — auto-trigger challenge and return pending state
         var challengeData = null;
         try {
           challengeData = await billClient.sendMFAChallenge('primary');
@@ -722,59 +837,57 @@ async function executeBILLPayment(opts) {
     }
   }
 
-  var journalEntryId = null;
+  var journalEntryIdFB = null;
   if (TrustAccountingEngine) {
     try {
-      var debitCode, creditCode;
+      var debitCodeFB, creditCodeFB;
       if (isDeposit) {
-        // Deposit: DR BILL Cash (1050) / CR source account
-        debitCode = ACCOUNT_CODES.BILL_CASH;
-        creditCode = opts.source_account_code || ACCOUNT_CODES.CASH;
+        debitCodeFB = ACCOUNT_CODES.BILL_CASH;
+        creditCodeFB = opts.source_account_code || ACCOUNT_CODES.CASH;
       } else {
-        // Vendor payment: DR Expenses / CR source account
-        debitCode = opts.payment_type === 'trust_distribution' ? ACCOUNT_CODES.DISTRIBUTIONS : ACCOUNT_CODES.EXPENSES;
-        creditCode = opts.source_account_code || ACCOUNT_CODES.BILL_CASH;
+        debitCodeFB = opts.payment_type === 'trust_distribution' ? ACCOUNT_CODES.DISTRIBUTIONS : ACCOUNT_CODES.EXPENSES;
+        creditCodeFB = opts.source_account_code || ACCOUNT_CODES.BILL_CASH;
       }
-      var je = await TrustAccountingEngine.postJournalEntry({
+      var jeFB = await TrustAccountingEngine.postJournalEntry({
         entryDate: new Date(),
         description: 'Electronic settlement: ' + (opts.description || opts.payee_name),
         lines: [
-          { accountCode: debitCode, debitAmount: opts.amount, creditAmount: 0,
+          { accountCode: debitCodeFB, debitAmount: opts.amount, creditAmount: 0,
             memo: 'ESTL ' + opts.settlementId + ' — ' + (opts.payee_name || 'BILL Cash deposit') },
-          { accountCode: creditCode, debitAmount: 0, creditAmount: opts.amount,
+          { accountCode: creditCodeFB, debitAmount: 0, creditAmount: opts.amount,
             memo: 'Electronic settlement ' + (isDeposit ? 'deposit' : 'outflow') + ': ' + opts.paymentRef },
         ],
         referenceType: 'electronic_settlement',
         referenceId: opts.settlementId,
         postedBy: opts.initiated_by || 'system',
       });
-      journalEntryId = je.entry_id || je.id || null;
+      journalEntryIdFB = jeFB.entry_id || jeFB.id || null;
     } catch (err) {
       console.warn('[ElectronicSettlement] JE failed:', err.message);
     }
   }
 
-  var billRef = isDeposit
+  var billRefFB = isDeposit
     ? (paymentResult.receivedPayId || paymentResult.id || null)
     : (paymentResult.sentPayId || paymentResult.billId || null);
 
-  var fileContent = JSON.stringify({
+  var fileContentFB = JSON.stringify({
     method: 'bill_api',
     endpoint: isDeposit ? '/api/v2/RecordARPayment' : '/api/v2/PayBills',
     type: isDeposit ? 'deposit' : 'vendor_payment',
     amount: opts.amount,
-    ref: billRef,
+    ref: billRefFB,
     timestamp: new Date().toISOString(),
   });
 
   return {
-    bill_ref: billRef,
+    bill_ref: billRefFB,
     bill_vendor_id: isDeposit ? null : (paymentResult.vendorId || null),
     bill_id: isDeposit ? null : (paymentResult.billId || null),
-    journal_entry_id: journalEntryId,
-    transmission_ref: billRef || opts.paymentRef,
-    processor_ref: billRef,
-    payment_file_hash: computePaymentFileHash(fileContent),
+    journal_entry_id: journalEntryIdFB,
+    transmission_ref: billRefFB || opts.paymentRef,
+    processor_ref: billRefFB,
+    payment_file_hash: computePaymentFileHash(fileContentFB),
   };
 }
 
@@ -1018,45 +1131,154 @@ async function pollSettlements() {
     ORDER BY submitted_at ASC LIMIT 20
   `);
 
-  var results = { checked: 0, advanced: 0, confirmed: 0, details: [] };
+  var results = { checked: 0, advanced: 0, confirmed: 0, stp_polled: 0, details: [] };
 
+  // ─── STP BILL STATUS POLLING ──────────────────────────────────
+  // Poll BILL API for actual payment statuses (not time-based)
+  if (STPEngine) {
+    try {
+      var stpPollResults = await STPEngine.pollBILLStatuses();
+      results.stp_polled = stpPollResults.checked;
+      results.advanced += stpPollResults.advanced;
+      if (stpPollResults.details) {
+        for (var j = 0; j < stpPollResults.details.length; j++) {
+          results.details.push(stpPollResults.details[j]);
+        }
+      }
+    } catch (stpErr) {
+      console.warn('[ElectronicSettlement] STP poll failed:', stpErr.message);
+    }
+
+    // Check availability on posted STP entries
+    try {
+      var availResults = await STPEngine.checkAvailability();
+      if (availResults.made_available > 0) {
+        results.details.push({ stp_availability: availResults.made_available + ' payments now available (T+1 passed)' });
+      }
+    } catch (e) { /* non-critical */ }
+  }
+
+  // ─── STANDARD POLLING (BILL ref or wire/ACH) ─────────────────
   for (var i = 0; i < pendingRes.rows.length; i++) {
     var s = pendingRes.rows[i];
     results.checked++;
 
     try {
       if (s.bill_ref && (s.status === 'transmitted' || s.status === 'accepted' || s.status === 'clearing')) {
-        if (s.status === 'transmitted') {
-          await advanceSettlementStatus(s.settlement_id, 'accepted');
-          s.status = 'accepted';
-          results.advanced++;
-          results.details.push({ settlement_id: s.settlement_id, from: 'transmitted', to: 'accepted' });
+        // Try actual BILL status check first via readEntity
+        var actualBillStatus = null;
+        if (billClient && billClient.readEntity) {
+          try {
+            // Determine entity type: SentPay (vendor) or ReceivedPay (deposit)
+            var entityType = (s.bill_ref && s.bill_ref.indexOf('stp01') === 0) ? 'SentPay' :
+                             (s.bill_ref && s.bill_ref.indexOf('0rp01') === 0) ? 'ReceivedPay' : null;
+            if (entityType) {
+              var entity = await billClient.readEntity(entityType, s.bill_ref);
+              if (entity) {
+                actualBillStatus = String(entity.status);
+              }
+            }
+          } catch (readErr) {
+            console.warn('[ElectronicSettlement] BILL read failed:', readErr.message);
+          }
         }
 
-        var elapsedMinutes = (Date.now() - new Date(s.submitted_at).getTime()) / 60000;
-        var clearingMinutes = s.payment_method === 'bill' ? 5 : s.payment_method === 'wire' ? 30 : 60;
-
-        if (elapsedMinutes >= clearingMinutes) {
-          await advanceSettlementStatus(s.settlement_id, 'settled', {
-            settlement_ref: s.bill_ref || s.processor_ref,
-          });
-          s.status = 'settled';
-          results.advanced++;
-          results.details.push({ settlement_id: s.settlement_id, from: 'accepted', to: 'settled' });
-
-          if (s.payment_method === 'bill') {
-            var confirmResult = await confirmSettlement(s.settlement_id);
-            results.confirmed++;
-            results.details.push({
-              settlement_id: s.settlement_id, to: 'confirmed',
-              confirmation_code: confirmResult.confirmation_code,
-            });
+        if (actualBillStatus) {
+          // Use actual BILL status for advancement
+          if (entityType === 'SentPay') {
+            // SentPay: 0=Scheduled, 1=Processing, 2=Processed, 3=Failed, 4=Voided
+            if (actualBillStatus === '2') {
+              // Processed — fully cleared
+              if (s.status !== 'clearing') {
+                await advanceSettlementStatus(s.settlement_id, 'clearing');
+              }
+              await advanceSettlementStatus(s.settlement_id, 'settled', { settlement_ref: s.bill_ref });
+              var confirmRes = await confirmSettlement(s.settlement_id);
+              results.advanced += 2;
+              results.confirmed++;
+              results.details.push({ settlement_id: s.settlement_id, bill_status: 'Processed', to: 'confirmed',
+                confirmation_code: confirmRes.confirmation_code });
+            } else if (actualBillStatus === '1') {
+              // Processing
+              if (s.status === 'transmitted') {
+                await advanceSettlementStatus(s.settlement_id, 'accepted');
+                await advanceSettlementStatus(s.settlement_id, 'clearing');
+                results.advanced += 2;
+                results.details.push({ settlement_id: s.settlement_id, bill_status: 'Processing', to: 'clearing' });
+              } else if (s.status === 'accepted') {
+                await advanceSettlementStatus(s.settlement_id, 'clearing');
+                results.advanced++;
+              }
+            } else if (actualBillStatus === '3' || actualBillStatus === '4') {
+              // Failed or Voided
+              await pool.query(
+                "UPDATE electronic_settlements SET status = 'failed', last_error = $2, updated_at = NOW() WHERE settlement_id = $1",
+                [s.settlement_id, 'BILL SentPay status: ' + (actualBillStatus === '3' ? 'Failed' : 'Voided')]
+              );
+              results.details.push({ settlement_id: s.settlement_id, bill_status: actualBillStatus === '3' ? 'Failed' : 'Voided' });
+            }
+            // 0=Scheduled — still waiting, advance to accepted
+            else if (actualBillStatus === '0' && s.status === 'transmitted') {
+              await advanceSettlementStatus(s.settlement_id, 'accepted');
+              results.advanced++;
+            }
+          } else if (entityType === 'ReceivedPay') {
+            // ReceivedPay: 0=Uncleared, 1=Cleared, 2=Voided
+            if (actualBillStatus === '1') {
+              // Cleared
+              if (s.status !== 'clearing') {
+                await advanceSettlementStatus(s.settlement_id, 'clearing');
+              }
+              await advanceSettlementStatus(s.settlement_id, 'settled', { settlement_ref: s.bill_ref });
+              var confirmDeposit = await confirmSettlement(s.settlement_id);
+              results.advanced += 2;
+              results.confirmed++;
+              results.details.push({ settlement_id: s.settlement_id, bill_status: 'Cleared', to: 'confirmed' });
+            } else if (actualBillStatus === '2') {
+              await pool.query(
+                "UPDATE electronic_settlements SET status = 'failed', last_error = 'Deposit voided in BILL', updated_at = NOW() WHERE settlement_id = $1",
+                [s.settlement_id]
+              );
+            } else if (s.status === 'transmitted') {
+              await advanceSettlementStatus(s.settlement_id, 'accepted');
+              await advanceSettlementStatus(s.settlement_id, 'clearing');
+              results.advanced += 2;
+            }
           }
-        } else if (s.status === 'accepted') {
-          await advanceSettlementStatus(s.settlement_id, 'clearing');
-          s.status = 'clearing';
-          results.advanced++;
-          results.details.push({ settlement_id: s.settlement_id, from: 'accepted', to: 'clearing' });
+        } else {
+          // Fallback: time-based advancement when BILL read unavailable
+          if (s.status === 'transmitted') {
+            await advanceSettlementStatus(s.settlement_id, 'accepted');
+            s.status = 'accepted';
+            results.advanced++;
+            results.details.push({ settlement_id: s.settlement_id, from: 'transmitted', to: 'accepted' });
+          }
+
+          var elapsedMinutes = (Date.now() - new Date(s.submitted_at).getTime()) / 60000;
+          var clearingMinutes = s.payment_method === 'bill' ? 5 : s.payment_method === 'wire' ? 30 : 60;
+
+          if (elapsedMinutes >= clearingMinutes) {
+            await advanceSettlementStatus(s.settlement_id, 'settled', {
+              settlement_ref: s.bill_ref || s.processor_ref,
+            });
+            s.status = 'settled';
+            results.advanced++;
+            results.details.push({ settlement_id: s.settlement_id, from: 'accepted', to: 'settled' });
+
+            if (s.payment_method === 'bill') {
+              var confirmResult = await confirmSettlement(s.settlement_id);
+              results.confirmed++;
+              results.details.push({
+                settlement_id: s.settlement_id, to: 'confirmed',
+                confirmation_code: confirmResult.confirmation_code,
+              });
+            }
+          } else if (s.status === 'accepted') {
+            await advanceSettlementStatus(s.settlement_id, 'clearing');
+            s.status = 'clearing';
+            results.advanced++;
+            results.details.push({ settlement_id: s.settlement_id, from: 'accepted', to: 'clearing' });
+          }
         }
       }
 

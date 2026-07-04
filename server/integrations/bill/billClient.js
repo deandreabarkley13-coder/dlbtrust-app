@@ -1302,6 +1302,39 @@ function setDeviceId(id) {
   deviceId = id;
 }
 
+/**
+ * Read any BILL entity by type and ID.
+ * Used by STP engine to poll SentPay/ReceivedPay statuses.
+ * @param {string} entityType - e.g. 'SentPay', 'ReceivedPay', 'Bill', 'Vendor'
+ * @param {string} entityId - BILL entity ID
+ * @returns {Object|null} Entity data or null
+ */
+async function readEntity(entityType, entityId) {
+  var session = await getSession();
+  var devKey = process.env.BILL_DEV_KEY;
+  var result = await billRequest('/Crud/Read/' + entityType + '.json', {
+    devKey: devKey,
+    sessionId: session,
+    data: JSON.stringify({ id: entityId }),
+  });
+  if (result.response_status === 0 && result.response_data) {
+    return result.response_data;
+  }
+  if (result.response_status === 1) {
+    sessionId = null;
+    session = await getSession();
+    result = await billRequest('/Crud/Read/' + entityType + '.json', {
+      devKey: devKey,
+      sessionId: session,
+      data: JSON.stringify({ id: entityId }),
+    });
+    if (result.response_status === 0 && result.response_data) {
+      return result.response_data;
+    }
+  }
+  return null;
+}
+
 module.exports = {
   login: login,
   listBankAccounts: listBankAccounts,
@@ -1335,4 +1368,5 @@ module.exports = {
   verifyMFACode: verifyMFACode,
   getMFATrustInfo: getMFATrustInfo,
   setDeviceId: setDeviceId,
+  readEntity: readEntity,
 };
