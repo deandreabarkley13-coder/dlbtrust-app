@@ -168,4 +168,26 @@ router.post('/subscriptions', async (req, res) => {
   }
 });
 
+// ─── POST /api/crm/sync-fineract ─────────────────────────────────────────────
+// Bulk-sync all trustee/beneficiary contacts to Fineract
+router.post('/sync-fineract', async (req, res) => {
+  try {
+    var result = await CrmEngine.syncToFineract();
+    res.json({ success: true, data: result });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// ─── GET /api/crm/fineract-linkage ───────────────────────────────────────────
+// Show Fineract linkage status for trustees/beneficiaries
+router.get('/fineract-linkage', async (req, res) => {
+  try {
+    var status = await CrmEngine.getFineractLinkageStatus();
+    res.json({ success: true, data: status });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
 module.exports = router;

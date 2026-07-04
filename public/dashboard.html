@@ -243,6 +243,7 @@
     <div class="nav-item" data-page="bill"><span class="icon">💳</span> BILL Cash</div>
     <div class="nav-item" data-page="vendor-payments"><span class="icon">💸</span> Vendor Payments</div>
     <div class="nav-item" data-page="electronic-settlement"><span class="icon">⚡</span> Electronic Settlement</div>
+    <div class="nav-item" data-page="nifi"><span class="icon">🔄</span> NiFi File Transfer</div>
     <div class="nav-section">Data Bridge</div>
     <div class="nav-item" data-page="data-bridge"><span class="icon">🔗</span> Data Bridge</div>
     <div class="nav-section">Agents</div>
@@ -576,6 +577,8 @@
         <div class="section-title">Contacts</div>
         <div class="table-wrap" id="crm-contacts-wrap"><p class="loading">Loading...</p></div>
         <button class="btn btn-outline btn-sm mt-16" onclick="showAddContact()">+ Add Contact</button>
+        <button class="btn btn-outline btn-sm mt-16" style="margin-left:8px" onclick="syncFineractClients()">Sync Trustees/Beneficiaries to Fineract</button>
+        <div id="crm-fineract-sync-result" style="margin-top:8px"></div>
         <div id="crm-add-contact" class="hidden mt-16">
           <div class="form-row"><div class="form-group"><label>First Name</label><input type="text" id="crm-first"></div><div class="form-group"><label>Last Name</label><input type="text" id="crm-last"></div></div>
           <div class="form-row"><div class="form-group"><label>Email</label><input type="email" id="crm-email"></div><div class="form-group"><label>Type</label><select id="crm-type"><option value="investor">Investor</option><option value="beneficiary">Beneficiary</option><option value="trustee">Trustee</option><option value="vendor">Vendor</option></select></div></div>
@@ -1338,6 +1341,7 @@
               <option value="trust_distribution">Trust Distribution</option>
               <option value="disbursement">Disbursement</option>
               <option value="fee_payment">Fee Payment</option>
+              <option value="deposit">Record Deposit (ledger only)</option>
             </select>
           </div>
           <div style="grid-column:1/-1">
@@ -1355,10 +1359,106 @@
         <div id="es-recent-table"><p class="text-muted">Loading...</p></div>
       </div>
 
+      <!-- STP — Straight-Through Processing -->
+      <div class="card">
+        <div class="section-title" style="display:flex;justify-content:space-between;align-items:center">
+          <span>Straight-Through Processing (STP)</span>
+          <div>
+            <button class="btn btn-sm" onclick="stpPollBILL()" title="Poll BILL for actual payment statuses">Poll BILL Status</button>
+            <button class="btn btn-sm" onclick="stpCheckAvail()" title="Check T+1 availability">Check T+1</button>
+          </div>
+        </div>
+        <div class="grid grid-4" id="stp-stats" style="margin-bottom:12px">
+          <div class="card"><div class="stat-label">Clearing</div><div class="stat-value" id="stp-clearing">—</div></div>
+          <div class="card"><div class="stat-label">Cleared</div><div class="stat-value" id="stp-cleared">—</div></div>
+          <div class="card"><div class="stat-label">Posted</div><div class="stat-value" id="stp-posted">—</div></div>
+          <div class="card"><div class="stat-label">Available (T+1)</div><div class="stat-value" id="stp-available">—</div></div>
+        </div>
+        <div class="grid" style="margin-bottom:12px">
+          <div class="card"><div class="stat-label">Cleared Volume</div><div class="stat-value" id="stp-cleared-vol">$0.00</div></div>
+          <div class="card"><div class="stat-label">Pending Volume</div><div class="stat-value" id="stp-pending-vol">$0.00</div></div>
+          <div class="card"><div class="stat-label">Failed</div><div class="stat-value" id="stp-failed">0</div></div>
+        </div>
+        <div id="stp-recent-table"><p class="text-muted">Loading STP data...</p></div>
+        <div id="stp-poll-result" style="margin-top:8px"></div>
+      </div>
+
       <!-- Pending / SLA -->
       <div class="card" id="es-pending-card" style="display:none">
         <div class="section-title">Pending Settlements (SLA Order)</div>
         <div id="es-pending-table"></div>
+      </div>
+    </div>
+
+    <!-- NIFI FILE TRANSFER PAGE -->
+    <div id="page-nifi" class="page hidden">
+      <div class="page-header">
+        <div><h1>NiFi File Transfer</h1><div class="subtitle">Automated server-to-server payment file generation, staging, and transfer via Apache NiFi</div></div>
+        <div>
+          <button class="btn btn-sm" onclick="nifiExpireStale()" title="Expire stale files">Expire Stale</button>
+        </div>
+      </div>
+
+      <!-- Stats Cards -->
+      <div class="grid grid-4" id="nifi-stats">
+        <div class="card"><div class="stat-label">Outbound Files</div><div class="stat-value" id="nifi-outbound">—</div></div>
+        <div class="card"><div class="stat-label">Inbound Files</div><div class="stat-value" id="nifi-inbound">—</div></div>
+        <div class="card"><div class="stat-label">Staged (Ready)</div><div class="stat-value" id="nifi-staged">—</div></div>
+        <div class="card"><div class="stat-label">Total Volume</div><div class="stat-value" id="nifi-volume">—</div></div>
+      </div>
+
+      <!-- Generate Payment File -->
+      <div class="card" style="margin-top:24px">
+        <h2>Generate Payment File</h2>
+        <div class="grid grid-3">
+          <div><label class="form-label">Format</label>
+            <select id="nifi-format" class="form-control">
+              <option value="nacha">NACHA (ACH)</option>
+              <option value="iso20022">ISO 20022 (pain.001)</option>
+              <option value="csv">CSV</option>
+              <option value="json">JSON</option>
+            </select>
+          </div>
+          <div><label class="form-label">Destination</label>
+            <select id="nifi-dest" class="form-control">
+              <option value="bill">BILL Cash Account</option>
+              <option value="bank">Direct Bank</option>
+              <option value="partner">Payment Partner</option>
+            </select>
+          </div>
+          <div style="display:flex;align-items:flex-end">
+            <button class="btn btn-primary" onclick="nifiGenerate()">Generate &amp; Stage</button>
+          </div>
+        </div>
+        <div id="nifi-gen-result" style="margin-top:12px"></div>
+      </div>
+
+      <!-- Outbox (Staged Files) -->
+      <div class="card" style="margin-top:16px">
+        <h2>Outbox — Staged Files</h2>
+        <div class="table-responsive">
+          <table class="table">
+            <thead><tr><th>File ID</th><th>Name</th><th>Format</th><th>Payments</th><th>Amount</th><th>Status</th><th>Created</th><th>Actions</th></tr></thead>
+            <tbody id="nifi-outbox-body"><tr><td colspan="8" style="text-align:center;opacity:.5">Loading...</td></tr></tbody>
+          </table>
+        </div>
+      </div>
+
+      <!-- Recent Transfer History -->
+      <div class="card" style="margin-top:16px">
+        <h2>Transfer History</h2>
+        <div class="table-responsive">
+          <table class="table">
+            <thead><tr><th>File ID</th><th>Direction</th><th>Format</th><th>Payments</th><th>Amount</th><th>Status</th><th>Created</th></tr></thead>
+            <tbody id="nifi-history-body"><tr><td colspan="7" style="text-align:center;opacity:.5">Loading...</td></tr></tbody>
+          </table>
+        </div>
+      </div>
+
+      <!-- Circuit Breaker -->
+      <div class="card" style="margin-top:16px">
+        <h2>NiFi Circuit Breaker</h2>
+        <div id="nifi-circuit">Loading...</div>
       </div>
     </div>
 
@@ -1735,7 +1835,7 @@
         document.querySelectorAll('.page').forEach(p => p.classList.add('hidden'));
         document.getElementById('page-' + page).classList.remove('hidden');
         // Load data for page
-        const loaders = { overview: loadOverview, bonds: loadBonds, cash: loadCash, payments: loadPayments, ach: loadACH, wire: loadWire, partners: loadPartners, apikeys: loadApiKeys, as2: loadAS2, crm: loadCRM, documents: loadDocuments, accounting: loadAccounting, tax: loadTax, fineract: loadFineract, bill: loadBill, 'trustee-agent': loadTrusteeAgent, 'bookkeeping-agent': loadBookkeepingAgent, 'data-bridge': loadDataBridge, 'sub-ledgers': loadSubLedgers, 'vendor-payments': loadVendorPayments, 'electronic-settlement': loadElectronicSettlement, settings: loadSettings, security: loadSecurity, backup: loadBackupPage, admin: loadAdmin };
+        const loaders = { overview: loadOverview, bonds: loadBonds, cash: loadCash, payments: loadPayments, ach: loadACH, wire: loadWire, partners: loadPartners, apikeys: loadApiKeys, as2: loadAS2, crm: loadCRM, documents: loadDocuments, accounting: loadAccounting, tax: loadTax, fineract: loadFineract, bill: loadBill, 'trustee-agent': loadTrusteeAgent, 'bookkeeping-agent': loadBookkeepingAgent, 'data-bridge': loadDataBridge, 'sub-ledgers': loadSubLedgers, 'vendor-payments': loadVendorPayments, 'electronic-settlement': loadElectronicSettlement, nifi: loadNiFi, settings: loadSettings, security: loadSecurity, backup: loadBackupPage, admin: loadAdmin };
         if (loaders[page]) loaders[page]();
       });
     });
@@ -2560,14 +2660,15 @@
         <div class="card"><div class="card-title">Total Subscribed</div><div class="card-value">${fmt(dData.total_subscription_amount)}</div></div>
       `;
 
-      el('crm-contacts-wrap').innerHTML = cData.length ? '<table><thead><tr><th>ID</th><th>Name</th><th>Type</th><th>Email</th><th>Approval</th><th>KYC</th><th>Actions</th></tr></thead><tbody>' + cData.map(c => {
+      el('crm-contacts-wrap').innerHTML = cData.length ? '<table><thead><tr><th>ID</th><th>Name</th><th>Type</th><th>Email</th><th>Approval</th><th>KYC</th><th>Fineract</th><th>Actions</th></tr></thead><tbody>' + cData.map(c => {
         const approvalBadge = c.approval_status === 'approved' ? 'badge-active' : c.approval_status === 'rejected' ? 'badge-danger' : 'badge-pending';
         const kycBadge = c.kyc_status === 'verified' ? 'badge-active' : 'badge-pending';
+        const fineractBadge = c.fineract_client_id ? '<span class="badge badge-active">Linked #' + esc(c.fineract_client_id) + '</span>' : (c.contact_type === 'trustee' || c.contact_type === 'beneficiary' ? '<span class="badge badge-pending">Not linked</span>' : '<span class="badge" style="opacity:0.4">N/A</span>');
         let actions = '';
         if (c.approval_status !== 'approved') actions += `<button class="btn btn-success btn-sm" style="font-size:10px;padding:2px 8px;margin:1px;" onclick="crmApprove('${esc(c.contact_id)}')">Approve</button>`;
         if (c.approval_status !== 'rejected') actions += `<button class="btn btn-outline btn-sm" style="font-size:10px;padding:2px 8px;margin:1px;border-color:#e74c3c;color:#e74c3c;" onclick="crmReject('${esc(c.contact_id)}')">Reject</button>`;
         if (c.kyc_status !== 'verified') actions += `<button class="btn btn-outline btn-sm" style="font-size:10px;padding:2px 8px;margin:1px;" onclick="crmVerifyKYC('${esc(c.contact_id)}')">Verify KYC</button>`;
-        return `<tr><td><code style="font-size:10px">${esc(c.contact_id)}</code></td><td>${esc(c.first_name)} ${esc(c.last_name)}</td><td><span class="badge badge-info">${esc(c.contact_type)}</span></td><td>${esc(c.email || '—')}</td><td><span class="badge ${approvalBadge}">${esc(c.approval_status || 'pending_approval')}</span></td><td><span class="badge ${kycBadge}">${esc(c.kyc_status)}</span></td><td>${actions}</td></tr>`;
+        return `<tr><td><code style="font-size:10px">${esc(c.contact_id)}</code></td><td>${esc(c.first_name)} ${esc(c.last_name)}</td><td><span class="badge badge-info">${esc(c.contact_type)}</span></td><td>${esc(c.email || '—')}</td><td><span class="badge ${approvalBadge}">${esc(c.approval_status || 'pending_approval')}</span></td><td><span class="badge ${kycBadge}">${esc(c.kyc_status)}</span></td><td>${fineractBadge}</td><td>${actions}</td></tr>`;
       }).join('') + '</tbody></table>' : '<p class="text-muted">No contacts</p>';
 
       const sData = subs.data || [];
@@ -2596,8 +2697,27 @@
     async function crmVerifyKYC(contactId) {
       if (!confirm('Mark KYC as verified for ' + contactId + '?')) return;
       const r = await fetchJSON(API + '/api/crm/contacts/' + encodeURIComponent(contactId) + '/kyc', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ kycStatus: 'verified' }) });
-      alert(r.success ? 'KYC verified' : 'Error: ' + (r.error || 'Failed'));
+      alert(r.success ? 'KYC verified (Fineract client auto-created if trustee/beneficiary)' : 'Error: ' + (r.error || 'Failed'));
       loadCRM();
+    }
+    async function syncFineractClients() {
+      el('crm-fineract-sync-result').innerHTML = '<span style="color:var(--blue)">Syncing trustees/beneficiaries to Fineract...</span>';
+      try {
+        const r = await fetchJSON(API + '/api/crm/sync-fineract', { method: 'POST', headers: adminHeaders() });
+        if (r.success) {
+          const d = r.data;
+          el('crm-fineract-sync-result').innerHTML = '<div style="padding:8px 12px;background:rgba(16,185,129,0.1);border:1px solid var(--green);border-radius:6px;font-size:12px">' +
+            '<strong style="color:var(--green)">Fineract Sync Complete</strong> — ' +
+            'Synced: ' + d.synced + ' | Skipped: ' + d.skipped + ' | Failed: ' + d.failed +
+            (d.errors.length ? '<br>Errors: ' + d.errors.map(e => esc(e.contactId + ': ' + e.error)).join(', ') : '') +
+            '</div>';
+          loadCRM();
+        } else {
+          el('crm-fineract-sync-result').innerHTML = '<p class="error-msg">' + esc(r.error) + '</p>';
+        }
+      } catch (err) {
+        el('crm-fineract-sync-result').innerHTML = '<p class="error-msg">' + esc(err.message) + '</p>';
+      }
     }
 
     // ─── DOCUMENTS ─────────────────────────────────────────────────────────────
@@ -4636,6 +4756,120 @@
       loadUsers();
     }
 
+    // ─── NiFi File Transfer ──────────────────────────────────────────────────
+
+    async function loadNiFi() {
+      try {
+        const [dashRes, outboxRes, histRes] = await Promise.all([
+          fetchJSON(API + '/api/nifi/dashboard', { headers: adminHeaders() }),
+          fetchJSON(API + '/api/nifi/outbox', { headers: adminHeaders() }),
+          fetchJSON(API + '/api/nifi/history', { headers: adminHeaders() }),
+        ]);
+
+        if (dashRes.success && dashRes.data) {
+          const s = dashRes.data.stats;
+          el('nifi-outbound').textContent = s.outbound_total || 0;
+          el('nifi-inbound').textContent = s.inbound_total || 0;
+          el('nifi-staged').textContent = s.staged || 0;
+          el('nifi-volume').textContent = '$' + (s.outbound_volume + s.inbound_volume).toLocaleString(undefined, {minimumFractionDigits:2});
+
+          const cb = dashRes.data.circuit_breaker;
+          el('nifi-circuit').innerHTML = '<span class="badge ' + (cb.open ? 'badge-pending' : 'badge-active') + '">' +
+            (cb.open ? 'OPEN' : 'CLOSED') + '</span> Failures: ' + cb.failures +
+            (dashRes.data.nifi_endpoint ? ' | Endpoint: ' + esc(dashRes.data.nifi_endpoint) : ' | No endpoint configured') +
+            ' | HMAC: ' + (dashRes.data.hmac_configured ? 'configured' : 'default');
+        }
+
+        // Outbox table
+        if (outboxRes.success && outboxRes.data) {
+          const files = outboxRes.data;
+          if (files.length === 0) {
+            el('nifi-outbox-body').innerHTML = '<tr><td colspan="8" style="text-align:center;opacity:.5">No staged files</td></tr>';
+          } else {
+            el('nifi-outbox-body').innerHTML = files.map(f => '<tr>' +
+              '<td><code>' + esc(f.file_id) + '</code></td>' +
+              '<td>' + esc(f.file_name) + '</td>' +
+              '<td><span class="badge">' + esc(f.format.toUpperCase()) + '</span></td>' +
+              '<td>' + f.payment_count + '</td>' +
+              '<td>$' + (f.total_amount || 0).toLocaleString(undefined, {minimumFractionDigits:2}) + '</td>' +
+              '<td><span class="badge badge-active">' + esc(f.status) + '</span></td>' +
+              '<td>' + new Date(f.created_at).toLocaleString() + '</td>' +
+              '<td><button class="btn btn-sm" onclick="nifiAck(\'' + esc(f.file_id) + '\')">ACK</button></td>' +
+            '</tr>').join('');
+          }
+        }
+
+        // History table
+        if (histRes.success && histRes.data) {
+          const hist = histRes.data;
+          if (hist.length === 0) {
+            el('nifi-history-body').innerHTML = '<tr><td colspan="7" style="text-align:center;opacity:.5">No transfers yet</td></tr>';
+          } else {
+            el('nifi-history-body').innerHTML = hist.map(h => '<tr>' +
+              '<td><code>' + esc(h.file_id) + '</code></td>' +
+              '<td><span class="badge ' + (h.direction === 'outbound' ? 'badge-pending' : 'badge-active') + '">' + esc(h.direction) + '</span></td>' +
+              '<td>' + esc((h.file_format || '').toUpperCase()) + '</td>' +
+              '<td>' + (h.payment_count || 0) + '</td>' +
+              '<td>$' + parseFloat(h.total_amount || 0).toLocaleString(undefined, {minimumFractionDigits:2}) + '</td>' +
+              '<td><span class="badge">' + esc(h.status) + '</span></td>' +
+              '<td>' + new Date(h.created_at).toLocaleString() + '</td>' +
+            '</tr>').join('');
+          }
+        }
+      } catch (err) {
+        el('nifi-outbox-body').innerHTML = '<tr><td colspan="8" style="color:red">' + esc(err.message) + '</td></tr>';
+      }
+    }
+
+    async function nifiGenerate() {
+      const format = el('nifi-format').value;
+      const dest = el('nifi-dest').value;
+      el('nifi-gen-result').innerHTML = '<span style="color:var(--blue)">Generating payment file...</span>';
+      try {
+        const r = await fetchJSON(API + '/api/nifi/generate', {
+          method: 'POST', headers: { ...adminHeaders(), 'Content-Type': 'application/json' },
+          body: JSON.stringify({ format, destination_system: dest }),
+        });
+        if (r.success && r.data) {
+          const d = r.data;
+          if (!d.file_id) {
+            el('nifi-gen-result').innerHTML = '<span style="opacity:.6">' + esc(d.message || 'No pending payments to stage') + '</span>';
+          } else {
+            el('nifi-gen-result').innerHTML = '<div style="border:1px solid var(--green);padding:12px;border-radius:8px;background:rgba(0,200,0,.05)">' +
+              '<strong>File Staged:</strong> ' + esc(d.file_name) + '<br>' +
+              'Format: ' + esc(d.format.toUpperCase()) + ' | Payments: ' + d.payment_count + ' | Amount: $' + d.total_amount.toLocaleString(undefined, {minimumFractionDigits:2}) + '<br>' +
+              'Hash: <code>' + esc(d.file_hash.substring(0, 16)) + '...</code> | HMAC: <code>' + esc(d.hmac_signature.substring(0, 16)) + '...</code>' +
+              '</div>';
+            loadNiFi();
+          }
+        } else {
+          el('nifi-gen-result').innerHTML = '<span style="color:red">' + esc(r.error) + '</span>';
+        }
+      } catch (err) {
+        el('nifi-gen-result').innerHTML = '<span style="color:red">' + esc(err.message) + '</span>';
+      }
+    }
+
+    async function nifiAck(fileId) {
+      try {
+        const r = await fetchJSON(API + '/api/nifi/ack/' + fileId, {
+          method: 'POST', headers: adminHeaders(),
+        });
+        if (r.success) { alert('File acknowledged'); loadNiFi(); }
+        else alert(r.error);
+      } catch (err) { alert(err.message); }
+    }
+
+    async function nifiExpireStale() {
+      try {
+        const r = await fetchJSON(API + '/api/nifi/expire', {
+          method: 'POST', headers: adminHeaders(),
+        });
+        if (r.success) { alert('Expired: ' + (r.data.expired || 0) + ' files'); loadNiFi(); }
+        else alert(r.error);
+      } catch (err) { alert(err.message); }
+    }
+
     // ─── Electronic Settlement ───────────────────────────────────────────────
 
     async function loadElectronicSettlement() {
@@ -4717,6 +4951,9 @@
           el('es-stats').innerHTML = '<div class="card"><p class="error-msg">' + esc(dashRes.error) + '</p></div>';
         }
 
+        // Load STP dashboard
+        loadSTPDashboard();
+
         // Populate funding accounts dropdown — client accounts + trust GL accounts
         if (fundingRes.success && fundingRes.data) {
           const sel = document.getElementById('es-sub-ledger');
@@ -4788,7 +5025,51 @@
             (d.bill_ref ? 'BILL Payment: ' + esc(d.bill_ref) + '<br>' : '') +
             (d.bill_vendor_id ? 'BILL Vendor: ' + esc(d.bill_vendor_id) + '<br>' : '') +
             (d.journal_entry_id ? 'JE: ' + esc(d.journal_entry_id) + '<br>' : '') +
+            (d.stp_id ? 'STP: ' + esc(d.stp_id) + ' | ' : '') +
+            (d.settlement_date ? 'Settlement: ' + esc(d.settlement_date) + ' | ' : '') +
+            (d.availability_date ? 'Available: ' + esc(d.availability_date) + ' | ' : '') +
+            (d.chart_of_account ? 'COA: ' + esc(d.chart_of_account) + '<br>' : '') +
             'SLA: ' + esc(d.sla_deadline) + '</div>';
+          document.getElementById('es-payee-name').value = '';
+          document.getElementById('es-amount').value = '';
+          document.getElementById('es-description').value = '';
+          loadElectronicSettlement();
+        } else if (r.mfa_required) {
+          // Show MFA input dialog
+          el('es-submit-result').innerHTML =
+            '<div style="padding:12px;background:rgba(245,158,11,0.1);border:1px solid var(--amber,#f59e0b);border-radius:6px;font-size:13px">' +
+            '<strong style="color:#f59e0b">MFA Verification Required</strong><br>' +
+            '<p style="margin:6px 0">BILL sent a verification code to your phone/email. Enter it below to complete the $' + Number(r.amount).toFixed(2) + ' payment to ' + esc(r.payee_name) + '.</p>' +
+            '<div style="display:flex;gap:8px;align-items:center">' +
+            '<input type="text" id="es-mfa-code" class="form-control" placeholder="Enter MFA code" style="max-width:180px;font-size:16px;letter-spacing:4px;text-align:center">' +
+            '<button class="btn btn-primary" onclick="esCompleteMFA(\'' + esc(r.settlementId) + '\',\'' + esc(r.challengeId || '') + '\')">Verify &amp; Pay</button>' +
+            '</div></div>';
+          document.getElementById('es-mfa-code').focus();
+        } else {
+          el('es-submit-result').innerHTML = '<p class="error-msg">' + esc(r.error) + '</p>';
+        }
+      } catch (err) {
+        el('es-submit-result').innerHTML = '<p class="error-msg">' + esc(err.message) + '</p>';
+      }
+    }
+
+    async function esCompleteMFA(settlementId, challengeId) {
+      const code = document.getElementById('es-mfa-code').value.trim();
+      if (!code) { alert('Enter the MFA code'); return; }
+      el('es-submit-result').innerHTML = '<span style="color:var(--blue)">Verifying MFA and completing payment...</span>';
+      try {
+        const r = await fetchJSON(API + '/api/electronic-settlement/complete-mfa', {
+          method: 'POST', headers: { ...adminHeaders(), 'Content-Type': 'application/json' },
+          body: JSON.stringify({ code: code, challengeId: challengeId || undefined, settlementId: settlementId }),
+        });
+        if (r.success) {
+          const d = r.data;
+          el('es-submit-result').innerHTML = '<div style="padding:8px 12px;background:rgba(16,185,129,0.1);border:1px solid var(--green);border-radius:6px;font-size:12px">' +
+            '<strong style="color:var(--green)">Payment Completed (MFA Verified)</strong><br>' +
+            'Settlement: ' + esc(d.settlement_id) + ' | Ref: ' + esc(d.payment_ref) + '<br>' +
+            (d.bill_ref ? 'BILL Payment: ' + esc(d.bill_ref) + '<br>' : '') +
+            (d.journal_entry_id ? 'JE: ' + esc(d.journal_entry_id) + '<br>' : '') +
+            'Amount: $' + Number(d.amount).toFixed(2) + ' | Payee: ' + esc(d.payee) + '</div>';
           document.getElementById('es-payee-name').value = '';
           document.getElementById('es-amount').value = '';
           document.getElementById('es-description').value = '';
@@ -4874,6 +5155,82 @@
           alert('Sync failed: ' + (r.error || 'Unknown'));
         }
       } catch (err) { alert('Sync error: ' + err.message); }
+    }
+
+    // ─── Straight-Through Processing (STP) ─────────────────────────────────────
+
+    async function loadSTPDashboard() {
+      try {
+        const r = await fetchJSON(API + '/api/electronic-settlement/stp/dashboard', { headers: adminHeaders() });
+        if (r.success && r.data) {
+          const d = r.data;
+          el('stp-clearing').textContent = d.clearing || 0;
+          el('stp-cleared').textContent = d.cleared || 0;
+          el('stp-posted').textContent = d.posted || 0;
+          el('stp-available').textContent = d.available || 0;
+          el('stp-cleared-vol').textContent = '$' + Number(d.cleared_volume || 0).toLocaleString(undefined, {minimumFractionDigits:2});
+          el('stp-pending-vol').textContent = '$' + Number(d.pending_volume || 0).toLocaleString(undefined, {minimumFractionDigits:2});
+          el('stp-failed').textContent = d.failed || 0;
+
+          if (d.recent && d.recent.length > 0) {
+            let html = '<table><thead><tr><th>STP ID</th><th>Type</th><th>Amount</th><th>COA</th><th>Settlement Date</th><th>Availability</th><th>Status</th></tr></thead><tbody>';
+            for (const s of d.recent) {
+              const sc = s.stp_status === 'available' || s.stp_status === 'posted' ? 'var(--green)' :
+                s.stp_status === 'failed' ? 'var(--red)' : 'var(--blue)';
+              html += '<tr>' +
+                '<td style="font-family:monospace;font-size:11px">' + esc(s.stp_id) + '</td>' +
+                '<td>' + esc(s.payment_type || '—') + '</td>' +
+                '<td>$' + Number(s.amount || 0).toLocaleString(undefined, {minimumFractionDigits:2}) + '</td>' +
+                '<td style="font-size:11px">' + esc(s.bill_chart_of_acct || '—') + '</td>' +
+                '<td style="font-size:11px">' + (s.settlement_date ? shortDate(s.settlement_date) : '—') + '</td>' +
+                '<td style="font-size:11px">' + (s.availability_date ? shortDate(s.availability_date) : '—') + '</td>' +
+                '<td><span style="color:' + sc + ';font-weight:600">' + esc(s.stp_status) + '</span></td>' +
+                '</tr>';
+            }
+            html += '</tbody></table>';
+            el('stp-recent-table').innerHTML = html;
+          } else {
+            el('stp-recent-table').innerHTML = '<p class="text-muted">No STP entries yet. Submit a payment above — STP will enrich data automatically.</p>';
+          }
+        }
+      } catch (err) {
+        el('stp-recent-table').innerHTML = '<p class="text-muted">STP dashboard unavailable</p>';
+      }
+    }
+
+    async function stpPollBILL() {
+      el('stp-poll-result').innerHTML = '<span style="color:var(--blue)">Polling BILL API for actual statuses...</span>';
+      try {
+        const r = await fetchJSON(API + '/api/electronic-settlement/stp/poll', {
+          method: 'POST', headers: adminHeaders(),
+        });
+        if (r.success) {
+          el('stp-poll-result').innerHTML = '<span style="color:var(--green)">Poll complete: checked=' + (r.data.checked || 0) + ', advanced=' + (r.data.advanced || 0) + '</span>';
+          loadSTPDashboard();
+        } else {
+          el('stp-poll-result').innerHTML = '<span style="color:var(--red)">' + esc(r.error) + '</span>';
+        }
+      } catch (err) {
+        el('stp-poll-result').innerHTML = '<span style="color:var(--red)">' + esc(err.message) + '</span>';
+      }
+    }
+
+    async function stpCheckAvail() {
+      el('stp-poll-result').innerHTML = '<span style="color:var(--blue)">Checking T+1 availability...</span>';
+      try {
+        const r = await fetchJSON(API + '/api/electronic-settlement/stp/check-availability', {
+          method: 'POST', headers: adminHeaders(),
+        });
+        if (r.success) {
+          const d = r.data;
+          el('stp-poll-result').innerHTML = '<span style="color:var(--green)">T+1 check: ' + (d.made_available || 0) + ' payments now available, ' + (d.checked || 0) + ' checked</span>';
+          loadSTPDashboard();
+        } else {
+          el('stp-poll-result').innerHTML = '<span style="color:var(--red)">' + esc(r.error) + '</span>';
+        }
+      } catch (err) {
+        el('stp-poll-result').innerHTML = '<span style="color:var(--red)">' + esc(err.message) + '</span>';
+      }
     }
 
     // ─── Init ──────────────────────────────────────────────────────────────────
