@@ -220,7 +220,7 @@ class SubLedgerEngine {
 
       await client.query('COMMIT');
 
-      return {
+      var txnResult = {
         transactionId: txnId,
         subLedgerId: subLedgerId,
         transactionType: transactionType,
@@ -228,11 +228,58 @@ class SubLedgerEngine {
         previousBalance: parseFloat(ledger.balance),
         newBalance: newBalance,
       };
+
+      // Auto-post Fineract JE for trustee/beneficiary sub-ledger transactions
+      SubLedgerEngine._postFineractJE(ledger, txnResult).catch(function() {});
+
+      return txnResult;
     } catch (err) {
       await client.query('ROLLBACK');
       throw err;
     } finally {
       client.release();
+    }
+  }
+
+  /**
+   * Auto-post a Fineract journal entry for a sub-ledger transaction
+   * if the contact is a trustee or beneficiary.
+   */
+  static async _postFineractJE(ledger, txn) {
+    if (!FineractClient) return;
+    if (!ledger.fineract_savings_id) return;
+
+    // Only for trustees and beneficiaries
+    try {
+      var contactRes = await pool.query(
+        'SELECT contact_type, fineract_client_id FROM crm_contacts WHERE contact_id = $1',
+        [ledger.contact_id]
+      );
+      if (contactRes.rows.length === 0) return;
+      var contact = contactRes.rows[0];
+      if (contact.contact_type !== 'trustee' && contact.contact_type !== 'beneficiary') return;
+
+      var fineractGLId = parseInt(ledger.fineract_savings_id);
+      if (isNaN(fineractGLId) || fineractGLId <= 0) return;
+
+      var isDebit = ['debit', 'fee', 'distribution'].indexOf(txn.transactionType) !== -1;
+      var debits = isDebit
+        ? [{ glAccountId: fineractGLId, amount: txn.amount }]
+        : [{ glAccountId: 1, amount: txn.amount }];
+      var credits = isDebit
+        ? [{ glAccountId: 1, amount: txn.amount }]
+        : [{ glAccountId: fineractGLId, amount: txn.amount }];
+
+      await FineractClient.postJournalEntry({
+        officeId: 1,
+        transactionDate: new Date(),
+        comments: 'Sub-ledger txn ' + txn.transactionId + ': ' + txn.transactionType + ' $' + txn.amount,
+        debits: debits,
+        credits: credits,
+      });
+      console.log('[SubLedger] Fineract JE posted for ' + txn.transactionId);
+    } catch (err) {
+      console.warn('[SubLedger] Fineract JE auto-post failed for ' + txn.transactionId + ':', err.message);
     }
   }
 

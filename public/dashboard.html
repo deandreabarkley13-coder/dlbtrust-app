@@ -576,6 +576,8 @@
         <div class="section-title">Contacts</div>
         <div class="table-wrap" id="crm-contacts-wrap"><p class="loading">Loading...</p></div>
         <button class="btn btn-outline btn-sm mt-16" onclick="showAddContact()">+ Add Contact</button>
+        <button class="btn btn-outline btn-sm mt-16" style="margin-left:8px" onclick="syncFineractClients()">Sync Trustees/Beneficiaries to Fineract</button>
+        <div id="crm-fineract-sync-result" style="margin-top:8px"></div>
         <div id="crm-add-contact" class="hidden mt-16">
           <div class="form-row"><div class="form-group"><label>First Name</label><input type="text" id="crm-first"></div><div class="form-group"><label>Last Name</label><input type="text" id="crm-last"></div></div>
           <div class="form-row"><div class="form-group"><label>Email</label><input type="email" id="crm-email"></div><div class="form-group"><label>Type</label><select id="crm-type"><option value="investor">Investor</option><option value="beneficiary">Beneficiary</option><option value="trustee">Trustee</option><option value="vendor">Vendor</option></select></div></div>
@@ -2561,14 +2563,15 @@
         <div class="card"><div class="card-title">Total Subscribed</div><div class="card-value">${fmt(dData.total_subscription_amount)}</div></div>
       `;
 
-      el('crm-contacts-wrap').innerHTML = cData.length ? '<table><thead><tr><th>ID</th><th>Name</th><th>Type</th><th>Email</th><th>Approval</th><th>KYC</th><th>Actions</th></tr></thead><tbody>' + cData.map(c => {
+      el('crm-contacts-wrap').innerHTML = cData.length ? '<table><thead><tr><th>ID</th><th>Name</th><th>Type</th><th>Email</th><th>Approval</th><th>KYC</th><th>Fineract</th><th>Actions</th></tr></thead><tbody>' + cData.map(c => {
         const approvalBadge = c.approval_status === 'approved' ? 'badge-active' : c.approval_status === 'rejected' ? 'badge-danger' : 'badge-pending';
         const kycBadge = c.kyc_status === 'verified' ? 'badge-active' : 'badge-pending';
+        const fineractBadge = c.fineract_client_id ? '<span class="badge badge-active">Linked #' + esc(c.fineract_client_id) + '</span>' : (c.contact_type === 'trustee' || c.contact_type === 'beneficiary' ? '<span class="badge badge-pending">Not linked</span>' : '<span class="badge" style="opacity:0.4">N/A</span>');
         let actions = '';
         if (c.approval_status !== 'approved') actions += `<button class="btn btn-success btn-sm" style="font-size:10px;padding:2px 8px;margin:1px;" onclick="crmApprove('${esc(c.contact_id)}')">Approve</button>`;
         if (c.approval_status !== 'rejected') actions += `<button class="btn btn-outline btn-sm" style="font-size:10px;padding:2px 8px;margin:1px;border-color:#e74c3c;color:#e74c3c;" onclick="crmReject('${esc(c.contact_id)}')">Reject</button>`;
         if (c.kyc_status !== 'verified') actions += `<button class="btn btn-outline btn-sm" style="font-size:10px;padding:2px 8px;margin:1px;" onclick="crmVerifyKYC('${esc(c.contact_id)}')">Verify KYC</button>`;
-        return `<tr><td><code style="font-size:10px">${esc(c.contact_id)}</code></td><td>${esc(c.first_name)} ${esc(c.last_name)}</td><td><span class="badge badge-info">${esc(c.contact_type)}</span></td><td>${esc(c.email || '—')}</td><td><span class="badge ${approvalBadge}">${esc(c.approval_status || 'pending_approval')}</span></td><td><span class="badge ${kycBadge}">${esc(c.kyc_status)}</span></td><td>${actions}</td></tr>`;
+        return `<tr><td><code style="font-size:10px">${esc(c.contact_id)}</code></td><td>${esc(c.first_name)} ${esc(c.last_name)}</td><td><span class="badge badge-info">${esc(c.contact_type)}</span></td><td>${esc(c.email || '—')}</td><td><span class="badge ${approvalBadge}">${esc(c.approval_status || 'pending_approval')}</span></td><td><span class="badge ${kycBadge}">${esc(c.kyc_status)}</span></td><td>${fineractBadge}</td><td>${actions}</td></tr>`;
       }).join('') + '</tbody></table>' : '<p class="text-muted">No contacts</p>';
 
       const sData = subs.data || [];
@@ -2597,8 +2600,27 @@
     async function crmVerifyKYC(contactId) {
       if (!confirm('Mark KYC as verified for ' + contactId + '?')) return;
       const r = await fetchJSON(API + '/api/crm/contacts/' + encodeURIComponent(contactId) + '/kyc', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ kycStatus: 'verified' }) });
-      alert(r.success ? 'KYC verified' : 'Error: ' + (r.error || 'Failed'));
+      alert(r.success ? 'KYC verified (Fineract client auto-created if trustee/beneficiary)' : 'Error: ' + (r.error || 'Failed'));
       loadCRM();
+    }
+    async function syncFineractClients() {
+      el('crm-fineract-sync-result').innerHTML = '<span style="color:var(--blue)">Syncing trustees/beneficiaries to Fineract...</span>';
+      try {
+        const r = await fetchJSON(API + '/api/crm/sync-fineract', { method: 'POST', headers: adminHeaders() });
+        if (r.success) {
+          const d = r.data;
+          el('crm-fineract-sync-result').innerHTML = '<div style="padding:8px 12px;background:rgba(16,185,129,0.1);border:1px solid var(--green);border-radius:6px;font-size:12px">' +
+            '<strong style="color:var(--green)">Fineract Sync Complete</strong> — ' +
+            'Synced: ' + d.synced + ' | Skipped: ' + d.skipped + ' | Failed: ' + d.failed +
+            (d.errors.length ? '<br>Errors: ' + d.errors.map(e => esc(e.contactId + ': ' + e.error)).join(', ') : '') +
+            '</div>';
+          loadCRM();
+        } else {
+          el('crm-fineract-sync-result').innerHTML = '<p class="error-msg">' + esc(r.error) + '</p>';
+        }
+      } catch (err) {
+        el('crm-fineract-sync-result').innerHTML = '<p class="error-msg">' + esc(err.message) + '</p>';
+      }
     }
 
     // ─── DOCUMENTS ─────────────────────────────────────────────────────────────

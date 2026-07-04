@@ -9,8 +9,44 @@
 'use strict';
 
 const pool = require('../bonds/pgPool');
+var FineractClient = null;
+try { FineractClient = require('../fineract/fineractClient').FineractClient; } catch (e) { /* optional */ }
+
+var FINERACT_ELIGIBLE_TYPES = ['trustee', 'beneficiary'];
 
 class CrmEngine {
+
+  /**
+   * Auto-create a Fineract client for eligible contact types (trustee/beneficiary).
+   * Returns the Fineract client ID or null if not eligible/failed.
+   */
+  static async _ensureFineractClient(contact) {
+    if (!FineractClient) return null;
+    if (FINERACT_ELIGIBLE_TYPES.indexOf(contact.contact_type) === -1) return null;
+    if (contact.fineract_client_id) return contact.fineract_client_id;
+
+    try {
+      var externalId = contact.contact_id;
+      var result = await FineractClient.createClient({
+        firstName: contact.first_name,
+        lastName: contact.last_name || contact.first_name,
+        externalId: externalId,
+        email: contact.email || undefined,
+      });
+      var fineractClientId = String(result.clientId || result.resourceId || result.id || '');
+      if (fineractClientId) {
+        await pool.query(
+          'UPDATE crm_contacts SET fineract_client_id = $1, updated_at = NOW() WHERE contact_id = $2',
+          [fineractClientId, contact.contact_id]
+        );
+        console.log('[CRM] Fineract client created for ' + contact.contact_type + ' ' + contact.contact_id + ': ' + fineractClientId);
+      }
+      return fineractClientId;
+    } catch (err) {
+      console.warn('[CRM] Fineract client creation failed for ' + contact.contact_id + ':', err.message);
+      return null;
+    }
+  }
 
   static async createContact({
     contactType, firstName, lastName, company, email, phone, mailingAddress,
@@ -32,7 +68,12 @@ class CrmEngine {
        routingNumber || null, accountNumber || null, bankAccountType || 'checking',
        bankName || null, notes || null, tags || null]
     );
-    return result.rows[0];
+    var contact = result.rows[0];
+
+    // Auto-create Fineract client for trustees/beneficiaries
+    CrmEngine._ensureFineractClient(contact).catch(function() {});
+
+    return contact;
   }
 
   static async getContact(contactId) {
@@ -120,7 +161,14 @@ class CrmEngine {
       [kycStatus, verifiedAt, contactId]
     );
     if (result.rows.length === 0) throw new Error(`Contact ${contactId} not found`);
-    return result.rows[0];
+    var contact = result.rows[0];
+
+    // On KYC verification, auto-create Fineract client for trustees/beneficiaries
+    if (kycStatus === 'verified') {
+      CrmEngine._ensureFineractClient(contact).catch(function() {});
+    }
+
+    return contact;
   }
 
   static async approveContact(contactId, approvedBy) {
@@ -248,6 +296,59 @@ class CrmEngine {
       total_subscription_amount: parseFloat(subscriptionStats.rows[0].total_amount),
       generated_at: new Date().toISOString(),
     };
+  }
+
+  /**
+   * Bulk-sync all trustee/beneficiary contacts to Fineract.
+   * Creates Fineract clients for any that don't have one yet.
+   */
+  static async syncToFineract() {
+    var synced = 0;
+    var skipped = 0;
+    var failed = 0;
+    var errors = [];
+
+    try {
+      var contacts = await pool.query(
+        `SELECT * FROM crm_contacts
+         WHERE contact_type IN ('trustee', 'beneficiary')
+           AND (fineract_client_id IS NULL OR fineract_client_id = '')
+           AND status = 'active'`
+      );
+
+      for (var i = 0; i < contacts.rows.length; i++) {
+        try {
+          var fId = await CrmEngine._ensureFineractClient(contacts.rows[i]);
+          if (fId) { synced++; } else { skipped++; }
+        } catch (err) {
+          failed++;
+          errors.push({ contactId: contacts.rows[i].contact_id, error: err.message });
+        }
+      }
+    } catch (outerErr) {
+      errors.push({ phase: 'query', error: outerErr.message });
+    }
+
+    return { synced: synced, skipped: skipped, failed: failed, errors: errors };
+  }
+
+  /**
+   * Get Fineract linkage status for all trustee/beneficiary contacts.
+   */
+  static async getFineractLinkageStatus() {
+    var result = await pool.query(`
+      SELECT contact_id, contact_type, first_name, last_name,
+             fineract_client_id, kyc_status
+      FROM crm_contacts
+      WHERE contact_type IN ('trustee', 'beneficiary')
+      ORDER BY contact_type, last_name
+    `);
+    var linked = 0;
+    var unlinked = 0;
+    for (var i = 0; i < result.rows.length; i++) {
+      if (result.rows[i].fineract_client_id) { linked++; } else { unlinked++; }
+    }
+    return { contacts: result.rows, linked: linked, unlinked: unlinked, total: result.rows.length };
   }
 }
 
