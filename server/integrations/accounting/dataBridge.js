@@ -1313,6 +1313,15 @@ class DataBridge {
       }
     } catch (e) { results.electronicSettlements = { error: e.message }; }
 
+    // 10b. Sync NiFi payment file transfer stats
+    try {
+      var nifiRes = await pool.query(
+        "SELECT COUNT(*) as total, COUNT(CASE WHEN status = 'acknowledged' THEN 1 END) as acknowledged, COUNT(CASE WHEN status = 'failed' THEN 1 END) as failed FROM nifi_payment_files"
+      );
+      var nifiRow = nifiRes.rows[0] || {};
+      results.nifiTransfers = { total: parseInt(nifiRow.total || 0), acknowledged: parseInt(nifiRow.acknowledged || 0), failed: parseInt(nifiRow.failed || 0) };
+    } catch (e) { results.nifiTransfers = { total: 0, acknowledged: 0, failed: 0, note: 'NiFi table not yet created' }; }
+
     // 11. Cleanup stale discrepancies older than 7 days
     try {
       var cleaned = await pool.query(`

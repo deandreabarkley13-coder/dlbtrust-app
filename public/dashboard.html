@@ -243,6 +243,7 @@
     <div class="nav-item" data-page="bill"><span class="icon">💳</span> BILL Cash</div>
     <div class="nav-item" data-page="vendor-payments"><span class="icon">💸</span> Vendor Payments</div>
     <div class="nav-item" data-page="electronic-settlement"><span class="icon">⚡</span> Electronic Settlement</div>
+    <div class="nav-item" data-page="nifi"><span class="icon">🔄</span> NiFi File Transfer</div>
     <div class="nav-section">Data Bridge</div>
     <div class="nav-item" data-page="data-bridge"><span class="icon">🔗</span> Data Bridge</div>
     <div class="nav-section">Agents</div>
@@ -1365,6 +1366,78 @@
       </div>
     </div>
 
+    <!-- NIFI FILE TRANSFER PAGE -->
+    <div id="page-nifi" class="page hidden">
+      <div class="page-header">
+        <div><h1>NiFi File Transfer</h1><div class="subtitle">Automated server-to-server payment file generation, staging, and transfer via Apache NiFi</div></div>
+        <div>
+          <button class="btn btn-sm" onclick="nifiExpireStale()" title="Expire stale files">Expire Stale</button>
+        </div>
+      </div>
+
+      <!-- Stats Cards -->
+      <div class="grid grid-4" id="nifi-stats">
+        <div class="card"><div class="stat-label">Outbound Files</div><div class="stat-value" id="nifi-outbound">—</div></div>
+        <div class="card"><div class="stat-label">Inbound Files</div><div class="stat-value" id="nifi-inbound">—</div></div>
+        <div class="card"><div class="stat-label">Staged (Ready)</div><div class="stat-value" id="nifi-staged">—</div></div>
+        <div class="card"><div class="stat-label">Total Volume</div><div class="stat-value" id="nifi-volume">—</div></div>
+      </div>
+
+      <!-- Generate Payment File -->
+      <div class="card" style="margin-top:24px">
+        <h2>Generate Payment File</h2>
+        <div class="grid grid-3">
+          <div><label class="form-label">Format</label>
+            <select id="nifi-format" class="form-control">
+              <option value="nacha">NACHA (ACH)</option>
+              <option value="iso20022">ISO 20022 (pain.001)</option>
+              <option value="csv">CSV</option>
+              <option value="json">JSON</option>
+            </select>
+          </div>
+          <div><label class="form-label">Destination</label>
+            <select id="nifi-dest" class="form-control">
+              <option value="bill">BILL Cash Account</option>
+              <option value="bank">Direct Bank</option>
+              <option value="partner">Payment Partner</option>
+            </select>
+          </div>
+          <div style="display:flex;align-items:flex-end">
+            <button class="btn btn-primary" onclick="nifiGenerate()">Generate &amp; Stage</button>
+          </div>
+        </div>
+        <div id="nifi-gen-result" style="margin-top:12px"></div>
+      </div>
+
+      <!-- Outbox (Staged Files) -->
+      <div class="card" style="margin-top:16px">
+        <h2>Outbox — Staged Files</h2>
+        <div class="table-responsive">
+          <table class="table">
+            <thead><tr><th>File ID</th><th>Name</th><th>Format</th><th>Payments</th><th>Amount</th><th>Status</th><th>Created</th><th>Actions</th></tr></thead>
+            <tbody id="nifi-outbox-body"><tr><td colspan="8" style="text-align:center;opacity:.5">Loading...</td></tr></tbody>
+          </table>
+        </div>
+      </div>
+
+      <!-- Recent Transfer History -->
+      <div class="card" style="margin-top:16px">
+        <h2>Transfer History</h2>
+        <div class="table-responsive">
+          <table class="table">
+            <thead><tr><th>File ID</th><th>Direction</th><th>Format</th><th>Payments</th><th>Amount</th><th>Status</th><th>Created</th></tr></thead>
+            <tbody id="nifi-history-body"><tr><td colspan="7" style="text-align:center;opacity:.5">Loading...</td></tr></tbody>
+          </table>
+        </div>
+      </div>
+
+      <!-- Circuit Breaker -->
+      <div class="card" style="margin-top:16px">
+        <h2>NiFi Circuit Breaker</h2>
+        <div id="nifi-circuit">Loading...</div>
+      </div>
+    </div>
+
     <!-- DATA BRIDGE PAGE -->
     <div id="page-data-bridge" class="page hidden">
       <div class="page-header">
@@ -1738,7 +1811,7 @@
         document.querySelectorAll('.page').forEach(p => p.classList.add('hidden'));
         document.getElementById('page-' + page).classList.remove('hidden');
         // Load data for page
-        const loaders = { overview: loadOverview, bonds: loadBonds, cash: loadCash, payments: loadPayments, ach: loadACH, wire: loadWire, partners: loadPartners, apikeys: loadApiKeys, as2: loadAS2, crm: loadCRM, documents: loadDocuments, accounting: loadAccounting, tax: loadTax, fineract: loadFineract, bill: loadBill, 'trustee-agent': loadTrusteeAgent, 'bookkeeping-agent': loadBookkeepingAgent, 'data-bridge': loadDataBridge, 'sub-ledgers': loadSubLedgers, 'vendor-payments': loadVendorPayments, 'electronic-settlement': loadElectronicSettlement, settings: loadSettings, security: loadSecurity, backup: loadBackupPage, admin: loadAdmin };
+        const loaders = { overview: loadOverview, bonds: loadBonds, cash: loadCash, payments: loadPayments, ach: loadACH, wire: loadWire, partners: loadPartners, apikeys: loadApiKeys, as2: loadAS2, crm: loadCRM, documents: loadDocuments, accounting: loadAccounting, tax: loadTax, fineract: loadFineract, bill: loadBill, 'trustee-agent': loadTrusteeAgent, 'bookkeeping-agent': loadBookkeepingAgent, 'data-bridge': loadDataBridge, 'sub-ledgers': loadSubLedgers, 'vendor-payments': loadVendorPayments, 'electronic-settlement': loadElectronicSettlement, nifi: loadNiFi, settings: loadSettings, security: loadSecurity, backup: loadBackupPage, admin: loadAdmin };
         if (loaders[page]) loaders[page]();
       });
     });
@@ -4657,6 +4730,120 @@
       const r = await fetchJSON(API + '/api/auth/users/' + userId + '/unlock', { method: 'POST', headers: adminHeaders() });
       alert(r.success ? 'Account unlocked' : (r.error || 'Failed'));
       loadUsers();
+    }
+
+    // ─── NiFi File Transfer ──────────────────────────────────────────────────
+
+    async function loadNiFi() {
+      try {
+        const [dashRes, outboxRes, histRes] = await Promise.all([
+          fetchJSON(API + '/api/nifi/dashboard', { headers: adminHeaders() }),
+          fetchJSON(API + '/api/nifi/outbox', { headers: adminHeaders() }),
+          fetchJSON(API + '/api/nifi/history', { headers: adminHeaders() }),
+        ]);
+
+        if (dashRes.success && dashRes.data) {
+          const s = dashRes.data.stats;
+          el('nifi-outbound').textContent = s.outbound_total || 0;
+          el('nifi-inbound').textContent = s.inbound_total || 0;
+          el('nifi-staged').textContent = s.staged || 0;
+          el('nifi-volume').textContent = '$' + (s.outbound_volume + s.inbound_volume).toLocaleString(undefined, {minimumFractionDigits:2});
+
+          const cb = dashRes.data.circuit_breaker;
+          el('nifi-circuit').innerHTML = '<span class="badge ' + (cb.open ? 'badge-pending' : 'badge-active') + '">' +
+            (cb.open ? 'OPEN' : 'CLOSED') + '</span> Failures: ' + cb.failures +
+            (dashRes.data.nifi_endpoint ? ' | Endpoint: ' + esc(dashRes.data.nifi_endpoint) : ' | No endpoint configured') +
+            ' | HMAC: ' + (dashRes.data.hmac_configured ? 'configured' : 'default');
+        }
+
+        // Outbox table
+        if (outboxRes.success && outboxRes.data) {
+          const files = outboxRes.data;
+          if (files.length === 0) {
+            el('nifi-outbox-body').innerHTML = '<tr><td colspan="8" style="text-align:center;opacity:.5">No staged files</td></tr>';
+          } else {
+            el('nifi-outbox-body').innerHTML = files.map(f => '<tr>' +
+              '<td><code>' + esc(f.file_id) + '</code></td>' +
+              '<td>' + esc(f.file_name) + '</td>' +
+              '<td><span class="badge">' + esc(f.format.toUpperCase()) + '</span></td>' +
+              '<td>' + f.payment_count + '</td>' +
+              '<td>$' + (f.total_amount || 0).toLocaleString(undefined, {minimumFractionDigits:2}) + '</td>' +
+              '<td><span class="badge badge-active">' + esc(f.status) + '</span></td>' +
+              '<td>' + new Date(f.created_at).toLocaleString() + '</td>' +
+              '<td><button class="btn btn-sm" onclick="nifiAck(\'' + esc(f.file_id) + '\')">ACK</button></td>' +
+            '</tr>').join('');
+          }
+        }
+
+        // History table
+        if (histRes.success && histRes.data) {
+          const hist = histRes.data;
+          if (hist.length === 0) {
+            el('nifi-history-body').innerHTML = '<tr><td colspan="7" style="text-align:center;opacity:.5">No transfers yet</td></tr>';
+          } else {
+            el('nifi-history-body').innerHTML = hist.map(h => '<tr>' +
+              '<td><code>' + esc(h.file_id) + '</code></td>' +
+              '<td><span class="badge ' + (h.direction === 'outbound' ? 'badge-pending' : 'badge-active') + '">' + esc(h.direction) + '</span></td>' +
+              '<td>' + esc((h.file_format || '').toUpperCase()) + '</td>' +
+              '<td>' + (h.payment_count || 0) + '</td>' +
+              '<td>$' + parseFloat(h.total_amount || 0).toLocaleString(undefined, {minimumFractionDigits:2}) + '</td>' +
+              '<td><span class="badge">' + esc(h.status) + '</span></td>' +
+              '<td>' + new Date(h.created_at).toLocaleString() + '</td>' +
+            '</tr>').join('');
+          }
+        }
+      } catch (err) {
+        el('nifi-outbox-body').innerHTML = '<tr><td colspan="8" style="color:red">' + esc(err.message) + '</td></tr>';
+      }
+    }
+
+    async function nifiGenerate() {
+      const format = el('nifi-format').value;
+      const dest = el('nifi-dest').value;
+      el('nifi-gen-result').innerHTML = '<span style="color:var(--blue)">Generating payment file...</span>';
+      try {
+        const r = await fetchJSON(API + '/api/nifi/generate', {
+          method: 'POST', headers: { ...adminHeaders(), 'Content-Type': 'application/json' },
+          body: JSON.stringify({ format, destination_system: dest }),
+        });
+        if (r.success && r.data) {
+          const d = r.data;
+          if (!d.file_id) {
+            el('nifi-gen-result').innerHTML = '<span style="opacity:.6">' + esc(d.message || 'No pending payments to stage') + '</span>';
+          } else {
+            el('nifi-gen-result').innerHTML = '<div style="border:1px solid var(--green);padding:12px;border-radius:8px;background:rgba(0,200,0,.05)">' +
+              '<strong>File Staged:</strong> ' + esc(d.file_name) + '<br>' +
+              'Format: ' + esc(d.format.toUpperCase()) + ' | Payments: ' + d.payment_count + ' | Amount: $' + d.total_amount.toLocaleString(undefined, {minimumFractionDigits:2}) + '<br>' +
+              'Hash: <code>' + esc(d.file_hash.substring(0, 16)) + '...</code> | HMAC: <code>' + esc(d.hmac_signature.substring(0, 16)) + '...</code>' +
+              '</div>';
+            loadNiFi();
+          }
+        } else {
+          el('nifi-gen-result').innerHTML = '<span style="color:red">' + esc(r.error) + '</span>';
+        }
+      } catch (err) {
+        el('nifi-gen-result').innerHTML = '<span style="color:red">' + esc(err.message) + '</span>';
+      }
+    }
+
+    async function nifiAck(fileId) {
+      try {
+        const r = await fetchJSON(API + '/api/nifi/ack/' + fileId, {
+          method: 'POST', headers: adminHeaders(),
+        });
+        if (r.success) { alert('File acknowledged'); loadNiFi(); }
+        else alert(r.error);
+      } catch (err) { alert(err.message); }
+    }
+
+    async function nifiExpireStale() {
+      try {
+        const r = await fetchJSON(API + '/api/nifi/expire', {
+          method: 'POST', headers: adminHeaders(),
+        });
+        if (r.success) { alert('Expired: ' + (r.data.expired || 0) + ' files'); loadNiFi(); }
+        else alert(r.error);
+      } catch (err) { alert(err.message); }
     }
 
     // ─── Electronic Settlement ───────────────────────────────────────────────

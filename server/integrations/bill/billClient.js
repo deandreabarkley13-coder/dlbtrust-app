@@ -485,6 +485,315 @@ async function recordPayment(opts) {
 }
 
 /**
+ * Create an AR Invoice in BILL.
+ * Invoices are required for payments to properly clear and post in BILL.
+ * RecordARPayment alone only creates a ledger entry — linking to an invoice
+ * triggers BILL's actual payment processing and deposit clearing.
+ *
+ * @param {Object} opts
+ * @param {string} opts.customerId - BILL customer ID
+ * @param {number} opts.amount - Invoice amount
+ * @param {string} [opts.invoiceNumber] - Invoice reference number
+ * @param {string} [opts.description] - Line item description
+ * @param {string} [opts.dueDate] - Due date (YYYY-MM-DD), defaults to today
+ * @returns {Object} Created invoice with id
+ */
+async function createInvoice(opts) {
+  var session = await getSession();
+  var devKey = process.env.BILL_DEV_KEY;
+
+  var dueDate = opts.dueDate || new Date().toISOString().split('T')[0];
+  var invoiceDate = new Date().toISOString().split('T')[0];
+  var invoiceNumber = opts.invoiceNumber || ('INV-' + Date.now().toString(36).toUpperCase());
+
+  var invoiceLineItem = {
+    entity: 'InvoiceLineItem',
+    amount: opts.amount,
+    description: opts.description || 'Trust deposit',
+    quantity: 1,
+  };
+
+  var invoiceObj = {
+    entity: 'Invoice',
+    customerId: opts.customerId,
+    invoiceNumber: invoiceNumber,
+    invoiceDate: invoiceDate,
+    dueDate: dueDate,
+    isActive: '1',
+    invoiceLineItems: [invoiceLineItem],
+  };
+
+  var result = await billRequest('/Crud/Create/Invoice.json', {
+    devKey: devKey,
+    sessionId: session,
+    data: JSON.stringify({ obj: invoiceObj }),
+  });
+
+  if (result.response_status === 0 && result.response_data) {
+    return { id: result.response_data.id, invoiceNumber: invoiceNumber, amount: opts.amount, status: 'open' };
+  }
+
+  if (result.response_status === 1) {
+    sessionId = null;
+    session = await getSession();
+    result = await billRequest('/Crud/Create/Invoice.json', {
+      devKey: devKey,
+      sessionId: session,
+      data: JSON.stringify({ obj: invoiceObj }),
+    });
+    if (result.response_status === 0 && result.response_data) {
+      return { id: result.response_data.id, invoiceNumber: invoiceNumber, amount: opts.amount, status: 'open' };
+    }
+  }
+
+  var errMsg = (result.response_data && result.response_data.error_message) ||
+    result.response_message || JSON.stringify(result);
+  throw new Error('BILL Create Invoice failed: ' + errMsg);
+}
+
+/**
+ * Send an invoice to a customer via BILL (triggers email notification + online payment link).
+ * @param {string} invoiceId - BILL invoice ID
+ * @returns {Object} Send result
+ */
+async function sendInvoice(invoiceId) {
+  var session = await getSession();
+  var devKey = process.env.BILL_DEV_KEY;
+
+  var result = await billRequest('/SendInvoice.json', {
+    devKey: devKey,
+    sessionId: session,
+    data: JSON.stringify({ invoiceId: invoiceId }),
+  });
+
+  if (result.response_status === 0) {
+    return { invoiceId: invoiceId, sent: true, raw: result.response_data };
+  }
+
+  if (result.response_status === 1) {
+    sessionId = null;
+    session = await getSession();
+    result = await billRequest('/SendInvoice.json', {
+      devKey: devKey,
+      sessionId: session,
+      data: JSON.stringify({ invoiceId: invoiceId }),
+    });
+    if (result.response_status === 0) {
+      return { invoiceId: invoiceId, sent: true, raw: result.response_data };
+    }
+  }
+
+  var errMsg = (result.response_data && result.response_data.error_message) ||
+    result.response_message || JSON.stringify(result);
+  throw new Error('BILL Send Invoice failed: ' + errMsg);
+}
+
+/**
+ * Deposit to BILL Cash Account with proper clearing.
+ * Creates invoice → records payment against invoice → deposit clears and posts.
+ *
+ * This replaces the bare RecordARPayment call which only creates a ledger entry.
+ * By linking the payment to an invoice, BILL processes it through their
+ * payment clearing pipeline so it actually posts as a deposit.
+ *
+ * @param {Object} opts
+ * @param {number} opts.amount - Deposit amount
+ * @param {string} [opts.method] - 'ach' or 'wire'
+ * @param {string} [opts.memo] - Payment description
+ * @param {string} [opts.bankAccountId] - BILL bank account ID
+ * @param {string} [opts.customerId] - BILL customer ID
+ * @returns {Object} { invoiceId, receivedPayId, amount, status, clearing }
+ */
+async function depositToBillCash(opts) {
+  // 1. Resolve customer
+  var customerId = opts.customerId;
+  if (!customerId) {
+    var customers = await listCustomers();
+    if (customers.length > 0) {
+      customerId = customers[0].id;
+    } else {
+      customerId = await createTrustCustomer();
+    }
+  }
+
+  // 2. Create invoice for the deposit amount
+  var invoiceNumber = 'DEP-' + Date.now().toString(36).toUpperCase();
+  var invoice;
+  try {
+    invoice = await createInvoice({
+      customerId: customerId,
+      amount: opts.amount,
+      invoiceNumber: invoiceNumber,
+      description: opts.memo || ('Trust deposit — ' + (opts.method === 'wire' ? 'wire transfer' : 'ACH')),
+    });
+  } catch (invErr) {
+    // Fallback to bare RecordARPayment if invoice creation fails
+    console.warn('[bill-client] Invoice creation failed, falling back to RecordARPayment:', invErr.message);
+    var fallback = await recordDeposit(opts);
+    fallback.clearing = 'ledger_only';
+    fallback.note = 'Invoice creation failed — deposit recorded as ledger entry only. Check BILL dashboard.';
+    return fallback;
+  }
+
+  // 3. Record payment against the invoice
+  var session = await getSession();
+  var devKey = process.env.BILL_DEV_KEY;
+
+  var bankAccountId = opts.bankAccountId;
+  if (!bankAccountId) {
+    var accounts = await listBankAccounts();
+    var active = Array.isArray(accounts)
+      ? accounts.find(function(a) { return a.isActive === '1' || a.isActive === true; })
+      : null;
+    if (!active) throw new Error('No active BILL bank account found');
+    bankAccountId = active.id;
+  }
+
+  var paymentType = opts.method === 'wire' ? '6' : '4';
+  var paymentDate = new Date().toISOString().split('T')[0];
+  var description = opts.memo || ('Trust deposit — ' + invoiceNumber);
+
+  var result = await billRequest('/RecordARPayment.json', {
+    devKey: devKey,
+    sessionId: session,
+    data: {
+      customerId: customerId,
+      paymentDate: paymentDate,
+      amount: opts.amount,
+      paymentType: paymentType,
+      depositToBankAccountId: bankAccountId,
+      description: description,
+      invoicePayments: [{ invoiceId: invoice.id, amount: opts.amount }],
+    }
+  });
+
+  if (result.response_status === 0 && result.response_data) {
+    return {
+      invoiceId: invoice.id,
+      invoiceNumber: invoiceNumber,
+      receivedPayId: result.response_data.id,
+      amount: opts.amount,
+      status: 'clearing',
+      clearing: 'invoice_linked',
+      paymentDate: paymentDate,
+      paymentType: opts.method === 'wire' ? 'Wire Transfer' : 'ACH',
+      depositToBankAccountId: bankAccountId,
+      note: 'Deposit linked to invoice ' + invoiceNumber + ' — BILL will process and clear to Cash Account',
+    };
+  }
+
+  // Retry on session expiry
+  if (result.response_status === 1) {
+    sessionId = null;
+    session = await getSession();
+    result = await billRequest('/RecordARPayment.json', {
+      devKey: devKey,
+      sessionId: session,
+      data: {
+        customerId: customerId,
+        paymentDate: paymentDate,
+        amount: opts.amount,
+        paymentType: paymentType,
+        depositToBankAccountId: bankAccountId,
+        description: description,
+        invoicePayments: [{ invoiceId: invoice.id, amount: opts.amount }],
+      }
+    });
+    if (result.response_status === 0 && result.response_data) {
+      return {
+        invoiceId: invoice.id,
+        invoiceNumber: invoiceNumber,
+        receivedPayId: result.response_data.id,
+        amount: opts.amount,
+        status: 'clearing',
+        clearing: 'invoice_linked',
+        paymentDate: paymentDate,
+        paymentType: opts.method === 'wire' ? 'Wire Transfer' : 'ACH',
+        depositToBankAccountId: bankAccountId,
+        note: 'Deposit linked to invoice — BILL will process and clear',
+      };
+    }
+  }
+
+  var errMsg = (result.response_data && result.response_data.error_message) ||
+    result.response_message || JSON.stringify(result);
+  throw new Error('BILL deposit failed: ' + errMsg);
+}
+
+/**
+ * Check deposit/received payment status in BILL.
+ * Polls BILL to see if a recorded payment has cleared and posted.
+ * @param {string} receivedPayId - BILL ReceivedPay ID
+ * @returns {Object} { id, status, cleared, amount, paymentDate }
+ */
+async function checkDepositStatus(receivedPayId) {
+  var session = await getSession();
+  var devKey = process.env.BILL_DEV_KEY;
+
+  var result = await billRequest('/Crud/Read/ReceivedPay.json', {
+    devKey: devKey,
+    sessionId: session,
+    data: JSON.stringify({ id: receivedPayId }),
+  });
+
+  if (result.response_status === 0 && result.response_data) {
+    var pay = result.response_data;
+    // BILL status: 0=uncleared, 1=cleared/posted, 2=voided
+    var cleared = pay.status === '1' || pay.status === 1;
+    return {
+      id: pay.id,
+      status: cleared ? 'cleared' : (pay.status === '2' ? 'voided' : 'pending'),
+      cleared: cleared,
+      amount: parseFloat(pay.amount) || 0,
+      paymentDate: pay.paymentDate,
+      depositDate: pay.depositDate || null,
+      bankAccountId: pay.depositToBankAccountId || null,
+    };
+  }
+
+  if (result.response_status === 1) {
+    sessionId = null;
+    session = await getSession();
+    result = await billRequest('/Crud/Read/ReceivedPay.json', {
+      devKey: devKey,
+      sessionId: session,
+      data: JSON.stringify({ id: receivedPayId }),
+    });
+    if (result.response_status === 0 && result.response_data) {
+      var p = result.response_data;
+      var cl = p.status === '1' || p.status === 1;
+      return { id: p.id, status: cl ? 'cleared' : 'pending', cleared: cl, amount: parseFloat(p.amount) || 0, paymentDate: p.paymentDate };
+    }
+  }
+
+  throw new Error('BILL deposit status check failed');
+}
+
+/**
+ * Poll all pending deposits and return their clearing status.
+ * @returns {Array} Array of { receivedPayId, status, cleared }
+ */
+async function pollDepositStatuses() {
+  var payments = await listReceivedPayments(50);
+  if (!Array.isArray(payments)) return [];
+
+  var results = [];
+  for (var i = 0; i < payments.length; i++) {
+    var p = payments[i];
+    var cleared = p.status === '1' || p.status === 1;
+    results.push({
+      receivedPayId: p.id,
+      amount: parseFloat(p.amount) || 0,
+      status: cleared ? 'cleared' : (p.status === '2' ? 'voided' : 'pending'),
+      cleared: cleared,
+      paymentDate: p.paymentDate,
+      description: p.description || '',
+    });
+  }
+  return results;
+}
+
+/**
  * Get entity changes since the last sync token (incremental sync).
  * Uses BILL's GetEntityChanges endpoint for faster polling.
  * @param {string} [syncToken] - Sync token from previous call (uses env BILL_SYNC_TOKEN if omitted)
@@ -1004,6 +1313,11 @@ module.exports = {
   isConfigured: isConfigured,
   recordDeposit: recordDeposit,
   recordPayment: recordPayment,
+  createInvoice: createInvoice,
+  sendInvoice: sendInvoice,
+  depositToBillCash: depositToBillCash,
+  checkDepositStatus: checkDepositStatus,
+  pollDepositStatuses: pollDepositStatuses,
   listCustomers: listCustomers,
   listSentPayments: listSentPayments,
   listReceivedPayments: listReceivedPayments,

@@ -94,6 +94,9 @@ try { app.use('/api/vendors', require(path.join(HD, 'server', 'routes', 'vendors
 // Electronic Payment & Settlement System
 try { app.use('/api/electronic-settlement', require(path.join(HD, 'server', 'routes', 'electronicSettlement'))); console.log('[electronic-settlement] loaded'); } catch(e) { console.warn('[electronic-settlement]', e.message); }
 
+// Apache NiFi Payment File Transfer
+try { app.use('/api/nifi', require(path.join(HD, 'server', 'routes', 'nifi'))); console.log('[nifi] loaded'); } catch(e) { console.warn('[nifi]', e.message); }
+
 // Trustee Agent & Bookkeeping Agent
 try { app.use('/api/agents', require(path.join(HD, 'server', 'routes', 'agents'))); console.log('[agents] loaded'); } catch(e) { console.warn('[agents]', e.message); }
 

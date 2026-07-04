@@ -685,11 +685,11 @@ async function executeBILLPayment(opts) {
 
   var paymentResult;
   if (isDeposit) {
-    // Deposit INTO BILL Cash Account via RecordARPayment
-    paymentResult = await billClient.recordPayment({
+    // Deposit INTO BILL Cash Account via invoice-linked flow (clears and posts)
+    paymentResult = await billClient.depositToBillCash({
       amount: opts.amount,
-      description: opts.description || 'Electronic settlement deposit',
-      paymentDate: new Date().toISOString().split('T')[0],
+      method: 'ach',
+      memo: opts.description || 'Electronic settlement deposit',
     });
   } else {
     // Outbound vendor payment via PayBills
