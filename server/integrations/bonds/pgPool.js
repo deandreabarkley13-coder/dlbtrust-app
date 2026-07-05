@@ -118,14 +118,15 @@ function rebuildPool() {
 let recoveryTimer = null;
 function startRecoveryProbe() {
   if (recoveryTimer) return; // already running
+  rebuildPool(); // one initial rebuild when probe starts
   recoveryTimer = setInterval(async () => {
     try {
-      rebuildPool();
       await pool.query('SELECT 1');
       console.log('[BondDB] Recovery probe: Postgres is back!');
       dbCircuit.recordSuccess();
     } catch (e) {
       console.warn('[BondDB] Recovery probe: still down —', e.message);
+      rebuildPool(); // only rebuild after a failed probe
     }
   }, 3000);
   recoveryTimer.unref();
@@ -137,8 +138,9 @@ function stopRecoveryProbe() {
   }
 }
 
-// Keepalive ping every 15s (normal operation)
+// Keepalive ping every 15s (normal operation — paused while recovery probe is active)
 const keepAliveTimer = setInterval(async () => {
+  if (recoveryTimer) return; // recovery probe handles connectivity during outages
   try {
     await pool.query('SELECT 1');
     dbCircuit.recordSuccess();
