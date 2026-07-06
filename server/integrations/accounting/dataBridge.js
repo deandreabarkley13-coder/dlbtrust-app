@@ -1322,6 +1322,17 @@ class DataBridge {
       results.nifiTransfers = { total: parseInt(nifiRow.total || 0), acknowledged: parseInt(nifiRow.acknowledged || 0), failed: parseInt(nifiRow.failed || 0) };
     } catch (e) { results.nifiTransfers = { total: 0, acknowledged: 0, failed: 0, note: 'NiFi table not yet created' }; }
 
+    // 10c. Sync HCE contactless payment stats
+    try {
+      var hceRes = await pool.query(
+        "SELECT COUNT(*) as total, COUNT(CASE WHEN status = 'settled' OR status = 'completed' THEN 1 END) as settled, COUNT(CASE WHEN data_bridge_synced = TRUE THEN 1 END) as synced, COUNT(CASE WHEN status IN ('failed','declined') THEN 1 END) as failed FROM hce_transactions"
+      );
+      var hceRow = hceRes.rows[0] || {};
+      results.hcePayments = { total: parseInt(hceRow.total || 0), settled: parseInt(hceRow.settled || 0), synced: parseInt(hceRow.synced || 0), failed: parseInt(hceRow.failed || 0) };
+      // Mark settled HCE txns as synced
+      await pool.query("UPDATE hce_transactions SET data_bridge_synced = TRUE, updated_at = NOW() WHERE status IN ('settled','completed') AND data_bridge_synced = FALSE");
+    } catch (e) { results.hcePayments = { total: 0, settled: 0, synced: 0, failed: 0, note: 'HCE table not yet created' }; }
+
     // 11. Cleanup stale discrepancies older than 7 days
     try {
       var cleaned = await pool.query(`
