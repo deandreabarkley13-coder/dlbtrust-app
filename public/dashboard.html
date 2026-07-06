@@ -1521,7 +1521,7 @@
       <div class="grid grid-2" style="margin-top:16px">
         <div class="card">
           <h2>📷 QR Scanner</h2>
-          <p style="color:var(--muted);font-size:13px;margin-bottom:12px">Scan a QR payment code from a device to instantly process a transaction at the terminal</p>
+          <p style="color:var(--muted);font-size:13px;margin-bottom:12px">Scan any QR code — Cash App, Venmo, PayPal, Zelle, or DLB payment codes — to instantly process payments</p>
           <div id="hce-qr-scanner-area" style="position:relative;width:100%;max-width:360px;margin:0 auto">
             <video id="hce-qr-video" style="width:100%;border-radius:8px;background:#000;display:none" autoplay playsinline></video>
             <canvas id="hce-qr-canvas" style="display:none"></canvas>
@@ -1536,7 +1536,7 @@
           <div style="margin-top:12px">
             <label style="font-size:13px;color:var(--muted)">Or paste QR data manually:</label>
             <div style="display:flex;gap:8px;margin-top:4px">
-              <input id="hce-qr-manual" class="form-control" placeholder='Paste QR JSON data...' style="flex:1">
+              <input id="hce-qr-manual" class="form-control" placeholder='Paste QR data or payment URL (Cash App, Venmo, PayPal...)' style="flex:1">
               <button class="btn btn-sm" onclick="hceProcessManualQR()">Process</button>
             </div>
           </div>
@@ -5235,6 +5235,19 @@
     let hceQRStream = null;
     let hceQRScanInterval = null;
 
+    const QR_PROVIDER_LABELS = {
+      'dlb-hce': '🏦 DLB HCE Internal',
+      'cashapp': '💚 Cash App',
+      'venmo': '💙 Venmo',
+      'paypal': '💛 PayPal',
+      'zelle': '💜 Zelle',
+      'generic': '🌐 Payment Link',
+      'web': '🔗 Web Payment',
+      'bitcoin': '₿ Bitcoin',
+      'ethereum': 'Ξ Ethereum',
+      'amount': '💵 Amount',
+    };
+
     async function hceStartQRScan() {
       const video = el('hce-qr-video');
       const overlay = el('hce-qr-overlay');
@@ -5245,7 +5258,7 @@
         overlay.style.display = 'block';
         el('hce-qr-scan-btn').style.display = 'none';
         el('hce-qr-stop-btn').style.display = 'inline-block';
-        el('hce-qr-scan-result').innerHTML = '<div class="alert" style="background:var(--card);border:1px solid var(--accent)">Scanning... Point camera at QR payment code</div>';
+        el('hce-qr-scan-result').innerHTML = '<div class="alert" style="background:var(--card);border:1px solid var(--accent)">Scanning... Point camera at any QR code (Cash App, Venmo, PayPal, or DLB payment codes)</div>';
 
         const canvas = el('hce-qr-canvas');
         const ctx = canvas.getContext('2d', { willReadFrequently: true });
@@ -5259,14 +5272,10 @@
           try {
             const code = jsQR(imageData.data, imageData.width, imageData.height, { inversionAttempts: 'dontInvert' });
             if (code && code.data) {
-              let parsed;
-              try { parsed = JSON.parse(code.data); } catch (e) { return; }
-              if (parsed && parsed.type === 'dlb-hce-pay') {
-                hceStopQRScan();
-                hceProcessScannedQR(code.data);
-              }
+              hceStopQRScan();
+              hceHandleScannedData(code.data);
             }
-          } catch (e) { /* jsQR not loaded or parse failed */ }
+          } catch (e) { /* jsQR not loaded */ }
         }, 250);
       } catch (err) {
         el('hce-qr-scan-result').innerHTML = '<div class="alert alert-danger">Camera access denied or unavailable: ' + err.message + '</div>';
@@ -5282,8 +5291,100 @@
       el('hce-qr-stop-btn').style.display = 'none';
     }
 
-    async function hceProcessScannedQR(qrData) {
-      el('hce-qr-scan-result').innerHTML = '<div class="alert" style="background:var(--card);border:1px solid var(--accent)">Processing QR payment...</div>';
+    async function hceHandleScannedData(qrData) {
+      el('hce-qr-scan-result').innerHTML = '<div class="alert" style="background:var(--card);border:1px solid var(--accent)">Detecting QR format...</div>';
+
+      // First try internal DLB format directly
+      try {
+        const parsed = JSON.parse(qrData);
+        if (parsed && parsed.type === 'dlb-hce-pay') {
+          return hceProcessInternalQR(qrData);
+        }
+      } catch (e) { /* not internal JSON */ }
+
+      // Parse as external QR via backend
+      try {
+        const r = await fetchJSON(API + '/api/hce/qr/parse', {
+          method: 'POST', headers: { ...adminHeaders(), 'Content-Type': 'application/json' },
+          body: JSON.stringify({ qr_data: qrData }),
+        });
+        if (r.success && r.data) {
+          hceShowExternalQRConfirm(r.data, qrData);
+        } else {
+          el('hce-qr-scan-result').innerHTML = '<div class="alert alert-warning"><strong>Unrecognized QR Code</strong><br>' +
+            '<small>Data: <code>' + (qrData.length > 100 ? qrData.slice(0, 100) + '...' : qrData) + '</code></small></div>';
+        }
+      } catch (err) {
+        el('hce-qr-scan-result').innerHTML = '<div class="alert alert-danger">' + err.message + '</div>';
+      }
+    }
+
+    function hceShowExternalQRConfirm(parsed, rawData) {
+      const label = QR_PROVIDER_LABELS[parsed.provider] || parsed.provider;
+      const recipient = parsed.data.recipient || parsed.data.cashtag || parsed.data.username || 'Unknown';
+      const amount = parsed.data.amount;
+      let html = '<div class="alert" style="background:var(--card);border:1px solid var(--accent);padding:16px">';
+      html += '<strong style="font-size:16px">' + label + ' Payment Detected</strong><br><br>';
+      html += '<div style="display:grid;grid-template-columns:auto 1fr;gap:6px 12px;font-size:14px">';
+      html += '<span style="color:var(--muted)">Recipient:</span><strong>' + recipient + '</strong>';
+      if (amount) html += '<span style="color:var(--muted)">Amount:</span><strong style="color:var(--accent)">$' + Number(amount).toFixed(2) + '</strong>';
+      html += '<span style="color:var(--muted)">Provider:</span><span>' + parsed.provider + '</span>';
+      html += '</div>';
+      if (!amount) {
+        html += '<div style="margin-top:12px"><label style="font-size:13px;color:var(--muted)">Enter payment amount:</label>';
+        html += '<input id="hce-ext-qr-amount" class="form-control" type="number" placeholder="0.00" min="1" max="500000" step="0.01" style="margin-top:4px;max-width:200px"></div>';
+      }
+      html += '<div style="margin-top:14px;display:flex;gap:8px">';
+      html += '<button class="btn btn-primary" onclick="hcePayExternalQR()">Pay Now</button>';
+      html += '<button class="btn" onclick="el(\'hce-qr-scan-result\').innerHTML=\'\'">Cancel</button>';
+      html += '</div>';
+      html += '<input type="hidden" id="hce-ext-qr-raw" value=\'' + rawData.replace(/'/g, '&#39;') + '\'>';
+      if (amount) html += '<input type="hidden" id="hce-ext-qr-amount" value="' + amount + '">';
+      html += '</div>';
+      el('hce-qr-scan-result').innerHTML = html;
+    }
+
+    async function hcePayExternalQR() {
+      const rawData = el('hce-ext-qr-raw').value;
+      const amountEl = el('hce-ext-qr-amount');
+      const amount = parseFloat(amountEl.value);
+      if (!amount || amount < 1) return alert('Enter a valid payment amount ($1 minimum)');
+
+      el('hce-qr-scan-result').innerHTML = '<div class="alert" style="background:var(--card);border:1px solid var(--accent)">Processing external QR payment...</div>';
+      try {
+        const r = await fetchJSON(API + '/api/hce/qr/pay-external', {
+          method: 'POST', headers: { ...adminHeaders(), 'Content-Type': 'application/json' },
+          body: JSON.stringify({ qr_data: rawData, amount: amount }),
+        });
+        if (r.success) {
+          const d = r.data;
+          const provLabel = QR_PROVIDER_LABELS[d.provider] || d.provider;
+          if (d.action === 'settled') {
+            el('hce-qr-scan-result').innerHTML = '<div class="alert alert-success"><strong>' + provLabel + ' Payment Settled!</strong><br>' +
+              'Recipient: <strong>' + (d.recipient || '') + '</strong><br>' +
+              'Amount: <strong>$' + Number(d.amount).toFixed(2) + '</strong><br>' +
+              'Txn: <code>' + d.txn_id + '</code><br>' +
+              'Auth: <code>' + d.authorization_code + '</code><br>' +
+              'JE: <code>' + (d.journal_entry_id || 'n/a') + '</code><br>' +
+              'Settlement: <code>' + (d.settlement_id || 'n/a') + '</code></div>';
+          } else {
+            el('hce-qr-scan-result').innerHTML = '<div class="alert alert-warning"><strong>' + provLabel + ' Payment Pending Approval</strong><br>' +
+              'Recipient: <strong>' + (d.recipient || '') + '</strong><br>' +
+              'Amount: <strong>$' + Number(d.amount).toFixed(2) + '</strong><br>' +
+              'Txn: <code>' + d.txn_id + '</code><br>' +
+              'Tier: ' + d.approval_tier + ' — requires admin approval</div>';
+          }
+          loadHCE();
+        } else {
+          el('hce-qr-scan-result').innerHTML = '<div class="alert alert-danger">' + r.error + '</div>';
+        }
+      } catch (err) {
+        el('hce-qr-scan-result').innerHTML = '<div class="alert alert-danger">' + err.message + '</div>';
+      }
+    }
+
+    async function hceProcessInternalQR(qrData) {
+      el('hce-qr-scan-result').innerHTML = '<div class="alert" style="background:var(--card);border:1px solid var(--accent)">Processing DLB HCE payment...</div>';
       try {
         const r = await fetchJSON(API + '/api/hce/qr/scan', {
           method: 'POST', headers: { ...adminHeaders(), 'Content-Type': 'application/json' },
@@ -5312,7 +5413,7 @@
     async function hceProcessManualQR() {
       const qrData = el('hce-qr-manual').value.trim();
       if (!qrData) return alert('Paste QR data first');
-      await hceProcessScannedQR(qrData);
+      await hceHandleScannedData(qrData);
     }
 
     async function hceGenerateQR() {

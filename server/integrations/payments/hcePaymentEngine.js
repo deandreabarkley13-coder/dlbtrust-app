@@ -812,6 +812,264 @@ async function getCircuitStatus() {
   };
 }
 
+// ─── EXTERNAL QR CODE PARSING ─────────────────────────────────────────────────
+
+function parseExternalQR(qrString) {
+  if (!qrString || typeof qrString !== 'string') return null;
+  qrString = qrString.trim();
+
+  // Internal DLB HCE format
+  try {
+    var parsed = JSON.parse(qrString);
+    if (parsed && parsed.type === 'dlb-hce-pay') {
+      return { provider: 'dlb-hce', format: 'internal', raw: qrString, data: parsed };
+    }
+  } catch (e) { /* not JSON, continue */ }
+
+  // Cash App: https://cash.app/$cashtag or https://cash.app/$cashtag/25.00
+  var cashAppMatch = qrString.match(/^https?:\/\/cash\.app\/\$([A-Za-z0-9_-]+)(?:\/(\d+(?:\.\d{1,2})?))?/i);
+  if (cashAppMatch) {
+    return {
+      provider: 'cashapp',
+      format: 'url',
+      raw: qrString,
+      data: {
+        cashtag: '$' + cashAppMatch[1],
+        recipient: cashAppMatch[1],
+        amount: cashAppMatch[2] ? parseFloat(cashAppMatch[2]) : null,
+      }
+    };
+  }
+
+  // Venmo: https://venmo.com/u/username or venmo://paycharge?txn=pay&recipients=user&amount=25
+  var venmoWebMatch = qrString.match(/^https?:\/\/venmo\.com\/(?:u\/)?([A-Za-z0-9_-]+)(?:\?.*amount=(\d+(?:\.\d{1,2})?))?/i);
+  if (venmoWebMatch) {
+    return {
+      provider: 'venmo',
+      format: 'url',
+      raw: qrString,
+      data: {
+        username: venmoWebMatch[1],
+        recipient: venmoWebMatch[1],
+        amount: venmoWebMatch[2] ? parseFloat(venmoWebMatch[2]) : null,
+      }
+    };
+  }
+  var venmoDeepMatch = qrString.match(/^venmo:\/\/paycharge\?.*recipients=([^&]+).*amount=(\d+(?:\.\d{1,2})?)?/i);
+  if (venmoDeepMatch) {
+    return {
+      provider: 'venmo',
+      format: 'deeplink',
+      raw: qrString,
+      data: {
+        username: decodeURIComponent(venmoDeepMatch[1]),
+        recipient: decodeURIComponent(venmoDeepMatch[1]),
+        amount: venmoDeepMatch[2] ? parseFloat(venmoDeepMatch[2]) : null,
+      }
+    };
+  }
+
+  // PayPal: https://www.paypal.me/username/25.00 or paypal.me/username
+  var paypalMatch = qrString.match(/^https?:\/\/(?:www\.)?paypal\.(?:me|com\/paypalme)\/([A-Za-z0-9_-]+)(?:\/(\d+(?:\.\d{1,2})?))?/i);
+  if (paypalMatch) {
+    return {
+      provider: 'paypal',
+      format: 'url',
+      raw: qrString,
+      data: {
+        username: paypalMatch[1],
+        recipient: paypalMatch[1],
+        amount: paypalMatch[2] ? parseFloat(paypalMatch[2]) : null,
+      }
+    };
+  }
+
+  // Zelle: typically a mailto or phone-based QR
+  var zelleMatch = qrString.match(/^https?:\/\/(?:www\.)?zellepay\.com\/.*?(?:recipient|to)=([^&]+)(?:.*amount=(\d+(?:\.\d{1,2})?))?/i);
+  if (zelleMatch) {
+    return {
+      provider: 'zelle',
+      format: 'url',
+      raw: qrString,
+      data: {
+        recipient: decodeURIComponent(zelleMatch[1]),
+        amount: zelleMatch[2] ? parseFloat(zelleMatch[2]) : null,
+      }
+    };
+  }
+
+  // Square / generic payment URL with amount in query params
+  var genericPayMatch = qrString.match(/^https?:\/\/[^?]+\?.*amount=(\d+(?:\.\d{1,2})?)/i);
+  if (genericPayMatch) {
+    var urlObj;
+    try { urlObj = new URL(qrString); } catch (e) { urlObj = null; }
+    return {
+      provider: 'generic',
+      format: 'url',
+      raw: qrString,
+      data: {
+        recipient: urlObj ? urlObj.hostname : 'unknown',
+        amount: parseFloat(genericPayMatch[1]),
+        url: qrString,
+      }
+    };
+  }
+
+  // Bitcoin / crypto addresses (starts with bitcoin: or ethereum:)
+  var cryptoMatch = qrString.match(/^(bitcoin|ethereum|litecoin):([A-Za-z0-9]+)(?:\?amount=([0-9.]+))?/i);
+  if (cryptoMatch) {
+    return {
+      provider: cryptoMatch[1].toLowerCase(),
+      format: 'crypto',
+      raw: qrString,
+      data: {
+        address: cryptoMatch[2],
+        recipient: cryptoMatch[2].slice(0, 8) + '...',
+        amount: cryptoMatch[3] ? parseFloat(cryptoMatch[3]) : null,
+        currency: cryptoMatch[1].toUpperCase(),
+      }
+    };
+  }
+
+  // Plain URL that might be a payment page
+  if (qrString.match(/^https?:\/\//i)) {
+    var host;
+    try { host = new URL(qrString).hostname; } catch (e) { host = 'unknown'; }
+    return {
+      provider: 'web',
+      format: 'url',
+      raw: qrString,
+      data: { recipient: host, url: qrString, amount: null }
+    };
+  }
+
+  // If it's just a dollar amount like "$25.00"
+  var amountOnly = qrString.match(/^\$?(\d+(?:\.\d{1,2})?)$/);
+  if (amountOnly) {
+    return {
+      provider: 'amount',
+      format: 'text',
+      raw: qrString,
+      data: { amount: parseFloat(amountOnly[1]), recipient: null }
+    };
+  }
+
+  return null;
+}
+
+async function processExternalQRPayment(parsedQR, opts) {
+  checkCircuit();
+  await ensureTables();
+  opts = opts || {};
+
+  if (!parsedQR || !parsedQR.provider) throw new Error('Invalid QR data');
+
+  var amount = parsedQR.data.amount || opts.amount;
+  if (!amount || amount < MIN_PAYMENT_AMOUNT) throw new Error('Amount required — enter amount for this QR payment');
+  if (amount > MAX_PAYMENT_AMOUNT) throw new Error('Amount exceeds max $' + MAX_PAYMENT_AMOUNT.toLocaleString());
+
+  var deviceId = opts.device_id;
+  var device = null;
+  if (deviceId) {
+    device = await getDevice(deviceId);
+    if (!device) throw new Error('Device not found: ' + deviceId);
+    if (device.status !== 'active') throw new Error('Device suspended');
+    if (amount > parseFloat(device.per_txn_limit)) throw new Error('Exceeds per-txn limit $' + device.per_txn_limit);
+    await checkVelocity(deviceId);
+  } else {
+    // Use first active device if none specified
+    var devices = await listDevices();
+    device = devices.find(function(d) { return d.status === 'active'; });
+    if (!device) throw new Error('No active device — register a device first');
+    deviceId = device.device_id;
+  }
+
+  var merchantName = parsedQR.data.recipient || parsedQR.provider;
+  var merchantCategory = parsedQR.provider === 'cashapp' ? 'P2P Transfer' :
+    parsedQR.provider === 'venmo' ? 'P2P Transfer' :
+    parsedQR.provider === 'paypal' ? 'P2P Transfer' : 'QR Payment';
+
+  var fundingSource = device.sub_ledger_id || ('trust:' + (device.trust_account_code || '1000'));
+  var sourceCode = device.trust_account_code || '1000';
+  var subLedgerId = device.sub_ledger_id || null;
+
+  // Balance check
+  if (subLedgerId && SubLedgerEngine) {
+    try {
+      var ledger = await SubLedgerEngine.getSubLedger(subLedgerId);
+      if (ledger && parseFloat(ledger.balance) < amount) {
+        throw new Error('Insufficient sub-ledger balance: $' + parseFloat(ledger.balance).toFixed(2));
+      }
+      sourceCode = ledger.parent_account_code || sourceCode;
+    } catch (e) { if (e.message.startsWith('Insufficient')) throw e; }
+  }
+
+  var tier = getApprovalTier(amount);
+  var status = requiresApproval(amount) ? 'pending_approval' : 'authorized';
+
+  var txnId = generateTxnId();
+  var authCode = generateAuthCode();
+  var integrityHash = computeIntegrityHash({
+    txn_id: txnId, amount: amount, device_id: deviceId,
+    merchant_name: merchantName, submitted_at: new Date().toISOString(),
+  });
+
+  var tokenData = generateToken(deviceId, txnId, amount);
+
+  await pool.query(`
+    INSERT INTO hce_transactions
+      (txn_id, device_id, authorization_code, token, amount, merchant_name, merchant_id,
+       merchant_category, terminal_id, payment_method, funding_source, sub_ledger_id,
+       source_account_code, status, approval_tier, integrity_hash, geolocation, device_ip)
+    VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18)
+  `, [
+    txnId, deviceId, authCode, tokenData.token, amount,
+    merchantName, parsedQR.provider + ':' + (parsedQR.data.recipient || ''),
+    merchantCategory, 'QR-' + parsedQR.provider.toUpperCase(),
+    'qr_scan_' + parsedQR.provider, fundingSource, subLedgerId, sourceCode,
+    status, tier, integrityHash, opts.geolocation || null, opts.device_ip || null,
+  ]);
+
+  await pool.query(`
+    INSERT INTO hce_tokens (token_id, device_id, txn_id, token_data, amount, expires_at)
+    VALUES ($1, $2, $3, $4, $5, $6)
+  `, [
+    'TKN-' + crypto.randomBytes(6).toString('hex').toUpperCase(),
+    deviceId, txnId, tokenData.token, amount, tokenData.expires_at,
+  ]);
+
+  await pool.query('UPDATE hce_devices SET last_used_at = NOW() WHERE device_id = $1', [deviceId]);
+
+  recordSuccess();
+
+  // Auto-process if auto-approved
+  if (status === 'authorized') {
+    var receipt = await processPayment(txnId, { merchant_name: merchantName, qr_scan: true });
+    return {
+      action: 'settled',
+      provider: parsedQR.provider,
+      recipient: parsedQR.data.recipient,
+      txn_id: receipt.txn_id,
+      authorization_code: receipt.authorization_code,
+      amount: receipt.amount,
+      journal_entry_id: receipt.journal_entry_id,
+      settlement_id: receipt.settlement_id,
+      status: 'settled',
+    };
+  }
+
+  return {
+    action: 'pending_approval',
+    provider: parsedQR.provider,
+    recipient: parsedQR.data.recipient,
+    txn_id: txnId,
+    authorization_code: authCode,
+    amount: amount,
+    approval_tier: tier,
+    status: 'pending_approval',
+  };
+}
+
 // ─── EXPORTS ──────────────────────────────────────────────────────────────────
 
 // ─── QR PAYMENT CODE GENERATION ───────────────────────────────────────────────
@@ -890,5 +1148,7 @@ module.exports = {
   generateQRPayload: generateQRPayload,
   verifyQRPayload: verifyQRPayload,
   processQRScan: processQRScan,
+  parseExternalQR: parseExternalQR,
+  processExternalQRPayment: processExternalQRPayment,
   APPROVAL_TIERS: APPROVAL_TIERS,
 };

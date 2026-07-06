@@ -221,6 +221,47 @@ router.post('/qr/verify', requireAdmin, async function(req, res) {
   }
 });
 
+// ─── EXTERNAL QR SCAN (Cash App, Venmo, PayPal, etc.) ────────────────────────
+
+router.post('/qr/parse', requireAdmin, async function(req, res) {
+  try {
+    var qrData = req.body.qr_data;
+    if (!qrData) return res.status(400).json({ success: false, error: 'qr_data required' });
+    var parsed = hceEngine.parseExternalQR(qrData);
+    if (!parsed) return res.json({ success: false, error: 'Unrecognized QR format' });
+    res.json({ success: true, data: parsed });
+  } catch (err) {
+    res.status(400).json({ success: false, error: err.message });
+  }
+});
+
+router.post('/qr/pay-external', requireAdmin, async function(req, res) {
+  try {
+    var qrData = req.body.qr_data;
+    var amount = req.body.amount;
+    var deviceId = req.body.device_id;
+    if (!qrData) return res.status(400).json({ success: false, error: 'qr_data required' });
+
+    var parsed = hceEngine.parseExternalQR(qrData);
+    if (!parsed) return res.status(400).json({ success: false, error: 'Unrecognized QR format' });
+
+    // For internal DLB format, use existing flow
+    if (parsed.provider === 'dlb-hce') {
+      var result = await hceEngine.processQRScan(qrData);
+      return res.json({ success: true, data: result });
+    }
+
+    // External QR payment
+    var receipt = await hceEngine.processExternalQRPayment(parsed, {
+      amount: amount || parsed.data.amount,
+      device_id: deviceId,
+    });
+    res.json({ success: true, data: receipt });
+  } catch (err) {
+    res.status(400).json({ success: false, error: err.message });
+  }
+});
+
 // ─── CIRCUIT BREAKER STATUS ──────────────────────────────────────────────────
 
 router.get('/circuit-status', requireAdmin, async function(req, res) {
