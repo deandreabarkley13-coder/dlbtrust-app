@@ -467,6 +467,9 @@ async function authorizePayment(opts) {
 
   recordSuccess();
 
+  // Generate QR payment code for terminal scanning
+  var qrPayload = generateQRPayload(txnId, authCode, amount, opts.device_id, tokenData.expires_at.toISOString());
+
   return {
     txn_id: txnId,
     authorization_code: authCode,
@@ -478,6 +481,7 @@ async function authorizePayment(opts) {
     funding_source: fundingSource,
     requires_approval: requiresApproval(amount),
     integrity_hash: integrityHash,
+    qr_payload: qrPayload,
   };
 }
 
@@ -810,6 +814,62 @@ async function getCircuitStatus() {
 
 // ─── EXPORTS ──────────────────────────────────────────────────────────────────
 
+// ─── QR PAYMENT CODE GENERATION ───────────────────────────────────────────────
+
+function generateQRPayload(txnId, authCode, amount, deviceId, expiresAt) {
+  var qrData = {
+    v: 1,
+    type: 'dlb-hce-pay',
+    txn: txnId,
+    auth: authCode,
+    amt: amount,
+    dev: deviceId,
+    exp: expiresAt,
+    ts: Date.now(),
+    nonce: crypto.randomBytes(6).toString('hex'),
+  };
+  var dataStr = JSON.stringify(qrData);
+  var sig = crypto.createHmac('sha256', TOKEN_SECRET)
+    .update(dataStr).digest('hex').slice(0, 16);
+  qrData.sig = sig;
+  return JSON.stringify(qrData);
+}
+
+function verifyQRPayload(qrString) {
+  try {
+    var qrData = JSON.parse(qrString);
+    if (qrData.type !== 'dlb-hce-pay') return null;
+    var sig = qrData.sig;
+    delete qrData.sig;
+    var dataStr = JSON.stringify(qrData);
+    var expectedSig = crypto.createHmac('sha256', TOKEN_SECRET)
+      .update(dataStr).digest('hex').slice(0, 16);
+    if (sig !== expectedSig) return null;
+    if (qrData.exp && new Date(qrData.exp).getTime() < Date.now()) return null;
+    return qrData;
+  } catch (e) {
+    return null;
+  }
+}
+
+async function processQRScan(qrString) {
+  var payload = verifyQRPayload(qrString);
+  if (!payload) throw new Error('Invalid or expired QR payment code');
+
+  var txn = await getTransaction(payload.txn);
+  if (!txn) throw new Error('Transaction not found: ' + payload.txn);
+  if (txn.authorization_code !== payload.auth) throw new Error('Authorization code mismatch');
+  if (txn.status === 'settled' || txn.status === 'completed') {
+    return { already_settled: true, txn_id: txn.txn_id, status: txn.status };
+  }
+  if (txn.status !== 'authorized') {
+    throw new Error('Transaction not in authorized state: ' + txn.status);
+  }
+
+  var receipt = await processPayment(payload.txn, { qr_scan: true });
+  return receipt;
+}
+
 module.exports = {
   ensureTables: ensureTables,
   registerDevice: registerDevice,
@@ -827,5 +887,8 @@ module.exports = {
   listTransactions: listTransactions,
   getCircuitStatus: getCircuitStatus,
   verifyToken: verifyToken,
+  generateQRPayload: generateQRPayload,
+  verifyQRPayload: verifyQRPayload,
+  processQRScan: processQRScan,
   APPROVAL_TIERS: APPROVAL_TIERS,
 };

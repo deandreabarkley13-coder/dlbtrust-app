@@ -7,6 +7,8 @@
   <meta http-equiv="Pragma" content="no-cache">
   <meta http-equiv="Expires" content="0">
   <title>DLB Trust — Treasury Dashboard</title>
+  <script src="https://cdn.jsdelivr.net/npm/qrcode@1.5.3/build/qrcode.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/jsqr@1.4.0/dist/jsQR.min.js"></script>
   <style>
     :root {
       --bg: #0f1117;
@@ -1466,7 +1468,7 @@
     <!-- HCE CONTACTLESS PAYMENTS PAGE -->
     <div id="page-hce-payments" class="page hidden">
       <div class="page-header">
-        <div><h1>HCE Contactless Payments</h1><div class="subtitle">Android NFC tap-to-pay for trust &amp; beneficiary expenses ($1 — $500,000)</div></div>
+        <div><h1>HCE Contactless Payments</h1><div class="subtitle">Android NFC tap-to-pay &amp; QR scan for trust &amp; beneficiary expenses ($1 — $500,000)</div></div>
         <div style="display:flex;gap:8px">
           <button class="btn btn-sm" onclick="loadHCE()" title="Refresh">Refresh</button>
         </div>
@@ -1513,6 +1515,42 @@
           </div>
           <button class="btn btn-primary" onclick="hceAuthorize()">Authorize Payment</button>
           <div id="hce-auth-result" style="margin-top:10px"></div>
+        </div>
+      </div>
+
+      <div class="grid grid-2" style="margin-top:16px">
+        <div class="card">
+          <h2>📷 QR Scanner</h2>
+          <p style="color:var(--muted);font-size:13px;margin-bottom:12px">Scan a QR payment code from a device to instantly process a transaction at the terminal</p>
+          <div id="hce-qr-scanner-area" style="position:relative;width:100%;max-width:360px;margin:0 auto">
+            <video id="hce-qr-video" style="width:100%;border-radius:8px;background:#000;display:none" autoplay playsinline></video>
+            <canvas id="hce-qr-canvas" style="display:none"></canvas>
+            <div id="hce-qr-overlay" style="display:none;position:absolute;top:0;left:0;right:0;bottom:0;border:3px solid var(--accent);border-radius:8px;pointer-events:none">
+              <div style="position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);width:180px;height:180px;border:2px dashed rgba(99,102,241,.6);border-radius:4px"></div>
+            </div>
+          </div>
+          <div style="display:flex;gap:8px;margin-top:12px">
+            <button class="btn btn-primary" id="hce-qr-scan-btn" onclick="hceStartQRScan()">Start Camera Scanner</button>
+            <button class="btn btn-danger" id="hce-qr-stop-btn" onclick="hceStopQRScan()" style="display:none">Stop Scanner</button>
+          </div>
+          <div style="margin-top:12px">
+            <label style="font-size:13px;color:var(--muted)">Or paste QR data manually:</label>
+            <div style="display:flex;gap:8px;margin-top:4px">
+              <input id="hce-qr-manual" class="form-control" placeholder='Paste QR JSON data...' style="flex:1">
+              <button class="btn btn-sm" onclick="hceProcessManualQR()">Process</button>
+            </div>
+          </div>
+          <div id="hce-qr-scan-result" style="margin-top:10px"></div>
+        </div>
+
+        <div class="card">
+          <h2>📱 QR Payment Code</h2>
+          <p style="color:var(--muted);font-size:13px;margin-bottom:12px">Generate a QR code for an authorized payment — present at terminal for instant processing</p>
+          <div class="form-group"><label>Select Transaction</label>
+            <select id="hce-qr-txn-select" class="form-control"><option value="">Select authorized transaction...</option></select>
+          </div>
+          <button class="btn btn-primary" onclick="hceGenerateQR()">Generate QR Code</button>
+          <div id="hce-qr-display" style="margin-top:16px;text-align:center"></div>
         </div>
       </div>
 
@@ -5027,6 +5065,13 @@
             }).join('');
           }
 
+          // QR transaction selector (authorized only)
+          const qrSel = el('hce-qr-txn-select');
+          qrSel.innerHTML = '<option value="">Select authorized transaction...</option>' +
+            txns.filter(t => t.status === 'authorized').map(t =>
+              `<option value="${t.txn_id}">${t.txn_id} — $${Number(t.amount).toLocaleString(undefined,{minimumFractionDigits:2})} (${t.merchant_name || 'Terminal'})</option>`
+            ).join('');
+
           // Circuit breaker
           const cb = dashRes.data.circuit_breaker || {};
           el('hce-circuit').innerHTML = cb.open
@@ -5106,8 +5151,16 @@
           html += 'Status: ' + d.status + '<br>';
           if (d.requires_approval) html += '<em>Requires admin approval (tier: ' + d.approval_tier + ')</em><br>';
           html += 'Token expires: ' + new Date(d.token_expires_at).toLocaleString() + '<br>';
+          if (d.qr_payload && !d.requires_approval) {
+            html += '<div style="margin-top:12px;text-align:center"><strong>QR Payment Code</strong><br>';
+            html += '<canvas id="hce-auth-qr-canvas" style="margin-top:8px;border-radius:8px;background:#fff;padding:8px"></canvas>';
+            html += '<br><small style="color:var(--muted)">Present this QR code at the payment terminal</small></div>';
+          }
           html += '</div>';
           el('hce-auth-result').innerHTML = html;
+          if (d.qr_payload && !d.requires_approval && typeof QRCode !== 'undefined') {
+            try { QRCode.toCanvas(document.getElementById('hce-auth-qr-canvas'), d.qr_payload, { width: 220, margin: 2, color: { dark: '#000', light: '#fff' } }); } catch (e) { console.warn('QR render failed:', e); }
+          }
           el('hce-auth-amount').value = ''; el('hce-auth-merchant').value = '';
           loadHCE();
         } else {
@@ -5175,6 +5228,122 @@
         if (r.success) { alert('Device suspended.'); loadHCE(); }
         else alert(r.error);
       } catch (err) { alert(err.message); }
+    }
+
+    // ─── HCE QR Scanner & Generator ──────────────────────────────────────────
+
+    let hceQRStream = null;
+    let hceQRScanInterval = null;
+
+    async function hceStartQRScan() {
+      const video = el('hce-qr-video');
+      const overlay = el('hce-qr-overlay');
+      try {
+        hceQRStream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment', width: 640, height: 480 } });
+        video.srcObject = hceQRStream;
+        video.style.display = 'block';
+        overlay.style.display = 'block';
+        el('hce-qr-scan-btn').style.display = 'none';
+        el('hce-qr-stop-btn').style.display = 'inline-block';
+        el('hce-qr-scan-result').innerHTML = '<div class="alert" style="background:var(--card);border:1px solid var(--accent)">Scanning... Point camera at QR payment code</div>';
+
+        const canvas = el('hce-qr-canvas');
+        const ctx = canvas.getContext('2d', { willReadFrequently: true });
+
+        hceQRScanInterval = setInterval(() => {
+          if (video.readyState !== video.HAVE_ENOUGH_DATA) return;
+          canvas.width = video.videoWidth;
+          canvas.height = video.videoHeight;
+          ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+          const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+          try {
+            const code = jsQR(imageData.data, imageData.width, imageData.height, { inversionAttempts: 'dontInvert' });
+            if (code && code.data) {
+              let parsed;
+              try { parsed = JSON.parse(code.data); } catch (e) { return; }
+              if (parsed && parsed.type === 'dlb-hce-pay') {
+                hceStopQRScan();
+                hceProcessScannedQR(code.data);
+              }
+            }
+          } catch (e) { /* jsQR not loaded or parse failed */ }
+        }, 250);
+      } catch (err) {
+        el('hce-qr-scan-result').innerHTML = '<div class="alert alert-danger">Camera access denied or unavailable: ' + err.message + '</div>';
+      }
+    }
+
+    function hceStopQRScan() {
+      if (hceQRScanInterval) { clearInterval(hceQRScanInterval); hceQRScanInterval = null; }
+      if (hceQRStream) { hceQRStream.getTracks().forEach(t => t.stop()); hceQRStream = null; }
+      el('hce-qr-video').style.display = 'none';
+      el('hce-qr-overlay').style.display = 'none';
+      el('hce-qr-scan-btn').style.display = 'inline-block';
+      el('hce-qr-stop-btn').style.display = 'none';
+    }
+
+    async function hceProcessScannedQR(qrData) {
+      el('hce-qr-scan-result').innerHTML = '<div class="alert" style="background:var(--card);border:1px solid var(--accent)">Processing QR payment...</div>';
+      try {
+        const r = await fetchJSON(API + '/api/hce/qr/scan', {
+          method: 'POST', headers: { ...adminHeaders(), 'Content-Type': 'application/json' },
+          body: JSON.stringify({ qr_data: qrData }),
+        });
+        if (r.success) {
+          const d = r.data;
+          if (d.already_settled) {
+            el('hce-qr-scan-result').innerHTML = '<div class="alert alert-warning">Transaction already settled: <code>' + d.txn_id + '</code></div>';
+          } else {
+            el('hce-qr-scan-result').innerHTML = '<div class="alert alert-success"><strong>Payment Processed via QR!</strong><br>' +
+              'Txn: <code>' + (d.txn_id || d.txnId || '') + '</code><br>' +
+              'Auth: <code>' + (d.authorization_code || '') + '</code><br>' +
+              'JE: <code>' + (d.journal_entry_id || 'n/a') + '</code><br>' +
+              'Settlement: <code>' + (d.settlement_id || 'n/a') + '</code></div>';
+            loadHCE();
+          }
+        } else {
+          el('hce-qr-scan-result').innerHTML = '<div class="alert alert-danger">' + r.error + '</div>';
+        }
+      } catch (err) {
+        el('hce-qr-scan-result').innerHTML = '<div class="alert alert-danger">' + err.message + '</div>';
+      }
+    }
+
+    async function hceProcessManualQR() {
+      const qrData = el('hce-qr-manual').value.trim();
+      if (!qrData) return alert('Paste QR data first');
+      await hceProcessScannedQR(qrData);
+    }
+
+    async function hceGenerateQR() {
+      const txnId = el('hce-qr-txn-select').value;
+      if (!txnId) return alert('Select an authorized transaction');
+      try {
+        const r = await fetchJSON(API + '/api/hce/qr/generate', {
+          method: 'POST', headers: { ...adminHeaders(), 'Content-Type': 'application/json' },
+          body: JSON.stringify({ txn_id: txnId }),
+        });
+        if (r.success) {
+          const qrPayload = r.data.qr_payload;
+          let html = '<canvas id="hce-gen-qr-canvas" style="border-radius:8px;background:#fff;padding:8px"></canvas>';
+          html += '<br><small style="color:var(--muted)">Scan this code at the terminal — expires in 5 minutes</small>';
+          html += '<br><button class="btn btn-sm" style="margin-top:8px" onclick="hceCopyQR()">Copy QR Data</button>';
+          html += '<input type="hidden" id="hce-gen-qr-data" value=\'' + qrPayload.replace(/'/g, '&#39;') + '\'>';
+          el('hce-qr-display').innerHTML = html;
+          if (typeof QRCode !== 'undefined') {
+            QRCode.toCanvas(document.getElementById('hce-gen-qr-canvas'), qrPayload, { width: 260, margin: 2, color: { dark: '#000', light: '#fff' } });
+          }
+        } else {
+          el('hce-qr-display').innerHTML = '<div class="alert alert-danger">' + r.error + '</div>';
+        }
+      } catch (err) {
+        el('hce-qr-display').innerHTML = '<div class="alert alert-danger">' + err.message + '</div>';
+      }
+    }
+
+    function hceCopyQR() {
+      const data = el('hce-gen-qr-data').value;
+      navigator.clipboard.writeText(data).then(() => alert('QR data copied to clipboard')).catch(() => alert('Copy failed'));
     }
 
     // ─── Electronic Settlement ───────────────────────────────────────────────

@@ -178,6 +178,49 @@ router.post('/verify-token', requireAdmin, async function(req, res) {
   }
 });
 
+// ─── QR PAYMENT ──────────────────────────────────────────────────────────────
+
+router.post('/qr/generate', requireAdmin, async function(req, res) {
+  try {
+    var txnId = req.body.txn_id;
+    if (!txnId) return res.status(400).json({ success: false, error: 'txn_id required' });
+    var txn = await hceEngine.getTransaction(txnId);
+    if (!txn) return res.status(404).json({ success: false, error: 'Transaction not found' });
+    if (txn.status !== 'authorized') {
+      return res.status(400).json({ success: false, error: 'Transaction not authorized (status: ' + txn.status + ')' });
+    }
+    var qrPayload = hceEngine.generateQRPayload(txn.txn_id, txn.authorization_code,
+      parseFloat(txn.amount), txn.device_id, new Date(Date.now() + 5 * 60 * 1000).toISOString());
+    res.json({ success: true, data: { txn_id: txnId, qr_payload: qrPayload } });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+router.post('/qr/scan', requireAdmin, async function(req, res) {
+  try {
+    var qrData = req.body.qr_data;
+    if (!qrData) return res.status(400).json({ success: false, error: 'qr_data required' });
+    var result = await hceEngine.processQRScan(qrData);
+    res.json({ success: true, data: result });
+  } catch (err) {
+    res.status(400).json({ success: false, error: err.message });
+  }
+});
+
+router.post('/qr/verify', requireAdmin, async function(req, res) {
+  try {
+    var qrData = req.body.qr_data;
+    if (!qrData) return res.status(400).json({ success: false, error: 'qr_data required' });
+    var payload = hceEngine.verifyQRPayload(qrData);
+    if (!payload) return res.json({ success: false, error: 'Invalid or expired QR code' });
+    var txn = await hceEngine.getTransaction(payload.txn);
+    res.json({ success: true, data: { valid: true, payload: payload, transaction: txn } });
+  } catch (err) {
+    res.status(400).json({ success: false, error: err.message });
+  }
+});
+
 // ─── CIRCUIT BREAKER STATUS ──────────────────────────────────────────────────
 
 router.get('/circuit-status', requireAdmin, async function(req, res) {

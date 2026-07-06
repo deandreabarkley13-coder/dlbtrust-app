@@ -24,7 +24,7 @@
         <TextView
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:text="NFC Contactless Payment"
+            android:text="NFC Tap-to-Pay &amp; QR Scanner"
             android:textSize="14sp"
             android:textColor="#888888"
             android:gravity="center"
@@ -155,7 +155,7 @@
             android:id="@+id/authorizeBtn"
             android:layout_width="match_parent"
             android:layout_height="56dp"
-            android:text="Authorize &amp; Ready to Tap"
+            android:text="Authorize &amp; Ready to Pay"
             android:textColor="#FFFFFF"
             android:backgroundTint="#00AA00"
             android:textSize="18sp"
@@ -174,11 +174,50 @@
             android:background="#16213e"
             android:layout_marginBottom="24dp" />
 
+        <!-- QR Code Display -->
+        <ImageView
+            android:id="@+id/qrCodeImage"
+            android:layout_width="220dp"
+            android:layout_height="220dp"
+            android:layout_gravity="center"
+            android:visibility="gone"
+            android:background="#FFFFFF"
+            android:padding="8dp"
+            android:layout_marginBottom="8dp"
+            android:contentDescription="QR Payment Code" />
+
+        <!-- QR Scanner -->
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="QR Scanner"
+            android:textSize="18sp"
+            android:textColor="#FFFFFF"
+            android:textStyle="bold"
+            android:layout_marginBottom="8dp" />
+
+        <Button
+            android:id="@+id/qrScanBtn"
+            android:layout_width="match_parent"
+            android:layout_height="48dp"
+            android:text="Scan QR Code at Terminal"
+            android:textColor="#FFFFFF"
+            android:backgroundTint="#e94560"
+            android:layout_marginBottom="8dp" />
+
+        <TextView
+            android:id="@+id/qrScanResult"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:textSize="14sp"
+            android:textColor="#888888"
+            android:layout_marginBottom="24dp" />
+
         <!-- Info -->
         <TextView
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:text="How it works:\n1. Connect to your DLB Trust server\n2. Register this device\n3. Enter amount and authorize\n4. Tap phone on POS terminal\n5. Payment settles to your trust account"
+            android:text="How it works:\n1. Connect to your DLB Trust server\n2. Register this device\n3. Enter amount and authorize\n4. TAP phone on POS terminal OR show QR code\n5. Payment settles to your trust account"
             android:textSize="12sp"
             android:textColor="#666666"
             android:lineSpacingMultiplier="1.4" />
