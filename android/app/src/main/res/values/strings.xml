@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">DLB Trust Pay</string>
+    <string name="service_desc">DLB Trust contactless payment service</string>
+    <string name="aid_group_desc">DLB Trust payment AID</string>
+</resources>

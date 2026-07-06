@@ -244,6 +244,7 @@
     <div class="nav-item" data-page="vendor-payments"><span class="icon">💸</span> Vendor Payments</div>
     <div class="nav-item" data-page="electronic-settlement"><span class="icon">⚡</span> Electronic Settlement</div>
     <div class="nav-item" data-page="nifi"><span class="icon">🔄</span> NiFi File Transfer</div>
+    <div class="nav-item" data-page="hce-payments"><span class="icon">📱</span> HCE Contactless</div>
     <div class="nav-section">Data Bridge</div>
     <div class="nav-item" data-page="data-bridge"><span class="icon">🔗</span> Data Bridge</div>
     <div class="nav-section">Agents</div>
@@ -1462,6 +1463,95 @@
       </div>
     </div>
 
+    <!-- HCE CONTACTLESS PAYMENTS PAGE -->
+    <div id="page-hce-payments" class="page hidden">
+      <div class="page-header">
+        <div><h1>HCE Contactless Payments</h1><div class="subtitle">Android NFC tap-to-pay for trust &amp; beneficiary expenses ($1 — $500,000)</div></div>
+        <div style="display:flex;gap:8px">
+          <button class="btn btn-sm" onclick="loadHCE()" title="Refresh">Refresh</button>
+        </div>
+      </div>
+
+      <div class="grid grid-4" id="hce-stats">
+        <div class="card"><div class="stat-label">Total Transactions</div><div class="stat-value" id="hce-total">—</div></div>
+        <div class="card"><div class="stat-label">Settled</div><div class="stat-value" id="hce-settled">—</div></div>
+        <div class="card"><div class="stat-label">Pending Approval</div><div class="stat-value" id="hce-pending">—</div></div>
+        <div class="card"><div class="stat-label">Settled Volume</div><div class="stat-value" id="hce-volume">—</div></div>
+      </div>
+
+      <div class="grid grid-2" style="margin-top:16px">
+        <div class="card">
+          <h2>Register Device</h2>
+          <div class="form-group"><label>Device Name</label><input id="hce-dev-name" class="form-control" placeholder="e.g. Samsung Galaxy S24"></div>
+          <div class="form-group"><label>Account Holder</label><input id="hce-dev-holder" class="form-control" placeholder="Trustee / Beneficiary name"></div>
+          <div class="form-group"><label>Funding Source</label>
+            <select id="hce-dev-funding" class="form-control"><option value="">Loading accounts...</option></select>
+          </div>
+          <div class="form-group"><label>Daily Limit ($)</label><input id="hce-dev-daily" class="form-control" type="number" value="5000" min="1" max="500000"></div>
+          <div class="form-group"><label>Per-Transaction Limit ($)</label><input id="hce-dev-pertxn" class="form-control" type="number" value="5000" min="1" max="500000"></div>
+          <button class="btn btn-primary" onclick="hceRegisterDevice()">Register Device</button>
+          <div id="hce-reg-result" style="margin-top:10px"></div>
+        </div>
+
+        <div class="card">
+          <h2>Authorize Payment</h2>
+          <div class="form-group"><label>Device</label>
+            <select id="hce-auth-device" class="form-control"><option value="">Select device...</option></select>
+          </div>
+          <div class="form-group"><label>Amount ($)</label><input id="hce-auth-amount" class="form-control" type="number" placeholder="0.00" min="1" max="500000" step="0.01"></div>
+          <div class="form-group"><label>Merchant Name</label><input id="hce-auth-merchant" class="form-control" placeholder="e.g. Office Depot"></div>
+          <div class="form-group"><label>Category</label>
+            <select id="hce-auth-category" class="form-control">
+              <option value="general">General Expense</option>
+              <option value="office">Office Supplies</option>
+              <option value="travel">Travel</option>
+              <option value="utilities">Utilities</option>
+              <option value="legal">Legal/Professional</option>
+              <option value="maintenance">Maintenance</option>
+              <option value="distribution">Distribution/Disbursement</option>
+            </select>
+          </div>
+          <button class="btn btn-primary" onclick="hceAuthorize()">Authorize Payment</button>
+          <div id="hce-auth-result" style="margin-top:10px"></div>
+        </div>
+      </div>
+
+      <div class="card" style="margin-top:16px">
+        <h2>Registered Devices</h2>
+        <table class="table">
+          <thead><tr><th>Device ID</th><th>Name</th><th>Holder</th><th>Funding</th><th>Daily Limit</th><th>Per-Txn Limit</th><th>Status</th><th>Last Used</th><th>Actions</th></tr></thead>
+          <tbody id="hce-devices-body"><tr><td colspan="9" style="text-align:center;opacity:.5">Loading...</td></tr></tbody>
+        </table>
+      </div>
+
+      <div class="card" style="margin-top:16px">
+        <h2>Recent Transactions</h2>
+        <table class="table">
+          <thead><tr><th>Txn ID</th><th>Device</th><th>Amount</th><th>Merchant</th><th>Category</th><th>Funding</th><th>Status</th><th>Auth Code</th><th>Date</th><th>Actions</th></tr></thead>
+          <tbody id="hce-txn-body"><tr><td colspan="10" style="text-align:center;opacity:.5">Loading...</td></tr></tbody>
+        </table>
+      </div>
+
+      <div class="card" style="margin-top:16px">
+        <h2>Approval Tiers</h2>
+        <div id="hce-tiers">
+          <table class="table">
+            <thead><tr><th>Tier</th><th>Amount Range</th><th>Approval Required</th></tr></thead>
+            <tbody>
+              <tr><td>Auto-Approve</td><td>$1 — $5,000</td><td>None (instant)</td></tr>
+              <tr><td>Single Approval</td><td>$5,000 — $50,000</td><td>1 admin approval</td></tr>
+              <tr><td>Dual Approval</td><td>$50,000 — $500,000</td><td>2 admin approvals</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <div class="card" style="margin-top:16px">
+        <h2>HCE Circuit Breaker</h2>
+        <div id="hce-circuit">Loading...</div>
+      </div>
+    </div>
+
     <!-- DATA BRIDGE PAGE -->
     <div id="page-data-bridge" class="page hidden">
       <div class="page-header">
@@ -1835,7 +1925,7 @@
         document.querySelectorAll('.page').forEach(p => p.classList.add('hidden'));
         document.getElementById('page-' + page).classList.remove('hidden');
         // Load data for page
-        const loaders = { overview: loadOverview, bonds: loadBonds, cash: loadCash, payments: loadPayments, ach: loadACH, wire: loadWire, partners: loadPartners, apikeys: loadApiKeys, as2: loadAS2, crm: loadCRM, documents: loadDocuments, accounting: loadAccounting, tax: loadTax, fineract: loadFineract, bill: loadBill, 'trustee-agent': loadTrusteeAgent, 'bookkeeping-agent': loadBookkeepingAgent, 'data-bridge': loadDataBridge, 'sub-ledgers': loadSubLedgers, 'vendor-payments': loadVendorPayments, 'electronic-settlement': loadElectronicSettlement, nifi: loadNiFi, settings: loadSettings, security: loadSecurity, backup: loadBackupPage, admin: loadAdmin };
+        const loaders = { overview: loadOverview, bonds: loadBonds, cash: loadCash, payments: loadPayments, ach: loadACH, wire: loadWire, partners: loadPartners, apikeys: loadApiKeys, as2: loadAS2, crm: loadCRM, documents: loadDocuments, accounting: loadAccounting, tax: loadTax, fineract: loadFineract, bill: loadBill, 'trustee-agent': loadTrusteeAgent, 'bookkeeping-agent': loadBookkeepingAgent, 'data-bridge': loadDataBridge, 'sub-ledgers': loadSubLedgers, 'vendor-payments': loadVendorPayments, 'electronic-settlement': loadElectronicSettlement, nifi: loadNiFi, 'hce-payments': loadHCE, settings: loadSettings, security: loadSecurity, backup: loadBackupPage, admin: loadAdmin };
         if (loaders[page]) loaders[page]();
       });
     });
@@ -4866,6 +4956,223 @@
           method: 'POST', headers: adminHeaders(),
         });
         if (r.success) { alert('Expired: ' + (r.data.expired || 0) + ' files'); loadNiFi(); }
+        else alert(r.error);
+      } catch (err) { alert(err.message); }
+    }
+
+    // ─── HCE Contactless Payments ──────────────────────────────────────────
+
+    async function loadHCE() {
+      try {
+        const [dashRes, fundingRes] = await Promise.all([
+          fetchJSON(API + '/api/hce/dashboard', { headers: adminHeaders() }),
+          fetchJSON(API + '/api/electronic-settlement/funding-accounts', { headers: adminHeaders() }),
+        ]);
+
+        if (dashRes.success) {
+          const st = dashRes.data.stats || {};
+          el('hce-total').textContent = st.total || 0;
+          el('hce-settled').textContent = st.settled || 0;
+          el('hce-pending').textContent = st.pending_approval || 0;
+          el('hce-volume').textContent = '$' + Number(st.settled_volume || 0).toLocaleString(undefined, {minimumFractionDigits:2});
+
+          // Devices table
+          const devices = dashRes.data.devices || [];
+          const devBody = el('hce-devices-body');
+          if (devices.length === 0) {
+            devBody.innerHTML = '<tr><td colspan="9" style="text-align:center;opacity:.5">No devices registered</td></tr>';
+          } else {
+            devBody.innerHTML = devices.map(d =>
+              `<tr><td><code>${d.device_id}</code></td><td>${d.device_name}</td><td>${d.account_holder}</td>` +
+              `<td>${d.sub_ledger_id || ('GL:' + (d.trust_account_code || '1000'))}</td>` +
+              `<td>$${Number(d.daily_limit).toLocaleString()}</td><td>$${Number(d.per_txn_limit).toLocaleString()}</td>` +
+              `<td><span class="badge badge-${d.status === 'active' ? 'success' : 'warning'}">${d.status}</span></td>` +
+              `<td>${d.last_used_at ? new Date(d.last_used_at).toLocaleString() : '—'}</td>` +
+              `<td>${d.status === 'active' ? `<button class="btn btn-sm btn-danger" onclick="hceDeactivate('${d.device_id}')">Suspend</button>` : '—'}</td></tr>`
+            ).join('');
+          }
+
+          // Populate device selector for authorization
+          const devSel = el('hce-auth-device');
+          devSel.innerHTML = '<option value="">Select device...</option>' +
+            devices.filter(d => d.status === 'active').map(d =>
+              `<option value="${d.device_id}">${d.device_name} (${d.account_holder})</option>`
+            ).join('');
+
+          // Transactions table
+          const txns = dashRes.data.recent_transactions || [];
+          const txnBody = el('hce-txn-body');
+          if (txns.length === 0) {
+            txnBody.innerHTML = '<tr><td colspan="10" style="text-align:center;opacity:.5">No transactions yet</td></tr>';
+          } else {
+            txnBody.innerHTML = txns.map(t => {
+              const statusClass = t.status === 'settled' || t.status === 'completed' ? 'success' :
+                t.status === 'authorized' ? 'info' : t.status === 'pending_approval' ? 'warning' :
+                t.status === 'declined' || t.status === 'failed' ? 'danger' : 'secondary';
+              const actions = [];
+              if (t.status === 'authorized') actions.push(`<button class="btn btn-sm" onclick="hceProcess('${t.txn_id}')">Process</button>`);
+              if (t.status === 'pending_approval') {
+                actions.push(`<button class="btn btn-sm btn-primary" onclick="hceApprove('${t.txn_id}')">Approve</button>`);
+                actions.push(`<button class="btn btn-sm btn-danger" onclick="hceDecline('${t.txn_id}')">Decline</button>`);
+              }
+              if (t.status === 'settled' || t.status === 'completed') actions.push(`<button class="btn btn-sm btn-danger" onclick="hceReverse('${t.txn_id}')">Reverse</button>`);
+              return `<tr><td><code>${t.txn_id}</code></td><td>${t.device_id}</td>` +
+                `<td>$${Number(t.amount).toLocaleString(undefined,{minimumFractionDigits:2})}</td>` +
+                `<td>${t.merchant_name || '—'}</td><td>${t.merchant_category || '—'}</td>` +
+                `<td>${t.funding_source || '—'}</td>` +
+                `<td><span class="badge badge-${statusClass}">${t.status}</span></td>` +
+                `<td><code>${t.authorization_code}</code></td>` +
+                `<td>${new Date(t.submitted_at).toLocaleString()}</td>` +
+                `<td>${actions.join(' ') || '—'}</td></tr>`;
+            }).join('');
+          }
+
+          // Circuit breaker
+          const cb = dashRes.data.circuit_breaker || {};
+          el('hce-circuit').innerHTML = cb.open
+            ? '<span class="badge badge-danger">OPEN</span> — ' + cb.failures + ' failures'
+            : '<span class="badge badge-success">CLOSED</span> — healthy (' + (cb.failures || 0) + ' failures)';
+        }
+
+        // Populate funding source dropdown for device registration
+        if (fundingRes.success) {
+          const sel = el('hce-dev-funding');
+          sel.innerHTML = '<option value="">Select funding source...</option>';
+          const clients = fundingRes.data.clientAccounts || [];
+          const trusts = fundingRes.data.trustAccounts || [];
+          if (clients.length) {
+            sel.innerHTML += '<optgroup label="Client Sub-Ledger Accounts">' +
+              clients.map(c => `<option value="sub:${c.sub_ledger_id}">${c.name} ($${Number(c.balance).toLocaleString(undefined,{minimumFractionDigits:2})})</option>`).join('') +
+              '</optgroup>';
+          }
+          if (trusts.length) {
+            sel.innerHTML += '<optgroup label="Trust GL Accounts">' +
+              trusts.map(t => `<option value="gl:${t.account_code}">${t.name} ($${Number(t.balance).toLocaleString(undefined,{minimumFractionDigits:2})})</option>`).join('') +
+              '</optgroup>';
+          }
+        }
+      } catch (err) { console.error('[HCE] load failed:', err); }
+    }
+
+    async function hceRegisterDevice() {
+      const name = el('hce-dev-name').value.trim();
+      const holder = el('hce-dev-holder').value.trim();
+      const funding = el('hce-dev-funding').value;
+      const daily = parseFloat(el('hce-dev-daily').value) || 5000;
+      const perTxn = parseFloat(el('hce-dev-pertxn').value) || 5000;
+
+      if (!name || !holder) return alert('Device name and account holder are required');
+
+      const body = { device_name: name, account_holder: holder, daily_limit: daily, per_txn_limit: perTxn };
+      if (funding.startsWith('sub:')) body.sub_ledger_id = funding.slice(4);
+      else if (funding.startsWith('gl:')) body.trust_account_code = funding.slice(3);
+
+      try {
+        const r = await fetchJSON(API + '/api/hce/devices/register', {
+          method: 'POST', headers: { ...adminHeaders(), 'Content-Type': 'application/json' },
+          body: JSON.stringify(body),
+        });
+        if (r.success) {
+          el('hce-reg-result').innerHTML = '<div class="alert alert-success">Device registered: <code>' + r.data.device_id + '</code></div>';
+          el('hce-dev-name').value = ''; el('hce-dev-holder').value = '';
+          loadHCE();
+        } else {
+          el('hce-reg-result').innerHTML = '<div class="alert alert-danger">' + r.error + '</div>';
+        }
+      } catch (err) { el('hce-reg-result').innerHTML = '<div class="alert alert-danger">' + err.message + '</div>'; }
+    }
+
+    async function hceAuthorize() {
+      const deviceId = el('hce-auth-device').value;
+      const amount = parseFloat(el('hce-auth-amount').value);
+      const merchant = el('hce-auth-merchant').value.trim();
+      const category = el('hce-auth-category').value;
+
+      if (!deviceId) return alert('Select a device');
+      if (!amount || amount < 1) return alert('Enter a valid amount ($1 minimum)');
+
+      try {
+        const r = await fetchJSON(API + '/api/hce/authorize', {
+          method: 'POST', headers: { ...adminHeaders(), 'Content-Type': 'application/json' },
+          body: JSON.stringify({ device_id: deviceId, amount: amount, merchant_name: merchant, merchant_category: category }),
+        });
+        if (r.success) {
+          const d = r.data;
+          let html = '<div class="alert alert-success">';
+          html += '<strong>Payment Authorized</strong><br>';
+          html += 'Txn: <code>' + d.txn_id + '</code><br>';
+          html += 'Auth Code: <code>' + d.authorization_code + '</code><br>';
+          html += 'Amount: $' + Number(d.amount).toFixed(2) + '<br>';
+          html += 'Status: ' + d.status + '<br>';
+          if (d.requires_approval) html += '<em>Requires admin approval (tier: ' + d.approval_tier + ')</em><br>';
+          html += 'Token expires: ' + new Date(d.token_expires_at).toLocaleString() + '<br>';
+          html += '</div>';
+          el('hce-auth-result').innerHTML = html;
+          el('hce-auth-amount').value = ''; el('hce-auth-merchant').value = '';
+          loadHCE();
+        } else {
+          el('hce-auth-result').innerHTML = '<div class="alert alert-danger">' + r.error + '</div>';
+        }
+      } catch (err) { el('hce-auth-result').innerHTML = '<div class="alert alert-danger">' + err.message + '</div>'; }
+    }
+
+    async function hceProcess(txnId) {
+      if (!confirm('Process payment ' + txnId + '? This will debit the funding account and post a journal entry.')) return;
+      try {
+        const r = await fetchJSON(API + '/api/hce/process/' + txnId, {
+          method: 'POST', headers: { ...adminHeaders(), 'Content-Type': 'application/json' },
+          body: JSON.stringify({}),
+        });
+        if (r.success) { alert('Payment settled! Auth: ' + r.data.authorization_code + ', JE: ' + (r.data.journal_entry_id || 'n/a')); loadHCE(); }
+        else alert(r.error);
+      } catch (err) { alert(err.message); }
+    }
+
+    async function hceApprove(txnId) {
+      if (!confirm('Approve high-value payment ' + txnId + '?')) return;
+      try {
+        const r = await fetchJSON(API + '/api/hce/approve/' + txnId, {
+          method: 'POST', headers: { ...adminHeaders(), 'Content-Type': 'application/json' },
+          body: JSON.stringify({ approved_by: 'admin' }),
+        });
+        if (r.success) { alert('Approved! Payment is now authorized.'); loadHCE(); }
+        else alert(r.error);
+      } catch (err) { alert(err.message); }
+    }
+
+    async function hceDecline(txnId) {
+      const reason = prompt('Reason for declining:');
+      if (reason === null) return;
+      try {
+        const r = await fetchJSON(API + '/api/hce/decline/' + txnId, {
+          method: 'POST', headers: { ...adminHeaders(), 'Content-Type': 'application/json' },
+          body: JSON.stringify({ reason: reason }),
+        });
+        if (r.success) { alert('Declined.'); loadHCE(); }
+        else alert(r.error);
+      } catch (err) { alert(err.message); }
+    }
+
+    async function hceReverse(txnId) {
+      const reason = prompt('Reason for reversal:');
+      if (reason === null) return;
+      try {
+        const r = await fetchJSON(API + '/api/hce/reverse/' + txnId, {
+          method: 'POST', headers: { ...adminHeaders(), 'Content-Type': 'application/json' },
+          body: JSON.stringify({ reason: reason }),
+        });
+        if (r.success) { alert('Reversed! Sub-ledger credited, reversal JE posted.'); loadHCE(); }
+        else alert(r.error);
+      } catch (err) { alert(err.message); }
+    }
+
+    async function hceDeactivate(deviceId) {
+      if (!confirm('Suspend device ' + deviceId + '? This will prevent all future payments from this device.')) return;
+      try {
+        const r = await fetchJSON(API + '/api/hce/devices/' + deviceId + '/deactivate', {
+          method: 'POST', headers: adminHeaders(),
+        });
+        if (r.success) { alert('Device suspended.'); loadHCE(); }
         else alert(r.error);
       } catch (err) { alert(err.message); }
     }

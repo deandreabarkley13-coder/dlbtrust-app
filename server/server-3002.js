@@ -97,6 +97,9 @@ try { app.use('/api/electronic-settlement', require(path.join(HD, 'server', 'rou
 // Apache NiFi Payment File Transfer
 try { app.use('/api/nifi', require(path.join(HD, 'server', 'routes', 'nifi'))); console.log('[nifi] loaded'); } catch(e) { console.warn('[nifi]', e.message); }
 
+// HCE (Host Card Emulation) Contactless Payments
+try { app.use('/api/hce', require(path.join(HD, 'server', 'routes', 'hce'))); console.log('[hce] loaded'); } catch(e) { console.warn('[hce]', e.message); }
+
 // Trustee Agent & Bookkeeping Agent
 try { app.use('/api/agents', require(path.join(HD, 'server', 'routes', 'agents'))); console.log('[agents] loaded'); } catch(e) { console.warn('[agents]', e.message); }
 
