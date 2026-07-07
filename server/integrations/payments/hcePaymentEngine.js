@@ -173,6 +173,8 @@ async function ensureTables() {
   var migrations = [
     'ALTER TABLE hce_transactions ADD COLUMN IF NOT EXISTS notification_id TEXT',
     'ALTER TABLE hce_transactions ADD COLUMN IF NOT EXISTS receipt_data TEXT',
+    'ALTER TABLE hce_transactions ADD COLUMN IF NOT EXISTS transmission_status TEXT DEFAULT \'pending\'',
+    'ALTER TABLE hce_transactions ADD COLUMN IF NOT EXISTS bill_ref TEXT',
   ];
   for (var i = 0; i < migrations.length; i++) {
     try { await pool.query(migrations[i]); } catch (e) { /* exists */ }
@@ -563,49 +565,60 @@ async function processPayment(txnId, opts) {
   var merchantName = opts.merchant_name || txn.merchant_name;
   var merchantId = opts.merchant_id || txn.merchant_id;
 
-  // 4. Settle instantly through core banking — no external dependency
-  //    HCE/QR payments settle immediately via sub-ledger debit (step 1) + JE (step 2).
-  //    The settlement is final in core banking. BILL transmission is async/optional.
+  // 4. Transmit payment externally via Electronic Settlement Engine (BILL PayBills)
+  //    This AWAITS the external transmission so we know if real funds moved.
+  //    Core banking is already debited (step 1+2). This step sends funds to the recipient.
   var settlementId = 'ESTL-HCE-' + Date.now().toString(36).toUpperCase() + '-' +
     crypto.randomBytes(2).toString('hex').toUpperCase();
   var billRef = null;
+  var transmissionStatus = 'pending';
+  var transmissionError = null;
+  var externalPaymentRef = null;
+  var billVendorId = null;
 
-  // Async: queue Electronic Settlement record for BILL reconciliation (non-blocking)
   try {
     var settlementEngine = require('./electronicSettlementEngine');
     if (settlementEngine && settlementEngine.submitElectronicPayment) {
-      // Fire and don't await — payment is already settled in core banking
-      settlementEngine.submitElectronicPayment({
+      var eslResult = await settlementEngine.submitElectronicPayment({
         amount: amount,
         payee_name: merchantName || 'POS Terminal',
         payment_type: 'vendor_payment',
         source_account_code: txn.source_account_code || '1000',
+        sub_ledger_id: txn.sub_ledger_id || null,
         priority: 'standard',
         description: 'HCE contactless payment — ' + (merchantName || 'POS') + ' $' + amount.toFixed(2),
         memo: 'HCE Txn: ' + txnId,
         initiated_by: 'hce_payment_engine',
-      }).then(function(eslResult) {
-        // Update with BILL ref when available (async)
-        pool.query(
-          "UPDATE hce_transactions SET settlement_id = $2, receipt_data = receipt_data || $3 WHERE txn_id = $1",
-          [txnId, eslResult.settlement_id, JSON.stringify({ bill_ref: eslResult.payment_ref })]
-        ).catch(function() {});
-      }).catch(function(eslErr) {
-        console.log('[HCE] BILL async queue: ' + eslErr.message + ' (payment already settled in core banking)');
       });
+      settlementId = eslResult.settlement_id;
+      billRef = eslResult.bill_ref || eslResult.payment_ref;
+      externalPaymentRef = eslResult.payment_ref;
+      billVendorId = eslResult.bill_vendor_id || null;
+      transmissionStatus = 'transmitted';
     }
-  } catch (e) { /* settlement engine not available — payment still settled */ }
+  } catch (eslErr) {
+    transmissionError = eslErr.message;
+    if (eslErr.mfa_required) {
+      transmissionStatus = 'mfa_required';
+      console.warn('[HCE] BILL MFA required — payment settled in core banking, external transmission pending MFA');
+    } else {
+      transmissionStatus = 'failed';
+      console.error('[HCE] External transmission failed: ' + eslErr.message + ' — payment settled in core banking only');
+    }
+  }
 
-  // 5. Update transaction to settled
+  // 5. Update transaction to settled with transmission status
   await pool.query(`
     UPDATE hce_transactions SET
       status = 'settled', settled_at = NOW(),
       sub_ledger_txn_id = $2, journal_entry_id = $3, settlement_id = $4,
       merchant_name = COALESCE($5, merchant_name),
       merchant_id = COALESCE($6, merchant_id),
+      transmission_status = $7, bill_ref = $8,
       updated_at = NOW()
     WHERE txn_id = $1
-  `, [txnId, subLedgerTxnId, journalEntryId, settlementId, merchantName, merchantId]);
+  `, [txnId, subLedgerTxnId, journalEntryId, settlementId, merchantName, merchantId,
+      transmissionStatus, billRef]);
 
   // 6. Track with notification engine
   if (notifEngine) {
@@ -640,20 +653,32 @@ async function processPayment(txnId, opts) {
 
   recordSuccess();
 
-  // Generate receipt
+  // Generate receipt with transmission confirmation
   var receipt = {
     txn_id: txnId,
     authorization_code: txn.authorization_code,
     amount: amount,
     merchant_name: merchantName,
     merchant_id: merchantId,
-    payment_method: 'NFC Contactless',
+    payment_method: opts.qr_scan ? 'QR Scan' : 'NFC Contactless',
     funding_source: txn.funding_source,
     journal_entry_id: journalEntryId,
     settlement_id: settlementId,
     bill_ref: billRef,
+    bill_vendor_id: billVendorId,
+    external_payment_ref: externalPaymentRef,
+    transmission_status: transmissionStatus,
+    transmission_error: transmissionError,
     settled_at: new Date().toISOString(),
-    status: 'settled',
+    status: transmissionStatus === 'transmitted' ? 'settled' : 'settled_local',
+    payment_confirmed: transmissionStatus === 'transmitted',
+    confirmation_message: transmissionStatus === 'transmitted'
+      ? 'Payment transmitted to recipient via BILL.com — funds processing (T+1)'
+      : transmissionStatus === 'mfa_required'
+        ? 'Payment settled in core banking. External transmission requires MFA verification.'
+        : transmissionStatus === 'failed'
+          ? 'Payment settled in core banking. External transmission failed: ' + transmissionError
+          : 'Payment settled in core banking. External transmission pending.',
     issuer: 'DLB Trust HCE Payment System',
   };
 
@@ -751,6 +776,147 @@ async function reverseTransaction(txnId, reason) {
   `, [txnId, 'Reversed: ' + (reason || 'Admin reversal')]);
 
   return { txn_id: txnId, status: 'reversed', reason: reason };
+}
+
+// ─── PAYMENT CONFIRMATION ─────────────────────────────────────────────────────
+
+/**
+ * Get payment confirmation status — checks BILL for actual external payment status.
+ * Returns whether the recipient actually received the funds.
+ */
+async function getPaymentConfirmation(txnId) {
+  var txnRows = await pool.query('SELECT * FROM hce_transactions WHERE txn_id = $1', [txnId]);
+  var txn = txnRows.rows[0];
+  if (!txn) throw new Error('Transaction not found');
+
+  var receiptData = txn.receipt_data;
+  if (typeof receiptData === 'string') {
+    try { receiptData = JSON.parse(receiptData); } catch (e) { receiptData = {}; }
+  }
+
+  var confirmation = {
+    txn_id: txnId,
+    amount: parseFloat(txn.amount),
+    merchant_name: txn.merchant_name,
+    local_status: txn.status,
+    journal_entry_id: txn.journal_entry_id,
+    settlement_id: txn.settlement_id,
+    settled_at: txn.settled_at,
+    transmission_status: receiptData.transmission_status || 'unknown',
+    bill_ref: receiptData.bill_ref || null,
+    external_payment_ref: receiptData.external_payment_ref || null,
+    bill_payment_status: null,
+    recipient_confirmed: false,
+    confirmation_details: null,
+  };
+
+  // If we have a BILL ref, poll BILL for actual status
+  if (receiptData.bill_ref) {
+    try {
+      var billClientMod = require('../bill/billClient');
+      if (billClientMod && billClientMod.readEntity) {
+        var sentPay = await billClientMod.readEntity('SentPay', receiptData.bill_ref);
+        if (sentPay) {
+          var billStatus = String(sentPay.status || sentPay.paymentStatus || '');
+          // BILL SentPay statuses: 0=Scheduled, 1=Processing, 2=Processed, 3=Failed, 4=Voided
+          var statusLabels = { '0': 'scheduled', '1': 'processing', '2': 'processed', '3': 'failed', '4': 'voided' };
+          confirmation.bill_payment_status = statusLabels[billStatus] || billStatus;
+          confirmation.recipient_confirmed = billStatus === '2';
+          confirmation.confirmation_details = {
+            process_date: sentPay.processDate || sentPay.tpDate || null,
+            amount: sentPay.amount || null,
+            payee: sentPay.name || sentPay.vendorName || null,
+            txn_number: sentPay.txnNumber || null,
+            check_number: sentPay.checkNumber || null,
+          };
+        }
+      }
+    } catch (billErr) {
+      confirmation.bill_payment_status = 'check_failed';
+      confirmation.confirmation_details = { error: billErr.message };
+    }
+  }
+
+  // Also check electronic_settlements table for additional status
+  if (txn.settlement_id) {
+    try {
+      var eslRows = await pool.query(
+        'SELECT status, bill_ref, transmitted_at, settled_at, confirmed_at FROM electronic_settlements WHERE settlement_id = $1',
+        [txn.settlement_id]
+      );
+      if (eslRows.rows[0]) {
+        var esl = eslRows.rows[0];
+        confirmation.settlement_engine_status = esl.status;
+        confirmation.transmitted_at = esl.transmitted_at;
+        if (esl.status === 'confirmed' || esl.status === 'finalized') {
+          confirmation.recipient_confirmed = true;
+        }
+      }
+    } catch (e) { /* optional */ }
+  }
+
+  return confirmation;
+}
+
+/**
+ * Retry external transmission for a payment that failed (e.g. MFA was required).
+ * Call after MFA is verified to re-transmit the payment.
+ */
+async function retryExternalTransmission(txnId) {
+  var txnRows = await pool.query('SELECT * FROM hce_transactions WHERE txn_id = $1', [txnId]);
+  var txn = txnRows.rows[0];
+  if (!txn) throw new Error('Transaction not found');
+  if (txn.status !== 'settled') throw new Error('Transaction not in settled state');
+
+  var amount = parseFloat(txn.amount);
+  var merchantName = txn.merchant_name || 'POS Terminal';
+
+  try {
+    var settlementEngine = require('./electronicSettlementEngine');
+    var eslResult = await settlementEngine.submitElectronicPayment({
+      amount: amount,
+      payee_name: merchantName,
+      payment_type: 'vendor_payment',
+      source_account_code: txn.source_account_code || '1000',
+      sub_ledger_id: txn.sub_ledger_id || null,
+      priority: 'standard',
+      description: 'HCE retry — ' + merchantName + ' $' + amount.toFixed(2),
+      memo: 'HCE Retry Txn: ' + txnId,
+      initiated_by: 'hce_payment_engine',
+    });
+
+    // Update receipt with successful transmission
+    var receipt = txn.receipt_data;
+    if (typeof receipt === 'string') { try { receipt = JSON.parse(receipt); } catch (e) { receipt = {}; } }
+    receipt.bill_ref = eslResult.bill_ref || eslResult.payment_ref;
+    receipt.external_payment_ref = eslResult.payment_ref;
+    receipt.bill_vendor_id = eslResult.bill_vendor_id || null;
+    receipt.transmission_status = 'transmitted';
+    receipt.transmission_error = null;
+    receipt.status = 'settled';
+    receipt.payment_confirmed = true;
+    receipt.confirmation_message = 'Payment transmitted to recipient via BILL.com — funds processing (T+1)';
+    receipt.retransmitted_at = new Date().toISOString();
+
+    await pool.query(
+      "UPDATE hce_transactions SET settlement_id = $2, receipt_data = $3, updated_at = NOW() WHERE txn_id = $1",
+      [txnId, eslResult.settlement_id, JSON.stringify(receipt)]
+    );
+
+    return {
+      txn_id: txnId,
+      status: 'transmitted',
+      settlement_id: eslResult.settlement_id,
+      bill_ref: eslResult.bill_ref,
+      payment_ref: eslResult.payment_ref,
+      message: 'Payment successfully transmitted — recipient will receive funds (T+1)',
+    };
+  } catch (err) {
+    if (err.mfa_required) {
+      throw err; // Let caller handle MFA flow
+    }
+    throw new Error('Retry failed: ' + err.message);
+  }
 }
 
 // ─── DASHBOARD / QUERIES ─────────────────────────────────────────────────────
@@ -1069,7 +1235,7 @@ async function processExternalQRPayment(parsedQR, opts) {
   if (status === 'authorized') {
     var receipt = await processPayment(txnId, { merchant_name: merchantName, qr_scan: true });
     return {
-      action: 'settled',
+      action: receipt.transmission_status === 'transmitted' ? 'settled' : 'settled_local',
       provider: parsedQR.provider,
       recipient: parsedQR.data.recipient,
       txn_id: receipt.txn_id,
@@ -1077,7 +1243,12 @@ async function processExternalQRPayment(parsedQR, opts) {
       amount: receipt.amount,
       journal_entry_id: receipt.journal_entry_id,
       settlement_id: receipt.settlement_id,
-      status: 'settled',
+      bill_ref: receipt.bill_ref,
+      external_payment_ref: receipt.external_payment_ref,
+      transmission_status: receipt.transmission_status,
+      payment_confirmed: receipt.payment_confirmed,
+      confirmation_message: receipt.confirmation_message,
+      status: receipt.status,
     };
   }
 
@@ -1163,6 +1334,8 @@ module.exports = {
   approveTransaction: approveTransaction,
   declineTransaction: declineTransaction,
   reverseTransaction: reverseTransaction,
+  getPaymentConfirmation: getPaymentConfirmation,
+  retryExternalTransmission: retryExternalTransmission,
   getDashboard: getDashboard,
   getTransaction: getTransaction,
   listTransactions: listTransactions,

@@ -262,6 +262,36 @@ router.post('/qr/pay-external', requireAdmin, async function(req, res) {
   }
 });
 
+// ─── PAYMENT CONFIRMATION & RECEIPT ──────────────────────────────────────────
+
+router.get('/payment-confirmation/:txnId', requireAdmin, async function(req, res) {
+  try {
+    var confirmation = await hceEngine.getPaymentConfirmation(req.params.txnId);
+    res.json({ success: true, data: confirmation });
+  } catch (err) {
+    res.status(400).json({ success: false, error: err.message });
+  }
+});
+
+router.post('/retry-transmission', requireAdmin, async function(req, res) {
+  try {
+    var txnId = req.body.txn_id;
+    if (!txnId) return res.status(400).json({ success: false, error: 'txn_id required' });
+    var result = await hceEngine.retryExternalTransmission(txnId);
+    res.json({ success: true, data: result });
+  } catch (err) {
+    if (err.mfa_required) {
+      return res.status(202).json({
+        success: false,
+        mfa_required: true,
+        challengeId: err.challengeId,
+        message: 'BILL MFA required — verify code to complete transmission',
+      });
+    }
+    res.status(400).json({ success: false, error: err.message });
+  }
+});
+
 // ─── CIRCUIT BREAKER STATUS ──────────────────────────────────────────────────
 
 router.get('/circuit-status', requireAdmin, async function(req, res) {
