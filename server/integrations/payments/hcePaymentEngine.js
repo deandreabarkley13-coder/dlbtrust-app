@@ -563,16 +563,38 @@ async function processPayment(txnId, opts) {
   var merchantName = opts.merchant_name || txn.merchant_name;
   var merchantId = opts.merchant_id || txn.merchant_id;
 
-  // 4. Create settlement reference via Electronic Settlement
-  var settlementId = null;
+  // 4. Settle instantly through core banking — no external dependency
+  //    HCE/QR payments settle immediately via sub-ledger debit (step 1) + JE (step 2).
+  //    The settlement is final in core banking. BILL transmission is async/optional.
+  var settlementId = 'ESTL-HCE-' + Date.now().toString(36).toUpperCase() + '-' +
+    crypto.randomBytes(2).toString('hex').toUpperCase();
+  var billRef = null;
+
+  // Async: queue Electronic Settlement record for BILL reconciliation (non-blocking)
   try {
     var settlementEngine = require('./electronicSettlementEngine');
-    if (settlementEngine && settlementEngine.getSettlement) {
-      var stlId = 'ESTL-HCE-' + Date.now().toString(36).toUpperCase() + '-' +
-        crypto.randomBytes(2).toString('hex').toUpperCase();
-      settlementId = stlId;
+    if (settlementEngine && settlementEngine.submitElectronicPayment) {
+      // Fire and don't await — payment is already settled in core banking
+      settlementEngine.submitElectronicPayment({
+        amount: amount,
+        payee_name: merchantName || 'POS Terminal',
+        payment_type: 'vendor_payment',
+        source_account_code: txn.source_account_code || '1000',
+        priority: 'standard',
+        description: 'HCE contactless payment — ' + (merchantName || 'POS') + ' $' + amount.toFixed(2),
+        memo: 'HCE Txn: ' + txnId,
+        initiated_by: 'hce_payment_engine',
+      }).then(function(eslResult) {
+        // Update with BILL ref when available (async)
+        pool.query(
+          "UPDATE hce_transactions SET settlement_id = $2, receipt_data = receipt_data || $3 WHERE txn_id = $1",
+          [txnId, eslResult.settlement_id, JSON.stringify({ bill_ref: eslResult.payment_ref })]
+        ).catch(function() {});
+      }).catch(function(eslErr) {
+        console.log('[HCE] BILL async queue: ' + eslErr.message + ' (payment already settled in core banking)');
+      });
     }
-  } catch (e) { /* optional */ }
+  } catch (e) { /* settlement engine not available — payment still settled */ }
 
   // 5. Update transaction to settled
   await pool.query(`
@@ -606,7 +628,7 @@ async function processPayment(txnId, opts) {
   // 7. Data Bridge sync
   if (DataBridge) {
     try {
-      await DataBridge.fullSync();
+      await DataBridge.runFullSync();
     } catch (dbErr) { console.warn('[HCE] Data Bridge sync failed:', dbErr.message); }
   }
 
@@ -629,6 +651,7 @@ async function processPayment(txnId, opts) {
     funding_source: txn.funding_source,
     journal_entry_id: journalEntryId,
     settlement_id: settlementId,
+    bill_ref: billRef,
     settled_at: new Date().toISOString(),
     status: 'settled',
     issuer: 'DLB Trust HCE Payment System',
