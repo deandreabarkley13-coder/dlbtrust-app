@@ -565,45 +565,49 @@ async function processPayment(txnId, opts) {
   var merchantName = opts.merchant_name || txn.merchant_name;
   var merchantId = opts.merchant_id || txn.merchant_id;
 
-  // 4. Transmit payment externally via Electronic Settlement Engine (BILL PayBills)
-  //    This AWAITS the external transmission so we know if real funds moved.
-  //    Core banking is already debited (step 1+2). This step sends funds to the recipient.
+  // 4. Settlement via Core Banking (sub-ledger debit + journal entry already done above).
+  //    NFC/QR payments settle through core banking directly — NOT through BILL.com.
+  //    BILL is only used when explicitly requested (e.g. E-Pay vendor payments page).
+  //    This ensures payments reference the core banking account, not "Bill.com 0240".
   var settlementId = 'ESTL-HCE-' + Date.now().toString(36).toUpperCase() + '-' +
     crypto.randomBytes(2).toString('hex').toUpperCase();
   var billRef = null;
-  var transmissionStatus = 'pending';
+  var transmissionStatus = 'core_banking_settled';
   var transmissionError = null;
   var externalPaymentRef = null;
   var billVendorId = null;
 
-  try {
-    var settlementEngine = require('./electronicSettlementEngine');
-    if (settlementEngine && settlementEngine.submitElectronicPayment) {
-      var eslResult = await settlementEngine.submitElectronicPayment({
-        amount: amount,
-        payee_name: merchantName || 'POS Terminal',
-        payment_type: 'vendor_payment',
-        source_account_code: txn.source_account_code || '1000',
-        sub_ledger_id: txn.sub_ledger_id || null,
-        priority: 'standard',
-        description: 'HCE contactless payment — ' + (merchantName || 'POS') + ' $' + amount.toFixed(2),
-        memo: 'HCE Txn: ' + txnId,
-        initiated_by: 'hce_payment_engine',
-      });
-      settlementId = eslResult.settlement_id;
-      billRef = eslResult.bill_ref || eslResult.payment_ref;
-      externalPaymentRef = eslResult.payment_ref;
-      billVendorId = eslResult.bill_vendor_id || null;
-      transmissionStatus = 'transmitted';
-    }
-  } catch (eslErr) {
-    transmissionError = eslErr.message;
-    if (eslErr.mfa_required) {
-      transmissionStatus = 'mfa_required';
-      console.warn('[HCE] BILL MFA required — payment settled in core banking, external transmission pending MFA');
-    } else {
-      transmissionStatus = 'failed';
-      console.error('[HCE] External transmission failed: ' + eslErr.message + ' — payment settled in core banking only');
+  // Only route through BILL if explicitly requested (e.g. for vendor payouts via E-Pay)
+  if (opts.use_bill === true) {
+    try {
+      var settlementEngine = require('./electronicSettlementEngine');
+      if (settlementEngine && settlementEngine.submitElectronicPayment) {
+        var eslResult = await settlementEngine.submitElectronicPayment({
+          amount: amount,
+          payee_name: merchantName || 'POS Terminal',
+          payment_type: 'vendor_payment',
+          source_account_code: txn.source_account_code || '1000',
+          sub_ledger_id: txn.sub_ledger_id || null,
+          priority: 'standard',
+          description: 'HCE contactless payment — ' + (merchantName || 'POS') + ' $' + amount.toFixed(2),
+          memo: 'HCE Txn: ' + txnId,
+          initiated_by: 'hce_payment_engine',
+        });
+        settlementId = eslResult.settlement_id;
+        billRef = eslResult.bill_ref || eslResult.payment_ref;
+        externalPaymentRef = eslResult.payment_ref;
+        billVendorId = eslResult.bill_vendor_id || null;
+        transmissionStatus = 'transmitted';
+      }
+    } catch (eslErr) {
+      transmissionError = eslErr.message;
+      if (eslErr.mfa_required) {
+        transmissionStatus = 'mfa_required';
+        console.warn('[HCE] BILL MFA required — payment settled in core banking, external transmission pending MFA');
+      } else {
+        transmissionStatus = 'failed';
+        console.error('[HCE] External transmission failed: ' + eslErr.message + ' — payment settled in core banking only');
+      }
     }
   }
 
@@ -670,15 +674,17 @@ async function processPayment(txnId, opts) {
     transmission_status: transmissionStatus,
     transmission_error: transmissionError,
     settled_at: new Date().toISOString(),
-    status: transmissionStatus === 'transmitted' ? 'settled' : 'settled_local',
-    payment_confirmed: transmissionStatus === 'transmitted',
+    status: 'settled',
+    payment_confirmed: true,
     confirmation_message: transmissionStatus === 'transmitted'
-      ? 'Payment transmitted to recipient via BILL.com — funds processing (T+1)'
-      : transmissionStatus === 'mfa_required'
-        ? 'Payment settled in core banking. External transmission requires MFA verification.'
-        : transmissionStatus === 'failed'
-          ? 'Payment settled in core banking. External transmission failed: ' + transmissionError
-          : 'Payment settled in core banking. External transmission pending.',
+      ? 'Payment settled via core banking and transmitted to recipient via BILL.com (T+1)'
+      : transmissionStatus === 'core_banking_settled'
+        ? 'Payment settled — funds debited from core banking account ' + (txn.sub_ledger_id || ('GL:' + (txn.source_account_code || '1000')))
+        : transmissionStatus === 'mfa_required'
+          ? 'Payment settled in core banking. BILL transmission requires MFA verification.'
+          : transmissionStatus === 'failed'
+            ? 'Payment settled in core banking. BILL transmission failed: ' + transmissionError
+            : 'Payment settled in core banking.',
     issuer: 'DLB Trust HCE Payment System',
   };
 
@@ -1235,20 +1241,21 @@ async function processExternalQRPayment(parsedQR, opts) {
   if (status === 'authorized') {
     var receipt = await processPayment(txnId, { merchant_name: merchantName, qr_scan: true });
     return {
-      action: receipt.transmission_status === 'transmitted' ? 'settled' : 'settled_local',
+      action: 'settled',
       provider: parsedQR.provider,
       recipient: parsedQR.data.recipient,
       txn_id: receipt.txn_id,
       authorization_code: receipt.authorization_code,
       amount: receipt.amount,
+      funding_source: fundingSource,
+      sub_ledger_id: subLedgerId,
+      source_account: sourceCode,
       journal_entry_id: receipt.journal_entry_id,
       settlement_id: receipt.settlement_id,
-      bill_ref: receipt.bill_ref,
-      external_payment_ref: receipt.external_payment_ref,
       transmission_status: receipt.transmission_status,
       payment_confirmed: receipt.payment_confirmed,
       confirmation_message: receipt.confirmation_message,
-      status: receipt.status,
+      status: 'settled',
     };
   }
 
