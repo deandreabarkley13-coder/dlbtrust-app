@@ -26,11 +26,11 @@ function achHealth(req, res) {
     });
   });
   probeReq.on('error', function() {
-    json(res, 200, { openach_connected: true, status: 'ok', note: 'OpenACH on ach.dlbtrust.cloud' });
+    json(res, 503, { openach_connected: false, status: 'error', error: 'OpenACH not reachable' });
   });
   probeReq.setTimeout(4000, function() {
     probeReq.destroy();
-    json(res, 200, { openach_connected: true, status: 'ok', note: 'probe timeout' });
+    json(res, 503, { openach_connected: false, status: 'error', error: 'OpenACH probe timed out' });
   });
 }
 
@@ -54,8 +54,8 @@ function analyticsSummary(req, res) {
       try { db = new Database(dbPaths[i], { readonly: true }); break; } catch(e) {}
     }
     if (!db) {
-      json(res, 200, { total_corpus: 0, wallet_count: 0, transaction_count: 0,
-                       generated_at: new Date().toISOString(), note: 'DB not found' });
+      json(res, 503, { error: 'Database not available', detail: 'trust.db not found',
+                       generated_at: new Date().toISOString() });
       return;
     }
     var wallets = db.prepare('SELECT COUNT(*) as count, COALESCE(SUM(balance),0) as total FROM wallets').get();
@@ -68,8 +68,8 @@ function analyticsSummary(req, res) {
       generated_at: new Date().toISOString()
     });
   } catch(err) {
-    json(res, 200, { total_corpus: 0, wallet_count: 0, transaction_count: 0,
-                     generated_at: new Date().toISOString(), note: err.message });
+    json(res, 500, { error: 'Analytics query failed', detail: err.message,
+                     generated_at: new Date().toISOString() });
   }
 }
 

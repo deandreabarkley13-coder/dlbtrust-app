@@ -273,7 +273,21 @@ router.get('/wallets', (req, res) => {
 router.get('/transactions', (req, res) => {
   try {
     const db = req.db;
-    const { category, method, from: fromDate, to: toDate, limit = 100, offset = 0 } = req.query;
+    const { category, method, from: fromDate, to: toDate } = req.query;
+    let { limit = 100, offset = 0 } = req.query;
+
+    limit = parseInt(limit, 10);
+    offset = parseInt(offset, 10);
+    if (isNaN(limit) || limit < 1) limit = 100;
+    if (isNaN(offset) || offset < 0) offset = 0;
+    if (limit > 1000) limit = 1000;
+
+    if (fromDate && isNaN(Date.parse(fromDate))) {
+      return res.status(400).json({ error: "'from' must be a valid date (YYYY-MM-DD)" });
+    }
+    if (toDate && isNaN(Date.parse(toDate))) {
+      return res.status(400).json({ error: "'to' must be a valid date (YYYY-MM-DD)" });
+    }
 
     // Build dynamic WHERE clause
     const conditions = [];
@@ -342,7 +356,7 @@ router.get('/transactions', (req, res) => {
       ${where}
       ORDER BY created_at DESC
       LIMIT ? OFFSET ?
-    `).all(...params, parseInt(limit), parseInt(offset));
+    `).all(...params, limit, offset);
 
     // Total count
     const totalRow = db.prepare(`
@@ -353,7 +367,7 @@ router.get('/transactions', (req, res) => {
       generated_at: new Date().toISOString(),
       filters: { category: category || null, method: method || null, from: fromDate || null, to: toDate || null },
       total_count: totalRow.total,
-      page: { limit: parseInt(limit), offset: parseInt(offset) },
+      page: { limit, offset },
 
       by_category: byCategory.map(r => ({
         category: r.category,
@@ -610,6 +624,10 @@ router.get('/distributions', (req, res) => {
   try {
     const db = req.db;
     const { year } = req.query;
+
+    if (year && !/^\d{4}$/.test(year)) {
+      return res.status(400).json({ error: 'year must be a 4-digit year (e.g. 2025)' });
+    }
 
     const conditions = ["category = 'distribution'", "status = 'completed'"];
     const params = [];
