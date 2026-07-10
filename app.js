@@ -70,13 +70,29 @@ try {
   LiveBondEngine.scheduleAccrualJob();
 } catch(e) { console.warn('[liveEngine]', e.message); }
 
-// ─── Treasury Dashboard (must be before express.static) ────────────────────
-app.get('/', (req, res) => {
+// ─── Public website and Treasury Dashboard (before express.static) ──────────
+const businessHosts = (process.env.BUSINESS_HOSTS || 'dlbtrustcompany.com,www.dlbtrustcompany.com')
+  .split(',')
+  .map(host => host.trim().toLowerCase())
+  .filter(Boolean);
+
+function sendNoCacheFile(res, filename) {
   res.set('Cache-Control', 'no-cache, no-store, must-revalidate');
-  res.sendFile(path.join(__dirname, 'public', 'dashboard.html'));
+  res.set('Pragma', 'no-cache');
+  res.set('Expires', '0');
+  res.sendFile(path.join(__dirname, 'public', filename));
+}
+
+app.get('/business', (req, res) => {
+  sendNoCacheFile(res, 'business.html');
+});
+app.get('/', (req, res) => {
+  const hostname = String(req.hostname || '').toLowerCase();
+  const filename = businessHosts.includes(hostname) ? 'business.html' : 'dashboard.html';
+  sendNoCacheFile(res, filename);
 });
 app.get('/treasury', (req, res) => {
-  res.sendFile(path.join(__dirname, 'public', 'dashboard.html'));
+  sendNoCacheFile(res, 'dashboard.html');
 });
 app.use(express.static(path.join(__dirname, 'public')));
 app.get('*', (req, res) => {
