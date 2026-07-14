@@ -19,6 +19,7 @@
  */
 
 const pool = require('../bonds/pgPool');
+const { VendorEngine } = require('../vendors/vendorEngine');
 
 class BookkeepingAgent {
 
@@ -288,93 +289,34 @@ class BookkeepingAgent {
    */
   static async processVendorPayment(paymentId) {
     var payment = await pool.query(
-      `SELECT * FROM vendor_payments WHERE payment_id = $1`, [paymentId]
+      'SELECT * FROM vendor_payments WHERE payment_id = $1',
+      [paymentId]
     );
     if (payment.rows.length === 0) throw new Error('Payment not found: ' + paymentId);
 
-    var p = payment.rows[0];
-    if (p.status === 'completed') return { status: 'already_completed', paymentId: paymentId };
-
-    var results = { paymentId: paymentId, steps: [] };
-
-    // Step 1: Validate
-    var vendor = await pool.query(`SELECT * FROM vendors WHERE vendor_id = $1`, [p.vendor_id]);
-    if (vendor.rows.length === 0) throw new Error('Vendor not found: ' + p.vendor_id);
-    results.steps.push({ step: 'validate', status: 'ok', vendor: vendor.rows[0].vendor_name });
-
-    // Step 2: Execute payment through configured method
-    var amount = parseFloat(p.amount);
-    var method = p.payment_method || 'bill';
-
-    try {
-      if (method === 'ach') {
-        var { NACHAEngine } = require('../ach/nachaEngine');
-        var batch = await NACHAEngine.createBatch({
-          secCode: 'CCD',
-          companyName: 'DLB Trust',
-          entries: [{
-            transactionCode: '22',
-            routingNumber: vendor.rows[0].routing_number || '028000024',
-            accountNumber: vendor.rows[0].account_number || '',
-            amount: Math.round(amount * 100),
-            name: vendor.rows[0].vendor_name,
-            description: p.description || 'Payment',
-          }],
-        });
-        results.steps.push({ step: 'execute_ach', status: 'ok', batchId: batch.batchId });
-      } else if (method === 'wire') {
-        var { WireEngine } = require('../wire/wireEngine');
-        var wire = await WireEngine.initiateWire({
-          amount: amount,
-          beneficiaryName: vendor.rows[0].vendor_name,
-          beneficiaryRouting: vendor.rows[0].routing_number,
-          beneficiaryAccount: vendor.rows[0].account_number,
-          description: p.description || 'Vendor payment',
-        });
-        results.steps.push({ step: 'execute_wire', status: 'ok', wireId: wire.wireId });
-      } else {
-        // BILL payment
-        var BillClient = require('../bill/billClient');
-        var billResult = await BillClient.recordPayment({
-          amount: amount,
-          description: p.description || 'Vendor payment to ' + vendor.rows[0].vendor_name,
-        });
-        results.steps.push({ step: 'execute_bill', status: 'ok', billRef: billResult.receivedPayId || billResult.batchId });
-      }
-    } catch (execErr) {
-      results.steps.push({ step: 'execute_' + method, status: 'failed', error: execErr.message });
-      await pool.query(`UPDATE vendor_payments SET status = 'failed', updated_at = NOW() WHERE payment_id = $1`, [paymentId]);
-      return { ...results, status: 'failed', error: execErr.message };
+    var current = payment.rows[0];
+    if (current.status === 'settled') {
+      return { paymentId: paymentId, status: 'already_settled' };
+    }
+    if (current.status !== 'approved') {
+      throw new Error('Vendor payment must be approved before execution');
     }
 
-    // Step 3: Post journal entry
-    try {
-      var { TrustAccountingEngine } = require('../accounting/trustAccountingEngine');
-      var je = await TrustAccountingEngine.postJournalEntry({
-        entryDate: new Date(),
-        description: 'Vendor payment: ' + vendor.rows[0].vendor_name + ' — ' + (p.description || paymentId),
-        lines: [
-          { accountCode: '5000', debitAmount: amount, creditAmount: 0, memo: 'Vendor payment ' + paymentId },
-          { accountCode: '1000', debitAmount: 0, creditAmount: amount, memo: 'Cash disbursed' },
-        ],
-        referenceType: 'vendor_payment',
-        referenceId: paymentId,
-        postedBy: 'bookkeeping_agent',
-      });
-      results.steps.push({ step: 'journal_entry', status: 'ok', entryId: je.entry_id });
-    } catch (jeErr) {
-      results.steps.push({ step: 'journal_entry', status: 'failed', error: jeErr.message });
-    }
-
-    // Step 4: Update payment status
-    await pool.query(
-      `UPDATE vendor_payments SET status = 'completed', executed_at = NOW(), updated_at = NOW() WHERE payment_id = $1`,
-      [paymentId]
-    );
-    results.steps.push({ step: 'status_update', status: 'ok' });
-    results.status = 'completed';
-
-    return results;
+    var execution = await VendorEngine.executePayment(paymentId, 'bookkeeping_agent');
+    return {
+      paymentId: paymentId,
+      status: execution.status,
+      accounting_status: 'pending_settlement',
+      payment_intent_id: execution.payment_intent_id || null,
+      ach_batch_id: execution.ach_batch_id || null,
+      wire_id: execution.wire_id || null,
+      bill_payment_id: execution.bill_payment_id || null,
+      steps: [
+        { step: 'validate', status: 'ok' },
+        { step: 'canonical_payment_execution', status: 'ok' },
+        { step: 'journal_entry', status: 'pending_settlement' },
+      ],
+    };
   }
 
   /**

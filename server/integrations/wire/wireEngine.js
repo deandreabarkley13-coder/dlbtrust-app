@@ -17,6 +17,7 @@
 
 const pool = require('../bonds/pgPool');
 const { TrustAccountingEngine } = require('../accounting/trustAccountingEngine');
+const { validateRouting } = require('../ach/nachaGenerator');
 
 // Wire transfer statuses
 const WIRE_STATUSES = [
@@ -83,10 +84,10 @@ class WireEngine {
         description           TEXT,
 
         -- Sender (originator)
-        sender_name           TEXT NOT NULL DEFAULT 'DLB Trust',
-        sender_routing        TEXT NOT NULL DEFAULT '241075470',
-        sender_account        TEXT NOT NULL DEFAULT '1000000001',
-        sender_address        TEXT DEFAULT 'P.O. Box Trust Administration',
+        sender_name           TEXT NOT NULL,
+        sender_routing        TEXT NOT NULL,
+        sender_account        TEXT NOT NULL,
+        sender_address        TEXT,
 
         -- Beneficiary (receiver)
         beneficiary_name      TEXT NOT NULL,
@@ -114,6 +115,9 @@ class WireEngine {
 
         -- GL integration
         journal_entry_id      TEXT,
+        accounting_status     TEXT NOT NULL DEFAULT 'pending'
+                                CHECK (accounting_status IN ('pending','posting','posted','failed')),
+        accounting_error      TEXT,
 
         -- Error tracking
         error_message         TEXT,
@@ -135,6 +139,13 @@ class WireEngine {
       CREATE INDEX IF NOT EXISTS idx_wire_initiated_by ON wire_transfers(initiated_by);
       CREATE INDEX IF NOT EXISTS idx_wire_beneficiary ON wire_transfers(beneficiary_name);
     `);
+    await pool.query("ALTER TABLE wire_transfers ADD COLUMN IF NOT EXISTS accounting_status TEXT NOT NULL DEFAULT 'pending'");
+    await pool.query('ALTER TABLE wire_transfers ADD COLUMN IF NOT EXISTS accounting_error TEXT');
+    await pool.query("UPDATE wire_transfers SET accounting_status = 'posted' WHERE journal_entry_id IS NOT NULL AND accounting_status <> 'posted'");
+    await pool.query('ALTER TABLE wire_transfers ALTER COLUMN sender_name DROP DEFAULT');
+    await pool.query('ALTER TABLE wire_transfers ALTER COLUMN sender_routing DROP DEFAULT');
+    await pool.query('ALTER TABLE wire_transfers ALTER COLUMN sender_account DROP DEFAULT');
+    await pool.query('ALTER TABLE wire_transfers ALTER COLUMN sender_address DROP DEFAULT');
 
     // Wire audit log
     await pool.query(`
@@ -176,7 +187,7 @@ class WireEngine {
   // ─── Initiate Wire ────────────────────────────────────────────────────────
 
   /**
-   * Initiate a new wire transfer. Creates the record and optionally posts GL entry.
+   * Initiate a new wire transfer without posting settlement accounting.
    *
    * @param {Object} opts
    * @param {number} opts.amountCents - wire amount in cents
@@ -211,8 +222,16 @@ class WireEngine {
     if (!beneficiaryAccount) throw new Error('beneficiaryAccount is required');
 
     // Validate routing number (9 digits)
-    if (!/^\d{9}$/.test(String(beneficiaryRouting))) {
-      throw new Error('beneficiaryRouting must be a 9-digit ABA routing number');
+    if (!validateRouting(String(beneficiaryRouting))) {
+      throw new Error('beneficiaryRouting must be a valid ABA routing number');
+    }
+
+    const resolvedSenderName = senderName || process.env.WIRE_SENDER_NAME || (process.env.NODE_ENV !== 'production' ? 'DLB Trust Test Sender' : null);
+    const resolvedSenderRouting = senderRouting || process.env.WIRE_SENDER_ROUTING || (process.env.NODE_ENV !== 'production' ? '241075470' : null);
+    const resolvedSenderAccount = senderAccount || process.env.WIRE_SENDER_ACCOUNT || (process.env.NODE_ENV !== 'production' ? '1000000001' : null);
+    const resolvedSenderAddress = senderAddress || process.env.WIRE_SENDER_ADDRESS || null;
+    if (!resolvedSenderName || !validateRouting(String(resolvedSenderRouting)) || !resolvedSenderAccount) {
+      throw new Error('Wire sender name, routing number, and account must be configured');
     }
 
     // Security: per-transaction limit ($10M)
@@ -270,8 +289,8 @@ class WireEngine {
         wireId, initialStatus, amountCents,
         wType, typeInfo.type, typeInfo.subtype,
         paymentType || 'trust_distribution', purpose || null, description || null,
-        senderName || 'DLB Trust', senderRouting || '241075470',
-        senderAccount || '1000000001', senderAddress || 'P.O. Box Trust Administration',
+        resolvedSenderName, resolvedSenderRouting,
+        resolvedSenderAccount, resolvedSenderAddress,
         beneficiaryName, beneficiaryRouting, beneficiaryAccount,
         beneficiaryBankName || null, beneficiaryAddress || null,
         intermediaryRouting || null, intermediaryName || null,
@@ -349,6 +368,9 @@ class WireEngine {
    * In the current system, this is a simulated Fedwire send that auto-confirms.
    */
   static async sendWire(wireId) {
+    if (process.env.NODE_ENV === 'production') {
+      throw new Error('Direct wire transmission is disabled until a certified bank connector is configured');
+    }
     const wire = await WireEngine.getWire(wireId);
     if (!wire) throw new Error(`Wire not found: ${wireId}`);
     if (wire.status !== 'approved') {
@@ -368,182 +390,11 @@ class WireEngine {
       const fedRef = `FED-${Date.now()}`;
       const confirmationNumber = `CNF-${wireId}-${Date.now().toString(36).toUpperCase()}`;
 
-      // Post GL journal entry (DR expense/distribution, CR cash)
-      // Skip for bill_deposit wires — bill.js already posts the correct JE (DR 1050 / CR 1000)
-      let journalEntryId = null;
-      if (wire.payment_type !== 'bill_deposit') {
-        try {
-          const totalDollars = wire.amount_cents / 100;
-          let debitAccountCode;
-          let journalDescription;
+      const journalEntryId = null;
 
-          switch (wire.payment_type) {
-            case 'trust_distribution':
-              debitAccountCode = ACCOUNT_CODES.DISTRIBUTIONS;
-              journalDescription = `Wire distribution: ${wire.description || wire.beneficiary_name}`;
-              break;
-            case 'interest_payment':
-              debitAccountCode = ACCOUNT_CODES.DISTRIBUTIONS;
-              journalDescription = `Wire coupon distribution: ${wire.description || wire.beneficiary_name}`;
-              break;
-            case 'vendor_payment':
-            case 'principal_return':
-            default:
-              debitAccountCode = ACCOUNT_CODES.EXPENSES;
-              journalDescription = `Wire payment: ${wire.description || wire.beneficiary_name}`;
-              break;
-          }
-
-          const journalEntry = await TrustAccountingEngine.postJournalEntry({
-            entryDate: new Date(),
-            description: journalDescription,
-            lines: [
-              {
-                accountCode: debitAccountCode,
-                debitAmount: totalDollars,
-                creditAmount: 0,
-                memo: `Wire ${wireId}: ${wire.description || wire.payment_type}`,
-              },
-              {
-                accountCode: ACCOUNT_CODES.CASH,
-                debitAmount: 0,
-                creditAmount: totalDollars,
-                memo: `Wire outflow: ${wireId}`,
-              },
-            ],
-            referenceType: 'wire_transfer',
-            referenceId: wireId,
-            postedBy: wire.initiated_by || 'system',
-          });
-
-          journalEntryId = journalEntry.entry_id;
-        } catch (glErr) {
-          console.warn(`[WireEngine] GL posting failed for ${wireId} (wire still sent):`, glErr.message);
-        }
-      } else {
-        console.log(`[WireEngine] Skipping GL posting for bill_deposit wire ${wireId} — handled by bill.js`);
-      }
-
-      // Record cashflow event (skip for bill_deposit — bill.js already records it)
-      if (wire.payment_type !== 'bill_deposit') {
-        try {
-          await pool.query(
-            `INSERT INTO cashflow_events
-               (event_type, category, amount, direction, description, event_date, created_at)
-             VALUES ($1, $2, $3, $4, $5, NOW(), NOW())`,
-            [
-              wire.payment_type === 'trust_distribution' ? 'distribution' : 'wire_payment',
-              wire.payment_type === 'trust_distribution' ? 'financing' : 'operating',
-              wire.amount_cents / 100,
-              'outflow',
-              `Wire ${wireId}: ${wire.description || wire.beneficiary_name}`,
-            ]
-          );
-        } catch (cfErr) {
-          console.warn(`[WireEngine] Cashflow event failed for ${wireId}:`, cfErr.message);
-        }
-      }
-
-      // Check system mode for wire transmission routing
-      const { SystemSettings } = require('../ach/systemSettings');
-      const systemMode = await SystemSettings.getMode();
-      const wireEndpoint = await SystemSettings.getWireEndpoint();
-
-      // In production mode with wire endpoint: transmit externally
-      if (systemMode === 'production' && wireEndpoint) {
-        const productionConfig = await SystemSettings.getProductionPartnerConfig();
-        const isBill = productionConfig && productionConfig.isBill;
-
-        if (isBill && wire.payment_type !== 'bill_deposit') {
-          // BILL Cash Account: submit wire via BILL's RecordARPayment API
-          // Skip for bill_deposit wires — bill.js already recorded the deposit in BILL
-          console.log(`[WireEngine] sendWire(${wireId}): PRODUCTION MODE → BILL Cash Account`);
-          try {
-            const billClient = require('../bill/billClient');
-            const totalDollars = wire.amount_cents / 100;
-            const billResult = await billClient.recordDeposit({
-              amount: totalDollars,
-              method: 'wire',
-              memo: wire.description || ('Wire ' + wireId),
-            });
-            console.log(`[WireEngine] sendWire(${wireId}): BILL API → receivedPayId=${billResult.receivedPayId}`);
-          } catch (billErr) {
-            console.warn(`[WireEngine] BILL API wire submission info (non-blocking):`, billErr.message);
-          }
-        } else if (isBill && wire.payment_type === 'bill_deposit') {
-          console.log(`[WireEngine] sendWire(${wireId}): Skipping BILL API call — already recorded by bill.js`);
-        } else {
-        console.log(`[WireEngine] sendWire(${wireId}): PRODUCTION MODE → ${wireEndpoint}`);
-        try {
-          const wirePayload = JSON.stringify({
-            wire_id: wireId,
-            type: 'fedwire',
-            amount_cents: wire.amount_cents,
-            sender_routing: '091000019',
-            sender_account: 'DLB-TRUST-MAIN',
-            beneficiary_name: wire.beneficiary_name,
-            beneficiary_routing: wire.beneficiary_routing,
-            beneficiary_account: wire.beneficiary_account,
-            beneficiary_bank: wire.beneficiary_bank_name,
-            purpose: wire.payment_type,
-            description: wire.description,
-            imad,
-            omad,
-            fed_reference: fedRef,
-            submitted_at: new Date().toISOString(),
-          });
-
-          const bankAuth = await SystemSettings.getBankAuth();
-          const https = require('https');
-          const http = require('http');
-          const { URL } = require('url');
-          const parsed = new URL(wireEndpoint);
-          const lib = parsed.protocol === 'https:' ? https : http;
-
-          const reqHeaders = {
-                'Content-Type': 'application/json',
-                'Content-Length': Buffer.byteLength(wirePayload),
-                'X-Request-ID': `WIRE-${wireId}-${Date.now()}`,
-                'User-Agent': 'DLBTrust-Wire/1.0',
-          };
-          if (bankAuth.authType === 'bearer' && bankAuth.apiKey) {
-            reqHeaders['Authorization'] = 'Bearer ' + bankAuth.apiKey;
-          } else if (bankAuth.authType === 'basic' && bankAuth.apiKey) {
-            reqHeaders['Authorization'] = 'Basic ' + Buffer.from(bankAuth.apiKey + ':' + (bankAuth.apiSecret || '')).toString('base64');
-          } else if (bankAuth.authType === 'api_key' && bankAuth.apiKey) {
-            reqHeaders['X-API-Key'] = bankAuth.apiKey;
-          }
-
-          await new Promise((resolve, reject) => {
-            const req = lib.request({
-              hostname: parsed.hostname,
-              port: parsed.port || (parsed.protocol === 'https:' ? 443 : 80),
-              path: parsed.pathname,
-              method: 'POST',
-              headers: reqHeaders,
-              timeout: 60000,
-            }, (res) => {
-              let data = '';
-              res.on('data', chunk => { data += chunk; });
-              res.on('end', () => {
-                if (res.statusCode >= 200 && res.statusCode < 300) resolve(data);
-                else reject(new Error(`Wire endpoint returned ${res.statusCode}: ${data.substring(0, 200)}`));
-              });
-            });
-            req.on('error', reject);
-            req.on('timeout', () => { req.destroy(); reject(new Error('Wire endpoint timeout')); });
-            req.write(wirePayload);
-            req.end();
-          });
-        } catch (extErr) {
-          console.warn(`[WireEngine] External wire transmission info (non-blocking):`, extErr.message);
-        }
-        } // close else (non-BILL)
-      }
-
-      // Update wire with tracking info — auto-confirm (production processes end-to-end via HTTPS)
-      const autoSettle = await SystemSettings.get('auto_settle');
-      const finalStatus = (autoSettle === 'true') ? 'confirmed' : 'sent';
+      const systemMode = 'simulation';
+      const wireEndpoint = null;
+      const finalStatus = 'sent';
 
       await pool.query(
         `UPDATE wire_transfers
@@ -580,22 +431,138 @@ class WireEngine {
 
   // ─── Settle Wire ──────────────────────────────────────────────────────────
 
-  static async settleWire(wireId) {
-    const wire = await WireEngine.getWire(wireId);
-    if (!wire) throw new Error(`Wire not found: ${wireId}`);
-    if (!['confirmed', 'sent'].includes(wire.status)) {
-      throw new Error(`Wire must be in 'confirmed' or 'sent' status to settle, current: ${wire.status}`);
+  static async settleWire(wireId, metadata = {}) {
+    if (!metadata.processorConfirmed || !metadata.settlementRef) {
+      throw new Error('Wire settlement requires processor confirmation and a settlement reference');
     }
 
-    await pool.query(
-      `UPDATE wire_transfers SET status = 'settled', settled_at = NOW(), updated_at = NOW()
-       WHERE wire_id = $1`,
+    let wire = await WireEngine.getWire(wireId);
+    if (!wire) throw new Error(`Wire not found: ${wireId}`);
+    if (wire.status === 'settled' && wire.accounting_status === 'posted') return wire;
+    if (!['confirmed', 'sent', 'settled'].includes(wire.status)) {
+      throw new Error(`Wire must be in 'confirmed', 'sent', or 'settled' status to settle, current: ${wire.status}`);
+    }
+
+    if (wire.journal_entry_id && wire.accounting_status === 'posted') {
+      await pool.query(
+        `UPDATE wire_transfers SET status = 'settled', settled_at = COALESCE(settled_at, NOW()), updated_at = NOW()
+         WHERE wire_id = $1`,
+        [wireId]
+      );
+      await WireEngine.logAudit(wireId, 'settled', 'system', {
+        settlement_reference: metadata.settlementRef,
+        processor_confirmed: true,
+      });
+      return WireEngine.getWire(wireId);
+    }
+
+    const claimed = await pool.query(
+      `UPDATE wire_transfers
+       SET status = 'settled', settled_at = COALESCE(settled_at, NOW()),
+           accounting_status = 'posting', accounting_error = NULL, updated_at = NOW()
+       WHERE wire_id = $1
+         AND status IN ('confirmed','sent','settled')
+         AND journal_entry_id IS NULL
+         AND (
+           accounting_status IN ('pending','failed')
+           OR (accounting_status = 'posting' AND updated_at < NOW() - INTERVAL '5 minutes')
+         )
+       RETURNING *`,
       [wireId]
     );
 
-    await WireEngine.logAudit(wireId, 'settled', 'system', {});
+    if (!claimed.rows.length) {
+      for (let attempt = 0; attempt < 40; attempt++) {
+        wire = await WireEngine.getWire(wireId);
+        if (wire && wire.accounting_status === 'posted') return wire;
+        if (wire && wire.accounting_status === 'failed') {
+          throw new Error(wire.accounting_error || 'Wire settlement accounting failed');
+        }
+        await new Promise(resolve => setTimeout(resolve, 50));
+      }
+      throw new Error('Wire settlement accounting is already in progress');
+    }
 
-    return WireEngine.getWire(wireId);
+    wire = claimed.rows[0];
+    try {
+      let journalEntryId = null;
+      if (wire.payment_type !== 'bill_deposit') {
+        const isDistribution = ['trust_distribution', 'interest_payment'].includes(wire.payment_type);
+        const existing = await pool.query(
+          `SELECT entry_id FROM trust_journal_entries
+           WHERE reference_type = 'wire_transfer' AND reference_id = $1 AND status = 'posted'
+           ORDER BY created_at ASC LIMIT 1`,
+          [wireId]
+        );
+        journalEntryId = existing.rows.length ? existing.rows[0].entry_id : null;
+        let postedNow = false;
+        if (!journalEntryId) {
+          const totalDollars = wire.amount_cents / 100;
+          const journalEntry = await TrustAccountingEngine.postJournalEntry({
+            entryDate: wire.settled_at || new Date(),
+            description: `${isDistribution ? 'Wire distribution' : 'Wire payment'}: ${wire.description || wire.beneficiary_name}`,
+            lines: [
+              {
+                accountCode: isDistribution ? ACCOUNT_CODES.DISTRIBUTIONS : ACCOUNT_CODES.EXPENSES,
+                debitAmount: totalDollars,
+                creditAmount: 0,
+                memo: `Wire ${wireId}: ${wire.description || wire.payment_type}`,
+              },
+              {
+                accountCode: ACCOUNT_CODES.CASH,
+                debitAmount: 0,
+                creditAmount: totalDollars,
+                memo: `Processor-confirmed wire settlement: ${wireId}`,
+              },
+            ],
+            referenceType: 'wire_transfer',
+            referenceId: wireId,
+            postedBy: wire.initiated_by || 'system',
+          });
+          journalEntryId = journalEntry.entry_id;
+          postedNow = true;
+        }
+
+        if (postedNow) {
+          try {
+            await pool.query(
+              `INSERT INTO cashflow_events
+                 (event_type, category, amount, direction, description, event_date, created_at)
+               VALUES ($1, $2, $3, 'outflow', $4, NOW(), NOW())`,
+              [
+                isDistribution ? 'distribution' : 'wire_payment',
+                isDistribution ? 'financing' : 'operating',
+                wire.amount_cents / 100,
+                `Wire ${wireId}: ${wire.description || wire.beneficiary_name}`,
+              ]
+            );
+          } catch (cashflowErr) {
+            console.warn(`[WireEngine] Cashflow event failed for ${wireId}:`, cashflowErr.message);
+          }
+        }
+      }
+
+      await pool.query(
+        `UPDATE wire_transfers
+         SET journal_entry_id = COALESCE($2, journal_entry_id), accounting_status = 'posted',
+             accounting_error = NULL, updated_at = NOW()
+         WHERE wire_id = $1`,
+        [wireId, journalEntryId]
+      );
+      await WireEngine.logAudit(wireId, 'settled', 'system', {
+        settlement_reference: metadata.settlementRef,
+        processor_confirmed: true,
+        journal_entry_id: journalEntryId,
+      });
+      return WireEngine.getWire(wireId);
+    } catch (err) {
+      await pool.query(
+        `UPDATE wire_transfers SET accounting_status = 'failed', accounting_error = $2, updated_at = NOW()
+         WHERE wire_id = $1`,
+        [wireId, err.message]
+      );
+      throw err;
+    }
   }
 
   // ─── Cancel Wire ──────────────────────────────────────────────────────────

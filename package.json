@@ -2,12 +2,16 @@
   "name": "dlbtrust-app",
   "version": "1.0.0",
   "description": "DEANDREA LAVAR BARKLEY TRUST — Secure Wealth Management Portal",
-  "main": "app.js",
+  "main": "server/server-3002.js",
   "scripts": {
-    "start": "node app.js",
-    "dev": "node --watch app.js",
-    "pm2": "pm2 start app.js --name dlbtrust",
-    "test": "node server/integrations/openach/test-api.js"
+    "start": "node server/server-3002.js",
+    "dev": "node --watch server/server-3002.js",
+    "pm2": "pm2 start ecosystem.config.js",
+    "lint": "find server -type f -name '*.js' -print0 | xargs -0 -n1 node --check",
+    "test:payment-hub": "node server/integrations/paymentHub/paymentHub.test.js",
+    "test:payment-hub:integration": "node server/integrations/paymentHub/paymentHub.integration.test.js",
+    "validate": "npm run lint && npm run test:payment-hub",
+    "test": "npm run validate"
   },
   "dependencies": {
     "bcryptjs": "^3.0.3",

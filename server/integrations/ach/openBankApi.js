@@ -25,6 +25,7 @@ const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
 const { URL } = require('url');
+const paymentCrypto = require('../paymentHub/paymentCrypto');
 
 const ACH_EXPORTS_DIR = path.join(__dirname, '..', '..', '..', 'data', 'ach-exports');
 
@@ -38,18 +39,8 @@ class OpenBankApi {
    *   - otherwise → remote REST API POST
    */
   static async transmit(nachaContent, filename, partnerConfig) {
-    let baseUrl = partnerConfig.apiBaseUrl || partnerConfig.partnerUrl || '';
-    let mode = OpenBankApi._resolveMode(baseUrl);
-
-    // Auto-upgrade 'direct' to 'remote' using the platform's own HTTPS endpoint
-    if (mode === 'direct') {
-      const selfUrl = OpenBankApi._getSelfUrl();
-      if (selfUrl) {
-        baseUrl = selfUrl;
-        mode = 'remote';
-        partnerConfig = { ...partnerConfig, apiBaseUrl: selfUrl };
-      }
-    }
+    const baseUrl = partnerConfig.apiBaseUrl || partnerConfig.partnerUrl || '';
+    const mode = OpenBankApi._resolveMode(baseUrl);
 
     switch (mode) {
       case 'direct':
@@ -59,21 +50,6 @@ class OpenBankApi {
       default:
         return OpenBankApi._transmitRemote(nachaContent, filename, partnerConfig);
     }
-  }
-
-  /**
-   * Get the platform's own HTTPS URL for self-hosted REST API transmission.
-   * Uses APP_URL env var, falls back to common deployment URLs.
-   */
-  static _getSelfUrl() {
-    if (process.env.APP_URL) return process.env.APP_URL;
-    if (process.env.DEPLOY_URL) return process.env.DEPLOY_URL;
-    const port = process.env.PORT || 3002;
-    // In production, use HTTPS; locally fall back to HTTP
-    if (process.env.NODE_ENV === 'production') {
-      return process.env.DOMAIN ? `https://${process.env.DOMAIN}` : null;
-    }
-    return `http://localhost:${port}`;
   }
 
   /**
@@ -102,7 +78,7 @@ class OpenBankApi {
     const exportResult = OpenBankApi._exportFile(nachaContent, filename, partnerConfig.partnerId);
 
     const requestId = OpenBankApi._generateRequestId();
-    console.log(`[OpenBankApi] Direct transmission: ${filename} → ${exportResult.export_path}`);
+    console.log(`[OpenBankApi] Direct transmission validated and staged: ${filename}`);
 
     return {
       success: true,
@@ -471,7 +447,7 @@ class OpenBankApi {
         method: 'GET',
         headers,
         timeout: 10000,
-        rejectUnauthorized: false,
+        rejectUnauthorized: true,
       }, (res) => {
         let data = '';
         res.on('data', chunk => { data += chunk; });
@@ -504,19 +480,25 @@ class OpenBankApi {
   /**
    * Process an incoming webhook from a partner's bank API.
    */
-  static processWebhook(partnerId, payload, signature, partnerConfig) {
-    if (partnerConfig.webhookSecret && signature) {
-      const expected = crypto
-        .createHmac('sha256', partnerConfig.webhookSecret)
-        .update(JSON.stringify(payload))
-        .digest('hex');
-      if (signature !== expected && signature !== `sha256=${expected}`) {
-        throw new Error('Invalid webhook signature');
-      }
+  static processWebhook(partnerId, payload, signature, partnerConfig, rawBody) {
+    if (!partnerConfig.webhookSecret) throw new Error('Webhook secret is not configured');
+    if (!Buffer.isBuffer(rawBody)) throw new Error('Raw webhook body is unavailable');
+    const supplied = String(signature || '').replace(/^sha256=/, '').toLowerCase();
+    const expected = crypto
+      .createHmac('sha256', partnerConfig.webhookSecret)
+      .update(rawBody)
+      .digest('hex');
+    const suppliedBuffer = Buffer.from(supplied, 'hex');
+    const expectedBuffer = Buffer.from(expected, 'hex');
+    if (suppliedBuffer.length !== expectedBuffer.length || !crypto.timingSafeEqual(suppliedBuffer, expectedBuffer)) {
+      throw new Error('Invalid webhook signature');
     }
 
     const eventType = payload.event || payload.type || payload.event_type || 'unknown';
     const batchId = payload.batch_id || payload.id || payload.reference_id;
+    const transactionEventId = payload.transaction_id
+      ? `${payload.transaction_id}:${eventType}`
+      : payload.id ? `${payload.id}:${eventType}` : null;
 
     const statusMap = {
       'ach.accepted': 'accepted',
@@ -536,6 +518,7 @@ class OpenBankApi {
     return {
       partner_id: partnerId,
       event_type: eventType,
+      external_event_id: payload.event_id || payload.eventId || transactionEventId,
       batch_id: batchId,
       mapped_status: statusMap[eventType] || null,
       return_code: payload.return_code || payload.returnCode || null,
@@ -549,23 +532,29 @@ class OpenBankApi {
 
   // ─── File Export ────────────────────────────────────────────────────────────
 
+  static _safePathSegment(value, fallback) {
+    const sanitized = String(value || '').replace(/[^A-Za-z0-9._-]/g, '_').replace(/^\.+$/, '');
+    return sanitized || fallback;
+  }
+
   /**
    * Export NACHA file to date-organized directory.
    */
   static _exportFile(nachaContent, filename, partnerId) {
     const today = new Date().toISOString().split('T')[0]; // YYYY-MM-DD
-    const partnerDir = partnerId || 'default';
+    const partnerDir = OpenBankApi._safePathSegment(partnerId, 'default');
     const exportDir = path.join(ACH_EXPORTS_DIR, partnerDir, today);
 
     fs.mkdirSync(exportDir, { recursive: true });
 
-    const exportPath = path.join(exportDir, filename);
-    fs.writeFileSync(exportPath, nachaContent, 'utf8');
+    const safeFilename = OpenBankApi._safePathSegment(filename, `ACH-${Date.now()}.ach`);
+    const storedFilename = safeFilename.endsWith('.enc') ? safeFilename : `${safeFilename}.enc`;
+    const exportPath = path.join(exportDir, storedFilename);
+    fs.writeFileSync(exportPath, paymentCrypto.encrypt(nachaContent), { mode: 0o600 });
 
     return {
       export_path: exportPath,
-      export_filename: filename,
-      export_dir: exportDir,
+      export_filename: safeFilename.replace(/\.enc$/, ''),
       file_size: Buffer.byteLength(nachaContent, 'utf8'),
     };
   }
@@ -574,7 +563,7 @@ class OpenBankApi {
    * Ensure export directory exists and is writable.
    */
   static _ensureExportDir(partnerId) {
-    const dir = path.join(ACH_EXPORTS_DIR, partnerId || 'default');
+    const dir = path.join(ACH_EXPORTS_DIR, OpenBankApi._safePathSegment(partnerId, 'default'));
     fs.mkdirSync(dir, { recursive: true });
     fs.accessSync(dir, fs.constants.W_OK);
     return dir;
@@ -586,10 +575,11 @@ class OpenBankApi {
    */
   static listExports(partnerId, date) {
     if (!fs.existsSync(ACH_EXPORTS_DIR)) return [];
+    if (date && !/^\d{4}-\d{2}-\d{2}$/.test(date)) return [];
 
     // When no partnerId, scan all partner subdirectories
     const partnerIds = partnerId
-      ? [partnerId]
+      ? [OpenBankApi._safePathSegment(partnerId, 'default')]
       : fs.readdirSync(ACH_EXPORTS_DIR).filter(d => {
           try { return fs.statSync(path.join(ACH_EXPORTS_DIR, d)).isDirectory(); } catch { return false; }
         });
@@ -604,17 +594,17 @@ class OpenBankApi {
       for (const dateDir of dateDirs) {
         const fullDir = path.join(partnerDir, dateDir);
         if (!fs.existsSync(fullDir) || !fs.statSync(fullDir).isDirectory()) continue;
-        const files = fs.readdirSync(fullDir);
+        const files = fs.readdirSync(fullDir).filter(file => file.endsWith('.enc'));
         for (const file of files) {
           const filePath = path.join(fullDir, file);
           const stat = fs.statSync(filePath);
           results.push({
-            filename: file,
+            filename: file.replace(/\.enc$/, ''),
             date: dateDir,
-            path: filePath,
             size: stat.size,
             exported_at: stat.mtime.toISOString(),
             partner_id: pid,
+            encrypted: true,
           });
         }
       }

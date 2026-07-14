@@ -178,7 +178,7 @@ class SubLedgerEngine {
 
   static async postTransaction({
     subLedgerId, transactionType, amount, description,
-    referenceType, referenceId, journalEntryId, postedBy,
+    referenceType, referenceId, journalEntryId, postedBy, postToFineract = true,
   }) {
     var client = await pool.connect();
     try {
@@ -200,6 +200,7 @@ class SubLedgerEngine {
       // Calculate new balance
       var isDebit = ['debit', 'fee', 'distribution'].indexOf(transactionType) !== -1;
       var newBalance = parseFloat(ledger.balance) + (isDebit ? -txnAmount : txnAmount);
+      if (newBalance < 0) throw new Error('Insufficient sub-ledger balance');
 
       var txnId = 'SLT-' + Date.now() + '-' + Math.random().toString(36).slice(2, 6).toUpperCase();
 
@@ -229,8 +230,9 @@ class SubLedgerEngine {
         newBalance: newBalance,
       };
 
-      // Auto-post Fineract JE for trustee/beneficiary sub-ledger transactions
-      SubLedgerEngine._postFineractJE(ledger, txnResult).catch(function() {});
+      if (postToFineract) {
+        SubLedgerEngine._postFineractJE(ledger, txnResult).catch(function() {});
+      }
 
       return txnResult;
     } catch (err) {

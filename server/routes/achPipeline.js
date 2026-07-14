@@ -21,6 +21,8 @@ const { OpenBankApi } = require('../integrations/ach/openBankApi');
 const pool = require('../integrations/bonds/pgPool');
 const { validateRouting } = require('../integrations/ach/nachaGenerator');
 const { ApiCredentials } = require('../integrations/ach/apiCredentials');
+const { getConfig: getPaymentHubConfig } = require('../integrations/paymentHub/paymentHubConfig');
+const { PaymentHubEngine } = require('../integrations/paymentHub/paymentHubEngine');
 
 // ─── Auth Middleware ─────────────────────────────────────────────────────────
 // Accepts: x-admin-token header, Authorization: Bearer <api_key>, or X-API-Key header.
@@ -60,6 +62,39 @@ const requireAuth = async (req, res, next) => {
 
 // Keep requireAdmin as alias for backwards compat
 const requireAdmin = requireAuth;
+
+const requireLegacyTransmissionMode = (req, res, next) => {
+  if (getPaymentHubConfig().mode !== 'disabled') {
+    return res.status(409).json({
+      success: false,
+      error: 'Direct ACH batch transmission is blocked while Payment Hub mode is enabled',
+    });
+  }
+  next();
+};
+
+const requireLegacyBatchOwnership = async (req, res, next) => {
+  try {
+    const result = await pool.query(
+      'SELECT orchestration_owner FROM ach_batches WHERE batch_id = $1',
+      [req.params.id]
+    );
+    if (result.rows[0] && result.rows[0].orchestration_owner === 'payment_hub') {
+      return res.status(409).json({
+        success: false,
+        error: 'Payment Hub owns this ACH batch; update the canonical payment intent instead',
+      });
+    }
+    next();
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+};
+
+router.use((req, res, next) => {
+  if (req.method === 'POST' && /^\/webhooks\/[^/]+$/.test(req.path)) return next();
+  return requireAuth(req, res, next);
+});
 
 // ─── GET /api/ach-pipeline/status ─────────────────────────────────────────────
 // Full pipeline status: AS2 config, connectivity, batch stats
@@ -117,6 +152,7 @@ router.post('/batches', requireAdmin, async (req, res) => {
       entries, effectiveDate, secCode, description,
       paymentType: paymentType || 'vendor_payment',
       createdBy, partnerId,
+      idempotencyKey: req.headers['idempotency-key'] || req.body.idempotencyKey,
     });
     res.json({
       success: true,
@@ -132,7 +168,7 @@ router.post('/batches', requireAdmin, async (req, res) => {
 // ─── POST /api/ach-pipeline/batches/disburse ──────────────────────────────────
 // Create a disbursement batch from CRM contacts
 // Body: { contactIds: ["CRM-INV-..."], amountCents: 50000, description: "Trust Dist", effectiveDate: "..." }
-router.post('/batches/disburse', requireAdmin, async (req, res) => {
+router.post('/batches/disburse', requireAdmin, requireLegacyTransmissionMode, async (req, res) => {
   try {
     const batch = await ACHEngine.createDisbursementBatch(req.body);
     res.json({ success: true, data: batch });
@@ -234,7 +270,7 @@ router.get('/batches/:id/download', async (req, res) => {
 
 // ─── POST /api/ach-pipeline/batches/:id/transmit ──────────────────────────────
 // Transmit a batch via AS2 to the bank
-router.post('/batches/:id/transmit', requireAdmin, async (req, res) => {
+router.post('/batches/:id/transmit', requireAdmin, requireLegacyTransmissionMode, requireLegacyBatchOwnership, async (req, res) => {
   try {
     const result = await ACHEngine.transmitBatch(req.params.id);
     try { var journal = require('../integrations/backup/transactionJournal'); journal.record('ach_transmit', { batch_id: req.params.id, result: result.status || 'transmitted' }, 'api'); } catch(e) {}
@@ -246,7 +282,7 @@ router.post('/batches/:id/transmit', requireAdmin, async (req, res) => {
 
 // ─── POST /api/ach-pipeline/batches/:id/retry ──────────────────────────────────
 // Reset a failed batch back to pending so it can be retransmitted
-router.post('/batches/:id/retry', requireAdmin, async (req, res) => {
+router.post('/batches/:id/retry', requireAdmin, requireLegacyTransmissionMode, requireLegacyBatchOwnership, async (req, res) => {
   try {
     const batch = await ACHEngine.getBatch(req.params.id);
     if (!batch) return res.status(404).json({ success: false, error: 'Batch not found' });
@@ -269,7 +305,7 @@ router.post('/batches/:id/retry', requireAdmin, async (req, res) => {
 
 // ─── POST /api/ach-pipeline/batches/:id/cancel ────────────────────────────────
 // Cancel a pending batch
-router.post('/batches/:id/cancel', requireAdmin, async (req, res) => {
+router.post('/batches/:id/cancel', requireAdmin, requireLegacyBatchOwnership, async (req, res) => {
   try {
     const batch = await ACHEngine.cancelBatch(req.params.id);
     res.json({ success: true, data: batch });
@@ -317,7 +353,7 @@ router.post('/validate-routing', (req, res) => {
 
 // ─── POST /api/ach-pipeline/batches/:id/accept ────────────────────────────────
 // Record bank acceptance for a transmitted batch
-router.post('/batches/:id/accept', requireAdmin, async (req, res) => {
+router.post('/batches/:id/accept', requireAdmin, requireLegacyBatchOwnership, async (req, res) => {
   try {
     const { transmissionId, messageId, ackType, disposition, rawResponse } = req.body;
     const batch = await ACHEngine.acceptBatch(req.params.id, {
@@ -331,10 +367,10 @@ router.post('/batches/:id/accept', requireAdmin, async (req, res) => {
 
 // ─── POST /api/ach-pipeline/batches/:id/settle ────────────────────────────────
 // Record settlement for an accepted/transmitted batch
-router.post('/batches/:id/settle', requireAdmin, async (req, res) => {
+router.post('/batches/:id/settle', requireAdmin, requireLegacyBatchOwnership, async (req, res) => {
   try {
-    const { settlementDate } = req.body;
-    const batch = await ACHEngine.settleBatch(req.params.id, { settlementDate });
+    const { settlementDate, settlementRef, processorConfirmed } = req.body;
+    const batch = await ACHEngine.settleBatch(req.params.id, { settlementDate, settlementRef, processorConfirmed });
     res.json({ success: true, data: batch });
   } catch (err) {
     res.status(400).json({ success: false, error: err.message });
@@ -344,7 +380,7 @@ router.post('/batches/:id/settle', requireAdmin, async (req, res) => {
 // ─── POST /api/ach-pipeline/batches/:id/returns ───────────────────────────────
 // Ingest return entries for a batch
 // Body: { returns: [{ entrySequence, traceNumber, returnCode, returnReason, returnAmountCents, returnDate, addendaInfo }], returnFileRef }
-router.post('/batches/:id/returns', requireAdmin, async (req, res) => {
+router.post('/batches/:id/returns', requireAdmin, requireLegacyBatchOwnership, async (req, res) => {
   try {
     const { returns, returnFileRef } = req.body;
     if (!returns || !Array.isArray(returns) || !returns.length) {
@@ -750,33 +786,68 @@ router.post('/webhooks/:partnerId', async (req, res) => {
     }
 
     const signature = req.headers['x-signature'] || req.headers['x-hub-signature-256'] || '';
-    const event = OpenBankApi.processWebhook(partnerId, req.body, signature, config);
+    const event = OpenBankApi.processWebhook(partnerId, req.body, signature, config, req.rawBody);
 
     if (event.mapped_status && event.batch_id) {
+      if (!event.external_event_id) {
+        return res.status(400).json({ success: false, error: 'Bank webhook event ID is required' });
+      }
       const { ACHEngine: Engine } = require('../integrations/ach/achEngine');
-      try {
+      const batch = await Engine.getBatch(event.batch_id);
+      if (!batch) return res.status(404).json({ success: false, error: 'ACH batch not found' });
+
+      if (batch.payment_intent_id) {
+        await PaymentHubEngine.applyExternalEvent({
+          eventId: event.external_event_id,
+          intentId: batch.payment_intent_id,
+          status: event.mapped_status,
+          settlementDate: event.settlement_date,
+          returnCode: event.return_code,
+          returnReason: event.return_reason,
+          amountCents: event.amount_cents,
+        }, `bank-webhook:${partnerId}`);
+      } else {
         switch (event.mapped_status) {
           case 'accepted':
-            await Engine.acceptBatch(event.batch_id, { source: 'webhook', skipAckRecord: false });
+            if (!['accepted', 'settled', 'returned'].includes(batch.status)) {
+              await Engine.acceptBatch(event.batch_id, { source: 'webhook', skipAckRecord: false });
+            }
             break;
           case 'settled':
-            await Engine.settleBatch(event.batch_id, {
-              settlementDate: event.settlement_date || new Date().toISOString().split('T')[0],
-              source: 'webhook',
-            });
+            if (!['settled', 'returned'].includes(batch.status)) {
+              await Engine.settleBatch(event.batch_id, {
+                settlementDate: event.settlement_date || new Date().toISOString().split('T')[0],
+                settlementRef: event.external_event_id,
+                processorConfirmed: true,
+                source: 'webhook',
+              });
+            }
             break;
           case 'returned':
-            if (event.return_code) {
+            if (batch.status !== 'returned' && event.return_code) {
               await Engine.processReturns(event.batch_id, [{
                 returnCode: event.return_code,
                 returnReason: event.return_reason || 'Bank return via webhook',
-                amountCents: event.amount_cents,
+                returnAmountCents: event.amount_cents,
               }], { source: 'webhook' });
             }
             break;
+          case 'failed':
+            if (batch.status !== 'failed') {
+              if (['settled', 'returned', 'cancelled'].includes(batch.status)) {
+                throw new Error(`Bank failure cannot replace terminal ACH status ${batch.status}`);
+              }
+              await pool.query(
+                `UPDATE ach_batches SET status = 'failed', error_message = $2, updated_at = NOW() WHERE batch_id = $1`,
+                [event.batch_id, event.return_reason || `Bank reported ${event.event_type}`]
+              );
+              await pool.query(
+                `UPDATE ach_entries SET status = 'failed' WHERE batch_id = $1 AND status <> 'returned'`,
+                [event.batch_id]
+              );
+            }
+            break;
         }
-      } catch (stateErr) {
-        console.warn(`[Webhook] State transition failed for ${event.batch_id}:`, stateErr.message);
       }
     }
 
@@ -853,18 +924,26 @@ router.get('/exports', requireAdmin, async (req, res) => {
 
 // GET /api/ach-pipeline/exports/:partnerId/:date/:filename — Download exported file
 router.get('/exports/:partnerId/:date/:filename', requireAdmin, (req, res) => {
-  const { partnerId, date, filename } = req.params;
-  const nodePath = require('path');
-  const nodeFs = require('fs');
-  const exportBase = nodePath.resolve(nodePath.join(__dirname, '..', '..', 'data', 'ach-exports'));
-  const safePath = nodePath.resolve(nodePath.join(exportBase, partnerId, date, filename));
-  if (!safePath.startsWith(exportBase)) {
-    return res.status(403).json({ success: false, error: 'Access denied' });
+  try {
+    const { partnerId, date, filename } = req.params;
+    const nodePath = require('path');
+    const nodeFs = require('fs');
+    const paymentCrypto = require('../integrations/paymentHub/paymentCrypto');
+    const exportBase = nodePath.resolve(nodePath.join(__dirname, '..', '..', 'data', 'ach-exports'));
+    const safePath = nodePath.resolve(nodePath.join(exportBase, partnerId, date, `${filename}.enc`));
+    if (!safePath.startsWith(exportBase + nodePath.sep)) {
+      return res.status(403).json({ success: false, error: 'Access denied' });
+    }
+    if (!nodeFs.existsSync(safePath)) {
+      return res.status(404).json({ success: false, error: 'File not found' });
+    }
+    const content = paymentCrypto.decrypt(nodeFs.readFileSync(safePath, 'utf8'));
+    res.setHeader('Content-Type', 'text/plain; charset=utf-8');
+    res.setHeader('Content-Disposition', `attachment; filename="${nodePath.basename(filename)}"`);
+    res.send(content);
+  } catch (err) {
+    res.status(400).json({ success: false, error: err.message });
   }
-  if (!nodeFs.existsSync(safePath)) {
-    return res.status(404).json({ success: false, error: 'File not found' });
-  }
-  res.download(safePath, filename);
 });
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -899,7 +978,7 @@ router.post('/receive', requireAdmin, async (req, res) => {
     const exportResult = OpenBankApi._exportFile(content, nachaFilename, partnerId);
 
     const receiptId = `RCV-${Date.now()}-${Math.random().toString(36).substring(2, 8)}`;
-    console.log(`[Receive] HTTPS file received: ${nachaFilename} from ${partnerId} → ${exportResult.export_path}`);
+    console.log(`[Receive] HTTPS file received and encrypted: ${nachaFilename} from ${partnerId}`);
 
     res.json({
       success: true,
@@ -907,7 +986,6 @@ router.post('/receive', requireAdmin, async (req, res) => {
       receipt_id: receiptId,
       batch_id: receiptId,
       filename: nachaFilename,
-      export_path: exportResult.export_path,
       file_size: exportResult.file_size,
       entry_count: validation.entryCount || 0,
       total_debit: validation.totalDebit || 0,

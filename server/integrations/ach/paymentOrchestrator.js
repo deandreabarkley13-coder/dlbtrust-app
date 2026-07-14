@@ -3,136 +3,75 @@
 /**
  * Payment Orchestrator — DLB Trust Platform
  *
- * Bridges payment operations (ACH disbursements, trust distributions, K-1 payments)
- * to trust accounting journal entries and Fineract GL posting.
- *
- * Every outbound payment creates:
- * 1. An ACH batch (NACHA file) via ACHEngine
- * 2. A trust journal entry (DR expense/distribution, CR cash) via TrustAccountingEngine
- * 3. A cashflow event for reporting
- * 4. (optional) Fineract GL posting
- *
- * Account codes used:
- *   1000 — Cash & Equivalents (credit on outflow)
- *   5100 — Trust Distributions (debit for beneficiary distributions)
- *   5200 — Operating Expenses / Vendor Payments (debit)
- *   4100 — Interest Income / Fee Income (credit for interest received)
+ * Routes legacy ACH disbursement calls into canonical payment instructions.
+ * Accounting is deferred until bank-confirmed settlement.
  */
 
 const pool = require('../bonds/pgPool');
 const { ACHEngine } = require('./achEngine');
-const { TrustAccountingEngine } = require('../accounting/trustAccountingEngine');
+const { PaymentHubEngine } = require('../paymentHub/paymentHubEngine');
+const { getConfig } = require('../paymentHub/paymentHubConfig');
 let WireEngine;
 try { WireEngine = require('../wire/wireEngine').WireEngine; } catch (e) { WireEngine = null; }
 
-const ACCOUNT_CODES = {
-  CASH: '1000',
-  DISTRIBUTIONS: '5100',
-  EXPENSES: '5200',
-  INTEREST_INCOME: '4100',
-  ACCRUED_INTEREST: '1200',
-};
-
 class PaymentOrchestrator {
 
-  /**
-   * Create a disbursement batch with full accounting integration.
-   * Creates the ACH batch AND posts a journal entry for the payment.
-   *
-   * @param {Object} opts
-   * @param {Array} opts.entries - ACH entry details
-   * @param {string} opts.effectiveDate - payment date
-   * @param {string} opts.secCode - SEC code (PPD/CCD)
-   * @param {string} opts.description - batch description
-   * @param {string} opts.paymentType - trust_distribution|vendor_payment|interest_payment|principal_return
-   * @param {string} opts.createdBy - who initiated
-   * @returns {Object} { batch, journal_entry }
-   */
   static async createDisbursementWithAccounting(opts) {
     const { entries, effectiveDate, secCode, description, paymentType, createdBy, partnerId } = opts;
+    if (!Array.isArray(entries) || !entries.length) throw new Error('At least one payment entry is required');
+    const totalCents = entries.reduce((sum, entry) => sum + Number(entry.amountCents || 0), 0);
+    const config = getConfig();
 
-    // 1. Create the ACH batch (NACHA file generation, with optional partner routing)
-    const batch = await ACHEngine.createBatch(
-      { effectiveDate, secCode, description, createdBy, partnerId },
-      entries
-    );
-
-    const totalCents = entries.reduce((sum, e) => sum + Number(e.amountCents || 0), 0);
-    const totalDollars = totalCents / 100;
-    const batchId = batch.batch_id;
-
-    // 2. Determine debit account based on payment type
-    let debitAccountCode;
-    let journalDescription;
-    switch (paymentType) {
-      case 'trust_distribution':
-        debitAccountCode = ACCOUNT_CODES.DISTRIBUTIONS;
-        journalDescription = `Trust distribution: ${description || 'Beneficiary payment'}`;
-        break;
-      case 'interest_payment':
-        debitAccountCode = ACCOUNT_CODES.DISTRIBUTIONS;
-        journalDescription = `Coupon distribution: ${description || 'Bond interest'}`;
-        break;
-      case 'vendor_payment':
-      case 'principal_return':
-      default:
-        debitAccountCode = ACCOUNT_CODES.EXPENSES;
-        journalDescription = `${(paymentType || 'payment').replace(/_/g, ' ')}: ${description || 'Payment'}`;
-        break;
-    }
-
-    // 3. Post trust journal entry (DR expense/distribution, CR cash)
-    let journalEntry = null;
-    try {
-      journalEntry = await TrustAccountingEngine.postJournalEntry({
-        entryDate: effectiveDate || new Date(),
-        description: journalDescription,
-        lines: [
-          {
-            accountCode: debitAccountCode,
-            debitAmount: totalDollars,
-            creditAmount: 0,
-            memo: `ACH batch ${batchId}: ${description || paymentType}`,
-          },
-          {
-            accountCode: ACCOUNT_CODES.CASH,
-            debitAmount: 0,
-            creditAmount: totalDollars,
-            memo: `ACH outflow: ${batchId}`,
-          },
-        ],
-        referenceType: 'ach_disbursement',
-        referenceId: batchId,
-        postedBy: createdBy || 'system',
-      });
-    } catch (err) {
-      console.warn('[PaymentOrchestrator] Journal entry failed (batch still created):', err.message);
-    }
-
-    // 4. Record cashflow event
-    try {
-      await pool.query(
-        `INSERT INTO cashflow_events
-           (event_type, category, amount, direction, description, event_date, created_at)
-         VALUES ($1, $2, $3, $4, $5, $6, NOW())`,
-        [
-          paymentType === 'trust_distribution' ? 'distribution' : 'other',
-          paymentType === 'trust_distribution' ? 'financing' : 'operating',
-          totalDollars,
-          'outflow',
-          journalDescription,
-          effectiveDate || new Date(),
-        ]
+    if (config.mode === 'disabled') {
+      const batch = await ACHEngine.createBatch(
+        { effectiveDate, secCode, description, createdBy, partnerId, nachaConfig: opts.nachaConfig },
+        entries
       );
-    } catch (err) {
-      console.warn('[PaymentOrchestrator] Cashflow event failed:', err.message);
+      return {
+        batch,
+        journal_entry: null,
+        accounting_integrated: false,
+        accounting_deferred_until_settlement: true,
+        total_amount: totalCents / 100,
+      };
+    }
+
+    const groupId = 'PHG-' + Date.now() + '-' + Math.random().toString(36).slice(2, 7).toUpperCase();
+    const intents = [];
+    for (let index = 0; index < entries.length; index++) {
+      const entry = entries[index];
+      const result = await PaymentHubEngine.createIntent({
+        idempotencyKey: `${opts.idempotencyKey || groupId}:${index + 1}`,
+        paymentType: paymentType || 'vendor_payment',
+        amountCents: Number(entry.amountCents),
+        sourceType: opts.sourceSubLedgerId ? 'sub_ledger' : 'trust_account',
+        sourceSubLedgerId: opts.sourceSubLedgerId,
+        sourceAccountCode: opts.sourceAccountCode || '1000',
+        debitAccountCode: opts.debitAccountCode,
+        beneficiaryName: entry.individualName || description || 'Beneficiary',
+        beneficiaryRouting: entry.receivingRouting,
+        beneficiaryAccount: entry.accountNumber,
+        beneficiaryAccountType: ['32', '37'].includes(String(entry.transactionCode)) ? 'savings' : 'checking',
+        secCode: secCode || 'CCD',
+        effectiveDate,
+        description: entry.memo || description,
+        metadata: { groupId, legacyOrchestrator: true },
+      }, createdBy || 'system');
+      intents.push(result.intent);
     }
 
     return {
-      batch,
-      journal_entry: journalEntry,
-      accounting_integrated: !!journalEntry,
-      total_amount: totalDollars,
+      batch: {
+        batch_id: groupId,
+        status: 'pending_approval',
+        entry_count: intents.length,
+        total_amount_cents: totalCents,
+      },
+      journal_entry: null,
+      accounting_integrated: false,
+      accounting_deferred_until_settlement: true,
+      payment_intents: intents,
+      total_amount: totalCents / 100,
     };
   }
 
@@ -164,6 +103,10 @@ class PaymentOrchestrator {
     } else {
       channel = 'ach';
       reason = 'Wire engine not available — defaulting to ACH';
+    }
+
+    if (channel === 'wire' && getConfig().mode !== 'disabled') {
+      throw new Error('Wire transmission is blocked while Payment Hub mode is enabled; use a canonical supported connector');
     }
 
     if (channel === 'wire' && WireEngine) {
@@ -269,23 +212,13 @@ class PaymentOrchestrator {
       description: `K1-${taxYear}`,
       paymentType: 'trust_distribution',
       createdBy,
+      idempotencyKey: `k1-distribution:${returnId}:${taxYear}`,
     });
-
-    // Update K-1 statuses to 'distributed'
-    const batchId = result.batch.batch_id;
-    for (const k1 of k1Result.rows) {
-      if (k1.routing_number && k1.account_number) {
-        await pool.query(
-          `UPDATE k1_schedules SET status = 'distributed', updated_at = NOW()
-           WHERE id = $1`,
-          [k1.id]
-        );
-      }
-    }
 
     return {
       ...result,
-      beneficiaries_paid: entries.length,
+      beneficiaries_paid: 0,
+      beneficiaries_queued: entries.length,
       beneficiaries_skipped: skipped,
       tax_year: taxYear,
       return_id: returnId,

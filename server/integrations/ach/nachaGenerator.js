@@ -5,17 +5,27 @@
  *
  * Generates ACH files in standard NACHA format (fixed-width 94-char records).
  * Supports CCD (corporate) and PPD (personal) SEC codes.
- *
- * ODFI: Eaton Family Credit Union (routing: 241075470)
- * Originator: DEANDREA LAVAR BARKLEY TRUST
  */
 
 const RECORD_LENGTH = 94;
-const ODFI_ROUTING = '241075470';
-const ODFI_ID = '24107547'; // first 8 digits
-const ORIGINATOR_NAME = 'DLB TRUST';
-const ORIGINATOR_ID = '1241075470'; // '1' + routing
-const COMPANY_NAME = 'DLB TRUST';
+
+function resolveNachaConfig(opts = {}) {
+  const config = {
+    immediateDestination: opts.immediateDestination || process.env.ACH_ODFI_ROUTING || '',
+    immediateDestinationName: opts.immediateDestinationName || process.env.ACH_ODFI_NAME || '',
+    immediateOrigin: opts.immediateOrigin || process.env.ACH_IMMEDIATE_ORIGIN || '',
+    immediateOriginName: opts.immediateOriginName || process.env.ACH_ORIGINATOR_NAME || '',
+    companyName: opts.companyName || process.env.ACH_COMPANY_NAME || '',
+    companyId: opts.companyId || process.env.ACH_COMPANY_ID || '',
+  };
+  if (!validateRouting(config.immediateDestination)) throw new Error('A valid ACH ODFI routing number is required');
+  if (!/^\d{10}$/.test(config.immediateOrigin)) throw new Error('ACH immediate origin must be 10 digits');
+  if (!config.immediateDestinationName) throw new Error('ACH ODFI name is required');
+  if (!config.immediateOriginName) throw new Error('ACH originator name is required');
+  if (!config.companyName) throw new Error('ACH company name is required');
+  if (!/^[A-Za-z0-9]{10}$/.test(config.companyId)) throw new Error('ACH company ID must be 10 alphanumeric characters');
+  return { ...opts, ...config, odfiId: config.immediateDestination.slice(0, 8) };
+}
 
 function pad(str, len, fill = ' ', alignRight = false) {
   const s = String(str || '').substring(0, len);
@@ -64,16 +74,16 @@ function fileHeaderRecord(opts = {}) {
   let rec = '';
   rec += '1';                                    // pos 1: record type
   rec += '01';                                   // pos 2-3: priority code
-  rec += ' ' + pad(opts.immediateDestination || ODFI_ROUTING, 9, ' ', true); // pos 4-13
-  rec += pad(opts.immediateOrigin || ORIGINATOR_ID, 10);   // pos 14-23
+  rec += ' ' + pad(opts.immediateDestination, 9, ' ', true); // pos 4-13
+  rec += pad(opts.immediateOrigin, 10);                  // pos 14-23
   rec += formatDate(opts.fileCreationDate || now);          // pos 24-29
   rec += formatTime(opts.fileCreationDate || now);          // pos 30-33
   rec += pad(opts.fileIdModifier || 'A', 1);               // pos 34
   rec += '094';                                  // pos 35-37: record size
   rec += '10';                                   // pos 38-39: blocking factor
   rec += '1';                                    // pos 40: format code
-  rec += pad(opts.immediateDestinationName || 'EATON FAMILY CU', 23); // pos 41-63
-  rec += pad(opts.immediateOriginName || ORIGINATOR_NAME, 23);        // pos 64-86
+  rec += pad(opts.immediateDestinationName, 23);         // pos 41-63
+  rec += pad(opts.immediateOriginName, 23);              // pos 64-86
   rec += pad(opts.referenceCode || '', 8);       // pos 87-94
   return rec.padEnd(RECORD_LENGTH);
 }
@@ -86,16 +96,16 @@ function batchHeaderRecord(batchNumber, opts = {}) {
   let rec = '';
   rec += '5';                                    // pos 1: record type
   rec += serviceClass;                           // pos 2-4
-  rec += pad(opts.companyName || COMPANY_NAME, 16);         // pos 5-20
+  rec += pad(opts.companyName, 16);                        // pos 5-20
   rec += pad(opts.companyDiscretionaryData || '', 20);      // pos 21-40
-  rec += pad(opts.companyId || ORIGINATOR_ID, 10);          // pos 41-50
+  rec += pad(opts.companyId, 10);                           // pos 41-50
   rec += pad(opts.secCode || 'CCD', 3);          // pos 51-53: CCD or PPD
   rec += pad(opts.companyEntryDescription || 'PAYMENT', 10); // pos 54-63
   rec += pad(opts.companyDescriptiveDate || '', 6);          // pos 64-69
   rec += formatDate(opts.effectiveEntryDate || new Date());   // pos 70-75
   rec += pad('', 3);                             // pos 76-78: settlement date (ACH operator)
   rec += '1';                                    // pos 79: originator status (ODFI)
-  rec += pad(ODFI_ID, 8);                        // pos 80-87
+  rec += pad(opts.odfiId, 8);                        // pos 80-87
   rec += numPad(batchNumber, 7);                 // pos 88-94
   return rec.padEnd(RECORD_LENGTH);
 }
@@ -103,7 +113,7 @@ function batchHeaderRecord(batchNumber, opts = {}) {
 /**
  * Record 6: Entry Detail Record (CCD/PPD)
  */
-function entryDetailRecord(entry, traceSeq) {
+function entryDetailRecord(entry, traceSeq, odfiId) {
   const txCode = entry.transactionCode || '22'; // 22=credit checking, 27=debit checking, 32=credit savings, 37=debit savings
   let rec = '';
   rec += '6';                                    // pos 1: record type
@@ -116,7 +126,7 @@ function entryDetailRecord(entry, traceSeq) {
   rec += pad(entry.individualName || '', 22);    // pos 55-76: individual name
   rec += pad(entry.discretionaryData || '', 2);  // pos 77-78
   rec += '0';                                    // pos 79: addenda indicator
-  rec += pad(ODFI_ID, 8);                        // pos 80-87: trace routing
+  rec += pad(odfiId, 8);                         // pos 80-87: trace routing
   rec += numPad(traceSeq, 7);                    // pos 88-94: trace sequence
   return rec.padEnd(RECORD_LENGTH);
 }
@@ -149,10 +159,10 @@ function batchControlRecord(batchNumber, entries, opts = {}) {
   rec += numPad(entryHash, 10);                  // pos 11-20: entry hash
   rec += numPad(totalDebit, 12);                 // pos 21-32: total debit
   rec += numPad(totalCredit, 12);                // pos 33-44: total credit
-  rec += pad(opts.companyId || ORIGINATOR_ID, 10); // pos 45-54
+  rec += pad(opts.companyId, 10);                // pos 45-54
   rec += pad('', 19);                            // pos 55-73: message auth code (blank)
   rec += pad('', 6);                             // pos 74-79: reserved
-  rec += pad(ODFI_ID, 8);                        // pos 80-87
+  rec += pad(opts.odfiId, 8);                        // pos 80-87
   rec += numPad(batchNumber, 7);                 // pos 88-94
   return rec.padEnd(RECORD_LENGTH);
 }
@@ -182,6 +192,7 @@ function fileControlRecord(batchCount, blockCount, entryCount, entryHash, totalD
  * @returns {string} NACHA file content
  */
 function generateNACHAFile(opts = {}, batches = []) {
+  const config = resolveNachaConfig(opts);
   const lines = [];
   let totalEntryCount = 0;
   let totalEntryHash = 0;
@@ -189,7 +200,7 @@ function generateNACHAFile(opts = {}, batches = []) {
   let totalCredit = 0;
 
   // File Header
-  lines.push(fileHeaderRecord(opts));
+  lines.push(fileHeaderRecord(config));
 
   // Process each batch
   batches.forEach((batch, idx) => {
@@ -202,8 +213,9 @@ function generateNACHAFile(opts = {}, batches = []) {
       companyEntryDescription: batch.companyEntryDescription || 'PAYMENT',
       serviceClassCode: batch.serviceClassCode || '200',
       effectiveEntryDate: batch.effectiveEntryDate,
-      companyName: batch.companyName,
-      companyId: batch.companyId,
+      companyName: batch.companyName || config.companyName,
+      companyId: batch.companyId || config.companyId,
+      odfiId: config.odfiId,
     }));
 
     // Entry Detail records
@@ -223,13 +235,14 @@ function generateNACHAFile(opts = {}, batches = []) {
         discretionaryData: entry.discretionaryData,
       };
       processedEntries.push(processed);
-      lines.push(entryDetailRecord(processed, entryIdx + 1));
+      lines.push(entryDetailRecord(processed, entryIdx + 1, config.odfiId));
     });
 
     // Batch Control
     lines.push(batchControlRecord(batchNum, processedEntries, {
       serviceClassCode: batch.serviceClassCode || '200',
-      companyId: batch.companyId,
+      companyId: batch.companyId || config.companyId,
+      odfiId: config.odfiId,
     }));
 
     // Accumulate file-level totals
@@ -337,7 +350,5 @@ module.exports = {
   generateNACHAFile,
   parseNACHAFile,
   validateRouting,
-  ODFI_ROUTING,
-  ORIGINATOR_NAME,
-  ORIGINATOR_ID,
+  resolveNachaConfig,
 };

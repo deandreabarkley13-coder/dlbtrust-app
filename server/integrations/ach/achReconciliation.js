@@ -68,6 +68,8 @@ class ACHReconciliation {
         if (['transmitted', 'accepted'].includes(batch.status)) {
           await ACHEngine.settleBatch(item.batchId, {
             settlementDate: item.settlementDate,
+            settlementRef: item.settlementReference || reconciliationId,
+            processorConfirmed: true,
           });
           batchesSettled++;
           totalSettledCents += batch.total_amount_cents;

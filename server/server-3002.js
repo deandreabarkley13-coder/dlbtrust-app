@@ -26,7 +26,10 @@ app.use(security.globalRateLimiter());
 app.use(security.requestLogger);
 
 // Body parsing
-app.use(express.json({ limit: '5mb' }));
+app.use(express.json({
+  limit: '5mb',
+  verify: function(req, res, buffer) { req.rawBody = Buffer.from(buffer); },
+}));
 app.use(express.urlencoded({ extended: true, limit: '5mb' }));
 
 // Input sanitization (null bytes, oversized strings)
@@ -36,9 +39,6 @@ app.use(security.sanitizeInput);
 try { app.use('/api/auth', require(path.join(HD, 'server', 'routes', 'auth'))); console.log('[auth] loaded'); } catch(e) { console.warn('[auth]', e.message); }
 
 // V2 wealth management routes REMOVED — treasury system is the only platform now
-
-// OpenACH routes (legacy — kept for backward compat)
-try { require(path.join(HD, 'server', 'openach-patch'))(app, null); console.log('[openach] loaded'); } catch(e) { console.warn('[openach]', e.message); }
 
 // Analytics routes
 try { app.use('/api/analytics', require(path.join(HD, 'server', 'routes', 'analytics'))); console.log('[analytics] loaded'); } catch(e) { console.warn('[analytics]', e.message); }
@@ -64,8 +64,9 @@ try { app.use('/api/documents', require(path.join(HD, 'server', 'routes', 'docum
 // Trust Accounting routes
 try { app.use('/api/accounting', require(path.join(HD, 'server', 'routes', 'accounting'))); console.log('[accounting] loaded'); } catch(e) { console.warn('[accounting]', e.message); }
 
-// Payments & Disbursements — OpenACH-powered ACH disbursements
-try { app.use('/api/payments', require(path.join(HD, 'server', 'routes', 'payments'))); console.log('[payments] loaded'); } catch(e) { console.warn('[payments]', e.message); }
+// Payment Hub EE orchestration and canonical payment instructions
+app.use('/api/payment-hub', require(path.join(HD, 'server', 'routes', 'paymentHub')));
+console.log('[payment-hub] loaded');
 
 // ACH Pipeline — NACHA generation + AS2 transmission
 try { app.use('/api/ach-pipeline', require(path.join(HD, 'server', 'routes', 'achPipeline'))); console.log('[ach-pipeline] loaded'); } catch(e) { console.warn('[ach-pipeline]', e.message); }
@@ -191,9 +192,8 @@ app.get('*', function(req, res) {
 });
 
 // ─── Sequential Database Initialization ───────────────────────────────────────
-// Runs all migrations serially to avoid connection storms on Fly.io cold boot.
-// Fly.io's Postgres proxy kills idle connections; simultaneous init queries from
-// 12+ modules overwhelm it. Sequential init with warmup prevents this.
+// Runs all migrations serially before accepting requests to avoid connection
+// storms and partially initialized payment workflows on cold boot.
 async function initializeDatabase() {
   var pool = require(path.join(HD, 'server', 'integrations', 'bonds', 'pgPool'));
 
@@ -209,7 +209,7 @@ async function initializeDatabase() {
       warmupAttempts++;
       if (warmupAttempts >= MAX_WARMUP) {
         console.error('[startup] Database warmup failed after ' + MAX_WARMUP + ' attempts:', e.message);
-        return; // Skip migrations — app will still serve requests, pool will recover via keepalive
+        throw e;
       }
       console.warn('[startup] Warmup attempt ' + warmupAttempts + ' failed: ' + e.message + ' — retrying in 2s');
       await new Promise(function(r) { setTimeout(r, 2000); });
@@ -237,12 +237,24 @@ async function initializeDatabase() {
     console.log('[agents] tables ensured (trustee + bookkeeping)');
   } catch(e) { console.warn('[agents] table init:', e.message); }
 
+  try {
+    var PaymentHubEngine = require(path.join(HD, 'server', 'integrations', 'paymentHub', 'paymentHubEngine')).PaymentHubEngine;
+    await PaymentHubEngine.ensureTables();
+    console.log('[payment-hub] tables ensured');
+  } catch(e) {
+    console.error('[payment-hub] table init failed:', e.message);
+    throw e;
+  }
+
   // Electronic Settlement tables
   try {
     var esEngine = require(path.join(HD, 'server', 'integrations', 'payments', 'electronicSettlementEngine'));
     await esEngine.ensureTables();
     console.log('[electronic-settlement] tables ensured');
-  } catch(e) { console.warn('[electronic-settlement] table init:', e.message); }
+  } catch(e) {
+    console.error('[electronic-settlement] table init failed:', e.message);
+    throw e;
+  }
 
   // Step 2: Data infrastructure (DataBridge, system settings, bonds metadata)
   try {
@@ -335,18 +347,14 @@ async function initializeDatabase() {
   console.log('[startup] All database migrations complete');
 }
 
-// Kick off sequential init (non-blocking — server is already listening)
-initializeDatabase().catch(function(e) {
-  console.error('[startup] Fatal init error:', e.message);
-});
-
 // ─── Graceful Shutdown & Backup Initialization ─────────────────────────────
 try {
   var gracefulShutdown = require(path.join(HD, 'server', 'integrations', 'backup', 'gracefulShutdown'));
   gracefulShutdown.install();
 } catch(e) { console.warn('[graceful-shutdown]', e.message); }
 
-var server = app.listen(PORT, function() {
+initializeDatabase().then(function() {
+  var server = app.listen(PORT, function() {
   console.log('[dlbtrust-treasury] running on port ' + PORT);
 
   // Register server for graceful shutdown
@@ -509,4 +517,8 @@ var server = app.listen(PORT, function() {
       console.warn('[data-check] Error:', e.message);
     }
   }, 3000);
+  });
+}).catch(function(e) {
+  console.error('[startup] Fatal init error:', e.message);
+  process.exit(1);
 });
