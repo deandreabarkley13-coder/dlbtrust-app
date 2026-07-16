@@ -1,7 +1,7 @@
 /**
- * OpenACH Service — dlbtrust.cloud
+ * OpenACH Service — dlbtrust-app.fly.dev
  * 
- * Connects to the self-hosted OpenACH instance at ach.dlbtrust.cloud
+ * Connects to the OpenACH instance hosted on Fly.io
  * using the correct session-cookie REST API (not Bearer token).
  * 
  * ODFI: Eaton Family Credit Union (routing: 241075470)
@@ -13,7 +13,7 @@ import https from 'https';
 import http from 'http';
 import { URL } from 'url';
 
-const OPENACH_BASE_URL   = process.env.OPENACH_BASE_URL   || 'https://ach.dlbtrust.cloud/openach/api';
+const OPENACH_BASE_URL   = process.env.OPENACH_BASE_URL   || 'https://dlbtrust-app.fly.dev/openach/api';
 const OPENACH_API_TOKEN  = process.env.OPENACH_API_TOKEN  || '';
 const OPENACH_API_KEY    = process.env.OPENACH_API_KEY    || '';
 const OPENACH_PAYMENT_TYPE_ID = process.env.OPENACH_PAYMENT_TYPE_ID || '';

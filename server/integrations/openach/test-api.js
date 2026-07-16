@@ -11,7 +11,7 @@ const { OpenACHClient, OpenACHSession } = require('./openachClient');
 async function runTests() {
   console.log('===========================================');
   console.log(' OpenACH API Integration Test');
-  console.log(' Base URL:', process.env.OPENACH_BASE_URL || 'https://ach.dlbtrust.cloud/openach/api');
+  console.log(' Base URL:', process.env.OPENACH_BASE_URL || 'https://dlbtrust-app.fly.dev/openach/api');
   console.log('===========================================\n');
 
   if (!process.env.OPENACH_API_TOKEN || !process.env.OPENACH_API_KEY) {

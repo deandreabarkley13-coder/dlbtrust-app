@@ -52,7 +52,7 @@ function loadCert(certPath) {
 
 function generateMessageId() {
   const rand = crypto.randomBytes(12).toString('hex');
-  return `<${rand}@dlbtrust.cloud>`;
+  return `<${rand}@dlbtrust-app.fly.dev>`;
 }
 
 class AS2Client {

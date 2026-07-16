@@ -1,6 +1,7 @@
 /**
- * dlbtrust.cloud — Express Application Entry Point
+ * dlbtrust-app — Express Application Entry Point
  * DEANDREA LAVAR BARKLEY TRUST — Treasury Management System
+ * Hosted on Fly.io: https://dlbtrust-app.fly.dev
  * 
  * This file is the fallback/reference app.js.
  * The live server uses server-new-fixed.js — both are patched identically.

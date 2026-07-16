@@ -30,7 +30,7 @@ const MDN_BASE_URL = process.env.AS2_MDN_URL || '';
 
 function generateMessageId() {
   const rand = crypto.randomBytes(16).toString('hex');
-  return `<${rand}@dlbtrust.cloud>`;
+  return `<${rand}@dlbtrust-app.fly.dev>`;
 }
 
 function generateMIC(content, algorithm) {
@@ -250,7 +250,7 @@ class AS2Server {
 
     mdnBody += `--${boundary}\r\n`;
     mdnBody += `Content-Type: message/disposition-notification\r\n\r\n`;
-    mdnBody += `Reporting-UA: dlbtrust.cloud; DLB Trust AS2 Server\r\n`;
+    mdnBody += `Reporting-UA: dlbtrust-app.fly.dev; DLB Trust AS2 Server\r\n`;
     mdnBody += `Original-Recipient: rfc822; ${LOCAL_AS2_ID}\r\n`;
     mdnBody += `Final-Recipient: rfc822; ${LOCAL_AS2_ID}\r\n`;
     mdnBody += `Original-Message-ID: ${originalMessageId}\r\n`;
