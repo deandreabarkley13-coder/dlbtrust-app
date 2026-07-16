@@ -1,23 +1,20 @@
 /**
  * OpenACH REST API Client
- * Integrates with self-hosted OpenACH instance at ach.dlbtrust.cloud
+ * Integrates with OpenACH instance hosted on Fly.io at dlbtrust-app.fly.dev
  * 
  * DEANDREA LAVAR BARKLEY TRUST — Real Money Movement via ACH
  * ODFI: Eaton Family Credit Union (routing: 241075470)
  * 
- * NOTE: Uses HTTP via localhost to avoid TLS certificate issues.
- * The Docker container is accessible at http://localhost with Host header.
- * Set OPENACH_BASE_URL=http://localhost/openach/api in production .env
+ * Set OPENACH_BASE_URL=https://dlbtrust-app.fly.dev/openach/api in production .env
  */
 
 const https = require('https');
 const http = require('http');
 const { URL } = require('url');
 
-// Default to HTTP localhost to avoid TLS issues from server-side calls
-// When calling from the server itself, Apache proxies ach.dlbtrust.cloud -> localhost
-const OPENACH_BASE_URL = process.env.OPENACH_BASE_URL || 'http://localhost/openach/api';
-const OPENACH_HOST_HEADER = process.env.OPENACH_HOST_HEADER || 'ach.dlbtrust.cloud';
+// Default to Fly.io hosted OpenACH endpoint
+const OPENACH_BASE_URL = process.env.OPENACH_BASE_URL || 'https://dlbtrust-app.fly.dev/openach/api';
+const OPENACH_HOST_HEADER = process.env.OPENACH_HOST_HEADER || 'dlbtrust-app.fly.dev';
 const OPENACH_API_TOKEN = process.env.OPENACH_API_TOKEN;
 const OPENACH_API_KEY   = process.env.OPENACH_API_KEY;
 
