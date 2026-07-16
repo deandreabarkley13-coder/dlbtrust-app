@@ -1,0 +1,125 @@
+name: Restore 5/8 + Push to 8/8
+on:
+  push:
+    branches: [main]
+    paths: ['.github/workflows/restore-5-8.yml']
+  workflow_dispatch:
+
+jobs:
+  restore:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      SERVER: "74.208.191.205"
+      SSH_USER: "dlbtrust.cloud_h6zkwzag1ya"
+      SSH_PASS: "Deploy2026!"
+      PLESK_PASS: "dP8RlShbOWNq"
+      PLESK: "https://74.208.191.205:8443"
+
+    steps:
+      - uses: actions/checkout@v4
+      - run: apt-get install -y sshpass 2>/dev/null | tail -1 || true
+
+      - name: Check and restore correct vhost.conf
+        run: |
+          sshpass -p "$SSH_PASS" ssh \
+            -o StrictHostKeyChecking=no -o ConnectTimeout=10 \
+            -o PasswordAuthentication=yes \
+            "$SSH_USER@$SERVER" << 'SSHEOF'
+            VHOST_CONF="/var/www/vhosts/dlbtrust.cloud/conf/vhost.conf"
+            
+            echo "=== Current vhost.conf ==="
+            cat "$VHOST_CONF" 2>/dev/null
+            
+            echo "=== What's listening ==="
+            ss -tlnp | grep -E "3001|3002|80|443"
+            
+            echo "=== pm2 list ==="
+            pm2 list 2>/dev/null
+            
+            echo "=== Restoring correct vhost.conf (ProxyPass to 3001) ==="
+            cat > "$VHOST_CONF" << 'VHEOF'
+ProxyRequests Off
+ProxyPreserveHost On
+ProxyPass / http://localhost:3001/
+ProxyPassReverse / http://localhost:3001/
+<Proxy *>
+    Order deny,allow
+    Allow from all
+    Require all granted
+</Proxy>
+VHEOF
+            echo "✅ vhost.conf restored to port 3001"
+            cat "$VHOST_CONF"
+          SSHEOF
+
+      - name: Trigger Apache reload via Plesk
+        run: |
+          # Use Plesk srv_man to restart Apache
+          for schema in \
+            '<?xml version="1.0"?><packet version="1.6.9.1"><server><srv_man><restart><service>httpd</service></restart></srv_man></server></packet>' \
+            '<?xml version="1.0"?><packet version="1.6.9.1"><server><srv_man><restart><service>apache2</service></restart></srv_man></server></packet>'; do
+            RESULT=$(curl -sk --max-time 15 "$PLESK/enterprise/control/agent.php" \
+              -H "HTTP_AUTH_LOGIN: admin" -H "HTTP_AUTH_PASSWD: $PLESK_PASS" \
+              -H "Content-Type: text/xml" -d "$schema")
+            echo "srv_man restart: $RESULT" | head -c 200
+            echo ""
+          done
+          
+          # Rebuild Apache config via httpdmng
+          RESULT=$(curl -sk --max-time 20 "$PLESK/enterprise/control/agent.php" \
+            -H "HTTP_AUTH_LOGIN: admin" -H "HTTP_AUTH_PASSWD: $PLESK_PASS" \
+            -H "Content-Type: text/xml" \
+            -d '<?xml version="1.0"?><packet version="1.6.9.1">
+              <webspace>
+                <set>
+                  <filter><name>dlbtrust.cloud</name></filter>
+                  <values><prefs><www>true</www></prefs></values>
+                </set>
+              </webspace>
+            </packet>')
+          echo "Webspace: $RESULT" | head -c 100
+          
+          sleep 5
+
+      - name: Add ACH and analytics routes inline to server-3002.js on port 3002
+        run: |
+          # Run server-3002.js on port 3002 as NEW process (port 3001 = original v2)
+          # Update vhost to use 3002 which has ACH+analytics
+          sshpass -p "$SSH_PASS" ssh \
+            -o StrictHostKeyChecking=no -o ConnectTimeout=10 \
+            -o PasswordAuthentication=yes \
+            "$SSH_USER@$SERVER" << 'SSHEOF'
+            HTTPDOCS="/var/www/vhosts/dlbtrust.cloud/httpdocs"
+            
+            echo "=== Starting 3002 server ==="
+            pm2 delete dlbtrust-3002 2>/dev/null || true
+            PORT=3002 pm2 start "$HTTPDOCS/server-3002.js" --name dlbtrust-3002 2>/dev/null
+            
+            # Check if it started
+            sleep 3
+            pm2 list 2>/dev/null | grep dlbtrust
+            
+            echo "=== Test port 3002 ==="
+            curl -s http://localhost:3002/api/ach/health
+            echo ""
+            curl -s http://localhost:3002/api/wallets | head -c 80
+          SSHEOF
+
+      - name: Final check — what score are we at
+        run: |
+          sleep 5
+          S=$SERVER; P=0; F=0
+          t() { r=$(eval "$2" 2>&1|head -c 200); echo "$r"|grep -q "$3" && { echo "✅ $1"; P=$((P+1)); } || { echo "❌ $1|${r:0:70}"; F=$((F+1)); }; }
+          t "HTTP 301"    "curl -s -o/dev/null -w '%{http_code}' http://dlbtrust.cloud/"                                           "301"
+          t "Wallets"     "curl -sk --resolve 'dlbtrust.cloud:443:$S' https://dlbtrust.cloud/api/wallets"                         "wallet_id"
+          t "Transactions" "curl -sk --resolve 'dlbtrust.cloud:443:$S' https://dlbtrust.cloud/api/transactions"                   "type"
+          t "ACH health"  "curl -sk --resolve 'dlbtrust.cloud:443:$S' https://dlbtrust.cloud/api/ach/health"                     "openach_connected"
+          t "Analytics"   "curl -sk --resolve 'dlbtrust.cloud:443:$S' https://dlbtrust.cloud/api/analytics/summary"              "total_corpus"
+          t "OA UI"       "curl -sk --resolve 'ach.dlbtrust.cloud:443:$S' https://ach.dlbtrust.cloud/openach/ -o/dev/null -w '%{http_code}'" "200"
+          t "OA API"      "curl -sk --resolve 'ach.dlbtrust.cloud:443:$S' -X POST https://ach.dlbtrust.cloud/openach/api/connect --data 'user_api_token=3caee1c2-c218-4959-b6d2-21d4b2a1b42e&user_api_key=b74966cf-5276-4d8b-8650-5bd57dcee272'" '"success":true'
+          echo ""
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          echo "SCORE: $P/7"
+          [ $F -eq 0 ] && echo "🎉 PRODUCTION READY" || echo "⚠️ $F failing"
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"

@@ -1,0 +1,67 @@
+name: Find Plesk Cron API
+on:
+  push:
+    branches: [main]
+    paths: ['.github/workflows/plesk-find-cron-api.yml']
+  workflow_dispatch:
+
+jobs:
+  find:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      PLESK: "https://74.208.191.205:8443"
+      PLESK_PASS: "dP8RlShbOWNq"
+
+    steps:
+      - name: Probe all Plesk XML API top-level nodes
+        run: |
+          # Try all known Plesk XML API top-level nodes to find cron support
+          for NODE in "crontab" "sched" "scheduled-tasks" "task" "cron" "job" "schedule"; do
+            RESULT=$(curl -sk --max-time 8 "$PLESK/enterprise/control/agent.php" \
+              -H "HTTP_AUTH_LOGIN: admin" \
+              -H "HTTP_AUTH_PASSWD: $PLESK_PASS" \
+              -H "Content-Type: text/xml" \
+              -d "<?xml version=\"1.0\"?><packet version=\"1.6.9.1\"><$NODE><get/></$NODE></packet>" 2>/dev/null)
+            echo "$NODE: $(echo "$RESULT" | head -c 150)"
+          done
+
+      - name: Try site/webspace crontab
+        run: |
+          # Try crontab under site or webspace context
+          for PARENT in "site" "webspace" "server"; do
+            for ACTION in "get_crontab" "get-crontab" "crontab" "sched"; do
+              RESULT=$(curl -sk --max-time 6 "$PLESK/enterprise/control/agent.php" \
+                -H "HTTP_AUTH_LOGIN: admin" \
+                -H "HTTP_AUTH_PASSWD: $PLESK_PASS" \
+                -H "Content-Type: text/xml" \
+                -d "<?xml version=\"1.0\"?><packet version=\"1.6.9.1\"><$PARENT><$ACTION/></$PARENT></packet>" 2>/dev/null | head -c 100)
+              echo "$PARENT/$ACTION: $RESULT"
+            done
+          done
+
+      - name: Check Plesk get_protos to see all supported operations
+        run: |
+          RESULT=$(curl -sk --max-time 10 "$PLESK/enterprise/control/agent.php" \
+            -H "HTTP_AUTH_LOGIN: admin" \
+            -H "HTTP_AUTH_PASSWD: $PLESK_PASS" \
+            -H "Content-Type: text/xml" \
+            -d '<?xml version="1.0"?><packet version="1.6.9.1"><server><get_protos/></server></packet>')
+          echo "Protos: $RESULT" | head -c 1000
+
+      - name: Try Plesk CLI endpoint directly
+        run: |
+          # Plesk has a CLI endpoint that might allow running commands
+          for path in \
+            "/enterprise/control/agent.php" \
+            "/api/v2/cli/run" \
+            "/admin/server/cli" \
+            "/api/v2/server/shell"; do
+            STATUS=$(curl -sk --max-time 6 \
+              -X POST "$PLESK$path" \
+              -H "Authorization: Basic $(echo -n admin:$PLESK_PASS | base64)" \
+              -H "Content-Type: application/json" \
+              -d '{"cmd":"whoami"}' \
+              -o /tmp/r.txt -w "%{http_code}")
+            echo "$path -> $STATUS | $(cat /tmp/r.txt | head -c 80)"
+          done

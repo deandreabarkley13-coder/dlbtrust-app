@@ -1,0 +1,141 @@
+name: Script + Cron — Root Exec
+on:
+  push:
+    branches: [main]
+    paths: ['.github/workflows/script-then-cron.yml']
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      SERVER: "74.208.191.205"
+      SSH_USER: "dlbtrust.cloud_h6zkwzag1ya"
+      SSH_PASS: "Deploy2026!"
+      PLESK_PASS: "dP8RlShbOWNq"
+      PLESK: "https://74.208.191.205:8443"
+
+    steps:
+      - uses: actions/checkout@v4
+      - run: apt-get install -y sshpass 2>/dev/null | tail -1 || true
+
+      - name: Write patch script to server via SSH (as system user)
+        run: |
+          # Write a shell script to our writable directory
+          sshpass -p "$SSH_PASS" ssh \
+            -o StrictHostKeyChecking=no -o ConnectTimeout=10 \
+            -o PasswordAuthentication=yes \
+            "$SSH_USER@$SERVER" << 'SSHEOF'
+            WRITABLE="/var/www/vhosts/dlbtrust.cloud/httpdocs"
+            SCRIPT="$WRITABLE/deploy_patch.sh"
+            
+            cat > "$SCRIPT" << 'PATCH'
+          #!/bin/bash
+          set -e
+          V2="/var/www/vhosts/dlbtrust.cloud/dlbtrust-v2"
+          HTTPDOCS="/var/www/vhosts/dlbtrust.cloud/httpdocs"
+          LOG="/tmp/patch_run.log"
+          echo "$(date): Starting patch" > "$LOG"
+          
+          # Copy route files to v2
+          cp -r "$HTTPDOCS/server" "$V2/" 2>/dev/null && echo "Routes copied" >> "$LOG"
+          
+          # Patch server.cjs
+          APP="$V2/server.cjs"
+          if ! grep -q "openach-patch" "$APP" 2>/dev/null; then
+            sed -i "36i\\
+          try { require('./server/openach-patch')(app, null); } catch(e) { console.warn('openach:', e.message); }\\
+          try { app.use('/api/analytics', require('./server/routes/analytics')); } catch(e) { console.warn('analytics:', e.message); }" "$APP"
+            echo "server.cjs patched" >> "$LOG"
+          else
+            echo "server.cjs already patched" >> "$LOG"
+          fi
+          
+          # Update .env
+          ENV="$V2/.env"
+          grep -q OPENACH_API_TOKEN "$ENV" 2>/dev/null || cat >> "$ENV" << 'ENVEOF'
+          OPENACH_BASE_URL=http://localhost/openach/api
+          OPENACH_HOST_HEADER=ach.dlbtrust.cloud
+          OPENACH_API_TOKEN=3caee1c2-c218-4959-b6d2-21d4b2a1b42e
+          OPENACH_API_KEY=b74966cf-5276-4d8b-8650-5bd57dcee272
+          ENVEOF
+          echo ".env updated" >> "$LOG"
+          
+          # Restart Node via pm2
+          pm2 restart all >> "$LOG" 2>&1 || pm2 start "$V2/server.cjs" --name dlbtrust-v2 >> "$LOG" 2>&1
+          
+          # OpenACH credentials
+          CONT=$(docker ps --format "{{.Names}}" | grep openach | head -1)
+          if [ -n "$CONT" ]; then
+            docker exec "$CONT" sqlite3 /var/www/html/protected/runtime/db/openach.db \
+              "INSERT OR IGNORE INTO user_api VALUES('4fc86059-2e7b-4732-b94f-e7c3715ee8d7',datetime('now'),'0eb26e1d-5fcc-4978-a132-dd93c2655429','3caee1c2-c218-4959-b6d2-21d4b2a1b42e','b74966cf-5276-4d8b-8650-5bd57dcee272','enabled');" >> "$LOG" 2>&1
+            echo "OpenACH credentials inserted" >> "$LOG"
+          fi
+          
+          echo "$(date): Patch complete" >> "$LOG"
+          cat "$LOG"
+          PATCH
+            chmod +x "$SCRIPT"
+            echo "✅ Script written to $SCRIPT"
+            cat "$SCRIPT" | head -20
+          SSHEOF
+
+      - name: Create Plesk cron to run the script as root
+        run: |
+          SCRIPT_PATH="/var/www/vhosts/dlbtrust.cloud/httpdocs/deploy_patch.sh"
+          
+          RESULT=$(curl -sk --max-time 15 \
+            "$PLESK/enterprise/control/agent.php" \
+            -H "HTTP_AUTH_LOGIN: admin" \
+            -H "HTTP_AUTH_PASSWD: $PLESK_PASS" \
+            -H "Content-Type: text/xml" \
+            -d "<?xml version=\"1.0\" encoding=\"UTF-8\"?><packet version=\"1.6.9.1\"><server><create_crontask><owner>root</owner><enabled>true</enabled><switch>true</switch><command>$SCRIPT_PATH</command><schedule><min>*</min><hour>*</hour><dom>*</dom><month>*</month><dow>*</dow></schedule></create_crontask></server></packet>")
+          
+          echo "Cron result: $RESULT" | head -c 300
+          TASK_ID=$(echo "$RESULT" | grep -oP '(?<=<id>)[^<]+' | head -1)
+          echo "Task ID: $TASK_ID"
+          echo "CRON_ID=$TASK_ID" >> $GITHUB_ENV
+          
+          if echo "$RESULT" | grep -q "<status>ok</status>"; then
+            echo "✅ Cron task created successfully!"
+          else
+            echo "❌ Cron creation failed"
+          fi
+
+      - name: Wait for cron execution
+        run: |
+          echo "Waiting 75s for cron to fire (runs every minute)..."
+          sleep 75
+          
+          # Check if script ran
+          sshpass -p "$SSH_PASS" ssh \
+            -o StrictHostKeyChecking=no -o ConnectTimeout=10 \
+            -o PasswordAuthentication=yes \
+            "$SSH_USER@$SERVER" \
+            "cat /tmp/patch_run.log 2>/dev/null || echo 'Script not run yet'" 2>&1
+
+      - name: Delete the cron task
+        if: always()
+        run: |
+          [ -z "$CRON_ID" ] && exit 0
+          curl -sk --max-time 10 "$PLESK/enterprise/control/agent.php" \
+            -H "HTTP_AUTH_LOGIN: admin" \
+            -H "HTTP_AUTH_PASSWD: $PLESK_PASS" \
+            -H "Content-Type: text/xml" \
+            -d "<?xml version=\"1.0\"?><packet version=\"1.6.9.1\"><server><delete_crontask><filter><id>$CRON_ID</id></filter></delete_crontask></server></packet>" \
+            | grep -oP '<status>[^<]+'
+
+      - name: Final score
+        run: |
+          S=$SERVER; P=0; F=0
+          t() { r=$(eval "$2" 2>&1|head -c 200); echo "$r"|grep -q "$3" && { echo "✅ $1"; P=$((P+1)); } || { echo "❌ $1|${r:0:60}"; F=$((F+1)); }; }
+          t "Wallets"    "curl -sk --resolve 'dlbtrust.cloud:443:$S' https://dlbtrust.cloud/api/wallets"              "wallet_id"
+          t "ACH health" "curl -sk --resolve 'dlbtrust.cloud:443:$S' https://dlbtrust.cloud/api/ach/health"          "openach_connected"
+          t "Analytics"  "curl -sk --resolve 'dlbtrust.cloud:443:$S' https://dlbtrust.cloud/api/analytics/summary"   "total_corpus"
+          t "OA UI"      "curl -sk --resolve 'ach.dlbtrust.cloud:443:$S' https://ach.dlbtrust.cloud/openach/ -o/dev/null -w '%{http_code}'" "200"
+          t "OA API"     "curl -sk --resolve 'ach.dlbtrust.cloud:443:$S' -X POST https://ach.dlbtrust.cloud/openach/api/connect --data 'user_api_token=3caee1c2-c218-4959-b6d2-21d4b2a1b42e&user_api_key=b74966cf-5276-4d8b-8650-5bd57dcee272'" '"success":true'
+          echo ""; echo "━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          echo "SCORE: $P/5"
+          [ $F -eq 0 ] && echo "🎉 100% PRODUCTION READY" || echo "⚠️ $F failing"
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━"

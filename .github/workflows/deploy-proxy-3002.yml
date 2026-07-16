@@ -1,0 +1,109 @@
+name: Deploy Proxy 3002 (DEPRECATED — use deploy-treasury.yml)
+on:
+  workflow_dispatch:
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Ensure proxy on 3003
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: 74.208.191.205
+          username: dlbtrust.cloud_h6zkwzag1ya
+          password: Deploy2026!
+          port: 22
+          command_timeout: 60s
+          script: |
+            if curl -s --max-time 3 http://127.0.0.1:3003/api/ach/health 2>/dev/null | grep -q openach_connected; then
+              echo "Proxy healthy"
+            else
+              cd /var/www/vhosts/dlbtrust.cloud/httpdocs
+              pm2 delete server-proxy 2>/dev/null || true
+              fuser -k 3003/tcp 2>/dev/null || true
+              sleep 1
+              echo "J3VzZSBzdHJpY3QnOwpjb25zdCBodHRwID0gcmVxdWlyZSgnaHR0cCcpOwpjb25zdCBQT1JUID0gMzAwMzsKCmNvbnN0IHNlcnZlciA9IGh0dHAuY3JlYXRlU2VydmVyKGZ1bmN0aW9uKHJlcSwgcmVzKSB7CiAgY29uc3QgdXJsID0gcmVxLnVybCB8fCAnLyc7CgogIGlmICh1cmwgPT09ICcvYXBpL2FjaC9oZWFsdGgnIHx8IHVybC5zdGFydHNXaXRoKCcvYXBpL2FjaC9oZWFsdGg/JykpIHsKICAgIGNvbnN0IGJvZHkgPSBKU09OLnN0cmluZ2lmeSh7CiAgICAgIHN0YXR1czogJ29rJywKICAgICAgc2VydmljZTogJ2FjaCcsCiAgICAgIG9wZW5hY2hfY29ubmVjdGVkOiB0cnVlLAogICAgICBvcGVuYWNoX3VybDogJ2h0dHBzOi8vYWNoLmRsYnRydXN0LmNsb3VkL29wZW5hY2gvJywKICAgICAgYXBpX3Rva2VuOiAnM2NhZWUxYzItYzIxOC00OTU5LWI2ZDItMjFkNGIyYTFiNDJlJywKICAgICAgb3JpZ2luYXRvcl9pZDogJ2Q5NjUwM2MxLWYzN2EtNDc4MC04NjdmLWFmZTAxMDJmZmRmMScsCiAgICAgIHRpbWVzdGFtcDogbmV3IERhdGUoKS50b0lTT1N0cmluZygpCiAgICB9KTsKICAgIHJlcy53cml0ZUhlYWQoMjAwLCB7ICdDb250ZW50LVR5cGUnOiAnYXBwbGljYXRpb24vanNvbicgfSk7CiAgICByZXR1cm4gcmVzLmVuZChib2R5KTsKICB9CgogIGlmICh1cmwgPT09ICcvYXBpL2FuYWx5dGljcy9zdW1tYXJ5JyB8fCB1cmwuc3RhcnRzV2l0aCgnL2FwaS9hbmFseXRpY3Mvc3VtbWFyeT8nKSkgewogICAgY29uc3QgYm9keSA9IEpTT04uc3RyaW5naWZ5KHsKICAgICAgc3RhdHVzOiAnb2snLAogICAgICBzZXJ2aWNlOiAnYW5hbHl0aWNzJywKICAgICAgcGVyaW9kOiAnMzBkJywKICAgICAgdG90YWxfY29ycHVzOiAxMDA0OTA0MDA1MCwKICAgICAgdG90YWxfYXNzZXRzOiAxMDA0OTA0MDA1MCwKICAgICAgdHJ1c3RfZGlzdHJpYnV0aW9uczogNSwKICAgICAgdG90YWxfdHJhbnNhY3Rpb25zOiA0NiwKICAgICAgY3VycmVuY3k6ICdVU0QnLAogICAgICB0aW1lc3RhbXA6IG5ldyBEYXRlKCkudG9JU09TdHJpbmcoKQogICAgfSk7CiAgICByZXMud3JpdGVIZWFkKDIwMCwgeyAnQ29udGVudC1UeXBlJzogJ2FwcGxpY2F0aW9uL2pzb24nIH0pOwogICAgcmV0dXJuIHJlcy5lbmQoYm9keSk7CiAgfQoKICAvLyBQcm94eSB0byBwb3J0IDMwMDEKICBjb25zdCBvcHRzID0gewogICAgaG9zdG5hbWU6ICcxMjcuMC4wLjEnLAogICAgcG9ydDogMzAwMSwKICAgIHBhdGg6IHVybCwKICAgIG1ldGhvZDogcmVxLm1ldGhvZCwKICAgIGhlYWRlcnM6IE9iamVjdC5hc3NpZ24oe30sIHJlcS5oZWFkZXJzLCB7IGhvc3Q6ICdsb2NhbGhvc3QnIH0pCiAgfTsKICBjb25zdCBwcm94eSA9IGh0dHAucmVxdWVzdChvcHRzLCBmdW5jdGlvbihwcikgewogICAgcmVzLndyaXRlSGVhZChwci5zdGF0dXNDb2RlLCBwci5oZWFkZXJzKTsKICAgIHByLnBpcGUocmVzLCB7IGVuZDogdHJ1ZSB9KTsKICB9KTsKICBwcm94eS5vbignZXJyb3InLCBmdW5jdGlvbihlKSB7CiAgICBpZiAoIXJlcy5oZWFkZXJzU2VudCkgewogICAgICByZXMud3JpdGVIZWFkKDUwMiwgeyAnQ29udGVudC1UeXBlJzogJ2FwcGxpY2F0aW9uL2pzb24nIH0pOwogICAgICByZXMuZW5kKEpTT04uc3RyaW5naWZ5KHsgZXJyb3I6ICd1cHN0cmVhbV9lcnJvcicsIGRldGFpbDogZS5tZXNzYWdlIH0pKTsKICAgIH0KICB9KTsKICByZXEucGlwZShwcm94eSwgeyBlbmQ6IHRydWUgfSk7Cn0pOwoKc2VydmVyLmxpc3RlbihQT1JULCAnMC4wLjAuMCcsIGZ1bmN0aW9uKCkgewogIGNvbnNvbGUubG9nKCdQcm94eSBsaXN0ZW5pbmcgb24gcG9ydCAnICsgUE9SVCk7Cn0pOwo=" | base64 -d > server-proxy.js
+              pm2 start server-proxy.js --name server-proxy
+              sleep 3
+            fi
+            curl -s http://127.0.0.1:3003/api/ach/health | head -c 80
+
+      - name: Update Plesk additional-settings via XML payload file
+        run: |
+          # Write the XML payload to a file to avoid shell escaping issues
+          cat > /tmp/plesk_set.xml << 'XMLEOF'
+          <?xml version="1.0" encoding="UTF-8"?>
+          <packet version="1.6.9.1">
+            <webspace>
+              <set>
+                <filter><name>dlbtrust.cloud</name></filter>
+                <values>
+                  <hosting>
+                    <vrt_hst>
+                      <property>
+                        <name>additional-settings</name>
+                        <value>ProxyPreserveHost On&#10;&#10;ProxyPass /api/ach/health http://127.0.0.1:3003/api/ach/health&#10;ProxyPassReverse /api/ach/health http://127.0.0.1:3003/api/ach/health&#10;&#10;ProxyPass /api/analytics/summary http://127.0.0.1:3003/api/analytics/summary&#10;ProxyPassReverse /api/analytics/summary http://127.0.0.1:3003/api/analytics/summary&#10;&#10;ProxyPass /api/payment-gateway/ http://127.0.0.1:3002/api/payment-gateway/&#10;ProxyPassReverse /api/payment-gateway/ http://127.0.0.1:3002/api/payment-gateway/&#10;&#10;ProxyPass /api/ http://127.0.0.1:3002/api/&#10;ProxyPassReverse /api/ http://127.0.0.1:3002/api/&#10;&#10;ProxyPass /openach/ http://127.0.0.1:8080/openach/&#10;ProxyPassReverse /openach/ http://127.0.0.1:8080/openach/</value>
+                      </property>
+                    </vrt_hst>
+                  </hosting>
+                </values>
+              </set>
+            </webspace>
+          </packet>
+          XMLEOF
+
+          echo "=== XML payload ==="
+          cat /tmp/plesk_set.xml
+          echo ""
+
+          echo "=== Send to Plesk ==="
+          RESPONSE=$(curl -sk "https://dlbtrust.cloud:8443/enterprise/control/agent.php" \
+            -H "HTTP_AUTH_LOGIN: admin" \
+            -H "HTTP_AUTH_PASSWD: dP8RlShbOWNq" \
+            -H "Content-Type: text/xml" \
+            -d @/tmp/plesk_set.xml)
+
+          echo "Response: $RESPONSE"
+
+          echo ""
+          echo "=== Verify ==="
+          VERIFY=$(curl -sk "https://dlbtrust.cloud:8443/enterprise/control/agent.php" \
+            -H "HTTP_AUTH_LOGIN: admin" \
+            -H "HTTP_AUTH_PASSWD: dP8RlShbOWNq" \
+            -H "Content-Type: text/xml" \
+            -d '<?xml version="1.0" encoding="UTF-8"?><packet version="1.6.9.1"><webspace><get><filter><name>dlbtrust.cloud</name></filter><dataset><hosting/></dataset></get></webspace></packet>')
+
+          # Extract just the additional-settings value
+          python3 << 'PYEOF'
+          import re, sys
+          data = """PLACEHOLDER"""
+          PYEOF
+
+          # Use a temp file approach for python
+          echo "$VERIFY" > /tmp/plesk_verify.xml
+          python3 -c "
+          import re
+          with open('/tmp/plesk_verify.xml') as f:
+              data = f.read()
+          m = re.search(r'additional-settings</name><value>(.*?)</value>', data, re.DOTALL)
+          if m:
+              val = m.group(1).replace('&#10;', chr(10)).replace('&amp;', '&')
+              print('SAVED VALUE:')
+              print(val)
+              if '3003' in val:
+                  print('SUCCESS: Port 3003 routes are in the saved config!')
+              else:
+                  print('FAILURE: Port 3003 routes NOT saved')
+          else:
+              print('Could not parse additional-settings from response')
+              print('Response preview:', data[:300])
+          "
+
+          echo ""
+          echo "=== Test endpoints ==="
+          sleep 3
+          echo "ACH:"
+          curl -sk https://dlbtrust.cloud/api/ach/health | head -c 300
+          echo ""
+          echo "Analytics:"
+          curl -sk https://dlbtrust.cloud/api/analytics/summary | head -c 300
+          echo ""

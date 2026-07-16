@@ -1,0 +1,199 @@
+name: Patch dlbtrust-v2 server.cjs — FINAL
+on:
+  push:
+    branches: [main]
+    paths: ['.github/workflows/patch-v2-server.yml']
+  workflow_dispatch:
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      SERVER: "74.208.191.205"
+      SSH_USER: "dlbtrust.cloud_h6zkwzag1ya"
+      SSH_PASS: "Deploy2026!"
+
+    steps:
+      - uses: actions/checkout@v4
+      - run: apt-get install -y sshpass 2>/dev/null | tail -1 || true
+
+      - name: Read the live server.cjs and map its routes
+        run: |
+          sshpass -p "$SSH_PASS" ssh \
+            -o StrictHostKeyChecking=no -o ConnectTimeout=10 \
+            -o PasswordAuthentication=yes \
+            "$SSH_USER@$SERVER" << 'SSHEOF'
+            echo "=== dlbtrust-v2 directory ==="
+            ls -la /var/www/vhosts/dlbtrust.cloud/dlbtrust-v2/
+            
+            echo "=== server.cjs (first 80 lines) ==="
+            head -80 /var/www/vhosts/dlbtrust.cloud/dlbtrust-v2/server.cjs
+            
+            echo "=== ROUTES in server.cjs ==="
+            grep -n "app\.get\|app\.post\|app\.use\|app\.listen\|require\|\.route" \
+              /var/www/vhosts/dlbtrust.cloud/dlbtrust-v2/server.cjs | head -40
+            
+            echo "=== .env ==="
+            cat /var/www/vhosts/dlbtrust.cloud/dlbtrust-v2/.env 2>/dev/null || echo "no .env"
+            
+            echo "=== package.json ==="
+            cat /var/www/vhosts/dlbtrust.cloud/dlbtrust-v2/package.json 2>/dev/null | head -20
+            
+            echo "=== git status ==="
+            cd /var/www/vhosts/dlbtrust.cloud/dlbtrust-v2 && git log --oneline -3 2>/dev/null || echo "no git"
+            
+            echo "=== server.cjs listen line ==="
+            grep -n "listen\|PORT" /var/www/vhosts/dlbtrust.cloud/dlbtrust-v2/server.cjs | tail -10
+          SSHEOF
+
+      - name: Copy ACH and analytics route files to v2 app
+        run: |
+          sshpass -p "$SSH_PASS" ssh \
+            -o StrictHostKeyChecking=no -o ConnectTimeout=10 \
+            -o PasswordAuthentication=yes \
+            "$SSH_USER@$SERVER" << 'SSHEOF'
+            V2="/var/www/vhosts/dlbtrust.cloud/dlbtrust-v2"
+            
+            echo "=== Creating server/routes directory ==="
+            mkdir -p "$V2/server/routes"
+            mkdir -p "$V2/server/integrations/openach"
+            
+            echo "=== Downloading ACH routes from GitHub ==="
+            curl -s https://raw.githubusercontent.com/deandreabarkley13-coder/dlbtrust-app/main/server/routes/ach.js \
+              -o "$V2/server/routes/ach.js" && echo "✅ ach.js downloaded" || echo "❌ ach.js failed"
+            
+            curl -s https://raw.githubusercontent.com/deandreabarkley13-coder/dlbtrust-app/main/server/routes/analytics.js \
+              -o "$V2/server/routes/analytics.js" && echo "✅ analytics.js downloaded" || echo "❌ analytics.js failed"
+            
+            curl -s https://raw.githubusercontent.com/deandreabarkley13-coder/dlbtrust-app/main/server/integrations/openach/openachClient.js \
+              -o "$V2/server/integrations/openach/openachClient.js" && echo "✅ openachClient.js downloaded" || echo "❌ openachClient.js failed"
+            
+            curl -s https://raw.githubusercontent.com/deandreabarkley13-coder/dlbtrust-app/main/server/openach-patch.js \
+              -o "$V2/server/openach-patch.js" && echo "✅ openach-patch.js downloaded" || echo "❌ openach-patch.js failed"
+            
+            echo "=== Files in v2/server ==="
+            find "$V2/server" -name "*.js" 2>/dev/null
+          SSHEOF
+
+      - name: Patch server.cjs to add ACH + analytics routes
+        run: |
+          sshpass -p "$SSH_PASS" ssh \
+            -o StrictHostKeyChecking=no -o ConnectTimeout=10 \
+            -o PasswordAuthentication=yes \
+            "$SSH_USER@$SERVER" << 'SSHEOF'
+            V2="/var/www/vhosts/dlbtrust.cloud/dlbtrust-v2"
+            APP="$V2/server.cjs"
+            
+            echo "=== Current listen line ==="
+            grep -n "listen" "$APP" | tail -5
+            
+            echo "=== Check if already patched ==="
+            grep -q "openach-patch\|ach/health\|analytics" "$APP" && {
+              echo "Already patched — skipping sed"
+            } || {
+              # Find the listen line and add routes before it
+              LISTEN_LINE=$(grep -n "\.listen(" "$APP" | tail -1 | cut -d: -f1)
+              echo "Listen at line: $LISTEN_LINE"
+              
+              # Insert ACH and analytics routes before listen
+              sed -i "${LISTEN_LINE}i\\
+          // OpenACH Integration\\
+          try { require('./server/openach-patch')(app, typeof db !== 'undefined' ? db : null); } catch(e) { console.warn('openach-patch:', e.message); }\\
+          // Analytics Routes\\
+          try { app.use('/api/analytics', require('./server/routes/analytics')); } catch(e) { console.warn('analytics:', e.message); }\\
+          " "$APP"
+              echo "✅ Routes injected before line $LISTEN_LINE"
+            }
+            
+            echo "=== Verify patch ==="
+            grep -n "openach-patch\|analytics\|listen" "$APP" | tail -10
+            
+            echo "=== Update .env ==="
+            ENV_FILE="$V2/.env"
+            [ -f "$ENV_FILE" ] || touch "$ENV_FILE"
+            grep -q "OPENACH_API_TOKEN" "$ENV_FILE" || cat >> "$ENV_FILE" << 'ENVEOF'
+          OPENACH_BASE_URL=http://localhost/openach/api
+          OPENACH_HOST_HEADER=ach.dlbtrust.cloud
+          OPENACH_API_TOKEN=3caee1c2-c218-4959-b6d2-21d4b2a1b42e
+          OPENACH_API_KEY=b74966cf-5276-4d8b-8650-5bd57dcee272
+          ENVEOF
+            echo "✅ .env updated"
+            cat "$ENV_FILE" | tail -5
+          SSHEOF
+
+      - name: Insert OpenACH credentials via docker exec
+        run: |
+          sshpass -p "$SSH_PASS" ssh \
+            -o StrictHostKeyChecking=no -o ConnectTimeout=10 \
+            -o PasswordAuthentication=yes \
+            "$SSH_USER@$SERVER" << 'SSHEOF'
+            echo "=== Docker containers ==="
+            docker ps 2>/dev/null | head -10
+            
+            CONTAINER=$(docker ps --format "{{.Names}}" 2>/dev/null | grep -i openach | head -1)
+            echo "OpenACH container: $CONTAINER"
+            
+            if [ -n "$CONTAINER" ]; then
+              DB=$(docker exec "$CONTAINER" find /var/www/html -name "openach.db" 2>/dev/null | head -1)
+              DB=${DB:-"/var/www/html/protected/runtime/db/openach.db"}
+              echo "DB: $DB"
+              
+              docker exec "$CONTAINER" sqlite3 "$DB" \
+                "INSERT OR IGNORE INTO user_api (user_api_user_id, user_api_datetime, user_api_originator_info_id, user_api_token, user_api_key, user_api_status) VALUES ('4fc86059-2e7b-4732-b94f-e7c3715ee8d7', datetime('now'), '0eb26e1d-5fcc-4978-a132-dd93c2655429', '3caee1c2-c218-4959-b6d2-21d4b2a1b42e', 'b74966cf-5276-4d8b-8650-5bd57dcee272', 'enabled');" 2>/dev/null
+              
+              VERIFY=$(docker exec "$CONTAINER" sqlite3 "$DB" \
+                "SELECT user_api_token, user_api_status FROM user_api;" 2>/dev/null)
+              echo "✅ Credentials: $VERIFY"
+            else
+              echo "❌ No openach container found"
+            fi
+          SSHEOF
+
+      - name: Restart the Node.js process (kill + relaunch)
+        run: |
+          sshpass -p "$SSH_PASS" ssh \
+            -o StrictHostKeyChecking=no -o ConnectTimeout=10 \
+            -o PasswordAuthentication=yes \
+            "$SSH_USER@$SERVER" << 'SSHEOF'
+            V2="/var/www/vhosts/dlbtrust.cloud/dlbtrust-v2"
+            
+            echo "=== Current Node processes ==="
+            ps aux | grep "node.*server" | grep -v grep
+            
+            # pm2 restart as this user
+            pm2 restart all 2>/dev/null && echo "✅ pm2 restarted" || echo "pm2 restart failed"
+            pm2 list 2>/dev/null
+            
+            # If pm2 shows nothing, start it
+            pm2 list 2>/dev/null | grep -q "online" || {
+              echo "Starting via pm2..."
+              cd "$V2"
+              pm2 start server.cjs --name dlbtrust-v2
+              pm2 save
+            }
+            
+            sleep 4
+            echo "=== After restart ==="
+            pm2 list 2>/dev/null
+            
+            echo "=== Self test ==="
+            curl -s http://localhost:3001/api/ach/health 2>/dev/null || echo "ACH health: not on 3001"
+            curl -s http://localhost:3000/api/ach/health 2>/dev/null || echo "ACH health: not on 3000"
+            curl -s http://localhost:3001/api/wallets 2>/dev/null | head -c 80 || echo "wallets: not on 3001"
+          SSHEOF
+
+      - name: Final production test
+        run: |
+          sleep 5
+          S=$SERVER; P=0; F=0
+          t() { r=$(eval "$2" 2>&1|head -c 200); echo "$r"|grep -q "$3" && { echo "✅ $1"; P=$((P+1)); } || { echo "❌ $1|${r:0:70}"; F=$((F+1)); }; }
+          t "Wallets"    "curl -sk --resolve 'dlbtrust.cloud:443:$S' https://dlbtrust.cloud/api/wallets"              "wallet_id"
+          t "ACH health" "curl -sk --resolve 'dlbtrust.cloud:443:$S' https://dlbtrust.cloud/api/ach/health"          "openach_connected"
+          t "Analytics"  "curl -sk --resolve 'dlbtrust.cloud:443:$S' https://dlbtrust.cloud/api/analytics/summary"   "total_corpus"
+          t "OA UI"      "curl -sk --resolve 'ach.dlbtrust.cloud:443:$S' https://ach.dlbtrust.cloud/openach/ -o/dev/null -w '%{http_code}'" "200"
+          t "OA API"     "curl -sk --resolve 'ach.dlbtrust.cloud:443:$S' -X POST https://ach.dlbtrust.cloud/openach/api/connect --data 'user_api_token=3caee1c2-c218-4959-b6d2-21d4b2a1b42e&user_api_key=b74966cf-5276-4d8b-8650-5bd57dcee272'" '"success":true'
+          echo ""; echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          echo "SCORE: $P/5"
+          [ $F -eq 0 ] && echo "🎉 100% PRODUCTION READY — dlbtrust.cloud IS LIVE" || echo "⚠️ $F still failing"
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"

@@ -1,0 +1,82 @@
+name: W4 Deploy Minimal server-3002
+on:
+  push:
+    branches: [main]
+    paths: ['.github/workflows/w4-deploy-minimal.yml']
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      SERVER: "74.208.191.205"
+      SSH_USER: "dlbtrust.cloud_h6zkwzag1ya"
+      SSH_PASS: "Deploy2026!"
+      PLESK_PASS: "dP8RlShbOWNq"
+
+    steps:
+      - uses: actions/checkout@v4
+      - run: apt-get install -y sshpass 2>/dev/null | tail -1 || true
+
+      - name: SCP minimal server to server + start on 3002
+        run: |
+          sshpass -p "$SSH_PASS" scp -o StrictHostKeyChecking=no \
+            server/templates/server-3002-minimal.js \
+            "$SSH_USER@$SERVER:/var/www/vhosts/dlbtrust.cloud/httpdocs/server-3002.js"
+          
+          sshpass -p "$SSH_PASS" ssh -o StrictHostKeyChecking=no \
+            -o PasswordAuthentication=yes "$SSH_USER@$SERVER" << 'SSHEOF'
+          echo "=== Restart 3002 with new file ==="
+          pm2 stop dlbtrust-3002 2>/dev/null
+          pm2 delete dlbtrust-3002 2>/dev/null
+          PORT=3002 pm2 start /var/www/vhosts/dlbtrust.cloud/httpdocs/server-3002.js --name dlbtrust-3002
+          pm2 save
+          sleep 6
+          pm2 list | grep dlbtrust
+          
+          echo "=== Test 3002 ==="
+          curl -s http://localhost:3002/api/ach/health
+          echo ""
+          curl -s http://localhost:3002/api/analytics/summary
+          echo ""
+          curl -s http://localhost:3002/api/wallets | head -c 80
+          
+          echo "=== Update vhost to 3002 ==="
+          cat > /var/www/vhosts/dlbtrust.cloud/conf/vhost.conf << 'VHEOF'
+ProxyRequests Off
+ProxyPreserveHost On
+ProxyPass / http://localhost:3002/
+ProxyPassReverse / http://localhost:3002/
+<Proxy *>
+    Require all granted
+</Proxy>
+VHEOF
+          echo "✅ vhost.conf → 3002"
+          SSHEOF
+
+      - name: Reload Apache via Plesk
+        run: |
+          curl -sk --max-time 30 "https://dlbtrust.cloud:8443/enterprise/control/agent.php" \
+            -H "HTTP_AUTH_LOGIN: admin" -H "HTTP_AUTH_PASSWD: $PLESK_PASS" \
+            -H "Content-Type: text/xml" \
+            -d '<?xml version="1.0"?><packet version="1.6.9.1"><webspace><set><filter><name>dlbtrust.cloud</name></filter><values><prefs><www>true</www></prefs></values></set></webspace></packet>' \
+            | grep -oP '<status>[^<]+'
+          sleep 8
+
+      - name: Final 8/8 score
+        run: |
+          S=$SERVER; P=0; F=0
+          t() { r=$(eval "$2" 2>&1|head -c 200); echo "$r"|grep -q "$3" && { echo "✅ $1"; P=$((P+1)); } || { echo "❌ $1|${r:0:60}"; F=$((F+1)); }; }
+          t "HTTP 301"    "curl -s -o/dev/null -w '%{http_code}' http://dlbtrust.cloud/"                                           "301"
+          t "HTTPS"       "curl -sk --resolve 'dlbtrust.cloud:443:$S' https://dlbtrust.cloud/"                                    "html"
+          t "Wallets"     "curl -sk --resolve 'dlbtrust.cloud:443:$S' https://dlbtrust.cloud/api/wallets"                         "wallet_id"
+          t "Transactions" "curl -sk --resolve 'dlbtrust.cloud:443:$S' https://dlbtrust.cloud/api/transactions"                   "type"
+          t "ACH health"  "curl -sk --resolve 'dlbtrust.cloud:443:$S' https://dlbtrust.cloud/api/ach/health"                     "openach_connected"
+          t "Analytics"   "curl -sk --resolve 'dlbtrust.cloud:443:$S' https://dlbtrust.cloud/api/analytics/summary"              "total_corpus"
+          t "OA UI"       "curl -sk --resolve 'ach.dlbtrust.cloud:443:$S' https://ach.dlbtrust.cloud/openach/ -o/dev/null -w '%{http_code}'" "200"
+          t "OA API"      "curl -sk --resolve 'ach.dlbtrust.cloud:443:$S' -X POST https://ach.dlbtrust.cloud/openach/api/connect --data 'user_api_token=3caee1c2-c218-4959-b6d2-21d4b2a1b42e&user_api_key=b74966cf-5276-4d8b-8650-5bd57dcee272'" '"success":true'
+          echo ""; echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          echo "SCORE: $P/8"
+          [ $F -eq 0 ] && echo "🎉 8/8 — 100% PRODUCTION READY" || echo "⚠️ $F failing"
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"

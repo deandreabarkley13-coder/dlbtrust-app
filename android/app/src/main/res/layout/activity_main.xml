@@ -1,0 +1,226 @@
+<?xml version="1.0" encoding="utf-8"?>
+<ScrollView xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="#1a1a2e">
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="vertical"
+        android:padding="24dp">
+
+        <!-- Header -->
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="DLB Trust Pay"
+            android:textSize="28sp"
+            android:textColor="#FFFFFF"
+            android:textStyle="bold"
+            android:gravity="center"
+            android:layout_marginBottom="4dp" />
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="NFC Tap-to-Pay &amp; QR Scanner"
+            android:textSize="14sp"
+            android:textColor="#888888"
+            android:gravity="center"
+            android:layout_marginBottom="24dp" />
+
+        <!-- NFC Status -->
+        <TextView
+            android:id="@+id/nfcStatus"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="NFC: Checking..."
+            android:textSize="16sp"
+            android:textColor="#AAAAAA"
+            android:gravity="center"
+            android:layout_marginBottom="16dp" />
+
+        <!-- Server Connection -->
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="Server Connection"
+            android:textSize="18sp"
+            android:textColor="#FFFFFF"
+            android:textStyle="bold"
+            android:layout_marginBottom="8dp" />
+
+        <EditText
+            android:id="@+id/serverInput"
+            android:layout_width="match_parent"
+            android:layout_height="48dp"
+            android:hint="Server URL (e.g. https://dlbtrust-app.fly.dev)"
+            android:textColor="#FFFFFF"
+            android:textColorHint="#666666"
+            android:background="#16213e"
+            android:padding="12dp"
+            android:textSize="14sp"
+            android:inputType="textUri"
+            android:layout_marginBottom="8dp" />
+
+        <EditText
+            android:id="@+id/tokenInput"
+            android:layout_width="match_parent"
+            android:layout_height="48dp"
+            android:hint="Admin Token"
+            android:textColor="#FFFFFF"
+            android:textColorHint="#666666"
+            android:background="#16213e"
+            android:padding="12dp"
+            android:textSize="14sp"
+            android:inputType="textPassword"
+            android:layout_marginBottom="8dp" />
+
+        <Button
+            android:id="@+id/connectBtn"
+            android:layout_width="match_parent"
+            android:layout_height="48dp"
+            android:text="Connect"
+            android:textColor="#FFFFFF"
+            android:backgroundTint="#0f3460"
+            android:layout_marginBottom="8dp" />
+
+        <TextView
+            android:id="@+id/statusText"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="Not connected"
+            android:textSize="14sp"
+            android:textColor="#888888"
+            android:layout_marginBottom="16dp" />
+
+        <!-- Device Registration -->
+        <Button
+            android:id="@+id/registerBtn"
+            android:layout_width="match_parent"
+            android:layout_height="48dp"
+            android:text="Register This Device"
+            android:textColor="#FFFFFF"
+            android:backgroundTint="#533483"
+            android:enabled="false"
+            android:layout_marginBottom="8dp" />
+
+        <TextView
+            android:id="@+id/deviceInfo"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="Device: Not Registered"
+            android:textSize="14sp"
+            android:textColor="#888888"
+            android:layout_marginBottom="24dp" />
+
+        <!-- Payment Authorization -->
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="Authorize Payment"
+            android:textSize="18sp"
+            android:textColor="#FFFFFF"
+            android:textStyle="bold"
+            android:layout_marginBottom="8dp" />
+
+        <EditText
+            android:id="@+id/amountInput"
+            android:layout_width="match_parent"
+            android:layout_height="48dp"
+            android:hint="Amount ($1 - $500,000)"
+            android:textColor="#FFFFFF"
+            android:textColorHint="#666666"
+            android:background="#16213e"
+            android:padding="12dp"
+            android:textSize="14sp"
+            android:inputType="numberDecimal"
+            android:layout_marginBottom="8dp" />
+
+        <EditText
+            android:id="@+id/merchantInput"
+            android:layout_width="match_parent"
+            android:layout_height="48dp"
+            android:hint="Merchant Name (optional)"
+            android:textColor="#FFFFFF"
+            android:textColorHint="#666666"
+            android:background="#16213e"
+            android:padding="12dp"
+            android:textSize="14sp"
+            android:inputType="text"
+            android:layout_marginBottom="8dp" />
+
+        <Button
+            android:id="@+id/authorizeBtn"
+            android:layout_width="match_parent"
+            android:layout_height="56dp"
+            android:text="Authorize &amp; Ready to Pay"
+            android:textColor="#FFFFFF"
+            android:backgroundTint="#00AA00"
+            android:textSize="18sp"
+            android:textStyle="bold"
+            android:enabled="false"
+            android:layout_marginBottom="16dp" />
+
+        <TextView
+            android:id="@+id/paymentStatus"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="No active payment"
+            android:textSize="14sp"
+            android:textColor="#888888"
+            android:padding="16dp"
+            android:background="#16213e"
+            android:layout_marginBottom="24dp" />
+
+        <!-- QR Code Display -->
+        <ImageView
+            android:id="@+id/qrCodeImage"
+            android:layout_width="220dp"
+            android:layout_height="220dp"
+            android:layout_gravity="center"
+            android:visibility="gone"
+            android:background="#FFFFFF"
+            android:padding="8dp"
+            android:layout_marginBottom="8dp"
+            android:contentDescription="QR Payment Code" />
+
+        <!-- QR Scanner -->
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="QR Scanner"
+            android:textSize="18sp"
+            android:textColor="#FFFFFF"
+            android:textStyle="bold"
+            android:layout_marginBottom="8dp" />
+
+        <Button
+            android:id="@+id/qrScanBtn"
+            android:layout_width="match_parent"
+            android:layout_height="48dp"
+            android:text="Scan QR Code at Terminal"
+            android:textColor="#FFFFFF"
+            android:backgroundTint="#e94560"
+            android:layout_marginBottom="8dp" />
+
+        <TextView
+            android:id="@+id/qrScanResult"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:textSize="14sp"
+            android:textColor="#888888"
+            android:layout_marginBottom="24dp" />
+
+        <!-- Info -->
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="How it works:\n1. Connect to your DLB Trust server\n2. Register this device\n3. Enter amount and authorize\n4. TAP phone on POS terminal OR show QR code\n5. Payment settles to your trust account"
+            android:textSize="12sp"
+            android:textColor="#666666"
+            android:lineSpacingMultiplier="1.4" />
+
+    </LinearLayout>
+</ScrollView>

@@ -1,0 +1,34 @@
+name: EMERGENCY Enable Domain
+on:
+  push:
+    branches: [main]
+
+jobs:
+  enable:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Re-enable dlbtrust.cloud domain NOW
+        run: |
+          echo "=== XML API www=true ==="
+          curl -sk --max-time 30 \
+            "https://dlbtrust.cloud:8443/enterprise/control/agent.php" \
+            -H "HTTP_AUTH_LOGIN: admin" \
+            -H "HTTP_AUTH_PASSWD: dP8RlShbOWNq" \
+            -H "Content-Type: text/xml" \
+            -d '<?xml version="1.0"?><packet version="1.6.9.1"><webspace><set><filter><name>dlbtrust.cloud</name></filter><values><prefs><www>true</www></prefs></values></set></webspace></packet>'
+          echo ""
+
+          echo "=== REST API status active ==="
+          curl -sk --max-time 30 -X PUT \
+            "https://dlbtrust.cloud:8443/api/v2/domains/1/status" \
+            -u "admin:dP8RlShbOWNq" \
+            -H "Content-Type: application/json" \
+            -d '{"status": "active"}' | head -c 200
+          echo ""
+
+          sleep 15
+          echo "=== Verify site is up ==="
+          curl -sk --max-time 15 https://dlbtrust.cloud/ | head -c 100
+          echo ""
+          curl -sk --max-time 15 https://dlbtrust.cloud/api/wallets | grep -q wallet_id && echo "WALLETS: OK" || echo "WALLETS: STILL DOWN"
+          curl -sk --max-time 15 https://dlbtrust.cloud/api/ach/health | grep -q openach_connected && echo "ACH: PASS" || echo "ACH: FAIL (expected)"

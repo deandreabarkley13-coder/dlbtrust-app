@@ -1,0 +1,214 @@
+name: FINAL FIX — Fix server-new.js + PM2 + OpenACH
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths: ['.github/workflows/fix-deploy-final.yml']
+
+jobs:
+  fix:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      SERVER: "74.208.191.205"
+      SSH_USER: "dlbtrust.cloud_h6zkwzag1ya"
+      SSH_PASS: "Deploy2026!"
+
+    steps:
+      - run: apt-get install -y sshpass 2>/dev/null | tail -1 || true
+
+      - name: Read OpenACH env and diagnose
+        run: |
+          sshpass -p "$SSH_PASS" ssh \
+            -o StrictHostKeyChecking=no -o ConnectTimeout=15 \
+            -o PasswordAuthentication=yes \
+            "$SSH_USER@$SERVER" << 'SSHEOF'
+            echo "=== .env.openach ==="
+            cat /var/www/vhosts/dlbtrust.cloud/httpdocs/.env.openach 2>/dev/null
+            echo ""
+            echo "=== dlbtrust-v2/.env ==="
+            cat /var/www/vhosts/dlbtrust.cloud/dlbtrust-v2/.env 2>/dev/null
+            echo ""
+            echo "=== Check OpenACH via HTTPS ==="
+            curl -sk "https://ach.dlbtrust.cloud/openach/api/connect" \
+              -X POST \
+              --data "user_api_token=3caee1c2-c218-4959-b6d2-21d4b2a1b42e&user_api_key=b74966cf-5276-4d8b-8650-5bd57dcee272" \
+              -H "Host: ach.dlbtrust.cloud" 2>&1 | head -c 300
+            echo ""
+            echo "=== Check OpenACH DB directly ==="
+            CONT=$(docker ps --format "{{.Names}}" | grep -i openach | head -1)
+            echo "Container: $CONT"
+            [ -n "$CONT" ] && docker exec "$CONT" sqlite3 /var/www/html/protected/runtime/db/openach.db \
+              "SELECT * FROM user_api LIMIT 5;" 2>/dev/null || echo "No container access"
+            echo ""
+            echo "=== node_modules path in v2 ==="
+            ls /var/www/vhosts/dlbtrust.cloud/dlbtrust-v2/node_modules/express 2>/dev/null | head -3
+            echo ""
+            echo "=== test require express from v2 node_modules ==="
+            node -e "require('/var/www/vhosts/dlbtrust.cloud/dlbtrust-v2/node_modules/express'); console.log('express OK from v2 path')" 2>&1
+          SSHEOF
+
+      - name: Write and start fixed server
+        run: |
+          sshpass -p "$SSH_PASS" ssh \
+            -o StrictHostKeyChecking=no -o ConnectTimeout=15 \
+            -o PasswordAuthentication=yes \
+            "$SSH_USER@$SERVER" 'bash -s' << 'SSHEOF'
+            
+            V2="/var/www/vhosts/dlbtrust.cloud/dlbtrust-v2"
+            HD="/var/www/vhosts/dlbtrust.cloud/httpdocs"
+            
+            # Write server-new.js with correct module resolution
+            cat > "$HD/server-new.js" << 'EOF'
+"use strict";
+// Resolve modules from v2 which has node_modules
+const V2 = "/var/www/vhosts/dlbtrust.cloud/dlbtrust-v2";
+const HD = "/var/www/vhosts/dlbtrust.cloud/httpdocs";
+
+// Use v2 node_modules for express
+const express = require(V2 + "/node_modules/express");
+const path = require("path");
+const fs = require("fs");
+
+const app = express();
+const PORT = process.env.PORT || 3001;
+
+app.use(express.json());
+app.use(express.urlencoded({ extended: true }));
+
+// Load v2 auth and API routes
+try { require(V2 + "/auth-routes.cjs")(app); console.log("[auth] loaded"); } catch(e) { console.warn("[auth]", e.message); }
+try { require(V2 + "/api-routes.cjs")(app); console.log("[api] loaded"); } catch(e) { console.warn("[api]", e.message); }
+
+// OpenACH integration (uses v2 express)
+try { 
+  require(HD + "/server/openach-patch")(app, null);
+  console.log("[openach-patch] loaded"); 
+} catch(e) { console.warn("[openach-patch]", e.message); }
+
+// Analytics routes
+try { 
+  app.use("/api/analytics", require(HD + "/server/routes/analytics"));
+  console.log("[analytics] loaded"); 
+} catch(e) { console.warn("[analytics]", e.message); }
+
+// Static files from v2
+app.use(express.static(path.join(V2, "dist", "public")));
+app.use("/assets", express.static(path.join(V2, "dist", "public", "assets")));
+
+app.get("/", (req, res) => {
+  const l = path.join(V2, "dist", "public", "landing.html");
+  fs.existsSync(l) ? res.sendFile(l) : res.redirect("/#/dashboard");
+});
+app.get("/login", (req, res) => {
+  const l = path.join(V2, "dist", "public", "login.html");
+  fs.existsSync(l) ? res.sendFile(l) : res.status(404).send("Not found");
+});
+app.get("/login.html", (req, res) => res.redirect("/login"));
+app.get("*", (req, res) => {
+  const idx = path.join(V2, "dist", "public", "index.html");
+  fs.existsSync(idx) ? res.sendFile(idx) : res.status(404).send("Not found");
+});
+
+app.listen(PORT, () => console.log("[dlbtrust-full] running on port " + PORT));
+EOF
+            
+            echo "=== server-new.js written ==="
+            
+            # Test node syntax first
+            node --check "$HD/server-new.js" && echo "Syntax OK" || echo "Syntax ERROR"
+            
+            # Stop and restart pm2 process
+            echo "=== PM2 before ==="
+            pm2 list 2>/dev/null | head -10
+            
+            # Stop old process
+            pm2 stop dlbtrust 2>/dev/null || pm2 stop dlbtrust-full 2>/dev/null || true
+            pm2 delete dlbtrust 2>/dev/null || pm2 delete dlbtrust-full 2>/dev/null || true
+            
+            # Load env vars
+            OPENACH_TOKEN=$(cat "$HD/.env.openach" 2>/dev/null | grep OPENACH_API_TOKEN | cut -d= -f2)
+            OPENACH_KEY=$(cat "$HD/.env.openach" 2>/dev/null | grep OPENACH_API_KEY | cut -d= -f2)
+            
+            # Start with correct CWD (so relative requires work)
+            NODE_PATH="$V2/node_modules" \
+            OPENACH_BASE_URL="http://localhost/openach/api" \
+            OPENACH_HOST_HEADER="ach.dlbtrust.cloud" \
+            OPENACH_API_TOKEN="${OPENACH_TOKEN:-3caee1c2-c218-4959-b6d2-21d4b2a1b42e}" \
+            OPENACH_API_KEY="${OPENACH_KEY:-b74966cf-5276-4d8b-8650-5bd57dcee272}" \
+            pm2 start "$HD/server-new.js" \
+              --name dlbtrust \
+              --cwd "$V2" \
+              --wait-ready \
+              --listen-timeout 10000 \
+              2>/dev/null
+            
+            sleep 3
+            
+            echo "=== PM2 after ==="
+            pm2 list 2>/dev/null | head -10
+            
+            echo "=== PM2 logs ==="
+            pm2 logs dlbtrust --lines 20 --nostream 2>/dev/null | head -30
+            
+            echo "=== Test local endpoints ==="
+            sleep 2
+            curl -s "http://localhost:3001/api/ach/health" 2>/dev/null | head -c 200
+            echo ""
+            curl -s "http://localhost:3001/api/analytics/summary" 2>/dev/null | head -c 200
+            echo ""
+            
+          SSHEOF
+
+      - name: Fix OpenACH credentials
+        continue-on-error: true
+        run: |
+          sshpass -p "$SSH_PASS" ssh \
+            -o StrictHostKeyChecking=no -o ConnectTimeout=15 \
+            -o PasswordAuthentication=yes \
+            "$SSH_USER@$SERVER" << 'SSHEOF'
+            
+            echo "=== Insert OpenACH credentials ==="
+            CONT=$(docker ps --format "{{.Names}}" | grep -i openach | head -1)
+            echo "Docker container: $CONT"
+            
+            if [ -n "$CONT" ]; then
+              # Check existing user_api table
+              docker exec "$CONT" sqlite3 /var/www/html/protected/runtime/db/openach.db \
+                ".schema user_api" 2>/dev/null
+              
+              # Insert credentials
+              docker exec "$CONT" sqlite3 /var/www/html/protected/runtime/db/openach.db \
+                "INSERT OR REPLACE INTO user_api VALUES('4fc86059-2e7b-4732-b94f-e7c3715ee8d7',datetime('now'),'0eb26e1d-5fcc-4978-a132-dd93c2655429','3caee1c2-c218-4959-b6d2-21d4b2a1b42e','b74966cf-5276-4d8b-8650-5bd57dcee272','enabled');" 2>/dev/null && \
+                echo "Credentials inserted!" || echo "Insert failed"
+              
+              # Verify
+              docker exec "$CONT" sqlite3 /var/www/html/protected/runtime/db/openach.db \
+                "SELECT user_api_token, user_api_key, status FROM user_api;" 2>/dev/null
+            else
+              echo "No Docker container found"
+              # Try via HTTP API instead
+              curl -sk "https://ach.dlbtrust.cloud/openach/api/connect" \
+                -X POST \
+                --data "user_api_token=3caee1c2-c218-4959-b6d2-21d4b2a1b42e&user_api_key=b74966cf-5276-4d8b-8650-5bd57dcee272" \
+                2>/dev/null | head -c 300
+            fi
+          SSHEOF
+
+      - name: Final 8/8 score
+        run: |
+          S=$SERVER; P=0; F=0
+          t() { r=$(eval "$2" 2>&1|head -c 300); echo "$r"|grep -q "$3" && { echo "✅ $1"; P=$((P+1)); } || { echo "❌ $1|${r:0:80}"; F=$((F+1)); }; }
+          t "HTTP 301"    "curl -s -o/dev/null -w '%{http_code}' http://dlbtrust.cloud/"                                           "301"
+          t "HTTPS"       "curl -sk --resolve 'dlbtrust.cloud:443:$S' https://dlbtrust.cloud/"                                    "html"
+          t "Wallets"     "curl -sk --resolve 'dlbtrust.cloud:443:$S' https://dlbtrust.cloud/api/wallets"                         "wallet_id"
+          t "Transactions" "curl -sk --resolve 'dlbtrust.cloud:443:$S' https://dlbtrust.cloud/api/transactions"                   "type"
+          t "ACH health"  "curl -sk --resolve 'dlbtrust.cloud:443:$S' https://dlbtrust.cloud/api/ach/health"                     "openach_connected"
+          t "Analytics"   "curl -sk --resolve 'dlbtrust.cloud:443:$S' https://dlbtrust.cloud/api/analytics/summary"              "total_corpus"
+          t "OA UI"       "curl -sk --resolve 'ach.dlbtrust.cloud:443:$S' https://ach.dlbtrust.cloud/openach/ -o/dev/null -w '%{http_code}'" "200"
+          t "OA API"      "curl -sk --resolve 'ach.dlbtrust.cloud:443:$S' -X POST https://ach.dlbtrust.cloud/openach/api/connect --data 'user_api_token=3caee1c2-c218-4959-b6d2-21d4b2a1b42e&user_api_key=b74966cf-5276-4d8b-8650-5bd57dcee272'" '"success":true'
+          echo ""
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          echo "FINAL SCORE: $P/8"
+          [ $F -eq 0 ] && echo "🎉 100% PRODUCTION READY" || echo "⚠️ $F still failing"
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"

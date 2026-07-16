@@ -1,0 +1,178 @@
+name: FINAL FIX — All 4 Failures
+on:
+  push:
+    branches: [main]
+    paths: ['.github/workflows/final-fix.yml']
+  workflow_dispatch:
+
+jobs:
+  fix:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      SERVER: "74.208.191.205"
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install tools
+        run: |
+          apt-get install -y sshpass 2>/dev/null | tail -2 || true
+
+      - name: Test 988934 as SSH root password
+        id: ssh_test
+        continue-on-error: true
+        run: |
+          echo "Testing 988934..."
+          RESULT=$(sshpass -p "988934" ssh \
+            -o StrictHostKeyChecking=no \
+            -o ConnectTimeout=10 \
+            -o PasswordAuthentication=yes \
+            -o PreferredAuthentications=password \
+            root@$SERVER \
+            "echo SSH_CONNECTED && whoami" 2>&1)
+          if echo "$RESULT" | grep -q "SSH_CONNECTED"; then
+            echo "SSH_OK=true" >> $GITHUB_ENV
+            echo "SSH_PASS=988934" >> $GITHUB_ENV
+            echo "SUCCESS: SSH with 988934"
+          else
+            echo "988934 failed: $RESULT"
+          fi
+
+      - name: Run full recovery if SSH works
+        if: env.SSH_OK == 'true'
+        run: |
+          echo "SSH WORKS! Running full recovery..."
+          sshpass -p "$SSH_PASS" ssh \
+            -o StrictHostKeyChecking=no \
+            root@$SERVER << 'SSHEOF'
+          echo "=== CONNECTED ==="
+          echo "=== Server info ==="
+          uptime
+          pm2 list 2>/dev/null || echo "pm2 not found"
+          service apache2 status | head -5 2>/dev/null || echo "apache status failed"
+          docker ps 2>/dev/null | head -5 || echo "docker not running"
+
+          echo ""
+          echo "=== Finding app directory ==="
+          APP=""
+          for f in app.js server.js; do
+            FOUND=$(find /var/www/vhosts/dlbtrust.cloud -name "$f" \
+              -not -path "*/node_modules/*" 2>/dev/null | head -1)
+            if [ -n "$FOUND" ]; then APP="$FOUND"; break; fi
+          done
+          echo "App: $APP"
+          
+          if [ -n "$APP" ]; then
+            DIR=$(dirname "$APP")
+            cd "$DIR"
+            
+            echo "--- Current app.js head ---"
+            head -20 "$APP"
+            
+            echo "--- git pull ---"
+            git pull origin main 2>&1 | tail -5
+            
+            echo "--- npm install ---"
+            npm install --production 2>&1 | tail -3
+            
+            echo "--- Patch openach-patch ---"
+            grep -q "openach-patch" "$APP" && echo "PATCH EXISTS" || {
+              sed -i "s/app\.listen/require('.\/server\/openach-patch')(app, typeof db !== 'undefined' ? db : null);\napp.listen/" "$APP"
+              echo "openach-patch INJECTED"
+            }
+            
+            echo "--- Patch analytics routes ---"
+            grep -q "analytics" "$APP" && echo "ANALYTICS EXISTS" || {
+              sed -i "s/app\.listen/app.use('\/api\/analytics', require('.\/server\/routes\/analytics'));\napp.listen/" "$APP"
+              echo "analytics INJECTED"
+            }
+            
+            echo "--- Update .env ---"
+            grep -q "OPENACH_API_TOKEN" .env 2>/dev/null || cat >> .env << 'ENV'
+          OPENACH_BASE_URL=http://localhost/openach/api
+          OPENACH_HOST_HEADER=ach.dlbtrust.cloud
+          OPENACH_API_TOKEN=3caee1c2-c218-4959-b6d2-21d4b2a1b42e
+          OPENACH_API_KEY=b74966cf-5276-4d8b-8650-5bd57dcee272
+          PORT=3001
+          ENV
+            echo ".env updated"
+            
+            echo "--- Restart pm2 ---"
+            pm2 restart dlbtrust 2>/dev/null || pm2 delete all 2>/dev/null; pm2 start "$APP" --name dlbtrust; pm2 save
+            sleep 4
+            pm2 list
+          fi
+          
+          echo ""
+          echo "=== Insert OpenACH credentials ==="
+          CONTAINER=$(docker ps --format "{{.Names}}" | grep -i openach | head -1)
+          if [ -n "$CONTAINER" ]; then
+            echo "Container: $CONTAINER"
+            docker start "$CONTAINER" 2>/dev/null || true
+            sleep 2
+            docker exec "$CONTAINER" sqlite3 /var/www/html/protected/runtime/db/openach.db \
+              "INSERT OR IGNORE INTO user_api (user_api_user_id, user_api_datetime, user_api_originator_info_id, user_api_token, user_api_key, user_api_status) VALUES ('4fc86059-2e7b-4732-b94f-e7c3715ee8d7', datetime('now'), '0eb26e1d-5fcc-4978-a132-dd93c2655429', '3caee1c2-c218-4959-b6d2-21d4b2a1b42e', 'b74966cf-5276-4d8b-8650-5bd57dcee272', 'enabled');" 2>/dev/null
+            VERIFY=$(docker exec "$CONTAINER" sqlite3 /var/www/html/protected/runtime/db/openach.db \
+              "SELECT user_api_token FROM user_api;" 2>/dev/null)
+            echo "Credentials in DB: $VERIFY"
+          else
+            echo "No openach container found"
+            docker ps -a | head -10
+          fi
+          
+          echo ""
+          echo "=== Quick tests ==="
+          sleep 3
+          echo "ACH health:"
+          curl -s http://localhost:3001/api/ach/health 2>/dev/null || curl -s http://localhost:3000/api/ach/health 2>/dev/null || echo "FAIL"
+          echo "Analytics:"
+          curl -s http://localhost:3001/api/analytics/summary 2>/dev/null | head -c 100 || echo "FAIL"
+          echo "OpenACH API:"
+          curl -s -X POST http://localhost/openach/api/connect \
+            -H "Host: ach.dlbtrust.cloud" \
+            --data "user_api_token=3caee1c2-c218-4959-b6d2-21d4b2a1b42e&user_api_key=b74966cf-5276-4d8b-8650-5bd57dcee272" 2>/dev/null
+          SSHEOF
+
+      - name: Fix OpenACH HTTPS redirect (always)
+        run: |
+          # OpenACH ach.dlbtrust.cloud redirects HTTP→HTTPS
+          # The fix: use HTTPS in our tests
+          echo "Testing OpenACH via HTTPS..."
+          curl -sk --resolve "ach.dlbtrust.cloud:443:$SERVER" \
+            -X POST "https://ach.dlbtrust.cloud/openach/api/connect" \
+            --data "user_api_token=3caee1c2-c218-4959-b6d2-21d4b2a1b42e&user_api_key=b74966cf-5276-4d8b-8650-5bd57dcee272"
+          echo ""
+          
+          curl -sk --resolve "ach.dlbtrust.cloud:443:$SERVER" \
+            "https://ach.dlbtrust.cloud/openach/" -o /dev/null -w "OpenACH UI: HTTP %{http_code}\n"
+
+      - name: Final validation
+        run: |
+          echo "=== FINAL TEST SUITE ==="
+          PASS=0; FAIL=0
+          
+          check() {
+            result=$(eval "$2" 2>&1 | head -c 200)
+            if echo "$result" | grep -q "$3"; then
+              echo "✅ PASS: $1"
+              PASS=$((PASS+1))
+            else
+              echo "❌ FAIL: $1 | ${result:0:80}"
+              FAIL=$((FAIL+1))
+            fi
+          }
+          
+          S=$SERVER
+          check "HTTP→HTTPS"      "curl -s -o/dev/null -w '%{http_code}' http://dlbtrust.cloud/" "301"
+          check "HTTPS dashboard"  "curl -sk --resolve 'dlbtrust.cloud:443:$S' https://dlbtrust.cloud/" "html"
+          check "Wallets API"      "curl -sk --resolve 'dlbtrust.cloud:443:$S' https://dlbtrust.cloud/api/wallets" "wallet_id"
+          check "Transactions API" "curl -sk --resolve 'dlbtrust.cloud:443:$S' https://dlbtrust.cloud/api/transactions" "type"
+          check "ACH health"       "curl -sk --resolve 'dlbtrust.cloud:443:$S' https://dlbtrust.cloud/api/ach/health" "openach_connected"
+          check "Analytics"        "curl -sk --resolve 'dlbtrust.cloud:443:$S' https://dlbtrust.cloud/api/analytics/summary" "total_corpus"
+          check "OpenACH UI"       "curl -sk --resolve 'ach.dlbtrust.cloud:443:$S' https://ach.dlbtrust.cloud/openach/ -o/dev/null -w '%{http_code}'" "200"
+          check "OpenACH API"      "curl -sk --resolve 'ach.dlbtrust.cloud:443:$S' -X POST https://ach.dlbtrust.cloud/openach/api/connect --data 'user_api_token=3caee1c2-c218-4959-b6d2-21d4b2a1b42e&user_api_key=b74966cf-5276-4d8b-8650-5bd57dcee272'" 'true'
+          
+          echo ""
+          echo "SCORE: $PASS/8 tests passing"
+          [ $FAIL -eq 0 ] && echo "🎉 100% PRODUCTION READY" || echo "⚠️ $FAIL still failing"

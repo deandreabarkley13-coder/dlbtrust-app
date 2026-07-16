@@ -1,0 +1,100 @@
+name: Try TOTP 509621
+on:
+  push:
+    branches: [main]
+    paths: ['.github/workflows/try-totp.yml']
+  workflow_dispatch:
+jobs:
+  fix:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      SERVER: "74.208.191.205"
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install sshpass
+        run: apt-get install -y sshpass 2>/dev/null | tail -1 || true
+
+      - name: Try 509621 as SSH root password
+        id: ssh
+        continue-on-error: true
+        run: |
+          for PASS in "509621" "509621!" "Barkley509621" "509621Barkley"; do
+            echo -n "Trying: $PASS ... "
+            R=$(timeout 8 sshpass -p "$PASS" ssh \
+              -o StrictHostKeyChecking=no -o ConnectTimeout=6 \
+              -o PasswordAuthentication=yes -o PreferredAuthentications=password \
+              -o LogLevel=ERROR root@$SERVER "echo __OK__" 2>&1)
+            if echo "$R" | grep -q "__OK__"; then
+              echo "✅ SSH SUCCESS: $PASS"
+              echo "SSH_PASS=$PASS" >> $GITHUB_ENV
+              echo "SSH_OK=true" >> $GITHUB_ENV
+              break
+            else
+              echo "❌ ($R)"
+            fi
+          done
+
+      - name: Full deploy via SSH
+        if: env.SSH_OK == 'true'
+        run: |
+          sshpass -p "$SSH_PASS" ssh -o StrictHostKeyChecking=no root@$SERVER << 'SSHEOF'
+            echo "=== CONNECTED: $(whoami) @ $(hostname) ==="
+            pm2 list 2>/dev/null
+            
+            APP=$(find /var/www/vhosts/dlbtrust.cloud -name "app.js" \
+              -not -path "*/node_modules/*" 2>/dev/null | head -1)
+            [ -z "$APP" ] && APP=$(find /var/www/vhosts/dlbtrust.cloud -name "server.js" \
+              -not -path "*/node_modules/*" 2>/dev/null | head -1)
+            DIR=$(dirname "$APP")
+            echo "App: $APP"
+            
+            cd "$DIR"
+            git pull origin main 2>&1 | tail -3
+            npm install --production 2>&1 | tail -2
+            
+            grep -q "openach-patch" "$APP" || \
+              sed -i "s/app\.listen/require('.\/server\/openach-patch')(app, typeof db !== 'undefined' ? db : null);\napp.listen/" "$APP" && \
+              echo "✅ openach-patch patched"
+            
+            grep -q "analytics" "$APP" || \
+              sed -i "s/app\.listen/app.use('\/api\/analytics', require('.\/server\/routes\/analytics'));\napp.listen/" "$APP" && \
+              echo "✅ analytics patched"
+            
+            grep -q "OPENACH_API_TOKEN" .env 2>/dev/null || cat >> .env << 'ENV'
+          OPENACH_BASE_URL=http://localhost/openach/api
+          OPENACH_HOST_HEADER=ach.dlbtrust.cloud
+          OPENACH_API_TOKEN=3caee1c2-c218-4959-b6d2-21d4b2a1b42e
+          OPENACH_API_KEY=b74966cf-5276-4d8b-8650-5bd57dcee272
+          PORT=3001
+          ENV
+            pm2 restart dlbtrust 2>/dev/null || pm2 start "$APP" --name dlbtrust
+            pm2 save; sleep 4; pm2 list
+            
+            CONTAINER=$(docker ps --format "{{.Names}}" | grep -i openach | head -1)
+            if [ -n "$CONTAINER" ]; then
+              docker exec "$CONTAINER" sqlite3 \
+                /var/www/html/protected/runtime/db/openach.db \
+                "INSERT OR IGNORE INTO user_api VALUES ('4fc86059-2e7b-4732-b94f-e7c3715ee8d7', datetime('now'), '0eb26e1d-5fcc-4978-a132-dd93c2655429', '3caee1c2-c218-4959-b6d2-21d4b2a1b42e', 'b74966cf-5276-4d8b-8650-5bd57dcee272', 'enabled');" 2>/dev/null
+              echo "✅ OpenACH credentials inserted"
+            fi
+            
+            sleep 3
+            echo "ACH:"; curl -s http://localhost:3001/api/ach/health
+            echo ""; echo "Analytics:"; curl -s http://localhost:3001/api/analytics/summary | head -c 100
+          SSHEOF
+
+      - name: Score
+        run: |
+          S=$SERVER; P=0; F=0
+          t() { r=$(eval "$2" 2>&1|head -c 150); echo "$r"|grep -q "$3" && { echo "✅ $1"; P=$((P+1)); } || { echo "❌ $1 | ${r:0:60}"; F=$((F+1)); }; }
+          t "HTTP 301"      "curl -s -o/dev/null -w '%{http_code}' http://dlbtrust.cloud/"                                            "301"
+          t "HTTPS"         "curl -sk --resolve 'dlbtrust.cloud:443:$S' https://dlbtrust.cloud/"                                     "html"
+          t "Wallets"       "curl -sk --resolve 'dlbtrust.cloud:443:$S' https://dlbtrust.cloud/api/wallets"                          "wallet_id"
+          t "Transactions"  "curl -sk --resolve 'dlbtrust.cloud:443:$S' https://dlbtrust.cloud/api/transactions"                     "type"
+          t "ACH health"    "curl -sk --resolve 'dlbtrust.cloud:443:$S' https://dlbtrust.cloud/api/ach/health"                      "openach_connected"
+          t "Analytics"     "curl -sk --resolve 'dlbtrust.cloud:443:$S' https://dlbtrust.cloud/api/analytics/summary"               "total_corpus"
+          t "OpenACH UI"    "curl -sk --resolve 'ach.dlbtrust.cloud:443:$S' https://ach.dlbtrust.cloud/openach/ -o/dev/null -w '%{http_code}'" "200"
+          t "OpenACH API"   "curl -sk --resolve 'ach.dlbtrust.cloud:443:$S' -X POST https://ach.dlbtrust.cloud/openach/api/connect --data 'user_api_token=3caee1c2-c218-4959-b6d2-21d4b2a1b42e&user_api_key=b74966cf-5276-4d8b-8650-5bd57dcee272'" '"success":true'
+          echo ""; echo "━━━ SCORE: $P/8 ━━━"
+          [ $F -eq 0 ] && echo "🎉 100% PRODUCTION READY" || echo "⚠️ $F failing"

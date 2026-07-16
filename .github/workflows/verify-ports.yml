@@ -1,0 +1,49 @@
+name: Verify Port 3001 and Test Endpoints
+on:
+  workflow_dispatch:
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      SERVER: "74.208.191.205"
+      SSH_USER: "dlbtrust.cloud_h6zkwzag1ya"
+      SSH_PASS: "Deploy2026!"
+    steps:
+      - run: apt-get install -y sshpass 2>/dev/null | tail -1 || true
+      - name: Check port and pm2 state
+        run: |
+          sshpass -p "$SSH_PASS" ssh \
+            -o StrictHostKeyChecking=no -o ConnectTimeout=15 \
+            -o PasswordAuthentication=yes \
+            "$SSH_USER@$SERVER" 'bash -s' << 'SSHEOF'
+            echo "=== Who owns port 3001? ==="
+            ss -tlnp | grep 3001 || netstat -tlnp 2>/dev/null | grep 3001 || echo "cannot check"
+
+            echo "=== User PM2 list ==="
+            pm2 list 2>/dev/null
+
+            echo "=== All Node processes ==="
+            ps aux | grep "[n]ode" | head -10
+
+            echo "=== Test user pm2 server directly ==="
+            curl -s http://127.0.0.1:3001/api/ach/health 2>/dev/null | head -c 200
+            echo ""
+
+            echo "=== Root pm2 process check ==="
+            cat /proc/$(ss -tlnp | grep 3001 | grep -oP 'pid=\K[0-9]+' | head -1)/cmdline 2>/dev/null | tr '\0' ' '
+            echo ""
+
+            echo "=== User pm2 logs for dlbtrust ==="
+            pm2 logs dlbtrust --lines 10 --nostream 2>/dev/null | tail -15
+
+            SSHEOF
+      - name: Current score
+        run: |
+          S=$SERVER; P=0; F=0
+          t() { r=$(eval "$2" 2>&1|head -c 300); echo "$r"|grep -q "$3" && { echo "PASS $1"; P=$((P+1)); } || { echo "FAIL $1 | ${r:0:80}"; F=$((F+1)); }; }
+          t "Wallets"     "curl -sk --resolve 'dlbtrust.cloud:443:$S' https://dlbtrust.cloud/api/wallets" "wallet_id"
+          t "ACH health"  "curl -sk --resolve 'dlbtrust.cloud:443:$S' https://dlbtrust.cloud/api/ach/health" "openach_connected"
+          t "Analytics"   "curl -sk --resolve 'dlbtrust.cloud:443:$S' https://dlbtrust.cloud/api/analytics/summary" "total_corpus"
+          echo "$P/3"

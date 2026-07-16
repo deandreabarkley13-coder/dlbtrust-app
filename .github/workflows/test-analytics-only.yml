@@ -1,0 +1,33 @@
+name: Test Analytics Output
+
+on:
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Test analytics endpoint
+        run: |
+          SERVER="74.208.191.205"
+          echo "=== Analytics Summary ==="
+          curl -sk --resolve "dlbtrust.cloud:443:$SERVER" \
+            "https://dlbtrust.cloud/api/analytics/summary"
+          echo ""
+          echo "=== Analytics Headers ==="
+          curl -ski --resolve "dlbtrust.cloud:443:$SERVER" \
+            "https://dlbtrust.cloud/api/analytics/summary" | head -20
+          echo ""
+          echo "=== Plesk admin test ==="
+          for PASS in "admin" "Admin123!" "222714" "DLBtrust1!" "988934"; do
+            R=$(curl -sk --max-time 8 "https://$SERVER:8443/enterprise/control/agent.php" \
+              -H "HTTP_AUTH_LOGIN: admin" \
+              -H "HTTP_AUTH_PASSWD: $PASS" \
+              -H "Content-Type: text/xml" \
+              -d '<?xml version="1.0"?><packet><server><get><gen_info/></get></server></packet>' 2>/dev/null | head -c 100)
+            if echo "$R" | grep -q "ok"; then
+              echo "PLESK OK: $PASS"
+            else
+              echo "PLESK FAIL: $PASS -> ${R:0:50}"
+            fi
+          done

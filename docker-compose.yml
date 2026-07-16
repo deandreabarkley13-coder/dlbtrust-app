@@ -1,0 +1,60 @@
+# dlbtrust-app — Docker Compose
+# Adds Apache Fineract (core banking GL) + PostgreSQL alongside the existing app.
+# OpenACH containers are managed separately (existing setup).
+#
+# Usage:
+#   docker compose up -d
+#   Wait ~60s for Fineract to finish initialization, then:
+#   curl -k https://localhost:8444/fineract-provider/api/v1/offices?tenantIdentifier=default
+
+services:
+  # ─── PostgreSQL 16 — Fineract database ────────────────────────────────────
+  fineract-db:
+    image: postgres:16
+    container_name: fineract-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${FINERACT_DB_USER:-postgres}
+      POSTGRES_PASSWORD: ${FINERACT_DB_PASSWORD:-postgres}
+      POSTGRES_DB: fineract_tenants
+    # No external port — Fineract connects via Docker internal network (fineract-db:5432)
+    # Avoids port conflicts with other PostgreSQL instances on the host
+    volumes:
+      - fineract-db-data:/var/lib/postgresql/data
+      - ./docker/postgres-init:/docker-entrypoint-initdb.d
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${FINERACT_DB_USER:-postgres}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  # ─── Apache Fineract — Core Banking Engine ────────────────────────────────
+  fineract:
+    image: apache/fineract:latest
+    container_name: fineract
+    restart: unless-stopped
+    depends_on:
+      fineract-db:
+        condition: service_healthy
+    environment:
+      - FINERACT_HIKARI_JDBC_URL=jdbc:postgresql://fineract-db:5432/fineract_tenants
+      - FINERACT_HIKARI_USERNAME=${FINERACT_DB_USER:-postgres}
+      - FINERACT_HIKARI_PASSWORD=${FINERACT_DB_PASSWORD:-postgres}
+      - FINERACT_HIKARI_DRIVER_SOURCE_CLASS_NAME=org.postgresql.Driver
+      - FINERACT_DEFAULT_TENANTDB_HOSTNAME=fineract-db
+      - FINERACT_DEFAULT_TENANTDB_PORT=5432
+      - FINERACT_DEFAULT_TENANTDB_UID=${FINERACT_DB_USER:-postgres}
+      - FINERACT_DEFAULT_TENANTDB_PWD=${FINERACT_DB_PASSWORD:-postgres}
+      - FINERACT_DEFAULT_TENANTDB_NAME=fineract_default
+      - JAVA_TOOL_OPTIONS=-Xmx512m
+    ports:
+      - "${FINERACT_HOST_PORT:-8443}:8443"  # Use 8444 on production (8443 taken by OBP)
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- --no-check-certificate https://localhost:8443/fineract-provider/actuator/health || exit 1"]
+      interval: 15s
+      timeout: 10s
+      retries: 15
+      start_period: 300s
+
+volumes:
+  fineract-db-data:

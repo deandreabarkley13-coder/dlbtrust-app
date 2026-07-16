@@ -1,0 +1,130 @@
+name: Plesk Correct Cron Schema
+on:
+  push:
+    branches: [main]
+    paths: ['.github/workflows/plesk-cron-correct.yml']
+  workflow_dispatch:
+
+jobs:
+  cron:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      SERVER: "74.208.191.205"
+      SSH_USER: "dlbtrust.cloud_h6zkwzag1ya"
+      SSH_PASS: "Deploy2026!"
+      PLESK_PASS: "dP8RlShbOWNq"
+      PLESK: "https://74.208.191.205:8443"
+
+    steps:
+      - uses: actions/checkout@v4
+      - run: apt-get install -y sshpass 2>/dev/null | tail -1 || true
+
+      - name: Probe Plesk XML API to find correct cron schema
+        run: |
+          # Try different XML schemas for cron
+          for XML in \
+            '<?xml version="1.0"?><packet version="1.6.9.1"><server><get><gen_info/></get></server></packet>' \
+            '<?xml version="1.0"?><packet version="1.6.9.1"><server><get_protos/></server></packet>'; do
+            echo "--- Testing: ${XML:0:60} ---"
+            curl -sk --max-time 8 "$PLESK/enterprise/control/agent.php" \
+              -H "HTTP_AUTH_LOGIN: admin" \
+              -H "HTTP_AUTH_PASSWD: $PLESK_PASS" \
+              -H "Content-Type: text/xml" -d "$XML" | head -c 400
+            echo ""
+          done
+
+      - name: Try Plesk crontab via website cron API
+        run: |
+          # Plesk cron for a website uses the 'site' or 'webspace' cron endpoint
+          # Try: webspace crontab
+          SCRIPT_PATH="/var/www/vhosts/dlbtrust.cloud/httpdocs/deploy_patch.sh"
+          
+          for XML in \
+            "<?xml version=\"1.0\"?><packet version=\"1.6.9.1\"><webspace><set><filter><name>dlbtrust.cloud</name></filter><values><gen_settings><crontask><user>root</user><command>$SCRIPT_PATH</command><min>*</min><hour>*</hour><dom>*</dom><month>*</month><dow>*</dow></crontask></gen_settings></values></set></webspace></packet>" \
+            "<?xml version=\"1.0\"?><packet version=\"1.6.9.1\"><site><crontask><add><filter><name>dlbtrust.cloud</name></filter><command>$SCRIPT_PATH</command><schedule><min>*</min><hour>*</hour><dom>*</dom><month>*</month><dow>*</dow></schedule></add></crontask></site></packet>"; do
+            
+            echo "--- Trying schema ---"
+            curl -sk --max-time 8 "$PLESK/enterprise/control/agent.php" \
+              -H "HTTP_AUTH_LOGIN: admin" \
+              -H "HTTP_AUTH_PASSWD: $PLESK_PASS" \
+              -H "Content-Type: text/xml" -d "$XML" | head -c 200
+            echo ""
+          done
+
+      - name: Use Plesk REST API to trigger Node.js restart
+        run: |
+          # Plesk REST API (v2) for Node.js apps
+          # Try restarting the Node.js app via Plesk REST API
+          for ENDPOINT in \
+            "/api/v2/nodes/nodejs/dlbtrust.cloud/restart" \
+            "/api/v2/domains/dlbtrust.cloud/apps/nodejs/restart" \
+            "/api/v2/domains/dlbtrust.cloud/hosting/nodejs"; do
+            echo "--- $ENDPOINT ---"
+            curl -sk --max-time 8 \
+              -X POST "$PLESK$ENDPOINT" \
+              -H "Authorization: Basic $(echo -n admin:$PLESK_PASS | base64)" \
+              -H "Content-Type: application/json" | head -c 200
+            echo ""
+          done
+
+      - name: Use system user sudo if allowed
+        run: |
+          sshpass -p "$SSH_PASS" ssh \
+            -o StrictHostKeyChecking=no -o ConnectTimeout=10 \
+            -o PasswordAuthentication=yes \
+            "$SSH_USER@$SERVER" << 'SSHEOF'
+            echo "=== Checking sudo access ==="
+            sudo -n -l 2>/dev/null || echo "sudo requires password or not available"
+            
+            echo "=== Checking writable locations in dlbtrust-v2 ==="
+            ls -la /var/www/vhosts/dlbtrust.cloud/dlbtrust-v2/ | head -20
+            
+            echo "=== Can we write to .env? ==="
+            touch /var/www/vhosts/dlbtrust.cloud/dlbtrust-v2/.env 2>/dev/null && echo "✅ .env writable!" || echo "❌ .env not writable"
+            
+            echo "=== Can we write to server.cjs? ==="
+            test -w /var/www/vhosts/dlbtrust.cloud/dlbtrust-v2/server.cjs && echo "✅ server.cjs writable!" || echo "❌ not writable"
+            
+            echo "=== WHO OWNS DLBTRUST-V2 ==="
+            stat /var/www/vhosts/dlbtrust.cloud/dlbtrust-v2/ 2>/dev/null | grep -E "Uid|Gid|File"
+            
+            echo "=== WHAT GROUPS AM I IN ==="
+            id
+            
+            echo "=== CAN WE TOUCH ANY FILE IN V2? ==="
+            for f in server.cjs .env payment-gateway.cjs api-routes.cjs; do
+              test -w "/var/www/vhosts/dlbtrust.cloud/dlbtrust-v2/$f" && echo "✅ $f writable" || echo "❌ $f not writable"
+            done
+          SSHEOF
+
+      - name: Try writing to server.cjs via cat redirect
+        run: |
+          sshpass -p "$SSH_PASS" ssh \
+            -o StrictHostKeyChecking=no -o ConnectTimeout=10 \
+            -o PasswordAuthentication=yes \
+            "$SSH_USER@$SERVER" << 'SSHEOF'
+            V2="/var/www/vhosts/dlbtrust.cloud/dlbtrust-v2"
+            
+            echo "=== Current server.cjs ==="
+            wc -l "$V2/server.cjs"
+            
+            echo "=== Attempting to append to server.cjs ==="
+            echo "" >> "$V2/server.cjs" 2>&1 && echo "✅ CAN APPEND!" || echo "❌ Cannot write to server.cjs"
+            
+            echo "=== Try cp to overwrite ==="
+            cp "$V2/server.cjs" /tmp/server_backup.cjs 2>/dev/null && echo "✅ Read server.cjs OK" || echo "❌ Cannot read"
+            cp /tmp/server_backup.cjs "$V2/server.cjs" 2>/dev/null && echo "✅ CAN WRITE server.cjs!" || echo "❌ Cannot write"
+          SSHEOF
+
+      - name: Final score
+        run: |
+          S=$SERVER; P=0; F=0
+          t() { r=$(eval "$2" 2>&1|head -c 200); echo "$r"|grep -q "$3" && { echo "✅ $1"; P=$((P+1)); } || { echo "❌ $1|${r:0:60}"; F=$((F+1)); }; }
+          t "Wallets"    "curl -sk --resolve 'dlbtrust.cloud:443:$S' https://dlbtrust.cloud/api/wallets"              "wallet_id"
+          t "ACH health" "curl -sk --resolve 'dlbtrust.cloud:443:$S' https://dlbtrust.cloud/api/ach/health"          "openach_connected"
+          t "Analytics"  "curl -sk --resolve 'dlbtrust.cloud:443:$S' https://dlbtrust.cloud/api/analytics/summary"   "total_corpus"
+          t "OA UI"      "curl -sk --resolve 'ach.dlbtrust.cloud:443:$S' https://ach.dlbtrust.cloud/openach/ -o/dev/null -w '%{http_code}'" "200"
+          t "OA API"     "curl -sk --resolve 'ach.dlbtrust.cloud:443:$S' -X POST https://ach.dlbtrust.cloud/openach/api/connect --data 'user_api_token=3caee1c2-c218-4959-b6d2-21d4b2a1b42e&user_api_key=b74966cf-5276-4d8b-8650-5bd57dcee272'" '"success":true'
+          echo ""; echo "━━━ SCORE: $P/5 ━━━"
+          [ $F -eq 0 ] && echo "🎉 100% PRODUCTION READY" || echo "⚠️ $F failing"

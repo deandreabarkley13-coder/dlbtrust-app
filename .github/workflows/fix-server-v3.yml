@@ -1,0 +1,129 @@
+name: FINAL FIX v3 - Deploy patched server via SCP
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths: [".github/workflows/fix-server-v3.yml", "server-new-fixed.js"]
+
+jobs:
+  fix:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      SERVER: "74.208.191.205"
+      SSH_USER: "dlbtrust.cloud_h6zkwzag1ya"
+      SSH_PASS: "Deploy2026!"
+
+    steps:
+      - uses: actions/checkout@v4
+      - run: apt-get install -y sshpass 2>/dev/null | tail -1 || true
+
+      - name: SCP fixed server-new.js to httpdocs
+        run: |
+          sshpass -p "$SSH_PASS" scp \
+            -o StrictHostKeyChecking=no \
+            server-new-fixed.js \
+            "$SSH_USER@$SERVER:/var/www/vhosts/dlbtrust.cloud/httpdocs/server-new.js"
+          echo "SCP complete"
+
+      - name: Restart pm2 with correct NODE_PATH and CWD
+        run: |
+          sshpass -p "$SSH_PASS" ssh \
+            -o StrictHostKeyChecking=no -o ConnectTimeout=15 \
+            -o PasswordAuthentication=yes \
+            "$SSH_USER@$SERVER" 'bash -s' << 'SSHEOF'
+            V2="/var/www/vhosts/dlbtrust.cloud/dlbtrust-v2"
+            HD="/var/www/vhosts/dlbtrust.cloud/httpdocs"
+
+            echo "=== Syntax check ==="
+            node --check "$HD/server-new.js" && echo "Syntax OK" || echo "SYNTAX FAIL"
+
+            echo "=== Verify express available ==="
+            node -e "require('$V2/node_modules/express'); console.log('express OK')" 2>&1
+
+            echo "=== Stop all user pm2 processes ==="
+            pm2 stop all 2>/dev/null | tail -2 || true
+            pm2 delete all 2>/dev/null | tail -2 || true
+
+            echo "=== Start with NODE_PATH pointing to v2/node_modules ==="
+            NODE_PATH="$V2/node_modules" \
+            OPENACH_BASE_URL="http://localhost/openach/api" \
+            OPENACH_HOST_HEADER="ach.dlbtrust.cloud" \
+            OPENACH_API_TOKEN="3caee1c2-c218-4959-b6d2-21d4b2a1b42e" \
+            OPENACH_API_KEY="b74966cf-5276-4d8b-8650-5bd57dcee272" \
+            pm2 start "$HD/server-new.js" \
+              --name dlbtrust \
+              --cwd "$V2" \
+              2>/dev/null
+            sleep 5
+
+            echo "=== PM2 list ==="
+            pm2 list 2>/dev/null
+
+            echo "=== PM2 logs ==="
+            pm2 logs dlbtrust --lines 20 --nostream 2>/dev/null | tail -25
+
+            echo "=== Test local endpoints ==="
+            sleep 3
+            echo "ACH health:"
+            curl -s http://localhost:3001/api/ach/health | head -c 300
+            echo ""
+            echo "Analytics:"
+            curl -s http://localhost:3001/api/analytics/summary | head -c 200
+            echo ""
+            SSHEOF
+
+      - name: Insert OpenACH credentials via Docker
+        continue-on-error: true
+        run: |
+          sshpass -p "$SSH_PASS" ssh \
+            -o StrictHostKeyChecking=no -o ConnectTimeout=15 \
+            -o PasswordAuthentication=yes \
+            "$SSH_USER@$SERVER" 'bash -s' << 'SSHEOF'
+            CONT=$(docker ps --format "{{.Names}}" | grep -i openach | head -1)
+            echo "Docker container: $CONT"
+            if [ -n "$CONT" ]; then
+              docker exec "$CONT" sqlite3 /var/www/html/protected/runtime/db/openach.db \
+                "SELECT user_api_token, status FROM user_api LIMIT 5;" 2>/dev/null
+              docker exec "$CONT" sqlite3 /var/www/html/protected/runtime/db/openach.db \
+                "INSERT OR REPLACE INTO user_api VALUES('4fc86059-2e7b-4732-b94f-e7c3715ee8d7',datetime('now'),'0eb26e1d-5fcc-4978-a132-dd93c2655429','3caee1c2-c218-4959-b6d2-21d4b2a1b42e','b74966cf-5276-4d8b-8650-5bd57dcee272','enabled');" 2>/dev/null \
+                && echo "Credentials inserted!"
+              docker exec "$CONT" sqlite3 /var/www/html/protected/runtime/db/openach.db \
+                "SELECT user_api_token, status FROM user_api LIMIT 5;" 2>/dev/null
+            else
+              echo "No openach container. Testing HTTPS directly:"
+              curl -sk https://ach.dlbtrust.cloud/openach/api/connect \
+                -X POST \
+                --data "user_api_token=3caee1c2-c218-4959-b6d2-21d4b2a1b42e&user_api_key=b74966cf-5276-4d8b-8650-5bd57dcee272" \
+                | head -c 300
+            fi
+            SSHEOF
+
+      - name: Final 8/8 production score
+        run: |
+          S=$SERVER
+          P=0; F=0
+          t() {
+            name="$1"; cmd="$2"; want="$3"
+            r=$(eval "$cmd" 2>&1 | head -c 300)
+            if echo "$r" | grep -q "$want"; then
+              echo "PASS $name"
+              P=$((P+1))
+            else
+              echo "FAIL $name | ${r:0:100}"
+              F=$((F+1))
+            fi
+          }
+          t "HTTP 301"     "curl -s -o/dev/null -w '%{http_code}' http://dlbtrust.cloud/"   "301"
+          t "HTTPS"        "curl -sk --resolve 'dlbtrust.cloud:443:$S' https://dlbtrust.cloud/"  "html"
+          t "Wallets"      "curl -sk --resolve 'dlbtrust.cloud:443:$S' https://dlbtrust.cloud/api/wallets"  "wallet_id"
+          t "Transactions" "curl -sk --resolve 'dlbtrust.cloud:443:$S' https://dlbtrust.cloud/api/transactions"  "type"
+          t "ACH health"   "curl -sk --resolve 'dlbtrust.cloud:443:$S' https://dlbtrust.cloud/api/ach/health"  "openach_connected"
+          t "Analytics"    "curl -sk --resolve 'dlbtrust.cloud:443:$S' https://dlbtrust.cloud/api/analytics/summary"  "total_corpus"
+          t "OA UI"        "curl -sk --resolve 'ach.dlbtrust.cloud:443:$S' https://ach.dlbtrust.cloud/openach/ -o/dev/null -w '%{http_code}'"  "200"
+          t "OA API"       "curl -sk --resolve 'ach.dlbtrust.cloud:443:$S' -X POST https://ach.dlbtrust.cloud/openach/api/connect --data 'user_api_token=3caee1c2-c218-4959-b6d2-21d4b2a1b42e&user_api_key=b74966cf-5276-4d8b-8650-5bd57dcee272'"  '"success":true'
+          echo ""
+          echo "=========================="
+          echo "FINAL SCORE: $P/8"
+          [ $F -eq 0 ] && echo "100% PRODUCTION READY - dlbtrust.cloud LIVE" || echo "$F tests still failing"
+          echo "=========================="

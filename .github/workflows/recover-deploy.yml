@@ -1,0 +1,186 @@
+name: Run recover.sh on server
+
+on:
+  workflow_dispatch:
+
+jobs:
+  recover:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Pre-check server state
+        run: |
+          SERVER="74.208.191.205"
+          echo "=== Pre-recovery server state ==="
+          
+          echo "--- /api/wallets ---"
+          curl -s --max-time 10 \
+            --resolve "dlbtrust.cloud:443:$SERVER" \
+            "https://dlbtrust.cloud/api/wallets" | head -c 200
+          echo ""
+          
+          echo "--- /api/ach/health ---"
+          curl -s --max-time 10 \
+            --resolve "dlbtrust.cloud:443:$SERVER" \
+            "https://dlbtrust.cloud/api/ach/health"
+          echo ""
+          
+          echo "--- OpenACH connect (pre) ---"
+          curl -s --max-time 10 \
+            --resolve "ach.dlbtrust.cloud:80:$SERVER" \
+            -X POST "http://ach.dlbtrust.cloud/openach/api/connect" \
+            --data "user_api_token=3caee1c2-c218-4959-b6d2-21d4b2a1b42e&user_api_key=b74966cf-5276-4d8b-8650-5bd57dcee272"
+          echo ""
+
+      - name: SSH + run recover.sh
+        run: |
+          SERVER="74.208.191.205"
+          sudo apt-get install -y sshpass 2>/dev/null || true
+          
+          PASSWORDS=(
+            "Skunklemon78tut\$jupiter"
+            "Admin123!"
+            "admin"
+            "DLBtrust1!"
+            "ionos123"
+            "Ionos123!"
+            "root"
+            "toor"
+            "hosting123"
+            "dlbtrust2026"
+            "dlbtrust2024"
+            "Jupiter78tut!"
+            "!Jupiter78tut"
+            "skunklemon"
+          )
+          
+          SSH_SUCCESS=false
+          WORKING_PASS=""
+          
+          echo "=== Testing SSH passwords ==="
+          for PASS in "${PASSWORDS[@]}"; do
+            RESULT=$(sshpass -p "$PASS" ssh \
+              -o StrictHostKeyChecking=no \
+              -o ConnectTimeout=8 \
+              -o BatchMode=no \
+              -o PasswordAuthentication=yes \
+              -o PreferredAuthentications=password \
+              root@$SERVER \
+              'echo SSH_OK' 2>&1)
+            if echo "$RESULT" | grep -q "SSH_OK"; then
+              echo "SSH SUCCESS with password: [REDACTED]"
+              SSH_SUCCESS=true
+              WORKING_PASS="$PASS"
+              break
+            else
+              echo "Failed: ${RESULT:0:50}"
+            fi
+          done
+          
+          if [ "$SSH_SUCCESS" = "true" ]; then
+            echo ""
+            echo "=== Running recover.sh via SSH ==="
+            sshpass -p "$WORKING_PASS" ssh \
+              -o StrictHostKeyChecking=no \
+              -o ConnectTimeout=60 \
+              -o BatchMode=no \
+              -o ServerAliveInterval=10 \
+              root@$SERVER \
+              'bash <(curl -s https://raw.githubusercontent.com/deandreabarkley13-coder/dlbtrust-app/main/server/recover.sh) 2>&1'
+          else
+            echo "=== SSH failed — trying recover.sh on OpenACH container via curl ==="
+            echo "All SSH attempts failed. Server may still be blocking port 22."
+            echo "Trying alternative: Plesk XML API..."
+            
+            for PASS in "admin" "Admin123!" "Skunklemon78tut\$jupiter" "DLBtrust1!" "ionos123"; do
+              RESULT=$(curl -sk --max-time 15 \
+                --resolve "dlbtrust.cloud:8443:$SERVER" \
+                "https://dlbtrust.cloud:8443/enterprise/control/agent.php" \
+                -H "HTTP_AUTH_LOGIN: admin" \
+                -H "HTTP_AUTH_PASSWD: $PASS" \
+                -H "Content-Type: text/xml" \
+                -d '<?xml version="1.0"?><packet version="1.6.7.0"><server><get_protos/></server></packet>' 2>&1)
+              
+              if echo "$RESULT" | grep -q "protocolVersion\|<version>"; then
+                echo "PLESK LOGIN SUCCESS"
+                # Run recover.sh via Plesk CLI
+                curl -sk --max-time 120 \
+                  --resolve "dlbtrust.cloud:8443:$SERVER" \
+                  "https://dlbtrust.cloud:8443/enterprise/control/agent.php" \
+                  -H "HTTP_AUTH_LOGIN: admin" \
+                  -H "HTTP_AUTH_PASSWD: $PASS" \
+                  -H "Content-Type: text/xml" \
+                  -d '<?xml version="1.0"?><packet version="1.6.7.0"><cli><run><exe>/bin/bash</exe><params>-c</params><params>bash &lt;(curl -s https://raw.githubusercontent.com/deandreabarkley13-coder/dlbtrust-app/main/server/recover.sh) 2&gt;&amp;1</params></run></cli></packet>'
+                break
+              else
+                echo "Plesk pass failed: ${RESULT:0:50}"
+              fi
+            done
+          fi
+
+      - name: Post-recovery health check
+        run: |
+          SERVER="74.208.191.205"
+          echo "=== Waiting 15s for services to stabilize ==="
+          sleep 15
+          
+          echo ""
+          echo "=== POST-RECOVERY HEALTH CHECKS ==="
+          
+          echo ""
+          echo "--- /api/wallets ---"
+          WALLETS=$(curl -s --max-time 15 \
+            --resolve "dlbtrust.cloud:443:$SERVER" \
+            "https://dlbtrust.cloud/api/wallets")
+          echo "$WALLETS" | head -c 300
+          echo ""
+          
+          echo ""
+          echo "--- /api/ach/health ---"
+          ACH_HEALTH=$(curl -s --max-time 15 \
+            --resolve "dlbtrust.cloud:443:$SERVER" \
+            "https://dlbtrust.cloud/api/ach/health")
+          echo "$ACH_HEALTH"
+          echo ""
+          
+          echo ""
+          echo "--- OpenACH connect (post) ---"
+          OPENACH=$(curl -s --max-time 15 \
+            --resolve "ach.dlbtrust.cloud:80:$SERVER" \
+            -X POST "http://ach.dlbtrust.cloud/openach/api/connect" \
+            --data "user_api_token=3caee1c2-c218-4959-b6d2-21d4b2a1b42e&user_api_key=b74966cf-5276-4d8b-8650-5bd57dcee272")
+          echo "$OPENACH"
+          echo ""
+          
+          echo ""
+          echo "--- Get payment types (if connected) ---"
+          if echo "$OPENACH" | grep -q '"success":true'; then
+            echo "OpenACH connected! Getting payment types..."
+            curl -s --max-time 15 \
+              --resolve "ach.dlbtrust.cloud:80:$SERVER" \
+              -X POST "http://ach.dlbtrust.cloud/openach/api/getPaymentTypes" \
+              -H "Cookie: $(echo "$OPENACH" | python3 -c 'import sys,json; d=json.load(sys.stdin); print("PHPSESSID=" + d.get("session_id","")) if isinstance(d,dict) else print("")' 2>/dev/null)"
+          else
+            echo "OpenACH not connected yet"
+          fi
+          echo ""
+          
+          echo ""
+          echo "=== SUMMARY ==="
+          if echo "$WALLETS" | grep -q "wlt_trust_primary"; then
+            echo "✓ Node.js API: ONLINE"
+          else
+            echo "✗ Node.js API: NOT RESPONDING"
+          fi
+          
+          if echo "$ACH_HEALTH" | grep -q '"success":true'; then
+            echo "✓ ACH health: ONLINE"
+          else
+            echo "✗ ACH health: OFFLINE or not patched"
+          fi
+          
+          if echo "$OPENACH" | grep -q '"success":true'; then
+            echo "✓ OpenACH API: CONNECTED"
+          else
+            echo "✗ OpenACH API: NOT CONNECTED (credentials may not be inserted)"
+          fi

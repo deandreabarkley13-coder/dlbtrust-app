@@ -1,0 +1,53 @@
+name: Check Server State
+on: [workflow_dispatch]
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      SERVER: "74.208.191.205"
+      SSH_USER: "dlbtrust.cloud_h6zkwzag1ya"
+      SSH_PASS: "Deploy2026!"
+    steps:
+      - run: apt-get install -y sshpass 2>/dev/null | tail -1 || true
+      - name: Check server state
+        run: |
+          sshpass -p "$SSH_PASS" ssh \
+            -o StrictHostKeyChecking=no -o ConnectTimeout=15 \
+            -o PasswordAuthentication=yes \
+            "$SSH_USER@$SERVER" << 'SSHEOF'
+            
+            echo "=== do_copy.sh content ==="
+            cat /var/www/vhosts/dlbtrust.cloud/httpdocs/do_copy.sh 2>/dev/null || echo "File not found"
+            
+            echo ""
+            echo "=== server.cjs first/last 50 lines ==="
+            head -50 /var/www/vhosts/dlbtrust.cloud/dlbtrust-v2/server.cjs
+            echo "---TAIL---"
+            tail -50 /var/www/vhosts/dlbtrust.cloud/dlbtrust-v2/server.cjs
+            
+            echo ""
+            echo "=== httpdocs dir ==="
+            ls -la /var/www/vhosts/dlbtrust.cloud/httpdocs/ 2>/dev/null | head -30
+            
+            echo ""
+            echo "=== server dir in httpdocs ==="
+            ls -la /var/www/vhosts/dlbtrust.cloud/httpdocs/server/ 2>/dev/null || echo "No server dir"
+            
+            echo ""
+            echo "=== openach-patch file ==="
+            cat /var/www/vhosts/dlbtrust.cloud/httpdocs/server/openach-patch.js 2>/dev/null || echo "Not found"
+            
+            echo ""
+            echo "=== analytics route file ==="
+            cat /var/www/vhosts/dlbtrust.cloud/httpdocs/server/routes/analytics.js 2>/dev/null || echo "Not found"
+            
+            echo ""
+            echo "=== pm2 status ==="
+            pm2 list 2>/dev/null || ~/.pm2/bin/pm2 list 2>/dev/null || echo "pm2 not accessible"
+            
+            echo ""
+            echo "=== OpenACH credentials in env ==="
+            env | grep -i ach 2>/dev/null | head -10 || echo "No ACH env vars"
+          SSHEOF

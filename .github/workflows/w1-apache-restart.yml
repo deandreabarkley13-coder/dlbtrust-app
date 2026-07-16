@@ -1,0 +1,74 @@
+name: W1 Apache Reload via SSH
+on:
+  push:
+    branches: [main]
+    paths: ['.github/workflows/w1-apache-restart.yml']
+  workflow_dispatch:
+jobs:
+  fix:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      SERVER: "74.208.191.205"
+      SSH_USER: "dlbtrust.cloud_h6zkwzag1ya"
+      SSH_PASS: "Deploy2026!"
+      PLESK_PASS: "dP8RlShbOWNq"
+    steps:
+      - run: apt-get install -y sshpass 2>/dev/null | tail -1 || true
+      - name: Set vhost to port 3002 and try every Apache reload method
+        run: |
+          sshpass -p "$SSH_PASS" ssh -o StrictHostKeyChecking=no \
+            -o ConnectTimeout=10 -o PasswordAuthentication=yes \
+            "$SSH_USER@$SERVER" << 'SSHEOF'
+          # Make sure server-3002.js is running
+          pm2 list 2>/dev/null | grep -q dlbtrust-3002 || \
+            PORT=3002 pm2 start /var/www/vhosts/dlbtrust.cloud/httpdocs/server-3002.js --name dlbtrust-3002
+          pm2 list 2>/dev/null | grep dlbtrust
+          
+          # Test port 3002
+          echo "Port 3002 test:"
+          curl -s http://localhost:3002/api/ach/health
+          echo ""
+          curl -s http://localhost:3002/api/wallets | head -c 80
+          
+          # Update vhost to 3002
+          cat > /var/www/vhosts/dlbtrust.cloud/conf/vhost.conf << 'VH'
+ProxyRequests Off
+ProxyPreserveHost On
+ProxyPass / http://localhost:3002/
+ProxyPassReverse / http://localhost:3002/
+<Proxy *>
+    Require all granted
+</Proxy>
+VH
+          echo "vhost.conf updated to port 3002"
+          
+          # Try ALL Apache reload methods
+          for cmd in \
+            "service apache2 reload" \
+            "service apache2 restart" \
+            "apachectl graceful" \
+            "/usr/sbin/apachectl graceful" \
+            "systemctl reload apache2" \
+            "/usr/local/psa/admin/sbin/httpdmng --reconfigure-domain dlbtrust.cloud"; do
+            eval "$cmd" 2>/dev/null && echo "SUCCESS: $cmd" && break || echo "FAIL: $cmd"
+          done
+          SSHEOF
+      - name: Trigger Apache reload via Plesk webspace (forces httpdmng)
+        run: |
+          curl -sk --max-time 30 "https://dlbtrust.cloud:8443/enterprise/control/agent.php" \
+            -H "HTTP_AUTH_LOGIN: admin" -H "HTTP_AUTH_PASSWD: $PLESK_PASS" \
+            -H "Content-Type: text/xml" \
+            -d '<?xml version="1.0"?><packet version="1.6.9.1"><webspace><set><filter><name>dlbtrust.cloud</name></filter><values><prefs><www>true</www></prefs></values></set></webspace></packet>' \
+            | grep -oP '<status>[^<]+'
+          sleep 5
+      - name: Score
+        run: |
+          S=$SERVER; P=0; F=0
+          t() { r=$(eval "$2" 2>&1|head -c 200); echo "$r"|grep -q "$3" && { echo "✅ $1"; P=$((P+1)); } || { echo "❌ $1|${r:0:60}"; F=$((F+1)); }; }
+          t "Wallets"    "curl -sk --resolve 'dlbtrust.cloud:443:$S' https://dlbtrust.cloud/api/wallets"              "wallet_id"
+          t "ACH health" "curl -sk --resolve 'dlbtrust.cloud:443:$S' https://dlbtrust.cloud/api/ach/health"          "openach_connected"
+          t "Analytics"  "curl -sk --resolve 'dlbtrust.cloud:443:$S' https://dlbtrust.cloud/api/analytics/summary"   "total_corpus"
+          t "OA UI"      "curl -sk --resolve 'ach.dlbtrust.cloud:443:$S' https://ach.dlbtrust.cloud/openach/ -o/dev/null -w '%{http_code}'" "200"
+          t "OA API"     "curl -sk --resolve 'ach.dlbtrust.cloud:443:$S' -X POST https://ach.dlbtrust.cloud/openach/api/connect --data 'user_api_token=3caee1c2-c218-4959-b6d2-21d4b2a1b42e&user_api_key=b74966cf-5276-4d8b-8650-5bd57dcee272'" '"success":true'
+          echo "━━━ $P/5 ━━━"; [ $F -eq 0 ] && echo "🎉 ALL PASSING" || echo "⚠️ $F failing"

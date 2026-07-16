@@ -1,0 +1,112 @@
+name: IONOS Login Get Password
+
+on:
+  workflow_dispatch:
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Setup
+        run: |
+          pip install playwright --quiet
+          playwright install chromium --with-deps 2>&1 | tail -3
+
+      - name: Write script
+        run: |
+          python3 - << 'PYEOF'
+script = """
+import asyncio, json, re, os
+from playwright.async_api import async_playwright
+
+EMAIL = 'deandreabarkley13@gmail.com'
+PASS = 'Skunklemon78tut$jupiter'
+TARGET_IP = '74.208.191.205'
+
+async def main():
+    async with async_playwright() as p:
+        browser = await p.chromium.launch(
+            headless=True,
+            args=['--no-sandbox','--disable-dev-shm-usage']
+        )
+        ctx = await browser.new_context(
+            user_agent='Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36',
+            viewport={'width':1280,'height':800}
+        )
+        page = await ctx.new_page()
+        
+        print("STEP1: Loading IONOS login page")
+        await page.goto('https://login.ionos.com/', timeout=30000)
+        await page.wait_for_load_state('networkidle', timeout=15000)
+        print(f"  URL: {page.url}")
+        await page.screenshot(path='/tmp/s1.png')
+        
+        print("STEP2: Filling username")
+        try:
+            await page.wait_for_selector('input', timeout=8000)
+            await page.fill('input', EMAIL, timeout=5000)
+            await page.keyboard.press('Enter')
+            await page.wait_for_load_state('networkidle', timeout=10000)
+            print(f"  URL after username: {page.url}")
+        except Exception as e:
+            print(f"  Error: {e}")
+        await page.screenshot(path='/tmp/s2.png')
+        
+        print("STEP3: Filling password")
+        try:
+            await page.wait_for_selector('input[type=password]', timeout=8000)
+            await page.fill('input[type=password]', PASS, timeout=5000)
+            await page.keyboard.press('Enter')
+            await page.wait_for_load_state('networkidle', timeout=15000)
+            print(f"  URL after password: {page.url}")
+        except Exception as e:
+            print(f"  Error: {e}")
+        await page.screenshot(path='/tmp/s3.png')
+        
+        print(f"STEP4: Post-login URL: {page.url}")
+        title = await page.title()
+        print(f"  Title: {title}")
+        
+        content = await page.content()
+        if 'login' in page.url.lower() or 'identifier' in page.url.lower():
+            print("  STILL ON LOGIN PAGE - auth failed or 2FA needed")
+            print(f"  Page content: {content[:1000]}")
+        else:
+            print("  LOGGED IN SUCCESSFULLY")
+            print("STEP5: Navigate to server management")
+            for url in [
+                'https://my.ionos.com/',
+                'https://my.ionos.com/server-cloud-infrastructure',
+            ]:
+                try:
+                    await page.goto(url, timeout=20000)
+                    await page.wait_for_load_state('networkidle', timeout=10000)
+                    curr = page.url
+                    content2 = await page.content()
+                    print(f"  URL: {curr}")
+                    if TARGET_IP in content2:
+                        print(f"  FOUND TARGET IP on this page!")
+                        with open('/tmp/server_page.html','w') as f:
+                            f.write(content2)
+                except Exception as e:
+                    print(f"  Error: {e}")
+            
+            await page.screenshot(path='/tmp/s5.png')
+        
+        await browser.close()
+
+asyncio.run(main())
+"""
+with open('/tmp/ionos_login.py', 'w') as f:
+    f.write(script)
+print("Script written")
+PYEOF
+
+      - name: Run script
+        run: python3 /tmp/ionos_login.py
+
+      - name: Show results
+        run: |
+          ls -la /tmp/s*.png /tmp/*.html 2>/dev/null || echo "no output files"
+          test -f /tmp/server_page.html && grep -i "74.208\|password\|ssh\|root" /tmp/server_page.html | head -20 || echo "no server page"
