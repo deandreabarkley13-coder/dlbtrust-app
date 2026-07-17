@@ -497,8 +497,12 @@ class WireEngine {
           const https = require('https');
           const http = require('http');
           const { URL } = require('url');
+          const { buildMtlsOptions } = require('../ach/openBankApi');
           const parsed = new URL(wireEndpoint);
           const lib = parsed.protocol === 'https:' ? https : http;
+
+          // Present a client certificate when the bank wire endpoint requires mutual TLS
+          const mtlsOptions = buildMtlsOptions(bankAuth);
 
           const reqHeaders = {
                 'Content-Type': 'application/json',
@@ -522,6 +526,7 @@ class WireEngine {
               method: 'POST',
               headers: reqHeaders,
               timeout: 60000,
+              ...mtlsOptions,
             }, (res) => {
               let data = '';
               res.on('data', chunk => { data += chunk; });

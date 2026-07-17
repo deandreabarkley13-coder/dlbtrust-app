@@ -26,6 +26,7 @@ const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
 const { URL } = require('url');
+const { buildMtlsOptions } = require('./openBankApi');
 
 const AS2_CONFIG = {
   partnerUrl:      process.env.AS2_PARTNER_URL || '',
@@ -38,6 +39,12 @@ const AS2_CONFIG = {
   signingAlg:      process.env.AS2_SIGNING_ALG || 'sha256',
   requestMdn:      process.env.AS2_REQUEST_MDN !== 'false',
   mdnUrl:          process.env.AS2_MDN_URL || '',
+  // Optional mutual-TLS material (only used when the AS2 endpoint requires it)
+  useMtls:         process.env.AS2_USE_MTLS === 'true',
+  clientCertPath:  process.env.AS2_CLIENT_CERT || '',
+  clientKeyPath:   process.env.AS2_CLIENT_KEY || '',
+  clientCaPath:    process.env.AS2_CLIENT_CA || '',
+  clientKeyPassphrase: process.env.AS2_CLIENT_KEY_PASSPHRASE || '',
 };
 
 function loadCert(certPath) {
@@ -71,6 +78,11 @@ class AS2Client {
     AS2_CONFIG.signingAlg      = process.env.AS2_SIGNING_ALG || 'sha256';
     AS2_CONFIG.requestMdn      = process.env.AS2_REQUEST_MDN !== 'false';
     AS2_CONFIG.mdnUrl          = process.env.AS2_MDN_URL || '';
+    AS2_CONFIG.useMtls         = process.env.AS2_USE_MTLS === 'true';
+    AS2_CONFIG.clientCertPath  = process.env.AS2_CLIENT_CERT || '';
+    AS2_CONFIG.clientKeyPath   = process.env.AS2_CLIENT_KEY || '';
+    AS2_CONFIG.clientCaPath    = process.env.AS2_CLIENT_CA || '';
+    AS2_CONFIG.clientKeyPassphrase = process.env.AS2_CLIENT_KEY_PASSPHRASE || '';
   }
 
   /**
@@ -192,6 +204,8 @@ class AS2Client {
         method: 'POST',
         headers,
         rejectUnauthorized: true,
+        // Present a client certificate when the AS2 endpoint requires mutual TLS
+        ...buildMtlsOptions(cfg),
       };
 
       const lib = parsed.protocol === 'https:' ? https : http;

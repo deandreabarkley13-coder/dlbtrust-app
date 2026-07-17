@@ -149,8 +149,14 @@ CREATE TABLE IF NOT EXISTS as2_partners (
   api_key             TEXT,
   api_secret          TEXT,
   api_auth_type       TEXT DEFAULT 'bearer'
-                        CHECK (api_auth_type IN ('bearer','basic','api_key','hmac')),
+                        CHECK (api_auth_type IN ('bearer','basic','api_key','hmac','mtls')),
   webhook_secret      TEXT,
+  -- Mutual-TLS (client certificate) fields — additive to header auth
+  use_mtls            BOOLEAN NOT NULL DEFAULT FALSE,
+  client_cert_path    TEXT,
+  client_key_path     TEXT,
+  client_ca_path      TEXT,
+  client_key_passphrase TEXT,
   -- Common fields
   is_default          BOOLEAN NOT NULL DEFAULT FALSE,
   active              BOOLEAN NOT NULL DEFAULT TRUE,
@@ -207,6 +213,28 @@ ALTER TABLE as2_partners ADD COLUMN IF NOT EXISTS webhook_secret TEXT;
 ALTER TABLE as2_partners ADD COLUMN IF NOT EXISTS is_default BOOLEAN NOT NULL DEFAULT FALSE;
 ALTER TABLE as2_partners ADD COLUMN IF NOT EXISTS active BOOLEAN NOT NULL DEFAULT TRUE;
 ALTER TABLE as2_partners ADD COLUMN IF NOT EXISTS notes TEXT;
+
+-- Mutual-TLS (client certificate) fields — optional, backward-compatible.
+-- Present a client certificate during the TLS handshake when the bank
+-- endpoint requires mutual TLS. mTLS is orthogonal to header auth: a bank
+-- may require BOTH a client cert AND a bearer token, so use_mtls is an
+-- independent flag rather than an api_auth_type value.
+ALTER TABLE as2_partners ADD COLUMN IF NOT EXISTS use_mtls BOOLEAN NOT NULL DEFAULT FALSE;
+ALTER TABLE as2_partners ADD COLUMN IF NOT EXISTS client_cert_path TEXT;
+ALTER TABLE as2_partners ADD COLUMN IF NOT EXISTS client_key_path TEXT;
+ALTER TABLE as2_partners ADD COLUMN IF NOT EXISTS client_ca_path TEXT;
+ALTER TABLE as2_partners ADD COLUMN IF NOT EXISTS client_key_passphrase TEXT;
+
+-- Recreate the api_auth_type CHECK constraint idempotently to also allow 'mtls'
+-- (for callers that model mTLS as an auth type). mTLS remains additive to
+-- header auth via the independent use_mtls flag above.
+DO $$ BEGIN
+  ALTER TABLE as2_partners DROP CONSTRAINT IF EXISTS as2_partners_api_auth_type_check;
+  ALTER TABLE as2_partners ADD CONSTRAINT as2_partners_api_auth_type_check
+    CHECK (api_auth_type IN ('bearer','basic','api_key','hmac','mtls'));
+EXCEPTION WHEN others THEN
+  RAISE NOTICE 'Skipping api_auth_type constraint recreate: %', SQLERRM;
+END $$;
 
 -- Backfill partner_name from 'name' column if it exists (migrate-as2.sql uses 'name')
 DO $$ BEGIN

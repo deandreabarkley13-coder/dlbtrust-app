@@ -27,6 +27,14 @@ const DEFAULTS = {
   wire_api_key: '',
   settlement_webhook_url: '',
   auto_settle: 'true',
+  // Mutual-TLS (client certificate) for the external bank endpoint.
+  // Only needed when the receiving bank requires mutual TLS; additive to
+  // header auth (bank may require both a client cert AND a bearer token).
+  bank_use_mtls: 'false',
+  bank_client_cert_path: '',
+  bank_client_key_path: '',
+  bank_client_ca_path: '',
+  bank_client_key_passphrase: '',
 };
 
 // Pre-configured bank templates (common ODFI endpoints)
@@ -229,6 +237,11 @@ class SystemSettings {
       authType: await SystemSettings.get('bank_auth_type') || 'none',
       apiKey: await SystemSettings.get('bank_api_key') || '',
       apiSecret: await SystemSettings.get('bank_api_secret') || '',
+      useMtls: (await SystemSettings.get('bank_use_mtls')) === 'true',
+      clientCertPath: await SystemSettings.get('bank_client_cert_path') || '',
+      clientKeyPath: await SystemSettings.get('bank_client_key_path') || '',
+      clientCaPath: await SystemSettings.get('bank_client_ca_path') || '',
+      clientKeyPassphrase: await SystemSettings.get('bank_client_key_passphrase') || '',
     };
   }
 
@@ -249,6 +262,11 @@ class SystemSettings {
     const authType = await SystemSettings.get('bank_auth_type') || 'none';
     const apiKey = await SystemSettings.get('bank_api_key') || '';
     const apiSecret = await SystemSettings.get('bank_api_secret') || '';
+    const useMtls = (await SystemSettings.get('bank_use_mtls')) === 'true';
+    const clientCertPath = await SystemSettings.get('bank_client_cert_path') || '';
+    const clientKeyPath = await SystemSettings.get('bank_client_key_path') || '';
+    const clientCaPath = await SystemSettings.get('bank_client_ca_path') || '';
+    const clientKeyPassphrase = await SystemSettings.get('bank_client_key_passphrase') || '';
 
     const isBill = authType === 'bill_api' || endpoint.indexOf('api.bill.com') !== -1;
 
@@ -263,6 +281,12 @@ class SystemSettings {
       localAs2Id: 'DLBTRUST-AS2',
       isProduction: true,
       isBill: isBill,
+      // mTLS material (additive to header auth) — merged into https options by senders
+      useMtls: useMtls,
+      clientCertPath: clientCertPath || null,
+      clientKeyPath: clientKeyPath || null,
+      clientCaPath: clientCaPath || null,
+      clientKeyPassphrase: clientKeyPassphrase || null,
     };
   }
 

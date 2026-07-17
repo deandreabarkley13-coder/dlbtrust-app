@@ -501,6 +501,18 @@
             <div class="form-group"><label>Auth Type</label><select id="partner-auth-type"><option value="bearer">Bearer Token</option><option value="basic">Basic Auth</option><option value="api_key">API Key Header</option><option value="hmac">HMAC Signature</option></select></div>
             <div class="form-group"><label>Default?</label><select id="partner-default"><option value="false">No</option><option value="true">Yes — use for batches without partnerId</option></select></div>
           </div>
+          <div class="form-row">
+            <div class="form-group"><label>Mutual TLS (Client Certificate)</label><select id="partner-use-mtls"><option value="false">Disabled</option><option value="true">Enabled — present client cert during TLS handshake</option></select></div>
+          </div>
+          <p class="text-muted" style="font-size:11px;margin:-4px 0 8px;">Only needed when the bank endpoint requires mutual TLS. Additive to the auth type above (a bank may require both a client cert and a token). Provide file paths on the server.</p>
+          <div class="form-row">
+            <div class="form-group"><label>Client Cert Path</label><input type="text" id="partner-client-cert" placeholder="/path/to/client-cert.pem"></div>
+            <div class="form-group"><label>Client Key Path</label><input type="text" id="partner-client-key" placeholder="/path/to/client-key.pem"></div>
+          </div>
+          <div class="form-row">
+            <div class="form-group"><label>Client CA Path (optional)</label><input type="text" id="partner-client-ca" placeholder="/path/to/ca.pem"></div>
+            <div class="form-group"><label>Client Key Passphrase (optional)</label><input type="password" id="partner-client-key-passphrase" placeholder="(Optional) key passphrase"></div>
+          </div>
           <button class="btn btn-success btn-sm" onclick="registerPartner()">Register Partner</button>
           <div id="partner-add-result"></div>
         </div>
@@ -1699,6 +1711,23 @@
           <div class="form-group" style="flex:1"><label>API Secret / Password</label><input type="password" id="cfg-api-secret" placeholder="Secret or password"></div>
         </div>
         <div class="form-row" style="margin-top:8px;">
+          <div class="form-group"><label>Mutual TLS (Client Certificate)</label>
+            <select id="cfg-use-mtls" style="padding:8px;border-radius:6px;border:1px solid var(--border);background:var(--bg);color:var(--text);">
+              <option value="false">Disabled</option>
+              <option value="true">Enabled — present client cert during TLS handshake</option>
+            </select>
+          </div>
+        </div>
+        <p class="text-muted" style="font-size:11px;margin:-2px 0 8px;">Only needed when the receiving bank requires mutual TLS. Additive to the auth type (a bank may require both a client cert and a token). Provide file paths on the server.</p>
+        <div class="form-row">
+          <div class="form-group" style="flex:1"><label>Client Cert Path</label><input type="text" id="cfg-client-cert" placeholder="/path/to/client-cert.pem"></div>
+          <div class="form-group" style="flex:1"><label>Client Key Path</label><input type="text" id="cfg-client-key" placeholder="/path/to/client-key.pem"></div>
+        </div>
+        <div class="form-row">
+          <div class="form-group" style="flex:1"><label>Client CA Path (optional)</label><input type="text" id="cfg-client-ca" placeholder="/path/to/ca.pem"></div>
+          <div class="form-group" style="flex:1"><label>Client Key Passphrase (optional)</label><input type="password" id="cfg-client-key-passphrase" placeholder="(Optional) key passphrase"></div>
+        </div>
+        <div class="form-row" style="margin-top:8px;">
           <button class="btn btn-success btn-sm" onclick="saveSettings()">Save Configuration</button>
           <button class="btn btn-outline btn-sm" onclick="testConnection()">Test Connection</button>
         </div>
@@ -2616,6 +2645,11 @@
         apiKey: el('partner-api-key').value || undefined,
         apiSecret: el('partner-api-secret').value || undefined,
         apiAuthType: el('partner-auth-type').value,
+        useMtls: el('partner-use-mtls').value === 'true',
+        clientCertPath: el('partner-client-cert').value || undefined,
+        clientKeyPath: el('partner-client-key').value || undefined,
+        clientCaPath: el('partner-client-ca').value || undefined,
+        clientKeyPassphrase: el('partner-client-key-passphrase').value || undefined,
         isDefault: el('partner-default').value === 'true',
       };
       if (!data.partnerId || !data.partnerName) {
@@ -2647,6 +2681,7 @@
           <tr><td>Protocol</td><td><span class="badge ${p.protocol === 'rest_api' ? 'badge-info' : 'badge-purple'}">${esc(p.protocol)}</span></td></tr>
           <tr><td>API Base URL</td><td>${esc(p.api_base_url || p.partner_url || '—')}</td></tr>
           <tr><td>API Key</td><td>${p.has_api_key ? '<span class="badge badge-active">Set</span>' : '<span class="badge badge-pending">Not set</span>'}</td></tr>
+          <tr><td>Mutual TLS</td><td>${p.use_mtls ? '<span class="badge badge-active">Enabled</span>' : '<span class="badge badge-pending">Disabled</span>'}${p.has_client_cert ? ' · cert ✓' : ''}${p.has_client_key ? ' · key ✓' : ''}${p.has_client_ca ? ' · CA ✓' : ''}</td></tr>
           <tr><td>Default Partner</td><td>${p.is_default ? 'Yes' : 'No'}</td></tr>
           <tr><td>Active</td><td><span class="badge ${p.active ? 'badge-active' : 'badge-error'}">${p.active ? 'Yes' : 'No'}</span></td></tr>
           <tr><td>Created</td><td>${shortDate(p.created_at)}</td></tr>
@@ -3111,6 +3146,11 @@
         el('cfg-auth-type').value = s.bank_auth_type || 'none';
         el('cfg-api-key').value = s.bank_api_key || '';
         el('cfg-api-secret').value = s.bank_api_secret || '';
+        el('cfg-use-mtls').value = (s.bank_use_mtls === 'true' || s.bank_use_mtls === true) ? 'true' : 'false';
+        el('cfg-client-cert').value = s.bank_client_cert_path || '';
+        el('cfg-client-key').value = s.bank_client_key_path || '';
+        el('cfg-client-ca').value = s.bank_client_ca_path || '';
+        el('cfg-client-key-passphrase').value = s.bank_client_key_passphrase || '';
 
         // Show/hide auth fields
         toggleAuthFields();
@@ -3175,6 +3215,11 @@
         bank_auth_type: el('cfg-auth-type').value,
         bank_api_key: el('cfg-api-key').value,
         bank_api_secret: el('cfg-api-secret').value,
+        bank_use_mtls: el('cfg-use-mtls').value === 'true' ? 'true' : 'false',
+        bank_client_cert_path: el('cfg-client-cert').value,
+        bank_client_key_path: el('cfg-client-key').value,
+        bank_client_ca_path: el('cfg-client-ca').value,
+        bank_client_key_passphrase: el('cfg-client-key-passphrase').value,
       };
       const resp = await fetchJSON(API + '/api/admin/system/settings', {
         method: 'POST', headers: adminHeaders(), body: JSON.stringify(updates)
