@@ -110,7 +110,13 @@ router.get('/events', requireAdmin, async (req, res) => {
 // Uses raw body so the connector can verify an HMAC signature over the exact bytes.
 router.post('/webhooks/:id', express.raw({ type: '*/*', limit: '2mb' }), async (req, res) => {
   try {
-    const rawBody = Buffer.isBuffer(req.body) ? req.body : Buffer.from(req.body || '');
+    // Prefer the exact received bytes. Depending on the entrypoint the raw body
+    // arrives either as req.rawBody (server-3002.js captures it in express.json's
+    // verify callback) or as a Buffer in req.body (server-new-fixed.js mounts
+    // express.raw for this path before the global JSON parser).
+    const rawBody = Buffer.isBuffer(req.rawBody) ? req.rawBody
+      : Buffer.isBuffer(req.body) ? req.body
+      : Buffer.from(typeof req.body === 'string' ? req.body : JSON.stringify(req.body || {}));
     const result = await BankingAggregator.handleWebhook(req.params.id, req.headers, rawBody);
     if (!result.verified) return res.status(401).json({ success: false, error: 'Signature verification failed' });
     res.json({ success: true, data: result });

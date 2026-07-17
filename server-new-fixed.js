@@ -6,6 +6,11 @@ const fs = require("fs");
 const app = express();
 const PORT = process.env.PORT || 3001;
 
+// Preserve the raw request body for aggregator webhooks so the connector can
+// verify an HMAC signature over the exact received bytes. Must run BEFORE the
+// global JSON parser, otherwise express.json() consumes the stream first.
+app.use("/api/aggregator/webhooks", express.raw({ type: "*/*", limit: "2mb" }));
+
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 

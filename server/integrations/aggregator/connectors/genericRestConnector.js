@@ -24,8 +24,13 @@
  *           bearerToken, apiKey, headerName, username, password, hmacSecret },
  *   // Mutual TLS (additive to header auth) — reuses the shared helper:
  *   useMtls, clientCertPath, clientKeyPath, clientCaPath, clientKeyPassphrase,
- *   // Webhook signature verification:
+ *   // Webhook signature verification (secure default: unsigned webhooks are
+ *   // rejected unless allowUnsignedWebhooks is explicitly set):
  *   webhookSecret, webhookSignatureHeader,   // default header: x-signature
+ *   allowUnsignedWebhooks,                    // opt-in to accept unsigned webhooks
+ *   // SSRF guard: requests to private/internal/loopback addresses are refused
+ *   // unless the operator explicitly opts in:
+ *   allowPrivateNetwork,                      // opt-in to allow internal targets
  *   // Optional record location + field mapping for normalization:
  *   listPaths: { accounts: 'data', transactions: 'data', statements: 'data' },
  *   mapping: {
@@ -44,8 +49,76 @@
 const https = require('https');
 const http = require('http');
 const crypto = require('crypto');
+const fs = require('fs');
+const net = require('net');
+const dns = require('dns').promises;
 const { URL } = require('url');
-const { buildMtlsOptions } = require('../../ach/openBankApi');
+
+// Build mutual-TLS options from a connection config. Returns {} when mTLS is
+// not enabled or cert material is missing, so the result is always safe to
+// spread into https.request options. Self-contained so this connector does not
+// depend on other outbound clients being present.
+function buildMtlsOptions(config) {
+  if (!config) return {};
+  const useMtls = config.useMtls === true || config.useMtls === 'true';
+  const certPath = config.clientCertPath;
+  const keyPath = config.clientKeyPath;
+  if (!useMtls || !certPath || !keyPath) return {};
+  const tls = {};
+  try {
+    tls.cert = fs.readFileSync(certPath);
+    tls.key = fs.readFileSync(keyPath);
+    if (config.clientCaPath && fs.existsSync(config.clientCaPath)) tls.ca = fs.readFileSync(config.clientCaPath);
+    if (config.clientKeyPassphrase) tls.passphrase = config.clientKeyPassphrase;
+  } catch (err) {
+    throw new Error('Failed to load mTLS client certificate material: ' + err.message);
+  }
+  return tls;
+}
+
+// Returns true if the given literal IP is loopback/private/link-local (incl.
+// cloud metadata 169.254.169.254) — used to block SSRF to internal targets.
+function isPrivateIp(ip) {
+  if (net.isIPv4(ip)) {
+    const p = ip.split('.').map(Number);
+    if (p[0] === 10 || p[0] === 127 || p[0] === 0) return true;
+    if (p[0] === 169 && p[1] === 254) return true;
+    if (p[0] === 172 && p[1] >= 16 && p[1] <= 31) return true;
+    if (p[0] === 192 && p[1] === 168) return true;
+    if (p[0] === 100 && p[1] >= 64 && p[1] <= 127) return true;
+    return false;
+  }
+  const lower = ip.toLowerCase();
+  if (lower === '::1' || lower === '::') return true;
+  if (lower.startsWith('::ffff:')) return isPrivateIp(lower.slice(7));
+  if (lower.startsWith('fc') || lower.startsWith('fd')) return true; // unique local
+  if (lower.startsWith('fe80')) return true; // link-local
+  return false;
+}
+
+// SSRF guard: resolves the target host and returns the vetted public IPs to
+// pin the connection to (defeats DNS rebinding). Returns null when the operator
+// explicitly opts into private-network access via config.allowPrivateNetwork.
+async function resolveAllowed(parsed, config) {
+  if (parsed.protocol !== 'https:' && parsed.protocol !== 'http:') {
+    throw new Error('Only http/https URLs are allowed');
+  }
+  if (config && config.allowPrivateNetwork === true) return null;
+  const host = parsed.hostname;
+  let addrs;
+  if (net.isIP(host)) {
+    addrs = [host];
+  } else {
+    const results = await dns.lookup(host, { all: true });
+    addrs = results.map((r) => r.address);
+  }
+  const allowed = addrs.filter((a) => !isPrivateIp(a));
+  if (!allowed.length) {
+    throw new Error('Refusing to connect to private/internal host ' + host
+      + ' (set config.allowPrivateNetwork=true to override)');
+  }
+  return allowed;
+}
 
 const DEFAULT_ENDPOINTS = {
   accounts: '/accounts',
@@ -81,9 +154,10 @@ function applyAuth(headers, config, body) {
   }
 }
 
-function request(method, urlStr, config, bodyObj) {
+async function request(method, urlStr, config, bodyObj) {
+  const parsed = new URL(urlStr);
+  const vetted = await resolveAllowed(parsed, config);
   return new Promise((resolve, reject) => {
-    const parsed = new URL(urlStr);
     const lib = parsed.protocol === 'https:' ? https : http;
     const body = bodyObj != null ? JSON.stringify(bodyObj) : null;
     const headers = { 'Accept': 'application/json' };
@@ -104,6 +178,15 @@ function request(method, urlStr, config, bodyObj) {
       // Present a client certificate when the provider requires mutual TLS
       ...buildMtlsOptions(config),
     };
+
+    // Pin the connection to a vetted public IP (with a custom lookup) so a
+    // rebinding DNS response cannot redirect us to an internal address, while
+    // preserving the original hostname for TLS SNI and the Host header.
+    if (vetted && vetted.length) {
+      const ip = vetted[0];
+      const family = net.isIPv6(ip) ? 6 : 4;
+      options.lookup = (hostname, opts, cb) => cb(null, ip, family);
+    }
 
     const req = lib.request(options, (res) => {
       let data = '';
@@ -241,7 +324,9 @@ const genericRestConnector = {
 
   verifyWebhook(conn, headers, rawBody) {
     const config = conn.config || {};
-    if (!config.webhookSecret) return true; // no secret configured → accept
+    // Secure default: reject unsigned webhooks unless a secret is configured.
+    // Operators whose provider does not sign webhooks can opt in explicitly.
+    if (!config.webhookSecret) return config.allowUnsignedWebhooks === true;
     const headerName = (config.webhookSignatureHeader || 'x-signature').toLowerCase();
     const provided = headers ? (headers[headerName] || headers[headerName.replace(/-/g, '_')]) : null;
     if (!provided) return false;
