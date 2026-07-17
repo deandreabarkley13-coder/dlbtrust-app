@@ -175,7 +175,7 @@ class BillSyncEngine {
       var res = await pool.query(`
         SELECT COALESCE(SUM(debit_amount), 0) - COALESCE(SUM(credit_amount), 0) as balance
         FROM trust_journal_lines jl
-        JOIN trust_journal_entries je ON je.id = jl.journal_entry_id
+        JOIN trust_journal_entries je ON je.entry_id = jl.entry_id
         WHERE jl.account_code = $1 AND je.status = 'posted'
       `, [BILL_CASH_GL]);
       glBalance = parseFloat(res.rows[0].balance) || 0;

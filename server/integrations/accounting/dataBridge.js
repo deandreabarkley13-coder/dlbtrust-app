@@ -558,10 +558,17 @@ class DataBridge {
       }
 
       var glMap = {};
-      if (glSummary && Array.isArray(glSummary.accounts)) {
-        for (var g = 0; g < glSummary.accounts.length; g++) {
-          var glAcct = glSummary.accounts[g];
-          glMap[glAcct.id] = glAcct;
+      if (glSummary && glSummary.accounts) {
+        var acctCategories = glSummary.accounts;
+        var allAccts = [].concat(
+          acctCategories.assets || [],
+          acctCategories.liabilities || [],
+          acctCategories.equity || [],
+          acctCategories.income || [],
+          acctCategories.expenses || []
+        );
+        for (var g = 0; g < allAccts.length; g++) {
+          glMap[allAccts[g].id] = allAccts[g];
         }
       }
 

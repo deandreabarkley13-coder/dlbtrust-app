@@ -5942,13 +5942,14 @@
         const r = await fetchJSON(API + '/api/electronic-settlement/stp/dashboard', { headers: adminHeaders() });
         if (r.success && r.data) {
           const d = r.data;
-          el('stp-clearing').textContent = d.clearing || 0;
-          el('stp-cleared').textContent = d.cleared || 0;
-          el('stp-posted').textContent = d.posted || 0;
-          el('stp-available').textContent = d.available || 0;
-          el('stp-cleared-vol').textContent = '$' + Number(d.cleared_volume || 0).toLocaleString(undefined, {minimumFractionDigits:2});
-          el('stp-pending-vol').textContent = '$' + Number(d.pending_volume || 0).toLocaleString(undefined, {minimumFractionDigits:2});
-          el('stp-failed').textContent = d.failed || 0;
+          const st = d.stats || d;
+          el('stp-clearing').textContent = st.clearing || 0;
+          el('stp-cleared').textContent = st.cleared || 0;
+          el('stp-posted').textContent = st.posted || 0;
+          el('stp-available').textContent = st.available || 0;
+          el('stp-cleared-vol').textContent = '$' + Number(st.cleared_volume || 0).toLocaleString(undefined, {minimumFractionDigits:2});
+          el('stp-pending-vol').textContent = '$' + Number(st.pending_volume || 0).toLocaleString(undefined, {minimumFractionDigits:2});
+          el('stp-failed').textContent = st.failed || 0;
 
           if (d.recent && d.recent.length > 0) {
             let html = '<table><thead><tr><th>STP ID</th><th>Type</th><th>Amount</th><th>COA</th><th>Settlement Date</th><th>Availability</th><th>Status</th></tr></thead><tbody>';
