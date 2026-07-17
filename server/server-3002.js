@@ -121,6 +121,25 @@ app.get('/treasury', function(req, res) {
   res.set('Expires', '0');
   res.sendFile(path.join(HD, 'public', 'dashboard.html'));
 });
+// ─── Circuit Breaker Reset ────────────────────────────────────────────────
+app.post('/api/admin/circuit-reset', function(req, res) {
+  var adminToken = req.headers['x-admin-token'];
+  if (!adminToken || adminToken !== process.env.ADMIN_SECRET_TOKEN) {
+    return res.status(403).json({ success: false, error: 'Unauthorized' });
+  }
+  try {
+    var pool = require(path.join(HD, 'server', 'integrations', 'bonds', 'pgPool'));
+    if (pool.resetCircuit) {
+      pool.resetCircuit();
+      res.json({ success: true, message: 'Circuit breaker reset and pool rebuilt', status: pool.getCircuitStatus() });
+    } else {
+      res.json({ success: false, error: 'resetCircuit not available' });
+    }
+  } catch (e) {
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
 // ─── Health / Data Integrity Endpoint ──────────────────────────────────────
 app.get('/api/health', async function(req, res) {
   try {

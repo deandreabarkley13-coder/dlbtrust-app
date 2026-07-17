@@ -1921,12 +1921,14 @@
       }
     }
 
+    let _loginRetryTimer = null;
     async function doLogin() {
       const username = el('login-username').value.trim();
       const password = el('login-password').value;
       if (!username || !password) { showLoginError('Please enter username and password'); return; }
 
       el('login-error').style.display = 'none';
+      if (_loginRetryTimer) { clearInterval(_loginRetryTimer); _loginRetryTimer = null; }
       const r = await fetchJSON(API + '/api/auth/login', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -1944,13 +1946,37 @@
         updateSidebarUser();
         loadOverview();
       } else {
-        showLoginError(r.error || 'Login failed');
+        const errMsg = r.error || 'Login failed';
+        // Auto-retry on circuit breaker / DB unavailable errors
+        if (errMsg.includes('circuit breaker') || errMsg.includes('temporarily unavailable') || errMsg.includes('auto-recovering') || errMsg.includes('Connection terminated')) {
+          showLoginError('Database reconnecting... retrying automatically');
+          el('login-error').style.background = 'rgba(59,130,246,0.1)';
+          el('login-error').style.color = '#60a5fa';
+          el('login-error').style.borderColor = '#3b82f6';
+          let countdown = 5;
+          _loginRetryTimer = setInterval(() => {
+            countdown--;
+            if (countdown <= 0) {
+              clearInterval(_loginRetryTimer);
+              _loginRetryTimer = null;
+              el('login-error').textContent = 'Retrying...';
+              doLogin();
+            } else {
+              el('login-error').textContent = 'Database reconnecting... retrying in ' + countdown + 's';
+            }
+          }, 1000);
+        } else {
+          showLoginError(errMsg);
+        }
       }
     }
 
     function showLoginError(msg) {
       el('login-error').textContent = msg;
       el('login-error').style.display = 'block';
+      el('login-error').style.background = '';
+      el('login-error').style.color = '';
+      el('login-error').style.borderColor = '';
     }
 
     function doLogout() {
