@@ -234,6 +234,7 @@
     <div class="nav-item" data-page="apikeys"><span class="icon">🔑</span> API Keys</div>
     <div class="nav-item" data-page="as2"><span class="icon">🔗</span> AS2 Server</div>
     <div class="nav-item" data-page="aggregator"><span class="icon">🔀</span> Banking Aggregator</div>
+    <div class="nav-item" data-page="payment-hub"><span class="icon">🏧</span> Payment Hub</div>
     <div class="nav-section">Operations</div>
     <div class="nav-item" data-page="crm"><span class="icon">👥</span> CRM & Investors</div>
     <div class="nav-item" data-page="documents"><span class="icon">📄</span> Documents</div>
@@ -1466,6 +1467,60 @@
       </div>
     </div>
 
+    <!-- PAYMENT HUB PAGE -->
+    <div id="page-payment-hub" class="page hidden">
+      <div class="page-header">
+        <div><h1>Payment Hub</h1><div class="subtitle">Maker/checker payment intents with straight-through ACH transmission. Operator JWT required (Authorization: Bearer).</div></div>
+        <div>
+          <button class="btn btn-sm" onclick="loadPaymentHub()" title="Refresh">Refresh</button>
+        </div>
+      </div>
+
+      <div class="grid grid-4" id="ph-stats">
+        <div class="card"><div class="stat-label">Readiness</div><div class="stat-value" id="ph-readiness">—</div></div>
+        <div class="card"><div class="stat-label">Total Intents</div><div class="stat-value" id="ph-total-intents">—</div></div>
+        <div class="card"><div class="stat-label">Pending Approvals</div><div class="stat-value" id="ph-pending-approvals">—</div></div>
+        <div class="card"><div class="stat-label">ACH Connector</div><div class="stat-value" id="ph-ach-status">—</div></div>
+      </div>
+
+      <!-- Create Payment Intent -->
+      <div class="card" style="margin-top:24px">
+        <h2>Create Payment Intent</h2>
+        <p class="text-muted" style="font-size:12px;margin:-4px 0 10px;">Submits to <code>POST /api/payment-hub/intents</code> with a client-generated <code>Idempotency-Key</code>. Beneficiary routing/account are encrypted server-side and never returned in full.</p>
+        <div class="form-row">
+          <div class="form-group"><label>Amount</label><input type="number" step="0.01" min="0.01" id="ph-amount" placeholder="100.00"></div>
+          <div class="form-group"><label>Currency</label><select id="ph-currency"><option value="USD">USD</option></select></div>
+          <div class="form-group"><label>Payment Type</label><input type="text" id="ph-payment-type" placeholder="e.g. vendor_disbursement"></div>
+        </div>
+        <div class="form-row">
+          <div class="form-group"><label>Source Type</label><select id="ph-source-type"><option value="trust_account">Trust Account</option><option value="sub_ledger">Sub-Ledger</option></select></div>
+          <div class="form-group"><label>Source Account Code</label><input type="text" id="ph-source-account-code" placeholder="1000"></div>
+          <div class="form-group"><label>Source Sub-Ledger ID</label><input type="text" id="ph-source-sub-ledger" placeholder="required for sub_ledger"></div>
+        </div>
+        <div class="form-row">
+          <div class="form-group"><label>Beneficiary Name</label><input type="text" id="ph-beneficiary-name" placeholder="Acme LLC"></div>
+          <div class="form-group"><label>Beneficiary Routing</label><input type="text" id="ph-beneficiary-routing" placeholder="9 digits"></div>
+          <div class="form-group"><label>Beneficiary Account</label><input type="text" id="ph-beneficiary-account" placeholder="4-17 digits"></div>
+        </div>
+        <div class="form-row">
+          <div class="form-group"><label>Account Type</label><select id="ph-account-type"><option value="checking">Checking</option><option value="savings">Savings</option></select></div>
+          <div class="form-group"><label>SEC Code</label><select id="ph-sec-code"><option value="CCD">CCD</option><option value="PPD">PPD</option></select></div>
+          <div class="form-group"><label>Effective Date (optional)</label><input type="date" id="ph-effective-date"></div>
+        </div>
+        <div class="form-row">
+          <div class="form-group" style="flex:1"><label>Reason / Description</label><input type="text" id="ph-description" placeholder="Purpose of payment"></div>
+        </div>
+        <button class="btn btn-success btn-sm" onclick="phCreateIntent()">Create Intent</button>
+        <div id="ph-create-result" style="margin-top:8px"></div>
+      </div>
+
+      <!-- Payment Intents -->
+      <div class="card" style="margin-top:24px">
+        <h2>Payment Intents</h2>
+        <div id="ph-intents-table"><p class="text-muted">Loading…</p></div>
+      </div>
+    </div>
+
     <div id="page-nifi" class="page hidden">
       <div class="page-header">
         <div><h1>NiFi File Transfer</h1><div class="subtitle">Automated server-to-server payment file generation, staging, and transfer via Apache NiFi</div></div>
@@ -2058,7 +2113,16 @@
         el('agg-txns-count').textContent = status.data.transactions;
         el('agg-events-count').textContent = status.data.events;
       } else {
-        el('agg-connections-list').innerHTML = '<p class="error-msg">' + esc((status && status.error) || 'Set your admin token (Security page) to use the aggregator.') + '</p>';
+        const guidance = (status && status.status === 401)
+          ? 'Set your admin token on the Security page to use the aggregator.'
+          : ((status && status.error) || 'Set your admin token on the Security page to use the aggregator.');
+        ['agg-connections', 'agg-accounts-count', 'agg-txns-count', 'agg-events-count'].forEach(id => { el(id).textContent = '—'; });
+        const msg = '<p class="error-msg">' + esc(guidance) + '</p>';
+        el('agg-connections-list').innerHTML = msg;
+        el('agg-accounts-table').innerHTML = msg;
+        el('agg-txns-table').innerHTML = msg;
+        el('agg-events-table').innerHTML = msg;
+        return;
       }
       renderAggConnections((conns && conns.data) || []);
       renderAggAccounts((accts && accts.data) || []);
@@ -2184,6 +2248,143 @@
       else alert('Delete failed: ' + ((resp && resp.error) || 'unknown'));
     }
 
+    // ─── PAYMENT HUB ─────────────────────────────────────────────────────────────
+    function phUuid() {
+      if (window.crypto && typeof window.crypto.randomUUID === 'function') return window.crypto.randomUUID();
+      return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function (c) {
+        const r = (Math.random() * 16) | 0;
+        const v = c === 'x' ? r : (r & 0x3) | 0x8;
+        return v.toString(16);
+      });
+    }
+
+    async function loadPaymentHub() {
+      const [dash, intents] = await Promise.all([
+        fetchJSON(API + '/api/payment-hub/dashboard', { headers: adminHeaders() }),
+        fetchJSON(API + '/api/payment-hub/intents?limit=100', { headers: adminHeaders() }),
+      ]);
+      if (dash && dash.success && dash.data) {
+        const d = dash.data;
+        const ready = d.readiness && d.readiness.ready;
+        el('ph-readiness').innerHTML = ready
+          ? '<span class="badge badge-active">Ready</span>'
+          : '<span class="badge badge-error">Not Ready</span>';
+        const statuses = d.statuses || {};
+        const total = Object.values(statuses).reduce((a, b) => a + Number(b || 0), 0);
+        el('ph-total-intents').textContent = total;
+        el('ph-pending-approvals').textContent = Number(statuses.pending_approval || 0);
+        const ach = d.achConnector || {};
+        el('ph-ach-status').innerHTML = ach.ready
+          ? '<span class="badge badge-active">Ready</span>'
+          : '<span class="badge badge-error">Not Ready</span>';
+      } else {
+        const msg = (dash && dash.error) || 'Sign in with an operator account to use the Payment Hub.';
+        el('ph-readiness').innerHTML = '<span class="badge badge-error">Auth</span>';
+        el('ph-total-intents').textContent = '—';
+        el('ph-pending-approvals').textContent = '—';
+        el('ph-ach-status').innerHTML = '<span class="badge badge-error">Auth</span>';
+        el('ph-intents-table').innerHTML = '<p class="error-msg">' + esc(msg) + '</p>';
+        return;
+      }
+      renderPhIntents((intents && intents.data) || []);
+    }
+
+    function phActionButtons(it) {
+      const id = it.intent_id;
+      const s = it.status;
+      const b = [];
+      if (s === 'pending_approval') {
+        b.push('<button class="btn btn-sm btn-success" onclick="phApprove(\'' + id + '\')">Approve</button>');
+        b.push('<button class="btn btn-sm btn-danger" onclick="phReject(\'' + id + '\')">Reject</button>');
+      }
+      if (s === 'approved' || s === 'queued') {
+        b.push('<button class="btn btn-sm" onclick="phSubmit(\'' + id + '\')">Submit</button>');
+      }
+      if (s === 'failed' || s === 'returned') {
+        b.push('<button class="btn btn-sm" onclick="phRetry(\'' + id + '\')">Retry</button>');
+      }
+      if (['pending_approval', 'approved', 'queued', 'failed'].includes(s)) {
+        b.push('<button class="btn btn-sm btn-danger" onclick="phCancel(\'' + id + '\')">Cancel</button>');
+      }
+      return b.length ? b.join(' ') : '<span class="text-muted">—</span>';
+    }
+
+    function renderPhIntents(list) {
+      if (!list.length) { el('ph-intents-table').innerHTML = '<p class="text-muted">No payment intents yet. Create one above.</p>'; return; }
+      let h = '<table><thead><tr><th>Intent</th><th>Type</th><th>Status</th><th>Amount</th><th>Beneficiary</th><th>Approvals</th><th>Created</th><th>Actions</th></tr></thead><tbody>';
+      for (const it of list) {
+        h += '<tr>'
+          + '<td><code>' + esc(it.intent_id) + '</code>' + (it.error_message ? '<br><span class="error-msg" style="font-size:11px">' + esc(it.error_message) + '</span>' : '') + '</td>'
+          + '<td>' + esc(it.payment_type) + '</td>'
+          + '<td>' + esc(it.status) + '</td>'
+          + '<td>' + esc(it.amount) + ' ' + esc(it.currency) + '</td>'
+          + '<td>' + esc(it.beneficiary_name) + '<br><span class="text-muted" style="font-size:11px">' + esc(it.beneficiary_routing) + ' / ' + esc(it.beneficiary_account) + '</span></td>'
+          + '<td>' + esc((it.approval_count != null ? it.approval_count : 0) + '/' + (it.required_approvals != null ? it.required_approvals : '?')) + '</td>'
+          + '<td>' + shortDate(it.created_at) + '</td>'
+          + '<td>' + phActionButtons(it) + '</td>'
+          + '</tr>';
+      }
+      el('ph-intents-table').innerHTML = h + '</tbody></table>';
+    }
+
+    async function phAction(id, action, body) {
+      const resp = await fetchJSON(API + '/api/payment-hub/intents/' + encodeURIComponent(id) + '/' + action, {
+        method: 'POST', headers: adminHeaders(), body: JSON.stringify(body || {}),
+      });
+      if (!(resp && resp.success)) alert(action + ' failed: ' + ((resp && resp.error) || 'unknown'));
+      loadPaymentHub();
+    }
+
+    function phApprove(id) { phAction(id, 'approve', { reason: prompt('Approval reason (optional):') || undefined }); }
+    function phReject(id) {
+      const reason = prompt('Rejection reason:');
+      if (reason == null) return;
+      phAction(id, 'reject', { reason: reason || undefined });
+    }
+    function phSubmit(id) { if (confirm('Submit intent ' + id + ' for transmission?')) phAction(id, 'submit'); }
+    function phCancel(id) {
+      const reason = prompt('Cancellation reason:');
+      if (reason == null) return;
+      phAction(id, 'cancel', { reason: reason || undefined });
+    }
+    function phRetry(id) { if (confirm('Retry intent ' + id + '?')) phAction(id, 'retry'); }
+
+    async function phCreateIntent() {
+      const sourceType = el('ph-source-type').value;
+      const data = {
+        amount: el('ph-amount').value,
+        currency: el('ph-currency').value,
+        paymentType: el('ph-payment-type').value.trim(),
+        sourceType,
+        beneficiaryName: el('ph-beneficiary-name').value.trim(),
+        beneficiaryRouting: el('ph-beneficiary-routing').value.trim(),
+        beneficiaryAccount: el('ph-beneficiary-account').value.trim(),
+        beneficiaryAccountType: el('ph-account-type').value,
+        secCode: el('ph-sec-code').value,
+        description: el('ph-description').value.trim() || undefined,
+      };
+      if (sourceType === 'trust_account') data.sourceAccountCode = el('ph-source-account-code').value.trim() || undefined;
+      else data.sourceSubLedgerId = el('ph-source-sub-ledger').value.trim() || undefined;
+      const eff = el('ph-effective-date').value;
+      if (eff) data.effectiveDate = eff;
+      if (!data.amount || Number(data.amount) <= 0) { el('ph-create-result').innerHTML = '<p class="error-msg">Amount is required</p>'; return; }
+      if (!data.paymentType) { el('ph-create-result').innerHTML = '<p class="error-msg">Payment type is required</p>'; return; }
+      const headers = adminHeaders();
+      headers['Idempotency-Key'] = phUuid();
+      const resp = await fetchJSON(API + '/api/payment-hub/intents', { method: 'POST', headers, body: JSON.stringify(data) });
+      if (resp && resp.success) {
+        const intent = (resp.data && resp.data.intent) || {};
+        el('ph-create-result').innerHTML = '<p class="success-msg">Intent created: ' + esc(intent.intent_id || '') + '</p>';
+        el('ph-amount').value = ''; el('ph-payment-type').value = ''; el('ph-beneficiary-name').value = '';
+        el('ph-beneficiary-routing').value = ''; el('ph-beneficiary-account').value = '';
+        el('ph-source-account-code').value = ''; el('ph-source-sub-ledger').value = '';
+        el('ph-description').value = ''; el('ph-effective-date').value = '';
+        loadPaymentHub();
+      } else {
+        el('ph-create-result').innerHTML = '<p class="error-msg">' + esc((resp && resp.error) || 'Failed') + '</p>';
+      }
+    }
+
     // ─── Navigation ────────────────────────────────────────────────────────────
     document.querySelectorAll('.nav-item').forEach(item => {
       item.addEventListener('click', () => {
@@ -2193,7 +2394,7 @@
         document.querySelectorAll('.page').forEach(p => p.classList.add('hidden'));
         document.getElementById('page-' + page).classList.remove('hidden');
         // Load data for page
-        const loaders = { overview: loadOverview, bonds: loadBonds, cash: loadCash, payments: loadPayments, ach: loadACH, wire: loadWire, partners: loadPartners, apikeys: loadApiKeys, as2: loadAS2, aggregator: loadAggregator, crm: loadCRM, documents: loadDocuments, accounting: loadAccounting, tax: loadTax, fineract: loadFineract, bill: loadBill, 'trustee-agent': loadTrusteeAgent, 'bookkeeping-agent': loadBookkeepingAgent, 'data-bridge': loadDataBridge, 'sub-ledgers': loadSubLedgers, 'vendor-payments': loadVendorPayments, 'electronic-settlement': loadElectronicSettlement, nifi: loadNiFi, 'hce-payments': loadHCE, settings: loadSettings, security: loadSecurity, backup: loadBackupPage, admin: loadAdmin };
+        const loaders = { overview: loadOverview, bonds: loadBonds, cash: loadCash, payments: loadPayments, ach: loadACH, wire: loadWire, partners: loadPartners, apikeys: loadApiKeys, as2: loadAS2, aggregator: loadAggregator, 'payment-hub': loadPaymentHub, crm: loadCRM, documents: loadDocuments, accounting: loadAccounting, tax: loadTax, fineract: loadFineract, bill: loadBill, 'trustee-agent': loadTrusteeAgent, 'bookkeeping-agent': loadBookkeepingAgent, 'data-bridge': loadDataBridge, 'sub-ledgers': loadSubLedgers, 'vendor-payments': loadVendorPayments, 'electronic-settlement': loadElectronicSettlement, nifi: loadNiFi, 'hce-payments': loadHCE, settings: loadSettings, security: loadSecurity, backup: loadBackupPage, admin: loadAdmin };
         if (loaders[page]) loaders[page]();
       });
     });
