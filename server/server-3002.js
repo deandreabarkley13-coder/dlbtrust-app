@@ -238,6 +238,15 @@ async function initializeDatabase() {
   } catch(e) { console.warn('[agents] table init:', e.message); }
 
   try {
+    var achMigration = fs.readFileSync(path.join(HD, 'server', 'scripts', 'migrate-ach.sql'), 'utf8');
+    await pool.query(achMigration);
+    console.log('[ach] tables ensured');
+  } catch(e) {
+    console.error('[ach] table init failed:', e.message);
+    throw e;
+  }
+
+  try {
     var PaymentHubEngine = require(path.join(HD, 'server', 'integrations', 'paymentHub', 'paymentHubEngine')).PaymentHubEngine;
     await PaymentHubEngine.ensureTables();
     console.log('[payment-hub] tables ensured');
