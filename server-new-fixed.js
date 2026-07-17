@@ -47,6 +47,9 @@ try { app.use("/api/as2", require(HD + "/server/routes/as2")); console.log("[as2
 // Tax Engine — Form 1041 & K-1 generation
 try { app.use("/api/tax", require(HD + "/server/routes/tax")); console.log("[tax] loaded"); } catch(e) { console.warn("[tax]", e.message); }
 
+// Banking Aggregator — bi-directional financial data hub (pull/push/webhooks)
+try { app.use("/api/aggregator", require(HD + "/server/routes/aggregator")); console.log("[aggregator] loaded"); } catch(e) { console.warn("[aggregator]", e.message); }
+
 // Start live bond accrual scheduler
 try {
   const { LiveBondEngine } = require(HD + "/server/integrations/bonds/liveEngine");
