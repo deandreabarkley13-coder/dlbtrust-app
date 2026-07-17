@@ -80,6 +80,10 @@ try { app.use('/api/as2', require(path.join(HD, 'server', 'routes', 'as2'))); co
 // Tax Engine — Form 1041 & K-1 generation
 try { app.use('/api/tax', require(path.join(HD, 'server', 'routes', 'tax'))); console.log('[tax] loaded'); } catch(e) { console.warn('[tax]', e.message); }
 
+// Banking Aggregator — bi-directional financial data hub (pull/push/webhooks).
+// Webhook HMAC verification uses req.rawBody captured by express.json's verify above.
+try { app.use('/api/aggregator', require(path.join(HD, 'server', 'routes', 'aggregator'))); console.log('[aggregator] loaded'); } catch(e) { console.warn('[aggregator]', e.message); }
+
 // Backup & System Resilience routes
 try { app.use('/api/backup', require(path.join(HD, 'server', 'routes', 'backup'))); console.log('[backup] loaded'); } catch(e) { console.warn('[backup]', e.message); }
 

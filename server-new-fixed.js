@@ -6,6 +6,11 @@ const fs = require("fs");
 const app = express();
 const PORT = process.env.PORT || 3001;
 
+// Preserve the raw request body for aggregator webhooks so the connector can
+// verify an HMAC signature over the exact received bytes. Must run BEFORE the
+// global JSON parser, otherwise express.json() consumes the stream first.
+app.use("/api/aggregator/webhooks", express.raw({ type: "*/*", limit: "2mb" }));
+
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
@@ -46,6 +51,9 @@ try { app.use("/api/as2", require(HD + "/server/routes/as2")); console.log("[as2
 
 // Tax Engine — Form 1041 & K-1 generation
 try { app.use("/api/tax", require(HD + "/server/routes/tax")); console.log("[tax] loaded"); } catch(e) { console.warn("[tax]", e.message); }
+
+// Banking Aggregator — bi-directional financial data hub (pull/push/webhooks)
+try { app.use("/api/aggregator", require(HD + "/server/routes/aggregator")); console.log("[aggregator] loaded"); } catch(e) { console.warn("[aggregator]", e.message); }
 
 // Start live bond accrual scheduler
 try {
