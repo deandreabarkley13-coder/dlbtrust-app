@@ -28,6 +28,49 @@ const { URL } = require('url');
 
 const ACH_EXPORTS_DIR = path.join(__dirname, '..', '..', '..', 'data', 'ach-exports');
 
+/**
+ * Build Node TLS options ({ cert, key, ca, passphrase }) for a client-certificate
+ * (mutual TLS) handshake from a partner/bank config. Returns an empty object when
+ * mTLS is not enabled or no client cert/key is configured, so callers can safely
+ * spread the result into their https.request options unconditionally.
+ *
+ * mTLS is additive: merging these options does not touch header auth, so a bank
+ * that requires BOTH a client cert AND a bearer token is fully supported.
+ *
+ * Accepts either camelCase (partner config from AS2Partners._buildConfig /
+ * SystemSettings.getProductionPartnerConfig) or the snake_case System Settings
+ * shape, whichever the caller has on hand.
+ *
+ * @param {Object} config
+ * @returns {{ cert?: Buffer, key?: Buffer, ca?: Buffer, passphrase?: string }}
+ */
+function buildMtlsOptions(config) {
+  if (!config) return {};
+
+  const useMtls = config.useMtls === true || config.useMtls === 'true'
+    || config.use_mtls === true || config.use_mtls === 'true';
+  const certPath = config.clientCertPath || config.client_cert_path;
+  const keyPath = config.clientKeyPath || config.client_key_path;
+  const caPath = config.clientCaPath || config.client_ca_path;
+  const passphrase = config.clientKeyPassphrase || config.client_key_passphrase;
+
+  // Require the flag plus both a cert and key; CA is optional.
+  if (!useMtls || !certPath || !keyPath) return {};
+
+  const tls = {};
+  try {
+    tls.cert = fs.readFileSync(certPath);
+    tls.key = fs.readFileSync(keyPath);
+    if (caPath && fs.existsSync(caPath)) tls.ca = fs.readFileSync(caPath);
+    if (passphrase) tls.passphrase = passphrase;
+  } catch (err) {
+    // Never log key/cert contents — only the failing path and error message.
+    console.warn('[mTLS] Failed to load client certificate material:', err.message);
+    return {};
+  }
+  return tls;
+}
+
 class OpenBankApi {
 
   /**
@@ -295,6 +338,8 @@ class OpenBankApi {
         headers,
         // Allow self-signed certs for self-transmit (loopback); verify for external partners
         rejectUnauthorized: !isSelfTransmit,
+        // Present a client certificate when the bank endpoint requires mutual TLS
+        ...buildMtlsOptions(partnerConfig),
       };
 
       const lib = parsed.protocol === 'https:' ? https : http;
@@ -378,6 +423,7 @@ class OpenBankApi {
         method: 'GET',
         headers,
         rejectUnauthorized: true,
+        ...buildMtlsOptions(partnerConfig),
       }, (res) => {
         let data = '';
         res.on('data', chunk => { data += chunk; });
@@ -472,6 +518,7 @@ class OpenBankApi {
         headers,
         timeout: 10000,
         rejectUnauthorized: false,
+        ...buildMtlsOptions(partnerConfig),
       }, (res) => {
         let data = '';
         res.on('data', chunk => { data += chunk; });
@@ -775,6 +822,7 @@ class OpenBankApi {
           path: parsed.pathname || '/',
           method: 'OPTIONS',
           timeout: 10000,
+          ...buildMtlsOptions(partnerConfig),
         }, (res) => {
           resolve({
             connected: true,
@@ -814,4 +862,4 @@ class OpenBankApi {
   }
 }
 
-module.exports = { OpenBankApi };
+module.exports = { OpenBankApi, buildMtlsOptions };

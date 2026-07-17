@@ -63,6 +63,19 @@ class USAchConnector {
         issues.push('AS2 transmission is blocked until bank certification is recorded with AS2_PRODUCTION_APPROVED=true');
       }
     }
+    // Mutual-TLS validation — when the partner presents a client certificate,
+    // the cert/key (and CA, if provided) must exist on disk. Additive to header auth.
+    if (partner && (partner.useMtls === true || (partner.apiAuthType || '') === 'mtls')) {
+      if (!partner.clientCertPath || !fs.existsSync(partner.clientCertPath)) {
+        issues.push('mTLS client certificate not found — configure the client cert file');
+      }
+      if (!partner.clientKeyPath || !fs.existsSync(partner.clientKeyPath)) {
+        issues.push('mTLS client private key not found — configure the client key file');
+      }
+      if (partner.clientCaPath && !fs.existsSync(partner.clientCaPath)) {
+        issues.push('mTLS CA bundle path is set but the file was not found');
+      }
+    }
     if (!production && mode !== 'production') warnings.push('Sandbox ACH transmissions do not reach an ODFI');
 
     return {

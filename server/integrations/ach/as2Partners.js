@@ -55,6 +55,8 @@ class AS2Partners {
       localAs2Id, signingCert, signingKey, partnerCert,
       encryptionAlg, signingAlg, requestMdn, mdnUrl,
       apiBaseUrl, apiKey, apiSecret, apiAuthType, webhookSecret,
+      useMtls, clientCert, clientKey, clientCa,
+      clientCertPath, clientKeyPath, clientCaPath, clientKeyPassphrase,
       isDefault, notes,
     } = opts;
 
@@ -77,7 +79,14 @@ class AS2Partners {
     }
 
     // Write certificates to disk
-    const certPaths = AS2Partners._writeCerts(partnerId, { signingCert, signingKey, partnerCert });
+    const certPaths = AS2Partners._writeCerts(partnerId, {
+      signingCert, signingKey, partnerCert, clientCert, clientKey, clientCa,
+    });
+
+    // Resolve mTLS paths: prefer uploaded content (written to disk), else direct path
+    const resolvedClientCert = certPaths.clientCert || clientCertPath || null;
+    const resolvedClientKey = certPaths.clientKey || clientKeyPath || null;
+    const resolvedClientCa = certPaths.clientCa || clientCaPath || null;
 
     // If setting as default, clear existing default
     if (isDefault) {
@@ -90,8 +99,9 @@ class AS2Partners {
          signing_cert_path, signing_key_path, partner_cert_path,
          encryption_alg, signing_alg, request_mdn, mdn_url,
          api_base_url, api_key, api_secret, api_auth_type, webhook_secret,
+         use_mtls, client_cert_path, client_key_path, client_ca_path, client_key_passphrase,
          is_default, active, notes, name, as2_identifier, created_at, updated_at)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, TRUE, $20, $21, $22, NOW(), NOW())
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, TRUE, $25, $26, $27, NOW(), NOW())
        RETURNING *`,
       [
         partnerId, partnerName, proto,
@@ -110,6 +120,11 @@ class AS2Partners {
         apiSecret || null,
         apiAuthType || 'bearer',
         webhookSecret || null,
+        useMtls === true || useMtls === 'true',
+        resolvedClientCert,
+        resolvedClientKey,
+        resolvedClientCa,
+        clientKeyPassphrase || null,
         isDefault || false,
         notes || null,
         // Legacy columns from migrate-as2.sql (backfill for compatibility)
@@ -134,11 +149,15 @@ class AS2Partners {
       signingCert, signingKey, partnerCert,
       encryptionAlg, signingAlg, requestMdn, mdnUrl,
       apiBaseUrl, apiKey, apiSecret, apiAuthType, webhookSecret,
+      useMtls, clientCert, clientKey, clientCa,
+      clientCertPath, clientKeyPath, clientCaPath, clientKeyPassphrase,
       isDefault, active, notes,
     } = updates;
 
     // Write new certs if provided
-    const certPaths = AS2Partners._writeCerts(partnerId, { signingCert, signingKey, partnerCert });
+    const certPaths = AS2Partners._writeCerts(partnerId, {
+      signingCert, signingKey, partnerCert, clientCert, clientKey, clientCa,
+    });
 
     // If setting as default, clear existing default
     if (isDefault === true) {
@@ -167,6 +186,8 @@ class AS2Partners {
       api_secret: apiSecret,
       api_auth_type: apiAuthType,
       webhook_secret: webhookSecret,
+      use_mtls: useMtls === undefined ? undefined : (useMtls === true || useMtls === 'true'),
+      client_key_passphrase: clientKeyPassphrase,
       is_default: isDefault,
       active: active,
       notes: notes,
@@ -191,6 +212,23 @@ class AS2Partners {
     if (certPaths.partnerCert) {
       setClauses.push(`partner_cert_path = $${idx++}`);
       params.push(certPaths.partnerCert);
+    }
+
+    // mTLS cert paths: prefer newly uploaded content, else accept a direct path
+    const newClientCert = certPaths.clientCert || clientCertPath;
+    const newClientKey = certPaths.clientKey || clientKeyPath;
+    const newClientCa = certPaths.clientCa || clientCaPath;
+    if (newClientCert !== undefined) {
+      setClauses.push(`client_cert_path = $${idx++}`);
+      params.push(newClientCert);
+    }
+    if (newClientKey !== undefined) {
+      setClauses.push(`client_key_path = $${idx++}`);
+      params.push(newClientKey);
+    }
+    if (newClientCa !== undefined) {
+      setClauses.push(`client_ca_path = $${idx++}`);
+      params.push(newClientCa);
     }
 
     if (!setClauses.length) throw new Error('No fields to update');
@@ -440,7 +478,8 @@ class AS2Partners {
    */
   static _writeCerts(partnerId, certs) {
     const paths = {};
-    if (!certs.signingCert && !certs.signingKey && !certs.partnerCert) return paths;
+    if (!certs.signingCert && !certs.signingKey && !certs.partnerCert &&
+        !certs.clientCert && !certs.clientKey && !certs.clientCa) return paths;
 
     const dir = AS2Partners.ensureCertsDir(partnerId);
 
@@ -458,6 +497,22 @@ class AS2Partners {
       paths.partnerCert = path.join(dir, 'partner-cert.pem');
       fs.writeFileSync(paths.partnerCert, certs.partnerCert, 'utf8');
       fs.chmodSync(paths.partnerCert, 0o600);
+    }
+    // mTLS client credentials (presented during the TLS handshake)
+    if (certs.clientCert) {
+      paths.clientCert = path.join(dir, 'client-cert.pem');
+      fs.writeFileSync(paths.clientCert, certs.clientCert, 'utf8');
+      fs.chmodSync(paths.clientCert, 0o600);
+    }
+    if (certs.clientKey) {
+      paths.clientKey = path.join(dir, 'client-key.pem');
+      fs.writeFileSync(paths.clientKey, certs.clientKey, 'utf8');
+      fs.chmodSync(paths.clientKey, 0o600);
+    }
+    if (certs.clientCa) {
+      paths.clientCa = path.join(dir, 'client-ca.pem');
+      fs.writeFileSync(paths.clientCa, certs.clientCa, 'utf8');
+      fs.chmodSync(paths.clientCa, 0o600);
     }
     return paths;
   }
@@ -490,6 +545,11 @@ class AS2Partners {
       apiSecret: row.api_secret,
       apiAuthType: row.api_auth_type,
       webhookSecret: row.webhook_secret,
+      useMtls: row.use_mtls === true,
+      clientCertPath: row.client_cert_path,
+      clientKeyPath: row.client_key_path,
+      clientCaPath: row.client_ca_path,
+      clientKeyPassphrase: row.client_key_passphrase,
     };
   }
 
@@ -505,6 +565,11 @@ class AS2Partners {
       has_signing_cert: !!(row.signing_cert_path && fs.existsSync(row.signing_cert_path)),
       has_signing_key: !!(row.signing_key_path && fs.existsSync(row.signing_key_path)),
       has_partner_cert: !!(row.partner_cert_path && fs.existsSync(row.partner_cert_path)),
+      // mTLS status booleans only — never expose key/cert material or paths
+      use_mtls: row.use_mtls === true,
+      has_client_cert: !!(row.client_cert_path && fs.existsSync(row.client_cert_path)),
+      has_client_key: !!(row.client_key_path && fs.existsSync(row.client_key_path)),
+      has_client_ca: !!(row.client_ca_path && fs.existsSync(row.client_ca_path)),
       encryption_alg: row.encryption_alg,
       signing_alg: row.signing_alg,
       request_mdn: row.request_mdn,

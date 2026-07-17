@@ -692,6 +692,18 @@ async function pushToNiFi(fileId, endpoint) {
   var postData = file.file_content;
   var mod = parsed.protocol === 'https:' ? https_mod : http_mod;
 
+  // Optional mutual-TLS: present a client certificate when NiFi's ListenHTTP
+  // endpoint requires one. Sourced from NIFI_CLIENT_* env vars.
+  var buildMtlsOptions = require('../ach/openBankApi').buildMtlsOptions;
+  var mtlsOptions = buildMtlsOptions({
+    useMtls: process.env.NIFI_USE_MTLS === 'true'
+      || !!(process.env.NIFI_CLIENT_CERT_PATH && process.env.NIFI_CLIENT_KEY_PATH),
+    clientCertPath: process.env.NIFI_CLIENT_CERT_PATH,
+    clientKeyPath: process.env.NIFI_CLIENT_KEY_PATH,
+    clientCaPath: process.env.NIFI_CLIENT_CA_PATH,
+    clientKeyPassphrase: process.env.NIFI_CLIENT_KEY_PASSPHRASE,
+  });
+
   return new Promise(function(resolve, reject) {
     var options = {
       hostname: parsed.hostname,
@@ -716,6 +728,9 @@ async function pushToNiFi(fileId, endpoint) {
     if (process.env.NIFI_API_KEY) {
       options.headers['Authorization'] = 'Bearer ' + process.env.NIFI_API_KEY;
     }
+
+    // Merge mutual-TLS client cert/key/ca (additive to header auth)
+    Object.assign(options, mtlsOptions);
 
     var req = mod.request(options, function(res) {
       var body = '';
