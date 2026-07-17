@@ -46,6 +46,12 @@ try { notifEngine = require('./paymentNotificationEngine'); } catch (e) { notifE
 var ACHEngine;
 try { ACHEngine = require('../ach/achEngine').ACHEngine; } catch (e) { ACHEngine = null; }
 
+// OpenACH REST client — real ACH money movement via ODFI (Eaton Family Credit Union).
+// This is the "core banking" rail: funds originate from the trust's own ODFI account,
+// NOT from the BILL Cash Account. Preferred for vendor payments when bank details present.
+var OpenACHClient;
+try { OpenACHClient = require('../openach/openachClient').OpenACHClient; } catch (e) { OpenACHClient = null; }
+
 var WireEngine;
 try { WireEngine = require('../wire/wireEngine').WireEngine; } catch (e) { WireEngine = null; }
 
@@ -667,15 +673,32 @@ async function submitElectronicPayment(opts) {
 
 /**
  * Determine optimal payment method based on priority and amount.
+ *
+ * Preference order for outbound vendor/distribution payments:
+ *   1. WIRE  — for immediate/urgent when recipient bank details present
+ *   2. OPENACH — real ACH from core banking ODFI (funds from trust's own account, NOT BILL Cash)
+ *   3. BILL  — fallback rail (draws from BILL Cash Account)
+ *
+ * OpenACH is preferred over BILL whenever the recipient's routing+account are
+ * present and the OpenACH REST rail is configured, so funds pull from core banking.
  */
 function determineOptimalMethod(amount, priority, opts) {
   if (opts.payee_routing && opts.payee_account) {
     if (priority === 'immediate' || priority === 'urgent') {
       return WireEngine ? 'wire' : 'bill';
     }
+    // Prefer the core-banking ACH rail (OpenACH) when available.
+    if (OpenACHClient && openACHConfigured()) return 'openach';
     if (priority === 'express') return 'bill';
   }
   return 'bill';
+}
+
+/**
+ * Whether the OpenACH REST rail has credentials + base URL configured.
+ */
+function openACHConfigured() {
+  return !!(process.env.OPENACH_API_TOKEN && process.env.OPENACH_API_KEY && process.env.OPENACH_BASE_URL);
 }
 
 /**
@@ -683,10 +706,98 @@ function determineOptimalMethod(amount, priority, opts) {
  */
 async function executePaymentByMethod(method, opts) {
   switch (method) {
-    case 'bill':  return executeBILLPayment(opts);
-    case 'wire':  return executeWirePayment(opts);
-    case 'ach':   return executeACHPayment(opts);
-    default:      throw new Error('Unsupported payment method: ' + method);
+    case 'bill':    return executeBILLPayment(opts);
+    case 'wire':    return executeWirePayment(opts);
+    case 'ach':     return executeACHPayment(opts);
+    case 'openach': return executeOpenACHPayment(opts);
+    default:        throw new Error('Unsupported payment method: ' + method);
+  }
+}
+
+/**
+ * Execute a REAL ACH credit through the OpenACH REST API (core banking ODFI).
+ * Funds originate from the trust's ODFI account (Eaton Family Credit Union),
+ * NOT the BILL Cash Account. Posts a core-banking journal entry.
+ *
+ * Falls back to BILL if OpenACH is unreachable so payments are never silently dropped.
+ */
+async function executeOpenACHPayment(opts) {
+  if (!OpenACHClient || !openACHConfigured()) {
+    console.warn('[ElectronicSettlement] OpenACH not configured — falling back to BILL');
+    return executeBILLPayment(opts);
+  }
+
+  var payeeName = opts.payee_name || 'Vendor';
+  var nameParts = String(payeeName).trim().split(/\s+/);
+  var firstName = nameParts[0] || 'Payee';
+  var lastName = nameParts.slice(1).join(' ') || payeeName;
+
+  try {
+    // Resolve the disbursement payment type (credit) from the ODFI account.
+    var paymentTypeId = opts.openach_payment_type_id || process.env.OPENACH_PAYMENT_TYPE_ID;
+    if (!paymentTypeId) {
+      var types = await OpenACHClient.getPaymentTypes();
+      var creditType = Array.isArray(types)
+        ? types.find(function(t) { return /dist|credit|disburse/i.test(t.name || t.payment_type_name || ''); })
+        : null;
+      paymentTypeId = creditType ? (creditType.id || creditType.payment_type_id) : null;
+    }
+    if (!paymentTypeId) throw new Error('No OpenACH credit payment type available');
+
+    var sendDate = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString().split('T')[0];
+    var achResult = await OpenACHClient.disburseToBeneficiary({
+      first_name: firstName,
+      last_name: lastName,
+      email: opts.payee_email || '',
+      external_id: 'estl_' + opts.settlementId,
+      bank_name: opts.payee_bank_name || 'Recipient Bank',
+      routing_number: opts.payee_routing,
+      account_number: opts.payee_account,
+      account_type: opts.payee_account_type || 'Checking',
+      amount: opts.amount,
+      send_date: sendDate,
+      payment_type_id: paymentTypeId,
+    });
+
+    // Post the core-banking journal entry (funds leave the trust ODFI/cash account).
+    var journalEntryId = null;
+    if (TrustAccountingEngine) {
+      try {
+        var debitCode = opts.payment_type === 'trust_distribution' ? ACCOUNT_CODES.DISTRIBUTIONS : ACCOUNT_CODES.EXPENSES;
+        var creditCode = opts.source_account_code || ACCOUNT_CODES.CASH;
+        var je = await TrustAccountingEngine.postJournalEntry({
+          entryDate: new Date(),
+          description: 'OpenACH settlement (core banking): ' + (opts.description || payeeName),
+          lines: [
+            { accountCode: debitCode, debitAmount: opts.amount, creditAmount: 0,
+              memo: 'OpenACH ' + opts.settlementId + ' — ' + payeeName },
+            { accountCode: creditCode, debitAmount: 0, creditAmount: opts.amount,
+              memo: 'ACH outflow (ODFI): ' + opts.paymentRef },
+          ],
+          referenceType: 'electronic_settlement',
+          referenceId: opts.settlementId,
+          postedBy: opts.initiated_by || 'system',
+        });
+        journalEntryId = je.entry_id || je.id || null;
+      } catch (jeErr) {
+        console.warn('[ElectronicSettlement] OpenACH JE failed:', jeErr.message);
+      }
+    }
+
+    return {
+      journal_entry_id: journalEntryId,
+      transmission_ref: achResult.payment_schedule_id || achResult.external_account_id || opts.paymentRef,
+      processor_ref: achResult.payment_schedule_id || null,
+      openach_profile_id: achResult.payment_profile_id || null,
+      openach_schedule_id: achResult.payment_schedule_id || null,
+      payment_file_hash: computePaymentFileHash(JSON.stringify({
+        method: 'openach_rest', schedule_id: achResult.payment_schedule_id,
+        amount: opts.amount, payee: payeeName, timestamp: new Date().toISOString(),
+      })),
+    };
+  } catch (err) {
+    console.error('[ElectronicSettlement] OpenACH payment failed: ' + err.message + ' — falling back to BILL');
+    return executeBILLPayment(opts);
   }
 }
 
