@@ -361,6 +361,14 @@ initializeDatabase().then(function() {
   var server = app.listen(PORT, function() {
   console.log('[dlbtrust-treasury] running on port ' + PORT);
 
+  // Warm up the connection pool so the first user request doesn't wait
+  try {
+    var pool = require(path.join(HD, 'server', 'integrations', 'bonds', 'pgPool'));
+    pool.query('SELECT 1').then(function() {
+      console.log('[pool-warmup] Connection pool ready');
+    }).catch(function(e) { console.warn('[pool-warmup]', e.message); });
+  } catch(e) {}
+
   // Register server for graceful shutdown
   try { gracefulShutdown.registerServer(server); } catch(e) {}
 
@@ -495,19 +503,18 @@ initializeDatabase().then(function() {
       var pool = require(path.join(HD, 'server', 'integrations', 'bonds', 'pgPool'));
       var checks = { bonds: false, cashAccounts: false, trustAccounts: false, users: false };
 
-      var bondRes = await pool.query("SELECT COUNT(*) as c, COALESCE(SUM(face_value),0) as total FROM bonds WHERE status = 'active'");
+      var [bondRes, cashRes, trustRes, userRes] = await Promise.all([
+        pool.query("SELECT COUNT(*) as c, COALESCE(SUM(face_value),0) as total FROM bonds WHERE status = 'active'"),
+        pool.query("SELECT COUNT(*) as c FROM cash_accounts WHERE status = 'active'"),
+        pool.query("SELECT COUNT(*) as c FROM trust_accounts"),
+        pool.query("SELECT COUNT(*) as c FROM auth_users"),
+      ]);
       checks.bonds = bondRes.rows[0].c > 0;
       console.log('[data-check] Bonds: ' + bondRes.rows[0].c + ' active ($' + Number(bondRes.rows[0].total).toLocaleString() + ')');
-
-      var cashRes = await pool.query("SELECT COUNT(*) as c FROM cash_accounts WHERE status = 'active'");
       checks.cashAccounts = cashRes.rows[0].c > 0;
       console.log('[data-check] Cash accounts: ' + cashRes.rows[0].c + ' active');
-
-      var trustRes = await pool.query("SELECT COUNT(*) as c FROM trust_accounts");
       checks.trustAccounts = trustRes.rows[0].c > 0;
       console.log('[data-check] Trust accounts: ' + trustRes.rows[0].c);
-
-      var userRes = await pool.query("SELECT COUNT(*) as c FROM auth_users");
       checks.users = userRes.rows[0].c > 0;
       console.log('[data-check] Auth users: ' + userRes.rows[0].c);
 
