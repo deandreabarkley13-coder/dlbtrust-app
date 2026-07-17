@@ -233,6 +233,7 @@
     <div class="nav-item" data-page="partners"><span class="icon">🤝</span> Partners</div>
     <div class="nav-item" data-page="apikeys"><span class="icon">🔑</span> API Keys</div>
     <div class="nav-item" data-page="as2"><span class="icon">🔗</span> AS2 Server</div>
+    <div class="nav-item" data-page="aggregator"><span class="icon">🔀</span> Banking Aggregator</div>
     <div class="nav-section">Operations</div>
     <div class="nav-item" data-page="crm"><span class="icon">👥</span> CRM & Investors</div>
     <div class="nav-item" data-page="documents"><span class="icon">📄</span> Documents</div>
@@ -1405,7 +1406,66 @@
       </div>
     </div>
 
-    <!-- NIFI FILE TRANSFER PAGE -->
+    <!-- BANKING AGGREGATOR PAGE -->
+    <div id="page-aggregator" class="page hidden">
+      <div class="page-header">
+        <div><h1>Banking Aggregator</h1><div class="subtitle">Bi-directional financial data hub — pull balances/transactions/statements inbound, push payments/data outbound, receive webhooks. Provider-agnostic via pluggable connectors.</div></div>
+        <div>
+          <button class="btn btn-sm" onclick="loadAggregator()" title="Refresh">Refresh</button>
+        </div>
+      </div>
+
+      <div class="grid grid-4" id="agg-stats">
+        <div class="card"><div class="stat-label">Connections</div><div class="stat-value" id="agg-connections">—</div></div>
+        <div class="card"><div class="stat-label">Accounts</div><div class="stat-value" id="agg-accounts-count">—</div></div>
+        <div class="card"><div class="stat-label">Transactions</div><div class="stat-value" id="agg-txns-count">—</div></div>
+        <div class="card"><div class="stat-label">Events</div><div class="stat-value" id="agg-events-count">—</div></div>
+      </div>
+
+      <!-- Add Connection -->
+      <div class="card" style="margin-top:24px">
+        <h2>Add Connection</h2>
+        <p class="text-muted" style="font-size:12px;margin:-4px 0 10px;">Register an external provider. Secrets (tokens/keys/webhook secret) are stored securely and never returned by the API — only presence flags are shown.</p>
+        <div class="form-row">
+          <div class="form-group"><label>Name</label><input type="text" id="agg-name" placeholder="e.g. Provider Sandbox"></div>
+          <div class="form-group"><label>Connector Type</label><select id="agg-connector-type"><option value="generic_rest">Generic REST (provider-agnostic)</option></select></div>
+          <div class="form-group"><label>Direction</label><select id="agg-direction"><option value="both">Both (pull + push)</option><option value="inbound">Inbound (pull only)</option><option value="outbound">Outbound (push only)</option></select></div>
+        </div>
+        <div class="form-row">
+          <div class="form-group"><label>Base URL</label><input type="text" id="agg-base-url" placeholder="https://provider.example.com"></div>
+          <div class="form-group"><label>Auth Type</label><select id="agg-auth-type"><option value="none">None</option><option value="bearer">Bearer Token</option><option value="api_key">API Key Header</option><option value="basic">Basic Auth</option><option value="hmac">HMAC Signature</option></select></div>
+        </div>
+        <div class="form-row">
+          <div class="form-group"><label>Auth Secret / Token</label><input type="password" id="agg-auth-secret" placeholder="Bearer token / API key / password / HMAC secret"></div>
+          <div class="form-group"><label>Username / Header Name (optional)</label><input type="text" id="agg-auth-extra" placeholder="basic username, or api-key header name"></div>
+        </div>
+        <div class="form-row">
+          <div class="form-group"><label>Webhook Secret (optional)</label><input type="password" id="agg-webhook-secret" placeholder="HMAC secret for inbound webhook verification"></div>
+        </div>
+        <button class="btn btn-success btn-sm" onclick="aggCreateConnection()">Add Connection</button>
+        <div id="agg-create-result" style="margin-top:8px"></div>
+      </div>
+
+      <!-- Connections -->
+      <div class="card" style="margin-top:24px">
+        <h2>Connections</h2>
+        <div id="agg-connections-list"><p class="text-muted">Loading…</p></div>
+      </div>
+
+      <!-- Normalized data -->
+      <div class="card" style="margin-top:24px">
+        <h2>Aggregated Data</h2>
+        <div class="tabs">
+          <div class="tab active" data-tab="agg-tab-accounts">Accounts</div>
+          <div class="tab" data-tab="agg-tab-txns">Transactions</div>
+          <div class="tab" data-tab="agg-tab-events">Events</div>
+        </div>
+        <div class="tab-content active" id="agg-tab-accounts"><div id="agg-accounts-table"><p class="text-muted">No data.</p></div></div>
+        <div class="tab-content" id="agg-tab-txns"><div id="agg-txns-table"><p class="text-muted">No data.</p></div></div>
+        <div class="tab-content" id="agg-tab-events"><div id="agg-events-table"><p class="text-muted">No data.</p></div></div>
+      </div>
+    </div>
+
     <div id="page-nifi" class="page hidden">
       <div class="page-header">
         <div><h1>NiFi File Transfer</h1><div class="subtitle">Automated server-to-server payment file generation, staging, and transfer via Apache NiFi</div></div>
@@ -1983,6 +2043,147 @@
       return '<div class="card"><div class="card-title">' + esc(title) + '</div><div class="card-value">' + value + '</div><div class="card-sub">' + esc(sub) + '</div></div>';
     }
 
+    // ─── BANKING AGGREGATOR ──────────────────────────────────────────────────────
+    async function loadAggregator() {
+      const [status, conns, accts, txns, events] = await Promise.all([
+        fetchJSON(API + '/api/aggregator/status', { headers: adminHeaders() }),
+        fetchJSON(API + '/api/aggregator/connections', { headers: adminHeaders() }),
+        fetchJSON(API + '/api/aggregator/accounts', { headers: adminHeaders() }),
+        fetchJSON(API + '/api/aggregator/transactions?limit=100', { headers: adminHeaders() }),
+        fetchJSON(API + '/api/aggregator/events?limit=100', { headers: adminHeaders() }),
+      ]);
+      if (status && status.success) {
+        el('agg-connections').textContent = status.data.connections;
+        el('agg-accounts-count').textContent = status.data.accounts;
+        el('agg-txns-count').textContent = status.data.transactions;
+        el('agg-events-count').textContent = status.data.events;
+      } else {
+        el('agg-connections-list').innerHTML = '<p class="error-msg">' + esc((status && status.error) || 'Set your admin token (Security page) to use the aggregator.') + '</p>';
+      }
+      renderAggConnections((conns && conns.data) || []);
+      renderAggAccounts((accts && accts.data) || []);
+      renderAggTxns((txns && txns.data) || []);
+      renderAggEvents((events && events.data) || []);
+    }
+
+    function renderAggConnections(list) {
+      if (!list.length) { el('agg-connections-list').innerHTML = '<p class="text-muted">No connections yet. Add one above.</p>'; return; }
+      let h = '<table><thead><tr><th>Name</th><th>Type</th><th>Direction</th><th>Auth</th><th>Active</th><th>Last Pull</th><th>Actions</th></tr></thead><tbody>';
+      for (const c of list) {
+        const cfg = c.config || {}; const cred = c.credentials || {};
+        const authBits = [];
+        if (cfg.auth && cfg.auth.type && cfg.auth.type !== 'none') authBits.push(cfg.auth.type);
+        if (cred.has_webhookSecret) authBits.push('webhook✓');
+        h += '<tr>'
+          + '<td><code>' + esc(c.name) + '</code><br><span class="text-muted" style="font-size:11px">' + esc(c.id) + '</span></td>'
+          + '<td>' + esc(c.connector_type) + '</td>'
+          + '<td>' + esc(c.direction) + '</td>'
+          + '<td>' + (authBits.length ? esc(authBits.join(', ')) : '<span class="text-muted">none</span>') + '</td>'
+          + '<td>' + (c.active ? '<span class="badge badge-active">Yes</span>' : '<span class="badge badge-error">No</span>') + '</td>'
+          + '<td>' + (c.last_pull_at ? shortDate(c.last_pull_at) : '<span class="text-muted">never</span>') + '</td>'
+          + '<td>'
+          + (c.direction !== 'outbound' ? '<button class="btn btn-sm" onclick="aggPull(\'' + c.id + '\')">Pull</button> ' : '')
+          + (c.direction !== 'inbound' ? '<button class="btn btn-sm" onclick="aggPushPrompt(\'' + c.id + '\')">Push</button> ' : '')
+          + '<button class="btn btn-sm btn-danger" onclick="aggDelete(\'' + c.id + '\')">Delete</button>'
+          + '</td></tr>';
+      }
+      h += '</tbody></table>';
+      el('agg-connections-list').innerHTML = h;
+    }
+
+    function renderAggAccounts(list) {
+      if (!list.length) { el('agg-accounts-table').innerHTML = '<p class="text-muted">No accounts. Pull a connection to sync.</p>'; return; }
+      let h = '<table><thead><tr><th>Account</th><th>Type</th><th>Currency</th><th>Available</th><th>Current</th><th>Updated</th></tr></thead><tbody>';
+      for (const a of list) {
+        h += '<tr><td>' + esc(a.name || a.external_account_id) + (a.mask ? ' <span class="text-muted">••' + esc(a.mask) + '</span>' : '') + '</td>'
+          + '<td>' + esc(a.account_type || '—') + '</td><td>' + esc(a.currency || '') + '</td>'
+          + '<td>' + (a.balance_available != null ? esc(a.balance_available) : '—') + '</td>'
+          + '<td>' + (a.balance_current != null ? esc(a.balance_current) : '—') + '</td>'
+          + '<td>' + shortDate(a.updated_at) + '</td></tr>';
+      }
+      el('agg-accounts-table').innerHTML = h + '</tbody></table>';
+    }
+
+    function renderAggTxns(list) {
+      if (!list.length) { el('agg-txns-table').innerHTML = '<p class="text-muted">No transactions.</p>'; return; }
+      let h = '<table><thead><tr><th>Date</th><th>Description</th><th>Direction</th><th>Amount</th><th>Currency</th><th>Status</th></tr></thead><tbody>';
+      for (const t of list) {
+        h += '<tr><td>' + esc(t.posted_date || '—') + '</td><td>' + esc(t.description || '—') + '</td>'
+          + '<td>' + esc(t.direction || '—') + '</td><td>' + esc(t.amount) + '</td>'
+          + '<td>' + esc(t.currency || '') + '</td><td>' + esc(t.status || '') + '</td></tr>';
+      }
+      el('agg-txns-table').innerHTML = h + '</tbody></table>';
+    }
+
+    function renderAggEvents(list) {
+      if (!list.length) { el('agg-events-table').innerHTML = '<p class="text-muted">No events.</p>'; return; }
+      let h = '<table><thead><tr><th>When</th><th>Direction</th><th>Type</th><th>Status</th><th>Ref/Error</th></tr></thead><tbody>';
+      for (const e of list) {
+        h += '<tr><td>' + shortDate(e.created_at) + '</td><td>' + esc(e.direction) + '</td>'
+          + '<td>' + esc(e.event_type) + '</td><td>' + esc(e.status) + '</td>'
+          + '<td>' + esc(e.error || e.provider_ref || '') + '</td></tr>';
+      }
+      el('agg-events-table').innerHTML = h + '</tbody></table>';
+    }
+
+    async function aggCreateConnection() {
+      const authType = el('agg-auth-type').value;
+      const secret = el('agg-auth-secret').value;
+      const extra = el('agg-auth-extra').value;
+      const auth = { type: authType };
+      if (authType === 'bearer') auth.bearerToken = secret || undefined;
+      else if (authType === 'api_key') { auth.apiKey = secret || undefined; if (extra) auth.headerName = extra; }
+      else if (authType === 'basic') { auth.username = extra || undefined; auth.password = secret || undefined; }
+      else if (authType === 'hmac') { auth.hmacSecret = secret || undefined; if (extra) auth.headerName = extra; }
+      const config = { baseUrl: el('agg-base-url').value || undefined, auth };
+      const wh = el('agg-webhook-secret').value;
+      if (wh) config.webhookSecret = wh;
+      const data = {
+        name: el('agg-name').value,
+        connectorType: el('agg-connector-type').value,
+        direction: el('agg-direction').value,
+        config,
+      };
+      if (!data.name) { el('agg-create-result').innerHTML = '<p class="error-msg">Name is required</p>'; return; }
+      const resp = await fetchJSON(API + '/api/aggregator/connections', { method: 'POST', headers: adminHeaders(), body: JSON.stringify(data) });
+      if (resp && resp.success) {
+        el('agg-create-result').innerHTML = '<p class="success-msg">Connection added: ' + esc(resp.data.id) + '</p>';
+        el('agg-name').value = ''; el('agg-base-url').value = ''; el('agg-auth-secret').value = ''; el('agg-auth-extra').value = ''; el('agg-webhook-secret').value = '';
+        loadAggregator();
+      } else {
+        el('agg-create-result').innerHTML = '<p class="error-msg">' + esc((resp && resp.error) || 'Failed') + '</p>';
+      }
+    }
+
+    async function aggPull(id) {
+      const resp = await fetchJSON(API + '/api/aggregator/connections/' + encodeURIComponent(id) + '/pull', { method: 'POST', headers: adminHeaders(), body: JSON.stringify({}) });
+      if (resp && resp.data) {
+        const s = resp.data;
+        alert('Pulled — accounts: ' + s.accounts + ', transactions: ' + s.transactions + ', statements: ' + s.statements + (s.errors && s.errors.length ? '\nErrors: ' + s.errors.map(e => e.kind + ': ' + e.error).join('; ') : ''));
+      } else {
+        alert('Pull failed: ' + ((resp && resp.error) || 'unknown'));
+      }
+      loadAggregator();
+    }
+
+    async function aggPushPrompt(id) {
+      const raw = prompt('Enter JSON payload to push (e.g. {"type":"payment","amount":100,"currency":"USD"}):', '{"type":"payment"}');
+      if (!raw) return;
+      let payload;
+      try { payload = JSON.parse(raw); } catch (e) { alert('Invalid JSON'); return; }
+      const resp = await fetchJSON(API + '/api/aggregator/connections/' + encodeURIComponent(id) + '/push', { method: 'POST', headers: adminHeaders(), body: JSON.stringify(payload) });
+      if (resp && resp.success) alert('Pushed. Provider ref: ' + ((resp.data && resp.data.providerRef) || 'n/a'));
+      else alert('Push failed: ' + ((resp && resp.error) || 'unknown'));
+      loadAggregator();
+    }
+
+    async function aggDelete(id) {
+      if (!confirm('Delete connection ' + id + '? This also removes its synced accounts/transactions.')) return;
+      const resp = await fetchJSON(API + '/api/aggregator/connections/' + encodeURIComponent(id), { method: 'DELETE', headers: adminHeaders() });
+      if (resp && resp.success) loadAggregator();
+      else alert('Delete failed: ' + ((resp && resp.error) || 'unknown'));
+    }
+
     // ─── Navigation ────────────────────────────────────────────────────────────
     document.querySelectorAll('.nav-item').forEach(item => {
       item.addEventListener('click', () => {
@@ -1992,7 +2193,7 @@
         document.querySelectorAll('.page').forEach(p => p.classList.add('hidden'));
         document.getElementById('page-' + page).classList.remove('hidden');
         // Load data for page
-        const loaders = { overview: loadOverview, bonds: loadBonds, cash: loadCash, payments: loadPayments, ach: loadACH, wire: loadWire, partners: loadPartners, apikeys: loadApiKeys, as2: loadAS2, crm: loadCRM, documents: loadDocuments, accounting: loadAccounting, tax: loadTax, fineract: loadFineract, bill: loadBill, 'trustee-agent': loadTrusteeAgent, 'bookkeeping-agent': loadBookkeepingAgent, 'data-bridge': loadDataBridge, 'sub-ledgers': loadSubLedgers, 'vendor-payments': loadVendorPayments, 'electronic-settlement': loadElectronicSettlement, nifi: loadNiFi, 'hce-payments': loadHCE, settings: loadSettings, security: loadSecurity, backup: loadBackupPage, admin: loadAdmin };
+        const loaders = { overview: loadOverview, bonds: loadBonds, cash: loadCash, payments: loadPayments, ach: loadACH, wire: loadWire, partners: loadPartners, apikeys: loadApiKeys, as2: loadAS2, aggregator: loadAggregator, crm: loadCRM, documents: loadDocuments, accounting: loadAccounting, tax: loadTax, fineract: loadFineract, bill: loadBill, 'trustee-agent': loadTrusteeAgent, 'bookkeeping-agent': loadBookkeepingAgent, 'data-bridge': loadDataBridge, 'sub-ledgers': loadSubLedgers, 'vendor-payments': loadVendorPayments, 'electronic-settlement': loadElectronicSettlement, nifi: loadNiFi, 'hce-payments': loadHCE, settings: loadSettings, security: loadSecurity, backup: loadBackupPage, admin: loadAdmin };
         if (loaders[page]) loaders[page]();
       });
     });
