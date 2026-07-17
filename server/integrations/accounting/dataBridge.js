@@ -247,11 +247,12 @@ class DataBridge {
     var errors = [];
 
     try {
-      // Find ACH batches that are transmitted/settled but don't have trust JEs
+      // Find bank-settled legacy ACH batches that do not have trust JEs
       var batches = await pool.query(`
         SELECT ab.*
         FROM ach_batches ab
-        WHERE ab.status IN ('transmitted', 'settled', 'acknowledged')
+        WHERE ab.status = 'settled'
+          AND COALESCE(ab.orchestration_owner, 'legacy') <> 'payment_hub'
           AND NOT EXISTS (
             SELECT 1 FROM trust_journal_entries je
             WHERE je.reference_type = 'ach_batch'

@@ -6,5 +6,9 @@ export default defineConfig({
     environment: 'node',
     include: ['tests/**/*.test.ts'],
     setupFiles: ['tests/setup.ts'],
+    env: {
+      DATABASE_PATH: ':memory:',
+      JWT_SECRET: 'test-secret',
+    },
   },
 });

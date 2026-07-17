@@ -8,15 +8,14 @@
  *  - Payment initiation from client sub-ledger or trust GL accounts
  *  - Approval workflow (pending → approved → executed → settled)
  *  - Payment execution via ACH, Wire, or BILL
- *  - Auto-post double-entry journal entries (DR Expense / CR Cash)
- *  - Cashflow event recording
+ *  - Settlement-confirmed accounting through the canonical payment lifecycle
  *  - Full audit trail
  */
 
 const pool = require('../bonds/pgPool');
-const { TrustAccountingEngine } = require('../accounting/trustAccountingEngine');
-let ACHEngine, WireEngine, billClient;
-try { ACHEngine = require('../ach/achEngine').ACHEngine; } catch (e) { ACHEngine = null; }
+const { PaymentHubEngine } = require('../paymentHub/paymentHubEngine');
+const { getConfig: getPaymentHubConfig } = require('../paymentHub/paymentHubConfig');
+let WireEngine, billClient;
 try { WireEngine = require('../wire/wireEngine').WireEngine; } catch (e) { WireEngine = null; }
 try { billClient = require('../bill/billClient'); } catch (e) { billClient = null; }
 
@@ -110,6 +109,7 @@ class VendorEngine {
         ach_batch_id        TEXT,
         wire_id             TEXT,
         bill_payment_id     TEXT,
+        payment_intent_id   TEXT,
         journal_entry_id    TEXT,
         -- Timestamps
         approved_at         TIMESTAMPTZ,
@@ -259,7 +259,11 @@ class VendorEngine {
     if (!vendor) throw new Error('Vendor not found: ' + data.vendor_id);
     if (vendor.status !== 'active') throw new Error('Vendor is not active');
 
-    const method = data.payment_method || vendor.payment_method || 'ach';
+    let method = data.payment_method || vendor.payment_method || 'ach';
+    if (method === 'auto') {
+      method = vendor.routing_number && vendor.account_number ? 'ach' : vendor.bill_vendor_id ? 'bill' : null;
+      if (!method) throw new Error('Vendor has no configured payment rail');
+    }
     if (method === 'ach' && (!vendor.routing_number || !vendor.account_number)) {
       throw new Error('Vendor has no bank details for ACH payment');
     }
@@ -315,21 +319,26 @@ class VendorEngine {
   // ═══════════════════════════════════════════════════════════════════════════
 
   static async executePayment(paymentId, executedBy) {
-    // Fetch payment + vendor
-    const payRes = await pool.query(`SELECT * FROM vendor_payments WHERE payment_id = $1`, [paymentId]);
-    if (payRes.rowCount === 0) throw new Error('Payment not found');
-    const payment = payRes.rows[0];
-    if (payment.status !== 'approved') throw new Error('Payment must be approved before execution');
-
-    const vendor = await VendorEngine.getVendor(payment.vendor_id);
-    if (!vendor) throw new Error('Vendor not found');
-
-    // Mark as processing
-    await pool.query(`UPDATE vendor_payments SET status = 'processing', updated_at = NOW() WHERE payment_id = $1`, [paymentId]);
-
+    const claimed = await pool.query(
+      `UPDATE vendor_payments SET status = 'processing', updated_at = NOW()
+       WHERE payment_id = $1 AND status = 'approved'
+       RETURNING *`,
+      [paymentId]
+    );
+    if (claimed.rowCount === 0) throw new Error('Payment not found or not approved for execution');
+    const payment = claimed.rows[0];
     let executionRef = {};
+    let vendor;
 
     try {
+      vendor = await VendorEngine.getVendor(payment.vendor_id);
+      if (!vendor) throw new Error('Vendor not found');
+
+      const paymentHubMode = getPaymentHubConfig().mode;
+      if (paymentHubMode !== 'disabled' && payment.payment_method !== 'ach') {
+        throw new Error(`Payment Hub mode ${paymentHubMode} currently supports vendor ACH only; ${payment.payment_method} transmission is blocked`);
+      }
+
       // Execute based on method
       switch (payment.payment_method) {
         case 'ach':
@@ -345,62 +354,28 @@ class VendorEngine {
           throw new Error('Unknown payment method: ' + payment.payment_method);
       }
 
-      // Post journal entry: DR Expense / CR Cash
-      let journalEntry = null;
-      try {
-        const creditAccount = payment.payment_method === 'bill' ? ACCOUNT_CODES.BILL_CASH : ACCOUNT_CODES.CASH;
-        const debitAccount = payment.payment_type === 'fee_payment' ? ACCOUNT_CODES.FEES_PAYABLE
-          : payment.payment_type === 'trust_expense' ? ACCOUNT_CODES.EXPENSES
-          : ACCOUNT_CODES.EXPENSES;
-
-        journalEntry = await TrustAccountingEngine.postJournalEntry({
-          entryDate: new Date(),
-          description: `Vendor payment: ${vendor.vendor_name} — ${payment.description || payment.payment_type}`,
-          lines: [
-            { accountCode: debitAccount, debitAmount: parseFloat(payment.amount), creditAmount: 0,
-              memo: `${payment.payment_method.toUpperCase()} to ${vendor.vendor_name} (${paymentId})` },
-            { accountCode: creditAccount, debitAmount: 0, creditAmount: parseFloat(payment.amount),
-              memo: `Vendor payment outflow: ${paymentId}` },
-          ],
-          referenceType: 'vendor_payment',
-          referenceId: paymentId,
-          postedBy: executedBy || 'system',
-        });
-      } catch (err) {
-        console.warn('[VendorEngine] Journal entry failed:', err.message);
-      }
-
-      // Record cashflow event
-      try {
-        await pool.query(`
-          INSERT INTO cashflow_events (event_type, category, amount, direction, description, event_date, created_at)
-          VALUES ('vendor_payment', 'operating', $1, 'outflow', $2, NOW(), NOW())
-        `, [parseFloat(payment.amount), `Vendor: ${vendor.vendor_name} — ${payment.description || paymentId}`]);
-      } catch (err) {
-        console.warn('[VendorEngine] Cashflow event failed:', err.message);
-      }
-
-      // Mark as executed
+      const lifecycleStatus = payment.payment_method === 'ach' ? 'processing' : 'executed';
       await pool.query(`
-        UPDATE vendor_payments SET status = 'executed', executed_at = NOW(), updated_at = NOW(),
-          ach_batch_id = $2, wire_id = $3, bill_payment_id = $4, journal_entry_id = $5
+        UPDATE vendor_payments SET status = $2, executed_at = NOW(), updated_at = NOW(),
+          ach_batch_id = $3, wire_id = $4, bill_payment_id = $5, payment_intent_id = $6
         WHERE payment_id = $1
       `, [
         paymentId,
+        lifecycleStatus,
         executionRef.ach_batch_id || null,
         executionRef.wire_id || null,
         executionRef.bill_payment_id || null,
-        journalEntry ? (journalEntry.entry_id || journalEntry.id || null) : null,
+        executionRef.payment_intent_id || null,
       ]);
 
       return {
         payment_id: paymentId,
-        status: 'executed',
+        status: lifecycleStatus,
         method: payment.payment_method,
         amount: parseFloat(payment.amount),
         vendor: vendor.vendor_name,
+        accounting_status: 'pending_settlement',
         ...executionRef,
-        journal_entry: journalEntry ? (journalEntry.entry_id || journalEntry.id) : null,
       };
 
     } catch (err) {
@@ -414,27 +389,38 @@ class VendorEngine {
   // ─── ACH Execution ───────────────────────────────────────────────────────
 
   static async _executeACH(payment, vendor) {
-    if (!ACHEngine) throw new Error('ACH Engine not available');
+    const created = await PaymentHubEngine.createIntent({
+      idempotencyKey: `vendor-payment:${payment.payment_id}`,
+      paymentType: 'vendor_payment',
+      amount: payment.amount,
+      sourceType: payment.source_type === 'sub_ledger' ? 'sub_ledger' : 'trust_account',
+      sourceSubLedgerId: payment.sub_ledger_id,
+      sourceAccountCode: payment.source_account_code || '1000',
+      debitAccountCode: ACCOUNT_CODES.EXPENSES,
+      beneficiaryName: vendor.vendor_name,
+      beneficiaryRouting: vendor.routing_number,
+      beneficiaryAccount: vendor.account_number,
+      beneficiaryAccountType: vendor.account_type || 'checking',
+      secCode: 'CCD',
+      effectiveDate: new Date().toISOString().split('T')[0],
+      description: payment.description || `Vendor payment ${payment.payment_id}`,
+      metadata: { vendorPaymentId: payment.payment_id, vendorId: payment.vendor_id },
+    }, payment.initiated_by);
 
-    const batch = await ACHEngine.createBatch(
-      {
-        effectiveDate: new Date().toISOString().split('T')[0],
-        secCode: 'CCD',
-        description: `VENDOR ${vendor.vendor_name.slice(0, 10).toUpperCase()}`,
-        createdBy: payment.initiated_by,
-      },
-      [{
-        receivingRouting: vendor.routing_number,
-        accountNumber: vendor.account_number,
-        receivingName: vendor.vendor_name,
-        amountCents: Math.round(parseFloat(payment.amount) * 100),
-        transactionCode: vendor.account_type === 'savings' ? '32' : '22',
-        identification: payment.payment_id,
-        discretionaryData: payment.invoice_number || '',
-      }]
-    );
+    let intent = created.intent;
+    if (intent.status === 'pending_approval' && payment.approved_by && payment.approved_by !== payment.initiated_by) {
+      intent = await PaymentHubEngine.approveIntent(intent.intent_id, payment.approved_by, 'Vendor payment approved');
+    }
+    if (intent.status === 'approved') {
+      const submitted = await PaymentHubEngine.submitIntent(intent.intent_id, payment.approved_by || payment.initiated_by);
+      intent = submitted.intent;
+    }
 
-    return { ach_batch_id: batch.batch_id };
+    return {
+      payment_intent_id: intent.intent_id,
+      ach_batch_id: intent.ach_batch_id || null,
+      payment_hub_status: intent.status,
+    };
   }
 
   // ─── Wire Execution ──────────────────────────────────────────────────────
@@ -465,13 +451,17 @@ class VendorEngine {
   static async _executeBILL(payment, vendor) {
     if (!billClient) throw new Error('BILL client not available');
 
-    const result = await billClient.recordPayment({
+    const result = await billClient.sendVendorPayment({
+      payee_name: vendor.vendor_name,
       amount: parseFloat(payment.amount),
-      description: `Vendor: ${vendor.vendor_name} — ${payment.description || payment.payment_id}`,
-      vendorId: vendor.bill_vendor_id || vendor.vendor_id,
+      description: payment.description || payment.payment_id,
+      invoiceNumber: payment.invoice_number || payment.payment_id,
+      email: vendor.email || undefined,
     });
 
-    return { bill_payment_id: result.receivedPayId || result.id || 'recorded' };
+    const paymentId = result.sentPayId || result.billId;
+    if (!paymentId) throw new Error('BILL accepted the vendor payment without a payment identifier');
+    return { bill_payment_id: paymentId };
   }
 
   // ═══════════════════════════════════════════════════════════════════════════

@@ -2,7 +2,6 @@ import { Router, Request, Response } from 'express';
 import { getDb } from '../db/index.js';
 import { requireAuth, requireRole } from '../middleware/auth.js';
 import { logAudit } from '../services/audit.js';
-import { initiateAchPayment, isOpenAchConfigured } from '../services/openach.js';
 import { v4 as uuid } from 'uuid';
 import type { DisbursementStatus } from '../../shared/types.js';
 
@@ -151,67 +150,11 @@ router.post('/:id/approve', requireAuth, requireRole('admin', 'trustee'), async 
     return;
   }
 
-  const approveAndDebit = db.transaction(() => {
-    db.prepare(`
-      UPDATE disbursements SET status = 'approved', approved_by = ?, updated_at = datetime('now') WHERE id = ?
-    `).run(req.user!.userId, id);
-
-    db.prepare(`
-      UPDATE trusts SET balance = balance - ?, updated_at = datetime('now') WHERE id = ?
-    `).run(disbursement.amount, disbursement.trust_id);
-
-    db.prepare(`
-      INSERT INTO transactions (id, trust_id, disbursement_id, type, amount, description)
-      VALUES (?, ?, ?, 'debit', ?, ?)
-    `).run(uuid(), disbursement.trust_id, id, disbursement.amount, `Disbursement approved`);
-  });
-
-  approveAndDebit();
+  db.prepare(`
+    UPDATE disbursements SET status = 'approved', approved_by = ?, updated_at = datetime('now') WHERE id = ?
+  `).run(req.user!.userId, id);
   logAudit(req.user!.userId, 'approve_disbursement', 'disbursement', id, `Amount: $${disbursement.amount}`);
 
-  if (disbursement.method === 'ach' && isOpenAchConfigured()) {
-    try {
-      const beneficiary = db.prepare('SELECT * FROM beneficiaries WHERE id = ?').get(disbursement.beneficiary_id) as {
-        first_name: string; last_name: string; routing_number: string; account_number_encrypted: string; account_type: 'checking' | 'savings';
-      };
-
-      if (beneficiary.routing_number && beneficiary.account_number_encrypted) {
-        const result = await initiateAchPayment({
-          amount: disbursement.amount,
-          routingNumber: beneficiary.routing_number,
-          accountNumber: beneficiary.account_number_encrypted,
-          accountType: beneficiary.account_type,
-          recipientName: `${beneficiary.first_name} ${beneficiary.last_name}`,
-          description: `DLB Trust disbursement`,
-          referenceId: id,
-        });
-
-        db.prepare(`
-          UPDATE disbursements 
-          SET status = 'processing',
-              ach_transaction_id = ?,
-              openach_profile_id = ?,
-              openach_account_id = ?,
-              updated_at = datetime('now')
-          WHERE id = ?
-        `).run(result.transactionId, result.profileId, result.accountId, id);
-
-        logAudit(
-          req.user!.userId,
-          'initiate_ach',
-          'disbursement',
-          id,
-          `ACH TX: ${result.transactionId} | Profile: ${result.profileId} | ${result.message}`
-        );
-      }
-    } catch (err) {
-      const message = err instanceof Error ? err.message : 'Unknown error';
-      // Mark as failed so it shows up in the dashboard
-      db.prepare(`UPDATE disbursements SET status = 'failed', rejection_reason = ?, updated_at = datetime('now') WHERE id = ?`)
-        .run(`ACH error: ${message}`, id);
-      logAudit(req.user!.userId, 'ach_error', 'disbursement', id, message);
-    }
-  }
 
   const updated = db.prepare(`
     SELECT d.*, b.first_name || ' ' || b.last_name as beneficiary_name, t.name as trust_name

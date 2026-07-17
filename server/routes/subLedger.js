@@ -1,5 +1,5 @@
 /**
- * Sub-Ledger Routes — dlbtrust.cloud
+ * Sub-Ledger Routes — DLB Trust
  * Mounts at: /api/sub-ledgers
  *
  * Per-client sub-ledger accounts within Core Banking.

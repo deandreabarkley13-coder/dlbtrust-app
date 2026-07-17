@@ -1,5 +1,5 @@
 /**
- * Cash Management Routes — dlbtrust.cloud
+ * Cash Management Routes — DLB Trust
  * Mounts at: /api/cash
  *
  * Inter-account transfers, deposits, position summaries, and Fineract reconciliation.

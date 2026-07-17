@@ -27,9 +27,7 @@
 
 var crypto = require('crypto');
 var pool = require('../bonds/pgPool');
-
-var TrustAccountingEngine;
-try { TrustAccountingEngine = require('../accounting/trustAccountingEngine').TrustAccountingEngine; } catch (e) { TrustAccountingEngine = null; }
+var TrustAccountingEngine = require('../accounting/trustAccountingEngine').TrustAccountingEngine;
 
 var SubLedgerEngine;
 try { SubLedgerEngine = require('../accounting/subLedgerEngine').SubLedgerEngine; } catch (e) { SubLedgerEngine = null; }
@@ -51,6 +49,10 @@ try { WireEngine = require('../wire/wireEngine').WireEngine; } catch (e) { WireE
 
 var STPEngine;
 try { STPEngine = require('./stpEngine'); } catch (e) { STPEngine = null; }
+
+var PaymentHubEngine = require('../paymentHub/paymentHubEngine').PaymentHubEngine;
+var paymentHubConfig = require('../paymentHub/paymentHubConfig');
+var paymentCrypto = require('../paymentHub/paymentCrypto');
 
 // ─── CONSTANTS ────────────────────────────────────────────────────────────────
 
@@ -171,8 +173,14 @@ async function ensureTables() {
       wire_id               TEXT,
       journal_entry_id      TEXT,
       tracking_id           TEXT,
+      payment_intent_id     TEXT,
+      payment_hub_txn_id    TEXT,
+      payment_hub_status    TEXT,
       retry_count           INTEGER DEFAULT 0,
       last_error            TEXT,
+      accounting_status     TEXT NOT NULL DEFAULT 'pending'
+                              CHECK (accounting_status IN ('pending','posting','posted','failed')),
+      accounting_error      TEXT,
       submitted_at          TIMESTAMPTZ DEFAULT NOW(),
       transmitted_at        TIMESTAMPTZ,
       accepted_at           TIMESTAMPTZ,
@@ -203,10 +211,18 @@ async function ensureTables() {
     'ALTER TABLE electronic_settlements ADD COLUMN IF NOT EXISTS retry_count INTEGER DEFAULT 0',
     'ALTER TABLE electronic_settlements ADD COLUMN IF NOT EXISTS last_error TEXT',
     'ALTER TABLE electronic_settlements ADD COLUMN IF NOT EXISTS data_bridge_synced BOOLEAN DEFAULT FALSE',
+    'ALTER TABLE electronic_settlements ADD COLUMN IF NOT EXISTS payment_intent_id TEXT',
+    'ALTER TABLE electronic_settlements ADD COLUMN IF NOT EXISTS payment_hub_txn_id TEXT',
+    'ALTER TABLE electronic_settlements ADD COLUMN IF NOT EXISTS payment_hub_status TEXT',
+    "ALTER TABLE electronic_settlements ADD COLUMN IF NOT EXISTS accounting_status TEXT NOT NULL DEFAULT 'pending'",
+    'ALTER TABLE electronic_settlements ADD COLUMN IF NOT EXISTS accounting_error TEXT',
   ];
   for (var i = 0; i < migrations.length; i++) {
     try { await pool.query(migrations[i]); } catch (e) { /* column exists */ }
   }
+  await pool.query(
+    "UPDATE electronic_settlements SET accounting_status = 'posted' WHERE journal_entry_id IS NOT NULL AND accounting_status <> 'posted'"
+  );
 
   // Ensure STP table exists
   if (STPEngine && STPEngine.ensureSTPTable) {
@@ -460,7 +476,7 @@ async function syncToDataBridge(settlementId) {
  * @param {string} opts.payee_bank_name - bank name (optional)
  * @param {string} opts.payment_type - vendor_payment|trust_distribution|disbursement|fee_payment
  * @param {string} opts.priority - standard|express|urgent|immediate
- * @param {string} opts.force_method - force specific method (ach|wire|bill)
+ * @param {string} opts.force_method - force specific method (payment_hub|ach|wire|bill)
  * @param {string} opts.sub_ledger_id - Core Banking sub-ledger to fund from (optional)
  * @param {string} opts.source_account_code - GL account code if no sub-ledger (default 1000)
  * @param {string} opts.vendor_id - vendor ID (optional)
@@ -478,6 +494,17 @@ async function submitElectronicPayment(opts) {
   var priority = opts.priority || 'standard';
   var priorityConfig = PRIORITY_LEVELS[priority] || PRIORITY_LEVELS.standard;
   var method = opts.force_method || determineOptimalMethod(amount, priority, opts);
+  var hubMode = paymentHubConfig.getConfig().mode;
+  var isDeposit = opts.payment_type === 'deposit' || opts.payment_type === 'bill_cash_deposit';
+  if (hubMode !== 'disabled' && !isDeposit) {
+    if (opts.force_method && opts.force_method !== 'payment_hub') {
+      throw new Error('Outbound electronic payments must use Payment Hub while it is enabled');
+    }
+    if (!opts.payee_routing || !opts.payee_account) {
+      throw new Error('Payment Hub outbound payments require beneficiary routing and account numbers');
+    }
+    method = 'payment_hub';
+  }
 
   var settlementId = generateSettlementId();
   var paymentRef = 'EPAY-' + Date.now().toString(36).toUpperCase() + '-' +
@@ -496,7 +523,7 @@ async function submitElectronicPayment(opts) {
 
   // 1. If sub-ledger specified, debit it first (funds source)
   var subLedgerTxnId = null;
-  if (opts.sub_ledger_id) {
+  if (opts.sub_ledger_id && method !== 'payment_hub') {
     subLedgerTxnId = await withRetry(function() {
       return debitSubLedger(opts.sub_ledger_id, amount, settlementId,
         'Payment to ' + opts.payee_name + ' via ' + method);
@@ -521,8 +548,10 @@ async function submitElectronicPayment(opts) {
     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21)
   `, [
     settlementId, paymentRef, opts.payment_type || 'vendor_payment', method, priority,
-    sourceCode, opts.payee_name, opts.payee_account || null,
-    opts.payee_routing || null, opts.payee_bank_name || null,
+    sourceCode, opts.payee_name,
+    method === 'payment_hub' ? paymentCrypto.mask(opts.payee_account) : (opts.payee_account || null),
+    method === 'payment_hub' ? paymentCrypto.mask(opts.payee_routing) : (opts.payee_routing || null),
+    opts.payee_bank_name || null,
     opts.sub_ledger_id || null, subLedgerTxnId, sourceCode,
     amount, integrityHash, slaDeadline, submittedAt, opts.initiated_by || 'admin',
     opts.description || ('Electronic payment to ' + opts.payee_name),
@@ -547,15 +576,20 @@ async function submitElectronicPayment(opts) {
         initiated_by: opts.initiated_by || 'admin',
         vendor_id: opts.vendor_id,
         priority: priority,
+        sub_ledger_id: opts.sub_ledger_id,
+        beneficiary_account_type: opts.beneficiary_account_type,
+        approved_by: opts.approved_by,
       });
     }, 'payment execution');
 
     // 4. Update settlement with execution refs
     await pool.query(`
       UPDATE electronic_settlements SET
-        status = 'transmitted', transmitted_at = NOW(),
+        status = $9,
+        transmitted_at = CASE WHEN $9 = 'transmitted' THEN NOW() ELSE transmitted_at END,
         bill_ref = $2, ach_batch_id = $3, wire_id = $4, journal_entry_id = $5,
         transmission_ref = $6, processor_ref = $7, payment_file_hash = $8,
+        payment_intent_id = $10, payment_hub_txn_id = $11, payment_hub_status = $12,
         updated_at = NOW()
       WHERE settlement_id = $1
     `, [
@@ -567,6 +601,10 @@ async function submitElectronicPayment(opts) {
       executionResult.transmission_ref || paymentRef,
       executionResult.processor_ref || null,
       executionResult.payment_file_hash || null,
+      executionResult.settlement_status || 'transmitted',
+      executionResult.payment_intent_id || null,
+      executionResult.payment_hub_txn_id || null,
+      executionResult.payment_hub_status || null,
     ]);
 
     // 5. Track with notification engine
@@ -608,21 +646,12 @@ async function submitElectronicPayment(opts) {
     await pool.query('UPDATE electronic_settlements SET tracking_id = $2, updated_at = NOW() WHERE settlement_id = $1',
       [settlementId, trackingId]);
 
-    // 6. BILL direct → accepted immediately
-    if (method === 'bill' && executionResult.bill_ref) {
-      await advanceSettlementStatus(settlementId, 'accepted');
-    }
-
-    // 7. Async Data Bridge sync (non-blocking)
-    syncToDataBridge(settlementId).catch(function(err) {
-      console.warn('[ElectronicSettlement] async DataBridge sync failed:', err.message);
-    });
 
     return {
       settlement_id: settlementId,
       payment_ref: paymentRef,
       tracking_id: trackingId,
-      status: 'transmitted',
+      status: executionResult.settlement_status || 'transmitted',
       method: method,
       priority: priority,
       priority_label: priorityConfig.label,
@@ -640,6 +669,9 @@ async function submitElectronicPayment(opts) {
       wire_id: executionResult.wire_id || null,
       journal_entry_id: executionResult.journal_entry_id || null,
       transmission_ref: executionResult.transmission_ref || null,
+      payment_intent_id: executionResult.payment_intent_id || null,
+      payment_hub_txn_id: executionResult.payment_hub_txn_id || null,
+      payment_hub_status: executionResult.payment_hub_status || null,
       payment_file_hash: executionResult.payment_file_hash || null,
       // STP enrichment data
       stp_id: executionResult.stp_id || null,
@@ -683,11 +715,55 @@ function determineOptimalMethod(amount, priority, opts) {
  */
 async function executePaymentByMethod(method, opts) {
   switch (method) {
+    case 'payment_hub': return executePaymentHub(opts);
     case 'bill':  return executeBILLPayment(opts);
     case 'wire':  return executeWirePayment(opts);
     case 'ach':   return executeACHPayment(opts);
     default:      throw new Error('Unsupported payment method: ' + method);
   }
+}
+
+async function executePaymentHub(opts) {
+  var created = await PaymentHubEngine.createIntent({
+    idempotencyKey: 'electronic-settlement:' + opts.settlementId,
+    paymentType: opts.payment_type || 'vendor_payment',
+    amount: opts.amount,
+    sourceType: opts.sub_ledger_id ? 'sub_ledger' : 'trust_account',
+    sourceSubLedgerId: opts.sub_ledger_id,
+    sourceAccountCode: opts.source_account_code || ACCOUNT_CODES.CASH,
+    debitAccountCode: opts.payment_type === 'trust_distribution' ? ACCOUNT_CODES.DISTRIBUTIONS : ACCOUNT_CODES.EXPENSES,
+    beneficiaryName: opts.payee_name,
+    beneficiaryRouting: opts.payee_routing,
+    beneficiaryAccount: opts.payee_account,
+    beneficiaryAccountType: opts.beneficiary_account_type || 'checking',
+    secCode: opts.payment_type === 'trust_distribution' ? 'PPD' : 'CCD',
+    effectiveDate: new Date().toISOString().slice(0, 10),
+    description: opts.description,
+    metadata: { electronicSettlementId: opts.settlementId, vendorId: opts.vendor_id || null },
+  }, opts.initiated_by || 'system');
+
+  var intent = created.intent;
+  if (intent.status === 'pending_approval' && opts.approved_by && opts.approved_by !== opts.initiated_by) {
+    intent = await PaymentHubEngine.approveIntent(intent.intent_id, opts.approved_by, 'Electronic payment approved');
+  }
+  if (intent.status === 'failed') {
+    var retried = await PaymentHubEngine.retryIntent(intent.intent_id, opts.approved_by || opts.initiated_by);
+    intent = retried.intent;
+  } else if (intent.status === 'approved') {
+    var submitted = await PaymentHubEngine.submitIntent(intent.intent_id, opts.approved_by || opts.initiated_by);
+    intent = submitted.intent;
+  }
+
+  var transmittedStatuses = ['orchestrating', 'transmitting', 'transmitted', 'accepted', 'clearing', 'settled'];
+  return {
+    settlement_status: transmittedStatuses.indexOf(intent.status) !== -1 ? 'transmitted' : 'submitted',
+    payment_intent_id: intent.intent_id,
+    payment_hub_txn_id: intent.payment_hub_txn_id,
+    payment_hub_status: intent.status,
+    ach_batch_id: intent.ach_batch_id,
+    transmission_ref: intent.payment_hub_txn_id || intent.intent_id,
+    processor_ref: intent.payment_hub_txn_id,
+  };
 }
 
 /**
@@ -729,36 +805,6 @@ async function executeBILLPayment(opts) {
       if (stpResult.status === 'transmitted' && !stpResult.error) {
         // STP successfully executed and transmitted — use its results
         var journalEntryId = null;
-        if (TrustAccountingEngine) {
-          try {
-            var debitCode, creditCode;
-            if (isDeposit) {
-              debitCode = ACCOUNT_CODES.BILL_CASH;
-              creditCode = opts.source_account_code || ACCOUNT_CODES.CASH;
-            } else {
-              debitCode = opts.payment_type === 'trust_distribution' ? ACCOUNT_CODES.DISTRIBUTIONS : ACCOUNT_CODES.EXPENSES;
-              creditCode = opts.source_account_code || ACCOUNT_CODES.BILL_CASH;
-            }
-            var je = await TrustAccountingEngine.postJournalEntry({
-              entryDate: new Date(),
-              description: 'STP settlement: ' + (opts.description || opts.payee_name),
-              lines: [
-                { accountCode: debitCode, debitAmount: opts.amount, creditAmount: 0,
-                  memo: 'ESTL ' + opts.settlementId + ' — ' + (opts.payee_name || 'BILL Cash deposit') +
-                    ' [STP ' + stpResult.stp_id + ', settle ' + (stpResult.settlement_date || 'pending') +
-                    ', avail ' + (stpResult.availability_date || 'T+1') + ']' },
-                { accountCode: creditCode, debitAmount: 0, creditAmount: opts.amount,
-                  memo: 'Electronic settlement ' + (isDeposit ? 'deposit' : 'outflow') + ': ' + opts.paymentRef },
-              ],
-              referenceType: 'electronic_settlement',
-              referenceId: opts.settlementId,
-              postedBy: opts.initiated_by || 'system',
-            });
-            journalEntryId = je.entry_id || je.id || null;
-          } catch (err) {
-            console.warn('[ElectronicSettlement] JE failed:', err.message);
-          }
-        }
 
         var billRef = stpResult.bill_ref;
         var fileContent = JSON.stringify({
@@ -838,34 +884,6 @@ async function executeBILLPayment(opts) {
   }
 
   var journalEntryIdFB = null;
-  if (TrustAccountingEngine) {
-    try {
-      var debitCodeFB, creditCodeFB;
-      if (isDeposit) {
-        debitCodeFB = ACCOUNT_CODES.BILL_CASH;
-        creditCodeFB = opts.source_account_code || ACCOUNT_CODES.CASH;
-      } else {
-        debitCodeFB = opts.payment_type === 'trust_distribution' ? ACCOUNT_CODES.DISTRIBUTIONS : ACCOUNT_CODES.EXPENSES;
-        creditCodeFB = opts.source_account_code || ACCOUNT_CODES.BILL_CASH;
-      }
-      var jeFB = await TrustAccountingEngine.postJournalEntry({
-        entryDate: new Date(),
-        description: 'Electronic settlement: ' + (opts.description || opts.payee_name),
-        lines: [
-          { accountCode: debitCodeFB, debitAmount: opts.amount, creditAmount: 0,
-            memo: 'ESTL ' + opts.settlementId + ' — ' + (opts.payee_name || 'BILL Cash deposit') },
-          { accountCode: creditCodeFB, debitAmount: 0, creditAmount: opts.amount,
-            memo: 'Electronic settlement ' + (isDeposit ? 'deposit' : 'outflow') + ': ' + opts.paymentRef },
-        ],
-        referenceType: 'electronic_settlement',
-        referenceId: opts.settlementId,
-        postedBy: opts.initiated_by || 'system',
-      });
-      journalEntryIdFB = jeFB.entry_id || jeFB.id || null;
-    } catch (err) {
-      console.warn('[ElectronicSettlement] JE failed:', err.message);
-    }
-  }
 
   var billRefFB = isDeposit
     ? (paymentResult.receivedPayId || paymentResult.id || null)
@@ -913,28 +931,6 @@ async function executeWirePayment(opts) {
   });
 
   var journalEntryId = null;
-  if (TrustAccountingEngine) {
-    try {
-      var debitCode = opts.payment_type === 'trust_distribution' ? ACCOUNT_CODES.DISTRIBUTIONS : ACCOUNT_CODES.EXPENSES;
-      var creditCode = opts.source_account_code || ACCOUNT_CODES.CASH;
-      var je = await TrustAccountingEngine.postJournalEntry({
-        entryDate: new Date(),
-        description: 'Electronic wire settlement: ' + (opts.description || opts.payee_name),
-        lines: [
-          { accountCode: debitCode, debitAmount: opts.amount, creditAmount: 0,
-            memo: 'Wire ESTL ' + opts.settlementId + ' — ' + opts.payee_name },
-          { accountCode: creditCode, debitAmount: 0, creditAmount: opts.amount,
-            memo: 'Wire outflow: ' + opts.paymentRef },
-        ],
-        referenceType: 'electronic_settlement',
-        referenceId: opts.settlementId,
-        postedBy: opts.initiated_by || 'system',
-      });
-      journalEntryId = je.entry_id || je.id || null;
-    } catch (err) {
-      console.warn('[ElectronicSettlement] Wire JE failed:', err.message);
-    }
-  }
 
   return {
     wire_id: wire.wire_id,
@@ -974,42 +970,8 @@ async function executeACHPayment(opts) {
   );
 
   var journalEntryId = null;
-  if (TrustAccountingEngine) {
-    try {
-      var debitCode = opts.payment_type === 'trust_distribution' ? ACCOUNT_CODES.DISTRIBUTIONS : ACCOUNT_CODES.EXPENSES;
-      var creditCode = opts.source_account_code || ACCOUNT_CODES.CASH;
-      var je = await TrustAccountingEngine.postJournalEntry({
-        entryDate: new Date(),
-        description: 'Electronic ACH settlement: ' + (opts.description || opts.payee_name),
-        lines: [
-          { accountCode: debitCode, debitAmount: opts.amount, creditAmount: 0,
-            memo: 'ACH ESTL ' + opts.settlementId + ' — ' + opts.payee_name },
-          { accountCode: creditCode, debitAmount: 0, creditAmount: opts.amount,
-            memo: 'ACH outflow: ' + opts.paymentRef },
-        ],
-        referenceType: 'electronic_settlement',
-        referenceId: opts.settlementId,
-        postedBy: opts.initiated_by || 'system',
-      });
-      journalEntryId = je.entry_id || je.id || null;
-    } catch (err) {
-      console.warn('[ElectronicSettlement] ACH JE failed:', err.message);
-    }
-  }
 
   var billRef = null;
-  if (billClient) {
-    try {
-      var billResult = await billClient.recordDeposit({
-        amount: opts.amount,
-        method: 'ach',
-        memo: 'ACH settlement: ' + (opts.description || opts.payee_name),
-      });
-      billRef = billResult.receivedPayId || null;
-    } catch (err) {
-      console.warn('[ElectronicSettlement] BILL recording for ACH failed:', err.message);
-    }
-  }
 
   return {
     ach_batch_id: batch.batch_id,
@@ -1029,6 +991,24 @@ async function executeACHPayment(opts) {
 
 async function advanceSettlementStatus(settlementId, newStatus, extras) {
   extras = extras || {};
+  var current = await getSettlement(settlementId);
+  if (!current) throw new Error('Settlement not found: ' + settlementId);
+  if (current.payment_intent_id) {
+    throw new Error('Payment Hub owns this settlement status; update the payment intent instead');
+  }
+  var allowedTransitions = {
+    submitted: ['transmitted', 'failed'],
+    transmitted: ['accepted', 'failed', 'returned'],
+    accepted: ['clearing', 'failed', 'returned'],
+    clearing: ['settled', 'failed', 'returned'],
+    settled: ['returned'],
+  };
+  if (!allowedTransitions[current.status] || allowedTransitions[current.status].indexOf(newStatus) < 0) {
+    throw new Error('Invalid settlement transition: ' + current.status + ' -> ' + newStatus);
+  }
+  if (newStatus === 'settled' && (!extras.processorConfirmed || !extras.settlement_ref)) {
+    throw new Error('Settlement requires processor confirmation and a settlement reference');
+  }
   var statusField = newStatus + '_at';
   var setClauses = ['status = $2', 'updated_at = NOW()'];
   var params = [settlementId, newStatus];
@@ -1064,13 +1044,106 @@ async function advanceSettlementStatus(settlementId, newStatus, extras) {
   return settlement;
 }
 
+async function ensureLegacySettlementAccounting(settlement) {
+  if (settlement.payment_intent_id || settlement.journal_entry_id) return settlement.journal_entry_id || null;
+
+  var claimed = await pool.query(
+    `UPDATE electronic_settlements
+     SET accounting_status = 'posting', accounting_error = NULL, updated_at = NOW()
+     WHERE settlement_id = $1
+       AND status = 'settled'
+       AND payment_intent_id IS NULL
+       AND journal_entry_id IS NULL
+       AND (
+         accounting_status IN ('pending','failed')
+         OR (accounting_status = 'posting' AND updated_at < NOW() - INTERVAL '5 minutes')
+       )
+     RETURNING *`,
+    [settlement.settlement_id]
+  );
+
+  if (!claimed.rows.length) {
+    for (var attempt = 0; attempt < 40; attempt++) {
+      var current = await getSettlement(settlement.settlement_id);
+      if (current && current.journal_entry_id) return current.journal_entry_id;
+      if (current && current.accounting_status === 'failed') {
+        throw new Error(current.accounting_error || 'Settlement accounting failed');
+      }
+      await new Promise(function(resolve) { setTimeout(resolve, 50); });
+    }
+    throw new Error('Settlement accounting is already in progress');
+  }
+
+  settlement = claimed.rows[0];
+  try {
+    var existing = await pool.query(
+      `SELECT entry_id FROM trust_journal_entries
+       WHERE reference_type = 'electronic_settlement' AND reference_id = $1 AND status = 'posted'
+       ORDER BY created_at ASC LIMIT 1`,
+      [settlement.settlement_id]
+    );
+    var journalEntryId = existing.rows.length ? existing.rows[0].entry_id : null;
+    if (!journalEntryId) {
+      var isDeposit = settlement.payment_type === 'deposit' || settlement.payment_type === 'bill_cash_deposit';
+      var debitCode = isDeposit
+        ? ACCOUNT_CODES.BILL_CASH
+        : (settlement.payment_type === 'trust_distribution' ? ACCOUNT_CODES.DISTRIBUTIONS : ACCOUNT_CODES.EXPENSES);
+      var creditCode = isDeposit
+        ? (settlement.source_account_code || ACCOUNT_CODES.CASH)
+        : (settlement.source_account_code || (settlement.payment_method === 'bill' ? ACCOUNT_CODES.BILL_CASH : ACCOUNT_CODES.CASH));
+      var journal = await TrustAccountingEngine.postJournalEntry({
+        entryDate: settlement.settled_at || new Date(),
+        description: 'Electronic settlement: ' + (settlement.description || settlement.payee_name),
+        lines: [
+          { accountCode: debitCode, debitAmount: parseFloat(settlement.amount), creditAmount: 0,
+            memo: 'Settlement ' + settlement.settlement_id + ' — ' + (settlement.payee_name || 'deposit') },
+          { accountCode: creditCode, debitAmount: 0, creditAmount: parseFloat(settlement.amount),
+            memo: 'Processor-confirmed settlement: ' + settlement.payment_ref },
+        ],
+        referenceType: 'electronic_settlement',
+        referenceId: settlement.settlement_id,
+        postedBy: settlement.initiated_by || 'system',
+      });
+      journalEntryId = journal.entry_id || journal.id;
+    }
+    await pool.query(
+      `UPDATE electronic_settlements
+       SET journal_entry_id = $2, accounting_status = 'posted', accounting_error = NULL, updated_at = NOW()
+       WHERE settlement_id = $1`,
+      [settlement.settlement_id, journalEntryId]
+    );
+    return journalEntryId;
+  } catch (err) {
+    await pool.query(
+      `UPDATE electronic_settlements
+       SET accounting_status = 'failed', accounting_error = $2, updated_at = NOW()
+       WHERE settlement_id = $1`,
+      [settlement.settlement_id, err.message]
+    );
+    throw err;
+  }
+}
+
 async function confirmSettlement(settlementId) {
   var settlement = await getSettlement(settlementId);
   if (!settlement) throw new Error('Settlement not found: ' + settlementId);
-  if (settlement.status !== 'settled' && settlement.status !== 'clearing') {
-    throw new Error('Settlement must be settled/clearing to confirm. Current: ' + settlement.status);
+  if (settlement.status === 'confirmed' || settlement.status === 'finalized') {
+    return {
+      settlement_id: settlementId,
+      status: settlement.status,
+      confirmation_code: settlement.confirmation_code,
+      certificate: settlement.settlement_certificate ? JSON.parse(settlement.settlement_certificate) : null,
+      amount: parseFloat(settlement.amount),
+      payee: settlement.payee_name,
+      settled_at: settlement.settled_at,
+      confirmed_at: settlement.confirmed_at,
+    };
+  }
+  if (settlement.status !== 'settled') {
+    throw new Error('Settlement must have processor-confirmed settled status. Current: ' + settlement.status);
   }
 
+  await ensureLegacySettlementAccounting(settlement);
   var confirmationCode = generateConfirmationCode();
   var certificate = generateSettlementCertificate({
     ...settlement,
@@ -1078,11 +1151,14 @@ async function confirmSettlement(settlementId) {
     confirmed_at: new Date().toISOString(),
   });
 
-  await pool.query(`
+  var confirmed = await pool.query(`
     UPDATE electronic_settlements SET status = 'confirmed', confirmed_at = NOW(),
       confirmation_code = $2, settlement_certificate = $3, updated_at = NOW()
-    WHERE settlement_id = $1
+    WHERE settlement_id = $1 AND status = 'settled'
+    RETURNING *
   `, [settlementId, confirmationCode, certificate]);
+  if (!confirmed.rows.length) return confirmSettlement(settlementId);
+  settlement = confirmed.rows[0];
 
   if (settlement.tracking_id && notifEngine) {
     try {
@@ -1189,10 +1265,16 @@ async function pollSettlements() {
             // SentPay: 0=Scheduled, 1=Processing, 2=Processed, 3=Failed, 4=Voided
             if (actualBillStatus === '2') {
               // Processed — fully cleared
-              if (s.status !== 'clearing') {
+              if (s.status === 'transmitted') {
+                await advanceSettlementStatus(s.settlement_id, 'accepted');
+              }
+              if (s.status === 'transmitted' || s.status === 'accepted') {
                 await advanceSettlementStatus(s.settlement_id, 'clearing');
               }
-              await advanceSettlementStatus(s.settlement_id, 'settled', { settlement_ref: s.bill_ref });
+              await advanceSettlementStatus(s.settlement_id, 'settled', {
+                settlement_ref: s.bill_ref,
+                processorConfirmed: true,
+              });
               var confirmRes = await confirmSettlement(s.settlement_id);
               results.advanced += 2;
               results.confirmed++;
@@ -1226,10 +1308,16 @@ async function pollSettlements() {
             // ReceivedPay: 0=Uncleared, 1=Cleared, 2=Voided
             if (actualBillStatus === '1') {
               // Cleared
-              if (s.status !== 'clearing') {
+              if (s.status === 'transmitted') {
+                await advanceSettlementStatus(s.settlement_id, 'accepted');
+              }
+              if (s.status === 'transmitted' || s.status === 'accepted') {
                 await advanceSettlementStatus(s.settlement_id, 'clearing');
               }
-              await advanceSettlementStatus(s.settlement_id, 'settled', { settlement_ref: s.bill_ref });
+              await advanceSettlementStatus(s.settlement_id, 'settled', {
+                settlement_ref: s.bill_ref,
+                processorConfirmed: true,
+              });
               var confirmDeposit = await confirmSettlement(s.settlement_id);
               results.advanced += 2;
               results.confirmed++;
@@ -1246,54 +1334,20 @@ async function pollSettlements() {
             }
           }
         } else {
-          // Fallback: time-based advancement when BILL read unavailable
-          if (s.status === 'transmitted') {
-            await advanceSettlementStatus(s.settlement_id, 'accepted');
-            s.status = 'accepted';
-            results.advanced++;
-            results.details.push({ settlement_id: s.settlement_id, from: 'transmitted', to: 'accepted' });
-          }
-
-          var elapsedMinutes = (Date.now() - new Date(s.submitted_at).getTime()) / 60000;
-          var clearingMinutes = s.payment_method === 'bill' ? 5 : s.payment_method === 'wire' ? 30 : 60;
-
-          if (elapsedMinutes >= clearingMinutes) {
-            await advanceSettlementStatus(s.settlement_id, 'settled', {
-              settlement_ref: s.bill_ref || s.processor_ref,
-            });
-            s.status = 'settled';
-            results.advanced++;
-            results.details.push({ settlement_id: s.settlement_id, from: 'accepted', to: 'settled' });
-
-            if (s.payment_method === 'bill') {
-              var confirmResult = await confirmSettlement(s.settlement_id);
-              results.confirmed++;
-              results.details.push({
-                settlement_id: s.settlement_id, to: 'confirmed',
-                confirmation_code: confirmResult.confirmation_code,
-              });
-            }
-          } else if (s.status === 'accepted') {
-            await advanceSettlementStatus(s.settlement_id, 'clearing');
-            s.status = 'clearing';
-            results.advanced++;
-            results.details.push({ settlement_id: s.settlement_id, from: 'accepted', to: 'clearing' });
-          }
+          results.details.push({
+            settlement_id: s.settlement_id,
+            status: s.status,
+            awaiting_processor_confirmation: true,
+          });
         }
       }
 
       if (!s.bill_ref && (s.wire_id || s.ach_batch_id)) {
-        var elapsed = (Date.now() - new Date(s.submitted_at).getTime()) / 60000;
-        if (s.status === 'transmitted' && elapsed >= 2) {
-          await advanceSettlementStatus(s.settlement_id, 'accepted', { processor_ref: s.wire_id || s.ach_batch_id });
-          s.status = 'accepted';
-          results.advanced++;
-        }
-        if (s.status === 'accepted' && elapsed >= 5) {
-          await advanceSettlementStatus(s.settlement_id, 'clearing');
-          s.status = 'clearing';
-          results.advanced++;
-        }
+        results.details.push({
+          settlement_id: s.settlement_id,
+          status: s.status,
+          awaiting_processor_confirmation: true,
+        });
       }
     } catch (pollErr) {
       console.warn('[ElectronicSettlement] poll error for ' + s.settlement_id + ':', pollErr.message);
@@ -1356,16 +1410,21 @@ async function retryFailedSettlements() {
       }, 'retry-' + s.settlement_id, 2);
 
       await pool.query(`
-        UPDATE electronic_settlements SET status = 'transmitted', transmitted_at = NOW(),
-          bill_ref = COALESCE($2, bill_ref), ach_batch_id = COALESCE($3, ach_batch_id),
-          wire_id = COALESCE($4, wire_id), journal_entry_id = COALESCE($5, journal_entry_id),
-          transmission_ref = COALESCE($6, transmission_ref), updated_at = NOW()
+        UPDATE electronic_settlements SET status = $2,
+          transmitted_at = CASE WHEN $2 = 'transmitted' THEN NOW() ELSE transmitted_at END,
+          bill_ref = COALESCE($3, bill_ref), ach_batch_id = COALESCE($4, ach_batch_id),
+          wire_id = COALESCE($5, wire_id), journal_entry_id = COALESCE($6, journal_entry_id),
+          transmission_ref = COALESCE($7, transmission_ref),
+          payment_intent_id = COALESCE($8, payment_intent_id),
+          payment_hub_txn_id = COALESCE($9, payment_hub_txn_id),
+          payment_hub_status = COALESCE($10, payment_hub_status), updated_at = NOW()
         WHERE settlement_id = $1
       `, [
-        s.settlement_id,
+        s.settlement_id, execResult.settlement_status || 'transmitted',
         execResult.bill_ref || null, execResult.ach_batch_id || null,
         execResult.wire_id || null, execResult.journal_entry_id || null,
-        execResult.transmission_ref || null,
+        execResult.transmission_ref || null, execResult.payment_intent_id || null,
+        execResult.payment_hub_txn_id || null, execResult.payment_hub_status || null,
       ]);
 
       results.retried++;
@@ -1540,30 +1599,7 @@ async function completeMFASettlement(opts) {
 
   var billRef = paymentResult.sentPayId || bill.id || null;
 
-  // 4. Post journal entry
   var journalEntryId = null;
-  if (TrustAccountingEngine) {
-    try {
-      var debitCode = settlement.payment_type === 'trust_distribution' ? ACCOUNT_CODES.DISTRIBUTIONS : ACCOUNT_CODES.EXPENSES;
-      var creditCode = settlement.source_account_code || ACCOUNT_CODES.BILL_CASH;
-      var je = await TrustAccountingEngine.postJournalEntry({
-        entryDate: new Date(),
-        description: 'Electronic settlement: ' + (settlement.description || settlement.payee_name),
-        lines: [
-          { accountCode: debitCode, debitAmount: parseFloat(settlement.amount), creditAmount: 0,
-            memo: 'ESTL ' + settlementId + ' — ' + settlement.payee_name },
-          { accountCode: creditCode, debitAmount: 0, creditAmount: parseFloat(settlement.amount),
-            memo: 'Electronic settlement outflow: ' + settlement.payment_ref },
-        ],
-        referenceType: 'electronic_settlement',
-        referenceId: settlementId,
-        postedBy: 'admin',
-      });
-      journalEntryId = je.entry_id || je.id || null;
-    } catch (jeErr) {
-      console.warn('[ElectronicSettlement] JE failed during MFA completion:', jeErr.message);
-    }
-  }
 
   // 5. Update settlement to success
   await pool.query(`
@@ -1573,11 +1609,6 @@ async function completeMFASettlement(opts) {
       last_error = NULL, updated_at = NOW()
     WHERE settlement_id = $1
   `, [settlementId, billRef, journalEntryId]);
-
-  // 6. Async Data Bridge sync
-  syncToDataBridge(settlementId).catch(function(err) {
-    console.warn('[ElectronicSettlement] async DataBridge sync failed:', err.message);
-  });
 
   return {
     settlement_id: settlementId,

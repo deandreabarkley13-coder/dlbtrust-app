@@ -1,7 +1,7 @@
 'use strict';
 
 /**
- * Agent Routes — dlbtrust.cloud
+ * Agent Routes — DLB Trust
  * Mounts at: /api/agents
  *
  * Trustee Agent: fiduciary oversight, compliance, asset reviews, distributions

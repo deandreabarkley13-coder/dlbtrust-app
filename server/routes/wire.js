@@ -12,6 +12,7 @@ const express = require('express');
 const router = express.Router();
 const { WireEngine } = require('../integrations/wire/wireEngine');
 const { ApiCredentials } = require('../integrations/ach/apiCredentials');
+const { getConfig: getPaymentHubConfig } = require('../integrations/paymentHub/paymentHubConfig');
 
 // ─── Auth Middleware (shared with ACH pipeline) ─────────────────────────────
 const requireAuth = async (req, res, next) => {
@@ -48,6 +49,24 @@ const requireAuth = async (req, res, next) => {
   });
 };
 
+router.use(requireAuth);
+
+const requireLegacyWireMode = (req, res, next) => {
+  if (process.env.NODE_ENV === 'production') {
+    return res.status(503).json({
+      success: false,
+      error: 'Direct wire processing is disabled until a certified bank connector is configured',
+    });
+  }
+  if (getPaymentHubConfig().mode !== 'disabled') {
+    return res.status(409).json({
+      success: false,
+      error: 'Direct wire processing is blocked while Payment Hub mode is enabled',
+    });
+  }
+  next();
+};
+
 // ─── GET /api/wire/summary ─────────────────────────────────────────────────
 // Wire transfer dashboard metrics
 router.get('/summary', async (req, res) => {
@@ -61,7 +80,7 @@ router.get('/summary', async (req, res) => {
 
 // ─── POST /api/wire/initiate ───────────────────────────────────────────────
 // Initiate a new wire transfer (maker action)
-router.post('/initiate', requireAuth, async (req, res) => {
+router.post('/initiate', requireLegacyWireMode, async (req, res) => {
   try {
     const {
       amountCents, amountDollars,
@@ -112,7 +131,7 @@ router.get('/pending-approvals', requireAuth, async (req, res) => {
 
 // ─── POST /api/wire/:id/approve ────────────────────────────────────────────
 // Approve a pending wire (checker action)
-router.post('/:id/approve', requireAuth, async (req, res) => {
+router.post('/:id/approve', requireLegacyWireMode, async (req, res) => {
   try {
     const approvedBy = req.body.approvedBy || req.authUser || 'checker';
     const wire = await WireEngine.approveWire(req.params.id, approvedBy);
@@ -137,7 +156,7 @@ router.post('/:id/reject', requireAuth, async (req, res) => {
 
 // ─── POST /api/wire/:id/send ───────────────────────────────────────────────
 // Send an approved wire (transmit to Fed)
-router.post('/:id/send', requireAuth, async (req, res) => {
+router.post('/:id/send', requireLegacyWireMode, async (req, res) => {
   try {
     const wire = await WireEngine.sendWire(req.params.id);
     res.json({ success: true, data: wire });
@@ -150,7 +169,7 @@ router.post('/:id/send', requireAuth, async (req, res) => {
 // Settle a confirmed wire
 router.post('/:id/settle', requireAuth, async (req, res) => {
   try {
-    const wire = await WireEngine.settleWire(req.params.id);
+    const wire = await WireEngine.settleWire(req.params.id, req.body);
     res.json({ success: true, data: wire });
   } catch (err) {
     res.status(400).json({ success: false, error: err.message });

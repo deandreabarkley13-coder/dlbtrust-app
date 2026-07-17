@@ -6,12 +6,13 @@
  */
 
 const pool = require('../bonds/pgPool');
-const { generateNACHAFile, parseNACHAFile, validateRouting, ODFI_ROUTING, ORIGINATOR_ID } = require('./nachaGenerator');
+const { generateNACHAFile, parseNACHAFile, validateRouting } = require('./nachaGenerator');
 const { AS2Client } = require('./as2Client');
 const { AS2Partners } = require('./as2Partners');
 const { OpenBankApi } = require('./openBankApi');
 const path = require('path');
 const fs = require('fs');
+const paymentCrypto = require('../paymentHub/paymentCrypto');
 
 const ACH_FILES_DIR = process.env.ACH_FILES_DIR || path.join(__dirname, '..', '..', '..', 'data', 'ach-files');
 
@@ -37,25 +38,38 @@ class ACHEngine {
   static async createBatch(opts = {}, entries = []) {
     if (!entries.length) throw new Error('At least one entry is required');
 
+    const creditCodes = new Set(['22', '23', '24', '32', '33', '34']);
+    const debitCodes = new Set(['27', '28', '29', '37', '38', '39']);
+    let hasCredits = false;
+    let hasDebits = false;
     for (const entry of entries) {
-      if (!entry.receivingRouting || !entry.accountNumber || !entry.amountCents) {
+      if (!entry.receivingRouting || !entry.accountNumber || entry.amountCents === undefined) {
         throw new Error('Each entry requires receivingRouting, accountNumber, amountCents');
       }
       if (!validateRouting(String(entry.receivingRouting))) {
         throw new Error(`Invalid routing number: ${entry.receivingRouting}`);
       }
+      if (!/^\d{4,17}$/.test(String(entry.accountNumber))) throw new Error('ACH account number must be 4-17 digits');
+      if (!Number.isSafeInteger(Number(entry.amountCents)) || Number(entry.amountCents) <= 0) {
+        throw new Error('ACH entry amountCents must be a positive integer');
+      }
+      const transactionCode = String(entry.transactionCode || '22');
+      if (creditCodes.has(transactionCode)) hasCredits = true;
+      else if (debitCodes.has(transactionCode)) hasDebits = true;
+      else throw new Error(`Unsupported ACH transaction code: ${transactionCode}`);
     }
 
     const batchId = 'ACH-' + Date.now() + '-' + Math.random().toString(36).slice(2, 6).toUpperCase();
     const effectiveDate = opts.effectiveDate || new Date().toISOString().split('T')[0];
     const secCode = opts.secCode || 'CCD';
     const description = opts.description || 'PAYMENT';
+    const serviceClassCode = hasCredits && hasDebits ? '200' : hasDebits ? '225' : '220';
 
-    const nachaContent = generateNACHAFile({}, [{
+    const nachaContent = generateNACHAFile(opts.nachaConfig || {}, [{
       secCode,
       companyEntryDescription: description,
       effectiveEntryDate: effectiveDate,
-      serviceClassCode: '200',
+      serviceClassCode,
       entries: entries.map(e => ({
         receivingRouting: e.receivingRouting,
         accountNumber: e.accountNumber,
@@ -68,40 +82,49 @@ class ACHEngine {
 
     const totalCents = entries.reduce((sum, e) => sum + Number(e.amountCents), 0);
     const filename = `${batchId}.ach`;
+    const encryptedContent = paymentCrypto.encrypt(nachaContent);
 
-    // Save to filesystem
     ACHEngine.ensureFilesDir();
-    const filePath = path.join(ACH_FILES_DIR, filename);
-    fs.writeFileSync(filePath, nachaContent);
+    const filePath = path.join(ACH_FILES_DIR, `${filename}.enc`);
+    fs.writeFileSync(filePath, encryptedContent, { mode: 0o600 });
 
-    // Save to database (with optional partner_id for multi-partner routing)
-    const result = await pool.query(
-      `INSERT INTO ach_batches
-        (batch_id, filename, status, sec_code, entry_description,
-         effective_date, entry_count, total_amount_cents, nacha_content,
-         file_path, created_by, partner_id, created_at)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, NOW())
-       RETURNING *`,
-      [batchId, filename, 'pending', secCode, description,
-       effectiveDate, entries.length, totalCents, nachaContent,
-       filePath, opts.createdBy || 'system', opts.partnerId || null]
-    );
-
-    // Save individual entries
-    for (let i = 0; i < entries.length; i++) {
-      const e = entries[i];
-      await pool.query(
-        `INSERT INTO ach_entries
-          (batch_id, entry_sequence, transaction_code, receiving_routing,
-           account_number, amount_cents, individual_id, individual_name, memo)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
-        [batchId, i + 1, e.transactionCode || '22', e.receivingRouting,
-         e.accountNumber, e.amountCents, e.individualId || '',
-         e.individualName || '', e.memo || '']
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN');
+      const result = await client.query(
+        `INSERT INTO ach_batches
+          (batch_id, filename, status, sec_code, entry_description,
+           effective_date, entry_count, total_amount_cents, nacha_content,
+           file_path, created_by, partner_id, created_at)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, NOW())
+         RETURNING *`,
+        [batchId, filename, 'pending', secCode, description,
+         effectiveDate, entries.length, totalCents, encryptedContent,
+         filePath, opts.createdBy || 'system', opts.partnerId || null]
       );
-    }
 
-    return result.rows[0];
+      for (let i = 0; i < entries.length; i++) {
+        const e = entries[i];
+        await client.query(
+          `INSERT INTO ach_entries
+            (batch_id, entry_sequence, transaction_code, receiving_routing,
+             account_number, amount_cents, individual_id, individual_name, memo)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
+          [batchId, i + 1, e.transactionCode || '22', e.receivingRouting,
+           paymentCrypto.mask(e.accountNumber), e.amountCents, e.individualId || '',
+           e.individualName || '', e.memo || '']
+        );
+      }
+      await client.query('COMMIT');
+      const { nacha_content: encryptedNacha, file_path: storedFilePath, ...publicBatch } = result.rows[0];
+      return publicBatch;
+    } catch (err) {
+      await client.query('ROLLBACK');
+      if (fs.existsSync(filePath)) fs.unlinkSync(filePath);
+      throw err;
+    } finally {
+      client.release();
+    }
   }
 
   /**
@@ -116,7 +139,15 @@ class ACHEngine {
       [batchId]
     );
 
-    return { ...batch.rows[0], entries: entries.rows };
+    const { nacha_content: encryptedContent, file_path: filePath, ...publicBatch } = batch.rows[0];
+    return {
+      ...publicBatch,
+      entries: entries.rows.map(entry => ({
+        ...entry,
+        receiving_routing: paymentCrypto.mask(entry.receiving_routing),
+        account_number: paymentCrypto.mask(entry.account_number),
+      })),
+    };
   }
 
   /**
@@ -144,7 +175,10 @@ class ACHEngine {
     params.push(limit, offset);
 
     const result = await pool.query(sql, params);
-    return result.rows;
+    return result.rows.map(row => {
+      const { nacha_content: encryptedContent, file_path: filePath, ...publicBatch } = row;
+      return publicBatch;
+    });
   }
 
   /**
@@ -155,37 +189,35 @@ class ACHEngine {
   static async transmitBatch(batchId) {
     const batch = await ACHEngine.getBatch(batchId);
     if (!batch) throw new Error(`Batch not found: ${batchId}`);
+    const file = await ACHEngine.downloadBatch(batchId);
     const nonTransmittable = ['transmitting', 'transmitted', 'accepted', 'settled', 'returned', 'cancelled'];
     if (nonTransmittable.includes(batch.status)) {
       throw new Error(`Cannot transmit batch in '${batch.status}' status — only 'pending' or 'failed' batches can be transmitted`);
     }
 
-    const nachaContent = batch.nacha_content;
+    const nachaContent = file.nacha_content;
     if (!nachaContent) throw new Error('Batch has no NACHA content');
 
-    // Check system mode — production routes to configured external bank endpoint
     const { SystemSettings } = require('./systemSettings');
     const systemMode = await SystemSettings.getMode();
-    const productionConfig = systemMode === 'production'
-      ? await SystemSettings.getProductionPartnerConfig()
+    if (process.env.NODE_ENV === 'production' && systemMode !== 'production') {
+      throw new Error('ACH transmission blocked: System Settings must be in production mode');
+    }
+    let partnerConfig = batch.partner_id
+      ? await AS2Partners.getPartnerConfig(batch.partner_id)
       : null;
 
-    // Resolve partner config for this batch
-    let partnerConfig = null;
-    if (productionConfig) {
-      // Production mode: use the configured external bank endpoint
-      partnerConfig = productionConfig;
-      console.log(`[ACH] transmitBatch(${batchId}): PRODUCTION MODE → ${productionConfig.partnerName}`);
-    } else {
-      // Sandbox mode: use partner-specific or default config
-      if (batch.partner_id) {
-        partnerConfig = await AS2Partners.getPartnerConfig(batch.partner_id);
-      }
+    if (systemMode === 'production') {
+      if (!partnerConfig) partnerConfig = await SystemSettings.getProductionPartnerConfig();
       if (!partnerConfig) {
-        partnerConfig = await AS2Partners.getDefaultPartnerConfig();
+        throw new Error('ACH transmission blocked: no production ODFI endpoint is configured');
       }
-
-      // When no partner is configured, default to HTTPS REST API self-transmit
+      if (partnerConfig.protocol === 'as2' && process.env.AS2_PRODUCTION_APPROVED !== 'true') {
+        throw new Error('ACH transmission blocked: AS2 bank certification is not approved');
+      }
+      console.log(`[ACH] transmitBatch(${batchId}): PRODUCTION MODE → ${partnerConfig.partnerName}`);
+    } else {
+      if (!partnerConfig) partnerConfig = await AS2Partners.getDefaultPartnerConfig();
       if (!partnerConfig) {
         partnerConfig = {
           partnerId: batch.partner_id || 'DLBTRUST-DIRECT',
@@ -205,37 +237,23 @@ class ACHEngine {
     );
 
     try {
-      // Route based on partner protocol: bill_api, rest_api, or as2
+      // Route through a configured outbound bank connector.
       const protocol = partnerConfig.protocol || 'rest_api';
       console.log(`[ACH] transmitBatch(${batchId}): calling ${protocol} transmit`);
 
       let result;
       if (protocol === 'bill_api') {
-        // BILL Cash Account: submit via BILL's RecordARPayment API
-        const billClient = require('../bill/billClient');
-        const totalDollars = (batch.total_amount_cents || 0) / 100;
-        const billResult = await billClient.recordDeposit({
-          amount: totalDollars,
-          method: 'ach',
-          memo: batch.entry_description || ('ACH batch ' + batchId),
-        });
-        result = {
-          success: true,
-          mode: 'bill_api',
-          message_id: billResult.receivedPayId || ('BILL-' + Date.now()),
-          status_code: 200,
-          mdn_received: true,
-          response_body: JSON.stringify(billResult),
-          billRecord: billResult,
-        };
-        console.log(`[ACH] transmitBatch(${batchId}): BILL API → receivedPayId=${billResult.receivedPayId}`);
-      } else {
-        result = protocol === 'rest_api'
-          ? await OpenBankApi.transmit(nachaContent, batch.filename, partnerConfig)
-          : await AS2Client.transmit(nachaContent, batch.filename, partnerConfig);
+        throw new Error('BILL deposit recording cannot transmit outbound ACH batches');
       }
+      result = protocol === 'rest_api'
+        ? await OpenBankApi.transmit(nachaContent, batch.filename, partnerConfig)
+        : await AS2Client.transmit(nachaContent, batch.filename, partnerConfig);
 
       console.log(`[ACH] transmitBatch(${batchId}): transmit result success=${result.success}, mode=${result.mode}`);
+      const publicResult = { ...result };
+      delete publicResult.response_body;
+      delete publicResult.response_headers;
+      delete publicResult.export_path;
 
       // Record transmission with system mode
       await pool.query(
@@ -268,21 +286,7 @@ class ACHEngine {
         // In SANDBOX mode: auto-accept on self-transmit
         if (systemMode === 'production') {
           console.log(`[ACH] transmitBatch(${batchId}): PRODUCTION — transmitted to external bank, awaiting confirmation`);
-          const autoSettle = await SystemSettings.get('auto_settle');
-          if (autoSettle === 'true') {
-            // Auto-settle in production for systems that process end-to-end
-            console.log(`[ACH] transmitBatch(${batchId}): auto_settle enabled → accepting`);
-            await pool.query(
-              `UPDATE ach_batches SET status = 'accepted', accepted_at = NOW(), updated_at = NOW() WHERE batch_id = $1`,
-              [batchId]
-            );
-            await pool.query(
-              `UPDATE ach_entries SET status = 'accepted' WHERE batch_id = $1 AND status = 'transmitted'`,
-              [batchId]
-            );
-            return { ...result, batch_id: batchId, batch_status: 'accepted', auto_accepted: true, system_mode: 'production' };
-          }
-          return { ...result, batch_id: batchId, batch_status: 'transmitted', system_mode: 'production', awaiting_confirmation: true };
+          return { ...publicResult, batch_id: batchId, batch_status: 'transmitted', system_mode: 'production', awaiting_confirmation: true };
         }
 
         // Sandbox: Auto-accept on self-transmit
@@ -297,11 +301,11 @@ class ACHEngine {
             `UPDATE ach_entries SET status = 'accepted' WHERE batch_id = $1 AND status = 'transmitted'`,
             [batchId]
           );
-          return { ...result, batch_id: batchId, batch_status: 'accepted', auto_accepted: true, system_mode: 'sandbox' };
+          return { ...publicResult, batch_id: batchId, batch_status: 'accepted', auto_accepted: true, system_mode: 'sandbox' };
         }
       }
 
-      return { ...result, batch_id: batchId, batch_status: newStatus, system_mode: systemMode };
+      return { ...publicResult, batch_id: batchId, batch_status: newStatus, system_mode: systemMode };
     } catch (err) {
       console.error(`[ACH] transmitBatch(${batchId}) FAILED:`, err.message);
       await pool.query(
@@ -352,8 +356,7 @@ class ACHEngine {
       }
     }
 
-    const updated = await pool.query('SELECT * FROM ach_batches WHERE batch_id = $1', [batchId]);
-    return updated.rows[0];
+    return ACHEngine.getBatch(batchId);
   }
 
   /**
@@ -364,6 +367,9 @@ class ACHEngine {
     if (!batch) throw new Error(`Batch not found: ${batchId}`);
     if (batch.status !== 'accepted' && batch.status !== 'transmitted') {
       throw new Error(`Batch must be in 'accepted' or 'transmitted' status to settle, current: ${batch.status}`);
+    }
+    if (!metadata.processorConfirmed || !metadata.settlementRef) {
+      throw new Error('ACH settlement requires processor confirmation and a settlement reference');
     }
 
     const settlementDate = metadata.settlementDate || new Date().toISOString().split('T')[0];
@@ -382,8 +388,7 @@ class ACHEngine {
       [batchId]
     );
 
-    const updated = await pool.query('SELECT * FROM ach_batches WHERE batch_id = $1', [batchId]);
-    return updated.rows[0];
+    return ACHEngine.getBatch(batchId);
   }
 
   /**
@@ -516,7 +521,11 @@ class ACHEngine {
        ORDER BY e.entry_sequence`,
       [batchId]
     );
-    return result.rows;
+    return result.rows.map(entry => ({
+      ...entry,
+      receiving_routing: paymentCrypto.mask(entry.receiving_routing),
+      account_number: paymentCrypto.mask(entry.account_number),
+    }));
   }
 
   /**
@@ -529,7 +538,7 @@ class ACHEngine {
       [batchId]
     );
     if (!result.rows.length) throw new Error(`Batch not found or not in pending status: ${batchId}`);
-    return result.rows[0];
+    return ACHEngine.getBatch(batchId);
   }
 
   /**
@@ -642,7 +651,10 @@ class ACHEngine {
       [batchId]
     );
     if (!batch.rows.length) throw new Error(`Batch not found: ${batchId}`);
-    return batch.rows[0];
+    return {
+      ...batch.rows[0],
+      nacha_content: paymentCrypto.decrypt(batch.rows[0].nacha_content),
+    };
   }
 
   /**

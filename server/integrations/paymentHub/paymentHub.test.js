@@ -5,7 +5,7 @@ const crypto = require('crypto');
 const fs = require('fs');
 const http = require('http');
 const paymentCrypto = require('./paymentCrypto');
-const { readiness, isSecureEndpoint } = require('./paymentHubConfig');
+const { getConfig, readiness, isSecureEndpoint } = require('./paymentHubConfig');
 const { PaymentHubClient } = require('./paymentHubClient');
 const { PaymentHubEngine } = require('./paymentHubEngine');
 const { generateNACHAFile, parseNACHAFile, validateRouting } = require('../ach/nachaGenerator');
@@ -24,6 +24,9 @@ async function testCrypto() {
   assert.strictEqual(isSecureEndpoint('https://payments.example.test/callback'), true);
   assert.strictEqual(isSecureEndpoint('http://payment-hub.svc.cluster.local/callback'), true);
   assert.strictEqual(isSecureEndpoint('http://payments.example.test/callback'), false);
+  process.env.PAYMENT_HUB_WEBHOOK_MAX_AGE_SECONDS = '600';
+  assert.strictEqual(getConfig().webhookMaxAgeSeconds, 600);
+  delete process.env.PAYMENT_HUB_WEBHOOK_MAX_AGE_SECONDS;
 
   process.env.NODE_ENV = 'production';
   process.env.PAYMENT_DATA_ENCRYPTION_KEY = 'not-a-valid-production-encryption-key';
