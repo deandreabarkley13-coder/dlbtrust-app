@@ -1,5 +1,5 @@
 /**
- * Fineract Core Banking Routes — dlbtrust.cloud
+ * Fineract Core Banking Routes — DLB Trust
  * Mounts at: /api/fineract
  *
  * Provides endpoints for Fineract client/account management,

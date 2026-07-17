@@ -1,5 +1,5 @@
 /**
- * Trust Accounting Routes — dlbtrust.cloud
+ * Trust Accounting Routes — DLB Trust
  * Mounts at: /api/accounting
  *
  * Chart of accounts, journal entries, trial balance,

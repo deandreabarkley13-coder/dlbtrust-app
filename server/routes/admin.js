@@ -1,5 +1,5 @@
 /**
- * Admin Control Routes — dlbtrust.cloud
+ * Admin Control Routes — DLB Trust
  * Mounts at: /api/admin
  *
  * System health, Fineract client/account management, bond administration,

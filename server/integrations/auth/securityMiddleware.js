@@ -30,7 +30,7 @@ function helmetMiddleware() {
         scriptSrcAttr: ["'unsafe-inline'"],
         styleSrc: ["'self'", "'unsafe-inline'"],
         imgSrc: ["'self'", 'data:', 'blob:', 'https:'],
-        connectSrc: ["'self'", 'https://*.trycloudflare.com', 'https://*.dlbtrust.cloud', 'https://*.tunnelmole.net'],
+        connectSrc: ["'self'", 'https://*.trycloudflare.com', 'https://*.tunnelmole.net'],
         fontSrc: ["'self'", 'https:', 'data:'],
         objectSrc: ["'none'"],
         frameAncestors: ["'none'"],

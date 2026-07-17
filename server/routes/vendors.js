@@ -1,5 +1,5 @@
 /**
- * Vendor Routes — dlbtrust.cloud
+ * Vendor Routes — DLB Trust
  * Mounts at: /api/vendors
  *
  * Vendor registry, payment initiation, approval workflow, and execution.

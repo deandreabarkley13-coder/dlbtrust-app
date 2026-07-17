@@ -1,5 +1,5 @@
 /**
- * Document Management Routes — dlbtrust.cloud
+ * Document Management Routes — DLB Trust
  * Mounts at: /api/documents
  *
  * Document templates, document management, and document generation.

@@ -36,7 +36,7 @@ function getConfig() {
     authToken: process.env.PAYMENT_HUB_AUTH_TOKEN || '',
     serviceToken: process.env.PAYMENT_HUB_SERVICE_TOKEN || '',
     webhookSecret: process.env.PAYMENT_HUB_WEBHOOK_SECRET || '',
-    webhookMaxAgeSeconds: integer('PAYMENT_HUB_WEBHOOK_MAX_AGE_SECONDS', 300),
+    webhookMaxAgeSeconds: integer('PAYMENT_HUB_WEBHOOK_MAX_AGE_SECONDS', 300, 10, 86400),
     requestTimeoutMs: integer('PAYMENT_HUB_TIMEOUT_MS', 15000, 1000, 120000),
     maxRetries: integer('PAYMENT_HUB_MAX_RETRIES', 2, 0, 5),
     callbackUrl: process.env.PAYMENT_HUB_CALLBACK_URL || '',
