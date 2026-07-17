@@ -4,7 +4,7 @@
  * ACH Pipeline Routes — NACHA generation + AS2 transmission
  * Mounts at: /api/ach-pipeline
  *
- * Replaces OpenACH Docker dependency with direct NACHA file generation
+ * Provides direct NACHA file generation and authenticated transmission controls
  * and AS2 protocol delivery to the bank.
  */
 

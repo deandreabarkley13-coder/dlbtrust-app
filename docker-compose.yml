@@ -1,6 +1,5 @@
 # dlbtrust-app — Docker Compose
 # Adds Apache Fineract (core banking GL) + PostgreSQL alongside the existing app.
-# OpenACH containers are managed separately (existing setup).
 #
 # Usage:
 #   docker compose up -d
