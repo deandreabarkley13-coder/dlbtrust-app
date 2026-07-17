@@ -45,6 +45,13 @@ const SECRET_CONFIG_KEYS = [
 ];
 
 let tablesReady = false;
+let tablesReadyPromise = null;
+
+// Advisory-lock key that serializes concurrent migrations. Without it, the
+// dashboard's parallel aggregator requests can each run CREATE TABLE IF NOT
+// EXISTS at once and collide on the pg_type catalog
+// ("duplicate key value violates unique constraint pg_type_typname_nsp_index").
+const MIGRATION_LOCK_KEY = 4820251;
 
 class BankingAggregator {
   // ═══════════════════════════════════════════════════════════════════════════
@@ -53,8 +60,25 @@ class BankingAggregator {
 
   static async ensureTables() {
     if (tablesReady) return;
+    if (tablesReadyPromise) return tablesReadyPromise;
 
-    await pool.query(`
+    tablesReadyPromise = BankingAggregator._createTables()
+      .then(() => { tablesReady = true; })
+      .catch((e) => { tablesReadyPromise = null; throw e; });
+
+    return tablesReadyPromise;
+  }
+
+  static async _createTables() {
+    // Serialize DDL across concurrent callers and across processes/machines so
+    // parallel CREATE TABLE IF NOT EXISTS statements don't race the pg_type
+    // catalog. The lock is held on a single dedicated connection and released
+    // in finally.
+    const client = await pool.connect();
+    try {
+      await client.query('SELECT pg_advisory_lock($1)', [MIGRATION_LOCK_KEY]);
+
+    await client.query(`
       CREATE TABLE IF NOT EXISTS aggregator_connections (
         id                TEXT PRIMARY KEY,
         name              TEXT NOT NULL,
@@ -70,7 +94,7 @@ class BankingAggregator {
       )
     `);
 
-    await pool.query(`
+    await client.query(`
       CREATE TABLE IF NOT EXISTS aggregator_accounts (
         id                  TEXT PRIMARY KEY,
         connection_id       TEXT NOT NULL REFERENCES aggregator_connections(id) ON DELETE CASCADE,
@@ -87,7 +111,7 @@ class BankingAggregator {
       )
     `);
 
-    await pool.query(`
+    await client.query(`
       CREATE TABLE IF NOT EXISTS aggregator_transactions (
         id                  TEXT PRIMARY KEY,
         connection_id       TEXT NOT NULL REFERENCES aggregator_connections(id) ON DELETE CASCADE,
@@ -106,7 +130,7 @@ class BankingAggregator {
       )
     `);
 
-    await pool.query(`
+    await client.query(`
       CREATE TABLE IF NOT EXISTS aggregator_statements (
         id                  TEXT PRIMARY KEY,
         connection_id       TEXT NOT NULL REFERENCES aggregator_connections(id) ON DELETE CASCADE,
@@ -122,7 +146,7 @@ class BankingAggregator {
       )
     `);
 
-    await pool.query(`
+    await client.query(`
       CREATE TABLE IF NOT EXISTS aggregator_events (
         id            TEXT PRIMARY KEY,
         connection_id TEXT REFERENCES aggregator_connections(id) ON DELETE SET NULL,
@@ -136,8 +160,10 @@ class BankingAggregator {
         created_at    TIMESTAMPTZ DEFAULT NOW()
       )
     `);
-
-    tablesReady = true;
+    } finally {
+      await client.query('SELECT pg_advisory_unlock($1)', [MIGRATION_LOCK_KEY]).catch(function () {});
+      client.release();
+    }
   }
 
   // ═══════════════════════════════════════════════════════════════════════════
