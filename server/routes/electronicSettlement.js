@@ -52,6 +52,19 @@ router.post('/submit', requireAdmin, async function(req, res) {
   }
 });
 
+// Deposit internal ledger funds into the Eaton Family CU Trust Checking account
+// (on-us ACH credit: DR trust checking / CR source cash). Source is main GL cash
+// (source_account_code) or a sub-ledger (sub_ledger_id); destination comes from
+// TRUST_BANK_ACCOUNT / TRUST_BANK_ROUTING config.
+router.post('/deposit-to-bank', requireAdmin, async function(req, res) {
+  try {
+    var result = await settlementEngine.depositToTrustChecking(req.body);
+    res.json({ success: true, data: result });
+  } catch (err) {
+    res.status(400).json({ success: false, error: err.message });
+  }
+});
+
 // Complete MFA-pending settlement (verify MFA + retry PayBills)
 router.post('/complete-mfa', requireAdmin, async function(req, res) {
   try {
