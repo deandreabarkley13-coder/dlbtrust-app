@@ -52,6 +52,9 @@ function buildConfig() {
       accounts: `/users/${userGuid}/accounts`,
       transactions: `/users/${userGuid}/transactions`,
     },
+    // MX has no statements endpoint — only sync the kinds it actually serves so
+    // scheduled pulls are not recorded as failed for a missing /statements path.
+    pullKinds: ['accounts', 'transactions'],
     auth: {
       type: 'basic',
       username: required('MX_CLIENT_ID'),
