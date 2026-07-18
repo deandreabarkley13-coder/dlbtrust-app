@@ -68,11 +68,37 @@ var PRIORITY_LEVELS = {
 
 var ACCOUNT_CODES = {
   CASH: '1000',
+  TRUST_CHECKING: '1010',
   BILL_CASH: '1050',
   SETTLEMENT_CLEARING: '1060',
   EXPENSES: '5200',
   DISTRIBUTIONS: '5100',
 };
+
+// Default ODFI/RDFI for on-us trust funding. Eaton Family CU is both the
+// originating and receiving institution for the trust checking account, so a
+// deposit is an on-us ACH credit. Routing matches the NACHA generator's ODFI.
+var EATON_ROUTING = '241075470';
+
+/**
+ * Resolve the debit/credit GL accounts for a settlement's journal entry.
+ * `trust_deposit`/`internal_transfer` move cash into our own bank account
+ * (Eaton Trust Checking) — an asset reclass (DR bank / CR source cash), not an
+ * expense. All other types keep the prior expense/distribution behavior.
+ * Pure function (no I/O) so it is unit-testable without a database.
+ */
+function resolveSettlementJeAccounts(paymentType, sourceCode) {
+  var creditCode = sourceCode || ACCOUNT_CODES.CASH;
+  var debitCode;
+  if (paymentType === 'trust_deposit' || paymentType === 'internal_transfer') {
+    debitCode = ACCOUNT_CODES.TRUST_CHECKING;
+  } else if (paymentType === 'trust_distribution') {
+    debitCode = ACCOUNT_CODES.DISTRIBUTIONS;
+  } else {
+    debitCode = ACCOUNT_CODES.EXPENSES;
+  }
+  return { debitCode: debitCode, creditCode: creditCode };
+}
 
 var MAX_RETRIES = 3;
 var RETRY_DELAYS_MS = [1000, 3000, 8000];
@@ -976,16 +1002,18 @@ async function executeACHPayment(opts) {
   var journalEntryId = null;
   if (TrustAccountingEngine) {
     try {
-      var debitCode = opts.payment_type === 'trust_distribution' ? ACCOUNT_CODES.DISTRIBUTIONS : ACCOUNT_CODES.EXPENSES;
-      var creditCode = opts.source_account_code || ACCOUNT_CODES.CASH;
+      var achAccts = resolveSettlementJeAccounts(opts.payment_type, opts.source_account_code);
+      var debitCode = achAccts.debitCode;
+      var creditCode = achAccts.creditCode;
+      var isDeposit = opts.payment_type === 'trust_deposit' || opts.payment_type === 'internal_transfer';
       var je = await TrustAccountingEngine.postJournalEntry({
         entryDate: new Date(),
-        description: 'Electronic ACH settlement: ' + (opts.description || opts.payee_name),
+        description: (isDeposit ? 'ACH deposit to trust checking: ' : 'Electronic ACH settlement: ') + (opts.description || opts.payee_name),
         lines: [
           { accountCode: debitCode, debitAmount: opts.amount, creditAmount: 0,
             memo: 'ACH ESTL ' + opts.settlementId + ' — ' + opts.payee_name },
           { accountCode: creditCode, debitAmount: 0, creditAmount: opts.amount,
-            memo: 'ACH outflow: ' + opts.paymentRef },
+            memo: (isDeposit ? 'ACH deposit funding: ' : 'ACH outflow: ') + opts.paymentRef },
         ],
         referenceType: 'electronic_settlement',
         referenceId: opts.settlementId,
@@ -1594,9 +1622,80 @@ async function completeMFASettlement(opts) {
 
 // ─── EXPORT ───────────────────────────────────────────────────────────────────
 
+/**
+ * Ensure the Eaton Trust Checking GL account exists so deposit journal entries
+ * post cleanly even if the chart-of-accounts migration hasn't been re-run.
+ * Idempotent; safe to call before every deposit.
+ */
+async function ensureTrustCheckingAccount() {
+  try {
+    await pool.query(
+      `INSERT INTO trust_accounts (account_code, account_name, account_type, sub_type, description)
+       VALUES ($1, $2, 'asset', 'cash', $3)
+       ON CONFLICT (account_code) DO NOTHING`,
+      [ACCOUNT_CODES.TRUST_CHECKING, 'Eaton Family CU Trust Checking',
+       'Eaton Family CU trust operating/checking account (ODFI/RDFI 241075470)']
+    );
+  } catch (e) {
+    console.warn('[ElectronicSettlement] ensureTrustCheckingAccount skipped:', e.message);
+  }
+}
+
+/**
+ * Move funds from an internal ledger source (main GL cash or a sub-ledger) into
+ * the Eaton Family CU Trust Checking account via an on-us ACH credit.
+ *
+ * Eaton is both ODFI and RDFI, so this originates a NACHA credit entry
+ * (transaction code 22) to the trust checking account and books an asset-reclass
+ * journal entry (DR Trust Checking / CR source cash). No P&L impact.
+ *
+ * Destination is config-driven — never hardcode a real account number:
+ *   TRUST_BANK_ROUTING  (default 241075470 = Eaton Family CU)
+ *   TRUST_BANK_ACCOUNT  (required — the trust checking account number)
+ *   TRUST_BANK_NAME     (default 'Eaton Family CU Trust Checking')
+ *
+ * @param {Object} opts
+ * @param {number} opts.amount            amount to deposit (dollars)
+ * @param {string} [opts.source_account_code] GL cash account to draw from (default 1000)
+ * @param {string} [opts.sub_ledger_id]   sub-ledger to fund from instead of GL cash
+ * @param {string} [opts.destination_account] override TRUST_BANK_ACCOUNT
+ * @param {string} [opts.description]
+ * @param {string} [opts.memo]
+ * @param {string} [opts.priority]
+ * @param {string} [opts.initiated_by]
+ */
+async function depositToTrustChecking(opts) {
+  opts = opts || {};
+  var routing = process.env.TRUST_BANK_ROUTING || EATON_ROUTING;
+  var account = opts.destination_account || process.env.TRUST_BANK_ACCOUNT;
+  var bankName = process.env.TRUST_BANK_NAME || 'Eaton Family CU Trust Checking';
+  if (!account) {
+    throw new Error('Trust checking destination not configured — set TRUST_BANK_ACCOUNT (or pass destination_account)');
+  }
+  await ensureTrustCheckingAccount();
+  return submitElectronicPayment({
+    amount: opts.amount,
+    payee_name: bankName,
+    payee_routing: routing,
+    payee_account: account,
+    payee_bank_name: 'Eaton Family CU',
+    force_method: 'ach',
+    payment_type: 'trust_deposit',
+    priority: opts.priority || 'standard',
+    sub_ledger_id: opts.sub_ledger_id || null,
+    source_account_code: opts.source_account_code || ACCOUNT_CODES.CASH,
+    description: opts.description || 'Deposit to Eaton Family CU Trust Checking',
+    memo: opts.memo || null,
+    initiated_by: opts.initiated_by || 'admin',
+  });
+}
+
 module.exports = {
   ensureTables: ensureTables,
   submitElectronicPayment: submitElectronicPayment,
+  depositToTrustChecking: depositToTrustChecking,
+  resolveSettlementJeAccounts: resolveSettlementJeAccounts,
+  ACCOUNT_CODES: ACCOUNT_CODES,
   completeMFASettlement: completeMFASettlement,
   advanceSettlementStatus: advanceSettlementStatus,
   confirmSettlement: confirmSettlement,

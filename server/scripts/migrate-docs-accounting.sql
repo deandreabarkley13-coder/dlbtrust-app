@@ -216,6 +216,7 @@ INSERT INTO trust_accounts (account_code, account_name, account_type, sub_type, 
 VALUES
   -- Assets
   ('1000', 'Trust Cash & Equivalents', 'asset', 'cash', 'Primary cash holdings'),
+  ('1010', 'Eaton Family CU Trust Checking', 'asset', 'cash', 'Eaton Family CU trust operating/checking account (ODFI/RDFI 241075470)'),
   ('1050', 'BILL Cash Account', 'asset', 'cash', 'BILL.com Cash Account (routing 028000024)'),
   ('1100', 'Bond Investments', 'asset', 'investment', 'Fixed income bond holdings at cost'),
   ('1200', 'Accrued Interest Receivable', 'asset', 'receivable', 'Interest earned but not yet received'),
