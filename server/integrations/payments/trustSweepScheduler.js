@@ -46,6 +46,79 @@ function toNumber(value, fallback) {
 }
 
 /**
+ * Persisted sweep ledger — survives restarts so a crash/redeploy mid-window can't
+ * double-sweep. Each sweep attempt claims a unique sweep_key (per source + time
+ * window); a second attempt for the same window is rejected by the UNIQUE index.
+ */
+async function ensureSweepLedger() {
+  await pool.query(
+    'CREATE TABLE IF NOT EXISTS trust_sweeps (' +
+    ' id SERIAL PRIMARY KEY,' +
+    ' sweep_key TEXT UNIQUE NOT NULL,' +
+    ' source_account_code TEXT NOT NULL,' +
+    ' amount NUMERIC(18,2),' +
+    ' reserve NUMERIC(18,2),' +
+    ' status TEXT NOT NULL,' +
+    ' settlement_id TEXT,' +
+    ' ach_batch_id TEXT,' +
+    ' journal_entry_id TEXT,' +
+    ' error TEXT,' +
+    ' initiated_by TEXT,' +
+    ' created_at TIMESTAMPTZ DEFAULT NOW(),' +
+    ' updated_at TIMESTAMPTZ DEFAULT NOW())'
+  );
+}
+
+/**
+ * Idempotency key for a sweep: an explicit override, or a bucket derived from the
+ * source account and the sweep cadence so at most one sweep runs per window.
+ */
+function buildSweepKey(sourceAccount, windowMs, explicitKey) {
+  if (explicitKey) return String(explicitKey);
+  var bucket = Math.floor(Date.now() / windowMs);
+  return sourceAccount + ':' + windowMs + ':' + bucket;
+}
+
+/**
+ * Claim a sweep window. Returns { claimed, rowId, existing } — claimed=false when
+ * another completed/in-flight sweep already owns this window (idempotent skip).
+ * A previously failed attempt for the same window is allowed to retry.
+ */
+async function claimSweepWindow(sweepKey, sourceAccount, reserve, initiatedBy) {
+  var ins = await pool.query(
+    'INSERT INTO trust_sweeps (sweep_key, source_account_code, reserve, status, initiated_by)' +
+    " VALUES ($1, $2, $3, 'in_progress', $4)" +
+    ' ON CONFLICT (sweep_key) DO NOTHING RETURNING id',
+    [sweepKey, sourceAccount, reserve, initiatedBy]
+  );
+  if (ins.rows.length) return { claimed: true, rowId: ins.rows[0].id };
+
+  var existing = await pool.query(
+    'SELECT id, status FROM trust_sweeps WHERE sweep_key = $1',
+    [sweepKey]
+  );
+  var row = existing.rows[0];
+  if (row && row.status === 'failed') {
+    await pool.query(
+      "UPDATE trust_sweeps SET status = 'in_progress', error = NULL, updated_at = NOW() WHERE id = $1",
+      [row.id]
+    );
+    return { claimed: true, rowId: row.id, retriedFrom: 'failed' };
+  }
+  return { claimed: false, existing: row || null };
+}
+
+async function finalizeSweepRow(rowId, fields) {
+  await pool.query(
+    'UPDATE trust_sweeps SET status = $2, amount = $3, settlement_id = $4,' +
+    ' ach_batch_id = $5, journal_entry_id = $6, error = $7, updated_at = NOW() WHERE id = $1',
+    [rowId, fields.status, fields.amount != null ? fields.amount : null,
+     fields.settlement_id || null, fields.ach_batch_id || null,
+     fields.journal_entry_id || null, fields.error || null]
+  );
+}
+
+/**
  * Pure sweep math: available = balance - reserve, floored at 0, capped at
  * maxAmount, rounded to cents. Kept separate from the DB read so it's testable.
  */
@@ -106,21 +179,52 @@ async function runOnce(opts) {
       return summary;
     }
 
-    var settlementEngine = require('./electronicSettlementEngine');
-    var deposit = await settlementEngine.depositToTrustChecking({
-      amount: calc.available,
-      source_account_code: sourceAccount,
-      description: opts.description || 'Scheduled fixed-income cash sweep to Eaton Trust Checking',
-      initiated_by: opts.initiated_by || 'sweep-scheduler',
-      transmit: opts.transmit,
-    });
+    // Claim the sweep window in the persisted ledger before moving any money, so a
+    // restart mid-window can't run a second sweep for the same period.
+    await ensureSweepLedger();
+    var initiatedBy = opts.initiated_by || 'sweep-scheduler';
+    var windowMs = resolveInterval(opts.interval_ms);
+    // opts.force bypasses the window guard with a unique key (manual override).
+    var explicitKey = opts.force ? ('force:' + sourceAccount + ':' + Date.now()) : opts.idempotency_key;
+    var sweepKey = buildSweepKey(sourceAccount, windowMs, explicitKey);
+    summary.sweep_key = sweepKey;
 
-    summary.swept = true;
-    summary.amount = calc.available;
-    summary.settlement_id = deposit.settlement_id;
-    summary.ach_batch_id = deposit.ach_batch_id;
-    summary.journal_entry_id = deposit.journal_entry_id;
-    summary.transmission = deposit.transmission || null;
+    var claim = await claimSweepWindow(sweepKey, sourceAccount, reserve, initiatedBy);
+    if (!claim.claimed) {
+      summary.reason = 'sweep window already processed (idempotent skip)';
+      summary.existing_status = claim.existing ? claim.existing.status : null;
+      return summary;
+    }
+
+    var settlementEngine = require('./electronicSettlementEngine');
+    try {
+      var deposit = await settlementEngine.depositToTrustChecking({
+        amount: calc.available,
+        source_account_code: sourceAccount,
+        description: opts.description || 'Scheduled fixed-income cash sweep to Eaton Trust Checking',
+        initiated_by: initiatedBy,
+        transmit: opts.transmit,
+      });
+
+      summary.swept = true;
+      summary.amount = calc.available;
+      summary.settlement_id = deposit.settlement_id;
+      summary.ach_batch_id = deposit.ach_batch_id;
+      summary.journal_entry_id = deposit.journal_entry_id;
+      summary.transmission = deposit.transmission || null;
+
+      await finalizeSweepRow(claim.rowId, {
+        status: 'completed',
+        amount: calc.available,
+        settlement_id: deposit.settlement_id,
+        ach_batch_id: deposit.ach_batch_id,
+        journal_entry_id: deposit.journal_entry_id,
+      });
+    } catch (depErr) {
+      // Mark the window failed so it can be retried on the next cycle.
+      await finalizeSweepRow(claim.rowId, { status: 'failed', amount: calc.available, error: depErr.message });
+      throw depErr;
+    }
   } catch (e) {
     summary.error = e.message;
   } finally {
@@ -162,11 +266,29 @@ function stop() {
   if (_interval) { clearInterval(_interval); _interval = null; }
 }
 
+/**
+ * Recent sweep ledger rows (audit trail). Safe if the table doesn't exist yet.
+ */
+async function listSweeps(limit) {
+  await ensureSweepLedger();
+  var n = Number(limit) > 0 ? Math.min(Number(limit), 500) : 50;
+  var res = await pool.query(
+    'SELECT sweep_key, source_account_code, amount, reserve, status, settlement_id,' +
+    ' ach_batch_id, journal_entry_id, error, initiated_by, created_at, updated_at' +
+    ' FROM trust_sweeps ORDER BY created_at DESC LIMIT $1',
+    [n]
+  );
+  return res.rows;
+}
+
 module.exports = {
   start: start,
   stop: stop,
   runOnce: runOnce,
   computeSweepAmount: computeSweepAmount,
   computeAvailable: computeAvailable,
+  buildSweepKey: buildSweepKey,
+  ensureSweepLedger: ensureSweepLedger,
+  listSweeps: listSweeps,
   isEnabled: isEnabled,
 };
