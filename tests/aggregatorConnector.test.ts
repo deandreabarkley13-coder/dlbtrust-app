@@ -130,6 +130,31 @@ describe('connector registry & internal rails', () => {
   });
 });
 
+describe('internal_rails pullTransactions direction', () => {
+  const pgPool = require('../server/integrations/bonds/pgPool');
+  const originalQuery = pgPool.query;
+
+  afterAll(() => { pgPool.query = originalQuery; });
+
+  it('labels deposits as credit and payments as debit', async () => {
+    pgPool.query = async () => ({
+      rows: [
+        { settlement_id: 'S1', payment_method: 'ach', payment_type: 'deposit', amount: 100, status: 'settled' },
+        { settlement_id: 'S2', payment_method: 'ach', payment_type: 'bill_cash_deposit', amount: 50, status: 'settled' },
+        { settlement_id: 'S3', payment_method: 'wire', payment_type: 'vendor_payment', amount: 75, status: 'transmitted' },
+      ],
+    });
+
+    const rails = getConnector('internal_rails');
+    const txns = await rails.pullTransactions({ id: 'r1', config: {} }, {});
+    const byId = Object.fromEntries(txns.map((t: any) => [t.externalTxnId, t.direction]));
+
+    expect(byId.S1).toBe('credit');   // deposit → money in
+    expect(byId.S2).toBe('credit');   // bill_cash_deposit → money in
+    expect(byId.S3).toBe('debit');    // vendor_payment → money out
+  });
+});
+
 describe('secret redaction', () => {
   it('redacts the OAuth2 clientSecret but keeps non-secret auth fields', () => {
     const redacted = BankingAggregator._redactConnection({
