@@ -24,6 +24,24 @@ describe('trustSweepScheduler.computeAvailable', () => {
   });
 });
 
+describe('trustSweepScheduler.buildSweepKey', () => {
+  it('is stable within the same window bucket (idempotent) and differs across sources', () => {
+    const k1 = sweep.buildSweepKey('1000', 60000);
+    const k2 = sweep.buildSweepKey('1000', 60000);
+    expect(k1).toBe(k2); // same source + window → same key
+    expect(sweep.buildSweepKey('2000', 60000)).not.toBe(k1);
+  });
+
+  it('honors an explicit override key', () => {
+    expect(sweep.buildSweepKey('1000', 60000, 'my-key')).toBe('my-key');
+  });
+
+  it('encodes source and window in the derived key', () => {
+    const k = sweep.buildSweepKey('1000', 60000);
+    expect(k.startsWith('1000:60000:')).toBe(true);
+  });
+});
+
 describe('trustSweepScheduler.isEnabled', () => {
   it('is off unless TRUST_SWEEP_ENABLED=true (money movement is opt-in)', () => {
     const old = process.env.TRUST_SWEEP_ENABLED;

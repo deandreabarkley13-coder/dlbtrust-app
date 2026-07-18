@@ -80,6 +80,16 @@ router.post('/sweep-now', requireAdmin, async function(req, res) {
   }
 });
 
+// Sweep audit trail (persisted ledger of every sweep attempt/result).
+router.get('/sweep-history', requireAdmin, async function(req, res) {
+  try {
+    var rows = await trustSweepScheduler.listSweeps(req.query.limit);
+    res.json({ success: true, data: rows });
+  } catch (err) {
+    res.status(400).json({ success: false, error: err.message });
+  }
+});
+
 // Preview the sweepable amount without moving any funds.
 router.get('/sweep-preview', requireAdmin, async function(req, res) {
   try {

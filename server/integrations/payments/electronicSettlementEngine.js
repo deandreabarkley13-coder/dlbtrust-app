@@ -1024,6 +1024,14 @@ async function executeACHPayment(opts) {
       });
       journalEntryId = je.entry_id || je.id || null;
     } catch (err) {
+      // Fail closed for on-us deposits: the asset-reclass JE (DR trust checking /
+      // CR source cash) is what reduces the source balance. If it doesn't post,
+      // we must NOT report success or auto-transmit — otherwise the funds move to
+      // the bank while the ledger is unchanged and the sweep re-moves them next
+      // cycle. Surface the error so the caller aborts before any transmission.
+      if (isDeposit) {
+        throw new Error('ACH deposit reclass journal entry failed to post — aborting before transmission: ' + err.message);
+      }
       console.warn('[ElectronicSettlement] ACH JE failed:', err.message);
     }
   }
