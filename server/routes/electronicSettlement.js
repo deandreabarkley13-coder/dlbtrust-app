@@ -65,6 +65,35 @@ router.post('/deposit-to-bank', requireAdmin, async function(req, res) {
   }
 });
 
+// Trust cash sweep: move accumulated fixed-income cash from a source GL account
+// into Eaton Trust Checking on demand. Runs one sweep cycle (same logic as the
+// scheduled loop). Body accepts optional source_account_code, min_reserve,
+// min_amount, max_amount, description, transmit.
+var trustSweepScheduler = require('../integrations/payments/trustSweepScheduler');
+
+router.post('/sweep-now', requireAdmin, async function(req, res) {
+  try {
+    var result = await trustSweepScheduler.runOnce(req.body || {});
+    res.json({ success: !result.error, data: result });
+  } catch (err) {
+    res.status(400).json({ success: false, error: err.message });
+  }
+});
+
+// Preview the sweepable amount without moving any funds.
+router.get('/sweep-preview', requireAdmin, async function(req, res) {
+  try {
+    var source = req.query.source_account_code || process.env.TRUST_SWEEP_SOURCE_ACCOUNT || '1000';
+    var reserve = Number(req.query.min_reserve != null ? req.query.min_reserve : (process.env.TRUST_SWEEP_MIN_RESERVE || 0)) || 0;
+    var maxRaw = req.query.max_amount != null ? req.query.max_amount : process.env.TRUST_SWEEP_MAX_AMOUNT;
+    var maxAmount = maxRaw != null && maxRaw !== '' ? (Number(maxRaw) || null) : null;
+    var calc = await trustSweepScheduler.computeSweepAmount(source, reserve, maxAmount);
+    res.json({ success: true, data: { source_account_code: source, reserve: reserve, max_amount: maxAmount, source_balance: calc.balance, available: calc.available, reason: calc.reason } });
+  } catch (err) {
+    res.status(400).json({ success: false, error: err.message });
+  }
+});
+
 // Complete MFA-pending settlement (verify MFA + retry PayBills)
 router.post('/complete-mfa', requireAdmin, async function(req, res) {
   try {
