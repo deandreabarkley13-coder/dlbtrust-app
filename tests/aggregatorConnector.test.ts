@@ -18,8 +18,19 @@ const { BankingAggregator } = require('../server/integrations/aggregator/banking
 function startProvider() {
   let tokenRequests = 0;
   let lastAuthHeader: string | undefined;
+  let lastAcceptHeader: string | undefined;
 
   const server = http.createServer((req, res) => {
+    if (req.url === '/mx/transactions' && req.method === 'GET') {
+      lastAuthHeader = req.headers['authorization'] as string;
+      lastAcceptHeader = req.headers['accept'] as string;
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ transactions: [
+        { guid: 'TRN-1', account_guid: 'ACT-1', amount: 12.5, type: 'CREDIT', transacted_at: '2026-01-01' },
+        { guid: 'TRN-2', account_guid: 'ACT-1', amount: 4.0, type: 'DEBIT', transacted_at: '2026-01-02' },
+      ] }));
+      return;
+    }
     if (req.url === '/oauth/token' && req.method === 'POST') {
       tokenRequests++;
       let body = '';
@@ -46,6 +57,7 @@ function startProvider() {
     close: () => void;
     getTokenRequests: () => number;
     getLastAuthHeader: () => string | undefined;
+    getLastAcceptHeader: () => string | undefined;
   }>((resolve) => {
     server.listen(0, '127.0.0.1', () => {
       const { port } = server.address() as AddressInfo;
@@ -55,6 +67,7 @@ function startProvider() {
         close: () => server.close(),
         getTokenRequests: () => tokenRequests,
         getLastAuthHeader: () => lastAuthHeader,
+        getLastAcceptHeader: () => lastAcceptHeader,
       });
     });
   });
@@ -115,6 +128,42 @@ describe('generic_rest OAuth2 client-credentials', () => {
     await expect(
       getAccessToken({ id: 'c' }, { auth: { type: 'oauth2_client_credentials', tokenUrl: provider.tokenUrl } })
     ).rejects.toThrow(/tokenUrl|clientId|clientSecret/);
+  });
+});
+
+describe('generic_rest MX-style basic auth + custom headers', () => {
+  let provider: Awaited<ReturnType<typeof startProvider>>;
+
+  beforeAll(async () => { provider = await startProvider(); });
+  afterAll(() => { provider.close(); });
+
+  it('sends the custom Accept header + Basic auth and normalizes DEBIT/CREDIT casing', async () => {
+    const conn = {
+      id: 'conn-mx-1',
+      name: 'MX',
+      config: {
+        baseUrl: provider.baseUrl,
+        endpoints: { transactions: '/mx/transactions' },
+        headers: { Accept: 'application/vnd.mx.api.v1+json' },
+        allowPrivateNetwork: true,
+        listPaths: { transactions: 'transactions' },
+        auth: { type: 'basic', username: 'mx-client', password: 'mx-key' },
+        mapping: {
+          transactions: {
+            externalTxnId: 'guid', externalAccountId: 'account_guid',
+            postedDate: 'transacted_at', amount: 'amount', direction: 'type',
+          },
+        },
+      },
+    };
+    const txns = await genericRestConnector.pullTransactions(conn, {});
+    expect(provider.getLastAcceptHeader()).toBe('application/vnd.mx.api.v1+json');
+    const expectedBasic = 'Basic ' + Buffer.from('mx-client:mx-key').toString('base64');
+    expect(provider.getLastAuthHeader()).toBe(expectedBasic);
+    expect(txns.map((t: any) => [t.externalTxnId, t.direction])).toEqual([
+      ['TRN-1', 'credit'],
+      ['TRN-2', 'debit'],
+    ]);
   });
 });
 

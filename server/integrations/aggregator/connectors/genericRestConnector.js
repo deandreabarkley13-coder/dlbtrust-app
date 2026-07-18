@@ -20,6 +20,7 @@
  *     statements: '/v1/statements',
  *     push: '/v1/payments'
  *   },
+ *   headers: { 'Accept': 'application/vnd.mx.api.v1+json' }, // optional static request headers
  *   auth: { type: 'bearer'|'api_key'|'basic'|'hmac'|'oauth2_client_credentials'|'none',
  *           bearerToken, apiKey, headerName, username, password, hmacSecret,
  *           // OAuth2 client-credentials (machine-to-machine, no human): the
@@ -279,7 +280,10 @@ async function request(method, urlStr, config, bodyObj, conn) {
   return new Promise((resolve, reject) => {
     const lib = parsed.protocol === 'https:' ? https : http;
     const body = bodyObj != null ? JSON.stringify(bodyObj) : null;
-    const headers = { 'Accept': 'application/json' };
+    // Optional per-connection static headers (e.g. MX requires
+    // Accept: application/vnd.mx.api.v1+json). Applied before auth so the
+    // Authorization header set by applyAuth/OAuth always takes precedence.
+    const headers = Object.assign({ 'Accept': 'application/json' }, (config && config.headers) || {});
     if (body) {
       headers['Content-Type'] = 'application/json';
       headers['Content-Length'] = Buffer.byteLength(body);
@@ -398,6 +402,8 @@ const genericRestConnector = {
       const m = mapRecord(rec, mapping, {});
       const amount = toNumber(m.amount != null ? m.amount : rec.amount);
       let direction = m.direction;
+      // Normalize provider casing (e.g. MX returns type 'DEBIT'/'CREDIT').
+      if (direction) direction = String(direction).toLowerCase();
       if (!direction && amount != null) direction = amount < 0 ? 'debit' : 'credit';
       return {
         externalTxnId: m.externalTxnId != null ? m.externalTxnId : (rec.id || rec.transaction_id),
