@@ -277,9 +277,16 @@ class BankingAggregator {
     if (conn.direction === 'outbound') throw new Error('Connection is outbound-only: ' + id);
 
     const connector = getConnector(conn.connector_type);
+    // Precedence: explicit opts.kinds > per-connection config.pullKinds > all.
+    // config.pullKinds lets a connection opt out of data kinds its provider does
+    // not serve (e.g. MX has no statements endpoint) so scheduled syncs are not
+    // recorded as failed for requesting an unsupported endpoint every cycle.
+    const configKinds = conn.config && Array.isArray(conn.config.pullKinds) && conn.config.pullKinds.length
+      ? conn.config.pullKinds
+      : null;
     const kinds = Array.isArray(opts.kinds) && opts.kinds.length
       ? opts.kinds
-      : ['accounts', 'transactions', 'statements'];
+      : (configKinds || ['accounts', 'transactions', 'statements']);
 
     const summary = { accounts: 0, transactions: 0, statements: 0, errors: [] };
 
