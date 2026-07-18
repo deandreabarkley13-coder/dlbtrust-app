@@ -118,7 +118,7 @@ const internalRailsConnector = {
     let rows = [];
     try {
       const res = await pool.query(
-        `SELECT settlement_id, payment_method, amount, status, payee_name,
+        `SELECT settlement_id, payment_method, payment_type, amount, status, payee_name,
                 description, submitted_at, created_at
          FROM electronic_settlements
          ORDER BY created_at DESC
@@ -131,14 +131,18 @@ const internalRailsConnector = {
       return [];
     }
 
+    // Deposits/collections are money in (credit); everything else is a payment
+    // out of the trust (debit). Mirrors electronicSettlementEngine's deposit
+    // classification so the unified view reflects cash direction correctly.
+    const isDeposit = (t) => t === 'deposit' || t === 'bill_cash_deposit';
+
     return rows.map((r) => ({
       externalTxnId: r.settlement_id,
       externalAccountId: r.payment_method || 'rail',
       postedDate: r.submitted_at || r.created_at,
-      // Outbound rail settlements move cash out of the trust → debit.
       amount: Math.abs(Number(r.amount) || 0),
       currency: 'USD',
-      direction: 'debit',
+      direction: isDeposit(r.payment_type) ? 'credit' : 'debit',
       description: r.description || (`${r.payment_method || 'rail'} payment to ${r.payee_name || 'payee'}`),
       status: r.status || 'posted',
       raw: { source: 'internal_rails', ...r },
