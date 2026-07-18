@@ -999,13 +999,16 @@ async function executeACHPayment(opts) {
     }]
   );
 
+  // On-us transfer into our own bank account (Eaton trust checking) — computed
+  // once at function scope so both the JE branch and the BILL guard below see it.
+  var isDeposit = opts.payment_type === 'trust_deposit' || opts.payment_type === 'internal_transfer';
+
   var journalEntryId = null;
   if (TrustAccountingEngine) {
     try {
       var achAccts = resolveSettlementJeAccounts(opts.payment_type, opts.source_account_code);
       var debitCode = achAccts.debitCode;
       var creditCode = achAccts.creditCode;
-      var isDeposit = opts.payment_type === 'trust_deposit' || opts.payment_type === 'internal_transfer';
       var je = await TrustAccountingEngine.postJournalEntry({
         entryDate: new Date(),
         description: (isDeposit ? 'ACH deposit to trust checking: ' : 'Electronic ACH settlement: ') + (opts.description || opts.payee_name),
@@ -1026,7 +1029,11 @@ async function executeACHPayment(opts) {
   }
 
   var billRef = null;
-  if (billClient) {
+  // On-us transfers into our own bank account (Eaton trust checking) must NOT be
+  // recorded as a BILL AR deposit — that would book a phantom inflow into the
+  // BILL cash account and double-count the money. Only record real inbound
+  // settlements in BILL.
+  if (billClient && !isDeposit) {
     try {
       var billResult = await billClient.recordDeposit({
         amount: opts.amount,
@@ -1673,7 +1680,7 @@ async function depositToTrustChecking(opts) {
     throw new Error('Trust checking destination not configured — set TRUST_BANK_ACCOUNT (or pass destination_account)');
   }
   await ensureTrustCheckingAccount();
-  return submitElectronicPayment({
+  var result = await submitElectronicPayment({
     amount: opts.amount,
     payee_name: bankName,
     payee_routing: routing,
@@ -1688,6 +1695,27 @@ async function depositToTrustChecking(opts) {
     memo: opts.memo || null,
     initiated_by: opts.initiated_by || 'admin',
   });
+
+  // Machine-to-machine delivery: auto-transmit the generated NACHA file to Eaton
+  // (over the env-configured SFTP endpoint / partner) with no human step, when
+  // enabled. Opt-in via TRUST_BANK_AUTO_TRANSMIT=true or opts.transmit === true.
+  var autoTransmit = opts.transmit === true
+    || (opts.transmit !== false && String(process.env.TRUST_BANK_AUTO_TRANSMIT || '').toLowerCase() === 'true');
+  if (autoTransmit && ACHEngine && result && result.ach_batch_id) {
+    try {
+      var tx = await ACHEngine.transmitBatch(result.ach_batch_id);
+      result.transmission = {
+        transmitted: !!(tx && tx.success),
+        batch_status: tx && tx.batch_status,
+        mode: tx && tx.mode,
+        message_id: tx && tx.message_id,
+      };
+    } catch (err) {
+      console.warn('[ElectronicSettlement] Eaton NACHA auto-transmit failed:', err.message);
+      result.transmission = { transmitted: false, error: err.message };
+    }
+  }
+  return result;
 }
 
 module.exports = {

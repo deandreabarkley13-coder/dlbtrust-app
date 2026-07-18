@@ -725,29 +725,42 @@ class OpenBankApi {
   // ─── SFTP Upload ───────────────────────────────────────────────────────────
 
   /**
-   * Upload file via SFTP using shell command (sshpass + sftp).
-   * Falls back to scp if sftp is not available.
+   * Upload a NACHA file to the partner's SFTP server via scp.
+   * Uses key-based auth (privateKey path) when available, else password auth via
+   * sshpass -e. Arguments are passed as an array (no shell) and host keys are
+   * verified against ACH_SFTP_KNOWN_HOSTS (or accept-new when unset).
    */
   static async _sftpUpload({ host, port, user, privateKey, password, remotePath, content }) {
-    const { execSync } = require('child_process');
+    const { execFileSync } = require('child_process');
 
-    // Write content to temp file
-    const tmpFile = path.join(ACH_EXPORTS_DIR, `.tmp-${Date.now()}.ach`);
+    // Write content to temp file (randomized name to avoid concurrent collisions)
+    const tmpFile = path.join(ACH_EXPORTS_DIR, `.tmp-${Date.now()}-${crypto.randomBytes(4).toString('hex')}.ach`);
     fs.mkdirSync(path.dirname(tmpFile), { recursive: true });
     fs.writeFileSync(tmpFile, content, 'utf8');
 
+    // Host-key verification: prefer a pinned known_hosts file; otherwise TOFU
+    // (accept-new). Never blanket-disable checking (StrictHostKeyChecking=no).
+    const knownHosts = process.env.ACH_SFTP_KNOWN_HOSTS || '';
+    const sshOpts = knownHosts
+      ? ['-o', 'StrictHostKeyChecking=yes', '-o', `UserKnownHostsFile=${knownHosts}`]
+      : ['-o', 'StrictHostKeyChecking=accept-new'];
+    const dest = `${user}@${host}:${remotePath}`;
+
     try {
       if (privateKey && fs.existsSync(privateKey)) {
-        // Key-based auth
-        execSync(
-          `scp -P ${port} -o StrictHostKeyChecking=no -i "${privateKey}" "${tmpFile}" "${user}@${host}:${remotePath}"`,
+        // Key-based auth — args passed as an array (no shell), so no injection.
+        execFileSync(
+          'scp',
+          ['-P', String(port), ...sshOpts, '-i', privateKey, tmpFile, dest],
           { timeout: 60000 }
         );
       } else if (password) {
-        // Password-based auth via sshpass
-        execSync(
-          `sshpass -p "${password}" scp -P ${port} -o StrictHostKeyChecking=no "${tmpFile}" "${user}@${host}:${remotePath}"`,
-          { timeout: 60000 }
+        // Password auth via sshpass -e: the password is read from the SSHPASS env
+        // var, never placed on argv (avoids process-list / shell-history leakage).
+        execFileSync(
+          'sshpass',
+          ['-e', 'scp', '-P', String(port), ...sshOpts, tmpFile, dest],
+          { timeout: 60000, env: Object.assign({}, process.env, { SSHPASS: password }) }
         );
       } else {
         throw new Error('SFTP requires either privateKey path or password (set as apiKey on partner)');
