@@ -370,6 +370,12 @@ initializeDatabase().then(function() {
     backupEngine.startScheduledBackups();
   } catch(e) { console.warn('[backup-scheduler]', e.message); }
 
+  // Start banking-aggregator auto-sync (hands-off pull + GL posting)
+  try {
+    var aggregatorScheduler = require(path.join(HD, 'server', 'integrations', 'aggregator', 'aggregatorScheduler'));
+    aggregatorScheduler.start();
+  } catch(e) { console.warn('[aggregator-scheduler]', e.message); }
+
   // Record server start in transaction journal
   try {
     var journal = require(path.join(HD, 'server', 'integrations', 'backup', 'transactionJournal'));

@@ -20,8 +20,16 @@
  *     statements: '/v1/statements',
  *     push: '/v1/payments'
  *   },
- *   auth: { type: 'bearer'|'api_key'|'basic'|'hmac'|'none',
- *           bearerToken, apiKey, headerName, username, password, hmacSecret },
+ *   auth: { type: 'bearer'|'api_key'|'basic'|'hmac'|'oauth2_client_credentials'|'none',
+ *           bearerToken, apiKey, headerName, username, password, hmacSecret,
+ *           // OAuth2 client-credentials (machine-to-machine, no human): the
+ *           // connector automatically POSTs to tokenUrl to obtain a short-lived
+ *           // access token, caches it until just before it expires, and sends it
+ *           // as a Bearer token on every pull/push. This is how two servers
+ *           // establish an authenticated connection and exchange financial data
+ *           // with no manual credential handling.
+ *           tokenUrl, clientId, clientSecret, scope, audience,
+ *           credentialsInBody },   // send client_id/secret in the body instead of Basic header
  *   // Mutual TLS (additive to header auth) — reuses the shared helper:
  *   useMtls, clientCertPath, clientKeyPath, clientCaPath, clientKeyPassphrase,
  *   // Webhook signature verification (secure default: unsigned webhooks are
@@ -154,9 +162,120 @@ function applyAuth(headers, config, body) {
   }
 }
 
-async function request(method, urlStr, config, bodyObj) {
+// OAuth2 client-credentials token cache, keyed per connection. Tokens are held
+// in memory only (never persisted, never logged) and refreshed automatically a
+// short time before they expire so requests never carry a stale credential.
+const OAUTH_TOKEN_CACHE = new Map();
+const OAUTH_EXPIRY_SKEW_MS = 60 * 1000; // refresh 60s before the real expiry
+
+function oauthCacheKey(conn, auth) {
+  const id = (conn && conn.id) || '';
+  return `${id}|${auth.tokenUrl}|${auth.clientId}|${auth.scope || ''}|${auth.audience || ''}`;
+}
+
+// Low-level form-encoded POST used for the OAuth2 token endpoint. Reuses the
+// same SSRF guard and mutual-TLS material as the data requests.
+async function formPost(urlStr, config, form, headers) {
   const parsed = new URL(urlStr);
   const vetted = await resolveAllowed(parsed, config);
+  return new Promise((resolve, reject) => {
+    const lib = parsed.protocol === 'https:' ? https : http;
+    const body = new URLSearchParams(form).toString();
+    const reqHeaders = Object.assign({
+      'Accept': 'application/json',
+      'Content-Type': 'application/x-www-form-urlencoded',
+      'Content-Length': Buffer.byteLength(body),
+    }, headers || {});
+
+    const options = {
+      hostname: parsed.hostname,
+      port: parsed.port || (parsed.protocol === 'https:' ? 443 : 80),
+      path: parsed.pathname + (parsed.search || ''),
+      method: 'POST',
+      headers: reqHeaders,
+      timeout: 30000,
+      rejectUnauthorized: true,
+      ...buildMtlsOptions(config),
+    };
+    if (vetted && vetted.length) {
+      const ip = vetted[0];
+      const family = net.isIPv6(ip) ? 6 : 4;
+      options.lookup = (hostname, opts, cb) => cb(null, ip, family);
+    }
+
+    const req = lib.request(options, (res) => {
+      let data = '';
+      res.on('data', (c) => { data += c; });
+      res.on('end', () => {
+        let json = null;
+        try { json = data ? JSON.parse(data) : null; } catch (e) { json = null; }
+        if (res.statusCode >= 200 && res.statusCode < 300) {
+          resolve({ statusCode: res.statusCode, json, raw: data });
+        } else {
+          // Avoid echoing the response body — it may contain token material.
+          reject(new Error(`OAuth2 token request failed: HTTP ${res.statusCode} from ${parsed.origin}`));
+        }
+      });
+    });
+    req.on('error', reject);
+    req.on('timeout', () => { req.destroy(new Error('OAuth2 token request timed out: ' + parsed.origin)); });
+    req.write(body);
+    req.end();
+  });
+}
+
+// Obtain (or reuse a cached) OAuth2 client-credentials access token for a
+// connection. Fully automatic: no human intervention is required once the
+// clientId/clientSecret/tokenUrl are configured on the connection.
+async function getAccessToken(conn, config) {
+  const auth = (config && config.auth) || {};
+  if (!auth.tokenUrl || !auth.clientId || !auth.clientSecret) {
+    throw new Error('oauth2_client_credentials requires auth.tokenUrl, auth.clientId and auth.clientSecret');
+  }
+  const key = oauthCacheKey(conn, auth);
+  const cached = OAUTH_TOKEN_CACHE.get(key);
+  if (cached && cached.expiresAt - OAUTH_EXPIRY_SKEW_MS > Date.now()) {
+    return cached.token;
+  }
+
+  const form = { grant_type: 'client_credentials' };
+  if (auth.scope) form.scope = auth.scope;
+  if (auth.audience) form.audience = auth.audience;
+
+  const headers = {};
+  if (auth.credentialsInBody) {
+    form.client_id = auth.clientId;
+    form.client_secret = auth.clientSecret;
+  } else {
+    headers['Authorization'] = 'Basic ' + Buffer.from(`${auth.clientId}:${auth.clientSecret}`).toString('base64');
+  }
+
+  const { json } = await formPost(auth.tokenUrl, config, form, headers);
+  const token = json && (json.access_token || json.accessToken);
+  if (!token) throw new Error('OAuth2 token endpoint did not return an access_token');
+  const expiresInSec = Number(json.expires_in || json.expiresIn);
+  const ttlMs = Number.isFinite(expiresInSec) && expiresInSec > 0 ? expiresInSec * 1000 : 5 * 60 * 1000;
+  OAUTH_TOKEN_CACHE.set(key, { token, expiresAt: Date.now() + ttlMs });
+  return token;
+}
+
+// Test/ops helper: drop cached tokens (all, or for one connection id).
+function clearTokenCache(connectionId) {
+  if (!connectionId) { OAUTH_TOKEN_CACHE.clear(); return; }
+  for (const key of OAUTH_TOKEN_CACHE.keys()) {
+    if (key.startsWith(connectionId + '|')) OAUTH_TOKEN_CACHE.delete(key);
+  }
+}
+
+async function request(method, urlStr, config, bodyObj, conn) {
+  const parsed = new URL(urlStr);
+  const vetted = await resolveAllowed(parsed, config);
+  // Resolve an OAuth2 bearer token up front (auto-fetched/cached) so the
+  // Authorization header is ready before the request is sent.
+  let oauthToken = null;
+  if (config && config.auth && config.auth.type === 'oauth2_client_credentials') {
+    oauthToken = await getAccessToken(conn, config);
+  }
   return new Promise((resolve, reject) => {
     const lib = parsed.protocol === 'https:' ? https : http;
     const body = bodyObj != null ? JSON.stringify(bodyObj) : null;
@@ -166,6 +285,7 @@ async function request(method, urlStr, config, bodyObj) {
       headers['Content-Length'] = Buffer.byteLength(body);
     }
     applyAuth(headers, config, body || '');
+    if (oauthToken) headers['Authorization'] = 'Bearer ' + oauthToken;
 
     const options = {
       hostname: parsed.hostname,
@@ -248,7 +368,7 @@ const genericRestConnector = {
   async pullAccounts(conn, opts) {
     const config = conn.config || {};
     const url = endpointUrl(config, 'accounts');
-    const { json } = await request('GET', url, config, null);
+    const { json } = await request('GET', url, config, null, conn);
     const list = extractList(json, (config.listPaths || {}).accounts);
     const mapping = (config.mapping || {}).accounts;
     return list.map((rec) => {
@@ -271,7 +391,7 @@ const genericRestConnector = {
     let url = endpointUrl(config, 'transactions');
     if (opts && opts.since) url += (url.indexOf('?') === -1 ? '?' : '&') + 'since=' + encodeURIComponent(opts.since);
     if (opts && opts.accountId) url += (url.indexOf('?') === -1 ? '?' : '&') + 'account_id=' + encodeURIComponent(opts.accountId);
-    const { json } = await request('GET', url, config, null);
+    const { json } = await request('GET', url, config, null, conn);
     const list = extractList(json, (config.listPaths || {}).transactions);
     const mapping = (config.mapping || {}).transactions;
     return list.map((rec) => {
@@ -297,7 +417,7 @@ const genericRestConnector = {
   async pullStatements(conn, opts) {
     const config = conn.config || {};
     const url = endpointUrl(config, 'statements');
-    const { json } = await request('GET', url, config, null);
+    const { json } = await request('GET', url, config, null, conn);
     const list = extractList(json, (config.listPaths || {}).statements);
     const mapping = (config.mapping || {}).statements;
     return list.map((rec) => {
@@ -317,7 +437,7 @@ const genericRestConnector = {
   async push(conn, payload) {
     const config = conn.config || {};
     const url = endpointUrl(config, 'push');
-    const { json } = await request('POST', url, config, payload);
+    const { json } = await request('POST', url, config, payload, conn);
     const providerRef = json && (json.id || json.reference || json.transfer_id || json.payment_id) || null;
     return { ok: true, providerRef, response: json };
   },
@@ -342,4 +462,4 @@ const genericRestConnector = {
   },
 };
 
-module.exports = { genericRestConnector };
+module.exports = { genericRestConnector, getAccessToken, clearTokenCache };

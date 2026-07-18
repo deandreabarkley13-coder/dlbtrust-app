@@ -16,6 +16,7 @@
  */
 
 const { genericRestConnector } = require('./genericRestConnector');
+const { internalRailsConnector } = require('./internalRailsConnector');
 
 const REGISTRY = new Map();
 
@@ -36,5 +37,6 @@ function listConnectorTypes() {
 
 // Built-in connectors
 registerConnector(genericRestConnector);
+registerConnector(internalRailsConnector);
 
 module.exports = { registerConnector, getConnector, listConnectorTypes };
