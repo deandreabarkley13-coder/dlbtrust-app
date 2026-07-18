@@ -41,7 +41,7 @@ const { getConnector, listConnectorTypes } = require('./connectors');
 // Config keys treated as secret material — never returned by the API, never logged.
 const SECRET_CONFIG_KEYS = [
   'apiKey', 'apiSecret', 'bearerToken', 'token', 'password',
-  'hmacSecret', 'webhookSecret', 'clientKeyPassphrase',
+  'hmacSecret', 'webhookSecret', 'clientKeyPassphrase', 'clientSecret',
 ];
 
 let tablesReady = false;

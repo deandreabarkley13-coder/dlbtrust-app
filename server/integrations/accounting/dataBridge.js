@@ -313,6 +313,101 @@ class DataBridge {
   }
 
   // ═══════════════════════════════════════════════════════════════════════════
+  //  BANKING AGGREGATOR → TRUST ACCOUNTING SYNC
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  /**
+   * Post trust journal entries for external bank transactions pulled by the
+   * Banking Aggregator. Runs fully hands-off: any aggregator transaction that
+   * does not yet have a posted JE (matched by reference_type/reference_id) is
+   * booked to cash + income/expense, then flows to the Fineract GL via
+   * pushToFineract() on the same sync cycle.
+   *
+   * Idempotency mirrors syncACHToAccounting: the NOT EXISTS guard on
+   * trust_journal_entries means re-pulling the same transaction never
+   * double-posts.
+   */
+  static async syncAggregatorToAccounting() {
+    var { TrustAccountingEngine } = require('./trustAccountingEngine');
+
+    var syncId = 'SYNC-AGG-' + Date.now() + '-' + Math.random().toString(36).slice(2, 6).toUpperCase();
+    var synced = 0;
+    var skipped = 0;
+    var failed = 0;
+    var errors = [];
+
+    try {
+      var txns = await pool.query(`
+        SELECT t.id, t.connection_id, t.external_txn_id, t.external_account_id,
+               t.posted_date, t.amount, t.currency, t.direction, t.description,
+               t.created_at, c.name AS connection_name
+        FROM aggregator_transactions t
+        JOIN aggregator_connections c ON c.id = t.connection_id
+        WHERE c.connector_type <> 'internal_rails'
+          AND NOT EXISTS (
+            SELECT 1 FROM trust_journal_entries je
+            WHERE je.reference_type = 'aggregator_txn'
+              AND je.reference_id = t.id
+              AND je.status = 'posted'
+          )
+        ORDER BY t.created_at ASC
+        LIMIT 100
+      `);
+
+      for (var i = 0; i < txns.rows.length; i++) {
+        var txn = txns.rows[i];
+        try {
+          var amount = Math.abs(parseFloat(txn.amount || 0));
+          if (amount <= 0) { skipped++; continue; }
+
+          // Direction is normalized by the connector: 'credit' = money into our
+          // account, 'debit' = money out. Fall back to the amount sign.
+          var isCredit = txn.direction
+            ? txn.direction === 'credit'
+            : parseFloat(txn.amount || 0) >= 0;
+
+          var label = txn.connection_name || txn.connection_id;
+          var description = 'Aggregator ' + (isCredit ? 'credit' : 'debit') + ' — ' + label +
+            (txn.description ? ' (' + txn.description + ')' : '');
+
+          var lines;
+          if (isCredit) {
+            lines = [
+              { accountCode: ACCOUNTS.CASH, debitAmount: amount, creditAmount: 0, memo: 'Bank credit ' + txn.external_txn_id },
+              { accountCode: ACCOUNTS.FEE_INCOME, debitAmount: 0, creditAmount: amount, memo: 'Aggregator income received' },
+            ];
+          } else {
+            lines = [
+              { accountCode: ACCOUNTS.PAYMENT_EXPENSE, debitAmount: amount, creditAmount: 0, memo: 'Bank debit ' + txn.external_txn_id },
+              { accountCode: ACCOUNTS.CASH, debitAmount: 0, creditAmount: amount, memo: 'Cash paid out (aggregator)' },
+            ];
+          }
+
+          await TrustAccountingEngine.postJournalEntry({
+            entryDate: txn.posted_date || txn.created_at,
+            description: description,
+            lines: lines,
+            referenceType: 'aggregator_txn',
+            referenceId: txn.id,
+            postedBy: 'data_bridge',
+            postToFineract: false,
+          });
+          synced++;
+        } catch (err) {
+          failed++;
+          errors.push({ txnId: txn.id, error: err.message });
+        }
+      }
+    } catch (outerErr) {
+      errors.push({ phase: 'query', error: outerErr.message });
+    }
+
+    await DataBridge._logSync(syncId, 'aggregator_to_accounting', 'aggregator', 'trust_accounting', synced, skipped, failed, errors);
+
+    return { syncId: syncId, synced: synced, skipped: skipped, failed: failed, errors: errors };
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════
   //  CASH → TRUST ACCOUNTING RECONCILIATION
   // ═══════════════════════════════════════════════════════════════════════════
 
@@ -1259,6 +1354,10 @@ class DataBridge {
     try { results.ach = await DataBridge.syncACHToAccounting(); }
     catch (e) { results.ach = { error: e.message }; }
 
+    // 2b. Sync banking-aggregator transactions to accounting
+    try { results.aggregator = await DataBridge.syncAggregatorToAccounting(); }
+    catch (e) { results.aggregator = { error: e.message }; }
+
     // 3. Sync BILL to accounting
     try { results.bill = await DataBridge.syncBILLToAccounting(); }
     catch (e) { results.bill = { error: e.message }; }
@@ -1348,9 +1447,11 @@ class DataBridge {
     var elapsed = Date.now() - startTime;
 
     var totalSynced = (results.openingBalances.synced || 0) + (results.bonds.synced || 0) + (results.ach.synced || 0) +
+      (results.aggregator.synced || 0) +
       (results.bill.synced || 0) + (results.fineractPush.synced || 0) + (results.subLedgerSync.synced || 0) +
       (results.electronicSettlements.synced || 0);
     var totalFailed = (results.openingBalances.failed || 0) + (results.bonds.failed || 0) + (results.ach.failed || 0) +
+      (results.aggregator.failed || 0) +
       (results.bill.failed || 0) + (results.fineractPush.failed || 0) + ((results.subLedgerSync.errors || []).length || 0) +
       (results.electronicSettlements.error ? 1 : 0);
 
