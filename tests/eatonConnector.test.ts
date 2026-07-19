@@ -41,7 +41,8 @@ function startEaton() {
     }
     if (req.url && req.url.startsWith('/ach/returns') && req.method === 'GET') {
       res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ data: [
+      // Wrap under `returns` — the natural shape for an endpoint named /ach/returns.
+      res.end(JSON.stringify({ returns: [
         { id: 'RET-1', submission_id: 'SUB-123', return_code: 'R01', reason: 'Insufficient funds', amount: 100 },
       ] }));
       return;
@@ -122,7 +123,7 @@ describe('eaton connector outbound payment-file transmit (REST, M2M OAuth2)', ()
     await expect(eatonConnector.pullFileStatus(conn(), {})).rejects.toThrow(/submissionId/);
   });
 
-  it('pulls and normalizes ACH returns (ACK/NACK)', async () => {
+  it('pulls and normalizes ACH returns (ACK/NACK) wrapped under a `returns` key', async () => {
     const returns = await eatonConnector.pullReturns(conn(), {});
     expect(returns).toHaveLength(1);
     expect(returns[0].returnCode).toBe('R01');

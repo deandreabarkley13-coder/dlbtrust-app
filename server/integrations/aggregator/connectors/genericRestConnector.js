@@ -347,7 +347,7 @@ function extractList(json, listPath) {
     if (Array.isArray(v)) return v;
   }
   // common conventions
-  for (const key of ['data', 'results', 'items', 'accounts', 'transactions', 'statements']) {
+  for (const key of ['data', 'results', 'items', 'accounts', 'transactions', 'statements', 'returns']) {
     if (json && Array.isArray(json[key])) return json[key];
   }
   return [];
