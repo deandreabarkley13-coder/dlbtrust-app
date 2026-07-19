@@ -79,6 +79,24 @@ router.post('/connections/:id/push', requireAdmin, async (req, res) => {
   } catch (err) { fail(res, err); }
 });
 
+// ─── Payment-file exchange (connectors that support it, e.g. Eaton) ──────────
+// Transmit a payment file: POST /connections/:id/push with body
+//   { kind: 'ach_file', ach_batch_id } or { kind: 'ach_file', content, filename }
+// Status + returns are separate pulls:
+router.get('/connections/:id/file-status', requireAdmin, async (req, res) => {
+  try {
+    const result = await BankingAggregator.pullFileStatus(req.params.id, { submissionId: req.query.submissionId });
+    res.json({ success: true, data: result });
+  } catch (err) { fail(res, err); }
+});
+
+router.post('/connections/:id/returns', requireAdmin, async (req, res) => {
+  try {
+    const result = await BankingAggregator.pullReturns(req.params.id, req.body || {});
+    res.json({ success: true, data: result });
+  } catch (err) { fail(res, err); }
+});
+
 // ─── Normalized data queries ─────────────────────────────────────────────────
 router.get('/accounts', requireAdmin, async (req, res) => {
   try { res.json({ success: true, data: await BankingAggregator.listAccounts(req.query.connectionId) }); }

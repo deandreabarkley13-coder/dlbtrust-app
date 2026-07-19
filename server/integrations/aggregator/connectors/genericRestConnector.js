@@ -468,4 +468,16 @@ const genericRestConnector = {
   },
 };
 
-module.exports = { genericRestConnector, getAccessToken, clearTokenCache };
+module.exports = {
+  genericRestConnector,
+  getAccessToken,
+  clearTokenCache,
+  // Exposed so provider-specific connectors (e.g. Eaton) can reuse the same
+  // hardened HTTP layer — OAuth2/mTLS auth, SSRF guard, timeouts — instead of
+  // duplicating it.
+  request,
+  endpointUrl,
+  extractList,
+  mapRecord,
+  toNumber,
+};
