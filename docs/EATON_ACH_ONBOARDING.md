@@ -42,6 +42,18 @@ Please provision the following so we can originate ACH credits to the trust chec
 - [ ] The **file naming convention** and any **PGP encryption** requirement for files at rest.
 - [ ] Where Eaton drops **acknowledgment / return files** (ACK/NACK, R-return records) for us to pull.
 
+### C-alt. File transmission channel (REST API) — if Eaton prefers HTTPS over SFTP
+The app also supports transmitting the same NACHA/ISO 20022 payment file over a
+**REST API** (machine-to-machine), as an alternative to SFTP. If Eaton exposes a
+REST file-exchange API instead of (or in addition to) SFTP, provide:
+- [ ] **API base URL** (e.g. `https://api.eatonfamilycu.example/v1`).
+- [ ] **OAuth2 token URL** + **client_id** / **client_secret** (client-credentials grant),
+      and/or **mutual TLS** client-certificate requirements.
+- [ ] **File-intake endpoint** (POST) that accepts a payment file (we send a JSON
+      envelope `{ filename, format, encoding: "base64", content }`).
+- [ ] **File-status endpoint** (GET by submission id) and **returns endpoint** (GET)
+      for ACK/NACK and R-return records.
+
 ### D. Testing
 - [ ] A **test/sandbox** window: a penny-test or zero-dollar prenote (SEC code with
       transaction code `23`/`28` prenotification) to validate routing + account before live credits.
@@ -66,6 +78,26 @@ Once Eaton returns the above, they are set as environment variables / secrets �
 
 The ACH Company ID / Originator ID lives in the NACHA generator config
 (`server/integrations/ach/nachaGenerator.js`) — provide the value and we set it there.
+
+### Alternative: REST payment-file transmission (aggregator `eaton` connector)
+If Eaton uses a REST API instead of SFTP, register the direct connection with
+`node server/scripts/register-eaton-connection.js` using these variables. The
+`eaton` connector then transmits the payment file over REST with machine-to-machine
+OAuth2 (and optional mutual TLS), and pulls file status + ACH returns back:
+
+| Setting | Purpose |
+| --- | --- |
+| `EATON_CONNECTOR` | `eaton` (REST payment-file exchange) or `generic_rest` (default `eaton`). |
+| `EATON_BASE_URL` | Eaton REST API base URL. **Required.** |
+| `EATON_TOKEN_URL` / `EATON_CLIENT_ID` / `EATON_CLIENT_SECRET` | OAuth2 client-credentials (M2M). **Required.** |
+| `EATON_FILE_INTAKE_PATH` | POST payment file (default `/ach/files`). |
+| `EATON_FILE_STATUS_PATH` | GET submission status (default `/ach/files`). |
+| `EATON_RETURNS_PATH` | GET ACH returns / ACK-NACK (default `/ach/returns`). |
+| `EATON_USE_MTLS` + `EATON_CLIENT_CERT_PATH` / `EATON_CLIENT_KEY_PATH` | Optional mutual TLS. |
+
+Transmit a file: `POST /api/aggregator/connections/CONN-EATON-FCU/push` with
+`{ "kind": "ach_file", "ach_batch_id": "<batch>" }` (or inline `content`).
+Reconcile: `GET .../file-status?submissionId=<id>` and `POST .../returns`.
 
 ### Optional hands-off sweep (off by default)
 An automated sweep can move accumulated fixed-income cash into the trust checking account on a

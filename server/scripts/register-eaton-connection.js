@@ -24,6 +24,18 @@
  *   EATON_PUSH_PATH          default /payments
  *   EATON_DIRECTION      inbound|outbound|both  (default: both)
  *   EATON_CONNECTION_ID  connection id          (default: CONN-EATON-FCU)
+ *   EATON_CONNECTOR      generic_rest | eaton   (default: eaton)
+ *
+ * When EATON_CONNECTOR=eaton, these payment-file endpoints are also configured
+ * (outbound NACHA/ISO file transmit + status + ACH returns pull over REST):
+ *   EATON_FILE_INTAKE_PATH   default /ach/files
+ *   EATON_FILE_STATUS_PATH   default /ach/files
+ *   EATON_RETURNS_PATH       default /ach/returns
+ *   EATON_FILE_FORMAT        default nacha
+ *
+ * Optional mutual TLS (machine-to-machine client cert, additive to OAuth2):
+ *   EATON_USE_MTLS=true, EATON_CLIENT_CERT_PATH, EATON_CLIENT_KEY_PATH,
+ *   EATON_CLIENT_CA_PATH, EATON_CLIENT_KEY_PASSPHRASE
  *
  * Usage:
  *   node server/scripts/register-eaton-connection.js            # create/update
@@ -40,6 +52,8 @@ function required(name) {
   }
   return String(v).trim();
 }
+
+const CONNECTOR = (process.env.EATON_CONNECTOR || 'eaton').trim();
 
 function buildConfig() {
   const config = {
@@ -59,6 +73,23 @@ function buildConfig() {
   };
   if (process.env.EATON_SCOPE) config.auth.scope = process.env.EATON_SCOPE.trim();
   if (process.env.EATON_AUDIENCE) config.auth.audience = process.env.EATON_AUDIENCE.trim();
+
+  // Payment-file exchange endpoints for the dedicated Eaton connector.
+  if (CONNECTOR === 'eaton') {
+    config.endpoints.fileIntake = process.env.EATON_FILE_INTAKE_PATH || '/ach/files';
+    config.endpoints.fileStatus = process.env.EATON_FILE_STATUS_PATH || '/ach/files';
+    config.endpoints.returns = process.env.EATON_RETURNS_PATH || '/ach/returns';
+    config.defaultFileFormat = process.env.EATON_FILE_FORMAT || 'nacha';
+  }
+
+  // Optional mutual TLS (client certificate), additive to OAuth2.
+  if (String(process.env.EATON_USE_MTLS || '').toLowerCase() === 'true') {
+    config.useMtls = true;
+    config.clientCertPath = required('EATON_CLIENT_CERT_PATH');
+    config.clientKeyPath = required('EATON_CLIENT_KEY_PATH');
+    if (process.env.EATON_CLIENT_CA_PATH) config.clientCaPath = process.env.EATON_CLIENT_CA_PATH.trim();
+    if (process.env.EATON_CLIENT_KEY_PASSPHRASE) config.clientKeyPassphrase = process.env.EATON_CLIENT_KEY_PASSPHRASE;
+  }
   return config;
 }
 
@@ -68,6 +99,7 @@ function redactedView(config) {
   if (c.auth) {
     if (c.auth.clientSecret) c.auth.clientSecret = '***redacted***';
   }
+  if (c.clientKeyPassphrase) c.clientKeyPassphrase = '***redacted***';
   return c;
 }
 
@@ -76,6 +108,7 @@ async function main() {
   const config = buildConfig();
 
   console.log('[eaton] connection id:', CONNECTION_ID);
+  console.log('[eaton] connector   :', CONNECTOR);
   console.log('[eaton] direction   :', direction);
   console.log('[eaton] config      :', JSON.stringify(redactedView(config)));
 
@@ -99,7 +132,7 @@ async function main() {
     await BankingAggregator.createConnection({
       id: CONNECTION_ID,
       name: 'Eaton Family Credit Union',
-      connectorType: 'generic_rest',
+      connectorType: CONNECTOR,
       direction,
       active: true,
       config,

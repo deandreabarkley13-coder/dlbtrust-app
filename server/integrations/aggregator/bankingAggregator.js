@@ -405,6 +405,47 @@ class BankingAggregator {
     return result;
   }
 
+  /**
+   * Pull the status of a previously transmitted payment file (connectors that
+   * support file exchange, e.g. Eaton). Returns the connector's status shape.
+   */
+  static async pullFileStatus(id, opts) {
+    const conn = await BankingAggregator._getConnectionRaw(id);
+    if (!conn) throw new Error('Connection not found: ' + id);
+    const connector = getConnector(conn.connector_type);
+    if (typeof connector.pullFileStatus !== 'function') {
+      throw new Error(`Connector "${conn.connector_type}" does not support file status`);
+    }
+    const result = await connector.pullFileStatus(conn, opts || {});
+    await BankingAggregator._logEvent(id, 'inbound', 'file_status',
+      { submissionId: opts && opts.submissionId, status: result && result.status }, 'processed', null);
+    return result;
+  }
+
+  /**
+   * Pull ACH returns / ACK-NACK records so the app can reconcile which
+   * originated credits were accepted vs. returned (R01/R02/…).
+   */
+  static async pullReturns(id, opts) {
+    const conn = await BankingAggregator._getConnectionRaw(id);
+    if (!conn) throw new Error('Connection not found: ' + id);
+    if (conn.direction === 'outbound') throw new Error('Connection is outbound-only: ' + id);
+    const connector = getConnector(conn.connector_type);
+    if (typeof connector.pullReturns !== 'function') {
+      throw new Error(`Connector "${conn.connector_type}" does not support returns`);
+    }
+    let returns;
+    try {
+      returns = await connector.pullReturns(conn, opts || {});
+    } catch (err) {
+      await BankingAggregator._logEvent(id, 'inbound', 'returns', { count: 0 }, 'failed', err.message);
+      throw err;
+    }
+    await pool.query('UPDATE aggregator_connections SET last_pull_at = NOW() WHERE id = $1', [id]);
+    await BankingAggregator._logEvent(id, 'inbound', 'returns', { count: returns.length }, 'processed', null);
+    return returns;
+  }
+
   // ═══════════════════════════════════════════════════════════════════════════
   //  WEBHOOKS — provider-initiated inbound events
   // ═══════════════════════════════════════════════════════════════════════════
