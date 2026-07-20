@@ -74,10 +74,33 @@ Once Eaton returns the above, they are set as environment variables / secrets �
 | `ACH_SFTP_KEY` | Path to our SSH private key (preferred auth). |
 | `ACH_SFTP_PASSWORD` | Password (fallback auth) — stored as a secret. |
 | `ACH_SFTP_KNOWN_HOSTS` | Path to a `known_hosts` file pinning Eaton's host key. |
+| `ACH_SFTP_RETURN_PATH` | Remote directory where Eaton drops return/ACK files (default `/outbound`). |
+| `ACH_RETURNS_DIR` | Local directory to save downloaded return files (default `data/ach-returns`). |
 | `TRUST_BANK_AUTO_TRANSMIT` | `true` to auto-deliver each generated NACHA file to Eaton. |
+| `TRUST_ID` | Protected trust identifier (redacted in logs; never hardcoded). |
+| `TRUST_MASTER_ACCOUNT` | Protected trust master (control) account number (redacted; never hardcoded). |
 
 The ACH Company ID / Originator ID lives in the NACHA generator config
 (`server/integrations/ach/nachaGenerator.js`) — provide the value and we set it there.
+
+### Automated SFTP file-drop client (`server/scripts/eaton-file-drop.js`)
+Once Eaton returns the SFTP channel, this env-driven CLI handles the file-drop
+protocol machine-to-machine — no host, credential, or account value is hardcoded,
+and every identifier is redacted in output:
+
+```
+node server/scripts/eaton-file-drop.js --status            # show redacted config + readiness
+node server/scripts/eaton-file-drop.js --upload <batchId>  # upload one NACHA batch
+node server/scripts/eaton-file-drop.js --upload-pending    # upload all pending batches
+node server/scripts/eaton-file-drop.js --fetch-returns     # download return/ACK files
+node server/scripts/eaton-file-drop.js --dry-run --upload-pending   # report only, no I/O
+```
+
+Uploads route through the hardened ACH transmit path (arguments via `execFile`,
+no shell; password read from `SSHPASS` env, never argv; host key pinned via
+`ACH_SFTP_KNOWN_HOSTS` or trust-on-first-use). Without `ACH_SFTP_URL` the script
+**refuses to transmit** (fail-safe). It can run on a schedule (cron / systemd timer)
+for fully hands-off origination and return reconciliation.
 
 ### Alternative: REST payment-file transmission (aggregator `eaton` connector)
 If Eaton uses a REST API instead of SFTP, register the direct connection with
