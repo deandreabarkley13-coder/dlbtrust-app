@@ -1,0 +1,17 @@
+{
+  "name": "fwaas-prototype",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Spike: bank-free fiat-wallet-as-a-service — TigerBeetle double-entry ledger + USDC-on-Stellar (testnet) instant settlement.",
+  "type": "commonjs",
+  "scripts": {
+    "tb:format": "node scripts/tb-run.js format",
+    "tb:start": "node scripts/tb-run.js start",
+    "demo": "node demo.js",
+    "demo:ledger-only": "LEDGER_ONLY=1 node demo.js"
+  },
+  "dependencies": {
+    "@stellar/stellar-sdk": "^13.1.0",
+    "tigerbeetle-node": "0.17.9"
+  }
+}
