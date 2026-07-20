@@ -52,6 +52,9 @@ try { WireEngine = require('../wire/wireEngine').WireEngine; } catch (e) { WireE
 var STPEngine;
 try { STPEngine = require('./stpEngine'); } catch (e) { STPEngine = null; }
 
+var TrustIdentity;
+try { TrustIdentity = require('./trustIdentity'); } catch (e) { TrustIdentity = null; }
+
 // ─── CONSTANTS ────────────────────────────────────────────────────────────────
 
 var SETTLEMENT_STATUSES = [
@@ -1703,6 +1706,12 @@ async function depositToTrustChecking(opts) {
     memo: opts.memo || null,
     initiated_by: opts.initiated_by || 'admin',
   });
+
+  // Attach the protected trust identity (redacted) so the deposit is
+  // attributable to the trust entity without ever exposing full identifiers.
+  if (TrustIdentity) {
+    result.trust_identity = TrustIdentity.summary();
+  }
 
   // Machine-to-machine delivery: auto-transmit the generated NACHA file to Eaton
   // (over the env-configured SFTP endpoint / partner) with no human step, when

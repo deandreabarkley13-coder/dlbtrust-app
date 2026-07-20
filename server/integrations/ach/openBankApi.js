@@ -772,6 +772,78 @@ class OpenBankApi {
     }
   }
 
+  /**
+   * Build the ssh/scp/sftp host-key-verification options. Prefers a pinned
+   * known_hosts file (ACH_SFTP_KNOWN_HOSTS); otherwise trust-on-first-use
+   * (accept-new). Never blanket-disables host-key checking.
+   */
+  static _sshHostKeyOpts() {
+    const knownHosts = process.env.ACH_SFTP_KNOWN_HOSTS || '';
+    return knownHosts
+      ? ['-o', 'StrictHostKeyChecking=yes', '-o', `UserKnownHostsFile=${knownHosts}`]
+      : ['-o', 'StrictHostKeyChecking=accept-new'];
+  }
+
+  /**
+   * List files in a remote SFTP directory. Returns an array of filenames.
+   * Uses a batch `sftp` command with arguments passed via a batch file (no
+   * shell), key- or password-based auth, and host-key verification.
+   */
+  static async _sftpList({ host, port, user, privateKey, password, remoteDir }) {
+    const { execFileSync } = require('child_process');
+    const sshOpts = OpenBankApi._sshHostKeyOpts();
+    const batchFile = path.join(ACH_EXPORTS_DIR, `.ls-${Date.now()}-${crypto.randomBytes(4).toString('hex')}.batch`);
+    fs.mkdirSync(path.dirname(batchFile), { recursive: true });
+    // `-1` = one entry per line; scope the listing to the target directory.
+    fs.writeFileSync(batchFile, `cd ${remoteDir}\nls -1\nbye\n`, 'utf8');
+
+    const target = `${user}@${host}`;
+    const baseArgs = ['-P', String(port), ...sshOpts, '-b', batchFile];
+
+    try {
+      let out;
+      if (privateKey && fs.existsSync(privateKey)) {
+        out = execFileSync('sftp', ['-i', privateKey, ...baseArgs, target],
+          { timeout: 60000, encoding: 'utf8' });
+      } else if (password) {
+        out = execFileSync('sshpass', ['-e', 'sftp', ...baseArgs, target],
+          { timeout: 60000, encoding: 'utf8', env: Object.assign({}, process.env, { SSHPASS: password }) });
+      } else {
+        throw new Error('SFTP requires either privateKey path or password');
+      }
+      return String(out || '')
+        .split('\n')
+        .map((l) => l.trim())
+        // Drop sftp prompts/echoes (sftp>, cd, ls) and blank lines.
+        .filter((l) => l && !l.startsWith('sftp>') && l !== 'ls -1' && !l.startsWith('cd ') && l !== 'bye');
+    } finally {
+      try { fs.unlinkSync(batchFile); } catch { /* ignore */ }
+    }
+  }
+
+  /**
+   * Download a single file from the partner's SFTP server to a local path.
+   * Arguments are passed as an array (no shell), so remote/local paths cannot
+   * inject shell commands; host keys are verified.
+   */
+  static async _sftpDownload({ host, port, user, privateKey, password, remotePath, localPath }) {
+    const { execFileSync } = require('child_process');
+    const sshOpts = OpenBankApi._sshHostKeyOpts();
+    fs.mkdirSync(path.dirname(localPath), { recursive: true });
+    const src = `${user}@${host}:${remotePath}`;
+
+    if (privateKey && fs.existsSync(privateKey)) {
+      execFileSync('scp', ['-P', String(port), ...sshOpts, '-i', privateKey, src, localPath],
+        { timeout: 60000 });
+    } else if (password) {
+      execFileSync('sshpass', ['-e', 'scp', '-P', String(port), ...sshOpts, src, localPath],
+        { timeout: 60000, env: Object.assign({}, process.env, { SSHPASS: password }) });
+    } else {
+      throw new Error('SFTP requires either privateKey path or password');
+    }
+    return { success: true, host, remotePath, localPath };
+  }
+
   // ─── Mode Resolution ───────────────────────────────────────────────────────
 
   static _resolveMode(baseUrl) {
