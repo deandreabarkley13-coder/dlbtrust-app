@@ -124,13 +124,20 @@ async function doUpload(batchIds, dryRun) {
     log('[dry-run] Would transmit the above batches to Eaton over SFTP. No files sent.');
     return;
   }
+  let failures = 0;
   for (const id of ids) {
     try {
       const res = await ACHEngine.transmitBatch(id);
       log(`  [ok]   ${id} -> status=${res && res.batch_status} mode=${res && res.mode}`);
     } catch (err) {
+      failures++;
       log(`  [FAIL] ${id} -> ${err.message}`);
     }
+  }
+  if (failures) {
+    // Surface partial/total failure to schedulers (cron/systemd) via exit code.
+    process.exitCode = 1;
+    log(`Upload completed with ${failures} failure(s) of ${ids.length}.`);
   }
 }
 
