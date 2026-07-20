@@ -87,13 +87,15 @@ async function main() {
       console.log(`    ✔ confirmed in ledger #${s.ledger} in ${s.latencyMs} ms`);
       console.log(`    tx:       ${s.hash}`);
       console.log(`    explorer: ${s.explorer}`);
-      const postBal = await rail.usdcBalance(acc.beneficiary);
-      console.log(`    beneficiary USDC after:  ${postBal}  (+${s.amount})\n`);
-
-      // On-chain confirmed → POST the ledger hold.
+      // On-chain confirmed → POST the ledger hold immediately, before any
+      // display-only query, so a transient read failure can never void a hold
+      // whose funds already moved (keeps ledger and chain reconciled).
       await ledger._post(genId(), holdId, AMOUNT_CENTS);
       settled = true;
       console.log('[6] On-chain confirmed → ledger hold POSTED (settled).\n');
+
+      const postBal = await rail.usdcBalance(acc.beneficiary).catch(() => 'n/a');
+      console.log(`    beneficiary USDC after:  ${postBal}  (+${s.amount})\n`);
     } catch (err) {
       summary.error = err.message;
       console.error(`    ✖ settlement failed: ${err.message}`);
