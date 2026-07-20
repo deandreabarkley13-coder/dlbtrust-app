@@ -62,15 +62,29 @@ try {
   console.log("[liveEngine] daily accrual scheduler started");
 } catch(e) { console.warn("[liveEngine]", e.message); }
 
-// Treasury Management System — serve dashboard at root, static files from public/
-// Disable browser caching on HTML so deploys are picked up immediately
+// Public business website and private Treasury Management System
+const businessHosts = (process.env.BUSINESS_HOSTS || "dlbtrustcompany.com,www.dlbtrustcompany.com")
+  .split(",")
+  .map(host => host.trim().toLowerCase())
+  .filter(Boolean);
+
+function sendNoCacheFile(res, filename) {
+  res.set("Cache-Control", "no-cache, no-store, must-revalidate");
+  res.set("Pragma", "no-cache");
+  res.set("Expires", "0");
+  res.sendFile(path.join(HD, "public", filename));
+}
+
+app.get("/business", (req, res) => {
+  sendNoCacheFile(res, "business.html");
+});
 app.get("/", (req, res) => {
-  res.set('Cache-Control', 'no-cache, no-store, must-revalidate');
-  res.sendFile(path.join(HD, "public", "dashboard.html"));
+  const hostname = String(req.hostname || "").toLowerCase();
+  const filename = businessHosts.includes(hostname) ? "business.html" : "dashboard.html";
+  sendNoCacheFile(res, filename);
 });
 app.get("/treasury", (req, res) => {
-  res.set('Cache-Control', 'no-cache, no-store, must-revalidate');
-  res.sendFile(path.join(HD, "public", "dashboard.html"));
+  sendNoCacheFile(res, "dashboard.html");
 });
 app.use(express.static(path.join(HD, "public"), {
   etag: false,

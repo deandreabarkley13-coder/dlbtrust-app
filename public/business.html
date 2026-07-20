@@ -1,0 +1,443 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="description" content="DLB Trust provides private trust administration, treasury oversight, fixed-income monitoring, and fiduciary reporting.">
+  <meta name="theme-color" content="#0b1d2a">
+  <meta property="og:title" content="DLB Trust Company">
+  <meta property="og:description" content="Private trust administration with disciplined treasury oversight.">
+  <meta property="og:type" content="website">
+  <meta property="og:url" content="https://dlbtrustcompany.com">
+  <title>DLB Trust Company | Private Trust Administration</title>
+  <style>
+    :root {
+      --ink: #12202a;
+      --navy: #0b1d2a;
+      --navy-soft: #153347;
+      --gold: #b99452;
+      --gold-light: #d7bd8b;
+      --paper: #f7f5ef;
+      --white: #ffffff;
+      --muted: #62717b;
+      --line: rgba(18, 32, 42, 0.14);
+      --shadow: 0 24px 70px rgba(11, 29, 42, 0.12);
+    }
+
+    * { box-sizing: border-box; }
+    html { scroll-behavior: smooth; }
+    body {
+      margin: 0;
+      color: var(--ink);
+      background: var(--paper);
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      line-height: 1.6;
+      -webkit-font-smoothing: antialiased;
+    }
+    a { color: inherit; }
+    .wrap { width: min(1180px, calc(100% - 40px)); margin: 0 auto; }
+    .eyebrow {
+      margin: 0 0 14px;
+      color: var(--gold);
+      font-size: 0.76rem;
+      font-weight: 800;
+      letter-spacing: 0.16em;
+      text-transform: uppercase;
+    }
+
+    .site-header {
+      position: absolute;
+      z-index: 10;
+      top: 0;
+      left: 0;
+      right: 0;
+      border-bottom: 1px solid rgba(255, 255, 255, 0.14);
+    }
+    .nav {
+      min-height: 86px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 30px;
+    }
+    .brand {
+      display: inline-flex;
+      align-items: center;
+      gap: 13px;
+      color: var(--white);
+      text-decoration: none;
+    }
+    .brand-mark {
+      width: 44px;
+      height: 44px;
+      display: grid;
+      place-items: center;
+      border: 1px solid rgba(215, 189, 139, 0.72);
+      color: var(--gold-light);
+      font-family: Georgia, "Times New Roman", serif;
+      font-size: 1rem;
+      letter-spacing: 0.08em;
+    }
+    .brand-copy strong {
+      display: block;
+      font-family: Georgia, "Times New Roman", serif;
+      font-size: 1.08rem;
+      font-weight: 500;
+      letter-spacing: 0.02em;
+    }
+    .brand-copy span {
+      display: block;
+      margin-top: 1px;
+      color: rgba(255, 255, 255, 0.62);
+      font-size: 0.66rem;
+      letter-spacing: 0.13em;
+      text-transform: uppercase;
+    }
+    .nav-links { display: flex; align-items: center; gap: 30px; }
+    .nav-links a {
+      color: rgba(255, 255, 255, 0.78);
+      font-size: 0.86rem;
+      font-weight: 600;
+      text-decoration: none;
+    }
+    .nav-links a:hover, .nav-links a:focus-visible { color: var(--white); }
+    .nav-links .portal-link {
+      padding: 10px 16px;
+      border: 1px solid rgba(215, 189, 139, 0.62);
+      color: var(--gold-light);
+    }
+
+    .hero {
+      position: relative;
+      overflow: hidden;
+      min-height: 760px;
+      display: grid;
+      align-items: center;
+      color: var(--white);
+      background:
+        radial-gradient(circle at 79% 30%, rgba(185, 148, 82, 0.19), transparent 27%),
+        linear-gradient(120deg, #081720 0%, #0b2536 58%, #143a4d 100%);
+    }
+    .hero::before {
+      content: "";
+      position: absolute;
+      inset: 0;
+      opacity: 0.24;
+      background-image:
+        linear-gradient(rgba(255, 255, 255, 0.055) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(255, 255, 255, 0.055) 1px, transparent 1px);
+      background-size: 64px 64px;
+      mask-image: linear-gradient(to right, transparent 3%, black 68%, transparent 100%);
+    }
+    .hero::after {
+      content: "DLB";
+      position: absolute;
+      right: -0.03em;
+      bottom: -0.23em;
+      color: rgba(255, 255, 255, 0.025);
+      font-family: Georgia, "Times New Roman", serif;
+      font-size: clamp(15rem, 36vw, 34rem);
+      line-height: 1;
+      letter-spacing: -0.1em;
+      pointer-events: none;
+    }
+    .hero-content {
+      position: relative;
+      z-index: 1;
+      max-width: 800px;
+      padding: 170px 0 105px;
+    }
+    .hero h1 {
+      max-width: 760px;
+      margin: 0;
+      font-family: Georgia, "Times New Roman", serif;
+      font-size: clamp(3.25rem, 7.4vw, 6.2rem);
+      font-weight: 400;
+      line-height: 0.98;
+      letter-spacing: -0.045em;
+    }
+    .hero h1 span { color: var(--gold-light); }
+    .hero-lead {
+      max-width: 640px;
+      margin: 30px 0 0;
+      color: rgba(255, 255, 255, 0.74);
+      font-size: clamp(1.05rem, 2vw, 1.22rem);
+      line-height: 1.75;
+    }
+    .hero-actions { display: flex; flex-wrap: wrap; gap: 14px; margin-top: 38px; }
+    .button {
+      display: inline-flex;
+      min-height: 50px;
+      align-items: center;
+      justify-content: center;
+      padding: 0 22px;
+      border: 1px solid transparent;
+      font-size: 0.84rem;
+      font-weight: 800;
+      letter-spacing: 0.05em;
+      text-decoration: none;
+      text-transform: uppercase;
+      transition: transform 160ms ease, background 160ms ease, border-color 160ms ease;
+    }
+    .button:hover { transform: translateY(-2px); }
+    .button-gold { color: var(--navy); background: var(--gold-light); }
+    .button-ghost { border-color: rgba(255, 255, 255, 0.34); color: var(--white); }
+    .button-ghost:hover { border-color: rgba(255, 255, 255, 0.72); }
+    .hero-note {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      margin-top: 48px;
+      color: rgba(255, 255, 255, 0.54);
+      font-size: 0.76rem;
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+    }
+    .hero-note::before { content: ""; width: 30px; height: 1px; background: var(--gold); }
+
+    .intro { padding: 110px 0; }
+    .intro-grid { display: grid; grid-template-columns: 0.8fr 1.2fr; gap: clamp(60px, 10vw, 140px); }
+    .intro h2, .section-heading h2, .governance-copy h2, .access-panel h2 {
+      margin: 0;
+      font-family: Georgia, "Times New Roman", serif;
+      font-size: clamp(2.3rem, 4vw, 3.7rem);
+      font-weight: 400;
+      line-height: 1.1;
+      letter-spacing: -0.035em;
+    }
+    .intro-copy { padding-top: 8px; }
+    .intro-copy p { margin: 0 0 22px; color: var(--muted); font-size: 1.04rem; }
+    .intro-rule { width: 80px; height: 2px; margin-top: 34px; background: var(--gold); }
+
+    .capabilities { padding: 105px 0; background: var(--white); }
+    .section-heading { max-width: 760px; margin-bottom: 58px; }
+    .capability-grid { display: grid; grid-template-columns: repeat(4, 1fr); border-top: 1px solid var(--line); border-left: 1px solid var(--line); }
+    .capability {
+      min-height: 330px;
+      padding: 38px 30px;
+      border-right: 1px solid var(--line);
+      border-bottom: 1px solid var(--line);
+    }
+    .capability-number { color: var(--gold); font-family: Georgia, serif; font-size: 0.85rem; }
+    .capability h3 { margin: 52px 0 17px; font-family: Georgia, serif; font-size: 1.42rem; font-weight: 500; line-height: 1.25; }
+    .capability p { margin: 0; color: var(--muted); font-size: 0.91rem; }
+
+    .governance { padding: 110px 0; color: var(--white); background: var(--navy); }
+    .governance-grid { display: grid; grid-template-columns: 1.08fr 0.92fr; align-items: center; gap: clamp(60px, 9vw, 120px); }
+    .governance-copy p { max-width: 590px; margin: 25px 0 0; color: rgba(255, 255, 255, 0.65); }
+    .control-list { margin: 40px 0 0; padding: 0; list-style: none; }
+    .control-list li {
+      display: grid;
+      grid-template-columns: 34px 1fr;
+      gap: 15px;
+      padding: 18px 0;
+      border-top: 1px solid rgba(255, 255, 255, 0.12);
+      color: rgba(255, 255, 255, 0.83);
+    }
+    .control-list li:last-child { border-bottom: 1px solid rgba(255, 255, 255, 0.12); }
+    .control-list span:first-child { color: var(--gold-light); font-family: Georgia, serif; }
+    .governance-card {
+      position: relative;
+      padding: 54px 46px;
+      border: 1px solid rgba(215, 189, 139, 0.32);
+      background: linear-gradient(145deg, rgba(255, 255, 255, 0.055), rgba(255, 255, 255, 0.015));
+    }
+    .governance-card::before, .governance-card::after {
+      content: "";
+      position: absolute;
+      width: 40px;
+      height: 40px;
+      border-color: var(--gold);
+    }
+    .governance-card::before { top: 15px; left: 15px; border-top: 1px solid; border-left: 1px solid; }
+    .governance-card::after { right: 15px; bottom: 15px; border-right: 1px solid; border-bottom: 1px solid; }
+    .seal { width: 88px; height: 88px; margin-bottom: 36px; display: grid; place-items: center; border: 1px solid var(--gold); border-radius: 50%; color: var(--gold-light); font-family: Georgia, serif; font-size: 1.2rem; letter-spacing: 0.1em; }
+    .governance-card blockquote { margin: 0; font-family: Georgia, serif; font-size: clamp(1.5rem, 3vw, 2.15rem); line-height: 1.4; }
+    .governance-card p { margin: 25px 0 0; color: rgba(255, 255, 255, 0.52); font-size: 0.78rem; letter-spacing: 0.08em; text-transform: uppercase; }
+
+    .access { padding: 100px 0; }
+    .access-panel {
+      display: grid;
+      grid-template-columns: 1fr auto;
+      align-items: center;
+      gap: 50px;
+      padding: 60px;
+      border: 1px solid var(--line);
+      background: var(--white);
+      box-shadow: var(--shadow);
+    }
+    .access-panel p { max-width: 670px; margin: 18px 0 0; color: var(--muted); }
+    .access-panel .button { color: var(--white); background: var(--navy); }
+
+    footer { padding: 55px 0; color: rgba(255, 255, 255, 0.62); background: #07131b; }
+    .footer-grid { display: grid; grid-template-columns: 1fr 1.4fr; gap: 60px; }
+    .footer-brand { color: var(--white); font-family: Georgia, serif; font-size: 1.24rem; }
+    .footer-brand p { margin: 10px 0 0; color: rgba(255, 255, 255, 0.48); font-family: Inter, sans-serif; font-size: 0.77rem; letter-spacing: 0.08em; text-transform: uppercase; }
+    .legal { margin: 0; font-size: 0.77rem; line-height: 1.75; }
+    .footer-bottom { display: flex; justify-content: space-between; gap: 30px; margin-top: 42px; padding-top: 24px; border-top: 1px solid rgba(255, 255, 255, 0.1); font-size: 0.74rem; }
+
+    :focus-visible { outline: 2px solid var(--gold-light); outline-offset: 4px; }
+
+    @media (max-width: 900px) {
+      .nav-links a:not(.portal-link) { display: none; }
+      .intro-grid, .governance-grid, .footer-grid { grid-template-columns: 1fr; }
+      .intro-grid { gap: 34px; }
+      .capability-grid { grid-template-columns: repeat(2, 1fr); }
+      .access-panel { grid-template-columns: 1fr; padding: 45px; }
+      .access-panel .button { justify-self: start; }
+    }
+
+    @media (max-width: 600px) {
+      .wrap { width: min(100% - 28px, 1180px); }
+      .brand-copy span { display: none; }
+      .nav { min-height: 76px; }
+      .nav-links .portal-link { padding: 9px 11px; font-size: 0.72rem; }
+      .hero { min-height: 720px; }
+      .hero-content { padding-top: 150px; }
+      .hero h1 { font-size: clamp(3.05rem, 15vw, 4.6rem); }
+      .hero-actions { flex-direction: column; align-items: stretch; }
+      .intro, .capabilities, .governance, .access { padding: 78px 0; }
+      .capability-grid { grid-template-columns: 1fr; }
+      .capability { min-height: auto; }
+      .capability h3 { margin-top: 32px; }
+      .governance-card { padding: 46px 30px; }
+      .access-panel { padding: 36px 28px; }
+      .footer-bottom { flex-direction: column; }
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      html { scroll-behavior: auto; }
+      .button { transition: none; }
+    }
+  </style>
+</head>
+<body>
+  <header class="site-header">
+    <div class="wrap nav">
+      <a class="brand" href="#top" aria-label="DLB Trust Company home">
+        <span class="brand-mark" aria-hidden="true">DLB</span>
+        <span class="brand-copy">
+          <strong>DLB Trust Company</strong>
+          <span>Private Trust Administration</span>
+        </span>
+      </a>
+      <nav class="nav-links" aria-label="Primary navigation">
+        <a href="#about">About</a>
+        <a href="#capabilities">Capabilities</a>
+        <a href="#governance">Governance</a>
+        <a class="portal-link" href="https://dlbtrust-app.fly.dev">Secure Access</a>
+      </nav>
+    </div>
+  </header>
+
+  <main id="top">
+    <section class="hero" aria-labelledby="hero-title">
+      <div class="wrap hero-content">
+        <p class="eyebrow">Stewardship · Control · Continuity</p>
+        <h1 id="hero-title">Purposeful oversight for <span>private trust assets.</span></h1>
+        <p class="hero-lead">DLB Trust brings disciplined administration, treasury controls, fixed-income monitoring, and fiduciary reporting together in one private operating framework.</p>
+        <div class="hero-actions">
+          <a class="button button-gold" href="#about">Our approach</a>
+          <a class="button button-ghost" href="https://dlbtrust-app.fly.dev">Authorized system access</a>
+        </div>
+        <p class="hero-note">Private access · Not open to public enrollment</p>
+      </div>
+    </section>
+
+    <section class="intro" id="about" aria-labelledby="about-title">
+      <div class="wrap intro-grid">
+        <div>
+          <p class="eyebrow">About DLB Trust</p>
+          <h2 id="about-title">Built around fiduciary responsibility.</h2>
+        </div>
+        <div class="intro-copy">
+          <p>DLB Trust supports the administration of privately held trust assets through documented governance, controlled workflows, and transparent financial records.</p>
+          <p>Our operating model is designed to help trustees monitor assets and obligations, maintain trust accounting records, oversee approved disbursements, and preserve an auditable history of fiduciary activity.</p>
+          <div class="intro-rule" aria-hidden="true"></div>
+        </div>
+      </div>
+    </section>
+
+    <section class="capabilities" id="capabilities" aria-labelledby="capabilities-title">
+      <div class="wrap">
+        <div class="section-heading">
+          <p class="eyebrow">Core capabilities</p>
+          <h2 id="capabilities-title">A connected framework for private trust operations.</h2>
+        </div>
+        <div class="capability-grid">
+          <article class="capability">
+            <span class="capability-number">01</span>
+            <h3>Trust administration</h3>
+            <p>Structured records for beneficiaries, fiduciary decisions, approvals, distributions, and administrative obligations.</p>
+          </article>
+          <article class="capability">
+            <span class="capability-number">02</span>
+            <h3>Fixed-income oversight</h3>
+            <p>Portfolio schedules, principal tracking, coupon accrual monitoring, cash-flow projections, and statement support.</p>
+          </article>
+          <article class="capability">
+            <span class="capability-number">03</span>
+            <h3>Treasury controls</h3>
+            <p>Controlled payment preparation, funding-source records, maker-checker review, settlement tracking, and reconciliation.</p>
+          </article>
+          <article class="capability">
+            <span class="capability-number">04</span>
+            <h3>Fiduciary reporting</h3>
+            <p>General-ledger records, sub-ledger visibility, financial statements, supporting documents, and audit-ready histories.</p>
+          </article>
+        </div>
+      </div>
+    </section>
+
+    <section class="governance" id="governance" aria-labelledby="governance-title">
+      <div class="wrap governance-grid">
+        <div class="governance-copy">
+          <p class="eyebrow">Governance by design</p>
+          <h2 id="governance-title">Controls that support accountable stewardship.</h2>
+          <p>Trust administration requires more than transaction processing. DLB Trust emphasizes clear authority, documented review, separation of duties, and records that connect each approved action to its fiduciary purpose.</p>
+          <ol class="control-list">
+            <li><span>01</span><span>Defined roles and approval authority</span></li>
+            <li><span>02</span><span>Dual-control review for sensitive activity</span></li>
+            <li><span>03</span><span>Reconciled accounting and operational records</span></li>
+            <li><span>04</span><span>Traceable documentation and audit history</span></li>
+          </ol>
+        </div>
+        <aside class="governance-card" aria-label="Stewardship statement">
+          <div class="seal" aria-hidden="true">DLB</div>
+          <blockquote>“Preserve the record. Protect the asset. Honor the purpose of the trust.”</blockquote>
+          <p>Operating principle</p>
+        </aside>
+      </div>
+    </section>
+
+    <section class="access" aria-labelledby="access-title">
+      <div class="wrap">
+        <div class="access-panel">
+          <div>
+            <p class="eyebrow">Authorized users</p>
+            <h2 id="access-title">Secure treasury system access.</h2>
+            <p>The private treasury platform is restricted to authorized trustees, administrators, and approved operational users.</p>
+          </div>
+          <a class="button" href="https://dlbtrust-app.fly.dev">Open secure portal</a>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <footer>
+    <div class="wrap">
+      <div class="footer-grid">
+        <div class="footer-brand">
+          DLB Trust Company
+          <p>Private trust administration</p>
+        </div>
+        <p class="legal">DLB Trust is a private trust administration organization. This website is informational and does not constitute an offer of securities, investment advice, banking services, deposit-taking, or an invitation for public enrollment. Access to trust systems and records is restricted to authorized persons.</p>
+      </div>
+      <div class="footer-bottom">
+        <span>© 2026 DLB Trust Company. All rights reserved.</span>
+        <span>dlbtrustcompany.com</span>
+      </div>
+    </div>
+  </footer>
+</body>
+</html>

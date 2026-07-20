@@ -108,18 +108,29 @@ try { app.use('/api/hce', require(path.join(HD, 'server', 'routes', 'hce'))); co
 // Trustee Agent & Bookkeeping Agent
 try { app.use('/api/agents', require(path.join(HD, 'server', 'routes', 'agents'))); console.log('[agents] loaded'); } catch(e) { console.warn('[agents]', e.message); }
 
-// Treasury Management System — serve dashboard at root, static files from public/
-app.get('/', function(req, res) {
+// Public business website and private Treasury Management System
+var BUSINESS_HOSTS = (process.env.BUSINESS_HOSTS || 'dlbtrustcompany.com,www.dlbtrustcompany.com')
+  .split(',')
+  .map(function(host) { return host.trim().toLowerCase(); })
+  .filter(Boolean);
+
+function sendNoCacheFile(res, filename) {
   res.set('Cache-Control', 'no-cache, no-store, must-revalidate');
   res.set('Pragma', 'no-cache');
   res.set('Expires', '0');
-  res.sendFile(path.join(HD, 'public', 'dashboard.html'));
+  res.sendFile(path.join(HD, 'public', filename));
+}
+
+app.get('/business', function(req, res) {
+  sendNoCacheFile(res, 'business.html');
+});
+app.get('/', function(req, res) {
+  var hostname = String(req.hostname || '').toLowerCase();
+  var filename = BUSINESS_HOSTS.indexOf(hostname) >= 0 ? 'business.html' : 'dashboard.html';
+  sendNoCacheFile(res, filename);
 });
 app.get('/treasury', function(req, res) {
-  res.set('Cache-Control', 'no-cache, no-store, must-revalidate');
-  res.set('Pragma', 'no-cache');
-  res.set('Expires', '0');
-  res.sendFile(path.join(HD, 'public', 'dashboard.html'));
+  sendNoCacheFile(res, 'dashboard.html');
 });
 // ─── Health / Data Integrity Endpoint ──────────────────────────────────────
 app.get('/api/health', async function(req, res) {
