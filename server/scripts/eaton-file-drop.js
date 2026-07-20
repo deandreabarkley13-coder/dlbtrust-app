@@ -161,6 +161,7 @@ async function doFetchReturns(cfg, dryRun) {
   }
   fs.mkdirSync(localDir, { recursive: true });
   let downloaded = 0;
+  let failures = 0;
   for (const name of files) {
     const localPath = path.join(localDir, path.basename(name));
     if (fs.existsSync(localPath)) {
@@ -177,10 +178,16 @@ async function doFetchReturns(cfg, dryRun) {
       downloaded++;
       log(`  [ok]   ${name}`);
     } catch (err) {
+      failures++;
       log(`  [FAIL] ${name} -> ${err.message}`);
     }
   }
   log(`Downloaded ${downloaded} new return file(s).`);
+  if (failures) {
+    // Surface download failures to schedulers (cron/systemd) via exit code.
+    process.exitCode = 1;
+    log(`Fetch completed with ${failures} failure(s).`);
+  }
 }
 
 async function main() {
