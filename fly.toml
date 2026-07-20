@@ -7,8 +7,8 @@ primary_region = 'iad'
   PORT = '3002'
   NODE_ENV = 'production'
   FINERACT_URL = 'http://dlbtrust-fineract.internal:8443/fineract-provider/api/v1'
-  PAYMENT_HUB_MODE = 'local_ach'
-  PAYMENT_HUB_LIVE = 'true'
+  PAYMENT_HUB_MODE = 'disabled'
+  PAYMENT_HUB_LIVE = 'false'
 
 [http_service]
   internal_port = 3002
