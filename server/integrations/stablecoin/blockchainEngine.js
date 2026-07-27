@@ -121,6 +121,7 @@ class BlockchainEngine {
     if (!sdk) throw new Error('Stellar SDK is not installed');
     if (!this.cfg.distributorSecret) throw new Error('STABLECOIN_DISTRIBUTOR_SECRET not configured');
     const kp = loadKeypair(this.cfg.distributorSecret);
+    await this._fundIfNeeded(kp);
     const account = await this.server.loadAccount(kp.publicKey());
     return { kp, account };
   }
