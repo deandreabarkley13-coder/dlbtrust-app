@@ -145,6 +145,7 @@ class SourceOfFundsAdapter {
       }
       case 'cash': {
         if (!CashEngine) throw new Error('CashEngine not available');
+        if (!sourceRef.movementId) throw new Error('Cash source has no reserve movement; approve before settling');
         const cfg = getConfig();
         const holdingAccount = sourceRef.holdingAccount || cfg.cashHoldingAccount || 'STABLECOIN_CASH_HOLD';
         if (cfg.cashSettlementAccount) {
