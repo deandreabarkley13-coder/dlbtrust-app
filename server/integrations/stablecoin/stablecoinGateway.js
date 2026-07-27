@@ -205,7 +205,7 @@ class StablecoinGateway {
   }
 
   static async settlePayment(id, { memo } = {}) {
-    const payment = await StablecoinGateway.getPayment(id);
+    let payment = await StablecoinGateway.getPayment(id);
     if (payment.status === 'settled') return payment;
     if (!['pending', 'approved'].includes(payment.status)) {
       throw new Error(`Cannot settle payment in ${payment.status} status`);
