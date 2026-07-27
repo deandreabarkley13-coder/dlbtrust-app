@@ -68,6 +68,10 @@ try { app.use('/api/accounting', require(path.join(HD, 'server', 'routes', 'acco
 app.use('/api/payment-hub', require(path.join(HD, 'server', 'routes', 'paymentHub')));
 console.log('[payment-hub] loaded');
 
+// Stablecoin Payment Gateway + Treasury + Magic WaaS + WSO2 API Manager
+app.use('/api/stablecoin', require(path.join(HD, 'server', 'routes', 'stablecoin')));
+console.log('[stablecoin] loaded');
+
 // ACH Pipeline — NACHA generation + AS2 transmission
 try { app.use('/api/ach-pipeline', require(path.join(HD, 'server', 'routes', 'achPipeline'))); console.log('[ach-pipeline] loaded'); } catch(e) { console.warn('[ach-pipeline]', e.message); }
 
@@ -248,6 +252,15 @@ async function initializeDatabase() {
   } catch(e) {
     console.error('[payment-hub] table init failed:', e.message);
     throw e;
+  }
+
+  // Stablecoin Payment Gateway + Treasury tables
+  try {
+    var StablecoinGateway = require(path.join(HD, 'server', 'integrations', 'stablecoin', 'stablecoinGateway')).StablecoinGateway;
+    await StablecoinGateway.ensureTables();
+    console.log('[stablecoin] tables ensured');
+  } catch(e) {
+    console.warn('[stablecoin] table init:', e.message);
   }
 
   // Electronic Settlement tables

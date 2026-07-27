@@ -1,0 +1,243 @@
+'use strict';
+
+/**
+ * Blockchain Engine — direct stablecoin clearing and settlement to wallets.
+ *
+ * Primary rail: USDC on Stellar. The engine is intentionally narrow: it moves
+ * stablecoins from the trust's distributor account to a beneficiary public key.
+ * Wallet creation/address resolution is delegated to MagicWalletService.
+ */
+
+let sdk;
+try {
+  sdk = require('@stellar/stellar-sdk');
+} catch (err) {
+  console.warn('[stablecoin] @stellar/stellar-sdk not installed; settlement will be simulated.');
+}
+
+const { getConfig, isProduction } = require('./config');
+
+function centsToUnits(cents) {
+  if (!Number.isSafeInteger(cents) || cents < 0) {
+    throw new Error('amountCents must be a non-negative safe integer');
+  }
+  const whole = BigInt(cents) / 100n;
+  const fraction = String(Number(cents) % 100).padStart(2, '0');
+  return `${whole}.${fraction}`;
+}
+
+function parseNetworkPassphrase(cfg) {
+  if (cfg.networkPassphrase) return cfg.networkPassphrase;
+  if (!sdk) return '';
+  if (cfg.network === 'mainnet' || cfg.network === 'public') return sdk.Networks.PUBLIC;
+  if (cfg.network === 'testnet') return sdk.Networks.TESTNET;
+  if (cfg.network === 'custom') return 'Custom Network';
+  return sdk.Networks.TESTNET;
+}
+
+function loadKeypair(secret) {
+  if (!sdk) throw new Error('Stellar SDK is not installed');
+  try {
+    return sdk.Keypair.fromSecret(secret);
+  } catch (e) {
+    throw new Error('Invalid Stellar secret key');
+  }
+}
+
+function getAsset(cfg) {
+  if (!sdk) throw new Error('Stellar SDK is not installed');
+  if (cfg.issuerPublic) return new sdk.Asset(cfg.assetCode, cfg.issuerPublic);
+  if (cfg.issuerSecret) {
+    const issuer = loadKeypair(cfg.issuerSecret);
+    return new sdk.Asset(cfg.assetCode, issuer.publicKey());
+  }
+  // Native XLM fallback only when no stablecoin issuer is configured.
+  return sdk.Asset.native();
+}
+
+async function friendbot(pubkey) {
+  const cfg = getConfig();
+  if (!cfg.friendbotUrl) return;
+  const res = await fetch(`${cfg.friendbotUrl}?addr=${encodeURIComponent(pubkey)}`);
+  if (!res.ok) throw new Error(`friendbot funding failed for ${pubkey}: ${res.status}`);
+  return res.json();
+}
+
+class BlockchainEngine {
+  constructor() {
+    this.cfg = getConfig();
+    this.network = parseNetworkPassphrase(this.cfg);
+    if (sdk) {
+      this.server = new sdk.Horizon.Server(this.cfg.horizonUrl);
+    }
+  }
+
+  static centsToUnits(cents) {
+    return centsToUnits(cents);
+  }
+
+  async readiness() {
+    const cfg = getConfig();
+    const issues = [];
+    const warnings = [];
+
+    if (!cfg.enabled) issues.push('STABLECOIN_ENABLED is not true');
+    if (cfg.mode === 'shadow') warnings.push('Blockchain engine is running in shadow/simulation mode');
+    if (cfg.mode === 'disabled') issues.push('STABLECOIN_MODE is disabled');
+    if (!cfg.distributorSecret) issues.push('STABLECOIN_DISTRIBUTOR_SECRET is required to sign settlement transactions');
+    if (!cfg.assetCode) issues.push('STABLECOIN_ASSET_CODE is required');
+    if (isProduction(cfg) && !cfg.issuerPublic && !cfg.issuerSecret) {
+      issues.push('Mainnet USDC requires STABLECOIN_ISSUER_PUBLIC (Circle issuer)');
+    }
+    if (isProduction(cfg) && cfg.friendbotUrl) {
+      warnings.push('FRIENDBOT_URL should not be used on mainnet');
+    }
+
+    let horizonOk = false;
+    if (sdk && this.server && !issues.length) {
+      try {
+        await this.server.fetchTimebounds(10);
+        horizonOk = true;
+      } catch (e) {
+        issues.push(`Horizon unreachable: ${e.message}`);
+      }
+    } else if (!sdk) {
+      warnings.push('@stellar/stellar-sdk not installed; settlement simulated');
+    }
+
+    return {
+      ready: issues.length === 0,
+      issues,
+      warnings,
+      network: cfg.network,
+      assetCode: cfg.assetCode,
+      horizonUrl: cfg.horizonUrl,
+      horizonOk,
+      distributorPublic: cfg.distributorPublic || (cfg.distributorSecret ? loadKeypair(cfg.distributorSecret).publicKey() : null),
+    };
+  }
+
+  async _loadDistributor() {
+    if (!sdk) throw new Error('Stellar SDK is not installed');
+    if (!this.cfg.distributorSecret) throw new Error('STABLECOIN_DISTRIBUTOR_SECRET not configured');
+    const kp = loadKeypair(this.cfg.distributorSecret);
+    const account = await this.server.loadAccount(kp.publicKey());
+    return { kp, account };
+  }
+
+  async _ensureTrustline(kp) {
+    if (!sdk || !this.cfg.issuerPublic) return;
+    try {
+      const account = await this.server.loadAccount(kp.publicKey());
+      const trustline = account.balances.find(
+        (b) => b.asset_code === this.cfg.assetCode && b.asset_issuer === this.cfg.issuerPublic
+      );
+      if (trustline) return;
+      const tx = new sdk.TransactionBuilder(account, {
+        fee: sdk.BASE_FEE,
+        networkPassphrase: this.network,
+      })
+        .addOperation(sdk.Operation.changeTrust({ asset: getAsset(this.cfg) }))
+        .setTimeout(60)
+        .build();
+      tx.sign(kp);
+      await this.server.submitTransaction(tx);
+    } catch (e) {
+      console.warn('[blockchainEngine] trustline ensure failed:', e.message);
+    }
+  }
+
+  async _fundIfNeeded(kp) {
+    if (isProduction(this.cfg)) return;
+    try {
+      await this.server.loadAccount(kp.publicKey());
+    } catch (e) {
+      if (this.cfg.friendbotUrl) await friendbot(kp.publicKey());
+    }
+  }
+
+  /**
+   * Settle `amountCents` stablecoins from the distributor to `destination`.
+   * Returns tx hash, ledger sequence, latency, and explorer link.
+   */
+  async settle({ destination, amountCents, memo }) {
+    const cfg = getConfig();
+    if (cfg.mode === 'shadow') {
+      return {
+        hash: `shadow-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+        ledger: 0,
+        amount: centsToUnits(amountCents),
+        memo: memo || null,
+        latencyMs: 0,
+        explorer: '',
+        simulated: true,
+      };
+    }
+
+    if (!sdk) throw new Error('Stellar SDK is not installed');
+    if (!destination) throw new Error('destination public key is required');
+    let destKey;
+    try {
+      destKey = sdk.StrKey.isValidEd25519PublicKey(destination)
+        ? destination
+        : sdk.Keypair.fromPublicKey(destination).publicKey();
+    } catch (e) {
+      throw new Error('destination is not a valid Stellar public key');
+    }
+
+    const { kp, account } = await this._loadDistributor();
+    await this._ensureTrustline(kp);
+    await this._fundIfNeeded(kp);
+
+    const amount = centsToUnits(amountCents);
+    const builder = new sdk.TransactionBuilder(account, {
+      fee: sdk.BASE_FEE,
+      networkPassphrase: this.network,
+    })
+      .addOperation(sdk.Operation.payment({
+        destination: destKey,
+        asset: getAsset(cfg),
+        amount,
+      }))
+      .setTimeout(60);
+    if (memo) builder.addMemo(sdk.Memo.text(String(memo).slice(0, 28)));
+
+    const tx = builder.build();
+    tx.sign(kp);
+
+    const start = Date.now();
+    const res = await this.server.submitTransaction(tx);
+    const latencyMs = Date.now() - start;
+
+    const explorerBase = cfg.network === 'mainnet' || cfg.network === 'public'
+      ? 'https://stellar.expert/explorer/public/tx'
+      : 'https://stellar.expert/explorer/testnet/tx';
+
+    return {
+      hash: res.hash,
+      ledger: res.ledger,
+      amount,
+      memo: memo || null,
+      latencyMs,
+      explorer: `${explorerBase}/${res.hash}`,
+      simulated: false,
+    };
+  }
+
+  async getBalance(publicKey) {
+    if (!sdk) return '0';
+    const cfg = getConfig();
+    const account = await this.server.loadAccount(publicKey);
+    const issuer = cfg.issuerPublic || (cfg.issuerSecret ? loadKeypair(cfg.issuerSecret).publicKey() : null);
+    if (cfg.assetCode === 'XLM' || !issuer) {
+      const native = account.balances.find((b) => b.asset_type === 'native');
+      return native ? native.balance : '0';
+    }
+    const line = account.balances.find(
+      (b) => b.asset_code === cfg.assetCode && b.asset_issuer === issuer
+    );
+    return line ? line.balance : '0';
+  }
+}
+
+module.exports = { BlockchainEngine, centsToUnits };

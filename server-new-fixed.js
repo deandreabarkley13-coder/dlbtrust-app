@@ -43,6 +43,9 @@ try { app.use("/api/documents", require(HD + "/server/routes/documents")); conso
 // Trust Accounting routes
 try { app.use("/api/accounting", require(HD + "/server/routes/accounting")); console.log("[accounting] loaded"); } catch(e) { console.warn("[accounting]", e.message); }
 
+// Stablecoin Payment Gateway + Treasury + Magic WaaS + WSO2 API Manager
+try { app.use("/api/stablecoin", require(HD + "/server/routes/stablecoin")); console.log("[stablecoin] loaded"); } catch(e) { console.warn("[stablecoin]", e.message); }
+
 // ACH Pipeline — NACHA generation + AS2 transmission
 try { app.use("/api/ach-pipeline", require(HD + "/server/routes/achPipeline")); console.log("[ach-pipeline] loaded"); } catch(e) { console.warn("[ach-pipeline]", e.message); }
 

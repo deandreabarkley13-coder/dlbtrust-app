@@ -12,6 +12,7 @@ const { PaymentHubClient } = require('./paymentHubClient');
 const { USAchConnector } = require('./usAchConnector');
 const { getConfig, readiness } = require('./paymentHubConfig');
 const paymentCrypto = require('./paymentCrypto');
+const { StablecoinConnector } = require('./stablecoinConnector');
 
 const TRANSITIONS = Object.freeze({
   draft: new Set(['pending_approval', 'cancelled']),
@@ -133,6 +134,10 @@ function publicIntent(row) {
     error_code: row.error_code,
     error_message: row.error_message,
     metadata: row.metadata || {},
+    destination_wallet: (row.metadata || {}).destination_wallet || null,
+    network: (row.metadata || {}).network || null,
+    asset_code: (row.metadata || {}).asset_code || null,
+    tx_hash: (row.metadata || {}).tx_hash || null,
     approved_at: row.approved_at,
     queued_at: row.queued_at,
     transmitted_at: row.transmitted_at,
@@ -167,22 +172,38 @@ class PaymentHubEngine {
     const maker = actorId(actor);
     const idempotencyKey = String(input.idempotencyKey || '').trim();
     const paymentType = String(input.paymentType || '').trim();
-    const routing = String(input.beneficiaryRouting || '').replace(/\s/g, '');
-    const account = String(input.beneficiaryAccount || '').replace(/\s/g, '');
+    let routing = String(input.beneficiaryRouting || '').replace(/\s/g, '');
+    let account = String(input.beneficiaryAccount || '').replace(/\s/g, '');
     const beneficiaryName = String(input.beneficiaryName || '').trim();
-    const accountType = input.beneficiaryAccountType || 'checking';
+    let accountType = input.beneficiaryAccountType || 'checking';
     const sourceType = input.sourceType || (input.sourceSubLedgerId ? 'sub_ledger' : 'trust_account');
     const sourceAccountCode = sourceType === 'trust_account' ? String(input.sourceAccountCode || '1000') : null;
     const sourceSubLedgerId = sourceType === 'sub_ledger' ? String(input.sourceSubLedgerId || '') : null;
     const amountCents = cents(input);
     const config = getConfig();
 
-    if (!idempotencyKey || idempotencyKey.length > 128) throw new Error('Idempotency-Key is required and must be at most 128 characters');
-    if (!paymentType || paymentType.length > 50) throw new Error('paymentType is required');
-    if (!beneficiaryName || beneficiaryName.length > 100) throw new Error('beneficiaryName is required and must be at most 100 characters');
-    if (!validateRouting(routing)) throw new Error('beneficiaryRouting must be a valid routing number');
-    if (!/^\d{4,17}$/.test(account)) throw new Error('beneficiaryAccount must be 4-17 digits');
-    if (!['checking', 'savings'].includes(accountType)) throw new Error('beneficiaryAccountType must be checking or savings');
+    const rail = String(input.rail || 'ach').toLowerCase();
+    if (!['ach', 'wire', 'stablecoin'].includes(rail)) throw new Error('rail must be ach, wire, or stablecoin');
+
+    let stablecoinMeta = {};
+    if (rail === 'stablecoin') {
+      const destinationWallet = String(input.destinationWallet || '').trim();
+      if (!destinationWallet) throw new Error('destinationWallet is required for stablecoin rail');
+      stablecoinMeta = {
+        destination_wallet: destinationWallet,
+        asset_code: String(input.assetCode || 'USDC').toUpperCase(),
+        network: String(input.network || 'testnet').toLowerCase(),
+        wallet_provider: input.walletProvider || 'direct',
+      };
+      // Bank fields are not used for on-chain settlement; placeholders satisfy legacy NOT NULL columns.
+      routing = '021000021';
+      account = '0000000000';
+      accountType = 'checking';
+    } else {
+      if (!validateRouting(routing)) throw new Error('beneficiaryRouting must be a valid routing number');
+      if (!/^\d{4,17}$/.test(account)) throw new Error('beneficiaryAccount must be 4-17 digits');
+      if (!['checking', 'savings'].includes(accountType)) throw new Error('beneficiaryAccountType must be checking or savings');
+    }
     if (!['trust_account', 'sub_ledger'].includes(sourceType)) throw new Error('sourceType must be trust_account or sub_ledger');
     if (sourceType === 'sub_ledger' && !sourceSubLedgerId) throw new Error('sourceSubLedgerId is required');
 
@@ -198,18 +219,20 @@ class PaymentHubEngine {
     const canonical = {
       paymentType,
       amountCents,
+      rail,
       currency: input.currency || 'USD',
       sourceType,
       sourceAccountCode,
       sourceSubLedgerId,
       debitAccountCode: debitAccount(paymentType, input.debitAccountCode),
       beneficiaryName,
-      routing,
-      account,
+      routing: rail === 'stablecoin' ? null : routing,
+      account: rail === 'stablecoin' ? null : account,
       accountType,
       secCode,
       effectiveDate,
       description: String(input.description || '').trim(),
+      stablecoin: stablecoinMeta,
     };
     if (canonical.currency !== 'USD') throw new Error('Only USD payment instructions are supported');
     const requestHash = paymentCrypto.hash(JSON.stringify(canonical));
@@ -237,7 +260,7 @@ class PaymentHubEngine {
           beneficiary_account_hash, beneficiary_account_last4, beneficiary_account_type,
           sec_code, effective_date, description, maker_id, required_approvals, metadata
         ) VALUES (
-          $1,$2,$3,'pending_approval','ach',$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,
+          $1,$2,$3,'pending_approval',$25,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,
           $15,$16,$17,$18,$19,$20,$21,$22,$23,$24
         ) RETURNING *`,
         [
@@ -246,13 +269,14 @@ class PaymentHubEngine {
           beneficiaryName, paymentCrypto.encrypt(routing), paymentCrypto.hash(routing), routing.slice(-4),
           paymentCrypto.encrypt(account), paymentCrypto.hash(account), account.slice(-4), accountType,
           secCode, effectiveDate, canonical.description || null, maker, config.approvalThreshold,
-          input.metadata || {},
+          { ...(input.metadata || {}), ...stablecoinMeta },
+          rail,
         ]
       );
       await PaymentHubEngine._recordEvent(client, intentId, 'intent_created', null, 'pending_approval', maker, {
         amountCents,
         paymentType,
-        rail: 'ach',
+        rail,
       });
       await client.query('COMMIT');
       return { intent: publicIntent(inserted.rows[0]), idempotent: false };
@@ -352,6 +376,11 @@ class PaymentHubEngine {
       return { intent: publicIntent(row), shadow: true, transmitted: false };
     }
     if (!config.live) throw new Error('Payment transmission is blocked until PAYMENT_HUB_LIVE=true');
+
+    if (row.rail === 'stablecoin') {
+      return PaymentHubEngine.executeStablecoinConnector(intentId, operator);
+    }
+
     const achReadiness = await USAchConnector.readiness();
     if (!achReadiness.ready) {
       throw new Error('U.S. ACH connector is not ready: ' + achReadiness.issues.join('; '));
@@ -420,6 +449,51 @@ class PaymentHubEngine {
       return { intent: updated, connector: result };
     } catch (err) {
       await PaymentHubEngine._fail(intentId, operator, 'ACH_TRANSMISSION_FAILED', err.message);
+      throw err;
+    }
+  }
+
+  static async executeStablecoinConnector(intentId, actor) {
+    const operator = actorId(actor);
+    const config = getConfig();
+    if (config.mode === 'disabled' || config.mode === 'shadow') {
+      throw new Error(`Stablecoin connector execution is blocked in ${config.mode} mode`);
+    }
+    if (!config.live) throw new Error('Payment transmission is blocked until PAYMENT_HUB_LIVE=true');
+
+    const current = await PaymentHubEngine._getRow(intentId);
+    if (!current) throw new Error(`Payment intent not found: ${intentId}`);
+    if (current.rail !== 'stablecoin') throw new Error('Intent is not a stablecoin rail');
+    if (current.status !== 'approved') {
+      if (['settled'].includes(current.status)) return { intent: publicIntent(current), idempotent: true };
+      throw new Error(`Stablecoin connector cannot execute an intent in ${current.status} status`);
+    }
+
+    const sci = await StablecoinConnector.readiness();
+    if (!sci.ready) throw new Error('Stablecoin connector is not ready: ' + sci.issues.join('; '));
+
+    await PaymentHubEngine._transition(intentId, 'orchestrating', operator, 'stablecoin_settlement_started', {});
+    try {
+      const intent = await PaymentHubEngine.getIntentInternal(intentId);
+      const result = await StablecoinConnector.transmit(intent);
+      const metadata = { ...(current.metadata || {}), tx_hash: result.txHash, stablecoin_payment_id: result.stablecoinPaymentId };
+      await pool.query(
+        `UPDATE payment_intents SET remote_reference = $2, metadata = $3,
+         updated_at = NOW(), version = version + 1 WHERE intent_id = $1`,
+        [intentId, result.txHash, JSON.stringify(metadata)]
+      );
+      const updated = await PaymentHubEngine._transition(intentId, 'settled', operator, 'stablecoin_settlement_confirmed', {
+        txHash: result.txHash,
+        ledger: result.ledger,
+        explorer: result.explorer,
+        latencyMs: result.latencyMs,
+        stablecoinPaymentId: result.stablecoinPaymentId,
+      });
+      await PaymentHubEngine._captureHold(intentId);
+      await PaymentHubEngine.postSettlementAccounting(intentId, operator);
+      return { intent: publicIntent(updated), connector: result };
+    } catch (err) {
+      await PaymentHubEngine._fail(intentId, operator, 'STABLECOIN_SETTLEMENT_FAILED', err.message);
       throw err;
     }
   }
@@ -723,9 +797,11 @@ class PaymentHubEngine {
       pool.query(`SELECT COUNT(*)::int AS count FROM payment_webhook_receipts WHERE processing_status = 'failed'`),
     ]);
     const ach = await USAchConnector.readiness().catch(err => ({ ready: false, issues: [err.message] }));
+    const stablecoin = await StablecoinConnector.readiness().catch(err => ({ ready: false, issues: [err.message] }));
     return {
       readiness: readiness(),
       achConnector: ach,
+      stablecoinConnector: stablecoin,
       statuses: Object.fromEntries(statusCounts.rows.map(row => [row.status, Number(row.count)])),
       settled: { count: Number(totals.rows[0].count), amountCents: Number(totals.rows[0].amount_cents) },
       accounting: Object.fromEntries(accounting.rows.map(row => [row.accounting_status, Number(row.count)])),

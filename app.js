@@ -59,6 +59,9 @@ app.use('/api/documents', require('./server/routes/documents'));
 // ─── Trust Accounting Routes ─────────────────────────────────────────────────
 app.use('/api/accounting', require('./server/routes/accounting'));
 
+// ─── Stablecoin Payment Gateway + Treasury + Magic WaaS + WSO2 API Manager
+app.use('/api/stablecoin', require('./server/routes/stablecoin'));
+
 // ─── ACH Pipeline — NACHA generation + AS2 transmission ─────────────────────
 app.use('/api/ach-pipeline', require('./server/routes/achPipeline'));
 
