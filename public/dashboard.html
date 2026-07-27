@@ -6309,13 +6309,17 @@
         fetchJSON(API + '/api/stablecoin/health', { headers: adminHeaders() }),
         fetchJSON(API + '/api/stablecoin/payments?limit=50', { headers: adminHeaders() }),
       ]);
-      if (health && health.success && health.data) {
+      if (health && health.data) {
         const h = health.data;
         el('sc-readiness').innerHTML = h.ready ? '<span class="badge badge-active">Ready</span>' : '<span class="badge badge-error">Not Ready</span>';
         el('sc-network').textContent = esc(h.network || '—');
         el('sc-asset').textContent = esc(h.assetCode || '—');
-      } else {
+      } else if (health && health.error) {
         el('sc-readiness').innerHTML = '<span class="badge badge-error">Auth</span>';
+        el('sc-network').textContent = '—';
+        el('sc-asset').textContent = '—';
+      } else {
+        el('sc-readiness').innerHTML = '<span class="badge badge-error">Unavailable</span>';
         el('sc-network').textContent = '—';
         el('sc-asset').textContent = '—';
       }
@@ -6336,9 +6340,9 @@
       let btns = '';
       if (p.status === 'pending') {
         btns += '<button class="btn btn-sm btn-success" style="margin-right:6px" onclick="scApprove(\'' + id + '\')">Approve</button>';
-        btns += '<button class="btn btn-sm" style="margin-right:6px" onclick="scSettle(\'' + id + '\')">Approve & Settle</button>';
+        btns += '<button class="btn btn-sm" style="margin-right:6px" onclick="scSettle(\'' + id + '\')">Settle</button>';
       }
-      if (p.status === 'approved' || p.status === 'pending') {
+      if (p.status === 'approved') {
         btns += '<button class="btn btn-sm" onclick="scSettle(\'' + id + '\')">Settle</button>';
       }
       return btns || '<span class="text-muted">—</span>';
