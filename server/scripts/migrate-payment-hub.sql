@@ -7,7 +7,7 @@ CREATE TABLE IF NOT EXISTS payment_intents (
     'draft','pending_approval','approved','queued','orchestrating','transmitting',
     'transmitted','accepted','clearing','settled','returned','failed','rejected','cancelled'
   )),
-  rail TEXT NOT NULL DEFAULT 'ach' CHECK (rail IN ('ach','wire')),
+  rail TEXT NOT NULL DEFAULT 'ach' CHECK (rail IN ('ach','wire','stablecoin')),
   payment_type TEXT NOT NULL,
   amount_cents BIGINT NOT NULL CHECK (amount_cents > 0),
   currency CHAR(3) NOT NULL DEFAULT 'USD',
