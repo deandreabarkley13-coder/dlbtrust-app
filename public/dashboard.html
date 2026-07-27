@@ -235,6 +235,7 @@
     <div class="nav-item" data-page="as2"><span class="icon">🔗</span> AS2 Server</div>
     <div class="nav-item" data-page="aggregator"><span class="icon">🔀</span> Banking Aggregator</div>
     <div class="nav-item" data-page="payment-hub"><span class="icon">🏧</span> Payment Hub</div>
+    <div class="nav-item" data-page="stablecoin"><span class="icon">🪙</span> Stablecoin Payments</div>
     <div class="nav-section">Operations</div>
     <div class="nav-item" data-page="crm"><span class="icon">👥</span> CRM & Investors</div>
     <div class="nav-item" data-page="documents"><span class="icon">📄</span> Documents</div>
@@ -1521,6 +1522,51 @@
       </div>
     </div>
 
+    <!-- STABLECOIN PAYMENTS PAGE -->
+    <div id="page-stablecoin" class="page hidden">
+      <div class="page-header">
+        <div><h1>Stablecoin Payments</h1><div class="subtitle">Direct stablecoin disbursements and settlements to digital wallets</div></div>
+        <button class="btn btn-primary btn-sm" onclick="loadStablecoin()">Refresh</button>
+      </div>
+      <div class="grid grid-4" id="sc-stats">
+        <div class="card"><div class="stat-label">Readiness</div><div class="stat-value" id="sc-readiness">—</div></div>
+        <div class="card"><div class="stat-label">Network</div><div class="stat-value" id="sc-network">—</div></div>
+        <div class="card"><div class="stat-label">Asset</div><div class="stat-value" id="sc-asset">—</div></div>
+        <div class="card"><div class="stat-label">Payments</div><div class="stat-value" id="sc-payment-count">—</div></div>
+      </div>
+      <div class="card" style="margin-top:24px">
+        <h2>Create Stablecoin Payment</h2>
+        <p class="text-muted" style="font-size:12px;margin:-4px 0 10px;">Submits to <code>POST /api/stablecoin/payments</code>. Operator JWT or admin token required.</p>
+        <div class="form-row">
+          <div class="form-group"><label>Destination Wallet</label><input type="text" id="sc-destination" placeholder="G... Stellar public key or Magic wallet address"></div>
+          <div class="form-group"><label>Amount ($)</label><input type="number" step="0.01" min="0.01" id="sc-amount" placeholder="100.00"></div>
+          <div class="form-group"><label>Memo (optional)</label><input type="text" id="sc-memo" placeholder="Invoice #1234"></div>
+        </div>
+        <div class="form-row">
+          <div class="form-group"><label>Source Type</label><select id="sc-source-type"><option value="treasury">Treasury</option><option value="cash">Cash</option><option value="trust">Trust Account</option><option value="bond">Bond / Fixed Income</option><option value="fineract">Fineract Core Banking</option></select></div>
+          <div class="form-group"><label>Source Account ID</label><input type="text" id="sc-source-account" placeholder="e.g. TREASURY_HOT, account code, bond id, GL id"></div>
+          <div class="form-group"><label>Wallet Provider</label><select id="sc-wallet-provider"><option value="direct">Direct</option><option value="magic">Magic WaaS</option></select></div>
+        </div>
+        <div class="form-row">
+          <div class="form-group"><label>Beneficiary Name (optional)</label><input type="text" id="sc-beneficiary" placeholder="Acme LLC"></div>
+          <div class="form-group"><label>Asset Code</label><input type="text" id="sc-asset-code" placeholder="USDC" value="USDC"></div>
+          <div class="form-group"><label>Network</label><input type="text" id="sc-network-input" placeholder="testnet" value="testnet"></div>
+        </div>
+        <div class="form-row">
+          <button class="btn btn-success btn-sm" onclick="scCreatePayment()">Create Payment</button>
+          <button class="btn btn-primary btn-sm" onclick="scQuote()">Get Quote</button>
+          <button class="btn btn-sm" onclick="scCheckSourceBalance()">Check Source Balance</button>
+        </div>
+        <div id="sc-quote-result" style="margin-top:8px"></div>
+        <div id="sc-create-result" style="margin-top:8px"></div>
+        <div id="sc-balance-result" style="margin-top:8px"></div>
+      </div>
+      <div class="card" style="margin-top:24px">
+        <h2>Stablecoin Payments</h2>
+        <div id="sc-payments-table"><p class="text-muted">Loading…</p></div>
+      </div>
+    </div>
+
     <div id="page-nifi" class="page hidden">
       <div class="page-header">
         <div><h1>NiFi File Transfer</h1><div class="subtitle">Automated server-to-server payment file generation, staging, and transfer via Apache NiFi</div></div>
@@ -2394,7 +2440,7 @@
         document.querySelectorAll('.page').forEach(p => p.classList.add('hidden'));
         document.getElementById('page-' + page).classList.remove('hidden');
         // Load data for page
-        const loaders = { overview: loadOverview, bonds: loadBonds, cash: loadCash, payments: loadPayments, ach: loadACH, wire: loadWire, partners: loadPartners, apikeys: loadApiKeys, as2: loadAS2, aggregator: loadAggregator, 'payment-hub': loadPaymentHub, crm: loadCRM, documents: loadDocuments, accounting: loadAccounting, tax: loadTax, fineract: loadFineract, bill: loadBill, 'trustee-agent': loadTrusteeAgent, 'bookkeeping-agent': loadBookkeepingAgent, 'data-bridge': loadDataBridge, 'sub-ledgers': loadSubLedgers, 'vendor-payments': loadVendorPayments, 'electronic-settlement': loadElectronicSettlement, nifi: loadNiFi, 'hce-payments': loadHCE, settings: loadSettings, security: loadSecurity, backup: loadBackupPage, admin: loadAdmin };
+        const loaders = { overview: loadOverview, bonds: loadBonds, cash: loadCash, payments: loadPayments, ach: loadACH, wire: loadWire, partners: loadPartners, apikeys: loadApiKeys, as2: loadAS2, aggregator: loadAggregator, 'payment-hub': loadPaymentHub, stablecoin: loadStablecoin, crm: loadCRM, documents: loadDocuments, accounting: loadAccounting, tax: loadTax, fineract: loadFineract, bill: loadBill, 'trustee-agent': loadTrusteeAgent, 'bookkeeping-agent': loadBookkeepingAgent, 'data-bridge': loadDataBridge, 'sub-ledgers': loadSubLedgers, 'vendor-payments': loadVendorPayments, 'electronic-settlement': loadElectronicSettlement, nifi: loadNiFi, 'hce-payments': loadHCE, settings: loadSettings, security: loadSecurity, backup: loadBackupPage, admin: loadAdmin };
         if (loaders[page]) loaders[page]();
       });
     });
@@ -6255,6 +6301,129 @@
       } catch (err) {
         el('stp-poll-result').innerHTML = '<span style="color:var(--red)">' + esc(err.message) + '</span>';
       }
+    }
+
+    // ─── STABLECOIN PAYMENTS ───────────────────────────────────────────────────
+    async function loadStablecoin() {
+      const [health, payments] = await Promise.all([
+        fetchJSON(API + '/api/stablecoin/health', { headers: adminHeaders() }),
+        fetchJSON(API + '/api/stablecoin/payments?limit=50', { headers: adminHeaders() }),
+      ]);
+      if (health && health.success && health.data) {
+        const h = health.data;
+        el('sc-readiness').innerHTML = h.ready ? '<span class="badge badge-active">Ready</span>' : '<span class="badge badge-error">Not Ready</span>';
+        el('sc-network').textContent = esc(h.network || '—');
+        el('sc-asset').textContent = esc(h.assetCode || '—');
+      } else {
+        el('sc-readiness').innerHTML = '<span class="badge badge-error">Auth</span>';
+        el('sc-network').textContent = '—';
+        el('sc-asset').textContent = '—';
+      }
+      if (payments && payments.success && payments.data) {
+        const list = payments.data;
+        el('sc-payment-count').textContent = list.length || 0;
+        renderStablecoinPayments(list);
+      } else {
+        el('sc-payment-count').textContent = '—';
+        const msg = (payments && payments.error) || 'Sign in with an operator account to load stablecoin payments.';
+        el('sc-payments-table').innerHTML = '<p class="error-msg">' + esc(msg) + '</p>';
+      }
+    }
+
+    function scActionButtons(p) {
+      const id = esc(p.id);
+      if (p.status === 'settled') return '<span class="text-muted">Settled</span>';
+      let btns = '';
+      if (p.status === 'pending') {
+        btns += '<button class="btn btn-sm btn-success" style="margin-right:6px" onclick="scApprove(\'' + id + '\')">Approve</button>';
+        btns += '<button class="btn btn-sm" style="margin-right:6px" onclick="scSettle(\'' + id + '\')">Approve & Settle</button>';
+      }
+      if (p.status === 'approved' || p.status === 'pending') {
+        btns += '<button class="btn btn-sm" onclick="scSettle(\'' + id + '\')">Settle</button>';
+      }
+      return btns || '<span class="text-muted">—</span>';
+    }
+
+    function renderStablecoinPayments(list) {
+      if (!list.length) { el('sc-payments-table').innerHTML = '<p class="text-muted">No stablecoin payments yet.</p>'; return; }
+      let h = '<table><thead><tr><th>ID</th><th>Status</th><th>Amount</th><th>Fee</th><th>Total</th><th>Asset</th><th>Destination</th><th>Source</th><th>Created</th><th>Actions</th></tr></thead><tbody>';
+      for (const p of list) {
+        h += '<tr>'
+          + '<td><code style="font-size:11px">' + esc(p.id) + '</code></td>'
+          + '<td>' + esc(p.status) + '</td>'
+          + '<td>' + fmtCents(p.amount_cents) + '</td>'
+          + '<td>' + fmtCents(p.fee_cents) + '</td>'
+          + '<td>' + fmtCents(p.total_cents) + '</td>'
+          + '<td>' + esc(p.asset_code) + '</td>'
+          + '<td style="font-size:11px;max-width:180px;word-break:break-all">' + esc(p.destination_wallet) + '</td>'
+          + '<td>' + esc(p.source_type) + '<br><span class="text-muted" style="font-size:11px">' + esc(p.source_account_id) + '</span></td>'
+          + '<td>' + shortDate(p.created_at) + '</td>'
+          + '<td>' + scActionButtons(p) + '</td>'
+          + '</tr>';
+      }
+      el('sc-payments-table').innerHTML = h + '</tbody></table>';
+    }
+
+    async function scQuote() {
+      const amount = Number(el('sc-amount').value);
+      if (!amount || amount <= 0) { el('sc-quote-result').innerHTML = '<p class="error-msg">Enter a positive amount</p>'; return; }
+      const amountCents = Math.round(amount * 100);
+      const resp = await fetchJSON(API + '/api/stablecoin/quote', {
+        method: 'POST', headers: adminHeaders(), body: JSON.stringify({ amountCents, assetCode: el('sc-asset-code').value, network: el('sc-network-input').value }),
+      });
+      if (resp && resp.success) {
+        const q = resp.data;
+        el('sc-quote-result').innerHTML = '<p class="success-msg">Quote: ' + fmtCents(q.amountCents) + ' + fee ' + fmtCents(q.feeCents) + ' = ' + fmtCents(q.totalCents) + '</p>';
+      } else {
+        el('sc-quote-result').innerHTML = '<p class="error-msg">' + esc((resp && resp.error) || 'Quote failed') + '</p>';
+      }
+    }
+
+    async function scCheckSourceBalance() {
+      const sourceType = el('sc-source-type').value;
+      const sourceAccountId = el('sc-source-account').value.trim();
+      if (!sourceAccountId) { el('sc-balance-result').innerHTML = '<p class="error-msg">Enter a source account id</p>'; return; }
+      const resp = await fetchJSON(API + '/api/stablecoin/sources/' + encodeURIComponent(sourceType) + '/' + encodeURIComponent(sourceAccountId) + '/balance', { headers: adminHeaders() });
+      if (resp && resp.success) {
+        el('sc-balance-result').innerHTML = '<p class="success-msg">Available: ' + fmtCents(resp.data.availableCents) + '</p>';
+      } else {
+        el('sc-balance-result').innerHTML = '<p class="error-msg">' + esc((resp && resp.error) || 'Balance check failed') + '</p>';
+      }
+    }
+
+    async function scCreatePayment() {
+      const amount = Number(el('sc-amount').value);
+      if (!amount || amount <= 0) { el('sc-create-result').innerHTML = '<p class="error-msg">Enter a positive amount</p>'; return; }
+      const data = {
+        amountCents: Math.round(amount * 100),
+        destinationWallet: el('sc-destination').value.trim(),
+        assetCode: el('sc-asset-code').value.trim() || 'USDC',
+        network: el('sc-network-input').value.trim() || 'testnet',
+        sourceType: el('sc-source-type').value,
+        sourceAccountId: el('sc-source-account').value.trim() || undefined,
+        walletProvider: el('sc-wallet-provider').value,
+        memo: el('sc-memo').value.trim() || undefined,
+        beneficiaryName: el('sc-beneficiary').value.trim() || undefined,
+      };
+      if (!data.destinationWallet) { el('sc-create-result').innerHTML = '<p class="error-msg">Destination wallet is required</p>'; return; }
+      const resp = await fetchJSON(API + '/api/stablecoin/payments', { method: 'POST', headers: adminHeaders(), body: JSON.stringify(data) });
+      if (resp && resp.success) {
+        el('sc-create-result').innerHTML = '<p class="success-msg">Payment created: ' + esc(resp.data.id) + '</p>';
+        el('sc-amount').value = ''; el('sc-destination').value = ''; el('sc-memo').value = ''; el('sc-beneficiary').value = '';
+        loadStablecoin();
+      } else {
+        el('sc-create-result').innerHTML = '<p class="error-msg">' + esc((resp && resp.error) || 'Create failed') + '</p>';
+      }
+    }
+
+    async function scApprove(id) {
+      const resp = await fetchJSON(API + '/api/stablecoin/payments/' + encodeURIComponent(id) + '/approve', { method: 'POST', headers: adminHeaders() });
+      if (resp && resp.success) { loadStablecoin(); } else { alert('Approve failed: ' + ((resp && resp.error) || 'unknown')); }
+    }
+
+    async function scSettle(id) {
+      const resp = await fetchJSON(API + '/api/stablecoin/payments/' + encodeURIComponent(id) + '/settle', { method: 'POST', headers: adminHeaders() });
+      if (resp && resp.success) { loadStablecoin(); } else { alert('Settle failed: ' + ((resp && resp.error) || 'unknown')); }
     }
 
     // ─── Init ──────────────────────────────────────────────────────────────────
