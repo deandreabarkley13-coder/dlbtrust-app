@@ -18,11 +18,12 @@ try {
 const { getConfig, isProduction } = require('./config');
 
 function centsToUnits(cents) {
-  if (!Number.isSafeInteger(cents) || cents < 0) {
+  const value = Number(cents);
+  if (!Number.isSafeInteger(value) || value < 0) {
     throw new Error('amountCents must be a non-negative safe integer');
   }
-  const whole = BigInt(cents) / 100n;
-  const fraction = String(Number(cents) % 100).padStart(2, '0');
+  const whole = BigInt(value) / 100n;
+  const fraction = String(value % 100).padStart(2, '0');
   return `${whole}.${fraction}`;
 }
 
@@ -121,6 +122,7 @@ class BlockchainEngine {
     if (!sdk) throw new Error('Stellar SDK is not installed');
     if (!this.cfg.distributorSecret) throw new Error('STABLECOIN_DISTRIBUTOR_SECRET not configured');
     const kp = loadKeypair(this.cfg.distributorSecret);
+    await this._fundIfNeeded(kp);
     const account = await this.server.loadAccount(kp.publicKey());
     return { kp, account };
   }
