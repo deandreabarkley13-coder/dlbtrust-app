@@ -114,6 +114,13 @@ router.post('/convert/execute', operatorAuth, writeRateLimiter(), async (req, re
   } catch (err) { sendError(res, err); }
 });
 
+router.get('/convert/readiness', operatorAuth, async (req, res) => {
+  try {
+    const data = new HollaExClient().readiness();
+    res.json({ success: true, data });
+  } catch (err) { sendError(res, err); }
+});
+
 router.get('/treasury/:accountId?', operatorAuth, async (req, res) => {
   try {
     const data = await TreasuryEngine.getPosition(req.params.accountId || DEFAULT_ACCOUNT);
