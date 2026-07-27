@@ -1548,6 +1548,11 @@
           <div class="form-group"><label>Wallet Provider</label><select id="sc-wallet-provider"><option value="direct">Direct</option><option value="magic">Magic WaaS</option></select></div>
         </div>
         <div class="form-row">
+          <div class="form-group" style="flex:2"><label>Destination Secret (optional, for trustline auto-create)</label><input type="password" id="sc-destination-secret" placeholder="Stellar secret key that matches the destination wallet"></div>
+          <div class="form-group" style="flex:1"><label>&nbsp;</label><button class="btn btn-sm" style="width:100%" onclick="scEnsureTrustline()">Ensure Trustline</button></div>
+          <div class="form-group" style="flex:1"><label>&nbsp;</label><button class="btn btn-sm btn-danger" style="width:100%" onclick="el('sc-destination-secret').value=''">Clear Secret</button></div>
+        </div>
+        <div class="form-row">
           <div class="form-group"><label>Beneficiary Name (optional)</label><input type="text" id="sc-beneficiary" placeholder="Acme LLC"></div>
           <div class="form-group"><label>Asset Code</label><input type="text" id="sc-asset-code" placeholder="USDC" value="USDC"></div>
           <div class="form-group"><label>Network</label><input type="text" id="sc-network-input" placeholder="testnet" value="testnet"></div>
@@ -6426,8 +6431,23 @@
     }
 
     async function scSettle(id) {
-      const resp = await fetchJSON(API + '/api/stablecoin/payments/' + encodeURIComponent(id) + '/settle', { method: 'POST', headers: adminHeaders() });
+      const destinationSecret = el('sc-destination-secret').value.trim() || undefined;
+      const body = destinationSecret ? JSON.stringify({ destinationSecret }) : '{}';
+      const resp = await fetchJSON(API + '/api/stablecoin/payments/' + encodeURIComponent(id) + '/settle', { method: 'POST', headers: adminHeaders(), body });
       if (resp && resp.success) { loadStablecoin(); } else { alert('Settle failed: ' + ((resp && resp.error) || 'unknown')); }
+    }
+
+    async function scEnsureTrustline() {
+      const destination = el('sc-destination').value.trim();
+      const destinationSecret = el('sc-destination-secret').value.trim();
+      if (!destination) { alert('Enter a destination wallet first'); return; }
+      const body = JSON.stringify({ destination, destinationSecret: destinationSecret || undefined });
+      const resp = await fetchJSON(API + '/api/stablecoin/ensure-trustline', { method: 'POST', headers: adminHeaders(), body });
+      if (resp && resp.success) {
+        alert('Trustline ensured: ' + (resp.data.trustlineCreated ? 'created ' + resp.data.txHash : 'already exists'));
+      } else {
+        alert('Trustline ensure failed: ' + ((resp && resp.error) || 'unknown'));
+      }
     }
 
     // ─── Init ──────────────────────────────────────────────────────────────────

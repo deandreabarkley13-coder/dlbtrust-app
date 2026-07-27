@@ -157,10 +157,78 @@ class BlockchainEngine {
   }
 
   /**
+   * Ensure the destination account exists and has a trustline for the configured asset.
+   * On testnet, an unfunded account is created via friendbot. If a destinationSecret
+   * is provided, a missing trustline is opened by signing from the destination account.
+   */
+  async ensureDestinationTrustline({ destination, destinationSecret }) {
+    if (!sdk) throw new Error('Stellar SDK is not installed');
+    if (!destination) throw new Error('destination public key is required');
+    let destKey;
+    try {
+      destKey = sdk.StrKey.isValidEd25519PublicKey(destination)
+        ? destination
+        : sdk.Keypair.fromPublicKey(destination).publicKey();
+    } catch (e) {
+      throw new Error('destination is not a valid Stellar public key');
+    }
+
+    let destAccount;
+    try {
+      destAccount = await this.server.loadAccount(destKey);
+    } catch (e) {
+      if (isProduction(this.cfg)) {
+        throw new Error('Destination account does not exist; fund the account before opening a trustline.');
+      }
+      if (this.cfg.friendbotUrl) {
+        await friendbot(destKey);
+        destAccount = await this.server.loadAccount(destKey);
+      } else {
+        throw new Error('Destination account does not exist and friendbot is not configured for this network.');
+      }
+    }
+
+    const issuer = this.cfg.issuerPublic || (this.cfg.issuerSecret ? loadKeypair(this.cfg.issuerSecret).publicKey() : null);
+    if (this.cfg.assetCode === 'XLM' || !issuer) {
+      return { accountExists: true, trustlineCreated: false, required: false };
+    }
+
+    const line = destAccount.balances.find(
+      (b) => b.asset_code === this.cfg.assetCode && b.asset_issuer === issuer
+    );
+    if (line) return { accountExists: true, trustlineCreated: false, required: true };
+
+    if (!destinationSecret) {
+      throw new Error(`Destination account is missing a ${this.cfg.assetCode} trustline; provide destinationSecret to auto-create it.`);
+    }
+
+    let destKp;
+    try {
+      destKp = loadKeypair(destinationSecret);
+    } catch (e) {
+      throw new Error('destinationSecret is not a valid Stellar secret key');
+    }
+    if (destKp.publicKey() !== destKey) {
+      throw new Error('destinationSecret does not match destination public key');
+    }
+
+    const tx = new sdk.TransactionBuilder(destAccount, {
+      fee: sdk.BASE_FEE,
+      networkPassphrase: this.network,
+    })
+      .addOperation(sdk.Operation.changeTrust({ asset: getAsset(this.cfg) }))
+      .setTimeout(60)
+      .build();
+    tx.sign(destKp);
+    const res = await this.server.submitTransaction(tx);
+    return { accountExists: true, trustlineCreated: true, txHash: res.hash };
+  }
+
+  /**
    * Settle `amountCents` stablecoins from the distributor to `destination`.
    * Returns tx hash, ledger sequence, latency, and explorer link.
    */
-  async settle({ destination, amountCents, memo }) {
+  async settle({ destination, amountCents, memo, destinationSecret }) {
     const cfg = getConfig();
     if (cfg.mode === 'shadow') {
       return {
@@ -188,6 +256,7 @@ class BlockchainEngine {
     const { kp, account } = await this._loadDistributor();
     await this._ensureTrustline(kp);
     await this._fundIfNeeded(kp);
+    await this.ensureDestinationTrustline({ destination: destKey, destinationSecret });
 
     const amount = centsToUnits(amountCents);
     const builder = new sdk.TransactionBuilder(account, {

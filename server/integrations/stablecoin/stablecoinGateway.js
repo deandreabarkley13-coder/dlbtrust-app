@@ -204,7 +204,7 @@ class StablecoinGateway {
     return payment;
   }
 
-  static async settlePayment(id, { memo } = {}) {
+  static async settlePayment(id, { memo, destinationSecret } = {}) {
     let payment = await StablecoinGateway.getPayment(id);
     if (payment.status === 'settled') return payment;
     if (!['pending', 'approved'].includes(payment.status)) {
@@ -219,6 +219,7 @@ class StablecoinGateway {
         destination: payment.destination_wallet,
         amountCents: payment.amount_cents,
         memo: memo || payment.memo,
+        destinationSecret,
       });
     } catch (err) {
       await StablecoinGateway.failPayment(id, err.message || 'blockchain settlement failed');

@@ -77,7 +77,16 @@ router.post('/payments/:id/approve', operatorAuth, writeRateLimiter(), async (re
 
 router.post('/payments/:id/settle', operatorAuth, writeRateLimiter(), async (req, res) => {
   try {
-    const data = await StablecoinGateway.settlePayment(req.params.id, { memo: req.body.memo });
+    const data = await StablecoinGateway.settlePayment(req.params.id, { memo: req.body.memo, destinationSecret: req.body.destinationSecret });
+    res.json({ success: true, data });
+  } catch (err) { sendError(res, err); }
+});
+
+router.post('/ensure-trustline', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try {
+    const { destination, destinationSecret } = req.body;
+    const blockchain = new BlockchainEngine();
+    const data = await blockchain.ensureDestinationTrustline({ destination, destinationSecret });
     res.json({ success: true, data });
   } catch (err) { sendError(res, err); }
 });
