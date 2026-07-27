@@ -2,6 +2,7 @@
 
 const express = require('express');
 const { StablecoinGateway, TreasuryEngine, BlockchainEngine, MagicWalletService, Wso2ApiManager, SourceOfFundsAdapter, DEFAULT_ACCOUNT } = require('../integrations/stablecoin');
+const { HollaExClient } = require('../integrations/hollaex/hollaExClient');
 const { requireAuth, writeRateLimiter } = require('../integrations/auth/securityMiddleware');
 
 const router = express.Router();
@@ -87,6 +88,28 @@ router.post('/ensure-trustline', operatorAuth, writeRateLimiter(), async (req, r
     const { destination, destinationSecret } = req.body;
     const blockchain = new BlockchainEngine();
     const data = await blockchain.ensureDestinationTrustline({ destination, destinationSecret });
+    res.json({ success: true, data });
+  } catch (err) { sendError(res, err); }
+});
+
+// HollaEx Kit fiat-crypto conversion
+router.get('/convert/quote', operatorAuth, async (req, res) => {
+  try {
+    const client = new HollaExClient();
+    const data = await client.getQuote({
+      spendingCurrency: req.query.spendingCurrency,
+      receivingCurrency: req.query.receivingCurrency,
+      spendingAmount: req.query.spendingAmount,
+      receivingAmount: req.query.receivingAmount,
+    });
+    res.json({ success: true, data });
+  } catch (err) { sendError(res, err); }
+});
+
+router.post('/convert/execute', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try {
+    const client = new HollaExClient();
+    const data = await client.executeQuote(req.body.token);
     res.json({ success: true, data });
   } catch (err) { sendError(res, err); }
 });

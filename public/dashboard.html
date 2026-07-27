@@ -1567,6 +1567,21 @@
         <div id="sc-balance-result" style="margin-top:8px"></div>
       </div>
       <div class="card" style="margin-top:24px">
+        <h2>Fiat to Crypto Conversion (HollaEx Kit)</h2>
+        <p class="text-muted" style="font-size:12px;margin:-4px 0 10px;">Quote and execute a quick trade between fiat and the configured stablecoin asset.</p>
+        <div class="form-row">
+          <div class="form-group"><label>Spend Currency</label><input type="text" id="sc-convert-spend" value="usd"></div>
+          <div class="form-group"><label>Receive Currency</label><input type="text" id="sc-convert-receive" value="usdc"></div>
+          <div class="form-group"><label>Amount</label><input type="number" step="0.01" id="sc-convert-amount" placeholder="100.00"></div>
+        </div>
+        <div class="form-row">
+          <button class="btn btn-primary btn-sm" onclick="scGetConvertQuote()">Get Quote</button>
+          <button class="btn btn-success btn-sm" onclick="scExecuteConvertQuote()">Execute Quote</button>
+        </div>
+        <div id="sc-convert-token" style="margin-top:8px;font-family:monospace;font-size:11px;word-break:break-all"></div>
+        <div id="sc-convert-result" style="margin-top:8px"></div>
+      </div>
+      <div class="card" style="margin-top:24px">
         <h2>Stablecoin Payments</h2>
         <div id="sc-payments-table"><p class="text-muted">Loading…</p></div>
       </div>
@@ -6447,6 +6462,33 @@
         alert('Trustline ensured: ' + (resp.data.trustlineCreated ? 'created ' + resp.data.txHash : 'already exists'));
       } else {
         alert('Trustline ensure failed: ' + ((resp && resp.error) || 'unknown'));
+      }
+    }
+
+    async function scGetConvertQuote() {
+      const spend = el('sc-convert-spend').value.trim() || 'usd';
+      const receive = el('sc-convert-receive').value.trim() || 'usdc';
+      const amount = Number(el('sc-convert-amount').value);
+      if (!amount || amount <= 0) { el('sc-convert-result').innerHTML = '<p class="error-msg">Enter a positive amount</p>'; return; }
+      const params = new URLSearchParams({ spendingCurrency: spend, receivingCurrency: receive, spendingAmount: String(amount) });
+      const resp = await fetchJSON(API + '/api/stablecoin/convert/quote?' + params.toString(), { headers: adminHeaders() });
+      if (resp && resp.success) {
+        el('sc-convert-token').textContent = 'Token: ' + esc(resp.data.token || '—');
+        el('sc-convert-result').innerHTML = '<p class="success-msg">Quote: spend ' + esc(String(resp.data.spending_amount || amount)) + ' ' + esc(spend) + ' → receive ' + esc(String(resp.data.receiving_amount || '—')) + ' ' + esc(receive) + '</p>';
+      } else {
+        el('sc-convert-token').textContent = '';
+        el('sc-convert-result').innerHTML = '<p class="error-msg">' + esc((resp && resp.error) || 'Quote failed') + '</p>';
+      }
+    }
+
+    async function scExecuteConvertQuote() {
+      const token = el('sc-convert-token').textContent.replace('Token: ', '').trim();
+      if (!token || token === '—') { el('sc-convert-result').innerHTML = '<p class="error-msg">Get a quote first</p>'; return; }
+      const resp = await fetchJSON(API + '/api/stablecoin/convert/execute', { method: 'POST', headers: adminHeaders(), body: JSON.stringify({ token }) });
+      if (resp && resp.success) {
+        el('sc-convert-result').innerHTML = '<p class="success-msg">Executed: ' + esc(JSON.stringify(resp.data)) + '</p>';
+      } else {
+        el('sc-convert-result').innerHTML = '<p class="error-msg">' + esc((resp && resp.error) || 'Execute failed') + '</p>';
       }
     }
 
