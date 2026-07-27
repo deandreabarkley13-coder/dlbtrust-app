@@ -145,14 +145,27 @@ class SourceOfFundsAdapter {
       }
       case 'cash': {
         if (!CashEngine) throw new Error('CashEngine not available');
+        const cfg = getConfig();
+        const holdingAccount = sourceRef.holdingAccount || cfg.cashHoldingAccount || 'STABLECOIN_CASH_HOLD';
+        if (cfg.cashSettlementAccount) {
+          const movement = await CashEngine.transfer({
+            fromAccountId: holdingAccount,
+            toAccountId: cfg.cashSettlementAccount,
+            amountCents,
+            movementType: 'withdrawal',
+            memo: `Stablecoin settlement ${payment.id} ${txHash || ''}`,
+            referenceId: payment.id,
+            referenceType: 'stablecoin_payment',
+          });
+          return { sourceType, sourceAccountId, movementId: movement.movement_id, posted: true };
+        }
         if (sourceRef.movementId) {
           return { sourceType, sourceAccountId, movementId: sourceRef.movementId, posted: true };
         }
-        const cfg = getConfig();
-        const holdingAccount = cfg.cashHoldingAccount || 'STABLECOIN_CASH_HOLD';
+        // Fallback: move from holding back to source if no settlement account configured (should not reach here after reserve)
         const movement = await CashEngine.transfer({
           fromAccountId: holdingAccount,
-          toAccountId: cfg.cashSettlementAccount || sourceAccountId,
+          toAccountId: sourceAccountId,
           amountCents,
           movementType: 'withdrawal',
           memo: `Stablecoin settlement ${payment.id} ${txHash || ''}`,
