@@ -1,11 +1,15 @@
 'use strict';
 
 const express = require('express');
-const { StablecoinGateway, TreasuryEngine, BlockchainEngine, MagicWalletService, Wso2ApiManager, DEFAULT_ACCOUNT } = require('../integrations/stablecoin');
+const { StablecoinGateway, TreasuryEngine, BlockchainEngine, MagicWalletService, Wso2ApiManager, SourceOfFundsAdapter, DEFAULT_ACCOUNT } = require('../integrations/stablecoin');
 const { requireAuth, writeRateLimiter } = require('../integrations/auth/securityMiddleware');
 
 const router = express.Router();
 const operatorAuth = requireAuth({ role: 'operator' });
+const adminAuth = requireAuth({ role: 'admin' });
+
+const WSO2_ALLOWED_METHODS = new Set(['GET', 'POST', 'PUT', 'DELETE']);
+const WSO2_PATH_RE = /^\/[A-Za-z0-9_\-.\/]+$/;
 
 function sendError(res, err) {
   const status = err.status || (err.message && err.message.includes('not found') ? 404 : 400);
@@ -14,7 +18,7 @@ function sendError(res, err) {
 
 router.get('/health', async (req, res) => {
   try {
-    const readiness = await StablecoinGateway.readiness();
+    const readiness = await StablecoinGateway.readiness({ publicHealth: true });
     res.status(readiness.ready ? 200 : 503).json({ success: readiness.ready, data: readiness });
   } catch (err) { sendError(res, err); }
 });
@@ -25,6 +29,17 @@ router.post('/quote', async (req, res) => {
     const cents = amountCents || Math.round(parseFloat(amount || 0) * 100);
     if (!cents || cents <= 0) return res.status(400).json({ success: false, error: 'amount or amountCents required' });
     res.json({ success: true, data: StablecoinGateway.quote({ amountCents: cents, assetCode, network }) });
+  } catch (err) { sendError(res, err); }
+});
+
+router.get('/source-types', async (req, res) => {
+  res.json({ success: true, data: ['treasury', 'cash', 'trust', 'bond', 'fixed_income', 'fineract'] });
+});
+
+router.get('/sources/:type/:id/balance', operatorAuth, async (req, res) => {
+  try {
+    const balance = await SourceOfFundsAdapter.getBalance({ sourceType: req.params.type, sourceAccountId: req.params.id });
+    res.json({ success: true, data: { sourceType: req.params.type, sourceAccountId: req.params.id, availableCents: balance } });
   } catch (err) { sendError(res, err); }
 });
 
@@ -107,11 +122,17 @@ router.post('/wallets/:id/sign', operatorAuth, writeRateLimiter(), async (req, r
   } catch (err) { sendError(res, err); }
 });
 
-// WSO2 API Manager proxy
-router.all('/wso2/*', operatorAuth, writeRateLimiter(), async (req, res) => {
+// WSO2 API Manager proxy (admin-only; restricted method/path)
+router.all('/wso2/*', adminAuth, writeRateLimiter(), async (req, res) => {
   try {
-    const manager = new Wso2ApiManager();
+    if (!WSO2_ALLOWED_METHODS.has(req.method)) {
+      return res.status(405).json({ success: false, error: 'Method not allowed for WSO2 proxy' });
+    }
     const path = req.path.replace('/wso2', '');
+    if (!WSO2_PATH_RE.test(path) || path.includes('..')) {
+      return res.status(400).json({ success: false, error: 'Invalid WSO2 proxy path' });
+    }
+    const manager = new Wso2ApiManager();
     const result = await manager.proxy({
       method: req.method,
       path,

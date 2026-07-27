@@ -6,6 +6,7 @@ const { TreasuryEngine, DEFAULT_ACCOUNT } = require('./treasuryEngine');
 const { StablecoinGateway } = require('./stablecoinGateway');
 const { MagicWalletService } = require('./magicWalletService');
 const { Wso2ApiManager } = require('./wso2ApiManager');
+const { SourceOfFundsAdapter } = require('./sourceOfFundsAdapter');
 
 module.exports = {
   getConfig,
@@ -15,4 +16,5 @@ module.exports = {
   StablecoinGateway,
   MagicWalletService,
   Wso2ApiManager,
+  SourceOfFundsAdapter,
 };

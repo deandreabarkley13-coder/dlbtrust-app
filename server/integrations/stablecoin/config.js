@@ -49,6 +49,11 @@ function getConfig() {
     wso2ClientId: str('WSO2_CLIENT_ID', ''),
     wso2ClientSecret: str('WSO2_CLIENT_SECRET', ''),
     wso2ApiContext: str('WSO2_API_CONTEXT', '/stablecoin'),
+    // Source-of-funds mappings
+    cashHoldingAccount: str('STABLECOIN_CASH_HOLDING_ACCOUNT', 'STABLECOIN_CASH_HOLD'),
+    cashSettlementAccount: str('STABLECOIN_CASH_SETTLEMENT_ACCOUNT', ''),
+    stablecoinAssetAccount: str('STABLECOIN_ASSET_ACCOUNT', '1210'),
+    fineractStablecoinAssetGlId: str('STABLECOIN_FINERACT_ASSET_GL_ID', ''),
   };
 }
 

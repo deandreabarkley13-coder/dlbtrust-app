@@ -11,7 +11,8 @@ let pool;
 try { pool = require('../bonds/pgPool'); } catch (e) { pool = null; }
 
 const DEFAULT_ACCOUNT = 'TREASURY_HOT';
-const memory = new Map();
+const memoryAccounts = new Map();
+const memoryReserves = new Map();
 
 async function query(sql, params) {
   if (!pool || !pool.query) throw new Error('Postgres pool unavailable');
@@ -19,12 +20,13 @@ async function query(sql, params) {
 }
 
 async function withFallback(fn, fallback) {
-  try {
-    return await fn();
-  } catch (e) {
-    if (!pool) return fallback(e);
-    throw e;
-  }
+  try { return await fn(); } catch (e) { if (!pool) return fallback(e); throw e; }
+}
+
+async function withClient(fn) {
+  if (!pool || !pool.connect) throw new Error('Postgres pool unavailable');
+  const client = await pool.connect();
+  try { return await fn(client); } finally { client.release(); }
 }
 
 class TreasuryEngine {
@@ -70,10 +72,10 @@ class TreasuryEngine {
   }
 
   static async getOrCreateAccount(id, { type = 'hot', network = 'testnet', assetCode = 'USDC', publicAddress = '' } = {}) {
-    if (memory.has(id)) return memory.get(id);
+    if (memoryAccounts.has(id)) return memoryAccounts.get(id);
     if (!pool) {
       const account = { account_id: id, type, network, asset_code: assetCode, public_address: publicAddress, balance_cents: 0n, hold_cents: 0n, available_cents: 0n, metadata: {} };
-      memory.set(id, account);
+      memoryAccounts.set(id, account);
       return account;
     }
     const rows = await query('SELECT * FROM stablecoin_treasury_accounts WHERE account_id = $1', [id]);
@@ -140,68 +142,72 @@ class TreasuryEngine {
     if (amountCents <= 0) throw new Error('hold amount must be positive');
     const reserveId = `RES-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
     return withFallback(async () => {
-      await query('BEGIN');
-      try {
-        const pos = await query('SELECT * FROM stablecoin_treasury_accounts WHERE account_id = $1 FOR UPDATE', [accountId]);
-        if (!pos.rows.length) throw new Error(`Treasury account not found: ${accountId}`);
-        const a = pos.rows[0];
-        const available = Number(a.available_cents);
-        if (available < amountCents) throw new Error(`Insufficient treasury available balance: ${available} < ${amountCents}`);
-        await query(`
-          UPDATE stablecoin_treasury_accounts
-          SET hold_cents = hold_cents + $2,
-              available_cents = available_cents - $2,
-              updated_at = NOW()
-          WHERE account_id = $1
-        `, [accountId, amountCents]);
-        await query(`
-          INSERT INTO stablecoin_reserves (reserve_id, payment_id, account_id, amount_cents, status)
-          VALUES ($1, $2, $3, $4, 'active')
-        `, [reserveId, paymentId, accountId, amountCents]);
-        await query('COMMIT');
-      } catch (e) {
-        await query('ROLLBACK');
-        throw e;
-      }
-      return { reserveId, accountId, amountCents, status: 'active' };
+      return withClient(async (client) => {
+        await client.query('BEGIN');
+        try {
+          const pos = await client.query('SELECT * FROM stablecoin_treasury_accounts WHERE account_id = $1 FOR UPDATE', [accountId]);
+          if (!pos.rows.length) throw new Error(`Treasury account not found: ${accountId}`);
+          const a = pos.rows[0];
+          const available = Number(a.available_cents);
+          if (available < amountCents) throw new Error(`Insufficient treasury available balance: ${available} < ${amountCents}`);
+          await client.query(`
+            UPDATE stablecoin_treasury_accounts
+            SET hold_cents = hold_cents + $2,
+                available_cents = available_cents - $2,
+                updated_at = NOW()
+            WHERE account_id = $1
+          `, [accountId, amountCents]);
+          await client.query(`
+            INSERT INTO stablecoin_reserves (reserve_id, payment_id, account_id, amount_cents, status)
+            VALUES ($1, $2, $3, $4, 'active')
+          `, [reserveId, paymentId, accountId, amountCents]);
+          await client.query('COMMIT');
+        } catch (e) {
+          await client.query('ROLLBACK');
+          throw e;
+        }
+        return { reserveId, accountId, amountCents, status: 'active' };
+      });
     }, async () => {
       const a = await TreasuryEngine.getOrCreateAccount(accountId);
       const available = BigInt(a.available_cents);
       if (available < BigInt(amountCents)) throw new Error(`Insufficient treasury available balance`);
       a.hold_cents = BigInt(a.hold_cents) + BigInt(amountCents);
       a.available_cents = available - BigInt(amountCents);
-      memory.set(reserveId, { reserve_id: reserveId, payment_id: paymentId, account_id: accountId, amount_cents: amountCents, status: 'active' });
+      memoryReserves.set(reserveId, { reserve_id: reserveId, payment_id: paymentId, account_id: accountId, amount_cents: amountCents, status: 'active' });
       return { reserveId, accountId, amountCents, status: 'active' };
     });
   }
 
   static async release(reserveId, reason = '') {
     return withFallback(async () => {
-      const rows = await query('SELECT * FROM stablecoin_reserves WHERE reserve_id = $1 AND status = $2', [reserveId, 'active']);
-      if (!rows.rows.length) return { released: false, reason: 'reserve not found or not active' };
-      const r = rows.rows[0];
-      await query('BEGIN');
-      try {
-        await query(`
-          UPDATE stablecoin_treasury_accounts
-          SET hold_cents = hold_cents - $2,
-              available_cents = available_cents + $2,
-              updated_at = NOW()
-          WHERE account_id = $1
-        `, [r.account_id, r.amount_cents]);
-        await query(`
-          UPDATE stablecoin_reserves
-          SET status = 'released', released_at = NOW()
-          WHERE reserve_id = $1
-        `, [reserveId]);
-        await query('COMMIT');
-      } catch (e) {
-        await query('ROLLBACK');
-        throw e;
-      }
-      return { released: true, reserveId };
+      return withClient(async (client) => {
+        const rows = await client.query('SELECT * FROM stablecoin_reserves WHERE reserve_id = $1 AND status = $2 FOR UPDATE', [reserveId, 'active']);
+        if (!rows.rows.length) return { released: false, reason: 'reserve not found or not active' };
+        const r = rows.rows[0];
+        await client.query('BEGIN');
+        try {
+          await client.query(`
+            UPDATE stablecoin_treasury_accounts
+            SET hold_cents = hold_cents - $2,
+                available_cents = available_cents + $2,
+                updated_at = NOW()
+            WHERE account_id = $1
+          `, [r.account_id, r.amount_cents]);
+          await client.query(`
+            UPDATE stablecoin_reserves
+            SET status = 'released', released_at = NOW()
+            WHERE reserve_id = $1
+          `, [reserveId]);
+          await client.query('COMMIT');
+        } catch (e) {
+          await client.query('ROLLBACK');
+          throw e;
+        }
+        return { released: true, reserveId };
+      });
     }, async () => {
-      const r = memory.get(reserveId);
+      const r = memoryReserves.get(reserveId);
       if (!r || r.status !== 'active') return { released: false, reason: 'reserve not found or not active' };
       const a = await TreasuryEngine.getOrCreateAccount(r.account_id);
       a.hold_cents = BigInt(a.hold_cents) - BigInt(r.amount_cents);
@@ -211,41 +217,56 @@ class TreasuryEngine {
     });
   }
 
-  static async post(reserveId, txHash) {
+  /**
+   * Finalize a reserve after settlement. By default the full reserve amount is
+   * debited from the balance. If `settledAmountCents` is provided, only that
+   * amount is debited; the remainder (the gateway fee) is released back to
+   * available funds.
+   */
+  static async post(reserveId, txHash, { settledAmountCents } = {}) {
     return withFallback(async () => {
-      const rows = await query('SELECT * FROM stablecoin_reserves WHERE reserve_id = $1', [reserveId]);
-      if (!rows.rows.length) throw new Error(`Reserve not found: ${reserveId}`);
-      const r = rows.rows[0];
-      if (r.status !== 'active') throw new Error(`Reserve is not active: ${r.status}`);
-      await query('BEGIN');
-      try {
-        await query(`
-          UPDATE stablecoin_treasury_accounts
-          SET hold_cents = hold_cents - $2,
-              balance_cents = balance_cents - $2,
-              updated_at = NOW()
-          WHERE account_id = $1
-        `, [r.account_id, r.amount_cents]);
-        await query(`
-          UPDATE stablecoin_reserves
-          SET status = 'posted', tx_hash = $2
-          WHERE reserve_id = $1
-        `, [reserveId, txHash]);
-        await query('COMMIT');
-      } catch (e) {
-        await query('ROLLBACK');
-        throw e;
-      }
-      return { posted: true, reserveId, txHash };
+      return withClient(async (client) => {
+        const rows = await client.query('SELECT * FROM stablecoin_reserves WHERE reserve_id = $1 FOR UPDATE', [reserveId]);
+        if (!rows.rows.length) throw new Error(`Reserve not found: ${reserveId}`);
+        const r = rows.rows[0];
+        if (r.status !== 'active') throw new Error(`Reserve is not active: ${r.status}`);
+        const settled = Number(settledAmountCents) || Number(r.amount_cents);
+        if (settled <= 0 || settled > Number(r.amount_cents)) throw new Error('settledAmountCents must be positive and not exceed the reserve');
+        const fee = Number(r.amount_cents) - settled;
+        await client.query('BEGIN');
+        try {
+          await client.query(`
+            UPDATE stablecoin_treasury_accounts
+            SET hold_cents = hold_cents - $2,
+                balance_cents = balance_cents - $3,
+                available_cents = available_cents + $4,
+                updated_at = NOW()
+            WHERE account_id = $1
+          `, [r.account_id, r.amount_cents, settled, fee]);
+          await client.query(`
+            UPDATE stablecoin_reserves
+            SET status = 'posted', tx_hash = $2
+            WHERE reserve_id = $1
+          `, [reserveId, txHash]);
+          await client.query('COMMIT');
+        } catch (e) {
+          await client.query('ROLLBACK');
+          throw e;
+        }
+        return { posted: true, reserveId, txHash, settled, fee };
+      });
     }, async () => {
-      const r = memory.get(reserveId);
+      const r = memoryReserves.get(reserveId);
       if (!r || r.status !== 'active') throw new Error('Reserve not active');
       const a = await TreasuryEngine.getOrCreateAccount(r.account_id);
+      const settled = Number(settledAmountCents) || Number(r.amount_cents);
+      const fee = Number(r.amount_cents) - settled;
       a.hold_cents = BigInt(a.hold_cents) - BigInt(r.amount_cents);
-      a.balance_cents = BigInt(a.balance_cents) - BigInt(r.amount_cents);
+      a.balance_cents = BigInt(a.balance_cents) - BigInt(settled);
+      a.available_cents = BigInt(a.available_cents) + BigInt(fee);
       r.status = 'posted';
       r.tx_hash = txHash;
-      return { posted: true, reserveId, txHash };
+      return { posted: true, reserveId, txHash, settled, fee };
     });
   }
 }
