@@ -210,7 +210,7 @@ class StablecoinGateway {
     if (!['pending', 'approved'].includes(payment.status)) {
       throw new Error(`Cannot settle payment in ${payment.status} status`);
     }
-    if (payment.status === 'pending') await StablecoinGateway.approvePayment(id, payment.source_account_id);
+    if (payment.status === 'pending') payment = await StablecoinGateway.approvePayment(id, payment.source_account_id);
 
     const blockchain = new BlockchainEngine();
     let result;
