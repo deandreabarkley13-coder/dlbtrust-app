@@ -1,7 +1,7 @@
 'use strict';
 
 const express = require('express');
-const { StablecoinGateway, TreasuryEngine, BlockchainEngine, MagicWalletService, Wso2ApiManager, DEFAULT_ACCOUNT } = require('../integrations/stablecoin');
+const { StablecoinGateway, TreasuryEngine, BlockchainEngine, MagicWalletService, Wso2ApiManager, SourceOfFundsAdapter, DEFAULT_ACCOUNT } = require('../integrations/stablecoin');
 const { requireAuth, writeRateLimiter } = require('../integrations/auth/securityMiddleware');
 
 const router = express.Router();
@@ -29,6 +29,17 @@ router.post('/quote', async (req, res) => {
     const cents = amountCents || Math.round(parseFloat(amount || 0) * 100);
     if (!cents || cents <= 0) return res.status(400).json({ success: false, error: 'amount or amountCents required' });
     res.json({ success: true, data: StablecoinGateway.quote({ amountCents: cents, assetCode, network }) });
+  } catch (err) { sendError(res, err); }
+});
+
+router.get('/source-types', async (req, res) => {
+  res.json({ success: true, data: ['treasury', 'cash', 'trust', 'bond', 'fixed_income', 'fineract'] });
+});
+
+router.get('/sources/:type/:id/balance', operatorAuth, async (req, res) => {
+  try {
+    const balance = await SourceOfFundsAdapter.getBalance({ sourceType: req.params.type, sourceAccountId: req.params.id });
+    res.json({ success: true, data: { sourceType: req.params.type, sourceAccountId: req.params.id, availableCents: balance } });
   } catch (err) { sendError(res, err); }
 });
 

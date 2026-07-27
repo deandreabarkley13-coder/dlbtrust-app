@@ -13,6 +13,7 @@ const { getConfig, isProduction } = require('./config');
 const { TreasuryEngine, DEFAULT_ACCOUNT } = require('./treasuryEngine');
 const { BlockchainEngine } = require('./blockchainEngine');
 const { MagicWalletService } = require('./magicWalletService');
+const { SourceOfFundsAdapter } = require('./sourceOfFundsAdapter');
 
 const memoryPayments = new Map();
 
@@ -58,7 +59,9 @@ class StablecoinGateway {
           network TEXT NOT NULL DEFAULT 'testnet',
           destination_wallet TEXT,
           wallet_provider TEXT,
+          source_type TEXT DEFAULT 'treasury',
           source_account_id TEXT,
+          source_ref JSONB DEFAULT '{}',
           reserve_id TEXT,
           tx_hash TEXT,
           tx_ledger TEXT,
@@ -71,6 +74,8 @@ class StablecoinGateway {
         );
       `);
       await query('CREATE INDEX IF NOT EXISTS idx_scp_status ON stablecoin_payments(status);');
+      await query(`ALTER TABLE stablecoin_payments ADD COLUMN IF NOT EXISTS source_type TEXT DEFAULT 'treasury';`);
+      await query(`ALTER TABLE stablecoin_payments ADD COLUMN IF NOT EXISTS source_ref JSONB DEFAULT '{}';`);
     } catch (e) {
       console.warn('[stablecoinGateway] Postgres table ensure failed:', e.message);
     }
@@ -135,7 +140,9 @@ class StablecoinGateway {
       network: quote.network,
       destination_wallet: destination,
       wallet_provider: input.walletProvider || 'direct',
-      source_account_id: input.sourceAccountId || DEFAULT_ACCOUNT,
+      source_type: String(input.sourceType || 'treasury').toLowerCase(),
+      source_account_id: input.sourceAccountId || input.sourceAccount || DEFAULT_ACCOUNT,
+      source_ref: {},
       memo: input.memo || `DLB Trust stablecoin payment ${id}`,
       metadata: { beneficiaryName: input.beneficiaryName || '', ...input.metadata },
       reserve_id: null,
@@ -148,11 +155,12 @@ class StablecoinGateway {
       await query(`
         INSERT INTO stablecoin_payments
         (id, payment_hub_intent_id, status, amount_cents, fee_cents, total_cents, asset_code, network,
-         destination_wallet, wallet_provider, source_account_id, memo, metadata)
-        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
+         destination_wallet, wallet_provider, source_type, source_account_id, source_ref, memo, metadata)
+        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)
       `, [record.id, record.payment_hub_intent_id, record.status, record.amount_cents, record.fee_cents,
           record.total_cents, record.asset_code, record.network, record.destination_wallet,
-          record.wallet_provider, record.source_account_id, record.memo, JSON.stringify(record.metadata)]);
+          record.wallet_provider, record.source_type, record.source_account_id, JSON.stringify(record.source_ref),
+          record.memo, JSON.stringify(record.metadata)]);
     }, () => { memoryPayments.set(id, record); });
 
     return { id: record.id, ...record };
@@ -186,9 +194,11 @@ class StablecoinGateway {
   static async approvePayment(id, accountId = DEFAULT_ACCOUNT) {
     const payment = await StablecoinGateway.getPayment(id);
     if (payment.status !== 'pending') throw new Error(`Cannot approve payment in ${payment.status} status`);
-    const reserve = await TreasuryEngine.hold(id, accountId, payment.total_cents);
+    if (accountId) payment.source_account_id = accountId;
+    const reserve = await SourceOfFundsAdapter.reserve(payment);
     payment.status = 'approved';
-    payment.reserve_id = reserve.reserveId;
+    payment.source_ref = reserve;
+    payment.reserve_id = reserve.reserveId || null;
     payment.updated_at = new Date().toISOString();
     await StablecoinGateway._update(payment);
     return payment;
@@ -215,12 +225,14 @@ class StablecoinGateway {
       throw err;
     }
 
-    await TreasuryEngine.post(payment.reserve_id, result.hash, { settledAmountCents: payment.amount_cents });
+    const sourcePost = await SourceOfFundsAdapter.post(payment, result.hash, { settledAmountCents: payment.amount_cents });
+    await SourceOfFundsAdapter.recordCrmAndDocuments(payment, result.hash);
     payment.status = 'settled';
     payment.tx_hash = result.hash;
     payment.tx_ledger = String(result.ledger);
     payment.tx_explorer = result.explorer;
     payment.latency_ms = result.latencyMs;
+    payment.source_ref = { ...payment.source_ref, post: sourcePost };
     payment.updated_at = new Date().toISOString();
     await StablecoinGateway._update(payment);
     return payment;
@@ -228,7 +240,7 @@ class StablecoinGateway {
 
   static async failPayment(id, error) {
     const payment = await StablecoinGateway.getPayment(id);
-    if (payment.reserve_id) await TreasuryEngine.release(payment.reserve_id, error);
+    await SourceOfFundsAdapter.release(payment);
     payment.status = 'failed';
     payment.metadata = { ...payment.metadata, error };
     payment.updated_at = new Date().toISOString();
@@ -241,11 +253,13 @@ class StablecoinGateway {
       await query(`
         UPDATE stablecoin_payments
         SET status = $2, reserve_id = $3, tx_hash = $4, tx_ledger = $5, tx_explorer = $6,
-            latency_ms = $7, metadata = $8, updated_at = NOW()
+            latency_ms = $7, source_type = $8, source_account_id = $9, source_ref = $10,
+            metadata = $11, updated_at = NOW()
         WHERE id = $1
       `, [payment.id, payment.status, payment.reserve_id || null, payment.tx_hash || null,
           payment.tx_ledger || null, payment.tx_explorer || null, payment.latency_ms || null,
-          JSON.stringify(payment.metadata)]);
+          payment.source_type || 'treasury', payment.source_account_id || DEFAULT_ACCOUNT,
+          JSON.stringify(payment.source_ref || {}), JSON.stringify(payment.metadata)]);
     }, () => { memoryPayments.set(payment.id, payment); });
   }
 
@@ -260,6 +274,8 @@ class StablecoinGateway {
     if (!destination) throw new Error('Stablecoin intent requires metadata.destination_wallet');
     if (network !== cfg.network) throw new Error(`Payment network ${network} does not match configured stablecoin network ${cfg.network}`);
     if (String(assetCode).toUpperCase() !== cfg.assetCode.toUpperCase()) throw new Error(`Payment asset ${assetCode} does not match configured asset ${cfg.assetCode}`);
+    const sourceType = intent.metadata && intent.metadata.source_type || 'treasury';
+    const sourceAccountId = intent.metadata && intent.metadata.source_account_id || DEFAULT_ACCOUNT;
     return StablecoinGateway.createPayment({
       paymentHubIntentId: intent.intent_id,
       amountCents: Number(intent.amount_cents),
@@ -267,7 +283,8 @@ class StablecoinGateway {
       network,
       destinationWallet: destination,
       walletProvider,
-      sourceAccountId: DEFAULT_ACCOUNT,
+      sourceType,
+      sourceAccountId,
       beneficiaryName: intent.beneficiary_name,
       memo: `PaymentHub ${intent.intent_id}`,
       metadata: { paymentHubIntentId: intent.intent_id, rail: 'stablecoin' },
