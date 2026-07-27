@@ -1577,9 +1577,11 @@
         <div class="form-row">
           <button class="btn btn-primary btn-sm" onclick="scGetConvertQuote()">Get Quote</button>
           <button class="btn btn-success btn-sm" onclick="scExecuteConvertQuote()">Execute Quote</button>
+          <button class="btn btn-sm" onclick="scCheckHollaExReadiness()">Check HollaEx</button>
         </div>
         <div id="sc-convert-token" style="margin-top:8px;font-family:monospace;font-size:11px;word-break:break-all"></div>
         <div id="sc-convert-result" style="margin-top:8px"></div>
+        <div id="sc-convert-readiness" style="margin-top:8px"></div>
       </div>
       <div class="card" style="margin-top:24px">
         <h2>Stablecoin Payments</h2>
@@ -6473,7 +6475,7 @@
       const params = new URLSearchParams({ spendingCurrency: spend, receivingCurrency: receive, spendingAmount: String(amount) });
       const resp = await fetchJSON(API + '/api/stablecoin/convert/quote?' + params.toString(), { headers: adminHeaders() });
       if (resp && resp.success) {
-        el('sc-convert-token').textContent = 'Token: ' + esc(resp.data.token || '—');
+        el('sc-convert-token').textContent = 'Token: ' + (resp.data.token || '—');
         el('sc-convert-result').innerHTML = '<p class="success-msg">Quote: spend ' + esc(String(resp.data.spending_amount || amount)) + ' ' + esc(spend) + ' → receive ' + esc(String(resp.data.receiving_amount || '—')) + ' ' + esc(receive) + '</p>';
       } else {
         el('sc-convert-token').textContent = '';
@@ -6489,6 +6491,16 @@
         el('sc-convert-result').innerHTML = '<p class="success-msg">Executed: ' + esc(JSON.stringify(resp.data)) + '</p>';
       } else {
         el('sc-convert-result').innerHTML = '<p class="error-msg">' + esc((resp && resp.error) || 'Execute failed') + '</p>';
+      }
+    }
+
+    async function scCheckHollaExReadiness() {
+      const resp = await fetchJSON(API + '/api/stablecoin/convert/readiness', { headers: adminHeaders() });
+      if (resp && resp.success) {
+        const r = resp.data;
+        el('sc-convert-readiness').innerHTML = '<p class="' + (r.ready ? 'success-msg' : 'error-msg') + '">HollaEx ' + (r.ready ? 'Ready' : 'Not Ready') + ': ' + esc((r.issues || []).join('; ') || 'OK') + '</p>';
+      } else {
+        el('sc-convert-readiness').innerHTML = '<p class="error-msg">' + esc((resp && resp.error) || 'Readiness check failed') + '</p>';
       }
     }
 
