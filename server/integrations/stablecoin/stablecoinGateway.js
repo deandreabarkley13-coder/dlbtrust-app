@@ -76,8 +76,17 @@ class StablecoinGateway {
     }
   }
 
-  static async readiness() {
+  static async readiness({ publicHealth } = {}) {
     const cfg = getConfig();
+    if (publicHealth) {
+      const blockchain = await new BlockchainEngine().readiness();
+      return {
+        ready: cfg.enabled && blockchain.ready,
+        mode: cfg.mode,
+        network: cfg.network,
+        assetCode: cfg.assetCode,
+      };
+    }
     const treasury = await TreasuryEngine.getPosition(DEFAULT_ACCOUNT).catch(err => ({ ready: false, error: err.message }));
     const blockchain = await new BlockchainEngine().readiness();
     const magic = new MagicWalletService().readiness();
@@ -109,6 +118,8 @@ class StablecoinGateway {
     const cfg = getConfig();
     const amountCents = typeof input.amountCents === 'number' ? input.amountCents : toCents(input.amount);
     const quote = StablecoinGateway.quote({ amountCents, assetCode: input.assetCode, network: input.network });
+    if (quote.network !== cfg.network) throw new Error(`Payment network ${quote.network} does not match configured stablecoin network ${cfg.network}`);
+    if (quote.assetCode.toUpperCase() !== cfg.assetCode.toUpperCase()) throw new Error(`Payment asset ${quote.assetCode} does not match configured asset ${cfg.assetCode}`);
     const id = identifier('SCP');
     const destination = input.destinationWallet || input.walletAddress || '';
     if (!destination) throw new Error('destinationWallet is required');
@@ -165,9 +176,10 @@ class StablecoinGateway {
         status ? [params[0], params[1], status] : params);
       return rows.rows;
     }, () => {
+      const capped = Math.min(Number(limit) || 50, 200);
       const all = Array.from(memoryPayments.values()).sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
       let filtered = status ? all.filter(p => p.status === status) : all;
-      return filtered.slice(offset, offset + limit);
+      return filtered.slice(offset, offset + capped);
     });
   }
 
@@ -189,14 +201,21 @@ class StablecoinGateway {
       throw new Error(`Cannot settle payment in ${payment.status} status`);
     }
     if (payment.status === 'pending') await StablecoinGateway.approvePayment(id, payment.source_account_id);
-    const cfg = getConfig();
+
     const blockchain = new BlockchainEngine();
-    const result = await blockchain.settle({
-      destination: payment.destination_wallet,
-      amountCents: payment.total_cents,
-      memo: memo || payment.memo,
-    });
-    await TreasuryEngine.post(payment.reserve_id, result.hash);
+    let result;
+    try {
+      result = await blockchain.settle({
+        destination: payment.destination_wallet,
+        amountCents: payment.amount_cents,
+        memo: memo || payment.memo,
+      });
+    } catch (err) {
+      await StablecoinGateway.failPayment(id, err.message || 'blockchain settlement failed');
+      throw err;
+    }
+
+    await TreasuryEngine.post(payment.reserve_id, result.hash, { settledAmountCents: payment.amount_cents });
     payment.status = 'settled';
     payment.tx_hash = result.hash;
     payment.tx_ledger = String(result.ledger);
@@ -233,11 +252,14 @@ class StablecoinGateway {
   /* ─── Payment Hub integration ─────────────────────────────────────────── */
 
   static async createFromIntent(intent) {
+    const cfg = getConfig();
     const destination = intent.metadata && intent.metadata.destination_wallet;
-    const network = intent.metadata && intent.metadata.network || 'testnet';
-    const assetCode = intent.metadata && intent.metadata.asset_code || 'USDC';
+    const network = intent.metadata && intent.metadata.network || cfg.network;
+    const assetCode = intent.metadata && intent.metadata.asset_code || cfg.assetCode;
     const walletProvider = intent.metadata && intent.metadata.wallet_provider || 'direct';
     if (!destination) throw new Error('Stablecoin intent requires metadata.destination_wallet');
+    if (network !== cfg.network) throw new Error(`Payment network ${network} does not match configured stablecoin network ${cfg.network}`);
+    if (String(assetCode).toUpperCase() !== cfg.assetCode.toUpperCase()) throw new Error(`Payment asset ${assetCode} does not match configured asset ${cfg.assetCode}`);
     return StablecoinGateway.createPayment({
       paymentHubIntentId: intent.intent_id,
       amountCents: Number(intent.amount_cents),
@@ -245,7 +267,7 @@ class StablecoinGateway {
       network,
       destinationWallet: destination,
       walletProvider,
-      sourceAccountId: intent.source_account_code || DEFAULT_ACCOUNT,
+      sourceAccountId: DEFAULT_ACCOUNT,
       beneficiaryName: intent.beneficiary_name,
       memo: `PaymentHub ${intent.intent_id}`,
       metadata: { paymentHubIntentId: intent.intent_id, rail: 'stablecoin' },

@@ -6,6 +6,10 @@ const { requireAuth, writeRateLimiter } = require('../integrations/auth/security
 
 const router = express.Router();
 const operatorAuth = requireAuth({ role: 'operator' });
+const adminAuth = requireAuth({ role: 'admin' });
+
+const WSO2_ALLOWED_METHODS = new Set(['GET', 'POST', 'PUT', 'DELETE']);
+const WSO2_PATH_RE = /^\/[A-Za-z0-9_\-.\/]+$/;
 
 function sendError(res, err) {
   const status = err.status || (err.message && err.message.includes('not found') ? 404 : 400);
@@ -14,7 +18,7 @@ function sendError(res, err) {
 
 router.get('/health', async (req, res) => {
   try {
-    const readiness = await StablecoinGateway.readiness();
+    const readiness = await StablecoinGateway.readiness({ publicHealth: true });
     res.status(readiness.ready ? 200 : 503).json({ success: readiness.ready, data: readiness });
   } catch (err) { sendError(res, err); }
 });
@@ -107,11 +111,17 @@ router.post('/wallets/:id/sign', operatorAuth, writeRateLimiter(), async (req, r
   } catch (err) { sendError(res, err); }
 });
 
-// WSO2 API Manager proxy
-router.all('/wso2/*', operatorAuth, writeRateLimiter(), async (req, res) => {
+// WSO2 API Manager proxy (admin-only; restricted method/path)
+router.all('/wso2/*', adminAuth, writeRateLimiter(), async (req, res) => {
   try {
-    const manager = new Wso2ApiManager();
+    if (!WSO2_ALLOWED_METHODS.has(req.method)) {
+      return res.status(405).json({ success: false, error: 'Method not allowed for WSO2 proxy' });
+    }
     const path = req.path.replace('/wso2', '');
+    if (!WSO2_PATH_RE.test(path) || path.includes('..')) {
+      return res.status(400).json({ success: false, error: 'Invalid WSO2 proxy path' });
+    }
+    const manager = new Wso2ApiManager();
     const result = await manager.proxy({
       method: req.method,
       path,

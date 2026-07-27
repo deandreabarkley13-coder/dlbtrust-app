@@ -17,7 +17,7 @@ const { StablecoinConnector } = require('./stablecoinConnector');
 const TRANSITIONS = Object.freeze({
   draft: new Set(['pending_approval', 'cancelled']),
   pending_approval: new Set(['approved', 'rejected', 'cancelled']),
-  approved: new Set(['queued', 'cancelled']),
+  approved: new Set(['queued', 'orchestrating', 'cancelled']),
   queued: new Set(['orchestrating', 'transmitting', 'failed', 'cancelled']),
   orchestrating: new Set(['transmitting', 'transmitted', 'accepted', 'clearing', 'settled', 'returned', 'failed']),
   transmitting: new Set(['transmitted', 'accepted', 'clearing', 'settled', 'returned', 'failed']),
