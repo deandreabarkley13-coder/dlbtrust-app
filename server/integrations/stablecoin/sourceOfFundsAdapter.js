@@ -6,6 +6,12 @@
  * Routes stablecoin payment holds, releases, and settlement debits to the
  * appropriate backing engine (treasury, cash, trust accounting, bonds,
  * fixed income, Fineract core banking, CRM, documents).
+ *
+ * For non-treasury sources, the adapter now sweeps the source balance into the
+ * stablecoin treasury's internal ledger at reserve time.  The treasury then
+ * holds the funds, and on settlement the on-chain USDC is disbursed while the
+ * treasury reserve is finalized.  This makes Core Banking / Bond / Fixed Income /
+ * Trust / Cash balances the real funding source for stablecoin payments.
  */
 
 let CashEngine = null;
@@ -72,32 +78,29 @@ class SourceOfFundsAdapter {
     }
   }
 
-  static async reserve(payment) {
-    const sourceType = String(payment.source_type || 'treasury').toLowerCase();
-    const sourceAccountId = payment.source_account_id || DEFAULT_ACCOUNT;
-    const amountCents = Number(payment.total_cents);
-
+  /**
+   * Move real funds from a source engine into the stablecoin treasury.
+   * After this, the treasury internal ledger is backed by the source balance.
+   */
+  static async _fundSourceToTreasury({ sourceType, sourceAccountId, paymentId, amountCents }) {
+    const cfg = getConfig();
     switch (sourceType) {
-      case 'treasury': {
-        const { reserveId } = await TreasuryEngine.hold(payment.id, sourceAccountId, amountCents);
-        return { sourceType, sourceAccountId, reserveId };
-      }
       case 'cash': {
         if (!CashEngine) throw new Error('CashEngine not available');
         const acct = await CashEngine.getAccount(sourceAccountId);
         if (!acct) throw new Error(`Cash account not found: ${sourceAccountId}`);
         if (Number(acct.balance_cents || 0) < amountCents) throw new Error(`Insufficient cash balance in ${sourceAccountId}`);
-        const cfg = getConfig();
         const holdingAccount = cfg.cashHoldingAccount || 'STABLECOIN_CASH_HOLD';
         const movement = await CashEngine.transfer({
           fromAccountId: sourceAccountId,
           toAccountId: holdingAccount,
           amountCents,
-          movementType: 'reserve',
-          memo: `Stablecoin reserve ${payment.id}`,
-          referenceId: payment.id,
+          movementType: 'sweep',
+          memo: `Stablecoin funding ${paymentId}`,
+          referenceId: paymentId,
           referenceType: 'stablecoin_payment',
         });
+        await TreasuryEngine.credit(DEFAULT_ACCOUNT, amountCents, { source: 'cash', sourceAccountId, movementId: movement.movement_id });
         return { sourceType, sourceAccountId, movementId: movement.movement_id, holdingAccount };
       }
       case 'trust':
@@ -105,7 +108,23 @@ class SourceOfFundsAdapter {
         if (!TrustAccountingEngine) throw new Error('TrustAccountingEngine not available');
         const acct = await TrustAccountingEngine.getAccount(sourceAccountId);
         if (!acct) throw new Error(`Trust account not found: ${sourceAccountId}`);
-        return { sourceType, sourceAccountId, reservedAt: new Date().toISOString() };
+        const available = toCents(acct.balance || 0);
+        if (available < amountCents) throw new Error(`Insufficient trust account balance: ${available} < ${amountCents}`);
+        const assetAccount = cfg.stablecoinAssetAccount || '1210';
+        const journal = await TrustAccountingEngine.postJournalEntry({
+          entryDate: new Date(),
+          description: `Stablecoin funding ${paymentId}`,
+          referenceType: 'stablecoin_payment',
+          referenceId: paymentId,
+          postedBy: 'stablecoin-gateway',
+          postToFineract: false,
+          lines: [
+            { accountCode: assetAccount, debitAmount: amountCents / 100, creditAmount: 0, memo: 'Stablecoin backing from source' },
+            { accountCode: sourceAccountId, debitAmount: 0, creditAmount: amountCents / 100, memo: 'Source funds to stablecoin' },
+          ],
+        });
+        await TreasuryEngine.credit(DEFAULT_ACCOUNT, amountCents, { source: 'trust', sourceAccountId, journalEntryId: journal.entry_id });
+        return { sourceType, sourceAccountId, journalEntryId: journal.entry_id, assetAccount };
       }
       case 'bond':
       case 'fixed_income': {
@@ -114,7 +133,10 @@ class SourceOfFundsAdapter {
         if (!bond) throw new Error(`Bond not found: ${sourceAccountId}`);
         const available = Math.round((Number(bond.principal_balance || 0) + Number(bond.accrued_interest || 0)) * 100);
         if (available < amountCents) throw new Error(`Insufficient bond liquidity: ${available} < ${amountCents}`);
-        return { sourceType, sourceAccountId, reservedAt: new Date().toISOString() };
+        const amount = amountCents / 100;
+        const result = await BondEngine.payPrincipal(Number(sourceAccountId), amount);
+        await TreasuryEngine.credit(DEFAULT_ACCOUNT, amountCents, { source: sourceType, sourceAccountId, bondTransactionId: result.transaction.id });
+        return { sourceType, sourceAccountId, bondTransactionId: result.transaction.id, newPrincipalCents: toCents(result.new_principal_balance) };
       }
       case 'fineract':
       case 'core_banking': {
@@ -122,10 +144,106 @@ class SourceOfFundsAdapter {
         const summary = await FineractClient.getAccountBalance(sourceAccountId);
         const available = toCents(summary.accountBalance || summary.balance || 0);
         if (available < amountCents) throw new Error(`Insufficient Fineract balance: ${available} < ${amountCents}`);
-        return { sourceType, sourceAccountId, reservedAt: new Date().toISOString() };
+        const assetGlId = Number(cfg.fineractStablecoinAssetGlId);
+        const sourceGlId = Number(sourceAccountId);
+        if (!assetGlId) throw new Error('STABLECOIN_FINERACT_ASSET_GL_ID is required for Fineract source-of-funds');
+        if (!Number.isFinite(sourceGlId)) throw new Error(`Invalid Fineract GL account id: ${sourceAccountId}`);
+        const journal = await FineractClient.postJournalEntry({
+          officeId: 1,
+          transactionDate: new Date(),
+          comments: `Stablecoin funding ${paymentId}`,
+          debits: [{ glAccountId: sourceGlId, amount: amountCents / 100 }],
+          credits: [{ glAccountId: assetGlId, amount: amountCents / 100 }],
+        });
+        await TreasuryEngine.credit(DEFAULT_ACCOUNT, amountCents, { source: 'fineract', sourceAccountId, journalId: journal.resourceId });
+        return { sourceType, sourceAccountId, journalId: journal.resourceId };
       }
       default:
-        throw new Error(`Unsupported source type: ${sourceType}`);
+        throw new Error(`Unsupported source type for funding: ${sourceType}`);
+    }
+  }
+
+  /**
+   * Reverse a source-to-treasury sweep when the payment fails or is cancelled.
+   */
+  static async _refundSourceFromTreasury({ sourceType, sourceAccountId, payment, sourceRef }) {
+    const amountCents = Number(payment.total_cents);
+    const cfg = getConfig();
+    await TreasuryEngine.debit(DEFAULT_ACCOUNT, amountCents, { reason: `Refund source for ${payment.id}`, source: sourceType });
+    switch (sourceType) {
+      case 'cash': {
+        if (!CashEngine) throw new Error('CashEngine not available');
+        const holdingAccount = sourceRef.holdingAccount || cfg.cashHoldingAccount || 'STABLECOIN_CASH_HOLD';
+        await CashEngine.transfer({
+          fromAccountId: holdingAccount,
+          toAccountId: sourceAccountId,
+          amountCents,
+          movementType: 'transfer',
+          memo: `Release stablecoin reserve ${payment.id}`,
+          referenceId: payment.id,
+          referenceType: 'stablecoin_payment',
+        });
+        break;
+      }
+      case 'trust':
+      case 'trust_account': {
+        if (!TrustAccountingEngine) throw new Error('TrustAccountingEngine not available');
+        if (sourceRef.journalEntryId) {
+          await TrustAccountingEngine.reverseJournalEntry(sourceRef.journalEntryId, { postedBy: 'stablecoin-gateway' });
+        }
+        break;
+      }
+      case 'bond':
+      case 'fixed_income': {
+        if (!BondEngine) throw new Error('BondEngine not available');
+        if (sourceRef.bondTransactionId) {
+          const amount = amountCents / 100;
+          await BondEngine.receivePrincipal(Number(sourceAccountId), amount);
+        }
+        break;
+      }
+      case 'fineract':
+      case 'core_banking': {
+        if (!FineractClient) throw new Error('FineractClient not available');
+        if (sourceRef.journalId) {
+          const assetGlId = Number(cfg.fineractStablecoinAssetGlId);
+          const sourceGlId = Number(sourceAccountId);
+          if (assetGlId && Number.isFinite(sourceGlId)) {
+            await FineractClient.postJournalEntry({
+              officeId: 1,
+              transactionDate: new Date(),
+              comments: `Reversal of stablecoin funding ${payment.id}`,
+              debits: [{ glAccountId: assetGlId, amount: amountCents / 100 }],
+              credits: [{ glAccountId: sourceGlId, amount: amountCents / 100 }],
+            });
+          }
+        }
+        break;
+      }
+      default:
+        break;
+    }
+    return { refunded: true };
+  }
+
+  static async reserve(payment) {
+    const sourceType = String(payment.source_type || 'treasury').toLowerCase();
+    const sourceAccountId = payment.source_account_id || DEFAULT_ACCOUNT;
+    const amountCents = Number(payment.total_cents);
+
+    if (sourceType === 'treasury') {
+      const { reserveId } = await TreasuryEngine.hold(payment.id, sourceAccountId, amountCents);
+      return { sourceType, sourceAccountId, reserveId };
+    }
+
+    const funding = await SourceOfFundsAdapter._fundSourceToTreasury({ sourceType, sourceAccountId, paymentId: payment.id, amountCents });
+    try {
+      const { reserveId } = await TreasuryEngine.hold(payment.id, DEFAULT_ACCOUNT, amountCents);
+      return { sourceType, sourceAccountId, reserveId, ...funding };
+    } catch (err) {
+      // Rollback the source sweep if we cannot hold in treasury
+      try { await SourceOfFundsAdapter._refundSourceFromTreasury({ sourceType, sourceAccountId, payment, sourceRef: funding }); } catch (e) { console.warn('[SourceOfFundsAdapter] rollback failed:', e.message); }
+      throw err;
     }
   }
 
@@ -134,19 +252,18 @@ class SourceOfFundsAdapter {
     const sourceAccountId = payment.source_account_id || DEFAULT_ACCOUNT;
     const sourceRef = payment.source_ref || {};
     const amountCents = Number(settledAmountCents || payment.amount_cents);
+    const cfg = getConfig();
+
+    if (payment.reserve_id) {
+      await TreasuryEngine.post(payment.reserve_id, txHash, { settledAmountCents: amountCents });
+    }
 
     switch (sourceType) {
-      case 'treasury': {
-        if (payment.reserve_id) {
-          const result = await TreasuryEngine.post(payment.reserve_id, txHash, { settledAmountCents: amountCents });
-          return { sourceType, sourceAccountId, ...result };
-        }
+      case 'treasury':
         return { sourceType, sourceAccountId, posted: true };
-      }
       case 'cash': {
         if (!CashEngine) throw new Error('CashEngine not available');
         if (!sourceRef.movementId) throw new Error('Cash source has no reserve movement; approve before settling');
-        const cfg = getConfig();
         const holdingAccount = sourceRef.holdingAccount || cfg.cashHoldingAccount || 'STABLECOIN_CASH_HOLD';
         if (cfg.cashSettlementAccount) {
           const movement = await CashEngine.transfer({
@@ -160,66 +277,17 @@ class SourceOfFundsAdapter {
           });
           return { sourceType, sourceAccountId, movementId: movement.movement_id, posted: true };
         }
-        if (sourceRef.movementId) {
-          return { sourceType, sourceAccountId, movementId: sourceRef.movementId, posted: true };
-        }
-        // Fallback: move from holding back to source if no settlement account configured (should not reach here after reserve)
-        const movement = await CashEngine.transfer({
-          fromAccountId: holdingAccount,
-          toAccountId: sourceAccountId,
-          amountCents,
-          movementType: 'withdrawal',
-          memo: `Stablecoin settlement ${payment.id} ${txHash || ''}`,
-          referenceId: payment.id,
-          referenceType: 'stablecoin_payment',
-        });
-        return { sourceType, sourceAccountId, movementId: movement.movement_id, posted: true };
+        return { sourceType, sourceAccountId, movementId: sourceRef.movementId, posted: true };
       }
       case 'trust':
-      case 'trust_account': {
-        if (!TrustAccountingEngine) throw new Error('TrustAccountingEngine not available');
-        const cfg = getConfig();
-        const journal = await TrustAccountingEngine.postJournalEntry({
-          entryDate: new Date(),
-          description: `Stablecoin settlement ${payment.id} ${txHash || ''}`,
-          referenceType: 'stablecoin_payment',
-          referenceId: payment.id,
-          postedBy: 'stablecoin-gateway',
-          postToFineract: false,
-          lines: [
-            { accountCode: cfg.stablecoinAssetAccount || '1210', debitAmount: amountCents / 100, creditAmount: 0, memo: 'Stablecoin asset received' },
-            { accountCode: sourceAccountId, debitAmount: 0, creditAmount: amountCents / 100, memo: 'Source account debited' },
-          ],
-        });
-        return { sourceType, sourceAccountId, journalEntryId: journal.entry_id, posted: true };
-      }
+      case 'trust_account':
+        return { sourceType, sourceAccountId, journalEntryId: sourceRef.journalEntryId, posted: true };
       case 'bond':
-      case 'fixed_income': {
-        if (!BondEngine) throw new Error('BondEngine not available');
-        const bond = await BondEngine.getBond(sourceAccountId);
-        if (!bond) throw new Error(`Bond not found: ${sourceAccountId}`);
-        const amount = amountCents / 100;
-        await BondEngine.payPrincipal(Number(sourceAccountId), amount);
-        const newPrincipal = Math.max(0, Number(bond.principal_balance || 0) - amount);
-        return { sourceType, sourceAccountId, posted: true, newPrincipalCents: toCents(newPrincipal) };
-      }
+      case 'fixed_income':
+        return { sourceType, sourceAccountId, bondTransactionId: sourceRef.bondTransactionId, posted: true, newPrincipalCents: sourceRef.newPrincipalCents };
       case 'fineract':
-      case 'core_banking': {
-        if (!FineractClient) throw new Error('FineractClient not available');
-        const cfg = getConfig();
-        const assetGlId = Number(cfg.fineractStablecoinAssetGlId);
-        const sourceGlId = Number(sourceAccountId);
-        if (!assetGlId) throw new Error('STABLECOIN_FINERACT_ASSET_GL_ID is required for Fineract source-of-funds');
-        if (!Number.isFinite(sourceGlId)) throw new Error(`Invalid Fineract GL account id: ${sourceAccountId}`);
-        const journal = await FineractClient.postJournalEntry({
-          officeId: 1,
-          transactionDate: new Date(),
-          comments: `Stablecoin settlement ${payment.id} ${txHash || ''}`,
-          debits: [{ glAccountId: assetGlId, amount: amountCents / 100 }],
-          credits: [{ glAccountId: sourceGlId, amount: amountCents / 100 }],
-        });
-        return { sourceType, sourceAccountId, journalId: journal.resourceId, posted: true };
-      }
+      case 'core_banking':
+        return { sourceType, sourceAccountId, journalId: sourceRef.journalId, posted: true };
       default:
         return { sourceType, sourceAccountId, posted: false };
     }
@@ -230,30 +298,16 @@ class SourceOfFundsAdapter {
     const sourceAccountId = payment.source_account_id || DEFAULT_ACCOUNT;
     const sourceRef = payment.source_ref || {};
 
-    switch (sourceType) {
-      case 'treasury': {
-        if (payment.reserve_id) await TreasuryEngine.release(payment.reserve_id, 'payment failed or cancelled');
-        return { released: true };
-      }
-      case 'cash': {
-        if (!CashEngine) throw new Error('CashEngine not available');
-        if (sourceRef.movementId && sourceRef.holdingAccount) {
-          const amountCents = Number(payment.total_cents);
-          await CashEngine.transfer({
-            fromAccountId: sourceRef.holdingAccount,
-            toAccountId: sourceAccountId,
-            amountCents,
-            movementType: 'transfer',
-            memo: `Release stablecoin reserve ${payment.id}`,
-            referenceId: payment.id,
-            referenceType: 'stablecoin_payment',
-          });
-        }
-        return { released: true };
-      }
-      default:
-        return { released: true };
+    if (payment.reserve_id) {
+      await TreasuryEngine.release(payment.reserve_id, 'payment failed or cancelled');
     }
+
+    if (sourceType === 'treasury') {
+      return { released: true };
+    }
+
+    await SourceOfFundsAdapter._refundSourceFromTreasury({ sourceType, sourceAccountId, payment, sourceRef });
+    return { released: true };
   }
 
   static async recordCrmAndDocuments(payment, txHash) {
