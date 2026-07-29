@@ -6612,7 +6612,6 @@
       if (health && health.data) {
         const h = health.data;
         el('ofx-readiness').innerHTML = h.ready ? '<span class="badge badge-active">Ready</span>' : '<span class="badge badge-error">Not Ready</span>';
-        el('ofx-inst-count').textContent = h.institutionCount != null ? h.institutionCount : '—';
       } else {
         el('ofx-readiness').innerHTML = '<span class="badge badge-error">Unavailable</span>';
       }
