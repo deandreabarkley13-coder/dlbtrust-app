@@ -194,7 +194,11 @@ class StablecoinGateway {
   static async approvePayment(id, accountId = DEFAULT_ACCOUNT) {
     const payment = await StablecoinGateway.getPayment(id);
     if (payment.status !== 'pending') throw new Error(`Cannot approve payment in ${payment.status} status`);
-    if (accountId) payment.source_account_id = accountId;
+    // Only override the source account for treasury payments; non-treasury sources
+    // keep the account they were created with so the real balance can be swept.
+    if (accountId && (payment.source_type === 'treasury' || payment.source_type === undefined || payment.source_type === null)) {
+      payment.source_account_id = accountId;
+    }
     const reserve = await SourceOfFundsAdapter.reserve(payment);
     payment.status = 'approved';
     payment.source_ref = reserve;

@@ -138,6 +138,42 @@ class TreasuryEngine {
     });
   }
 
+  static async debit(accountId, amountCents, { reason = '', source = '' } = {}) {
+    if (amountCents <= 0) throw new Error('debit amount must be positive');
+    return withFallback(async () => {
+      return withClient(async (client) => {
+        await client.query('BEGIN');
+        try {
+          const pos = await client.query('SELECT * FROM stablecoin_treasury_accounts WHERE account_id = $1 FOR UPDATE', [accountId]);
+          if (!pos.rows.length) throw new Error(`Treasury account not found: ${accountId}`);
+          const a = pos.rows[0];
+          const available = Number(a.available_cents);
+          if (available < amountCents) throw new Error(`Insufficient treasury available balance: ${available} < ${amountCents}`);
+          await client.query(`
+            UPDATE stablecoin_treasury_accounts
+            SET balance_cents = balance_cents - $2,
+                available_cents = available_cents - $2,
+                metadata = jsonb_set(metadata, '{debits}', COALESCE(metadata->'debits','[]'::jsonb) || $3::jsonb),
+                updated_at = NOW()
+            WHERE account_id = $1
+          `, [accountId, amountCents, JSON.stringify([{ amount: amountCents, reason, source, at: new Date().toISOString() }])]);
+          await client.query('COMMIT');
+        } catch (e) {
+          await client.query('ROLLBACK');
+          throw e;
+        }
+        return TreasuryEngine.getPosition(accountId);
+      });
+    }, async () => {
+      const a = await TreasuryEngine.getOrCreateAccount(accountId);
+      const available = BigInt(a.available_cents);
+      if (available < BigInt(amountCents)) throw new Error('Insufficient treasury available balance');
+      a.balance_cents = BigInt(a.balance_cents) - BigInt(amountCents);
+      a.available_cents = available - BigInt(amountCents);
+      return TreasuryEngine.getPosition(accountId);
+    });
+  }
+
   static async hold(paymentId, accountId, amountCents) {
     if (amountCents <= 0) throw new Error('hold amount must be positive');
     const reserveId = `RES-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;

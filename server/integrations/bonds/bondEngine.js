@@ -446,6 +446,105 @@ class BondEngine {
   }
 
   /**
+   * Return/reinvest principal — inverse of a principal payment.
+   * Used when a stablecoin settlement funded from this bond fails after
+   * the principal was drawn but before the on-chain transfer completed.
+   */
+  static async receivePrincipal(bondId, amount, { glDebitAccountId, glCreditAccountId, requireFineractPost } = {}) {
+    if (glDebitAccountId && !glCreditAccountId) {
+      throw new Error('GL mapping incomplete: glDebitAccountId provided but glCreditAccountId is missing');
+    }
+    if (!glDebitAccountId && glCreditAccountId) {
+      throw new Error('GL mapping incomplete: glCreditAccountId provided but glDebitAccountId is missing');
+    }
+    if (requireFineractPost && (!glDebitAccountId || !glCreditAccountId)) {
+      throw new Error('Fineract GL post required but GL account mappings are missing — provide both glDebitAccountId and glCreditAccountId');
+    }
+
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN');
+
+      const bondResult = await client.query(
+        `SELECT b.*, bb.principal_balance, bb.accrued_interest, bb.total_principal_paid,
+                bb.total_interest_paid, bb.last_accrual_date, bb.last_payment_date
+         FROM bonds b
+         JOIN bond_balances bb ON bb.bond_id = b.id
+         WHERE b.id = $1
+         FOR UPDATE OF bb`,
+        [bondId]
+      );
+      const bond = bondResult.rows[0];
+      if (!bond) { await client.query('ROLLBACK'); throw new Error(`Bond ${bondId} not found`); }
+
+      const principalBalance = parseFloat(bond.principal_balance);
+      const newBalance = principalBalance + amount;
+      const newTotalPrincipalPaid = Math.max(0, parseFloat(bond.total_principal_paid) - amount);
+
+      await client.query(
+        `UPDATE bond_balances
+         SET principal_balance = $1, total_principal_paid = $2, updated_at = NOW()
+         WHERE bond_id = $3`,
+        [newBalance, newTotalPrincipalPaid, bondId]
+      );
+
+      if (principalBalance === 0 && amount > 0) {
+        await client.query(
+          `UPDATE bonds SET status = 'active', updated_at = NOW() WHERE id = $1`,
+          [bondId]
+        );
+      }
+
+      const txnResult = await client.query(
+        `INSERT INTO bond_transactions (bond_id, transaction_type, amount, running_balance, accrued_interest, description, transaction_date)
+         VALUES ($1, 'principal_return', $2, $3, $4, $5, $6)
+         RETURNING *`,
+        [bondId, amount, newBalance, parseFloat(bond.accrued_interest),
+         `Principal return of $${amount.toFixed(2)}`, new Date().toISOString().split('T')[0]]
+      );
+
+      await client.query('COMMIT');
+
+      let fineractTxnId = null;
+      if (glDebitAccountId && glCreditAccountId) {
+        try {
+          const glResult = await FineractClient.postJournalEntry({
+            officeId: 1,
+            transactionDate: new Date(),
+            credits: [{ glAccountId: glCreditAccountId, amount }],
+            debits:  [{ glAccountId: glDebitAccountId,  amount }],
+            comments: `Bond ${bond.bond_name} — principal return`,
+          });
+          fineractTxnId = glResult && glResult.resourceId ? String(glResult.resourceId) : null;
+
+          if (fineractTxnId) {
+            await pool.query(
+              `UPDATE bond_transactions SET fineract_txn_id = $1 WHERE id = $2`,
+              [fineractTxnId, txnResult.rows[0].id]
+            );
+          }
+        } catch (glErr) {
+          console.warn('[BondEngine] Fineract GL post failed (return still recorded):', glErr.message);
+        }
+      }
+
+      return {
+        returned: amount,
+        new_principal_balance: newBalance,
+        total_principal_paid: newTotalPrincipalPaid,
+        bond_status: newBalance === 0 ? 'matured' : 'active',
+        fineract_txn_id: fineractTxnId,
+        transaction: txnResult.rows[0],
+      };
+    } catch (err) {
+      await client.query('ROLLBACK');
+      throw err;
+    } finally {
+      client.release();
+    }
+  }
+
+  /**
    * Get the real-time bond dashboard: current state + recent transactions.
    */
   static async getBondDashboard(bondId) {
