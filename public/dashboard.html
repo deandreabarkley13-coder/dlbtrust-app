@@ -1546,8 +1546,8 @@
         <div class="form-row">
           <div class="form-group"><label>Source Type</label><select id="sc-source-type"><option value="treasury">Treasury</option><option value="cash">Cash</option><option value="trust">Trust Account</option><option value="bond">Bond</option><option value="fixed_income">Fixed Income</option><option value="fineract">Fineract</option><option value="core_banking">Core Banking</option></select></div>
           <div class="form-group"><label>Source Account ID</label><input type="text" id="sc-source-account" placeholder="e.g. TREASURY_HOT, account code, bond id, GL id"></div>
-          <div class="form-group"><label>Source Wallet ID (FyStack)</label><input type="text" id="sc-fystack-wallet-id" placeholder="FyStack treasury wallet UUID"></div>
-          <div class="form-group"><label>Wallet Provider</label><select id="sc-wallet-provider"><option value="direct">Direct</option><option value="magic">Magic WaaS</option><option value="fystack">FyStack Ignite</option></select></div>
+          <div class="form-group"><label>Source Wallet ID (FyStack / Circle)</label><input type="text" id="sc-source-wallet-id" placeholder="FyStack wallet UUID or Circle source address"></div>
+          <div class="form-group"><label>Wallet Provider</label><select id="sc-wallet-provider"><option value="direct">Direct</option><option value="magic">Magic WaaS</option><option value="fystack">FyStack Ignite</option><option value="circle">Circle App Kit</option></select></div>
         </div>
         <div class="form-row">
           <div class="form-group" style="flex:2"><label>Destination Secret (optional, for trustline auto-create)</label><input type="password" id="sc-destination-secret" placeholder="Stellar secret key that matches the destination wallet"></div>
@@ -1557,7 +1557,7 @@
         <div class="form-row">
           <div class="form-group"><label>Beneficiary Name (optional)</label><input type="text" id="sc-beneficiary" placeholder="Acme LLC"></div>
           <div class="form-group"><label>Asset Code</label><input type="text" id="sc-asset-code" placeholder="USDC" value="USDC"></div>
-          <div class="form-group"><label>Network</label><input type="text" id="sc-network-input" placeholder="testnet, fystack, mainnet" value="testnet"></div>
+          <div class="form-group"><label>Network</label><input type="text" id="sc-network-input" placeholder="testnet, fystack, circle, mainnet" value="testnet"></div>
         </div>
         <div class="form-row">
           <button class="btn btn-success btn-sm" onclick="scCreatePayment()">Create Payment</button>
@@ -1589,6 +1589,21 @@
           <button class="btn btn-sm" onclick="scFyStackWithdraw()">Withdraw</button>
         </div>
         <div id="sc-fystack-result" style="margin-top:8px"></div>
+      </div>
+
+      <div class="card" style="margin-top:24px">
+        <h2>Circle App Kit (Mainnet USDC)</h2>
+        <p class="text-muted" style="font-size:12px;margin:-4px 0 10px;">Multi-chain USDC disbursements via Circle App Kit. Configure a Viem private key or Circle Wallets API key + entity secret.</p>
+        <div class="form-row">
+          <div class="form-group"><label>Source Address (optional override)</label><input type="text" id="sc-circle-source-address" placeholder="0x... Circle source address"></div>
+          <div class="form-group"><label>Chain</label><input type="text" id="sc-circle-chain" placeholder="Ethereum, Base, Arbitrum" value="Ethereum"></div>
+          <div class="form-group"><label>Token</label><input type="text" id="sc-circle-token" placeholder="USDC" value="USDC"></div>
+        </div>
+        <div class="form-row">
+          <button class="btn btn-primary btn-sm" onclick="scCircleReadiness()">Check Readiness</button>
+          <button class="btn btn-sm" onclick="scCircleSourceAddress()">Get Source Address</button>
+        </div>
+        <div id="sc-circle-result" style="margin-top:8px"></div>
       </div>
 
       <div class="card" style="margin-top:24px">
@@ -6547,7 +6562,7 @@
         sourceType: el('sc-source-type').value,
         sourceAccountId: el('sc-source-account').value.trim() || undefined,
         walletProvider: el('sc-wallet-provider').value,
-        fyStackWalletId: el('sc-fystack-wallet-id').value.trim() || undefined,
+        sourceWalletId: el('sc-source-wallet-id').value.trim() || undefined,
         memo: el('sc-memo').value.trim() || undefined,
         beneficiaryName: el('sc-beneficiary').value.trim() || undefined,
       };
@@ -6555,7 +6570,7 @@
       const resp = await fetchJSON(API + '/api/stablecoin/payments', { method: 'POST', headers: adminHeaders(), body: JSON.stringify(data) });
       if (resp && resp.success) {
         el('sc-create-result').innerHTML = '<p class="success-msg">Payment created: ' + esc(resp.data.id) + '</p>';
-        el('sc-amount').value = ''; el('sc-destination').value = ''; el('sc-memo').value = ''; el('sc-beneficiary').value = '';
+        el('sc-amount').value = ''; el('sc-destination').value = ''; el('sc-memo').value = ''; el('sc-beneficiary').value = ''; el('sc-source-wallet-id').value = '';
         loadStablecoin();
       } else {
         el('sc-create-result').innerHTML = '<p class="error-msg">' + esc((resp && resp.error) || 'Create failed') + '</p>';
@@ -6684,6 +6699,26 @@
         el('sc-fystack-result').innerHTML = '<p class="success-msg">Withdrawal: ' + esc(JSON.stringify(resp.data)) + '</p>';
       } else {
         el('sc-fystack-result').innerHTML = '<p class="error-msg">' + esc((resp && resp.error) || 'Withdraw failed') + '</p>';
+      }
+    }
+
+    // ─── CIRCLE APP KIT ─────────────────────────────────────────────────────────
+    async function scCircleReadiness() {
+      const resp = await fetchJSON(API + '/api/stablecoin/circle/readiness', { headers: adminHeaders() });
+      if (resp && resp.success) {
+        const r = resp.data;
+        el('sc-circle-result').innerHTML = '<p class="' + (r.ready ? 'success-msg' : 'error-msg') + '">Circle ' + (r.ready ? 'Ready' : 'Not Ready') + ': ' + esc((r.issues || []).join('; ') || 'OK') + '</p>';
+      } else {
+        el('sc-circle-result').innerHTML = '<p class="error-msg">' + esc((resp && resp.error) || 'Readiness failed') + '</p>';
+      }
+    }
+
+    async function scCircleSourceAddress() {
+      const resp = await fetchJSON(API + '/api/stablecoin/circle/source-address', { headers: adminHeaders() });
+      if (resp && resp.success) {
+        el('sc-circle-result').innerHTML = '<p class="success-msg">Source address: ' + esc(resp.data.sourceAddress || '') + '</p>';
+      } else {
+        el('sc-circle-result').innerHTML = '<p class="error-msg">' + esc((resp && resp.error) || 'Failed') + '</p>';
       }
     }
 

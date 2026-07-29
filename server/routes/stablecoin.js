@@ -1,7 +1,7 @@
 'use strict';
 
 const express = require('express');
-const { StablecoinGateway, TreasuryEngine, BlockchainEngine, FyStackEngine, MagicWalletService, Wso2ApiManager, SourceOfFundsAdapter, DEFAULT_ACCOUNT } = require('../integrations/stablecoin');
+const { StablecoinGateway, TreasuryEngine, BlockchainEngine, FyStackEngine, CircleKitEngine, MagicWalletService, Wso2ApiManager, SourceOfFundsAdapter, DEFAULT_ACCOUNT } = require('../integrations/stablecoin');
 const { HollaExClient } = require('../integrations/hollaex/hollaExClient');
 const { requireAuth, writeRateLimiter } = require('../integrations/auth/securityMiddleware');
 
@@ -175,6 +175,21 @@ router.post('/fystack/sweep-tasks', operatorAuth, writeRateLimiter(), async (req
   try {
     const data = await new FyStackEngine().createSweepTask(req.body.workspaceId, req.body);
     res.json({ success: true, data });
+  } catch (err) { sendError(res, err); }
+});
+
+// Circle App Kit stablecoin rail
+router.get('/circle/readiness', operatorAuth, async (req, res) => {
+  try {
+    const data = await new CircleKitEngine().readiness();
+    res.status(data.ready ? 200 : 503).json({ success: data.ready, data });
+  } catch (err) { sendError(res, err); }
+});
+
+router.get('/circle/source-address', operatorAuth, async (req, res) => {
+  try {
+    const data = await new CircleKitEngine().getSourceAddress();
+    res.json({ success: true, data: { sourceAddress: data } });
   } catch (err) { sendError(res, err); }
 });
 
