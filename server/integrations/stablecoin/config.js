@@ -5,11 +5,16 @@
  */
 
 const MODES = new Set(['disabled', 'shadow', 'testnet', 'mainnet']);
-const NETWORKS = new Set(['testnet', 'public', 'mainnet', 'custom', 'fystack']);
+const NETWORKS = new Set(['testnet', 'public', 'mainnet', 'custom', 'fystack', 'circle']);
 
 function isFyStackNetwork(network) {
   const n = String(network || '').toLowerCase();
   return n === 'fystack' || n.startsWith('fystack-');
+}
+
+function isCircleNetwork(network) {
+  const n = String(network || '').toLowerCase();
+  return n === 'circle' || n.startsWith('circle-');
 }
 
 function bool(name, fallback = false) {
@@ -67,6 +72,18 @@ function getConfig() {
     fyStackAddressType: str('FYSTACK_ADDRESS_TYPE', 'evm'),
     fyStackExplorerTx: str('FYSTACK_EXPLORER_TX', ''),
     fyStackShadow: bool('FYSTACK_SHADOW', false),
+    // Circle App Kit mainnet stablecoin rail
+    circleEnabled: bool('CIRCLE_ENABLED', false),
+    circleKitKey: str('CIRCLE_KIT_KEY', ''),
+    circleAdapterType: str('CIRCLE_ADAPTER_TYPE', 'viem'),
+    circlePrivateKey: str('CIRCLE_PRIVATE_KEY', ''),
+    circleApiKey: str('CIRCLE_API_KEY', ''),
+    circleEntitySecret: str('CIRCLE_ENTITY_SECRET', ''),
+    circleSourceAddress: str('CIRCLE_SOURCE_ADDRESS', ''),
+    circleChain: str('CIRCLE_CHAIN', 'Ethereum'),
+    circleToken: str('CIRCLE_TOKEN', 'USDC'),
+    circleExplorerTx: str('CIRCLE_EXPLORER_TX', ''),
+    circleShadow: bool('CIRCLE_SHADOW', false),
     // Source-of-funds mappings
     cashHoldingAccount: str('STABLECOIN_CASH_HOLDING_ACCOUNT', 'STABLECOIN_CASH_HOLD'),
     cashSettlementAccount: str('STABLECOIN_CASH_SETTLEMENT_ACCOUNT', ''),
@@ -81,10 +98,10 @@ function isProduction(cfg) {
 
 function redact(cfg) {
   const copy = { ...cfg };
-  ['issuerSecret', 'distributorSecret', 'magicSecretKey', 'wso2ClientSecret', 'fyStackApiSecret'].forEach((k) => {
+  ['issuerSecret', 'distributorSecret', 'magicSecretKey', 'wso2ClientSecret', 'fyStackApiSecret', 'circlePrivateKey', 'circleApiKey', 'circleEntitySecret', 'circleKitKey'].forEach((k) => {
     if (copy[k]) copy[k] = '***';
   });
   return copy;
 }
 
-module.exports = { getConfig, isProduction, redact, isFyStackNetwork, MODES, NETWORKS };
+module.exports = { getConfig, isProduction, redact, isFyStackNetwork, isCircleNetwork, MODES, NETWORKS };

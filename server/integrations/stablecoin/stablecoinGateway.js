@@ -9,10 +9,11 @@
 let pool;
 try { pool = require('../bonds/pgPool'); } catch (e) { pool = null; }
 
-const { getConfig, isProduction, isFyStackNetwork } = require('./config');
+const { getConfig, isProduction, isFyStackNetwork, isCircleNetwork } = require('./config');
 const { TreasuryEngine, DEFAULT_ACCOUNT } = require('./treasuryEngine');
 const { BlockchainEngine } = require('./blockchainEngine');
 const { FyStackEngine } = require('./fystackEngine');
+const { CircleKitEngine } = require('./circleKitEngine');
 const { MagicWalletService } = require('./magicWalletService');
 const { SourceOfFundsAdapter } = require('./sourceOfFundsAdapter');
 
@@ -87,14 +88,16 @@ class StablecoinGateway {
     const treasury = await TreasuryEngine.getPosition(DEFAULT_ACCOUNT).catch(err => ({ ready: false, error: err.message }));
     const blockchain = await new BlockchainEngine().readiness();
     const fyStack = cfg.fyStackEnabled ? await new FyStackEngine().readiness() : { ready: false, issues: [] };
+    const circle = cfg.circleEnabled ? await new CircleKitEngine().readiness() : { ready: false, issues: [] };
     const magic = new MagicWalletService().readiness();
-    const anyReady = blockchain.ready || fyStack.ready;
+    const anyReady = blockchain.ready || fyStack.ready || circle.ready;
     const issues = [];
     if (!cfg.enabled) issues.push('STABLECOIN_ENABLED is not true');
     if (!anyReady) {
       issues.push('No stablecoin rail is ready');
       if (!blockchain.ready) issues.push(...(blockchain.issues || []));
       if (cfg.fyStackEnabled && !fyStack.ready) issues.push(...(fyStack.issues || []));
+      if (cfg.circleEnabled && !circle.ready) issues.push(...(circle.issues || []));
     }
 
     if (publicHealth) {
@@ -112,6 +115,7 @@ class StablecoinGateway {
       treasury: { ok: typeof treasury.balanceCents === 'number', ...treasury },
       blockchain,
       fyStack,
+      circle,
       magic,
     };
   }
@@ -135,6 +139,8 @@ class StablecoinGateway {
     const quoteNetwork = String(quote.network).toLowerCase();
     if (isFyStackNetwork(quoteNetwork)) {
       if (!cfg.fyStackEnabled) throw new Error('FYSTACK_ENABLED must be true for FyStack stablecoin payments');
+    } else if (isCircleNetwork(quoteNetwork)) {
+      if (!cfg.circleEnabled) throw new Error('CIRCLE_ENABLED must be true for Circle App Kit stablecoin payments');
     } else if (quote.network !== cfg.network) {
       throw new Error(`Payment network ${quote.network} does not match configured stablecoin network ${cfg.network}`);
     }
@@ -161,6 +167,7 @@ class StablecoinGateway {
       metadata: {
         beneficiaryName: input.beneficiaryName || '',
         fyStackWalletId: input.fyStackWalletId || input.sourceWalletId || '',
+        circleSourceAddress: input.circleSourceAddress || input.sourceWalletId || '',
         ...input.metadata,
       },
       reserve_id: null,
@@ -235,7 +242,8 @@ class StablecoinGateway {
     if (payment.status === 'pending') payment = await StablecoinGateway.approvePayment(id, payment.source_account_id);
 
     const isFy = isFyStackNetwork(payment.network);
-    const engine = isFy ? new FyStackEngine() : new BlockchainEngine();
+    const isCircle = isCircleNetwork(payment.network);
+    const engine = isFy ? new FyStackEngine() : isCircle ? new CircleKitEngine() : new BlockchainEngine();
     let result;
     try {
       result = isFy
@@ -245,12 +253,19 @@ class StablecoinGateway {
             memo: memo || payment.memo,
             walletId: payment.metadata && (payment.metadata.fyStackWalletId || payment.metadata.sourceWalletId),
           })
-        : await engine.settle({
-            destination: payment.destination_wallet,
-            amountCents: payment.amount_cents,
-            memo: memo || payment.memo,
-            destinationSecret,
-          });
+        : isCircle
+          ? await engine.settle({
+              destination: payment.destination_wallet,
+              amountCents: payment.amount_cents,
+              memo: memo || payment.memo,
+              walletId: payment.metadata && (payment.metadata.circleSourceAddress || payment.metadata.sourceWalletId || cfg.circleSourceAddress),
+            })
+          : await engine.settle({
+              destination: payment.destination_wallet,
+              amountCents: payment.amount_cents,
+              memo: memo || payment.memo,
+              destinationSecret,
+            });
     } catch (err) {
       await StablecoinGateway.failPayment(id, err.message || 'settlement failed');
       throw err;
@@ -303,8 +318,9 @@ class StablecoinGateway {
     const assetCode = intent.metadata && intent.metadata.asset_code || cfg.assetCode;
     const walletProvider = intent.metadata && intent.metadata.wallet_provider || 'direct';
     if (!destination) throw new Error('Stablecoin intent requires metadata.destination_wallet');
-    if (!isFyStackNetwork(network) && network !== cfg.network) throw new Error(`Payment network ${network} does not match configured stablecoin network ${cfg.network}`);
+    if (!isFyStackNetwork(network) && !isCircleNetwork(network) && network !== cfg.network) throw new Error(`Payment network ${network} does not match configured stablecoin network ${cfg.network}`);
     if (isFyStackNetwork(network) && !cfg.fyStackEnabled) throw new Error('FYSTACK_ENABLED must be true for FyStack stablecoin payments');
+    if (isCircleNetwork(network) && !cfg.circleEnabled) throw new Error('CIRCLE_ENABLED must be true for Circle App Kit stablecoin payments');
     if (String(assetCode).toUpperCase() !== cfg.assetCode.toUpperCase()) throw new Error(`Payment asset ${assetCode} does not match configured asset ${cfg.assetCode}`);
     const sourceType = intent.metadata && intent.metadata.source_type || 'treasury';
     const sourceAccountId = intent.metadata && intent.metadata.source_account_id || DEFAULT_ACCOUNT;
@@ -318,6 +334,7 @@ class StablecoinGateway {
       sourceType,
       sourceAccountId,
       fyStackWalletId: intent.metadata && intent.metadata.fy_stack_wallet_id,
+      circleSourceAddress: intent.metadata && intent.metadata.circle_source_address,
       beneficiaryName: intent.beneficiary_name,
       memo: `PaymentHub ${intent.intent_id}`,
       metadata: { paymentHubIntentId: intent.intent_id, rail: 'stablecoin' },
