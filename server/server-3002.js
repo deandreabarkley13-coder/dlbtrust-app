@@ -72,6 +72,9 @@ console.log('[payment-hub] loaded');
 app.use('/api/stablecoin', require(path.join(HD, 'server', 'routes', 'stablecoin')));
 console.log('[stablecoin] loaded');
 
+// OFX Clearing — statement import and OFX payment origination
+try { app.use('/api/ofx', require(path.join(HD, 'server', 'routes', 'ofx'))); console.log('[ofx] loaded'); } catch(e) { console.warn('[ofx]', e.message); }
+
 // ACH Pipeline — NACHA generation + AS2 transmission
 try { app.use('/api/ach-pipeline', require(path.join(HD, 'server', 'routes', 'achPipeline'))); console.log('[ach-pipeline] loaded'); } catch(e) { console.warn('[ach-pipeline]', e.message); }
 

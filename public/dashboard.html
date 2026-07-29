@@ -236,6 +236,7 @@
     <div class="nav-item" data-page="aggregator"><span class="icon">🔀</span> Banking Aggregator</div>
     <div class="nav-item" data-page="payment-hub"><span class="icon">🏧</span> Payment Hub</div>
     <div class="nav-item" data-page="stablecoin"><span class="icon">🪙</span> Stablecoin Payments</div>
+    <div class="nav-item" data-page="ofx"><span class="icon">🌐</span> OFX Clearing</div>
     <div class="nav-section">Operations</div>
     <div class="nav-item" data-page="crm"><span class="icon">👥</span> CRM & Investors</div>
     <div class="nav-item" data-page="documents"><span class="icon">📄</span> Documents</div>
@@ -1589,6 +1590,100 @@
       </div>
     </div>
 
+    <!-- OFX CLEARING PAGE -->
+    <div id="page-ofx" class="page hidden">
+      <div class="page-header">
+        <div><h1>OFX Clearing</h1><div class="subtitle">Import bank statements and originate OFX trust distributions & disbursements</div></div>
+        <button class="btn btn-primary btn-sm" onclick="loadOFX()">Refresh</button>
+      </div>
+      <div class="grid grid-4" id="ofx-stats">
+        <div class="card"><div class="stat-label">Readiness</div><div class="stat-value" id="ofx-readiness">—</div></div>
+        <div class="card"><div class="stat-label">Institutions</div><div class="stat-value" id="ofx-inst-count">—</div></div>
+        <div class="card"><div class="stat-label">Statements</div><div class="stat-value" id="ofx-stmt-count">—</div></div>
+        <div class="card"><div class="stat-label">Payments</div><div class="stat-value" id="ofx-pay-count">—</div></div>
+      </div>
+
+      <div class="card" style="margin-top:24px">
+        <h2>OFX Institutions</h2>
+        <p class="text-muted" style="font-size:12px;margin:-4px 0 10px;">Configure bank / FI endpoints. Keep mode <strong>simulate</strong> until credentials are verified.</p>
+        <div class="form-row">
+          <div class="form-group"><label>Institution Name</label><input type="text" id="ofx-inst-name" placeholder="Eaton Family CU"></div>
+          <div class="form-group"><label>OFX Org</label><input type="text" id="ofx-inst-org" placeholder="DLB"></div>
+          <div class="form-group"><label>FI ID</label><input type="text" id="ofx-inst-fid" placeholder="12345"></div>
+        </div>
+        <div class="form-row">
+          <div class="form-group"><label>Base URL</label><input type="text" id="ofx-inst-url" placeholder="https://bank.example.com/ofx"></div>
+          <div class="form-group"><label>Username</label><input type="text" id="ofx-inst-user" placeholder="online-banking-user"></div>
+          <div class="form-group"><label>Password</label><input type="password" id="ofx-inst-pass" placeholder="online-banking-password"></div>
+        </div>
+        <div class="form-row">
+          <div class="form-group"><label>Bank ID (Routing/SWIFT)</label><input type="text" id="ofx-inst-bank" placeholder="241075470"></div>
+          <div class="form-group"><label>Account ID</label><input type="text" id="ofx-inst-account" placeholder="account number"></div>
+          <div class="form-group"><label>Account Type</label><select id="ofx-inst-type"><option value="CHECKING">CHECKING</option><option value="SAVINGS">SAVINGS</option><option value="MONEYMRKT">MONEYMRKT</option></select></div>
+        </div>
+        <div class="form-row">
+          <div class="form-group"><label>Mode</label><select id="ofx-inst-mode"><option value="simulate">Simulate</option><option value="live">Live</option></select></div>
+          <div class="form-group"><label>Status</label><select id="ofx-inst-status"><option value="active">Active</option><option value="paused">Paused</option></select></div>
+          <div class="form-group"><label>&nbsp;</label><button class="btn btn-success" style="width:100%" onclick="ofxSaveInstitution()">Save Institution</button></div>
+        </div>
+        <div id="ofx-inst-result" style="margin-top:8px"></div>
+        <div id="ofx-institutions-table" style="margin-top:16px"><p class="text-muted">Loading…</p></div>
+      </div>
+
+      <div class="card" style="margin-top:24px">
+        <h2>Import OFX Statement</h2>
+        <p class="text-muted" style="font-size:12px;margin:-4px 0 10px;">Paste an OFX/QFX file (2.0 XML or 1.x SGML). Transactions are parsed and stored for reconciliation.</p>
+        <div class="form-row">
+          <div class="form-group"><label>Institution</label><select id="ofx-stmt-inst"><option value="">None / Manual</option></select></div>
+          <div class="form-group" style="flex:3"><label>Statement Source (optional)</label><input type="text" id="ofx-stmt-source" placeholder="DLB-Trust-Checking-Jan2025.ofx"></div>
+        </div>
+        <div class="form-group"><label>OFX File Content</label><textarea id="ofx-stmt-content" rows="8" style="width:100%;font-family:monospace;font-size:11px" placeholder="Paste OFX content here..."></textarea></div>
+        <div class="form-row">
+          <button class="btn btn-primary btn-sm" onclick="ofxParseOnly()">Parse Preview</button>
+          <button class="btn btn-success btn-sm" onclick="ofxImportStatement()">Import Statement</button>
+        </div>
+        <div id="ofx-stmt-preview" style="margin-top:8px"></div>
+        <div id="ofx-stmt-result" style="margin-top:8px"></div>
+      </div>
+
+      <div class="card" style="margin-top:24px">
+        <h2>Create OFX Payment</h2>
+        <p class="text-muted" style="font-size:12px;margin:-4px 0 10px;">Originate a bill pay, wire, or bank transfer OFX request. Simulate mode returns an accepted response without a network call.</p>
+        <div class="form-row">
+          <div class="form-group"><label>Institution</label><select id="ofx-pay-inst"><option value="">Select institution…</option></select></div>
+          <div class="form-group"><label>Payment Type</label><select id="ofx-pay-type"><option value="billpay">Bill Pay</option><option value="wire">Wire Transfer</option><option value="intrabank">Intra-bank Transfer</option><option value="interbank">Inter-bank / ACH Transfer</option></select></div>
+          <div class="form-group"><label>Amount ($)</label><input type="number" step="0.01" id="ofx-pay-amount" placeholder="100.00"></div>
+        </div>
+        <div class="form-row">
+          <div class="form-group"><label>Payee Name</label><input type="text" id="ofx-pay-payee" placeholder="Beneficiary LLC"></div>
+          <div class="form-group"><label>Payee Account</label><input type="text" id="ofx-pay-account" placeholder="account number"></div>
+          <div class="form-group"><label>Payee Bank ID / Routing</label><input type="text" id="ofx-pay-bank" placeholder="241075470"></div>
+        </div>
+        <div class="form-row">
+          <div class="form-group"><label>Address Line 1</label><input type="text" id="ofx-pay-addr1" placeholder="123 Main St"></div>
+          <div class="form-group"><label>City</label><input type="text" id="ofx-pay-city" placeholder="New York"></div>
+          <div class="form-group"><label>State</label><input type="text" id="ofx-pay-state" placeholder="NY"></div>
+        </div>
+        <div class="form-row">
+          <div class="form-group"><label>Postal Code</label><input type="text" id="ofx-pay-postal" placeholder="10001"></div>
+          <div class="form-group"><label>Country</label><input type="text" id="ofx-pay-country" value="USA"></div>
+          <div class="form-group"><label>Due Date</label><input type="date" id="ofx-pay-due" value=""></div>
+        </div>
+        <div class="form-row">
+          <div class="form-group" style="flex:2"><label>Memo / Distribution Note</label><input type="text" id="ofx-pay-memo" placeholder="Trust distribution Q3"></div>
+          <div class="form-group" style="flex:1"><label>Source Account ID</label><input type="text" id="ofx-pay-source-account" placeholder="TREASURY_HOT"></div>
+          <div class="form-group" style="flex:1"><label>Source Type</label><select id="ofx-pay-source-type"><option value="treasury">Treasury</option><option value="cash">Cash</option><option value="trust">Trust</option><option value="fineract">Fineract</option></select></div>
+        </div>
+        <button class="btn btn-success btn-sm" onclick="ofxCreatePayment()">Create Payment</button>
+        <div id="ofx-pay-result" style="margin-top:8px"></div>
+      </div>
+
+      <div class="card" style="margin-top:24px">
+        <h2>OFX Payments</h2>
+        <div id="ofx-payments-table"><p class="text-muted">Loading…</p></div>
+      </div>
+    </div>
+
     <div id="page-nifi" class="page hidden">
       <div class="page-header">
         <div><h1>NiFi File Transfer</h1><div class="subtitle">Automated server-to-server payment file generation, staging, and transfer via Apache NiFi</div></div>
@@ -2462,7 +2557,7 @@
         document.querySelectorAll('.page').forEach(p => p.classList.add('hidden'));
         document.getElementById('page-' + page).classList.remove('hidden');
         // Load data for page
-        const loaders = { overview: loadOverview, bonds: loadBonds, cash: loadCash, payments: loadPayments, ach: loadACH, wire: loadWire, partners: loadPartners, apikeys: loadApiKeys, as2: loadAS2, aggregator: loadAggregator, 'payment-hub': loadPaymentHub, stablecoin: loadStablecoin, crm: loadCRM, documents: loadDocuments, accounting: loadAccounting, tax: loadTax, fineract: loadFineract, bill: loadBill, 'trustee-agent': loadTrusteeAgent, 'bookkeeping-agent': loadBookkeepingAgent, 'data-bridge': loadDataBridge, 'sub-ledgers': loadSubLedgers, 'vendor-payments': loadVendorPayments, 'electronic-settlement': loadElectronicSettlement, nifi: loadNiFi, 'hce-payments': loadHCE, settings: loadSettings, security: loadSecurity, backup: loadBackupPage, admin: loadAdmin };
+        const loaders = { overview: loadOverview, bonds: loadBonds, cash: loadCash, payments: loadPayments, ach: loadACH, wire: loadWire, partners: loadPartners, apikeys: loadApiKeys, as2: loadAS2, aggregator: loadAggregator, 'payment-hub': loadPaymentHub, stablecoin: loadStablecoin, ofx: loadOFX, crm: loadCRM, documents: loadDocuments, accounting: loadAccounting, tax: loadTax, fineract: loadFineract, bill: loadBill, 'trustee-agent': loadTrusteeAgent, 'bookkeeping-agent': loadBookkeepingAgent, 'data-bridge': loadDataBridge, 'sub-ledgers': loadSubLedgers, 'vendor-payments': loadVendorPayments, 'electronic-settlement': loadElectronicSettlement, nifi: loadNiFi, 'hce-payments': loadHCE, settings: loadSettings, security: loadSecurity, backup: loadBackupPage, admin: loadAdmin };
         if (loaders[page]) loaders[page]();
       });
     });
@@ -6502,6 +6597,196 @@
       } else {
         el('sc-convert-readiness').innerHTML = '<p class="error-msg">' + esc((resp && resp.error) || 'Readiness check failed') + '</p>';
       }
+    }
+
+    // ─── OFX CLEARING ───────────────────────────────────────────────────────────
+    let ofxInstitutions = [];
+
+    async function loadOFX() {
+      const [health, inst, stmts, payments] = await Promise.all([
+        fetchJSON(API + '/api/ofx/health', { headers: adminHeaders() }),
+        fetchJSON(API + '/api/ofx/institutions', { headers: adminHeaders() }),
+        fetchJSON(API + '/api/ofx/statements', { headers: adminHeaders() }),
+        fetchJSON(API + '/api/ofx/payments', { headers: adminHeaders() }),
+      ]);
+      if (health && health.data) {
+        const h = health.data;
+        el('ofx-readiness').innerHTML = h.ready ? '<span class="badge badge-active">Ready</span>' : '<span class="badge badge-error">Not Ready</span>';
+        el('ofx-inst-count').textContent = h.institutionCount != null ? h.institutionCount : '—';
+      } else {
+        el('ofx-readiness').innerHTML = '<span class="badge badge-error">Unavailable</span>';
+      }
+      ofxInstitutions = (inst && inst.success && inst.data) || [];
+      el('ofx-inst-count').textContent = ofxInstitutions.length;
+      el('ofx-stmt-count').textContent = ((stmts && stmts.success && stmts.data) || []).length;
+      el('ofx-pay-count').textContent = ((payments && payments.success && payments.data) || []).length;
+      renderOfxInstitutions(ofxInstitutions);
+      populateOfxSelects(ofxInstitutions);
+      renderOfxPayments((payments && payments.success && payments.data) || []);
+    }
+
+    function populateOfxSelects(list) {
+      let opts = '<option value="">Select institution…</option>';
+      let stmtOpts = '<option value="">None / Manual</option>';
+      for (const i of list) {
+        const label = esc(i.name + ' (' + (i.mode || 'simulate') + ')');
+        opts += '<option value="' + esc(String(i.id)) + '">' + label + '</option>';
+        stmtOpts += '<option value="' + esc(String(i.id)) + '">' + label + '</option>';
+      }
+      el('ofx-pay-inst').innerHTML = opts;
+      el('ofx-stmt-inst').innerHTML = stmtOpts;
+    }
+
+    function renderOfxInstitutions(list) {
+      if (!list.length) { el('ofx-institutions-table').innerHTML = '<p class="text-muted">No OFX institutions configured.</p>'; return; }
+      let h = '<table><thead><tr><th>ID</th><th>Name</th><th>Org/FID</th><th>Account</th><th>Mode</th><th>Status</th><th>Actions</th></tr></thead><tbody>';
+      for (const i of list) {
+        h += '<tr>'
+          + '<td>' + esc(i.id) + '</td>'
+          + '<td>' + esc(i.name) + '</td>'
+          + '<td>' + esc(i.org) + ' / ' + esc(i.fid) + '</td>'
+          + '<td>' + esc(i.bankId) + ' / ' + esc(i.accountId) + '</td>'
+          + '<td>' + esc(i.mode) + '</td>'
+          + '<td>' + esc(i.status) + '</td>'
+          + '<td><button class="btn btn-sm btn-danger" onclick="ofxDeleteInstitution(' + esc(String(i.id)) + ')">Delete</button></td>'
+          + '</tr>';
+      }
+      el('ofx-institutions-table').innerHTML = h + '</tbody></table>';
+    }
+
+    function ofxInstitutionPayload() {
+      return {
+        name: el('ofx-inst-name').value.trim(),
+        org: el('ofx-inst-org').value.trim(),
+        fid: el('ofx-inst-fid').value.trim(),
+        baseUrl: el('ofx-inst-url').value.trim(),
+        username: el('ofx-inst-user').value.trim(),
+        password: el('ofx-inst-pass').value,
+        bankId: el('ofx-inst-bank').value.trim(),
+        accountId: el('ofx-inst-account').value.trim(),
+        accountType: el('ofx-inst-type').value,
+        mode: el('ofx-inst-mode').value,
+        status: el('ofx-inst-status').value,
+      };
+    }
+
+    async function ofxSaveInstitution() {
+      const data = ofxInstitutionPayload();
+      if (!data.name || !data.bankId || !data.accountId) { el('ofx-inst-result').innerHTML = '<p class="error-msg">Name, Bank ID and Account ID are required</p>'; return; }
+      const resp = await fetchJSON(API + '/api/ofx/institutions', { method: 'POST', headers: adminHeaders(), body: JSON.stringify(data) });
+      if (resp && resp.success) {
+        el('ofx-inst-result').innerHTML = '<p class="success-msg">Institution saved: ' + esc(resp.data.id) + '</p>';
+        loadOFX();
+      } else {
+        el('ofx-inst-result').innerHTML = '<p class="error-msg">' + esc((resp && resp.error) || 'Save failed') + '</p>';
+      }
+    }
+
+    async function ofxDeleteInstitution(id) {
+      if (!confirm('Delete institution ' + id + '?')) return;
+      const resp = await fetchJSON(API + '/api/ofx/institutions/' + encodeURIComponent(id), { method: 'DELETE', headers: adminHeaders() });
+      if (resp && resp.success) { loadOFX(); } else { alert('Delete failed: ' + ((resp && resp.error) || 'unknown')); }
+    }
+
+    async function ofxParseOnly() {
+      const content = el('ofx-stmt-content').value.trim();
+      if (!content) { el('ofx-stmt-preview').innerHTML = '<p class="error-msg">Paste OFX content first</p>'; return; }
+      const resp = await fetchJSON(API + '/api/ofx/parse', { method: 'POST', headers: adminHeaders(), body: JSON.stringify({ content }) });
+      if (resp && resp.success) {
+        const d = resp.data;
+        let html = '<p class="success-msg">Parsed ' + d.transactions.length + ' transactions. Account ' + esc(d.account.ACCTID) + ' / ' + esc(d.currency) + ' Balance ' + fmtCents(d.ledgerBalanceCents) + '</p>';
+        html += '<table style="margin-top:8px"><thead><tr><th>Date</th><th>Type</th><th>Amount</th><th>Name</th><th>Memo</th></tr></thead><tbody>';
+        for (const t of d.transactions.slice(0, 20)) {
+          html += '<tr><td>' + esc(t.postedAt) + '</td><td>' + esc(t.type) + '</td><td>' + fmtCents(t.amountCents) + '</td><td>' + esc(t.name) + '</td><td>' + esc(t.memo) + '</td></tr>';
+        }
+        html += '</tbody></table>';
+        el('ofx-stmt-preview').innerHTML = html;
+      } else {
+        el('ofx-stmt-preview').innerHTML = '<p class="error-msg">' + esc((resp && resp.error) || 'Parse failed') + '</p>';
+      }
+    }
+
+    async function ofxImportStatement() {
+      const content = el('ofx-stmt-content').value.trim();
+      const institutionId = el('ofx-stmt-inst').value;
+      if (!content) { el('ofx-stmt-result').innerHTML = '<p class="error-msg">Paste OFX content first</p>'; return; }
+      const resp = await fetchJSON(API + '/api/ofx/statements', { method: 'POST', headers: adminHeaders(), body: JSON.stringify({ institutionId, content }) });
+      if (resp && resp.success) {
+        el('ofx-stmt-result').innerHTML = '<p class="success-msg">Statement imported: ID ' + esc(resp.data.statementId) + '</p>';
+        el('ofx-stmt-content').value = '';
+        el('ofx-stmt-preview').innerHTML = '';
+        loadOFX();
+      } else {
+        el('ofx-stmt-result').innerHTML = '<p class="error-msg">' + esc((resp && resp.error) || 'Import failed') + '</p>';
+      }
+    }
+
+    async function ofxCreatePayment() {
+      const amount = Number(el('ofx-pay-amount').value);
+      if (!amount || amount <= 0) { el('ofx-pay-result').innerHTML = '<p class="error-msg">Enter a positive amount</p>'; return; }
+      const data = {
+        institutionId: el('ofx-pay-inst').value,
+        paymentType: el('ofx-pay-type').value,
+        amountCents: Math.round(amount * 100),
+        payeeName: el('ofx-pay-payee').value.trim(),
+        payeeAccount: el('ofx-pay-account').value.trim(),
+        payeeBankId: el('ofx-pay-bank').value.trim(),
+        payeeAddress1: el('ofx-pay-addr1').value.trim(),
+        payeeCity: el('ofx-pay-city').value.trim(),
+        payeeState: el('ofx-pay-state').value.trim(),
+        payeePostal: el('ofx-pay-postal').value.trim(),
+        payeeCountry: el('ofx-pay-country').value.trim() || 'USA',
+        dueDate: el('ofx-pay-due').value || undefined,
+        memo: el('ofx-pay-memo').value.trim() || undefined,
+        sourceAccountId: el('ofx-pay-source-account').value.trim() || undefined,
+        sourceType: el('ofx-pay-source-type').value,
+      };
+      if (!data.institutionId) { el('ofx-pay-result').innerHTML = '<p class="error-msg">Select an institution</p>'; return; }
+      if (!data.payeeName || !data.payeeAccount || !data.payeeBankId) { el('ofx-pay-result').innerHTML = '<p class="error-msg">Payee name, account and bank ID are required</p>'; return; }
+      const resp = await fetchJSON(API + '/api/ofx/payments', { method: 'POST', headers: adminHeaders(), body: JSON.stringify(data) });
+      if (resp && resp.success) {
+        el('ofx-pay-result').innerHTML = '<p class="success-msg">Payment created: ' + esc(resp.data.id) + ' — <button class="btn btn-sm" onclick="ofxSubmitPayment(' + esc(String(resp.data.id)) + ')">Submit</button></p>';
+        loadOFX();
+      } else {
+        el('ofx-pay-result').innerHTML = '<p class="error-msg">' + esc((resp && resp.error) || 'Create failed') + '</p>';
+      }
+    }
+
+    async function ofxSubmitPayment(id) {
+      const resp = await fetchJSON(API + '/api/ofx/payments/' + encodeURIComponent(id) + '/submit', { method: 'POST', headers: adminHeaders() });
+      if (resp && resp.success) { loadOFX(); } else { alert('Submit failed: ' + ((resp && resp.error) || 'unknown')); }
+    }
+
+    async function ofxCancelPayment(id) {
+      const resp = await fetchJSON(API + '/api/ofx/payments/' + encodeURIComponent(id) + '/cancel', { method: 'POST', headers: adminHeaders() });
+      if (resp && resp.success) { loadOFX(); } else { alert('Cancel failed: ' + ((resp && resp.error) || 'unknown')); }
+    }
+
+    function ofxPaymentActions(p) {
+      if (p.status === 'cancelled') return '<span class="text-muted">Cancelled</span>';
+      if (p.status === 'accepted' || p.status === 'cleared') return '<span class="text-muted">' + esc(p.status) + '</span>';
+      let btns = '';
+      if (p.status === 'pending') btns += '<button class="btn btn-sm btn-success" style="margin-right:6px" onclick="ofxSubmitPayment(' + esc(String(p.id)) + ')">Submit</button>';
+      if (p.status === 'pending' || p.status === 'submitted') btns += '<button class="btn btn-sm btn-danger" onclick="ofxCancelPayment(' + esc(String(p.id)) + ')">Cancel</button>';
+      return btns || '<span class="text-muted">—</span>';
+    }
+
+    function renderOfxPayments(list) {
+      if (!list.length) { el('ofx-payments-table').innerHTML = '<p class="text-muted">No OFX payments yet.</p>'; return; }
+      let h = '<table><thead><tr><th>ID</th><th>Status</th><th>Type</th><th>Amount</th><th>Payee</th><th>Reference</th><th>Created</th><th>Actions</th></tr></thead><tbody>';
+      for (const p of list) {
+        h += '<tr>'
+          + '<td><code style="font-size:11px">' + esc(p.id) + '</code></td>'
+          + '<td>' + esc(p.status) + '</td>'
+          + '<td>' + esc(p.payment_type) + '</td>'
+          + '<td>' + fmtCents(p.amount_cents) + '</td>'
+          + '<td>' + esc(p.payee_name) + '<br><span class="text-muted" style="font-size:11px">' + esc(p.payee_account) + '</span></td>'
+          + '<td><code style="font-size:11px">' + esc(p.reference) + '</code></td>'
+          + '<td>' + shortDate(p.created_at) + '</td>'
+          + '<td>' + ofxPaymentActions(p) + '</td>'
+          + '</tr>';
+      }
+      el('ofx-payments-table').innerHTML = h + '</tbody></table>';
     }
 
     // ─── Init ──────────────────────────────────────────────────────────────────
