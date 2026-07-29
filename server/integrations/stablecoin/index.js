@@ -1,7 +1,8 @@
 'use strict';
 
-const { getConfig } = require('./config');
+const { getConfig, isFyStackNetwork } = require('./config');
 const { BlockchainEngine } = require('./blockchainEngine');
+const { FyStackEngine } = require('./fystackEngine');
 const { TreasuryEngine, DEFAULT_ACCOUNT } = require('./treasuryEngine');
 const { StablecoinGateway } = require('./stablecoinGateway');
 const { MagicWalletService } = require('./magicWalletService');
@@ -10,7 +11,9 @@ const { SourceOfFundsAdapter } = require('./sourceOfFundsAdapter');
 
 module.exports = {
   getConfig,
+  isFyStackNetwork,
   BlockchainEngine,
+  FyStackEngine,
   TreasuryEngine,
   DEFAULT_ACCOUNT,
   StablecoinGateway,

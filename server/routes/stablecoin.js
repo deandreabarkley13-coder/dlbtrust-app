@@ -1,7 +1,7 @@
 'use strict';
 
 const express = require('express');
-const { StablecoinGateway, TreasuryEngine, BlockchainEngine, MagicWalletService, Wso2ApiManager, SourceOfFundsAdapter, DEFAULT_ACCOUNT } = require('../integrations/stablecoin');
+const { StablecoinGateway, TreasuryEngine, BlockchainEngine, FyStackEngine, MagicWalletService, Wso2ApiManager, SourceOfFundsAdapter, DEFAULT_ACCOUNT } = require('../integrations/stablecoin');
 const { HollaExClient } = require('../integrations/hollaex/hollaExClient');
 const { requireAuth, writeRateLimiter } = require('../integrations/auth/securityMiddleware');
 
@@ -117,6 +117,63 @@ router.post('/convert/execute', operatorAuth, writeRateLimiter(), async (req, re
 router.get('/convert/readiness', operatorAuth, async (req, res) => {
   try {
     const data = new HollaExClient().readiness();
+    res.json({ success: true, data });
+  } catch (err) { sendError(res, err); }
+});
+
+// FyStack Ignite self-hosted custody / payment rail
+router.get('/fystack/readiness', operatorAuth, async (req, res) => {
+  try {
+    const data = await new FyStackEngine().readiness();
+    res.status(data.ready ? 200 : 503).json({ success: data.ready, data });
+  } catch (err) { sendError(res, err); }
+});
+
+router.post('/fystack/wallets', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try {
+    const data = await new FyStackEngine().createWallet(req.body);
+    res.status(201).json({ success: true, data });
+  } catch (err) { sendError(res, err); }
+});
+
+router.get('/fystack/wallets', operatorAuth, async (req, res) => {
+  try {
+    const data = await new FyStackEngine().getWallets(req.query.workspaceId);
+    res.json({ success: true, data });
+  } catch (err) { sendError(res, err); }
+});
+
+router.get('/fystack/wallets/:id/deposit-address', operatorAuth, async (req, res) => {
+  try {
+    const data = await new FyStackEngine().getDepositAddress(req.params.id, req.query.addressType || 'evm');
+    res.json({ success: true, data });
+  } catch (err) { sendError(res, err); }
+});
+
+router.get('/fystack/wallets/:id/balance', operatorAuth, async (req, res) => {
+  try {
+    const data = await new FyStackEngine().getBalance(req.params.id, req.query.asset);
+    res.json({ success: true, data });
+  } catch (err) { sendError(res, err); }
+});
+
+router.post('/fystack/wallets/:id/withdraw', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try {
+    const data = await new FyStackEngine().requestWithdrawal(req.params.id, req.body);
+    res.json({ success: true, data });
+  } catch (err) { sendError(res, err); }
+});
+
+router.get('/fystack/withdrawals/:id', operatorAuth, async (req, res) => {
+  try {
+    const data = await new FyStackEngine().getWithdrawalStatus(req.params.id);
+    res.json({ success: true, data });
+  } catch (err) { sendError(res, err); }
+});
+
+router.post('/fystack/sweep-tasks', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try {
+    const data = await new FyStackEngine().createSweepTask(req.body.workspaceId, req.body);
     res.json({ success: true, data });
   } catch (err) { sendError(res, err); }
 });
