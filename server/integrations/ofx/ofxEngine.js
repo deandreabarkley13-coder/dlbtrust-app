@@ -24,7 +24,10 @@ const memory = {
 
 let seqId = 0;
 
+let initPromise;
+
 async function dbQuery(text, params) {
+  if (initPromise) await initPromise;
   if (pool && pool.query) return pool.query(text, params);
   throw new Error('Postgres pool unavailable');
 }
@@ -115,10 +118,66 @@ async function ensureTables() {
     console.warn('[OFX] ensure tables warning:', e.message);
   }
 }
-ensureTables();
+initPromise = ensureTables();
 
 function useMemory() {
   return !pool || process.env.OFX_USE_MEMORY === 'true';
+}
+
+const MAX_OFX_CONTENT_SIZE = Number(process.env.OFX_MAX_CONTENT_SIZE) || 10 * 1024 * 1024; // 10 MB
+const ALLOWED_OFX_SCHEMES = ['https:'];
+
+function getOfxUrlAllowlist() {
+  const env = process.env.OFX_BASE_URL_ALLOWLIST;
+  if (!env) return [];
+  return env.split(',').map((h) => h.trim().toLowerCase()).filter(Boolean);
+}
+
+function isPrivateHost(hostname) {
+  if (!hostname) return true;
+  const h = hostname.toLowerCase();
+  if (h === 'localhost' || h.endsWith('.localhost') || h.endsWith('.local') || h.endsWith('.internal')) return true;
+  if (/^(127\.|10\.|192\.168\.|169\.254\.|0\.0\.0\.0$)/.test(h)) return true;
+  if (/^172\.(1[6-9]|2\d|3[01])\.\d{1,3}\.\d{1,3}$/.test(h)) return true;
+  if (/^100\.(6[4-9]|[7-9]\d|1\d\d|12[0-7])\.\d{1,3}\.\d{1,3}$/.test(h)) return true;
+  if (/:/.test(h) && (/^::$|^::1$|^fc|^fd|^fe80:|^ff/.test(h) || /^2001:db8:/i.test(h) || /^::/.test(h))) return true;
+  return false;
+}
+
+function validateOfxBaseUrl(url) {
+  if (!url) throw new Error('OFX baseUrl is required for live mode');
+  let parsed;
+  try {
+    parsed = new URL(url);
+  } catch (e) {
+    throw new Error('OFX baseUrl is not a valid URL');
+  }
+  if (!ALLOWED_OFX_SCHEMES.includes(parsed.protocol)) {
+    throw new Error('OFX baseUrl must use HTTPS');
+  }
+  const allowlist = getOfxUrlAllowlist();
+  const host = parsed.hostname.toLowerCase();
+  if (allowlist.length && !allowlist.includes(host)) {
+    throw new Error('OFX baseUrl host is not in allowlist');
+  }
+  if (!allowlist.length && isPrivateHost(host)) {
+    throw new Error('OFX baseUrl host resolves to a private or local address');
+  }
+}
+
+function sanitizeOfxContent(content) {
+  if (!content) return content;
+  if (typeof content !== 'string') throw new Error('OFX content must be a string');
+  if (content.length > MAX_OFX_CONTENT_SIZE) throw new Error('OFX content exceeds maximum size');
+  const sanitized = content
+    .replace(/<!DOCTYPE\s+[^>]*(?:>|$)[\s\S]*?>/gi, '')
+    .replace(/<!ENTITY\s+[^>]*(?:>|$)[\s\S]*?>/gi, '')
+    .replace(/<!DOCTYPE\s[^[>]*\[[\s\S]*?\]\s*>/gi, '')
+    .replace(/<!ENTITY\s+%?\s+[^\s]+\s+SYSTEM\s+[^>]+>/gi, '');
+  if (/<!DOCTYPE/i.test(sanitized) || /<!ENTITY/i.test(sanitized)) {
+    throw new Error('OFX content contains disallowed DTD/ENTITY declarations');
+  }
+  return sanitized;
 }
 
 function makeRef(prefix) {
@@ -262,7 +321,7 @@ function buildPaymentMessageSet(inst, payment) {
   if (payment.payment_type === 'interbank' || payment.payment_type === 'ach') {
     return {
       INTERXFERMSGSRQV1: {
-        INTERTRNRQ: { TRNUID: ref, INTERTRNQ: { XFERINFO: commonXfer } },
+        INTERTRNRQ: { TRNUID: ref, INTERRQ: { XFERINFO: commonXfer } },
       },
     };
   }
@@ -329,7 +388,7 @@ function buildPaymentRequest(inst, payment) {
   return buildEnvelope({
     OFXHEADER: '200',
     DATA: 'OFXSGML',
-    VERSION: inst.ofx_version || '200',
+    VERSION: inst.ofxVersion || inst.ofx_version || '200',
     SECURITY: 'NONE',
     ENCODING: 'UTF-8',
     CHARSET: 'NONE',
@@ -395,8 +454,9 @@ function extractStatement(parsed) {
 
 function parseStatement(fileContent) {
   if (!fileContent || typeof fileContent !== 'string') throw new Error('OFX content required');
+  const safeContent = sanitizeOfxContent(fileContent);
   try {
-    const parsed = ofx.parse(fileContent);
+    const parsed = ofx.parse(safeContent);
     return extractStatement(parsed);
   } catch (e) {
     throw new Error('Failed to parse OFX file: ' + e.message);
@@ -424,13 +484,34 @@ function rowToInstitution(r) {
   };
 }
 
+function toPublicInstitution(inst) {
+  if (!inst) return inst;
+  const out = { ...inst };
+  if (out.password) {
+    out.hasPassword = true;
+    delete out.password;
+  } else {
+    out.hasPassword = false;
+  }
+  return out;
+}
+
 async function listInstitutions() {
-  if (useMemory()) return [...memory.institutions.values()].filter((i) => i.status !== 'deleted');
+  if (useMemory()) return [...memory.institutions.values()].filter((i) => i.status !== 'deleted').map(toPublicInstitution);
   const res = await dbQuery('SELECT * FROM ofx_institutions WHERE status != $1 ORDER BY created_at DESC', ['deleted']);
-  return res.rows.map(rowToInstitution);
+  return res.rows.map((r) => toPublicInstitution(rowToInstitution(r)));
 }
 
 async function getInstitution(id) {
+  if (useMemory()) {
+    const inst = memory.institutions.get(String(id));
+    return inst ? toPublicInstitution(inst) : null;
+  }
+  const res = await dbQuery('SELECT * FROM ofx_institutions WHERE id = $1', [id]);
+  return res.rows[0] ? toPublicInstitution(rowToInstitution(res.rows[0])) : null;
+}
+
+async function getInstitutionWithSecrets(id) {
   if (useMemory()) return memory.institutions.get(String(id));
   const res = await dbQuery('SELECT * FROM ofx_institutions WHERE id = $1', [id]);
   return res.rows[0] ? rowToInstitution(res.rows[0]) : null;
@@ -452,11 +533,12 @@ async function saveInstitution(data) {
     status: data.status || 'active',
     mode: data.mode || 'simulate',
   };
+  if (payload.mode === 'live') validateOfxBaseUrl(payload.base_url);
   if (useMemory()) {
     const id = data.id || ++seqId;
     const inst = { ...payload, id, created_at: new Date(), updated_at: new Date() };
     memory.institutions.set(String(id), rowToInstitution(inst));
-    return rowToInstitution(inst);
+    return toPublicInstitution(rowToInstitution(inst));
   }
   if (data.id) {
     const res = await dbQuery(`
@@ -466,7 +548,7 @@ async function saveInstitution(data) {
     `, [payload.name, payload.org, payload.fid, payload.base_url, payload.ofx_version,
         payload.username, payload.password, payload.bank_id, payload.account_id,
         payload.account_type, payload.routing_number, payload.status, payload.mode, data.id]);
-    return res.rows[0] ? rowToInstitution(res.rows[0]) : null;
+    return res.rows[0] ? toPublicInstitution(rowToInstitution(res.rows[0])) : null;
   }
   const res = await dbQuery(`
     INSERT INTO ofx_institutions (name, org, fid, base_url, ofx_version, username, password,
@@ -475,7 +557,7 @@ async function saveInstitution(data) {
   `, [payload.name, payload.org, payload.fid, payload.base_url, payload.ofx_version,
       payload.username, payload.password, payload.bank_id, payload.account_id,
       payload.account_type, payload.routing_number, payload.status, payload.mode]);
-  return rowToInstitution(res.rows[0]);
+  return toPublicInstitution(rowToInstitution(res.rows[0]));
 }
 
 async function deleteInstitution(id) {
@@ -485,7 +567,8 @@ async function deleteInstitution(id) {
 }
 
 async function importStatement({ institutionId, fileContent, rawStore = true }) {
-  const parsed = parseStatement(fileContent);
+  const safeContent = sanitizeOfxContent(fileContent);
+  const parsed = parseStatement(safeContent);
   const accountId = parsed.account && (parsed.account.ACCTID || parsed.account.ACCTID);
 
   if (useMemory()) {
@@ -499,7 +582,7 @@ async function importStatement({ institutionId, fileContent, rawStore = true }) 
       end_date: parsed.endDate,
       ledger_balance_cents: parsed.ledgerBalanceCents,
       ledger_balance_date: parsed.ledgerBalanceDate,
-      raw_content: rawStore ? fileContent : null,
+      raw_content: rawStore ? safeContent : null,
     };
     memory.statements.set(String(sid), stmt);
     for (const t of parsed.transactions) {
@@ -517,7 +600,7 @@ async function importStatement({ institutionId, fileContent, rawStore = true }) 
       ledger_balance_cents, ledger_balance_date, raw_content)
       VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING id
     `, [institutionId || null, accountId, parsed.currency, parsed.startDate, parsed.endDate,
-        parsed.ledgerBalanceCents, parsed.ledgerBalanceDate, rawStore ? fileContent : null]);
+        parsed.ledgerBalanceCents, parsed.ledgerBalanceDate, rawStore ? safeContent : null]);
     const statementId = stmtRes.rows[0].id;
     for (const t of parsed.transactions) {
       await client.query(`
@@ -657,7 +740,7 @@ async function submitPayment(id) {
   if (!payment) throw new Error('payment not found');
   if (payment.status !== 'pending') throw new Error(`payment status is ${payment.status}`);
 
-  const institution = await getInstitution(payment.institution_id);
+  const institution = await getInstitutionWithSecrets(payment.institution_id);
   if (!institution) throw new Error('institution not found');
   if (institution.status !== 'active') throw new Error('institution is not active');
 
@@ -678,6 +761,7 @@ async function submitPayment(id) {
   }
 
   // Live submission
+  validateOfxBaseUrl(institution.baseUrl);
   const url = institution.baseUrl.replace(/\/$/, '') + '/ofx/' + (institution.ofxVersion || '200');
   try {
     const res = await fetch(url, {
