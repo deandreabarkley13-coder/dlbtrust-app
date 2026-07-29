@@ -12,6 +12,7 @@ try { pool = require('../bonds/pgPool'); } catch (e) { pool = null; }
 const { getConfig, isProduction } = require('./config');
 const { TreasuryEngine, DEFAULT_ACCOUNT } = require('./treasuryEngine');
 const { BlockchainEngine } = require('./blockchainEngine');
+const { HederaEngine } = require('./hederaEngine');
 const { MagicWalletService } = require('./magicWalletService');
 const { SourceOfFundsAdapter } = require('./sourceOfFundsAdapter');
 
@@ -31,6 +32,10 @@ function toCents(num) {
 
 function totalCents(amountCents, feeCents) {
   return amountCents + feeCents;
+}
+
+function isHederaNetwork(network) {
+  return String(network || '').startsWith('hedera-');
 }
 
 async function query(sql, params) {
@@ -95,27 +100,36 @@ class StablecoinGateway {
     const treasury = await TreasuryEngine.getPosition(DEFAULT_ACCOUNT).catch(err => ({ ready: false, error: err.message }));
     const blockchain = await new BlockchainEngine().readiness();
     const magic = new MagicWalletService().readiness();
+    const hedera = cfg.hederaEnabled ? await new HederaEngine().readiness().catch(err => ({ ready: false, issues: [err.message] })) : { ready: false, issues: ['HEDERA_STUDIO_ENABLED is not true'] };
     const issues = [];
     if (!cfg.enabled) issues.push('STABLECOIN_ENABLED is not true');
-    if (!blockchain.ready) issues.push(...blockchain.issues);
+    const anyBlockchainReady = blockchain.ready || (cfg.hederaEnabled && hedera.ready);
+    if (!anyBlockchainReady) {
+      issues.push('No blockchain rail is ready');
+      if (!blockchain.ready) issues.push(...blockchain.issues);
+      if (cfg.hederaEnabled && !hedera.ready) issues.push(...hedera.issues);
+    }
     return {
-      ready: cfg.enabled && blockchain.ready,
+      ready: cfg.enabled && anyBlockchainReady,
       issues,
       treasury: { ok: typeof treasury.balanceCents === 'number', ...treasury },
       blockchain,
       magic,
+      hedera,
     };
   }
 
   static quote({ amountCents, assetCode = 'USDC', network = 'testnet' }) {
     const cfg = getConfig();
     const fee = cfg.gatewayFeeCents;
+    const hedera = isHederaNetwork(network);
     return {
       assetCode: assetCode.toUpperCase(),
       network,
       amountCents,
       feeCents: fee,
       totalCents: totalCents(amountCents, fee),
+      hedera,
     };
   }
 
@@ -123,8 +137,16 @@ class StablecoinGateway {
     const cfg = getConfig();
     const amountCents = typeof input.amountCents === 'number' ? input.amountCents : toCents(input.amount);
     const quote = StablecoinGateway.quote({ amountCents, assetCode: input.assetCode, network: input.network });
-    if (quote.network !== cfg.network) throw new Error(`Payment network ${quote.network} does not match configured stablecoin network ${cfg.network}`);
-    if (quote.assetCode.toUpperCase() !== cfg.assetCode.toUpperCase()) throw new Error(`Payment asset ${quote.assetCode} does not match configured asset ${cfg.assetCode}`);
+    if (isHederaNetwork(quote.network)) {
+      if (!cfg.hederaEnabled) throw new Error('HEDERA_STUDIO_ENABLED must be true for Hedera stablecoin payments');
+      const expectedHederaNetwork = cfg.hederaNetwork === 'mainnet' ? 'hedera-mainnet' : 'hedera-testnet';
+      if (quote.network !== expectedHederaNetwork) throw new Error(`Payment network ${quote.network} does not match configured Hedera network ${expectedHederaNetwork}`);
+      const allowedAssets = [cfg.hederaStablecoinSymbol.toUpperCase(), cfg.assetCode.toUpperCase()];
+      if (!allowedAssets.includes(quote.assetCode.toUpperCase())) throw new Error(`Payment asset ${quote.assetCode} does not match configured Hedera symbol ${cfg.hederaStablecoinSymbol}`);
+    } else {
+      if (quote.network !== cfg.network) throw new Error(`Payment network ${quote.network} does not match configured stablecoin network ${cfg.network}`);
+      if (quote.assetCode.toUpperCase() !== cfg.assetCode.toUpperCase()) throw new Error(`Payment asset ${quote.assetCode} does not match configured asset ${cfg.assetCode}`);
+    }
     const id = identifier('SCP');
     const destination = input.destinationWallet || input.walletAddress || '';
     if (!destination) throw new Error('destinationWallet is required');
@@ -208,7 +230,7 @@ class StablecoinGateway {
     return payment;
   }
 
-  static async settlePayment(id, { memo, destinationSecret } = {}) {
+  static async settlePayment(id, { memo, destinationSecret, destinationKey } = {}) {
     let payment = await StablecoinGateway.getPayment(id);
     if (payment.status === 'settled') return payment;
     if (!['pending', 'approved'].includes(payment.status)) {
@@ -216,14 +238,15 @@ class StablecoinGateway {
     }
     if (payment.status === 'pending') payment = await StablecoinGateway.approvePayment(id, payment.source_account_id);
 
-    const blockchain = new BlockchainEngine();
+    const engine = isHederaNetwork(payment.network) ? new HederaEngine() : new BlockchainEngine();
     let result;
     try {
-      result = await blockchain.settle({
+      result = await engine.settle({
         destination: payment.destination_wallet,
         amountCents: payment.amount_cents,
         memo: memo || payment.memo,
         destinationSecret,
+        destinationKey,
       });
     } catch (err) {
       await StablecoinGateway.failPayment(id, err.message || 'blockchain settlement failed');
@@ -237,6 +260,7 @@ class StablecoinGateway {
     payment.tx_ledger = String(result.ledger);
     payment.tx_explorer = result.explorer;
     payment.latency_ms = result.latencyMs;
+    if (result.tokenId) payment.metadata = { ...payment.metadata, hederaTokenId: result.tokenId };
     payment.updated_at = new Date().toISOString();
 
     try {

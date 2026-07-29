@@ -5,7 +5,7 @@
  */
 
 const MODES = new Set(['disabled', 'shadow', 'testnet', 'mainnet']);
-const NETWORKS = new Set(['testnet', 'public', 'mainnet', 'custom']);
+const NETWORKS = new Set(['testnet', 'public', 'mainnet', 'custom', 'hedera-testnet', 'hedera-mainnet']);
 
 function bool(name, fallback = false) {
   const v = process.env[name];
@@ -54,6 +54,21 @@ function getConfig() {
     cashSettlementAccount: str('STABLECOIN_CASH_SETTLEMENT_ACCOUNT', ''),
     stablecoinAssetAccount: str('STABLECOIN_ASSET_ACCOUNT', '1210'),
     fineractStablecoinAssetGlId: str('STABLECOIN_FINERACT_ASSET_GL_ID', ''),
+    // Hedera Stablecoin Studio
+    hederaEnabled: bool('HEDERA_STUDIO_ENABLED', false),
+    hederaNetwork: str('HEDERA_NETWORK', 'testnet'),
+    hederaOperatorId: str('HEDERA_OPERATOR_ID', ''),
+    hederaOperatorKey: str('HEDERA_OPERATOR_KEY', ''),
+    hederaTokenId: str('HEDERA_TOKEN_ID', ''),
+    hederaFactoryId: str('HEDERA_FACTORY_ID', ''),
+    hederaResolverId: str('HEDERA_RESOLVER_ID', ''),
+    hederaStablecoinName: str('HEDERA_STABLECOIN_NAME', 'DLB Trust Stablecoin'),
+    hederaStablecoinSymbol: str('HEDERA_STABLECOIN_SYMBOL', 'DLBUSD'),
+    hederaDecimals: int('HEDERA_DECIMALS', 6, 0, 18),
+    hederaCreateReserve: bool('HEDERA_CREATE_RESERVE', false),
+    hederaShadow: bool('HEDERA_SHADOW', false),
+    hederaMirrorNode: str('HEDERA_MIRROR_NODE', 'https://testnet.mirrornode.hedera.com/api/v1/'),
+    hederaRpcNode: str('HEDERA_RPC_NODE', 'https://testnet.hashio.io/api'),
   };
 }
 
@@ -63,7 +78,7 @@ function isProduction(cfg) {
 
 function redact(cfg) {
   const copy = { ...cfg };
-  ['issuerSecret', 'distributorSecret', 'magicSecretKey', 'wso2ClientSecret'].forEach((k) => {
+  ['issuerSecret', 'distributorSecret', 'magicSecretKey', 'wso2ClientSecret', 'hederaOperatorKey'].forEach((k) => {
     if (copy[k]) copy[k] = '***';
   });
   return copy;

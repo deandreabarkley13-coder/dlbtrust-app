@@ -1539,7 +1539,7 @@
         <h2>Create Stablecoin Payment</h2>
         <p class="text-muted" style="font-size:12px;margin:-4px 0 10px;">Submits to <code>POST /api/stablecoin/payments</code>. Operator JWT or admin token required.</p>
         <div class="form-row">
-          <div class="form-group"><label>Destination Wallet</label><input type="text" id="sc-destination" placeholder="G... Stellar public key or Magic wallet address"></div>
+          <div class="form-group"><label>Destination Wallet</label><input type="text" id="sc-destination" placeholder="G... Stellar public key, Magic wallet address, or 0.0... Hedera account"></div>
           <div class="form-group"><label>Amount ($)</label><input type="number" step="0.01" min="0.01" id="sc-amount" placeholder="100.00"></div>
           <div class="form-group"><label>Memo (optional)</label><input type="text" id="sc-memo" placeholder="Invoice #1234"></div>
         </div>
@@ -1549,14 +1549,19 @@
           <div class="form-group"><label>Wallet Provider</label><select id="sc-wallet-provider"><option value="direct">Direct</option><option value="magic">Magic WaaS</option></select></div>
         </div>
         <div class="form-row">
-          <div class="form-group" style="flex:2"><label>Destination Secret (optional, for trustline auto-create)</label><input type="password" id="sc-destination-secret" placeholder="Stellar secret key that matches the destination wallet"></div>
+          <div class="form-group" style="flex:2"><label>Destination Secret (Stellar trustline)</label><input type="password" id="sc-destination-secret" placeholder="Stellar secret key that matches the destination wallet"></div>
           <div class="form-group" style="flex:1"><label>&nbsp;</label><button class="btn btn-sm" style="width:100%" onclick="scEnsureTrustline()">Ensure Trustline</button></div>
-          <div class="form-group" style="flex:1"><label>&nbsp;</label><button class="btn btn-sm btn-danger" style="width:100%" onclick="el('sc-destination-secret').value=''">Clear Secret</button></div>
+          <div class="form-group" style="flex:1"><label>&nbsp;</label><button class="btn btn-sm btn-danger" style="width:100%" onclick="el('sc-destination-secret').value=''">Clear</button></div>
+        </div>
+        <div class="form-row">
+          <div class="form-group" style="flex:2"><label>Destination Key (Hedera association, optional)</label><input type="password" id="sc-destination-key" placeholder="Hedera private key for the destination account"></div>
+          <div class="form-group" style="flex:1"><label>&nbsp;</label><button class="btn btn-sm" style="width:100%" onclick="scEnsureHederaAssociation()">Ensure Assoc</button></div>
+          <div class="form-group" style="flex:1"><label>&nbsp;</label><button class="btn btn-sm btn-danger" style="width:100%" onclick="el('sc-destination-key').value=''">Clear</button></div>
         </div>
         <div class="form-row">
           <div class="form-group"><label>Beneficiary Name (optional)</label><input type="text" id="sc-beneficiary" placeholder="Acme LLC"></div>
-          <div class="form-group"><label>Asset Code</label><input type="text" id="sc-asset-code" placeholder="USDC" value="USDC"></div>
-          <div class="form-group"><label>Network</label><input type="text" id="sc-network-input" placeholder="testnet" value="testnet"></div>
+          <div class="form-group"><label>Asset Code</label><input type="text" id="sc-asset-code" placeholder="USDC / DLBUSD" value="USDC"></div>
+          <div class="form-group"><label>Network</label><select id="sc-network-input"><option value="testnet" selected>Stellar Testnet</option><option value="mainnet">Stellar Mainnet</option><option value="hedera-testnet">Hedera Testnet</option><option value="hedera-mainnet">Hedera Mainnet</option></select></div>
         </div>
         <div class="form-row">
           <button class="btn btn-success btn-sm" onclick="scCreatePayment()">Create Payment</button>
@@ -1567,6 +1572,28 @@
         <div id="sc-create-result" style="margin-top:8px"></div>
         <div id="sc-balance-result" style="margin-top:8px"></div>
       </div>
+      <div class="card" style="margin-top:24px">
+        <h2>Hedera Stablecoin Studio</h2>
+        <p class="text-muted" style="font-size:12px;margin:-4px 0 10px;">Issue and manage DLB Trust stablecoins on Hedera Hashgraph. Requires HEDERA_STUDIO_ENABLED=true and operator credentials.</p>
+        <div class="form-row">
+          <div class="form-group" style="flex:2"><label>Token ID</label><input type="text" id="sc-hedera-token-id" placeholder="0.0... (leave blank to create)" onchange="this.dataset.dirty='true'"></div>
+          <div class="form-group"><label>Symbol</label><input type="text" id="sc-hedera-symbol" placeholder="DLBUSD" value="DLBUSD"></div>
+          <div class="form-group"><label>Decimals</label><input type="number" id="sc-hedera-decimals" value="6" min="0" max="18"></div>
+        </div>
+        <div class="form-row">
+          <div class="form-group"><label>Initial Supply ($)</label><input type="number" step="0.01" id="sc-hedera-initial" placeholder="0"></div>
+          <div class="form-group"><label>Mint to Account</label><input type="text" id="sc-hedera-mint-target" placeholder="0.0... (operator default)"></div>
+          <div class="form-group"><label>Mint Amount ($)</label><input type="number" step="0.01" id="sc-hedera-mint-amount" placeholder="100"></div>
+        </div>
+        <div class="form-row">
+          <button class="btn btn-primary btn-sm" onclick="scCreateHederaStablecoin()">Create Stablecoin</button>
+          <button class="btn btn-success btn-sm" onclick="scMintHederaStablecoin()">Mint</button>
+          <button class="btn btn-sm" onclick="scHederaBalance()">Balance</button>
+          <button class="btn btn-sm" onclick="scCheckHederaReadiness()">Readiness</button>
+        </div>
+        <div id="sc-hedera-result" style="margin-top:8px"></div>
+      </div>
+
       <div class="card" style="margin-top:24px">
         <h2>Fiat to Crypto Conversion (HollaEx Kit)</h2>
         <p class="text-muted" style="font-size:12px;margin:-4px 0 10px;">Quote and execute a quick trade between fiat and the configured stablecoin asset.</p>
@@ -6431,6 +6458,11 @@
         el('sc-readiness').innerHTML = h.ready ? '<span class="badge badge-active">Ready</span>' : '<span class="badge badge-error">Not Ready</span>';
         el('sc-network').textContent = esc(h.network || '—');
         el('sc-asset').textContent = esc(h.assetCode || '—');
+        if (h.hedera && h.hedera.ready) {
+          el('sc-readiness').innerHTML += ' <span class="badge badge-active">Hedera Ready</span>';
+        } else if (h.hedera) {
+          el('sc-readiness').innerHTML += ' <span class="badge badge-error" title="' + esc((h.hedera.issues || []).join('; ')) + '">Hedera Not Ready</span>';
+        }
       } else if (health && health.error) {
         el('sc-readiness').innerHTML = '<span class="badge badge-error">Auth</span>';
         el('sc-network').textContent = '—';
@@ -6544,8 +6576,11 @@
 
     async function scSettle(id) {
       const destinationSecret = el('sc-destination-secret').value.trim() || undefined;
-      const body = destinationSecret ? JSON.stringify({ destinationSecret }) : '{}';
-      const resp = await fetchJSON(API + '/api/stablecoin/payments/' + encodeURIComponent(id) + '/settle', { method: 'POST', headers: adminHeaders(), body });
+      const destinationKey = el('sc-destination-key').value.trim() || undefined;
+      const bodyObj = {};
+      if (destinationSecret) bodyObj.destinationSecret = destinationSecret;
+      if (destinationKey) bodyObj.destinationKey = destinationKey;
+      const resp = await fetchJSON(API + '/api/stablecoin/payments/' + encodeURIComponent(id) + '/settle', { method: 'POST', headers: adminHeaders(), body: JSON.stringify(bodyObj) });
       if (resp && resp.success) { loadStablecoin(); } else { alert('Settle failed: ' + ((resp && resp.error) || 'unknown')); }
     }
 
@@ -6586,6 +6621,73 @@
         el('sc-convert-result').innerHTML = '<p class="success-msg">Executed: ' + esc(JSON.stringify(resp.data)) + '</p>';
       } else {
         el('sc-convert-result').innerHTML = '<p class="error-msg">' + esc((resp && resp.error) || 'Execute failed') + '</p>';
+      }
+    }
+
+    async function scEnsureHederaAssociation() {
+      const tokenId = el('sc-hedera-token-id').value.trim() || undefined;
+      const targetId = el('sc-destination').value.trim();
+      const targetKey = el('sc-destination-key').value.trim() || undefined;
+      if (!targetId) { alert('Enter a destination wallet first'); return; }
+      const body = JSON.stringify({ tokenId, targetId, targetKey });
+      const resp = await fetchJSON(API + '/api/stablecoin/hedera/associate', { method: 'POST', headers: adminHeaders(), body });
+      if (resp && resp.success) {
+        alert('Hedera token association ensured for ' + esc(targetId));
+      } else {
+        alert('Hedera association failed: ' + ((resp && resp.error) || 'unknown'));
+      }
+    }
+
+    async function scCheckHederaReadiness() {
+      const resp = await fetchJSON(API + '/api/stablecoin/hedera/readiness', { headers: adminHeaders() });
+      if (resp && resp.success) {
+        const r = resp.data;
+        el('sc-hedera-result').innerHTML = '<p class="' + (r.ready ? 'success-msg' : 'error-msg') + '">Hedera ' + (r.ready ? 'Ready' : 'Not Ready') + ': ' + esc((r.issues || []).join('; ') || 'OK') + '</p>';
+      } else {
+        el('sc-hedera-result').innerHTML = '<p class="error-msg">' + esc((resp && resp.error) || 'Readiness failed') + '</p>';
+      }
+    }
+
+    async function scCreateHederaStablecoin() {
+      const name = 'DLB Trust Stablecoin';
+      const symbol = el('sc-hedera-symbol').value.trim() || 'DLBUSD';
+      const decimals = Number(el('sc-hedera-decimals').value) || 6;
+      const initial = Number(el('sc-hedera-initial').value) || 0;
+      const initialSupply = String(initial);
+      const resp = await fetchJSON(API + '/api/stablecoin/hedera/create-stablecoin', { method: 'POST', headers: adminHeaders(), body: JSON.stringify({ name, symbol, decimals, initialSupply }) });
+      if (resp && resp.success) {
+        el('sc-hedera-token-id').value = resp.data.tokenId || '';
+        el('sc-hedera-result').innerHTML = '<p class="success-msg">Created stablecoin: ' + esc(resp.data.tokenId || JSON.stringify(resp.data)) + '</p>';
+      } else {
+        el('sc-hedera-result').innerHTML = '<p class="error-msg">' + esc((resp && resp.error) || 'Create failed') + '</p>';
+      }
+    }
+
+    async function scMintHederaStablecoin() {
+      const tokenId = el('sc-hedera-token-id').value.trim();
+      const targetId = el('sc-hedera-mint-target').value.trim() || undefined;
+      const amount = Number(el('sc-hedera-mint-amount').value);
+      if (!tokenId || !amount || amount <= 0) { el('sc-hedera-result').innerHTML = '<p class="error-msg">Enter token ID and positive mint amount</p>'; return; }
+      const amountCents = Math.round(amount * 100);
+      const resp = await fetchJSON(API + '/api/stablecoin/hedera/mint', { method: 'POST', headers: adminHeaders(), body: JSON.stringify({ tokenId, targetId, amountCents }) });
+      if (resp && resp.success) {
+        el('sc-hedera-result').innerHTML = '<p class="success-msg">Minted: ' + esc(resp.data.txId || JSON.stringify(resp.data)) + '</p>';
+      } else {
+        el('sc-hedera-result').innerHTML = '<p class="error-msg">' + esc((resp && resp.error) || 'Mint failed') + '</p>';
+      }
+    }
+
+    async function scHederaBalance() {
+      const tokenId = el('sc-hedera-token-id').value.trim();
+      const accountId = el('sc-hedera-mint-target').value.trim() || undefined;
+      if (!tokenId) { el('sc-hedera-result').innerHTML = '<p class="error-msg">Enter token ID</p>'; return; }
+      const params = new URLSearchParams({ tokenId });
+      if (accountId) params.set('accountId', accountId);
+      const resp = await fetchJSON(API + '/api/stablecoin/hedera/balance?' + params.toString(), { headers: adminHeaders() });
+      if (resp && resp.success) {
+        el('sc-hedera-result').innerHTML = '<p class="success-msg">Balance for ' + esc(accountId || 'operator') + ': ' + esc(String(resp.data.balance)) + '</p>';
+      } else {
+        el('sc-hedera-result').innerHTML = '<p class="error-msg">' + esc((resp && resp.error) || 'Balance failed') + '</p>';
       }
     }
 
