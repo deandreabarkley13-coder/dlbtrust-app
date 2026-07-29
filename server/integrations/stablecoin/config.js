@@ -5,7 +5,12 @@
  */
 
 const MODES = new Set(['disabled', 'shadow', 'testnet', 'mainnet']);
-const NETWORKS = new Set(['testnet', 'public', 'mainnet', 'custom']);
+const NETWORKS = new Set(['testnet', 'public', 'mainnet', 'custom', 'fystack']);
+
+function isFyStackNetwork(network) {
+  const n = String(network || '').toLowerCase();
+  return n === 'fystack' || n.startsWith('fystack-');
+}
 
 function bool(name, fallback = false) {
   const v = process.env[name];
@@ -49,6 +54,19 @@ function getConfig() {
     wso2ClientId: str('WSO2_CLIENT_ID', ''),
     wso2ClientSecret: str('WSO2_CLIENT_SECRET', ''),
     wso2ApiContext: str('WSO2_API_CONTEXT', '/stablecoin'),
+    // FyStack Ignite self-hosted custody / payment rail
+    fyStackEnabled: bool('FYSTACK_ENABLED', false),
+    fyStackApiKey: str('FYSTACK_API_KEY', ''),
+    fyStackApiSecret: str('FYSTACK_API_SECRET', ''),
+    fyStackWorkspaceId: str('FYSTACK_WORKSPACE_ID', ''),
+    fyStackBaseUrl: str('FYSTACK_BASE_URL', 'http://localhost:8150'),
+    fyStackNetwork: str('FYSTACK_NETWORK', mode === 'mainnet' ? 'ETHEREUM_MAINNET' : 'ETHEREUM_SEPOLIA'),
+    fyStackAsset: str('FYSTACK_ASSET', 'USDC'),
+    fyStackAssetId: str('FYSTACK_ASSET_ID', ''),
+    fyStackTreasuryWalletId: str('FYSTACK_TREASURY_WALLET_ID', ''),
+    fyStackAddressType: str('FYSTACK_ADDRESS_TYPE', 'evm'),
+    fyStackExplorerTx: str('FYSTACK_EXPLORER_TX', ''),
+    fyStackShadow: bool('FYSTACK_SHADOW', false),
     // Source-of-funds mappings
     cashHoldingAccount: str('STABLECOIN_CASH_HOLDING_ACCOUNT', 'STABLECOIN_CASH_HOLD'),
     cashSettlementAccount: str('STABLECOIN_CASH_SETTLEMENT_ACCOUNT', ''),
@@ -63,10 +81,10 @@ function isProduction(cfg) {
 
 function redact(cfg) {
   const copy = { ...cfg };
-  ['issuerSecret', 'distributorSecret', 'magicSecretKey', 'wso2ClientSecret'].forEach((k) => {
+  ['issuerSecret', 'distributorSecret', 'magicSecretKey', 'wso2ClientSecret', 'fyStackApiSecret'].forEach((k) => {
     if (copy[k]) copy[k] = '***';
   });
   return copy;
 }
 
-module.exports = { getConfig, isProduction, redact, MODES, NETWORKS };
+module.exports = { getConfig, isProduction, redact, isFyStackNetwork, MODES, NETWORKS };

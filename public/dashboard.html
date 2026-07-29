@@ -1539,14 +1539,15 @@
         <h2>Create Stablecoin Payment</h2>
         <p class="text-muted" style="font-size:12px;margin:-4px 0 10px;">Submits to <code>POST /api/stablecoin/payments</code>. Operator JWT or admin token required.</p>
         <div class="form-row">
-          <div class="form-group"><label>Destination Wallet</label><input type="text" id="sc-destination" placeholder="G... Stellar public key or Magic wallet address"></div>
+          <div class="form-group"><label>Destination Wallet</label><input type="text" id="sc-destination" placeholder="G... Stellar public key, Magic wallet address, or 0x/Solana address"></div>
           <div class="form-group"><label>Amount ($)</label><input type="number" step="0.01" min="0.01" id="sc-amount" placeholder="100.00"></div>
           <div class="form-group"><label>Memo (optional)</label><input type="text" id="sc-memo" placeholder="Invoice #1234"></div>
         </div>
         <div class="form-row">
           <div class="form-group"><label>Source Type</label><select id="sc-source-type"><option value="treasury">Treasury</option><option value="cash">Cash</option><option value="trust">Trust Account</option><option value="bond">Bond</option><option value="fixed_income">Fixed Income</option><option value="fineract">Fineract</option><option value="core_banking">Core Banking</option></select></div>
           <div class="form-group"><label>Source Account ID</label><input type="text" id="sc-source-account" placeholder="e.g. TREASURY_HOT, account code, bond id, GL id"></div>
-          <div class="form-group"><label>Wallet Provider</label><select id="sc-wallet-provider"><option value="direct">Direct</option><option value="magic">Magic WaaS</option></select></div>
+          <div class="form-group"><label>Source Wallet ID (FyStack)</label><input type="text" id="sc-fystack-wallet-id" placeholder="FyStack treasury wallet UUID"></div>
+          <div class="form-group"><label>Wallet Provider</label><select id="sc-wallet-provider"><option value="direct">Direct</option><option value="magic">Magic WaaS</option><option value="fystack">FyStack Ignite</option></select></div>
         </div>
         <div class="form-row">
           <div class="form-group" style="flex:2"><label>Destination Secret (optional, for trustline auto-create)</label><input type="password" id="sc-destination-secret" placeholder="Stellar secret key that matches the destination wallet"></div>
@@ -1556,7 +1557,7 @@
         <div class="form-row">
           <div class="form-group"><label>Beneficiary Name (optional)</label><input type="text" id="sc-beneficiary" placeholder="Acme LLC"></div>
           <div class="form-group"><label>Asset Code</label><input type="text" id="sc-asset-code" placeholder="USDC" value="USDC"></div>
-          <div class="form-group"><label>Network</label><input type="text" id="sc-network-input" placeholder="testnet" value="testnet"></div>
+          <div class="form-group"><label>Network</label><input type="text" id="sc-network-input" placeholder="testnet, fystack, mainnet" value="testnet"></div>
         </div>
         <div class="form-row">
           <button class="btn btn-success btn-sm" onclick="scCreatePayment()">Create Payment</button>
@@ -1567,6 +1568,29 @@
         <div id="sc-create-result" style="margin-top:8px"></div>
         <div id="sc-balance-result" style="margin-top:8px"></div>
       </div>
+      <div class="card" style="margin-top:24px">
+        <h2>FyStack Ignite Self-Hosted Custody</h2>
+        <p class="text-muted" style="font-size:12px;margin:-4px 0 10px;">Create MPC wallets, deposit addresses, balances, and sweep tasks on your self-hosted FyStack cluster.</p>
+        <div class="form-row">
+          <div class="form-group"><label>Wallet Name</label><input type="text" id="sc-fystack-name" placeholder="Treasury Hot Wallet"></div>
+          <div class="form-group"><label>Wallet Type</label><select id="sc-fystack-type"><option value="mpc">MPC</option><option value="standard">Standard</option></select></div>
+          <div class="form-group"><label>Address Type</label><select id="sc-fystack-addr-type"><option value="evm">EVM</option><option value="sol">Solana</option></select></div>
+        </div>
+        <div class="form-row">
+          <div class="form-group"><label>FyStack Wallet ID</label><input type="text" id="sc-fystack-wallet-id-ops" placeholder="UUID for deposits / balance / withdraw"></div>
+          <div class="form-group"><label>Withdraw Amount ($)</label><input type="number" step="0.01" id="sc-fystack-withdraw-amount" placeholder="10.00"></div>
+          <div class="form-group"><label>Recipient Address</label><input type="text" id="sc-fystack-recipient" placeholder="0x... or Solana address"></div>
+        </div>
+        <div class="form-row">
+          <button class="btn btn-primary btn-sm" onclick="scFyStackReadiness()">Check Readiness</button>
+          <button class="btn btn-success btn-sm" onclick="scFyStackCreateWallet()">Create Wallet</button>
+          <button class="btn btn-sm" onclick="scFyStackDepositAddress()">Deposit Address</button>
+          <button class="btn btn-sm" onclick="scFyStackBalance()">Balance</button>
+          <button class="btn btn-sm" onclick="scFyStackWithdraw()">Withdraw</button>
+        </div>
+        <div id="sc-fystack-result" style="margin-top:8px"></div>
+      </div>
+
       <div class="card" style="margin-top:24px">
         <h2>Fiat to Crypto Conversion (HollaEx Kit)</h2>
         <p class="text-muted" style="font-size:12px;margin:-4px 0 10px;">Quote and execute a quick trade between fiat and the configured stablecoin asset.</p>
@@ -6523,6 +6547,7 @@
         sourceType: el('sc-source-type').value,
         sourceAccountId: el('sc-source-account').value.trim() || undefined,
         walletProvider: el('sc-wallet-provider').value,
+        fyStackWalletId: el('sc-fystack-wallet-id').value.trim() || undefined,
         memo: el('sc-memo').value.trim() || undefined,
         beneficiaryName: el('sc-beneficiary').value.trim() || undefined,
       };
@@ -6596,6 +6621,69 @@
         el('sc-convert-readiness').innerHTML = '<p class="' + (r.ready ? 'success-msg' : 'error-msg') + '">HollaEx ' + (r.ready ? 'Ready' : 'Not Ready') + ': ' + esc((r.issues || []).join('; ') || 'OK') + '</p>';
       } else {
         el('sc-convert-readiness').innerHTML = '<p class="error-msg">' + esc((resp && resp.error) || 'Readiness check failed') + '</p>';
+      }
+    }
+
+    // ─── FYSTACK IGNITE ───────────────────────────────────────────────────────────
+    async function scFyStackReadiness() {
+      const resp = await fetchJSON(API + '/api/stablecoin/fystack/readiness', { headers: adminHeaders() });
+      const msg = resp && resp.success ? 'Ready' : (resp && resp.error) || 'Not Ready';
+      el('sc-fystack-result').innerHTML = '<p class="' + (resp && resp.success ? 'success-msg' : 'error-msg') + '">' + esc(msg) + '</p>';
+    }
+
+    async function scFyStackCreateWallet() {
+      const body = JSON.stringify({
+        name: el('sc-fystack-name').value.trim() || 'DLB Trust Wallet',
+        walletType: el('sc-fystack-type').value,
+        walletPurpose: 'general',
+      });
+      const resp = await fetchJSON(API + '/api/stablecoin/fystack/wallets', { method: 'POST', headers: adminHeaders(), body });
+      if (resp && resp.success) {
+        el('sc-fystack-result').innerHTML = '<p class="success-msg">Wallet created: ' + esc(resp.data.wallet_id || JSON.stringify(resp.data)) + '</p>';
+      } else {
+        el('sc-fystack-result').innerHTML = '<p class="error-msg">' + esc((resp && resp.error) || 'Create failed') + '</p>';
+      }
+    }
+
+    async function scFyStackDepositAddress() {
+      const walletId = el('sc-fystack-wallet-id-ops').value.trim();
+      if (!walletId) { el('sc-fystack-result').innerHTML = '<p class="error-msg">Enter a FyStack Wallet ID</p>'; return; }
+      const addressType = el('sc-fystack-addr-type').value;
+      const resp = await fetchJSON(API + '/api/stablecoin/fystack/wallets/' + encodeURIComponent(walletId) + '/deposit-address?addressType=' + encodeURIComponent(addressType), { headers: adminHeaders() });
+      if (resp && resp.success) {
+        el('sc-fystack-result').innerHTML = '<p class="success-msg">Deposit address: ' + esc(resp.data.address || JSON.stringify(resp.data)) + '</p>';
+      } else {
+        el('sc-fystack-result').innerHTML = '<p class="error-msg">' + esc((resp && resp.error) || 'Failed') + '</p>';
+      }
+    }
+
+    async function scFyStackBalance() {
+      const walletId = el('sc-fystack-wallet-id-ops').value.trim();
+      if (!walletId) { el('sc-fystack-result').innerHTML = '<p class="error-msg">Enter a FyStack Wallet ID</p>'; return; }
+      const resp = await fetchJSON(API + '/api/stablecoin/fystack/wallets/' + encodeURIComponent(walletId) + '/balance', { headers: adminHeaders() });
+      if (resp && resp.success) {
+        el('sc-fystack-result').innerHTML = '<p class="success-msg">Balance: ' + esc(String(resp.data)) + '</p>';
+      } else {
+        el('sc-fystack-result').innerHTML = '<p class="error-msg">' + esc((resp && resp.error) || 'Failed') + '</p>';
+      }
+    }
+
+    async function scFyStackWithdraw() {
+      const walletId = el('sc-fystack-wallet-id-ops').value.trim();
+      const recipient = el('sc-fystack-recipient').value.trim();
+      const amount = Number(el('sc-fystack-withdraw-amount').value);
+      if (!walletId || !recipient || !amount || amount <= 0) { el('sc-fystack-result').innerHTML = '<p class="error-msg">Wallet ID, recipient, and amount are required</p>'; return; }
+      const body = JSON.stringify({
+        asset: el('sc-asset-code').value.trim() || 'USDC',
+        amount: String(amount),
+        recipientAddress: recipient,
+        notes: 'DLB Trust FyStack withdrawal',
+      });
+      const resp = await fetchJSON(API + '/api/stablecoin/fystack/wallets/' + encodeURIComponent(walletId) + '/withdraw', { method: 'POST', headers: adminHeaders(), body });
+      if (resp && resp.success) {
+        el('sc-fystack-result').innerHTML = '<p class="success-msg">Withdrawal: ' + esc(JSON.stringify(resp.data)) + '</p>';
+      } else {
+        el('sc-fystack-result').innerHTML = '<p class="error-msg">' + esc((resp && resp.error) || 'Withdraw failed') + '</p>';
       }
     }
 

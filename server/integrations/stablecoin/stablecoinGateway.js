@@ -9,9 +9,10 @@
 let pool;
 try { pool = require('../bonds/pgPool'); } catch (e) { pool = null; }
 
-const { getConfig, isProduction } = require('./config');
+const { getConfig, isProduction, isFyStackNetwork } = require('./config');
 const { TreasuryEngine, DEFAULT_ACCOUNT } = require('./treasuryEngine');
 const { BlockchainEngine } = require('./blockchainEngine');
+const { FyStackEngine } = require('./fystackEngine');
 const { MagicWalletService } = require('./magicWalletService');
 const { SourceOfFundsAdapter } = require('./sourceOfFundsAdapter');
 
@@ -83,26 +84,34 @@ class StablecoinGateway {
 
   static async readiness({ publicHealth } = {}) {
     const cfg = getConfig();
+    const treasury = await TreasuryEngine.getPosition(DEFAULT_ACCOUNT).catch(err => ({ ready: false, error: err.message }));
+    const blockchain = await new BlockchainEngine().readiness();
+    const fyStack = cfg.fyStackEnabled ? await new FyStackEngine().readiness() : { ready: false, issues: [] };
+    const magic = new MagicWalletService().readiness();
+    const anyReady = blockchain.ready || fyStack.ready;
+    const issues = [];
+    if (!cfg.enabled) issues.push('STABLECOIN_ENABLED is not true');
+    if (!anyReady) {
+      issues.push('No stablecoin rail is ready');
+      if (!blockchain.ready) issues.push(...(blockchain.issues || []));
+      if (cfg.fyStackEnabled && !fyStack.ready) issues.push(...(fyStack.issues || []));
+    }
+
     if (publicHealth) {
-      const blockchain = await new BlockchainEngine().readiness();
       return {
-        ready: cfg.enabled && blockchain.ready,
+        ready: cfg.enabled && anyReady,
         mode: cfg.mode,
         network: cfg.network,
         assetCode: cfg.assetCode,
       };
     }
-    const treasury = await TreasuryEngine.getPosition(DEFAULT_ACCOUNT).catch(err => ({ ready: false, error: err.message }));
-    const blockchain = await new BlockchainEngine().readiness();
-    const magic = new MagicWalletService().readiness();
-    const issues = [];
-    if (!cfg.enabled) issues.push('STABLECOIN_ENABLED is not true');
-    if (!blockchain.ready) issues.push(...blockchain.issues);
+
     return {
-      ready: cfg.enabled && blockchain.ready,
+      ready: cfg.enabled && anyReady,
       issues,
       treasury: { ok: typeof treasury.balanceCents === 'number', ...treasury },
       blockchain,
+      fyStack,
       magic,
     };
   }
@@ -123,7 +132,12 @@ class StablecoinGateway {
     const cfg = getConfig();
     const amountCents = typeof input.amountCents === 'number' ? input.amountCents : toCents(input.amount);
     const quote = StablecoinGateway.quote({ amountCents, assetCode: input.assetCode, network: input.network });
-    if (quote.network !== cfg.network) throw new Error(`Payment network ${quote.network} does not match configured stablecoin network ${cfg.network}`);
+    const quoteNetwork = String(quote.network).toLowerCase();
+    if (isFyStackNetwork(quoteNetwork)) {
+      if (!cfg.fyStackEnabled) throw new Error('FYSTACK_ENABLED must be true for FyStack stablecoin payments');
+    } else if (quote.network !== cfg.network) {
+      throw new Error(`Payment network ${quote.network} does not match configured stablecoin network ${cfg.network}`);
+    }
     if (quote.assetCode.toUpperCase() !== cfg.assetCode.toUpperCase()) throw new Error(`Payment asset ${quote.assetCode} does not match configured asset ${cfg.assetCode}`);
     const id = identifier('SCP');
     const destination = input.destinationWallet || input.walletAddress || '';
@@ -144,7 +158,11 @@ class StablecoinGateway {
       source_account_id: input.sourceAccountId || input.sourceAccount || DEFAULT_ACCOUNT,
       source_ref: {},
       memo: input.memo || `DLB Trust stablecoin payment ${id}`,
-      metadata: { beneficiaryName: input.beneficiaryName || '', ...input.metadata },
+      metadata: {
+        beneficiaryName: input.beneficiaryName || '',
+        fyStackWalletId: input.fyStackWalletId || input.sourceWalletId || '',
+        ...input.metadata,
+      },
       reserve_id: null,
       tx_hash: null,
       created_at: new Date().toISOString(),
@@ -216,17 +234,25 @@ class StablecoinGateway {
     }
     if (payment.status === 'pending') payment = await StablecoinGateway.approvePayment(id, payment.source_account_id);
 
-    const blockchain = new BlockchainEngine();
+    const isFy = isFyStackNetwork(payment.network);
+    const engine = isFy ? new FyStackEngine() : new BlockchainEngine();
     let result;
     try {
-      result = await blockchain.settle({
-        destination: payment.destination_wallet,
-        amountCents: payment.amount_cents,
-        memo: memo || payment.memo,
-        destinationSecret,
-      });
+      result = isFy
+        ? await engine.settle({
+            destination: payment.destination_wallet,
+            amountCents: payment.amount_cents,
+            memo: memo || payment.memo,
+            walletId: payment.metadata && (payment.metadata.fyStackWalletId || payment.metadata.sourceWalletId),
+          })
+        : await engine.settle({
+            destination: payment.destination_wallet,
+            amountCents: payment.amount_cents,
+            memo: memo || payment.memo,
+            destinationSecret,
+          });
     } catch (err) {
-      await StablecoinGateway.failPayment(id, err.message || 'blockchain settlement failed');
+      await StablecoinGateway.failPayment(id, err.message || 'settlement failed');
       throw err;
     }
 
@@ -234,14 +260,15 @@ class StablecoinGateway {
     // cannot trigger a second blockchain send if source posting fails.
     payment.status = 'settled';
     payment.tx_hash = result.hash;
-    payment.tx_ledger = String(result.ledger);
-    payment.tx_explorer = result.explorer;
+    payment.tx_ledger = String(result.ledger || result.status || '');
+    payment.tx_explorer = result.explorer || '';
     payment.latency_ms = result.latencyMs;
     payment.updated_at = new Date().toISOString();
+    await StablecoinGateway._update(payment);
 
     try {
       const sourcePost = await SourceOfFundsAdapter.post(payment, result.hash, { settledAmountCents: payment.amount_cents });
-      payment.source_ref = { ...payment.source_ref, post: sourcePost };
+      payment.source_ref = { ...payment.source_ref, post: sourcePost, fyStack: result.simulated ? { simulated: true } : undefined };
     } catch (postErr) {
       payment.metadata = { ...payment.metadata, postError: postErr.message };
       console.warn(`[stablecoinGateway] source post failed after on-chain send for ${payment.id}:`, postErr.message);
@@ -285,7 +312,8 @@ class StablecoinGateway {
     const assetCode = intent.metadata && intent.metadata.asset_code || cfg.assetCode;
     const walletProvider = intent.metadata && intent.metadata.wallet_provider || 'direct';
     if (!destination) throw new Error('Stablecoin intent requires metadata.destination_wallet');
-    if (network !== cfg.network) throw new Error(`Payment network ${network} does not match configured stablecoin network ${cfg.network}`);
+    if (!isFyStackNetwork(network) && network !== cfg.network) throw new Error(`Payment network ${network} does not match configured stablecoin network ${cfg.network}`);
+    if (isFyStackNetwork(network) && !cfg.fyStackEnabled) throw new Error('FYSTACK_ENABLED must be true for FyStack stablecoin payments');
     if (String(assetCode).toUpperCase() !== cfg.assetCode.toUpperCase()) throw new Error(`Payment asset ${assetCode} does not match configured asset ${cfg.assetCode}`);
     const sourceType = intent.metadata && intent.metadata.source_type || 'treasury';
     const sourceAccountId = intent.metadata && intent.metadata.source_account_id || DEFAULT_ACCOUNT;
@@ -298,6 +326,7 @@ class StablecoinGateway {
       walletProvider,
       sourceType,
       sourceAccountId,
+      fyStackWalletId: intent.metadata && intent.metadata.fy_stack_wallet_id,
       beneficiaryName: intent.beneficiary_name,
       memo: `PaymentHub ${intent.intent_id}`,
       metadata: { paymentHubIntentId: intent.intent_id, rail: 'stablecoin' },
