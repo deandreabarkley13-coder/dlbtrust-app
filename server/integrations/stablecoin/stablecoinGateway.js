@@ -230,15 +230,23 @@ class StablecoinGateway {
       throw err;
     }
 
-    const sourcePost = await SourceOfFundsAdapter.post(payment, result.hash, { settledAmountCents: payment.amount_cents });
-    await SourceOfFundsAdapter.recordCrmAndDocuments(payment, result.hash);
+    // Persist the on-chain result before finalizing source ledgers so a retry
+    // cannot trigger a second blockchain send if source posting fails.
     payment.status = 'settled';
     payment.tx_hash = result.hash;
     payment.tx_ledger = String(result.ledger);
     payment.tx_explorer = result.explorer;
     payment.latency_ms = result.latencyMs;
-    payment.source_ref = { ...payment.source_ref, post: sourcePost };
     payment.updated_at = new Date().toISOString();
+
+    try {
+      const sourcePost = await SourceOfFundsAdapter.post(payment, result.hash, { settledAmountCents: payment.amount_cents });
+      payment.source_ref = { ...payment.source_ref, post: sourcePost };
+    } catch (postErr) {
+      payment.metadata = { ...payment.metadata, postError: postErr.message };
+      console.warn(`[stablecoinGateway] source post failed after on-chain send for ${payment.id}:`, postErr.message);
+    }
+    await SourceOfFundsAdapter.recordCrmAndDocuments(payment, result.hash);
     await StablecoinGateway._update(payment);
     return payment;
   }
