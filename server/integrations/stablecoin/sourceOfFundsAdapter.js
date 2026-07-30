@@ -330,7 +330,7 @@ class SourceOfFundsAdapter {
         results.document = await DocumentEngine.createDocument({
           documentName: `Stablecoin Receipt ${payment.id}`,
           documentType: 'receipt',
-          category: 'payment',
+          category: 'financial',
           referenceType: 'stablecoin_payment',
           referenceId: payment.id,
           content: JSON.stringify({ ...payment, tx_hash: txHash }, null, 2),

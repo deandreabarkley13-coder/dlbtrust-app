@@ -14,6 +14,7 @@ const { getConfig } = require('./config');
 let AppKit;
 let createViemAdapterFromPrivateKey;
 let createCircleWalletsAdapter;
+let resolveChainIdentifier;
 
 function loadModules() {
   if (AppKit) return;
@@ -23,6 +24,7 @@ function loadModules() {
   AppKit = appKit.AppKit;
   createViemAdapterFromPrivateKey = viemAdapter.createViemAdapterFromPrivateKey;
   createCircleWalletsAdapter = cwAdapter.createCircleWalletsAdapter;
+  resolveChainIdentifier = viemAdapter.resolveChainIdentifier;
 }
 
 function centsToDecimal(cents) {
@@ -71,9 +73,16 @@ class CircleKitEngine {
   async _sourceAddress() {
     const cfg = this.cfg;
     if (cfg.circleSourceAddress) return cfg.circleSourceAddress;
+
+    if (this._adapterType() === 'circle-wallets') {
+      throw new Error('CIRCLE_SOURCE_ADDRESS is required for Circle Wallets adapter');
+    }
+
+    loadModules();
     const adapter = this._getAdapter();
     if (adapter.getAddress) {
-      return adapter.getAddress({ chain: cfg.circleChain || 'Ethereum' });
+      const chainDef = resolveChainIdentifier(cfg.circleChain || 'Ethereum');
+      return adapter.getAddress(chainDef);
     }
     throw new Error('CIRCLE_SOURCE_ADDRESS is required (or adapter must support getAddress)');
   }
@@ -156,15 +165,14 @@ class CircleKitEngine {
 
     if (!destination) throw new Error('destination wallet address is required');
     const chain = cfg.circleChain || 'Ethereum';
-    const sourceAddress = walletId || cfg.circleSourceAddress;
     const amount = centsToDecimal(amountCents);
 
     loadModules();
     const adapter = this._getAdapter();
+    const sourceAddress = walletId || (await this._sourceAddress());
     const kit = new AppKit();
 
-    const from = { adapter, chain };
-    if (sourceAddress) from.address = sourceAddress;
+    const from = { adapter, chain, address: sourceAddress };
 
     const start = Date.now();
     let result;
