@@ -47,7 +47,7 @@ function toHederaTokenAmount(cents, decimals = 6) {
 
 function txExplorerUrl(network, txId) {
   if (!txId || typeof txId !== 'string') return '';
-  const net = network === 'mainnet' ? 'mainnet' : 'testnet';
+  const net = ['mainnet', 'testnet', 'previewnet'].includes(network) ? network : 'testnet';
   return `${HEDERA_EXPLORER}/${net}/transaction/${txId}`;
 }
 
@@ -102,7 +102,7 @@ class HederaEngine {
   }
 
   async _init(cfg) {
-    const networkName = cfg.hederaNetwork === 'mainnet' ? 'mainnet' : 'testnet';
+    const networkName = (cfg.hederaNetwork || 'testnet').toLowerCase();
 
     if (useNativeHts(cfg)) {
       return { network: networkName, native: true };
@@ -314,7 +314,8 @@ class HederaEngine {
     await this.ensureInitialized();
     if (useNativeHts(cfg) || (cachedTokenInfo && cachedTokenInfo.native)) {
       try {
-        const base = cfg.hederaMirrorNode || `https://${cfg.hederaNetwork === 'mainnet' ? 'mainnet' : 'testnet'}.mirrornode.hedera.com/api/v1/`;
+        const net = cfg.hederaNetwork || 'testnet';
+        const base = cfg.hederaMirrorNode || `https://${net}.mirrornode.hedera.com/api/v1/`;
         const res = await fetch(`${base}accounts/${targetId}/tokens?token.id=${tokenId}&limit=1`);
         if (!res.ok) return false;
         const data = await res.json();
@@ -340,9 +341,11 @@ class HederaEngine {
   async getHederaClient() {
     if (!hederaSdk) throw new Error('@hiero-ledger/sdk is not available');
     const cfg = getConfig();
-    const client = cfg.hederaNetwork === 'mainnet'
-      ? hederaSdk.Client.forMainnet()
-      : hederaSdk.Client.forTestnet();
+    const network = (cfg.hederaNetwork || 'testnet').toLowerCase();
+    let client;
+    if (network === 'mainnet') client = hederaSdk.Client.forMainnet();
+    else if (network === 'previewnet') client = hederaSdk.Client.forPreviewnet();
+    else client = hederaSdk.Client.forTestnet();
     const operatorId = cfg.hederaOperatorId.startsWith('0x')
       ? hederaSdk.AccountId.fromEvmAddress(0, 0, cfg.hederaOperatorId)
       : hederaSdk.AccountId.fromString(cfg.hederaOperatorId);

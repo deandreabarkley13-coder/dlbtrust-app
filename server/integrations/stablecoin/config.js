@@ -106,8 +106,18 @@ function getConfig() {
     hederaDecimals: int('HEDERA_DECIMALS', 6, 0, 18),
     hederaCreateReserve: bool('HEDERA_CREATE_RESERVE', false),
     hederaShadow: bool('HEDERA_SHADOW', false),
-    hederaMirrorNode: str('HEDERA_MIRROR_NODE', str('HEDERA_NETWORK', 'testnet') === 'mainnet' ? 'https://mainnet.mirrornode.hedera.com/api/v1/' : 'https://testnet.mirrornode.hedera.com/api/v1/'),
-    hederaRpcNode: str('HEDERA_RPC_NODE', str('HEDERA_NETWORK', 'testnet') === 'mainnet' ? 'https://mainnet.hashio.io/api' : 'https://testnet.hashio.io/api'),
+    hederaMirrorNode: str('HEDERA_MIRROR_NODE', (() => {
+      const n = str('HEDERA_NETWORK', 'testnet');
+      if (n === 'mainnet') return 'https://mainnet.mirrornode.hedera.com/api/v1/';
+      if (n === 'previewnet') return 'https://previewnet.mirrornode.hedera.com/api/v1/';
+      return 'https://testnet.mirrornode.hedera.com/api/v1/';
+    })()),
+    hederaRpcNode: str('HEDERA_RPC_NODE', (() => {
+      const n = str('HEDERA_NETWORK', 'testnet');
+      if (n === 'mainnet') return 'https://mainnet.hashio.io/api';
+      if (n === 'previewnet') return 'https://previewnet.hashio.io/api';
+      return 'https://testnet.hashio.io/api';
+    })()),
     // Source-of-funds mappings
     cashHoldingAccount: str('STABLECOIN_CASH_HOLDING_ACCOUNT', 'STABLECOIN_CASH_HOLD'),
     cashSettlementAccount: str('STABLECOIN_CASH_SETTLEMENT_ACCOUNT', ''),
