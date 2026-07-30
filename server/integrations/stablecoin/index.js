@@ -1,9 +1,10 @@
 'use strict';
 
-const { getConfig, isFyStackNetwork, isCircleNetwork } = require('./config');
+const { getConfig, isFyStackNetwork, isCircleNetwork, isHederaNetwork } = require('./config');
 const { BlockchainEngine } = require('./blockchainEngine');
 const { FyStackEngine } = require('./fystackEngine');
 const { CircleKitEngine } = require('./circleKitEngine');
+const { HederaEngine } = require('./hederaEngine');
 const { TreasuryEngine, DEFAULT_ACCOUNT } = require('./treasuryEngine');
 const { StablecoinGateway } = require('./stablecoinGateway');
 const { MagicWalletService } = require('./magicWalletService');
@@ -16,7 +17,9 @@ module.exports = {
   getConfig,
   isFyStackNetwork,
   isCircleNetwork,
+  isHederaNetwork,
   BlockchainEngine,
+  HederaEngine,
   FyStackEngine,
   CircleKitEngine,
   TreasuryEngine,

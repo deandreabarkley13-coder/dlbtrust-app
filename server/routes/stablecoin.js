@@ -2,7 +2,7 @@
 
 const express = require('express');
 const crypto = require('crypto');
-const { StablecoinGateway, TreasuryEngine, BlockchainEngine, FyStackEngine, CircleKitEngine, MagicWalletService, Wso2ApiManager, SourceOfFundsAdapter, CircleMintClient, ClearingAndSettlementEngine, DEFAULT_ACCOUNT } = require('../integrations/stablecoin');
+const { StablecoinGateway, TreasuryEngine, BlockchainEngine, FyStackEngine, CircleKitEngine, HederaEngine, MagicWalletService, Wso2ApiManager, SourceOfFundsAdapter, CircleMintClient, ClearingAndSettlementEngine, DEFAULT_ACCOUNT } = require('../integrations/stablecoin');
 const { HollaExClient } = require('../integrations/hollaex/hollaExClient');
 const { requireAuth, writeRateLimiter } = require('../integrations/auth/securityMiddleware');
 
@@ -79,7 +79,7 @@ router.post('/payments/:id/approve', operatorAuth, writeRateLimiter(), async (re
 
 router.post('/payments/:id/settle', operatorAuth, writeRateLimiter(), async (req, res) => {
   try {
-    const data = await StablecoinGateway.settlePayment(req.params.id, { memo: req.body.memo, destinationSecret: req.body.destinationSecret });
+    const data = await StablecoinGateway.settlePayment(req.params.id, { memo: req.body.memo, destinationSecret: req.body.destinationSecret, destinationKey: req.body.destinationKey });
     res.json({ success: true, data });
   } catch (err) { sendError(res, err); }
 });
@@ -89,6 +89,46 @@ router.post('/ensure-trustline', operatorAuth, writeRateLimiter(), async (req, r
     const { destination, destinationSecret } = req.body;
     const blockchain = new BlockchainEngine();
     const data = await blockchain.ensureDestinationTrustline({ destination, destinationSecret });
+    res.json({ success: true, data });
+  } catch (err) { sendError(res, err); }
+});
+
+// Hedera Stablecoin Studio operations
+router.get('/hedera/readiness', operatorAuth, async (req, res) => {
+  try {
+    const data = await new HederaEngine().readiness();
+    res.status(data.ready ? 200 : 503).json({ success: data.ready, data });
+  } catch (err) { sendError(res, err); }
+});
+
+router.post('/hedera/create-stablecoin', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try {
+    const { name, symbol, decimals = 6, initialSupply = '0', createReserve = false } = req.body;
+    const data = await new HederaEngine().createStablecoin({ name, symbol, decimals, initialSupply, createReserve });
+    res.json({ success: true, data });
+  } catch (err) { sendError(res, err); }
+});
+
+router.post('/hedera/mint', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try {
+    const { tokenId, targetId, amountCents } = req.body;
+    const data = await new HederaEngine().cashIn({ tokenId, targetId, amountCents });
+    res.json({ success: true, data });
+  } catch (err) { sendError(res, err); }
+});
+
+router.get('/hedera/balance', operatorAuth, async (req, res) => {
+  try {
+    const { tokenId, accountId } = req.query;
+    const data = await new HederaEngine().getBalance({ tokenId, accountId });
+    res.json({ success: true, data: { tokenId, accountId, balance: data } });
+  } catch (err) { sendError(res, err); }
+});
+
+router.post('/hedera/associate', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try {
+    const { tokenId, targetId, targetKey } = req.body;
+    const data = await new HederaEngine().associateToken({ tokenId, targetId, targetKey });
     res.json({ success: true, data });
   } catch (err) { sendError(res, err); }
 });

@@ -22,6 +22,8 @@
     "@circle-fin/adapter-circle-wallets": "^1.5.0",
     "@circle-fin/adapter-viem-v2": "^1.14.1",
     "@circle-fin/app-kit": "^1.11.0",
+    "@hashgraph/stablecoin-npm-sdk": "^4.4.0",
+    "@hiero-ledger/sdk": "^2.79.0",
     "@magic-sdk/admin": "^2.8.2",
     "@stellar/stellar-sdk": "^16.1.0",
     "@supabase/supabase-js": "^2.45.0",
