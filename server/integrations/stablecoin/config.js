@@ -92,6 +92,12 @@ function getConfig() {
     // Circle Mint regulated fiat on-ramp
     circleMintApiKey: str('CIRCLE_MINT_API_KEY', ''),
     circleMintBaseUrl: str('CIRCLE_MINT_BASE_URL', 'https://api.circle.com'),
+    // Coinbase HBAR fiat-to-crypto funding
+    coinbaseHbarEnabled: bool('COINBASE_HBAR_ENABLED', false),
+    coinbaseCdpKeyName: str('COINBASE_CDP_KEY_NAME', ''),
+    coinbaseCdpPrivateKey: str('COINBASE_CDP_PRIVATE_KEY', ''),
+    coinbaseHbarShadow: bool('COINBASE_HBAR_SHADOW', false),
+    coinbaseHbarWithdrawalFee: str('COINBASE_HBAR_WITHDRAWAL_FEE', '0'),
     // Hedera Stablecoin Studio
     hederaEnabled: bool('HEDERA_STUDIO_ENABLED', false),
     hederaNetwork: str('HEDERA_NETWORK', 'testnet'),

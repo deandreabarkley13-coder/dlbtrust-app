@@ -2,7 +2,7 @@
 
 const express = require('express');
 const crypto = require('crypto');
-const { StablecoinGateway, TreasuryEngine, BlockchainEngine, FyStackEngine, CircleKitEngine, HederaEngine, MagicWalletService, Wso2ApiManager, SourceOfFundsAdapter, CircleMintClient, ClearingAndSettlementEngine, DEFAULT_ACCOUNT } = require('../integrations/stablecoin');
+const { StablecoinGateway, TreasuryEngine, BlockchainEngine, FyStackEngine, CircleKitEngine, HederaEngine, MagicWalletService, Wso2ApiManager, SourceOfFundsAdapter, CircleMintClient, CoinbaseHbarEngine, ClearingAndSettlementEngine, DEFAULT_ACCOUNT } = require('../integrations/stablecoin');
 const { HollaExClient } = require('../integrations/hollaex/hollaExClient');
 const { requireAuth, writeRateLimiter } = require('../integrations/auth/securityMiddleware');
 
@@ -464,6 +464,51 @@ router.get('/clearing/orders', operatorAuth, async (req, res) => {
 router.get('/clearing/orders/:id', operatorAuth, async (req, res) => {
   try {
     const data = await ClearingAndSettlementEngine.getOrder(req.params.id);
+    res.json({ success: true, data });
+  } catch (err) { sendError(res, err); }
+});
+
+// Coinbase HBAR fiat-to-crypto funding
+router.get('/coinbase-hbar/balances', operatorAuth, async (req, res) => {
+  try {
+    const data = await CoinbaseHbarEngine.getBalances();
+    res.json({ success: true, data });
+  } catch (err) { sendError(res, err); }
+});
+
+router.get('/coinbase-hbar/quote', operatorAuth, async (req, res) => {
+  try {
+    const data = await CoinbaseHbarEngine.quote({ fiatAmount: req.query.fiatAmount, fiatCurrency: req.query.fiatCurrency });
+    res.json({ success: true, data });
+  } catch (err) { sendError(res, err); }
+});
+
+router.post('/coinbase-hbar/fund', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try {
+    const { fiatAmount, targetAddress, sourceType, sourceAccountId, autoBuy } = req.body;
+    const data = await CoinbaseHbarEngine.fund({ fiatAmount, targetAddress, sourceType, sourceAccountId, autoBuy });
+    res.status(201).json({ success: true, data });
+  } catch (err) { sendError(res, err); }
+});
+
+router.post('/coinbase-hbar/withdraw', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try {
+    const { amount, targetAddress } = req.body;
+    const data = await CoinbaseHbarEngine.withdraw({ amount, targetAddress });
+    res.status(201).json({ success: true, data });
+  } catch (err) { sendError(res, err); }
+});
+
+router.get('/coinbase-hbar/orders', operatorAuth, async (req, res) => {
+  try {
+    const data = await CoinbaseHbarEngine.listOrders(req.query);
+    res.json({ success: true, data });
+  } catch (err) { sendError(res, err); }
+});
+
+router.get('/coinbase-hbar/orders/:id', operatorAuth, async (req, res) => {
+  try {
+    const data = await CoinbaseHbarEngine.getOrder(req.params.id);
     res.json({ success: true, data });
   } catch (err) { sendError(res, err); }
 });

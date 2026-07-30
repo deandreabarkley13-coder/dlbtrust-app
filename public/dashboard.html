@@ -1707,6 +1707,25 @@
       </div>
 
       <div class="card" style="margin-top:24px">
+        <h2>Coinbase HBAR Funding</h2>
+        <p class="text-muted" style="font-size:12px;margin:-4px 0 10px;">Swap fiat (USD cash in Coinbase) for HBAR and send it to a Hedera wallet. Requires COINBASE_CDP_KEY_NAME/COINBASE_CDP_PRIVATE_KEY.</p>
+        <div class="form-row">
+          <div class="form-group"><label>USD Amount</label><input type="number" step="0.01" id="sc-cb-hbar-amount" placeholder="25.00" value="25.00"></div>
+          <div class="form-group" style="flex:2"><label>Target Hedera Address</label><input type="text" id="sc-cb-hbar-target" placeholder="0x... or 0.0..." value="0xad1adb4897976c6b03839f1f4a21dfd135cfb48b"></div>
+          <div class="form-group"><label>Source Type</label><select id="sc-cb-hbar-source-type"><option value="treasury">Treasury</option><option value="cash">Cash</option><option value="trust">Trust Account</option><option value="bond">Bond</option><option value="fixed_income">Fixed Income</option><option value="fineract">Fineract</option><option value="core_banking">Core Banking</option></select></div>
+          <div class="form-group"><label>Source Account ID</label><input type="text" id="sc-cb-hbar-source-account" value="TREASURY_HOT" placeholder="TREASURY_HOT"></div>
+          <div class="form-group"><label>Auto Buy</label><select id="sc-cb-hbar-autobuy"><option value="true" selected>Yes</option><option value="false">No</option></select></div>
+        </div>
+        <div class="form-row">
+          <button class="btn btn-sm" onclick="scCbHbarBalances()">Balances</button>
+          <button class="btn btn-sm" onclick="scCbHbarQuote()">Quote</button>
+          <button class="btn btn-success btn-sm" onclick="scCbHbarFund()">Fund HBAR</button>
+          <button class="btn btn-danger btn-sm" onclick="scCbHbarWithdraw()">Withdraw HBAR</button>
+        </div>
+        <div id="sc-cb-hbar-result" style="margin-top:8px"></div>
+      </div>
+
+      <div class="card" style="margin-top:24px">
         <h2>Clearing & Settlement</h2>
         <p class="text-muted" style="font-size:12px;margin:-4px 0 10px;">Link source ledgers (Core Banking, Treasury, Bond, Fixed Income, Cash, Trust) to wallets and clear funds in one step.</p>
         <div class="form-row">
@@ -6913,6 +6932,61 @@
         el('sc-circle-mint-result').innerHTML = '<p class="success-msg">Transfer created: ' + esc(JSON.stringify(resp.data)) + '</p>';
       } else {
         el('sc-circle-mint-result').innerHTML = '<p class="error-msg">' + esc((resp && resp.error) || 'Transfer failed') + '</p>';
+      }
+    }
+
+    // ─── COINBASE HBAR FUNDING ────────────────────────────────────────────────────
+    async function scCbHbarBalances() {
+      const resp = await fetchJSON(API + '/api/stablecoin/coinbase-hbar/balances', { headers: adminHeaders() });
+      if (resp && resp.success) {
+        el('sc-cb-hbar-result').innerHTML = '<p class="success-msg">Balances: <pre style="white-space:pre-wrap">' + esc(JSON.stringify(resp.data, null, 2)) + '</pre></p>';
+      } else {
+        el('sc-cb-hbar-result').innerHTML = '<p class="error-msg">' + esc((resp && resp.error) || 'Balances failed') + '</p>';
+      }
+    }
+
+    async function scCbHbarQuote() {
+      const amount = el('sc-cb-hbar-amount').value.trim();
+      if (!amount || Number(amount) <= 0) { el('sc-cb-hbar-result').innerHTML = '<p class="error-msg">Enter a positive USD amount</p>'; return; }
+      const resp = await fetchJSON(API + '/api/stablecoin/coinbase-hbar/quote?fiatAmount=' + encodeURIComponent(amount), { headers: adminHeaders() });
+      if (resp && resp.success) {
+        el('sc-cb-hbar-result').innerHTML = '<p class="success-msg">Quote: <pre style="white-space:pre-wrap">' + esc(JSON.stringify(resp.data, null, 2)) + '</pre></p>';
+      } else {
+        el('sc-cb-hbar-result').innerHTML = '<p class="error-msg">' + esc((resp && resp.error) || 'Quote failed') + '</p>';
+      }
+    }
+
+    async function scCbHbarFund() {
+      const amount = Number(el('sc-cb-hbar-amount').value);
+      if (!amount || amount <= 0) { el('sc-cb-hbar-result').innerHTML = '<p class="error-msg">Enter a positive USD amount</p>'; return; }
+      const target = el('sc-cb-hbar-target').value.trim();
+      if (!target) { el('sc-cb-hbar-result').innerHTML = '<p class="error-msg">Enter a target Hedera address</p>'; return; }
+      const body = JSON.stringify({
+        fiatAmount: String(amount),
+        targetAddress: target,
+        sourceType: el('sc-cb-hbar-source-type').value,
+        sourceAccountId: el('sc-cb-hbar-source-account').value.trim() || undefined,
+        autoBuy: el('sc-cb-hbar-autobuy').value === 'true',
+      });
+      const resp = await fetchJSON(API + '/api/stablecoin/coinbase-hbar/fund', { method: 'POST', headers: adminHeaders(), body });
+      if (resp && resp.success) {
+        el('sc-cb-hbar-result').innerHTML = '<p class="success-msg">Funding order: <pre style="white-space:pre-wrap">' + esc(JSON.stringify(resp.data, null, 2)) + '</pre></p>';
+      } else {
+        el('sc-cb-hbar-result').innerHTML = '<p class="error-msg">' + esc((resp && resp.error) || 'Fund failed') + '</p>';
+      }
+    }
+
+    async function scCbHbarWithdraw() {
+      const amount = el('sc-cb-hbar-amount').value.trim();
+      if (!amount || Number(amount) <= 0) { el('sc-cb-hbar-result').innerHTML = '<p class="error-msg">Enter a positive HBAR amount</p>'; return; }
+      const target = el('sc-cb-hbar-target').value.trim();
+      if (!target) { el('sc-cb-hbar-result').innerHTML = '<p class="error-msg">Enter a target Hedera address</p>'; return; }
+      const body = JSON.stringify({ amount, targetAddress: target });
+      const resp = await fetchJSON(API + '/api/stablecoin/coinbase-hbar/withdraw', { method: 'POST', headers: adminHeaders(), body });
+      if (resp && resp.success) {
+        el('sc-cb-hbar-result').innerHTML = '<p class="success-msg">Withdrawal order: <pre style="white-space:pre-wrap">' + esc(JSON.stringify(resp.data, null, 2)) + '</pre></p>';
+      } else {
+        el('sc-cb-hbar-result').innerHTML = '<p class="error-msg">' + esc((resp && resp.error) || 'Withdraw failed') + '</p>';
       }
     }
 

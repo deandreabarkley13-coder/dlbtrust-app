@@ -11,6 +11,7 @@ const { MagicWalletService } = require('./magicWalletService');
 const { Wso2ApiManager } = require('./wso2ApiManager');
 const { SourceOfFundsAdapter } = require('./sourceOfFundsAdapter');
 const { CircleMintClient } = require('./circleMintClient');
+const { CoinbaseHbarEngine } = require('./coinbaseHbarEngine');
 const { ClearingAndSettlementEngine, WalletRegistry } = require('./clearingAndSettlementEngine');
 
 module.exports = {
@@ -29,6 +30,7 @@ module.exports = {
   Wso2ApiManager,
   SourceOfFundsAdapter,
   CircleMintClient,
+  CoinbaseHbarEngine,
   ClearingAndSettlementEngine,
   WalletRegistry,
 };

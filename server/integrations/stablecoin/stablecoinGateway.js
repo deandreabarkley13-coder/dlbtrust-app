@@ -88,6 +88,12 @@ class StablecoinGateway {
     } catch (err) {
       console.warn('[stablecoinGateway] clearing tables failed:', err.message);
     }
+    try {
+      const { CoinbaseHbarEngine } = require('./coinbaseHbarEngine');
+      await CoinbaseHbarEngine.ensureTables();
+    } catch (err) {
+      console.warn('[stablecoinGateway] coinbase hbar tables failed:', err.message);
+    }
   }
 
   static async readiness({ publicHealth } = {}) {
