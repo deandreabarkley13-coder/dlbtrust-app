@@ -343,7 +343,10 @@ class HederaEngine {
     const client = cfg.hederaNetwork === 'mainnet'
       ? hederaSdk.Client.forMainnet()
       : hederaSdk.Client.forTestnet();
-    client.setOperator(cfg.hederaOperatorId, parseHederaPrivateKey(cfg.hederaOperatorKey, cfg.hederaKeyType));
+    const operatorId = cfg.hederaOperatorId.startsWith('0x')
+      ? hederaSdk.AccountId.fromEvmAddress(0, 0, cfg.hederaOperatorId)
+      : hederaSdk.AccountId.fromString(cfg.hederaOperatorId);
+    client.setOperator(operatorId, parseHederaPrivateKey(cfg.hederaOperatorKey, cfg.hederaKeyType));
     return client;
   }
 
