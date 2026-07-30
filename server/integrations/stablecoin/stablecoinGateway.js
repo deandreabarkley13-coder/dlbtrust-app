@@ -16,6 +16,7 @@ const { FyStackEngine } = require('./fystackEngine');
 const { CircleKitEngine } = require('./circleKitEngine');
 const { MagicWalletService } = require('./magicWalletService');
 const { SourceOfFundsAdapter } = require('./sourceOfFundsAdapter');
+const { ClearingAndSettlementEngine } = require('./clearingAndSettlementEngine');
 
 const memoryPayments = new Map();
 
@@ -81,6 +82,7 @@ class StablecoinGateway {
     } catch (e) {
       console.warn('[stablecoinGateway] Postgres table ensure failed:', e.message);
     }
+    await ClearingAndSettlementEngine.ensureTables().catch(err => console.warn('[stablecoinGateway] clearing tables failed:', err.message));
   }
 
   static async readiness({ publicHealth } = {}) {

@@ -2,7 +2,7 @@
 
 const express = require('express');
 const crypto = require('crypto');
-const { StablecoinGateway, TreasuryEngine, BlockchainEngine, FyStackEngine, CircleKitEngine, MagicWalletService, Wso2ApiManager, SourceOfFundsAdapter, CircleMintClient, DEFAULT_ACCOUNT } = require('../integrations/stablecoin');
+const { StablecoinGateway, TreasuryEngine, BlockchainEngine, FyStackEngine, CircleKitEngine, MagicWalletService, Wso2ApiManager, SourceOfFundsAdapter, CircleMintClient, ClearingAndSettlementEngine, DEFAULT_ACCOUNT } = require('../integrations/stablecoin');
 const { HollaExClient } = require('../integrations/hollaex/hollaExClient');
 const { requireAuth, writeRateLimiter } = require('../integrations/auth/securityMiddleware');
 
@@ -364,6 +364,66 @@ router.get('/circle-mint/transfers', operatorAuth, async (req, res) => {
 router.get('/circle-mint/transfers/:id', operatorAuth, async (req, res) => {
   try {
     const data = await circleMintClient().getTransfer(req.params.id);
+    res.json({ success: true, data });
+  } catch (err) { sendError(res, err); }
+});
+
+// ─── CLEARING & SETTLEMENT ────────────────────────────────────────────────────
+
+router.post('/clearing/wallets', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try {
+    const data = await ClearingAndSettlementEngine.createWallet(req.body);
+    res.status(201).json({ success: true, data });
+  } catch (err) { sendError(res, err); }
+});
+
+router.get('/clearing/wallets', operatorAuth, async (req, res) => {
+  try {
+    const data = await ClearingAndSettlementEngine.listWallets(req.query);
+    res.json({ success: true, data });
+  } catch (err) { sendError(res, err); }
+});
+
+router.get('/clearing/wallets/:id', operatorAuth, async (req, res) => {
+  try {
+    const data = await ClearingAndSettlementEngine.getWallet(req.params.id);
+    res.json({ success: true, data });
+  } catch (err) { sendError(res, err); }
+});
+
+router.post('/clearing/clear-and-settle', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try {
+    const data = await ClearingAndSettlementEngine.clearAndSettle(req.body);
+    res.status(201).json({ success: true, data });
+  } catch (err) { sendError(res, err); }
+});
+
+router.post('/clearing/wallets/:id/fund', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try {
+    const data = await ClearingAndSettlementEngine.fundWallet({ walletId: req.params.id, ...req.body });
+    res.status(201).json({ success: true, data });
+  } catch (err) { sendError(res, err); }
+});
+
+router.post('/clearing/batch', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try {
+    const items = Array.isArray(req.body) ? req.body : req.body.items;
+    if (!Array.isArray(items)) return res.status(400).json({ success: false, error: 'items array is required' });
+    const data = await ClearingAndSettlementEngine.batchClearAndSettle(items);
+    res.status(201).json({ success: true, data });
+  } catch (err) { sendError(res, err); }
+});
+
+router.get('/clearing/orders', operatorAuth, async (req, res) => {
+  try {
+    const data = await ClearingAndSettlementEngine.listOrders(req.query);
+    res.json({ success: true, data });
+  } catch (err) { sendError(res, err); }
+});
+
+router.get('/clearing/orders/:id', operatorAuth, async (req, res) => {
+  try {
+    const data = await ClearingAndSettlementEngine.getOrder(req.params.id);
     res.json({ success: true, data });
   } catch (err) { sendError(res, err); }
 });
