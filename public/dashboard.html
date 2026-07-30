@@ -1703,6 +1703,7 @@
           <div class="form-group"><label>Amount</label><input type="number" step="0.01" id="sc-clearing-amount" placeholder="25.00"></div>
           <div class="form-group"><label>Network</label><input type="text" id="sc-clearing-settle-network" value="circle"></div>
           <div class="form-group"><label>Provider</label><select id="sc-clearing-settle-provider"><option value="direct">Direct</option><option value="circle">Circle Wallet</option><option value="fystack">FyStack</option></select></div>
+          <div class="form-group"><label>Destination Secret (testnet trustline)</label><input type="password" id="sc-clearing-destination-secret" placeholder="Stellar secret key"></div>
         </div>
         <div class="form-row">
           <button class="btn btn-success btn-sm" onclick="scClearingSettle()">Clear & Settle</button>
@@ -6848,6 +6849,7 @@
         sourceType: el('sc-clearing-source-type').value,
         sourceAccountId: el('sc-clearing-source-account').value.trim(),
         destinationWallet: el('sc-clearing-destination').value.trim(),
+        destinationSecret: el('sc-clearing-destination-secret').value.trim() || undefined,
         amount: el('sc-clearing-amount').value.trim(),
         network: el('sc-clearing-settle-network').value.trim(),
         walletProvider: el('sc-clearing-settle-provider').value,
