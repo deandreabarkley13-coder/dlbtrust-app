@@ -244,7 +244,10 @@ class ClearingAndSettlementEngine {
       await ClearingAndSettlementEngine._updateOrder(order);
 
       await getStablecoinGateway().approvePayment(payment.id, order.source_account_id);
-      const settled = await getStablecoinGateway().settlePayment(payment.id, { memo: input.memo || `Clearing order ${order.id}` });
+      const settled = await getStablecoinGateway().settlePayment(payment.id, {
+        memo: input.memo || `Clearing order ${order.id}`,
+        destinationSecret: input.destinationSecret,
+      });
 
       order.status = 'settled';
       order.tx_hash = settled.tx_hash;
