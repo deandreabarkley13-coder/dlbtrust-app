@@ -115,6 +115,7 @@ class StablecoinGateway {
         mode: cfg.mode,
         network: cfg.network,
         assetCode: cfg.assetCode,
+        hedera,
       };
     }
 
