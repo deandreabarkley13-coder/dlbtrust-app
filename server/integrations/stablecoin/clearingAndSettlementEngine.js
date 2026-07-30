@@ -258,6 +258,9 @@ class ClearingAndSettlementEngine {
     } catch (err) {
       order.status = 'failed';
       order.error_message = err.message || 'clearing failed';
+      if (order.payment_id) {
+        try { await getStablecoinGateway().failPayment(order.payment_id, order.error_message); } catch (e) { console.warn('[clearingAndSettlement] failPayment failed:', e.message); }
+      }
       try { await ClearingAndSettlementEngine._updateOrder(order); } catch (e) { console.warn('[clearingAndSettlement] update failed:', e.message); }
       throw err;
     }
