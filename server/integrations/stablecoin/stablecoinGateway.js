@@ -154,7 +154,8 @@ class StablecoinGateway {
       if (!cfg.circleEnabled) throw new Error('CIRCLE_ENABLED must be true for Circle App Kit stablecoin payments');
     } else if (isHederaNetwork(quoteNetwork)) {
       if (!cfg.hederaEnabled) throw new Error('HEDERA_STUDIO_ENABLED must be true for Hedera stablecoin payments');
-      const expectedHederaNetwork = cfg.hederaNetwork === 'mainnet' ? 'hedera-mainnet' : 'hedera-testnet';
+      const hederaNetwork = (cfg.hederaNetwork || 'testnet').toLowerCase();
+      const expectedHederaNetwork = `hedera-${hederaNetwork}`;
       if (quote.network !== expectedHederaNetwork) throw new Error(`Payment network ${quote.network} does not match configured Hedera network ${expectedHederaNetwork}`);
       const allowedAssets = [cfg.hederaStablecoinSymbol.toUpperCase(), cfg.assetCode.toUpperCase()];
       if (!allowedAssets.includes(quote.assetCode.toUpperCase())) throw new Error(`Payment asset ${quote.assetCode} does not match configured Hedera symbol ${cfg.hederaStablecoinSymbol}`);
