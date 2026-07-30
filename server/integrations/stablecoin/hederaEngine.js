@@ -41,6 +41,10 @@ function centsToTokenUnits(cents, decimals = 6) {
   return `${whole}.${frac}`;
 }
 
+function toHederaTokenAmount(cents, decimals = 6) {
+  return BigInt(cents) * (BigInt(10) ** BigInt(decimals)) / 100n;
+}
+
 function txExplorerUrl(network, txId) {
   if (!txId || typeof txId !== 'string') return '';
   const net = network === 'mainnet' ? 'mainnet' : 'testnet';
@@ -278,7 +282,7 @@ class HederaEngine {
       return { associated: true, txId: `shadow-${Date.now()}`, simulated: true };
     }
     const client = await this.getHederaClient();
-    const targetPrivateKey = hederaSdk.PrivateKey.fromString(targetKey);
+    const targetPrivateKey = parseHederaPrivateKey(targetKey, cfg.hederaKeyType);
     const tx = await new hederaSdk.TokenAssociateTransaction()
       .setAccountId(targetId)
       .setTokenIds([tokenId])
@@ -313,35 +317,35 @@ class HederaEngine {
     };
   }
 
-  async transfer({ tokenId, destination, amountCents, destinationKey } = {}) {
+  async transfer({ tokenId, destination, amountCents, destinationKey, memo } = {}) {
     const cfg = getConfig();
     tokenId = await this.ensureToken(tokenId);
     const decimals = cfg.hederaShadow ? cfg.hederaDecimals : (await this.getTokenInfo(tokenId)).decimals;
-    const amount = centsToTokenUnits(amountCents, decimals);
+    const amount = toHederaTokenAmount(amountCents, decimals);
     const operatorId = cfg.hederaOperatorId;
 
     if (cfg.hederaShadow) {
-      return { txId: `shadow-${Date.now()}`, tokenId, amount, simulated: true };
+      return { txId: `shadow-${Date.now()}`, tokenId, amount: amount.toString(), simulated: true };
     }
 
-    const S = HederaEngine.getSdk();
     await this.ensureInitialized();
     await this.ensureDestinationAssociation({ tokenId, targetId: destination, targetKey: destinationKey });
 
-    const result = await S.StableCoin.transfers(
-      new S.TransfersRequest({
-        tokenId,
-        targetId: operatorId,
-        targetsId: [destination],
-        amounts: [amount],
-      }),
-    );
+    const client = await this.getHederaClient();
+    const tx = await new hederaSdk.TransferTransaction()
+      .addTokenTransfer(tokenId, operatorId, -amount)
+      .addTokenTransfer(tokenId, destination, amount)
+      .setTransactionMemo(memo || '')
+      .freezeWith(client);
+    const signedTx = await tx.sign(parseHederaPrivateKey(cfg.hederaOperatorKey, cfg.hederaKeyType));
+    const receipt = await signedTx.execute(client);
+    const txId = receipt?.transactionId?.toString() || '';
     return {
-      txId: result?.transactionId?.toString(),
+      txId,
       tokenId,
-      amount,
+      amount: amount.toString(),
       simulated: false,
-      explorer: txExplorerUrl(cfg.hederaNetwork, result?.transactionId?.toString()),
+      explorer: txExplorerUrl(cfg.hederaNetwork, txId),
     };
   }
 
@@ -363,7 +367,7 @@ class HederaEngine {
     }
 
     const start = Date.now();
-    const result = await this.transfer({ tokenId, destination, amountCents, destinationKey });
+    const result = await this.transfer({ tokenId, destination, amountCents, destinationKey, memo });
     return {
       hash: result.txId,
       ledger: 0,
