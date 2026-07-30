@@ -1630,6 +1630,7 @@
         <div class="form-row">
           <div class="form-group"><label>Bank Account Number</label><input type="text" id="sc-circle-mint-account" placeholder="12340010"></div>
           <div class="form-group"><label>Routing Number</label><input type="text" id="sc-circle-mint-routing" placeholder="121000248"></div>
+          <div class="form-group"><label>Idempotency Key (optional)</label><input type="text" id="sc-circle-mint-wire-idempotency" placeholder="UUID for retries"></div>
         </div>
         <div class="form-row">
           <div class="form-group"><label>Billing Name</label><input type="text" id="sc-circle-mint-billing-name" placeholder="Satoshi Nakamoto"></div>
@@ -1659,6 +1660,7 @@
           <div class="form-group"><label>Chain</label><input type="text" id="sc-circle-mint-recipient-chain" value="ETH"></div>
           <div class="form-group"><label>Currency</label><input type="text" id="sc-circle-mint-recipient-currency" value="USD"></div>
           <div class="form-group"><label>Description</label><input type="text" id="sc-circle-mint-recipient-desc" placeholder="Circle Wallet"></div>
+          <div class="form-group"><label>Idempotency Key (optional)</label><input type="text" id="sc-circle-mint-recipient-idempotency" placeholder="UUID for retries"></div>
         </div>
         <div class="form-row">
           <button class="btn btn-primary btn-sm" onclick="scCircleMintCreateRecipient()">Create Recipient</button>
@@ -1669,6 +1671,7 @@
           <div class="form-group"><label>Transfer Currency</label><input type="text" id="sc-circle-mint-transfer-currency" value="USD"></div>
           <div class="form-group"><label>Source Type (optional)</label><select id="sc-circle-mint-source-type"><option value="">None</option><option value="treasury">Treasury</option><option value="cash">Cash</option><option value="trust">Trust Account</option><option value="bond">Bond</option><option value="fixed_income">Fixed Income</option><option value="fineract">Fineract</option><option value="core_banking">Core Banking</option></select></div>
           <div class="form-group"><label>Source Account ID</label><input type="text" id="sc-circle-mint-source-account" placeholder="e.g. CASH-001 or TREASURY_HOT"></div>
+          <div class="form-group"><label>Idempotency Key (optional)</label><input type="text" id="sc-circle-mint-transfer-idempotency" placeholder="UUID for retries"></div>
         </div>
         <div class="form-row">
           <button class="btn btn-success btn-sm" onclick="scCircleMintTransfer()">Transfer USDC to Wallet</button>
@@ -6705,6 +6708,7 @@
 
     async function scCircleMintCreateWire() {
       const body = JSON.stringify({
+        idempotencyKey: el('sc-circle-mint-wire-idempotency').value.trim() || undefined,
         accountNumber: el('sc-circle-mint-account').value.trim(),
         routingNumber: el('sc-circle-mint-routing').value.trim(),
         billingDetails: {
@@ -6746,6 +6750,7 @@
 
     async function scCircleMintCreateRecipient() {
       const body = JSON.stringify({
+        idempotencyKey: el('sc-circle-mint-recipient-idempotency').value.trim() || undefined,
         address: el('sc-circle-mint-recipient-address').value.trim(),
         chain: el('sc-circle-mint-recipient-chain').value.trim() || 'ETH',
         currency: el('sc-circle-mint-recipient-currency').value.trim() || 'USD',
@@ -6763,6 +6768,7 @@
 
     async function scCircleMintTransfer() {
       const body = JSON.stringify({
+        idempotencyKey: el('sc-circle-mint-transfer-idempotency').value.trim() || undefined,
         destinationAddressId: el('sc-circle-mint-recipient-id').value.trim(),
         amount: el('sc-circle-mint-transfer-amount').value.trim(),
         currency: el('sc-circle-mint-transfer-currency').value.trim() || 'USD',

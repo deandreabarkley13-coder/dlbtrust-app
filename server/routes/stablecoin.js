@@ -269,7 +269,7 @@ router.get('/circle-mint/readiness', operatorAuth, async (req, res) => {
     const base = client.readiness();
     if (!base.ready) return res.status(503).json({ success: false, data: base });
     const account = await client.getBusinessAccount();
-    res.json({ success: true, data: { ...base, account: account.data } });
+    res.json({ success: true, data: { ...base, account: (account && account.data) || null } });
   } catch (err) { sendError(res, err); }
 });
 
@@ -317,23 +317,38 @@ router.post('/circle-mint/transfers', operatorAuth, writeRateLimiter(), async (r
       return res.status(400).json({ success: false, error: 'destinationAddressId and amount are required' });
     }
     const amountCents = Math.round(parseFloat(amount) * 100);
-    if (amountCents <= 0) return res.status(400).json({ success: false, error: 'amount must be positive' });
+    if (!Number.isFinite(amountCents) || amountCents <= 0) return res.status(400).json({ success: false, error: 'amount must be a positive number' });
 
     const paymentId = `CM-${crypto.randomUUID()}`;
+    const normalizedSourceType = sourceType ? String(sourceType).toLowerCase() : '';
 
-    // Record source-of-funds backing before initiating the on-chain transfer.
-    if (sourceType && sourceType.toLowerCase() !== 'treasury') {
-      await SourceOfFundsAdapter._fundSourceToTreasury({
-        sourceType,
+    // Record source-of-funds backing, reserve it in treasury, then settle.
+    let funding;
+    let reserveId;
+    if (normalizedSourceType && normalizedSourceType !== 'treasury') {
+      funding = await SourceOfFundsAdapter._fundSourceToTreasury({
+        sourceType: normalizedSourceType,
         sourceAccountId: sourceAccountId || DEFAULT_ACCOUNT,
         amountCents,
         paymentId,
       });
+      ({ reserveId } = await TreasuryEngine.hold(paymentId, DEFAULT_ACCOUNT, amountCents));
     }
 
-    const data = await circleMintClient().createTransfer({ destinationAddressId, amount, currency, idempotencyKey });
-
-    res.status(201).json({ success: true, data, paymentId });
+    try {
+      const data = await circleMintClient().createTransfer({ destinationAddressId, amount, currency, idempotencyKey });
+      const txId = data && data.data && data.data.id;
+      if (reserveId) await TreasuryEngine.post(reserveId, txId, { settledAmountCents: amountCents });
+      res.status(201).json({ success: true, data, paymentId });
+    } catch (err) {
+      if (reserveId) {
+        try { await TreasuryEngine.release(reserveId, 'Circle Mint transfer failed'); } catch (e) { console.warn('[circle-mint] reserve release failed:', e.message); }
+      }
+      if (funding) {
+        try { await SourceOfFundsAdapter._refundSourceFromTreasury({ sourceType: normalizedSourceType, sourceAccountId: sourceAccountId || DEFAULT_ACCOUNT, payment: { id: paymentId, total_cents: amountCents }, sourceRef: funding }); } catch (e) { console.warn('[circle-mint] source refund failed:', e.message); }
+      }
+      throw err;
+    }
   } catch (err) { sendError(res, err); }
 });
 
