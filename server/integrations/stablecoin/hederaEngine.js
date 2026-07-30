@@ -56,7 +56,11 @@ function parseHederaPrivateKey(key, type) {
   const t = (type || '').toUpperCase();
   if (t === 'ECDSA') return hederaSdk.PrivateKey.fromStringECDSA(key);
   if (t === 'ED25519') return hederaSdk.PrivateKey.fromStringED25519(key);
-  // Default: use fromString (auto-detect), but ECDSA 0x keys often need explicit type.
+  // DER/PEM-encoded keys (e.g., 302e... or 3030...)
+  if (typeof key === 'string' && /^30[0-9a-f]+/i.test(key)) {
+    return hederaSdk.PrivateKey.fromStringDer(key);
+  }
+  // Default auto-detect works for most ED25519 raw keys; ECDSA 0x keys should set HEDERA_KEY_TYPE=ECDSA.
   return hederaSdk.PrivateKey.fromString(key);
 }
 
