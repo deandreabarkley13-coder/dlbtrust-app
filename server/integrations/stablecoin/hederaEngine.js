@@ -47,6 +47,15 @@ function txExplorerUrl(network, txId) {
   return `${HEDERA_EXPLORER}/${net}/transaction/${txId}`;
 }
 
+function parseHederaPrivateKey(key, type) {
+  if (!hederaSdk) throw new Error('@hiero-ledger/sdk is not available');
+  const t = (type || '').toUpperCase();
+  if (t === 'ECDSA') return hederaSdk.PrivateKey.fromStringECDSA(key);
+  if (t === 'ED25519') return hederaSdk.PrivateKey.fromStringED25519(key);
+  // Default: use fromString (auto-detect), but ECDSA 0x keys often need explicit type.
+  return hederaSdk.PrivateKey.fromString(key);
+}
+
 class HederaEngine {
   static getSdk() {
     if (!sdk) throw new Error('@hashgraph/stablecoin-npm-sdk is not installed');
@@ -104,7 +113,7 @@ class HederaEngine {
       new S.ConnectRequest({
         account: {
           accountId: cfg.hederaOperatorId,
-          privateKey: { key: cfg.hederaOperatorKey, type: 'ED25519' },
+          privateKey: { key: cfg.hederaOperatorKey, type: cfg.hederaKeyType || 'ED25519' },
         },
         network: networkName,
         mirrorNode,
@@ -255,7 +264,7 @@ class HederaEngine {
     const client = cfg.hederaNetwork === 'mainnet'
       ? hederaSdk.Client.forMainnet()
       : hederaSdk.Client.forTestnet();
-    client.setOperator(cfg.hederaOperatorId, hederaSdk.PrivateKey.fromString(cfg.hederaOperatorKey));
+    client.setOperator(cfg.hederaOperatorId, parseHederaPrivateKey(cfg.hederaOperatorKey, cfg.hederaKeyType));
     return client;
   }
 

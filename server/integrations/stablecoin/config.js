@@ -97,6 +97,7 @@ function getConfig() {
     hederaNetwork: str('HEDERA_NETWORK', 'testnet'),
     hederaOperatorId: str('HEDERA_OPERATOR_ID', ''),
     hederaOperatorKey: str('HEDERA_OPERATOR_KEY', ''),
+    hederaKeyType: str('HEDERA_KEY_TYPE', ''),
     hederaTokenId: str('HEDERA_TOKEN_ID', ''),
     hederaFactoryId: str('HEDERA_FACTORY_ID', ''),
     hederaResolverId: str('HEDERA_RESOLVER_ID', ''),
