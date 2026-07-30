@@ -60,6 +60,26 @@ function parseHederaPrivateKey(key, type) {
   return hederaSdk.PrivateKey.fromString(key);
 }
 
+function useNativeHts(cfg) {
+  // Fallback to native Hedera Token Service when Studio factory/resolver are not configured.
+  return !cfg.hederaFactoryId && !cfg.hederaResolverId;
+}
+
+function bigIntToLong(value) {
+  if (typeof hederaSdk.Long !== 'undefined' && hederaSdk.Long.fromString) {
+    return hederaSdk.Long.fromString(value.toString());
+  }
+  return Number(value);
+}
+
+function detectKeyType(key) {
+  if (!key || typeof key !== 'string') return '';
+  const stripped = key.trim().toLowerCase();
+  if (stripped.startsWith('0x') && stripped.length === 66) return 'ECDSA';
+  if (stripped.length === 64 && /^[0-9a-f]+$/.test(stripped)) return 'ED25519';
+  return '';
+}
+
 class HederaEngine {
   static getSdk() {
     if (!sdk) throw new Error('@hashgraph/stablecoin-npm-sdk is not installed');
@@ -78,9 +98,13 @@ class HederaEngine {
   }
 
   async _init(cfg) {
-    const S = HederaEngine.getSdk();
     const networkName = cfg.hederaNetwork === 'mainnet' ? 'mainnet' : 'testnet';
 
+    if (useNativeHts(cfg)) {
+      return { network: networkName, native: true };
+    }
+
+    const S = HederaEngine.getSdk();
     const factoryAddress = cfg.hederaFactoryId || (networkName === 'testnet' ? TESTNET_FACTORY : '');
     const resolverAddress = cfg.hederaResolverId || (networkName === 'testnet' ? TESTNET_RESOLVER : '');
     if (!factoryAddress || !resolverAddress) {
@@ -144,9 +168,9 @@ class HederaEngine {
     if (!cfg.hederaOperatorKey) issues.push('HEDERA_OPERATOR_KEY is required');
 
     const networkName = (cfg.hederaNetwork || 'testnet').toLowerCase();
-    if (networkName === 'mainnet') {
-      if (!cfg.hederaFactoryId) issues.push('HEDERA_FACTORY_ID is required for mainnet');
-      if (!cfg.hederaResolverId) issues.push('HEDERA_RESOLVER_ID is required for mainnet');
+    if (networkName === 'mainnet' && !useNativeHts(cfg)) {
+      if (!cfg.hederaFactoryId) issues.push('HEDERA_FACTORY_ID is required for mainnet Stablecoin Studio');
+      if (!cfg.hederaResolverId) issues.push('HEDERA_RESOLVER_ID is required for mainnet Stablecoin Studio');
     }
 
     let mirrorOk = false;
@@ -175,16 +199,28 @@ class HederaEngine {
 
   async getTokenInfo(tokenId) {
     if (cachedTokenInfo && cachedTokenInfo.tokenId === tokenId) return cachedTokenInfo;
-    const S = HederaEngine.getSdk();
-    await this.ensureInitialized();
-    const coin = await S.StableCoin.getInfo(new S.GetStableCoinDetailsRequest({ id: tokenId }));
-    cachedTokenInfo = {
-      tokenId,
-      name: coin?.name,
-      symbol: coin?.symbol,
-      decimals: Number(coin?.decimals || coin?.tokenDecimals || 6),
-      totalSupply: coin?.totalSupply?.toString(),
-    };
+    const cfg = getConfig();
+    const tokenInfo = { tokenId };
+    if (useNativeHts(cfg) || (cachedTokenInfo && cachedTokenInfo.native)) {
+      await this.ensureInitialized();
+      const client = await this.getHederaClient();
+      const info = await new hederaSdk.TokenInfoQuery().setTokenId(tokenId).execute(client);
+      tokenInfo.name = info?.name;
+      tokenInfo.symbol = info?.symbol;
+      tokenInfo.decimals = Number(info?.decimals || 6);
+      tokenInfo.totalSupply = info?.totalSupply?.toString();
+      tokenInfo.native = true;
+    } else {
+      const S = HederaEngine.getSdk();
+      await this.ensureInitialized();
+      const coin = await S.StableCoin.getInfo(new S.GetStableCoinDetailsRequest({ id: tokenId }));
+      tokenInfo.name = coin?.name;
+      tokenInfo.symbol = coin?.symbol;
+      tokenInfo.decimals = Number(coin?.decimals || coin?.tokenDecimals || 6);
+      tokenInfo.totalSupply = coin?.totalSupply?.toString();
+      tokenInfo.native = false;
+    }
+    cachedTokenInfo = tokenInfo;
     return cachedTokenInfo;
   }
 
@@ -196,10 +232,34 @@ class HederaEngine {
       return { tokenId: fakeId, simulated: true };
     }
 
-    const S = HederaEngine.getSdk();
     await this.ensureInitialized();
     const operatorId = cfg.hederaOperatorId;
+    const operatorKey = parseHederaPrivateKey(cfg.hederaOperatorKey, cfg.hederaKeyType);
 
+    if (useNativeHts(cfg)) {
+      const client = await this.getHederaClient();
+      const supplyInitial = BigInt(Math.max(0, Number(initialSupply))) * (BigInt(10) ** BigInt(decimals));
+      const tx = await new hederaSdk.TokenCreateTransaction()
+        .setTokenName(name)
+        .setTokenSymbol(symbol)
+        .setDecimals(decimals)
+        .setInitialSupply(bigIntToLong(supplyInitial))
+        .setTreasuryAccountId(operatorId)
+        .setSupplyKey(operatorKey)
+        .setAdminKey(operatorKey)
+        .setWipeKey(operatorKey)
+        .setPauseKey(operatorKey)
+        .freezeWith(client);
+      const signedTx = await tx.sign(operatorKey);
+      const response = await signedTx.execute(client);
+      const receipt = await response.getReceipt(client);
+      const tokenId = receipt?.tokenId?.toString();
+      const txId = response?.transactionId?.toString() || '';
+      cachedTokenInfo = { tokenId, name, symbol, decimals, native: true };
+      return { tokenId, simulated: false, txId, native: true, explorer: txExplorerUrl(cfg.hederaNetwork, txId) };
+    }
+
+    const S = HederaEngine.getSdk();
     const request = new S.CreateRequest({
       name,
       symbol,
@@ -226,7 +286,7 @@ class HederaEngine {
 
     const result = await S.StableCoin.create(request);
     const tokenId = result?.coin?.tokenId?.toString();
-    cachedTokenInfo = { tokenId, name, symbol, decimals };
+    cachedTokenInfo = { tokenId, name, symbol, decimals, native: false };
     return { tokenId, simulated: false, txId: result?.coin?.transactionId?.toString() };
   }
 
@@ -247,8 +307,19 @@ class HederaEngine {
   async isAssociated(tokenId, targetId) {
     const cfg = getConfig();
     if (cfg.hederaShadow) return true;
-    const S = HederaEngine.getSdk();
     await this.ensureInitialized();
+    if (useNativeHts(cfg) || (cachedTokenInfo && cachedTokenInfo.native)) {
+      try {
+        const base = cfg.hederaMirrorNode || `https://${cfg.hederaNetwork === 'mainnet' ? 'mainnet' : 'testnet'}.mirrornode.hedera.com/api/v1/`;
+        const res = await fetch(`${base}accounts/${targetId}/tokens?token.id=${tokenId}&limit=1`);
+        if (!res.ok) return false;
+        const data = await res.json();
+        return Array.isArray(data.tokens) && data.tokens.length > 0;
+      } catch (e) {
+        return false;
+      }
+    }
+    const S = HederaEngine.getSdk();
     return S.StableCoin.isAccountAssociated(
       new S.IsAccountAssociatedTokenRequest({ tokenId, targetId }),
     );
@@ -282,14 +353,15 @@ class HederaEngine {
       return { associated: true, txId: `shadow-${Date.now()}`, simulated: true };
     }
     const client = await this.getHederaClient();
-    const targetPrivateKey = parseHederaPrivateKey(targetKey, cfg.hederaKeyType);
+    const targetPrivateKey = parseHederaPrivateKey(targetKey, detectKeyType(targetKey) || cfg.hederaKeyType);
     const tx = await new hederaSdk.TokenAssociateTransaction()
       .setAccountId(targetId)
       .setTokenIds([tokenId])
       .freezeWith(client);
     const signedTx = await tx.sign(targetPrivateKey);
-    const receipt = await signedTx.execute(client);
-    const txId = receipt?.transactionId?.toString() || '';
+    const response = await signedTx.execute(client);
+    await response.getReceipt(client);
+    const txId = response?.transactionId?.toString() || '';
     return { associated: true, txId, explorer: txExplorerUrl(cfg.hederaNetwork, txId) };
   }
 
@@ -297,21 +369,36 @@ class HederaEngine {
     const cfg = getConfig();
     tokenId = await this.ensureToken(tokenId);
     const decimals = cfg.hederaShadow ? cfg.hederaDecimals : (await this.getTokenInfo(tokenId)).decimals;
-    const amount = centsToTokenUnits(amountCents, decimals);
 
     if (cfg.hederaShadow) {
-      return { txId: `shadow-${Date.now()}`, tokenId, amount, simulated: true };
+      return { txId: `shadow-${Date.now()}`, tokenId, amount: centsToTokenUnits(amountCents, decimals), simulated: true };
+    }
+
+    await this.ensureInitialized();
+    const amount = toHederaTokenAmount(amountCents, decimals);
+
+    if (useNativeHts(cfg) || (cachedTokenInfo && cachedTokenInfo.native)) {
+      const client = await this.getHederaClient();
+      const tx = await new hederaSdk.TokenMintTransaction()
+        .setTokenId(tokenId)
+        .setAmount(bigIntToLong(amount))
+        .freezeWith(client);
+      const signedTx = await tx.sign(parseHederaPrivateKey(cfg.hederaOperatorKey, cfg.hederaKeyType));
+      const response = await signedTx.execute(client);
+      await response.getReceipt(client);
+      const txId = response?.transactionId?.toString() || '';
+      return { txId, tokenId, amount: centsToTokenUnits(amountCents, decimals), simulated: false, native: true, explorer: txExplorerUrl(cfg.hederaNetwork, txId) };
     }
 
     const S = HederaEngine.getSdk();
-    await this.ensureInitialized();
+    const sdkAmount = centsToTokenUnits(amountCents, decimals);
     const result = await S.StableCoin.cashIn(
-      new S.CashInRequest({ tokenId, targetId, amount }),
+      new S.CashInRequest({ tokenId, targetId, amount: sdkAmount }),
     );
     return {
       txId: result?.transactionId?.toString(),
       tokenId,
-      amount,
+      amount: sdkAmount,
       simulated: false,
       explorer: txExplorerUrl(cfg.hederaNetwork, result?.transactionId?.toString()),
     };
@@ -338,8 +425,9 @@ class HederaEngine {
       .setTransactionMemo(memo || '')
       .freezeWith(client);
     const signedTx = await tx.sign(parseHederaPrivateKey(cfg.hederaOperatorKey, cfg.hederaKeyType));
-    const receipt = await signedTx.execute(client);
-    const txId = receipt?.transactionId?.toString() || '';
+    const response = await signedTx.execute(client);
+    await response.getReceipt(client);
+    const txId = response?.transactionId?.toString() || '';
     return {
       txId,
       tokenId,
@@ -385,8 +473,21 @@ class HederaEngine {
     if (cfg.hederaShadow) return '0';
     tokenId = await this.ensureToken(tokenId);
 
-    const S = HederaEngine.getSdk();
     await this.ensureInitialized();
+    if (useNativeHts(cfg) || (cachedTokenInfo && cachedTokenInfo.native)) {
+      const client = await this.getHederaClient();
+      const balance = await new hederaSdk.AccountBalanceQuery().setAccountId(accountId).execute(client);
+      if (balance?.tokens) {
+        const tokenBalance = balance.tokens.get(tokenId);
+        if (tokenBalance !== undefined && tokenBalance !== null) return tokenBalance.toString();
+        for (const [id, value] of balance.tokens) {
+          if (id.toString() === tokenId || id === tokenId) return value.toString();
+        }
+      }
+      return '0';
+    }
+
+    const S = HederaEngine.getSdk();
     const balance = await S.StableCoin.getBalanceOf(
       new S.GetAccountBalanceRequest({ tokenId, targetId: accountId }),
     );
