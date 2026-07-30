@@ -90,11 +90,13 @@ class StablecoinGateway {
     const cfg = getConfig();
     if (publicHealth) {
       const blockchain = await new BlockchainEngine().readiness();
+      const hedera = cfg.hederaEnabled ? await new HederaEngine().readiness().catch(err => ({ ready: false, issues: [err.message] })) : { ready: false, issues: ['HEDERA_STUDIO_ENABLED is not true'] };
       return {
-        ready: cfg.enabled && blockchain.ready,
+        ready: cfg.enabled && (blockchain.ready || (cfg.hederaEnabled && hedera.ready)),
         mode: cfg.mode,
         network: cfg.network,
         assetCode: cfg.assetCode,
+        hedera,
       };
     }
     const treasury = await TreasuryEngine.getPosition(DEFAULT_ACCOUNT).catch(err => ({ ready: false, error: err.message }));
