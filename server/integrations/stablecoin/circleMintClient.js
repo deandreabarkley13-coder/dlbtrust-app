@@ -69,8 +69,8 @@ class CircleMintClient {
     return { ready: issues.length === 0, issues, baseUrl: this.cfg.baseUrl };
   }
 
-  async getBusinessAccount() {
-    return this._request('GET', '/v1/businessAccount');
+  async getConfiguration() {
+    return this._request('GET', '/v1/configuration');
   }
 
   async getBalances() {

@@ -268,8 +268,9 @@ router.get('/circle-mint/readiness', operatorAuth, async (req, res) => {
     const client = circleMintClient();
     const base = client.readiness();
     if (!base.ready) return res.status(503).json({ success: false, data: base });
-    const account = await client.getBusinessAccount();
-    res.json({ success: true, data: { ...base, account: (account && account.data) || null } });
+    const config = await client.getConfiguration();
+    const masterWalletId = config && config.data && config.data.payments && config.data.payments.masterWalletId;
+    res.json({ success: true, data: { ...base, masterWalletId: masterWalletId || null, configuration: (config && config.data) || null } });
   } catch (err) { sendError(res, err); }
 });
 
