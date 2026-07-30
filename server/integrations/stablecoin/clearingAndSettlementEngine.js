@@ -12,9 +12,13 @@
 let pool;
 try { pool = require('../bonds/pgPool'); } catch (e) { pool = null; }
 
-const { StablecoinGateway } = require('./stablecoinGateway');
 const { SourceOfFundsAdapter } = require('./sourceOfFundsAdapter');
 const { getConfig } = require('./config');
+
+function getStablecoinGateway() {
+  const { StablecoinGateway } = require('./stablecoinGateway');
+  return StablecoinGateway;
+}
 
 const memoryWallets = new Map();
 const memoryOrders = new Map();
@@ -177,7 +181,7 @@ class ClearingAndSettlementEngine {
   static async _createOrder(input) {
     const cfg = getConfig();
     const amountCents = typeof input.amountCents === 'number' ? input.amountCents : toCents(input.amount);
-    const quote = StablecoinGateway.quote({ amountCents, assetCode: input.assetCode, network: input.network });
+    const quote = getStablecoinGateway().quote({ amountCents, assetCode: input.assetCode, network: input.network });
     const order = {
       id: identifier('CSO'),
       wallet_id: input.walletId || null,
@@ -223,7 +227,7 @@ class ClearingAndSettlementEngine {
   static async clearAndSettle(input) {
     const order = await ClearingAndSettlementEngine._createOrder(input);
     try {
-      const payment = await StablecoinGateway.createPayment({
+      const payment = await getStablecoinGateway().createPayment({
         amountCents: order.amount_cents,
         assetCode: order.asset_code,
         network: order.network,
@@ -239,8 +243,8 @@ class ClearingAndSettlementEngine {
       order.status = 'approved';
       await ClearingAndSettlementEngine._updateOrder(order);
 
-      await StablecoinGateway.approvePayment(payment.id, order.source_account_id);
-      const settled = await StablecoinGateway.settlePayment(payment.id, { memo: input.memo || `Clearing order ${order.id}` });
+      await getStablecoinGateway().approvePayment(payment.id, order.source_account_id);
+      const settled = await getStablecoinGateway().settlePayment(payment.id, { memo: input.memo || `Clearing order ${order.id}` });
 
       order.status = 'settled';
       order.tx_hash = settled.tx_hash;
