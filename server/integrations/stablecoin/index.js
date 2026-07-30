@@ -9,6 +9,7 @@ const { StablecoinGateway } = require('./stablecoinGateway');
 const { MagicWalletService } = require('./magicWalletService');
 const { Wso2ApiManager } = require('./wso2ApiManager');
 const { SourceOfFundsAdapter } = require('./sourceOfFundsAdapter');
+const { CircleMintClient } = require('./circleMintClient');
 
 module.exports = {
   getConfig,
@@ -23,4 +24,5 @@ module.exports = {
   MagicWalletService,
   Wso2ApiManager,
   SourceOfFundsAdapter,
+  CircleMintClient,
 };

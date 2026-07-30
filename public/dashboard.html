@@ -1623,6 +1623,59 @@
         <div id="sc-convert-result" style="margin-top:8px"></div>
         <div id="sc-convert-readiness" style="margin-top:8px"></div>
       </div>
+
+      <div class="card" style="margin-top:24px">
+        <h2>Circle Mint Fiat On-Ramp</h2>
+        <p class="text-muted" style="font-size:12px;margin:-4px 0 10px;">Regulated bank wire → USDC on-chain. Link a bank, get wire instructions, then transfer USDC to a wallet.</p>
+        <div class="form-row">
+          <div class="form-group"><label>Bank Account Number</label><input type="text" id="sc-circle-mint-account" placeholder="12340010"></div>
+          <div class="form-group"><label>Routing Number</label><input type="text" id="sc-circle-mint-routing" placeholder="121000248"></div>
+        </div>
+        <div class="form-row">
+          <div class="form-group"><label>Billing Name</label><input type="text" id="sc-circle-mint-billing-name" placeholder="Satoshi Nakamoto"></div>
+          <div class="form-group"><label>Billing City</label><input type="text" id="sc-circle-mint-billing-city" placeholder="Boston"></div>
+          <div class="form-group"><label>Billing Country</label><input type="text" id="sc-circle-mint-billing-country" value="US"></div>
+          <div class="form-group"><label>Billing Line 1</label><input type="text" id="sc-circle-mint-billing-line1" placeholder="100 Money Street"></div>
+          <div class="form-group"><label>Billing District</label><input type="text" id="sc-circle-mint-billing-district" placeholder="MA"></div>
+          <div class="form-group"><label>Billing Postal Code</label><input type="text" id="sc-circle-mint-billing-postal" placeholder="01234"></div>
+        </div>
+        <div class="form-row">
+          <div class="form-group"><label>Bank Name</label><input type="text" id="sc-circle-mint-bank-name" placeholder="SAN FRANCISCO"></div>
+          <div class="form-group"><label>Bank City</label><input type="text" id="sc-circle-mint-bank-city" placeholder="SAN FRANCISCO"></div>
+          <div class="form-group"><label>Bank Country</label><input type="text" id="sc-circle-mint-bank-country" value="US"></div>
+          <div class="form-group"><label>Bank Line 1</label><input type="text" id="sc-circle-mint-bank-line1" placeholder="100 Money Street"></div>
+          <div class="form-group"><label>Bank District</label><input type="text" id="sc-circle-mint-bank-district" placeholder="CA"></div>
+        </div>
+        <div class="form-row">
+          <button class="btn btn-primary btn-sm" onclick="scCircleMintCreateWire()">Create Wire Bank</button>
+          <button class="btn btn-sm" onclick="scCircleMintInstructions()">Get Wire Instructions</button>
+          <button class="btn btn-sm" onclick="scCircleMintReadiness()">Check Circle Mint</button>
+        </div>
+        <div class="form-row" style="margin-top:12px">
+          <div class="form-group"><label>Wire Bank Account ID</label><input type="text" id="sc-circle-mint-wire-id" placeholder="saved from create"></div>
+        </div>
+        <div class="form-row">
+          <div class="form-group"><label>Recipient Address</label><input type="text" id="sc-circle-mint-recipient-address" placeholder="0x..." value="0x080e0d0ae80c86cc80bb050dbe0d5e5bdb6cd225"></div>
+          <div class="form-group"><label>Chain</label><input type="text" id="sc-circle-mint-recipient-chain" value="ETH"></div>
+          <div class="form-group"><label>Currency</label><input type="text" id="sc-circle-mint-recipient-currency" value="USD"></div>
+          <div class="form-group"><label>Description</label><input type="text" id="sc-circle-mint-recipient-desc" placeholder="Circle Wallet"></div>
+        </div>
+        <div class="form-row">
+          <button class="btn btn-primary btn-sm" onclick="scCircleMintCreateRecipient()">Create Recipient</button>
+          <input type="text" id="sc-circle-mint-recipient-id" placeholder="Recipient Address ID" style="font-family:monospace;min-width:260px">
+        </div>
+        <div class="form-row" style="margin-top:12px">
+          <div class="form-group"><label>Transfer Amount (decimal)</label><input type="number" step="0.01" id="sc-circle-mint-transfer-amount" placeholder="25.00"></div>
+          <div class="form-group"><label>Transfer Currency</label><input type="text" id="sc-circle-mint-transfer-currency" value="USD"></div>
+          <div class="form-group"><label>Source Type (optional)</label><select id="sc-circle-mint-source-type"><option value="">None</option><option value="treasury">Treasury</option><option value="cash">Cash</option><option value="trust">Trust Account</option><option value="bond">Bond</option><option value="fixed_income">Fixed Income</option><option value="fineract">Fineract</option><option value="core_banking">Core Banking</option></select></div>
+          <div class="form-group"><label>Source Account ID</label><input type="text" id="sc-circle-mint-source-account" placeholder="e.g. CASH-001 or TREASURY_HOT"></div>
+        </div>
+        <div class="form-row">
+          <button class="btn btn-success btn-sm" onclick="scCircleMintTransfer()">Transfer USDC to Wallet</button>
+        </div>
+        <div id="sc-circle-mint-result" style="margin-top:8px"></div>
+      </div>
+
       <div class="card" style="margin-top:24px">
         <h2>Stablecoin Payments</h2>
         <div id="sc-payments-table"><p class="text-muted">Loading…</p></div>
@@ -6636,6 +6689,91 @@
         el('sc-convert-readiness').innerHTML = '<p class="' + (r.ready ? 'success-msg' : 'error-msg') + '">HollaEx ' + (r.ready ? 'Ready' : 'Not Ready') + ': ' + esc((r.issues || []).join('; ') || 'OK') + '</p>';
       } else {
         el('sc-convert-readiness').innerHTML = '<p class="error-msg">' + esc((resp && resp.error) || 'Readiness check failed') + '</p>';
+      }
+    }
+
+    // ─── CIRCLE MINT FIAT ON-RAMP ─────────────────────────────────────────────────
+    async function scCircleMintReadiness() {
+      const resp = await fetchJSON(API + '/api/stablecoin/circle-mint/readiness', { headers: adminHeaders() });
+      if (resp && resp.success) {
+        const r = resp.data;
+        el('sc-circle-mint-result').innerHTML = '<p class="' + (r.ready ? 'success-msg' : 'error-msg') + '">Circle Mint ' + (r.ready ? 'Ready' : 'Not Ready') + ': ' + esc((r.issues || []).join('; ') || 'OK') + '</p>';
+      } else {
+        el('sc-circle-mint-result').innerHTML = '<p class="error-msg">' + esc((resp && resp.error) || 'Readiness check failed') + '</p>';
+      }
+    }
+
+    async function scCircleMintCreateWire() {
+      const body = JSON.stringify({
+        accountNumber: el('sc-circle-mint-account').value.trim(),
+        routingNumber: el('sc-circle-mint-routing').value.trim(),
+        billingDetails: {
+          name: el('sc-circle-mint-billing-name').value.trim(),
+          city: el('sc-circle-mint-billing-city').value.trim(),
+          country: el('sc-circle-mint-billing-country').value.trim() || 'US',
+          line1: el('sc-circle-mint-billing-line1').value.trim(),
+          district: el('sc-circle-mint-billing-district').value.trim(),
+          postalCode: el('sc-circle-mint-billing-postal').value.trim(),
+        },
+        bankAddress: {
+          bankName: el('sc-circle-mint-bank-name').value.trim(),
+          city: el('sc-circle-mint-bank-city').value.trim(),
+          country: el('sc-circle-mint-bank-country').value.trim() || 'US',
+          line1: el('sc-circle-mint-bank-line1').value.trim(),
+          district: el('sc-circle-mint-bank-district').value.trim(),
+        },
+      });
+      const resp = await fetchJSON(API + '/api/stablecoin/circle-mint/bank-accounts/wire', { method: 'POST', headers: adminHeaders(), body });
+      if (resp && resp.success) {
+        const id = resp.data && resp.data.data && resp.data.data.id;
+        el('sc-circle-mint-wire-id').value = id || '';
+        el('sc-circle-mint-result').innerHTML = '<p class="success-msg">Wire bank account created: ' + esc(id || JSON.stringify(resp.data)) + '</p>';
+      } else {
+        el('sc-circle-mint-result').innerHTML = '<p class="error-msg">' + esc((resp && resp.error) || 'Create wire bank account failed') + '</p>';
+      }
+    }
+
+    async function scCircleMintInstructions() {
+      const id = el('sc-circle-mint-wire-id').value.trim();
+      if (!id) { el('sc-circle-mint-result').innerHTML = '<p class="error-msg">Create a wire bank account first</p>'; return; }
+      const resp = await fetchJSON(API + '/api/stablecoin/circle-mint/bank-accounts/' + encodeURIComponent(id) + '/instructions', { headers: adminHeaders() });
+      if (resp && resp.success) {
+        el('sc-circle-mint-result').innerHTML = '<p class="success-msg">Wire instructions: <pre style="white-space:pre-wrap">' + esc(JSON.stringify(resp.data, null, 2)) + '</pre></p>';
+      } else {
+        el('sc-circle-mint-result').innerHTML = '<p class="error-msg">' + esc((resp && resp.error) || 'Get instructions failed') + '</p>';
+      }
+    }
+
+    async function scCircleMintCreateRecipient() {
+      const body = JSON.stringify({
+        address: el('sc-circle-mint-recipient-address').value.trim(),
+        chain: el('sc-circle-mint-recipient-chain').value.trim() || 'ETH',
+        currency: el('sc-circle-mint-recipient-currency').value.trim() || 'USD',
+        description: el('sc-circle-mint-recipient-desc').value.trim(),
+      });
+      const resp = await fetchJSON(API + '/api/stablecoin/circle-mint/recipient-addresses', { method: 'POST', headers: adminHeaders(), body });
+      if (resp && resp.success) {
+        const id = resp.data && resp.data.data && resp.data.data.id;
+        el('sc-circle-mint-recipient-id').value = id || '';
+        el('sc-circle-mint-result').innerHTML = '<p class="success-msg">Recipient address created: ' + esc(id || JSON.stringify(resp.data)) + '</p>';
+      } else {
+        el('sc-circle-mint-result').innerHTML = '<p class="error-msg">' + esc((resp && resp.error) || 'Create recipient address failed') + '</p>';
+      }
+    }
+
+    async function scCircleMintTransfer() {
+      const body = JSON.stringify({
+        destinationAddressId: el('sc-circle-mint-recipient-id').value.trim(),
+        amount: el('sc-circle-mint-transfer-amount').value.trim(),
+        currency: el('sc-circle-mint-transfer-currency').value.trim() || 'USD',
+        sourceType: el('sc-circle-mint-source-type').value.trim(),
+        sourceAccountId: el('sc-circle-mint-source-account').value.trim(),
+      });
+      const resp = await fetchJSON(API + '/api/stablecoin/circle-mint/transfers', { method: 'POST', headers: adminHeaders(), body });
+      if (resp && resp.success) {
+        el('sc-circle-mint-result').innerHTML = '<p class="success-msg">Transfer created: ' + esc(JSON.stringify(resp.data)) + '</p>';
+      } else {
+        el('sc-circle-mint-result').innerHTML = '<p class="error-msg">' + esc((resp && resp.error) || 'Transfer failed') + '</p>';
       }
     }
 

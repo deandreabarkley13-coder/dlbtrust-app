@@ -1,7 +1,8 @@
 'use strict';
 
 const express = require('express');
-const { StablecoinGateway, TreasuryEngine, BlockchainEngine, FyStackEngine, CircleKitEngine, MagicWalletService, Wso2ApiManager, SourceOfFundsAdapter, DEFAULT_ACCOUNT } = require('../integrations/stablecoin');
+const crypto = require('crypto');
+const { StablecoinGateway, TreasuryEngine, BlockchainEngine, FyStackEngine, CircleKitEngine, MagicWalletService, Wso2ApiManager, SourceOfFundsAdapter, CircleMintClient, DEFAULT_ACCOUNT } = require('../integrations/stablecoin');
 const { HollaExClient } = require('../integrations/hollaex/hollaExClient');
 const { requireAuth, writeRateLimiter } = require('../integrations/auth/securityMiddleware');
 
@@ -253,6 +254,101 @@ router.all('/wso2/*', adminAuth, writeRateLimiter(), async (req, res) => {
       ),
     });
     res.status(result.status).json(result.body);
+  } catch (err) { sendError(res, err); }
+});
+
+// ─── CIRCLE MINT REGULATED FIAT ON-RAMP ─────────────────────────────────────
+
+function circleMintClient() {
+  return new CircleMintClient();
+}
+
+router.get('/circle-mint/readiness', operatorAuth, async (req, res) => {
+  try {
+    const client = circleMintClient();
+    const base = client.readiness();
+    if (!base.ready) return res.status(503).json({ success: false, data: base });
+    const account = await client.getBusinessAccount();
+    res.json({ success: true, data: { ...base, account: account.data } });
+  } catch (err) { sendError(res, err); }
+});
+
+router.post('/circle-mint/bank-accounts/wire', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try {
+    const { accountNumber, routingNumber, billingDetails, bankAddress, idempotencyKey } = req.body;
+    if (!accountNumber || !routingNumber || !billingDetails) {
+      return res.status(400).json({ success: false, error: 'accountNumber, routingNumber, and billingDetails are required' });
+    }
+    const data = await circleMintClient().createWireBankAccount({ accountNumber, routingNumber, billingDetails, bankAddress, idempotencyKey });
+    res.status(201).json({ success: true, data });
+  } catch (err) { sendError(res, err); }
+});
+
+router.get('/circle-mint/bank-accounts/:id/instructions', operatorAuth, async (req, res) => {
+  try {
+    const { currency, walletId } = req.query;
+    const data = await circleMintClient().getWireInstructions(req.params.id, { currency, walletId });
+    res.json({ success: true, data });
+  } catch (err) { sendError(res, err); }
+});
+
+router.get('/circle-mint/balances', operatorAuth, async (req, res) => {
+  try {
+    const data = await circleMintClient().getBalances();
+    res.json({ success: true, data });
+  } catch (err) { sendError(res, err); }
+});
+
+router.post('/circle-mint/recipient-addresses', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try {
+    const { address, chain, currency, description, idempotencyKey } = req.body;
+    if (!address || !chain) {
+      return res.status(400).json({ success: false, error: 'address and chain are required' });
+    }
+    const data = await circleMintClient().createRecipientAddress({ address, chain, currency, description, idempotencyKey });
+    res.status(201).json({ success: true, data });
+  } catch (err) { sendError(res, err); }
+});
+
+router.post('/circle-mint/transfers', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try {
+    const { destinationAddressId, amount, currency, idempotencyKey, sourceType, sourceAccountId } = req.body;
+    if (!destinationAddressId || !amount) {
+      return res.status(400).json({ success: false, error: 'destinationAddressId and amount are required' });
+    }
+    const amountCents = Math.round(parseFloat(amount) * 100);
+    if (amountCents <= 0) return res.status(400).json({ success: false, error: 'amount must be positive' });
+
+    const paymentId = `CM-${crypto.randomUUID()}`;
+
+    // Record source-of-funds backing before initiating the on-chain transfer.
+    if (sourceType && sourceType.toLowerCase() !== 'treasury') {
+      await SourceOfFundsAdapter._fundSourceToTreasury({
+        sourceType,
+        sourceAccountId: sourceAccountId || DEFAULT_ACCOUNT,
+        amountCents,
+        paymentId,
+      });
+    }
+
+    const data = await circleMintClient().createTransfer({ destinationAddressId, amount, currency, idempotencyKey });
+
+    res.status(201).json({ success: true, data, paymentId });
+  } catch (err) { sendError(res, err); }
+});
+
+router.get('/circle-mint/transfers', operatorAuth, async (req, res) => {
+  try {
+    const { from, to, status, type, pageSize, pageBefore, pageAfter } = req.query;
+    const data = await circleMintClient().listTransfers({ from, to, status, type, pageSize, pageBefore, pageAfter });
+    res.json({ success: true, data });
+  } catch (err) { sendError(res, err); }
+});
+
+router.get('/circle-mint/transfers/:id', operatorAuth, async (req, res) => {
+  try {
+    const data = await circleMintClient().getTransfer(req.params.id);
+    res.json({ success: true, data });
   } catch (err) { sendError(res, err); }
 });
 

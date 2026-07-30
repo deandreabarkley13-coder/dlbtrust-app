@@ -84,6 +84,9 @@ function getConfig() {
     circleToken: str('CIRCLE_TOKEN', 'USDC'),
     circleExplorerTx: str('CIRCLE_EXPLORER_TX', ''),
     circleShadow: bool('CIRCLE_SHADOW', false),
+    // Circle Mint regulated fiat on-ramp
+    circleMintApiKey: str('CIRCLE_MINT_API_KEY', ''),
+    circleMintBaseUrl: str('CIRCLE_MINT_BASE_URL', 'https://api.circle.com'),
     // Source-of-funds mappings
     cashHoldingAccount: str('STABLECOIN_CASH_HOLDING_ACCOUNT', 'STABLECOIN_CASH_HOLD'),
     cashSettlementAccount: str('STABLECOIN_CASH_SETTLEMENT_ACCOUNT', ''),
@@ -98,7 +101,7 @@ function isProduction(cfg) {
 
 function redact(cfg) {
   const copy = { ...cfg };
-  ['issuerSecret', 'distributorSecret', 'magicSecretKey', 'wso2ClientSecret', 'fyStackApiSecret', 'circlePrivateKey', 'circleApiKey', 'circleEntitySecret', 'circleKitKey'].forEach((k) => {
+  ['issuerSecret', 'distributorSecret', 'magicSecretKey', 'wso2ClientSecret', 'fyStackApiSecret', 'circlePrivateKey', 'circleApiKey', 'circleEntitySecret', 'circleKitKey', 'circleMintApiKey'].forEach((k) => {
     if (copy[k]) copy[k] = '***';
   });
   return copy;
