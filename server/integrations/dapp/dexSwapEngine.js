@@ -58,16 +58,17 @@ class DexSwapEngine {
     const amount = Number(amountIn) || 0;
     if (amount <= 0) throw new Error('amountIn must be positive');
 
-    // Simple constant-product simulation for shadow quoting
+    // Simple constant-product simulation for shadow quoting.
+    // amountIn is treated as a human-unit token quantity.
     const price = 0.95 + Math.random() * 0.05;
-    const out = amount * price * (10 ** (decimalsOut - decimalsIn));
-    const minOut = Math.floor(out * (1 - cfg.slippageBps / 10000));
+    const outHuman = amount * price;
+    const minOutHuman = outHuman * (1 - cfg.slippageBps / 10000);
     return {
       tokenIn,
       tokenOut: tokenOut || cfg.usdcAddress,
       amountIn: amount,
-      amountOut: out.toFixed(decimalsOut),
-      amountOutMinimum: minOut.toFixed(decimalsOut),
+      amountOut: outHuman.toFixed(decimalsOut),
+      amountOutMinimum: minOutHuman.toFixed(decimalsOut),
       fee,
       price,
       mode: cfg.shadow ? 'shadow' : 'live',
