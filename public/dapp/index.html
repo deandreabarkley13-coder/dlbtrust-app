@@ -99,6 +99,7 @@
         <button data-section="distribute" onclick="showSection('distribute')">Distribute</button>
         <button data-section="p2p" onclick="showSection('p2p')">P2P Pay</button>
         <button data-section="payment-rails" onclick="showSection('payment-rails')">Payment Rails</button>
+        <button data-section="bond-tokens" onclick="showSection('bond-tokens')">Bond Tokens</button>
         <button data-section="settings" onclick="showSection('settings')">White Label</button>
       </div>
 
@@ -289,6 +290,47 @@
             </div>
             <div class="actions"><button class="btn" onclick="requestCashAppPayment()">Request / Get QR</button></div>
             <div id="ca-result" class="status hidden"></div>
+          </div>
+        </div>
+      </section>
+
+      <section id="bond-tokens" class="section">
+        <div class="grid">
+          <div class="card">
+            <h2>Tokenize Fixed Income / Bond Position</h2>
+            <p>Mint an ERC-20 representing bond principal and accrued interest. Shadow mode records tokens locally; live mode requires BOND_TOKEN_FACTORY and a hot wallet with gas.</p>
+            <div class="form-row">
+              <div><label>Bond ID</label><input type="text" id="bt-bond-id" placeholder="1" /></div>
+              <div><label>Token Name</label><input type="text" id="bt-name" placeholder="DLB Bond 2030 Token" /></div>
+              <div><label>Token Symbol</label><input type="text" id="bt-symbol" placeholder="DLB2030" /></div>
+            </div>
+            <div class="actions"><button class="btn" onclick="createBondToken()">Create Token</button></div>
+            <div id="bt-create-result" class="status hidden"></div>
+          </div>
+          <div class="card">
+            <h2>Mint Bond Tokens</h2>
+            <p>Lock a bond position and mint tokens to a holder (e.g., the Safe).</p>
+            <div class="form-row">
+              <div><label>Token ID</label><input type="text" id="bt-token-id" placeholder="BTOK-..." /></div>
+              <div><label>Principal</label><input type="text" id="bt-principal" placeholder="1000" /></div>
+              <div><label>Interest</label><input type="text" id="bt-interest" placeholder="50" /></div>
+              <div><label>Holder Address</label><input type="text" id="bt-holder" placeholder="0x..." /></div>
+            </div>
+            <div class="actions"><button class="btn" onclick="mintBondToken()">Mint</button></div>
+            <div id="bt-mint-result" class="status hidden"></div>
+          </div>
+          <div class="card" style="grid-column: 1 / -1;">
+            <h2>DEX Swap (Bond Token → USDC)</h2>
+            <p>Get a quote and swap tokenized bonds for USDC on a DEX. Live mode needs a Uniswap V3 pool with liquidity.</p>
+            <div class="form-row">
+              <div><label>Token In (bond token address)</label><input type="text" id="dex-token-in" placeholder="shadow-BTOK-... or 0x..." /></div>
+              <div><label>Amount In</label><input type="text" id="dex-amount" placeholder="100" /></div>
+            </div>
+            <div class="actions">
+              <button class="btn" onclick="quoteDexSwap()">Get Quote</button>
+              <button class="btn" onclick="executeDexSwap()">Execute Swap</button>
+            </div>
+            <div id="dex-result" class="status hidden"></div>
           </div>
         </div>
       </section>
@@ -618,6 +660,39 @@
         el('ca-result').innerHTML = `Shareable link: <a href="${res.data.shareableUrl}" target="_blank">${res.data.shareableUrl}</a><br/>QR payload: <span class="mono">${res.data.qrPayload}</span>`;
         el('ca-result').className = 'status success';
       } catch (e) { el('ca-result').textContent = e.message; el('ca-result').className = 'status error'; }
+    };
+
+    window.createBondToken = async function() {
+      try {
+        const res = await api('/api/dapp/bond-tokens', { method: 'POST', body: JSON.stringify({ bondId: el('bt-bond-id').value, tokenName: el('bt-name').value, tokenSymbol: el('bt-symbol').value }) });
+        el('bt-create-result').textContent = 'Token created: ' + res.data.id + ' (' + res.data.token_address + ')';
+        el('bt-create-result').className = 'status success';
+      } catch (e) { el('bt-create-result').textContent = e.message; el('bt-create-result').className = 'status error'; }
+    };
+
+    window.mintBondToken = async function() {
+      try {
+        const tokenId = el('bt-token-id').value;
+        const res = await api(`/api/dapp/bond-tokens/${tokenId}/mint`, { method: 'POST', body: JSON.stringify({ principal: el('bt-principal').value, interest: el('bt-interest').value, holderAddress: el('bt-holder').value }) });
+        el('bt-mint-result').textContent = `Minted ${res.data.minted} tokens; total supply ${res.data.token.total_supply}`;
+        el('bt-mint-result').className = 'status success';
+      } catch (e) { el('bt-mint-result').textContent = e.message; el('bt-mint-result').className = 'status error'; }
+    };
+
+    window.quoteDexSwap = async function() {
+      try {
+        const res = await api('/api/dapp/dex/quote', { method: 'POST', body: JSON.stringify({ tokenIn: el('dex-token-in').value, amountIn: el('dex-amount').value }) });
+        el('dex-result').textContent = `Quote: ${res.data.amountIn} in → ${res.data.amountOut} USDC (min ${res.data.amountOutMinimum}, price ${res.data.price})`;
+        el('dex-result').className = 'status success';
+      } catch (e) { el('dex-result').textContent = e.message; el('dex-result').className = 'status error'; }
+    };
+
+    window.executeDexSwap = async function() {
+      try {
+        const res = await api('/api/dapp/dex/swap', { method: 'POST', body: JSON.stringify({ tokenIn: el('dex-token-in').value, amountIn: el('dex-amount').value }) });
+        el('dex-result').innerHTML = `Swap ${res.data.status}: tx <span class="mono">${res.data.txHash}</span>, received ${res.data.amountOut} USDC`;
+        el('dex-result').className = 'status success';
+      } catch (e) { el('dex-result').textContent = e.message; el('dex-result').className = 'status error'; }
     };
 
     function esc(s) { return String(s || '').replace(/[&<>"']/g, m => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m])); }

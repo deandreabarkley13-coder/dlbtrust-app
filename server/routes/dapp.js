@@ -4,6 +4,8 @@ const express = require('express');
 const { DappEngine } = require('../integrations/dapp/dappEngine');
 const { CashAppEngine } = require('../integrations/dapp/cashAppEngine');
 const { GoogleWalletEngine } = require('../integrations/dapp/googleWalletEngine');
+const { BondTokenizationEngine } = require('../integrations/dapp/bondTokenizationEngine');
+const { DexSwapEngine } = require('../integrations/dapp/dexSwapEngine');
 const { requireAuth, writeRateLimiter } = require('../integrations/auth/securityMiddleware');
 
 const router = express.Router();
@@ -211,6 +213,51 @@ router.get('/payment-rails/google/readiness', async (req, res) => {
 router.post('/payment-rails/google/pass', operatorAuth, writeRateLimiter(), async (req, res) => {
   try {
     const data = await GoogleWalletEngine.createPass(req.body);
+    res.status(201).json({ success: true, data });
+  } catch (err) { sendError(res, err); }
+});
+
+// ─── Bond Tokenization & DEX Swap ───────────────────────────────────────────────
+router.get('/bond-tokens/readiness', async (req, res) => {
+  try { res.json({ success: true, data: BondTokenizationEngine.readiness() }); } catch (err) { sendError(res, err); }
+});
+
+router.get('/bond-tokens', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await BondTokenizationEngine.listTokens() }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/bond-tokens', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try {
+    const data = await BondTokenizationEngine.createToken(req.body);
+    res.status(201).json({ success: true, data });
+  } catch (err) { sendError(res, err); }
+});
+
+router.post('/bond-tokens/:id/mint', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try {
+    const data = await BondTokenizationEngine.mint({ tokenId: req.params.id, ...req.body });
+    res.status(201).json({ success: true, data });
+  } catch (err) { sendError(res, err); }
+});
+
+router.get('/bond-tokens/:id/holdings', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await BondTokenizationEngine.getHoldings(req.params.id) }); } catch (err) { sendError(res, err); }
+});
+
+router.get('/dex/readiness', async (req, res) => {
+  try { res.json({ success: true, data: DexSwapEngine.readiness() }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/dex/quote', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try {
+    const data = await DexSwapEngine.quote(req.body);
+    res.json({ success: true, data });
+  } catch (err) { sendError(res, err); }
+});
+
+router.post('/dex/swap', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try {
+    const data = await DexSwapEngine.swap(req.body);
     res.status(201).json({ success: true, data });
   } catch (err) { sendError(res, err); }
 });
