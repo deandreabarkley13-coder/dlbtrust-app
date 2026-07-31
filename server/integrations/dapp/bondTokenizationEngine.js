@@ -153,7 +153,7 @@ class BondTokenizationEngine {
           abi: factoryAbi,
           functionName: 'createBondToken',
           args: [record.token_name, record.token_symbol, 0],
-          gas: 1500000n,
+          gas: 1200000n,
         });
         const receipt = await publicClient.waitForTransactionReceipt({ hash });
         if (receipt.status !== 'success') throw new Error(`bond token factory deploy failed: ${receipt.transactionHash}`);
@@ -168,7 +168,7 @@ class BondTokenizationEngine {
           abi,
           bytecode,
           args: [record.token_name, record.token_symbol, 0],
-          gas: 1200000n,
+          gas: 1100000n,
         });
         const receipt = await publicClient.waitForTransactionReceipt({ hash });
         if (receipt.status !== 'success') throw new Error(`bond token deploy failed: ${receipt.transactionHash}`);
