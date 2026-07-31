@@ -5,17 +5,22 @@
  *
  * Wraps the internal fixed-income/bond ledger and produces ERC-20 tokens
  * representing bond principal and accrued interest. In shadow mode it records
- * token mints in the local database; in live mode it deploys/mints via a
- * configured ERC-20 factory using the dapp hot wallet.
+ * token mints in the local database; in live mode it deploys/mints via an
+ * ERC-20 factory or direct BondToken contract using the dapp hot wallet.
  */
 
 const { getConfig } = require('./config');
+const fs = require('fs');
+const path = require('path');
 
 let pool;
 try { pool = require('../bonds/pgPool'); } catch (e) { pool = null; }
 
 let BondEngine;
 try { BondEngine = require('../bonds/bondEngine').BondEngine; } catch (e) { BondEngine = null; }
+
+let viem, chains;
+try { viem = require('viem'); chains = require('viem/chains'); } catch (e) { viem = null; chains = null; }
 
 function str(name, fallback = '') { return (process.env[name] || fallback).trim(); }
 function bool(name, fallback = false) { const v = process.env[name]; return v ? String(v).toLowerCase() === 'true' : fallback; }
@@ -27,8 +32,7 @@ const memory = { tokens: new Map(), holdings: new Map() };
 
 async function query(sql, params) {
   if (!pool) throw new Error('no database');
-  const res = await pool.query(sql, params);
-  return res;
+  return pool.query(sql, params);
 }
 
 async function ensureTable() {
@@ -63,6 +67,34 @@ async function ensureTable() {
   `);
 }
 
+function walletClient() {
+  if (!viem) throw new Error('viem not installed');
+  const cfg = getConfig();
+  if (!cfg.privateKey) throw new Error('DAPP_PRIVATE_KEY not configured');
+  const account = viem.privateKeyToAccount(cfg.privateKey);
+  const chain = cfg.chainId === 1 ? (chains && chains.mainnet) : (chains && chains.sepolia) || undefined;
+  return {
+    account,
+    wallet: viem.createWalletClient({ account, chain, transport: viem.http(cfg.rpcUrl) }),
+    public: viem.createPublicClient({ chain, transport: viem.http(cfg.rpcUrl) })
+  };
+}
+
+function getBondTokenAbi() {
+  const abiPath = str('BOND_TOKEN_ABI_PATH', path.join(process.cwd(), 'artifacts', 'contracts_BondToken_sol_BondToken.abi'));
+  return JSON.parse(fs.readFileSync(abiPath, 'utf8'));
+}
+
+function getBondTokenBytecode() {
+  const binPath = str('BOND_TOKEN_BYTECODE_PATH', path.join(process.cwd(), 'artifacts', 'contracts_BondToken_sol_BondToken.bin'));
+  return '0x' + fs.readFileSync(binPath, 'utf8').trim();
+}
+
+const factoryAbi = [
+  { type: 'function', name: 'createBondToken', inputs: [{ type: 'string' }, { type: 'string' }, { type: 'uint256' }], outputs: [{ type: 'address' }], stateMutability: 'nonpayable' },
+  { type: 'event', name: 'BondTokenCreated', inputs: [{ type: 'address', indexed: true, name: 'token' }, { type: 'string', name: 'name' }, { type: 'string', name: 'symbol' }, { type: 'uint256', name: 'initialSupply' }] }
+];
+
 class BondTokenizationEngine {
   static getConfig() {
     const cfg = getConfig();
@@ -70,7 +102,8 @@ class BondTokenizationEngine {
       enabled: bool('BOND_TOKENIZATION_ENABLED', true),
       shadow: bool('BOND_TOKEN_SHADOW', cfg.dappShadow !== false ? true : cfg.dappShadow),
       factoryAddress: str('BOND_TOKEN_FACTORY', ''),
-      implAddress: str('BOND_TOKEN_IMPL', ''),
+      bytecodePath: str('BOND_TOKEN_BYTECODE_PATH', path.join(process.cwd(), 'artifacts', 'contracts_BondToken_sol_BondToken.bin')),
+      abiPath: str('BOND_TOKEN_ABI_PATH', path.join(process.cwd(), 'artifacts', 'contracts_BondToken_sol_BondToken.abi')),
       chainId: cfg.chainId,
       rpcUrl: cfg.rpcUrl,
       privateKey: cfg.privateKey,
@@ -83,13 +116,14 @@ class BondTokenizationEngine {
     const issues = [];
     if (!cfg.enabled) issues.push('BOND_TOKENIZATION_ENABLED is not true');
     if (!cfg.shadow) {
-      if (!cfg.factoryAddress) issues.push('BOND_TOKEN_FACTORY not configured');
       if (!cfg.privateKey) issues.push('DAPP_PRIVATE_KEY not configured');
+      if (!cfg.rpcUrl) issues.push('DAPP_RPC_URL not configured');
+      if (!cfg.factoryAddress && !fs.existsSync(cfg.bytecodePath)) issues.push('BOND_TOKEN_FACTORY or BOND_TOKEN_BYTECODE_PATH missing');
     }
     return { ready: issues.length === 0, mode: cfg.shadow ? 'shadow' : 'live', issues };
   }
 
-  static async createToken({ bondId, tokenName, tokenSymbol, tokenAddress } = {}) {
+  static async createToken({ bondId, tokenName, tokenSymbol, tokenAddress, decimals = 6 } = {}) {
     await ensureTable();
     let bond;
     if (bondId && BondEngine) {
@@ -108,8 +142,39 @@ class BondTokenizationEngine {
       tokenized_principal: 0,
       tokenized_interest: 0,
       status: 'active',
-      metadata: JSON.stringify({ shadow: cfg.shadow, chainId: cfg.chainId }),
+      metadata: JSON.stringify({ shadow: cfg.shadow, chainId: cfg.chainId, decimals }),
     };
+
+    if (!cfg.shadow && !tokenAddress) {
+      const { wallet, public } = walletClient();
+      if (cfg.factoryAddress) {
+        const hash = await wallet.writeContract({
+          address: cfg.factoryAddress,
+          abi: factoryAbi,
+          functionName: 'createBondToken',
+          args: [record.token_name, record.token_symbol, 0],
+          gas: 1500000n,
+        });
+        const receipt = await public.waitForTransactionReceipt({ hash });
+        if (receipt.status !== 'success') throw new Error(`bond token factory deploy failed: ${receipt.transactionHash}`);
+        const event = receipt.logs.find(l => l.address.toLowerCase() === cfg.factoryAddress.toLowerCase());
+        if (!event) throw new Error('BondTokenCreated event not found');
+        const decoded = viem.decodeEventLog({ abi: factoryAbi, eventName: 'BondTokenCreated', data: event.data, topics: event.topics });
+        record.token_address = decoded.args.token;
+      } else {
+        const abi = getBondTokenAbi();
+        const bytecode = getBondTokenBytecode();
+        const hash = await wallet.deployContract({
+          abi,
+          bytecode,
+          args: [record.token_name, record.token_symbol, 0],
+          gas: 1200000n,
+        });
+        const receipt = await public.waitForTransactionReceipt({ hash });
+        if (receipt.status !== 'success') throw new Error(`bond token deploy failed: ${receipt.transactionHash}`);
+        record.token_address = receipt.contractAddress;
+      }
+    }
 
     if (pool) {
       await pool.query(
@@ -158,22 +223,43 @@ class BondTokenizationEngine {
     token.tokenized_interest = Number(token.tokenized_interest || 0) + interestNum;
     token.updated_at = new Date().toISOString();
 
+    const cfg = this.getConfig();
+    const target = holderAddress || 'treasury';
+    let txHash = null;
+
+    if (!cfg.shadow) {
+      if (!token.token_address || token.token_address.startsWith('shadow-')) throw new Error('token has no on-chain address');
+      const { wallet, public } = walletClient();
+      const abi = getBondTokenAbi();
+      const decimals = (token.metadata && token.metadata.decimals) ? token.metadata.decimals : 6;
+      const raw = viem.parseUnits(String(amount), decimals);
+      const hash = await wallet.writeContract({
+        address: token.token_address,
+        abi,
+        functionName: 'mint',
+        args: [target, raw],
+      });
+      const receipt = await public.waitForTransactionReceipt({ hash });
+      if (receipt.status !== 'success') throw new Error(`mint failed: ${receipt.transactionHash}`);
+      txHash = receipt.transactionHash;
+    }
+
     if (pool) {
       await pool.query('UPDATE bond_tokens SET total_supply = $1, tokenized_principal = $2, tokenized_interest = $3, updated_at = NOW() WHERE id = $4', [token.total_supply, token.tokenized_principal, token.tokenized_interest, tokenId]);
       await pool.query(
         `INSERT INTO bond_token_holders (id, token_id, holder_address, balance) VALUES ($1, $2, $3, $4)
          ON CONFLICT (token_id, holder_address) DO UPDATE SET balance = bond_token_holders.balance + $4, updated_at = NOW()`,
-        [id('BTH'), tokenId, holderAddress || 'treasury', amount]
+        [id('BTH'), tokenId, target, amount]
       );
     } else {
       memory.tokens.set(tokenId, token);
-      const key = `${tokenId}:${holderAddress || 'treasury'}`;
-      const h = memory.holdings.get(key) || { id: id('BTH'), token_id: tokenId, holder_address: holderAddress || 'treasury', balance: 0 };
+      const key = `${tokenId}:${target}`;
+      const h = memory.holdings.get(key) || { id: id('BTH'), token_id: tokenId, holder_address: target, balance: 0 };
       h.balance += amount;
       memory.holdings.set(key, h);
     }
 
-    return { token, minted: amount, principal: principalNum, interest: interestNum, holder: holderAddress || 'treasury' };
+    return { token, minted: amount, principal: principalNum, interest: interestNum, holder: target, txHash };
   }
 
   static async getHoldings(tokenId) {
