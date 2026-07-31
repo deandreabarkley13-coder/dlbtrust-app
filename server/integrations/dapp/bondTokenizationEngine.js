@@ -76,7 +76,7 @@ function walletClient() {
   return {
     account,
     wallet: viem.createWalletClient({ account, chain, transport: viem.http(cfg.rpcUrl) }),
-    public: viem.createPublicClient({ chain, transport: viem.http(cfg.rpcUrl) })
+    publicClient: viem.createPublicClient({ chain, transport: viem.http(cfg.rpcUrl) })
   };
 }
 
@@ -146,7 +146,7 @@ class BondTokenizationEngine {
     };
 
     if (!cfg.shadow && !tokenAddress) {
-      const { wallet, public } = walletClient();
+      const { wallet, publicClient } = walletClient();
       if (cfg.factoryAddress) {
         const hash = await wallet.writeContract({
           address: cfg.factoryAddress,
@@ -155,7 +155,7 @@ class BondTokenizationEngine {
           args: [record.token_name, record.token_symbol, 0],
           gas: 1500000n,
         });
-        const receipt = await public.waitForTransactionReceipt({ hash });
+        const receipt = await publicClient.waitForTransactionReceipt({ hash });
         if (receipt.status !== 'success') throw new Error(`bond token factory deploy failed: ${receipt.transactionHash}`);
         const event = receipt.logs.find(l => l.address.toLowerCase() === cfg.factoryAddress.toLowerCase());
         if (!event) throw new Error('BondTokenCreated event not found');
@@ -170,7 +170,7 @@ class BondTokenizationEngine {
           args: [record.token_name, record.token_symbol, 0],
           gas: 1200000n,
         });
-        const receipt = await public.waitForTransactionReceipt({ hash });
+        const receipt = await publicClient.waitForTransactionReceipt({ hash });
         if (receipt.status !== 'success') throw new Error(`bond token deploy failed: ${receipt.transactionHash}`);
         record.token_address = receipt.contractAddress;
       }
@@ -229,7 +229,7 @@ class BondTokenizationEngine {
 
     if (!cfg.shadow) {
       if (!token.token_address || token.token_address.startsWith('shadow-')) throw new Error('token has no on-chain address');
-      const { wallet, public } = walletClient();
+      const { wallet, publicClient } = walletClient();
       const abi = getBondTokenAbi();
       const decimals = (token.metadata && token.metadata.decimals) ? token.metadata.decimals : 6;
       const raw = viem.parseUnits(String(amount), decimals);
@@ -239,7 +239,7 @@ class BondTokenizationEngine {
         functionName: 'mint',
         args: [target, raw],
       });
-      const receipt = await public.waitForTransactionReceipt({ hash });
+      const receipt = await publicClient.waitForTransactionReceipt({ hash });
       if (receipt.status !== 'success') throw new Error(`mint failed: ${receipt.transactionHash}`);
       txHash = receipt.transactionHash;
     }

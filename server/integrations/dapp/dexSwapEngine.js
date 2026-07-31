@@ -47,7 +47,7 @@ function walletClient() {
   return {
     account,
     wallet: viem.createWalletClient({ account, chain, transport: viem.http(cfg.rpcUrl) }),
-    public: viem.createPublicClient({ chain, transport: viem.http(cfg.rpcUrl) })
+    publicClient: viem.createPublicClient({ chain, transport: viem.http(cfg.rpcUrl) })
   };
 }
 
@@ -88,11 +88,11 @@ class DexSwapEngine {
     const inputToken = tokenIn;
 
     if (!cfg.shadow && cfg.router && viem) {
-      const { public } = walletClient();
-      const token0 = await public.readContract({ address: cfg.router, abi: bondDexAbi, functionName: 'token0' });
-      const token1 = await public.readContract({ address: cfg.router, abi: bondDexAbi, functionName: 'token1' });
-      const r0 = await public.readContract({ address: cfg.router, abi: bondDexAbi, functionName: 'reserve0' });
-      const r1 = await public.readContract({ address: cfg.router, abi: bondDexAbi, functionName: 'reserve1' });
+      const { publicClient } = walletClient();
+      const token0 = await publicClient.readContract({ address: cfg.router, abi: bondDexAbi, functionName: 'token0' });
+      const token1 = await publicClient.readContract({ address: cfg.router, abi: bondDexAbi, functionName: 'token1' });
+      const r0 = await publicClient.readContract({ address: cfg.router, abi: bondDexAbi, functionName: 'reserve0' });
+      const r1 = await publicClient.readContract({ address: cfg.router, abi: bondDexAbi, functionName: 'reserve1' });
       const tokenInIsToken0 = inputToken.toLowerCase() === token0.toLowerCase();
       const reserveIn = tokenInIsToken0 ? r0 : r1;
       const reserveOut = tokenInIsToken0 ? r1 : r0;
@@ -154,7 +154,7 @@ class DexSwapEngine {
 
     if (!cfg.router || !viem) throw new Error('BOND_DEX_ADDRESS / DEX_SWAP_ROUTER not configured');
 
-    const { wallet, public } = walletClient();
+    const { wallet, publicClient } = walletClient();
     const rawIn = viem.parseUnits(String(amountIn), decimalsIn);
     const minOut = amountOutMinimum ? viem.parseUnits(String(amountOutMinimum), decimalsOut) : 0n;
 
@@ -164,7 +164,7 @@ class DexSwapEngine {
       functionName: 'approve',
       args: [cfg.router, rawIn],
     });
-    await public.waitForTransactionReceipt({ hash: approveHash });
+    await publicClient.waitForTransactionReceipt({ hash: approveHash });
 
     const swapHash = await wallet.writeContract({
       address: cfg.router,
@@ -173,7 +173,7 @@ class DexSwapEngine {
       args: [rawIn, inputToken, minOut],
       gas: 500000n,
     });
-    const receipt = await public.waitForTransactionReceipt({ hash: swapHash });
+    const receipt = await publicClient.waitForTransactionReceipt({ hash: swapHash });
     if (receipt.status !== 'success') throw new Error(`swap failed: ${receipt.transactionHash}`);
 
     return {
