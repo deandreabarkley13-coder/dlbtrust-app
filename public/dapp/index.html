@@ -211,8 +211,11 @@
           </div>
           <div class="actions">
             <button class="btn" onclick="stageCoinbaseTreasury()">Stage to Coinbase</button>
+            <button class="btn" onclick="loadCoinbasePaymentMethods()">Load Payment Methods</button>
+            <button class="btn" onclick="loadCoinbaseAccounts()">Load Coinbase Accounts</button>
           </div>
           <div id="cbt-fund-result" class="status hidden" style="word-break:break-word"></div>
+          <div id="cbt-payment-result" class="status hidden" style="white-space:pre-wrap;word-break:break-word"></div>
           <div style="margin-top:10px"><label>Transfer ID</label><input type="text" id="cbt-transfer-id" placeholder="CBTB-..." style="width:240px" /></div>
           <div class="actions">
             <button class="btn" onclick="executeCoinbaseTreasury()">Execute After Deposit</button>
@@ -604,6 +607,22 @@
         }
         loadSourceBalances();
       } catch (e) { el('cb-fund-result').textContent = e.message; el('cb-fund-result').className = 'status error'; }
+    };
+
+    window.loadCoinbasePaymentMethods = async function() {
+      try {
+        const res = await api('/api/dapp/coinbase-treasury/payment-methods');
+        el('cbt-payment-result').textContent = 'Payment methods: ' + JSON.stringify(res.data, null, 2);
+        el('cbt-payment-result').className = 'status success';
+      } catch (e) { el('cbt-payment-result').textContent = e.message; el('cbt-payment-result').className = 'status error'; }
+    };
+
+    window.loadCoinbaseAccounts = async function() {
+      try {
+        const res = await api('/api/dapp/coinbase-treasury/accounts');
+        el('cbt-payment-result').textContent = 'Coinbase accounts: ' + JSON.stringify(res.data, null, 2);
+        el('cbt-payment-result').className = 'status success';
+      } catch (e) { el('cbt-payment-result').textContent = e.message; el('cbt-payment-result').className = 'status error'; }
     };
 
     window.stageCoinbaseTreasury = async function() {

@@ -127,6 +127,37 @@ class CoinbaseTreasuryBridge {
     }, () => { /* best effort */ });
   }
 
+  static async getPaymentMethods() {
+    const appClient = CoinbaseSpotEngine._getAppClient();
+    try {
+      const res = await appClient.getPrivate('/v2/payment-methods');
+      return res && res.data ? res.data : res;
+    } catch (e) {
+      return { error: (e && e.message) || String(e) };
+    }
+  }
+
+  static async getFiatAccounts(currency = 'USD') {
+    const appClient = CoinbaseSpotEngine._getAppClient();
+    try {
+      const accounts = await appClient.getAccounts();
+      const list = accounts && accounts.data ? accounts.data : [];
+      return list.filter(a => a.currency === currency || (a.balance && a.balance.currency === currency));
+    } catch (e) {
+      return [];
+    }
+  }
+
+  static async getDepositStatus(transfer) {
+    if (typeof transfer === 'string') transfer = await this.getTransfer(transfer);
+    if (!transfer || !transfer.coinbase_deposit_id) return null;
+    const appClient = CoinbaseSpotEngine._getAppClient();
+    const usdAccounts = await this.getFiatAccounts('USD');
+    const usdAccount = usdAccounts[0];
+    if (!usdAccount) return null;
+    return appClient.getDeposit({ account_id: usdAccount.id, deposit_id: transfer.coinbase_deposit_id });
+  }
+
   static _addLedger(transfer, entry) {
     transfer.ledger_entries = transfer.ledger_entries || [];
     entry.at = new Date().toISOString();
@@ -227,8 +258,17 @@ class CoinbaseTreasuryBridge {
       throw err;
     }
 
-    // 3. Optionally initiate the fiat deposit with the Coinbase App API
-    if (coinbasePaymentMethodId) {
+    // 3. Initiate the fiat deposit with the Coinbase App API
+    let selectedPaymentMethodId = coinbasePaymentMethodId;
+    if (!selectedPaymentMethodId) {
+      try {
+        const methods = await this.getPaymentMethods();
+        const methodsArray = Array.isArray(methods) ? methods : (methods && methods.data ? methods.data : []);
+        const fiatMethod = methodsArray.find(m => m.type === 'fiat_account' || m.type === 'ach_bank_account' || m.currency === 'USD');
+        if (fiatMethod) selectedPaymentMethodId = fiatMethod.id;
+      } catch (e) { /* best effort */ }
+    }
+    if (selectedPaymentMethodId) {
       try {
         const appClient = CoinbaseSpotEngine._getAppClient();
         const accounts = await appClient.getAccounts();
@@ -239,22 +279,13 @@ class CoinbaseTreasuryBridge {
           account_id: usdAccount.id,
           amount: amountNum.toFixed(2),
           currency: 'USD',
-          payment_method: coinbasePaymentMethodId,
-          commit: false,
+          payment_method: selectedPaymentMethodId,
+          commit: true,
         });
         transfer.coinbase_deposit_id = deposit && deposit.id;
         transfer.coinbase_deposit_response = deposit || {};
-        transfer.metadata.deposit_status = 'pending_commit';
-        if (transfer.coinbase_deposit_id) {
-          try {
-            const committed = await appClient.commitDeposit({ account_id: usdAccount.id, deposit_id: transfer.coinbase_deposit_id });
-            transfer.coinbase_deposit_response = committed || transfer.coinbase_deposit_response;
-            transfer.metadata.deposit_status = 'committed';
-          } catch (commitErr) {
-            transfer.metadata.deposit_status = 'commit_failed';
-            transfer.metadata.commit_error = (commitErr && commitErr.message) || String(commitErr);
-          }
-        }
+        transfer.coinbase_payment_method_id = selectedPaymentMethodId;
+        transfer.metadata.deposit_status = deposit && deposit.committed === false ? 'pending_commit' : 'committed';
         await this._insert(transfer);
       } catch (err) {
         transfer.error = `Coinbase deposit initiation failed: ${(err && err.message) || err}; manual wire required`;
@@ -281,9 +312,12 @@ class CoinbaseTreasuryBridge {
           instructions: {
             amount: amountNum.toFixed(2),
             currency: 'USD',
-            method: coinbasePaymentMethodId ? 'coinbase_deposit' : 'manual_wire',
-            depositId: transfer.coinbase_deposit_id,
-            message: 'Send USD to the connected Coinbase account, then call POST /api/dapp/coinbase-treasury/:id/execute to complete the buy and on-chain send.',
+            method: transfer.coinbase_payment_method_id ? 'coinbase_deposit' : 'manual_wire',
+            paymentMethodId: transfer.coinbase_payment_method_id || null,
+            depositId: transfer.coinbase_deposit_id || null,
+            message: transfer.coinbase_payment_method_id
+              ? `Coinbase deposit created. Once USD settles, call POST /api/dapp/coinbase-treasury/transfers/${transfer.id}/execute to complete the buy and on-chain send.`
+              : `No Coinbase payment method found. Link a bank account in Coinbase, then call POST /api/dapp/coinbase-treasury/transfers/${transfer.id}/execute after the USD deposit settles.`,
           },
         };
       }

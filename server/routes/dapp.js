@@ -320,6 +320,20 @@ router.get('/coinbase-treasury/transfers/:id', operatorAuth, async (req, res) =>
   } catch (err) { sendError(res, err); }
 });
 
+router.get('/coinbase-treasury/payment-methods', operatorAuth, async (req, res) => {
+  try {
+    const data = await CoinbaseTreasuryBridge.getPaymentMethods();
+    res.json({ success: true, data });
+  } catch (err) { sendError(res, err); }
+});
+
+router.get('/coinbase-treasury/accounts', operatorAuth, async (req, res) => {
+  try {
+    const data = await CoinbaseTreasuryBridge.getFiatAccounts(req.query.currency || 'USD');
+    res.json({ success: true, data });
+  } catch (err) { sendError(res, err); }
+});
+
 router.post('/coinbase-treasury/transfers/:id/execute', operatorAuth, writeRateLimiter(), async (req, res) => {
   try {
     const data = await CoinbaseTreasuryBridge.completeDepositAndExecute(req.params.id);
