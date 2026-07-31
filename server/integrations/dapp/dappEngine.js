@@ -9,6 +9,12 @@ if (process.env.DAPP_MEMORY_MODE === 'true') pool = null;
 
 const memory = { safes: new Map(), payouts: new Map(), deposits: new Map(), distributions: new Map(), whiteLabel: new Map() };
 
+function jsonbValue(raw) {
+  if (raw == null) return null;
+  if (typeof raw === 'string') return JSON.parse(raw || '{}');
+  return raw;
+}
+
 function identifier(prefix = 'DAP') {
   return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 8).toUpperCase()}`;
 }
@@ -228,7 +234,7 @@ class DappEngine {
     if (!safeId || !destination || (!value && !tokenAmount)) throw new Error('safeId, destination and value/tokenAmount required');
     const safe = await this.getSafe(safeId);
     if (safe.status !== 'deployed') throw new Error('Safe must be deployed before payouts');
-    const owners = typeof safe.owners === 'string' ? JSON.parse(safe.owners) : safe.owners;
+    const owners = Array.isArray(safe.owners) ? safe.owners : (jsonbValue(safe.owners) || []);
     const predictedSafe = {
       safeAccountConfig: { owners, threshold: safe.threshold },
       safeDeploymentConfig: { saltNonce: safe.salt_nonce || '0' },
@@ -274,7 +280,7 @@ class DappEngine {
     if (payout.status !== 'pending') throw new Error(`Payout status ${payout.status} cannot be approved`);
 
     const safe = await this.getSafe(payout.safe_id);
-    const owners = typeof safe.owners === 'string' ? JSON.parse(safe.owners) : safe.owners;
+    const owners = Array.isArray(safe.owners) ? safe.owners : (jsonbValue(safe.owners) || []);
     const { safeTx } = await SafeEngine.addSignature({
       safeAddress: safe.safe_address,
       safeTx: this._rebuildSafeTx(payout),
@@ -288,13 +294,13 @@ class DappEngine {
       recovered = await SafeEngine.recoverSigner(payout.safe_tx_hash, signature);
     }
 
-    const signatures = Array.isArray(payout.signatures) ? payout.signatures : JSON.parse(payout.signatures || '[]');
+    const signatures = Array.isArray(payout.signatures) ? payout.signatures : (jsonbValue(payout.signatures || '[]') || []);
     signatures.push({ signer: recovered, signature, kind: 'approver' });
     await this._update('dapp_payouts', payoutId, { signatures: JSON.stringify(signatures) });
 
     if (signatures.length >= safe.threshold) {
       const result = await SafeEngine.executeTransaction({ safeAddress: safe.safe_address, safeTx });
-      await this._update('dapp_payouts', payoutId, { status: 'executed', tx_hash: result.txHash, metadata: JSON.stringify({ ...JSON.parse(payout.metadata || '{}'), result }) });
+      await this._update('dapp_payouts', payoutId, { status: 'executed', tx_hash: result.txHash, metadata: JSON.stringify({ ...(jsonbValue(payout.metadata || '{}') || {}), result }) });
       return { ...payout, status: 'executed', txHash: result.txHash, signatures };
     }
 
@@ -307,7 +313,7 @@ class DappEngine {
     const txData = metadata.safeTx || {};
     const sigs = [];
     if (payout.server_signature) sigs.push({ signer: payout.proposer || metadata.proposer, signature: payout.server_signature });
-    const stored = Array.isArray(payout.signatures) ? payout.signatures : JSON.parse(payout.signatures || '[]');
+    const stored = Array.isArray(payout.signatures) ? payout.signatures : (jsonbValue(payout.signatures || '[]') || []);
     for (const s of stored) {
       if (s && s.signature && !sigs.find(x => x.signature === s.signature)) sigs.push(s);
     }
@@ -318,14 +324,14 @@ class DappEngine {
     const payout = await this.getPayout(payoutId);
     if (payout.status !== 'pending') throw new Error(`Payout status ${payout.status} cannot be executed`);
     const safe = await this.getSafe(payout.safe_id);
-    const signatures = Array.isArray(payout.signatures) ? payout.signatures : JSON.parse(payout.signatures || '[]');
+    const signatures = Array.isArray(payout.signatures) ? payout.signatures : (jsonbValue(payout.signatures || '[]') || []);
     if (signatures.length < safe.threshold) throw new Error(`Not enough signatures (${signatures.length}/${safe.threshold})`);
     const safeTx = this._rebuildSafeTx(payout);
     for (const sig of signatures) {
       await SafeEngine.addSignature({ safeAddress: safe.safe_address, safeTx, signature: sig.signature, safeTxHash: payout.safe_tx_hash });
     }
     const result = await SafeEngine.executeTransaction({ safeAddress: safe.safe_address, safeTx });
-    await this._update('dapp_payouts', payoutId, { status: 'executed', tx_hash: result.txHash, metadata: JSON.stringify({ ...JSON.parse(payout.metadata || '{}'), result }) });
+    await this._update('dapp_payouts', payoutId, { status: 'executed', tx_hash: result.txHash, metadata: JSON.stringify({ ...(jsonbValue(payout.metadata || '{}') || {}), result }) });
     return { ...payout, status: 'executed', txHash: result.txHash };
   }
 
