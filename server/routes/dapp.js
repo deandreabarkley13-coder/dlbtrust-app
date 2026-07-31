@@ -8,6 +8,7 @@ const { BondTokenizationEngine } = require('../integrations/dapp/bondTokenizatio
 const { DexSwapEngine } = require('../integrations/dapp/dexSwapEngine');
 const { SourceToDexBridge } = require('../integrations/dapp/sourceToDexBridge');
 const { CoinbaseSpotEngine } = require('../integrations/dapp/coinbaseSpotEngine');
+const { CoinbaseTreasuryBridge } = require('../integrations/dapp/coinbaseTreasuryBridge');
 const { requireAuth, writeRateLimiter } = require('../integrations/auth/securityMiddleware');
 
 const router = express.Router();
@@ -292,6 +293,37 @@ router.post('/coinbase-spot/fund', operatorAuth, writeRateLimiter(), async (req,
   try {
     const data = await CoinbaseSpotEngine.fundFromSource(req.body);
     res.status(201).json({ success: true, data });
+  } catch (err) { sendError(res, err); }
+});
+
+// ─── Coinbase Treasury Bridge (source ledger -> Coinbase deposit -> buy -> send) ───
+router.post('/coinbase-treasury/fund', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try {
+    const data = await CoinbaseTreasuryBridge.stageFromSource(req.body);
+    const statusCode = data && data.status === 'needs_deposit' ? 202 : 201;
+    res.status(statusCode).json({ success: true, data });
+  } catch (err) { sendError(res, err); }
+});
+
+router.get('/coinbase-treasury/transfers', operatorAuth, async (req, res) => {
+  try {
+    const data = await CoinbaseTreasuryBridge.listTransfers({ status: req.query.status, limit: req.query.limit, offset: req.query.offset });
+    res.json({ success: true, data });
+  } catch (err) { sendError(res, err); }
+});
+
+router.get('/coinbase-treasury/transfers/:id', operatorAuth, async (req, res) => {
+  try {
+    const data = await CoinbaseTreasuryBridge.getTransfer(req.params.id);
+    if (!data) return res.status(404).json({ success: false, error: 'Transfer not found' });
+    res.json({ success: true, data });
+  } catch (err) { sendError(res, err); }
+});
+
+router.post('/coinbase-treasury/transfers/:id/execute', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try {
+    const data = await CoinbaseTreasuryBridge.completeDepositAndExecute(req.params.id);
+    res.status(200).json({ success: true, data });
   } catch (err) { sendError(res, err); }
 });
 

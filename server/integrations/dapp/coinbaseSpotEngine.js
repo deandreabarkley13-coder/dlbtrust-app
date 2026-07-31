@@ -193,6 +193,45 @@ class CoinbaseSpotEngine {
     }
   }
 
+  static async _buildOrder({
+    sourceType = 'treasury',
+    sourceAccountId,
+    amount,
+    targetAsset = 'ETH',
+    targetNetwork = 'ethereum',
+    targetAddress,
+    transferId,
+  } = {}) {
+    await this.ensureTables();
+    const cfg = getConfig();
+    const orderId = identifier('CBS');
+    const resolvedTarget = targetAddress || getOperatorAddress(cfg);
+    if (!resolvedTarget) throw new Error('targetAddress or DAPP_PRIVATE_KEY required');
+    const order = {
+      id: orderId,
+      status: 'pending',
+      source_type: sourceType,
+      source_account_id: sourceAccountId || '',
+      reserve_id: transferId || '',
+      fiat_amount: Number(amount),
+      fiat_currency: 'USD',
+      target_asset: String(targetAsset).toUpperCase(),
+      target_network: targetNetwork,
+      target_address: resolvedTarget,
+      target_amount: '',
+      order_id: '',
+      order_response: {},
+      withdrawal_id: '',
+      withdrawal_response: {},
+      tx_hash: '',
+      tx_explorer: '',
+      error: '',
+      metadata: {},
+    };
+    await this._insert(order);
+    return order;
+  }
+
   /**
    * Fund the operator/Safe wallet by reserving an internal ledger balance and
    * buying the target asset on Coinbase with fiat, then sending it on-chain.
@@ -252,7 +291,17 @@ class CoinbaseSpotEngine {
       order.reserve_id = reserve && (reserve.bondTransactionId || reserve.cashTransactionId || reserve.subLedgerTransactionId || reserve.treasuryId || orderId);
     } catch (err) { await this._setError(order, err); throw err; }
 
-    // 2. Preview / submit the buy order on Coinbase Advanced Trade
+    // 2. Execute the Coinbase buy + on-chain send
+    const result = await this.executeBuySend(order, { amountNum, reserve, amountCents });
+    return result;
+  }
+
+  /**
+   * Execute the market buy + on-chain send for an already-funded order.
+   * Called by fundFromSource after reserving a source ledger, or by a Treasury bridge
+   * after USD has been pushed to Coinbase.
+   */
+  static async executeBuySend(order, { amountNum, reserve, amountCents, skipRefund = false } = {}) {
     const advClient = this._getAdvancedClient();
     const productId = productIdFor(order.target_asset);
     if (!['ETH-USD', 'BTC-USD'].includes(productId)) {
@@ -276,12 +325,12 @@ class CoinbaseSpotEngine {
         err.code = needsDeposit ? 'needs_deposit' : 'preview_failed';
         order.status = needsDeposit ? 'needs_deposit' : 'failed';
         order.error = err.message;
-        await this._refundSource(order, reserve, amountCents);
+        if (!skipRefund && reserve) await this._refundSource(order, reserve, amountCents);
         await this._insert(order);
         throw err;
       }
     } catch (err) {
-      if (err && err.code !== 'needs_deposit') await this._refundSource(order, reserve, amountCents);
+      if (err && err.code !== 'needs_deposit' && !skipRefund && reserve) await this._refundSource(order, reserve, amountCents);
       if (order.status !== 'needs_deposit') await this._setError(order, err);
       else await this._insert(order);
       throw err;
@@ -306,13 +355,12 @@ class CoinbaseSpotEngine {
       order.order_id = submitted.order_id || submitted.id || '';
       order.target_amount = submitted.filled_size || (preview && preview.base_size) || '';
     } catch (err) {
-      // If the buy fails because of insufficient USD, rollback the ledger reserve
-      await this._refundSource(order, reserve, amountCents);
+      if (!skipRefund && reserve) await this._refundSource(order, reserve, amountCents);
       await this._setError(order, err);
       throw err;
     }
 
-    // 3. Send purchased crypto to the target wallet using the Coinbase App API
+    // Send purchased crypto to the target wallet using the Coinbase App API
     try {
       order.status = 'sending';
       await this._insert(order);
@@ -325,23 +373,22 @@ class CoinbaseSpotEngine {
       const send = await appClient.sendMoney({
         account_id: account.id,
         type: 'send',
-        to: resolvedTarget,
-        amount: order.target_amount || quoteSize,
+        to: order.target_address,
+        amount: order.target_amount,
         currency: order.target_asset,
-        network: targetNetwork,
+        network: order.target_network,
         idem: order.id,
       });
       order.withdrawal_id = send && send.data && send.data.id;
       order.withdrawal_response = send;
       order.tx_hash = send && send.data && (send.data.network || send.data.transaction ? (send.data.network && send.data.network.hash) || (send.data.transaction && send.data.transaction.id) : '') || '';
-      order.tx_explorer = order.tx_hash ? `https://${targetNetwork === 'ethereum' ? '' : targetNetwork + '.'}etherscan.io/tx/${order.tx_hash}` : '';
+      order.tx_explorer = order.tx_hash ? `https://${order.target_network === 'ethereum' ? '' : order.target_network + '.'}etherscan.io/tx/${order.tx_hash}` : '';
       order.status = order.tx_hash ? 'completed' : 'sending';
     } catch (err) {
       const errMsg = (err && (err.message || err.error || err.detail || err.title)) || (typeof err === 'string' ? err : 'Unknown Coinbase send error');
       order.error = `Bought ${order.target_asset} but withdrawal failed: ${errMsg}`;
       order.status = 'failed';
       await this._insert(order);
-      // Note: crypto is now held in Coinbase; manual send required.
       throw err || new Error(errMsg);
     }
 

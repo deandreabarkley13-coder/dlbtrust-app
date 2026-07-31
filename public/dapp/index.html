@@ -196,6 +196,30 @@
           </div>
           <div id="cb-fund-result" class="status hidden"></div>
         </div>
+
+        <div class="card" style="margin-top:20px">
+          <h2>Treasury -> Coinbase Bridge</h2>
+          <p>Sweep a Treasury / Core Banking / Bond / Trust / Cash source ledger into Coinbase, then buy crypto and send it to the operator/Safe wallet. Posts ledger entries at each stage.</p>
+          <div class="form-row">
+            <div><label>Source Type</label><select id="cbt-fund-type"><option value="bond">Bond / Fixed Income</option><option value="cash">Cash</option><option value="trust">Trust Accounting</option><option value="sub_ledger">Sub-Ledger</option><option value="core_banking">Core Banking</option></select></div>
+            <div><label>Source Account ID</label><input type="text" id="cbt-fund-account" placeholder="Account ID / Bond ID" /></div>
+            <div><label>Amount (USD)</label><input type="text" id="cbt-fund-amount" placeholder="100.00" /></div>
+            <div><label>Target Asset</label><select id="cbt-fund-asset"><option value="ETH">ETH</option><option value="BTC">BTC</option></select></div>
+            <div><label>Network</label><select id="cbt-fund-network"><option value="ethereum">Ethereum Mainnet</option><option value="base">Base</option><option value="sepolia">Sepolia</option></select></div>
+            <div><label>Destination Address (optional)</label><input type="text" id="cbt-fund-address" placeholder="0x... or Safe address" /></div>
+            <div><label>Coinbase Payment Method ID (optional)</label><input type="text" id="cbt-fund-pm" placeholder="pm-..." /></div>
+          </div>
+          <div class="actions">
+            <button class="btn" onclick="stageCoinbaseTreasury()">Stage to Coinbase</button>
+          </div>
+          <div id="cbt-fund-result" class="status hidden" style="word-break:break-word"></div>
+          <div style="margin-top:10px"><label>Transfer ID</label><input type="text" id="cbt-transfer-id" placeholder="CBTB-..." style="width:240px" /></div>
+          <div class="actions">
+            <button class="btn" onclick="executeCoinbaseTreasury()">Execute After Deposit</button>
+            <button class="btn" onclick="listCoinbaseTreasury()">List Transfers</button>
+          </div>
+          <div id="cbt-list-result" class="status hidden" style="white-space:pre-wrap"></div>
+        </div>
       </section>
 
       <section id="safes" class="section">
@@ -580,6 +604,56 @@
         }
         loadSourceBalances();
       } catch (e) { el('cb-fund-result').textContent = e.message; el('cb-fund-result').className = 'status error'; }
+    };
+
+    window.stageCoinbaseTreasury = async function() {
+      try {
+        const res = await api('/api/dapp/coinbase-treasury/fund', {
+          method: 'POST',
+          body: JSON.stringify({
+            sourceType: el('cbt-fund-type').value,
+            sourceAccountId: el('cbt-fund-account').value,
+            amount: el('cbt-fund-amount').value,
+            targetAsset: el('cbt-fund-asset').value,
+            targetNetwork: el('cbt-fund-network').value,
+            targetAddress: el('cbt-fund-address').value || null,
+            coinbasePaymentMethodId: el('cbt-fund-pm').value || null,
+          })
+        });
+        const d = res.data;
+        const t = d.transfer || d;
+        el('cbt-transfer-id').value = t.id || '';
+        if (d.status === 'needs_deposit') {
+          el('cbt-fund-result').textContent = `Staged ${t.id}: reserved $${t.amount_cents / 100} from ${t.source_type}:${t.source_account_id}. ${d.instructions.message}`;
+          el('cbt-fund-result').className = 'status warning';
+        } else {
+          el('cbt-fund-result').textContent = `Completed ${t.id}: status ${t.status} | tx ${t.tx_hash || ''}`;
+          el('cbt-fund-result').className = 'status ' + (t.status === 'completed' ? 'success' : 'warning');
+        }
+        loadSourceBalances();
+      } catch (e) { el('cbt-fund-result').textContent = e.message; el('cbt-fund-result').className = 'status error'; }
+    };
+
+    window.executeCoinbaseTreasury = async function() {
+      try {
+        const id = el('cbt-transfer-id').value;
+        if (!id) throw new Error('Enter a transfer ID');
+        const res = await api(`/api/dapp/coinbase-treasury/transfers/${encodeURIComponent(id)}/execute`, { method: 'POST' });
+        const d = res.data;
+        const t = d.transfer || d;
+        el('cbt-fund-result').textContent = `Executed ${t.id}: status ${t.status} | tx ${t.tx_hash || ''} | ledger entries ${(t.ledger_entries || []).length}`;
+        el('cbt-fund-result').className = 'status ' + (t.status === 'completed' ? 'success' : 'warning');
+        loadSourceBalances();
+      } catch (e) { el('cbt-fund-result').textContent = e.message; el('cbt-fund-result').className = 'status error'; }
+    };
+
+    window.listCoinbaseTreasury = async function() {
+      try {
+        const res = await api('/api/dapp/coinbase-treasury/transfers?limit=10');
+        const list = res.data || [];
+        el('cbt-list-result').textContent = JSON.stringify(list, null, 2);
+        el('cbt-list-result').className = 'status success';
+      } catch (e) { el('cbt-list-result').textContent = e.message; el('cbt-list-result').className = 'status error'; }
     };
 
     window.fundSafeFromSourceDex = async function() {
