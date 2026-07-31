@@ -280,10 +280,11 @@ class BondTokenizationEngine {
   static async getTokenByBondId(bondId) {
     await ensureTable();
     if (pool) {
-      const res = await pool.query('SELECT * FROM bond_tokens WHERE bond_id = $1 ORDER BY created_at DESC LIMIT 1', [bondId]);
-      return res.rows[0] || null;
+      const res = await pool.query("SELECT * FROM bond_tokens WHERE bond_id = $1 AND token_address IS NOT NULL AND token_address <> '' AND token_address NOT LIKE 'shadow-%' ORDER BY created_at DESC LIMIT 1", [bondId]);
+      if (res.rows.length) return res.rows[0];
+      return null;
     }
-    return Array.from(memory.tokens.values()).find(t => t.bond_id === bondId) || null;
+    return Array.from(memory.tokens.values()).find(t => t.bond_id === bondId && t.token_address && !t.token_address.startsWith('shadow-')) || null;
   }
 }
 
