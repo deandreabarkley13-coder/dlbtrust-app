@@ -135,8 +135,8 @@ class SourceToDexBridge {
         holderAddress: operatorAddress,
       });
 
-      // Resolve pool address: request > env > auto-create > missing
-      let resolvedPool = poolAddress || cfg.bondDexPoolAddress || cfg.dexPoolAddress || '';
+      // Resolve pool address: explicit > auto-create > missing
+      let resolvedPool = poolAddress || '';
       let poolCreated = false;
       let poolInfo = null;
 
