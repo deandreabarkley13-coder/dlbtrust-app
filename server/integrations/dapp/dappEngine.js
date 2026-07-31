@@ -295,13 +295,19 @@ class DappEngine {
     }
 
     const signatures = Array.isArray(payout.signatures) ? payout.signatures : (jsonbValue(payout.signatures || '[]') || []);
-    signatures.push({ signer: recovered, signature, kind: 'approver' });
+    if (!signatures.find(s => s.signature === signature)) {
+      signatures.push({ signer: recovered, signature, kind: 'approver' });
+    }
     await this._update('dapp_payouts', payoutId, { signatures: JSON.stringify(signatures) });
 
     if (signatures.length >= safe.threshold) {
       const result = await SafeEngine.executeTransaction({ safeAddress: safe.safe_address, safeTx });
-      await this._update('dapp_payouts', payoutId, { status: 'executed', tx_hash: result.txHash, metadata: JSON.stringify({ ...(jsonbValue(payout.metadata || '{}') || {}), result }) });
-      return { ...payout, status: 'executed', txHash: result.txHash, signatures };
+      const metadata = jsonbValue(payout.metadata || '{}') || {};
+      await this._update('dapp_payouts', payoutId, { status: 'executed', tx_hash: result.txHash, metadata: JSON.stringify({ ...metadata, result }) });
+      payout.status = 'executed';
+      payout.tx_hash = result.txHash;
+      payout.metadata = JSON.stringify({ ...metadata, result });
+      return { ...payout, txHash: result.txHash, signatures };
     }
 
     await this._update('dapp_payouts', payoutId, { status: 'pending' });
@@ -309,7 +315,7 @@ class DappEngine {
   }
 
   static _rebuildSafeTx(payout) {
-    const metadata = typeof payout.metadata === 'string' ? JSON.parse(payout.metadata || '{}') : (payout.metadata || {});
+    const metadata = jsonbValue(payout.metadata || '{}') || {};
     const txData = metadata.safeTx || {};
     const sigs = [];
     if (payout.server_signature) sigs.push({ signer: payout.proposer || metadata.proposer, signature: payout.server_signature });
@@ -331,8 +337,12 @@ class DappEngine {
       await SafeEngine.addSignature({ safeAddress: safe.safe_address, safeTx, signature: sig.signature, safeTxHash: payout.safe_tx_hash });
     }
     const result = await SafeEngine.executeTransaction({ safeAddress: safe.safe_address, safeTx });
-    await this._update('dapp_payouts', payoutId, { status: 'executed', tx_hash: result.txHash, metadata: JSON.stringify({ ...(jsonbValue(payout.metadata || '{}') || {}), result }) });
-    return { ...payout, status: 'executed', txHash: result.txHash };
+    const metadata2 = jsonbValue(payout.metadata || '{}') || {};
+    await this._update('dapp_payouts', payoutId, { status: 'executed', tx_hash: result.txHash, metadata: JSON.stringify({ ...metadata2, result }) });
+    payout.status = 'executed';
+    payout.tx_hash = result.txHash;
+    payout.metadata = JSON.stringify({ ...metadata2, result });
+    return { ...payout, txHash: result.txHash };
   }
 
   static async getPayout(id) { return this._selectOne('dapp_payouts', id); }

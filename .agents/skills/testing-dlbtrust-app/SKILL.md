@@ -36,11 +36,29 @@ description: How to end-to-end test the DLB Trust treasury dashboard, including 
   ```
   Expected: `status: settled`, `tx_hash` starting with `shadow-`, `metadata.hederaTokenId` matching the created token.
 
+## DeFi dApp / Safe multisig (deployed shadow mode)
+
+- dApp lives at `/` and `/dapp`; legacy treasury dashboard at `/treasury`.
+- Tabs: Dashboard, Safe Wallets, Deposit, Payout / 2-Sig, Distribute, P2P Pay, White Label.
+- Safe creation UI: fill label, co-owner address, threshold 2 and call `createSafe()`; server auto-adds its hot-wallet owner and deploys in shadow mode.
+- Payout approval without MetaMask:
+  1. Create payout via `POST /api/dapp/payouts` with `safeId`, `destination`, `value`, `description`.
+  2. Note `safe_tx_hash`.
+  3. Generate second-owner signature with `viem`:
+     ```js
+     const { privateKeyToAccount } = require('viem/accounts');
+     const sig = await privateKeyToAccount(privKey).signMessage({ message: { raw: safeTxHash } });
+     ```
+  4. Approve via `POST /api/dapp/payouts/<id>/approve` with `signature` and `signerAddress`.
+  5. In shadow mode expect `status: executed` and `txHash`/`tx_hash` starting with `shadow-`.
+- Verify via `GET /api/dapp/safes/<id>` and `GET /api/dapp/payouts/<id>`.
+
 ## Common checks
 
 - Treasury hot account balance: `GET /api/stablecoin/treasury/TREASURY_HOT` or click **Check Source Balance**.
 - Health: `GET /api/stablecoin/health`.
 - Hedera readiness: `GET /api/stablecoin/hedera/readiness`.
+- dApp routes: `GET /api/dapp/safes`, `GET /api/dapp/payouts`.
 
 ## Devin Secrets Needed
 
