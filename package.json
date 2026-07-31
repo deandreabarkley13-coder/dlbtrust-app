@@ -46,7 +46,6 @@
     "react-router-dom": "^6.26.0",
     "uuid": "^10.0.0",
     "viem": "^2.55.4",
-    "wagmi": "^3.7.5",
     "zod": "^3.23.8"
   },
   "devDependencies": {
