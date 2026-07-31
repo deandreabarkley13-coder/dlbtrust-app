@@ -46,12 +46,21 @@ function getOperatorAddress(cfg) {
   return cfg.operatorAddress || '';
 }
 
+function productIdFor(asset) {
+  // Coinbase Advanced Trade stablecoin-to-fiat pairs (e.g. USDC-USD) are not
+  // available for every key/region. Direct USD pairs like ETH-USD / BTC-USD are
+  // the most reliable way to convert fiat into on-chain value.
+  const map = { ETH: 'ETH-USD', BTC: 'BTC-USD' };
+  const a = asset.toUpperCase();
+  return map[a] || `${a}-USD`;
+}
+
 class CoinbaseSpotEngine {
   static getConfig() { return getConfig(); }
 
   static enabled() {
     const cfg = getConfig();
-    return cfg.coinbaseCdpKeyName && cfg.coinbaseCdpPrivateKey;
+    return !!(cfg.coinbaseCdpKeyName && cfg.coinbaseCdpPrivateKey);
   }
 
   static _getAdvancedClient() {
@@ -158,15 +167,20 @@ class CoinbaseSpotEngine {
     return this._insert(order);
   }
 
-  static async preview({ amount, targetAsset = 'USDC' } = {}) {
+  static async preview({ amount, targetAsset = 'ETH' } = {}) {
     const client = this._getAdvancedClient();
-    const productId = `${targetAsset.toUpperCase()}-USD`;
-    const preview = await client.previewOrder({
-      product_id: productId,
-      side: 'BUY',
-      order_configuration: { market_market_ioc: { quote_size: String(Number(amount).toFixed(2)) } },
-    });
-    return { productId, ...preview };
+    const productId = productIdFor(targetAsset);
+    try {
+      const preview = await client.previewOrder({
+        product_id: productId,
+        side: 'BUY',
+        order_configuration: { market_market_ioc: { quote_size: String(Number(amount).toFixed(2)) } },
+      });
+      return { productId, supportedAssets: ['ETH', 'BTC'], ...preview };
+    } catch (err) {
+      const msg = err && (err.body && err.body.message) || err.message || String(err);
+      throw new Error(`Coinbase preview failed for ${productId}: ${msg}. Supported on-ramp assets: ETH, BTC.`);
+    }
   }
 
   /**
@@ -230,7 +244,12 @@ class CoinbaseSpotEngine {
 
     // 2. Preview / submit the buy order on Coinbase Advanced Trade
     const advClient = this._getAdvancedClient();
-    const productId = `${order.target_asset}-USD`;
+    const productId = productIdFor(order.target_asset);
+    if (!['ETH-USD', 'BTC-USD'].includes(productId)) {
+      const err = new Error(`Coinbase Spot off-ramp supports ETH and BTC only (got ${order.target_asset}). USDC-USD is not available on this Advanced Trade key.`);
+      await this._setError(order, err);
+      throw err;
+    }
     const quoteSize = String(amountNum.toFixed(2));
     let preview;
     try {
