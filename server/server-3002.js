@@ -392,7 +392,7 @@ try {
 } catch(e) { console.warn('[graceful-shutdown]', e.message); }
 
 initializeDatabase().then(function() {
-  var server = app.listen(PORT, function() {
+  var server = app.listen(PORT, '0.0.0.0', function() {
   console.log('[dlbtrust-treasury] running on port ' + PORT);
 
   // Register server for graceful shutdown
