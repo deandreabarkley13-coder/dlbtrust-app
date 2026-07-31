@@ -342,8 +342,13 @@ class CoinbaseTreasuryBridge {
       await this._insert(transfer);
       return { transfer, order: result };
     } catch (err) {
-      transfer.status = 'failed';
-      transfer.error = `Buy/send failed: ${(err && err.message) || err}`;
+      if (err && err.code === 'needs_deposit') {
+        transfer.status = 'needs_deposit';
+        transfer.error = `Deposit not yet available at Coinbase: ${err.message}`;
+      } else {
+        transfer.status = 'failed';
+        transfer.error = `Buy/send failed: ${(err && err.message) || err}`;
+      }
       await this._insert(transfer);
       throw err;
     }
