@@ -57,8 +57,10 @@ function walletClient() {
   if (!cfg.privateKey) throw new Error('DAPP_PRIVATE_KEY not configured');
   const account = privateKeyToAccount(cfg.privateKey);
   const chain = cfg.chainId === 1 ? (chains && chains.mainnet) : (chains && chains.sepolia) || undefined;
+  const fees = { maxFeePerGas: viem.parseGwei('3'), maxPriorityFeePerGas: viem.parseGwei('0.0015') };
   return {
     account,
+    fees,
     wallet: viem.createWalletClient({ account, chain, transport: viem.http(cfg.rpcUrl) }),
     publicClient: viem.createPublicClient({ chain, transport: viem.http(cfg.rpcUrl) })
   };
@@ -178,6 +180,8 @@ class DexSwapEngine {
       abi: erc20Abi,
       functionName: 'approve',
       args: [poolAddress, rawIn],
+      gas: 100000n,
+      ...fees,
     });
     await publicClient.waitForTransactionReceipt({ hash: approveHash });
 
@@ -186,7 +190,8 @@ class DexSwapEngine {
       abi: bondDexAbi,
       functionName: 'swap',
       args: [rawIn, inputToken, minOut],
-      gas: 500000n,
+      gas: 250000n,
+      ...fees,
     });
     const receipt = await publicClient.waitForTransactionReceipt({ hash: swapHash });
     if (receipt.status !== 'success') throw new Error(`swap failed: ${receipt.transactionHash}`);
@@ -224,7 +229,8 @@ class DexSwapEngine {
       abi,
       bytecode,
       args: [token0, token1],
-      gas: 1200000n,
+      gas: 1000000n,
+      ...fees,
     });
     const receipt = await publicClient.waitForTransactionReceipt({ hash: deployHash });
     if (receipt.status !== 'success') throw new Error(`pool deploy failed: ${receipt.transactionHash}`);
@@ -235,6 +241,8 @@ class DexSwapEngine {
       abi: erc20Abi,
       functionName: 'approve',
       args: [poolAddress, raw0],
+      gas: 100000n,
+      ...fees,
     });
     await publicClient.waitForTransactionReceipt({ hash: approve0 });
 
@@ -243,6 +251,8 @@ class DexSwapEngine {
       abi: erc20Abi,
       functionName: 'approve',
       args: [poolAddress, raw1],
+      gas: 100000n,
+      ...fees,
     });
     await publicClient.waitForTransactionReceipt({ hash: approve1 });
 
@@ -251,7 +261,8 @@ class DexSwapEngine {
       abi: bondDexAbi,
       functionName: 'addLiquidity',
       args: [raw0, raw1],
-      gas: 500000n,
+      gas: 300000n,
+      ...fees,
     });
     const addReceipt = await publicClient.waitForTransactionReceipt({ hash: addHash });
     if (addReceipt.status !== 'success') throw new Error(`addLiquidity failed: ${addReceipt.transactionHash}`);

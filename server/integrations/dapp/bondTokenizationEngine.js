@@ -73,8 +73,10 @@ function walletClient() {
   if (!cfg.privateKey) throw new Error('DAPP_PRIVATE_KEY not configured');
   const account = privateKeyToAccount(cfg.privateKey);
   const chain = cfg.chainId === 1 ? (chains && chains.mainnet) : (chains && chains.sepolia) || undefined;
+  const fees = { maxFeePerGas: viem.parseGwei('3'), maxPriorityFeePerGas: viem.parseGwei('0.0015') };
   return {
     account,
+    fees,
     wallet: viem.createWalletClient({ account, chain, transport: viem.http(cfg.rpcUrl) }),
     publicClient: viem.createPublicClient({ chain, transport: viem.http(cfg.rpcUrl) })
   };
@@ -153,7 +155,8 @@ class BondTokenizationEngine {
           abi: factoryAbi,
           functionName: 'createBondToken',
           args: [record.token_name, record.token_symbol, 0],
-          gas: 1200000n,
+          gas: 850000n,
+          ...fees,
         });
         const receipt = await publicClient.waitForTransactionReceipt({ hash });
         if (receipt.status !== 'success') throw new Error(`bond token factory deploy failed: ${receipt.transactionHash}`);
@@ -168,7 +171,8 @@ class BondTokenizationEngine {
           abi,
           bytecode,
           args: [record.token_name, record.token_symbol, 0],
-          gas: 1100000n,
+          gas: 900000n,
+          ...fees,
         });
         const receipt = await publicClient.waitForTransactionReceipt({ hash });
         if (receipt.status !== 'success') throw new Error(`bond token deploy failed: ${receipt.transactionHash}`);
@@ -238,6 +242,8 @@ class BondTokenizationEngine {
         abi,
         functionName: 'mint',
         args: [target, raw],
+        gas: 100000n,
+        ...fees,
       });
       const receipt = await publicClient.waitForTransactionReceipt({ hash });
       if (receipt.status !== 'success') throw new Error(`mint failed: ${receipt.transactionHash}`);
