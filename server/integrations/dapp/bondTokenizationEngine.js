@@ -276,6 +276,15 @@ class BondTokenizationEngine {
     }
     return Array.from(memory.holdings.values()).filter(h => h.token_id === tokenId);
   }
+
+  static async getTokenByBondId(bondId) {
+    await ensureTable();
+    if (pool) {
+      const res = await pool.query('SELECT * FROM bond_tokens WHERE bond_id = $1 ORDER BY created_at DESC LIMIT 1', [bondId]);
+      return res.rows[0] || null;
+    }
+    return Array.from(memory.tokens.values()).find(t => t.bond_id === bondId) || null;
+  }
 }
 
 module.exports = { BondTokenizationEngine };

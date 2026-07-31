@@ -165,6 +165,20 @@
           <div class="actions"><button class="btn" onclick="depositFromSource()">Deposit from Source</button></div>
           <div id="sof-deposit-result" class="status hidden"></div>
         </div>
+        <div class="card" style="margin-top:20px">
+          <h2>Fund Safe via DEX (Bond / Fixed Income)</h2>
+          <p>Tokenize a bond/fixed-income source and swap the bond tokens on a DEX for USDC/ETH. If no pool exists, provide a seed amount of the target asset to create one.</p>
+          <div class="form-row">
+            <div><label>Source Type</label><select id="dex-fund-type"><option value="bond">Bond / Fixed Income</option></select></div>
+            <div><label>Source Account ID</label><input type="text" id="dex-fund-account" placeholder="Bond ID" /></div>
+            <div><label>Amount (USD)</label><input type="text" id="dex-fund-amount" placeholder="100.00" /></div>
+            <div><label>Target Asset</label><select id="dex-fund-asset"><option value="USDC">USDC</option><option value="ETH">ETH (WETH)</option></select></div>
+            <div><label>Pool Seed Amount (optional)</label><input type="text" id="dex-fund-seed" placeholder="0.5" /></div>
+            <div><label>Target Safe ID (optional)</label><input type="text" id="dex-fund-safe" placeholder="SAFE-..." /></div>
+          </div>
+          <div class="actions"><button class="btn" onclick="fundSafeFromSourceDex()">Fund via DEX</button></div>
+          <div id="dex-fund-result" class="status hidden"></div>
+        </div>
       </section>
 
       <section id="safes" class="section">
@@ -509,6 +523,29 @@
         el('sof-deposit-result').className = 'status success';
         loadSourceBalances();
       } catch (e) { el('sof-deposit-result').textContent = e.message; el('sof-deposit-result').className = 'status error'; }
+    };
+
+    window.fundSafeFromSourceDex = async function() {
+      try {
+        const seed = el('dex-fund-seed').value;
+        const res = await api('/api/dapp/fund-from-source', {
+          method: 'POST',
+          body: JSON.stringify({
+            sourceType: el('dex-fund-type').value,
+            sourceAccountId: el('dex-fund-account').value,
+            amount: el('dex-fund-amount').value,
+            targetAsset: el('dex-fund-asset').value,
+            safeId: el('dex-fund-safe').value || null,
+            createPoolIfMissing: !!seed,
+            poolSeedAmount: seed || undefined,
+          })
+        });
+        const d = res.data;
+        const tx = d.swap && d.swap.txHash ? d.swap.txHash : (d.token && d.token.mintTxHash ? d.token.mintTxHash : d.operationId);
+        el('dex-fund-result').textContent = `Status: ${d.status} | Operation: ${d.operationId} | Tx/Pool: ${tx}`;
+        el('dex-fund-result').className = 'status ' + (d.status === 'swapped' ? 'success' : (d.status === 'needs_pool' ? 'warning' : 'success'));
+        loadSourceBalances();
+      } catch (e) { el('dex-fund-result').textContent = e.message; el('dex-fund-result').className = 'status error'; }
     };
 
     async function listSafes() {

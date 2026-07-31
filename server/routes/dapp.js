@@ -6,6 +6,7 @@ const { CashAppEngine } = require('../integrations/dapp/cashAppEngine');
 const { GoogleWalletEngine } = require('../integrations/dapp/googleWalletEngine');
 const { BondTokenizationEngine } = require('../integrations/dapp/bondTokenizationEngine');
 const { DexSwapEngine } = require('../integrations/dapp/dexSwapEngine');
+const { SourceToDexBridge } = require('../integrations/dapp/sourceToDexBridge');
 const { requireAuth, writeRateLimiter } = require('../integrations/auth/securityMiddleware');
 
 const router = express.Router();
@@ -265,6 +266,14 @@ router.post('/dex/swap', operatorAuth, writeRateLimiter(), async (req, res) => {
 router.post('/dex/pools', operatorAuth, writeRateLimiter(), async (req, res) => {
   try {
     const data = await DexSwapEngine.createPool(req.body);
+    res.status(201).json({ success: true, data });
+  } catch (err) { sendError(res, err); }
+});
+
+// ─── Source → DEX Bridge (fund Safe from legacy ledger via tokenization/swap) ───
+router.post('/fund-from-source', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try {
+    const data = await SourceToDexBridge.fundSafeFromSource(req.body);
     res.status(201).json({ success: true, data });
   } catch (err) { sendError(res, err); }
 });
