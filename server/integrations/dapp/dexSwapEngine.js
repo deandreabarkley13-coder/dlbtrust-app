@@ -171,7 +171,7 @@ class DexSwapEngine {
 
     if (!poolAddress || !viem) throw new Error('BOND_DEX_ADDRESS / DEX_SWAP_ROUTER not configured');
 
-    const { wallet, publicClient } = walletClient();
+    const { wallet, publicClient, fees } = walletClient();
     const rawIn = viem.parseUnits(String(amountIn), decimalsIn);
     const minOut = amountOutMinimum ? viem.parseUnits(String(amountOutMinimum), decimalsOut) : 0n;
 
@@ -221,7 +221,7 @@ class DexSwapEngine {
       ? [viem.parseUnits(String(amountA), decimalsA), viem.parseUnits(String(amountB), decimalsB)]
       : [viem.parseUnits(String(amountB), decimalsB), viem.parseUnits(String(amountA), decimalsA)];
 
-    const { wallet, publicClient } = walletClient();
+    const { wallet, publicClient, fees } = walletClient();
     const abi = getBondDexAbi();
     const bytecode = getBondDexBytecode();
 

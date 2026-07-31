@@ -148,7 +148,7 @@ class BondTokenizationEngine {
     };
 
     if (!cfg.shadow && !tokenAddress) {
-      const { wallet, publicClient } = walletClient();
+      const { wallet, publicClient, fees } = walletClient();
       if (cfg.factoryAddress) {
         const hash = await wallet.writeContract({
           address: cfg.factoryAddress,
@@ -233,7 +233,7 @@ class BondTokenizationEngine {
 
     if (!cfg.shadow) {
       if (!token.token_address || token.token_address.startsWith('shadow-')) throw new Error('token has no on-chain address');
-      const { wallet, publicClient } = walletClient();
+      const { wallet, publicClient, fees } = walletClient();
       const abi = getBondTokenAbi();
       const decimals = (token.metadata && token.metadata.decimals) ? token.metadata.decimals : 6;
       const raw = viem.parseUnits(String(amount), decimals);
