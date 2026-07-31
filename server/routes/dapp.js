@@ -15,7 +15,8 @@ const operatorAuth = requireAuth({ role: 'operator' });
 
 function sendError(res, err) {
   console.error('[dapp]', err);
-  res.status(500).json({ success: false, error: err.message });
+  const message = err && (err.message || err.error || err.detail || err.title) ? (err.message || err.error || err.detail || err.title) : (typeof err === 'string' ? err : 'Unknown error');
+  res.status(500).json({ success: false, error: message, raw: typeof err === 'object' && err ? err : undefined });
 }
 
 // ─── Safe Wallets ─────────────────────────────────────────────────────────────
