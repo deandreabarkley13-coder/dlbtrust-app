@@ -416,7 +416,7 @@ class DappEngine {
   static async listPayouts() { return this._selectAll('dapp_payouts'); }
 
   // ─── Distributions ────────────────────────────────────────────────────────────
-  static async createDistribution({ safeId, name, asset, totalAmount, beneficiaries, sourceType, sourceAccountId } = {}) {
+  static async createDistribution({ safeId, name, asset = 'USDC', totalAmount, beneficiaries, sourceType, sourceAccountId } = {}) {
     if (!safeId || !Array.isArray(beneficiaries) || !beneficiaries.length) throw new Error('safeId and beneficiaries required');
     const id = identifier('DIS');
     const safe = await this.getSafe(safeId);
