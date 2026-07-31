@@ -98,6 +98,7 @@
         <button data-section="payouts" onclick="showSection('payouts')">Payout / 2-Sig</button>
         <button data-section="distribute" onclick="showSection('distribute')">Distribute</button>
         <button data-section="p2p" onclick="showSection('p2p')">P2P Pay</button>
+        <button data-section="payment-rails" onclick="showSection('payment-rails')">Payment Rails</button>
         <button data-section="settings" onclick="showSection('settings')">White Label</button>
       </div>
 
@@ -108,6 +109,18 @@
           <input type="password" id="admin-token" placeholder="x-admin-token" value="dlb-admin-2026-trust" />
           <button class="btn" onclick="saveToken()">Save Token</button>
         </div>
+      </div>
+
+      <div id="user-auth-card" class="card" style="margin-bottom:20px">
+        <h2>Trustee / Beneficiary Login</h2>
+        <p>Email/phone identity for P2P payments. In production the one-time code is sent via SMS/email; in this demo the API returns it.</p>
+        <div id="user-auth-state" class="form-row" style="align-items:center;">
+          <input type="email" id="login-email" placeholder="trustee@example.com" />
+          <button class="btn" onclick="sendOtp()">Send Code</button>
+          <input type="text" id="login-code" placeholder="123456" maxlength="6" style="max-width:120px" />
+          <button class="btn" onclick="verifyOtp()">Verify</button>
+        </div>
+        <div id="user-auth-status" class="status hidden"></div>
       </div>
 
       <section id="dashboard" class="section active">
@@ -242,7 +255,8 @@
           <p>Send a peer-to-peer payment from a Safe or source-of-funds ledger.</p>
           <div class="form-row">
             <div><label>Safe ID</label><select id="p2p-safe"></select></div>
-            <div><label>Recipient</label><input type="text" id="p2p-to" placeholder="0x..." /></div>
+            <div><label>Recipient User</label><select id="p2p-recipient-user"><option value="">Manual address</option></select></div>
+            <div><label>Recipient Address</label><input type="text" id="p2p-to" placeholder="0x..." /></div>
             <div><label>Amount (USD)</label><input type="text" id="p2p-amount-usd" placeholder="25.00" /></div>
             <div><label>Source Type</label><select id="p2p-source-type"><option value="">No source ledger</option><option value="treasury">Treasury</option><option value="cash">Cash</option><option value="trust">Trust Accounting</option><option value="bond">Bond / Fixed Income</option><option value="core_banking">Core Banking</option></select></div>
             <div><label>Source Account ID</label><input type="text" id="p2p-source-account" placeholder="Account ID / Bond ID" /></div>
@@ -250,6 +264,32 @@
           </div>
           <div class="actions"><button class="btn" onclick="createP2p()">Send P2P</button></div>
           <div id="p2p-result" class="status hidden"></div>
+        </div>
+      </section>
+
+      <section id="payment-rails" class="section">
+        <div class="grid">
+          <div class="card">
+            <h2>Google Wallet (NFC / Pass)</h2>
+            <p>Generate an Add to Google Wallet pass with a linked wallet address. Real NFC tap-to-pay requires a Google Pay issuer/TSP partnership or Android HCE.</p>
+            <div class="form-row">
+              <div><label>User Email</label><input type="text" id="gw-email" placeholder="trustee@example.com" /></div>
+              <div><label>Wallet Address</label><input type="text" id="gw-address" placeholder="0x..." /></div>
+            </div>
+            <div class="actions"><button class="btn" onclick="generateGoogleWalletPass()">Generate Pass Link</button></div>
+            <div id="gw-result" class="status hidden"></div>
+          </div>
+          <div class="card">
+            <h2>Cash App Crypto / Pay</h2>
+            <p>Cash App does not expose a personal crypto P2P API. This creates a shareable payment request QR/link; record the on-chain tx hash when the recipient sends.</p>
+            <div class="form-row">
+              <div><label>Amount (USD)</label><input type="text" id="ca-amount" placeholder="25.00" /></div>
+              <div><label>Wallet Address / Tag</label><input type="text" id="ca-tag" placeholder="$Cashtag or 0x..." /></div>
+              <div><label>Memo</label><input type="text" id="ca-memo" placeholder="Trust payment" /></div>
+            </div>
+            <div class="actions"><button class="btn" onclick="requestCashAppPayment()">Request / Get QR</button></div>
+            <div id="ca-result" class="status hidden"></div>
+          </div>
         </div>
       </section>
 
@@ -282,6 +322,8 @@
     let account = null;
     let chainId = null;
     let chainName = 'Ethereum';
+    let currentUser = null;
+    let userWallet = null;
 
     function el(id) { return document.getElementById(id); }
     function show(id, cls = 'hidden', add = false) { const e = el(id); if (e) e.classList[add ? 'add' : 'remove'](cls); }
@@ -299,7 +341,8 @@
     function saveToken() { localStorage.setItem('dlb-admin-token', el('admin-token').value); showToast('Token saved'); }
 
     async function api(path, opts = {}) {
-      const headers = { 'Content-Type': 'application/json', 'x-admin-token': token() };
+      const headers = { 'Content-Type': 'application/json' };
+      if (!opts.noToken) headers['x-admin-token'] = token();
       if (opts.headers) Object.assign(headers, opts.headers);
       const res = await fetch(API + path, { ...opts, headers });
       const text = await res.text();
@@ -313,6 +356,7 @@
       try {
         const [addr] = await window.ethereum.request({ method: 'eth_requestAccounts' });
         account = addr;
+        userWallet = addr;
         const cid = await window.ethereum.request({ method: 'eth_chainId' });
         chainId = Number(cid);
         chainName = CHAIN_NAMES[chainId] || `Chain ${chainId}`;
@@ -320,6 +364,9 @@
         el('network-name').textContent = chainName;
         el('connect-btn').textContent = 'Connected';
         el('dash-wallet').textContent = `${account} on ${chainName}`;
+        if (currentUser && currentUser.email) {
+          await api('/api/dapp/users/link-wallet', { method: 'POST', body: JSON.stringify({ email: currentUser.email, walletAddress: account, provider: 'metamask', safeOwnerAddress: account }) }).catch(() => {});
+        }
         window.ethereum.on('accountsChanged', (a) => { if (a[0]) { account = a[0]; el('wallet-address').textContent = account.slice(0,6)+'…'+account.slice(-4); } });
         window.ethereum.on('chainChanged', () => location.reload());
       } catch (e) { showToast(e.message, true); }
@@ -334,7 +381,51 @@
       if (name === 'safes') listSafes();
       if (name === 'dashboard') loadDashboard();
       if (name === 'source-of-funds') loadSourceBalances();
+      if (name === 'p2p') loadUsers();
     };
+
+    async function loadUsers() {
+      try {
+        const res = await api('/api/dapp/users');
+        const sel = el('p2p-recipient-user');
+        const v = sel ? sel.value : '';
+        const options = '<option value="">Manual address</option>' + res.data.map(u => `<option value="${esc(u.email)}" data-address="${esc(u.wallet_address || '')}">${esc(u.name || u.email)}</option>`).join('');
+        if (sel) { sel.innerHTML = options; sel.value = v; sel.onchange = () => { const opt = sel.options[sel.selectedIndex]; const addr = opt.getAttribute('data-address'); if (addr) el('p2p-to').value = addr; }; }
+      } catch (e) {}
+    }
+
+    window.sendOtp = async function() {
+      try {
+        const email = el('login-email').value;
+        if (!email) throw new Error('Enter your email');
+        const res = await api('/api/dapp/auth/send-code', { method: 'POST', body: JSON.stringify({ email }), noToken: true });
+        el('user-auth-status').innerHTML = `Code generated: <b>${res.data.code}</b> (in production this is sent via SMS/email)`;
+        el('user-auth-status').className = 'status success';
+      } catch (e) { el('user-auth-status').textContent = e.message; el('user-auth-status').className = 'status error'; }
+    };
+
+    window.verifyOtp = async function() {
+      try {
+        const email = el('login-email').value;
+        const code = el('login-code').value;
+        if (!email || !code) throw new Error('Enter email and code');
+        const res = await api('/api/dapp/auth/verify', { method: 'POST', body: JSON.stringify({ email, code }), noToken: true });
+        currentUser = res.data;
+        localStorage.setItem('dlb-user', JSON.stringify(currentUser));
+        el('user-auth-status').textContent = `Logged in as ${currentUser.name || currentUser.email} (${currentUser.role})`;
+        el('user-auth-status').className = 'status success';
+        if (window.ethereum && account) connectWallet();
+      } catch (e) { el('user-auth-status').textContent = e.message; el('user-auth-status').className = 'status error'; }
+    };
+
+    function restoreUser() {
+      try { currentUser = JSON.parse(localStorage.getItem('dlb-user') || 'null'); } catch {};
+      if (currentUser && currentUser.email) {
+        el('login-email').value = currentUser.email;
+        el('user-auth-status').textContent = `Logged in as ${currentUser.name || currentUser.email} (${currentUser.role})`;
+        el('user-auth-status').className = 'status success';
+      }
+    }
 
     async function loadDashboard() {
       try {
@@ -493,6 +584,8 @@
         if (amountUsd) body.amountUsd = amountUsd;
         const sourceType = el('p2p-source-type').value;
         if (sourceType) { body.sourceType = sourceType; body.sourceAccountId = el('p2p-source-account').value; }
+        const sel = el('p2p-recipient-user');
+        if (sel && sel.value && currentUser) body.metadata = { recipientEmail: sel.value, senderEmail: currentUser.email };
         body.value = el('p2p-value') ? el('p2p-value').value : '0';
         const res = await api('/api/dapp/p2p', { method: 'POST', body: JSON.stringify(body) });
         el('p2p-result').textContent = 'P2P payment proposed: ' + res.data.id;
@@ -511,11 +604,28 @@
       } catch (e) { el('wl-result').textContent = e.message; el('wl-result').className = 'status error'; }
     };
 
+    window.generateGoogleWalletPass = async function() {
+      try {
+        const res = await api('/api/dapp/payment-rails/google/pass', { method: 'POST', body: JSON.stringify({ email: el('gw-email').value, walletAddress: el('gw-address').value }) });
+        el('gw-result').innerHTML = `<a href="${res.data.addToWalletLink}" target="_blank" class="btn btn-sm">Add to Google Wallet</a><br/><span class="mono">${res.data.objectId}</span>`;
+        el('gw-result').className = 'status success';
+      } catch (e) { el('gw-result').textContent = e.message; el('gw-result').className = 'status error'; }
+    };
+
+    window.requestCashAppPayment = async function() {
+      try {
+        const res = await api('/api/dapp/payment-rails/cashapp/request', { method: 'POST', body: JSON.stringify({ amountUsd: el('ca-amount').value, recipientTag: el('ca-tag').value, memo: el('ca-memo').value }) });
+        el('ca-result').innerHTML = `Shareable link: <a href="${res.data.shareableUrl}" target="_blank">${res.data.shareableUrl}</a><br/>QR payload: <span class="mono">${res.data.qrPayload}</span>`;
+        el('ca-result').className = 'status success';
+      } catch (e) { el('ca-result').textContent = e.message; el('ca-result').className = 'status error'; }
+    };
+
     function esc(s) { return String(s || '').replace(/[&<>"']/g, m => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m])); }
 
     document.addEventListener('DOMContentLoaded', () => {
       const saved = localStorage.getItem('dlb-admin-token');
       if (saved) el('admin-token').value = saved;
+      restoreUser();
       loadDashboard();
       // white label default
       fetch('/api/dapp/white-label/default').then(r => r.json()).then(d => {

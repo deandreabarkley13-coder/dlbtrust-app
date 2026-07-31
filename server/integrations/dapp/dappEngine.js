@@ -17,7 +17,7 @@ let pool;
 try { pool = require('../bonds/pgPool'); } catch (e) { pool = null; }
 if (process.env.DAPP_MEMORY_MODE === 'true') pool = null;
 
-const memory = { safes: new Map(), payouts: new Map(), deposits: new Map(), distributions: new Map(), whiteLabel: new Map() };
+const memory = { safes: new Map(), payouts: new Map(), deposits: new Map(), distributions: new Map(), whiteLabel: new Map(), users: new Map() };
 
 function jsonbValue(raw) {
   if (raw == null) return null;
@@ -134,11 +134,30 @@ class DappEngine {
           updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
         );
       `);
+
+      await query(`
+        CREATE TABLE IF NOT EXISTS dapp_users (
+          id TEXT PRIMARY KEY,
+          email TEXT UNIQUE,
+          phone TEXT,
+          name TEXT,
+          role TEXT NOT NULL DEFAULT 'beneficiary' CHECK (role IN ('trustee_admin', 'trustee_secretary', 'beneficiary', 'viewer')),
+          wallet_address TEXT,
+          safe_owner_address TEXT,
+          linked_wallet_provider TEXT,
+          verified BOOLEAN NOT NULL DEFAULT false,
+          otp_code TEXT,
+          otp_expires TIMESTAMPTZ,
+          metadata JSONB DEFAULT '{}',
+          created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+          updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        );
+      `);
     }, () => { /* memory fallback */ });
   }
 
   static _memKey(table) {
-    const map = { dapp_safes: 'safes', dapp_payouts: 'payouts', dapp_deposits: 'deposits', dapp_distributions: 'distributions', dapp_white_label: 'whiteLabel' };
+    const map = { dapp_safes: 'safes', dapp_payouts: 'payouts', dapp_deposits: 'deposits', dapp_distributions: 'distributions', dapp_white_label: 'whiteLabel', dapp_users: 'users' };
     return map[table] || table;
   }
 
@@ -589,6 +608,60 @@ class DappEngine {
     };
     await this._insert('dapp_deposits', row);
     return row;
+  }
+
+  // ─── dApp Users / Identity (email/phone login) ─────────────────────────────────
+  static async createUser({ email, phone, name, role = 'beneficiary', walletAddress, safeOwnerAddress, provider, metadata = {} } = {}) {
+    if (!email && !phone) throw new Error('email or phone required');
+    if (email) {
+      const existing = await this.getUserByEmail(email).catch(() => null);
+      if (existing) throw new Error('User with this email already exists');
+    }
+    const id = identifier('USR');
+    const row = { id, email: email || null, phone: phone || null, name: name || null, role, wallet_address: walletAddress || null, safe_owner_address: safeOwnerAddress || null, linked_wallet_provider: provider || null, verified: false, metadata: JSON.stringify(metadata) };
+    await this._insert('dapp_users', row);
+    return row;
+  }
+
+  static async getUser(id) { return this._selectOne('dapp_users', id); }
+  static async listUsers() { return this._selectAll('dapp_users'); }
+
+  static async getUserByEmail(email) {
+    return withFallback(async () => {
+      const rows = await query('SELECT * FROM dapp_users WHERE email = $1 LIMIT 1', [email]);
+      if (!rows.rows.length) throw new Error('User not found');
+      return rows.rows[0];
+    }, () => {
+      for (const u of memory.users.values()) if (u.email === email) return u;
+      throw new Error('User not found');
+    });
+  }
+
+  static async generateOtp(email) {
+    const user = await this.getUserByEmail(email);
+    const code = String(Math.floor(100000 + Math.random() * 900000));
+    const expires = new Date(Date.now() + 10 * 60 * 1000).toISOString();
+    await this._update('dapp_users', user.id, { otp_code: code, otp_expires: expires });
+    return { email, code, expires, message: 'In production, send this code via Twilio/SendGrid' };
+  }
+
+  static async verifyOtp({ email, code } = {}) {
+    const user = await this.getUserByEmail(email);
+    const now = new Date();
+    if (user.otp_code !== String(code)) throw new Error('Invalid code');
+    if (!user.otp_expires || new Date(user.otp_expires) < now) throw new Error('Code expired');
+    await this._update('dapp_users', user.id, { verified: true, otp_code: null, otp_expires: null });
+    return this.getUser(user.id);
+  }
+
+  static async linkWallet({ email, walletAddress, provider, safeOwnerAddress } = {}) {
+    const user = await this.getUserByEmail(email);
+    const updates = {};
+    if (walletAddress) updates.wallet_address = walletAddress;
+    if (provider) updates.linked_wallet_provider = provider;
+    if (safeOwnerAddress) updates.safe_owner_address = safeOwnerAddress;
+    await this._update('dapp_users', user.id, updates);
+    return this.getUser(user.id);
   }
 }
 

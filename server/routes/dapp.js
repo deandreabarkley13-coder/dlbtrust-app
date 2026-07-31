@@ -2,6 +2,8 @@
 
 const express = require('express');
 const { DappEngine } = require('../integrations/dapp/dappEngine');
+const { CashAppEngine } = require('../integrations/dapp/cashAppEngine');
+const { GoogleWalletEngine } = require('../integrations/dapp/googleWalletEngine');
 const { requireAuth, writeRateLimiter } = require('../integrations/auth/securityMiddleware');
 
 const router = express.Router();
@@ -125,6 +127,46 @@ router.post('/p2p', operatorAuth, writeRateLimiter(), async (req, res) => {
   } catch (err) { sendError(res, err); }
 });
 
+// ─── dApp Users / Identity (email/phone P2P login) ────────────────────────────
+router.get('/users', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await DappEngine.listUsers() }); } catch (err) { sendError(res, err); }
+});
+
+router.get('/users/:id', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await DappEngine.getUser(req.params.id) }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/users', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try {
+    const data = await DappEngine.createUser(req.body);
+    res.status(201).json({ success: true, data });
+  } catch (err) { sendError(res, err); }
+});
+
+router.post('/users/link-wallet', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try {
+    const { email, walletAddress, provider, safeOwnerAddress } = req.body;
+    const data = await DappEngine.linkWallet({ email, walletAddress, provider, safeOwnerAddress });
+    res.json({ success: true, data });
+  } catch (err) { sendError(res, err); }
+});
+
+router.post('/auth/send-code', async (req, res) => {
+  try {
+    const { email } = req.body;
+    const data = await DappEngine.generateOtp(email);
+    res.json({ success: true, data, note: 'In this demo the code is returned in the response; in production wire Twilio/SendGrid.' });
+  } catch (err) { sendError(res, err); }
+});
+
+router.post('/auth/verify', async (req, res) => {
+  try {
+    const { email, code } = req.body;
+    const data = await DappEngine.verifyOtp({ email, code });
+    res.json({ success: true, data });
+  } catch (err) { sendError(res, err); }
+});
+
 // ─── White-label ────────────────────────────────────────────────────────────────
 router.get('/white-label/:slug', async (req, res) => {
   try { res.json({ success: true, data: await DappEngine.getWhiteLabel(req.params.slug) }); } catch (err) { sendError(res, err); }
@@ -133,6 +175,42 @@ router.get('/white-label/:slug', async (req, res) => {
 router.post('/white-label', operatorAuth, writeRateLimiter(), async (req, res) => {
   try {
     const data = await DappEngine.setWhiteLabel(req.body);
+    res.status(201).json({ success: true, data });
+  } catch (err) { sendError(res, err); }
+});
+
+// ─── External Payment Rails (Google Wallet / Cash App) ──────────────────────────
+router.get('/payment-rails', async (req, res) => {
+  try {
+    res.json({ success: true, data: [CashAppEngine.readiness(), GoogleWalletEngine.readiness()] });
+  } catch (err) { sendError(res, err); }
+});
+
+router.get('/payment-rails/cashapp/readiness', async (req, res) => {
+  try { res.json({ success: true, data: CashAppEngine.readiness() }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/payment-rails/cashapp/request', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try {
+    const data = await CashAppEngine.requestPayment(req.body);
+    res.status(201).json({ success: true, data });
+  } catch (err) { sendError(res, err); }
+});
+
+router.post('/payment-rails/cashapp/webhook', async (req, res) => {
+  try {
+    const data = await CashAppEngine.verifyWebhook(req.body, req.headers['x-cashapp-signature']);
+    res.json({ success: true, data });
+  } catch (err) { sendError(res, err); }
+});
+
+router.get('/payment-rails/google/readiness', async (req, res) => {
+  try { res.json({ success: true, data: GoogleWalletEngine.readiness() }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/payment-rails/google/pass', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try {
+    const data = await GoogleWalletEngine.createPass(req.body);
     res.status(201).json({ success: true, data });
   } catch (err) { sendError(res, err); }
 });
