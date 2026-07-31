@@ -32,6 +32,9 @@ try { CrmEngine = require('../crm/crmEngine').CrmEngine; } catch (e) { /* option
 let DocumentEngine = null;
 try { DocumentEngine = require('../documents/documentEngine').DocumentEngine; } catch (e) { /* optional */ }
 
+let SubLedgerEngine = null;
+try { SubLedgerEngine = require('../accounting/subLedgerEngine').SubLedgerEngine; } catch (e) { /* optional */ }
+
 const { TreasuryEngine, DEFAULT_ACCOUNT } = require('./treasuryEngine');
 const { getConfig } = require('./config');
 
@@ -72,6 +75,11 @@ class SourceOfFundsAdapter {
         if (!FineractClient) throw new Error('FineractClient not available');
         const summary = await FineractClient.getAccountBalance(sourceAccountId);
         return toCents(summary.accountBalance || summary.balance || 0);
+      }
+      case 'sub_ledger': {
+        if (!SubLedgerEngine) throw new Error('SubLedgerEngine not available');
+        const ledger = await SubLedgerEngine.getSubLedger(sourceAccountId);
+        return ledger ? toCents(ledger.balance || 0) : 0;
       }
       default:
         return 0;
@@ -158,6 +166,25 @@ class SourceOfFundsAdapter {
         await TreasuryEngine.credit(DEFAULT_ACCOUNT, amountCents, { source: 'fineract', sourceAccountId, journalId: journal.resourceId });
         return { sourceType, sourceAccountId, journalId: journal.resourceId };
       }
+      case 'sub_ledger': {
+        if (!SubLedgerEngine) throw new Error('SubLedgerEngine not available');
+        const ledger = await SubLedgerEngine.getSubLedger(sourceAccountId);
+        if (!ledger) throw new Error(`Sub-ledger not found: ${sourceAccountId}`);
+        const available = toCents(ledger.balance || 0);
+        if (available < amountCents) throw new Error(`Insufficient sub-ledger balance: ${available} < ${amountCents}`);
+        const amount = amountCents / 100;
+        const txn = await SubLedgerEngine.postTransaction({
+          subLedgerId: sourceAccountId,
+          transactionType: 'distribution',
+          amount,
+          description: `Stablecoin funding ${paymentId}`,
+          referenceType: 'stablecoin_payment',
+          referenceId: paymentId,
+          postedBy: 'stablecoin-gateway',
+        });
+        await TreasuryEngine.credit(DEFAULT_ACCOUNT, amountCents, { source: 'sub_ledger', sourceAccountId, subLedgerTransactionId: txn.transactionId });
+        return { sourceType, sourceAccountId, subLedgerTransactionId: txn.transactionId, newBalanceCents: toCents(txn.newBalance) };
+      }
       default:
         throw new Error(`Unsupported source type for funding: ${sourceType}`);
     }
@@ -217,6 +244,22 @@ class SourceOfFundsAdapter {
               credits: [{ glAccountId: sourceGlId, amount: amountCents / 100 }],
             });
           }
+        }
+        break;
+      }
+      case 'sub_ledger': {
+        if (!SubLedgerEngine) throw new Error('SubLedgerEngine not available');
+        if (sourceRef.subLedgerTransactionId) {
+          const amount = amountCents / 100;
+          await SubLedgerEngine.postTransaction({
+            subLedgerId: sourceAccountId,
+            transactionType: 'credit',
+            amount,
+            description: `Refund stablecoin funding ${payment.id}`,
+            referenceType: 'stablecoin_payment_refund',
+            referenceId: payment.id,
+            postedBy: 'stablecoin-gateway',
+          });
         }
         break;
       }

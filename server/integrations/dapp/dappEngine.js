@@ -4,7 +4,7 @@ const { SafeEngine } = require('./safeEngine');
 const { getConfig } = require('./config');
 const { SourceOfFundsAdapter } = require('../stablecoin/sourceOfFundsAdapter');
 
-let CashEngine, TrustAccountingEngine, BondEngine, FineractClient, CrmEngine, TaxEngine, DocumentEngine;
+let CashEngine, TrustAccountingEngine, BondEngine, FineractClient, CrmEngine, TaxEngine, DocumentEngine, SubLedgerEngine;
 try { CashEngine = require('../cash/cashEngine').CashEngine; } catch (e) { }
 try { TrustAccountingEngine = require('../accounting/trustAccountingEngine').TrustAccountingEngine; } catch (e) { }
 try { BondEngine = require('../bonds/bondEngine').BondEngine; } catch (e) { }
@@ -12,6 +12,7 @@ try { FineractClient = require('../fineract/fineractClient').FineractClient; } c
 try { CrmEngine = require('../crm/crmEngine').CrmEngine; } catch (e) { }
 try { TaxEngine = require('../tax/taxEngine').TaxEngine; } catch (e) { }
 try { DocumentEngine = require('../documents/documentEngine').DocumentEngine; } catch (e) { }
+try { SubLedgerEngine = require('../accounting/subLedgerEngine').SubLedgerEngine; } catch (e) { }
 
 let pool;
 try { pool = require('../bonds/pgPool'); } catch (e) { pool = null; }
@@ -546,6 +547,16 @@ class DappEngine {
           const summary = await FineractClient.getAccountBalance(acct.id).catch(() => ({}));
           const bal = (summary.accountBalance || summary.balance || 0) * 100;
           push('core_banking', String(acct.id), acct.productName || acct.clientName || `Savings ${acct.id}`, bal, summary.currency?.code || 'USD', { clientId: acct.clientId });
+        }
+      }
+    } catch (e) { }
+
+    try {
+      if (SubLedgerEngine) {
+        const ledgers = await SubLedgerEngine.listSubLedgers({ status: 'active' });
+        for (const sl of ledgers) {
+          const bal = await SourceOfFundsAdapter.getBalance({ sourceType: 'sub_ledger', sourceAccountId: sl.sub_ledger_id }).catch(() => 0);
+          balances.push({ type: 'sub_ledger', id: sl.sub_ledger_id, name: `${sl.sub_account_name} (${sl.parent_account_code})`, balance_cents: Number(bal) || 0, currency: sl.currency || 'USD', contact_id: sl.contact_id, parent_account_code: sl.parent_account_code, sub_account_type: sl.sub_account_type });
         }
       }
     } catch (e) { }
