@@ -131,9 +131,11 @@ class CoinbaseTreasuryBridge {
     const appClient = CoinbaseSpotEngine._getAppClient();
     try {
       const res = await appClient.getPrivate('/v2/payment-methods');
-      return res && res.data ? res.data : res;
+      const list = res && res.data ? res.data : (Array.isArray(res) ? res : []);
+      return { paymentMethods: list };
     } catch (e) {
-      return { error: (e && e.message) || String(e) };
+      const msg = (e && (e.message || e.error)) || String(e);
+      return { paymentMethods: [], error: msg, note: 'Payment-method listing may be unavailable for this CDP key scope. Provide a coinbasePaymentMethodId directly or link a bank account in Coinbase and paste the ID.' };
     }
   }
 
