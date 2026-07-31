@@ -134,7 +134,8 @@ class CoinbaseTreasuryBridge {
       const list = res && res.data ? res.data : (Array.isArray(res) ? res : []);
       return { paymentMethods: list };
     } catch (e) {
-      const msg = (e && (e.message || e.error)) || String(e);
+      let msg = (e && (e.message || e.error || e.title || e.detail)) || String(e);
+      if (!msg || msg === 'undefined') msg = 'Coinbase payment-method endpoint returned an empty or unauthorized response';
       return { paymentMethods: [], error: msg, note: 'Payment-method listing may be unavailable for this CDP key scope. Provide a coinbasePaymentMethodId directly or link a bank account in Coinbase and paste the ID.' };
     }
   }
