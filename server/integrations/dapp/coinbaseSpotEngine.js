@@ -177,14 +177,15 @@ class CoinbaseSpotEngine {
         order_configuration: { market_market_ioc: { quote_size: String(Number(amount).toFixed(2)) } },
       });
       const errors = preview && Array.isArray(preview.errs) ? preview.errs : [];
+      const needsDeposit = errors.some(e => /INSUFFICIENT_FUND|TOO_SMALL/i.test(e));
       if (errors.length) {
-        const needsDeposit = errors.some(e => /INSUFFICIENT_FUND|TOO_SMALL/i.test(e));
         const code = needsDeposit ? 'needs_deposit' : 'preview_failed';
         const e = new Error(`Coinbase preview for ${productId}: ${errors.join(', ')}`);
         e.code = code;
+        e.preview = { productId, supportedAssets: ['ETH', 'BTC'], needsDeposit, errors, ...preview };
         throw e;
       }
-      return { productId, supportedAssets: ['ETH', 'BTC'], ...preview };
+      return { productId, supportedAssets: ['ETH', 'BTC'], needsDeposit: false, errors: [], ...preview };
     } catch (err) {
       if (err && err.code === 'needs_deposit') throw err;
       const msg = err && (err.body && err.body.message) || err.message || String(err);

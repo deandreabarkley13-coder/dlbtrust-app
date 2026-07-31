@@ -186,7 +186,7 @@
             <div><label>Source Type</label><select id="cb-fund-type"><option value="bond">Bond / Fixed Income</option><option value="cash">Cash</option><option value="trust">Trust Accounting</option><option value="sub_ledger">Sub-Ledger</option><option value="core_banking">Core Banking</option></select></div>
             <div><label>Source Account ID</label><input type="text" id="cb-fund-account" placeholder="Account ID / Bond ID" /></div>
             <div><label>Amount (USD)</label><input type="text" id="cb-fund-amount" placeholder="100.00" /></div>
-            <div><label>Target Asset</label><select id="cb-fund-asset"><option value="USDC">USDC</option><option value="ETH">ETH</option></select></div>
+            <div><label>Target Asset</label><select id="cb-fund-asset"><option value="ETH">ETH</option><option value="BTC">BTC</option></select></div>
             <div><label>Network</label><select id="cb-fund-network"><option value="ethereum">Ethereum Mainnet</option><option value="base">Base</option><option value="sepolia">Sepolia</option></select></div>
             <div><label>Destination Address (optional)</label><input type="text" id="cb-fund-address" placeholder="0x... or Safe address" /></div>
           </div>
@@ -545,8 +545,14 @@
     window.quoteCoinbaseSpot = async function() {
       try {
         const res = await api(`/api/dapp/coinbase-spot/quote?amount=${encodeURIComponent(el('cb-fund-amount').value)}&targetAsset=${encodeURIComponent(el('cb-fund-asset').value)}`);
-        el('cb-fund-result').textContent = 'Quote: ' + JSON.stringify(res.data);
-        el('cb-fund-result').className = 'status success';
+        const d = res.data;
+        if (d.needsDeposit) {
+          el('cb-fund-result').textContent = `Preview: ${d.quote_size || d.order_total || ''} USD → ~${d.base_size || ''} ${el('cb-fund-asset').value}. Status: needs Coinbase USD deposit (${d.errors.join(', ')})`;
+          el('cb-fund-result').className = 'status warning';
+        } else {
+          el('cb-fund-result').textContent = `Quote: ${d.quote_size || d.order_total || ''} USD → ~${d.base_size || ''} ${el('cb-fund-asset').value} on ${d.productId}`;
+          el('cb-fund-result').className = 'status success';
+        }
       } catch (e) { el('cb-fund-result').textContent = e.message; el('cb-fund-result').className = 'status error'; }
     };
 
@@ -564,9 +570,14 @@
           })
         });
         const d = res.data;
-        const tx = d.tx_hash || d.withdrawal_id || d.id;
-        el('cb-fund-result').textContent = `Status: ${d.status} | Order: ${d.order_id || d.id} | Withdrawal: ${tx}`;
-        el('cb-fund-result').className = 'status ' + (d.status === 'completed' ? 'success' : 'warning');
+        const tx = d.tx_hash || d.withdrawal_id || d.id || d.order_id || '';
+        if (d.status === 'needs_deposit') {
+          el('cb-fund-result').textContent = `Reserved $${d.fiat_amount} from source; Coinbase account needs USD to complete the buy (${d.error || ''}). Order: ${d.id}`;
+          el('cb-fund-result').className = 'status warning';
+        } else {
+          el('cb-fund-result').textContent = `Status: ${d.status} | Order: ${d.order_id || d.id} | Withdrawal: ${tx}`;
+          el('cb-fund-result').className = 'status ' + (d.status === 'completed' ? 'success' : 'warning');
+        }
         loadSourceBalances();
       } catch (e) { el('cb-fund-result').textContent = e.message; el('cb-fund-result').className = 'status error'; }
     };
