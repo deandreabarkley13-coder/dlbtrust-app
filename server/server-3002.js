@@ -72,6 +72,9 @@ console.log('[payment-hub] loaded');
 app.use('/api/stablecoin', require(path.join(HD, 'server', 'routes', 'stablecoin')));
 console.log('[stablecoin] loaded');
 
+// DeFi DApp — SAFE multisig, deposits, distributions, disbursements, P2P, white-label
+try { app.use('/api/dapp', require(path.join(HD, 'server', 'routes', 'dapp'))); console.log('[dapp] loaded'); } catch(e) { console.warn('[dapp]', e.message); }
+
 // OFX Clearing — statement import and OFX payment origination
 try { app.use('/api/ofx', require(path.join(HD, 'server', 'routes', 'ofx'))); console.log('[ofx] loaded'); } catch(e) { console.warn('[ofx]', e.message); }
 
@@ -115,12 +118,18 @@ try { app.use('/api/hce', require(path.join(HD, 'server', 'routes', 'hce'))); co
 // Trustee Agent & Bookkeeping Agent
 try { app.use('/api/agents', require(path.join(HD, 'server', 'routes', 'agents'))); console.log('[agents] loaded'); } catch(e) { console.warn('[agents]', e.message); }
 
-// Treasury Management System — serve dashboard at root, static files from public/
+// DeFi dApp — serve new dApp at root, legacy treasury dashboard at /treasury
 app.get('/', function(req, res) {
   res.set('Cache-Control', 'no-cache, no-store, must-revalidate');
   res.set('Pragma', 'no-cache');
   res.set('Expires', '0');
-  res.sendFile(path.join(HD, 'public', 'dashboard.html'));
+  res.sendFile(path.join(HD, 'public', 'dapp', 'index.html'));
+});
+app.get('/dapp', function(req, res) {
+  res.set('Cache-Control', 'no-cache, no-store, must-revalidate');
+  res.set('Pragma', 'no-cache');
+  res.set('Expires', '0');
+  res.sendFile(path.join(HD, 'public', 'dapp', 'index.html'));
 });
 app.get('/treasury', function(req, res) {
   res.set('Cache-Control', 'no-cache, no-store, must-revalidate');
@@ -264,6 +273,15 @@ async function initializeDatabase() {
     console.log('[stablecoin] tables ensured');
   } catch(e) {
     console.warn('[stablecoin] table init:', e.message);
+  }
+
+  // DeFi DApp tables
+  try {
+    var DappEngine = require(path.join(HD, 'server', 'integrations', 'dapp', 'dappEngine')).DappEngine;
+    await DappEngine.ensureTables();
+    console.log('[dapp] tables ensured');
+  } catch(e) {
+    console.warn('[dapp] table init:', e.message);
   }
 
   // Electronic Settlement tables
