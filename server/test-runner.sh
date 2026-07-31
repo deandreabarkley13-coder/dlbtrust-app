@@ -27,10 +27,10 @@ check "pm2 running"       "pm2 list"                       "online"
 check "Docker running"    "docker ps | grep openach"       "openach"
 
 echo "--- API Endpoints ---" | tee -a $LOG
-check "Wallets API"       "curl -s http://localhost:3000/api/wallets"   "wallet_id"
-check "Transactions API"  "curl -s http://localhost:3000/api/transactions" "type"
-check "ACH health"        "curl -s http://localhost:3000/api/ach/health"  "openach_connected"
-check "Analytics API"     "curl -s http://localhost:3000/api/analytics/summary" "total_corpus"
+check "Wallets API"       "curl -s http://localhost:3002/api/wallets"   "wallet_id"
+check "Transactions API"  "curl -s http://localhost:3002/api/transactions" "type"
+check "ACH health"        "curl -s http://localhost:3002/api/ach/health"  "openach_connected"
+check "Analytics API"     "curl -s http://localhost:3002/api/analytics/summary" "total_corpus"
 
 echo "--- OpenACH ---" | tee -a $LOG
 check "OA connect"  "curl -s -X POST http://localhost/openach/api/connect -H 'Host: ach.dlbtrust.cloud' --data 'user_api_token=3caee1c2-c218-4959-b6d2-21d4b2a1b42e&user_api_key=b74966cf-5276-4d8b-8650-5bd57dcee272'" "success.*true"
