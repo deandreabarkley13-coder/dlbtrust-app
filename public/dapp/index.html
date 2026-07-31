@@ -241,15 +241,13 @@
 
   <div id="toast" class="toast"></div>
 
-  <script type="module">
-    import { createWalletClient, custom, parseEther, formatEther } from 'https://esm.sh/viem@2.55.4';
-    import { mainnet, sepolia } from 'https://esm.sh/viem/chains@2.55.4';
-
+  <script src="/dapp/ethers.min.js"></script>
+  <script>
     const API = '';
-    const CHAINS = { 1: mainnet, 11155111: sepolia };
-    let walletClient = null;
+    const CHAIN_NAMES = { 1: 'Ethereum', 11155111: 'Sepolia', 137: 'Polygon', 42161: 'Arbitrum', 8453: 'Base' };
     let account = null;
-    let chain = sepolia;
+    let chainId = null;
+    let chainName = 'Ethereum';
 
     function el(id) { return document.getElementById(id); }
     function show(id, cls = 'hidden', add = false) { const e = el(id); if (e) e.classList[add ? 'add' : 'remove'](cls); }
@@ -279,15 +277,15 @@
     window.connectWallet = async function() {
       if (!window.ethereum) return showToast('MetaMask not available', true);
       try {
-        walletClient = createWalletClient({ transport: custom(window.ethereum) });
-        const [addr] = await walletClient.requestAddresses();
+        const [addr] = await window.ethereum.request({ method: 'eth_requestAccounts' });
         account = addr;
-        const cid = Number(window.ethereum.chainId || '0xaa36a7');
-        chain = CHAINS[cid] || sepolia;
+        const cid = await window.ethereum.request({ method: 'eth_chainId' });
+        chainId = Number(cid);
+        chainName = CHAIN_NAMES[chainId] || `Chain ${chainId}`;
         el('wallet-address').textContent = account.slice(0, 6) + '…' + account.slice(-4);
-        el('network-name').textContent = chain.name;
+        el('network-name').textContent = chainName;
         el('connect-btn').textContent = 'Connected';
-        el('dash-wallet').textContent = `${account} on ${chain.name}`;
+        el('dash-wallet').textContent = `${account} on ${chainName}`;
         window.ethereum.on('accountsChanged', (a) => { if (a[0]) { account = a[0]; el('wallet-address').textContent = account.slice(0,6)+'…'+account.slice(-4); } });
         window.ethereum.on('chainChanged', () => location.reload());
       } catch (e) { showToast(e.message, true); }
@@ -393,8 +391,9 @@
 
     window.approvePayout = async function(payoutId, safeTxHash) {
       try {
+        if (!window.ethereum) return showToast('MetaMask not available', true);
         if (!account) await connectWallet();
-        const signature = await walletClient.signMessage({ account, message: { raw: safeTxHash } });
+        const signature = await window.ethereum.request({ method: 'eth_sign', params: [account, safeTxHash] });
         const res = await api(`/api/dapp/payouts/${payoutId}/approve`, { method: 'POST', body: JSON.stringify({ signature, signerAddress: account }) });
         showToast(`Payout ${res.data.status}: ${res.data.txHash || ''}`);
         listPayouts();
