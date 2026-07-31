@@ -291,8 +291,9 @@ class CoinbaseTreasuryBridge {
         transfer.metadata.deposit_status = deposit && deposit.committed === false ? 'pending_commit' : 'committed';
         await this._insert(transfer);
       } catch (err) {
-        transfer.error = `Coinbase deposit initiation failed: ${(err && err.message) || err}; manual wire required`;
-        transfer.metadata.deposit_error = (err && err.message) || String(err);
+        const depositErr = (err && (err.message || err.error || err.detail || err.title)) || (err ? String(err) : 'Coinbase deposit API returned an empty error response');
+        transfer.error = `Coinbase deposit initiation failed: ${depositErr}; manual wire required`;
+        transfer.metadata.deposit_error = depositErr;
         // Do not fail; the operator can still send a bank wire to Coinbase.
       }
     }
@@ -315,12 +316,15 @@ class CoinbaseTreasuryBridge {
           instructions: {
             amount: amountNum.toFixed(2),
             currency: 'USD',
-            method: transfer.coinbase_payment_method_id ? 'coinbase_deposit' : 'manual_wire',
+            method: transfer.coinbase_deposit_id ? 'coinbase_deposit' : (transfer.coinbase_payment_method_id ? 'coinbase_deposit_attempted' : 'manual_wire'),
             paymentMethodId: transfer.coinbase_payment_method_id || null,
             depositId: transfer.coinbase_deposit_id || null,
-            message: transfer.coinbase_payment_method_id
-              ? `Coinbase deposit created. Once USD settles, call POST /api/dapp/coinbase-treasury/transfers/${transfer.id}/execute to complete the buy and on-chain send.`
-              : `No Coinbase payment method found. Link a bank account in Coinbase, then call POST /api/dapp/coinbase-treasury/transfers/${transfer.id}/execute after the USD deposit settles.`,
+            depositError: transfer.metadata.deposit_error || null,
+            message: transfer.coinbase_deposit_id
+              ? `Coinbase deposit created (${transfer.coinbase_deposit_id}). Once USD settles, call POST /api/dapp/coinbase-treasury/transfers/${transfer.id}/execute to complete the buy and on-chain send.`
+              : (transfer.metadata.deposit_error
+                ? `Coinbase deposit could not be initiated: ${transfer.metadata.deposit_error}. Link a verified bank account and provide a valid coinbasePaymentMethodId, or send a manual wire to Coinbase, then call POST /api/dapp/coinbase-treasury/transfers/${transfer.id}/execute after the USD settles.`
+                : `No Coinbase payment method available. Link a bank account in Coinbase and provide a valid coinbasePaymentMethodId, then call POST /api/dapp/coinbase-treasury/transfers/${transfer.id}/execute after the USD deposit settles.`),
           },
         };
       }
