@@ -92,6 +92,7 @@
     <div class="container">
       <div class="nav" id="nav">
         <button class="active" data-section="dashboard" onclick="showSection('dashboard')">Dashboard</button>
+        <button data-section="source-of-funds" onclick="showSection('source-of-funds')">Source of Funds</button>
         <button data-section="safes" onclick="showSection('safes')">Safe Wallets</button>
         <button data-section="deposits" onclick="showSection('deposits')">Deposit</button>
         <button data-section="payouts" onclick="showSection('payouts')">Payout / 2-Sig</button>
@@ -126,6 +127,29 @@
             <p>Use this account to approve or propose payouts.</p>
             <div id="dash-wallet" class="status">Not connected</div>
           </div>
+        </div>
+      </section>
+
+      <section id="source-of-funds" class="section">
+        <div class="grid">
+          <div class="card" style="grid-column: 1 / -1;">
+            <h2>Legacy Source-of-Funds Balances</h2>
+            <p>Treasury, Cash, Trust Accounting, Bond/Fixed Income, Core Banking, CRM, Tax, and Document modules wired as stablecoin funding sources.</p>
+            <div class="table-wrap"><table id="sof-table"><thead><tr><th>Type</th><th>Name</th><th>ID</th><th>Balance</th><th>Currency</th></tr></thead><tbody></tbody></table></div>
+            <div class="actions"><button class="btn btn-sm" onclick="loadSourceBalances()">Refresh</button></div>
+          </div>
+        </div>
+        <div class="card" style="margin-top:20px">
+          <h2>Deposit from Source Ledger into Safe</h2>
+          <p>Sweep a legacy source-of-funds balance into the dApp as a stablecoin deposit.</p>
+          <div class="form-row">
+            <div><label>Source Type</label><select id="sof-deposit-type"><option value="">Select source</option><option value="treasury">Treasury</option><option value="cash">Cash</option><option value="trust">Trust Accounting</option><option value="bond">Bond / Fixed Income</option><option value="core_banking">Core Banking</option></select></div>
+            <div><label>Source Account ID</label><input type="text" id="sof-deposit-account" placeholder="Account ID / Bond ID" /></div>
+            <div><label>Target Safe ID</label><input type="text" id="sof-deposit-safe" placeholder="SAFE-..." /></div>
+            <div><label>Amount (USD)</label><input type="text" id="sof-deposit-amount" placeholder="100.00" /></div>
+          </div>
+          <div class="actions"><button class="btn" onclick="depositFromSource()">Deposit from Source</button></div>
+          <div id="sof-deposit-result" class="status hidden"></div>
         </div>
       </section>
 
@@ -169,15 +193,23 @@
       <section id="payouts" class="section">
         <div class="card">
           <h2>Create Payout</h2>
-          <p>Propose a payout from a Safe. The server signs first; the second owner approves with their wallet.</p>
+          <p>Propose a payout from a Safe. The server signs first; the second owner approves with their wallet. Set an Amount (USD) to reserve from a source-of-funds ledger.</p>
           <div class="form-row">
             <div><label>Safe ID</label><select id="payout-safe"></select></div>
             <div><label>Destination</label><input type="text" id="payout-to" placeholder="0x..." /></div>
-            <div><label>Value (wei for ETH)</label><input type="text" id="payout-value" placeholder="1000000000000000" /></div>
-            <div><label>Token (optional USDC address)</label><input type="text" id="payout-token" placeholder="0xA0b8..." /></div>
-            <div><label>Token Amount (optional)</label><input type="text" id="payout-token-amount" placeholder="25000000" /></div>
+            <div><label>Amount (USD)</label><input type="text" id="payout-amount-usd" placeholder="25.00" /></div>
+            <div><label>Source Type</label><select id="payout-source-type"><option value="">No source ledger</option><option value="treasury">Treasury</option><option value="cash">Cash</option><option value="trust">Trust Accounting</option><option value="bond">Bond / Fixed Income</option><option value="core_banking">Core Banking</option></select></div>
+            <div><label>Source Account ID</label><input type="text" id="payout-source-account" placeholder="Account ID / Bond ID" /></div>
             <div><label>Description</label><input type="text" id="payout-desc" placeholder="Beneficiary expense" /></div>
           </div>
+          <details>
+            <summary style="color:var(--muted);font-size:12px;cursor:pointer;">Advanced (raw token values)</summary>
+            <div class="form-row" style="margin-top:12px">
+              <div><label>Value (wei for ETH)</label><input type="text" id="payout-value" placeholder="0" /></div>
+              <div><label>Token (USDC address)</label><input type="text" id="payout-token" placeholder="0xA0b8..." /></div>
+              <div><label>Token Amount (optional)</label><input type="text" id="payout-token-amount" placeholder="25000000" /></div>
+            </div>
+          </details>
           <div class="actions"><button class="btn" onclick="createPayout()">Propose Payout</button></div>
           <div id="payout-create-result" class="status hidden"></div>
         </div>
@@ -190,15 +222,15 @@
       <section id="distribute" class="section">
         <div class="card">
           <h2>Create Distribution</h2>
-          <p>Split funds to multiple beneficiaries in one workflow.</p>
+          <p>Split funds to multiple beneficiaries from a source-of-funds ledger in one workflow.</p>
           <div class="form-row">
             <div><label>Safe ID</label><select id="dist-safe"></select></div>
             <div><label>Distribution Name</label><input type="text" id="dist-name" placeholder="Q3 Beneficiary Distribution" /></div>
-            <div><label>Asset</label><input type="text" id="dist-asset" value="ETH" /></div>
-            <div><label>Total Amount</label><input type="text" id="dist-total" placeholder="1.0" /></div>
+            <div><label>Source Type</label><select id="dist-source-type"><option value="">No source ledger</option><option value="treasury">Treasury</option><option value="cash">Cash</option><option value="trust">Trust Accounting</option><option value="bond">Bond / Fixed Income</option><option value="core_banking">Core Banking</option></select></div>
+            <div><label>Source Account ID</label><input type="text" id="dist-source-account" placeholder="Account ID / Bond ID" /></div>
           </div>
-          <label style="margin-top:10px">Beneficiaries JSON</label>
-          <textarea id="dist-beneficiaries" rows="5" placeholder='[{"address":"0x...","amount":"1000000000000000","name":"Alice"}]'></textarea>
+          <label style="margin-top:10px">Beneficiaries JSON (amountUsd is dollars, address is wallet)</label>
+          <textarea id="dist-beneficiaries" rows="5" placeholder='[{"address":"0x...","amountUsd":"10.00","name":"Alice"}]'></textarea>
           <div class="actions"><button class="btn" onclick="createDistribution()">Create Distribution</button></div>
           <div id="dist-result" class="status hidden"></div>
         </div>
@@ -207,11 +239,13 @@
       <section id="p2p" class="section">
         <div class="card">
           <h2>P2P Payment</h2>
-          <p>Send a peer-to-peer payment from a Safe or treasury source.</p>
+          <p>Send a peer-to-peer payment from a Safe or source-of-funds ledger.</p>
           <div class="form-row">
             <div><label>Safe ID</label><select id="p2p-safe"></select></div>
             <div><label>Recipient</label><input type="text" id="p2p-to" placeholder="0x..." /></div>
-            <div><label>Value / Amount</label><input type="text" id="p2p-value" placeholder="1000000000000000" /></div>
+            <div><label>Amount (USD)</label><input type="text" id="p2p-amount-usd" placeholder="25.00" /></div>
+            <div><label>Source Type</label><select id="p2p-source-type"><option value="">No source ledger</option><option value="treasury">Treasury</option><option value="cash">Cash</option><option value="trust">Trust Accounting</option><option value="bond">Bond / Fixed Income</option><option value="core_banking">Core Banking</option></select></div>
+            <div><label>Source Account ID</label><input type="text" id="p2p-source-account" placeholder="Account ID / Bond ID" /></div>
             <div><label>Description</label><input type="text" id="p2p-desc" placeholder="Trust expense" /></div>
           </div>
           <div class="actions"><button class="btn" onclick="createP2p()">Send P2P</button></div>
@@ -299,6 +333,7 @@
       if (name === 'payouts') listPayouts();
       if (name === 'safes') listSafes();
       if (name === 'dashboard') loadDashboard();
+      if (name === 'source-of-funds') loadSourceBalances();
     };
 
     async function loadDashboard() {
@@ -312,6 +347,36 @@
         el('dash-pending').textContent = `${pending} pending approval(s)`;
       } catch (e) { el('dash-pending').textContent = '—'; }
     }
+
+    async function loadSourceBalances() {
+      try {
+        const res = await api('/api/dapp/source-of-funds');
+        const tb = el('sof-table').querySelector('tbody'); tb.innerHTML = '';
+        res.data.forEach(b => {
+          const tr = document.createElement('tr');
+          tr.innerHTML = `<td>${esc(b.type)}</td><td>${esc(b.name)}</td><td class="mono">${esc(b.id)}</td><td>${Number(b.balance_cents / 100).toFixed(2)}</td><td>${esc(b.currency)}</td>`;
+          tb.appendChild(tr);
+        });
+      } catch (e) { showToast('Source of funds error: ' + e.message, true); }
+    }
+
+    window.depositFromSource = async function() {
+      try {
+        const res = await api('/api/dapp/deposits/from-source', {
+          method: 'POST',
+          body: JSON.stringify({
+            sourceType: el('sof-deposit-type').value,
+            sourceAccountId: el('sof-deposit-account').value,
+            safeId: el('sof-deposit-safe').value || null,
+            amount: el('sof-deposit-amount').value,
+            asset: 'USDC',
+          })
+        });
+        el('sof-deposit-result').textContent = 'Deposit recorded: ' + res.data.id;
+        el('sof-deposit-result').className = 'status success';
+        loadSourceBalances();
+      } catch (e) { el('sof-deposit-result').textContent = e.message; el('sof-deposit-result').className = 'status error'; }
+    };
 
     async function listSafes() {
       try {
@@ -366,10 +431,15 @@
         const safeId = el('payout-safe').value;
         if (!safeId) throw new Error('Select a Safe');
         if (!account) await connectWallet();
-        const res = await api('/api/dapp/payouts', {
-          method: 'POST',
-          body: JSON.stringify({ safeId, destination: el('payout-to').value, value: el('payout-value').value || undefined, token: el('payout-token').value || undefined, tokenAmount: el('payout-token-amount').value || undefined, description: el('payout-desc').value })
-        });
+        const body = { safeId, destination: el('payout-to').value, description: el('payout-desc').value };
+        const amountUsd = el('payout-amount-usd').value;
+        if (amountUsd) body.amountUsd = amountUsd;
+        const sourceType = el('payout-source-type').value;
+        if (sourceType) { body.sourceType = sourceType; body.sourceAccountId = el('payout-source-account').value; }
+        body.value = el('payout-value').value || undefined;
+        body.token = el('payout-token').value || undefined;
+        body.tokenAmount = el('payout-token-amount').value || undefined;
+        const res = await api('/api/dapp/payouts', { method: 'POST', body: JSON.stringify(body) });
         const p = res.data;
         el('payout-create-result').innerHTML = `Payout proposed: <b>${p.id}</b>. SafeTxHash: <span class="mono">${p.safe_tx_hash}</span> Sign this hash to approve.`;
         el('payout-create-result').className = 'status success';
@@ -405,10 +475,10 @@
         const safeId = el('dist-safe').value;
         if (!safeId) throw new Error('Select a Safe');
         const beneficiaries = JSON.parse(el('dist-beneficiaries').value || '[]');
-        const res = await api('/api/dapp/distributions', {
-          method: 'POST',
-          body: JSON.stringify({ safeId, name: el('dist-name').value, asset: el('dist-asset').value, totalAmount: el('dist-total').value, beneficiaries })
-        });
+        const body = { safeId, name: el('dist-name').value, asset: 'USDC', beneficiaries };
+        const sourceType = el('dist-source-type').value;
+        if (sourceType) { body.sourceType = sourceType; body.sourceAccountId = el('dist-source-account').value; }
+        const res = await api('/api/dapp/distributions', { method: 'POST', body: JSON.stringify(body) });
         el('dist-result').textContent = 'Distribution created: ' + res.data.id;
         el('dist-result').className = 'status success';
       } catch (e) { el('dist-result').textContent = e.message; el('dist-result').className = 'status error'; }
@@ -418,10 +488,13 @@
       try {
         const safeId = el('p2p-safe').value;
         if (!safeId) throw new Error('Select a Safe');
-        const res = await api('/api/dapp/p2p', {
-          method: 'POST',
-          body: JSON.stringify({ safeId, destination: el('p2p-to').value, value: el('p2p-value').value, description: el('p2p-desc').value })
-        });
+        const body = { safeId, destination: el('p2p-to').value, description: el('p2p-desc').value };
+        const amountUsd = el('p2p-amount-usd').value;
+        if (amountUsd) body.amountUsd = amountUsd;
+        const sourceType = el('p2p-source-type').value;
+        if (sourceType) { body.sourceType = sourceType; body.sourceAccountId = el('p2p-source-account').value; }
+        body.value = el('p2p-value') ? el('p2p-value').value : '0';
+        const res = await api('/api/dapp/p2p', { method: 'POST', body: JSON.stringify(body) });
         el('p2p-result').textContent = 'P2P payment proposed: ' + res.data.id;
         el('p2p-result').className = 'status success';
       } catch (e) { el('p2p-result').textContent = e.message; el('p2p-result').className = 'status error'; }

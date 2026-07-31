@@ -50,6 +50,19 @@ router.post('/deposits', operatorAuth, writeRateLimiter(), async (req, res) => {
   } catch (err) { sendError(res, err); }
 });
 
+router.post('/deposits/from-source', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try {
+    const { sourceType, sourceAccountId, safeId, asset, amount, memo } = req.body;
+    const data = await DappEngine.depositFromSource({ sourceType, sourceAccountId, safeId, asset, amount, memo });
+    res.status(201).json({ success: true, data });
+  } catch (err) { sendError(res, err); }
+});
+
+// ─── Source of Funds (legacy modules) ─────────────────────────────────────────
+router.get('/source-of-funds', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await DappEngine.listSourceBalances() }); } catch (err) { sendError(res, err); }
+});
+
 // ─── Payouts / Disbursements / P2P (2-signature approval) ───────────────────────
 router.get('/payouts', operatorAuth, async (req, res) => {
   try { res.json({ success: true, data: await DappEngine.listPayouts() }); } catch (err) { sendError(res, err); }
@@ -61,8 +74,8 @@ router.get('/payouts/:id', operatorAuth, async (req, res) => {
 
 router.post('/payouts', operatorAuth, writeRateLimiter(), async (req, res) => {
   try {
-    const { safeId, type, destination, value, token, tokenAmount, description, sourceType, sourceAccountId } = req.body;
-    const data = await DappEngine.createPayout({ safeId, type, destination, value, token, tokenAmount, description, sourceType, sourceAccountId });
+    const { safeId, type, destination, value, token, tokenAmount, description, sourceType, sourceAccountId, amountUsd } = req.body;
+    const data = await DappEngine.createPayout({ safeId, type, destination, value, token, tokenAmount, description, sourceType, sourceAccountId, amountUsd });
     res.status(201).json({ success: true, data });
   } catch (err) { sendError(res, err); }
 });
@@ -93,8 +106,8 @@ router.get('/distributions/:id', operatorAuth, async (req, res) => {
 
 router.post('/distributions', operatorAuth, writeRateLimiter(), async (req, res) => {
   try {
-    const { safeId, name, asset, totalAmount, beneficiaries } = req.body;
-    const data = await DappEngine.createDistribution({ safeId, name, asset, totalAmount, beneficiaries });
+    const { safeId, name, asset, totalAmount, beneficiaries, sourceType, sourceAccountId } = req.body;
+    const data = await DappEngine.createDistribution({ safeId, name, asset, totalAmount, beneficiaries, sourceType, sourceAccountId });
     res.status(201).json({ success: true, data });
   } catch (err) { sendError(res, err); }
 });
@@ -106,8 +119,8 @@ router.get('/p2p', operatorAuth, async (req, res) => {
 
 router.post('/p2p', operatorAuth, writeRateLimiter(), async (req, res) => {
   try {
-    const { safeId, destination, value, token, tokenAmount, description, sourceType, sourceAccountId } = req.body;
-    const data = await DappEngine.createP2p({ safeId, destination, value, token, tokenAmount, description, sourceType, sourceAccountId });
+    const { safeId, destination, value, token, tokenAmount, description, sourceType, sourceAccountId, amountUsd } = req.body;
+    const data = await DappEngine.createP2p({ safeId, destination, value, token, tokenAmount, description, sourceType, sourceAccountId, amountUsd });
     res.status(201).json({ success: true, data });
   } catch (err) { sendError(res, err); }
 });

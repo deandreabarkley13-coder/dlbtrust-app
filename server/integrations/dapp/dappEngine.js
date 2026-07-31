@@ -2,6 +2,16 @@
 
 const { SafeEngine } = require('./safeEngine');
 const { getConfig } = require('./config');
+const { SourceOfFundsAdapter } = require('../stablecoin/sourceOfFundsAdapter');
+
+let CashEngine, TrustAccountingEngine, BondEngine, FineractClient, CrmEngine, TaxEngine, DocumentEngine;
+try { CashEngine = require('../cash/cashEngine').CashEngine; } catch (e) { }
+try { TrustAccountingEngine = require('../accounting/trustAccountingEngine').TrustAccountingEngine; } catch (e) { }
+try { BondEngine = require('../bonds/bondEngine').BondEngine; } catch (e) { }
+try { FineractClient = require('../fineract/fineractClient').FineractClient; } catch (e) { }
+try { CrmEngine = require('../crm/crmEngine').CrmEngine; } catch (e) { }
+try { TaxEngine = require('../tax/taxEngine').TaxEngine; } catch (e) { }
+try { DocumentEngine = require('../documents/documentEngine').DocumentEngine; } catch (e) { }
 
 let pool;
 try { pool = require('../bonds/pgPool'); } catch (e) { pool = null; }
@@ -99,11 +109,15 @@ class DappEngine {
           beneficiaries JSONB NOT NULL,
           status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending','approved','executed','failed')),
           tx_hash TEXT,
+          source_type TEXT,
+          source_account_id TEXT,
           metadata JSONB DEFAULT '{}',
           created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
           updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
         );
       `);
+      await query(`ALTER TABLE dapp_distributions ADD COLUMN IF NOT EXISTS source_type TEXT;`);
+      await query(`ALTER TABLE dapp_distributions ADD COLUMN IF NOT EXISTS source_account_id TEXT;`);
 
       await query(`
         CREATE TABLE IF NOT EXISTS dapp_white_label (
@@ -230,10 +244,32 @@ class DappEngine {
   static async getDeposit(id) { return this._selectOne('dapp_deposits', id); }
 
   // ─── Payouts with 2-signature approval ──────────────────────────────────────────
-  static async createPayout({ safeId, type = 'payout', destination, value, token, tokenAmount, description, sourceType, sourceAccountId } = {}) {
-    if (!safeId || !destination || (!value && !tokenAmount)) throw new Error('safeId, destination and value/tokenAmount required');
+  static async createPayout({ safeId, type = 'payout', destination, value, token, tokenAmount, description, sourceType, sourceAccountId, amountUsd } = {}) {
+    if (!safeId || !destination) throw new Error('safeId and destination required');
+    if (!value && !tokenAmount && !amountUsd) throw new Error('value, tokenAmount or amountUsd required');
     const safe = await this.getSafe(safeId);
     if (safe.status !== 'deployed') throw new Error('Safe must be deployed before payouts');
+    const cfg = getConfig();
+
+    let amountCents = 0;
+    if (amountUsd) {
+      amountCents = Math.round(Number(amountUsd) * 100);
+      if (!token) token = cfg.usdcAddress;
+      if (!tokenAmount) tokenAmount = String(Math.round(Number(amountUsd) * 1e6));
+      if (!value) value = '0';
+    }
+
+    const id = identifier('PAY');
+    let reserve = null;
+    if (sourceType && amountCents > 0) {
+      reserve = await SourceOfFundsAdapter.reserve({
+        id,
+        source_type: sourceType,
+        source_account_id: sourceAccountId || '',
+        total_cents: amountCents,
+      });
+    }
+
     const owners = Array.isArray(safe.owners) ? safe.owners : (jsonbValue(safe.owners) || []);
     const predictedSafe = {
       safeAccountConfig: { owners, threshold: safe.threshold },
@@ -249,7 +285,7 @@ class DappEngine {
       tokenAmount,
     });
 
-    const id = identifier('PAY');
+    const metadata = { safeTx: safeTx.data, proposer, amountUsd, amountCents, sourceRef: reserve };
     const row = {
       id,
       safe_id: safeId,
@@ -266,9 +302,9 @@ class DappEngine {
       tx_hash: null,
       source_type: sourceType || null,
       source_account_id: sourceAccountId || null,
-      reserve_id: null,
+      reserve_id: reserve ? reserve.reserveId : null,
       distribution_id: null,
-      metadata: JSON.stringify({ safeTx: safeTx.data, proposer }),
+      metadata: JSON.stringify(metadata),
     };
     await this._insert('dapp_payouts', row);
     return { ...row, safeTxHash, needsSignature: true, pendingApprovals: safe.threshold - 1 };
@@ -303,10 +339,12 @@ class DappEngine {
     if (signatures.length >= safe.threshold) {
       const result = await SafeEngine.executeTransaction({ safeAddress: safe.safe_address, safeTx });
       const metadata = jsonbValue(payout.metadata || '{}') || {};
-      await this._update('dapp_payouts', payoutId, { status: 'executed', tx_hash: result.txHash, metadata: JSON.stringify({ ...metadata, result }) });
+      metadata.result = result;
+      await this._finalizeSource(payout, result.txHash, metadata);
+      await this._update('dapp_payouts', payoutId, { status: 'executed', tx_hash: result.txHash, metadata: JSON.stringify(metadata) });
       payout.status = 'executed';
       payout.tx_hash = result.txHash;
-      payout.metadata = JSON.stringify({ ...metadata, result });
+      payout.metadata = JSON.stringify(metadata);
       return { ...payout, txHash: result.txHash, signatures };
     }
 
@@ -326,6 +364,33 @@ class DappEngine {
     return SafeEngine.rebuildTransaction(txData, sigs);
   }
 
+  static async _finalizeSource(payout, txHash, metadata) {
+    if (!payout.reserve_id || !payout.source_type) return;
+    const amountCents = metadata.amountCents || 0;
+    const payment = {
+      id: payout.id,
+      source_type: payout.source_type,
+      source_account_id: payout.source_account_id,
+      reserve_id: payout.reserve_id,
+      total_cents: amountCents,
+      amount_cents: amountCents,
+      source_ref: metadata.sourceRef || {},
+      metadata: metadata.sourceRef || {},
+    };
+    try {
+      const sourcePost = await SourceOfFundsAdapter.post(payment, txHash, { settledAmountCents: amountCents });
+      metadata.sourcePost = sourcePost;
+    } catch (err) {
+      console.warn('[dappEngine] source post failed:', err.message);
+      metadata.sourcePostError = err.message;
+    }
+    try {
+      await SourceOfFundsAdapter.recordCrmAndDocuments({ ...payout, amount_cents: amountCents, asset_code: payout.token }, txHash);
+    } catch (err) {
+      console.warn('[dappEngine] CRM/document recording failed:', err.message);
+    }
+  }
+
   static async executePayout(payoutId) {
     const payout = await this.getPayout(payoutId);
     if (payout.status !== 'pending') throw new Error(`Payout status ${payout.status} cannot be executed`);
@@ -338,10 +403,12 @@ class DappEngine {
     }
     const result = await SafeEngine.executeTransaction({ safeAddress: safe.safe_address, safeTx });
     const metadata2 = jsonbValue(payout.metadata || '{}') || {};
-    await this._update('dapp_payouts', payoutId, { status: 'executed', tx_hash: result.txHash, metadata: JSON.stringify({ ...metadata2, result }) });
+    metadata2.result = result;
+    await this._finalizeSource(payout, result.txHash, metadata2);
+    await this._update('dapp_payouts', payoutId, { status: 'executed', tx_hash: result.txHash, metadata: JSON.stringify(metadata2) });
     payout.status = 'executed';
     payout.tx_hash = result.txHash;
-    payout.metadata = JSON.stringify({ ...metadata2, result });
+    payout.metadata = JSON.stringify(metadata2);
     return { ...payout, txHash: result.txHash };
   }
 
@@ -349,22 +416,29 @@ class DappEngine {
   static async listPayouts() { return this._selectAll('dapp_payouts'); }
 
   // ─── Distributions ────────────────────────────────────────────────────────────
-  static async createDistribution({ safeId, name, asset, totalAmount, beneficiaries } = {}) {
+  static async createDistribution({ safeId, name, asset, totalAmount, beneficiaries, sourceType, sourceAccountId } = {}) {
     if (!safeId || !Array.isArray(beneficiaries) || !beneficiaries.length) throw new Error('safeId and beneficiaries required');
     const id = identifier('DIS');
     const safe = await this.getSafe(safeId);
+    const totalUsd = beneficiaries.reduce((s, b) => s + (Number(b.amountUsd) || 0), 0);
     const dist = {
-      id, safe_id: safeId, name: name || `Distribution ${id}`, asset, total_amount: String(totalAmount),
+      id, safe_id: safeId, name: name || `Distribution ${id}`, asset,
+      total_amount: String(totalAmount || totalUsd),
       beneficiaries: JSON.stringify(beneficiaries), status: 'pending',
+      source_type: sourceType || null,
+      source_account_id: sourceAccountId || null,
     };
     await this._insert('dapp_distributions', dist);
 
     // Create child payout records for each beneficiary
     for (const b of beneficiaries) {
       await this.createPayout({
-        safeId, type: 'distribution_item', destination: b.address, value: b.amount, token: b.token,
-        tokenAmount: b.tokenAmount, description: `Distribution ${id} to ${b.name || b.address}`,
-        sourceType: 'treasury',
+        safeId, type: 'distribution_item', destination: b.address,
+        value: b.value || '0', token: b.token, tokenAmount: b.tokenAmount,
+        amountUsd: b.amountUsd,
+        description: `Distribution ${id} to ${b.name || b.address}`,
+        sourceType,
+        sourceAccountId,
       });
     }
     return dist;
@@ -374,8 +448,8 @@ class DappEngine {
   static async listDistributions() { return this._selectAll('dapp_distributions'); }
 
   // ─── P2P payments ───────────────────────────────────────────────────────────────
-  static async createP2p({ safeId, destination, value, token, tokenAmount, description, sourceType, sourceAccountId } = {}) {
-    return this.createPayout({ safeId, type: 'p2p', destination, value, token, tokenAmount, description, sourceType, sourceAccountId });
+  static async createP2p({ safeId, destination, value, token, tokenAmount, description, sourceType, sourceAccountId, amountUsd } = {}) {
+    return this.createPayout({ safeId, type: 'p2p', destination, value, token, tokenAmount, description, sourceType, sourceAccountId, amountUsd });
   }
 
   // ─── White-label ──────────────────────────────────────────────────────────────
@@ -400,6 +474,120 @@ class DappEngine {
       await query(`INSERT INTO dapp_white_label (${cols}) VALUES (${vals}) ON CONFLICT (id) DO UPDATE SET ${updateSet}, updated_at = NOW() RETURNING *`,
         [...keys.map(k => row[k]), ...keys.map(k => row[k])]);
     }, () => { memory.whiteLabel.set(row.id, row); });
+    return row;
+  }
+
+  // ─── Source of Funds bridge (legacy modules -> dApp stablecoin rails) ───────────
+  static async listSourceBalances() {
+    const balances = [];
+    const push = (type, id, name, balance_cents, currency = 'USD', meta = {}) => {
+      balances.push({ type, id, name, balance_cents: Number(balance_cents) || 0, currency, ...meta });
+    };
+
+    try {
+      const bal = await SourceOfFundsAdapter.getBalance({ sourceType: 'treasury' });
+      push('treasury', 'TREASURY_HOT', 'Treasury Hot', bal, 'USDC', { asset: 'USDC' });
+    } catch (e) { /* optional */ }
+
+    try {
+      if (CashEngine) {
+        const accts = await CashEngine.listAccounts({ status: 'active' });
+        for (const a of accts) {
+          const bal = await SourceOfFundsAdapter.getBalance({ sourceType: 'cash', sourceAccountId: a.account_id }).catch(() => 0);
+          push('cash', a.account_id, a.account_name || a.account_id, bal, a.currency || 'USD', { account_type: a.account_type });
+        }
+      }
+    } catch (e) { }
+
+    try {
+      if (TrustAccountingEngine) {
+        const accts = await TrustAccountingEngine.listAccounts({ isActive: true });
+        for (const a of accts) {
+          const bal = await SourceOfFundsAdapter.getBalance({ sourceType: 'trust', sourceAccountId: a.account_code }).catch(() => 0);
+          push('trust', a.account_code, a.account_name || a.account_code, bal, 'USD', { account_type: a.account_type, sub_type: a.sub_type });
+        }
+      }
+    } catch (e) { }
+
+    try {
+      if (BondEngine) {
+        const bonds = await BondEngine.listBonds();
+        for (const b of bonds) {
+          const bal = await SourceOfFundsAdapter.getBalance({ sourceType: 'bond', sourceAccountId: String(b.id) }).catch(() => 0);
+          push('bond', String(b.id), b.bond_name || b.isin || `Bond ${b.id}`, bal, b.currency || 'USD', { isin: b.isin, status: b.status });
+        }
+      }
+    } catch (e) { }
+
+    try {
+      if (FineractClient) {
+        const savings = await FineractClient.listSavingsAccounts({ limit: 100 });
+        const page = savings.pageItems || [];
+        for (const acct of page) {
+          const summary = await FineractClient.getAccountBalance(acct.id).catch(() => ({}));
+          const bal = (summary.accountBalance || summary.balance || 0) * 100;
+          push('core_banking', String(acct.id), acct.productName || acct.clientName || `Savings ${acct.id}`, bal, summary.currency?.code || 'USD', { clientId: acct.clientId });
+        }
+      }
+    } catch (e) { }
+
+    try {
+      if (CrmEngine) {
+        const contacts = await CrmEngine.listContacts({ status: 'active' });
+        for (const c of contacts) {
+          balances.push({ type: 'crm', id: c.contact_id, name: `${c.first_name || ''} ${c.last_name || ''}`.trim() || c.company || c.contact_id, balance_cents: 0, currency: 'USD', email: c.email, phone: c.phone, linked_wallet_id: c.linked_wallet_id });
+        }
+      }
+    } catch (e) { }
+
+    try {
+      if (TaxEngine) {
+        const dash = await TaxEngine.getDashboard();
+        push('tax', 'trust_tax_reserve', 'Tax Reserve / Distributions', Math.round((dash.total_distributions || dash.estimated_payments || 0) * 100), 'USD', { tax_year: dash.tax_year });
+      }
+    } catch (e) { }
+
+    try {
+      if (DocumentEngine) {
+        const stats = await DocumentEngine.getStats();
+        push('documents', 'document_vault', 'Document Vault', (stats.total_documents || 0), 'count', stats);
+      }
+    } catch (e) { }
+
+    return balances;
+  }
+
+  static async depositFromSource({ sourceType, sourceAccountId, safeId, asset, amount, memo }) {
+    if (!sourceType || !amount) throw new Error('sourceType and amount required');
+    const amountCents = Math.round((Number(amount) || 0) * 100);
+    if (amountCents <= 0) throw new Error('amount must be positive');
+    const depositId = identifier('DEP');
+
+    // Sweep legacy fiat balance into the stablecoin treasury (real source-of-funds movement)
+    const sweep = await SourceOfFundsAdapter._fundSourceToTreasury({
+      sourceType,
+      sourceAccountId,
+      paymentId: depositId,
+      amountCents,
+    }).catch(err => {
+      if (sourceType === 'treasury') {
+        return { sourceType, sourceAccountId, skipped: true, reason: err.message };
+      }
+      throw err;
+    });
+
+    const cfg = getConfig();
+    const row = {
+      id: depositId,
+      safe_id: safeId || null,
+      asset: asset || cfg.nativeTokenSymbol || 'USDC',
+      amount: String(amount),
+      from_address: sourceAccountId || sourceType,
+      tx_hash: `shadow-${Date.now()}`,
+      status: 'confirmed',
+      metadata: JSON.stringify({ sourceType, sourceAccountId, sweep }),
+    };
+    await this._insert('dapp_deposits', row);
     return row;
   }
 }
