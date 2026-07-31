@@ -176,8 +176,17 @@ class CoinbaseSpotEngine {
         side: 'BUY',
         order_configuration: { market_market_ioc: { quote_size: String(Number(amount).toFixed(2)) } },
       });
+      const errors = preview && Array.isArray(preview.errs) ? preview.errs : [];
+      if (errors.length) {
+        const needsDeposit = errors.some(e => /INSUFFICIENT_FUND|TOO_SMALL/i.test(e));
+        const code = needsDeposit ? 'needs_deposit' : 'preview_failed';
+        const e = new Error(`Coinbase preview for ${productId}: ${errors.join(', ')}`);
+        e.code = code;
+        throw e;
+      }
       return { productId, supportedAssets: ['ETH', 'BTC'], ...preview };
     } catch (err) {
+      if (err && err.code === 'needs_deposit') throw err;
       const msg = err && (err.body && err.body.message) || err.message || String(err);
       throw new Error(`Coinbase preview failed for ${productId}: ${msg}. Supported on-ramp assets: ETH, BTC.`);
     }
@@ -259,7 +268,23 @@ class CoinbaseSpotEngine {
         order_configuration: { market_market_ioc: { quote_size: quoteSize } },
       });
       order.metadata.preview = preview;
-    } catch (err) { await this._setError(order, err); throw err; }
+      const errors = preview && Array.isArray(preview.errs) ? preview.errs : [];
+      if (errors.length) {
+        const needsDeposit = errors.some(e => /INSUFFICIENT_FUND|TOO_SMALL/i.test(e));
+        const err = new Error(`Coinbase preview for ${productId}: ${errors.join(', ')}`);
+        err.code = needsDeposit ? 'needs_deposit' : 'preview_failed';
+        order.status = needsDeposit ? 'needs_deposit' : 'failed';
+        order.error = err.message;
+        await this._refundSource(order, reserve, amountCents);
+        await this._insert(order);
+        throw err;
+      }
+    } catch (err) {
+      if (err && err.code !== 'needs_deposit') await this._refundSource(order, reserve, amountCents);
+      if (order.status !== 'needs_deposit') await this._setError(order, err);
+      else await this._insert(order);
+      throw err;
+    }
 
     let submitted;
     try {
@@ -270,9 +295,15 @@ class CoinbaseSpotEngine {
         side: 'BUY',
         order_configuration: { market_market_ioc: { quote_size: quoteSize } },
       });
-      order.order_id = submitted && (submitted.order_id || submitted.id || '');
-      order.order_response = submitted;
-      order.target_amount = submitted && (submitted.filled_size || preview && preview.order && preview.order.base_size || '');
+      order.order_response = submitted || {};
+      if (!submitted || submitted.success === false || (submitted.error_response && submitted.error_response.error)) {
+        const errorDetail = submitted && submitted.error_response;
+        const err = new Error(`Coinbase buy failed for ${productId}: ${(errorDetail && (errorDetail.message || errorDetail.error || errorDetail.preview_failure_reason)) || 'unknown'}`);
+        err.code = (errorDetail && errorDetail.error) || 'buy_failed';
+        throw err;
+      }
+      order.order_id = submitted.order_id || submitted.id || '';
+      order.target_amount = submitted.filled_size || (preview && preview.base_size) || '';
     } catch (err) {
       // If the buy fails because of insufficient USD, rollback the ledger reserve
       await this._refundSource(order, reserve, amountCents);
@@ -288,6 +319,7 @@ class CoinbaseSpotEngine {
       const accounts = await appClient.getAccounts();
       const account = accounts && accounts.data && accounts.data.find(a => a.currency === order.target_asset || (a.balance && a.balance.currency === order.target_asset));
       if (!account) throw new Error(`No Coinbase ${order.target_asset} wallet account found for withdrawal`);
+      if (!order.target_amount) throw new Error(`Coinbase buy did not return a filled size; cannot send ${order.target_asset}`);
 
       const send = await appClient.sendMoney({
         account_id: account.id,
@@ -304,11 +336,12 @@ class CoinbaseSpotEngine {
       order.tx_explorer = order.tx_hash ? `https://${targetNetwork === 'ethereum' ? '' : targetNetwork + '.'}etherscan.io/tx/${order.tx_hash}` : '';
       order.status = order.tx_hash ? 'completed' : 'sending';
     } catch (err) {
-      order.error = `Bought ${order.target_asset} but withdrawal failed: ${err.message || err}`;
+      const errMsg = (err && (err.message || err.error || err.detail || err.title)) || (typeof err === 'string' ? err : 'Unknown Coinbase send error');
+      order.error = `Bought ${order.target_asset} but withdrawal failed: ${errMsg}`;
       order.status = 'failed';
       await this._insert(order);
       // Note: crypto is now held in Coinbase; manual send required.
-      throw err;
+      throw err || new Error(errMsg);
     }
 
     await this._insert(order);
