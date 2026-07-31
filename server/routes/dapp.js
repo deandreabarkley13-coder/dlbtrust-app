@@ -262,4 +262,11 @@ router.post('/dex/swap', operatorAuth, writeRateLimiter(), async (req, res) => {
   } catch (err) { sendError(res, err); }
 });
 
+router.post('/dex/pools', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try {
+    const data = await DexSwapEngine.createPool(req.body);
+    res.status(201).json({ success: true, data });
+  } catch (err) { sendError(res, err); }
+});
+
 module.exports = router;

@@ -14,10 +14,10 @@ contract BondTokenFactory {
 
     function createAndMintBondToken(string memory name, string memory symbol, address holder, uint256 amount) external returns (address token) {
         token = address(new BondToken(name, symbol, 0));
-        BondToken(token).transferOwnership(msg.sender);
         if (amount > 0 && holder != address(0)) {
             BondToken(token).mint(holder, amount);
         }
+        BondToken(token).transferOwnership(msg.sender);
         emit BondTokenCreated(token, name, symbol, amount);
     }
 }

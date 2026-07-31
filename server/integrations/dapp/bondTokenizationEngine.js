@@ -19,8 +19,8 @@ try { pool = require('../bonds/pgPool'); } catch (e) { pool = null; }
 let BondEngine;
 try { BondEngine = require('../bonds/bondEngine').BondEngine; } catch (e) { BondEngine = null; }
 
-let viem, chains;
-try { viem = require('viem'); chains = require('viem/chains'); } catch (e) { viem = null; chains = null; }
+let viem, chains, privateKeyToAccount;
+try { viem = require('viem'); chains = require('viem/chains'); ({ privateKeyToAccount } = require('viem/accounts')); } catch (e) { viem = null; chains = null; privateKeyToAccount = null; }
 
 function str(name, fallback = '') { return (process.env[name] || fallback).trim(); }
 function bool(name, fallback = false) { const v = process.env[name]; return v ? String(v).toLowerCase() === 'true' : fallback; }
@@ -71,7 +71,7 @@ function walletClient() {
   if (!viem) throw new Error('viem not installed');
   const cfg = getConfig();
   if (!cfg.privateKey) throw new Error('DAPP_PRIVATE_KEY not configured');
-  const account = viem.privateKeyToAccount(cfg.privateKey);
+  const account = privateKeyToAccount(cfg.privateKey);
   const chain = cfg.chainId === 1 ? (chains && chains.mainnet) : (chains && chains.sepolia) || undefined;
   return {
     account,
