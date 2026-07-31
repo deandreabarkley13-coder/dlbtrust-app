@@ -7,6 +7,7 @@ const { GoogleWalletEngine } = require('../integrations/dapp/googleWalletEngine'
 const { BondTokenizationEngine } = require('../integrations/dapp/bondTokenizationEngine');
 const { DexSwapEngine } = require('../integrations/dapp/dexSwapEngine');
 const { SourceToDexBridge } = require('../integrations/dapp/sourceToDexBridge');
+const { CoinbaseSpotEngine } = require('../integrations/dapp/coinbaseSpotEngine');
 const { requireAuth, writeRateLimiter } = require('../integrations/auth/securityMiddleware');
 
 const router = express.Router();
@@ -274,6 +275,21 @@ router.post('/dex/pools', operatorAuth, writeRateLimiter(), async (req, res) => 
 router.post('/fund-from-source', operatorAuth, writeRateLimiter(), async (req, res) => {
   try {
     const data = await SourceToDexBridge.fundSafeFromSource(req.body);
+    res.status(201).json({ success: true, data });
+  } catch (err) { sendError(res, err); }
+});
+
+// ─── Coinbase Spot Off-Ramp (ledger -> Coinbase buy -> on-chain send) ───
+router.get('/coinbase-spot/quote', operatorAuth, async (req, res) => {
+  try {
+    const data = await CoinbaseSpotEngine.preview({ amount: req.query.amount, targetAsset: req.query.targetAsset });
+    res.json({ success: true, data });
+  } catch (err) { sendError(res, err); }
+});
+
+router.post('/coinbase-spot/fund', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try {
+    const data = await CoinbaseSpotEngine.fundFromSource(req.body);
     res.status(201).json({ success: true, data });
   } catch (err) { sendError(res, err); }
 });

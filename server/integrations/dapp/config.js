@@ -18,12 +18,15 @@ const config = {
   chainId,
   rpcUrl,
   privateKey: str('DAPP_PRIVATE_KEY', ''),
+  operatorAddress: str('DAPP_OPERATOR_ADDRESS', ''),
   defaultThreshold: num('DAPP_DEFAULT_THRESHOLD', 2),
   apiKitBase: str('DAPP_SAFE_API_KIT_BASE', chainId === 1 ? 'https://safe-transaction-mainnet.safe.global' : 'https://safe-transaction-sepolia.safe.global'),
   usdcAddress: str('DAPP_USDC_ADDRESS', '0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48'),
   wethAddress,
   nativeTokenSymbol: str('DAPP_NATIVE_TOKEN', 'ETH'),
   bondDexPoolAddress: str('BOND_DEX_ADDRESS', ''),
+  coinbaseCdpKeyName: str('COINBASE_CDP_KEY_NAME', ''),
+  coinbaseCdpPrivateKey: str('COINBASE_CDP_PRIVATE_KEY', ''),
   supportedNetworks: ['ethereum', 'sepolia', 'polygon', 'arbitrum', 'base'],
 };
 
