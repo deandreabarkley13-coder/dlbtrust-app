@@ -7,6 +7,7 @@ const { GoogleWalletEngine } = require('../integrations/dapp/googleWalletEngine'
 const { BondTokenizationEngine } = require('../integrations/dapp/bondTokenizationEngine');
 const { DexSwapEngine } = require('../integrations/dapp/dexSwapEngine');
 const { SourceToDexBridge } = require('../integrations/dapp/sourceToDexBridge');
+const { StablecoinDexEngine } = require('../integrations/dapp/stablecoinDexEngine');
 const { CoinbaseSpotEngine } = require('../integrations/dapp/coinbaseSpotEngine');
 const { CoinbaseTreasuryBridge } = require('../integrations/dapp/coinbaseTreasuryBridge');
 const { requireAuth, writeRateLimiter } = require('../integrations/auth/securityMiddleware');
@@ -269,6 +270,39 @@ router.post('/dex/swap', operatorAuth, writeRateLimiter(), async (req, res) => {
 router.post('/dex/pools', operatorAuth, writeRateLimiter(), async (req, res) => {
   try {
     const data = await DexSwapEngine.createPool(req.body);
+    res.status(201).json({ success: true, data });
+  } catch (err) { sendError(res, err); }
+});
+
+// ─── Stablecoin DEX (DLBUSD -> USDC/USDS, gasless via operator relayer) ───
+router.get('/stablecoin-dex/readiness', async (req, res) => {
+  try { res.json({ success: true, data: StablecoinDexEngine.readiness() }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/stablecoin-dex/quote', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try {
+    const data = await StablecoinDexEngine.quote(req.body);
+    res.json({ success: true, data });
+  } catch (err) { sendError(res, err); }
+});
+
+router.post('/stablecoin-dex/pool', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try {
+    const data = await StablecoinDexEngine.createPool(req.body);
+    res.status(201).json({ success: true, data });
+  } catch (err) { sendError(res, err); }
+});
+
+router.post('/stablecoin-dex/swap', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try {
+    const data = await StablecoinDexEngine.swap(req.body);
+    res.status(201).json({ success: true, data });
+  } catch (err) { sendError(res, err); }
+});
+
+router.post('/stablecoin-dex/deposit-and-swap', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try {
+    const data = await StablecoinDexEngine.depositAndSwap(req.body);
     res.status(201).json({ success: true, data });
   } catch (err) { sendError(res, err); }
 });

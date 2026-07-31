@@ -286,6 +286,16 @@ class BondTokenizationEngine {
     }
     return Array.from(memory.tokens.values()).find(t => t.bond_id === bondId && t.token_address && !t.token_address.startsWith('shadow-')) || null;
   }
+
+  static async getTokenBySymbol(tokenSymbol) {
+    await ensureTable();
+    if (pool) {
+      const res = await pool.query("SELECT * FROM bond_tokens WHERE token_symbol = $1 AND token_address IS NOT NULL AND token_address <> '' AND token_address NOT LIKE 'shadow-%' ORDER BY created_at DESC LIMIT 1", [tokenSymbol.toUpperCase()]);
+      if (res.rows.length) return res.rows[0];
+      return null;
+    }
+    return Array.from(memory.tokens.values()).find(t => String(t.token_symbol).toUpperCase() === tokenSymbol.toUpperCase() && t.token_address && !t.token_address.startsWith('shadow-')) || null;
+  }
 }
 
 module.exports = { BondTokenizationEngine };

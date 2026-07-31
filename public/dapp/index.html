@@ -100,6 +100,7 @@
         <button data-section="p2p" onclick="showSection('p2p')">P2P Pay</button>
         <button data-section="payment-rails" onclick="showSection('payment-rails')">Payment Rails</button>
         <button data-section="bond-tokens" onclick="showSection('bond-tokens')">Bond Tokens</button>
+        <button data-section="stablecoin-dex" onclick="showSection('stablecoin-dex')">Stablecoin DEX</button>
         <button data-section="settings" onclick="showSection('settings')">White Label</button>
       </div>
 
@@ -222,6 +223,29 @@
             <button class="btn" onclick="listCoinbaseTreasury()">List Transfers</button>
           </div>
           <div id="cbt-list-result" class="status hidden" style="white-space:pre-wrap"></div>
+        </div>
+      </section>
+
+      <section id="stablecoin-dex" class="section">
+        <div class="grid">
+          <div class="card" style="grid-column: 1 / -1;">
+            <h2>Gasless Stablecoin DEX (DLBUSD -> USDC/USDS)</h2>
+            <p>Mint DLBUSD from any source-of-funds ledger and swap it on a DEX for USDC or USDS. The operator relayer pays gas, so you do not need ETH to use this flow.</p>
+            <div class="form-row">
+              <div><label>Source Type</label><select id="sdex-source-type"><option value="treasury">Treasury</option><option value="cash">Cash</option><option value="trust">Trust Accounting</option><option value="bond">Bond / Fixed Income</option><option value="sub_ledger">Sub-Ledger</option><option value="core_banking">Core Banking</option></select></div>
+              <div><label>Source Account ID</label><input type="text" id="sdex-source-id" placeholder="CA-OPERATING" /></div>
+              <div><label>Amount (DLBUSD)</label><input type="number" id="sdex-amount" value="0.05" step="0.001" /></div>
+              <div><label>Target Asset</label><select id="sdex-target"><option value="USDC">USDC</option><option value="USDS">USDS</option></select></div>
+              <div><label>Recipient Address (optional)</label><input type="text" id="sdex-recipient" placeholder="0x..." /></div>
+              <div><label>Pool Address (optional)</label><input type="text" id="sdex-pool" placeholder="0x..." /></div>
+            </div>
+            <div class="actions">
+              <button class="btn" onclick="quoteStablecoinDex()">Quote</button>
+              <button class="btn" onclick="createStablecoinDexPool()">Create Pool</button>
+              <button class="btn" onclick="depositAndSwapStablecoinDex()">Mint DLBUSD & Swap</button>
+            </div>
+            <div id="sdex-result" class="status hidden" style="white-space:pre-wrap;word-break:break-word"></div>
+          </div>
         </div>
       </section>
 
@@ -864,6 +888,50 @@
         el('bt-mint-result').textContent = `Minted ${res.data.minted} tokens; total supply ${res.data.token.total_supply}`;
         el('bt-mint-result').className = 'status success';
       } catch (e) { el('bt-mint-result').textContent = e.message; el('bt-mint-result').className = 'status error'; }
+    };
+
+    window.quoteStablecoinDex = async function() {
+      try {
+        const res = await api('/api/dapp/stablecoin-dex/quote', {
+          method: 'POST',
+          body: JSON.stringify({ amount: el('sdex-amount').value, targetAsset: el('sdex-target').value, poolAddress: el('sdex-pool').value })
+        });
+        el('sdex-result').textContent = `Quote: ${res.data.amountIn} DLBUSD -> ${res.data.amountOut} ${res.data.tokenOut} (min ${res.data.amountOutMinimum}, price ${res.data.price})`;
+        el('sdex-result').className = 'status success';
+      } catch (e) { el('sdex-result').textContent = e.message; el('sdex-result').className = 'status error'; }
+    };
+
+    window.createStablecoinDexPool = async function() {
+      try {
+        const res = await api('/api/dapp/stablecoin-dex/pool', {
+          method: 'POST',
+          body: JSON.stringify({ targetAsset: el('sdex-target').value, seedUsdcAmount: el('sdex-amount').value, seedDlbusdAmount: el('sdex-amount').value })
+        });
+        el('sdex-result').innerHTML = `Pool created: <span class="mono">${res.data.poolAddress}</span> (${res.data.mode})`;
+        el('sdex-result').className = 'status success';
+        if (res.data.poolAddress && !res.data.poolAddress.startsWith('shadow')) el('sdex-pool').value = res.data.poolAddress;
+      } catch (e) { el('sdex-result').textContent = e.message; el('sdex-result').className = 'status error'; }
+    };
+
+    window.depositAndSwapStablecoinDex = async function() {
+      try {
+        const res = await api('/api/dapp/stablecoin-dex/deposit-and-swap', {
+          method: 'POST',
+          body: JSON.stringify({
+            sourceType: el('sdex-source-type').value,
+            sourceAccountId: el('sdex-source-id').value || 'CA-OPERATING',
+            amount: el('sdex-amount').value,
+            targetAsset: el('sdex-target').value,
+            recipient: el('sdex-recipient').value,
+            poolAddress: el('sdex-pool').value,
+            createPoolIfMissing: true,
+            poolSeedUsdc: el('sdex-amount').value,
+            poolSeedDlbusd: el('sdex-amount').value,
+          })
+        });
+        el('sdex-result').innerHTML = `${res.data.operationId}: minted ${res.data.minted} DLBUSD and swapped for ${res.data.targetAsset}<br>Pool: <span class="mono">${res.data.poolAddress}</span><br>Swap tx: <span class="mono">${res.data.swap && res.data.swap.txHash}</span>`;
+        el('sdex-result').className = 'status success';
+      } catch (e) { el('sdex-result').textContent = e.message; el('sdex-result').className = 'status error'; }
     };
 
     window.quoteDexSwap = async function() {
