@@ -32,6 +32,28 @@ function getOperatorAddress(cfg) {
   return str('DAPP_OPERATOR_ADDRESS', '');
 }
 
+function walletClient() {
+  if (!viem) throw new Error('viem not installed');
+  const cfg = getConfig();
+  if (!cfg.privateKey) throw new Error('DAPP_PRIVATE_KEY not configured');
+  const account = privateKeyToAccount(cfg.privateKey);
+  const chains = require('viem/chains');
+  const chain = cfg.chainId === 1 ? chains.mainnet : (chains.sepolia || undefined);
+  const fees = { maxFeePerGas: viem.parseGwei('1.5'), maxPriorityFeePerGas: viem.parseGwei('0.0015') };
+  return {
+    account,
+    fees,
+    wallet: viem.createWalletClient({ account, chain, transport: viem.http(cfg.rpcUrl) }),
+    publicClient: viem.createPublicClient({ chain, transport: viem.http(cfg.rpcUrl) }),
+  };
+}
+
+const erc20Abi = [
+  { type: 'function', name: 'decimals', inputs: [], outputs: [{ type: 'uint8' }], stateMutability: 'view' },
+  { type: 'function', name: 'transfer', inputs: [{ type: 'address' }, { type: 'uint256' }], outputs: [{ type: 'bool' }], stateMutability: 'nonpayable' },
+  { type: 'function', name: 'balanceOf', inputs: [{ type: 'address' }], outputs: [{ type: 'uint256' }], stateMutability: 'view' },
+];
+
 class StablecoinDexEngine {
   static getConfig() {
     const cfg = getConfig();
@@ -189,6 +211,23 @@ class StablecoinDexEngine {
       router: poolAddress,
       recipient: recipient || cfg.operatorAddress,
     });
+
+    const finalRecipient = (recipient || cfg.operatorAddress).toLowerCase();
+    const operatorAddressLower = cfg.operatorAddress.toLowerCase();
+    if (finalRecipient !== operatorAddressLower && !cfg.shadow) {
+      const { wallet, publicClient, fees } = walletClient();
+      const rawOut = viem.parseUnits(String(swap.amountOut), 6);
+      const transferHash = await wallet.writeContract({
+        address: tokenOut,
+        abi: erc20Abi,
+        functionName: 'transfer',
+        args: [recipient, rawOut],
+        gas: 100000n,
+        ...fees,
+      });
+      await publicClient.waitForTransactionReceipt({ hash: transferHash });
+      swap.transferHash = transferHash;
+    }
 
     return { quote, swap };
   }
