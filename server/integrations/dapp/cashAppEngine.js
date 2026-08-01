@@ -12,7 +12,7 @@
 const QRCode = require('qrcode');
 
 let privateKeyToAccount;
-try { privateKeyToAccount = require('viem').privateKeyToAccount; } catch (e) { }
+try { ({ privateKeyToAccount } = require('viem/accounts')); } catch (e) { }
 
 function str(name, fallback = '') { return (process.env[name] || fallback).trim(); }
 function bool(name, fallback = false) { const v = process.env[name]; return v ? String(v).toLowerCase() === 'true' : fallback; }
@@ -20,7 +20,8 @@ function bool(name, fallback = false) { const v = process.env[name]; return v ? 
 class CashAppEngine {
   static getConfig() {
     let operatorAddress = str('DAPP_OPERATOR_ADDRESS', '');
-    const privateKey = str('DAPP_PRIVATE_KEY', '');
+    let privateKey = str('DAPP_PRIVATE_KEY', '');
+    if (privateKey && privateKey.length === 64 && !privateKey.startsWith('0x')) privateKey = '0x' + privateKey;
     if (!operatorAddress && privateKey && privateKeyToAccount) {
       try { operatorAddress = privateKeyToAccount(privateKey).address; } catch (e) { }
     }
