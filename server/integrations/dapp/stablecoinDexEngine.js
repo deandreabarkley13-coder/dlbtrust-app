@@ -254,6 +254,12 @@ class StablecoinDexEngine {
     // 2. Resolve or create the DEX pool
     let resolvedPool = poolAddress;
     let poolInfo = null;
+    if (!resolvedPool) {
+      try {
+        const dexCfg = DexSwapEngine.getConfig();
+        if (dexCfg.router) resolvedPool = dexCfg.router;
+      } catch (e) { /* fall through */ }
+    }
     if (!resolvedPool && createPoolIfMissing) {
       poolInfo = await this.createPool({ seedUsdcAmount: poolSeedUsdc, seedDlbusdAmount: poolSeedDlbusd, targetAsset });
       resolvedPool = poolInfo && poolInfo.poolAddress;

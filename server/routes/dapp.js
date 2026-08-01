@@ -10,6 +10,10 @@ const { SourceToDexBridge } = require('../integrations/dapp/sourceToDexBridge');
 const { StablecoinDexEngine } = require('../integrations/dapp/stablecoinDexEngine');
 const { CoinbaseSpotEngine } = require('../integrations/dapp/coinbaseSpotEngine');
 const { CoinbaseTreasuryBridge } = require('../integrations/dapp/coinbaseTreasuryBridge');
+const { FinOpsAgent } = require('../integrations/agents/finOpsAgent');
+const { CalendarEngine } = require('../integrations/calendar/calendarEngine');
+const { MessagingEngine } = require('../integrations/messaging/messagingEngine');
+const { DocumentEngine } = require('../integrations/documents/documentEngine');
 const { requireAuth, writeRateLimiter } = require('../integrations/auth/securityMiddleware');
 
 const router = express.Router();
@@ -372,6 +376,142 @@ router.post('/coinbase-treasury/transfers/:id/execute', operatorAuth, writeRateL
   try {
     const data = await CoinbaseTreasuryBridge.completeDepositAndExecute(req.params.id);
     res.status(200).json({ success: true, data });
+  } catch (err) { sendError(res, err); }
+});
+
+// ═════════════════════════════════════════════════════════════════════════════
+// FinOps AI Agent
+// ═════════════════════════════════════════════════════════════════════════════
+
+router.get('/finops-ai/trustees', async (req, res) => {
+  try { res.json({ success: true, data: FinOpsAgent.getTrustees() }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/finops-ai/prompt', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try {
+    const { prompt, requestedBy } = req.body;
+    const data = await FinOpsAgent.createTask({ prompt, requestedBy });
+    res.status(201).json({ success: true, data });
+  } catch (err) { sendError(res, err); }
+});
+
+router.get('/finops-ai/tasks', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await FinOpsAgent.listTasks(req.query) }); } catch (err) { sendError(res, err); }
+});
+
+router.get('/finops-ai/tasks/:id', operatorAuth, async (req, res) => {
+  try {
+    const data = await FinOpsAgent.getTask(req.params.id);
+    if (!data) return res.status(404).json({ success: false, error: 'Task not found' });
+    res.json({ success: true, data });
+  } catch (err) { sendError(res, err); }
+});
+
+router.post('/finops-ai/tasks/:id/approve', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try {
+    const { role, trusteeEmail, signature, signerName } = req.body;
+    const data = await FinOpsAgent.approveTask({ taskId: req.params.id, role, trusteeEmail, signature, signerName });
+    res.json({ success: true, data });
+  } catch (err) { sendError(res, err); }
+});
+
+router.post('/finops-ai/tasks/:id/reject', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try {
+    const { role, trusteeEmail, reason } = req.body;
+    const data = await FinOpsAgent.rejectTask({ taskId: req.params.id, role, trusteeEmail, reason });
+    res.json({ success: true, data });
+  } catch (err) { sendError(res, err); }
+});
+
+router.post('/finops-ai/tasks/:id/execute', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try {
+    const data = await FinOpsAgent.executeTask(req.params.id);
+    res.json({ success: true, data });
+  } catch (err) { sendError(res, err); }
+});
+
+// ═════════════════════════════════════════════════════════════════════════════
+// Calendar & Scheduling
+// ═════════════════════════════════════════════════════════════════════════════
+
+router.get('/calendar/events', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await CalendarEngine.listEvents(req.query) }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/calendar/events', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try {
+    const data = await CalendarEngine.createEvent(req.body);
+    res.status(201).json({ success: true, data });
+  } catch (err) { sendError(res, err); }
+});
+
+router.get('/calendar/events/:id', operatorAuth, async (req, res) => {
+  try {
+    const data = await CalendarEngine.getEvent(req.params.id);
+    if (!data) return res.status(404).json({ success: false, error: 'Event not found' });
+    res.json({ success: true, data });
+  } catch (err) { sendError(res, err); }
+});
+
+router.put('/calendar/events/:id', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try { res.json({ success: true, data: await CalendarEngine.updateEvent(req.params.id, req.body) }); } catch (err) { sendError(res, err); }
+});
+
+router.delete('/calendar/events/:id', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try { res.json({ success: true, data: await CalendarEngine.deleteEvent(req.params.id) }); } catch (err) { sendError(res, err); }
+});
+
+// ═════════════════════════════════════════════════════════════════════════════
+// Messaging
+// ═════════════════════════════════════════════════════════════════════════════
+
+router.get('/messaging/threads', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await MessagingEngine.listThreads(req.query) }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/messaging/threads', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try {
+    const data = await MessagingEngine.createThread(req.body);
+    res.status(201).json({ success: true, data });
+  } catch (err) { sendError(res, err); }
+});
+
+router.get('/messaging/threads/:id', operatorAuth, async (req, res) => {
+  try {
+    const thread = await MessagingEngine.getThread(req.params.id);
+    if (!thread) return res.status(404).json({ success: false, error: 'Thread not found' });
+    const messages = await MessagingEngine.listMessages(req.params.id);
+    res.json({ success: true, data: { thread, messages } });
+  } catch (err) { sendError(res, err); }
+});
+
+router.post('/messaging/threads/:id/messages', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try {
+    const data = await MessagingEngine.sendMessage({ threadId: req.params.id, ...req.body });
+    res.status(201).json({ success: true, data });
+  } catch (err) { sendError(res, err); }
+});
+
+// ═════════════════════════════════════════════════════════════════════════════
+// Document Vault (dApp wrappers)
+// ═════════════════════════════════════════════════════════════════════════════
+
+router.get('/documents', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await DocumentEngine.listDocuments(req.query) }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/documents', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try {
+    const data = await DocumentEngine.createDocument(req.body);
+    res.status(201).json({ success: true, data });
+  } catch (err) { sendError(res, err); }
+});
+
+router.get('/documents/:id', operatorAuth, async (req, res) => {
+  try {
+    const data = await DocumentEngine.getDocument(req.params.id);
+    if (!data) return res.status(404).json({ success: false, error: 'Document not found' });
+    res.json({ success: true, data });
   } catch (err) { sendError(res, err); }
 });
 

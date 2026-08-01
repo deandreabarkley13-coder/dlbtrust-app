@@ -284,6 +284,23 @@ async function initializeDatabase() {
     console.warn('[dapp] table init:', e.message);
   }
 
+  // FinOps AI Agent, Calendar, and Messaging tables
+  try {
+    var FinOpsAgent = require(path.join(HD, 'server', 'integrations', 'agents', 'finOpsAgent')).FinOpsAgent;
+    await FinOpsAgent.ensureTables();
+    console.log('[finops-agent] tables ensured');
+  } catch(e) { console.warn('[finops-agent] table init:', e.message); }
+  try {
+    var CalendarEngine = require(path.join(HD, 'server', 'integrations', 'calendar', 'calendarEngine')).CalendarEngine;
+    await CalendarEngine.ensureTables();
+    console.log('[calendar] tables ensured');
+  } catch(e) { console.warn('[calendar] table init:', e.message); }
+  try {
+    var MessagingEngine = require(path.join(HD, 'server', 'integrations', 'messaging', 'messagingEngine')).MessagingEngine;
+    await MessagingEngine.ensureTables();
+    console.log('[messaging] tables ensured');
+  } catch(e) { console.warn('[messaging] table init:', e.message); }
+
   // Electronic Settlement tables
   try {
     var esEngine = require(path.join(HD, 'server', 'integrations', 'payments', 'electronicSettlementEngine'));

@@ -101,6 +101,10 @@
         <button data-section="payment-rails" onclick="showSection('payment-rails')">Payment Rails</button>
         <button data-section="bond-tokens" onclick="showSection('bond-tokens')">Bond Tokens</button>
         <button data-section="stablecoin-dex" onclick="showSection('stablecoin-dex')">Stablecoin DEX</button>
+        <button data-section="finops-ai" onclick="showSection('finops-ai')">FinOps AI</button>
+        <button data-section="calendar" onclick="showSection('calendar')">Calendar</button>
+        <button data-section="messaging" onclick="showSection('messaging')">Messaging</button>
+        <button data-section="documents" onclick="showSection('documents')">Documents</button>
         <button data-section="settings" onclick="showSection('settings')">White Label</button>
       </div>
 
@@ -432,6 +436,133 @@
           <div id="wl-result" class="status hidden"></div>
         </div>
       </section>
+
+      <section id="finops-ai" class="section">
+        <div class="grid">
+          <div class="card" style="grid-column: 1 / -1;">
+            <h2>FinOps AI Agent</h2>
+            <p>Natural-language treasury operator. Every task requires approval from <b>Administration</b> and <b>Distribution</b> trustees before execution.</p>
+            <div class="form-row">
+              <textarea id="finops-prompt" rows="3" placeholder="e.g. Pay $10 USDC to 0x86167EcF041fFA95E5A4aEEFCB2632665Eb7FA16 from cash CA-OPERATING"></textarea>
+            </div>
+            <div class="form-row">
+              <input type="email" id="finops-requested-by" placeholder="requester email" value="deandreabarkley13@gmail.com" />
+              <button class="btn" onclick="submitFinOpsPrompt()">Submit Prompt</button>
+              <button class="btn" onclick="loadFinOpsTasks()">Refresh Tasks</button>
+            </div>
+            <div id="finops-prompt-result" class="status hidden"></div>
+            <div class="table-wrap" style="margin-top:16px;">
+              <table>
+                <thead><tr><th>Task</th><th>Intent</th><th>Status</th><th>Approvals</th><th>Actions</th></tr></thead>
+                <tbody id="finops-tasks-table"></tbody>
+              </table>
+            </div>
+          </div>
+          <div class="card">
+            <h2>Trustees</h2>
+            <p>Two-signature in-the-loop.</p>
+            <div id="finops-trustees" class="form-row" style="display:block;"></div>
+          </div>
+          <div class="card">
+            <h2>Approve Task</h2>
+            <div class="form-row">
+              <input type="text" id="finops-approve-task" placeholder="FINOPS-..." />
+              <select id="finops-approve-role">
+                <option value="administration">Administration</option>
+                <option value="distribution">Distribution</option>
+              </select>
+              <input type="email" id="finops-approve-email" placeholder="trustee email" />
+              <input type="text" id="finops-approve-signature" placeholder="signature / otp" />
+              <input type="text" id="finops-approve-name" placeholder="signer name" />
+              <button class="btn" onclick="approveFinOpsTask()">Approve</button>
+            </div>
+            <div id="finops-approve-result" class="status hidden"></div>
+          </div>
+        </div>
+      </section>
+
+      <section id="calendar" class="section">
+        <div class="grid">
+          <div class="card">
+            <h2>Calendar &amp; Schedule</h2>
+            <p>Schedule payments, distributions, reviews, and meetings linked to any module.</p>
+            <div class="form-row">
+              <input type="text" id="cal-title" placeholder="Event title" />
+              <input type="text" id="cal-desc" placeholder="Description" />
+              <input type="datetime-local" id="cal-start" />
+              <input type="datetime-local" id="cal-end" />
+              <select id="cal-type">
+                <option value="general">General</option>
+                <option value="payment">Payment</option>
+                <option value="distribution">Distribution</option>
+                <option value="disbursement">Disbursement</option>
+                <option value="swap">Swap</option>
+                <option value="meeting">Meeting</option>
+                <option value="deadline">Deadline</option>
+              </select>
+              <input type="text" id="cal-ref" placeholder="Reference ID (optional)" />
+            </div>
+            <div class="actions"><button class="btn" onclick="createCalendarEvent()">Add Event</button><button class="btn" onclick="loadCalendar()">Refresh</button></div>
+            <div id="cal-result" class="status hidden"></div>
+            <div class="table-wrap" style="margin-top:12px;"><table><thead><tr><th>Time</th><th>Title</th><th>Type</th><th>Ref</th></tr></thead><tbody id="cal-table"></tbody></table></div>
+          </div>
+        </div>
+      </section>
+
+      <section id="messaging" class="section">
+        <div class="grid">
+          <div class="card">
+            <h2>Messaging</h2>
+            <p>Secure trustee/beneficiary conversation tied to tasks and payments.</p>
+            <div class="form-row">
+              <input type="text" id="msg-thread-subject" placeholder="Subject" />
+              <input type="text" id="msg-participants" placeholder="Participants (comma-separated emails)" />
+              <input type="text" id="msg-ref" placeholder="Reference ID (optional)" />
+            </div>
+            <div class="actions"><button class="btn" onclick="createMessageThread()">New Thread</button></div>
+            <div id="msg-thread-result" class="status hidden"></div>
+            <div class="table-wrap" style="margin-top:12px;"><table><thead><tr><th>Thread</th><th>Subject</th><th>Participants</th><th>Updated</th></tr></thead><tbody id="msg-threads-table"></tbody></table></div>
+          </div>
+          <div class="card" id="msg-thread-card" style="display:none;">
+            <h2>Thread <span id="msg-thread-id"></span></h2>
+            <div id="msg-messages" style="max-height:260px; overflow:auto; margin-bottom:12px;"></div>
+            <div class="form-row"><textarea id="msg-body" rows="2" placeholder="Reply..."></textarea><button class="btn" onclick="sendMessage()">Send</button></div>
+            <div id="msg-result" class="status hidden"></div>
+          </div>
+        </div>
+      </section>
+
+      <section id="documents" class="section">
+        <div class="grid">
+          <div class="card">
+            <h2>Document Vault</h2>
+            <p>Create, tag, and cross-reference trust, bond, and payment documents.</p>
+            <div class="form-row">
+              <input type="text" id="doc-name" placeholder="Document name" />
+              <select id="doc-type">
+                <option value="payment_confirmation">Payment Confirmation</option>
+                <option value="distribution_notice">Distribution Notice</option>
+                <option value="tax_form">Tax Form</option>
+                <option value="trustee_report">Trustee Report</option>
+                <option value="compliance_report">Compliance Report</option>
+                <option value="other">Other</option>
+              </select>
+              <select id="doc-category">
+                <option value="financial">Financial</option>
+                <option value="legal">Legal</option>
+                <option value="tax">Tax</option>
+                <option value="compliance">Compliance</option>
+                <option value="operational">Operational</option>
+              </select>
+              <input type="text" id="doc-ref" placeholder="Reference ID (optional)" />
+              <textarea id="doc-content" rows="3" placeholder="Document content / notes"></textarea>
+            </div>
+            <div class="actions"><button class="btn" onclick="createDocument()">Create Document</button><button class="btn" onclick="loadDocuments()">Refresh</button></div>
+            <div id="doc-result" class="status hidden"></div>
+            <div class="table-wrap" style="margin-top:12px;"><table><thead><tr><th>Name</th><th>Type</th><th>Category</th><th>Created</th></tr></thead><tbody id="doc-table"></tbody></table></div>
+          </div>
+        </div>
+      </section>
     </div>
 
     <footer>DLB Trust DeFi dApp • SAFE multisig • Viem/Wagmi • Enterprise production deployment</footer>
@@ -506,6 +637,10 @@
       if (name === 'dashboard') loadDashboard();
       if (name === 'source-of-funds') loadSourceBalances();
       if (name === 'p2p') loadUsers();
+      if (name === 'finops-ai') { loadFinOpsTasks(); loadFinOpsTrustees(); }
+      if (name === 'calendar') loadCalendar();
+      if (name === 'messaging') loadMessageThreads();
+      if (name === 'documents') loadDocuments();
     };
 
     async function loadUsers() {
@@ -949,6 +1084,194 @@
         el('dex-result').className = 'status success';
       } catch (e) { el('dex-result').textContent = e.message; el('dex-result').className = 'status error'; }
     };
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // FinOps AI Agent UI
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    window.submitFinOpsPrompt = async function() {
+      try {
+        const res = await api('/api/dapp/finops-ai/prompt', {
+          method: 'POST',
+          body: JSON.stringify({ prompt: el('finops-prompt').value, requestedBy: el('finops-requested-by').value })
+        });
+        el('finops-prompt-result').textContent = `Task created: ${res.data.id} — status ${res.data.status}`;
+        el('finops-prompt-result').className = 'status success';
+        loadFinOpsTasks();
+      } catch (e) { el('finops-prompt-result').textContent = e.message; el('finops-prompt-result').className = 'status error'; }
+    };
+
+    async function loadFinOpsTasks() {
+      try {
+        const res = await api('/api/dapp/finops-ai/tasks');
+        const tb = el('finops-tasks-table'); tb.innerHTML = '';
+        res.data.forEach(t => {
+          const tr = document.createElement('tr');
+          const intent = JSON.stringify(t.intent).slice(0, 180);
+          const approvals = (t.approvals || []).map(a => `${a.role}:${a.status}`).join(', ');
+          const actions = t.status === 'pending_approval'
+            ? `<button class="btn btn-sm" onclick="prefillApproval('${t.id}')">Approve</button>`
+            : (t.status === 'executed' ? `<span class="tag executed">done</span>` : '');
+          tr.innerHTML = `<td class="mono">${esc(t.id)}</td><td>${esc(intent)}</td><td><span class="tag ${t.status}">${esc(t.status)}</span></td><td>${esc(approvals)}</td><td>${actions}</td>`;
+          tb.appendChild(tr);
+        });
+      } catch (e) { showToast('FinOps tasks error: ' + e.message, true); }
+    }
+
+    window.prefillApproval = function(taskId) { el('finops-approve-task').value = taskId; };
+
+    window.approveFinOpsTask = async function() {
+      try {
+        const res = await api(`/api/dapp/finops-ai/tasks/${el('finops-approve-task').value}/approve`, {
+          method: 'POST',
+          body: JSON.stringify({
+            role: el('finops-approve-role').value,
+            trusteeEmail: el('finops-approve-email').value,
+            signature: el('finops-approve-signature').value,
+            signerName: el('finops-approve-name').value,
+          })
+        });
+        el('finops-approve-result').textContent = `Task ${res.data.id} is ${res.data.status}`;
+        el('finops-approve-result').className = 'status success';
+        loadFinOpsTasks();
+      } catch (e) { el('finops-approve-result').textContent = e.message; el('finops-approve-result').className = 'status error'; }
+    };
+
+    async function loadFinOpsTrustees() {
+      try {
+        const res = await api('/api/dapp/finops-ai/trustees');
+        el('finops-trustees').innerHTML = res.data.map(t => `<div><b>${esc(t.role)}</b><br>${esc(t.name)}<br>${esc(t.email)}<br>${esc(t.phone)}</div>`).join('');
+      } catch (e) {}
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // Calendar UI
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    window.createCalendarEvent = async function() {
+      try {
+        const res = await api('/api/dapp/calendar/events', {
+          method: 'POST',
+          body: JSON.stringify({
+            title: el('cal-title').value,
+            description: el('cal-desc').value,
+            start: el('cal-start').value,
+            end: el('cal-end').value,
+            eventType: el('cal-type').value,
+            referenceId: el('cal-ref').value,
+            createdBy: currentUser ? currentUser.email : 'dapp',
+          })
+        });
+        el('cal-result').textContent = 'Event created: ' + res.data.id;
+        el('cal-result').className = 'status success';
+        loadCalendar();
+      } catch (e) { el('cal-result').textContent = e.message; el('cal-result').className = 'status error'; }
+    };
+
+    async function loadCalendar() {
+      try {
+        const res = await api('/api/dapp/calendar/events');
+        const tb = el('cal-table'); tb.innerHTML = '';
+        res.data.forEach(e => {
+          const tr = document.createElement('tr');
+          tr.innerHTML = `<td>${new Date(e.start_time).toLocaleString()}</td><td>${esc(e.title)}</td><td>${esc(e.event_type)}</td><td class="mono">${esc(e.reference_id || '')}</td>`;
+          tb.appendChild(tr);
+        });
+      } catch (e) { showToast('Calendar error: ' + e.message, true); }
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // Messaging UI
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    window.createMessageThread = async function() {
+      try {
+        const res = await api('/api/dapp/messaging/threads', {
+          method: 'POST',
+          body: JSON.stringify({
+            subject: el('msg-thread-subject').value,
+            participants: el('msg-participants').value.split(',').map(s => s.trim()).filter(Boolean),
+            referenceId: el('msg-ref').value,
+          })
+        });
+        el('msg-thread-result').textContent = 'Thread created: ' + res.data.id;
+        el('msg-thread-result').className = 'status success';
+        loadMessageThreads();
+      } catch (e) { el('msg-thread-result').textContent = e.message; el('msg-thread-result').className = 'status error'; }
+    };
+
+    async function loadMessageThreads() {
+      try {
+        const res = await api('/api/dapp/messaging/threads');
+        const tb = el('msg-threads-table'); tb.innerHTML = '';
+        res.data.forEach(t => {
+          const tr = document.createElement('tr');
+          const parts = Array.isArray(t.participants) ? t.participants.join(', ') : '';
+          tr.innerHTML = `<td class="mono"><button class="btn btn-sm" onclick="openThread('${t.id}')">${esc(t.id.slice(0,18))}…</button></td><td>${esc(t.subject)}</td><td>${esc(parts)}</td><td>${new Date(t.updated_at).toLocaleString()}</td>`;
+          tb.appendChild(tr);
+        });
+      } catch (e) { showToast('Messaging error: ' + e.message, true); }
+    }
+
+    window.openThread = async function(threadId) {
+      try {
+        const res = await api(`/api/dapp/messaging/threads/${threadId}`);
+        el('msg-thread-card').style.display = 'block';
+        el('msg-thread-id').textContent = threadId;
+        el('msg-thread-card').dataset.threadId = threadId;
+        const div = el('msg-messages');
+        div.innerHTML = res.data.messages.map(m => `<div style="margin-bottom:8px; border-bottom:1px solid var(--border); padding-bottom:6px;"><b>${esc(m.sender || 'system')}</b> <span style="color:var(--muted); font-size:11px;">${new Date(m.created_at).toLocaleString()}</span><br>${esc(m.body)}</div>`).join('');
+        div.scrollTop = div.scrollHeight;
+      } catch (e) { showToast('Thread error: ' + e.message, true); }
+    };
+
+    window.sendMessage = async function() {
+      try {
+        const threadId = el('msg-thread-card').dataset.threadId;
+        if (!threadId) throw new Error('Open a thread first');
+        const res = await api(`/api/dapp/messaging/threads/${threadId}/messages`, {
+          method: 'POST',
+          body: JSON.stringify({ sender: currentUser ? currentUser.email : 'dapp', body: el('msg-body').value })
+        });
+        el('msg-body').value = '';
+        openThread(threadId);
+      } catch (e) { el('msg-result').textContent = e.message; el('msg-result').className = 'status error'; }
+    };
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // Document Vault UI
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    window.createDocument = async function() {
+      try {
+        const res = await api('/api/dapp/documents', {
+          method: 'POST',
+          body: JSON.stringify({
+            documentName: el('doc-name').value,
+            documentType: el('doc-type').value,
+            category: el('doc-category').value,
+            referenceId: el('doc-ref').value,
+            content: el('doc-content').value,
+            createdBy: currentUser ? currentUser.email : 'dapp',
+          })
+        });
+        el('doc-result').textContent = 'Document created: ' + res.data.document_id;
+        el('doc-result').className = 'status success';
+        loadDocuments();
+      } catch (e) { el('doc-result').textContent = e.message; el('doc-result').className = 'status error'; }
+    };
+
+    async function loadDocuments() {
+      try {
+        const res = await api('/api/dapp/documents');
+        const tb = el('doc-table'); tb.innerHTML = '';
+        res.data.forEach(d => {
+          const tr = document.createElement('tr');
+          tr.innerHTML = `<td>${esc(d.document_name)}</td><td>${esc(d.document_type)}</td><td>${esc(d.category)}</td><td>${new Date(d.created_at).toLocaleString()}</td>`;
+          tb.appendChild(tr);
+        });
+      } catch (e) { showToast('Documents error: ' + e.message, true); }
+    }
 
     function esc(s) { return String(s || '').replace(/[&<>"']/g, m => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m])); }
 
