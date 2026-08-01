@@ -60,6 +60,24 @@ description: How to end-to-end test the DLB Trust treasury dashboard, including 
 - Hedera readiness: `GET /api/stablecoin/hedera/readiness`.
 - dApp routes: `GET /api/dapp/safes`, `GET /api/dapp/payouts`.
 
+## FinOps AI Agent, Calendar, Messaging, Document Vault (deployed dApp)
+
+- dApp lives at `/dapp`; nav tabs include **FinOps AI**, **Calendar**, **Messaging**, **Documents**.
+- Use the operator token saved in the UI (`$ADMIN_SECRET_TOKEN`) for all `/api/dapp/*` calls.
+- Submit a FinOps payment prompt with:
+  ```js
+  el('finops-prompt').value='Pay $0.01 USDC to 0x86167EcF041fFA95E5A4aEEFCB2632665Eb7FA16 from cash CA-OPERATING';
+  submitFinOpsPrompt();
+  ```
+- Approve with both trustees using `approveFinOpsTask()`:
+  - Administration: `deandreabarkley13@gmail.com` / `DeAndrea Lavar Barkley`
+  - Distribution: `annrobinson9800@yahoo.com` / `Malissa Ann Robinson`
+- After both approvals the task auto-executes. Poll `loadFinOpsTasks()` until `status: executed`.
+- The final `tx_hash` is the USDC transfer to the destination; verify on `https://eth-sepolia.blockscout.com/tx/<txHash>`.
+- Calendar auto-creates a `FinOps task: payment <id>` event; you can also create events with `createCalendarEvent()`.
+- Messaging auto-creates threads on task creation, each approval, and execution; open one with `openThread(<id>)`.
+- Documents list includes `FinOps Payment Confirmation` and `Stablecoin Receipt`s; create a confirmation with `createDocument()`.
+
 ## Live DeFi dApp bond-token / DEX flow (Sepolia, DAPP_SHADOW=false)
 
 - dApp lives at `/dapp`; nav tab **Bond Tokens** exposes Create Token, Mint, DEX Quote and DEX Swap UI.
