@@ -18,7 +18,7 @@ let DexSwapEngine = null;
 try { DexSwapEngine = require('./dexSwapEngine').DexSwapEngine; } catch (e) { /* optional */ }
 
 let viem, privateKeyToAccount;
-try { ({ default: viem, privateKeyToAccount } = require('viem')); } catch (e) { }
+try { viem = require('viem'); ({ privateKeyToAccount } = require('viem/accounts')); } catch (e) { }
 
 function str(name, fallback = '') { return (process.env[name] || fallback).trim(); }
 function bool(name, fallback = false) { const v = process.env[name]; return v ? String(v).toLowerCase() === 'true' : fallback; }
@@ -43,6 +43,7 @@ class StablecoinDexEngine {
       privateKey: cfg.privateKey,
       usdcAddress: cfg.usdcAddress,
       usdsAddress: str('DAPP_USDS_ADDRESS', ''),
+      wethAddress: cfg.wethAddress,
       operatorAddress: cfg.operatorAddress || getOperatorAddress(cfg),
       slippageBps: Number(str('STABLECOIN_DEX_SLIPPAGE_BPS', '100')) || 100,
     };
