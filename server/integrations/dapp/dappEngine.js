@@ -18,6 +18,15 @@ let pool;
 try { pool = require('../bonds/pgPool'); } catch (e) { pool = null; }
 if (process.env.DAPP_MEMORY_MODE === 'true') pool = null;
 
+let viem;
+try { viem = require('viem'); } catch (e) { }
+
+let BondTokenizationEngine;
+try { BondTokenizationEngine = require('./bondTokenizationEngine').BondTokenizationEngine; } catch (e) { }
+
+const https = require('https');
+const { URL } = require('url');
+
 const memory = { safes: new Map(), payouts: new Map(), deposits: new Map(), distributions: new Map(), whiteLabel: new Map(), users: new Map() };
 
 function jsonbValue(raw) {
@@ -37,6 +46,50 @@ async function query(sql, params) {
 
 async function withFallback(fn, fallback) {
   try { return await fn(); } catch (e) { if (!pool) return fallback(e); throw e; }
+}
+
+function httpGet(url, options = {}) {
+  return new Promise((resolve, reject) => {
+    const u = new URL(url);
+    const req = https.get({ hostname: u.hostname, path: `${u.pathname}${u.search}`, port: u.port || 443, headers: { 'Accept': 'application/json', ...(options.headers || {}) } }, (res) => {
+      let data = '';
+      res.on('data', chunk => data += chunk);
+      res.on('end', () => {
+        try { resolve(JSON.parse(data)); } catch (e) { resolve(data); }
+      });
+    });
+    req.on('error', reject);
+    req.setTimeout(options.timeout || 15000, () => { req.destroy(); reject(new Error('HTTP timeout')); });
+  });
+}
+
+const erc20Abi = [
+  { type: 'function', name: 'balanceOf', stateMutability: 'view', inputs: [{ type: 'address' }], outputs: [{ type: 'uint256' }] },
+  { type: 'function', name: 'decimals', stateMutability: 'view', inputs: [], outputs: [{ type: 'uint8' }] },
+  { type: 'function', name: 'symbol', stateMutability: 'view', inputs: [], outputs: [{ type: 'string' }] },
+];
+
+function evmPublicClient(cfg) {
+  if (!viem) throw new Error('viem not installed');
+  const chains = require('viem/chains');
+  const chain = cfg.chainId === 1 ? chains.mainnet
+    : (cfg.chainId === 11155111 ? chains.sepolia
+    : { id: cfg.chainId, name: 'custom', nativeCurrency: { name: 'Ether', symbol: 'ETH', decimals: 18 }, rpcUrls: { default: { http: [cfg.rpcUrl] } } });
+  return viem.createPublicClient({ chain, transport: viem.http(cfg.rpcUrl) });
+}
+
+function normalizeHexAddress(addr) {
+  if (!addr || typeof addr !== 'string' || !/^0x[a-fA-F0-9]{40}$/.test(addr)) throw new Error('invalid EVM address');
+  return addr.toLowerCase();
+}
+
+function hederaMirrorBase() {
+  const base = (process.env.HEDERA_MIRROR_NODE || 'https://mainnet.mirrornode.hedera.com/api/v1/').trim();
+  return base.replace(/\/$/, '') + '/';
+}
+
+function hederaNetworkName() {
+  return (process.env.HEDERA_NETWORK || 'mainnet').toLowerCase();
 }
 
 class DappEngine {
@@ -673,6 +726,208 @@ class DappEngine {
     if (safeOwnerAddress) updates.safe_owner_address = safeOwnerAddress;
     await this._update('dapp_users', user.id, updates);
     return this.getUser(user.id);
+  }
+
+  // ═════════════════════════════════════════════════════════════════════════════
+  // Wallet balances & activity (MetaMask / any address)
+  // ═════════════════════════════════════════════════════════════════════════════
+
+  static async getWalletBalances({ chain, address } = {}) {
+    if (!address) throw new Error('address is required');
+    const chainNorm = String(chain || 'evm').toLowerCase();
+    if (chainNorm === 'hedera' || chainNorm === '295') return this._getHederaBalances(address);
+    return this._getEvmBalances(address);
+  }
+
+  static async getWalletActivity({ chain, address } = {}) {
+    if (!address) throw new Error('address is required');
+    const chainNorm = String(chain || 'evm').toLowerCase();
+    if (chainNorm === 'hedera' || chainNorm === '295') return this._getHederaActivity(address);
+    return this._getEvmActivity(address);
+  }
+
+  static async _getEvmBalances(address) {
+    const cfg = getConfig();
+    if (!viem) throw new Error('viem not installed');
+    const normalized = normalizeHexAddress(address);
+    const publicClient = evmPublicClient(cfg);
+
+    const [ethWei, usdcRaw] = await Promise.all([
+      publicClient.getBalance({ address: normalized }),
+      publicClient.readContract({ address: cfg.usdcAddress, abi: erc20Abi, functionName: 'balanceOf', args: [normalized] }).catch(() => 0n),
+    ]);
+
+    let dlbusd = null;
+    try {
+      if (BondTokenizationEngine) {
+        const token = await BondTokenizationEngine.getTokenBySymbol('DLBUSD');
+        const tokenMeta = token && token.metadata ? jsonbValue(token.metadata) : {};
+        const tokenChain = Number(tokenMeta.chainId || tokenMeta.chain_id || cfg.chainId);
+        if (token && token.token_address && !token.token_address.startsWith('shadow-') && tokenChain === cfg.chainId) {
+          const [raw, decimals] = await Promise.all([
+            publicClient.readContract({ address: token.token_address, abi: erc20Abi, functionName: 'balanceOf', args: [normalized] }),
+            publicClient.readContract({ address: token.token_address, abi: erc20Abi, functionName: 'decimals' }).catch(() => 6),
+          ]);
+          dlbusd = { tokenAddress: token.token_address, balance: viem.formatUnits(raw, decimals || 6) };
+        }
+      }
+    } catch (e) { /* optional */ }
+
+    return {
+      chain: cfg.chainId,
+      rpcUrl: cfg.rpcUrl.replace(/\/v2\/[^\/]+/, '/v2/[hidden]'),
+      address: normalized,
+      native: { symbol: cfg.nativeTokenSymbol || 'ETH', balance: viem.formatEther(ethWei) },
+      usdc: { symbol: 'USDC', tokenAddress: cfg.usdcAddress, balance: viem.formatUnits(usdcRaw, 6) },
+      dlbusd,
+    };
+  }
+
+  static async _getEvmActivity(address) {
+    const normalized = normalizeHexAddress(address);
+    const cfg = getConfig();
+    const items = [];
+
+    // Internal dApp activity
+    if (pool) {
+      try {
+        const [payoutRows, depositRows, distributionRows] = await Promise.all([
+          pool.query("SELECT id, type, destination, value, token, status, tx_hash, source_type, source_account_id, created_at FROM dapp_payouts WHERE destination ILIKE $1 ORDER BY created_at DESC LIMIT 50", [normalized]),
+          pool.query("SELECT id, asset, amount, from_address, tx_hash, status, created_at FROM dapp_deposits WHERE from_address ILIKE $1 ORDER BY created_at DESC LIMIT 50", [normalized]),
+          pool.query("SELECT id, name, asset, total_amount, beneficiaries, status, tx_hash, source_type, source_account_id, created_at FROM dapp_distributions WHERE beneficiaries::text ILIKE $1 ORDER BY created_at DESC LIMIT 50", [normalized]),
+        ]);
+        for (const r of payoutRows.rows) items.push({ type: 'payout', ...r });
+        for (const r of depositRows.rows) items.push({ type: 'deposit', ...r });
+        for (const r of distributionRows.rows) items.push({ type: 'distribution', ...r });
+      } catch (e) { console.warn('[wallet-activity] DB query failed', e.message); }
+    }
+
+    // On-chain transfers via Alchemy
+    try {
+      const alchemyUrl = cfg.rpcUrl;
+      if (alchemyUrl && alchemyUrl.includes('alchemy.com')) {
+        const transfers = await this._alchemyTransfers(alchemyUrl, normalized);
+        for (const t of transfers) items.push({ type: 'chain_transfer', ...t });
+      }
+    } catch (e) { console.warn('[wallet-activity] Alchemy transfers failed', e.message); }
+
+    items.sort((a, b) => new Date(b.created_at || b.timestamp || 0) - new Date(a.created_at || a.timestamp || 0));
+    return { chain: cfg.chainId, address: normalized, items: items.slice(0, 50) };
+  }
+
+  static async _alchemyTransfers(alchemyUrl, address) {
+    const results = [];
+    const categories = ['external', 'erc20', 'erc721', 'erc1155'];
+    const directions = [
+      { fromAddress: address },
+      { toAddress: address },
+    ];
+    for (const dir of directions) {
+      const body = {
+        jsonrpc: '2.0', id: 1,
+        method: 'alchemy_getAssetTransfers',
+        params: [{
+          fromBlock: '0x0',
+          toBlock: 'latest',
+          category: categories,
+          withMetadata: true,
+          maxCount: '0x19',
+          order: 'descending',
+          ...dir,
+        }],
+      };
+      const data = await this._rpcPost(alchemyUrl, body);
+      if (data && Array.isArray(data.result && data.result.transfers)) {
+        for (const t of data.result.transfers) {
+          results.push({
+            hash: t.hash,
+            from: t.from,
+            to: t.to,
+            value: t.value,
+            asset: t.asset || t.tokenId || 'ETH',
+            category: t.category,
+            direction: dir.fromAddress ? 'out' : 'in',
+            timestamp: t.metadata ? t.metadata.blockTimestamp : null,
+            created_at: t.metadata ? t.metadata.blockTimestamp : null,
+          });
+        }
+      }
+    }
+    return results;
+  }
+
+  static async _rpcPost(url, body) {
+    const u = new URL(url);
+    const postData = JSON.stringify(body);
+    return new Promise((resolve, reject) => {
+      const req = https.request({ hostname: u.hostname, path: `${u.pathname}${u.search}`, port: u.port || 443, method: 'POST', headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' } }, (res) => {
+        let data = '';
+        res.on('data', chunk => data += chunk);
+        res.on('end', () => { try { resolve(JSON.parse(data)); } catch (e) { resolve(data); } });
+      });
+      req.on('error', reject);
+      req.write(postData);
+      req.end();
+    });
+  }
+
+  static async _getHederaBalances(address) {
+    const normalized = normalizeHexAddress(address);
+    const base = hederaMirrorBase();
+    const data = await httpGet(`${base}accounts/${normalized}?timestamp=gt:0`);
+    const notFound = (data._status && data._status.messages && data._status.messages.some(m => /not found/i.test(m.message)));
+    if (notFound) {
+      return {
+        chain: 295,
+        network: hederaNetworkName(),
+        address: normalized,
+        created: false,
+        account: null,
+        alias: null,
+        evm_address: normalized,
+        native: { symbol: 'HBAR', balance: 0 },
+        tokens: [],
+        note: 'This EVM address has not been auto-created on Hedera mainnet. Send at least 0.2 HBAR to create it.',
+      };
+    }
+    const hbarBalance = data.balance ? Number(data.balance) / 1e8 : 0;
+    const tokens = (data.tokens || []).map(t => ({
+      token_id: t.token_id,
+      balance: String(Number(t.balance) / Math.pow(10, t.decimals || 0)),
+      raw_balance: t.balance,
+      decimals: t.decimals,
+    }));
+    return {
+      chain: 295,
+      network: hederaNetworkName(),
+      address: normalized,
+      created: true,
+      account: data.account || null,
+      alias: data.alias || null,
+      evm_address: data.evm_address || normalized,
+      native: { symbol: 'HBAR', balance: hbarBalance },
+      tokens,
+    };
+  }
+
+  static async _getHederaActivity(address) {
+    const normalized = normalizeHexAddress(address);
+    const base = hederaMirrorBase();
+    const [txData, account] = await Promise.all([
+      httpGet(`${base}accounts/${normalized}/transactions?limit=25&order=desc`).catch(() => ({ transactions: [] })),
+      httpGet(`${base}accounts/${normalized}?timestamp=gt:0`).catch(() => ({})),
+    ]);
+    const items = (txData.transactions || []).map(tx => ({
+      type: 'hedera_transaction',
+      name: tx.name,
+      transaction_id: tx.transaction_id,
+      consensus_timestamp: tx.consensus_timestamp,
+      result: tx.result,
+      charged_tx_fee: tx.charged_tx_fee,
+      transfers: (tx.transfers || []).filter(tr => (tr.account === account.account) || (String(tr.account).includes(address.slice(2)))) || tx.transfers,
+      created_at: tx.consensus_timestamp ? new Date(Number(tx.consensus_timestamp.split('.')[0]) * 1000).toISOString() : null,
+    }));
+    return { chain: 295, network: hederaNetworkName(), address: normalized, account: account.account || null, items };
   }
 }
 

@@ -105,6 +105,7 @@
         <button data-section="calendar" onclick="showSection('calendar')">Calendar</button>
         <button data-section="messaging" onclick="showSection('messaging')">Messaging</button>
         <button data-section="documents" onclick="showSection('documents')">Documents</button>
+        <button data-section="wallet" onclick="showSection('wallet')">Wallet</button>
         <button data-section="settings" onclick="showSection('settings')">White Label</button>
       </div>
 
@@ -563,6 +564,37 @@
           </div>
         </div>
       </section>
+
+      <section id="wallet" class="section">
+        <div class="grid">
+          <div class="card">
+            <h2>Connected Wallet</h2>
+            <p>Connect MetaMask or enter an address to view balances and activity.</p>
+            <div class="form-row" style="align-items:center;">
+              <button id="connect-btn" class="btn" onclick="connectWallet()">Connect MetaMask</button>
+              <span id="wallet-address" class="status">Not connected</span>
+              <span id="network-name" class="status badge">—</span>
+            </div>
+            <div class="form-row">
+              <input type="text" id="watch-address" placeholder="0x... or Hedera EVM address" style="flex:1;" />
+              <select id="watch-chain" style="max-width:160px">
+                <option value="evm">Ethereum/Sepolia</option>
+                <option value="hedera">Hedera Mainnet</option>
+              </select>
+              <button class="btn" onclick="watchAddress()">Watch Address</button>
+            </div>
+            <div id="wallet-balance-card" class="hidden" style="margin-top:12px;">
+              <h3 id="balance-title">Balances</h3>
+              <div id="wallet-balances" class="grid" style="grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap:12px;"></div>
+            </div>
+            <div id="wallet-activity-card" class="hidden" style="margin-top:16px;">
+              <h3>Activity</h3>
+              <div class="table-wrap"><table><thead><tr><th>Type</th><th>ID/Hash</th><th>From/To</th><th>Amount</th><th>Time</th></tr></thead><tbody id="wallet-activity"></tbody></table></div>
+            </div>
+            <div id="wallet-error" class="status hidden"></div>
+          </div>
+        </div>
+      </section>
     </div>
 
     <footer>DLB Trust DeFi dApp • SAFE multisig • Viem/Wagmi • Enterprise production deployment</footer>
@@ -573,7 +605,7 @@
   <script src="/dapp/ethers.min.js"></script>
   <script>
     const API = '';
-    const CHAIN_NAMES = { 1: 'Ethereum', 11155111: 'Sepolia', 137: 'Polygon', 42161: 'Arbitrum', 8453: 'Base' };
+    const CHAIN_NAMES = { 1: 'Ethereum', 11155111: 'Sepolia', 137: 'Polygon', 42161: 'Arbitrum', 8453: 'Base', 295: 'Hedera' };
     let account = null;
     let chainId = null;
     let chainName = 'Ethereum';
@@ -622,10 +654,93 @@
         if (currentUser && currentUser.email) {
           await api('/api/dapp/users/link-wallet', { method: 'POST', body: JSON.stringify({ email: currentUser.email, walletAddress: account, provider: 'metamask', safeOwnerAddress: account }) }).catch(() => {});
         }
-        window.ethereum.on('accountsChanged', (a) => { if (a[0]) { account = a[0]; el('wallet-address').textContent = account.slice(0,6)+'…'+account.slice(-4); } });
+        window.ethereum.on('accountsChanged', (a) => { if (a[0]) { account = a[0]; el('wallet-address').textContent = account.slice(0,6)+'…'+account.slice(-4); loadWallet(); } });
         window.ethereum.on('chainChanged', () => location.reload());
+        await loadWallet();
       } catch (e) { showToast(e.message, true); }
     };
+
+    function walletChainParam() {
+      return (chainId === 295) ? 'hedera' : 'evm';
+    }
+
+    window.watchAddress = async function() {
+      const addr = el('watch-address').value.trim();
+      const chain = el('watch-chain').value;
+      if (!addr) return showToast('Enter an address', true);
+      account = addr;
+      userWallet = addr;
+      if (chain === 'hedera') { chainId = 295; chainName = 'Hedera Mainnet'; }
+      else { chainId = (window.ethereum && window.ethereum.chainId) ? Number(window.ethereum.chainId) : 1; chainName = CHAIN_NAMES[chainId] || `Chain ${chainId}`; }
+      el('wallet-address').textContent = addr.slice(0, 6) + '…' + addr.slice(-4);
+      el('network-name').textContent = chainName;
+      el('dash-wallet').textContent = `${addr} on ${chainName}`;
+      await loadWallet();
+    };
+
+    async function loadWallet() {
+      if (!account) return;
+      try {
+        show('wallet-balance-card');
+        show('wallet-activity-card');
+        el('balance-title').textContent = `Balances for ${account.slice(0, 6)}…${account.slice(-4)}`;
+        el('wallet-error').classList.add('hidden');
+        const chain = walletChainParam();
+        const [balRes, actRes] = await Promise.all([
+          api(`/api/dapp/wallet/balances?chain=${encodeURIComponent(chain)}&address=${encodeURIComponent(account)}`),
+          api(`/api/dapp/wallet/activity?chain=${encodeURIComponent(chain)}&address=${encodeURIComponent(account)}`),
+        ]);
+        renderWalletBalances(balRes.data);
+        renderWalletActivity(actRes.data);
+      } catch (e) {
+        el('wallet-error').textContent = e.message;
+        el('wallet-error').classList.remove('hidden');
+      }
+    }
+
+    function renderWalletBalances(data) {
+      const container = el('wallet-balances');
+      container.innerHTML = '';
+      if (data.created === false && data.note) {
+        container.innerHTML = `<div class="status" style="grid-column:1/-1">${esc(data.note)}</div>`;
+      }
+      const addCard = (symbol, balance, address, isNative) => {
+        const div = document.createElement('div');
+        div.className = 'card';
+        div.style.padding = '12px';
+        div.innerHTML = `<div class="muted" style="font-size:12px;text-transform:uppercase">${esc(symbol)}${address ? ` <span class="muted" style="font-size:10px">${esc(address.slice(0,8))}…</span>` : ''}</div><div style="font-size:20px;font-weight:700;margin-top:4px">${Number(balance || 0).toLocaleString(undefined, { maximumFractionDigits: 6 })}</div><div class="muted" style="font-size:11px">${isNative ? 'Native' : 'ERC-20 / HTS'}</div>`;
+        container.appendChild(div);
+      };
+      if (data.native) addCard(data.native.symbol, data.native.balance, null, true);
+      if (data.usdc) addCard(data.usdc.symbol, data.usdc.balance, data.usdc.tokenAddress, false);
+      if (data.dlbusd) addCard('DLBUSD', data.dlbusd.balance, data.dlbusd.tokenAddress, false);
+      if (data.tokens && data.tokens.length) {
+        data.tokens.forEach(t => addCard(t.token_id, t.balance, t.token_id, false));
+      }
+      if (!container.children.length) container.innerHTML = '<div class="status">No token balances found</div>';
+    }
+
+    function renderWalletActivity(data) {
+      const tbody = el('wallet-activity');
+      tbody.innerHTML = '';
+      if (!data.items || !data.items.length) {
+        tbody.innerHTML = '<tr><td colspan="5" class="status">No activity found</td></tr>';
+        return;
+      }
+      for (const it of data.items.slice(0, 50)) {
+        const idHash = esc(it.hash || it.tx_hash || it.transaction_id || it.id || '—');
+        const short = idHash.length > 20 ? idHash.slice(0,10)+'…'+idHash.slice(-8) : idHash;
+        const link = (it.hash || it.tx_hash) ? `https://etherscan.io/tx/${esc(it.hash || it.tx_hash)}` : (it.transaction_id ? `https://hashscan.io/mainnet/transaction/${esc(it.transaction_id)}` : null);
+        const amount = it.value !== undefined ? esc(String(it.value)) : (it.amount !== undefined ? esc(String(it.amount)) : (it.total_amount !== undefined ? esc(String(it.total_amount)) : '—'));
+        const peer = it.from ? `${esc(it.from.slice(0,8))}…${esc(it.from.slice(-6))} → ` : '';
+        const to = it.to ? `${esc(it.to.slice(0,8))}…${esc(it.to.slice(-6))}` : (it.destination ? `${esc(it.destination.slice(0,8))}…${esc(it.destination.slice(-6))}` : '—');
+        const time = it.created_at ? new Date(it.created_at).toLocaleString() : (it.consensus_timestamp ? new Date(Number(it.consensus_timestamp.split('.')[0])*1000).toLocaleString() : '—');
+        const type = esc(it.type || 'activity');
+        const row = document.createElement('tr');
+        row.innerHTML = `<td>${type}</td><td>${link ? `<a href="${link}" target="_blank" style="color:var(--primary)">${short}</a>` : short}</td><td>${peer}${to}</td><td>${amount}</td><td>${time}</td>`;
+        tbody.appendChild(row);
+      }
+    }
 
     window.showSection = function(name) {
       document.querySelectorAll('.section').forEach(s => s.classList.remove('active'));
@@ -641,6 +756,7 @@
       if (name === 'calendar') loadCalendar();
       if (name === 'messaging') loadMessageThreads();
       if (name === 'documents') loadDocuments();
+      if (name === 'wallet') { if (account) loadWallet(); }
     };
 
     async function loadUsers() {

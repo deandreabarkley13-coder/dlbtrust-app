@@ -515,4 +515,24 @@ router.get('/documents/:id', operatorAuth, async (req, res) => {
   } catch (err) { sendError(res, err); }
 });
 
+// ═════════════════════════════════════════════════════════════════════════════
+// Connected wallet balances & activity
+// ═════════════════════════════════════════════════════════════════════════════
+
+router.get('/wallet/balances', operatorAuth, async (req, res) => {
+  try {
+    const { chain, address } = req.query;
+    const data = await DappEngine.getWalletBalances({ chain, address });
+    res.json({ success: true, data });
+  } catch (err) { sendError(res, err); }
+});
+
+router.get('/wallet/activity', operatorAuth, async (req, res) => {
+  try {
+    const { chain, address } = req.query;
+    const data = await DappEngine.getWalletActivity({ chain, address });
+    res.json({ success: true, data });
+  } catch (err) { sendError(res, err); }
+});
+
 module.exports = router;
