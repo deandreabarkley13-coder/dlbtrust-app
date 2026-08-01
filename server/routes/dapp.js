@@ -208,6 +208,13 @@ router.post('/payment-rails/cashapp/request', operatorAuth, writeRateLimiter(), 
   } catch (err) { sendError(res, err); }
 });
 
+router.post('/payment-rails/cashapp/fund-operator', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try {
+    const data = await CashAppEngine.fundOperator(req.body);
+    res.status(201).json({ success: true, data });
+  } catch (err) { sendError(res, err); }
+});
+
 router.post('/payment-rails/cashapp/webhook', async (req, res) => {
   try {
     const data = await CashAppEngine.verifyWebhook(req.body, req.headers['x-cashapp-signature']);

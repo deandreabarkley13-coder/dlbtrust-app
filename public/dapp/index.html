@@ -372,11 +372,22 @@
             <p>Cash App does not expose a personal crypto P2P API. This creates a shareable payment request QR/link; record the on-chain tx hash when the recipient sends.</p>
             <div class="form-row">
               <div><label>Amount (USD)</label><input type="text" id="ca-amount" placeholder="25.00" /></div>
-              <div><label>Wallet Address / Tag</label><input type="text" id="ca-tag" placeholder="$Cashtag or 0x..." /></div>
+              <div><label>$Cashtag or 0x address</label><input type="text" id="ca-tag" placeholder="$Cashtag or 0x..." /></div>
               <div><label>Memo</label><input type="text" id="ca-memo" placeholder="Trust payment" /></div>
             </div>
             <div class="actions"><button class="btn" onclick="requestCashAppPayment()">Request / Get QR</button></div>
             <div id="ca-result" class="status hidden"></div>
+          </div>
+          <div class="card" style="grid-column: 1 / -1;">
+            <h2>Fund Operator Wallet via Cash App</h2>
+            <p>Generate a Cash App QR/deep link to send USD to the trust's $Cashtag, plus the operator EVM wallet QR for direct crypto sends from any wallet.</p>
+            <div class="form-row">
+              <div><label>Amount (USD)</label><input type="text" id="ca-fund-amount" placeholder="25.00" value="25.00" /></div>
+              <div><label>Trust $Cashtag</label><input type="text" id="ca-fund-tag" placeholder="$YourCashtag" /></div>
+              <div><label>Memo</label><input type="text" id="ca-fund-memo" placeholder="DLB Trust funding" /></div>
+            </div>
+            <div class="actions"><button class="btn" onclick="fundOperatorWithCashApp()">Generate Cash App QR</button></div>
+            <div id="ca-fund-result" class="status hidden"></div>
           </div>
         </div>
       </section>
@@ -1119,9 +1130,25 @@
     window.requestCashAppPayment = async function() {
       try {
         const res = await api('/api/dapp/payment-rails/cashapp/request', { method: 'POST', body: JSON.stringify({ amountUsd: el('ca-amount').value, recipientTag: el('ca-tag').value, memo: el('ca-memo').value }) });
-        el('ca-result').innerHTML = `Shareable link: <a href="${res.data.shareableUrl}" target="_blank">${res.data.shareableUrl}</a><br/>QR payload: <span class="mono">${res.data.qrPayload}</span>`;
+        const qrImg = res.data.qrDataUrl ? `<br/><img src="${res.data.qrDataUrl}" alt="Cash App QR" style="max-width:220px;margin-top:10px;"/>` : '';
+        el('ca-result').innerHTML = `Shareable link: <a href="${res.data.shareableUrl}" target="_blank">${res.data.shareableUrl}</a><br/>QR payload: <span class="mono">${res.data.qrPayload}</span>${qrImg}`;
         el('ca-result').className = 'status success';
       } catch (e) { el('ca-result').textContent = e.message; el('ca-result').className = 'status error'; }
+    };
+
+    window.fundOperatorWithCashApp = async function() {
+      try {
+        const res = await api('/api/dapp/payment-rails/cashapp/fund-operator', { method: 'POST', body: JSON.stringify({ amountUsd: el('ca-fund-amount').value, cashtag: el('ca-fund-tag').value, memo: el('ca-fund-memo').value }) });
+        const d = res.data;
+        el('ca-fund-result').innerHTML = `
+          <p><b>Step 1:</b> Scan the Cash App QR or <a href="${d.cashAppDeepLink}" target="_blank">tap here</a> / <a href="${d.cashMeDeepLink}" target="_blank">cash.me</a> to send $${d.amountUsd} to $${d.cashtag}.</p>
+          <p><img src="${d.cashAppQrDataUrl}" alt="Cash App QR" style="max-width:220px;"/></p>
+          <p><b>Operator wallet:</b> <span class="mono">${d.operatorAddress}</span></p>
+          <p><img src="${d.operatorWalletQrDataUrl}" alt="Operator Wallet QR" style="max-width:220px;"/></p>
+          <p class="small">${d.instructions}</p>
+        `;
+        el('ca-fund-result').className = 'status success';
+      } catch (e) { el('ca-fund-result').textContent = e.message; el('ca-fund-result').className = 'status error'; }
     };
 
     window.createBondToken = async function() {
