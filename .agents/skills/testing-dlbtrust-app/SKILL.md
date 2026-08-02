@@ -1,9 +1,9 @@
 ---
 name: testing-dlbtrust-app
-description: How to end-to-end test the DLB Trust treasury dashboard, including stablecoin payments, Hedera Stablecoin Studio, and the deployed fly.io instance.
+description: How to end-to-end test the DLB Trust treasury dashboard, including stablecoin payments, Hedera Stablecoin Studio, the deployed fly.io instance, and OFX clearing.
 ---
 
-# Testing DLB Trust stablecoin and Hedera flows
+# Testing DLB Trust (`dlbtrust-app`)
 
 ## URLs and credentials
 
@@ -12,14 +12,49 @@ description: How to end-to-end test the DLB Trust treasury dashboard, including 
 - Dashboard login: `admin` / `dlb-admin-2026-trust`
 - Admin token header for API calls: `x-admin-token: dlb-admin-2026-trust`
 
-## Getting started
+## Quick start (local)
 
-1. Maximize the browser before recording:
-   ```bash
-   wmctrl -r :ACTIVE: -b add,maximized_vert,maximized_horz
-   ```
-2. Log in and use the left sidebar to reach the page under test.
-3. Because the 1024x768 tool coordinate space does not reliably map to small buttons on high-resolution viewports, form fields are best populated by JavaScript (e.g. `el('sc-destination').value='0.0.101';`) and action buttons may be triggered by their handlers (e.g. `scCreateHederaStablecoin()`).
+1. Verify PostgreSQL is running and the `dlbtrust` database/user exist (or create one).
+2. Truncate/seed OFX tables if you need deterministic counts.
+3. Start the server in the background with `nohup` and the required env vars:
+
+```bash
+cd /path/to/dlbtrust-app
+nohup env \
+  DATABASE_URL=postgres://dlbtrust:dlbtrust@localhost:5432/dlbtrust \
+  JWT_SECRET=<any-stable-secret> \
+  ADMIN_SECRET_TOKEN=dlb-admin-2026-trust \
+  PORT=3002 \
+  node server/server-3002.js > /tmp/server-3002.log 2>&1 &
+disown
+```
+
+- The server warms up Postgres synchronously before listening. It can crash or restart if another process is on port 3002, so verify with `ss -ltnp | grep 3002`.
+- Default admin credentials are `admin` / `dlb-admin-2026-trust`.
+- The dashboard SPA lives at `http://localhost:3002/`. Set `ADMIN_SECRET_TOKEN` to the admin password so the dashboard's stored `x-admin-token` works as a fallback.
+
+## Common environment issues
+
+- `DATABASE_URL` falls back to `postgres://postgres:postgres@localhost:5432/fineract_tenants` if unset; on a fresh `dlbtrust` DB the core bond/trust tables will be missing and many modules log warnings, but OFX Clearing and the dApp still work.
+- Fineract and some backup jobs are not configured locally; expect `fineract` and `pg_dump` errors in the logs. They do not block testing.
+- The server may receive `SIGTERM` from an external watchdog or port conflict. If the dashboard starts returning 401 or blank responses, check whether the node process is still alive and restart it.
+
+## UI navigation
+
+- Login via the overlay.
+- Use the left sidebar **OFX Clearing** nav item to switch to `#page-ofx`.
+- The page has cards for institutions, statement import, payment creation, and a payments table.
+- Submitting a payment in simulate mode updates the row to `accepted` and persists an XML `ofx_request` in Postgres.
+
+## Useful Postgres checks
+
+```sql
+SELECT id, status, ofx_request IS NOT NULL AS has_request
+FROM ofx_payments ORDER BY id DESC;
+
+SELECT * FROM ofx_statements ORDER BY parsed_at DESC;
+SELECT fit_id, type, amount_cents, name, memo FROM ofx_transactions;
+```
 
 ## Hedera Stablecoin Studio (deployed shadow mode)
 
@@ -39,7 +74,7 @@ description: How to end-to-end test the DLB Trust treasury dashboard, including 
 ## DeFi dApp / Safe multisig (deployed shadow mode)
 
 - dApp lives at `/` and `/dapp`; legacy treasury dashboard at `/treasury`.
-- Tabs: Dashboard, Safe Wallets, Deposit, Payout / 2-Sig, Distribute, P2P Pay, White Label.
+- Tabs: Dashboard, Source of Funds, Core Modules, Safe Wallets, Deposit, Payout / 2-Sig, Distribute, P2P Pay, Payment Rails, Bond Tokens, Stablecoin DEX, Sovereign Trust, Asset-Debt Proof, Requests, Automation, Assets / Expenses, FinOps AI, Calendar, Messaging, Documents, Wallet, White Label.
 - Safe creation UI: fill label, co-owner address, threshold 2 and call `createSafe()`; server auto-adds its hot-wallet owner and deploys in shadow mode.
 - Payout approval without MetaMask:
   1. Create payout via `POST /api/dapp/payouts` with `safeId`, `destination`, `value`, `description`.
@@ -62,7 +97,6 @@ description: How to end-to-end test the DLB Trust treasury dashboard, including 
 
 ## FinOps AI Agent, Calendar, Messaging, Document Vault (deployed dApp)
 
-- dApp lives at `/dapp`; nav tabs include **FinOps AI**, **Calendar**, **Messaging**, **Documents**.
 - Use the operator token saved in the UI (`$ADMIN_SECRET_TOKEN`) for all `/api/dapp/*` calls.
 - Submit a FinOps payment prompt with:
   ```js
@@ -80,17 +114,17 @@ description: How to end-to-end test the DLB Trust treasury dashboard, including 
 
 ## Core Modules funding abstraction (deployed dApp)
 
-- dApp lives at `/dapp`; nav tab **Core Modules** shows grouped module balances (Treasury, Cash Management, Trust Accounting, Bond/Fixed Income, Core Banking, Sub-Ledger, CRM, Tax, Documents) from `GET /api/dapp/modules`.
+- Nav tab **Core Modules** shows grouped module balances (Treasury, Cash Management, Trust Accounting, Bond/Fixed Income, Core Banking, Sub-Ledger, CRM, Tax, Documents) from `GET /api/dapp/modules`.
 - Internal transfer: `internalModuleTransfer()` posts to `/api/dapp/modules/transfer` with `{fromType, fromAccountId, toType, toAccountId, amount, memo}`. For cash, `CashEngine.transfer` is used.
 - Fund External Rail: `fundExternalRail()` posts to `/api/dapp/modules/fund-rail` with `{sourceType, sourceAccountId, rail, amount, memo, railOptions}`.
   - `cashapp` with `railOptions.cashtag` returns a QR `data:image/png;base64,...` and a `https://cash.app/$<cashtag>/<amount>` deep link.
   - `googlewallet` with `railOptions.email` and `railOptions.walletAddress` returns an `https://pay.google.com/gp/v/save/...` JWT link.
-  - `stablecoin_dex` requires amount ≥ $0.01 (1 cent); the request can hang/take long because it mints DLBUSD and swaps on Sepolia live. For tiny tests prefer an existing `poolAddress` and `createPoolIfMissing:false` if gas is low.
+  - `stablecoin_dex` requires amount >= $0.01 (1 cent); the request can hang/take long because it mints DLBUSD and swaps on Sepolia live. For tiny tests prefer an existing `poolAddress` and `createPoolIfMissing:false` if gas is low.
 - Note: `STABLECOIN_CASH_HOLDING_ACCOUNT` on the deployed instance may be mapped to `CA-RESERVE`, so rail reservations from `CA-OPERATING` can appear as credits to `CA-RESERVE` in the source-of-funds balance view.
 
 ## Live DeFi dApp bond-token / DEX flow (Sepolia, DAPP_SHADOW=false)
 
-- dApp lives at `/dapp`; nav tab **Bond Tokens** exposes Create Token, Mint, DEX Quote and DEX Swap UI.
+- Nav tab **Bond Tokens** exposes Create Token, Mint, DEX Quote and DEX Swap UI.
 - Operator hot wallet: `0x3e53028cf69949f3B961ce786Baf2D4D75166562`. Sepolia ETH is required for live factory/pool/swap transactions.
 - Readiness: `GET /api/dapp/bond-tokens/readiness` and `GET /api/dapp/dex/readiness` should show `mode: live`.
 - Create token: `POST /api/dapp/bond-tokens` with `{bondId, tokenName, tokenSymbol}`; returns `id`, `token_address` (`0x...`).
@@ -133,7 +167,7 @@ description: How to end-to-end test the DLB Trust treasury dashboard, including 
 
 ## Assets / Expenses & One-Click Automation (deployed dApp)
 
-- dApp lives at `/dapp`; nav tabs **Assets / Expenses** and **Automation** expose the new features.
+- Nav tabs **Assets / Expenses** and **Automation** expose the new features.
 - **Assets / Expenses** handlers:
   - `addAsset()`, `addLiability()`, `addExpense()`, `loadAssets()`, `loadLiabilities()`, `loadExpenses()`, `loadExpenseTotals()`.
   - Expense pay uses `payExpense(id)`, which calls `window.prompt` for destination, Safe ID, source type, and source account. For scripted tests override `window.prompt` to return the desired values.
@@ -164,5 +198,7 @@ description: How to end-to-end test the DLB Trust treasury dashboard, including 
 
 ## Devin Secrets Needed
 
+- `DATABASE_URL` or local Postgres credentials (`dlbtrust`/`dlbtrust`).
+- `JWT_SECRET` and `ADMIN_SECRET_TOKEN` for stable auth.
 - `secret:org:HEDERA_OPERATOR_KEY` — only needed for live (non-shadow) Hedera tests.
 - `secret:org:DLBTRUST_API_KEY` — for programmatic API access if enabled.
