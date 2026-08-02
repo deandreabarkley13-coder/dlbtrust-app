@@ -32,6 +32,9 @@ try { CrmEngine = require('../crm/crmEngine').CrmEngine; } catch (e) { /* option
 let DocumentEngine = null;
 try { DocumentEngine = require('../documents/documentEngine').DocumentEngine; } catch (e) { /* optional */ }
 
+let SubLedgerEngine = null;
+try { SubLedgerEngine = require('../accounting/subLedgerEngine').SubLedgerEngine; } catch (e) { /* optional */ }
+
 const { TreasuryEngine, DEFAULT_ACCOUNT } = require('./treasuryEngine');
 const { getConfig } = require('./config');
 
@@ -73,6 +76,11 @@ class SourceOfFundsAdapter {
         const summary = await FineractClient.getAccountBalance(sourceAccountId);
         return toCents(summary.accountBalance || summary.balance || 0);
       }
+      case 'sub_ledger': {
+        if (!SubLedgerEngine) throw new Error('SubLedgerEngine not available');
+        const ledger = await SubLedgerEngine.getSubLedger(sourceAccountId);
+        return ledger ? toCents(ledger.balance || 0) : 0;
+      }
       default:
         return 0;
     }
@@ -100,6 +108,17 @@ class SourceOfFundsAdapter {
     }
 
     switch (sourceType) {
+      case 'treasury':
+      case 'treasury_hot': {
+        const treasuryAccountId = sourceAccountId || DEFAULT_ACCOUNT;
+        const pos = await TreasuryEngine.getPosition(treasuryAccountId);
+        if (!pos || Number(pos.availableCents || 0) < amountCents) throw new Error(`Insufficient treasury balance in ${treasuryAccountId}: ${pos ? (pos.availableCents || 0) : 0} < ${amountCents}`);
+        if (treasuryAccountId !== DEFAULT_ACCOUNT) {
+          await TreasuryEngine.debit(treasuryAccountId, amountCents, { reason: `Treasury funding ${paymentId}`, source: 'source_of_funds' });
+          await TreasuryEngine.credit(DEFAULT_ACCOUNT, amountCents, { source: 'treasury', sourceAccountId: treasuryAccountId, metadata: { paymentId, stage: 'treasury_to_hot' } });
+        }
+        return { sourceType, sourceAccountId: treasuryAccountId, treasuryAccountId };
+      }
       case 'cash': {
         if (!CashEngine) throw new Error('CashEngine not available');
         const acct = await CashEngine.getAccount(sourceAccountId);
@@ -173,6 +192,25 @@ class SourceOfFundsAdapter {
         funding = { sourceType, sourceAccountId, journalId: journal.resourceId };
         return creditAndReturn({ sourceAccountId, journalId: journal.resourceId });
       }
+      case 'sub_ledger': {
+        if (!SubLedgerEngine) throw new Error('SubLedgerEngine not available');
+        const ledger = await SubLedgerEngine.getSubLedger(sourceAccountId);
+        if (!ledger) throw new Error(`Sub-ledger not found: ${sourceAccountId}`);
+        const available = toCents(ledger.balance || 0);
+        if (available < amountCents) throw new Error(`Insufficient sub-ledger balance: ${available} < ${amountCents}`);
+        const amount = amountCents / 100;
+        const txn = await SubLedgerEngine.postTransaction({
+          subLedgerId: sourceAccountId,
+          transactionType: 'distribution',
+          amount,
+          description: `Stablecoin funding ${paymentId}`,
+          referenceType: 'stablecoin_payment',
+          referenceId: paymentId,
+          postedBy: 'stablecoin-gateway',
+        });
+        await TreasuryEngine.credit(DEFAULT_ACCOUNT, amountCents, { source: 'sub_ledger', sourceAccountId, subLedgerTransactionId: txn.transactionId });
+        return { sourceType, sourceAccountId, subLedgerTransactionId: txn.transactionId, newBalanceCents: toCents(txn.newBalance) };
+      }
       default:
         throw new Error(`Unsupported source type for funding: ${sourceType}`);
     }
@@ -231,6 +269,22 @@ class SourceOfFundsAdapter {
               credits: [{ glAccountId: sourceGlId, amount: amountCents / 100 }],
             });
           }
+        }
+        break;
+      }
+      case 'sub_ledger': {
+        if (!SubLedgerEngine) throw new Error('SubLedgerEngine not available');
+        if (sourceRef.subLedgerTransactionId) {
+          const amount = amountCents / 100;
+          await SubLedgerEngine.postTransaction({
+            subLedgerId: sourceAccountId,
+            transactionType: 'credit',
+            amount,
+            description: `Refund stablecoin funding ${payment.id}`,
+            referenceType: 'stablecoin_payment_refund',
+            referenceId: payment.id,
+            postedBy: 'stablecoin-gateway',
+          });
         }
         break;
       }
@@ -354,7 +408,7 @@ class SourceOfFundsAdapter {
         results.document = await DocumentEngine.createDocument({
           documentName: `Stablecoin Receipt ${payment.id}`,
           documentType: 'receipt',
-          category: 'payment',
+          category: 'financial',
           referenceType: 'stablecoin_payment',
           referenceId: payment.id,
           content: JSON.stringify({ ...payment, tx_hash: txHash }, null, 2),

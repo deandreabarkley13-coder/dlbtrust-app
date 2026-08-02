@@ -1,7 +1,8 @@
 'use strict';
 
 const express = require('express');
-const { StablecoinGateway, TreasuryEngine, BlockchainEngine, FyStackEngine, MagicWalletService, Wso2ApiManager, SourceOfFundsAdapter, DEFAULT_ACCOUNT } = require('../integrations/stablecoin');
+const crypto = require('crypto');
+const { StablecoinGateway, TreasuryEngine, BlockchainEngine, FyStackEngine, CircleKitEngine, HederaEngine, MagicWalletService, Wso2ApiManager, SourceOfFundsAdapter, CircleMintClient, CoinbaseHbarEngine, ClearingAndSettlementEngine, DEFAULT_ACCOUNT } = require('../integrations/stablecoin');
 const { HollaExClient } = require('../integrations/hollaex/hollaExClient');
 const { requireAuth, writeRateLimiter } = require('../integrations/auth/securityMiddleware');
 
@@ -78,7 +79,7 @@ router.post('/payments/:id/approve', operatorAuth, writeRateLimiter(), async (re
 
 router.post('/payments/:id/settle', operatorAuth, writeRateLimiter(), async (req, res) => {
   try {
-    const data = await StablecoinGateway.settlePayment(req.params.id, { memo: req.body.memo, destinationSecret: req.body.destinationSecret });
+    const data = await StablecoinGateway.settlePayment(req.params.id, { memo: req.body.memo, destinationSecret: req.body.destinationSecret, destinationKey: req.body.destinationKey });
     res.json({ success: true, data });
   } catch (err) { sendError(res, err); }
 });
@@ -88,6 +89,46 @@ router.post('/ensure-trustline', operatorAuth, writeRateLimiter(), async (req, r
     const { destination, destinationSecret } = req.body;
     const blockchain = new BlockchainEngine();
     const data = await blockchain.ensureDestinationTrustline({ destination, destinationSecret });
+    res.json({ success: true, data });
+  } catch (err) { sendError(res, err); }
+});
+
+// Hedera Stablecoin Studio operations
+router.get('/hedera/readiness', operatorAuth, async (req, res) => {
+  try {
+    const data = await new HederaEngine().readiness();
+    res.status(data.ready ? 200 : 503).json({ success: data.ready, data });
+  } catch (err) { sendError(res, err); }
+});
+
+router.post('/hedera/create-stablecoin', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try {
+    const { name, symbol, decimals = 6, initialSupply = '0', createReserve = false } = req.body;
+    const data = await new HederaEngine().createStablecoin({ name, symbol, decimals, initialSupply, createReserve });
+    res.json({ success: true, data });
+  } catch (err) { sendError(res, err); }
+});
+
+router.post('/hedera/mint', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try {
+    const { tokenId, targetId, amountCents } = req.body;
+    const data = await new HederaEngine().cashIn({ tokenId, targetId, amountCents });
+    res.json({ success: true, data });
+  } catch (err) { sendError(res, err); }
+});
+
+router.get('/hedera/balance', operatorAuth, async (req, res) => {
+  try {
+    const { tokenId, accountId } = req.query;
+    const data = await new HederaEngine().getBalance({ tokenId, accountId });
+    res.json({ success: true, data: { tokenId, accountId, balance: data } });
+  } catch (err) { sendError(res, err); }
+});
+
+router.post('/hedera/associate', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try {
+    const { tokenId, targetId, targetKey } = req.body;
+    const data = await new HederaEngine().associateToken({ tokenId, targetId, targetKey });
     res.json({ success: true, data });
   } catch (err) { sendError(res, err); }
 });
@@ -178,6 +219,21 @@ router.post('/fystack/sweep-tasks', operatorAuth, writeRateLimiter(), async (req
   } catch (err) { sendError(res, err); }
 });
 
+// Circle App Kit stablecoin rail
+router.get('/circle/readiness', operatorAuth, async (req, res) => {
+  try {
+    const data = await new CircleKitEngine().readiness();
+    res.status(data.ready ? 200 : 503).json({ success: data.ready, data });
+  } catch (err) { sendError(res, err); }
+});
+
+router.get('/circle/source-address', operatorAuth, async (req, res) => {
+  try {
+    const data = await new CircleKitEngine().getSourceAddress();
+    res.json({ success: true, data: { sourceAddress: data } });
+  } catch (err) { sendError(res, err); }
+});
+
 router.get('/treasury/:accountId?', operatorAuth, async (req, res) => {
   try {
     const data = await TreasuryEngine.getPosition(req.params.accountId || DEFAULT_ACCOUNT);
@@ -238,6 +294,222 @@ router.all('/wso2/*', adminAuth, writeRateLimiter(), async (req, res) => {
       ),
     });
     res.status(result.status).json(result.body);
+  } catch (err) { sendError(res, err); }
+});
+
+// ─── CIRCLE MINT REGULATED FIAT ON-RAMP ─────────────────────────────────────
+
+function circleMintClient() {
+  return new CircleMintClient();
+}
+
+router.get('/circle-mint/readiness', operatorAuth, async (req, res) => {
+  try {
+    const client = circleMintClient();
+    const base = client.readiness();
+    if (!base.ready) return res.status(503).json({ success: false, data: base });
+    const config = await client.getConfiguration();
+    const masterWalletId = config && config.data && config.data.payments && config.data.payments.masterWalletId;
+    res.json({ success: true, data: { ...base, masterWalletId: masterWalletId || null, configuration: (config && config.data) || null } });
+  } catch (err) { sendError(res, err); }
+});
+
+router.post('/circle-mint/bank-accounts/wire', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try {
+    const { accountNumber, routingNumber, billingDetails, bankAddress, idempotencyKey } = req.body;
+    if (!accountNumber || !routingNumber || !billingDetails) {
+      return res.status(400).json({ success: false, error: 'accountNumber, routingNumber, and billingDetails are required' });
+    }
+    const data = await circleMintClient().createWireBankAccount({ accountNumber, routingNumber, billingDetails, bankAddress, idempotencyKey });
+    res.status(201).json({ success: true, data });
+  } catch (err) { sendError(res, err); }
+});
+
+router.get('/circle-mint/bank-accounts/:id/instructions', operatorAuth, async (req, res) => {
+  try {
+    const { currency, walletId } = req.query;
+    const data = await circleMintClient().getWireInstructions(req.params.id, { currency, walletId });
+    res.json({ success: true, data });
+  } catch (err) { sendError(res, err); }
+});
+
+router.get('/circle-mint/balances', operatorAuth, async (req, res) => {
+  try {
+    const data = await circleMintClient().getBalances();
+    res.json({ success: true, data });
+  } catch (err) { sendError(res, err); }
+});
+
+router.post('/circle-mint/recipient-addresses', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try {
+    const { address, chain, currency, description, idempotencyKey } = req.body;
+    if (!address || !chain) {
+      return res.status(400).json({ success: false, error: 'address and chain are required' });
+    }
+    const data = await circleMintClient().createRecipientAddress({ address, chain, currency, description, idempotencyKey });
+    res.status(201).json({ success: true, data });
+  } catch (err) { sendError(res, err); }
+});
+
+router.post('/circle-mint/transfers', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try {
+    const { destinationAddressId, amount, currency, idempotencyKey, sourceType, sourceAccountId } = req.body;
+    if (!destinationAddressId || !amount) {
+      return res.status(400).json({ success: false, error: 'destinationAddressId and amount are required' });
+    }
+    const amountCents = Math.round(parseFloat(amount) * 100);
+    if (!Number.isFinite(amountCents) || amountCents <= 0) return res.status(400).json({ success: false, error: 'amount must be a positive number' });
+
+    const paymentId = `CM-${crypto.randomUUID()}`;
+    const normalizedSourceType = sourceType ? String(sourceType).toLowerCase() : '';
+
+    // Record source-of-funds backing, reserve it in treasury, then settle.
+    let funding;
+    let reserveId;
+    if (normalizedSourceType && normalizedSourceType !== 'treasury') {
+      funding = await SourceOfFundsAdapter._fundSourceToTreasury({
+        sourceType: normalizedSourceType,
+        sourceAccountId: sourceAccountId || DEFAULT_ACCOUNT,
+        amountCents,
+        paymentId,
+      });
+      ({ reserveId } = await TreasuryEngine.hold(paymentId, DEFAULT_ACCOUNT, amountCents));
+    }
+
+    try {
+      const data = await circleMintClient().createTransfer({ destinationAddressId, amount, currency, idempotencyKey });
+      const txId = data && data.data && data.data.id;
+      if (reserveId) await TreasuryEngine.post(reserveId, txId, { settledAmountCents: amountCents });
+      res.status(201).json({ success: true, data, paymentId });
+    } catch (err) {
+      if (reserveId) {
+        try { await TreasuryEngine.release(reserveId, 'Circle Mint transfer failed'); } catch (e) { console.warn('[circle-mint] reserve release failed:', e.message); }
+      }
+      if (funding) {
+        try { await SourceOfFundsAdapter._refundSourceFromTreasury({ sourceType: normalizedSourceType, sourceAccountId: sourceAccountId || DEFAULT_ACCOUNT, payment: { id: paymentId, total_cents: amountCents }, sourceRef: funding }); } catch (e) { console.warn('[circle-mint] source refund failed:', e.message); }
+      }
+      throw err;
+    }
+  } catch (err) { sendError(res, err); }
+});
+
+router.get('/circle-mint/transfers', operatorAuth, async (req, res) => {
+  try {
+    const { from, to, status, type, pageSize, pageBefore, pageAfter } = req.query;
+    const data = await circleMintClient().listTransfers({ from, to, status, type, pageSize, pageBefore, pageAfter });
+    res.json({ success: true, data });
+  } catch (err) { sendError(res, err); }
+});
+
+router.get('/circle-mint/transfers/:id', operatorAuth, async (req, res) => {
+  try {
+    const data = await circleMintClient().getTransfer(req.params.id);
+    res.json({ success: true, data });
+  } catch (err) { sendError(res, err); }
+});
+
+// ─── CLEARING & SETTLEMENT ────────────────────────────────────────────────────
+
+router.post('/clearing/wallets', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try {
+    const data = await ClearingAndSettlementEngine.createWallet(req.body);
+    res.status(201).json({ success: true, data });
+  } catch (err) { sendError(res, err); }
+});
+
+router.get('/clearing/wallets', operatorAuth, async (req, res) => {
+  try {
+    const data = await ClearingAndSettlementEngine.listWallets(req.query);
+    res.json({ success: true, data });
+  } catch (err) { sendError(res, err); }
+});
+
+router.get('/clearing/wallets/:id', operatorAuth, async (req, res) => {
+  try {
+    const data = await ClearingAndSettlementEngine.getWallet(req.params.id);
+    res.json({ success: true, data });
+  } catch (err) { sendError(res, err); }
+});
+
+router.post('/clearing/clear-and-settle', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try {
+    const data = await ClearingAndSettlementEngine.clearAndSettle(req.body);
+    res.status(201).json({ success: true, data });
+  } catch (err) { sendError(res, err); }
+});
+
+router.post('/clearing/wallets/:id/fund', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try {
+    const data = await ClearingAndSettlementEngine.fundWallet({ walletId: req.params.id, ...req.body });
+    res.status(201).json({ success: true, data });
+  } catch (err) { sendError(res, err); }
+});
+
+router.post('/clearing/batch', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try {
+    const items = Array.isArray(req.body) ? req.body : req.body.items;
+    if (!Array.isArray(items)) return res.status(400).json({ success: false, error: 'items array is required' });
+    const data = await ClearingAndSettlementEngine.batchClearAndSettle(items);
+    res.status(201).json({ success: true, data });
+  } catch (err) { sendError(res, err); }
+});
+
+router.get('/clearing/orders', operatorAuth, async (req, res) => {
+  try {
+    const data = await ClearingAndSettlementEngine.listOrders(req.query);
+    res.json({ success: true, data });
+  } catch (err) { sendError(res, err); }
+});
+
+router.get('/clearing/orders/:id', operatorAuth, async (req, res) => {
+  try {
+    const data = await ClearingAndSettlementEngine.getOrder(req.params.id);
+    res.json({ success: true, data });
+  } catch (err) { sendError(res, err); }
+});
+
+// Coinbase HBAR fiat-to-crypto funding
+router.get('/coinbase-hbar/balances', operatorAuth, async (req, res) => {
+  try {
+    const data = await CoinbaseHbarEngine.getBalances();
+    res.json({ success: true, data });
+  } catch (err) { sendError(res, err); }
+});
+
+router.get('/coinbase-hbar/quote', operatorAuth, async (req, res) => {
+  try {
+    const data = await CoinbaseHbarEngine.quote({ fiatAmount: req.query.fiatAmount, fiatCurrency: req.query.fiatCurrency });
+    res.json({ success: true, data });
+  } catch (err) { sendError(res, err); }
+});
+
+router.post('/coinbase-hbar/fund', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try {
+    const { fiatAmount, targetAddress, sourceType, sourceAccountId, autoBuy } = req.body;
+    const data = await CoinbaseHbarEngine.fund({ fiatAmount, targetAddress, sourceType, sourceAccountId, autoBuy });
+    res.status(201).json({ success: true, data });
+  } catch (err) { sendError(res, err); }
+});
+
+router.post('/coinbase-hbar/withdraw', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try {
+    const { amount, targetAddress } = req.body;
+    const data = await CoinbaseHbarEngine.withdraw({ amount, targetAddress });
+    res.status(201).json({ success: true, data });
+  } catch (err) { sendError(res, err); }
+});
+
+router.get('/coinbase-hbar/orders', operatorAuth, async (req, res) => {
+  try {
+    const data = await CoinbaseHbarEngine.listOrders(req.query);
+    res.json({ success: true, data });
+  } catch (err) { sendError(res, err); }
+});
+
+router.get('/coinbase-hbar/orders/:id', operatorAuth, async (req, res) => {
+  try {
+    const data = await CoinbaseHbarEngine.getOrder(req.params.id);
+    res.json({ success: true, data });
   } catch (err) { sendError(res, err); }
 });
 

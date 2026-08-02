@@ -9,10 +9,12 @@
 let pool;
 try { pool = require('../bonds/pgPool'); } catch (e) { pool = null; }
 
-const { getConfig, isProduction, isFyStackNetwork } = require('./config');
+const { getConfig, isProduction, isFyStackNetwork, isCircleNetwork, isHederaNetwork } = require('./config');
 const { TreasuryEngine, DEFAULT_ACCOUNT } = require('./treasuryEngine');
 const { BlockchainEngine } = require('./blockchainEngine');
 const { FyStackEngine } = require('./fystackEngine');
+const { CircleKitEngine } = require('./circleKitEngine');
+const { HederaEngine } = require('./hederaEngine');
 const { MagicWalletService } = require('./magicWalletService');
 const { SourceOfFundsAdapter } = require('./sourceOfFundsAdapter');
 
@@ -80,6 +82,18 @@ class StablecoinGateway {
     } catch (e) {
       console.warn('[stablecoinGateway] Postgres table ensure failed:', e.message);
     }
+    try {
+      const { ClearingAndSettlementEngine } = require('./clearingAndSettlementEngine');
+      await ClearingAndSettlementEngine.ensureTables();
+    } catch (err) {
+      console.warn('[stablecoinGateway] clearing tables failed:', err.message);
+    }
+    try {
+      const { CoinbaseHbarEngine } = require('./coinbaseHbarEngine');
+      await CoinbaseHbarEngine.ensureTables();
+    } catch (err) {
+      console.warn('[stablecoinGateway] coinbase hbar tables failed:', err.message);
+    }
   }
 
   static async readiness({ publicHealth } = {}) {
@@ -87,14 +101,18 @@ class StablecoinGateway {
     const treasury = await TreasuryEngine.getPosition(DEFAULT_ACCOUNT).catch(err => ({ ready: false, error: err.message }));
     const blockchain = await new BlockchainEngine().readiness();
     const fyStack = cfg.fyStackEnabled ? await new FyStackEngine().readiness() : { ready: false, issues: [] };
+    const circle = cfg.circleEnabled ? await new CircleKitEngine().readiness() : { ready: false, issues: [] };
+    const hedera = cfg.hederaEnabled ? await new HederaEngine().readiness().catch(err => ({ ready: false, issues: [err.message] })) : { ready: false, issues: ['HEDERA_STUDIO_ENABLED is not true'] };
     const magic = new MagicWalletService().readiness();
-    const anyReady = blockchain.ready || fyStack.ready;
+    const anyReady = blockchain.ready || fyStack.ready || circle.ready || (cfg.hederaEnabled && hedera.ready);
     const issues = [];
     if (!cfg.enabled) issues.push('STABLECOIN_ENABLED is not true');
     if (!anyReady) {
       issues.push('No stablecoin rail is ready');
       if (!blockchain.ready) issues.push(...(blockchain.issues || []));
       if (cfg.fyStackEnabled && !fyStack.ready) issues.push(...(fyStack.issues || []));
+      if (cfg.circleEnabled && !circle.ready) issues.push(...(circle.issues || []));
+      if (cfg.hederaEnabled && !hedera.ready) issues.push(...(hedera.issues || []));
     }
 
     if (publicHealth) {
@@ -103,6 +121,7 @@ class StablecoinGateway {
         mode: cfg.mode,
         network: cfg.network,
         assetCode: cfg.assetCode,
+        hedera,
       };
     }
 
@@ -112,6 +131,8 @@ class StablecoinGateway {
       treasury: { ok: typeof treasury.balanceCents === 'number', ...treasury },
       blockchain,
       fyStack,
+      circle,
+      hedera,
       magic,
     };
   }
@@ -135,10 +156,19 @@ class StablecoinGateway {
     const quoteNetwork = String(quote.network).toLowerCase();
     if (isFyStackNetwork(quoteNetwork)) {
       if (!cfg.fyStackEnabled) throw new Error('FYSTACK_ENABLED must be true for FyStack stablecoin payments');
+    } else if (isCircleNetwork(quoteNetwork)) {
+      if (!cfg.circleEnabled) throw new Error('CIRCLE_ENABLED must be true for Circle App Kit stablecoin payments');
+    } else if (isHederaNetwork(quoteNetwork)) {
+      if (!cfg.hederaEnabled) throw new Error('HEDERA_STUDIO_ENABLED must be true for Hedera stablecoin payments');
+      const hederaNetwork = (cfg.hederaNetwork || 'testnet').toLowerCase();
+      const expectedHederaNetwork = `hedera-${hederaNetwork}`;
+      if (quote.network !== expectedHederaNetwork) throw new Error(`Payment network ${quote.network} does not match configured Hedera network ${expectedHederaNetwork}`);
+      const allowedAssets = [cfg.hederaStablecoinSymbol.toUpperCase(), cfg.assetCode.toUpperCase()];
+      if (!allowedAssets.includes(quote.assetCode.toUpperCase())) throw new Error(`Payment asset ${quote.assetCode} does not match configured Hedera symbol ${cfg.hederaStablecoinSymbol}`);
     } else if (quote.network !== cfg.network) {
       throw new Error(`Payment network ${quote.network} does not match configured stablecoin network ${cfg.network}`);
     }
-    if (quote.assetCode.toUpperCase() !== cfg.assetCode.toUpperCase()) throw new Error(`Payment asset ${quote.assetCode} does not match configured asset ${cfg.assetCode}`);
+    if (!isHederaNetwork(quote.network) && quote.assetCode.toUpperCase() !== cfg.assetCode.toUpperCase()) throw new Error(`Payment asset ${quote.assetCode} does not match configured asset ${cfg.assetCode}`);
     const id = identifier('SCP');
     const destination = input.destinationWallet || input.walletAddress || '';
     if (!destination) throw new Error('destinationWallet is required');
@@ -161,6 +191,7 @@ class StablecoinGateway {
       metadata: {
         beneficiaryName: input.beneficiaryName || '',
         fyStackWalletId: input.fyStackWalletId || input.sourceWalletId || '',
+        circleSourceAddress: input.circleSourceAddress || input.sourceWalletId || '',
         ...input.metadata,
       },
       reserve_id: null,
@@ -226,7 +257,8 @@ class StablecoinGateway {
     return payment;
   }
 
-  static async settlePayment(id, { memo, destinationSecret } = {}) {
+  static async settlePayment(id, { memo, destinationSecret, destinationKey } = {}) {
+    const cfg = getConfig();
     let payment = await StablecoinGateway.getPayment(id);
     if (payment.status === 'settled') return payment;
     if (!['pending', 'approved'].includes(payment.status)) {
@@ -235,22 +267,40 @@ class StablecoinGateway {
     if (payment.status === 'pending') payment = await StablecoinGateway.approvePayment(id, payment.source_account_id);
 
     const isFy = isFyStackNetwork(payment.network);
-    const engine = isFy ? new FyStackEngine() : new BlockchainEngine();
+    const isCircle = isCircleNetwork(payment.network);
+    const isHedera = isHederaNetwork(payment.network);
+    const engine = isFy ? new FyStackEngine() : isCircle ? new CircleKitEngine() : isHedera ? new HederaEngine() : new BlockchainEngine();
     let result;
     try {
-      result = isFy
-        ? await engine.settle({
-            destination: payment.destination_wallet,
-            amountCents: payment.amount_cents,
-            memo: memo || payment.memo,
-            walletId: payment.metadata && (payment.metadata.fyStackWalletId || payment.metadata.sourceWalletId),
-          })
-        : await engine.settle({
-            destination: payment.destination_wallet,
-            amountCents: payment.amount_cents,
-            memo: memo || payment.memo,
-            destinationSecret,
-          });
+      if (isFy) {
+        result = await engine.settle({
+          destination: payment.destination_wallet,
+          amountCents: payment.amount_cents,
+          memo: memo || payment.memo,
+          walletId: payment.metadata && (payment.metadata.fyStackWalletId || payment.metadata.sourceWalletId),
+        });
+      } else if (isCircle) {
+        result = await engine.settle({
+          destination: payment.destination_wallet,
+          amountCents: payment.amount_cents,
+          memo: memo || payment.memo,
+          walletId: payment.metadata && (payment.metadata.circleSourceAddress || payment.metadata.sourceWalletId || cfg.circleSourceAddress),
+        });
+      } else if (isHedera) {
+        result = await engine.settle({
+          destination: payment.destination_wallet,
+          destinationKey,
+          amountCents: payment.amount_cents,
+          memo: memo || payment.memo,
+        });
+      } else {
+        result = await engine.settle({
+          destination: payment.destination_wallet,
+          amountCents: payment.amount_cents,
+          memo: memo || payment.memo,
+          destinationSecret,
+        });
+      }
     } catch (err) {
       await StablecoinGateway.failPayment(id, err.message || 'settlement failed');
       throw err;
@@ -263,12 +313,12 @@ class StablecoinGateway {
     payment.tx_ledger = String(result.ledger || result.status || '');
     payment.tx_explorer = result.explorer || '';
     payment.latency_ms = result.latencyMs;
+    if (result.tokenId) payment.metadata = { ...payment.metadata, hederaTokenId: result.tokenId };
     payment.updated_at = new Date().toISOString();
-    await StablecoinGateway._update(payment);
 
     try {
       const sourcePost = await SourceOfFundsAdapter.post(payment, result.hash, { settledAmountCents: payment.amount_cents });
-      payment.source_ref = { ...payment.source_ref, post: sourcePost, fyStack: result.simulated ? { simulated: true } : undefined };
+      payment.source_ref = { ...payment.source_ref, post: sourcePost, simulated: result.simulated ? true : undefined };
     } catch (postErr) {
       payment.metadata = { ...payment.metadata, postError: postErr.message };
       console.warn(`[stablecoinGateway] source post failed after on-chain send for ${payment.id}:`, postErr.message);
@@ -312,9 +362,12 @@ class StablecoinGateway {
     const assetCode = intent.metadata && intent.metadata.asset_code || cfg.assetCode;
     const walletProvider = intent.metadata && intent.metadata.wallet_provider || 'direct';
     if (!destination) throw new Error('Stablecoin intent requires metadata.destination_wallet');
-    if (!isFyStackNetwork(network) && network !== cfg.network) throw new Error(`Payment network ${network} does not match configured stablecoin network ${cfg.network}`);
+    const isHederaIntent = isHederaNetwork(network);
+    if (!isFyStackNetwork(network) && !isCircleNetwork(network) && !isHederaIntent && network !== cfg.network) throw new Error(`Payment network ${network} does not match configured stablecoin network ${cfg.network}`);
     if (isFyStackNetwork(network) && !cfg.fyStackEnabled) throw new Error('FYSTACK_ENABLED must be true for FyStack stablecoin payments');
-    if (String(assetCode).toUpperCase() !== cfg.assetCode.toUpperCase()) throw new Error(`Payment asset ${assetCode} does not match configured asset ${cfg.assetCode}`);
+    if (isCircleNetwork(network) && !cfg.circleEnabled) throw new Error('CIRCLE_ENABLED must be true for Circle App Kit stablecoin payments');
+    if (isHederaIntent && !cfg.hederaEnabled) throw new Error('HEDERA_STUDIO_ENABLED must be true for Hedera stablecoin payments');
+    if (!isHederaIntent && String(assetCode).toUpperCase() !== cfg.assetCode.toUpperCase()) throw new Error(`Payment asset ${assetCode} does not match configured asset ${cfg.assetCode}`);
     const sourceType = intent.metadata && intent.metadata.source_type || 'treasury';
     const sourceAccountId = intent.metadata && intent.metadata.source_account_id || DEFAULT_ACCOUNT;
     return StablecoinGateway.createPayment({
@@ -327,6 +380,7 @@ class StablecoinGateway {
       sourceType,
       sourceAccountId,
       fyStackWalletId: intent.metadata && intent.metadata.fy_stack_wallet_id,
+      circleSourceAddress: intent.metadata && intent.metadata.circle_source_address,
       beneficiaryName: intent.beneficiary_name,
       memo: `PaymentHub ${intent.intent_id}`,
       metadata: { paymentHubIntentId: intent.intent_id, rail: 'stablecoin' },
