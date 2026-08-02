@@ -71,23 +71,25 @@ class CashAppEngine {
    *      Cash App mobile app, confirms the amount, and sends USD. This is the
    *      only practical path without merchant credentials.
    */
-  static async requestPayment({ amountUsd, currency = 'USD', recipientTag, walletAddress, chain = 'EVM', memo } = {}) {
+  static async requestPayment({ amountUsd, currency = 'USD', recipientTag, walletAddress, chain = 'EVM', memo, direction = 'pull' } = {}) {
     const cfg = this.getConfig();
     const tag = this._cleanCashtag(recipientTag || cfg.cashtag || '');
     if (!tag) throw new Error('CASHAPP_CASHTAG or a recipientTag is required for a Cash App payment link');
 
     const id = `CASH-${Date.now()}-${Math.random().toString(36).slice(2, 8).toUpperCase()}`;
     const amount = Number(amountUsd || 0).toFixed(2);
-    const note = encodeURIComponent(memo || 'DLB Trust payment');
+    const encodedMemo = encodeURIComponent(memo || 'DLB Trust payment');
     // Cash App P2P universal link: https://cash.app/$cashtag/amount
     // cash.me is the same service with a shorter host.
-    const shareable = `https://cash.app/$${tag}/${amount}?note=${note}`;
+    const shareable = `https://cash.app/$${tag}/${amount}?note=${encodedMemo}`;
     const cashMeLink = `https://cash.me/$${tag}/${amount}/`;
     const qrDataUrl = await this._toQrDataUrl(shareable);
+    const isPush = String(direction).toLowerCase() === 'push';
     return {
       id,
       rail: 'cashapp',
-      status: 'awaiting_sender',
+      direction: isPush ? 'push' : 'pull',
+      status: isPush ? 'awaiting_trust_send' : 'awaiting_sender',
       amountUsd,
       currency,
       recipientTag: tag,
@@ -97,7 +99,9 @@ class CashAppEngine {
       cashMeDeepLink: cashMeLink,
       qrDataUrl,
       qrPayload: walletAddress ? `${chain}:${walletAddress}?amount=${amountUsd}` : shareable,
-      note: 'Cash App can only send USD or BTC. This link requests USD from the $Cashtag. After the sender pays in Cash App, record the deposit manually with the Cash App transaction ID or, if crypto was sent from another wallet, the on-chain tx hash.',
+      note: isPush
+        ? `PUSH: Open this link from the trust's Cash App mobile app to send $${amount} to $${tag}. After you send, paste the Cash App transaction ID to complete the ledger entry. The system cannot send from Cash App automatically without merchant API credentials.`
+        : `PULL: Share this QR/link with a payer. When they scan it, Cash App will prompt them to send $${amount} to $${tag}. Cash App can only send USD or BTC. Record the Cash App transaction ID or on-chain tx hash once payment is received.`,
     };
   }
 
@@ -106,24 +110,26 @@ class CashAppEngine {
    * Cash App can only send USD or BTC; this routes USD to the trust $Cashtag.
    * The operator must then move the USD to a crypto on-ramp (Coinbase/Treasury bridge).
    */
-  static async fundOperator({ amountUsd = '25.00', cashtag, memo = 'DLB Trust funding' } = {}) {
+  static async fundOperator({ amountUsd = '25.00', cashtag, memo = 'DLB Trust funding', direction = 'pull' } = {}) {
     const cfg = this.getConfig();
     const tag = this._cleanCashtag(cashtag || cfg.cashtag || '');
     if (!tag) throw new Error('CASHAPP_CASHTAG or cashtag is required to fund via Cash App');
     if (!cfg.operatorAddress) throw new Error('DAPP_OPERATOR_ADDRESS is required for operator wallet funding');
     const id = `CASH-FUND-${Date.now()}-${Math.random().toString(36).slice(2, 8).toUpperCase()}`;
     const amount = Number(amountUsd || 0).toFixed(2);
-    const note = encodeURIComponent(memo || 'DLB Trust funding');
-    const cashAppDeepLink = `https://cash.app/$${tag}/${amount}?note=${note}`;
+    const encodedMemo = encodeURIComponent(memo || 'DLB Trust funding');
+    const cashAppDeepLink = `https://cash.app/$${tag}/${amount}?note=${encodedMemo}`;
     const cashMeDeepLink = `https://cash.me/$${tag}/${amount}/`;
     const walletUri = `ethereum:${cfg.operatorAddress}`;
     const [cashQr, walletQr] = await Promise.all([
       this._toQrDataUrl(cashAppDeepLink),
       this._toQrDataUrl(walletUri),
     ]);
+    const isPush = String(direction).toLowerCase() === 'push';
     return {
       id,
       rail: 'cashapp',
+      direction: isPush ? 'push' : 'pull',
       amountUsd,
       cashtag: tag,
       operatorAddress: cfg.operatorAddress,
@@ -131,11 +137,17 @@ class CashAppEngine {
       cashMeDeepLink,
       cashAppQrDataUrl: cashQr,
       operatorWalletQrDataUrl: walletQr,
-      instructions: [
-        `1. Scan the Cash App QR or tap the deep link to send $${amount} to $${tag}.`,
-        '2. Cash App holds USD. To convert it to ETH/USDC for the operator wallet, transfer the USD to the connected Coinbase/bank account and use Source of Funds > Fund Safe via Coinbase Spot / Treasury -> Coinbase Bridge.',
-        `3. Alternatively, send crypto directly to the operator EVM address ${cfg.operatorAddress} from a wallet that supports Ethereum/USDC (not Cash App).`,
-      ].join(' '),
+      instructions: isPush
+        ? [
+            `PUSH: Open this link from the trust's Cash App mobile app to send $${amount} to $${tag} (the operator's Cash App wallet).`,
+            `After the USD arrives in $${tag}, transfer it to a bank/Coinbase account, then use Treasury -> Coinbase Bridge to buy ETH/USDC and send to the operator EVM address ${cfg.operatorAddress}.`,
+            `Alternatively, send crypto directly to ${cfg.operatorAddress} from any Ethereum wallet.`,
+          ].join(' ')
+        : [
+            `PULL: Share this QR/deep link with a payer so they can send $${amount} to $${tag}.`,
+            'After the USD arrives in Cash App, transfer it to a connected Coinbase/bank account and use Source of Funds > Coinbase Spot / Treasury -> Coinbase Bridge to convert to ETH/USDC for the operator wallet.',
+            `Alternatively, send crypto directly to the operator EVM address ${cfg.operatorAddress} from a wallet that supports Ethereum/USDC (not Cash App).`,
+          ].join(' '),
     };
   }
 

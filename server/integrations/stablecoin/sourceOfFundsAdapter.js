@@ -68,7 +68,8 @@ class SourceOfFundsAdapter {
         if (!BondEngine) throw new Error('BondEngine not available');
         const bond = await BondEngine.getBond(sourceAccountId);
         if (!bond) return 0;
-        return Math.round((Number(bond.principal_balance || 0) + Number(bond.accrued_interest || 0)) * 100);
+        // Only principal is available for funding because BondEngine.payPrincipal reduces principal only.
+        return Math.round(Number(bond.principal_balance || 0) * 100);
       }
       case 'fineract':
       case 'core_banking': {
@@ -208,8 +209,8 @@ class SourceOfFundsAdapter {
           referenceId: paymentId,
           postedBy: 'stablecoin-gateway',
         });
-        await TreasuryEngine.credit(DEFAULT_ACCOUNT, amountCents, { source: 'sub_ledger', sourceAccountId, subLedgerTransactionId: txn.transactionId });
-        return { sourceType, sourceAccountId, subLedgerTransactionId: txn.transactionId, newBalanceCents: toCents(txn.newBalance) };
+        funding = { sourceType, sourceAccountId, subLedgerTransactionId: txn.transactionId, newBalanceCents: toCents(txn.newBalance) };
+        return creditAndReturn({ sourceAccountId, subLedgerTransactionId: txn.transactionId });
       }
       default:
         throw new Error(`Unsupported source type for funding: ${sourceType}`);
@@ -280,9 +281,9 @@ class SourceOfFundsAdapter {
             subLedgerId: sourceAccountId,
             transactionType: 'credit',
             amount,
-            description: `Refund stablecoin funding ${payment.id}`,
+            description: `Refund stablecoin funding ${paymentId}`,
             referenceType: 'stablecoin_payment_refund',
-            referenceId: payment.id,
+            referenceId: paymentId,
             postedBy: 'stablecoin-gateway',
           });
         }

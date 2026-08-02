@@ -288,6 +288,7 @@ class ModuleFundingEngine {
           recipientTag: railOptions.cashtag || railOptions.recipientTag,
           walletAddress: railOptions.walletAddress,
           memo: memo || `Funded from ${sourceType}:${sourceAccountId}`,
+          direction: railOptions.direction,
         });
         break;
       case 'cashapp_fund_operator':
@@ -295,6 +296,7 @@ class ModuleFundingEngine {
           amountUsd: fromCents(amountCents),
           cashtag: railOptions.cashtag,
           memo: memo || `Funded from ${sourceType}:${sourceAccountId}`,
+          direction: railOptions.direction,
         });
         break;
       case 'googlewallet':
