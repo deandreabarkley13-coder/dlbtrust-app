@@ -93,6 +93,17 @@ class SourceOfFundsAdapter {
   static async _fundSourceToTreasury({ sourceType, sourceAccountId, paymentId, amountCents }) {
     const cfg = getConfig();
     switch (sourceType) {
+      case 'treasury':
+      case 'treasury_hot': {
+        const treasuryAccountId = sourceAccountId || DEFAULT_ACCOUNT;
+        const pos = await TreasuryEngine.getPosition(treasuryAccountId);
+        if (!pos || Number(pos.availableCents || 0) < amountCents) throw new Error(`Insufficient treasury balance in ${treasuryAccountId}: ${pos ? (pos.availableCents || 0) : 0} < ${amountCents}`);
+        if (treasuryAccountId !== DEFAULT_ACCOUNT) {
+          await TreasuryEngine.debit(treasuryAccountId, amountCents, { reason: `Treasury funding ${paymentId}`, source: 'source_of_funds' });
+          await TreasuryEngine.credit(DEFAULT_ACCOUNT, amountCents, { source: 'treasury', sourceAccountId: treasuryAccountId, metadata: { paymentId, stage: 'treasury_to_hot' } });
+        }
+        return { sourceType, sourceAccountId: treasuryAccountId, treasuryAccountId };
+      }
       case 'cash': {
         if (!CashEngine) throw new Error('CashEngine not available');
         const acct = await CashEngine.getAccount(sourceAccountId);
