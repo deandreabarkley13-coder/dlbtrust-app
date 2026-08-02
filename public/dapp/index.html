@@ -105,6 +105,8 @@
         <button data-section="sovereign-trust" onclick="showSection('sovereign-trust')">Sovereign Trust</button>
         <button data-section="asset-debt" onclick="showSection('asset-debt')">Asset-Debt Proof</button>
         <button data-section="distribution-requests" onclick="showSection('distribution-requests')">Requests</button>
+        <button data-section="automation" onclick="showSection('automation')">Automation</button>
+        <button data-section="assets-expenses" onclick="showSection('assets-expenses')">Assets / Expenses</button>
         <button data-section="finops-ai" onclick="showSection('finops-ai')">FinOps AI</button>
         <button data-section="calendar" onclick="showSection('calendar')">Calendar</button>
         <button data-section="messaging" onclick="showSection('messaging')">Messaging</button>
@@ -690,6 +692,142 @@
         </div>
       </section>
 
+      <section id="automation" class="section">
+        <div class="grid">
+          <div class="card" style="grid-column: 1 / -1;">
+            <h2>One-Click Distribution / Disbursement Automation</h2>
+            <p>Compute an asset-debt proof, create a request, notify trustees, and execute in one workflow. Provide trustee signatures to auto-approve.</p>
+            <div class="form-row">
+              <div><label>Template Name (optional)</label><input type="text" id="auto-template-name" placeholder="Monthly distribution" /></div>
+              <div><label>Type</label><select id="auto-type"><option value="distribution">Distribution</option><option value="disbursement">Disbursement</option></select></div>
+              <div><label>Source Type</label><select id="auto-source-type"><option value="treasury">Treasury</option><option value="cash">Cash</option><option value="trust">Trust Accounting</option><option value="bond">Bond/Fixed Income</option><option value="sub_ledger">Sub-Ledger</option><option value="core_banking">Core Banking</option></select></div>
+              <div><label>Source Account ID</label><input type="text" id="auto-source-account" placeholder="TREASURY_HOT" /></div>
+              <div><label>Safe ID</label><input type="text" id="auto-safe-id" placeholder="SAFE-..." /></div>
+              <div><label>Amount USD</label><input type="number" id="auto-amount" value="10.00" step="0.01" /></div>
+              <div><label>Beneficiary Email</label><input type="email" id="auto-ben-email" placeholder="beneficiary@example.com" /></div>
+              <div><label>Beneficiary Name</label><input type="text" id="auto-ben-name" placeholder="Jane Doe" /></div>
+              <div><label>Destination Address</label><input type="text" id="auto-destination" placeholder="0x..." /></div>
+              <div style="flex:2"><label>Beneficiaries JSON (overrides single)</label><input type="text" id="auto-beneficiaries" placeholder='[{"address":"0x...","amountUsd":"10.00","name":"Jane","email":"j@e.com"}]' /></div>
+            </div>
+            <div class="form-row">
+              <div><label>Memo</label><input type="text" id="auto-memo" placeholder="One-click distribution" /></div>
+              <div style="flex:2"><label>Trustee Signatures JSON (optional)</label><input type="text" id="auto-signatures" placeholder='[{"role":"administration","trusteeEmail":"deandreabarkley13@gmail.com","signature":"0x..."},{"role":"distribution","trusteeEmail":"annrobinson9800@yahoo.com","signature":"0x..."}]' /></div>
+            </div>
+            <div class="form-row">
+              <label style="display:flex;align-items:center;gap:8px"><input type="checkbox" id="auto-hard-assets" checked /> Include hard assets/liabilities in proof</label>
+              <label style="display:flex;align-items:center;gap:8px"><input type="checkbox" id="auto-execute" /> Auto-execute after approval</label>
+            </div>
+            <div class="actions">
+              <button class="btn" onclick="runOneClickAutomation()">Run One-Click Distribution</button>
+              <button class="btn" onclick="loadAutomationTemplates()">Load Templates</button>
+              <button class="btn" onclick="loadAutomationRuns()">Load Runs</button>
+            </div>
+            <div id="auto-result" class="status hidden" style="white-space:pre-wrap;word-break:break-word"></div>
+          </div>
+        </div>
+        <div class="grid" style="margin-top:20px">
+          <div class="card" style="grid-column: 1 / -1;">
+            <h3>Approve / Execute Run</h3>
+            <div class="form-row">
+              <div><label>Run ID</label><input type="text" id="auto-run-id" placeholder="RUN-..." /></div>
+              <div style="flex:2"><label>Trustee Signatures JSON</label><input type="text" id="auto-run-signatures" placeholder='[{"role":"administration","trusteeEmail":"deandreabarkley13@gmail.com","signature":"0x..."},...]' /></div>
+            </div>
+            <div class="actions"><button class="btn" onclick="approveExecuteAutomationRun()">Approve & Execute Run</button></div>
+            <div id="auto-run-result" class="status hidden" style="white-space:pre-wrap;word-break:break-word"></div>
+          </div>
+        </div>
+        <div class="grid" style="margin-top:20px">
+          <div class="card" style="grid-column: 1 / -1;">
+            <h3>Templates</h3>
+            <div id="auto-templates" class="table-wrap"><table id="auto-templates-table"><thead><tr><th>Name</th><th>Type</th><th>Source</th><th>Amount</th><th>Auto-Approve</th></tr></thead><tbody></tbody></table></div>
+          </div>
+        </div>
+        <div class="grid" style="margin-top:20px">
+          <div class="card" style="grid-column: 1 / -1;">
+            <h3>Runs</h3>
+            <div id="auto-runs" class="table-wrap"><table id="auto-runs-table"><thead><tr><th>ID</th><th>Status</th><th>Proof</th><th>Requests</th><th>Run At</th></tr></thead><tbody></tbody></table></div>
+          </div>
+        </div>
+      </section>
+
+      <section id="assets-expenses" class="section">
+        <div class="grid">
+          <div class="card">
+            <h2>Add Asset</h2>
+            <p>Real estate, vehicles, equipment, accounts, etc. with VIN/serial/deed/account identifiers.</p>
+            <div class="form-row">
+              <div><label>Category</label><select id="asset-category"><option value="real_estate">Real Estate</option><option value="vehicle">Vehicle</option><option value="equipment">Equipment</option><option value="bank_account">Bank Account</option><option value="investment">Investment</option><option value="crypto">Crypto Wallet</option><option value="other">Other</option></select></div>
+              <div><label>Name</label><input type="text" id="asset-name" placeholder="2024 Tahoe" /></div>
+              <div><label>Identifier (VIN / serial / deed / account)</label><input type="text" id="asset-identifier" placeholder="1HGBH41JXMN109186" /></div>
+              <div><label>Current Value USD</label><input type="number" id="asset-value" value="0" step="0.01" /></div>
+              <div><label>Owner</label><input type="text" id="asset-owner" placeholder="Beneficiary / Trustee" /></div>
+              <div><label>Linked Source Type</label><select id="asset-source-type"><option value=""></option><option value="treasury">Treasury</option><option value="cash">Cash</option><option value="trust">Trust Accounting</option><option value="bond">Bond/Fixed Income</option><option value="sub_ledger">Sub-Ledger</option><option value="core_banking">Core Banking</option></select></div>
+              <div><label>Linked Source Account ID</label><input type="text" id="asset-source-account" placeholder="Account ID" /></div>
+            </div>
+            <div><label>Description / Notes</label><textarea id="asset-description" rows="2"></textarea></div>
+            <div class="actions"><button class="btn" onclick="addAsset()">Add Asset</button></div>
+            <div id="asset-result" class="status hidden" style="white-space:pre-wrap;word-break:break-word"></div>
+          </div>
+          <div class="card">
+            <h2>Add Liability</h2>
+            <p>Loans, mortgages, vendor payables, taxes owed, credit lines.</p>
+            <div class="form-row">
+              <div><label>Category</label><select id="liability-category"><option value="loan">Loan</option><option value="mortgage">Mortgage</option><option value="tax">Tax Owed</option><option value="vendor_payable">Vendor Payable</option><option value="credit_line">Credit Line</option><option value="other">Other</option></select></div>
+              <div><label>Name</label><input type="text" id="liability-name" placeholder="Mortgage - Main St" /></div>
+              <div><label>Identifier (loan # / deed ref)</label><input type="text" id="liability-identifier" placeholder="LOAN-12345" /></div>
+              <div><label>Amount Owed USD</label><input type="number" id="liability-value" value="0" step="0.01" /></div>
+              <div><label>Owner / Payee</label><input type="text" id="liability-owner" placeholder="Lender / Vendor" /></div>
+              <div><label>Linked Source Type</label><select id="liability-source-type"><option value=""></option><option value="treasury">Treasury</option><option value="cash">Cash</option><option value="trust">Trust Accounting</option><option value="bond">Bond/Fixed Income</option><option value="sub_ledger">Sub-Ledger</option><option value="core_banking">Core Banking</option></select></div>
+              <div><label>Linked Source Account ID</label><input type="text" id="liability-source-account" placeholder="Account ID" /></div>
+            </div>
+            <div><label>Description / Notes</label><textarea id="liability-description" rows="2"></textarea></div>
+            <div class="actions"><button class="btn" onclick="addLiability()">Add Liability</button></div>
+            <div id="liability-result" class="status hidden" style="white-space:pre-wrap;word-break:break-word"></div>
+          </div>
+        </div>
+        <div class="grid" style="margin-top:20px">
+          <div class="card" style="grid-column: 1 / -1;">
+            <h2>Add Expense</h2>
+            <p>Track expenses against assets/liabilities and pay them through the distribution engine.</p>
+            <div class="form-row">
+              <div><label>Expense Type</label><select id="expense-type"><option value="maintenance">Maintenance</option><option value="legal">Legal</option><option value="tax">Tax</option><option value="distribution">Distribution</option><option value="interest">Interest</option><option value="fee">Fee</option><option value="other">Other</option></select></div>
+              <div><label>Amount USD</label><input type="number" id="expense-amount" value="0" step="0.01" /></div>
+              <div><label>Payee</label><input type="text" id="expense-payee" placeholder="Vendor / Beneficiary" /></div>
+              <div><label>Payer</label><input type="text" id="expense-payer" placeholder="Trust account" /></div>
+              <div><label>Linked Asset/Liability ID</label><input type="text" id="expense-asset-id" placeholder="AST-... / LIA-..." /></div>
+              <div><label>Receipt URL</label><input type="text" id="expense-receipt" placeholder="https://..." /></div>
+            </div>
+            <div><label>Description</label><textarea id="expense-description" rows="2"></textarea></div>
+            <div class="actions"><button class="btn" onclick="addExpense()">Add Expense</button></div>
+            <div id="expense-result" class="status hidden" style="white-space:pre-wrap;word-break:break-word"></div>
+          </div>
+        </div>
+        <div class="grid" style="margin-top:20px">
+          <div class="card" style="grid-column: 1 / -1;">
+            <h3>Totals</h3>
+            <div id="expense-totals" class="status">Loading…</div>
+          </div>
+        </div>
+        <div class="grid" style="margin-top:20px">
+          <div class="card" style="grid-column: 1 / -1;">
+            <h3>Assets</h3>
+            <div id="assets-list" class="table-wrap"><table id="assets-table"><thead><tr><th>Type</th><th>Category</th><th>Name</th><th>Identifier</th><th>Value</th><th>Status</th><th>Owner</th></tr></thead><tbody></tbody></table></div>
+          </div>
+        </div>
+        <div class="grid" style="margin-top:20px">
+          <div class="card" style="grid-column: 1 / -1;">
+            <h3>Liabilities</h3>
+            <div id="liabilities-list" class="table-wrap"><table id="liabilities-table"><thead><tr><th>Category</th><th>Name</th><th>Identifier</th><th>Amount</th><th>Status</th><th>Owner</th></tr></thead><tbody></tbody></table></div>
+          </div>
+        </div>
+        <div class="grid" style="margin-top:20px">
+          <div class="card" style="grid-column: 1 / -1;">
+            <h3>Expenses</h3>
+            <div id="expenses-list" class="table-wrap"><table id="expenses-table"><thead><tr><th>Type</th><th>Amount</th><th>Payee</th><th>Status</th><th>Asset/Liability</th><th>Actions</th></tr></thead><tbody></tbody></table></div>
+          </div>
+        </div>
+      </section>
+
       <section id="finops-ai" class="section">
         <div class="grid">
           <div class="card" style="grid-column: 1 / -1;">
@@ -1013,6 +1151,8 @@
       if (name === 'sovereign-trust') { loadSovereignTrust(); loadAAReadiness(); }
       if (name === 'asset-debt') loadAssetDebtProofs();
       if (name === 'distribution-requests') { loadDistributionRequests(); }
+      if (name === 'automation') { loadAutomationTemplates(); loadAutomationRuns(); }
+      if (name === 'assets-expenses') { loadExpenseTotals(); loadAssets(); loadLiabilities(); loadExpenses(); }
     };
 
     async function loadUsers() {
@@ -2083,6 +2223,212 @@
           ptb.appendChild(tr);
         });
       } catch (e) { showToast(e.message, true); }
+    };
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // One-Click Automation UI
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    window.runOneClickAutomation = async function() {
+      try {
+        let signatures = [];
+        const rawSigs = el('auto-signatures').value.trim();
+        if (rawSigs) signatures = JSON.parse(rawSigs);
+        let beneficiaries = [];
+        const rawBens = el('auto-beneficiaries').value.trim();
+        if (rawBens) beneficiaries = JSON.parse(rawBens);
+        const body = {
+          templateId: el('auto-template-name').value.trim() || undefined,
+          name: el('auto-template-name').value.trim() || undefined,
+          type: el('auto-type').value,
+          sourceType: el('auto-source-type').value,
+          sourceAccountId: el('auto-source-account').value.trim() || undefined,
+          safeId: el('auto-safe-id').value.trim() || undefined,
+          amountUsd: el('auto-amount').value,
+          destinationAddress: el('auto-destination').value.trim() || undefined,
+          beneficiaryEmail: el('auto-ben-email').value.trim() || undefined,
+          beneficiaryName: el('auto-ben-name').value.trim() || undefined,
+          beneficiaries,
+          memo: el('auto-memo').value.trim(),
+          includeHardAssets: el('auto-hard-assets').checked,
+          trusteeSignatures: signatures.length ? signatures : undefined,
+          autoExecute: el('auto-execute').checked,
+        };
+        const res = await api('/api/dapp/automations/one-click-distribution', { method: 'POST', body: JSON.stringify(body) });
+        const r = res.data;
+        const reqIds = (r.run && r.run.request_ids || []).join(', ');
+        setText('auto-result', `Run ${r.run.id}\nStatus: ${r.run.status}\nProof: ${r.proof ? r.proof.id : '—'}\nRequests: ${reqIds}\nErrors: ${(r.errors || []).join('; ') || 'none'}`, false);
+        loadAutomationRuns();
+        loadDistributionRequests();
+      } catch (e) { setText('auto-result', e.message, true); }
+    };
+
+    window.loadAutomationTemplates = async function() {
+      try {
+        const res = await api('/api/dapp/automations/templates');
+        const tb = el('auto-templates-table').querySelector('tbody'); tb.innerHTML = '';
+        (res.data || []).forEach(t => {
+          const tr = document.createElement('tr');
+          tr.innerHTML = `<td>${esc(t.name)}</td><td>${esc(t.type)}</td><td>${esc(t.source_type || '—')}:${esc(t.source_account_id || '—')}</td><td>$${Number(t.amount_usd || 0).toFixed(2)}</td><td>${t.auto_approve ? 'Yes' : 'No'}</td>`;
+          tb.appendChild(tr);
+        });
+      } catch (e) { showToast('Templates error: ' + e.message, true); }
+    };
+
+    window.loadAutomationRuns = async function() {
+      try {
+        const res = await api('/api/dapp/automations/runs');
+        const tb = el('auto-runs-table').querySelector('tbody'); tb.innerHTML = '';
+        (res.data || []).forEach(r => {
+          const tr = document.createElement('tr');
+          const reqIds = ((r.request_ids || []).map(i => i.slice(0,10)+'…')).join(', ');
+          tr.innerHTML = `<td class="mono">${esc(r.id.slice(0,16))}…</td><td><span class="tag ${r.status}">${esc(r.status)}</span></td><td class="mono">${esc((r.proof_id || '').slice(0,12))}…</td><td>${esc(reqIds || '—')}</td><td>${new Date(r.created_at).toLocaleString()}</td>`;
+          tb.appendChild(tr);
+        });
+      } catch (e) { showToast('Runs error: ' + e.message, true); }
+    };
+
+    window.approveExecuteAutomationRun = async function() {
+      try {
+        const runId = el('auto-run-id').value.trim();
+        if (!runId) throw new Error('Run ID required');
+        const signatures = JSON.parse(el('auto-run-signatures').value.trim() || '[]');
+        const res = await api(`/api/dapp/automations/runs/${encodeURIComponent(runId)}/approve-execute`, { method: 'POST', body: JSON.stringify({ trusteeSignatures: signatures }) });
+        setText('auto-run-result', `Approvals: ${(res.data.approvals || []).length}\nExecutions: ${(res.data.executions || []).length}`, false);
+        loadAutomationRuns();
+        loadDistributionRequests();
+      } catch (e) { setText('auto-run-result', e.message, true); }
+    };
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // Asset / Liability / Expense UI
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    window.addAsset = async function() {
+      try {
+        const body = {
+          category: el('asset-category').value,
+          name: el('asset-name').value.trim(),
+          identifier: el('asset-identifier').value.trim(),
+          description: el('asset-description').value.trim(),
+          amountUsd: el('asset-value').value,
+          owner: el('asset-owner').value.trim(),
+          linkedSourceType: el('asset-source-type').value || undefined,
+          linkedSourceAccountId: el('asset-source-account').value.trim() || undefined,
+        };
+        const res = await api('/api/dapp/assets', { method: 'POST', body: JSON.stringify(body) });
+        setText('asset-result', `Asset added: ${res.data.id}`, false);
+        loadAssets(); loadExpenseTotals();
+      } catch (e) { setText('asset-result', e.message, true); }
+    };
+
+    window.addLiability = async function() {
+      try {
+        const body = {
+          category: el('liability-category').value,
+          name: el('liability-name').value.trim(),
+          identifier: el('liability-identifier').value.trim(),
+          description: el('liability-description').value.trim(),
+          amountUsd: el('liability-value').value,
+          owner: el('liability-owner').value.trim(),
+          linkedSourceType: el('liability-source-type').value || undefined,
+          linkedSourceAccountId: el('liability-source-account').value.trim() || undefined,
+        };
+        const res = await api('/api/dapp/liabilities', { method: 'POST', body: JSON.stringify(body) });
+        setText('liability-result', `Liability added: ${res.data.id}`, false);
+        loadLiabilities(); loadExpenseTotals();
+      } catch (e) { setText('liability-result', e.message, true); }
+    };
+
+    window.addExpense = async function() {
+      try {
+        const body = {
+          expenseType: el('expense-type').value,
+          amountUsd: el('expense-amount').value,
+          payee: el('expense-payee').value.trim(),
+          payer: el('expense-payer').value.trim(),
+          assetLiabilityId: el('expense-asset-id').value.trim() || undefined,
+          description: el('expense-description').value.trim(),
+          receiptUrl: el('expense-receipt').value.trim() || undefined,
+        };
+        const res = await api('/api/dapp/expenses', { method: 'POST', body: JSON.stringify(body) });
+        setText('expense-result', `Expense added: ${res.data.id}`, false);
+        loadExpenses(); loadExpenseTotals();
+      } catch (e) { setText('expense-result', e.message, true); }
+    };
+
+    window.loadAssets = async function() {
+      try {
+        const res = await api('/api/dapp/assets');
+        const tb = el('assets-table').querySelector('tbody'); tb.innerHTML = '';
+        (res.data || []).forEach(r => {
+          const tr = document.createElement('tr');
+          tr.innerHTML = `<td>Asset</td><td>${esc(r.category)}</td><td>${esc(r.name)}</td><td class="mono">${esc(r.identifier || '—')}</td><td>$${(Number(r.amount_cents || 0)/100).toFixed(2)}</td><td><span class="tag ${r.status}">${esc(r.status)}</span></td><td>${esc(r.owner || '—')}</td>`;
+          tb.appendChild(tr);
+        });
+      } catch (e) { showToast('Assets error: ' + e.message, true); }
+    };
+
+    window.loadLiabilities = async function() {
+      try {
+        const res = await api('/api/dapp/liabilities');
+        const tb = el('liabilities-table').querySelector('tbody'); tb.innerHTML = '';
+        (res.data || []).forEach(r => {
+          const tr = document.createElement('tr');
+          tr.innerHTML = `<td>${esc(r.category)}</td><td>${esc(r.name)}</td><td class="mono">${esc(r.identifier || '—')}</td><td>$${(Number(r.amount_cents || 0)/100).toFixed(2)}</td><td><span class="tag ${r.status}">${esc(r.status)}</span></td><td>${esc(r.owner || '—')}</td>`;
+          tb.appendChild(tr);
+        });
+      } catch (e) { showToast('Liabilities error: ' + e.message, true); }
+    };
+
+    window.loadExpenses = async function() {
+      try {
+        const res = await api('/api/dapp/expenses');
+        const tb = el('expenses-table').querySelector('tbody'); tb.innerHTML = '';
+        (res.data || []).forEach(r => {
+          const tr = document.createElement('tr');
+          const actions = r.status === 'pending' || r.status === 'approved'
+            ? `<button class="btn btn-sm" onclick="payExpense('${esc(r.id)}')">Pay</button> <button class="btn btn-sm" onclick="approveExpenseRecord('${esc(r.id)}')">Approve</button> <button class="btn btn-sm" onclick="rejectExpenseRecord('${esc(r.id)}')">Reject</button>`
+            : '';
+          tr.innerHTML = `<td>${esc(r.expense_type)}</td><td>$${(Number(r.amount_cents || 0)/100).toFixed(2)}</td><td>${esc(r.payee || '—')}</td><td><span class="tag ${r.status}">${esc(r.status)}</span></td><td class="mono">${esc(r.asset_liability_id || '—').slice(0,12)}…</td><td>${actions}</td>`;
+          tb.appendChild(tr);
+        });
+      } catch (e) { showToast('Expenses error: ' + e.message, true); }
+    };
+
+    window.approveExpenseRecord = async function(id) {
+      try {
+        await api(`/api/dapp/expenses/${encodeURIComponent(id)}/approve`, { method: 'POST', body: '{}' });
+        loadExpenses();
+      } catch (e) { showToast(e.message, true); }
+    };
+
+    window.rejectExpenseRecord = async function(id) {
+      try {
+        await api(`/api/dapp/expenses/${encodeURIComponent(id)}/reject`, { method: 'POST', body: JSON.stringify({ reason: 'Rejected from UI' }) });
+        loadExpenses();
+      } catch (e) { showToast(e.message, true); }
+    };
+
+    window.payExpense = async function(id) {
+      try {
+        const destination = prompt('Enter destination address for this expense payment:');
+        if (!destination) return;
+        const safeId = prompt('Enter Safe ID to pay from:');
+        const sourceType = prompt('Source type (treasury/cash/etc):') || 'treasury';
+        const sourceAccountId = prompt('Source account ID:') || 'TREASURY_HOT';
+        const res = await api(`/api/dapp/expenses/${encodeURIComponent(id)}/pay`, { method: 'POST', body: JSON.stringify({ destinationAddress: destination, safeId, sourceType, sourceAccountId }) });
+        showToast(`Expense paid: ${res.data.expense.request_id}`, false);
+        loadExpenses(); loadDistributionRequests();
+      } catch (e) { showToast(e.message, true); }
+    };
+
+    window.loadExpenseTotals = async function() {
+      try {
+        const res = await api('/api/dapp/expense-totals');
+        const d = res.data;
+        el('expense-totals').textContent = `Assets: $${(d.totalAssetsCents/100).toFixed(2)} | Liabilities: $${(d.totalLiabilitiesCents/100).toFixed(2)} | Net Worth: $${(d.netWorthCents/100).toFixed(2)} | Expenses: $${(d.totalExpensesCents/100).toFixed(2)}`;
+      } catch (e) { el('expense-totals').textContent = 'Totals error: ' + e.message; }
     };
 
     document.addEventListener('DOMContentLoaded', () => {

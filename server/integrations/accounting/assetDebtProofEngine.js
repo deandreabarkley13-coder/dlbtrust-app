@@ -155,7 +155,7 @@ class AssetDebtProofEngine {
    * Compute an asset/debt proof from live source-of-funds balances.
    * `liabilities` is an array of { name, amount_cents, type? }.
    */
-  static async computeProof({ liabilities = [], memo = '', includePendingLiabilities = false, createdBy = 'system' } = {}) {
+  static async computeProof({ liabilities = [], memo = '', includePendingLiabilities = false, includeHardAssets = false, createdBy = 'system' } = {}) {
     await this.ensureTables();
 
     const assets = [];
@@ -179,6 +179,49 @@ class AssetDebtProofEngine {
         }
       } catch (e) {
         console.warn('[AssetDebtProofEngine] listSourceBalances failed:', e.message);
+      }
+    }
+
+    // Include hard assets/liabilities (real estate, vehicles, equipment, loans, etc.)
+    if (includeHardAssets) {
+      let ExpenseManagementEngine;
+      try { ExpenseManagementEngine = require('./expenseManagementEngine').ExpenseManagementEngine; } catch (e) {}
+      if (!ExpenseManagementEngine) {
+        console.warn('[AssetDebtProofEngine] ExpenseManagementEngine not available for hard assets');
+      }
+      try {
+        const hardAssets = await ExpenseManagementEngine.listRecords({ type: 'asset', status: 'active', limit: 10000 });
+        for (const ha of hardAssets) {
+          const amountCents = Number(ha.amount_cents || 0);
+          if (amountCents === 0) continue;
+          assets.push({
+            record_type: 'hard_asset',
+            category: ha.category,
+            name: ha.name,
+            identifier: ha.identifier,
+            linked_source_type: ha.linked_source_type,
+            linked_source_account_id: ha.linked_source_account_id,
+            balance_cents: amountCents,
+            currency: ha.currency || 'USD',
+          });
+          totalAssetsCents += amountCents;
+        }
+        const hardLiabilities = await ExpenseManagementEngine.listRecords({ type: 'liability', status: 'active', limit: 10000 });
+        for (const hl of hardLiabilities) {
+          const amountCents = Number(hl.amount_cents || 0);
+          if (amountCents === 0) continue;
+          liabilities.push({
+            record_type: 'hard_liability',
+            category: hl.category,
+            name: hl.name,
+            identifier: hl.identifier,
+            amount_cents: amountCents,
+            currency: hl.currency || 'USD',
+            memo: hl.description || '',
+          });
+        }
+      } catch (e) {
+        console.warn('[AssetDebtProofEngine] include hard assets failed:', e.message);
       }
     }
 

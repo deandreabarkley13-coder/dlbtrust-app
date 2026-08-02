@@ -17,6 +17,8 @@ const { DocumentEngine } = require('../integrations/documents/documentEngine');
 const { ModuleFundingEngine } = require('../integrations/dapp/moduleFundingEngine');
 const { SovereignTrustEngine } = require('../integrations/dapp/sovereignTrustEngine');
 const { AccountAbstractionEngine } = require('../integrations/dapp/accountAbstractionEngine');
+const { ExpenseManagementEngine } = require('../integrations/accounting/expenseManagementEngine');
+const { DisbursementAutomationEngine } = require('../integrations/dapp/disbursementAutomationEngine');
 const { requireAuth, writeRateLimiter } = require('../integrations/auth/securityMiddleware');
 
 const router = express.Router();
@@ -713,6 +715,98 @@ router.post('/distribution-requests/:id/execute', operatorAuth, writeRateLimiter
 
 router.get('/beneficiary/activity', operatorAuth, async (req, res) => {
   try { res.json({ success: true, data: await DistributionRequestEngine.getBeneficiaryActivity(req.query.email) }); } catch (err) { sendError(res, err); }
+});
+
+// ═════════════════════════════════════════════════════════════════════════════
+// Asset / Liability / Expense Management
+// ═════════════════════════════════════════════════════════════════════════════
+
+router.get('/assets', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await ExpenseManagementEngine.listRecords({ type: 'asset', category: req.query.category, status: req.query.status, limit: Number(req.query.limit) || 100 }) }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/assets', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try { res.status(201).json({ success: true, data: await ExpenseManagementEngine.createRecord({ ...req.body, type: 'asset', createdBy: req.user?.email }) }); } catch (err) { sendError(res, err); }
+});
+
+router.get('/liabilities', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await ExpenseManagementEngine.listRecords({ type: 'liability', category: req.query.category, status: req.query.status, limit: Number(req.query.limit) || 100 }) }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/liabilities', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try { res.status(201).json({ success: true, data: await ExpenseManagementEngine.createRecord({ ...req.body, type: 'liability', createdBy: req.user?.email }) }); } catch (err) { sendError(res, err); }
+});
+
+router.get('/assets/:id', operatorAuth, async (req, res) => {
+  try {
+    const rec = await ExpenseManagementEngine.getRecord(req.params.id);
+    if (!rec) return res.status(404).json({ success: false, error: 'Not found' });
+    res.json({ success: true, data: rec });
+  } catch (err) { sendError(res, err); }
+});
+
+router.put('/assets/:id', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try { res.json({ success: true, data: await ExpenseManagementEngine.updateRecord(req.params.id, req.body) }); } catch (err) { sendError(res, err); }
+});
+
+router.delete('/assets/:id', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try { res.json({ success: true, data: await ExpenseManagementEngine.deleteRecord(req.params.id) }); } catch (err) { sendError(res, err); }
+});
+
+router.get('/expenses', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await ExpenseManagementEngine.listExpenses({ status: req.query.status, assetLiabilityId: req.query.assetLiabilityId, limit: Number(req.query.limit) || 100 }) }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/expenses', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try { res.status(201).json({ success: true, data: await ExpenseManagementEngine.createExpense({ ...req.body, createdBy: req.user?.email }) }); } catch (err) { sendError(res, err); }
+});
+
+router.get('/expenses/:id', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await ExpenseManagementEngine.getExpense(req.params.id) }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/expenses/:id/approve', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try { res.json({ success: true, data: await ExpenseManagementEngine.approveExpense(req.params.id, { ...req.body, approvedBy: req.user?.email }) }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/expenses/:id/reject', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try { res.json({ success: true, data: await ExpenseManagementEngine.rejectExpense(req.params.id, req.body) }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/expenses/:id/pay', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try { res.json({ success: true, data: await ExpenseManagementEngine.payExpense(req.params.id, { ...req.body, createdBy: req.user?.email }) }); } catch (err) { sendError(res, err); }
+});
+
+router.get('/expense-totals', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await ExpenseManagementEngine.getTotals() }); } catch (err) { sendError(res, err); }
+});
+
+// ═════════════════════════════════════════════════════════════════════════════
+// One-Click Distribution / Disbursement Automation
+// ═════════════════════════════════════════════════════════════════════════════
+
+router.get('/automations/templates', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await DisbursementAutomationEngine.listTemplates(Number(req.query.limit) || 100) }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/automations/templates', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try { res.status(201).json({ success: true, data: await DisbursementAutomationEngine.createTemplate({ ...req.body, createdBy: req.user?.email }) }); } catch (err) { sendError(res, err); }
+});
+
+router.get('/automations/runs', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await DisbursementAutomationEngine.listRuns(Number(req.query.limit) || 100) }); } catch (err) { sendError(res, err); }
+});
+
+router.get('/automations/runs/:id', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await DisbursementAutomationEngine.getRun(req.params.id) }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/automations/one-click-distribution', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try { res.status(201).json({ success: true, data: await DisbursementAutomationEngine.runOneClickDistribution({ ...req.body, createdBy: req.user?.email }) }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/automations/runs/:id/approve-execute', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try { res.json({ success: true, data: await DisbursementAutomationEngine.approveAndExecuteRun(req.params.id, req.body) }); } catch (err) { sendError(res, err); }
 });
 
 module.exports = router;
