@@ -78,6 +78,16 @@ description: How to end-to-end test the DLB Trust treasury dashboard, including 
 - Messaging auto-creates threads on task creation, each approval, and execution; open one with `openThread(<id>)`.
 - Documents list includes `FinOps Payment Confirmation` and `Stablecoin Receipt`s; create a confirmation with `createDocument()`.
 
+## Core Modules funding abstraction (deployed dApp)
+
+- dApp lives at `/dapp`; nav tab **Core Modules** shows grouped module balances (Treasury, Cash Management, Trust Accounting, Bond/Fixed Income, Core Banking, Sub-Ledger, CRM, Tax, Documents) from `GET /api/dapp/modules`.
+- Internal transfer: `internalModuleTransfer()` posts to `/api/dapp/modules/transfer` with `{fromType, fromAccountId, toType, toAccountId, amount, memo}`. For cash, `CashEngine.transfer` is used.
+- Fund External Rail: `fundExternalRail()` posts to `/api/dapp/modules/fund-rail` with `{sourceType, sourceAccountId, rail, amount, memo, railOptions}`.
+  - `cashapp` with `railOptions.cashtag` returns a QR `data:image/png;base64,...` and a `https://cash.app/$<cashtag>/<amount>` deep link.
+  - `googlewallet` with `railOptions.email` and `railOptions.walletAddress` returns an `https://pay.google.com/gp/v/save/...` JWT link.
+  - `stablecoin_dex` requires amount ≥ $0.01 (1 cent); the request can hang/take long because it mints DLBUSD and swaps on Sepolia live. For tiny tests prefer an existing `poolAddress` and `createPoolIfMissing:false` if gas is low.
+- Note: `STABLECOIN_CASH_HOLDING_ACCOUNT` on the deployed instance may be mapped to `CA-RESERVE`, so rail reservations from `CA-OPERATING` can appear as credits to `CA-RESERVE` in the source-of-funds balance view.
+
 ## Live DeFi dApp bond-token / DEX flow (Sepolia, DAPP_SHADOW=false)
 
 - dApp lives at `/dapp`; nav tab **Bond Tokens** exposes Create Token, Mint, DEX Quote and DEX Swap UI.
