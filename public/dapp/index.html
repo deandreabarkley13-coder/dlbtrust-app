@@ -149,7 +149,7 @@
           <div class="form-row">
             <input type="email" id="new-user-email" placeholder="user@example.com" />
             <input type="text" id="new-user-name" placeholder="Full name" />
-            <select id="new-user-role"><option value="beneficiary">Beneficiary</option><option value="trustee_maker">Trustee Maker</option><option value="trustee_admin">Trustee Admin</option></select>
+            <select id="new-user-role"><option value="beneficiary">Beneficiary</option><option value="trustee_maker">Trustee Maker</option><option value="trustee_checker">Trustee Checker</option><option value="trustee_admin">Trustee Admin</option></select>
             <button class="btn" onclick="createPortalUser()">Add User</button>
           </div>
           <div id="portal-users-list" class="table-wrap" style="margin-top:10px"></div>
@@ -2529,7 +2529,7 @@
           const actions = r.status === 'approved'
             ? `<button class="btn btn-sm" onclick="executeDistributionRequest('${esc(r.id)}')">Execute</button>`
             : r.status === 'requested' || r.status === 'under_review'
-              ? `<button class="btn btn-sm" onclick="approveDistributionRequest('${esc(r.id)}','administration')">Admin Approve</button> <button class="btn btn-sm" onclick="approveDistributionRequest('${esc(r.id)}','distribution')">Dist Approve</button> <button class="btn btn-sm" onclick="rejectDistributionRequest('${esc(r.id)}')">Reject</button>`
+              ? `<button class="btn btn-sm" onclick="approveDistributionRequest('${esc(r.id)}','maker','annrobinson9800@yahoo.com')">Maker Approve</button> <button class="btn btn-sm" onclick="approveDistributionRequest('${esc(r.id)}','checker','dbnettrust@gmail.com')">Checker Approve</button> <button class="btn btn-sm" onclick="rejectDistributionRequest('${esc(r.id)}')">Reject</button>`
               : '';
           tr.innerHTML = `<td class="mono">${esc(r.id.slice(0,16))}…</td><td>${esc(r.type)}</td><td>${esc(r.beneficiary_name || r.beneficiary_email || '—')}</td><td>$${(r.amount_cents/100).toFixed(2)}</td><td><span class="tag ${r.status}">${esc(r.status)}</span></td><td>${proofCell}</td><td>${actions}</td>`;
           tb.appendChild(tr);
@@ -2537,10 +2537,10 @@
       } catch (e) { showToast('Distribution requests error: ' + e.message, true); }
     };
 
-    window.approveDistributionRequest = async function(requestId, role) {
+    window.approveDistributionRequest = async function(requestId, role, email) {
       try {
-        const email = role === 'administration' ? 'deandreabarkley13@gmail.com' : 'annrobinson9800@yahoo.com';
-        const res = await api(`/api/dapp/distribution-requests/${encodeURIComponent(requestId)}/approve`, { method: 'POST', body: JSON.stringify({ role, trusteeEmail: email }) });
+        const trusteeEmail = email || (role === 'maker' ? 'annrobinson9800@yahoo.com' : 'dbnettrust@gmail.com');
+        const res = await api(`/api/dapp/distribution-requests/${encodeURIComponent(requestId)}/approve`, { method: 'POST', body: JSON.stringify({ role, trusteeEmail }) });
         showToast(`Request ${res.data.status}`, false);
         loadDistributionRequests();
       } catch (e) { showToast(e.message, true); }

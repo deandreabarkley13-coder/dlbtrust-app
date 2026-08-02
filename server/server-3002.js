@@ -118,14 +118,20 @@ try { app.use('/api/hce', require(path.join(HD, 'server', 'routes', 'hce'))); co
 // Trustee Agent & Bookkeeping Agent
 try { app.use('/api/agents', require(path.join(HD, 'server', 'routes', 'agents'))); console.log('[agents] loaded'); } catch(e) { console.warn('[agents]', e.message); }
 
-// DeFi dApp — serve new dApp at root, /dapp, and /dashboard; legacy treasury dashboard at /treasury
+// DeFi dApp — serve new dApp at /dapp and /dashboard; landing page at root; legacy treasury dashboard at /treasury
 function serveDapp(req, res) {
   res.set('Cache-Control', 'no-cache, no-store, must-revalidate');
   res.set('Pragma', 'no-cache');
   res.set('Expires', '0');
   res.sendFile(path.join(HD, 'public', 'dapp', 'index.html'));
 }
-app.get('/', serveDapp);
+function serveLanding(req, res) {
+  res.set('Cache-Control', 'no-cache, no-store, must-revalidate');
+  res.set('Pragma', 'no-cache');
+  res.set('Expires', '0');
+  res.sendFile(path.join(HD, 'public', 'landing', 'index.html'));
+}
+app.get('/', serveLanding);
 app.get('/dapp', serveDapp);
 app.get('/dashboard', serveDapp);
 app.get('/treasury', function(req, res) {

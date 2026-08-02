@@ -900,4 +900,95 @@ router.get('/funding/deposit-invoice', operatorAuth, async (req, res) => {
   try { res.json({ success: true, data: await FundingEngine.getDepositInvoice(req.query) }); } catch (err) { sendError(res, err); }
 });
 
+// ═════════════════════════════════════════════════════════════════════════════
+// Public landing / beneficiary request entry point
+// ═════════════════════════════════════════════════════════════════════════════
+
+router.post('/public/message', writeRateLimiter(), async (req, res) => {
+  try {
+    const { name, email, body } = req.body || {};
+    if (!name || !email || !body) throw new Error('Name, email and message body are required');
+    if (!MessagingEngine) throw new Error('Messaging engine unavailable');
+    const thread = await MessagingEngine.notify({
+      subject: `Landing page message from ${name}`,
+      body: `From: ${name} <${email}>\n\n${body}`,
+      participants: [
+        { name: 'Malissa Robinson', email: 'annrobinson9800@yahoo.com', role: 'trustee_maker' },
+        { name: 'Checker Trust', email: 'dbnettrust@gmail.com', role: 'trustee_checker' },
+      ],
+      sender: email,
+      metadata: { source: 'landing', name, email },
+    });
+    res.json({ success: true, data: thread });
+  } catch (err) { sendError(res, err); }
+});
+
+router.post('/public/request', writeRateLimiter(), async (req, res) => {
+  try {
+    const { beneficiaryName, beneficiaryEmail, beneficiaryPhone, beneficiaryWallet, amountUsd, message } = req.body || {};
+    if (!beneficiaryEmail) throw new Error('Beneficiary email is required');
+    if (!amountUsd || Number(amountUsd) <= 0) throw new Error('A positive amount is required');
+
+    // Ensure beneficiary user exists
+    let beneficiary = await DappEngine.getUserByEmail(beneficiaryEmail).catch(() => null);
+    if (!beneficiary) {
+      beneficiary = await DappEngine.createUser({ email: beneficiaryEmail, name: beneficiaryName || beneficiaryEmail.split('@')[0], phone: beneficiaryPhone, roles: ['beneficiary'], activeRole: 'beneficiary' });
+    }
+    if (beneficiaryWallet) {
+      await DappEngine.linkWallet({ email: beneficiaryEmail, walletAddress: beneficiaryWallet, provider: 'manual' }).catch(() => {});
+    }
+
+    // Ensure maker and checker portal users exist
+    const makerEmail = 'annrobinson9800@yahoo.com';
+    const checkerEmail = 'dbnettrust@gmail.com';
+    let maker = await DappEngine.getUserByEmail(makerEmail).catch(() => null);
+    let checker = await DappEngine.getUserByEmail(checkerEmail).catch(() => null);
+    if (!maker) maker = await DappEngine.createUser({ email: makerEmail, name: 'Malissa Robinson', roles: ['trustee_maker', 'beneficiary'], activeRole: 'trustee_maker' });
+    if (!checker) checker = await DappEngine.createUser({ email: checkerEmail, name: 'Checker Trust', roles: ['trustee_checker', 'beneficiary'], activeRole: 'trustee_checker' });
+
+    // Generate one-time login PINs for maker and checker (sent to email in production)
+    const makerOtp = await DappEngine.generateOtp(makerEmail);
+    const checkerOtp = await DappEngine.generateOtp(checkerEmail);
+
+    // Kick off the full automation pipeline: proof -> request -> approval/execution
+    const run = await DisbursementAutomationEngine.runOneClickDistribution({
+      name: `Landing request from ${beneficiaryName || beneficiaryEmail}`,
+      type: 'distribution',
+      beneficiaryEmail,
+      beneficiaryName: beneficiaryName || beneficiaryEmail.split('@')[0],
+      amountUsd: Number(amountUsd).toFixed(2),
+      destinationAddress: beneficiaryWallet || '',
+      memo: message || `Landing request submitted by ${beneficiaryEmail}`,
+      autoExecute: false,
+      createdBy: beneficiaryEmail,
+    });
+
+    // Notify maker and checker with their PINs
+    if (MessagingEngine) {
+      try {
+        await MessagingEngine.notify({
+          subject: 'New beneficiary request — maker approval required',
+          body: `A new request was submitted by ${beneficiaryName || beneficiaryEmail} for $${Number(amountUsd).toFixed(2)}. Your one-time login PIN is: ${makerOtp.code}. Log in at the dApp to approve.`,
+          participants: [{ name: maker.name, email: makerEmail, role: 'trustee_maker' }],
+          referenceType: 'distribution_request',
+          referenceId: (run.requests && run.requests[0] && run.requests[0].id) || (run.run && run.run.id),
+          sender: 'system',
+        });
+      } catch (e) { console.warn('[public/request] maker notify failed:', e.message); }
+      try {
+        await MessagingEngine.notify({
+          subject: 'New beneficiary request — checker approval required',
+          body: `A new request was submitted by ${beneficiaryName || beneficiaryEmail} for $${Number(amountUsd).toFixed(2)}. Your one-time login PIN is: ${checkerOtp.code}. Log in at the dApp to approve.`,
+          participants: [{ name: checker.name, email: checkerEmail, role: 'trustee_checker' }],
+          referenceType: 'distribution_request',
+          referenceId: (run.requests && run.requests[0] && run.requests[0].id) || (run.run && run.run.id),
+          sender: 'system',
+        });
+      } catch (e) { console.warn('[public/request] checker notify failed:', e.message); }
+    }
+
+    res.json({ success: true, data: { run, beneficiary, pins: { maker: makerOtp.code, checker: checkerOtp.code } } });
+  } catch (err) { sendError(res, err); }
+});
+
 module.exports = router;

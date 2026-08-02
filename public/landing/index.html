@@ -1,0 +1,256 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>DeAndrea LaVar Barkley Trust — Web3 DeFi Portal</title>
+<style>
+:root{
+  --bg:#0a0e1a;
+  --bg-2:#0f1424;
+  --surface:#111827;
+  --surface-2:#1f2937;
+  --border:#374151;
+  --primary:#3b82f6;
+  --primary-hover:#2563eb;
+  --primary-glow:rgba(59,130,246,.25);
+  --success:#10b981;
+  --warning:#f59e0b;
+  --danger:#ef4444;
+  --text:#f9fafb;
+  --text-muted:#9ca3af;
+  --gold:#d4af37;
+  --gold-glow:rgba(212,175,55,.18);
+  --radius:14px;
+}
+*{margin:0;padding:0;box-sizing:border-box}
+html{scroll-behavior:smooth}
+body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;background:var(--bg);color:var(--text);line-height:1.6}
+a{color:var(--primary);text-decoration:none}
+.header{position:sticky;top:0;z-index:50;background:rgba(10,14,26,.92);backdrop-filter:blur(10px);border-bottom:1px solid var(--border)}
+.header-inner{max-width:1200px;margin:0 auto;padding:1rem 1.5rem;display:flex;align-items:center;justify-content:space-between}
+.brand{display:flex;align-items:center;gap:.75rem}
+.brand-mark{width:40px;height:40px;border-radius:50%;background:linear-gradient(135deg,var(--gold),#b8860b);display:grid;place-items:center;font-weight:800;color:#0b0f1a}
+.brand-text h1{font-size:1.1rem;letter-spacing:.3px}
+.brand-text span{font-size:.75rem;color:var(--text-muted);display:block}
+.nav-links{display:flex;gap:1.5rem;align-items:center;font-size:.85rem}
+.nav-links a{color:var(--text-muted);transition:color .2s}
+.nav-links a:hover{color:var(--text)}
+.btn{display:inline-flex;align-items:center;justify-content:center;gap:.5rem;padding:.7rem 1.25rem;border-radius:var(--radius);border:none;font-size:.9rem;font-weight:600;cursor:pointer;transition:all .2s}
+.btn-primary{background:var(--primary);color:#fff;box-shadow:0 4px 16px var(--primary-glow)}
+.btn-primary:hover{background:var(--primary-hover);transform:translateY(-1px)}
+.btn-gold{background:var(--gold);color:#0b0f1a}
+.btn-gold:hover{filter:brightness(1.05);transform:translateY(-1px)}
+.hero{position:relative;overflow:hidden;padding:6rem 1.5rem 4rem;background:radial-gradient(circle at 70% 10%,rgba(59,130,246,.12),transparent 40%),radial-gradient(circle at 20% 80%,rgba(212,175,55,.1),transparent 35%)}
+.hero-inner{max-width:1200px;margin:0 auto;display:grid;grid-template-columns:1.1fr .9fr;gap:3rem;align-items:center}
+.hero h2{font-size:2.75rem;line-height:1.15;margin-bottom:1rem;background:linear-gradient(90deg,#fff,var(--gold));-webkit-background-clip:text;background-clip:text;color:transparent}
+.hero p{color:var(--text-muted);font-size:1.05rem;margin-bottom:2rem;max-width:520px}
+.hero-actions{display:flex;gap:1rem;flex-wrap:wrap}
+.card{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:1.75rem;box-shadow:0 10px 40px rgba(0,0,0,.2)}
+.card h3{font-size:1.15rem;margin-bottom:.75rem;display:flex;align-items:center;gap:.5rem}
+.card p{color:var(--text-muted);font-size:.9rem;margin-bottom:1rem}
+.form-group{margin-bottom:1rem}
+.form-group label{display:block;font-size:.7rem;color:var(--text-muted);text-transform:uppercase;letter-spacing:.5px;margin-bottom:.35rem}
+.form-group input,.form-group textarea,.form-group select{width:100%;padding:.75rem;background:var(--surface-2);border:1px solid var(--border);border-radius:8px;color:var(--text);font-size:.9rem}
+.form-group input:focus,.form-group textarea:focus,.form-group select:focus{outline:none;border-color:var(--primary);box-shadow:0 0 0 3px var(--primary-glow)}
+.form-group textarea{min-height:90px;resize:vertical}
+.form-row{display:grid;grid-template-columns:1fr 1fr;gap:1rem}
+.status{padding:.85rem 1rem;border-radius:8px;font-size:.9rem;margin-top:1rem;display:none}
+.status.show{display:block}
+.status.success{background:rgba(16,185,129,.12);color:var(--success);border:1px solid rgba(16,185,129,.25)}
+.status.error{background:rgba(239,68,68,.12);color:var(--danger);border:1px solid rgba(239,68,68,.25)}
+.pins{background:var(--bg-2);border:1px solid var(--border);border-radius:8px;padding:1rem;margin-top:1rem}
+.pins code{font-family:monospace;color:var(--gold);font-size:1rem}
+.section{padding:4rem 1.5rem}
+.section.alt{background:var(--bg-2)}
+.section-inner{max-width:1200px;margin:0 auto}
+.section h2{font-size:1.8rem;margin-bottom:1rem}
+.section p{color:var(--text-muted);max-width:720px}
+.grid-3{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:1.5rem;margin-top:2rem}
+.feature{display:flex;flex-direction:column;gap:.75rem}
+.feature-icon{width:44px;height:44px;border-radius:10px;background:var(--surface-2);border:1px solid var(--border);display:grid;place-items:center;color:var(--gold);font-size:1.25rem}
+.footer{border-top:1px solid var(--border);padding:2rem 1.5rem;text-align:center;color:var(--text-muted);font-size:.8rem}
+@media (max-width:900px){.hero-inner{grid-template-columns:1fr}.hero h2{font-size:2rem}}
+</style>
+</head>
+<body>
+<header class="header">
+  <div class="header-inner">
+    <div class="brand">
+      <div class="brand-mark">DLB</div>
+      <div class="brand-text">
+        <h1>DeAndrea LaVar Barkley Trust</h1>
+        <span>Web3 DeFi Trust Management</span>
+      </div>
+    </div>
+    <nav class="nav-links">
+      <a href="#request">Request Distribution</a>
+      <a href="#messaging">Message Trustees</a>
+      <a href="#portal">Trustee Portal</a>
+      <a href="/dapp" class="btn btn-primary" style="padding:.55rem 1rem">Launch dApp</a>
+    </nav>
+  </div>
+</header>
+
+<section class="hero">
+  <div class="hero-inner">
+    <div>
+      <h2>Self-Issued Sovereign Trust. On-Chain Transparency. Real-Time Distribution.</h2>
+      <p>A private, permissioned DeFi portal for trustees, makers, checkers, and beneficiaries. Submit requests, message the trust team, and track every disbursement from source-of-funds ledgers to your wallet.</p>
+      <div class="hero-actions">
+        <a href="#request" class="btn btn-primary">Request a Distribution</a>
+        <a href="/dapp" class="btn btn-gold">Trustee Login</a>
+      </div>
+    </div>
+    <div class="card" style="border-color:var(--gold);background:linear-gradient(135deg,var(--surface),rgba(212,175,55,.05))">
+      <h3>Portal Status</h3>
+      <p id="status-text">Loading live trust data…</p>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:1rem;margin-top:1rem">
+        <div><div class="text-muted" style="font-size:.75rem">Treasury</div><div style="font-size:1.25rem;font-weight:700;color:var(--success)">Active</div></div>
+        <div><div class="text-muted" style="font-size:.75rem">2-Sig Approval</div><div style="font-size:1.25rem;font-weight:700;color:var(--gold)">Required</div></div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section id="request" class="section">
+  <div class="section-inner">
+    <h2>Beneficiary Distribution Request</h2>
+    <p>Complete the form below. The system will create your secure login, run an asset-to-debt proof, generate a distribution request, and send one-time PINs to the maker and checker for approval.</p>
+    <div class="grid-3" style="margin-top:1.5rem;grid-template-columns:1fr">
+      <div class="card">
+        <form id="request-form" onsubmit="submitRequest(event)">
+          <div class="form-row">
+            <div class="form-group">
+              <label>Full Name</label>
+              <input type="text" id="req-name" placeholder="Your full name" required />
+            </div>
+            <div class="form-group">
+              <label>Email</label>
+              <input type="email" id="req-email" placeholder="you@example.com" required />
+            </div>
+          </div>
+          <div class="form-row">
+            <div class="form-group">
+              <label>Phone</label>
+              <input type="tel" id="req-phone" placeholder="(000) 000-0000" />
+            </div>
+            <div class="form-group">
+              <label>Wallet Address (optional)</label>
+              <input type="text" id="req-wallet" placeholder="0x... or Hedera account" />
+            </div>
+          </div>
+          <div class="form-row">
+            <div class="form-group">
+              <label>Amount (USD)</label>
+              <input type="number" id="req-amount" min="0.01" step="0.01" placeholder="0.00" required />
+            </div>
+            <div class="form-group">
+              <label>Distribution Type</label>
+              <select id="req-type"><option value="distribution">Distribution</option><option value="disbursement">Disbursement</option></select>
+            </div>
+          </div>
+          <div class="form-group">
+            <label>Message / Purpose</label>
+            <textarea id="req-message" placeholder="Briefly describe the purpose of this request…"></textarea>
+          </div>
+          <button type="submit" class="btn btn-primary" style="width:100%">Submit Request & Start Automation</button>
+          <div id="request-status" class="status"></div>
+        </form>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section id="messaging" class="section alt">
+  <div class="section-inner">
+    <h2>Message the Trustees</h2>
+    <p>Send a secure message to the trust administration team. You do not need an account — the trustees will be notified by email.</p>
+    <div class="grid-3" style="margin-top:1.5rem;grid-template-columns:1fr">
+      <div class="card">
+        <form id="message-form" onsubmit="submitMessage(event)">
+          <div class="form-row">
+            <div class="form-group">
+              <label>Your Name</label>
+              <input type="text" id="msg-name" placeholder="Your name" required />
+            </div>
+            <div class="form-group">
+              <label>Your Email</label>
+              <input type="email" id="msg-email" placeholder="you@example.com" required />
+            </div>
+          </div>
+          <div class="form-group">
+            <label>Message</label>
+            <textarea id="msg-body" placeholder="How can we help you?" required></textarea>
+          </div>
+          <button type="submit" class="btn btn-primary" style="width:100%">Send Message</button>
+          <div id="message-status" class="status"></div>
+        </form>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section id="portal" class="section">
+  <div class="section-inner">
+    <h2>Trustee Portal</h2>
+    <p>Makers and checkers log in with email + one-time PIN. The portal supports beneficiary view-only access, maker/checker approvals, and full treasury administration.</p>
+    <div class="grid-3" style="margin-top:1.5rem">
+      <div class="card feature"><div class="feature-icon">🔐</div><h3>RBAC Login</h3><p>Beneficiary, maker, checker, and admin roles with automatic role switching and sign-out.</p></div>
+      <div class="card feature"><div class="feature-icon">📜</div><h3>Smart Contract Automation</h3><p>Asset-to-debt proof, distribution request, 2-sig approval, and execution pipeline in one flow.</p></div>
+      <div class="card feature"><div class="feature-icon">💬</div><h3>Messaging & Documents</h3><p>Threaded messaging, calendar events, and a document vault tied to every request.</p></div>
+    </div>
+  </div>
+</section>
+
+<footer class="footer">
+  <p>&copy; 2026 DeAndrea LaVar Barkley Trust. Private permissioned DeFi trust management.</p>
+</footer>
+
+<script>
+function status(id, msg, isError=false){
+  const el=document.getElementById(id);
+  el.textContent=msg;
+  el.className='status show '+(isError?'error':'success');
+}
+async function api(path, opts){
+  const res=await fetch('/api/dapp'+path,{...opts,headers:{'Content-Type':'application/json'}});
+  const text=await res.text();
+  let json; try{json=JSON.parse(text)}catch{json={error:text}}
+  if(!res.ok || !json.success) throw new Error(json.error || `HTTP ${res.status}`);
+  return json;
+}
+async function submitRequest(e){
+  e.preventDefault();
+  const body={
+    beneficiaryName: document.getElementById('req-name').value.trim(),
+    beneficiaryEmail: document.getElementById('req-email').value.trim(),
+    beneficiaryPhone: document.getElementById('req-phone').value.trim(),
+    beneficiaryWallet: document.getElementById('req-wallet').value.trim(),
+    amountUsd: document.getElementById('req-amount').value,
+    type: document.getElementById('req-type').value,
+    message: document.getElementById('req-message').value.trim(),
+  };
+  try{
+    const res=await api('/public/request',{method:'POST',body:JSON.stringify(body)});
+    const data=res.data;
+    const reqId=(data.run && data.run.requests && data.run.requests[0] && data.run.requests[0].id) || 'created';
+    status('request-status', `Request submitted: ${reqId}. Maker PIN: ${data.pins.maker} — Checker PIN: ${data.pins.checker}. (Demo: PINs would be emailed in production.)`);
+  }catch(err){ status('request-status', err.message, true); }
+}
+async function submitMessage(e){
+  e.preventDefault();
+  const body={
+    name: document.getElementById('msg-name').value.trim(),
+    email: document.getElementById('msg-email').value.trim(),
+    body: document.getElementById('msg-body').value.trim(),
+  };
+  try{
+    const res=await api('/public/message',{method:'POST',body:JSON.stringify(body)});
+    status('message-status', 'Message sent. A trustee will respond shortly.');
+  }catch(err){ status('message-status', err.message, true); }
+}
+// Public message endpoint not built yet — hide or make it no-op until backend ready
+</script>
+</body>
+</html>

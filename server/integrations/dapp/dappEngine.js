@@ -733,7 +733,8 @@ class DappEngine {
     if (trustee) {
       const lower = String(trustee.role).toLowerCase();
       if (lower === 'administration') return ['trustee_admin', 'beneficiary'];
-      if (lower === 'distribution') return ['trustee_maker', 'beneficiary'];
+      if (lower === 'distribution' || lower === 'maker') return ['trustee_maker', 'beneficiary'];
+      if (lower === 'checker') return ['trustee_checker', 'beneficiary'];
       return ['trustee', 'beneficiary'];
     }
     return ['beneficiary'];
@@ -823,6 +824,8 @@ class DappEngine {
     const seeded = [
       { email: 'deandreabarkley13@gmail.com', name: 'DeAndrea Barkley', roles: ['trustee_admin', 'beneficiary'], activeRole: 'trustee_admin' },
       { email: 'annrobinson9800@yahoo.com', name: 'Malissa Robinson', roles: ['trustee_maker', 'beneficiary'], activeRole: 'trustee_maker' },
+      { email: 'dbnettrust@gmail.com', name: 'Checker Trust', roles: ['trustee_checker', 'beneficiary'], activeRole: 'trustee_checker' },
+      { email: 'Robinsonjeremy22a@gmail.com', name: 'Jeremy Robinson', roles: ['beneficiary'], activeRole: 'beneficiary' },
     ];
     const results = [];
     for (const s of seeded) {

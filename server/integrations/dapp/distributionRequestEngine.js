@@ -14,7 +14,7 @@ let pool;
 try { pool = require('../bonds/pgPool'); } catch (e) { pool = null; }
 if (process.env.DAPP_MEMORY_MODE === 'true') pool = null;
 
-const { TRUSTEES, REQUIRED_ROLES, validateTrustee } = require('./trustees');
+const { TRUSTEES, REQUIRED_ROLES, validateTrustee, normalizeRole } = require('./trustees');
 
 let DappEngine;
 try { DappEngine = require('./dappEngine').DappEngine; } catch (e) { DappEngine = null; }
@@ -256,6 +256,7 @@ class DistributionRequestEngine {
     await this.ensureTables();
     if (!requestId || !role || !trusteeEmail) throw new Error('requestId, role and trusteeEmail required');
     const trustee = validateTrustee(role, trusteeEmail);
+    const normalizedRole = normalizeRole(role);
 
     const request = await this.getRequest(requestId);
     if (!request) throw new Error('Request not found');
@@ -269,13 +270,13 @@ class DistributionRequestEngine {
     }
 
     const approvals = request.approvals || [];
-    if (approvals.some(a => a.role === role)) throw new Error(`Role ${role} has already approved this request`);
+    if (approvals.some(a => a.role === normalizedRole)) throw new Error(`Role ${normalizedRole} has already approved this request`);
 
     approvals.push({
-      role,
+      role: normalizedRole,
       trusteeEmail,
       signerName: signerName || trustee.name,
-      signature: signature || `sig-${role}-${Date.now()}`,
+      signature: signature || `sig-${normalizedRole}-${Date.now()}`,
       approvedAt: new Date().toISOString(),
     });
 

@@ -199,7 +199,7 @@ function requireAuth(options = {}) {
 
     // Check role requirement
     if (requiredRole) {
-      const ROLE_LEVELS = { viewer: 10, beneficiary: 10, operator: 50, trustee_maker: 50, trustee: 50, admin: 100, trustee_admin: 100 };
+      const ROLE_LEVELS = { viewer: 10, beneficiary: 10, operator: 50, trustee_maker: 50, trustee_checker: 50, trustee: 50, admin: 100, trustee_admin: 100 };
       const userLevel = ROLE_LEVELS[userRole] || 0;
       const requiredLevel = ROLE_LEVELS[requiredRole] || 100;
       if (userLevel < requiredLevel) {
@@ -226,6 +226,7 @@ function dappAuth(options = {}) {
     viewer: 10,
     operator: 50,
     trustee_maker: 50,
+    trustee_checker: 50,
     trustee: 50,
     admin: 100,
     trustee_admin: 100,
@@ -250,7 +251,7 @@ function dappAuth(options = {}) {
       if (authHeader && authHeader.startsWith('Bearer ')) {
         const token = authHeader.slice(7).trim();
         try {
-          const decoded = jwt.verify(token, UserAuth.JWT_SECRET);
+          const decoded = jwt.verify(token, JWT_SECRET);
           if (decoded.email && decoded.roles) {
             req.user = decoded;
             req.authMethod = 'dapp_user';

@@ -34,20 +34,7 @@ try { MessagingEngine = require('../messaging/messagingEngine').MessagingEngine;
 let CalendarEngine;
 try { CalendarEngine = require('../calendar/calendarEngine').CalendarEngine; } catch (e) { CalendarEngine = null; }
 
-const TRUSTEES = [
-  {
-    role: 'administration',
-    name: process.env.TRUST_ADMIN_NAME || 'DeAndrea Lavar Barkley',
-    email: process.env.TRUST_ADMIN_EMAIL || 'deandreabarkley13@gmail.com',
-    address: process.env.TRUST_ADMIN_ADDRESS || '',
-  },
-  {
-    role: 'distribution',
-    name: process.env.TRUST_DIST_NAME || 'Malissa Ann Robinson',
-    email: process.env.TRUST_DIST_EMAIL || 'annrobinson9800@yahoo.com',
-    address: process.env.TRUST_DIST_ADDRESS || '',
-  },
-];
+const { TRUSTEES, REQUIRED_ROLES } = require('./trustees');
 
 function id(prefix = 'AUT') { return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 8).toUpperCase()}`; }
 
@@ -323,7 +310,7 @@ class DisbursementAutomationEngine {
         for (const s of trusteeSignatures) sigByRole.set(s.role, s);
         for (const req of results.requests) {
           try {
-            for (const role of ['administration', 'distribution']) {
+            for (const role of REQUIRED_ROLES) {
               const sig = sigByRole.get(role) || trusteeSignatures.find(s => s.role === role);
               if (sig) {
                 const approved = await DistributionRequestEngine.approveRequest({ requestId: req.id, role: sig.role, trusteeEmail: sig.trusteeEmail, signature: sig.signature, signerName: sig.signerName });
