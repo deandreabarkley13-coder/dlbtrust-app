@@ -373,15 +373,24 @@ class SovereignTrustEngine {
     const raw = viem.parseUnits(String(cents / 100), 6);
 
     const paymentId = id('SIT-MINT');
-    const sourceRef = await SourceOfFundsAdapter._fundSourceToTreasury({
-      sourceType, sourceAccountId, paymentId, amountCents: cents,
-    });
+    let sourceRef;
+    if (String(sourceType).toLowerCase() === 'treasury') {
+      const acct = sourceAccountId || cfg.reserveAccount;
+      await TreasuryEngine.debit(acct, cents, { reason: memo || `Sovereign token mint reserve ${paymentId}`, source: 'sovereign_mint', metadata: { sourceType, sourceAccountId, paymentId, target: to } });
+      sourceRef = { sourceType, sourceAccountId: acct, treasuryDebit: true };
+    } else {
+      sourceRef = await SourceOfFundsAdapter._fundSourceToTreasury({
+        sourceType, sourceAccountId, paymentId, amountCents: cents,
+      });
+    }
 
-    await TreasuryEngine.debit(DEFAULT_ACCOUNT, cents, {
-      reason: memo || `Sovereign token mint reserve ${paymentId}`,
-      source: 'sovereign_mint',
-      metadata: { sourceType, sourceAccountId, paymentId, target: to, sourceRef },
-    });
+    if (String(sourceType).toLowerCase() !== 'treasury') {
+      await TreasuryEngine.debit(DEFAULT_ACCOUNT, cents, {
+        reason: memo || `Sovereign token mint reserve ${paymentId}`,
+        source: 'sovereign_mint',
+        metadata: { sourceType, sourceAccountId, paymentId, target: to, sourceRef },
+      });
+    }
     await TreasuryEngine.credit(cfg.reserveAccount, cents, {
       source: 'sovereign_mint',
       metadata: { sourceType, sourceAccountId, paymentId, target: to, sourceRef },
@@ -593,10 +602,18 @@ class SovereignTrustEngine {
       callData = viem.encodeFunctionData({ abi: getTokenAbi(), functionName, args: fnArgs });
     }
     if (!callData) throw new Error('data or functionName+args required');
-    if (!to) to = tokenAddress;
+    to = tokenAddress;
 
     if (cfg.shadow) {
-      return { shadow: true, from, to, data: callData, gas: gas || cfg.gaslessMaxGas, nonce: 0, signature: '0x' };
+      const nonce = 0n;
+      return {
+        shadow: true,
+        forwardRequest: { from, to, value: '0', gas: String(gas || cfg.gaslessMaxGas), nonce: String(nonce), data: callData },
+        domain: this.getEip712Domain(forwarderAddress, chainId),
+        types: this.getEip712Types(),
+        primaryType: 'ForwardRequest',
+        message: { from, to, value: '0', gas: String(gas || cfg.gaslessMaxGas), nonce: String(nonce), data: callData },
+      };
     }
     const { publicClient } = walletClient();
     const forwarderAbi = getForwarderAbi();
