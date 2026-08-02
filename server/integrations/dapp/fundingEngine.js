@@ -59,8 +59,9 @@ async function getHederaBalance(accountId) {
     const res = await fetch(`https://mainnet.mirrornode.hedera.com/api/v1/accounts/${accountId}`);
     if (!res.ok) return { error: `mirror node ${res.status}` };
     const data = await res.json();
+    const tinybar = data.balance?.balance ?? data.balance?.tinybar ?? 0;
     return {
-      hbar: String(Number(data.balance?.tinybar || 0) / 1e8),
+      hbar: String(Number(tinybar) / 1e8),
       evmAddress: data.evm_address || '',
       tokens: (data.tokens || []).map(t => ({ tokenId: t.token_id, balance: t.balance })),
     };
@@ -173,21 +174,13 @@ class FundingEngine {
       }
     }
 
-    // 2. Coinbase (fiat → crypto)
-    if (status.rails.coinbase_treasury.ready) {
-      steps.push({ step: 'coinbase_treasury', message: `Reserve ${amountUsd} USD from source ledger and stage Coinbase Treasury bridge. Requires Coinbase account to hold USD.` });
-      if (strategy === 'coinbase' || strategy === 'auto') {
-        return { canExecute: true, status, steps, missing: [...missing, 'coinbase_usd_deposit'], recommendation: 'Run coinbase treasury rail and deposit USD into the connected Coinbase account.' };
-      }
-    } else {
-      missing.push('Coinbase CDP API not configured');
-    }
-
-    // 3. DEX
+    // 2. DEX (preferred — uses internal stablecoin rails, not CEX)
     if (status.rails.stablecoin_dex.ready) {
       if (status.pool.exists && Number(status.pool.target) > 0) {
         steps.push({ step: 'dex_swap', message: `Mint ${amountUsd} DLBUSD from ${sourceType}:${sourceAccountId} and swap for ${targetAsset} on pool ${status.pool.address}.` });
-        return { canExecute: true, status, steps, missing, recommendation: 'Execute Stablecoin DEX swap; the pool already has WETH/USDC liquidity.' };
+        if (strategy === 'dex' || strategy === 'auto') {
+          return { canExecute: true, status, steps, missing, recommendation: 'Execute Stablecoin DEX swap; the pool already has WETH/USDC liquidity.' };
+        }
       } else {
         missing.push(`DLBUSD/${targetAsset} pool is missing or empty (${status.pool.target || 0} ${targetAsset})`);
         steps.push({ step: 'seed_pool', message: `An external LP must deposit WETH/${targetAsset} into pool ${status.pool.address || 'not deployed'} before the DEX can convert DLBUSD.` });
@@ -196,7 +189,7 @@ class FundingEngine {
       missing.push('Stablecoin DEX not ready: ' + (status.rails.stablecoin_dex.issues || []).join(', '));
     }
 
-    // 4. Cash App / P2P fiat
+    // 3. Cash App / P2P fiat
     if (status.rails.cashapp.ready) {
       steps.push({ step: 'cashapp_p2p', message: 'Generate Cash App P2P QR/link, receive USD, then wire/deposit to Coinbase or another on-ramp.' });
       if (strategy === 'cashapp') {
@@ -208,6 +201,16 @@ class FundingEngine {
       }
     } else {
       missing.push('Cash App rail not ready: ' + (status.rails.cashapp.issues || []).join(', '));
+    }
+
+    // 4. Coinbase (fiat → crypto) — fallback when DEX/Cash App cannot close the gap
+    if (status.rails.coinbase_treasury.ready) {
+      steps.push({ step: 'coinbase_treasury', message: `Reserve ${amountUsd} USD from source ledger and stage Coinbase Treasury bridge. Requires Coinbase account to hold USD.` });
+      if (strategy === 'coinbase') {
+        return { canExecute: true, status, steps, missing: [...missing, 'coinbase_usd_deposit'], recommendation: 'Run coinbase treasury rail and deposit USD into the connected Coinbase account.' };
+      }
+    } else {
+      missing.push('Coinbase CDP API not configured');
     }
 
     // 5. Hedera HBAR bridge
@@ -228,22 +231,7 @@ class FundingEngine {
     const executed = [];
     const cfg = this.getConfig();
 
-    // Coinbase rail
-    if (strategy === 'coinbase' || strategy === 'auto') {
-      try {
-        const result = await CoinbaseTreasuryBridge.stageFromSource({
-          sourceType, sourceAccountId, amount: amountUsd,
-          targetAsset, targetAddress: cfg.operatorAddress,
-          coinbasePaymentMethodId: railOptions.coinbasePaymentMethodId || '',
-        });
-        executed.push({ rail: 'coinbase_treasury', result });
-        return { ...plan, executed };
-      } catch (e) {
-        executed.push({ rail: 'coinbase_treasury', error: e.message });
-      }
-    }
-
-    // DEX rail
+    // DEX rail (preferred)
     if (strategy === 'dex' || strategy === 'auto') {
       try {
         const result = await StablecoinDexEngine.depositAndSwap({
@@ -273,6 +261,21 @@ class FundingEngine {
         return { ...plan, executed };
       } catch (e) {
         executed.push({ rail: 'cashapp_fund_operator', error: e.message });
+      }
+    }
+
+    // Coinbase rail (CEX fallback)
+    if (strategy === 'coinbase' || strategy === 'auto') {
+      try {
+        const result = await CoinbaseTreasuryBridge.stageFromSource({
+          sourceType, sourceAccountId, amount: amountUsd,
+          targetAsset, targetAddress: cfg.operatorAddress,
+          coinbasePaymentMethodId: railOptions.coinbasePaymentMethodId || '',
+        });
+        executed.push({ rail: 'coinbase_treasury', result });
+        return { ...plan, executed };
+      } catch (e) {
+        executed.push({ rail: 'coinbase_treasury', error: e.message });
       }
     }
 
