@@ -130,7 +130,37 @@ description: How to end-to-end test the DLB Trust treasury dashboard, including 
   ```
   Then call `relaySovereignTransfer()` to relay the signed meta-tx.
 - Use `TREASURY_HOT` as the treasury source account for mint and burn; for non-treasury sources ensure the source-of-funds account has a positive balance.
-- **Known runtime bug:** `server/integrations/dapp/sovereignTrustEngine.js` destructures `DEFAULT_ACCOUNT` from `treasuryEngine` without declaring it, which throws `ReferenceError: DEFAULT_ACCOUNT is not defined` on server startup. The symptom is `mintFromSource` failing with `SourceOfFundsAdapter or TreasuryEngine not available`. To test, declare `let DEFAULT_ACCOUNT;` on the same line as `let TreasuryEngine;` before the destructuring.
+
+## Assets / Expenses & One-Click Automation (deployed dApp)
+
+- dApp lives at `/dapp`; nav tabs **Assets / Expenses** and **Automation** expose the new features.
+- **Assets / Expenses** handlers:
+  - `addAsset()`, `addLiability()`, `addExpense()`, `loadAssets()`, `loadLiabilities()`, `loadExpenses()`, `loadExpenseTotals()`.
+  - Expense pay uses `payExpense(id)`, which calls `window.prompt` for destination, Safe ID, source type, and source account. For scripted tests override `window.prompt` to return the desired values.
+  - Example:
+    ```js
+    const origPrompt = window.prompt;
+    window.prompt = (msg) => {
+      if (msg.includes('destination')) return '0x86167EcF041fFA95E5A4aEEFCB2632665Eb7FA16';
+      if (msg.includes('Safe ID')) return 'SAFE-1785504557741-WW39EK';
+      if (msg.includes('Source type')) return 'cash';
+      if (msg.includes('Source account ID')) return 'CA-OPERATING';
+      return '';
+    };
+    payExpense('EXP-...');
+    window.prompt = origPrompt;
+    ```
+- **Automation** handlers:
+  - `runOneClickAutomation()` calls `POST /api/dapp/automations/one-click-distribution` with `includeHardAssets` controlled by `el('auto-hard-assets').checked`.
+  - `approveExecuteAutomationRun()` calls `POST /api/dapp/automations/runs/<id>/approve-execute`.
+- The **Asset-Debt Proof** tab exposes an `Include hard assets / liabilities` checkbox (`adp-hard-assets`). `computeAssetDebtProof()` passes `includeHardAssets` to `/api/dapp/asset-debt-proofs/compute`.
+- The **Automation** tab also has an `Include hard assets / liabilities` checkbox (`auto-hard-assets`) and a `Auto-execute after approval` checkbox.
+- Existing Sepolia Safe for execution tests: `SAFE-1785504557741-WW39EK` is threshold 1 with status `deployed` but not actually on-chain; execution will fail with `Safe is not deployed yet` due to the operator wallet having no gas. This is the expected testnet behavior.
+- Trustee signatures for automation and requests:
+  - Administration: `deandreabarkley13@gmail.com` / `DeAndrea Lavar Barkley`
+  - Distribution: `annrobinson9800@yahoo.com` / `Malissa Ann Robinson`
+- Beneficiary activity: `loadBeneficiaryActivity()` calls `GET /api/dapp/beneficiary/activity?email=<email>` and displays matching requests/payouts.
+- Calendar/Messaging: automation run and distribution request creation auto-create Calendar events and Messaging threads.
 
 ## Devin Secrets Needed
 
