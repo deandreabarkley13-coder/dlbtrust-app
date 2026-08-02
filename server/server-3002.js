@@ -118,19 +118,16 @@ try { app.use('/api/hce', require(path.join(HD, 'server', 'routes', 'hce'))); co
 // Trustee Agent & Bookkeeping Agent
 try { app.use('/api/agents', require(path.join(HD, 'server', 'routes', 'agents'))); console.log('[agents] loaded'); } catch(e) { console.warn('[agents]', e.message); }
 
-// DeFi dApp — serve new dApp at root, legacy treasury dashboard at /treasury
-app.get('/', function(req, res) {
+// DeFi dApp — serve new dApp at root, /dapp, and /dashboard; legacy treasury dashboard at /treasury
+function serveDapp(req, res) {
   res.set('Cache-Control', 'no-cache, no-store, must-revalidate');
   res.set('Pragma', 'no-cache');
   res.set('Expires', '0');
   res.sendFile(path.join(HD, 'public', 'dapp', 'index.html'));
-});
-app.get('/dapp', function(req, res) {
-  res.set('Cache-Control', 'no-cache, no-store, must-revalidate');
-  res.set('Pragma', 'no-cache');
-  res.set('Expires', '0');
-  res.sendFile(path.join(HD, 'public', 'dapp', 'index.html'));
-});
+}
+app.get('/', serveDapp);
+app.get('/dapp', serveDapp);
+app.get('/dashboard', serveDapp);
 app.get('/treasury', function(req, res) {
   res.set('Cache-Control', 'no-cache, no-store, must-revalidate');
   res.set('Pragma', 'no-cache');
@@ -207,8 +204,10 @@ app.use(express.static(path.join(HD, 'public'), {
   }
 }));
 app.get('*', function(req, res) {
-  var idx = path.join(HD, 'public', 'index.html');
-  fs.existsSync(idx) ? res.sendFile(idx) : res.status(404).send('Not found');
+  res.set('Cache-Control', 'no-cache, no-store, must-revalidate');
+  res.set('Pragma', 'no-cache');
+  res.set('Expires', '0');
+  res.sendFile(path.join(HD, 'public', 'dapp', 'index.html'));
 });
 
 // ─── Sequential Database Initialization ───────────────────────────────────────
