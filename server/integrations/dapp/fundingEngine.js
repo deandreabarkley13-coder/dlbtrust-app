@@ -193,11 +193,13 @@ class FundingEngine {
     if (status.rails.cashapp.ready) {
       steps.push({ step: 'cashapp_p2p', message: 'Generate Cash App P2P QR/link, receive USD, then wire/deposit to Coinbase or another on-ramp.' });
       if (strategy === 'cashapp') {
-        if (!cashtag) missing.push('A $Cashtag is required for Cash App P2P');
-        else return { canExecute: true, status, steps, missing, recommendation: `Generate Cash App QR for $${cashtag}, receive USD, then convert to ETH.` };
+        const tag = String(cashtag || '').replace(/^\$/, '').trim();
+        if (!tag) missing.push('A $Cashtag is required for Cash App P2P');
+        else return { canExecute: true, status, steps, missing, recommendation: `Generate Cash App QR for $${tag}, receive USD, then convert to ETH.` };
       }
       if (strategy === 'auto' && cashtag) {
-        return { canExecute: true, status, steps, missing, recommendation: `Generate Cash App QR for $${cashtag}, receive USD, then convert to ETH.` };
+        const tag = String(cashtag).replace(/^\$/, '').trim();
+        return { canExecute: true, status, steps, missing, recommendation: `Generate Cash App QR for $${tag}, receive USD, then convert to ETH.` };
       }
     } else {
       missing.push('Cash App rail not ready: ' + (status.rails.cashapp.issues || []).join(', '));
