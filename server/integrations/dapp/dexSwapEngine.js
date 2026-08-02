@@ -1,0 +1,282 @@
+'use strict';
+
+/**
+ * DEX Swap Engine
+ *
+ * Provides a minimal constant-product DEX swap path for tokenized bonds -> USDC.
+ * In shadow mode it simulates quotes and returns a shadow tx hash.
+ *
+ * Live usage needs:
+ *  - BOND_DEX_ADDRESS or DEX_SWAP_ROUTER pointing to a BondDex pool
+ *  - tokenIn approved for the pool
+ *  - tokenIn/USDC liquidity in the pool
+ *  - gas in the operator wallet
+ */
+
+const { getConfig } = require('./config');
+const fs = require('fs');
+const path = require('path');
+
+let viem, chains, privateKeyToAccount;
+try { viem = require('viem'); chains = require('viem/chains'); ({ privateKeyToAccount } = require('viem/accounts')); } catch (e) { viem = null; chains = null; privateKeyToAccount = null; }
+
+function str(name, fallback = '') { return (process.env[name] || fallback).trim(); }
+function bool(name, fallback = false) { const v = process.env[name]; return v ? String(v).toLowerCase() === 'true' : fallback; }
+function num(name, fallback = 0) { const n = Number(process.env[name]); return Number.isFinite(n) ? n : fallback; }
+
+const SWAP_ROUTER_02 = '0x68b3465833fb72A70ecDF485E0e4C7bD8665Fc45';
+
+const erc20Abi = [
+  { type: 'function', name: 'decimals', inputs: [], outputs: [{ type: 'uint8' }], stateMutability: 'view' },
+  { type: 'function', name: 'approve', inputs: [{ type: 'address' }, { type: 'uint256' }], outputs: [{ type: 'bool' }], stateMutability: 'nonpayable' },
+  { type: 'function', name: 'balanceOf', inputs: [{ type: 'address' }], outputs: [{ type: 'uint256' }], stateMutability: 'view' },
+];
+
+const bondDexAbi = [
+  { type: 'function', name: 'token0', inputs: [], outputs: [{ type: 'address' }], stateMutability: 'view' },
+  { type: 'function', name: 'token1', inputs: [], outputs: [{ type: 'address' }], stateMutability: 'view' },
+  { type: 'function', name: 'reserve0', inputs: [], outputs: [{ type: 'uint256' }], stateMutability: 'view' },
+  { type: 'function', name: 'reserve1', inputs: [], outputs: [{ type: 'uint256' }], stateMutability: 'view' },
+  { type: 'function', name: 'addLiquidity', inputs: [{ type: 'uint256' }, { type: 'uint256' }], outputs: [{ type: 'uint256' }], stateMutability: 'nonpayable' },
+  { type: 'function', name: 'swap', inputs: [{ type: 'uint256' }, { type: 'address' }, { type: 'uint256' }], outputs: [{ type: 'uint256' }], stateMutability: 'nonpayable' },
+];
+
+function getBondDexAbi() {
+  const abiPath = str('BOND_DEX_ABI_PATH', path.join(process.cwd(), 'artifacts', 'contracts_BondDex_sol_BondDex.abi'));
+  return JSON.parse(fs.readFileSync(abiPath, 'utf8'));
+}
+
+function getBondDexBytecode() {
+  const binPath = str('BOND_DEX_BYTECODE_PATH', path.join(process.cwd(), 'artifacts', 'contracts_BondDex_sol_BondDex.bin'));
+  return '0x' + fs.readFileSync(binPath, 'utf8').trim();
+}
+
+function walletClient() {
+  if (!viem) throw new Error('viem not installed');
+  const cfg = getConfig();
+  if (!cfg.privateKey) throw new Error('DAPP_PRIVATE_KEY not configured');
+  const account = privateKeyToAccount(cfg.privateKey);
+  const chain = cfg.chainId === 1 ? (chains && chains.mainnet) : (chains && chains.sepolia) || undefined;
+  const fees = { maxFeePerGas: viem.parseGwei('1.5'), maxPriorityFeePerGas: viem.parseGwei('0.0015') };
+  return {
+    account,
+    fees,
+    wallet: viem.createWalletClient({ account, chain, transport: viem.http(cfg.rpcUrl) }),
+    publicClient: viem.createPublicClient({ chain, transport: viem.http(cfg.rpcUrl) })
+  };
+}
+
+class DexSwapEngine {
+  static getConfig() {
+    const cfg = getConfig();
+    return {
+      enabled: bool('DEX_SWAP_ENABLED', true),
+      shadow: bool('DEX_SWAP_SHADOW', cfg.dappShadow !== false ? true : cfg.dappShadow),
+      chainId: cfg.chainId,
+      rpcUrl: cfg.rpcUrl,
+      privateKey: cfg.privateKey,
+      router: str('BOND_DEX_ADDRESS') || str('DEX_SWAP_ROUTER', SWAP_ROUTER_02),
+      usdcAddress: cfg.usdcAddress,
+      slippageBps: num('DEX_SLIPPAGE_BPS', 100),
+    };
+  }
+
+  static readiness() {
+    const cfg = this.getConfig();
+    const issues = [];
+    if (!cfg.enabled) issues.push('DEX_SWAP_ENABLED is not true');
+    if (!cfg.shadow) {
+      if (!cfg.privateKey) issues.push('DAPP_PRIVATE_KEY not configured');
+      if (!cfg.rpcUrl) issues.push('DAPP_RPC_URL not configured');
+      if (!cfg.router) issues.push('BOND_DEX_ADDRESS / DEX_SWAP_ROUTER not configured');
+    }
+    return { ready: issues.length === 0, mode: cfg.shadow ? 'shadow' : 'live', issues };
+  }
+
+  static async quote({ tokenIn, tokenOut, amountIn, decimalsIn = 6, decimalsOut = 6, fee = 3000, router } = {}) {
+    const cfg = this.getConfig();
+    if (!cfg.enabled) throw new Error('DEX swap not enabled');
+    const amount = Number(amountIn) || 0;
+    if (amount <= 0) throw new Error('amountIn must be positive');
+
+    const outputToken = tokenOut || cfg.usdcAddress;
+    const inputToken = tokenIn;
+    const poolAddress = router || cfg.router;
+
+    if (!cfg.shadow && poolAddress && viem) {
+      const { publicClient } = walletClient();
+      const token0 = await publicClient.readContract({ address: poolAddress, abi: bondDexAbi, functionName: 'token0' });
+      const token1 = await publicClient.readContract({ address: poolAddress, abi: bondDexAbi, functionName: 'token1' });
+      const r0 = await publicClient.readContract({ address: poolAddress, abi: bondDexAbi, functionName: 'reserve0' });
+      const r1 = await publicClient.readContract({ address: poolAddress, abi: bondDexAbi, functionName: 'reserve1' });
+      const tokenInIsToken0 = inputToken.toLowerCase() === token0.toLowerCase();
+      const reserveIn = tokenInIsToken0 ? r0 : r1;
+      const reserveOut = tokenInIsToken0 ? r1 : r0;
+      const rawIn = viem.parseUnits(String(amount), decimalsIn);
+      const amountInWithFee = (rawIn * 997n) / 1000n;
+      const amountOutRaw = (amountInWithFee * reserveOut) / (reserveIn + amountInWithFee);
+      const amountOutHuman = Number(viem.formatUnits(amountOutRaw, decimalsOut));
+      const minOutHuman = amountOutHuman * (1 - cfg.slippageBps / 10000);
+      return {
+        tokenIn: inputToken,
+        tokenOut: outputToken,
+        amountIn: amount,
+        amountOut: amountOutHuman.toFixed(decimalsOut),
+        amountOutMinimum: minOutHuman.toFixed(decimalsOut),
+        fee,
+        price: amountOutHuman / amount,
+        mode: 'live',
+      };
+    }
+
+    const price = 0.95 + Math.random() * 0.05;
+    const outHuman = amount * price;
+    const minOutHuman = outHuman * (1 - cfg.slippageBps / 10000);
+    return {
+      tokenIn: inputToken,
+      tokenOut: outputToken,
+      amountIn: amount,
+      amountOut: outHuman.toFixed(decimalsOut),
+      amountOutMinimum: minOutHuman.toFixed(decimalsOut),
+      fee,
+      price,
+      mode: 'shadow',
+    };
+  }
+
+  static async swap({ tokenIn, tokenOut, amountIn, amountOutMinimum, recipient, fee = 3000, decimalsIn = 6, decimalsOut = 6, router } = {}) {
+    const cfg = this.getConfig();
+    if (!cfg.enabled) throw new Error('DEX swap not enabled');
+    if (!amountIn || Number(amountIn) <= 0) throw new Error('amountIn required');
+
+    const inputToken = tokenIn;
+    const outputToken = tokenOut || cfg.usdcAddress;
+    const poolAddress = router || cfg.router;
+    const quote = await this.quote({ tokenIn: inputToken, tokenOut: outputToken, amountIn, decimalsIn, decimalsOut, fee, router: poolAddress });
+
+    if (cfg.shadow) {
+      return {
+        status: 'executed',
+        mode: 'shadow',
+        txHash: `shadow-dex-${Date.now()}`,
+        tokenIn: inputToken,
+        tokenOut: outputToken,
+        amountIn,
+        amountOut: quote.amountOut,
+        amountOutMinimum: amountOutMinimum || quote.amountOutMinimum,
+        recipient: recipient || 'operator',
+        note: 'Shadow DEX swap; real swap requires token approval, liquidity pool, and gas.',
+      };
+    }
+
+    if (!poolAddress || !viem) throw new Error('BOND_DEX_ADDRESS / DEX_SWAP_ROUTER not configured');
+
+    const { wallet, publicClient, fees } = walletClient();
+    const rawIn = viem.parseUnits(String(amountIn), decimalsIn);
+    const minOut = amountOutMinimum ? viem.parseUnits(String(amountOutMinimum), decimalsOut) : 0n;
+
+    const approveHash = await wallet.writeContract({
+      address: inputToken,
+      abi: erc20Abi,
+      functionName: 'approve',
+      args: [poolAddress, rawIn],
+      gas: 100000n,
+      ...fees,
+    });
+    await publicClient.waitForTransactionReceipt({ hash: approveHash });
+
+    const swapHash = await wallet.writeContract({
+      address: poolAddress,
+      abi: bondDexAbi,
+      functionName: 'swap',
+      args: [rawIn, inputToken, minOut],
+      gas: 250000n,
+      ...fees,
+    });
+    const receipt = await publicClient.waitForTransactionReceipt({ hash: swapHash });
+    if (receipt.status !== 'success') throw new Error(`swap failed: ${receipt.transactionHash}`);
+
+    return {
+      status: 'executed',
+      mode: 'live',
+      txHash: receipt.transactionHash,
+      tokenIn: inputToken,
+      tokenOut: outputToken,
+      amountIn,
+      amountOut: quote.amountOut,
+      amountOutMinimum: amountOutMinimum || quote.amountOutMinimum,
+      recipient: recipient || wallet.account.address,
+    };
+  }
+
+  static async createPool({ tokenA, tokenB, amountA, amountB, decimalsA = 6, decimalsB = 6 } = {}) {
+    if (!tokenA || !tokenB) throw new Error('tokenA and tokenB required');
+    if (tokenA.toLowerCase() === tokenB.toLowerCase()) throw new Error('tokens must be different');
+    const cfg = this.getConfig();
+    if (cfg.shadow) return { poolAddress: `shadow-pool-${Date.now()}`, mode: 'shadow' };
+    if (!cfg.privateKey || !viem) throw new Error('DAPP_PRIVATE_KEY or viem not configured');
+
+    const [token0, token1] = tokenA.toLowerCase() < tokenB.toLowerCase() ? [tokenA, tokenB] : [tokenB, tokenA];
+    const [raw0, raw1] = tokenA.toLowerCase() === token0.toLowerCase()
+      ? [viem.parseUnits(String(amountA), decimalsA), viem.parseUnits(String(amountB), decimalsB)]
+      : [viem.parseUnits(String(amountB), decimalsB), viem.parseUnits(String(amountA), decimalsA)];
+
+    const { wallet, publicClient, fees } = walletClient();
+    const abi = getBondDexAbi();
+    const bytecode = getBondDexBytecode();
+
+    const deployHash = await wallet.deployContract({
+      abi,
+      bytecode,
+      args: [token0, token1],
+      gas: 1000000n,
+      ...fees,
+    });
+    const receipt = await publicClient.waitForTransactionReceipt({ hash: deployHash });
+    if (receipt.status !== 'success') throw new Error(`pool deploy failed: ${receipt.transactionHash}`);
+    const poolAddress = receipt.contractAddress;
+
+    const approve0 = await wallet.writeContract({
+      address: token0,
+      abi: erc20Abi,
+      functionName: 'approve',
+      args: [poolAddress, raw0],
+      gas: 100000n,
+      ...fees,
+    });
+    await publicClient.waitForTransactionReceipt({ hash: approve0 });
+
+    const approve1 = await wallet.writeContract({
+      address: token1,
+      abi: erc20Abi,
+      functionName: 'approve',
+      args: [poolAddress, raw1],
+      gas: 100000n,
+      ...fees,
+    });
+    await publicClient.waitForTransactionReceipt({ hash: approve1 });
+
+    const addHash = await wallet.writeContract({
+      address: poolAddress,
+      abi: bondDexAbi,
+      functionName: 'addLiquidity',
+      args: [raw0, raw1],
+      gas: 300000n,
+      ...fees,
+    });
+    const addReceipt = await publicClient.waitForTransactionReceipt({ hash: addHash });
+    if (addReceipt.status !== 'success') throw new Error(`addLiquidity failed: ${addReceipt.transactionHash}`);
+
+    return {
+      poolAddress,
+      token0,
+      token1,
+      amount0: amountA,
+      amount1: amountB,
+      mode: 'live',
+      txHash: addReceipt.transactionHash,
+    };
+  }
+}
+
+module.exports = { DexSwapEngine };
