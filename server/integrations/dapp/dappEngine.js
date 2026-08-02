@@ -599,7 +599,8 @@ class DappEngine {
         const bonds = await BondEngine.listBonds();
         for (const b of bonds) {
           const bal = await SourceOfFundsAdapter.getBalance({ sourceType: 'bond', sourceAccountId: String(b.id) }).catch(() => 0);
-          push('bond', String(b.id), b.bond_name || b.isin || `Bond ${b.id}`, bal, b.currency || 'USD', { isin: b.isin, status: b.status });
+          const accruedCents = Math.round(Number(b.accrued_interest || 0) * 100);
+          push('bond', String(b.id), b.bond_name || b.isin || `Bond ${b.id}`, bal, b.currency || 'USD', { isin: b.isin, status: b.status, accrued_interest_cents: accruedCents });
         }
       }
     } catch (e) { }

@@ -68,7 +68,8 @@ class SourceOfFundsAdapter {
         if (!BondEngine) throw new Error('BondEngine not available');
         const bond = await BondEngine.getBond(sourceAccountId);
         if (!bond) return 0;
-        return Math.round((Number(bond.principal_balance || 0) + Number(bond.accrued_interest || 0)) * 100);
+        // Only principal is available for funding because BondEngine.payPrincipal reduces principal only.
+        return Math.round(Number(bond.principal_balance || 0) * 100);
       }
       case 'fineract':
       case 'core_banking': {
