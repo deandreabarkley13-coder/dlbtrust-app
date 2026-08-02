@@ -22,11 +22,11 @@ function bool(name, fallback = false) { const v = process.env[name]; return v ? 
 class GoogleWalletEngine {
   static getConfig() {
     return {
-      enabled: bool('GOOGLE_WALLET_ENABLED', false),
-      issuerId: str('GOOGLE_WALLET_ISSUER_ID', ''),
-      serviceAccountEmail: str('GOOGLE_WALLET_SERVICE_ACCOUNT_EMAIL', ''),
+      enabled: bool('GOOGLE_WALLET_ENABLED', true),
+      issuerId: str('GOOGLE_WALLET_ISSUER_ID', 'DLB_TRUST_DEMO_ISSUER'),
+      serviceAccountEmail: str('GOOGLE_WALLET_SERVICE_ACCOUNT_EMAIL', 'demo@dlbtrust-app.fly.dev'),
       serviceAccountKey: str('GOOGLE_WALLET_SERVICE_ACCOUNT_KEY', ''),
-      classId: str('GOOGLE_WALLET_CLASS_ID', ''),
+      classId: str('GOOGLE_WALLET_CLASS_ID', 'DLB_TRUST_DEMO_CLASS'),
     };
   }
 

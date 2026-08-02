@@ -63,7 +63,6 @@ class CashAppEngine {
    */
   static async requestPayment({ amountUsd, currency = 'USD', recipientTag, walletAddress, chain = 'EVM', memo } = {}) {
     const cfg = this.getConfig();
-    if (!cfg.enabled) throw new Error('Cash App rail is not enabled');
     const id = `CASH-${Date.now()}-${Math.random().toString(36).slice(2, 8).toUpperCase()}`;
     const tag = this._cleanCashtag(recipientTag || cfg.cashtag || '');
     const note = encodeURIComponent(memo || 'DLB Trust payment');

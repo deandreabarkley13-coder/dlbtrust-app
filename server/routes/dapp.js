@@ -14,6 +14,7 @@ const { FinOpsAgent } = require('../integrations/agents/finOpsAgent');
 const { CalendarEngine } = require('../integrations/calendar/calendarEngine');
 const { MessagingEngine } = require('../integrations/messaging/messagingEngine');
 const { DocumentEngine } = require('../integrations/documents/documentEngine');
+const { ModuleFundingEngine } = require('../integrations/dapp/moduleFundingEngine');
 const { requireAuth, writeRateLimiter } = require('../integrations/auth/securityMiddleware');
 
 const router = express.Router();
@@ -74,6 +75,25 @@ router.post('/deposits/from-source', operatorAuth, writeRateLimiter(), async (re
 // ─── Source of Funds (legacy modules) ─────────────────────────────────────────
 router.get('/source-of-funds', operatorAuth, async (req, res) => {
   try { res.json({ success: true, data: await DappEngine.listSourceBalances() }); } catch (err) { sendError(res, err); }
+});
+
+// ─── Unified Core Modules / Funding Abstraction Layer ─────────────────────────
+router.get('/modules', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await ModuleFundingEngine.listModules() }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/modules/transfer', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try {
+    const data = await ModuleFundingEngine.internalTransfer(req.body);
+    res.status(201).json({ success: true, data });
+  } catch (err) { sendError(res, err); }
+});
+
+router.post('/modules/fund-rail', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try {
+    const data = await ModuleFundingEngine.fundExternalRail(req.body);
+    res.status(201).json({ success: true, data });
+  } catch (err) { sendError(res, err); }
 });
 
 // ─── Payouts / Disbursements / P2P (2-signature approval) ───────────────────────

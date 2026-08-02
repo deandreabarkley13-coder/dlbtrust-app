@@ -93,6 +93,7 @@
       <div class="nav" id="nav">
         <button class="active" data-section="dashboard" onclick="showSection('dashboard')">Dashboard</button>
         <button data-section="source-of-funds" onclick="showSection('source-of-funds')">Source of Funds</button>
+        <button data-section="core-modules" onclick="showSection('core-modules')">Core Modules</button>
         <button data-section="safes" onclick="showSection('safes')">Safe Wallets</button>
         <button data-section="deposits" onclick="showSection('deposits')">Deposit</button>
         <button data-section="payouts" onclick="showSection('payouts')">Payout / 2-Sig</button>
@@ -228,6 +229,44 @@
             <button class="btn" onclick="listCoinbaseTreasury()">List Transfers</button>
           </div>
           <div id="cbt-list-result" class="status hidden" style="white-space:pre-wrap"></div>
+        </div>
+      </section>
+
+      <section id="core-modules" class="section">
+        <div class="grid">
+          <div class="card" style="grid-column: 1 / -1;">
+            <h2>Core Modules Ledger View</h2>
+            <p>Unified abstraction layer for Treasury, Cash, Trust Accounting, Bond / Fixed Income, Core Banking, Sub-Ledger, CRM, Tax, and Documents.</p>
+            <div id="core-modules-table-wrap" class="table-wrap"><table id="core-modules-table"><thead><tr><th>Module</th><th>Name</th><th>ID</th><th>Balance</th><th>Currency</th></tr></thead><tbody></tbody></table></div>
+            <div class="actions"><button class="btn btn-sm" onclick="loadCoreModules()">Refresh</button></div>
+          </div>
+        </div>
+        <div class="card" style="margin-top:20px">
+          <h2>Internal Module Transfer</h2>
+          <p>Move funds between accounts within the same module. Cross-module transfers route through the treasury abstraction layer.</p>
+          <div class="form-row">
+            <div><label>From Module</label><select id="int-from-type"><option value="">Select</option><option value="treasury">Treasury</option><option value="cash">Cash Management</option><option value="trust">Trust Accounting</option><option value="sub_ledger">Sub-Ledger</option><option value="bond">Bond / Fixed Income</option><option value="core_banking">Core Banking</option></select></div>
+            <div><label>From Account ID</label><input type="text" id="int-from-account" placeholder="Account ID / Bond ID / GL ID" /></div>
+            <div><label>To Module</label><select id="int-to-type"><option value="">Select</option><option value="treasury">Treasury</option><option value="cash">Cash Management</option><option value="trust">Trust Accounting</option><option value="sub_ledger">Sub-Ledger</option><option value="bond">Bond / Fixed Income</option><option value="core_banking">Core Banking</option></select></div>
+            <div><label>To Account ID</label><input type="text" id="int-to-account" placeholder="Account ID / Bond ID / GL ID" /></div>
+            <div><label>Amount (USD)</label><input type="text" id="int-amount" placeholder="100.00" /></div>
+            <div><label>Memo</label><input type="text" id="int-memo" placeholder="Internal transfer" /></div>
+          </div>
+          <div class="actions"><button class="btn" onclick="internalModuleTransfer()">Transfer</button></div>
+          <div id="int-result" class="status hidden"></div>
+        </div>
+        <div class="card" style="margin-top:20px">
+          <h2>Fund External Rail from Module</h2>
+          <p>Reserve a source-of-funds ledger balance and generate a Cash App Pay, Google Wallet NFC/Pass, Stablecoin DEX, Safe 2-sig, or Coinbase Treasury instrument.</p>
+          <div class="form-row">
+            <div><label>Source Module</label><select id="rail-source-type"><option value="">Select</option><option value="treasury">Treasury</option><option value="cash">Cash</option><option value="trust">Trust Accounting</option><option value="sub_ledger">Sub-Ledger</option><option value="bond">Bond / Fixed Income</option><option value="core_banking">Core Banking</option></select></div>
+            <div><label>Source Account ID</label><input type="text" id="rail-source-account" placeholder="Account ID / Bond ID / GL ID" /></div>
+            <div><label>Amount (USD)</label><input type="text" id="rail-amount" placeholder="25.00" /></div>
+            <div><label>Rail</label><select id="rail-type"><option value="cashapp">Cash App Pay QR</option><option value="cashapp_fund_operator">Cash App Fund Operator</option><option value="googlewallet">Google Wallet Pass</option><option value="stablecoin_dex">Stablecoin DEX (DLBUSD -> USDC)</option><option value="safe_payout">Safe 2-Sig Payout</option><option value="coinbase_treasury">Coinbase Treasury Bridge</option></select></div>
+            <div style="grid-column: 1 / -1;"><label>Rail Options (JSON)</label><textarea id="rail-options" rows="3" placeholder='{&#x22;cashtag&#x22;:&#x22;$DLBTrust&#x22;,&#x22;walletAddress&#x22;:&#x22;0x...&#x22;,&#x22;targetAsset&#x22;:&#x22;USDC&#x22;}'></textarea></div>
+          </div>
+          <div class="actions"><button class="btn" onclick="fundExternalRail()">Generate / Fund Rail</button></div>
+          <div id="rail-result" class="status hidden" style="white-space:pre-wrap;word-break:break-word"></div>
         </div>
       </section>
 
@@ -762,6 +801,7 @@
       if (name === 'safes') listSafes();
       if (name === 'dashboard') loadDashboard();
       if (name === 'source-of-funds') loadSourceBalances();
+      if (name === 'core-modules') loadCoreModules();
       if (name === 'p2p') loadUsers();
       if (name === 'finops-ai') { loadFinOpsTasks(); loadFinOpsTrustees(); }
       if (name === 'calendar') loadCalendar();
@@ -836,6 +876,76 @@
         });
       } catch (e) { showToast('Source of funds error: ' + e.message, true); }
     }
+
+    async function loadCoreModules() {
+      try {
+        const res = await api('/api/dapp/modules');
+        const tb = el('core-modules-table').querySelector('tbody'); tb.innerHTML = '';
+        if (res.data && res.data.groups) {
+          for (const g of res.data.groups) {
+            for (const a of g.accounts || []) {
+              const tr = document.createElement('tr');
+              tr.innerHTML = `<td><span class="tag">${esc(g.label)}</span></td><td>${esc(a.name)}</td><td class="mono">${esc(a.id)}</td><td>${Number(a.balance_cents / 100).toFixed(2)}</td><td>${esc(a.currency)}</td>`;
+              tb.appendChild(tr);
+            }
+          }
+        }
+      } catch (e) { showToast('Core modules error: ' + e.message, true); }
+    }
+
+    window.internalModuleTransfer = async function() {
+      try {
+        const res = await api('/api/dapp/modules/transfer', {
+          method: 'POST',
+          body: JSON.stringify({
+            fromType: el('int-from-type').value,
+            fromAccountId: el('int-from-account').value,
+            toType: el('int-to-type').value,
+            toAccountId: el('int-to-account').value,
+            amount: el('int-amount').value,
+            memo: el('int-memo').value,
+          })
+        });
+        el('int-result').textContent = 'Transfer ' + res.data.transferId + ' completed.';
+        el('int-result').className = 'status success';
+        loadCoreModules(); loadSourceBalances();
+      } catch (e) { el('int-result').textContent = e.message; el('int-result').className = 'status error'; }
+    };
+
+    window.fundExternalRail = async function() {
+      try {
+        let railOptions = {};
+        try { railOptions = JSON.parse(el('rail-options').value || '{}'); } catch (e) { throw new Error('Rail options must be valid JSON: ' + e.message); }
+        const res = await api('/api/dapp/modules/fund-rail', {
+          method: 'POST',
+          body: JSON.stringify({
+            sourceType: el('rail-source-type').value,
+            sourceAccountId: el('rail-source-account').value,
+            rail: el('rail-type').value,
+            amount: el('rail-amount').value,
+            memo: railOptions.memo || `Fund ${el('rail-type').value} from ${el('rail-source-type').value}`,
+            railOptions,
+          })
+        });
+        const d = res.data;
+        let html = `<b>${esc(d.rail)}</b> funded from ${esc(d.sourceType)}:${esc(d.sourceAccountId)} for $${Number(d.amount).toFixed(2)}<br>ID: ${esc(d.fundingId)}`;
+        const instr = d.instrument || {};
+        if (instr.qrDataUrl || instr.cashAppQrDataUrl || instr.operatorWalletQrDataUrl) {
+          const src = instr.qrDataUrl || instr.cashAppQrDataUrl || instr.operatorWalletQrDataUrl;
+          html += `<br><img src="${esc(src)}" style="max-width:220px;margin-top:8px" />`;
+        }
+        if (instr.shareableUrl || instr.cashAppDeepLink || instr.cashMeDeepLink || instr.addToWalletLink) {
+          const link = instr.shareableUrl || instr.cashAppDeepLink || instr.cashMeDeepLink || instr.addToWalletLink;
+          html += `<br><a href="${esc(link)}" target="_blank">Open payment link / pass</a>`;
+        }
+        if (instr.mintTxHash || instr.swap) {
+          html += `<br>On-chain: ${JSON.stringify(instr.mintTxHash || instr.swap, null, 2).slice(0, 400)}`;
+        }
+        el('rail-result').innerHTML = html;
+        el('rail-result').className = 'status success';
+        loadCoreModules(); loadSourceBalances();
+      } catch (e) { el('rail-result').textContent = e.message; el('rail-result').className = 'status error'; }
+    };
 
     window.depositFromSource = async function() {
       try {
