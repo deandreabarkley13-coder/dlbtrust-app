@@ -21,8 +21,8 @@ try { viem = require('viem'); chains = require('viem/chains'); ({ privateKeyToAc
 let SourceOfFundsAdapter;
 try { ({ SourceOfFundsAdapter } = require('../stablecoin/sourceOfFundsAdapter')); } catch (e) { SourceOfFundsAdapter = null; }
 
-let TreasuryEngine;
-try { ({ TreasuryEngine, DEFAULT_ACCOUNT } = require('../stablecoin/treasuryEngine')); } catch (e) { TreasuryEngine = null; }
+let TreasuryEngine, DEFAULT_ACCOUNT;
+try { ({ TreasuryEngine, DEFAULT_ACCOUNT } = require('../stablecoin/treasuryEngine')); } catch (e) { TreasuryEngine = null; DEFAULT_ACCOUNT = 'TREASURY_HOT'; }
 
 let ModuleFundingEngine;
 try { ({ ModuleFundingEngine } = require('./moduleFundingEngine')); } catch (e) { ModuleFundingEngine = null; }
@@ -375,7 +375,7 @@ class SovereignTrustEngine {
     const paymentId = id('SIT-MINT');
     let sourceRef;
     if (String(sourceType).toLowerCase() === 'treasury') {
-      const acct = sourceAccountId || cfg.reserveAccount;
+      const acct = sourceAccountId || DEFAULT_ACCOUNT || 'TREASURY_HOT';
       await TreasuryEngine.debit(acct, cents, { reason: memo || `Sovereign token mint reserve ${paymentId}`, source: 'sovereign_mint', metadata: { sourceType, sourceAccountId, paymentId, target: to } });
       sourceRef = { sourceType, sourceAccountId: acct, treasuryDebit: true };
     } else {

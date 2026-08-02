@@ -101,6 +101,37 @@ description: How to end-to-end test the DLB Trust treasury dashboard, including 
 - If the operator wallet is low on Sepolia ETH, request a top-up or use the CDP EVM faucet (`ethereum-sepolia`) with `COINBASE_CDP_KEY_NAME` / `COINBASE_CDP_PRIVATE_KEY` Fly secrets.
 - Blockscout Sepolia explorer: `https://eth-sepolia.blockscout.com/tx/<txHash>`.
 
+## Sovereign Trust Token (SIT) (local shadow mode)
+
+- The dApp nav tab **Sovereign Trust** uses `GET /api/dapp/sovereign-trust/readiness`, `POST /api/dapp/sovereign-trust/deploy`, `POST /api/dapp/sovereign-trust/mint`, `POST /api/dapp/sovereign-trust/burn`, `POST /api/dapp/sovereign-trust/meta-tx/build`, `POST /api/dapp/sovereign-trust/meta-tx/relay`, and `GET /api/dapp/sovereign-trust/orders`.
+- In shadow mode (`SOVEREIGN_TRUST_SHADOW=true`), deploy returns `shadow-token-<ts>` and `shadow-forwarder-<ts>`; mint/burn return `shadow-tx-...` hashes; relay returns `shadow-relay-<ts>`.
+- Start local server with:
+  ```bash
+  export ADMIN_SECRET_TOKEN=dlb-admin-2026-trust \
+    BOND_DB_NAME=dlbtrust \
+    SOVEREIGN_TRUST_ENABLED=true \
+    SOVEREIGN_TRUST_SHADOW=true \
+    SOVEREIGN_RESERVE_ACCOUNT=TREASURY_HOT \
+    DAPP_PRIVATE_KEY=<valid-0x-private-key> \
+    DAPP_OPERATOR_ADDRESS=<matching-0x-address> \
+    DAPP_RPC_URL=https://ethereum-sepolia.publicnode.com \
+    PORT=3002
+  node server/server-3002.js
+  ```
+- Use the dApp UI `admin-token` field with `dlb-admin-2026-trust`.
+- For the gasless transfer without MetaMask, mock `window.ethereum` before calling `signSovereignTransfer()`:
+  ```js
+  window.ethereum = {
+    request: async ({ method, params }) => {
+      if (method === 'eth_signTypedData_v4') return '0x' + '1'.repeat(130);
+      return null;
+    }
+  };
+  ```
+  Then call `relaySovereignTransfer()` to relay the signed meta-tx.
+- Use `TREASURY_HOT` as the treasury source account for mint and burn; for non-treasury sources ensure the source-of-funds account has a positive balance.
+- **Known runtime bug:** `server/integrations/dapp/sovereignTrustEngine.js` destructures `DEFAULT_ACCOUNT` from `treasuryEngine` without declaring it, which throws `ReferenceError: DEFAULT_ACCOUNT is not defined` on server startup. The symptom is `mintFromSource` failing with `SourceOfFundsAdapter or TreasuryEngine not available`. To test, declare `let DEFAULT_ACCOUNT;` on the same line as `let TreasuryEngine;` before the destructuring.
+
 ## Devin Secrets Needed
 
 - `secret:org:HEDERA_OPERATOR_KEY` — only needed for live (non-shadow) Hedera tests.
