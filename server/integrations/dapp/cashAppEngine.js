@@ -43,14 +43,14 @@ class CashAppEngine {
     const cfg = this.getConfig();
     const issues = [];
     if (!cfg.enabled) issues.push('CASHAPP_ENABLED is not true');
-    if (!cfg.cashtag) issues.push('CASHAPP_CASHTAG missing (set the trust $Cashtag for P2P links)');
+    if (!cfg.cashtag) issues.push('CASHAPP_CASHTAG not set — P2P links still work if a $Cashtag is passed in the request');
     // Merchant Cash App Pay API credentials are only required for the partner checkout flow.
     // P2P deep links work with just a $Cashtag.
     const needsMerchant = cfg.clientId || cfg.clientSecret || cfg.networkApiKey;
     if (needsMerchant && (!cfg.clientId || !cfg.clientSecret || !cfg.networkApiKey)) {
       issues.push('Cash App Pay partner credentials incomplete (clientId/clientSecret/networkApiKey)');
     }
-    return { ready: issues.length === 0, rail: 'cashapp', mode: cfg.sandbox ? 'sandbox' : 'production', cashtag: cfg.cashtag || null, issues };
+    return { ready: cfg.enabled, rail: 'cashapp', mode: cfg.sandbox ? 'sandbox' : 'production', cashtag: cfg.cashtag || null, issues };
   }
 
   static _cleanCashtag(cashtag) {
@@ -87,7 +87,7 @@ class CashAppEngine {
     return {
       id,
       rail: 'cashapp',
-      status: cfg.sandbox ? 'pending_merchant_approval' : 'pending',
+      status: 'awaiting_sender',
       amountUsd,
       currency,
       recipientTag: tag,
