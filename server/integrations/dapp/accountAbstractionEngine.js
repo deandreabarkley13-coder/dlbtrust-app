@@ -142,15 +142,19 @@ const memory = {
 class AccountAbstractionEngine {
   static getConfig() {
     const base = getBaseConfig();
+    let operatorAddress = base.operatorAddress;
+    if (!operatorAddress && base.privateKey && accounts) {
+      try { operatorAddress = accounts.privateKeyToAccount(base.privateKey).address; } catch (e) {}
+    }
     return {
       ...base,
+      operatorAddress,
       aaEnabled: bool('AA_ENABLED', true),
       aaShadow: bool('AA_SHADOW', true),
       entryPoint: str('AA_ENTRY_POINT', DEFAULT_ENTRY_POINT_06),
       factory: str('AA_FACTORY', DEFAULT_SIMPLE_ACCOUNT_FACTORY_06),
       bundlerUrl: str('AA_BUNDLER_URL', DEFAULT_BUNDLER_URL),
       paymasterAddress: str('AA_PAYMASTER_ADDRESS', ''),
-      operatorAddress: base.operatorAddress,
       privateKey: base.privateKey,
       validityWindowSec: num('AA_VALIDITY_WINDOW_SEC', DEFAULT_VALIDITY_WINDOW_SEC),
     };
