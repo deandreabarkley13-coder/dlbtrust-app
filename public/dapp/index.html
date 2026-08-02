@@ -1100,7 +1100,7 @@
 
     function userRole() { return activeRole(); }
 
-    function isTrustee() { const r = activeRole(); return r === 'trustee_admin' || r === 'trustee_maker' || r === 'trustee'; }
+    function isTrustee() { const r = activeRole(); return r === 'trustee_admin' || r === 'trustee_maker' || r === 'trustee_checker' || r === 'trustee'; }
     function isAdmin() { return activeRole() === 'trustee_admin'; }
     function isBeneficiary() { return activeRole() === 'beneficiary'; }
 
@@ -1353,7 +1353,7 @@
     function roleAllowed(allowed, role) {
       if (allowed.includes('all')) return true;
       if (allowed.includes(role)) return true;
-      if (allowed.includes('trustee') && (role === 'trustee_admin' || role === 'trustee_maker' || role === 'trustee')) return true;
+      if (allowed.includes('trustee') && (role === 'trustee_admin' || role === 'trustee_maker' || role === 'trustee_checker' || role === 'trustee')) return true;
       if (allowed.includes('admin') && role === 'trustee_admin') return true;
       return false;
     }
@@ -1362,7 +1362,7 @@
       const role = userRole();
       const badge = el('role-badge');
       if (badge) {
-        const label = role === 'trustee_admin' ? 'Trustee Admin' : (role === 'trustee_maker' ? 'Trustee Maker' : (role === 'beneficiary' ? 'Beneficiary' : 'Guest'));
+        const label = role === 'trustee_admin' ? 'Trustee Admin' : (role === 'trustee_maker' ? 'Trustee Maker' : (role === 'trustee_checker' ? 'Trustee Checker' : (role === 'beneficiary' ? 'Beneficiary' : 'Guest')));
         badge.textContent = label;
         badge.className = `badge ${role.startsWith('trustee') ? 'trustee' : (role === 'beneficiary' ? 'beneficiary' : '')}`;
         badge.classList.remove('hidden');
