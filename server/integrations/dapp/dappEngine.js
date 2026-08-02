@@ -214,6 +214,11 @@ class DappEngine {
           updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
         );
       `);
+      // Migrate existing dapp_users tables that predate the RBAC columns.
+      await query(`ALTER TABLE dapp_users ADD COLUMN IF NOT EXISTS roles JSONB DEFAULT '["beneficiary"]'`);
+      await query(`ALTER TABLE dapp_users ADD COLUMN IF NOT EXISTS active_role TEXT`);
+      await query(`ALTER TABLE dapp_users ADD COLUMN IF NOT EXISTS is_active BOOLEAN NOT NULL DEFAULT true`);
+      await query(`ALTER TABLE dapp_users DROP CONSTRAINT IF EXISTS dapp_users_role_check`);
     }, () => { /* memory fallback */ });
   }
 
