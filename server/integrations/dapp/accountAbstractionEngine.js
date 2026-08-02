@@ -321,6 +321,105 @@ class AccountAbstractionEngine {
     return { success: true, shadow: false, paymaster: record.paymaster_address, entryPoint: cfg.entryPoint, tx: receipt.transactionHash };
   }
 
+  static async getPaymasterBalance() {
+    await ensureTables();
+    const cfg = this._checkDeps();
+    if (cfg.aaShadow) return { shadow: true, message: 'AA_SHADOW is enabled; no real balance to read' };
+    const paymaster = await this._loadPaymaster();
+    const address = cfg.paymasterAddress || paymaster?.paymaster_address;
+    if (!address || address.startsWith('shadow-')) throw new Error('paymaster not deployed');
+    const publicClient = this._publicClient(cfg);
+    const [operatorEth, paymasterEth, depositInfo] = await Promise.all([
+      publicClient.getBalance({ address: cfg.operatorAddress }),
+      publicClient.getBalance({ address }),
+      publicClient.readContract({
+        address: cfg.entryPoint,
+        abi: aa.entryPoint06Abi,
+        functionName: 'getDepositInfo',
+        args: [address],
+      }).catch(() => ({ deposit: 0n, staked: false, stake: 0n, unstakeDelaySec: 0n, withdrawTime: 0n })),
+    ]);
+    return {
+      paymasterAddress: address,
+      operatorAddress: cfg.operatorAddress,
+      operatorEth: viem.formatEther(operatorEth),
+      paymasterEth: viem.formatEther(paymasterEth),
+      entryPointDeposit: viem.formatEther(depositInfo?.deposit || 0n),
+      entryPointStake: viem.formatEther(depositInfo?.stake || 0n),
+      staked: !!depositInfo?.staked,
+      unstakeDelaySec: Number(depositInfo?.unstakeDelaySec || 0n),
+    };
+  }
+
+  static async seedPaymaster({ amountEth = '0.001', whitelistAddress } = {}) {
+    await ensureTables();
+    const cfg = this._checkDeps();
+    if (cfg.aaShadow) return { shadow: true, message: 'AA_SHADOW is enabled. Set AA_SHADOW=false and fund the operator wallet to seed a real paymaster.' };
+
+    const publicClient = this._publicClient(cfg);
+    let paymasterRecord = await this._loadPaymaster();
+    let paymasterAddress = cfg.paymasterAddress || paymasterRecord?.paymaster_address;
+
+    // Deploy if missing
+    if (!paymasterAddress || paymasterAddress.startsWith('shadow-')) {
+      const operatorEth = await publicClient.getBalance({ address: cfg.operatorAddress });
+      const estimatedDeploy = viem.parseEther('0.01');
+      if (operatorEth < estimatedDeploy) {
+        return {
+          needs_funding: true,
+          reason: 'deploy',
+          operatorAddress: cfg.operatorAddress,
+          operatorEth: viem.formatEther(operatorEth),
+          requiredEth: '0.01',
+          message: `Operator wallet needs at least 0.01 ETH to deploy the paymaster on chain ${cfg.chainId}.`,
+        };
+      }
+      const deployed = await this.deployPaymaster();
+      paymasterRecord = await this._loadPaymaster();
+      paymasterAddress = deployed.paymaster || paymasterRecord?.paymaster_address;
+    }
+
+    if (!paymasterAddress || paymasterAddress.startsWith('shadow-')) throw new Error('paymaster not deployed');
+
+    const depositAmt = viem.parseEther(String(amountEth));
+    const stakeAmt = depositAmt;
+    const gasReserve = viem.parseEther('0.0005');
+    const required = depositAmt + stakeAmt + gasReserve;
+
+    const [operatorEth] = await Promise.all([publicClient.getBalance({ address: cfg.operatorAddress })]);
+    if (operatorEth < required) {
+      return {
+        needs_funding: true,
+        reason: 'seed',
+        operatorAddress: cfg.operatorAddress,
+        paymasterAddress,
+        operatorEth: viem.formatEther(operatorEth),
+        requiredEth: viem.formatEther(required),
+        shortfallEth: viem.formatEther(required - operatorEth),
+        message: `Operator wallet needs ${viem.formatEther(required - operatorEth)} more ETH to deposit ${String(amountEth)} ETH and stake ${String(amountEth)} ETH on the EntryPoint.`,
+      };
+    }
+
+    const fundResult = await this.fundPaymaster({ amountEth, unstakeDelaySec: 86400 });
+    const whitelistResults = [];
+    const senderToWhitelist = whitelistAddress || cfg.operatorAddress;
+    try {
+      whitelistResults.push(await this.whitelistSender(senderToWhitelist, true));
+    } catch (err) {
+      whitelistResults.push({ success: false, error: err.message });
+    }
+
+    const balances = await this.getPaymasterBalance();
+    return {
+      success: true,
+      paymasterAddress,
+      fund: fundResult,
+      whitelistResults,
+      balances,
+      message: `Paymaster seeded. EntryPoint deposit ${balances.entryPointDeposit} ETH, stake ${balances.entryPointStake} ETH. Sender ${senderToWhitelist} whitelisted.`,
+    };
+  }
+
   static async fundPaymaster({ amountEth, unstakeDelaySec = 86400 } = {}) {
     await ensureTables();
     const cfg = this._checkDeps();

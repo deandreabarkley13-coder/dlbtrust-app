@@ -386,6 +386,17 @@
               <button class="btn" onclick="fundAAPaymaster()">Fund Paymaster</button>
               <button class="btn" onclick="whitelistAASender()">Whitelist Sender</button>
             </div>
+            <hr style="margin:20px 0;border:0;border-top:1px solid rgba(148,163,184,0.2)" />
+            <h4>One-Click Seed</h4>
+            <div id="aa-paymaster-balance" class="status" style="white-space:pre-wrap;word-break:break-word"></div>
+            <div class="form-row">
+              <div><label>Seed amount (ETH)</label><input type="number" id="aa-seed-amount" value="0.001" step="0.0001" /></div>
+              <div><label>Whitelist after seed (optional)</label><input type="text" id="aa-seed-whitelist" placeholder="0x... (defaults to operator)" /></div>
+            </div>
+            <div class="actions">
+              <button class="btn" onclick="loadAAPaymasterBalance()">Refresh Balance</button>
+              <button class="btn" onclick="seedAAPaymaster()">Seed Paymaster</button>
+            </div>
             <div id="aa-admin-result" class="status hidden" style="white-space:pre-wrap;word-break:break-word"></div>
           </div>
         </div>
@@ -1151,7 +1162,7 @@
       if (name === 'messaging') loadMessageThreads();
       if (name === 'documents') loadDocuments();
       if (name === 'wallet') { if (account) loadWallet(); }
-      if (name === 'sovereign-trust') { loadSovereignTrust(); loadAAReadiness(); }
+      if (name === 'sovereign-trust') { loadSovereignTrust(); loadAAReadiness(); loadAAPaymasterBalance(); }
       if (name === 'asset-debt') loadAssetDebtProofs();
       if (name === 'distribution-requests') { loadDistributionRequests(); }
       if (name === 'automation') { loadAutomationTemplates(); loadAutomationRuns(); }
@@ -2057,6 +2068,30 @@
         if (!address) throw new Error('address required');
         const res = await api('/api/dapp/aa/whitelist-sender', { method: 'POST', body: JSON.stringify({ address }) });
         setText('aa-admin-result', JSON.stringify(res.data, null, 2), false);
+      } catch (e) { setText('aa-admin-result', e.message, true); }
+    };
+
+    window.loadAAPaymasterBalance = async function() {
+      try {
+        const res = await api('/api/dapp/aa/paymaster-balance');
+        el('aa-paymaster-balance').textContent = `Operator: ${res.data.operatorAddress}\nOperator ETH: ${res.data.operatorEth}\nPaymaster: ${res.data.paymasterAddress}\nPaymaster ETH: ${res.data.paymasterEth}\nEntryPoint deposit: ${res.data.entryPointDeposit}\nEntryPoint stake: ${res.data.entryPointStake} (staked: ${res.data.staked})`;
+        el('aa-paymaster-balance').className = 'status success';
+      } catch (e) { el('aa-paymaster-balance').textContent = 'Paymaster balance error: ' + e.message; el('aa-paymaster-balance').className = 'status error'; }
+    };
+
+    window.seedAAPaymaster = async function() {
+      try {
+        const amountEth = el('aa-seed-amount').value;
+        const whitelistAddress = el('aa-seed-whitelist').value.trim();
+        const res = await api('/api/dapp/aa/seed-paymaster', { method: 'POST', body: JSON.stringify({ amountEth, whitelistAddress: whitelistAddress || undefined }) });
+        if (res.data && res.data.needs_funding) {
+          setText('aa-admin-result', `Needs funding.\nOperator: ${res.data.operatorAddress}\nPaymaster: ${res.data.paymasterAddress || 'not deployed'}\nOperator ETH: ${res.data.operatorEth}\nRequired ETH: ${res.data.requiredEth}\nShortfall: ${res.data.shortfallEth || res.data.requiredEth}\n\nSend ETH to the operator address above, then click Seed Paymaster again.`, true);
+        } else if (res.data && res.data.shadow) {
+          setText('aa-admin-result', `Shadow mode: ${res.data.message}`, false);
+        } else {
+          setText('aa-admin-result', JSON.stringify(res.data, null, 2), false);
+        }
+        loadAAPaymasterBalance();
       } catch (e) { setText('aa-admin-result', e.message, true); }
     };
 

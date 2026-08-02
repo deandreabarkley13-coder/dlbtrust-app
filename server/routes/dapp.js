@@ -634,6 +634,14 @@ router.post('/aa/fund-paymaster', operatorAuth, writeRateLimiter(), async (req, 
   try { res.status(201).json({ success: true, data: await AccountAbstractionEngine.fundPaymaster(req.body) }); } catch (err) { sendError(res, err); }
 });
 
+router.get('/aa/paymaster-balance', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await AccountAbstractionEngine.getPaymasterBalance() }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/aa/seed-paymaster', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try { res.status(201).json({ success: true, data: await AccountAbstractionEngine.seedPaymaster(req.body) }); } catch (err) { sendError(res, err); }
+});
+
 router.post('/aa/whitelist-sender', operatorAuth, writeRateLimiter(), async (req, res) => {
   try { res.status(201).json({ success: true, data: await AccountAbstractionEngine.whitelistSender(req.body.address, req.body.allowed !== false) }); } catch (err) { sendError(res, err); }
 });
