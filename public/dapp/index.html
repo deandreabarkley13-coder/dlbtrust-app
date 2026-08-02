@@ -1866,8 +1866,8 @@
 
     window.createCashAppPayoutRequest = async function() {
       try {
-        const amount = Math.round(Number(el('cap-amount').value) * 100);
-        if (!amount || amount <= 0) throw new Error('Enter a positive amount');
+        const rawAmount = el('cap-amount').value.trim();
+        const amount = rawAmount ? Math.round(Number(rawAmount) * 100) : undefined;
         const body = { amount, channel: 'ONLINE', accountReferenceId: el('cap-account').value, note: el('cap-memo').value };
         const res = await api('/api/dapp/payment-rails/cashapp/payout-request', { method: 'POST', body: JSON.stringify(body) });
         const d = res.data;

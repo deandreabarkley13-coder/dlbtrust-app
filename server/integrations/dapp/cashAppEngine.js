@@ -27,6 +27,9 @@ class CashAppEngine {
     if (!operatorAddress && privateKey && privateKeyToAccount) {
       try { operatorAddress = privateKeyToAccount(privateKey).address; } catch (e) { }
     }
+    const sandbox = bool('CASHAPP_SANDBOX', true);
+    const networkBase = sandbox ? 'https://sandbox.api.cash.app/network/v1' : 'https://api.cash.app/network/v1';
+    const customerBase = sandbox ? 'https://sandbox.api.cash.app/customer-request/v1' : 'https://api.cash.app/customer-request/v1';
     return {
       enabled: bool('CASHAPP_ENABLED', false),
       clientId: str('CASHAPP_CLIENT_ID', ''),
@@ -38,8 +41,9 @@ class CashAppEngine {
       scopeId: str('CASHAPP_SCOPE_ID', str('CASHAPP_BRAND_ID', str('CASHAPP_CLIENT_ID', ''))),
       region: str('CASHAPP_REGION', 'US'),
       payoutsEnabled: bool('CASHAPP_PAYOUTS_ENABLED', false),
-      sandbox: bool('CASHAPP_SANDBOX', true),
-      baseUrl: str('CASHAPP_BASE_URL', 'https://api.cash.app/network/v1'),
+      sandbox,
+      baseUrl: str('CASHAPP_BASE_URL', networkBase),
+      customerRequestBaseUrl: str('CASHAPP_CUSTOMER_REQUEST_BASE_URL', customerBase),
       brandId: str('CASHAPP_BRAND_ID', ''),
       webhookSecret: str('CASHAPP_WEBHOOK_SECRET', ''),
       cashtag: str('CASHAPP_CASHTAG', ''),
@@ -62,7 +66,8 @@ class CashAppEngine {
     if (needsPayouts && (!cfg.clientId || !cfg.keyId || !cfg.apiSecret || !cfg.merchantId)) {
       issues.push('Cash App Payouts needs CASHAPP_CLIENT_ID, CASHAPP_KEY_ID, CASHAPP_API_SECRET, and CASHAPP_MERCHANT_ID');
     }
-    return { ready: cfg.enabled, rail: 'cashapp', mode: cfg.sandbox ? 'sandbox' : 'production', cashtag: cfg.cashtag || null, payoutsEnabled: needsPayouts && cfg.clientId && cfg.keyId && cfg.apiSecret && cfg.merchantId, issues };
+    const payoutsReady = Boolean(needsPayouts && cfg.clientId && cfg.keyId && cfg.apiSecret && cfg.merchantId);
+    return { ready: cfg.enabled, rail: 'cashapp', mode: cfg.sandbox ? 'sandbox' : 'production', cashtag: cfg.cashtag || null, payoutsEnabled: payoutsReady, issues };
   }
 
   static _cleanCashtag(cashtag) {
@@ -168,10 +173,13 @@ class CashAppEngine {
    * Implements the HMAC-SHA256 request signing documented at:
    * https://developers.cash.app/cash-app-pay-partner-api/guides/technical-guides/api-fundamentals/requests/signing-requests
    */
-  static _networkRequest({ method = 'GET', path = '/', body = null, cfg = null } = {}) {
+  static _networkRequest({ method = 'GET', path = '/', body = null, cfg = null, api = 'network' } = {}) {
     const config = cfg || this.getConfig();
     return new Promise((resolve, reject) => {
-      const url = new URL(path, config.baseUrl);
+      const base = api === 'customer' ? config.customerRequestBaseUrl : config.baseUrl;
+      const baseWithSlash = base.endsWith('/') ? base : `${base}/`;
+      const relativePath = String(path).replace(/^\//, '');
+      const url = new URL(relativePath, baseWithSlash);
       const payload = body ? JSON.stringify(body) : '';
       const digest = crypto.createHash('sha256').update(payload).digest('hex').toLowerCase();
       const authHeader = `Client ${config.clientId} ${config.keyId}`.trim();
@@ -211,12 +219,26 @@ class CashAppEngine {
           try {
             const json = data ? JSON.parse(data) : {};
             if (res.statusCode >= 200 && res.statusCode < 300) resolve(json);
-            else reject(new Error(`Cash App API ${res.statusCode}: ${data}`));
+            else {
+              console.error('[CashAppEngine] upstream error', res.statusCode, data.slice(0, 2000));
+              const err = new Error(`Cash App API ${res.statusCode}`);
+              err.statusCode = res.statusCode;
+              reject(err);
+            }
           } catch (e) {
             if (res.statusCode >= 200 && res.statusCode < 300) resolve({ raw: data });
-            else reject(new Error(`Cash App API ${res.statusCode}: ${data}`));
+            else {
+              console.error('[CashAppEngine] upstream non-JSON error', res.statusCode, data.slice(0, 2000));
+              const err = new Error(`Cash App API ${res.statusCode}`);
+              err.statusCode = res.statusCode;
+              reject(err);
+            }
           }
         });
+      });
+      req.setTimeout(30000, () => {
+        req.destroy();
+        reject(new Error('Cash App API request timeout'));
       });
       req.on('error', reject);
       if (payload) req.write(payload);
@@ -239,21 +261,25 @@ class CashAppEngine {
     const cfg = this.getConfig();
     const idempotencyKey = `ca-preq-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
     const ref = referenceId || `dlb-payout-${Date.now()}`;
+    const metadata = {};
+    if (amount !== undefined && amount !== null && amount !== '') metadata.amount_cents = String(amount);
+    if (currency) metadata.currency = currency;
+    if (note) metadata.note = note;
     const body = {
       idempotency_key: idempotencyKey,
       request: {
-        action: {
+        actions: [{
           type: 'ON_FILE_PAYOUT',
           scope_id: scopeId || cfg.scopeId,
           ...(accountReferenceId ? { account_reference_id: accountReferenceId } : {}),
-        },
+        }],
         channel,
-        redirect_uri: redirectUri,
+        redirect_url: redirectUri,
         reference_id: ref,
-        ...(note ? { note } : {}),
+        ...(Object.keys(metadata).length ? { metadata } : {}),
       },
     };
-    const result = await this._networkRequest({ method: 'POST', path: '/requests', body, cfg });
+    const result = await this._networkRequest({ method: 'POST', path: '/requests', body, cfg, api: 'customer' });
     return { success: true, requestId: result.request?.id, status: result.request?.status, authFlow: result.request?.auth_flow, raw: result };
   }
 
@@ -286,7 +312,7 @@ class CashAppEngine {
   static async getRequest(requestId) {
     if (!this._payoutsConfigured()) throw new Error('Cash App Payouts not configured');
     const cfg = this.getConfig();
-    return this._networkRequest({ method: 'GET', path: `/requests/${encodeURIComponent(requestId)}`, cfg });
+    return this._networkRequest({ method: 'GET', path: `/requests/${encodeURIComponent(requestId)}`, cfg, api: 'customer' });
   }
 
   static async getPayout(payoutId) {
