@@ -77,6 +77,7 @@ module.exports = {
   TRUSTEES,
   REQUIRED_ROLES,
   ROLE_ALIASES,
+  normalizeRole,
   getTrusteeByRole,
   getTrusteeByEmail,
   validateTrustee,
