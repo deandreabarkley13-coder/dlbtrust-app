@@ -440,6 +440,23 @@ initializeDatabase().then(function() {
     trustSweepScheduler.start();
   } catch(e) { console.warn('[trust-sweep]', e.message); }
 
+  // Operator Gas Tank auto-check (converts source-ledger USD to operator ETH when low).
+  // OFF unless OPERATOR_GAS_TANK_AUTO_CHECK=true to avoid unintended source-ledger reservations.
+  try {
+    if (process.env.OPERATOR_GAS_TANK_AUTO_CHECK === 'true') {
+      var OperatorGasTank = require(path.join(HD, 'server', 'integrations', 'dapp', 'operatorGasTank')).OperatorGasTank;
+      var checkIntervalMs = parseInt(process.env.OPERATOR_GAS_TANK_CHECK_INTERVAL_MS || '300000', 10);
+      setInterval(function() {
+        OperatorGasTank.checkAndTopUp().then(function(result) {
+          console.log('[operator-gas-tank] auto-check:', result.status);
+        }).catch(function(err) {
+          console.warn('[operator-gas-tank] auto-check failed:', err.message);
+        });
+      }, checkIntervalMs);
+      console.log('[operator-gas-tank] auto-check scheduled every ' + checkIntervalMs + 'ms');
+    }
+  } catch(e) { console.warn('[operator-gas-tank] scheduler:', e.message); }
+
   // Record server start in transaction journal
   try {
     var journal = require(path.join(HD, 'server', 'integrations', 'backup', 'transactionJournal'));

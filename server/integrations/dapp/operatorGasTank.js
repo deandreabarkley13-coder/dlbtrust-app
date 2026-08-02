@@ -194,6 +194,13 @@ class OperatorGasTank {
       };
     }
 
+    // Do not create overlapping top-ups while one is already in flight.
+    const recentTopups = await this.listTopups({ limit: 5 });
+    const inFlight = recentTopups.find(t => ['pending','reserved','needs_deposit','deposit_initiated','buying','sending'].includes(t.status));
+    if (inFlight && !force) {
+      return { status: 'skipped', reason: 'topup_already_in_flight', topupId: inFlight.id, status: inFlight.status, balanceEth: balance.balanceEth };
+    }
+
     const topup = {
       id: identifier('GAS'),
       status: 'pending',
