@@ -17,6 +17,7 @@ const { DocumentEngine } = require('../integrations/documents/documentEngine');
 const { ModuleFundingEngine } = require('../integrations/dapp/moduleFundingEngine');
 const { SovereignTrustEngine } = require('../integrations/dapp/sovereignTrustEngine');
 const { AccountAbstractionEngine } = require('../integrations/dapp/accountAbstractionEngine');
+const { OperatorGasTank } = require('../integrations/dapp/operatorGasTank');
 const { ExpenseManagementEngine } = require('../integrations/accounting/expenseManagementEngine');
 const { DisbursementAutomationEngine } = require('../integrations/dapp/disbursementAutomationEngine');
 const { requireAuth, writeRateLimiter } = require('../integrations/auth/securityMiddleware');
@@ -640,6 +641,19 @@ router.get('/aa/paymaster-balance', operatorAuth, async (req, res) => {
 
 router.post('/aa/seed-paymaster', operatorAuth, writeRateLimiter(), async (req, res) => {
   try { res.status(201).json({ success: true, data: await AccountAbstractionEngine.seedPaymaster(req.body) }); } catch (err) { sendError(res, err); }
+});
+
+// ─── Operator Gas Tank (auto ETH replenishment) ───────────────────────────────────
+router.get('/operator-gas-tank/status', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await OperatorGasTank.getStatus() }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/operator-gas-tank/check-and-topup', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try { res.status(201).json({ success: true, data: await OperatorGasTank.checkAndTopUp(req.body) }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/operator-gas-tank/topups/:id/execute', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try { res.json({ success: true, data: await OperatorGasTank.executePending(req.params.id) }); } catch (err) { sendError(res, err); }
 });
 
 router.post('/aa/whitelist-sender', operatorAuth, writeRateLimiter(), async (req, res) => {

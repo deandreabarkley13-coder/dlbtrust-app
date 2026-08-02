@@ -283,6 +283,13 @@ async function initializeDatabase() {
     console.warn('[dapp] table init:', e.message);
   }
 
+  // Operator Gas Tank tables
+  try {
+    var OperatorGasTank = require(path.join(HD, 'server', 'integrations', 'dapp', 'operatorGasTank')).OperatorGasTank;
+    await OperatorGasTank.ensureTables();
+    console.log('[operator-gas-tank] tables ensured');
+  } catch(e) { console.warn('[operator-gas-tank] table init:', e.message); }
+
   // FinOps AI Agent, Calendar, and Messaging tables
   try {
     var FinOpsAgent = require(path.join(HD, 'server', 'integrations', 'agents', 'finOpsAgent')).FinOpsAgent;

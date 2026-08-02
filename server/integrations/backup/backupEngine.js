@@ -16,12 +16,28 @@ var fs = require('fs');
 var path = require('path');
 var { execSync, execFileSync, exec } = require('child_process');
 
+var { parse: parseConnectionString } = require('pg-connection-string');
+
 var BACKUP_DIR = process.env.BACKUP_DIR || path.resolve(__dirname, '../../../backups');
-var PG_HOST = process.env.FINERACT_DB_HOST || 'localhost';
-var PG_PORT = process.env.FINERACT_DB_PORT || '5432';
-var PG_USER = process.env.FINERACT_DB_USER || 'postgres';
-var PG_PASS = process.env.FINERACT_DB_PASSWORD || 'postgres';
-var PG_DB = process.env.BOND_DB_NAME || 'fineract_tenants';
+
+function pgFromEnv() {
+  if (process.env.DATABASE_URL) {
+    try {
+      var parsed = parseConnectionString(process.env.DATABASE_URL);
+      return { host: parsed.host || 'localhost', port: String(parsed.port || 5432), user: parsed.user || 'postgres', pass: parsed.password || '', db: parsed.database || 'dlbtrust', ssl: parsed.ssl || false };
+    } catch (e) { console.warn('[backup] DATABASE_URL parse failed:', e.message); }
+  }
+  return {
+    host: process.env.FINERACT_DB_HOST || 'localhost',
+    port: process.env.FINERACT_DB_PORT || '5432',
+    user: process.env.FINERACT_DB_USER || 'postgres',
+    pass: process.env.FINERACT_DB_PASSWORD || 'postgres',
+    db: process.env.BOND_DB_NAME || 'fineract_tenants',
+    ssl: false,
+  };
+}
+
+var PG = pgFromEnv();
 
 // Ensure backup directory exists
 function ensureBackupDir() {
@@ -34,17 +50,23 @@ function ensureBackupDir() {
 /**
  * Backup PostgreSQL database using pg_dump
  */
+function pgEnv(extra) {
+  var env = Object.assign({}, process.env, { PGPASSWORD: PG.pass });
+  if (PG.ssl) env.PGSSLMODE = 'require';
+  if (extra) Object.assign(env, extra);
+  return env;
+}
+
 function backupPostgres() {
   ensureBackupDir();
   var timestamp = new Date().toISOString().replace(/[:.]/g, '-');
   var filename = 'pg-backup-' + timestamp + '.sql';
   var filepath = path.join(BACKUP_DIR, 'pg', filename);
 
-  var env = Object.assign({}, process.env, { PGPASSWORD: PG_PASS });
-  var args = ['-h', PG_HOST, '-p', PG_PORT, '-U', PG_USER, '-d', PG_DB, '--no-owner', '--no-acl', '-f', filepath];
+  var args = ['-h', PG.host, '-p', PG.port, '-U', PG.user, '-d', PG.db, '--no-owner', '--no-acl', '-f', filepath];
 
   try {
-    execFileSync('pg_dump', args, { env: env, timeout: 60000 });
+    execFileSync('pg_dump', args, { env: pgEnv(), timeout: 60000 });
     var stats = fs.statSync(filepath);
     console.log('[backup] PostgreSQL backup complete: ' + filename + ' (' + (stats.size / 1024).toFixed(1) + ' KB)');
     return { success: true, file: filename, path: filepath, size: stats.size, timestamp: new Date().toISOString() };
@@ -55,22 +77,39 @@ function backupPostgres() {
 }
 
 /**
- * Backup Fineract GL database (fineract_default)
+ * Backup Fineract GL database (fineract_default). Uses FINERACT_DATABASE_URL if set,
+ * otherwise falls back to FINERACT_DEFAULT_DB on the same host as the app DB.
  */
 function backupFineractDB() {
   ensureBackupDir();
+  var fineractUrl = process.env.FINERACT_DATABASE_URL || process.env.FINERACT_DB_URL || '';
+  var fineractDB = process.env.FINERACT_DEFAULT_DB || 'fineract_default';
+  var host = PG.host, port = PG.port, user = PG.user, pass = PG.pass, ssl = PG.ssl;
+
+  if (fineractUrl) {
+    try {
+      var parsed = parseConnectionString(fineractUrl);
+      host = parsed.host || host;
+      port = String(parsed.port || port);
+      user = parsed.user || user;
+      pass = parsed.password || pass;
+      ssl = parsed.ssl || ssl;
+      if (parsed.database) fineractDB = parsed.database;
+    } catch (e) { console.warn('[backup] FINERACT_DATABASE_URL parse failed:', e.message); }
+  }
+
   var fineractBackupDir = path.join(BACKUP_DIR, 'pg-fineract');
   if (!fs.existsSync(fineractBackupDir)) fs.mkdirSync(fineractBackupDir, { recursive: true });
   var timestamp = new Date().toISOString().replace(/[:.]/g, '-');
   var filename = 'fineract-default-backup-' + timestamp + '.sql';
   var filepath = path.join(fineractBackupDir, filename);
 
-  var env = Object.assign({}, process.env, { PGPASSWORD: PG_PASS });
-  var fineractDB = process.env.FINERACT_DEFAULT_DB || 'fineract_default';
-  var args = ['-h', PG_HOST, '-p', PG_PORT, '-U', PG_USER, '-d', fineractDB, '--no-owner', '--no-acl', '-f', filepath];
+  var args = ['-h', host, '-p', port, '-U', user, '-d', fineractDB, '--no-owner', '--no-acl', '-f', filepath];
+  var envOverrides = { PGPASSWORD: pass };
+  if (ssl !== PG.ssl) envOverrides.PGSSLMODE = ssl ? 'require' : 'disable';
 
   try {
-    execFileSync('pg_dump', args, { env: env, timeout: 120000 });
+    execFileSync('pg_dump', args, { env: pgEnv(envOverrides), timeout: 120000 });
     var stats = fs.statSync(filepath);
     console.log('[backup] Fineract DB backup complete: ' + filename + ' (' + (stats.size / 1024).toFixed(1) + ' KB)');
     return { success: true, file: filename, path: filepath, size: stats.size, timestamp: new Date().toISOString() };

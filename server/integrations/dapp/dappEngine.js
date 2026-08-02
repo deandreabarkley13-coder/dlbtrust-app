@@ -529,11 +529,11 @@ class DappEngine {
   static async getWhiteLabel(idOrSlug) {
     return withFallback(async () => {
       const rows = await query('SELECT * FROM dapp_white_label WHERE id = $1 OR slug = $1', [idOrSlug]);
-      if (!rows.rows.length) throw new Error('White-label config not found');
-      return rows.rows[0];
+      if (rows.rows.length) return rows.rows[0];
+      return { id: 'default', slug: 'default', name: 'Sovereign Trust', primary_color: '#3b82f6', secondary_color: '#2563eb', logo_url: '', favicon_url: '', contact_email: '' };
     }, () => {
       for (const v of memory.whiteLabel.values()) if (v.id === idOrSlug || v.slug === idOrSlug) return v;
-      throw new Error('White-label config not found');
+      return { id: 'default', slug: 'default', name: 'Sovereign Trust', primary_color: '#3b82f6', secondary_color: '#2563eb', logo_url: '', favicon_url: '', contact_email: '' };
     });
   }
 
@@ -702,7 +702,10 @@ class DappEngine {
   }
 
   static async generateOtp(email) {
-    const user = await this.getUserByEmail(email);
+    let user = await this.getUserByEmail(email).catch(() => null);
+    if (!user) {
+      user = await this.createUser({ email, name: email.split('@')[0], role: 'beneficiary' });
+    }
     const code = String(Math.floor(100000 + Math.random() * 900000));
     const expires = new Date(Date.now() + 10 * 60 * 1000).toISOString();
     await this._update('dapp_users', user.id, { otp_code: code, otp_expires: expires });

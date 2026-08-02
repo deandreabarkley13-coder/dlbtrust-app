@@ -327,10 +327,23 @@ class AccountAbstractionEngine {
     if (cfg.aaShadow) return { shadow: true, message: 'AA_SHADOW is enabled; no real balance to read' };
     const paymaster = await this._loadPaymaster();
     const address = cfg.paymasterAddress || paymaster?.paymaster_address;
-    if (!address || address.startsWith('shadow-')) throw new Error('paymaster not deployed');
     const publicClient = this._publicClient(cfg);
-    const [operatorEth, paymasterEth, depositInfo] = await Promise.all([
-      publicClient.getBalance({ address: cfg.operatorAddress }),
+    const operatorEth = await publicClient.getBalance({ address: cfg.operatorAddress });
+    if (!address || address.startsWith('shadow-')) {
+      return {
+        deployed: false,
+        operatorAddress: cfg.operatorAddress,
+        operatorEth: viem.formatEther(operatorEth),
+        paymasterAddress: null,
+        paymasterEth: '0',
+        entryPointDeposit: '0',
+        entryPointStake: '0',
+        staked: false,
+        unstakeDelaySec: 0,
+        message: 'Paymaster not deployed; use Seed Paymaster to deploy and fund it.',
+      };
+    }
+    const [paymasterEth, depositInfo] = await Promise.all([
       publicClient.getBalance({ address }),
       publicClient.readContract({
         address: cfg.entryPoint,
@@ -340,6 +353,7 @@ class AccountAbstractionEngine {
       }).catch(() => ({ deposit: 0n, staked: false, stake: 0n, unstakeDelaySec: 0n, withdrawTime: 0n })),
     ]);
     return {
+      deployed: true,
       paymasterAddress: address,
       operatorAddress: cfg.operatorAddress,
       operatorEth: viem.formatEther(operatorEth),

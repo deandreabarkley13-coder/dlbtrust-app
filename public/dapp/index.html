@@ -417,6 +417,25 @@
             <div class="actions"><button class="btn btn-sm" onclick="loadSovereignOrders()">Refresh Orders</button></div>
           </div>
         </div>
+
+        <div class="grid" style="margin-top:20px">
+          <div class="card" style="grid-column: 1 / -1;">
+            <h2>Operator Gas Tank</h2>
+            <p>Auto-replenish operator ETH from Treasury / Core Banking / Trust Accounting / Bond / Fixed Income / Cash / Sub-Ledger / CRM reserves. When the operator balance falls below the threshold, $100 USD is swept from the source ledger and converted to ETH on Coinbase, then sent to the operator wallet.</p>
+            <div id="gas-tank-status" class="status" style="white-space:pre-wrap;word-break:break-word"></div>
+            <div class="form-row">
+              <div><label>Source Type</label><select id="gas-source-type"><option value="treasury">Treasury</option><option value="cash">Cash</option><option value="trust">Trust Accounting</option><option value="bond">Bond / Fixed Income</option><option value="sub_ledger">Sub-Ledger</option><option value="core_banking">Core Banking</option><option value="crm">CRM</option></select></div>
+              <div><label>Source Account</label><input type="text" id="gas-source-account" placeholder="TREASURY_HOT or CA-OPERATING" value="TREASURY_HOT" /></div>
+              <div><label>Top-up USD</label><input type="number" id="gas-amount" value="100" step="1" min="1" /></div>
+              <div><label>Threshold ETH</label><input type="number" id="gas-threshold" value="0.005" step="0.001" min="0" /></div>
+            </div>
+            <div class="actions">
+              <button class="btn" onclick="loadGasTankStatus()">Refresh Status</button>
+              <button class="btn" onclick="checkAndTopUpGas()">Check & Top-up</button>
+            </div>
+            <div id="gas-tank-result" class="status hidden" style="white-space:pre-wrap;word-break:break-word"></div>
+          </div>
+        </div>
       </section>
 
       <section id="asset-debt" class="section">
@@ -2074,6 +2093,11 @@
     window.loadAAPaymasterBalance = async function() {
       try {
         const res = await api('/api/dapp/aa/paymaster-balance');
+        if (res.data.deployed === false) {
+          el('aa-paymaster-balance').textContent = `Operator: ${res.data.operatorAddress}\nOperator ETH: ${res.data.operatorEth}\n${res.data.message}`;
+          el('aa-paymaster-balance').className = 'status';
+          return;
+        }
         el('aa-paymaster-balance').textContent = `Operator: ${res.data.operatorAddress}\nOperator ETH: ${res.data.operatorEth}\nPaymaster: ${res.data.paymasterAddress}\nPaymaster ETH: ${res.data.paymasterEth}\nEntryPoint deposit: ${res.data.entryPointDeposit}\nEntryPoint stake: ${res.data.entryPointStake} (staked: ${res.data.staked})`;
         el('aa-paymaster-balance').className = 'status success';
       } catch (e) { el('aa-paymaster-balance').textContent = 'Paymaster balance error: ' + e.message; el('aa-paymaster-balance').className = 'status error'; }
@@ -2093,6 +2117,47 @@
         }
         loadAAPaymasterBalance();
       } catch (e) { setText('aa-admin-result', e.message, true); }
+    };
+
+    window.loadGasTankStatus = async function() {
+      try {
+        const res = await api('/api/dapp/operator-gas-tank/status');
+        const d = res.data;
+        const statusClass = d.low ? 'error' : 'success';
+        let txt = `Operator: ${d.operatorAddress}\nBalance: ${d.balanceEth} ETH\nThreshold: ${d.thresholdEth} ETH\nTop-up: $${Number(d.topupUsd).toFixed(2)} from ${d.sourceType}:${d.sourceAccountId}\nCoinbase bridge: ${d.coinbaseEnabled ? 'enabled' : 'disabled'}`;
+        if (d.recentTopups && d.recentTopups.length) {
+          txt += '\n\nRecent top-ups:\n' + d.recentTopups.map(t => `${t.id} | ${t.status} | $${Number(t.amount_usd).toFixed(2)} | ${t.bridge_transfer_id || '—'}`).join('\n');
+        }
+        const node = el('gas-tank-status');
+        node.textContent = txt;
+        node.className = 'status ' + statusClass;
+      } catch (e) { setText('gas-tank-result', e.message, true); }
+    };
+
+    window.checkAndTopUpGas = async function() {
+      try {
+        const body = {
+          sourceType: el('gas-source-type').value,
+          sourceAccountId: el('gas-source-account').value,
+          amountUsd: Number(el('gas-amount').value),
+          thresholdEth: Number(el('gas-threshold').value),
+        };
+        const res = await api('/api/dapp/operator-gas-tank/check-and-topup', { method: 'POST', body: JSON.stringify(body) });
+        let txt = `Status: ${res.data.status}\n`;
+        if (res.data.status === 'completed') {
+          txt += `Top-up completed. New balance: ${res.data.balanceEth} ETH\n`;
+        } else if (res.data.status === 'needs_deposit') {
+          txt += `Source reserved; Coinbase needs a USD deposit to complete.\n${JSON.stringify(res.data.instructions || {}, null, 2)}`;
+        } else if (res.data.status === 'skipped') {
+          txt += `Balance ${res.data.balanceEth} ETH is above threshold ${res.data.thresholdEth} ETH.`;
+        } else if (res.data.status === 'needs_config') {
+          txt += res.data.reason;
+        } else {
+          txt += JSON.stringify(res.data.topup || res.data, null, 2);
+        }
+        setText('gas-tank-result', txt, res.data.status === 'failed');
+        loadGasTankStatus();
+      } catch (e) { setText('gas-tank-result', e.message, true); }
     };
 
     async function loadSovereignOrders() {
