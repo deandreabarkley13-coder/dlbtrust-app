@@ -279,6 +279,8 @@ async function initializeDatabase() {
     var DappEngine = require(path.join(HD, 'server', 'integrations', 'dapp', 'dappEngine')).DappEngine;
     await DappEngine.ensureTables();
     console.log('[dapp] tables ensured');
+    await DappEngine.ensurePortalUsers();
+    console.log('[dapp] portal users seeded');
   } catch(e) {
     console.warn('[dapp] table init:', e.message);
   }

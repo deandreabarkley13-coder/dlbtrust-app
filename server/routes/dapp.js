@@ -25,6 +25,8 @@ const { requireAuth, writeRateLimiter } = require('../integrations/auth/security
 
 const router = express.Router();
 const operatorAuth = requireAuth({ role: 'operator' });
+const portalAuth = requireAuth({ role: 'viewer' });
+const adminAuth = requireAuth({ role: 'admin' });
 
 function sendError(res, err) {
   console.error('[dapp]', err);
@@ -165,22 +167,46 @@ router.post('/p2p', operatorAuth, writeRateLimiter(), async (req, res) => {
 });
 
 // ─── dApp Users / Identity (email/phone P2P login) ────────────────────────────
-router.get('/users', operatorAuth, async (req, res) => {
+router.get('/users', adminAuth, async (req, res) => {
   try { res.json({ success: true, data: await DappEngine.listUsers() }); } catch (err) { sendError(res, err); }
 });
 
-router.get('/users/:id', operatorAuth, async (req, res) => {
+router.get('/users/me', portalAuth, async (req, res) => {
+  try {
+    const email = req.user && req.user.email;
+    const data = email ? await DappEngine.getUserByEmail(email).then(u => DappEngine._sanitizeUser(u)) : null;
+    res.json({ success: true, data });
+  } catch (err) { sendError(res, err); }
+});
+
+router.get('/users/:id', adminAuth, async (req, res) => {
   try { res.json({ success: true, data: await DappEngine.getUser(req.params.id) }); } catch (err) { sendError(res, err); }
 });
 
-router.post('/users', operatorAuth, writeRateLimiter(), async (req, res) => {
+router.post('/users', adminAuth, writeRateLimiter(), async (req, res) => {
   try {
     const data = await DappEngine.createUser(req.body);
     res.status(201).json({ success: true, data });
   } catch (err) { sendError(res, err); }
 });
 
-router.post('/users/link-wallet', operatorAuth, writeRateLimiter(), async (req, res) => {
+router.post('/users/:id/roles', adminAuth, writeRateLimiter(), async (req, res) => {
+  try {
+    const user = await DappEngine.getUser(req.params.id);
+    const data = await DappEngine.setUserRoles({ email: user.email, roles: req.body.roles, activeRole: req.body.activeRole });
+    res.json({ success: true, data });
+  } catch (err) { sendError(res, err); }
+});
+
+router.post('/users/:id/active', adminAuth, writeRateLimiter(), async (req, res) => {
+  try {
+    const user = await DappEngine.getUser(req.params.id);
+    const data = await DappEngine.setUserActive(user.email, req.body.isActive !== false);
+    res.json({ success: true, data });
+  } catch (err) { sendError(res, err); }
+});
+
+router.post('/users/link-wallet', portalAuth, writeRateLimiter(), async (req, res) => {
   try {
     const { email, walletAddress, provider, safeOwnerAddress } = req.body;
     const data = await DappEngine.linkWallet({ email, walletAddress, provider, safeOwnerAddress });
@@ -202,6 +228,28 @@ router.post('/auth/verify', async (req, res) => {
     const data = await DappEngine.verifyOtp({ email, code });
     res.json({ success: true, data });
   } catch (err) { sendError(res, err); }
+});
+
+router.get('/auth/me', portalAuth, async (req, res) => {
+  try {
+    const email = req.user && req.user.email;
+    const data = email ? await DappEngine.getUserByEmail(email).then(u => DappEngine._sanitizeUser(u)) : null;
+    res.json({ success: true, data: { user: req.user, dappUser: data } });
+  } catch (err) { sendError(res, err); }
+});
+
+router.post('/auth/switch-role', portalAuth, async (req, res) => {
+  try {
+    const { activeRole } = req.body;
+    const email = req.user && req.user.email;
+    if (!email) throw new Error('Not authenticated');
+    const data = await DappEngine.switchActiveRole({ email, activeRole });
+    res.json({ success: true, data });
+  } catch (err) { sendError(res, err); }
+});
+
+router.post('/auth/logout', portalAuth, async (req, res) => {
+  res.json({ success: true, data: { message: 'Session cleared on client. Please remove dlb-dapp-token from storage.' } });
 });
 
 // ─── White-label ────────────────────────────────────────────────────────────────
@@ -467,7 +515,7 @@ router.post('/finops-ai/tasks/:id/execute', operatorAuth, writeRateLimiter(), as
 // Calendar & Scheduling
 // ═════════════════════════════════════════════════════════════════════════════
 
-router.get('/calendar/events', operatorAuth, async (req, res) => {
+router.get('/calendar/events', portalAuth, async (req, res) => {
   try { res.json({ success: true, data: await CalendarEngine.listEvents(req.query) }); } catch (err) { sendError(res, err); }
 });
 
@@ -478,7 +526,7 @@ router.post('/calendar/events', operatorAuth, writeRateLimiter(), async (req, re
   } catch (err) { sendError(res, err); }
 });
 
-router.get('/calendar/events/:id', operatorAuth, async (req, res) => {
+router.get('/calendar/events/:id', portalAuth, async (req, res) => {
   try {
     const data = await CalendarEngine.getEvent(req.params.id);
     if (!data) return res.status(404).json({ success: false, error: 'Event not found' });
@@ -498,7 +546,7 @@ router.delete('/calendar/events/:id', operatorAuth, writeRateLimiter(), async (r
 // Messaging
 // ═════════════════════════════════════════════════════════════════════════════
 
-router.get('/messaging/threads', operatorAuth, async (req, res) => {
+router.get('/messaging/threads', portalAuth, async (req, res) => {
   try { res.json({ success: true, data: await MessagingEngine.listThreads(req.query) }); } catch (err) { sendError(res, err); }
 });
 
@@ -509,7 +557,7 @@ router.post('/messaging/threads', operatorAuth, writeRateLimiter(), async (req, 
   } catch (err) { sendError(res, err); }
 });
 
-router.get('/messaging/threads/:id', operatorAuth, async (req, res) => {
+router.get('/messaging/threads/:id', portalAuth, async (req, res) => {
   try {
     const thread = await MessagingEngine.getThread(req.params.id);
     if (!thread) return res.status(404).json({ success: false, error: 'Thread not found' });
@@ -518,7 +566,7 @@ router.get('/messaging/threads/:id', operatorAuth, async (req, res) => {
   } catch (err) { sendError(res, err); }
 });
 
-router.post('/messaging/threads/:id/messages', operatorAuth, writeRateLimiter(), async (req, res) => {
+router.post('/messaging/threads/:id/messages', portalAuth, writeRateLimiter(), async (req, res) => {
   try {
     const data = await MessagingEngine.sendMessage({ threadId: req.params.id, ...req.body });
     res.status(201).json({ success: true, data });
@@ -529,18 +577,18 @@ router.post('/messaging/threads/:id/messages', operatorAuth, writeRateLimiter(),
 // Document Vault (dApp wrappers)
 // ═════════════════════════════════════════════════════════════════════════════
 
-router.get('/documents', operatorAuth, async (req, res) => {
+router.get('/documents', portalAuth, async (req, res) => {
   try { res.json({ success: true, data: await DocumentEngine.listDocuments(req.query) }); } catch (err) { sendError(res, err); }
 });
 
-router.post('/documents', operatorAuth, writeRateLimiter(), async (req, res) => {
+router.post('/documents', portalAuth, writeRateLimiter(), async (req, res) => {
   try {
     const data = await DocumentEngine.createDocument(req.body);
     res.status(201).json({ success: true, data });
   } catch (err) { sendError(res, err); }
 });
 
-router.get('/documents/:id', operatorAuth, async (req, res) => {
+router.get('/documents/:id', portalAuth, async (req, res) => {
   try {
     const data = await DocumentEngine.getDocument(req.params.id);
     if (!data) return res.status(404).json({ success: false, error: 'Document not found' });
@@ -552,7 +600,7 @@ router.get('/documents/:id', operatorAuth, async (req, res) => {
 // Connected wallet balances & activity
 // ═════════════════════════════════════════════════════════════════════════════
 
-router.get('/wallet/balances', operatorAuth, async (req, res) => {
+router.get('/wallet/balances', portalAuth, async (req, res) => {
   try {
     const { chain, address } = req.query;
     const data = await DappEngine.getWalletBalances({ chain, address });
@@ -560,7 +608,7 @@ router.get('/wallet/balances', operatorAuth, async (req, res) => {
   } catch (err) { sendError(res, err); }
 });
 
-router.get('/wallet/activity', operatorAuth, async (req, res) => {
+router.get('/wallet/activity', portalAuth, async (req, res) => {
   try {
     const { chain, address } = req.query;
     const data = await DappEngine.getWalletActivity({ chain, address });
@@ -712,15 +760,15 @@ function optionalAuth(req, res, next) {
   return operatorAuth(req, res, next);
 }
 
-router.get('/distribution-requests', operatorAuth, async (req, res) => {
+router.get('/distribution-requests', portalAuth, async (req, res) => {
   try { res.json({ success: true, data: await DistributionRequestEngine.listRequests({ status: req.query.status, beneficiaryEmail: req.query.beneficiaryEmail, limit: Number(req.query.limit) || 50 }) }); } catch (err) { sendError(res, err); }
 });
 
-router.get('/distribution-requests/:id', operatorAuth, async (req, res) => {
+router.get('/distribution-requests/:id', portalAuth, async (req, res) => {
   try { res.json({ success: true, data: await DistributionRequestEngine.getRequest(req.params.id) }); } catch (err) { sendError(res, err); }
 });
 
-router.post('/distribution-requests', operatorAuth, writeRateLimiter(), async (req, res) => {
+router.post('/distribution-requests', portalAuth, writeRateLimiter(), async (req, res) => {
   try { res.status(201).json({ success: true, data: await DistributionRequestEngine.createRequest(req.body) }); } catch (err) { sendError(res, err); }
 });
 

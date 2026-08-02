@@ -4,6 +4,7 @@ const { SafeEngine } = require('./safeEngine');
 const { getConfig } = require('./config');
 const { SourceOfFundsAdapter } = require('../stablecoin/sourceOfFundsAdapter');
 const { getTrusteeByEmail } = require('./trustees');
+const { JWT_SECRET } = require('../auth/userAuth');
 
 let CashEngine, TrustAccountingEngine, BondEngine, FineractClient, CrmEngine, TaxEngine, DocumentEngine, SubLedgerEngine;
 try { CashEngine = require('../cash/cashEngine').CashEngine; } catch (e) { }
@@ -27,6 +28,8 @@ try { BondTokenizationEngine = require('./bondTokenizationEngine').BondTokenizat
 
 const https = require('https');
 const { URL } = require('url');
+let jwt;
+try { jwt = require('jsonwebtoken'); } catch (e) { }
 
 const memory = { safes: new Map(), payouts: new Map(), deposits: new Map(), distributions: new Map(), whiteLabel: new Map(), users: new Map() };
 
@@ -196,11 +199,14 @@ class DappEngine {
           email TEXT UNIQUE,
           phone TEXT,
           name TEXT,
-          role TEXT NOT NULL DEFAULT 'beneficiary' CHECK (role IN ('trustee_admin', 'trustee_secretary', 'beneficiary', 'viewer')),
+          role TEXT NOT NULL DEFAULT 'beneficiary',
+          roles JSONB DEFAULT '["beneficiary"]',
+          active_role TEXT,
           wallet_address TEXT,
           safe_owner_address TEXT,
           linked_wallet_provider TEXT,
           verified BOOLEAN NOT NULL DEFAULT false,
+          is_active BOOLEAN NOT NULL DEFAULT true,
           otp_code TEXT,
           otp_expires TIMESTAMPTZ,
           metadata JSONB DEFAULT '{}',
@@ -676,20 +682,35 @@ class DappEngine {
   }
 
   // ─── dApp Users / Identity (email/phone login) ─────────────────────────────────
-  static async createUser({ email, phone, name, role = 'beneficiary', walletAddress, safeOwnerAddress, provider, metadata = {} } = {}) {
+  static async createUser({ email, phone, name, role, roles = [], activeRole, walletAddress, safeOwnerAddress, provider, isActive = true, metadata = {} } = {}) {
     if (!email && !phone) throw new Error('email or phone required');
     if (email) {
       const existing = await this.getUserByEmail(email).catch(() => null);
       if (existing) throw new Error('User with this email already exists');
     }
+    const inferred = roles && roles.length ? roles : (role ? [role] : []);
+    const resolvedRoles = inferred.length ? inferred : this.inferRoles(email);
+    const primaryRole = activeRole || role || resolvedRoles[0] || 'beneficiary';
     const id = identifier('USR');
-    const row = { id, email: email || null, phone: phone || null, name: name || null, role, wallet_address: walletAddress || null, safe_owner_address: safeOwnerAddress || null, linked_wallet_provider: provider || null, verified: false, metadata: JSON.stringify(metadata) };
+    const row = {
+      id, email: email || null, phone: phone || null, name: name || null,
+      role: primaryRole,
+      roles: JSON.stringify(resolvedRoles),
+      active_role: activeRole || primaryRole,
+      wallet_address: walletAddress || null,
+      safe_owner_address: safeOwnerAddress || null,
+      linked_wallet_provider: provider || null,
+      verified: false, is_active: isActive, metadata: JSON.stringify(metadata),
+    };
     await this._insert('dapp_users', row);
     return row;
   }
 
-  static async getUser(id) { return this._selectOne('dapp_users', id); }
-  static async listUsers() { return this._selectAll('dapp_users'); }
+  static async getUser(id) { return this._sanitizeUser(await this._selectOne('dapp_users', id)); }
+  static async listUsers() {
+    const rows = await this._selectAll('dapp_users');
+    return rows.map(u => this._sanitizeUser(u));
+  }
 
   static async getUserByEmail(email) {
     return withFallback(async () => {
@@ -702,39 +723,62 @@ class DappEngine {
     });
   }
 
-  static inferRole(email) {
+  static inferRoles(email) {
     const trustee = getTrusteeByEmail(email);
     if (trustee) {
-      if (String(trustee.role).toLowerCase() === 'administration') return 'trustee_admin';
-      if (String(trustee.role).toLowerCase() === 'distribution') return 'trustee_secretary';
-      return 'trustee';
+      const lower = String(trustee.role).toLowerCase();
+      if (lower === 'administration') return ['trustee_admin', 'beneficiary'];
+      if (lower === 'distribution') return ['trustee_maker', 'beneficiary'];
+      return ['trustee', 'beneficiary'];
     }
-    return 'beneficiary';
+    return ['beneficiary'];
+  }
+
+  static inferRole(email) {
+    return this.inferRoles(email)[0];
   }
 
   static async generateOtp(email) {
     let user = await this.getUserByEmail(email).catch(() => null);
-    const role = this.inferRole(email);
+    const roles = this.inferRoles(email);
+    const role = roles[0];
     if (!user) {
-      user = await this.createUser({ email, name: email.split('@')[0], role });
-    } else if (user.role !== role && role !== 'beneficiary') {
-      // Promote a user to trustee if their email matches a configured trustee.
-      await this._update('dapp_users', user.id, { role });
-      user.role = role;
+      user = await this.createUser({ email, name: email.split('@')[0], role, roles });
+    } else {
+      const existingRoles = Array.isArray(user.roles) ? user.roles : (user.roles ? JSON.parse(user.roles) : [user.role || 'beneficiary']);
+      const merged = Array.from(new Set([...existingRoles, ...roles]));
+      const primary = user.active_role || user.role || merged[0];
+      await this._update('dapp_users', user.id, { role: primary, roles: JSON.stringify(merged) });
+      user.role = primary;
+      user.roles = merged;
     }
     const code = String(Math.floor(100000 + Math.random() * 900000));
     const expires = new Date(Date.now() + 10 * 60 * 1000).toISOString();
     await this._update('dapp_users', user.id, { otp_code: code, otp_expires: expires });
-    return { email, code, expires, role, message: 'In production, send this code via Twilio/SendGrid' };
+    return { email, code, expires, role, roles, message: 'In production, send this code via Twilio/SendGrid' };
+  }
+
+  static _sanitizeUser(user) {
+    if (!user) return user;
+    const u = { ...user };
+    delete u.otp_code;
+    delete u.otp_expires;
+    if (typeof u.roles === 'string') { try { u.roles = JSON.parse(u.roles); } catch { u.roles = [u.role || 'beneficiary']; } }
+    if (!Array.isArray(u.roles)) u.roles = [u.role || 'beneficiary'];
+    return u;
   }
 
   static async verifyOtp({ email, code } = {}) {
     const user = await this.getUserByEmail(email);
+    if (user.is_active === false) throw new Error('Account is disabled. Contact administrator.');
     const now = new Date();
     if (user.otp_code !== String(code)) throw new Error('Invalid code');
     if (!user.otp_expires || new Date(user.otp_expires) < now) throw new Error('Code expired');
     await this._update('dapp_users', user.id, { verified: true, otp_code: null, otp_expires: null });
-    return this.getUser(user.id);
+    const sanitized = this._sanitizeUser(await this.getUser(user.id));
+    const secret = JWT_SECRET || process.env.JWT_SECRET || 'dlb-dev-secret';
+    const token = jwt ? jwt.sign({ userId: sanitized.id, email: sanitized.email, role: sanitized.role, roles: sanitized.roles, tokenId: identifier('DSE') }, secret, { expiresIn: '8h' }) : null;
+    return { ...sanitized, token, tokenExpiresAt: token ? new Date(Date.now() + 8 * 60 * 60 * 1000).toISOString() : null };
   }
 
   static async linkWallet({ email, walletAddress, provider, safeOwnerAddress } = {}) {
@@ -744,7 +788,51 @@ class DappEngine {
     if (provider) updates.linked_wallet_provider = provider;
     if (safeOwnerAddress) updates.safe_owner_address = safeOwnerAddress;
     await this._update('dapp_users', user.id, updates);
-    return this.getUser(user.id);
+    return this._sanitizeUser(await this.getUser(user.id));
+  }
+
+  static async switchActiveRole({ email, activeRole } = {}) {
+    const user = await this.getUserByEmail(email);
+    const roles = Array.isArray(user.roles) ? user.roles : (user.roles ? JSON.parse(user.roles) : [user.role || 'beneficiary']);
+    if (!roles.includes(activeRole)) throw new Error(`Role ${activeRole} is not assigned to this user`);
+    await this._update('dapp_users', user.id, { active_role: activeRole, role: activeRole });
+    return this._sanitizeUser(await this.getUser(user.id));
+  }
+
+  static async setUserRoles({ email, roles = [], activeRole } = {}) {
+    const user = await this.getUserByEmail(email);
+    if (!Array.isArray(roles) || roles.length === 0) throw new Error('roles array required');
+    const primary = activeRole || roles[0];
+    await this._update('dapp_users', user.id, { roles: JSON.stringify(roles), active_role: primary, role: primary });
+    return this._sanitizeUser(await this.getUser(user.id));
+  }
+
+  static async setUserActive(email, isActive) {
+    const user = await this.getUserByEmail(email);
+    await this._update('dapp_users', user.id, { is_active: isActive });
+    return this._sanitizeUser(await this.getUser(user.id));
+  }
+
+  static async ensurePortalUsers() {
+    const seeded = [
+      { email: 'deandreabarkley13@gmail.com', name: 'DeAndrea Barkley', roles: ['trustee_admin', 'beneficiary'], activeRole: 'trustee_admin' },
+      { email: 'annrobinson9800@yahoo.com', name: 'Malissa Robinson', roles: ['trustee_maker', 'beneficiary'], activeRole: 'trustee_maker' },
+    ];
+    const results = [];
+    for (const s of seeded) {
+      let user = await this.getUserByEmail(s.email).catch(() => null);
+      if (!user) {
+        user = await this.createUser({ email: s.email, name: s.name, roles: s.roles, activeRole: s.activeRole });
+      } else {
+        const existingRoles = Array.isArray(user.roles) ? user.roles : (user.roles ? JSON.parse(user.roles) : [user.role || 'beneficiary']);
+        const merged = Array.from(new Set([...existingRoles, ...s.roles]));
+        const primary = s.activeRole || user.active_role || merged[0];
+        await this._update('dapp_users', user.id, { role: primary, active_role: primary, roles: JSON.stringify(merged), name: s.name });
+        user = await this.getUser(user.id);
+      }
+      results.push(this._sanitizeUser(user));
+    }
+    return results;
   }
 
   // ═════════════════════════════════════════════════════════════════════════════

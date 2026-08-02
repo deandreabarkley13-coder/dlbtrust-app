@@ -199,7 +199,7 @@ function requireAuth(options = {}) {
 
     // Check role requirement
     if (requiredRole) {
-      const ROLE_LEVELS = { viewer: 10, operator: 50, admin: 100 };
+      const ROLE_LEVELS = { viewer: 10, beneficiary: 10, operator: 50, trustee_maker: 50, trustee: 50, admin: 100, trustee_admin: 100 };
       const userLevel = ROLE_LEVELS[userRole] || 0;
       const requiredLevel = ROLE_LEVELS[requiredRole] || 100;
       if (userLevel < requiredLevel) {
@@ -210,6 +210,67 @@ function requireAuth(options = {}) {
     // Check specific permission
     if (permission && !UserAuth.hasPermission(userRole, permission)) {
       return res.status(403).json({ error: 'Missing permission: ' + permission });
+    }
+
+    next();
+  };
+}
+
+// ─── dApp Portal Auth (email/OTP users with multi-role support) ─────────────────
+// Accepts admin token OR a dApp user JWT issued by DappEngine.verifyOtp.
+function dappAuth(options = {}) {
+  const { role: requiredRole = 'viewer' } = options;
+
+  const ROLE_LEVELS = {
+    beneficiary: 10,
+    viewer: 10,
+    operator: 50,
+    trustee_maker: 50,
+    trustee: 50,
+    admin: 100,
+    trustee_admin: 100,
+  };
+
+  return async (req, res, next) => {
+    let authenticated = false;
+    let userRole = null;
+
+    // 1. Admin token bypass
+    const adminToken = req.headers['x-admin-token'] || req.query.adminToken;
+    if (adminToken && adminToken === process.env.ADMIN_SECRET_TOKEN) {
+      req.user = { userId: 0, username: 'legacy-admin', role: 'admin', roles: ['admin'] };
+      req.authMethod = 'admin_token';
+      authenticated = true;
+      userRole = 'admin';
+    }
+
+    // 2. dApp user JWT
+    if (!authenticated) {
+      const authHeader = req.headers['authorization'];
+      if (authHeader && authHeader.startsWith('Bearer ')) {
+        const token = authHeader.slice(7).trim();
+        try {
+          const decoded = jwt.verify(token, UserAuth.JWT_SECRET);
+          if (decoded.email && decoded.roles) {
+            req.user = decoded;
+            req.authMethod = 'dapp_user';
+            authenticated = true;
+            userRole = decoded.role || decoded.roles[0] || 'beneficiary';
+          }
+        } catch (err) {
+          // fall through
+        }
+      }
+    }
+
+    if (!authenticated) {
+      return res.status(401).json({ error: 'Authentication required. Please log in.' });
+    }
+
+    const userLevel = ROLE_LEVELS[userRole] || 0;
+    const requiredLevel = ROLE_LEVELS[requiredRole] || 0;
+    if (userLevel < requiredLevel) {
+      return res.status(403).json({ error: 'Insufficient permissions. Required role: ' + requiredRole });
     }
 
     next();
@@ -343,6 +404,7 @@ module.exports = {
   corsMiddleware,
   sanitizeInput,
   requireAuth,
+  dappAuth,
   generateCsrfToken,
   verifyCsrf,
   requestLogger,

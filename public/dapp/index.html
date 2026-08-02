@@ -130,15 +130,30 @@
       </div>
 
       <div id="user-auth-card" class="card" style="margin-bottom:20px">
-        <h2>Trustee / Beneficiary Login</h2>
-        <p>Email/phone identity for P2P payments. In production the one-time code is sent via SMS/email; in this demo the API returns it.</p>
+        <h2>Portal Sign In / Security</h2>
+        <p>Log in with your email and one-time code. Trustees can switch to beneficiary view. Sign out clears the session.</p>
         <div id="user-auth-state" class="form-row" style="align-items:center;">
           <input type="email" id="login-email" placeholder="trustee@example.com" />
           <button class="btn" onclick="sendOtp()">Send Code</button>
           <input type="text" id="login-code" placeholder="123456" maxlength="6" style="max-width:120px" />
           <button class="btn" onclick="verifyOtp()">Verify</button>
         </div>
+        <div id="user-auth-actions" class="form-row hidden" style="align-items:center;">
+          <span id="auth-user-name" class="mono"></span>
+          <select id="active-role-select" onchange="switchActiveRole()" style="max-width:160px"></select>
+          <button class="btn btn-secondary" onclick="logout()">Sign Out</button>
+        </div>
         <div id="user-auth-status" class="status hidden"></div>
+        <div id="portal-users-card" class="hidden" style="margin-top:20px; border-top:1px solid var(--border); padding-top:20px;">
+          <h3>Portal Users (Admin)</h3>
+          <div class="form-row">
+            <input type="email" id="new-user-email" placeholder="user@example.com" />
+            <input type="text" id="new-user-name" placeholder="Full name" />
+            <select id="new-user-role"><option value="beneficiary">Beneficiary</option><option value="trustee_maker">Trustee Maker</option><option value="trustee_admin">Trustee Admin</option></select>
+            <button class="btn" onclick="createPortalUser()">Add User</button>
+          </div>
+          <div id="portal-users-list" class="table-wrap" style="margin-top:10px"></div>
+        </div>
       </div>
 
       <section id="dashboard" class="section active">
@@ -1077,15 +1092,23 @@
     let currentUser = null;
     let userWallet = null;
 
-    function userRole() {
+    function activeRole() {
       if (!currentUser) return 'guest';
-      const r = String(currentUser.role || 'beneficiary').toLowerCase();
-      if (r.startsWith('trustee')) return 'trustee';
-      if (r === 'viewer') return 'viewer';
-      return 'beneficiary';
+      const r = String(currentUser.active_role || currentUser.role || 'beneficiary').toLowerCase();
+      return r;
     }
 
-    function isTrustee() { return userRole() === 'trustee'; }
+    function userRole() { return activeRole(); }
+
+    function isTrustee() { const r = activeRole(); return r === 'trustee_admin' || r === 'trustee_maker' || r === 'trustee'; }
+    function isAdmin() { return activeRole() === 'trustee_admin'; }
+    function isBeneficiary() { return activeRole() === 'beneficiary'; }
+
+    function hasRole(role) {
+      if (!currentUser) return false;
+      const roles = Array.isArray(currentUser.roles) ? currentUser.roles : [currentUser.role || 'beneficiary'];
+      return roles.includes(role);
+    }
 
     function el(id) { return document.getElementById(id); }
     function show(id, cls = 'hidden', add = false) { const e = el(id); if (e) e.classList[add ? 'add' : 'remove'](cls); }
@@ -1100,11 +1123,16 @@
     }
 
     function token() { return localStorage.getItem('dlb-admin-token') || el('admin-token').value || 'dlb-admin-2026-trust'; }
+    function dappToken() { return localStorage.getItem('dlb-dapp-token') || ''; }
     function saveToken() { localStorage.setItem('dlb-admin-token', el('admin-token').value); showToast('Token saved'); }
 
     async function api(path, opts = {}) {
       const headers = { 'Content-Type': 'application/json' };
-      if (!opts.noToken) headers['x-admin-token'] = token();
+      if (!opts.noToken) {
+        const dt = dappToken();
+        if (dt) headers['Authorization'] = `Bearer ${dt}`;
+        headers['x-admin-token'] = token();
+      }
       if (opts.headers) Object.assign(headers, opts.headers);
       const res = await fetch(API + path, { ...opts, headers });
       const text = await res.text();
@@ -1267,35 +1295,102 @@
         if (!email || !code) throw new Error('Enter email and code');
         const res = await api('/api/dapp/auth/verify', { method: 'POST', body: JSON.stringify({ email, code }), noToken: true });
         currentUser = res.data;
+        if (currentUser.token) localStorage.setItem('dlb-dapp-token', currentUser.token);
         localStorage.setItem('dlb-user', JSON.stringify(currentUser));
-        el('user-auth-status').textContent = `Logged in as ${currentUser.name || currentUser.email} (${currentUser.role})`;
+        el('login-code').value = '';
+        el('user-auth-status').textContent = `Logged in as ${currentUser.name || currentUser.email} (${currentUser.active_role || currentUser.role})`;
         el('user-auth-status').className = 'status success';
         applyRoleUI();
         if (window.ethereum && account) connectWallet();
       } catch (e) { el('user-auth-status').textContent = e.message; el('user-auth-status').className = 'status error'; }
     };
 
+    window.logout = function() {
+      localStorage.removeItem('dlb-dapp-token');
+      localStorage.removeItem('dlb-user');
+      currentUser = null;
+      el('login-code').value = '';
+      el('user-auth-status').textContent = 'Signed out';
+      el('user-auth-status').className = 'status success';
+      applyRoleUI();
+      showSection('dashboard');
+    };
+
+    window.switchActiveRole = async function() {
+      if (!currentUser) return;
+      const activeRole = el('active-role-select').value;
+      try {
+        const res = await api('/api/dapp/auth/switch-role', { method: 'POST', body: JSON.stringify({ activeRole }) });
+        currentUser = res.data;
+        currentUser.token = localStorage.getItem('dlb-dapp-token');
+        localStorage.setItem('dlb-user', JSON.stringify(currentUser));
+        applyRoleUI();
+        showToast(`Switched to ${activeRole}`);
+      } catch (e) { showToast(e.message, true); }
+    };
+
+    async function loadPortalUsers() {
+      if (!isAdmin()) return;
+      try {
+        const res = await api('/api/dapp/users');
+        const rows = res.data.map(u => `<tr><td>${esc(u.name || '')}</td><td>${esc(u.email || '')}</td><td>${esc((u.roles || []).join(', '))}</td><td>${u.is_active === false ? 'Disabled' : 'Active'}</td></tr>`).join('');
+        el('portal-users-list').innerHTML = '<table class="data-table"><thead><tr><th>Name</th><th>Email</th><th>Roles</th><th>Status</th></tr></thead><tbody>' + (rows || '<tr><td colspan="4">No users</td></tr>') + '</tbody></table>';
+      } catch (e) { el('portal-users-list').textContent = e.message; }
+    }
+
+    window.createPortalUser = async function() {
+      try {
+        const email = el('new-user-email').value;
+        const name = el('new-user-name').value;
+        const role = el('new-user-role').value;
+        if (!email) throw new Error('Email required');
+        await api('/api/dapp/users', { method: 'POST', body: JSON.stringify({ email, name, roles: [role, 'beneficiary'], activeRole: role }) });
+        showToast('User added');
+        loadPortalUsers();
+      } catch (e) { showToast(e.message, true); }
+    };
+
+    function roleAllowed(allowed, role) {
+      if (allowed.includes('all')) return true;
+      if (allowed.includes(role)) return true;
+      if (allowed.includes('trustee') && (role === 'trustee_admin' || role === 'trustee_maker' || role === 'trustee')) return true;
+      if (allowed.includes('admin') && role === 'trustee_admin') return true;
+      return false;
+    }
+
     function applyRoleUI() {
       const role = userRole();
       const badge = el('role-badge');
       if (badge) {
-        badge.textContent = role === 'trustee' ? 'Trustee' : (role === 'beneficiary' ? 'Beneficiary' : 'Guest');
-        badge.className = `badge ${role === 'trustee' ? 'trustee' : (role === 'beneficiary' ? 'beneficiary' : '')}`;
+        const label = role === 'trustee_admin' ? 'Trustee Admin' : (role === 'trustee_maker' ? 'Trustee Maker' : (role === 'beneficiary' ? 'Beneficiary' : 'Guest'));
+        badge.textContent = label;
+        badge.className = `badge ${role.startsWith('trustee') ? 'trustee' : (role === 'beneficiary' ? 'beneficiary' : '')}`;
         badge.classList.remove('hidden');
       }
+      // Show/hide login vs logged-in controls
+      const loggedIn = !!currentUser;
+      if (el('user-auth-state')) el('user-auth-state').classList.toggle('hidden', loggedIn);
+      if (el('user-auth-actions')) el('user-auth-actions').classList.toggle('hidden', !loggedIn);
+      // Populate role switcher
+      const roleSel = el('active-role-select');
+      if (roleSel && currentUser) {
+        const roles = Array.isArray(currentUser.roles) ? currentUser.roles : [currentUser.role || 'beneficiary'];
+        roleSel.innerHTML = roles.map(r => `<option value="${esc(r)}" ${r === role ? 'selected' : ''}>${esc(r)}</option>`).join('');
+      }
+      // Portal users for admin
+      const puc = el('portal-users-card');
+      if (puc) puc.classList.toggle('hidden', !isAdmin());
+      if (isAdmin()) loadPortalUsers();
+
       document.querySelectorAll('#nav button[data-roles]').forEach(btn => {
         const allowed = (btn.getAttribute('data-roles') || 'all').split(',').map(s => s.trim());
-        const visible = allowed.includes('all') || allowed.includes(role) || role === 'trustee';
-        btn.style.display = visible ? '' : 'none';
+        btn.style.display = roleAllowed(allowed, role) ? '' : 'none';
       });
-      // Trustee sections: disable beneficiary inputs/actions; beneficiary sections: disable create/approve
-      document.querySelectorAll('[data-roles]').forEach(el => {
-        if (el.tagName === 'BUTTON' && el.id.startsWith('nav')) return;
-        const allowed = (el.getAttribute('data-roles') || 'all').split(',').map(s => s.trim());
-        const visible = allowed.includes('all') || allowed.includes(role) || role === 'trustee';
-        el.classList.toggle('hidden', !visible);
+      document.querySelectorAll('[data-roles]').forEach(e => {
+        if (e.tagName === 'BUTTON' && e.id && e.id.startsWith('nav')) return;
+        const allowed = (e.getAttribute('data-roles') || 'all').split(',').map(s => s.trim());
+        e.classList.toggle('hidden', !roleAllowed(allowed, role));
       });
-      // If a beneficiary is looking at a trustee-only section, redirect them
       if (role === 'beneficiary' || role === 'guest') {
         const active = document.querySelector('.section.active');
         if (active && active.id && !sectionAllowedForRole(active.id, role)) showSection('dashboard');
@@ -1306,14 +1401,14 @@
       const btn = document.querySelector(`#nav button[data-section="${section}"]`);
       if (!btn) return true;
       const allowed = (btn.getAttribute('data-roles') || 'all').split(',').map(s => s.trim());
-      return allowed.includes('all') || allowed.includes(role) || role === 'trustee';
+      return roleAllowed(allowed, role);
     }
 
     function restoreUser() {
       try { currentUser = JSON.parse(localStorage.getItem('dlb-user') || 'null'); } catch {};
       if (currentUser && currentUser.email) {
         el('login-email').value = currentUser.email;
-        el('user-auth-status').textContent = `Logged in as ${currentUser.name || currentUser.email} (${currentUser.role})`;
+        el('user-auth-status').textContent = `Logged in as ${currentUser.name || currentUser.email} (${currentUser.active_role || currentUser.role})`;
         el('user-auth-status').className = 'status success';
       }
       applyRoleUI();
