@@ -210,6 +210,7 @@ class UserAuth {
     try {
       decoded = jwt.verify(token, JWT_SECRET);
     } catch (err) {
+      console.error('[auth] verifyToken failed:', err.message, { reason: err.name });
       if (err.name === 'TokenExpiredError') throw new Error('Session expired. Please log in again.');
       throw new Error('Invalid token');
     }

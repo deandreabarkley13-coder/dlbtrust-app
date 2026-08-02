@@ -17,7 +17,7 @@ const helmet = require('helmet');
 const rateLimit = require('express-rate-limit');
 const cors = require('cors');
 const crypto = require('crypto');
-const { UserAuth } = require('./userAuth');
+const { UserAuth, JWT_SECRET } = require('./userAuth');
 const { ApiCredentials } = require('../ach/apiCredentials');
 
 // ─── Helmet Security Headers ──────────────────────────────────────────────────

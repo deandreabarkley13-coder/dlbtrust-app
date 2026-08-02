@@ -781,7 +781,8 @@ class DappEngine {
     if (!user.otp_expires || new Date(user.otp_expires) < now) throw new Error('Code expired');
     await this._update('dapp_users', user.id, { verified: true, otp_code: null, otp_expires: null });
     const sanitized = this._sanitizeUser(await this.getUser(user.id));
-    const secret = JWT_SECRET || process.env.JWT_SECRET || 'dlb-dev-secret';
+    const secret = JWT_SECRET || process.env.JWT_SECRET;
+    if (!secret) throw new Error('JWT_SECRET is not configured');
     const token = jwt ? jwt.sign({ userId: sanitized.id, email: sanitized.email, role: sanitized.role, roles: sanitized.roles, tokenId: identifier('DSE') }, secret, { expiresIn: '8h' }) : null;
     return { ...sanitized, token, tokenExpiresAt: token ? new Date(Date.now() + 8 * 60 * 60 * 1000).toISOString() : null };
   }
