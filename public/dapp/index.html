@@ -355,6 +355,38 @@
         </div>
 
         <div class="grid" style="margin-top:20px">
+          <div class="card" style="grid-column: 1 / -1;">
+            <h2>Gasless SIT Transfer (EIP-4337 Account Abstraction)</h2>
+            <p>Smart-account wallet + verifying paymaster.  User holds zero native ETH; the operator paymaster funds gas.  SIT tokens are the only asset the user needs.</p>
+            <div class="form-row">
+              <div><label>Owner EOA</label><input type="text" id="aa-owner" placeholder="0x... (MetaMask address)" /></div>
+              <div><label>Recipient</label><input type="text" id="aa-to" placeholder="0x..." /></div>
+              <div><label>Amount (SIT, raw units)</label><input type="text" id="aa-amount" value="1000000" /></div>
+              <div><label>Token Address (optional)</label><input type="text" id="aa-token" placeholder="leave empty to use SIT" /></div>
+            </div>
+            <div id="aa-readiness" class="status" style="white-space:pre-wrap;word-break:break-word"></div>
+            <div class="actions">
+              <button class="btn" onclick="getAASmartAccount()">Get Smart Account</button>
+              <button class="btn" onclick="prepareAAGaslessTransfer()">Prepare Gasless Transfer</button>
+              <button class="btn" onclick="signAAGaslessTransfer()">Sign with MetaMask</button>
+              <button class="btn" onclick="submitAAGaslessTransfer()">Submit Signed Transfer</button>
+            </div>
+            <div id="aa-result" class="status hidden" style="white-space:pre-wrap;word-break:break-word"></div>
+            <hr style="margin:20px 0;border:0;border-top:1px solid rgba(148,163,184,0.2)" />
+            <h3>Paymaster Administration</h3>
+            <div class="form-row">
+              <div><label>Whitelist Address</label><input type="text" id="aa-whitelist-address" placeholder="0x... (smart account)" /></div>
+            </div>
+            <div class="actions">
+              <button class="btn" onclick="deployAAPaymaster()">Deploy Paymaster</button>
+              <button class="btn" onclick="fundAAPaymaster()">Fund Paymaster</button>
+              <button class="btn" onclick="whitelistAASender()">Whitelist Sender</button>
+            </div>
+            <div id="aa-admin-result" class="status hidden" style="white-space:pre-wrap;word-break:break-word"></div>
+          </div>
+        </div>
+
+        <div class="grid" style="margin-top:20px">
           <div class="card">
             <h2>Whitelist Address</h2>
             <div class="form-row">
@@ -887,7 +919,7 @@
       if (name === 'messaging') loadMessageThreads();
       if (name === 'documents') loadDocuments();
       if (name === 'wallet') { if (account) loadWallet(); }
-      if (name === 'sovereign-trust') loadSovereignTrust();
+      if (name === 'sovereign-trust') { loadSovereignTrust(); loadAAReadiness(); }
     };
 
     async function loadUsers() {
@@ -1713,6 +1745,85 @@
       } catch (e) { el('sit-meta-result').textContent = e.message; el('sit-meta-result').className = 'status error'; }
     };
 
+    // ═══════════════════════════════════════════════════════════════════════════
+    // Account Abstraction / Gas Abstraction UI
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    let aaOperation = null;
+
+    async function loadAAReadiness() {
+      try {
+        const res = await api('/api/dapp/aa/readiness');
+        el('aa-readiness').textContent = JSON.stringify(res.data, null, 2);
+        el('aa-readiness').className = 'status ' + (res.data.ready ? 'success' : '');
+      } catch (e) { el('aa-readiness').textContent = 'AA readiness error: ' + e.message; }
+    }
+
+    window.getAASmartAccount = async function() {
+      try {
+        const owner = el('aa-owner').value.trim();
+        if (!owner) throw new Error('owner EOA required');
+        const res = await api('/api/dapp/aa/smart-account', { method: 'POST', body: JSON.stringify({ owner }) });
+        setText('aa-result', `Smart account for ${res.data.owner}: ${res.data.smartAccountAddress}`, false);
+      } catch (e) { setText('aa-result', e.message, true); }
+    };
+
+    window.prepareAAGaslessTransfer = async function() {
+      try {
+        const owner = el('aa-owner').value.trim();
+        const to = el('aa-to').value.trim();
+        const amount = el('aa-amount').value.trim();
+        const tokenAddress = el('aa-token').value.trim();
+        if (!owner || !to || !amount) throw new Error('owner, recipient and amount required');
+        const body = { owner, to, amount };
+        if (tokenAddress) body.tokenAddress = tokenAddress;
+        const res = await api('/api/dapp/aa/prepare-transfer', { method: 'POST', body: JSON.stringify(body) });
+        aaOperation = res.data;
+        setText('aa-result', `Prepared.\noperationId: ${res.data.operationId}\nsmartAccount: ${res.data.smartAccountAddress}\nuserOpHash: ${res.data.userOpHash}`, false);
+      } catch (e) { setText('aa-result', e.message, true); }
+    };
+
+    window.signAAGaslessTransfer = async function() {
+      try {
+        if (!aaOperation) throw new Error('Prepare a transfer first');
+        if (!account) throw new Error('Connect MetaMask first');
+        const sig = await window.ethereum.request({ method: 'personal_sign', params: [aaOperation.userOpHash, account] });
+        aaOperation.signature = sig;
+        setText('aa-result', `Signed.\nSignature: ${sig}\nClick Submit Signed Transfer.`, false);
+      } catch (e) { setText('aa-result', e.message, true); }
+    };
+
+    window.submitAAGaslessTransfer = async function() {
+      try {
+        if (!aaOperation || !aaOperation.signature) throw new Error('Sign the userOpHash first');
+        const res = await api('/api/dapp/aa/submit-transfer', { method: 'POST', body: JSON.stringify({ operationId: aaOperation.operationId, signature: aaOperation.signature }) });
+        setText('aa-result', JSON.stringify(res.data, null, 2), false);
+      } catch (e) { setText('aa-result', e.message, true); }
+    };
+
+    window.deployAAPaymaster = async function() {
+      try {
+        const res = await api('/api/dapp/aa/deploy-paymaster', { method: 'POST', body: '{}' });
+        setText('aa-admin-result', JSON.stringify(res.data, null, 2), false);
+      } catch (e) { setText('aa-admin-result', e.message, true); }
+    };
+
+    window.fundAAPaymaster = async function() {
+      try {
+        const res = await api('/api/dapp/aa/fund-paymaster', { method: 'POST', body: JSON.stringify({ amountEth: '0.001' }) });
+        setText('aa-admin-result', JSON.stringify(res.data, null, 2), false);
+      } catch (e) { setText('aa-admin-result', e.message, true); }
+    };
+
+    window.whitelistAASender = async function() {
+      try {
+        const address = el('aa-whitelist-address').value.trim();
+        if (!address) throw new Error('address required');
+        const res = await api('/api/dapp/aa/whitelist-sender', { method: 'POST', body: JSON.stringify({ address }) });
+        setText('aa-admin-result', JSON.stringify(res.data, null, 2), false);
+      } catch (e) { setText('aa-admin-result', e.message, true); }
+    };
+
     async function loadSovereignOrders() {
       try {
         const res = await api('/api/dapp/sovereign-trust/orders');
@@ -1726,6 +1837,13 @@
     }
 
     function esc(s) { return String(s || '').replace(/[&<>"']/g, m => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m])); }
+
+    function setText(id, text, isError) {
+      const node = el(id);
+      node.textContent = text;
+      node.className = 'status' + (isError ? ' error' : ' success');
+      node.classList.remove('hidden');
+    }
 
     document.addEventListener('DOMContentLoaded', () => {
       const saved = localStorage.getItem('dlb-admin-token');

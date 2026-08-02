@@ -19,6 +19,7 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "@account-abstraction/contracts": "^0.8.0",
     "@circle-fin/adapter-circle-wallets": "^1.5.0",
     "@circle-fin/adapter-viem-v2": "^1.14.1",
     "@circle-fin/app-kit": "^1.11.0",

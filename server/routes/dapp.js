@@ -16,6 +16,7 @@ const { MessagingEngine } = require('../integrations/messaging/messagingEngine')
 const { DocumentEngine } = require('../integrations/documents/documentEngine');
 const { ModuleFundingEngine } = require('../integrations/dapp/moduleFundingEngine');
 const { SovereignTrustEngine } = require('../integrations/dapp/sovereignTrustEngine');
+const { AccountAbstractionEngine } = require('../integrations/dapp/accountAbstractionEngine');
 const { requireAuth, writeRateLimiter } = require('../integrations/auth/securityMiddleware');
 
 const router = express.Router();
@@ -613,6 +614,42 @@ router.post('/sovereign-trust/off-ramp', operatorAuth, writeRateLimiter(), async
 
 router.get('/sovereign-trust/orders', operatorAuth, async (req, res) => {
   try { res.json({ success: true, data: await SovereignTrustEngine.listOrders() }); } catch (err) { sendError(res, err); }
+});
+
+// ═════════════════════════════════════════════════════════════════════════════
+// Account Abstraction / Gas Abstraction (EIP-4337 v0.6)
+// ═════════════════════════════════════════════════════════════════════════════
+
+router.get('/aa/readiness', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await AccountAbstractionEngine.readiness() }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/aa/deploy-paymaster', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try { res.status(201).json({ success: true, data: await AccountAbstractionEngine.deployPaymaster() }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/aa/fund-paymaster', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try { res.status(201).json({ success: true, data: await AccountAbstractionEngine.fundPaymaster(req.body) }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/aa/whitelist-sender', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try { res.status(201).json({ success: true, data: await AccountAbstractionEngine.whitelistSender(req.body.address, req.body.allowed !== false) }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/aa/smart-account', operatorAuth, async (req, res) => {
+  try {
+    const { owner, index } = req.body;
+    const address = await AccountAbstractionEngine.getSmartAccountAddress(owner, index ? BigInt(index) : 0n);
+    res.json({ success: true, data: { owner, index: index || 0, smartAccountAddress: address } });
+  } catch (err) { sendError(res, err); }
+});
+
+router.post('/aa/prepare-transfer', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try { res.json({ success: true, data: await AccountAbstractionEngine.prepareGaslessTransfer(req.body) }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/aa/submit-transfer', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try { res.status(201).json({ success: true, data: await AccountAbstractionEngine.submitGaslessTransfer(req.body) }); } catch (err) { sendError(res, err); }
 });
 
 module.exports = router;
