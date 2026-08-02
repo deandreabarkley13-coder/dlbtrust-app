@@ -10,7 +10,7 @@ function num(name, def = 0) { const v = Number(process.env[name]); return Number
 const chainId = num('DAPP_CHAIN_ID', 1);
 const rpcUrl = str('DAPP_RPC_URL', chainId === 1 ? 'https://ethereum.publicnode.com' : 'https://ethereum-sepolia-rpc.publicnode.com');
 
-const wethAddress = str('DAPP_WETH_ADDRESS', chainId === 1 ? '0xC02b27E55a55d7e30F02e479463fF28b9fE5B873' : '0x7b79995e5f793A07Bc00c21412eF0E0661d51f4A');
+const wethAddress = str('DAPP_WETH_ADDRESS', chainId === 1 ? '0xC02aaA39b223FE8D0A0E5C4F27eAD9083C756Cc2' : '0x7b79995e5f793A07Bc00c21412eF0E0661d51f4A');
 
 const config = {
   dappEnabled: bool('DAPP_ENABLED', true),
