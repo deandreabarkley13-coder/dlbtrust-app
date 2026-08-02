@@ -9,6 +9,7 @@
 
 let pool;
 try { pool = require('../bonds/pgPool'); } catch (e) { pool = null; }
+if (process.env.DAPP_MEMORY_MODE === 'true') pool = null;
 
 const DEFAULT_ACCOUNT = 'TREASURY_HOT';
 const memoryAccounts = new Map();

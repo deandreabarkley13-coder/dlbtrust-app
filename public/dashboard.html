@@ -1539,24 +1539,30 @@
         <h2>Create Stablecoin Payment</h2>
         <p class="text-muted" style="font-size:12px;margin:-4px 0 10px;">Submits to <code>POST /api/stablecoin/payments</code>. Operator JWT or admin token required.</p>
         <div class="form-row">
-          <div class="form-group"><label>Destination Wallet</label><input type="text" id="sc-destination" placeholder="G... Stellar public key or Magic wallet address"></div>
+          <div class="form-group"><label>Destination Wallet</label><input type="text" id="sc-destination" placeholder="G... Stellar, 0x... EVM, 0.0... Hedera, Magic wallet address"></div>
           <div class="form-group"><label>Amount ($)</label><input type="number" step="0.01" min="0.01" id="sc-amount" placeholder="100.00"></div>
           <div class="form-group"><label>Memo (optional)</label><input type="text" id="sc-memo" placeholder="Invoice #1234"></div>
         </div>
         <div class="form-row">
           <div class="form-group"><label>Source Type</label><select id="sc-source-type"><option value="treasury">Treasury</option><option value="cash">Cash</option><option value="trust">Trust Account</option><option value="bond">Bond</option><option value="fixed_income">Fixed Income</option><option value="fineract">Fineract</option><option value="core_banking">Core Banking</option></select></div>
           <div class="form-group"><label>Source Account ID</label><input type="text" id="sc-source-account" placeholder="e.g. TREASURY_HOT, account code, bond id, GL id"></div>
-          <div class="form-group"><label>Wallet Provider</label><select id="sc-wallet-provider"><option value="direct">Direct</option><option value="magic">Magic WaaS</option></select></div>
+          <div class="form-group"><label>Source Wallet ID (FyStack / Circle)</label><input type="text" id="sc-source-wallet-id" placeholder="FyStack wallet UUID or Circle source address"></div>
+          <div class="form-group"><label>Wallet Provider</label><select id="sc-wallet-provider"><option value="direct">Direct</option><option value="magic">Magic WaaS</option><option value="fystack">FyStack Ignite</option><option value="circle">Circle App Kit</option></select></div>
         </div>
         <div class="form-row">
-          <div class="form-group" style="flex:2"><label>Destination Secret (optional, for trustline auto-create)</label><input type="password" id="sc-destination-secret" placeholder="Stellar secret key that matches the destination wallet"></div>
+          <div class="form-group" style="flex:2"><label>Destination Secret (Stellar trustline)</label><input type="password" id="sc-destination-secret" placeholder="Stellar secret key that matches the destination wallet"></div>
           <div class="form-group" style="flex:1"><label>&nbsp;</label><button class="btn btn-sm" style="width:100%" onclick="scEnsureTrustline()">Ensure Trustline</button></div>
-          <div class="form-group" style="flex:1"><label>&nbsp;</label><button class="btn btn-sm btn-danger" style="width:100%" onclick="el('sc-destination-secret').value=''">Clear Secret</button></div>
+          <div class="form-group" style="flex:1"><label>&nbsp;</label><button class="btn btn-sm btn-danger" style="width:100%" onclick="el('sc-destination-secret').value=''">Clear</button></div>
+        </div>
+        <div class="form-row">
+          <div class="form-group" style="flex:2"><label>Destination Key (Hedera association, optional)</label><input type="password" id="sc-destination-key" placeholder="Hedera private key for the destination account"></div>
+          <div class="form-group" style="flex:1"><label>&nbsp;</label><button class="btn btn-sm" style="width:100%" onclick="scEnsureHederaAssociation()">Ensure Assoc</button></div>
+          <div class="form-group" style="flex:1"><label>&nbsp;</label><button class="btn btn-sm btn-danger" style="width:100%" onclick="el('sc-destination-key').value=''">Clear</button></div>
         </div>
         <div class="form-row">
           <div class="form-group"><label>Beneficiary Name (optional)</label><input type="text" id="sc-beneficiary" placeholder="Acme LLC"></div>
-          <div class="form-group"><label>Asset Code</label><input type="text" id="sc-asset-code" placeholder="USDC" value="USDC"></div>
-          <div class="form-group"><label>Network</label><input type="text" id="sc-network-input" placeholder="testnet" value="testnet"></div>
+          <div class="form-group"><label>Asset Code</label><input type="text" id="sc-asset-code" placeholder="USDC / DLBUSD" value="USDC"></div>
+          <div class="form-group"><label>Network</label><select id="sc-network-input"><option value="testnet" selected>Stellar Testnet</option><option value="mainnet">Stellar Mainnet</option><option value="fystack">FyStack</option><option value="circle">Circle App Kit</option><option value="hedera-testnet">Hedera Testnet</option><option value="hedera-mainnet">Hedera Mainnet</option></select></div>
         </div>
         <div class="form-row">
           <button class="btn btn-success btn-sm" onclick="scCreatePayment()">Create Payment</button>
@@ -1567,6 +1573,66 @@
         <div id="sc-create-result" style="margin-top:8px"></div>
         <div id="sc-balance-result" style="margin-top:8px"></div>
       </div>
+      <div class="card" style="margin-top:24px">
+        <h2>Hedera Stablecoin Studio</h2>
+        <p class="text-muted" style="font-size:12px;margin:-4px 0 10px;">Issue and manage DLB Trust stablecoins on Hedera Hashgraph. Requires HEDERA_STUDIO_ENABLED=true and operator credentials.</p>
+        <div class="form-row">
+          <div class="form-group" style="flex:2"><label>Token ID</label><input type="text" id="sc-hedera-token-id" placeholder="0.0... (leave blank to create)" onchange="this.dataset.dirty='true'"></div>
+          <div class="form-group"><label>Symbol</label><input type="text" id="sc-hedera-symbol" placeholder="DLBUSD" value="DLBUSD"></div>
+          <div class="form-group"><label>Decimals</label><input type="number" id="sc-hedera-decimals" value="6" min="0" max="18"></div>
+        </div>
+        <div class="form-row">
+          <div class="form-group"><label>Initial Supply ($)</label><input type="number" step="0.01" id="sc-hedera-initial" placeholder="0"></div>
+          <div class="form-group"><label>Mint to Account</label><input type="text" id="sc-hedera-mint-target" placeholder="0.0... (operator default)"></div>
+          <div class="form-group"><label>Mint Amount ($)</label><input type="number" step="0.01" id="sc-hedera-mint-amount" placeholder="100"></div>
+        </div>
+        <div class="form-row">
+          <button class="btn btn-primary btn-sm" onclick="scCreateHederaStablecoin()">Create Stablecoin</button>
+          <button class="btn btn-success btn-sm" onclick="scMintHederaStablecoin()">Mint</button>
+          <button class="btn btn-sm" onclick="scHederaBalance()">Balance</button>
+          <button class="btn btn-sm" onclick="scCheckHederaReadiness()">Readiness</button>
+        </div>
+        <div id="sc-hedera-result" style="margin-top:8px"></div>
+      </div>
+
+      <div class="card" style="margin-top:24px">
+        <h2>FyStack Ignite Self-Hosted Custody</h2>
+        <p class="text-muted" style="font-size:12px;margin:-4px 0 10px;">Create MPC wallets, deposit addresses, balances, and sweep tasks on your self-hosted FyStack cluster.</p>
+        <div class="form-row">
+          <div class="form-group"><label>Wallet Name</label><input type="text" id="sc-fystack-name" placeholder="Treasury Hot Wallet"></div>
+          <div class="form-group"><label>Wallet Type</label><select id="sc-fystack-type"><option value="mpc">MPC</option><option value="standard">Standard</option></select></div>
+          <div class="form-group"><label>Address Type</label><select id="sc-fystack-addr-type"><option value="evm">EVM</option><option value="sol">Solana</option></select></div>
+        </div>
+        <div class="form-row">
+          <div class="form-group"><label>FyStack Wallet ID</label><input type="text" id="sc-fystack-wallet-id-ops" placeholder="UUID for deposits / balance / withdraw"></div>
+          <div class="form-group"><label>Withdraw Amount ($)</label><input type="number" step="0.01" id="sc-fystack-withdraw-amount" placeholder="10.00"></div>
+          <div class="form-group"><label>Recipient Address</label><input type="text" id="sc-fystack-recipient" placeholder="0x... or Solana address"></div>
+        </div>
+        <div class="form-row">
+          <button class="btn btn-primary btn-sm" onclick="scFyStackReadiness()">Check Readiness</button>
+          <button class="btn btn-success btn-sm" onclick="scFyStackCreateWallet()">Create Wallet</button>
+          <button class="btn btn-sm" onclick="scFyStackDepositAddress()">Deposit Address</button>
+          <button class="btn btn-sm" onclick="scFyStackBalance()">Balance</button>
+          <button class="btn btn-sm" onclick="scFyStackWithdraw()">Withdraw</button>
+        </div>
+        <div id="sc-fystack-result" style="margin-top:8px"></div>
+      </div>
+
+      <div class="card" style="margin-top:24px">
+        <h2>Circle App Kit (Mainnet USDC)</h2>
+        <p class="text-muted" style="font-size:12px;margin:-4px 0 10px;">Multi-chain USDC disbursements via Circle App Kit. Configure a Viem private key or Circle Wallets API key + entity secret.</p>
+        <div class="form-row">
+          <div class="form-group"><label>Source Address (optional override)</label><input type="text" id="sc-circle-source-address" placeholder="0x... Circle source address"></div>
+          <div class="form-group"><label>Chain</label><input type="text" id="sc-circle-chain" placeholder="Ethereum, Base, Arbitrum" value="Ethereum"></div>
+          <div class="form-group"><label>Token</label><input type="text" id="sc-circle-token" placeholder="USDC" value="USDC"></div>
+        </div>
+        <div class="form-row">
+          <button class="btn btn-primary btn-sm" onclick="scCircleReadiness()">Check Readiness</button>
+          <button class="btn btn-sm" onclick="scCircleSourceAddress()">Get Source Address</button>
+        </div>
+        <div id="sc-circle-result" style="margin-top:8px"></div>
+      </div>
+
       <div class="card" style="margin-top:24px">
         <h2>Fiat to Crypto Conversion (HollaEx Kit)</h2>
         <p class="text-muted" style="font-size:12px;margin:-4px 0 10px;">Quote and execute a quick trade between fiat and the configured stablecoin asset.</p>
@@ -1584,6 +1650,114 @@
         <div id="sc-convert-result" style="margin-top:8px"></div>
         <div id="sc-convert-readiness" style="margin-top:8px"></div>
       </div>
+
+      <div class="card" style="margin-top:24px">
+        <h2>Circle Mint Fiat On-Ramp</h2>
+        <p class="text-muted" style="font-size:12px;margin:-4px 0 10px;">Regulated bank wire → USDC on-chain. Link a bank, get wire instructions, then transfer USDC to a wallet.</p>
+        <div class="form-row">
+          <div class="form-group"><label>Bank Account Number</label><input type="text" id="sc-circle-mint-account" placeholder="12340010"></div>
+          <div class="form-group"><label>Routing Number</label><input type="text" id="sc-circle-mint-routing" placeholder="121000248"></div>
+          <div class="form-group"><label>Idempotency Key (optional)</label><input type="text" id="sc-circle-mint-wire-idempotency" placeholder="UUID for retries"></div>
+        </div>
+        <div class="form-row">
+          <div class="form-group"><label>Billing Name</label><input type="text" id="sc-circle-mint-billing-name" placeholder="Satoshi Nakamoto"></div>
+          <div class="form-group"><label>Billing City</label><input type="text" id="sc-circle-mint-billing-city" placeholder="Boston"></div>
+          <div class="form-group"><label>Billing Country</label><input type="text" id="sc-circle-mint-billing-country" value="US"></div>
+          <div class="form-group"><label>Billing Line 1</label><input type="text" id="sc-circle-mint-billing-line1" placeholder="100 Money Street"></div>
+          <div class="form-group"><label>Billing District</label><input type="text" id="sc-circle-mint-billing-district" placeholder="MA"></div>
+          <div class="form-group"><label>Billing Postal Code</label><input type="text" id="sc-circle-mint-billing-postal" placeholder="01234"></div>
+        </div>
+        <div class="form-row">
+          <div class="form-group"><label>Bank Name</label><input type="text" id="sc-circle-mint-bank-name" placeholder="SAN FRANCISCO"></div>
+          <div class="form-group"><label>Bank City</label><input type="text" id="sc-circle-mint-bank-city" placeholder="SAN FRANCISCO"></div>
+          <div class="form-group"><label>Bank Country</label><input type="text" id="sc-circle-mint-bank-country" value="US"></div>
+          <div class="form-group"><label>Bank Line 1</label><input type="text" id="sc-circle-mint-bank-line1" placeholder="100 Money Street"></div>
+          <div class="form-group"><label>Bank District</label><input type="text" id="sc-circle-mint-bank-district" placeholder="CA"></div>
+        </div>
+        <div class="form-row">
+          <button class="btn btn-primary btn-sm" onclick="scCircleMintCreateWire()">Create Wire Bank</button>
+          <button class="btn btn-sm" onclick="scCircleMintInstructions()">Get Wire Instructions</button>
+          <button class="btn btn-sm" onclick="scCircleMintReadiness()">Check Circle Mint</button>
+        </div>
+        <div class="form-row" style="margin-top:12px">
+          <div class="form-group"><label>Wire Bank Account ID</label><input type="text" id="sc-circle-mint-wire-id" placeholder="saved from create"></div>
+        </div>
+        <div class="form-row">
+          <div class="form-group"><label>Recipient Address</label><input type="text" id="sc-circle-mint-recipient-address" placeholder="0x..." value="0x080e0d0ae80c86cc80bb050dbe0d5e5bdb6cd225"></div>
+          <div class="form-group"><label>Chain</label><input type="text" id="sc-circle-mint-recipient-chain" value="ETH"></div>
+          <div class="form-group"><label>Currency</label><input type="text" id="sc-circle-mint-recipient-currency" value="USD"></div>
+          <div class="form-group"><label>Description</label><input type="text" id="sc-circle-mint-recipient-desc" placeholder="Circle Wallet"></div>
+          <div class="form-group"><label>Idempotency Key (optional)</label><input type="text" id="sc-circle-mint-recipient-idempotency" placeholder="UUID for retries"></div>
+        </div>
+        <div class="form-row">
+          <button class="btn btn-primary btn-sm" onclick="scCircleMintCreateRecipient()">Create Recipient</button>
+          <input type="text" id="sc-circle-mint-recipient-id" placeholder="Recipient Address ID" style="font-family:monospace;min-width:260px">
+        </div>
+        <div class="form-row" style="margin-top:12px">
+          <div class="form-group"><label>Transfer Amount (decimal)</label><input type="number" step="0.01" id="sc-circle-mint-transfer-amount" placeholder="25.00"></div>
+          <div class="form-group"><label>Transfer Currency</label><input type="text" id="sc-circle-mint-transfer-currency" value="USD"></div>
+          <div class="form-group"><label>Source Type (optional)</label><select id="sc-circle-mint-source-type"><option value="">None</option><option value="treasury">Treasury</option><option value="cash">Cash</option><option value="trust">Trust Account</option><option value="bond">Bond</option><option value="fixed_income">Fixed Income</option><option value="fineract">Fineract</option><option value="core_banking">Core Banking</option></select></div>
+          <div class="form-group"><label>Source Account ID</label><input type="text" id="sc-circle-mint-source-account" placeholder="e.g. CASH-001 or TREASURY_HOT"></div>
+          <div class="form-group"><label>Idempotency Key (optional)</label><input type="text" id="sc-circle-mint-transfer-idempotency" placeholder="UUID for retries"></div>
+        </div>
+        <div class="form-row">
+          <button class="btn btn-success btn-sm" onclick="scCircleMintTransfer()">Transfer USDC to Wallet</button>
+        </div>
+        <div id="sc-circle-mint-result" style="margin-top:8px"></div>
+      </div>
+
+      <div class="card" style="margin-top:24px">
+        <h2>Coinbase HBAR Funding</h2>
+        <p class="text-muted" style="font-size:12px;margin:-4px 0 10px;">Swap fiat (USD cash in Coinbase) for HBAR and send it to a Hedera wallet. Requires COINBASE_CDP_KEY_NAME/COINBASE_CDP_PRIVATE_KEY.</p>
+        <div class="form-row">
+          <div class="form-group"><label>USD Amount</label><input type="number" step="0.01" id="sc-cb-hbar-amount" placeholder="25.00" value="25.00"></div>
+          <div class="form-group" style="flex:2"><label>Target Hedera Address</label><input type="text" id="sc-cb-hbar-target" placeholder="0x... or 0.0..." value="0xad1adb4897976c6b03839f1f4a21dfd135cfb48b"></div>
+          <div class="form-group"><label>Source Type</label><select id="sc-cb-hbar-source-type"><option value="treasury">Treasury</option><option value="cash">Cash</option><option value="trust">Trust Account</option><option value="bond">Bond</option><option value="fixed_income">Fixed Income</option><option value="fineract">Fineract</option><option value="core_banking">Core Banking</option></select></div>
+          <div class="form-group"><label>Source Account ID</label><input type="text" id="sc-cb-hbar-source-account" value="TREASURY_HOT" placeholder="TREASURY_HOT"></div>
+          <div class="form-group"><label>Auto Buy</label><select id="sc-cb-hbar-autobuy"><option value="true" selected>Yes</option><option value="false">No</option></select></div>
+        </div>
+        <div class="form-row">
+          <button class="btn btn-sm" onclick="scCbHbarBalances()">Balances</button>
+          <button class="btn btn-sm" onclick="scCbHbarQuote()">Quote</button>
+          <button class="btn btn-success btn-sm" onclick="scCbHbarFund()">Fund HBAR</button>
+          <button class="btn btn-danger btn-sm" onclick="scCbHbarWithdraw()">Withdraw HBAR</button>
+        </div>
+        <div id="sc-cb-hbar-result" style="margin-top:8px"></div>
+      </div>
+
+      <div class="card" style="margin-top:24px">
+        <h2>Clearing & Settlement</h2>
+        <p class="text-muted" style="font-size:12px;margin:-4px 0 10px;">Link source ledgers (Core Banking, Treasury, Bond, Fixed Income, Cash, Trust) to wallets and clear funds in one step.</p>
+        <div class="form-row">
+          <div class="form-group"><label>Label</label><input type="text" id="sc-clearing-wallet-label" placeholder="Bond reserve wallet"></div>
+          <div class="form-group"><label>Source Type</label><select id="sc-clearing-source-type"><option value="treasury">Treasury</option><option value="cash">Cash</option><option value="trust">Trust Account</option><option value="bond">Bond</option><option value="fixed_income">Fixed Income</option><option value="fineract">Fineract</option><option value="core_banking">Core Banking</option></select></div>
+          <div class="form-group"><label>Source Account ID</label><input type="text" id="sc-clearing-source-account" placeholder="BOND-001"></div>
+          <div class="form-group"><label>Wallet Address</label><input type="text" id="sc-clearing-address" placeholder="0x... or G..." value="0x080e0d0ae80c86cc80bb050dbe0d5e5bdb6cd225"></div>
+        </div>
+        <div class="form-row">
+          <div class="form-group"><label>Network</label><input type="text" id="sc-clearing-network" value="circle"></div>
+          <div class="form-group"><label>Wallet Provider</label><select id="sc-clearing-provider"><option value="direct">Direct</option><option value="magic">Magic WaaS</option><option value="circle">Circle Wallet</option><option value="fystack">FyStack</option></select></div>
+          <div class="form-group"><label>Parent Wallet ID</label><input type="text" id="sc-clearing-parent-id" placeholder="optional"></div>
+        </div>
+        <div class="form-row">
+          <button class="btn btn-primary btn-sm" onclick="scClearingRegisterWallet()">Register Wallet</button>
+          <button class="btn btn-sm" onclick="scClearingListWallets()">List Wallets</button>
+        </div>
+        <hr style="border:none;border-top:1px solid #334155;margin:16px 0">
+        <div class="form-row">
+          <div class="form-group"><label>Destination Wallet</label><input type="text" id="sc-clearing-destination" placeholder="0x... or G..." value="0x080e0d0ae80c86cc80bb050dbe0d5e5bdb6cd225"></div>
+          <div class="form-group"><label>Amount</label><input type="number" step="0.01" id="sc-clearing-amount" placeholder="25.00"></div>
+          <div class="form-group"><label>Network</label><input type="text" id="sc-clearing-settle-network" value="circle"></div>
+          <div class="form-group"><label>Provider</label><select id="sc-clearing-settle-provider"><option value="direct">Direct</option><option value="circle">Circle Wallet</option><option value="fystack">FyStack</option></select></div>
+          <div class="form-group"><label>Destination Secret (testnet trustline)</label><input type="password" id="sc-clearing-destination-secret" placeholder="Stellar secret key"></div>
+        </div>
+        <div class="form-row">
+          <button class="btn btn-success btn-sm" onclick="scClearingSettle()">Clear & Settle</button>
+          <button class="btn btn-sm" onclick="scClearingListOrders()">List Orders</button>
+        </div>
+        <div id="sc-clearing-result" style="margin-top:8px"></div>
+      </div>
+
       <div class="card" style="margin-top:24px">
         <h2>Stablecoin Payments</h2>
         <div id="sc-payments-table"><p class="text-muted">Loading…</p></div>
@@ -6428,7 +6602,10 @@
       ]);
       if (health && health.data) {
         const h = health.data;
-        el('sc-readiness').innerHTML = h.ready ? '<span class="badge badge-active">Ready</span>' : '<span class="badge badge-error">Not Ready</span>';
+        let readinessHtml = h.ready ? '<span class="badge badge-active">Ready</span>' : '<span class="badge badge-error">Not Ready</span>';
+        if (h.hedera && h.hedera.ready) readinessHtml += ' <span class="badge badge-active">Hedera Ready</span>';
+        else if (h.hedera) readinessHtml += ' <span class="badge badge-error" title="' + esc((h.hedera.issues || []).join('; ')) + '">Hedera Not Ready</span>';
+        el('sc-readiness').innerHTML = readinessHtml;
         el('sc-network').textContent = esc(h.network || '—');
         el('sc-asset').textContent = esc(h.assetCode || '—');
       } else if (health && health.error) {
@@ -6523,6 +6700,7 @@
         sourceType: el('sc-source-type').value,
         sourceAccountId: el('sc-source-account').value.trim() || undefined,
         walletProvider: el('sc-wallet-provider').value,
+        sourceWalletId: el('sc-source-wallet-id').value.trim() || undefined,
         memo: el('sc-memo').value.trim() || undefined,
         beneficiaryName: el('sc-beneficiary').value.trim() || undefined,
       };
@@ -6530,7 +6708,7 @@
       const resp = await fetchJSON(API + '/api/stablecoin/payments', { method: 'POST', headers: adminHeaders(), body: JSON.stringify(data) });
       if (resp && resp.success) {
         el('sc-create-result').innerHTML = '<p class="success-msg">Payment created: ' + esc(resp.data.id) + '</p>';
-        el('sc-amount').value = ''; el('sc-destination').value = ''; el('sc-memo').value = ''; el('sc-beneficiary').value = '';
+        el('sc-amount').value = ''; el('sc-destination').value = ''; el('sc-memo').value = ''; el('sc-beneficiary').value = ''; el('sc-source-wallet-id').value = '';
         loadStablecoin();
       } else {
         el('sc-create-result').innerHTML = '<p class="error-msg">' + esc((resp && resp.error) || 'Create failed') + '</p>';
@@ -6544,8 +6722,11 @@
 
     async function scSettle(id) {
       const destinationSecret = el('sc-destination-secret').value.trim() || undefined;
-      const body = destinationSecret ? JSON.stringify({ destinationSecret }) : '{}';
-      const resp = await fetchJSON(API + '/api/stablecoin/payments/' + encodeURIComponent(id) + '/settle', { method: 'POST', headers: adminHeaders(), body });
+      const destinationKey = el('sc-destination-key').value.trim() || undefined;
+      const bodyObj = {};
+      if (destinationSecret) bodyObj.destinationSecret = destinationSecret;
+      if (destinationKey) bodyObj.destinationKey = destinationKey;
+      const resp = await fetchJSON(API + '/api/stablecoin/payments/' + encodeURIComponent(id) + '/settle', { method: 'POST', headers: adminHeaders(), body: JSON.stringify(bodyObj) });
       if (resp && resp.success) { loadStablecoin(); } else { alert('Settle failed: ' + ((resp && resp.error) || 'unknown')); }
     }
 
@@ -6559,6 +6740,73 @@
         alert('Trustline ensured: ' + (resp.data.trustlineCreated ? 'created ' + resp.data.txHash : 'already exists'));
       } else {
         alert('Trustline ensure failed: ' + ((resp && resp.error) || 'unknown'));
+      }
+    }
+
+    async function scEnsureHederaAssociation() {
+      const tokenId = el('sc-hedera-token-id').value.trim() || undefined;
+      const targetId = el('sc-destination').value.trim();
+      const targetKey = el('sc-destination-key').value.trim() || undefined;
+      if (!targetId) { alert('Enter a destination wallet first'); return; }
+      const body = JSON.stringify({ tokenId, targetId, targetKey });
+      const resp = await fetchJSON(API + '/api/stablecoin/hedera/associate', { method: 'POST', headers: adminHeaders(), body });
+      if (resp && resp.success) {
+        alert('Hedera token association ensured for ' + esc(targetId));
+      } else {
+        alert('Hedera association failed: ' + ((resp && resp.error) || 'unknown'));
+      }
+    }
+
+    async function scCheckHederaReadiness() {
+      const resp = await fetchJSON(API + '/api/stablecoin/hedera/readiness', { headers: adminHeaders() });
+      if (resp && resp.success) {
+        const r = resp.data;
+        el('sc-hedera-result').innerHTML = '<p class="' + (r.ready ? 'success-msg' : 'error-msg') + '">Hedera ' + (r.ready ? 'Ready' : 'Not Ready') + ': ' + esc((r.issues || []).join('; ') || 'OK') + '</p>';
+      } else {
+        el('sc-hedera-result').innerHTML = '<p class="error-msg">' + esc((resp && resp.error) || 'Readiness failed') + '</p>';
+      }
+    }
+
+    async function scCreateHederaStablecoin() {
+      const name = 'DLB Trust Stablecoin';
+      const symbol = el('sc-hedera-symbol').value.trim() || 'DLBUSD';
+      const decimals = Number(el('sc-hedera-decimals').value) || 6;
+      const initial = Number(el('sc-hedera-initial').value) || 0;
+      const initialSupply = String(initial);
+      const resp = await fetchJSON(API + '/api/stablecoin/hedera/create-stablecoin', { method: 'POST', headers: adminHeaders(), body: JSON.stringify({ name, symbol, decimals, initialSupply }) });
+      if (resp && resp.success) {
+        el('sc-hedera-token-id').value = resp.data.tokenId || '';
+        el('sc-hedera-result').innerHTML = '<p class="success-msg">Created stablecoin: ' + esc(resp.data.tokenId || JSON.stringify(resp.data)) + '</p>';
+      } else {
+        el('sc-hedera-result').innerHTML = '<p class="error-msg">' + esc((resp && resp.error) || 'Create failed') + '</p>';
+      }
+    }
+
+    async function scMintHederaStablecoin() {
+      const tokenId = el('sc-hedera-token-id').value.trim();
+      const targetId = el('sc-hedera-mint-target').value.trim() || undefined;
+      const amount = Number(el('sc-hedera-mint-amount').value);
+      if (!tokenId || !amount || amount <= 0) { el('sc-hedera-result').innerHTML = '<p class="error-msg">Enter token ID and positive mint amount</p>'; return; }
+      const amountCents = Math.round(amount * 100);
+      const resp = await fetchJSON(API + '/api/stablecoin/hedera/mint', { method: 'POST', headers: adminHeaders(), body: JSON.stringify({ tokenId, targetId, amountCents }) });
+      if (resp && resp.success) {
+        el('sc-hedera-result').innerHTML = '<p class="success-msg">Minted: ' + esc(resp.data.txId || JSON.stringify(resp.data)) + '</p>';
+      } else {
+        el('sc-hedera-result').innerHTML = '<p class="error-msg">' + esc((resp && resp.error) || 'Mint failed') + '</p>';
+      }
+    }
+
+    async function scHederaBalance() {
+      const tokenId = el('sc-hedera-token-id').value.trim();
+      const accountId = el('sc-hedera-mint-target').value.trim() || undefined;
+      if (!tokenId) { el('sc-hedera-result').innerHTML = '<p class="error-msg">Enter token ID</p>'; return; }
+      const params = new URLSearchParams({ tokenId });
+      if (accountId) params.set('accountId', accountId);
+      const resp = await fetchJSON(API + '/api/stablecoin/hedera/balance?' + params.toString(), { headers: adminHeaders() });
+      if (resp && resp.success) {
+        el('sc-hedera-result').innerHTML = '<p class="success-msg">Balance for ' + esc(accountId || 'operator') + ': ' + esc(String(resp.data.balance)) + '</p>';
+      } else {
+        el('sc-hedera-result').innerHTML = '<p class="error-msg">' + esc((resp && resp.error) || 'Balance failed') + '</p>';
       }
     }
 
@@ -6596,6 +6844,288 @@
         el('sc-convert-readiness').innerHTML = '<p class="' + (r.ready ? 'success-msg' : 'error-msg') + '">HollaEx ' + (r.ready ? 'Ready' : 'Not Ready') + ': ' + esc((r.issues || []).join('; ') || 'OK') + '</p>';
       } else {
         el('sc-convert-readiness').innerHTML = '<p class="error-msg">' + esc((resp && resp.error) || 'Readiness check failed') + '</p>';
+      }
+    }
+
+    // ─── CIRCLE MINT FIAT ON-RAMP ─────────────────────────────────────────────────
+    async function scCircleMintReadiness() {
+      const resp = await fetchJSON(API + '/api/stablecoin/circle-mint/readiness', { headers: adminHeaders() });
+      if (resp && resp.success) {
+        const r = resp.data;
+        el('sc-circle-mint-result').innerHTML = '<p class="' + (r.ready ? 'success-msg' : 'error-msg') + '">Circle Mint ' + (r.ready ? 'Ready' : 'Not Ready') + ': ' + esc((r.issues || []).join('; ') || 'OK') + '</p>';
+      } else {
+        el('sc-circle-mint-result').innerHTML = '<p class="error-msg">' + esc((resp && resp.error) || 'Readiness check failed') + '</p>';
+      }
+    }
+
+    async function scCircleMintCreateWire() {
+      const body = JSON.stringify({
+        idempotencyKey: el('sc-circle-mint-wire-idempotency').value.trim() || undefined,
+        accountNumber: el('sc-circle-mint-account').value.trim(),
+        routingNumber: el('sc-circle-mint-routing').value.trim(),
+        billingDetails: {
+          name: el('sc-circle-mint-billing-name').value.trim(),
+          city: el('sc-circle-mint-billing-city').value.trim(),
+          country: el('sc-circle-mint-billing-country').value.trim() || 'US',
+          line1: el('sc-circle-mint-billing-line1').value.trim(),
+          district: el('sc-circle-mint-billing-district').value.trim(),
+          postalCode: el('sc-circle-mint-billing-postal').value.trim(),
+        },
+        bankAddress: {
+          bankName: el('sc-circle-mint-bank-name').value.trim(),
+          city: el('sc-circle-mint-bank-city').value.trim(),
+          country: el('sc-circle-mint-bank-country').value.trim() || 'US',
+          line1: el('sc-circle-mint-bank-line1').value.trim(),
+          district: el('sc-circle-mint-bank-district').value.trim(),
+        },
+      });
+      const resp = await fetchJSON(API + '/api/stablecoin/circle-mint/bank-accounts/wire', { method: 'POST', headers: adminHeaders(), body });
+      if (resp && resp.success) {
+        const id = resp.data && resp.data.data && resp.data.data.id;
+        el('sc-circle-mint-wire-id').value = id || '';
+        el('sc-circle-mint-result').innerHTML = '<p class="success-msg">Wire bank account created: ' + esc(id || JSON.stringify(resp.data)) + '</p>';
+      } else {
+        el('sc-circle-mint-result').innerHTML = '<p class="error-msg">' + esc((resp && resp.error) || 'Create wire bank account failed') + '</p>';
+      }
+    }
+
+    async function scCircleMintInstructions() {
+      const id = el('sc-circle-mint-wire-id').value.trim();
+      if (!id) { el('sc-circle-mint-result').innerHTML = '<p class="error-msg">Create a wire bank account first</p>'; return; }
+      const resp = await fetchJSON(API + '/api/stablecoin/circle-mint/bank-accounts/' + encodeURIComponent(id) + '/instructions', { headers: adminHeaders() });
+      if (resp && resp.success) {
+        el('sc-circle-mint-result').innerHTML = '<p class="success-msg">Wire instructions: <pre style="white-space:pre-wrap">' + esc(JSON.stringify(resp.data, null, 2)) + '</pre></p>';
+      } else {
+        el('sc-circle-mint-result').innerHTML = '<p class="error-msg">' + esc((resp && resp.error) || 'Get instructions failed') + '</p>';
+      }
+    }
+
+    async function scCircleMintCreateRecipient() {
+      const body = JSON.stringify({
+        idempotencyKey: el('sc-circle-mint-recipient-idempotency').value.trim() || undefined,
+        address: el('sc-circle-mint-recipient-address').value.trim(),
+        chain: el('sc-circle-mint-recipient-chain').value.trim() || 'ETH',
+        currency: el('sc-circle-mint-recipient-currency').value.trim() || 'USD',
+        description: el('sc-circle-mint-recipient-desc').value.trim(),
+      });
+      const resp = await fetchJSON(API + '/api/stablecoin/circle-mint/recipient-addresses', { method: 'POST', headers: adminHeaders(), body });
+      if (resp && resp.success) {
+        const id = resp.data && resp.data.data && resp.data.data.id;
+        el('sc-circle-mint-recipient-id').value = id || '';
+        el('sc-circle-mint-result').innerHTML = '<p class="success-msg">Recipient address created: ' + esc(id || JSON.stringify(resp.data)) + '</p>';
+      } else {
+        el('sc-circle-mint-result').innerHTML = '<p class="error-msg">' + esc((resp && resp.error) || 'Create recipient address failed') + '</p>';
+      }
+    }
+
+    async function scCircleMintTransfer() {
+      const body = JSON.stringify({
+        idempotencyKey: el('sc-circle-mint-transfer-idempotency').value.trim() || undefined,
+        destinationAddressId: el('sc-circle-mint-recipient-id').value.trim(),
+        amount: el('sc-circle-mint-transfer-amount').value.trim(),
+        currency: el('sc-circle-mint-transfer-currency').value.trim() || 'USD',
+        sourceType: el('sc-circle-mint-source-type').value.trim(),
+        sourceAccountId: el('sc-circle-mint-source-account').value.trim(),
+      });
+      const resp = await fetchJSON(API + '/api/stablecoin/circle-mint/transfers', { method: 'POST', headers: adminHeaders(), body });
+      if (resp && resp.success) {
+        el('sc-circle-mint-result').innerHTML = '<p class="success-msg">Transfer created: ' + esc(JSON.stringify(resp.data)) + '</p>';
+      } else {
+        el('sc-circle-mint-result').innerHTML = '<p class="error-msg">' + esc((resp && resp.error) || 'Transfer failed') + '</p>';
+      }
+    }
+
+    // ─── COINBASE HBAR FUNDING ────────────────────────────────────────────────────
+    async function scCbHbarBalances() {
+      const resp = await fetchJSON(API + '/api/stablecoin/coinbase-hbar/balances', { headers: adminHeaders() });
+      if (resp && resp.success) {
+        el('sc-cb-hbar-result').innerHTML = '<p class="success-msg">Balances: <pre style="white-space:pre-wrap">' + esc(JSON.stringify(resp.data, null, 2)) + '</pre></p>';
+      } else {
+        el('sc-cb-hbar-result').innerHTML = '<p class="error-msg">' + esc((resp && resp.error) || 'Balances failed') + '</p>';
+      }
+    }
+
+    async function scCbHbarQuote() {
+      const amount = el('sc-cb-hbar-amount').value.trim();
+      if (!amount || Number(amount) <= 0) { el('sc-cb-hbar-result').innerHTML = '<p class="error-msg">Enter a positive USD amount</p>'; return; }
+      const resp = await fetchJSON(API + '/api/stablecoin/coinbase-hbar/quote?fiatAmount=' + encodeURIComponent(amount), { headers: adminHeaders() });
+      if (resp && resp.success) {
+        el('sc-cb-hbar-result').innerHTML = '<p class="success-msg">Quote: <pre style="white-space:pre-wrap">' + esc(JSON.stringify(resp.data, null, 2)) + '</pre></p>';
+      } else {
+        el('sc-cb-hbar-result').innerHTML = '<p class="error-msg">' + esc((resp && resp.error) || 'Quote failed') + '</p>';
+      }
+    }
+
+    async function scCbHbarFund() {
+      const amount = Number(el('sc-cb-hbar-amount').value);
+      if (!amount || amount <= 0) { el('sc-cb-hbar-result').innerHTML = '<p class="error-msg">Enter a positive USD amount</p>'; return; }
+      const target = el('sc-cb-hbar-target').value.trim();
+      if (!target) { el('sc-cb-hbar-result').innerHTML = '<p class="error-msg">Enter a target Hedera address</p>'; return; }
+      const body = JSON.stringify({
+        fiatAmount: String(amount),
+        targetAddress: target,
+        sourceType: el('sc-cb-hbar-source-type').value,
+        sourceAccountId: el('sc-cb-hbar-source-account').value.trim() || undefined,
+        autoBuy: el('sc-cb-hbar-autobuy').value === 'true',
+      });
+      const resp = await fetchJSON(API + '/api/stablecoin/coinbase-hbar/fund', { method: 'POST', headers: adminHeaders(), body });
+      if (resp && resp.success) {
+        el('sc-cb-hbar-result').innerHTML = '<p class="success-msg">Funding order: <pre style="white-space:pre-wrap">' + esc(JSON.stringify(resp.data, null, 2)) + '</pre></p>';
+      } else {
+        el('sc-cb-hbar-result').innerHTML = '<p class="error-msg">' + esc((resp && resp.error) || 'Fund failed') + '</p>';
+      }
+    }
+
+    async function scCbHbarWithdraw() {
+      const amount = el('sc-cb-hbar-amount').value.trim();
+      if (!amount || Number(amount) <= 0) { el('sc-cb-hbar-result').innerHTML = '<p class="error-msg">Enter a positive HBAR amount</p>'; return; }
+      const target = el('sc-cb-hbar-target').value.trim();
+      if (!target) { el('sc-cb-hbar-result').innerHTML = '<p class="error-msg">Enter a target Hedera address</p>'; return; }
+      const body = JSON.stringify({ amount, targetAddress: target });
+      const resp = await fetchJSON(API + '/api/stablecoin/coinbase-hbar/withdraw', { method: 'POST', headers: adminHeaders(), body });
+      if (resp && resp.success) {
+        el('sc-cb-hbar-result').innerHTML = '<p class="success-msg">Withdrawal order: <pre style="white-space:pre-wrap">' + esc(JSON.stringify(resp.data, null, 2)) + '</pre></p>';
+      } else {
+        el('sc-cb-hbar-result').innerHTML = '<p class="error-msg">' + esc((resp && resp.error) || 'Withdraw failed') + '</p>';
+      }
+    }
+
+    // ─── CLEARING & SETTLEMENT ────────────────────────────────────────────────────
+    async function scClearingRegisterWallet() {
+      const body = JSON.stringify({
+        label: el('sc-clearing-wallet-label').value.trim(),
+        sourceType: el('sc-clearing-source-type').value,
+        sourceAccountId: el('sc-clearing-source-account').value.trim(),
+        address: el('sc-clearing-address').value.trim(),
+        network: el('sc-clearing-network').value.trim(),
+        walletProvider: el('sc-clearing-provider').value,
+        parentWalletId: el('sc-clearing-parent-id').value.trim() || undefined,
+      });
+      const resp = await fetchJSON(API + '/api/stablecoin/clearing/wallets', { method: 'POST', headers: adminHeaders(), body });
+      if (resp && resp.success) {
+        el('sc-clearing-result').innerHTML = '<p class="success-msg">Wallet registered: ' + esc(resp.data.id) + '</p>';
+      } else {
+        el('sc-clearing-result').innerHTML = '<p class="error-msg">' + esc((resp && resp.error) || 'Register wallet failed') + '</p>';
+      }
+    }
+
+    async function scClearingListWallets() {
+      const resp = await fetchJSON(API + '/api/stablecoin/clearing/wallets', { headers: adminHeaders() });
+      if (resp && resp.success) {
+        el('sc-clearing-result').innerHTML = '<p class="success-msg">Wallets: <pre style="white-space:pre-wrap">' + esc(JSON.stringify(resp.data, null, 2)) + '</pre></p>';
+      } else {
+        el('sc-clearing-result').innerHTML = '<p class="error-msg">' + esc((resp && resp.error) || 'List wallets failed') + '</p>';
+      }
+    }
+
+    async function scClearingSettle() {
+      const body = JSON.stringify({
+        sourceType: el('sc-clearing-source-type').value,
+        sourceAccountId: el('sc-clearing-source-account').value.trim(),
+        destinationWallet: el('sc-clearing-destination').value.trim(),
+        destinationSecret: el('sc-clearing-destination-secret').value.trim() || undefined,
+        amount: el('sc-clearing-amount').value.trim(),
+        network: el('sc-clearing-settle-network').value.trim(),
+        walletProvider: el('sc-clearing-settle-provider').value,
+        memo: 'Clearing & Settlement via dashboard',
+      });
+      const resp = await fetchJSON(API + '/api/stablecoin/clearing/clear-and-settle', { method: 'POST', headers: adminHeaders(), body });
+      if (resp && resp.success) {
+        el('sc-clearing-result').innerHTML = '<p class="success-msg">Clearing order settled: ' + esc(resp.data.id) + ' tx=' + esc(resp.data.tx_hash || 'pending') + '</p>';
+      } else {
+        el('sc-clearing-result').innerHTML = '<p class="error-msg">' + esc((resp && resp.error) || 'Clear and settle failed') + '</p>';
+      }
+    }
+
+    async function scClearingListOrders() {
+      const resp = await fetchJSON(API + '/api/stablecoin/clearing/orders', { headers: adminHeaders() });
+      if (resp && resp.success) {
+        el('sc-clearing-result').innerHTML = '<p class="success-msg">Orders: <pre style="white-space:pre-wrap">' + esc(JSON.stringify(resp.data, null, 2)) + '</pre></p>';
+      } else {
+        el('sc-clearing-result').innerHTML = '<p class="error-msg">' + esc((resp && resp.error) || 'List orders failed') + '</p>';
+      }
+    }
+
+    // ─── FYSTACK IGNITE ───────────────────────────────────────────────────────────
+    async function scFyStackReadiness() {
+      const resp = await fetchJSON(API + '/api/stablecoin/fystack/readiness', { headers: adminHeaders() });
+      const msg = resp && resp.success ? 'Ready' : (resp && resp.error) || 'Not Ready';
+      el('sc-fystack-result').innerHTML = '<p class="' + (resp && resp.success ? 'success-msg' : 'error-msg') + '">' + esc(msg) + '</p>';
+    }
+
+    async function scFyStackCreateWallet() {
+      const body = JSON.stringify({
+        name: el('sc-fystack-name').value.trim() || 'DLB Trust Wallet',
+        walletType: el('sc-fystack-type').value,
+        walletPurpose: 'general',
+      });
+      const resp = await fetchJSON(API + '/api/stablecoin/fystack/wallets', { method: 'POST', headers: adminHeaders(), body });
+      if (resp && resp.success) {
+        el('sc-fystack-result').innerHTML = '<p class="success-msg">Wallet created: ' + esc(resp.data.wallet_id || JSON.stringify(resp.data)) + '</p>';
+      } else {
+        el('sc-fystack-result').innerHTML = '<p class="error-msg">' + esc((resp && resp.error) || 'Create failed') + '</p>';
+      }
+    }
+
+    async function scFyStackDepositAddress() {
+      const walletId = el('sc-fystack-wallet-id-ops').value.trim();
+      if (!walletId) { el('sc-fystack-result').innerHTML = '<p class="error-msg">Enter a FyStack Wallet ID</p>'; return; }
+      const addressType = el('sc-fystack-addr-type').value;
+      const resp = await fetchJSON(API + '/api/stablecoin/fystack/wallets/' + encodeURIComponent(walletId) + '/deposit-address?addressType=' + encodeURIComponent(addressType), { headers: adminHeaders() });
+      if (resp && resp.success) {
+        el('sc-fystack-result').innerHTML = '<p class="success-msg">Deposit address: ' + esc(resp.data.address || JSON.stringify(resp.data)) + '</p>';
+      } else {
+        el('sc-fystack-result').innerHTML = '<p class="error-msg">' + esc((resp && resp.error) || 'Failed') + '</p>';
+      }
+    }
+
+    async function scFyStackBalance() {
+      const walletId = el('sc-fystack-wallet-id-ops').value.trim();
+      if (!walletId) { el('sc-fystack-result').innerHTML = '<p class="error-msg">Enter a FyStack Wallet ID</p>'; return; }
+      const resp = await fetchJSON(API + '/api/stablecoin/fystack/wallets/' + encodeURIComponent(walletId) + '/balance', { headers: adminHeaders() });
+      if (resp && resp.success) {
+        el('sc-fystack-result').innerHTML = '<p class="success-msg">Balance: ' + esc(String(resp.data)) + '</p>';
+      } else {
+        el('sc-fystack-result').innerHTML = '<p class="error-msg">' + esc((resp && resp.error) || 'Failed') + '</p>';
+      }
+    }
+
+    async function scFyStackWithdraw() {
+      const walletId = el('sc-fystack-wallet-id-ops').value.trim();
+      const recipient = el('sc-fystack-recipient').value.trim();
+      const amount = Number(el('sc-fystack-withdraw-amount').value);
+      if (!walletId || !recipient || !amount || amount <= 0) { el('sc-fystack-result').innerHTML = '<p class="error-msg">Wallet ID, recipient, and amount are required</p>'; return; }
+      const body = JSON.stringify({
+        asset: el('sc-asset-code').value.trim() || 'USDC',
+        amount: String(amount),
+        recipientAddress: recipient,
+        notes: 'DLB Trust FyStack withdrawal',
+      });
+      const resp = await fetchJSON(API + '/api/stablecoin/fystack/wallets/' + encodeURIComponent(walletId) + '/withdraw', { method: 'POST', headers: adminHeaders(), body });
+      if (resp && resp.success) {
+        el('sc-fystack-result').innerHTML = '<p class="success-msg">Withdrawal: ' + esc(JSON.stringify(resp.data)) + '</p>';
+      } else {
+        el('sc-fystack-result').innerHTML = '<p class="error-msg">' + esc((resp && resp.error) || 'Withdraw failed') + '</p>';
+      }
+    }
+
+    // ─── CIRCLE APP KIT ─────────────────────────────────────────────────────────
+    async function scCircleReadiness() {
+      const resp = await fetchJSON(API + '/api/stablecoin/circle/readiness', { headers: adminHeaders() });
+      if (resp && resp.success) {
+        const r = resp.data;
+        el('sc-circle-result').innerHTML = '<p class="' + (r.ready ? 'success-msg' : 'error-msg') + '">Circle ' + (r.ready ? 'Ready' : 'Not Ready') + ': ' + esc((r.issues || []).join('; ') || 'OK') + '</p>';
+      } else {
+        el('sc-circle-result').innerHTML = '<p class="error-msg">' + esc((resp && resp.error) || 'Readiness failed') + '</p>';
+      }
+    }
+
+    async function scCircleSourceAddress() {
+      const resp = await fetchJSON(API + '/api/stablecoin/circle/source-address', { headers: adminHeaders() });
+      if (resp && resp.success) {
+        el('sc-circle-result').innerHTML = '<p class="success-msg">Source address: ' + esc(resp.data.sourceAddress || '') + '</p>';
+      } else {
+        el('sc-circle-result').innerHTML = '<p class="error-msg">' + esc((resp && resp.error) || 'Failed') + '</p>';
       }
     }
 
