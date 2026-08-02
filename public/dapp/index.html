@@ -725,6 +725,23 @@
             <div class="actions"><button class="btn" onclick="fundOperatorWithCashApp()">Generate Cash App QR</button></div>
             <div id="ca-fund-result" class="status hidden"></div>
           </div>
+          <div class="card" style="grid-column: 1 / -1;">
+            <h2>Cash App Partner Payout (merchant push)</h2>
+            <p>Uses the official Cash App Pay Partner API to send USD from a merchant account to a customer's Cash App account. Requires Cash App partner credentials and an approved <b>ON_FILE_PAYOUT</b> grant. If credentials are not configured, this returns setup instructions.</p>
+            <div class="form-row">
+              <div><label>Amount (USD)</label><input type="text" id="cap-amount" placeholder="25.00" /></div>
+              <div><label>Account Reference ID (customer id / $Cashtag)</label><input type="text" id="cap-account" placeholder="$RecipientTag or internal customer id" /></div>
+              <div><label>Memo / Note</label><input type="text" id="cap-memo" placeholder="Trust payout" /></div>
+              <div><label>Grant ID (after customer approves request)</label><input type="text" id="cap-grant" placeholder="grant-..." /></div>
+              <div><label>Payout Request ID (optional, to poll)</label><input type="text" id="cap-request-id" placeholder="" /></div>
+            </div>
+            <div class="actions">
+              <button class="btn" onclick="createCashAppPayoutRequest()">1. Create Payout Request</button>
+              <button class="btn" onclick="executeCashAppPayout()">2. Execute Payout</button>
+              <button class="btn" onclick="pollCashAppPayoutRequest()">Poll Request Status</button>
+            </div>
+            <div id="cap-result" class="status hidden" style="white-space:pre-wrap;word-break:break-word"></div>
+          </div>
         </div>
       </section>
 
@@ -1845,6 +1862,51 @@
         `;
         el('ca-fund-result').className = 'status success';
       } catch (e) { el('ca-fund-result').textContent = e.message; el('ca-fund-result').className = 'status error'; }
+    };
+
+    window.createCashAppPayoutRequest = async function() {
+      try {
+        const rawAmount = el('cap-amount').value.trim();
+        const amount = rawAmount ? Math.round(Number(rawAmount) * 100) : undefined;
+        const body = { amount, channel: 'ONLINE', accountReferenceId: el('cap-account').value, note: el('cap-memo').value };
+        const res = await api('/api/dapp/payment-rails/cashapp/payout-request', { method: 'POST', body: JSON.stringify(body) });
+        const d = res.data;
+        let html = `<b>Payout request created</b><br/>Request ID: <span class="mono">${esc(d.requestId)}</span><br/>Status: ${esc(d.status)}`;
+        if (d.authFlow) {
+          if (d.authFlow.mobile_url) html += `<br/>Mobile URL: <a href="${esc(d.authFlow.mobile_url)}" target="_blank">${esc(d.authFlow.mobile_url)}</a>`;
+          if (d.authFlow.qr_code_image_url) html += `<br/><img src="${esc(d.authFlow.qr_code_image_url)}" alt="Payout QR" style="max-width:220px;"/>`;
+          if (d.authFlow.qr_code_svg_url) html += `<br/><a href="${esc(d.authFlow.qr_code_svg_url)}" target="_blank">QR SVG</a>`;
+        }
+        if (d.raw && d.raw.request) {
+          el('cap-request-id').value = d.raw.request.id || '';
+        }
+        el('cap-result').innerHTML = html;
+        el('cap-result').className = 'status success';
+      } catch (e) { el('cap-result').textContent = e.message; el('cap-result').className = 'status error'; }
+    };
+
+    window.executeCashAppPayout = async function() {
+      try {
+        const amount = Math.round(Number(el('cap-amount').value) * 100);
+        const grantId = el('cap-grant').value.trim();
+        if (!grantId) throw new Error('Enter the Grant ID from the approved payout request');
+        if (!amount || amount <= 0) throw new Error('Enter a positive amount');
+        const res = await api('/api/dapp/payment-rails/cashapp/payout', { method: 'POST', body: JSON.stringify({ amount, grantId, note: el('cap-memo').value }) });
+        const d = res.data;
+        el('cap-result').innerHTML = `<b>Payout created</b><br/>Payout ID: <span class="mono">${esc(d.payoutId)}</span><br/>Status: ${esc(d.status)}`;
+        el('cap-result').className = 'status success';
+      } catch (e) { el('cap-result').textContent = e.message; el('cap-result').className = 'status error'; }
+    };
+
+    window.pollCashAppPayoutRequest = async function() {
+      try {
+        const requestId = el('cap-request-id').value.trim();
+        if (!requestId) throw new Error('Enter a Payout Request ID');
+        const res = await api(`/api/dapp/payment-rails/cashapp/requests/${encodeURIComponent(requestId)}`);
+        const d = res.data;
+        el('cap-result').textContent = `Request status: ${JSON.stringify(d, null, 2)}`;
+        el('cap-result').className = 'status success';
+      } catch (e) { el('cap-result').textContent = e.message; el('cap-result').className = 'status error'; }
     };
 
     window.createBondToken = async function() {

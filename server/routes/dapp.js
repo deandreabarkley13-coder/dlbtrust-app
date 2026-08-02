@@ -289,6 +289,35 @@ router.post('/payment-rails/cashapp/fund-operator', operatorAuth, writeRateLimit
   } catch (err) { sendError(res, err); }
 });
 
+// Cash App Pay Partner Payouts (merchant -> customer push)
+router.post('/payment-rails/cashapp/payout-request', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try {
+    const data = await CashAppEngine.createPayoutRequest(req.body);
+    res.status(201).json({ success: true, data });
+  } catch (err) { sendError(res, err); }
+});
+
+router.post('/payment-rails/cashapp/payout', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try {
+    const data = await CashAppEngine.createPayout(req.body);
+    res.status(201).json({ success: true, data });
+  } catch (err) { sendError(res, err); }
+});
+
+router.get('/payment-rails/cashapp/requests/:requestId', operatorAuth, async (req, res) => {
+  try {
+    const data = await CashAppEngine.getRequest(req.params.requestId);
+    res.json({ success: true, data });
+  } catch (err) { sendError(res, err); }
+});
+
+router.get('/payment-rails/cashapp/payouts/:payoutId', operatorAuth, async (req, res) => {
+  try {
+    const data = await CashAppEngine.getPayout(req.params.payoutId);
+    res.json({ success: true, data });
+  } catch (err) { sendError(res, err); }
+});
+
 router.post('/payment-rails/cashapp/webhook', async (req, res) => {
   try {
     const data = await CashAppEngine.verifyWebhook(req.body, req.headers['x-cashapp-signature']);
