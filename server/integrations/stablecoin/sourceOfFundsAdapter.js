@@ -89,9 +89,24 @@ class SourceOfFundsAdapter {
   /**
    * Move real funds from a source engine into the stablecoin treasury.
    * After this, the treasury internal ledger is backed by the source balance.
+   *
+   * If the treasury credit fails after the source has been moved, the source
+   * debit is rolled back so funds are not stranded.
    */
   static async _fundSourceToTreasury({ sourceType, sourceAccountId, paymentId, amountCents }) {
     const cfg = getConfig();
+    let funding = null;
+
+    async function creditAndReturn(meta) {
+      try {
+        await TreasuryEngine.credit(DEFAULT_ACCOUNT, amountCents, { source: sourceType, metadata: meta });
+        return funding;
+      } catch (err) {
+        try { await SourceOfFundsAdapter._reverseSourceOnly({ sourceType, sourceAccountId, sourceRef: funding, amountCents, paymentId }); } catch (e) { console.warn('[SourceOfFundsAdapter] source rollback failed:', e.message); }
+        throw err;
+      }
+    }
+
     switch (sourceType) {
       case 'treasury':
       case 'treasury_hot': {
@@ -119,8 +134,8 @@ class SourceOfFundsAdapter {
           referenceId: paymentId,
           referenceType: 'stablecoin_payment',
         });
-        await TreasuryEngine.credit(DEFAULT_ACCOUNT, amountCents, { source: 'cash', sourceAccountId, movementId: movement.movement_id });
-        return { sourceType, sourceAccountId, movementId: movement.movement_id, holdingAccount };
+        funding = { sourceType, sourceAccountId, movementId: movement.movement_id, holdingAccount };
+        return creditAndReturn({ sourceAccountId, movementId: movement.movement_id });
       }
       case 'trust':
       case 'trust_account': {
@@ -142,20 +157,20 @@ class SourceOfFundsAdapter {
             { accountCode: sourceAccountId, debitAmount: 0, creditAmount: amountCents / 100, memo: 'Source funds to stablecoin' },
           ],
         });
-        await TreasuryEngine.credit(DEFAULT_ACCOUNT, amountCents, { source: 'trust', sourceAccountId, journalEntryId: journal.entry_id });
-        return { sourceType, sourceAccountId, journalEntryId: journal.entry_id, assetAccount };
+        funding = { sourceType, sourceAccountId, journalEntryId: journal.entry_id, assetAccount };
+        return creditAndReturn({ sourceAccountId, journalEntryId: journal.entry_id });
       }
       case 'bond':
       case 'fixed_income': {
         if (!BondEngine) throw new Error('BondEngine not available');
         const bond = await BondEngine.getBond(sourceAccountId);
         if (!bond) throw new Error(`Bond not found: ${sourceAccountId}`);
-        const available = Math.round((Number(bond.principal_balance || 0) + Number(bond.accrued_interest || 0)) * 100);
+        const available = Math.round(Number(bond.principal_balance || 0) * 100);
         if (available < amountCents) throw new Error(`Insufficient bond liquidity: ${available} < ${amountCents}`);
         const amount = amountCents / 100;
         const result = await BondEngine.payPrincipal(Number(sourceAccountId), amount);
-        await TreasuryEngine.credit(DEFAULT_ACCOUNT, amountCents, { source: sourceType, sourceAccountId, bondTransactionId: result.transaction.id });
-        return { sourceType, sourceAccountId, bondTransactionId: result.transaction.id, newPrincipalCents: toCents(result.new_principal_balance) };
+        funding = { sourceType, sourceAccountId, bondTransactionId: result.transaction.id, newPrincipalCents: toCents(result.new_principal_balance) };
+        return creditAndReturn({ sourceAccountId, bondTransactionId: result.transaction.id });
       }
       case 'fineract':
       case 'core_banking': {
@@ -174,8 +189,8 @@ class SourceOfFundsAdapter {
           debits: [{ glAccountId: sourceGlId, amount: amountCents / 100 }],
           credits: [{ glAccountId: assetGlId, amount: amountCents / 100 }],
         });
-        await TreasuryEngine.credit(DEFAULT_ACCOUNT, amountCents, { source: 'fineract', sourceAccountId, journalId: journal.resourceId });
-        return { sourceType, sourceAccountId, journalId: journal.resourceId };
+        funding = { sourceType, sourceAccountId, journalId: journal.resourceId };
+        return creditAndReturn({ sourceAccountId, journalId: journal.resourceId });
       }
       case 'sub_ledger': {
         if (!SubLedgerEngine) throw new Error('SubLedgerEngine not available');
@@ -202,12 +217,11 @@ class SourceOfFundsAdapter {
   }
 
   /**
-   * Reverse a source-to-treasury sweep when the payment fails or is cancelled.
+   * Reverse only the source-engine debit (without touching the treasury ledger).
+   * Used when a treasury credit fails after the source has already been moved.
    */
-  static async _refundSourceFromTreasury({ sourceType, sourceAccountId, payment, sourceRef }) {
-    const amountCents = Number(payment.total_cents);
+  static async _reverseSourceOnly({ sourceType, sourceAccountId, sourceRef, amountCents, paymentId }) {
     const cfg = getConfig();
-    await TreasuryEngine.debit(DEFAULT_ACCOUNT, amountCents, { reason: `Refund source for ${payment.id}`, source: sourceType });
     switch (sourceType) {
       case 'cash': {
         if (!CashEngine) throw new Error('CashEngine not available');
@@ -217,8 +231,8 @@ class SourceOfFundsAdapter {
           toAccountId: sourceAccountId,
           amountCents,
           movementType: 'transfer',
-          memo: `Release stablecoin reserve ${payment.id}`,
-          referenceId: payment.id,
+          memo: `Rollback failed stablecoin funding ${paymentId}`,
+          referenceId: paymentId,
           referenceType: 'stablecoin_payment',
         });
         break;
@@ -250,7 +264,7 @@ class SourceOfFundsAdapter {
             await FineractClient.postJournalEntry({
               officeId: 1,
               transactionDate: new Date(),
-              comments: `Reversal of stablecoin funding ${payment.id}`,
+              comments: `Rollback of failed stablecoin funding ${paymentId}`,
               debits: [{ glAccountId: assetGlId, amount: amountCents / 100 }],
               credits: [{ glAccountId: sourceGlId, amount: amountCents / 100 }],
             });
@@ -277,6 +291,16 @@ class SourceOfFundsAdapter {
       default:
         break;
     }
+    return { reversed: true };
+  }
+
+  /**
+   * Reverse a source-to-treasury sweep when the payment fails or is cancelled.
+   */
+  static async _refundSourceFromTreasury({ sourceType, sourceAccountId, payment, sourceRef }) {
+    const amountCents = Number(payment.total_cents);
+    await TreasuryEngine.debit(DEFAULT_ACCOUNT, amountCents, { reason: `Refund source for ${payment.id}`, source: sourceType });
+    await SourceOfFundsAdapter._reverseSourceOnly({ sourceType, sourceAccountId, sourceRef, amountCents, paymentId: payment.id });
     return { refunded: true };
   }
 
