@@ -1837,11 +1837,11 @@
         const d = res.data;
         const heading = d.direction === 'push' ? 'Push USD to Cash App wallet' : 'Receive USD into Cash App wallet';
         el('ca-fund-result').innerHTML = `
-          <p><b>${esc(heading)}</b> — <a href="${d.cashAppDeepLink}" target="_blank">Open Cash App</a> / <a href="${d.cashMeDeepLink}" target="_blank">cash.me</a></p>
-          <p><img src="${d.cashAppQrDataUrl}" alt="Cash App QR" style="max-width:220px;"/></p>
-          <p><b>Operator wallet:</b> <span class="mono">${d.operatorAddress}</span></p>
-          <p><img src="${d.operatorWalletQrDataUrl}" alt="Operator Wallet QR" style="max-width:220px;"/></p>
-          <p class="small">${d.instructions}</p>
+          <p><b>${esc(heading)}</b> — <a href="${esc(d.cashAppDeepLink)}" target="_blank">Open Cash App</a> / <a href="${esc(d.cashMeDeepLink)}" target="_blank">cash.me</a></p>
+          <p><img src="${esc(d.cashAppQrDataUrl)}" alt="Cash App QR" style="max-width:220px;"/></p>
+          <p><b>Operator wallet:</b> <span class="mono">${esc(d.operatorAddress)}</span></p>
+          <p><img src="${esc(d.operatorWalletQrDataUrl)}" alt="Operator Wallet QR" style="max-width:220px;"/></p>
+          <p class="small">${esc(d.instructions)}</p>
         `;
         el('ca-fund-result').className = 'status success';
       } catch (e) { el('ca-fund-result').textContent = e.message; el('ca-fund-result').className = 'status error'; }
