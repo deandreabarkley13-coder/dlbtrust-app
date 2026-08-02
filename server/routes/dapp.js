@@ -20,6 +20,7 @@ const { AccountAbstractionEngine } = require('../integrations/dapp/accountAbstra
 const { OperatorGasTank } = require('../integrations/dapp/operatorGasTank');
 const { ExpenseManagementEngine } = require('../integrations/accounting/expenseManagementEngine');
 const { DisbursementAutomationEngine } = require('../integrations/dapp/disbursementAutomationEngine');
+const { FundingEngine } = require('../integrations/dapp/fundingEngine');
 const { requireAuth, writeRateLimiter } = require('../integrations/auth/securityMiddleware');
 
 const router = express.Router();
@@ -829,6 +830,26 @@ router.post('/automations/one-click-distribution', operatorAuth, writeRateLimite
 
 router.post('/automations/runs/:id/approve-execute', operatorAuth, writeRateLimiter(), async (req, res) => {
   try { res.json({ success: true, data: await DisbursementAutomationEngine.approveAndExecuteRun(req.params.id, req.body) }); } catch (err) { sendError(res, err); }
+});
+
+// ═════════════════════════════════════════════════════════════════════════════
+// Funding Orchestrator
+// ═════════════════════════════════════════════════════════════════════════════
+
+router.get('/funding/status', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await FundingEngine.getStatus(req.query) }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/funding/plan', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await FundingEngine.buildPlan(req.body) }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/funding/execute', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try { res.json({ success: true, data: await FundingEngine.executePlan(req.body) }); } catch (err) { sendError(res, err); }
+});
+
+router.get('/funding/deposit-invoice', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await FundingEngine.getDepositInvoice(req.query) }); } catch (err) { sendError(res, err); }
 });
 
 module.exports = router;

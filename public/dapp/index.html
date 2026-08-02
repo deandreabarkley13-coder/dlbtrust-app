@@ -273,8 +273,14 @@
             <div><label>Source Account ID</label><input type="text" id="rail-source-account" placeholder="Account ID / Bond ID / GL ID" /></div>
             <div><label>Amount (USD)</label><input type="text" id="rail-amount" placeholder="25.00" /></div>
             <div><label>Rail</label><select id="rail-type"><option value="cashapp">Cash App Pay QR</option><option value="cashapp_fund_operator">Cash App Fund Operator</option><option value="googlewallet">Google Wallet Pass</option><option value="stablecoin_dex">Stablecoin DEX (DLBUSD -> USDC)</option><option value="safe_payout">Safe 2-Sig Payout</option><option value="coinbase_treasury">Coinbase Treasury Bridge</option></select></div>
-            <div style="grid-column: 1 / -1;"><label>Rail Options (JSON)</label><textarea id="rail-options" rows="3" placeholder='{&#x22;cashtag&#x22;:&#x22;$DLBTrust&#x22;,&#x22;walletAddress&#x22;:&#x22;0x...&#x22;,&#x22;targetAsset&#x22;:&#x22;USDC&#x22;}'></textarea></div>
           </div>
+          <div class="form-row">
+            <div><label>Cash App $Cashtag</label><input type="text" id="rail-cashtag" placeholder="$YourCashtag" /></div>
+            <div><label>Recipient Address / Wallet</label><input type="text" id="rail-recipient" placeholder="0x..." /></div>
+            <div><label>Target Asset</label><select id="rail-target-asset"><option value="USDC">USDC</option><option value="ETH">ETH</option><option value="WETH">WETH</option><option value="BTC">BTC</option></select></div>
+            <div><label>Safe ID (for safe_payout)</label><input type="text" id="rail-safe-id" placeholder="SAFE-..." /></div>
+          </div>
+          <div style="grid-column: 1 / -1;"><label>Advanced Rail Options (JSON, merges with fields above)</label><textarea id="rail-options" rows="2" placeholder='{&#x22;memo&#x22;:&#x22;Trust funding&#x22;}'></textarea></div>
           <div class="actions"><button class="btn" onclick="fundExternalRail()">Generate / Fund Rail</button></div>
           <div id="rail-result" class="status hidden" style="white-space:pre-wrap;word-break:break-word"></div>
         </div>
@@ -446,6 +452,30 @@
               <button class="btn" onclick="checkAndTopUpGas()">Check & Top-up</button>
             </div>
             <div id="gas-tank-result" class="status hidden" style="white-space:pre-wrap;word-break:break-word"></div>
+          </div>
+        </div>
+
+        <div class="grid" style="margin-top:20px">
+          <div class="card" style="grid-column: 1 / -1;">
+            <h2>Funding Orchestrator</h2>
+            <p>Audits every funding rail, builds the best plan to fund the operator wallet, and executes the first viable step. If no rail can mint ETH, it returns the exact deposit invoice.</p>
+            <div id="funding-status" class="status" style="white-space:pre-wrap;word-break:break-word"></div>
+            <div class="form-row">
+              <div><label>Strategy</label><select id="funding-strategy"><option value="auto">Auto (best rail)</option><option value="dex">Stablecoin DEX</option><option value="coinbase">Coinbase Treasury</option><option value="cashapp">Cash App P2P</option></select></div>
+              <div><label>Amount USD</label><input type="number" id="funding-amount" value="100" step="1" min="1" /></div>
+              <div><label>Source Module</label><select id="funding-source-type"><option value="treasury">Treasury</option><option value="cash">Cash</option><option value="trust">Trust Accounting</option><option value="bond">Bond / Fixed Income</option><option value="sub_ledger">Sub-Ledger</option><option value="core_banking">Core Banking</option></select></div>
+              <div><label>Source Account</label><input type="text" id="funding-source-account" placeholder="TREASURY_HOT" value="TREASURY_HOT" /></div>
+              <div><label>Cash App $Cashtag (for cashapp strategy)</label><input type="text" id="funding-cashtag" placeholder="$YourCashtag" /></div>
+              <div><label>External EVM donor (optional)</label><input type="text" id="funding-external" placeholder="0x..." /></div>
+              <div><label>Hedera donor account (optional)</label><input type="text" id="funding-hedera" placeholder="0.0..." /></div>
+            </div>
+            <div class="actions">
+              <button class="btn" onclick="loadFundingStatus()">Audit Funding</button>
+              <button class="btn" onclick="buildFundingPlan()">Build Plan</button>
+              <button class="btn" onclick="executeFundingPlan()">Execute Best Rail</button>
+              <button class="btn" onclick="getDepositInvoice()">Deposit Invoice</button>
+            </div>
+            <div id="funding-result" class="status hidden" style="white-space:pre-wrap;word-break:break-word"></div>
           </div>
         </div>
       </section>
@@ -1350,8 +1380,22 @@
 
     window.fundExternalRail = async function() {
       try {
-        let railOptions = {};
-        try { railOptions = JSON.parse(el('rail-options').value || '{}'); } catch (e) { throw new Error('Rail options must be valid JSON: ' + e.message); }
+        let parsedOptions = {};
+        const rawOptions = el('rail-options').value.trim();
+        if (rawOptions) {
+          try { parsedOptions = JSON.parse(rawOptions); } catch (e) { throw new Error('Rail options must be valid JSON: ' + e.message); }
+        }
+        const railOptions = {
+          cashtag: el('rail-cashtag').value || parsedOptions.cashtag,
+          recipientTag: el('rail-cashtag').value || parsedOptions.recipientTag,
+          recipient: el('rail-recipient').value || parsedOptions.recipient,
+          recipientAddress: el('rail-recipient').value || parsedOptions.recipientAddress,
+          walletAddress: el('rail-recipient').value || parsedOptions.walletAddress,
+          targetAsset: el('rail-target-asset').value || parsedOptions.targetAsset,
+          asset: el('rail-target-asset').value || parsedOptions.asset,
+          safeId: el('rail-safe-id').value || parsedOptions.safeId,
+          ...parsedOptions,
+        };
         const res = await api('/api/dapp/modules/fund-rail', {
           method: 'POST',
           body: JSON.stringify({
@@ -2227,6 +2271,55 @@
         setText('gas-tank-result', txt, res.data.status === 'failed');
         loadGasTankStatus();
       } catch (e) { setText('gas-tank-result', e.message, true); }
+    };
+
+    window.loadFundingStatus = async function() {
+      try {
+        const res = await api('/api/dapp/funding/status?externalEvmAddress=' + encodeURIComponent(el('funding-external').value) + '&hederaAccountId=' + encodeURIComponent(el('funding-hedera').value));
+        const d = res.data;
+        const ready = Number(d.operator.eth) > 0 || (d.hedera && Number(d.hedera.hbar) > 0) || (d.externalWallet && Number(d.externalWallet.eth) > 0);
+        setText('funding-status', `Operator: ${d.operator.address}\nETH: ${d.operator.eth} | WETH: ${d.operator.weth} | USDC: ${d.operator.usdc}\nPool: ${d.pool.address || 'none'} exists=${d.pool.exists} target=${d.pool.target}\nExternal: ${d.externalWallet ? d.externalWallet.eth + ' ETH at ' + d.externalWallet.address : 'none'}\nHedera: ${d.hedera ? d.hedera.hbar + ' HBAR' : 'none'}\nSource ledger count: ${d.sourceBalances.length}\nRails: coinbase=${d.rails.coinbase_treasury.ready ? 'ready' : 'off'}, dex=${d.rails.stablecoin_dex.ready ? 'ready' : 'off'}, cashapp=${d.rails.cashapp.ready ? 'ready' : 'off'}`, !ready);
+      } catch (e) { setText('funding-status', e.message, true); }
+    };
+
+    window.buildFundingPlan = async function() {
+      try {
+        const body = {
+          strategy: el('funding-strategy').value,
+          amountUsd: Number(el('funding-amount').value),
+          sourceType: el('funding-source-type').value,
+          sourceAccountId: el('funding-source-account').value,
+          cashtag: el('funding-cashtag').value,
+          externalEvmAddress: el('funding-external').value,
+          hederaAccountId: el('funding-hedera').value,
+        };
+        const res = await api('/api/dapp/funding/plan', { method: 'POST', body: JSON.stringify(body) });
+        setText('funding-result', JSON.stringify(res.data, null, 2), !res.data.canExecute);
+      } catch (e) { setText('funding-result', e.message, true); }
+    };
+
+    window.executeFundingPlan = async function() {
+      try {
+        const body = {
+          strategy: el('funding-strategy').value,
+          amountUsd: Number(el('funding-amount').value),
+          sourceType: el('funding-source-type').value,
+          sourceAccountId: el('funding-source-account').value,
+          cashtag: el('funding-cashtag').value,
+          externalEvmAddress: el('funding-external').value,
+          hederaAccountId: el('funding-hedera').value,
+        };
+        const res = await api('/api/dapp/funding/execute', { method: 'POST', body: JSON.stringify(body) });
+        setText('funding-result', JSON.stringify(res.data, null, 2), !res.data.canExecute && (!res.data.executed || res.data.executed.every(r => r.error)));
+      } catch (e) { setText('funding-result', e.message, true); }
+    };
+
+    window.getDepositInvoice = async function() {
+      try {
+        const res = await api('/api/dapp/funding/deposit-invoice?externalEvmAddress=' + encodeURIComponent(el('funding-external').value) + '&hederaAccountId=' + encodeURIComponent(el('funding-hedera').value) + '&amountEth=0.01');
+        const d = res.data;
+        setText('funding-result', `Send ${d.amountEth} ETH to:\n${d.operatorAddress}\nor WETH to:\n${d.wethAddress}\n\nHedera donor account:\n${d.hedera ? d.hedera.accountId + ' (' + d.hedera.hbar + ' HBAR, evm ' + d.hedera.evmAddress + ')' : 'none'}\n\nExternal wallet:\n${d.externalWallet ? d.externalWallet.eth + ' ETH at ' + d.externalWallet.address : 'none'}\n\nSource ledgers:\n${d.sourceBalances.map(b => b.type + ':' + b.id + ' $' + (b.balance_cents / 100).toFixed(2)).join('\n')}\n\n${d.message}`);
+      } catch (e) { setText('funding-result', e.message, true); }
     };
 
     async function loadSovereignOrders() {
