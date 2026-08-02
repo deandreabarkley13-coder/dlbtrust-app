@@ -72,6 +72,9 @@ console.log('[payment-hub] loaded');
 app.use('/api/stablecoin', require(path.join(HD, 'server', 'routes', 'stablecoin')));
 console.log('[stablecoin] loaded');
 
+// DeFi DApp — SAFE multisig, deposits, distributions, disbursements, P2P, white-label
+try { app.use('/api/dapp', require(path.join(HD, 'server', 'routes', 'dapp'))); console.log('[dapp] loaded'); } catch(e) { console.warn('[dapp]', e.message); }
+
 // OFX Clearing — statement import and OFX payment origination
 try { app.use('/api/ofx', require(path.join(HD, 'server', 'routes', 'ofx'))); console.log('[ofx] loaded'); } catch(e) { console.warn('[ofx]', e.message); }
 
@@ -115,13 +118,22 @@ try { app.use('/api/hce', require(path.join(HD, 'server', 'routes', 'hce'))); co
 // Trustee Agent & Bookkeeping Agent
 try { app.use('/api/agents', require(path.join(HD, 'server', 'routes', 'agents'))); console.log('[agents] loaded'); } catch(e) { console.warn('[agents]', e.message); }
 
-// Treasury Management System — serve dashboard at root, static files from public/
-app.get('/', function(req, res) {
+// DeFi dApp — serve new dApp at /dapp and /dashboard; landing page at root; legacy treasury dashboard at /treasury
+function serveDapp(req, res) {
   res.set('Cache-Control', 'no-cache, no-store, must-revalidate');
   res.set('Pragma', 'no-cache');
   res.set('Expires', '0');
-  res.sendFile(path.join(HD, 'public', 'dashboard.html'));
-});
+  res.sendFile(path.join(HD, 'public', 'dapp', 'index.html'));
+}
+function serveLanding(req, res) {
+  res.set('Cache-Control', 'no-cache, no-store, must-revalidate');
+  res.set('Pragma', 'no-cache');
+  res.set('Expires', '0');
+  res.sendFile(path.join(HD, 'public', 'landing', 'index.html'));
+}
+app.get('/', serveLanding);
+app.get('/dapp', serveDapp);
+app.get('/dashboard', serveDapp);
 app.get('/treasury', function(req, res) {
   res.set('Cache-Control', 'no-cache, no-store, must-revalidate');
   res.set('Pragma', 'no-cache');
@@ -198,8 +210,10 @@ app.use(express.static(path.join(HD, 'public'), {
   }
 }));
 app.get('*', function(req, res) {
-  var idx = path.join(HD, 'public', 'index.html');
-  fs.existsSync(idx) ? res.sendFile(idx) : res.status(404).send('Not found');
+  res.set('Cache-Control', 'no-cache, no-store, must-revalidate');
+  res.set('Pragma', 'no-cache');
+  res.set('Expires', '0');
+  res.sendFile(path.join(HD, 'public', 'dapp', 'index.html'));
 });
 
 // ─── Sequential Database Initialization ───────────────────────────────────────
@@ -265,6 +279,41 @@ async function initializeDatabase() {
   } catch(e) {
     console.warn('[stablecoin] table init:', e.message);
   }
+
+  // DeFi DApp tables
+  try {
+    var DappEngine = require(path.join(HD, 'server', 'integrations', 'dapp', 'dappEngine')).DappEngine;
+    await DappEngine.ensureTables();
+    console.log('[dapp] tables ensured');
+    await DappEngine.ensurePortalUsers();
+    console.log('[dapp] portal users seeded');
+  } catch(e) {
+    console.warn('[dapp] table init:', e.message);
+  }
+
+  // Operator Gas Tank tables
+  try {
+    var OperatorGasTank = require(path.join(HD, 'server', 'integrations', 'dapp', 'operatorGasTank')).OperatorGasTank;
+    await OperatorGasTank.ensureTables();
+    console.log('[operator-gas-tank] tables ensured');
+  } catch(e) { console.warn('[operator-gas-tank] table init:', e.message); }
+
+  // FinOps AI Agent, Calendar, and Messaging tables
+  try {
+    var FinOpsAgent = require(path.join(HD, 'server', 'integrations', 'agents', 'finOpsAgent')).FinOpsAgent;
+    await FinOpsAgent.ensureTables();
+    console.log('[finops-agent] tables ensured');
+  } catch(e) { console.warn('[finops-agent] table init:', e.message); }
+  try {
+    var CalendarEngine = require(path.join(HD, 'server', 'integrations', 'calendar', 'calendarEngine')).CalendarEngine;
+    await CalendarEngine.ensureTables();
+    console.log('[calendar] tables ensured');
+  } catch(e) { console.warn('[calendar] table init:', e.message); }
+  try {
+    var MessagingEngine = require(path.join(HD, 'server', 'integrations', 'messaging', 'messagingEngine')).MessagingEngine;
+    await MessagingEngine.ensureTables();
+    console.log('[messaging] tables ensured');
+  } catch(e) { console.warn('[messaging] table init:', e.message); }
 
   // Electronic Settlement tables
   try {
@@ -374,7 +423,7 @@ try {
 } catch(e) { console.warn('[graceful-shutdown]', e.message); }
 
 initializeDatabase().then(function() {
-  var server = app.listen(PORT, function() {
+  var server = app.listen(PORT, '0.0.0.0', function() {
   console.log('[dlbtrust-treasury] running on port ' + PORT);
 
   // Register server for graceful shutdown
@@ -398,6 +447,23 @@ initializeDatabase().then(function() {
     var trustSweepScheduler = require(path.join(HD, 'server', 'integrations', 'payments', 'trustSweepScheduler'));
     trustSweepScheduler.start();
   } catch(e) { console.warn('[trust-sweep]', e.message); }
+
+  // Operator Gas Tank auto-check (converts source-ledger USD to operator ETH when low).
+  // OFF unless OPERATOR_GAS_TANK_AUTO_CHECK=true to avoid unintended source-ledger reservations.
+  try {
+    if (process.env.OPERATOR_GAS_TANK_AUTO_CHECK === 'true') {
+      var OperatorGasTank = require(path.join(HD, 'server', 'integrations', 'dapp', 'operatorGasTank')).OperatorGasTank;
+      var checkIntervalMs = parseInt(process.env.OPERATOR_GAS_TANK_CHECK_INTERVAL_MS || '300000', 10);
+      setInterval(function() {
+        OperatorGasTank.checkAndTopUp().then(function(result) {
+          console.log('[operator-gas-tank] auto-check:', result.status);
+        }).catch(function(err) {
+          console.warn('[operator-gas-tank] auto-check failed:', err.message);
+        });
+      }, checkIntervalMs);
+      console.log('[operator-gas-tank] auto-check scheduled every ' + checkIntervalMs + 'ms');
+    }
+  } catch(e) { console.warn('[operator-gas-tank] scheduler:', e.message); }
 
   // Record server start in transaction journal
   try {
