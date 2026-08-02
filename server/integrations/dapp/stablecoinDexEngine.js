@@ -107,6 +107,12 @@ class StablecoinDexEngine {
     return '';
   }
 
+  static targetTokenDecimals(targetAsset) {
+    const t = String(targetAsset).toUpperCase();
+    if (t === 'ETH' || t === 'WETH') return 18;
+    return 6;
+  }
+
   static async quote({ amount, targetAsset = 'USDC', poolAddress }) {
     const cfg = this.getConfig();
     if (!cfg.enabled) throw new Error('Stablecoin DEX not enabled');
@@ -114,12 +120,13 @@ class StablecoinDexEngine {
     const token = await this.getOrCreateDLBUSDToken();
     const tokenOut = this.targetTokenAddress(targetAsset);
     if (!tokenOut) throw new Error(`Target asset ${targetAsset} has no token address configured`);
+    const decimalsOut = this.targetTokenDecimals(targetAsset);
     const quote = await DexSwapEngine.quote({
       tokenIn: token.token_address,
       tokenOut,
       amountIn: amount,
       decimalsIn: 6,
-      decimalsOut: 6,
+      decimalsOut,
       router: poolAddress,
     });
     return { tokenIn: token.token_address, tokenOut, ...quote };
@@ -132,6 +139,7 @@ class StablecoinDexEngine {
     const token = await this.getOrCreateDLBUSDToken();
     const tokenOut = this.targetTokenAddress(targetAsset);
     if (!tokenOut) throw new Error(`Target asset ${targetAsset} has no token address configured`);
+    const decimalsOut = this.targetTokenDecimals(targetAsset);
 
     // First mint the seed DLBUSD to the operator wallet (no source debit; comes from treasury backing)
     await BondTokenizationEngine.mint({ tokenId: token.id, principal: seedDlbusdAmount, holderAddress: cfg.operatorAddress });
@@ -142,7 +150,7 @@ class StablecoinDexEngine {
       amountA: seedDlbusdAmount,
       amountB: seedUsdcAmount,
       decimalsA: 6,
-      decimalsB: 6,
+      decimalsB: decimalsOut,
     });
   }
 
@@ -183,6 +191,24 @@ class StablecoinDexEngine {
     };
   }
 
+  static async unwrapWethToEth({ amount, recipient } = {}) {
+    const cfg = this.getConfig();
+    if (!cfg.wethAddress || cfg.shadow) return { skipped: true };
+    if (!viem) throw new Error('viem not installed');
+    const { wallet, publicClient, fees } = walletClient();
+    const wethAbi = [
+      { type: 'function', name: 'withdraw', inputs: [{ type: 'uint256' }], outputs: [], stateMutability: 'nonpayable' },
+      { type: 'function', name: 'balanceOf', inputs: [{ type: 'address' }], outputs: [{ type: 'uint256' }], stateMutability: 'view' },
+    ];
+    const target = recipient || cfg.operatorAddress;
+    const balance = await publicClient.readContract({ address: cfg.wethAddress, abi: wethAbi, functionName: 'balanceOf', args: [wallet.account.address] });
+    const raw = amount ? viem.parseUnits(String(amount), 18) : balance;
+    if (raw <= 0n) return { skipped: true, reason: 'no_weth_balance' };
+    const hash = await wallet.writeContract({ address: cfg.wethAddress, abi: wethAbi, functionName: 'withdraw', args: [raw], gas: 100000n, ...fees });
+    const receipt = await publicClient.waitForTransactionReceipt({ hash });
+    return { hash, status: receipt.status, amountEth: viem.formatEther(raw) };
+  }
+
   static async swap({ amount, targetAsset = 'USDC', poolAddress, recipient, minOut } = {}) {
     const cfg = this.getConfig();
     if (!cfg.enabled) throw new Error('Stablecoin DEX not enabled');
@@ -191,13 +217,14 @@ class StablecoinDexEngine {
     const token = await this.getOrCreateDLBUSDToken();
     const tokenOut = this.targetTokenAddress(targetAsset);
     if (!tokenOut) throw new Error(`Target asset ${targetAsset} has no token address configured`);
+    const decimalsOut = this.targetTokenDecimals(targetAsset);
 
     const quote = await DexSwapEngine.quote({
       tokenIn: token.token_address,
       tokenOut,
       amountIn: amount,
       decimalsIn: 6,
-      decimalsOut: 6,
+      decimalsOut,
       router: poolAddress,
     });
 
@@ -207,7 +234,7 @@ class StablecoinDexEngine {
       amountIn: amount,
       amountOutMinimum: minOut || quote.amountOutMinimum,
       decimalsIn: 6,
-      decimalsOut: 6,
+      decimalsOut,
       router: poolAddress,
       recipient: recipient || cfg.operatorAddress,
     });
@@ -216,7 +243,7 @@ class StablecoinDexEngine {
     const operatorAddressLower = cfg.operatorAddress.toLowerCase();
     if (finalRecipient !== operatorAddressLower && !cfg.shadow) {
       const { wallet, publicClient, fees } = walletClient();
-      const rawOut = viem.parseUnits(String(swap.amountOut), 6);
+      const rawOut = viem.parseUnits(String(swap.amountOut), decimalsOut);
       const transferHash = await wallet.writeContract({
         address: tokenOut,
         abi: erc20Abi,
@@ -242,6 +269,8 @@ class StablecoinDexEngine {
     createPoolIfMissing = false,
     poolSeedUsdc = 0.2,
     poolSeedDlbusd = 0.2,
+    poolSeedTargetAmount,
+    unwrapWeth = true,
   } = {}) {
     if (!sourceType || !sourceAccountId || !amount) throw new Error('sourceType, sourceAccountId, and amount are required');
     const cfg = this.getConfig();
@@ -261,18 +290,25 @@ class StablecoinDexEngine {
       } catch (e) { /* fall through */ }
     }
     if (!resolvedPool && createPoolIfMissing) {
-      poolInfo = await this.createPool({ seedUsdcAmount: poolSeedUsdc, seedDlbusdAmount: poolSeedDlbusd, targetAsset });
+      const seedTarget = poolSeedTargetAmount !== undefined ? poolSeedTargetAmount : poolSeedUsdc;
+      poolInfo = await this.createPool({ seedUsdcAmount: seedTarget, seedDlbusdAmount: poolSeedDlbusd, targetAsset });
       resolvedPool = poolInfo && poolInfo.poolAddress;
     }
     if (!resolvedPool) throw new Error('No DEX pool address provided and createPoolIfMissing is false');
 
     // 3. Execute the DEX swap (operator relayer pays gas; user is gasless)
+    const swapTarget = (targetAsset || 'USDC').toUpperCase() === 'ETH' ? 'WETH' : targetAsset;
     const { quote, swap } = await this.swap({
       amount,
-      targetAsset,
+      targetAsset: swapTarget,
       poolAddress: resolvedPool,
       recipient: recipient || cfg.operatorAddress,
     });
+
+    let unwrap = { skipped: true };
+    if (!cfg.shadow && (targetAsset || '').toUpperCase() === 'ETH' && unwrapWeth) {
+      try { unwrap = await this.unwrapWethToEth({ amount: swap.amountOut, recipient: recipient || cfg.operatorAddress }); } catch (e) { unwrap = { skipped: false, error: e.message }; }
+    }
 
     return {
       operationId,
@@ -280,6 +316,7 @@ class StablecoinDexEngine {
       sourceAccountId,
       amount,
       targetAsset,
+      swapTarget,
       tokenAddress: mint.tokenAddress,
       minted: mint.minted,
       mintTxHash: mint.mintTxHash,
@@ -287,6 +324,7 @@ class StablecoinDexEngine {
       poolCreated: !!poolInfo,
       quote,
       swap,
+      unwrap,
       recipient: recipient || cfg.operatorAddress,
       mode: cfg.shadow ? 'shadow' : 'live',
       note: cfg.shadow
