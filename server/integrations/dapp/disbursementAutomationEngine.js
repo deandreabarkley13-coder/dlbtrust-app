@@ -217,6 +217,7 @@ class DisbursementAutomationEngine {
     beneficiaries,
     memo,
     includeHardAssets = false,
+    requesterRole = 'trustee',
     trusteeSignatures,
     autoExecute = false,
     createdBy,
@@ -271,7 +272,7 @@ class DisbursementAutomationEngine {
       for (const b of benList) {
         const req = await DistributionRequestEngine.createRequest({
           type,
-          requesterRole: 'trustee',
+          requesterRole,
           beneficiaryEmail: b.email,
           beneficiaryName: b.name,
           amountUsd: b.amountUsd,
