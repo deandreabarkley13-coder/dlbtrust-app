@@ -416,6 +416,9 @@
             <div class="form-row">
               <div><label>Memo</label><input type="text" id="adp-memo" placeholder="Quarterly review" /></div>
               <div style="flex:2"><label>Liabilities JSON (optional)</label><input type="text" id="adp-liabilities" placeholder='[{"name":"Vendor payable","amount_cents":10000}]' /></div>
+              <div style="display:flex;align-items:end;gap:12px">
+                <label style="display:flex;align-items:center;gap:8px;font-size:13px;text-transform:none"><input type="checkbox" id="adp-hard-assets" checked /> Include hard assets / liabilities</label>
+              </div>
             </div>
             <div class="actions">
               <button class="btn" onclick="computeAssetDebtProof()">Compute Proof</button>
@@ -1804,7 +1807,7 @@
         const tb = el('msg-threads-table'); tb.innerHTML = '';
         res.data.forEach(t => {
           const tr = document.createElement('tr');
-          const parts = Array.isArray(t.participants) ? t.participants.join(', ') : '';
+          const parts = Array.isArray(t.participants) ? t.participants.map(p => typeof p === 'string' ? p : (p.email || p.name || JSON.stringify(p))).join(', ') : '';
           tr.innerHTML = `<td class="mono"><button class="btn btn-sm" onclick="openThread('${t.id}')">${esc(t.id.slice(0,18))}…</button></td><td>${esc(t.subject)}</td><td>${esc(parts)}</td><td>${new Date(t.updated_at).toLocaleString()}</td>`;
           tb.appendChild(tr);
         });
@@ -2089,7 +2092,8 @@
         const memo = el('adp-memo').value.trim();
         const raw = el('adp-liabilities').value.trim();
         const liabilities = raw ? JSON.parse(raw) : [];
-        const res = await api('/api/dapp/asset-debt-proofs/compute', { method: 'POST', body: JSON.stringify({ liabilities, memo }) });
+        const includeHardAssets = el('adp-hard-assets').checked;
+        const res = await api('/api/dapp/asset-debt-proofs/compute', { method: 'POST', body: JSON.stringify({ liabilities, memo, includeHardAssets }) });
         setText('adp-result', `Computed ${res.data.id}\nStatus: ${res.data.status}\nAssets: $${(res.data.total_assets_cents/100).toFixed(2)}\nLiabilities: $${(res.data.total_liabilities_cents/100).toFixed(2)}\nNet Worth: $${(res.data.net_worth_cents/100).toFixed(2)}\nHash: ${res.data.proof_hash}`, false);
         loadAssetDebtProofs();
       } catch (e) { setText('adp-result', e.message, true); }
@@ -2294,7 +2298,12 @@
         if (!runId) throw new Error('Run ID required');
         const signatures = JSON.parse(el('auto-run-signatures').value.trim() || '[]');
         const res = await api(`/api/dapp/automations/runs/${encodeURIComponent(runId)}/approve-execute`, { method: 'POST', body: JSON.stringify({ trusteeSignatures: signatures }) });
-        setText('auto-run-result', `Approvals: ${(res.data.approvals || []).length}\nExecutions: ${(res.data.executions || []).length}`, false);
+        const approvals = res.data.approvals || [];
+        const executions = res.data.executions || [];
+        const approvalOk = approvals.filter(a => !a.error).length;
+        const execOk = executions.filter(e => !e.error).length;
+        const execErrors = executions.filter(e => e.error).map(e => e.error).join('; ');
+        setText('auto-run-result', `Approvals: ${approvalOk}/${approvals.length} | Executions: ${execOk}/${executions.length}${execErrors ? '\nExecution errors: ' + execErrors : ''}`, !!execErrors);
         loadAutomationRuns();
         loadDistributionRequests();
       } catch (e) { setText('auto-run-result', e.message, true); }
