@@ -499,7 +499,25 @@ Before any real mainnet operation, confirm:
 
 ---
 
-## 14. Security & audit
+## 14. Operator Gas Tank (auto ETH replenishment)
+
+The **Operator Gas Tank** keeps the operator hot wallet funded so that on-chain transactions, paymaster seeding, and DEX swaps can execute without manual ETH purchases.
+
+- Card: **Sovereign Trust → Operator Gas Tank**
+- Threshold: `OPERATOR_GAS_TANK_THRESHOLD_ETH` (default `0.005 ETH`)
+- Top-up amount: `OPERATOR_GAS_TANK_TOPUP_USD` (default `$100`)
+- Source: any source-of-funds ledger (`treasury`, `cash`, `trust`, `bond`, `sub_ledger`, `core_banking`)
+
+### Flow
+1. `GET /api/dapp/operator-gas-tank/status` reads the operator balance and shows recent top-ups.
+2. `POST /api/dapp/operator-gas-tank/check-and-topup` checks the balance. If below the threshold, it sweeps `$100` from the source ledger into the Treasury, stages a `CoinbaseTreasuryBridge` transfer, and tries to market-buy ETH and send it to the operator wallet.
+3. If Coinbase has USD, the buy and on-chain send complete automatically and the status is `completed`.
+4. If Coinbase has no USD, the status is `needs_deposit`; the source ledger is already reserved. Wire/ACH USD into the connected Coinbase account, then call `POST /api/dapp/operator-gas-tank/topups/:id/execute` to retry.
+5. Optional: set `OPERATOR_GAS_TANK_AUTO_CHECK=true` to run the check every `OPERATOR_GAS_TANK_CHECK_INTERVAL_MS` (default 5 minutes) and `OPERATOR_GAS_TANK_SEED_PAYMASTER_ETH` to auto-seed the paymaster after each top-up.
+
+---
+
+## 15. Security & audit
 
 - All routes require `x-admin-token`, JWT, or session auth.
 - Write routes use rate limiting (`writeRateLimiter`).
