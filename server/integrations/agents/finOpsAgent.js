@@ -21,12 +21,7 @@ try { MessagingEngine = require('../messaging/messagingEngine').MessagingEngine;
 try { DocumentEngine = require('../documents/documentEngine').DocumentEngine; } catch (e) { /* optional */ }
 try { GenerationEngine = require('../documents/generationEngine').GenerationEngine; } catch (e) { /* optional */ }
 
-const TRUSTEES = [
-  { role: 'administration', name: 'DeAndrea Lavar Barkley', email: 'deandreabarkley13@gmail.com', phone: '(216)632-2353' },
-  { role: 'distribution',   name: 'Malissa Ann Robinson',   email: 'annrobinson9800@yahoo.com', phone: '(216)484-4804' },
-];
-
-const REQUIRED_ROLES = ['administration', 'distribution'];
+const { TRUSTEES, REQUIRED_ROLES } = require('../dapp/trustees');
 
 function id(prefix = 'FINOPS') {
   return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 8).toUpperCase()}`;

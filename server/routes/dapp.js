@@ -652,4 +652,67 @@ router.post('/aa/submit-transfer', operatorAuth, writeRateLimiter(), async (req,
   try { res.status(201).json({ success: true, data: await AccountAbstractionEngine.submitGaslessTransfer(req.body) }); } catch (err) { sendError(res, err); }
 });
 
+// ═════════════════════════════════════════════════════════════════════════════
+// Asset-to-Debt Proof Engine
+// ═════════════════════════════════════════════════════════════════════════════
+const { AssetDebtProofEngine } = require('../integrations/accounting/assetDebtProofEngine');
+
+router.get('/asset-debt-proofs', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await AssetDebtProofEngine.listProofs(Number(req.query.limit) || 50) }); } catch (err) { sendError(res, err); }
+});
+
+router.get('/asset-debt-proofs/:id', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await AssetDebtProofEngine.getProof(req.params.id) }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/asset-debt-proofs/compute', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try { res.status(201).json({ success: true, data: await AssetDebtProofEngine.computeProof(req.body) }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/asset-debt-proofs/:id/sign', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try { res.json({ success: true, data: await AssetDebtProofEngine.signProof(req.params.id, req.body) }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/asset-debt-proofs/:id/reject', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try { res.json({ success: true, data: await AssetDebtProofEngine.rejectProof(req.params.id, req.body) }); } catch (err) { sendError(res, err); }
+});
+
+// ═════════════════════════════════════════════════════════════════════════════
+// Distribution / Disbursement Requests with 2-trustee approval
+// ═════════════════════════════════════════════════════════════════════════════
+const { DistributionRequestEngine } = require('../integrations/dapp/distributionRequestEngine');
+
+function optionalAuth(req, res, next) {
+  // Beneficiary view may be public or admin-gated depending on deployment.
+  return operatorAuth(req, res, next);
+}
+
+router.get('/distribution-requests', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await DistributionRequestEngine.listRequests({ status: req.query.status, beneficiaryEmail: req.query.beneficiaryEmail, limit: Number(req.query.limit) || 50 }) }); } catch (err) { sendError(res, err); }
+});
+
+router.get('/distribution-requests/:id', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await DistributionRequestEngine.getRequest(req.params.id) }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/distribution-requests', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try { res.status(201).json({ success: true, data: await DistributionRequestEngine.createRequest(req.body) }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/distribution-requests/:id/approve', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try { res.json({ success: true, data: await DistributionRequestEngine.approveRequest({ requestId: req.params.id, ...req.body }) }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/distribution-requests/:id/reject', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try { res.json({ success: true, data: await DistributionRequestEngine.rejectRequest({ requestId: req.params.id, ...req.body }) }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/distribution-requests/:id/execute', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try { res.json({ success: true, data: await DistributionRequestEngine.executeRequest(req.params.id) }); } catch (err) { sendError(res, err); }
+});
+
+router.get('/beneficiary/activity', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await DistributionRequestEngine.getBeneficiaryActivity(req.query.email) }); } catch (err) { sendError(res, err); }
+});
+
 module.exports = router;
