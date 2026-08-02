@@ -271,6 +271,12 @@ class ModuleFundingEngine {
     let reserve = null;
     let instrument;
 
+    // Validate instrument prerequisites before debiting the source ledger.
+    if (rail === 'cashapp' || rail === 'cashapp_fund_operator') {
+      const tag = (railOptions.cashtag || railOptions.recipientTag || CashAppEngine.getConfig().cashtag || '').replace(/^\$/, '').trim();
+      if (!tag) throw new Error('A $Cashtag is required for Cash App rails. Set CASHAPP_CASHTAG or pass {"cashtag":"$YourTag"} in Rail Options.');
+    }
+
     if (instrumentRails.has(rail)) {
       reserve = await this._debitSourceForRail({ sourceType, sourceAccountId, amountCents, referenceId, memo });
     }

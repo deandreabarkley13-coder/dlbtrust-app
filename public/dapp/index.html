@@ -71,6 +71,10 @@
     .modal-backdrop.show { display: flex; }
     .modal { background: var(--panel); border: 1px solid var(--border); border-radius: var(--radius); padding: 24px; width: min(520px, 92vw); max-height: 90vh; overflow: auto; }
     .hidden { display: none; }
+    .badge { display: inline-flex; align-items: center; padding: 3px 10px; border-radius: 999px; font-size: 11px; font-weight: 600; background: var(--panel-2); border: 1px solid var(--border); color: var(--muted); }
+    .badge.trustee { background: rgba(59,130,246,.12); border-color: rgba(59,130,246,.4); color: #93c5fd; }
+    .badge.beneficiary { background: rgba(34,197,94,.12); border-color: rgba(34,197,94,.4); color: #86efac; }
+    .role-disabled { opacity: .55; pointer-events: none; }
     .kbd { background: var(--panel-2); border: 1px solid var(--border); border-radius: 4px; padding: 2px 6px; font-size: 12px; font-family: monospace; }
     footer { border-top: 1px solid var(--border); padding: 18px 24px; color: var(--muted); font-size: 12px; text-align: center; }
   </style>
@@ -84,6 +88,7 @@
       </div>
       <div class="wallet-chip">
         <span id="network-name">Ethereum</span>
+        <span id="role-badge" class="badge hidden"></span>
         <span id="wallet-address" class="mono">Not connected</span>
         <button id="connect-btn" onclick="connectWallet()">Connect MetaMask</button>
       </div>
@@ -91,28 +96,28 @@
 
     <div class="container">
       <div class="nav" id="nav">
-        <button class="active" data-section="dashboard" onclick="showSection('dashboard')">Dashboard</button>
-        <button data-section="source-of-funds" onclick="showSection('source-of-funds')">Source of Funds</button>
-        <button data-section="core-modules" onclick="showSection('core-modules')">Core Modules</button>
-        <button data-section="safes" onclick="showSection('safes')">Safe Wallets</button>
-        <button data-section="deposits" onclick="showSection('deposits')">Deposit</button>
-        <button data-section="payouts" onclick="showSection('payouts')">Payout / 2-Sig</button>
-        <button data-section="distribute" onclick="showSection('distribute')">Distribute</button>
-        <button data-section="p2p" onclick="showSection('p2p')">P2P Pay</button>
-        <button data-section="payment-rails" onclick="showSection('payment-rails')">Payment Rails</button>
-        <button data-section="bond-tokens" onclick="showSection('bond-tokens')">Bond Tokens</button>
-        <button data-section="stablecoin-dex" onclick="showSection('stablecoin-dex')">Stablecoin DEX</button>
-        <button data-section="sovereign-trust" onclick="showSection('sovereign-trust')">Sovereign Trust</button>
-        <button data-section="asset-debt" onclick="showSection('asset-debt')">Asset-Debt Proof</button>
-        <button data-section="distribution-requests" onclick="showSection('distribution-requests')">Requests</button>
-        <button data-section="automation" onclick="showSection('automation')">Automation</button>
-        <button data-section="assets-expenses" onclick="showSection('assets-expenses')">Assets / Expenses</button>
-        <button data-section="finops-ai" onclick="showSection('finops-ai')">FinOps AI</button>
-        <button data-section="calendar" onclick="showSection('calendar')">Calendar</button>
-        <button data-section="messaging" onclick="showSection('messaging')">Messaging</button>
-        <button data-section="documents" onclick="showSection('documents')">Documents</button>
-        <button data-section="wallet" onclick="showSection('wallet')">Wallet</button>
-        <button data-section="settings" onclick="showSection('settings')">White Label</button>
+        <button class="active" data-section="dashboard" data-roles="all" onclick="showSection('dashboard')">Dashboard</button>
+        <button data-section="source-of-funds" data-roles="trustee" onclick="showSection('source-of-funds')">Source of Funds</button>
+        <button data-section="core-modules" data-roles="trustee" onclick="showSection('core-modules')">Core Modules</button>
+        <button data-section="safes" data-roles="trustee" onclick="showSection('safes')">Safe Wallets</button>
+        <button data-section="deposits" data-roles="trustee" onclick="showSection('deposits')">Deposit</button>
+        <button data-section="payouts" data-roles="trustee" onclick="showSection('payouts')">Payout / 2-Sig</button>
+        <button data-section="distribute" data-roles="trustee" onclick="showSection('distribute')">Distribute</button>
+        <button data-section="p2p" data-roles="trustee" onclick="showSection('p2p')">P2P Pay</button>
+        <button data-section="payment-rails" data-roles="trustee" onclick="showSection('payment-rails')">Payment Rails</button>
+        <button data-section="bond-tokens" data-roles="trustee" onclick="showSection('bond-tokens')">Bond Tokens</button>
+        <button data-section="stablecoin-dex" data-roles="trustee" onclick="showSection('stablecoin-dex')">Stablecoin DEX</button>
+        <button data-section="sovereign-trust" data-roles="trustee" onclick="showSection('sovereign-trust')">Sovereign Trust</button>
+        <button data-section="asset-debt" data-roles="trustee" onclick="showSection('asset-debt')">Asset-Debt Proof</button>
+        <button data-section="distribution-requests" data-roles="all" onclick="showSection('distribution-requests')">Requests</button>
+        <button data-section="automation" data-roles="trustee" onclick="showSection('automation')">Automation</button>
+        <button data-section="assets-expenses" data-roles="trustee" onclick="showSection('assets-expenses')">Assets / Expenses</button>
+        <button data-section="finops-ai" data-roles="trustee" onclick="showSection('finops-ai')">FinOps AI</button>
+        <button data-section="calendar" data-roles="all" onclick="showSection('calendar')">Calendar</button>
+        <button data-section="messaging" data-roles="all" onclick="showSection('messaging')">Messaging</button>
+        <button data-section="documents" data-roles="all" onclick="showSection('documents')">Documents</button>
+        <button data-section="wallet" data-roles="all" onclick="showSection('wallet')">Wallet</button>
+        <button data-section="settings" data-roles="trustee" onclick="showSection('settings')">White Label</button>
       </div>
 
       <div id="auth-card" class="card" style="margin-bottom:20px">
@@ -513,7 +518,7 @@
           </div>
         </div>
 
-        <div class="grid" style="margin-top:20px">
+        <div class="grid" style="margin-top:20px" data-roles="trustee">
           <div class="card" style="grid-column: 1 / -1;">
             <h2>Trustee Portal — Approve / Execute</h2>
             <div id="req-pending-list" class="table-wrap"><table id="req-pending-table"><thead><tr><th>ID</th><th>Type</th><th>Beneficiary</th><th>Amount</th><th>Status</th><th>Proof</th><th>Actions</th></tr></thead><tbody></tbody></table></div>
@@ -651,14 +656,14 @@
             <div id="gw-result" class="status hidden"></div>
           </div>
           <div class="card">
-            <h2>Cash App Crypto / Pay</h2>
-            <p>Cash App does not expose a personal crypto P2P API. This creates a shareable payment request QR/link; record the on-chain tx hash when the recipient sends.</p>
+            <h2>Cash App Pay (USD P2P)</h2>
+            <p>Cash App can send USD to a $Cashtag. It cannot send ETH/USDC to an EVM address. Generate a request link for a recipient; if they need crypto, use the operator wallet QR instead.</p>
             <div class="form-row">
               <div><label>Amount (USD)</label><input type="text" id="ca-amount" placeholder="25.00" /></div>
-              <div><label>$Cashtag or 0x address</label><input type="text" id="ca-tag" placeholder="$Cashtag or 0x..." /></div>
+              <div><label>Recipient $Cashtag</label><input type="text" id="ca-tag" placeholder="$RecipientTag" /></div>
               <div><label>Memo</label><input type="text" id="ca-memo" placeholder="Trust payment" /></div>
             </div>
-            <div class="actions"><button class="btn" onclick="requestCashAppPayment()">Request / Get QR</button></div>
+            <div class="actions"><button class="btn" onclick="requestCashAppPayment()">Generate Payment Link / QR</button></div>
             <div id="ca-result" class="status hidden"></div>
           </div>
           <div class="card" style="grid-column: 1 / -1;">
@@ -1042,6 +1047,16 @@
     let currentUser = null;
     let userWallet = null;
 
+    function userRole() {
+      if (!currentUser) return 'guest';
+      const r = String(currentUser.role || 'beneficiary').toLowerCase();
+      if (r.startsWith('trustee')) return 'trustee';
+      if (r === 'viewer') return 'viewer';
+      return 'beneficiary';
+    }
+
+    function isTrustee() { return userRole() === 'trustee'; }
+
     function el(id) { return document.getElementById(id); }
     function show(id, cls = 'hidden', add = false) { const e = el(id); if (e) e.classList[add ? 'add' : 'remove'](cls); }
     function hide(id, cls = 'hidden') { const e = el(id); if (e) e.classList.add(cls); }
@@ -1225,9 +1240,44 @@
         localStorage.setItem('dlb-user', JSON.stringify(currentUser));
         el('user-auth-status').textContent = `Logged in as ${currentUser.name || currentUser.email} (${currentUser.role})`;
         el('user-auth-status').className = 'status success';
+        applyRoleUI();
         if (window.ethereum && account) connectWallet();
       } catch (e) { el('user-auth-status').textContent = e.message; el('user-auth-status').className = 'status error'; }
     };
+
+    function applyRoleUI() {
+      const role = userRole();
+      const badge = el('role-badge');
+      if (badge) {
+        badge.textContent = role === 'trustee' ? 'Trustee' : (role === 'beneficiary' ? 'Beneficiary' : 'Guest');
+        badge.className = `badge ${role === 'trustee' ? 'trustee' : (role === 'beneficiary' ? 'beneficiary' : '')}`;
+        badge.classList.remove('hidden');
+      }
+      document.querySelectorAll('#nav button[data-roles]').forEach(btn => {
+        const allowed = (btn.getAttribute('data-roles') || 'all').split(',').map(s => s.trim());
+        const visible = allowed.includes('all') || allowed.includes(role) || role === 'trustee';
+        btn.style.display = visible ? '' : 'none';
+      });
+      // Trustee sections: disable beneficiary inputs/actions; beneficiary sections: disable create/approve
+      document.querySelectorAll('[data-roles]').forEach(el => {
+        if (el.tagName === 'BUTTON' && el.id.startsWith('nav')) return;
+        const allowed = (el.getAttribute('data-roles') || 'all').split(',').map(s => s.trim());
+        const visible = allowed.includes('all') || allowed.includes(role) || role === 'trustee';
+        el.classList.toggle('hidden', !visible);
+      });
+      // If a beneficiary is looking at a trustee-only section, redirect them
+      if (role === 'beneficiary' || role === 'guest') {
+        const active = document.querySelector('.section.active');
+        if (active && active.id && !sectionAllowedForRole(active.id, role)) showSection('dashboard');
+      }
+    }
+
+    function sectionAllowedForRole(section, role) {
+      const btn = document.querySelector(`#nav button[data-section="${section}"]`);
+      if (!btn) return true;
+      const allowed = (btn.getAttribute('data-roles') || 'all').split(',').map(s => s.trim());
+      return allowed.includes('all') || allowed.includes(role) || role === 'trustee';
+    }
 
     function restoreUser() {
       try { currentUser = JSON.parse(localStorage.getItem('dlb-user') || 'null'); } catch {};
@@ -1236,6 +1286,7 @@
         el('user-auth-status').textContent = `Logged in as ${currentUser.name || currentUser.email} (${currentUser.role})`;
         el('user-auth-status').className = 'status success';
       }
+      applyRoleUI();
     }
 
     async function loadDashboard() {
@@ -1625,8 +1676,10 @@
     window.requestCashAppPayment = async function() {
       try {
         const res = await api('/api/dapp/payment-rails/cashapp/request', { method: 'POST', body: JSON.stringify({ amountUsd: el('ca-amount').value, recipientTag: el('ca-tag').value, memo: el('ca-memo').value }) });
-        const qrImg = res.data.qrDataUrl ? `<br/><img src="${res.data.qrDataUrl}" alt="Cash App QR" style="max-width:220px;margin-top:10px;"/>` : '';
-        el('ca-result').innerHTML = `Shareable link: <a href="${res.data.shareableUrl}" target="_blank">${res.data.shareableUrl}</a><br/>QR payload: <span class="mono">${res.data.qrPayload}</span>${qrImg}`;
+        const d = res.data;
+        const qrImg = d.qrDataUrl ? `<br/><img src="${esc(d.qrDataUrl)}" alt="Cash App QR" style="max-width:220px;margin-top:10px;"/>` : '';
+        const altLink = d.cashMeDeepLink ? `<br/>Short link: <a href="${esc(d.cashMeDeepLink)}" target="_blank">${esc(d.cashMeDeepLink)}</a>` : '';
+        el('ca-result').innerHTML = `Shareable link: <a href="${esc(d.shareableUrl)}" target="_blank">${esc(d.shareableUrl)}</a>${altLink}<br/>QR payload: <span class="mono">${esc(d.qrPayload)}</span>${qrImg}<br/><em>${esc(d.note || '')}</em>`;
         el('ca-result').className = 'status success';
       } catch (e) { el('ca-result').textContent = e.message; el('ca-result').className = 'status error'; }
     };
@@ -2323,8 +2376,10 @@
 
     window.loadBeneficiaryActivity = async function() {
       try {
-        const email = el('ben-view-email').value.trim();
+        let email = el('ben-view-email').value.trim();
+        if (!email && currentUser && currentUser.email) email = currentUser.email;
         if (!email) throw new Error('Enter beneficiary email');
+        if (userRole() === 'beneficiary' && email.toLowerCase() !== (currentUser.email || '').toLowerCase()) throw new Error('You can only view your own activity');
         const res = await api(`/api/dapp/beneficiary/activity?email=${encodeURIComponent(email)}`);
         const data = res.data;
         el('ben-view-result').textContent = `Beneficiary: ${esc(data.beneficiaryEmail)} | Requests: ${data.requests.length} | Transactions: ${data.payouts.length}`;

@@ -3,6 +3,7 @@
 const { SafeEngine } = require('./safeEngine');
 const { getConfig } = require('./config');
 const { SourceOfFundsAdapter } = require('../stablecoin/sourceOfFundsAdapter');
+const { getTrusteeByEmail } = require('./trustees');
 
 let CashEngine, TrustAccountingEngine, BondEngine, FineractClient, CrmEngine, TaxEngine, DocumentEngine, SubLedgerEngine;
 try { CashEngine = require('../cash/cashEngine').CashEngine; } catch (e) { }
@@ -701,15 +702,30 @@ class DappEngine {
     });
   }
 
+  static inferRole(email) {
+    const trustee = getTrusteeByEmail(email);
+    if (trustee) {
+      if (String(trustee.role).toLowerCase() === 'administration') return 'trustee_admin';
+      if (String(trustee.role).toLowerCase() === 'distribution') return 'trustee_secretary';
+      return 'trustee';
+    }
+    return 'beneficiary';
+  }
+
   static async generateOtp(email) {
     let user = await this.getUserByEmail(email).catch(() => null);
+    const role = this.inferRole(email);
     if (!user) {
-      user = await this.createUser({ email, name: email.split('@')[0], role: 'beneficiary' });
+      user = await this.createUser({ email, name: email.split('@')[0], role });
+    } else if (user.role !== role && role !== 'beneficiary') {
+      // Promote a user to trustee if their email matches a configured trustee.
+      await this._update('dapp_users', user.id, { role });
+      user.role = role;
     }
     const code = String(Math.floor(100000 + Math.random() * 900000));
     const expires = new Date(Date.now() + 10 * 60 * 1000).toISOString();
     await this._update('dapp_users', user.id, { otp_code: code, otp_expires: expires });
-    return { email, code, expires, message: 'In production, send this code via Twilio/SendGrid' };
+    return { email, code, expires, role, message: 'In production, send this code via Twilio/SendGrid' };
   }
 
   static async verifyOtp({ email, code } = {}) {
