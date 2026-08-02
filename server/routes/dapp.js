@@ -15,6 +15,7 @@ const { CalendarEngine } = require('../integrations/calendar/calendarEngine');
 const { MessagingEngine } = require('../integrations/messaging/messagingEngine');
 const { DocumentEngine } = require('../integrations/documents/documentEngine');
 const { ModuleFundingEngine } = require('../integrations/dapp/moduleFundingEngine');
+const { SovereignTrustEngine } = require('../integrations/dapp/sovereignTrustEngine');
 const { requireAuth, writeRateLimiter } = require('../integrations/auth/securityMiddleware');
 
 const router = express.Router();
@@ -560,6 +561,58 @@ router.get('/wallet/activity', operatorAuth, async (req, res) => {
     const data = await DappEngine.getWalletActivity({ chain, address });
     res.json({ success: true, data });
   } catch (err) { sendError(res, err); }
+});
+
+// ═════════════════════════════════════════════════════════════════════════════
+// Sovereign Trust Token (self-issued permissioned stablecoin)
+// ═════════════════════════════════════════════════════════════════════════════
+
+router.get('/sovereign-trust/readiness', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await SovereignTrustEngine.readiness() }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/sovereign-trust/deploy', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try { res.status(201).json({ success: true, data: await SovereignTrustEngine.deployContracts() }); } catch (err) { sendError(res, err); }
+});
+
+router.get('/sovereign-trust/token', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await SovereignTrustEngine.tokenInfo() }); } catch (err) { sendError(res, err); }
+});
+
+router.get('/sovereign-trust/balance/:address', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: { address: req.params.address, balance: await SovereignTrustEngine.tokenBalanceOf(req.params.address) } }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/sovereign-trust/mint', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try { res.status(201).json({ success: true, data: await SovereignTrustEngine.mintFromSource(req.body) }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/sovereign-trust/burn', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try { res.status(201).json({ success: true, data: await SovereignTrustEngine.burnToSource(req.body) }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/sovereign-trust/whitelist', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try { res.status(201).json({ success: true, data: { tx: await SovereignTrustEngine.whitelistAddress(req.body.address, req.body.allowed !== false) } }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/sovereign-trust/meta-tx/build', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await SovereignTrustEngine.buildMetaTx(req.body) }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/sovereign-trust/meta-tx/relay', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try { res.status(201).json({ success: true, data: await SovereignTrustEngine.relayMetaTx(req.body) }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/sovereign-trust/on-ramp', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try { res.status(201).json({ success: true, data: await SovereignTrustEngine.createOnRampOrder(req.body) }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/sovereign-trust/off-ramp', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try { res.status(201).json({ success: true, data: await SovereignTrustEngine.createOffRampOrder(req.body) }); } catch (err) { sendError(res, err); }
+});
+
+router.get('/sovereign-trust/orders', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await SovereignTrustEngine.listOrders() }); } catch (err) { sendError(res, err); }
 });
 
 module.exports = router;

@@ -102,6 +102,7 @@
         <button data-section="payment-rails" onclick="showSection('payment-rails')">Payment Rails</button>
         <button data-section="bond-tokens" onclick="showSection('bond-tokens')">Bond Tokens</button>
         <button data-section="stablecoin-dex" onclick="showSection('stablecoin-dex')">Stablecoin DEX</button>
+        <button data-section="sovereign-trust" onclick="showSection('sovereign-trust')">Sovereign Trust</button>
         <button data-section="finops-ai" onclick="showSection('finops-ai')">FinOps AI</button>
         <button data-section="calendar" onclick="showSection('calendar')">Calendar</button>
         <button data-section="messaging" onclick="showSection('messaging')">Messaging</button>
@@ -289,6 +290,84 @@
               <button class="btn" onclick="depositAndSwapStablecoinDex()">Mint DLBUSD & Swap</button>
             </div>
             <div id="sdex-result" class="status hidden" style="white-space:pre-wrap;word-break:break-word"></div>
+          </div>
+        </div>
+      </section>
+
+      <section id="sovereign-trust" class="section">
+        <div class="grid">
+          <div class="card" style="grid-column: 1 / -1;">
+            <h2>Sovereign Trust Token (SIT)</h2>
+            <p>Self-issued, private/permissioned stablecoin backed by Treasury, Core Banking, Trust Accounting, Bond/Fixed Income, Cash, Sub-Ledger and CRM reserves. Gasless transfers via ERC-2771 trusted forwarder.</p>
+            <div id="sovereign-readiness" class="status" style="white-space:pre-wrap;word-break:break-word"></div>
+            <div class="actions">
+              <button class="btn" onclick="deploySovereignToken()">Deploy Token & Forwarder</button>
+              <button class="btn btn-sm" onclick="loadSovereignTrust()">Refresh</button>
+            </div>
+          </div>
+        </div>
+
+        <div class="grid" style="margin-top:20px">
+          <div class="card">
+            <h2>Mint SIT (Fiat / Reserve On-Ramp)</h2>
+            <p>Debit a source-of-funds ledger and mint SIT to a wallet. This creates the on-chain token and credits the reserve account.</p>
+            <div class="form-row">
+              <div><label>Source Type</label><select id="sit-source-type"><option value="treasury">Treasury</option><option value="cash">Cash</option><option value="trust">Trust Accounting</option><option value="bond">Bond / Fixed Income</option><option value="sub_ledger">Sub-Ledger</option><option value="core_banking">Core Banking</option></select></div>
+              <div><label>Source Account ID</label><input type="text" id="sit-source-id" placeholder="CA-OPERATING" /></div>
+              <div><label>Amount (USD)</label><input type="number" id="sit-mint-amount" value="1.00" step="0.01" /></div>
+              <div><label>Recipient Address</label><input type="text" id="sit-mint-to" placeholder="0x..." /></div>
+              <div><label>Memo</label><input type="text" id="sit-mint-memo" placeholder="On-ramp to SIT" /></div>
+            </div>
+            <div class="actions"><button class="btn" onclick="mintSovereignToken()">Mint SIT</button></div>
+            <div id="sit-mint-result" class="status hidden" style="white-space:pre-wrap;word-break:break-word"></div>
+          </div>
+
+          <div class="card">
+            <h2>Burn SIT (Fiat / Reserve Off-Ramp)</h2>
+            <p>Burn SIT from a wallet and credit the source-of-funds ledger. The operator must be approved as a burner or tokens must be sent to the operator first.</p>
+            <div class="form-row">
+              <div><label>Source Type (credit)</label><select id="sit-burn-source-type"><option value="treasury">Treasury</option><option value="cash">Cash</option><option value="trust">Trust Accounting</option><option value="bond">Bond / Fixed Income</option><option value="sub_ledger">Sub-Ledger</option><option value="core_banking">Core Banking</option></select></div>
+              <div><label>Source Account ID</label><input type="text" id="sit-burn-source-id" placeholder="CA-OPERATING" /></div>
+              <div><label>Amount (USD)</label><input type="number" id="sit-burn-amount" value="1.00" step="0.01" /></div>
+              <div><label>From Address</label><input type="text" id="sit-burn-from" placeholder="0x... (holder)" /></div>
+              <div><label>Memo</label><input type="text" id="sit-burn-memo" placeholder="Off-ramp from SIT" /></div>
+            </div>
+            <div class="actions"><button class="btn btn-danger" onclick="burnSovereignToken()">Burn SIT & Release Reserve</button></div>
+            <div id="sit-burn-result" class="status hidden" style="white-space:pre-wrap;word-break:break-word"></div>
+          </div>
+        </div>
+
+        <div class="grid" style="margin-top:20px">
+          <div class="card" style="grid-column: 1 / -1;">
+            <h2>Gasless SIT Transfer (Meta-Tx)</h2>
+            <p>Sign with MetaMask; the operator relayer pays gas. No ETH required in the sender wallet.</p>
+            <div class="form-row">
+              <div><label>From</label><input type="text" id="sit-meta-from" placeholder="0x... (signer)" /></div>
+              <div><label>To</label><input type="text" id="sit-meta-to" placeholder="0x..." /></div>
+              <div><label>Amount (SIT)</label><input type="number" id="sit-meta-amount" value="0.50" step="0.01" /></div>
+            </div>
+            <div class="actions">
+              <button class="btn" onclick="signSovereignTransfer()">Sign in MetaMask</button>
+              <button class="btn" onclick="relaySovereignTransfer()">Relay Signed Tx</button>
+            </div>
+            <div id="sit-meta-result" class="status hidden" style="white-space:pre-wrap;word-break:break-word"></div>
+          </div>
+        </div>
+
+        <div class="grid" style="margin-top:20px">
+          <div class="card">
+            <h2>Whitelist Address</h2>
+            <div class="form-row">
+              <div><label>Address</label><input type="text" id="sit-whitelist-address" placeholder="0x..." /></div>
+              <div><label>Allowed</label><select id="sit-whitelist-allowed"><option value="true">Yes</option><option value="false">No</option></select></div>
+            </div>
+            <div class="actions"><button class="btn" onclick="whitelistSovereignAddress()">Update Whitelist</button></div>
+            <div id="sit-whitelist-result" class="status hidden" style="white-space:pre-wrap;word-break:break-word"></div>
+          </div>
+          <div class="card">
+            <h2>Ramp Orders</h2>
+            <div id="sit-orders" class="table-wrap"><table id="sit-orders-table"><thead><tr><th>ID</th><th>Direction</th><th>Source</th><th>Amount</th><th>Status</th><th>Tx</th></tr></thead><tbody></tbody></table></div>
+            <div class="actions"><button class="btn btn-sm" onclick="loadSovereignOrders()">Refresh Orders</button></div>
           </div>
         </div>
       </section>
@@ -808,6 +887,7 @@
       if (name === 'messaging') loadMessageThreads();
       if (name === 'documents') loadDocuments();
       if (name === 'wallet') { if (account) loadWallet(); }
+      if (name === 'sovereign-trust') loadSovereignTrust();
     };
 
     async function loadUsers() {
@@ -1524,6 +1604,125 @@
           tb.appendChild(tr);
         });
       } catch (e) { showToast('Documents error: ' + e.message, true); }
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // Sovereign Trust Token UI
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    let sovereignMetaTx = null;
+
+    async function loadSovereignTrust() {
+      try {
+        const r = await api('/api/dapp/sovereign-trust/readiness');
+        const info = await api('/api/dapp/sovereign-trust/token');
+        el('sovereign-readiness').textContent = JSON.stringify({ ready: r.data.ready, mode: r.data.mode, token: info.data }, null, 2);
+        el('sovereign-readiness').className = 'status ' + (r.data.ready ? 'success' : '');
+        loadSovereignOrders();
+      } catch (e) { showToast('Sovereign trust error: ' + e.message, true); }
+    }
+
+    window.deploySovereignToken = async function() {
+      try {
+        const res = await api('/api/dapp/sovereign-trust/deploy', { method: 'POST', body: '{}' });
+        el('sovereign-readiness').textContent = JSON.stringify(res.data, null, 2);
+        el('sovereign-readiness').className = 'status success';
+      } catch (e) { showToast('Deploy failed: ' + e.message, true); }
+    };
+
+    window.mintSovereignToken = async function() {
+      try {
+        const res = await api('/api/dapp/sovereign-trust/mint', {
+          method: 'POST',
+          body: JSON.stringify({
+            sourceType: el('sit-source-type').value,
+            sourceAccountId: el('sit-source-id').value,
+            amount: el('sit-mint-amount').value,
+            to: el('sit-mint-to').value,
+            memo: el('sit-mint-memo').value,
+          })
+        });
+        el('sit-mint-result').textContent = JSON.stringify(res.data, null, 2);
+        el('sit-mint-result').className = 'status success';
+        loadSovereignOrders();
+      } catch (e) { el('sit-mint-result').textContent = e.message; el('sit-mint-result').className = 'status error'; }
+    };
+
+    window.burnSovereignToken = async function() {
+      try {
+        const res = await api('/api/dapp/sovereign-trust/burn', {
+          method: 'POST',
+          body: JSON.stringify({
+            sourceType: el('sit-burn-source-type').value,
+            sourceAccountId: el('sit-burn-source-id').value,
+            amount: el('sit-burn-amount').value,
+            from: el('sit-burn-from').value,
+            memo: el('sit-burn-memo').value,
+          })
+        });
+        el('sit-burn-result').textContent = JSON.stringify(res.data, null, 2);
+        el('sit-burn-result').className = 'status success';
+        loadSovereignOrders();
+      } catch (e) { el('sit-burn-result').textContent = e.message; el('sit-burn-result').className = 'status error'; }
+    };
+
+    window.whitelistSovereignAddress = async function() {
+      try {
+        const res = await api('/api/dapp/sovereign-trust/whitelist', {
+          method: 'POST',
+          body: JSON.stringify({
+            address: el('sit-whitelist-address').value,
+            allowed: el('sit-whitelist-allowed').value === 'true',
+          })
+        });
+        el('sit-whitelist-result').textContent = JSON.stringify(res.data, null, 2);
+        el('sit-whitelist-result').className = 'status success';
+      } catch (e) { el('sit-whitelist-result').textContent = e.message; el('sit-whitelist-result').className = 'status error'; }
+    };
+
+    window.signSovereignTransfer = async function() {
+      if (!window.ethereum) return showToast('MetaMask not available', true);
+      try {
+        const from = el('sit-meta-from').value;
+        const to = el('sit-meta-to').value;
+        const amount = el('sit-meta-amount').value;
+        if (!from || !to || !amount) throw new Error('from, to and amount required');
+        const res = await api('/api/dapp/sovereign-trust/meta-tx/build', {
+          method: 'POST',
+          body: JSON.stringify({ from, to, functionName: 'transfer', amount })
+        });
+        sovereignMetaTx = res.data;
+        const typed = { domain: res.data.domain, types: res.data.types, primaryType: res.data.primaryType, message: res.data.message };
+        const sig = await window.ethereum.request({ method: 'eth_signTypedData_v4', params: [from, JSON.stringify(typed)] });
+        sovereignMetaTx.signature = sig;
+        el('sit-meta-result').textContent = 'Signed. Click Relay Signed Tx.';
+        el('sit-meta-result').className = 'status success';
+      } catch (e) { el('sit-meta-result').textContent = e.message; el('sit-meta-result').className = 'status error'; }
+    };
+
+    window.relaySovereignTransfer = async function() {
+      if (!sovereignMetaTx || !sovereignMetaTx.signature) return showToast('Sign a meta-tx first', true);
+      try {
+        const res = await api('/api/dapp/sovereign-trust/meta-tx/relay', {
+          method: 'POST',
+          body: JSON.stringify({ request: sovereignMetaTx.forwardRequest, signature: sovereignMetaTx.signature })
+        });
+        el('sit-meta-result').textContent = JSON.stringify(res.data, null, 2);
+        el('sit-meta-result').className = 'status success';
+        loadSovereignTrust();
+      } catch (e) { el('sit-meta-result').textContent = e.message; el('sit-meta-result').className = 'status error'; }
+    };
+
+    async function loadSovereignOrders() {
+      try {
+        const res = await api('/api/dapp/sovereign-trust/orders');
+        const tb = el('sit-orders-table').querySelector('tbody'); tb.innerHTML = '';
+        (res.data || []).forEach(o => {
+          const tr = document.createElement('tr');
+          tr.innerHTML = `<td class="mono">${esc(o.id.slice(0,16))}…</td><td>${esc(o.direction)}</td><td>${esc(o.source_type)}:${esc(o.source_account_id)}</td><td>${Number(o.amount_cents/100).toFixed(2)}</td><td><span class="tag ${o.status}">${esc(o.status)}</span></td><td class="mono">${esc(o.on_chain_tx || '—').slice(0,12)}…</td>`;
+          tb.appendChild(tr);
+        });
+      } catch (e) { showToast('Sovereign orders error: ' + e.message, true); }
     }
 
     function esc(s) { return String(s || '').replace(/[&<>"']/g, m => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m])); }
