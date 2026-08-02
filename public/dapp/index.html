@@ -968,9 +968,11 @@
             <h2>Approve Task</h2>
             <div class="form-row">
               <input type="text" id="finops-approve-task" placeholder="FINOPS-..." />
-              <select id="finops-approve-role">
-                <option value="administration">Administration</option>
-                <option value="distribution">Distribution</option>
+              <select id="finops-approve-role" onchange="prefillFinOpsApprover()">
+                <option value="maker">Maker / Administration</option>
+                <option value="administration">Administration (legacy alias)</option>
+                <option value="checker">Checker / Distribution</option>
+                <option value="distribution">Distribution (legacy alias)</option>
               </select>
               <input type="email" id="finops-approve-email" placeholder="trustee email" />
               <input type="text" id="finops-approve-signature" placeholder="signature / otp" />
@@ -2038,12 +2040,32 @@
       } catch (e) { el('finops-approve-result').textContent = e.message; el('finops-approve-result').className = 'status error'; }
     };
 
+    let finOpsTrustees = [];
+
     async function loadFinOpsTrustees() {
       try {
         const res = await api('/api/dapp/finops-ai/trustees');
-        el('finops-trustees').innerHTML = res.data.map(t => `<div><b>${esc(t.role)}</b><br>${esc(t.name)}<br>${esc(t.email)}<br>${esc(t.phone)}</div>`).join('');
+        finOpsTrustees = res.data || [];
+        el('finops-trustees').innerHTML = finOpsTrustees.map(t => `<div><b>${esc(t.role)}</b><br>${esc(t.name)}<br>${esc(t.email)}<br>${esc(t.phone)}</div>`).join('');
+        prefillFinOpsApprover();
       } catch (e) {}
     }
+
+    window.prefillFinOpsApprover = function() {
+      const role = el('finops-approve-role').value;
+      const trustee = finOpsTrustees.find(t => String(t.role).toLowerCase() === role);
+      if (!trustee) return;
+      el('finops-approve-email').value = trustee.email || '';
+      el('finops-approve-name').value = trustee.name || '';
+      // If the logged-in user's email matches this trustee, leave it; otherwise default to the configured trustee.
+      if (currentUser && currentUser.email) {
+        const userMatch = finOpsTrustees.find(t => String(t.email).toLowerCase() === String(currentUser.email).toLowerCase());
+        if (userMatch && String(userMatch.role).toLowerCase() === role) {
+          el('finops-approve-email').value = currentUser.email;
+          el('finops-approve-name').value = currentUser.name || userMatch.name || '';
+        }
+      }
+    };
 
     // ═══════════════════════════════════════════════════════════════════════════
     // Calendar UI

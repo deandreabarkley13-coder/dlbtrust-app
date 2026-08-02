@@ -21,7 +21,7 @@ try { MessagingEngine = require('../messaging/messagingEngine').MessagingEngine;
 try { DocumentEngine = require('../documents/documentEngine').DocumentEngine; } catch (e) { /* optional */ }
 try { GenerationEngine = require('../documents/generationEngine').GenerationEngine; } catch (e) { /* optional */ }
 
-const { TRUSTEES, REQUIRED_ROLES } = require('../dapp/trustees');
+const { TRUSTEES, REQUIRED_ROLES, normalizeRole, getTrusteeByRole } = require('../dapp/trustees');
 
 function id(prefix = 'FINOPS') {
   return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 8).toUpperCase()}`;
@@ -218,11 +218,11 @@ class FinOpsAgent {
     if (!task) throw new Error('Task not found');
     if (task.status === 'executed') throw new Error('Task already executed');
 
-    const roleKey = String(role).toLowerCase();
-    const expected = TRUSTEES.find(t => t.role === roleKey);
+    const roleKey = normalizeRole(role);
+    const expected = getTrusteeByRole(roleKey);
     if (!expected) throw new Error(`Unknown role ${role}`);
     if (expected.email.toLowerCase() !== String(trusteeEmail).toLowerCase()) {
-      throw new Error(`Email ${trusteeEmail} is not authorized for role ${role}`);
+      throw new Error(`Email ${trusteeEmail} is not authorized for role ${role} (expected ${expected.email})`);
     }
 
     const approvals = task.approvals || [];
@@ -272,10 +272,11 @@ class FinOpsAgent {
   static async rejectTask({ taskId, role, trusteeEmail, reason }) {
     const task = await this.getTask(taskId);
     if (!task) throw new Error('Task not found');
-    const expected = TRUSTEES.find(t => t.role === role);
-    if (!expected || expected.email.toLowerCase() !== trusteeEmail.toLowerCase()) throw new Error('Unauthorized');
+    const roleKey = normalizeRole(role);
+    const expected = getTrusteeByRole(roleKey);
+    if (!expected || expected.email.toLowerCase() !== trusteeEmail.toLowerCase()) throw new Error(`Email ${trusteeEmail} is not authorized for role ${role} (expected ${expected.email})`);
     const approvals = task.approvals || [];
-    const idx = approvals.findIndex(a => a.role === role);
+    const idx = approvals.findIndex(a => a.role === roleKey);
     if (idx >= 0) approvals[idx] = { ...approvals[idx], status: 'rejected', signature: null, approvedAt: null, reason };
     await pool.query(
       `UPDATE finops_tasks SET approvals = $1, status = 'rejected', updated_at = NOW() WHERE id = $2`,
