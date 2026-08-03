@@ -19,6 +19,9 @@ const { TRUSTEES, REQUIRED_ROLES, validateTrustee, normalizeRole } = require('./
 let DappEngine;
 try { DappEngine = require('./dappEngine').DappEngine; } catch (e) { DappEngine = null; }
 
+let PayoutCenterEngine;
+try { PayoutCenterEngine = require('./payoutCenterEngine').PayoutCenterEngine; } catch (e) { PayoutCenterEngine = null; }
+
 let AssetDebtProofEngine;
 try { AssetDebtProofEngine = require('../accounting/assetDebtProofEngine').AssetDebtProofEngine; } catch (e) { AssetDebtProofEngine = null; }
 
@@ -324,37 +327,31 @@ class DistributionRequestEngine {
     const request = await this.getRequest(requestId);
     if (!request) throw new Error('Request not found');
     if (request.status !== 'approved') throw new Error('Request must be approved by both trustees before execution');
-    if (!request.safe_id) throw new Error('safeId is required to execute request');
-    if (!DappEngine) throw new Error('DappEngine not available');
+    if (!PayoutCenterEngine) throw new Error('PayoutCenterEngine not available');
 
     const amountUsd = (Number(request.amount_cents) / 100).toFixed(2);
+    const sourceType = request.source_type || 'treasury';
+    const sourceAccountId = request.source_account_id || 'TREASURY_HOT';
 
-    const payout = await DappEngine.createPayout({
-      safeId: request.safe_id,
-      type: request.type === 'disbursement' ? 'disbursement' : 'distribution_item',
-      destination: request.destination_address,
-      amountUsd,
+    const payment = await PayoutCenterEngine.createPayment({
+      paymentType: request.type,
+      sourceType,
+      sourceAccountId,
+      recipientType: 'external',
+      recipientIdentifier: request.destination_address,
+      amount: amountUsd,
+      asset: 'SIT',
       description: request.memo || `${request.type} request ${request.id}`,
-      sourceType: request.source_type,
-      sourceAccountId: request.source_account_id,
+      rail: 'sit',
     });
 
-    await this._update(requestId, { status: 'payout_created', payout_id: payout.id, metadata: { ...request.metadata, payout } });
-
-    let executed = null;
-    try {
-      executed = await DappEngine.executePayout(payout.id);
-      await this._update(requestId, { status: 'executed', tx_hash: executed.txHash, metadata: { ...request.metadata, payout, executed } });
-    } catch (e) {
-      console.warn('[DistributionRequestEngine] executePayout failed (may need additional Safe signatures):', e.message);
-      return { request: await this.getRequest(requestId), payout, note: 'Payout created but needs additional Safe signatures or threshold configuration', error: e.message };
-    }
+    await this._update(requestId, { status: 'executed', tx_hash: payment.tx_hash || null, payout_id: payment.id, metadata: { ...request.metadata, payment } });
 
     try {
       if (MessagingEngine) {
         await MessagingEngine.notify({
           subject: `Distribution request ${requestId} executed`,
-          body: `$${amountUsd} paid to ${request.destination_address}. Tx: ${executed ? executed.txHash : payout.safe_tx_hash}.`,
+          body: `$${amountUsd} paid to ${request.destination_address}. Tx: ${payment.tx_hash || 'pending'}.`,
           participants: [...TRUSTEES.map(t => t.email), request.beneficiary_email],
           referenceType: 'distribution_request',
           referenceId: requestId,
@@ -375,7 +372,7 @@ class DistributionRequestEngine {
       }
     } catch (e) { console.warn('[DistributionRequestEngine] execute notify failed:', e.message); }
 
-    return { request: await this.getRequest(requestId), payout, executed };
+    return { request: await this.getRequest(requestId), payment };
   }
 
   /**

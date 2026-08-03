@@ -118,7 +118,7 @@ class DappEngine {
       await query(`
         CREATE TABLE IF NOT EXISTS dapp_payouts (
           id TEXT PRIMARY KEY,
-          safe_id TEXT NOT NULL REFERENCES dapp_safes(id) ON DELETE CASCADE,
+          safe_id TEXT REFERENCES dapp_safes(id) ON DELETE CASCADE,
           type TEXT NOT NULL DEFAULT 'payout' CHECK (type IN ('payout','disbursement','p2p','distribution_item')),
           destination TEXT NOT NULL,
           value TEXT,
@@ -141,6 +141,7 @@ class DappEngine {
       `);
       await query(`CREATE INDEX IF NOT EXISTS idx_dapp_payouts_status ON dapp_payouts(status);`);
       await query(`CREATE INDEX IF NOT EXISTS idx_dapp_payouts_safe ON dapp_payouts(safe_id);`);
+      await query(`ALTER TABLE dapp_payouts ALTER COLUMN safe_id DROP NOT NULL;`);
 
       await query(`
         CREATE TABLE IF NOT EXISTS dapp_deposits (
@@ -328,19 +329,24 @@ class DappEngine {
   static async listDeposits() { return this._selectAll('dapp_deposits'); }
   static async getDeposit(id) { return this._selectOne('dapp_deposits', id); }
 
-  // ─── Payouts with 2-signature approval ──────────────────────────────────────────
+  // ─── Payouts with 2-signature Safe approval ─────────────────────────────────────
   static async createPayout({ safeId, type = 'payout', destination, value, token, tokenAmount, description, sourceType, sourceAccountId, amountUsd } = {}) {
     if (!safeId || !destination) throw new Error('safeId and destination required');
     if (!value && !tokenAmount && !amountUsd) throw new Error('value, tokenAmount or amountUsd required');
+    const cfg = getConfig();
     const safe = await this.getSafe(safeId);
     if (safe.status !== 'deployed') throw new Error('Safe must be deployed before payouts');
-    const cfg = getConfig();
 
     let amountCents = 0;
-    if (amountUsd) {
-      amountCents = Math.round(Number(amountUsd) * 100);
+    let resolvedAmountUsd = amountUsd;
+    if (resolvedAmountUsd) {
+      amountCents = Math.round(Number(resolvedAmountUsd) * 100);
       if (!token) token = cfg.usdcAddress;
-      if (!tokenAmount) tokenAmount = String(Math.round(Number(amountUsd) * 1e6));
+      if (!tokenAmount) tokenAmount = String(Math.round(Number(resolvedAmountUsd) * 1e6));
+      if (!value) value = '0';
+    } else if (tokenAmount && token === cfg.usdcAddress) {
+      resolvedAmountUsd = (Number(tokenAmount) / 1e6).toFixed(2);
+      amountCents = Math.round(Number(resolvedAmountUsd) * 100);
       if (!value) value = '0';
     }
 
@@ -370,7 +376,7 @@ class DappEngine {
       tokenAmount,
     });
 
-    const metadata = { safeTx: safeTx.data, proposer, amountUsd, amountCents, sourceRef: reserve };
+    const metadata = { safeTx: safeTx.data, proposer, amountUsd: resolvedAmountUsd, amountCents, sourceRef: reserve };
     const row = {
       id,
       safe_id: safeId,
@@ -399,6 +405,14 @@ class DappEngine {
     if (!payoutId || !signature) throw new Error('payoutId and signature required');
     const payout = await this.getPayout(payoutId);
     if (payout.status !== 'pending') throw new Error(`Payout status ${payout.status} cannot be approved`);
+
+    // Direct payouts are already executed; approval is a no-op record.
+    if (!payout.safe_id) {
+      const metadata = jsonbValue(payout.metadata || '{}') || {};
+      metadata.approval = { signature, signerAddress, at: new Date().toISOString() };
+      await this._update('dapp_payouts', payoutId, { status: 'executed', metadata: JSON.stringify(metadata) });
+      return { ...payout, status: 'executed', metadata: JSON.stringify(metadata) };
+    }
 
     const safe = await this.getSafe(payout.safe_id);
     const owners = Array.isArray(safe.owners) ? safe.owners : (jsonbValue(safe.owners) || []);
@@ -479,6 +493,13 @@ class DappEngine {
   static async executePayout(payoutId) {
     const payout = await this.getPayout(payoutId);
     if (payout.status !== 'pending') throw new Error(`Payout status ${payout.status} cannot be executed`);
+
+    // Direct payouts are already executed on creation; just mark completed.
+    if (!payout.safe_id) {
+      if (payout.tx_hash) return { ...payout, txHash: payout.tx_hash, direct: true };
+      throw new Error('Direct payout has no tx_hash');
+    }
+
     const safe = await this.getSafe(payout.safe_id);
     const signatures = Array.isArray(payout.signatures) ? payout.signatures : (jsonbValue(payout.signatures || '[]') || []);
     if (signatures.length < safe.threshold) throw new Error(`Not enough signatures (${signatures.length}/${safe.threshold})`);
@@ -502,12 +523,12 @@ class DappEngine {
 
   // ─── Distributions ────────────────────────────────────────────────────────────
   static async createDistribution({ safeId, name, asset = 'USDC', totalAmount, beneficiaries, sourceType, sourceAccountId } = {}) {
-    if (!safeId || !Array.isArray(beneficiaries) || !beneficiaries.length) throw new Error('safeId and beneficiaries required');
+    if (!safeId) throw new Error('safeId required for Safe-governed distribution');
+    if (!Array.isArray(beneficiaries) || !beneficiaries.length) throw new Error('beneficiaries required');
     const id = identifier('DIS');
-    const safe = await this.getSafe(safeId);
     const totalUsd = beneficiaries.reduce((s, b) => s + (Number(b.amountUsd) || 0), 0);
     const dist = {
-      id, safe_id: safeId, name: name || `Distribution ${id}`, asset,
+      id, safe_id: safeId || null, name: name || `Distribution ${id}`, asset,
       total_amount: String(totalAmount || totalUsd),
       beneficiaries: JSON.stringify(beneficiaries), status: 'pending',
       source_type: sourceType || null,
@@ -515,10 +536,10 @@ class DappEngine {
     };
     await this._insert('dapp_distributions', dist);
 
-    // Create child payout records for each beneficiary
+    // Create child payout records for each beneficiary (direct if no deployed Safe)
     for (const b of beneficiaries) {
       await this.createPayout({
-        safeId, type: 'distribution_item', destination: b.address,
+        safeId: safeId || undefined, type: 'distribution_item', destination: b.address,
         value: b.value || '0', token: b.token, tokenAmount: b.tokenAmount,
         amountUsd: b.amountUsd,
         description: `Distribution ${id} to ${b.name || b.address}`,

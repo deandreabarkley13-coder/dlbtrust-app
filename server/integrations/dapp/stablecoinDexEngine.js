@@ -52,6 +52,13 @@ const erc20Abi = [
   { type: 'function', name: 'decimals', inputs: [], outputs: [{ type: 'uint8' }], stateMutability: 'view' },
   { type: 'function', name: 'transfer', inputs: [{ type: 'address' }, { type: 'uint256' }], outputs: [{ type: 'bool' }], stateMutability: 'nonpayable' },
   { type: 'function', name: 'balanceOf', inputs: [{ type: 'address' }], outputs: [{ type: 'uint256' }], stateMutability: 'view' },
+  { type: 'function', name: 'approve', inputs: [{ type: 'address' }, { type: 'uint256' }], outputs: [{ type: 'bool' }], stateMutability: 'nonpayable' },
+];
+
+const wethAbi = [
+  { type: 'function', name: 'deposit', inputs: [], outputs: [], stateMutability: 'payable' },
+  { type: 'function', name: 'withdraw', inputs: [{ type: 'uint256' }], outputs: [], stateMutability: 'nonpayable' },
+  { type: 'function', name: 'balanceOf', inputs: [{ type: 'address' }], outputs: [{ type: 'uint256' }], stateMutability: 'view' },
 ];
 
 class StablecoinDexEngine {
@@ -85,9 +92,33 @@ class StablecoinDexEngine {
     return { ready: issues.length === 0, mode: cfg.shadow ? 'shadow' : 'live', issues };
   }
 
+  static async wrapEth({ amount } = {}) {
+    const cfg = this.getConfig();
+    if (cfg.shadow) return { wrapped: amount, mode: 'shadow' };
+    if (!cfg.wethAddress) throw new Error('DAPP_WETH_ADDRESS not configured');
+    if (!amount || Number(amount) <= 0) throw new Error('amount must be positive');
+    const { wallet, publicClient, fees } = walletClient();
+    const raw = viem.parseEther(String(amount));
+    const hash = await wallet.writeContract({
+      address: cfg.wethAddress,
+      abi: wethAbi,
+      functionName: 'deposit',
+      value: raw,
+      gas: 100000n,
+      ...fees,
+    });
+    await publicClient.waitForTransactionReceipt({ hash });
+    return { wrapped: amount, txHash: hash };
+  }
+
   static async getOrCreateDLBUSDToken() {
     if (!BondTokenizationEngine) throw new Error('BondTokenizationEngine not available');
     let token = await BondTokenizationEngine.getTokenBySymbol('DLBUSD');
+    if (token && token.token_address && !this.getConfig().shadow) {
+      const { publicClient } = walletClient();
+      const code = await publicClient.getBytecode({ address: token.token_address }).catch(() => '0x');
+      if (!code || code === '0x') token = null;
+    }
     if (!token) {
       token = await BondTokenizationEngine.createToken({
         tokenName: 'DLBUSD',
@@ -143,6 +174,16 @@ class StablecoinDexEngine {
 
     // First mint the seed DLBUSD to the operator wallet (no source debit; comes from treasury backing)
     await BondTokenizationEngine.mint({ tokenId: token.id, principal: seedDlbusdAmount, holderAddress: cfg.operatorAddress });
+
+    // If seeding a WETH pool, wrap native ETH so the pool can pull WETH from the operator.
+    if (tokenOut.toLowerCase() === (cfg.wethAddress || '').toLowerCase()) {
+      const { publicClient } = walletClient();
+      const wethBalance = await publicClient.readContract({ address: tokenOut, abi: wethAbi, functionName: 'balanceOf', args: [cfg.operatorAddress] });
+      const seedWethRaw = viem.parseEther(String(seedUsdcAmount));
+      if (BigInt(wethBalance || 0) < seedWethRaw) {
+        await this.wrapEth({ amount: seedUsdcAmount });
+      }
+    }
 
     return DexSwapEngine.createPool({
       tokenA: token.token_address,
@@ -205,8 +246,31 @@ class StablecoinDexEngine {
     const raw = amount ? viem.parseUnits(String(amount), 18) : balance;
     if (raw <= 0n) return { skipped: true, reason: 'no_weth_balance' };
     const hash = await wallet.writeContract({ address: cfg.wethAddress, abi: wethAbi, functionName: 'withdraw', args: [raw], gas: 100000n, ...fees });
-    const receipt = await publicClient.waitForTransactionReceipt({ hash });
-    return { hash, status: receipt.status, amountEth: viem.formatEther(raw) };
+    await publicClient.waitForTransactionReceipt({ hash });
+    const sendHash = await wallet.sendTransaction({ to: target, value: raw, gas: 21000n, ...fees });
+    const receipt = await publicClient.waitForTransactionReceipt({ hash: sendHash });
+    return { hash, sendHash, status: receipt.status, amountEth: viem.formatEther(raw), to: target };
+  }
+
+  static async _isValidPool({ poolAddress, tokenIn, tokenOut }) {
+    if (!poolAddress || !tokenIn || !tokenOut) return false;
+    if (this.getConfig().shadow) return true;
+    try {
+      const { publicClient } = walletClient();
+      const code = await publicClient.getBytecode({ address: poolAddress });
+      if (!code || code === '0x') return false;
+      const bondDexAbi = [
+        { type: 'function', name: 'token0', inputs: [], outputs: [{ type: 'address' }], stateMutability: 'view' },
+        { type: 'function', name: 'token1', inputs: [], outputs: [{ type: 'address' }], stateMutability: 'view' },
+      ];
+      const [t0, t1] = await Promise.all([
+        publicClient.readContract({ address: poolAddress, abi: bondDexAbi, functionName: 'token0' }),
+        publicClient.readContract({ address: poolAddress, abi: bondDexAbi, functionName: 'token1' }),
+      ]);
+      const inLower = tokenIn.toLowerCase();
+      const outLower = tokenOut.toLowerCase();
+      return (t0.toLowerCase() === inLower && t1.toLowerCase() === outLower) || (t0.toLowerCase() === outLower && t1.toLowerCase() === inLower);
+    } catch (e) { return false; }
   }
 
   static async swap({ amount, targetAsset = 'USDC', poolAddress, recipient, minOut } = {}) {
@@ -218,6 +282,10 @@ class StablecoinDexEngine {
     const tokenOut = this.targetTokenAddress(targetAsset);
     if (!tokenOut) throw new Error(`Target asset ${targetAsset} has no token address configured`);
     const decimalsOut = this.targetTokenDecimals(targetAsset);
+
+    if (poolAddress && !(await this._isValidPool({ poolAddress, tokenIn: token.token_address, tokenOut }))) {
+      throw new Error(`Pool ${poolAddress} is not a valid DLBUSD/${targetAsset} BondDex pool`);
+    }
 
     const quote = await DexSwapEngine.quote({
       tokenIn: token.token_address,
@@ -274,39 +342,48 @@ class StablecoinDexEngine {
   } = {}) {
     if (!sourceType || !sourceAccountId || !amount) throw new Error('sourceType, sourceAccountId, and amount are required');
     const cfg = this.getConfig();
+    if (!cfg.enabled) throw new Error('Stablecoin DEX not enabled');
     const operationId = id('DLBUSD-SWAP');
-    const amountNum = Number(amount);
 
-    // 1. Mint DLBUSD from the chosen source ledger
-    const mint = await this.mintFromSource({ sourceType, sourceAccountId, amount, targetAddress: cfg.operatorAddress });
-
-    // 2. Resolve or create the DEX pool
+    // 1. Resolve or create the DEX pool BEFORE debiting the source ledger
     let resolvedPool = poolAddress;
     let poolInfo = null;
-    if (!resolvedPool) {
-      try {
-        const dexCfg = DexSwapEngine.getConfig();
-        if (dexCfg.router) resolvedPool = dexCfg.router;
-      } catch (e) { /* fall through */ }
+    const token = await this.getOrCreateDLBUSDToken();
+    const tokenOut = this.targetTokenAddress(targetAsset);
+    if (resolvedPool && !(await this._isValidPool({ poolAddress: resolvedPool, tokenIn: token.token_address, tokenOut }))) {
+      resolvedPool = null;
+    }
+    // Fallback to a configured pool/router address if no pool address was supplied.
+    if (!resolvedPool && DexSwapEngine) {
+      const router = DexSwapEngine.getConfig && DexSwapEngine.getConfig().router;
+      if (router && await this._isValidPool({ poolAddress: router, tokenIn: token.token_address, tokenOut })) {
+        resolvedPool = router;
+      }
     }
     if (!resolvedPool && createPoolIfMissing) {
       const seedTarget = poolSeedTargetAmount !== undefined ? poolSeedTargetAmount : poolSeedUsdc;
       poolInfo = await this.createPool({ seedUsdcAmount: seedTarget, seedDlbusdAmount: poolSeedDlbusd, targetAsset });
       resolvedPool = poolInfo && poolInfo.poolAddress;
     }
-    if (!resolvedPool) throw new Error('No DEX pool address provided and createPoolIfMissing is false');
+    if (!resolvedPool) throw new Error('No valid DEX pool address and createPoolIfMissing is false');
+
+    // 2. Mint DLBUSD from the chosen source ledger
+    const mint = await this.mintFromSource({ sourceType, sourceAccountId, amount, targetAddress: cfg.operatorAddress });
 
     // 3. Execute the DEX swap (operator relayer pays gas; user is gasless)
-    const swapTarget = (targetAsset || 'USDC').toUpperCase() === 'ETH' ? 'WETH' : targetAsset;
+    const isEthTarget = (targetAsset || '').toUpperCase() === 'ETH';
+    const swapTarget = isEthTarget ? 'WETH' : targetAsset;
+    // For ETH output keep WETH in the operator wallet so it can be unwrapped and sent as native ETH.
+    const swapRecipient = isEthTarget ? cfg.operatorAddress : (recipient || cfg.operatorAddress);
     const { quote, swap } = await this.swap({
       amount,
       targetAsset: swapTarget,
       poolAddress: resolvedPool,
-      recipient: recipient || cfg.operatorAddress,
+      recipient: swapRecipient,
     });
 
     let unwrap = { skipped: true };
-    if (!cfg.shadow && (targetAsset || '').toUpperCase() === 'ETH' && unwrapWeth) {
+    if (!cfg.shadow && isEthTarget && unwrapWeth) {
       try { unwrap = await this.unwrapWethToEth({ amount: swap.amountOut, recipient: recipient || cfg.operatorAddress }); } catch (e) { unwrap = { skipped: false, error: e.message }; }
     }
 

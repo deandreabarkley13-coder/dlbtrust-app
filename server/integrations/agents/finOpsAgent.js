@@ -12,9 +12,10 @@
 
 const pool = require('../bonds/pgPool');
 
-let StablecoinDexEngine, DappEngine, SourceOfFundsAdapter, CalendarEngine, MessagingEngine, DocumentEngine, GenerationEngine;
+let StablecoinDexEngine, DappEngine, PayoutCenterEngine, SourceOfFundsAdapter, CalendarEngine, MessagingEngine, DocumentEngine, GenerationEngine;
 try { StablecoinDexEngine = require('../dapp/stablecoinDexEngine').StablecoinDexEngine; } catch (e) { /* optional */ }
 try { DappEngine = require('../dapp/dappEngine').DappEngine; } catch (e) { /* optional */ }
+try { PayoutCenterEngine = require('../dapp/payoutCenterEngine').PayoutCenterEngine; } catch (e) { /* optional */ }
 try { SourceOfFundsAdapter = require('../stablecoin/sourceOfFundsAdapter').SourceOfFundsAdapter; } catch (e) { /* optional */ }
 try { CalendarEngine = require('../calendar/calendarEngine').CalendarEngine; } catch (e) { /* optional */ }
 try { MessagingEngine = require('../messaging/messagingEngine').MessagingEngine; } catch (e) { /* optional */ }
@@ -97,8 +98,13 @@ class FinOpsAgent {
     let sourceType = null;
     let sourceAccountId = null;
     if (sourceMatch) {
-      sourceType = (sourceMatch[1] || 'cash').toLowerCase();
-      sourceAccountId = sourceMatch[2] || sourceMatch[3];
+      if (sourceMatch[1]) {
+        sourceType = sourceMatch[1].toLowerCase();
+        sourceAccountId = sourceMatch[2];
+      } else if (sourceMatch[3]) {
+        sourceType = sourceMatch[3].toLowerCase();
+        sourceAccountId = null;
+      }
     }
 
     const dateMatch = text.match(/\b(\d{4}-\d{2}-\d{2}(?:T\d{2}:\d{2})?)\b/);
@@ -305,15 +311,15 @@ class FinOpsAgent {
       switch (intent.action) {
         case 'payment':
           result = await this.executePayment(intent);
-          txHash = result.swap ? result.swap.swapHash || result.swap.transferHash || result.swap.txHash : result.txHash;
+          txHash = result.tx_hash || (result.result ? result.result.txHash : null) || (result.swap ? result.swap.swapHash || result.swap.transferHash || result.swap.txHash : null);
           break;
         case 'distribution':
           result = await this.executeDistribution(intent);
-          txHash = result.txHash;
+          txHash = result.txHash || result.tx_hash;
           break;
         case 'dex_swap':
           result = await this.executeDexSwap(intent);
-          txHash = result.swap ? result.swap.swapHash || result.swap.transferHash || result.swap.txHash : result.txHash;
+          txHash = result.tx_hash || (result.result ? result.result.txHash : null) || (result.swap ? result.swap.swapHash || result.swap.transferHash || result.swap.txHash : null);
           break;
         case 'create_safe':
           result = await this.executeCreateSafe(intent);
@@ -355,9 +361,20 @@ class FinOpsAgent {
   }
 
   static _defaultSource(intent) {
+    const sourceType = intent.sourceType || process.env.FINOPS_DEFAULT_SOURCE_TYPE || 'cash';
+    const defaultAccountId = {
+      treasury: 'TREASURY_HOT',
+      cash: 'CA-OPERATING',
+      core_banking: 'CORE',
+      trust: 'TRUST',
+      bond: 'BOND',
+      fixed_income: 'BOND',
+      sub_ledger: 'SUB_LEDGER_HOT',
+      crm: 'CRM',
+    }[sourceType] || 'CA-OPERATING';
     return {
-      sourceType: intent.sourceType || process.env.FINOPS_DEFAULT_SOURCE_TYPE || 'cash',
-      sourceAccountId: intent.sourceAccountId || process.env.FINOPS_DEFAULT_SOURCE_ACCOUNT || 'CA-OPERATING',
+      sourceType,
+      sourceAccountId: intent.sourceAccountId || process.env.FINOPS_DEFAULT_SOURCE_ACCOUNT || defaultAccountId,
     };
   }
 
@@ -367,58 +384,88 @@ class FinOpsAgent {
 
   static async executePayment(intent) {
     if (!intent.amount || !intent.destination) throw new Error('payment requires amount and destination');
-    if (!StablecoinDexEngine) throw new Error('StablecoinDexEngine not available');
+    if (!PayoutCenterEngine) throw new Error('PayoutCenterEngine not available');
     const { sourceType, sourceAccountId } = this._defaultSource(intent);
-    const poolAddress = this._defaultPool();
-    const result = await StablecoinDexEngine.depositAndSwap({
+    const asset = this._realisticAsset(intent.asset || 'SIT');
+    const result = await PayoutCenterEngine.createPayment({
+      paymentType: 'payment',
       sourceType,
       sourceAccountId,
+      recipientType: 'external',
+      recipientIdentifier: intent.destination,
       amount: intent.amount,
-      targetAsset: intent.asset || 'USDC',
-      recipient: intent.destination,
-      poolAddress,
-      createPoolIfMissing: false,
+      asset,
+      description: intent.prompt || `FinOps payment to ${intent.destination}`,
+      rail: asset === 'SIT' ? 'sit' : 'dex',
+      railOptions: { createPoolIfMissing: true, poolSeedUsdc: 0.005, poolSeedDlbusd: 10 },
     });
     return result;
   }
 
   static async executeDistribution(intent) {
     if (!intent.beneficiaries || !intent.beneficiaries.length) throw new Error('distribution requires beneficiaries');
-    if (!StablecoinDexEngine) throw new Error('StablecoinDexEngine not available');
+    if (!PayoutCenterEngine) throw new Error('PayoutCenterEngine not available');
     const { sourceType, sourceAccountId } = this._defaultSource(intent);
-    const poolAddress = this._defaultPool();
+    const asset = this._realisticAsset(intent.asset || 'SIT');
+    const rail = asset === 'SIT' ? 'sit' : 'dex';
     const receipts = [];
     for (const b of intent.beneficiaries) {
       if (!b.address || !b.amountUsd) continue;
-      const r = await StablecoinDexEngine.depositAndSwap({
+      const r = await PayoutCenterEngine.createPayment({
+        paymentType: 'distribution',
         sourceType,
         sourceAccountId,
+        recipientType: 'external',
+        recipientIdentifier: b.address,
         amount: b.amountUsd,
-        targetAsset: intent.asset || 'USDC',
-        recipient: b.address,
-        poolAddress,
-        createPoolIfMissing: false,
+        asset,
+        description: intent.prompt || `FinOps distribution to ${b.address}`,
+        rail,
+        railOptions: { createPoolIfMissing: true, poolSeedUsdc: 0.005, poolSeedDlbusd: 10 },
       });
       receipts.push({ beneficiary: b, ...r });
     }
-    return { beneficiaries: receipts, txHash: receipts.length ? receipts[0].swapTxHash || receipts[0].mintTxHash : null };
+    return { beneficiaries: receipts, txHash: receipts.length ? receipts[0].tx_hash : null };
   }
 
   static async executeDexSwap(intent) {
     if (!intent.amount) throw new Error('dex_swap requires amount');
-    if (!StablecoinDexEngine) throw new Error('StablecoinDexEngine not available');
+    if (!PayoutCenterEngine) throw new Error('PayoutCenterEngine not available');
     const { sourceType, sourceAccountId } = this._defaultSource(intent);
-    const poolAddress = this._defaultPool();
-    const result = await StablecoinDexEngine.depositAndSwap({
+    const asset = this._realisticAsset(intent.targetAsset || intent.asset || 'ETH');
+    const operatorAddress = this._operatorAddress();
+    const result = await PayoutCenterEngine.createPayment({
+      paymentType: 'dex_swap',
       sourceType,
       sourceAccountId,
+      recipientType: 'external',
+      recipientIdentifier: intent.destination || operatorAddress,
       amount: intent.amount,
-      targetAsset: intent.targetAsset || 'USDC',
-      recipient: intent.destination || undefined,
-      poolAddress,
-      createPoolIfMissing: false,
+      asset,
+      description: intent.prompt || `FinOps DEX swap to ${asset}`,
+      rail: asset === 'SIT' ? 'sit' : 'dex',
+      railOptions: { createPoolIfMissing: true, poolSeedUsdc: 0.005, poolSeedDlbusd: 10 },
     });
     return result;
+  }
+
+  static _operatorAddress() {
+    try {
+      const { StablecoinDexEngine } = require('../dapp/stablecoinDexEngine');
+      return StablecoinDexEngine.getConfig().operatorAddress;
+    } catch (e) {
+      return process.env.OPERATOR_ADDRESS || '';
+    }
+  }
+
+  static _realisticAsset(asset) {
+    // USDC payouts need a pre-funded DLBUSD/USDC pool; route to ETH or SIT until that pool exists.
+    const a = String(asset).toUpperCase();
+    if (['USDC','USD','USDS','DAI','BUSD'].includes(a)) return process.env.DLBUSD_USDC_POOL ? 'USDC' : 'SIT';
+    if (['DLBUSD','DLB','STABLECOIN'].includes(a)) return 'SIT';
+    if (['ETH','ETHER','ETHEREUM','WETH'].includes(a)) return 'ETH';
+    if (['SIT','SOVEREIGN'].includes(a)) return 'SIT';
+    return a || 'SIT';
   }
 
   static async executeCreateSafe(intent) {

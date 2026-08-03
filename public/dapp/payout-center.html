@@ -1,0 +1,250 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>DLB Trust — Payout Center</title>
+  <style>
+    :root { --bg:#0f172a; --card:#1e293b; --border:#334155; --text:#f8fafc; --muted:#94a3b8; --accent:#3b82f6; --accent-2:#10b981; --danger:#ef4444; }
+    * { box-sizing:border-box; }
+    body { margin:0; font-family:system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif; background:var(--bg); color:var(--text); }
+    header { background:var(--card); border-bottom:1px solid var(--border); padding:16px 24px; display:flex; align-items:center; justify-content:space-between; }
+    header h1 { margin:0; font-size:20px; }
+    header a { color:var(--muted); text-decoration:none; font-size:14px; }
+    header a:hover { color:var(--text); }
+    .container { max-width:980px; margin:24px auto; padding:0 16px; }
+    .tabs { display:flex; gap:8px; margin-bottom:20px; border-bottom:1px solid var(--border); }
+    .tab { background:transparent; border:0; color:var(--muted); padding:12px 20px; cursor:pointer; font-size:15px; border-bottom:2px solid transparent; }
+    .tab.active { color:var(--text); border-bottom-color:var(--accent); }
+    .panel { display:none; }
+    .panel.active { display:block; }
+    .card { background:var(--card); border:1px solid var(--border); border-radius:12px; padding:24px; margin-bottom:20px; }
+    h2 { margin:0 0 12px; font-size:18px; }
+    p { color:var(--muted); font-size:14px; margin:0 0 16px; }
+    .form-row { display:grid; grid-template-columns:repeat(auto-fit,minmax(220px,1fr)); gap:14px; margin-bottom:14px; }
+    label { display:block; font-size:13px; color:var(--muted); margin-bottom:6px; }
+    input, select, textarea { width:100%; background:#0b1220; border:1px solid var(--border); color:var(--text); padding:10px 12px; border-radius:8px; font-size:14px; }
+    input:focus, select:focus, textarea:focus { outline:none; border-color:var(--accent); }
+    textarea { min-height:80px; }
+    .actions { display:flex; gap:10px; margin-top:18px; flex-wrap:wrap; }
+    .btn { background:var(--accent); color:#fff; border:0; padding:10px 18px; border-radius:8px; cursor:pointer; font-size:14px; }
+    .btn:hover { opacity:.9; }
+    .btn-secondary { background:var(--border); color:var(--text); }
+    .btn-danger { background:var(--danger); }
+    .status { padding:12px; border-radius:8px; background:#0b1220; border:1px solid var(--border); font-size:13px; margin-top:14px; white-space:pre-wrap; word-break:break-word; }
+    .status.success { border-color:var(--accent-2); color:var(--accent-2); }
+    .status.error { border-color:var(--danger); color:var(--danger); }
+    .hidden { display:none; }
+    table { width:100%; border-collapse:collapse; font-size:13px; }
+    th, td { text-align:left; padding:10px 8px; border-bottom:1px solid var(--border); }
+    th { color:var(--muted); font-weight:500; }
+    .badge { display:inline-block; padding:3px 8px; border-radius:999px; background:var(--border); font-size:12px; }
+    .small { font-size:12px; color:var(--muted); }
+    .kbd { font-family:monospace; background:#0b1220; padding:2px 6px; border-radius:4px; }
+    details { margin-top:12px; }
+    summary { color:var(--muted); cursor:pointer; font-size:12px; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>Payout Center</h1>
+    <div>
+      <a href="/dapp/wallets.html">Wallets & Transactions</a> &nbsp;|&nbsp;
+      <a href="/dapp">&larr; Back to full dApp</a>
+    </div>
+  </header>
+
+  <div class="container">
+    <div class="card">
+      <label>Operator API Token</label>
+      <div class="form-row" style="grid-template-columns:1fr auto;">
+        <input type="password" id="admin-token" placeholder="Paste your operator token" />
+        <button class="btn" onclick="saveToken()">Save</button>
+      </div>
+      <p class="small">This token is sent as <span class="kbd">x-admin-token</span> for backend calls.</p>
+    </div>
+
+    <div class="tabs">
+      <button class="tab active" onclick="showTab('send')">Send</button>
+      <button class="tab" onclick="showTab('recipients')">Wallets</button>
+      <button class="tab" onclick="showTab('activity')">Activity</button>
+    </div>
+
+    <div id="send" class="panel active">
+      <div class="card">
+        <h2>Send a payment</h2>
+        <p>Choose the source ledger, a connected wallet, and the output asset. The operator wallet pays gas so the recipient does not need native tokens.</p>
+        <div class="form-row">
+          <div><label>Payment type</label><select id="pay-type"><option value="distribution">Distribution</option><option value="disbursement">Disbursement</option><option value="expense">Expense Payout</option><option value="payout">General Payout</option></select></div>
+          <div><label>Source ledger</label><select id="pay-source-type"><option value="treasury">Treasury</option><option value="core_banking">Core Banking</option><option value="cash">Cash</option><option value="trust">Trust Accounting</option><option value="bond">Bond / Fixed Income</option><option value="sub_ledger">Sub-Ledger</option></select></div>
+          <div><label>Source account ID</label><input type="text" id="pay-source-account" value="TREASURY_HOT" placeholder="TREASURY_HOT or bond ID" /></div>
+        </div>
+        <div class="form-row">
+          <div><label>Recipient type</label><select id="pay-recipient-type" onchange="loadRecipients()">
+            <option value="all">All connected wallets</option>
+            <option value="beneficiary">Beneficiary</option>
+            <option value="trustee">Trustee</option>
+            <option value="vendor">Vendor</option>
+            <option value="external">External address</option>
+          </select></div>
+          <div><label>Recipient</label><select id="pay-recipient-select"><option value="">Loading...</option></select><input type="text" id="pay-recipient-address" class="hidden" placeholder="0x..." /></div>
+          <div><label>Amount (USD)</label><input type="number" id="pay-amount" value="1.00" step="0.01" /></div>
+        </div>
+        <div class="form-row">
+          <div><label>Output asset</label><select id="pay-asset" onchange="updateRailHint()">
+            <option value="SIT">SIT (Sovereign Trust Token)</option>
+            <option value="USDC">USDC (Stablecoin DEX)</option>
+            <option value="ETH">ETH (Stablecoin DEX)</option>
+            <option value="WETH">WETH (Stablecoin DEX)</option>
+            <option value="CASH">Cash App USD</option>
+          </select></div>
+          <div><label>Description</label><input type="text" id="pay-desc" placeholder="Q3 beneficiary distribution" /></div>
+        </div>
+        <details>
+          <summary>Advanced DEX pool options</summary>
+          <div class="form-row" style="margin-top:12px;">
+            <div><label>Create pool if missing</label><select id="pay-create-pool"><option value="true">Yes — seed with operator ETH</option><option value="false">No — fail if no pool</option></select></div>
+            <div><label>Pool seed target amount</label><input type="number" id="pay-seed-target" value="0.005" step="0.001" /></div>
+            <div><label>Pool seed DLBUSD amount</label><input type="number" id="pay-seed-dlbusd" value="10" step="1" /></div>
+          </div>
+          <p class="small">Pool seeding only applies the first time a DLBUSD/{asset} pool is created. The operator wraps native ETH to WETH when needed.</p>
+        </details>
+        <div id="pay-rail-hint" class="small" style="margin-top:10px;"></div>
+        <div class="actions">
+          <button class="btn" onclick="sendPayment()">Send Payment</button>
+        </div>
+        <div id="pay-result" class="status hidden"></div>
+      </div>
+    </div>
+
+    <div id="recipients" class="panel">
+      <div class="card">
+        <h2>Connected wallets</h2>
+        <p>Trustees, beneficiaries, and vendors with a linked wallet address appear as recipients.</p>
+        <div class="actions"><button class="btn" onclick="loadRecipientsList()">Refresh</button></div>
+        <div id="recipients-list" class="table-wrap"><p class="small">Click Refresh to load.</p></div>
+      </div>
+      <div class="card">
+        <h2>Add a wallet</h2>
+        <div class="form-row">
+          <div><label>Email</label><input type="email" id="new-email" placeholder="vendor@example.com" /></div>
+          <div><label>Name</label><input type="text" id="new-name" placeholder="Vendor / Beneficiary name" /></div>
+          <div><label>Role</label><select id="new-role"><option value="beneficiary">Beneficiary</option><option value="vendor">Vendor</option><option value="trustee_maker">Trustee Maker</option><option value="trustee_checker">Trustee Checker</option><option value="trustee_admin">Trustee Admin</option></select></div>
+          <div><label>Wallet address</label><input type="text" id="new-wallet" placeholder="0x..." /></div>
+        </div>
+        <div class="actions"><button class="btn" onclick="addWallet()">Add Wallet</button></div>
+        <div id="new-wallet-result" class="status hidden"></div>
+      </div>
+    </div>
+
+    <div id="activity" class="panel">
+      <div class="card">
+        <h2>Recent payments</h2>
+        <div class="actions"><button class="btn" onclick="loadActivity()">Refresh</button></div>
+        <div id="activity-list" class="table-wrap"><p class="small">Click Refresh to load.</p></div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    const el = id => document.getElementById(id);
+    const apiBase = '/api/dapp';
+    function saveToken() { localStorage.setItem('dlb-admin-token', el('admin-token').value); show('Operator token saved', false, 'pay-result'); }
+    function getToken() { return el('admin-token').value || localStorage.getItem('dlb-admin-token') || ''; }
+    function showTab(name) {
+      document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+      document.querySelectorAll('.panel').forEach(p => p.classList.remove('active'));
+      el(name).classList.add('active');
+      [...document.querySelectorAll('.tab')].find(t => t.textContent.toLowerCase().includes(name === 'send' ? 'send' : name === 'recipients' ? 'wallet' : 'activ'))?.classList.add('active');
+      if (name === 'recipients') loadRecipientsList();
+      if (name === 'activity') loadActivity();
+    }
+    function show(msg, isErr, id) { const d = el(id || 'pay-result'); d.textContent = msg; d.className = 'status ' + (isErr ? 'error' : 'success'); d.classList.remove('hidden'); }
+    async function api(path, opts = {}) {
+      opts.headers = opts.headers || {};
+      opts.headers['x-admin-token'] = getToken();
+      opts.headers['Content-Type'] = opts.headers['Content-Type'] || 'application/json';
+      const res = await fetch(apiBase + path, opts);
+      const text = await res.text();
+      try { const j = JSON.parse(text); if (!j.success) throw new Error(j.error || 'Request failed'); return j.data; } catch (e) { throw new Error(text || e.message); }
+    }
+
+    function updateRailHint() {
+      const asset = el('pay-asset').value;
+      const hints = { SIT: 'Rail: Sovereign Trust Token (SIT) minted directly to the recipient wallet. No DEX needed.', USDC: 'Rail: Stablecoin DEX swaps source-ledger DLBUSD to USDC.', ETH: 'Rail: Stablecoin DEX swaps source-ledger DLBUSD to native ETH.', WETH: 'Rail: Stablecoin DEX swaps source-ledger DLBUSD to WETH.', CASH: 'Rail: Cash App QR / deep link for USD.' };
+      el('pay-rail-hint').textContent = hints[asset] || '';
+    }
+    updateRailHint();
+
+    async function loadRecipients() {
+      const type = el('pay-recipient-type').value;
+      const select = el('pay-recipient-select');
+      const addr = el('pay-recipient-address');
+      if (type === 'external') { select.classList.add('hidden'); addr.classList.remove('hidden'); return; }
+      select.classList.remove('hidden'); addr.classList.add('hidden');
+      select.innerHTML = '<option value="">Loading...</option>';
+      try {
+        const list = await api(`/payout-center/recipients?role=${type}`);
+        select.innerHTML = list.length ? list.map(r => `<option value="${r.email || r.walletAddress}">${r.name || r.email} — ${r.walletAddress || 'no wallet'}</option>`).join('') : '<option value="">No wallets found</option>';
+      } catch (e) { select.innerHTML = `<option value="">Error: ${e.message}</option>`; }
+    }
+    loadRecipients();
+
+    async function sendPayment() {
+      const asset = el('pay-asset').value;
+      const recipientType = el('pay-recipient-type').value;
+      let recipientIdentifier = el('pay-recipient-select').value;
+      if (recipientType === 'external') recipientIdentifier = el('pay-recipient-address').value;
+      const body = {
+        paymentType: el('pay-type').value,
+        sourceType: el('pay-source-type').value,
+        sourceAccountId: el('pay-source-account').value,
+        recipientType,
+        recipientIdentifier,
+        amount: el('pay-amount').value,
+        asset,
+        description: el('pay-desc').value,
+        rail: asset === 'SIT' ? 'sit' : asset === 'CASH' ? 'cashapp' : 'dex',
+        railOptions: { createPoolIfMissing: el('pay-create-pool').value === 'true', poolSeedUsdc: el('pay-seed-target').value, poolSeedDlbusd: el('pay-seed-dlbusd').value }
+      };
+      try {
+        show('Submitting...', false, 'pay-result');
+        const data = await api('/payout-center/pay', { method: 'POST', body: JSON.stringify(body) });
+        show(JSON.stringify(data, null, 2), false, 'pay-result');
+        loadActivity();
+      } catch (e) { show(e.message, true, 'pay-result'); }
+    }
+
+    async function loadRecipientsList() {
+      const div = el('recipients-list');
+      try {
+        const list = await api('/payout-center/recipients?role=all');
+        if (!list.length) { div.innerHTML = '<p class="small">No connected wallets yet.</p>'; return; }
+        div.innerHTML = '<table><thead><tr><th>Name</th><th>Email</th><th>Role(s)</th><th>Wallet</th></tr></thead><tbody>' +
+          list.map(r => `<tr><td>${r.name || '-'}</td><td>${r.email || '-'}</td><td>${(r.roles || [r.role]).join(', ')}</td><td class="mono">${r.walletAddress || '-'}</td></tr>`).join('') +
+          '</tbody></table>';
+      } catch (e) { div.innerHTML = `<p class="small error">${e.message}</p>`; }
+    }
+
+    async function addWallet() {
+      const body = { email: el('new-email').value, name: el('new-name').value, role: el('new-role').value, walletAddress: el('new-wallet').value, roles: [el('new-role').value] };
+      try {
+        const data = await api('/users', { method: 'POST', body: JSON.stringify(body) });
+        show(JSON.stringify(data, null, 2), false, 'new-wallet-result');
+        loadRecipientsList();
+      } catch (e) { show(e.message, true, 'new-wallet-result'); }
+    }
+
+    async function loadActivity() {
+      const div = el('activity-list');
+      try {
+        const list = await api('/payout-center/payments');
+        if (!list.length) { div.innerHTML = '<p class="small">No payments yet.</p>'; return; }
+        div.innerHTML = '<table><thead><tr><th>Type</th><th>To</th><th>Amount</th><th>Asset</th><th>Rail</th><th>Status</th><th>Tx</th></tr></thead><tbody>' +
+          list.map(p => `<tr><td>${p.payment_type}</td><td class="mono">${p.recipient_address}</td><td>$${p.amount_usd}</td><td>${p.asset}</td><td>${p.rail}</td><td><span class="badge">${p.status}</span></td><td class="small">${(p.tx_hash || '').slice(0,18)}...</td></tr>`).join('') +
+          '</tbody></table>';
+      } catch (e) { div.innerHTML = `<p class="small error">${e.message}</p>`; }
+    }
+  </script>
+</body>
+</html>
