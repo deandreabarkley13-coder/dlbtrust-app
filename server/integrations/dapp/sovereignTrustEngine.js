@@ -518,8 +518,19 @@ class SovereignTrustEngine {
     const token = await this._loadToken();
     if (!token) return '0';
     if (this.getConfig().shadow) {
-      const h = memory.holders.get((address || '').toLowerCase());
-      return h ? (h / 100).toFixed(2) : '0.00';
+      const addr = (address || '').toLowerCase();
+      if (memory.holders.has(addr)) return (memory.holders.get(addr) / 100).toFixed(2);
+      if (pool) {
+        try {
+          const rows = await pool.query('SELECT balance_cents FROM sovereign_token_holders WHERE token_id = $1 AND address = $2', [token.id, addr]);
+          if (rows.rows && rows.rows[0]) {
+            const c = Number(rows.rows[0].balance_cents);
+            memory.holders.set(addr, c);
+            return (c / 100).toFixed(2);
+          }
+        } catch (e) { console.warn('[SovereignTrustEngine] tokenBalanceOf DB lookup failed:', e.message); }
+      }
+      return '0.00';
     }
     const { publicClient } = walletClient();
     const raw = await publicClient.readContract({
@@ -593,12 +604,16 @@ class SovereignTrustEngine {
           const meta = JSON.stringify({ shadowTransfer: true, from: operator, to: toLower, amountCents: cents, at: ts });
           await pool.query(`
             INSERT INTO sovereign_token_holders (id, token_id, address, balance_cents, metadata)
-            VALUES ($1, $2, $3, $4, $5)
-            ON CONFLICT (token_id, address) DO UPDATE SET
-              balance_cents = GREATEST(0, sovereign_token_holders.balance_cents - EXCLUDED.balance_cents),
-              metadata = sovereign_token_holders.metadata || EXCLUDED.metadata,
-              updated_at = NOW()
-          `, [id('SIT-HOLD'), token.id, opLower, cents, meta]);
+            VALUES ($1, $2, $3, 0, $4)
+            ON CONFLICT (token_id, address) DO NOTHING
+          `, [id('SIT-HOLD'), token.id, opLower, meta]);
+          await pool.query(`
+            UPDATE sovereign_token_holders
+            SET balance_cents = GREATEST(0, balance_cents - $1),
+                metadata = metadata || $2,
+                updated_at = NOW()
+            WHERE token_id = $3 AND address = $4
+          `, [cents, meta, token.id, opLower]);
           await pool.query(`
             INSERT INTO sovereign_token_holders (id, token_id, address, balance_cents, metadata)
             VALUES ($1, $2, $3, $4, $5)
