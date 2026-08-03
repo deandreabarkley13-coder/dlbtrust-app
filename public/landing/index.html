@@ -235,7 +235,7 @@ async function submitRequest(e){
     const res=await api('/public/request',{method:'POST',body:JSON.stringify(body)});
     const data=res.data;
     const reqId=(data.run && data.run.requests && data.run.requests[0] && data.run.requests[0].id) || 'created';
-    status('request-status', `Request submitted: ${reqId}. Maker PIN: ${data.pins.maker} — Checker PIN: ${data.pins.checker}. (Demo: PINs would be emailed in production.)`);
+    status('request-status', `Request submitted: ${reqId}. The maker trustee will receive a one-time PIN by email to approve, and the checker trustee will be notified next.`);
   }catch(err){ status('request-status', err.message, true); }
 }
 async function submitMessage(e){

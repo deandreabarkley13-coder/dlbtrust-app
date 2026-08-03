@@ -511,13 +511,26 @@ class WalletEngine {
     const walletClient = viem.createWalletClient({ account, chain, transport: viem.http(cfg.rpcUrl) });
     const publicClient = viem.createPublicClient({ chain, transport: viem.http(cfg.rpcUrl) });
     const raw = viem.parseEther(String(eth));
+    const gasLimit = 21000n;
     const fees = { maxFeePerGas: viem.parseGwei('3'), maxPriorityFeePerGas: viem.parseGwei('0.0015') };
     const ethBalance = await publicClient.getBalance({ address: wallet.address });
-    const totalNeeded = raw + (fees.maxFeePerGas ? BigInt(Math.ceil(Number(fees.maxFeePerGas) * 1.5)) : 0n);
+    const totalNeeded = raw + (fees.maxFeePerGas * gasLimit);
     if (ethBalance < totalNeeded) throw new Error(`Insufficient on-chain ETH balance: ${viem.formatEther(ethBalance)} available`);
-    const hash = await walletClient.sendTransaction({ to, value: raw, gas: 21000n, ...fees });
+    const hash = await walletClient.sendTransaction({ to, value: raw, gas: gasLimit, ...fees });
     await publicClient.waitForTransactionReceipt({ hash });
-    return { type: 'external_eth', from: wallet.address, to, amount: eth, asset: 'ETH', txHash: hash };
+
+    // Update internal ledger and history when precision allows
+    const cents = toCents(eth);
+    if (cents > 0) {
+      try { await this._debit(fromWalletId, 'ETH', cents, { memo, tx_hash: hash }); } catch (e) { console.warn('[WalletEngine.externalEthSend] internal ETH debit skipped:', e.message); }
+    }
+    const txId = id('WTX');
+    await withFallback(async () => {
+      await query('INSERT INTO dapp_wallet_transactions (id, wallet_id, counterparty_address, type, asset, amount_cents, status, tx_hash, memo, metadata) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)',
+        [txId, fromWalletId, to, 'external_eth', 'ETH', cents, 'completed', hash, memo || '', JSON.stringify({ ethAmount: eth, note: 'Internal ledger uses 2-decimal units; small ETH amounts may show as 0.' })]);
+    }, () => {});
+
+    return { type: 'external_eth', from: wallet.address, to, amount: eth, asset: 'ETH', txHash: hash, balance: await this.getBalance(fromWalletId) };
   }
 
   static _erc20FullAbi() {

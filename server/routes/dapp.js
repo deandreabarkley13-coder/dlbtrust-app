@@ -995,10 +995,8 @@ router.post('/public/request', writeRateLimiter(), async (req, res) => {
     if (!maker) maker = await DappEngine.createUser({ email: makerEmail, name: 'Malissa Robinson', roles: ['trustee_maker', 'beneficiary'], activeRole: 'trustee_maker' });
     if (!checker) checker = await DappEngine.createUser({ email: checkerEmail, name: 'Checker Trust', roles: ['trustee_checker', 'beneficiary'], activeRole: 'trustee_checker' });
 
-    // Generate one-time login PIN for maker (DistributionRequestEngine will email it)
-    const makerOtp = await DappEngine.generateOtp(makerEmail);
-
     // Kick off the full automation pipeline: proof -> request -> sequential approval/execution
+    // DistributionRequestEngine.createRequest emails the maker trustee with a one-time PIN.
     const run = await DisbursementAutomationEngine.runOneClickDistribution({
       name: `Landing request from ${beneficiaryName || beneficiaryEmail}`,
       type: 'distribution',
@@ -1012,7 +1010,8 @@ router.post('/public/request', writeRateLimiter(), async (req, res) => {
       createdBy: beneficiaryEmail,
     });
 
-    res.json({ success: true, data: { run, beneficiary, pins: { maker: makerOtp.code } } });
+    const requestId = run && run.requests && run.requests[0] && run.requests[0].id;
+    res.json({ success: true, data: { run, beneficiary, requestId, message: 'Request submitted. The maker trustee has been notified by email.' } });
   } catch (err) { sendError(res, err); }
 });
 

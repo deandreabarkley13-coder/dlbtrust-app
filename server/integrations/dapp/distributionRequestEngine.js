@@ -263,7 +263,7 @@ class DistributionRequestEngine {
         await EmailEngine.sendOtp({
           to: maker.email,
           name: maker.name,
-          otp: otp.otp_code || otp.otp || 'N/A',
+          otp: otp.code || otp.otp_code || otp.otp || 'N/A',
           action: 'approve',
           actionUrl: `https://dlbtrust-app.fly.dev/dapp/request-approval.html?request=${request.id}&role=maker`,
         });
@@ -336,7 +336,7 @@ class DistributionRequestEngine {
         await EmailEngine.sendOtp({
           to: checker.email,
           name: checker.name,
-          otp: otp.otp_code || otp.otp || 'N/A',
+          otp: otp.code || otp.otp_code || otp.otp || 'N/A',
           action: 'approve',
           actionUrl: `https://dlbtrust-app.fly.dev/dapp/request-approval.html?request=${requestId}&role=checker`,
         });

@@ -71,7 +71,13 @@ class MasterWalletEngine {
     const result = {};
     for (const def of MASTER_DEFS) {
       const wallet = await this.getMasterWallet(def.subtype);
-      if (wallet) result[def.subtype] = { ...wallet, balances: await WalletEngine.getBalance(wallet.id) };
+      if (wallet) {
+        const sanitized = { ...wallet };
+        delete sanitized.private_key_encrypted;
+        delete sanitized.private_key;
+        delete sanitized.privateKey;
+        result[def.subtype] = { ...sanitized, balances: await WalletEngine.getBalance(wallet.id) };
+      }
     }
     return result;
   }
@@ -169,14 +175,18 @@ class MasterWalletEngine {
       }
     }
 
-    // 3. Credit internal ledger of the distribution master wallet
+    // 3. Credit internal ledger of the distribution master wallet when precision allows
     const outAmount = parseFloat(swap.swap && swap.swap.amountOut || 0);
     if (outAmount > 0) {
-      await WalletEngine.credit(distribution.id, usedAsset, outAmount, {
-        memo: memo || `Fixed income from bond ${bond.bond_name} (${usedAsset})`,
-        bond_id: bondId,
-        swap: swap.operationId,
-      });
+      try {
+        await WalletEngine.credit(distribution.id, usedAsset, outAmount, {
+          memo: memo || `Fixed income from bond ${bond.bond_name} (${usedAsset})`,
+          bond_id: bondId,
+          swap: swap.operationId,
+        });
+      } catch (creditErr) {
+        console.warn('[MasterWalletEngine] internal ledger credit skipped for', usedAsset, creditErr.message);
+      }
     }
 
     const result = {
