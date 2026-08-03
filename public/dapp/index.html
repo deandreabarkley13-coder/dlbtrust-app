@@ -371,9 +371,9 @@
         <div class="grid" style="margin-top:20px">
           <div class="card" style="grid-column: 1 / -1;">
             <h2>Operator SIT Transfer</h2>
-            <p>Transfer SIT from the operator treasury wallet to any address. The recipient is auto-whitelisted and the operator pays gas.</p>
+            <p>Transfer SIT from the operator treasury wallet to any address. The recipient must already be whitelisted, or use <b>Whitelist Address</b> first. The operator pays gas.</p>
             <div class="form-row">
-              <div><label>To</label><input type="text" id="sit-transfer-to" placeholder="0x..." value="0x86167EcF041fFA95E5A4aEEFCB2632665Eb7FA16" /></div>
+              <div><label>To</label><input type="text" id="sit-transfer-to" placeholder="0x..." /></div>
               <div><label>Amount (SIT)</label><input type="number" id="sit-transfer-amount" value="0.01" step="0.01" /></div>
             </div>
             <div class="actions"><button class="btn" onclick="operatorTransferSIT()">Transfer SIT</button></div>
