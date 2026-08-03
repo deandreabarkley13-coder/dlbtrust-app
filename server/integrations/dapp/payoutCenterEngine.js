@@ -15,8 +15,9 @@ if (process.env.DAPP_MEMORY_MODE === 'true') pool = null;
 let viem;
 try { viem = require('viem'); } catch (e) { viem = null; }
 
-let DappEngine;
-try { ({ DappEngine } = require('./dappEngine')); } catch (e) { DappEngine = null; }
+function getDappEngine() {
+  try { return require('./dappEngine').DappEngine; } catch (e) { return null; }
+}
 
 let SovereignTrustEngine;
 try { ({ SovereignTrustEngine } = require('./sovereignTrustEngine')); } catch (e) { SovereignTrustEngine = null; }
@@ -70,6 +71,7 @@ class PayoutCenterEngine {
   }
 
   static async listRecipients({ role } = {}) {
+    const DappEngine = getDappEngine();
     if (!DappEngine) throw new Error('DappEngine not available');
     const users = await DappEngine.listUsers();
     return users
@@ -83,6 +85,7 @@ class PayoutCenterEngine {
 
   static async resolveRecipient({ recipientType, identifier }) {
     if (isAddress(identifier)) return { address: viem.getAddress ? viem.getAddress(identifier) : identifier.toLowerCase(), type: 'address' };
+    const DappEngine = getDappEngine();
     if (!DappEngine) throw new Error('Wallet address required or DappEngine not available');
     const user = await DappEngine.getUserByEmail(identifier).catch(() => null);
     if (!user) throw new Error(`Recipient not found for ${identifier}`);
