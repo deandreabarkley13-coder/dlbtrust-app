@@ -244,15 +244,22 @@ contract SovereignTrustToken {
 
     // ─── ERC-2771 context ────────────────────────────────────────────────────────
 
-    function _msgSender() internal view returns (address) {
+    function _msgSender() internal view returns (address sender) {
         if (msg.sender == address(this)) return msg.sender;
         if (trustedForwarders[msg.sender]) {
             uint256 calldataLength = msg.data.length;
             if (calldataLength >= 20) {
-                return address(uint160(uint256(bytes32(msg.data[calldataLength - 20:calldataLength]))));
+                assembly {
+                    let ptr := mload(0x40)
+                    calldatacopy(ptr, sub(calldatasize(), 20), 20)
+                    sender := shr(96, mload(ptr))
+                }
+            } else {
+                sender = msg.sender;
             }
+        } else {
+            sender = msg.sender;
         }
-        return msg.sender;
     }
 
     // ─── Hooks ───────────────────────────────────────────────────────────────────

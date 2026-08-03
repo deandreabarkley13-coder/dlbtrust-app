@@ -22,6 +22,7 @@ const { ExpenseManagementEngine } = require('../integrations/accounting/expenseM
 const { DisbursementAutomationEngine } = require('../integrations/dapp/disbursementAutomationEngine');
 const { FundingEngine } = require('../integrations/dapp/fundingEngine');
 const { PayoutCenterEngine } = require('../integrations/dapp/payoutCenterEngine');
+const { WalletEngine } = require('../integrations/dapp/walletEngine');
 const { requireAuth, writeRateLimiter } = require('../integrations/auth/securityMiddleware');
 
 const router = express.Router();
@@ -1065,6 +1066,51 @@ router.post('/payout-center/pay', operatorAuth, writeRateLimiter(), async (req, 
         poolAddress: sanitizedRailOptions.poolAddress || undefined,
       },
     });
+    res.status(201).json({ success: true, data });
+  } catch (err) { sendError(res, err); }
+});
+
+// ═════════════════════════════════════════════════════════════════════════════
+// Wallets — simple wallet cards, balances, internal & external transfers
+// ═════════════════════════════════════════════════════════════════════════════
+
+router.get('/wallets', operatorAuth, async (req, res) => {
+  try { await WalletEngine.ensureWalletsForAllUsers(); res.json({ success: true, data: await WalletEngine.listWallets() }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/wallets', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try {
+    const { userId, name, type, address, privateKey } = req.body;
+    const data = await WalletEngine.createWallet({ userId, name, type, address, privateKey });
+    res.status(201).json({ success: true, data });
+  } catch (err) { sendError(res, err); }
+});
+
+router.get('/wallets/:id', operatorAuth, async (req, res) => {
+  try { const data = await WalletEngine.getWallet(req.params.id); res.json({ success: true, data }); } catch (err) { sendError(res, err); }
+});
+
+router.get('/wallets/:id/balance', operatorAuth, async (req, res) => {
+  try { const data = await WalletEngine.getBalance(req.params.id); res.json({ success: true, data }); } catch (err) { sendError(res, err); }
+});
+
+router.get('/wallets/:id/transactions', operatorAuth, async (req, res) => {
+  try { const data = await WalletEngine.listTransactions(req.params.id); res.json({ success: true, data }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/wallets/:id/fund', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try {
+    const { amount, asset, sourceType, sourceAccountId, memo } = req.body;
+    const data = await WalletEngine.fundWallet({ walletId: req.params.id, amount, asset: asset || 'SIT', sourceType: sourceType || 'treasury', sourceAccountId: sourceAccountId || 'TREASURY_HOT', memo });
+    res.status(201).json({ success: true, data });
+  } catch (err) { sendError(res, err); }
+});
+
+router.post('/wallets/transfer', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try {
+    const { fromWalletId, toWalletId, toAddress, amount, asset, memo } = req.body;
+    if (!fromWalletId || (!toWalletId && !toAddress)) throw new Error('fromWalletId and toWalletId or toAddress required');
+    const data = await WalletEngine.transfer({ fromWalletId, toWalletId, toAddress, amount, asset: asset || 'SIT', memo });
     res.status(201).json({ success: true, data });
   } catch (err) { sendError(res, err); }
 });

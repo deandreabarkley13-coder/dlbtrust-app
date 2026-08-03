@@ -1,0 +1,211 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>DLB Trust — Wallets & Transactions</title>
+  <style>
+    :root { --bg:#0f172a; --card:#1e293b; --border:#334155; --text:#f8fafc; --muted:#94a3b8; --accent:#3b82f6; --accent-2:#10b981; --danger:#ef4444; }
+    * { box-sizing:border-box; }
+    body { margin:0; font-family:system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif; background:var(--bg); color:var(--text); }
+    header { background:var(--card); border-bottom:1px solid var(--border); padding:16px 24px; display:flex; align-items:center; justify-content:space-between; }
+    header h1 { margin:0; font-size:20px; }
+    header a { color:var(--muted); text-decoration:none; font-size:14px; }
+    header a:hover { color:var(--text); }
+    .container { max-width:1200px; margin:24px auto; padding:0 16px; }
+    .card { background:var(--card); border:1px solid var(--border); border-radius:12px; padding:24px; margin-bottom:20px; }
+    h2 { margin:0 0 12px; font-size:18px; }
+    p { color:var(--muted); font-size:14px; margin:0 0 16px; }
+    .form-row { display:grid; grid-template-columns:repeat(auto-fit,minmax(220px,1fr)); gap:14px; margin-bottom:14px; }
+    label { display:block; font-size:13px; color:var(--muted); margin-bottom:6px; }
+    input, select, textarea { width:100%; background:#0b1220; border:1px solid var(--border); color:var(--text); padding:10px 12px; border-radius:8px; font-size:14px; }
+    input:focus, select:focus, textarea:focus { outline:none; border-color:var(--accent); }
+    .actions { display:flex; gap:10px; margin-top:18px; flex-wrap:wrap; }
+    .btn { background:var(--accent); color:#fff; border:0; padding:10px 18px; border-radius:8px; cursor:pointer; font-size:14px; }
+    .btn:hover { opacity:.9; }
+    .btn-secondary { background:var(--border); color:var(--text); }
+    .status { padding:12px; border-radius:8px; background:#0b1220; border:1px solid var(--border); font-size:13px; margin-top:14px; white-space:pre-wrap; word-break:break-word; }
+    .status.success { border-color:var(--accent-2); color:var(--accent-2); }
+    .status.error { border-color:var(--danger); color:var(--danger); }
+    .grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(300px,1fr)); gap:16px; }
+    .wallet { background:var(--card); border:1px solid var(--border); border-radius:12px; padding:16px; }
+    .wallet h3 { margin:0 0 8px; font-size:16px; }
+    .wallet .role { font-size:12px; color:var(--muted); margin-bottom:10px; }
+    .wallet .addr { font-family:monospace; font-size:12px; color:var(--accent); word-break:break-all; }
+    .wallet .bal { margin-top:10px; font-size:13px; }
+    .wallet .bal span { display:block; color:var(--muted); }
+    .wallet .bal b { color:var(--text); }
+    .hidden { display:none; }
+    .small { font-size:12px; color:var(--muted); }
+    .kbd { font-family:monospace; background:#0b1220; padding:2px 6px; border-radius:4px; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>Wallets & Transactions</h1>
+    <a href="/dapp/payout-center.html">&larr; Payout Center</a>
+  </header>
+
+  <div class="container">
+    <div class="card">
+      <label>Operator API Token</label>
+      <div class="form-row" style="grid-template-columns:1fr auto;">
+        <input type="password" id="admin-token" placeholder="Paste your operator token" />
+        <button class="btn" onclick="saveToken()">Save</button>
+      </div>
+      <p class="small">This token is sent as <span class="kbd">x-admin-token</span> for backend calls.</p>
+    </div>
+
+    <div class="card">
+      <h2>Trust wallets</h2>
+      <p>Each trustee and beneficiary gets a wallet. Internal transfers move balances instantly off-chain. External sends submit a real blockchain transaction through the trusted forwarder.</p>
+      <div class="actions">
+        <button class="btn" onclick="loadWallets()">Refresh wallets</button>
+        <button class="btn btn-secondary" onclick="ensureWallets()">Create missing wallets</button>
+      </div>
+      <div id="wallets-list" class="grid"><p class="small">Click Refresh wallets to load.</p></div>
+    </div>
+
+    <div class="card">
+      <h2>Fund a wallet</h2>
+      <div class="form-row">
+        <div><label>Wallet</label><select id="fund-wallet"></select></div>
+        <div><label>Amount (USD/SIT)</label><input type="number" id="fund-amount" value="1.00" step="0.01" /></div>
+        <div><label>Asset</label><select id="fund-asset"><option value="SIT">SIT</option></select></div>
+        <div><label>Source ledger</label><select id="fund-source"><option value="treasury">Treasury</option><option value="core_banking">Core Banking</option><option value="cash">Cash</option><option value="trust">Trust Accounting</option><option value="bond">Bond / Fixed Income</option><option value="sub_ledger">Sub-Ledger</option></select></div>
+      </div>
+      <div class="actions"><button class="btn" onclick="fundWallet()">Fund wallet</button></div>
+      <div id="fund-result" class="status hidden"></div>
+    </div>
+
+    <div class="card">
+      <h2>Make a transaction</h2>
+      <div class="form-row">
+        <div><label>From wallet</label><select id="tx-from"></select></div>
+        <div><label>Transfer type</label><select id="tx-type" onchange="toggleTxTo()"><option value="internal">Internal (wallet to wallet)</option><option value="external">External (on-chain address)</option></select></div>
+        <div id="to-wallet-wrap"><label>To wallet</label><select id="tx-to-wallet"></select></div>
+        <div id="to-address-wrap" class="hidden"><label>To address</label><input type="text" id="tx-to-address" placeholder="0x..." /></div>
+        <div><label>Amount</label><input type="number" id="tx-amount" value="0.50" step="0.01" /></div>
+        <div><label>Asset</label><select id="tx-asset"><option value="SIT">SIT</option></select></div>
+        <div><label>Memo</label><input type="text" id="tx-memo" placeholder="Distribution / expense note" /></div>
+      </div>
+      <div class="actions"><button class="btn" onclick="sendTransaction()">Send</button></div>
+      <div id="tx-result" class="status hidden"></div>
+    </div>
+
+    <div id="wallet-detail" class="card hidden">
+      <h2>Wallet transactions</h2>
+      <p id="wallet-detail-header" class="small"></p>
+      <div id="wallet-tx-list"></div>
+    </div>
+  </div>
+
+  <script>
+    const el = id => document.getElementById(id);
+    const apiBase = '/api/dapp';
+    function saveToken() { localStorage.setItem('dlb-admin-token', el('admin-token').value); show('Token saved', false, 'fund-result'); }
+    function getToken() { return el('admin-token').value || localStorage.getItem('dlb-admin-token') || ''; }
+    function show(msg, isErr, id) { const d = el(id); d.textContent = msg; d.className = 'status ' + (isErr ? 'error' : 'success'); d.classList.remove('hidden'); }
+    async function api(path, opts = {}) {
+      opts.headers = opts.headers || {};
+      opts.headers['x-admin-token'] = getToken();
+      opts.headers['Content-Type'] = opts.headers['Content-Type'] || 'application/json';
+      const res = await fetch(apiBase + path, opts);
+      const text = await res.text();
+      try { const j = JSON.parse(text); if (!j.success) throw new Error(j.error || 'Request failed'); return j.data; } catch (e) { throw new Error(text || e.message); }
+    }
+
+    let walletsCache = [];
+
+    function toggleTxTo() {
+      const type = el('tx-type').value;
+      el('to-wallet-wrap').classList.toggle('hidden', type === 'external');
+      el('to-address-wrap').classList.toggle('hidden', type !== 'external');
+    }
+
+    function renderWalletOptions() {
+      const selects = ['fund-wallet', 'tx-from', 'tx-to-wallet'];
+      for (const sid of selects) {
+        const sel = el(sid);
+        sel.innerHTML = walletsCache.map(w => `<option value="${w.id}">${w.user_name || w.email || w.name} — ${w.address.slice(0,10)}... (${w.type})</option>`).join('');
+      }
+    }
+
+    async function loadWallets() {
+      el('wallets-list').innerHTML = '<p class="small">Loading...</p>';
+      try {
+        const wallets = await api('/wallets');
+        walletsCache = wallets;
+        renderWalletOptions();
+        const list = document.getElementById('wallets-list');
+        list.innerHTML = '';
+        for (const w of wallets) {
+          const bal = await api(`/wallets/${w.id}/balance`).catch(e => ({ internal:{}, external:{eth:'0',usdc:'0',sit:'0'} }));
+          const div = document.createElement('div');
+          div.className = 'wallet';
+          div.innerHTML = `
+            <h3>${w.user_name || w.name || 'Wallet'}</h3>
+            <div class="role">${w.role || 'beneficiary'} • ${w.type}</div>
+            <div class="addr">${w.address}</div>
+            <div class="bal">
+              <span>Internal SIT: <b>${bal.internal && bal.internal.SIT ? bal.internal.SIT : '0.00'}</b></span>
+              <span>On-chain SIT: <b>${bal.external.sit}</b></span>
+              <span>ETH: <b>${Number(bal.external.eth).toFixed(6)}</b> • USDC: <b>${bal.external.usdc}</b></span>
+            </div>
+            <div class="actions" style="margin-top:10px;">
+              <button class="btn btn-secondary" onclick="viewWallet('${w.id}', '${w.address}')">Transactions</button>
+            </div>
+          `;
+          list.appendChild(div);
+        }
+      } catch (e) { el('wallets-list').innerHTML = `<p class="small error">${e.message}</p>`; }
+    }
+
+    async function ensureWallets() {
+      await loadWallets();
+      show('Wallets ensured', false, 'fund-result');
+    }
+
+    async function fundWallet() {
+      try {
+        const data = await api(`/wallets/${el('fund-wallet').value}/fund`, {
+          method: 'POST',
+          body: JSON.stringify({ amount: el('fund-amount').value, asset: el('fund-asset').value, sourceType: el('fund-source').value, sourceAccountId: 'TREASURY_HOT', memo: 'Wallet funding' })
+        });
+        show(`Funded ${data.amount} ${data.asset} → ${data.wallet.address}`, false, 'fund-result');
+        await loadWallets();
+      } catch (e) { show(e.message, true, 'fund-result'); }
+    }
+
+    async function sendTransaction() {
+      try {
+        const body = {
+          fromWalletId: el('tx-from').value,
+          amount: el('tx-amount').value,
+          asset: el('tx-asset').value,
+          memo: el('tx-memo').value,
+        };
+        if (el('tx-type').value === 'internal') body.toWalletId = el('tx-to-wallet').value;
+        else body.toAddress = el('tx-to-address').value;
+        const data = await api('/wallets/transfer', { method: 'POST', body: JSON.stringify(body) });
+        show(`${data.type} transfer of ${data.amount} ${data.asset} ${data.txHash ? 'tx: ' + data.txHash : ''}`, false, 'tx-result');
+        await loadWallets();
+      } catch (e) { show(e.message, true, 'tx-result'); }
+    }
+
+    async function viewWallet(id, address) {
+      try {
+        const txs = await api(`/wallets/${id}/transactions`);
+        el('wallet-detail').classList.remove('hidden');
+        el('wallet-detail-header').textContent = `Address: ${address}`;
+        const list = el('wallet-tx-list');
+        list.innerHTML = '<table style="width:100%;font-size:13px;border-collapse:collapse;"><tr><th align="left">Type</th><th align="left">Asset</th><th align="left">Amount</th><th align="left">Status</th><th align="left">Tx</th></tr>' +
+          txs.map(t => `<tr><td>${t.type}</td><td>${t.asset}</td><td>${(t.amount_cents/100).toFixed(2)}</td><td>${t.status}</td><td class="small">${t.tx_hash ? t.tx_hash.slice(0,20)+'...' : '-'}</td></tr>`).join('') +
+          '</table>';
+      } catch (e) { show(e.message, true, 'tx-result'); }
+    }
+
+    toggleTxTo();
+  </script>
+</body>
+</html>

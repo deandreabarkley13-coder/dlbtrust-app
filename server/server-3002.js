@@ -287,6 +287,10 @@ async function initializeDatabase() {
     console.log('[dapp] tables ensured');
     await DappEngine.ensurePortalUsers();
     console.log('[dapp] portal users seeded');
+    var WalletEngine = require(path.join(HD, 'server', 'integrations', 'dapp', 'walletEngine')).WalletEngine;
+    await WalletEngine.ensureTables();
+    await WalletEngine.ensureWalletsForAllUsers();
+    console.log('[dapp] wallets ensured');
   } catch(e) {
     console.warn('[dapp] table init:', e.message);
   }
