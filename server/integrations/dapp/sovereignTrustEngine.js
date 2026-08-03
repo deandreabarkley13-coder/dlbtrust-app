@@ -167,11 +167,13 @@ class SovereignTrustEngine {
       getTokenAbi();
       getForwarderAbi();
     } catch (e) { issues.push('compiled artifacts missing: run solcjs'); }
-    if (!cfg.shadow) {
-      if (!cfg.tokenAddress || cfg.tokenAddress.startsWith('shadow-')) issues.push('SOVEREIGN_TOKEN_ADDRESS not set or shadow');
-      if (!cfg.forwarderAddress || cfg.forwarderAddress.startsWith('shadow-')) issues.push('SOVEREIGN_FORWARDER_ADDRESS not set or shadow');
-    }
     const token = await this._loadToken();
+    const tokenAddress = cfg.tokenAddress || token?.token_address || '';
+    const forwarderAddress = cfg.forwarderAddress || token?.forwarder_address || '';
+    if (!cfg.shadow) {
+      if (!tokenAddress || String(tokenAddress).startsWith('shadow-')) issues.push('SOVEREIGN_TOKEN_ADDRESS not set or shadow');
+      if (!forwarderAddress || String(forwarderAddress).startsWith('shadow-')) issues.push('SOVEREIGN_FORWARDER_ADDRESS not set or shadow');
+    }
     return {
       ready: issues.length === 0,
       mode: cfg.shadow ? 'shadow' : 'live',
@@ -271,7 +273,7 @@ class SovereignTrustEngine {
       const hash = await wallet.deployContract({
         abi: getForwarderAbi(),
         bytecode: getForwarderBytecode(),
-        gas: 1200000n,
+        gas: 2500000n,
         ...fees,
       });
       const receipt = await publicClient.waitForTransactionReceipt({ hash, timeout: 120000 });
@@ -285,7 +287,7 @@ class SovereignTrustEngine {
         abi: getTokenAbi(),
         bytecode: getTokenBytecode(),
         args: [cfg.tokenName, cfg.tokenSymbol, cfg.operatorAddress],
-        gas: 2500000n,
+        gas: 5000000n,
         ...fees,
       });
       const receipt = await publicClient.waitForTransactionReceipt({ hash, timeout: 120000 });
@@ -391,6 +393,7 @@ class SovereignTrustEngine {
         metadata: { sourceType, sourceAccountId, paymentId, target: to, sourceRef },
       });
     }
+    await TreasuryEngine.getOrCreateAccount(cfg.reserveAccount, { type: 'reserve', network: cfg.chainId === 1 ? 'mainnet' : 'sepolia', assetCode: cfg.tokenSymbol });
     await TreasuryEngine.credit(cfg.reserveAccount, cents, {
       source: 'sovereign_mint',
       metadata: { sourceType, sourceAccountId, paymentId, target: to, sourceRef },
