@@ -149,35 +149,18 @@ class BondTokenizationEngine {
 
     if (!cfg.shadow && !tokenAddress) {
       const { wallet, publicClient, fees } = walletClient();
-      if (cfg.factoryAddress) {
-        const hash = await wallet.writeContract({
-          address: cfg.factoryAddress,
-          abi: factoryAbi,
-          functionName: 'createBondToken',
-          args: [record.token_name, record.token_symbol, 0],
-          gas: 850000n,
-          ...fees,
-        });
-        const receipt = await publicClient.waitForTransactionReceipt({ hash });
-        if (receipt.status !== 'success') throw new Error(`bond token factory deploy failed: ${receipt.transactionHash}`);
-        const event = receipt.logs.find(l => l.address.toLowerCase() === cfg.factoryAddress.toLowerCase());
-        if (!event) throw new Error('BondTokenCreated event not found');
-        const decoded = viem.decodeEventLog({ abi: factoryAbi, eventName: 'BondTokenCreated', data: event.data, topics: event.topics });
-        record.token_address = decoded.args.token;
-      } else {
-        const abi = getBondTokenAbi();
-        const bytecode = getBondTokenBytecode();
-        const hash = await wallet.deployContract({
-          abi,
-          bytecode,
-          args: [record.token_name, record.token_symbol, 0],
-          gas: 2500000n,
-          ...fees,
-        });
-        const receipt = await publicClient.waitForTransactionReceipt({ hash });
-        if (receipt.status !== 'success') throw new Error(`bond token deploy failed: ${receipt.transactionHash}`);
-        record.token_address = receipt.contractAddress;
-      }
+      const abi = getBondTokenAbi();
+      const bytecode = getBondTokenBytecode();
+      const hash = await wallet.deployContract({
+        abi,
+        bytecode,
+        args: [record.token_name, record.token_symbol, 0],
+        gas: 2500000n,
+        ...fees,
+      });
+      const receipt = await publicClient.waitForTransactionReceipt({ hash });
+      if (receipt.status !== 'success') throw new Error(`bond token deploy failed: ${receipt.transactionHash}`);
+      record.token_address = receipt.contractAddress;
     }
 
     if (pool) {
