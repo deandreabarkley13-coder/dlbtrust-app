@@ -370,6 +370,19 @@
 
         <div class="grid" style="margin-top:20px">
           <div class="card" style="grid-column: 1 / -1;">
+            <h2>Operator SIT Transfer</h2>
+            <p>Transfer SIT from the operator treasury wallet to any address. The recipient is auto-whitelisted and the operator pays gas.</p>
+            <div class="form-row">
+              <div><label>To</label><input type="text" id="sit-transfer-to" placeholder="0x..." value="0x86167EcF041fFA95E5A4aEEFCB2632665Eb7FA16" /></div>
+              <div><label>Amount (SIT)</label><input type="number" id="sit-transfer-amount" value="0.01" step="0.01" /></div>
+            </div>
+            <div class="actions"><button class="btn" onclick="operatorTransferSIT()">Transfer SIT</button></div>
+            <div id="sit-transfer-result" class="status hidden" style="white-space:pre-wrap;word-break:break-word"></div>
+          </div>
+        </div>
+
+        <div class="grid" style="margin-top:20px">
+          <div class="card" style="grid-column: 1 / -1;">
             <h2>Gasless SIT Transfer (Meta-Tx)</h2>
             <p>Sign with MetaMask; the operator relayer pays gas. No ETH required in the sender wallet.</p>
             <div class="form-row">
@@ -2236,6 +2249,21 @@
         el('sit-mint-result').className = 'status success';
         loadSovereignOrders();
       } catch (e) { el('sit-mint-result').textContent = e.message; el('sit-mint-result').className = 'status error'; }
+    };
+
+    window.operatorTransferSIT = async function() {
+      try {
+        const res = await api('/api/dapp/sovereign-trust/transfer', {
+          method: 'POST',
+          body: JSON.stringify({
+            to: el('sit-transfer-to').value,
+            amount: el('sit-transfer-amount').value,
+          })
+        });
+        el('sit-transfer-result').textContent = JSON.stringify(res.data, null, 2);
+        el('sit-transfer-result').className = 'status success';
+        loadSovereignTrust();
+      } catch (e) { el('sit-transfer-result').textContent = e.message; el('sit-transfer-result').className = 'status error'; }
     };
 
     window.burnSovereignToken = async function() {
