@@ -252,6 +252,27 @@ class StablecoinDexEngine {
     return { hash, sendHash, status: receipt.status, amountEth: viem.formatEther(raw), to: target };
   }
 
+  static async _isValidPool({ poolAddress, tokenIn, tokenOut }) {
+    if (!poolAddress || !tokenIn || !tokenOut) return false;
+    if (!viem || viem.getAddress === undefined) return true;
+    try {
+      const { publicClient } = walletClient();
+      const code = await publicClient.getBytecode({ address: poolAddress });
+      if (!code || code === '0x') return false;
+      const bondDexAbi = [
+        { type: 'function', name: 'token0', inputs: [], outputs: [{ type: 'address' }], stateMutability: 'view' },
+        { type: 'function', name: 'token1', inputs: [], outputs: [{ type: 'address' }], stateMutability: 'view' },
+      ];
+      const [t0, t1] = await Promise.all([
+        publicClient.readContract({ address: poolAddress, abi: bondDexAbi, functionName: 'token0' }),
+        publicClient.readContract({ address: poolAddress, abi: bondDexAbi, functionName: 'token1' }),
+      ]);
+      const inLower = tokenIn.toLowerCase();
+      const outLower = tokenOut.toLowerCase();
+      return (t0.toLowerCase() === inLower && t1.toLowerCase() === outLower) || (t0.toLowerCase() === outLower && t1.toLowerCase() === inLower);
+    } catch (e) { return false; }
+  }
+
   static async swap({ amount, targetAsset = 'USDC', poolAddress, recipient, minOut } = {}) {
     const cfg = this.getConfig();
     if (!cfg.enabled) throw new Error('Stablecoin DEX not enabled');
@@ -261,6 +282,10 @@ class StablecoinDexEngine {
     const tokenOut = this.targetTokenAddress(targetAsset);
     if (!tokenOut) throw new Error(`Target asset ${targetAsset} has no token address configured`);
     const decimalsOut = this.targetTokenDecimals(targetAsset);
+
+    if (poolAddress && !(await this._isValidPool({ poolAddress, tokenIn: token.token_address, tokenOut }))) {
+      throw new Error(`Pool ${poolAddress} is not a valid DLBUSD/${targetAsset} BondDex pool`);
+    }
 
     const quote = await DexSwapEngine.quote({
       tokenIn: token.token_address,
@@ -326,6 +351,11 @@ class StablecoinDexEngine {
     // 2. Resolve or create the DEX pool
     let resolvedPool = poolAddress;
     let poolInfo = null;
+    const token = await this.getOrCreateDLBUSDToken();
+    const tokenOut = this.targetTokenAddress(targetAsset);
+    if (resolvedPool && !(await this._isValidPool({ poolAddress: resolvedPool, tokenIn: token.token_address, tokenOut }))) {
+      resolvedPool = null;
+    }
     if (!resolvedPool && createPoolIfMissing) {
       const seedTarget = poolSeedTargetAmount !== undefined ? poolSeedTargetAmount : poolSeedUsdc;
       poolInfo = await this.createPool({ seedUsdcAmount: seedTarget, seedDlbusdAmount: poolSeedDlbusd, targetAsset });

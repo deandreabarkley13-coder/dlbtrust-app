@@ -97,6 +97,7 @@ class PayoutCenterEngine {
     if (!amount || Number(amount) <= 0) throw new Error('amount must be positive');
 
     const recipient = await this.resolveRecipient({ recipientType, identifier: recipientIdentifier });
+    const chosenRail = (rail || 'sit').toLowerCase();
     const recordId = id('PC');
     const base = {
       id: recordId,
@@ -124,7 +125,12 @@ class PayoutCenterEngine {
     }, () => {});
 
     let result = null;
-    const chosenRail = (rail || 'sit').toLowerCase();
+    // Reuse the latest valid DEX pool for this asset to avoid paying creation gas each time.
+    if (chosenRail === 'dex' && !railOptions.poolAddress) {
+      const latest = await this.getLatestPoolAddress(asset);
+      if (latest) railOptions.poolAddress = latest;
+    }
+
     switch (chosenRail) {
       case 'sit':
       case 'sovereign': {
@@ -198,6 +204,19 @@ class PayoutCenterEngine {
     }, () => {});
 
     return { ...base, result };
+  }
+
+  static async getLatestPoolAddress(asset) {
+    await this.ensureTables();
+    return withFallback(async () => {
+      const rows = await query(
+        `SELECT tx_data->>'poolAddress' AS pool FROM dapp_payout_center
+         WHERE rail = 'dex' AND asset = $1 AND tx_data->>'poolAddress' IS NOT NULL
+         ORDER BY created_at DESC LIMIT 1`,
+        [asset.toUpperCase()]
+      );
+      return rows.rows[0] ? rows.rows[0].pool : null;
+    }, () => null);
   }
 
   static async listPayments({ limit = 50 } = {}) {
