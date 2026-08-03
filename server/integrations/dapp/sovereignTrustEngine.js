@@ -562,12 +562,65 @@ class SovereignTrustEngine {
 
   static async operatorTransfer({ to, amount, amountCents } = {}) {
     await ensureTables();
+    const cfg = this.getConfig();
     const token = await this._loadToken();
     if (!token) throw new Error('sovereign token not deployed');
+    if (!viem || !viem.isAddress || !viem.isAddress(to)) throw new Error('Invalid recipient address');
+    const toAddr = viem.getAddress ? viem.getAddress(to) : to.toLowerCase();
+    if (toAddr === '0x0000000000000000000000000000000000000000') throw new Error('Cannot transfer to zero address');
+
     const cents = amountCents || toCents(amount);
     if (cents <= 0) throw new Error('amount must be > 0');
+    if (cents > 1_000_000_000_000) throw new Error('amount exceeds maximum transfer limit');
+
+    const operator = (cfg.operatorAddress || '').toLowerCase();
+    const balance = await this.tokenBalanceOf(operator);
+    const balanceCents = Math.round(Number(balance) * 100);
+    if (cents > balanceCents) throw new Error(`Insufficient operator SIT balance: ${fromCents(balanceCents)} available, ${fromCents(cents)} requested`);
+
     const raw = viem.parseUnits(String(cents / 100), 6);
-    await this.whitelistAddress(to, true);
+
+    if (cfg.shadow) {
+      const toLower = (to || '').toLowerCase();
+      const opLower = operator.toLowerCase();
+      const opExisting = memory.holders.get(opLower) || 0;
+      memory.holders.set(opLower, Math.max(0, opExisting - cents));
+      const toExisting = memory.holders.get(toLower) || 0;
+      memory.holders.set(toLower, toExisting + cents);
+      if (pool) {
+        try {
+          const ts = new Date().toISOString();
+          const meta = JSON.stringify({ shadowTransfer: true, from: operator, to: toLower, amountCents: cents, at: ts });
+          await pool.query(`
+            INSERT INTO sovereign_token_holders (id, token_id, address, balance_cents, metadata)
+            VALUES ($1, $2, $3, $4, $5)
+            ON CONFLICT (token_id, address) DO UPDATE SET
+              balance_cents = GREATEST(0, sovereign_token_holders.balance_cents - EXCLUDED.balance_cents),
+              metadata = sovereign_token_holders.metadata || EXCLUDED.metadata,
+              updated_at = NOW()
+          `, [id('SIT-HOLD'), token.id, opLower, cents, meta]);
+          await pool.query(`
+            INSERT INTO sovereign_token_holders (id, token_id, address, balance_cents, metadata)
+            VALUES ($1, $2, $3, $4, $5)
+            ON CONFLICT (token_id, address) DO UPDATE SET
+              balance_cents = sovereign_token_holders.balance_cents + EXCLUDED.balance_cents,
+              metadata = sovereign_token_holders.metadata || EXCLUDED.metadata,
+              updated_at = NOW()
+          `, [id('SIT-HOLD'), token.id, toLower, cents, meta]);
+        } catch (e) { console.warn('[SovereignTrustEngine] shadow transfer holder update failed:', e.message); }
+      }
+      return { success: true, shadow: true, to, amount: fromCents(cents), tx: `shadow-tx-transfer-${Date.now()}` };
+    }
+
+    const { publicClient } = walletClient();
+    const whitelisted = await publicClient.readContract({
+      address: token.token_address,
+      abi: getTokenAbi(),
+      functionName: 'isWhitelisted',
+      args: [to],
+    }).catch(() => false);
+    if (!whitelisted) throw new Error(`Recipient ${to} is not whitelisted; call Whitelist Address first`);
+
     const tx = await this._tokenWrite('transfer', [to, raw], { gas: 200000n });
     return { success: true, to, amount: fromCents(cents), tx };
   }
