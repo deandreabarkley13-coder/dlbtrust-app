@@ -165,6 +165,33 @@ SELECT fit_id, type, amount_cents, name, memo FROM ofx_transactions;
   Then call `relaySovereignTransfer()` to relay the signed meta-tx.
 - Use `TREASURY_HOT` as the treasury source account for mint and burn; for non-treasury sources ensure the source-of-funds account has a positive balance.
 
+## Sovereign Trust Token (SIT) live mainnet deploy (deployed dApp)
+
+- The dApp **Sovereign Trust** tab reads `GET /api/dapp/sovereign-trust/readiness` and calls `POST /api/dapp/sovereign-trust/deploy`, `POST /api/dapp/sovereign-trust/mint`, etc.
+- On mainnet (`SOVEREIGN_TRUST_SHADOW=false`, `DAPP_CHAIN_ID=1`), readiness initially reports `ready: false` with issues `SOVEREIGN_TOKEN_ADDRESS not set or shadow` / `SOVEREIGN_FORWARDER_ADDRESS not set or shadow` until the token and forwarder are deployed.
+- Deploy:
+  1. Confirm `fly.toml` contains `[build]` `dockerfile = "Dockerfile"` (without it `fly deploy` reports `app does not have a Dockerfile or buildpacks configured`).
+  2. From the repo root run `flyctl deploy --app dlbtrust-app --yes --local-only` (or omit `--local-only` if the remote builder picks up the Dockerfile).
+  3. `POST /api/dapp/sovereign-trust/deploy` with `x-admin-token: dlb-admin-2026-trust`. The server waits for receipts; it may take >120s. It returns `token` and `forwarder` mainnet addresses.
+  4. Set Fly secrets so readiness passes and the app knows the deployed contracts:
+     ```bash
+     flyctl secrets set --app dlbtrust-app \
+       SOVEREIGN_TOKEN_ADDRESS=<token-address> \
+       SOVEREIGN_FORWARDER_ADDRESS=<forwarder-address>
+     ```
+- Verify deploy:
+  - `GET /api/dapp/sovereign-trust/readiness` should return `ready: true`, `mode: live`, `network: mainnet`, no issues, and the token/forwarder addresses.
+  - `eth_getCode` for both addresses should return non-empty bytecode.
+  - Deploy tx hashes (from `eth_getTransactionByHash` with `to: null`):
+    - Forwarder deploy uses `gas: 2500000` and input length ~8KB.
+    - Token deploy uses `gas: 5000000` and input length ~32KB (16KB deployed bytecode).
+- Optional live mint:
+  - First ensure the destination address is whitelisted (`POST /api/dapp/sovereign-trust/whitelist` with `address` and `allowed: true`) because `whitelistEnabled` is `true`.
+  - First mint on a fresh deploy may fail with `Treasury account not found: SOVEREIGN_RESERVE` because `SOVEREIGN_RESERVE` does not exist in `stablecoin_treasury_accounts`. Create it by SSHing into the Fly machine and calling `TreasuryEngine.getOrCreateAccount('SOVEREIGN_RESERVE')`, or set `SOVEREIGN_RESERVE_ACCOUNT` to an existing account (e.g. `TREASURY_HOT`) before the deploy.
+  - `POST /api/dapp/sovereign-trust/mint` with `sourceType: treasury`, `sourceAccountId: TREASURY_HOT`, `amount: 0.01`, and `to: <destination>`.
+  - Verify balance with `GET /api/dapp/sovereign-trust/balance/<destination>` and on-chain with `eth_getBalance` of the token contract or `eth_call` `balanceOf(<destination>)`.
+- Operator wallet: `0x3e53028cf69949f3B961ce786Baf2D4D75166562`. Live deploy + whitelist + 0.01 SIT mint used ~0.0016 ETH at ~0.17 gwei effective gas price.
+
 ## Assets / Expenses & One-Click Automation (deployed dApp)
 
 - Nav tabs **Assets / Expenses** and **Automation** expose the new features.
@@ -202,3 +229,4 @@ SELECT fit_id, type, amount_cents, name, memo FROM ofx_transactions;
 - `JWT_SECRET` and `ADMIN_SECRET_TOKEN` for stable auth.
 - `secret:org:HEDERA_OPERATOR_KEY` — only needed for live (non-shadow) Hedera tests.
 - `secret:org:DLBTRUST_API_KEY` — for programmatic API access if enabled.
+- `secret:org:FLY_API_TOKEN` — needed for `flyctl deploy` and `flyctl secrets set` against `dlbtrust-app`.
