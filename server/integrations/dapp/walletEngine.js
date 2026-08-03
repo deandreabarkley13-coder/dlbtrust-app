@@ -27,6 +27,8 @@ let DappEngine, SovereignTrustEngine;
 function getDappEngine() { try { return require('./dappEngine').DappEngine; } catch (e) { return null; } }
 function getSovereignEngine() { try { return require('./sovereignTrustEngine').SovereignTrustEngine; } catch (e) { return null; } }
 
+const { getConfig } = require('./config');
+
 function str(name, def = '') { return (process.env[name] || def).trim(); }
 function bool(name, def = false) { const v = process.env[name]; return v ? String(v).toLowerCase() === 'true' : def; }
 function id(prefix = 'WLT') { return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 8).toUpperCase()}`; }
@@ -140,7 +142,18 @@ class WalletEngine {
     return results;
   }
 
-  static async createWallet({ userId, name, type = 'internal', address, privateKey } = {}) {
+  static async getSystemUser() {
+    DappEngine = getDappEngine();
+    if (!DappEngine) throw new Error('DappEngine not available');
+    const email = 'system@dlbtrust.internal';
+    let user = await DappEngine.getUserByEmail(email).catch(() => null);
+    if (!user) {
+      user = await DappEngine.createUser({ email, name: 'Trust System', role: 'system', roles: ['system'], activeRole: 'system' });
+    }
+    return user;
+  }
+
+  static async createWallet({ userId, name, type = 'internal', address, privateKey, subtype, metadata = {} } = {}) {
     await this.ensureTables();
     if (!userId) throw new Error('userId required');
     let walletAddress = address;
@@ -151,6 +164,7 @@ class WalletEngine {
       encryptedKey = this._encrypt(kp.privateKey);
     }
     if (!walletAddress) throw new Error('address required for external wallet');
+    const meta = { createdBy: 'WalletEngine', ...(metadata || {}), ...(subtype ? { subtype } : {}) };
     const row = {
       id: id('WLT'),
       user_id: userId,
@@ -160,13 +174,21 @@ class WalletEngine {
       type,
       private_key_encrypted: encryptedKey,
       is_primary: true,
-      metadata: JSON.stringify({ createdBy: 'WalletEngine' }),
+      metadata: JSON.stringify(meta),
     };
     await withFallback(async () => {
       await query(`INSERT INTO dapp_wallets (id, user_id, name, address, chain, type, private_key_encrypted, is_primary, metadata) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
         [row.id, row.user_id, row.name, row.address, row.chain, row.type, row.private_key_encrypted, row.is_primary, row.metadata]);
     }, () => {});
     return row;
+  }
+
+  static async getWalletBySubtype(subtype) {
+    await this.ensureTables();
+    return withFallback(async () => {
+      const rows = await query(`SELECT * FROM dapp_wallets WHERE metadata->>'subtype' = $1 LIMIT 1`, [subtype]);
+      return rows.rows[0] || null;
+    }, () => null);
   }
 
   static async getWallet(id) {
@@ -247,6 +269,19 @@ class WalletEngine {
     return this.getBalance(walletId);
   }
 
+  // Public ledger helpers for master-wallet automation
+  static async credit(walletId, asset, amount, metadata = {}) {
+    const cents = toCents(amount);
+    if (cents <= 0) throw new Error('amount must be positive');
+    return this._credit(walletId, asset, cents, metadata);
+  }
+
+  static async debit(walletId, asset, amount, metadata = {}) {
+    const cents = toCents(amount);
+    if (cents <= 0) throw new Error('amount must be positive');
+    return this._debit(walletId, asset, cents, metadata);
+  }
+
   static async getBalance(walletId) {
     const wallet = await this.getWallet(walletId);
     if (!wallet) throw new Error('Wallet not found');
@@ -318,6 +353,23 @@ class WalletEngine {
 
     await this._credit(walletId, asset, cents, { memo: memo || `Credit ${asset}` });
     return { wallet, amount, asset, balance: await this.getBalance(walletId) };
+  }
+
+  static async fundWalletEth({ walletId, amountEth } = {}) {
+    if (!viem) throw new Error('viem not installed');
+    const wallet = await this.getWallet(walletId);
+    if (!wallet) throw new Error('Wallet not found');
+    const cfg = getConfig();
+    if (!cfg.privateKey) throw new Error('DAPP_PRIVATE_KEY not configured');
+    const account = accountFns.privateKeyToAccount(cfg.privateKey);
+    const chain = cfg.chainId === 11155111 ? chains.sepolia : chains.mainnet;
+    const fees = { maxFeePerGas: viem.parseGwei('1.5'), maxPriorityFeePerGas: viem.parseGwei('0.0015') };
+    const walletClient = viem.createWalletClient({ account, chain, transport: viem.http(cfg.rpcUrl) });
+    const publicClient = viem.createPublicClient({ chain, transport: viem.http(cfg.rpcUrl) });
+    const raw = viem.parseEther(String(amountEth));
+    const hash = await walletClient.sendTransaction({ to: wallet.address, value: raw, gas: 21000n, ...fees });
+    await publicClient.waitForTransactionReceipt({ hash });
+    return { walletId, amountEth, txHash: hash };
   }
 
   static async transfer({ fromWalletId, toWalletId, toAddress, amount, asset = 'SIT', memo } = {}) {
@@ -400,6 +452,80 @@ class WalletEngine {
     }, () => {});
 
     return { type: 'external', from: wallet.address, to, amount, asset, txHash: relay.tx, balance: await this.getBalance(fromWalletId) };
+  }
+
+  static async externalTokenSend({ fromWalletId, toAddress, amount, asset = 'USDC', tokenAddress, decimals = 6, memo } = {}) {
+    await this.ensureTables();
+    if (!fromWalletId || !toAddress || !tokenAddress) throw new Error('fromWalletId, toAddress and tokenAddress required');
+    if (!viem || !viem.isAddress || !viem.isAddress(toAddress) || !viem.isAddress(tokenAddress)) throw new Error('Invalid recipient or token address');
+    const to = viem.getAddress ? viem.getAddress(toAddress) : toAddress.toLowerCase();
+    const wallet = await this.getWallet(fromWalletId);
+    if (!wallet || wallet.type !== 'internal' || !wallet.private_key_encrypted) throw new Error('Only system wallets can send external tokens');
+    const cents = toCents(amount);
+    if (cents <= 0) throw new Error('amount must be positive');
+
+    const cfg = getConfig();
+    if (!cfg.privateKey) throw new Error('DAPP_PRIVATE_KEY not configured');
+    const chain = cfg.chainId === 11155111 ? chains.sepolia : chains.mainnet;
+    const account = accountFns.privateKeyToAccount(this._decrypt(wallet.private_key_encrypted));
+    const walletClient = viem.createWalletClient({ account, chain, transport: viem.http(cfg.rpcUrl) });
+    const publicClient = viem.createPublicClient({ chain, transport: viem.http(cfg.rpcUrl) });
+    const raw = viem.parseUnits(String(amount), decimals);
+    const fees = { maxFeePerGas: viem.parseGwei('3'), maxPriorityFeePerGas: viem.parseGwei('0.0015') };
+
+    const hash = await walletClient.writeContract({
+      address: tokenAddress,
+      abi: this._erc20FullAbi(),
+      functionName: 'transfer',
+      args: [to, raw],
+      gas: 100000n,
+      ...fees,
+    });
+    const receipt = await publicClient.waitForTransactionReceipt({ hash });
+    if (receipt.status !== 'success') throw new Error('Token transfer reverted');
+
+    await this._debit(fromWalletId, asset, cents, { memo: memo || `External token send to ${to}`, tx_hash: hash });
+    const txId = id('WTX');
+    await withFallback(async () => {
+      await query('INSERT INTO dapp_wallet_transactions (id, wallet_id, counterparty_address, type, asset, amount_cents, status, tx_hash, memo, metadata) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)',
+        [txId, fromWalletId, to, 'external_token', asset.toUpperCase(), cents, 'completed', hash, memo || '', JSON.stringify({ tokenAddress, decimals })]);
+    }, () => {});
+
+    return { type: 'external_token', from: wallet.address, to, amount, asset, tokenAddress, txHash: hash, balance: await this.getBalance(fromWalletId) };
+  }
+
+  static async externalEthSend({ fromWalletId, toAddress, amount, memo } = {}) {
+    await this.ensureTables();
+    if (!fromWalletId || !toAddress) throw new Error('fromWalletId and toAddress required');
+    if (!viem || !viem.isAddress || !viem.isAddress(toAddress)) throw new Error('Invalid recipient address');
+    const to = viem.getAddress ? viem.getAddress(toAddress) : toAddress.toLowerCase();
+    const wallet = await this.getWallet(fromWalletId);
+    if (!wallet || wallet.type !== 'internal' || !wallet.private_key_encrypted) throw new Error('Only system wallets can send external ETH');
+    const eth = Number(amount);
+    if (eth <= 0) throw new Error('amount must be positive');
+
+    const cfg = getConfig();
+    if (!cfg.privateKey) throw new Error('DAPP_PRIVATE_KEY not configured');
+    const chain = cfg.chainId === 11155111 ? chains.sepolia : chains.mainnet;
+    const account = accountFns.privateKeyToAccount(this._decrypt(wallet.private_key_encrypted));
+    const walletClient = viem.createWalletClient({ account, chain, transport: viem.http(cfg.rpcUrl) });
+    const publicClient = viem.createPublicClient({ chain, transport: viem.http(cfg.rpcUrl) });
+    const raw = viem.parseEther(String(eth));
+    const fees = { maxFeePerGas: viem.parseGwei('3'), maxPriorityFeePerGas: viem.parseGwei('0.0015') };
+    const ethBalance = await publicClient.getBalance({ address: wallet.address });
+    const totalNeeded = raw + (fees.maxFeePerGas ? BigInt(Math.ceil(Number(fees.maxFeePerGas) * 1.5)) : 0n);
+    if (ethBalance < totalNeeded) throw new Error(`Insufficient on-chain ETH balance: ${viem.formatEther(ethBalance)} available`);
+    const hash = await walletClient.sendTransaction({ to, value: raw, gas: 21000n, ...fees });
+    await publicClient.waitForTransactionReceipt({ hash });
+    return { type: 'external_eth', from: wallet.address, to, amount: eth, asset: 'ETH', txHash: hash };
+  }
+
+  static _erc20FullAbi() {
+    return [
+      { type: 'function', name: 'transfer', inputs: [{ type: 'address' }, { type: 'uint256' }], outputs: [{ type: 'bool' }], stateMutability: 'nonpayable' },
+      { type: 'function', name: 'balanceOf', inputs: [{ type: 'address' }], outputs: [{ type: 'uint256' }], stateMutability: 'view' },
+      { type: 'function', name: 'decimals', inputs: [], outputs: [{ type: 'uint8' }], stateMutability: 'view' },
+    ];
   }
 
   static async listTransactions(walletId) {

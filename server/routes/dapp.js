@@ -23,6 +23,10 @@ const { DisbursementAutomationEngine } = require('../integrations/dapp/disbursem
 const { FundingEngine } = require('../integrations/dapp/fundingEngine');
 const { PayoutCenterEngine } = require('../integrations/dapp/payoutCenterEngine');
 const { WalletEngine } = require('../integrations/dapp/walletEngine');
+const { MasterWalletEngine } = require('../integrations/dapp/masterWalletEngine');
+let BondEngine, LiveBondEngine;
+try { BondEngine = require('../integrations/bonds/bondEngine').BondEngine; } catch (e) { BondEngine = null; }
+try { LiveBondEngine = require('../integrations/bonds/liveEngine').LiveBondEngine; } catch (e) { LiveBondEngine = null; }
 const { requireAuth, writeRateLimiter } = require('../integrations/auth/securityMiddleware');
 
 const router = express.Router();
@@ -971,7 +975,17 @@ router.post('/public/request', writeRateLimiter(), async (req, res) => {
     }
     if (beneficiaryWallet) {
       await DappEngine.linkWallet({ email: beneficiaryEmail, walletAddress: beneficiaryWallet, provider: 'manual' }).catch(() => {});
+    } else {
+      // Create a system wallet for the beneficiary so funds can be released automatically
+      const wallets = await WalletEngine.getWalletsByUser(beneficiary.id);
+      if (!wallets.length) {
+        const wallet = await WalletEngine.createWallet({ userId: beneficiary.id, name: `${beneficiary.name || beneficiaryEmail} Wallet`, type: 'internal' });
+        await DappEngine.linkWallet({ email: beneficiaryEmail, walletAddress: wallet.address, provider: 'system' }).catch(() => null);
+      }
     }
+
+    const refreshed = await DappEngine.getUserByEmail(beneficiaryEmail);
+    const destinationAddress = refreshed.wallet_address || beneficiaryWallet || beneficiaryEmail;
 
     // Ensure maker and checker portal users exist
     const makerEmail = 'annrobinson9800@yahoo.com';
@@ -981,49 +995,24 @@ router.post('/public/request', writeRateLimiter(), async (req, res) => {
     if (!maker) maker = await DappEngine.createUser({ email: makerEmail, name: 'Malissa Robinson', roles: ['trustee_maker', 'beneficiary'], activeRole: 'trustee_maker' });
     if (!checker) checker = await DappEngine.createUser({ email: checkerEmail, name: 'Checker Trust', roles: ['trustee_checker', 'beneficiary'], activeRole: 'trustee_checker' });
 
-    // Generate one-time login PINs for maker and checker (sent to email in production)
+    // Generate one-time login PIN for maker (DistributionRequestEngine will email it)
     const makerOtp = await DappEngine.generateOtp(makerEmail);
-    const checkerOtp = await DappEngine.generateOtp(checkerEmail);
 
-    // Kick off the full automation pipeline: proof -> request -> approval/execution
+    // Kick off the full automation pipeline: proof -> request -> sequential approval/execution
     const run = await DisbursementAutomationEngine.runOneClickDistribution({
       name: `Landing request from ${beneficiaryName || beneficiaryEmail}`,
       type: 'distribution',
       beneficiaryEmail,
       beneficiaryName: beneficiaryName || beneficiaryEmail.split('@')[0],
       amountUsd: Number(amountUsd).toFixed(2),
-      destinationAddress: beneficiaryWallet || beneficiaryEmail,
+      destinationAddress,
       requesterRole: 'beneficiary',
       memo: message || `Landing request submitted by ${beneficiaryEmail}`,
       autoExecute: false,
       createdBy: beneficiaryEmail,
     });
 
-    // Notify maker and checker with their PINs
-    if (MessagingEngine) {
-      try {
-        await MessagingEngine.notify({
-          subject: 'New beneficiary request — maker approval required',
-          body: `A new request was submitted by ${beneficiaryName || beneficiaryEmail} for $${Number(amountUsd).toFixed(2)}. Your one-time login PIN is: ${makerOtp.code}. Log in at the dApp to approve.`,
-          participants: [{ name: maker.name, email: makerEmail, role: 'trustee_maker' }],
-          referenceType: 'distribution_request',
-          referenceId: (run.requests && run.requests[0] && run.requests[0].id) || (run.run && run.run.id),
-          sender: 'system',
-        });
-      } catch (e) { console.warn('[public/request] maker notify failed:', e.message); }
-      try {
-        await MessagingEngine.notify({
-          subject: 'New beneficiary request — checker approval required',
-          body: `A new request was submitted by ${beneficiaryName || beneficiaryEmail} for $${Number(amountUsd).toFixed(2)}. Your one-time login PIN is: ${checkerOtp.code}. Log in at the dApp to approve.`,
-          participants: [{ name: checker.name, email: checkerEmail, role: 'trustee_checker' }],
-          referenceType: 'distribution_request',
-          referenceId: (run.requests && run.requests[0] && run.requests[0].id) || (run.run && run.run.id),
-          sender: 'system',
-        });
-      } catch (e) { console.warn('[public/request] checker notify failed:', e.message); }
-    }
-
-    res.json({ success: true, data: { run, beneficiary, pins: { maker: makerOtp.code, checker: checkerOtp.code } } });
+    res.json({ success: true, data: { run, beneficiary, pins: { maker: makerOtp.code } } });
   } catch (err) { sendError(res, err); }
 });
 
@@ -1112,6 +1101,59 @@ router.post('/wallets/transfer', operatorAuth, writeRateLimiter(), async (req, r
     if (!fromWalletId || (!toWalletId && !toAddress)) throw new Error('fromWalletId and toWalletId or toAddress required');
     const data = await WalletEngine.transfer({ fromWalletId, toWalletId, toAddress, amount, asset: asset || 'SIT', memo });
     res.status(201).json({ success: true, data });
+  } catch (err) { sendError(res, err); }
+});
+
+// ─── Master Wallets & Fixed-Income Automation ─────────────────────────────────
+router.get('/master-wallets', adminAuth, async (req, res) => {
+  try { res.json({ success: true, data: await MasterWalletEngine.getAll() }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/master-wallets/ensure', adminAuth, async (req, res) => {
+  try { res.json({ success: true, data: await MasterWalletEngine.ensureMasterWallets() }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/master-wallets/:subtype/transfer', adminAuth, writeRateLimiter(), async (req, res) => {
+  try {
+    const { toSubtype, amount, asset, memo } = req.body;
+    const data = await MasterWalletEngine.transfer({ fromSubtype: req.params.subtype, toSubtype, amount, asset: asset || 'SIT', memo });
+    res.status(201).json({ success: true, data });
+  } catch (err) { sendError(res, err); }
+});
+
+router.post('/master-wallets/:subtype/external-send', adminAuth, writeRateLimiter(), async (req, res) => {
+  try {
+    const { toAddress, amount, asset, tokenAddress, decimals, memo } = req.body;
+    const data = await MasterWalletEngine.externalSend({ fromSubtype: req.params.subtype, toAddress, amount, asset: asset || 'SIT', tokenAddress, decimals, memo });
+    res.status(201).json({ success: true, data });
+  } catch (err) { sendError(res, err); }
+});
+
+router.post('/master-wallets/distribute-fixed-income', adminAuth, writeRateLimiter(), async (req, res) => {
+  try {
+    const { bondId, amount, targetAsset, memo } = req.body;
+    const data = await MasterWalletEngine.distributeFixedIncome({ bondId, amount, targetAsset, memo });
+    res.status(201).json({ success: true, data });
+  } catch (err) { sendError(res, err); }
+});
+
+router.post('/bonds/:id/distribute-interest', adminAuth, writeRateLimiter(), async (req, res) => {
+  try {
+    const { amount, targetAsset, memo } = req.body || {};
+    const data = await MasterWalletEngine.distributeFixedIncome({ bondId: req.params.id, amount, targetAsset, memo });
+    res.status(201).json({ success: true, data });
+  } catch (err) { sendError(res, err); }
+});
+
+router.get('/bonds/portfolio', adminAuth, async (req, res) => {
+  try {
+    if (!BondEngine) throw new Error('BondEngine not available');
+    const bonds = await BondEngine.listBonds();
+    const metrics = [];
+    for (const bond of bonds) {
+      try { metrics.push(await LiveBondEngine.getBondLiveMetrics(bond.id)); } catch (e) { metrics.push({ bond_id: bond.id, bond_name: bond.bond_name, error: e.message }); }
+    }
+    res.json({ success: true, data: { bonds, metrics } });
   } catch (err) { sendError(res, err); }
 });
 

@@ -291,6 +291,9 @@ async function initializeDatabase() {
     await WalletEngine.ensureTables();
     await WalletEngine.ensureWalletsForAllUsers();
     console.log('[dapp] wallets ensured');
+    var MasterWalletEngine = require(path.join(HD, 'server', 'integrations', 'dapp', 'masterWalletEngine')).MasterWalletEngine;
+    await MasterWalletEngine.ensureMasterWallets();
+    console.log('[dapp] master wallets ensured');
   } catch(e) {
     console.warn('[dapp] table init:', e.message);
   }

@@ -1,0 +1,315 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>DLB Trust — Master Dashboard</title>
+  <style>
+    :root { --bg:#0b0f17; --card:#131925; --panel:#1e293b; --border:#2a3548; --text:#f8fafc; --muted:#94a3b8; --accent:#3b82f6; --accent-2:#10b981; --gold:#f59e0b; --danger:#ef4444; }
+    * { box-sizing:border-box; }
+    body { margin:0; font-family:system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif; background:var(--bg); color:var(--text); }
+    header { background:var(--card); border-bottom:1px solid var(--border); padding:16px 24px; display:flex; align-items:center; justify-content:space-between; }
+    header h1 { margin:0; font-size:20px; }
+    header a { color:var(--muted); text-decoration:none; font-size:14px; }
+    header a:hover { color:var(--text); }
+    .container { max-width:1200px; margin:24px auto; padding:0 16px; }
+    .topbar { display:flex; gap:12px; align-items:end; flex-wrap:wrap; margin-bottom:18px; }
+    .topbar label { font-size:12px; color:var(--muted); display:block; margin-bottom:4px; }
+    .topbar input { background:#0b1220; border:1px solid var(--border); color:var(--text); padding:8px 10px; border-radius:6px; font-size:14px; }
+    .btn { background:var(--accent); color:#fff; border:0; padding:10px 18px; border-radius:8px; cursor:pointer; font-size:14px; }
+    .btn:hover { opacity:.9; }
+    .btn-gold { background:var(--gold); color:#000; }
+    .btn-2 { background:var(--accent-2); color:#000; }
+    .btn-sec { background:var(--border); color:var(--text); }
+    .btn-sm { padding:6px 12px; font-size:12px; }
+    .grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(260px,1fr)); gap:16px; }
+    .panel { background:var(--panel); border:1px solid var(--border); border-radius:12px; padding:18px; margin-bottom:18px; }
+    .panel h2 { margin:0 0 8px; font-size:17px; display:flex; align-items:center; gap:8px; }
+    .panel p { color:var(--muted); font-size:13px; margin:0 0 12px; }
+    .big { font-size:32px; font-weight:700; color:var(--accent-2); }
+    .muted { color:var(--muted); font-size:12px; }
+    .wallet-card { background:var(--card); border:1px solid var(--border); border-radius:10px; padding:14px; }
+    .wallet-card h3 { margin:0 0 6px; font-size:15px; }
+    .wallet-card .addr { font-family:monospace; font-size:11px; color:var(--accent); word-break:break-all; }
+    .wallet-card .bal { margin-top:8px; font-size:13px; }
+    .wallet-card .bal span { color:var(--muted); display:block; }
+    table { width:100%; border-collapse:collapse; font-size:13px; }
+    th, td { text-align:left; padding:8px; border-bottom:1px solid var(--border); }
+    th { color:var(--muted); font-weight:600; }
+    .form-row { display:grid; grid-template-columns:repeat(auto-fit,minmax(180px,1fr)); gap:12px; margin:12px 0; }
+    label { display:block; font-size:12px; color:var(--muted); margin-bottom:4px; }
+    input, select { width:100%; background:#0b1220; border:1px solid var(--border); color:var(--text); padding:8px 10px; border-radius:6px; }
+    .status { padding:10px; border-radius:6px; background:#0b1220; border:1px solid var(--border); font-size:12px; margin-top:10px; white-space:pre-wrap; word-break:break-word; }
+    .status.ok { border-color:var(--accent-2); color:var(--accent-2); }
+    .status.err { border-color:var(--danger); color:var(--danger); }
+    .hidden { display:none; }
+    .tabs { display:flex; gap:6px; margin-bottom:12px; border-bottom:1px solid var(--border); padding-bottom:8px; }
+    .tab { background:transparent; border:0; color:var(--muted); padding:8px 12px; cursor:pointer; font-size:14px; }
+    .tab.active { color:var(--text); border-bottom:2px solid var(--accent); }
+    .section.hidden { display:none; }
+    .inline { display:flex; gap:8px; align-items:center; flex-wrap:wrap; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>DLB Trust — Master Dashboard</h1>
+    <div>
+      <a href="/dapp/wallets.html">Wallets</a> &middot;
+      <a href="/dapp/payout-center.html">Payout Center</a> &middot;
+      <a href="/dapp/index.html">Portal</a>
+    </div>
+  </header>
+
+  <div class="container">
+    <div class="panel">
+      <div class="topbar">
+        <div>
+          <label>Admin / Operator Token</label>
+          <input type="password" id="token" placeholder="x-admin-token" style="width:260px;" />
+        </div>
+        <button class="btn" onclick="saveToken()">Save token</button>
+        <button class="btn btn-sec" onclick="loadAll()">Refresh all</button>
+      </div>
+      <p class="muted">Use this dashboard to create master wallets, view bond/fixed-income values, distribute interest, and approve beneficiary requests.</p>
+    </div>
+
+    <div class="tabs">
+      <button class="tab active" onclick="showTab('overview')">Overview</button>
+      <button class="tab" onclick="showTab('masters')">Master Wallets</button>
+      <button class="tab" onclick="showTab('bonds')">Bond / Fixed Income</button>
+      <button class="tab" onclick="showTab('requests')">Requests</button>
+    </div>
+
+    <!-- Overview -->
+    <div id="overview" class="section">
+      <div class="grid">
+        <div class="panel">
+          <h2>Master Wallet Status</h2>
+          <p>Principal, Interest Income, Operating, and Income Distribution wallets.</p>
+          <div id="overview-master-status" class="muted">Loading...</div>
+        </div>
+        <div class="panel">
+          <h2>Fixed Income</h2>
+          <p>Accrued interest and next coupon per bond.</p>
+          <div id="overview-income" class="muted">Loading...</div>
+        </div>
+        <div class="panel">
+          <h2>Pending Approvals</h2>
+          <p>Beneficiary requests awaiting maker/checker approval.</p>
+          <div id="overview-pending" class="muted">Loading...</div>
+        </div>
+      </div>
+      <div class="panel">
+        <h2>One-click automation</h2>
+        <p>Run common workflows with one button. The beneficiary landing request (/) still triggers the maker-then-checker email flow automatically.</p>
+        <div class="inline">
+          <button class="btn" onclick="ensureMasterWallets()">1. Ensure master wallets</button>
+          <button class="btn btn-gold" onclick="openDistributeModal()">2. Distribute fixed income</button>
+          <button class="btn btn-2" onclick="loadRequests()">3. Approve pending requests</button>
+        </div>
+        <div id="automation-result" class="status hidden"></div>
+      </div>
+    </div>
+
+    <!-- Master Wallets -->
+    <div id="masters" class="section hidden">
+      <div class="panel">
+        <h2>Master Accounts</h2>
+        <p>System wallets for principal, interest, operating, and income distribution. Use the forms below to move funds between them or send externally.</p>
+        <div id="master-list" class="grid"></div>
+      </div>
+      <div class="panel">
+        <h2>Transfer between master wallets</h2>
+        <div class="form-row">
+          <div><label>From</label><select id="m-from"><option value="principal">Principal Token Master</option><option value="interest">Interest Income Master</option><option value="operating">Trust Operating Wallet</option><option value="distribution">Income Distribution Master</option></select></div>
+          <div><label>To</label><select id="m-to"><option value="distribution" selected>Income Distribution Master</option><option value="principal">Principal Token Master</option><option value="interest">Interest Income Master</option><option value="operating">Trust Operating Wallet</option></select></div>
+          <div><label>Amount</label><input type="number" id="m-amount" value="0.50" step="0.01" /></div>
+          <div><label>Asset</label><select id="m-asset"><option value="SIT">SIT</option><option value="USDC">USDC</option><option value="ETH">ETH</option></select></div>
+        </div>
+        <button class="btn" onclick="masterTransfer()">Transfer</button>
+        <div id="m-transfer-result" class="status hidden"></div>
+      </div>
+      <div class="panel">
+        <h2>External send from master wallet</h2>
+        <div class="form-row">
+          <div><label>From master</label><select id="mx-from"><option value="distribution">Income Distribution Master</option><option value="principal">Principal Token Master</option><option value="interest">Interest Income Master</option><option value="operating">Trust Operating Wallet</option></select></div>
+          <div><label>To address</label><input type="text" id="mx-address" placeholder="0x..." /></div>
+          <div><label>Amount</label><input type="number" id="mx-amount" value="0.10" step="0.01" /></div>
+          <div><label>Asset</label><select id="mx-asset"><option value="SIT">SIT</option><option value="ETH">ETH</option><option value="USDC">USDC</option></select></div>
+          <div><label>Token address (for USDC/custom)</label><input type="text" id="mx-token" placeholder="0xA0b8..." /></div>
+          <div><label>Decimals</label><input type="number" id="mx-decimals" value="6" /></div>
+        </div>
+        <button class="btn" onclick="masterExternalSend()">Send externally</button>
+        <div id="mx-result" class="status hidden"></div>
+      </div>
+    </div>
+
+    <!-- Bonds -->
+    <div id="bonds" class="section hidden">
+      <div class="panel">
+        <h2>Bond Portfolio Values</h2>
+        <p>Principal, accrued interest, market value, and next coupon.</p>
+        <div id="bond-portfolio" class="grid"></div>
+      </div>
+      <div class="panel">
+        <h2>Fixed Income → Income Distribution</h2>
+        <p>Pay bond interest, mint DLBUSD, swap for USDC (or ETH fallback), and sweep to the Income Distribution Master Wallet.</p>
+        <div class="form-row">
+          <div><label>Bond</label><select id="dist-bond"><option value="">Loading...</option></select></div>
+          <div><label>Amount (leave blank for all accrued)</label><input type="number" id="dist-amount" step="0.01" placeholder="auto" /></div>
+          <div><label>Target asset</label><select id="dist-asset"><option value="USDC">USDC</option><option value="ETH">ETH</option></select></div>
+        </div>
+        <button class="btn btn-gold" onclick="distributeFixedIncome()">Distribute fixed income</button>
+        <div id="dist-result" class="status hidden"></div>
+      </div>
+    </div>
+
+    <!-- Requests -->
+    <div id="requests" class="section hidden">
+      <div class="panel">
+        <h2>Distribution / Disbursement Requests</h2>
+        <p>Beneficiary requests trigger an email to the maker first, then the checker. After both approve, funds are released to the beneficiary wallet.</p>
+        <table>
+          <thead><tr><th>ID</th><th>Beneficiary</th><th>Amount</th><th>Status</th><th>Approvals</th><th>Action</th></tr></thead>
+          <tbody id="requests-list"></tbody>
+        </table>
+        <div id="requests-result" class="status hidden"></div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    const apiBase = '/api/dapp';
+    const el = id => document.getElementById(id);
+    function token() { return el('token').value || localStorage.getItem('dlb-admin-token') || ''; }
+    function saveToken() { localStorage.setItem('dlb-admin-token', el('token').value); show('Token saved', false, 'automation-result'); }
+    function show(msg, isErr, id) { const d = el(id); d.textContent = msg; d.className = 'status ' + (isErr ? 'err' : 'ok'); d.classList.remove('hidden'); }
+    function showTab(name) {
+      document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+      event.target.classList.add('active');
+      document.querySelectorAll('.section').forEach(s => s.classList.add('hidden'));
+      el(name).classList.remove('hidden');
+    }
+    async function api(path, opts = {}) {
+      opts.headers = opts.headers || {};
+      opts.headers['x-admin-token'] = token();
+      opts.headers['Content-Type'] = opts.headers['Content-Type'] || 'application/json';
+      const res = await fetch(apiBase + path, opts);
+      const text = await res.text();
+      try { const j = JSON.parse(text); if (!j.success) throw new Error(j.error || 'Request failed'); return j.data; } catch (e) { throw new Error(text || e.message); }
+    }
+
+    async function loadAll() {
+      await Promise.all([loadMasters(), loadBonds(), loadRequests(), loadOverview()]);
+    }
+
+    async function loadOverview() {
+      try {
+        const ms = await api('/master-wallets').catch(() => ({}));
+        const names = { principal: 'Principal Token Master', interest: 'Interest Income Master', operating: 'Trust Operating Wallet', distribution: 'Income Distribution Master' };
+        const html = Object.entries(ms).map(([k, w]) => `<div>${names[k] || k}: <b>${w.address ? w.address.slice(0,8)+'...'+w.address.slice(-6) : 'not created'}</b></div>`).join('') || 'No master wallets yet.';
+        el('overview-master-status').innerHTML = html;
+      } catch (e) { el('overview-master-status').textContent = e.message; }
+      try {
+        const pf = await api('/bonds/portfolio');
+        const income = (pf.metrics || []).reduce((s, m) => s + (parseFloat(m.accrued_interest_total) || 0), 0);
+        el('overview-income').innerHTML = `<div class="big">$${income.toFixed(2)}</div><div class="muted">total accrued interest</div>`;
+      } catch (e) { el('overview-income').textContent = e.message; }
+      try {
+        const reqs = await api('/distribution-requests?limit=50');
+        const pending = (reqs || []).filter(r => r.status !== 'executed' && r.status !== 'rejected' && r.status !== 'failed').length;
+        el('overview-pending').innerHTML = `<div class="big">${pending}</div><div class="muted">pending requests</div>`;
+      } catch (e) { el('overview-pending').textContent = e.message; }
+    }
+
+    async function loadMasters() {
+      try {
+        const ms = await api('/master-wallets');
+        const names = { principal: 'Principal Token Master', interest: 'Interest Income Master', operating: 'Trust Operating Wallet', distribution: 'Income Distribution Master' };
+        el('master-list').innerHTML = Object.entries(ms).map(([k, w]) => {
+          const b = w.balances || {};
+          const internal = Object.entries(b.internal || {}).map(([a, v]) => `<span><b>${a}</b>: ${v}</span>`).join('');
+          return `<div class="wallet-card"><h3>${names[k]}</h3><div class="addr">${w.address || 'not created'}</div><div class="bal">${internal || '<span>no internal balances</span>'}</div><div class="muted">External: SIT ${b.external && b.external.sit || 0} | ETH ${b.external && b.external.eth || 0} | USDC ${b.external && b.external.usdc || 0}</div></div>`;
+        }).join('');
+      } catch (e) { el('master-list').innerHTML = '<p class="muted">' + e.message + '</p>'; }
+    }
+
+    async function ensureMasterWallets() {
+      try { const data = await api('/master-wallets/ensure', { method: 'POST' }); show('Master wallets ensured. Refresh to view balances.', false, 'automation-result'); await loadMasters(); }
+      catch (e) { show(e.message, true, 'automation-result'); }
+    }
+
+    async function masterTransfer() {
+      try {
+        const data = await api(`/master-wallets/${el('m-from').value}/transfer`, { method: 'POST', body: JSON.stringify({ toSubtype: el('m-to').value, amount: el('m-amount').value, asset: el('m-asset').value }) });
+        show(JSON.stringify(data, null, 2), false, 'm-transfer-result'); await loadMasters();
+      } catch (e) { show(e.message, true, 'm-transfer-result'); }
+    }
+
+    async function masterExternalSend() {
+      try {
+        const body = { toAddress: el('mx-address').value, amount: el('mx-amount').value, asset: el('mx-asset').value };
+        if (el('mx-token').value) { body.tokenAddress = el('mx-token').value; body.decimals = el('mx-decimals').value; }
+        const data = await api(`/master-wallets/${el('mx-from').value}/external-send`, { method: 'POST', body: JSON.stringify(body) });
+        show(JSON.stringify(data, null, 2), false, 'mx-result'); await loadMasters();
+      } catch (e) { show(e.message, true, 'mx-result'); }
+    }
+
+    async function loadBonds() {
+      try {
+        const pf = await api('/bonds/portfolio');
+        const metrics = pf.metrics || [];
+        el('bond-portfolio').innerHTML = metrics.map(m => `
+          <div class="panel">
+            <h3>${m.bond_name || m.bond_id}</h3>
+            <div class="big">$${(m.total_current_value || 0).toFixed(2)}</div>
+            <div class="muted">total current value</div>
+            <div class="bal"><span>Principal: <b>$${(m.principal_balance || 0).toFixed(2)}</b></span><span>Accrued interest: <b>$${(m.accrued_interest_total || 0).toFixed(2)}</b></span><span>Next coupon: <b>${m.next_coupon_date || '—'}</b> ($${(m.coupon_per_period || 0).toFixed(2)})</span><span>Market value: <b>$${(m.market_value || 0).toFixed(2)}</b></span></div>
+          </div>
+        `).join('');
+        el('dist-bond').innerHTML = metrics.map(m => `<option value="${m.bond_id}">${m.bond_name || m.bond_id} — accrued $${(m.accrued_interest_total || 0).toFixed(2)}</option>`).join('');
+      } catch (e) { el('bond-portfolio').innerHTML = '<p class="muted">' + e.message + '</p>'; }
+    }
+
+    async function distributeFixedIncome() {
+      try {
+        const bondId = el('dist-bond').value;
+        if (!bondId) throw new Error('Select a bond');
+        const amount = el('dist-amount').value;
+        const body = { targetAsset: el('dist-asset').value };
+        if (amount) body.amount = amount;
+        const data = await api(`/bonds/${bondId}/distribute-interest`, { method: 'POST', body: JSON.stringify(body) });
+        show(JSON.stringify(data, null, 2), false, 'dist-result');
+        await loadMasters(); await loadBonds(); await loadOverview();
+      } catch (e) { show(e.message, true, 'dist-result'); }
+    }
+
+    function openDistributeModal() { showTab('bonds'); }
+
+    async function loadRequests() {
+      try {
+        const reqs = await api('/distribution-requests?limit=50');
+        el('requests-list').innerHTML = (reqs || []).map(r => {
+          const approvals = (r.approvals || []).map(a => a.role).join(', ');
+          let action = '';
+          if (r.status !== 'executed' && r.status !== 'rejected' && r.status !== 'failed') {
+            action = `<button class="btn btn-sm" onclick="approveAs('${r.id}','maker','annrobinson9800@yahoo.com')">Approve Maker</button> <button class="btn btn-sm btn-2" onclick="approveAs('${r.id}','checker','dbnettrust@gmail.com')">Approve Checker</button>`;
+          }
+          return `<tr><td>${r.id.slice(-12)}</td><td>${r.beneficiary_name || r.beneficiary_email}</td><td>$${(r.amount_cents / 100).toFixed(2)}</td><td>${r.status}</td><td>${approvals || 'none'}</td><td>${action}</td></tr>`;
+        }).join('') || '<tr><td colspan="6">No requests yet.</td></tr>';
+      } catch (e) { el('requests-list').innerHTML = '<tr><td colspan="6">' + e.message + '</td></tr>'; }
+    }
+
+    async function approveAs(id, role, email) {
+      try {
+        const data = await api(`/distribution-requests/${id}/approve`, { method: 'POST', body: JSON.stringify({ role, trusteeEmail: email, signature: `sig-${role}-${Date.now()}` }) });
+        show(JSON.stringify(data, null, 2), false, 'requests-result');
+        await loadRequests(); await loadOverview(); await loadMasters();
+      } catch (e) { show(e.message, true, 'requests-result'); }
+    }
+
+    if (localStorage.getItem('dlb-admin-token')) el('token').value = localStorage.getItem('dlb-admin-token');
+    loadAll();
+  </script>
+</body>
+</html>

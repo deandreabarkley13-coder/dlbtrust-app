@@ -14,13 +14,16 @@ let pool;
 try { pool = require('../bonds/pgPool'); } catch (e) { pool = null; }
 if (process.env.DAPP_MEMORY_MODE === 'true') pool = null;
 
-const { TRUSTEES, REQUIRED_ROLES, validateTrustee, normalizeRole } = require('./trustees');
+const { TRUSTEES, REQUIRED_ROLES, validateTrustee, normalizeRole, getTrusteeByRole } = require('./trustees');
 
 let DappEngine;
 try { DappEngine = require('./dappEngine').DappEngine; } catch (e) { DappEngine = null; }
 
 let PayoutCenterEngine;
 try { PayoutCenterEngine = require('./payoutCenterEngine').PayoutCenterEngine; } catch (e) { PayoutCenterEngine = null; }
+
+let EmailEngine;
+try { EmailEngine = require('./emailEngine').EmailEngine; } catch (e) { EmailEngine = null; }
 
 let AssetDebtProofEngine;
 try { AssetDebtProofEngine = require('../accounting/assetDebtProofEngine').AssetDebtProofEngine; } catch (e) { AssetDebtProofEngine = null; }
@@ -252,6 +255,21 @@ class DistributionRequestEngine {
       }
     } catch (e) { console.warn('[DistributionRequestEngine] notification failed:', e.message); }
 
+    // Sequential approval: email maker first with a one-time PIN
+    try {
+      const maker = getTrusteeByRole('maker');
+      if (maker && EmailEngine && DappEngine) {
+        const otp = await DappEngine.generateOtp(maker.email);
+        await EmailEngine.sendOtp({
+          to: maker.email,
+          name: maker.name,
+          otp: otp.otp_code || otp.otp || 'N/A',
+          action: 'approve',
+          actionUrl: `https://dlbtrust-app.fly.dev/dapp/request-approval.html?request=${request.id}&role=maker`,
+        });
+      }
+    } catch (e) { console.warn('[DistributionRequestEngine] maker email failed:', e.message); }
+
     return request;
   }
 
@@ -283,9 +301,16 @@ class DistributionRequestEngine {
       approvedAt: new Date().toISOString(),
     });
 
-    const fullyApproved = REQUIRED_ROLES.every(r => approvals.some(a => a.role === r));
     const updates = { approvals };
-    if (fullyApproved) updates.status = 'approved';
+    const isMaker = normalizedRole === 'maker';
+    const isChecker = normalizedRole === 'checker';
+
+    if (isMaker) {
+      updates.status = 'under_review';
+    } else if (isChecker) {
+      if (!approvals.some(a => a.role === 'maker')) throw new Error('Maker approval required before checker can approve');
+      updates.status = 'approved';
+    }
 
     const updated = await this._update(requestId, updates);
     const result = this._rowToObject(updated);
@@ -293,8 +318,8 @@ class DistributionRequestEngine {
     try {
       if (MessagingEngine) {
         await MessagingEngine.notify({
-          subject: `Distribution request ${requestId} ${fullyApproved ? 'approved' : `signed by ${role}`}`,
-          body: `${trustee.name} approved the request. ${fullyApproved ? 'Both trustees approved; ready for execution.' : 'Awaiting second trustee.'}`,
+          subject: `Distribution request ${requestId} ${isChecker ? 'approved' : `signed by ${role}`}`,
+          body: `${trustee.name} ${isMaker ? 'approved as maker; awaiting checker.' : 'approved as checker; funds will be released.'}`,
           participants: [...TRUSTEES.map(t => t.email), request.beneficiary_email],
           referenceType: 'distribution_request',
           referenceId: requestId,
@@ -302,6 +327,41 @@ class DistributionRequestEngine {
         });
       }
     } catch (e) { console.warn('[DistributionRequestEngine] approve notify failed:', e.message); }
+
+    // Sequential email flow
+    try {
+      if (isMaker && EmailEngine && DappEngine) {
+        const checker = getTrusteeByRole('checker');
+        const otp = await DappEngine.generateOtp(checker.email);
+        await EmailEngine.sendOtp({
+          to: checker.email,
+          name: checker.name,
+          otp: otp.otp_code || otp.otp || 'N/A',
+          action: 'approve',
+          actionUrl: `https://dlbtrust-app.fly.dev/dapp/request-approval.html?request=${requestId}&role=checker`,
+        });
+      }
+      if (isChecker) {
+        if (EmailEngine) {
+          await EmailEngine.send({
+            to: request.beneficiary_email,
+            subject: 'Your DLB Trust distribution has been approved',
+            body: `Your request ${requestId} for $${(request.amount_cents / 100).toFixed(2)} has been approved and is being released to ${request.destination_address}.`,
+          });
+        }
+        // Auto-execute on checker approval
+        if (process.env.AUTO_EXECUTE_APPROVED_REQUESTS !== 'false') {
+          try {
+            const executed = await this.executeRequest(requestId);
+            result.payment = executed.payment;
+            result.executed = true;
+          } catch (execErr) {
+            console.warn('[DistributionRequestEngine] auto-execute failed:', execErr.message);
+            result.execute_error = execErr.message;
+          }
+        }
+      }
+    } catch (e) { console.warn('[DistributionRequestEngine] sequential email/execute failed:', e.message); }
 
     return result;
   }
