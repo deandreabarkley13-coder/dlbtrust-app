@@ -677,6 +677,10 @@ router.post('/sovereign-trust/whitelist', operatorAuth, writeRateLimiter(), asyn
   try { res.status(201).json({ success: true, data: { tx: await SovereignTrustEngine.whitelistAddress(req.body.address, req.body.allowed !== false) } }); } catch (err) { sendError(res, err); }
 });
 
+router.post('/sovereign-trust/transfer', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try { res.status(201).json({ success: true, data: await SovereignTrustEngine.operatorTransfer(req.body) }); } catch (err) { sendError(res, err); }
+});
+
 router.post('/sovereign-trust/meta-tx/build', operatorAuth, async (req, res) => {
   try { res.json({ success: true, data: await SovereignTrustEngine.buildMetaTx(req.body) }); } catch (err) { sendError(res, err); }
 });

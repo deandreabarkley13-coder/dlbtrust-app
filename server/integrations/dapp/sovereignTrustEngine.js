@@ -560,6 +560,18 @@ class SovereignTrustEngine {
     return await this._tokenWrite('setWhitelisted', [address, allowed], { gas: 100000n });
   }
 
+  static async operatorTransfer({ to, amount, amountCents } = {}) {
+    await ensureTables();
+    const token = await this._loadToken();
+    if (!token) throw new Error('sovereign token not deployed');
+    const cents = amountCents || toCents(amount);
+    if (cents <= 0) throw new Error('amount must be > 0');
+    const raw = viem.parseUnits(String(cents / 100), 6);
+    await this.whitelistAddress(to, true);
+    const tx = await this._tokenWrite('transfer', [to, raw], { gas: 200000n });
+    return { success: true, to, amount: fromCents(cents), tx };
+  }
+
   // ─── ERC-2771 Meta-transactions (gasless) ────────────────────────────────────
 
   static getEip712Domain(forwarderAddress, chainId) {
