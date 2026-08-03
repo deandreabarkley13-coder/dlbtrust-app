@@ -21,6 +21,7 @@ const { OperatorGasTank } = require('../integrations/dapp/operatorGasTank');
 const { ExpenseManagementEngine } = require('../integrations/accounting/expenseManagementEngine');
 const { DisbursementAutomationEngine } = require('../integrations/dapp/disbursementAutomationEngine');
 const { FundingEngine } = require('../integrations/dapp/fundingEngine');
+const { PayoutCenterEngine } = require('../integrations/dapp/payoutCenterEngine');
 const { requireAuth, writeRateLimiter } = require('../integrations/auth/securityMiddleware');
 
 const router = express.Router();
@@ -1022,6 +1023,22 @@ router.post('/public/request', writeRateLimiter(), async (req, res) => {
     }
 
     res.json({ success: true, data: { run, beneficiary, pins: { maker: makerOtp.code, checker: checkerOtp.code } } });
+  } catch (err) { sendError(res, err); }
+});
+
+// ─── Simplified Payout Center ─────────────────────────────────────────────────
+router.get('/payout-center/recipients', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await PayoutCenterEngine.listRecipients({ role: req.query.role }) }); } catch (err) { sendError(res, err); }
+});
+
+router.get('/payout-center/payments', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await PayoutCenterEngine.listPayments({ limit: Number(req.query.limit) || 50 }) }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/payout-center/pay', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try {
+    const data = await PayoutCenterEngine.createPayment(req.body);
+    res.status(201).json({ success: true, data });
   } catch (err) { sendError(res, err); }
 });
 
