@@ -114,6 +114,11 @@ class StablecoinDexEngine {
   static async getOrCreateDLBUSDToken() {
     if (!BondTokenizationEngine) throw new Error('BondTokenizationEngine not available');
     let token = await BondTokenizationEngine.getTokenBySymbol('DLBUSD');
+    if (token && token.token_address && !this.getConfig().shadow) {
+      const { publicClient } = walletClient();
+      const code = await publicClient.getBytecode({ address: token.token_address }).catch(() => '0x');
+      if (!code || code === '0x') token = null;
+    }
     if (!token) {
       token = await BondTokenizationEngine.createToken({
         tokenName: 'DLBUSD',

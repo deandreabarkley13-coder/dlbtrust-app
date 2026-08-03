@@ -171,7 +171,7 @@ class BondTokenizationEngine {
           abi,
           bytecode,
           args: [record.token_name, record.token_symbol, 0],
-          gas: 900000n,
+          gas: 2500000n,
           ...fees,
         });
         const receipt = await publicClient.waitForTransactionReceipt({ hash });
