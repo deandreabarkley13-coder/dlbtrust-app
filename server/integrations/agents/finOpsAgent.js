@@ -98,8 +98,13 @@ class FinOpsAgent {
     let sourceType = null;
     let sourceAccountId = null;
     if (sourceMatch) {
-      sourceType = (sourceMatch[1] || 'cash').toLowerCase();
-      sourceAccountId = sourceMatch[2] || sourceMatch[3];
+      if (sourceMatch[1]) {
+        sourceType = sourceMatch[1].toLowerCase();
+        sourceAccountId = sourceMatch[2];
+      } else if (sourceMatch[3]) {
+        sourceType = sourceMatch[3].toLowerCase();
+        sourceAccountId = null;
+      }
     }
 
     const dateMatch = text.match(/\b(\d{4}-\d{2}-\d{2}(?:T\d{2}:\d{2})?)\b/);
@@ -356,9 +361,20 @@ class FinOpsAgent {
   }
 
   static _defaultSource(intent) {
+    const sourceType = intent.sourceType || process.env.FINOPS_DEFAULT_SOURCE_TYPE || 'cash';
+    const defaultAccountId = {
+      treasury: 'TREASURY_HOT',
+      cash: 'CA-OPERATING',
+      core_banking: 'CORE',
+      trust: 'TRUST',
+      bond: 'BOND',
+      fixed_income: 'BOND',
+      sub_ledger: 'SUB_LEDGER_HOT',
+      crm: 'CRM',
+    }[sourceType] || 'CA-OPERATING';
     return {
-      sourceType: intent.sourceType || process.env.FINOPS_DEFAULT_SOURCE_TYPE || 'cash',
-      sourceAccountId: intent.sourceAccountId || process.env.FINOPS_DEFAULT_SOURCE_ACCOUNT || 'CA-OPERATING',
+      sourceType,
+      sourceAccountId: intent.sourceAccountId || process.env.FINOPS_DEFAULT_SOURCE_ACCOUNT || defaultAccountId,
     };
   }
 
