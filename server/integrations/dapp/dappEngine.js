@@ -26,9 +26,6 @@ try { viem = require('viem'); } catch (e) { }
 let BondTokenizationEngine;
 try { BondTokenizationEngine = require('./bondTokenizationEngine').BondTokenizationEngine; } catch (e) { }
 
-let PayoutCenterEngine;
-try { PayoutCenterEngine = require('./payoutCenterEngine').PayoutCenterEngine; } catch (e) { }
-
 const https = require('https');
 const { URL } = require('url');
 let jwt;
@@ -332,68 +329,25 @@ class DappEngine {
   static async listDeposits() { return this._selectAll('dapp_deposits'); }
   static async getDeposit(id) { return this._selectOne('dapp_deposits', id); }
 
-  // ─── Payouts with 2-signature approval or direct Payout Center execution ─────────
+  // ─── Payouts with 2-signature Safe approval ─────────────────────────────────────
   static async createPayout({ safeId, type = 'payout', destination, value, token, tokenAmount, description, sourceType, sourceAccountId, amountUsd } = {}) {
-    if (!destination) throw new Error('destination required');
+    if (!safeId || !destination) throw new Error('safeId and destination required');
     if (!value && !tokenAmount && !amountUsd) throw new Error('value, tokenAmount or amountUsd required');
     const cfg = getConfig();
+    const safe = await this.getSafe(safeId);
+    if (safe.status !== 'deployed') throw new Error('Safe must be deployed before payouts');
 
     let amountCents = 0;
     let resolvedAmountUsd = amountUsd;
     if (resolvedAmountUsd) {
       amountCents = Math.round(Number(resolvedAmountUsd) * 100);
+      if (!token) token = cfg.usdcAddress;
+      if (!tokenAmount) tokenAmount = String(Math.round(Number(resolvedAmountUsd) * 1e6));
+      if (!value) value = '0';
     } else if (tokenAmount && token === cfg.usdcAddress) {
       resolvedAmountUsd = (Number(tokenAmount) / 1e6).toFixed(2);
       amountCents = Math.round(Number(resolvedAmountUsd) * 100);
-    } else {
-      resolvedAmountUsd = '0.00';
-    }
-    if (!token) token = cfg.usdcAddress;
-    if (!tokenAmount) tokenAmount = String(Math.round(Number(resolvedAmountUsd) * 1e6));
-    if (!value) value = '0';
-
-    // Resolve the Safe; if no Safe is provided or it is not deployed, execute directly via PayoutCenter.
-    let safe = null;
-    if (safeId) safe = await this.getSafe(safeId).catch(() => null);
-    const useSafe = safe && safe.status === 'deployed';
-
-    if (!useSafe) {
-      if (!PayoutCenterEngine) throw new Error('PayoutCenterEngine not available for direct payout');
-      if (Number(resolvedAmountUsd) <= 0) throw new Error('amountUsd is required for a direct payout');
-      const payment = await PayoutCenterEngine.createPayment({
-        paymentType: type,
-        sourceType: sourceType || 'treasury',
-        sourceAccountId: sourceAccountId || 'TREASURY_HOT',
-        recipientType: 'external',
-        recipientIdentifier: destination,
-        amount: resolvedAmountUsd,
-        asset: 'SIT',
-        description,
-        rail: 'sit',
-      });
-      const id = identifier('PAY');
-      const row = {
-        id,
-        safe_id: safe ? safe.id : null,
-        type,
-        destination,
-        value,
-        token,
-        token_amount: tokenAmount,
-        description,
-        status: payment.status === 'completed' ? 'executed' : 'pending',
-        safe_tx_hash: null,
-        server_signature: null,
-        signatures: '[]',
-        tx_hash: payment.tx_hash || null,
-        source_type: sourceType || null,
-        source_account_id: sourceAccountId || null,
-        reserve_id: null,
-        distribution_id: null,
-        metadata: JSON.stringify({ payment, direct: true }),
-      };
-      await this._insert('dapp_payouts', row);
-      return { ...row, payment, direct: true };
+      if (!value) value = '0';
     }
 
     const id = identifier('PAY');
@@ -569,6 +523,7 @@ class DappEngine {
 
   // ─── Distributions ────────────────────────────────────────────────────────────
   static async createDistribution({ safeId, name, asset = 'USDC', totalAmount, beneficiaries, sourceType, sourceAccountId } = {}) {
+    if (!safeId) throw new Error('safeId required for Safe-governed distribution');
     if (!Array.isArray(beneficiaries) || !beneficiaries.length) throw new Error('beneficiaries required');
     const id = identifier('DIS');
     const totalUsd = beneficiaries.reduce((s, b) => s + (Number(b.amountUsd) || 0), 0);

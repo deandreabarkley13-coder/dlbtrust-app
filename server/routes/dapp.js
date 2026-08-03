@@ -1037,7 +1037,34 @@ router.get('/payout-center/payments', operatorAuth, async (req, res) => {
 
 router.post('/payout-center/pay', operatorAuth, writeRateLimiter(), async (req, res) => {
   try {
-    const data = await PayoutCenterEngine.createPayment(req.body);
+    const {
+      paymentType, sourceType, sourceAccountId,
+      recipientType, recipientIdentifier, amount, asset, description,
+      rail, railOptions,
+    } = req.body;
+    const allowedRails = ['sit','dex','cashapp','cash_app','cash','fund_rail','module','stablecoin_dex'];
+    const allowedAssets = ['SIT','USDC','ETH','WETH','CASH'];
+    if (!sourceType || !sourceAccountId) throw new Error('sourceType and sourceAccountId are required');
+    if (!recipientIdentifier) throw new Error('recipientIdentifier is required');
+    if (amount === undefined || amount === null || isNaN(Number(amount))) throw new Error('amount is required and must be numeric');
+    if (!asset || !allowedAssets.includes(String(asset).toUpperCase())) throw new Error('asset must be one of: ' + allowedAssets.join(', '));
+    if (rail && !allowedRails.includes(String(rail).toLowerCase())) throw new Error('rail is not supported');
+    const sanitizedRailOptions = typeof railOptions === 'object' && railOptions !== null ? railOptions : {};
+    const data = await PayoutCenterEngine.createPayment({
+      paymentType, sourceType, sourceAccountId,
+      recipientType: recipientType || 'external',
+      recipientIdentifier,
+      amount: Number(amount),
+      asset: String(asset).toUpperCase(),
+      description,
+      rail,
+      railOptions: {
+        createPoolIfMissing: Boolean(sanitizedRailOptions.createPoolIfMissing),
+        poolSeedUsdc: Number(sanitizedRailOptions.poolSeedUsdc) || 0.005,
+        poolSeedDlbusd: Number(sanitizedRailOptions.poolSeedDlbusd) || 10,
+        poolAddress: sanitizedRailOptions.poolAddress || undefined,
+      },
+    });
     res.status(201).json({ success: true, data });
   } catch (err) { sendError(res, err); }
 });

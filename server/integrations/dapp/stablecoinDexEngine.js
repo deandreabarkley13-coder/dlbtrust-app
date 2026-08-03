@@ -254,7 +254,7 @@ class StablecoinDexEngine {
 
   static async _isValidPool({ poolAddress, tokenIn, tokenOut }) {
     if (!poolAddress || !tokenIn || !tokenOut) return false;
-    if (!viem || viem.getAddress === undefined) return true;
+    if (this.getConfig().shadow) return true;
     try {
       const { publicClient } = walletClient();
       const code = await publicClient.getBytecode({ address: poolAddress });
@@ -342,13 +342,10 @@ class StablecoinDexEngine {
   } = {}) {
     if (!sourceType || !sourceAccountId || !amount) throw new Error('sourceType, sourceAccountId, and amount are required');
     const cfg = this.getConfig();
+    if (!cfg.enabled) throw new Error('Stablecoin DEX not enabled');
     const operationId = id('DLBUSD-SWAP');
-    const amountNum = Number(amount);
 
-    // 1. Mint DLBUSD from the chosen source ledger
-    const mint = await this.mintFromSource({ sourceType, sourceAccountId, amount, targetAddress: cfg.operatorAddress });
-
-    // 2. Resolve or create the DEX pool
+    // 1. Resolve or create the DEX pool BEFORE debiting the source ledger
     let resolvedPool = poolAddress;
     let poolInfo = null;
     const token = await this.getOrCreateDLBUSDToken();
@@ -356,12 +353,22 @@ class StablecoinDexEngine {
     if (resolvedPool && !(await this._isValidPool({ poolAddress: resolvedPool, tokenIn: token.token_address, tokenOut }))) {
       resolvedPool = null;
     }
+    // Fallback to a configured pool/router address if no pool address was supplied.
+    if (!resolvedPool && DexSwapEngine) {
+      const router = DexSwapEngine.getConfig && DexSwapEngine.getConfig().router;
+      if (router && await this._isValidPool({ poolAddress: router, tokenIn: token.token_address, tokenOut })) {
+        resolvedPool = router;
+      }
+    }
     if (!resolvedPool && createPoolIfMissing) {
       const seedTarget = poolSeedTargetAmount !== undefined ? poolSeedTargetAmount : poolSeedUsdc;
       poolInfo = await this.createPool({ seedUsdcAmount: seedTarget, seedDlbusdAmount: poolSeedDlbusd, targetAsset });
       resolvedPool = poolInfo && poolInfo.poolAddress;
     }
-    if (!resolvedPool) throw new Error('No DEX pool address provided and createPoolIfMissing is false');
+    if (!resolvedPool) throw new Error('No valid DEX pool address and createPoolIfMissing is false');
+
+    // 2. Mint DLBUSD from the chosen source ledger
+    const mint = await this.mintFromSource({ sourceType, sourceAccountId, amount, targetAddress: cfg.operatorAddress });
 
     // 3. Execute the DEX swap (operator relayer pays gas; user is gasless)
     const isEthTarget = (targetAsset || '').toUpperCase() === 'ETH';

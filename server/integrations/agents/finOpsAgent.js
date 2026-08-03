@@ -433,12 +433,13 @@ class FinOpsAgent {
     if (!PayoutCenterEngine) throw new Error('PayoutCenterEngine not available');
     const { sourceType, sourceAccountId } = this._defaultSource(intent);
     const asset = this._realisticAsset(intent.targetAsset || intent.asset || 'ETH');
+    const operatorAddress = this._operatorAddress();
     const result = await PayoutCenterEngine.createPayment({
       paymentType: 'dex_swap',
       sourceType,
       sourceAccountId,
       recipientType: 'external',
-      recipientIdentifier: intent.destination || sourceAccountId,
+      recipientIdentifier: intent.destination || operatorAddress,
       amount: intent.amount,
       asset,
       description: intent.prompt || `FinOps DEX swap to ${asset}`,
@@ -446,6 +447,15 @@ class FinOpsAgent {
       railOptions: { createPoolIfMissing: true, poolSeedUsdc: 0.005, poolSeedDlbusd: 10 },
     });
     return result;
+  }
+
+  static _operatorAddress() {
+    try {
+      const { StablecoinDexEngine } = require('../dapp/stablecoinDexEngine');
+      return StablecoinDexEngine.getConfig().operatorAddress;
+    } catch (e) {
+      return process.env.OPERATOR_ADDRESS || '';
+    }
   }
 
   static _realisticAsset(asset) {
