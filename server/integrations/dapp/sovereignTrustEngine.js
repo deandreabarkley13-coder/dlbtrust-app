@@ -271,7 +271,7 @@ class SovereignTrustEngine {
       const hash = await wallet.deployContract({
         abi: getForwarderAbi(),
         bytecode: getForwarderBytecode(),
-        gas: 1200000n,
+        gas: 2500000n,
         ...fees,
       });
       const receipt = await publicClient.waitForTransactionReceipt({ hash, timeout: 120000 });
@@ -285,7 +285,7 @@ class SovereignTrustEngine {
         abi: getTokenAbi(),
         bytecode: getTokenBytecode(),
         args: [cfg.tokenName, cfg.tokenSymbol, cfg.operatorAddress],
-        gas: 2500000n,
+        gas: 5000000n,
         ...fees,
       });
       const receipt = await publicClient.waitForTransactionReceipt({ hash, timeout: 120000 });
