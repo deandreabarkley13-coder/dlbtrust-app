@@ -12,6 +12,8 @@ const { WalletEngine } = require('./walletEngine');
 const { SourceOfFundsAdapter } = require('../stablecoin/sourceOfFundsAdapter');
 const { getConfig } = require('./config');
 
+const { TreasuryEngine, DEFAULT_ACCOUNT: TREASURY_HOT } = require('../stablecoin/treasuryEngine');
+
 let DappEngine, TrustAccountingEngine, CrmEngine;
 function getDappEngine() { try { return require('./dappEngine').DappEngine; } catch (e) { return null; } }
 function getTrustEngine() { try { return require('../accounting/trustAccountingEngine').TrustAccountingEngine; } catch (e) { return null; } }
@@ -89,6 +91,8 @@ class WalletFundingEngine {
       const contact = contacts.find(c => String(c.contact_id) === String(source.contact_id));
       if (contact && contact.email) {
         if (contact.email.toLowerCase() === userEmail) return true;
+        // The source is explicitly owned by another contact; don't fuzzy-match it to this wallet.
+        return false;
       }
     }
 
@@ -227,8 +231,11 @@ class WalletFundingEngine {
           });
           txHash = fundResult && fundResult.mint && fundResult.mint.tx;
         } else {
-          // Internal ledger credit only; caller can convert later.
+          // Internal ledger credit backed by the Treasury sweep.
           const cents = toCents(alloc.totalUsd);
+          if (TreasuryEngine) {
+            await TreasuryEngine.debit(TREASURY_HOT, cents, { reason: `Fund wallet ${wallet.id} with ${asset}`, source: 'wallet_funding' });
+          }
           await WalletEngine._credit(wallet.id, asset, String(cents), { memo: `Wallet funding from ledgers` });
           fundResult = { walletId: wallet.id, amount: alloc.totalUsd, asset, credited: true };
         }

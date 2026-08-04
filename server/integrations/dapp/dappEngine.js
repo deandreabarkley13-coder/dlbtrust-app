@@ -611,7 +611,8 @@ class DappEngine {
         const accts = await TrustAccountingEngine.listAccounts({ isActive: true });
         for (const a of accts) {
           const bal = await SourceOfFundsAdapter.getBalance({ sourceType: 'trust', sourceAccountId: a.account_code }).catch(() => 0);
-          push('trust', a.account_code, a.account_name || a.account_code, bal, 'USD', { account_type: a.account_type, sub_type: a.sub_type });
+          const trustContactId = a.linked_cash_account ? a.linked_cash_account.replace(/^CA-/, '') : null;
+          push('trust', a.account_code, a.account_name || a.account_code, bal, 'USD', { account_type: a.account_type, sub_type: a.sub_type, contact_id: trustContactId });
         }
       }
     } catch (e) { }
