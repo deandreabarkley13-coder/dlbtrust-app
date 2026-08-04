@@ -273,7 +273,7 @@ class BondEngine {
       const bond = bondResult.rows[0];
       if (!bond) { await client.query('ROLLBACK'); throw new Error(`Bond ${bondId} not found`); }
 
-      const payAmount = amount || parseFloat(bond.accrued_interest);
+      const payAmount = Number(amount) || parseFloat(bond.accrued_interest);
       if (payAmount <= 0) { await client.query('ROLLBACK'); throw new Error('No accrued interest to pay'); }
       if (payAmount > parseFloat(bond.accrued_interest)) {
         await client.query('ROLLBACK');
@@ -371,13 +371,14 @@ class BondEngine {
       if (!bond) { await client.query('ROLLBACK'); throw new Error(`Bond ${bondId} not found`); }
 
       const principalBalance = parseFloat(bond.principal_balance);
-      if (amount > principalBalance) {
+      const payAmount = Number(amount);
+      if (payAmount > principalBalance) {
         await client.query('ROLLBACK');
-        throw new Error(`Payment $${amount} exceeds principal balance $${principalBalance}`);
+        throw new Error(`Payment $${payAmount} exceeds principal balance $${principalBalance}`);
       }
 
-      const newBalance = principalBalance - amount;
-      const newTotalPrincipalPaid = parseFloat(bond.total_principal_paid) + amount;
+      const newBalance = principalBalance - payAmount;
+      const newTotalPrincipalPaid = parseFloat(bond.total_principal_paid) + payAmount;
 
       await client.query(
         `UPDATE bond_balances
@@ -399,8 +400,8 @@ class BondEngine {
         `INSERT INTO bond_transactions (bond_id, transaction_type, amount, running_balance, accrued_interest, description, transaction_date)
          VALUES ($1, $2, $3, $4, $5, $6, $7)
          RETURNING *`,
-        [bondId, txType, amount, newBalance, parseFloat(bond.accrued_interest),
-         newBalance === 0 ? 'Bond matured — principal fully repaid' : `Principal payment of $${amount.toFixed(2)}`,
+        [bondId, txType, payAmount, newBalance, parseFloat(bond.accrued_interest),
+         newBalance === 0 ? 'Bond matured — principal fully repaid' : `Principal payment of $${payAmount.toFixed(2)}`,
          new Date().toISOString().split('T')[0]]
       );
 
@@ -478,8 +479,9 @@ class BondEngine {
       if (!bond) { await client.query('ROLLBACK'); throw new Error(`Bond ${bondId} not found`); }
 
       const principalBalance = parseFloat(bond.principal_balance);
-      const newBalance = principalBalance + amount;
-      const newTotalPrincipalPaid = Math.max(0, parseFloat(bond.total_principal_paid) - amount);
+      const payAmount = Number(amount);
+      const newBalance = principalBalance + payAmount;
+      const newTotalPrincipalPaid = Math.max(0, parseFloat(bond.total_principal_paid) - payAmount);
 
       await client.query(
         `UPDATE bond_balances
@@ -499,8 +501,8 @@ class BondEngine {
         `INSERT INTO bond_transactions (bond_id, transaction_type, amount, running_balance, accrued_interest, description, transaction_date)
          VALUES ($1, 'principal_return', $2, $3, $4, $5, $6)
          RETURNING *`,
-        [bondId, amount, newBalance, parseFloat(bond.accrued_interest),
-         `Principal return of $${amount.toFixed(2)}`, new Date().toISOString().split('T')[0]]
+        [bondId, payAmount, newBalance, parseFloat(bond.accrued_interest),
+         `Principal return of $${payAmount.toFixed(2)}`, new Date().toISOString().split('T')[0]]
       );
 
       await client.query('COMMIT');

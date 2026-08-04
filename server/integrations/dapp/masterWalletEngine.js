@@ -140,7 +140,7 @@ class MasterWalletEngine {
     // Bring accrued interest up to date before paying
     await BondEngine.accrueInterest(bondId, new Date().toISOString().split('T')[0]);
     const live = await LiveBondEngine.getBondLiveMetrics(bondId);
-    const payAmount = amount || parseFloat(live.accrued_interest_total);
+    const payAmount = Number(amount) || parseFloat(live.accrued_interest_total);
     if (payAmount <= 0) throw new Error('No fixed income to distribute');
 
     // Mint DLBUSD from bond interest and swap to the target asset in one flow.
@@ -158,8 +158,8 @@ class MasterWalletEngine {
     });
 
     const usedAsset = swap.actualTargetAsset || targetAsset;
-    const outAmount = parseFloat(swap.amountOut || 0);
-    if (outAmount > 0) {
+    const outAmount = String(swap.amountOut || '0');
+    if (Number(outAmount) > 0) {
       try {
         await WalletEngine.credit(distribution.id, usedAsset, outAmount, {
           memo: memo || `Fixed income from bond ${bond.bond_name} (${usedAsset})`,
@@ -246,8 +246,8 @@ class MasterWalletEngine {
         poolSeedDlbusd: 10,
       });
       const usedAsset = interestSwap.actualTargetAsset || 'USDC';
-      const outAmount = parseFloat(interestSwap.amountOut || 0);
-      if (outAmount > 0) {
+      const outAmount = String(interestSwap.amountOut || '0');
+      if (Number(outAmount) > 0) {
         await WalletEngine.credit(distributionMaster.id, usedAsset, outAmount, {
           memo: `Backfill bond interest for ${bond.bond_name}`,
           bond_id: bondId,

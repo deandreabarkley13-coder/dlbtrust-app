@@ -223,6 +223,29 @@ SELECT fit_id, type, amount_cents, name, memo FROM ofx_transactions;
 - Beneficiary activity: `loadBeneficiaryActivity()` calls `GET /api/dapp/beneficiary/activity?email=<email>` and displays matching requests/payouts.
 - Calendar/Messaging: automation run and distribution request creation auto-create Calendar events and Messaging threads.
 
+## Master Dashboard, Fixed-Income Distribution, Public Requests, and Master Wallet Transfers (PR #243)
+
+- Open `https://dlbtrust-app.fly.dev/dapp/master-dashboard.html` directly; the dApp navigation may not load this page reliably from the landing tab bar.
+- Enter the operator token `dlb-admin-2026-trust` and click **Save Token**. Most endpoints require `x-admin-token`.
+- **Masters tab:** `loadMasters()` calls `GET /api/dapp/master-wallets` and renders four cards: `principal`, `interest`, `operating`, `distribution`. Master wallet on-chain addresses are deterministic and known:
+  - principal: `0xECCDF9A767799999320C5D4AFb513f11F1bA2f6e`
+  - interest: `0xaC066AF63cdB3d60f81CBC9879736d6FA422aC0E`
+  - operating: `0x0CB900C845F2E0F85625d09bc3CEfe36D62A42e3`
+  - distribution: `0x4eC020Dc4E9A846bCeffB97DB2a8E95fC9D02500`
+- **Ensure master wallets:** `ensureMasterWallets()` calls `POST /api/dapp/master-wallets/ensure` and seeds each wallet with `MASTER_WALLET_GAS_SEED` ETH. This is idempotent.
+- **Bond fixed-income distribution:** `distributeFixedIncome()` calls `POST /api/dapp/bonds/<bondId>/distribute-interest` with `{ amount, targetAsset: 'ETH' }`. As of the PR #243 build, `BondEngine.payInterest` adds the string `amount` to `total_interest_paid`, so decimal strings like `"5.00"` cause Postgres numeric parse errors. Calling the API directly with a JSON number (e.g. `5`) bypasses the UI bug but may still run into `WaitForTransactionReceiptTimeoutError` on mainnet.
+- **Public landing request** (`https://dlbtrust-app.fly.dev/`):
+  - Fill the Beneficiary Distribution Request form and submit. `submitRequest()` posts to `POST /api/dapp/public/request` and creates a beneficiary, maker, checker, and a run with a distribution request.
+  - Maker trustee: `annrobinson9800@yahoo.com`. Checker trustee: `dbnettrust@gmail.com`.
+  - In Master Dashboard **Requests**, `approveAs(id, 'maker', email)` and `approveAs(id, 'checker', email)` call `POST /api/dapp/distribution-requests/<id>/approve` with `{ role, trusteeEmail, signature: 'sig-<role>-<ts>' }`. Checker approval auto-executes.
+  - Execution calls `PayoutCenterEngine.createPayment` with rail `sit`, then `SovereignTrustEngine.mintFromSource`, so the beneficiary address receives SIT on mainnet.
+- **Master wallet transfers:**
+  - Internal transfer: `masterTransfer()` calls `POST /api/dapp/master-wallets/<fromSubtype>/transfer` with `{ toSubtype, amount, asset }`. Works for `SIT` and `ETH`.
+  - External send: `masterExternalSend()` calls `POST /api/dapp/master-wallets/<fromSubtype>/external-send` with `{ toAddress, amount, asset, tokenAddress, decimals }`. For `ETH` it sends native ETH via `WalletEngine.externalEthSend`; for `SIT` it uses `WalletEngine.externalSend` and relays the meta-tx.
+- **Seeding internal ETH for transfer tests:** The fixed-income distribution currently does not credit internal ETH (it rounds `<0.005 ETH` to 0 cents), so to test internal ETH transfers seed an internal ETH balance via `POST /api/dapp/wallets/<walletId>/fund` with `{ amount: '0.02', asset: 'ETH' }`. Find the operating wallet ID from `GET /api/dapp/master-wallets`.
+- **Bond in portfolio:** `DLB-PRB` id `1` has ~$100M principal and accrued interest starting around $2,700. Use tiny amounts and accept that on-chain mainnet receipts may time out.
+- Live SIT token for this phase: `0x217ad61f5f0d7bca71e365ed24836e66bab9ec97`; forwarder: `0xcfb7011292a99ccdd7e6fc0714aa4a6f4e67a8d4`.
+
 ## Devin Secrets Needed
 
 - `DATABASE_URL` or local Postgres credentials (`dlbtrust`/`dlbtrust`).
