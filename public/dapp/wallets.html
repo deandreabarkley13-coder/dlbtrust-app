@@ -44,6 +44,7 @@
   <header>
     <h1>Wallets & Transactions</h1>
     <div>
+      <a href="/dapp">Portal</a> &middot;
       <a href="/dapp/master-dashboard.html">Master Dashboard</a> &middot;
       <a href="/dapp/payout-center.html">Payout Center</a>
     </div>
@@ -150,6 +151,14 @@
       }
     }
 
+    function formatAmount(asset, amount) {
+      const a = String(asset || '').toUpperCase();
+      const n = Number(amount || 0);
+      if (a === 'USD' || a === 'SIT') return n.toFixed(2);
+      if (a === 'ETH') return n.toFixed(6);
+      return n.toFixed(6);
+    }
+
     async function loadWallets() {
       el('wallets-list').innerHTML = '<p class="small">Loading...</p>';
       try {
@@ -162,7 +171,7 @@
           const bal = await api(`/wallets/${w.id}/balance`).catch(e => ({ internal:{}, external:{eth:'0',usdc:'0',sit:'0'} }));
           const internal = bal.internal || {};
           const internalSpans = Object.keys(internal).length
-            ? Object.entries(internal).map(([asset, amount]) => `<span>${asset}: <b>${Number(amount).toFixed(2)}</b></span>`).join(' ')
+            ? Object.entries(internal).map(([asset, amount]) => `<span>${asset}: <b>${formatAmount(asset, amount)}</b></span>`).join(' ')
             : '<span class="small">No internal balance</span>';
           const div = document.createElement('div');
           div.className = 'wallet';
@@ -172,8 +181,8 @@
             <div class="addr">${w.address}</div>
             <div class="bal">${internalSpans}</div>
             <div class="bal">
-              <span>On-chain SIT: <b>${Number(bal.external.sit).toFixed(2)}</b></span>
-              <span>ETH: <b>${Number(bal.external.eth).toFixed(6)}</b> • USDC: <b>${Number(bal.external.usdc).toFixed(2)}</b></span>
+              <span>On-chain SIT: <b>${formatAmount('SIT', bal.external.sit)}</b></span>
+              <span>ETH: <b>${formatAmount('ETH', bal.external.eth)}</b> • USDC: <b>${formatAmount('USDC', bal.external.usdc)}</b></span>
             </div>
             <div class="actions" style="margin-top:10px;">
               <button class="btn btn-secondary" onclick="viewWallet('${w.id}', '${w.address}')">Transactions</button>
