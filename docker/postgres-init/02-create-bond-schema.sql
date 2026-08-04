@@ -14,6 +14,7 @@ CREATE TABLE IF NOT EXISTS bonds (
   payment_freq    VARCHAR(20) NOT NULL DEFAULT 'monthly',  -- daily|monthly|quarterly|semi_annual|annual
   day_count       VARCHAR(20) NOT NULL DEFAULT '30/360',   -- 30/360|ACT/ACT|ACT/360
   currency        VARCHAR(3) NOT NULL DEFAULT 'USD',
+  amortizing      BOOLEAN NOT NULL DEFAULT false,
   status          VARCHAR(20) NOT NULL DEFAULT 'active',   -- active|matured|called|defaulted
   created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
