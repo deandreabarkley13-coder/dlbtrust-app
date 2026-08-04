@@ -38,7 +38,8 @@ const adminAuth = requireAuth({ role: 'admin' });
 function sendError(res, err) {
   console.error('[dapp]', err);
   const message = err && (err.message || err.error || err.detail || err.title) ? (err.message || err.error || err.detail || err.title) : (typeof err === 'string' ? err : 'Unknown error');
-  res.status(500).json({ success: false, error: message, raw: typeof err === 'object' && err ? err : undefined });
+  const safeRaw = typeof err === 'object' && err ? JSON.parse(JSON.stringify(err, (k, v) => typeof v === 'bigint' ? String(v) : v)) : undefined;
+  res.status(500).json({ success: false, error: message, raw: safeRaw });
 }
 
 // ─── Safe Wallets ─────────────────────────────────────────────────────────────
