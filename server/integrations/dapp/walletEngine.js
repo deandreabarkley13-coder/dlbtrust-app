@@ -44,11 +44,17 @@ function toCents(amount, asset = '') {
   const str = String(amount);
   if (decimals === 18) {
     if (!viem) return Math.round((Number(amount) || 0) * 1e18).toString();
-    try { return viem.parseEther(str).toString(); } catch (e) { return '0'; }
+    try {
+      const rounded = Number(amount).toFixed(18);
+      return viem.parseEther(rounded).toString();
+    } catch (e) { return '0'; }
   }
   if (decimals === 6) {
     if (!viem) return Math.round((Number(amount) || 0) * 1e6).toString();
-    try { return viem.parseUnits(str, 6).toString(); } catch (e) { return '0'; }
+    try {
+      const rounded = Number(amount).toFixed(6);
+      return viem.parseUnits(rounded, 6).toString();
+    } catch (e) { return '0'; }
   }
   return Math.round((Number(amount) || 0) * 100);
 }
@@ -65,6 +71,8 @@ function fromCents(cents, asset = '') {
   }
   return ((Number(cents) || 0) / 100).toFixed(2);
 }
+
+function safeJson(obj) { return JSON.stringify(obj, (k, v) => typeof v === 'bigint' ? String(v) : v); }
 
 async function query(sql, params) {
   if (!pool) throw new Error('Postgres unavailable');
@@ -205,7 +213,7 @@ class WalletEngine {
       type,
       private_key_encrypted: encryptedKey,
       is_primary: true,
-      metadata: JSON.stringify(meta),
+      metadata: safeJson(meta),
     };
     await withFallback(async () => {
       await query(`INSERT INTO dapp_wallets (id, user_id, name, address, chain, type, private_key_encrypted, is_primary, metadata) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
@@ -284,7 +292,7 @@ class WalletEngine {
     const txId = id('WTX');
     await withFallback(async () => {
       await query('INSERT INTO dapp_wallet_transactions (id, wallet_id, type, asset, amount_cents, status, memo, metadata) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)',
-        [txId, walletId, 'credit', asset.toUpperCase(), String(cents), 'completed', metadata.memo || '', JSON.stringify(metadata)]);
+        [txId, walletId, 'credit', asset.toUpperCase(), String(cents), 'completed', metadata.memo || '', safeJson(metadata)]);
     }, () => {});
     return this.getBalance(walletId);
   }
@@ -299,7 +307,7 @@ class WalletEngine {
     const txId = id('WTX');
     await withFallback(async () => {
       await query('INSERT INTO dapp_wallet_transactions (id, wallet_id, type, asset, amount_cents, status, memo, metadata) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)',
-        [txId, walletId, 'debit', asset.toUpperCase(), String(cents), 'completed', metadata.memo || '', JSON.stringify(metadata)]);
+        [txId, walletId, 'debit', asset.toUpperCase(), String(cents), 'completed', metadata.memo || '', safeJson(metadata)]);
     }, () => {});
     return this.getBalance(walletId);
   }
@@ -492,7 +500,7 @@ class WalletEngine {
     const txId = id('WTX');
     await withFallback(async () => {
       await query('INSERT INTO dapp_wallet_transactions (id, wallet_id, counterparty_address, type, asset, amount_cents, status, tx_hash, memo, metadata) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)',
-        [txId, fromWalletId, to, 'external', asset.toUpperCase(), cents, 'completed', relay.tx, memo || '', JSON.stringify(relay)]);
+        [txId, fromWalletId, to, 'external', asset.toUpperCase(), cents, 'completed', relay.tx, memo || '', safeJson(relay)]);
     }, () => {});
 
     return { type: 'external', from: wallet.address, to, amount, asset, txHash: relay.tx, balance: await this.getBalance(fromWalletId) };
@@ -534,7 +542,7 @@ class WalletEngine {
 
     await withFallback(async () => {
       await query('INSERT INTO dapp_wallet_transactions (id, wallet_id, counterparty_address, type, asset, amount_cents, status, tx_hash, memo, metadata) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)',
-        [txId, fromWalletId, to, 'external_token', asset.toUpperCase(), String(cents), 'completed', hash, memo || '', JSON.stringify({ tokenAddress, decimals })]);
+        [txId, fromWalletId, to, 'external_token', asset.toUpperCase(), String(cents), 'completed', hash, memo || '', safeJson({ tokenAddress, decimals })]);
     }, () => {});
 
     try {
@@ -580,7 +588,7 @@ class WalletEngine {
     const txId = id('WTX');
     await withFallback(async () => {
       await query('INSERT INTO dapp_wallet_transactions (id, wallet_id, counterparty_address, type, asset, amount_cents, status, tx_hash, memo, metadata) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)',
-        [txId, fromWalletId, to, 'external_eth', 'ETH', String(cents), 'completed', hash, memo || '', JSON.stringify({ ethAmount: eth, note: 'Internal ledger stores ETH in 18-decimal wei units.' })]);
+        [txId, fromWalletId, to, 'external_eth', 'ETH', String(cents), 'completed', hash, memo || '', safeJson({ ethAmount: eth, note: 'Internal ledger stores ETH in 18-decimal wei units.' })]);
     }, () => {});
     try { await this._debit(fromWalletId, 'ETH', cents, { memo, tx_hash: hash }); } catch (e) { console.warn('[WalletEngine.externalEthSend] internal ETH debit skipped:', e.message); }
 

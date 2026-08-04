@@ -115,13 +115,35 @@ class WalletFundingEngine {
     return false;
   }
 
+  static _isEligibleFundingSource(source) {
+    if (!source || Number(source.balance_cents || 0) <= 0) return false;
+    if (['crm', 'treasury'].includes(source.type)) return false;
+
+    // Sub-ledgers backed by bond/principal investments should go to the
+    // Principal/Interest master wallets, not personal beneficiary wallets.
+    if (source.type === 'sub_ledger') {
+      const investmentTypes = ['investment', 'bond_proceeds', 'bond_principal'];
+      const investmentParents = ['1100', '2100'];
+      if (investmentTypes.includes(source.sub_account_type)) return false;
+      if (investmentParents.includes(source.parent_account_code)) return false;
+    }
+
+    // Cash bond proceeds / operating / reserve / escrow / fee accounts are
+    // not personal beneficiary funds.
+    if (source.type === 'cash') {
+      const restrictedTypes = ['bond_proceeds', 'operating', 'reserve', 'escrow', 'fee', 'management_fee'];
+      if (restrictedTypes.includes(source.meta && source.meta.account_type)) return false;
+    }
+
+    return true;
+  }
+
   static async _allocationsForWallet(wallet, sourceBalances, contacts) {
     const user = wallet.user;
     if (!user || !user.email) return { sources: [], totalCents: 0, totalUsd: 0 };
 
     const matches = (sourceBalances || []).filter(s => {
-      if (!s || Number(s.balance_cents || 0) <= 0) return false;
-      if (['crm', 'treasury'].includes(s.type)) return false;
+      if (!this._isEligibleFundingSource(s)) return false;
       return this._matchesUser(s, user, contacts);
     });
 

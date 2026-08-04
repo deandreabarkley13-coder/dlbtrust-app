@@ -37,6 +37,7 @@ function num(name, def = 0) { const n = Number(process.env[name]); return Number
 function id(prefix = 'SIT') { return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 8).toUpperCase()}`; }
 function toCents(amount) { return Math.round((Number(amount) || 0) * 100); }
 function fromCents(cents) { return (cents / 100).toFixed(2); }
+function safeJson(obj) { return JSON.stringify(obj, (k, v) => typeof v === 'bigint' ? String(v) : v); }
 
 const memory = {
   token: null,
@@ -201,7 +202,7 @@ class SovereignTrustEngine {
     const params = [
       record.id, cfg.chainId === 1 ? 'mainnet' : 'sepolia', cfg.chainId,
       record.token_address, record.forwarder_address, cfg.tokenSymbol, cfg.tokenName,
-      'active', cfg.shadow, JSON.stringify(record.metadata || {})
+      'active', cfg.shadow, safeJson(record.metadata || {})
     ];
     try {
       await pool.query(`
@@ -231,8 +232,8 @@ class SovereignTrustEngine {
     const params = [
       order.id, order.token_id, order.direction, order.source_type, order.source_account_id,
       order.amount_cents, order.target_address, order.fiat_destination, order.on_chain_tx,
-      order.on_chain_status, order.status, JSON.stringify(order.metadata || {}),
-      JSON.stringify(order.source_ref || {}), order.id
+      order.on_chain_status, order.status, safeJson(order.metadata || {}),
+      safeJson(order.source_ref || {})
     ];
     try {
       await pool.query(`
@@ -338,7 +339,7 @@ class SovereignTrustEngine {
           balance_cents = sovereign_token_holders.balance_cents + EXCLUDED.balance_cents,
           metadata = sovereign_token_holders.metadata || EXCLUDED.metadata,
           updated_at = NOW()
-      `, [holderId, token.id, addr, amountCents, JSON.stringify({ sourceRef, onChainTx })]);
+      `, [holderId, token.id, addr, amountCents, safeJson({ sourceRef, onChainTx })]);
     } catch (e) { console.warn('[SovereignTrustEngine] _recordMint failed:', e.message); }
   }
 
@@ -493,7 +494,7 @@ class SovereignTrustEngine {
             balance_cents = GREATEST(0, sovereign_token_holders.balance_cents - EXCLUDED.balance_cents),
             metadata = sovereign_token_holders.metadata || EXCLUDED.metadata,
             updated_at = NOW()
-        `, [id('SIT-HOLD'), token.id, fromAddr, cents, JSON.stringify(sourceRef)]);
+        `, [id('SIT-HOLD'), token.id, fromAddr, cents, safeJson(sourceRef)]);
       } catch (e) { console.warn('[SovereignTrustEngine] burn holder update failed:', e.message); }
     }
 
@@ -603,7 +604,7 @@ class SovereignTrustEngine {
       if (pool) {
         try {
           const ts = new Date().toISOString();
-          const meta = JSON.stringify({ shadowTransfer: true, from: operator, to: toLower, amountCents: cents, at: ts });
+          const meta = safeJson({ shadowTransfer: true, from: operator, to: toLower, amountCents: cents, at: ts });
           await pool.query(`
             INSERT INTO sovereign_token_holders (id, token_id, address, balance_cents, metadata)
             VALUES ($1, $2, $3, 0, $4)

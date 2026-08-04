@@ -58,6 +58,7 @@ function jsonbValue(raw) {
   if (typeof raw === 'string') return JSON.parse(raw || '{}');
   return raw;
 }
+function safeJson(obj) { return JSON.stringify(obj, (k, v) => typeof v === 'bigint' ? String(v) : v); }
 
 class DistributionRequestEngine {
 
@@ -121,7 +122,7 @@ class DistributionRequestEngine {
       const keys = Object.keys(updates).filter(k => updates[k] !== undefined);
       if (!keys.length) return this.getRequest(id);
       const set = keys.map((k, i) => `${k} = $${i + 1}`).join(',');
-      const values = keys.map(k => (k === 'approvals' || k === 'signatures' || k === 'metadata') ? JSON.stringify(updates[k]) : updates[k]);
+      const values = keys.map(k => (k === 'approvals' || k === 'signatures' || k === 'metadata') ? safeJson(updates[k]) : updates[k]);
       const result = await query(`UPDATE dapp_distribution_requests SET ${set}, updated_at = NOW() WHERE id = $${keys.length + 1} RETURNING *`, [...values, id]);
       return result.rows[0];
     }, async () => {
@@ -413,19 +414,34 @@ class DistributionRequestEngine {
     const sourceType = request.source_type || 'treasury';
     const sourceAccountId = request.source_account_id || 'TREASURY_HOT';
 
-    const payment = await PayoutCenterEngine.createPayment({
-      paymentType: request.type,
-      sourceType,
-      sourceAccountId,
-      recipientType: 'external',
-      recipientIdentifier: request.destination_address,
-      amount: amountUsd,
-      asset: 'SIT',
-      description: request.memo || `${request.type} request ${request.id}`,
-      rail: 'sit',
-    });
+    let payment;
+    let executeStatus = 'executed';
+    let executeError = null;
+    try {
+      payment = await PayoutCenterEngine.createPayment({
+        paymentType: request.type,
+        sourceType,
+        sourceAccountId,
+        recipientType: 'external',
+        recipientIdentifier: request.destination_address,
+        amount: amountUsd,
+        asset: 'SIT',
+        description: request.memo || `${request.type} request ${request.id}`,
+        rail: 'sit',
+      });
+    } catch (payErr) {
+      console.warn('[DistributionRequestEngine] payment execution failed:', payErr.message);
+      executeStatus = 'execution_failed';
+      executeError = payErr.message;
+      payment = { error: payErr.message, requestedAt: new Date().toISOString() };
+    }
 
-    await this._update(requestId, { status: 'executed', tx_hash: payment.tx_hash || null, payout_id: payment.id, metadata: { ...request.metadata, payment } });
+    await this._update(requestId, {
+      status: executeStatus,
+      tx_hash: payment && payment.tx_hash ? payment.tx_hash : null,
+      payout_id: payment && payment.id ? payment.id : null,
+      metadata: { ...request.metadata, payment, executeError },
+    });
 
     try {
       if (MessagingEngine) {

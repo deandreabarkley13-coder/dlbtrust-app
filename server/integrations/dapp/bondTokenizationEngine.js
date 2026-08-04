@@ -155,7 +155,6 @@ class BondTokenizationEngine {
         abi,
         bytecode,
         args: [record.token_name, record.token_symbol, 0],
-        gas: 2500000n,
         ...fees,
       });
       const receipt = await publicClient.waitForTransactionReceipt({ hash, timeout: 120000 });
@@ -225,7 +224,6 @@ class BondTokenizationEngine {
         abi,
         functionName: 'mint',
         args: [target, raw],
-        gas: 100000n,
         ...fees,
       });
       const receipt = await publicClient.waitForTransactionReceipt({ hash, timeout: 120000 });
