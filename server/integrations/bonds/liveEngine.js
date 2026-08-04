@@ -252,7 +252,7 @@ class LiveBondEngine {
       payment_freq: bond.payment_freq,
       day_count: bond.day_count,
       currency: bond.currency,
-      status: isMatured ? 'matured' : 'active',
+      status: isMatured ? 'matured' : (bond.status === 'matured' ? 'active' : bond.status),
       issue_date: bond.issue_date,
       maturity_date: bond.maturity_date,
       days_to_maturity: daysToMat,
@@ -287,7 +287,7 @@ class LiveBondEngine {
 
   static async getPortfolioSnapshot() {
     const result = await pool.query(
-      `SELECT b.id FROM bonds b WHERE b.status = 'active' OR b.maturity_date > NOW()`
+      `SELECT b.id FROM bonds b WHERE b.status = 'active' OR (b.status = 'matured' AND b.maturity_date > NOW())`
     );
 
     const metrics = [];

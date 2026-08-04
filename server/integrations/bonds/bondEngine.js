@@ -157,7 +157,8 @@ class BondEngine {
 
       const now = new Date();
       const maturityDate = new Date(bond.maturity_date);
-      if (bond.status !== 'active' && maturityDate <= now) { await client.query('ROLLBACK'); throw new Error(`Bond ${bondId} is ${bond.status} and matured, cannot accrue`); }
+      const statusAllowsAccrual = bond.status === 'active' || (bond.status === 'matured' && maturityDate > now);
+      if (!statusAllowsAccrual) { await client.query('ROLLBACK'); throw new Error(`Bond ${bondId} is ${bond.status}, cannot accrue`); }
 
       const fromDate = bond.last_accrual_date;
       const to = new Date(toDate || now);
