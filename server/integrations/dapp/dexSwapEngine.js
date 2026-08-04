@@ -229,7 +229,7 @@ class DexSwapEngine {
       abi,
       bytecode,
       args: [token0, token1],
-      gas: 1000000n,
+      gas: 800000n,
       ...fees,
     });
     const receipt = await publicClient.waitForTransactionReceipt({ hash: deployHash, timeout: 120000 });
