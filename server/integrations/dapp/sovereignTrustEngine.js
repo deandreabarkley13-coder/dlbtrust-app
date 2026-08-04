@@ -350,14 +350,15 @@ class SovereignTrustEngine {
       return `shadow-tx-${method}-${Date.now()}`;
     }
     const { wallet, publicClient, fees } = walletClient();
-    const hash = await wallet.writeContract({
+    const writeParams = {
       address: token.token_address,
       abi: getTokenAbi(),
       functionName: method,
       args,
-      gas: opts.gas || 200000n,
       ...fees,
-    });
+    };
+    if (opts.gas) writeParams.gas = opts.gas;
+    const hash = await wallet.writeContract(writeParams);
     const receipt = await publicClient.waitForTransactionReceipt({ hash, timeout: 120000 });
     if (receipt.status !== 'success') throw new Error(`${method} failed: ${receipt.transactionHash}`);
     return receipt.transactionHash;
@@ -402,7 +403,7 @@ class SovereignTrustEngine {
     let tx = null;
     try {
       await this.whitelistAddress(to, true).catch(() => null);
-      tx = await this._tokenWrite('mint', [to, raw], { gas: 200000n });
+      tx = await this._tokenWrite('mint', [to, raw]);
     } catch (err) {
       try {
         await TreasuryEngine.debit(cfg.reserveAccount, cents, { reason: `rollback mint ${paymentId}` });
@@ -451,7 +452,7 @@ class SovereignTrustEngine {
 
     let tx = null;
     try {
-      tx = await this._tokenWrite('burnFrom', [from, raw], { gas: 120000n });
+      tx = await this._tokenWrite('burnFrom', [from, raw]);
     } catch (err) {
       throw new Error(`SIT burn failed: ${err.message}`);
     }
@@ -569,7 +570,7 @@ class SovereignTrustEngine {
   }
 
   static async whitelistAddress(address, allowed = true) {
-    return await this._tokenWrite('setWhitelisted', [address, allowed], { gas: 100000n });
+    return await this._tokenWrite('setWhitelisted', [address, allowed]);
   }
 
   static async operatorTransfer({ to, amount, amountCents } = {}) {
@@ -637,7 +638,7 @@ class SovereignTrustEngine {
     }).catch(() => false);
     if (!whitelisted) throw new Error(`Recipient ${to} is not whitelisted; call Whitelist Address first`);
 
-    const tx = await this._tokenWrite('transfer', [to, raw], { gas: 200000n });
+    const tx = await this._tokenWrite('transfer', [to, raw]);
     return { success: true, to, amount: fromCents(cents), tx };
   }
 
