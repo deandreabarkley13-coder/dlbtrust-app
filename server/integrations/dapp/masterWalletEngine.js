@@ -15,6 +15,7 @@
  */
 
 const { WalletEngine } = require('./walletEngine');
+const pool = require('../bonds/pgPool');
 let BondEngine, LiveBondEngine, StablecoinDexEngine, EmailEngine, DistributionRequestEngine, DappEngine;
 function loadDeps() {
   try { BondEngine = require('../bonds/bondEngine').BondEngine; } catch (e) { BondEngine = null; }
@@ -86,6 +87,19 @@ class MasterWalletEngine {
     return this.getMasterWallet('distribution');
   }
 
+  static async _hasBondBackfill(walletId, bondId, backfillType) {
+    const memoPattern = `%Backfill bond ${backfillType}%`;
+    const rows = await pool.query(
+      `SELECT 1 FROM dapp_wallet_transactions
+       WHERE wallet_id = $1 AND asset = 'DLBUSD' AND type = 'credit'
+         AND metadata->>'bond_id' = $2
+         AND (metadata->>'backfill_type' = $3 OR memo ILIKE $4)
+       LIMIT 1`,
+      [walletId, bondId, backfillType, memoPattern]
+    );
+    return (rows && rows.rows && rows.rows.length > 0) || false;
+  }
+
   static async transfer({ fromSubtype, toSubtype, amount, asset = 'SIT', memo } = {}) {
     const fromWallet = await this.getMasterWallet(fromSubtype);
     const toWallet = await this.getMasterWallet(toSubtype);
@@ -137,8 +151,9 @@ class MasterWalletEngine {
     const bond = await BondEngine.getBond(bondId);
     if (!bond) throw new Error(`Bond ${bondId} not found`);
 
-    // Bring accrued interest up to date before paying (only for active bonds)
-    if (bond.status === 'active') {
+    // Bring accrued interest up to date before paying (for active or non-matured bonds)
+    const maturityDate = new Date(bond.maturity_date);
+    if (bond.status === 'active' || maturityDate > new Date()) {
       await BondEngine.accrueInterest(bondId, new Date().toISOString().split('T')[0]);
     }
     const live = await LiveBondEngine.getBondLiveMetrics(bondId);
@@ -227,7 +242,10 @@ class MasterWalletEngine {
 
     const results = { principal: null, interest: null };
 
-    if (backfillPrincipal && Number(live.principal_balance) > 0) {
+    const principalAlreadyBackfilled = await this._hasBondBackfill(principalMaster.id, bondId, 'principal');
+    const interestAlreadyBackfilled = await this._hasBondBackfill(distributionMaster.id, bondId, 'interest');
+
+    if (backfillPrincipal && Number(live.principal_balance) > 0 && !principalAlreadyBackfilled) {
       let principalMint = null;
       let principalAmount = '0';
       try {
@@ -246,6 +264,7 @@ class MasterWalletEngine {
           await WalletEngine.credit(principalMaster.id, 'DLBUSD', principalAmount, {
             memo: `Backfill bond principal for ${bond.bond_name}`,
             bond_id: bondId,
+            backfill_type: 'principal',
             mint: principalMint && principalMint.operationId,
           });
         } catch (creditErr) {
@@ -258,9 +277,11 @@ class MasterWalletEngine {
         token_address: principalMint && principalMint.tokenAddress,
         master_wallet: principalMaster.address,
       };
+    } else if (backfillPrincipal && principalAlreadyBackfilled) {
+      results.principal = { skipped: true, reason: 'Bond principal already backfilled to master wallet' };
     }
 
-    if (backfillInterest && Number(live.accrued_interest_total) > 0) {
+    if (backfillInterest && Number(live.accrued_interest_total) > 0 && !interestAlreadyBackfilled) {
       let interestMint = null;
       let outAmount = String(live.accrued_interest_total);
       let conversionNote = 'USDC swap skipped (no DEX liquidity); DLBUSD credited for later conversion';
@@ -269,7 +290,7 @@ class MasterWalletEngine {
           sourceType: 'bond_interest',
           sourceAccountId: bondId,
           amount: Number(live.accrued_interest_total),
-          targetAddress: distributionMaster.address,
+          targetAddress: distributionMaster.id,
         });
         outAmount = String(interestMint.minted || '0');
         conversionNote = `DLBUSD minted to distribution master; swap to USDC can be run once a DEX pool exists`;
@@ -281,6 +302,7 @@ class MasterWalletEngine {
           await WalletEngine.credit(distributionMaster.id, 'DLBUSD', outAmount, {
             memo: `Backfill bond interest for ${bond.bond_name} (${conversionNote})`,
             bond_id: bondId,
+            backfill_type: 'interest',
             mint: interestMint && interestMint.operationId,
           });
         } catch (creditErr) {
@@ -294,6 +316,8 @@ class MasterWalletEngine {
         distribution_wallet: distributionMaster.address,
         note: conversionNote,
       };
+    } else if (backfillInterest && interestAlreadyBackfilled) {
+      results.interest = { skipped: true, reason: 'Bond interest already backfilled to master wallet' };
     }
 
     return {
