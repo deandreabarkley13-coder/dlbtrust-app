@@ -203,7 +203,13 @@ class MasterWalletEngine {
     if (!bondId) throw new Error('bondId required');
 
     const wallets = await this.ensureMasterWallets();
-    const walletMap = Object.fromEntries(wallets.map(w => [w.subtype, w]));
+    const subtypeOf = (w) => {
+      const meta = w && w.metadata;
+      if (!meta) return null;
+      if (typeof meta === 'string') { try { return JSON.parse(meta).subtype; } catch (e) { return null; } }
+      return meta.subtype || null;
+    };
+    const walletMap = Object.fromEntries(wallets.map(w => [subtypeOf(w), w]).filter(([k]) => k));
     const principalMaster = walletMap.principal;
     const distributionMaster = walletMap.distribution;
     if (!principalMaster || !distributionMaster) throw new Error('Master wallets not found');
@@ -265,7 +271,7 @@ class MasterWalletEngine {
     return {
       bond_id: bondId,
       bond_name: bond.bond_name,
-      wallets: Object.fromEntries(wallets.map(w => [w.subtype, w.id])),
+      wallets: Object.fromEntries(wallets.map(w => [subtypeOf(w), w.id]).filter(([k]) => k)),
       results,
     };
   }
