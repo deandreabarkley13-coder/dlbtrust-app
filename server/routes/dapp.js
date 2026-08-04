@@ -450,10 +450,12 @@ router.get('/moonpay/onramp', operatorAuth, async (req, res) => {
   } catch (err) { sendError(res, err); }
 });
 
-router.post('/moonpay/webhook', express.raw({ type: 'application/json' }), async (req, res) => {
+router.post('/moonpay/webhook', async (req, res) => {
   try {
     const signature = req.headers['x-moonpay-signature'] || '';
-    const result = await MoonPayEngine.webhook(JSON.parse(req.body), signature);
+    const rawBody = Buffer.isBuffer(req.rawBody) ? req.rawBody : (Buffer.isBuffer(req.body) ? req.body : Buffer.from(typeof req.body === 'string' ? req.body : JSON.stringify(req.body || {})));
+    const parsed = rawBody.length ? JSON.parse(rawBody.toString('utf8')) : {};
+    const result = await MoonPayEngine.webhook(parsed, signature, rawBody);
     res.json({ success: true, data: result });
   } catch (err) {
     console.error('[moonpay webhook]', err.message);

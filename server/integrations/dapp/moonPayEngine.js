@@ -61,18 +61,23 @@ class MoonPayEngine {
 
     let query = params.toString();
     if (cfg.apiSecret) {
-      const signature = crypto.createHmac('sha256', cfg.apiSecret).update(query).digest('hex');
-      query += `&signature=${signature}`;
+      const signature = crypto.createHmac('sha256', cfg.apiSecret).update(`?${query}`).digest('base64');
+      query += `&signature=${encodeURIComponent(signature)}`;
     }
 
     return `${cfg.widgetBase}?${query}`;
   }
 
-  static async webhook(body, signatureHeader) {
+  static async webhook(body, signatureHeader, rawBody) {
     const cfg = getConfig();
-    if (cfg.apiSecret && signatureHeader) {
-      const expected = crypto.createHmac('sha256', cfg.apiSecret).update(JSON.stringify(body)).digest('hex');
-      if (expected !== signatureHeader) throw new Error('MoonPay webhook signature mismatch');
+    if (cfg.apiSecret) {
+      if (!signatureHeader) throw new Error('MoonPay webhook signature missing');
+      const expected = crypto.createHmac('sha256', cfg.apiSecret).update(rawBody || JSON.stringify(body)).digest('hex');
+      const expectedBuf = Buffer.from(expected, 'hex');
+      const actualBuf = Buffer.from(signatureHeader, 'hex');
+      if (expectedBuf.length !== actualBuf.length || !crypto.timingSafeEqual(expectedBuf, actualBuf)) {
+        throw new Error('MoonPay webhook signature mismatch');
+      }
     }
 
     if (!body || !body.type) return { received: true, action: 'ignored' };
