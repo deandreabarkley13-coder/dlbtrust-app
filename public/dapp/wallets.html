@@ -160,16 +160,20 @@
         list.innerHTML = '';
         for (const w of wallets) {
           const bal = await api(`/wallets/${w.id}/balance`).catch(e => ({ internal:{}, external:{eth:'0',usdc:'0',sit:'0'} }));
+          const internal = bal.internal || {};
+          const internalSpans = Object.keys(internal).length
+            ? Object.entries(internal).map(([asset, amount]) => `<span>${asset}: <b>${Number(amount).toFixed(2)}</b></span>`).join(' ')
+            : '<span class="small">No internal balance</span>';
           const div = document.createElement('div');
           div.className = 'wallet';
           div.innerHTML = `
             <h3>${w.user_name || w.name || 'Wallet'}</h3>
             <div class="role">${w.role || 'beneficiary'} • ${w.type}</div>
             <div class="addr">${w.address}</div>
+            <div class="bal">${internalSpans}</div>
             <div class="bal">
-              <span>Internal SIT: <b>${bal.internal && bal.internal.SIT ? bal.internal.SIT : '0.00'}</b></span>
-              <span>On-chain SIT: <b>${bal.external.sit}</b></span>
-              <span>ETH: <b>${Number(bal.external.eth).toFixed(6)}</b> • USDC: <b>${bal.external.usdc}</b></span>
+              <span>On-chain SIT: <b>${Number(bal.external.sit).toFixed(2)}</b></span>
+              <span>ETH: <b>${Number(bal.external.eth).toFixed(6)}</b> • USDC: <b>${Number(bal.external.usdc).toFixed(2)}</b></span>
             </div>
             <div class="actions" style="margin-top:10px;">
               <button class="btn btn-secondary" onclick="viewWallet('${w.id}', '${w.address}')">Transactions</button>
@@ -249,6 +253,9 @@
           '</table>';
       } catch (e) { show(e.message, true, 'tx-result'); }
     }
+
+    if (localStorage.getItem('dlb-admin-token')) { el('admin-token').value = localStorage.getItem('dlb-admin-token'); }
+    loadWallets();
 
     toggleTxTo();
   </script>
