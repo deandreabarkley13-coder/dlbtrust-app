@@ -73,7 +73,7 @@ function walletClient() {
   if (!cfg.privateKey) throw new Error('DAPP_PRIVATE_KEY not configured');
   const account = privateKeyToAccount(cfg.privateKey);
   const chain = cfg.chainId === 1 ? (chains && chains.mainnet) : (chains && chains.sepolia) || undefined;
-  const fees = { maxFeePerGas: viem.parseGwei('3'), maxPriorityFeePerGas: viem.parseGwei('0.0015') };
+  const fees = cfg.getFees ? (cfg.getFees() || { maxFeePerGas: viem.parseGwei('20'), maxPriorityFeePerGas: viem.parseGwei('0.5') }) : { maxFeePerGas: viem.parseGwei('20'), maxPriorityFeePerGas: viem.parseGwei('0.5') };
   return {
     account,
     fees,
@@ -155,10 +155,9 @@ class BondTokenizationEngine {
         abi,
         bytecode,
         args: [record.token_name, record.token_symbol, 0],
-        gas: 2500000n,
         ...fees,
       });
-      const receipt = await publicClient.waitForTransactionReceipt({ hash });
+      const receipt = await publicClient.waitForTransactionReceipt({ hash, timeout: 120000 });
       if (receipt.status !== 'success') throw new Error(`bond token deploy failed: ${receipt.transactionHash}`);
       record.token_address = receipt.contractAddress;
     }
@@ -225,10 +224,9 @@ class BondTokenizationEngine {
         abi,
         functionName: 'mint',
         args: [target, raw],
-        gas: 100000n,
         ...fees,
       });
-      const receipt = await publicClient.waitForTransactionReceipt({ hash });
+      const receipt = await publicClient.waitForTransactionReceipt({ hash, timeout: 120000 });
       if (receipt.status !== 'success') throw new Error(`mint failed: ${receipt.transactionHash}`);
       txHash = receipt.transactionHash;
     }

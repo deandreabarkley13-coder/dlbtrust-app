@@ -33,6 +33,7 @@ try { ({ ModuleFundingEngine } = require('./moduleFundingEngine')); } catch (e) 
 
 function id(prefix = 'PAY') { return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 8).toUpperCase()}`; }
 function isAddress(v) { return viem && viem.isAddress && viem.isAddress(v); }
+function safeJson(obj) { return JSON.stringify(obj, (k, v) => typeof v === 'bigint' ? String(v) : v); }
 
 async function query(sql, params) {
   if (!pool || !pool.query) throw new Error('Postgres pool unavailable');
@@ -124,7 +125,7 @@ class PayoutCenterEngine {
       const keys = Object.keys(base).filter(k => base[k] !== undefined);
       const cols = keys.join(',');
       const vals = keys.map((_, i) => `$${i + 1}`).join(',');
-      await query(`INSERT INTO dapp_payout_center (${cols}) VALUES (${vals})`, keys.map(k => (k === 'tx_data' || k === 'metadata') ? JSON.stringify(base[k]) : base[k]));
+      await query(`INSERT INTO dapp_payout_center (${cols}) VALUES (${vals})`, keys.map(k => (k === 'tx_data' || k === 'metadata') ? safeJson(base[k]) : base[k]));
     }, () => {});
 
     let result = null;
@@ -203,7 +204,7 @@ class PayoutCenterEngine {
     base.updated_at = new Date().toISOString();
     await withFallback(async () => {
       await query(`UPDATE dapp_payout_center SET status = $1, tx_hash = $2, tx_data = $3, updated_at = NOW() WHERE id = $4`,
-        [base.status, base.tx_hash, JSON.stringify(base.tx_data), base.id]);
+        [base.status, base.tx_hash, safeJson(base.tx_data), base.id]);
     }, () => {});
 
     return { ...base, result };

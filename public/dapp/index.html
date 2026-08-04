@@ -106,6 +106,7 @@
         <button data-section="p2p" data-roles="trustee" onclick="showSection('p2p')">P2P Pay</button>
         <button data-section="payment-rails" data-roles="trustee" onclick="showSection('payment-rails')">Payment Rails</button>
         <button onclick="window.open('/dapp/wallets.html','_blank')">Wallets & Transactions</button>
+        <button onclick="window.open('/dapp/master-dashboard.html','_blank')">Master Dashboard</button>
         <button data-section="bond-tokens" data-roles="trustee" onclick="showSection('bond-tokens')">Bond Tokens</button>
         <button data-section="stablecoin-dex" data-roles="trustee" onclick="showSection('stablecoin-dex')">Stablecoin DEX</button>
         <button data-section="sovereign-trust" data-roles="trustee" onclick="showSection('sovereign-trust')">Sovereign Trust</button>
@@ -1118,7 +1119,6 @@
 
   <div id="toast" class="toast"></div>
 
-  <script src="/dapp/ethers.min.js"></script>
   <script>
     const API = '';
     const CHAIN_NAMES = { 1: 'Ethereum', 11155111: 'Sepolia', 137: 'Polygon', 42161: 'Arbitrum', 8453: 'Base', 295: 'Hedera' };
@@ -1319,7 +1319,13 @@
         const email = el('login-email').value;
         if (!email) throw new Error('Enter your email');
         const res = await api('/api/dapp/auth/send-code', { method: 'POST', body: JSON.stringify({ email }), noToken: true });
-        el('user-auth-status').innerHTML = `Code generated: <b>${res.data.code}</b> (in production this is sent via SMS/email)`;
+        if (res.data.sent) {
+          el('user-auth-status').textContent = `Check your email (${res.data.provider || 'provider'}) for the 6-digit code. Code sent to ${email}.`;
+        } else if (res.data.code) {
+          el('user-auth-status').innerHTML = `Email provider not configured. Your one-time code is: <b>${esc(res.data.code)}</b>. Set SENDGRID_API_KEY as a secret to enable email delivery.`;
+        } else {
+          el('user-auth-status').textContent = 'Unable to deliver code. Contact the administrator to configure email/SMS delivery.';
+        }
         el('user-auth-status').className = 'status success';
       } catch (e) { el('user-auth-status').textContent = e.message; el('user-auth-status').className = 'status error'; }
     };

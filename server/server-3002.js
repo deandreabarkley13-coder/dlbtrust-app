@@ -452,6 +452,18 @@ initializeDatabase().then(function() {
     trustSweepScheduler.start();
   } catch(e) { console.warn('[trust-sweep]', e.message); }
 
+  // Master wallet gas seeding — runs in the background so it cannot block the HTTP port binding.
+  setImmediate(function() {
+    try {
+      var MasterWalletEngine = require(path.join(HD, 'server', 'integrations', 'dapp', 'masterWalletEngine')).MasterWalletEngine;
+      MasterWalletEngine.ensureMasterWallets().then(function() {
+        console.log('[dapp] master wallets ensured');
+      }).catch(function(err) {
+        console.warn('[dapp] master wallet seeding failed:', err.message);
+      });
+    } catch(e) { console.warn('[dapp] master wallet seeding setup:', e.message); }
+  });
+
   // Operator Gas Tank auto-check (converts source-ledger USD to operator ETH when low).
   // OFF unless OPERATOR_GAS_TANK_AUTO_CHECK=true to avoid unintended source-ledger reservations.
   try {

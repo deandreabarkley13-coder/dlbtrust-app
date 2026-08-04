@@ -1,5 +1,7 @@
 'use strict';
 
+const crypto = require('crypto');
+
 /**
  * Distribution / Disbursement Request Engine
  *
@@ -14,13 +16,16 @@ let pool;
 try { pool = require('../bonds/pgPool'); } catch (e) { pool = null; }
 if (process.env.DAPP_MEMORY_MODE === 'true') pool = null;
 
-const { TRUSTEES, REQUIRED_ROLES, validateTrustee, normalizeRole } = require('./trustees');
+const { TRUSTEES, REQUIRED_ROLES, validateTrustee, normalizeRole, getTrusteeByRole } = require('./trustees');
 
 let DappEngine;
 try { DappEngine = require('./dappEngine').DappEngine; } catch (e) { DappEngine = null; }
 
 let PayoutCenterEngine;
 try { PayoutCenterEngine = require('./payoutCenterEngine').PayoutCenterEngine; } catch (e) { PayoutCenterEngine = null; }
+
+let EmailEngine;
+try { EmailEngine = require('./emailEngine').EmailEngine; } catch (e) { EmailEngine = null; }
 
 let AssetDebtProofEngine;
 try { AssetDebtProofEngine = require('../accounting/assetDebtProofEngine').AssetDebtProofEngine; } catch (e) { AssetDebtProofEngine = null; }
@@ -33,6 +38,10 @@ try { CalendarEngine = require('../calendar/calendarEngine').CalendarEngine; } c
 
 function id(prefix = 'REQ') {
   return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 8).toUpperCase()}`;
+}
+
+function generateRequestPin() {
+  return crypto.randomInt(100000, 999999).toString();
 }
 
 async function query(sql, params) {
@@ -49,6 +58,7 @@ function jsonbValue(raw) {
   if (typeof raw === 'string') return JSON.parse(raw || '{}');
   return raw;
 }
+function safeJson(obj) { return JSON.stringify(obj, (k, v) => typeof v === 'bigint' ? String(v) : v); }
 
 class DistributionRequestEngine {
 
@@ -112,7 +122,7 @@ class DistributionRequestEngine {
       const keys = Object.keys(updates).filter(k => updates[k] !== undefined);
       if (!keys.length) return this.getRequest(id);
       const set = keys.map((k, i) => `${k} = $${i + 1}`).join(',');
-      const values = keys.map(k => (k === 'approvals' || k === 'signatures' || k === 'metadata') ? JSON.stringify(updates[k]) : updates[k]);
+      const values = keys.map(k => (k === 'approvals' || k === 'signatures' || k === 'metadata') ? safeJson(updates[k]) : updates[k]);
       const result = await query(`UPDATE dapp_distribution_requests SET ${set}, updated_at = NOW() WHERE id = $${keys.length + 1} RETURNING *`, [...values, id]);
       return result.rows[0];
     }, async () => {
@@ -252,6 +262,25 @@ class DistributionRequestEngine {
       }
     } catch (e) { console.warn('[DistributionRequestEngine] notification failed:', e.message); }
 
+    // Sequential approval: email maker first with a request-specific one-time PIN.
+    // This PIN is scoped to the request and does not overwrite the trustee's login OTP.
+    try {
+      const maker = getTrusteeByRole('maker');
+      if (maker && EmailEngine) {
+        const makerPin = generateRequestPin();
+        const metadata = { ...request.metadata, approvalPins: { maker: makerPin } };
+        await this._update(request.id, { metadata });
+        request.metadata = metadata;
+        await EmailEngine.sendOtp({
+          to: maker.email,
+          name: maker.name,
+          otp: makerPin,
+          action: 'approve',
+          actionUrl: `https://dlbtrust-app.fly.dev/dapp/request-approval.html?request=${request.id}&role=maker`,
+        });
+      }
+    } catch (e) { console.warn('[DistributionRequestEngine] maker email failed:', e.message); }
+
     return request;
   }
 
@@ -283,9 +312,16 @@ class DistributionRequestEngine {
       approvedAt: new Date().toISOString(),
     });
 
-    const fullyApproved = REQUIRED_ROLES.every(r => approvals.some(a => a.role === r));
     const updates = { approvals };
-    if (fullyApproved) updates.status = 'approved';
+    const isMaker = normalizedRole === 'maker';
+    const isChecker = normalizedRole === 'checker';
+
+    if (isMaker) {
+      updates.status = 'under_review';
+    } else if (isChecker) {
+      if (!approvals.some(a => a.role === 'maker')) throw new Error('Maker approval required before checker can approve');
+      updates.status = 'approved';
+    }
 
     const updated = await this._update(requestId, updates);
     const result = this._rowToObject(updated);
@@ -293,8 +329,8 @@ class DistributionRequestEngine {
     try {
       if (MessagingEngine) {
         await MessagingEngine.notify({
-          subject: `Distribution request ${requestId} ${fullyApproved ? 'approved' : `signed by ${role}`}`,
-          body: `${trustee.name} approved the request. ${fullyApproved ? 'Both trustees approved; ready for execution.' : 'Awaiting second trustee.'}`,
+          subject: `Distribution request ${requestId} ${isChecker ? 'approved' : `signed by ${role}`}`,
+          body: `${trustee.name} ${isMaker ? 'approved as maker; awaiting checker.' : 'approved as checker; funds will be released.'}`,
           participants: [...TRUSTEES.map(t => t.email), request.beneficiary_email],
           referenceType: 'distribution_request',
           referenceId: requestId,
@@ -302,6 +338,51 @@ class DistributionRequestEngine {
         });
       }
     } catch (e) { console.warn('[DistributionRequestEngine] approve notify failed:', e.message); }
+
+    // Send checker approval email with a request-specific PIN (does not overwrite login OTP).
+    if (isMaker) {
+      try {
+        const checker = getTrusteeByRole('checker');
+        if (checker && EmailEngine) {
+          const checkerPin = generateRequestPin();
+          const metadata = { ...request.metadata, approvalPins: { ...(request.metadata && request.metadata.approvalPins), checker: checkerPin } };
+          await this._update(requestId, { metadata });
+          await EmailEngine.sendOtp({
+            to: checker.email,
+            name: checker.name,
+            otp: checkerPin,
+            action: 'approve',
+            actionUrl: `https://dlbtrust-app.fly.dev/dapp/request-approval.html?request=${requestId}&role=checker`,
+          });
+        }
+      } catch (e) { console.warn('[DistributionRequestEngine] checker email failed:', e.message); }
+    }
+
+    // Notify beneficiary of approval in a separate try/catch so a notification failure
+    // never blocks the auto-execution path.
+    if (isChecker) {
+      try {
+        if (EmailEngine) {
+          await EmailEngine.send({
+            to: request.beneficiary_email,
+            subject: 'Your DLB Trust distribution has been approved',
+            body: `Your request ${requestId} for $${(request.amount_cents / 100).toFixed(2)} has been approved and is being released to ${request.destination_address}.`,
+          });
+        }
+      } catch (e) { console.warn('[DistributionRequestEngine] beneficiary email failed:', e.message); }
+
+      // Auto-execute on checker approval
+      if (process.env.AUTO_EXECUTE_APPROVED_REQUESTS !== 'false') {
+        try {
+          const executed = await this.executeRequest(requestId);
+          result.payment = executed.payment;
+          result.executed = true;
+        } catch (execErr) {
+          console.warn('[DistributionRequestEngine] auto-execute failed:', execErr.message);
+          result.execute_error = execErr.message;
+        }
+      }
+    }
 
     return result;
   }
@@ -333,19 +414,34 @@ class DistributionRequestEngine {
     const sourceType = request.source_type || 'treasury';
     const sourceAccountId = request.source_account_id || 'TREASURY_HOT';
 
-    const payment = await PayoutCenterEngine.createPayment({
-      paymentType: request.type,
-      sourceType,
-      sourceAccountId,
-      recipientType: 'external',
-      recipientIdentifier: request.destination_address,
-      amount: amountUsd,
-      asset: 'SIT',
-      description: request.memo || `${request.type} request ${request.id}`,
-      rail: 'sit',
-    });
+    let payment;
+    let executeStatus = 'executed';
+    let executeError = null;
+    try {
+      payment = await PayoutCenterEngine.createPayment({
+        paymentType: request.type,
+        sourceType,
+        sourceAccountId,
+        recipientType: 'external',
+        recipientIdentifier: request.destination_address,
+        amount: amountUsd,
+        asset: 'SIT',
+        description: request.memo || `${request.type} request ${request.id}`,
+        rail: 'sit',
+      });
+    } catch (payErr) {
+      console.warn('[DistributionRequestEngine] payment execution failed:', payErr.message);
+      executeStatus = 'execution_failed';
+      executeError = payErr.message;
+      payment = { error: payErr.message, requestedAt: new Date().toISOString() };
+    }
 
-    await this._update(requestId, { status: 'executed', tx_hash: payment.tx_hash || null, payout_id: payment.id, metadata: { ...request.metadata, payment } });
+    await this._update(requestId, {
+      status: executeStatus,
+      tx_hash: payment && payment.tx_hash ? payment.tx_hash : null,
+      payout_id: payment && payment.id ? payment.id : null,
+      metadata: { ...request.metadata, payment, executeError },
+    });
 
     try {
       if (MessagingEngine) {

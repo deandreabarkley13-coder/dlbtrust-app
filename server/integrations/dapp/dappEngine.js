@@ -6,7 +6,8 @@ const { SourceOfFundsAdapter } = require('../stablecoin/sourceOfFundsAdapter');
 const { getTrusteeByEmail } = require('./trustees');
 const { JWT_SECRET } = require('../auth/userAuth');
 
-let CashEngine, TrustAccountingEngine, BondEngine, FineractClient, CrmEngine, TaxEngine, DocumentEngine, SubLedgerEngine;
+let CashEngine, TrustAccountingEngine, BondEngine, FineractClient, CrmEngine, TaxEngine, DocumentEngine, SubLedgerEngine, EmailEngine;
+try { EmailEngine = require('./emailEngine').EmailEngine; } catch (e) { }
 try { CashEngine = require('../cash/cashEngine').CashEngine; } catch (e) { }
 try { TrustAccountingEngine = require('../accounting/trustAccountingEngine').TrustAccountingEngine; } catch (e) { }
 try { BondEngine = require('../bonds/bondEngine').BondEngine; } catch (e) { }
@@ -783,7 +784,15 @@ class DappEngine {
     const code = String(Math.floor(100000 + Math.random() * 900000));
     const expires = new Date(Date.now() + 10 * 60 * 1000).toISOString();
     await this._update('dapp_users', user.id, { otp_code: code, otp_expires: expires });
-    return { email, code, expires, role, roles, message: 'In production, send this code via Twilio/SendGrid' };
+
+    let emailStatus = { sent: false, note: 'No email provider configured; code returned in API' };
+    if (EmailEngine) {
+      try {
+        emailStatus = await EmailEngine.sendOtp({ to: email, name: user.name || email, otp: code, action: 'login' });
+      } catch (e) { console.warn('[DappEngine] OTP email failed:', e.message); }
+    }
+
+    return { email, code: emailStatus.sent ? null : code, expires, role, roles, sent: emailStatus.sent, provider: emailStatus.provider, message: emailStatus.note || 'OTP generated' };
   }
 
   static _sanitizeUser(user) {

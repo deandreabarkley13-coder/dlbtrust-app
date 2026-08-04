@@ -35,19 +35,27 @@ class LiveBondEngine {
     return Math.max(0, Math.ceil((mat.getTime() - now.getTime()) / msPerDay));
   }
 
+  static _isLeapYear(year) {
+    return (year % 4 === 0 && year % 100 !== 0) || year % 400 === 0;
+  }
+
+  static _liveDaysBetween(bond, d1, d2) {
+    if ((bond.day_count || '30/360') === '30/360') {
+      let y1 = d1.getFullYear(), m1 = d1.getMonth() + 1, day1 = Math.min(d1.getDate(), 30);
+      let y2 = d2.getFullYear(), m2 = d2.getMonth() + 1, day2 = Math.min(d2.getDate(), 30);
+      return Math.max(0, (y2 - y1) * 360 + (m2 - m1) * 30 + (day2 - day1));
+    }
+    return Math.max(0, Math.round((d2.getTime() - d1.getTime()) / 86400000));
+  }
+
   static calcAccruedInterestLive(bond) {
     const principal = parseFloat(bond.principal_balance);
     const couponRate = parseFloat(bond.coupon_rate);
     const lastAccrual = new Date(bond.last_accrual_date);
     const now = new Date();
-
-    const d1 = lastAccrual;
-    const d2 = now;
-    let y1 = d1.getFullYear(), m1 = d1.getMonth() + 1, day1 = Math.min(d1.getDate(), 30);
-    let y2 = d2.getFullYear(), m2 = d2.getMonth() + 1, day2 = Math.min(d2.getDate(), 30);
-    const daysSince = Math.max(0, (y2 - y1) * 360 + (m2 - m1) * 30 + (day2 - day1));
-
-    return principal * (couponRate / 360) * daysSince;
+    const daysSince = LiveBondEngine._liveDaysBetween(bond, lastAccrual, now);
+    const daysInYear = bond.day_count === 'ACT/ACT' ? (LiveBondEngine._isLeapYear(now.getFullYear()) ? 366 : 365) : 360;
+    return principal * (couponRate / daysInYear) * daysSince;
   }
 
   /**
@@ -177,16 +185,14 @@ class LiveBondEngine {
   static calcDailyAccrual(bond) {
     const principal = parseFloat(bond.principal_balance);
     const couponRate = parseFloat(bond.coupon_rate);
-    return Math.round(principal * (couponRate / 360) * 100) / 100;
+    const daysInYear = bond.day_count === 'ACT/ACT' ? (LiveBondEngine._isLeapYear(new Date().getFullYear()) ? 366 : 365) : 360;
+    return Math.round(principal * (couponRate / daysInYear) * 100) / 100;
   }
 
   static calcDaysSinceLastAccrual(bond) {
     const last = new Date(bond.last_accrual_date);
     const now = new Date();
-    const d1 = last, d2 = now;
-    let y1 = d1.getFullYear(), m1 = d1.getMonth() + 1, day1 = Math.min(d1.getDate(), 30);
-    let y2 = d2.getFullYear(), m2 = d2.getMonth() + 1, day2 = Math.min(d2.getDate(), 30);
-    return Math.max(0, (y2 - y1) * 360 + (m2 - m1) * 30 + (day2 - day1));
+    return LiveBondEngine._liveDaysBetween(bond, last, now);
   }
 
   static async getBondLiveMetrics(bondId, marketYield) {
@@ -207,7 +213,8 @@ class LiveBondEngine {
     const macDuration = LiveBondEngine.calcMacaulayDuration(bond);
     const modDuration = LiveBondEngine.calcModifiedDuration(bond, ytm);
     const currentPrice = LiveBondEngine.calcCurrentPrice(bond, yield_);
-    const marketValue = currentPrice * faceValue;
+    const cleanMarketValue = currentPrice * principalBalance;
+    const marketValue = cleanMarketValue + totalAccrued;
     const dv01 = LiveBondEngine.calcDV01(bond, modDuration, marketValue);
     const dailyAccrual = LiveBondEngine.calcDailyAccrual(bond);
     const nextCouponDate = LiveBondEngine.calcNextCouponDate(bond);
@@ -262,7 +269,7 @@ class LiveBondEngine {
       // Totals
       total_interest_paid: parseFloat(bond.total_interest_paid),
       total_principal_paid: parseFloat(bond.total_principal_paid),
-      total_current_value: Math.round((marketValue + totalAccrued) * 100) / 100,
+      total_current_value: Math.round(marketValue * 100) / 100,
       generated_at: new Date().toISOString(),
     };
   }

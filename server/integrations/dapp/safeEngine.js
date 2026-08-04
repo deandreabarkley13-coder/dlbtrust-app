@@ -3,7 +3,7 @@
 const Safe = require('@safe-global/protocol-kit').default;
 const { privateKeyToAccount } = require('viem/accounts');
 const {
-  createPublicClient, createWalletClient, http,
+  createPublicClient, createWalletClient, http, parseGwei,
   encodeFunctionData, parseAbi, recoverMessageAddress, hexToBytes, toHex,
 } = require('viem');
 const { mainnet, sepolia, polygon, arbitrum, base } = require('viem/chains');
@@ -41,6 +41,11 @@ class SafeEngine {
   static _walletClient() {
     const cfg = this._validate();
     return createWalletClient({ account: this._account(), chain: chainById(cfg.chainId), transport: http(cfg.rpcUrl) });
+  }
+
+  static _fees() {
+    const cfg = this._validate();
+    return cfg.getFees ? (cfg.getFees() || { maxFeePerGas: parseGwei('20'), maxPriorityFeePerGas: parseGwei('0.5') }) : { maxFeePerGas: parseGwei('20'), maxPriorityFeePerGas: parseGwei('0.5') };
   }
 
   static async _getKit({ safeAddress, predictedSafe } = {}) {
@@ -82,9 +87,10 @@ class SafeEngine {
       to: deploymentTx.to,
       value: BigInt(deploymentTx.value),
       data: deploymentTx.data,
+      ...this._fees(),
     });
     const publicClient = this._publicClient();
-    const receipt = await publicClient.waitForTransactionReceipt({ hash });
+    const receipt = await publicClient.waitForTransactionReceipt({ hash, timeout: 120000 });
     const { getSafeAddressFromDeploymentTx } = require('@safe-global/protocol-kit');
     const safeAddress = getSafeAddressFromDeploymentTx(receipt);
     return { safeAddress, txHash: hash, receipt, simulated: false };
