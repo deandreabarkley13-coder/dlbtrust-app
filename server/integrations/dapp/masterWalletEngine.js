@@ -137,8 +137,9 @@ class MasterWalletEngine {
     const bond = await BondEngine.getBond(bondId);
     if (!bond) throw new Error(`Bond ${bondId} not found`);
 
-    // Bring accrued interest up to date before paying (only for active bonds)
-    if (bond.status === 'active') {
+    // Bring accrued interest up to date before paying (for active or non-matured bonds)
+    const maturityDate = new Date(bond.maturity_date);
+    if (bond.status === 'active' || maturityDate > new Date()) {
       await BondEngine.accrueInterest(bondId, new Date().toISOString().split('T')[0]);
     }
     const live = await LiveBondEngine.getBondLiveMetrics(bondId);
@@ -227,7 +228,12 @@ class MasterWalletEngine {
 
     const results = { principal: null, interest: null };
 
-    if (backfillPrincipal && Number(live.principal_balance) > 0) {
+    const principalBalanceObj = await WalletEngine.getBalance(principalMaster.id).catch(() => null);
+    const existingPrincipal = principalBalanceObj && principalBalanceObj.internal ? Number(principalBalanceObj.internal['DLBUSD'] || 0) : 0;
+    const distributionBalanceObj = await WalletEngine.getBalance(distributionMaster.id).catch(() => null);
+    const existingDistribution = distributionBalanceObj && distributionBalanceObj.internal ? Number(distributionBalanceObj.internal['DLBUSD'] || 0) : 0;
+
+    if (backfillPrincipal && Number(live.principal_balance) > 0 && existingPrincipal <= 0) {
       let principalMint = null;
       let principalAmount = '0';
       try {
@@ -260,7 +266,7 @@ class MasterWalletEngine {
       };
     }
 
-    if (backfillInterest && Number(live.accrued_interest_total) > 0) {
+    if (backfillInterest && Number(live.accrued_interest_total) > 0 && existingDistribution <= 0) {
       let interestMint = null;
       let outAmount = String(live.accrued_interest_total);
       let conversionNote = 'USDC swap skipped (no DEX liquidity); DLBUSD credited for later conversion';

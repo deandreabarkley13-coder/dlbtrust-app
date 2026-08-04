@@ -49,10 +49,13 @@ class LiveBondEngine {
   }
 
   static calcAccruedInterestLive(bond) {
-    const principal = parseFloat(bond.principal_balance);
+    const rawPrincipal = parseFloat(bond.principal_balance || 0);
+    const faceValue = parseFloat(bond.face_value || 0);
     const couponRate = parseFloat(bond.coupon_rate);
     const lastAccrual = new Date(bond.last_accrual_date);
     const now = new Date();
+    const maturityDate = new Date(bond.maturity_date);
+    const principal = rawPrincipal > 0 ? rawPrincipal : (maturityDate > now ? faceValue : 0);
     const daysSince = LiveBondEngine._liveDaysBetween(bond, lastAccrual, now);
     const daysInYear = bond.day_count === 'ACT/ACT' ? (LiveBondEngine._isLeapYear(now.getFullYear()) ? 366 : 365) : 360;
     return principal * (couponRate / daysInYear) * daysSince;
@@ -183,9 +186,13 @@ class LiveBondEngine {
   }
 
   static calcDailyAccrual(bond) {
-    const principal = parseFloat(bond.principal_balance);
+    const rawPrincipal = parseFloat(bond.principal_balance || 0);
+    const faceValue = parseFloat(bond.face_value || 0);
     const couponRate = parseFloat(bond.coupon_rate);
-    const daysInYear = bond.day_count === 'ACT/ACT' ? (LiveBondEngine._isLeapYear(new Date().getFullYear()) ? 366 : 365) : 360;
+    const now = new Date();
+    const maturityDate = new Date(bond.maturity_date);
+    const principal = rawPrincipal > 0 ? rawPrincipal : (maturityDate > now ? faceValue : 0);
+    const daysInYear = bond.day_count === 'ACT/ACT' ? (LiveBondEngine._isLeapYear(now.getFullYear()) ? 366 : 365) : 360;
     return Math.round(principal * (couponRate / daysInYear) * 100) / 100;
   }
 
@@ -199,10 +206,14 @@ class LiveBondEngine {
     const bond = await BondEngine.getBond(bondId);
     if (!bond) throw new Error(`Bond ${bondId} not found`);
 
+    const now = new Date();
+    const maturityDate = new Date(bond.maturity_date);
+    const isMatured = maturityDate <= now;
     const couponRate = parseFloat(bond.coupon_rate);
     const faceValue = parseFloat(bond.face_value);
-    const principalBalance = parseFloat(bond.principal_balance);
-    const dbAccrued = parseFloat(bond.accrued_interest);
+    const rawPrincipal = parseFloat(bond.principal_balance || 0);
+    const effectivePrincipal = isMatured ? Math.max(0, rawPrincipal) : (rawPrincipal > 0 ? rawPrincipal : faceValue);
+    const dbAccrued = parseFloat(bond.accrued_interest || 0);
     const yield_ = marketYield !== undefined ? parseFloat(marketYield) : couponRate;
 
     const daysToMat = LiveBondEngine.calcDaysToMaturity(bond.maturity_date);
@@ -213,15 +224,15 @@ class LiveBondEngine {
     const macDuration = LiveBondEngine.calcMacaulayDuration(bond);
     const modDuration = LiveBondEngine.calcModifiedDuration(bond, ytm);
     const currentPrice = LiveBondEngine.calcCurrentPrice(bond, yield_);
-    const cleanMarketValue = currentPrice * principalBalance;
+    const cleanMarketValue = currentPrice * effectivePrincipal;
     const marketValue = cleanMarketValue + totalAccrued;
     const dv01 = LiveBondEngine.calcDV01(bond, modDuration, marketValue);
     const dailyAccrual = LiveBondEngine.calcDailyAccrual(bond);
     const nextCouponDate = LiveBondEngine.calcNextCouponDate(bond);
     const daysSinceAccrual = LiveBondEngine.calcDaysSinceLastAccrual(bond);
     const freq = freqPerYear(bond.payment_freq);
-    const annualCouponIncome = principalBalance * couponRate;
-    const couponPerPeriod = Math.round(annualCouponIncome / freq * 100) / 100;
+    const annualCouponIncome = effectivePrincipal * couponRate;
+    const couponPerPeriod = Math.round((annualCouponIncome / freq) * 100) / 100;
     const currentYield = marketValue > 0 ? (annualCouponIncome / marketValue) * 100 : 0;
 
     return {
@@ -236,12 +247,12 @@ class LiveBondEngine {
       issuer: bond.issuer || null,
       issuer_state: bond.issuer_state || null,
       face_value: faceValue,
-      principal_balance: principalBalance,
+      principal_balance: effectivePrincipal,
       coupon_rate_pct: couponRate * 100,
       payment_freq: bond.payment_freq,
       day_count: bond.day_count,
       currency: bond.currency,
-      status: bond.status,
+      status: isMatured ? 'matured' : 'active',
       issue_date: bond.issue_date,
       maturity_date: bond.maturity_date,
       days_to_maturity: daysToMat,
@@ -276,7 +287,7 @@ class LiveBondEngine {
 
   static async getPortfolioSnapshot() {
     const result = await pool.query(
-      `SELECT b.id FROM bonds b WHERE b.status = 'active'`
+      `SELECT b.id FROM bonds b WHERE b.status = 'active' OR b.maturity_date > NOW()`
     );
 
     const metrics = [];

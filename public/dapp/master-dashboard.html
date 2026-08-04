@@ -258,10 +258,13 @@
       } catch (e) { el('overview-master-status').textContent = e.message; }
       try {
         const pf = await api('/bonds/portfolio');
-        const income = (pf.metrics || []).reduce((s, m) => s + (parseFloat(m.accrued_interest_total) || 0), 0);
-        const interestPaid = (pf.metrics || []).reduce((s, m) => s + (parseFloat(m.total_interest_paid) || 0), 0);
-        const faceValue = (pf.metrics || []).reduce((s, m) => s + (parseFloat(m.face_value) || 0), 0);
-        el('overview-income').innerHTML = `<div class="big">$${esc(formatMoney(income))}</div><div class="muted">total accrued interest</div><div style="margin-top:10px;color:var(--muted);font-size:12px;">Total face value: <b>$${esc(formatMoney(faceValue))}</b><br/>Total interest paid: <b>$${esc(formatMoney(interestPaid))}</b></div>`;
+        const metrics = pf.metrics || [];
+        const currentValue = metrics.reduce((s, m) => s + (parseFloat(m.total_current_value) || 0), 0);
+        const accrued = metrics.reduce((s, m) => s + (parseFloat(m.accrued_interest_total) || 0), 0);
+        const interestPaid = metrics.reduce((s, m) => s + (parseFloat(m.total_interest_paid) || 0), 0);
+        const interestAccruedToDate = metrics.reduce((s, m) => s + (parseFloat(m.total_interest_paid) || 0) + (parseFloat(m.accrued_interest_total) || 0), 0);
+        const faceValue = metrics.reduce((s, m) => s + (parseFloat(m.face_value) || 0), 0);
+        el('overview-income').innerHTML = `<div class="big">$${esc(formatMoney(currentValue))}</div><div class="muted">total current value (principal + accrued)</div><div style="margin-top:10px;color:var(--muted);font-size:12px;">Total face value: <b>$${esc(formatMoney(faceValue))}</b><br/>Accrued interest outstanding: <b>$${esc(formatMoney(accrued))}</b><br/>Interest paid/distributed: <b>$${esc(formatMoney(interestPaid))}</b><br/>Total interest accrued to date: <b>$${esc(formatMoney(interestAccruedToDate))}</b></div>`;
       } catch (e) { el('overview-income').textContent = e.message; }
       try {
         const reqs = await api('/distribution-requests?limit=50');
@@ -325,8 +328,9 @@
               <span>Face value: <b>$${esc(formatMoney(m.face_value))}</b></span>
               <span>Principal balance: <b>$${esc(formatMoney(m.principal_balance))}</b></span>
               <span>Total principal paid: <b>$${esc(formatMoney(m.total_principal_paid))}</b></span>
-              <span>Accrued interest: <b>$${esc(formatMoney(m.accrued_interest_total))}</b></span>
-              <span>Total interest paid: <b>$${esc(formatMoney(m.total_interest_paid))}</b></span>
+              <span>Accrued interest (outstanding): <b>$${esc(formatMoney(m.accrued_interest_total))}</b></span>
+              <span>Total interest paid/distributed: <b>$${esc(formatMoney(m.total_interest_paid))}</b></span>
+              <span>Total interest accrued to date: <b>$${esc(formatMoney((parseFloat(m.total_interest_paid) || 0) + (parseFloat(m.accrued_interest_total) || 0)))}</b></span>
               <span>Next coupon: <b>${esc(m.next_coupon_date || '—')}</b> ($${esc(formatMoney(m.coupon_per_period))})</span>
               <span>Market value: <b>$${esc(formatMoney(m.market_value))}</b></span>
               <span>Status: <b>${esc(m.status || '—')}</b></span>
