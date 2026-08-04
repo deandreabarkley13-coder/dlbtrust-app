@@ -8,6 +8,7 @@ const { BondTokenizationEngine } = require('../integrations/dapp/bondTokenizatio
 const { DexSwapEngine } = require('../integrations/dapp/dexSwapEngine');
 const { SourceToDexBridge } = require('../integrations/dapp/sourceToDexBridge');
 const { StablecoinDexEngine } = require('../integrations/dapp/stablecoinDexEngine');
+const { MoonPayEngine } = require('../integrations/dapp/moonPayEngine');
 const { CoinbaseSpotEngine } = require('../integrations/dapp/coinbaseSpotEngine');
 const { CoinbaseTreasuryBridge } = require('../integrations/dapp/coinbaseTreasuryBridge');
 const { FinOpsAgent } = require('../integrations/agents/finOpsAgent');
@@ -430,6 +431,36 @@ router.post('/stablecoin-dex/deposit-and-swap', operatorAuth, writeRateLimiter()
     const data = await StablecoinDexEngine.depositAndSwap(req.body);
     res.status(201).json({ success: true, data });
   } catch (err) { sendError(res, err); }
+});
+
+// ─── MoonPay On-Ramp ────────────────────────────────────────────────────────────
+router.get('/moonpay/readiness', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: MoonPayEngine.readiness() }); } catch (err) { sendError(res, err); }
+});
+
+router.get('/moonpay/onramp', operatorAuth, async (req, res) => {
+  try {
+    const url = MoonPayEngine.buildUrl({
+      currencyCode: req.query.currencyCode,
+      walletAddress: req.query.walletAddress,
+      fiatCurrency: req.query.fiatCurrency,
+      amount: req.query.amount,
+    });
+    res.json({ success: true, data: { url, targetWallet: req.query.walletAddress || MoonPayEngine.getConfig().operatorAddress } });
+  } catch (err) { sendError(res, err); }
+});
+
+router.post('/moonpay/webhook', async (req, res) => {
+  try {
+    const signature = req.headers['x-moonpay-signature'] || '';
+    const rawBody = Buffer.isBuffer(req.rawBody) ? req.rawBody : (Buffer.isBuffer(req.body) ? req.body : Buffer.from(typeof req.body === 'string' ? req.body : JSON.stringify(req.body || {})));
+    const parsed = rawBody.length ? JSON.parse(rawBody.toString('utf8')) : {};
+    const result = await MoonPayEngine.webhook(parsed, signature, rawBody);
+    res.json({ success: true, data: result });
+  } catch (err) {
+    console.error('[moonpay webhook]', err.message);
+    res.status(400).json({ success: false, error: err.message });
+  }
 });
 
 // ─── Source → DEX Bridge (fund Safe from legacy ledger via tokenization/swap) ───
