@@ -45,8 +45,8 @@ class WalletFundingEngine {
     this._lazyLoad();
     if (!TrustAccountingEngine) return;
     const accounts = [
-      { code: WALLET_FUNDS_CODE, name: 'Wallet Funds — Beneficiary Holdings', type: 'asset', subType: 'wallet' },
-      { code: WALLET_ALLOCATIONS_CODE, name: 'Wallet Allocations — Beneficiary Obligations', type: 'liability', subType: 'wallet' },
+      { code: WALLET_FUNDS_CODE, name: 'Wallet Funds — Beneficiary Holdings', type: 'asset', subType: 'cash' },
+      { code: WALLET_ALLOCATIONS_CODE, name: 'Wallet Allocations — Beneficiary Obligations', type: 'liability', subType: 'payable' },
     ];
     for (const a of accounts) {
       try {
