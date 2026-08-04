@@ -25,7 +25,7 @@ function bool(name, fallback = false) { const v = process.env[name]; return v ? 
 function num(name, fallback = 0) { const n = Number(process.env[name]); return Number.isFinite(n) ? n : fallback; }
 
 const SWAP_ROUTER_02 = '0x68b3465833fb72A70ecDF485E0e4C7bD8665Fc45';
-const UNISWAP_V2_ROUTER_02 = '0x7a250d5630B4cF539739dF5c5dAcb4c259F1AcC3';
+const UNISWAP_V2_ROUTER_02 = '0x7a250d5630B4cF539739dF2C5dAcb4c659F2488D';
 
 const erc20Abi = [
   { type: 'function', name: 'decimals', inputs: [], outputs: [{ type: 'uint8' }], stateMutability: 'view' },
