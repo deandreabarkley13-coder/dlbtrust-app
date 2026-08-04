@@ -69,6 +69,16 @@
       <p class="small">This token is sent as <span class="kbd">x-admin-token</span> for backend calls.</p>
     </div>
 
+    <div class="card">
+      <h2>Fund operator wallet with MoonPay</h2>
+      <p>Buy ETH (or another currency) with fiat and send it directly to the operator hot wallet. Requires a MoonPay API key configured on the server.</p>
+      <div class="form-row" style="grid-template-columns:1fr auto;">
+        <input type="number" id="moonpay-amount" value="0.05" min="0.01" step="0.01" placeholder="Amount in ETH" />
+        <button class="btn" onclick="openMoonpay()">Open MoonPay</button>
+      </div>
+      <div id="moonpay-result" class="status hidden" style="margin-top:10px;"></div>
+    </div>
+
     <div class="tabs">
       <button class="tab active" data-tab="send" onclick="showTab('send')">Send</button>
       <button class="tab" data-tab="recipients" onclick="showTab('recipients')">Wallets</button>
@@ -192,6 +202,17 @@
       el('pay-rail-hint').textContent = hints[asset] || '';
     }
     updateRailHint();
+
+    async function openMoonpay() {
+      const amount = el('moonpay-amount').value;
+      try {
+        const data = await api(`/moonpay/onramp?amount=${amount}&currencyCode=eth`);
+        el('moonpay-result').textContent = `Opening MoonPay for ${amount} ETH to ${data.targetWallet}`;
+        el('moonpay-result').className = 'status success';
+        el('moonpay-result').classList.remove('hidden');
+        window.open(data.url, '_blank');
+      } catch (e) { show(e.message, true, 'moonpay-result'); }
+    }
 
     async function loadRecipients() {
       const type = el('pay-recipient-type').value;
