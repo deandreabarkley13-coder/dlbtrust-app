@@ -94,8 +94,8 @@
       <h2>Fund a wallet</h2>
       <div class="form-row">
         <div><label>Wallet</label><select id="fund-wallet"></select></div>
-        <div><label>Amount (USD/SIT)</label><input type="number" id="fund-amount" value="1.00" step="0.01" /></div>
-        <div><label>Asset</label><select id="fund-asset"><option value="SIT">SIT</option><option value="ETH">ETH</option><option value="USDC">USDC</option></select></div>
+        <div><label>Amount</label><input type="number" id="fund-amount" value="1.00" min="0.01" step="0.01" /></div>
+        <div><label>Asset</label><select id="fund-asset" onchange="setAmountPrecision('fund-amount','fund-asset')"><option value="SIT">SIT</option><option value="ETH">ETH</option><option value="USDC">USDC</option></select></div>
         <div><label>Source ledger</label><select id="fund-source"><option value="treasury">Treasury</option><option value="core_banking">Core Banking</option><option value="cash">Cash</option><option value="trust">Trust Accounting</option><option value="bond">Bond / Fixed Income</option><option value="sub_ledger">Sub-Ledger</option></select></div>
       </div>
       <div class="actions"><button class="btn" onclick="fundWallet()">Fund wallet</button></div>
@@ -109,8 +109,8 @@
         <div><label>Transfer type</label><select id="tx-type" onchange="toggleTxTo()"><option value="internal">Internal (wallet to wallet)</option><option value="external">External (on-chain address)</option></select></div>
         <div id="to-wallet-wrap"><label>To wallet</label><select id="tx-to-wallet"></select></div>
         <div id="to-address-wrap" class="hidden"><label>To address</label><input type="text" id="tx-to-address" placeholder="0x..." /></div>
-        <div><label>Amount</label><input type="number" id="tx-amount" value="0.50" step="0.01" /></div>
-        <div><label>Asset</label><select id="tx-asset"><option value="SIT">SIT</option><option value="ETH">ETH</option><option value="USDC">USDC</option></select></div>
+        <div><label>Amount</label><input type="number" id="tx-amount" value="0.50" min="0.01" step="0.01" /></div>
+        <div><label>Asset</label><select id="tx-asset" onchange="setAmountPrecision('tx-amount','tx-asset')"><option value="SIT">SIT</option><option value="ETH">ETH</option><option value="USDC">USDC</option></select></div>
         <div><label>Memo</label><input type="text" id="tx-memo" placeholder="Distribution / expense note" /></div>
       </div>
       <div class="actions"><button class="btn" onclick="sendTransaction()">Send</button></div>
@@ -163,7 +163,19 @@
       const selects = ['fund-wallet', 'tx-from', 'tx-to-wallet'];
       for (const sid of selects) {
         const sel = el(sid);
+        const current = sel.value;
         sel.innerHTML = walletsCache.map(w => `<option value="${w.id}">${w.user_name || w.email || w.name} — ${w.address.slice(0,10)}... (${w.type})</option>`).join('');
+        if ([...sel.options].some(o => o.value === current)) sel.value = current;
+      }
+    }
+
+    function setAmountPrecision(inputId, assetId) {
+      const input = el(inputId);
+      const asset = el(assetId).value.toUpperCase();
+      if (asset === 'SIT' || asset === 'USD') {
+        input.min = '0.01'; input.step = '0.01';
+      } else if (asset === 'ETH' || asset === 'USDC' || asset === 'WETH') {
+        input.min = '0.000001'; input.step = '0.000001';
       }
     }
 
@@ -281,7 +293,8 @@
 
     if (localStorage.getItem('dlb-admin-token')) { el('admin-token').value = localStorage.getItem('dlb-admin-token'); }
     loadWallets();
-
+    setAmountPrecision('fund-amount', 'fund-asset');
+    setAmountPrecision('tx-amount', 'tx-asset');
     toggleTxTo();
   </script>
 </body>

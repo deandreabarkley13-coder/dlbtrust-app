@@ -154,7 +154,7 @@ class SovereignTrustEngine {
       operatorAddress: cfg.operatorAddress || (cfg.privateKey ? privateKeyToAccount(cfg.privateKey).address : ''),
       tokenAddress: str('SOVEREIGN_TOKEN_ADDRESS', ''),
       forwarderAddress: str('SOVEREIGN_FORWARDER_ADDRESS', ''),
-      gaslessMaxGas: num('SOVEREIGN_GASLESS_MAX_GAS', 500000),
+      gaslessMaxGas: num('SOVEREIGN_GASLESS_MAX_GAS', 150000),
     };
   }
 
@@ -745,7 +745,7 @@ class SovereignTrustEngine {
     const req = {
       ...request,
       value: request.value ? BigInt(request.value) : 0n,
-      gas: request.gas ? BigInt(request.gas) : 500000n,
+      gas: request.gas ? BigInt(request.gas) : 150000n,
       nonce: request.nonce ? BigInt(request.nonce) : 0n,
     };
     const hash = await wallet.writeContract({

@@ -41,22 +41,25 @@ function assetDecimals(asset) {
 function toCents(amount, asset = '') {
   if (amount === null || amount === undefined) return '0';
   const decimals = assetDecimals(asset);
-  const str = String(amount);
+  const n = Number(amount) || 0;
+  let cents = '0';
   if (decimals === 18) {
-    if (!viem) return Math.round((Number(amount) || 0) * 1e18).toString();
-    try {
-      const rounded = Number(amount).toFixed(18);
-      return viem.parseEther(rounded).toString();
-    } catch (e) { return '0'; }
+    if (!viem) cents = Math.round(n * 1e18).toString();
+    else try {
+      const rounded = n.toFixed(18);
+      cents = viem.parseEther(rounded).toString();
+    } catch (e) { cents = '0'; }
+  } else if (decimals === 6) {
+    if (!viem) cents = Math.round(n * 1e6).toString();
+    else try {
+      const rounded = n.toFixed(6);
+      cents = viem.parseUnits(rounded, 6).toString();
+    } catch (e) { cents = '0'; }
+  } else {
+    cents = Math.round(n * 100);
   }
-  if (decimals === 6) {
-    if (!viem) return Math.round((Number(amount) || 0) * 1e6).toString();
-    try {
-      const rounded = Number(amount).toFixed(6);
-      return viem.parseUnits(rounded, 6).toString();
-    } catch (e) { return '0'; }
-  }
-  return Math.round((Number(amount) || 0) * 100);
+  if (n > 0 && BigInt(String(cents)) <= 0n) throw new Error(`Amount below minimum precision for ${asset || 'USD'} (minimum 0.01)`);
+  return cents;
 }
 function fromCents(cents, asset = '') {
   const decimals = assetDecimals(asset);
