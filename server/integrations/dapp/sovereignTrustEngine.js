@@ -401,6 +401,7 @@ class SovereignTrustEngine {
 
     let tx = null;
     try {
+      await this.whitelistAddress(to, true).catch(() => null);
       tx = await this._tokenWrite('mint', [to, raw], { gas: 200000n });
     } catch (err) {
       try {
