@@ -60,6 +60,7 @@
         <input type="password" id="admin-token" placeholder="Paste your operator token" />
         <button class="btn" onclick="saveToken()">Save</button>
       </div>
+      <div id="token-status" class="status hidden" style="margin-top:10px;"></div>
       <p class="small">This token is sent as <span class="kbd">x-admin-token</span> for backend calls.</p>
     </div>
 
@@ -126,7 +127,19 @@
   <script>
     const el = id => document.getElementById(id);
     const apiBase = '/api/dapp';
-    function saveToken() { localStorage.setItem('dlb-admin-token', el('admin-token').value); show('Token saved', false, 'fund-result'); }
+    async function saveToken() {
+      const v = el('admin-token').value.trim();
+      if (!v) { show('Paste a token first', true, 'token-status'); return; }
+      try {
+        const res = await fetch('/api/dapp/auth/me', { headers: { 'x-admin-token': v } });
+        const text = await res.text();
+        let data; try { data = JSON.parse(text); } catch { data = {}; }
+        if (!res.ok || !data.success) throw new Error((data && data.error) || 'Invalid token');
+        localStorage.setItem('dlb-admin-token', v);
+        show('Token saved. Loading wallets…', false, 'token-status');
+        await loadWallets();
+      } catch (e) { show(e.message || 'Token validation failed', true, 'token-status'); }
+    }
     function getToken() { return el('admin-token').value || localStorage.getItem('dlb-admin-token') || ''; }
     function show(msg, isErr, id) { const d = el(id); d.textContent = msg; d.className = 'status ' + (isErr ? 'error' : 'success'); d.classList.remove('hidden'); }
     async function api(path, opts = {}) {

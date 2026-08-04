@@ -241,8 +241,11 @@ router.post('/auth/verify', async (req, res) => {
 router.get('/auth/me', portalAuth, async (req, res) => {
   try {
     const email = req.user && req.user.email;
-    const data = email ? await DappEngine.getUserByEmail(email).then(u => DappEngine._sanitizeUser(u)) : null;
-    res.json({ success: true, data: { user: req.user, dappUser: data } });
+    let dappUser = null;
+    if (email) {
+      dappUser = await DappEngine.getUserByEmail(email).then(u => DappEngine._sanitizeUser(u)).catch(() => null);
+    }
+    res.json({ success: true, data: { user: req.user, dappUser } });
   } catch (err) { sendError(res, err); }
 });
 

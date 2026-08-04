@@ -124,11 +124,12 @@
 
       <div id="auth-card" class="card" style="margin-bottom:20px">
         <h2>Operator Token</h2>
-        <p>Enter your operator token to call the backend API. Default: <span class="kbd">dlb-admin-2026-trust</span></p>
+        <p>Enter your operator token to call the backend API. This is required for admin/operator actions; trustees can also sign in with email below.</p>
         <div class="form-row">
-          <input type="password" id="admin-token" placeholder="x-admin-token" value="dlb-admin-2026-trust" />
+          <input type="password" id="admin-token" placeholder="Paste your x-admin-token" />
           <button class="btn" onclick="saveToken()">Save Token</button>
         </div>
+        <div id="token-status" class="status hidden" style="margin-top:10px;"></div>
       </div>
 
       <div id="user-auth-card" class="card" style="margin-bottom:20px">
@@ -1158,9 +1159,28 @@
       setTimeout(() => t.classList.remove('show'), 5000);
     }
 
-    function token() { return localStorage.getItem('dlb-admin-token') || el('admin-token').value || 'dlb-admin-2026-trust'; }
+    function token() { return localStorage.getItem('dlb-admin-token') || el('admin-token').value || ''; }
     function dappToken() { return localStorage.getItem('dlb-dapp-token') || ''; }
-    function saveToken() { localStorage.setItem('dlb-admin-token', el('admin-token').value); showToast('Token saved'); }
+    async function saveToken() {
+      const v = el('admin-token').value.trim();
+      if (!v) { showToast('Paste a token first', true); return; }
+      try {
+        const res = await fetch('/api/dapp/auth/me', { headers: { 'x-admin-token': v, 'Content-Type': 'application/json' } });
+        const text = await res.text();
+        let data; try { data = JSON.parse(text); } catch { data = {}; }
+        if (!res.ok || !data.success) throw new Error((data && data.error) || 'Invalid token');
+        localStorage.setItem('dlb-admin-token', v);
+        showToast('Token saved');
+        el('token-status').textContent = 'Operator token validated.';
+        el('token-status').className = 'status success';
+        el('token-status').classList.remove('hidden');
+      } catch (e) {
+        showToast(e.message || 'Token validation failed', true);
+        el('token-status').textContent = e.message || 'Token validation failed';
+        el('token-status').className = 'status error';
+        el('token-status').classList.remove('hidden');
+      }
+    }
 
     async function api(path, opts = {}) {
       const headers = { 'Content-Type': 'application/json' };
