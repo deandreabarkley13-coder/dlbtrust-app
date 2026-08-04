@@ -201,11 +201,11 @@
       const v = el('token').value.trim();
       if (!v) { show('Paste a token first', true, 'token-status'); return; }
       try {
-        const res = await fetch('/api/health', { headers: { 'x-admin-token': v } });
+        const res = await fetch('/api/dapp/auth/me', { headers: { 'x-admin-token': v } });
         const text = await res.text();
         let data; try { data = JSON.parse(text); } catch { data = {}; }
-        if (!res.ok || data.status === 'error' || (data.error && !data.checks)) {
-          throw new Error('Invalid token or server error');
+        if (!res.ok || !data.success) {
+          throw new Error((data && data.error) || 'Invalid token or server error');
         }
         localStorage.setItem('dlb-admin-token', v);
         show('Token saved. Loading dashboard…', false, 'token-status');
