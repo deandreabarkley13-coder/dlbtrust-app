@@ -78,10 +78,10 @@
     </div>
 
     <div class="tabs">
-      <button class="tab active" onclick="showTab('overview')">Overview</button>
-      <button class="tab" onclick="showTab('masters')">Master Wallets</button>
-      <button class="tab" onclick="showTab('bonds')">Bond / Fixed Income</button>
-      <button class="tab" onclick="showTab('requests')">Requests</button>
+      <button class="tab active" data-tab="overview" onclick="showTab('overview')">Overview</button>
+      <button class="tab" data-tab="masters" onclick="showTab('masters')">Master Wallets</button>
+      <button class="tab" data-tab="bonds" onclick="showTab('bonds')">Bond / Fixed Income</button>
+      <button class="tab" data-tab="requests" onclick="showTab('requests')">Requests</button>
     </div>
 
     <!-- Overview -->
@@ -163,7 +163,7 @@
       </div>
       <div class="panel">
         <h2>Fixed Income → Income Distribution</h2>
-        <p>Pay bond interest, mint DLBUSD, swap for USDC (or ETH fallback), and sweep to the Income Distribution Master Wallet.</p>
+        <p>Pay bond accrued interest, mint DLBUSD, and sweep to the Income Distribution Master Wallet. A USDC/ETH swap runs only when a DEX pool exists; otherwise DLBUSD is credited for later conversion.</p>
         <div class="form-row">
           <div><label>Bond</label><select id="dist-bond"><option value="">Loading...</option></select></div>
           <div><label>Amount (leave blank for all accrued)</label><input type="number" id="dist-amount" step="0.01" placeholder="auto" /></div>
@@ -223,8 +223,7 @@
       return n.toLocaleString('en-US', { minimumFractionDigits: digits, maximumFractionDigits: digits });
     }
     function showTab(name) {
-      document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
-      event.target.classList.add('active');
+      document.querySelectorAll('.tab').forEach(t => t.classList.toggle('active', t.dataset.tab === name));
       document.querySelectorAll('.section').forEach(s => s.classList.add('hidden'));
       el(name).classList.remove('hidden');
     }

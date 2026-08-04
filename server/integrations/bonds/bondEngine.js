@@ -353,6 +353,7 @@ class BondEngine {
       return {
         paid: payAmount,
         remaining_accrued: newAccrued,
+        new_accrued_interest: newAccrued,
         total_interest_paid: newTotalPaid,
         fineract_txn_id: fineractTxnId,
         transaction: txnResult.rows[0],
