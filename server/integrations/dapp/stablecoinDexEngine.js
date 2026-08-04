@@ -73,6 +73,7 @@ class StablecoinDexEngine {
       usdcAddress: cfg.usdcAddress,
       usdsAddress: str('DAPP_USDS_ADDRESS', ''),
       wethAddress: cfg.wethAddress,
+      daiAddress: str('DAPP_DAI_ADDRESS', '0x6B175474E89094C44Da98b954EedeAC495271d0F'),
       operatorAddress: cfg.operatorAddress || getOperatorAddress(cfg),
       slippageBps: Number(str('STABLECOIN_DEX_SLIPPAGE_BPS', '100')) || 100,
     };
@@ -135,12 +136,14 @@ class StablecoinDexEngine {
     if (t === 'USD' || t === 'USDC') return cfg.usdcAddress;
     if (t === 'USDS') return cfg.usdsAddress || cfg.usdcAddress;
     if (t === 'ETH' || t === 'WETH') return cfg.wethAddress || '';
+    if (t === 'DAI') return cfg.daiAddress || '';
     return '';
   }
 
   static targetTokenDecimals(targetAsset) {
     const t = String(targetAsset).toUpperCase();
     if (t === 'ETH' || t === 'WETH') return 18;
+    if (t === 'DAI') return 18;
     return 6;
   }
 
@@ -387,11 +390,13 @@ class StablecoinDexEngine {
     const mint = await this.mintFromSource({ sourceType, sourceAccountId, amount, targetAddress: cfg.operatorAddress });
 
     // 3. Execute the DEX swap (operator relayer pays gas; user is gasless)
-    let isEthTarget = (targetAsset || '').toUpperCase() === 'ETH';
-    let swapTarget = isEthTarget ? 'WETH' : targetAsset;
+    const targetUpper = (targetAsset || '').toUpperCase();
+    let isEthTarget = targetUpper === 'ETH';
+    let isDaiTarget = targetUpper === 'DAI';
+    let swapTarget = isEthTarget ? 'WETH' : (isDaiTarget ? 'WETH' : targetAsset);
     // For ETH output keep WETH in the operator wallet so it can be unwrapped and sent as native ETH.
-    let swapRecipient = isEthTarget ? cfg.operatorAddress : (recipient || cfg.operatorAddress);
-    let quote, swap;
+    let swapRecipient = (isEthTarget || isDaiTarget) ? cfg.operatorAddress : (recipient || cfg.operatorAddress);
+    let quote, swap, daiSwap;
     try {
       const swapResult = await this.swap({
         amount,
@@ -403,8 +408,8 @@ class StablecoinDexEngine {
       swap = swapResult.swap;
     } catch (swapErr) {
       // Try an ETH fallback so bond interest is not left stranded as DLBUSD in the operator wallet.
-      if (isEthTarget) {
-        console.warn('[StablecoinDexEngine] primary swap failed and target is already ETH; DLBUSD held by operator:', swapErr.message);
+      if (isEthTarget || isDaiTarget) {
+        console.warn('[StablecoinDexEngine] primary swap failed and target is WETH/ETH/DAI; DLBUSD held by operator:', swapErr.message);
         throw swapErr;
       }
       console.warn('[StablecoinDexEngine] primary swap failed, trying ETH fallback:', swapErr.message);
@@ -424,13 +429,33 @@ class StablecoinDexEngine {
       }
     }
 
+    // 3b. For DAI payouts, route the WETH through Uniswap V2 to real MakerDAO-issued DAI.
+    if (!cfg.shadow && isDaiTarget) {
+      const daiAddress = this.targetTokenAddress('DAI');
+      const wethAddress = cfg.wethAddress;
+      if (!daiAddress || !wethAddress) throw new Error('DAI or WETH address not configured');
+      try {
+        daiSwap = await DexSwapEngine.swapOnUniswapV2({
+          tokenIn: wethAddress,
+          tokenOut: daiAddress,
+          amountIn: swap.amountOut,
+          recipient: recipient || cfg.operatorAddress,
+          decimalsIn: 18,
+          decimalsOut: 18,
+        });
+      } catch (daiErr) {
+        console.warn('[StablecoinDexEngine] WETH -> DAI Uniswap swap failed:', daiErr.message);
+        throw daiErr;
+      }
+    }
+
     let unwrap = { skipped: true };
     if (!cfg.shadow && isEthTarget && unwrapWeth) {
       try { unwrap = await this.unwrapWethToEth({ amount: swap.amountOut, recipient: recipient || cfg.operatorAddress }); } catch (e) { unwrap = { skipped: false, error: e.message }; }
     }
 
-    const actualTargetAsset = isEthTarget ? 'ETH' : targetAsset;
-    const actualAmountOut = isEthTarget ? (unwrap.amountEth || swap.amountOut || 0) : (swap.amountOut || 0);
+    const actualTargetAsset = isEthTarget ? 'ETH' : (isDaiTarget ? 'DAI' : targetAsset);
+    const actualAmountOut = isEthTarget ? (unwrap.amountEth || swap.amountOut || 0) : (isDaiTarget ? (daiSwap && daiSwap.amountOut) || 0 : (swap.amountOut || 0));
 
     return {
       operationId,
@@ -447,6 +472,7 @@ class StablecoinDexEngine {
       poolCreated: !!poolInfo,
       quote,
       swap,
+      daiSwap,
       unwrap,
       recipient: recipient || cfg.operatorAddress,
       amountOut: actualAmountOut,
