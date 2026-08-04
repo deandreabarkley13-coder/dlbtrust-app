@@ -1,0 +1,2947 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+  <title>DLB Trust — DeFi DApp</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --bg: #0b0f19;
+      --panel: #111827;
+      --panel-2: #1f2937;
+      --border: #374151;
+      --text: #f3f4f6;
+      --muted: #9ca3af;
+      --primary: #3b82f6;
+      --primary-2: #2563eb;
+      --success: #22c55e;
+      --danger: #ef4444;
+      --warning: #f59e0b;
+      --radius: 12px;
+      --shadow: 0 10px 30px rgba(0,0,0,.25);
+    }
+    * { box-sizing: border-box; }
+    html, body { margin: 0; padding: 0; background: var(--bg); color: var(--text); font-family: 'Inter', system-ui, -apple-system, sans-serif; }
+    a { color: var(--primary); }
+    .app { display: flex; flex-direction: column; min-height: 100vh; }
+    header { background: rgba(17,24,39,.85); backdrop-filter: blur(10px); border-bottom: 1px solid var(--border); padding: 16px 24px; display: flex; align-items: center; justify-content: space-between; position: sticky; top: 0; z-index: 50; }
+    .brand { display: flex; align-items: center; gap: 12px; font-weight: 700; font-size: 18px; }
+    .brand img { height: 32px; width: 32px; border-radius: 8px; background: var(--panel-2); }
+    .sub { color: var(--muted); font-weight: 400; font-size: 12px; margin-left: 6px; }
+    .wallet-chip { display: flex; align-items: center; gap: 10px; background: var(--panel-2); border: 1px solid var(--border); border-radius: 999px; padding: 8px 14px; font-size: 13px; font-weight: 500; }
+    .wallet-chip button { background: var(--primary); color: #fff; border: none; border-radius: 999px; padding: 6px 12px; cursor: pointer; font-weight: 600; }
+    .container { max-width: 1200px; margin: 0 auto; padding: 24px; width: 100%; flex: 1; }
+    .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 20px; }
+    .card { background: var(--panel); border: 1px solid var(--border); border-radius: var(--radius); padding: 20px; box-shadow: var(--shadow); }
+    .card h2 { margin: 0 0 12px; font-size: 16px; font-weight: 600; color: var(--text); }
+    .card p { color: var(--muted); font-size: 13px; margin: -6px 0 14px; }
+    .form-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 12px; margin-bottom: 12px; }
+    label { font-size: 12px; color: var(--muted); text-transform: uppercase; letter-spacing: .05em; margin-bottom: 4px; display: block; }
+    input, select, textarea { width: 100%; background: var(--panel-2); border: 1px solid var(--border); color: var(--text); border-radius: 8px; padding: 10px 12px; font-size: 14px; outline: none; }
+    input:focus, select:focus, textarea:focus { border-color: var(--primary); }
+    .btn { display: inline-flex; align-items: center; justify-content: center; gap: 8px; background: var(--primary); color: #fff; border: none; border-radius: 8px; padding: 10px 16px; font-size: 13px; font-weight: 600; cursor: pointer; }
+    .btn:hover { background: var(--primary-2); }
+    .btn-success { background: var(--success); }
+    .btn-danger { background: var(--danger); }
+    .btn-sm { padding: 7px 12px; font-size: 12px; }
+    .actions { display: flex; gap: 10px; flex-wrap: wrap; margin-top: 12px; }
+    .status { font-size: 12px; padding: 8px 12px; border-radius: 8px; background: var(--panel-2); border: 1px solid var(--border); margin-top: 12px; }
+    .status.success { background: rgba(34,197,94,.12); border-color: rgba(34,197,94,.35); color: #86efac; }
+    .status.error { background: rgba(239,68,68,.12); border-color: rgba(239,68,68,.35); color: #fca5a5; }
+    .table-wrap { overflow-x: auto; margin-top: 12px; }
+    table { width: 100%; border-collapse: collapse; font-size: 13px; }
+    th, td { text-align: left; padding: 10px; border-bottom: 1px solid var(--border); color: var(--text); }
+    th { color: var(--muted); font-weight: 500; font-size: 11px; text-transform: uppercase; letter-spacing: .04em; }
+    tr:hover td { background: rgba(255,255,255,.02); }
+    .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; font-size: 12px; }
+    .tag { display: inline-block; padding: 3px 8px; border-radius: 999px; font-size: 11px; font-weight: 600; background: var(--panel-2); border: 1px solid var(--border); }
+    .tag.pending { color: #fbbf24; border-color: rgba(245,158,11,.4); }
+    .tag.executed { color: #86efac; border-color: rgba(34,197,94,.4); }
+    .nav { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 24px; }
+    .nav button { background: var(--panel-2); border: 1px solid var(--border); color: var(--text); padding: 8px 14px; border-radius: 8px; cursor: pointer; font-weight: 500; }
+    .nav button.active { background: var(--primary); border-color: var(--primary); color: #fff; }
+    .section { display: none; }
+    .section.active { display: block; }
+    .toast { position: fixed; bottom: 20px; right: 20px; background: var(--panel); border: 1px solid var(--border); padding: 14px 18px; border-radius: var(--radius); box-shadow: var(--shadow); z-index: 100; max-width: 360px; display: none; }
+    .toast.show { display: block; }
+    .modal-backdrop { position: fixed; inset: 0; background: rgba(0,0,0,.6); display: none; align-items: center; justify-content: center; z-index: 60; }
+    .modal-backdrop.show { display: flex; }
+    .modal { background: var(--panel); border: 1px solid var(--border); border-radius: var(--radius); padding: 24px; width: min(520px, 92vw); max-height: 90vh; overflow: auto; }
+    .hidden { display: none; }
+    .badge { display: inline-flex; align-items: center; padding: 3px 10px; border-radius: 999px; font-size: 11px; font-weight: 600; background: var(--panel-2); border: 1px solid var(--border); color: var(--muted); }
+    .badge.trustee { background: rgba(59,130,246,.12); border-color: rgba(59,130,246,.4); color: #93c5fd; }
+    .badge.beneficiary { background: rgba(34,197,94,.12); border-color: rgba(34,197,94,.4); color: #86efac; }
+    .role-disabled { opacity: .55; pointer-events: none; }
+    .kbd { background: var(--panel-2); border: 1px solid var(--border); border-radius: 4px; padding: 2px 6px; font-size: 12px; font-family: monospace; }
+    footer { border-top: 1px solid var(--border); padding: 18px 24px; color: var(--muted); font-size: 12px; text-align: center; }
+  </style>
+</head>
+<body>
+  <div class="app">
+    <header>
+      <div class="brand">
+        <img src="" id="brand-logo" alt="logo" />
+        <div><span id="brand-name">DLB Trust</span><span class="sub">DeFi dApp</span></div>
+      </div>
+      <div class="wallet-chip">
+        <span id="network-name">Ethereum</span>
+        <span id="role-badge" class="badge hidden"></span>
+        <span id="wallet-address" class="mono">Not connected</span>
+        <button id="connect-btn" onclick="connectWallet()">Connect MetaMask</button>
+      </div>
+    </header>
+
+    <div class="container">
+      <div class="nav" id="nav">
+        <button class="active" data-section="dashboard" data-roles="all" onclick="showSection('dashboard')">Dashboard</button>
+        <button data-section="source-of-funds" data-roles="trustee" onclick="showSection('source-of-funds')">Source of Funds</button>
+        <button data-section="core-modules" data-roles="trustee" onclick="showSection('core-modules')">Core Modules</button>
+        <button data-section="safes" data-roles="trustee" onclick="showSection('safes')">Safe Wallets</button>
+        <button data-section="deposits" data-roles="trustee" onclick="showSection('deposits')">Deposit</button>
+        <button data-section="payouts" data-roles="trustee" onclick="showSection('payouts')">Payout / 2-Sig</button>
+        <button data-section="distribute" data-roles="trustee" onclick="showSection('distribute')">Distribute</button>
+        <button data-section="p2p" data-roles="trustee" onclick="showSection('p2p')">P2P Pay</button>
+        <button data-section="payment-rails" data-roles="trustee" onclick="showSection('payment-rails')">Payment Rails</button>
+        <button onclick="window.open('/dapp/wallets.html','_blank')">Wallets & Transactions</button>
+        <button onclick="window.open('/dapp/master-dashboard.html','_blank')">Master Dashboard</button>
+        <button data-section="bond-tokens" data-roles="trustee" onclick="showSection('bond-tokens')">Bond Tokens</button>
+        <button data-section="stablecoin-dex" data-roles="trustee" onclick="showSection('stablecoin-dex')">Stablecoin DEX</button>
+        <button data-section="sovereign-trust" data-roles="trustee" onclick="showSection('sovereign-trust')">Sovereign Trust</button>
+        <button data-section="asset-debt" data-roles="trustee" onclick="showSection('asset-debt')">Asset-Debt Proof</button>
+        <button data-section="distribution-requests" data-roles="all" onclick="showSection('distribution-requests')">Requests</button>
+        <button data-section="automation" data-roles="trustee" onclick="showSection('automation')">Automation</button>
+        <button data-section="assets-expenses" data-roles="trustee" onclick="showSection('assets-expenses')">Assets / Expenses</button>
+        <button data-section="finops-ai" data-roles="trustee" onclick="showSection('finops-ai')">FinOps AI</button>
+        <button data-section="calendar" data-roles="all" onclick="showSection('calendar')">Calendar</button>
+        <button data-section="messaging" data-roles="all" onclick="showSection('messaging')">Messaging</button>
+        <button data-section="documents" data-roles="all" onclick="showSection('documents')">Documents</button>
+        <button data-section="wallet" data-roles="all" onclick="showSection('wallet')">Wallet</button>
+        <button data-section="settings" data-roles="trustee" onclick="showSection('settings')">White Label</button>
+      </div>
+
+      <div id="auth-card" class="card" style="margin-bottom:20px">
+        <h2>Operator Token</h2>
+        <p>Enter your operator token to call the backend API. Default: <span class="kbd">dlb-admin-2026-trust</span></p>
+        <div class="form-row">
+          <input type="password" id="admin-token" placeholder="x-admin-token" value="dlb-admin-2026-trust" />
+          <button class="btn" onclick="saveToken()">Save Token</button>
+        </div>
+      </div>
+
+      <div id="user-auth-card" class="card" style="margin-bottom:20px">
+        <h2>Portal Sign In / Security</h2>
+        <p>Log in with your email and one-time code. Trustees can switch to beneficiary view. Sign out clears the session.</p>
+        <div id="user-auth-state" class="form-row" style="align-items:center;">
+          <input type="email" id="login-email" placeholder="trustee@example.com" />
+          <button class="btn" onclick="sendOtp()">Send Code</button>
+          <input type="text" id="login-code" placeholder="123456" maxlength="6" style="max-width:120px" />
+          <button class="btn" onclick="verifyOtp()">Verify</button>
+        </div>
+        <div id="user-auth-actions" class="form-row hidden" style="align-items:center;">
+          <span id="auth-user-name" class="mono"></span>
+          <select id="active-role-select" onchange="switchActiveRole()" style="max-width:160px"></select>
+          <button class="btn btn-secondary" onclick="logout()">Sign Out</button>
+        </div>
+        <div id="user-auth-status" class="status hidden"></div>
+        <div id="portal-users-card" class="hidden" style="margin-top:20px; border-top:1px solid var(--border); padding-top:20px;">
+          <h3>Portal Users (Admin)</h3>
+          <div class="form-row">
+            <input type="email" id="new-user-email" placeholder="user@example.com" />
+            <input type="text" id="new-user-name" placeholder="Full name" />
+            <select id="new-user-role"><option value="beneficiary">Beneficiary</option><option value="trustee_maker">Trustee Maker</option><option value="trustee_checker">Trustee Checker</option><option value="trustee_admin">Trustee Admin</option></select>
+            <button class="btn" onclick="createPortalUser()">Add User</button>
+          </div>
+          <div id="portal-users-list" class="table-wrap" style="margin-top:10px"></div>
+        </div>
+      </div>
+
+      <section id="dashboard" class="section active">
+        <div class="grid">
+          <div class="card">
+            <h2>Safes</h2>
+            <p>Multi-sig vaults managed by trustees.</p>
+            <div id="dash-safes" class="status">Loading…</div>
+          </div>
+          <div class="card">
+            <h2>Pending Approvals</h2>
+            <p>Payouts awaiting a second signature.</p>
+            <div id="dash-pending" class="status">Loading…</div>
+          </div>
+          <div class="card">
+            <h2>Connected Wallet</h2>
+            <p>Use this account to approve or propose payouts.</p>
+            <div id="dash-wallet" class="status">Not connected</div>
+          </div>
+        </div>
+      </section>
+
+      <section id="source-of-funds" class="section">
+        <div class="grid">
+          <div class="card" style="grid-column: 1 / -1;">
+            <h2>Legacy Source-of-Funds Balances</h2>
+            <p>Treasury, Cash, Trust Accounting, Bond/Fixed Income, Core Banking, CRM, Tax, and Document modules wired as stablecoin funding sources.</p>
+            <div class="table-wrap"><table id="sof-table"><thead><tr><th>Type</th><th>Name</th><th>ID</th><th>Balance</th><th>Currency</th></tr></thead><tbody></tbody></table></div>
+            <div class="actions"><button class="btn btn-sm" onclick="loadSourceBalances()">Refresh</button></div>
+          </div>
+        </div>
+        <div class="card" style="margin-top:20px">
+          <h2>Deposit from Source Ledger into Safe</h2>
+          <p>Sweep a legacy source-of-funds balance into the dApp as a stablecoin deposit.</p>
+          <div class="form-row">
+            <div><label>Source Type</label><select id="sof-deposit-type"><option value="">Select source</option><option value="treasury">Treasury</option><option value="cash">Cash</option><option value="trust">Trust Accounting</option><option value="sub_ledger">Sub-Ledger</option><option value="bond">Bond / Fixed Income</option><option value="core_banking">Core Banking</option></select></div>
+            <div><label>Source Account ID</label><input type="text" id="sof-deposit-account" placeholder="Account ID / Bond ID" /></div>
+            <div><label>Target Safe ID</label><input type="text" id="sof-deposit-safe" placeholder="SAFE-..." /></div>
+            <div><label>Amount (USD)</label><input type="text" id="sof-deposit-amount" placeholder="100.00" /></div>
+          </div>
+          <div class="actions"><button class="btn" onclick="depositFromSource()">Deposit from Source</button></div>
+          <div id="sof-deposit-result" class="status hidden"></div>
+        </div>
+        <div class="card" style="margin-top:20px">
+          <h2>Fund Safe via DEX (Bond / Fixed Income)</h2>
+          <p>Tokenize a bond/fixed-income source and swap the bond tokens on a DEX for USDC/ETH. If no pool exists, provide a seed amount of the target asset to create one.</p>
+          <div class="form-row">
+            <div><label>Source Type</label><select id="dex-fund-type"><option value="bond">Bond / Fixed Income</option></select></div>
+            <div><label>Source Account ID</label><input type="text" id="dex-fund-account" placeholder="Bond ID" /></div>
+            <div><label>Amount (USD)</label><input type="text" id="dex-fund-amount" placeholder="100.00" /></div>
+            <div><label>Target Asset</label><select id="dex-fund-asset"><option value="USDC">USDC</option><option value="ETH">ETH (WETH)</option></select></div>
+            <div><label>Pool Seed Amount (optional)</label><input type="text" id="dex-fund-seed" placeholder="0.5" /></div>
+            <div><label>Target Safe ID (optional)</label><input type="text" id="dex-fund-safe" placeholder="SAFE-..." /></div>
+          </div>
+          <div class="actions"><button class="btn" onclick="fundSafeFromSourceDex()">Fund via DEX</button></div>
+          <div id="dex-fund-result" class="status hidden"></div>
+        </div>
+        <div class="card" style="margin-top:20px">
+          <h2>Fund Safe via Coinbase Spot</h2>
+          <p>Reserve an internal source-of-funds balance, market-buy USDC/ETH on Coinbase with fiat, and send it to the operator/Safe wallet. Requires a Coinbase account with USD.</p>
+          <div class="form-row">
+            <div><label>Source Type</label><select id="cb-fund-type"><option value="bond">Bond / Fixed Income</option><option value="cash">Cash</option><option value="trust">Trust Accounting</option><option value="sub_ledger">Sub-Ledger</option><option value="core_banking">Core Banking</option></select></div>
+            <div><label>Source Account ID</label><input type="text" id="cb-fund-account" placeholder="Account ID / Bond ID" /></div>
+            <div><label>Amount (USD)</label><input type="text" id="cb-fund-amount" placeholder="100.00" /></div>
+            <div><label>Target Asset</label><select id="cb-fund-asset"><option value="ETH">ETH</option><option value="BTC">BTC</option></select></div>
+            <div><label>Network</label><select id="cb-fund-network"><option value="ethereum">Ethereum Mainnet</option><option value="base">Base</option><option value="sepolia">Sepolia</option></select></div>
+            <div><label>Destination Address (optional)</label><input type="text" id="cb-fund-address" placeholder="0x... or Safe address" /></div>
+          </div>
+          <div class="actions">
+            <button class="btn" onclick="quoteCoinbaseSpot()">Quote</button>
+            <button class="btn" onclick="fundCoinbaseSpot()">Fund via Coinbase</button>
+          </div>
+          <div id="cb-fund-result" class="status hidden"></div>
+        </div>
+
+        <div class="card" style="margin-top:20px">
+          <h2>Treasury -> Coinbase Bridge</h2>
+          <p>Sweep a Treasury / Core Banking / Bond / Trust / Cash source ledger into Coinbase, then buy crypto and send it to the operator/Safe wallet. Posts ledger entries at each stage.</p>
+          <div class="form-row">
+            <div><label>Source Type</label><select id="cbt-fund-type"><option value="bond">Bond / Fixed Income</option><option value="cash">Cash</option><option value="trust">Trust Accounting</option><option value="sub_ledger">Sub-Ledger</option><option value="core_banking">Core Banking</option></select></div>
+            <div><label>Source Account ID</label><input type="text" id="cbt-fund-account" placeholder="Account ID / Bond ID" /></div>
+            <div><label>Amount (USD)</label><input type="text" id="cbt-fund-amount" placeholder="100.00" /></div>
+            <div><label>Target Asset</label><select id="cbt-fund-asset"><option value="ETH">ETH</option><option value="BTC">BTC</option></select></div>
+            <div><label>Network</label><select id="cbt-fund-network"><option value="ethereum">Ethereum Mainnet</option><option value="base">Base</option><option value="sepolia">Sepolia</option></select></div>
+            <div><label>Destination Address (optional)</label><input type="text" id="cbt-fund-address" placeholder="0x... or Safe address" /></div>
+            <div><label>Coinbase Payment Method ID (optional)</label><input type="text" id="cbt-fund-pm" placeholder="pm-..." /></div>
+          </div>
+          <div class="actions">
+            <button class="btn" onclick="stageCoinbaseTreasury()">Stage to Coinbase</button>
+            <button class="btn" onclick="loadCoinbasePaymentMethods()">Load Payment Methods</button>
+            <button class="btn" onclick="loadCoinbaseAccounts()">Load Coinbase Accounts</button>
+          </div>
+          <div id="cbt-fund-result" class="status hidden" style="word-break:break-word"></div>
+          <div id="cbt-payment-result" class="status hidden" style="white-space:pre-wrap;word-break:break-word"></div>
+          <div style="margin-top:10px"><label>Transfer ID</label><input type="text" id="cbt-transfer-id" placeholder="CBTB-..." style="width:240px" /></div>
+          <div class="actions">
+            <button class="btn" onclick="executeCoinbaseTreasury()">Execute After Deposit</button>
+            <button class="btn" onclick="listCoinbaseTreasury()">List Transfers</button>
+          </div>
+          <div id="cbt-list-result" class="status hidden" style="white-space:pre-wrap"></div>
+        </div>
+      </section>
+
+      <section id="core-modules" class="section">
+        <div class="grid">
+          <div class="card" style="grid-column: 1 / -1;">
+            <h2>Core Modules Ledger View</h2>
+            <p>Unified abstraction layer for Treasury, Cash, Trust Accounting, Bond / Fixed Income, Core Banking, Sub-Ledger, CRM, Tax, and Documents.</p>
+            <div id="core-modules-table-wrap" class="table-wrap"><table id="core-modules-table"><thead><tr><th>Module</th><th>Name</th><th>ID</th><th>Balance</th><th>Currency</th></tr></thead><tbody></tbody></table></div>
+            <div class="actions"><button class="btn btn-sm" onclick="loadCoreModules()">Refresh</button></div>
+          </div>
+        </div>
+        <div class="card" style="margin-top:20px">
+          <h2>Internal Module Transfer</h2>
+          <p>Move funds between accounts within the same module. Cross-module transfers route through the treasury abstraction layer.</p>
+          <div class="form-row">
+            <div><label>From Module</label><select id="int-from-type"><option value="">Select</option><option value="treasury">Treasury</option><option value="cash">Cash Management</option><option value="trust">Trust Accounting</option><option value="sub_ledger">Sub-Ledger</option><option value="bond">Bond / Fixed Income</option><option value="core_banking">Core Banking</option></select></div>
+            <div><label>From Account ID</label><input type="text" id="int-from-account" placeholder="Account ID / Bond ID / GL ID" /></div>
+            <div><label>To Module</label><select id="int-to-type"><option value="">Select</option><option value="treasury">Treasury</option><option value="cash">Cash Management</option><option value="trust">Trust Accounting</option><option value="sub_ledger">Sub-Ledger</option><option value="bond">Bond / Fixed Income</option><option value="core_banking">Core Banking</option></select></div>
+            <div><label>To Account ID</label><input type="text" id="int-to-account" placeholder="Account ID / Bond ID / GL ID" /></div>
+            <div><label>Amount (USD)</label><input type="text" id="int-amount" placeholder="100.00" /></div>
+            <div><label>Memo</label><input type="text" id="int-memo" placeholder="Internal transfer" /></div>
+          </div>
+          <div class="actions"><button class="btn" onclick="internalModuleTransfer()">Transfer</button></div>
+          <div id="int-result" class="status hidden"></div>
+        </div>
+        <div class="card" style="margin-top:20px">
+          <h2>Fund External Rail from Module</h2>
+          <p>Reserve a source-of-funds ledger balance and generate a Cash App Pay, Google Wallet NFC/Pass, Stablecoin DEX, Safe 2-sig, or Coinbase Treasury instrument.</p>
+          <div class="form-row">
+            <div><label>Source Module</label><select id="rail-source-type"><option value="">Select</option><option value="treasury">Treasury</option><option value="cash">Cash</option><option value="trust">Trust Accounting</option><option value="sub_ledger">Sub-Ledger</option><option value="bond">Bond / Fixed Income</option><option value="core_banking">Core Banking</option></select></div>
+            <div><label>Source Account ID</label><input type="text" id="rail-source-account" placeholder="Account ID / Bond ID / GL ID" /></div>
+            <div><label>Amount (USD)</label><input type="text" id="rail-amount" placeholder="25.00" /></div>
+            <div><label>Rail</label><select id="rail-type"><option value="cashapp">Cash App Pay QR</option><option value="cashapp_fund_operator">Cash App Fund Operator</option><option value="googlewallet">Google Wallet Pass</option><option value="stablecoin_dex">Stablecoin DEX (DLBUSD -> USDC)</option><option value="safe_payout">Safe 2-Sig Payout</option><option value="coinbase_treasury">Coinbase Treasury Bridge</option></select></div>
+          </div>
+          <div class="form-row">
+            <div><label>Cash App $Cashtag</label><input type="text" id="rail-cashtag" placeholder="$YourCashtag" /></div>
+            <div><label>Cash App Direction</label><select id="rail-direction"><option value="pull">Pull / Receive into $Cashtag</option><option value="push">Push / Send from trust to $Cashtag</option></select></div>
+            <div><label>Recipient Address / Wallet</label><input type="text" id="rail-recipient" placeholder="0x..." /></div>
+            <div><label>Target Asset</label><select id="rail-target-asset"><option value="USDC">USDC</option><option value="ETH">ETH</option><option value="WETH">WETH</option><option value="BTC">BTC</option></select></div>
+            <div><label>Safe ID (for safe_payout)</label><input type="text" id="rail-safe-id" placeholder="SAFE-..." /></div>
+          </div>
+          <div style="grid-column: 1 / -1;"><label>Advanced Rail Options (JSON, merges with fields above)</label><textarea id="rail-options" rows="2" placeholder='{&#x22;memo&#x22;:&#x22;Trust funding&#x22;}'></textarea></div>
+          <div class="actions"><button class="btn" onclick="fundExternalRail()">Generate / Fund Rail</button></div>
+          <div id="rail-result" class="status hidden" style="white-space:pre-wrap;word-break:break-word"></div>
+        </div>
+      </section>
+
+      <section id="stablecoin-dex" class="section">
+        <div class="grid">
+          <div class="card" style="grid-column: 1 / -1;">
+            <h2>Gasless Stablecoin DEX (DLBUSD -> USDC/USDS)</h2>
+            <p>Mint DLBUSD from any source-of-funds ledger and swap it on a DEX for USDC or USDS. The operator relayer pays gas, so you do not need ETH to use this flow.</p>
+            <div class="form-row">
+              <div><label>Source Type</label><select id="sdex-source-type"><option value="treasury">Treasury</option><option value="cash">Cash</option><option value="trust">Trust Accounting</option><option value="bond">Bond / Fixed Income</option><option value="sub_ledger">Sub-Ledger</option><option value="core_banking">Core Banking</option></select></div>
+              <div><label>Source Account ID</label><input type="text" id="sdex-source-id" placeholder="CA-OPERATING" /></div>
+              <div><label>Amount (DLBUSD)</label><input type="number" id="sdex-amount" value="0.05" step="0.001" /></div>
+              <div><label>Target Asset</label><select id="sdex-target"><option value="USDC">USDC</option><option value="USDS">USDS</option></select></div>
+              <div><label>Recipient Address (optional)</label><input type="text" id="sdex-recipient" placeholder="0x..." /></div>
+              <div><label>Pool Address (optional)</label><input type="text" id="sdex-pool" placeholder="0x..." /></div>
+            </div>
+            <div class="actions">
+              <button class="btn" onclick="quoteStablecoinDex()">Quote</button>
+              <button class="btn" onclick="createStablecoinDexPool()">Create Pool</button>
+              <button class="btn" onclick="depositAndSwapStablecoinDex()">Mint DLBUSD & Swap</button>
+            </div>
+            <div id="sdex-result" class="status hidden" style="white-space:pre-wrap;word-break:break-word"></div>
+          </div>
+        </div>
+      </section>
+
+      <section id="sovereign-trust" class="section">
+        <div class="grid">
+          <div class="card" style="grid-column: 1 / -1;">
+            <h2>Sovereign Trust Token (SIT)</h2>
+            <p>Self-issued, private/permissioned stablecoin backed by Treasury, Core Banking, Trust Accounting, Bond/Fixed Income, Cash, Sub-Ledger and CRM reserves. Gasless transfers via ERC-2771 trusted forwarder.</p>
+            <div id="sovereign-readiness" class="status" style="white-space:pre-wrap;word-break:break-word"></div>
+            <div class="actions">
+              <button class="btn" onclick="deploySovereignToken()">Deploy Token & Forwarder</button>
+              <button class="btn btn-sm" onclick="loadSovereignTrust()">Refresh</button>
+            </div>
+          </div>
+        </div>
+
+        <div class="grid" style="margin-top:20px">
+          <div class="card">
+            <h2>Mint SIT (Fiat / Reserve On-Ramp)</h2>
+            <p>Debit a source-of-funds ledger and mint SIT to a wallet. This creates the on-chain token and credits the reserve account.</p>
+            <div class="form-row">
+              <div><label>Source Type</label><select id="sit-source-type"><option value="treasury">Treasury</option><option value="cash">Cash</option><option value="trust">Trust Accounting</option><option value="bond">Bond / Fixed Income</option><option value="sub_ledger">Sub-Ledger</option><option value="core_banking">Core Banking</option></select></div>
+              <div><label>Source Account ID</label><input type="text" id="sit-source-id" placeholder="CA-OPERATING" /></div>
+              <div><label>Amount (USD)</label><input type="number" id="sit-mint-amount" value="1.00" step="0.01" /></div>
+              <div><label>Recipient Address</label><input type="text" id="sit-mint-to" placeholder="0x..." /></div>
+              <div><label>Memo</label><input type="text" id="sit-mint-memo" placeholder="On-ramp to SIT" /></div>
+            </div>
+            <div class="actions"><button class="btn" onclick="mintSovereignToken()">Mint SIT</button></div>
+            <div id="sit-mint-result" class="status hidden" style="white-space:pre-wrap;word-break:break-word"></div>
+          </div>
+
+          <div class="card">
+            <h2>Burn SIT (Fiat / Reserve Off-Ramp)</h2>
+            <p>Burn SIT from a wallet and credit the source-of-funds ledger. The operator must be approved as a burner or tokens must be sent to the operator first.</p>
+            <div class="form-row">
+              <div><label>Source Type (credit)</label><select id="sit-burn-source-type"><option value="treasury">Treasury</option><option value="cash">Cash</option><option value="trust">Trust Accounting</option><option value="bond">Bond / Fixed Income</option><option value="sub_ledger">Sub-Ledger</option><option value="core_banking">Core Banking</option></select></div>
+              <div><label>Source Account ID</label><input type="text" id="sit-burn-source-id" placeholder="CA-OPERATING" /></div>
+              <div><label>Amount (USD)</label><input type="number" id="sit-burn-amount" value="1.00" step="0.01" /></div>
+              <div><label>From Address</label><input type="text" id="sit-burn-from" placeholder="0x... (holder)" /></div>
+              <div><label>Memo</label><input type="text" id="sit-burn-memo" placeholder="Off-ramp from SIT" /></div>
+            </div>
+            <div class="actions"><button class="btn btn-danger" onclick="burnSovereignToken()">Burn SIT & Release Reserve</button></div>
+            <div id="sit-burn-result" class="status hidden" style="white-space:pre-wrap;word-break:break-word"></div>
+          </div>
+        </div>
+
+        <div class="grid" style="margin-top:20px">
+          <div class="card" style="grid-column: 1 / -1;">
+            <h2>Operator SIT Transfer</h2>
+            <p>Transfer SIT from the operator treasury wallet to any address. The recipient must already be whitelisted, or use <b>Whitelist Address</b> first. The operator pays gas.</p>
+            <div class="form-row">
+              <div><label>To</label><input type="text" id="sit-transfer-to" placeholder="0x..." /></div>
+              <div><label>Amount (SIT)</label><input type="number" id="sit-transfer-amount" value="0.01" step="0.01" /></div>
+            </div>
+            <div class="actions"><button class="btn" onclick="operatorTransferSIT()">Transfer SIT</button></div>
+            <div id="sit-transfer-result" class="status hidden" style="white-space:pre-wrap;word-break:break-word"></div>
+          </div>
+        </div>
+
+        <div class="grid" style="margin-top:20px">
+          <div class="card" style="grid-column: 1 / -1;">
+            <h2>Gasless SIT Transfer (Meta-Tx)</h2>
+            <p>Sign with MetaMask; the operator relayer pays gas. No ETH required in the sender wallet.</p>
+            <div class="form-row">
+              <div><label>From</label><input type="text" id="sit-meta-from" placeholder="0x... (signer)" /></div>
+              <div><label>To</label><input type="text" id="sit-meta-to" placeholder="0x..." /></div>
+              <div><label>Amount (SIT)</label><input type="number" id="sit-meta-amount" value="0.50" step="0.01" /></div>
+            </div>
+            <div class="actions">
+              <button class="btn" onclick="signSovereignTransfer()">Sign in MetaMask</button>
+              <button class="btn" onclick="relaySovereignTransfer()">Relay Signed Tx</button>
+            </div>
+            <div id="sit-meta-result" class="status hidden" style="white-space:pre-wrap;word-break:break-word"></div>
+          </div>
+        </div>
+
+        <div class="grid" style="margin-top:20px">
+          <div class="card" style="grid-column: 1 / -1;">
+            <h2>Gasless SIT Transfer (EIP-4337 Account Abstraction)</h2>
+            <p>Smart-account wallet + verifying paymaster.  User holds zero native ETH; the operator paymaster funds gas.  SIT tokens are the only asset the user needs.</p>
+            <div class="form-row">
+              <div><label>Owner EOA</label><input type="text" id="aa-owner" placeholder="0x... (MetaMask address)" /></div>
+              <div><label>Recipient</label><input type="text" id="aa-to" placeholder="0x..." /></div>
+              <div><label>Amount (SIT, raw units)</label><input type="text" id="aa-amount" value="1000000" /></div>
+              <div><label>Token Address (optional)</label><input type="text" id="aa-token" placeholder="leave empty to use SIT" /></div>
+            </div>
+            <div id="aa-readiness" class="status" style="white-space:pre-wrap;word-break:break-word"></div>
+            <div class="actions">
+              <button class="btn" onclick="getAASmartAccount()">Get Smart Account</button>
+              <button class="btn" onclick="prepareAAGaslessTransfer()">Prepare Gasless Transfer</button>
+              <button class="btn" onclick="signAAGaslessTransfer()">Sign with MetaMask</button>
+              <button class="btn" onclick="submitAAGaslessTransfer()">Submit Signed Transfer</button>
+            </div>
+            <div id="aa-result" class="status hidden" style="white-space:pre-wrap;word-break:break-word"></div>
+            <hr style="margin:20px 0;border:0;border-top:1px solid rgba(148,163,184,0.2)" />
+            <h3>Paymaster Administration</h3>
+            <div class="form-row">
+              <div><label>Whitelist Address</label><input type="text" id="aa-whitelist-address" placeholder="0x... (smart account)" /></div>
+            </div>
+            <div class="actions">
+              <button class="btn" onclick="deployAAPaymaster()">Deploy Paymaster</button>
+              <button class="btn" onclick="fundAAPaymaster()">Fund Paymaster</button>
+              <button class="btn" onclick="whitelistAASender()">Whitelist Sender</button>
+            </div>
+            <hr style="margin:20px 0;border:0;border-top:1px solid rgba(148,163,184,0.2)" />
+            <h4>One-Click Seed</h4>
+            <div id="aa-paymaster-balance" class="status" style="white-space:pre-wrap;word-break:break-word"></div>
+            <div class="form-row">
+              <div><label>Seed amount (ETH)</label><input type="number" id="aa-seed-amount" value="0.001" step="0.0001" /></div>
+              <div><label>Whitelist after seed (optional)</label><input type="text" id="aa-seed-whitelist" placeholder="0x... (defaults to operator)" /></div>
+            </div>
+            <div class="actions">
+              <button class="btn" onclick="loadAAPaymasterBalance()">Refresh Balance</button>
+              <button class="btn" onclick="seedAAPaymaster()">Seed Paymaster</button>
+            </div>
+            <div id="aa-admin-result" class="status hidden" style="white-space:pre-wrap;word-break:break-word"></div>
+          </div>
+        </div>
+
+        <div class="grid" style="margin-top:20px">
+          <div class="card">
+            <h2>Whitelist Address</h2>
+            <div class="form-row">
+              <div><label>Address</label><input type="text" id="sit-whitelist-address" placeholder="0x..." /></div>
+              <div><label>Allowed</label><select id="sit-whitelist-allowed"><option value="true">Yes</option><option value="false">No</option></select></div>
+            </div>
+            <div class="actions"><button class="btn" onclick="whitelistSovereignAddress()">Update Whitelist</button></div>
+            <div id="sit-whitelist-result" class="status hidden" style="white-space:pre-wrap;word-break:break-word"></div>
+          </div>
+          <div class="card">
+            <h2>Ramp Orders</h2>
+            <div id="sit-orders" class="table-wrap"><table id="sit-orders-table"><thead><tr><th>ID</th><th>Direction</th><th>Source</th><th>Amount</th><th>Status</th><th>Tx</th></tr></thead><tbody></tbody></table></div>
+            <div class="actions"><button class="btn btn-sm" onclick="loadSovereignOrders()">Refresh Orders</button></div>
+          </div>
+        </div>
+
+        <div class="grid" style="margin-top:20px">
+          <div class="card" style="grid-column: 1 / -1;">
+            <h2>Operator Gas Tank</h2>
+            <p>Auto-replenish operator ETH from Treasury / Core Banking / Trust Accounting / Bond / Fixed Income / Cash / Sub-Ledger reserves. In DEX mode, the system mints DLBUSD from the source ledger and swaps it for WETH/ETH on the Stablecoin DEX. In CEX mode, it stages a Coinbase Treasury transfer.</p>
+            <div id="gas-tank-status" class="status" style="white-space:pre-wrap;word-break:break-word"></div>
+            <div class="form-row">
+              <div><label>Mode</label><select id="gas-mode"><option value="dex">DEX</option><option value="coinbase">Coinbase (CEX)</option></select></div>
+              <div><label>Source Type</label><select id="gas-source-type"><option value="treasury">Treasury</option><option value="cash">Cash</option><option value="trust">Trust Accounting</option><option value="bond">Bond / Fixed Income</option><option value="sub_ledger">Sub-Ledger</option><option value="core_banking">Core Banking</option></select></div>
+              <div><label>Source Account</label><input type="text" id="gas-source-account" placeholder="TREASURY_HOT or CA-OPERATING" value="TREASURY_HOT" /></div>
+              <div><label>Top-up USD</label><input type="number" id="gas-amount" value="100" step="1" min="1" /></div>
+              <div><label>Threshold ETH</label><input type="number" id="gas-threshold" value="0.005" step="0.001" min="0" /></div>
+            </div>
+            <div class="form-row">
+              <div><label>Target Asset</label><select id="gas-target-asset"><option value="ETH">ETH (unwrap WETH)</option><option value="WETH">WETH</option><option value="USDC">USDC</option></select></div>
+              <div><label>Create pool if missing</label><input type="checkbox" id="gas-create-pool" /></div>
+              <div><label>Pool seed WETH</label><input type="number" id="gas-seed-weth" value="0" step="0.001" min="0" /></div>
+              <div><label>Pool seed DLBUSD</label><input type="number" id="gas-seed-dlbusd" value="0.2" step="0.1" min="0" /></div>
+            </div>
+            <div class="actions">
+              <button class="btn" onclick="loadGasTankStatus()">Refresh Status</button>
+              <button class="btn" onclick="checkAndTopUpGas()">Check & Top-up</button>
+            </div>
+            <div id="gas-tank-result" class="status hidden" style="white-space:pre-wrap;word-break:break-word"></div>
+          </div>
+        </div>
+
+        <div class="grid" style="margin-top:20px">
+          <div class="card" style="grid-column: 1 / -1;">
+            <h2>Funding Orchestrator</h2>
+            <p>Audits every funding rail, builds the best plan to fund the operator wallet, and executes the first viable step. If no rail can mint ETH, it returns the exact deposit invoice.</p>
+            <div id="funding-status" class="status" style="white-space:pre-wrap;word-break:break-word"></div>
+            <div class="form-row">
+              <div><label>Strategy</label><select id="funding-strategy"><option value="auto">Auto (best rail)</option><option value="dex">Stablecoin DEX</option><option value="coinbase">Coinbase Treasury</option><option value="cashapp">Cash App P2P</option></select></div>
+              <div><label>Amount USD</label><input type="number" id="funding-amount" value="100" step="1" min="1" /></div>
+              <div><label>Source Module</label><select id="funding-source-type"><option value="treasury">Treasury</option><option value="cash">Cash</option><option value="trust">Trust Accounting</option><option value="bond">Bond / Fixed Income</option><option value="sub_ledger">Sub-Ledger</option><option value="core_banking">Core Banking</option></select></div>
+              <div><label>Source Account</label><input type="text" id="funding-source-account" placeholder="TREASURY_HOT" value="TREASURY_HOT" /></div>
+              <div><label>Cash App $Cashtag (for cashapp strategy)</label><input type="text" id="funding-cashtag" placeholder="$YourCashtag" /></div>
+              <div><label>External EVM donor (optional)</label><input type="text" id="funding-external" placeholder="0x..." /></div>
+              <div><label>Hedera donor account (optional)</label><input type="text" id="funding-hedera" placeholder="0.0..." /></div>
+            </div>
+            <div class="actions">
+              <button class="btn" onclick="loadFundingStatus()">Audit Funding</button>
+              <button class="btn" onclick="buildFundingPlan()">Build Plan</button>
+              <button class="btn" onclick="executeFundingPlan()">Execute Best Rail</button>
+              <button class="btn" onclick="getDepositInvoice()">Deposit Invoice</button>
+            </div>
+            <div id="funding-result" class="status hidden" style="white-space:pre-wrap;word-break:break-word"></div>
+          </div>
+        </div>
+      </section>
+
+      <section id="asset-debt" class="section">
+        <div class="grid">
+          <div class="card" style="grid-column: 1 / -1;">
+            <h2>Asset-to-Debt Proof Engine</h2>
+            <p>Compute a certified net-worth statement from source-of-funds ledgers. Requires Administration + Distribution signatures.</p>
+            <div class="form-row">
+              <div><label>Memo</label><input type="text" id="adp-memo" placeholder="Quarterly review" /></div>
+              <div style="flex:2"><label>Liabilities JSON (optional)</label><input type="text" id="adp-liabilities" placeholder='[{"name":"Vendor payable","amount_cents":10000}]' /></div>
+              <div style="display:flex;align-items:end;gap:12px">
+                <label style="display:flex;align-items:center;gap:8px;font-size:13px;text-transform:none"><input type="checkbox" id="adp-hard-assets" checked /> Include hard assets / liabilities</label>
+              </div>
+            </div>
+            <div class="actions">
+              <button class="btn" onclick="computeAssetDebtProof()">Compute Proof</button>
+              <button class="btn" onclick="loadAssetDebtProofs()">Refresh Proofs</button>
+            </div>
+            <div id="adp-result" class="status hidden" style="white-space:pre-wrap;word-break:break-word"></div>
+          </div>
+        </div>
+        <div class="grid" style="margin-top:20px">
+          <div class="card" style="grid-column: 1 / -1;">
+            <h3>Certify Proof</h3>
+            <div class="form-row">
+              <div><label>Proof ID</label><input type="text" id="adp-proof-id" placeholder="ADP-..." /></div>
+              <div><label>Role</label><select id="adp-role"><option value="administration">Administration</option><option value="distribution">Distribution</option></select></div>
+              <div><label>Trustee Email</label><input type="email" id="adp-email" value="deandreabarkley13@gmail.com" /></div>
+              <div><label>Signature (optional)</label><input type="text" id="adp-signature" placeholder="0x..." /></div>
+            </div>
+            <div class="actions">
+              <button class="btn" onclick="signAssetDebtProof()">Sign Proof</button>
+              <button class="btn" onclick="rejectAssetDebtProof()">Reject Proof</button>
+            </div>
+            <div id="adp-sign-result" class="status hidden" style="white-space:pre-wrap;word-break:break-word"></div>
+          </div>
+        </div>
+        <div class="grid" style="margin-top:20px">
+          <div class="card" style="grid-column: 1 / -1;">
+            <h3>Proofs</h3>
+            <div id="adp-list" class="table-wrap"><table id="adp-table"><thead><tr><th>ID</th><th>Status</th><th>Assets</th><th>Liabilities</th><th>Net Worth</th><th>Hash</th></tr></thead><tbody></tbody></table></div>
+          </div>
+        </div>
+      </section>
+
+      <section id="distribution-requests" class="section">
+        <div class="grid">
+          <div class="card" style="grid-column: 1 / -1;">
+            <h2>Beneficiary Distribution / Disbursement Request</h2>
+            <p>Submit a request. Beneficiary requests require a certified asset-debt proof and two-trustee approval before execution.</p>
+            <div class="form-row">
+              <div><label>Type</label><select id="req-type"><option value="distribution">Distribution</option><option value="disbursement">Disbursement</option></select></div>
+              <div><label>Beneficiary Email</label><input type="email" id="req-beneficiary-email" placeholder="beneficiary@example.com" /></div>
+              <div><label>Beneficiary Name</label><input type="text" id="req-beneficiary-name" placeholder="Jane Doe" /></div>
+              <div><label>Amount USD</label><input type="number" id="req-amount" value="10.00" step="0.01" /></div>
+              <div><label>Destination Address</label><input type="text" id="req-destination" placeholder="0x..." /></div>
+              <div><label>Source Type</label><select id="req-source-type"><option value="treasury">Treasury</option><option value="cash">Cash</option><option value="trust">Trust Accounting</option><option value="bond">Bond/Fixed Income</option><option value="sub_ledger">Sub-Ledger</option><option value="core_banking">Core Banking</option></select></div>
+              <div><label>Source Account ID</label><input type="text" id="req-source-account" placeholder="TREASURY_HOT" /></div>
+              <div><label>Safe ID</label><input type="text" id="req-safe-id" placeholder="SAFE-..." /></div>
+              <div><label>Proof ID (certified)</label><input type="text" id="req-proof-id" placeholder="ADP-..." /></div>
+              <div style="flex:2"><label>Memo</label><input type="text" id="req-memo" placeholder="Reason for request" /></div>
+            </div>
+            <div class="actions">
+              <button class="btn" onclick="createDistributionRequest()">Submit Request</button>
+              <button class="btn" onclick="loadDistributionRequests()">Refresh Requests</button>
+            </div>
+            <div id="req-result" class="status hidden" style="white-space:pre-wrap;word-break:break-word"></div>
+          </div>
+        </div>
+
+        <div class="grid" style="margin-top:20px" data-roles="trustee">
+          <div class="card" style="grid-column: 1 / -1;">
+            <h2>Trustee Portal — Approve / Execute</h2>
+            <div id="req-pending-list" class="table-wrap"><table id="req-pending-table"><thead><tr><th>ID</th><th>Type</th><th>Beneficiary</th><th>Amount</th><th>Status</th><th>Proof</th><th>Actions</th></tr></thead><tbody></tbody></table></div>
+          </div>
+        </div>
+
+        <div class="grid" style="margin-top:20px">
+          <div class="card" style="grid-column: 1 / -1;">
+            <h2>Beneficiary View-Only Portal</h2>
+            <p>Enter a beneficiary email to see their requests and any payouts to their linked addresses.</p>
+            <div class="form-row">
+              <div><label>Beneficiary Email</label><input type="email" id="ben-view-email" placeholder="beneficiary@example.com" /></div>
+              <div><button class="btn" onclick="loadBeneficiaryActivity()">Load Activity</button></div>
+            </div>
+            <div id="ben-view-result" class="status" style="white-space:pre-wrap;word-break:break-word"></div>
+            <h3 style="margin-top:20px">Requests</h3>
+            <div id="ben-requests" class="table-wrap"><table id="ben-requests-table"><thead><tr><th>ID</th><th>Type</th><th>Amount</th><th>Status</th><th>Destination</th></tr></thead><tbody></tbody></table></div>
+            <h3 style="margin-top:20px">Transactions</h3>
+            <div id="ben-payouts" class="table-wrap"><table id="ben-payouts-table"><thead><tr><th>ID</th><th>Type</th><th>Amount</th><th>Status</th><th>Tx</th></tr></thead><tbody></tbody></table></div>
+          </div>
+        </div>
+      </section>
+
+      <section id="safes" class="section">
+        <div class="card">
+          <h2>Create Safe Wallet</h2>
+          <p>Deploy a Gnosis Safe with 2-of-N threshold. The server hot wallet is automatically added as an owner.</p>
+          <div class="form-row">
+            <div><label>Label</label><input type="text" id="safe-label" placeholder="Trust Reserve Safe" /></div>
+            <div><label>Co-owner Address</label><input type="text" id="safe-owner" placeholder="0x... trustee/beneficiary" /></div>
+            <div><label>Threshold</label><input type="number" id="safe-threshold" value="2" min="1" max="5" /></div>
+          </div>
+          <div class="actions">
+            <button class="btn" onclick="createSafe()">Create Safe</button>
+            <button class="btn btn-sm" onclick="listSafes()">Refresh List</button>
+          </div>
+          <div id="safe-result" class="status hidden"></div>
+        </div>
+        <div class="card" style="margin-top:20px">
+          <h2>Safe Wallets</h2>
+          <div class="table-wrap"><table id="safes-table"><thead><tr><th>Label</th><th>Address</th><th>Threshold</th><th>Status</th></tr></thead><tbody></tbody></table></div>
+        </div>
+      </section>
+
+      <section id="deposits" class="section">
+        <div class="card">
+          <h2>Record Deposit</h2>
+          <p>Record crypto inflow to a Safe or the treasury.</p>
+          <div class="form-row">
+            <div><label>Safe / Wallet ID</label><input type="text" id="deposit-safe" placeholder="SAFE-..." /></div>
+            <div><label>Asset</label><input type="text" id="deposit-asset" value="ETH" /></div>
+            <div><label>Amount</label><input type="text" id="deposit-amount" placeholder="1.5" /></div>
+            <div><label>From Address</label><input type="text" id="deposit-from" placeholder="0x..." /></div>
+            <div><label>Tx Hash</label><input type="text" id="deposit-tx" placeholder="0x..." /></div>
+          </div>
+          <div class="actions"><button class="btn" onclick="recordDeposit()">Record Deposit</button></div>
+          <div id="deposit-result" class="status hidden"></div>
+        </div>
+      </section>
+
+      <section id="payouts" class="section">
+        <div class="card">
+          <h2>Create Payout</h2>
+          <p>Propose a payout from a Safe. The server signs first; the second owner approves with their wallet. Set an Amount (USD) to reserve from a source-of-funds ledger.</p>
+          <div class="form-row">
+            <div><label>Safe ID</label><select id="payout-safe"></select></div>
+            <div><label>Destination</label><input type="text" id="payout-to" placeholder="0x..." /></div>
+            <div><label>Amount (USD)</label><input type="text" id="payout-amount-usd" placeholder="25.00" /></div>
+            <div><label>Source Type</label><select id="payout-source-type"><option value="">No source ledger</option><option value="treasury">Treasury</option><option value="cash">Cash</option><option value="trust">Trust Accounting</option><option value="bond">Bond / Fixed Income</option><option value="core_banking">Core Banking</option></select></div>
+            <div><label>Source Account ID</label><input type="text" id="payout-source-account" placeholder="Account ID / Bond ID" /></div>
+            <div><label>Description</label><input type="text" id="payout-desc" placeholder="Beneficiary expense" /></div>
+          </div>
+          <details>
+            <summary style="color:var(--muted);font-size:12px;cursor:pointer;">Advanced (raw token values)</summary>
+            <div class="form-row" style="margin-top:12px">
+              <div><label>Value (wei for ETH)</label><input type="text" id="payout-value" placeholder="0" /></div>
+              <div><label>Token (USDC address)</label><input type="text" id="payout-token" placeholder="0xA0b8..." /></div>
+              <div><label>Token Amount (optional)</label><input type="text" id="payout-token-amount" placeholder="25000000" /></div>
+            </div>
+          </details>
+          <div class="actions"><button class="btn" onclick="createPayout()">Propose Payout</button></div>
+          <div id="payout-create-result" class="status hidden"></div>
+        </div>
+        <div class="card" style="margin-top:20px">
+          <h2>Pending Payouts</h2>
+          <div class="table-wrap"><table id="payouts-table"><thead><tr><th>ID</th><th>To</th><th>Value</th><th>Status</th><th>Action</th></tr></thead><tbody></tbody></table></div>
+        </div>
+      </section>
+
+      <section id="distribute" class="section">
+        <div class="card">
+          <h2>Create Distribution</h2>
+          <p>Split funds to multiple beneficiaries from a source-of-funds ledger in one workflow.</p>
+          <div class="form-row">
+            <div><label>Safe ID</label><select id="dist-safe"></select></div>
+            <div><label>Distribution Name</label><input type="text" id="dist-name" placeholder="Q3 Beneficiary Distribution" /></div>
+            <div><label>Source Type</label><select id="dist-source-type"><option value="">No source ledger</option><option value="treasury">Treasury</option><option value="cash">Cash</option><option value="trust">Trust Accounting</option><option value="bond">Bond / Fixed Income</option><option value="core_banking">Core Banking</option></select></div>
+            <div><label>Source Account ID</label><input type="text" id="dist-source-account" placeholder="Account ID / Bond ID" /></div>
+          </div>
+          <label style="margin-top:10px">Beneficiaries JSON (amountUsd is dollars, address is wallet)</label>
+          <textarea id="dist-beneficiaries" rows="5" placeholder='[{"address":"0x...","amountUsd":"10.00","name":"Alice"}]'></textarea>
+          <div class="actions"><button class="btn" onclick="createDistribution()">Create Distribution</button></div>
+          <div id="dist-result" class="status hidden"></div>
+        </div>
+      </section>
+
+      <section id="p2p" class="section">
+        <div class="card">
+          <h2>P2P Payment</h2>
+          <p>Send a peer-to-peer payment from a Safe or source-of-funds ledger.</p>
+          <div class="form-row">
+            <div><label>Safe ID</label><select id="p2p-safe"></select></div>
+            <div><label>Recipient User</label><select id="p2p-recipient-user"><option value="">Manual address</option></select></div>
+            <div><label>Recipient Address</label><input type="text" id="p2p-to" placeholder="0x..." /></div>
+            <div><label>Amount (USD)</label><input type="text" id="p2p-amount-usd" placeholder="25.00" /></div>
+            <div><label>Source Type</label><select id="p2p-source-type"><option value="">No source ledger</option><option value="treasury">Treasury</option><option value="cash">Cash</option><option value="trust">Trust Accounting</option><option value="bond">Bond / Fixed Income</option><option value="core_banking">Core Banking</option></select></div>
+            <div><label>Source Account ID</label><input type="text" id="p2p-source-account" placeholder="Account ID / Bond ID" /></div>
+            <div><label>Description</label><input type="text" id="p2p-desc" placeholder="Trust expense" /></div>
+          </div>
+          <div class="actions"><button class="btn" onclick="createP2p()">Send P2P</button></div>
+          <div id="p2p-result" class="status hidden"></div>
+        </div>
+      </section>
+
+      <section id="payment-rails" class="section">
+        <div class="grid">
+          <div class="card">
+            <h2>Google Wallet (NFC / Pass)</h2>
+            <p>Generate an Add to Google Wallet pass with a linked wallet address. Real NFC tap-to-pay requires a Google Pay issuer/TSP partnership or Android HCE.</p>
+            <div class="form-row">
+              <div><label>User Email</label><input type="text" id="gw-email" placeholder="trustee@example.com" /></div>
+              <div><label>Wallet Address</label><input type="text" id="gw-address" placeholder="0x..." /></div>
+            </div>
+            <div class="actions"><button class="btn" onclick="generateGoogleWalletPass()">Generate Pass Link</button></div>
+            <div id="gw-result" class="status hidden"></div>
+          </div>
+          <div class="card">
+            <h2>Cash App Pay (USD P2P)</h2>
+            <p>Cash App can send USD to a $Cashtag. It cannot send ETH/USDC to an EVM address. Choose <b>Push</b> to send from the trust's Cash App to the recipient's $Cashtag, or <b>Pull</b> to request payment into the trust's $Cashtag.</p>
+            <div class="form-row">
+              <div><label>Amount (USD)</label><input type="text" id="ca-amount" placeholder="25.00" /></div>
+              <div><label>$Cashtag</label><input type="text" id="ca-tag" placeholder="$RecipientTag or $YourTag" /></div>
+              <div><label>Direction</label><select id="ca-direction"><option value="pull">Pull / Request money to this $Cashtag</option><option value="push">Push / Send money from trust to this $Cashtag</option></select></div>
+              <div><label>Memo</label><input type="text" id="ca-memo" placeholder="Trust payment" /></div>
+            </div>
+            <div class="actions"><button class="btn" onclick="requestCashAppPayment()">Generate Cash App QR</button></div>
+            <div id="ca-result" class="status hidden"></div>
+          </div>
+          <div class="card" style="grid-column: 1 / -1;">
+            <h2>Fund Operator Wallet via Cash App</h2>
+            <p>Generate a Cash App QR/deep link. <b>Pull</b> receives USD into the $Cashtag and then converts it to crypto. <b>Push</b> opens the trust's Cash App to send USD to the $Cashtag (use the operator's $Cashtag or a bank/Coinbase account).</p>
+            <div class="form-row">
+              <div><label>Amount (USD)</label><input type="text" id="ca-fund-amount" placeholder="25.00" value="25.00" /></div>
+              <div><label>$Cashtag</label><input type="text" id="ca-fund-tag" placeholder="$YourCashtag" /></div>
+              <div><label>Direction</label><select id="ca-fund-direction"><option value="pull">Pull / Receive USD into this $Cashtag</option><option value="push">Push / Send USD from trust to this $Cashtag</option></select></div>
+              <div><label>Memo</label><input type="text" id="ca-fund-memo" placeholder="DLB Trust funding" /></div>
+            </div>
+            <div class="actions"><button class="btn" onclick="fundOperatorWithCashApp()">Generate Cash App QR</button></div>
+            <div id="ca-fund-result" class="status hidden"></div>
+          </div>
+          <div class="card" style="grid-column: 1 / -1;">
+            <h2>Cash App Partner Payout (merchant push)</h2>
+            <p>Uses the official Cash App Pay Partner API to send USD from a merchant account to a customer's Cash App account. Requires Cash App partner credentials and an approved <b>ON_FILE_PAYOUT</b> grant. If credentials are not configured, this returns setup instructions.</p>
+            <div class="form-row">
+              <div><label>Amount (USD)</label><input type="text" id="cap-amount" placeholder="25.00" /></div>
+              <div><label>Account Reference ID (customer id / $Cashtag)</label><input type="text" id="cap-account" placeholder="$RecipientTag or internal customer id" /></div>
+              <div><label>Memo / Note</label><input type="text" id="cap-memo" placeholder="Trust payout" /></div>
+              <div><label>Grant ID (after customer approves request)</label><input type="text" id="cap-grant" placeholder="grant-..." /></div>
+              <div><label>Payout Request ID (optional, to poll)</label><input type="text" id="cap-request-id" placeholder="" /></div>
+            </div>
+            <div class="actions">
+              <button class="btn" onclick="createCashAppPayoutRequest()">1. Create Payout Request</button>
+              <button class="btn" onclick="executeCashAppPayout()">2. Execute Payout</button>
+              <button class="btn" onclick="pollCashAppPayoutRequest()">Poll Request Status</button>
+            </div>
+            <div id="cap-result" class="status hidden" style="white-space:pre-wrap;word-break:break-word"></div>
+          </div>
+        </div>
+      </section>
+
+      <section id="bond-tokens" class="section">
+        <div class="grid">
+          <div class="card">
+            <h2>Tokenize Fixed Income / Bond Position</h2>
+            <p>Mint an ERC-20 representing bond principal and accrued interest. Shadow mode records tokens locally; live mode requires BOND_TOKEN_FACTORY and a hot wallet with gas.</p>
+            <div class="form-row">
+              <div><label>Bond ID</label><input type="text" id="bt-bond-id" placeholder="1" /></div>
+              <div><label>Token Name</label><input type="text" id="bt-name" placeholder="DLB Bond 2030 Token" /></div>
+              <div><label>Token Symbol</label><input type="text" id="bt-symbol" placeholder="DLB2030" /></div>
+            </div>
+            <div class="actions"><button class="btn" onclick="createBondToken()">Create Token</button></div>
+            <div id="bt-create-result" class="status hidden"></div>
+          </div>
+          <div class="card">
+            <h2>Mint Bond Tokens</h2>
+            <p>Lock a bond position and mint tokens to a holder (e.g., the Safe).</p>
+            <div class="form-row">
+              <div><label>Token ID</label><input type="text" id="bt-token-id" placeholder="BTOK-..." /></div>
+              <div><label>Principal</label><input type="text" id="bt-principal" placeholder="1000" /></div>
+              <div><label>Interest</label><input type="text" id="bt-interest" placeholder="50" /></div>
+              <div><label>Holder Address</label><input type="text" id="bt-holder" placeholder="0x..." /></div>
+            </div>
+            <div class="actions"><button class="btn" onclick="mintBondToken()">Mint</button></div>
+            <div id="bt-mint-result" class="status hidden"></div>
+          </div>
+          <div class="card" style="grid-column: 1 / -1;">
+            <h2>DEX Swap (Bond Token → USDC)</h2>
+            <p>Get a quote and swap tokenized bonds for USDC on a DEX. Live mode needs a Uniswap V3 pool with liquidity.</p>
+            <div class="form-row">
+              <div><label>Token In (bond token address)</label><input type="text" id="dex-token-in" placeholder="shadow-BTOK-... or 0x..." /></div>
+              <div><label>Amount In</label><input type="text" id="dex-amount" placeholder="100" /></div>
+            </div>
+            <div class="actions">
+              <button class="btn" onclick="quoteDexSwap()">Get Quote</button>
+              <button class="btn" onclick="executeDexSwap()">Execute Swap</button>
+            </div>
+            <div id="dex-result" class="status hidden"></div>
+          </div>
+        </div>
+      </section>
+
+      <section id="settings" class="section">
+        <div class="card">
+          <h2>White Label</h2>
+          <p>Brand the dApp for your trust or family office.</p>
+          <div class="form-row">
+            <div><label>Trust Name</label><input type="text" id="wl-name" placeholder="Barkley Family Trust" /></div>
+            <div><label>Slug</label><input type="text" id="wl-slug" placeholder="barkley" /></div>
+            <div><label>Primary Color</label><input type="color" id="wl-primary" value="#3b82f6" /></div>
+            <div><label>Logo URL</label><input type="text" id="wl-logo" placeholder="https://..." /></div>
+            <div><label>Contact Email</label><input type="text" id="wl-email" placeholder="trust@example.com" /></div>
+          </div>
+          <div class="actions"><button class="btn" onclick="saveWhiteLabel()">Save Brand</button></div>
+          <div id="wl-result" class="status hidden"></div>
+        </div>
+      </section>
+
+      <section id="automation" class="section">
+        <div class="grid">
+          <div class="card" style="grid-column: 1 / -1;">
+            <h2>One-Click Distribution / Disbursement Automation</h2>
+            <p>Compute an asset-debt proof, create a request, notify trustees, and execute in one workflow. Provide trustee signatures to auto-approve.</p>
+            <div class="form-row">
+              <div><label>Template Name (optional)</label><input type="text" id="auto-template-name" placeholder="Monthly distribution" /></div>
+              <div><label>Type</label><select id="auto-type"><option value="distribution">Distribution</option><option value="disbursement">Disbursement</option></select></div>
+              <div><label>Source Type</label><select id="auto-source-type"><option value="treasury">Treasury</option><option value="cash">Cash</option><option value="trust">Trust Accounting</option><option value="bond">Bond/Fixed Income</option><option value="sub_ledger">Sub-Ledger</option><option value="core_banking">Core Banking</option></select></div>
+              <div><label>Source Account ID</label><input type="text" id="auto-source-account" placeholder="TREASURY_HOT" /></div>
+              <div><label>Safe ID</label><input type="text" id="auto-safe-id" placeholder="SAFE-..." /></div>
+              <div><label>Amount USD</label><input type="number" id="auto-amount" value="10.00" step="0.01" /></div>
+              <div><label>Beneficiary Email</label><input type="email" id="auto-ben-email" placeholder="beneficiary@example.com" /></div>
+              <div><label>Beneficiary Name</label><input type="text" id="auto-ben-name" placeholder="Jane Doe" /></div>
+              <div><label>Destination Address</label><input type="text" id="auto-destination" placeholder="0x..." /></div>
+              <div style="flex:2"><label>Beneficiaries JSON (overrides single)</label><input type="text" id="auto-beneficiaries" placeholder='[{"address":"0x...","amountUsd":"10.00","name":"Jane","email":"j@e.com"}]' /></div>
+            </div>
+            <div class="form-row">
+              <div><label>Memo</label><input type="text" id="auto-memo" placeholder="One-click distribution" /></div>
+              <div style="flex:2"><label>Trustee Signatures JSON (optional)</label><input type="text" id="auto-signatures" placeholder='[{"role":"administration","trusteeEmail":"deandreabarkley13@gmail.com","signature":"0x..."},{"role":"distribution","trusteeEmail":"annrobinson9800@yahoo.com","signature":"0x..."}]' /></div>
+            </div>
+            <div class="form-row">
+              <label style="display:flex;align-items:center;gap:8px"><input type="checkbox" id="auto-hard-assets" checked /> Include hard assets/liabilities in proof</label>
+              <label style="display:flex;align-items:center;gap:8px"><input type="checkbox" id="auto-execute" /> Auto-execute after approval</label>
+            </div>
+            <div class="actions">
+              <button class="btn" onclick="runOneClickAutomation()">Run One-Click Distribution</button>
+              <button class="btn" onclick="loadAutomationTemplates()">Load Templates</button>
+              <button class="btn" onclick="loadAutomationRuns()">Load Runs</button>
+            </div>
+            <div id="auto-result" class="status hidden" style="white-space:pre-wrap;word-break:break-word"></div>
+          </div>
+        </div>
+        <div class="grid" style="margin-top:20px">
+          <div class="card" style="grid-column: 1 / -1;">
+            <h3>Approve / Execute Run</h3>
+            <div class="form-row">
+              <div><label>Run ID</label><input type="text" id="auto-run-id" placeholder="RUN-..." /></div>
+              <div style="flex:2"><label>Trustee Signatures JSON</label><input type="text" id="auto-run-signatures" placeholder='[{"role":"administration","trusteeEmail":"deandreabarkley13@gmail.com","signature":"0x..."},...]' /></div>
+            </div>
+            <div class="actions"><button class="btn" onclick="approveExecuteAutomationRun()">Approve & Execute Run</button></div>
+            <div id="auto-run-result" class="status hidden" style="white-space:pre-wrap;word-break:break-word"></div>
+          </div>
+        </div>
+        <div class="grid" style="margin-top:20px">
+          <div class="card" style="grid-column: 1 / -1;">
+            <h3>Templates</h3>
+            <div id="auto-templates" class="table-wrap"><table id="auto-templates-table"><thead><tr><th>Name</th><th>Type</th><th>Source</th><th>Amount</th><th>Auto-Approve</th></tr></thead><tbody></tbody></table></div>
+          </div>
+        </div>
+        <div class="grid" style="margin-top:20px">
+          <div class="card" style="grid-column: 1 / -1;">
+            <h3>Runs</h3>
+            <div id="auto-runs" class="table-wrap"><table id="auto-runs-table"><thead><tr><th>ID</th><th>Status</th><th>Proof</th><th>Requests</th><th>Run At</th></tr></thead><tbody></tbody></table></div>
+          </div>
+        </div>
+      </section>
+
+      <section id="assets-expenses" class="section">
+        <div class="grid">
+          <div class="card">
+            <h2>Add Asset</h2>
+            <p>Real estate, vehicles, equipment, accounts, etc. with VIN/serial/deed/account identifiers.</p>
+            <div class="form-row">
+              <div><label>Category</label><select id="asset-category"><option value="real_estate">Real Estate</option><option value="vehicle">Vehicle</option><option value="equipment">Equipment</option><option value="bank_account">Bank Account</option><option value="investment">Investment</option><option value="crypto">Crypto Wallet</option><option value="other">Other</option></select></div>
+              <div><label>Name</label><input type="text" id="asset-name" placeholder="2024 Tahoe" /></div>
+              <div><label>Identifier (VIN / serial / deed / account)</label><input type="text" id="asset-identifier" placeholder="1HGBH41JXMN109186" /></div>
+              <div><label>Current Value USD</label><input type="number" id="asset-value" value="0" step="0.01" /></div>
+              <div><label>Owner</label><input type="text" id="asset-owner" placeholder="Beneficiary / Trustee" /></div>
+              <div><label>Linked Source Type</label><select id="asset-source-type"><option value=""></option><option value="treasury">Treasury</option><option value="cash">Cash</option><option value="trust">Trust Accounting</option><option value="bond">Bond/Fixed Income</option><option value="sub_ledger">Sub-Ledger</option><option value="core_banking">Core Banking</option></select></div>
+              <div><label>Linked Source Account ID</label><input type="text" id="asset-source-account" placeholder="Account ID" /></div>
+            </div>
+            <div><label>Description / Notes</label><textarea id="asset-description" rows="2"></textarea></div>
+            <div class="actions"><button class="btn" onclick="addAsset()">Add Asset</button></div>
+            <div id="asset-result" class="status hidden" style="white-space:pre-wrap;word-break:break-word"></div>
+          </div>
+          <div class="card">
+            <h2>Add Liability</h2>
+            <p>Loans, mortgages, vendor payables, taxes owed, credit lines.</p>
+            <div class="form-row">
+              <div><label>Category</label><select id="liability-category"><option value="loan">Loan</option><option value="mortgage">Mortgage</option><option value="tax">Tax Owed</option><option value="vendor_payable">Vendor Payable</option><option value="credit_line">Credit Line</option><option value="other">Other</option></select></div>
+              <div><label>Name</label><input type="text" id="liability-name" placeholder="Mortgage - Main St" /></div>
+              <div><label>Identifier (loan # / deed ref)</label><input type="text" id="liability-identifier" placeholder="LOAN-12345" /></div>
+              <div><label>Amount Owed USD</label><input type="number" id="liability-value" value="0" step="0.01" /></div>
+              <div><label>Owner / Payee</label><input type="text" id="liability-owner" placeholder="Lender / Vendor" /></div>
+              <div><label>Linked Source Type</label><select id="liability-source-type"><option value=""></option><option value="treasury">Treasury</option><option value="cash">Cash</option><option value="trust">Trust Accounting</option><option value="bond">Bond/Fixed Income</option><option value="sub_ledger">Sub-Ledger</option><option value="core_banking">Core Banking</option></select></div>
+              <div><label>Linked Source Account ID</label><input type="text" id="liability-source-account" placeholder="Account ID" /></div>
+            </div>
+            <div><label>Description / Notes</label><textarea id="liability-description" rows="2"></textarea></div>
+            <div class="actions"><button class="btn" onclick="addLiability()">Add Liability</button></div>
+            <div id="liability-result" class="status hidden" style="white-space:pre-wrap;word-break:break-word"></div>
+          </div>
+        </div>
+        <div class="grid" style="margin-top:20px">
+          <div class="card" style="grid-column: 1 / -1;">
+            <h2>Add Expense</h2>
+            <p>Track expenses against assets/liabilities and pay them through the distribution engine.</p>
+            <div class="form-row">
+              <div><label>Expense Type</label><select id="expense-type"><option value="maintenance">Maintenance</option><option value="legal">Legal</option><option value="tax">Tax</option><option value="distribution">Distribution</option><option value="interest">Interest</option><option value="fee">Fee</option><option value="other">Other</option></select></div>
+              <div><label>Amount USD</label><input type="number" id="expense-amount" value="0" step="0.01" /></div>
+              <div><label>Payee</label><input type="text" id="expense-payee" placeholder="Vendor / Beneficiary" /></div>
+              <div><label>Payer</label><input type="text" id="expense-payer" placeholder="Trust account" /></div>
+              <div><label>Linked Asset/Liability ID</label><input type="text" id="expense-asset-id" placeholder="AST-... / LIA-..." /></div>
+              <div><label>Receipt URL</label><input type="text" id="expense-receipt" placeholder="https://..." /></div>
+            </div>
+            <div><label>Description</label><textarea id="expense-description" rows="2"></textarea></div>
+            <div class="actions"><button class="btn" onclick="addExpense()">Add Expense</button></div>
+            <div id="expense-result" class="status hidden" style="white-space:pre-wrap;word-break:break-word"></div>
+          </div>
+        </div>
+        <div class="grid" style="margin-top:20px">
+          <div class="card" style="grid-column: 1 / -1;">
+            <h3>Totals</h3>
+            <div id="expense-totals" class="status">Loading…</div>
+          </div>
+        </div>
+        <div class="grid" style="margin-top:20px">
+          <div class="card" style="grid-column: 1 / -1;">
+            <h3>Assets</h3>
+            <div id="assets-list" class="table-wrap"><table id="assets-table"><thead><tr><th>Type</th><th>Category</th><th>Name</th><th>Identifier</th><th>Value</th><th>Status</th><th>Owner</th></tr></thead><tbody></tbody></table></div>
+          </div>
+        </div>
+        <div class="grid" style="margin-top:20px">
+          <div class="card" style="grid-column: 1 / -1;">
+            <h3>Liabilities</h3>
+            <div id="liabilities-list" class="table-wrap"><table id="liabilities-table"><thead><tr><th>Category</th><th>Name</th><th>Identifier</th><th>Amount</th><th>Status</th><th>Owner</th></tr></thead><tbody></tbody></table></div>
+          </div>
+        </div>
+        <div class="grid" style="margin-top:20px">
+          <div class="card" style="grid-column: 1 / -1;">
+            <h3>Expenses</h3>
+            <div id="expenses-list" class="table-wrap"><table id="expenses-table"><thead><tr><th>Type</th><th>Amount</th><th>Payee</th><th>Status</th><th>Asset/Liability</th><th>Actions</th></tr></thead><tbody></tbody></table></div>
+          </div>
+        </div>
+      </section>
+
+      <section id="finops-ai" class="section">
+        <div class="grid">
+          <div class="card" style="grid-column: 1 / -1;">
+            <h2>FinOps AI Agent</h2>
+            <p>Natural-language treasury operator. Every task requires approval from <b>Administration</b> and <b>Distribution</b> trustees before execution.</p>
+            <div class="form-row">
+              <textarea id="finops-prompt" rows="3" placeholder="e.g. Pay $10 USDC to 0x86167EcF041fFA95E5A4aEEFCB2632665Eb7FA16 from cash CA-OPERATING"></textarea>
+            </div>
+            <div class="form-row">
+              <input type="email" id="finops-requested-by" placeholder="requester email" value="deandreabarkley13@gmail.com" />
+              <button class="btn" onclick="submitFinOpsPrompt()">Submit Prompt</button>
+              <button class="btn" onclick="loadFinOpsTasks()">Refresh Tasks</button>
+            </div>
+            <div id="finops-prompt-result" class="status hidden"></div>
+            <div class="table-wrap" style="margin-top:16px;">
+              <table>
+                <thead><tr><th>Task</th><th>Intent</th><th>Status</th><th>Approvals</th><th>Actions</th></tr></thead>
+                <tbody id="finops-tasks-table"></tbody>
+              </table>
+            </div>
+          </div>
+          <div class="card">
+            <h2>Trustees</h2>
+            <p>Two-signature in-the-loop.</p>
+            <div id="finops-trustees" class="form-row" style="display:block;"></div>
+          </div>
+          <div class="card">
+            <h2>Approve Task</h2>
+            <div class="form-row">
+              <input type="text" id="finops-approve-task" placeholder="FINOPS-..." />
+              <select id="finops-approve-role" onchange="prefillFinOpsApprover()">
+                <option value="maker">Maker / Administration</option>
+                <option value="administration">Administration (legacy alias)</option>
+                <option value="checker">Checker / Distribution</option>
+                <option value="distribution">Distribution (legacy alias)</option>
+              </select>
+              <input type="email" id="finops-approve-email" placeholder="trustee email" />
+              <input type="text" id="finops-approve-signature" placeholder="signature / otp" />
+              <input type="text" id="finops-approve-name" placeholder="signer name" />
+              <button class="btn" onclick="approveFinOpsTask()">Approve</button>
+            </div>
+            <div id="finops-approve-result" class="status hidden"></div>
+          </div>
+        </div>
+      </section>
+
+      <section id="calendar" class="section">
+        <div class="grid">
+          <div class="card">
+            <h2>Calendar &amp; Schedule</h2>
+            <p>Schedule payments, distributions, reviews, and meetings linked to any module.</p>
+            <div class="form-row">
+              <input type="text" id="cal-title" placeholder="Event title" />
+              <input type="text" id="cal-desc" placeholder="Description" />
+              <input type="datetime-local" id="cal-start" />
+              <input type="datetime-local" id="cal-end" />
+              <select id="cal-type">
+                <option value="general">General</option>
+                <option value="payment">Payment</option>
+                <option value="distribution">Distribution</option>
+                <option value="disbursement">Disbursement</option>
+                <option value="swap">Swap</option>
+                <option value="meeting">Meeting</option>
+                <option value="deadline">Deadline</option>
+              </select>
+              <input type="text" id="cal-ref" placeholder="Reference ID (optional)" />
+            </div>
+            <div class="actions"><button class="btn" onclick="createCalendarEvent()">Add Event</button><button class="btn" onclick="loadCalendar()">Refresh</button></div>
+            <div id="cal-result" class="status hidden"></div>
+            <div class="table-wrap" style="margin-top:12px;"><table><thead><tr><th>Time</th><th>Title</th><th>Type</th><th>Ref</th></tr></thead><tbody id="cal-table"></tbody></table></div>
+          </div>
+        </div>
+      </section>
+
+      <section id="messaging" class="section">
+        <div class="grid">
+          <div class="card">
+            <h2>Messaging</h2>
+            <p>Secure trustee/beneficiary conversation tied to tasks and payments.</p>
+            <div class="form-row">
+              <input type="text" id="msg-thread-subject" placeholder="Subject" />
+              <input type="text" id="msg-participants" placeholder="Participants (comma-separated emails)" />
+              <input type="text" id="msg-ref" placeholder="Reference ID (optional)" />
+            </div>
+            <div class="actions"><button class="btn" onclick="createMessageThread()">New Thread</button></div>
+            <div id="msg-thread-result" class="status hidden"></div>
+            <div class="table-wrap" style="margin-top:12px;"><table><thead><tr><th>Thread</th><th>Subject</th><th>Participants</th><th>Updated</th></tr></thead><tbody id="msg-threads-table"></tbody></table></div>
+          </div>
+          <div class="card" id="msg-thread-card" style="display:none;">
+            <h2>Thread <span id="msg-thread-id"></span></h2>
+            <div id="msg-messages" style="max-height:260px; overflow:auto; margin-bottom:12px;"></div>
+            <div class="form-row"><textarea id="msg-body" rows="2" placeholder="Reply..."></textarea><button class="btn" onclick="sendMessage()">Send</button></div>
+            <div id="msg-result" class="status hidden"></div>
+          </div>
+        </div>
+      </section>
+
+      <section id="documents" class="section">
+        <div class="grid">
+          <div class="card">
+            <h2>Document Vault</h2>
+            <p>Create, tag, and cross-reference trust, bond, and payment documents.</p>
+            <div class="form-row">
+              <input type="text" id="doc-name" placeholder="Document name" />
+              <select id="doc-type">
+                <option value="payment_confirmation">Payment Confirmation</option>
+                <option value="distribution_notice">Distribution Notice</option>
+                <option value="tax_form">Tax Form</option>
+                <option value="trustee_report">Trustee Report</option>
+                <option value="compliance_report">Compliance Report</option>
+                <option value="other">Other</option>
+              </select>
+              <select id="doc-category">
+                <option value="financial">Financial</option>
+                <option value="legal">Legal</option>
+                <option value="tax">Tax</option>
+                <option value="compliance">Compliance</option>
+                <option value="operational">Operational</option>
+              </select>
+              <input type="text" id="doc-ref" placeholder="Reference ID (optional)" />
+              <textarea id="doc-content" rows="3" placeholder="Document content / notes"></textarea>
+            </div>
+            <div class="actions"><button class="btn" onclick="createDocument()">Create Document</button><button class="btn" onclick="loadDocuments()">Refresh</button></div>
+            <div id="doc-result" class="status hidden"></div>
+            <div class="table-wrap" style="margin-top:12px;"><table><thead><tr><th>Name</th><th>Type</th><th>Category</th><th>Created</th></tr></thead><tbody id="doc-table"></tbody></table></div>
+          </div>
+        </div>
+      </section>
+
+      <section id="wallet" class="section">
+        <div class="grid">
+          <div class="card">
+            <h2>Connected Wallet</h2>
+            <p>Connect MetaMask or enter an address to view balances and activity.</p>
+            <div class="form-row" style="align-items:center;">
+              <button id="connect-btn" class="btn" onclick="connectWallet()">Connect MetaMask</button>
+              <span id="wallet-address" class="status">Not connected</span>
+              <span id="network-name" class="status badge">—</span>
+            </div>
+            <div class="form-row">
+              <input type="text" id="watch-address" placeholder="0x... or Hedera EVM address" style="flex:1;" />
+              <select id="watch-chain" style="max-width:160px">
+                <option value="evm">Ethereum/Sepolia</option>
+                <option value="hedera">Hedera Mainnet</option>
+              </select>
+              <button class="btn" onclick="watchAddress()">Watch Address</button>
+            </div>
+            <div id="wallet-balance-card" class="hidden" style="margin-top:12px;">
+              <h3 id="balance-title">Balances</h3>
+              <div id="wallet-balances" class="grid" style="grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap:12px;"></div>
+            </div>
+            <div id="wallet-activity-card" class="hidden" style="margin-top:16px;">
+              <h3>Activity</h3>
+              <div class="table-wrap"><table><thead><tr><th>Type</th><th>ID/Hash</th><th>From/To</th><th>Amount</th><th>Time</th></tr></thead><tbody id="wallet-activity"></tbody></table></div>
+            </div>
+            <div id="wallet-error" class="status hidden"></div>
+          </div>
+        </div>
+      </section>
+    </div>
+
+    <footer>DLB Trust DeFi dApp • SAFE multisig • Viem/Wagmi • Enterprise production deployment</footer>
+  </div>
+
+  <div id="toast" class="toast"></div>
+
+  <script>
+    const API = '';
+    const CHAIN_NAMES = { 1: 'Ethereum', 11155111: 'Sepolia', 137: 'Polygon', 42161: 'Arbitrum', 8453: 'Base', 295: 'Hedera' };
+    let account = null;
+    let chainId = null;
+    let chainName = 'Ethereum';
+    let currentUser = null;
+    let userWallet = null;
+
+    function activeRole() {
+      if (!currentUser) return 'guest';
+      const r = String(currentUser.active_role || currentUser.role || 'beneficiary').toLowerCase();
+      return r;
+    }
+
+    function userRole() { return activeRole(); }
+
+    function isTrustee() { const r = activeRole(); return r === 'trustee_admin' || r === 'trustee_maker' || r === 'trustee_checker' || r === 'trustee'; }
+    function isAdmin() { return activeRole() === 'trustee_admin'; }
+    function isBeneficiary() { return activeRole() === 'beneficiary'; }
+
+    function hasRole(role) {
+      if (!currentUser) return false;
+      const roles = Array.isArray(currentUser.roles) ? currentUser.roles : [currentUser.role || 'beneficiary'];
+      return roles.includes(role);
+    }
+
+    function el(id) { return document.getElementById(id); }
+    function show(id, cls = 'hidden', add = false) { const e = el(id); if (e) e.classList[add ? 'add' : 'remove'](cls); }
+    function hide(id, cls = 'hidden') { const e = el(id); if (e) e.classList.add(cls); }
+
+    function showToast(message, isError = false) {
+      const t = el('toast');
+      t.textContent = message;
+      t.style.borderColor = isError ? 'var(--danger)' : 'var(--success)';
+      t.classList.add('show');
+      setTimeout(() => t.classList.remove('show'), 5000);
+    }
+
+    function token() { return localStorage.getItem('dlb-admin-token') || el('admin-token').value || 'dlb-admin-2026-trust'; }
+    function dappToken() { return localStorage.getItem('dlb-dapp-token') || ''; }
+    function saveToken() { localStorage.setItem('dlb-admin-token', el('admin-token').value); showToast('Token saved'); }
+
+    async function api(path, opts = {}) {
+      const headers = { 'Content-Type': 'application/json' };
+      if (!opts.noToken) {
+        const dt = dappToken();
+        if (dt) headers['Authorization'] = `Bearer ${dt}`;
+        headers['x-admin-token'] = token();
+      }
+      if (opts.headers) Object.assign(headers, opts.headers);
+      const res = await fetch(API + path, { ...opts, headers });
+      const text = await res.text();
+      let json; try { json = JSON.parse(text); } catch { json = { error: text }; }
+      if (!res.ok || !json.success) throw new Error(json.error || `HTTP ${res.status}`);
+      return json;
+    }
+
+    window.connectWallet = async function() {
+      if (!window.ethereum) return showToast('MetaMask not available', true);
+      try {
+        const [addr] = await window.ethereum.request({ method: 'eth_requestAccounts' });
+        account = addr;
+        userWallet = addr;
+        const cid = await window.ethereum.request({ method: 'eth_chainId' });
+        chainId = Number(cid);
+        chainName = CHAIN_NAMES[chainId] || `Chain ${chainId}`;
+        el('wallet-address').textContent = account.slice(0, 6) + '…' + account.slice(-4);
+        el('network-name').textContent = chainName;
+        el('connect-btn').textContent = 'Connected';
+        el('dash-wallet').textContent = `${account} on ${chainName}`;
+        if (currentUser && currentUser.email) {
+          await api('/api/dapp/users/link-wallet', { method: 'POST', body: JSON.stringify({ email: currentUser.email, walletAddress: account, provider: 'metamask', safeOwnerAddress: account }) }).catch(() => {});
+        }
+        window.ethereum.on('accountsChanged', (a) => { if (a[0]) { account = a[0]; el('wallet-address').textContent = account.slice(0,6)+'…'+account.slice(-4); loadWallet(); } });
+        window.ethereum.on('chainChanged', () => location.reload());
+        await loadWallet();
+      } catch (e) { showToast(e.message, true); }
+    };
+
+    function walletChainParam() {
+      return (chainId === 295) ? 'hedera' : 'evm';
+    }
+
+    window.watchAddress = async function() {
+      const addr = el('watch-address').value.trim();
+      const chain = el('watch-chain').value;
+      if (!addr) return showToast('Enter an address', true);
+      account = addr;
+      userWallet = addr;
+      if (chain === 'hedera') { chainId = 295; chainName = 'Hedera Mainnet'; }
+      else { chainId = (window.ethereum && window.ethereum.chainId) ? Number(window.ethereum.chainId) : 1; chainName = CHAIN_NAMES[chainId] || `Chain ${chainId}`; }
+      el('wallet-address').textContent = addr.slice(0, 6) + '…' + addr.slice(-4);
+      el('network-name').textContent = chainName;
+      el('dash-wallet').textContent = `${addr} on ${chainName}`;
+      await loadWallet();
+    };
+
+    async function loadWallet() {
+      if (!account) return;
+      try {
+        show('wallet-balance-card');
+        show('wallet-activity-card');
+        el('balance-title').textContent = `Balances for ${account.slice(0, 6)}…${account.slice(-4)}`;
+        el('wallet-error').classList.add('hidden');
+        const chain = walletChainParam();
+        const [balRes, actRes] = await Promise.all([
+          api(`/api/dapp/wallet/balances?chain=${encodeURIComponent(chain)}&address=${encodeURIComponent(account)}`),
+          api(`/api/dapp/wallet/activity?chain=${encodeURIComponent(chain)}&address=${encodeURIComponent(account)}`),
+        ]);
+        renderWalletBalances(balRes.data);
+        renderWalletActivity(actRes.data);
+      } catch (e) {
+        el('wallet-error').textContent = e.message;
+        el('wallet-error').classList.remove('hidden');
+      }
+    }
+
+    function renderWalletBalances(data) {
+      const container = el('wallet-balances');
+      container.innerHTML = '';
+      if (data.created === false && data.note) {
+        container.innerHTML = `<div class="status" style="grid-column:1/-1">${esc(data.note)}</div>`;
+      }
+      const addCard = (symbol, balance, address, isNative) => {
+        const div = document.createElement('div');
+        div.className = 'card';
+        div.style.padding = '12px';
+        div.innerHTML = `<div class="muted" style="font-size:12px;text-transform:uppercase">${esc(symbol)}${address ? ` <span class="muted" style="font-size:10px">${esc(address.slice(0,8))}…</span>` : ''}</div><div style="font-size:20px;font-weight:700;margin-top:4px">${Number(balance || 0).toLocaleString(undefined, { maximumFractionDigits: 6 })}</div><div class="muted" style="font-size:11px">${isNative ? 'Native' : 'ERC-20 / HTS'}</div>`;
+        container.appendChild(div);
+      };
+      if (data.native) addCard(data.native.symbol, data.native.balance, null, true);
+      if (data.usdc) addCard(data.usdc.symbol, data.usdc.balance, data.usdc.tokenAddress, false);
+      if (data.dlbusd) addCard('DLBUSD', data.dlbusd.balance, data.dlbusd.tokenAddress, false);
+      if (data.tokens && data.tokens.length) {
+        data.tokens.forEach(t => addCard(t.token_id, t.balance, t.token_id, false));
+      }
+      if (!container.children.length) container.innerHTML = '<div class="status">No token balances found</div>';
+    }
+
+    function renderWalletActivity(data) {
+      const tbody = el('wallet-activity');
+      tbody.innerHTML = '';
+      if (!data.items || !data.items.length) {
+        tbody.innerHTML = '<tr><td colspan="5" class="status">No activity found</td></tr>';
+        return;
+      }
+      for (const it of data.items.slice(0, 50)) {
+        const idHash = esc(it.hash || it.tx_hash || it.transaction_id || it.id || '—');
+        const short = idHash.length > 20 ? idHash.slice(0,10)+'…'+idHash.slice(-8) : idHash;
+        const link = (it.hash || it.tx_hash) ? `https://etherscan.io/tx/${esc(it.hash || it.tx_hash)}` : (it.transaction_id ? `https://hashscan.io/mainnet/transaction/${esc(it.transaction_id)}` : null);
+        const amount = it.value !== undefined ? esc(String(it.value)) : (it.amount !== undefined ? esc(String(it.amount)) : (it.total_amount !== undefined ? esc(String(it.total_amount)) : '—'));
+        const peer = it.from ? `${esc(it.from.slice(0,8))}…${esc(it.from.slice(-6))} → ` : '';
+        const to = it.to ? `${esc(it.to.slice(0,8))}…${esc(it.to.slice(-6))}` : (it.destination ? `${esc(it.destination.slice(0,8))}…${esc(it.destination.slice(-6))}` : '—');
+        const time = it.created_at ? new Date(it.created_at).toLocaleString() : (it.consensus_timestamp ? new Date(Number(it.consensus_timestamp.split('.')[0])*1000).toLocaleString() : '—');
+        const type = esc(it.type || 'activity');
+        const row = document.createElement('tr');
+        row.innerHTML = `<td>${type}</td><td>${link ? `<a href="${link}" target="_blank" style="color:var(--primary)">${short}</a>` : short}</td><td>${peer}${to}</td><td>${amount}</td><td>${time}</td>`;
+        tbody.appendChild(row);
+      }
+    }
+
+    window.showSection = function(name) {
+      document.querySelectorAll('.section').forEach(s => s.classList.remove('active'));
+      el(name).classList.add('active');
+      document.querySelectorAll('#nav button').forEach(b => b.classList.toggle('active', b.dataset.section === name));
+      if (name === 'safes' || name === 'payouts' || name === 'distribute' || name === 'p2p') populateSafeSelects();
+      if (name === 'payouts') listPayouts();
+      if (name === 'safes') listSafes();
+      if (name === 'dashboard') loadDashboard();
+      if (name === 'source-of-funds') loadSourceBalances();
+      if (name === 'core-modules') loadCoreModules();
+      if (name === 'p2p') loadUsers();
+      if (name === 'finops-ai') { loadFinOpsTasks(); loadFinOpsTrustees(); }
+      if (name === 'calendar') loadCalendar();
+      if (name === 'messaging') loadMessageThreads();
+      if (name === 'documents') loadDocuments();
+      if (name === 'wallet') { if (account) loadWallet(); }
+      if (name === 'sovereign-trust') { loadSovereignTrust(); loadAAReadiness(); loadAAPaymasterBalance(); }
+      if (name === 'asset-debt') loadAssetDebtProofs();
+      if (name === 'distribution-requests') { loadDistributionRequests(); }
+      if (name === 'automation') { loadAutomationTemplates(); loadAutomationRuns(); }
+      if (name === 'assets-expenses') { loadExpenseTotals(); loadAssets(); loadLiabilities(); loadExpenses(); }
+    };
+
+    async function loadUsers() {
+      try {
+        const res = await api('/api/dapp/users');
+        const sel = el('p2p-recipient-user');
+        const v = sel ? sel.value : '';
+        const options = '<option value="">Manual address</option>' + res.data.map(u => `<option value="${esc(u.email)}" data-address="${esc(u.wallet_address || '')}">${esc(u.name || u.email)}</option>`).join('');
+        if (sel) { sel.innerHTML = options; sel.value = v; sel.onchange = () => { const opt = sel.options[sel.selectedIndex]; const addr = opt.getAttribute('data-address'); if (addr) el('p2p-to').value = addr; }; }
+      } catch (e) {}
+    }
+
+    window.sendOtp = async function() {
+      try {
+        const email = el('login-email').value;
+        if (!email) throw new Error('Enter your email');
+        const res = await api('/api/dapp/auth/send-code', { method: 'POST', body: JSON.stringify({ email }), noToken: true });
+        if (res.data.sent) {
+          el('user-auth-status').textContent = `Check your email (${res.data.provider || 'provider'}) for the 6-digit code. Code sent to ${email}.`;
+        } else if (res.data.code) {
+          el('user-auth-status').innerHTML = `Email provider not configured. Your one-time code is: <b>${esc(res.data.code)}</b>. Set SENDGRID_API_KEY as a secret to enable email delivery.`;
+        } else {
+          el('user-auth-status').textContent = 'Unable to deliver code. Contact the administrator to configure email/SMS delivery.';
+        }
+        el('user-auth-status').className = 'status success';
+      } catch (e) { el('user-auth-status').textContent = e.message; el('user-auth-status').className = 'status error'; }
+    };
+
+    window.verifyOtp = async function() {
+      try {
+        const email = el('login-email').value;
+        const code = el('login-code').value;
+        if (!email || !code) throw new Error('Enter email and code');
+        const res = await api('/api/dapp/auth/verify', { method: 'POST', body: JSON.stringify({ email, code }), noToken: true });
+        currentUser = res.data;
+        if (currentUser.token) localStorage.setItem('dlb-dapp-token', currentUser.token);
+        localStorage.setItem('dlb-user', JSON.stringify(currentUser));
+        el('login-code').value = '';
+        el('user-auth-status').textContent = `Logged in as ${currentUser.name || currentUser.email} (${currentUser.active_role || currentUser.role})`;
+        el('user-auth-status').className = 'status success';
+        applyRoleUI();
+        if (window.ethereum && account) connectWallet();
+      } catch (e) { el('user-auth-status').textContent = e.message; el('user-auth-status').className = 'status error'; }
+    };
+
+    window.logout = function() {
+      localStorage.removeItem('dlb-dapp-token');
+      localStorage.removeItem('dlb-user');
+      currentUser = null;
+      el('login-code').value = '';
+      el('user-auth-status').textContent = 'Signed out';
+      el('user-auth-status').className = 'status success';
+      applyRoleUI();
+      showSection('dashboard');
+    };
+
+    window.switchActiveRole = async function() {
+      if (!currentUser) return;
+      const activeRole = el('active-role-select').value;
+      try {
+        const res = await api('/api/dapp/auth/switch-role', { method: 'POST', body: JSON.stringify({ activeRole }) });
+        currentUser = res.data;
+        currentUser.token = localStorage.getItem('dlb-dapp-token');
+        localStorage.setItem('dlb-user', JSON.stringify(currentUser));
+        applyRoleUI();
+        showToast(`Switched to ${activeRole}`);
+      } catch (e) { showToast(e.message, true); }
+    };
+
+    async function loadPortalUsers() {
+      if (!isAdmin()) return;
+      try {
+        const res = await api('/api/dapp/users');
+        const rows = res.data.map(u => `<tr><td>${esc(u.name || '')}</td><td>${esc(u.email || '')}</td><td>${esc((u.roles || []).join(', '))}</td><td>${u.is_active === false ? 'Disabled' : 'Active'}</td></tr>`).join('');
+        el('portal-users-list').innerHTML = '<table class="data-table"><thead><tr><th>Name</th><th>Email</th><th>Roles</th><th>Status</th></tr></thead><tbody>' + (rows || '<tr><td colspan="4">No users</td></tr>') + '</tbody></table>';
+      } catch (e) { el('portal-users-list').textContent = e.message; }
+    }
+
+    window.createPortalUser = async function() {
+      try {
+        const email = el('new-user-email').value;
+        const name = el('new-user-name').value;
+        const role = el('new-user-role').value;
+        if (!email) throw new Error('Email required');
+        await api('/api/dapp/users', { method: 'POST', body: JSON.stringify({ email, name, roles: [role, 'beneficiary'], activeRole: role }) });
+        showToast('User added');
+        loadPortalUsers();
+      } catch (e) { showToast(e.message, true); }
+    };
+
+    function roleAllowed(allowed, role) {
+      if (allowed.includes('all')) return true;
+      if (allowed.includes(role)) return true;
+      if (allowed.includes('trustee') && (role === 'trustee_admin' || role === 'trustee_maker' || role === 'trustee_checker' || role === 'trustee')) return true;
+      if (allowed.includes('admin') && role === 'trustee_admin') return true;
+      return false;
+    }
+
+    function applyRoleUI() {
+      const role = userRole();
+      const badge = el('role-badge');
+      if (badge) {
+        const label = role === 'trustee_admin' ? 'Trustee Admin' : (role === 'trustee_maker' ? 'Trustee Maker' : (role === 'trustee_checker' ? 'Trustee Checker' : (role === 'beneficiary' ? 'Beneficiary' : 'Guest')));
+        badge.textContent = label;
+        badge.className = `badge ${role.startsWith('trustee') ? 'trustee' : (role === 'beneficiary' ? 'beneficiary' : '')}`;
+        badge.classList.remove('hidden');
+      }
+      // Show/hide login vs logged-in controls
+      const loggedIn = !!currentUser;
+      if (el('user-auth-state')) el('user-auth-state').classList.toggle('hidden', loggedIn);
+      if (el('user-auth-actions')) el('user-auth-actions').classList.toggle('hidden', !loggedIn);
+      // Populate role switcher
+      const roleSel = el('active-role-select');
+      if (roleSel && currentUser) {
+        const roles = Array.isArray(currentUser.roles) ? currentUser.roles : [currentUser.role || 'beneficiary'];
+        roleSel.innerHTML = roles.map(r => `<option value="${esc(r)}" ${r === role ? 'selected' : ''}>${esc(r)}</option>`).join('');
+      }
+      // Portal users for admin
+      const puc = el('portal-users-card');
+      if (puc) puc.classList.toggle('hidden', !isAdmin());
+      if (isAdmin()) loadPortalUsers();
+
+      document.querySelectorAll('#nav button[data-roles]').forEach(btn => {
+        const allowed = (btn.getAttribute('data-roles') || 'all').split(',').map(s => s.trim());
+        btn.style.display = roleAllowed(allowed, role) ? '' : 'none';
+      });
+      document.querySelectorAll('[data-roles]').forEach(e => {
+        if (e.tagName === 'BUTTON' && e.id && e.id.startsWith('nav')) return;
+        const allowed = (e.getAttribute('data-roles') || 'all').split(',').map(s => s.trim());
+        e.classList.toggle('hidden', !roleAllowed(allowed, role));
+      });
+      if (role === 'beneficiary' || role === 'guest') {
+        const active = document.querySelector('.section.active');
+        if (active && active.id && !sectionAllowedForRole(active.id, role)) showSection('dashboard');
+      }
+    }
+
+    function sectionAllowedForRole(section, role) {
+      const btn = document.querySelector(`#nav button[data-section="${section}"]`);
+      if (!btn) return true;
+      const allowed = (btn.getAttribute('data-roles') || 'all').split(',').map(s => s.trim());
+      return roleAllowed(allowed, role);
+    }
+
+    function restoreUser() {
+      try { currentUser = JSON.parse(localStorage.getItem('dlb-user') || 'null'); } catch {};
+      if (currentUser && currentUser.email) {
+        el('login-email').value = currentUser.email;
+        el('user-auth-status').textContent = `Logged in as ${currentUser.name || currentUser.email} (${currentUser.active_role || currentUser.role})`;
+        el('user-auth-status').className = 'status success';
+      }
+      applyRoleUI();
+    }
+
+    async function loadDashboard() {
+      try {
+        const safes = await api('/api/dapp/safes');
+        el('dash-safes').textContent = `${safes.data.length} Safe wallet(s)`;
+      } catch (e) { el('dash-safes').textContent = '—'; }
+      try {
+        const payouts = await api('/api/dapp/payouts');
+        const pending = payouts.data.filter(p => p.status === 'pending').length;
+        el('dash-pending').textContent = `${pending} pending approval(s)`;
+      } catch (e) { el('dash-pending').textContent = '—'; }
+    }
+
+    async function loadSourceBalances() {
+      try {
+        const res = await api('/api/dapp/source-of-funds');
+        const tb = el('sof-table').querySelector('tbody'); tb.innerHTML = '';
+        res.data.forEach(b => {
+          const tr = document.createElement('tr');
+          tr.innerHTML = `<td>${esc(b.type)}</td><td>${esc(b.name)}</td><td class="mono">${esc(b.id)}</td><td>${Number(b.balance_cents / 100).toFixed(2)}</td><td>${esc(b.currency)}</td>`;
+          tb.appendChild(tr);
+        });
+      } catch (e) { showToast('Source of funds error: ' + e.message, true); }
+    }
+
+    async function loadCoreModules() {
+      try {
+        const res = await api('/api/dapp/modules');
+        const tb = el('core-modules-table').querySelector('tbody'); tb.innerHTML = '';
+        if (res.data && res.data.groups) {
+          for (const g of res.data.groups) {
+            for (const a of g.accounts || []) {
+              const tr = document.createElement('tr');
+              tr.innerHTML = `<td><span class="tag">${esc(g.label)}</span></td><td>${esc(a.name)}</td><td class="mono">${esc(a.id)}</td><td>${Number(a.balance_cents / 100).toFixed(2)}</td><td>${esc(a.currency)}</td>`;
+              tb.appendChild(tr);
+            }
+          }
+        }
+      } catch (e) { showToast('Core modules error: ' + e.message, true); }
+    }
+
+    window.internalModuleTransfer = async function() {
+      try {
+        const res = await api('/api/dapp/modules/transfer', {
+          method: 'POST',
+          body: JSON.stringify({
+            fromType: el('int-from-type').value,
+            fromAccountId: el('int-from-account').value,
+            toType: el('int-to-type').value,
+            toAccountId: el('int-to-account').value,
+            amount: el('int-amount').value,
+            memo: el('int-memo').value,
+          })
+        });
+        el('int-result').textContent = 'Transfer ' + res.data.transferId + ' completed.';
+        el('int-result').className = 'status success';
+        loadCoreModules(); loadSourceBalances();
+      } catch (e) { el('int-result').textContent = e.message; el('int-result').className = 'status error'; }
+    };
+
+    window.fundExternalRail = async function() {
+      try {
+        let parsedOptions = {};
+        const rawOptions = el('rail-options').value.trim();
+        if (rawOptions) {
+          try { parsedOptions = JSON.parse(rawOptions); } catch (e) { throw new Error('Rail options must be valid JSON: ' + e.message); }
+        }
+        const railOptions = {
+          cashtag: el('rail-cashtag').value || parsedOptions.cashtag,
+          recipientTag: el('rail-cashtag').value || parsedOptions.recipientTag,
+          direction: el('rail-direction').value || parsedOptions.direction,
+          recipient: el('rail-recipient').value || parsedOptions.recipient,
+          recipientAddress: el('rail-recipient').value || parsedOptions.recipientAddress,
+          walletAddress: el('rail-recipient').value || parsedOptions.walletAddress,
+          targetAsset: el('rail-target-asset').value || parsedOptions.targetAsset,
+          asset: el('rail-target-asset').value || parsedOptions.asset,
+          safeId: el('rail-safe-id').value || parsedOptions.safeId,
+          ...parsedOptions,
+        };
+        const res = await api('/api/dapp/modules/fund-rail', {
+          method: 'POST',
+          body: JSON.stringify({
+            sourceType: el('rail-source-type').value,
+            sourceAccountId: el('rail-source-account').value,
+            rail: el('rail-type').value,
+            amount: el('rail-amount').value,
+            memo: railOptions.memo || `Fund ${el('rail-type').value} from ${el('rail-source-type').value}`,
+            railOptions,
+          })
+        });
+        const d = res.data;
+        let html = `<b>${esc(d.rail)}</b> funded from ${esc(d.sourceType)}:${esc(d.sourceAccountId)} for $${Number(d.amount).toFixed(2)}<br>ID: ${esc(d.fundingId)}`;
+        const instr = d.instrument || {};
+        if (instr.qrDataUrl || instr.cashAppQrDataUrl || instr.operatorWalletQrDataUrl) {
+          const src = instr.qrDataUrl || instr.cashAppQrDataUrl || instr.operatorWalletQrDataUrl;
+          html += `<br><img src="${esc(src)}" style="max-width:220px;margin-top:8px" />`;
+        }
+        if (instr.shareableUrl || instr.cashAppDeepLink || instr.cashMeDeepLink || instr.addToWalletLink) {
+          const link = instr.shareableUrl || instr.cashAppDeepLink || instr.cashMeDeepLink || instr.addToWalletLink;
+          html += `<br><a href="${esc(link)}" target="_blank">Open payment link / pass</a>`;
+        }
+        if (instr.mintTxHash || instr.swap) {
+          html += `<br>On-chain: ${JSON.stringify(instr.mintTxHash || instr.swap, null, 2).slice(0, 400)}`;
+        }
+        if (instr.note || instr.instructions) {
+          html += `<br><em>${esc(instr.note || instr.instructions)}</em>`;
+        }
+        el('rail-result').innerHTML = html;
+        el('rail-result').className = 'status success';
+        loadCoreModules(); loadSourceBalances();
+      } catch (e) { el('rail-result').textContent = e.message; el('rail-result').className = 'status error'; }
+    };
+
+    window.depositFromSource = async function() {
+      try {
+        const res = await api('/api/dapp/deposits/from-source', {
+          method: 'POST',
+          body: JSON.stringify({
+            sourceType: el('sof-deposit-type').value,
+            sourceAccountId: el('sof-deposit-account').value,
+            safeId: el('sof-deposit-safe').value || null,
+            amount: el('sof-deposit-amount').value,
+            asset: 'USDC',
+          })
+        });
+        el('sof-deposit-result').textContent = 'Deposit recorded: ' + res.data.id;
+        el('sof-deposit-result').className = 'status success';
+        loadSourceBalances();
+      } catch (e) { el('sof-deposit-result').textContent = e.message; el('sof-deposit-result').className = 'status error'; }
+    };
+
+    window.quoteCoinbaseSpot = async function() {
+      try {
+        const res = await api(`/api/dapp/coinbase-spot/quote?amount=${encodeURIComponent(el('cb-fund-amount').value)}&targetAsset=${encodeURIComponent(el('cb-fund-asset').value)}`);
+        const d = res.data;
+        if (d.needsDeposit) {
+          el('cb-fund-result').textContent = `Preview: ${d.quote_size || d.order_total || ''} USD → ~${d.base_size || ''} ${el('cb-fund-asset').value}. Status: needs Coinbase USD deposit (${d.errors.join(', ')})`;
+          el('cb-fund-result').className = 'status warning';
+        } else {
+          el('cb-fund-result').textContent = `Quote: ${d.quote_size || d.order_total || ''} USD → ~${d.base_size || ''} ${el('cb-fund-asset').value} on ${d.productId}`;
+          el('cb-fund-result').className = 'status success';
+        }
+      } catch (e) { el('cb-fund-result').textContent = e.message; el('cb-fund-result').className = 'status error'; }
+    };
+
+    window.fundCoinbaseSpot = async function() {
+      try {
+        const res = await api('/api/dapp/coinbase-spot/fund', {
+          method: 'POST',
+          body: JSON.stringify({
+            sourceType: el('cb-fund-type').value,
+            sourceAccountId: el('cb-fund-account').value,
+            amount: el('cb-fund-amount').value,
+            targetAsset: el('cb-fund-asset').value,
+            targetNetwork: el('cb-fund-network').value,
+            targetAddress: el('cb-fund-address').value || null,
+          })
+        });
+        const d = res.data;
+        const tx = d.tx_hash || d.withdrawal_id || d.id || d.order_id || '';
+        if (d.status === 'needs_deposit') {
+          el('cb-fund-result').textContent = `Reserved $${d.fiat_amount} from source; Coinbase account needs USD to complete the buy (${d.error || ''}). Order: ${d.id}`;
+          el('cb-fund-result').className = 'status warning';
+        } else {
+          el('cb-fund-result').textContent = `Status: ${d.status} | Order: ${d.order_id || d.id} | Withdrawal: ${tx}`;
+          el('cb-fund-result').className = 'status ' + (d.status === 'completed' ? 'success' : 'warning');
+        }
+        loadSourceBalances();
+      } catch (e) { el('cb-fund-result').textContent = e.message; el('cb-fund-result').className = 'status error'; }
+    };
+
+    window.loadCoinbasePaymentMethods = async function() {
+      try {
+        const res = await api('/api/dapp/coinbase-treasury/payment-methods');
+        el('cbt-payment-result').textContent = 'Payment methods: ' + JSON.stringify(res.data, null, 2);
+        el('cbt-payment-result').className = 'status success';
+      } catch (e) { el('cbt-payment-result').textContent = e.message; el('cbt-payment-result').className = 'status error'; }
+    };
+
+    window.loadCoinbaseAccounts = async function() {
+      try {
+        const res = await api('/api/dapp/coinbase-treasury/accounts');
+        el('cbt-payment-result').textContent = 'Coinbase accounts: ' + JSON.stringify(res.data, null, 2);
+        el('cbt-payment-result').className = 'status success';
+      } catch (e) { el('cbt-payment-result').textContent = e.message; el('cbt-payment-result').className = 'status error'; }
+    };
+
+    window.stageCoinbaseTreasury = async function() {
+      try {
+        const res = await api('/api/dapp/coinbase-treasury/fund', {
+          method: 'POST',
+          body: JSON.stringify({
+            sourceType: el('cbt-fund-type').value,
+            sourceAccountId: el('cbt-fund-account').value,
+            amount: el('cbt-fund-amount').value,
+            targetAsset: el('cbt-fund-asset').value,
+            targetNetwork: el('cbt-fund-network').value,
+            targetAddress: el('cbt-fund-address').value || null,
+            coinbasePaymentMethodId: el('cbt-fund-pm').value || null,
+          })
+        });
+        const d = res.data;
+        const t = d.transfer || d;
+        el('cbt-transfer-id').value = t.id || '';
+        if (d.status === 'needs_deposit') {
+          el('cbt-fund-result').textContent = `Staged ${t.id}: reserved $${t.amount_cents / 100} from ${t.source_type}:${t.source_account_id}. ${d.instructions.message}`;
+          el('cbt-fund-result').className = 'status warning';
+        } else {
+          el('cbt-fund-result').textContent = `Completed ${t.id}: status ${t.status} | tx ${t.tx_hash || ''}`;
+          el('cbt-fund-result').className = 'status ' + (t.status === 'completed' ? 'success' : 'warning');
+        }
+        loadSourceBalances();
+      } catch (e) { el('cbt-fund-result').textContent = e.message; el('cbt-fund-result').className = 'status error'; }
+    };
+
+    window.executeCoinbaseTreasury = async function() {
+      try {
+        const id = el('cbt-transfer-id').value;
+        if (!id) throw new Error('Enter a transfer ID');
+        const res = await api(`/api/dapp/coinbase-treasury/transfers/${encodeURIComponent(id)}/execute`, { method: 'POST' });
+        const d = res.data;
+        const t = d.transfer || d;
+        el('cbt-fund-result').textContent = `Executed ${t.id}: status ${t.status} | tx ${t.tx_hash || ''} | ledger entries ${(t.ledger_entries || []).length}`;
+        el('cbt-fund-result').className = 'status ' + (t.status === 'completed' ? 'success' : 'warning');
+        loadSourceBalances();
+      } catch (e) { el('cbt-fund-result').textContent = e.message; el('cbt-fund-result').className = 'status error'; }
+    };
+
+    window.listCoinbaseTreasury = async function() {
+      try {
+        const res = await api('/api/dapp/coinbase-treasury/transfers?limit=10');
+        const list = res.data || [];
+        el('cbt-list-result').textContent = JSON.stringify(list, null, 2);
+        el('cbt-list-result').className = 'status success';
+      } catch (e) { el('cbt-list-result').textContent = e.message; el('cbt-list-result').className = 'status error'; }
+    };
+
+    window.fundSafeFromSourceDex = async function() {
+      try {
+        const seed = el('dex-fund-seed').value;
+        const res = await api('/api/dapp/fund-from-source', {
+          method: 'POST',
+          body: JSON.stringify({
+            sourceType: el('dex-fund-type').value,
+            sourceAccountId: el('dex-fund-account').value,
+            amount: el('dex-fund-amount').value,
+            targetAsset: el('dex-fund-asset').value,
+            safeId: el('dex-fund-safe').value || null,
+            createPoolIfMissing: !!seed,
+            poolSeedAmount: seed || undefined,
+          })
+        });
+        const d = res.data;
+        const tx = d.swap && d.swap.txHash ? d.swap.txHash : (d.token && d.token.mintTxHash ? d.token.mintTxHash : d.operationId);
+        el('dex-fund-result').textContent = `Status: ${d.status} | Operation: ${d.operationId} | Tx/Pool: ${tx}`;
+        el('dex-fund-result').className = 'status ' + (d.status === 'swapped' ? 'success' : (d.status === 'needs_pool' ? 'warning' : 'success'));
+        loadSourceBalances();
+      } catch (e) { el('dex-fund-result').textContent = e.message; el('dex-fund-result').className = 'status error'; }
+    };
+
+    async function listSafes() {
+      try {
+        const res = await api('/api/dapp/safes');
+        const tb = el('safes-table').querySelector('tbody'); tb.innerHTML = '';
+        res.data.forEach(s => {
+          const tr = document.createElement('tr');
+          tr.innerHTML = `<td>${esc(s.label)}</td><td class="mono">${esc(s.safe_address)}</td><td>${s.threshold}</td><td><span class="tag ${s.status}">${s.status}</span></td>`;
+          tb.appendChild(tr);
+        });
+      } catch (e) { showToast('Safes error: ' + e.message, true); }
+    }
+
+    function populateSafeSelects() {
+      api('/api/dapp/safes').then(res => {
+        ['payout-safe','dist-safe','p2p-safe'].forEach(id => {
+          const sel = el(id); if (!sel) return;
+          const v = sel.value;
+          sel.innerHTML = '<option value="">Select Safe</option>' + res.data.map(s => `<option value="${esc(s.id)}">${esc(s.label)} (${s.safe_address.slice(0,6)}…)</option>`).join('');
+          sel.value = v;
+        });
+      }).catch(() => {});
+    }
+
+    window.createSafe = async function() {
+      try {
+        const owners = [el('safe-owner').value.trim()];
+        const res = await api('/api/dapp/safes', {
+          method: 'POST',
+          body: JSON.stringify({ label: el('safe-label').value, owners, threshold: Number(el('safe-threshold').value), deployNow: false })
+        });
+        const s = res.data;
+        el('safe-result').textContent = `Safe created: ${s.id} → ${s.safe_address} (status: ${s.status}). Fund & deploy before payouts.`;
+        el('safe-result').className = 'status success';
+        listSafes(); populateSafeSelects();
+      } catch (e) { el('safe-result').textContent = e.message; el('safe-result').className = 'status error'; }
+    };
+
+    window.recordDeposit = async function() {
+      try {
+        const res = await api('/api/dapp/deposits', {
+          method: 'POST',
+          body: JSON.stringify({ safeId: el('deposit-safe').value, asset: el('deposit-asset').value, amount: el('deposit-amount').value, fromAddress: el('deposit-from').value, txHash: el('deposit-tx').value, status: 'confirmed' })
+        });
+        el('deposit-result').textContent = 'Deposit recorded: ' + res.data.id;
+        el('deposit-result').className = 'status success';
+      } catch (e) { el('deposit-result').textContent = e.message; el('deposit-result').className = 'status error'; }
+    };
+
+    window.createPayout = async function() {
+      try {
+        const safeId = el('payout-safe').value;
+        if (!safeId) throw new Error('Select a Safe');
+        if (!account) await connectWallet();
+        const body = { safeId, destination: el('payout-to').value, description: el('payout-desc').value };
+        const amountUsd = el('payout-amount-usd').value;
+        if (amountUsd) body.amountUsd = amountUsd;
+        const sourceType = el('payout-source-type').value;
+        if (sourceType) { body.sourceType = sourceType; body.sourceAccountId = el('payout-source-account').value; }
+        body.value = el('payout-value').value || undefined;
+        body.token = el('payout-token').value || undefined;
+        body.tokenAmount = el('payout-token-amount').value || undefined;
+        const res = await api('/api/dapp/payouts', { method: 'POST', body: JSON.stringify(body) });
+        const p = res.data;
+        el('payout-create-result').innerHTML = `Payout proposed: <b>${p.id}</b>. SafeTxHash: <span class="mono">${p.safe_tx_hash}</span> Sign this hash to approve.`;
+        el('payout-create-result').className = 'status success';
+        listPayouts();
+      } catch (e) { el('payout-create-result').textContent = e.message; el('payout-create-result').className = 'status error'; }
+    };
+
+    async function listPayouts() {
+      try {
+        const res = await api('/api/dapp/payouts');
+        const tb = el('payouts-table').querySelector('tbody'); tb.innerHTML = '';
+        res.data.forEach(p => {
+          const tr = document.createElement('tr');
+          tr.innerHTML = `<td class="mono">${p.id}</td><td class="mono">${esc(p.destination)}</td><td class="mono">${esc(p.value || p.token_amount || '0')}</td><td><span class="tag ${p.status}">${p.status}</span></td><td>${p.status === 'pending' ? `<button class="btn btn-sm" onclick="approvePayout('${p.id}', '${p.safe_tx_hash}')">Approve</button>` : '—'}</td>`;
+          tb.appendChild(tr);
+        });
+      } catch (e) { showToast('Payouts error: ' + e.message, true); }
+    }
+
+    window.approvePayout = async function(payoutId, safeTxHash) {
+      try {
+        if (!window.ethereum) return showToast('MetaMask not available', true);
+        if (!account) await connectWallet();
+        const signature = await window.ethereum.request({ method: 'eth_sign', params: [account, safeTxHash] });
+        const res = await api(`/api/dapp/payouts/${payoutId}/approve`, { method: 'POST', body: JSON.stringify({ signature, signerAddress: account }) });
+        showToast(`Payout ${res.data.status}: ${res.data.txHash || ''}`);
+        listPayouts();
+      } catch (e) { showToast('Approval error: ' + e.message, true); }
+    };
+
+    window.createDistribution = async function() {
+      try {
+        const safeId = el('dist-safe').value;
+        if (!safeId) throw new Error('Select a Safe');
+        const beneficiaries = JSON.parse(el('dist-beneficiaries').value || '[]');
+        const body = { safeId, name: el('dist-name').value, asset: 'USDC', beneficiaries };
+        const sourceType = el('dist-source-type').value;
+        if (sourceType) { body.sourceType = sourceType; body.sourceAccountId = el('dist-source-account').value; }
+        const res = await api('/api/dapp/distributions', { method: 'POST', body: JSON.stringify(body) });
+        el('dist-result').textContent = 'Distribution created: ' + res.data.id;
+        el('dist-result').className = 'status success';
+      } catch (e) { el('dist-result').textContent = e.message; el('dist-result').className = 'status error'; }
+    };
+
+    window.createP2p = async function() {
+      try {
+        const safeId = el('p2p-safe').value;
+        if (!safeId) throw new Error('Select a Safe');
+        const body = { safeId, destination: el('p2p-to').value, description: el('p2p-desc').value };
+        const amountUsd = el('p2p-amount-usd').value;
+        if (amountUsd) body.amountUsd = amountUsd;
+        const sourceType = el('p2p-source-type').value;
+        if (sourceType) { body.sourceType = sourceType; body.sourceAccountId = el('p2p-source-account').value; }
+        const sel = el('p2p-recipient-user');
+        if (sel && sel.value && currentUser) body.metadata = { recipientEmail: sel.value, senderEmail: currentUser.email };
+        body.value = el('p2p-value') ? el('p2p-value').value : '0';
+        const res = await api('/api/dapp/p2p', { method: 'POST', body: JSON.stringify(body) });
+        el('p2p-result').textContent = 'P2P payment proposed: ' + res.data.id;
+        el('p2p-result').className = 'status success';
+      } catch (e) { el('p2p-result').textContent = e.message; el('p2p-result').className = 'status error'; }
+    };
+
+    window.saveWhiteLabel = async function() {
+      try {
+        const res = await api('/api/dapp/white-label', {
+          method: 'POST',
+          body: JSON.stringify({ name: el('wl-name').value, slug: el('wl-slug').value, primaryColor: el('wl-primary').value, logoUrl: el('wl-logo').value, contactEmail: el('wl-email').value })
+        });
+        el('wl-result').textContent = 'White label saved: ' + res.data.id;
+        el('wl-result').className = 'status success';
+      } catch (e) { el('wl-result').textContent = e.message; el('wl-result').className = 'status error'; }
+    };
+
+    window.generateGoogleWalletPass = async function() {
+      try {
+        const res = await api('/api/dapp/payment-rails/google/pass', { method: 'POST', body: JSON.stringify({ email: el('gw-email').value, walletAddress: el('gw-address').value }) });
+        el('gw-result').innerHTML = `<a href="${res.data.addToWalletLink}" target="_blank" class="btn btn-sm">Add to Google Wallet</a><br/><span class="mono">${res.data.objectId}</span>`;
+        el('gw-result').className = 'status success';
+      } catch (e) { el('gw-result').textContent = e.message; el('gw-result').className = 'status error'; }
+    };
+
+    window.requestCashAppPayment = async function() {
+      try {
+        const res = await api('/api/dapp/payment-rails/cashapp/request', { method: 'POST', body: JSON.stringify({ amountUsd: el('ca-amount').value, recipientTag: el('ca-tag').value, memo: el('ca-memo').value, direction: el('ca-direction').value }) });
+        const d = res.data;
+        const qrImg = d.qrDataUrl ? `<br/><img src="${esc(d.qrDataUrl)}" alt="Cash App QR" style="max-width:220px;margin-top:10px;"/>` : '';
+        const altLink = d.cashMeDeepLink ? `<br/>Short link: <a href="${esc(d.cashMeDeepLink)}" target="_blank">${esc(d.cashMeDeepLink)}</a>` : '';
+        const title = d.direction === 'push' ? 'Push-to-Cash-App QR' : 'Request-payment QR';
+        el('ca-result').innerHTML = `<b>${esc(title)}</b><br/>Shareable link: <a href="${esc(d.shareableUrl)}" target="_blank">${esc(d.shareableUrl)}</a>${altLink}<br/>QR payload: <span class="mono">${esc(d.qrPayload)}</span>${qrImg}<br/><em>${esc(d.note || '')}</em>`;
+        el('ca-result').className = 'status success';
+      } catch (e) { el('ca-result').textContent = e.message; el('ca-result').className = 'status error'; }
+    };
+
+    window.fundOperatorWithCashApp = async function() {
+      try {
+        const res = await api('/api/dapp/payment-rails/cashapp/fund-operator', { method: 'POST', body: JSON.stringify({ amountUsd: el('ca-fund-amount').value, cashtag: el('ca-fund-tag').value, memo: el('ca-fund-memo').value, direction: el('ca-fund-direction').value }) });
+        const d = res.data;
+        const heading = d.direction === 'push' ? 'Push USD to Cash App wallet' : 'Receive USD into Cash App wallet';
+        el('ca-fund-result').innerHTML = `
+          <p><b>${esc(heading)}</b> — <a href="${esc(d.cashAppDeepLink)}" target="_blank">Open Cash App</a> / <a href="${esc(d.cashMeDeepLink)}" target="_blank">cash.me</a></p>
+          <p><img src="${esc(d.cashAppQrDataUrl)}" alt="Cash App QR" style="max-width:220px;"/></p>
+          <p><b>Operator wallet:</b> <span class="mono">${esc(d.operatorAddress)}</span></p>
+          <p><img src="${esc(d.operatorWalletQrDataUrl)}" alt="Operator Wallet QR" style="max-width:220px;"/></p>
+          <p class="small">${esc(d.instructions)}</p>
+        `;
+        el('ca-fund-result').className = 'status success';
+      } catch (e) { el('ca-fund-result').textContent = e.message; el('ca-fund-result').className = 'status error'; }
+    };
+
+    window.createCashAppPayoutRequest = async function() {
+      try {
+        const rawAmount = el('cap-amount').value.trim();
+        const amount = rawAmount ? Math.round(Number(rawAmount) * 100) : undefined;
+        const body = { amount, channel: 'ONLINE', accountReferenceId: el('cap-account').value, note: el('cap-memo').value };
+        const res = await api('/api/dapp/payment-rails/cashapp/payout-request', { method: 'POST', body: JSON.stringify(body) });
+        const d = res.data;
+        let html = `<b>Payout request created</b><br/>Request ID: <span class="mono">${esc(d.requestId)}</span><br/>Status: ${esc(d.status)}`;
+        if (d.authFlow) {
+          if (d.authFlow.mobile_url) html += `<br/>Mobile URL: <a href="${esc(d.authFlow.mobile_url)}" target="_blank">${esc(d.authFlow.mobile_url)}</a>`;
+          if (d.authFlow.qr_code_image_url) html += `<br/><img src="${esc(d.authFlow.qr_code_image_url)}" alt="Payout QR" style="max-width:220px;"/>`;
+          if (d.authFlow.qr_code_svg_url) html += `<br/><a href="${esc(d.authFlow.qr_code_svg_url)}" target="_blank">QR SVG</a>`;
+        }
+        if (d.raw && d.raw.request) {
+          el('cap-request-id').value = d.raw.request.id || '';
+        }
+        el('cap-result').innerHTML = html;
+        el('cap-result').className = 'status success';
+      } catch (e) { el('cap-result').textContent = e.message; el('cap-result').className = 'status error'; }
+    };
+
+    window.executeCashAppPayout = async function() {
+      try {
+        const amount = Math.round(Number(el('cap-amount').value) * 100);
+        const grantId = el('cap-grant').value.trim();
+        if (!grantId) throw new Error('Enter the Grant ID from the approved payout request');
+        if (!amount || amount <= 0) throw new Error('Enter a positive amount');
+        const res = await api('/api/dapp/payment-rails/cashapp/payout', { method: 'POST', body: JSON.stringify({ amount, grantId, note: el('cap-memo').value }) });
+        const d = res.data;
+        el('cap-result').innerHTML = `<b>Payout created</b><br/>Payout ID: <span class="mono">${esc(d.payoutId)}</span><br/>Status: ${esc(d.status)}`;
+        el('cap-result').className = 'status success';
+      } catch (e) { el('cap-result').textContent = e.message; el('cap-result').className = 'status error'; }
+    };
+
+    window.pollCashAppPayoutRequest = async function() {
+      try {
+        const requestId = el('cap-request-id').value.trim();
+        if (!requestId) throw new Error('Enter a Payout Request ID');
+        const res = await api(`/api/dapp/payment-rails/cashapp/requests/${encodeURIComponent(requestId)}`);
+        const d = res.data;
+        el('cap-result').textContent = `Request status: ${JSON.stringify(d, null, 2)}`;
+        el('cap-result').className = 'status success';
+      } catch (e) { el('cap-result').textContent = e.message; el('cap-result').className = 'status error'; }
+    };
+
+    window.createBondToken = async function() {
+      try {
+        const res = await api('/api/dapp/bond-tokens', { method: 'POST', body: JSON.stringify({ bondId: el('bt-bond-id').value, tokenName: el('bt-name').value, tokenSymbol: el('bt-symbol').value }) });
+        el('bt-create-result').textContent = 'Token created: ' + res.data.id + ' (' + res.data.token_address + ')';
+        el('bt-create-result').className = 'status success';
+      } catch (e) { el('bt-create-result').textContent = e.message; el('bt-create-result').className = 'status error'; }
+    };
+
+    window.mintBondToken = async function() {
+      try {
+        const tokenId = el('bt-token-id').value;
+        const res = await api(`/api/dapp/bond-tokens/${tokenId}/mint`, { method: 'POST', body: JSON.stringify({ principal: el('bt-principal').value, interest: el('bt-interest').value, holderAddress: el('bt-holder').value }) });
+        el('bt-mint-result').textContent = `Minted ${res.data.minted} tokens; total supply ${res.data.token.total_supply}`;
+        el('bt-mint-result').className = 'status success';
+      } catch (e) { el('bt-mint-result').textContent = e.message; el('bt-mint-result').className = 'status error'; }
+    };
+
+    window.quoteStablecoinDex = async function() {
+      try {
+        const res = await api('/api/dapp/stablecoin-dex/quote', {
+          method: 'POST',
+          body: JSON.stringify({ amount: el('sdex-amount').value, targetAsset: el('sdex-target').value, poolAddress: el('sdex-pool').value })
+        });
+        el('sdex-result').textContent = `Quote: ${res.data.amountIn} DLBUSD -> ${res.data.amountOut} ${res.data.tokenOut} (min ${res.data.amountOutMinimum}, price ${res.data.price})`;
+        el('sdex-result').className = 'status success';
+      } catch (e) { el('sdex-result').textContent = e.message; el('sdex-result').className = 'status error'; }
+    };
+
+    window.createStablecoinDexPool = async function() {
+      try {
+        const res = await api('/api/dapp/stablecoin-dex/pool', {
+          method: 'POST',
+          body: JSON.stringify({ targetAsset: el('sdex-target').value, seedUsdcAmount: el('sdex-amount').value, seedDlbusdAmount: el('sdex-amount').value })
+        });
+        el('sdex-result').innerHTML = `Pool created: <span class="mono">${res.data.poolAddress}</span> (${res.data.mode})`;
+        el('sdex-result').className = 'status success';
+        if (res.data.poolAddress && !res.data.poolAddress.startsWith('shadow')) el('sdex-pool').value = res.data.poolAddress;
+      } catch (e) { el('sdex-result').textContent = e.message; el('sdex-result').className = 'status error'; }
+    };
+
+    window.depositAndSwapStablecoinDex = async function() {
+      try {
+        const res = await api('/api/dapp/stablecoin-dex/deposit-and-swap', {
+          method: 'POST',
+          body: JSON.stringify({
+            sourceType: el('sdex-source-type').value,
+            sourceAccountId: el('sdex-source-id').value || 'CA-OPERATING',
+            amount: el('sdex-amount').value,
+            targetAsset: el('sdex-target').value,
+            recipient: el('sdex-recipient').value,
+            poolAddress: el('sdex-pool').value,
+            createPoolIfMissing: true,
+            poolSeedUsdc: el('sdex-amount').value,
+            poolSeedDlbusd: el('sdex-amount').value,
+          })
+        });
+        el('sdex-result').innerHTML = `${res.data.operationId}: minted ${res.data.minted} DLBUSD and swapped for ${res.data.targetAsset}<br>Pool: <span class="mono">${res.data.poolAddress}</span><br>Swap tx: <span class="mono">${res.data.swap && res.data.swap.txHash}</span>`;
+        el('sdex-result').className = 'status success';
+      } catch (e) { el('sdex-result').textContent = e.message; el('sdex-result').className = 'status error'; }
+    };
+
+    window.quoteDexSwap = async function() {
+      try {
+        const res = await api('/api/dapp/dex/quote', { method: 'POST', body: JSON.stringify({ tokenIn: el('dex-token-in').value, amountIn: el('dex-amount').value }) });
+        el('dex-result').textContent = `Quote: ${res.data.amountIn} in → ${res.data.amountOut} USDC (min ${res.data.amountOutMinimum}, price ${res.data.price})`;
+        el('dex-result').className = 'status success';
+      } catch (e) { el('dex-result').textContent = e.message; el('dex-result').className = 'status error'; }
+    };
+
+    window.executeDexSwap = async function() {
+      try {
+        const res = await api('/api/dapp/dex/swap', { method: 'POST', body: JSON.stringify({ tokenIn: el('dex-token-in').value, amountIn: el('dex-amount').value }) });
+        el('dex-result').innerHTML = `Swap ${res.data.status}: tx <span class="mono">${res.data.txHash}</span>, received ${res.data.amountOut} USDC`;
+        el('dex-result').className = 'status success';
+      } catch (e) { el('dex-result').textContent = e.message; el('dex-result').className = 'status error'; }
+    };
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // FinOps AI Agent UI
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    window.submitFinOpsPrompt = async function() {
+      try {
+        const res = await api('/api/dapp/finops-ai/prompt', {
+          method: 'POST',
+          body: JSON.stringify({ prompt: el('finops-prompt').value, requestedBy: el('finops-requested-by').value })
+        });
+        el('finops-prompt-result').textContent = `Task created: ${res.data.id} — status ${res.data.status}`;
+        el('finops-prompt-result').className = 'status success';
+        loadFinOpsTasks();
+      } catch (e) { el('finops-prompt-result').textContent = e.message; el('finops-prompt-result').className = 'status error'; }
+    };
+
+    async function loadFinOpsTasks() {
+      try {
+        const res = await api('/api/dapp/finops-ai/tasks');
+        const tb = el('finops-tasks-table'); tb.innerHTML = '';
+        res.data.forEach(t => {
+          const tr = document.createElement('tr');
+          const intent = JSON.stringify(t.intent).slice(0, 180);
+          const approvals = (t.approvals || []).map(a => `${a.role}:${a.status}`).join(', ');
+          const actions = t.status === 'pending_approval'
+            ? `<button class="btn btn-sm" onclick="prefillApproval('${t.id}')">Approve</button>`
+            : (t.status === 'executed' ? `<span class="tag executed">done</span>` : '');
+          tr.innerHTML = `<td class="mono">${esc(t.id)}</td><td>${esc(intent)}</td><td><span class="tag ${t.status}">${esc(t.status)}</span></td><td>${esc(approvals)}</td><td>${actions}</td>`;
+          tb.appendChild(tr);
+        });
+      } catch (e) { showToast('FinOps tasks error: ' + e.message, true); }
+    }
+
+    window.prefillApproval = function(taskId) { el('finops-approve-task').value = taskId; };
+
+    window.approveFinOpsTask = async function() {
+      try {
+        const res = await api(`/api/dapp/finops-ai/tasks/${el('finops-approve-task').value}/approve`, {
+          method: 'POST',
+          body: JSON.stringify({
+            role: el('finops-approve-role').value,
+            trusteeEmail: el('finops-approve-email').value,
+            signature: el('finops-approve-signature').value,
+            signerName: el('finops-approve-name').value,
+          })
+        });
+        el('finops-approve-result').textContent = `Task ${res.data.id} is ${res.data.status}`;
+        el('finops-approve-result').className = 'status success';
+        loadFinOpsTasks();
+      } catch (e) { el('finops-approve-result').textContent = e.message; el('finops-approve-result').className = 'status error'; }
+    };
+
+    let finOpsTrustees = [];
+
+    async function loadFinOpsTrustees() {
+      try {
+        const res = await api('/api/dapp/finops-ai/trustees');
+        finOpsTrustees = res.data || [];
+        el('finops-trustees').innerHTML = finOpsTrustees.map(t => `<div><b>${esc(t.role)}</b><br>${esc(t.name)}<br>${esc(t.email)}<br>${esc(t.phone)}</div>`).join('');
+        prefillFinOpsApprover();
+      } catch (e) {}
+    }
+
+    window.prefillFinOpsApprover = function() {
+      const role = el('finops-approve-role').value;
+      const trustee = finOpsTrustees.find(t => String(t.role).toLowerCase() === role);
+      if (!trustee) return;
+      el('finops-approve-email').value = trustee.email || '';
+      el('finops-approve-name').value = trustee.name || '';
+      // If the logged-in user's email matches this trustee, leave it; otherwise default to the configured trustee.
+      if (currentUser && currentUser.email) {
+        const userMatch = finOpsTrustees.find(t => String(t.email).toLowerCase() === String(currentUser.email).toLowerCase());
+        if (userMatch && String(userMatch.role).toLowerCase() === role) {
+          el('finops-approve-email').value = currentUser.email;
+          el('finops-approve-name').value = currentUser.name || userMatch.name || '';
+        }
+      }
+    };
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // Calendar UI
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    window.createCalendarEvent = async function() {
+      try {
+        const res = await api('/api/dapp/calendar/events', {
+          method: 'POST',
+          body: JSON.stringify({
+            title: el('cal-title').value,
+            description: el('cal-desc').value,
+            start: el('cal-start').value,
+            end: el('cal-end').value,
+            eventType: el('cal-type').value,
+            referenceId: el('cal-ref').value,
+            createdBy: currentUser ? currentUser.email : 'dapp',
+          })
+        });
+        el('cal-result').textContent = 'Event created: ' + res.data.id;
+        el('cal-result').className = 'status success';
+        loadCalendar();
+      } catch (e) { el('cal-result').textContent = e.message; el('cal-result').className = 'status error'; }
+    };
+
+    async function loadCalendar() {
+      try {
+        const res = await api('/api/dapp/calendar/events');
+        const tb = el('cal-table'); tb.innerHTML = '';
+        res.data.forEach(e => {
+          const tr = document.createElement('tr');
+          tr.innerHTML = `<td>${new Date(e.start_time).toLocaleString()}</td><td>${esc(e.title)}</td><td>${esc(e.event_type)}</td><td class="mono">${esc(e.reference_id || '')}</td>`;
+          tb.appendChild(tr);
+        });
+      } catch (e) { showToast('Calendar error: ' + e.message, true); }
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // Messaging UI
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    window.createMessageThread = async function() {
+      try {
+        const res = await api('/api/dapp/messaging/threads', {
+          method: 'POST',
+          body: JSON.stringify({
+            subject: el('msg-thread-subject').value,
+            participants: el('msg-participants').value.split(',').map(s => s.trim()).filter(Boolean),
+            referenceId: el('msg-ref').value,
+          })
+        });
+        el('msg-thread-result').textContent = 'Thread created: ' + res.data.id;
+        el('msg-thread-result').className = 'status success';
+        loadMessageThreads();
+      } catch (e) { el('msg-thread-result').textContent = e.message; el('msg-thread-result').className = 'status error'; }
+    };
+
+    async function loadMessageThreads() {
+      try {
+        const res = await api('/api/dapp/messaging/threads');
+        const tb = el('msg-threads-table'); tb.innerHTML = '';
+        res.data.forEach(t => {
+          const tr = document.createElement('tr');
+          const parts = Array.isArray(t.participants) ? t.participants.map(p => typeof p === 'string' ? p : (p.email || p.name || JSON.stringify(p))).join(', ') : '';
+          tr.innerHTML = `<td class="mono"><button class="btn btn-sm" onclick="openThread('${t.id}')">${esc(t.id.slice(0,18))}…</button></td><td>${esc(t.subject)}</td><td>${esc(parts)}</td><td>${new Date(t.updated_at).toLocaleString()}</td>`;
+          tb.appendChild(tr);
+        });
+      } catch (e) { showToast('Messaging error: ' + e.message, true); }
+    }
+
+    window.openThread = async function(threadId) {
+      try {
+        const res = await api(`/api/dapp/messaging/threads/${threadId}`);
+        el('msg-thread-card').style.display = 'block';
+        el('msg-thread-id').textContent = threadId;
+        el('msg-thread-card').dataset.threadId = threadId;
+        const div = el('msg-messages');
+        div.innerHTML = res.data.messages.map(m => `<div style="margin-bottom:8px; border-bottom:1px solid var(--border); padding-bottom:6px;"><b>${esc(m.sender || 'system')}</b> <span style="color:var(--muted); font-size:11px;">${new Date(m.created_at).toLocaleString()}</span><br>${esc(m.body)}</div>`).join('');
+        div.scrollTop = div.scrollHeight;
+      } catch (e) { showToast('Thread error: ' + e.message, true); }
+    };
+
+    window.sendMessage = async function() {
+      try {
+        const threadId = el('msg-thread-card').dataset.threadId;
+        if (!threadId) throw new Error('Open a thread first');
+        const res = await api(`/api/dapp/messaging/threads/${threadId}/messages`, {
+          method: 'POST',
+          body: JSON.stringify({ sender: currentUser ? currentUser.email : 'dapp', body: el('msg-body').value })
+        });
+        el('msg-body').value = '';
+        openThread(threadId);
+      } catch (e) { el('msg-result').textContent = e.message; el('msg-result').className = 'status error'; }
+    };
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // Document Vault UI
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    window.createDocument = async function() {
+      try {
+        const res = await api('/api/dapp/documents', {
+          method: 'POST',
+          body: JSON.stringify({
+            documentName: el('doc-name').value,
+            documentType: el('doc-type').value,
+            category: el('doc-category').value,
+            referenceId: el('doc-ref').value,
+            content: el('doc-content').value,
+            createdBy: currentUser ? currentUser.email : 'dapp',
+          })
+        });
+        el('doc-result').textContent = 'Document created: ' + res.data.document_id;
+        el('doc-result').className = 'status success';
+        loadDocuments();
+      } catch (e) { el('doc-result').textContent = e.message; el('doc-result').className = 'status error'; }
+    };
+
+    async function loadDocuments() {
+      try {
+        const res = await api('/api/dapp/documents');
+        const tb = el('doc-table'); tb.innerHTML = '';
+        res.data.forEach(d => {
+          const tr = document.createElement('tr');
+          tr.innerHTML = `<td>${esc(d.document_name)}</td><td>${esc(d.document_type)}</td><td>${esc(d.category)}</td><td>${new Date(d.created_at).toLocaleString()}</td>`;
+          tb.appendChild(tr);
+        });
+      } catch (e) { showToast('Documents error: ' + e.message, true); }
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // Sovereign Trust Token UI
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    let sovereignMetaTx = null;
+
+    async function loadSovereignTrust() {
+      try {
+        const r = await api('/api/dapp/sovereign-trust/readiness');
+        const info = await api('/api/dapp/sovereign-trust/token');
+        el('sovereign-readiness').textContent = JSON.stringify({ ready: r.data.ready, mode: r.data.mode, token: info.data }, null, 2);
+        el('sovereign-readiness').className = 'status ' + (r.data.ready ? 'success' : '');
+        loadSovereignOrders();
+      } catch (e) { showToast('Sovereign trust error: ' + e.message, true); }
+    }
+
+    window.deploySovereignToken = async function() {
+      try {
+        const res = await api('/api/dapp/sovereign-trust/deploy', { method: 'POST', body: '{}' });
+        el('sovereign-readiness').textContent = JSON.stringify(res.data, null, 2);
+        el('sovereign-readiness').className = 'status success';
+      } catch (e) { showToast('Deploy failed: ' + e.message, true); }
+    };
+
+    window.mintSovereignToken = async function() {
+      try {
+        const res = await api('/api/dapp/sovereign-trust/mint', {
+          method: 'POST',
+          body: JSON.stringify({
+            sourceType: el('sit-source-type').value,
+            sourceAccountId: el('sit-source-id').value,
+            amount: el('sit-mint-amount').value,
+            to: el('sit-mint-to').value,
+            memo: el('sit-mint-memo').value,
+          })
+        });
+        el('sit-mint-result').textContent = JSON.stringify(res.data, null, 2);
+        el('sit-mint-result').className = 'status success';
+        loadSovereignOrders();
+      } catch (e) { el('sit-mint-result').textContent = e.message; el('sit-mint-result').className = 'status error'; }
+    };
+
+    window.operatorTransferSIT = async function() {
+      try {
+        const res = await api('/api/dapp/sovereign-trust/transfer', {
+          method: 'POST',
+          body: JSON.stringify({
+            to: el('sit-transfer-to').value,
+            amount: el('sit-transfer-amount').value,
+          })
+        });
+        el('sit-transfer-result').textContent = JSON.stringify(res.data, null, 2);
+        el('sit-transfer-result').className = 'status success';
+        loadSovereignTrust();
+      } catch (e) { el('sit-transfer-result').textContent = e.message; el('sit-transfer-result').className = 'status error'; }
+    };
+
+    window.burnSovereignToken = async function() {
+      try {
+        const res = await api('/api/dapp/sovereign-trust/burn', {
+          method: 'POST',
+          body: JSON.stringify({
+            sourceType: el('sit-burn-source-type').value,
+            sourceAccountId: el('sit-burn-source-id').value,
+            amount: el('sit-burn-amount').value,
+            from: el('sit-burn-from').value,
+            memo: el('sit-burn-memo').value,
+          })
+        });
+        el('sit-burn-result').textContent = JSON.stringify(res.data, null, 2);
+        el('sit-burn-result').className = 'status success';
+        loadSovereignOrders();
+      } catch (e) { el('sit-burn-result').textContent = e.message; el('sit-burn-result').className = 'status error'; }
+    };
+
+    window.whitelistSovereignAddress = async function() {
+      try {
+        const res = await api('/api/dapp/sovereign-trust/whitelist', {
+          method: 'POST',
+          body: JSON.stringify({
+            address: el('sit-whitelist-address').value,
+            allowed: el('sit-whitelist-allowed').value === 'true',
+          })
+        });
+        el('sit-whitelist-result').textContent = JSON.stringify(res.data, null, 2);
+        el('sit-whitelist-result').className = 'status success';
+      } catch (e) { el('sit-whitelist-result').textContent = e.message; el('sit-whitelist-result').className = 'status error'; }
+    };
+
+    window.signSovereignTransfer = async function() {
+      if (!window.ethereum) return showToast('MetaMask not available', true);
+      try {
+        const from = el('sit-meta-from').value;
+        const to = el('sit-meta-to').value;
+        const amount = el('sit-meta-amount').value;
+        if (!from || !to || !amount) throw new Error('from, to and amount required');
+        const res = await api('/api/dapp/sovereign-trust/meta-tx/build', {
+          method: 'POST',
+          body: JSON.stringify({ from, to, functionName: 'transfer', amount })
+        });
+        sovereignMetaTx = res.data;
+        const typed = { domain: res.data.domain, types: res.data.types, primaryType: res.data.primaryType, message: res.data.message };
+        const sig = await window.ethereum.request({ method: 'eth_signTypedData_v4', params: [from, JSON.stringify(typed)] });
+        sovereignMetaTx.signature = sig;
+        el('sit-meta-result').textContent = 'Signed. Click Relay Signed Tx.';
+        el('sit-meta-result').className = 'status success';
+      } catch (e) { el('sit-meta-result').textContent = e.message; el('sit-meta-result').className = 'status error'; }
+    };
+
+    window.relaySovereignTransfer = async function() {
+      if (!sovereignMetaTx || !sovereignMetaTx.signature) return showToast('Sign a meta-tx first', true);
+      try {
+        const res = await api('/api/dapp/sovereign-trust/meta-tx/relay', {
+          method: 'POST',
+          body: JSON.stringify({ request: sovereignMetaTx.forwardRequest, signature: sovereignMetaTx.signature })
+        });
+        el('sit-meta-result').textContent = JSON.stringify(res.data, null, 2);
+        el('sit-meta-result').className = 'status success';
+        loadSovereignTrust();
+      } catch (e) { el('sit-meta-result').textContent = e.message; el('sit-meta-result').className = 'status error'; }
+    };
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // Account Abstraction / Gas Abstraction UI
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    let aaOperation = null;
+
+    async function loadAAReadiness() {
+      try {
+        const res = await api('/api/dapp/aa/readiness');
+        el('aa-readiness').textContent = JSON.stringify(res.data, null, 2);
+        el('aa-readiness').className = 'status ' + (res.data.ready ? 'success' : '');
+      } catch (e) { el('aa-readiness').textContent = 'AA readiness error: ' + e.message; }
+    }
+
+    window.getAASmartAccount = async function() {
+      try {
+        const owner = el('aa-owner').value.trim();
+        if (!owner) throw new Error('owner EOA required');
+        const res = await api('/api/dapp/aa/smart-account', { method: 'POST', body: JSON.stringify({ owner }) });
+        setText('aa-result', `Smart account for ${res.data.owner}: ${res.data.smartAccountAddress}`, false);
+      } catch (e) { setText('aa-result', e.message, true); }
+    };
+
+    window.prepareAAGaslessTransfer = async function() {
+      try {
+        const owner = el('aa-owner').value.trim();
+        const to = el('aa-to').value.trim();
+        const amount = el('aa-amount').value.trim();
+        const tokenAddress = el('aa-token').value.trim();
+        if (!owner || !to || !amount) throw new Error('owner, recipient and amount required');
+        const body = { owner, to, amount };
+        if (tokenAddress) body.tokenAddress = tokenAddress;
+        const res = await api('/api/dapp/aa/prepare-transfer', { method: 'POST', body: JSON.stringify(body) });
+        aaOperation = res.data;
+        setText('aa-result', `Prepared.\noperationId: ${res.data.operationId}\nsmartAccount: ${res.data.smartAccountAddress}\nuserOpHash: ${res.data.userOpHash}`, false);
+      } catch (e) { setText('aa-result', e.message, true); }
+    };
+
+    window.signAAGaslessTransfer = async function() {
+      try {
+        if (!aaOperation) throw new Error('Prepare a transfer first');
+        if (!account) throw new Error('Connect MetaMask first');
+        const sig = await window.ethereum.request({ method: 'personal_sign', params: [aaOperation.userOpHash, account] });
+        aaOperation.signature = sig;
+        setText('aa-result', `Signed.\nSignature: ${sig}\nClick Submit Signed Transfer.`, false);
+      } catch (e) { setText('aa-result', e.message, true); }
+    };
+
+    window.submitAAGaslessTransfer = async function() {
+      try {
+        if (!aaOperation || !aaOperation.signature) throw new Error('Sign the userOpHash first');
+        const res = await api('/api/dapp/aa/submit-transfer', { method: 'POST', body: JSON.stringify({ operationId: aaOperation.operationId, signature: aaOperation.signature }) });
+        setText('aa-result', JSON.stringify(res.data, null, 2), false);
+      } catch (e) { setText('aa-result', e.message, true); }
+    };
+
+    window.deployAAPaymaster = async function() {
+      try {
+        const res = await api('/api/dapp/aa/deploy-paymaster', { method: 'POST', body: '{}' });
+        setText('aa-admin-result', JSON.stringify(res.data, null, 2), false);
+      } catch (e) { setText('aa-admin-result', e.message, true); }
+    };
+
+    window.fundAAPaymaster = async function() {
+      try {
+        const res = await api('/api/dapp/aa/fund-paymaster', { method: 'POST', body: JSON.stringify({ amountEth: '0.001' }) });
+        setText('aa-admin-result', JSON.stringify(res.data, null, 2), false);
+      } catch (e) { setText('aa-admin-result', e.message, true); }
+    };
+
+    window.whitelistAASender = async function() {
+      try {
+        const address = el('aa-whitelist-address').value.trim();
+        if (!address) throw new Error('address required');
+        const res = await api('/api/dapp/aa/whitelist-sender', { method: 'POST', body: JSON.stringify({ address }) });
+        setText('aa-admin-result', JSON.stringify(res.data, null, 2), false);
+      } catch (e) { setText('aa-admin-result', e.message, true); }
+    };
+
+    window.loadAAPaymasterBalance = async function() {
+      try {
+        const res = await api('/api/dapp/aa/paymaster-balance');
+        if (res.data.deployed === false) {
+          el('aa-paymaster-balance').textContent = `Operator: ${res.data.operatorAddress}\nOperator ETH: ${res.data.operatorEth}\n${res.data.message}`;
+          el('aa-paymaster-balance').className = 'status';
+          return;
+        }
+        el('aa-paymaster-balance').textContent = `Operator: ${res.data.operatorAddress}\nOperator ETH: ${res.data.operatorEth}\nPaymaster: ${res.data.paymasterAddress}\nPaymaster ETH: ${res.data.paymasterEth}\nEntryPoint deposit: ${res.data.entryPointDeposit}\nEntryPoint stake: ${res.data.entryPointStake} (staked: ${res.data.staked})`;
+        el('aa-paymaster-balance').className = 'status success';
+      } catch (e) { el('aa-paymaster-balance').textContent = 'Paymaster balance error: ' + e.message; el('aa-paymaster-balance').className = 'status error'; }
+    };
+
+    window.seedAAPaymaster = async function() {
+      try {
+        const amountEth = el('aa-seed-amount').value;
+        const whitelistAddress = el('aa-seed-whitelist').value.trim();
+        const res = await api('/api/dapp/aa/seed-paymaster', { method: 'POST', body: JSON.stringify({ amountEth, whitelistAddress: whitelistAddress || undefined }) });
+        if (res.data && res.data.needs_funding) {
+          setText('aa-admin-result', `Needs funding.\nOperator: ${res.data.operatorAddress}\nPaymaster: ${res.data.paymasterAddress || 'not deployed'}\nOperator ETH: ${res.data.operatorEth}\nRequired ETH: ${res.data.requiredEth}\nShortfall: ${res.data.shortfallEth || res.data.requiredEth}\n\nSend ETH to the operator address above, then click Seed Paymaster again.`, true);
+        } else if (res.data && res.data.shadow) {
+          setText('aa-admin-result', `Shadow mode: ${res.data.message}`, false);
+        } else {
+          setText('aa-admin-result', JSON.stringify(res.data, null, 2), false);
+        }
+        loadAAPaymasterBalance();
+      } catch (e) { setText('aa-admin-result', e.message, true); }
+    };
+
+    window.loadGasTankStatus = async function() {
+      try {
+        const res = await api('/api/dapp/operator-gas-tank/status');
+        const d = res.data;
+        const statusClass = d.low ? 'error' : 'success';
+        let txt = `Operator: ${d.operatorAddress}\nETH Balance: ${d.balanceEth} ETH\nWETH Balance: ${d.wethBalance} WETH\nThreshold: ${d.thresholdEth} ETH\nMode: ${d.mode}\nTop-up: $${Number(d.topupUsd).toFixed(2)} from ${d.sourceType}:${d.sourceAccountId}\nDEX enabled: ${d.dexEnabled ? 'yes' : 'no'} | Coinbase bridge: ${d.coinbaseEnabled ? 'enabled' : 'disabled'}`;
+        if (d.recentTopups && d.recentTopups.length) {
+          txt += '\n\nRecent top-ups:\n' + d.recentTopups.map(t => `${t.id} | ${t.status} | $${Number(t.amount_usd).toFixed(2)} | ${t.bridge_transfer_id || '—'}`).join('\n');
+        }
+        const node = el('gas-tank-status');
+        node.textContent = txt;
+        node.className = 'status ' + statusClass;
+      } catch (e) { setText('gas-tank-result', e.message, true); }
+    };
+
+    window.checkAndTopUpGas = async function() {
+      try {
+        const body = {
+          mode: el('gas-mode').value,
+          sourceType: el('gas-source-type').value,
+          sourceAccountId: el('gas-source-account').value,
+          amountUsd: Number(el('gas-amount').value),
+          thresholdEth: Number(el('gas-threshold').value),
+          targetAsset: el('gas-target-asset').value,
+          createPoolIfMissing: el('gas-create-pool').checked,
+          poolSeedWeth: Number(el('gas-seed-weth').value),
+          poolSeedDlbusd: Number(el('gas-seed-dlbusd').value),
+        };
+        const res = await api('/api/dapp/operator-gas-tank/check-and-topup', { method: 'POST', body: JSON.stringify(body) });
+        let txt = `Status: ${res.data.status}\n`;
+        if (res.data.status === 'completed') {
+          txt += `Top-up completed. ETH balance: ${res.data.balanceEth} ETH`;
+          if (res.data.wethBalance) txt += `, WETH balance: ${res.data.wethBalance} WETH`;
+          txt += '\n';
+        } else if (res.data.status === 'needs_pool') {
+          txt += `DEX swap needs a DLBUSD/WETH pool with WETH liquidity.\n${JSON.stringify(res.data.instructions || {}, null, 2)}`;
+        } else if (res.data.status === 'needs_deposit') {
+          txt += `Source reserved; Coinbase needs a USD deposit to complete.\n${JSON.stringify(res.data.instructions || {}, null, 2)}`;
+        } else if (res.data.status === 'skipped') {
+          txt += `Balance ${res.data.balanceEth} ETH is above threshold ${res.data.thresholdEth} ETH.`;
+        } else if (res.data.status === 'needs_config') {
+          txt += res.data.reason;
+        } else {
+          txt += JSON.stringify(res.data.topup || res.data, null, 2);
+        }
+        setText('gas-tank-result', txt, res.data.status === 'failed');
+        loadGasTankStatus();
+      } catch (e) { setText('gas-tank-result', e.message, true); }
+    };
+
+    window.loadFundingStatus = async function() {
+      try {
+        const res = await api('/api/dapp/funding/status?externalEvmAddress=' + encodeURIComponent(el('funding-external').value) + '&hederaAccountId=' + encodeURIComponent(el('funding-hedera').value));
+        const d = res.data;
+        const ready = Number(d.operator.eth) > 0 || (d.hedera && Number(d.hedera.hbar) > 0) || (d.externalWallet && Number(d.externalWallet.eth) > 0);
+        setText('funding-status', `Operator: ${d.operator.address}\nETH: ${d.operator.eth} | WETH: ${d.operator.weth} | USDC: ${d.operator.usdc}\nPool: ${d.pool.address || 'none'} exists=${d.pool.exists} target=${d.pool.target}\nExternal: ${d.externalWallet ? d.externalWallet.eth + ' ETH at ' + d.externalWallet.address : 'none'}\nHedera: ${d.hedera ? d.hedera.hbar + ' HBAR' : 'none'}\nSource ledger count: ${d.sourceBalances.length}\nRails: coinbase=${d.rails.coinbase_treasury.ready ? 'ready' : 'off'}, dex=${d.rails.stablecoin_dex.ready ? 'ready' : 'off'}, cashapp=${d.rails.cashapp.ready ? 'ready' : 'off'}`, !ready);
+      } catch (e) { setText('funding-status', e.message, true); }
+    };
+
+    window.buildFundingPlan = async function() {
+      try {
+        const body = {
+          strategy: el('funding-strategy').value,
+          amountUsd: Number(el('funding-amount').value),
+          sourceType: el('funding-source-type').value,
+          sourceAccountId: el('funding-source-account').value,
+          cashtag: el('funding-cashtag').value,
+          externalEvmAddress: el('funding-external').value,
+          hederaAccountId: el('funding-hedera').value,
+        };
+        const res = await api('/api/dapp/funding/plan', { method: 'POST', body: JSON.stringify(body) });
+        setText('funding-result', JSON.stringify(res.data, null, 2), !res.data.canExecute);
+      } catch (e) { setText('funding-result', e.message, true); }
+    };
+
+    window.executeFundingPlan = async function() {
+      try {
+        const body = {
+          strategy: el('funding-strategy').value,
+          amountUsd: Number(el('funding-amount').value),
+          sourceType: el('funding-source-type').value,
+          sourceAccountId: el('funding-source-account').value,
+          cashtag: el('funding-cashtag').value,
+          externalEvmAddress: el('funding-external').value,
+          hederaAccountId: el('funding-hedera').value,
+        };
+        const res = await api('/api/dapp/funding/execute', { method: 'POST', body: JSON.stringify(body) });
+        setText('funding-result', JSON.stringify(res.data, null, 2), !res.data.canExecute && (!res.data.executed || res.data.executed.every(r => r.error)));
+      } catch (e) { setText('funding-result', e.message, true); }
+    };
+
+    window.getDepositInvoice = async function() {
+      try {
+        const res = await api('/api/dapp/funding/deposit-invoice?externalEvmAddress=' + encodeURIComponent(el('funding-external').value) + '&hederaAccountId=' + encodeURIComponent(el('funding-hedera').value) + '&amountEth=0.01');
+        const d = res.data;
+        setText('funding-result', `Send ${d.amountEth} ETH to:\n${d.operatorAddress}\nor WETH to:\n${d.wethAddress}\n\nHedera donor account:\n${d.hedera ? d.hedera.accountId + ' (' + d.hedera.hbar + ' HBAR, evm ' + d.hedera.evmAddress + ')' : 'none'}\n\nExternal wallet:\n${d.externalWallet ? d.externalWallet.eth + ' ETH at ' + d.externalWallet.address : 'none'}\n\nSource ledgers:\n${d.sourceBalances.map(b => b.type + ':' + b.id + ' $' + (b.balance_cents / 100).toFixed(2)).join('\n')}\n\n${d.message}`);
+      } catch (e) { setText('funding-result', e.message, true); }
+    };
+
+    async function loadSovereignOrders() {
+      try {
+        const res = await api('/api/dapp/sovereign-trust/orders');
+        const tb = el('sit-orders-table').querySelector('tbody'); tb.innerHTML = '';
+        (res.data || []).forEach(o => {
+          const tr = document.createElement('tr');
+          tr.innerHTML = `<td class="mono">${esc(o.id.slice(0,16))}…</td><td>${esc(o.direction)}</td><td>${esc(o.source_type)}:${esc(o.source_account_id)}</td><td>${Number(o.amount_cents/100).toFixed(2)}</td><td><span class="tag ${o.status}">${esc(o.status)}</span></td><td class="mono">${esc(o.on_chain_tx || '—').slice(0,12)}…</td>`;
+          tb.appendChild(tr);
+        });
+      } catch (e) { showToast('Sovereign orders error: ' + e.message, true); }
+    }
+
+    function esc(s) { return String(s || '').replace(/[&<>"']/g, m => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m])); }
+
+    function setText(id, text, isError) {
+      const node = el(id);
+      node.textContent = text;
+      node.className = 'status' + (isError ? ' error' : ' success');
+      node.classList.remove('hidden');
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // Asset-Debt Proof UI
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    let adpProofs = [];
+
+    window.computeAssetDebtProof = async function() {
+      try {
+        const memo = el('adp-memo').value.trim();
+        const raw = el('adp-liabilities').value.trim();
+        const liabilities = raw ? JSON.parse(raw) : [];
+        const includeHardAssets = el('adp-hard-assets').checked;
+        const res = await api('/api/dapp/asset-debt-proofs/compute', { method: 'POST', body: JSON.stringify({ liabilities, memo, includeHardAssets }) });
+        setText('adp-result', `Computed ${res.data.id}\nStatus: ${res.data.status}\nAssets: $${(res.data.total_assets_cents/100).toFixed(2)}\nLiabilities: $${(res.data.total_liabilities_cents/100).toFixed(2)}\nNet Worth: $${(res.data.net_worth_cents/100).toFixed(2)}\nHash: ${res.data.proof_hash}`, false);
+        loadAssetDebtProofs();
+      } catch (e) { setText('adp-result', e.message, true); }
+    };
+
+    window.signAssetDebtProof = async function() {
+      try {
+        const proofId = el('adp-proof-id').value.trim();
+        const role = el('adp-role').value;
+        const email = el('adp-email').value.trim();
+        const signature = el('adp-signature').value.trim();
+        if (!proofId || !email) throw new Error('Proof ID and trustee email required');
+        const res = await api(`/api/dapp/asset-debt-proofs/${encodeURIComponent(proofId)}/sign`, { method: 'POST', body: JSON.stringify({ role, trusteeEmail: email, signature }) });
+        setText('adp-sign-result', `Signed by ${role}\nStatus: ${res.data.status}\nSignatures: ${JSON.stringify(res.data.signatures)}`, false);
+        loadAssetDebtProofs();
+      } catch (e) { setText('adp-sign-result', e.message, true); }
+    };
+
+    window.rejectAssetDebtProof = async function() {
+      try {
+        const proofId = el('adp-proof-id').value.trim();
+        const email = el('adp-email').value.trim();
+        if (!proofId || !email) throw new Error('Proof ID and trustee email required');
+        const res = await api(`/api/dapp/asset-debt-proofs/${encodeURIComponent(proofId)}/reject`, { method: 'POST', body: JSON.stringify({ trusteeEmail: email }) });
+        setText('adp-sign-result', `Rejected: ${res.data.status}`, false);
+        loadAssetDebtProofs();
+      } catch (e) { setText('adp-sign-result', e.message, true); }
+    };
+
+    window.loadAssetDebtProofs = async function() {
+      try {
+        const res = await api('/api/dapp/asset-debt-proofs');
+        adpProofs = res.data || [];
+        const tb = el('adp-table').querySelector('tbody'); tb.innerHTML = '';
+        adpProofs.forEach(p => {
+          const tr = document.createElement('tr');
+          tr.innerHTML = `<td class="mono">${esc(p.id.slice(0,16))}…</td><td><span class="tag ${p.status}">${esc(p.status)}</span></td><td>$${(p.total_assets_cents/100).toFixed(2)}</td><td>$${(p.total_liabilities_cents/100).toFixed(2)}</td><td>$${(p.net_worth_cents/100).toFixed(2)}</td><td class="mono">${esc(String(p.proof_hash).slice(0,16))}…</td>`;
+          tb.appendChild(tr);
+        });
+      } catch (e) { showToast('Asset-debt proofs error: ' + e.message, true); }
+    };
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // Distribution / Disbursement Requests UI
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    window.createDistributionRequest = async function() {
+      try {
+        const body = {
+          type: el('req-type').value,
+          requesterRole: 'beneficiary',
+          beneficiaryEmail: el('req-beneficiary-email').value.trim(),
+          beneficiaryName: el('req-beneficiary-name').value.trim(),
+          amountUsd: el('req-amount').value.trim(),
+          destinationAddress: el('req-destination').value.trim(),
+          sourceType: el('req-source-type').value,
+          sourceAccountId: el('req-source-account').value.trim(),
+          safeId: el('req-safe-id').value.trim(),
+          proofId: el('req-proof-id').value.trim() || undefined,
+          memo: el('req-memo').value.trim(),
+        };
+        const res = await api('/api/dapp/distribution-requests', { method: 'POST', body: JSON.stringify(body) });
+        setText('req-result', `Created ${res.data.id}\nStatus: ${res.data.status}\nAmount: $${(res.data.amount_cents/100).toFixed(2)}`, false);
+        loadDistributionRequests();
+      } catch (e) { setText('req-result', e.message, true); }
+    };
+
+    window.loadDistributionRequests = async function() {
+      try {
+        const res = await api('/api/dapp/distribution-requests');
+        const requests = res.data || [];
+        const tb = el('req-pending-table').querySelector('tbody'); tb.innerHTML = '';
+        requests.forEach(r => {
+          const tr = document.createElement('tr');
+          const proofCell = r.proof_id ? esc(r.proof_id.slice(0,12)) + '…' : '—';
+          const actions = r.status === 'approved'
+            ? `<button class="btn btn-sm" onclick="executeDistributionRequest('${esc(r.id)}')">Execute</button>`
+            : r.status === 'requested' || r.status === 'under_review'
+              ? `<button class="btn btn-sm" onclick="approveDistributionRequest('${esc(r.id)}','maker','annrobinson9800@yahoo.com')">Maker Approve</button> <button class="btn btn-sm" onclick="approveDistributionRequest('${esc(r.id)}','checker','dbnettrust@gmail.com')">Checker Approve</button> <button class="btn btn-sm" onclick="rejectDistributionRequest('${esc(r.id)}')">Reject</button>`
+              : '';
+          tr.innerHTML = `<td class="mono">${esc(r.id.slice(0,16))}…</td><td>${esc(r.type)}</td><td>${esc(r.beneficiary_name || r.beneficiary_email || '—')}</td><td>$${(r.amount_cents/100).toFixed(2)}</td><td><span class="tag ${r.status}">${esc(r.status)}</span></td><td>${proofCell}</td><td>${actions}</td>`;
+          tb.appendChild(tr);
+        });
+      } catch (e) { showToast('Distribution requests error: ' + e.message, true); }
+    };
+
+    window.approveDistributionRequest = async function(requestId, role, email) {
+      try {
+        const trusteeEmail = email || (role === 'maker' ? 'annrobinson9800@yahoo.com' : 'dbnettrust@gmail.com');
+        const res = await api(`/api/dapp/distribution-requests/${encodeURIComponent(requestId)}/approve`, { method: 'POST', body: JSON.stringify({ role, trusteeEmail }) });
+        showToast(`Request ${res.data.status}`, false);
+        loadDistributionRequests();
+      } catch (e) { showToast(e.message, true); }
+    };
+
+    window.rejectDistributionRequest = async function(requestId) {
+      try {
+        const res = await api(`/api/dapp/distribution-requests/${encodeURIComponent(requestId)}/reject`, { method: 'POST', body: JSON.stringify({ trusteeEmail: 'deandreabarkley13@gmail.com' }) });
+        showToast(`Request ${res.data.status}`, false);
+        loadDistributionRequests();
+      } catch (e) { showToast(e.message, true); }
+    };
+
+    window.executeDistributionRequest = async function(requestId) {
+      try {
+        const res = await api(`/api/dapp/distribution-requests/${encodeURIComponent(requestId)}/execute`, { method: 'POST', body: '{}' });
+        showToast(`Executed ${res.data.request.status}`, false);
+        loadDistributionRequests();
+      } catch (e) { showToast(e.message, true); }
+    };
+
+    window.loadBeneficiaryActivity = async function() {
+      try {
+        let email = el('ben-view-email').value.trim();
+        if (!email && currentUser && currentUser.email) email = currentUser.email;
+        if (!email) throw new Error('Enter beneficiary email');
+        if (userRole() === 'beneficiary' && email.toLowerCase() !== (currentUser.email || '').toLowerCase()) throw new Error('You can only view your own activity');
+        const res = await api(`/api/dapp/beneficiary/activity?email=${encodeURIComponent(email)}`);
+        const data = res.data;
+        el('ben-view-result').textContent = `Beneficiary: ${esc(data.beneficiaryEmail)} | Requests: ${data.requests.length} | Transactions: ${data.payouts.length}`;
+
+        const rtb = el('ben-requests-table').querySelector('tbody'); rtb.innerHTML = '';
+        (data.requests || []).forEach(r => {
+          const tr = document.createElement('tr');
+          tr.innerHTML = `<td class="mono">${esc(r.id.slice(0,16))}…</td><td>${esc(r.type)}</td><td>$${(r.amount_cents/100).toFixed(2)}</td><td><span class="tag ${r.status}">${esc(r.status)}</span></td><td class="mono">${esc(r.destination_address || '—').slice(0,12)}…</td>`;
+          rtb.appendChild(tr);
+        });
+
+        const ptb = el('ben-payouts-table').querySelector('tbody'); ptb.innerHTML = '';
+        (data.payouts || []).forEach(p => {
+          const tr = document.createElement('tr');
+          tr.innerHTML = `<td class="mono">${esc(p.id.slice(0,16))}…</td><td>${esc(p.type)}</td><td>$${(Number(p.token_amount || p.value || 0)/1e6).toFixed(2)}</td><td><span class="tag ${p.status}">${esc(p.status)}</span></td><td class="mono">${esc(p.tx_hash || p.safe_tx_hash || '—').slice(0,12)}…</td>`;
+          ptb.appendChild(tr);
+        });
+      } catch (e) { showToast(e.message, true); }
+    };
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // One-Click Automation UI
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    window.runOneClickAutomation = async function() {
+      try {
+        let signatures = [];
+        const rawSigs = el('auto-signatures').value.trim();
+        if (rawSigs) signatures = JSON.parse(rawSigs);
+        let beneficiaries = [];
+        const rawBens = el('auto-beneficiaries').value.trim();
+        if (rawBens) beneficiaries = JSON.parse(rawBens);
+        const body = {
+          templateId: el('auto-template-name').value.trim() || undefined,
+          name: el('auto-template-name').value.trim() || undefined,
+          type: el('auto-type').value,
+          sourceType: el('auto-source-type').value,
+          sourceAccountId: el('auto-source-account').value.trim() || undefined,
+          safeId: el('auto-safe-id').value.trim() || undefined,
+          amountUsd: el('auto-amount').value,
+          destinationAddress: el('auto-destination').value.trim() || undefined,
+          beneficiaryEmail: el('auto-ben-email').value.trim() || undefined,
+          beneficiaryName: el('auto-ben-name').value.trim() || undefined,
+          beneficiaries,
+          memo: el('auto-memo').value.trim(),
+          includeHardAssets: el('auto-hard-assets').checked,
+          trusteeSignatures: signatures.length ? signatures : undefined,
+          autoExecute: el('auto-execute').checked,
+        };
+        const res = await api('/api/dapp/automations/one-click-distribution', { method: 'POST', body: JSON.stringify(body) });
+        const r = res.data;
+        const reqIds = (r.run && r.run.request_ids || []).join(', ');
+        setText('auto-result', `Run ${r.run.id}\nStatus: ${r.run.status}\nProof: ${r.proof ? r.proof.id : '—'}\nRequests: ${reqIds}\nErrors: ${(r.errors || []).join('; ') || 'none'}`, false);
+        loadAutomationRuns();
+        loadDistributionRequests();
+      } catch (e) { setText('auto-result', e.message, true); }
+    };
+
+    window.loadAutomationTemplates = async function() {
+      try {
+        const res = await api('/api/dapp/automations/templates');
+        const tb = el('auto-templates-table').querySelector('tbody'); tb.innerHTML = '';
+        (res.data || []).forEach(t => {
+          const tr = document.createElement('tr');
+          tr.innerHTML = `<td>${esc(t.name)}</td><td>${esc(t.type)}</td><td>${esc(t.source_type || '—')}:${esc(t.source_account_id || '—')}</td><td>$${Number(t.amount_usd || 0).toFixed(2)}</td><td>${t.auto_approve ? 'Yes' : 'No'}</td>`;
+          tb.appendChild(tr);
+        });
+      } catch (e) { showToast('Templates error: ' + e.message, true); }
+    };
+
+    window.loadAutomationRuns = async function() {
+      try {
+        const res = await api('/api/dapp/automations/runs');
+        const tb = el('auto-runs-table').querySelector('tbody'); tb.innerHTML = '';
+        (res.data || []).forEach(r => {
+          const tr = document.createElement('tr');
+          const reqIds = ((r.request_ids || []).map(i => i.slice(0,10)+'…')).join(', ');
+          tr.innerHTML = `<td class="mono">${esc(r.id.slice(0,16))}…</td><td><span class="tag ${r.status}">${esc(r.status)}</span></td><td class="mono">${esc((r.proof_id || '').slice(0,12))}…</td><td>${esc(reqIds || '—')}</td><td>${new Date(r.created_at).toLocaleString()}</td>`;
+          tb.appendChild(tr);
+        });
+      } catch (e) { showToast('Runs error: ' + e.message, true); }
+    };
+
+    window.approveExecuteAutomationRun = async function() {
+      try {
+        const runId = el('auto-run-id').value.trim();
+        if (!runId) throw new Error('Run ID required');
+        const signatures = JSON.parse(el('auto-run-signatures').value.trim() || '[]');
+        const res = await api(`/api/dapp/automations/runs/${encodeURIComponent(runId)}/approve-execute`, { method: 'POST', body: JSON.stringify({ trusteeSignatures: signatures }) });
+        const approvals = res.data.approvals || [];
+        const executions = res.data.executions || [];
+        const approvalOk = approvals.filter(a => !a.error).length;
+        const execOk = executions.filter(e => !e.error).length;
+        const execErrors = executions.filter(e => e.error).map(e => e.error).join('; ');
+        setText('auto-run-result', `Approvals: ${approvalOk}/${approvals.length} | Executions: ${execOk}/${executions.length}${execErrors ? '\nExecution errors: ' + execErrors : ''}`, !!execErrors);
+        loadAutomationRuns();
+        loadDistributionRequests();
+      } catch (e) { setText('auto-run-result', e.message, true); }
+    };
+
+    // ═══════════════════════════════════════════════════════════════════════════
+    // Asset / Liability / Expense UI
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    window.addAsset = async function() {
+      try {
+        const body = {
+          category: el('asset-category').value,
+          name: el('asset-name').value.trim(),
+          identifier: el('asset-identifier').value.trim(),
+          description: el('asset-description').value.trim(),
+          amountUsd: el('asset-value').value,
+          owner: el('asset-owner').value.trim(),
+          linkedSourceType: el('asset-source-type').value || undefined,
+          linkedSourceAccountId: el('asset-source-account').value.trim() || undefined,
+        };
+        const res = await api('/api/dapp/assets', { method: 'POST', body: JSON.stringify(body) });
+        setText('asset-result', `Asset added: ${res.data.id}`, false);
+        loadAssets(); loadExpenseTotals();
+      } catch (e) { setText('asset-result', e.message, true); }
+    };
+
+    window.addLiability = async function() {
+      try {
+        const body = {
+          category: el('liability-category').value,
+          name: el('liability-name').value.trim(),
+          identifier: el('liability-identifier').value.trim(),
+          description: el('liability-description').value.trim(),
+          amountUsd: el('liability-value').value,
+          owner: el('liability-owner').value.trim(),
+          linkedSourceType: el('liability-source-type').value || undefined,
+          linkedSourceAccountId: el('liability-source-account').value.trim() || undefined,
+        };
+        const res = await api('/api/dapp/liabilities', { method: 'POST', body: JSON.stringify(body) });
+        setText('liability-result', `Liability added: ${res.data.id}`, false);
+        loadLiabilities(); loadExpenseTotals();
+      } catch (e) { setText('liability-result', e.message, true); }
+    };
+
+    window.addExpense = async function() {
+      try {
+        const body = {
+          expenseType: el('expense-type').value,
+          amountUsd: el('expense-amount').value,
+          payee: el('expense-payee').value.trim(),
+          payer: el('expense-payer').value.trim(),
+          assetLiabilityId: el('expense-asset-id').value.trim() || undefined,
+          description: el('expense-description').value.trim(),
+          receiptUrl: el('expense-receipt').value.trim() || undefined,
+        };
+        const res = await api('/api/dapp/expenses', { method: 'POST', body: JSON.stringify(body) });
+        setText('expense-result', `Expense added: ${res.data.id}`, false);
+        loadExpenses(); loadExpenseTotals();
+      } catch (e) { setText('expense-result', e.message, true); }
+    };
+
+    window.loadAssets = async function() {
+      try {
+        const res = await api('/api/dapp/assets');
+        const tb = el('assets-table').querySelector('tbody'); tb.innerHTML = '';
+        (res.data || []).forEach(r => {
+          const tr = document.createElement('tr');
+          tr.innerHTML = `<td>Asset</td><td>${esc(r.category)}</td><td>${esc(r.name)}</td><td class="mono">${esc(r.identifier || '—')}</td><td>$${(Number(r.amount_cents || 0)/100).toFixed(2)}</td><td><span class="tag ${r.status}">${esc(r.status)}</span></td><td>${esc(r.owner || '—')}</td>`;
+          tb.appendChild(tr);
+        });
+      } catch (e) { showToast('Assets error: ' + e.message, true); }
+    };
+
+    window.loadLiabilities = async function() {
+      try {
+        const res = await api('/api/dapp/liabilities');
+        const tb = el('liabilities-table').querySelector('tbody'); tb.innerHTML = '';
+        (res.data || []).forEach(r => {
+          const tr = document.createElement('tr');
+          tr.innerHTML = `<td>${esc(r.category)}</td><td>${esc(r.name)}</td><td class="mono">${esc(r.identifier || '—')}</td><td>$${(Number(r.amount_cents || 0)/100).toFixed(2)}</td><td><span class="tag ${r.status}">${esc(r.status)}</span></td><td>${esc(r.owner || '—')}</td>`;
+          tb.appendChild(tr);
+        });
+      } catch (e) { showToast('Liabilities error: ' + e.message, true); }
+    };
+
+    window.loadExpenses = async function() {
+      try {
+        const res = await api('/api/dapp/expenses');
+        const tb = el('expenses-table').querySelector('tbody'); tb.innerHTML = '';
+        (res.data || []).forEach(r => {
+          const tr = document.createElement('tr');
+          const actions = r.status === 'pending' || r.status === 'approved'
+            ? `<button class="btn btn-sm" onclick="payExpense('${esc(r.id)}')">Pay</button> <button class="btn btn-sm" onclick="approveExpenseRecord('${esc(r.id)}')">Approve</button> <button class="btn btn-sm" onclick="rejectExpenseRecord('${esc(r.id)}')">Reject</button>`
+            : '';
+          tr.innerHTML = `<td>${esc(r.expense_type)}</td><td>$${(Number(r.amount_cents || 0)/100).toFixed(2)}</td><td>${esc(r.payee || '—')}</td><td><span class="tag ${r.status}">${esc(r.status)}</span></td><td class="mono">${esc(r.asset_liability_id || '—').slice(0,12)}…</td><td>${actions}</td>`;
+          tb.appendChild(tr);
+        });
+      } catch (e) { showToast('Expenses error: ' + e.message, true); }
+    };
+
+    window.approveExpenseRecord = async function(id) {
+      try {
+        await api(`/api/dapp/expenses/${encodeURIComponent(id)}/approve`, { method: 'POST', body: '{}' });
+        loadExpenses();
+      } catch (e) { showToast(e.message, true); }
+    };
+
+    window.rejectExpenseRecord = async function(id) {
+      try {
+        await api(`/api/dapp/expenses/${encodeURIComponent(id)}/reject`, { method: 'POST', body: JSON.stringify({ reason: 'Rejected from UI' }) });
+        loadExpenses();
+      } catch (e) { showToast(e.message, true); }
+    };
+
+    window.payExpense = async function(id) {
+      try {
+        const destination = prompt('Enter destination address for this expense payment:');
+        if (!destination) return;
+        const safeId = prompt('Enter Safe ID to pay from:');
+        const sourceType = prompt('Source type (treasury/cash/etc):') || 'treasury';
+        const sourceAccountId = prompt('Source account ID:') || 'TREASURY_HOT';
+        const res = await api(`/api/dapp/expenses/${encodeURIComponent(id)}/pay`, { method: 'POST', body: JSON.stringify({ destinationAddress: destination, safeId, sourceType, sourceAccountId }) });
+        showToast(`Expense paid: ${res.data.expense.request_id}`, false);
+        loadExpenses(); loadDistributionRequests();
+      } catch (e) { showToast(e.message, true); }
+    };
+
+    window.loadExpenseTotals = async function() {
+      try {
+        const res = await api('/api/dapp/expense-totals');
+        const d = res.data;
+        el('expense-totals').textContent = `Assets: $${(d.totalAssetsCents/100).toFixed(2)} | Liabilities: $${(d.totalLiabilitiesCents/100).toFixed(2)} | Net Worth: $${(d.netWorthCents/100).toFixed(2)} | Expenses: $${(d.totalExpensesCents/100).toFixed(2)}`;
+      } catch (e) { el('expense-totals').textContent = 'Totals error: ' + e.message; }
+    };
+
+    document.addEventListener('DOMContentLoaded', () => {
+      const saved = localStorage.getItem('dlb-admin-token');
+      if (saved) el('admin-token').value = saved;
+      restoreUser();
+      loadDashboard();
+      // white label default
+      fetch('/api/dapp/white-label/default').then(r => r.json()).then(d => {
+        if (d.success && d.data) {
+          document.documentElement.style.setProperty('--primary', d.data.primary_color || '#3b82f6');
+          document.documentElement.style.setProperty('--primary-2', d.data.secondary_color || '#2563eb');
+          if (d.data.name) el('brand-name').textContent = d.data.name;
+          if (d.data.logo_url) el('brand-logo').src = d.data.logo_url;
+        }
+      }).catch(() => {});
+    });
+  </script>
+</body>
+</html>

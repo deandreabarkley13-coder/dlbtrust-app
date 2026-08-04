@@ -195,14 +195,14 @@ class WalletFundingEngine {
       const alloc = await this._allocationsForWallet(wallet, sourceBalances, contacts);
       if (alloc.totalCents <= 0) continue;
 
-      totalFundedCents += alloc.totalCents;
-
       if (dryRun) {
+        totalFundedCents += alloc.totalCents;
         results.push({ walletId: wallet.id, userEmail: wallet.user && wallet.user.email, address: wallet.address, amount: alloc.totalUsd, sources: alloc.sources, dryRun: true });
         continue;
       }
 
       const sweepErrors = [];
+      let sweptCents = 0;
       for (const source of alloc.sources) {
         try {
           await SourceOfFundsAdapter._fundSourceToTreasury({
@@ -211,19 +211,26 @@ class WalletFundingEngine {
             paymentId: `${paymentIdBase}-${source.type}`,
             amountCents: source.balance_cents,
           });
+          sweptCents += Number(source.balance_cents || 0);
         } catch (err) {
           console.warn(`[WalletFundingEngine] sweep failed for ${source.type} ${source.id}:`, err.message);
           sweepErrors.push({ type: source.type, id: source.id, error: err.message });
         }
       }
 
+      if (sweptCents <= 0) {
+        results.push({ walletId: wallet.id, address: wallet.address, amount: 0, success: false, error: 'No source funds were swept', sweepErrors });
+        continue;
+      }
+
+      const fundUsd = fromCents(sweptCents);
       let fundResult = null;
       let txHash = null;
       try {
         if (autoConvert && asset.toUpperCase() === 'SIT') {
           fundResult = await WalletEngine.fundWallet({
             walletId: wallet.id,
-            amount: alloc.totalUsd,
+            amount: fundUsd,
             asset: 'SIT',
             sourceType: 'treasury',
             sourceAccountId: 'TREASURY_HOT',
@@ -232,22 +239,21 @@ class WalletFundingEngine {
           txHash = fundResult && fundResult.mint && fundResult.mint.tx;
         } else {
           // Internal ledger credit backed by the Treasury sweep.
-          const cents = toCents(alloc.totalUsd);
           if (TreasuryEngine) {
-            await TreasuryEngine.debit(TREASURY_HOT, cents, { reason: `Fund wallet ${wallet.id} with ${asset}`, source: 'wallet_funding' });
+            await TreasuryEngine.debit(TREASURY_HOT, sweptCents, { reason: `Fund wallet ${wallet.id} with ${asset}`, source: 'wallet_funding' });
           }
-          await WalletEngine._credit(wallet.id, asset, String(cents), { memo: `Wallet funding from ledgers` });
-          fundResult = { walletId: wallet.id, amount: alloc.totalUsd, asset, credited: true };
+          await WalletEngine._credit(wallet.id, asset, String(sweptCents), { memo: `Wallet funding from ledgers` });
+          fundResult = { walletId: wallet.id, amount: fundUsd, asset, credited: true };
         }
       } catch (err) {
-        results.push({ walletId: wallet.id, address: wallet.address, amount: alloc.totalUsd, success: false, error: err.message, sweepErrors });
+        results.push({ walletId: wallet.id, address: wallet.address, amount: fundUsd, success: false, error: err.message, sweepErrors });
         continue;
       }
 
       // Compliance journal entry
       if (TrustAccountingEngine) {
         try {
-          const assetCents = toCents(alloc.totalUsd);
+          const assetCents = sweptCents;
           const amountDisplay = fromCents(assetCents);
           await TrustAccountingEngine.postJournalEntry({
             entryDate: new Date(),
@@ -266,7 +272,8 @@ class WalletFundingEngine {
         }
       }
 
-      results.push({ walletId: wallet.id, address: wallet.address, amount: alloc.totalUsd, asset, success: true, txHash, fundResult: !!fundResult, sweepErrors });
+      totalFundedCents += sweptCents;
+      results.push({ walletId: wallet.id, address: wallet.address, amount: fundUsd, asset, success: true, txHash, fundResult: !!fundResult, sweepErrors });
     }
 
     return { fundedWallets: results.length, totalUsd: fromCents(totalFundedCents), results };
