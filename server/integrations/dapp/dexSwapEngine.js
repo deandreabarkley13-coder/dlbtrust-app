@@ -25,11 +25,18 @@ function bool(name, fallback = false) { const v = process.env[name]; return v ? 
 function num(name, fallback = 0) { const n = Number(process.env[name]); return Number.isFinite(n) ? n : fallback; }
 
 const SWAP_ROUTER_02 = '0x68b3465833fb72A70ecDF485E0e4C7bD8665Fc45';
+const UNISWAP_V2_ROUTER_02 = '0x7a250d5630B4cF539739dF2C5dAcb4c659F2488D';
 
 const erc20Abi = [
   { type: 'function', name: 'decimals', inputs: [], outputs: [{ type: 'uint8' }], stateMutability: 'view' },
   { type: 'function', name: 'approve', inputs: [{ type: 'address' }, { type: 'uint256' }], outputs: [{ type: 'bool' }], stateMutability: 'nonpayable' },
   { type: 'function', name: 'balanceOf', inputs: [{ type: 'address' }], outputs: [{ type: 'uint256' }], stateMutability: 'view' },
+  { type: 'function', name: 'transfer', inputs: [{ type: 'address' }, { type: 'uint256' }], outputs: [{ type: 'bool' }], stateMutability: 'nonpayable' },
+];
+
+const uniswapV2RouterAbi = [
+  { type: 'function', name: 'getAmountsOut', inputs: [{ type: 'uint256' }, { type: 'address[]' }], outputs: [{ type: 'uint256[]' }], stateMutability: 'view' },
+  { type: 'function', name: 'swapExactTokensForTokens', inputs: [{ type: 'uint256' }, { type: 'uint256' }, { type: 'address[]' }, { type: 'address' }, { type: 'uint256' }], outputs: [{ type: 'uint256[]' }], stateMutability: 'nonpayable' },
 ];
 
 const bondDexAbi = [
@@ -206,6 +213,123 @@ class DexSwapEngine {
       amountOut: quote.amountOut,
       amountOutMinimum: amountOutMinimum || quote.amountOutMinimum,
       recipient: recipient || wallet.account.address,
+    };
+  }
+
+  static async quoteUniswapV2({ tokenIn, tokenOut, amountIn, decimalsIn = 18, decimalsOut = 18, router } = {}) {
+    const cfg = this.getConfig();
+    if (!cfg.enabled) throw new Error('DEX swap not enabled');
+    const amount = Number(amountIn) || 0;
+    if (amount <= 0) throw new Error('amountIn must be positive');
+
+    const inputToken = tokenIn;
+    const outputToken = tokenOut;
+    const routerAddress = router || str('UNISWAP_V2_ROUTER', UNISWAP_V2_ROUTER_02);
+
+    if (!cfg.shadow && viem) {
+      const { publicClient } = walletClient();
+      const rawIn = viem.parseUnits(String(amountIn), decimalsIn);
+      const amounts = await publicClient.readContract({
+        address: routerAddress,
+        abi: uniswapV2RouterAbi,
+        functionName: 'getAmountsOut',
+        args: [rawIn, [inputToken, outputToken]],
+      });
+      if (!amounts || amounts.length < 2) throw new Error('Uniswap V2 getAmountsOut failed');
+      const amountOutRaw = amounts[amounts.length - 1];
+      const amountOutHuman = Number(viem.formatUnits(amountOutRaw, decimalsOut));
+      const minOutHuman = amountOutHuman * (1 - cfg.slippageBps / 10000);
+      return {
+        tokenIn: inputToken,
+        tokenOut: outputToken,
+        amountIn,
+        amountOut: amountOutHuman.toFixed(decimalsOut),
+        amountOutMinimum: minOutHuman.toFixed(decimalsOut),
+        price: amountOutHuman / amount,
+        mode: 'live',
+        router: routerAddress,
+      };
+    }
+
+    const price = 0.95 + Math.random() * 0.05;
+    const outHuman = amount * price;
+    const minOutHuman = outHuman * (1 - cfg.slippageBps / 10000);
+    return {
+      tokenIn: inputToken,
+      tokenOut: outputToken,
+      amountIn,
+      amountOut: outHuman.toFixed(decimalsOut),
+      amountOutMinimum: minOutHuman.toFixed(decimalsOut),
+      price,
+      mode: 'shadow',
+      router: routerAddress,
+    };
+  }
+
+  static async swapOnUniswapV2({ tokenIn, tokenOut, amountIn, amountOutMinimum, recipient, decimalsIn = 18, decimalsOut = 18, router } = {}) {
+    const cfg = this.getConfig();
+    if (!cfg.enabled) throw new Error('DEX swap not enabled');
+    const amount = Number(amountIn) || 0;
+    if (amount <= 0) throw new Error('amountIn must be positive');
+
+    const inputToken = tokenIn;
+    const outputToken = tokenOut;
+    const routerAddress = router || str('UNISWAP_V2_ROUTER', UNISWAP_V2_ROUTER_02);
+    const to = recipient || cfg.operatorAddress;
+
+    const quote = await this.quoteUniswapV2({ tokenIn: inputToken, tokenOut: outputToken, amountIn, decimalsIn, decimalsOut, router: routerAddress });
+
+    if (cfg.shadow) {
+      return {
+        status: 'executed',
+        mode: 'shadow',
+        txHash: `shadow-uniswap-${Date.now()}`,
+        tokenIn: inputToken,
+        tokenOut: outputToken,
+        amountIn,
+        amountOut: quote.amountOut,
+        amountOutMinimum: amountOutMinimum || quote.amountOutMinimum,
+        recipient: to,
+      };
+    }
+
+    if (!routerAddress || !viem) throw new Error('Uniswap V2 router not configured');
+    const { wallet, publicClient, fees } = walletClient();
+    const rawIn = viem.parseUnits(String(amountIn), decimalsIn);
+    const minOut = amountOutMinimum ? viem.parseUnits(String(amountOutMinimum), decimalsOut) : viem.parseUnits(quote.amountOutMinimum, decimalsOut);
+    const deadline = Math.floor(Date.now() / 1000) + 300;
+
+    const approveHash = await wallet.writeContract({
+      address: inputToken,
+      abi: erc20Abi,
+      functionName: 'approve',
+      args: [routerAddress, rawIn],
+      gas: 100000n,
+      ...fees,
+    });
+    await publicClient.waitForTransactionReceipt({ hash: approveHash, timeout: 120000 });
+
+    const swapHash = await wallet.writeContract({
+      address: routerAddress,
+      abi: uniswapV2RouterAbi,
+      functionName: 'swapExactTokensForTokens',
+      args: [rawIn, minOut, [inputToken, outputToken], to, BigInt(deadline)],
+      gas: 250000n,
+      ...fees,
+    });
+    const receipt = await publicClient.waitForTransactionReceipt({ hash: swapHash, timeout: 120000 });
+    if (receipt.status !== 'success') throw new Error(`Uniswap V2 swap failed: ${receipt.transactionHash}`);
+
+    return {
+      status: 'executed',
+      mode: 'live',
+      txHash: receipt.transactionHash,
+      tokenIn: inputToken,
+      tokenOut: outputToken,
+      amountIn,
+      amountOut: quote.amountOut,
+      amountOutMinimum: quote.amountOutMinimum,
+      recipient: to,
     };
   }
 

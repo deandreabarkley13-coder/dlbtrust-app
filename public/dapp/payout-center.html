@@ -72,8 +72,9 @@
     <div class="card">
       <h2>Fund operator wallet with MoonPay</h2>
       <p>Buy ETH (or another currency) with fiat and send it directly to the operator hot wallet. Requires a MoonPay API key configured on the server.</p>
-      <div class="form-row" style="grid-template-columns:1fr auto;">
-        <input type="number" id="moonpay-amount" value="0.05" min="0.01" step="0.01" placeholder="Amount in ETH" />
+      <div class="form-row" style="grid-template-columns:1fr 120px auto;">
+        <input type="number" id="moonpay-amount" value="0.05" min="0.01" step="0.01" placeholder="Amount" />
+        <select id="moonpay-currency"><option value="eth">ETH</option><option value="dai">DAI</option></select>
         <button class="btn" onclick="openMoonpay()">Open MoonPay</button>
       </div>
       <div id="moonpay-result" class="status hidden" style="margin-top:10px;"></div>
@@ -111,6 +112,7 @@
             <option value="USDC">USDC (Stablecoin DEX)</option>
             <option value="ETH">ETH (Stablecoin DEX)</option>
             <option value="WETH">WETH (Stablecoin DEX)</option>
+            <option value="DAI">DAI (DLBUSD -> WETH -> Uniswap DAI)</option>
             <option value="CASH">Cash App USD</option>
           </select></div>
           <div><label>Description</label><input type="text" id="pay-desc" placeholder="Q3 beneficiary distribution" /></div>
@@ -198,16 +200,17 @@
 
     function updateRailHint() {
       const asset = el('pay-asset').value;
-      const hints = { SIT: 'Rail: Sovereign Trust Token (SIT) minted directly to the recipient wallet. No DEX needed.', USDC: 'Rail: Stablecoin DEX swaps source-ledger DLBUSD to USDC.', ETH: 'Rail: Stablecoin DEX swaps source-ledger DLBUSD to native ETH.', WETH: 'Rail: Stablecoin DEX swaps source-ledger DLBUSD to WETH.', CASH: 'Rail: Cash App QR / deep link for USD.' };
+      const hints = { SIT: 'Rail: Sovereign Trust Token (SIT) minted directly to the recipient wallet. No DEX needed.', USDC: 'Rail: Stablecoin DEX swaps source-ledger DLBUSD to USDC.', ETH: 'Rail: Stablecoin DEX swaps source-ledger DLBUSD to native ETH.', WETH: 'Rail: Stablecoin DEX swaps source-ledger DLBUSD to WETH.', DAI: 'Rail: Stablecoin DEX swaps source-ledger DLBUSD to WETH, then Uniswap V2 WETH to MakerDAO DAI.', CASH: 'Rail: Cash App QR / deep link for USD.' };
       el('pay-rail-hint').textContent = hints[asset] || '';
     }
     updateRailHint();
 
     async function openMoonpay() {
       const amount = el('moonpay-amount').value;
+      const currency = el('moonpay-currency').value || 'eth';
       try {
-        const data = await api(`/moonpay/onramp?amount=${amount}&currencyCode=eth`);
-        el('moonpay-result').textContent = `Opening MoonPay for ${amount} ETH to ${data.targetWallet}`;
+        const data = await api(`/moonpay/onramp?amount=${amount}&currencyCode=${currency}`);
+        el('moonpay-result').textContent = `Opening MoonPay for ${amount} ${currency.toUpperCase()} to ${data.targetWallet}`;
         el('moonpay-result').className = 'status success';
         el('moonpay-result').classList.remove('hidden');
         window.open(data.url, '_blank');
