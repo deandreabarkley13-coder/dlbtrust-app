@@ -35,7 +35,7 @@ function id(prefix = 'WLT') { return `${prefix}-${Date.now()}-${Math.random().to
 function assetDecimals(asset) {
   const a = String(asset || '').toUpperCase();
   if (a === 'ETH' || a === 'WETH') return 18;
-  if (['USDC','USDT','USDS','DAI','DLBUSD','UST','TUSD','BUSD','PYUSD','GUSD','USDC.E'].includes(a)) return 6;
+  if (['SIT','USDC','USDT','USDS','DAI','DLBUSD','UST','TUSD','BUSD','PYUSD','GUSD','USDC.E'].includes(a)) return 6;
   return 2;
 }
 function toCents(amount, asset = '') {

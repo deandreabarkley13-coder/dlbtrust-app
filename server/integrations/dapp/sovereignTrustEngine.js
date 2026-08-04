@@ -35,8 +35,9 @@ function bool(name, def = false) { const v = process.env[name]; return v ? Strin
 function num(name, def = 0) { const n = Number(process.env[name]); return Number.isFinite(n) ? n : def; }
 
 function id(prefix = 'SIT') { return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 8).toUpperCase()}`; }
-function toCents(amount) { return Math.round((Number(amount) || 0) * 100); }
-function fromCents(cents) { return (cents / 100).toFixed(2); }
+function toCents(amount) { return Math.round((Number(amount) || 0) * 1_000_000); }
+function fromCents(cents) { return (Number(cents || 0) / 1_000_000).toFixed(6); }
+function toUsdCents(microCents) { return Math.max(0, Math.round(Number(microCents || 0) / 10000)); }
 function safeJson(obj) { return JSON.stringify(obj, (k, v) => typeof v === 'bigint' ? String(v) : v); }
 
 const memory = {
@@ -374,29 +375,30 @@ class SovereignTrustEngine {
 
     const cents = amountCents || toCents(amount);
     if (cents <= 0) throw new Error('amount must be > 0');
-    const raw = viem.parseUnits(String(cents / 100), 6);
+    const raw = viem.parseUnits(fromCents(cents), 6);
+    const usdCents = toUsdCents(cents);
 
     const paymentId = id('SIT-MINT');
     let sourceRef;
     if (String(sourceType).toLowerCase() === 'treasury') {
       const acct = sourceAccountId || DEFAULT_ACCOUNT || 'TREASURY_HOT';
-      await TreasuryEngine.debit(acct, cents, { reason: memo || `Sovereign token mint reserve ${paymentId}`, source: 'sovereign_mint', metadata: { sourceType, sourceAccountId, paymentId, target: to } });
+      await TreasuryEngine.debit(acct, usdCents, { reason: memo || `Sovereign token mint reserve ${paymentId}`, source: 'sovereign_mint', metadata: { sourceType, sourceAccountId, paymentId, target: to } });
       sourceRef = { sourceType, sourceAccountId: acct, treasuryDebit: true };
     } else {
       sourceRef = await SourceOfFundsAdapter._fundSourceToTreasury({
-        sourceType, sourceAccountId, paymentId, amountCents: cents,
+        sourceType, sourceAccountId, paymentId, amountCents: usdCents,
       });
     }
 
     if (String(sourceType).toLowerCase() !== 'treasury') {
-      await TreasuryEngine.debit(DEFAULT_ACCOUNT, cents, {
+      await TreasuryEngine.debit(DEFAULT_ACCOUNT, usdCents, {
         reason: memo || `Sovereign token mint reserve ${paymentId}`,
         source: 'sovereign_mint',
         metadata: { sourceType, sourceAccountId, paymentId, target: to, sourceRef },
       });
     }
     await TreasuryEngine.getOrCreateAccount(cfg.reserveAccount, { type: 'reserve', network: cfg.chainId === 1 ? 'mainnet' : 'sepolia', assetCode: cfg.tokenSymbol });
-    await TreasuryEngine.credit(cfg.reserveAccount, cents, {
+    await TreasuryEngine.credit(cfg.reserveAccount, usdCents, {
       source: 'sovereign_mint',
       metadata: { sourceType, sourceAccountId, paymentId, target: to, sourceRef },
     });
@@ -407,9 +409,9 @@ class SovereignTrustEngine {
       tx = await this._tokenWrite('mint', [to, raw]);
     } catch (err) {
       try {
-        await TreasuryEngine.debit(cfg.reserveAccount, cents, { reason: `rollback mint ${paymentId}` });
-        await TreasuryEngine.credit(DEFAULT_ACCOUNT, cents, { reason: `rollback mint ${paymentId}` });
-        await SourceOfFundsAdapter._refundSourceFromTreasury({ sourceType, sourceAccountId, payment: { id: paymentId, total_cents: cents }, sourceRef });
+        await TreasuryEngine.debit(cfg.reserveAccount, usdCents, { reason: `rollback mint ${paymentId}` });
+        await TreasuryEngine.credit(DEFAULT_ACCOUNT, usdCents, { reason: `rollback mint ${paymentId}` });
+        await SourceOfFundsAdapter._refundSourceFromTreasury({ sourceType, sourceAccountId, payment: { id: paymentId, total_cents: usdCents }, sourceRef });
       } catch (e) { console.warn('[SovereignTrustEngine] mint rollback failed:', e.message); }
       throw err;
     }
@@ -444,10 +446,11 @@ class SovereignTrustEngine {
 
     const cents = amountCents || toCents(amount);
     if (cents <= 0) throw new Error('amount must be > 0');
-    const raw = viem.parseUnits(String(cents / 100), 6);
+    const raw = viem.parseUnits(fromCents(cents), 6);
+    const usdCents = toUsdCents(cents);
 
     const balance = await this.tokenBalanceOf(from);
-    if (Number(balance) * 100 < cents) throw new Error(`Insufficient SIT balance: ${balance}`);
+    if (Number(balance) * 1_000_000 < cents) throw new Error(`Insufficient SIT balance: ${balance}`);
 
     const paymentId = id('SIT-BURN');
 
@@ -458,26 +461,26 @@ class SovereignTrustEngine {
       throw new Error(`SIT burn failed: ${err.message}`);
     }
 
-    await TreasuryEngine.debit(cfg.reserveAccount, cents, {
+    await TreasuryEngine.debit(cfg.reserveAccount, usdCents, {
       reason: memo || `Sovereign token burn release ${paymentId}`,
       source: 'sovereign_burn',
       metadata: { sourceType, sourceAccountId, paymentId, from, tx },
     });
-    await TreasuryEngine.credit(DEFAULT_ACCOUNT, cents, {
+    await TreasuryEngine.credit(DEFAULT_ACCOUNT, usdCents, {
       source: 'sovereign_burn',
       metadata: { sourceType, sourceAccountId, paymentId, from, tx },
     });
 
-    const sourceRef = { burnTx: tx, from, amountCents: cents };
+    const sourceRef = { burnTx: tx, from, amountCents: usdCents };
     if (ModuleFundingEngine) {
       await ModuleFundingEngine._creditSource({
-        type: sourceType, accountId: sourceAccountId, amountCents: cents,
+        type: sourceType, accountId: sourceAccountId, amountCents: usdCents,
         memo: memo || `Sovereign token burn release ${paymentId}`, referenceId: paymentId,
       });
     } else {
       await SourceOfFundsAdapter._refundSourceFromTreasury({
         sourceType, sourceAccountId,
-        payment: { id: paymentId, total_cents: cents },
+        payment: { id: paymentId, total_cents: usdCents },
         sourceRef,
       });
     }
@@ -522,18 +525,18 @@ class SovereignTrustEngine {
     if (!token) return '0';
     if (this.getConfig().shadow) {
       const addr = (address || '').toLowerCase();
-      if (memory.holders.has(addr)) return (memory.holders.get(addr) / 100).toFixed(2);
+      if (memory.holders.has(addr)) return (memory.holders.get(addr) / 1_000_000).toFixed(6);
       if (pool) {
         try {
           const rows = await pool.query('SELECT balance_cents FROM sovereign_token_holders WHERE token_id = $1 AND address = $2', [token.id, addr]);
           if (rows.rows && rows.rows[0]) {
             const c = Number(rows.rows[0].balance_cents);
             memory.holders.set(addr, c);
-            return (c / 100).toFixed(2);
+            return (c / 1_000_000).toFixed(6);
           }
         } catch (e) { console.warn('[SovereignTrustEngine] tokenBalanceOf DB lookup failed:', e.message); }
       }
-      return '0.00';
+      return '0.000000';
     }
     const { publicClient } = walletClient();
     const raw = await publicClient.readContract({
@@ -589,10 +592,10 @@ class SovereignTrustEngine {
 
     const operator = (cfg.operatorAddress || '').toLowerCase();
     const balance = await this.tokenBalanceOf(operator);
-    const balanceCents = Math.round(Number(balance) * 100);
+    const balanceCents = Math.round(Number(balance) * 1_000_000);
     if (cents > balanceCents) throw new Error(`Insufficient operator SIT balance: ${fromCents(balanceCents)} available, ${fromCents(cents)} requested`);
 
-    const raw = viem.parseUnits(String(cents / 100), 6);
+    const raw = viem.parseUnits(fromCents(cents), 6);
 
     if (cfg.shadow) {
       const toLower = (to || '').toLowerCase();

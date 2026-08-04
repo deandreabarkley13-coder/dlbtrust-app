@@ -219,7 +219,7 @@
     function formatAsset(asset, amount) {
       const a = String(asset || '').toUpperCase();
       const n = Number(amount || 0);
-      const digits = (a === 'USD' || a === 'SIT') ? 2 : 6;
+      const digits = (a === 'USD') ? 2 : 6;
       return n.toLocaleString('en-US', { minimumFractionDigits: digits, maximumFractionDigits: digits });
     }
     function showTab(name) {
