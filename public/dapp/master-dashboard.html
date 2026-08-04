@@ -192,9 +192,16 @@
       return s.replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
     }
     function token() { return el('token').value || localStorage.getItem('dlb-admin-token') || ''; }
-    function saveToken() { localStorage.setItem('dlb-admin-token', el('token').value); show('Token saved', false, 'automation-result'); }
+    function hasToken() { return Boolean(token()); }
+    function saveToken() { localStorage.setItem('dlb-admin-token', el('token').value); show('Token saved', false, 'automation-result'); loadAll(); }
     function show(msg, isErr, id) { const d = el(id); d.textContent = msg; d.className = 'status ' + (isErr ? 'err' : 'ok'); d.classList.remove('hidden'); }
     function formatMoney(n) { return Number(n || 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 }); }
+    function formatAsset(asset, amount) {
+      const a = String(asset || '').toUpperCase();
+      const n = Number(amount || 0);
+      const digits = (a === 'USD' || a === 'SIT') ? 2 : 6;
+      return n.toLocaleString('en-US', { minimumFractionDigits: digits, maximumFractionDigits: digits });
+    }
     function showTab(name) {
       document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
       event.target.classList.add('active');
@@ -211,6 +218,14 @@
     }
 
     async function loadAll() {
+      if (!hasToken()) {
+        const msg = 'Paste your Admin / Operator Token and click Save token.';
+        el('overview-master-status').textContent = msg;
+        el('overview-income').textContent = msg;
+        el('overview-pending').textContent = msg;
+        el('overview-wallets').textContent = msg;
+        return;
+      }
       await Promise.all([loadMasters(), loadBonds(), loadRequests(), loadOverview()]);
     }
 
@@ -237,7 +252,7 @@
         const wallets = await api('/wallets');
         const rows = await Promise.all(wallets.map(async w => {
           const bal = await api(`/wallets/${w.id}/balance`).catch(() => ({ internal: {}, external: { eth: '0', usdc: '0', sit: '0' } }));
-          const internal = Object.entries(bal.internal || {}).map(([a, v]) => `${esc(a)}: <b>${esc(formatMoney(v))}</b>`).join(' &middot; ') || '<span class="muted">No internal balance</span>';
+          const internal = Object.entries(bal.internal || {}).map(([a, v]) => `${esc(a)}: <b>${esc(formatAsset(a, v))}</b>`).join(' &middot; ') || '<span class="muted">No internal balance</span>';
           return `<div style="border-bottom:1px solid var(--border);padding:10px 0;"><div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;"><b>${esc(w.user_name || w.name || 'Wallet')}</b><span class="addr" style="font-family:monospace;font-size:12px;color:var(--accent);">${esc(w.address)}</span><span class="muted">&middot; ${esc(w.role || 'beneficiary')}</span></div><div style="margin-top:4px;font-size:13px;">${internal}</div></div>`;
         }));
         el('overview-wallets').innerHTML = rows.join('') || '<span class="muted">No wallets found.</span>';
@@ -355,7 +370,15 @@
     function showSafe(msg, isErr, id) { const d = el(id); d.textContent = msg; d.className = 'status ' + (isErr ? 'err' : 'ok'); d.classList.remove('hidden'); }
 
     if (localStorage.getItem('dlb-admin-token')) el('token').value = localStorage.getItem('dlb-admin-token');
-    loadAll();
+    if (!hasToken()) {
+      const msg = 'Paste your Admin / Operator Token and click Save token.';
+      el('overview-master-status').textContent = msg;
+      el('overview-income').textContent = msg;
+      el('overview-pending').textContent = msg;
+      el('overview-wallets').textContent = msg;
+    } else {
+      loadAll();
+    }
   </script>
 </body>
 </html>
