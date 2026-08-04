@@ -137,8 +137,10 @@ class MasterWalletEngine {
     const bond = await BondEngine.getBond(bondId);
     if (!bond) throw new Error(`Bond ${bondId} not found`);
 
-    // Bring accrued interest up to date before paying
-    await BondEngine.accrueInterest(bondId, new Date().toISOString().split('T')[0]);
+    // Bring accrued interest up to date before paying (only for active bonds)
+    if (bond.status === 'active') {
+      await BondEngine.accrueInterest(bondId, new Date().toISOString().split('T')[0]);
+    }
     const live = await LiveBondEngine.getBondLiveMetrics(bondId);
     const payAmount = Number(amount) || parseFloat(live.accrued_interest_total);
     if (payAmount <= 0) throw new Error('No fixed income to distribute');
