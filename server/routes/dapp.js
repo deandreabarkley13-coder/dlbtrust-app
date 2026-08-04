@@ -463,6 +463,21 @@ router.post('/moonpay/webhook', async (req, res) => {
   }
 });
 
+// ─── Operator Wallet (for direct funding of gas / pool liquidity) ───────────────
+router.get('/operator/wallet', operatorAuth, async (req, res) => {
+  try {
+    const cfg = StablecoinDexEngine.getConfig();
+    res.json({
+      success: true,
+      data: {
+        address: cfg.operatorAddress,
+        network: cfg.chainId === 1 ? 'ethereum-mainnet' : 'sepolia',
+        assets: ['ETH', 'WETH', 'DAI', 'USDC', 'DLBUSD'],
+      },
+    });
+  } catch (err) { sendError(res, err); }
+});
+
 // ─── Source → DEX Bridge (fund Safe from legacy ledger via tokenization/swap) ───
 router.post('/fund-from-source', operatorAuth, writeRateLimiter(), async (req, res) => {
   try {
