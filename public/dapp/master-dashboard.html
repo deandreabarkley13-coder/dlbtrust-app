@@ -98,6 +98,11 @@
           <p>Beneficiary requests awaiting maker/checker approval.</p>
           <div id="overview-pending" class="muted">Loading...</div>
         </div>
+        <div class="panel" style="grid-column:1 / -1;">
+          <h2>Trust Wallets</h2>
+          <p>Trustee and beneficiary wallet addresses and current balances.</p>
+          <div id="overview-wallets" class="muted">Loading...</div>
+        </div>
       </div>
       <div class="panel">
         <h2>One-click automation</h2>
@@ -228,6 +233,15 @@
         const pending = (reqs || []).filter(r => r.status !== 'executed' && r.status !== 'rejected' && r.status !== 'failed').length;
         el('overview-pending').innerHTML = `<div class="big">${esc(pending)}</div><div class="muted">pending requests</div>`;
       } catch (e) { el('overview-pending').textContent = e.message; }
+      try {
+        const wallets = await api('/wallets');
+        const rows = await Promise.all(wallets.map(async w => {
+          const bal = await api(`/wallets/${w.id}/balance`).catch(() => ({ internal: {}, external: { eth: '0', usdc: '0', sit: '0' } }));
+          const internal = Object.entries(bal.internal || {}).map(([a, v]) => `${esc(a)}: <b>${esc(formatMoney(v))}</b>`).join(' &middot; ') || '<span class="muted">No internal balance</span>';
+          return `<div style="border-bottom:1px solid var(--border);padding:10px 0;"><div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;"><b>${esc(w.user_name || w.name || 'Wallet')}</b><span class="addr" style="font-family:monospace;font-size:12px;color:var(--accent);">${esc(w.address)}</span><span class="muted">&middot; ${esc(w.role || 'beneficiary')}</span></div><div style="margin-top:4px;font-size:13px;">${internal}</div></div>`;
+        }));
+        el('overview-wallets').innerHTML = rows.join('') || '<span class="muted">No wallets found.</span>';
+      } catch (e) { el('overview-wallets').textContent = e.message; }
     }
 
     async function loadMasters() {
