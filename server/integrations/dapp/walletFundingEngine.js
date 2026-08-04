@@ -96,16 +96,14 @@ class WalletFundingEngine {
     }
 
     // Name / email substring matching
-    if (userName && (sourceName.includes(userName) || userName.split(/\s+/).every(part => sourceTokens.includes(part)))) return true;
-    if (userLocal && sourceName.includes(userLocal)) return true;
     if (userName) {
+      if (sourceName.includes(userName) || userName.split(/\s+/).every(part => sourceTokens.includes(part))) return true;
       const parts = userName.split(/\s+/).filter(Boolean);
-      if (parts.length >= 1) {
-        for (const part of parts) {
-          if (part.length > 2 && sourceTokens.includes(part)) return true;
-        }
+      for (const part of parts) {
+        if (part.length > 2 && sourceTokens.includes(part)) return true;
       }
     }
+    if (userLocal && sourceName.includes(userLocal)) return true;
 
     // Phone matching
     if (user.phone && sourceName.includes(String(user.phone).replace(/\D/g, ''))) return true;
