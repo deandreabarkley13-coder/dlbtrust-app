@@ -32,6 +32,8 @@ function tokens(text) {
   return normalize(text).split(/\s+/).filter(Boolean);
 }
 
+const STOPWORDS = new Set(['trust', 'account', 'accounts', 'cash', 'bank', 'beneficiary', 'reserve', 'operating', 'corpus', 'distribution', 'investment', 'accrued', 'interest', 'fund', 'funds', 'savings', 'checking', 'ledger', 'income', 'asset', 'liability', 'equity', 'revenue', 'expense']);
+
 class WalletFundingEngine {
   static _lazyLoad() {
     DappEngine = DappEngine || getDappEngine();
@@ -95,15 +97,17 @@ class WalletFundingEngine {
       if (String(source.meta.clientId) === String(user.metadata.fineract_client_id)) return true;
     }
 
-    // Name / email substring matching
+    // Email local-part match (very specific)
+    if (userLocal && userLocal.length > 2 && sourceName.includes(userLocal)) return true;
+
+    // Full name substring match
     if (userName) {
-      if (sourceName.includes(userName) || userName.split(/\s+/).every(part => sourceTokens.includes(part))) return true;
-      const parts = userName.split(/\s+/).filter(Boolean);
-      for (const part of parts) {
-        if (part.length > 2 && sourceTokens.includes(part)) return true;
-      }
+      if (sourceName.includes(userName)) return true;
+
+      // Require every meaningful name token to appear in the source name.
+      const userParts = userName.split(/\s+/).filter(p => p.length > 1);
+      if (userParts.length > 0 && userParts.every(p => sourceTokens.includes(p))) return true;
     }
-    if (userLocal && sourceName.includes(userLocal)) return true;
 
     // Phone matching
     if (user.phone && sourceName.includes(String(user.phone).replace(/\D/g, ''))) return true;
