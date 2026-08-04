@@ -3,16 +3,46 @@
 /**
  * Email Engine
  *
- * Sends real email using SendGrid when SENDGRID_API_KEY is set.
+ * Sends real email using:
+ * 1. SendGrid when SENDGRID_API_KEY is set.
+ * 2. Gmail SMTP when GMAIL_USER and GMAIL_APP_PASSWORD are set.
+ * 3. A generic SMTP server when SMTP_HOST, SMTP_USER, and SMTP_PASS are set.
+ *
  * Falls back to in-app messaging via MessagingEngine and console logging
  * when no email provider is configured.
  */
 
 let MessagingEngine;
+let nodemailer;
 try { MessagingEngine = require('../messaging/messagingEngine').MessagingEngine; } catch (e) { MessagingEngine = null; }
+try { nodemailer = require('nodemailer'); } catch (e) { nodemailer = null; }
 
 const SENDGRID_KEY = process.env.SENDGRID_API_KEY || process.env.DLB_SENDGRID_API_KEY || '';
-const FROM_EMAIL = process.env.SENDGRID_FROM_EMAIL || process.env.EMAIL_FROM || 'noreply@dlbtrust.co';
+const FROM_EMAIL = process.env.SENDGRID_FROM_EMAIL || process.env.EMAIL_FROM || process.env.GMAIL_USER || 'noreply@dlbtrust.co';
+
+function getSmtpTransporter() {
+  if (!nodemailer) return null;
+
+  if (process.env.GMAIL_USER && process.env.GMAIL_APP_PASSWORD) {
+    return nodemailer.createTransport({
+      host: 'smtp.gmail.com',
+      port: 465,
+      secure: true,
+      auth: { user: process.env.GMAIL_USER, pass: process.env.GMAIL_APP_PASSWORD },
+    });
+  }
+
+  if (process.env.SMTP_HOST && process.env.SMTP_USER && process.env.SMTP_PASS) {
+    return nodemailer.createTransport({
+      host: process.env.SMTP_HOST,
+      port: parseInt(process.env.SMTP_PORT || '587', 10),
+      secure: process.env.SMTP_SECURE === 'true' || (process.env.SMTP_PORT || '587') === '465',
+      auth: { user: process.env.SMTP_USER, pass: process.env.SMTP_PASS },
+    });
+  }
+
+  return null;
+}
 
 class EmailEngine {
 
@@ -39,6 +69,22 @@ class EmailEngine {
         return { sent: true, provider: 'sendgrid', to, subject };
       } catch (e) {
         console.warn('[EmailEngine] SendGrid send failed:', e.message);
+      }
+    }
+
+    const smtp = getSmtpTransporter();
+    if (smtp) {
+      try {
+        const info = await smtp.sendMail({
+          from: `"DLB Trust" <${from || FROM_EMAIL}>`,
+          to,
+          subject,
+          text: body || '',
+          html: html || undefined,
+        });
+        return { sent: true, provider: 'smtp', to, subject, messageId: info.messageId };
+      } catch (e) {
+        console.warn('[EmailEngine] SMTP send failed:', e.message);
       }
     }
 
