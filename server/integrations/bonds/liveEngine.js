@@ -207,7 +207,8 @@ class LiveBondEngine {
     const macDuration = LiveBondEngine.calcMacaulayDuration(bond);
     const modDuration = LiveBondEngine.calcModifiedDuration(bond, ytm);
     const currentPrice = LiveBondEngine.calcCurrentPrice(bond, yield_);
-    const marketValue = currentPrice * faceValue;
+    const cleanMarketValue = currentPrice * principalBalance;
+    const marketValue = cleanMarketValue + totalAccrued;
     const dv01 = LiveBondEngine.calcDV01(bond, modDuration, marketValue);
     const dailyAccrual = LiveBondEngine.calcDailyAccrual(bond);
     const nextCouponDate = LiveBondEngine.calcNextCouponDate(bond);
@@ -262,7 +263,7 @@ class LiveBondEngine {
       // Totals
       total_interest_paid: parseFloat(bond.total_interest_paid),
       total_principal_paid: parseFloat(bond.total_principal_paid),
-      total_current_value: Math.round((marketValue + totalAccrued) * 100) / 100,
+      total_current_value: Math.round(marketValue * 100) / 100,
       generated_at: new Date().toISOString(),
     };
   }

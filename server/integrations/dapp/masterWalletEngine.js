@@ -146,25 +146,40 @@ class MasterWalletEngine {
     // Mint DLBUSD from bond interest and swap to the target asset in one flow.
     // StablecoinDexEngine.mintFromSource will roll the bond debit back if the mint fails,
     // and depositAndSwap will try an ETH fallback if the primary swap fails.
-    const swap = await StablecoinDexEngine.depositAndSwap({
-      sourceType: 'bond_interest',
-      sourceAccountId: bondId,
-      amount: payAmount,
-      targetAsset,
-      recipient: distribution.address,
-      createPoolIfMissing: true,
-      poolSeedUsdc: 0.005,
-      poolSeedDlbusd: 10,
-    });
-
-    const usedAsset = swap.actualTargetAsset || targetAsset;
-    const outAmount = String(swap.amountOut || '0');
+    let swap = null;
+    let usedAsset = 'DLBUSD';
+    let outAmount = String(payAmount);
+    let conversionNote = `${targetAsset} swap skipped (no DEX liquidity); DLBUSD credited for later conversion`;
+    try {
+      swap = await StablecoinDexEngine.depositAndSwap({
+        sourceType: 'bond_interest',
+        sourceAccountId: bondId,
+        amount: payAmount,
+        targetAsset,
+        recipient: distribution.address,
+        createPoolIfMissing: true,
+        poolSeedUsdc: 0.005,
+        poolSeedDlbusd: 10,
+      });
+      usedAsset = swap.actualTargetAsset || targetAsset;
+      outAmount = String(swap.amountOut || '0');
+      conversionNote = `Converted to ${usedAsset}`;
+    } catch (swapErr) {
+      console.warn('[MasterWalletEngine] fixed-income swap failed, minting DLBUSD instead:', swapErr.message);
+      swap = await StablecoinDexEngine.mintFromSource({
+        sourceType: 'bond_interest',
+        sourceAccountId: bondId,
+        amount: payAmount,
+        targetAddress: distribution.address,
+      });
+      outAmount = String(swap.minted || '0');
+    }
     if (Number(outAmount) > 0) {
       try {
         await WalletEngine.credit(distribution.id, usedAsset, outAmount, {
-          memo: memo || `Fixed income from bond ${bond.bond_name} (${usedAsset})`,
+          memo: memo || `Fixed income from bond ${bond.bond_name} (${conversionNote})`,
           bond_id: bondId,
-          swap: swap.operationId,
+          swap: swap && swap.operationId,
         });
       } catch (creditErr) {
         console.warn('[MasterWalletEngine] internal ledger credit skipped for', usedAsset, creditErr.message);
@@ -241,23 +256,41 @@ class MasterWalletEngine {
     }
 
     if (backfillInterest && live.accrued_interest_total > 0) {
-      const interestSwap = await StablecoinDexEngine.depositAndSwap({
-        sourceType: 'bond_interest',
-        sourceAccountId: bondId,
-        amount: live.accrued_interest_total,
-        targetAsset: 'USDC',
-        recipient: distributionMaster.address,
-        createPoolIfMissing: true,
-        poolSeedUsdc: 0.005,
-        poolSeedDlbusd: 10,
-      });
-      const usedAsset = interestSwap.actualTargetAsset || 'USDC';
-      const outAmount = String(interestSwap.amountOut || '0');
+      let interestSwap = null;
+      let usedAsset = 'DLBUSD';
+      let outAmount = String(live.accrued_interest_total);
+      let conversionNote = 'USDC swap skipped (no DEX liquidity); DLBUSD credited for later conversion';
+      try {
+        interestSwap = await StablecoinDexEngine.depositAndSwap({
+          sourceType: 'bond_interest',
+          sourceAccountId: bondId,
+          amount: live.accrued_interest_total,
+          targetAsset: 'USDC',
+          recipient: distributionMaster.address,
+          createPoolIfMissing: true,
+          poolSeedUsdc: 0.005,
+          poolSeedDlbusd: 10,
+        });
+        usedAsset = interestSwap.actualTargetAsset || 'USDC';
+        outAmount = String(interestSwap.amountOut || '0');
+        conversionNote = `Converted to ${usedAsset}`;
+      } catch (swapErr) {
+        console.warn('[MasterWalletEngine] interest swap failed, minting DLBUSD instead:', swapErr.message);
+        // If the DEX is not liquid, mint DLBUSD directly into the distribution master
+        // so the accrued interest is captured on-chain and can be swapped later.
+        interestSwap = await StablecoinDexEngine.mintFromSource({
+          sourceType: 'bond_interest',
+          sourceAccountId: bondId,
+          amount: live.accrued_interest_total,
+          targetAddress: distributionMaster.address,
+        });
+        outAmount = String(interestSwap.minted || '0');
+      }
       if (Number(outAmount) > 0) {
         await WalletEngine.credit(distributionMaster.id, usedAsset, outAmount, {
-          memo: `Backfill bond interest for ${bond.bond_name}`,
+          memo: `Backfill bond interest for ${bond.bond_name} (${conversionNote})`,
           bond_id: bondId,
-          swap: interestSwap.operationId,
+          swap: interestSwap && interestSwap.operationId,
         });
       }
       results.interest = {
@@ -265,6 +298,7 @@ class MasterWalletEngine {
         target_asset: usedAsset,
         amount_out: outAmount,
         distribution_wallet: distributionMaster.address,
+        note: conversionNote,
       };
     }
 
