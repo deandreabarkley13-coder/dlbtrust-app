@@ -23,6 +23,7 @@ const { DisbursementAutomationEngine } = require('../integrations/dapp/disbursem
 const { FundingEngine } = require('../integrations/dapp/fundingEngine');
 const { PayoutCenterEngine } = require('../integrations/dapp/payoutCenterEngine');
 const { WalletEngine } = require('../integrations/dapp/walletEngine');
+const { WalletFundingEngine } = require('../integrations/dapp/walletFundingEngine');
 const { MasterWalletEngine } = require('../integrations/dapp/masterWalletEngine');
 let BondEngine, LiveBondEngine;
 try { BondEngine = require('../integrations/bonds/bondEngine').BondEngine; } catch (e) { BondEngine = null; }
@@ -224,7 +225,7 @@ router.post('/auth/send-code', async (req, res) => {
   try {
     const { email } = req.body;
     const data = await DappEngine.generateOtp(email);
-    res.json({ success: true, data, note: 'In this demo the code is returned in the response; in production wire Twilio/SendGrid.' });
+    res.json({ success: true, data });
   } catch (err) { sendError(res, err); }
 });
 
@@ -1099,6 +1100,19 @@ router.post('/wallets/transfer', operatorAuth, writeRateLimiter(), async (req, r
     const { fromWalletId, toWalletId, toAddress, amount, asset, memo } = req.body;
     if (!fromWalletId || (!toWalletId && !toAddress)) throw new Error('fromWalletId and toWalletId or toAddress required');
     const data = await WalletEngine.transfer({ fromWalletId, toWalletId, toAddress, amount, asset: asset || 'SIT', memo });
+    res.status(201).json({ success: true, data });
+  } catch (err) { sendError(res, err); }
+});
+
+// ─── Wallet Funding from Core Banking / General Ledger ────────────────────────
+router.get('/wallets/fund-all/preview', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await WalletFundingEngine.preview() }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/wallets/fund-all', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try {
+    const { asset, autoConvert, dryRun } = req.body || {};
+    const data = await WalletFundingEngine.fundAll({ asset: asset || 'SIT', autoConvert: autoConvert !== false, dryRun: dryRun === true });
     res.status(201).json({ success: true, data });
   } catch (err) { sendError(res, err); }
 });

@@ -792,7 +792,7 @@ class DappEngine {
       } catch (e) { console.warn('[DappEngine] OTP email failed:', e.message); }
     }
 
-    return { email, code, expires, role, roles, sent: emailStatus.sent, provider: emailStatus.provider, message: emailStatus.note || 'OTP generated' };
+    return { email, code: emailStatus.sent ? null : code, expires, role, roles, sent: emailStatus.sent, provider: emailStatus.provider, message: emailStatus.note || 'OTP generated' };
   }
 
   static _sanitizeUser(user) {

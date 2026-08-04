@@ -39,7 +39,7 @@ function walletClient() {
   const account = privateKeyToAccount(cfg.privateKey);
   const chains = require('viem/chains');
   const chain = cfg.chainId === 1 ? chains.mainnet : (chains.sepolia || undefined);
-  const fees = { maxFeePerGas: viem.parseGwei('1.5'), maxPriorityFeePerGas: viem.parseGwei('0.0015') };
+  const fees = cfg.getFees ? (cfg.getFees() || { maxFeePerGas: viem.parseGwei('20'), maxPriorityFeePerGas: viem.parseGwei('0.5') }) : { maxFeePerGas: viem.parseGwei('20'), maxPriorityFeePerGas: viem.parseGwei('0.5') };
   return {
     account,
     fees,
@@ -107,7 +107,7 @@ class StablecoinDexEngine {
       gas: 100000n,
       ...fees,
     });
-    await publicClient.waitForTransactionReceipt({ hash });
+    await publicClient.waitForTransactionReceipt({ hash, timeout: 120000 });
     return { wrapped: amount, txHash: hash };
   }
 
@@ -262,9 +262,9 @@ class StablecoinDexEngine {
     const raw = amount ? viem.parseUnits(String(amount), 18) : balance;
     if (raw <= 0n) return { skipped: true, reason: 'no_weth_balance' };
     const hash = await wallet.writeContract({ address: cfg.wethAddress, abi: wethAbi, functionName: 'withdraw', args: [raw], gas: 100000n, ...fees });
-    await publicClient.waitForTransactionReceipt({ hash });
+    await publicClient.waitForTransactionReceipt({ hash, timeout: 120000 });
     const sendHash = await wallet.sendTransaction({ to: target, value: raw, gas: 21000n, ...fees });
-    const receipt = await publicClient.waitForTransactionReceipt({ hash: sendHash });
+    const receipt = await publicClient.waitForTransactionReceipt({ hash: sendHash, timeout: 120000 });
     return { hash, sendHash, status: receipt.status, amountEth: viem.formatEther(raw), to: target };
   }
 
@@ -336,7 +336,7 @@ class StablecoinDexEngine {
         gas: 100000n,
         ...fees,
       });
-      await publicClient.waitForTransactionReceipt({ hash: transferHash });
+      await publicClient.waitForTransactionReceipt({ hash: transferHash, timeout: 120000 });
       swap.transferHash = transferHash;
     }
 

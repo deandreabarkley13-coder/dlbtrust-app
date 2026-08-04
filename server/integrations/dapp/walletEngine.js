@@ -398,17 +398,12 @@ class WalletEngine {
     if (!cfg.privateKey) throw new Error('DAPP_PRIVATE_KEY not configured');
     const account = accountFns.privateKeyToAccount(cfg.privateKey);
     const chain = cfg.chainId === 11155111 ? chains.sepolia : chains.mainnet;
-    const fees = { maxFeePerGas: viem.parseGwei('1.5'), maxPriorityFeePerGas: viem.parseGwei('0.0015') };
+    const fees = cfg.getFees ? (cfg.getFees() || { maxFeePerGas: viem.parseGwei('20'), maxPriorityFeePerGas: viem.parseGwei('0.5') }) : { maxFeePerGas: viem.parseGwei('20'), maxPriorityFeePerGas: viem.parseGwei('0.5') };
     const walletClient = viem.createWalletClient({ account, chain, transport: viem.http(cfg.rpcUrl) });
     const publicClient = viem.createPublicClient({ chain, transport: viem.http(cfg.rpcUrl) });
     const raw = viem.parseEther(String(amountEth));
-    const sendPromise = (async () => {
-      const hash = await walletClient.sendTransaction({ to: wallet.address, value: raw, gas: 21000n, ...fees });
-      const receipt = await publicClient.waitForTransactionReceipt({ hash });
-      return { hash, receipt };
-    })();
-    const timeoutPromise = new Promise((_, reject) => setTimeout(() => reject(new Error('ETH fund transaction timed out')), 30000));
-    const { hash } = await Promise.race([sendPromise, timeoutPromise]);
+    const hash = await walletClient.sendTransaction({ to: wallet.address, value: raw, gas: 21000n, ...fees });
+    await publicClient.waitForTransactionReceipt({ hash, timeout: 120000 });
     return { walletId, amountEth, txHash: hash };
   }
 
@@ -433,6 +428,14 @@ class WalletEngine {
     }
 
     // External transfer
+    const assetUpper = String(asset || 'SIT').toUpperCase();
+    if (assetUpper === 'ETH') return this.externalEthSend({ fromWalletId, toAddress, amount, memo });
+    if (['USDC','USDT','USDS','DAI','DLBUSD','UST','TUSD','BUSD','PYUSD','GUSD','USDC.E'].includes(assetUpper)) {
+      const cfg = getConfig();
+      const tokenAddress = cfg[`${assetUpper.toLowerCase().replace('.', '')}Address`] || (assetUpper === 'USDC' ? cfg.usdcAddress : '');
+      if (!tokenAddress) throw new Error(`Token address not configured for ${assetUpper}`);
+      return this.externalTokenSend({ fromWalletId, toAddress, amount, asset: assetUpper, tokenAddress, decimals: assetUpper === 'ETH' || assetUpper === 'WETH' ? 18 : 6, memo });
+    }
     return this.externalSend({ fromWalletId, toAddress, amount, asset, memo });
   }
 
@@ -515,7 +518,7 @@ class WalletEngine {
     const walletClient = viem.createWalletClient({ account, chain, transport: viem.http(cfg.rpcUrl) });
     const publicClient = viem.createPublicClient({ chain, transport: viem.http(cfg.rpcUrl) });
     const raw = viem.parseUnits(String(amount), decimals);
-    const fees = { maxFeePerGas: viem.parseGwei('3'), maxPriorityFeePerGas: viem.parseGwei('0.0015') };
+    const fees = cfg.getFees ? (cfg.getFees() || { maxFeePerGas: viem.parseGwei('20'), maxPriorityFeePerGas: viem.parseGwei('0.5') }) : { maxFeePerGas: viem.parseGwei('20'), maxPriorityFeePerGas: viem.parseGwei('0.5') };
 
     const txId = id('WTX');
     const hash = await walletClient.writeContract({
@@ -526,7 +529,7 @@ class WalletEngine {
       gas: 100000n,
       ...fees,
     });
-    const receipt = await publicClient.waitForTransactionReceipt({ hash });
+    const receipt = await publicClient.waitForTransactionReceipt({ hash, timeout: 120000 });
     if (receipt.status !== 'success') throw new Error('Token transfer reverted');
 
     await withFallback(async () => {
@@ -565,12 +568,12 @@ class WalletEngine {
     const publicClient = viem.createPublicClient({ chain, transport: viem.http(cfg.rpcUrl) });
     const raw = viem.parseEther(String(eth));
     const gasLimit = 21000n;
-    const fees = { maxFeePerGas: viem.parseGwei('3'), maxPriorityFeePerGas: viem.parseGwei('0.0015') };
+    const fees = cfg.getFees ? (cfg.getFees() || { maxFeePerGas: viem.parseGwei('20'), maxPriorityFeePerGas: viem.parseGwei('0.5') }) : { maxFeePerGas: viem.parseGwei('20'), maxPriorityFeePerGas: viem.parseGwei('0.5') };
     const ethBalance = await publicClient.getBalance({ address: wallet.address });
     const totalNeeded = raw + (fees.maxFeePerGas * gasLimit);
     if (ethBalance < totalNeeded) throw new Error(`Insufficient on-chain ETH balance: ${viem.formatEther(ethBalance)} available`);
     const hash = await walletClient.sendTransaction({ to, value: raw, gas: gasLimit, ...fees });
-    await publicClient.waitForTransactionReceipt({ hash });
+    await publicClient.waitForTransactionReceipt({ hash, timeout: 120000 });
 
     // Update internal ledger and history; record the external transaction first so on-chain
     // activity is always logged even if the ledger debit encounters a transient error.

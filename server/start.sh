@@ -20,7 +20,7 @@ npm install --production
 
 echo "[3] Restarting app with pm2..."
 pm2 delete dlbtrust 2>/dev/null || true
-pm2 start app.js --name dlbtrust --env production
+pm2 start server/server-3002.js --name dlbtrust --env production
 
 echo "[4] Saving pm2 config..."
 pm2 save

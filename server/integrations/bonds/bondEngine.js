@@ -388,20 +388,20 @@ class BondEngine {
       );
 
       // If fully repaid, mark bond as matured
-      if (newBalance === 0) {
+      if (Math.abs(newBalance) < 0.0001) {
         await client.query(
           `UPDATE bonds SET status = 'matured', updated_at = NOW() WHERE id = $1`,
           [bondId]
         );
       }
 
-      const txType = newBalance === 0 ? 'maturity' : 'principal_payment';
+      const txType = Math.abs(newBalance) < 0.0001 ? 'maturity' : 'principal_payment';
       const txnResult = await client.query(
         `INSERT INTO bond_transactions (bond_id, transaction_type, amount, running_balance, accrued_interest, description, transaction_date)
          VALUES ($1, $2, $3, $4, $5, $6, $7)
          RETURNING *`,
         [bondId, txType, payAmount, newBalance, parseFloat(bond.accrued_interest),
-         newBalance === 0 ? 'Bond matured — principal fully repaid' : `Principal payment of $${payAmount.toFixed(2)}`,
+         Math.abs(newBalance) < 0.0001 ? 'Bond matured — principal fully repaid' : `Principal payment of $${payAmount.toFixed(2)}`,
          new Date().toISOString().split('T')[0]]
       );
 
@@ -413,8 +413,8 @@ class BondEngine {
           const glResult = await FineractClient.postJournalEntry({
             officeId: 1,
             transactionDate: new Date(),
-            credits: [{ glAccountId: glCreditAccountId, amount }],
-            debits:  [{ glAccountId: glDebitAccountId,  amount }],
+            credits: [{ glAccountId: glCreditAccountId, amount: payAmount }],
+            debits:  [{ glAccountId: glDebitAccountId,  amount: payAmount }],
             comments: `Bond ${bond.bond_name} — principal payment`,
           });
           fineractTxnId = glResult && glResult.resourceId ? String(glResult.resourceId) : null;
@@ -431,10 +431,10 @@ class BondEngine {
       }
 
       return {
-        paid: amount,
+        paid: payAmount,
         new_principal_balance: newBalance,
         total_principal_paid: newTotalPrincipalPaid,
-        bond_status: newBalance === 0 ? 'matured' : 'active',
+        bond_status: Math.abs(newBalance) < 0.0001 ? 'matured' : 'active',
         fineract_txn_id: fineractTxnId,
         transaction: txnResult.rows[0],
       };
@@ -479,9 +479,9 @@ class BondEngine {
       if (!bond) { await client.query('ROLLBACK'); throw new Error(`Bond ${bondId} not found`); }
 
       const principalBalance = parseFloat(bond.principal_balance);
-      const payAmount = Number(amount);
-      const newBalance = principalBalance + payAmount;
-      const newTotalPrincipalPaid = Math.max(0, parseFloat(bond.total_principal_paid) - payAmount);
+      const returnAmount = Number(amount);
+      const newBalance = principalBalance + returnAmount;
+      const newTotalPrincipalPaid = Math.max(0, parseFloat(bond.total_principal_paid) - returnAmount);
 
       await client.query(
         `UPDATE bond_balances
@@ -490,7 +490,7 @@ class BondEngine {
         [newBalance, newTotalPrincipalPaid, bondId]
       );
 
-      if (principalBalance === 0 && amount > 0) {
+      if (principalBalance === 0 && returnAmount > 0) {
         await client.query(
           `UPDATE bonds SET status = 'active', updated_at = NOW() WHERE id = $1`,
           [bondId]
@@ -501,8 +501,8 @@ class BondEngine {
         `INSERT INTO bond_transactions (bond_id, transaction_type, amount, running_balance, accrued_interest, description, transaction_date)
          VALUES ($1, 'principal_return', $2, $3, $4, $5, $6)
          RETURNING *`,
-        [bondId, payAmount, newBalance, parseFloat(bond.accrued_interest),
-         `Principal return of $${payAmount.toFixed(2)}`, new Date().toISOString().split('T')[0]]
+        [bondId, returnAmount, newBalance, parseFloat(bond.accrued_interest),
+         `Principal return of $${returnAmount.toFixed(2)}`, new Date().toISOString().split('T')[0]]
       );
 
       await client.query('COMMIT');
@@ -513,8 +513,8 @@ class BondEngine {
           const glResult = await FineractClient.postJournalEntry({
             officeId: 1,
             transactionDate: new Date(),
-            credits: [{ glAccountId: glCreditAccountId, amount }],
-            debits:  [{ glAccountId: glDebitAccountId,  amount }],
+            credits: [{ glAccountId: glCreditAccountId, amount: returnAmount }],
+            debits:  [{ glAccountId: glDebitAccountId,  amount: returnAmount }],
             comments: `Bond ${bond.bond_name} — principal return`,
           });
           fineractTxnId = glResult && glResult.resourceId ? String(glResult.resourceId) : null;
@@ -531,10 +531,10 @@ class BondEngine {
       }
 
       return {
-        returned: amount,
+        returned: returnAmount,
         new_principal_balance: newBalance,
         total_principal_paid: newTotalPrincipalPaid,
-        bond_status: newBalance === 0 ? 'matured' : 'active',
+        bond_status: Math.abs(newBalance) < 0.0001 ? 'matured' : 'active',
         fineract_txn_id: fineractTxnId,
         transaction: txnResult.rows[0],
       };

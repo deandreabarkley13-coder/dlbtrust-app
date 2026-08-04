@@ -57,7 +57,7 @@ function walletClient() {
   if (!cfg.privateKey) throw new Error('DAPP_PRIVATE_KEY not configured');
   const account = privateKeyToAccount(cfg.privateKey);
   const chain = cfg.chainId === 1 ? (chains && chains.mainnet) : (chains && chains.sepolia) || undefined;
-  const fees = { maxFeePerGas: viem.parseGwei('1.5'), maxPriorityFeePerGas: viem.parseGwei('0.0015') };
+  const fees = cfg.getFees ? (cfg.getFees() || { maxFeePerGas: viem.parseGwei('20'), maxPriorityFeePerGas: viem.parseGwei('0.5') }) : { maxFeePerGas: viem.parseGwei('20'), maxPriorityFeePerGas: viem.parseGwei('0.5') };
   return {
     account,
     fees,
@@ -183,7 +183,7 @@ class DexSwapEngine {
       gas: 100000n,
       ...fees,
     });
-    await publicClient.waitForTransactionReceipt({ hash: approveHash });
+    await publicClient.waitForTransactionReceipt({ hash: approveHash, timeout: 120000 });
 
     const swapHash = await wallet.writeContract({
       address: poolAddress,
@@ -193,7 +193,7 @@ class DexSwapEngine {
       gas: 250000n,
       ...fees,
     });
-    const receipt = await publicClient.waitForTransactionReceipt({ hash: swapHash });
+    const receipt = await publicClient.waitForTransactionReceipt({ hash: swapHash, timeout: 120000 });
     if (receipt.status !== 'success') throw new Error(`swap failed: ${receipt.transactionHash}`);
 
     return {
@@ -232,7 +232,7 @@ class DexSwapEngine {
       gas: 2000000n,
       ...fees,
     });
-    const receipt = await publicClient.waitForTransactionReceipt({ hash: deployHash });
+    const receipt = await publicClient.waitForTransactionReceipt({ hash: deployHash, timeout: 120000 });
     if (receipt.status !== 'success') throw new Error(`pool deploy failed: ${receipt.transactionHash}`);
     const poolAddress = receipt.contractAddress;
 
@@ -244,7 +244,7 @@ class DexSwapEngine {
       gas: 100000n,
       ...fees,
     });
-    await publicClient.waitForTransactionReceipt({ hash: approve0 });
+    await publicClient.waitForTransactionReceipt({ hash: approve0, timeout: 120000 });
 
     const approve1 = await wallet.writeContract({
       address: token1,
@@ -254,7 +254,7 @@ class DexSwapEngine {
       gas: 100000n,
       ...fees,
     });
-    await publicClient.waitForTransactionReceipt({ hash: approve1 });
+    await publicClient.waitForTransactionReceipt({ hash: approve1, timeout: 120000 });
 
     const addHash = await wallet.writeContract({
       address: poolAddress,
@@ -264,7 +264,7 @@ class DexSwapEngine {
       gas: 300000n,
       ...fees,
     });
-    const addReceipt = await publicClient.waitForTransactionReceipt({ hash: addHash });
+    const addReceipt = await publicClient.waitForTransactionReceipt({ hash: addHash, timeout: 120000 });
     if (addReceipt.status !== 'success') throw new Error(`addLiquidity failed: ${addReceipt.transactionHash}`);
 
     return {

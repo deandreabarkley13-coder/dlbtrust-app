@@ -177,7 +177,7 @@ class SourceOfFundsAdapter {
         const available = Math.round(Number(bond.principal_balance || 0) * 100);
         if (available < amountCents) throw new Error(`Insufficient bond liquidity: ${available} < ${amountCents}`);
         const amount = amountCents / 100;
-        const result = await BondEngine.payPrincipal(Number(sourceAccountId), amount);
+        const result = await BondEngine.payPrincipal(sourceAccountId, amount);
         funding = { sourceType, sourceAccountId, bondTransactionId: result.transaction.id, newPrincipalCents: toCents(result.new_principal_balance) };
         return creditAndReturn({ sourceAccountId, bondTransactionId: result.transaction.id });
       }
@@ -189,7 +189,7 @@ class SourceOfFundsAdapter {
         const available = Math.round(Number(live.accrued_interest_total || 0) * 100);
         if (available < amountCents) throw new Error(`Insufficient bond interest: ${available} < ${amountCents}`);
         const amount = amountCents / 100;
-        const result = await BondEngine.payInterest(Number(sourceAccountId), amount);
+        const result = await BondEngine.payInterest(sourceAccountId, amount);
         funding = { sourceType, sourceAccountId, bondTransactionId: result.transaction.id, newAccruedCents: toCents(result.new_accrued_interest) };
         return creditAndReturn({ sourceAccountId, bondTransactionId: result.transaction.id });
       }
@@ -271,7 +271,7 @@ class SourceOfFundsAdapter {
         if (!BondEngine) throw new Error('BondEngine not available');
         if (sourceRef.bondTransactionId) {
           const amount = amountCents / 100;
-          await BondEngine.receivePrincipal(Number(sourceAccountId), amount);
+          await BondEngine.receivePrincipal(sourceAccountId, amount);
         }
         break;
       }
@@ -279,7 +279,7 @@ class SourceOfFundsAdapter {
         if (!BondEngine) throw new Error('BondEngine not available');
         if (sourceRef.bondTransactionId) {
           const amount = amountCents / 100;
-          await BondEngine.receiveInterest(Number(sourceAccountId), amount);
+          await BondEngine.receiveInterest(sourceAccountId, amount);
         }
         break;
       }

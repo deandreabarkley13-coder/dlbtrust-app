@@ -65,8 +65,24 @@
       <div class="actions">
         <button class="btn" onclick="loadWallets()">Refresh wallets</button>
         <button class="btn btn-secondary" onclick="ensureWallets()">Create missing wallets</button>
+        <button class="btn" style="background:var(--accent-2)" onclick="previewFundAll()">Preview ledger funding</button>
       </div>
       <div id="wallets-list" class="grid"><p class="small">Click Refresh wallets to load.</p></div>
+    </div>
+
+    <div class="card">
+      <h2>Fund all wallets from core banking / ledger balances</h2>
+      <p>Sweeps each matched source-of-funds balance (core banking, trust, cash, sub-ledger) into Treasury, then mints SIT to the corresponding wallet and posts a Trust Accounting journal entry.</p>
+      <div class="form-row" style="grid-template-columns:repeat(auto-fit,minmax(180px,1fr));">
+        <div><label>Asset</label><select id="fund-all-asset"><option value="SIT">SIT</option><option value="USD">USD (internal ledger)</option></select></div>
+        <div><label>Auto convert to SIT</label><select id="fund-all-convert"><option value="true">Yes</option><option value="false">No</option></select></div>
+      </div>
+      <div class="actions">
+        <button class="btn" onclick="previewFundAll()">Preview</button>
+        <button class="btn" style="background:var(--accent-2)" onclick="fundAllWallets()">Fund all wallets</button>
+      </div>
+      <div id="fund-all-result" class="status hidden"></div>
+      <pre id="fund-all-preview" class="status hidden" style="white-space:pre-wrap;max-height:300px;overflow:auto;"></pre>
     </div>
 
     <div class="card">
@@ -74,7 +90,7 @@
       <div class="form-row">
         <div><label>Wallet</label><select id="fund-wallet"></select></div>
         <div><label>Amount (USD/SIT)</label><input type="number" id="fund-amount" value="1.00" step="0.01" /></div>
-        <div><label>Asset</label><select id="fund-asset"><option value="SIT">SIT</option></select></div>
+        <div><label>Asset</label><select id="fund-asset"><option value="SIT">SIT</option><option value="ETH">ETH</option><option value="USDC">USDC</option></select></div>
         <div><label>Source ledger</label><select id="fund-source"><option value="treasury">Treasury</option><option value="core_banking">Core Banking</option><option value="cash">Cash</option><option value="trust">Trust Accounting</option><option value="bond">Bond / Fixed Income</option><option value="sub_ledger">Sub-Ledger</option></select></div>
       </div>
       <div class="actions"><button class="btn" onclick="fundWallet()">Fund wallet</button></div>
@@ -89,7 +105,7 @@
         <div id="to-wallet-wrap"><label>To wallet</label><select id="tx-to-wallet"></select></div>
         <div id="to-address-wrap" class="hidden"><label>To address</label><input type="text" id="tx-to-address" placeholder="0x..." /></div>
         <div><label>Amount</label><input type="number" id="tx-amount" value="0.50" step="0.01" /></div>
-        <div><label>Asset</label><select id="tx-asset"><option value="SIT">SIT</option></select></div>
+        <div><label>Asset</label><select id="tx-asset"><option value="SIT">SIT</option><option value="ETH">ETH</option><option value="USDC">USDC</option></select></div>
         <div><label>Memo</label><input type="text" id="tx-memo" placeholder="Distribution / expense note" /></div>
       </div>
       <div class="actions"><button class="btn" onclick="sendTransaction()">Send</button></div>
@@ -167,6 +183,32 @@
     async function ensureWallets() {
       await loadWallets();
       show('Wallets ensured', false, 'fund-result');
+    }
+
+    async function previewFundAll() {
+      el('fund-all-preview').classList.remove('hidden');
+      el('fund-all-preview').textContent = 'Loading preview...';
+      try {
+        const data = await api('/wallets/fund-all/preview');
+        el('fund-all-preview').textContent = JSON.stringify(data, null, 2);
+        show(`${data.length} wallet(s) matched ledger balances`, false, 'fund-all-result');
+      } catch (e) { show(e.message, true, 'fund-all-result'); }
+    }
+
+    async function fundAllWallets() {
+      if (!confirm('This will sweep source-of-funds ledger balances and mint/allocate assets to all matched wallets. Continue?')) return;
+      show('Funding in progress...', false, 'fund-all-result');
+      try {
+        const body = {
+          asset: el('fund-all-asset').value,
+          autoConvert: el('fund-all-convert').value === 'true',
+          dryRun: false
+        };
+        const data = await api('/wallets/fund-all', { method: 'POST', body: JSON.stringify(body) });
+        show(`Funded ${data.totalUsd} USD across ${data.fundedWallets} wallet(s)`, false, 'fund-all-result');
+        el('fund-all-preview').textContent = JSON.stringify(data.results, null, 2);
+        await loadWallets();
+      } catch (e) { show(e.message, true, 'fund-all-result'); }
     }
 
     async function fundWallet() {
