@@ -140,6 +140,7 @@ class BondEngine {
     }
 
     const client = await pool.connect();
+    let clientReleased = false;
     try {
       await client.query('BEGIN');
 
@@ -165,6 +166,7 @@ class BondEngine {
       if (bond.amortizing) {
         await client.query('COMMIT');
         client.release();
+        clientReleased = true;
         const result = await this.applyAmortization(bondId, to.toISOString().split('T')[0]);
         return {
           accrued: result.accrual_delta || 0,
@@ -260,7 +262,7 @@ class BondEngine {
       await client.query('ROLLBACK');
       throw err;
     } finally {
-      client.release();
+      if (!clientReleased) client.release();
     }
   }
 
