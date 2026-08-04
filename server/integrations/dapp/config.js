@@ -15,8 +15,8 @@ const wethAddress = str('DAPP_WETH_ADDRESS', chainId === 1 ? '0xC02aaA39b223FE8D
 function getFees() {
   let viem;
   try { viem = require('viem'); } catch (e) { return null; }
-  const maxFeeGwei = num('DAPP_MAX_FEE_GWEI', 20);
-  const priorityFeeGwei = num('DAPP_PRIORITY_FEE_GWEI', 0.5);
+  const maxFeeGwei = num('DAPP_MAX_FEE_GWEI', 3);
+  const priorityFeeGwei = num('DAPP_PRIORITY_FEE_GWEI', 0.1);
   return {
     maxFeePerGas: viem.parseGwei(String(maxFeeGwei)),
     maxPriorityFeePerGas: viem.parseGwei(String(priorityFeeGwei)),
