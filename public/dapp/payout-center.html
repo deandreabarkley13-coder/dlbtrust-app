@@ -70,9 +70,9 @@
     </div>
 
     <div class="tabs">
-      <button class="tab active" onclick="showTab('send')">Send</button>
-      <button class="tab" onclick="showTab('recipients')">Wallets</button>
-      <button class="tab" onclick="showTab('activity')">Activity</button>
+      <button class="tab active" data-tab="send" onclick="showTab('send')">Send</button>
+      <button class="tab" data-tab="recipients" onclick="showTab('recipients')">Wallets</button>
+      <button class="tab" data-tab="activity" onclick="showTab('activity')">Activity</button>
     </div>
 
     <div id="send" class="panel active">
@@ -170,10 +170,9 @@
     const savedToken = localStorage.getItem('dlb-admin-token');
     if (savedToken) el('admin-token').value = savedToken;
     function showTab(name) {
-      document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+      document.querySelectorAll('.tab').forEach(t => t.classList.toggle('active', t.dataset.tab === name));
       document.querySelectorAll('.panel').forEach(p => p.classList.remove('active'));
       el(name).classList.add('active');
-      [...document.querySelectorAll('.tab')].find(t => t.textContent.toLowerCase().includes(name === 'send' ? 'send' : name === 'recipients' ? 'wallet' : 'activ'))?.classList.add('active');
       if (name === 'recipients') loadRecipientsList();
       if (name === 'activity') loadActivity();
     }
