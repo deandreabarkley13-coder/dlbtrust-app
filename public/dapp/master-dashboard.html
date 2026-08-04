@@ -189,6 +189,7 @@
     function token() { return el('token').value || localStorage.getItem('dlb-admin-token') || ''; }
     function saveToken() { localStorage.setItem('dlb-admin-token', el('token').value); show('Token saved', false, 'automation-result'); }
     function show(msg, isErr, id) { const d = el(id); d.textContent = msg; d.className = 'status ' + (isErr ? 'err' : 'ok'); d.classList.remove('hidden'); }
+    function formatMoney(n) { return Number(n || 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 }); }
     function showTab(name) {
       document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
       event.target.classList.add('active');
@@ -218,7 +219,9 @@
       try {
         const pf = await api('/bonds/portfolio');
         const income = (pf.metrics || []).reduce((s, m) => s + (parseFloat(m.accrued_interest_total) || 0), 0);
-        el('overview-income').innerHTML = `<div class="big">$${esc(income.toFixed(2))}</div><div class="muted">total accrued interest</div>`;
+        const interestPaid = (pf.metrics || []).reduce((s, m) => s + (parseFloat(m.total_interest_paid) || 0), 0);
+        const faceValue = (pf.metrics || []).reduce((s, m) => s + (parseFloat(m.face_value) || 0), 0);
+        el('overview-income').innerHTML = `<div class="big">$${esc(formatMoney(income))}</div><div class="muted">total accrued interest</div><div style="margin-top:10px;color:var(--muted);font-size:12px;">Total face value: <b>$${esc(formatMoney(faceValue))}</b><br/>Total interest paid: <b>$${esc(formatMoney(interestPaid))}</b></div>`;
       } catch (e) { el('overview-income').textContent = e.message; }
       try {
         const reqs = await api('/distribution-requests?limit=50');
@@ -267,12 +270,23 @@
         el('bond-portfolio').innerHTML = metrics.map(m => `
           <div class="panel">
             <h3>${esc(m.bond_name || m.bond_id)}</h3>
-            <div class="big">$${esc((m.total_current_value || 0).toFixed(2))}</div>
+            <div class="big">$${esc(formatMoney(m.total_current_value))}</div>
             <div class="muted">total current value</div>
-            <div class="bal"><span>Principal: <b>$${esc((m.principal_balance || 0).toFixed(2))}</b></span><span>Accrued interest: <b>$${esc((m.accrued_interest_total || 0).toFixed(2))}</b></span><span>Next coupon: <b>${esc(m.next_coupon_date || '—')}</b> ($${esc((m.coupon_per_period || 0).toFixed(2))})</span><span>Market value: <b>$${esc((m.market_value || 0).toFixed(2))}</b></span><span>Coupon rate: <b>${esc(m.coupon_rate_pct || 0)}%</b></span><span>YTM: <b>${esc(m.ytm_pct || 0)}%</b></span></div>
+            <div class="bal">
+              <span>Face value: <b>$${esc(formatMoney(m.face_value))}</b></span>
+              <span>Principal balance: <b>$${esc(formatMoney(m.principal_balance))}</b></span>
+              <span>Total principal paid: <b>$${esc(formatMoney(m.total_principal_paid))}</b></span>
+              <span>Accrued interest: <b>$${esc(formatMoney(m.accrued_interest_total))}</b></span>
+              <span>Total interest paid: <b>$${esc(formatMoney(m.total_interest_paid))}</b></span>
+              <span>Next coupon: <b>${esc(m.next_coupon_date || '—')}</b> ($${esc(formatMoney(m.coupon_per_period))})</span>
+              <span>Market value: <b>$${esc(formatMoney(m.market_value))}</b></span>
+              <span>Status: <b>${esc(m.status || '—')}</b></span>
+              <span>Coupon rate: <b>${esc(m.coupon_rate_pct || 0)}%</b></span>
+              <span>YTM: <b>${esc(m.ytm_pct || 0)}%</b></span>
+            </div>
           </div>
         `).join('');
-        el('dist-bond').innerHTML = metrics.map(m => `<option value="${esc(m.bond_id)}">${esc(m.bond_name || m.bond_id)} — accrued $${esc((m.accrued_interest_total || 0).toFixed(2))}</option>`).join('');
+        el('dist-bond').innerHTML = metrics.map(m => `<option value="${esc(m.bond_id)}">${esc(m.bond_name || m.bond_id)} — accrued $${esc(formatMoney(m.accrued_interest_total))}</option>`).join('');
       } catch (e) { el('bond-portfolio').innerHTML = '<p class="muted">' + esc(e.message) + '</p>'; }
     }
 
