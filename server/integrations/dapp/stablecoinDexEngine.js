@@ -365,10 +365,13 @@ class StablecoinDexEngine {
     const operationId = id('DLBUSD-SWAP');
 
     // 1. Resolve or create the DEX pool BEFORE debiting the source ledger
+    const targetUpper = (targetAsset || '').toUpperCase();
+    const needsWethPool = targetUpper === 'DAI' || targetUpper === 'ETH';
+    const poolTargetAsset = needsWethPool ? 'WETH' : targetAsset;
     let resolvedPool = poolAddress;
     let poolInfo = null;
     const token = await this.getOrCreateDLBUSDToken();
-    const tokenOut = this.targetTokenAddress(targetAsset);
+    const tokenOut = this.targetTokenAddress(poolTargetAsset);
     if (resolvedPool && !(await this._isValidPool({ poolAddress: resolvedPool, tokenIn: token.token_address, tokenOut }))) {
       resolvedPool = null;
     }
@@ -381,7 +384,7 @@ class StablecoinDexEngine {
     }
     if (!resolvedPool && createPoolIfMissing) {
       const seedTarget = poolSeedTargetAmount !== undefined ? poolSeedTargetAmount : poolSeedUsdc;
-      poolInfo = await this.createPool({ seedUsdcAmount: seedTarget, seedDlbusdAmount: poolSeedDlbusd, targetAsset });
+      poolInfo = await this.createPool({ seedUsdcAmount: seedTarget, seedDlbusdAmount: poolSeedDlbusd, targetAsset: poolTargetAsset });
       resolvedPool = poolInfo && poolInfo.poolAddress;
     }
     if (!resolvedPool) throw new Error('No valid DEX pool address and createPoolIfMissing is false');
@@ -390,7 +393,6 @@ class StablecoinDexEngine {
     const mint = await this.mintFromSource({ sourceType, sourceAccountId, amount, targetAddress: cfg.operatorAddress });
 
     // 3. Execute the DEX swap (operator relayer pays gas; user is gasless)
-    const targetUpper = (targetAsset || '').toUpperCase();
     let isEthTarget = targetUpper === 'ETH';
     let isDaiTarget = targetUpper === 'DAI';
     let swapTarget = isEthTarget ? 'WETH' : (isDaiTarget ? 'WETH' : targetAsset);
