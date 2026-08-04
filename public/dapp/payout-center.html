@@ -220,7 +220,7 @@
         show('Operator wallet address copied.', false, 'operator-copy-status');
       } catch (e) { show('Copy failed.', true, 'operator-copy-status'); }
     }
-    if (getToken()) loadOperatorWallet();
+    if (getToken()) loadOperatorWallet(); else el('operator-wallet').textContent = 'Save your operator token above to load the funding address.';
 
     async function loadRecipients() {
       const type = el('pay-recipient-type').value;
