@@ -213,11 +213,27 @@ class StablecoinDexEngine {
 
     const token = await this.getOrCreateDLBUSDToken();
     const holder = targetAddress || cfg.operatorAddress;
-    const mint = await BondTokenizationEngine.mint({
-      tokenId: token.id,
-      principal: amountNum,
-      holderAddress: holder,
-    });
+    let mint;
+    try {
+      mint = await BondTokenizationEngine.mint({
+        tokenId: token.id,
+        principal: amountNum,
+        holderAddress: holder,
+      });
+    } catch (mintErr) {
+      // Rollback the source-engine debit if on-chain mint fails so funds are not stranded.
+      try {
+        await SourceOfFundsAdapter._refundSourceFromTreasury({
+          sourceType,
+          sourceAccountId,
+          payment: { id: operationId, total_cents: amountCents },
+          sourceRef: sweep,
+        });
+      } catch (rollbackErr) {
+        console.warn('[StablecoinDexEngine] source rollback failed after mint error:', rollbackErr.message);
+      }
+      throw mintErr;
+    }
 
     return {
       operationId,
@@ -371,21 +387,50 @@ class StablecoinDexEngine {
     const mint = await this.mintFromSource({ sourceType, sourceAccountId, amount, targetAddress: cfg.operatorAddress });
 
     // 3. Execute the DEX swap (operator relayer pays gas; user is gasless)
-    const isEthTarget = (targetAsset || '').toUpperCase() === 'ETH';
-    const swapTarget = isEthTarget ? 'WETH' : targetAsset;
+    let isEthTarget = (targetAsset || '').toUpperCase() === 'ETH';
+    let swapTarget = isEthTarget ? 'WETH' : targetAsset;
     // For ETH output keep WETH in the operator wallet so it can be unwrapped and sent as native ETH.
-    const swapRecipient = isEthTarget ? cfg.operatorAddress : (recipient || cfg.operatorAddress);
-    const { quote, swap } = await this.swap({
-      amount,
-      targetAsset: swapTarget,
-      poolAddress: resolvedPool,
-      recipient: swapRecipient,
-    });
+    let swapRecipient = isEthTarget ? cfg.operatorAddress : (recipient || cfg.operatorAddress);
+    let quote, swap;
+    try {
+      const swapResult = await this.swap({
+        amount,
+        targetAsset: swapTarget,
+        poolAddress: resolvedPool,
+        recipient: swapRecipient,
+      });
+      quote = swapResult.quote;
+      swap = swapResult.swap;
+    } catch (swapErr) {
+      // Try an ETH fallback so bond interest is not left stranded as DLBUSD in the operator wallet.
+      if (isEthTarget) {
+        console.warn('[StablecoinDexEngine] primary swap failed and target is already ETH; DLBUSD held by operator:', swapErr.message);
+        throw swapErr;
+      }
+      console.warn('[StablecoinDexEngine] primary swap failed, trying ETH fallback:', swapErr.message);
+      try {
+        const ethSwapResult = await this.swap({
+          amount,
+          targetAsset: 'WETH',
+          poolAddress: resolvedPool,
+          recipient: cfg.operatorAddress,
+        });
+        quote = ethSwapResult.quote;
+        swap = ethSwapResult.swap;
+        isEthTarget = true;
+      } catch (ethErr) {
+        console.warn('[StablecoinDexEngine] ETH fallback swap failed; DLBUSD held by operator:', ethErr.message);
+        throw ethErr;
+      }
+    }
 
     let unwrap = { skipped: true };
     if (!cfg.shadow && isEthTarget && unwrapWeth) {
       try { unwrap = await this.unwrapWethToEth({ amount: swap.amountOut, recipient: recipient || cfg.operatorAddress }); } catch (e) { unwrap = { skipped: false, error: e.message }; }
     }
+
+    const actualTargetAsset = isEthTarget ? 'ETH' : targetAsset;
+    const actualAmountOut = isEthTarget ? (unwrap.amountEth || swap.amountOut || 0) : (swap.amountOut || 0);
 
     return {
       operationId,
@@ -393,6 +438,7 @@ class StablecoinDexEngine {
       sourceAccountId,
       amount,
       targetAsset,
+      actualTargetAsset,
       swapTarget,
       tokenAddress: mint.tokenAddress,
       minted: mint.minted,
@@ -403,6 +449,7 @@ class StablecoinDexEngine {
       swap,
       unwrap,
       recipient: recipient || cfg.operatorAddress,
+      amountOut: actualAmountOut,
       mode: cfg.shadow ? 'shadow' : 'live',
       note: cfg.shadow
         ? 'Shadow swap completed. Real on-chain swap requires a deployed DLBUSD token, a funded DEX pool, and gas in the operator wallet.'

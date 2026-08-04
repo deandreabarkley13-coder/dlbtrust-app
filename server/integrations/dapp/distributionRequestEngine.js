@@ -1,5 +1,7 @@
 'use strict';
 
+const crypto = require('crypto');
+
 /**
  * Distribution / Disbursement Request Engine
  *
@@ -36,6 +38,10 @@ try { CalendarEngine = require('../calendar/calendarEngine').CalendarEngine; } c
 
 function id(prefix = 'REQ') {
   return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 8).toUpperCase()}`;
+}
+
+function generateRequestPin() {
+  return crypto.randomInt(100000, 999999).toString();
 }
 
 async function query(sql, params) {
@@ -255,15 +261,19 @@ class DistributionRequestEngine {
       }
     } catch (e) { console.warn('[DistributionRequestEngine] notification failed:', e.message); }
 
-    // Sequential approval: email maker first with a one-time PIN
+    // Sequential approval: email maker first with a request-specific one-time PIN.
+    // This PIN is scoped to the request and does not overwrite the trustee's login OTP.
     try {
       const maker = getTrusteeByRole('maker');
-      if (maker && EmailEngine && DappEngine) {
-        const otp = await DappEngine.generateOtp(maker.email);
+      if (maker && EmailEngine) {
+        const makerPin = generateRequestPin();
+        const metadata = { ...request.metadata, approvalPins: { maker: makerPin } };
+        await this._update(request.id, { metadata });
+        request.metadata = metadata;
         await EmailEngine.sendOtp({
           to: maker.email,
           name: maker.name,
-          otp: otp.code || otp.otp_code || otp.otp || 'N/A',
+          otp: makerPin,
           action: 'approve',
           actionUrl: `https://dlbtrust-app.fly.dev/dapp/request-approval.html?request=${request.id}&role=maker`,
         });
@@ -328,20 +338,29 @@ class DistributionRequestEngine {
       }
     } catch (e) { console.warn('[DistributionRequestEngine] approve notify failed:', e.message); }
 
-    // Sequential email flow
-    try {
-      if (isMaker && EmailEngine && DappEngine) {
+    // Send checker approval email with a request-specific PIN (does not overwrite login OTP).
+    if (isMaker) {
+      try {
         const checker = getTrusteeByRole('checker');
-        const otp = await DappEngine.generateOtp(checker.email);
-        await EmailEngine.sendOtp({
-          to: checker.email,
-          name: checker.name,
-          otp: otp.code || otp.otp_code || otp.otp || 'N/A',
-          action: 'approve',
-          actionUrl: `https://dlbtrust-app.fly.dev/dapp/request-approval.html?request=${requestId}&role=checker`,
-        });
-      }
-      if (isChecker) {
+        if (checker && EmailEngine) {
+          const checkerPin = generateRequestPin();
+          const metadata = { ...request.metadata, approvalPins: { ...(request.metadata && request.metadata.approvalPins), checker: checkerPin } };
+          await this._update(requestId, { metadata });
+          await EmailEngine.sendOtp({
+            to: checker.email,
+            name: checker.name,
+            otp: checkerPin,
+            action: 'approve',
+            actionUrl: `https://dlbtrust-app.fly.dev/dapp/request-approval.html?request=${requestId}&role=checker`,
+          });
+        }
+      } catch (e) { console.warn('[DistributionRequestEngine] checker email failed:', e.message); }
+    }
+
+    // Notify beneficiary of approval in a separate try/catch so a notification failure
+    // never blocks the auto-execution path.
+    if (isChecker) {
+      try {
         if (EmailEngine) {
           await EmailEngine.send({
             to: request.beneficiary_email,
@@ -349,19 +368,20 @@ class DistributionRequestEngine {
             body: `Your request ${requestId} for $${(request.amount_cents / 100).toFixed(2)} has been approved and is being released to ${request.destination_address}.`,
           });
         }
-        // Auto-execute on checker approval
-        if (process.env.AUTO_EXECUTE_APPROVED_REQUESTS !== 'false') {
-          try {
-            const executed = await this.executeRequest(requestId);
-            result.payment = executed.payment;
-            result.executed = true;
-          } catch (execErr) {
-            console.warn('[DistributionRequestEngine] auto-execute failed:', execErr.message);
-            result.execute_error = execErr.message;
-          }
+      } catch (e) { console.warn('[DistributionRequestEngine] beneficiary email failed:', e.message); }
+
+      // Auto-execute on checker approval
+      if (process.env.AUTO_EXECUTE_APPROVED_REQUESTS !== 'false') {
+        try {
+          const executed = await this.executeRequest(requestId);
+          result.payment = executed.payment;
+          result.executed = true;
+        } catch (execErr) {
+          console.warn('[DistributionRequestEngine] auto-execute failed:', execErr.message);
+          result.execute_error = execErr.message;
         }
       }
-    } catch (e) { console.warn('[DistributionRequestEngine] sequential email/execute failed:', e.message); }
+    }
 
     return result;
   }

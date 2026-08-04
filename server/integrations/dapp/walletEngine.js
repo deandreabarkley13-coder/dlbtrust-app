@@ -32,8 +32,39 @@ const { getConfig } = require('./config');
 function str(name, def = '') { return (process.env[name] || def).trim(); }
 function bool(name, def = false) { const v = process.env[name]; return v ? String(v).toLowerCase() === 'true' : def; }
 function id(prefix = 'WLT') { return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 8).toUpperCase()}`; }
-function toCents(amount) { return Math.round((Number(amount) || 0) * 100); }
-function fromCents(cents) { return (cents / 100).toFixed(2); }
+function assetDecimals(asset) {
+  const a = String(asset || '').toUpperCase();
+  if (a === 'ETH' || a === 'WETH') return 18;
+  if (['USDC','USDT','USDS','DAI','DLBUSD','UST','TUSD','BUSD','PYUSD','GUSD','USDC.E'].includes(a)) return 6;
+  return 2;
+}
+function toCents(amount, asset = '') {
+  if (amount === null || amount === undefined) return '0';
+  const decimals = assetDecimals(asset);
+  const str = String(amount);
+  if (decimals === 18) {
+    if (!viem) return Math.round((Number(amount) || 0) * 1e18).toString();
+    try { return viem.parseEther(str).toString(); } catch (e) { return '0'; }
+  }
+  if (decimals === 6) {
+    if (!viem) return Math.round((Number(amount) || 0) * 1e6).toString();
+    try { return viem.parseUnits(str, 6).toString(); } catch (e) { return '0'; }
+  }
+  return Math.round((Number(amount) || 0) * 100);
+}
+function fromCents(cents, asset = '') {
+  const decimals = assetDecimals(asset);
+  const s = String(cents || '0');
+  if (decimals === 18) {
+    if (!viem) return (Number(s) / 1e18).toFixed(18);
+    try { return viem.formatEther(BigInt(s)); } catch (e) { return (Number(s) / 1e18).toFixed(18); }
+  }
+  if (decimals === 6) {
+    if (!viem) return (Number(s) / 1e6).toFixed(6);
+    try { return viem.formatUnits(BigInt(s), 6); } catch (e) { return (Number(s) / 1e6).toFixed(6); }
+  }
+  return ((Number(cents) || 0) / 100).toFixed(2);
+}
 
 async function query(sql, params) {
   if (!pool) throw new Error('Postgres unavailable');
@@ -246,39 +277,43 @@ class WalletEngine {
 
   static async _credit(walletId, asset, cents, metadata = {}) {
     const bal = await this._ensureBalance(walletId, asset);
-    const newCents = Number(bal.balance_cents) + cents;
-    await this._setBalance(walletId, asset, newCents);
+    const current = BigInt(bal.balance_cents || 0);
+    const add = BigInt(cents);
+    const newCents = current + add;
+    await this._setBalance(walletId, asset, newCents.toString());
     const txId = id('WTX');
     await withFallback(async () => {
       await query('INSERT INTO dapp_wallet_transactions (id, wallet_id, type, asset, amount_cents, status, memo, metadata) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)',
-        [txId, walletId, 'credit', asset.toUpperCase(), cents, 'completed', metadata.memo || '', JSON.stringify(metadata)]);
+        [txId, walletId, 'credit', asset.toUpperCase(), String(cents), 'completed', metadata.memo || '', JSON.stringify(metadata)]);
     }, () => {});
     return this.getBalance(walletId);
   }
 
   static async _debit(walletId, asset, cents, metadata = {}) {
     const bal = await this._ensureBalance(walletId, asset);
-    if (Number(bal.balance_cents) < cents) throw new Error(`Insufficient ${asset.toUpperCase()} internal balance: ${fromCents(Number(bal.balance_cents))} available`);
-    const newCents = Number(bal.balance_cents) - cents;
-    await this._setBalance(walletId, asset, newCents);
+    const current = BigInt(bal.balance_cents || 0);
+    const sub = BigInt(cents);
+    if (current < sub) throw new Error(`Insufficient ${asset.toUpperCase()} internal balance: ${fromCents(current.toString(), asset)} available`);
+    const newCents = current - sub;
+    await this._setBalance(walletId, asset, newCents.toString());
     const txId = id('WTX');
     await withFallback(async () => {
       await query('INSERT INTO dapp_wallet_transactions (id, wallet_id, type, asset, amount_cents, status, memo, metadata) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)',
-        [txId, walletId, 'debit', asset.toUpperCase(), cents, 'completed', metadata.memo || '', JSON.stringify(metadata)]);
+        [txId, walletId, 'debit', asset.toUpperCase(), String(cents), 'completed', metadata.memo || '', JSON.stringify(metadata)]);
     }, () => {});
     return this.getBalance(walletId);
   }
 
   // Public ledger helpers for master-wallet automation
   static async credit(walletId, asset, amount, metadata = {}) {
-    const cents = toCents(amount);
-    if (cents <= 0) throw new Error('amount must be positive');
+    const cents = toCents(amount, asset);
+    if (BigInt(cents) <= 0n) throw new Error('amount must be positive');
     return this._credit(walletId, asset, cents, metadata);
   }
 
   static async debit(walletId, asset, amount, metadata = {}) {
-    const cents = toCents(amount);
-    if (cents <= 0) throw new Error('amount must be positive');
+    const cents = toCents(amount, asset);
+    if (BigInt(cents) <= 0n) throw new Error('amount must be positive');
     return this._debit(walletId, asset, cents, metadata);
   }
 
@@ -289,7 +324,7 @@ class WalletEngine {
     const internalBalances = await withFallback(async () => {
       const rows = await query('SELECT asset, balance_cents FROM dapp_wallet_balances WHERE wallet_id = $1', [walletId]);
       const map = {};
-      for (const r of rows.rows) map[r.asset] = Number(r.balance_cents);
+      for (const r of rows.rows) map[r.asset] = String(r.balance_cents);
       return map;
     }, () => ({}));
 
@@ -318,7 +353,7 @@ class WalletEngine {
     return {
       walletId,
       address: wallet.address,
-      internal: Object.fromEntries(Object.entries(internalBalances).map(([a, c]) => [a, fromCents(c)])),
+      internal: Object.fromEntries(Object.entries(internalBalances).map(([a, c]) => [a, fromCents(c, a)])),
       external,
     };
   }
@@ -340,8 +375,8 @@ class WalletEngine {
     await this.ensureTables();
     const wallet = await this.getWallet(walletId);
     if (!wallet) throw new Error('Wallet not found');
-    const cents = toCents(amount);
-    if (cents <= 0) throw new Error('amount must be positive');
+    const cents = toCents(amount, asset);
+    if (BigInt(cents) <= 0n) throw new Error('amount must be positive');
     SovereignTrustEngine = getSovereignEngine();
 
     if (asset.toUpperCase() === 'SIT' && SovereignTrustEngine) {
@@ -367,16 +402,21 @@ class WalletEngine {
     const walletClient = viem.createWalletClient({ account, chain, transport: viem.http(cfg.rpcUrl) });
     const publicClient = viem.createPublicClient({ chain, transport: viem.http(cfg.rpcUrl) });
     const raw = viem.parseEther(String(amountEth));
-    const hash = await walletClient.sendTransaction({ to: wallet.address, value: raw, gas: 21000n, ...fees });
-    await publicClient.waitForTransactionReceipt({ hash });
+    const sendPromise = (async () => {
+      const hash = await walletClient.sendTransaction({ to: wallet.address, value: raw, gas: 21000n, ...fees });
+      const receipt = await publicClient.waitForTransactionReceipt({ hash });
+      return { hash, receipt };
+    })();
+    const timeoutPromise = new Promise((_, reject) => setTimeout(() => reject(new Error('ETH fund transaction timed out')), 30000));
+    const { hash } = await Promise.race([sendPromise, timeoutPromise]);
     return { walletId, amountEth, txHash: hash };
   }
 
   static async transfer({ fromWalletId, toWalletId, toAddress, amount, asset = 'SIT', memo } = {}) {
     await this.ensureTables();
     if (!fromWalletId || (!toWalletId && !toAddress)) throw new Error('fromWalletId and (toWalletId or toAddress) required');
-    const cents = toCents(amount);
-    if (cents <= 0) throw new Error('amount must be positive');
+    const cents = toCents(amount, asset);
+    if (BigInt(cents) <= 0n) throw new Error('amount must be positive');
 
     if (toWalletId) {
       const fromWallet = await this.getWallet(fromWalletId);
@@ -404,8 +444,8 @@ class WalletEngine {
     const wallet = await this.getWallet(fromWalletId);
     if (!wallet) throw new Error('Wallet not found');
     if (wallet.type !== 'internal' || !wallet.private_key_encrypted) throw new Error('Only system wallets can send external transactions');
-    const cents = toCents(amount);
-    if (cents <= 0) throw new Error('amount must be positive');
+    const cents = toCents(amount, asset);
+    if (BigInt(cents) <= 0n) throw new Error('amount must be positive');
 
     SovereignTrustEngine = getSovereignEngine();
     if (!SovereignTrustEngine || !SovereignTrustEngine.buildMetaTx || !SovereignTrustEngine.relayMetaTx) {
@@ -413,10 +453,11 @@ class WalletEngine {
     }
 
     const internalBalance = await this._ensureBalance(fromWalletId, asset);
-    if (Number(internalBalance.balance_cents) < cents) throw new Error(`Insufficient ${asset} internal balance`);
+    if (BigInt(internalBalance.balance_cents || 0) < BigInt(cents)) throw new Error(`Insufficient ${asset} internal balance`);
 
     const onChainBalance = await SovereignTrustEngine.tokenBalanceOf(wallet.address);
-    if (Number(onChainBalance) * 100 < cents) throw new Error(`Insufficient on-chain ${asset} balance. Fund the wallet first.`);
+    const onChainCents = toCents(onChainBalance, asset);
+    if (BigInt(onChainCents) < BigInt(cents)) throw new Error(`Insufficient on-chain ${asset} balance. Fund the wallet first.`);
 
     await SovereignTrustEngine.whitelistAddress(to, true).catch(() => null);
     const metaTx = await SovereignTrustEngine.buildMetaTx({
@@ -461,8 +502,11 @@ class WalletEngine {
     const to = viem.getAddress ? viem.getAddress(toAddress) : toAddress.toLowerCase();
     const wallet = await this.getWallet(fromWalletId);
     if (!wallet || wallet.type !== 'internal' || !wallet.private_key_encrypted) throw new Error('Only system wallets can send external tokens');
-    const cents = toCents(amount);
-    if (cents <= 0) throw new Error('amount must be positive');
+    const cents = toCents(amount, asset);
+    if (BigInt(cents) <= 0n) throw new Error('amount must be positive');
+
+    const internalBalance = await this._ensureBalance(fromWalletId, asset);
+    if (BigInt(internalBalance.balance_cents || 0) < BigInt(cents)) throw new Error(`Insufficient ${asset} internal balance for external send`);
 
     const cfg = getConfig();
     if (!cfg.privateKey) throw new Error('DAPP_PRIVATE_KEY not configured');
@@ -473,6 +517,7 @@ class WalletEngine {
     const raw = viem.parseUnits(String(amount), decimals);
     const fees = { maxFeePerGas: viem.parseGwei('3'), maxPriorityFeePerGas: viem.parseGwei('0.0015') };
 
+    const txId = id('WTX');
     const hash = await walletClient.writeContract({
       address: tokenAddress,
       abi: this._erc20FullAbi(),
@@ -484,12 +529,16 @@ class WalletEngine {
     const receipt = await publicClient.waitForTransactionReceipt({ hash });
     if (receipt.status !== 'success') throw new Error('Token transfer reverted');
 
-    await this._debit(fromWalletId, asset, cents, { memo: memo || `External token send to ${to}`, tx_hash: hash });
-    const txId = id('WTX');
     await withFallback(async () => {
       await query('INSERT INTO dapp_wallet_transactions (id, wallet_id, counterparty_address, type, asset, amount_cents, status, tx_hash, memo, metadata) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)',
-        [txId, fromWalletId, to, 'external_token', asset.toUpperCase(), cents, 'completed', hash, memo || '', JSON.stringify({ tokenAddress, decimals })]);
+        [txId, fromWalletId, to, 'external_token', asset.toUpperCase(), String(cents), 'completed', hash, memo || '', JSON.stringify({ tokenAddress, decimals })]);
     }, () => {});
+
+    try {
+      await this._debit(fromWalletId, asset, cents, { memo: memo || `External token send to ${to}`, tx_hash: hash });
+    } catch (debitErr) {
+      console.warn('[WalletEngine] externalTokenSend ledger debit failed; transaction still recorded:', debitErr.message);
+    }
 
     return { type: 'external_token', from: wallet.address, to, amount, asset, tokenAddress, txHash: hash, balance: await this.getBalance(fromWalletId) };
   }
@@ -503,6 +552,10 @@ class WalletEngine {
     if (!wallet || wallet.type !== 'internal' || !wallet.private_key_encrypted) throw new Error('Only system wallets can send external ETH');
     const eth = Number(amount);
     if (eth <= 0) throw new Error('amount must be positive');
+    const cents = toCents(eth, 'ETH');
+
+    const internalBalance = await this._ensureBalance(fromWalletId, 'ETH');
+    if (BigInt(internalBalance.balance_cents || 0) < BigInt(cents)) throw new Error('Insufficient ETH internal balance');
 
     const cfg = getConfig();
     if (!cfg.privateKey) throw new Error('DAPP_PRIVATE_KEY not configured');
@@ -519,16 +572,14 @@ class WalletEngine {
     const hash = await walletClient.sendTransaction({ to, value: raw, gas: gasLimit, ...fees });
     await publicClient.waitForTransactionReceipt({ hash });
 
-    // Update internal ledger and history when precision allows
-    const cents = toCents(eth);
-    if (cents > 0) {
-      try { await this._debit(fromWalletId, 'ETH', cents, { memo, tx_hash: hash }); } catch (e) { console.warn('[WalletEngine.externalEthSend] internal ETH debit skipped:', e.message); }
-    }
+    // Update internal ledger and history; record the external transaction first so on-chain
+    // activity is always logged even if the ledger debit encounters a transient error.
     const txId = id('WTX');
     await withFallback(async () => {
       await query('INSERT INTO dapp_wallet_transactions (id, wallet_id, counterparty_address, type, asset, amount_cents, status, tx_hash, memo, metadata) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)',
-        [txId, fromWalletId, to, 'external_eth', 'ETH', cents, 'completed', hash, memo || '', JSON.stringify({ ethAmount: eth, note: 'Internal ledger uses 2-decimal units; small ETH amounts may show as 0.' })]);
+        [txId, fromWalletId, to, 'external_eth', 'ETH', String(cents), 'completed', hash, memo || '', JSON.stringify({ ethAmount: eth, note: 'Internal ledger stores ETH in 18-decimal wei units.' })]);
     }, () => {});
+    try { await this._debit(fromWalletId, 'ETH', cents, { memo, tx_hash: hash }); } catch (e) { console.warn('[WalletEngine.externalEthSend] internal ETH debit skipped:', e.message); }
 
     return { type: 'external_eth', from: wallet.address, to, amount: eth, asset: 'ETH', txHash: hash, balance: await this.getBalance(fromWalletId) };
   }

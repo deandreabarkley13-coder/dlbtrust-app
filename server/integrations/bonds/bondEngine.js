@@ -624,6 +624,64 @@ class BondEngine {
     const result = await pool.query(query, params);
     return result.rows;
   }
+
+  /**
+   * Return/reverse an interest payment — inverse of payInterest.
+   * Used when a stablecoin swap funded from bond interest fails after the
+   * interest was drawn but before the on-chain transfer completed.
+   */
+  static async receiveInterest(bondId, amount) {
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN');
+
+      const bondResult = await client.query(
+        `SELECT b.*, bb.principal_balance, bb.accrued_interest, bb.total_interest_paid,
+                bb.total_principal_paid, bb.last_accrual_date, bb.last_payment_date
+         FROM bonds b
+         JOIN bond_balances bb ON bb.bond_id = b.id
+         WHERE b.id = $1
+         FOR UPDATE OF bb`,
+        [bondId]
+      );
+      const bond = bondResult.rows[0];
+      if (!bond) { await client.query('ROLLBACK'); throw new Error(`Bond ${bondId} not found`); }
+
+      const amountNum = Number(amount);
+      if (amountNum <= 0) { await client.query('ROLLBACK'); throw new Error('amount must be positive'); }
+
+      const newAccrued = parseFloat(bond.accrued_interest) + amountNum;
+      const newTotalInterestPaid = Math.max(0, parseFloat(bond.total_interest_paid) - amountNum);
+
+      await client.query(
+        `UPDATE bond_balances
+         SET accrued_interest = $1, total_interest_paid = $2, updated_at = NOW()
+         WHERE bond_id = $3`,
+        [newAccrued, newTotalInterestPaid, bondId]
+      );
+
+      const txnResult = await client.query(
+        `INSERT INTO bond_transactions (bond_id, transaction_type, amount, running_balance, accrued_interest, description, transaction_date)
+         VALUES ($1, 'interest_return', $2, $3, $4, $5, $6)
+         RETURNING *`,
+        [bondId, amountNum, parseFloat(bond.principal_balance), newAccrued,
+         `Interest return of $${amountNum.toFixed(2)}`, new Date().toISOString().split('T')[0]]
+      );
+
+      await client.query('COMMIT');
+      return {
+        returned: amountNum,
+        new_accrued_interest: newAccrued,
+        total_interest_paid: newTotalInterestPaid,
+        transaction: txnResult.rows[0],
+      };
+    } catch (err) {
+      await client.query('ROLLBACK');
+      throw err;
+    } finally {
+      client.release();
+    }
+  }
 }
 
 module.exports = { BondEngine };

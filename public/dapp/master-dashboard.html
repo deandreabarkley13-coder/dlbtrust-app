@@ -104,8 +104,9 @@
         <p>Run common workflows with one button. The beneficiary landing request (/) still triggers the maker-then-checker email flow automatically.</p>
         <div class="inline">
           <button class="btn" onclick="ensureMasterWallets()">1. Ensure master wallets</button>
-          <button class="btn btn-gold" onclick="openDistributeModal()">2. Distribute fixed income</button>
-          <button class="btn btn-2" onclick="loadRequests()">3. Approve pending requests</button>
+          <button class="btn btn-gold" onclick="backfillMasterWallets()">2. Backfill principal + interest</button>
+          <button class="btn btn-2" onclick="openDistributeModal()">3. Distribute fixed income</button>
+          <button class="btn" onclick="loadRequests()">4. Approve pending requests</button>
         </div>
         <div id="automation-result" class="status hidden"></div>
       </div>
@@ -181,6 +182,10 @@
   <script>
     const apiBase = '/api/dapp';
     const el = id => document.getElementById(id);
+    function esc(str) {
+      const s = String(str ?? '');
+      return s.replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+    }
     function token() { return el('token').value || localStorage.getItem('dlb-admin-token') || ''; }
     function saveToken() { localStorage.setItem('dlb-admin-token', el('token').value); show('Token saved', false, 'automation-result'); }
     function show(msg, isErr, id) { const d = el(id); d.textContent = msg; d.className = 'status ' + (isErr ? 'err' : 'ok'); d.classList.remove('hidden'); }
@@ -207,18 +212,18 @@
       try {
         const ms = await api('/master-wallets').catch(() => ({}));
         const names = { principal: 'Principal Token Master', interest: 'Interest Income Master', operating: 'Trust Operating Wallet', distribution: 'Income Distribution Master' };
-        const html = Object.entries(ms).map(([k, w]) => `<div>${names[k] || k}: <b>${w.address ? w.address.slice(0,8)+'...'+w.address.slice(-6) : 'not created'}</b></div>`).join('') || 'No master wallets yet.';
+        const html = Object.entries(ms).map(([k, w]) => `<div>${esc(names[k] || k)}: <b>${esc(w.address ? w.address.slice(0,8)+'...'+w.address.slice(-6) : 'not created')}</b></div>`).join('') || 'No master wallets yet.';
         el('overview-master-status').innerHTML = html;
       } catch (e) { el('overview-master-status').textContent = e.message; }
       try {
         const pf = await api('/bonds/portfolio');
         const income = (pf.metrics || []).reduce((s, m) => s + (parseFloat(m.accrued_interest_total) || 0), 0);
-        el('overview-income').innerHTML = `<div class="big">$${income.toFixed(2)}</div><div class="muted">total accrued interest</div>`;
+        el('overview-income').innerHTML = `<div class="big">$${esc(income.toFixed(2))}</div><div class="muted">total accrued interest</div>`;
       } catch (e) { el('overview-income').textContent = e.message; }
       try {
         const reqs = await api('/distribution-requests?limit=50');
         const pending = (reqs || []).filter(r => r.status !== 'executed' && r.status !== 'rejected' && r.status !== 'failed').length;
-        el('overview-pending').innerHTML = `<div class="big">${pending}</div><div class="muted">pending requests</div>`;
+        el('overview-pending').innerHTML = `<div class="big">${esc(pending)}</div><div class="muted">pending requests</div>`;
       } catch (e) { el('overview-pending').textContent = e.message; }
     }
 
@@ -228,8 +233,8 @@
         const names = { principal: 'Principal Token Master', interest: 'Interest Income Master', operating: 'Trust Operating Wallet', distribution: 'Income Distribution Master' };
         el('master-list').innerHTML = Object.entries(ms).map(([k, w]) => {
           const b = w.balances || {};
-          const internal = Object.entries(b.internal || {}).map(([a, v]) => `<span><b>${a}</b>: ${v}</span>`).join('');
-          return `<div class="wallet-card"><h3>${names[k]}</h3><div class="addr">${w.address || 'not created'}</div><div class="bal">${internal || '<span>no internal balances</span>'}</div><div class="muted">External: SIT ${b.external && b.external.sit || 0} | ETH ${b.external && b.external.eth || 0} | USDC ${b.external && b.external.usdc || 0}</div></div>`;
+          const internal = Object.entries(b.internal || {}).map(([a, v]) => `<span><b>${esc(a)}</b>: ${esc(v)}</span>`).join('');
+          return `<div class="wallet-card"><h3>${esc(names[k])}</h3><div class="addr">${esc(w.address || 'not created')}</div><div class="bal">${internal || '<span>no internal balances</span>'}</div><div class="muted">External: SIT ${esc(b.external && b.external.sit || 0)} | ETH ${esc(b.external && b.external.eth || 0)} | USDC ${esc(b.external && b.external.usdc || 0)}</div></div>`;
         }).join('');
       } catch (e) { el('master-list').innerHTML = '<p class="muted">' + e.message + '</p>'; }
     }
@@ -261,14 +266,24 @@
         const metrics = pf.metrics || [];
         el('bond-portfolio').innerHTML = metrics.map(m => `
           <div class="panel">
-            <h3>${m.bond_name || m.bond_id}</h3>
-            <div class="big">$${(m.total_current_value || 0).toFixed(2)}</div>
+            <h3>${esc(m.bond_name || m.bond_id)}</h3>
+            <div class="big">$${esc((m.total_current_value || 0).toFixed(2))}</div>
             <div class="muted">total current value</div>
-            <div class="bal"><span>Principal: <b>$${(m.principal_balance || 0).toFixed(2)}</b></span><span>Accrued interest: <b>$${(m.accrued_interest_total || 0).toFixed(2)}</b></span><span>Next coupon: <b>${m.next_coupon_date || '—'}</b> ($${(m.coupon_per_period || 0).toFixed(2)})</span><span>Market value: <b>$${(m.market_value || 0).toFixed(2)}</b></span></div>
+            <div class="bal"><span>Principal: <b>$${esc((m.principal_balance || 0).toFixed(2))}</b></span><span>Accrued interest: <b>$${esc((m.accrued_interest_total || 0).toFixed(2))}</b></span><span>Next coupon: <b>${esc(m.next_coupon_date || '—')}</b> ($${esc((m.coupon_per_period || 0).toFixed(2))})</span><span>Market value: <b>$${esc((m.market_value || 0).toFixed(2))}</b></span><span>Coupon rate: <b>${esc(m.coupon_rate_pct || 0)}%</b></span><span>YTM: <b>${esc(m.ytm_pct || 0)}%</b></span></div>
           </div>
         `).join('');
-        el('dist-bond').innerHTML = metrics.map(m => `<option value="${m.bond_id}">${m.bond_name || m.bond_id} — accrued $${(m.accrued_interest_total || 0).toFixed(2)}</option>`).join('');
-      } catch (e) { el('bond-portfolio').innerHTML = '<p class="muted">' + e.message + '</p>'; }
+        el('dist-bond').innerHTML = metrics.map(m => `<option value="${esc(m.bond_id)}">${esc(m.bond_name || m.bond_id)} — accrued $${esc((m.accrued_interest_total || 0).toFixed(2))}</option>`).join('');
+      } catch (e) { el('bond-portfolio').innerHTML = '<p class="muted">' + esc(e.message) + '</p>'; }
+    }
+
+    async function backfillMasterWallets() {
+      try {
+        const bondId = el('dist-bond').value;
+        if (!bondId) throw new Error('Select a bond');
+        const data = await api('/master-wallets/backfill', { method: 'POST', body: JSON.stringify({ bondId }) });
+        show(JSON.stringify(data, null, 2), false, 'dist-result');
+        await loadMasters(); await loadBonds(); await loadOverview();
+      } catch (e) { show(e.message, true, 'dist-result'); }
     }
 
     async function distributeFixedIncome() {
@@ -290,14 +305,14 @@
       try {
         const reqs = await api('/distribution-requests?limit=50');
         el('requests-list').innerHTML = (reqs || []).map(r => {
-          const approvals = (r.approvals || []).map(a => a.role).join(', ');
+          const approvals = esc((r.approvals || []).map(a => a.role).join(', ') || 'none');
           let action = '';
           if (r.status !== 'executed' && r.status !== 'rejected' && r.status !== 'failed') {
-            action = `<button class="btn btn-sm" onclick="approveAs('${r.id}','maker','annrobinson9800@yahoo.com')">Approve Maker</button> <button class="btn btn-sm btn-2" onclick="approveAs('${r.id}','checker','dbnettrust@gmail.com')">Approve Checker</button>`;
+            action = `<button class="btn btn-sm" onclick="approveAs('${esc(r.id)}','maker','annrobinson9800@yahoo.com')">Approve Maker</button> <button class="btn btn-sm btn-2" onclick="approveAs('${esc(r.id)}','checker','dbnettrust@gmail.com')">Approve Checker</button>`;
           }
-          return `<tr><td>${r.id.slice(-12)}</td><td>${r.beneficiary_name || r.beneficiary_email}</td><td>$${(r.amount_cents / 100).toFixed(2)}</td><td>${r.status}</td><td>${approvals || 'none'}</td><td>${action}</td></tr>`;
+          return `<tr><td>${esc(r.id.slice(-12))}</td><td>${esc(r.beneficiary_name || r.beneficiary_email)}</td><td>$${esc((r.amount_cents / 100).toFixed(2))}</td><td>${esc(r.status)}</td><td>${approvals}</td><td>${action}</td></tr>`;
         }).join('') || '<tr><td colspan="6">No requests yet.</td></tr>';
-      } catch (e) { el('requests-list').innerHTML = '<tr><td colspan="6">' + e.message + '</td></tr>'; }
+      } catch (e) { el('requests-list').innerHTML = '<tr><td colspan="6">' + esc(e.message) + '</td></tr>'; }
     }
 
     async function approveAs(id, role, email) {
@@ -307,6 +322,9 @@
         await loadRequests(); await loadOverview(); await loadMasters();
       } catch (e) { show(e.message, true, 'requests-result'); }
     }
+
+    // Escape status messages (JSON.stringify output can contain HTML characters)
+    function showSafe(msg, isErr, id) { const d = el(id); d.textContent = msg; d.className = 'status ' + (isErr ? 'err' : 'ok'); d.classList.remove('hidden'); }
 
     if (localStorage.getItem('dlb-admin-token')) el('token').value = localStorage.getItem('dlb-admin-token');
     loadAll();

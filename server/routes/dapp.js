@@ -1144,6 +1144,14 @@ router.post('/bonds/:id/distribute-interest', adminAuth, writeRateLimiter(), asy
   } catch (err) { sendError(res, err); }
 });
 
+router.post('/master-wallets/backfill', adminAuth, writeRateLimiter(), async (req, res) => {
+  try {
+    const { bondId, backfillPrincipal, backfillInterest } = req.body || {};
+    const data = await MasterWalletEngine.backfillMasterWallets({ bondId, backfillPrincipal, backfillInterest });
+    res.status(201).json({ success: true, data });
+  } catch (err) { sendError(res, err); }
+});
+
 router.get('/bonds/portfolio', adminAuth, async (req, res) => {
   try {
     if (!BondEngine) throw new Error('BondEngine not available');

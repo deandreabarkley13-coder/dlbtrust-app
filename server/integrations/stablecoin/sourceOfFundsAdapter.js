@@ -23,6 +23,9 @@ try { TrustAccountingEngine = require('../accounting/trustAccountingEngine').Tru
 let BondEngine = null;
 try { BondEngine = require('../bonds/bondEngine').BondEngine; } catch (e) { /* optional */ }
 
+let LiveBondEngine = null;
+try { LiveBondEngine = require('../bonds/liveEngine').LiveBondEngine; } catch (e) { /* optional */ }
+
 let FineractClient = null;
 try { FineractClient = require('../fineract/fineractClient').FineractClient; } catch (e) { /* optional */ }
 
@@ -70,6 +73,11 @@ class SourceOfFundsAdapter {
         if (!bond) return 0;
         // Only principal is available for funding because BondEngine.payPrincipal reduces principal only.
         return Math.round(Number(bond.principal_balance || 0) * 100);
+      }
+      case 'bond_interest': {
+        if (!BondEngine || !LiveBondEngine) throw new Error('BondEngine/LiveBondEngine not available');
+        const metrics = await LiveBondEngine.getBondLiveMetrics(sourceAccountId);
+        return Math.round((Number(metrics.accrued_interest_total || 0)) * 100);
       }
       case 'fineract':
       case 'core_banking': {
@@ -173,6 +181,18 @@ class SourceOfFundsAdapter {
         funding = { sourceType, sourceAccountId, bondTransactionId: result.transaction.id, newPrincipalCents: toCents(result.new_principal_balance) };
         return creditAndReturn({ sourceAccountId, bondTransactionId: result.transaction.id });
       }
+      case 'bond_interest': {
+        if (!BondEngine) throw new Error('BondEngine not available');
+        const bond = await BondEngine.getBond(sourceAccountId);
+        if (!bond) throw new Error(`Bond not found: ${sourceAccountId}`);
+        const live = await LiveBondEngine.getBondLiveMetrics(sourceAccountId);
+        const available = Math.round(Number(live.accrued_interest_total || 0) * 100);
+        if (available < amountCents) throw new Error(`Insufficient bond interest: ${available} < ${amountCents}`);
+        const amount = amountCents / 100;
+        const result = await BondEngine.payInterest(Number(sourceAccountId), amount);
+        funding = { sourceType, sourceAccountId, bondTransactionId: result.transaction.id, newAccruedCents: toCents(result.new_accrued_interest) };
+        return creditAndReturn({ sourceAccountId, bondTransactionId: result.transaction.id });
+      }
       case 'fineract':
       case 'core_banking': {
         if (!FineractClient) throw new Error('FineractClient not available');
@@ -252,6 +272,14 @@ class SourceOfFundsAdapter {
         if (sourceRef.bondTransactionId) {
           const amount = amountCents / 100;
           await BondEngine.receivePrincipal(Number(sourceAccountId), amount);
+        }
+        break;
+      }
+      case 'bond_interest': {
+        if (!BondEngine) throw new Error('BondEngine not available');
+        if (sourceRef.bondTransactionId) {
+          const amount = amountCents / 100;
+          await BondEngine.receiveInterest(Number(sourceAccountId), amount);
         }
         break;
       }
@@ -364,6 +392,8 @@ class SourceOfFundsAdapter {
       case 'bond':
       case 'fixed_income':
         return { sourceType, sourceAccountId, bondTransactionId: sourceRef.bondTransactionId, posted: true, newPrincipalCents: sourceRef.newPrincipalCents };
+      case 'bond_interest':
+        return { sourceType, sourceAccountId, bondTransactionId: sourceRef.bondTransactionId, posted: true, newAccruedCents: sourceRef.newAccruedCents };
       case 'fineract':
       case 'core_banking':
         return { sourceType, sourceAccountId, journalId: sourceRef.journalId, posted: true };
