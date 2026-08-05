@@ -77,7 +77,7 @@ class BtcPayEngine {
     return this.request(`/stores/${BTCPAY_STORE_ID}/payouts`, { method: 'POST', body: JSON.stringify(body) });
   }
 
-  static async approvePayout(payoutId, revision = 1, rateRule = null) {
+  static async approvePayout(payoutId, revision = 0, rateRule = null) {
     return this.request(`/stores/${BTCPAY_STORE_ID}/payouts/${payoutId}`, {
       method: 'POST',
       body: JSON.stringify({ revision, rateRule }),
@@ -104,9 +104,9 @@ class BtcPayEngine {
 
     if (autoApprove) {
       try {
-        await this.approvePayout(payout.id, payout.revision || 1, null);
+        await this.approvePayout(payout.id, payout.revision != null ? payout.revision : 0, null);
       } catch (e) {
-        // approval may fail before wallet/node is ready; keep payout as pending
+        console.warn('[BtcPayEngine] payout approval failed:', e.message);
       }
     }
 
@@ -125,7 +125,10 @@ class BtcPayEngine {
     const crypto = require('crypto');
     const hmac = crypto.createHmac('sha256', BTCPAY_WEBHOOK_SECRET).update(rawBody, 'utf8').digest('hex');
     const sig = (signature || '').replace(/^sha256=/, '');
-    return { valid: crypto.timingSafeEqual(Buffer.from(hmac, 'hex'), Buffer.from(sig, 'hex')), verified: true };
+    const a = Buffer.from(hmac, 'hex');
+    const b = Buffer.from(sig, 'hex');
+    if (a.length !== b.length) return { valid: false, verified: true };
+    return { valid: crypto.timingSafeEqual(a, b), verified: true };
   }
 }
 

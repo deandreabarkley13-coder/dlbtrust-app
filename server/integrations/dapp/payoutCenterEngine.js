@@ -88,13 +88,28 @@ class PayoutCenterEngine {
   }
 
   static isBtcAddress(v) {
-    return /^bitcoin:/i.test(v) || /^[13][a-zA-Z0-9]{25,34}$/.test(v) || /^(bc1|BC1)[a-zA-Z0-9]{11,71}$/.test(v);
+    if (typeof v !== 'string' || !v.trim()) return false;
+    let addr = v.trim();
+    if (addr.toLowerCase().startsWith('bitcoin:')) {
+      try {
+        const u = new URL(addr);
+        addr = u.pathname || u.hostname;
+      } catch { return false; }
+    }
+    return /^[13][a-zA-Z0-9]{25,34}$/.test(addr) || /^(bc1|BC1)[a-zA-Z0-9]{11,71}$/.test(addr);
   }
 
   static async resolveRecipient({ recipientType, identifier, asset = '' } = {}) {
     const upper = String(asset).toUpperCase();
     if (isAddress(identifier)) return { address: viem.getAddress ? viem.getAddress(identifier) : identifier.toLowerCase(), type: 'address' };
-    if (upper === 'BTC' && this.isBtcAddress(identifier)) return { address: identifier, type: 'btc_address' };
+    if (upper === 'BTC' && this.isBtcAddress(identifier)) {
+      let addr = identifier.trim();
+      if (addr.toLowerCase().startsWith('bitcoin:')) {
+        const u = new URL(addr);
+        addr = u.pathname || u.hostname;
+      }
+      return { address: addr, type: 'btc_address' };
+    }
     const DappEngine = getDappEngine();
     if (!DappEngine) throw new Error('Wallet address required or DappEngine not available');
     const user = await DappEngine.getUserByEmail(identifier).catch(() => null);

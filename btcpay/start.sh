@@ -8,13 +8,15 @@ BTCPAY_DIR=${BTCPAY_DIR:-$DATA_DIR/btcpay}
 
 mkdir -p "$BITCOIN_DIR" "$NBXPLORER_DIR" "$BTCPAY_DIR" /var/log/supervisor
 
-# Generate Bitcoin RPC credentials if not provided
+# Bitcoin RPC credentials must be provided as Fly secrets; do not auto-generate
 BTC_RPCUSER=${BTC_RPCUSER:-btcrpc}
 if [ -z "$BTC_RPCPASSWORD" ]; then
-  BTC_RPCPASSWORD=$(head -c 32 /dev/urandom | xxd -p | tr -d '\n')
+  echo "ERROR: BTC_RPCPASSWORD is required as a Fly secret" >&2
+  exit 1
 fi
 
 # Write bitcoin.conf for a pruned mainnet node
+# RPC and P2P are bound to loopback only; internal consumers use 127.0.0.1.
 cat > "$BITCOIN_DIR/bitcoin.conf" <<EOF
 mainnet=1
 [main]
@@ -23,29 +25,24 @@ dbcache=256
 maxmempool=128
 maxconnections=16
 listen=1
+bind=127.0.0.1
 server=1
 txindex=0
 disablewallet=1
 blockfilterindex=0
 rpcuser=$BTC_RPCUSER
 rpcpassword=$BTC_RPCPASSWORD
-rpcbind=0.0.0.0
-rpcallowip=0.0.0.0/0
+rpcbind=127.0.0.1
+rpcallowip=127.0.0.1/32
 rpcworkqueue=128
 fallbackfee=0.0002
 EOF
 
-# Parse DATABASE_URL into Npgsql-style connection strings for BTCPay and NBXplorer
-# Expected format: postgres://user:pass@host:port/db?...
-if [ -z "$DATABASE_URL" ]; then
-  echo "ERROR: DATABASE_URL is required" >&2
-  exit 1
-fi
-
+# Postgres connection strings can be supplied directly as Fly secrets, or parsed from DATABASE_URL.
+# Using BTCPAY_POSTGRES / NBXPLORER_POSTGRES avoids fragile URL parsing of passwords with special characters.
 parse_postgres_url() {
   local url="$1"
   local db_name="$2"
-  # Strip leading postgres://
   local rest="${url#postgres://}"
   local userpass="${rest%%@*}"
   local hostportdb="${rest#*@}"
@@ -63,13 +60,19 @@ parse_postgres_url() {
       sslmode="Disable"
     fi
   fi
-  [ -z "$sslmode" ] && sslmode="Prefer"
+  [ -z "$sslmode" ] && sslmode="Require"
   echo "User ID=$user;Password=$pass;Host=$host;Port=$port;Database=$db_name;SSL Mode=$sslmode;Application Name=$db_name"
 }
 
-NBXPLORER_POSTGRES=$(parse_postgres_url "$DATABASE_URL" nbxplorer)
-BTCPAY_POSTGRES=$(parse_postgres_url "$DATABASE_URL" btcpay)
-BTCPAY_EXPLORERPOSTGRES=$NBXPLORER_POSTGRES
+if [ -z "$NBXPLORER_POSTGRES" ] || [ -z "$BTCPAY_POSTGRES" ]; then
+  if [ -z "$DATABASE_URL" ]; then
+    echo "ERROR: DATABASE_URL (or BTCPAY_POSTGRES and NBXPLORER_POSTGRES) is required" >&2
+    exit 1
+  fi
+  NBXPLORER_POSTGRES=${NBXPLORER_POSTGRES:-$(parse_postgres_url "$DATABASE_URL" nbxplorer)}
+  BTCPAY_POSTGRES=${BTCPAY_POSTGRES:-$(parse_postgres_url "$DATABASE_URL" btcpay)}
+fi
+BTCPAY_EXPLORERPOSTGRES=${BTCPAY_EXPLORERPOSTGRES:-$NBXPLORER_POSTGRES}
 
 # Export for supervisor child processes
 export NBXPLORER_NETWORK=mainnet
