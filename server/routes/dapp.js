@@ -1069,8 +1069,8 @@ router.post('/payout-center/pay', operatorAuth, writeRateLimiter(), async (req, 
       recipientType, recipientIdentifier, amount, asset, description,
       rail, railOptions,
     } = req.body;
-    const allowedRails = ['sit','dex','cashapp','cash_app','cash','fund_rail','module','stablecoin_dex'];
-    const allowedAssets = ['SIT','USDC','ETH','WETH','CASH'];
+    const allowedRails = ['sit','dex','cashapp','cash_app','cash','fund_rail','module','stablecoin_dex','btcpay'];
+    const allowedAssets = ['SIT','USDC','ETH','WETH','CASH','BTC'];
     if (!sourceType || !sourceAccountId) throw new Error('sourceType and sourceAccountId are required');
     if (!recipientIdentifier) throw new Error('recipientIdentifier is required');
     if (amount === undefined || amount === null || isNaN(Number(amount))) throw new Error('amount is required and must be numeric');
