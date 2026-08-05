@@ -71,13 +71,25 @@
 
     <div class="card">
       <h2>Operator Wallet — fund for gas & liquidity</h2>
-      <p>Send ETH, WETH, DAI, USDC, or DLBUSD to this address from any exchange or wallet. The operator wallet pays gas for all on-chain transactions and DEX pool liquidity.</p>
+      <p>Send ETH, WETH, DAI, USDC, or DLBUSD to this address from any exchange or wallet, or fund directly from a DLB Trust source ledger.</p>
       <div id="operator-wallet" class="small" style="margin:12px 0;">Loading...</div>
       <div class="form-row" style="grid-template-columns:1fr auto;">
         <input type="text" id="operator-address" readonly style="font-family:monospace;" />
         <button class="btn" onclick="copyOperatorAddress()">Copy</button>
       </div>
       <div id="operator-copy-status" class="status hidden" style="margin-top:10px;"></div>
+
+      <div style="margin-top:18px; border-top:1px solid var(--border); padding-top:16px;">
+        <h3 style="margin:0 0 10px; font-size:15px;">Fund from DLB Trust</h3>
+        <div class="form-row">
+          <div><label>Source ledger</label><select id="fund-source-type"><option value="treasury">Treasury</option><option value="core_banking">Core Banking</option><option value="cash">Cash</option><option value="trust">Trust Accounting</option><option value="bond">Bond / Fixed Income</option><option value="sub_ledger">Sub-Ledger</option></select></div>
+          <div><label>Source account ID</label><input type="text" id="fund-source-account" value="TREASURY_HOT" /></div>
+          <div><label>Asset to receive</label><select id="fund-asset"><option value="ETH">ETH</option><option value="WETH">WETH</option><option value="DAI">DAI</option><option value="USDC">USDC</option></select></div>
+          <div><label>Amount (USD)</label><input type="number" id="fund-amount" value="1.00" min="0.01" step="0.01" /></div>
+        </div>
+        <div class="actions"><button class="btn" onclick="fundOperatorWallet()">Fund operator wallet</button></div>
+        <div id="fund-operator-result" class="status hidden"></div>
+      </div>
     </div>
 
     <div class="tabs">
@@ -221,6 +233,20 @@
         await navigator.clipboard.writeText(addr);
         show('Operator wallet address copied.', false, 'operator-copy-status');
       } catch (e) { show('Copy failed.', true, 'operator-copy-status'); }
+    }
+    async function fundOperatorWallet() {
+      const body = {
+        sourceType: el('fund-source-type').value,
+        sourceAccountId: el('fund-source-account').value,
+        asset: el('fund-asset').value,
+        amount: el('fund-amount').value,
+        description: 'Fund operator wallet from DLB Trust',
+      };
+      try {
+        show('Funding operator wallet...', false, 'fund-operator-result');
+        const data = await api('/operator/fund', { method: 'POST', body: JSON.stringify(body) });
+        show(JSON.stringify(data, null, 2), false, 'fund-operator-result');
+      } catch (e) { show(e.message, true, 'fund-operator-result'); }
     }
     if (getToken()) loadOperatorWallet(); else el('operator-wallet').textContent = 'Save your operator token above to load the funding address.';
 
