@@ -100,7 +100,7 @@ class BondTrustReconciliation {
         cash_bond_proceeds_zeroed: 'CA-BOND-PROCEEDS',
       };
     } catch (err) {
-      await client.query('ROLLBACK');
+      try { await client.query('ROLLBACK'); } catch (e) { /* no active transaction */ }
       throw err;
     } finally {
       client.release();

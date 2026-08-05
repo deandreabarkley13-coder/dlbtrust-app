@@ -18,7 +18,6 @@ fi
 # Write bitcoin.conf for a pruned mainnet node
 # RPC and P2P are bound to loopback only; internal consumers use 127.0.0.1.
 cat > "$BITCOIN_DIR/bitcoin.conf" <<EOF
-mainnet=1
 [main]
 prune=5120
 dbcache=256
