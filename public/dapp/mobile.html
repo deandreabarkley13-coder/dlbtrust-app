@@ -118,7 +118,7 @@
       <button class="btn" onclick="stopScanner()" id="btn-stop-scan" hidden>Cancel Scan</button>
       <div id="pay-form" class="hidden">
         <label>Recipient Address</label>
-        <input type="text" id="pay-address" readonly />
+        <input type="text" id="pay-address" placeholder="0x..." />
         <div class="row-flex">
           <div>
             <label>Amount</label>
@@ -261,11 +261,19 @@ function renderBalances(balance) {
   const grid = el('balance-grid');
   grid.innerHTML = '';
   if (!balance || typeof balance !== 'object') { grid.innerHTML = '<div class="muted">No balance data</div>'; return; }
-  for (const asset of Object.keys(balance)) {
-    const b = balance[asset];
-    if (!b || typeof b !== 'object') continue;
-    const internal = formatAmount(b.internal_cents || b.internal, asset);
-    const external = formatAmount(b.external_cents || b.external, asset);
+  const assets = new Map();
+  for (const [k, v] of Object.entries(balance.internal || {})) {
+    const a = k.toUpperCase();
+    assets.set(a, { ...(assets.get(a) || {}), internal: v });
+  }
+  for (const [k, v] of Object.entries(balance.external || {})) {
+    const a = k.toUpperCase();
+    assets.set(a, { ...(assets.get(a) || {}), external: v });
+  }
+  if (assets.size === 0) { grid.innerHTML = '<div class="muted">No balances</div>'; return; }
+  for (const [asset, vals] of Array.from(assets).sort((a, b) => a[0].localeCompare(b[0]))) {
+    const external = vals.external !== undefined ? String(vals.external) : '0.0000';
+    const internal = vals.internal !== undefined ? String(vals.internal) : '0.0000';
     const div = document.createElement('div');
     div.className = 'balance';
     div.innerHTML = `<div class="asset">${asset}</div><div class="val">${external}</div><div class="muted">int ${internal}</div>`;
@@ -300,6 +308,7 @@ function showTab(id) {
     el('receive-address').textContent = state.wallet.address;
     updateReceiveQR();
   }
+  if (id === 'tab-pay') startScanner();
   if (id !== 'tab-pay') stopScanner();
 }
 
@@ -350,7 +359,11 @@ async function startScanner() {
     await state.scanner.start(camera, { fps: 10, qrbox: { width: 220, height: 220 } }, onScan, () => {});
     state.scannerActive = true;
     el('btn-stop-scan').hidden = false;
-  } catch(e) { show('Camera error: ' + e.message, true, 'pay-status'); }
+  } catch(e) {
+    show('Camera error: ' + e.message + '. You can enter the recipient address below.', true, 'pay-status');
+    el('pay-form').classList.remove('hidden');
+    el('reader').innerHTML = '<div style="padding:20px;color:var(--muted);text-align:center;">Camera not available.<br>Use the form below.</div>';
+  }
 }
 
 function stopScanner() {
