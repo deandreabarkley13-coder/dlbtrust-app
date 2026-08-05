@@ -1258,4 +1258,57 @@ router.post('/operator/fund', operatorAuth, writeRateLimiter(), async (req, res)
   } catch (err) { sendError(res, err); }
 });
 
+// ─── Mobile Beneficiary PWA API ─────────────────────────────────────────────────
+// Public routes (no auth) are handled by /auth/send-code and /auth/verify.
+// /auth/me already returns the logged-in dApp user.
+
+function sanitizeWallet(w) {
+  if (!w) return w;
+  const safe = { ...w };
+  delete safe.private_key_encrypted;
+  delete safe.seed_phrase_encrypted;
+  return safe;
+}
+
+router.get('/beneficiary/wallet', portalAuth, async (req, res) => {
+  try {
+    const email = req.user && req.user.email;
+    if (!email) throw new Error('Not authenticated');
+    const user = await DappEngine.getUserByEmail(email);
+    const wallets = await WalletEngine.getWalletsByUser(user.id);
+    const wallet = wallets.find(w => w.is_primary) || wallets[0];
+    if (!wallet) throw new Error('No wallet found for this beneficiary');
+    const balance = await WalletEngine.getBalance(wallet.id);
+    res.json({ success: true, data: { user: DappEngine._sanitizeUser ? DappEngine._sanitizeUser(user) : user, wallet: sanitizeWallet(wallet), balance } });
+  } catch (err) { sendError(res, err); }
+});
+
+router.get('/beneficiary/transactions', portalAuth, async (req, res) => {
+  try {
+    const email = req.user && req.user.email;
+    if (!email) throw new Error('Not authenticated');
+    const user = await DappEngine.getUserByEmail(email);
+    const wallets = await WalletEngine.getWalletsByUser(user.id);
+    const wallet = wallets.find(w => w.is_primary) || wallets[0];
+    if (!wallet) throw new Error('No wallet found');
+    const data = await WalletEngine.listTransactions(wallet.id);
+    res.json({ success: true, data });
+  } catch (err) { sendError(res, err); }
+});
+
+router.post('/beneficiary/transfer', portalAuth, writeRateLimiter(), async (req, res) => {
+  try {
+    const email = req.user && req.user.email;
+    if (!email) throw new Error('Not authenticated');
+    const { toAddress, amount, asset = 'SIT', memo = '' } = req.body;
+    if (!toAddress || amount === undefined || amount === null) throw new Error('toAddress and amount required');
+    const user = await DappEngine.getUserByEmail(email);
+    const wallets = await WalletEngine.getWalletsByUser(user.id);
+    const wallet = wallets.find(w => w.is_primary) || wallets[0];
+    if (!wallet) throw new Error('No wallet found');
+    const data = await WalletEngine.transfer({ fromWalletId: wallet.id, toAddress, amount, asset: asset.toUpperCase(), memo });
+    res.status(201).json({ success: true, data });
+  } catch (err) { sendError(res, err); }
+});
+
 module.exports = router;
