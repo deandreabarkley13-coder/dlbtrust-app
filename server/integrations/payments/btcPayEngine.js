@@ -121,7 +121,7 @@ class BtcPayEngine {
   }
 
   static validateWebhook(rawBody, signature) {
-    if (!BTCPAY_WEBHOOK_SECRET) return { valid: true, verified: false };
+    if (!BTCPAY_WEBHOOK_SECRET) return { valid: false, verified: false };
     const crypto = require('crypto');
     const hmac = crypto.createHmac('sha256', BTCPAY_WEBHOOK_SECRET).update(rawBody, 'utf8').digest('hex');
     const sig = (signature || '').replace(/^sha256=/, '');
