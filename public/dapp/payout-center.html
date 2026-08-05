@@ -112,6 +112,8 @@
             <option value="USDC">USDC (Stablecoin DEX)</option>
             <option value="ETH">ETH (Stablecoin DEX)</option>
             <option value="WETH">WETH (Stablecoin DEX)</option>
+            <option value="DAI">DAI (DLBUSD -> WETH -> Uniswap DAI)</option>
+            <option value="BTC">BTC (BTCPay Server on-chain)</option>
             <option value="CASH">Cash App USD</option>
           </select></div>
           <div><label>Description</label><input type="text" id="pay-desc" placeholder="Q3 beneficiary distribution" /></div>
@@ -200,7 +202,7 @@
 
     function updateRailHint() {
       const asset = el('pay-asset').value;
-      const hints = { SIT: 'Rail: Sovereign Trust Token (SIT) minted directly to the recipient wallet. No DEX needed.', USDC: 'Rail: Stablecoin DEX swaps source-ledger DLBUSD to USDC.', ETH: 'Rail: Stablecoin DEX swaps source-ledger DLBUSD to native ETH.', WETH: 'Rail: Stablecoin DEX swaps source-ledger DLBUSD to WETH.', CASH: 'Rail: Cash App QR / deep link for USD.' };
+      const hints = { SIT: 'Rail: Sovereign Trust Token (SIT) minted directly to the recipient wallet. No DEX needed.', USDC: 'Rail: Stablecoin DEX swaps source-ledger DLBUSD to USDC.', ETH: 'Rail: Stablecoin DEX swaps source-ledger DLBUSD to native ETH.', WETH: 'Rail: Stablecoin DEX swaps source-ledger DLBUSD to WETH.', DAI: 'Rail: Stablecoin DEX swaps source-ledger DLBUSD to WETH, then Uniswap V2 WETH to MakerDAO DAI.', BTC: 'Rail: BTCPay Server pull-payment + on-chain BTC payout. Requires BTCPay wallet funded and synced.', CASH: 'Rail: Cash App QR / deep link for USD.' };
       el('pay-rail-hint').textContent = hints[asset] || '';
     }
     updateRailHint();
@@ -250,7 +252,7 @@
         amount: el('pay-amount').value,
         asset,
         description: el('pay-desc').value,
-        rail: asset === 'SIT' ? 'sit' : asset === 'CASH' ? 'cashapp' : 'dex',
+        rail: asset === 'SIT' ? 'sit' : asset === 'CASH' ? 'cashapp' : asset === 'BTC' ? 'btcpay' : 'dex',
         railOptions: { createPoolIfMissing: el('pay-create-pool').value === 'true', poolSeedUsdc: el('pay-seed-target').value, poolSeedDlbusd: el('pay-seed-dlbusd').value }
       };
       try {

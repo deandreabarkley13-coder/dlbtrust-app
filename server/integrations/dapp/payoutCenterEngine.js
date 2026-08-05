@@ -31,6 +31,9 @@ try { ({ CashAppEngine } = require('./cashAppEngine')); } catch (e) { CashAppEng
 let ModuleFundingEngine;
 try { ({ ModuleFundingEngine } = require('./moduleFundingEngine')); } catch (e) { ModuleFundingEngine = null; }
 
+let BtcPayEngine;
+try { ({ BtcPayEngine } = require('../payments/btcPayEngine')); } catch (e) { BtcPayEngine = null; }
+
 function id(prefix = 'PAY') { return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 8).toUpperCase()}`; }
 function isAddress(v) { return viem && viem.isAddress && viem.isAddress(v); }
 function safeJson(obj) { return JSON.stringify(obj, (k, v) => typeof v === 'bigint' ? String(v) : v); }
@@ -84,8 +87,29 @@ class PayoutCenterEngine {
       .map(u => ({ id: u.id, email: u.email, name: u.name, role: u.role, roles: u.roles, walletAddress: u.wallet_address }));
   }
 
-  static async resolveRecipient({ recipientType, identifier }) {
+  static isBtcAddress(v) {
+    if (typeof v !== 'string' || !v.trim()) return false;
+    let addr = v.trim();
+    if (addr.toLowerCase().startsWith('bitcoin:')) {
+      try {
+        const u = new URL(addr);
+        addr = u.pathname || u.hostname;
+      } catch { return false; }
+    }
+    return /^[13][a-zA-Z0-9]{25,34}$/.test(addr) || /^(bc1|BC1)[a-zA-Z0-9]{11,71}$/.test(addr);
+  }
+
+  static async resolveRecipient({ recipientType, identifier, asset = '' } = {}) {
+    const upper = String(asset).toUpperCase();
     if (isAddress(identifier)) return { address: viem.getAddress ? viem.getAddress(identifier) : identifier.toLowerCase(), type: 'address' };
+    if (upper === 'BTC' && this.isBtcAddress(identifier)) {
+      let addr = identifier.trim();
+      if (addr.toLowerCase().startsWith('bitcoin:')) {
+        const u = new URL(addr);
+        addr = u.pathname || u.hostname;
+      }
+      return { address: addr, type: 'btc_address' };
+    }
     const DappEngine = getDappEngine();
     if (!DappEngine) throw new Error('Wallet address required or DappEngine not available');
     const user = await DappEngine.getUserByEmail(identifier).catch(() => null);
@@ -100,7 +124,7 @@ class PayoutCenterEngine {
     if (!recipientIdentifier) throw new Error('recipientIdentifier required');
     if (!amount || Number(amount) <= 0) throw new Error('amount must be positive');
 
-    const recipient = await this.resolveRecipient({ recipientType, identifier: recipientIdentifier });
+    const recipient = await this.resolveRecipient({ recipientType, identifier: recipientIdentifier, asset });
     const chosenRail = (rail || 'sit').toLowerCase();
     const recordId = id('PC');
     const base = {
@@ -194,6 +218,19 @@ class PayoutCenterEngine {
         });
         base.tx_hash = result && (result.fundingId || result.txHash);
         base.status = 'completed';
+        break;
+      }
+      case 'btcpay': {
+        if (!BtcPayEngine || !BtcPayEngine.isConfigured()) throw new Error('BTCPay engine not configured');
+        result = await BtcPayEngine.payoutBtc({
+          destination: recipient.address,
+          amountUsd: amount,
+          description,
+          memo: description,
+          autoApprove: true,
+        });
+        base.tx_hash = result.payoutId;
+        base.status = 'awaiting_payment';
         break;
       }
       default:

@@ -29,6 +29,8 @@ const { MasterWalletEngine } = require('../integrations/dapp/masterWalletEngine'
 let BondEngine, LiveBondEngine;
 try { BondEngine = require('../integrations/bonds/bondEngine').BondEngine; } catch (e) { BondEngine = null; }
 try { LiveBondEngine = require('../integrations/bonds/liveEngine').LiveBondEngine; } catch (e) { LiveBondEngine = null; }
+let BondTrustReconciliation;
+try { BondTrustReconciliation = require('../integrations/bonds/bondTrustReconciliation').BondTrustReconciliation; } catch (e) { BondTrustReconciliation = null; }
 const { requireAuth, writeRateLimiter } = require('../integrations/auth/securityMiddleware');
 
 const router = express.Router();
@@ -1082,8 +1084,8 @@ router.post('/payout-center/pay', operatorAuth, writeRateLimiter(), async (req, 
       recipientType, recipientIdentifier, amount, asset, description,
       rail, railOptions,
     } = req.body;
-    const allowedRails = ['sit','dex','cashapp','cash_app','cash','fund_rail','module','stablecoin_dex'];
-    const allowedAssets = ['SIT','USDC','ETH','WETH','CASH'];
+    const allowedRails = ['sit','dex','cashapp','cash_app','cash','fund_rail','module','stablecoin_dex','btcpay'];
+    const allowedAssets = ['SIT','USDC','ETH','WETH','DAI','CASH','BTC'];
     if (!sourceType || !sourceAccountId) throw new Error('sourceType and sourceAccountId are required');
     if (!recipientIdentifier) throw new Error('recipientIdentifier is required');
     if (amount === undefined || amount === null || isNaN(Number(amount))) throw new Error('amount is required and must be numeric');
@@ -1225,6 +1227,15 @@ router.get('/bonds/portfolio', adminAuth, async (req, res) => {
       try { metrics.push(await LiveBondEngine.getBondLiveMetrics(bond.id)); } catch (e) { metrics.push({ bond_id: bond.id, bond_name: bond.bond_name, error: e.message }); }
     }
     res.json({ success: true, data: { bonds, metrics } });
+  } catch (err) { sendError(res, err); }
+});
+
+// ─── Reconcile trust accounting / sub-ledgers / cash with the BondEngine ──────
+router.post('/bonds/reconcile-trust', adminAuth, writeRateLimiter(), async (req, res) => {
+  try {
+    if (!BondTrustReconciliation) throw new Error('BondTrustReconciliation not available');
+    const data = await BondTrustReconciliation.sync(req.body.bondId || 'DLB-PRB');
+    res.json({ success: true, data });
   } catch (err) { sendError(res, err); }
 });
 
