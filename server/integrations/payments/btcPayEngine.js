@@ -21,6 +21,13 @@ class BtcPayEngine {
     return Boolean(BTCPAY_URL && BTCPAY_API_KEY && BTCPAY_STORE_ID);
   }
 
+  static extractError(data) {
+    if (!data) return '';
+    if (typeof data === 'string') return data;
+    if (Array.isArray(data)) return data.map(e => e.message || e.path || JSON.stringify(e)).join('; ');
+    return data.message || data.title || data.detail || (data.errors && JSON.stringify(data.errors)) || (data.modelState && JSON.stringify(data.modelState)) || '';
+  }
+
   static async request(path, opts = {}) {
     if (!this.isConfigured()) throw new Error('BTCPay engine not configured (BTCPAY_URL, BTCPAY_API_KEY, BTCPAY_STORE_ID)');
     const url = `${BTCPAY_URL}/api/v1${path.startsWith('/') ? path : '/' + path}`;
@@ -34,7 +41,7 @@ class BtcPayEngine {
     let data;
     try { data = text ? JSON.parse(text) : {}; } catch { data = { raw: text }; }
     if (!res.ok) {
-      const err = data && (data.message || data.title || data.detail || (data.errors && JSON.stringify(data.errors))) || `BTCPay HTTP ${res.status}`;
+      const err = this.extractError(data) || `BTCPay HTTP ${res.status}`;
       throw new Error(`BTCPay ${res.status}: ${err}`);
     }
     return data;
