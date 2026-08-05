@@ -25,6 +25,7 @@ maxmempool=128
 maxconnections=16
 listen=1
 bind=127.0.0.1
+whitelist=127.0.0.1
 server=1
 txindex=0
 disablewallet=1
