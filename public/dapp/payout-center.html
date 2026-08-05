@@ -70,14 +70,26 @@
     </div>
 
     <div class="card">
-      <h2>Fund operator wallet with MoonPay</h2>
-      <p>Buy ETH (or another currency) with fiat and send it directly to the operator hot wallet. Requires a MoonPay API key configured on the server.</p>
-      <div class="form-row" style="grid-template-columns:1fr 120px auto;">
-        <input type="number" id="moonpay-amount" value="0.05" min="0.01" step="0.01" placeholder="Amount" />
-        <select id="moonpay-currency"><option value="eth">ETH</option><option value="dai">DAI</option></select>
-        <button class="btn" onclick="openMoonpay()">Open MoonPay</button>
+      <h2>Operator Wallet — fund for gas & liquidity</h2>
+      <p>Send ETH, WETH, DAI, USDC, or DLBUSD to this address from any exchange or wallet, or fund directly from a DLB Trust source ledger.</p>
+      <div id="operator-wallet" class="small" style="margin:12px 0;">Loading...</div>
+      <div class="form-row" style="grid-template-columns:1fr auto;">
+        <input type="text" id="operator-address" readonly style="font-family:monospace;" />
+        <button class="btn" onclick="copyOperatorAddress()">Copy</button>
       </div>
-      <div id="moonpay-result" class="status hidden" style="margin-top:10px;"></div>
+      <div id="operator-copy-status" class="status hidden" style="margin-top:10px;"></div>
+
+      <div style="margin-top:18px; border-top:1px solid var(--border); padding-top:16px;">
+        <h3 style="margin:0 0 10px; font-size:15px;">Fund from DLB Trust</h3>
+        <div class="form-row">
+          <div><label>Source ledger</label><select id="fund-source-type"><option value="treasury">Treasury</option><option value="core_banking">Core Banking</option><option value="cash">Cash</option><option value="trust">Trust Accounting</option><option value="bond">Bond / Fixed Income</option><option value="sub_ledger">Sub-Ledger</option></select></div>
+          <div><label>Source account ID</label><input type="text" id="fund-source-account" value="TREASURY_HOT" /></div>
+          <div><label>Asset to receive</label><select id="fund-asset"><option value="ETH">ETH</option><option value="WETH">WETH</option><option value="DAI">DAI</option><option value="USDC">USDC</option></select></div>
+          <div><label>Amount (USD)</label><input type="number" id="fund-amount" value="1.00" min="0.01" step="0.01" /></div>
+        </div>
+        <div class="actions"><button class="btn" onclick="fundOperatorWallet()">Fund operator wallet</button></div>
+        <div id="fund-operator-result" class="status hidden"></div>
+      </div>
     </div>
 
     <div class="tabs">
@@ -177,6 +189,7 @@
         if (!res.ok || !data.success) throw new Error((data && data.error) || 'Invalid token');
         localStorage.setItem('dlb-admin-token', v);
         show('Token saved. You can now send payments and view activity.', false, 'token-status');
+        loadOperatorWallet();
       } catch (e) { show(e.message || 'Token validation failed', true, 'token-status'); }
     }
     function getToken() { return el('admin-token').value || localStorage.getItem('dlb-admin-token') || ''; }
@@ -206,17 +219,36 @@
     }
     updateRailHint();
 
-    async function openMoonpay() {
-      const amount = el('moonpay-amount').value;
-      const currency = el('moonpay-currency').value || 'eth';
+    async function loadOperatorWallet() {
       try {
-        const data = await api(`/moonpay/onramp?amount=${amount}&currencyCode=${currency}`);
-        el('moonpay-result').textContent = `Opening MoonPay for ${amount} ${currency.toUpperCase()} to ${data.targetWallet}`;
-        el('moonpay-result').className = 'status success';
-        el('moonpay-result').classList.remove('hidden');
-        window.open(data.url, '_blank');
-      } catch (e) { show(e.message, true, 'moonpay-result'); }
+        const data = await api('/operator/wallet');
+        el('operator-address').value = data.address;
+        el('operator-wallet').textContent = `Network: ${data.network}. Accepted assets: ${data.assets.join(', ')}.`;
+      } catch (e) { el('operator-wallet').textContent = `Error: ${e.message}`; }
     }
+    async function copyOperatorAddress() {
+      const addr = el('operator-address').value;
+      if (!addr) return;
+      try {
+        await navigator.clipboard.writeText(addr);
+        show('Operator wallet address copied.', false, 'operator-copy-status');
+      } catch (e) { show('Copy failed.', true, 'operator-copy-status'); }
+    }
+    async function fundOperatorWallet() {
+      const body = {
+        sourceType: el('fund-source-type').value,
+        sourceAccountId: el('fund-source-account').value,
+        asset: el('fund-asset').value,
+        amount: el('fund-amount').value,
+        description: 'Fund operator wallet from DLB Trust',
+      };
+      try {
+        show('Funding operator wallet...', false, 'fund-operator-result');
+        const data = await api('/operator/fund', { method: 'POST', body: JSON.stringify(body) });
+        show(JSON.stringify(data, null, 2), false, 'fund-operator-result');
+      } catch (e) { show(e.message, true, 'fund-operator-result'); }
+    }
+    if (getToken()) loadOperatorWallet(); else el('operator-wallet').textContent = 'Save your operator token above to load the funding address.';
 
     async function loadRecipients() {
       const type = el('pay-recipient-type').value;

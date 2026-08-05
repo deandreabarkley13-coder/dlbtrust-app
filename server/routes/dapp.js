@@ -1224,4 +1224,38 @@ router.post('/bonds/reconcile-trust', adminAuth, writeRateLimiter(), async (req,
   } catch (err) { sendError(res, err); }
 });
 
+// ─── Operator Wallet (for direct funding of gas / pool liquidity) ───────────────
+router.get('/operator/wallet', operatorAuth, async (req, res) => {
+  try {
+    const cfg = StablecoinDexEngine.getConfig();
+    if (!cfg.operatorAddress) throw new Error('Operator wallet not configured');
+    res.json({ success: true, data: { address: cfg.operatorAddress, network: 'ethereum-mainnet', assets: ['ETH', 'WETH', 'DAI', 'USDC', 'DLBUSD'] } });
+  } catch (err) { sendError(res, err); }
+});
+
+// ─── Fund operator wallet from a DLB Trust source ledger ──────────────────────
+router.post('/operator/fund', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try {
+    const { sourceType, sourceAccountId, asset, amount, description, railOptions } = req.body;
+    if (!sourceType || !sourceAccountId || !asset || amount === undefined || amount === null) {
+      throw new Error('sourceType, sourceAccountId, asset, and amount are required');
+    }
+    const cfg = StablecoinDexEngine.getConfig();
+    if (!cfg.operatorAddress) throw new Error('Operator wallet not configured');
+    const data = await PayoutCenterEngine.createPayment({
+      paymentType: 'operator_fund',
+      sourceType,
+      sourceAccountId,
+      recipientType: 'external',
+      recipientIdentifier: cfg.operatorAddress,
+      amount,
+      asset,
+      description: description || `Fund operator wallet from ${sourceType}`,
+      rail: 'dex',
+      railOptions: railOptions || {},
+    });
+    res.status(201).json({ success: true, data });
+  } catch (err) { sendError(res, err); }
+});
+
 module.exports = router;
