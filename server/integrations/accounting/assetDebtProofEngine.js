@@ -60,6 +60,23 @@ function hashProof({ assets, liabilities, totalAssetsCents, totalLiabilitiesCent
   return '0x' + crypto.createHash('sha256').update(payload).digest('hex');
 }
 
+function isBondDerivedSource(b) {
+  if (b.type === 'cash' && b.account_type === 'bond_proceeds') return true;
+  if (b.type === 'trust') {
+    if (['1100', '1200', '4000', '4200'].includes(b.id)) return true;
+    if (['bond_investment', 'accrued_interest', 'realized_gain'].includes(b.sub_type)) return true;
+  }
+  if (b.type === 'sub_ledger') {
+    if (b.parent_account_code === '1100' || b.sub_account_type === 'bond_investment' || b.sub_account_type === 'accrued_interest') return true;
+  }
+  return false;
+}
+
+function isNonAssetTrustAccount(b) {
+  if (b.type !== 'trust') return false;
+  return ['liability', 'equity', 'income', 'expense'].includes(b.account_type);
+}
+
 class AssetDebtProofEngine {
 
   static async ensureTables() {
@@ -167,13 +184,56 @@ class AssetDebtProofEngine {
         for (const b of balances) {
           const amountCents = Number(b.balance_cents || 0);
           if (amountCents === 0) continue;
+
+          if (isBondDerivedSource(b)) continue;
+
+          // Skip non-monetary sources like document counts
+          if (b.currency === 'count' || b.type === 'documents') continue;
+
+          if (b.type === 'trust' && b.account_type === 'liability') {
+            liabilities.push({
+              name: b.name || `${b.type}:${b.id}`,
+              type: 'trust_liability',
+              amount_cents: Math.round(amountCents),
+              memo: `Trust accounting liability ${b.id}`,
+            });
+            continue;
+          }
+
+          if (isNonAssetTrustAccount(b)) continue;
+
+          if (b.type === 'bond') {
+            const accruedCents = Math.round(Number(b.accrued_interest_cents || 0));
+            assets.push({
+              ...b,
+              source_type: 'bond',
+              source_account_id: b.id || '',
+              name: `${b.name || `Bond ${b.id}`} — principal`,
+              balance_cents: amountCents,
+              currency: b.currency || 'USD',
+            });
+            totalAssetsCents += amountCents;
+            if (accruedCents > 0) {
+              assets.push({
+                ...b,
+                source_type: 'bond',
+                source_account_id: b.id || '',
+                name: `${b.name || `Bond ${b.id}`} — accrued interest`,
+                balance_cents: accruedCents,
+                currency: b.currency || 'USD',
+              });
+              totalAssetsCents += accruedCents;
+            }
+            continue;
+          }
+
           assets.push({
+            ...b,
             source_type: b.type || 'unknown',
             source_account_id: b.id || '',
             name: b.name || `${b.type}:${b.id}`,
             balance_cents: amountCents,
             currency: b.currency || 'USD',
-            ...b,
           });
           totalAssetsCents += amountCents;
         }
