@@ -34,6 +34,9 @@ try { ({ ModuleFundingEngine } = require('./moduleFundingEngine')); } catch (e) 
 let BtcPayEngine;
 try { ({ BtcPayEngine } = require('../payments/btcPayEngine')); } catch (e) { BtcPayEngine = null; }
 
+let SpritzEngine;
+try { ({ SpritzEngine } = require('../payments/spritzEngine')); } catch (e) { SpritzEngine = null; }
+
 function id(prefix = 'PAY') { return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 8).toUpperCase()}`; }
 function isAddress(v) { return viem && viem.isAddress && viem.isAddress(v); }
 function safeJson(obj) { return JSON.stringify(obj, (k, v) => typeof v === 'bigint' ? String(v) : v); }
@@ -124,8 +127,13 @@ class PayoutCenterEngine {
     if (!recipientIdentifier) throw new Error('recipientIdentifier required');
     if (!amount || Number(amount) <= 0) throw new Error('amount must be positive');
 
-    const recipient = await this.resolveRecipient({ recipientType, identifier: recipientIdentifier, asset });
     const chosenRail = (rail || 'sit').toLowerCase();
+    let recipient;
+    if (chosenRail === 'spritz') {
+      recipient = { address: railOptions.accountId || JSON.stringify(railOptions.bankAccount) || recipientIdentifier, type: 'spritz', user: null };
+    } else {
+      recipient = await this.resolveRecipient({ recipientType, identifier: recipientIdentifier, asset });
+    }
     const recordId = id('PC');
     const base = {
       id: recordId,
@@ -231,6 +239,26 @@ class PayoutCenterEngine {
         });
         base.tx_hash = result.payoutId;
         base.status = 'awaiting_payment';
+        break;
+      }
+      case 'spritz': {
+        if (!SpritzEngine || !SpritzEngine.isConfigured()) throw new Error('Spritz engine not configured');
+        const targetAsset = String(asset).toUpperCase() === 'SPRITZ' ? 'USDC' : String(asset).toUpperCase();
+        result = await SpritzEngine.offRamp({
+          sourceType,
+          sourceAccountId,
+          amount,
+          targetAsset,
+          accountId: railOptions.accountId,
+          bankAccount: railOptions.bankAccount,
+          email: railOptions.email,
+          deliveryMethod: railOptions.deliveryMethod,
+          amountMode: railOptions.amountMode,
+          bufferPercent: railOptions.bufferPercent,
+          memo: description,
+        });
+        base.tx_hash = result.payment && (result.payment.payHash || result.payment.approveHash);
+        base.status = result.payment && result.payment.payHash ? 'completed' : 'pending';
         break;
       }
       default:

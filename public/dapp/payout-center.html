@@ -119,12 +119,13 @@
           <div><label>Amount (USD)</label><input type="number" id="pay-amount" value="1.00" min="0.01" step="0.01" /></div>
         </div>
         <div class="form-row">
-          <div><label>Output asset</label><select id="pay-asset" onchange="updateRailHint()">
+          <div><label>Output asset</label><select id="pay-asset" onchange="updateAssetUI()">
             <option value="SIT">SIT (Sovereign Trust Token)</option>
             <option value="USDC">USDC (Stablecoin DEX)</option>
             <option value="ETH">ETH (Stablecoin DEX)</option>
             <option value="WETH">WETH (Stablecoin DEX)</option>
             <option value="DAI">DAI (DLBUSD -> WETH -> Uniswap DAI)</option>
+            <option value="SPRITZ">USD Bank Account (Spritz off-ramp)</option>
             <option value="BTC">BTC (BTCPay Server on-chain)</option>
             <option value="CASH">Cash App USD</option>
           </select></div>
@@ -139,6 +140,16 @@
           </div>
           <p class="small">Pool seeding only applies the first time a DLBUSD/{asset} pool is created. The operator wraps native ETH to WETH when needed.</p>
         </details>
+        <div id="spritz-fields" class="hidden" style="margin-top:12px; padding:12px; border:1px solid var(--border); border-radius:8px;">
+          <h4 style="margin:0 0 10px; font-size:14px;">Spritz Bank Account</h4>
+          <div class="form-row">
+            <div><label>Routing number</label><input type="text" id="spritz-routing" placeholder="021000021" maxlength="9" /></div>
+            <div><label>Account number</label><input type="text" id="spritz-account" placeholder="123456789" /></div>
+            <div><label>Account type</label><select id="spritz-subtype"><option value="checking">Checking</option><option value="savings">Savings</option></select></div>
+            <div><label>Label</label><input type="text" id="spritz-label" placeholder="Primary Checking" /></div>
+          </div>
+          <p class="small">The Spritz user is created with SPRITZ_DEFAULT_EMAIL. KYC may be required before the first fiat payout.</p>
+        </div>
         <div id="pay-rail-hint" class="small" style="margin-top:10px;"></div>
         <div class="actions">
           <button class="btn" onclick="sendPayment()">Send Payment</button>
@@ -214,10 +225,19 @@
 
     function updateRailHint() {
       const asset = el('pay-asset').value;
-      const hints = { SIT: 'Rail: Sovereign Trust Token (SIT) minted directly to the recipient wallet. No DEX needed.', USDC: 'Rail: Stablecoin DEX swaps source-ledger DLBUSD to USDC.', ETH: 'Rail: Stablecoin DEX swaps source-ledger DLBUSD to native ETH.', WETH: 'Rail: Stablecoin DEX swaps source-ledger DLBUSD to WETH.', DAI: 'Rail: Stablecoin DEX swaps source-ledger DLBUSD to WETH, then Uniswap V2 WETH to MakerDAO DAI.', BTC: 'Rail: BTCPay Server pull-payment + on-chain BTC payout. Requires BTCPay wallet funded and synced.', CASH: 'Rail: Cash App QR / deep link for USD.' };
+      const hints = { SIT: 'Rail: Sovereign Trust Token (SIT) minted directly to the recipient wallet. No DEX needed.', USDC: 'Rail: Stablecoin DEX swaps source-ledger DLBUSD to USDC.', ETH: 'Rail: Stablecoin DEX swaps source-ledger DLBUSD to native ETH.', WETH: 'Rail: Stablecoin DEX swaps source-ledger DLBUSD to WETH.', DAI: 'Rail: Stablecoin DEX swaps source-ledger DLBUSD to WETH, then Uniswap V2 WETH to MakerDAO DAI.', SPRITZ: 'Rail: DLBUSD -> WETH -> USDC, then Spritz off-ramp to the bank account below.', BTC: 'Rail: BTCPay Server pull-payment + on-chain BTC payout. Requires BTCPay wallet funded and synced.', CASH: 'Rail: Cash App QR / deep link for USD.' };
       el('pay-rail-hint').textContent = hints[asset] || '';
     }
-    updateRailHint();
+    function updateAssetUI() {
+      const asset = el('pay-asset').value;
+      const isSpritz = asset === 'SPRITZ';
+      el('spritz-fields').classList.toggle('hidden', !isSpritz);
+      el('pay-recipient-type').disabled = isSpritz;
+      el('pay-recipient-select').disabled = isSpritz;
+      el('pay-recipient-address').disabled = isSpritz;
+      updateRailHint();
+    }
+    updateAssetUI();
 
     async function loadOperatorWallet() {
       try {
@@ -266,9 +286,22 @@
 
     async function sendPayment() {
       const asset = el('pay-asset').value;
-      const recipientType = el('pay-recipient-type').value;
-      let recipientIdentifier = el('pay-recipient-select').value;
-      if (recipientType === 'external') recipientIdentifier = el('pay-recipient-address').value;
+      const isSpritz = asset === 'SPRITZ';
+      const recipientType = isSpritz ? 'external' : el('pay-recipient-type').value;
+      let recipientIdentifier = isSpritz ? 'spritz-offramp' : el('pay-recipient-select').value;
+      if (recipientType === 'external' && !isSpritz) recipientIdentifier = el('pay-recipient-address').value;
+      const rail = isSpritz ? 'spritz' : (asset === 'SIT' ? 'sit' : asset === 'CASH' ? 'cashapp' : asset === 'BTC' ? 'btcpay' : 'dex');
+      const railOptions = { createPoolIfMissing: el('pay-create-pool').value === 'true', poolSeedUsdc: el('pay-seed-target').value, poolSeedDlbusd: el('pay-seed-dlbusd').value };
+      if (isSpritz) {
+        railOptions.bankAccount = {
+          type: 'us',
+          ownership: 'personal',
+          routingNumber: el('spritz-routing').value.trim(),
+          accountNumber: el('spritz-account').value.trim(),
+          accountSubtype: el('spritz-subtype').value,
+          label: el('spritz-label').value.trim() || 'DLB Trust Off-ramp'
+        };
+      }
       const body = {
         paymentType: el('pay-type').value,
         sourceType: el('pay-source-type').value,
@@ -278,8 +311,8 @@
         amount: el('pay-amount').value,
         asset,
         description: el('pay-desc').value,
-        rail: asset === 'SIT' ? 'sit' : asset === 'CASH' ? 'cashapp' : asset === 'BTC' ? 'btcpay' : 'dex',
-        railOptions: { createPoolIfMissing: el('pay-create-pool').value === 'true', poolSeedUsdc: el('pay-seed-target').value, poolSeedDlbusd: el('pay-seed-dlbusd').value }
+        rail,
+        railOptions
       };
       try {
         show('Submitting...', false, 'pay-result');
