@@ -83,16 +83,17 @@ class ModuleP2PSwapEngine {
     const orders = [];
     for (const id of ids) {
       const o = await publicClient.readContract({ address: cfg.contractAddress, abi, functionName: 'orders', args: [id] });
-      if (!activeOnly || o.active) {
+      const active = o[7];
+      if (!activeOnly || active) {
         orders.push({
           orderId: String(id),
-          maker: o.maker,
-          tokenIn: o.tokenIn,
-          amountIn: o.amountIn,
-          tokenOut: o.tokenOut,
-          amountOut: o.amountOut,
-          recipient: o.recipient,
-          active: o.active,
+          maker: o[1],
+          tokenIn: o[2],
+          amountIn: String(o[3]),
+          tokenOut: o[4],
+          amountOut: String(o[5]),
+          recipient: o[6],
+          active,
         });
       }
     }
