@@ -237,7 +237,8 @@
         setStat('core-banking', fmt(cbTotal || treasuryBal, 0));
       }
       if (accts && accts.data) {
-        const trustTotal = accts.data.reduce((a,b) => a + (Number(b.balance || 0)), 0);
+        const trustRows = accts.data.filter(b => ['1100','1200','4000'].includes(String(b.account_code)));
+        const trustTotal = trustRows.reduce((a,b) => a + (Number(b.balance || 0)), 0);
         setStat('trust-accounting', fmt(trustTotal, 0));
       }
       if (bond && bond.data && bond.data.bond) setStat('fixed-income', fmt(bond.data.bond.total_current_value, 0));
@@ -279,7 +280,7 @@
         const rows = normalizeBalances(data.data);
         body.innerHTML = renderTable(rows, ['id','name','balance_cents','currency'], {balance_cents: v => fmt(Number(v || 0) / 100, 2)});
       } else if (m.key === 'trust-accounting') {
-        const rows = Array.isArray(data.data) ? data.data : [];
+        const rows = (Array.isArray(data.data) ? data.data : []).filter(b => ['1100','1200','4000'].includes(String(b.account_code)));
         body.innerHTML = renderTable(rows, ['account_code','account_name','account_type','balance'], {balance: v => fmt(Number(v || 0), 2)});
       } else if (m.key === 'crm') {
         body.innerHTML = renderTable(data.data.contacts || [], ['first_name','last_name','email','role'], {});
