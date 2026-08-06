@@ -1125,6 +1125,22 @@ router.get('/wallets/:id/transactions', operatorAuth, async (req, res) => {
   try { const data = await WalletEngine.listTransactions(req.params.id); res.json({ success: true, data }); } catch (err) { sendError(res, err); }
 });
 
+router.get('/wallets/:id/swap/quote', operatorAuth, async (req, res) => {
+  try {
+    const { assetIn, assetOut, amount } = req.query;
+    const data = await WalletEngine.quoteSwap({ walletId: req.params.id, assetIn, assetOut, amount });
+    res.json({ success: true, data });
+  } catch (err) { sendError(res, err); }
+});
+
+router.post('/wallets/:id/swap', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try {
+    const { assetIn, assetOut, amount, slippageBps } = req.body || {};
+    const data = await WalletEngine.swapTokens({ walletId: req.params.id, assetIn, assetOut, amount, slippageBps });
+    res.json({ success: true, data });
+  } catch (err) { sendError(res, err); }
+});
+
 router.post('/wallets/:id/fund', operatorAuth, writeRateLimiter(), async (req, res) => {
   try {
     const { amount, asset, sourceType, sourceAccountId, memo } = req.body;

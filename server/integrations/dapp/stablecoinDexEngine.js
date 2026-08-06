@@ -143,7 +143,7 @@ class StablecoinDexEngine {
   static targetTokenDecimals(targetAsset) {
     const t = String(targetAsset).toUpperCase();
     if (t === 'ETH' || t === 'WETH') return 18;
-    if (t === 'DAI') return 18;
+    if (t === 'DAI' || t === 'USDS') return 18;
     return 6;
   }
 

@@ -33,6 +33,8 @@ const config = {
   defaultThreshold: num('DAPP_DEFAULT_THRESHOLD', 2),
   apiKitBase: str('DAPP_SAFE_API_KIT_BASE', chainId === 1 ? 'https://safe-transaction-mainnet.safe.global' : 'https://safe-transaction-sepolia.safe.global'),
   usdcAddress: str('DAPP_USDC_ADDRESS', '0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48'),
+  usdsAddress: str('DAPP_USDS_ADDRESS', '0xDC035D45d973eBD0d15FBD831697527719126F34'),
+  daiAddress: str('DAPP_DAI_ADDRESS', '0x6B175474E89094C44Da98b954EedeAC495271d0F'),
   wethAddress,
   nativeTokenSymbol: str('DAPP_NATIVE_TOKEN', 'ETH'),
   bondDexPoolAddress: str('BOND_DEX_ADDRESS', ''),

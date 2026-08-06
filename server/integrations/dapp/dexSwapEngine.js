@@ -216,7 +216,7 @@ class DexSwapEngine {
     };
   }
 
-  static async quoteUniswapV2({ tokenIn, tokenOut, amountIn, decimalsIn = 18, decimalsOut = 18, router } = {}) {
+  static async quoteUniswapV2({ tokenIn, tokenOut, amountIn, decimalsIn = 18, decimalsOut = 18, router, path } = {}) {
     const cfg = this.getConfig();
     if (!cfg.enabled) throw new Error('DEX swap not enabled');
     const amount = Number(amountIn) || 0;
@@ -225,6 +225,7 @@ class DexSwapEngine {
     const inputToken = tokenIn;
     const outputToken = tokenOut;
     const routerAddress = router || str('UNISWAP_V2_ROUTER', UNISWAP_V2_ROUTER_02);
+    const swapPath = Array.isArray(path) && path.length >= 2 ? path : [inputToken, outputToken];
 
     if (!cfg.shadow && viem) {
       const { publicClient } = walletClient();
@@ -233,7 +234,7 @@ class DexSwapEngine {
         address: routerAddress,
         abi: uniswapV2RouterAbi,
         functionName: 'getAmountsOut',
-        args: [rawIn, [inputToken, outputToken]],
+        args: [rawIn, swapPath],
       });
       if (!amounts || amounts.length < 2) throw new Error('Uniswap V2 getAmountsOut failed');
       const amountOutRaw = amounts[amounts.length - 1];
@@ -242,6 +243,7 @@ class DexSwapEngine {
       return {
         tokenIn: inputToken,
         tokenOut: outputToken,
+        path: swapPath,
         amountIn,
         amountOut: amountOutHuman.toFixed(decimalsOut),
         amountOutMinimum: minOutHuman.toFixed(decimalsOut),
@@ -257,6 +259,7 @@ class DexSwapEngine {
     return {
       tokenIn: inputToken,
       tokenOut: outputToken,
+      path: swapPath,
       amountIn,
       amountOut: outHuman.toFixed(decimalsOut),
       amountOutMinimum: minOutHuman.toFixed(decimalsOut),
@@ -266,7 +269,7 @@ class DexSwapEngine {
     };
   }
 
-  static async swapOnUniswapV2({ tokenIn, tokenOut, amountIn, amountOutMinimum, recipient, decimalsIn = 18, decimalsOut = 18, router } = {}) {
+  static async swapOnUniswapV2({ tokenIn, tokenOut, amountIn, amountOutMinimum, recipient, decimalsIn = 18, decimalsOut = 18, router, path, privateKey } = {}) {
     const cfg = this.getConfig();
     if (!cfg.enabled) throw new Error('DEX swap not enabled');
     const amount = Number(amountIn) || 0;
@@ -275,9 +278,10 @@ class DexSwapEngine {
     const inputToken = tokenIn;
     const outputToken = tokenOut;
     const routerAddress = router || str('UNISWAP_V2_ROUTER', UNISWAP_V2_ROUTER_02);
+    const swapPath = Array.isArray(path) && path.length >= 2 ? path : [inputToken, outputToken];
     const to = recipient || cfg.operatorAddress;
 
-    const quote = await this.quoteUniswapV2({ tokenIn: inputToken, tokenOut: outputToken, amountIn, decimalsIn, decimalsOut, router: routerAddress });
+    const quote = await this.quoteUniswapV2({ tokenIn: inputToken, tokenOut: outputToken, amountIn, decimalsIn, decimalsOut, router: routerAddress, path: swapPath });
 
     if (cfg.shadow) {
       return {
@@ -294,7 +298,16 @@ class DexSwapEngine {
     }
 
     if (!routerAddress || !viem) throw new Error('Uniswap V2 router not configured');
-    const { wallet, publicClient, fees } = walletClient();
+    let wallet, publicClient, fees;
+    if (privateKey && accountFns && accountFns.privateKeyToAccount) {
+      const account = accountFns.privateKeyToAccount(privateKey);
+      const chain = cfg.chainId === 11155111 ? chains.sepolia : chains.mainnet;
+      fees = cfg.getFees ? (cfg.getFees() || { maxFeePerGas: viem.parseGwei('20'), maxPriorityFeePerGas: viem.parseGwei('0.5') }) : { maxFeePerGas: viem.parseGwei('20'), maxPriorityFeePerGas: viem.parseGwei('0.5') };
+      wallet = viem.createWalletClient({ account, chain, transport: viem.http(cfg.rpcUrl) });
+      publicClient = viem.createPublicClient({ chain, transport: viem.http(cfg.rpcUrl) });
+    } else {
+      ({ wallet, publicClient, fees } = walletClient());
+    }
     const rawIn = viem.parseUnits(String(amountIn), decimalsIn);
     const minOut = amountOutMinimum ? viem.parseUnits(String(amountOutMinimum), decimalsOut) : viem.parseUnits(quote.amountOutMinimum, decimalsOut);
     const deadline = Math.floor(Date.now() / 1000) + 300;
@@ -313,7 +326,7 @@ class DexSwapEngine {
       address: routerAddress,
       abi: uniswapV2RouterAbi,
       functionName: 'swapExactTokensForTokens',
-      args: [rawIn, minOut, [inputToken, outputToken], to, BigInt(deadline)],
+      args: [rawIn, minOut, swapPath, to, BigInt(deadline)],
       gas: 250000n,
       ...fees,
     });
@@ -326,6 +339,7 @@ class DexSwapEngine {
       txHash: receipt.transactionHash,
       tokenIn: inputToken,
       tokenOut: outputToken,
+      path: swapPath,
       amountIn,
       amountOut: quote.amountOut,
       amountOutMinimum: quote.amountOutMinimum,
@@ -403,4 +417,4 @@ class DexSwapEngine {
   }
 }
 
-module.exports = { DexSwapEngine };
+module.exports = { DexSwapEngine, UNISWAP_V2_ROUTER_02, SWAP_ROUTER_02, erc20Abi, uniswapV2RouterAbi };
