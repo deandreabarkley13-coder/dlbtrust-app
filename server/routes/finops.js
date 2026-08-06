@@ -4,6 +4,7 @@ const express = require('express');
 const { requireAuth, writeRateLimiter } = require('../integrations/auth/securityMiddleware');
 const { FinOpsAgent } = require('../integrations/finops/finopsAgent');
 const { ModuleSmartAccountEngine } = require('../integrations/dapp/moduleSmartAccountEngine');
+const { ModuleP2PSwapEngine } = require('../integrations/dapp/moduleP2PSwapEngine');
 
 const router = express.Router();
 const operatorAuth = requireAuth({ role: 'operator' });
@@ -94,6 +95,41 @@ router.post('/module-accounts/:module/init', operatorAuth, writeRateLimiter(), a
 router.post('/module-accounts/:module/tokenize', operatorAuth, writeRateLimiter(), async (req, res) => {
   try {
     const data = await ModuleSmartAccountEngine.tokenizeModule(req.params.module);
+    res.json({ success: true, data });
+  } catch (err) { sendError(res, err); }
+});
+
+// ─── Module P2P Swap (OTC order book, no WETH required) ───────────────────────
+router.get('/module-p2p/orders', operatorAuth, async (req, res) => {
+  try {
+    const data = await ModuleP2PSwapEngine.listOrders({ maker: req.query.maker, activeOnly: req.query.active !== 'false' });
+    res.json({ success: true, data });
+  } catch (err) { sendError(res, err); }
+});
+
+router.post('/module-p2p/orders', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try {
+    const { moduleKey, amountIn, pricePerToken, tokenIn, tokenOut, amountOut, recipient } = req.body;
+    let data;
+    if (moduleKey) {
+      data = await ModuleP2PSwapEngine.createModuleOrder({ moduleKey, amountIn, pricePerToken, recipient });
+    } else {
+      data = await ModuleP2PSwapEngine.createOrder({ tokenIn, amountIn, tokenOut, amountOut, recipient });
+    }
+    res.json({ success: true, data });
+  } catch (err) { sendError(res, err); }
+});
+
+router.post('/module-p2p/orders/:id/fill', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try {
+    const data = await ModuleP2PSwapEngine.fillOrder({ orderId: req.params.id });
+    res.json({ success: true, data });
+  } catch (err) { sendError(res, err); }
+});
+
+router.post('/module-p2p/orders/:id/cancel', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try {
+    const data = await ModuleP2PSwapEngine.cancelOrder({ orderId: req.params.id });
     res.json({ success: true, data });
   } catch (err) { sendError(res, err); }
 });

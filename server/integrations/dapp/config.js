@@ -38,6 +38,7 @@ const config = {
   wethAddress,
   nativeTokenSymbol: str('DAPP_NATIVE_TOKEN', 'ETH'),
   bondDexPoolAddress: str('BOND_DEX_ADDRESS', ''),
+  moduleP2PSwapAddress: str('MODULE_P2P_SWAP_ADDRESS', ''),
   coinbaseCdpKeyName: str('COINBASE_CDP_KEY_NAME', ''),
   coinbaseCdpPrivateKey: str('COINBASE_CDP_PRIVATE_KEY', ''),
   supportedNetworks: ['ethereum', 'sepolia', 'polygon', 'arbitrum', 'base'],
