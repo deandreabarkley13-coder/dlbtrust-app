@@ -3,6 +3,7 @@
 const express = require('express');
 const { requireAuth, writeRateLimiter } = require('../integrations/auth/securityMiddleware');
 const { FinOpsAgent } = require('../integrations/finops/finopsAgent');
+const { ModuleSmartAccountEngine } = require('../integrations/dapp/moduleSmartAccountEngine');
 
 const router = express.Router();
 const operatorAuth = requireAuth({ role: 'operator' });
@@ -71,6 +72,28 @@ router.get('/bonds', operatorAuth, async (req, res) => {
 router.get('/crm', operatorAuth, async (req, res) => {
   try {
     const data = await FinOpsAgent.executeRead('showCrm');
+    res.json({ success: true, data });
+  } catch (err) { sendError(res, err); }
+});
+
+// ─── Module Smart Accounts (PTC tokenized custody) ───────────────────────────
+router.get('/module-accounts', operatorAuth, async (req, res) => {
+  try {
+    const data = await ModuleSmartAccountEngine.listModules();
+    res.json({ success: true, data });
+  } catch (err) { sendError(res, err); }
+});
+
+router.post('/module-accounts/:module/init', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try {
+    const data = await ModuleSmartAccountEngine.initializeModule(req.params.module);
+    res.json({ success: true, data });
+  } catch (err) { sendError(res, err); }
+});
+
+router.post('/module-accounts/:module/tokenize', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try {
+    const data = await ModuleSmartAccountEngine.tokenizeModule(req.params.module);
     res.json({ success: true, data });
   } catch (err) { sendError(res, err); }
 });
