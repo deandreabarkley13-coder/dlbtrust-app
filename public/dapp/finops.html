@@ -142,6 +142,7 @@
     { key:'crm', name:'CRM / Contacts', desc:'Trustees, beneficiaries, vendors', stat:'', endpoint:'/api/finops/crm' },
     { key:'wallets', name:'Wallets', desc:'Master, trustee and beneficiary wallets', stat:'', endpoint:'/api/finops/wallets' },
     { key:'fixed-income', name:'Fixed Income', desc:'DLB-PRB bond metrics & accrued interest', stat:'', endpoint:'/api/finops/bonds' },
+    { key:'p2p-swap', name:'P2P Module Swap', desc:'OTC order book: module tokens for USDC (no WETH)', stat:'', endpoint:'/api/finops/module-p2p/orders' },
     { key:'payout', name:'Payout Center', desc:'Disbursements, trades, off-ramps', stat:'', endpoint:null, link:'/dapp/payout-center.html?v=2' },
     { key:'distribution', name:'Distribution', desc:'Trustee-approved beneficiary distributions', stat:'', endpoint:null, link:'/dapp/master-dashboard.html?v=2' },
   ];
@@ -221,12 +222,13 @@
     renderModules();
     renderFlow();
     try {
-      const [sof, accts, wallets, bond, crm] = await Promise.all([
+      const [sof, accts, wallets, bond, crm, p2p] = await Promise.all([
         api('/api/finops/source-of-funds').catch(()=>null),
         api('/api/accounting/accounts').catch(()=>null),
         api('/api/finops/wallets').catch(()=>null),
         api('/api/finops/bonds').catch(()=>null),
         api('/api/finops/crm').catch(()=>null),
+        api('/api/finops/module-p2p/orders').catch(()=>null),
       ]);
       const balances = normalizeBalances(sof && sof.data);
       if (balances.length) {
@@ -244,6 +246,7 @@
       if (bond && bond.data && bond.data.bond) setStat('fixed-income', fmt(bond.data.bond.total_current_value, 0));
       if (wallets && wallets.data && wallets.data.wallets) setStat('wallets', String(wallets.data.wallets.length));
       if (crm && crm.data && crm.data.contacts) setStat('crm', String(crm.data.contacts.length));
+      if (p2p && p2p.data && Array.isArray(p2p.data)) setStat('p2p-swap', String(p2p.data.length));
       renderModules();
     } catch(e) { console.error('loadAll error', e); }
     loadApprovals();
@@ -289,6 +292,9 @@
       } else if (m.key === 'fixed-income') {
         const b = data.data.bond || {};
         body.innerHTML = '<div class="grid" style="grid-template-columns:repeat(auto-fill,minmax(160px,1fr));">' + Object.entries(b).map(([k,v]) => `<div class="module-card"><h3>${k}</h3><div class="stat">${typeof v==='number'?fmt(v,2):v}</div></div>`).join('') + '</div>';
+      } else if (m.key === 'p2p-swap') {
+        const rows = (data.data || []);
+        body.innerHTML = renderP2PTable(rows) + renderP2PForm();
       }
     } catch(e) { body.innerHTML = '<div class="status err">' + e.message + '</div>'; }
   }
@@ -301,6 +307,47 @@
   }
 
   function closePanel() { el('module-panel').classList.remove('active'); }
+
+  function renderP2PTable(rows) {
+    if (!rows.length) return '<p class="muted">No active orders. Create one below to sell module tokens for USDC without needing WETH.</p>';
+    return '<table class="table"><thead><tr><th>ID</th><th>Maker</th><th>Token In</th><th>Amount</th><th>Token Out</th><th>Ask</th><th>Recipient</th><th></th></tr></thead><tbody>' +
+      rows.map(r => `<tr><td>${r.orderId}</td><td class="muted">${r.maker.slice(0,8)}…</td><td class="muted">${r.tokenIn.slice(0,8)}…</td><td>${r.amountIn / 1e6}</td><td class="muted">${r.tokenOut.slice(0,8)}…</td><td>${r.amountOut / 1e6}</td><td class="muted">${r.recipient.slice(0,8)}…</td><td><button class="btn btn-sec" onclick="fillP2POrder('${r.orderId}')">Fill</button></td></tr>`).join('') +
+      '</tbody></table>';
+  }
+
+  function renderP2PForm() {
+    return '<div style="margin-top:16px; border-top:1px solid var(--border); padding-top:16px;">' +
+      '<h3 style="margin:0 0 10px; font-size:14px;">Create Order (sell module token / DLBUSD for USDC)</h3>' +
+      '<div class="token-bar"><input id="p2p-tokenIn" placeholder="tokenIn address (DLBUSD/module token)" /></div>' +
+      '<div class="token-bar"><input id="p2p-amountIn" placeholder="amount in (units with 6 decimals)" /></div>' +
+      '<div class="token-bar"><input id="p2p-amountOut" placeholder="USDC amount (units with 6 decimals)" /></div>' +
+      '<div class="token-bar"><input id="p2p-recipient" placeholder="recipient address" /></div>' +
+      '<div class="approval-actions"><button class="btn" onclick="createP2POrder()">List Order</button></div>' +
+      '<div id="p2p-status" class="status hidden"></div></div>';
+  }
+
+  async function createP2POrder() {
+    const status = el('p2p-status');
+    try {
+      const tokenIn = el('p2p-tokenIn').value.trim();
+      const amountIn = el('p2p-amountIn').value.trim();
+      const amountOut = el('p2p-amountOut').value.trim();
+      const recipient = el('p2p-recipient').value.trim();
+      const res = await api('/api/finops/module-p2p/orders', { method:'POST', body: JSON.stringify({ tokenIn, amountIn, tokenOut: '0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48', amountOut, recipient }) });
+      status.textContent = 'Order created: ' + res.data.orderId;
+      status.className = 'status ok';
+      openModule('p2p-swap');
+    } catch(e) { status.textContent = e.message; status.className = 'status err'; }
+    status.classList.remove('hidden');
+  }
+
+  async function fillP2POrder(orderId) {
+    try {
+      const res = await api(`/api/finops/module-p2p/orders/${orderId}/fill`, { method:'POST' });
+      alert('Filled: ' + res.data.txHash);
+      openModule('p2p-swap');
+    } catch(e) { alert('Fill failed: ' + e.message); }
+  }
 
   function addChat(sender, text) {
     const log = el('chat-log');
