@@ -34,9 +34,8 @@ function bool(name, def = false) { const v = process.env[name]; return v ? Strin
 function id(prefix = 'WLT') { return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 8).toUpperCase()}`; }
 function assetDecimals(asset) {
   const a = String(asset || '').toUpperCase();
-  if (a === 'ETH' || a === 'WETH') return 18;
-  if (a === 'DAI') return 18;
-  if (['SIT','USDC','USDT','USDS','DLBUSD','UST','TUSD','BUSD','PYUSD','GUSD','USDC.E'].includes(a)) return 6;
+  if (a === 'ETH' || a === 'WETH' || a === 'DAI' || a === 'USDS') return 18;
+  if (['SIT','USDC','USDT','DLBUSD','UST','TUSD','BUSD','PYUSD','GUSD','USDC.E'].includes(a)) return 6;
   return 2;
 }
 function toCents(amount, asset = '') {
@@ -446,7 +445,8 @@ class WalletEngine {
       const cfg = getConfig();
       const tokenAddress = cfg[`${assetUpper.toLowerCase().replace('.', '')}Address`] || (assetUpper === 'USDC' ? cfg.usdcAddress : '');
       if (!tokenAddress) throw new Error(`Token address not configured for ${assetUpper}`);
-      return this.externalTokenSend({ fromWalletId, toAddress, amount, asset: assetUpper, tokenAddress, decimals: assetUpper === 'ETH' || assetUpper === 'WETH' ? 18 : 6, memo });
+      const tokenDecimals = assetUpper === 'ETH' || assetUpper === 'WETH' || assetUpper === 'DAI' || assetUpper === 'USDS' ? 18 : 6;
+      return this.externalTokenSend({ fromWalletId, toAddress, amount, asset: assetUpper, tokenAddress, decimals: tokenDecimals, memo });
     }
     return this.externalSend({ fromWalletId, toAddress, amount, asset, memo });
   }

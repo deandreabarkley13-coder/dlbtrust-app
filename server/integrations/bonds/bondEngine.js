@@ -313,9 +313,9 @@ class BondEngine {
 
       await client.query(
         `UPDATE bond_balances
-         SET accrued_interest = $1, total_interest_paid = $2, last_payment_date = $3, updated_at = NOW()
-         WHERE bond_id = $4`,
-        [newAccrued, newTotalPaid, now.toISOString().split('T')[0], bondId]
+         SET accrued_interest = $1, total_interest_paid = $2, updated_at = NOW()
+         WHERE bond_id = $3`,
+        [newAccrued, newTotalPaid, bondId]
       );
 
       const txnResult = await client.query(
@@ -420,9 +420,9 @@ class BondEngine {
 
       await client.query(
         `UPDATE bond_balances
-         SET principal_balance = $1, total_principal_paid = $2, last_payment_date = $3, updated_at = NOW()
-         WHERE bond_id = $4`,
-        [newBalance, newTotalPrincipalPaid, now.toISOString().split('T')[0], bondId]
+         SET principal_balance = $1, total_principal_paid = $2, updated_at = NOW()
+         WHERE bond_id = $3`,
+        [newBalance, newTotalPrincipalPaid, bondId]
       );
 
       // If fully repaid and at/past maturity, mark bond as matured

@@ -216,14 +216,15 @@ class DexSwapEngine {
     };
   }
 
-  static async quoteUniswapV2({ tokenIn, tokenOut, amountIn, decimalsIn = 18, decimalsOut = 18, router } = {}) {
+  static async quoteUniswapV2({ tokenIn, tokenOut, path, amountIn, decimalsIn = 18, decimalsOut = 18, router } = {}) {
     const cfg = this.getConfig();
     if (!cfg.enabled) throw new Error('DEX swap not enabled');
     const amount = Number(amountIn) || 0;
     if (amount <= 0) throw new Error('amountIn must be positive');
 
-    const inputToken = tokenIn;
-    const outputToken = tokenOut;
+    const swapPath = Array.isArray(path) && path.length >= 2 ? path : [tokenIn, tokenOut];
+    const inputToken = swapPath[0];
+    const outputToken = swapPath[swapPath.length - 1];
     const routerAddress = router || str('UNISWAP_V2_ROUTER', UNISWAP_V2_ROUTER_02);
 
     if (!cfg.shadow && viem) {
@@ -233,15 +234,16 @@ class DexSwapEngine {
         address: routerAddress,
         abi: uniswapV2RouterAbi,
         functionName: 'getAmountsOut',
-        args: [rawIn, [inputToken, outputToken]],
+        args: [rawIn, swapPath],
       });
-      if (!amounts || amounts.length < 2) throw new Error('Uniswap V2 getAmountsOut failed');
+      if (!amounts || amounts.length < swapPath.length) throw new Error('Uniswap V2 getAmountsOut failed');
       const amountOutRaw = amounts[amounts.length - 1];
       const amountOutHuman = Number(viem.formatUnits(amountOutRaw, decimalsOut));
       const minOutHuman = amountOutHuman * (1 - cfg.slippageBps / 10000);
       return {
         tokenIn: inputToken,
         tokenOut: outputToken,
+        path: swapPath,
         amountIn,
         amountOut: amountOutHuman.toFixed(decimalsOut),
         amountOutMinimum: minOutHuman.toFixed(decimalsOut),
@@ -257,6 +259,7 @@ class DexSwapEngine {
     return {
       tokenIn: inputToken,
       tokenOut: outputToken,
+      path: swapPath,
       amountIn,
       amountOut: outHuman.toFixed(decimalsOut),
       amountOutMinimum: minOutHuman.toFixed(decimalsOut),
@@ -266,18 +269,19 @@ class DexSwapEngine {
     };
   }
 
-  static async swapOnUniswapV2({ tokenIn, tokenOut, amountIn, amountOutMinimum, recipient, decimalsIn = 18, decimalsOut = 18, router } = {}) {
+  static async swapOnUniswapV2({ tokenIn, tokenOut, path, amountIn, amountOutMinimum, recipient, decimalsIn = 18, decimalsOut = 18, router } = {}) {
     const cfg = this.getConfig();
     if (!cfg.enabled) throw new Error('DEX swap not enabled');
     const amount = Number(amountIn) || 0;
     if (amount <= 0) throw new Error('amountIn must be positive');
 
-    const inputToken = tokenIn;
-    const outputToken = tokenOut;
+    const swapPath = Array.isArray(path) && path.length >= 2 ? path : [tokenIn, tokenOut];
+    const inputToken = swapPath[0];
+    const outputToken = swapPath[swapPath.length - 1];
     const routerAddress = router || str('UNISWAP_V2_ROUTER', UNISWAP_V2_ROUTER_02);
     const to = recipient || cfg.operatorAddress;
 
-    const quote = await this.quoteUniswapV2({ tokenIn: inputToken, tokenOut: outputToken, amountIn, decimalsIn, decimalsOut, router: routerAddress });
+    const quote = await this.quoteUniswapV2({ path: swapPath, amountIn, decimalsIn, decimalsOut, router: routerAddress });
 
     if (cfg.shadow) {
       return {
@@ -286,6 +290,7 @@ class DexSwapEngine {
         txHash: `shadow-uniswap-${Date.now()}`,
         tokenIn: inputToken,
         tokenOut: outputToken,
+        path: swapPath,
         amountIn,
         amountOut: quote.amountOut,
         amountOutMinimum: amountOutMinimum || quote.amountOutMinimum,
@@ -313,7 +318,7 @@ class DexSwapEngine {
       address: routerAddress,
       abi: uniswapV2RouterAbi,
       functionName: 'swapExactTokensForTokens',
-      args: [rawIn, minOut, [inputToken, outputToken], to, BigInt(deadline)],
+      args: [rawIn, minOut, swapPath, to, BigInt(deadline)],
       gas: 250000n,
       ...fees,
     });
@@ -326,6 +331,7 @@ class DexSwapEngine {
       txHash: receipt.transactionHash,
       tokenIn: inputToken,
       tokenOut: outputToken,
+      path: swapPath,
       amountIn,
       amountOut: quote.amountOut,
       amountOutMinimum: quote.amountOutMinimum,
