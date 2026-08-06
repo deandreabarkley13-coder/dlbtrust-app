@@ -7,7 +7,7 @@
   <meta name="apple-mobile-web-app-capable" content="yes" />
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
   <meta name="apple-mobile-web-app-title" content="DLB Trust" />
-  <title>DLB Trust — Beneficiary Wallet</title>
+  <title>DLB Trust — Wallet</title>
   <link rel="manifest" href="/dapp/mobile-manifest.json?v=2" />
   <link rel="apple-touch-icon" href="/dapp/icons/icon.svg" />
   <style>
@@ -67,7 +67,7 @@
     <h1>DLB Trust</h1>
   </div>
   <div class="card" style="margin-top:30px;">
-    <h2>Beneficiary Login</h2>
+    <h2>Login</h2>
     <p>Enter your email. A one-time PIN will be sent to your inbox (or shown here if email is not configured).</p>
     <label for="login-email">Email</label>
     <input type="email" id="login-email" placeholder="you@email.com" inputmode="email" />
@@ -86,6 +86,7 @@
     <div>
       <h1>My Wallet</h1>
       <div class="small" id="user-name"></div>
+      <div class="small" id="user-role" style="color:var(--accent-2);text-transform:uppercase;font-size:11px;margin-top:2px;"></div>
     </div>
     <button class="btn btn-sec" style="width:auto; padding:8px 12px; margin:0;" onclick="logout()">Logout</button>
   </div>
@@ -138,6 +139,17 @@
         <input type="text" id="pay-memo" placeholder="Optional note" />
         <button class="btn btn-gold" onclick="sendPayment()">Send Payment</button>
       </div>
+      <div id="bitpay-form" class="hidden">
+        <h3>BitPay Invoice</h3>
+        <div id="bitpay-detail" class="muted" style="margin-bottom:10px;"></div>
+        <label>Pay with asset</label>
+        <select id="bitpay-asset">
+          <option value="ETH">ETH</option>
+          <option value="DAI">DAI</option>
+          <option value="USDC">USDC</option>
+        </select>
+        <button class="btn btn-gold" onclick="payBitPayInvoice()">Pay Invoice</button>
+      </div>
       <div id="pay-status" class="status hidden"></div>
     </div>
   </div>
@@ -168,7 +180,7 @@
 <script>
 const TOKEN_KEY = 'dlb-beneficiary-token';
 const el = id => document.getElementById(id);
-let state = { token: null, user: null, wallet: null, scanner: null, scannerActive: false };
+let state = { token: null, user: null, wallet: null, scanner: null, scannerActive: false, bitpay: null };
 
 try {
   state.token = localStorage.getItem(TOKEN_KEY);
@@ -249,6 +261,7 @@ async function loadWallet() {
     state.user = res.data.user;
     state.wallet = res.data.wallet;
     el('user-name').textContent = state.user.name || state.user.email;
+    el('user-role').textContent = (state.user.active_role || state.user.role || 'beneficiary').replace(/_/g, ' ');
     el('wallet-address').innerHTML = (res.data.wallet.address || '—') + '<button onclick="copyAddress()">Copy</button>';
     el('receive-address').textContent = res.data.wallet.address || '—';
     renderBalances(res.data.balance);
@@ -343,10 +356,17 @@ function updateReceiveQR() {
 function parseQr(text) {
   try {
     const obj = JSON.parse(text);
-    if (obj && typeof obj === 'object' && obj.a) return String(obj.a);
+    if (obj && typeof obj === 'object' && obj.a) return { type: 'address', value: String(obj.a) };
   } catch(e) {}
-  const m = text.match(/0x[a-fA-F0-9]{40}/);
-  return m ? m[0] : text.trim();
+  const t = String(text).trim();
+  const bitpay = t.match(/(https?:\/\/[^\s]+\/i\/[A-Za-z0-9]+)/) || t.match(/r=([^\s&]+)/);
+  if (bitpay) {
+    const url = decodeURIComponent(bitpay[1]);
+    if (/\/i\/[A-Za-z0-9]+$/.test(url)) return { type: 'bitpay', value: url };
+  }
+  const m = t.match(/0x[a-fA-F0-9]{40}/);
+  if (m) return { type: 'address', value: m[0] };
+  return { type: 'text', value: t };
 }
 
 async function startScanner() {
@@ -375,12 +395,20 @@ function stopScanner() {
   el('reader').innerHTML = '';
 }
 
-function onScan(text) {
-  const addr = parseQr(text);
-  if (!/^0x[a-fA-F0-9]{40}$/i.test(addr)) { show('Invalid QR code', true, 'pay-status'); return; }
+async function onScan(text) {
+  const parsed = parseQr(text);
+  if (parsed.type === 'bitpay') {
+    stopScanner();
+    await loadBitPayInvoice(parsed.value);
+    return;
+  }
+  if (parsed.type !== 'address' || !/^0x[a-fA-F0-9]{40}$/i.test(parsed.value)) {
+    show('Invalid QR code', true, 'pay-status'); return;
+  }
   stopScanner();
-  el('pay-address').value = addr;
+  el('pay-address').value = parsed.value;
   el('pay-form').classList.remove('hidden');
+  el('bitpay-form').classList.add('hidden');
   show('Recipient captured. Enter amount and confirm.', false, 'pay-status');
 }
 
@@ -396,6 +424,37 @@ async function sendPayment() {
     const res = await api('/api/dapp/beneficiary/transfer', { method: 'POST', body: JSON.stringify({ toAddress: to, amount: Number(amount), asset, memo }) });
     show((res.data.type || 'Payment') + ' of ' + res.data.amount + ' ' + res.data.asset + (res.data.txHash ? ' tx: ' + res.data.txHash : ''), false, 'pay-status');
     el('pay-form').classList.add('hidden');
+    await loadWallet();
+  } catch(e) { show(e.message, true, 'pay-status'); }
+}
+
+async function loadBitPayInvoice(url) {
+  state.bitpay = null;
+  el('bitpay-form').classList.add('hidden');
+  el('pay-form').classList.add('hidden');
+  show('Fetching BitPay invoice…', false, 'pay-status');
+  try {
+    const res = await api('/api/dapp/beneficiary/bitpay/invoice', { method: 'POST', body: JSON.stringify({ invoiceUrl: url }) });
+    state.bitpay = res.data;
+    const opt = state.bitpay.selectedOption || state.bitpay.options[0] || {};
+    const decimals = opt.decimals || 18;
+    const amount = Number(opt.estimatedAmount || 0) / Math.pow(10, decimals);
+    el('bitpay-detail').innerHTML = `<strong>${state.bitpay.memo || 'Invoice'}</strong><br>Invoice ID: ${state.bitpay.paymentId || ''}<br>Pay ${amount.toLocaleString(undefined, { maximumFractionDigits: 8 })} ${opt.currency || ''} on ${opt.chain || ''}<br>Expires: ${state.bitpay.expires ? new Date(state.bitpay.expires).toLocaleString() : '—'}`;
+    el('bitpay-asset').value = (opt.currency || 'ETH').toUpperCase();
+    el('bitpay-form').classList.remove('hidden');
+    show('BitPay invoice loaded. Confirm payment.', false, 'pay-status');
+  } catch(e) { show(e.message, true, 'pay-status'); }
+}
+
+async function payBitPayInvoice() {
+  if (!state.bitpay || !state.bitpay.url) { show('No invoice loaded', true, 'pay-status'); return; }
+  const asset = el('bitpay-asset').value;
+  show('Paying BitPay invoice…', false, 'pay-status');
+  try {
+    const res = await api('/api/dapp/beneficiary/bitpay/pay', { method: 'POST', body: JSON.stringify({ invoiceUrl: state.bitpay.url, asset }) });
+    show('BitPay paid: ' + res.data.hashes.join(', ') + (res.data.bitpayAck ? ' (acknowledged)' : ''), false, 'pay-status');
+    el('bitpay-form').classList.add('hidden');
+    state.bitpay = null;
     await loadWallet();
   } catch(e) { show(e.message, true, 'pay-status'); }
 }
