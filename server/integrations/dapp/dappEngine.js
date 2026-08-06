@@ -742,12 +742,13 @@ class DappEngine {
   }
 
   static async getUserByEmail(email) {
+    const lower = String(email || '').toLowerCase();
     return withFallback(async () => {
-      const rows = await query('SELECT * FROM dapp_users WHERE email = $1 LIMIT 1', [email]);
+      const rows = await query('SELECT * FROM dapp_users WHERE LOWER(email) = LOWER($1) LIMIT 1', [lower]);
       if (!rows.rows.length) throw new Error('User not found');
       return rows.rows[0];
     }, () => {
-      for (const u of memory.users.values()) if (u.email === email) return u;
+      for (const u of memory.users.values()) if (String(u.email || '').toLowerCase() === lower) return u;
       throw new Error('User not found');
     });
   }
@@ -857,7 +858,7 @@ class DappEngine {
       { email: 'deandreabarkley13@gmail.com', name: 'DeAndrea Barkley', roles: ['trustee_admin', 'beneficiary'], activeRole: 'trustee_admin' },
       { email: 'annrobinson9800@yahoo.com', name: 'Malissa Robinson', roles: ['trustee_maker', 'beneficiary'], activeRole: 'trustee_maker' },
       { email: 'dbnettrust@gmail.com', name: 'Checker Trust', roles: ['trustee_checker', 'beneficiary'], activeRole: 'trustee_checker' },
-      { email: 'Robinsonjeremy22a@gmail.com', name: 'Jeremy Robinson', roles: ['beneficiary'], activeRole: 'beneficiary' },
+      { email: 'robinsonjeremy22a@gmail.com', name: 'Jeremy Robinson', roles: ['beneficiary'], activeRole: 'beneficiary' },
     ];
     const results = [];
     for (const s of seeded) {
