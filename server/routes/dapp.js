@@ -1151,9 +1151,9 @@ router.post('/wallets/:id/fund', operatorAuth, writeRateLimiter(), async (req, r
 
 router.post('/wallets/transfer', operatorAuth, writeRateLimiter(), async (req, res) => {
   try {
-    const { fromWalletId, toWalletId, toAddress, amount, asset, memo } = req.body;
+    const { fromWalletId, toWalletId, toAddress, amount, asset, memo, reconcile } = req.body;
     if (!fromWalletId || (!toWalletId && !toAddress)) throw new Error('fromWalletId and toWalletId or toAddress required');
-    const data = await WalletEngine.transfer({ fromWalletId, toWalletId, toAddress, amount, asset: asset || 'SIT', memo });
+    const data = await WalletEngine.transfer({ fromWalletId, toWalletId, toAddress, amount, asset: asset || 'SIT', memo, reconcile });
     res.status(201).json({ success: true, data });
   } catch (err) { sendError(res, err); }
 });

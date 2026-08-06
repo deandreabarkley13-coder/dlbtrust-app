@@ -421,7 +421,7 @@ class WalletEngine {
     return { walletId, amountEth, txHash: hash };
   }
 
-  static async transfer({ fromWalletId, toWalletId, toAddress, amount, asset = 'SIT', memo } = {}) {
+  static async transfer({ fromWalletId, toWalletId, toAddress, amount, asset = 'SIT', memo, reconcile = false } = {}) {
     await this.ensureTables();
     if (!fromWalletId || (!toWalletId && !toAddress)) throw new Error('fromWalletId and (toWalletId or toAddress) required');
     const cents = toCents(amount, asset);
@@ -443,7 +443,7 @@ class WalletEngine {
 
     // External transfer
     const assetUpper = String(asset || 'SIT').toUpperCase();
-    if (assetUpper === 'ETH') return this.externalEthSend({ fromWalletId, toAddress, amount, memo });
+    if (assetUpper === 'ETH') return this.externalEthSend({ fromWalletId, toAddress, amount, memo, reconcile });
     if (['USDC','USDT','USDS','DAI','DLBUSD','UST','TUSD','BUSD','PYUSD','GUSD','USDC.E'].includes(assetUpper)) {
       const cfg = getConfig();
       const tokenAddress = cfg[`${assetUpper.toLowerCase().replace('.', '')}Address`] || (assetUpper === 'USDC' ? cfg.usdcAddress : '');
@@ -560,7 +560,7 @@ class WalletEngine {
     return { type: 'external_token', from: wallet.address, to, amount, asset, tokenAddress, txHash: hash, balance: await this.getBalance(fromWalletId) };
   }
 
-  static async externalEthSend({ fromWalletId, toAddress, amount, memo } = {}) {
+  static async externalEthSend({ fromWalletId, toAddress, amount, memo, reconcile = false } = {}) {
     await this.ensureTables();
     if (!fromWalletId || !toAddress) throw new Error('fromWalletId and toAddress required');
     if (!viem || !viem.isAddress || !viem.isAddress(toAddress)) throw new Error('Invalid recipient address');
@@ -572,9 +572,17 @@ class WalletEngine {
     const cents = toCents(eth, 'ETH');
 
     const internalBalance = await this._ensureBalance(fromWalletId, 'ETH');
-    if (BigInt(internalBalance.balance_cents || 0) < BigInt(cents)) throw new Error('Insufficient ETH internal balance');
-
     const cfg = getConfig();
+
+    if (BigInt(internalBalance.balance_cents || 0) < BigInt(cents)) {
+      if (!reconcile) throw new Error('Insufficient ETH internal balance');
+      const publicClient = viem.createPublicClient({ chain: cfg.chainId === 11155111 ? chains.sepolia : chains.mainnet, transport: viem.http(cfg.rpcUrl) });
+      const ethBalance = await publicClient.getBalance({ address: wallet.address });
+      const neededCents = BigInt(cents) - BigInt(internalBalance.balance_cents || 0);
+      const neededEth = Number(neededCents) / 1e18;
+      if (Number(viem.formatEther(ethBalance)) < neededEth) throw new Error(`Cannot reconcile: on-chain ETH ${viem.formatEther(ethBalance)} < ${neededEth}`);
+      await this._credit(fromWalletId, 'ETH', String(neededCents), { memo: 'Reconcile on-chain ETH to internal ledger' });
+    }
     if (!cfg.privateKey) throw new Error('DAPP_PRIVATE_KEY not configured');
     const chain = cfg.chainId === 11155111 ? chains.sepolia : chains.mainnet;
     const account = accountFns.privateKeyToAccount(this._decrypt(wallet.private_key_encrypted));
