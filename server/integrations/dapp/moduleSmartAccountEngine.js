@@ -41,8 +41,8 @@ const MODULES = {
     name: 'DLB-PTC-FIXED-INCOME',
     tokenName: 'DLB PTC Fixed Income',
     tokenSymbol: 'DLB-FIXED-INCOME',
-    sourceType: 'bond_interest',
-    sourceAccountId: '1',
+    sourceType: 'trust',
+    sourceAccountId: '1200',
     balanceFn: 'bondInterest',
     decimals: 6,
   },
@@ -213,9 +213,9 @@ class ModuleSmartAccountEngine {
       return Number(bond.principal_balance || 0);
     }
     if (mod.balanceFn === 'bondInterest') {
-      if (!LiveBondEngine) throw new Error('LiveBondEngine not available');
-      const metrics = await LiveBondEngine.getBondLiveMetrics(mod.sourceAccountId);
-      return Number(metrics.accrued_interest_total || 0);
+      if (!TrustAccountingEngine) throw new Error('TrustAccountingEngine not available');
+      const acct = await TrustAccountingEngine.getAccount('1200');
+      return Number(acct ? acct.balance || 0 : 0);
     }
     if (mod.balanceFn === 'trust') {
       if (!TrustAccountingEngine) throw new Error('TrustAccountingEngine not available');
