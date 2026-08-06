@@ -344,12 +344,13 @@ class WalletEngine {
     const external = { eth: '0', usdc: '0', sit: '0' };
     if (viem && viem.isAddress && viem.isAddress(wallet.address)) {
       try {
-        const cfg = (SovereignTrustEngine && SovereignTrustEngine.getConfig) ? SovereignTrustEngine.getConfig() : {};
+        const appCfg = getConfig();
+        const cfg = (SovereignTrustEngine && SovereignTrustEngine.getConfig) ? SovereignTrustEngine.getConfig() : appCfg;
         const publicClient = this._publicClient(cfg);
-        if (publicClient) {
+        if (publicClient && appCfg.usdcAddress) {
           const [ethWei, usdcRaw] = await Promise.all([
             publicClient.getBalance({ address: wallet.address }).catch(() => 0n),
-            publicClient.readContract({ address: cfg.usdcAddress, abi: this._erc20Abi(), functionName: 'balanceOf', args: [wallet.address] }).catch(() => 0n),
+            publicClient.readContract({ address: appCfg.usdcAddress, abi: this._erc20Abi(), functionName: 'balanceOf', args: [wallet.address] }).catch(() => 0n),
           ]);
           external.eth = viem.formatEther(ethWei);
           external.usdc = viem.formatUnits(usdcRaw, 6);
