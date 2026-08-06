@@ -174,7 +174,7 @@ class WalletEngine {
     const users = await DappEngine.listUsers();
     const results = [];
     for (const u of users) {
-      if (!u) continue;
+      if (!u || u.is_active === false) continue;
       const wallets = await this.getWalletsByUser(u.id);
       if (!wallets.length) {
         const wallet = await this.createWallet({ userId: u.id, name: `${u.name || u.email} Wallet`, type: 'internal' });

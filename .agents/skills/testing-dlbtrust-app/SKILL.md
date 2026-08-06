@@ -46,6 +46,21 @@ disown
 - The page has cards for institutions, statement import, payment creation, and a payments table.
 - Submitting a payment in simulate mode updates the row to `accepted` and persists an XML `ofx_request` in Postgres.
 
+## Beneficiary Mobile PWA (`/dapp/mobile.html`)
+
+- If the Fly deploy is not live, start the local server connected to the live DB via a `flyctl proxy`:
+  ```bash
+  flyctl proxy 15432:5432 -a dlbtrust-db &
+  env DATABASE_URL=postgres://dlbtrust_app:8r6uuonJw8Jv47a@localhost:15432/dlbtrust_app \
+      JWT_SECRET=test ADMIN_SECRET_TOKEN=dlb-admin-2026-trust PORT=3002 \
+      SOVEREIGN_TRUST_SHADOW=true node server/server-3002.js
+  ```
+- Local testing against a live DB requires the same `WALLET_ENCRYPTION_KEY`/`JWT_SECRET` that encrypted the `dapp_wallets.private_key_encrypted` column. If those keys differ, external SIT sends and BitPay payments will fail with `Unsupported state or unable to authenticate data` during `_decrypt`.
+- The mobile PWA login returns the PIN in the UI when no email provider is configured; on live SMTP the PIN is hidden, so read it from `dapp_users.otp_code` via `psql`.
+- Useful URLs/pages: `http://localhost:3002/dapp/mobile.html`, `http://localhost:3002/dapp/index.html` (mobile portal card), `/dapp/mobile-manifest.json`, `/dapp/mobile-service-worker.js`.
+- Camera/QR scanning is unavailable in a headless/desktop test; use `onScan(<string>)` in the console to simulate a QR payload or `el('pay-form').classList.remove('hidden')` to reveal the manual form.
+- PWA installability: the manifest must include screenshots with `form_factor` set to `narrow`/`wide` and a valid service worker; without these, Chrome does not show the install button.
+
 ## Useful Postgres checks
 
 ```sql

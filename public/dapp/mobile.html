@@ -1,0 +1,482 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+  <meta name="theme-color" content="#0b0f17" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <meta name="apple-mobile-web-app-title" content="DLB Trust" />
+  <title>DLB Trust — Wallet</title>
+  <link rel="manifest" href="/dapp/mobile-manifest.json?v=2" />
+  <link rel="apple-touch-icon" href="/dapp/icons/icon.svg" />
+  <style>
+    :root { --bg:#0b0f17; --card:#131925; --panel:#1e293b; --border:#2a3548; --text:#f8fafc; --muted:#94a3b8; --accent:#3b82f6; --accent-2:#10b981; --gold:#f59e0b; --danger:#ef4444; }
+    * { box-sizing:border-box; }
+    html, body { margin:0; height:100%; overscroll-behavior:none; }
+    body { font-family:system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif; background:var(--bg); color:var(--text); }
+    .view { display:none; min-height:100%; padding:16px; }
+    .view.active { display:block; }
+    .top { display:flex; align-items:center; justify-content:space-between; margin-bottom:12px; }
+    .top h1 { font-size:20px; margin:0; }
+    .top .small { font-size:12px; color:var(--muted); }
+    .card { background:var(--card); border:1px solid var(--border); border-radius:16px; padding:18px; margin-bottom:14px; }
+    .card h2 { margin:0 0 10px; font-size:16px; }
+    .card p { color:var(--muted); font-size:13px; margin:0 0 14px; }
+    label { display:block; font-size:12px; color:var(--muted); margin:10px 0 5px; }
+    input, select { width:100%; background:#0b1220; border:1px solid var(--border); color:var(--text); padding:12px; border-radius:10px; font-size:15px; }
+    input:focus, select:focus { outline:none; border-color:var(--accent); }
+    .btn { width:100%; background:var(--accent); color:#fff; border:0; padding:14px; border-radius:10px; font-size:15px; font-weight:600; cursor:pointer; margin-top:14px; }
+    .btn:hover { opacity:.92; }
+    .btn-gold { background:var(--gold); color:#000; }
+    .btn-sec { background:var(--panel); color:var(--text); }
+    .btn-danger { background:var(--danger); }
+    .status { padding:12px; border-radius:10px; background:#0b1220; border:1px solid var(--border); font-size:13px; margin-top:14px; word-break:break-word; }
+    .status.ok { border-color:var(--accent-2); color:var(--accent-2); }
+    .status.err { border-color:var(--danger); color:var(--danger); }
+    .muted { color:var(--muted); font-size:13px; }
+    .balance-grid { display:grid; grid-template-columns:repeat(2,1fr); gap:10px; }
+    .balance { background:var(--panel); border-radius:12px; padding:14px; text-align:center; }
+    .balance .asset { font-size:12px; color:var(--muted); text-transform:uppercase; }
+    .balance .val { font-size:22px; font-weight:700; margin-top:4px; word-break:break-word; }
+    .address-box { background:#0b1220; border:1px solid var(--border); border-radius:10px; padding:12px; font-size:12px; font-family:monospace; word-break:break-all; position:relative; }
+    .address-box button { position:absolute; top:6px; right:6px; background:var(--panel); border:0; color:var(--text); padding:4px 8px; border-radius:6px; font-size:11px; cursor:pointer; }
+    .qr-wrap { display:flex; justify-content:center; padding:10px 0; }
+    .qr-wrap canvas, .qr-wrap img, .qr-wrap svg { border-radius:10px; background:#fff; padding:8px; max-width:220px; width:100%; height:auto; }
+    .nav { position:fixed; bottom:0; left:0; right:0; background:var(--card); border-top:1px solid var(--border); display:flex; justify-content:space-around; padding:8px 0 calc(8px + env(safe-area-inset-bottom)); z-index:10; }
+    .nav button { background:transparent; border:0; color:var(--muted); font-size:11px; padding:6px 10px; }
+    .nav button.active { color:var(--accent); }
+    .tab { display:none; }
+    .tab.active { display:block; padding-bottom:70px; }
+    .tx { border-bottom:1px solid var(--border); padding:12px 0; }
+    .tx:last-child { border-bottom:0; }
+    .tx-head { display:flex; justify-content:space-between; font-size:13px; }
+    .tx-type { color:var(--muted); }
+    .tx-amount { font-weight:700; }
+    .tx-detail { font-size:11px; color:var(--muted); margin-top:4px; word-break:break-all; }
+    .reader { width:100%; aspect-ratio:1/1; background:#000; border-radius:12px; overflow:hidden; margin-bottom:12px; }
+    .row-flex { display:flex; gap:10px; }
+    .row-flex > * { flex:1; }
+    .hidden { display:none !important; }
+  </style>
+</head>
+<body>
+
+<div id="login" class="view active">
+  <div class="top" style="padding-top:30px; justify-content:center;">
+    <h1>DLB Trust</h1>
+  </div>
+  <div class="card" style="margin-top:30px;">
+    <h2>Login</h2>
+    <p>Enter your email. A one-time PIN will be sent to your inbox (or shown here if email is not configured).</p>
+    <label for="login-email">Email</label>
+    <input type="email" id="login-email" placeholder="you@email.com" inputmode="email" />
+    <button class="btn" id="btn-send" onclick="sendCode()">Send PIN</button>
+    <div id="login-status" class="status hidden"></div>
+    <div id="verify-box" class="hidden" style="margin-top:16px;">
+      <label for="login-code">One-time PIN</label>
+      <input type="number" id="login-code" placeholder="123456" inputmode="numeric" autocomplete="one-time-code" />
+      <button class="btn btn-gold" onclick="verifyCode()">Verify &amp; Open Wallet</button>
+    </div>
+  </div>
+</div>
+
+<div id="app" class="view">
+  <div class="top">
+    <div>
+      <h1>My Wallet</h1>
+      <div class="small" id="user-name"></div>
+      <div class="small" id="user-role" style="color:var(--accent-2);text-transform:uppercase;font-size:11px;margin-top:2px;"></div>
+    </div>
+    <button class="btn btn-sec" style="width:auto; padding:8px 12px; margin:0;" onclick="logout()">Logout</button>
+  </div>
+
+  <div class="tab active" id="tab-home">
+    <div class="card">
+      <div class="balance-grid" id="balance-grid"></div>
+      <div style="margin-top:14px;">
+        <div class="address-box" id="wallet-address">—</div>
+      </div>
+      <div class="qr-wrap">
+        <div id="qr-receive"></div>
+      </div>
+      <div style="display:flex; gap:10px;">
+        <button class="btn btn-gold" onclick="showTab('tab-pay')">Scan to Pay</button>
+        <button class="btn" onclick="showTab('tab-receive')">Receive</button>
+      </div>
+    </div>
+    <div class="card">
+      <h2>Recent Transactions</h2>
+      <div id="tx-list" class="muted">Loading…</div>
+    </div>
+  </div>
+
+  <div class="tab" id="tab-pay">
+    <div class="card">
+      <h2>Scan QR to Pay</h2>
+      <p>Point your camera at the recipient’s DLB Trust QR code.</p>
+      <div id="reader" class="reader"></div>
+      <button class="btn" onclick="stopScanner()" id="btn-stop-scan" hidden>Cancel Scan</button>
+      <div id="pay-form" class="hidden">
+        <label>Recipient Address</label>
+        <input type="text" id="pay-address" placeholder="0x..." />
+        <div class="row-flex">
+          <div>
+            <label>Amount</label>
+            <input type="number" id="pay-amount" step="0.000001" min="0" placeholder="0.00" />
+          </div>
+          <div>
+            <label>Asset</label>
+            <select id="pay-asset">
+              <option value="SIT">SIT</option>
+              <option value="ETH">ETH</option>
+              <option value="DAI">DAI</option>
+              <option value="USDC">USDC</option>
+            </select>
+          </div>
+        </div>
+        <label>Memo</label>
+        <input type="text" id="pay-memo" placeholder="Optional note" />
+        <button class="btn btn-gold" onclick="sendPayment()">Send Payment</button>
+      </div>
+      <div id="bitpay-form" class="hidden">
+        <h3>BitPay Invoice</h3>
+        <div id="bitpay-detail" class="muted" style="margin-bottom:10px;"></div>
+        <label>Pay with asset</label>
+        <select id="bitpay-asset">
+          <option value="ETH">ETH</option>
+          <option value="DAI">DAI</option>
+          <option value="USDC">USDC</option>
+        </select>
+        <button class="btn btn-gold" onclick="payBitPayInvoice()">Pay Invoice</button>
+      </div>
+      <div id="pay-status" class="status hidden"></div>
+    </div>
+  </div>
+
+  <div class="tab" id="tab-receive">
+    <div class="card">
+      <h2>Receive Payment</h2>
+      <p>Share this QR code or your wallet address. Optionally set an amount below to encode it in the QR.</p>
+      <div class="qr-wrap">
+        <div id="qr-receive-large"></div>
+      </div>
+      <div class="address-box" id="receive-address">—</div>
+      <label>Requested amount (optional)</label>
+      <input type="number" id="receive-amount" step="0.000001" min="0" placeholder="0.00" oninput="updateReceiveQR()" />
+      <button class="btn" onclick="copyReceiveAddress()">Copy Address</button>
+    </div>
+  </div>
+
+  <div class="nav">
+    <button class="active" onclick="showTab('tab-home')">Wallet</button>
+    <button onclick="showTab('tab-pay')">Pay</button>
+    <button onclick="showTab('tab-receive')">Receive</button>
+  </div>
+</div>
+
+<script src="/dapp/js/qrcode.min.js?v=2"></script>
+<script src="/dapp/js/html5-qrcode.min.js?v=2"></script>
+<script>
+const TOKEN_KEY = 'dlb-beneficiary-token';
+const el = id => document.getElementById(id);
+let state = { token: null, user: null, wallet: null, scanner: null, scannerActive: false, bitpay: null };
+
+try {
+  state.token = localStorage.getItem(TOKEN_KEY);
+} catch(e) {}
+
+function show(msg, isErr, id='login-status') {
+  const d = el(id);
+  if (!d) return;
+  d.textContent = msg;
+  d.className = 'status ' + (isErr ? 'err' : 'ok');
+  d.classList.remove('hidden');
+}
+
+function api(path, opts={}) {
+  opts.headers = opts.headers || {};
+  opts.headers['Content-Type'] = 'application/json';
+  if (state.token) opts.headers['Authorization'] = 'Bearer ' + state.token;
+  return fetch(path, opts).then(async r => {
+    const text = await r.text();
+    let data;
+    try { data = JSON.parse(text); } catch { data = { error: text }; }
+    if (!r.ok) throw new Error(data.error || data.message || r.statusText);
+    return data;
+  });
+}
+
+function formatAmount(cents, asset) {
+  const a = (asset || 'SIT').toUpperCase();
+  const decimals = { ETH:18, WETH:18, DAI:18, SIT:6, USDC:6, USDT:6, DLBUSD:6, USD:2 }[a] || 6;
+  const n = Number(cents || 0) / Math.pow(10, decimals);
+  return decimals === 18 ? n.toFixed(6) : decimals === 6 ? n.toFixed(4) : n.toFixed(2);
+}
+
+function assetDecimals(asset) {
+  return { ETH:18, WETH:18, DAI:18, SIT:6, USDC:6, USDT:6, DLBUSD:6, USD:2 }[(asset || 'SIT').toUpperCase()] || 6;
+}
+
+function toCents(amount, asset) {
+  const d = assetDecimals(asset);
+  return String(Math.round(Number(amount) * Math.pow(10, d)));
+}
+
+async function sendCode() {
+  const email = el('login-email').value.trim().toLowerCase();
+  if (!email) { show('Enter your email', true); return; }
+  show('Sending PIN…', false);
+  try {
+    const res = await api('/api/dapp/auth/send-code', { method: 'POST', body: JSON.stringify({ email }) });
+    el('verify-box').classList.remove('hidden');
+    if (res.data && res.data.code) {
+      show('Email provider not configured. Your PIN is: ' + res.data.code, false);
+    } else {
+      show('PIN sent to ' + email + '. Check your inbox (and spam).', false);
+    }
+  } catch(e) { show(e.message, true); }
+}
+
+async function verifyCode() {
+  const email = el('login-email').value.trim().toLowerCase();
+  const code = el('login-code').value.trim();
+  if (!email || !code) { show('Enter email and PIN', true); return; }
+  show('Verifying…', false);
+  try {
+    const res = await api('/api/dapp/auth/verify', { method: 'POST', body: JSON.stringify({ email, code }) });
+    if (!res.data || !res.data.token) throw new Error('No token returned');
+    state.token = res.data.token;
+    try { localStorage.setItem(TOKEN_KEY, state.token); } catch(e) {}
+    show('Login successful', false);
+    el('login').classList.remove('active');
+    el('app').classList.add('active');
+    await loadWallet();
+  } catch(e) { show(e.message, true); }
+}
+
+async function loadWallet() {
+  try {
+    const res = await api('/api/dapp/beneficiary/wallet');
+    state.user = res.data.user;
+    state.wallet = res.data.wallet;
+    el('user-name').textContent = state.user.name || state.user.email;
+    el('user-role').textContent = (state.user.active_role || state.user.role || 'beneficiary').replace(/_/g, ' ');
+    el('wallet-address').innerHTML = (res.data.wallet.address || '—') + '<button onclick="copyAddress()">Copy</button>';
+    el('receive-address').textContent = res.data.wallet.address || '—';
+    renderBalances(res.data.balance);
+    generateReceiveQR();
+    await loadTransactions();
+  } catch(e) { show(e.message, true); }
+}
+
+function renderBalances(balance) {
+  const grid = el('balance-grid');
+  grid.innerHTML = '';
+  if (!balance || typeof balance !== 'object') { grid.innerHTML = '<div class="muted">No balance data</div>'; return; }
+  const assets = new Map();
+  for (const [k, v] of Object.entries(balance.internal || {})) {
+    const a = k.toUpperCase();
+    assets.set(a, { ...(assets.get(a) || {}), internal: v });
+  }
+  for (const [k, v] of Object.entries(balance.external || {})) {
+    const a = k.toUpperCase();
+    assets.set(a, { ...(assets.get(a) || {}), external: v });
+  }
+  if (assets.size === 0) { grid.innerHTML = '<div class="muted">No balances</div>'; return; }
+  for (const [asset, vals] of Array.from(assets).sort((a, b) => a[0].localeCompare(b[0]))) {
+    const external = vals.external !== undefined ? String(vals.external) : '0.0000';
+    const internal = vals.internal !== undefined ? String(vals.internal) : '0.0000';
+    const div = document.createElement('div');
+    div.className = 'balance';
+    div.innerHTML = `<div class="asset">${asset}</div><div class="val">${external}</div><div class="muted">int ${internal}</div>`;
+    grid.appendChild(div);
+  }
+}
+
+async function loadTransactions() {
+  try {
+    const res = await api('/api/dapp/beneficiary/transactions');
+    const list = el('tx-list');
+    const txs = Array.isArray(res.data) ? res.data : [];
+    if (!txs.length) { list.innerHTML = '<div class="muted">No transactions yet.</div>'; return; }
+    list.innerHTML = '';
+    for (const tx of txs.slice(0, 50)) {
+      const d = document.createElement('div');
+      d.className = 'tx';
+      const amount = formatAmount(tx.amount_cents, tx.asset);
+      const cp = tx.counterparty_address || tx.counterparty_wallet_id || '';
+      const hash = tx.tx_hash || '';
+      d.innerHTML = `<div class="tx-head"><span class="tx-type">${tx.type} ${tx.asset}</span><span class="tx-amount">${amount}</span></div><div class="tx-detail">${new Date(tx.created_at).toLocaleString()} · ${tx.status}${cp ? ' · to ' + cp : ''}${hash ? ' · tx ' + hash.slice(0,12) + '…' : ''}</div>`;
+      list.appendChild(d);
+    }
+  } catch(e) { el('tx-list').innerHTML = '<div class="muted">Could not load transactions.</div>'; }
+}
+
+function showTab(id) {
+  for (const t of document.querySelectorAll('.tab')) t.classList.remove('active');
+  for (const b of document.querySelectorAll('.nav button')) b.classList.remove('active');
+  el(id).classList.add('active');
+  if (state.wallet && id === 'tab-receive') {
+    el('receive-address').textContent = state.wallet.address;
+    updateReceiveQR();
+  }
+  if (id === 'tab-pay') startScanner();
+  if (id !== 'tab-pay') stopScanner();
+}
+
+function copyAddress() {
+  if (!state.wallet) return;
+  navigator.clipboard.writeText(state.wallet.address).then(() => show('Address copied', false)).catch(() => {});
+}
+
+function copyReceiveAddress() {
+  if (!state.wallet) return;
+  navigator.clipboard.writeText(state.wallet.address).then(() => show('Address copied', false, 'receive-address')).catch(() => {});
+}
+
+let receiveQr = null;
+function generateReceiveQR() {
+  const container = el('qr-receive');
+  if (!state.wallet || !container) return;
+  container.innerHTML = '';
+  try { receiveQr = new QRCode(container, { text: state.wallet.address, width: 180, height: 180, colorDark: '#000', colorLight: '#fff', correctLevel: QRCode.CorrectLevel.M }); } catch(e) {}
+  updateReceiveQR();
+}
+function updateReceiveQR() {
+  const container = el('qr-receive-large');
+  if (!state.wallet || !container) return;
+  container.innerHTML = '';
+  let text = state.wallet.address;
+  const amt = el('receive-amount').value;
+  if (amt) text = JSON.stringify({ t: 'dlbtrust', a: state.wallet.address, amt: Number(amt) });
+  try { new QRCode(container, { text, width: 240, height: 240, colorDark: '#000', colorLight: '#fff', correctLevel: QRCode.CorrectLevel.M }); } catch(e) {}
+}
+
+function parseQr(text) {
+  try {
+    const obj = JSON.parse(text);
+    if (obj && typeof obj === 'object' && obj.a) return { type: 'address', value: String(obj.a) };
+  } catch(e) {}
+  const t = String(text).trim();
+  const bitpay = t.match(/(https?:\/\/[^\s]+\/i\/[A-Za-z0-9]+)/) || t.match(/r=([^\s&]+)/);
+  if (bitpay) {
+    const url = decodeURIComponent(bitpay[1]);
+    if (/\/i\/[A-Za-z0-9]+$/.test(url)) return { type: 'bitpay', value: url };
+  }
+  const m = t.match(/0x[a-fA-F0-9]{40}/);
+  if (m) return { type: 'address', value: m[0] };
+  return { type: 'text', value: t };
+}
+
+async function startScanner() {
+  if (state.scannerActive || !el('reader')) return;
+  try {
+    if (!window.Html5Qrcode) { show('QR scanner not available', true, 'pay-status'); return; }
+    state.scanner = new Html5Qrcode('reader');
+    const cameras = await Html5Qrcode.getCameras();
+    const camera = cameras && cameras.length ? cameras[0].id : { facingMode: 'environment' };
+    await state.scanner.start(camera, { fps: 10, qrbox: { width: 220, height: 220 } }, onScan, () => {});
+    state.scannerActive = true;
+    el('btn-stop-scan').hidden = false;
+  } catch(e) {
+    show('Camera error: ' + e.message + '. You can enter the recipient address below.', true, 'pay-status');
+    el('pay-form').classList.remove('hidden');
+    el('reader').innerHTML = '<div style="padding:20px;color:var(--muted);text-align:center;">Camera not available.<br>Use the form below.</div>';
+  }
+}
+
+function stopScanner() {
+  if (state.scanner && state.scannerActive) {
+    state.scanner.stop().catch(() => {});
+    state.scannerActive = false;
+  }
+  el('btn-stop-scan').hidden = true;
+  el('reader').innerHTML = '';
+}
+
+async function onScan(text) {
+  const parsed = parseQr(text);
+  if (parsed.type === 'bitpay') {
+    stopScanner();
+    await loadBitPayInvoice(parsed.value);
+    return;
+  }
+  if (parsed.type !== 'address' || !/^0x[a-fA-F0-9]{40}$/i.test(parsed.value)) {
+    show('Invalid QR code', true, 'pay-status'); return;
+  }
+  stopScanner();
+  el('pay-address').value = parsed.value;
+  el('pay-form').classList.remove('hidden');
+  el('bitpay-form').classList.add('hidden');
+  show('Recipient captured. Enter amount and confirm.', false, 'pay-status');
+}
+
+async function sendPayment() {
+  const to = el('pay-address').value.trim();
+  const amount = el('pay-amount').value;
+  const asset = el('pay-asset').value;
+  const memo = el('pay-memo').value.trim();
+  if (!to || !amount || Number(amount) <= 0) { show('Enter recipient and amount', true, 'pay-status'); return; }
+  if (!/^0x[a-fA-F0-9]{40}$/i.test(to)) { show('Invalid recipient address', true, 'pay-status'); return; }
+  show('Sending…', false, 'pay-status');
+  try {
+    const res = await api('/api/dapp/beneficiary/transfer', { method: 'POST', body: JSON.stringify({ toAddress: to, amount: Number(amount), asset, memo }) });
+    show((res.data.type || 'Payment') + ' of ' + res.data.amount + ' ' + res.data.asset + (res.data.txHash ? ' tx: ' + res.data.txHash : ''), false, 'pay-status');
+    el('pay-form').classList.add('hidden');
+    await loadWallet();
+  } catch(e) { show(e.message, true, 'pay-status'); }
+}
+
+async function loadBitPayInvoice(url) {
+  state.bitpay = null;
+  el('bitpay-form').classList.add('hidden');
+  el('pay-form').classList.add('hidden');
+  show('Fetching BitPay invoice…', false, 'pay-status');
+  try {
+    const res = await api('/api/dapp/beneficiary/bitpay/invoice', { method: 'POST', body: JSON.stringify({ invoiceUrl: url }) });
+    state.bitpay = res.data;
+    const opt = state.bitpay.selectedOption || state.bitpay.options[0] || {};
+    const decimals = opt.decimals || 18;
+    const amount = Number(opt.estimatedAmount || 0) / Math.pow(10, decimals);
+    el('bitpay-detail').innerHTML = `<strong>${state.bitpay.memo || 'Invoice'}</strong><br>Invoice ID: ${state.bitpay.paymentId || ''}<br>Pay ${amount.toLocaleString(undefined, { maximumFractionDigits: 8 })} ${opt.currency || ''} on ${opt.chain || ''}<br>Expires: ${state.bitpay.expires ? new Date(state.bitpay.expires).toLocaleString() : '—'}`;
+    el('bitpay-asset').value = (opt.currency || 'ETH').toUpperCase();
+    el('bitpay-form').classList.remove('hidden');
+    show('BitPay invoice loaded. Confirm payment.', false, 'pay-status');
+  } catch(e) { show(e.message, true, 'pay-status'); }
+}
+
+async function payBitPayInvoice() {
+  if (!state.bitpay || !state.bitpay.url) { show('No invoice loaded', true, 'pay-status'); return; }
+  const asset = el('bitpay-asset').value;
+  show('Paying BitPay invoice…', false, 'pay-status');
+  try {
+    const res = await api('/api/dapp/beneficiary/bitpay/pay', { method: 'POST', body: JSON.stringify({ invoiceUrl: state.bitpay.url, asset }) });
+    show('BitPay paid: ' + res.data.hashes.join(', ') + (res.data.bitpayAck ? ' (acknowledged)' : ''), false, 'pay-status');
+    el('bitpay-form').classList.add('hidden');
+    state.bitpay = null;
+    await loadWallet();
+  } catch(e) { show(e.message, true, 'pay-status'); }
+}
+
+function logout() {
+  state.token = null; state.user = null; state.wallet = null;
+  try { localStorage.removeItem(TOKEN_KEY); } catch(e) {}
+  stopScanner();
+  el('app').classList.remove('active');
+  el('login').classList.add('active');
+  el('login-status').classList.add('hidden');
+}
+
+if (state.token) {
+  el('login').classList.remove('active');
+  el('app').classList.add('active');
+  loadWallet();
+}
+
+if ('serviceWorker' in navigator) {
+  navigator.serviceWorker.register('/dapp/mobile-service-worker.js').catch(() => {});
+}
+</script>
+</body>
+</html>
