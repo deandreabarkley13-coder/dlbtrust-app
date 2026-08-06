@@ -261,6 +261,25 @@ SELECT fit_id, type, amount_cents, name, memo FROM ofx_transactions;
 - **Bond in portfolio:** `DLB-PRB` id `1` has ~$100M principal and accrued interest starting around $2,700. Use tiny amounts and accept that on-chain mainnet receipts may time out.
 - Live SIT token for this phase: `0x217ad61f5f0d7bca71e365ed24836e66bab9ec97`; forwarder: `0xcfb7011292a99ccdd7e6fc0714aa4a6f4e67a8d4`.
 
+## PR #264 — Fixed-Income Reconcile + Crypto Conversion (`devin/convert-fixed-income`)
+
+- The Fly deploy may be on `main` and not contain the new script. Deploy the branch before testing: `flyctl deploy --app dlbtrust-app --yes --local-only` from `/home/ubuntu/repos/dlbtrust-app` (requires `secret:org:FLY_API_TOKEN`).
+- The relevant UI is `https://dlbtrust-app.fly.dev/dapp/master-dashboard.html`:
+  - **Overview** shows aggregated fixed-income totals (all bonds).
+  - **Bond / Fixed Income** tab shows the `DLB-PRB` card with principal, accrued interest, total current value, next coupon, and coupon per period.
+  - **Master Wallets** tab shows the four master wallets; the Income Distribution Master lists `DAI`, `USDS`, `WETH`, and `DLBUSD` balances.
+- Tab buttons may not respond to mouse clicks; use `showTab('overview'|'masters'|'bonds'|'requests')` in the browser console to switch panels.
+- CLI conversion script: `node /app/server/scripts/convertFixedIncomeToCrypto.js DLB-PRB --target-asset=DAI --amount=0.01` (run via `flyctl ssh console -a dlbtrust-app -C '...'`):
+  - Uses `SourceOfFundsAdapter._fundSourceToTreasury({ sourceType: 'bond_interest', ... })` to debit bond accrued interest, then `StablecoinDexEngine.depositAndSwap` to mint DLBUSD, swap `DLBUSD -> WETH` on the BondDex pool, then `WETH -> DAI` on Uniswap V2.
+  - Add `--dry-run` to get a two-leg quote without broadcasting; add `--reconcile` to also run `BondTrustReconciliation.sync` (updates `trust_accounts` 1100/1200/4000 and zeros `CA-BOND-PROCEEDS`).
+  - A real conversion credits the Income Distribution Master internal ledger with `actualTargetAsset` and `amountOut`.
+- After a real conversion without `--reconcile`, run `POST /api/dapp/bonds/reconcile-trust` with `{"bondId":1}` to keep `trust_accounts` 1200/4000 in sync with `bond_balances`.
+- Useful API checks:
+  - `GET /api/dapp/bonds/portfolio` for DLB-PRB live metrics.
+  - `GET /api/dapp/source-of-funds` for trust account balances.
+  - `GET /api/dapp/master-wallets` for the Income Distribution Master asset balances.
+- Operator gas: the operator wallet (`0x3e53028...`) must have mainnet ETH for approval/swap transactions; current `DAPP_MAX_FEE_GWEI=3` makes conversions cheap at low base-fee periods.
+
 ## Devin Secrets Needed
 
 - `DATABASE_URL` or local Postgres credentials (`dlbtrust`/`dlbtrust`).
