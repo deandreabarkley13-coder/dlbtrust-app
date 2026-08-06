@@ -20,6 +20,10 @@ let LiveBondEngine;
 try { LiveBondEngine = require('../bonds/liveEngine').LiveBondEngine; } catch (e) { LiveBondEngine = null; }
 let TrustAccountingEngine;
 try { TrustAccountingEngine = require('../accounting/trustAccountingEngine').TrustAccountingEngine; } catch (e) { TrustAccountingEngine = null; }
+let CashEngine;
+try { CashEngine = require('../cash/cashEngine').CashEngine; } catch (e) { CashEngine = null; }
+let CrmEngine;
+try { CrmEngine = require('../crm/crmEngine').CrmEngine; } catch (e) { CrmEngine = null; }
 
 let pool;
 try {
@@ -60,7 +64,7 @@ const MODULES = {
     tokenName: 'DLB PTC Trust Accounting',
     tokenSymbol: 'DLB-TRUST',
     sourceType: 'trust',
-    sourceAccountId: '1200',
+    sourceAccountId: '1000',
     balanceFn: 'trust',
     decimals: 6,
   },
@@ -68,9 +72,9 @@ const MODULES = {
     name: 'DLB-PTC-CORE',
     tokenName: 'DLB PTC Core Banking',
     tokenSymbol: 'DLB-CORE',
-    sourceType: 'fineract',
-    sourceAccountId: '1',
-    balanceFn: 'fineract',
+    sourceType: 'cash',
+    sourceAccountId: 'CA-OPERATING',
+    balanceFn: 'cash',
     decimals: 6,
   },
   crm: {
@@ -78,7 +82,7 @@ const MODULES = {
     tokenName: 'DLB PTC CRM Registry',
     tokenSymbol: 'DLB-CRM',
     sourceType: 'crm',
-    sourceAccountId: '',
+    sourceAccountId: 'contacts',
     balanceFn: 'crm',
     decimals: 0,
   },
@@ -227,12 +231,17 @@ class ModuleSmartAccountEngine {
       const pos = await TreasuryEngine.getPosition(mod.sourceAccountId);
       return (Number(pos.availableCents || 0) / 100);
     }
+    if (mod.balanceFn === 'cash') {
+      if (!CashEngine) throw new Error('CashEngine not available');
+      const acct = await CashEngine.getAccount(mod.sourceAccountId);
+      return Number(acct ? acct.balance_cents || 0 : 0) / 100;
+    }
     if (mod.balanceFn === 'fineract') {
       return 0;
     }
     if (mod.balanceFn === 'crm') {
-      if (!DappEngine) return 0;
-      const contacts = await DappEngine.listContacts().catch(() => []);
+      if (!CrmEngine) return 0;
+      const contacts = await CrmEngine.listContacts().catch(() => []);
       return contacts.length;
     }
     return 0;
