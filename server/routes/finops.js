@@ -12,13 +12,17 @@ function sendError(res, err) {
   res.status(400).json({ success: false, error: err.message || 'FinOps error' });
 }
 
+function getUserId(req) {
+  const u = req.user || {};
+  return String(u.username || u.userId || u.id || u.email || 'operator');
+}
+
 // Chat/NL command endpoint
 router.post('/agent', operatorAuth, writeRateLimiter(), async (req, res) => {
   try {
     const { command } = req.body || {};
     if (!command || typeof command !== 'string') throw new Error('command string required');
-    const userId = req.user && req.user.id ? String(req.user.id) : (req.user && req.user.email ? req.user.email : 'operator');
-    const result = await FinOpsAgent.process({ command, userId });
+    const result = await FinOpsAgent.process({ command, userId: getUserId(req) });
     res.json({ success: true, data: result });
   } catch (err) { sendError(res, err); }
 });
@@ -36,8 +40,8 @@ router.post('/approvals/:id/execute', operatorAuth, writeRateLimiter(), async (r
   try {
     const { id } = req.params;
     const { approved, reason } = req.body || {};
-    const userId = req.user && req.user.id ? String(req.user.id) : (req.user && req.user.email ? req.user.email : 'operator');
-    const result = await FinOpsAgent.execute(id, { userId, approved: approved !== false && approved !== 'false', reason });
+    if (typeof approved !== 'boolean') throw new Error('approved boolean required');
+    const result = await FinOpsAgent.execute(id, { userId: getUserId(req), approved, reason });
     res.json({ success: true, data: result });
   } catch (err) { sendError(res, err); }
 });

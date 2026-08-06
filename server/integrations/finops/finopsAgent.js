@@ -8,6 +8,7 @@ const { PayoutCenterEngine } = require('../dapp/payoutCenterEngine');
 const { BondTrustReconciliation } = require('../bonds/bondTrustReconciliation');
 const { LiveBondEngine } = require('../bonds/liveEngine');
 const { DappEngine } = require('../dapp/dappEngine');
+const { CrmEngine } = require('../crm/crmEngine');
 
 const TABLES_SQL = `
 CREATE TABLE IF NOT EXISTS finops_approvals (
@@ -113,8 +114,18 @@ class FinOpsAgent {
       return { bond: metrics };
     }
     if (intent === 'showCrm') {
-      const rows = await pool.query('SELECT id, first_name, last_name, email, role, wallet_address FROM contacts ORDER BY created_at DESC LIMIT 50');
-      return { contacts: rows.rows };
+      const contacts = await CrmEngine.listContacts({ limit: 50 });
+      return { contacts: contacts.map(c => ({
+        id: c.contact_id,
+        contact_id: c.contact_id,
+        first_name: c.first_name,
+        last_name: c.last_name,
+        email: c.email,
+        phone: c.phone,
+        role: c.contact_type,
+        contact_type: c.contact_type,
+        wallet_address: c.linked_wallet_id,
+      })) };
     }
     throw new Error(`Read intent ${intent} not implemented`);
   }
@@ -211,23 +222,46 @@ class FinOpsAgent {
 
   static async execute(approvalId, { userId, approved, reason = '' } = {}) {
     await this.ensureTable();
-    const res = await pool.query('SELECT * FROM finops_approvals WHERE id = $1 FOR UPDATE', [approvalId]);
-    if (!res.rows.length) throw new Error('Approval not found');
-    const row = res.rows[0];
-    if (row.status !== 'pending') throw new Error(`Approval already ${row.status}`);
-
-    if (!approved) {
-      await pool.query('UPDATE finops_approvals SET status = $1, result = $2, updated_at = NOW() WHERE id = $3', ['rejected', JSON.stringify({ reason, rejectedBy: userId }), approvalId]);
-      return { status: 'rejected', approvalId };
-    }
-
+    const client = await pool.connect();
     try {
-      const result = await this.executeMutate(row.intent, row.params);
-      await pool.query('UPDATE finops_approvals SET status = $1, result = $2, updated_at = NOW() WHERE id = $3', ['approved', JSON.stringify({ executedBy: userId, result }), approvalId]);
-      return { status: 'approved', approvalId, result };
-    } catch (err) {
-      await pool.query('UPDATE finops_approvals SET status = $1, result = $2, updated_at = NOW() WHERE id = $3', ['failed', JSON.stringify({ error: err.message, failedBy: userId }), approvalId]);
-      throw err;
+      await client.query('BEGIN');
+      const claim = await client.query(
+        "UPDATE finops_approvals SET status = 'executing' WHERE id = $1 AND status = 'pending' RETURNING *",
+        [approvalId]
+      );
+      if (!claim.rows.length) {
+        await client.query('ROLLBACK');
+        throw new Error('Approval not found or already processed');
+      }
+      const row = claim.rows[0];
+
+      if (!approved) {
+        await client.query(
+          'UPDATE finops_approvals SET status = $1, result = $2, updated_at = NOW() WHERE id = $3',
+          ['rejected', JSON.stringify({ reason, rejectedBy: userId }), approvalId]
+        );
+        await client.query('COMMIT');
+        return { status: 'rejected', approvalId };
+      }
+
+      try {
+        const result = await this.executeMutate(row.intent, row.params);
+        await client.query(
+          'UPDATE finops_approvals SET status = $1, result = $2, updated_at = NOW() WHERE id = $3',
+          ['approved', JSON.stringify({ executedBy: userId, result }), approvalId]
+        );
+        await client.query('COMMIT');
+        return { status: 'approved', approvalId, result };
+      } catch (err) {
+        await client.query(
+          'UPDATE finops_approvals SET status = $1, result = $2, updated_at = NOW() WHERE id = $3',
+          ['failed', JSON.stringify({ error: err.message, failedBy: userId }), approvalId]
+        );
+        await client.query('COMMIT');
+        throw err;
+      }
+    } finally {
+      client.release();
     }
   }
 }

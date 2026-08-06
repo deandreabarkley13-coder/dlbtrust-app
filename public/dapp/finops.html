@@ -136,9 +136,9 @@
   const TOKEN_KEY = 'dlb-admin-token';
   const el = id => document.getElementById(id);
   const modules = [
-    { key:'core-banking', name:'Core Banking', desc:'Fineract GL, cash accounts, sub-ledgers', stat:'', endpoint:null },
+    { key:'core-banking', name:'Core Banking', desc:'Fineract GL, cash accounts, sub-ledgers', stat:'', endpoint:'/api/finops/source-of-funds' },
     { key:'treasury', name:'Treasury Management', desc:'Treasury Hot, source-of-funds, reserves', stat:'', endpoint:'/api/finops/source-of-funds' },
-    { key:'trust-accounting', name:'Trust Accounting', desc:'Trust accounts 1100/1200/4000', stat:'', endpoint:'/api/dapp/source-of-funds' },
+    { key:'trust-accounting', name:'Trust Accounting', desc:'Trust accounts 1100/1200/4000', stat:'', endpoint:'/api/accounting/accounts' },
     { key:'crm', name:'CRM / Contacts', desc:'Trustees, beneficiaries, vendors', stat:'', endpoint:'/api/finops/crm' },
     { key:'wallets', name:'Wallets', desc:'Master, trustee and beneficiary wallets', stat:'', endpoint:'/api/finops/wallets' },
     { key:'fixed-income', name:'Fixed Income', desc:'DLB-PRB bond metrics & accrued interest', stat:'', endpoint:'/api/finops/bonds' },
@@ -205,27 +205,46 @@
     `).join('');
   }
 
+  function normalizeBalances(raw) {
+    if (!raw) return [];
+    if (Array.isArray(raw)) return raw;
+    if (Array.isArray(raw.balances)) return raw.balances;
+    if (Array.isArray(raw.data)) return raw.data;
+    return [];
+  }
+  function balanceDollars(b) {
+    if (typeof b.balance === 'number') return b.balance;
+    if (typeof b.balance_cents === 'number') return b.balance_cents / 100;
+    return Number(b.balance || b.balance_cents || 0) / (typeof b.balance_cents === 'number' ? 100 : 1);
+  }
   async function loadAll() {
     renderModules();
     renderFlow();
     try {
-      const [sof, wallets, bond, crm] = await Promise.all([
+      const [sof, accts, wallets, bond, crm] = await Promise.all([
         api('/api/finops/source-of-funds').catch(()=>null),
+        api('/api/accounting/accounts').catch(()=>null),
         api('/api/finops/wallets').catch(()=>null),
         api('/api/finops/bonds').catch(()=>null),
         api('/api/finops/crm').catch(()=>null),
       ]);
-      if (sof && sof.data && sof.data.balances) {
-        const treasury = sof.data.balances.find(b => b.code === 'TREASURY_HOT' || (b.name||'').toLowerCase().includes('treasury'));
-        const trustTotal = sof.data.balances.reduce((a,b) => a + (parseFloat(b.balance || 0)), 0);
-        setStat('treasury', treasury ? fmt(treasury.balance, 0) : fmt(trustTotal, 0));
+      const balances = normalizeBalances(sof && sof.data);
+      if (balances.length) {
+        const treasury = balances.find(b => b.id === 'TREASURY_HOT' || (b.name||'').toLowerCase().includes('treasury'));
+        const treasuryBal = treasury ? balanceDollars(treasury) : 0;
+        const cbTotal = balances.filter(b => b.type === 'cash' || b.type === 'core_banking').reduce((a,b)=>a+balanceDollars(b),0);
+        setStat('treasury', fmt(treasuryBal, 0));
+        setStat('core-banking', fmt(cbTotal || treasuryBal, 0));
+      }
+      if (accts && accts.data) {
+        const trustTotal = accts.data.reduce((a,b) => a + (Number(b.balance || 0)), 0);
         setStat('trust-accounting', fmt(trustTotal, 0));
       }
       if (bond && bond.data && bond.data.bond) setStat('fixed-income', fmt(bond.data.bond.total_current_value, 0));
       if (wallets && wallets.data && wallets.data.wallets) setStat('wallets', String(wallets.data.wallets.length));
       if (crm && crm.data && crm.data.contacts) setStat('crm', String(crm.data.contacts.length));
       renderModules();
-    } catch(e) {}
+    } catch(e) { console.error('loadAll error', e); }
     loadApprovals();
   }
 
@@ -254,15 +273,14 @@
 
   async function loadModuleData(m, body) {
     try {
-      if (m.key === 'core-banking') {
-        const data = await api('/api/dapp/source-of-funds');
-        body.innerHTML = renderTable(data.data.balances || [], ['code','name','balance'], {balance: v => fmt(v)});
-        return;
-      }
       if (!m.endpoint) return;
       const data = await api(m.endpoint);
-      if (m.key === 'treasury' || m.key === 'trust-accounting') {
-        body.innerHTML = renderTable(data.data.balances || [], ['code','name','balance'], {balance: v => fmt(v)});
+      if (m.key === 'core-banking' || m.key === 'treasury') {
+        const rows = normalizeBalances(data.data);
+        body.innerHTML = renderTable(rows, ['id','name','balance_cents','currency'], {balance_cents: v => fmt(Number(v || 0) / 100, 2)});
+      } else if (m.key === 'trust-accounting') {
+        const rows = Array.isArray(data.data) ? data.data : [];
+        body.innerHTML = renderTable(rows, ['account_code','account_name','account_type','balance'], {balance: v => fmt(Number(v || 0), 2)});
       } else if (m.key === 'crm') {
         body.innerHTML = renderTable(data.data.contacts || [], ['first_name','last_name','email','role'], {});
       } else if (m.key === 'wallets') {
@@ -324,21 +342,23 @@
         <div class="approval-item">
           <div class="summary"><span class="badge">${r.intent}</span> ${r.summary}</div>
           <div class="approval-actions">
-            <button class="btn" onclick="decideApproval('${r.id}', true)">Approve</button>
-            <button class="btn btn-danger" onclick="decideApproval('${r.id}', false)">Reject</button>
+            <button class="btn" onclick="decideApproval('${r.id}', true, this)">Approve</button>
+            <button class="btn btn-danger" onclick="decideApproval('${r.id}', false, this)">Reject</button>
           </div>
         </div>
       `).join('');
     } catch(e) { list.innerHTML = '<span class="muted">Could not load approvals</span>'; }
   }
 
-  async function decideApproval(id, approved) {
+  async function decideApproval(id, approved, btn) {
+    if (btn) { btn.disabled = true; btn.textContent = '…'; }
     try {
       await api(`/api/finops/approvals/${id}/execute`, { method: 'POST', body: JSON.stringify({ approved }) });
       addChat('agent', approved ? 'Approved and executed.' : 'Rejected.');
       await loadApprovals();
       await loadAll();
     } catch(e) { addChat('agent', 'Approval error: ' + e.message); }
+    finally { if (btn) { btn.disabled = false; btn.textContent = approved ? 'Approve' : 'Reject'; } }
   }
 
   async function runConversionExample() {
