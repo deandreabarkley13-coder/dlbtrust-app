@@ -299,8 +299,8 @@ class DexSwapEngine {
 
     if (!routerAddress || !viem) throw new Error('Uniswap V2 router not configured');
     let wallet, publicClient, fees;
-    if (privateKey && accountFns && accountFns.privateKeyToAccount) {
-      const account = accountFns.privateKeyToAccount(privateKey);
+    if (privateKey && privateKeyToAccount) {
+      const account = privateKeyToAccount(privateKey);
       const chain = cfg.chainId === 11155111 ? chains.sepolia : chains.mainnet;
       fees = cfg.getFees ? (cfg.getFees() || { maxFeePerGas: viem.parseGwei('20'), maxPriorityFeePerGas: viem.parseGwei('0.5') }) : { maxFeePerGas: viem.parseGwei('20'), maxPriorityFeePerGas: viem.parseGwei('0.5') };
       wallet = viem.createWalletClient({ account, chain, transport: viem.http(cfg.rpcUrl) });
