@@ -8,6 +8,7 @@ const { ModuleP2PSwapEngine } = require('../integrations/dapp/moduleP2PSwapEngin
 const { SpritzEngine } = require('../integrations/spritz/spritzEngine');
 const { PeerOnRampEngine } = require('../integrations/peer/peerOnRampEngine');
 const { PtcStablecoinEngine } = require('../integrations/dapp/ptcStablecoinEngine');
+const { CanonicalConsensusEngine } = require('../integrations/dapp/canonicalConsensusEngine');
 
 const router = express.Router();
 const operatorAuth = requireAuth({ role: 'operator' });
@@ -305,6 +306,39 @@ router.post('/ptc-stablecoin/transfer', operatorAuth, writeRateLimiter(), async 
 
 router.get('/ptc-stablecoin/balance/:address', operatorAuth, async (req, res) => {
   try { res.json({ success: true, data: { address: req.params.address, balance: await PtcStablecoinEngine.balanceOf(req.params.address) } }); } catch (err) { sendError(res, err); }
+});
+
+// ═════════════════════════════════════════════════════════════════════════════
+// Canonical Consensus Engine (Maker / Checker approvals)
+// ═════════════════════════════════════════════════════════════════════════════
+
+function getUserEmail(req) {
+  const u = req.user || {};
+  return u.email || u.username || u.userId || 'operator';
+}
+
+router.get('/consensus', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await CanonicalConsensusEngine.listProposals(req.query) }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/consensus/proposals', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try { res.status(201).json({ success: true, data: await CanonicalConsensusEngine.createProposal({ ...req.body, createdBy: getUserEmail(req) }) }); } catch (err) { sendError(res, err); }
+});
+
+router.get('/consensus/proposals/:id', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await CanonicalConsensusEngine.getProposal(req.params.id) }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/consensus/proposals/:id/approve', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try { res.json({ success: true, data: await CanonicalConsensusEngine.approveProposal({ proposalId: req.params.id, ...req.body }) }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/consensus/proposals/:id/reject', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try { res.json({ success: true, data: await CanonicalConsensusEngine.rejectProposal({ proposalId: req.params.id, ...req.body }) }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/consensus/proposals/:id/execute', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try { res.json({ success: true, data: await CanonicalConsensusEngine.executeProposal(req.params.id) }); } catch (err) { sendError(res, err); }
 });
 
 module.exports = router;

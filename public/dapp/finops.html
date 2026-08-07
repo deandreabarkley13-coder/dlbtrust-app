@@ -156,6 +156,7 @@
     { key:'peer-onramp', name:'Peer On-Ramp', desc:'P2P fiat to USDC on Base (CashApp/Venmo/Wise)', stat:'', endpoint:null, action:'openPeerOnRampPanel' },
     { key:'spritz', name:'Spritz Off-Ramp', desc:'Crypto-to-fiat bank payouts via Spritz', stat:'', endpoint:null, action:'openSpritzPanel' },
     { key:'ptc-stablecoin', name:'PTC Stablecoin', desc:'DLB-PTCUSD backed by bond/fixed-income reserves', stat:'', endpoint:null, action:'openPtcStablecoinPanel' },
+    { key:'canonical-consensus', name:'Canonical Consensus', desc:'Maker/Checker approvals for tokenized ledger actions', stat:'', endpoint:null, action:'openCanonicalConsensusPanel' },
     { key:'payout', name:'Payout Center', desc:'Disbursements, trades, off-ramps', stat:'', endpoint:null, link:'/dapp/payout-center.html?v=2' },
     { key:'distribution', name:'Distribution', desc:'Trustee-approved beneficiary distributions', stat:'', endpoint:null, link:'/dapp/master-dashboard.html?v=2' },
   ];
@@ -319,7 +320,7 @@
     renderModules();
     renderFlow();
     try {
-      const [sof, accts, wallets, bond, crm, p2p, ptc] = await Promise.all([
+      const [sof, accts, wallets, bond, crm, p2p, ptc, consensus] = await Promise.all([
         api('/api/finops/source-of-funds').catch(()=>null),
         api('/api/accounting/accounts').catch(()=>null),
         api('/api/finops/wallets').catch(()=>null),
@@ -327,6 +328,7 @@
         api('/api/finops/crm').catch(()=>null),
         api('/api/finops/module-p2p/orders').catch(()=>null),
         api('/api/finops/ptc-stablecoin').catch(()=>null),
+        api('/api/finops/consensus').catch(()=>null),
       ]);
       const balances = normalizeBalances(sof && sof.data);
       if (balances.length) {
@@ -346,6 +348,10 @@
       if (crm && crm.data && crm.data.contacts) setStat('crm', String(crm.data.contacts.length));
       if (p2p && p2p.data && Array.isArray(p2p.data)) setStat('p2p-swap', String(p2p.data.length));
       if (ptc && ptc.data && ptc.data.deployed) setStat('ptc-stablecoin', fmt(Number(ptc.data.totalSupply || 0), 0));
+      if (consensus && consensus.data && Array.isArray(consensus.data)) {
+        const pending = consensus.data.filter(p => p.status === 'pending').length;
+        setStat('canonical-consensus', String(pending));
+      }
       renderModules();
     } catch(e) { console.error('loadAll error', e); }
     loadApprovals();
@@ -743,6 +749,123 @@
       await loadPtcStablecoinInfo();
       await loadAll();
     } catch(e) { ptcStatus(e.message, true); }
+  }
+
+  function openCanonicalConsensusPanel() {
+    const panel = el('module-panel');
+    const body = el('panel-body');
+    el('panel-title').textContent = 'Canonical Consensus';
+    panel.classList.add('active');
+    body.innerHTML = '<div class="muted">Loading consensus proposals…</div>';
+    loadCanonicalConsensus();
+  }
+
+  function renderCanonicalConsensusPanel(proposals, pendingCount, message) {
+    let html = '<div class="muted" style="margin-bottom:12px;">Maker/Checker consensus layer for canonical ledger → token actions. A proposal becomes canonical when ' + (message || '1-of-2 (Maker or Checker)') + ' approves it.</div>';
+    html += '<div id="consensus-status" class="status hidden"></div>';
+    html += '<div style="margin-bottom:12px;"><strong>Pending proposals:</strong> ' + pendingCount + '</div>';
+    html += '<div style="margin:12px 0; border-top:1px solid var(--border); padding-top:12px;">' +
+      '<h3 style="margin:0 0 10px; font-size:14px;">Create Proposal</h3>' +
+      '<div class="token-bar"><input id="cc-title" placeholder="title" value="Mint DLB-PTCUSD from DLB-PRB" /></div>' +
+      '<div class="token-bar"><input id="cc-category" placeholder="category (ptc_mint, ptc_transfer, ptc_redeem, dex_swap, p2p_order, custom)" value="ptc_mint" /></div>' +
+      '<div class="token-bar"><textarea id="cc-payload" placeholder="JSON payload" style="width:100%;min-height:80px;font-family:monospace;">{"moduleKey":"bond_portfolio","amount":"all","recipient":""}</textarea></div>' +
+      '<div class="approval-actions"><button class="btn" onclick="ccCreate()">Propose</button></div>' +
+      '</div>';
+    if (!proposals.length) {
+      html += '<p class="muted">No proposals yet.</p>';
+    } else {
+      html += '<h3 style="font-size:14px; margin:16px 0 8px;">Proposals</h3><div id="consensus-list">';
+      for (const p of proposals) {
+        html += renderConsensusRow(p);
+      }
+      html += '</div>';
+    }
+    return html;
+  }
+
+  function renderConsensusRow(p) {
+    const approvals = (p.approvals || []).map(a => a.role + (a.status === 'approved' ? ' ✓' : ' ✗')).join(', ') || 'none';
+    let actions = '';
+    if (p.status === 'pending') {
+      actions = '<div class="approval-actions">' +
+        '<input type="text" placeholder="your email" id="cc-email-' + p.id + '" style="width:160px;margin-right:8px;" />' +
+        '<button class="btn" onclick="ccApprove(\'' + p.id + '\', this)">Approve as Maker/Checker</button>' +
+        '<button class="btn btn-danger" style="margin-left:8px;" onclick="ccReject(\'' + p.id + '\', this)">Reject</button>' +
+        '</div>';
+    } else if (p.status === 'approved' || p.status === 'failed') {
+      actions = '<button class="btn btn-sec" onclick="ccExecute(\'' + p.id + '\', this)">Execute</button>';
+    }
+    return '<div class="approval-item" style="margin-bottom:10px;">' +
+      '<div class="summary"><span class="badge">' + p.category + '</span> ' + p.title + ' <small class="muted">(' + p.status + ')</small></div>' +
+      '<div class="muted" style="font-size:12px; margin:4px 0;">' + (p.description || '') + '</div>' +
+      '<div style="font-size:12px;"><strong>Payload:</strong> <code>' + JSON.stringify(p.payload || {}).slice(0, 120) + '</code></div>' +
+      '<div style="font-size:12px;"><strong>Approvals:</strong> ' + approvals + '</div>' +
+      actions +
+      '</div>';
+  }
+
+  async function loadCanonicalConsensus() {
+    const body = el('panel-body');
+    try {
+      const res = await api('/api/finops/consensus');
+      const proposals = res.data || [];
+      const pending = proposals.filter(p => p.status === 'pending').length;
+      body.innerHTML = renderCanonicalConsensusPanel(proposals, pending, '1-of-2 Maker/Checker');
+    } catch(e) { body.innerHTML = '<div class="status err">' + e.message + '</div>' + renderCanonicalConsensusPanel([], 0, '1-of-2 Maker/Checker'); }
+  }
+
+  function ccStatus(msg, isErr) {
+    const d = el('consensus-status');
+    if (!d) return;
+    d.textContent = msg; d.className = 'status ' + (isErr ? 'err' : 'ok'); d.classList.remove('hidden');
+  }
+
+  async function ccCreate() {
+    ccStatus('Creating consensus proposal…');
+    try {
+      const title = el('cc-title').value.trim();
+      const category = el('cc-category').value.trim();
+      const payloadText = el('cc-payload').value.trim();
+      const payload = payloadText ? JSON.parse(payloadText) : {};
+      const res = await api('/api/finops/consensus/proposals', { method:'POST', body: JSON.stringify({ title, category, payload, requiredRoles: ['maker','checker'], requiredApprovals: 1 }) });
+      ccStatus('Created proposal ' + res.data.id, false);
+      await loadCanonicalConsensus();
+    } catch(e) { ccStatus(e.message, true); }
+  }
+
+  async function ccApprove(proposalId, btn) {
+    if (btn) { btn.disabled = true; btn.textContent = '…'; }
+    try {
+      const email = el('cc-email-' + proposalId).value.trim();
+      const role = 'maker'; // can be maker or checker; server validates by email
+      const res = await api('/api/finops/consensus/proposals/' + proposalId + '/approve', { method:'POST', body: JSON.stringify({ role, approverEmail: email }) });
+      ccStatus('Approved: ' + (res.data.status || 'executed'), false);
+      await loadCanonicalConsensus();
+      await loadAll();
+    } catch(e) { ccStatus(e.message, true); }
+    finally { if (btn) { btn.disabled = false; btn.textContent = 'Approve as Maker/Checker'; } }
+  }
+
+  async function ccReject(proposalId, btn) {
+    if (btn) { btn.disabled = true; btn.textContent = '…'; }
+    try {
+      const email = el('cc-email-' + proposalId).value.trim();
+      const res = await api('/api/finops/consensus/proposals/' + proposalId + '/reject', { method:'POST', body: JSON.stringify({ role: 'maker', rejectorEmail: email }) });
+      ccStatus('Rejected', false);
+      await loadCanonicalConsensus();
+    } catch(e) { ccStatus(e.message, true); }
+    finally { if (btn) { btn.disabled = false; btn.textContent = 'Reject'; } }
+  }
+
+  async function ccExecute(proposalId, btn) {
+    if (btn) { btn.disabled = true; btn.textContent = '…'; }
+    try {
+      const res = await api('/api/finops/consensus/proposals/' + proposalId + '/execute', { method:'POST' });
+      ccStatus('Executed: ' + JSON.stringify(res.data.result || {}).slice(0, 120), false);
+      await loadCanonicalConsensus();
+      await loadAll();
+    } catch(e) { ccStatus(e.message, true); }
+    finally { if (btn) { btn.disabled = false; btn.textContent = 'Execute'; } }
   }
 
   function addChat(sender, text) {
