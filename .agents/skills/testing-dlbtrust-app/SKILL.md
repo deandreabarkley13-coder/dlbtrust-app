@@ -311,6 +311,32 @@ SELECT fit_id, type, amount_cents, name, memo FROM ofx_transactions;
   - `GET /api/dapp/master-wallets` for the Income Distribution Master asset balances.
 - Operator gas: the operator wallet (`0x3e53028...`) must have mainnet ETH for approval/swap transactions; current `DAPP_MAX_FEE_GWEI=3` makes conversions cheap at low base-fee periods.
 
+## PTC-backed Stablecoin (`/dapp/finops.html`)
+
+- Module card: **PTC Stablecoin** (`key:'ptc-stablecoin'`, `action:'openPtcStablecoinPanel'`) in `public/dapp/finops.html`.
+- Backend: `server/integrations/dapp/ptcStablecoinEngine.js` with routes in `server/routes/finops.js`:
+  - `GET /api/finops/ptc-stablecoin`
+  - `GET /api/finops/ptc-stablecoin/balance/:address`
+  - `POST /api/finops/ptc-stablecoin/deploy`
+  - `POST /api/finops/ptc-stablecoin/reserve-tokens`
+  - `POST /api/finops/ptc-stablecoin/reserve-tokens/default`
+  - `POST /api/finops/ptc-stablecoin/deposit`
+  - `POST /api/finops/ptc-stablecoin/deposit-all`
+  - `POST /api/finops/ptc-stablecoin/redeem`
+  - `POST /api/finops/ptc-stablecoin/transfer`
+  - `POST /api/finops/ptc-stablecoin/whitelist`
+- Expected live token/vault addresses are stored in `/data/ptc-stablecoin-state.json` on the Fly machine and returned by the `info()` method:
+  - Token `DLB-PTCUSD`: `0xb01e6280ffe6faac679a17b029df8e065e8d0002`
+  - Vault: `0xc8b2f6909b50a43ac839e74c3d0e82ae060094d1`
+- Read-only verification:
+  1. Load `/dapp/finops.html` and authenticate (trustee email/PIN or admin token in `dlb-admin-token`).
+  2. Because `resumeSession()` only auto-runs `loadAll()` for JWT sessions, admin-token users may need to call `loadAll()` from the console to populate card stats.
+  3. Confirm the **PTC Stablecoin** card shows a non-zero stat (e.g. `$211,187,497` from `totalSupply`).
+  4. Click the card; the panel should show token, vault, total supply, owner, and reserve tokens (DLB-BOND, DLB-FIXED-INCOME, DLB-TREASURY, DLB-TRUST, DLB-CORE) with vault balances.
+  5. `curl -H 'x-admin-token: dlb-admin-2026-trust' https://dlbtrust-app.fly.dev/api/finops/ptc-stablecoin` should return `deployed: true`, matching token/vault, `totalSupply > 0`, and reserves.
+  6. `curl -H 'x-admin-token: dlb-admin-2026-trust' https://dlbtrust-app.fly.dev/api/finops/ptc-stablecoin/balance/<address>` returns the on-chain balance.
+- Write operations (deploy, deposit, transfer, redeem) require `DAPP_PRIVATE_KEY` and mainnet ETH; do not execute in read-only tests without confirming gas.
+
 ## Devin Secrets Needed
 
 - `DATABASE_URL` or local Postgres credentials (`dlbtrust`/`dlbtrust`).
