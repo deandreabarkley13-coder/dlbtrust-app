@@ -257,9 +257,21 @@ SELECT fit_id, type, amount_cents, name, memo FROM ofx_transactions;
 - **Master wallet transfers:**
   - Internal transfer: `masterTransfer()` calls `POST /api/dapp/master-wallets/<fromSubtype>/transfer` with `{ toSubtype, amount, asset }`. Works for `SIT` and `ETH`.
   - External send: `masterExternalSend()` calls `POST /api/dapp/master-wallets/<fromSubtype>/external-send` with `{ toAddress, amount, asset, tokenAddress, decimals }`. For `ETH` it sends native ETH via `WalletEngine.externalEthSend`; for `SIT` it uses `WalletEngine.externalSend` and relays the meta-tx.
-- **Seeding internal ETH for transfer tests:** The fixed-income distribution currently does not credit internal ETH (it rounds `<0.005 ETH` to 0 cents), so to test internal ETH transfers seed an internal ETH balance via `POST /api/dapp/wallets/<walletId>/fund` with `{ amount: '0.02', asset: 'ETH' }`. Find the operating wallet ID from `GET /api/dapp/master-wallets`.
-- **Bond in portfolio:** `DLB-PRB` id `1` has ~$100M principal and accrued interest starting around $2,700. Use tiny amounts and accept that on-chain mainnet receipts may time out.
-- Live SIT token for this phase: `0x217ad61f5f0d7bca71e365ed24836e66bab9ec97`; forwarder: `0xcfb7011292a99ccdd7e6fc0714aa4a6f4e67a8d4`.
+
+## P2P Module Swap (deployed dApp)
+
+- Page: `/dapp/finops.html` -> click the **P2P Module Swap** card.
+- Backend: `server/integrations/dapp/moduleP2PSwapEngine.js`, routes `GET /api/finops/module-p2p/orders`, `POST /api/finops/module-p2p/orders`, `POST /api/finops/module-p2p/orders/:id/fill|cancel`.
+- Contract: `ModuleTokenSwap` at `MODULE_P2P_SWAP_ADDRESS` (mainnet example `0x9af32c917e319461e906863f3b6b1223ccc8ccce`).
+- Listing reads all active orders from the contract `orders` mapping; `createOrder` approves `tokenIn` (DLBUSD/module token) for the P2P contract, then calls `createOrder(tokenIn, amountInRaw, tokenOut, amountOutRaw, recipient)`.
+- Units: `amountIn`/`amountOut` in the UI are decimal strings (e.g. `0.001`); the engine `parseUnits(..., 6)` converts them to 1,000 6-decimal units.
+- Operator wallet (`0x3e53028cf69949f3B961ce786Baf2D4D75166562`) must hold the tokenIn (DLBUSD) and enough mainnet ETH for the approve + createOrder transactions.
+- To create an order from the UI:
+  1. Open `/dapp/finops.html`, save the operator token.
+  2. Click **P2P Module Swap** (or call `openModule('p2p-swap')` if clicks don't register in headless tests).
+  3. In the create form set `tokenIn` to the DLBUSD/module token address, `amountIn`/`amountOut` to `0.001`, and a valid `recipient` address, then click **List Order**.
+- Verify: API `GET /api/finops/module-p2p/orders` returns the new order with `active: true`, and `ModuleTokenSwap.orders(orderId)` on-chain shows the same details.
+- Useful explorer: `https://etherscan.io/tx/<txHash>` (txHash is not returned by the list endpoint; fetch it from the `OrderCreated` event logs for the order id).
 
 ## Devin Secrets Needed
 

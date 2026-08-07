@@ -100,6 +100,21 @@ router.post('/module-accounts/:module/tokenize', operatorAuth, writeRateLimiter(
   } catch (err) { sendError(res, err); }
 });
 
+router.post('/module-accounts/:module/settle-to-operator', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try {
+    const { amount } = req.body || {};
+    const data = await ModuleSmartAccountEngine.settleToOperator(req.params.module, amount);
+    res.json({ success: true, data });
+  } catch (err) { sendError(res, err); }
+});
+
+router.post('/module-accounts/settle-all-to-operator', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try {
+    const data = await ModuleSmartAccountEngine.settleAllToOperator();
+    res.json({ success: true, data });
+  } catch (err) { sendError(res, err); }
+});
+
 // ─── Module P2P Swap (OTC order book, no WETH required) ───────────────────────
 router.get('/module-p2p/orders', operatorAuth, async (req, res) => {
   try {

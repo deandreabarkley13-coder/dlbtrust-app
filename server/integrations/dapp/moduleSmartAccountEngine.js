@@ -13,6 +13,11 @@ const Safe = require('@safe-global/protocol-kit').default;
 const { getConfig } = require('./config');
 const { DappEngine } = require('./dappEngine');
 const { BondTokenizationEngine } = require('./bondTokenizationEngine');
+const { SafeEngine } = require('./safeEngine');
+const { WalletEngine } = require('./walletEngine');
+const { privateKeyToAccount } = require('viem/accounts');
+const { createPublicClient, http, parseUnits } = require('viem');
+const { mainnet, sepolia } = require('viem/chains');
 
 let BondEngine;
 try { BondEngine = require('../bonds/bondEngine').BondEngine; } catch (e) { BondEngine = null; }
@@ -89,6 +94,23 @@ const MODULES = {
 };
 
 function id(prefix) { return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 8).toUpperCase()}`; }
+
+function chainById(id) {
+  switch (id) {
+    case 1: return mainnet;
+    case 11155111: return sepolia;
+    default: return mainnet;
+  }
+}
+
+function ethSignOffset(sig) {
+  const bytes = Buffer.from(sig.slice(2), 'hex');
+  let v = bytes[64];
+  if (v < 27) v += 27;
+  v += 4; // Safe eth_sign v offset
+  bytes[64] = v;
+  return '0x' + bytes.toString('hex');
+}
 
 async function ensureTable() {
   if (!pool) return;
@@ -247,6 +269,33 @@ class ModuleSmartAccountEngine {
     return 0;
   }
 
+  static async _publicClient() {
+    const cfg = this.getConfig();
+    return createPublicClient({ chain: chainById(cfg.chainId), transport: http(cfg.rpcUrl) });
+  }
+
+  static async getTokenBalance(tokenAddress, holderAddress) {
+    const publicClient = await this._publicClient();
+    const raw = await publicClient.readContract({
+      address: tokenAddress,
+      abi: [{ type: 'function', name: 'balanceOf', inputs: [{ type: 'address' }], outputs: [{ type: 'uint256' }], stateMutability: 'view' }],
+      functionName: 'balanceOf',
+      args: [holderAddress],
+    });
+    return raw;
+  }
+
+  static async deployModuleSafe(moduleKey) {
+    const mod = await this.getModule(moduleKey);
+    if (!mod) throw new Error(`Module ${moduleKey} not initialized`);
+    const owners = Array.isArray(mod.owners) ? mod.owners : JSON.parse(mod.owners || '[]');
+    const info = await SafeEngine.getSafeInfo(mod.safe_address).catch(() => null);
+    if (!info || !info.isDeployed) {
+      await SafeEngine.deploySafe({ owners, threshold: mod.threshold, saltNonce: mod.salt_nonce });
+    }
+    return { safeAddress: mod.safe_address, deployed: true };
+  }
+
   static async tokenizeModule(moduleKey) {
     const mod = await this.initializeModule(moduleKey);
     const cfg = this.getConfig();
@@ -268,25 +317,109 @@ class ModuleSmartAccountEngine {
       });
     }
 
-    const mintAmount = isCrm ? 0 : balance;
+    const meta = (typeof mod.metadata === 'string' ? JSON.parse(mod.metadata || '{}') : (mod.metadata || {}));
+    const alreadyMinted = Number(meta.mintedAmount || 0);
+    const mintAmount = isCrm ? 0 : Math.max(0, balance - alreadyMinted);
     const principal = moduleKey === 'fixed_income' ? 0 : mintAmount;
     const interest = moduleKey === 'fixed_income' ? mintAmount : 0;
 
+    // Mint new supply to the operator wallet so it is direct from the blockchain.
+    const holderAddress = cfg.operatorAddress;
     if (mintAmount > 0) {
       await BondTokenizationEngine.mint({
         tokenId: token.id,
         principal,
         interest,
-        holderAddress: mod.safe_address,
+        holderAddress,
       });
     }
 
+    const newMinted = alreadyMinted + mintAmount;
+    const metadata = {
+      ...(meta || {}),
+      balance: { amount: newMinted, balance },
+      mintedAmount: newMinted,
+      holderAddress,
+    };
     await query(
-      'UPDATE module_smart_accounts SET token_id=$1, token_address=$2, balance_synced_at=NOW(), metadata=jsonb_set(metadata, \'{balance}\', $3) WHERE id=$4',
-      [token.id, token.token_address, JSON.stringify({ amount: mintAmount, balance }), mod.id]
+      'UPDATE module_smart_accounts SET token_id=$1, token_address=$2, balance_synced_at=NOW(), metadata=$3 WHERE id=$4',
+      [token.id, token.token_address, JSON.stringify(metadata), mod.id]
     );
 
-    return { module: await this.getModule(moduleKey), token, minted: mintAmount };
+    return { module: await this.getModule(moduleKey), token, minted: mintAmount, totalMinted: newMinted, holderAddress };
+  }
+
+  static async settleToOperator(moduleKey, amount = 'all') {
+    const mod = await this.getModule(moduleKey);
+    if (!mod || !mod.token_address) throw new Error(`Module ${moduleKey} has not been tokenized`);
+    if (moduleKey === 'crm') throw new Error('CRM module is not a transferable token balance');
+
+    const cfg = this.getConfig();
+    const tokenAddress = mod.token_address;
+    const safeAddress = mod.safe_address;
+    const operatorAddress = cfg.operatorAddress;
+    const owners = Array.isArray(mod.owners) ? mod.owners : JSON.parse(mod.owners || '[]');
+    const threshold = mod.threshold;
+
+    // Ensure the module Safe is deployed
+    await this.deployModuleSafe(moduleKey);
+
+    const rawBalance = await this.getTokenBalance(tokenAddress, safeAddress);
+    if (rawBalance === 0n) return { moduleKey, skipped: true, reason: 'No module token balance in Safe' };
+    let tokenAmount = rawBalance;
+    if (amount !== 'all' && amount) {
+      const dec = mod.config.decimals || 6;
+      tokenAmount = parseUnits(String(amount), dec);
+      if (tokenAmount > rawBalance) tokenAmount = rawBalance;
+    }
+
+    const { safeTx, safeTxHash } = await SafeEngine.createTransaction({
+      safeAddress,
+      token: tokenAddress,
+      tokenAmount: String(tokenAmount),
+      to: operatorAddress,
+    });
+
+    const signatures = [];
+    for (const addr of owners.slice(0, threshold)) {
+      const wallet = await WalletEngine.getWalletByAddress(addr);
+      if (!wallet || !wallet.private_key_encrypted) throw new Error(`No wallet for Safe owner ${addr}`);
+      const pk = WalletEngine._decrypt(wallet.private_key_encrypted);
+      const account = privateKeyToAccount(pk.startsWith('0x') ? pk : `0x${pk}`);
+      const rawSig = await account.signMessage({ message: { raw: safeTxHash } });
+      const safeSig = ethSignOffset(rawSig);
+      signatures.push({ signer: account.address, signature: safeSig });
+    }
+
+    const rebuilt = SafeEngine.rebuildTransaction(safeTx.data, signatures);
+    const result = await SafeEngine.executeTransaction({ safeAddress, safeTx: rebuilt });
+
+    // Update metadata so future tokenization does not double-mint
+    const meta = (typeof mod.metadata === 'string' ? JSON.parse(mod.metadata || '{}') : (mod.metadata || {}));
+    const movedAmount = Number(tokenAmount) / Math.pow(10, mod.config.decimals || 6);
+    const metadata = {
+      ...(meta || {}),
+      settledToOperator: true,
+      settledAt: new Date().toISOString(),
+      settledAmount: (Number(meta.settledAmount || 0) + movedAmount),
+      holderAddress: operatorAddress,
+    };
+    await query('UPDATE module_smart_accounts SET metadata=$1, updated_at=NOW() WHERE id=$2', [JSON.stringify(metadata), mod.id]);
+
+    return { moduleKey, safeAddress, operatorAddress, tokenAddress, amount: movedAmount, tokenAmount: String(tokenAmount), txHash: result.txHash };
+  }
+
+  static async settleAllToOperator() {
+    const results = {};
+    for (const key of Object.keys(MODULES)) {
+      if (key === 'crm') continue;
+      try {
+        results[key] = await this.settleToOperator(key);
+      } catch (err) {
+        results[key] = { success: false, error: err.message };
+      }
+    }
+    return results;
   }
 }
 
