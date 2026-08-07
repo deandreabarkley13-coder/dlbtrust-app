@@ -182,6 +182,13 @@ router.post('/spritz/quotes/:id/transaction', operatorAuth, writeRateLimiter(), 
   } catch (err) { sendError(res, err); }
 });
 
+router.post('/spritz/quotes/:id/execute', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try {
+    const data = await SpritzEngine.executeQuote(req.params.id);
+    res.json({ success: true, data });
+  } catch (err) { sendError(res, err); }
+});
+
 router.get('/spritz/off-ramps', operatorAuth, async (req, res) => {
   try {
     const data = await SpritzEngine.listOffRamps();

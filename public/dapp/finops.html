@@ -378,7 +378,7 @@
       '<div class="token-bar"><input id="spritz-amount" placeholder="USD amount" /></div>' +
       '<div class="token-bar"><input id="spritz-token" placeholder="token address (USDC)" value="0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48" /></div>' +
       '<div class="token-bar"><input id="spritz-chain" placeholder="chain" value="ethereum" /></div>' +
-      '<div class="approval-actions"><button class="btn" onclick="createSpritzQuote()">Get Transaction Params</button></div>' +
+      '<div class="approval-actions"><button class="btn" onclick="createSpritzQuote()">Get Transaction Params</button><button class="btn" id="spritz-execute-btn" style="display:none; margin-left:8px;" onclick="executeSpritzQuote()">Execute from Operator Wallet</button></div>' +
       '<div id="spritz-params" style="margin-top:12px; word-break:break-all;"></div></div>';
   }
 
@@ -409,6 +409,8 @@
     status.classList.remove('hidden');
   }
 
+  let currentSpritzQuoteId = null;
+
   async function createSpritzQuote() {
     const status = el('spritz-status');
     const accountId = el('spritz-account-id').value.trim();
@@ -417,12 +419,26 @@
     const chain = el('spritz-chain').value.trim() || 'ethereum';
     try {
       const quote = await api('/api/finops/spritz/quotes', { method:'POST', body: JSON.stringify({ accountId, amount, chain, tokenAddress, amountMode:'output', rail:'ach_standard' }) });
+      currentSpritzQuoteId = quote.data.id;
       const tx = await api('/api/finops/spritz/quotes/' + quote.data.id + '/transaction', { method:'POST', body: JSON.stringify({ senderAddress: '' }) });
       el('spritz-params').innerHTML = '<h4 style="margin:10px 0 6px; font-size:13px;">Quote</h4><pre style="white-space:pre-wrap; font-size:12px; background:#0b1220; padding:10px; border-radius:8px;">' + JSON.stringify(quote.data, null, 2) + '</pre>' +
         '<h4 style="margin:10px 0 6px; font-size:13px;">Transaction Params</h4><pre style="white-space:pre-wrap; font-size:12px; background:#0b1220; padding:10px; border-radius:8px;">' + JSON.stringify(tx.data, null, 2) + '</pre>' +
-        '<p class="muted">Sign and send a transaction to <code>' + (tx.data.contractAddress || tx.data.recipientAddress || '') + '</code> with the calldata above from a wallet holding the token.</p>';
+        '<p class="muted">Sign and send a transaction to <code>' + (tx.data.contractAddress || tx.data.recipientAddress || '') + '</code> with the calldata above, or execute from the operator wallet if funded.</p>';
       status.textContent = 'Quote and transaction params ready.';
       status.className = 'status ok';
+      el('spritz-execute-btn').style.display = 'inline-block';
+    } catch(e) { status.textContent = e.message; status.className = 'status err'; currentSpritzQuoteId = null; el('spritz-execute-btn').style.display = 'none'; }
+    status.classList.remove('hidden');
+  }
+
+  async function executeSpritzQuote() {
+    if (!currentSpritzQuoteId) return;
+    const status = el('spritz-status');
+    try {
+      const res = await api('/api/finops/spritz/quotes/' + currentSpritzQuoteId + '/execute', { method:'POST' });
+      status.textContent = 'Executed: ' + res.data.txHash;
+      status.className = 'status ok';
+      el('spritz-params').innerHTML += '<pre style="white-space:pre-wrap; font-size:12px; background:#0b1220; padding:10px; border-radius:8px;">' + JSON.stringify(res.data, null, 2) + '</pre>';
     } catch(e) { status.textContent = e.message; status.className = 'status err'; }
     status.classList.remove('hidden');
   }

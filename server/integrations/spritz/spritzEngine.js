@@ -11,6 +11,16 @@
 
 const { getConfig } = require('../dapp/config');
 
+let viem, chains, privateKeyToAccount;
+try { viem = require('viem'); chains = require('viem/chains'); ({ privateKeyToAccount } = require('viem/accounts')); } catch (e) { viem = null; chains = null; privateKeyToAccount = null; }
+
+const erc20Abi = [
+  { type: 'function', name: 'decimals', inputs: [], outputs: [{ type: 'uint8' }], stateMutability: 'view' },
+  { type: 'function', name: 'approve', inputs: [{ type: 'address' }, { type: 'uint256' }], outputs: [{ type: 'bool' }], stateMutability: 'nonpayable' },
+  { type: 'function', name: 'allowance', inputs: [{ type: 'address' }, { type: 'address' }], outputs: [{ type: 'uint256' }], stateMutability: 'view' },
+  { type: 'function', name: 'balanceOf', inputs: [{ type: 'address' }], outputs: [{ type: 'uint256' }], stateMutability: 'view' },
+];
+
 const SUPPORTED_CHAINS = ['ethereum','polygon','arbitrum','base','optimism','avalanche','binance-smart-chain','solana','bitcoin','dash','tron','sui','hyperevm','monad','sonic','unichain'];
 const SUPPORTED_RAILS = ['ach_standard','rtp','wire','eft','sepa','push_to_debit','bill_pay'];
 
@@ -108,6 +118,49 @@ class SpritzEngine {
   static async getOffRamp(offRampId) {
     if (!offRampId) throw new Error('offRampId required');
     return spritzRequest('GET', `/v1/off-ramps/${offRampId}`);
+  }
+
+  static async executeQuote(quoteId) {
+    if (!viem || !privateKeyToAccount) throw new Error('viem not installed');
+    const cfg = getConfig();
+    if (!cfg.privateKey) throw new Error('DAPP_PRIVATE_KEY not configured');
+    const account = privateKeyToAccount(cfg.privateKey);
+    const chain = cfg.chainId === 1 ? (chains && chains.mainnet) : (chains && chains.sepolia) || undefined;
+    const publicClient = viem.createPublicClient({ chain, transport: viem.http(cfg.rpcUrl) });
+    const walletClient = viem.createWalletClient({ account, chain, transport: viem.http(cfg.rpcUrl) });
+    const fees = cfg.getFees ? (cfg.getFees() || { maxFeePerGas: viem.parseGwei('20'), maxPriorityFeePerGas: viem.parseGwei('0.5') }) : { maxFeePerGas: viem.parseGwei('20'), maxPriorityFeePerGas: viem.parseGwei('0.5') };
+
+    const params = await this.getTransactionParams(quoteId, { senderAddress: account.address });
+    if (!params || params.type !== 'evm' || !params.contractAddress || !params.calldata) throw new Error('Invalid or non-EVM transaction params');
+    const { contractAddress, calldata, inputToken, requiredTokenInput } = params;
+    const required = BigInt(requiredTokenInput);
+
+    const balance = await publicClient.readContract({ address: inputToken, abi: erc20Abi, functionName: 'balanceOf', args: [account.address] });
+    if (balance < required) throw new Error(`Insufficient ${inputToken} balance: have ${balance.toString()}, need ${required.toString()}`);
+
+    const allowance = await publicClient.readContract({ address: inputToken, abi: erc20Abi, functionName: 'allowance', args: [account.address, contractAddress] });
+    if (allowance < required) {
+      const approveHash = await walletClient.writeContract({
+        address: inputToken,
+        abi: erc20Abi,
+        functionName: 'approve',
+        args: [contractAddress, required],
+        gas: 100000n,
+        ...fees,
+      });
+      await publicClient.waitForTransactionReceipt({ hash: approveHash, timeout: 120000 });
+    }
+
+    const hash = await walletClient.sendTransaction({
+      to: contractAddress,
+      data: calldata,
+      value: 0n,
+      gas: 300000n,
+      ...fees,
+    });
+    const receipt = await publicClient.waitForTransactionReceipt({ hash, timeout: 120000 });
+    if (receipt.status !== 'success') throw new Error(`Spritz payment transaction reverted: ${hash}`);
+    return { txHash: hash, quoteId, params };
   }
 }
 
