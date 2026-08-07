@@ -39,8 +39,8 @@ try {
 const MODULES = {
   bond_portfolio: {
     name: 'DLB-PTC-BOND',
-    tokenName: 'DLB PTC Bond Portfolio',
-    tokenSymbol: 'DLB-BOND',
+    tokenName: 'DLB PTC Private Placement Bond',
+    tokenSymbol: 'DLB-PRB',
     sourceType: 'bond',
     sourceAccountId: '1',
     balanceFn: 'bondPrincipal',
