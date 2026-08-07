@@ -5,6 +5,7 @@ const { requireAuth, writeRateLimiter } = require('../integrations/auth/security
 const { FinOpsAgent } = require('../integrations/finops/finopsAgent');
 const { ModuleSmartAccountEngine } = require('../integrations/dapp/moduleSmartAccountEngine');
 const { ModuleP2PSwapEngine } = require('../integrations/dapp/moduleP2PSwapEngine');
+const { SpritzEngine } = require('../integrations/spritz/spritzEngine');
 
 const router = express.Router();
 const operatorAuth = requireAuth({ role: 'operator' });
@@ -130,6 +131,71 @@ router.post('/module-p2p/orders/:id/fill', operatorAuth, writeRateLimiter(), asy
 router.post('/module-p2p/orders/:id/cancel', operatorAuth, writeRateLimiter(), async (req, res) => {
   try {
     const data = await ModuleP2PSwapEngine.cancelOrder({ orderId: req.params.id });
+    res.json({ success: true, data });
+  } catch (err) { sendError(res, err); }
+});
+
+// ─── Spritz off-ramp rails ────────────────────────────────────────────────────
+router.get('/spritz/user', operatorAuth, async (req, res) => {
+  try {
+    const email = req.query.email || req.user?.email;
+    if (!email) throw new Error('email required');
+    const data = await SpritzEngine.getUser(email);
+    res.json({ success: true, data });
+  } catch (err) { sendError(res, err); }
+});
+
+router.get('/spritz/access', operatorAuth, async (req, res) => {
+  try {
+    const email = req.query.email || req.user?.email;
+    if (!email) throw new Error('email required');
+    const data = await SpritzEngine.getUserAccess(email);
+    res.json({ success: true, data });
+  } catch (err) { sendError(res, err); }
+});
+
+router.get('/spritz/verification', operatorAuth, async (req, res) => {
+  try {
+    const email = req.query.email || req.user?.email;
+    if (!email) throw new Error('email required');
+    const data = await SpritzEngine.getVerificationParams(email);
+    res.json({ success: true, data });
+  } catch (err) { sendError(res, err); }
+});
+
+router.get('/spritz/bank-accounts', operatorAuth, async (req, res) => {
+  try {
+    const email = req.query.email || req.user?.email;
+    if (!email) throw new Error('email required');
+    const data = await SpritzEngine.listBankAccounts(email);
+    res.json({ success: true, data });
+  } catch (err) { sendError(res, err); }
+});
+
+router.post('/spritz/bank-accounts', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try {
+    const { email, accountNumber, routingNumber, name, subType } = req.body;
+    if (!email) throw new Error('email required');
+    const data = await SpritzEngine.createUSBankAccount(email, { accountNumber, routingNumber, name, subType });
+    res.json({ success: true, data });
+  } catch (err) { sendError(res, err); }
+});
+
+router.post('/spritz/payment-requests', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try {
+    const { email, amount, accountId, network, deliveryMethod, amountMode } = req.body;
+    if (!email || !amount || !accountId) throw new Error('email, amount, accountId required');
+    const data = await SpritzEngine.createPaymentRequest(email, { amount, accountId, network, deliveryMethod, amountMode });
+    res.json({ success: true, data });
+  } catch (err) { sendError(res, err); }
+});
+
+router.post('/spritz/payment-requests/:id/params', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try {
+    const email = req.body.email || req.query.email || req.user?.email;
+    const { paymentTokenAddress } = req.body;
+    if (!email || !paymentTokenAddress) throw new Error('email and paymentTokenAddress required');
+    const data = await SpritzEngine.getWeb3PaymentParams(email, { paymentRequestId: req.params.id, paymentTokenAddress });
     res.json({ success: true, data });
   } catch (err) { sendError(res, err); }
 });

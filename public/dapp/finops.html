@@ -143,6 +143,7 @@
     { key:'wallets', name:'Wallets', desc:'Master, trustee and beneficiary wallets', stat:'', endpoint:'/api/finops/wallets' },
     { key:'fixed-income', name:'Fixed Income', desc:'DLB-PRB bond metrics & accrued interest', stat:'', endpoint:'/api/finops/bonds' },
     { key:'p2p-swap', name:'P2P Module Swap', desc:'OTC order book: module tokens for USDC (no WETH)', stat:'', endpoint:'/api/finops/module-p2p/orders' },
+    { key:'spritz', name:'Spritz Off-Ramp', desc:'Crypto-to-fiat bank payouts via Spritz', stat:'', endpoint:null, action:'openSpritzPanel' },
     { key:'payout', name:'Payout Center', desc:'Disbursements, trades, off-ramps', stat:'', endpoint:null, link:'/dapp/payout-center.html?v=2' },
     { key:'distribution', name:'Distribution', desc:'Trustee-approved beneficiary distributions', stat:'', endpoint:null, link:'/dapp/master-dashboard.html?v=2' },
   ];
@@ -267,6 +268,7 @@
     const m = modules.find(x => x.key === key);
     if (!m) return;
     if (m.link) { window.location.href = m.link; return; }
+    if (m.action && typeof window[m.action] === 'function') { window[m.action](); return; }
     const panel = el('module-panel');
     const body = el('panel-body');
     el('panel-title').textContent = m.name;
@@ -348,6 +350,64 @@
       alert('Filled: ' + res.data.txHash);
       openModule('p2p-swap');
     } catch(e) { alert('Fill failed: ' + e.message); }
+  }
+
+  function openSpritzPanel() {
+    const panel = el('module-panel');
+    const body = el('panel-body');
+    el('panel-title').textContent = 'Spritz Off-Ramp';
+    panel.classList.add('active');
+    body.innerHTML = renderSpritzPanel();
+    loadSpritzUser();
+  }
+
+  function renderSpritzPanel() {
+    return '<div class="muted" style="margin-bottom:12px;">Spritz converts crypto to fiat bank payouts. Requires KYC and a linked bank account.</div>' +
+      '<div class="token-bar"><input id="spritz-email" placeholder="Spritz user email" /></div>' +
+      '<div class="approval-actions"><button class="btn" onclick="loadSpritzUser()">Load User / Access</button></div>' +
+      '<div id="spritz-status" class="status hidden"></div>' +
+      '<div id="spritz-kyc" style="margin-top:12px;"></div>' +
+      '<div id="spritz-accounts" style="margin-top:12px;"></div>' +
+      '<div style="margin-top:16px; border-top:1px solid var(--border); padding-top:16px;">' +
+      '<h3 style="margin:0 0 10px; font-size:14px;">Create Off-Ramp Payment Request</h3>' +
+      '<div class="token-bar"><input id="spritz-account-id" placeholder="bank account id" /></div>' +
+      '<div class="token-bar"><input id="spritz-amount" placeholder="amount USD" /></div>' +
+      '<div class="token-bar"><input id="spritz-token" placeholder="payment token address (USDC)" value="0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48" /></div>' +
+      '<div class="approval-actions"><button class="btn" onclick="createSpritzRequest()">Get Payment Params</button></div>' +
+      '<div id="spritz-params" style="margin-top:12px; word-break:break-all;"></div></div>';
+  }
+
+  async function loadSpritzUser() {
+    const status = el('spritz-status');
+    const email = (el('spritz-email')?.value || '').trim() || null;
+    try {
+      const access = await api('/api/finops/spritz/access' + (email ? '?email=' + encodeURIComponent(email) : ''));
+      status.textContent = 'Access loaded. kycStatus: ' + (access.data?.kycStatus?.verified ? 'verified' : 'not verified');
+      status.className = 'status ok';
+      if (!access.data?.kycStatus?.verified && access.data?.kycRequirement?.actionUrl) {
+        el('spritz-kyc').innerHTML = '<a class="btn" href="' + access.data.kycRequirement.actionUrl + '" target="_blank">Complete KYC</a>';
+      }
+      const accounts = await api('/api/finops/spritz/bank-accounts' + (email ? '?email=' + encodeURIComponent(email) : ''));
+      el('spritz-accounts').innerHTML = accounts.data?.length ? renderTable(accounts.data, ['id','name','type','status'], {}) : '<span class="muted">No linked bank accounts.</span>';
+    } catch(e) { status.textContent = e.message; status.className = 'status err'; }
+    status.classList.remove('hidden');
+  }
+
+  async function createSpritzRequest() {
+    const status = el('spritz-status');
+    const email = (el('spritz-email')?.value || '').trim() || null;
+    const accountId = el('spritz-account-id').value.trim();
+    const amount = el('spritz-amount').value.trim();
+    const token = el('spritz-token').value.trim();
+    try {
+      const req = await api('/api/finops/spritz/payment-requests', { method:'POST', body: JSON.stringify({ email, accountId, amount, network:'Ethereum', deliveryMethod:'STANDARD' }) });
+      const params = await api('/api/finops/spritz/payment-requests/' + req.data.id + '/params', { method:'POST', body: JSON.stringify({ email, paymentTokenAddress: token }) });
+      el('spritz-params').innerHTML = '<pre style="white-space:pre-wrap; font-size:12px; background:#0b1220; padding:10px; border-radius:8px;">' + JSON.stringify(params.data, null, 2) + '</pre>' +
+        '<p class="muted">Sign and send a transaction to <code>' + params.data.contractAddress + '</code> with the calldata above from a wallet holding the payment token.</p>';
+      status.textContent = 'Payment request ready. Sign the on-chain transaction.';
+      status.className = 'status ok';
+    } catch(e) { status.textContent = e.message; status.className = 'status err'; }
+    status.classList.remove('hidden');
   }
 
   function addChat(sender, text) {
