@@ -8,6 +8,7 @@ const { ModuleP2PSwapEngine } = require('../integrations/dapp/moduleP2PSwapEngin
 const { SpritzEngine } = require('../integrations/spritz/spritzEngine');
 const { PeerOnRampEngine } = require('../integrations/peer/peerOnRampEngine');
 const { PtcStablecoinEngine } = require('../integrations/dapp/ptcStablecoinEngine');
+const { StablecoinEngine } = require('../integrations/dapp/stablecoinEngine');
 const { CanonicalConsensusEngine } = require('../integrations/dapp/canonicalConsensusEngine');
 
 const router = express.Router();
@@ -356,6 +357,50 @@ router.post('/ptc-stablecoin/transfer', operatorAuth, writeRateLimiter(), async 
 
 router.get('/ptc-stablecoin/balance/:address', operatorAuth, async (req, res) => {
   try { res.json({ success: true, data: { address: req.params.address, balance: await PtcStablecoinEngine.balanceOf(req.params.address) } }); } catch (err) { sendError(res, err); }
+});
+
+// ═════════════════════════════════════════════════════════════════════════════
+// Stablecoin Engine (trust-owned, multi-collateral, auditable)
+// ═════════════════════════════════════════════════════════════════════════════
+
+router.get('/stablecoin', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await StablecoinEngine.info() }); } catch (err) { sendError(res, err); }
+});
+
+router.get('/stablecoin/collateral-ratio', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await StablecoinEngine.collateralRatio() }); } catch (err) { sendError(res, err); }
+});
+
+router.get('/stablecoin/audit', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await StablecoinEngine.getAuditLog(req.query.limit ? Number(req.query.limit) : 100) }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/stablecoin/mint', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try { res.status(201).json({ success: true, data: await StablecoinEngine.mint({ ...req.body, operatorEmail: getUserEmail(req) }) }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/stablecoin/redeem', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try { res.status(201).json({ success: true, data: await StablecoinEngine.redeem({ ...req.body, operatorEmail: getUserEmail(req) }) }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/stablecoin/transfer', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try { res.status(201).json({ success: true, data: await StablecoinEngine.transfer({ ...req.body, operatorEmail: getUserEmail(req) }) }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/stablecoin/settle', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try { res.status(201).json({ success: true, data: await StablecoinEngine.settle({ ...req.body, operatorEmail: getUserEmail(req) }) }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/stablecoin/collateral', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try { res.status(201).json({ success: true, data: await StablecoinEngine.addCollateral(req.body.moduleKey, req.body.price, req.body.token, req.body.decimals) }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/stablecoin/pause', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try { res.json({ success: true, data: await StablecoinEngine.pause() }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/stablecoin/unpause', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try { res.json({ success: true, data: await StablecoinEngine.unpause() }); } catch (err) { sendError(res, err); }
 });
 
 // ═════════════════════════════════════════════════════════════════════════════

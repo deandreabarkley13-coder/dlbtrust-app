@@ -156,6 +156,7 @@
     { key:'peer-onramp', name:'Peer On-Ramp', desc:'P2P fiat to USDC on Base (CashApp/Venmo/Wise)', stat:'', endpoint:null, action:'openPeerOnRampPanel' },
     { key:'spritz', name:'Spritz Off-Ramp', desc:'Crypto-to-fiat bank payouts via Spritz', stat:'', endpoint:null, action:'openSpritzPanel' },
     { key:'ptc-stablecoin', name:'PTC Stablecoin', desc:'DLB-PTCUSD backed by bond/fixed-income reserves', stat:'', endpoint:null, action:'openPtcStablecoinPanel' },
+    { key:'stablecoin', name:'Stablecoin Engine', desc:'Auditable mint/redeem/transfer/settle with collateral ratio', stat:'', endpoint:null, action:'openStablecoinPanel' },
     { key:'canonical-consensus', name:'Canonical Consensus', desc:'Maker/Checker approvals for tokenized ledger actions', stat:'', endpoint:null, action:'openCanonicalConsensusPanel' },
     { key:'payout', name:'Payout Center', desc:'Disbursements, trades, off-ramps', stat:'', endpoint:null, link:'/dapp/payout-center.html?v=2' },
     { key:'distribution', name:'Distribution', desc:'Trustee-approved beneficiary distributions', stat:'', endpoint:null, link:'/dapp/master-dashboard.html?v=2' },
@@ -780,6 +781,109 @@
       await loadPtcStablecoinInfo();
       await loadAll();
     } catch(e) { ptcStatus(e.message, true); }
+  }
+
+  // ─── Stablecoin Engine panel ─────────────────────────────────────────────────
+  function openStablecoinPanel() {
+    const panel = el('module-panel');
+    const body = el('panel-body');
+    el('panel-title').textContent = 'Stablecoin Engine';
+    panel.classList.add('active');
+    body.innerHTML = '<div class="muted">Loading stablecoin engine…</div>';
+    loadStablecoinInfo();
+  }
+
+  function renderStablecoinPanel(info, audit) {
+    const reserves = (info.reserves || []).map(r => '<li>' + (r.name || r.moduleKey || r.address.slice(0,10)) + ' — ' + (r.vaultBalanceFormatted || '0') + ' @ $' + (safeNum(r.price || 1e18) / 1e18).toFixed(2) + (r.error ? ' (' + r.error + ')' : '') + '</li>').join('');
+    let html = '<div class="muted" style="margin-bottom:12px;">Trust-owned stablecoin operations with on-chain audit trail and collateral health.</div>' +
+      '<div id="sc-status" class="status hidden"></div>' +
+      '<div style="margin-bottom:12px;">' +
+      '<strong>Token:</strong> ' + (info.symbol || 'DLB-PTCUSD') + ' — ' + (info.tokenAddress || 'not deployed') + '<br>' +
+      '<strong>Total Supply:</strong> ' + (info.totalSupply ? Number(info.totalSupply).toLocaleString(undefined, {maximumFractionDigits:6}) : '0') + '<br>' +
+      '<strong>Collateral Value:</strong> $' + (info.collateralValue !== undefined ? Number(info.collateralValue).toLocaleString(undefined, {maximumFractionDigits:2}) : '0') + '<br>' +
+      '<strong>Collateral Ratio:</strong> ' + (info.collateralRatio !== undefined ? (Number(info.collateralRatio) * 100).toFixed(2) : '0') + '%<br>' +
+      '<strong>Owner:</strong> ' + (info.owner || '—') +
+      '</div>' +
+      '<h3 style="font-size:14px;margin:12px 0 6px;">Reserves</h3>' + (reserves ? '<ul style="font-size:13px;margin:0;">' + reserves + '</ul>' : '<p class="muted">No reserves configured.</p>') +
+      '<div style="margin-top:16px; border-top:1px solid var(--border); padding-top:16px;">' +
+      '<h3 style="margin:0 0 10px; font-size:14px;">Mint Stablecoin</h3>' +
+      '<div class="token-bar"><input id="sc-mint-module" placeholder="module key or token address" value="fixed_income" /></div>' +
+      '<div class="token-bar"><input id="sc-mint-amount" placeholder="amount (or all)" value="all" /></div>' +
+      '<div class="token-bar"><input id="sc-mint-recipient" placeholder="recipient address or beneficiary id" /></div>' +
+      '<div class="approval-actions"><button class="btn" onclick="scMint(false)">Mint</button><button class="btn btn-sec" style="margin-left:8px;" onclick="scMint(true)">Mint with Consensus</button></div>' +
+      '</div>' +
+      '<div style="margin-top:16px; border-top:1px solid var(--border); padding-top:16px;">' +
+      '<h3 style="margin:0 0 10px; font-size:14px;">Redeem / Settle</h3>' +
+      '<div class="token-bar"><input id="sc-redeem-module" placeholder="module key" value="fixed_income" /></div>' +
+      '<div class="token-bar"><input id="sc-redeem-amount" placeholder="stablecoin amount" /></div>' +
+      '<div class="approval-actions"><button class="btn" onclick="scRedeem()">Redeem Reserve</button></div>' +
+      '<div class="token-bar" style="margin-top:10px;"><input id="sc-settle-to" placeholder="recipient address / beneficiary id" /></div>' +
+      '<div class="token-bar"><input id="sc-settle-amount" placeholder="amount" /></div>' +
+      '<div class="token-bar"><input id="sc-settle-memo" placeholder="memo" /></div>' +
+      '<div class="approval-actions"><button class="btn btn-sec" onclick="scSettle()">Settle Payment</button></div>' +
+      '</div>' +
+      '<div style="margin-top:16px; border-top:1px solid var(--border); padding-top:16px;">' +
+      '<h3 style="margin:0 0 10px; font-size:14px;">Audit</h3>';
+    if (!audit.length) { html += '<p class="muted">No operations yet.</p>'; }
+    else {
+      html += '<ul style="font-size:12px;margin:0;padding-left:18px;max-height:160px;overflow:auto;">';
+      for (const a of audit) {
+        html += '<li>' + a.timestamp + ' — <strong>' + a.action + '</strong> ' + (a.amount || '') + (a.recipient ? ' → ' + a.recipient : '') + (a.txHash ? ' <code>' + a.txHash.slice(0,10) + '…</code>' : '') + '</li>';
+      }
+      html += '</ul>';
+    }
+    html += '</div>';
+    return html;
+  }
+
+  function safeNum(n) { const v = Number(n); return Number.isFinite(v) ? v : 0; }
+
+  function scStatus(msg, isErr) {
+    const d = el('sc-status'); if (!d) return; d.textContent = msg; d.className = 'status ' + (isErr ? 'err' : 'ok'); d.classList.remove('hidden');
+  }
+
+  async function loadStablecoinInfo() {
+    const body = el('panel-body');
+    try {
+      const info = await api('/api/finops/stablecoin');
+      const audit = await api('/api/finops/stablecoin/audit');
+      body.innerHTML = renderStablecoinPanel(info.data || {}, audit.data || []);
+    } catch(e) { body.innerHTML = '<div class="status err">' + e.message + '</div>' + renderStablecoinPanel({}, []); }
+  }
+
+  async function scMint(requireConsensus) {
+    scStatus('Minting stablecoin from reserve…');
+    try {
+      const moduleKey = el('sc-mint-module').value.trim();
+      const amount = el('sc-mint-amount').value.trim();
+      const recipient = el('sc-mint-recipient').value.trim();
+      const res = await api('/api/finops/stablecoin/mint', { method:'POST', body: JSON.stringify({ moduleKey, amount, recipient, requireConsensus }) });
+      scStatus('Mint result: ' + (res.data.status || res.data.txHash || res.data.proposalId), false);
+      await loadStablecoinInfo();
+    } catch(e) { scStatus(e.message, true); }
+  }
+
+  async function scRedeem() {
+    scStatus('Redeeming stablecoin for reserve…');
+    try {
+      const moduleKey = el('sc-redeem-module').value.trim();
+      const amount = el('sc-redeem-amount').value.trim();
+      const res = await api('/api/finops/stablecoin/redeem', { method:'POST', body: JSON.stringify({ moduleKey, amount }) });
+      scStatus('Redeemed: ' + res.data.txHash, false);
+      await loadStablecoinInfo();
+    } catch(e) { scStatus(e.message, true); }
+  }
+
+  async function scSettle() {
+    scStatus('Settling stablecoin payment…');
+    try {
+      const to = el('sc-settle-to').value.trim();
+      const amount = el('sc-settle-amount').value.trim();
+      const memo = el('sc-settle-memo').value.trim();
+      const res = await api('/api/finops/stablecoin/settle', { method:'POST', body: JSON.stringify({ to, amount, memo }) });
+      scStatus('Settled: ' + (res.data.txHash || res.data.proposalId), false);
+      await loadStablecoinInfo();
+    } catch(e) { scStatus(e.message, true); }
   }
 
   function openCanonicalConsensusPanel() {
