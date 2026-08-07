@@ -136,12 +136,15 @@
   const TOKEN_KEY = 'dlb-admin-token';
   const el = id => document.getElementById(id);
   const modules = [
-    { key:'core-banking', name:'Core Banking', desc:'Fineract GL, cash accounts, sub-ledgers', stat:'', endpoint:null },
+    { key:'core-banking', name:'Core Banking', desc:'Fineract GL, cash accounts, sub-ledgers', stat:'', endpoint:'/api/finops/source-of-funds' },
     { key:'treasury', name:'Treasury Management', desc:'Treasury Hot, source-of-funds, reserves', stat:'', endpoint:'/api/finops/source-of-funds' },
-    { key:'trust-accounting', name:'Trust Accounting', desc:'Trust accounts 1100/1200/4000', stat:'', endpoint:'/api/dapp/source-of-funds' },
+    { key:'trust-accounting', name:'Trust Accounting', desc:'Trust accounts 1100/1200/4000', stat:'', endpoint:'/api/accounting/accounts' },
     { key:'crm', name:'CRM / Contacts', desc:'Trustees, beneficiaries, vendors', stat:'', endpoint:'/api/finops/crm' },
     { key:'wallets', name:'Wallets', desc:'Master, trustee and beneficiary wallets', stat:'', endpoint:'/api/finops/wallets' },
     { key:'fixed-income', name:'Fixed Income', desc:'DLB-PRB bond metrics & accrued interest', stat:'', endpoint:'/api/finops/bonds' },
+    { key:'p2p-swap', name:'P2P Module Swap', desc:'OTC order book: module tokens for USDC (no WETH)', stat:'', endpoint:'/api/finops/module-p2p/orders' },
+    { key:'peer-onramp', name:'Peer On-Ramp', desc:'P2P fiat to USDC on Base (CashApp/Venmo/Wise)', stat:'', endpoint:null, action:'openPeerOnRampPanel' },
+    { key:'spritz', name:'Spritz Off-Ramp', desc:'Crypto-to-fiat bank payouts via Spritz', stat:'', endpoint:null, action:'openSpritzPanel' },
     { key:'payout', name:'Payout Center', desc:'Disbursements, trades, off-ramps', stat:'', endpoint:null, link:'/dapp/payout-center.html?v=2' },
     { key:'distribution', name:'Distribution', desc:'Trustee-approved beneficiary distributions', stat:'', endpoint:null, link:'/dapp/master-dashboard.html?v=2' },
   ];
@@ -205,27 +208,49 @@
     `).join('');
   }
 
+  function normalizeBalances(raw) {
+    if (!raw) return [];
+    if (Array.isArray(raw)) return raw;
+    if (Array.isArray(raw.balances)) return raw.balances;
+    if (Array.isArray(raw.data)) return raw.data;
+    return [];
+  }
+  function balanceDollars(b) {
+    if (typeof b.balance === 'number') return b.balance;
+    if (typeof b.balance_cents === 'number') return b.balance_cents / 100;
+    return Number(b.balance || b.balance_cents || 0) / (typeof b.balance_cents === 'number' ? 100 : 1);
+  }
   async function loadAll() {
     renderModules();
     renderFlow();
     try {
-      const [sof, wallets, bond, crm] = await Promise.all([
+      const [sof, accts, wallets, bond, crm, p2p] = await Promise.all([
         api('/api/finops/source-of-funds').catch(()=>null),
+        api('/api/accounting/accounts').catch(()=>null),
         api('/api/finops/wallets').catch(()=>null),
         api('/api/finops/bonds').catch(()=>null),
         api('/api/finops/crm').catch(()=>null),
+        api('/api/finops/module-p2p/orders').catch(()=>null),
       ]);
-      if (sof && sof.data && sof.data.balances) {
-        const treasury = sof.data.balances.find(b => b.code === 'TREASURY_HOT' || (b.name||'').toLowerCase().includes('treasury'));
-        const trustTotal = sof.data.balances.reduce((a,b) => a + (parseFloat(b.balance || 0)), 0);
-        setStat('treasury', treasury ? fmt(treasury.balance, 0) : fmt(trustTotal, 0));
+      const balances = normalizeBalances(sof && sof.data);
+      if (balances.length) {
+        const treasury = balances.find(b => b.id === 'TREASURY_HOT' || (b.name||'').toLowerCase().includes('treasury'));
+        const treasuryBal = treasury ? balanceDollars(treasury) : 0;
+        const cbTotal = balances.filter(b => b.type === 'cash' || b.type === 'core_banking').reduce((a,b)=>a+balanceDollars(b),0);
+        setStat('treasury', fmt(treasuryBal, 0));
+        setStat('core-banking', fmt(cbTotal || treasuryBal, 0));
+      }
+      if (accts && accts.data) {
+        const trustRows = accts.data.filter(b => ['1100','1200','4000'].includes(String(b.account_code)));
+        const trustTotal = trustRows.reduce((a,b) => a + (Number(b.balance || 0)), 0);
         setStat('trust-accounting', fmt(trustTotal, 0));
       }
       if (bond && bond.data && bond.data.bond) setStat('fixed-income', fmt(bond.data.bond.total_current_value, 0));
       if (wallets && wallets.data && wallets.data.wallets) setStat('wallets', String(wallets.data.wallets.length));
       if (crm && crm.data && crm.data.contacts) setStat('crm', String(crm.data.contacts.length));
+      if (p2p && p2p.data && Array.isArray(p2p.data)) setStat('p2p-swap', String(p2p.data.length));
       renderModules();
-    } catch(e) {}
+    } catch(e) { console.error('loadAll error', e); }
     loadApprovals();
   }
 
@@ -244,6 +269,7 @@
     const m = modules.find(x => x.key === key);
     if (!m) return;
     if (m.link) { window.location.href = m.link; return; }
+    if (m.action && typeof window[m.action] === 'function') { window[m.action](); return; }
     const panel = el('module-panel');
     const body = el('panel-body');
     el('panel-title').textContent = m.name;
@@ -254,15 +280,14 @@
 
   async function loadModuleData(m, body) {
     try {
-      if (m.key === 'core-banking') {
-        const data = await api('/api/dapp/source-of-funds');
-        body.innerHTML = renderTable(data.data.balances || [], ['code','name','balance'], {balance: v => fmt(v)});
-        return;
-      }
       if (!m.endpoint) return;
       const data = await api(m.endpoint);
-      if (m.key === 'treasury' || m.key === 'trust-accounting') {
-        body.innerHTML = renderTable(data.data.balances || [], ['code','name','balance'], {balance: v => fmt(v)});
+      if (m.key === 'core-banking' || m.key === 'treasury') {
+        const rows = normalizeBalances(data.data);
+        body.innerHTML = renderTable(rows, ['id','name','balance_cents','currency'], {balance_cents: v => fmt(Number(v || 0) / 100, 2)});
+      } else if (m.key === 'trust-accounting') {
+        const rows = (Array.isArray(data.data) ? data.data : []).filter(b => ['1100','1200','4000'].includes(String(b.account_code)));
+        body.innerHTML = renderTable(rows, ['account_code','account_name','account_type','balance'], {balance: v => fmt(Number(v || 0), 2)});
       } else if (m.key === 'crm') {
         body.innerHTML = renderTable(data.data.contacts || [], ['first_name','last_name','email','role'], {});
       } else if (m.key === 'wallets') {
@@ -270,6 +295,9 @@
       } else if (m.key === 'fixed-income') {
         const b = data.data.bond || {};
         body.innerHTML = '<div class="grid" style="grid-template-columns:repeat(auto-fill,minmax(160px,1fr));">' + Object.entries(b).map(([k,v]) => `<div class="module-card"><h3>${k}</h3><div class="stat">${typeof v==='number'?fmt(v,2):v}</div></div>`).join('') + '</div>';
+      } else if (m.key === 'p2p-swap') {
+        const rows = (data.data || []);
+        body.innerHTML = renderP2PTable(rows) + renderP2PForm();
       }
     } catch(e) { body.innerHTML = '<div class="status err">' + e.message + '</div>'; }
   }
@@ -282,6 +310,220 @@
   }
 
   function closePanel() { el('module-panel').classList.remove('active'); }
+
+  function renderP2PTable(rows) {
+    if (!rows.length) return '<p class="muted">No active orders. Create one below to sell module tokens for USDC without needing WETH.</p>';
+    return '<table class="table"><thead><tr><th>ID</th><th>Maker</th><th>Token In</th><th>Amount</th><th>Token Out</th><th>Ask</th><th>Recipient</th><th></th></tr></thead><tbody>' +
+      rows.map(r => `<tr><td>${r.orderId}</td><td class="muted">${r.maker.slice(0,8)}…</td><td class="muted">${r.tokenIn.slice(0,8)}…</td><td>${r.amountIn / 1e6}</td><td class="muted">${r.tokenOut.slice(0,8)}…</td><td>${r.amountOut / 1e6}</td><td class="muted">${r.recipient.slice(0,8)}…</td><td><button class="btn btn-sec" onclick="fillP2POrder('${r.orderId}')">Fill</button></td></tr>`).join('') +
+      '</tbody></table>';
+  }
+
+  function renderP2PForm() {
+    return '<div style="margin-top:16px; border-top:1px solid var(--border); padding-top:16px;">' +
+      '<h3 style="margin:0 0 10px; font-size:14px;">Create Order (sell module token / DLBUSD for USDC)</h3>' +
+      '<div class="token-bar"><input id="p2p-tokenIn" placeholder="tokenIn address (DLBUSD/module token)" /></div>' +
+      '<div class="token-bar"><input id="p2p-amountIn" placeholder="amount in (units with 6 decimals)" /></div>' +
+      '<div class="token-bar"><input id="p2p-amountOut" placeholder="USDC amount (units with 6 decimals)" /></div>' +
+      '<div class="token-bar"><input id="p2p-recipient" placeholder="recipient address" /></div>' +
+      '<div class="approval-actions"><button class="btn" onclick="createP2POrder()">List Order</button></div>' +
+      '<div id="p2p-status" class="status hidden"></div></div>';
+  }
+
+  async function createP2POrder() {
+    const status = el('p2p-status');
+    try {
+      const tokenIn = el('p2p-tokenIn').value.trim();
+      const amountIn = el('p2p-amountIn').value.trim();
+      const amountOut = el('p2p-amountOut').value.trim();
+      const recipient = el('p2p-recipient').value.trim();
+      const res = await api('/api/finops/module-p2p/orders', { method:'POST', body: JSON.stringify({ tokenIn, amountIn, tokenOut: '0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48', amountOut, recipient }) });
+      status.textContent = 'Order created: ' + res.data.orderId;
+      status.className = 'status ok';
+      await loadAll();
+      openModule('p2p-swap');
+    } catch(e) { status.textContent = e.message; status.className = 'status err'; }
+    status.classList.remove('hidden');
+  }
+
+  async function fillP2POrder(orderId) {
+    try {
+      const res = await api(`/api/finops/module-p2p/orders/${orderId}/fill`, { method:'POST' });
+      alert('Filled: ' + res.data.txHash);
+      openModule('p2p-swap');
+    } catch(e) { alert('Fill failed: ' + e.message); }
+  }
+
+  let currentPeerQuote = null;
+
+  function openPeerOnRampPanel() {
+    const panel = el('module-panel');
+    const body = el('panel-body');
+    el('panel-title').textContent = 'Peer On-Ramp';
+    panel.classList.add('active');
+    body.innerHTML = renderPeerOnRampPanel();
+  }
+
+  function renderPeerOnRampPanel() {
+    return '<div class="muted" style="margin-bottom:12px;">Peer (ZKP2P) is a P2P fiat-to-crypto on-ramp. You pay the seller via CashApp/Venmo/Wise and USDC is released to the operator wallet on Base. Settles on Base; bridge to Ethereum mainnet separately.</div>' +
+      '<div class="token-bar"><input id="peer-platform" placeholder="platform (cashapp, venmo, wise, revolut, paypal, zelle)" value="cashapp" /></div>' +
+      '<div class="token-bar"><input id="peer-fiat" placeholder="fiat currency" value="USD" /></div>' +
+      '<div class="token-bar"><input id="peer-amount" placeholder="USDC amount" value="10" /></div>' +
+      '<div class="token-bar"><input id="peer-recipient" placeholder="recipient Base address (operator default)" /></div>' +
+      '<div class="approval-actions"><button class="btn" onclick="getPeerQuote()">Get Quote</button></div>' +
+      '<div id="peer-status" class="status hidden"></div>' +
+      '<div id="peer-quote" style="margin-top:12px; word-break:break-all;"></div>' +
+      '<div id="peer-actions" class="approval-actions" style="display:none; margin-top:12px;">' +
+      '<button class="btn" onclick="preparePeerSignal()">Prepare Signal</button>' +
+      '<button class="btn" id="peer-execute-btn" style="display:none; margin-left:8px;" onclick="executePeerSignal()">Signal Intent (Base gas)</button></div>';
+  }
+
+  async function getPeerQuote() {
+    const status = el('peer-status');
+    const platform = el('peer-platform').value.trim() || 'cashapp';
+    const fiatCurrency = el('peer-fiat').value.trim() || 'USD';
+    const amountUsdc = el('peer-amount').value.trim() || '10';
+    const recipient = el('peer-recipient').value.trim();
+    try {
+      const res = await api('/api/finops/peer-onramp/quote', { method:'POST', body: JSON.stringify({ platform, fiatCurrency, amountUsdc, recipient }) });
+      currentPeerQuote = res.data;
+      el('peer-quote').innerHTML = '<pre style="white-space:pre-wrap; font-size:12px; background:#0b1220; padding:10px; border-radius:8px;">' + JSON.stringify(res.data, null, 2) + '</pre>' +
+        '<p class="muted">Pay <strong>' + (res.data.fiatAmount || '') + '</strong> to the seller via <strong>' + (res.data.platform || '') + '</strong>. Payee ID: <code>' + (res.data.paymentInstructions?.offchainId || 'N/A') + '</code>. After signaling, you have ~5 days to complete payment and submit proof.</p>';
+      status.textContent = 'Quote ready.';
+      status.className = 'status ok';
+      el('peer-actions').style.display = 'block';
+      el('peer-execute-btn').style.display = 'none';
+    } catch(e) { status.textContent = e.message; status.className = 'status err'; currentPeerQuote = null; el('peer-actions').style.display = 'none'; }
+    status.classList.remove('hidden');
+  }
+
+  async function preparePeerSignal() {
+    if (!currentPeerQuote || !currentPeerQuote.intent) return;
+    const status = el('peer-status');
+    try {
+      const i = currentPeerQuote.intent;
+      const res = await api('/api/finops/peer-onramp/prepare', { method:'POST', body: JSON.stringify({
+        depositId: i.depositId, amount: i.amount, toAddress: i.toAddress,
+        processorName: i.processorName, payeeDetails: i.payeeDetails,
+        fiatCurrencyCode: 'USD', conversionRate: currentPeerQuote.conversionRate,
+        escrowAddress: i.escrowAddress
+      })});
+      el('peer-quote').innerHTML += '<h4 style="margin:10px 0 6px; font-size:13px;">Prepared Transaction</h4><pre style="white-space:pre-wrap; font-size:12px; background:#0b1220; padding:10px; border-radius:8px;">' + JSON.stringify(res.data, null, 2) + '</pre>' +
+        '<p class="muted">This transaction must be sent on Base. The operator wallet needs Base ETH for gas. If funded, click Signal Intent.</p>';
+      status.textContent = 'Prepared. Need Base gas to execute.';
+      status.className = 'status ok';
+      el('peer-execute-btn').style.display = 'inline-block';
+    } catch(e) { status.textContent = e.message; status.className = 'status err'; }
+    status.classList.remove('hidden');
+  }
+
+  async function executePeerSignal() {
+    if (!currentPeerQuote || !currentPeerQuote.intent) return;
+    const status = el('peer-status');
+    try {
+      const i = currentPeerQuote.intent;
+      const res = await api('/api/finops/peer-onramp/execute', { method:'POST', body: JSON.stringify({
+        depositId: i.depositId, amount: i.amount, toAddress: i.toAddress,
+        processorName: i.processorName, payeeDetails: i.payeeDetails,
+        fiatCurrencyCode: 'USD', conversionRate: currentPeerQuote.conversionRate,
+        escrowAddress: i.escrowAddress
+      })});
+      el('peer-quote').innerHTML += '<h4 style="margin:10px 0 6px; font-size:13px;">Signaled</h4><pre style="white-space:pre-wrap; font-size:12px; background:#0b1220; padding:10px; border-radius:8px;">' + JSON.stringify(res.data, null, 2) + '</pre>';
+      status.textContent = 'Intent signaled: ' + res.data.intentHash;
+      status.className = 'status ok';
+    } catch(e) { status.textContent = e.message; status.className = 'status err'; }
+    status.classList.remove('hidden');
+  }
+
+  function openSpritzPanel() {
+    const panel = el('module-panel');
+    const body = el('panel-body');
+    el('panel-title').textContent = 'Spritz Off-Ramp';
+    panel.classList.add('active');
+    body.innerHTML = renderSpritzPanel();
+    loadSpritzUser();
+  }
+
+  function renderSpritzPanel() {
+    return '<div class="muted" style="margin-bottom:12px;">Spritz converts crypto to fiat bank payouts. Requires a linked bank account.</div>' +
+      '<div class="approval-actions"><button class="btn" onclick="loadSpritzUser()">Load Spritz User</button></div>' +
+      '<div id="spritz-status" class="status hidden"></div>' +
+      '<div id="spritz-user" style="margin-top:12px;"></div>' +
+      '<div id="spritz-accounts" style="margin-top:12px;"></div>' +
+      '<div style="margin-top:16px; border-top:1px solid var(--border); padding-top:16px;">' +
+      '<h3 style="margin:0 0 10px; font-size:14px;">Add US Bank Account</h3>' +
+      '<div class="token-bar"><input id="spritz-routing" placeholder="routing number" /></div>' +
+      '<div class="token-bar"><input id="spritz-account-num" placeholder="account number" /></div>' +
+      '<div class="token-bar"><input id="spritz-label" placeholder="label (optional)" /></div>' +
+      '<div class="approval-actions"><button class="btn" onclick="addSpritzBankAccount()">Add Bank Account</button></div>' +
+      '<h3 style="margin:20px 0 10px; font-size:14px;">Create Off-Ramp Quote</h3>' +
+      '<div class="token-bar"><input id="spritz-account-id" placeholder="bank account id" /></div>' +
+      '<div class="token-bar"><input id="spritz-amount" placeholder="USD amount" /></div>' +
+      '<div class="token-bar"><input id="spritz-token" placeholder="token address (USDC)" value="0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48" /></div>' +
+      '<div class="token-bar"><input id="spritz-chain" placeholder="chain" value="ethereum" /></div>' +
+      '<div class="approval-actions"><button class="btn" onclick="createSpritzQuote()">Get Transaction Params</button><button class="btn" id="spritz-execute-btn" style="display:none; margin-left:8px;" onclick="executeSpritzQuote()">Execute from Operator Wallet</button></div>' +
+      '<div id="spritz-params" style="margin-top:12px; word-break:break-all;"></div></div>';
+  }
+
+  async function loadSpritzUser() {
+    const status = el('spritz-status');
+    try {
+      const user = await api('/api/finops/spritz/user');
+      el('spritz-user').innerHTML = '<pre style="white-space:pre-wrap; font-size:12px; background:#0b1220; padding:10px; border-radius:8px;">' + JSON.stringify(user.data, null, 2) + '</pre>';
+      const accounts = await api('/api/finops/spritz/bank-accounts');
+      el('spritz-accounts').innerHTML = accounts.data?.length ? renderTable(accounts.data, ['id','status','label','accountNumberLast4','supportedRails'], {}) : '<span class="muted">No linked bank accounts.</span>';
+      status.textContent = 'Spritz user loaded.';
+      status.className = 'status ok';
+    } catch(e) { status.textContent = e.message; status.className = 'status err'; }
+    status.classList.remove('hidden');
+  }
+
+  async function addSpritzBankAccount() {
+    const status = el('spritz-status');
+    const routingNumber = el('spritz-routing').value.trim();
+    const accountNumber = el('spritz-account-num').value.trim();
+    const label = el('spritz-label').value.trim() || undefined;
+    try {
+      const data = await api('/api/finops/spritz/bank-accounts', { method:'POST', body: JSON.stringify({ routingNumber, accountNumber, accountSubtype:'checking', ownership:'personal', label }) });
+      status.textContent = 'Bank account added: ' + (data.data?.id || 'ok');
+      status.className = 'status ok';
+      await loadSpritzUser();
+    } catch(e) { status.textContent = e.message; status.className = 'status err'; }
+    status.classList.remove('hidden');
+  }
+
+  let currentSpritzQuoteId = null;
+
+  async function createSpritzQuote() {
+    const status = el('spritz-status');
+    const accountId = el('spritz-account-id').value.trim();
+    const amount = el('spritz-amount').value.trim();
+    const tokenAddress = el('spritz-token').value.trim();
+    const chain = el('spritz-chain').value.trim() || 'ethereum';
+    try {
+      const quote = await api('/api/finops/spritz/quotes', { method:'POST', body: JSON.stringify({ accountId, amount, chain, tokenAddress, amountMode:'output', rail:'ach_standard' }) });
+      currentSpritzQuoteId = quote.data.id;
+      const tx = await api('/api/finops/spritz/quotes/' + quote.data.id + '/transaction', { method:'POST', body: JSON.stringify({ senderAddress: '' }) });
+      el('spritz-params').innerHTML = '<h4 style="margin:10px 0 6px; font-size:13px;">Quote</h4><pre style="white-space:pre-wrap; font-size:12px; background:#0b1220; padding:10px; border-radius:8px;">' + JSON.stringify(quote.data, null, 2) + '</pre>' +
+        '<h4 style="margin:10px 0 6px; font-size:13px;">Transaction Params</h4><pre style="white-space:pre-wrap; font-size:12px; background:#0b1220; padding:10px; border-radius:8px;">' + JSON.stringify(tx.data, null, 2) + '</pre>' +
+        '<p class="muted">Sign and send a transaction to <code>' + (tx.data.contractAddress || tx.data.recipientAddress || '') + '</code> with the calldata above, or execute from the operator wallet if funded.</p>';
+      status.textContent = 'Quote and transaction params ready.';
+      status.className = 'status ok';
+      el('spritz-execute-btn').style.display = 'inline-block';
+    } catch(e) { status.textContent = e.message; status.className = 'status err'; currentSpritzQuoteId = null; el('spritz-execute-btn').style.display = 'none'; }
+    status.classList.remove('hidden');
+  }
+
+  async function executeSpritzQuote() {
+    if (!currentSpritzQuoteId) return;
+    const status = el('spritz-status');
+    try {
+      const res = await api('/api/finops/spritz/quotes/' + currentSpritzQuoteId + '/execute', { method:'POST' });
+      status.textContent = 'Executed: ' + res.data.txHash;
+      status.className = 'status ok';
+      el('spritz-params').innerHTML += '<pre style="white-space:pre-wrap; font-size:12px; background:#0b1220; padding:10px; border-radius:8px;">' + JSON.stringify(res.data, null, 2) + '</pre>';
+    } catch(e) { status.textContent = e.message; status.className = 'status err'; }
+    status.classList.remove('hidden');
+  }
 
   function addChat(sender, text) {
     const log = el('chat-log');
@@ -324,21 +566,23 @@
         <div class="approval-item">
           <div class="summary"><span class="badge">${r.intent}</span> ${r.summary}</div>
           <div class="approval-actions">
-            <button class="btn" onclick="decideApproval('${r.id}', true)">Approve</button>
-            <button class="btn btn-danger" onclick="decideApproval('${r.id}', false)">Reject</button>
+            <button class="btn" onclick="decideApproval('${r.id}', true, this)">Approve</button>
+            <button class="btn btn-danger" onclick="decideApproval('${r.id}', false, this)">Reject</button>
           </div>
         </div>
       `).join('');
     } catch(e) { list.innerHTML = '<span class="muted">Could not load approvals</span>'; }
   }
 
-  async function decideApproval(id, approved) {
+  async function decideApproval(id, approved, btn) {
+    if (btn) { btn.disabled = true; btn.textContent = '…'; }
     try {
       await api(`/api/finops/approvals/${id}/execute`, { method: 'POST', body: JSON.stringify({ approved }) });
       addChat('agent', approved ? 'Approved and executed.' : 'Rejected.');
       await loadApprovals();
       await loadAll();
     } catch(e) { addChat('agent', 'Approval error: ' + e.message); }
+    finally { if (btn) { btn.disabled = false; btn.textContent = approved ? 'Approve' : 'Reject'; } }
   }
 
   async function runConversionExample() {
