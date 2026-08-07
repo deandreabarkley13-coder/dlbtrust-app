@@ -34,6 +34,7 @@
     "@supabase/supabase-js": "^2.45.0",
     "@uniswap/sdk-core": "^7.19.0",
     "@uniswap/v3-sdk": "^3.31.1",
+    "@zkp2p/sdk": "^0.11.0",
     "bcryptjs": "^2.4.3",
     "better-sqlite3": "^11.3.0",
     "coinbase-api": "^1.1.12",

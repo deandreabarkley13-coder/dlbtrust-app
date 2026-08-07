@@ -143,7 +143,7 @@ class StablecoinDexEngine {
   static targetTokenDecimals(targetAsset) {
     const t = String(targetAsset).toUpperCase();
     if (t === 'ETH' || t === 'WETH') return 18;
-    if (t === 'DAI') return 18;
+    if (t === 'DAI' || t === 'USDS') return 18;
     return 6;
   }
 
@@ -366,7 +366,7 @@ class StablecoinDexEngine {
 
     // 1. Resolve or create the DEX pool BEFORE debiting the source ledger
     const targetUpper = (targetAsset || '').toUpperCase();
-    const needsWethPool = targetUpper === 'DAI' || targetUpper === 'ETH';
+    const needsWethPool = ['DAI','ETH','USDC','USDS'].includes(targetUpper);
     const poolTargetAsset = needsWethPool ? 'WETH' : targetAsset;
     let resolvedPool = poolAddress;
     let poolInfo = null;
@@ -396,10 +396,12 @@ class StablecoinDexEngine {
     let isEthTarget = targetUpper === 'ETH';
     let isDaiTarget = targetUpper === 'DAI';
     let isUsdcTarget = targetUpper === 'USDC';
-    let swapTarget = (isEthTarget || isDaiTarget || isUsdcTarget) ? 'WETH' : targetAsset;
-    // For ETH/DAI/USDC output keep WETH in the operator wallet so it can be routed through Uniswap V2.
-    let swapRecipient = (isEthTarget || isDaiTarget || isUsdcTarget) ? cfg.operatorAddress : (recipient || cfg.operatorAddress);
-    let quote, swap, daiSwap, usdcSwap;
+    let isUsdsTarget = targetUpper === 'USDS';
+    let needsUniswapRoute = isDaiTarget || isUsdcTarget || isUsdsTarget;
+    let swapTarget = needsWethPool ? 'WETH' : targetAsset;
+    // For WETH-routed outputs keep WETH in the operator wallet until the final Uniswap swap.
+    let swapRecipient = needsWethPool ? cfg.operatorAddress : (recipient || cfg.operatorAddress);
+    let quote, swap, finalSwap;
     try {
       const swapResult = await this.swap({
         amount,
@@ -411,8 +413,8 @@ class StablecoinDexEngine {
       swap = swapResult.swap;
     } catch (swapErr) {
       // Try an ETH fallback so bond interest is not left stranded as DLBUSD in the operator wallet.
-      if (isEthTarget || isDaiTarget || isUsdcTarget) {
-        console.warn('[StablecoinDexEngine] primary swap failed and target is WETH/ETH/DAI/USDC; DLBUSD held by operator:', swapErr.message);
+      if (isEthTarget || needsUniswapRoute) {
+        console.warn('[StablecoinDexEngine] primary swap failed and target is WETH/ETH/DAI/USDC/USDS; DLBUSD held by operator:', swapErr.message);
         throw swapErr;
       }
       console.warn('[StablecoinDexEngine] primary swap failed, trying ETH fallback:', swapErr.message);
@@ -432,43 +434,24 @@ class StablecoinDexEngine {
       }
     }
 
-    // 3b. For DAI payouts, route the WETH through Uniswap V2 to real MakerDAO-issued DAI.
-    if (!cfg.shadow && isDaiTarget) {
-      const daiAddress = this.targetTokenAddress('DAI');
+    // 3b. For DAI/USDC/USDS payouts, route the WETH through Uniswap V2 to the target token.
+    if (!cfg.shadow && needsUniswapRoute) {
+      const targetAddress = this.targetTokenAddress(targetAsset);
       const wethAddress = cfg.wethAddress;
-      if (!daiAddress || !wethAddress) throw new Error('DAI or WETH address not configured');
+      const decimalsOut = this.targetTokenDecimals(targetAsset);
+      if (!targetAddress || !wethAddress) throw new Error(`${targetAsset} or WETH address not configured`);
       try {
-        daiSwap = await DexSwapEngine.swapOnUniswapV2({
+        finalSwap = await DexSwapEngine.swapOnUniswapV2({
           tokenIn: wethAddress,
-          tokenOut: daiAddress,
+          tokenOut: targetAddress,
           amountIn: swap.amountOut,
           recipient: recipient || cfg.operatorAddress,
           decimalsIn: 18,
-          decimalsOut: 18,
+          decimalsOut,
         });
-      } catch (daiErr) {
-        console.warn('[StablecoinDexEngine] WETH -> DAI Uniswap swap failed:', daiErr.message);
-        throw daiErr;
-      }
-    }
-
-    // 3c. For USDC payouts, route the WETH through Uniswap V2 to USDC (cheapest Spritz off-ramp token).
-    if (!cfg.shadow && isUsdcTarget) {
-      const usdcAddress = this.targetTokenAddress('USDC');
-      const wethAddress = cfg.wethAddress;
-      if (!usdcAddress || !wethAddress) throw new Error('USDC or WETH address not configured');
-      try {
-        usdcSwap = await DexSwapEngine.swapOnUniswapV2({
-          tokenIn: wethAddress,
-          tokenOut: usdcAddress,
-          amountIn: swap.amountOut,
-          recipient: recipient || cfg.operatorAddress,
-          decimalsIn: 18,
-          decimalsOut: 6,
-        });
-      } catch (usdcErr) {
-        console.warn('[StablecoinDexEngine] WETH -> USDC Uniswap swap failed:', usdcErr.message);
-        throw usdcErr;
+      } catch (routeErr) {
+        console.warn(`[StablecoinDexEngine] WETH -> ${targetAsset} Uniswap swap failed:`, routeErr.message);
+        throw routeErr;
       }
     }
 
@@ -477,14 +460,8 @@ class StablecoinDexEngine {
       try { unwrap = await this.unwrapWethToEth({ amount: swap.amountOut, recipient: recipient || cfg.operatorAddress }); } catch (e) { unwrap = { skipped: false, error: e.message }; }
     }
 
-    const actualTargetAsset = isEthTarget ? 'ETH' : (isDaiTarget ? 'DAI' : (isUsdcTarget ? 'USDC' : targetAsset));
-    const actualAmountOut = isEthTarget
-      ? (unwrap.amountEth || swap.amountOut || 0)
-      : (isDaiTarget
-          ? (daiSwap && daiSwap.amountOut) || 0
-          : (isUsdcTarget
-              ? (usdcSwap && usdcSwap.amountOut) || 0
-              : (swap.amountOut || 0)));
+    const actualTargetAsset = isEthTarget ? 'ETH' : (needsUniswapRoute ? targetAsset : targetAsset);
+    const actualAmountOut = isEthTarget ? (unwrap.amountEth || swap.amountOut || 0) : (needsUniswapRoute && finalSwap ? finalSwap.amountOut : (swap.amountOut || 0));
 
     return {
       operationId,
@@ -501,8 +478,7 @@ class StablecoinDexEngine {
       poolCreated: !!poolInfo,
       quote,
       swap,
-      daiSwap,
-      usdcSwap,
+      finalSwap,
       unwrap,
       recipient: recipient || cfg.operatorAddress,
       amountOut: actualAmountOut,

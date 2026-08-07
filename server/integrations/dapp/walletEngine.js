@@ -23,9 +23,10 @@ try { accountFns = require('viem/accounts'); } catch (e) { accountFns = null; }
 let pool;
 try { pool = require('../bonds/pgPool'); } catch (e) { pool = null; }
 
-let DappEngine, SovereignTrustEngine;
+let DappEngine, SovereignTrustEngine, DexSwapEngine;
 function getDappEngine() { try { return require('./dappEngine').DappEngine; } catch (e) { return null; } }
 function getSovereignEngine() { try { return require('./sovereignTrustEngine').SovereignTrustEngine; } catch (e) { return null; } }
+function getDexSwapEngine() { try { return require('./dexSwapEngine').DexSwapEngine; } catch (e) { return null; } }
 
 const { getConfig } = require('./config');
 
@@ -35,8 +36,8 @@ function id(prefix = 'WLT') { return `${prefix}-${Date.now()}-${Math.random().to
 function assetDecimals(asset) {
   const a = String(asset || '').toUpperCase();
   if (a === 'ETH' || a === 'WETH') return 18;
-  if (a === 'DAI') return 18;
-  if (['SIT','USDC','USDT','USDS','DLBUSD','UST','TUSD','BUSD','PYUSD','GUSD','USDC.E'].includes(a)) return 6;
+  if (a === 'DAI' || a === 'USDS') return 18;
+  if (['SIT','USDC','USDT','DLBUSD','UST','TUSD','BUSD','PYUSD','GUSD','USDC.E'].includes(a)) return 6;
   return 2;
 }
 function toCents(amount, asset = '') {
@@ -343,12 +344,13 @@ class WalletEngine {
     const external = { eth: '0', usdc: '0', sit: '0' };
     if (viem && viem.isAddress && viem.isAddress(wallet.address)) {
       try {
-        const cfg = (SovereignTrustEngine && SovereignTrustEngine.getConfig) ? SovereignTrustEngine.getConfig() : {};
+        const appCfg = getConfig();
+        const cfg = (SovereignTrustEngine && SovereignTrustEngine.getConfig) ? SovereignTrustEngine.getConfig() : appCfg;
         const publicClient = this._publicClient(cfg);
-        if (publicClient) {
+        if (publicClient && appCfg.usdcAddress) {
           const [ethWei, usdcRaw] = await Promise.all([
             publicClient.getBalance({ address: wallet.address }).catch(() => 0n),
-            publicClient.readContract({ address: cfg.usdcAddress, abi: this._erc20Abi(), functionName: 'balanceOf', args: [wallet.address] }).catch(() => 0n),
+            publicClient.readContract({ address: appCfg.usdcAddress, abi: this._erc20Abi(), functionName: 'balanceOf', args: [wallet.address] }).catch(() => 0n),
           ]);
           external.eth = viem.formatEther(ethWei);
           external.usdc = viem.formatUnits(usdcRaw, 6);
@@ -419,7 +421,7 @@ class WalletEngine {
     return { walletId, amountEth, txHash: hash };
   }
 
-  static async transfer({ fromWalletId, toWalletId, toAddress, amount, asset = 'SIT', memo } = {}) {
+  static async transfer({ fromWalletId, toWalletId, toAddress, amount, asset = 'SIT', memo, reconcile = false } = {}) {
     await this.ensureTables();
     if (!fromWalletId || (!toWalletId && !toAddress)) throw new Error('fromWalletId and (toWalletId or toAddress) required');
     const cents = toCents(amount, asset);
@@ -441,12 +443,12 @@ class WalletEngine {
 
     // External transfer
     const assetUpper = String(asset || 'SIT').toUpperCase();
-    if (assetUpper === 'ETH') return this.externalEthSend({ fromWalletId, toAddress, amount, memo });
+    if (assetUpper === 'ETH') return this.externalEthSend({ fromWalletId, toAddress, amount, memo, reconcile });
     if (['USDC','USDT','USDS','DAI','DLBUSD','UST','TUSD','BUSD','PYUSD','GUSD','USDC.E'].includes(assetUpper)) {
       const cfg = getConfig();
       const tokenAddress = cfg[`${assetUpper.toLowerCase().replace('.', '')}Address`] || (assetUpper === 'USDC' ? cfg.usdcAddress : '');
       if (!tokenAddress) throw new Error(`Token address not configured for ${assetUpper}`);
-      return this.externalTokenSend({ fromWalletId, toAddress, amount, asset: assetUpper, tokenAddress, decimals: assetUpper === 'ETH' || assetUpper === 'WETH' ? 18 : 6, memo });
+      return this.externalTokenSend({ fromWalletId, toAddress, amount, asset: assetUpper, tokenAddress, decimals: assetDecimals(assetUpper), memo });
     }
     return this.externalSend({ fromWalletId, toAddress, amount, asset, memo });
   }
@@ -558,7 +560,7 @@ class WalletEngine {
     return { type: 'external_token', from: wallet.address, to, amount, asset, tokenAddress, txHash: hash, balance: await this.getBalance(fromWalletId) };
   }
 
-  static async externalEthSend({ fromWalletId, toAddress, amount, memo } = {}) {
+  static async externalEthSend({ fromWalletId, toAddress, amount, memo, reconcile = false } = {}) {
     await this.ensureTables();
     if (!fromWalletId || !toAddress) throw new Error('fromWalletId and toAddress required');
     if (!viem || !viem.isAddress || !viem.isAddress(toAddress)) throw new Error('Invalid recipient address');
@@ -570,9 +572,17 @@ class WalletEngine {
     const cents = toCents(eth, 'ETH');
 
     const internalBalance = await this._ensureBalance(fromWalletId, 'ETH');
-    if (BigInt(internalBalance.balance_cents || 0) < BigInt(cents)) throw new Error('Insufficient ETH internal balance');
-
     const cfg = getConfig();
+
+    if (BigInt(internalBalance.balance_cents || 0) < BigInt(cents)) {
+      if (!reconcile) throw new Error('Insufficient ETH internal balance');
+      const publicClient = viem.createPublicClient({ chain: cfg.chainId === 11155111 ? chains.sepolia : chains.mainnet, transport: viem.http(cfg.rpcUrl) });
+      const ethBalance = await publicClient.getBalance({ address: wallet.address });
+      const neededCents = BigInt(cents) - BigInt(internalBalance.balance_cents || 0);
+      const neededEth = Number(neededCents) / 1e18;
+      if (Number(viem.formatEther(ethBalance)) < neededEth) throw new Error(`Cannot reconcile: on-chain ETH ${viem.formatEther(ethBalance)} < ${neededEth}`);
+      await this._credit(fromWalletId, 'ETH', String(neededCents), { memo: 'Reconcile on-chain ETH to internal ledger' });
+    }
     if (!cfg.privateKey) throw new Error('DAPP_PRIVATE_KEY not configured');
     const chain = cfg.chainId === 11155111 ? chains.sepolia : chains.mainnet;
     const account = accountFns.privateKeyToAccount(this._decrypt(wallet.private_key_encrypted));
@@ -597,6 +607,85 @@ class WalletEngine {
     try { await this._debit(fromWalletId, 'ETH', cents, { memo, tx_hash: hash }); } catch (e) { console.warn('[WalletEngine.externalEthSend] internal ETH debit skipped:', e.message); }
 
     return { type: 'external_eth', from: wallet.address, to, amount: eth, asset: 'ETH', txHash: hash, balance: await this.getBalance(fromWalletId) };
+  }
+
+  static _tokenAddress(asset) {
+    const cfg = getConfig();
+    const a = String(asset || '').toUpperCase();
+    if (a === 'USDC') return cfg.usdcAddress;
+    if (a === 'USDS') return cfg.usdsAddress;
+    if (a === 'DAI') return cfg.daiAddress;
+    if (a === 'WETH' || a === 'ETH') return cfg.wethAddress;
+    throw new Error(`Unsupported swap asset: ${asset}`);
+  }
+
+  static async _bestUniswapPath({ tokenIn, tokenOut, amountIn, decimalsIn, decimalsOut }) {
+    const Dex = getDexSwapEngine();
+    if (!Dex) throw new Error('DEX swap engine not available');
+    const cfg = getConfig();
+    const router = Dex.UNISWAP_V2_ROUTER_02 || '0x7a250d5630B4cF539739dF2C5dAcb4c659F2488D';
+    const candidates = [
+      [tokenIn, tokenOut],
+      [tokenIn, cfg.wethAddress, tokenOut],
+    ];
+    let best = null;
+    for (const p of candidates) {
+      try {
+        const q = await Dex.quoteUniswapV2({ tokenIn, tokenOut, amountIn, decimalsIn, decimalsOut, router, path: p });
+        if (Number(q.amountOut) > 0 && (!best || Number(q.amountOut) > Number(best.amountOut))) best = q;
+      } catch (e) { /* ignore failed path */ }
+    }
+    if (!best) throw new Error('No Uniswap V2 route found for this token pair');
+    return best;
+  }
+
+  static async quoteSwap({ walletId, assetIn, assetOut, amount }) {
+    await this.ensureTables();
+    const wallet = await this.getWallet(walletId);
+    if (!wallet) throw new Error('Wallet not found');
+    const tokenIn = this._tokenAddress(assetIn);
+    const tokenOut = this._tokenAddress(assetOut);
+    const decimalsIn = assetDecimals(assetIn);
+    const decimalsOut = assetDecimals(assetOut);
+    const quote = await this._bestUniswapPath({ tokenIn, tokenOut, amountIn: amount, decimalsIn, decimalsOut });
+    return { walletId, assetIn, assetOut, amount, quote };
+  }
+
+  static async swapTokens({ walletId, assetIn, assetOut, amount, slippageBps = 100 } = {}) {
+    await this.ensureTables();
+    if (!walletId || !assetIn || !assetOut || !amount) throw new Error('walletId, assetIn, assetOut, and amount required');
+    const wallet = await this.getWallet(walletId);
+    if (!wallet || !wallet.private_key_encrypted) throw new Error('Wallet not found or has no signing key');
+    const Dex = getDexSwapEngine();
+    if (!Dex) throw new Error('DEX swap engine not available');
+    const tokenIn = this._tokenAddress(assetIn);
+    const tokenOut = this._tokenAddress(assetOut);
+    const decimalsIn = assetDecimals(assetIn);
+    const decimalsOut = assetDecimals(assetOut);
+    const cfg = getConfig();
+    const router = Dex.UNISWAP_V2_ROUTER_02 || '0x7a250d5630B4cF539739dF2C5dAcb4c659F2488D';
+
+    const quote = await this._bestUniswapPath({ tokenIn, tokenOut, amountIn: amount, decimalsIn, decimalsOut });
+    const minOut = (Number(quote.amountOut) * (1 - (slippageBps || 100) / 10000)).toFixed(decimalsOut);
+
+    const swap = await Dex.swapOnUniswapV2({
+      tokenIn,
+      tokenOut,
+      amountIn: amount,
+      amountOutMinimum: minOut,
+      recipient: wallet.address,
+      decimalsIn,
+      decimalsOut,
+      router,
+      path: quote.path,
+      privateKey: this._decrypt(wallet.private_key_encrypted),
+    });
+
+    const inCents = toCents(amount, assetIn);
+    const outCents = toCents(swap.amountOut, assetOut);
+    await this._debit(walletId, assetIn, inCents, { memo: `Swap ${amount} ${assetIn} -> ${swap.amountOut} ${assetOut}`, tx_hash: swap.txHash });
+    await this._credit(walletId, assetOut, outCents, { memo: `Swap ${amount} ${assetIn} -> ${swap.amountOut} ${assetOut}`, tx_hash: swap.txHash });
+    return { walletId, assetIn, assetOut, amount, amountOut: swap.amountOut, txHash: swap.txHash, mode: swap.mode };
   }
 
   static _erc20FullAbi() {
