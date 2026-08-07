@@ -273,6 +273,25 @@ SELECT fit_id, type, amount_cents, name, memo FROM ofx_transactions;
 - Verify: API `GET /api/finops/module-p2p/orders` returns the new order with `active: true`, and `ModuleTokenSwap.orders(orderId)` on-chain shows the same details.
 - Useful explorer: `https://etherscan.io/tx/<txHash>` (txHash is not returned by the list endpoint; fetch it from the `OrderCreated` event logs for the order id).
 
+## Peer On-Ramp (deployed dApp) — `/dapp/finops.html` -> **Peer On-Ramp** card
+
+- Backend: `server/integrations/peer/peerOnRampEngine.js` (`@zkp2p/sdk` `OfframpClient`).
+- Routes (all require `x-admin-token: dlb-admin-2026-trust`):
+  - `POST /api/finops/peer-onramp/quote`
+  - `POST /api/finops/peer-onramp/prepare`
+  - `POST /api/finops/peer-onramp/execute`
+  - `GET /api/finops/peer-onramp/intents`
+  - `GET /api/finops/peer-onramp/intents/:hash`
+- Target contract: `0x014025fDE093f8701d86e9f38e2C3a9b779cb5c7` on Base (`chainId: 8453`); default USDC: `0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913`.
+- Required secret on Fly: `PEER_API_KEY`.
+- UI flow:
+  1. Open `/dapp/finops.html`, save the operator token, click the **Peer On-Ramp** card (or `openPeerOnRampPanel()`).
+  2. Enter platform (`cashapp`, `venmo`, `wise`, etc.), fiat currency (`USD`), and USDC amount (e.g. `10`).
+  3. Click **Get Quote**. Expect `available: true` with `fiatAmount`, `tokenAmount`, `paymentInstructions.offchainId`, and an `intent` object.
+  4. Click **Prepare Signal**. Expect `prepared.to` = `0x014025fDE093f8701d86e9f38e2C3a9b779cb5c7`, `prepared.chainId` = `8453`, `prepared.value` = `0`, and a hex `prepared.data`.
+  5. Click **Signal Intent (Base gas)**. Without Base ETH in `DAPP_OPERATOR_ADDRESS`, this should fail with a `gas required exceeds allowance (0)` message; the UI must not crash.
+- If testing the full happy path, fund the operator wallet with Base ETH and check `GET /api/finops/peer-onramp/intents` afterward for the recorded intent.
+
 ## Devin Secrets Needed
 
 - `DATABASE_URL` or local Postgres credentials (`dlbtrust`/`dlbtrust`).
