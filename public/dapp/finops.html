@@ -239,7 +239,17 @@
   async function resumeSession() {
     const token = getToken();
     const email = getEmail();
-    if (!token) { renderModules(); renderFlow(); return; }
+    const admin = localStorage.getItem(ADMIN_KEY);
+    if (!token && !admin) { renderModules(); renderFlow(); return; }
+    if (!token && admin) {
+      // Legacy admin-token session: skip JWT me check and load data directly
+      el('login-step-email').classList.add('hidden');
+      el('login-step-code').classList.add('hidden');
+      el('logged-in-bar').classList.remove('hidden');
+      setUserInfo('admin', 'admin');
+      await loadAll();
+      return;
+    }
     try {
       const res = await api('/api/dapp/auth/me');
       const user = res.data && (res.data.user || res.data.dappUser);
