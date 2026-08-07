@@ -394,6 +394,11 @@ class ModuleSmartAccountEngine {
     const rebuilt = SafeEngine.rebuildTransaction(safeTx.data, signatures);
     const result = await SafeEngine.executeTransaction({ safeAddress, safeTx: rebuilt });
 
+    // Wait for the Safe execution to be mined so the operator wallet has the tokens.
+    const publicClient = await this._publicClient();
+    const receipt = await publicClient.waitForTransactionReceipt({ hash: result.txHash, timeout: 120000 });
+    if (receipt.status !== 'success') throw new Error(`Safe transaction ${result.txHash} failed on-chain`);
+
     // Update metadata so future tokenization does not double-mint
     const meta = (typeof mod.metadata === 'string' ? JSON.parse(mod.metadata || '{}') : (mod.metadata || {}));
     const movedAmount = Number(tokenAmount) / Math.pow(10, mod.config.decimals || 6);
