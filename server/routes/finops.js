@@ -6,6 +6,7 @@ const { FinOpsAgent } = require('../integrations/finops/finopsAgent');
 const { ModuleSmartAccountEngine } = require('../integrations/dapp/moduleSmartAccountEngine');
 const { ModuleP2PSwapEngine } = require('../integrations/dapp/moduleP2PSwapEngine');
 const { SpritzEngine } = require('../integrations/spritz/spritzEngine');
+const { PeerOnRampEngine } = require('../integrations/peer/peerOnRampEngine');
 
 const router = express.Router();
 const operatorAuth = requireAuth({ role: 'operator' });
@@ -221,6 +222,43 @@ router.get('/spritz/off-ramps', operatorAuth, async (req, res) => {
 router.get('/spritz/off-ramps/:id', operatorAuth, async (req, res) => {
   try {
     const data = await SpritzEngine.getOffRamp(req.params.id);
+    res.json({ success: true, data });
+  } catch (err) { sendError(res, err); }
+});
+
+// ─── Peer / ZKP2P P2P fiat on-ramp (Base settlement, CashApp/Venmo/Wise/etc.) ───
+router.post('/peer-onramp/quote', operatorAuth, async (req, res) => {
+  try {
+    const { platform, fiatCurrency, amountUsdc, recipient } = req.body || {};
+    const data = await PeerOnRampEngine.getQuote({ platform, fiatCurrency, amountUsdc, recipient });
+    res.json({ success: true, data });
+  } catch (err) { sendError(res, err); }
+});
+
+router.post('/peer-onramp/prepare', operatorAuth, async (req, res) => {
+  try {
+    const data = await PeerOnRampEngine.prepareSignal(req.body || {});
+    res.json({ success: true, data });
+  } catch (err) { sendError(res, err); }
+});
+
+router.post('/peer-onramp/execute', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try {
+    const data = await PeerOnRampEngine.executeSignal(req.body || {});
+    res.json({ success: true, data });
+  } catch (err) { sendError(res, err); }
+});
+
+router.get('/peer-onramp/intents', operatorAuth, async (req, res) => {
+  try {
+    const data = await PeerOnRampEngine.listIntents();
+    res.json({ success: true, data });
+  } catch (err) { sendError(res, err); }
+});
+
+router.get('/peer-onramp/intents/:hash', operatorAuth, async (req, res) => {
+  try {
+    const data = await PeerOnRampEngine.getIntentStatus(req.params.hash);
     res.json({ success: true, data });
   } catch (err) { sendError(res, err); }
 });

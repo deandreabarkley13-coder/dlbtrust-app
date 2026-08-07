@@ -143,6 +143,7 @@
     { key:'wallets', name:'Wallets', desc:'Master, trustee and beneficiary wallets', stat:'', endpoint:'/api/finops/wallets' },
     { key:'fixed-income', name:'Fixed Income', desc:'DLB-PRB bond metrics & accrued interest', stat:'', endpoint:'/api/finops/bonds' },
     { key:'p2p-swap', name:'P2P Module Swap', desc:'OTC order book: module tokens for USDC (no WETH)', stat:'', endpoint:'/api/finops/module-p2p/orders' },
+    { key:'peer-onramp', name:'Peer On-Ramp', desc:'P2P fiat to USDC on Base (CashApp/Venmo/Wise)', stat:'', endpoint:null, action:'openPeerOnRampPanel' },
     { key:'spritz', name:'Spritz Off-Ramp', desc:'Crypto-to-fiat bank payouts via Spritz', stat:'', endpoint:null, action:'openSpritzPanel' },
     { key:'payout', name:'Payout Center', desc:'Disbursements, trades, off-ramps', stat:'', endpoint:null, link:'/dapp/payout-center.html?v=2' },
     { key:'distribution', name:'Distribution', desc:'Trustee-approved beneficiary distributions', stat:'', endpoint:null, link:'/dapp/master-dashboard.html?v=2' },
@@ -350,6 +351,87 @@
       alert('Filled: ' + res.data.txHash);
       openModule('p2p-swap');
     } catch(e) { alert('Fill failed: ' + e.message); }
+  }
+
+  let currentPeerQuote = null;
+
+  function openPeerOnRampPanel() {
+    const panel = el('module-panel');
+    const body = el('panel-body');
+    el('panel-title').textContent = 'Peer On-Ramp';
+    panel.classList.add('active');
+    body.innerHTML = renderPeerOnRampPanel();
+  }
+
+  function renderPeerOnRampPanel() {
+    return '<div class="muted" style="margin-bottom:12px;">Peer (ZKP2P) is a P2P fiat-to-crypto on-ramp. You pay the seller via CashApp/Venmo/Wise and USDC is released to the operator wallet on Base. Settles on Base; bridge to Ethereum mainnet separately.</div>' +
+      '<div class="token-bar"><input id="peer-platform" placeholder="platform (cashapp, venmo, wise, revolut, paypal, zelle)" value="cashapp" /></div>' +
+      '<div class="token-bar"><input id="peer-fiat" placeholder="fiat currency" value="USD" /></div>' +
+      '<div class="token-bar"><input id="peer-amount" placeholder="USDC amount" value="10" /></div>' +
+      '<div class="token-bar"><input id="peer-recipient" placeholder="recipient Base address (operator default)" /></div>' +
+      '<div class="approval-actions"><button class="btn" onclick="getPeerQuote()">Get Quote</button></div>' +
+      '<div id="peer-status" class="status hidden"></div>' +
+      '<div id="peer-quote" style="margin-top:12px; word-break:break-all;"></div>' +
+      '<div id="peer-actions" class="approval-actions" style="display:none; margin-top:12px;">' +
+      '<button class="btn" onclick="preparePeerSignal()">Prepare Signal</button>' +
+      '<button class="btn" id="peer-execute-btn" style="display:none; margin-left:8px;" onclick="executePeerSignal()">Signal Intent (Base gas)</button></div>';
+  }
+
+  async function getPeerQuote() {
+    const status = el('peer-status');
+    const platform = el('peer-platform').value.trim() || 'cashapp';
+    const fiatCurrency = el('peer-fiat').value.trim() || 'USD';
+    const amountUsdc = el('peer-amount').value.trim() || '10';
+    const recipient = el('peer-recipient').value.trim();
+    try {
+      const res = await api('/api/finops/peer-onramp/quote', { method:'POST', body: JSON.stringify({ platform, fiatCurrency, amountUsdc, recipient }) });
+      currentPeerQuote = res.data;
+      el('peer-quote').innerHTML = '<pre style="white-space:pre-wrap; font-size:12px; background:#0b1220; padding:10px; border-radius:8px;">' + JSON.stringify(res.data, null, 2) + '</pre>' +
+        '<p class="muted">Pay <strong>' + (res.data.fiatAmount || '') + '</strong> to the seller via <strong>' + (res.data.platform || '') + '</strong>. Payee ID: <code>' + (res.data.paymentInstructions?.offchainId || 'N/A') + '</code>. After signaling, you have ~5 days to complete payment and submit proof.</p>';
+      status.textContent = 'Quote ready.';
+      status.className = 'status ok';
+      el('peer-actions').style.display = 'block';
+      el('peer-execute-btn').style.display = 'none';
+    } catch(e) { status.textContent = e.message; status.className = 'status err'; currentPeerQuote = null; el('peer-actions').style.display = 'none'; }
+    status.classList.remove('hidden');
+  }
+
+  async function preparePeerSignal() {
+    if (!currentPeerQuote || !currentPeerQuote.intent) return;
+    const status = el('peer-status');
+    try {
+      const i = currentPeerQuote.intent;
+      const res = await api('/api/finops/peer-onramp/prepare', { method:'POST', body: JSON.stringify({
+        depositId: i.depositId, amount: i.amount, toAddress: i.toAddress,
+        processorName: i.processorName, payeeDetails: i.payeeDetails,
+        fiatCurrencyCode: 'USD', conversionRate: currentPeerQuote.conversionRate,
+        escrowAddress: i.escrowAddress
+      })});
+      el('peer-quote').innerHTML += '<h4 style="margin:10px 0 6px; font-size:13px;">Prepared Transaction</h4><pre style="white-space:pre-wrap; font-size:12px; background:#0b1220; padding:10px; border-radius:8px;">' + JSON.stringify(res.data, null, 2) + '</pre>' +
+        '<p class="muted">This transaction must be sent on Base. The operator wallet needs Base ETH for gas. If funded, click Signal Intent.</p>';
+      status.textContent = 'Prepared. Need Base gas to execute.';
+      status.className = 'status ok';
+      el('peer-execute-btn').style.display = 'inline-block';
+    } catch(e) { status.textContent = e.message; status.className = 'status err'; }
+    status.classList.remove('hidden');
+  }
+
+  async function executePeerSignal() {
+    if (!currentPeerQuote || !currentPeerQuote.intent) return;
+    const status = el('peer-status');
+    try {
+      const i = currentPeerQuote.intent;
+      const res = await api('/api/finops/peer-onramp/execute', { method:'POST', body: JSON.stringify({
+        depositId: i.depositId, amount: i.amount, toAddress: i.toAddress,
+        processorName: i.processorName, payeeDetails: i.payeeDetails,
+        fiatCurrencyCode: 'USD', conversionRate: currentPeerQuote.conversionRate,
+        escrowAddress: i.escrowAddress
+      })});
+      el('peer-quote').innerHTML += '<h4 style="margin:10px 0 6px; font-size:13px;">Signaled</h4><pre style="white-space:pre-wrap; font-size:12px; background:#0b1220; padding:10px; border-radius:8px;">' + JSON.stringify(res.data, null, 2) + '</pre>';
+      status.textContent = 'Intent signaled: ' + res.data.intentHash;
+      status.className = 'status ok';
+    } catch(e) { status.textContent = e.message; status.className = 'status err'; }
+    status.classList.remove('hidden');
   }
 
   function openSpritzPanel() {
