@@ -216,16 +216,16 @@ class DexSwapEngine {
     };
   }
 
-  static async quoteUniswapV2({ tokenIn, tokenOut, path, amountIn, decimalsIn = 18, decimalsOut = 18, router } = {}) {
+  static async quoteUniswapV2({ tokenIn, tokenOut, amountIn, decimalsIn = 18, decimalsOut = 18, router, path } = {}) {
     const cfg = this.getConfig();
     if (!cfg.enabled) throw new Error('DEX swap not enabled');
     const amount = Number(amountIn) || 0;
     if (amount <= 0) throw new Error('amountIn must be positive');
 
-    const swapPath = Array.isArray(path) && path.length >= 2 ? path : [tokenIn, tokenOut];
-    const inputToken = swapPath[0];
-    const outputToken = swapPath[swapPath.length - 1];
     const routerAddress = router || str('UNISWAP_V2_ROUTER', UNISWAP_V2_ROUTER_02);
+    const swapPath = Array.isArray(path) && path.length >= 2 ? path : [tokenIn, tokenOut];
+    const inputToken = tokenIn || swapPath[0];
+    const outputToken = tokenOut || swapPath[swapPath.length - 1];
 
     if (!cfg.shadow && viem) {
       const { publicClient } = walletClient();
@@ -269,19 +269,19 @@ class DexSwapEngine {
     };
   }
 
-  static async swapOnUniswapV2({ tokenIn, tokenOut, path, amountIn, amountOutMinimum, recipient, decimalsIn = 18, decimalsOut = 18, router } = {}) {
+  static async swapOnUniswapV2({ tokenIn, tokenOut, amountIn, amountOutMinimum, recipient, decimalsIn = 18, decimalsOut = 18, router, path, privateKey } = {}) {
     const cfg = this.getConfig();
     if (!cfg.enabled) throw new Error('DEX swap not enabled');
     const amount = Number(amountIn) || 0;
     if (amount <= 0) throw new Error('amountIn must be positive');
 
-    const swapPath = Array.isArray(path) && path.length >= 2 ? path : [tokenIn, tokenOut];
-    const inputToken = swapPath[0];
-    const outputToken = swapPath[swapPath.length - 1];
     const routerAddress = router || str('UNISWAP_V2_ROUTER', UNISWAP_V2_ROUTER_02);
+    const swapPath = Array.isArray(path) && path.length >= 2 ? path : [tokenIn, tokenOut];
+    const inputToken = tokenIn || swapPath[0];
+    const outputToken = tokenOut || swapPath[swapPath.length - 1];
     const to = recipient || cfg.operatorAddress;
 
-    const quote = await this.quoteUniswapV2({ path: swapPath, amountIn, decimalsIn, decimalsOut, router: routerAddress });
+    const quote = await this.quoteUniswapV2({ tokenIn: inputToken, tokenOut: outputToken, amountIn, decimalsIn, decimalsOut, router: routerAddress, path: swapPath });
 
     if (cfg.shadow) {
       return {
@@ -290,7 +290,6 @@ class DexSwapEngine {
         txHash: `shadow-uniswap-${Date.now()}`,
         tokenIn: inputToken,
         tokenOut: outputToken,
-        path: swapPath,
         amountIn,
         amountOut: quote.amountOut,
         amountOutMinimum: amountOutMinimum || quote.amountOutMinimum,
@@ -299,7 +298,16 @@ class DexSwapEngine {
     }
 
     if (!routerAddress || !viem) throw new Error('Uniswap V2 router not configured');
-    const { wallet, publicClient, fees } = walletClient();
+    let wallet, publicClient, fees;
+    if (privateKey && privateKeyToAccount) {
+      const account = privateKeyToAccount(privateKey);
+      const chain = cfg.chainId === 11155111 ? chains.sepolia : chains.mainnet;
+      fees = cfg.getFees ? (cfg.getFees() || { maxFeePerGas: viem.parseGwei('20'), maxPriorityFeePerGas: viem.parseGwei('0.5') }) : { maxFeePerGas: viem.parseGwei('20'), maxPriorityFeePerGas: viem.parseGwei('0.5') };
+      wallet = viem.createWalletClient({ account, chain, transport: viem.http(cfg.rpcUrl) });
+      publicClient = viem.createPublicClient({ chain, transport: viem.http(cfg.rpcUrl) });
+    } else {
+      ({ wallet, publicClient, fees } = walletClient());
+    }
     const rawIn = viem.parseUnits(String(amountIn), decimalsIn);
     const minOut = amountOutMinimum ? viem.parseUnits(String(amountOutMinimum), decimalsOut) : viem.parseUnits(quote.amountOutMinimum, decimalsOut);
     const deadline = Math.floor(Date.now() / 1000) + 300;
@@ -409,4 +417,4 @@ class DexSwapEngine {
   }
 }
 
-module.exports = { DexSwapEngine };
+module.exports = { DexSwapEngine, UNISWAP_V2_ROUTER_02, SWAP_ROUTER_02, erc20Abi, uniswapV2RouterAbi };
