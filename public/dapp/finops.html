@@ -155,6 +155,7 @@
     { key:'p2p-swap', name:'P2P Module Swap', desc:'OTC order book: module tokens for USDC (no WETH)', stat:'', endpoint:'/api/finops/module-p2p/orders' },
     { key:'peer-onramp', name:'Peer On-Ramp', desc:'P2P fiat to USDC on Base (CashApp/Venmo/Wise)', stat:'', endpoint:null, action:'openPeerOnRampPanel' },
     { key:'spritz', name:'Spritz Off-Ramp', desc:'Crypto-to-fiat bank payouts via Spritz', stat:'', endpoint:null, action:'openSpritzPanel' },
+    { key:'ptc-stablecoin', name:'PTC Stablecoin', desc:'DLB-PTCUSD backed by bond/fixed-income reserves', stat:'', endpoint:null, action:'openPtcStablecoinPanel' },
     { key:'payout', name:'Payout Center', desc:'Disbursements, trades, off-ramps', stat:'', endpoint:null, link:'/dapp/payout-center.html?v=2' },
     { key:'distribution', name:'Distribution', desc:'Trustee-approved beneficiary distributions', stat:'', endpoint:null, link:'/dapp/master-dashboard.html?v=2' },
   ];
@@ -308,13 +309,14 @@
     renderModules();
     renderFlow();
     try {
-      const [sof, accts, wallets, bond, crm, p2p] = await Promise.all([
+      const [sof, accts, wallets, bond, crm, p2p, ptc] = await Promise.all([
         api('/api/finops/source-of-funds').catch(()=>null),
         api('/api/accounting/accounts').catch(()=>null),
         api('/api/finops/wallets').catch(()=>null),
         api('/api/finops/bonds').catch(()=>null),
         api('/api/finops/crm').catch(()=>null),
         api('/api/finops/module-p2p/orders').catch(()=>null),
+        api('/api/finops/ptc-stablecoin').catch(()=>null),
       ]);
       const balances = normalizeBalances(sof && sof.data);
       if (balances.length) {
@@ -333,6 +335,7 @@
       if (wallets && wallets.data && wallets.data.wallets) setStat('wallets', String(wallets.data.wallets.length));
       if (crm && crm.data && crm.data.contacts) setStat('crm', String(crm.data.contacts.length));
       if (p2p && p2p.data && Array.isArray(p2p.data)) setStat('p2p-swap', String(p2p.data.length));
+      if (ptc && ptc.data && ptc.data.deployed) setStat('ptc-stablecoin', fmt(Number(ptc.data.totalSupply || 0), 0));
       renderModules();
     } catch(e) { console.error('loadAll error', e); }
     loadApprovals();
@@ -607,6 +610,129 @@
       el('spritz-params').innerHTML += '<pre style="white-space:pre-wrap; font-size:12px; background:#0b1220; padding:10px; border-radius:8px;">' + JSON.stringify(res.data, null, 2) + '</pre>';
     } catch(e) { status.textContent = e.message; status.className = 'status err'; }
     status.classList.remove('hidden');
+  }
+
+  function openPtcStablecoinPanel() {
+    const panel = el('module-panel');
+    const body = el('panel-body');
+    el('panel-title').textContent = 'PTC Stablecoin';
+    panel.classList.add('active');
+    body.innerHTML = '<div class="muted">Loading PTC stablecoin info…</div>';
+    loadPtcStablecoinInfo();
+  }
+
+  function renderPtcStablecoinPanel(info, reservesHtml, message) {
+    return '<div class="muted" style="margin-bottom:12px;">DLB-PTCUSD is a private/permissioned stablecoin issued by the PTC. It is minted when tokenized trust module assets (bond, fixed income, treasury, etc.) are deposited into the reserve vault, and burned when redeemed. This is for internal trust settlement, not a public offering.</div>' +
+      '<div id="ptc-status" class="status hidden"></div>' +
+      '<div style="margin-bottom:12px;">' +
+        '<strong>Token:</strong> ' + (info.tokenSymbol || 'DLB-PTCUSD') + ' — ' + (info.tokenAddress || 'not deployed') + '<br>' +
+        '<strong>Vault:</strong> ' + (info.vaultAddress || 'not deployed') + '<br>' +
+        '<strong>Total Supply:</strong> ' + (info.totalSupply !== undefined ? Number(info.totalSupply).toLocaleString(undefined, {maximumFractionDigits: 6}) : '0') + ' DLB-PTCUSD<br>' +
+        '<strong>Owner:</strong> ' + (info.owner || '—') +
+      '</div>' +
+      '<h3 style="margin:12px 0 8px; font-size:14px;">Reserve Tokens</h3>' + reservesHtml +
+      '<div style="margin-top:16px; border-top:1px solid var(--border); padding-top:16px;">' +
+      '<h3 style="margin:0 0 10px; font-size:14px;">Deposit Reserve / Mint</h3>' +
+      '<div class="token-bar"><input id="ptc-deposit-module" placeholder="module key (bond_portfolio, fixed_income, treasury, trust_accounting, core_banking)" value="fixed_income" /></div>' +
+      '<div class="token-bar"><input id="ptc-deposit-amount" placeholder="amount to deposit (or all)" value="all" /></div>' +
+      '<div class="token-bar"><input id="ptc-deposit-recipient" placeholder="recipient (default operator)" /></div>' +
+      '<div class="approval-actions"><button class="btn" onclick="ptcDeposit()">Deposit Reserve & Mint</button><button class="btn btn-sec" style="margin-left:8px;" onclick="ptcDepositAll()">Deposit All Modules</button></div>' +
+      '</div>' +
+      '<div style="margin-top:16px; border-top:1px solid var(--border); padding-top:16px;">' +
+      '<h3 style="margin:0 0 10px; font-size:14px;">Manage</h3>' +
+      '<div class="token-bar"><input id="ptc-token-name" placeholder="token name" value="DLB PTC Stablecoin" /></div>' +
+      '<div class="token-bar"><input id="ptc-token-symbol" placeholder="token symbol" value="DLB-PTCUSD" /></div>' +
+      '<div class="approval-actions"><button class="btn" onclick="ptcDeploy()">Deploy / Reset Contracts</button><button class="btn btn-sec" style="margin-left:8px;" onclick="ptcAddDefaults()">Add Default Reserves</button></div>' +
+      '</div>' +
+      '<div style="margin-top:16px; border-top:1px solid var(--border); padding-top:16px;">' +
+      '<h3 style="margin:0 0 10px; font-size:14px;">Transfer / Redeem</h3>' +
+      '<div class="token-bar"><input id="ptc-transfer-to" placeholder="recipient address" /></div>' +
+      '<div class="token-bar"><input id="ptc-transfer-amount" placeholder="amount" /></div>' +
+      '<div class="approval-actions"><button class="btn" onclick="ptcTransfer()">Transfer DLB-PTCUSD</button></div>' +
+      '<div class="token-bar" style="margin-top:10px;"><input id="ptc-redeem-module" placeholder="module key" value="fixed_income" /></div>' +
+      '<div class="token-bar"><input id="ptc-redeem-amount" placeholder="stablecoin amount to redeem" /></div>' +
+      '<div class="approval-actions"><button class="btn btn-sec" onclick="ptcRedeem()">Redeem Reserve</button></div>' +
+      '</div>';
+  }
+
+  async function loadPtcStablecoinInfo() {
+    const body = el('panel-body');
+    try {
+      const res = await api('/api/finops/ptc-stablecoin');
+      const info = res.data || {};
+      const reserves = (info.reserves || []).map(r => '<li>' + r.name + ' ' + r.address.slice(0,8) + '… — vault balance: ' + (r.vaultBalanceFormatted || '0') + (r.error ? ' (' + r.error + ')' : '') + '</li>').join('');
+      body.innerHTML = renderPtcStablecoinPanel(info, reserves ? '<ul style="font-size:13px; margin:0;">' + reserves + '</ul>' : '<p class="muted">No reserve tokens configured.</p>');
+    } catch(e) { body.innerHTML = '<div class="status err">' + e.message + '</div>' + renderPtcStablecoinPanel({}); }
+  }
+
+  function ptcStatus(msg, isErr) {
+    const d = el('ptc-status');
+    if (!d) return;
+    d.textContent = msg; d.className = 'status ' + (isErr ? 'err' : 'ok'); d.classList.remove('hidden');
+  }
+
+  async function ptcDeploy() {
+    ptcStatus('Deploying PTC stablecoin & reserve vault…');
+    try {
+      const name = el('ptc-token-name').value.trim();
+      const symbol = el('ptc-token-symbol').value.trim();
+      const res = await api('/api/finops/ptc-stablecoin/deploy', { method:'POST', body: JSON.stringify({ tokenName: name, tokenSymbol: symbol }) });
+      ptcStatus('Deployed: token ' + res.data.tokenAddress + ', vault ' + res.data.vaultAddress, false);
+      await loadPtcStablecoinInfo();
+    } catch(e) { ptcStatus(e.message, true); }
+  }
+
+  async function ptcAddDefaults() {
+    ptcStatus('Adding default module reserve tokens…');
+    try {
+      const res = await api('/api/finops/ptc-stablecoin/reserve-tokens/default', { method:'POST' });
+      ptcStatus('Reserve tokens added: ' + res.data.length, false);
+      await loadPtcStablecoinInfo();
+    } catch(e) { ptcStatus(e.message, true); }
+  }
+
+  async function ptcDeposit() {
+    ptcStatus('Depositing reserve and minting DLB-PTCUSD…');
+    try {
+      const moduleKey = el('ptc-deposit-module').value.trim();
+      const amount = el('ptc-deposit-amount').value.trim();
+      const recipient = el('ptc-deposit-recipient').value.trim();
+      const res = await api('/api/finops/ptc-stablecoin/deposit', { method:'POST', body: JSON.stringify({ moduleKey, amount, recipient }) });
+      ptcStatus('Minted ' + res.data.mintedStablecoin + ' to ' + res.data.recipient + ' tx ' + res.data.txHash, false);
+      await loadPtcStablecoinInfo();
+    } catch(e) { ptcStatus(e.message, true); }
+  }
+
+  async function ptcDepositAll() {
+    ptcStatus('Depositing all module reserves…');
+    try {
+      const res = await api('/api/finops/ptc-stablecoin/deposit-all', { method:'POST', body: JSON.stringify({}) });
+      ptcStatus('Deposit results: ' + JSON.stringify(res.data.map(x => x.moduleKey || x.error).join(', ')), false);
+      await loadPtcStablecoinInfo();
+    } catch(e) { ptcStatus(e.message, true); }
+  }
+
+  async function ptcTransfer() {
+    ptcStatus('Transferring DLB-PTCUSD…');
+    try {
+      const to = el('ptc-transfer-to').value.trim();
+      const amount = el('ptc-transfer-amount').value.trim();
+      const res = await api('/api/finops/ptc-stablecoin/transfer', { method:'POST', body: JSON.stringify({ to, amount }) });
+      ptcStatus('Transferred: ' + res.data.txHash, false);
+      await loadPtcStablecoinInfo();
+    } catch(e) { ptcStatus(e.message, true); }
+  }
+
+  async function ptcRedeem() {
+    ptcStatus('Redeeming DLB-PTCUSD for reserve tokens…');
+    try {
+      const moduleKey = el('ptc-redeem-module').value.trim();
+      const amount = el('ptc-redeem-amount').value.trim();
+      const res = await api('/api/finops/ptc-stablecoin/redeem', { method:'POST', body: JSON.stringify({ moduleKey, amount }) });
+      ptcStatus('Redeemed: ' + res.data.txHash, false);
+      await loadPtcStablecoinInfo();
+      await loadAll();
+    } catch(e) { ptcStatus(e.message, true); }
   }
 
   function addChat(sender, text) {
