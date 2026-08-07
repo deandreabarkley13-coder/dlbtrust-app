@@ -228,6 +228,52 @@ router.get('/spritz/off-ramps/:id', operatorAuth, async (req, res) => {
   } catch (err) { sendError(res, err); }
 });
 
+// ─── Spritz Bill Pay ─────────────────────────────────────────────────────────
+router.get('/spritz/bills', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await SpritzEngine.listBills() }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/spritz/bills/activate', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try { res.status(201).json({ success: true, data: await SpritzEngine.activateBills(req.body) }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/spritz/bills/:id/verify', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try { res.json({ success: true, data: await SpritzEngine.startBillVerification(req.params.id) }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/spritz/bills/:id/verify-submit', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try { res.json({ success: true, data: await SpritzEngine.submitBillVerification(req.params.id, req.body.responses) }); } catch (err) { sendError(res, err); }
+});
+
+router.delete('/spritz/bills/:id', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try { res.json({ success: true, data: await SpritzEngine.deleteBill(req.params.id) }); } catch (err) { sendError(res, err); }
+});
+
+// ─── Spritz Cards ────────────────────────────────────────────────────────────
+router.get('/spritz/cards', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await SpritzEngine.listCards() }); } catch (err) { sendError(res, err); }
+});
+
+router.get('/spritz/cards/balance', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await SpritzEngine.getCardBalance() }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/spritz/cards/:id/status', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try { res.json({ success: true, data: await SpritzEngine.updateCardStatus(req.params.id, req.body.status) }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/spritz/cards/:id/limit', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try { res.json({ success: true, data: await SpritzEngine.updateCardLimit(req.params.id, req.body) }); } catch (err) { sendError(res, err); }
+});
+
+router.get('/spritz/debit-cards', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await SpritzEngine.listDebitCards() }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/spritz/debit-cards', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try { res.status(201).json({ success: true, data: await SpritzEngine.createDebitCard(req.body) }); } catch (err) { sendError(res, err); }
+});
+
 // ─── Peer / ZKP2P P2P fiat on-ramp (Base settlement, CashApp/Venmo/Wise/etc.) ───
 router.post('/peer-onramp/quote', operatorAuth, async (req, res) => {
   try {

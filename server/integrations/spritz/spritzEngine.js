@@ -22,7 +22,7 @@ const erc20Abi = [
 ];
 
 const SUPPORTED_CHAINS = ['ethereum','polygon','arbitrum','base','optimism','avalanche','binance-smart-chain','solana','bitcoin','dash','tron','sui','hyperevm','monad','sonic','unichain'];
-const SUPPORTED_RAILS = ['ach_standard','rtp','wire','eft','sepa','push_to_debit','bill_pay'];
+const SUPPORTED_RAILS = ['ach_standard','ach_same_day','rtp','wire','eft','sepa','faster_payments','push_to_card','push_to_debit','bill_pay','card_deposit'];
 
 function str(name, def = '') { return (process.env[name] || def).trim(); }
 function baseUrl() { return str('SPRITZ_API_BASE_URL', 'https://platform.spritz.finance').replace(/\/$/, ''); }
@@ -166,6 +166,62 @@ class SpritzEngine {
     const receipt = await publicClient.waitForTransactionReceipt({ hash, timeout: 120000 });
     if (receipt.status !== 'success') throw new Error(`Spritz payment transaction reverted: ${hash}`);
     return { txHash: hash, quoteId, params };
+  }
+
+  static async listBills() {
+    return spritzRequest('GET', '/v1/bills/');
+  }
+
+  static async activateBills({ termsText, termsTextVersion, acceptedAt } = {}) {
+    const consent = {
+      termsText: termsText || str('SPRITZ_BILLPAY_TERMS', 'I agree to the Spritz bill pay terms.'),
+      termsTextVersion: termsTextVersion || str('SPRITZ_BILLPAY_TERMS_VERSION', '2026-01-01'),
+      acceptedAt: acceptedAt || new Date().toISOString(),
+    };
+    return spritzRequest('POST', '/v1/bills/activate', { consent });
+  }
+
+  static async startBillVerification(activationId) {
+    if (!activationId) throw new Error('activationId required');
+    return spritzRequest('POST', '/v1/bills/start_verification', { activationId });
+  }
+
+  static async submitBillVerification(activationId, responses) {
+    if (!activationId) throw new Error('activationId required');
+    if (!Array.isArray(responses)) throw new Error('responses array required');
+    return spritzRequest('POST', `/v1/bills/submit_verification/${activationId}`, { responses });
+  }
+
+  static async deleteBill(billId) {
+    if (!billId) throw new Error('billId required');
+    return spritzRequest('DELETE', `/v1/bills/${billId}`);
+  }
+
+  static async listCards() {
+    return spritzRequest('GET', '/v1/cards/');
+  }
+
+  static async getCardBalance() {
+    return spritzRequest('GET', '/v1/cards/balance');
+  }
+
+  static async listDebitCards() {
+    return spritzRequest('GET', '/v1/debit-cards/');
+  }
+
+  static async createDebitCard(payload) {
+    if (!payload || !payload.encryptedCardNumber) throw new Error('Encrypted card data required');
+    return spritzRequest('POST', '/v1/debit-cards/', payload);
+  }
+
+  static async updateCardStatus(cardId, status) {
+    if (!cardId || !status) throw new Error('cardId and status required');
+    return spritzRequest('POST', `/v1/cards/${cardId}/update_status`, { status });
+  }
+
+  static async updateCardLimit(cardId, { amount, interval }) {
+    if (!cardId || !amount || !interval) throw new Error('cardId, amount and interval required');
+    return spritzRequest('POST', `/v1/cards/${cardId}/update_limit`, { spendLimit: { amount: String(amount), interval } });
   }
 }
 

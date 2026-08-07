@@ -547,20 +547,23 @@
   }
 
   function renderSpritzPanel() {
-    return '<div class="muted" style="margin-bottom:12px;">Spritz converts crypto to fiat bank payouts. Requires a linked bank account.</div>' +
-      '<div class="approval-actions"><button class="btn" onclick="loadSpritzUser()">Load Spritz User</button></div>' +
+    return '<div class="muted" style="margin-bottom:12px;">Spritz converts crypto to fiat bank payouts, bill pay, and card loads. Destination ID can be a bank account, bill, Spritz card, or linked debit card.</div>' +
+      '<div class="approval-actions"><button class="btn" onclick="loadSpritzUser()">Load User & Accounts</button><button class="btn btn-sec" style="margin-left:8px;" onclick="loadSpritzBills()">Load Bills</button><button class="btn btn-sec" style="margin-left:8px;" onclick="loadSpritzCards()">Load Cards</button></div>' +
       '<div id="spritz-status" class="status hidden"></div>' +
       '<div id="spritz-user" style="margin-top:12px;"></div>' +
       '<div id="spritz-accounts" style="margin-top:12px;"></div>' +
+      '<div id="spritz-bills" style="margin-top:12px;"></div>' +
+      '<div id="spritz-cards" style="margin-top:12px;"></div>' +
       '<div style="margin-top:16px; border-top:1px solid var(--border); padding-top:16px;">' +
       '<h3 style="margin:0 0 10px; font-size:14px;">Add US Bank Account</h3>' +
       '<div class="token-bar"><input id="spritz-routing" placeholder="routing number" /></div>' +
       '<div class="token-bar"><input id="spritz-account-num" placeholder="account number" /></div>' +
       '<div class="token-bar"><input id="spritz-label" placeholder="label (optional)" /></div>' +
       '<div class="approval-actions"><button class="btn" onclick="addSpritzBankAccount()">Add Bank Account</button></div>' +
-      '<h3 style="margin:20px 0 10px; font-size:14px;">Create Off-Ramp Quote</h3>' +
-      '<div class="token-bar"><input id="spritz-account-id" placeholder="bank account id" /></div>' +
+      '<h3 style="margin:20px 0 10px; font-size:14px;">Create Quote</h3>' +
+      '<div class="token-bar"><input id="spritz-account-id" placeholder="destination account id (bank / bill / card)" /></div>' +
       '<div class="token-bar"><input id="spritz-amount" placeholder="USD amount" /></div>' +
+      '<div class="token-bar"><select id="spritz-rail"><option value="ach_standard">ach_standard</option><option value="ach_same_day">ach_same_day</option><option value="rtp">rtp</option><option value="wire">wire</option><option value="push_to_card">push_to_card</option><option value="card_deposit">card_deposit</option><option value="bill_pay">bill_pay</option></select></div>' +
       '<div class="token-bar"><input id="spritz-token" placeholder="token address (USDC)" value="0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48" /></div>' +
       '<div class="token-bar"><input id="spritz-chain" placeholder="chain" value="ethereum" /></div>' +
       '<div class="approval-actions"><button class="btn" onclick="createSpritzQuote()">Get Transaction Params</button><button class="btn" id="spritz-execute-btn" style="display:none; margin-left:8px;" onclick="executeSpritzQuote()">Execute from Operator Wallet</button></div>' +
@@ -594,6 +597,33 @@
     status.classList.remove('hidden');
   }
 
+  async function loadSpritzBills() {
+    const status = el('spritz-status');
+    try {
+      const bills = await api('/api/finops/spritz/bills');
+      const debitCards = await api('/api/finops/spritz/debit-cards').catch(() => ({ data: [] }));
+      const rows = Array.isArray(bills.data) ? bills.data : [];
+      el('spritz-bills').innerHTML = rows.length ? '<h3 style="font-size:13px;margin:12px 0 6px;">Linked Bills</h3>' + renderTable(rows, ['id','name','type','status','liability'], { liability: v => JSON.stringify(v || {}) }) : '<span class="muted">No linked bills.</span>';
+      el('spritz-bills').innerHTML += (debitCards.data?.length ? '<h3 style="font-size:13px;margin:12px 0 6px;">Linked Debit Cards</h3>' + renderTable(debitCards.data, ['id','cardLastFour','cardBrand','status'], {}) : '<span class="muted">No linked debit cards.</span>');
+      status.textContent = 'Bills loaded.';
+      status.className = 'status ok';
+    } catch(e) { status.textContent = e.message; status.className = 'status err'; }
+    status.classList.remove('hidden');
+  }
+
+  async function loadSpritzCards() {
+    const status = el('spritz-status');
+    try {
+      const cards = await api('/api/finops/spritz/cards');
+      const balance = await api('/api/finops/spritz/cards/balance').catch(() => ({ data: {} }));
+      const rows = Array.isArray(cards.data) ? cards.data : [];
+      el('spritz-cards').innerHTML = rows.length ? '<h3 style="font-size:13px;margin:12px 0 6px;">Spritz Cards</h3>' + renderTable(rows, ['id','status','type','last4','limit','payable'], {}) + '<div style="font-size:12px;margin-top:6px;"><strong>Program balance:</strong> ' + JSON.stringify(balance.data || {}) + '</div>' : '<span class="muted">No Spritz cards.</span>';
+      status.textContent = 'Cards loaded.';
+      status.className = 'status ok';
+    } catch(e) { status.textContent = e.message; status.className = 'status err'; }
+    status.classList.remove('hidden');
+  }
+
   let currentSpritzQuoteId = null;
 
   async function createSpritzQuote() {
@@ -602,8 +632,9 @@
     const amount = el('spritz-amount').value.trim();
     const tokenAddress = el('spritz-token').value.trim();
     const chain = el('spritz-chain').value.trim() || 'ethereum';
+    const rail = el('spritz-rail').value || 'ach_standard';
     try {
-      const quote = await api('/api/finops/spritz/quotes', { method:'POST', body: JSON.stringify({ accountId, amount, chain, tokenAddress, amountMode:'output', rail:'ach_standard' }) });
+      const quote = await api('/api/finops/spritz/quotes', { method:'POST', body: JSON.stringify({ accountId, amount, chain, tokenAddress, amountMode:'output', rail }) });
       currentSpritzQuoteId = quote.data.id;
       const tx = await api('/api/finops/spritz/quotes/' + quote.data.id + '/transaction', { method:'POST', body: JSON.stringify({ senderAddress: '' }) });
       el('spritz-params').innerHTML = '<h4 style="margin:10px 0 6px; font-size:13px;">Quote</h4><pre style="white-space:pre-wrap; font-size:12px; background:#0b1220; padding:10px; border-radius:8px;">' + JSON.stringify(quote.data, null, 2) + '</pre>' +
