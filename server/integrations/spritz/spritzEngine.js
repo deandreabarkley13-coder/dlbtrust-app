@@ -1,170 +1,109 @@
 'use strict';
 
 /**
- * SpritzEngine — crypto-to-fiat off-ramp via Spritz Finance.
+ * SpritzEngine — crypto-to-fiat off-ramp via the Spritz Finance API.
  *
- * Wraps the @spritz-finance/api-client to:
- * - create / recover Spritz users per email
- * - manage bank accounts / cards / bills
- * - create payment requests (off-ramps)
- * - return EVM calldata and optionally execute the on-chain `payWithToken` call
- *   from the operator wallet.
+ * Uses the user API key (SPRITZ_API_KEY) as a Bearer token against
+ * https://platform.spritz.finance. Supports bank-account management,
+ * off-ramp quotes, on-chain transaction params, and execution from an
+ * internal DLB wallet.
  */
 
-const { query } = require('../bonds/pgPool');
 const { getConfig } = require('../dapp/config');
 
-let SpritzApiClient, Environment, PaymentNetwork, BankAccountType, BankAccountSubType;
-try {
-  const m = require('@spritz-finance/api-client');
-  SpritzApiClient = m.SpritzApiClient;
-  Environment = m.Environment;
-  PaymentNetwork = m.PaymentNetwork;
-  BankAccountType = m.BankAccountType;
-  BankAccountSubType = m.BankAccountSubType;
-} catch (e) {
-  console.warn('[SpritzEngine] api-client not available:', e.message);
+const SUPPORTED_CHAINS = ['ethereum','polygon','arbitrum','base','optimism','avalanche','binance-smart-chain','solana','bitcoin','dash','tron','sui','hyperevm','monad','sonic','unichain'];
+const SUPPORTED_RAILS = ['ach_standard','rtp','wire','eft','sepa','push_to_debit','bill_pay'];
+
+function str(name, def = '') { return (process.env[name] || def).trim(); }
+function baseUrl() { return str('SPRITZ_API_BASE_URL', 'https://platform.spritz.finance').replace(/\/$/, ''); }
+function apiKey() {
+  const key = str('SPRITZ_API_KEY');
+  if (!key) throw new Error('SPRITZ_API_KEY not configured');
+  return key;
 }
 
-function envVal(key, def = '') { return (process.env[key] || def).trim(); }
-function envBool(key, def = false) { const v = process.env[key]; return v ? String(v).toLowerCase() === 'true' : def; }
+function cleanPath(p) { return p.startsWith('/') ? p : '/' + p; }
 
-async function ensureTable() {
-  await query(`
-    CREATE TABLE IF NOT EXISTS spritz_users (
-      id SERIAL PRIMARY KEY,
-      email TEXT UNIQUE NOT NULL,
-      user_id TEXT,
-      api_key TEXT,
-      environment TEXT,
-      created_at TIMESTAMPTZ DEFAULT NOW(),
-      updated_at TIMESTAMPTZ DEFAULT NOW()
-    )
-  `, []);
+async function spritzRequest(method, path, body) {
+  const url = baseUrl() + cleanPath(path);
+  const opts = {
+    method,
+    headers: {
+      Authorization: `Bearer ${apiKey()}`,
+      'Content-Type': 'application/json',
+      'User-Agent': 'dlbtrust-spritz-engine/1.0',
+      Origin: 'https://dlbtrust-app.fly.dev',
+    },
+  };
+  if (body !== undefined) opts.body = JSON.stringify(body);
+  const res = await fetch(url, opts);
+  const text = await res.text();
+  let data;
+  try { data = text ? JSON.parse(text) : null; } catch { data = { raw: text }; }
+  if (!res.ok) {
+    const err = new Error(`Spritz API ${method} ${path} failed: ${res.status} ${res.statusText} — ${text || 'no body'}`);
+    err.status = res.status;
+    err.data = data;
+    throw err;
+  }
+  return data;
 }
 
 class SpritzEngine {
-  static _getIntegrationKey() {
-    const key = envVal('SPRITZ_API_KEY');
-    if (!key) throw new Error('SPRITZ_API_KEY not configured');
-    return key;
+  static async getUser() {
+    return spritzRequest('GET', '/v1/users/me');
   }
 
-  static _getEnvironment() {
-    const cfg = envVal('SPRITZ_ENV', 'Production');
-    if (cfg.toLowerCase() === 'sandbox' || cfg.toLowerCase() === 'staging') return Environment.Sandbox;
-    return Environment.Production;
+  static async listBankAccounts() {
+    return spritzRequest('GET', '/v1/bank-accounts/');
   }
 
-  static _baseClient() {
-    if (!SpritzApiClient) throw new Error('Spritz API client not available');
-    return SpritzApiClient.initialize({
-      environment: this._getEnvironment(),
-      integrationKey: this._getIntegrationKey(),
-    });
-  }
-
-  static async _getUserRow(email) {
-    await ensureTable();
-    const res = await query('SELECT * FROM spritz_users WHERE email = $1', [email.toLowerCase()]);
-    return res.rows[0] || null;
-  }
-
-  static async _saveUser(email, userId, apiKey) {
-    await ensureTable();
-    await query(
-      `INSERT INTO spritz_users (email, user_id, api_key, environment)
-       VALUES ($1, $2, $3, $4)
-       ON CONFLICT (email) DO UPDATE SET user_id = EXCLUDED.user_id, api_key = EXCLUDED.api_key, environment = EXCLUDED.environment, updated_at = NOW()`,
-      [email.toLowerCase(), userId, apiKey, String(this._getEnvironment())]
-    );
-  }
-
-  static async _getUserClient(email) {
-    const row = await this._getUserRow(email);
-    const client = this._baseClient();
-    if (row && row.api_key) {
-      client.setApiKey(row.api_key);
-      return { client, userId: row.user_id };
-    }
-    // Create user
-    const user = await client.user.create({ email });
-    if (!user || !user.apiKey) throw new Error('Spritz user creation did not return apiKey');
-    client.setApiKey(user.apiKey);
-    await this._saveUser(email, user.userId || user.id || null, user.apiKey);
-    return { client, userId: user.userId || user.id };
-  }
-
-  static async getUser(email) {
-    const { client } = await this._getUserClient(email);
-    return client.user.getCurrentUser();
-  }
-
-  static async getUserAccess(email) {
-    const { client } = await this._getUserClient(email);
-    return client.user.getUserAccess();
-  }
-
-  static async getVerificationParams(email) {
-    const { client } = await this._getUserClient(email);
-    return client.user.getVerificationParams();
-  }
-
-  static async listBankAccounts(email) {
-    const { client } = await this._getUserClient(email);
-    return client.bankAccount.list();
-  }
-
-  static async createUSBankAccount(email, { accountNumber, routingNumber, name, subType = 'Checking' } = {}) {
-    if (!accountNumber || !routingNumber || !name) throw new Error('accountNumber, routingNumber, and name required');
-    const { client } = await this._getUserClient(email);
-    const sub = String(subType).toLowerCase() === 'savings' ? BankAccountSubType.Savings : BankAccountSubType.Checking;
-    return client.bankAccount.create(BankAccountType.USBankAccount, {
-      accountNumber,
+  static async createUSBankAccount({ routingNumber, accountNumber, accountSubtype = 'checking', ownership = 'personal', label } = {}) {
+    if (!routingNumber || !accountNumber) throw new Error('routingNumber and accountNumber required');
+    const body = {
+      type: 'us',
+      ownership,
       routingNumber,
-      name,
-      ownedByUser: true,
-      subType: sub,
-    });
+      accountNumber,
+      accountSubtype: accountSubtype.toLowerCase(),
+    };
+    if (label) body.label = label;
+    return spritzRequest('POST', '/v1/bank-accounts/', body);
   }
 
-  static async createPlaidLinkToken(email, { redirectUri } = {}) {
-    const { client } = await this._getUserClient(email);
-    return client.bankAccount.createLinkToken(redirectUri ? { redirectUri } : undefined);
+  static async createOffRampQuote({ accountId, amount, chain = 'ethereum', tokenAddress, amountMode = 'output', rail = 'ach_standard', memo } = {}) {
+    if (!accountId || amount === undefined || amount === null) throw new Error('accountId and amount required');
+    const c = String(chain).toLowerCase();
+    if (!SUPPORTED_CHAINS.includes(c)) throw new Error(`Unsupported chain: ${chain}`);
+    const r = String(rail).toLowerCase();
+    if (!SUPPORTED_RAILS.includes(r)) throw new Error(`Unsupported rail: ${rail}`);
+    const body = { accountId, amount: String(amount), chain: c, rail: r, amountMode: amountMode === 'input' ? 'input' : 'output' };
+    if (tokenAddress) body.tokenAddress = tokenAddress;
+    if (memo) body.memo = memo;
+    return spritzRequest('POST', '/v1/off-ramp-quotes/', body);
   }
 
-  static async completePlaidLink(email, { publicToken, accountIds, institutionId, institutionName } = {}) {
-    if (!publicToken || !accountIds) throw new Error('publicToken and accountIds required');
-    const { client } = await this._getUserClient(email);
-    return client.bankAccount.completeLinking({ publicToken, accountIds, institutionId, institutionName });
+  static async getOffRampQuote(quoteId) {
+    if (!quoteId) throw new Error('quoteId required');
+    return spritzRequest('GET', `/v1/off-ramp-quotes/${quoteId}`);
   }
 
-  static async createPaymentRequest(email, { amount, accountId, network = 'Ethereum', deliveryMethod, amountMode } = {}) {
-    if (!amount || !accountId) throw new Error('amount and accountId required');
-    const { client } = await this._getUserClient(email);
-    const net = PaymentNetwork[Object.keys(PaymentNetwork).find(k => k.toLowerCase() === String(network).toLowerCase()) || 'Ethereum'] || PaymentNetwork.Ethereum;
-    const opts = { amount: Number(amount), accountId, network: net };
-    if (deliveryMethod) opts.deliveryMethod = deliveryMethod;
-    if (amountMode) opts.amountMode = amountMode;
-    return client.paymentRequest.create(opts);
+  static async getTransactionParams(quoteId, { senderAddress, feePayer } = {}) {
+    if (!quoteId) throw new Error('quoteId required');
+    const body = {};
+    if (senderAddress) body.senderAddress = senderAddress;
+    if (feePayer) body.feePayer = feePayer;
+    return spritzRequest('POST', `/v1/off-ramp-quotes/${quoteId}/transaction`, body);
   }
 
-  static async getWeb3PaymentParams(email, { paymentRequestId, paymentTokenAddress } = {}) {
-    if (!paymentRequestId || !paymentTokenAddress) throw new Error('paymentRequestId and paymentTokenAddress required');
-    const { client } = await this._getUserClient(email);
-    // Re-fetch payment request object
-    const requests = await client.paymentRequest.list();
-    const paymentRequest = (requests || []).find(r => r.id === paymentRequestId);
-    if (!paymentRequest) throw new Error('Payment request not found');
-    return client.paymentRequest.getWeb3PaymentParams({ paymentRequest, paymentTokenAddress });
+  static async listOffRamps() {
+    return spritzRequest('GET', '/v1/off-ramps/');
   }
 
-  static async fulfillFromWallet(email, { paymentRequestId, paymentTokenAddress, fromWalletId } = {}) {
-    const params = await this.getWeb3PaymentParams(email, { paymentRequestId, paymentTokenAddress });
-    // We can either return params for the caller to sign, or execute from operator wallet.
-    // For server-side execution we need the USDC in the wallet; caller must move funds first.
-    return { params, fromWalletId: fromWalletId || null };
+  static async getOffRamp(offRampId) {
+    if (!offRampId) throw new Error('offRampId required');
+    return spritzRequest('GET', `/v1/off-ramps/${offRampId}`);
   }
 }
 
-module.exports = { SpritzEngine, BankAccountType, BankAccountSubType, PaymentNetwork };
+module.exports = { SpritzEngine, SUPPORTED_CHAINS, SUPPORTED_RAILS };

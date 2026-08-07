@@ -29,7 +29,6 @@
     "@magic-sdk/admin": "^2.8.2",
     "@safe-global/api-kit": "^5.0.1",
     "@safe-global/protocol-kit": "^8.0.4",
-    "@spritz-finance/api-client": "^0.10.0",
     "@stellar/stellar-sdk": "^16.1.0",
     "@supabase/supabase-js": "^2.45.0",
     "@uniswap/sdk-core": "^7.19.0",
