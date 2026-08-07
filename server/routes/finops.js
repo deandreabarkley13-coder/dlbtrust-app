@@ -158,6 +158,13 @@ router.post('/spritz/bank-accounts', operatorAuth, writeRateLimiter(), async (re
   } catch (err) { sendError(res, err); }
 });
 
+router.delete('/spritz/bank-accounts/:id', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try {
+    const data = await SpritzEngine.deleteBankAccount(req.params.id);
+    res.json({ success: true, data });
+  } catch (err) { sendError(res, err); }
+});
+
 router.post('/spritz/quotes', operatorAuth, writeRateLimiter(), async (req, res) => {
   try {
     const { accountId, amount, chain, tokenAddress, amountMode, rail, memo } = req.body;

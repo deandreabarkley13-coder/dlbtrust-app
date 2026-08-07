@@ -73,6 +73,11 @@ class SpritzEngine {
     return spritzRequest('GET', '/v1/bank-accounts/');
   }
 
+  static async deleteBankAccount(accountId) {
+    if (!accountId) throw new Error('accountId required');
+    return spritzRequest('DELETE', `/v1/bank-accounts/${accountId}`);
+  }
+
   static async createUSBankAccount({ routingNumber, accountNumber, accountSubtype = 'checking', ownership = 'personal', label } = {}) {
     if (!routingNumber || !accountNumber) throw new Error('routingNumber and accountNumber required');
     const body = {
