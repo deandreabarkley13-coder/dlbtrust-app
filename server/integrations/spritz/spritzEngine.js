@@ -21,20 +21,25 @@ function apiKey() {
   if (!key) throw new Error('SPRITZ_API_KEY not configured');
   return key;
 }
+function useProxy() { return str('SPRITZ_USE_PROXY', 'false').toLowerCase() === 'true' || baseUrl() !== 'https://platform.spritz.finance'; }
 
 function cleanPath(p) { return p.startsWith('/') ? p : '/' + p; }
 
 async function spritzRequest(method, path, body) {
   const url = baseUrl() + cleanPath(path);
-  const opts = {
-    method,
-    headers: {
-      Authorization: `Bearer ${apiKey()}`,
-      'Content-Type': 'application/json',
-      'User-Agent': 'dlbtrust-spritz-engine/1.0',
-      Origin: 'https://dlbtrust-app.fly.dev',
-    },
+  const headers = {
+    'Content-Type': 'application/json',
+    'User-Agent': 'dlbtrust-spritz-engine/1.0',
+    Origin: 'https://dlbtrust-app.fly.dev',
   };
+  if (useProxy()) {
+    headers['x-spritz-key'] = apiKey();
+    const proxyAuth = str('SPRITZ_PROXY_AUTH');
+    if (proxyAuth) headers['Authorization'] = proxyAuth;
+  } else {
+    headers['Authorization'] = `Bearer ${apiKey()}`;
+  }
+  const opts = { method, headers };
   if (body !== undefined) opts.body = JSON.stringify(body);
   const res = await fetch(url, opts);
   const text = await res.text();
