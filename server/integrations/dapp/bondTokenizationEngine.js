@@ -277,6 +277,18 @@ class BondTokenizationEngine {
     }
     return Array.from(memory.tokens.values()).find(t => String(t.token_symbol).toUpperCase() === tokenSymbol.toUpperCase() && t.token_address && !t.token_address.startsWith('shadow-')) || null;
   }
+
+  static async getTokenByAddress(tokenAddress) {
+    await ensureTable();
+    const addr = String(tokenAddress || '').toLowerCase();
+    if (!addr) return null;
+    if (pool) {
+      const res = await pool.query("SELECT * FROM bond_tokens WHERE LOWER(token_address) = $1 AND token_address IS NOT NULL AND token_address <> '' AND token_address NOT LIKE 'shadow-%' LIMIT 1", [addr]);
+      if (res.rows.length) return res.rows[0];
+      return null;
+    }
+    return Array.from(memory.tokens.values()).find(t => String(t.token_address || '').toLowerCase() === addr && t.token_address && !t.token_address.startsWith('shadow-')) || null;
+  }
 }
 
 module.exports = { BondTokenizationEngine };

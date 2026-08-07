@@ -222,10 +222,10 @@ class DexSwapEngine {
     const amount = Number(amountIn) || 0;
     if (amount <= 0) throw new Error('amountIn must be positive');
 
-    const inputToken = tokenIn;
-    const outputToken = tokenOut;
     const routerAddress = router || str('UNISWAP_V2_ROUTER', UNISWAP_V2_ROUTER_02);
-    const swapPath = Array.isArray(path) && path.length >= 2 ? path : [inputToken, outputToken];
+    const swapPath = Array.isArray(path) && path.length >= 2 ? path : [tokenIn, tokenOut];
+    const inputToken = tokenIn || swapPath[0];
+    const outputToken = tokenOut || swapPath[swapPath.length - 1];
 
     if (!cfg.shadow && viem) {
       const { publicClient } = walletClient();
@@ -236,7 +236,7 @@ class DexSwapEngine {
         functionName: 'getAmountsOut',
         args: [rawIn, swapPath],
       });
-      if (!amounts || amounts.length < 2) throw new Error('Uniswap V2 getAmountsOut failed');
+      if (!amounts || amounts.length < swapPath.length) throw new Error('Uniswap V2 getAmountsOut failed');
       const amountOutRaw = amounts[amounts.length - 1];
       const amountOutHuman = Number(viem.formatUnits(amountOutRaw, decimalsOut));
       const minOutHuman = amountOutHuman * (1 - cfg.slippageBps / 10000);
@@ -275,10 +275,10 @@ class DexSwapEngine {
     const amount = Number(amountIn) || 0;
     if (amount <= 0) throw new Error('amountIn must be positive');
 
-    const inputToken = tokenIn;
-    const outputToken = tokenOut;
     const routerAddress = router || str('UNISWAP_V2_ROUTER', UNISWAP_V2_ROUTER_02);
-    const swapPath = Array.isArray(path) && path.length >= 2 ? path : [inputToken, outputToken];
+    const swapPath = Array.isArray(path) && path.length >= 2 ? path : [tokenIn, tokenOut];
+    const inputToken = tokenIn || swapPath[0];
+    const outputToken = tokenOut || swapPath[swapPath.length - 1];
     const to = recipient || cfg.operatorAddress;
 
     const quote = await this.quoteUniswapV2({ tokenIn: inputToken, tokenOut: outputToken, amountIn, decimalsIn, decimalsOut, router: routerAddress, path: swapPath });

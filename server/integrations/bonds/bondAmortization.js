@@ -126,8 +126,16 @@ class BondAmortization {
       currentDate = pd;
     }
 
-    const days = daysBetween(currentDate, evalDate, bond.day_count);
-    const accrued = Math.round(currentBalance * dailyRate(coupon, bond.day_count, evalDate.getFullYear()) * days * 100) / 100;
+    const lastAccrualDate = bond.last_accrual_date ? new Date(bond.last_accrual_date) : null;
+    // If last_accrual_date is ahead of the last processed payment date, the existing accrued_interest
+    // is a partial-period balance that has not been reset by a scheduled payment. Preserve it and
+    // only accrue from that point forward. Otherwise recompute from the last payment date.
+    const preserveAccrualBase = lastAccrualDate && lastAccrualDate > currentDate;
+    const accrualStartDate = preserveAccrualBase ? lastAccrualDate : currentDate;
+    const accrualBase = preserveAccrualBase ? parseFloat(bond.accrued_interest || 0) : 0;
+    const days = daysBetween(accrualStartDate, evalDate, bond.day_count);
+    const additionalAccrued = Math.round(currentBalance * dailyRate(coupon, bond.day_count, evalDate.getFullYear()) * days * 100) / 100;
+    const accrued = Math.round((accrualBase + additionalAccrued) * 100) / 100;
 
     return {
       face_value: face,

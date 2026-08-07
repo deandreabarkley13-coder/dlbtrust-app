@@ -80,13 +80,21 @@
   <div class="container">
     <div class="main">
       <div id="token-card" class="card">
-        <h2>Operator Access</h2>
-        <p class="muted">The FinOps Agent routes through all trust modules. Enter your operator token to activate.</p>
-        <div class="token-bar">
-          <input id="admin-token" type="password" placeholder="x-admin-token" />
-          <button class="btn" onclick="saveToken()">Save Token</button>
+        <h2>Trustee Login</h2>
+        <p class="muted">Enter your trustee email. A one-time PIN will be sent to you. Use the same email recorded for the trust (e.g. deandreabarkley13@gmail.com).</p>
+        <div id="login-step-email" class="token-bar">
+          <input id="login-email" type="email" placeholder="trustee@example.com" />
+          <button class="btn" onclick="sendPin()">Send PIN</button>
+        </div>
+        <div id="login-step-code" class="token-bar hidden">
+          <input id="login-code" type="text" inputmode="numeric" maxlength="6" placeholder="6-digit PIN" />
+          <button class="btn" onclick="verifyPin()">Verify</button>
         </div>
         <div id="token-status" class="status hidden"></div>
+        <div id="logged-in-bar" class="hidden" style="margin-top:10px; display:flex; align-items:center; gap:12px;">
+          <span class="muted" id="logged-in-email"></span>
+          <button class="btn btn-sec" onclick="logout()">Log out</button>
+        </div>
       </div>
 
       <div class="card">
@@ -133,7 +141,9 @@
   </div>
 
   <script>
-  const TOKEN_KEY = 'dlb-admin-token';
+  const TOKEN_KEY = 'dlb-finops-token';
+  const EMAIL_KEY = 'dlb-finops-email';
+  const ADMIN_KEY = 'dlb-admin-token';
   const el = id => document.getElementById(id);
   const modules = [
     { key:'core-banking', name:'Core Banking', desc:'Fineract GL, cash accounts, sub-ledgers', stat:'', endpoint:'/api/finops/source-of-funds' },
@@ -150,7 +160,14 @@
   ];
 
   function getToken() { return localStorage.getItem(TOKEN_KEY) || ''; }
-  function headers() { const t = getToken(); return t ? { 'x-admin-token': t, 'Content-Type': 'application/json' } : { 'Content-Type': 'application/json' }; }
+  function getEmail() { return localStorage.getItem(EMAIL_KEY) || ''; }
+  function headers() {
+    const token = getToken();
+    if (token) return { 'Authorization': 'Bearer ' + token, 'Content-Type': 'application/json' };
+    const admin = localStorage.getItem(ADMIN_KEY) || '';
+    if (admin) return { 'x-admin-token': admin, 'Content-Type': 'application/json' };
+    return { 'Content-Type': 'application/json' };
+  }
 
   function show(msg, isErr, id='chat-status') {
     const d = el(id);
@@ -169,16 +186,83 @@
     return data;
   }
 
-  async function saveToken() {
-    const v = el('admin-token').value.trim();
-    if (!v) { show('Enter token', true, 'token-status'); return; }
+  function setUserInfo(email, role) {
+    el('logged-in-email').textContent = email + (role ? ' (' + role + ')' : '');
+    el('user-role').textContent = role || '';
+    el('user-role').style.display = role ? 'inline-block' : 'none';
+  }
+
+  function isFinOpsRole(role) {
+    return ['operator','trustee_maker','trustee_checker','trustee','admin','trustee_admin'].includes(role);
+  }
+
+  async function sendPin() {
+    const email = el('login-email').value.trim().toLowerCase();
+    if (!email) { show('Enter your trustee email', true, 'token-status'); return; }
+    show('Sending PIN…', false, 'token-status');
     try {
-      await api('/api/dapp/auth/me', { headers: { 'x-admin-token': v } });
-      localStorage.setItem(TOKEN_KEY, v);
-      show('Token active', false, 'token-status');
-      el('token-card').classList.add('hidden');
+      const res = await api('/api/dapp/auth/send-code', { method:'POST', body: JSON.stringify({ email }) });
+      el('login-step-email').classList.add('hidden');
+      el('login-step-code').classList.remove('hidden');
+      el('login-code').value = '';
+      if (res.data && res.data.code) {
+        show('Email provider not active; PIN for testing: ' + res.data.code + '. Enter it above.', false, 'token-status');
+      } else {
+        show('PIN sent to ' + email + '. Check your inbox/spam and enter it below.', false, 'token-status');
+      }
+    } catch(e) { show(e.message, true, 'token-status'); }
+  }
+
+  async function verifyPin() {
+    const email = el('login-email').value.trim().toLowerCase();
+    const code = el('login-code').value.trim();
+    if (!email || !code) { show('Enter email and PIN', true, 'token-status'); return; }
+    show('Verifying…', false, 'token-status');
+    try {
+      const res = await api('/api/dapp/auth/verify', { method:'POST', body: JSON.stringify({ email, code }) });
+      const token = res.data && res.data.token;
+      if (!token) throw new Error('No token returned');
+      if (!isFinOpsRole(res.data.role)) throw new Error('This account does not have FinOps access. Use a trustee email.');
+      localStorage.setItem(TOKEN_KEY, token);
+      localStorage.setItem(EMAIL_KEY, email);
+      localStorage.removeItem(ADMIN_KEY);
+      show('Logged in as ' + email + ' (' + res.data.role + ')', false, 'token-status');
+      el('login-step-email').classList.add('hidden');
+      el('login-step-code').classList.add('hidden');
+      el('logged-in-bar').classList.remove('hidden');
+      setUserInfo(email, res.data.role);
       await loadAll();
     } catch(e) { show(e.message, true, 'token-status'); }
+  }
+
+  async function resumeSession() {
+    const token = getToken();
+    const email = getEmail();
+    if (!token) { renderModules(); renderFlow(); return; }
+    try {
+      const res = await api('/api/dapp/auth/me');
+      const user = res.data && (res.data.user || res.data.dappUser);
+      if (!user) throw new Error('Session invalid');
+      if (!isFinOpsRole(user.role)) throw new Error('This account does not have FinOps access.');
+      el('login-step-email').classList.add('hidden');
+      el('login-step-code').classList.add('hidden');
+      el('logged-in-bar').classList.remove('hidden');
+      setUserInfo(user.email || email, user.role);
+      await loadAll();
+    } catch(e) {
+      console.warn('FinOps session expired:', e.message);
+      localStorage.removeItem(TOKEN_KEY);
+      localStorage.removeItem(EMAIL_KEY);
+      show('Session expired. Please log in again.', true, 'token-status');
+      renderModules(); renderFlow();
+    }
+  }
+
+  function logout() {
+    localStorage.removeItem(TOKEN_KEY);
+    localStorage.removeItem(EMAIL_KEY);
+    localStorage.removeItem(ADMIN_KEY);
+    window.location.reload();
   }
 
   function renderModules() {
@@ -601,9 +685,7 @@
   }
 
   window.addEventListener('DOMContentLoaded', () => {
-    const saved = getToken();
-    if (saved) { el('admin-token').value = saved; saveToken(); }
-    else { renderModules(); renderFlow(); }
+    resumeSession();
   });
   </script>
 </body>
