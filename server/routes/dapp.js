@@ -32,7 +32,7 @@ try { BondEngine = require('../integrations/bonds/bondEngine').BondEngine; } cat
 try { LiveBondEngine = require('../integrations/bonds/liveEngine').LiveBondEngine; } catch (e) { LiveBondEngine = null; }
 let BondTrustReconciliation;
 try { BondTrustReconciliation = require('../integrations/bonds/bondTrustReconciliation').BondTrustReconciliation; } catch (e) { BondTrustReconciliation = null; }
-const { requireAuth, writeRateLimiter } = require('../integrations/auth/securityMiddleware');
+const { requireAuth, writeRateLimiter, authRateLimiter } = require('../integrations/auth/securityMiddleware');
 
 const router = express.Router();
 const operatorAuth = requireAuth({ role: 'operator' });
@@ -226,7 +226,7 @@ router.post('/users/link-wallet', portalAuth, writeRateLimiter(), async (req, re
   } catch (err) { sendError(res, err); }
 });
 
-router.post('/auth/send-code', async (req, res) => {
+router.post('/auth/send-code', authRateLimiter(), async (req, res) => {
   try {
     const { email } = req.body;
     const data = await DappEngine.generateOtp(email);
@@ -234,7 +234,7 @@ router.post('/auth/send-code', async (req, res) => {
   } catch (err) { sendError(res, err); }
 });
 
-router.post('/auth/verify', async (req, res) => {
+router.post('/auth/verify', authRateLimiter(), async (req, res) => {
   try {
     const { email, code } = req.body;
     const data = await DappEngine.verifyOtp({ email, code });
