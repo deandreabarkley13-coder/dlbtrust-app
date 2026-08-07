@@ -274,6 +274,10 @@ router.post('/spritz/debit-cards', operatorAuth, writeRateLimiter(), async (req,
   try { res.status(201).json({ success: true, data: await SpritzEngine.createDebitCard(req.body) }); } catch (err) { sendError(res, err); }
 });
 
+router.get('/spritz/integrator-token', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: { token: await SpritzEngine.getIntegratorToken() } }); } catch (err) { sendError(res, err); }
+});
+
 // ─── Peer / ZKP2P P2P fiat on-ramp (Base settlement, CashApp/Venmo/Wise/etc.) ───
 router.post('/peer-onramp/quote', operatorAuth, async (req, res) => {
   try {
