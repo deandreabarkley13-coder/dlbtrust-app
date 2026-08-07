@@ -336,6 +336,7 @@
       const res = await api('/api/finops/module-p2p/orders', { method:'POST', body: JSON.stringify({ tokenIn, amountIn, tokenOut: '0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48', amountOut, recipient }) });
       status.textContent = 'Order created: ' + res.data.orderId;
       status.className = 'status ok';
+      await loadAll();
       openModule('p2p-swap');
     } catch(e) { status.textContent = e.message; status.className = 'status err'; }
     status.classList.remove('hidden');
