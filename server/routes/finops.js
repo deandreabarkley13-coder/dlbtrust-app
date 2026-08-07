@@ -7,6 +7,7 @@ const { ModuleSmartAccountEngine } = require('../integrations/dapp/moduleSmartAc
 const { ModuleP2PSwapEngine } = require('../integrations/dapp/moduleP2PSwapEngine');
 const { SpritzEngine } = require('../integrations/spritz/spritzEngine');
 const { PeerOnRampEngine } = require('../integrations/peer/peerOnRampEngine');
+const { PtcStablecoinEngine } = require('../integrations/dapp/ptcStablecoinEngine');
 
 const router = express.Router();
 const operatorAuth = requireAuth({ role: 'operator' });
@@ -261,6 +262,49 @@ router.get('/peer-onramp/intents/:hash', operatorAuth, async (req, res) => {
     const data = await PeerOnRampEngine.getIntentStatus(req.params.hash);
     res.json({ success: true, data });
   } catch (err) { sendError(res, err); }
+});
+
+// ═════════════════════════════════════════════════════════════════════════════
+// PTC-backed Stablecoin (reserve vault)
+// ═════════════════════════════════════════════════════════════════════════════
+router.get('/ptc-stablecoin', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await PtcStablecoinEngine.info() }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/ptc-stablecoin/deploy', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try { res.status(201).json({ success: true, data: await PtcStablecoinEngine.deploy(req.body) }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/ptc-stablecoin/reserve-tokens', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try { res.status(201).json({ success: true, data: await PtcStablecoinEngine.addReserveToken(req.body) }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/ptc-stablecoin/reserve-tokens/default', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try { res.status(201).json({ success: true, data: await PtcStablecoinEngine.addDefaultReserveTokens() }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/ptc-stablecoin/deposit', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try { res.status(201).json({ success: true, data: await PtcStablecoinEngine.approveAndDeposit(req.body) }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/ptc-stablecoin/deposit-all', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try { res.status(201).json({ success: true, data: await PtcStablecoinEngine.depositAll(req.body) }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/ptc-stablecoin/redeem', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try { res.status(201).json({ success: true, data: await PtcStablecoinEngine.redeem(req.body) }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/ptc-stablecoin/whitelist', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try { res.status(201).json({ success: true, data: await PtcStablecoinEngine.whitelist(req.body.address, req.body.allowed !== false) }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/ptc-stablecoin/transfer', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try { res.status(201).json({ success: true, data: await PtcStablecoinEngine.transfer(req.body) }); } catch (err) { sendError(res, err); }
+});
+
+router.get('/ptc-stablecoin/balance/:address', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: { address: req.params.address, balance: await PtcStablecoinEngine.balanceOf(req.params.address) } }); } catch (err) { sendError(res, err); }
 });
 
 module.exports = router;
