@@ -797,7 +797,7 @@ router.get('/ramps/requests', operatorAuth, async (req, res) => {
 });
 
 router.post('/ramps/requests/:id/approve', operatorAuth, writeRateLimiter(), async (req, res) => {
-  try { res.json({ success: true, data: await CanonicalConsensusEngine.approve({ proposalId: req.params.id, ...req.body }) }); } catch (err) { sendError(res, err); }
+  try { res.json({ success: true, data: await CanonicalConsensusEngine.approveProposal({ proposalId: req.params.id, ...req.body }) }); } catch (err) { sendError(res, err); }
 });
 
 router.post('/ramps/requests/:id/execute', operatorAuth, writeRateLimiter(), async (req, res) => {
