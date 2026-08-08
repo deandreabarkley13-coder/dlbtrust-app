@@ -755,8 +755,18 @@ class AccountAbstractionEngine {
         transport: this._bundlerTransport(cfg),
         paymaster: this._paymasterActions(paymasterAddress),
       });
+      // Use a fixed EntryPoint nonce sequence (key 0) so the paymaster hash is
+      // stable between gas estimation and the final send call.
+      const nonce = await publicClient.readContract({
+        address: cfg.entryPoint,
+        abi: aa.entryPoint06Abi,
+        functionName: 'getNonce',
+        args: [smartAccountAddress, 0n],
+      }).catch(() => 0n);
+
       userOp = await aa.prepareUserOperation(bundlerClient, {
         calls: [{ to: tokenAddress, value: 0n, data: callData }],
+        nonce,
       });
       userOpHash = aa.getUserOperationHash({
         chainId: cfg.chainId,
