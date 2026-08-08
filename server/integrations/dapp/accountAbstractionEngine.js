@@ -664,6 +664,8 @@ class AccountAbstractionEngine {
     });
 
     const signature = await operator.signMessage({ message: { raw: hash } });
+    const recovered = await viem.recoverMessageAddress({ message: { raw: hash }, signature });
+    console.log('[AccountAbstractionEngine] paymaster hash', hash, 'sig', signature, 'recovered', recovered, 'operator', operator.address);
     return viem.concat([paymasterAddress, validityBytes, signature]);
   }
 
