@@ -58,10 +58,21 @@ function bool(name, def = false) { const v = process.env[name]; return v ? Strin
 function num(name, def = 0) { const n = Number(process.env[name]); return Number.isFinite(n) ? n : def; }
 
 let pool = null;
-try {
-  const db = require('../../../db');
-  pool = db?.pool || null;
-} catch (e) { /* no DB in tests */ }
+try { pool = require('../bonds/pgPool'); } catch (e) { /* no DB in tests */ }
+if (process.env.DAPP_MEMORY_MODE === 'true') pool = null;
+
+const stateFilePath = path.join(process.env.DATA_DIR || '/data', 'aa-paymaster-state.json');
+function loadStateFile() {
+  try {
+    if (fs.existsSync(stateFilePath)) return JSON.parse(fs.readFileSync(stateFilePath, 'utf8'));
+  } catch (e) { console.warn('[AccountAbstractionEngine] loadStateFile failed:', e.message); }
+  return null;
+}
+function saveStateFile(record) {
+  try {
+    fs.writeFileSync(stateFilePath, JSON.stringify(record, null, 2));
+  } catch (e) { console.warn('[AccountAbstractionEngine] saveStateFile failed:', e.message); }
+}
 
 function id(prefix) {
   return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 8).toUpperCase()}`;
@@ -199,7 +210,12 @@ class AccountAbstractionEngine {
 
   static async _loadPaymaster() {
     if (memory.paymaster) return memory.paymaster;
-    if (!pool) return null;
+    const fromFile = loadStateFile();
+    if (fromFile && fromFile.paymaster_address) {
+      memory.paymaster = fromFile;
+      return fromFile;
+    }
+    if (!pool || !pool.query) return null;
     try {
       const { rows } = await pool.query('SELECT * FROM aa_paymasters ORDER BY created_at DESC LIMIT 1');
       if (rows && rows[0]) {
@@ -214,7 +230,8 @@ class AccountAbstractionEngine {
 
   static async _savePaymaster(record) {
     memory.paymaster = record;
-    if (!pool) return record;
+    saveStateFile(record);
+    if (!pool || !pool.query) return record;
     try {
       await pool.query(`
         INSERT INTO aa_paymasters (id, chain_id, network, paymaster_address, owner_address, deposit_tx, stake_tx, metadata)
