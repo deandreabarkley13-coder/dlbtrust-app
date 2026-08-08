@@ -8,7 +8,11 @@ const { ModuleP2PSwapEngine } = require('../integrations/dapp/moduleP2PSwapEngin
 const { SpritzEngine } = require('../integrations/spritz/spritzEngine');
 const { PeerOnRampEngine } = require('../integrations/peer/peerOnRampEngine');
 const { PtcStablecoinEngine } = require('../integrations/dapp/ptcStablecoinEngine');
+const { StablecoinEngine } = require('../integrations/dapp/stablecoinEngine');
+const { RedemptionEngine } = require('../integrations/dapp/redemptionEngine');
+const { AccountAbstractionEngine } = require('../integrations/dapp/accountAbstractionEngine');
 const { CanonicalConsensusEngine } = require('../integrations/dapp/canonicalConsensusEngine');
+const { FinOpsCoordinationEngine } = require('../integrations/finops/finopsCoordinationEngine');
 
 const router = express.Router();
 const operatorAuth = requireAuth({ role: 'operator' });
@@ -228,6 +232,56 @@ router.get('/spritz/off-ramps/:id', operatorAuth, async (req, res) => {
   } catch (err) { sendError(res, err); }
 });
 
+// ─── Spritz Bill Pay ─────────────────────────────────────────────────────────
+router.get('/spritz/bills', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await SpritzEngine.listBills() }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/spritz/bills/activate', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try { res.status(201).json({ success: true, data: await SpritzEngine.activateBills(req.body) }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/spritz/bills/:id/verify', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try { res.json({ success: true, data: await SpritzEngine.startBillVerification(req.params.id) }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/spritz/bills/:id/verify-submit', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try { res.json({ success: true, data: await SpritzEngine.submitBillVerification(req.params.id, req.body.responses) }); } catch (err) { sendError(res, err); }
+});
+
+router.delete('/spritz/bills/:id', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try { res.json({ success: true, data: await SpritzEngine.deleteBill(req.params.id) }); } catch (err) { sendError(res, err); }
+});
+
+// ─── Spritz Cards ────────────────────────────────────────────────────────────
+router.get('/spritz/cards', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await SpritzEngine.listCards() }); } catch (err) { sendError(res, err); }
+});
+
+router.get('/spritz/cards/balance', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await SpritzEngine.getCardBalance() }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/spritz/cards/:id/status', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try { res.json({ success: true, data: await SpritzEngine.updateCardStatus(req.params.id, req.body.status) }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/spritz/cards/:id/limit', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try { res.json({ success: true, data: await SpritzEngine.updateCardLimit(req.params.id, req.body) }); } catch (err) { sendError(res, err); }
+});
+
+router.get('/spritz/debit-cards', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await SpritzEngine.listDebitCards() }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/spritz/debit-cards', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try { res.status(201).json({ success: true, data: await SpritzEngine.createDebitCard(req.body) }); } catch (err) { sendError(res, err); }
+});
+
+router.get('/spritz/integrator-token', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: { token: await SpritzEngine.getIntegratorToken() } }); } catch (err) { sendError(res, err); }
+});
+
 // ─── Peer / ZKP2P P2P fiat on-ramp (Base settlement, CashApp/Venmo/Wise/etc.) ───
 router.post('/peer-onramp/quote', operatorAuth, async (req, res) => {
   try {
@@ -308,14 +362,86 @@ router.get('/ptc-stablecoin/balance/:address', operatorAuth, async (req, res) =>
   try { res.json({ success: true, data: { address: req.params.address, balance: await PtcStablecoinEngine.balanceOf(req.params.address) } }); } catch (err) { sendError(res, err); }
 });
 
-// ═════════════════════════════════════════════════════════════════════════════
-// Canonical Consensus Engine (Maker / Checker approvals)
-// ═════════════════════════════════════════════════════════════════════════════
-
 function getUserEmail(req) {
   const u = req.user || {};
   return u.email || u.username || u.userId || 'operator';
 }
+
+// ═════════════════════════════════════════════════════════════════════════════
+// Stablecoin Engine (trust-owned, multi-collateral, auditable)
+// ═════════════════════════════════════════════════════════════════════════════
+
+router.get('/stablecoin', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await StablecoinEngine.info() }); } catch (err) { sendError(res, err); }
+});
+
+router.get('/stablecoin/collateral-ratio', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await StablecoinEngine.collateralRatio() }); } catch (err) { sendError(res, err); }
+});
+
+router.get('/stablecoin/audit', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await StablecoinEngine.getAuditLog(req.query.limit ? Number(req.query.limit) : 100) }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/stablecoin/mint', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try { res.status(201).json({ success: true, data: await StablecoinEngine.mint({ ...req.body, operatorEmail: getUserEmail(req) }) }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/stablecoin/redeem', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try { res.status(201).json({ success: true, data: await StablecoinEngine.redeem({ ...req.body, operatorEmail: getUserEmail(req) }) }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/stablecoin/transfer', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try { res.status(201).json({ success: true, data: await StablecoinEngine.transfer({ ...req.body, operatorEmail: getUserEmail(req) }) }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/stablecoin/settle', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try { res.status(201).json({ success: true, data: await StablecoinEngine.settle({ ...req.body, operatorEmail: getUserEmail(req) }) }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/stablecoin/collateral', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try { res.status(201).json({ success: true, data: await StablecoinEngine.addCollateral(req.body.moduleKey, req.body.price, req.body.token, req.body.decimals) }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/stablecoin/pause', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try { res.json({ success: true, data: await StablecoinEngine.pause() }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/stablecoin/unpause', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try { res.json({ success: true, data: await StablecoinEngine.unpause() }); } catch (err) { sendError(res, err); }
+});
+
+// ═════════════════════════════════════════════════════════════════════════════
+// Redemption Engine (DLB-PTCUSD / module tokens -> fiat payout)
+// ═════════════════════════════════════════════════════════════════════════════
+
+router.get('/redemptions', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await RedemptionEngine.list(req.query) }); } catch (err) { sendError(res, err); }
+});
+
+router.get('/redemptions/:id', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await RedemptionEngine.get(req.params.id) }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/redemptions', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try { res.status(201).json({ success: true, data: await RedemptionEngine.create({ ...req.body, requesterEmail: getUserEmail(req) }) }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/redemptions/:id/execute', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try { res.json({ success: true, data: await RedemptionEngine.execute(req.params.id, { operatorEmail: getUserEmail(req) }) }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/redemptions/:id/approve', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try { res.json({ success: true, data: await RedemptionEngine.approve(req.params.id, getUserEmail(req)) }); } catch (err) { sendError(res, err); }
+});
+
+router.delete('/redemptions/:id', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try { res.json({ success: true, data: await RedemptionEngine.cancel(req.params.id) }); } catch (err) { sendError(res, err); }
+});
+
+// ═════════════════════════════════════════════════════════════════════════════
+// Canonical Consensus Engine (Maker / Checker approvals)
+// ═════════════════════════════════════════════════════════════════════════════
 
 router.get('/consensus', operatorAuth, async (req, res) => {
   try { res.json({ success: true, data: await CanonicalConsensusEngine.listProposals(req.query) }); } catch (err) { sendError(res, err); }
@@ -339,6 +465,70 @@ router.post('/consensus/proposals/:id/reject', operatorAuth, writeRateLimiter(),
 
 router.post('/consensus/proposals/:id/execute', operatorAuth, writeRateLimiter(), async (req, res) => {
   try { res.json({ success: true, data: await CanonicalConsensusEngine.executeProposal(req.params.id) }); } catch (err) { sendError(res, err); }
+});
+
+// ═════════════════════════════════════════════════════════════════════════════
+// Account Abstraction (gas sponsorship for operator / trustee smart accounts)
+// ═════════════════════════════════════════════════════════════════════════════
+
+router.get('/account-abstraction', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await AccountAbstractionEngine.readiness() }); } catch (err) { sendError(res, err); }
+});
+
+router.get('/account-abstraction/balance', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await AccountAbstractionEngine.getPaymasterBalance() }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/account-abstraction/deploy-paymaster', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try { res.json({ success: true, data: await AccountAbstractionEngine.deployPaymaster({ force: req.body?.force }) }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/account-abstraction/seed-paymaster', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try { res.json({ success: true, data: await AccountAbstractionEngine.seedPaymaster(req.body) }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/account-abstraction/fund-paymaster', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try { res.json({ success: true, data: await AccountAbstractionEngine.fundPaymaster(req.body) }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/account-abstraction/whitelist', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try { res.json({ success: true, data: await AccountAbstractionEngine.whitelistSender(req.body.address, req.body.allowed !== false) }); } catch (err) { sendError(res, err); }
+});
+
+router.get('/account-abstraction/smart-account/:owner', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: { smartAccountAddress: await AccountAbstractionEngine.getSmartAccountAddress(req.params.owner, req.query.index ? BigInt(req.query.index) : 0n) } }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/account-abstraction/prepare-transfer', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try { res.json({ success: true, data: await AccountAbstractionEngine.prepareGaslessTransfer(req.body) }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/account-abstraction/submit-transfer', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try { res.json({ success: true, data: await AccountAbstractionEngine.submitGaslessTransfer(req.body) }); } catch (err) { sendError(res, err); }
+});
+
+// ═════════════════════════════════════════════════════════════════════════════
+// FinOps Coordination Engine (AI agent stability & operation queue)
+// ═════════════════════════════════════════════════════════════════════════════
+
+router.get('/coordination/health', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await FinOpsCoordinationEngine.systemHealth() }); } catch (err) { sendError(res, err); }
+});
+
+router.get('/coordination/queue', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await FinOpsCoordinationEngine.listQueue(req.query) }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/coordination/command', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try { res.json({ success: true, data: await FinOpsCoordinationEngine.runCommand({ ...req.body, userId: getUserEmail(req) }) }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/coordination/jobs/:id/run', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try { res.json({ success: true, data: await FinOpsCoordinationEngine.processJob(req.params.id) }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/coordination/retry-failed', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try { res.json({ success: true, data: await FinOpsCoordinationEngine.retryFailed() }); } catch (err) { sendError(res, err); }
 });
 
 module.exports = router;

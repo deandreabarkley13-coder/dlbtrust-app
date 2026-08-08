@@ -10,6 +10,7 @@
  */
 
 const { getConfig } = require('../dapp/config');
+const crypto = require('crypto');
 
 let viem, chains, privateKeyToAccount;
 try { viem = require('viem'); chains = require('viem/chains'); ({ privateKeyToAccount } = require('viem/accounts')); } catch (e) { viem = null; chains = null; privateKeyToAccount = null; }
@@ -22,7 +23,7 @@ const erc20Abi = [
 ];
 
 const SUPPORTED_CHAINS = ['ethereum','polygon','arbitrum','base','optimism','avalanche','binance-smart-chain','solana','bitcoin','dash','tron','sui','hyperevm','monad','sonic','unichain'];
-const SUPPORTED_RAILS = ['ach_standard','rtp','wire','eft','sepa','push_to_debit','bill_pay'];
+const SUPPORTED_RAILS = ['ach_standard','ach_same_day','rtp','wire','eft','sepa','faster_payments','push_to_card','push_to_debit','bill_pay','card_deposit'];
 
 function str(name, def = '') { return (process.env[name] || def).trim(); }
 function baseUrl() { return str('SPRITZ_API_BASE_URL', 'https://platform.spritz.finance').replace(/\/$/, ''); }
@@ -31,21 +32,79 @@ function apiKey() {
   if (!key) throw new Error('SPRITZ_API_KEY not configured');
   return key;
 }
+function integratorKey() { return str('SPRITZ_INTEGRATOR_KEY'); }
+function integratorSecret() { return str('SPRITZ_INTEGRATOR_SECRET'); }
+function hasIntegratorCreds() { return Boolean(integratorKey() && integratorSecret()); }
 function useProxy() { return str('SPRITZ_USE_PROXY', 'false').toLowerCase() === 'true' || baseUrl() !== 'https://platform.spritz.finance'; }
 
 function cleanPath(p) { return p.startsWith('/') ? p : '/' + p; }
 
-async function spritzRequest(method, path, body) {
+function buildPathWithQuery(urlString) {
+  const url = new URL(urlString);
+  const params = url.searchParams;
+  if ([...params].length === 0) return url.pathname;
+  const query = [...params.keys()]
+    .sort()
+    .map(k => `${encodeURIComponent(k)}=${encodeURIComponent(params.get(k) || '')}`)
+    .join('&');
+  return `${url.pathname}?${query}`;
+}
+
+async function hmacSign(method, urlString, body) {
+  if (!hasIntegratorCreds()) return null;
+  const timestamp = Date.now();
+  const bodyHash = body ? crypto.createHash('sha256').update(body).digest('hex') : '';
+  const payload = `${timestamp}.${method.toUpperCase()}.${buildPathWithQuery(urlString)}.${bodyHash}`;
+  const signature = crypto.createHmac('sha256', integratorSecret()).update(payload).digest('hex');
+  return {
+    'X-Integrator-Key': integratorKey(),
+    'X-Timestamp': String(timestamp),
+    'X-Signature': `sha256=${signature}`,
+  };
+}
+
+let cachedIntegratorToken = null;
+let cachedTokenExpiresAt = 0;
+
+async function getIntegratorToken() {
+  if (cachedIntegratorToken && Date.now() < cachedTokenExpiresAt - 60_000) return cachedIntegratorToken;
+  if (!hasIntegratorCreds()) throw new Error('SPRITZ_INTEGRATOR_KEY and SPRITZ_INTEGRATOR_SECRET required for JWT exchange');
+  const url = baseUrl() + '/v1/integrator/tokens';
+  const body = JSON.stringify({ userApiKey: apiKey(), expiresIn: 3600 });
+  const signed = await hmacSign('POST', url, body);
+  const res = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json', ...signed }, body });
+  const text = await res.text();
+  let data;
+  try { data = text ? JSON.parse(text) : null; } catch { data = { raw: text }; }
+  if (!res.ok) {
+    const err = new Error(`Spritz integrator token exchange failed: ${res.status} ${res.statusText} — ${text || 'no body'}`);
+    err.status = res.status; err.data = data; throw err;
+  }
+  cachedIntegratorToken = data.accessToken;
+  cachedTokenExpiresAt = Date.now() + (data.expiresIn || 3600) * 1000;
+  return cachedIntegratorToken;
+}
+
+function clearTokenCache() { cachedIntegratorToken = null; cachedTokenExpiresAt = 0; }
+
+async function spritzRequest(method, path, body, options = {}) {
   const url = baseUrl() + cleanPath(path);
   const headers = {
     'Content-Type': 'application/json',
     'User-Agent': 'dlbtrust-spritz-engine/1.0',
     Origin: 'https://dlbtrust-app.fly.dev',
   };
-  if (useProxy()) {
+  if (options.useUserJwt) {
+    const token = await getIntegratorToken();
+    headers['Authorization'] = `Bearer ${token}`;
+  } else if (useProxy()) {
     headers['x-spritz-key'] = apiKey();
     const proxyAuth = str('SPRITZ_PROXY_AUTH');
     if (proxyAuth) headers['Authorization'] = proxyAuth;
+  } else if (hasIntegratorCreds()) {
+    const signed = await hmacSign(method, url, body !== undefined ? JSON.stringify(body) : undefined);
+    if (signed) Object.assign(headers, signed);
+    headers['Authorization'] = `Bearer ${apiKey()}`;
   } else {
     headers['Authorization'] = `Bearer ${apiKey()}`;
   }
@@ -166,6 +225,68 @@ class SpritzEngine {
     const receipt = await publicClient.waitForTransactionReceipt({ hash, timeout: 120000 });
     if (receipt.status !== 'success') throw new Error(`Spritz payment transaction reverted: ${hash}`);
     return { txHash: hash, quoteId, params };
+  }
+
+  static async listBills() {
+    return spritzRequest('GET', '/v1/bills/');
+  }
+
+  static async activateBills({ termsText, termsTextVersion, acceptedAt } = {}) {
+    const consent = {
+      termsText: termsText || str('SPRITZ_BILLPAY_TERMS', 'I agree to the Spritz bill pay terms.'),
+      termsTextVersion: termsTextVersion || str('SPRITZ_BILLPAY_TERMS_VERSION', '2026-01-01'),
+      acceptedAt: acceptedAt || new Date().toISOString(),
+    };
+    return spritzRequest('POST', '/v1/bills/activate', { consent });
+  }
+
+  static async startBillVerification(activationId) {
+    if (!activationId) throw new Error('activationId required');
+    return spritzRequest('POST', '/v1/bills/start_verification', { activationId });
+  }
+
+  static async submitBillVerification(activationId, responses) {
+    if (!activationId) throw new Error('activationId required');
+    if (!Array.isArray(responses)) throw new Error('responses array required');
+    return spritzRequest('POST', `/v1/bills/submit_verification/${activationId}`, { responses });
+  }
+
+  static async deleteBill(billId) {
+    if (!billId) throw new Error('billId required');
+    return spritzRequest('DELETE', `/v1/bills/${billId}`);
+  }
+
+  static async getIntegratorToken() {
+    return getIntegratorToken();
+  }
+
+  static clearIntegratorTokenCache() { clearTokenCache(); }
+
+  static async listCards() {
+    return spritzRequest('GET', '/v1/cards/', undefined, { useUserJwt: true });
+  }
+
+  static async getCardBalance() {
+    return spritzRequest('GET', '/v1/cards/balance', undefined, { useUserJwt: true });
+  }
+
+  static async listDebitCards() {
+    return spritzRequest('GET', '/v1/debit-cards/', undefined, { useUserJwt: true });
+  }
+
+  static async createDebitCard(payload) {
+    if (!payload || !payload.encryptedCardNumber) throw new Error('Encrypted card data required');
+    return spritzRequest('POST', '/v1/debit-cards/', payload, { useUserJwt: true });
+  }
+
+  static async updateCardStatus(cardId, status) {
+    if (!cardId || !status) throw new Error('cardId and status required');
+    return spritzRequest('POST', `/v1/cards/${cardId}/update_status`, { status }, { useUserJwt: true });
+  }
+
+  static async updateCardLimit(cardId, { amount, interval }) {
+    if (!cardId || !amount || !interval) throw new Error('cardId, amount and interval required');
+    return spritzRequest('POST', `/v1/cards/${cardId}/update_limit`, { spendLimit: { amount: String(amount), interval } }, { useUserJwt: true });
   }
 }
 
