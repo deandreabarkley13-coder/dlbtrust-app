@@ -385,6 +385,36 @@ SELECT fit_id, type, amount_cents, name, memo FROM ofx_transactions;
   - `GET /api/finops/canonical-money` returns `success: true` and an array of requests.
   - `GET /api/finops/consensus/proposals/<proposalId>` returns the proposal with `category: 'canonical_money'`, approvals, and `status`/`result`.
 
+## Liquidity Pool Engine (`/dapp/finops.html`)
+
+- Module card: **Liquidity Pool Engine** (`key:'liquidity-pool'`, `action:'openLiquidityPoolPanel'`).
+- Backend: `server/integrations/dapp/liquidityPoolEngine.js`, routes in `server/routes/finops.js`:
+  - `GET /api/finops/liquidity-pool` — list pools from `canonical_liquidity_pools` (currently empty until pools are created through this engine).
+  - `GET /api/finops/liquidity-pool/:address` — on-chain pool info via `DexSwapEngine.getPoolInfo`.
+  - `POST /api/finops/liquidity-pool/create`
+  - `POST /api/finops/liquidity-pool/add-liquidity`
+  - `POST /api/finops/liquidity-pool/remove-liquidity`
+  - `POST /api/finops/liquidity-pool/quote`
+  - `POST /api/finops/liquidity-pool/swap`
+- UI panel sections:
+  - **Create Pool** — tokenA, tokenB, decimals A/B, amountA, amountB.
+  - **Add / Remove Liquidity** — pool address, amountA, amountB.
+  - **Swap / Quote** — pool address, tokenIn, amountIn, minOut/slippage, recipient.
+- Testing the quote (read-only):
+  - If `BOND_DEX_ADDRESS` is configured (env on Fly), use it as the pool address.
+  - Example payload for the live BondDex pool (`0x6d81a71daa0aea908d57c31251db0013b2e41aea`):
+    ```json
+    {
+      "poolAddress": "0x6d81a71daa0aea908d57c31251db0013b2e41aea",
+      "tokenIn": "0x6bA8D02596a3b091A7246e38e3e078f770D33985",
+      "amountIn": "1",
+      "decimalsIn": 6
+    }
+    ```
+  - Expected response: `success: true`, `data.tokenOut` is the other pool token, `data.amountOut` is a positive decimal string, `data.mode: 'live'`.
+- Note: `create`/`add`/`remove`/`swap` are write endpoints and require mainnet gas; skip them unless the operator wallet is funded.
+- The `GET /api/finops/liquidity-pool` list may be empty even when a BondDex pool exists on-chain, because `listPools()` only queries the `canonical_liquidity_pools` table populated by this engine.
+
 ## Devin Secrets Needed
 
 - `DATABASE_URL` or local Postgres credentials (`dlbtrust`/`dlbtrust`).
