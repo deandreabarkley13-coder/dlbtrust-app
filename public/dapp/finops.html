@@ -1433,27 +1433,57 @@
   async function loadRedemptionGateway() {
     const body = el('panel-body');
     try {
-      const list = await api('/api/finops/redemption-gateway');
+      const [list, bankAccounts] = await Promise.all([
+        api('/api/finops/redemption-gateway'),
+        api('/api/finops/spritz/bank-accounts').catch(() => ({ data: [] })),
+      ]);
       let html = '<div class="muted" style="margin-bottom:12px;">Bridge DLB-PTCUSD to external clearing, stablecoin, or fiat rails.</div>';
       html += '<h3 style="font-size:14px;margin:0 0 8px;">Create Request</h3>';
-      html += '<div class="token-bar"><input id="rgw-beneficiary" placeholder="beneficiary address" /></div>';
+      html += '<div class="token-bar"><input id="rgw-beneficiary" placeholder="beneficiary / recipient" /></div>';
       html += '<div class="token-bar"><input id="rgw-amount" placeholder="amount" /></div>';
-      html += '<div class="token-bar"><input id="rgw-rail" placeholder="rail (clearing/besu/spritz/dex/p2p/bank_wire)" /></div>';
-      html += '<div class="approval-actions"><button class="btn" onclick="redemptionGatewayCreate()">Create</button></div>';
+      html += '<div class="token-bar"><input id="rgw-rail" placeholder="rail (clearing/besu/spritz/dex/p2p/bank_wire)" onchange="redemptionGatewayToggleRail()" /></div>';
+      html += '<div id="rgw-destination-box" class="token-bar" style="display:none;"><input id="rgw-destination" placeholder="destination JSON" /></div>';
+      html += '<div id="rgw-spritz-box" style="display:none;margin-top:8px;">';
+      html += '<div class="token-bar"><select id="rgw-account"><option value="">Select Spritz account</option>' + (bankAccounts.data || []).map(a => `<option value="${a.id}">${a.label || a.id} (${a.accountSubtype || ''})</option>`).join('') + '</select></div>';
+      html += '<div class="token-bar"><input id="rgw-spritz-rail" placeholder="Spritz rail (ach_standard, ach_same_day, rtp, wire, push_to_card, bill_pay)" value="ach_standard" /></div>';
+      html += '</div>';
+      html += '<div class="approval-actions"><button class="btn" onclick="redemptionGatewayCreate()">Create & Execute</button></div>';
       html += '<h3 style="font-size:14px;margin:16px 0 8px;">Requests</h3>';
       html += (list.data || []).map(r => `<div style="font-size:12px;border-bottom:1px solid var(--border);padding:4px 0;">${r.id}: ${r.beneficiary} ${r.amount} ${r.stablecoin} <em>${r.status}</em> (${r.externalRail})</div>`).join('');
       body.innerHTML = html;
     } catch(e) { body.innerHTML = '<div class="status err">' + e.message + '</div>'; }
   }
 
+  function redemptionGatewayToggleRail() {
+    const rail = el('rgw-rail').value.trim();
+    const destBox = el('rgw-destination-box');
+    const spritzBox = el('rgw-spritz-box');
+    if (rail === 'spritz') { spritzBox.style.display = 'block'; destBox.style.display = 'none'; }
+    else if (['clearing','besu','dex','p2p','bank_wire'].includes(rail)) { destBox.style.display = 'block'; spritzBox.style.display = 'none'; }
+    else { destBox.style.display = 'none'; spritzBox.style.display = 'none'; }
+  }
+
   async function redemptionGatewayCreate() {
     const beneficiary = el('rgw-beneficiary').value.trim();
     const amount = el('rgw-amount').value.trim();
     const externalRail = el('rgw-rail').value.trim() || 'clearing';
+    let destination = {};
     try {
-      const res = await api('/api/finops/redemption-gateway', { method:'POST', body: JSON.stringify({ beneficiary, amount, externalRail }) });
+      const raw = el('rgw-destination').value.trim();
+      if (raw) destination = JSON.parse(raw);
+    } catch(e) { alert('Invalid destination JSON'); return; }
+    if (externalRail === 'spritz') {
+      const accountId = el('rgw-account').value.trim() || el('rgw-beneficiary').value.trim();
+      const rail = el('rgw-spritz-rail').value.trim() || 'ach_standard';
+      destination = { ...destination, accountId, rail };
+    }
+    try {
+      const res = await api('/api/finops/redemption-gateway', { method:'POST', body: JSON.stringify({ beneficiary, amount, externalRail, destination }) });
       const id = res.data?.id;
-      if (id) await api('/api/finops/redemption-gateway/' + id + '/execute', { method:'POST' });
+      if (id) {
+        const exec = await api('/api/finops/redemption-gateway/' + id + '/execute', { method:'POST' });
+        alert('Status: ' + exec.data?.status + (exec.data?.metadata?.result?.error ? ' — ' + exec.data.metadata.result.error : ''));
+      }
       await loadRedemptionGateway();
     } catch(e) { alert(e.message); }
   }
