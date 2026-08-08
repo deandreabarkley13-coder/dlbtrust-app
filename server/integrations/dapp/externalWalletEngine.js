@@ -42,6 +42,7 @@ class ExternalWalletEngine {
         created_at  TIMESTAMPTZ DEFAULT NOW()
       )
     `);
+    await query(`CREATE UNIQUE INDEX IF NOT EXISTS idx_external_wallets_address ON external_wallets(address)`);
     await query(`
       CREATE TABLE IF NOT EXISTS external_wallet_swaps (
         id            TEXT PRIMARY KEY,
