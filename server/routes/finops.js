@@ -13,6 +13,9 @@ const { RedemptionEngine } = require('../integrations/dapp/redemptionEngine');
 const { AccountAbstractionEngine } = require('../integrations/dapp/accountAbstractionEngine');
 const { CanonicalConsensusEngine } = require('../integrations/dapp/canonicalConsensusEngine');
 const { FinOpsCoordinationEngine } = require('../integrations/finops/finopsCoordinationEngine');
+const { HyperledgerBesuEngine } = require('../integrations/dapp/hyperledgerBesuEngine');
+const { ClearingEngine } = require('../integrations/dapp/clearingEngine');
+const { RedemptionGatewayEngine } = require('../integrations/dapp/redemptionGatewayEngine');
 
 const router = express.Router();
 const operatorAuth = requireAuth({ role: 'operator' });
@@ -529,6 +532,62 @@ router.post('/coordination/jobs/:id/run', operatorAuth, writeRateLimiter(), asyn
 
 router.post('/coordination/retry-failed', operatorAuth, writeRateLimiter(), async (req, res) => {
   try { res.json({ success: true, data: await FinOpsCoordinationEngine.retryFailed() }); } catch (err) { sendError(res, err); }
+});
+
+// ═════════════════════════════════════════════════════════════════════════════
+// Hyperledger Besu Clearing & Redemption Gateway
+// ═════════════════════════════════════════════════════════════════════════════
+
+router.get('/besu/status', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await HyperledgerBesuEngine.status() }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/besu/deploy-clearing', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try { res.json({ success: true, data: await HyperledgerBesuEngine.deployClearingContract() }); } catch (err) { sendError(res, err); }
+});
+
+router.get('/clearing', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await ClearingEngine.list(req.query) }); } catch (err) { sendError(res, err); }
+});
+
+router.get('/clearing/:id', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await ClearingEngine.get(req.params.id) }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/clearing', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try { res.status(201).json({ success: true, data: await ClearingEngine.submit(req.body) }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/clearing/:id/approve', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try { res.json({ success: true, data: await ClearingEngine.approve(req.params.id) }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/clearing/:id/settle', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try { res.json({ success: true, data: await ClearingEngine.settle(req.params.id) }); } catch (err) { sendError(res, err); }
+});
+
+router.delete('/clearing/:id', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try { res.json({ success: true, data: await ClearingEngine.cancel(req.params.id) }); } catch (err) { sendError(res, err); }
+});
+
+router.get('/clearing/net-positions', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await ClearingEngine.netPositions() }); } catch (err) { sendError(res, err); }
+});
+
+router.get('/redemption-gateway', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await RedemptionGatewayEngine.list(req.query) }); } catch (err) { sendError(res, err); }
+});
+
+router.get('/redemption-gateway/:id', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await RedemptionGatewayEngine.get(req.params.id) }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/redemption-gateway', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try { res.status(201).json({ success: true, data: await RedemptionGatewayEngine.create(req.body) }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/redemption-gateway/:id/execute', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try { res.json({ success: true, data: await RedemptionGatewayEngine.execute(req.params.id) }); } catch (err) { sendError(res, err); }
 });
 
 module.exports = router;
