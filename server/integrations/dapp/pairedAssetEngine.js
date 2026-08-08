@@ -125,9 +125,9 @@ class PairedAssetEngine {
       if (!ModuleP2PSwapEngine) issues.push('ModuleP2PSwapEngine not available');
       if (PtcStablecoinEngine) {
         try {
-          const state = PtcStablecoinEngine.loadState ? PtcStablecoinEngine.loadState() : {};
-          if (!state.vaultAddress) issues.push('PTC reserve vault not deployed');
-        } catch (e) {}
+          const info = await PtcStablecoinEngine.info();
+          if (!info.deployed || !info.vaultAddress) issues.push('PTC reserve vault not deployed');
+        } catch (e) { issues.push('PTC stablecoin state unavailable'); }
       }
       return { ...base, ready: ready && issues.length === 0, issues };
     }
