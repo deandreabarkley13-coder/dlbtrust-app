@@ -706,11 +706,12 @@ class AccountAbstractionEngine {
     }
   }
 
-  static async prepareGaslessTransfer({ owner, to, amount, tokenAddress, index = 0n } = {}) {
+  static async prepareGaslessTransfer({ owner, to, amount, token, tokenAddress, index = 0n } = {}) {
     await ensureTables();
     const cfg = this._checkDeps();
     if (!viem.isAddress(owner)) throw new Error('owner must be an EVM address');
     if (!viem.isAddress(to)) throw new Error('to must be an EVM address');
+    tokenAddress = tokenAddress || token;
     if (!tokenAddress) {
       try {
         const { SovereignTrustEngine } = require('./sovereignTrustEngine');
@@ -906,7 +907,7 @@ class AccountAbstractionEngine {
     op.on_chain_tx = receipt.receipt.transactionHash || receipt.userOpHash;
     await this._saveOperation(op);
 
-    return { success: true, operationId, userOpHash: submittedUserOpHash, tx: receipt.receipt.transactionHash || receipt.userOpHash, receipt };
+    return { success: true, operationId, userOpHash: submittedUserOpHash, tx: receipt.receipt.transactionHash || receipt.userOpHash, receipt: JSON.parse(JSON.stringify(receipt, (k, v) => typeof v === 'bigint' ? String(v) : v)) };
   }
 
   static async _dbOperation(operationId) {
