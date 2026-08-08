@@ -337,6 +337,54 @@ SELECT fit_id, type, amount_cents, name, memo FROM ofx_transactions;
   6. `curl -H 'x-admin-token: dlb-admin-2026-trust' https://dlbtrust-app.fly.dev/api/finops/ptc-stablecoin/balance/<address>` returns the on-chain balance.
 - Write operations (deploy, deposit, transfer, redeem) require `DAPP_PRIVATE_KEY` and mainnet ETH; do not execute in read-only tests without confirming gas.
 
+## Canonical Liquidity Engine (`/dapp/finops.html`)
+
+- Module card: **Canonical Liquidity** (`key:'canonical-liquidity'`, `action:'openCanonicalLiquidityPanel'`) in `public/dapp/finops.html`.
+- Backend: `server/integrations/dapp/canonicalLiquidityEngine.js` and routes in `server/routes/finops.js`:
+  - `GET /api/finops/liquidity` (list pools)
+  - `GET /api/finops/liquidity/proposals` (list proposals)
+  - `POST /api/finops/liquidity/proposals` (create proposal)
+  - `POST /api/finops/liquidity/proposals/:id/approve`
+  - `POST /api/finops/liquidity/proposals/:id/execute`
+- Proposals are stored as `category:'liquidity'` in the canonical consensus (`canonical_proposals`) table; `CanonicalLiquidityEngine` delegates execution to `DexSwapEngine.createPool`/`addLiquidity`/`swap`.
+- The panel supports `create_pool`, `add_liquidity`, and `swap` proposals; sample tiny `create_pool`:
+  - Token A: `0xb01e6280ffe6faac679a17b029df8e065e8d0002` (DLB-PTCUSD)
+  - Token B: `0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48` (USDC)
+  - Amounts: `0.001` / `0.001`
+- Approval flow:
+  1. The UI **Approve** button calls `canonicalLiquidityApprove(proposalId)` and now sends a JSON body with `role` and `approverEmail` (fixed in the build that added Canonical Money).
+  2. Select role `checker` and enter a valid checker email, then click **Approve**.
+  3. With threshold `1` and a single `checker` approval, the proposal auto-executes. Because `DAPP_SHADOW=false` on the live deploy, `DexSwapEngine` attempts a real mainnet pool deployment. The operator wallet (`0x3e5302...`) usually has too little ETH, so execution fails with `insufficient funds for gas * price + value` and the proposal `status` becomes `failed`. This is the expected on-chain failure.
+- Read-only verification:
+  1. `GET /api/finops/liquidity` should return `success: true` and `data: []` (or existing pools).
+  2. `GET /api/finops/liquidity/proposals` should return `success: true` and a list including the newly created/failed proposal with `category: 'liquidity'`.
+- The card stat is currently always `—`; `loadAll()` does not populate it from the proposal count. This is cosmetic if the panel functions correctly.
+
+## Canonical Money Engine (`/dapp/finops.html`)
+
+- Module card: **Canonical Money** (`key:'canonical-money'`, `action:'openCanonicalMoneyPanel'`).
+- Backend: `server/integrations/dapp/canonicalMoneyEngine.js`, routes in `server/routes/finops.js`:
+  - `GET /api/finops/canonical-money` — list conversion requests.
+  - `POST /api/finops/canonical-money/quote` — get route for a source/target combination.
+  - `POST /api/finops/canonical-money/requests` — propose a conversion (creates a `canonical_money` consensus proposal).
+  - `POST /api/finops/canonical-money/requests/:id/approve` — approve and auto-execute.
+- UI form fields:
+  - Source type: ledger sources (`cash`, `treasury`, `trust`, `bond`, `fixed_income`, `fineract`, `sub_ledger`) or token/module (`DLB-PTCUSD`, `DLB-PRB`, `DLB-FIXED-INCOME`, etc.).
+  - Source account / token address: ledger account id (e.g. `1`) for source types, or leave blank for tokens/modules.
+  - Target asset: `USDC`, `USDS`, `DAI`, `WETH`, `ETH`.
+  - Optional pool address and recipient.
+- Expected quote behavior:
+  - `fixed_income` source → route `action: 'mint_and_swap'`, note `Mint DLBUSD from ledger and swap on DEX`.
+  - `DLB-PTCUSD` source with no active pool → route `action: 'ptc_swap'`, `poolAddress: null`, note `No canonical liquidity pool found; create one first`.
+- Approval flow:
+  1. The **Approve** button calls `canonicalMoneyApprove(proposalId)` with `role` and `approverEmail` from the per-row dropdown/input (verify with a fetch interceptor or network tab).
+  2. Auto-execution runs through `CanonicalConsensusEngine._execute` → `CanonicalMoneyEngine._executeRoute`. For ledger sources it uses `StablecoinDexEngine.depositAndSwap`; for PTC/module sources it uses `PtcStablecoinEngine`/`DexSwapEngine`.
+  3. With operator ETH near zero, execution fails quickly with `insufficient funds for gas * price + value`. The `canonical_proposals` row is updated to `failed` with the error in `result`.
+- Caveat: `CanonicalMoneyEngine._execute` does not wrap `_executeRoute` in a try/catch, so `canonical_money_requests` is not updated to `failed` when the route throws. Check `canonical_proposals` status for the real execution result if the UI request list still shows `pending`.
+- Read-only verification:
+  - `GET /api/finops/canonical-money` returns `success: true` and an array of requests.
+  - `GET /api/finops/consensus/proposals/<proposalId>` returns the proposal with `category: 'canonical_money'`, approvals, and `status`/`result`.
+
 ## Devin Secrets Needed
 
 - `DATABASE_URL` or local Postgres credentials (`dlbtrust`/`dlbtrust`).

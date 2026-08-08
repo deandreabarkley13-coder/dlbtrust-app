@@ -233,6 +233,16 @@ class CanonicalConsensusEngine {
       case 'p2p_fill':
         if (!ModuleP2PSwapEngine) throw new Error('ModuleP2PSwapEngine not available');
         return ModuleP2PSwapEngine.fillOrder(payload || {});
+      case 'liquidity': {
+        const { CanonicalLiquidityEngine } = require('./canonicalLiquidityEngine');
+        if (!CanonicalLiquidityEngine) throw new Error('CanonicalLiquidityEngine not available');
+        return CanonicalLiquidityEngine._execute(proposal);
+      }
+      case 'canonical_money': {
+        const { CanonicalMoneyEngine } = require('./canonicalMoneyEngine');
+        if (!CanonicalMoneyEngine) throw new Error('CanonicalMoneyEngine not available');
+        return CanonicalMoneyEngine._execute(proposal);
+      }
       case 'custom':
         return { status: 'approved', message: 'Custom proposal approved, no automatic execution configured', payload };
       default:

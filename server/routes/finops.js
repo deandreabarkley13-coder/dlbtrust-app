@@ -16,6 +16,8 @@ const { FinOpsCoordinationEngine } = require('../integrations/finops/finopsCoord
 const { HyperledgerBesuEngine } = require('../integrations/dapp/hyperledgerBesuEngine');
 const { ClearingEngine } = require('../integrations/dapp/clearingEngine');
 const { RedemptionGatewayEngine } = require('../integrations/dapp/redemptionGatewayEngine');
+const { CanonicalLiquidityEngine } = require('../integrations/dapp/canonicalLiquidityEngine');
+const { CanonicalMoneyEngine } = require('../integrations/dapp/canonicalMoneyEngine');
 
 const router = express.Router();
 const operatorAuth = requireAuth({ role: 'operator' });
@@ -468,6 +470,54 @@ router.post('/consensus/proposals/:id/reject', operatorAuth, writeRateLimiter(),
 
 router.post('/consensus/proposals/:id/execute', operatorAuth, writeRateLimiter(), async (req, res) => {
   try { res.json({ success: true, data: await CanonicalConsensusEngine.executeProposal(req.params.id) }); } catch (err) { sendError(res, err); }
+});
+
+// ═════════════════════════════════════════════════════════════════════════════
+// Canonical Liquidity Engine (governed DEX liquidity for trust assets)
+// ═════════════════════════════════════════════════════════════════════════════
+
+router.get('/liquidity', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await CanonicalLiquidityEngine.listPools() }); } catch (err) { sendError(res, err); }
+});
+
+router.get('/liquidity/proposals', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await CanonicalLiquidityEngine.listProposals(req.query) }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/liquidity/proposals', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try {
+    const { action, title, payload } = req.body;
+    const data = await CanonicalLiquidityEngine.propose({ action, title, createdBy: getUserEmail(req), payload });
+    res.status(201).json({ success: true, data });
+  } catch (err) { sendError(res, err); }
+});
+
+router.post('/liquidity/proposals/:id/approve', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try { res.json({ success: true, data: await CanonicalLiquidityEngine.approve({ proposalId: req.params.id, ...req.body }) }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/liquidity/proposals/:id/execute', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try { res.json({ success: true, data: await CanonicalLiquidityEngine.executeProposal(req.params.id) }); } catch (err) { sendError(res, err); }
+});
+
+// ═════════════════════════════════════════════════════════════════════════════
+// Canonical Money Engine (turn trust assets/income into canonical stablecoins)
+// ═════════════════════════════════════════════════════════════════════════════
+
+router.get('/canonical-money', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await CanonicalMoneyEngine.listRequests(req.query) }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/canonical-money/quote', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await CanonicalMoneyEngine.quote(req.body) }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/canonical-money/requests', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try { res.status(201).json({ success: true, data: await CanonicalMoneyEngine.propose({ ...req.body, createdBy: getUserEmail(req) }) }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/canonical-money/requests/:id/approve', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try { res.json({ success: true, data: await CanonicalMoneyEngine.approve({ proposalId: req.params.id, ...req.body }) }); } catch (err) { sendError(res, err); }
 });
 
 // ═════════════════════════════════════════════════════════════════════════════

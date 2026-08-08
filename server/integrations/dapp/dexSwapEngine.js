@@ -415,6 +415,91 @@ class DexSwapEngine {
       txHash: addReceipt.transactionHash,
     };
   }
+
+  static async getPoolInfo({ poolAddress } = {}) {
+    if (!poolAddress) throw new Error('poolAddress required');
+    const cfg = this.getConfig();
+    if (cfg.shadow) return { poolAddress, mode: 'shadow' };
+    if (!viem) throw new Error('viem not installed');
+    const { publicClient } = walletClient();
+    const [token0, token1, reserve0, reserve1] = await Promise.all([
+      publicClient.readContract({ address: poolAddress, abi: bondDexAbi, functionName: 'token0' }),
+      publicClient.readContract({ address: poolAddress, abi: bondDexAbi, functionName: 'token1' }),
+      publicClient.readContract({ address: poolAddress, abi: bondDexAbi, functionName: 'reserve0' }),
+      publicClient.readContract({ address: poolAddress, abi: bondDexAbi, functionName: 'reserve1' }),
+    ]);
+    const [decimals0, decimals1] = await Promise.all([
+      publicClient.readContract({ address: token0, abi: erc20Abi, functionName: 'decimals' }),
+      publicClient.readContract({ address: token1, abi: erc20Abi, functionName: 'decimals' }),
+    ]);
+    return { poolAddress, token0, token1, decimals0, decimals1, reserve0: String(reserve0), reserve1: String(reserve1), mode: 'live' };
+  }
+
+  static async addLiquidity({ poolAddress, tokenA, tokenB, amountA, amountB, decimalsA = 6, decimalsB = 6 } = {}) {
+    if (!poolAddress || !tokenA || !tokenB || amountA === undefined || amountB === undefined) throw new Error('poolAddress, tokenA, tokenB, amountA, amountB required');
+    const cfg = this.getConfig();
+    if (cfg.shadow) return { poolAddress, mode: 'shadow', amountA, amountB };
+    if (!cfg.privateKey || !viem) throw new Error('DAPP_PRIVATE_KEY or viem not configured');
+
+    const { wallet, publicClient, fees } = walletClient();
+    const [token0, token1] = await Promise.all([
+      publicClient.readContract({ address: poolAddress, abi: bondDexAbi, functionName: 'token0' }),
+      publicClient.readContract({ address: poolAddress, abi: bondDexAbi, functionName: 'token1' }),
+    ]);
+    const [decimals0, decimals1] = await Promise.all([
+      publicClient.readContract({ address: token0, abi: erc20Abi, functionName: 'decimals' }),
+      publicClient.readContract({ address: token1, abi: erc20Abi, functionName: 'decimals' }),
+    ]);
+
+    const tokenAIsToken0 = tokenA.toLowerCase() === token0.toLowerCase();
+    const raw0 = tokenAIsToken0
+      ? viem.parseUnits(String(amountA), decimals0)
+      : viem.parseUnits(String(amountB), decimals1);
+    const raw1 = tokenAIsToken0
+      ? viem.parseUnits(String(amountB), decimals1)
+      : viem.parseUnits(String(amountA), decimals0);
+
+    const approve0 = await wallet.writeContract({
+      address: token0,
+      abi: erc20Abi,
+      functionName: 'approve',
+      args: [poolAddress, raw0],
+      gas: 100000n,
+      ...fees,
+    });
+    await publicClient.waitForTransactionReceipt({ hash: approve0, timeout: 120000 });
+
+    const approve1 = await wallet.writeContract({
+      address: token1,
+      abi: erc20Abi,
+      functionName: 'approve',
+      args: [poolAddress, raw1],
+      gas: 100000n,
+      ...fees,
+    });
+    await publicClient.waitForTransactionReceipt({ hash: approve1, timeout: 120000 });
+
+    const addHash = await wallet.writeContract({
+      address: poolAddress,
+      abi: bondDexAbi,
+      functionName: 'addLiquidity',
+      args: [raw0, raw1],
+      gas: 300000n,
+      ...fees,
+    });
+    const addReceipt = await publicClient.waitForTransactionReceipt({ hash: addHash, timeout: 120000 });
+    if (addReceipt.status !== 'success') throw new Error(`addLiquidity failed: ${addReceipt.transactionHash}`);
+
+    return {
+      poolAddress,
+      token0,
+      token1,
+      amountA,
+      amountB,
+      mode: 'live',
+      txHash: addReceipt.transactionHash,
+    };
+  }
 }
 
 module.exports = { DexSwapEngine, UNISWAP_V2_ROUTER_02, SWAP_ROUTER_02, erc20Abi, uniswapV2RouterAbi };
