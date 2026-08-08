@@ -267,10 +267,26 @@ class PairedAssetEngine {
     return { status: 'executed', requestId, depositResult, poolResult };
   }
 
+  static async _operatorEthBalance() {
+    if (!viem) return 0n;
+    const cfg = this.config;
+    const { mainnet, sepolia } = require('viem/chains');
+    const chain = cfg.chainId === 11155111 ? sepolia : mainnet;
+    const publicClient = viem.createPublicClient({ chain, transport: viem.http(cfg.rpcUrl) });
+    return publicClient.getBalance({ address: cfg.operatorAddress });
+  }
+
   static async _fundPairedAsset({ method, amount, token, sourceAccountId, balB, needRaw }) {
     const cfg = this.config;
     if (balB.raw >= needRaw) {
       return { status: 'ready', source: 'operator_wallet', balance: balB.formatted };
+    }
+    if (method === 'module_redemption') {
+      const eth = await this._operatorEthBalance();
+      const minEth = viem.parseEther('0.00035'); // rough budget for redeem + createOrder
+      if (eth < minEth) {
+        return { status: 'needs_gas', source: 'operator_wallet', balanceEth: viem.formatEther(eth), neededEth: '0.00035', instructions: `Operator wallet needs at least ~0.00035 ETH for gas to redeem reserves and list the P2P order. Send ETH to ${cfg.operatorAddress}.` };
+      }
     }
     if (method === 'manual' || method === 'counterparty') {
       return {
