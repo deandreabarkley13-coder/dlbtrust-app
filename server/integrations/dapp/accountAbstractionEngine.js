@@ -724,12 +724,20 @@ class AccountAbstractionEngine {
     }
     if (!amount || amount === '0') throw new Error('amount required');
 
-    const account = await this.buildSmartAccount(owner, index);
+    const account = await this.buildSmartAccount(owner, typeof index === 'bigint' ? index : BigInt(index || 0));
     const smartAccountAddress = account.address;
+
+    const publicClient = this._publicClient(cfg);
+    const decimals = (tokenAddress && tokenAddress.startsWith('0x')) ? await publicClient.readContract({
+      address: tokenAddress,
+      abi: ERC20_TRANSFER_ABI,
+      functionName: 'decimals',
+    }).catch(() => 18) : 18;
+    const rawAmount = viem.parseUnits(String(amount), decimals);
     const callData = viem.encodeFunctionData({
       abi: ERC20_TRANSFER_ABI,
       functionName: 'transfer',
-      args: [to, BigInt(amount)],
+      args: [to, rawAmount],
     });
 
     let userOp;
