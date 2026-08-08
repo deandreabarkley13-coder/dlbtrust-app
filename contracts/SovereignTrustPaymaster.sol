@@ -94,7 +94,13 @@ contract SovereignTrustPaymaster is IPaymaster06 {
 
     function parsePaymasterAndData(bytes calldata paymasterAndData) public pure returns (uint48 validUntil, uint48 validAfter, bytes calldata signature) {
         require(paymasterAndData.length >= SIGNATURE_OFFSET, "SovereignTrustPaymaster: bad paymasterAndData");
-        (validUntil, validAfter) = abi.decode(paymasterAndData[VALID_TIMESTAMP_OFFSET:SIGNATURE_OFFSET], (uint48, uint48));
+        // validityBytes are two 32-byte words with uint48 values padded to the right.
+        // Read the low 48 bits of each word directly from the calldata slice.
+        assembly {
+            let start := add(paymasterAndData.offset, VALID_TIMESTAMP_OFFSET)
+            validUntil := and(calldataload(start), 0xffffffffffff)
+            validAfter := and(calldataload(add(start, 32)), 0xffffffffffff)
+        }
         signature = paymasterAndData[SIGNATURE_OFFSET:];
     }
 
