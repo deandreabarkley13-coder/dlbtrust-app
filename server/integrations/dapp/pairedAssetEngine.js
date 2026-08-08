@@ -11,12 +11,13 @@
 const { query } = require('../bonds/pgPool');
 const { getConfig } = require('./config');
 
-let LiquidityPoolEngine, CanonicalConsensusEngine, CircleMintClient, CoinbaseTreasuryBridge, MoonPayEngine;
+let LiquidityPoolEngine, CanonicalConsensusEngine, CircleMintClient, CoinbaseTreasuryBridge, MoonPayEngine, StablecoinDexEngine;
 try { ({ LiquidityPoolEngine } = require('./liquidityPoolEngine')); } catch (e) {}
 try { ({ CanonicalConsensusEngine } = require('./canonicalConsensusEngine')); } catch (e) {}
 try { CircleMintClient = require('../stablecoin/circleMintClient').CircleMintClient; } catch (e) {}
 try { ({ CoinbaseTreasuryBridge } = require('./coinbaseTreasuryBridge')); } catch (e) {}
 try { ({ MoonPayEngine } = require('./moonPayEngine')); } catch (e) {}
+try { ({ StablecoinDexEngine } = require('./stablecoinDexEngine')); } catch (e) {}
 
 let viem;
 try { viem = require('viem'); } catch (e) {}
@@ -60,10 +61,16 @@ class PairedAssetEngine {
     await query(`CREATE INDEX IF NOT EXISTS idx_paired_asset_status ON dapp_paired_asset_requests(status)`);
   }
 
-  static _resolveToken(token) {
+  static async _resolveToken(token) {
     const cfg = this.config;
     const t = String(token || '').toUpperCase();
-    if (t === 'DLBUSD') return { address: process.env.DLBUSD_ADDRESS || cfg.dlbUSDAddress || '', decimals: 6 };
+    if (t === 'DLBUSD') {
+      let address = process.env.DAPP_DLBUSD_ADDRESS || cfg.dlbusdAddress || '';
+      if (!address && StablecoinDexEngine) {
+        try { address = (await StablecoinDexEngine.getOrCreateDLBUSDToken())?.token_address || ''; } catch (e) {}
+      }
+      return { address, decimals: 6 };
+    }
     if (t === 'DLB-PTCUSD') return { address: process.env.DLB_PTCUSD_ADDRESS || cfg.dlbPTCUSDAddress || '', decimals: 18 };
     if (t === 'USDS') return { address: cfg.usdsAddress || '', decimals: 18 };
     if (t === 'USDC') return { address: cfg.usdcAddress || '', decimals: 6 };
@@ -112,8 +119,8 @@ class PairedAssetEngine {
   }
 
   static async quote({ tokenA = 'DLBUSD', tokenB = 'USDS', amountA = '0', sourceMethod = 'manual' } = {}) {
-    const a = this._resolveToken(tokenA);
-    const b = this._resolveToken(tokenB);
+    const a = await this._resolveToken(tokenA);
+    const b = await this._resolveToken(tokenB);
     const amountB = Number(amountA); // 1:1 pricing for seeding
     const balB = await this._operatorBalance(b.address);
     const source = await this.sourceReadiness(sourceMethod);
@@ -153,9 +160,9 @@ class PairedAssetEngine {
 
   static async propose({ tokenA = 'DLBUSD', tokenB = 'USDS', amountA, amountB, sourceMethod = 'manual', sourceAccountId, createPool = false, createdBy } = {}) {
     await this.ensureTables();
-    const a = this._resolveToken(tokenA);
-    const b = this._resolveToken(tokenB);
     const amountBOut = amountB || amountA;
+    const a = await this._resolveToken(tokenA);
+    const b = await this._resolveToken(tokenB);
     const requestId = id();
     const title = `Seed ${tokenA}/${tokenB} pool with ${amountA} ${tokenA} + ${amountBOut} ${tokenB}`;
     const payload = { requestId, tokenA, tokenB, amountA, amountB: amountBOut, sourceMethod, sourceAccountId, createPool };
@@ -201,8 +208,8 @@ class PairedAssetEngine {
   }
 
   static async _seedPool({ requestId, tokenA, tokenB, amountA, amountB, sourceMethod, sourceAccountId, createPool }) {
-    const a = this._resolveToken(tokenA);
-    const b = this._resolveToken(tokenB);
+    const a = await this._resolveToken(tokenA);
+    const b = await this._resolveToken(tokenB);
     const balB = await this._operatorBalance(b.address);
     const needRaw = viem.parseUnits(String(amountB || amountA), b.decimals);
     const depositResult = await this._fundPairedAsset({ method: sourceMethod, amount: amountB || amountA, token: b, sourceAccountId, balB, needRaw });
