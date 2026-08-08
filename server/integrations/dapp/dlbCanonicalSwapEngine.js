@@ -17,8 +17,8 @@ const { getConfig } = require('./config');
 
 let viem;
 let chains;
-let accounts;
-try { viem = require('viem'); chains = require('viem/chains'); ({ privateKeyToAccount } = require('viem/accounts')); accounts = { privateKeyToAccount }; } catch (e) { /* optional */ }
+let privateKeyToAccount;
+try { viem = require('viem'); chains = require('viem/chains'); ({ privateKeyToAccount } = require('viem/accounts')); } catch (e) { /* optional */ }
 
 function str(name, def = '') { return (process.env[name] || def).trim(); }
 function bool(name, def = false) { const v = process.env[name]; return v ? String(v).toLowerCase() === 'true' : def; }
@@ -88,7 +88,8 @@ function walletClient() {
   if (!viem) throw new Error('viem not installed');
   const cfg = getConfig();
   if (!cfg.privateKey) throw new Error('DAPP_PRIVATE_KEY not configured');
-  const account = accounts.privateKeyToAccount(cfg.privateKey.startsWith('0x') ? cfg.privateKey : `0x${cfg.privateKey}`);
+  if (!privateKeyToAccount) throw new Error('viem/accounts not loaded');
+  const account = privateKeyToAccount(cfg.privateKey.startsWith('0x') ? cfg.privateKey : `0x${cfg.privateKey}`);
   const chain = chainById(cfg.chainId);
   const fees = cfg.getFees ? (cfg.getFees() || { maxFeePerGas: viem.parseGwei('20'), maxPriorityFeePerGas: viem.parseGwei('0.5') }) : { maxFeePerGas: viem.parseGwei('20'), maxPriorityFeePerGas: viem.parseGwei('0.5') };
   return {
