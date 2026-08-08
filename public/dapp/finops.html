@@ -160,6 +160,7 @@
     { key:'redemption', name:'Redemption Engine', desc:'Redeem DLB-PTCUSD/module tokens for fiat payouts', stat:'', endpoint:null, action:'openRedemptionPanel' },
     { key:'account-abstraction', name:'Account Abstraction', desc:'Smart accounts + gas sponsorship for operator/trustee wallets', stat:'', endpoint:null, action:'openAccountAbstractionPanel' },
     { key:'canonical-consensus', name:'Canonical Consensus', desc:'Maker/Checker approvals for tokenized ledger actions', stat:'', endpoint:null, action:'openCanonicalConsensusPanel' },
+    { key:'canonical-liquidity', name:'Canonical Liquidity', desc:'Governed DEX liquidity pools and swaps for trust assets', stat:'', endpoint:null, action:'openCanonicalLiquidityPanel' },
     { key:'coordination', name:'Coordination Engine', desc:'System health, AI command queue and stability checks', stat:'', endpoint:null, action:'openCoordinationPanel' },
     { key:'clearing', name:'Clearing Engine', desc:'Bilateral and net settlement on Hyperledger Besu', stat:'', endpoint:null, action:'openClearingPanel' },
     { key:'redemption-gateway', name:'Redemption Gateway', desc:'Bridge DLB-PTCUSD to external clearing/stablecoin rails', stat:'', endpoint:null, action:'openRedemptionGatewayPanel' },
@@ -1485,6 +1486,91 @@
         alert('Status: ' + exec.data?.status + (exec.data?.metadata?.result?.error ? ' — ' + exec.data.metadata.result.error : ''));
       }
       await loadRedemptionGateway();
+    } catch(e) { alert(e.message); }
+  }
+
+  // ─── Canonical Liquidity panel ───────────────────────────────────────────────
+  function openCanonicalLiquidityPanel() {
+    const panel = el('module-panel');
+    const body = el('panel-body');
+    el('panel-title').textContent = 'Canonical Liquidity';
+    panel.classList.add('active');
+    body.innerHTML = '<div class="muted">Loading canonical liquidity…</div>';
+    loadCanonicalLiquidity();
+  }
+
+  async function loadCanonicalLiquidity() {
+    const body = el('panel-body');
+    try {
+      const [pools, proposals] = await Promise.all([
+        api('/api/finops/liquidity'),
+        api('/api/finops/liquidity/proposals'),
+      ]);
+      let html = '<div class="muted" style="margin-bottom:12px;">Governed DEX liquidity: pools, swaps, and liquidity additions require Maker/Checker approval.</div>';
+      html += '<h3 style="font-size:14px;margin:0 0 8px;">Create Proposal</h3>';
+      html += '<div class="token-bar"><select id="liq-action" onchange="liquidityFormToggle()"><option value="create_pool">Create Pool</option><option value="add_liquidity">Add Liquidity</option><option value="swap">Swap</option></select></div>';
+      html += '<div class="token-bar"><input id="liq-title" placeholder="proposal title" /></div>';
+      html += '<div class="token-bar"><input id="liq-pool" placeholder="pool address (for add/swap)" /></div>';
+      html += '<div class="token-bar"><input id="liq-tokenA" placeholder="token A address" /></div>';
+      html += '<div class="token-bar"><input id="liq-tokenB" placeholder="token B address" /></div>';
+      html += '<div class="token-bar"><input id="liq-amountA" placeholder="amount A" /></div>';
+      html += '<div class="token-bar"><input id="liq-amountB" placeholder="amount B / min out" /></div>';
+      html += '<div class="token-bar"><input id="liq-recipient" placeholder="recipient (swap only)" /></div>';
+      html += '<div class="approval-actions"><button class="btn" onclick="canonicalLiquidityPropose()">Propose</button></div>';
+      html += '<h3 style="font-size:14px;margin:16px 0 8px;">Pools</h3>';
+      html += (pools.data || []).map(p => `<div style="font-size:12px;border-bottom:1px solid var(--border);padding:4px 0;"><strong>${p.pool_address?.slice(0,10)}…</strong> ${p.token0?.slice(0,10)} / ${p.token1?.slice(0,10)} r0=${p.reserve0} r1=${p.reserve1}</div>`).join('');
+      html += '<h3 style="font-size:14px;margin:16px 0 8px;">Proposals</h3>';
+      html += (proposals.data || []).map(p => `<div style="font-size:12px;border-bottom:1px solid var(--border);padding:4px 0;">${p.id}: ${p.title} <em>${p.status}</em> ${p.status === 'pending' ? `<button class="btn" onclick="canonicalLiquidityApprove('${p.id}')">Approve</button>` : ''}</div>`).join('');
+      body.innerHTML = html;
+    } catch(e) { body.innerHTML = '<div class="status err">' + e.message + '</div>'; }
+  }
+
+  function liquidityFormToggle() {
+    const action = el('liq-action').value;
+    const poolInput = el('liq-pool');
+    const tokenA = el('liq-tokenA');
+    const tokenB = el('liq-tokenB');
+    const amountA = el('liq-amountA');
+    const amountB = el('liq-amountB');
+    const recipient = el('liq-recipient');
+    if (action === 'create_pool') {
+      poolInput.style.display = 'none';
+      recipient.style.display = 'none';
+      amountA.placeholder = 'amount A';
+      amountB.placeholder = 'amount B';
+    } else if (action === 'add_liquidity') {
+      poolInput.style.display = 'block';
+      recipient.style.display = 'none';
+      amountA.placeholder = 'amount A';
+      amountB.placeholder = 'amount B';
+    } else {
+      poolInput.style.display = 'block';
+      recipient.style.display = 'block';
+      amountA.placeholder = 'amount in';
+      amountB.placeholder = 'min amount out';
+    }
+  }
+
+  async function canonicalLiquidityPropose() {
+    const action = el('liq-action').value;
+    const title = el('liq-title').value.trim();
+    const poolAddress = el('liq-pool').value.trim() || undefined;
+    const tokenA = el('liq-tokenA').value.trim();
+    const tokenB = el('liq-tokenB').value.trim();
+    const amountA = el('liq-amountA').value.trim();
+    const amountB = el('liq-amountB').value.trim();
+    const recipient = el('liq-recipient').value.trim() || undefined;
+    const payload = { poolAddress, tokenA, tokenB, amountA, amountB, recipient };
+    try {
+      await api('/api/finops/liquidity/proposals', { method:'POST', body: JSON.stringify({ action, title, payload }) });
+      await loadCanonicalLiquidity();
+    } catch(e) { alert(e.message); }
+  }
+
+  async function canonicalLiquidityApprove(proposalId) {
+    try {
+      await api('/api/finops/liquidity/proposals/' + proposalId + '/approve', { method:'POST', body: JSON.stringify({}) });
+      await loadCanonicalLiquidity();
     } catch(e) { alert(e.message); }
   }
 
