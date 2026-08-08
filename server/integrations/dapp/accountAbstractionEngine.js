@@ -118,11 +118,11 @@ async function ensureTables() {
   }
 }
 
-function getArtifact(file) {
+function getArtifact(file, parseJson = true) {
   const candidate = path.join(process.cwd(), 'artifacts', file);
-  if (fs.existsSync(candidate)) return JSON.parse(fs.readFileSync(candidate, 'utf8'));
+  if (fs.existsSync(candidate)) return parseJson ? JSON.parse(fs.readFileSync(candidate, 'utf8')) : fs.readFileSync(candidate, 'utf8').trim();
   const fallback = path.join(__dirname, '..', '..', '..', 'artifacts', file);
-  if (fs.existsSync(fallback)) return JSON.parse(fs.readFileSync(fallback, 'utf8'));
+  if (fs.existsSync(fallback)) return parseJson ? JSON.parse(fs.readFileSync(fallback, 'utf8')) : fs.readFileSync(fallback, 'utf8').trim();
   throw new Error(`artifact not found: ${file}`);
 }
 
@@ -131,7 +131,7 @@ function getPaymasterAbi() {
 }
 
 function getPaymasterBytecode() {
-  return ('0x' + getArtifact('SovereignTrustPaymaster_sol_SovereignTrustPaymaster.bin')).toLowerCase();
+  return ('0x' + getArtifact('SovereignTrustPaymaster_sol_SovereignTrustPaymaster.bin', false)).toLowerCase();
 }
 
 const memory = {

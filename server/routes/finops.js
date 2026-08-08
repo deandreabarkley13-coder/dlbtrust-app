@@ -483,7 +483,7 @@ router.post('/account-abstraction/deploy-paymaster', operatorAuth, writeRateLimi
 });
 
 router.post('/account-abstraction/seed-paymaster', operatorAuth, writeRateLimiter(), async (req, res) => {
-  try { res.json({ success: true, data: await AccountAbstractionEngine.seedPaymaster({ ...req.body, whitelistAddress: req.body.whitelistAddress || getUserEmail(req) }) }); } catch (err) { sendError(res, err); }
+  try { res.json({ success: true, data: await AccountAbstractionEngine.seedPaymaster(req.body) }); } catch (err) { sendError(res, err); }
 });
 
 router.post('/account-abstraction/fund-paymaster', operatorAuth, writeRateLimiter(), async (req, res) => {
