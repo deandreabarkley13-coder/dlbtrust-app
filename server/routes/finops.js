@@ -490,6 +490,10 @@ router.post('/account-abstraction/fund-paymaster', operatorAuth, writeRateLimite
   try { res.json({ success: true, data: await AccountAbstractionEngine.fundPaymaster(req.body) }); } catch (err) { sendError(res, err); }
 });
 
+router.post('/account-abstraction/whitelist', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try { res.json({ success: true, data: await AccountAbstractionEngine.whitelistSender(req.body.address, req.body.allowed !== false) }); } catch (err) { sendError(res, err); }
+});
+
 router.get('/account-abstraction/smart-account/:owner', operatorAuth, async (req, res) => {
   try { res.json({ success: true, data: { smartAccountAddress: await AccountAbstractionEngine.getSmartAccountAddress(req.params.owner, req.query.index ? BigInt(req.query.index) : 0n) } }); } catch (err) { sendError(res, err); }
 });
