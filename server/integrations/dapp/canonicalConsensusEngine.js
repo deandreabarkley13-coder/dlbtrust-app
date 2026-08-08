@@ -13,13 +13,14 @@
 const { query } = require('../bonds/pgPool');
 const { TRUSTEES, normalizeRole, getTrusteeByRole, getTrusteeByEmail } = require('./trustees');
 
-let PtcStablecoinEngine, StablecoinDexEngine, ModuleP2PSwapEngine, OnOffRampEngine, TrustMarketEngine, IntentRoutingEngine;
+let PtcStablecoinEngine, StablecoinDexEngine, ModuleP2PSwapEngine, OnOffRampEngine, TrustMarketEngine, IntentRoutingEngine, ExternalWalletEngine;
 try { PtcStablecoinEngine = require('./ptcStablecoinEngine').PtcStablecoinEngine; } catch (e) { /* optional */ }
 try { StablecoinDexEngine = require('./stablecoinDexEngine').StablecoinDexEngine; } catch (e) { /* optional */ }
 try { ModuleP2PSwapEngine = require('./moduleP2PSwapEngine').ModuleP2PSwapEngine; } catch (e) { /* optional */ }
 try { OnOffRampEngine = require('./onOffRampEngine').OnOffRampEngine; } catch (e) { /* optional */ }
 try { TrustMarketEngine = require('./trustMarketEngine').TrustMarketEngine; } catch (e) { /* optional */ }
 try { IntentRoutingEngine = require('./intentRoutingEngine').IntentRoutingEngine; } catch (e) { /* optional */ }
+try { ExternalWalletEngine = require('./externalWalletEngine').ExternalWalletEngine; } catch (e) { /* optional */ }
 
 function id(prefix = 'CC') { return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 8).toUpperCase()}`; }
 function safeJson(obj) { return JSON.stringify(obj, (k, v) => typeof v === 'bigint' ? String(v) : v); }
@@ -265,6 +266,9 @@ class CanonicalConsensusEngine {
       case 'intent':
         if (!IntentRoutingEngine) throw new Error('IntentRoutingEngine not available');
         return IntentRoutingEngine._execute(proposal);
+      case 'external_wallet_swap':
+        if (!ExternalWalletEngine) throw new Error('ExternalWalletEngine not available');
+        return ExternalWalletEngine._execute(proposal);
       case 'custom':
         return { status: 'approved', message: 'Custom proposal approved, no automatic execution configured', payload };
       default:

@@ -24,6 +24,7 @@ const { PairedAssetEngine } = require('../integrations/dapp/pairedAssetEngine');
 const { OnOffRampEngine } = require('../integrations/dapp/onOffRampEngine');
 const { TrustMarketEngine } = require('../integrations/dapp/trustMarketEngine');
 const { IntentRoutingEngine } = require('../integrations/dapp/intentRoutingEngine');
+const { ExternalWalletEngine } = require('../integrations/dapp/externalWalletEngine');
 
 const router = express.Router();
 const operatorAuth = requireAuth({ role: 'operator' });
@@ -831,6 +832,50 @@ router.post('/intents/requests/:id/approve', operatorAuth, writeRateLimiter(), a
 
 router.post('/intents/requests/:id/execute', operatorAuth, writeRateLimiter(), async (req, res) => {
   try { res.json({ success: true, data: await CanonicalConsensusEngine.executeProposal(req.params.id) }); } catch (err) { sendError(res, err); }
+});
+
+// ═════════════════════════════════════════════════════════════════════════════
+// External Wallet Integration (hardware/MetaMask/GridPlus ledger source + swaps)
+// ═════════════════════════════════════════════════════════════════════════════
+
+router.get('/external-wallets', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await ExternalWalletEngine.list(req.query) }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/external-wallets', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try { res.status(201).json({ success: true, data: await ExternalWalletEngine.register({ ...req.body, createdBy: getUserEmail(req) }) }); } catch (err) { sendError(res, err); }
+});
+
+router.get('/external-wallets/:id/balances', operatorAuth, async (req, res) => {
+  try {
+    const wallet = await ExternalWalletEngine.getWallet(req.params.id);
+    const data = await ExternalWalletEngine.balances(wallet.address);
+    res.json({ success: true, data });
+  } catch (err) { sendError(res, err); }
+});
+
+router.post('/external-wallets/:id/quote', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await ExternalWalletEngine.quote({ walletId: req.params.id, ...req.body }) }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/external-wallets/swaps', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try { res.status(201).json({ success: true, data: await ExternalWalletEngine.propose({ ...req.body, createdBy: getUserEmail(req) }) }); } catch (err) { sendError(res, err); }
+});
+
+router.get('/external-wallets/swaps', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await ExternalWalletEngine.listSwaps(req.query) }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/external-wallets/swaps/:id/approve', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try { res.json({ success: true, data: await CanonicalConsensusEngine.approveProposal({ proposalId: req.params.id, ...req.body }) }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/external-wallets/swaps/:id/execute', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try { res.json({ success: true, data: await CanonicalConsensusEngine.executeProposal(req.params.id) }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/external-wallets/swaps/:id/submit', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try { res.json({ success: true, data: await ExternalWalletEngine.submitTx({ requestId: req.params.id, ...req.body }) }); } catch (err) { sendError(res, err); }
 });
 
 module.exports = router;

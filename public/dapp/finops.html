@@ -168,6 +168,7 @@
     { key:'trust-market', name:'Trust Market Maker', desc:'1:1 reserve-backed token <-> canonical stablecoin P2P market', stat:'', endpoint:null, action:'openTrustMarketPanel' },
     { key:'ramps', name:'Ramp Center', desc:'Fiat on/off ramps and counterparty rail aggregator', stat:'', endpoint:null, action:'openRampsPanel' },
     { key:'intent-routing', name:'Intent Routing', desc:'Natural-language orchestration of on/off-ramp and conversion flows', stat:'', endpoint:null, action:'openIntentRoutingPanel' },
+    { key:'external-wallet', name:'External Wallets', desc:'Hardware/MetaMask/GridPlus wallet as ledger source and DAI/USDS swaps', stat:'', endpoint:null, action:'openExternalWalletPanel' },
     { key:'coordination', name:'Coordination Engine', desc:'System health, AI command queue and stability checks', stat:'', endpoint:null, action:'openCoordinationPanel' },
     { key:'clearing', name:'Clearing Engine', desc:'Bilateral and net settlement on Hyperledger Besu', stat:'', endpoint:null, action:'openClearingPanel' },
     { key:'redemption-gateway', name:'Redemption Gateway', desc:'Bridge DLB-PTCUSD to external clearing/stablecoin rails', stat:'', endpoint:null, action:'openRedemptionGatewayPanel' },
@@ -334,7 +335,7 @@
     renderModules();
     renderFlow();
     try {
-      const [sof, accts, wallets, bond, crm, p2p, ptc, consensus, xchain, paired, trustMarket, ramps, intents] = await Promise.all([
+      const [sof, accts, wallets, bond, crm, p2p, ptc, consensus, xchain, paired, trustMarket, ramps, intents, externalWallets, externalSwaps] = await Promise.all([
         api('/api/finops/source-of-funds').catch(()=>null),
         api('/api/accounting/accounts').catch(()=>null),
         api('/api/finops/wallets').catch(()=>null),
@@ -348,6 +349,8 @@
         api('/api/finops/trust-market/orders').catch(()=>null),
         api('/api/finops/ramps/requests').catch(()=>null),
         api('/api/finops/intents').catch(()=>null),
+        api('/api/finops/external-wallets').catch(()=>null),
+        api('/api/finops/external-wallets/swaps').catch(()=>null),
       ]);
       const balances = normalizeBalances(sof && sof.data);
       if (balances.length) {
@@ -390,6 +393,9 @@
       if (intents && intents.data && Array.isArray(intents.data)) {
         const pending = intents.data.filter(r => r.status === 'pending').length;
         setStat('intent-routing', String(pending));
+      }
+      if (Array.isArray(externalWallets && externalWallets.data)) {
+        setStat('external-wallet', String(externalWallets.data.length));
       }
       renderModules();
     } catch(e) { console.error('loadAll error', e); }
@@ -2231,6 +2237,158 @@
     try {
       await api('/api/finops/intents/requests/' + proposalId + '/execute', { method:'POST', body: '{}' });
       await loadIntentRequests();
+    } catch(e) { alert(e.message); }
+  }
+
+  // ─── External Wallet Integration panel ─────────────────────────────────────────
+  let currentExternalWallet = null;
+
+  function openExternalWalletPanel() {
+    const panel = el('module-panel');
+    const body = el('panel-body');
+    el('panel-title').textContent = 'External Wallets';
+    panel.classList.add('active');
+    body.innerHTML = '<div class="muted" style="margin-bottom:12px;">Register a hardware/MetaMask/GridPlus wallet as a ledger source, read balances, and prepare signable DAI/USDS swaps.</div>' +
+      '<h3 style="font-size:14px;margin:8px 0;">Register wallet</h3>' +
+      '<div class="token-bar"><select id="wallet-type"><option value="gridplus">GridPlus</option><option value="metamask">MetaMask</option><option value="ledger">Ledger</option><option value="trezor">Trezor</option><option value="hardware">Other hardware</option></select></div>' +
+      '<div class="token-bar"><input id="wallet-address" placeholder="0x..." value="0x8A0DfD17eFca67590E7a144Df5a4d2FCe4A054F1" style="width:100%;" /></div>' +
+      '<div class="token-bar"><input id="wallet-label" placeholder="label (optional)" /></div>' +
+      '<div class="approval-actions"><button class="btn" onclick="registerExternalWallet()">Register</button><button class="btn" onclick="loadExternalWallets()">Refresh</button></div>' +
+      '<div id="wallet-list" style="margin:12px 0;"></div>' +
+      '<h3 style="font-size:14px;margin:8px 0;">Swap to DAI / USDS</h3>' +
+      '<div class="token-bar"><select id="swap-token-in"><option value="ETH">ETH</option><option value="WETH">WETH</option><option value="USDC">USDC</option><option value="USDS">USDS</option><option value="DLBUSD">DLBUSD</option><option value="DLB-PTCUSD">DLB-PTCUSD</option></select></div>' +
+      '<div class="token-bar"><input id="swap-amount" placeholder="amount in" /></div>' +
+      '<div class="token-bar"><select id="swap-token-out"><option value="DAI">DAI</option><option value="USDS">USDS</option><option value="USDC">USDC</option></select></div>' +
+      '<div class="approval-actions"><button class="btn" onclick="externalWalletQuote()">Quote</button><button class="btn" onclick="externalWalletPropose()">Propose</button></div>' +
+      '<div id="wallet-swap-plan" style="margin-top:12px;"></div>' +
+      '<h3 style="font-size:14px;margin:16px 0 8px;">Swap Requests</h3>' +
+      '<div id="external-swap-list"></div>';
+    loadExternalWallets();
+    loadExternalSwaps();
+  }
+
+  async function registerExternalWallet() {
+    try {
+      const type = el('wallet-type').value;
+      const address = el('wallet-address').value.trim();
+      const label = el('wallet-label').value.trim();
+      const res = await api('/api/finops/external-wallets', { method:'POST', body: JSON.stringify({ type, address, label }) });
+      el('wallet-list').innerHTML = '<div class="status ok">Registered: ' + res.data.id + '</div>';
+      await loadExternalWallets();
+    } catch(e) { el('wallet-list').innerHTML = '<div class="status err">' + e.message + '</div>'; }
+  }
+
+  async function loadExternalWallets() {
+    const wrap = el('wallet-list');
+    try {
+      const res = await api('/api/finops/external-wallets');
+      if (!res.data || !res.data.length) { wrap.innerHTML = '<span class="muted">No external wallets registered.</span>'; return; }
+      let html = '<ul style="font-size:12px;padding-left:16px;">';
+      for (const w of res.data) {
+        html += '<li><strong>' + w.type + '</strong> ' + w.address + (w.label ? ' (' + w.label + ')' : '') +
+          ' <button class="btn" onclick="viewExternalWalletBalances(\'' + w.id + '\')">Balances</button></li>';
+      }
+      html += '</ul>';
+      wrap.innerHTML = html;
+    } catch(e) { wrap.innerHTML = '<div class="status err">' + e.message + '</div>'; }
+  }
+
+  async function viewExternalWalletBalances(walletId) {
+    const plan = el('wallet-swap-plan');
+    try {
+      const res = await api('/api/finops/external-wallets/' + walletId + '/balances');
+      currentExternalWallet = walletId;
+      const rows = res.data.balances.map(b => '<div>' + b.symbol + ': ' + b.balance + '</div>').join('');
+      plan.innerHTML = '<div class="status ok"><strong>Balances for ' + res.data.address + '</strong><br/>' + rows + '</div>';
+    } catch(e) { plan.innerHTML = '<div class="status err">' + e.message + '</div>'; }
+  }
+
+  let currentExternalQuote = null;
+
+  async function externalWalletQuote() {
+    try {
+      if (!currentExternalWallet) throw new Error('Select a wallet from the list first');
+      const tokenIn = el('swap-token-in').value;
+      const tokenOut = el('swap-token-out').value;
+      const amount = el('swap-amount').value.trim();
+      const res = await api('/api/finops/external-wallets/' + currentExternalWallet + '/quote', { method:'POST', body: JSON.stringify({ tokenIn, tokenOut, amount }) });
+      currentExternalQuote = res.data;
+      const plan = res.data;
+      let html = '<div class="status ok"><strong>Quote</strong><br/>' +
+        'Wallet: ' + plan.wallet.address + '<br/>' +
+        'Swap: ' + plan.amountIn + ' ' + plan.tokenIn.symbol + ' -> ' + plan.tokenOut.symbol + '<br/>' +
+        'Expected out: ' + (plan.quote.amountOut || 'N/A') + '<br/>' +
+        'Path: ' + plan.path.join(' -> ') + '<br/>' +
+        'Instructions: ' + plan.instructions + '</div>';
+      if (plan.approveTx) {
+        html += '<div style="font-size:11px;margin-top:4px;"><strong>Approve tx</strong><br/>to: ' + plan.approveTx.to + '<br/>data: ' + plan.approveTx.data + '</div>';
+        html += '<button class="btn" onclick="signExternalTx(1)">Sign Approve (MetaMask)</button>';
+      }
+      html += '<div style="font-size:11px;margin-top:4px;"><strong>Swap tx</strong><br/>to: ' + plan.unsignedTx.to + '<br/>data: ' + plan.unsignedTx.data + '<br/>value: ' + plan.unsignedTx.value + '</div>';
+      html += '<button class="btn" onclick="signExternalTx(2)">Sign Swap (MetaMask)</button>';
+      el('wallet-swap-plan').innerHTML = html;
+    } catch(e) { el('wallet-swap-plan').innerHTML = '<div class="status err">' + e.message + '</div>'; }
+  }
+
+  async function externalWalletPropose() {
+    try {
+      if (!currentExternalWallet) throw new Error('Select a wallet first');
+      const tokenIn = el('swap-token-in').value;
+      const tokenOut = el('swap-token-out').value;
+      const amount = el('swap-amount').value.trim();
+      const res = await api('/api/finops/external-wallets/swaps', { method:'POST', body: JSON.stringify({ walletId: currentExternalWallet, tokenIn, tokenOut, amount }) });
+      el('wallet-swap-plan').innerHTML = '<div class="status ok">Proposed: ' + res.data.proposalId + ' (status: ' + res.data.proposal.status + ')</div>';
+      await loadExternalSwaps();
+    } catch(e) { el('wallet-swap-plan').innerHTML = '<div class="status err">' + e.message + '</div>'; }
+  }
+
+  async function signExternalTx(step) {
+    if (!currentExternalQuote) { alert('Get a quote first'); return; }
+    if (!window.ethereum) { alert('MetaMask/GridPlus not detected in this browser'); return; }
+    try {
+      const tx = step === 1 ? currentExternalQuote.approveTx : currentExternalQuote.unsignedTx;
+      if (!tx) throw new Error('No tx to sign');
+      const from = currentExternalQuote.wallet.address;
+      const accounts = await window.ethereum.request({ method: 'eth_requestAccounts' });
+      if (accounts[0].toLowerCase() !== from.toLowerCase()) throw new Error('Connected account does not match registered wallet ' + from);
+      const params = [{ from, to: tx.to, data: tx.data, value: tx.value || '0x0', gas: tx.gas ? '0x' + Number(tx.gas).toString(16) : undefined }];
+      const hash = await window.ethereum.request({ method: 'eth_sendTransaction', params });
+      el('wallet-swap-plan').innerHTML += '<div class="status ok">Broadcasted tx: ' + hash + '</div>';
+    } catch(e) { alert(e.message); }
+  }
+
+  async function loadExternalSwaps() {
+    const wrap = el('external-swap-list');
+    try {
+      const res = await api('/api/finops/external-wallets/swaps');
+      wrap.innerHTML = (res.data || []).map(s => `<div style="font-size:12px;border-bottom:1px solid var(--border);padding:4px 0;"><strong>${s.id}</strong>: ${s.token_in} ${s.amount_in} -> ${s.token_out} <em>${s.status}</em>` +
+        (s.status === 'pending_approval' ? ` <select id="ew-role-${s.proposal_id}"><option value="maker">maker</option><option value="checker">checker</option></select><input id="ew-email-${s.proposal_id}" placeholder="email" style="width:100px;" /><button class="btn" onclick="externalSwapApprove('${s.proposal_id}')">Approve</button>` : '') +
+        (s.status === 'awaiting_signature' ? ` <input id="ew-tx-${s.id}" placeholder="tx hash" /><button class="btn" onclick="externalSwapSubmit('${s.id}')">Submit TxHash</button>` : '') +
+        `</div>`).join('') || '<span class="muted">No external swaps yet.</span>';
+    } catch(e) { wrap.innerHTML = '<div class="status err">' + e.message + '</div>'; }
+  }
+
+  async function externalSwapApprove(proposalId) {
+    try {
+      const role = el('ew-role-' + proposalId).value;
+      const email = el('ew-email-' + proposalId).value.trim();
+      await api('/api/finops/external-wallets/swaps/' + proposalId + '/approve', { method:'POST', body: JSON.stringify({ role, approverEmail: email }) });
+      await loadExternalSwaps();
+    } catch(e) { alert(e.message); }
+  }
+
+  async function externalSwapExecute(proposalId) {
+    try {
+      await api('/api/finops/external-wallets/swaps/' + proposalId + '/execute', { method:'POST', body: '{}' });
+      await loadExternalSwaps();
+    } catch(e) { alert(e.message); }
+  }
+
+  async function externalSwapSubmit(requestId) {
+    try {
+      const txHash = el('ew-tx-' + requestId).value.trim();
+      await api('/api/finops/external-wallets/swaps/' + requestId + '/submit', { method:'POST', body: JSON.stringify({ txHash, status: 'submitted' }) });
+      await loadExternalSwaps();
     } catch(e) { alert(e.message); }
   }
 
