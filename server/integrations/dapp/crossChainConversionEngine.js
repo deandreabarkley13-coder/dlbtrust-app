@@ -639,7 +639,13 @@ class CrossChainConversionEngine {
       tokenIn = process.env.DLB_PTCUSD_ADDRESS || '';
       rawIn = viem.parseUnits(String(amount), 18);
     } else if (sourceToken) {
-      tokenIn = sourceToken;
+      if (String(sourceToken).toLowerCase() === 'dlbusd') {
+        if (!StablecoinDexEngine) throw new Error('StablecoinDexEngine not available');
+        const dlb = await StablecoinDexEngine.getOrCreateDLBUSDToken();
+        tokenIn = dlb.token_address;
+      } else {
+        tokenIn = sourceToken;
+      }
       rawIn = viem.parseUnits(String(amount), 6);
     } else if (sourceModule) {
       if (!PtcStablecoinEngine) throw new Error('PtcStablecoinEngine not available');
