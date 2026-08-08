@@ -24,7 +24,6 @@ contract SovereignTrustPaymaster is IPaymaster06 {
     address public immutable entryPoint;
     address public owner;
     mapping(address => bool) public whitelisted;
-    mapping(address => uint256) public senderNonce;
 
     uint256 private constant VALID_TIMESTAMP_OFFSET = 20;
     uint256 private constant SIGNATURE_OFFSET = 84;
@@ -64,30 +63,23 @@ contract SovereignTrustPaymaster is IPaymaster06 {
     }
 
     /**
-     * @notice Copy the userOp calldata up to (but not including) paymasterAndData.
-     * This is the same encoding the EntryPoint uses, minus the paymasterAndData field.
-     */
-    function pack(UserOperation06 calldata userOp) internal pure returns (bytes memory ret) {
-        bytes calldata pnd = userOp.paymasterAndData;
-        assembly {
-            let ofs := userOp
-            let len := sub(sub(pnd.offset, ofs), 32)
-            ret := mload(0x40)
-            mstore(0x40, add(ret, add(len, 32)))
-            mstore(ret, len)
-            calldatacopy(add(ret, 32), ofs, len)
-        }
-    }
-
-    /**
      * @notice Hash used by the off-chain service and on-chain verification.
-     * Excludes paymasterAndData and signature, and includes a validity time
-     * window to prevent replay. The EntryPoint nonce already enforces uniqueness.
+     * Excludes paymasterAndData and signature, and hashes initCode/callData
+     * to avoid circular dependencies on paymasterAndData. Includes a validity
+     * window, the paymaster address, and chain ID to prevent replay.
      */
     function getHash(UserOperation06 calldata userOp, uint48 validUntil, uint48 validAfter) public view returns (bytes32) {
         return keccak256(
             abi.encode(
-                pack(userOp),
+                userOp.sender,
+                userOp.nonce,
+                keccak256(userOp.initCode),
+                keccak256(userOp.callData),
+                userOp.callGasLimit,
+                userOp.verificationGasLimit,
+                userOp.preVerificationGas,
+                userOp.maxFeePerGas,
+                userOp.maxPriorityFeePerGas,
                 block.chainid,
                 address(this),
                 validUntil,
