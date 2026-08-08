@@ -616,28 +616,22 @@ class AccountAbstractionEngine {
   }
 
   static _sanitizeUserOp(userOp) {
-    const defaults = {
-      sender: '0x0000000000000000000000000000000000000000',
-      nonce: 0n,
-      initCode: '0x',
-      callData: '0x',
-      callGasLimit: 100000n,
-      verificationGasLimit: 100000n,
-      preVerificationGas: 50000n,
-      maxFeePerGas: 1000000000n,
-      maxPriorityFeePerGas: 100000000n,
+    // Keep every field from the userOp intact; only zero out paymasterAndData
+    // and signature so the paymaster hash is not circular. getHash ignores those
+    // two fields anyway, but we sanitize them for clarity.
+    return {
+      sender: userOp.sender,
+      nonce: userOp.nonce ?? 0n,
+      initCode: userOp.initCode || '0x',
+      callData: userOp.callData || '0x',
+      callGasLimit: userOp.callGasLimit ?? 0n,
+      verificationGasLimit: userOp.verificationGasLimit ?? 0n,
+      preVerificationGas: userOp.preVerificationGas ?? 0n,
+      maxFeePerGas: userOp.maxFeePerGas ?? 0n,
+      maxPriorityFeePerGas: userOp.maxPriorityFeePerGas ?? 0n,
       paymasterAndData: '0x',
       signature: '0x',
     };
-    const out = { ...defaults };
-    for (const [key, fallback] of Object.entries(defaults)) {
-      if (key === 'sender' || key === 'initCode' || key === 'callData' || key === 'paymasterAndData' || key === 'signature') {
-        out[key] = userOp[key] || fallback;
-      } else {
-        out[key] = this._normalizeUserOpField(userOp, key, fallback);
-      }
-    }
-    return out;
   }
 
   static async _buildPaymasterAndData(userOp, paymasterAddress, isStub = false) {
