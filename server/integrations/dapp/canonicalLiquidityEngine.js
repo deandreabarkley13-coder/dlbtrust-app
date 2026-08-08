@@ -1,9 +1,13 @@
 'use strict';
 
 const { query } = require('../bonds/pgPool');
-const { CanonicalConsensusEngine } = require('./canonicalConsensusEngine');
 let DexSwapEngine;
 try { ({ DexSwapEngine } = require('./dexSwapEngine')); } catch (e) { /* optional */ }
+
+function canonicalConsensusEngine() {
+  const { CanonicalConsensusEngine } = require('./canonicalConsensusEngine');
+  return CanonicalConsensusEngine;
+}
 
 function safeJson(obj) { return JSON.stringify(obj, (k, v) => typeof v === 'bigint' ? String(v) : v); }
 function id(prefix = 'CL') { return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 8).toUpperCase()}`; }
@@ -40,7 +44,7 @@ class CanonicalLiquidityEngine {
     await this.ensureTables();
     if (!action || !title || !createdBy) throw new Error('action, title, and createdBy are required');
     if (!['create_pool', 'add_liquidity', 'swap'].includes(action)) throw new Error(`Unsupported liquidity action: ${action}`);
-    const proposal = await CanonicalConsensusEngine.createProposal({
+    const proposal = await canonicalConsensusEngine().createProposal({
       category: 'liquidity',
       title,
       description: `Canonical liquidity ${action}`,
@@ -51,11 +55,11 @@ class CanonicalLiquidityEngine {
   }
 
   static async approve({ proposalId, role, approverEmail }) {
-    return CanonicalConsensusEngine.approveProposal({ proposalId, role, approverEmail });
+    return canonicalConsensusEngine().approveProposal({ proposalId, role, approverEmail });
   }
 
   static async executeProposal(proposalId) {
-    return CanonicalConsensusEngine.executeProposal(proposalId);
+    return canonicalConsensusEngine().executeProposal(proposalId);
   }
 
   static async listProposals({ status, limit = 50, offset = 0 } = {}) {
@@ -66,7 +70,8 @@ class CanonicalLiquidityEngine {
     sql += ` ORDER BY created_at DESC LIMIT $${params.length + 1} OFFSET $${params.length + 2}`;
     params.push(Number(limit), Number(offset));
     const res = await query(sql, params);
-    return res.rows.map(r => CanonicalConsensusEngine._format ? CanonicalConsensusEngine._format(r) : r);
+    const CCE = canonicalConsensusEngine();
+    return res.rows.map(r => CCE._format ? CCE._format(r) : r);
   }
 
   static async listPools() {

@@ -13,11 +13,10 @@
 const { query } = require('../bonds/pgPool');
 const { TRUSTEES, normalizeRole, getTrusteeByRole, getTrusteeByEmail } = require('./trustees');
 
-let PtcStablecoinEngine, StablecoinDexEngine, ModuleP2PSwapEngine, CanonicalLiquidityEngine;
+let PtcStablecoinEngine, StablecoinDexEngine, ModuleP2PSwapEngine;
 try { PtcStablecoinEngine = require('./ptcStablecoinEngine').PtcStablecoinEngine; } catch (e) { /* optional */ }
 try { StablecoinDexEngine = require('./stablecoinDexEngine').StablecoinDexEngine; } catch (e) { /* optional */ }
 try { ModuleP2PSwapEngine = require('./moduleP2PSwapEngine').ModuleP2PSwapEngine; } catch (e) { /* optional */ }
-try { CanonicalLiquidityEngine = require('./canonicalLiquidityEngine').CanonicalLiquidityEngine; } catch (e) { /* optional */ }
 
 function id(prefix = 'CC') { return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 8).toUpperCase()}`; }
 function safeJson(obj) { return JSON.stringify(obj, (k, v) => typeof v === 'bigint' ? String(v) : v); }
@@ -234,9 +233,11 @@ class CanonicalConsensusEngine {
       case 'p2p_fill':
         if (!ModuleP2PSwapEngine) throw new Error('ModuleP2PSwapEngine not available');
         return ModuleP2PSwapEngine.fillOrder(payload || {});
-      case 'liquidity':
+      case 'liquidity': {
+        const { CanonicalLiquidityEngine } = require('./canonicalLiquidityEngine');
         if (!CanonicalLiquidityEngine) throw new Error('CanonicalLiquidityEngine not available');
         return CanonicalLiquidityEngine._execute(proposal);
+      }
       case 'custom':
         return { status: 'approved', message: 'Custom proposal approved, no automatic execution configured', payload };
       default:
