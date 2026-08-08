@@ -611,9 +611,11 @@ class CrossChainConversionEngine {
   }
 
   static _p2pDisplayFromRaw(raw) {
-    if (!raw) return '0';
+    if (!raw || !viem) return '0';
     const b = typeof raw === 'bigint' ? raw : BigInt(raw);
-    return (b / 10n ** 6n).toString();
+    // ModuleP2PSwapEngine.createOrder hard-codes 6 decimals for both in/out.
+    // formatUnits(raw, 6) gives the correct display string so parseUnits(..., 6) recovers the raw amount.
+    return viem.formatUnits(b, 6);
   }
 
   static async _executeP2POrder(payload) {
