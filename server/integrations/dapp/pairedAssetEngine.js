@@ -11,13 +11,15 @@
 const { query } = require('../bonds/pgPool');
 const { getConfig } = require('./config');
 
-let LiquidityPoolEngine, CanonicalConsensusEngine, CircleMintClient, CoinbaseTreasuryBridge, MoonPayEngine, StablecoinDexEngine;
+let LiquidityPoolEngine, CanonicalConsensusEngine, CircleMintClient, CoinbaseTreasuryBridge, MoonPayEngine, StablecoinDexEngine, PtcStablecoinEngine, ModuleP2PSwapEngine;
 try { ({ LiquidityPoolEngine } = require('./liquidityPoolEngine')); } catch (e) {}
 try { ({ CanonicalConsensusEngine } = require('./canonicalConsensusEngine')); } catch (e) {}
 try { CircleMintClient = require('../stablecoin/circleMintClient').CircleMintClient; } catch (e) {}
 try { ({ CoinbaseTreasuryBridge } = require('./coinbaseTreasuryBridge')); } catch (e) {}
 try { ({ MoonPayEngine } = require('./moonPayEngine')); } catch (e) {}
 try { ({ StablecoinDexEngine } = require('./stablecoinDexEngine')); } catch (e) {}
+try { ({ PtcStablecoinEngine } = require('./ptcStablecoinEngine')); } catch (e) {}
+try { ({ ModuleP2PSwapEngine } = require('./moduleP2PSwapEngine')); } catch (e) {}
 
 let viem;
 try { viem = require('viem'); } catch (e) {}
@@ -31,6 +33,7 @@ const SOURCE_METHODS = {
   coinbase_treasury: { name: 'Coinbase Treasury Bridge', note: 'Stage a fiat deposit from a trust ledger through Coinbase.' },
   moonpay: { name: 'MoonPay on-ramp', note: 'Generate a MoonPay widget URL to buy the paired asset into the operator wallet.' },
   counterparty: { name: 'Counterparty deposit', note: 'A buyer/counterparty sends the paired asset to the operator wallet.' },
+  module_redemption: { name: 'DLB-PTCUSD reserve redemption', note: 'Redeem DLB-PTCUSD for reserve module tokens, then list them on the P2P order book for the paired asset.' },
 };
 
 class PairedAssetEngine {
@@ -114,6 +117,19 @@ class PairedAssetEngine {
     if (method === 'coinbase_treasury') {
       const enabled = CoinbaseTreasuryBridge ? CoinbaseTreasuryBridge.enabled() : false;
       return { ...base, ready: enabled, issues: enabled ? [] : ['Coinbase Treasury Bridge not enabled (missing Coinbase credentials)'] };
+    }
+    if (method === 'module_redemption') {
+      const ready = !!PtcStablecoinEngine && !!ModuleP2PSwapEngine;
+      const issues = [];
+      if (!PtcStablecoinEngine) issues.push('PtcStablecoinEngine not available');
+      if (!ModuleP2PSwapEngine) issues.push('ModuleP2PSwapEngine not available');
+      if (PtcStablecoinEngine) {
+        try {
+          const state = PtcStablecoinEngine.loadState ? PtcStablecoinEngine.loadState() : {};
+          if (!state.vaultAddress) issues.push('PTC reserve vault not deployed');
+        } catch (e) {}
+      }
+      return { ...base, ready: ready && issues.length === 0, issues };
     }
     return { ...base, issues: ['Unknown source method'] };
   }
@@ -297,6 +313,27 @@ class PairedAssetEngine {
         targetAddress: cfg.operatorAddress,
       });
       return { status: transfer.status || 'pending', source: 'coinbase_treasury', transfer };
+    }
+    if (method === 'module_redemption') {
+      if (!PtcStablecoinEngine || !ModuleP2PSwapEngine) return { status: 'needs_config', issues: ['PtcStablecoinEngine or ModuleP2PSwapEngine not available'] };
+      const moduleKey = sourceAccountId || 'bond_portfolio';
+      let reserve;
+      try { reserve = await PtcStablecoinEngine._getModuleToken(moduleKey); } catch (e) { return { status: 'needs_config', issues: [`Reserve module ${moduleKey} not tokenized: ${e.message}`] }; }
+      const existingOrders = await ModuleP2PSwapEngine.listOrders({ maker: cfg.operatorAddress, activeOnly: true });
+      const active = existingOrders.find(o =>
+        o.tokenIn.toLowerCase() === reserve.address.toLowerCase() &&
+        o.tokenOut.toLowerCase() === token.address.toLowerCase() &&
+        Number(o.amountOut) >= Number(amount)
+      );
+      if (active) return { status: 'awaiting_buyer', source: 'module_redemption', instructions: 'An existing P2P sell order is already active for this reserve/paired asset.', p2pOrderId: active.orderId, reserveRedemption: active };
+      const ptcBalance = await PtcStablecoinEngine.balanceOf(cfg.operatorAddress);
+      if (Number(ptcBalance) < Number(amount)) return { status: 'insufficient_dlb_ptcusd', source: 'module_redemption', balance: ptcBalance, needed: amount };
+      const redeemResult = await PtcStablecoinEngine.redeem({ moduleKey, amount: String(amount), recipient: cfg.operatorAddress });
+      const reserveRaw = BigInt(redeemResult.reserveAmount || 0);
+      const displayIn = viem.formatUnits(reserveRaw, 6); // P2P engine hard-codes 6 decimal parse
+      const displayOut = viem.formatUnits(needRaw, 6);
+      const p2pOrder = await ModuleP2PSwapEngine.createOrder({ tokenIn: reserve.address, amountIn: displayIn, tokenOut: token.address, amountOut: displayOut, recipient: cfg.operatorAddress });
+      return { status: 'awaiting_buyer', source: 'module_redemption', instructions: `Redeemed ${amount} DLB-PTCUSD for ${moduleKey} and listed on P2P order book. Buyer must fill order to provide ${amount} ${token.symbol || ''} to operator wallet.`, reserveRedemption: redeemResult, p2pOrderId: p2pOrder.orderId, orderTxHash: p2pOrder.txHash };
     }
     return { status: 'unknown_method', issues: [`Unknown source method: ${method}`] };
   }
