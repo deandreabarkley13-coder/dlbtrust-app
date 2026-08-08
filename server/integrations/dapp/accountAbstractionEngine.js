@@ -677,12 +677,7 @@ class AccountAbstractionEngine {
   static async _feeValues(publicClient, cfg) {
     try {
       const fees = await publicClient.estimateFeesPerGas({ type: 'eip1559' });
-      const minMax = 5000000000n;
-      const minPriority = 1500000000n;
-      return {
-        maxFeePerGas: fees.maxFeePerGas > minMax ? fees.maxFeePerGas : minMax,
-        maxPriorityFeePerGas: fees.maxPriorityFeePerGas > minPriority ? fees.maxPriorityFeePerGas : minPriority,
-      };
+      return { maxFeePerGas: fees.maxFeePerGas, maxPriorityFeePerGas: fees.maxPriorityFeePerGas };
     } catch (e) {
       if (cfg.chainId !== 1 && cfg.chainId !== 11155111) return { maxFeePerGas: 5000000000n, maxPriorityFeePerGas: 1500000000n };
       return { maxFeePerGas: 5000000000n, maxPriorityFeePerGas: 1500000000n };
