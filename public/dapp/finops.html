@@ -161,6 +161,8 @@
     { key:'account-abstraction', name:'Account Abstraction', desc:'Smart accounts + gas sponsorship for operator/trustee wallets', stat:'', endpoint:null, action:'openAccountAbstractionPanel' },
     { key:'canonical-consensus', name:'Canonical Consensus', desc:'Maker/Checker approvals for tokenized ledger actions', stat:'', endpoint:null, action:'openCanonicalConsensusPanel' },
     { key:'coordination', name:'Coordination Engine', desc:'System health, AI command queue and stability checks', stat:'', endpoint:null, action:'openCoordinationPanel' },
+    { key:'clearing', name:'Clearing Engine', desc:'Bilateral and net settlement on Hyperledger Besu', stat:'', endpoint:null, action:'openClearingPanel' },
+    { key:'redemption-gateway', name:'Redemption Gateway', desc:'Bridge DLB-PTCUSD to external clearing/stablecoin rails', stat:'', endpoint:null, action:'openRedemptionGatewayPanel' },
     { key:'payout', name:'Payout Center', desc:'Disbursements, trades, off-ramps', stat:'', endpoint:null, link:'/dapp/payout-center.html?v=2' },
     { key:'distribution', name:'Distribution', desc:'Trustee-approved beneficiary distributions', stat:'', endpoint:null, link:'/dapp/master-dashboard.html?v=2' },
   ];
@@ -1365,6 +1367,95 @@
       addChat('agent', data.summary || 'Created approval request.');
       await loadApprovals();
     } catch(e) { addChat('agent', 'Error: ' + e.message); }
+  }
+
+  // ─── Clearing Engine panel ───────────────────────────────────────────────────
+  function openClearingPanel() {
+    const panel = el('module-panel');
+    const body = el('panel-body');
+    el('panel-title').textContent = 'Clearing Engine';
+    panel.classList.add('active');
+    body.innerHTML = '<div class="muted">Loading Besu clearing…</div>';
+    loadClearing();
+  }
+
+  async function loadClearing() {
+    const body = el('panel-body');
+    try {
+      const [status, ops, net] = await Promise.all([
+        api('/api/finops/besu/status'),
+        api('/api/finops/clearing'),
+        api('/api/finops/clearing/net-positions'),
+      ]);
+      let html = '<div class="muted" style="margin-bottom:12px;">Bilateral and net settlement on the trust permissioned Hyperledger Besu ledger.</div>';
+      html += '<div><strong>Besu status:</strong> ' + (status.data?.enabled ? 'enabled' : 'disabled') + (status.data?.shadow ? ' (shadow)' : '') + '</div>';
+      html += '<div style="margin:12px 0;"><button class="btn" onclick="besuDeployClearing()">Deploy Clearing Contract</button></div>';
+      html += '<h3 style="font-size:14px;margin:16px 0 8px;">Submit Clearing</h3>';
+      html += '<div class="token-bar"><input id="clr-payer" placeholder="payer address" /></div>';
+      html += '<div class="token-bar"><input id="clr-payee" placeholder="payee address" /></div>';
+      html += '<div class="token-bar"><input id="clr-amount" placeholder="amount" /></div>';
+      html += '<div class="token-bar"><input id="clr-token" placeholder="token address (optional)" /></div>';
+      html += '<div class="approval-actions"><button class="btn" onclick="clearingSubmit()">Submit</button></div>';
+      html += '<h3 style="font-size:14px;margin:16px 0 8px;">Net Positions</h3>';
+      html += '<pre style="font-size:12px;overflow:auto;max-height:120px;">' + JSON.stringify(net.data || [], null, 2) + '</pre>';
+      html += '<h3 style="font-size:14px;margin:16px 0 8px;">Operations</h3>';
+      html += (ops.data || []).map(o => `<div style="font-size:12px;border-bottom:1px solid var(--border);padding:4px 0;">${o.id}: ${o.payer} → ${o.payee} ${o.amount} ${o.assetSymbol} <em>${o.status}</em></div>`).join('');
+      body.innerHTML = html;
+    } catch(e) { body.innerHTML = '<div class="status err">' + e.message + '</div>'; }
+  }
+
+  async function besuDeployClearing() {
+    try { const res = await api('/api/finops/besu/deploy-clearing', { method:'POST' }); alert('Clearing: ' + (res.data?.clearingAddress || 'shadow')); await loadClearing(); }
+    catch(e) { alert(e.message); }
+  }
+
+  async function clearingSubmit() {
+    const payer = el('clr-payer').value.trim();
+    const payee = el('clr-payee').value.trim();
+    const amount = el('clr-amount').value.trim();
+    const tokenAddress = el('clr-token').value.trim();
+    try {
+      await api('/api/finops/clearing', { method:'POST', body: JSON.stringify({ payer, payee, amount, tokenAddress }) });
+      await loadClearing();
+    } catch(e) { alert(e.message); }
+  }
+
+  // ─── Redemption Gateway panel ────────────────────────────────────────────────
+  function openRedemptionGatewayPanel() {
+    const panel = el('module-panel');
+    const body = el('panel-body');
+    el('panel-title').textContent = 'Redemption Gateway';
+    panel.classList.add('active');
+    body.innerHTML = '<div class="muted">Loading redemption gateway…</div>';
+    loadRedemptionGateway();
+  }
+
+  async function loadRedemptionGateway() {
+    const body = el('panel-body');
+    try {
+      const list = await api('/api/finops/redemption-gateway');
+      let html = '<div class="muted" style="margin-bottom:12px;">Bridge DLB-PTCUSD to external clearing, stablecoin, or fiat rails.</div>';
+      html += '<h3 style="font-size:14px;margin:0 0 8px;">Create Request</h3>';
+      html += '<div class="token-bar"><input id="rgw-beneficiary" placeholder="beneficiary address" /></div>';
+      html += '<div class="token-bar"><input id="rgw-amount" placeholder="amount" /></div>';
+      html += '<div class="token-bar"><input id="rgw-rail" placeholder="rail (clearing/besu/spritz/dex/p2p/bank_wire)" /></div>';
+      html += '<div class="approval-actions"><button class="btn" onclick="redemptionGatewayCreate()">Create</button></div>';
+      html += '<h3 style="font-size:14px;margin:16px 0 8px;">Requests</h3>';
+      html += (list.data || []).map(r => `<div style="font-size:12px;border-bottom:1px solid var(--border);padding:4px 0;">${r.id}: ${r.beneficiary} ${r.amount} ${r.stablecoin} <em>${r.status}</em> (${r.externalRail})</div>`).join('');
+      body.innerHTML = html;
+    } catch(e) { body.innerHTML = '<div class="status err">' + e.message + '</div>'; }
+  }
+
+  async function redemptionGatewayCreate() {
+    const beneficiary = el('rgw-beneficiary').value.trim();
+    const amount = el('rgw-amount').value.trim();
+    const externalRail = el('rgw-rail').value.trim() || 'clearing';
+    try {
+      const res = await api('/api/finops/redemption-gateway', { method:'POST', body: JSON.stringify({ beneficiary, amount, externalRail }) });
+      const id = res.data?.id;
+      if (id) await api('/api/finops/redemption-gateway/' + id + '/execute', { method:'POST' });
+      await loadRedemptionGateway();
+    } catch(e) { alert(e.message); }
   }
 
   window.addEventListener('DOMContentLoaded', () => {
