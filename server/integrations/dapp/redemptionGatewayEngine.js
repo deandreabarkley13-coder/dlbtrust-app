@@ -19,7 +19,7 @@ class RedemptionGatewayEngine {
     await pool.query(`
       CREATE TABLE IF NOT EXISTS redemption_gateway_requests (
         id            TEXT PRIMARY KEY,
-        status        TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending','clearing','external','awaiting_funds','completed','failed')),
+        status        TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending','clearing','external','completed','failed')),
         stablecoin    TEXT DEFAULT 'DLB-PTCUSD',
         amount        TEXT NOT NULL,
         beneficiary   TEXT,
@@ -126,7 +126,7 @@ class RedemptionGatewayEngine {
       result = { redemptionId: redemption.id };
     }
 
-    const status = result.awaitingFunds ? 'awaiting_funds' : (result.error ? 'failed' : 'completed');
+    const status = result.error || result.awaitingFunds ? 'failed' : 'completed';
     await pool.query(
       "UPDATE redemption_gateway_requests SET status=$1, metadata=jsonb_set(metadata, '{result}', $2::jsonb), updated_at=NOW() WHERE id=$3",
       [status, JSON.stringify(result), requestId]
