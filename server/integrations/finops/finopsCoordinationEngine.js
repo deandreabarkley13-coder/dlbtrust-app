@@ -42,6 +42,7 @@ class FinOpsCoordinationEngine {
         collateralRatio: stablecoin?.collateralRatio,
         paused: stablecoin?.paused,
       };
+      if (!health.checks.stablecoin.ok) health.ok = false;
     } catch (e) { health.checks.stablecoin = { ok: false, error: e.message }; health.ok = false; }
 
     try {
@@ -53,6 +54,7 @@ class FinOpsCoordinationEngine {
         paymasterAddress: aa?.paymasterAddress,
         issues: aa?.issues,
       };
+      if (!health.checks.accountAbstraction.ok) health.ok = false;
     } catch (e) { health.checks.accountAbstraction = { ok: false, error: e.message }; health.ok = false; }
 
     try {
@@ -64,6 +66,7 @@ class FinOpsCoordinationEngine {
         entryPointStake: paymasterBalance?.entryPointStake,
         operatorEth: paymasterBalance?.operatorEth,
       };
+      if (!health.checks.paymasterBalance.ok) health.ok = false;
     } catch (e) { health.checks.paymasterBalance = { ok: false, error: e.message }; health.ok = false; }
 
     try {
@@ -74,6 +77,7 @@ class FinOpsCoordinationEngine {
         address: aa?.operatorAddress,
         ethBalance: aa?.operatorEth,
       };
+      if (!health.checks.operatorWallet.ok) health.ok = false;
     } catch (e) { health.checks.operatorWallet = { ok: false, error: e.message }; health.ok = false; }
 
     return health;
