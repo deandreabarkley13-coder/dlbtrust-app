@@ -658,6 +658,8 @@ class AccountAbstractionEngine {
     });
 
     const signature = await operator.signMessage({ message: { raw: hash } });
+    const recovered = await viem.recoverMessageAddress({ message: { raw: hash }, signature }).catch(() => null);
+    console.log('[AA] _buildPaymasterAndData hash:', hash, 'signature:', signature, 'isStub:', isStub, 'validUntil:', validUntil, 'operator:', operator.address, 'recovered:', recovered);
     return viem.concat([paymasterAddress, validityBytes, signature]);
   }
 
@@ -758,10 +760,12 @@ class AccountAbstractionEngine {
         args: [smartAccountAddress, 0n],
       }).catch(() => 0n);
 
+      console.log('[AA] prepareUserOperation inputs:', { sender: smartAccountAddress, owner, nonce: String(nonce), tokenAddress, to, amount: String(amount) });
       userOp = await aa.prepareUserOperation(bundlerClient, {
         calls: [{ to: tokenAddress, value: 0n, data: callData }],
         nonce,
       });
+      console.log('[AA] prepared userOp:', this._serializeUserOp(userOp));
       userOpHash = aa.getUserOperationHash({
         chainId: cfg.chainId,
         entryPointAddress: cfg.entryPoint,
