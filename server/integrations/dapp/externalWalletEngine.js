@@ -22,6 +22,13 @@ function canonicalConsensusEngine() {
 function id(prefix = 'EW') { return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 8).toUpperCase()}`; }
 function safeJson(obj) { return JSON.stringify(obj, (k, v) => typeof v === 'bigint' ? String(v) : v); }
 
+const UNISWAP_V2_ROUTER_ABI = [
+  { type: 'function', name: 'getAmountsOut', inputs: [{ type: 'uint256' }, { type: 'address[]' }], outputs: [{ type: 'uint256[]' }], stateMutability: 'view' },
+  { type: 'function', name: 'swapExactTokensForTokens', inputs: [{ type: 'uint256' }, { type: 'uint256' }, { type: 'address[]' }, { type: 'address' }, { type: 'uint256' }], outputs: [{ type: 'uint256[]' }], stateMutability: 'nonpayable' },
+  { type: 'function', name: 'swapExactETHForTokens', inputs: [{ type: 'uint256' }, { type: 'address[]' }, { type: 'address' }, { type: 'uint256' }], outputs: [{ type: 'uint256[]' }], stateMutability: 'payable' },
+  { type: 'function', name: 'swapExactTokensForETH', inputs: [{ type: 'uint256' }, { type: 'uint256' }, { type: 'address[]' }, { type: 'address' }, { type: 'uint256' }], outputs: [{ type: 'uint256[]' }], stateMutability: 'nonpayable' },
+];
+
 const ERC20_BALANCE_ABI = [
   { type: 'function', name: 'balanceOf', inputs: [{ type: 'address' }], outputs: [{ type: 'uint256' }], stateMutability: 'view' },
   { type: 'function', name: 'decimals', inputs: [], outputs: [{ type: 'uint8' }], stateMutability: 'view' },
@@ -185,11 +192,24 @@ class ExternalWalletEngine {
 
     if (inToken.symbol === 'ETH') {
       const data = viem.encodeFunctionData({
-        abi: uniswapV2RouterAbi,
+        abi: UNISWAP_V2_ROUTER_ABI,
         functionName: 'swapExactETHForTokens',
         args: [minOut, path, to, BigInt(deadline)],
       });
       unsignedTx = { to: routerAddress, data, value: String(rawIn), gas: '250000' };
+    } else if (outToken.symbol === 'ETH') {
+      const data = viem.encodeFunctionData({
+        abi: UNISWAP_V2_ROUTER_ABI,
+        functionName: 'swapExactTokensForETH',
+        args: [rawIn, minOut, path, to, BigInt(deadline)],
+      });
+      unsignedTx = { to: routerAddress, data, value: '0', gas: '250000' };
+      approveTx = {
+        to: inToken.address,
+        data: viem.encodeFunctionData({ abi: erc20Abi, functionName: 'approve', args: [routerAddress, rawIn] }),
+        value: '0',
+        gas: '100000',
+      };
     } else {
       approveTx = {
         to: inToken.address,
@@ -200,7 +220,7 @@ class ExternalWalletEngine {
       unsignedTx = {
         to: routerAddress,
         data: viem.encodeFunctionData({
-          abi: uniswapV2RouterAbi,
+          abi: UNISWAP_V2_ROUTER_ABI,
           functionName: 'swapExactTokensForTokens',
           args: [rawIn, minOut, path, to, BigInt(deadline)],
         }),
