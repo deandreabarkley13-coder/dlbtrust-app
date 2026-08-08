@@ -54,7 +54,7 @@ class TrustMarketEngine {
     if (t === 'DLB-PTCUSD' || t === 'PTCUSD') {
       const info = PtcStablecoinEngine ? await PtcStablecoinEngine.info().catch(() => ({})) : {};
       address = info.tokenAddress || process.env.DLB_PTCUSD_ADDRESS || cfg.dlbPTCUSDAddress || '';
-      decimals = 6;
+      decimals = 18;
     } else if (t === 'DLBUSD' || t === 'DLB-USD') {
       if (PairedAssetEngine) {
         const r = await PairedAssetEngine._resolveToken('DLBUSD').catch(() => ({}));
@@ -87,8 +87,11 @@ class TrustMarketEngine {
 
     if (!address && viem && viem.isAddress && viem.isAddress(symbolOrAddress)) {
       address = symbolOrAddress;
+    }
+
+    if (address && viem) {
       const pc = this._publicClient();
-      decimals = Number(await pc.readContract({ address, abi: ERC20_ABI, functionName: 'decimals' }).catch(() => 18));
+      decimals = Number(await pc.readContract({ address, abi: ERC20_ABI, functionName: 'decimals' }).catch(() => decimals));
     }
 
     return { address, decimals, symbol };

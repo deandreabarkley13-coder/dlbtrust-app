@@ -76,7 +76,7 @@ class PairedAssetEngine {
       }
       return { address, decimals: 6 };
     }
-    if (t === 'DLB-PTCUSD') return { address: process.env.DLB_PTCUSD_ADDRESS || cfg.dlbPTCUSDAddress || '', decimals: 18 };
+    if (t === 'DLB-PTCUSD') return { address: process.env.DLB_PTCUSD_ADDRESS || cfg.dlbPTCUSDAddress || '', decimals: 18 }; // PTC stablecoin is 18 decimals on mainnet
     if (t === 'USDS') return { address: cfg.usdsAddress || '', decimals: 18 };
     if (t === 'USDC') return { address: cfg.usdcAddress || '', decimals: 6 };
     if (t === 'DAI') return { address: cfg.daiAddress || '', decimals: 18 };
