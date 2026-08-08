@@ -482,9 +482,9 @@ class AccountAbstractionEngine {
     if (receipt.status !== 'success') throw new Error(`deposit failed: ${receipt.transactionHash}`);
 
     const stakeHash = await wallet.writeContract({
-      address: cfg.entryPoint,
-      abi: aa.entryPoint06Abi,
-      functionName: 'addStake',
+      address,
+      abi: getPaymasterAbi(),
+      functionName: 'stake',
       args: [unstakeDelaySec],
       value,
       gas: 100000n,
