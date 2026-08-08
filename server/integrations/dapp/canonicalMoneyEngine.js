@@ -106,10 +106,16 @@ class CanonicalMoneyEngine {
 
   static async _execute(proposal) {
     const { payload } = proposal;
-    const { requestId, sourceType, sourceAccountId, sourceToken, sourceModule, amount, targetAsset, route } = payload;
-    const result = await this._executeRoute(route, payload);
-    await query('UPDATE canonical_money_requests SET result=$1, status=$2, updated_at=NOW() WHERE id=$3', [safeJson(result), result.status || 'completed', requestId]);
-    return result;
+    const { requestId, route } = payload;
+    try {
+      const result = await this._executeRoute(route, payload);
+      await query('UPDATE canonical_money_requests SET result=$1, status=$2, updated_at=NOW() WHERE id=$3', [safeJson(result), result.status || 'completed', requestId]);
+      return result;
+    } catch (err) {
+      const errorResult = { status: 'failed', error: err.message };
+      await query('UPDATE canonical_money_requests SET result=$1, status=$2, updated_at=NOW() WHERE id=$3', [safeJson(errorResult), 'failed', requestId]);
+      throw err;
+    }
   }
 
   static async _pickRoute({ sourceType, sourceAccountId, sourceToken, sourceModule, targetAsset, poolAddress }) {
