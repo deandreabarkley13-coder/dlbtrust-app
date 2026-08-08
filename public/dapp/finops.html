@@ -157,6 +157,7 @@
     { key:'spritz', name:'Spritz Off-Ramp', desc:'Crypto-to-fiat bank payouts via Spritz', stat:'', endpoint:null, action:'openSpritzPanel' },
     { key:'ptc-stablecoin', name:'PTC Stablecoin', desc:'DLB-PTCUSD backed by bond/fixed-income reserves', stat:'', endpoint:null, action:'openPtcStablecoinPanel' },
     { key:'stablecoin', name:'Stablecoin Engine', desc:'Auditable mint/redeem/transfer/settle with collateral ratio', stat:'', endpoint:null, action:'openStablecoinPanel' },
+    { key:'redemption', name:'Redemption Engine', desc:'Redeem DLB-PTCUSD/module tokens for fiat payouts', stat:'', endpoint:null, action:'openRedemptionPanel' },
     { key:'canonical-consensus', name:'Canonical Consensus', desc:'Maker/Checker approvals for tokenized ledger actions', stat:'', endpoint:null, action:'openCanonicalConsensusPanel' },
     { key:'payout', name:'Payout Center', desc:'Disbursements, trades, off-ramps', stat:'', endpoint:null, link:'/dapp/payout-center.html?v=2' },
     { key:'distribution', name:'Distribution', desc:'Trustee-approved beneficiary distributions', stat:'', endpoint:null, link:'/dapp/master-dashboard.html?v=2' },
@@ -884,6 +885,107 @@
       scStatus('Settled: ' + (res.data.txHash || res.data.proposalId), false);
       await loadStablecoinInfo();
     } catch(e) { scStatus(e.message, true); }
+  }
+
+  // ─── Redemption Engine panel ─────────────────────────────────────────────────
+  function openRedemptionPanel() {
+    const panel = el('module-panel');
+    const body = el('panel-body');
+    el('panel-title').textContent = 'Redemption Engine';
+    panel.classList.add('active');
+    body.innerHTML = '<div class="muted">Loading redemptions…</div>';
+    loadRedemptions();
+  }
+
+  function renderRedemptionPanel(redemptions) {
+    let html = '<div class="muted" style="margin-bottom:12px;">Request redemption of DLB-PTCUSD or module reserve tokens into fiat payouts (bank/card/bill) via Spritz.</div>' +
+      '<div id="rd-status" class="status hidden"></div>' +
+      '<div style="margin-top:12px; border-top:1px solid var(--border); padding-top:12px;">' +
+      '<h3 style="margin:0 0 10px; font-size:14px;">Create Redemption</h3>' +
+      '<div class="token-bar"><input id="rd-amount" placeholder="USD amount" /></div>' +
+      '<div class="token-bar"><input id="rd-from" placeholder="from asset (DLB-PTCUSD or module key)" value="DLB-PTCUSD" /></div>' +
+      '<div class="token-bar"><input id="rd-reserve" placeholder="reserve module (fixed_income, bond_portfolio, treasury)" value="fixed_income" /></div>' +
+      '<div class="token-bar"><input id="rd-destination-type" placeholder="destination type (bank, card, bill, wallet)" value="bank" /></div>' +
+      '<div class="token-bar"><input id="rd-destination-id" placeholder="destination account id" /></div>' +
+      '<div class="token-bar"><input id="rd-rail" placeholder="rail (ach_standard, bill_pay, card_deposit, push_to_card)" value="ach_standard" /></div>' +
+      '<div class="token-bar"><input id="rd-recipient" placeholder="recipient email / address" /></div>' +
+      '<div class="approval-actions"><button class="btn" onclick="rdCreate(false)">Create & Execute</button><button class="btn btn-sec" style="margin-left:8px;" onclick="rdCreate(true)">Create (consensus)</button></div>' +
+      '</div>';
+    if (!redemptions.length) { html += '<p class="muted">No redemptions yet.</p>'; }
+    else {
+      html += '<h3 style="font-size:14px; margin:16px 0 8px;">Redemptions</h3>';
+      for (const r of redemptions) {
+        html += '<div class="approval-item" style="margin-bottom:10px;">' +
+          '<div class="summary"><strong>' + r.id + '</strong> — ' + r.amount_usd + ' ' + r.from_asset + ' <span class="badge">' + r.status + '</span></div>' +
+          '<div class="muted" style="font-size:12px;">to ' + r.destination_type + ' (' + r.rail + ') stage: ' + r.stage + '</div>' +
+          '<div class="approval-actions">' +
+          (r.status === 'pending' ? '<button class="btn" onclick="rdExecute(\'' + r.id + '\')">Execute</button>' : '') +
+          (r.status === 'pending' && r.tx_data && r.tx_data.requireConsensus ? '<button class="btn btn-sec" style="margin-left:8px;" onclick="rdApprove(\'' + r.id + '\')">Approve</button>' : '') +
+          (r.status !== 'completed' && r.status !== 'cancelled' ? '<button class="btn btn-danger" style="margin-left:8px;" onclick="rdCancel(\'' + r.id + '\')">Cancel</button>' : '') +
+          '</div>' +
+          '</div>';
+      }
+    }
+    return html;
+  }
+
+  function rdStatus(msg, isErr) {
+    const d = el('rd-status'); if (!d) return; d.textContent = msg; d.className = 'status ' + (isErr ? 'err' : 'ok'); d.classList.remove('hidden');
+  }
+
+  async function loadRedemptions() {
+    const body = el('panel-body');
+    try {
+      const res = await api('/api/finops/redemptions');
+      body.innerHTML = renderRedemptionPanel(res.data || []);
+    } catch(e) { body.innerHTML = '<div class="status err">' + e.message + '</div>' + renderRedemptionPanel([]); }
+  }
+
+  async function rdCreate(requireConsensus) {
+    rdStatus('Creating redemption…');
+    try {
+      const body = {
+        amount: el('rd-amount').value.trim(),
+        fromAsset: el('rd-from').value.trim() || 'DLB-PTCUSD',
+        reserveModule: el('rd-reserve').value.trim() || 'fixed_income',
+        destinationType: el('rd-destination-type').value.trim() || 'bank',
+        destinationId: el('rd-destination-id').value.trim(),
+        rail: el('rd-rail').value.trim() || 'ach_standard',
+        recipientEmail: el('rd-recipient').value.trim(),
+        requireConsensus,
+      };
+      const res = await api('/api/finops/redemptions', { method:'POST', body: JSON.stringify(body) });
+      rdStatus('Created: ' + res.data.id + (requireConsensus ? ' — pending consensus' : ''), false);
+      if (!requireConsensus) await rdExecute(res.data.id);
+      else await loadRedemptions();
+    } catch(e) { rdStatus(e.message, true); }
+  }
+
+  async function rdExecute(id) {
+    rdStatus('Executing redemption ' + id + '…');
+    try {
+      const res = await api('/api/finops/redemptions/' + id + '/execute', { method:'POST' });
+      rdStatus('Status: ' + res.data.status + ' / ' + res.data.stage + (res.data.swapResult ? ' (order ' + res.data.swapResult.orderId + ')' : ''), false);
+      await loadRedemptions();
+    } catch(e) { rdStatus(e.message, true); }
+  }
+
+  async function rdApprove(id) {
+    rdStatus('Approving redemption ' + id + '…');
+    try {
+      const res = await api('/api/finops/redemptions/' + id + '/approve', { method:'POST' });
+      rdStatus('Approved/executed: ' + res.data.status, false);
+      await loadRedemptions();
+    } catch(e) { rdStatus(e.message, true); }
+  }
+
+  async function rdCancel(id) {
+    rdStatus('Cancelling redemption ' + id + '…');
+    try {
+      await api('/api/finops/redemptions/' + id, { method:'DELETE' });
+      rdStatus('Cancelled', false);
+      await loadRedemptions();
+    } catch(e) { rdStatus(e.message, true); }
   }
 
   function openCanonicalConsensusPanel() {

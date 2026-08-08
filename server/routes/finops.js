@@ -9,6 +9,7 @@ const { SpritzEngine } = require('../integrations/spritz/spritzEngine');
 const { PeerOnRampEngine } = require('../integrations/peer/peerOnRampEngine');
 const { PtcStablecoinEngine } = require('../integrations/dapp/ptcStablecoinEngine');
 const { StablecoinEngine } = require('../integrations/dapp/stablecoinEngine');
+const { RedemptionEngine } = require('../integrations/dapp/redemptionEngine');
 const { CanonicalConsensusEngine } = require('../integrations/dapp/canonicalConsensusEngine');
 
 const router = express.Router();
@@ -359,6 +360,11 @@ router.get('/ptc-stablecoin/balance/:address', operatorAuth, async (req, res) =>
   try { res.json({ success: true, data: { address: req.params.address, balance: await PtcStablecoinEngine.balanceOf(req.params.address) } }); } catch (err) { sendError(res, err); }
 });
 
+function getUserEmail(req) {
+  const u = req.user || {};
+  return u.email || u.username || u.userId || 'operator';
+}
+
 // ═════════════════════════════════════════════════════════════════════════════
 // Stablecoin Engine (trust-owned, multi-collateral, auditable)
 // ═════════════════════════════════════════════════════════════════════════════
@@ -404,13 +410,36 @@ router.post('/stablecoin/unpause', operatorAuth, writeRateLimiter(), async (req,
 });
 
 // ═════════════════════════════════════════════════════════════════════════════
-// Canonical Consensus Engine (Maker / Checker approvals)
+// Redemption Engine (DLB-PTCUSD / module tokens -> fiat payout)
 // ═════════════════════════════════════════════════════════════════════════════
 
-function getUserEmail(req) {
-  const u = req.user || {};
-  return u.email || u.username || u.userId || 'operator';
-}
+router.get('/redemptions', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await RedemptionEngine.list(req.query) }); } catch (err) { sendError(res, err); }
+});
+
+router.get('/redemptions/:id', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await RedemptionEngine.get(req.params.id) }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/redemptions', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try { res.status(201).json({ success: true, data: await RedemptionEngine.create({ ...req.body, requesterEmail: getUserEmail(req) }) }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/redemptions/:id/execute', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try { res.json({ success: true, data: await RedemptionEngine.execute(req.params.id, { operatorEmail: getUserEmail(req) }) }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/redemptions/:id/approve', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try { res.json({ success: true, data: await RedemptionEngine.approve(req.params.id, getUserEmail(req)) }); } catch (err) { sendError(res, err); }
+});
+
+router.delete('/redemptions/:id', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try { res.json({ success: true, data: await RedemptionEngine.cancel(req.params.id) }); } catch (err) { sendError(res, err); }
+});
+
+// ═════════════════════════════════════════════════════════════════════════════
+// Canonical Consensus Engine (Maker / Checker approvals)
+// ═════════════════════════════════════════════════════════════════════════════
 
 router.get('/consensus', operatorAuth, async (req, res) => {
   try { res.json({ success: true, data: await CanonicalConsensusEngine.listProposals(req.query) }); } catch (err) { sendError(res, err); }
