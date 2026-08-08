@@ -94,9 +94,14 @@ class FinOpsCoordinationEngine {
     const result = await pool.query('SELECT * FROM finops_coordination_jobs WHERE id = $1', [jobId]);
     if (!result.rows.length) return null;
     const row = result.rows[0];
-    row.payload = row.payload ? JSON.parse(row.payload) : {};
-    row.result = row.result ? JSON.parse(row.result) : null;
+    row.payload = typeof row.payload === 'string' ? JSON.parse(row.payload) : (row.payload || {});
+    row.result = typeof row.result === 'string' ? JSON.parse(row.result) : row.result;
     return row;
+  }
+
+  static _parseJsonb(value) {
+    if (typeof value === 'string') return JSON.parse(value);
+    return value ?? null;
   }
 
   static async listQueue({ status, limit = 50, offset = 0 } = {}) {
@@ -108,8 +113,8 @@ class FinOpsCoordinationEngine {
       [...params, limit, offset]
     );
     return result.rows.map(r => {
-      r.payload = r.payload ? JSON.parse(r.payload) : {};
-      r.result = r.result ? JSON.parse(r.result) : null;
+      r.payload = typeof r.payload === 'string' ? JSON.parse(r.payload) : (r.payload || {});
+      r.result = typeof r.result === 'string' ? JSON.parse(r.result) : r.result;
       return r;
     });
   }
