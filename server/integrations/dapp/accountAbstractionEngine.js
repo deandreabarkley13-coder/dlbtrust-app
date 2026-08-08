@@ -586,24 +586,59 @@ class AccountAbstractionEngine {
     }
   }
 
-  static async _buildPaymasterAndData(userOp, paymasterAddress) {
-    const cfg = this._checkDeps();
-    const operator = this._operatorAccount(cfg);
-    if (cfg.aaShadow) {
-      const shadowPaymaster = viem.isAddress(paymasterAddress) ? paymasterAddress : '0x0000000000000000000000000000000000000000';
-      const shadowSig = ('0x' + '00'.repeat(65));
-      const validUntil = Math.floor(Date.now() / 1000) + cfg.validityWindowSec;
-      const validAfter = 0;
-      const validityBytes = viem.encodeAbiParameters([{ type: 'uint48' }, { type: 'uint48' }], [validUntil, validAfter]);
-      return viem.concat([shadowPaymaster, validityBytes, shadowSig]);
+  static _normalizeUserOpField(userOp, field, fallback) {
+    const v = userOp[field];
+    if (v === undefined || v === null) return fallback;
+    if (typeof v === 'bigint') return v;
+    if (typeof v === 'string') {
+      if (v.startsWith('0x')) return BigInt(v);
+      try { return BigInt(v); } catch { return fallback; }
     }
+    if (typeof v === 'number') return BigInt(v);
+    return fallback;
+  }
 
+  static _sanitizeUserOp(userOp) {
+    const defaults = {
+      sender: '0x0000000000000000000000000000000000000000',
+      nonce: 0n,
+      initCode: '0x',
+      callData: '0x',
+      callGasLimit: 100000n,
+      verificationGasLimit: 100000n,
+      preVerificationGas: 50000n,
+      maxFeePerGas: 1000000000n,
+      maxPriorityFeePerGas: 100000000n,
+      paymasterAndData: '0x',
+      signature: '0x',
+    };
+    const out = { ...defaults };
+    for (const [key, fallback] of Object.entries(defaults)) {
+      if (key === 'sender' || key === 'initCode' || key === 'callData' || key === 'paymasterAndData' || key === 'signature') {
+        out[key] = userOp[key] || fallback;
+      } else {
+        out[key] = this._normalizeUserOpField(userOp, key, fallback);
+      }
+    }
+    return out;
+  }
+
+  static async _buildPaymasterAndData(userOp, paymasterAddress, isStub = false) {
+    const cfg = this._checkDeps();
     const validUntil = Math.floor(Date.now() / 1000) + cfg.validityWindowSec;
     const validAfter = 0;
-    const senderNonce = await this._getSenderNonce(paymasterAddress, userOp.sender || userOp.address);
-    const userOpForHash = { ...userOp, paymasterAndData: '0x', signature: '0x' };
+    const validityBytes = viem.encodeAbiParameters([{ type: 'uint48' }, { type: 'uint48' }], [validUntil, validAfter]);
 
+    if (isStub || cfg.aaShadow) {
+      const pm = viem.isAddress(paymasterAddress) ? paymasterAddress : '0x0000000000000000000000000000000000000000';
+      const stubSig = ('0x' + '00'.repeat(65));
+      return viem.concat([pm, validityBytes, stubSig]);
+    }
+
+    const operator = this._operatorAccount(cfg);
     const publicClient = this._publicClient(cfg);
+    const userOpForHash = this._sanitizeUserOp({ ...userOp, paymasterAndData: '0x', signature: '0x' });
+
     const hash = await publicClient.readContract({
       address: paymasterAddress,
       abi: getPaymasterAbi(),
@@ -612,17 +647,16 @@ class AccountAbstractionEngine {
     });
 
     const signature = await operator.signMessage({ message: { raw: hash } });
-    const validityBytes = viem.encodeAbiParameters([{ type: 'uint48' }, { type: 'uint48' }], [validUntil, validAfter]);
     return viem.concat([paymasterAddress, validityBytes, signature]);
   }
 
   static _paymasterActions(paymasterAddress) {
     return {
       getPaymasterStubData: async (parameters) => ({
-        paymasterAndData: await this._buildPaymasterAndData(parameters, paymasterAddress),
+        paymasterAndData: await this._buildPaymasterAndData(parameters, paymasterAddress, true),
       }),
       getPaymasterData: async (parameters) => ({
-        paymasterAndData: await this._buildPaymasterAndData(parameters, paymasterAddress),
+        paymasterAndData: await this._buildPaymasterAndData(parameters, paymasterAddress, false),
       }),
     };
   }
