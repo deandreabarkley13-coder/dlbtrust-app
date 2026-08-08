@@ -23,6 +23,7 @@ const { CrossChainConversionEngine } = require('../integrations/dapp/crossChainC
 const { PairedAssetEngine } = require('../integrations/dapp/pairedAssetEngine');
 const { OnOffRampEngine } = require('../integrations/dapp/onOffRampEngine');
 const { TrustMarketEngine } = require('../integrations/dapp/trustMarketEngine');
+const { IntentRoutingEngine } = require('../integrations/dapp/intentRoutingEngine');
 
 const router = express.Router();
 const operatorAuth = requireAuth({ role: 'operator' });
@@ -801,6 +802,34 @@ router.post('/ramps/requests/:id/approve', operatorAuth, writeRateLimiter(), asy
 });
 
 router.post('/ramps/requests/:id/execute', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try { res.json({ success: true, data: await CanonicalConsensusEngine.executeProposal(req.params.id) }); } catch (err) { sendError(res, err); }
+});
+
+// ═════════════════════════════════════════════════════════════════════════════
+// Intent Routing Engine (natural-language orchestration of on/off ramp flows)
+// ═════════════════════════════════════════════════════════════════════════════
+
+router.get('/intents', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await IntentRoutingEngine.listRequests(req.query) }); } catch (err) { sendError(res, err); }
+});
+
+router.get('/intents/:id', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await IntentRoutingEngine.getRequest(req.params.id) }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/intents/quote', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await IntentRoutingEngine.quote(req.body) }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/intents/requests', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try { res.status(201).json({ success: true, data: await IntentRoutingEngine.propose({ ...req.body, createdBy: getUserEmail(req) }) }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/intents/requests/:id/approve', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try { res.json({ success: true, data: await CanonicalConsensusEngine.approveProposal({ proposalId: req.params.id, ...req.body }) }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/intents/requests/:id/execute', operatorAuth, writeRateLimiter(), async (req, res) => {
   try { res.json({ success: true, data: await CanonicalConsensusEngine.executeProposal(req.params.id) }); } catch (err) { sendError(res, err); }
 });
 

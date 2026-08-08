@@ -167,6 +167,7 @@
     { key:'paired-assets', name:'Paired Asset Engine', desc:'Source real canonical assets to seed DEX liquidity pools', stat:'', endpoint:null, action:'openPairedAssetsPanel' },
     { key:'trust-market', name:'Trust Market Maker', desc:'1:1 reserve-backed token <-> canonical stablecoin P2P market', stat:'', endpoint:null, action:'openTrustMarketPanel' },
     { key:'ramps', name:'Ramp Center', desc:'Fiat on/off ramps and counterparty rail aggregator', stat:'', endpoint:null, action:'openRampsPanel' },
+    { key:'intent-routing', name:'Intent Routing', desc:'Natural-language orchestration of on/off-ramp and conversion flows', stat:'', endpoint:null, action:'openIntentRoutingPanel' },
     { key:'coordination', name:'Coordination Engine', desc:'System health, AI command queue and stability checks', stat:'', endpoint:null, action:'openCoordinationPanel' },
     { key:'clearing', name:'Clearing Engine', desc:'Bilateral and net settlement on Hyperledger Besu', stat:'', endpoint:null, action:'openClearingPanel' },
     { key:'redemption-gateway', name:'Redemption Gateway', desc:'Bridge DLB-PTCUSD to external clearing/stablecoin rails', stat:'', endpoint:null, action:'openRedemptionGatewayPanel' },
@@ -333,7 +334,7 @@
     renderModules();
     renderFlow();
     try {
-      const [sof, accts, wallets, bond, crm, p2p, ptc, consensus, xchain, paired, trustMarket, ramps] = await Promise.all([
+      const [sof, accts, wallets, bond, crm, p2p, ptc, consensus, xchain, paired, trustMarket, ramps, intents] = await Promise.all([
         api('/api/finops/source-of-funds').catch(()=>null),
         api('/api/accounting/accounts').catch(()=>null),
         api('/api/finops/wallets').catch(()=>null),
@@ -346,6 +347,7 @@
         api('/api/finops/paired-assets').catch(()=>null),
         api('/api/finops/trust-market/orders').catch(()=>null),
         api('/api/finops/ramps/requests').catch(()=>null),
+        api('/api/finops/intents').catch(()=>null),
       ]);
       const balances = normalizeBalances(sof && sof.data);
       if (balances.length) {
@@ -384,6 +386,10 @@
       if (ramps && ramps.data && Array.isArray(ramps.data)) {
         const pending = ramps.data.filter(r => r.status === 'pending').length;
         setStat('ramps', String(pending));
+      }
+      if (intents && intents.data && Array.isArray(intents.data)) {
+        const pending = intents.data.filter(r => r.status === 'pending').length;
+        setStat('intent-routing', String(pending));
       }
       renderModules();
     } catch(e) { console.error('loadAll error', e); }
@@ -2148,6 +2154,83 @@
     try {
       await api('/api/finops/ramps/requests/' + proposalId + '/execute', { method:'POST', body: '{}' });
       await loadRampRequests();
+    } catch(e) { alert(e.message); }
+  }
+
+  // ─── Intent Routing Engine panel ──────────────────────────────────────────────
+  let currentIntentPlan = null;
+
+  function openIntentRoutingPanel() {
+    const panel = el('module-panel');
+    const body = el('panel-body');
+    el('panel-title').textContent = 'Intent Routing';
+    panel.classList.add('active');
+    body.innerHTML = '<div class="muted" style="margin-bottom:12px;">Type a natural-language goal like <em>"Convert $500,000 bond interest to USDS"</em> or <em>"Offramp 1,000 USDC to bank"</em>. The engine parses the intent, plans the best route across ramps/P2P/DEX, and submits it to Canonical Consensus.</div>' +
+      '<div class="token-bar"><textarea id="intent-text" rows="2" placeholder="e.g. Convert $500000 coupon interest to USDC" style="width:100%;padding:8px;"></textarea></div>' +
+      '<div class="token-bar"><input id="intent-amount" placeholder="amount (optional override)" /></div>' +
+      '<div class="token-bar"><input id="intent-target" placeholder="target asset (optional override)" /></div>' +
+      '<div class="approval-actions"><button class="btn" onclick="intentQuote()">Plan</button><button class="btn" onclick="intentPropose()">Propose</button></div>' +
+      '<div id="intent-plan" style="margin-top:12px;"></div>' +
+      '<h3 style="font-size:14px;margin:16px 0 8px;">Intent Requests</h3>' +
+      '<div id="intent-requests"></div>';
+    loadIntentRequests();
+  }
+
+  async function intentQuote() {
+    try {
+      const text = el('intent-text').value.trim();
+      if (!text) throw new Error('Enter an intent');
+      const context = {};
+      const amt = el('intent-amount').value.trim();
+      if (amt) context.amount = amt;
+      const tgt = el('intent-target').value.trim();
+      if (tgt) context.targetAsset = tgt;
+      const res = await api('/api/finops/intents/quote', { method:'POST', body: JSON.stringify({ intentText: text, context }) });
+      currentIntentPlan = res.data;
+      const p = res.data.parsed;
+      const plan = res.data.plan;
+      let html = '<div class="status ' + (plan.status === 'ready' ? 'ok' : 'err') + '"><strong>Action:</strong> ' + p.action + '<br/><strong>Amount:</strong> ' + p.amount + '<br/><strong>Source:</strong> ' + (p.sourceAsset || p.sourceType || '') + '<br/><strong>Target:</strong> ' + (p.targetAsset || '') + '<br/><strong>Status:</strong> ' + plan.status + '<br/><strong>Best route:</strong> ' + (plan.bestStep ? plan.bestStep.engine + (plan.bestStep.direction ? ' ' + plan.bestStep.direction : '') : 'none') + '<br/><strong>Issues:</strong> ' + (plan.issues.join('; ') || 'none') + '</div>';
+      if (plan.steps && plan.steps.length) {
+        html += '<ul style="font-size:12px;margin-top:8px;padding-left:16px;">' + plan.steps.map(s => '<li><strong>' + s.engine + '</strong>: ' + (s.quote?.status || s.direction || '') + '</li>').join('') + '</ul>';
+      }
+      el('intent-plan').innerHTML = html;
+    } catch(e) { el('intent-plan').innerHTML = '<div class="status err">' + e.message + '</div>'; }
+  }
+
+  async function intentPropose() {
+    try {
+      if (!currentIntentPlan) { await intentQuote(); }
+      if (!currentIntentPlan) return;
+      const res = await api('/api/finops/intents/requests', { method:'POST', body: JSON.stringify({ intentText: currentIntentPlan.intentText, context: currentIntentPlan.parsed }) });
+      el('intent-plan').innerHTML = '<div class="status ok">Proposed: ' + res.data.proposalId + ' (status: ' + res.data.plan.status + ')</div>';
+      await loadIntentRequests();
+    } catch(e) { el('intent-plan').innerHTML = '<div class="status err">' + e.message + '</div>'; }
+  }
+
+  async function loadIntentRequests() {
+    const wrap = el('intent-requests');
+    try {
+      const res = await api('/api/finops/intents');
+      wrap.innerHTML = (res.data || []).map(r => `<div style="font-size:12px;border-bottom:1px solid var(--border);padding:4px 0;"><strong>${r.id}</strong>: ${r.intent_text} <em>${r.status}</em>` +
+        (r.status === 'pending' ? ` <select id="intent-role-${r.proposal_id}"><option value="maker">maker</option><option value="checker">checker</option></select><input id="intent-email-${r.proposal_id}" placeholder="email" style="width:100px;" /><button class="btn" onclick="intentApprove('${r.proposal_id}')">Approve</button>` : '') +
+        (r.status === 'approved' ? ` <button class="btn" onclick="intentExecute('${r.proposal_id}')">Execute</button>` : '') +
+        `</div>`).join('') || '<span class="muted">No intent requests yet.</span>';
+    } catch(e) { wrap.innerHTML = '<div class="status err">' + e.message + '</div>'; }
+  }
+
+  async function intentApprove(proposalId) {
+    try {
+      const role = el('intent-role-' + proposalId).value;
+      const email = el('intent-email-' + proposalId).value.trim();
+      await api('/api/finops/intents/requests/' + proposalId + '/approve', { method:'POST', body: JSON.stringify({ role, approverEmail: email }) });
+      await loadIntentRequests();
+    } catch(e) { alert(e.message); }
+  }
+
+  async function intentExecute(proposalId) {
+    try {
+      await api('/api/finops/intents/requests/' + proposalId + '/execute', { method:'POST', body: '{}' });
+      await loadIntentRequests();
     } catch(e) { alert(e.message); }
   }
 
