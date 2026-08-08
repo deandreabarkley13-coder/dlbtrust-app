@@ -10,6 +10,7 @@ const { PeerOnRampEngine } = require('../integrations/peer/peerOnRampEngine');
 const { PtcStablecoinEngine } = require('../integrations/dapp/ptcStablecoinEngine');
 const { StablecoinEngine } = require('../integrations/dapp/stablecoinEngine');
 const { RedemptionEngine } = require('../integrations/dapp/redemptionEngine');
+const { AccountAbstractionEngine } = require('../integrations/dapp/accountAbstractionEngine');
 const { CanonicalConsensusEngine } = require('../integrations/dapp/canonicalConsensusEngine');
 
 const router = express.Router();
@@ -463,6 +464,42 @@ router.post('/consensus/proposals/:id/reject', operatorAuth, writeRateLimiter(),
 
 router.post('/consensus/proposals/:id/execute', operatorAuth, writeRateLimiter(), async (req, res) => {
   try { res.json({ success: true, data: await CanonicalConsensusEngine.executeProposal(req.params.id) }); } catch (err) { sendError(res, err); }
+});
+
+// ═════════════════════════════════════════════════════════════════════════════
+// Account Abstraction (gas sponsorship for operator / trustee smart accounts)
+// ═════════════════════════════════════════════════════════════════════════════
+
+router.get('/account-abstraction', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await AccountAbstractionEngine.readiness() }); } catch (err) { sendError(res, err); }
+});
+
+router.get('/account-abstraction/balance', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await AccountAbstractionEngine.getPaymasterBalance() }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/account-abstraction/deploy-paymaster', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try { res.json({ success: true, data: await AccountAbstractionEngine.deployPaymaster() }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/account-abstraction/seed-paymaster', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try { res.json({ success: true, data: await AccountAbstractionEngine.seedPaymaster({ ...req.body, whitelistAddress: req.body.whitelistAddress || getUserEmail(req) }) }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/account-abstraction/fund-paymaster', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try { res.json({ success: true, data: await AccountAbstractionEngine.fundPaymaster(req.body) }); } catch (err) { sendError(res, err); }
+});
+
+router.get('/account-abstraction/smart-account/:owner', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: { smartAccountAddress: await AccountAbstractionEngine.getSmartAccountAddress(req.params.owner, req.query.index ? BigInt(req.query.index) : 0n) } }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/account-abstraction/prepare-transfer', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try { res.json({ success: true, data: await AccountAbstractionEngine.prepareGaslessTransfer(req.body) }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/account-abstraction/submit-transfer', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try { res.json({ success: true, data: await AccountAbstractionEngine.submitGaslessTransfer(req.body) }); } catch (err) { sendError(res, err); }
 });
 
 module.exports = router;

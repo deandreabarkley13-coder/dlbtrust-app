@@ -158,6 +158,7 @@
     { key:'ptc-stablecoin', name:'PTC Stablecoin', desc:'DLB-PTCUSD backed by bond/fixed-income reserves', stat:'', endpoint:null, action:'openPtcStablecoinPanel' },
     { key:'stablecoin', name:'Stablecoin Engine', desc:'Auditable mint/redeem/transfer/settle with collateral ratio', stat:'', endpoint:null, action:'openStablecoinPanel' },
     { key:'redemption', name:'Redemption Engine', desc:'Redeem DLB-PTCUSD/module tokens for fiat payouts', stat:'', endpoint:null, action:'openRedemptionPanel' },
+    { key:'account-abstraction', name:'Account Abstraction', desc:'Smart accounts + gas sponsorship for operator/trustee wallets', stat:'', endpoint:null, action:'openAccountAbstractionPanel' },
     { key:'canonical-consensus', name:'Canonical Consensus', desc:'Maker/Checker approvals for tokenized ledger actions', stat:'', endpoint:null, action:'openCanonicalConsensusPanel' },
     { key:'payout', name:'Payout Center', desc:'Disbursements, trades, off-ramps', stat:'', endpoint:null, link:'/dapp/payout-center.html?v=2' },
     { key:'distribution', name:'Distribution', desc:'Trustee-approved beneficiary distributions', stat:'', endpoint:null, link:'/dapp/master-dashboard.html?v=2' },
@@ -986,6 +987,104 @@
       rdStatus('Cancelled', false);
       await loadRedemptions();
     } catch(e) { rdStatus(e.message, true); }
+  }
+
+  // ─── Account Abstraction panel ───────────────────────────────────────────────
+  function openAccountAbstractionPanel() {
+    const panel = el('module-panel');
+    const body = el('panel-body');
+    el('panel-title').textContent = 'Account Abstraction';
+    panel.classList.add('active');
+    body.innerHTML = '<div class="muted">Loading account abstraction status…</div>';
+    loadAccountAbstraction();
+  }
+
+  function renderAccountAbstractionPanel(data) {
+    const paymaster = data.paymasterAddress || 'not deployed';
+    const balance = data.balances || {};
+    let html = '<div class="muted" style="margin-bottom:12px;">ERC-4337 smart accounts + paymaster so operator/trustee wallets can transact without holding ETH.</div>' +
+      '<div id="aa-status" class="status hidden"></div>' +
+      '<div style="margin-bottom:12px;">' +
+      '<strong>Status:</strong> ' + (data.ready ? 'ready' : 'not ready') + '<br>' +
+      '<strong>Shadow mode:</strong> ' + (data.shadow ? 'yes' : 'no') + '<br>' +
+      '<strong>EntryPoint:</strong> <code>' + data.entryPoint + '</code><br>' +
+      '<strong>Factory:</strong> <code>' + data.factory + '</code><br>' +
+      '<strong>Paymaster:</strong> <code>' + paymaster + '</code><br>' +
+      '<strong>Operator ETH:</strong> ' + (balance.operatorEth || '—') + '<br>' +
+      '<strong>Paymaster ETH:</strong> ' + (balance.paymasterEth || '0') + '<br>' +
+      '<strong>EntryPoint deposit:</strong> ' + (balance.entryPointDeposit || '0') + '<br>' +
+      '</div>' +
+      '<div style="margin:12px 0; border-top:1px solid var(--border); padding-top:12px;">' +
+      '<div class="approval-actions"><button class="btn" onclick="aaDeploy()">Deploy Paymaster</button>' +
+      '<button class="btn btn-sec" style="margin-left:8px;" onclick="aaSeed()">Seed Paymaster</button>' +
+      '<button class="btn btn-sec" style="margin-left:8px;" onclick="aaFund()">Fund Paymaster</button></div>' +
+      '</div>' +
+      '<div style="margin:12px 0; border-top:1px solid var(--border); padding-top:12px;">' +
+      '<h3 style="margin:0 0 10px; font-size:14px;">Smart Account Address</h3>' +
+      '<div class="token-bar"><input id="aa-owner" placeholder="owner EVM address" /></div>' +
+      '<div class="approval-actions"><button class="btn" onclick="aaGetSmartAccount()">Get Address</button></div>' +
+      '<div id="aa-smart-account" style="font-family:monospace; margin-top:8px;"></div>' +
+      '</div>' +
+      '<div style="margin:12px 0; border-top:1px solid var(--border); padding-top:12px;">' +
+      '<h3 style="margin:0 0 10px; font-size:14px;">Gasless Token Transfer</h3>' +
+      '<div class="token-bar"><input id="aa-owner-tx" placeholder="owner address" /></div>' +
+      '<div class="token-bar"><input id="aa-to" placeholder="recipient address" /></div>' +
+      '<div class="token-bar"><input id="aa-token" placeholder="token address" /></div>' +
+      '<div class="token-bar"><input id="aa-amount" placeholder="amount (raw)" /></div>' +
+      '<div class="approval-actions"><button class="btn" onclick="aaPrepare()">Prepare</button></div>' +
+      '<div id="aa-prepared" style="font-family:monospace; font-size:12px; margin-top:8px;"></div>' +
+      '</div>';
+    return html;
+  }
+
+  function aaStatus(msg, isErr) {
+    const d = el('aa-status'); if (!d) return; d.textContent = msg; d.className = 'status ' + (isErr ? 'err' : 'ok'); d.classList.remove('hidden');
+  }
+
+  async function loadAccountAbstraction() {
+    const body = el('panel-body');
+    try {
+      const info = await api('/api/finops/account-abstraction');
+      const bal = await api('/api/finops/account-abstraction/balance');
+      body.innerHTML = renderAccountAbstractionPanel({ ...(info.data || {}), balances: bal.data || {} });
+    } catch(e) { body.innerHTML = '<div class="status err">' + e.message + '</div>' + renderAccountAbstractionPanel({}); }
+  }
+
+  async function aaDeploy() {
+    aaStatus('Deploying paymaster…');
+    try { const res = await api('/api/finops/account-abstraction/deploy-paymaster', { method:'POST' }); aaStatus('Paymaster: ' + res.data.paymaster, false); await loadAccountAbstraction(); }
+    catch(e) { aaStatus(e.message, true); }
+  }
+
+  async function aaSeed() {
+    aaStatus('Seeding paymaster…');
+    try { const res = await api('/api/finops/account-abstraction/seed-paymaster', { method:'POST', body: JSON.stringify({ amountEth: '0.001' }) }); aaStatus(res.data.message || 'Seeded', false); await loadAccountAbstraction(); }
+    catch(e) { aaStatus(e.message, true); }
+  }
+
+  async function aaFund() {
+    aaStatus('Funding paymaster…');
+    try { const res = await api('/api/finops/account-abstraction/fund-paymaster', { method:'POST', body: JSON.stringify({ amountEth: '0.001' }) }); aaStatus('Fund tx: ' + res.data.depositTx, false); await loadAccountAbstraction(); }
+    catch(e) { aaStatus(e.message, true); }
+  }
+
+  async function aaGetSmartAccount() {
+    const owner = el('aa-owner').value.trim();
+    try { const res = await api('/api/finops/account-abstraction/smart-account/' + owner); el('aa-smart-account').textContent = res.data.smartAccountAddress; }
+    catch(e) { aaStatus(e.message, true); }
+  }
+
+  async function aaPrepare() {
+    aaStatus('Preparing gasless transfer…');
+    try {
+      const owner = el('aa-owner-tx').value.trim();
+      const to = el('aa-to').value.trim();
+      const tokenAddress = el('aa-token').value.trim();
+      const amount = el('aa-amount').value.trim();
+      const res = await api('/api/finops/account-abstraction/prepare-transfer', { method:'POST', body: JSON.stringify({ owner, to, tokenAddress, amount }) });
+      el('aa-prepared').textContent = JSON.stringify(res.data, null, 2);
+      aaStatus('Prepared. Submit from signer with signature.', false);
+    } catch(e) { aaStatus(e.message, true); }
   }
 
   function openCanonicalConsensusPanel() {
