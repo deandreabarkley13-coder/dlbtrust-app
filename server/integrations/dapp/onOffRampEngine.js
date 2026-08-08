@@ -147,7 +147,7 @@ class OnOffRampEngine {
 
       if (SpritzEngine) {
         const spritzKey = process.env.SPRITZ_API_KEY || cfg.spritzApiKey;
-        const bankAccounts = spritzKey ? await SpritzEngine.getBankAccounts().catch(() => []) : [];
+        const bankAccounts = spritzKey ? await SpritzEngine.listBankAccounts().catch(() => []) : [];
         routes.push({
           provider: 'spritz',
           name: 'Spritz Finance Off-Ramp',
