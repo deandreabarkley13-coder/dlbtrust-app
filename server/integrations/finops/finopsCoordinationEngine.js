@@ -67,12 +67,12 @@ class FinOpsCoordinationEngine {
     } catch (e) { health.checks.paymasterBalance = { ok: false, error: e.message }; health.ok = false; }
 
     try {
-      const wallets = await WalletEngine.listWallets ? await WalletEngine.listWallets() : [];
-      const operator = wallets.find(w => w.subtype === 'operator') || wallets[0];
+      const aa = await AccountAbstractionEngine.getPaymasterBalance();
+      const opEth = parseFloat(aa?.operatorEth || '0');
       health.checks.operatorWallet = {
-        ok: operator && parseFloat(operator.ethBalance || '0') > 0.00005,
-        address: operator?.address,
-        ethBalance: operator?.ethBalance,
+        ok: opEth > 0.000005,
+        address: aa?.operatorAddress,
+        ethBalance: aa?.operatorEth,
       };
     } catch (e) { health.checks.operatorWallet = { ok: false, error: e.message }; health.ok = false; }
 
