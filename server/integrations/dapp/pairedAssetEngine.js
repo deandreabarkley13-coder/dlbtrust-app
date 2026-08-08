@@ -11,9 +11,11 @@
 const { query } = require('../bonds/pgPool');
 const { getConfig } = require('./config');
 
-let LiquidityPoolEngine, CanonicalConsensusEngine, CircleMintClient, CoinbaseTreasuryBridge, MoonPayEngine, StablecoinDexEngine, PtcStablecoinEngine, ModuleP2PSwapEngine;
+let LiquidityPoolEngine, CircleMintClient, CoinbaseTreasuryBridge, MoonPayEngine, StablecoinDexEngine, PtcStablecoinEngine, ModuleP2PSwapEngine;
+function canonicalConsensusEngine() {
+  try { return require('./canonicalConsensusEngine').CanonicalConsensusEngine; } catch (e) { return null; }
+}
 try { ({ LiquidityPoolEngine } = require('./liquidityPoolEngine')); } catch (e) {}
-try { ({ CanonicalConsensusEngine } = require('./canonicalConsensusEngine')); } catch (e) {}
 try { CircleMintClient = require('../stablecoin/circleMintClient').CircleMintClient; } catch (e) {}
 try { ({ CoinbaseTreasuryBridge } = require('./coinbaseTreasuryBridge')); } catch (e) {}
 try { ({ MoonPayEngine } = require('./moonPayEngine')); } catch (e) {}
@@ -346,8 +348,8 @@ class PairedAssetEngine {
       if (Number(ptcBalance) < Number(amount)) return { status: 'insufficient_dlb_ptcusd', source: 'module_redemption', balance: ptcBalance, needed: amount };
       const redeemResult = await PtcStablecoinEngine.redeem({ moduleKey, amount: String(amount), recipient: cfg.operatorAddress });
       const reserveRaw = BigInt(redeemResult.reserveAmount || 0);
-      const displayIn = viem.formatUnits(reserveRaw, 6); // P2P engine hard-codes 6 decimal parse
-      const displayOut = viem.formatUnits(needRaw, 6);
+      const displayIn = viem.formatUnits(reserveRaw, reserve.decimals || 6);
+      const displayOut = viem.formatUnits(needRaw, token.decimals || 6);
       const p2pOrder = await ModuleP2PSwapEngine.createOrder({ tokenIn: reserve.address, amountIn: displayIn, tokenOut: token.address, amountOut: displayOut, recipient: cfg.operatorAddress });
       return { status: 'awaiting_buyer', source: 'module_redemption', instructions: `Redeemed ${amount} DLB-PTCUSD for ${moduleKey} and listed on P2P order book. Buyer must fill order to provide ${amount} ${token.symbol || ''} to operator wallet.`, reserveRedemption: redeemResult, p2pOrderId: p2pOrder.orderId, orderTxHash: p2pOrder.txHash };
     }
@@ -384,8 +386,9 @@ class PairedAssetEngine {
 }
 
 function canonicalConsensus() {
-  if (!CanonicalConsensusEngine) throw new Error('CanonicalConsensusEngine not available');
-  return CanonicalConsensusEngine;
+  const CCE = canonicalConsensusEngine();
+  if (!CCE) throw new Error('CanonicalConsensusEngine not available');
+  return CCE;
 }
 
 module.exports = { PairedAssetEngine };

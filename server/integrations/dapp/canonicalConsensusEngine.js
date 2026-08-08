@@ -13,10 +13,12 @@
 const { query } = require('../bonds/pgPool');
 const { TRUSTEES, normalizeRole, getTrusteeByRole, getTrusteeByEmail } = require('./trustees');
 
-let PtcStablecoinEngine, StablecoinDexEngine, ModuleP2PSwapEngine;
+let PtcStablecoinEngine, StablecoinDexEngine, ModuleP2PSwapEngine, OnOffRampEngine, TrustMarketEngine;
 try { PtcStablecoinEngine = require('./ptcStablecoinEngine').PtcStablecoinEngine; } catch (e) { /* optional */ }
 try { StablecoinDexEngine = require('./stablecoinDexEngine').StablecoinDexEngine; } catch (e) { /* optional */ }
 try { ModuleP2PSwapEngine = require('./moduleP2PSwapEngine').ModuleP2PSwapEngine; } catch (e) { /* optional */ }
+try { OnOffRampEngine = require('./onOffRampEngine').OnOffRampEngine; } catch (e) { /* optional */ }
+try { TrustMarketEngine = require('./trustMarketEngine').TrustMarketEngine; } catch (e) { /* optional */ }
 
 function id(prefix = 'CC') { return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 8).toUpperCase()}`; }
 function safeJson(obj) { return JSON.stringify(obj, (k, v) => typeof v === 'bigint' ? String(v) : v); }
@@ -253,6 +255,12 @@ class CanonicalConsensusEngine {
         if (!PairedAssetEngine) throw new Error('PairedAssetEngine not available');
         return PairedAssetEngine._execute(proposal);
       }
+      case 'ramp':
+        if (!OnOffRampEngine) throw new Error('OnOffRampEngine not available');
+        return OnOffRampEngine._execute(proposal);
+      case 'trust_market':
+        if (!TrustMarketEngine) throw new Error('TrustMarketEngine not available');
+        return TrustMarketEngine._execute(proposal);
       case 'custom':
         return { status: 'approved', message: 'Custom proposal approved, no automatic execution configured', payload };
       default:

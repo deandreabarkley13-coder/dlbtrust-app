@@ -165,6 +165,8 @@
     { key:'canonical-money', name:'Canonical Money', desc:'Turn trust assets and income into canonical spendable stablecoins', stat:'', endpoint:null, action:'openCanonicalMoneyPanel' },
     { key:'cross-chain', name:'Cross-Chain Conversion', desc:'Convert trust assets to canonical stablecoins across chains and protocols', stat:'', endpoint:null, action:'openCrossChainPanel' },
     { key:'paired-assets', name:'Paired Asset Engine', desc:'Source real canonical assets to seed DEX liquidity pools', stat:'', endpoint:null, action:'openPairedAssetsPanel' },
+    { key:'trust-market', name:'Trust Market Maker', desc:'1:1 reserve-backed token <-> canonical stablecoin P2P market', stat:'', endpoint:null, action:'openTrustMarketPanel' },
+    { key:'ramps', name:'Ramp Center', desc:'Fiat on/off ramps and counterparty rail aggregator', stat:'', endpoint:null, action:'openRampsPanel' },
     { key:'coordination', name:'Coordination Engine', desc:'System health, AI command queue and stability checks', stat:'', endpoint:null, action:'openCoordinationPanel' },
     { key:'clearing', name:'Clearing Engine', desc:'Bilateral and net settlement on Hyperledger Besu', stat:'', endpoint:null, action:'openClearingPanel' },
     { key:'redemption-gateway', name:'Redemption Gateway', desc:'Bridge DLB-PTCUSD to external clearing/stablecoin rails', stat:'', endpoint:null, action:'openRedemptionGatewayPanel' },
@@ -331,7 +333,7 @@
     renderModules();
     renderFlow();
     try {
-      const [sof, accts, wallets, bond, crm, p2p, ptc, consensus, xchain, paired] = await Promise.all([
+      const [sof, accts, wallets, bond, crm, p2p, ptc, consensus, xchain, paired, trustMarket, ramps] = await Promise.all([
         api('/api/finops/source-of-funds').catch(()=>null),
         api('/api/accounting/accounts').catch(()=>null),
         api('/api/finops/wallets').catch(()=>null),
@@ -342,6 +344,8 @@
         api('/api/finops/consensus').catch(()=>null),
         api('/api/finops/cross-chain').catch(()=>null),
         api('/api/finops/paired-assets').catch(()=>null),
+        api('/api/finops/trust-market/orders').catch(()=>null),
+        api('/api/finops/ramps/requests').catch(()=>null),
       ]);
       const balances = normalizeBalances(sof && sof.data);
       if (balances.length) {
@@ -372,6 +376,14 @@
       if (paired && paired.data && Array.isArray(paired.data)) {
         const pending = paired.data.filter(r => r.status === 'pending' || r.status === 'awaiting_deposit' || r.status === 'awaiting_funds').length;
         setStat('paired-assets', String(pending));
+      }
+      if (trustMarket && trustMarket.data && Array.isArray(trustMarket.data)) {
+        const active = trustMarket.data.filter(o => o.active).length;
+        setStat('trust-market', String(active));
+      }
+      if (ramps && ramps.data && Array.isArray(ramps.data)) {
+        const pending = ramps.data.filter(r => r.status === 'pending').length;
+        setStat('ramps', String(pending));
       }
       renderModules();
     } catch(e) { console.error('loadAll error', e); }
@@ -1969,6 +1981,173 @@
     try {
       await api('/api/finops/paired-assets/requests/' + requestId + '/execute', { method:'POST', body: '{}' });
       await loadPairedAssetRequests();
+    } catch(e) { alert(e.message); }
+  }
+
+  // ─── Trust Market Maker panel ─────────────────────────────────────────────────
+  let currentTrustMarketQuote = null;
+
+  function openTrustMarketPanel() {
+    const panel = el('module-panel');
+    const body = el('panel-body');
+    el('panel-title').textContent = 'Trust Market Maker';
+    panel.classList.add('active');
+    body.innerHTML = '<div class="muted" style="margin-bottom:12px;">List reserve-backed trust tokens for canonical stablecoins at 1:1. A buyer fills the order on-chain and sends USDC/USDS/DAI to the operator wallet.</div>' +
+      '<h3 style="font-size:14px;margin:0 0 8px;">Create Offer</h3>' +
+      '<div class="token-bar"><select id="tm-token"><option value="DLB-PTCUSD">DLB-PTCUSD</option><option value="DLBUSD">DLBUSD</option><option value="DLB-PRB">DLB-PRB (bond_portfolio)</option><option value="fixed_income">DLB-FIXED-INCOME</option><option value="treasury">DLB-TREASURY</option><option value="trust_accounting">DLB-TRUST</option><option value="core_banking">DLB-CORE</option></select></div>' +
+      '<div class="token-bar"><select id="tm-paired"><option value="USDS">USDS</option><option value="USDC">USDC</option><option value="DAI">DAI</option><option value="WETH">WETH</option></select></div>' +
+      '<div class="token-bar"><input id="tm-amount" placeholder="amount (e.g. 1000)" /></div>' +
+      '<div class="approval-actions"><button class="btn" onclick="trustMarketQuote()">Quote</button><button class="btn" onclick="trustMarketCreate()">Create Offer</button></div>' +
+      '<div id="tm-quote" style="margin-top:12px;"></div>' +
+      '<h3 style="font-size:14px;margin:16px 0 8px;">Active Orders</h3>' +
+      '<div id="tm-orders"></div>';
+    loadTrustMarketOrders();
+  }
+
+  async function trustMarketQuote() {
+    try {
+      const token = el('tm-token').value;
+      const paired = el('tm-paired').value;
+      const amount = el('tm-amount').value.trim();
+      const body = { trustToken: token, pairedAsset: paired, amount };
+      if (['bond_portfolio','fixed_income','treasury','trust_accounting','core_banking'].includes(token)) body.reserveModule = token;
+      const res = await api('/api/finops/trust-market/quote', { method:'POST', body: JSON.stringify(body) });
+      const q = res.data;
+      currentTrustMarketQuote = q;
+      el('tm-quote').innerHTML = '<div class="status ' + (q.status === 'ready_to_list' ? 'ok' : 'err') + '"><strong>Status:</strong> ' + q.status + '<br/><strong>Price:</strong> ' + (q.price || '1:1') + '<br/><strong>Balance:</strong> ' + (q.balance || '—') + ' ' + token + '<br/><strong>ETH:</strong> ' + (q.ethBalance || '—') + '<br/>' + (q.instructions || '') + (q.issues ? '<br/><span class="muted">' + q.issues.join('; ') + '</span>' : '') + '</div>';
+    } catch(e) { el('tm-quote').innerHTML = '<div class="status err">' + e.message + '</div>'; }
+  }
+
+  async function trustMarketCreate() {
+    try {
+      const token = el('tm-token').value;
+      const paired = el('tm-paired').value;
+      const amount = el('tm-amount').value.trim();
+      const body = { trustToken: token, pairedAsset: paired, amount };
+      if (['bond_portfolio','fixed_income','treasury','trust_accounting','core_banking'].includes(token)) body.reserveModule = token;
+      const res = await api('/api/finops/trust-market/orders', { method:'POST', body: JSON.stringify(body) });
+      el('tm-quote').innerHTML = '<div class="status ok">Offer ' + res.data.orderId + ' created. ' + (res.data.instructions || '') + '</div>';
+      await loadTrustMarketOrders();
+    } catch(e) { el('tm-quote').innerHTML = '<div class="status err">' + e.message + '</div>'; }
+  }
+
+  async function loadTrustMarketOrders() {
+    const wrap = el('tm-orders');
+    try {
+      const res = await api('/api/finops/trust-market/orders');
+      wrap.innerHTML = (res.data || []).map(o => `<div style="font-size:12px;border-bottom:1px solid var(--border);padding:4px 0;">Order ${o.orderId}: ${o.tokenIn} -> ${o.tokenOut} (in:${o.amountIn}, out:${o.amountOut}) <em>${o.active ? 'active' : 'inactive'}</em>` +
+        (o.active ? ` <button class="btn" onclick="cancelTrustMarketOrder('${o.orderId}')">Cancel</button>` : '') + `</div>`).join('') || '<span class="muted">No active offers.</span>';
+    } catch(e) { wrap.innerHTML = '<div class="status err">' + e.message + '</div>'; }
+  }
+
+  async function cancelTrustMarketOrder(orderId) {
+    try {
+      await api('/api/finops/trust-market/orders/' + orderId + '/cancel', { method:'POST' });
+      await loadTrustMarketOrders();
+    } catch(e) { alert(e.message); }
+  }
+
+  // ─── Ramp Center panel ────────────────────────────────────────────────────────
+  let currentRampQuote = null;
+
+  function openRampsPanel() {
+    const panel = el('module-panel');
+    const body = el('panel-body');
+    el('panel-title').textContent = 'Ramp Center';
+    panel.classList.add('active');
+    body.innerHTML = '<div class="muted" style="margin-bottom:12px;">Quote and execute fiat on/off ramps and counterparty exchanges. Configure MoonPay, Coinbase, Circle Mint, or Spritz to move real value.</div>' +
+      '<h3 style="font-size:14px;margin:0 0 8px;">Quote Ramp</h3>' +
+      '<div class="token-bar"><select id="ramp-direction" onchange="rampDirectionChanged()"><option value="onramp">Fiat -> Crypto</option><option value="offramp">Crypto -> Fiat</option><option value="exchange">Reserve -> Canonical</option></select></div>' +
+      '<div class="token-bar"><input id="ramp-source" placeholder="source (USD, DLB-PTCUSD, USDC...)" /></div>' +
+      '<div class="token-bar"><input id="ramp-target" placeholder="target (USDC, USDS, ETH...)" /></div>' +
+      '<div class="token-bar"><input id="ramp-amount" placeholder="amount" /></div>' +
+      '<div class="token-bar"><input id="ramp-source-account" placeholder="source account id (Coinbase/ledger)" /></div>' +
+      '<div class="approval-actions"><button class="btn" onclick="rampQuote()">Quote</button><button class="btn" onclick="rampPropose()">Propose</button></div>' +
+      '<div id="ramp-quote" style="margin-top:12px;"></div>' +
+      '<h3 style="font-size:14px;margin:16px 0 8px;">Providers</h3>' +
+      '<div id="ramp-providers"></div>' +
+      '<h3 style="font-size:14px;margin:16px 0 8px;">Ramp Requests</h3>' +
+      '<div id="ramp-requests"></div>';
+    loadRampProviders();
+    loadRampRequests();
+  }
+
+  function rampDirectionChanged() {
+    const d = el('ramp-direction').value;
+    el('ramp-source').placeholder = d === 'onramp' ? 'source (USD)' : (d === 'offramp' ? 'source (USDC)' : 'source (DLB-PTCUSD)');
+    el('ramp-target').placeholder = d === 'onramp' ? 'target (USDC/ETH)' : (d === 'offramp' ? 'target (USD)' : 'target (USDS/USDC)');
+  }
+
+  async function loadRampProviders() {
+    const wrap = el('ramp-providers');
+    try {
+      const res = await api('/api/finops/ramps/providers');
+      wrap.innerHTML = (res.data || []).map(p => '<div style="font-size:12px;border-bottom:1px solid var(--border);padding:4px 0;"><strong>' + p.name + '</strong> <em>(' + (p.ready ? 'ready' : 'not ready') + ')</em><br/><span class="muted">' + (p.directions || []).join(', ') + ' ' + (p.issues?.join('; ') || '') + '</span></div>').join('') || '<span class="muted">No providers configured.</span>';
+    } catch(e) { wrap.innerHTML = '<div class="status err">' + e.message + '</div>'; }
+  }
+
+  async function rampQuote() {
+    try {
+      const body = {
+        direction: el('ramp-direction').value,
+        sourceAsset: el('ramp-source').value.trim(),
+        targetAsset: el('ramp-target').value.trim(),
+        amount: el('ramp-amount').value.trim(),
+        sourceAccountId: el('ramp-source-account').value.trim() || undefined,
+      };
+      const res = await api('/api/finops/ramps/quote', { method:'POST', body: JSON.stringify(body) });
+      const q = res.data;
+      currentRampQuote = q;
+      let html = '<div class="status ok"><strong>Direction:</strong> ' + q.direction + '<br/><strong>Recommended:</strong> ' + (q.recommended ? q.recommended.provider : 'none') + '<br/><strong>Routes:</strong><ul style="margin:4px 0;padding-left:16px;font-size:12px;">';
+      (q.routes || []).forEach(r => { html += '<li><strong>' + r.provider + '</strong> (' + r.status + '): ' + (r.instructions || '') + '</li>'; });
+      html += '</ul></div>';
+      if (q.recommended && q.recommended.onrampUrl) html += '<div style="margin-top:8px;"><a class="btn" href="' + q.recommended.onrampUrl + '" target="_blank">Open MoonPay</a></div>';
+      el('ramp-quote').innerHTML = html;
+    } catch(e) { el('ramp-quote').innerHTML = '<div class="status err">' + e.message + '</div>'; }
+  }
+
+  async function rampPropose() {
+    try {
+      const q = currentRampQuote && currentRampQuote.recommended;
+      if (!q) { rampQuote(); return; }
+      const body = {
+        direction: el('ramp-direction').value,
+        sourceAsset: el('ramp-source').value.trim(),
+        targetAsset: el('ramp-target').value.trim(),
+        amount: el('ramp-amount').value.trim(),
+        provider: q.provider,
+        sourceAccountId: el('ramp-source-account').value.trim() || undefined,
+      };
+      const res = await api('/api/finops/ramps/requests', { method:'POST', body: JSON.stringify(body) });
+      el('ramp-quote').innerHTML = '<div class="status ok">Proposed: ' + res.data.proposalId + ' (' + res.data.status + ')</div>';
+      await loadRampRequests();
+    } catch(e) { el('ramp-quote').innerHTML = '<div class="status err">' + e.message + '</div>'; }
+  }
+
+  async function loadRampRequests() {
+    const wrap = el('ramp-requests');
+    try {
+      const res = await api('/api/finops/ramps/requests');
+      wrap.innerHTML = (res.data || []).map(r => `<div style="font-size:12px;border-bottom:1px solid var(--border);padding:4px 0;">${r.id}: ${r.title} <em>${r.status}</em>` +
+        (r.status === 'pending' ? ` <select id="ramp-role-${r.id}"><option value="maker">maker</option><option value="checker">checker</option></select><input id="ramp-email-${r.id}" placeholder="email" style="width:100px;" /><button class="btn" onclick="rampApprove('${r.id}')">Approve</button>` : '') +
+        (r.status === 'approved' ? ` <button class="btn" onclick="rampExecute('${r.id}')">Execute</button>` : '') +
+        `</div>`).join('') || '<span class="muted">No ramp requests yet.</span>';
+    } catch(e) { wrap.innerHTML = '<div class="status err">' + e.message + '</div>'; }
+  }
+
+  async function rampApprove(proposalId) {
+    try {
+      const role = el('ramp-role-' + proposalId).value;
+      const email = el('ramp-email-' + proposalId).value.trim();
+      await api('/api/finops/ramps/requests/' + proposalId + '/approve', { method:'POST', body: JSON.stringify({ role, approverEmail: email }) });
+      await loadRampRequests();
+    } catch(e) { alert(e.message); }
+  }
+
+  async function rampExecute(proposalId) {
+    try {
+      await api('/api/finops/ramps/requests/' + proposalId + '/execute', { method:'POST', body: '{}' });
+      await loadRampRequests();
     } catch(e) { alert(e.message); }
   }
 
