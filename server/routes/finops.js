@@ -26,6 +26,7 @@ const { TrustMarketEngine } = require('../integrations/dapp/trustMarketEngine');
 const { IntentRoutingEngine } = require('../integrations/dapp/intentRoutingEngine');
 const { ExternalWalletEngine } = require('../integrations/dapp/externalWalletEngine');
 const { JournalEntryEngine } = require('../integrations/dapp/journalEntryEngine');
+const { DlbCanonicalSwapEngine } = require('../integrations/dapp/dlbCanonicalSwapEngine');
 
 const router = express.Router();
 const operatorAuth = requireAuth({ role: 'operator' });
@@ -896,6 +897,42 @@ router.post('/journal-entries/principal-interest', operatorAuth, writeRateLimite
     const data = await JournalEntryEngine.postPrincipalAndInterest({ ...req.body, postedBy: getUserEmail(req) || 'operator' });
     res.status(201).json({ success: true, data });
   } catch (err) { sendError(res, err); }
+});
+
+// ═════════════════════════════════════════════════════════════════════════════
+// DlbCanonicalSwap — audited-style P2P swap into canonical stablecoins
+// ═════════════════════════════════════════════════════════════════════════════
+
+router.get('/canonical-swap/readiness', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: DlbCanonicalSwapEngine.readiness() }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/canonical-swap/deploy', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try { res.status(201).json({ success: true, data: await DlbCanonicalSwapEngine.deploy({ ...req.body }) }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/canonical-swap/quote', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await DlbCanonicalSwapEngine.quote(req.body) }); } catch (err) { sendError(res, err); }
+});
+
+router.get('/canonical-swap/orders', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await DlbCanonicalSwapEngine.listOrders(req.query) }); } catch (err) { sendError(res, err); }
+});
+
+router.get('/canonical-swap/orders/:id', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await DlbCanonicalSwapEngine.getOrder({ orderId: req.params.id }) }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/canonical-swap/orders', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try { res.status(201).json({ success: true, data: await DlbCanonicalSwapEngine.createOrder(req.body) }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/canonical-swap/orders/:id/fill', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try { res.json({ success: true, data: await DlbCanonicalSwapEngine.fillOrder({ orderId: req.params.id }) }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/canonical-swap/orders/:id/cancel', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try { res.json({ success: true, data: await DlbCanonicalSwapEngine.cancelOrder({ orderId: req.params.id }) }); } catch (err) { sendError(res, err); }
 });
 
 module.exports = router;
