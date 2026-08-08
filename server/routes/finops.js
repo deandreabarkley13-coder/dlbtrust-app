@@ -18,6 +18,7 @@ const { ClearingEngine } = require('../integrations/dapp/clearingEngine');
 const { RedemptionGatewayEngine } = require('../integrations/dapp/redemptionGatewayEngine');
 const { CanonicalLiquidityEngine } = require('../integrations/dapp/canonicalLiquidityEngine');
 const { CanonicalMoneyEngine } = require('../integrations/dapp/canonicalMoneyEngine');
+const { LiquidityPoolEngine } = require('../integrations/dapp/liquidityPoolEngine');
 
 const router = express.Router();
 const operatorAuth = requireAuth({ role: 'operator' });
@@ -518,6 +519,38 @@ router.post('/canonical-money/requests', operatorAuth, writeRateLimiter(), async
 
 router.post('/canonical-money/requests/:id/approve', operatorAuth, writeRateLimiter(), async (req, res) => {
   try { res.json({ success: true, data: await CanonicalMoneyEngine.approve({ proposalId: req.params.id, ...req.body }) }); } catch (err) { sendError(res, err); }
+});
+
+// ═════════════════════════════════════════════════════════════════════════════
+// Liquidity Pool Engine (BondDex pool creation, liquidity, swaps)
+// ═════════════════════════════════════════════════════════════════════════════
+
+router.get('/liquidity-pool', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await LiquidityPoolEngine.listPools() }); } catch (err) { sendError(res, err); }
+});
+
+router.get('/liquidity-pool/:address', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await LiquidityPoolEngine.getPool(req.params.address) }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/liquidity-pool/create', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try { res.status(201).json({ success: true, data: await LiquidityPoolEngine.createPool(req.body) }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/liquidity-pool/add-liquidity', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try { res.json({ success: true, data: await LiquidityPoolEngine.addLiquidity(req.body) }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/liquidity-pool/remove-liquidity', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try { res.json({ success: true, data: await LiquidityPoolEngine.removeLiquidity(req.body) }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/liquidity-pool/quote', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await LiquidityPoolEngine.quote(req.body) }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/liquidity-pool/swap', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try { res.json({ success: true, data: await LiquidityPoolEngine.swap(req.body) }); } catch (err) { sendError(res, err); }
 });
 
 // ═════════════════════════════════════════════════════════════════════════════

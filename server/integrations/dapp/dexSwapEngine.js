@@ -500,6 +500,33 @@ class DexSwapEngine {
       txHash: addReceipt.transactionHash,
     };
   }
+
+  static async removeLiquidity({ poolAddress, lpAmount, recipient } = {}) {
+    if (!poolAddress || !lpAmount) throw new Error('poolAddress and lpAmount required');
+    const cfg = this.getConfig();
+    if (cfg.shadow) return { poolAddress, mode: 'shadow', lpAmount };
+    if (!cfg.privateKey || !viem) throw new Error('DAPP_PRIVATE_KEY or viem not configured');
+
+    const { wallet, publicClient, fees } = walletClient();
+    const [token0, token1] = await Promise.all([
+      publicClient.readContract({ address: poolAddress, abi: bondDexAbi, functionName: 'token0' }),
+      publicClient.readContract({ address: poolAddress, abi: bondDexAbi, functionName: 'token1' }),
+    ]);
+    const rawLp = viem.parseEther(String(lpAmount));
+    const to = recipient || wallet.account.address;
+    const removeHash = await wallet.writeContract({
+      address: poolAddress,
+      abi: bondDexAbi,
+      functionName: 'removeLiquidity',
+      args: [rawLp],
+      gas: 250000n,
+      ...fees,
+    });
+    const receipt = await publicClient.waitForTransactionReceipt({ hash: removeHash, timeout: 120000 });
+    if (receipt.status !== 'success') throw new Error(`removeLiquidity failed: ${removeHash}`);
+
+    return { poolAddress, token0, token1, lpAmount, recipient: to, txHash: removeHash, mode: 'live' };
+  }
 }
 
 module.exports = { DexSwapEngine, UNISWAP_V2_ROUTER_02, SWAP_ROUTER_02, erc20Abi, uniswapV2RouterAbi };

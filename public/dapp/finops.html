@@ -161,6 +161,7 @@
     { key:'account-abstraction', name:'Account Abstraction', desc:'Smart accounts + gas sponsorship for operator/trustee wallets', stat:'', endpoint:null, action:'openAccountAbstractionPanel' },
     { key:'canonical-consensus', name:'Canonical Consensus', desc:'Maker/Checker approvals for tokenized ledger actions', stat:'', endpoint:null, action:'openCanonicalConsensusPanel' },
     { key:'canonical-liquidity', name:'Canonical Liquidity', desc:'Governed DEX liquidity pools and swaps for trust assets', stat:'', endpoint:null, action:'openCanonicalLiquidityPanel' },
+    { key:'liquidity-pool', name:'Liquidity Pool Engine', desc:'Full pool lifecycle: create, add/remove liquidity, swap, and positions', stat:'', endpoint:null, action:'openLiquidityPoolPanel' },
     { key:'canonical-money', name:'Canonical Money', desc:'Turn trust assets and income into canonical spendable stablecoins', stat:'', endpoint:null, action:'openCanonicalMoneyPanel' },
     { key:'coordination', name:'Coordination Engine', desc:'System health, AI command queue and stability checks', stat:'', endpoint:null, action:'openCoordinationPanel' },
     { key:'clearing', name:'Clearing Engine', desc:'Bilateral and net settlement on Hyperledger Besu', stat:'', endpoint:null, action:'openClearingPanel' },
@@ -1575,6 +1576,85 @@
       await api('/api/finops/liquidity/proposals/' + proposalId + '/approve', { method:'POST', body: JSON.stringify({ role, approverEmail: email }) });
       await loadCanonicalLiquidity();
     } catch(e) { alert(e.message); }
+  }
+
+  // ─── Liquidity Pool Engine panel ───────────────────────────────────────────────
+  function openLiquidityPoolPanel() {
+    const panel = el('module-panel');
+    const body = el('panel-body');
+    el('panel-title').textContent = 'Liquidity Pool Engine';
+    panel.classList.add('active');
+    body.innerHTML = '<div class="muted">Loading liquidity pools…</div>';
+    loadLiquidityPool();
+  }
+
+  async function loadLiquidityPool() {
+    const body = el('panel-body');
+    try {
+      const pools = await api('/api/finops/liquidity-pool');
+      let html = '<div class="muted" style="margin-bottom:12px;">Direct pool management: create a pool, add/remove liquidity, swap, and view positions. Requires real paired assets on-chain.</div>';
+      html += '<h3 style="font-size:14px;margin:0 0 8px;">Create Pool</h3>';
+      html += '<div class="token-bar"><input id="lp-tokenA" placeholder="token A address" /></div>';
+      html += '<div class="token-bar"><input id="lp-tokenB" placeholder="token B address" /></div>';
+      html += '<div class="token-bar"><input id="lp-decA" placeholder="decimals A (default 6)" /></div>';
+      html += '<div class="token-bar"><input id="lp-decB" placeholder="decimals B (default 6)" /></div>';
+      html += '<div class="token-bar"><input id="lp-amtA" placeholder="amount A" /></div>';
+      html += '<div class="token-bar"><input id="lp-amtB" placeholder="amount B" /></div>';
+      html += '<div class="approval-actions"><button class="btn" onclick="liquidityPoolCreate()">Create Pool</button></div>';
+      html += '<h3 style="font-size:14px;margin:16px 0 8px;">Add / Remove Liquidity</h3>';
+      html += '<div class="token-bar"><input id="lp-pool" placeholder="pool address" /></div>';
+      html += '<div class="token-bar"><input id="lp-amountA" placeholder="amount A" /></div>';
+      html += '<div class="token-bar"><input id="lp-amountB" placeholder="amount B" /></div>';
+      html += '<div class="approval-actions"><button class="btn" onclick="liquidityPoolAdd()">Add</button><button class="btn" onclick="liquidityPoolRemove()">Remove LP</button></div>';
+      html += '<h3 style="font-size:14px;margin:16px 0 8px;">Swap / Quote</h3>';
+      html += '<div class="token-bar"><input id="lp-swap-pool" placeholder="pool address" /></div>';
+      html += '<div class="token-bar"><input id="lp-swap-in" placeholder="token in address" /></div>';
+      html += '<div class="token-bar"><input id="lp-swap-amt" placeholder="amount in" /></div>';
+      html += '<div class="token-bar"><input id="lp-swap-min" placeholder="min out / slippage" /></div>';
+      html += '<div class="token-bar"><input id="lp-swap-recipient" placeholder="recipient" /></div>';
+      html += '<div class="approval-actions"><button class="btn" onclick="liquidityPoolQuote()">Quote</button><button class="btn" onclick="liquidityPoolSwap()">Swap</button></div>';
+      html += '<div id="lp-quote"></div>';
+      html += '<h3 style="font-size:14px;margin:16px 0 8px;">Pools</h3>';
+      html += (pools.data || []).map(p => `<div style="font-size:12px;border-bottom:1px solid var(--border);padding:4px 0;"><strong>${p.pool_address?.slice(0,12)}…</strong> ${p.token0?.slice(0,10)} / ${p.token1?.slice(0,10)} r0=${p.reserve0} r1=${p.reserve1}</div>`).join('');
+      body.innerHTML = html;
+    } catch(e) { body.innerHTML = '<div class="status err">' + e.message + '</div>'; }
+  }
+
+  async function liquidityPoolCreate() {
+    const payload = {
+      tokenA: el('lp-tokenA').value.trim(),
+      tokenB: el('lp-tokenB').value.trim(),
+      amountA: el('lp-amtA').value.trim(),
+      amountB: el('lp-amtB').value.trim(),
+      decimalsA: parseInt(el('lp-decA').value || '6', 10),
+      decimalsB: parseInt(el('lp-decB').value || '6', 10),
+    };
+    try { await api('/api/finops/liquidity-pool/create', { method:'POST', body: JSON.stringify(payload) }); loadLiquidityPool(); }
+    catch(e) { alert(e.message); }
+  }
+
+  async function liquidityPoolAdd() {
+    const payload = { poolAddress: el('lp-pool').value.trim(), tokenA: el('lp-tokenA').value.trim(), tokenB: el('lp-tokenB').value.trim(), amountA: el('lp-amountA').value.trim(), amountB: el('lp-amountB').value.trim() };
+    try { await api('/api/finops/liquidity-pool/add-liquidity', { method:'POST', body: JSON.stringify(payload) }); loadLiquidityPool(); }
+    catch(e) { alert(e.message); }
+  }
+
+  async function liquidityPoolRemove() {
+    const payload = { poolAddress: el('lp-pool').value.trim(), lpAmount: el('lp-amountA').value.trim(), recipient: el('lp-amountB').value.trim() || undefined };
+    try { await api('/api/finops/liquidity-pool/remove-liquidity', { method:'POST', body: JSON.stringify(payload) }); loadLiquidityPool(); }
+    catch(e) { alert(e.message); }
+  }
+
+  async function liquidityPoolQuote() {
+    const payload = { poolAddress: el('lp-swap-pool').value.trim(), tokenIn: el('lp-swap-in').value.trim(), amountIn: el('lp-swap-amt').value.trim() };
+    try { const res = await api('/api/finops/liquidity-pool/quote', { method:'POST', body: JSON.stringify(payload) }); el('lp-quote').innerHTML = '<div class="status ok">Out: ' + res.data.amountOut + ' ' + res.data.tokenOut?.slice(0,10) + '…</div>'; }
+    catch(e) { el('lp-quote').innerHTML = '<div class="status err">' + e.message + '</div>'; }
+  }
+
+  async function liquidityPoolSwap() {
+    const payload = { poolAddress: el('lp-swap-pool').value.trim(), tokenIn: el('lp-swap-in').value.trim(), amountIn: el('lp-swap-amt').value.trim(), minOut: el('lp-swap-min').value.trim() || '0', recipient: el('lp-swap-recipient').value.trim() || undefined };
+    try { await api('/api/finops/liquidity-pool/swap', { method:'POST', body: JSON.stringify(payload) }); loadLiquidityPool(); }
+    catch(e) { alert(e.message); }
   }
 
   // ─── Canonical Money panel ─────────────────────────────────────────────────────
