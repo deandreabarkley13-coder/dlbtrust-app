@@ -164,6 +164,7 @@
     { key:'liquidity-pool', name:'Liquidity Pool Engine', desc:'Full pool lifecycle: create, add/remove liquidity, swap, and positions', stat:'', endpoint:null, action:'openLiquidityPoolPanel' },
     { key:'canonical-money', name:'Canonical Money', desc:'Turn trust assets and income into canonical spendable stablecoins', stat:'', endpoint:null, action:'openCanonicalMoneyPanel' },
     { key:'cross-chain', name:'Cross-Chain Conversion', desc:'Convert trust assets to canonical stablecoins across chains and protocols', stat:'', endpoint:null, action:'openCrossChainPanel' },
+    { key:'paired-assets', name:'Paired Asset Engine', desc:'Source real canonical assets to seed DEX liquidity pools', stat:'', endpoint:null, action:'openPairedAssetsPanel' },
     { key:'coordination', name:'Coordination Engine', desc:'System health, AI command queue and stability checks', stat:'', endpoint:null, action:'openCoordinationPanel' },
     { key:'clearing', name:'Clearing Engine', desc:'Bilateral and net settlement on Hyperledger Besu', stat:'', endpoint:null, action:'openClearingPanel' },
     { key:'redemption-gateway', name:'Redemption Gateway', desc:'Bridge DLB-PTCUSD to external clearing/stablecoin rails', stat:'', endpoint:null, action:'openRedemptionGatewayPanel' },
@@ -330,7 +331,7 @@
     renderModules();
     renderFlow();
     try {
-      const [sof, accts, wallets, bond, crm, p2p, ptc, consensus, xchain] = await Promise.all([
+      const [sof, accts, wallets, bond, crm, p2p, ptc, consensus, xchain, paired] = await Promise.all([
         api('/api/finops/source-of-funds').catch(()=>null),
         api('/api/accounting/accounts').catch(()=>null),
         api('/api/finops/wallets').catch(()=>null),
@@ -340,6 +341,7 @@
         api('/api/finops/ptc-stablecoin').catch(()=>null),
         api('/api/finops/consensus').catch(()=>null),
         api('/api/finops/cross-chain').catch(()=>null),
+        api('/api/finops/paired-assets').catch(()=>null),
       ]);
       const balances = normalizeBalances(sof && sof.data);
       if (balances.length) {
@@ -366,6 +368,10 @@
       if (xchain && xchain.data && Array.isArray(xchain.data)) {
         const pending = xchain.data.filter(r => r.status === 'pending').length;
         setStat('cross-chain', String(pending));
+      }
+      if (paired && paired.data && Array.isArray(paired.data)) {
+        const pending = paired.data.filter(r => r.status === 'pending' || r.status === 'awaiting_deposit' || r.status === 'awaiting_funds').length;
+        setStat('paired-assets', String(pending));
       }
       renderModules();
     } catch(e) { console.error('loadAll error', e); }
@@ -1862,6 +1868,108 @@
       const res = await api('/api/finops/cross-chain/adapters/assets');
       el('xc-quote').innerHTML = '<pre style="white-space:pre-wrap; font-size:12px; background:#0b1220; padding:10px; border-radius:8px;">' + JSON.stringify(res.data, null, 2) + '</pre>';
     } catch(e) { el('xc-quote').innerHTML = '<div class="status err">' + e.message + '</div>'; }
+  }
+
+  // ─── Paired Asset Engine panel ────────────────────────────────────────────────
+  let currentPairedAssetQuote = null;
+
+  function openPairedAssetsPanel() {
+    const panel = el('module-panel');
+    const body = el('panel-body');
+    el('panel-title').textContent = 'Paired Asset Engine';
+    panel.classList.add('active');
+    body.innerHTML = renderPairedAssetsPanel();
+    loadPairedAssetRequests();
+    loadPairedAssetSources();
+  }
+
+  function renderPairedAssetsPanel() {
+    return '<div class="muted" style="margin-bottom:12px;">Source the real canonical asset needed to seed a DEX pool alongside a trust-issued token. The engine checks the operator wallet balance and the chosen funding rail, then adds liquidity once both sides are available.</div>' +
+      '<h3 style="font-size:14px;margin:0 0 8px;">Quote / Seed Pool</h3>' +
+      '<div class="token-bar"><select id="pa-token-a"><option value="DLBUSD">DLBUSD</option><option value="DLB-PTCUSD">DLB-PTCUSD</option></select></div>' +
+      '<div class="token-bar"><select id="pa-token-b"><option value="USDS">USDS</option><option value="USDC">USDC</option><option value="DAI">DAI</option><option value="WETH">WETH</option></select></div>' +
+      '<div class="token-bar"><input id="pa-amount" placeholder="amount of token A" /></div>' +
+      '<div class="token-bar"><select id="pa-source"><option value="manual">Manual deposit</option><option value="counterparty">Counterparty deposit</option><option value="moonpay">MoonPay on-ramp</option><option value="circle_mint">Circle Mint</option><option value="coinbase_treasury">Coinbase Treasury</option></select></div>' +
+      '<div class="token-bar"><input id="pa-source-account" placeholder="source account id (Coinbase)" /></div>' +
+      '<label style="font-size:12px;display:block;margin:8px 0;"><input type="checkbox" id="pa-create-pool" /> Create new pool if none exists</label>' +
+      '<div class="approval-actions"><button class="btn" onclick="pairedAssetQuote()">Quote</button><button class="btn" onclick="pairedAssetPropose()">Propose</button></div>' +
+      '<div id="pa-quote" style="margin-top:12px;"></div>' +
+      '<h3 style="font-size:14px;margin:16px 0 8px;">Funding Sources</h3>' +
+      '<div id="pa-sources"></div>' +
+      '<h3 style="font-size:14px;margin:16px 0 8px;">Requests</h3>' +
+      '<div id="pa-requests"></div>';
+  }
+
+  async function loadPairedAssetSources() {
+    const wrap = el('pa-sources');
+    try {
+      const res = await api('/api/finops/paired-assets/sources/list');
+      wrap.innerHTML = (res.data || []).map(s => '<div style="font-size:12px;border-bottom:1px solid var(--border);padding:4px 0;"><strong>' + s.name + '</strong> <em>(' + (s.ready ? 'ready' : 'not ready') + ')</em><br/><span class="muted">' + (s.note || s.issues?.join('; ') || '') + '</span></div>').join('');
+    } catch(e) { wrap.innerHTML = '<div class="status err">' + e.message + '</div>'; }
+  }
+
+  async function pairedAssetQuote() {
+    currentPairedAssetQuote = null;
+    try {
+      const body = {
+        tokenA: el('pa-token-a').value,
+        tokenB: el('pa-token-b').value,
+        amountA: el('pa-amount').value.trim(),
+        sourceMethod: el('pa-source').value,
+      };
+      const res = await api('/api/finops/paired-assets/quote', { method:'POST', body: JSON.stringify(body) });
+      const q = res.data;
+      currentPairedAssetQuote = q;
+      const html = '<div class="status ok"><strong>Status:</strong> ' + q.status + '<br/>' +
+        '<strong>Paired amount needed:</strong> ' + q.amountB + ' ' + q.tokenB + '<br/>' +
+        '<strong>Operator wallet ' + q.tokenB + ' balance:</strong> ' + q.operatorBalanceB + '<br/>' +
+        '<strong>Existing pool:</strong> ' + (q.existingPool || 'none') + '<br/>' +
+        '<span class="muted">' + (q.note || '') + '</span></div>';
+      el('pa-quote').innerHTML = html;
+    } catch(e) { el('pa-quote').innerHTML = '<div class="status err">' + e.message + '</div>'; }
+  }
+
+  async function pairedAssetPropose() {
+    try {
+      const body = {
+        tokenA: el('pa-token-a').value,
+        tokenB: el('pa-token-b').value,
+        amountA: el('pa-amount').value.trim(),
+        sourceMethod: el('pa-source').value,
+        sourceAccountId: el('pa-source-account').value.trim() || undefined,
+        createPool: el('pa-create-pool').checked,
+      };
+      const res = await api('/api/finops/paired-assets/requests', { method:'POST', body: JSON.stringify(body) });
+      el('pa-quote').innerHTML = '<div class="status ok">Proposed: ' + res.data.proposalId + '<br/>Request: ' + res.data.requestId + '</div>';
+      await loadPairedAssetRequests();
+    } catch(e) { el('pa-quote').innerHTML = '<div class="status err">' + e.message + '</div>'; }
+  }
+
+  async function loadPairedAssetRequests() {
+    const wrap = el('pa-requests');
+    try {
+      const res = await api('/api/finops/paired-assets');
+      wrap.innerHTML = (res.data || []).map(r => `<div style="font-size:12px;border-bottom:1px solid var(--border);padding:4px 0;">${r.id}: seed ${r.amount_a} ${r.token_a} + ${r.amount_b} ${r.token_b} via ${r.source_method} <em>${r.status}</em>` +
+        (r.status === 'pending' ? ` <select id="pa-role-${r.proposal_id}"><option value="maker">maker</option><option value="checker">checker</option></select><input id="pa-email-${r.proposal_id}" placeholder="email" style="width:100px;" /><button class="btn" onclick="pairedAssetApprove('${r.proposal_id}')">Approve</button>` : '') +
+        ((r.status === 'approved' || r.status === 'ready_to_seed') ? ` <button class="btn" onclick="pairedAssetExecute('${r.id}')">Execute</button>` : '') +
+        `</div>`).join('') || '<span class="muted">No requests yet.</span>';
+    } catch(e) { wrap.innerHTML = '<div class="status err">' + e.message + '</div>'; }
+  }
+
+  async function pairedAssetApprove(proposalId) {
+    try {
+      const role = el('pa-role-' + proposalId).value;
+      const email = el('pa-email-' + proposalId).value.trim();
+      await api('/api/finops/paired-assets/requests/' + proposalId + '/approve', { method:'POST', body: JSON.stringify({ role, approverEmail: email }) });
+      await loadPairedAssetRequests();
+    } catch(e) { alert(e.message); }
+  }
+
+  async function pairedAssetExecute(requestId) {
+    try {
+      await api('/api/finops/paired-assets/requests/' + requestId + '/execute', { method:'POST', body: '{}' });
+      await loadPairedAssetRequests();
+    } catch(e) { alert(e.message); }
   }
 
   window.addEventListener('DOMContentLoaded', () => {

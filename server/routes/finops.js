@@ -20,6 +20,7 @@ const { CanonicalLiquidityEngine } = require('../integrations/dapp/canonicalLiqu
 const { CanonicalMoneyEngine } = require('../integrations/dapp/canonicalMoneyEngine');
 const { LiquidityPoolEngine } = require('../integrations/dapp/liquidityPoolEngine');
 const { CrossChainConversionEngine } = require('../integrations/dapp/crossChainConversionEngine');
+const { PairedAssetEngine } = require('../integrations/dapp/pairedAssetEngine');
 
 const router = express.Router();
 const operatorAuth = requireAuth({ role: 'operator' });
@@ -708,6 +709,38 @@ router.get('/cross-chain/adapters/chains', operatorAuth, async (req, res) => {
 
 router.get('/cross-chain/adapters/assets', operatorAuth, async (req, res) => {
   try { res.json({ success: true, data: CrossChainConversionEngine.listAssets() }); } catch (err) { sendError(res, err); }
+});
+
+// ═════════════════════════════════════════════════════════════════════════════
+// Paired Asset Engine (source real canonical assets to seed DEX pools)
+// ═════════════════════════════════════════════════════════════════════════════
+
+router.get('/paired-assets', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await PairedAssetEngine.listRequests(req.query) }); } catch (err) { sendError(res, err); }
+});
+
+router.get('/paired-assets/:id', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await PairedAssetEngine.getRequest(req.params.id) }); } catch (err) { sendError(res, err); }
+});
+
+router.get('/paired-assets/sources/list', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await PairedAssetEngine.listSources() }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/paired-assets/quote', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await PairedAssetEngine.quote(req.body) }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/paired-assets/requests', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try { res.status(201).json({ success: true, data: await PairedAssetEngine.propose({ ...req.body, createdBy: getUserEmail(req) }) }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/paired-assets/requests/:id/approve', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try { res.json({ success: true, data: await PairedAssetEngine.approve({ proposalId: req.params.id, ...req.body }) }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/paired-assets/requests/:id/execute', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try { res.json({ success: true, data: await PairedAssetEngine.executeRequest(req.params.id) }); } catch (err) { sendError(res, err); }
 });
 
 module.exports = router;

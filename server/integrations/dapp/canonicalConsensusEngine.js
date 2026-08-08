@@ -248,6 +248,11 @@ class CanonicalConsensusEngine {
         if (!CrossChainConversionEngine) throw new Error('CrossChainConversionEngine not available');
         return CrossChainConversionEngine._execute(proposal);
       }
+      case 'paired_asset': {
+        const { PairedAssetEngine } = require('./pairedAssetEngine');
+        if (!PairedAssetEngine) throw new Error('PairedAssetEngine not available');
+        return PairedAssetEngine._execute(proposal);
+      }
       case 'custom':
         return { status: 'approved', message: 'Custom proposal approved, no automatic execution configured', payload };
       default:
