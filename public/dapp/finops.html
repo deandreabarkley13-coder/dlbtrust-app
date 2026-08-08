@@ -149,6 +149,7 @@
     { key:'core-banking', name:'Core Banking', desc:'Fineract GL, cash accounts, sub-ledgers', stat:'', endpoint:'/api/finops/source-of-funds' },
     { key:'treasury', name:'Treasury Management', desc:'Treasury Hot, source-of-funds, reserves', stat:'', endpoint:'/api/finops/source-of-funds' },
     { key:'trust-accounting', name:'Trust Accounting', desc:'Trust accounts 1100/1200/4000', stat:'', endpoint:'/api/accounting/accounts' },
+    { key:'journal-entries', name:'Journal Entries', desc:'Post principal and coupon interest credits', stat:'', endpoint:null, action:'openJournalEntryPanel' },
     { key:'crm', name:'CRM / Contacts', desc:'Trustees, beneficiaries, vendors', stat:'', endpoint:'/api/finops/crm' },
     { key:'wallets', name:'Wallets', desc:'Master, trustee and beneficiary wallets', stat:'', endpoint:'/api/finops/wallets' },
     { key:'fixed-income', name:'Fixed Income', desc:'DLB-PRB bond metrics & accrued interest', stat:'', endpoint:'/api/finops/bonds' },
@@ -2390,6 +2391,73 @@
       await api('/api/finops/external-wallets/swaps/' + requestId + '/submit', { method:'POST', body: JSON.stringify({ txHash, status: 'submitted' }) });
       await loadExternalSwaps();
     } catch(e) { alert(e.message); }
+  }
+
+  // ─── Journal Entries panel ───────────────────────────────────────────────────
+  function openJournalEntryPanel() {
+    const panel = el('module-panel');
+    const body = el('panel-body');
+    el('panel-title').textContent = 'Journal Entries';
+    panel.classList.add('active');
+    body.innerHTML = renderJournalEntryPanel();
+    loadJournalEntryAccounts();
+    loadJournalEntries();
+  }
+
+  function renderJournalEntryPanel() {
+    return '<div style="display:flex; flex-direction:column; gap:12px;">' +
+      '<div class="card" style="background:#0b1220;">' +
+        '<h3>Post Principal + Coupon Interest</h3>' +
+        '<p class="muted">Creates double-entry journals: Dr 1100 / Cr 3000 for principal, and Dr 1200 / Cr 4000 for interest.</p>' +
+        '<div style="display:flex; flex-wrap:wrap; gap:10px;">' +
+          '<label style="display:flex; flex-direction:column; gap:4px; flex:1; min-width:140px;">Principal ($)<input id="je-principal" type="number" step="0.01" value="" placeholder="e.g. 1000" style="padding:8px; border-radius:6px; border:1px solid var(--border); background:#0b0f17; color:var(--text);"></label>' +
+          '<label style="display:flex; flex-direction:column; gap:4px; flex:1; min-width:140px;">Interest ($)<input id="je-interest" type="number" step="0.01" value="" placeholder="e.g. 500" style="padding:8px; border-radius:6px; border:1px solid var(--border); background:#0b0f17; color:var(--text);"></label>' +
+          '<label style="display:flex; flex-direction:column; gap:4px; flex:2; min-width:180px;">Description<input id="je-desc" type="text" value="" placeholder="Bond principal + interest recognition" style="padding:8px; border-radius:6px; border:1px solid var(--border); background:#0b0f17; color:var(--text);"></label>' +
+        '</div>' +
+        '<div style="margin-top:12px;">' +
+          '<button class="btn" onclick="postJournalEntry()">Post Journal Entry</button>' +
+        '</div>' +
+        '<div id="je-status" class="status hidden"></div>' +
+      '</div>' +
+      '<div class="card" style="background:#0b1220;"><h3>Trust Accounts</h3><div id="je-accounts">Loading…</div></div>' +
+      '<div class="card" style="background:#0b1220;"><h3>Recent Journal Entries</h3><div id="je-entries">Loading…</div></div>' +
+    '</div>';
+  }
+
+  async function loadJournalEntryAccounts() {
+    const d = el('je-accounts');
+    try {
+      const res = await api('/api/finops/journal-entries/accounts');
+      const rows = (res.data || []).filter(a => ['1100','1200','4000','3000'].includes(String(a.account_code)));
+      d.innerHTML = renderTable(rows, ['account_code','account_name','account_type','balance'], { balance: v => fmt(Number(v || 0), 2) });
+    } catch(e) { d.innerHTML = '<div class="status err">' + e.message + '</div>'; }
+  }
+
+  async function loadJournalEntries() {
+    const d = el('je-entries');
+    try {
+      const res = await api('/api/finops/journal-entries?limit=20');
+      const rows = (res.data || []).map(e => ({ entry_id: e.entry_id, description: e.description, status: e.status, created_at: e.created_at }));
+      d.innerHTML = renderTable(rows, ['entry_id','description','status','created_at'], {});
+    } catch(e) { d.innerHTML = '<div class="status err">' + e.message + '</div>'; }
+  }
+
+  async function postJournalEntry() {
+    const status = el('je-status');
+    status.classList.add('hidden');
+    const principal = el('je-principal').value;
+    const interest = el('je-interest').value;
+    const description = el('je-desc').value;
+    if (!principal && !interest) { show('Enter at least one amount.', true, 'je-status'); return; }
+    try {
+      const res = await api('/api/finops/journal-entries/principal-interest', {
+        method: 'POST',
+        body: JSON.stringify({ principalAmount: principal || 0, interestAmount: interest || 0, description }),
+      });
+      show('Posted: ' + (res.data.principalEntry ? res.data.principalEntry.entry_id : '') + ' ' + (res.data.interestEntry ? res.data.interestEntry.entry_id : ''), false, 'je-status');
+      loadJournalEntryAccounts();
+      loadJournalEntries();
+    } catch(e) { show(e.message, true, 'je-status'); }
   }
 
   window.addEventListener('DOMContentLoaded', () => {

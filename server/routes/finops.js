@@ -25,6 +25,7 @@ const { OnOffRampEngine } = require('../integrations/dapp/onOffRampEngine');
 const { TrustMarketEngine } = require('../integrations/dapp/trustMarketEngine');
 const { IntentRoutingEngine } = require('../integrations/dapp/intentRoutingEngine');
 const { ExternalWalletEngine } = require('../integrations/dapp/externalWalletEngine');
+const { JournalEntryEngine } = require('../integrations/dapp/journalEntryEngine');
 
 const router = express.Router();
 const operatorAuth = requireAuth({ role: 'operator' });
@@ -876,6 +877,25 @@ router.post('/external-wallets/swaps/:id/execute', operatorAuth, writeRateLimite
 
 router.post('/external-wallets/swaps/:id/submit', operatorAuth, writeRateLimiter(), async (req, res) => {
   try { res.json({ success: true, data: await ExternalWalletEngine.submitTx({ requestId: req.params.id, ...req.body }) }); } catch (err) { sendError(res, err); }
+});
+
+// ═════════════════════════════════════════════════════════════════════════════
+// Journal Entries — principal and coupon interest income credits
+// ═════════════════════════════════════════════════════════════════════════════
+
+router.get('/journal-entries/accounts', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await JournalEntryEngine.listAccounts() }); } catch (err) { sendError(res, err); }
+});
+
+router.get('/journal-entries', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await JournalEntryEngine.listEntries({ bondId: req.query.bondId, limit: req.query.limit ? Number(req.query.limit) : 50 }) }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/journal-entries/principal-interest', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try {
+    const data = await JournalEntryEngine.postPrincipalAndInterest({ ...req.body, postedBy: getUserEmail(req) || 'operator' });
+    res.status(201).json({ success: true, data });
+  } catch (err) { sendError(res, err); }
 });
 
 module.exports = router;
