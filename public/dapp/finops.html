@@ -163,6 +163,11 @@
     { key:'canonical-liquidity', name:'Canonical Liquidity', desc:'Governed DEX liquidity pools and swaps for trust assets', stat:'', endpoint:null, action:'openCanonicalLiquidityPanel' },
     { key:'liquidity-pool', name:'Liquidity Pool Engine', desc:'Full pool lifecycle: create, add/remove liquidity, swap, and positions', stat:'', endpoint:null, action:'openLiquidityPoolPanel' },
     { key:'canonical-money', name:'Canonical Money', desc:'Turn trust assets and income into canonical spendable stablecoins', stat:'', endpoint:null, action:'openCanonicalMoneyPanel' },
+    { key:'cross-chain', name:'Cross-Chain Conversion', desc:'Convert trust assets to canonical stablecoins across chains and protocols', stat:'', endpoint:null, action:'openCrossChainPanel' },
+    { key:'paired-assets', name:'Paired Asset Engine', desc:'Source real canonical assets to seed DEX liquidity pools', stat:'', endpoint:null, action:'openPairedAssetsPanel' },
+    { key:'trust-market', name:'Trust Market Maker', desc:'1:1 reserve-backed token <-> canonical stablecoin P2P market', stat:'', endpoint:null, action:'openTrustMarketPanel' },
+    { key:'ramps', name:'Ramp Center', desc:'Fiat on/off ramps and counterparty rail aggregator', stat:'', endpoint:null, action:'openRampsPanel' },
+    { key:'intent-routing', name:'Intent Routing', desc:'Natural-language orchestration of on/off-ramp and conversion flows', stat:'', endpoint:null, action:'openIntentRoutingPanel' },
     { key:'coordination', name:'Coordination Engine', desc:'System health, AI command queue and stability checks', stat:'', endpoint:null, action:'openCoordinationPanel' },
     { key:'clearing', name:'Clearing Engine', desc:'Bilateral and net settlement on Hyperledger Besu', stat:'', endpoint:null, action:'openClearingPanel' },
     { key:'redemption-gateway', name:'Redemption Gateway', desc:'Bridge DLB-PTCUSD to external clearing/stablecoin rails', stat:'', endpoint:null, action:'openRedemptionGatewayPanel' },
@@ -329,7 +334,7 @@
     renderModules();
     renderFlow();
     try {
-      const [sof, accts, wallets, bond, crm, p2p, ptc, consensus] = await Promise.all([
+      const [sof, accts, wallets, bond, crm, p2p, ptc, consensus, xchain, paired, trustMarket, ramps, intents] = await Promise.all([
         api('/api/finops/source-of-funds').catch(()=>null),
         api('/api/accounting/accounts').catch(()=>null),
         api('/api/finops/wallets').catch(()=>null),
@@ -338,6 +343,11 @@
         api('/api/finops/module-p2p/orders').catch(()=>null),
         api('/api/finops/ptc-stablecoin').catch(()=>null),
         api('/api/finops/consensus').catch(()=>null),
+        api('/api/finops/cross-chain').catch(()=>null),
+        api('/api/finops/paired-assets').catch(()=>null),
+        api('/api/finops/trust-market/orders').catch(()=>null),
+        api('/api/finops/ramps/requests').catch(()=>null),
+        api('/api/finops/intents').catch(()=>null),
       ]);
       const balances = normalizeBalances(sof && sof.data);
       if (balances.length) {
@@ -360,6 +370,26 @@
       if (consensus && consensus.data && Array.isArray(consensus.data)) {
         const pending = consensus.data.filter(p => p.status === 'pending').length;
         setStat('canonical-consensus', String(pending));
+      }
+      if (xchain && xchain.data && Array.isArray(xchain.data)) {
+        const pending = xchain.data.filter(r => r.status === 'pending').length;
+        setStat('cross-chain', String(pending));
+      }
+      if (paired && paired.data && Array.isArray(paired.data)) {
+        const pending = paired.data.filter(r => r.status === 'pending' || r.status === 'awaiting_deposit' || r.status === 'awaiting_funds').length;
+        setStat('paired-assets', String(pending));
+      }
+      if (trustMarket && trustMarket.data && Array.isArray(trustMarket.data)) {
+        const active = trustMarket.data.filter(o => o.active).length;
+        setStat('trust-market', String(active));
+      }
+      if (ramps && ramps.data && Array.isArray(ramps.data)) {
+        const pending = ramps.data.filter(r => r.status === 'pending').length;
+        setStat('ramps', String(pending));
+      }
+      if (intents && intents.data && Array.isArray(intents.data)) {
+        const pending = intents.data.filter(r => r.status === 'pending').length;
+        setStat('intent-routing', String(pending));
       }
       renderModules();
     } catch(e) { console.error('loadAll error', e); }
@@ -1726,6 +1756,481 @@
       const email = el('cm-email-' + proposalId).value.trim();
       await api('/api/finops/canonical-money/requests/' + proposalId + '/approve', { method:'POST', body: JSON.stringify({ role, approverEmail: email }) });
       await loadCanonicalMoney();
+    } catch(e) { alert(e.message); }
+  }
+
+  // ─── Cross-Chain Conversion & Interoperability Engine panel ───────────────────
+  let currentCrossChainRoute = null;
+
+  function openCrossChainPanel() {
+    const panel = el('module-panel');
+    const body = el('panel-body');
+    el('panel-title').textContent = 'Cross-Chain Conversion';
+    panel.classList.add('active');
+    body.innerHTML = renderCrossChainPanel();
+    loadCrossChainRequests();
+  }
+
+  function renderCrossChainPanel() {
+    return '<div class="muted" style="margin-bottom:12px;">Plan and execute conversions from any trust asset or ledger balance to canonical stablecoins (USDC/USDS/DAI/WETH) on the source chain or across chains. If DEX liquidity is insufficient, the engine recommends a P2P order or a bridge route.</div>' +
+      '<h3 style="font-size:14px;margin:0 0 8px;">New Conversion</h3>' +
+      '<div class="token-bar"><select id="xc-source-type"><option value="">-- source type --</option><option value="cash">cash</option><option value="treasury">treasury</option><option value="trust">trust</option><option value="bond">bond</option><option value="fixed_income">fixed_income / bond_interest</option><option value="fineract">fineract</option><option value="sub_ledger">sub_ledger</option><option value="">-- or token/module --</option><option value="DLB-PTCUSD">DLB-PTCUSD</option><option value="DLB-PRB">DLB-PRB</option><option value="DLB-FIXED-INCOME">DLB-FIXED-INCOME</option><option value="DLB-TREASURY">DLB-TREASURY</option><option value="DLB-TRUST">DLB-TRUST</option><option value="DLB-CORE">DLB-CORE</option></select></div>' +
+      '<div class="token-bar"><input id="xc-source-id" placeholder="source account / token address" /></div>' +
+      '<div class="token-bar"><input id="xc-amount" placeholder="amount" /></div>' +
+      '<div class="token-bar"><select id="xc-target-asset"><option value="USDC">USDC</option><option value="USDS">USDS</option><option value="DAI">DAI</option><option value="WETH">WETH</option><option value="ETH">ETH</option></select></div>' +
+      '<div class="token-bar"><select id="xc-target-chain"><option value="ethereum">ethereum</option><option value="base">base</option><option value="polygon">polygon</option><option value="arbitrum">arbitrum</option><option value="besu">besu</option></select></div>' +
+      '<div class="token-bar"><select id="xc-bridge"><option value="">auto</option><option value="circle-cctp">circle-cctp</option><option value="hyperlane">hyperlane</option><option value="axelar">axelar</option><option value="layerzero">layerzero</option><option value="wormhole">wormhole</option><option value="besu">besu</option></select></div>' +
+      '<div class="token-bar"><input id="xc-recipient" placeholder="recipient address (optional, default operator)" /></div>' +
+      '<div class="token-bar"><input id="xc-slippage" placeholder="slippage bps (default 100)" value="100" /></div>' +
+      '<div class="approval-actions"><button class="btn" onclick="crossChainQuote()">Quote Routes</button><button class="btn" onclick="crossChainPropose()">Propose</button><button class="btn btn-sec" style="margin-left:8px;" onclick="crossChainChains()">Chains</button><button class="btn btn-sec" style="margin-left:8px;" onclick="crossChainAssets()">Assets</button></div>' +
+      '<input type="hidden" id="xc-route-name" />' +
+      '<div id="xc-quote" style="margin-top:12px;"></div>' +
+      '<h3 style="font-size:14px;margin:16px 0 8px;">Conversion Requests</h3>' +
+      '<div id="xc-requests"></div>';
+  }
+
+  function _crossChainForm() {
+    const sourceType = el('xc-source-type').value;
+    const sourceId = el('xc-source-id').value.trim();
+    const amount = el('xc-amount').value.trim();
+    const targetAsset = el('xc-target-asset').value;
+    const targetChain = el('xc-target-chain').value;
+    const bridge = el('xc-bridge').value;
+    const recipient = el('xc-recipient').value.trim() || undefined;
+    const slippageBps = el('xc-slippage').value.trim();
+    const knownTokens = ['DLB-PTCUSD','DLB-PRB','DLB-FIXED-INCOME','DLB-TREASURY','DLB-TRUST','DLB-CORE'];
+    let sourceAccountId, sourceToken, sourceModule;
+    if (knownTokens.includes(sourceType)) {
+      if (sourceType === 'DLB-PTCUSD') sourceToken = 'DLB-PTCUSD';
+      else sourceModule = sourceType;
+    } else {
+      sourceAccountId = sourceId;
+    }
+    const body = { sourceType: knownTokens.includes(sourceType) ? undefined : sourceType, sourceAccountId, sourceToken, sourceModule, amount, targetAsset, targetChain, recipient };
+    if (bridge) body.bridgeProvider = bridge;
+    if (slippageBps) body.slippageBps = Number(slippageBps);
+    return body;
+  }
+
+  async function crossChainQuote() {
+    currentCrossChainRoute = null;
+    el('xc-route-name').value = '';
+    try {
+      const res = await api('/api/finops/cross-chain/quote', { method:'POST', body: JSON.stringify(_crossChainForm()) });
+      const q = res.data;
+      let html = '<div class="status ok" style="margin-top:8px;"><strong>Recommendation:</strong> ' + (q.recommendation || 'none') + '<br/><strong>Target:</strong> ' + q.targetAsset + ' on ' + q.targetChain + '</div>';
+      html += '<div style="margin-top:10px;">' + (q.routes || []).map((r, i) => {
+        const selected = r.name === q.recommendation ? 'border-color: var(--accent);' : '';
+        return '<div style="border:1px solid var(--border);border-radius:8px;padding:8px;margin-bottom:8px;' + selected + '" onclick="selectCrossChainRoute(\'' + r.name + '\')">' +
+          '<strong>' + r.name + '</strong> — ' + r.provider + ' <em>(' + r.status + ')</em><br/>' +
+          '<span class="muted">Estimated output:</span> ' + (r.estimatedOutput || 0) + ' ' + r.outputAsset + ' on ' + r.outputChain + '<br/>' +
+          (r.warning ? '<span class="status err" style="display:inline-block;margin-top:4px;">' + r.warning + '</span>' : '') +
+          '</div>';
+      }).join('') + '</div>';
+      el('xc-quote').innerHTML = html;
+      if (q.recommendation) { el('xc-route-name').value = q.recommendation; currentCrossChainRoute = q.routes.find(r => r.name === q.recommendation); }
+    } catch(e) { el('xc-quote').innerHTML = '<div class="status err">' + e.message + '</div>'; }
+  }
+
+  function selectCrossChainRoute(name) {
+    el('xc-route-name').value = name;
+  }
+
+  async function crossChainPropose() {
+    try {
+      const body = _crossChainForm();
+      const routeName = el('xc-route-name').value;
+      if (routeName) body.routeName = routeName;
+      const res = await api('/api/finops/cross-chain/requests', { method:'POST', body: JSON.stringify(body) });
+      el('xc-quote').innerHTML = '<div class="status ok">Proposed: ' + res.data.proposalId + '<br/>Route: ' + res.data.chosenRoute.name + '</div>';
+      await loadCrossChainRequests();
+    } catch(e) { el('xc-quote').innerHTML = '<div class="status err">' + e.message + '</div>'; }
+  }
+
+  async function loadCrossChainRequests() {
+    const wrap = el('xc-requests');
+    try {
+      const res = await api('/api/finops/cross-chain');
+      wrap.innerHTML = (res.data || []).map(r => `<div style="font-size:12px;border-bottom:1px solid var(--border);padding:4px 0;">${r.id}: ${r.source_type || r.source_token || r.source_module} ${r.amount} -> ${r.target_asset} on ${r.target_chain} <em>${r.status}</em>` +
+        (r.status === 'pending' ? ` <select id="xc-role-${r.proposal_id}"><option value="maker">maker</option><option value="checker">checker</option></select><input id="xc-email-${r.proposal_id}" placeholder="email" style="width:100px;" /><button class="btn" onclick="crossChainApprove('${r.proposal_id}')">Approve</button>` : '') +
+        (r.status === 'approved' ? ` <button class="btn" onclick="crossChainExecute('${r.id}')">Execute</button>` : '') +
+        `</div>`).join('') || '<span class="muted">No requests yet.</span>';
+    } catch(e) { wrap.innerHTML = '<div class="status err">' + e.message + '</div>'; }
+  }
+
+  async function crossChainApprove(proposalId) {
+    try {
+      const role = el('xc-role-' + proposalId).value;
+      const email = el('xc-email-' + proposalId).value.trim();
+      await api('/api/finops/cross-chain/requests/' + proposalId + '/approve', { method:'POST', body: JSON.stringify({ role, approverEmail: email }) });
+      await loadCrossChainRequests();
+    } catch(e) { alert(e.message); }
+  }
+
+  async function crossChainExecute(requestId) {
+    try {
+      await api('/api/finops/cross-chain/requests/' + requestId + '/execute', { method:'POST', body: '{}' });
+      await loadCrossChainRequests();
+    } catch(e) { alert(e.message); }
+  }
+
+  async function crossChainChains() {
+    try {
+      const res = await api('/api/finops/cross-chain/adapters/chains');
+      el('xc-quote').innerHTML = '<pre style="white-space:pre-wrap; font-size:12px; background:#0b1220; padding:10px; border-radius:8px;">' + JSON.stringify(res.data, null, 2) + '</pre>';
+    } catch(e) { el('xc-quote').innerHTML = '<div class="status err">' + e.message + '</div>'; }
+  }
+
+  async function crossChainAssets() {
+    try {
+      const res = await api('/api/finops/cross-chain/adapters/assets');
+      el('xc-quote').innerHTML = '<pre style="white-space:pre-wrap; font-size:12px; background:#0b1220; padding:10px; border-radius:8px;">' + JSON.stringify(res.data, null, 2) + '</pre>';
+    } catch(e) { el('xc-quote').innerHTML = '<div class="status err">' + e.message + '</div>'; }
+  }
+
+  // ─── Paired Asset Engine panel ────────────────────────────────────────────────
+  let currentPairedAssetQuote = null;
+
+  function openPairedAssetsPanel() {
+    const panel = el('module-panel');
+    const body = el('panel-body');
+    el('panel-title').textContent = 'Paired Asset Engine';
+    panel.classList.add('active');
+    body.innerHTML = renderPairedAssetsPanel();
+    loadPairedAssetRequests();
+    loadPairedAssetSources();
+  }
+
+  function renderPairedAssetsPanel() {
+    return '<div class="muted" style="margin-bottom:12px;">Source the real canonical asset needed to seed a DEX pool alongside a trust-issued token. The engine checks the operator wallet balance and the chosen funding rail, then adds liquidity once both sides are available.</div>' +
+      '<h3 style="font-size:14px;margin:0 0 8px;">Quote / Seed Pool</h3>' +
+      '<div class="token-bar"><select id="pa-token-a"><option value="DLBUSD">DLBUSD</option><option value="DLB-PTCUSD">DLB-PTCUSD</option></select></div>' +
+      '<div class="token-bar"><select id="pa-token-b"><option value="USDS">USDS</option><option value="USDC">USDC</option><option value="DAI">DAI</option><option value="WETH">WETH</option></select></div>' +
+      '<div class="token-bar"><input id="pa-amount" placeholder="amount of token A" /></div>' +
+      '<div class="token-bar"><select id="pa-source"><option value="manual">Manual deposit</option><option value="counterparty">Counterparty deposit</option><option value="moonpay">MoonPay on-ramp</option><option value="circle_mint">Circle Mint</option><option value="coinbase_treasury">Coinbase Treasury</option><option value="module_redemption">DLB-PTCUSD reserve redemption</option></select></div>' +
+      '<div class="token-bar"><input id="pa-source-account" placeholder="source account id (Coinbase)" /></div>' +
+      '<label style="font-size:12px;display:block;margin:8px 0;"><input type="checkbox" id="pa-create-pool" /> Create new pool if none exists</label>' +
+      '<div class="approval-actions"><button class="btn" onclick="pairedAssetQuote()">Quote</button><button class="btn" onclick="pairedAssetPropose()">Propose</button></div>' +
+      '<div id="pa-quote" style="margin-top:12px;"></div>' +
+      '<h3 style="font-size:14px;margin:16px 0 8px;">Funding Sources</h3>' +
+      '<div id="pa-sources"></div>' +
+      '<h3 style="font-size:14px;margin:16px 0 8px;">Requests</h3>' +
+      '<div id="pa-requests"></div>';
+  }
+
+  async function loadPairedAssetSources() {
+    const wrap = el('pa-sources');
+    try {
+      const res = await api('/api/finops/paired-assets/sources/list');
+      wrap.innerHTML = (res.data || []).map(s => '<div style="font-size:12px;border-bottom:1px solid var(--border);padding:4px 0;"><strong>' + s.name + '</strong> <em>(' + (s.ready ? 'ready' : 'not ready') + ')</em><br/><span class="muted">' + (s.note || s.issues?.join('; ') || '') + '</span></div>').join('');
+    } catch(e) { wrap.innerHTML = '<div class="status err">' + e.message + '</div>'; }
+  }
+
+  async function pairedAssetQuote() {
+    currentPairedAssetQuote = null;
+    try {
+      const body = {
+        tokenA: el('pa-token-a').value,
+        tokenB: el('pa-token-b').value,
+        amountA: el('pa-amount').value.trim(),
+        sourceMethod: el('pa-source').value,
+      };
+      const res = await api('/api/finops/paired-assets/quote', { method:'POST', body: JSON.stringify(body) });
+      const q = res.data;
+      currentPairedAssetQuote = q;
+      const html = '<div class="status ok"><strong>Status:</strong> ' + q.status + '<br/>' +
+        '<strong>Paired amount needed:</strong> ' + q.amountB + ' ' + q.tokenB + '<br/>' +
+        '<strong>Operator wallet ' + q.tokenB + ' balance:</strong> ' + q.operatorBalanceB + '<br/>' +
+        '<strong>Existing pool:</strong> ' + (q.existingPool || 'none') + '<br/>' +
+        '<span class="muted">' + (q.note || '') + '</span></div>';
+      el('pa-quote').innerHTML = html;
+    } catch(e) { el('pa-quote').innerHTML = '<div class="status err">' + e.message + '</div>'; }
+  }
+
+  async function pairedAssetPropose() {
+    try {
+      const body = {
+        tokenA: el('pa-token-a').value,
+        tokenB: el('pa-token-b').value,
+        amountA: el('pa-amount').value.trim(),
+        sourceMethod: el('pa-source').value,
+        sourceAccountId: el('pa-source-account').value.trim() || undefined,
+        createPool: el('pa-create-pool').checked,
+      };
+      const res = await api('/api/finops/paired-assets/requests', { method:'POST', body: JSON.stringify(body) });
+      el('pa-quote').innerHTML = '<div class="status ok">Proposed: ' + res.data.proposalId + '<br/>Request: ' + res.data.requestId + '</div>';
+      await loadPairedAssetRequests();
+    } catch(e) { el('pa-quote').innerHTML = '<div class="status err">' + e.message + '</div>'; }
+  }
+
+  async function loadPairedAssetRequests() {
+    const wrap = el('pa-requests');
+    try {
+      const res = await api('/api/finops/paired-assets');
+      wrap.innerHTML = (res.data || []).map(r => `<div style="font-size:12px;border-bottom:1px solid var(--border);padding:4px 0;">${r.id}: seed ${r.amount_a} ${r.token_a} + ${r.amount_b} ${r.token_b} via ${r.source_method} <em>${r.status}</em>` +
+        (r.status === 'pending' ? ` <select id="pa-role-${r.proposal_id}"><option value="maker">maker</option><option value="checker">checker</option></select><input id="pa-email-${r.proposal_id}" placeholder="email" style="width:100px;" /><button class="btn" onclick="pairedAssetApprove('${r.proposal_id}')">Approve</button>` : '') +
+        ((r.status === 'approved' || r.status === 'ready_to_seed') ? ` <button class="btn" onclick="pairedAssetExecute('${r.id}')">Execute</button>` : '') +
+        `</div>`).join('') || '<span class="muted">No requests yet.</span>';
+    } catch(e) { wrap.innerHTML = '<div class="status err">' + e.message + '</div>'; }
+  }
+
+  async function pairedAssetApprove(proposalId) {
+    try {
+      const role = el('pa-role-' + proposalId).value;
+      const email = el('pa-email-' + proposalId).value.trim();
+      await api('/api/finops/paired-assets/requests/' + proposalId + '/approve', { method:'POST', body: JSON.stringify({ role, approverEmail: email }) });
+      await loadPairedAssetRequests();
+    } catch(e) { alert(e.message); }
+  }
+
+  async function pairedAssetExecute(requestId) {
+    try {
+      await api('/api/finops/paired-assets/requests/' + requestId + '/execute', { method:'POST', body: '{}' });
+      await loadPairedAssetRequests();
+    } catch(e) { alert(e.message); }
+  }
+
+  // ─── Trust Market Maker panel ─────────────────────────────────────────────────
+  let currentTrustMarketQuote = null;
+
+  function openTrustMarketPanel() {
+    const panel = el('module-panel');
+    const body = el('panel-body');
+    el('panel-title').textContent = 'Trust Market Maker';
+    panel.classList.add('active');
+    body.innerHTML = '<div class="muted" style="margin-bottom:12px;">List reserve-backed trust tokens for canonical stablecoins at 1:1. A buyer fills the order on-chain and sends USDC/USDS/DAI to the operator wallet.</div>' +
+      '<h3 style="font-size:14px;margin:0 0 8px;">Create Offer</h3>' +
+      '<div class="token-bar"><select id="tm-token"><option value="DLB-PTCUSD">DLB-PTCUSD</option><option value="DLBUSD">DLBUSD</option><option value="DLB-PRB">DLB-PRB (bond_portfolio)</option><option value="fixed_income">DLB-FIXED-INCOME</option><option value="treasury">DLB-TREASURY</option><option value="trust_accounting">DLB-TRUST</option><option value="core_banking">DLB-CORE</option></select></div>' +
+      '<div class="token-bar"><select id="tm-paired"><option value="USDS">USDS</option><option value="USDC">USDC</option><option value="DAI">DAI</option><option value="WETH">WETH</option></select></div>' +
+      '<div class="token-bar"><input id="tm-amount" placeholder="amount (e.g. 1000)" /></div>' +
+      '<div class="approval-actions"><button class="btn" onclick="trustMarketQuote()">Quote</button><button class="btn" onclick="trustMarketCreate()">Create Offer</button></div>' +
+      '<div id="tm-quote" style="margin-top:12px;"></div>' +
+      '<h3 style="font-size:14px;margin:16px 0 8px;">Active Orders</h3>' +
+      '<div id="tm-orders"></div>';
+    loadTrustMarketOrders();
+  }
+
+  async function trustMarketQuote() {
+    try {
+      const token = el('tm-token').value;
+      const paired = el('tm-paired').value;
+      const amount = el('tm-amount').value.trim();
+      const body = { trustToken: token, pairedAsset: paired, amount };
+      if (['bond_portfolio','fixed_income','treasury','trust_accounting','core_banking'].includes(token)) body.reserveModule = token;
+      const res = await api('/api/finops/trust-market/quote', { method:'POST', body: JSON.stringify(body) });
+      const q = res.data;
+      currentTrustMarketQuote = q;
+      el('tm-quote').innerHTML = '<div class="status ' + (q.status === 'ready_to_list' ? 'ok' : 'err') + '"><strong>Status:</strong> ' + q.status + '<br/><strong>Price:</strong> ' + (q.price || '1:1') + '<br/><strong>Balance:</strong> ' + (q.balance || '—') + ' ' + token + '<br/><strong>ETH:</strong> ' + (q.ethBalance || '—') + '<br/>' + (q.instructions || '') + (q.issues ? '<br/><span class="muted">' + q.issues.join('; ') + '</span>' : '') + '</div>';
+    } catch(e) { el('tm-quote').innerHTML = '<div class="status err">' + e.message + '</div>'; }
+  }
+
+  async function trustMarketCreate() {
+    try {
+      const token = el('tm-token').value;
+      const paired = el('tm-paired').value;
+      const amount = el('tm-amount').value.trim();
+      const body = { trustToken: token, pairedAsset: paired, amount };
+      if (['bond_portfolio','fixed_income','treasury','trust_accounting','core_banking'].includes(token)) body.reserveModule = token;
+      const res = await api('/api/finops/trust-market/orders', { method:'POST', body: JSON.stringify(body) });
+      el('tm-quote').innerHTML = '<div class="status ok">Offer ' + res.data.orderId + ' created. ' + (res.data.instructions || '') + '</div>';
+      await loadTrustMarketOrders();
+    } catch(e) { el('tm-quote').innerHTML = '<div class="status err">' + e.message + '</div>'; }
+  }
+
+  async function loadTrustMarketOrders() {
+    const wrap = el('tm-orders');
+    try {
+      const res = await api('/api/finops/trust-market/orders');
+      wrap.innerHTML = (res.data || []).map(o => `<div style="font-size:12px;border-bottom:1px solid var(--border);padding:4px 0;">Order ${o.orderId}: ${o.tokenIn} -> ${o.tokenOut} (in:${o.amountIn}, out:${o.amountOut}) <em>${o.active ? 'active' : 'inactive'}</em>` +
+        (o.active ? ` <button class="btn" onclick="cancelTrustMarketOrder('${o.orderId}')">Cancel</button>` : '') + `</div>`).join('') || '<span class="muted">No active offers.</span>';
+    } catch(e) { wrap.innerHTML = '<div class="status err">' + e.message + '</div>'; }
+  }
+
+  async function cancelTrustMarketOrder(orderId) {
+    try {
+      await api('/api/finops/trust-market/orders/' + orderId + '/cancel', { method:'POST' });
+      await loadTrustMarketOrders();
+    } catch(e) { alert(e.message); }
+  }
+
+  // ─── Ramp Center panel ────────────────────────────────────────────────────────
+  let currentRampQuote = null;
+
+  function openRampsPanel() {
+    const panel = el('module-panel');
+    const body = el('panel-body');
+    el('panel-title').textContent = 'Ramp Center';
+    panel.classList.add('active');
+    body.innerHTML = '<div class="muted" style="margin-bottom:12px;">Quote and execute fiat on/off ramps and counterparty exchanges. Configure MoonPay, Coinbase, Circle Mint, or Spritz to move real value.</div>' +
+      '<h3 style="font-size:14px;margin:0 0 8px;">Quote Ramp</h3>' +
+      '<div class="token-bar"><select id="ramp-direction" onchange="rampDirectionChanged()"><option value="onramp">Fiat -> Crypto</option><option value="offramp">Crypto -> Fiat</option><option value="exchange">Reserve -> Canonical</option></select></div>' +
+      '<div class="token-bar"><input id="ramp-source" placeholder="source (USD, DLB-PTCUSD, USDC...)" /></div>' +
+      '<div class="token-bar"><input id="ramp-target" placeholder="target (USDC, USDS, ETH...)" /></div>' +
+      '<div class="token-bar"><input id="ramp-amount" placeholder="amount" /></div>' +
+      '<div class="token-bar"><input id="ramp-source-account" placeholder="source account id (Coinbase/ledger)" /></div>' +
+      '<div class="approval-actions"><button class="btn" onclick="rampQuote()">Quote</button><button class="btn" onclick="rampPropose()">Propose</button></div>' +
+      '<div id="ramp-quote" style="margin-top:12px;"></div>' +
+      '<h3 style="font-size:14px;margin:16px 0 8px;">Providers</h3>' +
+      '<div id="ramp-providers"></div>' +
+      '<h3 style="font-size:14px;margin:16px 0 8px;">Ramp Requests</h3>' +
+      '<div id="ramp-requests"></div>';
+    loadRampProviders();
+    loadRampRequests();
+  }
+
+  function rampDirectionChanged() {
+    const d = el('ramp-direction').value;
+    el('ramp-source').placeholder = d === 'onramp' ? 'source (USD)' : (d === 'offramp' ? 'source (USDC)' : 'source (DLB-PTCUSD)');
+    el('ramp-target').placeholder = d === 'onramp' ? 'target (USDC/ETH)' : (d === 'offramp' ? 'target (USD)' : 'target (USDS/USDC)');
+  }
+
+  async function loadRampProviders() {
+    const wrap = el('ramp-providers');
+    try {
+      const res = await api('/api/finops/ramps/providers');
+      wrap.innerHTML = (res.data || []).map(p => '<div style="font-size:12px;border-bottom:1px solid var(--border);padding:4px 0;"><strong>' + p.name + '</strong> <em>(' + (p.ready ? 'ready' : 'not ready') + ')</em><br/><span class="muted">' + (p.directions || []).join(', ') + ' ' + (p.issues?.join('; ') || '') + '</span></div>').join('') || '<span class="muted">No providers configured.</span>';
+    } catch(e) { wrap.innerHTML = '<div class="status err">' + e.message + '</div>'; }
+  }
+
+  async function rampQuote() {
+    try {
+      const body = {
+        direction: el('ramp-direction').value,
+        sourceAsset: el('ramp-source').value.trim(),
+        targetAsset: el('ramp-target').value.trim(),
+        amount: el('ramp-amount').value.trim(),
+        sourceAccountId: el('ramp-source-account').value.trim() || undefined,
+      };
+      const res = await api('/api/finops/ramps/quote', { method:'POST', body: JSON.stringify(body) });
+      const q = res.data;
+      currentRampQuote = q;
+      let html = '<div class="status ok"><strong>Direction:</strong> ' + q.direction + '<br/><strong>Recommended:</strong> ' + (q.recommended ? q.recommended.provider : 'none') + '<br/><strong>Routes:</strong><ul style="margin:4px 0;padding-left:16px;font-size:12px;">';
+      (q.routes || []).forEach(r => { html += '<li><strong>' + r.provider + '</strong> (' + r.status + '): ' + (r.instructions || '') + '</li>'; });
+      html += '</ul></div>';
+      if (q.recommended && q.recommended.onrampUrl) html += '<div style="margin-top:8px;"><a class="btn" href="' + q.recommended.onrampUrl + '" target="_blank">Open MoonPay</a></div>';
+      el('ramp-quote').innerHTML = html;
+    } catch(e) { el('ramp-quote').innerHTML = '<div class="status err">' + e.message + '</div>'; }
+  }
+
+  async function rampPropose() {
+    try {
+      const q = currentRampQuote && currentRampQuote.recommended;
+      if (!q) { rampQuote(); return; }
+      const body = {
+        direction: el('ramp-direction').value,
+        sourceAsset: el('ramp-source').value.trim(),
+        targetAsset: el('ramp-target').value.trim(),
+        amount: el('ramp-amount').value.trim(),
+        provider: q.provider,
+        sourceAccountId: el('ramp-source-account').value.trim() || undefined,
+      };
+      const res = await api('/api/finops/ramps/requests', { method:'POST', body: JSON.stringify(body) });
+      el('ramp-quote').innerHTML = '<div class="status ok">Proposed: ' + res.data.proposalId + ' (' + res.data.status + ')</div>';
+      await loadRampRequests();
+    } catch(e) { el('ramp-quote').innerHTML = '<div class="status err">' + e.message + '</div>'; }
+  }
+
+  async function loadRampRequests() {
+    const wrap = el('ramp-requests');
+    try {
+      const res = await api('/api/finops/ramps/requests');
+      wrap.innerHTML = (res.data || []).map(r => `<div style="font-size:12px;border-bottom:1px solid var(--border);padding:4px 0;">${r.id}: ${r.title} <em>${r.status}</em>` +
+        (r.status === 'pending' ? ` <select id="ramp-role-${r.id}"><option value="maker">maker</option><option value="checker">checker</option></select><input id="ramp-email-${r.id}" placeholder="email" style="width:100px;" /><button class="btn" onclick="rampApprove('${r.id}')">Approve</button>` : '') +
+        (r.status === 'approved' ? ` <button class="btn" onclick="rampExecute('${r.id}')">Execute</button>` : '') +
+        `</div>`).join('') || '<span class="muted">No ramp requests yet.</span>';
+    } catch(e) { wrap.innerHTML = '<div class="status err">' + e.message + '</div>'; }
+  }
+
+  async function rampApprove(proposalId) {
+    try {
+      const role = el('ramp-role-' + proposalId).value;
+      const email = el('ramp-email-' + proposalId).value.trim();
+      await api('/api/finops/ramps/requests/' + proposalId + '/approve', { method:'POST', body: JSON.stringify({ role, approverEmail: email }) });
+      await loadRampRequests();
+    } catch(e) { alert(e.message); }
+  }
+
+  async function rampExecute(proposalId) {
+    try {
+      await api('/api/finops/ramps/requests/' + proposalId + '/execute', { method:'POST', body: '{}' });
+      await loadRampRequests();
+    } catch(e) { alert(e.message); }
+  }
+
+  // ─── Intent Routing Engine panel ──────────────────────────────────────────────
+  let currentIntentPlan = null;
+
+  function openIntentRoutingPanel() {
+    const panel = el('module-panel');
+    const body = el('panel-body');
+    el('panel-title').textContent = 'Intent Routing';
+    panel.classList.add('active');
+    body.innerHTML = '<div class="muted" style="margin-bottom:12px;">Type a natural-language goal like <em>"Convert $500,000 bond interest to USDS"</em> or <em>"Offramp 1,000 USDC to bank"</em>. The engine parses the intent, plans the best route across ramps/P2P/DEX, and submits it to Canonical Consensus.</div>' +
+      '<div class="token-bar"><textarea id="intent-text" rows="2" placeholder="e.g. Convert $500000 coupon interest to USDC" style="width:100%;padding:8px;"></textarea></div>' +
+      '<div class="token-bar"><input id="intent-amount" placeholder="amount (optional override)" /></div>' +
+      '<div class="token-bar"><input id="intent-target" placeholder="target asset (optional override)" /></div>' +
+      '<div class="approval-actions"><button class="btn" onclick="intentQuote()">Plan</button><button class="btn" onclick="intentPropose()">Propose</button></div>' +
+      '<div id="intent-plan" style="margin-top:12px;"></div>' +
+      '<h3 style="font-size:14px;margin:16px 0 8px;">Intent Requests</h3>' +
+      '<div id="intent-requests"></div>';
+    loadIntentRequests();
+  }
+
+  async function intentQuote() {
+    try {
+      const text = el('intent-text').value.trim();
+      if (!text) throw new Error('Enter an intent');
+      const context = {};
+      const amt = el('intent-amount').value.trim();
+      if (amt) context.amount = amt;
+      const tgt = el('intent-target').value.trim();
+      if (tgt) context.targetAsset = tgt;
+      const res = await api('/api/finops/intents/quote', { method:'POST', body: JSON.stringify({ intentText: text, context }) });
+      currentIntentPlan = res.data;
+      const p = res.data.parsed;
+      const plan = res.data.plan;
+      let html = '<div class="status ' + (plan.status === 'ready' ? 'ok' : 'err') + '"><strong>Action:</strong> ' + p.action + '<br/><strong>Amount:</strong> ' + p.amount + '<br/><strong>Source:</strong> ' + (p.sourceAsset || p.sourceType || '') + '<br/><strong>Target:</strong> ' + (p.targetAsset || '') + '<br/><strong>Status:</strong> ' + plan.status + '<br/><strong>Best route:</strong> ' + (plan.bestStep ? plan.bestStep.engine + (plan.bestStep.direction ? ' ' + plan.bestStep.direction : '') : 'none') + '<br/><strong>Issues:</strong> ' + (plan.issues.join('; ') || 'none') + '</div>';
+      if (plan.steps && plan.steps.length) {
+        html += '<ul style="font-size:12px;margin-top:8px;padding-left:16px;">' + plan.steps.map(s => '<li><strong>' + s.engine + '</strong>: ' + (s.quote?.status || s.direction || '') + '</li>').join('') + '</ul>';
+      }
+      el('intent-plan').innerHTML = html;
+    } catch(e) { el('intent-plan').innerHTML = '<div class="status err">' + e.message + '</div>'; }
+  }
+
+  async function intentPropose() {
+    try {
+      if (!currentIntentPlan) { await intentQuote(); }
+      if (!currentIntentPlan) return;
+      const res = await api('/api/finops/intents/requests', { method:'POST', body: JSON.stringify({ intentText: currentIntentPlan.intentText, context: currentIntentPlan.parsed }) });
+      el('intent-plan').innerHTML = '<div class="status ok">Proposed: ' + res.data.proposalId + ' (status: ' + res.data.plan.status + ')</div>';
+      await loadIntentRequests();
+    } catch(e) { el('intent-plan').innerHTML = '<div class="status err">' + e.message + '</div>'; }
+  }
+
+  async function loadIntentRequests() {
+    const wrap = el('intent-requests');
+    try {
+      const res = await api('/api/finops/intents');
+      wrap.innerHTML = (res.data || []).map(r => `<div style="font-size:12px;border-bottom:1px solid var(--border);padding:4px 0;"><strong>${r.id}</strong>: ${r.intent_text} <em>${r.status}</em>` +
+        (r.status === 'pending' ? ` <select id="intent-role-${r.proposal_id}"><option value="maker">maker</option><option value="checker">checker</option></select><input id="intent-email-${r.proposal_id}" placeholder="email" style="width:100px;" /><button class="btn" onclick="intentApprove('${r.proposal_id}')">Approve</button>` : '') +
+        (r.status === 'approved' ? ` <button class="btn" onclick="intentExecute('${r.proposal_id}')">Execute</button>` : '') +
+        `</div>`).join('') || '<span class="muted">No intent requests yet.</span>';
+    } catch(e) { wrap.innerHTML = '<div class="status err">' + e.message + '</div>'; }
+  }
+
+  async function intentApprove(proposalId) {
+    try {
+      const role = el('intent-role-' + proposalId).value;
+      const email = el('intent-email-' + proposalId).value.trim();
+      await api('/api/finops/intents/requests/' + proposalId + '/approve', { method:'POST', body: JSON.stringify({ role, approverEmail: email }) });
+      await loadIntentRequests();
+    } catch(e) { alert(e.message); }
+  }
+
+  async function intentExecute(proposalId) {
+    try {
+      await api('/api/finops/intents/requests/' + proposalId + '/execute', { method:'POST', body: '{}' });
+      await loadIntentRequests();
     } catch(e) { alert(e.message); }
   }
 

@@ -19,6 +19,11 @@ const { RedemptionGatewayEngine } = require('../integrations/dapp/redemptionGate
 const { CanonicalLiquidityEngine } = require('../integrations/dapp/canonicalLiquidityEngine');
 const { CanonicalMoneyEngine } = require('../integrations/dapp/canonicalMoneyEngine');
 const { LiquidityPoolEngine } = require('../integrations/dapp/liquidityPoolEngine');
+const { CrossChainConversionEngine } = require('../integrations/dapp/crossChainConversionEngine');
+const { PairedAssetEngine } = require('../integrations/dapp/pairedAssetEngine');
+const { OnOffRampEngine } = require('../integrations/dapp/onOffRampEngine');
+const { TrustMarketEngine } = require('../integrations/dapp/trustMarketEngine');
+const { IntentRoutingEngine } = require('../integrations/dapp/intentRoutingEngine');
 
 const router = express.Router();
 const operatorAuth = requireAuth({ role: 'operator' });
@@ -671,6 +676,161 @@ router.post('/redemption-gateway', operatorAuth, writeRateLimiter(), async (req,
 
 router.post('/redemption-gateway/:id/execute', operatorAuth, writeRateLimiter(), async (req, res) => {
   try { res.json({ success: true, data: await RedemptionGatewayEngine.execute(req.params.id) }); } catch (err) { sendError(res, err); }
+});
+
+// ═════════════════════════════════════════════════════════════════════════════
+// Cross-Chain Conversion & Interoperability Engine
+// ═════════════════════════════════════════════════════════════════════════════
+
+router.get('/cross-chain', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await CrossChainConversionEngine.listRequests(req.query) }); } catch (err) { sendError(res, err); }
+});
+
+router.get('/cross-chain/:id', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await CrossChainConversionEngine.getRequest(req.params.id) }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/cross-chain/quote', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await CrossChainConversionEngine.quote(req.body) }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/cross-chain/requests', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try { res.status(201).json({ success: true, data: await CrossChainConversionEngine.propose({ ...req.body, createdBy: getUserEmail(req) }) }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/cross-chain/requests/:id/approve', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try { res.json({ success: true, data: await CrossChainConversionEngine.approve({ proposalId: req.params.id, ...req.body }) }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/cross-chain/requests/:id/execute', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try { res.json({ success: true, data: await CrossChainConversionEngine.executeRequest(req.params.id) }); } catch (err) { sendError(res, err); }
+});
+
+router.get('/cross-chain/adapters/chains', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: CrossChainConversionEngine.listChains() }); } catch (err) { sendError(res, err); }
+});
+
+router.get('/cross-chain/adapters/assets', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: CrossChainConversionEngine.listAssets() }); } catch (err) { sendError(res, err); }
+});
+
+// ═════════════════════════════════════════════════════════════════════════════
+// Paired Asset Engine (source real canonical assets to seed DEX pools)
+// ═════════════════════════════════════════════════════════════════════════════
+
+router.get('/paired-assets', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await PairedAssetEngine.listRequests(req.query) }); } catch (err) { sendError(res, err); }
+});
+
+router.get('/paired-assets/:id', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await PairedAssetEngine.getRequest(req.params.id) }); } catch (err) { sendError(res, err); }
+});
+
+router.get('/paired-assets/sources/list', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await PairedAssetEngine.listSources() }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/paired-assets/quote', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await PairedAssetEngine.quote(req.body) }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/paired-assets/requests', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try { res.status(201).json({ success: true, data: await PairedAssetEngine.propose({ ...req.body, createdBy: getUserEmail(req) }) }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/paired-assets/requests/:id/approve', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try { res.json({ success: true, data: await PairedAssetEngine.approve({ proposalId: req.params.id, ...req.body }) }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/paired-assets/requests/:id/execute', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try { res.json({ success: true, data: await PairedAssetEngine.executeRequest(req.params.id) }); } catch (err) { sendError(res, err); }
+});
+
+// ═════════════════════════════════════════════════════════════════════════════
+// Trust Market Maker Engine (reserve-backed tokens <-> canonical stablecoins)
+// ═════════════════════════════════════════════════════════════════════════════
+
+router.get('/trust-market/quote', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await TrustMarketEngine.quote(req.query) }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/trust-market/quote', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await TrustMarketEngine.quote(req.body) }); } catch (err) { sendError(res, err); }
+});
+
+router.get('/trust-market/orders', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await TrustMarketEngine.listOffers(req.query) }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/trust-market/orders', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try { res.status(201).json({ success: true, data: await TrustMarketEngine.createOffer({ ...req.body }) }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/trust-market/orders/:id/cancel', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try { res.json({ success: true, data: await TrustMarketEngine.cancelOffer({ orderId: req.params.id }) }); } catch (err) { sendError(res, err); }
+});
+
+// ═════════════════════════════════════════════════════════════════════════════
+// On/Off Ramp Engine (fiat <-> crypto and counterparty rails)
+// ═════════════════════════════════════════════════════════════════════════════
+
+router.get('/ramps/providers', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await OnOffRampEngine.providers() }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/ramps/quote', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await OnOffRampEngine.quote(req.body) }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/ramps/requests', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try { res.status(201).json({ success: true, data: await OnOffRampEngine.propose({ ...req.body, createdBy: getUserEmail(req) }) }); } catch (err) { sendError(res, err); }
+});
+
+router.get('/ramps/requests/:id', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await CanonicalConsensusEngine.getProposal(req.params.id) }); } catch (err) { sendError(res, err); }
+});
+
+router.get('/ramps/requests', operatorAuth, async (req, res) => {
+  try {
+    const rows = await CanonicalConsensusEngine.listProposals({ category: 'ramp', limit: req.query.limit, offset: req.query.offset });
+    res.json({ success: true, data: rows });
+  } catch (err) { sendError(res, err); }
+});
+
+router.post('/ramps/requests/:id/approve', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try { res.json({ success: true, data: await CanonicalConsensusEngine.approveProposal({ proposalId: req.params.id, ...req.body }) }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/ramps/requests/:id/execute', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try { res.json({ success: true, data: await CanonicalConsensusEngine.executeProposal(req.params.id) }); } catch (err) { sendError(res, err); }
+});
+
+// ═════════════════════════════════════════════════════════════════════════════
+// Intent Routing Engine (natural-language orchestration of on/off ramp flows)
+// ═════════════════════════════════════════════════════════════════════════════
+
+router.get('/intents', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await IntentRoutingEngine.listRequests(req.query) }); } catch (err) { sendError(res, err); }
+});
+
+router.get('/intents/:id', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await IntentRoutingEngine.getRequest(req.params.id) }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/intents/quote', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await IntentRoutingEngine.quote(req.body) }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/intents/requests', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try { res.status(201).json({ success: true, data: await IntentRoutingEngine.propose({ ...req.body, createdBy: getUserEmail(req) }) }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/intents/requests/:id/approve', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try { res.json({ success: true, data: await CanonicalConsensusEngine.approveProposal({ proposalId: req.params.id, ...req.body }) }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/intents/requests/:id/execute', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try { res.json({ success: true, data: await CanonicalConsensusEngine.executeProposal(req.params.id) }); } catch (err) { sendError(res, err); }
 });
 
 module.exports = router;

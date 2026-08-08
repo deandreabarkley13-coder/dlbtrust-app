@@ -415,6 +415,42 @@ SELECT fit_id, type, amount_cents, name, memo FROM ofx_transactions;
 - Note: `create`/`add`/`remove`/`swap` are write endpoints and require mainnet gas; skip them unless the operator wallet is funded.
 - The `GET /api/finops/liquidity-pool` list may be empty even when a BondDex pool exists on-chain, because `listPools()` only queries the `canonical_liquidity_pools` table populated by this engine.
 
+## Cross-Chain Conversion & Interoperability Engine (PR #275)
+
+- Module card: **Cross-Chain Conversion** (`key:'cross-chain'`, `action:'openCrossChainPanel'`).
+- Backend: `server/integrations/dapp/crossChainConversionEngine.js`; routes in `server/routes/finops.js`:
+  - `GET /api/finops/cross-chain` (list requests)
+  - `GET /api/finops/cross-chain/:id` (single request)
+  - `POST /api/finops/cross-chain/quote`
+  - `POST /api/finops/cross-chain/requests`
+  - `POST /api/finops/cross-chain/requests/:id/approve`
+  - `POST /api/finops/cross-chain/requests/:id/execute`
+  - `GET /api/finops/cross-chain/adapters/chains`
+  - `GET /api/finops/cross-chain/adapters/assets`
+- UI panel sections: New Conversion (source type/id, amount, target asset/chain/bridge, recipient, slippage), Quote Routes, Propose, Chains, Assets, Conversion Requests.
+- Example quote payload for a sub_ledger source:
+  ```json
+  {
+    "sourceType": "sub_ledger",
+    "sourceAccountId": "SL-INV-1782881392896-1200-MR1OZ6PO",
+    "amount": "433721.62",
+    "targetAsset": "USDS",
+    "targetChain": "ethereum"
+  }
+  ```
+- Expected quote response: `data.recommendation` is `p2p_order` when DEX liquidity is tiny; `same_chain_dex` route has `status: 'no_liquidity'` with a high-slippage warning; `p2p_order` route has `status: 'awaiting_buyer'`.
+- Propose/approve/execute flow creates a Canonical Consensus proposal under `category: 'cross_chain'`. The UI Approve button sends `role` and `approverEmail`.
+- **Caution:** `execute` may actually succeed on mainnet even with a low ETH balance, minting DLBUSD from the source ledger and locking it in the `ModuleTokenSwap` contract. Test with tiny amounts or a shadow/testnet environment; do not assume operator gas will fail.
+- The `_p2pDisplayFromRaw` helper now uses `viem.formatUnits(raw, 6)` so `ModuleP2PSwapEngine.createOrder` receives the correct display string for both 6- and 18-decimal tokens despite its hard-coded 6-decimal parse.
+
+## Paired Asset Engine (PR #275+)
+
+- Module card: **Paired Asset Engine** (`key:'paired-assets'`, `action:'openPairedAssetsPanel'`).
+- Backend: `server/integrations/dapp/pairedAssetEngine.js`; routes in `server/routes/finops.js` under `/api/finops/paired-assets`.
+- Quote/propose/approve/execute flow sources the real canonical asset (USDS/USDC/DAI/WETH) needed to seed a `DLBUSD` pool, then adds liquidity through `LiquidityPoolEngine`.
+- Funding sources: `manual`, `counterparty`, `moonpay`, `circle_mint`, `coinbase_treasury`.
+- The engine cannot mint canonical stablecoins; it returns `awaiting_deposit`/`awaiting_onramp` until real paired capital is available.
+
 ## Devin Secrets Needed
 
 - `DATABASE_URL` or local Postgres credentials (`dlbtrust`/`dlbtrust`).
