@@ -646,7 +646,7 @@ class AccountAbstractionEngine {
     const validAfter = 0;
     const validityBytes = viem.encodeAbiParameters([{ type: 'uint48' }, { type: 'uint48' }], [validUntil, validAfter]);
 
-    if (isStub || cfg.aaShadow) {
+    if (cfg.aaShadow) {
       const pm = viem.isAddress(paymasterAddress) ? paymasterAddress : '0x0000000000000000000000000000000000000000';
       const stubSig = ('0x' + '00'.repeat(65));
       return viem.concat([pm, validityBytes, stubSig]);
