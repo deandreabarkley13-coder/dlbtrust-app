@@ -674,10 +674,32 @@ class AccountAbstractionEngine {
     };
   }
 
-  static async _feeValues(publicClient, cfg) {
+  static async _feeValues(publicClient, cfg, paymasterAddress) {
     try {
-      const fees = await publicClient.estimateFeesPerGas({ type: 'eip1559' });
-      return { maxFeePerGas: fees.maxFeePerGas, maxPriorityFeePerGas: fees.maxPriorityFeePerGas };
+      const block = await publicClient.getBlock({ blockTag: 'latest' });
+      const baseFee = block.baseFeePerGas;
+      if (!baseFee) throw new Error('no base fee');
+      const priority = 70000000n; // 0.07 gwei – high enough for Particle's signerGasPrice
+      const maxFeePerGas = baseFee + priority + 10000000n; // buffer for base-fee drift
+      let deposit = 0n;
+      if (paymasterAddress && viem.isAddress(paymasterAddress)) {
+        deposit = await publicClient.readContract({
+          address: cfg.entryPoint,
+          abi: aa.entryPoint06Abi,
+          functionName: 'getDepositInfo',
+          args: [paymasterAddress],
+        }).then(info => info?.deposit || 0n).catch(() => 0n);
+      }
+      const requiredGas = 1700000n; // rough upper bound: callGas + 3*verificationGas + preVerification
+      if (deposit > 0n) {
+        const affordableGasPrice = (deposit * 95n) / (requiredGas * 100n); // 5% buffer
+        if (affordableGasPrice < baseFee + priority) {
+          // Deposit is small; still need enough for bundler. Cap fee at what we can afford.
+          const cappedMaxFee = baseFee + priority;
+          return { maxFeePerGas: cappedMaxFee, maxPriorityFeePerGas: priority };
+        }
+      }
+      return { maxFeePerGas, maxPriorityFeePerGas: priority };
     } catch (e) {
       if (cfg.chainId !== 1 && cfg.chainId !== 11155111) return { maxFeePerGas: 5000000000n, maxPriorityFeePerGas: 1500000000n };
       return { maxFeePerGas: 5000000000n, maxPriorityFeePerGas: 1500000000n };
@@ -718,7 +740,7 @@ class AccountAbstractionEngine {
         const { factory, factoryData } = await account.getFactoryArgs();
         return viem.concat([factory, factoryData]);
       })();
-      const fees = await this._feeValues(this._publicClient(cfg), cfg);
+      const fees = await this._feeValues(this._publicClient(cfg), cfg, paymasterAddress);
       userOp = {
         sender: smartAccountAddress,
         nonce: 0n,
@@ -747,7 +769,7 @@ class AccountAbstractionEngine {
       const publicClient = this._publicClient(cfg);
       const paymasterAddress = cfg.paymasterAddress || (await this._loadPaymaster())?.paymaster_address;
       if (!paymasterAddress || paymasterAddress.startsWith('shadow-')) throw new Error('paymaster not deployed');
-      const fees = await this._feeValues(publicClient, cfg);
+      const fees = await this._feeValues(publicClient, cfg, paymasterAddress);
       const bundlerClient = aa.createBundlerClient({
         account,
         chain: getChain(cfg.chainId),
