@@ -47,19 +47,22 @@ class FinOpsCoordinationEngine {
     try {
       const aa = await AccountAbstractionEngine.readiness();
       health.checks.accountAbstraction = {
-        ok: aa && aa.paymasterStatus === 'ready',
+        ok: !!aa?.ready,
+        enabled: aa?.enabled,
+        shadow: aa?.shadow,
         paymasterAddress: aa?.paymasterAddress,
-        paymasterDeposit: aa?.paymasterDepositEth,
-        smartAccount: aa?.smartAccountAddress,
+        issues: aa?.issues,
       };
     } catch (e) { health.checks.accountAbstraction = { ok: false, error: e.message }; health.ok = false; }
 
     try {
       const paymasterBalance = await AccountAbstractionEngine.getPaymasterBalance();
+      const deposit = parseFloat(paymasterBalance?.entryPointDeposit || '0');
       health.checks.paymasterBalance = {
-        ok: paymasterBalance && parseFloat(paymasterBalance.depositEth || '0') > 0.00015,
-        depositEth: paymasterBalance?.depositEth,
-        stakeEth: paymasterBalance?.stakeEth,
+        ok: deposit > 0.00015,
+        entryPointDeposit: paymasterBalance?.entryPointDeposit,
+        entryPointStake: paymasterBalance?.entryPointStake,
+        operatorEth: paymasterBalance?.operatorEth,
       };
     } catch (e) { health.checks.paymasterBalance = { ok: false, error: e.message }; health.ok = false; }
 
