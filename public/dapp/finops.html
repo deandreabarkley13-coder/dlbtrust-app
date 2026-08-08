@@ -1031,9 +1031,11 @@
       '<div class="token-bar"><input id="aa-owner-tx" placeholder="owner address" /></div>' +
       '<div class="token-bar"><input id="aa-to" placeholder="recipient address" /></div>' +
       '<div class="token-bar"><input id="aa-token" placeholder="token address" /></div>' +
-      '<div class="token-bar"><input id="aa-amount" placeholder="amount (raw)" /></div>' +
+      '<div class="token-bar"><input id="aa-amount" placeholder="amount (human, e.g. 0.01)" /></div>' +
       '<div class="approval-actions"><button class="btn" onclick="aaPrepare()">Prepare</button></div>' +
       '<div id="aa-prepared" style="font-family:monospace; font-size:12px; margin-top:8px;"></div>' +
+      '<div class="token-bar" style="margin-top:10px;"><input id="aa-operation-id" placeholder="operationId to submit" /></div>' +
+      '<div class="approval-actions"><button class="btn btn-gold" onclick="aaSubmit()">Submit</button></div>' +
       '</div>';
     return html;
   }
@@ -1084,7 +1086,19 @@
       const amount = el('aa-amount').value.trim();
       const res = await api('/api/finops/account-abstraction/prepare-transfer', { method:'POST', body: JSON.stringify({ owner, to, tokenAddress, amount }) });
       el('aa-prepared').textContent = JSON.stringify(res.data, null, 2);
-      aaStatus('Prepared. Submit from signer with signature.', false);
+      el('aa-operation-id').value = res.data.operationId;
+      aaStatus('Prepared. Click Submit to send the UserOperation.', false);
+    } catch(e) { aaStatus(e.message, true); }
+  }
+
+  async function aaSubmit() {
+    const operationId = el('aa-operation-id').value.trim();
+    if (!operationId) { aaStatus('Enter an operationId', true); return; }
+    aaStatus('Submitting gasless transfer…');
+    try {
+      const res = await api('/api/finops/account-abstraction/submit-transfer', { method:'POST', body: JSON.stringify({ operationId }) });
+      el('aa-prepared').textContent = JSON.stringify(res.data, null, 2);
+      aaStatus('Submitted. Tx: ' + res.data.tx, false);
     } catch(e) { aaStatus(e.message, true); }
   }
 
