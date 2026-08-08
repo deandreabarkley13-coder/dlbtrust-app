@@ -12,6 +12,7 @@ const { StablecoinEngine } = require('../integrations/dapp/stablecoinEngine');
 const { RedemptionEngine } = require('../integrations/dapp/redemptionEngine');
 const { AccountAbstractionEngine } = require('../integrations/dapp/accountAbstractionEngine');
 const { CanonicalConsensusEngine } = require('../integrations/dapp/canonicalConsensusEngine');
+const { FinOpsCoordinationEngine } = require('../integrations/finops/finopsCoordinationEngine');
 
 const router = express.Router();
 const operatorAuth = requireAuth({ role: 'operator' });
@@ -504,6 +505,30 @@ router.post('/account-abstraction/prepare-transfer', operatorAuth, writeRateLimi
 
 router.post('/account-abstraction/submit-transfer', operatorAuth, writeRateLimiter(), async (req, res) => {
   try { res.json({ success: true, data: await AccountAbstractionEngine.submitGaslessTransfer(req.body) }); } catch (err) { sendError(res, err); }
+});
+
+// ═════════════════════════════════════════════════════════════════════════════
+// FinOps Coordination Engine (AI agent stability & operation queue)
+// ═════════════════════════════════════════════════════════════════════════════
+
+router.get('/coordination/health', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await FinOpsCoordinationEngine.systemHealth() }); } catch (err) { sendError(res, err); }
+});
+
+router.get('/coordination/queue', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await FinOpsCoordinationEngine.listQueue(req.query) }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/coordination/command', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try { res.json({ success: true, data: await FinOpsCoordinationEngine.runCommand({ ...req.body, userId: getUserEmail(req) }) }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/coordination/jobs/:id/run', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try { res.json({ success: true, data: await FinOpsCoordinationEngine.processJob(req.params.id) }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/coordination/retry-failed', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try { res.json({ success: true, data: await FinOpsCoordinationEngine.retryFailed() }); } catch (err) { sendError(res, err); }
 });
 
 module.exports = router;

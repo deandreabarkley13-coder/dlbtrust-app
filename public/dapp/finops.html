@@ -160,6 +160,7 @@
     { key:'redemption', name:'Redemption Engine', desc:'Redeem DLB-PTCUSD/module tokens for fiat payouts', stat:'', endpoint:null, action:'openRedemptionPanel' },
     { key:'account-abstraction', name:'Account Abstraction', desc:'Smart accounts + gas sponsorship for operator/trustee wallets', stat:'', endpoint:null, action:'openAccountAbstractionPanel' },
     { key:'canonical-consensus', name:'Canonical Consensus', desc:'Maker/Checker approvals for tokenized ledger actions', stat:'', endpoint:null, action:'openCanonicalConsensusPanel' },
+    { key:'coordination', name:'Coordination Engine', desc:'System health, AI command queue and stability checks', stat:'', endpoint:null, action:'openCoordinationPanel' },
     { key:'payout', name:'Payout Center', desc:'Disbursements, trades, off-ramps', stat:'', endpoint:null, link:'/dapp/payout-center.html?v=2' },
     { key:'distribution', name:'Distribution', desc:'Trustee-approved beneficiary distributions', stat:'', endpoint:null, link:'/dapp/master-dashboard.html?v=2' },
   ];
@@ -1202,6 +1203,79 @@
       await loadAll();
     } catch(e) { ccStatus(e.message, true); }
     finally { if (btn) { btn.disabled = false; btn.textContent = 'Execute'; } }
+  }
+
+  // ─── Coordination Engine panel ───────────────────────────────────────────────
+  function openCoordinationPanel() {
+    const panel = el('module-panel');
+    const body = el('panel-body');
+    el('panel-title').textContent = 'FinOps Coordination Engine';
+    panel.classList.add('active');
+    body.innerHTML = '<div class="muted">Loading system health…</div>';
+    loadCoordination();
+  }
+
+  function renderCoordinationPanel(health, queue) {
+    let html = '<div class="muted" style="margin-bottom:12px;">System stability checks and queued AI FinOps operations.</div>';
+    html += '<div id="coordination-status" class="status hidden"></div>';
+    html += '<div style="margin:12px 0;"><strong>Overall health:</strong> ' + (health.ok ? '<span style="color:var(--accent-2)">OK</span>' : '<span style="color:var(--danger)">Degraded</span>') + '</div>';
+    html += '<div style="margin:12px 0;">' + Object.entries(health.checks || {}).map(([k,v]) => {
+      const ok = v.ok ? '<span style="color:var(--accent-2)">OK</span>' : '<span style="color:var(--danger)">FAIL</span>';
+      return '<div style="font-size:13px;margin:6px 0;padding:8px;background:#0b1220;border-radius:6px;"><strong>' + k + '</strong> ' + ok + '<br/><span class="muted">' + JSON.stringify(v).slice(0, 180) + '</span></div>';
+    }).join('') + '</div>';
+    html += '<div style="margin:16px 0; border-top:1px solid var(--border); padding-top:12px;">' +
+      '<h3 style="margin:0 0 10px; font-size:14px;">Queue AI command</h3>' +
+      '<div class="chat-input"><input id="coordination-command" placeholder="e.g. show wallet balances" style="flex:1;" /><button class="btn" onclick="coordinationCommand()">Run / Queue</button></div>' +
+      '</div>';
+    if (queue && queue.length) {
+      html += '<h3 style="font-size:14px; margin:16px 0 8px;">Recent jobs</h3>';
+      for (const j of queue) {
+        html += '<div class="approval-item" style="margin-bottom:8px;"><div><span class="badge">' + j.type + '</span> <small class="muted">' + j.status + '</small></div><div style="font-size:12px;margin-top:4px;">' + JSON.stringify(j.payload || {}).slice(0, 120) + '</div>' +
+          (j.status === 'pending' || j.status === 'failed' ? '<button class="btn btn-sec" style="margin-top:6px;font-size:12px;padding:6px 10px;" onclick="coordinationRun(\'' + j.id + '\', this)">Run now</button>' : '') +
+          '</div>';
+      }
+    } else {
+      html += '<p class="muted">No queued jobs.</p>';
+    }
+    return html;
+  }
+
+  async function loadCoordination() {
+    const body = el('panel-body');
+    try {
+      const [healthRes, queueRes] = await Promise.all([api('/api/finops/coordination/health'), api('/api/finops/coordination/queue')]);
+      body.innerHTML = renderCoordinationPanel(healthRes.data || {}, queueRes.data || []);
+    } catch(e) { body.innerHTML = '<div class="status err">' + e.message + '</div>'; }
+  }
+
+  function coordinationStatus(msg, isErr) {
+    const d = el('coordination-status');
+    if (!d) return;
+    d.textContent = msg; d.className = 'status ' + (isErr ? 'err' : 'ok'); d.classList.remove('hidden');
+  }
+
+  async function coordinationCommand() {
+    const input = el('coordination-command');
+    const cmd = input.value.trim();
+    if (!cmd) return;
+    coordinationStatus('Running…');
+    try {
+      const res = await api('/api/finops/coordination/command', { method:'POST', body: JSON.stringify({ command: cmd }) });
+      coordinationStatus((res.data && res.data.summary) ? res.data.summary : 'Queued as ' + (res.data && res.data.jobId), false);
+      await loadCoordination();
+      if (res.data && res.data.type === 'data') await loadAll();
+    } catch(e) { coordinationStatus(e.message, true); }
+  }
+
+  async function coordinationRun(jobId, btn) {
+    if (btn) { btn.disabled = true; btn.textContent = '…'; }
+    try {
+      const res = await api('/api/finops/coordination/jobs/' + jobId + '/run', { method:'POST' });
+      coordinationStatus('Job ' + res.data.status, false);
+      await loadCoordination();
+      await loadAll();
+    } catch(e) { coordinationStatus(e.message, true); }
+    finally { if (btn) { btn.disabled = false; btn.textContent = 'Run now'; } }
   }
 
   function addChat(sender, text) {
