@@ -17,6 +17,7 @@ const { HyperledgerBesuEngine } = require('../integrations/dapp/hyperledgerBesuE
 const { ClearingEngine } = require('../integrations/dapp/clearingEngine');
 const { RedemptionGatewayEngine } = require('../integrations/dapp/redemptionGatewayEngine');
 const { CanonicalLiquidityEngine } = require('../integrations/dapp/canonicalLiquidityEngine');
+const { CanonicalMoneyEngine } = require('../integrations/dapp/canonicalMoneyEngine');
 
 const router = express.Router();
 const operatorAuth = requireAuth({ role: 'operator' });
@@ -497,6 +498,26 @@ router.post('/liquidity/proposals/:id/approve', operatorAuth, writeRateLimiter()
 
 router.post('/liquidity/proposals/:id/execute', operatorAuth, writeRateLimiter(), async (req, res) => {
   try { res.json({ success: true, data: await CanonicalLiquidityEngine.executeProposal(req.params.id) }); } catch (err) { sendError(res, err); }
+});
+
+// ═════════════════════════════════════════════════════════════════════════════
+// Canonical Money Engine (turn trust assets/income into canonical stablecoins)
+// ═════════════════════════════════════════════════════════════════════════════
+
+router.get('/canonical-money', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await CanonicalMoneyEngine.listRequests(req.query) }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/canonical-money/quote', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await CanonicalMoneyEngine.quote(req.body) }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/canonical-money/requests', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try { res.status(201).json({ success: true, data: await CanonicalMoneyEngine.propose({ ...req.body, createdBy: getUserEmail(req) }) }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/canonical-money/requests/:id/approve', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try { res.json({ success: true, data: await CanonicalMoneyEngine.approve({ proposalId: req.params.id, ...req.body }) }); } catch (err) { sendError(res, err); }
 });
 
 // ═════════════════════════════════════════════════════════════════════════════

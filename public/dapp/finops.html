@@ -161,6 +161,7 @@
     { key:'account-abstraction', name:'Account Abstraction', desc:'Smart accounts + gas sponsorship for operator/trustee wallets', stat:'', endpoint:null, action:'openAccountAbstractionPanel' },
     { key:'canonical-consensus', name:'Canonical Consensus', desc:'Maker/Checker approvals for tokenized ledger actions', stat:'', endpoint:null, action:'openCanonicalConsensusPanel' },
     { key:'canonical-liquidity', name:'Canonical Liquidity', desc:'Governed DEX liquidity pools and swaps for trust assets', stat:'', endpoint:null, action:'openCanonicalLiquidityPanel' },
+    { key:'canonical-money', name:'Canonical Money', desc:'Turn trust assets and income into canonical spendable stablecoins', stat:'', endpoint:null, action:'openCanonicalMoneyPanel' },
     { key:'coordination', name:'Coordination Engine', desc:'System health, AI command queue and stability checks', stat:'', endpoint:null, action:'openCoordinationPanel' },
     { key:'clearing', name:'Clearing Engine', desc:'Bilateral and net settlement on Hyperledger Besu', stat:'', endpoint:null, action:'openClearingPanel' },
     { key:'redemption-gateway', name:'Redemption Gateway', desc:'Bridge DLB-PTCUSD to external clearing/stablecoin rails', stat:'', endpoint:null, action:'openRedemptionGatewayPanel' },
@@ -1573,6 +1574,78 @@
       const email = el('liq-email-' + proposalId).value.trim();
       await api('/api/finops/liquidity/proposals/' + proposalId + '/approve', { method:'POST', body: JSON.stringify({ role, approverEmail: email }) });
       await loadCanonicalLiquidity();
+    } catch(e) { alert(e.message); }
+  }
+
+  // ─── Canonical Money panel ─────────────────────────────────────────────────────
+  function openCanonicalMoneyPanel() {
+    const panel = el('module-panel');
+    const body = el('panel-body');
+    el('panel-title').textContent = 'Canonical Money';
+    panel.classList.add('active');
+    body.innerHTML = '<div class="muted">Loading canonical money…</div>';
+    loadCanonicalMoney();
+  }
+
+  async function loadCanonicalMoney() {
+    const body = el('panel-body');
+    try {
+      const requests = await api('/api/finops/canonical-money');
+      let html = '<div class="muted" style="margin-bottom:12px;">Turn trust assets and income into canonical spendable stablecoins (USDC/USDS/DAI/WETH). Requires Maker/Checker approval.</div>';
+      html += '<h3 style="font-size:14px;margin:0 0 8px;">Convert Asset / Income</h3>';
+      html += '<div class="token-bar"><select id="cm-source-type"><option value="">-- source type --</option><option value="cash">cash</option><option value="treasury">treasury</option><option value="trust">trust</option><option value="bond">bond</option><option value="fixed_income">fixed_income / bond_interest</option><option value="fineract">fineract</option><option value="sub_ledger">sub_ledger</option><option value="">-- or token/module --</option><option value="DLB-PTCUSD">DLB-PTCUSD</option><option value="DLB-PRB">DLB-PRB</option><option value="DLB-FIXED-INCOME">DLB-FIXED-INCOME</option><option value="DLB-TREASURY">DLB-TREASURY</option><option value="DLB-TRUST">DLB-TRUST</option><option value="DLB-CORE">DLB-CORE</option></select></div>';
+      html += '<div class="token-bar"><input id="cm-source-id" placeholder="source account / token address" /></div>';
+      html += '<div class="token-bar"><input id="cm-amount" placeholder="amount" /></div>';
+      html += '<div class="token-bar"><select id="cm-target-asset"><option value="USDC">USDC</option><option value="USDS">USDS</option><option value="DAI">DAI</option><option value="WETH">WETH</option><option value="ETH">ETH</option></select></div>';
+      html += '<div class="token-bar"><input id="cm-pool" placeholder="pool address (optional)" /></div>';
+      html += '<div class="token-bar"><input id="cm-recipient" placeholder="recipient address (optional, default operator)" /></div>';
+      html += '<div class="approval-actions"><button class="btn" onclick="canonicalMoneyQuote()">Quote</button><button class="btn" onclick="canonicalMoneyPropose()">Propose</button></div>';
+      html += '<div id="cm-quote"></div>';
+      html += '<h3 style="font-size:14px;margin:16px 0 8px;">Conversion Requests</h3>';
+      html += (requests.data || []).map(r => `<div style="font-size:12px;border-bottom:1px solid var(--border);padding:4px 0;">${r.id}: ${r.source_type || r.source_token || r.source_module} ${r.amount} -> ${r.target_asset} <em>${r.status}</em> ${r.status === 'pending' ? `<select id="cm-role-${r.proposal_id}"><option value="maker">maker</option><option value="checker">checker</option></select><input id="cm-email-${r.proposal_id}" placeholder="email" style="width:100px;" /><button class="btn" onclick="canonicalMoneyApprove('${r.proposal_id}')">Approve</button>` : ''}</div>`).join('');
+      body.innerHTML = html;
+    } catch(e) { body.innerHTML = '<div class="status err">' + e.message + '</div>'; }
+  }
+
+  function _canonicalMoneyForm() {
+    const sourceType = el('cm-source-type').value;
+    const sourceId = el('cm-source-id').value.trim();
+    const amount = el('cm-amount').value.trim();
+    const targetAsset = el('cm-target-asset').value;
+    const poolAddress = el('cm-pool').value.trim() || undefined;
+    const recipient = el('cm-recipient').value.trim() || undefined;
+    let sourceAccountId, sourceToken, sourceModule;
+    const knownTokens = ['DLB-PTCUSD','DLB-PRB','DLB-FIXED-INCOME','DLB-TREASURY','DLB-TRUST','DLB-CORE'];
+    if (knownTokens.includes(sourceType)) {
+      if (sourceType === 'DLB-PTCUSD') sourceToken = 'DLB-PTCUSD';
+      else sourceModule = sourceType;
+    } else {
+      sourceAccountId = sourceId;
+    }
+    return { sourceType: knownTokens.includes(sourceType) ? undefined : sourceType, sourceAccountId, sourceToken, sourceModule, amount, targetAsset, poolAddress, recipient };
+  }
+
+  async function canonicalMoneyQuote() {
+    try {
+      const res = await api('/api/finops/canonical-money/quote', { method:'POST', body: JSON.stringify(_canonicalMoneyForm()) });
+      el('cm-quote').innerHTML = '<div class="status ok" style="margin-top:8px;">Route: ' + res.data.action + '<br/>' + (res.data.note || '') + (res.data.poolAddress ? '<br/>Pool: ' + res.data.poolAddress.slice(0,14) + '…' : '') + '</div>';
+    } catch(e) { el('cm-quote').innerHTML = '<div class="status err">' + e.message + '</div>'; }
+  }
+
+  async function canonicalMoneyPropose() {
+    try {
+      const res = await api('/api/finops/canonical-money/requests', { method:'POST', body: JSON.stringify(_canonicalMoneyForm()) });
+      el('cm-quote').innerHTML = '<div class="status ok">Proposed: ' + res.data.proposalId + '</div>';
+      await loadCanonicalMoney();
+    } catch(e) { el('cm-quote').innerHTML = '<div class="status err">' + e.message + '</div>'; }
+  }
+
+  async function canonicalMoneyApprove(proposalId) {
+    try {
+      const role = el('cm-role-' + proposalId).value;
+      const email = el('cm-email-' + proposalId).value.trim();
+      await api('/api/finops/canonical-money/requests/' + proposalId + '/approve', { method:'POST', body: JSON.stringify({ role, approverEmail: email }) });
+      await loadCanonicalMoney();
     } catch(e) { alert(e.message); }
   }
 
