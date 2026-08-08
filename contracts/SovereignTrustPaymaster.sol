@@ -81,8 +81,8 @@ contract SovereignTrustPaymaster is IPaymaster06 {
 
     /**
      * @notice Hash used by the off-chain service and on-chain verification.
-     * Excludes paymasterAndData and signature, and includes a per-sender nonce
-     * and validity time window to prevent replay.
+     * Excludes paymasterAndData and signature, and includes a validity time
+     * window to prevent replay. The EntryPoint nonce already enforces uniqueness.
      */
     function getHash(UserOperation06 calldata userOp, uint48 validUntil, uint48 validAfter) public view returns (bytes32) {
         return keccak256(
@@ -90,7 +90,6 @@ contract SovereignTrustPaymaster is IPaymaster06 {
                 pack(userOp),
                 block.chainid,
                 address(this),
-                senderNonce[userOp.sender],
                 validUntil,
                 validAfter
             )
@@ -131,8 +130,6 @@ contract SovereignTrustPaymaster is IPaymaster06 {
 
         address signer = ecrecover(hash, v, r, s);
         require(signer == owner, "SovereignTrustPaymaster: invalid signature");
-
-        senderNonce[userOp.sender]++;
 
         // validationData = validUntil (6 bytes) | validAfter (6 bytes) | 0 (20 bytes sig-fail)
         uint256 validUntilBits = uint256(validUntil) << 208;
