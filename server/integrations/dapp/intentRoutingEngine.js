@@ -133,8 +133,44 @@ class IntentRoutingEngine {
     return [];
   }
 
+  static async _resolveDefaultSourceAccount({ sourceType, amount }) {
+    if (!sourceType) return null;
+    const st = String(sourceType).toLowerCase();
+    try {
+      if (['bond', 'fixed_income', 'bond_interest'].includes(st)) {
+        const { BondEngine } = require('../bonds/bondEngine');
+        const { LiveBondEngine } = require('../bonds/liveEngine');
+        const bonds = await BondEngine.listBonds();
+        if (!bonds || !bonds.length) return null;
+        if (st === 'bond_interest') {
+          for (const bond of bonds) {
+            const m = await LiveBondEngine.getBondLiveMetrics(bond.id).catch(() => null);
+            if (m && Number(m.accrued_interest_total || 0) >= Number(amount || 0)) return bond.id;
+          }
+        } else {
+          for (const bond of bonds) {
+            if (Number(bond.principal_balance || 0) >= Number(amount || 0)) return bond.id;
+          }
+        }
+        return bonds[0].id;
+      }
+      if (st === 'sub_ledger' || st === 'ledger') {
+        const res = await query("SELECT id FROM sub_ledgers ORDER BY created_at DESC LIMIT 1");
+        return res.rows[0]?.id || null;
+      }
+      if (st === 'treasury') return 'DLB_TREASURY_MAIN';
+      if (st === 'cash') {
+        const res = await query("SELECT id FROM cash_accounts ORDER BY created_at DESC LIMIT 1");
+        return res.rows[0]?.id || null;
+      }
+    } catch (e) { console.warn('[IntentRoutingEngine] could not resolve default source account:', e.message); }
+    return null;
+  }
+
   static async plan(parsed) {
     const { action, amount, sourceType, sourceAsset, targetAsset, sourceAccountId, recipient } = parsed;
+    if (sourceType && !sourceAccountId) parsed.sourceAccountId = await this._resolveDefaultSourceAccount({ sourceType, amount });
+    const resolvedSourceAccountId = parsed.sourceAccountId;
     const plan = { steps: [], bestStep: null, status: 'ready', issues: [], instructions: '' };
 
     const addStep = (step) => {
@@ -144,13 +180,13 @@ class IntentRoutingEngine {
     };
 
     if (action === 'onramp') {
-      const quote = await OnOffRampEngine.quote({ direction: 'onramp', sourceAsset: sourceAsset || 'USD', targetAsset, amount: String(amount), sourceAccountId }).catch(e => ({ error: e.message }));
+      const quote = await OnOffRampEngine.quote({ direction: 'onramp', sourceAsset: sourceAsset || 'USD', targetAsset, amount: String(amount), sourceAccountId: resolvedSourceAccountId }).catch(e => ({ error: e.message }));
       addStep({ engine: 'on_off_ramp', direction: 'onramp', quote });
     }
 
     else if (action === 'offramp') {
       const canonicalAsset = sourceAsset || 'USDC';
-      const quote = await OnOffRampEngine.quote({ direction: 'offramp', sourceAsset: canonicalAsset, targetAsset: 'USD', amount: String(amount) }).catch(e => ({ error: e.message }));
+      const quote = await OnOffRampEngine.quote({ direction: 'offramp', sourceAsset: canonicalAsset, targetAsset: 'USD', amount: String(amount), sourceAccountId: resolvedSourceAccountId }).catch(e => ({ error: e.message }));
       addStep({ engine: 'on_off_ramp', direction: 'offramp', quote });
     }
 
@@ -164,7 +200,7 @@ class IntentRoutingEngine {
       const canonical = targetAsset || 'USDC';
 
       if (sourceType && sourceType !== 'ledger' && CanonicalMoneyEngine && !sourceAsset) {
-        const quote = await CanonicalMoneyEngine.quote({ sourceType, amount: String(amount), targetAsset: canonical, sourceAccountId }).catch(() => null);
+        const quote = await CanonicalMoneyEngine.quote({ sourceType, amount: String(amount), targetAsset: canonical, sourceAccountId: resolvedSourceAccountId }).catch(() => null);
         if (quote) addStep({ engine: 'canonical_money', quote });
       }
 
@@ -174,12 +210,12 @@ class IntentRoutingEngine {
       }
 
       if (CrossChainConversionEngine) {
-        const quote = await CrossChainConversionEngine.quote({ sourceAsset: trustToken, targetAsset: canonical, amount: String(amount), sourceType }).catch(e => ({ status: 'error', issues: [e.message] }));
+        const quote = await CrossChainConversionEngine.quote({ sourceAsset: trustToken, targetAsset: canonical, amount: String(amount), sourceType, sourceAccountId: resolvedSourceAccountId }).catch(e => ({ status: 'error', issues: [e.message] }));
         addStep({ engine: 'cross_chain', quote });
       }
 
       if (OnOffRampEngine) {
-        const quote = await OnOffRampEngine.quote({ direction: 'exchange', sourceAsset: trustToken, targetAsset: canonical, amount: String(amount), sourceType, sourceAccountId }).catch(e => ({ error: e.message }));
+        const quote = await OnOffRampEngine.quote({ direction: 'exchange', sourceAsset: trustToken, targetAsset: canonical, amount: String(amount), sourceType, sourceAccountId: resolvedSourceAccountId }).catch(e => ({ error: e.message }));
         addStep({ engine: 'on_off_ramp', direction: 'exchange', quote });
       }
 
