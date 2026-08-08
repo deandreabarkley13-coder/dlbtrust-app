@@ -3,6 +3,10 @@
 const pool = require('../bonds/pgPool');
 const { RedemptionEngine } = require('./redemptionEngine');
 const { ClearingEngine } = require('./clearingEngine');
+const { StablecoinEngine } = require('./stablecoinEngine');
+const { SpritzEngine } = require('../spritz/spritzEngine');
+let StablecoinDexEngine;
+try { ({ StablecoinDexEngine } = require('./stablecoinDexEngine')); } catch (e) { /* optional */ }
 let HyperledgerBesuEngine;
 try { ({ HyperledgerBesuEngine } = require('./hyperledgerBesuEngine')); } catch (e) { /* optional */ }
 
@@ -33,6 +37,9 @@ class RedemptionGatewayEngine {
     await this.ensureTable();
     if (!amount || Number(amount) <= 0) throw new Error('amount required');
     if (!beneficiary) throw new Error('beneficiary required');
+    if (externalRail === 'spritz') {
+      if (!destination || !destination.accountId) throw new Error('Spritz payout requires destination.accountId');
+    }
     const req = {
       id: id(),
       status: 'pending',
@@ -95,6 +102,18 @@ class RedemptionGatewayEngine {
         to: req.beneficiary,
         amount: req.amount,
       });
+    } else if (req.externalRail === 'spritz') {
+      result = await this._spritzPayout(req);
+    } else if (req.externalRail === 'dex' && StablecoinDexEngine) {
+      const swap = await StablecoinDexEngine.depositAndSwap({
+        sourceType: req.metadata?.sourceType || 'module',
+        sourceAccountId: req.metadata?.sourceAccountId || 'fixed_income',
+        amount: req.amount,
+        targetAsset: req.destination?.targetAsset || 'USDC',
+        recipient: req.beneficiary,
+        createPoolIfMissing: true,
+      });
+      result = { swap };
     } else {
       const redemption = await RedemptionEngine.create({
         fromAsset: req.stablecoin,
@@ -107,11 +126,61 @@ class RedemptionGatewayEngine {
       result = { redemptionId: redemption.id };
     }
 
+    const status = result.error || result.awaitingFunds ? 'failed' : 'completed';
     await pool.query(
-      "UPDATE redemption_gateway_requests SET status='completed', metadata=jsonb_set(metadata, '{result}', $1::jsonb), updated_at=NOW() WHERE id=$2",
-      [JSON.stringify(result), requestId]
+      "UPDATE redemption_gateway_requests SET status=$1, metadata=jsonb_set(metadata, '{result}', $2::jsonb), updated_at=NOW() WHERE id=$3",
+      [status, JSON.stringify(result), requestId]
     );
     return this.get(requestId);
+  }
+
+  static async _spritzPayout(req) {
+    const dest = req.destination || {};
+    const accountId = dest.accountId;
+    if (!accountId) throw new Error('Spritz payout requires destination.accountId');
+    const rail = dest.rail || 'ach_standard';
+    const chain = dest.chain || 'ethereum';
+    const tokenAddress = dest.tokenAddress || process.env.DAPP_USDC_ADDRESS || '0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48';
+    const amount = Number(req.amount);
+    if (!amount || amount <= 0) throw new Error('invalid amount');
+
+    const steps = [];
+    // If the request is in DLB-PTCUSD, burn it and release backing reserves before the trust funds the payout.
+    if (req.stablecoin === 'DLB-PTCUSD' && StablecoinEngine) {
+      try {
+        const reserveModule = req.metadata?.reserveModule || 'fixed_income';
+        const redeemResult = await StablecoinEngine.redeem({
+          moduleKey: reserveModule,
+          amount: req.amount,
+          operatorEmail: req.metadata?.requesterEmail || 'gateway',
+        });
+        steps.push({ step: 'redeem', result: redeemResult });
+      } catch (e) {
+        steps.push({ step: 'redeem', error: e.message });
+      }
+    }
+
+    // Create Spritz off-ramp quote and execute from the operator wallet.
+    const quote = await SpritzEngine.createOffRampQuote({
+      accountId,
+      amount: String(amount),
+      chain,
+      tokenAddress,
+      amountMode: 'output',
+      rail,
+      memo: `Redemption gateway ${req.id}`,
+    });
+
+    try {
+      const executed = await SpritzEngine.executeQuote(quote.id);
+      return { quote, executed, steps, status: 'completed' };
+    } catch (e) {
+      // If the operator wallet lacks canonical stablecoin, surface the shortfall without failing the request.
+      if (e.message && e.message.toLowerCase().includes('insufficient')) {
+        return { quote, steps, awaitingFunds: true, error: e.message };
+      }
+      throw e;
+    }
   }
 
   static async _transition(requestId, status) {
