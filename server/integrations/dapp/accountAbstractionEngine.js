@@ -295,13 +295,13 @@ class AccountAbstractionEngine {
     };
   }
 
-  static async deployPaymaster() {
+  static async deployPaymaster({ force = false } = {}) {
     await ensureTables();
     const cfg = this._checkDeps();
     const operator = cfg.operatorAddress;
     let paymaster = await this._loadPaymaster();
-    if (paymaster && paymaster.paymaster_address && !paymaster.paymaster_address.startsWith('shadow-')) {
-      return { success: true, shadow: false, paymaster: paymaster.paymaster_address, entryPoint: cfg.entryPoint };
+    if (!force && paymaster && paymaster.paymaster_address && !paymaster.paymaster_address.startsWith('shadow-')) {
+      return { success: true, shadow: false, paymaster: paymaster.paymaster_address, entryPoint: cfg.entryPoint, cached: true };
     }
 
     const record = {
