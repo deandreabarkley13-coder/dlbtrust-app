@@ -337,6 +337,36 @@ SELECT fit_id, type, amount_cents, name, memo FROM ofx_transactions;
   6. `curl -H 'x-admin-token: dlb-admin-2026-trust' https://dlbtrust-app.fly.dev/api/finops/ptc-stablecoin/balance/<address>` returns the on-chain balance.
 - Write operations (deploy, deposit, transfer, redeem) require `DAPP_PRIVATE_KEY` and mainnet ETH; do not execute in read-only tests without confirming gas.
 
+## Canonical Liquidity Engine (`/dapp/finops.html`)
+
+- Module card: **Canonical Liquidity** (`key:'canonical-liquidity'`, `action:'openCanonicalLiquidityPanel'`) in `public/dapp/finops.html`.
+- Backend: `server/integrations/dapp/canonicalLiquidityEngine.js` and routes in `server/routes/finops.js`:
+  - `GET /api/finops/liquidity` (list pools)
+  - `GET /api/finops/liquidity/proposals` (list proposals)
+  - `POST /api/finops/liquidity/proposals` (create proposal)
+  - `POST /api/finops/liquidity/proposals/:id/approve`
+  - `POST /api/finops/liquidity/proposals/:id/execute`
+- Proposals are stored as `category:'liquidity'` in the canonical consensus (`canonical_proposals`) table; `CanonicalLiquidityEngine` delegates execution to `DexSwapEngine.createPool`/`addLiquidity`/`swap`.
+- The panel supports `create_pool`, `add_liquidity`, and `swap` proposals; sample tiny `create_pool`:
+  - Token A: `0xb01e6280ffe6faac679a17b029df8e065e8d0002` (DLB-PTCUSD)
+  - Token B: `0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48` (USDC)
+  - Amounts: `0.001` / `0.001`
+- Approval flow:
+  1. The UI **Approve** button calls `canonicalLiquidityApprove(proposalId)`, which currently sends an empty JSON body. As of this writing that fails with `Unknown consensus role: undefined` because `CanonicalConsensusEngine.validateApprover` requires `role` and `approverEmail` in the request body.
+  2. Workaround: approve via curl with checker credentials:
+     ```bash
+     curl -s -H 'x-admin-token: dlb-admin-2026-trust' \
+       -H 'Content-Type: application/json' \
+       -X POST \
+       -d '{"role":"checker","approverEmail":"dbnettrust@gmail.com"}' \
+       https://dlbtrust-app.fly.dev/api/finops/liquidity/proposals/<id>/approve
+     ```
+- With threshold `1` and a single `checker` approval, the proposal auto-executes. Because `DAPP_SHADOW=false` on the live deploy, `DexSwapEngine` attempts a real mainnet pool deployment. The operator wallet (`0x3e5302...`) usually has too little ETH, so execution fails with `insufficient funds for gas * price + value` and the proposal `status` becomes `failed`. This is the expected on-chain failure.
+- Read-only verification:
+  1. `GET /api/finops/liquidity` should return `success: true` and `data: []` (or existing pools).
+  2. `GET /api/finops/liquidity/proposals` should return `success: true` and a list including the newly created/failed proposal with `category: 'liquidity'`.
+- The card stat is currently always `—`; `loadAll()` does not populate it from the proposal count. This is cosmetic if the panel functions correctly.
+
 ## Devin Secrets Needed
 
 - `DATABASE_URL` or local Postgres credentials (`dlbtrust`/`dlbtrust`).

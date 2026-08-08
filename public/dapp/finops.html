@@ -1520,7 +1520,7 @@
       html += '<h3 style="font-size:14px;margin:16px 0 8px;">Pools</h3>';
       html += (pools.data || []).map(p => `<div style="font-size:12px;border-bottom:1px solid var(--border);padding:4px 0;"><strong>${p.pool_address?.slice(0,10)}…</strong> ${p.token0?.slice(0,10)} / ${p.token1?.slice(0,10)} r0=${p.reserve0} r1=${p.reserve1}</div>`).join('');
       html += '<h3 style="font-size:14px;margin:16px 0 8px;">Proposals</h3>';
-      html += (proposals.data || []).map(p => `<div style="font-size:12px;border-bottom:1px solid var(--border);padding:4px 0;">${p.id}: ${p.title} <em>${p.status}</em> ${p.status === 'pending' ? `<button class="btn" onclick="canonicalLiquidityApprove('${p.id}')">Approve</button>` : ''}</div>`).join('');
+      html += (proposals.data || []).map(p => `<div style="font-size:12px;border-bottom:1px solid var(--border);padding:4px 0;">${p.id}: ${p.title} <em>${p.status}</em> ${p.status === 'pending' ? `<select id="liq-role-${p.id}"><option value="maker">maker</option><option value="checker">checker</option></select><input id="liq-email-${p.id}" placeholder="approver email" style="width:120px;" /><button class="btn" onclick="canonicalLiquidityApprove('${p.id}')">Approve</button>` : ''}</div>`).join('');
       body.innerHTML = html;
     } catch(e) { body.innerHTML = '<div class="status err">' + e.message + '</div>'; }
   }
@@ -1569,7 +1569,9 @@
 
   async function canonicalLiquidityApprove(proposalId) {
     try {
-      await api('/api/finops/liquidity/proposals/' + proposalId + '/approve', { method:'POST', body: JSON.stringify({}) });
+      const role = el('liq-role-' + proposalId).value;
+      const email = el('liq-email-' + proposalId).value.trim();
+      await api('/api/finops/liquidity/proposals/' + proposalId + '/approve', { method:'POST', body: JSON.stringify({ role, approverEmail: email }) });
       await loadCanonicalLiquidity();
     } catch(e) { alert(e.message); }
   }
