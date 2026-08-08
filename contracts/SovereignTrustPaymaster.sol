@@ -126,9 +126,10 @@ contract SovereignTrustPaymaster is IPaymaster06 {
         address signer = ecrecover(hash, v, r, s);
         require(signer == owner, "SovereignTrustPaymaster: invalid signature");
 
-        // validationData = validUntil (6 bytes) | validAfter (6 bytes) | 0 (20 bytes sig-fail)
-        uint256 validUntilBits = uint256(validUntil) << 208;
-        uint256 validAfterBits = uint256(validAfter) << 160;
+        // Layout matches Helpers._parseValidationData: bits 0..159 aggregator (0 here),
+        // bits 160..207 validUntil, bits 208..255 validAfter.
+        uint256 validUntilBits = uint256(validUntil) << 160;
+        uint256 validAfterBits = uint256(validAfter) << 208;
         validationData = validUntilBits | validAfterBits;
 
         return ("", validationData);
