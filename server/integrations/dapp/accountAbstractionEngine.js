@@ -674,13 +674,11 @@ class AccountAbstractionEngine {
     };
   }
 
-  static async _feeValues(publicClient, cfg, paymasterAddress) {
+  static async _feeValues(publicClient, cfg, paymasterAddress, estimatedGas = 1700000n) {
     try {
       const block = await publicClient.getBlock({ blockTag: 'latest' });
       const baseFee = block.baseFeePerGas;
       if (!baseFee) throw new Error('no base fee');
-      const priority = 70000000n; // 0.07 gwei – high enough for Particle's signerGasPrice
-      const maxFeePerGas = baseFee + priority + 10000000n; // buffer for base-fee drift
       let deposit = 0n;
       if (paymasterAddress && viem.isAddress(paymasterAddress)) {
         deposit = await publicClient.readContract({
@@ -690,16 +688,20 @@ class AccountAbstractionEngine {
           args: [paymasterAddress],
         }).then(info => info?.deposit || 0n).catch(() => 0n);
       }
-      const requiredGas = 1700000n; // rough upper bound: callGas + 3*verificationGas + preVerification
-      if (deposit > 0n) {
-        const affordableGasPrice = (deposit * 95n) / (requiredGas * 100n); // 5% buffer
-        if (affordableGasPrice < baseFee + priority) {
-          // Deposit is small; still need enough for bundler. Cap fee at what we can afford.
-          const cappedMaxFee = baseFee + priority;
-          return { maxFeePerGas: cappedMaxFee, maxPriorityFeePerGas: priority };
-        }
+      const requiredGas = BigInt(estimatedGas);
+      // Cap the gas price so the EntryPoint requiredPreFund (3x verificationGasLimit) fits in the paymaster deposit.
+      // userOpGasPrice = min(maxFeePerGas, baseFee + maxPriorityFeePerGas). We target that price.
+      const targetGasPrice = deposit > 0n
+        ? (deposit * 90n) / (requiredGas * 100n) // 10% buffer for deposit / gas mismatch
+        : baseFee + 150000000n; // fallback 0.15 gwei
+      const minPriority = 70000000n; // 0.07 gwei; ignored if deposit cannot cover it
+      let maxPriorityFeePerGas = targetGasPrice > baseFee ? targetGasPrice - baseFee : targetGasPrice;
+      if (maxPriorityFeePerGas < minPriority && targetGasPrice >= baseFee + minPriority) {
+        maxPriorityFeePerGas = minPriority;
       }
-      return { maxFeePerGas, maxPriorityFeePerGas: priority };
+      if (maxPriorityFeePerGas < 1n) maxPriorityFeePerGas = 1n;
+      const maxFeePerGas = targetGasPrice;
+      return { maxFeePerGas, maxPriorityFeePerGas };
     } catch (e) {
       if (cfg.chainId !== 1 && cfg.chainId !== 11155111) return { maxFeePerGas: 5000000000n, maxPriorityFeePerGas: 1500000000n };
       return { maxFeePerGas: 5000000000n, maxPriorityFeePerGas: 1500000000n };
@@ -803,6 +805,21 @@ class AccountAbstractionEngine {
         maxPriorityFeePerGas: fees.maxPriorityFeePerGas,
       });
       console.log('[AA] prepared userOp:', this._serializeUserOp(userOp));
+
+      // Recompute fees based on actual gas limits so the paymaster deposit can cover the bundler's signerGasPrice.
+      const actualRequiredGas = (userOp.callGasLimit || 0n) + (userOp.verificationGasLimit || 0n) * 3n + (userOp.preVerificationGas || 0n);
+      const adjustedFees = await this._feeValues(publicClient, cfg, paymasterAddress, actualRequiredGas);
+      if (adjustedFees.maxFeePerGas !== fees.maxFeePerGas || adjustedFees.maxPriorityFeePerGas !== fees.maxPriorityFeePerGas) {
+        console.log('[AA] adjusting fees to:', adjustedFees);
+        userOp = await aa.prepareUserOperation(bundlerClient, {
+          calls: [{ to: tokenAddress, value: 0n, data: callData }],
+          nonce,
+          maxFeePerGas: adjustedFees.maxFeePerGas,
+          maxPriorityFeePerGas: adjustedFees.maxPriorityFeePerGas,
+        });
+        console.log('[AA] re-prepared userOp:', this._serializeUserOp(userOp));
+      }
+
       userOpHash = aa.getUserOperationHash({
         chainId: cfg.chainId,
         entryPointAddress: cfg.entryPoint,
