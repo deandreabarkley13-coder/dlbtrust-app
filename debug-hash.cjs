@@ -13,9 +13,9 @@ const userOp = {
   callGasLimit: 0n,
   verificationGasLimit: 0n,
   preVerificationGas: 0n,
-  maxFeePerGas: 116281738n,
+  maxFeePerGas: 85916116n,
   maxPriorityFeePerGas: 20000n,
-  paymasterAndData: '0x3e7934bfdc432dfafaf1a68f4226b87478b9ee89000000000000000000000000000000000000000000000000000000006a7685310000000000000000000000000000000000000000000000000000000000000000632b34c65df015676ee8b9d78c4f3b3ce38f89d1aa78753cd7751123f32a83475bc70ddba80a825352bafad09f218cc64e521cb6c35fddadc1d6fc26bd68422b1c',
+  paymasterAndData: '0x3e7934bfdc432dfafaf1a68f4226b87478b9ee89000000000000000000000000000000000000000000000000000000006a7685de0000000000000000000000000000000000000000000000000000000000000000a9e4fc1c08fa54370d20b2868c9cf5f2e6289ac928e90e65738a658c0c507fc7660ef15577c0aa7d5c140216d23fd036a39d980e3d71dc832eb0fc3a039610a71b',
   signature: '0xfffffffffffffffffffffffffffffff0000000000000000000000000000000007aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa1c',
 };
 
@@ -28,44 +28,34 @@ async function main() {
   console.log('paymaster owner:', owner, 'expected operator:', OPERATOR, 'match:', owner.toLowerCase() === OPERATOR.toLowerCase());
 
   const parsed = await publicClient.readContract({ address: PAYMASTER, abi: paymasterAbi, functionName: 'parsePaymasterAndData', args: [userOp.paymasterAndData] });
-  console.log('parsed validUntil', parsed[0], 'validAfter', parsed[1], 'sig hex length', parsed[2].length, 'sig bytes', (parsed[2].length - 2) / 2);
+  console.log('parsed validUntil', parsed[0], 'validAfter', parsed[1], 'sig bytes', (parsed[2].length - 2) / 2);
 
   const hashActual = await publicClient.readContract({ address: PAYMASTER, abi: paymasterAbi, functionName: 'getHash', args: [userOp, parsed[0], parsed[1]] });
   console.log('getHash(actual userOp):', hashActual);
 
-  const userOpSanitized = { ...userOp, paymasterAndData: '0x', signature: '0x' };
-  const hashSanitized = await publicClient.readContract({ address: PAYMASTER, abi: paymasterAbi, functionName: 'getHash', args: [userOpSanitized, parsed[0], parsed[1]] });
-  console.log('getHash(sanitized):', hashSanitized);
+  const userOpNoInit = { ...userOp, initCode: '0x' };
+  const hashNoInit = await publicClient.readContract({ address: PAYMASTER, abi: paymasterAbi, functionName: 'getHash', args: [userOpNoInit, parsed[0], parsed[1]] });
+  console.log('getHash(no initCode):', hashNoInit);
 
   const sig = parsed[2];
   console.log('sig:', sig);
-
-  // Maybe the server signed a hash with default gas values
-  const userOpDefaults = { ...userOpSanitized, callGasLimit: 100000n, verificationGasLimit: 100000n, preVerificationGas: 50000n, maxFeePerGas: 1000000000n, maxPriorityFeePerGas: 100000000n };
-  const hashDefaults = await publicClient.readContract({ address: PAYMASTER, abi: paymasterAbi, functionName: 'getHash', args: [userOpDefaults, parsed[0], parsed[1]] });
-  console.log('getHash(defaults):', hashDefaults);
   try {
-    const recoveredDefaults = await recoverMessageAddress({ message: { raw: hashDefaults }, signature: sig });
-    console.log('recover(defaults):', recoveredDefaults, 'operator:', OPERATOR, 'match:', recoveredDefaults.toLowerCase() === OPERATOR.toLowerCase());
-  } catch (e) { console.log('recover(defaults) error:', e.message); }
-
-  // Or maybe server signed the EntryPoint userOpHash instead of getHash
-  const { getUserOperationHash } = require('viem/account-abstraction');
-  const userOpHash = getUserOperationHash({ userOperation: userOp, entryPointAddress: '0x5FF137D4b0FDCD49DcA30c7CF57E578a026d2789', chainId: 1, entryPointVersion: '0.6' });
-  console.log('entryPoint userOpHash:', userOpHash);
-  try {
-    const recoveredUoH = await recoverMessageAddress({ message: { raw: userOpHash }, signature: sig });
-    console.log('recover(userOpHash):', recoveredUoH, 'operator:', OPERATOR, 'match:', recoveredUoH.toLowerCase() === OPERATOR.toLowerCase());
-  } catch (e) { console.log('recover(userOpHash) error:', e.message); }
-
-  try {
-    const recoveredActual = await recoverMessageAddress({ message: { raw: hashActual }, signature: sig });
-    console.log('recover(actual):', recoveredActual, 'operator:', OPERATOR, 'match:', recoveredActual.toLowerCase() === OPERATOR.toLowerCase());
+    const recovered = await recoverMessageAddress({ message: { raw: hashActual }, signature: sig });
+    console.log('recover(actual):', recovered, 'operator:', OPERATOR, 'match:', recovered.toLowerCase() === OPERATOR.toLowerCase());
   } catch (e) { console.log('recover(actual) error:', e.message); }
+
+  // Simulate validatePaymasterUserOp from the EntryPoint
   try {
-    const recoveredSanitized = await recoverMessageAddress({ message: { raw: hashSanitized }, signature: sig });
-    console.log('recover(sanitized):', recoveredSanitized, 'operator:', OPERATOR, 'match:', recoveredSanitized.toLowerCase() === OPERATOR.toLowerCase());
-  } catch (e) { console.log('recover(sanitized) error:', e.message); }
+    const data = publicClient.encodeFunctionData ? null : null;
+    const { encodeFunctionData } = require('viem');
+    const simulateData = encodeFunctionData({
+      abi: paymasterAbi,
+      functionName: 'validatePaymasterUserOp',
+      args: [userOp, '0x' + '00'.repeat(32), 0],
+    });
+    const result = await publicClient.call({ to: PAYMASTER, data: simulateData, account: { address: '0x5FF137D4b0FDCD49DcA30c7CF57E578a026d2789', type: 'json-rpc' } });
+    console.log('simulate validatePaymasterUserOp result:', result);
+  } catch (e) { console.log('simulate validatePaymasterUserOp error:', e.message, e.cause?.shortMessage); }
 }
 
 main().catch(console.error);

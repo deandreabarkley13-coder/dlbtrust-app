@@ -69,17 +69,14 @@ contract SovereignTrustPaymaster is IPaymaster06 {
      * window, the paymaster address, and chain ID to prevent replay.
      */
     function getHash(UserOperation06 calldata userOp, uint48 validUntil, uint48 validAfter) public view returns (bytes32) {
+        // Exclude gas/fee fields and the paymasterAndData/signature so the
+        // operator signature remains valid across bundler gas re-estimation.
         return keccak256(
             abi.encode(
                 userOp.sender,
                 userOp.nonce,
                 keccak256(userOp.initCode),
                 keccak256(userOp.callData),
-                userOp.callGasLimit,
-                userOp.verificationGasLimit,
-                userOp.preVerificationGas,
-                userOp.maxFeePerGas,
-                userOp.maxPriorityFeePerGas,
                 block.chainid,
                 address(this),
                 validUntil,

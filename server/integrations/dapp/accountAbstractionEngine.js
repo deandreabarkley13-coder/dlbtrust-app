@@ -677,7 +677,12 @@ class AccountAbstractionEngine {
   static async _feeValues(publicClient, cfg) {
     try {
       const fees = await publicClient.estimateFeesPerGas({ type: 'eip1559' });
-      return { maxFeePerGas: fees.maxFeePerGas, maxPriorityFeePerGas: fees.maxPriorityFeePerGas };
+      const minMax = 5000000000n;
+      const minPriority = 1500000000n;
+      return {
+        maxFeePerGas: fees.maxFeePerGas > minMax ? fees.maxFeePerGas : minMax,
+        maxPriorityFeePerGas: fees.maxPriorityFeePerGas > minPriority ? fees.maxPriorityFeePerGas : minPriority,
+      };
     } catch (e) {
       if (cfg.chainId !== 1 && cfg.chainId !== 11155111) return { maxFeePerGas: 5000000000n, maxPriorityFeePerGas: 1500000000n };
       return { maxFeePerGas: 5000000000n, maxPriorityFeePerGas: 1500000000n };
@@ -718,6 +723,7 @@ class AccountAbstractionEngine {
         const { factory, factoryData } = await account.getFactoryArgs();
         return viem.concat([factory, factoryData]);
       })();
+      const fees = await this._feeValues(this._publicClient(cfg), cfg);
       userOp = {
         sender: smartAccountAddress,
         nonce: 0n,
@@ -726,8 +732,8 @@ class AccountAbstractionEngine {
         callGasLimit: 100000n,
         verificationGasLimit: 100000n,
         preVerificationGas: 50000n,
-        maxFeePerGas: 1000000000n,
-        maxPriorityFeePerGas: 100000000n,
+        maxFeePerGas: fees.maxFeePerGas,
+        maxPriorityFeePerGas: fees.maxPriorityFeePerGas,
         paymasterAndData: '0x',
         signature: '0xfffffffffffffffffffffffffffffff0000000000000000000000000000000007aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa1c',
       };
@@ -740,10 +746,13 @@ class AccountAbstractionEngine {
         entryPointVersion: '0.6',
         userOperation: userOp,
       });
+      const operator = this._operatorAccount(cfg);
+      userOp.signature = await operator.signMessage({ message: { raw: userOpHash } });
     } else {
       const publicClient = this._publicClient(cfg);
       const paymasterAddress = cfg.paymasterAddress || (await this._loadPaymaster())?.paymaster_address;
       if (!paymasterAddress || paymasterAddress.startsWith('shadow-')) throw new Error('paymaster not deployed');
+      const fees = await this._feeValues(publicClient, cfg);
       const bundlerClient = aa.createBundlerClient({
         account,
         chain: getChain(cfg.chainId),
@@ -764,6 +773,8 @@ class AccountAbstractionEngine {
       userOp = await aa.prepareUserOperation(bundlerClient, {
         calls: [{ to: tokenAddress, value: 0n, data: callData }],
         nonce,
+        maxFeePerGas: fees.maxFeePerGas,
+        maxPriorityFeePerGas: fees.maxPriorityFeePerGas,
       });
       console.log('[AA] prepared userOp:', this._serializeUserOp(userOp));
       userOpHash = aa.getUserOperationHash({
@@ -772,6 +783,8 @@ class AccountAbstractionEngine {
         entryPointVersion: '0.6',
         userOperation: userOp,
       });
+      const operator = this._operatorAccount(cfg);
+      userOp.signature = await operator.signMessage({ message: { raw: userOpHash } });
     }
 
     const operation = {
@@ -794,6 +807,8 @@ class AccountAbstractionEngine {
       smartAccountAddress,
       userOpHash,
       paymasterAndData: userOp.paymasterAndData,
+      signature: userOp.signature,
+      userOp: this._serializeUserOp(userOp),
       shadow: cfg.aaShadow,
     };
   }
@@ -825,36 +840,48 @@ class AccountAbstractionEngine {
     const cfg = this._checkDeps();
     const op = memory.operations.get(operationId) || (await this._dbOperation(operationId));
     if (!op) throw new Error('operation not found');
-    if (!signature) throw new Error('signature required');
 
     const userOp = this._deserializeUserOp(op.metadata.userOp);
-    userOp.signature = signature;
+    let userOpHash = aa.getUserOperationHash({
+      chainId: cfg.chainId,
+      entryPointAddress: cfg.entryPoint,
+      entryPointVersion: '0.6',
+      userOperation: userOp,
+    });
+
+    if (signature) {
+      userOp.signature = signature;
+    } else {
+      const operator = this._operatorAccount(cfg);
+      userOp.signature = await operator.signMessage({ message: { raw: userOpHash } });
+    }
 
     if (cfg.aaShadow) {
       op.status = 'completed';
       op.on_chain_tx = `shadow-aa-${op.id}`;
       await this._saveOperation(op);
-      return { success: true, shadow: true, operationId, userOpHash: op.user_op_hash, tx: op.on_chain_tx };
+      return { success: true, shadow: true, operationId, userOpHash, tx: op.on_chain_tx };
     }
 
-    const owner = op.owner;
-    const account = await this.buildSmartAccount(owner);
     const publicClient = this._publicClient(cfg);
     const bundlerClient = aa.createBundlerClient({
-      account,
       chain: getChain(cfg.chainId),
       client: publicClient,
       transport: this._bundlerTransport(cfg),
     });
 
-    const userOpHash = await aa.sendUserOperation(bundlerClient, userOp);
-    const receipt = await aa.waitForUserOperationReceipt(bundlerClient, { hash: userOpHash });
+    const rpcUserOp = aa.formatUserOperationRequest(userOp);
+    const submittedUserOpHash = await bundlerClient.request({
+      method: 'eth_sendUserOperation',
+      params: [rpcUserOp, cfg.entryPoint],
+    });
+    const receipt = await aa.waitForUserOperationReceipt(bundlerClient, { hash: submittedUserOpHash });
 
     op.status = 'completed';
     op.on_chain_tx = receipt.receipt.transactionHash || receipt.userOpHash;
     await this._saveOperation(op);
 
-    return { success: true, operationId, userOpHash, tx: receipt.receipt.transactionHash || receipt.userOpHash, receipt };
+    return { success: true, operationId, userOpHash: submittedUserOpHash, tx: receipt.receipt.transactionHash || receipt.userOpHash, receipt };
   }
 
   static async _dbOperation(operationId) {
