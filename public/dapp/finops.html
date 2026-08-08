@@ -163,6 +163,7 @@
     { key:'canonical-liquidity', name:'Canonical Liquidity', desc:'Governed DEX liquidity pools and swaps for trust assets', stat:'', endpoint:null, action:'openCanonicalLiquidityPanel' },
     { key:'liquidity-pool', name:'Liquidity Pool Engine', desc:'Full pool lifecycle: create, add/remove liquidity, swap, and positions', stat:'', endpoint:null, action:'openLiquidityPoolPanel' },
     { key:'canonical-money', name:'Canonical Money', desc:'Turn trust assets and income into canonical spendable stablecoins', stat:'', endpoint:null, action:'openCanonicalMoneyPanel' },
+    { key:'cross-chain', name:'Cross-Chain Conversion', desc:'Convert trust assets to canonical stablecoins across chains and protocols', stat:'', endpoint:null, action:'openCrossChainPanel' },
     { key:'coordination', name:'Coordination Engine', desc:'System health, AI command queue and stability checks', stat:'', endpoint:null, action:'openCoordinationPanel' },
     { key:'clearing', name:'Clearing Engine', desc:'Bilateral and net settlement on Hyperledger Besu', stat:'', endpoint:null, action:'openClearingPanel' },
     { key:'redemption-gateway', name:'Redemption Gateway', desc:'Bridge DLB-PTCUSD to external clearing/stablecoin rails', stat:'', endpoint:null, action:'openRedemptionGatewayPanel' },
@@ -329,7 +330,7 @@
     renderModules();
     renderFlow();
     try {
-      const [sof, accts, wallets, bond, crm, p2p, ptc, consensus] = await Promise.all([
+      const [sof, accts, wallets, bond, crm, p2p, ptc, consensus, xchain] = await Promise.all([
         api('/api/finops/source-of-funds').catch(()=>null),
         api('/api/accounting/accounts').catch(()=>null),
         api('/api/finops/wallets').catch(()=>null),
@@ -338,6 +339,7 @@
         api('/api/finops/module-p2p/orders').catch(()=>null),
         api('/api/finops/ptc-stablecoin').catch(()=>null),
         api('/api/finops/consensus').catch(()=>null),
+        api('/api/finops/cross-chain').catch(()=>null),
       ]);
       const balances = normalizeBalances(sof && sof.data);
       if (balances.length) {
@@ -360,6 +362,10 @@
       if (consensus && consensus.data && Array.isArray(consensus.data)) {
         const pending = consensus.data.filter(p => p.status === 'pending').length;
         setStat('canonical-consensus', String(pending));
+      }
+      if (xchain && xchain.data && Array.isArray(xchain.data)) {
+        const pending = xchain.data.filter(r => r.status === 'pending').length;
+        setStat('cross-chain', String(pending));
       }
       renderModules();
     } catch(e) { console.error('loadAll error', e); }
@@ -1727,6 +1733,135 @@
       await api('/api/finops/canonical-money/requests/' + proposalId + '/approve', { method:'POST', body: JSON.stringify({ role, approverEmail: email }) });
       await loadCanonicalMoney();
     } catch(e) { alert(e.message); }
+  }
+
+  // ─── Cross-Chain Conversion & Interoperability Engine panel ───────────────────
+  let currentCrossChainRoute = null;
+
+  function openCrossChainPanel() {
+    const panel = el('module-panel');
+    const body = el('panel-body');
+    el('panel-title').textContent = 'Cross-Chain Conversion';
+    panel.classList.add('active');
+    body.innerHTML = renderCrossChainPanel();
+    loadCrossChainRequests();
+  }
+
+  function renderCrossChainPanel() {
+    return '<div class="muted" style="margin-bottom:12px;">Plan and execute conversions from any trust asset or ledger balance to canonical stablecoins (USDC/USDS/DAI/WETH) on the source chain or across chains. If DEX liquidity is insufficient, the engine recommends a P2P order or a bridge route.</div>' +
+      '<h3 style="font-size:14px;margin:0 0 8px;">New Conversion</h3>' +
+      '<div class="token-bar"><select id="xc-source-type"><option value="">-- source type --</option><option value="cash">cash</option><option value="treasury">treasury</option><option value="trust">trust</option><option value="bond">bond</option><option value="fixed_income">fixed_income / bond_interest</option><option value="fineract">fineract</option><option value="sub_ledger">sub_ledger</option><option value="">-- or token/module --</option><option value="DLB-PTCUSD">DLB-PTCUSD</option><option value="DLB-PRB">DLB-PRB</option><option value="DLB-FIXED-INCOME">DLB-FIXED-INCOME</option><option value="DLB-TREASURY">DLB-TREASURY</option><option value="DLB-TRUST">DLB-TRUST</option><option value="DLB-CORE">DLB-CORE</option></select></div>' +
+      '<div class="token-bar"><input id="xc-source-id" placeholder="source account / token address" /></div>' +
+      '<div class="token-bar"><input id="xc-amount" placeholder="amount" /></div>' +
+      '<div class="token-bar"><select id="xc-target-asset"><option value="USDC">USDC</option><option value="USDS">USDS</option><option value="DAI">DAI</option><option value="WETH">WETH</option><option value="ETH">ETH</option></select></div>' +
+      '<div class="token-bar"><select id="xc-target-chain"><option value="ethereum">ethereum</option><option value="base">base</option><option value="polygon">polygon</option><option value="arbitrum">arbitrum</option><option value="besu">besu</option></select></div>' +
+      '<div class="token-bar"><select id="xc-bridge"><option value="">auto</option><option value="circle-cctp">circle-cctp</option><option value="hyperlane">hyperlane</option><option value="axelar">axelar</option><option value="layerzero">layerzero</option><option value="wormhole">wormhole</option><option value="besu">besu</option></select></div>' +
+      '<div class="token-bar"><input id="xc-recipient" placeholder="recipient address (optional, default operator)" /></div>' +
+      '<div class="token-bar"><input id="xc-slippage" placeholder="slippage bps (default 100)" value="100" /></div>' +
+      '<div class="approval-actions"><button class="btn" onclick="crossChainQuote()">Quote Routes</button><button class="btn" onclick="crossChainPropose()">Propose</button><button class="btn btn-sec" style="margin-left:8px;" onclick="crossChainChains()">Chains</button><button class="btn btn-sec" style="margin-left:8px;" onclick="crossChainAssets()">Assets</button></div>' +
+      '<input type="hidden" id="xc-route-name" />' +
+      '<div id="xc-quote" style="margin-top:12px;"></div>' +
+      '<h3 style="font-size:14px;margin:16px 0 8px;">Conversion Requests</h3>' +
+      '<div id="xc-requests"></div>';
+  }
+
+  function _crossChainForm() {
+    const sourceType = el('xc-source-type').value;
+    const sourceId = el('xc-source-id').value.trim();
+    const amount = el('xc-amount').value.trim();
+    const targetAsset = el('xc-target-asset').value;
+    const targetChain = el('xc-target-chain').value;
+    const bridge = el('xc-bridge').value;
+    const recipient = el('xc-recipient').value.trim() || undefined;
+    const slippageBps = el('xc-slippage').value.trim();
+    const knownTokens = ['DLB-PTCUSD','DLB-PRB','DLB-FIXED-INCOME','DLB-TREASURY','DLB-TRUST','DLB-CORE'];
+    let sourceAccountId, sourceToken, sourceModule;
+    if (knownTokens.includes(sourceType)) {
+      if (sourceType === 'DLB-PTCUSD') sourceToken = 'DLB-PTCUSD';
+      else sourceModule = sourceType;
+    } else {
+      sourceAccountId = sourceId;
+    }
+    const body = { sourceType: knownTokens.includes(sourceType) ? undefined : sourceType, sourceAccountId, sourceToken, sourceModule, amount, targetAsset, targetChain, recipient };
+    if (bridge) body.bridgeProvider = bridge;
+    if (slippageBps) body.slippageBps = Number(slippageBps);
+    return body;
+  }
+
+  async function crossChainQuote() {
+    currentCrossChainRoute = null;
+    el('xc-route-name').value = '';
+    try {
+      const res = await api('/api/finops/cross-chain/quote', { method:'POST', body: JSON.stringify(_crossChainForm()) });
+      const q = res.data;
+      let html = '<div class="status ok" style="margin-top:8px;"><strong>Recommendation:</strong> ' + (q.recommendation || 'none') + '<br/><strong>Target:</strong> ' + q.targetAsset + ' on ' + q.targetChain + '</div>';
+      html += '<div style="margin-top:10px;">' + (q.routes || []).map((r, i) => {
+        const selected = r.name === q.recommendation ? 'border-color: var(--accent);' : '';
+        return '<div style="border:1px solid var(--border);border-radius:8px;padding:8px;margin-bottom:8px;' + selected + '" onclick="selectCrossChainRoute(\'' + r.name + '\')">' +
+          '<strong>' + r.name + '</strong> — ' + r.provider + ' <em>(' + r.status + ')</em><br/>' +
+          '<span class="muted">Estimated output:</span> ' + (r.estimatedOutput || 0) + ' ' + r.outputAsset + ' on ' + r.outputChain + '<br/>' +
+          (r.warning ? '<span class="status err" style="display:inline-block;margin-top:4px;">' + r.warning + '</span>' : '') +
+          '</div>';
+      }).join('') + '</div>';
+      el('xc-quote').innerHTML = html;
+      if (q.recommendation) { el('xc-route-name').value = q.recommendation; currentCrossChainRoute = q.routes.find(r => r.name === q.recommendation); }
+    } catch(e) { el('xc-quote').innerHTML = '<div class="status err">' + e.message + '</div>'; }
+  }
+
+  function selectCrossChainRoute(name) {
+    el('xc-route-name').value = name;
+  }
+
+  async function crossChainPropose() {
+    try {
+      const body = _crossChainForm();
+      const routeName = el('xc-route-name').value;
+      if (routeName) body.routeName = routeName;
+      const res = await api('/api/finops/cross-chain/requests', { method:'POST', body: JSON.stringify(body) });
+      el('xc-quote').innerHTML = '<div class="status ok">Proposed: ' + res.data.proposalId + '<br/>Route: ' + res.data.chosenRoute.name + '</div>';
+      await loadCrossChainRequests();
+    } catch(e) { el('xc-quote').innerHTML = '<div class="status err">' + e.message + '</div>'; }
+  }
+
+  async function loadCrossChainRequests() {
+    const wrap = el('xc-requests');
+    try {
+      const res = await api('/api/finops/cross-chain');
+      wrap.innerHTML = (res.data || []).map(r => `<div style="font-size:12px;border-bottom:1px solid var(--border);padding:4px 0;">${r.id}: ${r.source_type || r.source_token || r.source_module} ${r.amount} -> ${r.target_asset} on ${r.target_chain} <em>${r.status}</em>` +
+        (r.status === 'pending' ? ` <select id="xc-role-${r.proposal_id}"><option value="maker">maker</option><option value="checker">checker</option></select><input id="xc-email-${r.proposal_id}" placeholder="email" style="width:100px;" /><button class="btn" onclick="crossChainApprove('${r.proposal_id}')">Approve</button>` : '') +
+        (r.status === 'approved' ? ` <button class="btn" onclick="crossChainExecute('${r.id}')">Execute</button>` : '') +
+        `</div>`).join('') || '<span class="muted">No requests yet.</span>';
+    } catch(e) { wrap.innerHTML = '<div class="status err">' + e.message + '</div>'; }
+  }
+
+  async function crossChainApprove(proposalId) {
+    try {
+      const role = el('xc-role-' + proposalId).value;
+      const email = el('xc-email-' + proposalId).value.trim();
+      await api('/api/finops/cross-chain/requests/' + proposalId + '/approve', { method:'POST', body: JSON.stringify({ role, approverEmail: email }) });
+      await loadCrossChainRequests();
+    } catch(e) { alert(e.message); }
+  }
+
+  async function crossChainExecute(requestId) {
+    try {
+      await api('/api/finops/cross-chain/requests/' + requestId + '/execute', { method:'POST', body: '{}' });
+      await loadCrossChainRequests();
+    } catch(e) { alert(e.message); }
+  }
+
+  async function crossChainChains() {
+    try {
+      const res = await api('/api/finops/cross-chain/adapters/chains');
+      el('xc-quote').innerHTML = '<pre style="white-space:pre-wrap; font-size:12px; background:#0b1220; padding:10px; border-radius:8px;">' + JSON.stringify(res.data, null, 2) + '</pre>';
+    } catch(e) { el('xc-quote').innerHTML = '<div class="status err">' + e.message + '</div>'; }
+  }
+
+  async function crossChainAssets() {
+    try {
+      const res = await api('/api/finops/cross-chain/adapters/assets');
+      el('xc-quote').innerHTML = '<pre style="white-space:pre-wrap; font-size:12px; background:#0b1220; padding:10px; border-radius:8px;">' + JSON.stringify(res.data, null, 2) + '</pre>';
+    } catch(e) { el('xc-quote').innerHTML = '<div class="status err">' + e.message + '</div>'; }
   }
 
   window.addEventListener('DOMContentLoaded', () => {

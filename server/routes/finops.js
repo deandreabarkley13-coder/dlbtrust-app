@@ -19,6 +19,7 @@ const { RedemptionGatewayEngine } = require('../integrations/dapp/redemptionGate
 const { CanonicalLiquidityEngine } = require('../integrations/dapp/canonicalLiquidityEngine');
 const { CanonicalMoneyEngine } = require('../integrations/dapp/canonicalMoneyEngine');
 const { LiquidityPoolEngine } = require('../integrations/dapp/liquidityPoolEngine');
+const { CrossChainConversionEngine } = require('../integrations/dapp/crossChainConversionEngine');
 
 const router = express.Router();
 const operatorAuth = requireAuth({ role: 'operator' });
@@ -671,6 +672,42 @@ router.post('/redemption-gateway', operatorAuth, writeRateLimiter(), async (req,
 
 router.post('/redemption-gateway/:id/execute', operatorAuth, writeRateLimiter(), async (req, res) => {
   try { res.json({ success: true, data: await RedemptionGatewayEngine.execute(req.params.id) }); } catch (err) { sendError(res, err); }
+});
+
+// ═════════════════════════════════════════════════════════════════════════════
+// Cross-Chain Conversion & Interoperability Engine
+// ═════════════════════════════════════════════════════════════════════════════
+
+router.get('/cross-chain', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await CrossChainConversionEngine.listRequests(req.query) }); } catch (err) { sendError(res, err); }
+});
+
+router.get('/cross-chain/:id', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await CrossChainConversionEngine.getRequest(req.params.id) }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/cross-chain/quote', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await CrossChainConversionEngine.quote(req.body) }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/cross-chain/requests', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try { res.status(201).json({ success: true, data: await CrossChainConversionEngine.propose({ ...req.body, createdBy: getUserEmail(req) }) }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/cross-chain/requests/:id/approve', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try { res.json({ success: true, data: await CrossChainConversionEngine.approve({ proposalId: req.params.id, ...req.body }) }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/cross-chain/requests/:id/execute', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try { res.json({ success: true, data: await CrossChainConversionEngine.executeRequest(req.params.id) }); } catch (err) { sendError(res, err); }
+});
+
+router.get('/cross-chain/adapters/chains', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: CrossChainConversionEngine.listChains() }); } catch (err) { sendError(res, err); }
+});
+
+router.get('/cross-chain/adapters/assets', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: CrossChainConversionEngine.listAssets() }); } catch (err) { sendError(res, err); }
 });
 
 module.exports = router;
