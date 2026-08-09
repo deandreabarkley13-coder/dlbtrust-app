@@ -96,6 +96,7 @@
       <button data-tab="holds">Hold Accounts</button>
       <button data-tab="ramps">On/Off Ramps</button>
       <button data-tab="agent">AI Agent</button>
+      <button data-tab="settlement">Settlement Gateway</button>
     </nav>
     <div class="user">
       <span id="user-info"></span>
@@ -335,6 +336,133 @@
           </div>
         </div>
       </div>
+
+      <div id="tab-settlement" class="tabs">
+        <div class="workflow">
+          <div class="card" style="flex:1.2;">
+            <h2>Transactional & Settlement Gateway</h2>
+            <p class="muted">Create a unified payment/settlement order and route it through fiat or digital rails.</p>
+            <div class="form-row">
+              <div class="form-group">
+                <label>Direction</label>
+                <select id="txs-direction"><option value="outbound">Outbound (pay / settle)</option><option value="inbound">Inbound (deposit / collect)</option></select>
+              </div>
+              <div class="form-group">
+                <label>Rail</label>
+                <select id="txs-rail">
+                  <option value="wire">Wire</option>
+                  <option value="ach">ACH</option>
+                  <option value="open_banking">Open Banking</option>
+                  <option value="iso20022">ISO 20022</option>
+                  <option value="mft_sftp">MFT / SFTP</option>
+                  <option value="as2">AS2</option>
+                  <option value="host_to_host">Host-to-Host</option>
+                  <option value="external_endpoint">External Endpoint</option>
+                  <option value="live_fintech">Live FinTech Endpoint</option>
+                  <option value="lili">Lili Bank</option>
+                  <option value="bill">Bill.com</option>
+                  <option value="stablecoin">Stablecoin</option>
+                  <option value="sovereign">Sovereign SIT</option>
+                  <option value="dex">DEX Swap</option>
+                  <option value="stablecoin_dex">Stablecoin DEX</option>
+                  <option value="cross_chain">Cross-Chain</option>
+                  <option value="btcpay">BTCPay</option>
+                  <option value="cashapp">Cash App</option>
+                  <option value="module">Module / Fund Rail</option>
+                  <option value="manual">Manual</option>
+                  <option value="deposit">Deposit</option>
+                </select>
+              </div>
+              <div class="form-group">
+                <label>Amount (USD)</label>
+                <input type="number" id="txs-amount" placeholder="0.00" step="0.01" />
+              </div>
+              <div class="form-group">
+                <label>Currency</label>
+                <input type="text" id="txs-currency" value="USD" />
+              </div>
+              <div class="form-group">
+                <label>Asset (digital rails)</label>
+                <input type="text" id="txs-asset" placeholder="USD / USDC / SIT" value="USD" />
+              </div>
+            </div>
+            <div class="form-row">
+              <div class="form-group">
+                <label>Source Type</label>
+                <select id="txs-source-type"><option value="treasury">Treasury</option><option value="cash">Cash</option><option value="trust_bank">Trust Bank</option><option value="issuer">Issuer</option></select>
+              </div>
+              <div class="form-group">
+                <label>Source Account ID</label>
+                <input type="text" id="txs-source-account" placeholder="CA-OPERATING or TBA-..." />
+              </div>
+              <div class="form-group">
+                <label>Destination Account ID (inbound)</label>
+                <input type="text" id="txs-destination-account" placeholder="CA-OPERATING" />
+              </div>
+            </div>
+            <div class="form-row">
+              <div class="form-group">
+                <label>Beneficiary Name</label>
+                <input type="text" id="txs-ben-name" placeholder="Full name" />
+              </div>
+              <div class="form-group">
+                <label>Beneficiary Email</label>
+                <input type="email" id="txs-ben-email" placeholder="email@example.com" />
+              </div>
+              <div class="form-group">
+                <label>Beneficiary Address / Wallet</label>
+                <input type="text" id="txs-ben-address" placeholder="0x... or bitcoin:..." />
+              </div>
+            </div>
+            <div class="form-row">
+              <div class="form-group">
+                <label>Account #</label>
+                <input type="text" id="txs-ben-account" placeholder="Account number" />
+              </div>
+              <div class="form-group">
+                <label>Routing #</label>
+                <input type="text" id="txs-ben-routing" placeholder="Routing number" />
+              </div>
+              <div class="form-group">
+                <label>Bank Name</label>
+                <input type="text" id="txs-ben-bank" placeholder="Bank name" />
+              </div>
+            </div>
+            <div class="form-row">
+              <div class="form-group">
+                <label>Debtor Name</label>
+                <input type="text" id="txs-debtor-name" placeholder="DLB Trust" />
+              </div>
+              <div class="form-group">
+                <label>Debtor Account #</label>
+                <input type="text" id="txs-debtor-account" placeholder="Account number" />
+              </div>
+              <div class="form-group">
+                <label>Debtor Routing #</label>
+                <input type="text" id="txs-debtor-routing" placeholder="Routing number" />
+              </div>
+            </div>
+            <div class="form-row">
+              <div class="form-group" style="flex:2;">
+                <label>Memo</label>
+                <input type="text" id="txs-memo" placeholder="Purpose of payment" />
+              </div>
+              <div class="form-group">
+                <label>Priority</label>
+                <select id="txs-priority"><option value="standard">Standard</option><option value="express">Express</option><option value="urgent">Urgent</option><option value="immediate">Immediate</option></select>
+              </div>
+            </div>
+            <button class="btn" onclick="createTxsOrder()">Create Settlement Order</button>
+            <div id="txs-status" class="status"></div>
+          </div>
+          <div class="card" style="flex:0.8;">
+            <h2>Settlement Summary</h2>
+            <div id="txs-summary" class="muted">Loading…</div>
+            <h3 style="margin-top:18px;">Recent Orders</h3>
+            <div id="txs-list" class="muted">Loading…</div>
+          </div>
+        </div>
+      </div>
     </div>
   </div>
 
@@ -376,6 +504,7 @@
     if (key === 'vendors') loadVendors();
     if (key === 'payouts') loadPayouts();
     if (key === 'holds') loadHolds();
+    if (key === 'settlement') loadSettlement();
   }
 
   document.querySelectorAll('.nav button').forEach(b => b.onclick = () => switchTab(b.dataset.tab));
@@ -587,6 +716,75 @@
       log.innerHTML += `<div class="chat-bubble agent">${JSON.stringify(res.data).substring(0, 500)}</div>`;
     } catch (e) { log.innerHTML += `<div class="chat-bubble agent" style="color:var(--danger)">${e.message}</div>`; }
     log.scrollTop = log.scrollHeight;
+  }
+
+  async function loadSettlement() {
+    try {
+      const [summary, orders] = await Promise.all([
+        api('/api/transactional-settlement/summary'),
+        api('/api/transactional-settlement/orders?limit=20')
+      ]);
+      const s = summary.data || {};
+      let sumHtml = '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:10px;">';
+      for (const [k, v] of Object.entries(s.byStatus || {})) {
+        sumHtml += `<div class="badge">${k}: ${v.count} / ${fmtUsd(v.usd)}</div>`;
+      }
+      sumHtml += '</div><div style="margin-top:10px;display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:10px;">';
+      for (const [k, v] of Object.entries(s.byRail || {})) {
+        sumHtml += `<div class="badge">${k}: ${v.count}</div>`;
+      }
+      sumHtml += '</div>';
+      el('txs-summary').innerHTML = sumHtml;
+
+      let listHtml = '<div style="display:grid;gap:8px;max-height:320px;overflow:auto;">';
+      for (const o of orders.data || []) {
+        const badge = o.status === 'completed' || o.status === 'settled' ? 'ok' : (o.status === 'failed' ? 'err' : '');
+        listHtml += `<div class="badge" style="justify-content:space-between;align-items:center;display:flex;">
+          <span>${o.order_id} · ${o.rail} · ${o.direction}</span>
+          <span>${fmtUsd(o.amount)} · <span class="${badge}">${o.status}</span></span>
+          ${o.status === 'reserved' || o.status === 'pending' ? `<button class="btn btn-sm" onclick="executeTxsOrder('${o.order_id}')">Execute</button>` : ''}
+        </div>`;
+      }
+      listHtml += '</div>';
+      el('txs-list').innerHTML = listHtml;
+    } catch (e) { el('txs-summary').textContent = e.message; }
+  }
+
+  async function createTxsOrder() {
+    const body = {
+      direction: el('txs-direction').value,
+      rail: el('txs-rail').value,
+      amount: el('txs-amount').value,
+      currency: el('txs-currency').value,
+      asset: el('txs-asset').value,
+      sourceType: el('txs-source-type').value,
+      sourceAccountId: el('txs-source-account').value,
+      destinationAccountId: el('txs-destination-account').value,
+      beneficiaryName: el('txs-ben-name').value,
+      beneficiaryEmail: el('txs-ben-email').value,
+      beneficiaryAddress: el('txs-ben-address').value,
+      beneficiaryAccount: el('txs-ben-account').value,
+      beneficiaryRouting: el('txs-ben-routing').value,
+      beneficiaryBank: el('txs-ben-bank').value,
+      debtorName: el('txs-debtor-name').value,
+      debtorAccount: el('txs-debtor-account').value,
+      debtorRouting: el('txs-debtor-routing').value,
+      memo: el('txs-memo').value,
+      priority: el('txs-priority').value,
+    };
+    try {
+      const res = await api('/api/transactional-settlement/orders', { method: 'POST', body: JSON.stringify(body) });
+      showStatus('txs-status', `Order created: ${res.data.order_id} (${res.data.status})`, false);
+      loadSettlement();
+    } catch (e) { showStatus('txs-status', e.message, true); }
+  }
+
+  async function executeTxsOrder(orderId) {
+    try {
+      const res = await api(`/api/transactional-settlement/orders/${orderId}/execute`, { method: 'POST' });
+      showStatus('txs-status', `Executed: ${res.data.order_id} → ${res.data.status}`, false);
+      loadSettlement();
+    } catch (e) { showStatus('txs-status', e.message, true); }
   }
 
   // Load token on start
