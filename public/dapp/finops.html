@@ -358,7 +358,7 @@
     renderModules();
     renderFlow();
     try {
-      const [sof, accts, wallets, bond, crm, p2p, ptc, consensus, xchain, paired, trustMarket, ramps, intents, externalWallets, externalSwaps, computing, holdings, capitalFunds, virtualAccounts, wireOrigination, electronicMoney, openBanking, trustDeposits, fineractPayouts, skrillLinks, barcodeDeposits] = await Promise.all([
+      const [sof, accts, wallets, bond, crm, p2p, ptc, consensus, xchain, paired, trustMarket, ramps, intents, externalWallets, externalSwaps, computing, holdings, capitalFunds, virtualAccounts, wireOrigination, electronicMoney, openBanking, trustDeposits, fineractPayouts, skrillLinks, barcodeDeposits, webPaymentRails, externalEndpoints] = await Promise.all([
         api('/api/finops/source-of-funds').catch(()=>null),
         api('/api/accounting/accounts').catch(()=>null),
         api('/api/finops/wallets').catch(()=>null),
@@ -386,6 +386,7 @@
         api('/api/finops/skrill-links').catch(()=>null),
         api('/api/finops/barcode-deposits').catch(()=>null),
         api('/api/finops/web-payment-rails').catch(()=>null),
+        api('/api/finops/external-endpoints').catch(()=>null),
       ]);
       const balances = normalizeBalances(sof && sof.data);
       if (balances.length) {
@@ -474,10 +475,13 @@
         const pending = barcodeDeposits.data.filter(d => d.status === 'pending').length;
         setStat('barcode-deposits', String(pending));
       }
-      const webPayments = results[20];
-      if (webPayments && webPayments.data && Array.isArray(webPayments.data)) {
-        const pending = webPayments.data.filter(d => d.status === 'pending').length;
+      if (webPaymentRails && webPaymentRails.data && Array.isArray(webPaymentRails.data)) {
+        const pending = webPaymentRails.data.filter(d => d.status === 'pending').length;
         setStat('web-payment-rails', String(pending));
+      }
+      if (externalEndpoints && externalEndpoints.data && Array.isArray(externalEndpoints.data)) {
+        const active = externalEndpoints.data.filter(e => e.enabled).length;
+        setStat('external-endpoint', String(active));
       }
       renderModules();
     } catch(e) { console.error('loadAll error', e); }
