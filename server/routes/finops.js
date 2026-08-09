@@ -41,6 +41,10 @@ const { WebPaymentRailEngine } = require('../integrations/payments/webPaymentRai
 const { LiliBankEngine } = require('../integrations/payments/liliBankEngine');
 const { LiliMcpEngine } = require('../integrations/payments/liliMcpEngine');
 const { ComplianceEngine } = require('../integrations/compliance/complianceEngine');
+const { IssuerEngine } = require('../integrations/dapp/issuerEngine');
+const { BankTransferEngine } = require('../integrations/dapp/bankTransferEngine');
+const { VendorPaymentEngine } = require('../integrations/dapp/vendorPaymentEngine');
+const { TrustBankEngine } = require('../integrations/dapp/trustBankEngine');
 let CashEngine;
 try { ({ CashEngine } = require('../integrations/cash/cashEngine')); } catch (e) { CashEngine = null; }
 
@@ -1433,6 +1437,150 @@ router.get('/lili/mcp/oauth/callback', async (req, res) => {
   } catch (err) {
     res.status(400).json({ success: false, error: err.message });
   }
+});
+
+// ─── Issuer Engine (trust custodian/issuer) ─────────────────────────────────
+
+router.get('/issuer/assets', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await IssuerEngine.listAssets() }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/issuer/assets', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await IssuerEngine.createAsset(req.body) }); } catch (err) { sendError(res, err); }
+});
+
+router.get('/issuer/assets/:code/balances', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await IssuerEngine.listBalances(req.params.code) }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/issuer/issue', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await IssuerEngine.issue(req.body) }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/issuer/redeem', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await IssuerEngine.redeem(req.body) }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/issuer/transfer', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await IssuerEngine.transfer(req.body) }); } catch (err) { sendError(res, err); }
+});
+
+router.get('/issuer/operations', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await IssuerEngine.listOperations({ assetCode: req.query.assetCode, limit: req.query.limit }) }); } catch (err) { sendError(res, err); }
+});
+
+// ─── Bank Transfer Engine (push/receive bank credits) ─────────────────────────
+
+router.get('/bank-accounts', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await BankTransferEngine.listBankAccounts() }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/bank-accounts', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await BankTransferEngine.createBankAccount(req.body) }); } catch (err) { sendError(res, err); }
+});
+
+router.get('/bank-transfers', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await BankTransferEngine.listBankTransfers({ direction: req.query.direction, status: req.query.status, limit: req.query.limit }) }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/bank-transfers/push-credit', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await BankTransferEngine.pushCredit(req.body) }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/bank-transfers/:id/send', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await BankTransferEngine.sendPushCredit(req.params.id) }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/bank-transfers/receive-credit', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await BankTransferEngine.receiveCredit(req.body) }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/bank-transfers/:id/cancel', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await BankTransferEngine.cancelPushCredit(req.params.id) }); } catch (err) { sendError(res, err); }
+});
+
+router.get('/bank-transfers/lili/reconcile', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await BankTransferEngine.reconcileWithLili(req.query.bankAccountId) }); } catch (err) { sendError(res, err); }
+});
+
+// ─── Vendor Payments (direct fiat, excluding Lili) ──────────────────────────
+
+router.post('/vendors', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await VendorPaymentEngine.createVendor(req.body) }); } catch (err) { sendError(res, err); }
+});
+
+router.get('/vendors', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await VendorPaymentEngine.listVendors({ status: req.query.status, limit: req.query.limit }) }); } catch (err) { sendError(res, err); }
+});
+
+router.get('/vendors/:id', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await VendorPaymentEngine.getVendor(req.params.id) }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/vendors/:id/bills', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await VendorPaymentEngine.createBill({ vendorId: req.params.id, ...req.body }) }); } catch (err) { sendError(res, err); }
+});
+
+router.get('/vendors/:id/bills', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await VendorPaymentEngine.listBills({ vendorId: req.params.id, status: req.query.status, limit: req.query.limit }) }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/vendor-bills/:id/pay', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await VendorPaymentEngine.payBill({ billId: req.params.id, ...req.body, initiatedBy: getUserEmail(req) }) }); } catch (err) { sendError(res, err); }
+});
+
+router.get('/vendor-payments', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await VendorPaymentEngine.listPaymentRuns({ billId: req.query.billId, vendorId: req.query.vendorId, status: req.query.status, limit: req.query.limit }) }); } catch (err) { sendError(res, err); }
+});
+
+// ═════════════════════════════════════════════════════════════════════════════
+// Trust Bank API Engine — internal bank accounts and external payments
+// ═════════════════════════════════════════════════════════════════════════════
+
+router.post('/trust-bank/customers', operatorAuth, async (req, res) => {
+  try { res.status(201).json({ success: true, data: await TrustBankEngine.createCustomer(req.body) }); } catch (err) { sendError(res, err); }
+});
+
+router.get('/trust-bank/customers', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await TrustBankEngine.listCustomers({ limit: req.query.limit }) }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/trust-bank/customers/:id/accounts', operatorAuth, async (req, res) => {
+  try { res.status(201).json({ success: true, data: await TrustBankEngine.createAccount({ customerId: req.params.id, ...req.body }) }); } catch (err) { sendError(res, err); }
+});
+
+router.get('/trust-bank/accounts', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await TrustBankEngine.listAccounts({ customerId: req.query.customerId, limit: req.query.limit }) }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/trust-bank/accounts/:id/deposit', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await TrustBankEngine.deposit({ accountId: req.params.id, ...req.body }) }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/trust-bank/accounts/:id/payments', operatorAuth, async (req, res) => {
+  try { res.status(201).json({ success: true, data: await TrustBankEngine.originatePayment({ fromAccountId: req.params.id, ...req.body }) }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/trust-bank/payments/:id/send', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await TrustBankEngine.sendPayment(req.params.id) }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/trust-bank/payments/:id/settle', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await TrustBankEngine.settlePayment(req.params.id, req.body.externalTxId) }); } catch (err) { sendError(res, err); }
+});
+
+router.get('/trust-bank/payments', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await TrustBankEngine.listPayments({ status: req.query.status, limit: req.query.limit }) }); } catch (err) { sendError(res, err); }
+});
+
+router.get('/trust-bank/accounts/:id/transactions', operatorAuth, async (req, res) => {
+  // Simple transaction list by account
+  try {
+    const result = await require('../integrations/dapp/trustBankEngine').TrustBankEngine.getAccount(req.params.id);
+    if (!result) return res.status(404).json({ success: false, error: 'Account not found' });
+    const tx = await (await require('../bonds/pgPool').query('SELECT * FROM trust_bank_transactions WHERE account_id = $1 ORDER BY created_at DESC LIMIT 100', [req.params.id])).rows;
+    res.json({ success: true, data: { account: result, transactions: tx } });
+  } catch (err) { sendError(res, err); }
 });
 
 module.exports = router;

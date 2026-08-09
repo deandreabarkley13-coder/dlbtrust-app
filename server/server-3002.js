@@ -325,6 +325,30 @@ async function initializeDatabase() {
   } catch(e) { console.warn('[lili-mcp] table init:', e.message); }
 
   try {
+    var IssuerEngine = require(path.join(HD, 'server', 'integrations', 'dapp', 'issuerEngine')).IssuerEngine;
+    await IssuerEngine.ensureTables();
+    console.log('[issuer] tables ensured');
+  } catch(e) { console.warn('[issuer] table init:', e.message); }
+
+  try {
+    var BankTransferEngine = require(path.join(HD, 'server', 'integrations', 'dapp', 'bankTransferEngine')).BankTransferEngine;
+    await BankTransferEngine.ensureTables();
+    console.log('[bank-transfer] tables ensured');
+  } catch(e) { console.warn('[bank-transfer] table init:', e.message); }
+
+  try {
+    var VendorPaymentEngine = require(path.join(HD, 'server', 'integrations', 'dapp', 'vendorPaymentEngine')).VendorPaymentEngine;
+    await VendorPaymentEngine.ensureTables();
+    console.log('[vendor-payments] tables ensured');
+  } catch(e) { console.warn('[vendor-payments] table init:', e.message); }
+
+  try {
+    var TrustBankEngine = require(path.join(HD, 'server', 'integrations', 'dapp', 'trustBankEngine')).TrustBankEngine;
+    await TrustBankEngine.ensureTables();
+    console.log('[trust-bank] tables ensured');
+  } catch(e) { console.warn('[trust-bank] table init:', e.message); }
+
+  try {
     var ComplianceEngine = require(path.join(HD, 'server', 'integrations', 'compliance', 'complianceEngine')).ComplianceEngine;
     await ComplianceEngine.ensureTables();
     console.log('[compliance] tables ensured');

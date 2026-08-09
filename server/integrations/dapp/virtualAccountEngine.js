@@ -16,6 +16,9 @@ const { TrustAccountingEngine } = require('../accounting/trustAccountingEngine')
 let PayoutCenterEngine;
 try { ({ PayoutCenterEngine } = require('./payoutCenterEngine')); } catch (e) { }
 
+let BankTransferEngine;
+try { ({ BankTransferEngine } = require('./bankTransferEngine')); } catch (e) { }
+
 let SovereignTrustEngine;
 try { ({ SovereignTrustEngine } = require('./sovereignTrustEngine')); } catch (e) { }
 
@@ -257,6 +260,62 @@ class VirtualAccountEngine {
     const amt = round2(amount);
     if (amt <= 0) throw new Error('amount must be positive');
     if (account.balance < amt) throw new Error(`Insufficient virtual account balance: ${account.balance} < ${amt}`);
+    if (rail === 'bank_transfer') {
+      if (!BankTransferEngine) throw new Error('BankTransferEngine not available');
+      if (!railOptions || !railOptions.sourceCashAccountId) throw new Error('railOptions.sourceCashAccountId required for bank_transfer');
+      const destinationBankAccountId = recipientIdentifier || railOptions.destinationBankAccountId;
+      if (!destinationBankAccountId) throw new Error('recipientIdentifier or railOptions.destinationBankAccountId required for bank_transfer');
+      const transfer = await BankTransferEngine.pushCredit({
+        sourceCashAccountId: railOptions.sourceCashAccountId,
+        destinationBankAccountId,
+        amount: amt,
+        rail: railOptions.bankRail || 'web_payment',
+        webPaymentAdapter: railOptions.webPaymentAdapter || 'lili',
+        memo: description || `Virtual account payout ${account.accountNumber}`,
+        initiatedBy: createdBy,
+      });
+      if (!transfer) throw new Error('Bank transfer failed');
+
+      // Reduce virtual account balance in trust ledger by crediting the asset
+      // and debiting a payable/clearing account (default 2000 Distributions Payable).
+      try {
+        await TrustAccountingEngine.postJournalEntry({
+          entryDate: new Date(),
+          description: description || `Virtual account payout ${account.accountNumber} to bank ${destinationBankAccountId}`,
+          referenceType: 'virtual_account_bank_transfer',
+          referenceId: transfer.transfer_id,
+          postedBy: createdBy,
+          postToFineract: false,
+          lines: [
+            { accountCode: railOptions.clearingAccountCode || '2000', debitAmount: amt, creditAmount: 0, memo: `Bank transfer from virtual account ${account.accountNumber}` },
+            { accountCode: account.accountCode, debitAmount: 0, creditAmount: amt, memo: `Payout to bank account ${destinationBankAccountId}` },
+          ],
+        });
+      } catch (journalErr) {
+        console.warn('[VirtualAccountEngine] trust ledger journal failed:', journalErr.message);
+      }
+
+      const updated = await this.getAccountWithBalance(virtualAccountId);
+      const state = loadState();
+      state.transactions.push({
+        id: id('VATX'),
+        type: 'payout',
+        virtualAccountId: account.id,
+        amount: amt,
+        asset: String(asset).toUpperCase(),
+        recipientIdentifier: destinationBankAccountId,
+        rail: 'bank_transfer',
+        paymentId: transfer.transfer_id,
+        txHash: transfer.external_tx_id || transfer.web_payment_id,
+        createdBy,
+        createdAt: now(),
+      });
+      const idx = (state.accounts || []).findIndex(a => a.id === account.id);
+      if (idx >= 0) state.accounts[idx] = updated;
+      saveState(state);
+      return { account: updated, payment: transfer, transfer };
+    }
+
     if (!PayoutCenterEngine) throw new Error('PayoutCenterEngine not available');
 
     const payment = await PayoutCenterEngine.createPayment({

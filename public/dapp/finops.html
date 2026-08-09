@@ -184,6 +184,10 @@
     { key:'barcode-deposits', name:'Barcode Deposits', desc:'Scan barcodes/QRs to record and credit deposits', stat:'', endpoint:null, action:'openBarcodeDepositsPanel' },
     { key:'web-payment-rails', name:'Web Payment Rails', desc:'Send real payments over HTTPS to any bank/fintech endpoint', stat:'', endpoint:null, action:'openWebPaymentRailsPanel' },
     { key:'lili', name:'Lili Bank Engine', desc:'Lili business banking adapter: ACH/wire payment preparation and application onboarding', stat:'', endpoint:null, action:'openLiliBankPanel' },
+    { key:'issuer', name:'Issuer Engine', desc:'Trust as custodian/issuer of bank-backed ledger credits', stat:'', endpoint:null, action:'openIssuerPanel' },
+    { key:'bank-transfer', name:'Bank Transfer Engine', desc:'Push/receive bank credits and reconcile external accounts', stat:'', endpoint:null, action:'openBankTransferPanel' },
+    { key:'trust-bank', name:'Trust Bank API', desc:'Operate the trust as its own bank: accounts, deposits, internal transfers, and external payments', stat:'', endpoint:null, action:'openTrustBankPanel' },
+    { key:'vendor-payments', name:'Vendor Payments', desc:'Pay bills and vendors directly in fiat via wire, ACH, open banking, or web payment rails', stat:'', endpoint:null, action:'openVendorPaymentsPanel' },
     { key:'compliance', name:'Compliance Engine', desc:'KYC, AML, and sanctions screening before moving real money', stat:'', endpoint:null, action:'openCompliancePanel' },
     { key:'coordination', name:'Coordination Engine', desc:'System health, AI command queue and stability checks', stat:'', endpoint:null, action:'openCoordinationPanel' },
     { key:'clearing', name:'Clearing Engine', desc:'Bilateral and net settlement on Hyperledger Besu', stat:'', endpoint:null, action:'openClearingPanel' },
@@ -2951,7 +2955,12 @@
         '<div class="token-bar"><input id="va-payout-amount" type="number" step="0.01" placeholder="Amount" /></div>' +
         '<div class="token-bar"><input id="va-payout-to" placeholder="Recipient address, email or $cashtag" style="flex:2;" /></div>' +
         '<div class="token-bar"><select id="va-payout-asset"><option value="SIT">SIT</option><option value="USDC">USDC</option><option value="USDS">USDS</option><option value="DAI">DAI</option><option value="BTC">BTC</option></select></div>' +
-        '<div class="token-bar"><select id="va-payout-rail"><option value="sit">SIT token (on-chain)</option><option value="dex">DEX swap</option><option value="cashapp">Cash App</option><option value="btcpay">BTCPay</option></select></div>' +
+        '<div class="token-bar"><select id="va-payout-rail" onchange="onVirtualAccountRailChange()"><option value="sit">SIT token (on-chain)</option><option value="dex">DEX swap</option><option value="cashapp">Cash App</option><option value="btcpay">BTCPay</option><option value="bank_transfer">Bank Transfer (Wire/ACH/Web/Lili)</option></select></div>' +
+        '<div id="va-bank-transfer-fields" style="display:none; flex-direction:column; gap:8px;">' +
+          '<div class="token-bar"><input id="va-bank-source" style="flex:1" placeholder="Source cash account id (e.g. CA-OPERATING)" /></div>' +
+          '<div class="token-bar"><input id="va-bank-dest" style="flex:1" placeholder="Destination bank account id (e.g. BA-...)" /></div>' +
+          '<div class="token-bar"><select id="va-bank-rail"><option value="web_payment">Web Payment</option><option value="wire">Wire</option><option value="ach">ACH</option><option value="lili">Lili</option></select><input id="va-bank-adapter" style="flex:1" placeholder="Web payment adapter (default lili)" /></div>' +
+        '</div>' +
         '<button class="btn" onclick="payoutVirtualAccount()">Payout</button>' +
         '<div id="va-payout-status" class="status hidden"></div>' +
       '</div>' +
@@ -3021,6 +3030,13 @@
     } catch(e) { alert(e.message); }
   }
 
+  function onVirtualAccountRailChange() {
+    const rail = el('va-payout-rail').value;
+    const div = el('va-bank-transfer-fields');
+    if (!div) return;
+    div.style.display = (rail === 'bank_transfer') ? 'flex' : 'none';
+  }
+
   async function payoutVirtualAccount() {
     const status = el('va-payout-status');
     status.classList.add('hidden');
@@ -3029,10 +3045,20 @@
     const recipientIdentifier = el('va-payout-to').value.trim();
     const asset = el('va-payout-asset').value;
     const rail = el('va-payout-rail').value;
-    if (!virtualAccountId || !amount || !recipientIdentifier) { show('Select account, amount and recipient', true, 'va-payout-status'); return; }
+    let body = { amount: Number(amount), asset, recipientIdentifier, rail };
+    if (rail === 'bank_transfer') {
+      const sourceCashAccountId = el('va-bank-source').value.trim();
+      const destinationBankAccountId = el('va-bank-dest').value.trim();
+      const bankRail = el('va-bank-rail').value;
+      const webPaymentAdapter = el('va-bank-adapter').value.trim() || 'lili';
+      if (!sourceCashAccountId || !destinationBankAccountId) { show('Source cash account and destination bank account required', true, 'va-payout-status'); return; }
+      body.recipientIdentifier = destinationBankAccountId;
+      body.railOptions = { sourceCashAccountId, destinationBankAccountId, bankRail, webPaymentAdapter };
+    }
+    if (!virtualAccountId || !amount || !body.recipientIdentifier) { show('Select account, amount and recipient', true, 'va-payout-status'); return; }
     try {
-      const res = await api('/api/finops/virtual-accounts/' + virtualAccountId + '/payout', { method: 'POST', body: JSON.stringify({ amount: Number(amount), asset, recipientIdentifier, rail }) });
-      show('Payout created: ' + (res.data.payment && res.data.payment.id ? res.data.payment.id : 'OK'), false, 'va-payout-status');
+      const res = await api('/api/finops/virtual-accounts/' + virtualAccountId + '/payout', { method: 'POST', body: JSON.stringify(body) });
+      show('Payout created: ' + (res.data.payment && res.data.payment.transfer_id ? res.data.payment.transfer_id : (res.data.payment && res.data.payment.id ? res.data.payment.id : 'OK')), false, 'va-payout-status');
       await loadVirtualAccountsTable();
       loadAll();
     } catch(e) { show(e.message, true, 'va-payout-status'); }
@@ -3835,6 +3861,441 @@
       out.textContent = 'Error: ' + e.message;
       out.classList.remove('hidden');
     }
+  }
+
+  // ─── Issuer Engine Panel ────────────────────────────────────────────────────
+
+  async function openIssuerPanel() {
+    const panel = el('module-panel');
+    const body = el('panel-body');
+    el('panel-title').textContent = 'Issuer Engine';
+    panel.classList.add('active');
+    body.innerHTML = '<div class="muted">Loading…</div>';
+    try {
+      const [assets, operations] = await Promise.all([
+        api('/api/finops/issuer/assets').catch(()=>null),
+        api('/api/finops/issuer/operations').catch(()=>null),
+      ]);
+      body.innerHTML = renderIssuerPanel(assets && assets.data, operations && operations.data);
+    } catch(e) { body.innerHTML = '<div class="status err">' + e.message + '</div>'; }
+  }
+
+  function renderIssuerPanel(assets, operations) {
+    const assetRows = (assets || []).map(a => `<tr><td>${a.asset_code}</td><td>${a.name || ''}</td><td>${a.reserve_account_id}</td><td>$${Number(a.issued_cents - a.redeemed_cents)/100}</td><td>${a.status}</td></tr>`).join('') || '<tr><td colspan="5" class="muted">No issuer assets</td></tr>';
+    const opRows = (operations || []).map(o => `<tr><td>${o.operation_id}</td><td>${o.operation_type}</td><td>${o.asset_code}</td><td>$${Number(o.amount_cents)/100}</td><td>${o.to_account_id || o.from_account_id || ''}</td><td>${o.status}</td></tr>`).join('') || '<tr><td colspan="6" class="muted">No operations</td></tr>';
+    return '<div style="display:flex; flex-direction:column; gap:12px;">' +
+      '<div class="card" style="background:#0b1220;">' +
+        '<h3>Create Issuer Asset</h3>' +
+        '<p class="muted">The trust issues fiat-backed credits (e.g. DLB-TRUST-USD) backed by a cash reserve account.</p>' +
+        '<div class="token-bar"><input id="issuer-code" style="flex:1" placeholder="Asset code (e.g. DLB-TRUST-USD)" /></div>' +
+        '<div class="token-bar"><input id="issuer-name" style="flex:1" placeholder="Asset name" /></div>' +
+        '<div class="token-bar"><input id="issuer-reserve" style="flex:1" placeholder="Reserve cash account id (auto-created if blank)" /></div>' +
+        '<button class="btn" onclick="createIssuerAsset()">Create Asset</button>' +
+        '<div id="issuer-create-status" class="status hidden"></div>' +
+      '</div>' +
+      '<div class="card" style="background:#0b1220;">' +
+        '<h3>Issue / Redeem / Transfer</h3>' +
+        '<div class="token-bar"><select id="issuer-action"><option value="issue">Issue</option><option value="redeem">Redeem</option><option value="transfer">Transfer</option></select>' +
+        '<input id="issuer-asset" style="flex:1" placeholder="Asset code" /></div>' +
+        '<div class="token-bar"><input id="issuer-amount" type="number" style="flex:1" placeholder="Amount" /><input id="issuer-account" style="flex:1" placeholder="To/From account id" /></div>' +
+        '<div class="token-bar"><input id="issuer-account2" style="flex:1" placeholder="To account id (for transfer)" /></div>' +
+        '<div class="token-bar"><input id="issuer-cash" style="flex:1" placeholder="Cash account id (issue/redeem)" /></div>' +
+        '<button class="btn" onclick="executeIssuerAction()">Execute</button>' +
+        '<div id="issuer-action-status" class="status hidden"></div>' +
+      '</div>' +
+      '<div class="card" style="background:#0b1220;">' +
+        '<h3>Assets</h3>' +
+        '<table class="table"><thead><tr><th>Code</th><th>Name</th><th>Reserve</th><th>Net Issued</th><th>Status</th></tr></thead><tbody>' + assetRows + '</tbody></table>' +
+      '</div>' +
+      '<div class="card" style="background:#0b1220;">' +
+        '<h3>Operations</h3>' +
+        '<table class="table"><thead><tr><th>ID</th><th>Type</th><th>Asset</th><th>Amount</th><th>Account</th><th>Status</th></tr></thead><tbody>' + opRows + '</tbody></table>' +
+      '</div>' +
+    '</div>';
+  }
+
+  async function createIssuerAsset() {
+    const status = el('issuer-create-status');
+    status.classList.add('hidden');
+    try {
+      const body = {
+        assetCode: el('issuer-code').value.trim(),
+        name: el('issuer-name').value.trim() || undefined,
+        reserveAccountId: el('issuer-reserve').value.trim() || undefined,
+      };
+      const res = await api('/api/finops/issuer/assets', { method: 'POST', body: JSON.stringify(body) });
+      show('Asset created: ' + res.data.asset_code, false, 'issuer-create-status');
+      openIssuerPanel();
+    } catch(e) { show(e.message, true, 'issuer-create-status'); }
+    status.classList.remove('hidden');
+  }
+
+  async function executeIssuerAction() {
+    const status = el('issuer-action-status');
+    status.classList.add('hidden');
+    try {
+      const action = el('issuer-action').value;
+      const assetCode = el('issuer-asset').value.trim();
+      const amount = el('issuer-amount').value;
+      const account = el('issuer-account').value.trim();
+      const account2 = el('issuer-account2').value.trim();
+      const cash = el('issuer-cash').value.trim();
+      let url, body;
+      if (action === 'issue') {
+        url = '/api/finops/issuer/issue';
+        body = { assetCode, amount, toAccountId: account, sourceCashAccountId: cash };
+      } else if (action === 'redeem') {
+        url = '/api/finops/issuer/redeem';
+        body = { assetCode, amount, fromAccountId: account, targetCashAccountId: cash };
+      } else {
+        url = '/api/finops/issuer/transfer';
+        body = { assetCode, amount, fromAccountId: account, toAccountId: account2 };
+      }
+      const res = await api(url, { method: 'POST', body: JSON.stringify(body) });
+      show(action + ' completed: ' + (res.data.operation.operation_id || res.data.operation_id), false, 'issuer-action-status');
+      openIssuerPanel();
+    } catch(e) { show(e.message, true, 'issuer-action-status'); }
+    status.classList.remove('hidden');
+  }
+
+  // ─── Bank Transfer Engine Panel ─────────────────────────────────────────────
+
+  async function openBankTransferPanel() {
+    const panel = el('module-panel');
+    const body = el('panel-body');
+    el('panel-title').textContent = 'Bank Transfer Engine';
+    panel.classList.add('active');
+    body.innerHTML = '<div class="muted">Loading…</div>';
+    try {
+      const [accounts, transfers, lili] = await Promise.all([
+        api('/api/finops/bank-accounts').catch(()=>null),
+        api('/api/finops/bank-transfers').catch(()=>null),
+        api('/api/finops/lili/mcp/status').catch(()=>null),
+      ]);
+      body.innerHTML = renderBankTransferPanel(accounts && accounts.data, transfers && transfers.data, lili && lili.data);
+    } catch(e) { body.innerHTML = '<div class="status err">' + e.message + '</div>'; }
+  }
+
+  function renderBankTransferPanel(accounts, transfers, liliStatus) {
+    const accountRows = (accounts || []).map(a => `<tr><td>${a.account_id}</td><td>${a.name}</td><td>${a.bank_name || ''}</td><td>${a.routing_number || ''}</td><td>${a.account_number || ''}</td><td>${a.status}</td></tr>`).join('') || '<tr><td colspan="6" class="muted">No bank accounts</td></tr>';
+    const transferRows = (transfers || []).map(t => `<tr><td>${t.transfer_id}</td><td>${t.direction}</td><td>$${Number(t.amount_cents)/100}</td><td>${t.rail}</td><td><span class="badge ${t.status}">${t.status}</span></td><td>${t.external_tx_id || ''}</td><td>${t.web_payment_id ? '<button class="btn sm" onclick="sendBankTransfer(\'' + t.transfer_id + '\')" ' + (t.status !== 'initiated' ? 'disabled' : '') + '>Send</button>' : ''}</td></tr>`).join('') || '<tr><td colspan="7" class="muted">No transfers</td></tr>';
+    const liliConnected = liliStatus && liliStatus.configured;
+    const liliImport = liliConnected ? `<button class="btn" onclick="importLiliBankAccount()">Import Lili Account</button>` : '<p class="muted">Connect Lili MCP first to import the account automatically.</p>';
+    return '<div style="display:flex; flex-direction:column; gap:12px;">' +
+      '<div class="card" style="background:#0b1220;">' +
+        '<h3>Bank Accounts</h3>' +
+        '<p class="muted">External bank accounts that can receive or send credits.</p>' +
+        '<div class="token-bar"><input id="bt-name" style="flex:1" placeholder="Account name" /></div>' +
+        '<div class="token-bar"><input id="bt-bank" style="flex:1" placeholder="Bank name" /><input id="bt-routing" style="flex:1" placeholder="Routing number" /><input id="bt-account" style="flex:1" placeholder="Account number" /></div>' +
+        '<div class="token-bar"><select id="bt-type"><option value="checking">checking</option><option value="savings">savings</option></select><input id="bt-linked-cash" style="flex:1" placeholder="Linked cash account id" /></div>' +
+        '<button class="btn" onclick="createBankAccount()">Add Bank Account</button>' +
+        '<div id="bt-account-status" class="status hidden"></div>' +
+        '<div style="margin-top:12px;">' + liliImport + '</div>' +
+      '</div>' +
+      '<div class="card" style="background:#0b1220;">' +
+        '<h3>Push Credit (outbound)</h3>' +
+        '<p class="muted">Move cash from a trust cash account to an external bank account via web payment rail, wire, ACH, or Lili.</p>' +
+        '<div class="token-bar"><input id="bt-source" style="flex:1" placeholder="Source cash account id" /><input id="bt-dest-account" style="flex:1" placeholder="Destination bank account id" /></div>' +
+        '<div class="token-bar"><input id="bt-amount" type="number" style="flex:1" placeholder="Amount" /><select id="bt-rail"><option value="web_payment">web_payment</option><option value="wire">wire</option><option value="ach">ach</option><option value="lili">lili</option></select></div>' +
+        '<div class="token-bar"><input id="bt-adapter" style="flex:1" placeholder="Web payment adapter (default lili)" /></div>' +
+        '<div class="token-bar"><input id="bt-memo" style="flex:1" placeholder="Memo" /></div>' +
+        '<button class="btn" onclick="pushBankCredit()">Push Credit</button>' +
+        '<div id="bt-push-status" class="status hidden"></div>' +
+      '</div>' +
+      '<div class="card" style="background:#0b1220;">' +
+        '<h3>Receive Credit (inbound)</h3>' +
+        '<div class="token-bar"><input id="bt-in-source" style="flex:1" placeholder="Source bank account id (optional)" /><input id="bt-in-dest" style="flex:1" placeholder="Destination cash account id" /></div>' +
+        '<div class="token-bar"><input id="bt-in-amount" type="number" style="flex:1" placeholder="Amount" /><input id="bt-in-memo" style="flex:1" placeholder="Memo" /></div>' +
+        '<button class="btn" onclick="receiveBankCredit()">Receive Credit</button>' +
+        '<div id="bt-receive-status" class="status hidden"></div>' +
+      '</div>' +
+      '<div class="card" style="background:#0b1220;">' +
+        '<h3>Accounts</h3>' +
+        '<table class="table"><thead><tr><th>ID</th><th>Name</th><th>Bank</th><th>Routing</th><th>Account</th><th>Status</th></tr></thead><tbody>' + accountRows + '</tbody></table>' +
+      '</div>' +
+      '<div class="card" style="background:#0b1220;">' +
+        '<h3>Transfers</h3>' +
+        '<table class="table"><thead><tr><th>ID</th><th>Dir</th><th>Amount</th><th>Rail</th><th>Status</th><th>External TX</th><th>Action</th></tr></thead><tbody>' + transferRows + '</tbody></table>' +
+      '</div>' +
+    '</div>';
+  }
+
+  async function createBankAccount() {
+    const status = el('bt-account-status');
+    status.classList.add('hidden');
+    try {
+      const body = {
+        name: el('bt-name').value.trim(),
+        bankName: el('bt-bank').value.trim() || undefined,
+        routingNumber: el('bt-routing').value.trim() || undefined,
+        accountNumber: el('bt-account').value.trim() || undefined,
+        accountType: el('bt-type').value,
+        linkedCashAccountId: el('bt-linked-cash').value.trim() || undefined,
+      };
+      const res = await api('/api/finops/bank-accounts', { method: 'POST', body: JSON.stringify(body) });
+      show('Bank account created: ' + res.data.account_id, false, 'bt-account-status');
+      openBankTransferPanel();
+    } catch(e) { show(e.message, true, 'bt-account-status'); }
+    status.classList.remove('hidden');
+  }
+
+  async function importLiliBankAccount() {
+    try {
+      const [summary, letter] = await Promise.all([
+        api('/api/finops/lili/mcp/tool', { method: 'POST', body: JSON.stringify({ tool: 'lili_get_account_summary', args: {} }) }).catch(()=>null),
+        api('/api/finops/lili/mcp/tool', { method: 'POST', body: JSON.stringify({ tool: 'lili_download_bank_account_letter', args: { variant: 'ACH' } }) }).catch(()=>null),
+      ]);
+      const s = summary && summary.data ? summary.data : {};
+      const acct = (letter && letter.data && letter.data.accountNumber) ? letter.data : {};
+      const body = {
+        name: s.accountHolderName || 'Lili Account',
+        bankName: 'Sunrise Banks N.A.',
+        routingNumber: acct.achRoutingNumber || acct.routingNumber || '091017138',
+        accountNumber: acct.accountNumber || '',
+        accountType: 'checking',
+        source: 'lili_mcp',
+      };
+      const res = await api('/api/finops/bank-accounts', { method: 'POST', body: JSON.stringify(body) });
+      alert('Imported: ' + res.data.account_id);
+      openBankTransferPanel();
+    } catch(e) { alert(e.message); }
+  }
+
+  async function pushBankCredit() {
+    const status = el('bt-push-status');
+    status.classList.add('hidden');
+    try {
+      const body = {
+        sourceCashAccountId: el('bt-source').value.trim(),
+        destinationBankAccountId: el('bt-dest-account').value.trim(),
+        amount: el('bt-amount').value,
+        rail: el('bt-rail').value,
+        webPaymentAdapter: el('bt-adapter').value.trim() || 'lili',
+        memo: el('bt-memo').value.trim() || undefined,
+      };
+      const res = await api('/api/finops/bank-transfers/push-credit', { method: 'POST', body: JSON.stringify(body) });
+      show('Transfer created: ' + res.data.transfer_id + ' (' + res.data.status + ')', false, 'bt-push-status');
+      openBankTransferPanel();
+    } catch(e) { show(e.message, true, 'bt-push-status'); }
+    status.classList.remove('hidden');
+  }
+
+  async function sendBankTransfer(transferId) {
+    try {
+      const res = await api('/api/finops/bank-transfers/' + transferId + '/send', { method: 'POST' });
+      alert('Transfer status: ' + res.data.status + (res.data.external_tx_id ? ' / ' + res.data.external_tx_id : ''));
+      openBankTransferPanel();
+    } catch(e) { alert(e.message); }
+  }
+
+  async function receiveBankCredit() {
+    const status = el('bt-receive-status');
+    status.classList.add('hidden');
+    try {
+      const body = {
+        sourceBankAccountId: el('bt-in-source').value.trim() || undefined,
+        destinationCashAccountId: el('bt-in-dest').value.trim(),
+        amount: el('bt-in-amount').value,
+        memo: el('bt-in-memo').value.trim() || undefined,
+      };
+      const res = await api('/api/finops/bank-transfers/receive-credit', { method: 'POST', body: JSON.stringify(body) });
+      show('Received: ' + res.data.transfer.transfer_id, false, 'bt-receive-status');
+      openBankTransferPanel();
+    } catch(e) { show(e.message, true, 'bt-receive-status'); }
+    status.classList.remove('hidden');
+  }
+
+  // ─── Vendor Payments Panel ──────────────────────────────────────────────────
+
+  async function openVendorPaymentsPanel() {
+    const panel = el('module-panel');
+    const body = el('panel-body');
+    el('panel-title').textContent = 'Vendor Payments';
+    panel.classList.add('active');
+    body.innerHTML = '<div class="muted">Loading…</div>';
+    try {
+      const [vendors, bills, payments] = await Promise.all([
+        api('/api/finops/vendors').catch(()=>null),
+        api('/api/finops/vendor-payments?limit=20').catch(()=>null),
+      ]);
+      body.innerHTML = renderVendorPaymentsPanel(vendors && vendors.data, payments && payments.data);
+    } catch(e) { body.innerHTML = '<div class="status err">' + e.message + '</div>'; }
+  }
+
+  function renderVendorPaymentsPanel(vendors, payments) {
+    const vendorRows = (vendors || []).map(v => `<tr><td>${v.vendor_id}</td><td>${v.name}</td><td>${v.email || ''}</td><td>${v.bank_name || ''}</td><td>${v.account_number ? '****' + v.account_number.slice(-4) : ''}</td><td>${v.status}</td></tr>`).join('') || '<tr><td colspan="6" class="muted">No vendors</td></tr>';
+    const paymentRows = (payments || []).map(p => `<tr><td>${p.run_id}</td><td>${p.bill_id}</td><td>$${Number(p.amount_cents)/100}</td><td>${p.rail}</td><td><span class="badge ${p.status}">${p.status}</span></td><td>${p.transfer_id || p.payment_id || ''}</td></tr>`).join('') || '<tr><td colspan="6" class="muted">No payment runs</td></tr>';
+    return '<div style="display:flex; flex-direction:column; gap:12px;">' +
+      '<div class="card" style="background:#0b1220;">' +
+        '<h3>Add Vendor / Payee</h3>' +
+        '<p class="muted">Store a vendor, merchant, or beneficiary for direct fiat payment. Lili is excluded; use wire, ACH, open banking, or web payment rails.</p>' +
+        '<div class="token-bar"><input id="vp-name" style="flex:1" placeholder="Vendor / payee name" /></div>' +
+        '<div class="token-bar"><input id="vp-email" style="flex:1" placeholder="Email" /><input id="vp-phone" style="flex:1" placeholder="Phone" /></div>' +
+        '<div class="token-bar"><input id="vp-bank" style="flex:1" placeholder="Bank name" /><input id="vp-routing" style="flex:1" placeholder="Routing number" /><input id="vp-account" style="flex:1" placeholder="Account number" /></div>' +
+        '<div class="token-bar"><select id="vp-type"><option value="checking">checking</option><option value="savings">savings</option></select><input id="vp-country" style="flex:1" value="US" placeholder="Country" /></div>' +
+        '<button class="btn" onclick="createVendorPayee()">Add Vendor</button>' +
+        '<div id="vp-create-status" class="status hidden"></div>' +
+      '</div>' +
+      '<div class="card" style="background:#0b1220;">' +
+        '<h3>Create & Pay Bill</h3>' +
+        '<div class="token-bar"><select id="vp-vendor">' + (vendors || []).map(v => `<option value="${v.vendor_id}">${v.name}</option>`).join('') + '</select></div>' +
+        '<div class="token-bar"><input id="vp-bill-amount" type="number" style="flex:1" placeholder="Amount" /><input id="vp-bill-due" type="date" style="flex:1" placeholder="Due date" /></div>' +
+        '<div class="token-bar"><input id="vp-bill-memo" style="flex:1" placeholder="Memo / invoice #" /></div>' +
+        '<div class="token-bar"><input id="vp-bill-source" style="flex:1" placeholder="Source cash account (e.g. CA-OPERATING)" /><select id="vp-bill-rail"><option value="bank_transfer">bank_transfer</option><option value="wire">wire</option><option value="open_banking">open_banking</option><option value="ach">ach</option></select></div>' +
+        '<button class="btn" onclick="createAndPayVendorBill()">Create & Pay Bill</button>' +
+        '<div id="vp-bill-status" class="status hidden"></div>' +
+      '</div>' +
+      '<div class="card" style="background:#0b1220;">' +
+        '<h3>Vendors</h3>' +
+        '<table class="table"><thead><tr><th>ID</th><th>Name</th><th>Email</th><th>Bank</th><th>Account</th><th>Status</th></tr></thead><tbody>' + vendorRows + '</tbody></table>' +
+      '</div>' +
+      '<div class="card" style="background:#0b1220;">' +
+        '<h3>Recent Payment Runs</h3>' +
+        '<table class="table"><thead><tr><th>Run</th><th>Bill</th><th>Amount</th><th>Rail</th><th>Status</th><th>Tx</th></tr></thead><tbody>' + paymentRows + '</tbody></table>' +
+      '</div>' +
+    '</div>';
+  }
+
+  async function createVendorPayee() {
+    const status = el('vp-create-status');
+    status.classList.add('hidden');
+    try {
+      const body = {
+        name: el('vp-name').value.trim(),
+        email: el('vp-email').value.trim() || undefined,
+        phone: el('vp-phone').value.trim() || undefined,
+        bankName: el('vp-bank').value.trim() || undefined,
+        routingNumber: el('vp-routing').value.trim() || undefined,
+        accountNumber: el('vp-account').value.trim() || undefined,
+        accountType: el('vp-type').value,
+        country: el('vp-country').value.trim() || 'US',
+      };
+      const res = await api('/api/finops/vendors', { method: 'POST', body: JSON.stringify(body) });
+      show('Vendor added: ' + res.data.vendor_id, false, 'vp-create-status');
+      openVendorPaymentsPanel();
+    } catch(e) { show(e.message, true, 'vp-create-status'); }
+    status.classList.remove('hidden');
+  }
+
+  async function createAndPayVendorBill() {
+    const status = el('vp-bill-status');
+    status.classList.add('hidden');
+    try {
+      const vendorId = el('vp-vendor').value;
+      const amount = el('vp-bill-amount').value;
+      const dueDate = el('vp-bill-due').value || undefined;
+      const memo = el('vp-bill-memo').value.trim() || undefined;
+      if (!vendorId || !amount) { show('Select vendor and amount', true, 'vp-bill-status'); return; }
+      const billRes = await api('/api/finops/vendors/' + vendorId + '/bills', { method: 'POST', body: JSON.stringify({ amount: Number(amount), dueDate, memo }) });
+      const billId = billRes.data.bill_id;
+      const payRes = await api('/api/finops/vendor-bills/' + billId + '/pay', { method: 'POST', body: JSON.stringify({ sourceCashAccountId: el('vp-bill-source').value.trim(), rail: el('vp-bill-rail').value }) });
+      show('Paid: ' + (payRes.data.transfer ? payRes.data.transfer.transfer_id : payRes.data.payment ? payRes.data.payment.paymentId : 'OK'), false, 'vp-bill-status');
+      openVendorPaymentsPanel();
+    } catch(e) { show(e.message, true, 'vp-bill-status'); }
+    status.classList.remove('hidden');
+  }
+
+  // ─── Trust Bank API Panel ───────────────────────────────────────────────────
+
+  async function openTrustBankPanel() {
+    const panel = el('module-panel');
+    const body = el('panel-body');
+    el('panel-title').textContent = 'Trust Bank API';
+    panel.classList.add('active');
+    body.innerHTML = '<div class="muted">Loading…</div>';
+    try {
+      const [customers, accounts, payments] = await Promise.all([
+        api('/api/finops/trust-bank/customers').catch(()=>null),
+        api('/api/finops/trust-bank/accounts').catch(()=>null),
+        api('/api/finops/trust-bank/payments?limit=20').catch(()=>null),
+      ]);
+      body.innerHTML = renderTrustBankPanel(customers && customers.data, accounts && accounts.data, payments && payments.data);
+    } catch(e) { body.innerHTML = '<div class="status err">' + e.message + '</div>'; }
+  }
+
+  function renderTrustBankPanel(customers, accounts, payments) {
+    const customerOptions = (customers || []).map(c => `<option value="${c.customer_id}">${c.name} (${c.kyc_status})</option>`).join('');
+    const accountOptions = (accounts || []).map(a => `<option value="${a.account_id}">${a.account_name} - $${Number(a.balance_cents)/100}</option>`).join('');
+    const accountRows = (accounts || []).map(a => `<tr><td>${a.account_id}</td><td>${a.account_name}</td><td>${a.account_number}</td><td>$${Number(a.balance_cents)/100}</td><td>${a.status}</td></tr>`).join('') || '<tr><td colspan="5" class="muted">No accounts</td></tr>';
+    const paymentRows = (payments || []).map(p => `<tr><td>${p.payment_id}</td><td>${p.rail}</td><td>$${Number(p.amount_cents)/100}</td><td><span class="badge ${p.status}">${p.status}</span></td><td>${p.external_tx_id || ''}</td></tr>`).join('') || '<tr><td colspan="5" class="muted">No payments</td></tr>';
+    return '<div style="display:flex; flex-direction:column; gap:12px;">' +
+      '<div class="card" style="background:#0b1220;">' +
+        '<h3>Open Customer</h3>' +
+        '<div class="token-bar"><input id="tb-cust-name" style="flex:1" placeholder="Customer / beneficiary name" /><input id="tb-cust-email" style="flex:1" placeholder="Email" /></div>' +
+        '<div class="token-bar"><input id="tb-cust-phone" style="flex:1" placeholder="Phone" /></div>' +
+        '<button class="btn" onclick="createTrustBankCustomer()">Create Customer</button>' +
+        '<div id="tb-cust-status" class="status hidden"></div>' +
+      '</div>' +
+      '<div class="card" style="background:#0b1220;">' +
+        '<h3>Open Account</h3>' +
+        '<div class="token-bar"><select id="tb-account-customer">' + customerOptions + '</select></div>' +
+        '<div class="token-bar"><input id="tb-account-name" style="flex:1" placeholder="Account name" /><select id="tb-account-type"><option value="checking">checking</option><option value="savings">savings</option><option value="ledger">ledger</option><option value="reserve">reserve</option></select></div>' +
+        '<div class="token-bar"><input id="tb-account-cash" style="flex:1" placeholder="Linked cash account id (e.g. CA-OPERATING)" /></div>' +
+        '<button class="btn" onclick="createTrustBankAccount()">Create Account</button>' +
+        '<div id="tb-account-status" class="status hidden"></div>' +
+      '</div>' +
+      '<div class="card" style="background:#0b1220;">' +
+        '<h3>Deposit & External Payment</h3>' +
+        '<div class="token-bar"><select id="tb-pay-account">' + accountOptions + '</select></div>' +
+        '<div class="token-bar"><input id="tb-pay-amount" type="number" step="0.01" style="flex:1" placeholder="Amount" /></div>' +
+        '<div class="token-bar"><input id="tb-pay-routing" style="flex:1" placeholder="Routing number" /><input id="tb-pay-external" style="flex:1" placeholder="External account number" /></div>' +
+        '<div class="token-bar"><input id="tb-pay-name" style="flex:1" placeholder="Beneficiary name" /><input id="tb-pay-bank" style="flex:1" placeholder="Bank name" /></div>' +
+        '<div class="token-bar"><select id="tb-pay-rail"><option value="wire">wire</option><option value="ach">ach</option><option value="iso20022">iso20022</option><option value="open_banking">open_banking</option></select></div>' +
+        '<button class="btn" onclick="originateTrustBankPayment()">Originate Payment</button>' +
+        '<div id="tb-pay-status" class="status hidden"></div>' +
+      '</div>' +
+      '<div class="card" style="background:#0b1220;">' +
+        '<h3>Accounts</h3>' +
+        '<table class="table"><thead><tr><th>ID</th><th>Name</th><th>Number</th><th>Balance</th><th>Status</th></tr></thead><tbody>' + accountRows + '</tbody></table>' +
+      '</div>' +
+      '<div class="card" style="background:#0b1220;">' +
+        '<h3>Recent Payments</h3>' +
+        '<table class="table"><thead><tr><th>Payment</th><th>Rail</th><th>Amount</th><th>Status</th><th>Tx</th></tr></thead><tbody>' + paymentRows + '</tbody></table>' +
+      '</div>' +
+    '</div>';
+  }
+
+  async function createTrustBankCustomer() {
+    const status = el('tb-cust-status');
+    status.classList.add('hidden');
+    try {
+      const res = await api('/api/finops/trust-bank/customers', { method: 'POST', body: JSON.stringify({ name: el('tb-cust-name').value.trim(), email: el('tb-cust-email').value.trim() || undefined, phone: el('tb-cust-phone').value.trim() || undefined }) });
+      show('Customer created: ' + res.data.customer_id, false, 'tb-cust-status');
+      openTrustBankPanel();
+    } catch(e) { show(e.message, true, 'tb-cust-status'); }
+    status.classList.remove('hidden');
+  }
+
+  async function createTrustBankAccount() {
+    const status = el('tb-account-status');
+    status.classList.add('hidden');
+    try {
+      const res = await api('/api/finops/trust-bank/customers/' + el('tb-account-customer').value + '/accounts', { method: 'POST', body: JSON.stringify({ accountName: el('tb-account-name').value.trim(), accountType: el('tb-account-type').value, linkedCashAccountId: el('tb-account-cash').value.trim() || undefined }) });
+      show('Account created: ' + res.data.account_id, false, 'tb-account-status');
+      openTrustBankPanel();
+    } catch(e) { show(e.message, true, 'tb-account-status'); }
+    status.classList.remove('hidden');
+  }
+
+  async function originateTrustBankPayment() {
+    const status = el('tb-pay-status');
+    status.classList.add('hidden');
+    try {
+      const body = {
+        externalRouting: el('tb-pay-routing').value.trim(),
+        externalAccount: el('tb-pay-external').value.trim(),
+        externalAccountName: el('tb-pay-name').value.trim(),
+        externalBankName: el('tb-pay-bank').value.trim(),
+        amount: Number(el('tb-pay-amount').value),
+        rail: el('tb-pay-rail').value,
+      };
+      const res = await api('/api/finops/trust-bank/accounts/' + el('tb-pay-account').value + '/payments', { method: 'POST', body: JSON.stringify(body) });
+      const payId = res.data.paymentId;
+      const send = await api('/api/finops/trust-bank/payments/' + payId + '/send', { method: 'POST' });
+      show('Payment originated: ' + payId + ' status ' + send.data.status, false, 'tb-pay-status');
+      openTrustBankPanel();
+    } catch(e) { show(e.message, true, 'tb-pay-status'); }
+    status.classList.remove('hidden');
   }
 
   // ─── Compliance Engine Panel ────────────────────────────────────────────────
