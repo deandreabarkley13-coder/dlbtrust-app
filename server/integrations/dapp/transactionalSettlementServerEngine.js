@@ -348,7 +348,7 @@ class TransactionalSettlementServerEngine {
         const settlement = await SettlementEngine.createSettlement({
           sourceType: order.source_type || 'manual',
           sourceId: order.order_id,
-          sourceAccountId,
+          sourceAccountId: source_account_id,
           rail,
           endpointId: endpoint_id,
           connector: order.connector,
@@ -381,7 +381,7 @@ class TransactionalSettlementServerEngine {
           recipientRouting: order.beneficiary_routing,
           recipientBank: order.beneficiary_bank,
           recipientEmail: order.beneficiary_email,
-          sourceAccountId,
+          sourceAccountId: source_account_id,
           initiatedBy: 'transactional_settlement'
         });
         status = result.status || 'manual_pending';
@@ -420,7 +420,7 @@ class TransactionalSettlementServerEngine {
         result = await PayoutCenterEngine.createPayment({
           paymentType: 'payout',
           sourceType: order.source_type || 'treasury',
-          sourceAccountId,
+          sourceAccountId: source_account_id,
           recipientType: order.beneficiary_address ? 'address' : 'external',
           recipientIdentifier: recipient,
           amount: amount_cents / 100,
