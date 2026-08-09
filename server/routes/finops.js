@@ -37,6 +37,7 @@ const { OpenBankingEngine } = require('../integrations/dapp/openBankingEngine');
 const { TrustDepositEngine } = require('../integrations/dapp/trustDepositEngine');
 const { SkrillLinkEngine } = require('../integrations/payments/skrillLinkEngine');
 const { BarcodeDepositEngine } = require('../integrations/payments/barcodeDepositEngine');
+const { WebPaymentRailEngine } = require('../integrations/payments/webPaymentRailEngine');
 let CashEngine;
 try { ({ CashEngine } = require('../integrations/cash/cashEngine')); } catch (e) { CashEngine = null; }
 
@@ -1288,6 +1289,41 @@ router.post('/barcode-deposits/:id/approve', operatorAuth, writeRateLimiter(), a
 
 router.post('/barcode-deposits/:id/cancel', operatorAuth, writeRateLimiter(), async (req, res) => {
   try { res.json({ success: true, data: await BarcodeDepositEngine.cancelDeposit(req.params.id) }); } catch (err) { sendError(res, err); }
+});
+
+// ─── Web HTTPS Payment Rail Engine ───────────────────────────────────────────────
+
+router.get('/web-payment-rails/configs', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await WebPaymentRailEngine.listConfigs() }); } catch (err) { sendError(res, err); }
+});
+
+router.get('/web-payment-rails', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await WebPaymentRailEngine.listPayments(req.query) }); } catch (err) { sendError(res, err); }
+});
+
+router.get('/web-payment-rails/:id', operatorAuth, async (req, res) => {
+  try {
+    const data = await WebPaymentRailEngine.getPayment(req.params.id);
+    if (!data) return res.status(404).json({ success: false, error: 'Web payment not found' });
+    res.json({ success: true, data });
+  } catch (err) { sendError(res, err); }
+});
+
+router.post('/web-payment-rails', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try { res.status(201).json({ success: true, data: await WebPaymentRailEngine.createPayment({ ...req.body, initiatedBy: getUserEmail(req) }) }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/web-payment-rails/:id/send', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try { res.json({ success: true, data: await WebPaymentRailEngine.sendPayment(req.params.id) }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/web-payment-rails/:id/cancel', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try { res.json({ success: true, data: await WebPaymentRailEngine.cancelPayment(req.params.id) }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/web-payment-rails/webhook/:id', async (req, res) => {
+  try { res.json({ success: true, data: await WebPaymentRailEngine.processWebhook({ paymentId: req.params.id, raw: req.body, ...req.body }) }); }
+  catch (err) { sendError(res, err); }
 });
 
 module.exports = router;

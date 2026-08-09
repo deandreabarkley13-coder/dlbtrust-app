@@ -182,6 +182,7 @@
     { key:'fineract-payouts', name:'Fineract/Mifos Payouts', desc:'Withdraw from Fineract/Mifos savings and route externally via Open Banking or Wire', stat:'', endpoint:null, action:'openFineractPayoutsPanel' },
     { key:'skrill-links', name:'Skrill Links', desc:'Pay Skrill.me/rq request links from the trust ledger', stat:'', endpoint:null, action:'openSkrillLinksPanel' },
     { key:'barcode-deposits', name:'Barcode Deposits', desc:'Scan barcodes/QRs to record and credit deposits', stat:'', endpoint:null, action:'openBarcodeDepositsPanel' },
+    { key:'web-payment-rails', name:'Web Payment Rails', desc:'Send real payments over HTTPS to any bank/fintech endpoint', stat:'', endpoint:null, action:'openWebPaymentRailsPanel' },
     { key:'coordination', name:'Coordination Engine', desc:'System health, AI command queue and stability checks', stat:'', endpoint:null, action:'openCoordinationPanel' },
     { key:'clearing', name:'Clearing Engine', desc:'Bilateral and net settlement on Hyperledger Besu', stat:'', endpoint:null, action:'openClearingPanel' },
     { key:'redemption-gateway', name:'Redemption Gateway', desc:'Bridge DLB-PTCUSD to external clearing/stablecoin rails', stat:'', endpoint:null, action:'openRedemptionGatewayPanel' },
@@ -375,6 +376,7 @@
         api('/api/fineract/payouts').catch(()=>null),
         api('/api/finops/skrill-links').catch(()=>null),
         api('/api/finops/barcode-deposits').catch(()=>null),
+        api('/api/finops/web-payment-rails').catch(()=>null),
       ]);
       const balances = normalizeBalances(sof && sof.data);
       if (balances.length) {
@@ -462,6 +464,11 @@
       if (barcodeDeposits && barcodeDeposits.data && Array.isArray(barcodeDeposits.data)) {
         const pending = barcodeDeposits.data.filter(d => d.status === 'pending').length;
         setStat('barcode-deposits', String(pending));
+      }
+      const webPayments = results[20];
+      if (webPayments && webPayments.data && Array.isArray(webPayments.data)) {
+        const pending = webPayments.data.filter(d => d.status === 'pending').length;
+        setStat('web-payment-rails', String(pending));
       }
       renderModules();
     } catch(e) { console.error('loadAll error', e); }
@@ -3643,6 +3650,83 @@
       loadAll();
     } catch(e) { show(e.message, true, 'bcd-create-status'); }
     status.classList.remove('hidden');
+  }
+
+  // ─── Web HTTPS Payment Rails Panel ───────────────────────────────────────────
+
+  async function openWebPaymentRailsPanel() {
+    const panel = el('module-panel');
+    const body = el('panel-body');
+    el('panel-title').textContent = 'Web HTTPS Payment Rails';
+    panel.classList.add('active');
+    body.innerHTML = '<div class="muted">Loading…</div>';
+    try {
+      const [configs, payments] = await Promise.all([
+        api('/api/finops/web-payment-rails/configs').catch(()=>null),
+        api('/api/finops/web-payment-rails').catch(()=>null),
+      ]);
+      body.innerHTML = renderWebPaymentRailsPanel(configs && configs.data, payments && payments.data);
+    } catch(e) { body.innerHTML = '<div class="status err">' + e.message + '</div>'; }
+  }
+
+  function renderWebPaymentRailsPanel(configs, items) {
+    const configRows = (configs || []).map(c => `<tr><td>${c.adapterName}</td><td>${c.ready ? 'Ready' : 'No endpoint'}</td><td>${c.endpoint || ''}</td><td>${c.method}</td></tr>`).join('') || '<tr><td colspan="4" class="muted">No adapters configured</td></tr>';
+    const rows = (items || []).map(p => `<tr><td>${p.payment_id}</td><td>${p.adapter_name || 'default'}</td><td>$${Number(p.amount_cents || 0)/100} ${p.currency || ''}</td><td>${p.recipient_name || ''}</td><td>${p.status}</td><td>${p.external_tx_id || ''}</td><td><button class="btn sm" onclick="sendWebPayment('${p.payment_id}')" ${p.status !== 'pending' ? 'disabled' : ''}>Send</button></td></tr>`).join('') || '<tr><td colspan="7" class="muted">No web payments yet</td></tr>';
+    return '<div style="display:flex; flex-direction:column; gap:12px;">' +
+      '<div class="card" style="background:#0b1220;">' +
+        '<h3>New Web HTTPS Payment</h3>' +
+        '<p class="muted">Post a payment instruction to any HTTPS endpoint. Configure adapter via env/system_settings (WEB_PAYMENT_RAIL_*).</p>' +
+        '<div class="token-bar"><input id="wpr-adapter" style="flex:1" placeholder="Adapter name (default)" /></div>' +
+        '<div class="token-bar"><input id="wpr-source" style="flex:1" placeholder="Source cash account id (e.g. CA-OPERATING)" /></div>' +
+        '<div class="token-bar"><input id="wpr-amount" type="number" style="flex:1" placeholder="Amount" />' +
+        '<select id="wpr-currency"><option value="USD">USD</option><option value="EUR">EUR</option><option value="GBP">GBP</option></select></div>' +
+        '<div class="token-bar"><input id="wpr-name" style="flex:1" placeholder="Recipient name" /></div>' +
+        '<div class="token-bar"><input id="wpr-account" style="flex:1" placeholder="Recipient account / wallet" /></div>' +
+        '<div class="token-bar"><input id="wpr-bank" style="flex:1" placeholder="Recipient bank / network" /></div>' +
+        '<div class="token-bar"><input id="wpr-routing" style="flex:1" placeholder="Routing / sort code / IBAN" /></div>' +
+        '<button class="btn" onclick="createWebPayment()">Create Payment</button>' +
+        '<div id="wpr-create-status" class="status hidden"></div>' +
+      '</div>' +
+      '<div class="card" style="background:#0b1220;">' +
+        '<h3>Configured Adapters</h3>' +
+        '<table class="table"><thead><tr><th>Adapter</th><th>Status</th><th>Endpoint</th><th>Method</th></tr></thead><tbody>' + configRows + '</tbody></table>' +
+      '</div>' +
+      '<div class="card" style="background:#0b1220;">' +
+        '<h3>Recent Web Payments</h3>' +
+        '<table class="table"><thead><tr><th>Payment ID</th><th>Adapter</th><th>Amount</th><th>Recipient</th><th>Status</th><th>External TX</th><th>Action</th></tr></thead><tbody>' + rows + '</tbody></table>' +
+      '</div>' +
+    '</div>';
+  }
+
+  async function createWebPayment() {
+    const status = el('wpr-create-status');
+    status.classList.add('hidden');
+    try {
+      const body = {
+        adapterName: el('wpr-adapter').value.trim() || 'default',
+        sourceAccountId: el('wpr-source').value.trim() || undefined,
+        amount: el('wpr-amount').value,
+        currency: el('wpr-currency').value,
+        recipientName: el('wpr-name').value.trim() || undefined,
+        recipientAccount: el('wpr-account').value.trim() || undefined,
+        recipientBank: el('wpr-bank').value.trim() || undefined,
+        recipientRouting: el('wpr-routing').value.trim() || undefined,
+      };
+      const res = await api('/api/finops/web-payment-rails', { method: 'POST', body: JSON.stringify(body) });
+      show('Payment created: ' + res.data.payment_id, false, 'wpr-create-status');
+      openWebPaymentRailsPanel();
+      loadAll();
+    } catch(e) { show(e.message, true, 'wpr-create-status'); }
+    status.classList.remove('hidden');
+  }
+
+  async function sendWebPayment(paymentId) {
+    try {
+      const res = await api('/api/finops/web-payment-rails/' + paymentId + '/send', { method: 'POST' });
+      alert('Payment ' + paymentId + ' status: ' + res.data.status);
+      openWebPaymentRailsPanel();
+      loadAll();
+    } catch(e) { alert(e.message); }
   }
 
   window.addEventListener('DOMContentLoaded', () => {

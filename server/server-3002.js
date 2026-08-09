@@ -307,6 +307,12 @@ async function initializeDatabase() {
   } catch(e) { console.warn('[barcode-deposit] table init:', e.message); }
 
   try {
+    var WebPaymentRailEngine = require(path.join(HD, 'server', 'integrations', 'payments', 'webPaymentRailEngine')).WebPaymentRailEngine;
+    await WebPaymentRailEngine.ensureTables();
+    console.log('[web-payment-rail] tables ensured');
+  } catch(e) { console.warn('[web-payment-rail] table init:', e.message); }
+
+  try {
     var TrusteeAgent = require(path.join(HD, 'server', 'integrations', 'agents', 'trusteeAgent')).TrusteeAgent;
     var BookkeepingAgent = require(path.join(HD, 'server', 'integrations', 'agents', 'bookkeepingAgent')).BookkeepingAgent;
     await TrusteeAgent.ensureTables();
