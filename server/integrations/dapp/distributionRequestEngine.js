@@ -326,7 +326,7 @@ class DistributionRequestEngine {
     }
 
     const updated = await this._update(requestId, updates);
-    const result = this._rowToObject(updated);
+    let result = this._rowToObject(updated);
 
     try {
       if (MessagingEngine) {
