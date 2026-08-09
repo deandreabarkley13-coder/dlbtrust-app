@@ -140,10 +140,16 @@ function serveFinops(req, res) {
   res.set('Expires', '0');
   res.sendFile(path.join(HD, 'public', 'dapp', 'finops.html'));
 }
+function serveTrustDashboard(req, res) {
+  res.set('Cache-Control', 'no-cache, no-store, must-revalidate');
+  res.set('Pragma', 'no-cache');
+  res.set('Expires', '0');
+  res.sendFile(path.join(HD, 'public', 'dapp', 'trust-dashboard.html'));
+}
 app.get('/', serveLanding);
 app.get('/dapp', serveDapp);
 app.get('/finops', serveFinops);
-app.get('/dashboard', serveDapp);
+app.get('/dashboard', serveTrustDashboard);
 app.get('/treasury', function(req, res) {
   res.set('Cache-Control', 'no-cache, no-store, must-revalidate');
   res.set('Pragma', 'no-cache');
