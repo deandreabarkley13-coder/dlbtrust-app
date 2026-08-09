@@ -1161,7 +1161,7 @@ router.post('/electronic-money/payout', operatorAuth, writeRateLimiter(), async 
 // ═════════════════════════════════════════════════════════════════════════════
 
 router.get('/open-banking/connectors', operatorAuth, async (req, res) => {
-  try { res.json({ success: true, data: OpenBankingEngine.getConnectors() }); } catch (err) { sendError(res, err); }
+  try { res.json({ success: true, data: await OpenBankingEngine.getConnectors() }); } catch (err) { sendError(res, err); }
 });
 
 router.get('/open-banking/payments', operatorAuth, async (req, res) => {
