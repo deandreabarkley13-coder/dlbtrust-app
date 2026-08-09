@@ -181,6 +181,7 @@
     { key:'trust-deposits', name:'Trust Deposits', desc:'Script deposits to bank, e-money, or wallet destinations', stat:'', endpoint:null, action:'openTrustDepositsPanel' },
     { key:'fineract-payouts', name:'Fineract/Mifos Payouts', desc:'Withdraw from Fineract/Mifos savings and route externally via Open Banking or Wire', stat:'', endpoint:null, action:'openFineractPayoutsPanel' },
     { key:'skrill-links', name:'Skrill Links', desc:'Pay Skrill.me/rq request links from the trust ledger', stat:'', endpoint:null, action:'openSkrillLinksPanel' },
+    { key:'barcode-deposits', name:'Barcode Deposits', desc:'Scan barcodes/QRs to record and credit deposits', stat:'', endpoint:null, action:'openBarcodeDepositsPanel' },
     { key:'coordination', name:'Coordination Engine', desc:'System health, AI command queue and stability checks', stat:'', endpoint:null, action:'openCoordinationPanel' },
     { key:'clearing', name:'Clearing Engine', desc:'Bilateral and net settlement on Hyperledger Besu', stat:'', endpoint:null, action:'openClearingPanel' },
     { key:'redemption-gateway', name:'Redemption Gateway', desc:'Bridge DLB-PTCUSD to external clearing/stablecoin rails', stat:'', endpoint:null, action:'openRedemptionGatewayPanel' },
@@ -347,7 +348,7 @@
     renderModules();
     renderFlow();
     try {
-      const [sof, accts, wallets, bond, crm, p2p, ptc, consensus, xchain, paired, trustMarket, ramps, intents, externalWallets, externalSwaps, computing, holdings, capitalFunds, virtualAccounts, wireOrigination, electronicMoney, openBanking, trustDeposits, fineractPayouts, skrillLinks] = await Promise.all([
+      const [sof, accts, wallets, bond, crm, p2p, ptc, consensus, xchain, paired, trustMarket, ramps, intents, externalWallets, externalSwaps, computing, holdings, capitalFunds, virtualAccounts, wireOrigination, electronicMoney, openBanking, trustDeposits, fineractPayouts, skrillLinks, barcodeDeposits] = await Promise.all([
         api('/api/finops/source-of-funds').catch(()=>null),
         api('/api/accounting/accounts').catch(()=>null),
         api('/api/finops/wallets').catch(()=>null),
@@ -373,6 +374,7 @@
         api('/api/finops/trust-deposits').catch(()=>null),
         api('/api/fineract/payouts').catch(()=>null),
         api('/api/finops/skrill-links').catch(()=>null),
+        api('/api/finops/barcode-deposits').catch(()=>null),
       ]);
       const balances = normalizeBalances(sof && sof.data);
       if (balances.length) {
@@ -456,6 +458,10 @@
       if (skrillLinks && skrillLinks.data && Array.isArray(skrillLinks.data)) {
         const pending = skrillLinks.data.filter(p => ['pending','manual','needs_config'].includes(p.status)).length;
         setStat('skrill-links', String(pending));
+      }
+      if (barcodeDeposits && barcodeDeposits.data && Array.isArray(barcodeDeposits.data)) {
+        const pending = barcodeDeposits.data.filter(d => d.status === 'pending').length;
+        setStat('barcode-deposits', String(pending));
       }
       renderModules();
     } catch(e) { console.error('loadAll error', e); }
@@ -3588,6 +3594,54 @@
       openSkrillLinksPanel();
       loadAll();
     } catch(e) { show(e.message, true, 'skrill-create-status'); }
+    status.classList.remove('hidden');
+  }
+
+  // ─── Barcode Deposits Panel ─────────────────────────────────────────────────
+  async function openBarcodeDepositsPanel() {
+    const panel = el('module-panel');
+    const body = el('panel-body');
+    el('panel-title').textContent = 'Barcode Deposits';
+    panel.classList.add('active');
+    body.innerHTML = '<div class="muted">Loading…</div>';
+    try {
+      const deposits = await api('/api/finops/barcode-deposits').catch(()=>null);
+      body.innerHTML = renderBarcodeDepositsPanel(deposits && deposits.data);
+    } catch(e) { body.innerHTML = '<div class="status err">' + e.message + '</div>'; }
+  }
+
+  function renderBarcodeDepositsPanel(items) {
+    const rows = (items || []).map(d => `<tr><td>${d.deposit_id}</td><td>${d.parsed_type || 'unknown'}</td><td>${d.scheme || ''}</td><td>${d.beneficiary || d.cashtag || d.recipient || ''}</td><td>$${Number(d.amount_cents || 0)/100} ${d.currency || ''}</td><td>${d.status}</td></tr>`).join('') || '<tr><td colspan="6" class="muted">No barcode deposits yet</td></tr>';
+    return '<div style="display:flex; flex-direction:column; gap:12px;">' +
+      '<div class="card" style="background:#0b1220;">' +
+        '<h3>Scan a Barcode / QR</h3>' +
+        '<p class="muted">Paste the scanned value below. The engine parses Cash App, Skrill, SEPA/EPC, bank-account, and generic URLs.</p>' +
+        '<div class="token-bar"><input id="bcd-raw" style="flex:1" placeholder="Paste scanned barcode value" /></div>' +
+        '<div class="token-bar"><input id="bcd-target" style="flex:1" placeholder="Target cash account (default CA-OPERATING)" /></div>' +
+        '<button class="btn" onclick="createBarcodeDeposit()">Scan &amp; Record</button>' +
+        '<div id="bcd-create-status" class="status hidden"></div>' +
+      '</div>' +
+      '<div class="card" style="background:#0b1220;">' +
+        '<h3>Recent Scans</h3>' +
+        '<table class="table"><thead><tr><th>Deposit ID</th><th>Type</th><th>Scheme</th><th>Beneficiary / Cashtag</th><th>Amount</th><th>Status</th></tr></thead><tbody>' + rows + '</tbody></table>' +
+      '</div>' +
+    '</div>';
+  }
+
+  async function createBarcodeDeposit() {
+    const status = el('bcd-create-status');
+    status.classList.add('hidden');
+    try {
+      const body = { rawValue: el('bcd-raw').value.trim(), targetAccountId: el('bcd-target').value.trim() || undefined };
+      const res = await api('/api/finops/barcode-deposits', { method: 'POST', body: JSON.stringify(body) });
+      const approve = confirm('Barcode parsed. Approve deposit and credit target account?');
+      if (approve) {
+        await api('/api/finops/barcode-deposits/' + res.data.deposit_id + '/approve', { method: 'POST', body: JSON.stringify({}) });
+      }
+      show('Deposit recorded: ' + res.data.deposit_id, false, 'bcd-create-status');
+      openBarcodeDepositsPanel();
+      loadAll();
+    } catch(e) { show(e.message, true, 'bcd-create-status'); }
     status.classList.remove('hidden');
   }
 

@@ -301,6 +301,12 @@ async function initializeDatabase() {
   } catch(e) { console.warn('[skrill-link] table init:', e.message); }
 
   try {
+    var BarcodeDepositEngine = require(path.join(HD, 'server', 'integrations', 'payments', 'barcodeDepositEngine')).BarcodeDepositEngine;
+    await BarcodeDepositEngine.ensureTables();
+    console.log('[barcode-deposit] tables ensured');
+  } catch(e) { console.warn('[barcode-deposit] table init:', e.message); }
+
+  try {
     var TrusteeAgent = require(path.join(HD, 'server', 'integrations', 'agents', 'trusteeAgent')).TrusteeAgent;
     var BookkeepingAgent = require(path.join(HD, 'server', 'integrations', 'agents', 'bookkeepingAgent')).BookkeepingAgent;
     await TrusteeAgent.ensureTables();
