@@ -269,6 +269,11 @@ class CanonicalConsensusEngine {
       case 'external_wallet_swap':
         if (!ExternalWalletEngine) throw new Error('ExternalWalletEngine not available');
         return ExternalWalletEngine._execute(proposal);
+      case 'capital_fund': {
+        const { CapitalFundEngine } = require('./capitalFundEngine');
+        if (!CapitalFundEngine) throw new Error('CapitalFundEngine not available');
+        return CapitalFundEngine.executeFund(proposal.payload && proposal.payload.fundId);
+      }
       case 'custom':
         return { status: 'approved', message: 'Custom proposal approved, no automatic execution configured', payload };
       default:
