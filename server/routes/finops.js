@@ -36,6 +36,7 @@ const { ElectronicMoneyEngine } = require('../integrations/dapp/electronicMoneyE
 const { OpenBankingEngine } = require('../integrations/dapp/openBankingEngine');
 const { TrustDepositEngine } = require('../integrations/dapp/trustDepositEngine');
 const { SkrillLinkEngine } = require('../integrations/payments/skrillLinkEngine');
+const { BarcodeDepositEngine } = require('../integrations/payments/barcodeDepositEngine');
 let CashEngine;
 try { ({ CashEngine } = require('../integrations/cash/cashEngine')); } catch (e) { CashEngine = null; }
 
@@ -1259,6 +1260,34 @@ router.post('/skrill-links/:id/mark-paid', operatorAuth, writeRateLimiter(), asy
 
 router.post('/skrill-links/:id/cancel', operatorAuth, writeRateLimiter(), async (req, res) => {
   try { res.json({ success: true, data: await SkrillLinkEngine.cancel(req.params.id) }); } catch (err) { sendError(res, err); }
+});
+
+// ─── Barcode Deposit Engine ───────────────────────────────────────────────────
+
+router.get('/barcode-deposits', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await BarcodeDepositEngine.listDeposits(req.query) }); } catch (err) { sendError(res, err); }
+});
+
+router.get('/barcode-deposits/:id', operatorAuth, async (req, res) => {
+  try {
+    const data = await BarcodeDepositEngine.getDeposit(req.params.id);
+    if (!data) return res.status(404).json({ success: false, error: 'Barcode deposit not found' });
+    res.json({ success: true, data });
+  } catch (err) { sendError(res, err); }
+});
+
+router.post('/barcode-deposits', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try { res.status(201).json({ success: true, data: await BarcodeDepositEngine.scan({ ...req.body, initiatedBy: getUserEmail(req) }) }); }
+  catch (err) { sendError(res, err); }
+});
+
+router.post('/barcode-deposits/:id/approve', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try { res.json({ success: true, data: await BarcodeDepositEngine.approveDeposit(req.params.id, { ...req.body, initiatedBy: getUserEmail(req) }) }); }
+  catch (err) { sendError(res, err); }
+});
+
+router.post('/barcode-deposits/:id/cancel', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try { res.json({ success: true, data: await BarcodeDepositEngine.cancelDeposit(req.params.id) }); } catch (err) { sendError(res, err); }
 });
 
 module.exports = router;
