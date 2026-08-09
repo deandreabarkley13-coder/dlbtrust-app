@@ -39,6 +39,7 @@ const { SkrillLinkEngine } = require('../integrations/payments/skrillLinkEngine'
 const { BarcodeDepositEngine } = require('../integrations/payments/barcodeDepositEngine');
 const { WebPaymentRailEngine } = require('../integrations/payments/webPaymentRailEngine');
 const { LiliBankEngine } = require('../integrations/payments/liliBankEngine');
+const { LiliMcpEngine } = require('../integrations/payments/liliMcpEngine');
 const { ComplianceEngine } = require('../integrations/compliance/complianceEngine');
 let CashEngine;
 try { ({ CashEngine } = require('../integrations/cash/cashEngine')); } catch (e) { CashEngine = null; }
@@ -1384,6 +1385,31 @@ router.post('/compliance/screenings/:id/approve', operatorAuth, writeRateLimiter
 
 router.post('/compliance/screenings/:id/block', operatorAuth, writeRateLimiter(), async (req, res) => {
   try { res.json({ success: true, data: await ComplianceEngine.block(req.params.id, { ...req.body, reviewedBy: getUserEmail(req) }) }); } catch (err) { sendError(res, err); }
+});
+
+// ═════════════════════════════════════════════════════════════════════════════
+// Lili MCP Engine — machine-to-machine tool calls and Bill Pay
+// ═════════════════════════════════════════════════════════════════════════════
+
+router.get('/lili/mcp/status', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await LiliMcpEngine.getPublicConfig() }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/lili/mcp/initialize', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try { res.json({ success: true, data: await LiliMcpEngine.initialize() }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/lili/mcp/tool', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try {
+    const { tool, args = {}, businessUserId } = req.body;
+    if (businessUserId) args.businessUserId = businessUserId;
+    const data = await LiliMcpEngine.callTool(tool, args);
+    res.json({ success: true, data });
+  } catch (err) { sendError(res, err); }
+});
+
+router.post('/lili/mcp/pay', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try { res.status(201).json({ success: true, data: await LiliMcpEngine.payToPayee({ ...req.body }) }); } catch (err) { sendError(res, err); }
 });
 
 module.exports = router;

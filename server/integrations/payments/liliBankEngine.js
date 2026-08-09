@@ -33,8 +33,10 @@ const http = require('http');
 const { URL } = require('url');
 
 let SystemSettings;
+let LiliMcpEngine;
 function loadDeps() {
   try { ({ SystemSettings } = require('../ach/systemSettings')); } catch (e) { SystemSettings = null; }
+  try { ({ LiliMcpEngine } = require('./liliMcpEngine')); } catch (e) { LiliMcpEngine = null; }
 }
 
 async function getSetting(name) {
@@ -119,11 +121,14 @@ class LiliBankEngine {
   }
 
   static async getConfig() {
+    const mcpConfig = LiliMcpEngine ? await LiliMcpEngine.getPublicConfig() : { mcpEnabled: false, configured: false };
     return {
       baseUrl: (await getSetting('LILI_BASE_URL')) || process.env.LILI_BASE_URL || 'https://prod.lili.co',
       applicationEndpoint: (await getSetting('LILI_APPLICATION_ENDPOINT')) || process.env.LILI_APPLICATION_ENDPOINT || '/lili/api/v1/lead',
       paymentEndpoint: (await getSetting('LILI_PAYMENT_ENDPOINT')) || process.env.LILI_PAYMENT_ENDPOINT || null,
       mcpUrl: (await getSetting('LILI_MCP_URL')) || process.env.LILI_MCP_URL || 'https://mcp.lili.co/mcp',
+      mcpEnabled: mcpConfig.mcpEnabled,
+      mcpConfigured: mcpConfig.configured,
       authHeader: liliAuthHeader(),
     };
   }
@@ -204,10 +209,33 @@ class LiliBankEngine {
           [err.message, paymentId]
         );
       }
+    } else if (cfg.mcpEnabled && LiliMcpEngine) {
+      try {
+        const mcpResult = await LiliMcpEngine.payToPayee({
+          amount: cents / 100,
+          recipientName,
+          recipientAccount,
+          recipientRouting,
+          recipientBank,
+          recipientEmail,
+          businessUserId: liliBusinessUserId,
+          memo: `Lili payment ${paymentId}`,
+        });
+        const status = mcpResult.status === 'api_pending' ? 'api_pending' : 'manual_pending';
+        await pool.query(
+          `UPDATE lili_payments SET status=$1, response_body=$2, external_tx_id=$3, error_message=$4, updated_at=NOW() WHERE payment_id=$5`,
+          [status, JSON.stringify(mcpResult), mcpResult.externalTxId || null, mcpResult.reason || null, paymentId]
+        );
+      } catch (err) {
+        await pool.query(
+          `UPDATE lili_payments SET status='manual_pending', error_message=$1, updated_at=NOW() WHERE payment_id=$2`,
+          [`MCP payment attempt failed: ${err.message}; complete in Lili Bill Pay`, paymentId]
+        );
+      }
     } else {
       await pool.query(
         `UPDATE lili_payments SET status='manual_pending', error_message=$1, updated_at=NOW() WHERE payment_id=$2`,
-        ['No LILI_PAYMENT_ENDPOINT configured; payment requires manual completion in Lili Bill Pay', paymentId]
+        ['No LILI_PAYMENT_ENDPOINT or Lili MCP configured; payment requires manual completion in Lili Bill Pay', paymentId]
       );
     }
 
