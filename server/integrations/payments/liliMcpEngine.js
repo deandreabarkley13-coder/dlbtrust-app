@@ -1,0 +1,362 @@
+'use strict';
+
+/**
+ * Lili MCP Engine
+ *
+ * Machine-to-machine integration with the Lili MCP server using the Streamable
+ * HTTP transport (MCP spec 2025-03-26).  Supports OAuth 2.0 token refresh and
+ * generic tool invocation, and exposes high-level helpers for paying a vendor
+ * through Lili Bill Pay.
+ *
+ * Required env / system settings:
+ *   LILI_MCP_URL            default https://mcp.lili.co/mcp
+ *   LILI_OAUTH_CLIENT_ID    registered OAuth client id
+ *   LILI_OAUTH_CLIENT_SECRET
+ *   LILI_OAUTH_ACCESS_TOKEN current access token (or refresh token)
+ *   LILI_OAUTH_REFRESH_TOKEN
+ *   LILI_BUSINESS_USER_ID   Lili business user external id (optional for owner accounts)
+ */
+
+let SystemSettings;
+function loadDeps() {
+  try { ({ SystemSettings } = require('../ach/systemSettings')); } catch (e) { SystemSettings = null; }
+}
+
+async function getSetting(name) {
+  loadDeps();
+  if (SystemSettings && typeof SystemSettings.get === 'function') {
+    try {
+      const v = await SystemSettings.get(name);
+      if (v !== null && v !== undefined) return v;
+    } catch (e) { /* fall through */ }
+  }
+  return process.env[name] || null;
+}
+
+function generateId(prefix = 'MCP') {
+  return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 8).toUpperCase()}`;
+}
+
+class LiliMcpEngine {
+  static async getConfig() {
+    return {
+      mcpUrl: (await getSetting('LILI_MCP_URL')) || process.env.LILI_MCP_URL || 'https://mcp.lili.co/mcp',
+      oauthBaseUrl: (await getSetting('LILI_OAUTH_BASE_URL')) || process.env.LILI_OAUTH_BASE_URL || 'https://mcp.lili.co',
+      clientId: (await getSetting('LILI_OAUTH_CLIENT_ID')) || process.env.LILI_OAUTH_CLIENT_ID || null,
+      clientSecret: (await getSetting('LILI_OAUTH_CLIENT_SECRET')) || process.env.LILI_OAUTH_CLIENT_SECRET || null,
+      accessToken: (await getSetting('LILI_OAUTH_ACCESS_TOKEN')) || process.env.LILI_OAUTH_ACCESS_TOKEN || null,
+      refreshToken: (await getSetting('LILI_OAUTH_REFRESH_TOKEN')) || process.env.LILI_OAUTH_REFRESH_TOKEN || null,
+      businessUserId: (await getSetting('LILI_BUSINESS_USER_ID')) || process.env.LILI_BUSINESS_USER_ID || null,
+      mcpEnabled: ((await getSetting('LILI_MCP_ENABLED')) || process.env.LILI_MCP_ENABLED || 'false') === 'true',
+    };
+  }
+
+  static async getPublicConfig() {
+    const cfg = await this.getConfig();
+    return {
+      mcpUrl: cfg.mcpUrl,
+      mcpEnabled: cfg.mcpEnabled,
+      configured: this.isConfigured(cfg),
+      hasAccessToken: Boolean(cfg.accessToken),
+      hasRefreshToken: Boolean(cfg.refreshToken),
+      businessUserId: cfg.businessUserId,
+    };
+  }
+
+  static isConfigured(cfg) {
+    if (!cfg) cfg = {};
+    return Boolean(cfg.mcpEnabled && cfg.mcpUrl && (cfg.accessToken || cfg.refreshToken) && cfg.clientId);
+  }
+
+  static async getAccessToken() {
+    const cfg = await this.getConfig();
+    if (!this.isConfigured(cfg)) return null;
+    if (cfg.accessToken) return cfg.accessToken;
+    if (cfg.refreshToken) {
+      try {
+        const refreshed = await this._refreshAccessToken(cfg);
+        return refreshed.access_token;
+      } catch (e) {
+        return null;
+      }
+    }
+    return null;
+  }
+
+  static async _refreshAccessToken(cfg) {
+    if (!cfg.refreshToken || !cfg.clientId) throw new Error('Refresh token and client id required');
+    const url = `${cfg.oauthBaseUrl.replace(/\/$/, '')}/oauth/token`;
+    const params = new URLSearchParams();
+    params.append('grant_type', 'refresh_token');
+    params.append('client_id', cfg.clientId);
+    if (cfg.clientSecret) params.append('client_secret', cfg.clientSecret);
+    params.append('refresh_token', cfg.refreshToken);
+    const res = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: params.toString(),
+    });
+    if (!res.ok) throw new Error(`OAuth refresh failed: ${res.status} ${await res.text()}`);
+    const data = await res.json();
+    if (!data.access_token) throw new Error('OAuth refresh did not return access_token');
+    // If running in memory-only mode, we cannot persist the new token.  Persisting
+    // would require updating system_settings or secrets; for now we return it and
+    // rely on the caller to use immediately.
+    return data;
+  }
+
+  static async _mcpPost(body, { accessToken } = {}) {
+    const cfg = await this.getConfig();
+    const token = accessToken || await this.getAccessToken();
+    if (!token) throw new Error('Lili MCP not authenticated');
+    const res = await fetch(cfg.mcpUrl, {
+      method: 'POST',
+      headers: {
+        'Accept': 'application/json, text/event-stream',
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${token}`,
+      },
+      body: JSON.stringify(body),
+    });
+    const contentType = res.headers.get('content-type') || '';
+    const text = await res.text();
+    if (!res.ok && !contentType.includes('event-stream')) {
+      throw new Error(`MCP request failed: ${res.status} ${text}`);
+    }
+    return this._parseMcpResponse(text, contentType);
+  }
+
+  static _parseMcpResponse(text, contentType) {
+    if (contentType.includes('text/event-stream')) {
+      const messages = [];
+      for (const line of text.split(/\r?\n/)) {
+        const trimmed = line.trim();
+        if (trimmed.startsWith('data:')) {
+          const payload = trimmed.replace(/^data:\s*/, '');
+          if (payload === '[DONE]') continue;
+          try { messages.push(JSON.parse(payload)); } catch (e) { /* ignore */ }
+        }
+      }
+      if (!messages.length) return null;
+      // Return the last response that contains a result or error.
+      for (let i = messages.length - 1; i >= 0; i--) {
+        if (messages[i].result !== undefined || messages[i].error !== undefined) return messages[i];
+      }
+      return messages[messages.length - 1];
+    }
+    try { return text ? JSON.parse(text) : null; } catch (e) { return { raw: text }; }
+  }
+
+  static async initialize() {
+    const response = await this._mcpPost({
+      jsonrpc: '2.0',
+      id: 1,
+      method: 'initialize',
+      params: {
+        protocolVersion: '2025-03-26',
+        capabilities: {},
+        clientInfo: { name: 'dlbtrust-lili-mcp', version: '1.0.0' },
+      },
+    });
+    // Send initialized notification.
+    try {
+      await this._mcpPost({
+        jsonrpc: '2.0',
+        method: 'notifications/initialized',
+      });
+    } catch (e) { /* notification may not return response */ }
+    return response;
+  }
+
+  static async listTools() {
+    return this._mcpPost({
+      jsonrpc: '2.0',
+      id: generateId(),
+      method: 'tools/list',
+    });
+  }
+
+  static async callTool(name, args = {}) {
+    return this._mcpPost({
+      jsonrpc: '2.0',
+      id: generateId(),
+      method: 'tools/call',
+      params: { name, arguments: args },
+    });
+  }
+
+  static _extractText(toolResult) {
+    if (!toolResult || !toolResult.result) return null;
+    const content = toolResult.result.content || [];
+    for (const c of content) {
+      if (c.type === 'text' && c.text) {
+        try { return JSON.parse(c.text); } catch (e) { return c.text; }
+      }
+    }
+    return toolResult.result;
+  }
+
+  static async getAccountSummary(businessUserId) {
+    const cfg = await this.getConfig();
+    const args = {};
+    const bid = businessUserId || cfg.businessUserId;
+    if (bid) args.businessUserId = bid;
+    const res = await this.callTool('lili_get_account_summary', args);
+    return this._extractText(res);
+  }
+
+  static async listSuppliers(businessUserId) {
+    const cfg = await this.getConfig();
+    const args = {};
+    const bid = businessUserId || cfg.businessUserId;
+    if (bid) args.businessUserId = bid;
+    const res = await this.callTool('lili_list_suppliers', args);
+    return this._extractText(res);
+  }
+
+  static async createSupplier({ businessUserId, name, address, city, state, zip, country = 'US', accountNumber, routingNumber, accountType = 'checking' }) {
+    const cfg = await this.getConfig();
+    const args = {
+      name,
+      address,
+      city,
+      state,
+      zip,
+      country,
+      accountNumber,
+      routingNumber,
+      accountType,
+    };
+    const bid = businessUserId || cfg.businessUserId;
+    if (bid) args.businessUserId = bid;
+    const res = await this.callTool('lili_create_supplier', args);
+    return this._extractText(res);
+  }
+
+  static async createBill({ businessUserId, supplierId, amount, dueDate, memo, invoiceNumber }) {
+    const cfg = await this.getConfig();
+    const args = {
+      supplierId,
+      amount: Number(amount).toFixed(2),
+      currency: 'USD',
+      dueDate: dueDate || new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10),
+      memo: memo || '',
+    };
+    if (invoiceNumber) args.invoiceNumber = invoiceNumber;
+    const bid = businessUserId || cfg.businessUserId;
+    if (bid) args.businessUserId = bid;
+    const res = await this.callTool('lili_create_bill', args);
+    return this._extractText(res);
+  }
+
+  static async getBillPaymentMethods({ businessUserId, billId }) {
+    const cfg = await this.getConfig();
+    const args = { billId };
+    const bid = businessUserId || cfg.businessUserId;
+    if (bid) args.businessUserId = bid;
+    const res = await this.callTool('lili_get_bill_payment_methods', args);
+    return this._extractText(res);
+  }
+
+  static async payBill({ businessUserId, billId, paymentMethodId, paymentDate }) {
+    const cfg = await this.getConfig();
+    const args = { billId };
+    if (paymentMethodId) args.paymentMethodId = paymentMethodId;
+    if (paymentDate) args.paymentDate = paymentDate;
+    const bid = businessUserId || cfg.businessUserId;
+    if (bid) args.businessUserId = bid;
+    const res = await this.callTool('lili_pay_bill', args);
+    return this._extractText(res);
+  }
+
+  /**
+   * End-to-end attempt to pay a vendor through Lili Bill Pay using the MCP server.
+   * Because Lili does not document the exact bill-pay tool names, we try common
+   * tool names and fall back to a manual_pending instruction if any step fails.
+   */
+  static async payToPayee({
+    amount,
+    recipientName,
+    recipientAccount,
+    recipientRouting,
+    recipientBank,
+    recipientEmail,
+    businessUserId,
+    memo,
+    dueDays = 0,
+  } = {}) {
+    if (!this.isConfigured(await this.getConfig())) {
+      return { status: 'manual_pending', reason: 'Lili MCP not configured', requires: ['LILI_MCP_ENABLED', 'LILI_OAUTH_CLIENT_ID', 'LILI_OAUTH_ACCESS_TOKEN or REFRESH_TOKEN'] };
+    }
+
+    // Verify connectivity and discover tools.
+    let tools = [];
+    try {
+      await this.initialize();
+      const toolsRes = await this.listTools();
+      const extracted = this._extractText(toolsRes);
+      tools = Array.isArray(extracted) ? extracted : [];
+    } catch (e) {
+      return { status: 'manual_pending', reason: `MCP connection failed: ${e.message}`, requires: ['Valid Lili OAuth token and MCP authorization'] };
+    }
+
+    const toolNames = new Set(tools.map(t => t.name));
+
+    // Find or create supplier.
+    let supplierId = null;
+    try {
+      if (toolNames.has('lili_list_suppliers')) {
+        const suppliers = await this.listSuppliers(businessUserId);
+        if (Array.isArray(suppliers)) {
+          const match = suppliers.find(s => s && (s.name === recipientName || s.accountNumber === recipientAccount || s.routingNumber === recipientRouting));
+          if (match && match.id) supplierId = match.id;
+        }
+      }
+      if (!supplierId && toolNames.has('lili_create_supplier')) {
+        const created = await this.createSupplier({
+          businessUserId,
+          name: recipientName,
+          accountNumber: recipientAccount,
+          routingNumber: recipientRouting,
+        });
+        supplierId = created && (created.id || created.supplierId);
+      }
+    } catch (e) {
+      return { status: 'manual_pending', reason: `Supplier step failed: ${e.message}`, requires: ['Verify supplier/bill-pay permissions in Lili dashboard'] };
+    }
+
+    if (!supplierId) {
+      return { status: 'manual_pending', reason: 'Could not create or find supplier via Lili MCP', requires: ['Enable bill-pay and supplier tools in Lili'] };
+    }
+
+    // Create bill if the tool exists.
+    let billId = null;
+    try {
+      if (toolNames.has('lili_create_bill')) {
+        const dueDate = new Date(Date.now() + dueDays * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+        const bill = await this.createBill({ businessUserId, supplierId, amount, dueDate, memo });
+        billId = bill && (bill.id || bill.billId);
+      }
+    } catch (e) {
+      return { status: 'manual_pending', reason: `Bill creation failed: ${e.message}`, supplierId };
+    }
+
+    // Pay bill if tool exists.
+    if (toolNames.has('lili_pay_bill') && billId) {
+      try {
+        const payment = await this.payBill({ businessUserId, billId });
+        return { status: 'api_pending', billId, supplierId, payment, externalTxId: payment && (payment.id || payment.paymentId) };
+      } catch (e) {
+        return { status: 'manual_pending', reason: `Payment submission failed: ${e.message}`, billId, supplierId };
+      }
+    }
+
+    if (billId) {
+      return { status: 'manual_pending', reason: 'Bill created but no lili_pay_bill tool available; complete payment in Lili app', billId, supplierId };
+    }
+
+    return { status: 'manual_pending', reason: 'Supplier created/resolved; complete bill creation and payment in Lili app', supplierId };
+  }
+}
+
+module.exports = { LiliMcpEngine };

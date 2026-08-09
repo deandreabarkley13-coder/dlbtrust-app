@@ -3740,21 +3740,23 @@
     panel.classList.add('active');
     body.innerHTML = '<div class="muted">Loading…</div>';
     try {
-      const [cfg, payments] = await Promise.all([
+      const [cfg, payments, mcp] = await Promise.all([
         api('/api/finops/lili/config').catch(()=>null),
         api('/api/finops/lili/payments').catch(()=>null),
+        api('/api/finops/lili/mcp/status').catch(()=>null),
       ]);
-      body.innerHTML = renderLiliBankPanel(cfg && cfg.data, payments && payments.data);
+      body.innerHTML = renderLiliBankPanel(cfg && cfg.data, payments && payments.data, mcp && mcp.data);
     } catch(e) { body.innerHTML = '<div class="status err">' + e.message + '</div>'; }
   }
 
-  function renderLiliBankPanel(config, items) {
+  function renderLiliBankPanel(config, items, mcpStatus) {
     const cfgText = config ? `<pre>${JSON.stringify(config, null, 2)}</pre>` : '<p class="muted">No Lili config returned</p>';
+    const mcp = mcpStatus || { configured: false, hasAccessToken: false };
     const rows = (items || []).map(p => `<tr><td>${p.payment_id}</td><td>$${Number(p.amount_cents || 0)/100} ${p.currency || ''}</td><td>${p.recipient_name || ''}</td><td>${p.recipient_bank || ''}</td><td>${p.status}</td><td>${p.external_tx_id || ''}</td></tr>`).join('') || '<tr><td colspan="6" class="muted">No Lili payments yet</td></tr>';
     return '<div style="display:flex; flex-direction:column; gap:12px;">' +
       '<div class="card" style="background:#0b1220;">' +
         '<h3>New Lili Payment</h3>' +
-        '<p class="muted">Lili does not expose a public outbound payment API. This panel prepares a record and optionally POSTs to a configured LILI_PAYMENT_ENDPOINT. Without that endpoint, status becomes <em>manual_pending</em> and you complete it in the Lili app.</p>' +
+        '<p class="muted">Lili does not expose a public outbound payment API. This panel prepares a record and optionally POSTs to a configured LILI_PAYMENT_ENDPOINT or uses the Lili MCP for M2M Bill Pay. Without those, status becomes <em>manual_pending</em> and you complete it in the Lili app.</p>' +
         '<div class="token-bar"><input id="lili-source" style="flex:1" placeholder="Source cash account id (e.g. CA-OPERATING)" /></div>' +
         '<div class="token-bar"><input id="lili-amount" type="number" style="flex:1" placeholder="Amount" />' +
         '<select id="lili-currency"><option value="USD">USD</option></select></div>' +
@@ -3765,6 +3767,14 @@
         '<div class="token-bar"><input id="lili-email" style="flex:1" placeholder="Recipient email (optional)" /></div>' +
         '<button class="btn" onclick="createLiliPayment()">Create Payment</button>' +
         '<div id="lili-create-status" class="status hidden"></div>' +
+      '</div>' +
+      '<div class="card" style="background:#0b1220;">' +
+        '<h3>Lili MCP (M2M)</h3>' +
+        `<p class="muted">Status: ${mcp.configured ? '<span class="badge completed">configured</span>' : '<span class="badge manual_pending">not configured</span>'} ${mcp.hasAccessToken ? ' (token present)' : ' (no token)'}</p>` +
+        '<div class="token-bar"><input id="lili-mcp-tool" style="flex:1" placeholder="Tool name (e.g. lili_get_account_summary)" /></div>' +
+        '<div class="token-bar"><input id="lili-mcp-args" style="flex:1" placeholder="Args JSON (optional)" /></div>' +
+        '<button class="btn" onclick="callLiliMcpTool()">Call Tool</button>' +
+        '<pre id="lili-mcp-result" class="hidden" style="font-size:11px;max-height:160px;overflow:auto;background:#050a14;padding:8px;border-radius:6px;margin-top:8px;"></pre>' +
       '</div>' +
       '<div class="card" style="background:#0b1220;">' +
         '<h3>Config</h3>' + cfgText +
@@ -3796,6 +3806,23 @@
       loadAll();
     } catch(e) { show(e.message, true, 'lili-create-status'); }
     status.classList.remove('hidden');
+  }
+
+  async function callLiliMcpTool() {
+    const out = el('lili-mcp-result');
+    out.classList.add('hidden');
+    try {
+      const tool = el('lili-mcp-tool').value.trim();
+      if (!tool) throw new Error('Tool name required');
+      const argsRaw = el('lili-mcp-args').value.trim();
+      const args = argsRaw ? JSON.parse(argsRaw) : {};
+      const res = await api('/api/finops/lili/mcp/tool', { method: 'POST', body: JSON.stringify({ tool, args }) });
+      out.textContent = JSON.stringify(res.data, null, 2);
+      out.classList.remove('hidden');
+    } catch(e) {
+      out.textContent = 'Error: ' + e.message;
+      out.classList.remove('hidden');
+    }
   }
 
   // ─── Compliance Engine Panel ────────────────────────────────────────────────
