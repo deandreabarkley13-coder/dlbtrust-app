@@ -25,7 +25,7 @@ function loadDeps() {
   try { ({ PayoutCenterEngine } = require('../payments/payoutCenterEngine')); } catch (e) { PayoutCenterEngine = null; }
 }
 
-const HOLD_ACCOUNT = 'TRUST_DEPOSIT_HOLD';
+
 
 function generateId(prefix = 'TDE') {
   return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 8).toUpperCase()}`;
@@ -68,21 +68,6 @@ class TrustDepositEngine {
       )
     `);
     await pool.query(`CREATE INDEX IF NOT EXISTS idx_trust_deposits_status ON trust_deposits(status)`);
-    await this.ensureHoldAccount();
-  }
-
-  static async ensureHoldAccount() {
-    if (!CashEngine) return;
-    try {
-      const existing = await CashEngine.getAccount(HOLD_ACCOUNT);
-      if (existing) return;
-      await CashEngine.createAccount({
-        accountId: HOLD_ACCOUNT,
-        accountName: 'Trust Deposit Hold',
-        accountType: 'escrow',
-        notes: 'Pending trust deposit reserve account',
-      });
-    } catch (e) { /* may already exist */ }
   }
 
   static async getSourceBalance(sourceType, sourceAccountId) {
@@ -182,57 +167,37 @@ class TrustDepositEngine {
     const row = await this.getDeposit(depositId);
     if (!row) throw new Error('Deposit not found');
     if (!['pending','approved'].includes(row.status)) throw new Error(`Deposit status is ${row.status}`);
-
-    if (row.deposit_method === 'emoney' && ElectronicMoneyEngine) {
-      const result = await ElectronicMoneyEngine.transfer({
-        fromAccountId: row.source_account_id,
-        toAccountId: row.destination_emoney_account_id,
-        amount: row.amount_cents / 100,
-        memo: row.memo,
-      });
-      await pool.query(`UPDATE trust_deposits SET status='confirmed', external_payment_id=$1, raw_response=$2, updated_at=NOW() WHERE deposit_id=$3`,
-        [result.transaction.tx_id, JSON.stringify(result), depositId]);
-      return this.getDeposit(depositId);
-    }
-
-    if (row.deposit_method === 'sit' && PayoutCenterEngine) {
-      const result = await PayoutCenterEngine.createPayment({
-        paymentType: 'deposit',
-        sourceType: row.source_type,
-        sourceAccountId: row.source_account_id,
-        recipientIdentifier: row.destination_wallet_address,
-        amount: row.amount_cents / 100,
-        asset: 'SIT',
-        rail: 'sit',
-        description: row.memo,
-      });
-      await pool.query(`UPDATE trust_deposits SET status='sent', external_payment_id=$1, raw_response=$2, updated_at=NOW() WHERE deposit_id=$3`,
-        [result.payment_id || result.id || null, JSON.stringify(result), depositId]);
-      return this.getDeposit(depositId);
-    }
-
-    // For bank rails, reserve cash in trust deposit hold
-    if (CashEngine && row.source_type === 'cash') {
-      try {
-        await CashEngine.transfer({
-          fromAccountId: row.source_account_id,
-          toAccountId: HOLD_ACCOUNT,
-          amountCents: row.amount_cents,
-          movementType: 'transfer',
-          memo: `Trust deposit reserve ${depositId}`,
-          referenceId: depositId,
-          referenceType: 'trust_deposit',
-          initiatedBy: row.initiated_by,
-        });
-      } catch (err) { throw new Error(`Reserve failed: ${err.message}`); }
-    }
+    const getBalance = async () => this.getSourceBalance(row.source_type, row.source_account_id);
+    if (await getBalance() < row.amount_cents) throw new Error(`Insufficient balance in ${row.source_account_id}`);
 
     try {
-      if (row.deposit_method === 'wire' || row.deposit_method === 'ach' || row.deposit_method === 'check') {
+      if (row.deposit_method === 'emoney' && ElectronicMoneyEngine) {
+        const result = await ElectronicMoneyEngine.transfer({
+          fromAccountId: row.source_account_id,
+          toAccountId: row.destination_emoney_account_id,
+          amount: row.amount_cents / 100,
+          memo: row.memo,
+        });
+        await pool.query(`UPDATE trust_deposits SET status='confirmed', external_payment_id=$1, raw_response=$2, updated_at=NOW() WHERE deposit_id=$3`,
+          [result.transaction.tx_id, JSON.stringify(result), depositId]);
+      } else if (row.deposit_method === 'sit' && PayoutCenterEngine) {
+        const result = await PayoutCenterEngine.createPayment({
+          paymentType: 'deposit',
+          sourceType: row.source_type,
+          sourceAccountId: row.source_account_id,
+          recipientIdentifier: row.destination_wallet_address,
+          amount: row.amount_cents / 100,
+          asset: 'SIT',
+          rail: 'sit',
+          description: row.memo,
+        });
+        await pool.query(`UPDATE trust_deposits SET status='sent', external_payment_id=$1, raw_response=$2, updated_at=NOW() WHERE deposit_id=$3`,
+          [result.payment_id || result.id || null, JSON.stringify(result), depositId]);
+      } else if (row.deposit_method === 'wire' || row.deposit_method === 'ach' || row.deposit_method === 'check') {
         if (!WireOriginationEngine) throw new Error('WireOriginationEngine not available');
         const result = await WireOriginationEngine.createPayout({
-          sourceType: 'cash',
-          sourceAccountId: HOLD_ACCOUNT,
+          sourceType: row.source_type,
+          sourceAccountId: row.source_account_id,
           amount: row.amount_cents / 100,
           adapter: row.deposit_method === 'check' ? 'manual' : row.deposit_method,
           initiatedBy: row.initiated_by,
@@ -244,14 +209,15 @@ class TrustDepositEngine {
           purpose: row.memo || `Trust deposit ${depositId}`,
           description: row.memo || `Trust deposit ${depositId}`,
         });
+        const mappedStatus = ['sent','confirmed','settled','originated'].includes(result.status) ? 'sent' : (result.status === 'approved' ? 'manual_pending' : result.status);
         await pool.query(
-          `UPDATE trust_deposits SET status='sent', external_payment_id=$1, raw_response=$2, updated_at=NOW() WHERE deposit_id=$3`,
-          [result.payout_id, JSON.stringify(result), depositId]
+          `UPDATE trust_deposits SET status=$1, external_payment_id=$2, raw_response=$3, updated_at=NOW() WHERE deposit_id=$4`,
+          [mappedStatus, result.payout_id, JSON.stringify(result), depositId]
         );
       } else if (row.deposit_method === 'open_banking') {
         if (!OpenBankingEngine) throw new Error('OpenBankingEngine not available');
         const result = await OpenBankingEngine.createPayment({
-          sourceCashAccountId: HOLD_ACCOUNT,
+          sourceCashAccountId: row.source_account_id,
           amount: row.amount_cents / 100,
           connector: opts.connector || 'generic_rest',
           currency: row.currency,
@@ -268,14 +234,10 @@ class TrustDepositEngine {
           `UPDATE trust_deposits SET status=$1, external_payment_id=$2, raw_response=$3, error_message=$4, updated_at=NOW() WHERE deposit_id=$5`,
           [status, result.paymentId || null, JSON.stringify(result), result.error || null, depositId]
         );
-        if (status === 'failed' && CashEngine) {
-          try { await this._refundHold(row); } catch (e) { /* best effort */ }
-        }
+      } else {
+        throw new Error(`Unsupported deposit method: ${row.deposit_method}`);
       }
     } catch (err) {
-      if (CashEngine && row.source_type === 'cash') {
-        try { await this._refundHold(row); } catch (e) { /* best effort */ }
-      }
       await pool.query(`UPDATE trust_deposits SET status='failed', error_message=$1, updated_at=NOW() WHERE deposit_id=$2`, [err.message, depositId]);
       throw err;
     }
@@ -283,25 +245,22 @@ class TrustDepositEngine {
     return this.getDeposit(depositId);
   }
 
-  static async _refundHold(row) {
-    return CashEngine.transfer({
-      fromAccountId: HOLD_ACCOUNT,
-      toAccountId: row.source_account_id,
-      amountCents: row.amount_cents,
-      movementType: 'transfer',
-      memo: `Refund trust deposit ${row.deposit_id}`,
-      referenceId: row.deposit_id,
-      referenceType: 'trust_deposit_refund',
-      initiatedBy: row.initiated_by,
-    });
-  }
-
   static async cancelDeposit(depositId) {
     const row = await this.getDeposit(depositId);
     if (!row) throw new Error('Deposit not found');
-    if (!['pending','approved'].includes(row.status)) throw new Error(`Cannot cancel deposit in ${row.status} status`);
-    if (CashEngine && row.source_type === 'cash') {
-      try { await this._refundHold(row); } catch (e) { /* best effort */ }
+    if (['sent','confirmed','manual_pending','originated'].includes(row.status)) {
+      if (row.deposit_method === 'wire' || row.deposit_method === 'ach' || row.deposit_method === 'check') {
+        if (WireOriginationEngine && row.external_payment_id) {
+          try { await WireOriginationEngine.cancelPayout(row.external_payment_id); } catch (e) { /* best effort */ }
+        }
+      } else if (row.deposit_method === 'open_banking') {
+        if (OpenBankingEngine && row.external_payment_id) {
+          try { await OpenBankingEngine.cancelPayment(row.external_payment_id); } catch (e) { /* best effort */ }
+        }
+      }
+    }
+    if (!['pending','approved','sent','manual_pending','originated'].includes(row.status)) {
+      throw new Error(`Cannot cancel deposit in ${row.status} status`);
     }
     await pool.query(`UPDATE trust_deposits SET status='cancelled', updated_at=NOW() WHERE deposit_id=$1`, [depositId]);
     return this.getDeposit(depositId);
