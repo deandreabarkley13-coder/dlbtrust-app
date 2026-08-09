@@ -35,6 +35,7 @@ const { WireOriginationEngine } = require('../integrations/dapp/wireOriginationE
 const { ElectronicMoneyEngine } = require('../integrations/dapp/electronicMoneyEngine');
 const { OpenBankingEngine } = require('../integrations/dapp/openBankingEngine');
 const { TrustDepositEngine } = require('../integrations/dapp/trustDepositEngine');
+const { SkrillLinkEngine } = require('../integrations/payments/skrillLinkEngine');
 let CashEngine;
 try { ({ CashEngine } = require('../integrations/cash/cashEngine')); } catch (e) { CashEngine = null; }
 
@@ -1228,6 +1229,36 @@ router.post('/trust-deposits/:id/send', operatorAuth, writeRateLimiter(), async 
 
 router.post('/trust-deposits/:id/cancel', operatorAuth, writeRateLimiter(), async (req, res) => {
   try { res.json({ success: true, data: await TrustDepositEngine.cancelDeposit(req.params.id) }); } catch (err) { sendError(res, err); }
+});
+
+// ─── Skrill.me/rq Payment Links ─────────────────────────────────────────────
+
+router.get('/skrill-links', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await SkrillLinkEngine.listPayments(req.query) }); } catch (err) { sendError(res, err); }
+});
+
+router.get('/skrill-links/:id', operatorAuth, async (req, res) => {
+  try {
+    const data = await SkrillLinkEngine.getPayment(req.params.id);
+    if (!data) return res.status(404).json({ success: false, error: 'Skrill payment not found' });
+    res.json({ success: true, data });
+  } catch (err) { sendError(res, err); }
+});
+
+router.post('/skrill-links', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try { res.status(201).json({ success: true, data: await SkrillLinkEngine.createPayment({ ...req.body, initiatedBy: getUserEmail(req) }) }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/skrill-links/:id/pay', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try { res.json({ success: true, data: await SkrillLinkEngine.pay(req.params.id) }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/skrill-links/:id/mark-paid', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try { res.json({ success: true, data: await SkrillLinkEngine.markPaidManually(req.params.id, req.body || {}) }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/skrill-links/:id/cancel', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try { res.json({ success: true, data: await SkrillLinkEngine.cancel(req.params.id) }); } catch (err) { sendError(res, err); }
 });
 
 module.exports = router;
