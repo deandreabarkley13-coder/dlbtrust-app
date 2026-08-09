@@ -406,7 +406,7 @@
       const sources = Object.entries(s.bySource || {}).map(([k,v]) => `${k}: ${fmtUsd(v.balance)}`).join(' | ');
       el('nw-sub').textContent = sources || 'across all ledgers';
       el('source-list').innerHTML = '<div style="display:grid;gap:8px;">' + Object.entries(s.bySource || {}).map(([k,v]) => `<div class="badge">${k}: ${fmtUsd(v.balance)}</div>`).join('') + '</div>';
-      const cash = (s.bySource && (s.bySource.cash || s.bySource.trust_bank || s.bySource.trust)) ? fmtUsd((s.bySource.cash?.balance || 0) + (s.bySource.trust_bank?.balance || 0) + (s.bySource.trust?.balance || 0)) : '—';
+      const cash = (s.bySource && (s.bySource.cash || s.bySource.trust_bank)) ? fmtUsd((s.bySource.cash?.balance || 0) + (s.bySource.trust_bank?.balance || 0)) : '—';
       el('cash-value').textContent = cash;
       el('bond-value').textContent = fmtUsd(s.bondValue);
       el('pending-value').textContent = s.pendingApprovals || 0;
