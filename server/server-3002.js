@@ -385,6 +385,12 @@ async function initializeDatabase() {
   } catch(e) { console.warn('[corporate-treasury] table init:', e.message); }
 
   try {
+    var HostToHostEngine = require(path.join(HD, 'server', 'integrations', 'dapp', 'hostToHostEngine')).HostToHostEngine;
+    await HostToHostEngine.ensureTables();
+    console.log('[host-to-host] tables ensured');
+  } catch(e) { console.warn('[host-to-host] table init:', e.message); }
+
+  try {
     var SettlementEngine = require(path.join(HD, 'server', 'integrations', 'dapp', 'settlementEngine')).SettlementEngine;
     await SettlementEngine.ensureTables();
     console.log('[settlement] tables ensured');

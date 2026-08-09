@@ -49,12 +49,15 @@ try { PaymentIdEngine = require('./paymentIdEngine').PaymentIdEngine; } catch (e
 let LiveFinTechEndpointEngine;
 try { LiveFinTechEndpointEngine = require('./liveFintechEndpointEngine').LiveFinTechEndpointEngine; } catch (e) { LiveFinTechEndpointEngine = null; }
 
+let HostToHostEngine;
+try { HostToHostEngine = require('./hostToHostEngine').HostToHostEngine; } catch (e) { HostToHostEngine = null; }
+
 const HOLD_ACCOUNT = 'SETTLEMENT_HOLD';
 const SETTLED_ACCOUNT = 'SETTLEMENT_SETTLED';
 
 const VALID_RAILS = new Set([
   'external_endpoint', 'wire', 'ach', 'open_banking', 'iso20022',
-  'mft_sftp', 'as2', 'stablecoin', 'manual', 'live_fintech'
+  'mft_sftp', 'as2', 'host_to_host', 'stablecoin', 'manual', 'live_fintech'
 ]);
 
 function generateId(prefix = 'SETL') {
@@ -84,7 +87,7 @@ class SettlementEngine {
         source_type TEXT DEFAULT 'manual',
         source_id TEXT,
         source_account_id TEXT,
-        rail TEXT NOT NULL CHECK (rail IN ('external_endpoint','wire','ach','open_banking','iso20022','mft_sftp','as2','stablecoin','manual','live_fintech')),
+        rail TEXT NOT NULL CHECK (rail IN ('external_endpoint','wire','ach','open_banking','iso20022','mft_sftp','as2','host_to_host','stablecoin','manual','live_fintech')),
         endpoint_id TEXT,
         connector TEXT,
         amount_cents BIGINT NOT NULL,
@@ -113,7 +116,7 @@ class SettlementEngine {
     await pool.query(`CREATE INDEX IF NOT EXISTS idx_settlements_status ON settlements(status)`);
     await pool.query(`CREATE INDEX IF NOT EXISTS idx_settlements_source_id ON settlements(source_id)`);
     await pool.query(`ALTER TABLE settlements DROP CONSTRAINT IF EXISTS settlements_rail_check`);
-    await pool.query(`ALTER TABLE settlements ADD CONSTRAINT settlements_rail_check CHECK (rail IN ('external_endpoint','wire','ach','open_banking','iso20022','mft_sftp','as2','stablecoin','manual','live_fintech'))`);
+    await pool.query(`ALTER TABLE settlements ADD CONSTRAINT settlements_rail_check CHECK (rail IN ('external_endpoint','wire','ach','open_banking','iso20022','mft_sftp','as2','host_to_host','stablecoin','manual','live_fintech'))`);
     await this._ensureHoldAccounts();
   }
 
@@ -224,6 +227,8 @@ class SettlementEngine {
       result = await this._executeExternalEndpoint(settlement);
     } else if (settlement.rail === 'live_fintech') {
       result = await this._executeLiveFinTech(settlement);
+    } else if (settlement.rail === 'mft_sftp' || settlement.rail === 'as2' || settlement.rail === 'host_to_host') {
+      result = await this._executeHostToHost(settlement);
     } else if (settlement.rail === 'wire' || settlement.rail === 'ach') {
       result = await this._executeWireOrAch(settlement);
     } else if (settlement.rail === 'open_banking' || settlement.rail === 'iso20022') {
@@ -437,6 +442,89 @@ class SettlementEngine {
     );
     if (error) throw new Error(error);
     return this.getSettlement(settlement.settlement_id);
+  }
+
+  static async _executeHostToHost(settlement) {
+    if (!HostToHostEngine) throw new Error('HostToHostEngine not available');
+    if (!settlement.endpoint_id) throw new Error('endpoint_id is required for host-to-host rail');
+
+    let status = 'failed';
+    let result = null;
+    let error = null;
+    const rawRequest = JSON.stringify({
+      endpoint_id: settlement.endpoint_id,
+      amount: settlement.amount_cents / 100,
+      currency: settlement.currency,
+      creditor: { name: settlement.creditor_name, account: settlement.creditor_account, routing: settlement.creditor_routing, bank: settlement.creditor_bank },
+      debtor: { name: settlement.debtor_name, account: settlement.debtor_account, routing: settlement.debtor_routing, bank: settlement.debtor_bank },
+      description: settlement.description,
+    });
+
+    if (settlement.source_account_id && CashEngine) {
+      try {
+        await CashEngine.transfer({
+          fromAccountId: settlement.source_account_id,
+          toAccountId: HOLD_ACCOUNT,
+          amountCents: settlement.amount_cents,
+          movementType: 'transfer',
+          memo: `Reserve H2H settlement ${settlement.settlement_id}`,
+          referenceId: settlement.settlement_id,
+          referenceType: 'settlement'
+        });
+      } catch (e) {
+        throw new Error(`Reserve failed: ${e.message}`);
+      }
+    }
+
+    try {
+      result = await HostToHostEngine.executeSettlement(settlement);
+      status = this._mapHostToHostStatus(result.status);
+      if (status === 'completed' && CashEngine) {
+        await CashEngine.transfer({
+          fromAccountId: HOLD_ACCOUNT,
+          toAccountId: 'HOST_TO_HOST_SETTLED',
+          amountCents: settlement.amount_cents,
+          movementType: 'transfer',
+          memo: `Settle H2H ${settlement.settlement_id}`,
+          referenceId: settlement.settlement_id,
+          referenceType: 'settlement'
+        });
+      }
+    } catch (e) {
+      error = e.message;
+      status = 'failed';
+      if (settlement.source_account_id && CashEngine) {
+        try {
+          await CashEngine.transfer({
+            fromAccountId: HOLD_ACCOUNT,
+            toAccountId: settlement.source_account_id,
+            amountCents: settlement.amount_cents,
+            movementType: 'transfer',
+            memo: `Refund H2H settlement ${settlement.settlement_id}`,
+            referenceId: settlement.settlement_id,
+            referenceType: 'settlement'
+          });
+        } catch (re) { console.warn('[settlement] H2H refund failed:', re.message); }
+      }
+    }
+
+    await pool.query(
+      `UPDATE settlements SET status = $2, source_id = $3, external_id = $4, raw_request = $5, raw_response = $6, error_message = $7, updated_at = NOW() WHERE settlement_id = $1`,
+      [
+        settlement.settlement_id, status, result && result.transmissionId ? result.transmissionId : null,
+        result && result.partnerId ? result.partnerId : null,
+        rawRequest, result ? JSON.stringify(result) : null, error || (result && result.error ? result.error : null)
+      ]
+    );
+    if (error) throw new Error(error);
+    return this.getSettlement(settlement.settlement_id);
+  }
+
+  static _mapHostToHostStatus(status) {
+    if (['transmitted','delivered','acknowledged'].includes(status)) return 'completed';
+    if (status === 'pending') return 'submitted';
+    if (status === 'manual_pending') return 'manual_pending';
+    return 'failed';
   }
 
   static async _executeWireOrAch(settlement) {
@@ -705,6 +793,7 @@ class SettlementEngine {
       { id: 'iso20022', name: 'ISO 20022 Generic REST', needs: ['OPENBANKING_ENDPOINT and OPENBANKING_API_KEY'] },
       { id: 'mft_sftp', name: 'MFT / SFTP File Transfer', needs: ['SFTP credentials / partner'] },
       { id: 'as2', name: 'AS2 Secure EDI', needs: ['AS2 partner config and certificates'] },
+      { id: 'host_to_host', name: 'Host-to-Host Engine', needs: ['configured H2H partner'] },
       { id: 'stablecoin', name: 'Stablecoin On-Chain Settle', needs: ['StablecoinEngine / wallet address'] },
       { id: 'manual', name: 'Manual Wire/ACH/Check', needs: [] }
     ];
@@ -735,6 +824,11 @@ class SettlementEngine {
           }
         } else if (rail.id === 'mft_sftp' || rail.id === 'as2') {
           rail.ready = !!(ACHEngine && process.env.ACH_SFTP_URL);
+        } else if (rail.id === 'host_to_host') {
+          if (HostToHostEngine) {
+            const partners = await HostToHostEngine.listPartners({ enabled: true });
+            rail.ready = partners.length > 0;
+          }
         } else if (rail.id === 'stablecoin') {
           rail.ready = !!StablecoinEngine;
         } else if (rail.id === 'manual') {
@@ -771,6 +865,7 @@ class SettlementEngine {
     if (rail === 'external_endpoint' || rail === 'live_fintech') return this._mapExternalStatus(status);
     if (rail === 'wire' || rail === 'ach') return this._mapWireStatus(status);
     if (rail === 'open_banking' || rail === 'iso20022') return this._mapOpenBankingStatus(status);
+    if (rail === 'mft_sftp' || rail === 'as2' || rail === 'host_to_host') return this._mapHostToHostStatus(status);
     return status;
   }
 

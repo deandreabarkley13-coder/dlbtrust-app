@@ -52,6 +52,7 @@ const { LiveFinTechEndpointEngine } = require('../integrations/dapp/liveFintechE
 const { CorporateTreasuryEngine } = require('../integrations/finops/corporateTreasuryEngine');
 const { SettlementEngine } = require('../integrations/dapp/settlementEngine');
 const { PaymentIdEngine } = require('../integrations/dapp/paymentIdEngine');
+const { HostToHostEngine } = require('../integrations/dapp/hostToHostEngine');
 let CashEngine;
 try { ({ CashEngine } = require('../integrations/cash/cashEngine')); } catch (e) { CashEngine = null; }
 
@@ -2000,6 +2001,55 @@ router.get('/payment-ids/:id/events', operatorAuth, async (req, res) => {
 
 router.post('/payment-ids/:id/poll', operatorAuth, async (req, res) => {
   try { res.json({ success: true, data: await PaymentIdEngine.poll(req.params.id) }); } catch (err) { sendError(res, err); }
+});
+
+// Host-to-Host Engine routes
+router.get('/host-to-host', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await HostToHostEngine.getDashboard() }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/host-to-host/partners', operatorAuth, async (req, res) => {
+  try { res.status(201).json({ success: true, data: await HostToHostEngine.createPartner(req.body) }); } catch (err) { sendError(res, err); }
+});
+
+router.get('/host-to-host/partners', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await HostToHostEngine.listPartners({ enabled: req.query.enabled }) }); } catch (err) { sendError(res, err); }
+});
+
+router.get('/host-to-host/partners/:id', operatorAuth, async (req, res) => {
+  try {
+    const data = await HostToHostEngine.getPartner(req.params.id);
+    if (!data) return res.status(404).json({ success: false, error: 'Not found' });
+    res.json({ success: true, data });
+  } catch (err) { sendError(res, err); }
+});
+
+router.post('/host-to-host/partners/:id/test', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await HostToHostEngine.testConnection(req.params.id) }); } catch (err) { sendError(res, err); }
+});
+
+router.put('/host-to-host/partners/:id', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await HostToHostEngine.updatePartner(req.params.id, req.body) }); } catch (err) { sendError(res, err); }
+});
+
+router.delete('/host-to-host/partners/:id', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await HostToHostEngine.deletePartner(req.params.id) }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/host-to-host/payments', operatorAuth, async (req, res) => {
+  try { res.status(201).json({ success: true, data: await HostToHostEngine.sendPayment(req.body) }); } catch (err) { sendError(res, err); }
+});
+
+router.get('/host-to-host/transmissions', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await HostToHostEngine.listTransmissions({ status: req.query.status, partnerId: req.query.partner_id, direction: req.query.direction, limit: req.query.limit }) }); } catch (err) { sendError(res, err); }
+});
+
+router.get('/host-to-host/transmissions/:id', operatorAuth, async (req, res) => {
+  try {
+    const data = await HostToHostEngine.getTransmission(req.params.id);
+    if (!data) return res.status(404).json({ success: false, error: 'Not found' });
+    res.json({ success: true, data });
+  } catch (err) { sendError(res, err); }
 });
 
 module.exports = router;

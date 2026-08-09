@@ -194,6 +194,7 @@
     { key:'live-fintech', name:'Live FinTech Endpoint Engine', desc:'Live fintech/bank payment endpoint adapters with provider-specific payloads and external payment flow', stat:'', endpoint:null, action:'openLiveFinTechPanel' },
     { key:'settlement', name:'Settlement Engine', desc:'Unified settlement queue for wire, ACH, open banking, external endpoints, stablecoin, MFT/AS2, and manual rails', stat:'', endpoint:null, action:'openSettlementPanel' },
     { key:'payment-ids', name:'Payment ID Engine', desc:'Canonical payment IDs, idempotency keys, child ID correlation, and event audit across all rails', stat:'', endpoint:null, action:'openPaymentIdPanel' },
+    { key:'host-to-host', name:'Host-to-Host Engine', desc:'SFTP/FTPS/AS2/HTTPS payment file and message exchange with bank/clearing partners', stat:'', endpoint:null, action:'openHostToHostPanel' },
     { key:'compliance', name:'Compliance Engine', desc:'KYC, AML, and sanctions screening before moving real money', stat:'', endpoint:null, action:'openCompliancePanel' },
     { key:'coordination', name:'Coordination Engine', desc:'System health, AI command queue and stability checks', stat:'', endpoint:null, action:'openCoordinationPanel' },
     { key:'clearing', name:'Clearing Engine', desc:'Bilateral and net settlement on Hyperledger Besu', stat:'', endpoint:null, action:'openClearingPanel' },
@@ -361,7 +362,7 @@
     renderModules();
     renderFlow();
     try {
-      const [sof, corporateTreasury, accts, wallets, bond, crm, p2p, ptc, consensus, xchain, paired, trustMarket, ramps, intents, externalWallets, externalSwaps, computing, holdings, capitalFunds, virtualAccounts, wireOrigination, electronicMoney, openBanking, trustDeposits, fineractPayouts, skrillLinks, barcodeDeposits, webPaymentRails, externalEndpoints, liveFintechEndpoints, settlements, paymentIds] = await Promise.all([
+      const [sof, corporateTreasury, accts, wallets, bond, crm, p2p, ptc, consensus, xchain, paired, trustMarket, ramps, intents, externalWallets, externalSwaps, computing, holdings, capitalFunds, virtualAccounts, wireOrigination, electronicMoney, openBanking, trustDeposits, fineractPayouts, skrillLinks, barcodeDeposits, webPaymentRails, externalEndpoints, liveFintechEndpoints, settlements, paymentIds, hostToHost] = await Promise.all([
         api('/api/finops/source-of-funds').catch(()=>null),
         api('/api/finops/corporate-treasury').catch(()=>null),
         api('/api/accounting/accounts').catch(()=>null),
@@ -394,6 +395,7 @@
         api('/api/finops/live-fintech-endpoints').catch(()=>null),
         api('/api/finops/settlements').catch(()=>null),
         api('/api/finops/payment-ids').catch(()=>null),
+        api('/api/finops/host-to-host').catch(()=>null),
       ]);
       if (corporateTreasury && corporateTreasury.data) {
         setStat('treasury', fmt(Number(corporateTreasury.data.totalCashCents || 0) / 100, 0));
@@ -501,6 +503,9 @@
       if (paymentIds && paymentIds.data && Array.isArray(paymentIds.data)) {
         const open = paymentIds.data.filter(p => ['created','reserved','submitted','transmitted','originated','queued','manual_pending'].includes(p.status)).length;
         setStat('payment-ids', String(open));
+      }
+      if (hostToHost && hostToHost.data) {
+        setStat('host-to-host', String(hostToHost.data.partners || 0));
       }
       renderModules();
     } catch(e) { console.error('loadAll error', e); }
@@ -4773,13 +4778,14 @@
     panel.classList.add('active');
     body.innerHTML = '<div class="muted">Loading…</div>';
     try {
-      const [rails, endpoints, liveFintechEndpoints, settlements] = await Promise.all([
+      const [rails, endpoints, liveFintechEndpoints, h2hPartners, settlements] = await Promise.all([
         api('/api/finops/settlements/rails').catch(()=>null),
         api('/api/finops/external-endpoints').catch(()=>null),
         api('/api/finops/live-fintech-endpoints').catch(()=>null),
+        api('/api/finops/host-to-host/partners').catch(()=>null),
         api('/api/finops/settlements').catch(()=>null),
       ]);
-      body.innerHTML = renderSettlementPanel(rails && rails.data, endpoints && endpoints.data, liveFintechEndpoints && liveFintechEndpoints.data, settlements && settlements.data);
+      body.innerHTML = renderSettlementPanel(rails && rails.data, endpoints && endpoints.data, liveFintechEndpoints && liveFintechEndpoints.data, h2hPartners && h2hPartners.data, settlements && settlements.data);
     } catch(e) { body.innerHTML = '<div class="status err">' + e.message + '</div>'; }
   }
 
@@ -4787,20 +4793,21 @@
     return (rails || []).map(r => `<option value="${r.id}" ${r.id === selected ? 'selected' : ''}>${r.name}${r.ready ? ' ✓' : ''}</option>`).join('');
   }
 
-  function endpointOptionsForSettlement(endpoints, liveFintechEndpoints, selected) {
+  function endpointOptionsForSettlement(endpoints, liveFintechEndpoints, h2hPartners, selected) {
     const externalOpts = (endpoints || []).map(e => `<option value="${e.endpoint_id}" ${e.endpoint_id === selected ? 'selected' : ''}>${e.name} (${e.protocol || 'external'})</option>`).join('');
     const liveOpts = (liveFintechEndpoints || []).map(e => `<option value="${e.endpoint_id}" ${e.endpoint_id === selected ? 'selected' : ''}>${e.name} (${e.provider})</option>`).join('');
-    return (externalOpts ? '<optgroup label="External Endpoints">' + externalOpts + '</optgroup>' : '') + (liveOpts ? '<optgroup label="Live FinTech">' + liveOpts + '</optgroup>' : '');
+    const h2hOpts = (h2hPartners || []).map(p => `<option value="${p.partner_id}" ${p.partner_id === selected ? 'selected' : ''}>${p.name} (${p.protocol})</option>`).join('');
+    return (externalOpts ? '<optgroup label="External Endpoints">' + externalOpts + '</optgroup>' : '') + (liveOpts ? '<optgroup label="Live FinTech">' + liveOpts + '</optgroup>' : '') + (h2hOpts ? '<optgroup label="Host-to-Host">' + h2hOpts + '</optgroup>' : '');
   }
 
-  function renderSettlementPanel(rails, endpoints, liveFintechEndpoints, settlements) {
+  function renderSettlementPanel(rails, endpoints, liveFintechEndpoints, h2hPartners, settlements) {
     const rows = (settlements || []).map(s => `<tr><td>${s.settlement_id}</td><td>${s.rail}</td><td>$${Number(s.amount_cents)/100}</td><td><span class="badge ${s.status}">${s.status}</span></td><td>${s.source_id || ''}</td><td>${s.error_message || ''}</td><td><button class="btn btn-sm" onclick="executeSettlement('${s.settlement_id}')">Execute</button><button class="btn btn-sm" onclick="cancelSettlement('${s.settlement_id}')">Cancel</button></td></tr>`).join('') || '<tr><td colspan="7" class="muted">No settlements yet</td></tr>';
     const railList = (rails || []).map(r => `<tr><td>${r.id}</td><td>${r.name}</td><td><span class="badge ${r.ready ? 'active' : 'inactive'}">${r.ready ? 'ready' : 'not ready'}</span></td><td>${r.needs.join(', ')}</td></tr>`).join('') || '<tr><td colspan="4" class="muted">No rails configured</td></tr>';
     return '<div style="display:flex; flex-direction:column; gap:12px;">' +
       '<div class="card" style="background:#0b1220;">' +
         '<h3>Create Settlement</h3>' +
         '<div class="token-bar"><select id="setl-rail" onchange="toggleSettlementFields()">' + railOptions(rails) + '</select>' +
-        '<select id="setl-endpoint" class="hidden" style="flex:1">' + endpointOptionsForSettlement(endpoints, liveFintechEndpoints) + '</select></div>' +
+        '<select id="setl-endpoint" class="hidden" style="flex:1">' + endpointOptionsForSettlement(endpoints, liveFintechEndpoints, h2hPartners) + '</select></div>' +
         '<div class="token-bar"><input id="setl-source" style="flex:1" placeholder="Source cash account ID (e.g. CA-OPERATING)" /><input id="setl-amount" type="number" step="0.01" style="flex:1" placeholder="Amount USD" /></div>' +
         '<div class="token-bar"><input id="setl-creditor-name" style="flex:1" placeholder="Creditor / beneficiary name" /><input id="setl-creditor-account" style="flex:1" placeholder="Account number / wallet" /></div>' +
         '<div class="token-bar"><input id="setl-creditor-routing" style="flex:1" placeholder="Routing / BIC / chain" /><input id="setl-creditor-bank" style="flex:1" placeholder="Bank name" /></div>' +
@@ -4825,7 +4832,7 @@
     const rail = el('setl-rail').value;
     const ep = el('setl-endpoint');
     const conn = el('setl-connector');
-    if (ep) ep.classList.toggle('hidden', rail !== 'external_endpoint' && rail !== 'live_fintech');
+    if (ep) ep.classList.toggle('hidden', rail !== 'external_endpoint' && rail !== 'live_fintech' && rail !== 'host_to_host' && rail !== 'mft_sftp' && rail !== 'as2');
     if (conn) conn.classList.toggle('hidden', rail !== 'open_banking' && rail !== 'iso20022');
   }
 
@@ -4846,7 +4853,7 @@
         debtorAccount: el('setl-debtor-account').value.trim() || undefined,
         description: el('setl-desc').value.trim(),
       };
-      if (rail === 'external_endpoint' || rail === 'live_fintech') body.endpointId = el('setl-endpoint').value;
+      if (rail === 'external_endpoint' || rail === 'live_fintech' || rail === 'host_to_host' || rail === 'mft_sftp' || rail === 'as2') body.endpointId = el('setl-endpoint').value;
       if (rail === 'open_banking' || rail === 'iso20022') body.connector = el('setl-connector').value.trim() || 'generic_rest';
       const res = await api('/api/finops/settlements', { method: 'POST', body: JSON.stringify(body) });
       show('Settlement created: ' + res.data.settlement_id + ' (' + res.data.status + ')', false, 'setl-create-status');
@@ -4877,6 +4884,132 @@
       show('Polled ' + (res.data || []).length + ' settlements', false, 'setl-create-status');
       openSettlementPanel();
     } catch(e) { show(e.message, true, 'setl-create-status'); }
+  }
+
+  // ─── Host-to-Host Engine Panel ───────────────────────────────────────────────
+
+  async function openHostToHostPanel() {
+    const panel = el('module-panel');
+    const body = el('panel-body');
+    el('panel-title').textContent = 'Host-to-Host Engine';
+    panel.classList.add('active');
+    body.innerHTML = '<div class="muted">Loading…</div>';
+    try {
+      const [partners, transmissions] = await Promise.all([
+        api('/api/finops/host-to-host/partners').catch(()=>null),
+        api('/api/finops/host-to-host/transmissions').catch(()=>null),
+      ]);
+      body.innerHTML = renderHostToHostPanel(partners && partners.data, transmissions && transmissions.data);
+    } catch(e) { body.innerHTML = '<div class="status err">' + e.message + '</div>'; }
+  }
+
+  function renderHostToHostPanel(partners, transmissions) {
+    const partnerRows = (partners || []).map(p => `<tr><td>${p.partner_id}</td><td>${p.name}</td><td>${p.protocol}</td><td>${p.host}</td><td>${p.message_type}</td><td>${p.enabled ? 'enabled' : 'disabled'}</td><td><button class="btn btn-sm" onclick="testH2HPartner('${p.partner_id}')">Test</button><button class="btn btn-sm" onclick="deleteH2HPartner('${p.partner_id}')">Delete</button></td></tr>`).join('') || '<tr><td colspan="7" class="muted">No partners yet</td></tr>';
+    const transmissionRows = (transmissions || []).map(t => `<tr><td>${t.transmission_id}</td><td>${t.partner_id}</td><td>${t.direction}</td><td>${t.message_type}</td><td><span class="badge ${t.status}">${t.status}</span></td><td>${t.filename}</td><td>${Number(t.amount_cents||0)/100}</td><td>${t.error_message || ''}</td></tr>`).join('') || '<tr><td colspan="8" class="muted">No transmissions yet</td></tr>';
+    return '<div style="display:flex; flex-direction:column; gap:12px;">' +
+      '<div class="card" style="background:#0b1220;">' +
+        '<h3>Create Partner</h3>' +
+        '<div class="token-bar"><input id="h2h-name" style="flex:1" placeholder="Partner name" /><select id="h2h-protocol" onchange="toggleH2HFields()"><option value="https">HTTPS</option><option value="http">HTTP</option><option value="sftp">SFTP</option><option value="ftps">FTPS</option><option value="as2">AS2</option></select></div>' +
+        '<div class="token-bar"><input id="h2h-host" style="flex:1" placeholder="Host / endpoint" /><input id="h2h-port" type="number" style="flex:0.5" placeholder="Port" /></div>' +
+        '<div class="token-bar"><input id="h2h-username" style="flex:1" placeholder="Username (optional)" /><input id="h2h-password" type="password" style="flex:1" placeholder="Password / API key" /></div>' +
+        '<div class="token-bar"><input id="h2h-remote" style="flex:1" placeholder="Remote path / webhook path" /><select id="h2h-message"><option value="json">JSON</option><option value="xml">XML</option><option value="nacha">NACHA ACH</option><option value="iso20022">ISO 20022</option><option value="csv">CSV</option></select></div>' +
+        '<div id="h2h-as2" class="hidden" style="display:flex; flex-direction:column; gap:8px;">' +
+          '<input id="h2h-as2-id" style="flex:1" placeholder="AS2 partner ID" />' +
+          '<input id="h2h-as2-url" style="flex:1" placeholder="AS2 endpoint URL" />' +
+          '<textarea id="h2h-as2-signing-cert" rows="2" placeholder="Signing certificate (PEM)"></textarea>' +
+          '<textarea id="h2h-as2-signing-key" rows="2" placeholder="Signing private key (PEM)"></textarea>' +
+          '<textarea id="h2h-as2-partner-cert" rows="2" placeholder="Partner public certificate (PEM)"></textarea>' +
+        '</div>' +
+        '<div class="token-bar"><textarea id="h2h-template" rows="2" style="flex:1" placeholder="Optional payload template with {{amount}}, {{creditor.name}}, etc."></textarea></div>' +
+        '<button class="btn" onclick="createH2HPartner()">Create Partner</button>' +
+        '<div id="h2h-create-status" class="status hidden"></div>' +
+      '</div>' +
+      '<div class="card" style="background:#0b1220;">' +
+        '<h3>Partners</h3>' +
+        '<table class="table"><thead><tr><th>ID</th><th>Name</th><th>Protocol</th><th>Host</th><th>Type</th><th>Enabled</th><th></th></tr></thead><tbody>' + partnerRows + '</tbody></table>' +
+      '</div>' +
+      '<div class="card" style="background:#0b1220;">' +
+        '<h3>Send Payment</h3>' +
+        '<div class="token-bar"><select id="h2h-send-partner">' + (partners || []).map(p => `<option value="${p.partner_id}">${p.name} (${p.protocol})</option>`).join('') + '</select><input id="h2h-send-amount" type="number" step="0.01" style="flex:0.5" placeholder="Amount" /></div>' +
+        '<div class="token-bar"><input id="h2h-send-creditor-name" style="flex:1" placeholder="Creditor name" /><input id="h2h-send-creditor-account" style="flex:1" placeholder="Account" /></div>' +
+        '<div class="token-bar"><input id="h2h-send-creditor-routing" style="flex:1" placeholder="Routing / IBAN" /><input id="h2h-send-creditor-bank" style="flex:1" placeholder="Bank" /></div>' +
+        '<button class="btn" onclick="sendH2HPayment()">Send Payment File / Message</button>' +
+        '<div id="h2h-send-status" class="status hidden"></div>' +
+      '</div>' +
+      '<div class="card" style="background:#0b1220;">' +
+        '<h3>Transmissions</h3>' +
+        '<table class="table"><thead><tr><th>ID</th><th>Partner</th><th>Dir</th><th>Type</th><th>Status</th><th>Filename</th><th>Amount</th><th>Error</th></tr></thead><tbody>' + transmissionRows + '</tbody></table>' +
+      '</div>' +
+    '</div>';
+  }
+
+  function toggleH2HFields() {
+    const protocol = el('h2h-protocol').value;
+    const as2 = el('h2h-as2');
+    if (as2) as2.classList.toggle('hidden', protocol !== 'as2');
+  }
+
+  async function createH2HPartner() {
+    const status = el('h2h-create-status');
+    status.classList.add('hidden');
+    try {
+      const body = {
+        name: el('h2h-name').value.trim(),
+        protocol: el('h2h-protocol').value,
+        host: el('h2h-host').value.trim(),
+        port: el('h2h-port').value ? Number(el('h2h-port').value) : undefined,
+        username: el('h2h-username').value.trim() || undefined,
+        password: el('h2h-password').value || undefined,
+        remotePath: el('h2h-remote').value.trim() || '/',
+        messageType: el('h2h-message').value,
+        template: el('h2h-template').value.trim() || undefined,
+      };
+      if (body.protocol === 'as2') {
+        body.as2Id = el('h2h-as2-id').value.trim();
+        body.as2Url = el('h2h-as2-url').value.trim();
+        body.as2SigningCert = el('h2h-as2-signing-cert').value.trim();
+        body.as2SigningKey = el('h2h-as2-signing-key').value.trim();
+        body.as2PartnerCert = el('h2h-as2-partner-cert').value.trim();
+      }
+      const res = await api('/api/finops/host-to-host/partners', { method: 'POST', body: JSON.stringify(body) });
+      show('Partner created: ' + res.data.partner_id, false, 'h2h-create-status');
+      openHostToHostPanel();
+    } catch(e) { show(e.message, true, 'h2h-create-status'); }
+    status.classList.remove('hidden');
+  }
+
+  async function testH2HPartner(id) {
+    try {
+      const res = await api('/api/finops/host-to-host/partners/' + id + '/test', { method: 'POST' });
+      alert('Test result: ' + JSON.stringify(res.data));
+    } catch(e) { alert(e.message); }
+  }
+
+  async function deleteH2HPartner(id) {
+    if (!confirm('Delete partner ' + id + '?')) return;
+    try {
+      await api('/api/finops/host-to-host/partners/' + id, { method: 'DELETE' });
+      openHostToHostPanel();
+    } catch(e) { alert(e.message); }
+  }
+
+  async function sendH2HPayment() {
+    const status = el('h2h-send-status');
+    status.classList.add('hidden');
+    try {
+      const body = {
+        partnerId: el('h2h-send-partner').value,
+        amount: Number(el('h2h-send-amount').value),
+        creditorName: el('h2h-send-creditor-name').value.trim(),
+        creditorAccount: el('h2h-send-creditor-account').value.trim() || undefined,
+        creditorRouting: el('h2h-send-creditor-routing').value.trim() || undefined,
+        creditorBank: el('h2h-send-creditor-bank').value.trim() || undefined,
+      };
+      const res = await api('/api/finops/host-to-host/payments', { method: 'POST', body: JSON.stringify(body) });
+      show('Transmission ' + res.data.transmission_id + ' status: ' + res.data.status, res.data.status === 'failed', 'h2h-send-status');
+      openHostToHostPanel();
+    } catch(e) { show(e.message, true, 'h2h-send-status'); }
+    status.classList.remove('hidden');
   }
 
   // ─── Compliance Engine Panel ────────────────────────────────────────────────

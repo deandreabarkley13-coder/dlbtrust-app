@@ -66,6 +66,7 @@ class FinOpsAgent {
 
     // Show data
     if (/corporate treasury|cash position|liquidity forecast|cash pool/.test(t)) return { intent: 'showCorporateTreasury', params: {} };
+    if (/host[- ]to[- ]host|h2h|host.*partner|sftp|ftps.*partner/.test(t)) return { intent: 'showHostToHost', params: {} };
     if (/source of funds|trust account|treasury|accounts/.test(t)) return { intent: 'showSourceOfFunds', params: {} };
     if (/wallet|balance/.test(t)) return { intent: 'showWallets', params: {} };
     if (/bond|dlb-prb|fixed income/.test(t)) return { intent: 'showBonds', params: {} };
@@ -79,6 +80,7 @@ class FinOpsAgent {
     if (intent === 'externalSend') return `Send ${params.amount ? '$' + params.amount + ' ' : ''}${params.asset} to ${params.toAddress}${params.from ? ' from ' + params.from + ' wallet' : ''}`;
     if (intent === 'reconcileBond') return `Reconcile DLB-PRB trust accounts`;
     if (intent === 'showCorporateTreasury') return 'Show corporate treasury cash position and forecast';
+    if (intent === 'showHostToHost') return 'Show host-to-host engine partners and transmissions';
     if (intent === 'showSourceOfFunds') return 'Show source-of-funds / trust account balances';
     if (intent === 'showWallets') return 'Show wallet balances';
     if (intent === 'showBonds') return 'Show DLB-PRB fixed-income metrics';
@@ -106,6 +108,10 @@ class FinOpsAgent {
     if (intent === 'showCorporateTreasury') {
       const { CorporateTreasuryEngine } = require('./corporateTreasuryEngine');
       return await CorporateTreasuryEngine.getDashboard();
+    }
+    if (intent === 'showHostToHost') {
+      const { HostToHostEngine } = require('../dapp/hostToHostEngine');
+      return await HostToHostEngine.getDashboard();
     }
     if (intent === 'showSourceOfFunds') {
       const rows = await DappEngine.listSourceBalances();
@@ -199,7 +205,7 @@ class FinOpsAgent {
     const parsed = this.parseCommand(command);
     const summary = this.summarize(parsed.intent, parsed.params);
 
-    const readOnly = ['showSourceOfFunds', 'showWallets', 'showBonds', 'showCrm', 'showCorporateTreasury'].includes(parsed.intent);
+    const readOnly = ['showSourceOfFunds', 'showWallets', 'showBonds', 'showCrm', 'showCorporateTreasury', 'showHostToHost'].includes(parsed.intent);
     if (parsed.intent === 'unknown') {
       return { type: 'message', summary, intent: 'unknown' };
     }
