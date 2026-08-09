@@ -121,6 +121,9 @@ try { app.use('/api/agents', require(path.join(HD, 'server', 'routes', 'agents')
 // AI FinOps Agent — natural language commands with human-in-the-loop approvals
 try { app.use('/api/finops', require(path.join(HD, 'server', 'routes', 'finops'))); console.log('[finops] loaded'); } catch(e) { console.warn('[finops]', e.message); }
 
+// Private Trust Company command center API
+try { app.use('/api/trust-ops', require(path.join(HD, 'server', 'routes', 'trustOps'))); console.log('[trust-ops] loaded'); } catch(e) { console.warn('[trust-ops]', e.message); }
+
 // DeFi dApp — serve new dApp at /dapp and /dashboard; landing page at root; legacy treasury dashboard at /treasury
 function serveDapp(req, res) {
   res.set('Cache-Control', 'no-cache, no-store, must-revalidate');

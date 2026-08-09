@@ -400,38 +400,20 @@
 
   async function loadOverview() {
     try {
-      const [nw, bonds, requests, users, vendors, holds] = await Promise.all([
-        api('/api/finops/aggregator/net-worth').catch(() => null),
-        api('/api/bonds/portfolio/live').catch(() => null),
-        api('/api/dapp/distribution-requests?limit=100').catch(() => null),
-        api('/api/dapp/users?limit=100').catch(() => null),
-        api('/api/finops/vendors?limit=100').catch(() => null),
-        api('/api/finops/trust-bank/accounts?limit=100').catch(() => null),
-      ]);
-      if (nw && nw.data) {
-        el('nw-value').textContent = fmtUsd(nw.data.total);
-        const sources = Object.entries(nw.data.by_source || {}).map(([k,v]) => `${k}: ${fmtUsd(v.balance)}`).join(' | ');
-        el('nw-sub').textContent = sources || 'across all ledgers';
-        el('source-list').innerHTML = '<div style="display:grid;gap:8px;">' + Object.entries(nw.data.by_source || {}).map(([k,v]) => `<div class="badge">${k}: ${fmtUsd(v.balance)}</div>`).join('') + '</div>';
-        const cash = (nw.data.by_source && (nw.data.by_source.cash || nw.data.by_source.trust_bank || nw.data.by_source.trust)) ? fmtUsd((nw.data.by_source.cash?.balance || 0) + (nw.data.by_source.trust_bank?.balance || 0) + (nw.data.by_source.trust?.balance || 0)) : '—';
-        el('cash-value').textContent = cash;
-      }
-      if (bonds && bonds.data) {
-        const total = bonds.data.totalMarket || bonds.data.totalFace || 0;
-        el('bond-value').textContent = fmtUsd(total);
-      }
-      if (requests && requests.data) {
-        const pending = requests.data.filter(r => r.status === 'under_review' || r.status === 'requested').length;
-        el('pending-value').textContent = pending;
-        const rows = requests.data.slice(0, 8).map(r => `<div style="display:flex;justify-content:space-between;padding:8px 0;border-bottom:1px solid var(--border);"><span>${r.id} — ${r.beneficiary_name || r.beneficiary_email}</span><span class="badge ${r.status === 'approved' || r.status === 'executed' ? 'approved' : r.status === 'rejected' ? 'rejected' : 'pending'}">${r.status}</span></div>`).join('');
-        el('recent-requests').innerHTML = rows || '<p class="muted">No requests yet.</p>';
-      }
-      if (users && users.data) {
-        const rows = users.data.slice(0, 10).map(u => `<div style="display:flex;justify-content:space-between;padding:6px 0;border-bottom:1px solid var(--border);font-size:.8rem;"><span>${u.name || u.email}</span><span class="badge">${u.role || 'beneficiary'}</span></div>`).join('');
-        el('contacts-list').innerHTML = rows || '<p class="muted">No contacts.</p>';
-      }
-      state.vendors = (vendors && vendors.data) || [];
-      state.holds = (holds && holds.data) || [];
+      const summary = await api('/api/trust-ops/summary');
+      const s = summary.data || {};
+      el('nw-value').textContent = fmtUsd(s.netWorth);
+      const sources = Object.entries(s.bySource || {}).map(([k,v]) => `${k}: ${fmtUsd(v.balance)}`).join(' | ');
+      el('nw-sub').textContent = sources || 'across all ledgers';
+      el('source-list').innerHTML = '<div style="display:grid;gap:8px;">' + Object.entries(s.bySource || {}).map(([k,v]) => `<div class="badge">${k}: ${fmtUsd(v.balance)}</div>`).join('') + '</div>';
+      const cash = (s.bySource && (s.bySource.cash || s.bySource.trust_bank || s.bySource.trust)) ? fmtUsd((s.bySource.cash?.balance || 0) + (s.bySource.trust_bank?.balance || 0) + (s.bySource.trust?.balance || 0)) : '—';
+      el('cash-value').textContent = cash;
+      el('bond-value').textContent = fmtUsd(s.bondValue);
+      el('pending-value').textContent = s.pendingApprovals || 0;
+      const rows = (s.distributions || []).slice(0, 8).map(r => `<div style="display:flex;justify-content:space-between;padding:8px 0;border-bottom:1px solid var(--border);"><span>${r.id} — ${r.beneficiary_name || r.beneficiary_email}</span><span class="badge ${r.status === 'approved' || r.status === 'executed' ? 'approved' : r.status === 'rejected' ? 'rejected' : 'pending'}">${r.status}</span></div>`).join('');
+      el('recent-requests').innerHTML = rows || '<p class="muted">No requests yet.</p>';
+      const contacts = (s.contacts || []).slice(0, 10).map(u => `<div style="display:flex;justify-content:space-between;padding:6px 0;border-bottom:1px solid var(--border);font-size:.8rem;"><span>${u.name || u.email}</span><span class="badge">${u.role || 'beneficiary'}</span></div>`).join('');
+      el('contacts-list').innerHTML = contacts || '<p class="muted">No contacts.</p>';
     } catch (e) { console.error('overview', e); }
   }
 
