@@ -124,12 +124,12 @@ try { app.use('/api/finops', require(path.join(HD, 'server', 'routes', 'finops')
 // Private Trust Company command center API
 try { app.use('/api/trust-ops', require(path.join(HD, 'server', 'routes', 'trustOps'))); console.log('[trust-ops] loaded'); } catch(e) { console.warn('[trust-ops]', e.message); }
 
-// DeFi dApp — serve new dApp at /dapp and /dashboard; landing page at root; legacy treasury dashboard at /treasury
+// DeFi dApp — dApp login at /dapp, command center at /dashboard; landing page at root; legacy treasury dashboard at /treasury
 function serveDapp(req, res) {
   res.set('Cache-Control', 'no-cache, no-store, must-revalidate');
   res.set('Pragma', 'no-cache');
   res.set('Expires', '0');
-  res.redirect('/dashboard');
+  res.sendFile(path.join(HD, 'public', 'dapp', 'index.html'));
 }
 function serveLanding(req, res) {
   res.set('Cache-Control', 'no-cache, no-store, must-revalidate');
