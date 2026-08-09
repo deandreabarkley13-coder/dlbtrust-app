@@ -177,6 +177,7 @@
     { key:'virtual-accounts', name:'Virtual Accounts', desc:'Ledger-backed virtual accounts for frictionless fiat+on-chain transactions', stat:'', endpoint:null, action:'openVirtualAccountsPanel' },
     { key:'wire-origination', name:'Wire Origination', desc:'Fiat payout origination API: wire, ACH, check, crypto rails', stat:'', endpoint:null, action:'openWireOriginationPanel' },
     { key:'electronic-money', name:'Electronic Money', desc:'Stored-value USD ledger for instant P2P transfers', stat:'', endpoint:null, action:'openElectronicMoneyPanel' },
+    { key:'open-banking', name:'Open Banking', desc:'ISO 20022 + bank connectors (Column, Increase, Plaid, REST) for direct payouts', stat:'', endpoint:null, action:'openOpenBankingPanel' },
     { key:'coordination', name:'Coordination Engine', desc:'System health, AI command queue and stability checks', stat:'', endpoint:null, action:'openCoordinationPanel' },
     { key:'clearing', name:'Clearing Engine', desc:'Bilateral and net settlement on Hyperledger Besu', stat:'', endpoint:null, action:'openClearingPanel' },
     { key:'redemption-gateway', name:'Redemption Gateway', desc:'Bridge DLB-PTCUSD to external clearing/stablecoin rails', stat:'', endpoint:null, action:'openRedemptionGatewayPanel' },
@@ -343,7 +344,7 @@
     renderModules();
     renderFlow();
     try {
-      const [sof, accts, wallets, bond, crm, p2p, ptc, consensus, xchain, paired, trustMarket, ramps, intents, externalWallets, externalSwaps, computing, holdings, capitalFunds, virtualAccounts, wireOrigination, electronicMoney] = await Promise.all([
+      const [sof, accts, wallets, bond, crm, p2p, ptc, consensus, xchain, paired, trustMarket, ramps, intents, externalWallets, externalSwaps, computing, holdings, capitalFunds, virtualAccounts, wireOrigination, electronicMoney, openBanking] = await Promise.all([
         api('/api/finops/source-of-funds').catch(()=>null),
         api('/api/accounting/accounts').catch(()=>null),
         api('/api/finops/wallets').catch(()=>null),
@@ -365,6 +366,7 @@
         api('/api/finops/virtual-accounts').catch(()=>null),
         api('/api/finops/wire-origination').catch(()=>null),
         api('/api/finops/electronic-money/summary').catch(()=>null),
+        api('/api/finops/open-banking/payments').catch(()=>null),
       ]);
       const balances = normalizeBalances(sof && sof.data);
       if (balances.length) {
@@ -432,6 +434,10 @@
       }
       if (electronicMoney && electronicMoney.data) {
         setStat('electronic-money', fmt(Number(electronicMoney.data.totalBalanceDollars || 0), 0));
+      }
+      if (openBanking && openBanking.data && Array.isArray(openBanking.data)) {
+        const pending = openBanking.data.filter(p => ['pending','originated'].includes(p.status)).length;
+        setStat('open-banking', String(pending));
       }
       renderModules();
     } catch(e) { console.error('loadAll error', e); }
@@ -3299,6 +3305,72 @@
       const rows = res.data || [];
       alert('Transactions for ' + accountId + ':\n' + rows.map(t => `${t.tx_type} $${t.amount_cents/100} ${t.status}`).join('\n'));
     } catch(e) { alert(e.message); }
+  }
+
+  // ─── Open Banking Engine Panel ───────────────────────────────────────────────
+  async function openOpenBankingPanel() {
+    const panel = el('module-panel');
+    const body = el('panel-body');
+    el('panel-title').textContent = 'Open Banking';
+    panel.classList.add('active');
+    body.innerHTML = '<div class="muted">Loading…</div>';
+    try {
+      const [connectors, payments] = await Promise.all([
+        api('/api/finops/open-banking/connectors').catch(()=>null),
+        api('/api/finops/open-banking/payments').catch(()=>null),
+      ]);
+      body.innerHTML = renderOpenBankingPanel(connectors && connectors.data, payments && payments.data);
+    } catch(e) { body.innerHTML = '<div class="status err">' + e.message + '</div>'; }
+  }
+
+  function renderOpenBankingPanel(connectors, payments) {
+    const cashOptions = (window.wireOriginationAccounts || []).length ? window.wireOriginationAccounts.map(a => `<option value="${a.account_id}">${a.account_id}</option>`).join('') : '<option value="CA-OPERATING">CA-OPERATING</option>';
+    const connectorOptions = (connectors || []).map(c => `<option value="${c.id}">${c.name} — ${c.readiness && c.readiness.ready ? 'ready' : 'needs config'}</option>`).join('') || '<option value="">No connectors</option>';
+    const rows = (payments || []).map(p => `<tr><td>${p.payment_id}</td><td>${p.connector}</td><td>$${Number(p.amount_cents || 0)/100}</td><td>${p.status}</td><td>${p.creditor_name || ''}</td><td>${p.error_message || ''}</td></tr>`).join('') || '<tr><td colspan="6" class="muted">No payments yet</td></tr>';
+    return '<div style="display:flex; flex-direction:column; gap:12px;">' +
+      '<div class="card" style="background:#0b1220;">' +
+        '<h3>Connector Readiness</h3>' +
+        '<p class="muted">Programmatic credit-push only. Set API keys in env/system_settings to activate a connector.</p>' +
+        '<ul style="font-size:13px; padding-left:18px;">' + (connectors || []).map(c => `<li><strong>${c.name}</strong>: ${c.readiness && c.readiness.ready ? 'ready' : 'needs ' + (c.readiness ? c.readiness.needs.join(', ') : 'config')}</li>`).join('') + '</ul>' +
+      '</div>' +
+      '<div class="card" style="background:#0b1220;">' +
+        '<h3>Initiate ISO 20022 Payment</h3>' +
+        '<div class="token-bar"><select id="ob-connector">' + connectorOptions + '</select></div>' +
+        '<div class="token-bar"><select id="ob-source-account">' + cashOptions + '</select></div>' +
+        '<div class="token-bar"><input id="ob-amount" type="number" step="0.01" placeholder="Amount USD" /></div>' +
+        '<div class="token-bar"><input id="ob-creditor-name" placeholder="Beneficiary name" /></div>' +
+        '<div class="token-bar"><input id="ob-creditor-account" placeholder="Beneficiary account" /></div>' +
+        '<div class="token-bar"><input id="ob-creditor-routing" placeholder="Routing / ABA" /></div>' +
+        '<div class="token-bar"><input id="ob-creditor-bic" placeholder="BIC (optional)" /></div>' +
+        '<div class="token-bar"><input id="ob-remittance" placeholder="Remittance / description" /></div>' +
+        '<button class="btn" onclick="createOpenBankingPayment()">Create Payment</button>' +
+        '<div id="ob-create-status" class="status hidden"></div>' +
+      '</div>' +
+      '<div class="card" style="background:#0b1220;">' +
+        '<h3>Recent Payments</h3>' +
+        '<table class="table"><thead><tr><th>Payment ID</th><th>Connector</th><th>Amount</th><th>Status</th><th>Beneficiary</th><th>Error</th></tr></thead><tbody>' + rows + '</tbody></table>' +
+      '</div>' +
+    '</div>';
+  }
+
+  async function createOpenBankingPayment() {
+    const status = el('ob-create-status');
+    status.classList.add('hidden');
+    try {
+      const connector = el('ob-connector').value;
+      const sourceCashAccountId = el('ob-source-account').value;
+      const amount = el('ob-amount').value;
+      const creditorName = el('ob-creditor-name').value;
+      const creditorAccount = el('ob-creditor-account').value;
+      const creditorRouting = el('ob-creditor-routing').value;
+      const creditorBic = el('ob-creditor-bic').value;
+      const remittance = el('ob-remittance').value;
+      if (!connector || !amount || !creditorName || !creditorAccount || !creditorRouting) throw new Error('Connector, amount, beneficiary name, account and routing required');
+      const res = await api('/api/finops/open-banking/payments', { method: 'POST', body: JSON.stringify({ connector, sourceCashAccountId, amount, creditorName, creditorAccount, creditorRouting, creditorBic, remittance }) });
+      show('Payment created: ' + res.data.paymentId + ' — status: ' + res.data.status, res.data.status === 'failed', 'ob-create-status');
+      openOpenBankingPanel();
+    } catch(e) { show(e.message, true, 'ob-create-status'); }
+    status.classList.remove('hidden');
   }
 
   window.addEventListener('DOMContentLoaded', () => {

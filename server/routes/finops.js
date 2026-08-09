@@ -33,6 +33,7 @@ const { CapitalFundEngine } = require('../integrations/dapp/capitalFundEngine');
 const { VirtualAccountEngine } = require('../integrations/dapp/virtualAccountEngine');
 const { WireOriginationEngine } = require('../integrations/dapp/wireOriginationEngine');
 const { ElectronicMoneyEngine } = require('../integrations/dapp/electronicMoneyEngine');
+const { OpenBankingEngine } = require('../integrations/dapp/openBankingEngine');
 let CashEngine;
 try { ({ CashEngine } = require('../integrations/cash/cashEngine')); } catch (e) { CashEngine = null; }
 
@@ -1153,6 +1154,47 @@ router.post('/electronic-money/redeem', operatorAuth, writeRateLimiter(), async 
 
 router.post('/electronic-money/payout', operatorAuth, writeRateLimiter(), async (req, res) => {
   try { res.json({ success: true, data: await ElectronicMoneyEngine.payout({ ...req.body, createdBy: getUserEmail(req) }) }); } catch (err) { sendError(res, err); }
+});
+
+// ═════════════════════════════════════════════════════════════════════════════
+// Open Banking Engine — ISO 20022 + bank connectors for direct payouts
+// ═════════════════════════════════════════════════════════════════════════════
+
+router.get('/open-banking/connectors', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: OpenBankingEngine.getConnectors() }); } catch (err) { sendError(res, err); }
+});
+
+router.get('/open-banking/payments', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await OpenBankingEngine.listPayments(req.query) }); } catch (err) { sendError(res, err); }
+});
+
+router.get('/open-banking/payments/:id', operatorAuth, async (req, res) => {
+  try {
+    const data = await OpenBankingEngine.getPayment(req.params.id);
+    if (!data) return res.status(404).json({ success: false, error: 'Payment not found' });
+    res.json({ success: true, data });
+  } catch (err) { sendError(res, err); }
+});
+
+router.get('/open-banking/payments/:id/iso20022', operatorAuth, async (req, res) => {
+  try {
+    const data = await OpenBankingEngine.getPayment(req.params.id);
+    if (!data) return res.status(404).json({ success: false, error: 'Payment not found' });
+    res.set('Content-Type', 'application/xml');
+    res.send(data.iso20022_message || '<error>No message</error>');
+  } catch (err) { sendError(res, err); }
+});
+
+router.post('/open-banking/payments', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try { res.status(201).json({ success: true, data: await OpenBankingEngine.createPayment(req.body) }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/open-banking/payments/:id/cancel', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try { res.json({ success: true, data: await OpenBankingEngine.cancelPayment(req.params.id) }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/open-banking/verify-account', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try { res.json({ success: true, data: await OpenBankingEngine.verifyAccount(req.body) }); } catch (err) { sendError(res, err); }
 });
 
 module.exports = router;
