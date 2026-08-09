@@ -15,12 +15,6 @@ const { URL } = require('url');
 const { Readable } = require('stream');
 const pool = require('../bonds/pgPool');
 
-let CashEngine;
-try { ({ CashEngine } = require('../cash/cashEngine')); } catch (e) { CashEngine = null; }
-
-let SettlementEngine;
-try { SettlementEngine = require('./settlementEngine').SettlementEngine; } catch (e) { SettlementEngine = null; }
-
 let ExternalEndpointEngine;
 let httpRequest;
 let buildSimplePain001;
@@ -36,9 +30,6 @@ try { ({ AS2Client } = require('../ach/as2Client')); } catch (e) { AS2Client = n
 
 let Nacha;
 try { Nacha = require('../ach/nachaGenerator'); } catch (e) { Nacha = null; }
-
-const HOLD_ACCOUNT = 'HOST_TO_HOST_HOLD';
-const SETTLED_ACCOUNT = 'HOST_TO_HOST_SETTLED';
 
 function id(prefix = 'H2H') {
   return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 8).toUpperCase()}`;
@@ -126,12 +117,6 @@ class HostToHostEngine {
     await pool.query(`CREATE INDEX IF NOT EXISTS idx_h2h_partner_enabled ON host_to_host_partners(enabled)`);
     await pool.query(`CREATE INDEX IF NOT EXISTS idx_h2h_txn_status ON host_to_host_transmissions(status)`);
     await pool.query(`CREATE INDEX IF NOT EXISTS idx_h2h_txn_settlement ON host_to_host_transmissions(settlement_id)`);
-  }
-
-  static async ensureHoldAccounts() {
-    if (!CashEngine || !CashEngine.getOrCreateHoldAccount) return;
-    try { await CashEngine.getOrCreateHoldAccount(HOLD_ACCOUNT, { currency: 'USD', description: 'Host-to-host payment hold' }); } catch (e) { console.warn('[h2h] hold account:', e.message); }
-    try { await CashEngine.getOrCreateHoldAccount(SETTLED_ACCOUNT, { currency: 'USD', description: 'Host-to-host payment settled' }); } catch (e) { console.warn('[h2h] settled account:', e.message); }
   }
 
   // ─── Partner CRUD ────────────────────────────────────────────────────────────

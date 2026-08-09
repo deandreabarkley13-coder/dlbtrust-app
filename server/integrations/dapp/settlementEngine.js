@@ -482,7 +482,7 @@ class SettlementEngine {
       if (status === 'completed' && CashEngine) {
         await CashEngine.transfer({
           fromAccountId: HOLD_ACCOUNT,
-          toAccountId: 'HOST_TO_HOST_SETTLED',
+          toAccountId: SETTLED_ACCOUNT,
           amountCents: settlement.amount_cents,
           movementType: 'transfer',
           memo: `Settle H2H ${settlement.settlement_id}`,

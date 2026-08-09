@@ -36,9 +36,6 @@ function loadDeps() {
   try { ComplianceEngine = require('../compliance/complianceEngine').ComplianceEngine; } catch (e) { ComplianceEngine = null; }
 }
 
-const HOLD_ACCOUNT = 'LIVE_MONEY_HOLD';
-const SETTLED_ACCOUNT = 'LIVE_MONEY_SETTLED';
-
 const VALID_RAILS = new Set([
   'auto', 'trust_bank', 'host_to_host', 'live_fintech', 'external_endpoint',
   'wire', 'ach', 'open_banking', 'iso20022', 'stablecoin', 'manual'
@@ -94,12 +91,6 @@ class LiveMoneyMovementEngine {
     `);
     await pool.query(`CREATE INDEX IF NOT EXISTS idx_live_money_status ON live_money_movements(status)`);
     await pool.query(`CREATE INDEX IF NOT EXISTS idx_live_money_settlement ON live_money_movements(settlement_id)`);
-  }
-
-  static async ensureHoldAccounts() {
-    if (!CashEngine || !CashEngine.getOrCreateHoldAccount) return;
-    try { await CashEngine.getOrCreateHoldAccount(HOLD_ACCOUNT, { currency: 'USD', description: 'Live money movement hold' }); } catch (e) { console.warn('[live-money] hold account:', e.message); }
-    try { await CashEngine.getOrCreateHoldAccount(SETTLED_ACCOUNT, { currency: 'USD', description: 'Live money movement settled' }); } catch (e) { console.warn('[live-money] settled account:', e.message); }
   }
 
   // ─── Core: initiate a live movement ────────────────────────────────────────────
@@ -246,34 +237,6 @@ class LiveMoneyMovementEngine {
           errorMessage: result.error_message || null
         });
       } catch (e) { console.warn('[live-money] payment-id link:', e.message); }
-    }
-
-    if (status === 'completed' && CashEngine) {
-      try {
-        await CashEngine.transfer({
-          fromAccountId: HOLD_ACCOUNT,
-          toAccountId: SETTLED_ACCOUNT,
-          amountCents: movement.amount_cents,
-          movementType: 'transfer',
-          memo: `Live money settled ${movementId}`,
-          referenceId: movementId,
-          referenceType: 'live_money'
-        });
-      } catch (e) { console.warn('[live-money] settle transfer:', e.message); }
-    }
-
-    if (status === 'failed' && movement.source_account_id && CashEngine) {
-      try {
-        await CashEngine.transfer({
-          fromAccountId: HOLD_ACCOUNT,
-          toAccountId: movement.source_account_id,
-          amountCents: movement.amount_cents,
-          movementType: 'transfer',
-          memo: `Live money refund ${movementId}`,
-          referenceId: movementId,
-          referenceType: 'live_money'
-        });
-      } catch (e) { console.warn('[live-money] refund failed:', e.message); }
     }
 
     if (error) throw new Error(error);
