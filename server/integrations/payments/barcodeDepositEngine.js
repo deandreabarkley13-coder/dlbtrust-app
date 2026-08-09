@@ -213,7 +213,7 @@ class BarcodeDepositEngine {
         `INSERT INTO cash_accounts (account_id, account_name, account_type, status, balance_cents, created_at, updated_at)
          VALUES ($1, $2, $3, 'active', 0, NOW(), NOW())
          ON CONFLICT (account_id) DO NOTHING`,
-        [externalId, 'Barcode Deposit External Source', 'external']
+        [externalId, 'Barcode Deposit External Source', 'escrow']
       );
 
       const fromRes = await client.query(
