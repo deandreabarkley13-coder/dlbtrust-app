@@ -65,7 +65,7 @@ class HoldingManagementEngine {
       accountCode,
       accountName: `Holding: ${name}`,
       accountType: 'asset',
-      subType: 'holding',
+      subType: 'other',
       description: `Canonical holding managed account for ${id}`,
     });
 
