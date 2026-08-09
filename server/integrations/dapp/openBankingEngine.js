@@ -16,8 +16,39 @@ try { ({ CashEngine } = require('../cash/cashEngine')); } catch (e) { /* optiona
 
 try { var { SystemSettings } = require('../ach/systemSettings'); } catch (e) { var SystemSettings = null; }
 
-let lib;
-try { lib = require('../utils/httpLib'); } catch (e) { /* optional */ }
+const https = require('https');
+const http = require('http');
+const { URL } = require('url');
+
+function httpRequest({ url, method = 'GET', headers = {}, body } = {}) {
+  return new Promise((resolve, reject) => {
+    const parsed = new URL(url);
+    const client = parsed.protocol === 'https:' ? https : http;
+    const payload = body ? (typeof body === 'string' ? body : JSON.stringify(body)) : null;
+    const reqHeaders = { ...headers };
+    if (payload) reqHeaders['Content-Length'] = Buffer.byteLength(payload);
+    const req = client.request({
+      hostname: parsed.hostname,
+      port: parsed.port || (parsed.protocol === 'https:' ? 443 : 80),
+      path: `${parsed.pathname}${parsed.search || ''}`,
+      method,
+      headers: reqHeaders,
+      timeout: 60000,
+    }, (res) => {
+      let data = '';
+      res.on('data', chunk => { data += chunk; });
+      res.on('end', () => {
+        try { resolve(JSON.parse(data)); } catch {
+          resolve({ raw: data, statusCode: res.statusCode });
+        }
+      });
+    });
+    req.on('error', reject);
+    req.on('timeout', () => { req.destroy(); reject(new Error('HTTP timeout')); });
+    if (payload) req.write(payload);
+    req.end();
+  });
+}
 
 function generateId(prefix = 'OBP') {
   return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 8).toUpperCase()}`;
@@ -126,8 +157,7 @@ class ColumnConnector extends BaseConnector {
       receiving_account_name: payment.creditor_name,
       description: payment.description || payment.remittance,
     };
-    if (!lib) throw new Error('HTTP library not available');
-    const res = await lib.request({
+    const res = await httpRequest({
       url: 'https://api.column.com/wire-transfers',
       method: 'POST',
       headers: { 'Authorization': `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
@@ -158,8 +188,7 @@ class IncreaseConnector extends BaseConnector {
       beneficiary_name: payment.creditor_name,
       message_to_beneficiary: payment.description || payment.remittance,
     };
-    if (!lib) throw new Error('HTTP library not available');
-    const res = await lib.request({
+    const res = await httpRequest({
       url: 'https://api.increase.com/wire_transfers',
       method: 'POST',
       headers: { 'Authorization': `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
@@ -182,8 +211,7 @@ class PlaidConnector extends BaseConnector {
     const secret = await getSetting('PLAID_SECRET');
     const env = (await getSetting('PLAID_ENV')) || 'sandbox';
     const host = env === 'development' ? 'https://development.plaid.com' : env === 'production' ? 'https://production.plaid.com' : 'https://sandbox.plaid.com';
-    if (!lib) throw new Error('HTTP library not available');
-    return lib.request({ url: `${host}${path}`, method: 'POST', headers: { 'Content-Type': 'application/json' }, body: { ...body, client_id: clientId, secret } });
+    return httpRequest({ url: `${host}${path}`, method: 'POST', headers: { 'Content-Type': 'application/json' }, body: { ...body, client_id: clientId, secret } });
   }
   async sendPayment(payment) {
     const accessToken = await getSetting('PLAID_ACCESS_TOKEN');
@@ -231,8 +259,7 @@ class GenericRestConnector extends BaseConnector {
       creditorBic: payment.creditor_bic,
       remittance: payment.remittance,
     });
-    if (!lib) throw new Error('HTTP library not available');
-    const res = await lib.request({
+    const res = await httpRequest({
       url: endpoint,
       method: 'POST',
       headers: { 'Authorization': `Bearer ${apiKey}`, 'Content-Type': 'application/xml' },
