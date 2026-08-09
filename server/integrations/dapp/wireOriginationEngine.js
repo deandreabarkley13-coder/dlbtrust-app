@@ -94,17 +94,15 @@ class WireOriginationEngine {
     const ids = Object.values(HOLD_ACCOUNTS).concat(Object.values(SETTLED_ACCOUNTS));
     for (const accountId of ids) {
       try {
-        await CashEngine.getAccount(accountId);
-      } catch (e) {
-        try {
-          await CashEngine.createAccount({
-            accountId,
-            accountName: accountId.replace(/_/g, ' ').toLowerCase().replace(/\b\w/g, l => l.toUpperCase()),
-            accountType: 'escrow',
-            notes: 'Wire Origination Engine clearing account',
-          });
-        } catch (createErr) { /* may already exist or engine has different API */ }
-      }
+        const existing = await CashEngine.getAccount(accountId);
+        if (existing) continue;
+        await CashEngine.createAccount({
+          accountId,
+          accountName: accountId.replace(/_/g, ' ').toLowerCase().replace(/\b\w/g, l => l.toUpperCase()),
+          accountType: 'escrow',
+          notes: 'Wire Origination Engine clearing account',
+        });
+      } catch (e) { /* may already exist or engine has different API */ }
     }
   }
 
@@ -473,7 +471,7 @@ class WireOriginationEngine {
   static async getMessage(payoutId) {
     const row = await this.getPayout(payoutId);
     if (!row) throw new Error('Payout not found');
-    if (row.adapter === 'wire' && WireEngine && row.wire_id) {
+    if (['wire','manual'].includes(row.adapter) && WireEngine && row.wire_id) {
       const wire = await WireEngine.getWire(row.wire_id);
       if (!wire) throw new Error('Wire not found');
       return WireEngine.formatWireMessage(wire);
