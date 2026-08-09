@@ -47,6 +47,7 @@ const { VendorPaymentEngine } = require('../integrations/dapp/vendorPaymentEngin
 const { TrustBankEngine } = require('../integrations/dapp/trustBankEngine');
 const { WealthManagementEngine } = require('../integrations/dapp/wealthManagementEngine');
 const { TrustAggregatorEngine } = require('../integrations/dapp/trustAggregatorEngine');
+const { ExternalEndpointEngine } = require('../integrations/dapp/externalEndpointEngine');
 let CashEngine;
 try { ({ CashEngine } = require('../integrations/cash/cashEngine')); } catch (e) { CashEngine = null; }
 
@@ -1667,6 +1668,62 @@ router.get('/aggregator/transactions', operatorAuth, async (req, res) => {
 
 router.post('/aggregator/auto-connect', operatorAuth, async (req, res) => {
   try { res.status(201).json({ success: true, data: await TrustAggregatorEngine.autoConnectInternalSources() }); } catch (err) { sendError(res, err); }
+});
+
+// ═════════════════════════════════════════════════════════════════════════════
+// External Endpoint Engine
+// ═════════════════════════════════════════════════════════════════════════════
+
+router.post('/external-endpoints', operatorAuth, async (req, res) => {
+  try { res.status(201).json({ success: true, data: await ExternalEndpointEngine.createEndpoint(req.body) }); } catch (err) { sendError(res, err); }
+});
+
+router.get('/external-endpoints', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await ExternalEndpointEngine.listEndpoints({ enabled: req.query.enabled }) }); } catch (err) { sendError(res, err); }
+});
+
+router.get('/external-endpoints/:id', operatorAuth, async (req, res) => {
+  try {
+    const data = await ExternalEndpointEngine.getEndpoint(req.params.id);
+    if (!data) return res.status(404).json({ success: false, error: 'Not found' });
+    res.json({ success: true, data });
+  } catch (err) { sendError(res, err); }
+});
+
+router.patch('/external-endpoints/:id', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await ExternalEndpointEngine.updateEndpoint(req.params.id, req.body) }); } catch (err) { sendError(res, err); }
+});
+
+router.delete('/external-endpoints/:id', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await ExternalEndpointEngine.deleteEndpoint(req.params.id) }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/external-endpoints/:id/test', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await ExternalEndpointEngine.testConnection(req.params.id) }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/external-endpoints/:id/payments', operatorAuth, async (req, res) => {
+  try { res.status(201).json({ success: true, data: await ExternalEndpointEngine.executePayment({ endpointId: req.params.id, ...req.body }) }); } catch (err) { sendError(res, err); }
+});
+
+router.get('/external-endpoints/:id/payments', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await ExternalEndpointEngine.listPayments({ endpointId: req.params.id, status: req.query.status, limit: req.query.limit }) }); } catch (err) { sendError(res, err); }
+});
+
+router.get('/external-payments', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await ExternalEndpointEngine.listPayments({ status: req.query.status, limit: req.query.limit }) }); } catch (err) { sendError(res, err); }
+});
+
+router.get('/external-payments/:id', operatorAuth, async (req, res) => {
+  try {
+    const data = await ExternalEndpointEngine.getPayment(req.params.id);
+    if (!data) return res.status(404).json({ success: false, error: 'Not found' });
+    res.json({ success: true, data });
+  } catch (err) { sendError(res, err); }
+});
+
+router.post('/external-payments/:id/send', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await ExternalEndpointEngine.sendPayment(req.params.id) }); } catch (err) { sendError(res, err); }
 });
 
 module.exports = router;

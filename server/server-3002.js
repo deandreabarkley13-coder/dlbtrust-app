@@ -361,6 +361,12 @@ async function initializeDatabase() {
   } catch(e) { console.warn('[trust-aggregator] table init:', e.message); }
 
   try {
+    var ExternalEndpointEngine = require(path.join(HD, 'server', 'integrations', 'dapp', 'externalEndpointEngine')).ExternalEndpointEngine;
+    await ExternalEndpointEngine.ensureTables();
+    console.log('[external-endpoint] tables ensured');
+  } catch(e) { console.warn('[external-endpoint] table init:', e.message); }
+
+  try {
     var ComplianceEngine = require(path.join(HD, 'server', 'integrations', 'compliance', 'complianceEngine')).ComplianceEngine;
     await ComplianceEngine.ensureTables();
     console.log('[compliance] tables ensured');
