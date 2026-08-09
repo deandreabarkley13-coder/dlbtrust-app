@@ -264,19 +264,25 @@ class LiliMcpEngine {
     return data;
   }
 
+  static _sessionId = null;
+
   static async _mcpPost(body, { accessToken } = {}) {
     const cfg = await this.getConfig();
     const token = accessToken || await this.getAccessToken();
     if (!token) throw new Error('Lili MCP not authenticated');
+    const headers = {
+      'Accept': 'application/json, text/event-stream',
+      'Content-Type': 'application/json',
+      'Authorization': `Bearer ${token}`,
+    };
+    if (this._sessionId) headers['Mcp-Session-Id'] = this._sessionId;
     const res = await fetch(cfg.mcpUrl, {
       method: 'POST',
-      headers: {
-        'Accept': 'application/json, text/event-stream',
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${token}`,
-      },
+      headers,
       body: JSON.stringify(body),
     });
+    const sessionId = res.headers.get('mcp-session-id');
+    if (sessionId) this._sessionId = sessionId;
     const contentType = res.headers.get('content-type') || '';
     const text = await res.text();
     if (!res.ok && !contentType.includes('event-stream')) {
@@ -306,6 +312,7 @@ class LiliMcpEngine {
   }
 
   static async initialize() {
+    this._sessionId = null;
     const response = await this._mcpPost({
       jsonrpc: '2.0',
       id: 1,
@@ -326,6 +333,7 @@ class LiliMcpEngine {
   }
 
   static async listTools() {
+    if (!this._sessionId) await this.initialize();
     return this._mcpPost({
       jsonrpc: '2.0',
       id: generateId(),
@@ -334,6 +342,7 @@ class LiliMcpEngine {
   }
 
   static async callTool(name, args = {}) {
+    if (!this._sessionId) await this.initialize();
     return this._mcpPost({
       jsonrpc: '2.0',
       id: generateId(),
