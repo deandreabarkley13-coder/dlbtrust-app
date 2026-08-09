@@ -213,11 +213,12 @@ class SkrillLinkEngine {
 
     try {
       const prepare = await httpPostForm('https://www.skrill.com/app/pay.pl', prepareForm);
-      // Skrill MQI returns XML; look for a session id
+      // Skrill MQI returns XML; look for a session id or error details
       const sidMatch = prepare.body.match(/<sid>([^<]+)<\/sid>/i);
       if (!sidMatch) {
+        const errMsg = prepare.body.match(/<error_msg>([^<]+)<\/error_msg>/i);
         const err = prepare.body.match(/<error>([^<]+)<\/error>/i);
-        throw new Error(err ? err[1] : 'Skrill prepare failed: no session returned');
+        throw new Error(errMsg ? errMsg[1] : (err ? err[1] : `Skrill prepare failed: ${prepare.body}`));
       }
       const sid = sidMatch[1];
 
