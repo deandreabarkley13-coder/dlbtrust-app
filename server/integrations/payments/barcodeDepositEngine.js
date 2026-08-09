@@ -234,7 +234,7 @@ class BarcodeDepositEngine {
       await client.query(
         `INSERT INTO cash_movements (movement_id, from_account_id, to_account_id, amount_cents, movement_type, reference_id, reference_type, memo, initiated_by)
          VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
-        [movementId, externalId, target, row.amount_cents, 'barcode_deposit', row.deposit_id, 'barcode_deposit', `Barcode deposit ${row.deposit_id}`, initiatedBy]
+        [movementId, externalId, target, row.amount_cents, 'deposit', row.deposit_id, 'barcode_deposit', `Barcode deposit ${row.deposit_id}`, initiatedBy]
       );
       await client.query(`UPDATE ${TABLE} SET status='deposited', target_account_id=$1, cash_movement_id=$2, updated_at=NOW() WHERE deposit_id=$3`,
         [target, movementId, depositId]);
