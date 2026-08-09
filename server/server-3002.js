@@ -373,6 +373,18 @@ async function initializeDatabase() {
   } catch(e) { console.warn('[payment-id] table init:', e.message); }
 
   try {
+    var LiveFinTechEndpointEngine = require(path.join(HD, 'server', 'integrations', 'dapp', 'liveFintechEndpointEngine')).LiveFinTechEndpointEngine;
+    await LiveFinTechEndpointEngine.ensureTables();
+    console.log('[live-fintech] tables ensured');
+  } catch(e) { console.warn('[live-fintech] table init:', e.message); }
+
+  try {
+    var CorporateTreasuryEngine = require(path.join(HD, 'server', 'integrations', 'finops', 'corporateTreasuryEngine')).CorporateTreasuryEngine;
+    await CorporateTreasuryEngine.ensureTables();
+    console.log('[corporate-treasury] tables ensured');
+  } catch(e) { console.warn('[corporate-treasury] table init:', e.message); }
+
+  try {
     var SettlementEngine = require(path.join(HD, 'server', 'integrations', 'dapp', 'settlementEngine')).SettlementEngine;
     await SettlementEngine.ensureTables();
     console.log('[settlement] tables ensured');

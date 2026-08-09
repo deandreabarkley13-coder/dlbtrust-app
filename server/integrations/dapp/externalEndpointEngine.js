@@ -577,4 +577,15 @@ class ExternalEndpointEngine {
   }
 }
 
-module.exports = { ExternalEndpointEngine };
+module.exports = {
+  ExternalEndpointEngine,
+  httpRequest,
+  buildAuthHeaders,
+  renderTemplate,
+  maskSecret,
+  escapeXml,
+  buildDefaultPayload,
+  buildSimplePain001,
+  buildSimpleXmlPayload,
+  resolveStatusFromResponse,
+};

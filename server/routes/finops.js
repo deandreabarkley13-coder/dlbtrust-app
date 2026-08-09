@@ -48,6 +48,8 @@ const { TrustBankEngine } = require('../integrations/dapp/trustBankEngine');
 const { WealthManagementEngine } = require('../integrations/dapp/wealthManagementEngine');
 const { TrustAggregatorEngine } = require('../integrations/dapp/trustAggregatorEngine');
 const { ExternalEndpointEngine } = require('../integrations/dapp/externalEndpointEngine');
+const { LiveFinTechEndpointEngine } = require('../integrations/dapp/liveFintechEndpointEngine');
+const { CorporateTreasuryEngine } = require('../integrations/finops/corporateTreasuryEngine');
 const { SettlementEngine } = require('../integrations/dapp/settlementEngine');
 const { PaymentIdEngine } = require('../integrations/dapp/paymentIdEngine');
 let CashEngine;
@@ -1726,6 +1728,202 @@ router.get('/external-payments/:id', operatorAuth, async (req, res) => {
 
 router.post('/external-payments/:id/send', operatorAuth, async (req, res) => {
   try { res.json({ success: true, data: await ExternalEndpointEngine.sendPayment(req.params.id) }); } catch (err) { sendError(res, err); }
+});
+
+// ═════════════════════════════════════════════════════════════════════════════
+// Live FinTech Endpoint Engine
+// ═════════════════════════════════════════════════════════════════════════════
+
+router.get('/live-fintech/providers', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: LiveFinTechEndpointEngine.providers }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/live-fintech-endpoints', operatorAuth, async (req, res) => {
+  try { res.status(201).json({ success: true, data: await LiveFinTechEndpointEngine.createEndpoint(req.body) }); } catch (err) { sendError(res, err); }
+});
+
+router.get('/live-fintech-endpoints', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await LiveFinTechEndpointEngine.listEndpoints({ enabled: req.query.enabled, provider: req.query.provider }) }); } catch (err) { sendError(res, err); }
+});
+
+router.get('/live-fintech-endpoints/:id', operatorAuth, async (req, res) => {
+  try {
+    const data = await LiveFinTechEndpointEngine.getEndpoint(req.params.id);
+    if (!data) return res.status(404).json({ success: false, error: 'Not found' });
+    res.json({ success: true, data });
+  } catch (err) { sendError(res, err); }
+});
+
+router.patch('/live-fintech-endpoints/:id', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await LiveFinTechEndpointEngine.updateEndpoint(req.params.id, req.body) }); } catch (err) { sendError(res, err); }
+});
+
+router.delete('/live-fintech-endpoints/:id', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await LiveFinTechEndpointEngine.deleteEndpoint(req.params.id) }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/live-fintech-endpoints/:id/test', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await LiveFinTechEndpointEngine.testConnection(req.params.id) }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/live-fintech-endpoints/:id/payments', operatorAuth, async (req, res) => {
+  try { res.status(201).json({ success: true, data: await LiveFinTechEndpointEngine.executePayment({ endpointId: req.params.id, ...req.body }) }); } catch (err) { sendError(res, err); }
+});
+
+router.get('/live-fintech-endpoints/:id/payments', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await LiveFinTechEndpointEngine.listPayments({ endpointId: req.params.id, status: req.query.status, limit: req.query.limit }) }); } catch (err) { sendError(res, err); }
+});
+
+router.get('/live-fintech-payments', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await LiveFinTechEndpointEngine.listPayments({ status: req.query.status, limit: req.query.limit }) }); } catch (err) { sendError(res, err); }
+});
+
+router.get('/live-fintech-payments/:id', operatorAuth, async (req, res) => {
+  try {
+    const data = await LiveFinTechEndpointEngine.getPayment(req.params.id);
+    if (!data) return res.status(404).json({ success: false, error: 'Not found' });
+    res.json({ success: true, data });
+  } catch (err) { sendError(res, err); }
+});
+
+router.post('/live-fintech-payments/:id/send', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await LiveFinTechEndpointEngine.sendPayment(req.params.id) }); } catch (err) { sendError(res, err); }
+});
+
+// ═════════════════════════════════════════════════════════════════════════════
+// Corporate Treasury Management System Engine
+// ═════════════════════════════════════════════════════════════════════════════
+
+router.get('/corporate-treasury', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await CorporateTreasuryEngine.getDashboard() }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/corporate-treasury/setup-ptc', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await CorporateTreasuryEngine.setupPTCDefaultAccounts(req.body) }); } catch (err) { sendError(res, err); }
+});
+
+router.get('/corporate-treasury/ptc-report', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await CorporateTreasuryEngine.getPTCReport(req.query) }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/corporate-treasury/segregate-beneficiary', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await CorporateTreasuryEngine.segregateBeneficiaryFunds(req.body) }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/corporate-treasury/allocate-capital-call', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await CorporateTreasuryEngine.allocateCapitalCall(req.body) }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/corporate-treasury/sync', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await CorporateTreasuryEngine.syncBalances() }); } catch (err) { sendError(res, err); }
+});
+
+router.get('/corporate-treasury/forecast', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await CorporateTreasuryEngine.getLiquidityForecast({ days: Number(req.query.days) || 30 }) }); } catch (err) { sendError(res, err); }
+});
+
+router.get('/corporate-treasury/accounts', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await CorporateTreasuryEngine.listAccounts(req.query) }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/corporate-treasury/accounts', operatorAuth, async (req, res) => {
+  try { res.status(201).json({ success: true, data: await CorporateTreasuryEngine.createAccount(req.body) }); } catch (err) { sendError(res, err); }
+});
+
+router.get('/corporate-treasury/accounts/:id', operatorAuth, async (req, res) => {
+  try {
+    const data = await CorporateTreasuryEngine.getAccount(req.params.id);
+    if (!data) return res.status(404).json({ success: false, error: 'Not found' });
+    res.json({ success: true, data });
+  } catch (err) { sendError(res, err); }
+});
+
+router.patch('/corporate-treasury/accounts/:id', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await CorporateTreasuryEngine.updateAccount(req.params.id, req.body) }); } catch (err) { sendError(res, err); }
+});
+
+router.delete('/corporate-treasury/accounts/:id', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await CorporateTreasuryEngine.deleteAccount(req.params.id) }); } catch (err) { sendError(res, err); }
+});
+
+router.get('/corporate-treasury/pools', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await CorporateTreasuryEngine.listCashPools(req.query) }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/corporate-treasury/pools', operatorAuth, async (req, res) => {
+  try { res.status(201).json({ success: true, data: await CorporateTreasuryEngine.createCashPool(req.body) }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/corporate-treasury/pools/:id/sweep', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await CorporateTreasuryEngine.sweepCashPool(req.params.id) }); } catch (err) { sendError(res, err); }
+});
+
+router.get('/corporate-treasury/cash-flows', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await CorporateTreasuryEngine.listCashFlows(req.query) }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/corporate-treasury/cash-flows', operatorAuth, async (req, res) => {
+  try { res.status(201).json({ success: true, data: await CorporateTreasuryEngine.createCashFlow(req.body) }); } catch (err) { sendError(res, err); }
+});
+
+router.patch('/corporate-treasury/cash-flows/:id', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await CorporateTreasuryEngine.updateCashFlow(req.params.id, req.body) }); } catch (err) { sendError(res, err); }
+});
+
+router.delete('/corporate-treasury/cash-flows/:id', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await CorporateTreasuryEngine.deleteCashFlow(req.params.id) }); } catch (err) { sendError(res, err); }
+});
+
+router.get('/corporate-treasury/investments', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await CorporateTreasuryEngine.listInvestments(req.query) }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/corporate-treasury/investments', operatorAuth, async (req, res) => {
+  try { res.status(201).json({ success: true, data: await CorporateTreasuryEngine.createInvestment(req.body) }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/corporate-treasury/investments/:id/redeem', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await CorporateTreasuryEngine.redeemInvestment(req.params.id) }); } catch (err) { sendError(res, err); }
+});
+
+router.get('/corporate-treasury/transactions', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await CorporateTreasuryEngine.listTransactions(req.query) }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/corporate-treasury/transactions', operatorAuth, async (req, res) => {
+  try { res.status(201).json({ success: true, data: await CorporateTreasuryEngine.createTransaction(req.body) }); } catch (err) { sendError(res, err); }
+});
+
+router.get('/corporate-treasury/policies', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await CorporateTreasuryEngine.listPolicies(req.query) }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/corporate-treasury/policies', operatorAuth, async (req, res) => {
+  try { res.status(201).json({ success: true, data: await CorporateTreasuryEngine.createPolicy(req.body) }); } catch (err) { sendError(res, err); }
+});
+
+router.delete('/corporate-treasury/policies/:id', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await CorporateTreasuryEngine.deletePolicy(req.params.id) }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/corporate-treasury/evaluate', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await CorporateTreasuryEngine.evaluatePayment(req.body) }); } catch (err) { sendError(res, err); }
+});
+
+router.get('/corporate-treasury/workflows', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await CorporateTreasuryEngine.listWorkflows(req.query) }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/corporate-treasury/workflows', operatorAuth, async (req, res) => {
+  try { res.status(201).json({ success: true, data: await CorporateTreasuryEngine.createWorkflow(req.body) }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/corporate-treasury/workflows/:id/approve', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await CorporateTreasuryEngine.approveWorkflow(req.params.id, req.body) }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/corporate-treasury/workflows/:id/execute', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await CorporateTreasuryEngine.executeWorkflow(req.params.id) }); } catch (err) { sendError(res, err); }
 });
 
 // ═════════════════════════════════════════════════════════════════════════════

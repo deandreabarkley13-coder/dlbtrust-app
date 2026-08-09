@@ -46,12 +46,15 @@ try { SystemSettings = require('../ach/systemSettings').SystemSettings; } catch 
 let PaymentIdEngine;
 try { PaymentIdEngine = require('./paymentIdEngine').PaymentIdEngine; } catch (e) { PaymentIdEngine = null; }
 
+let LiveFinTechEndpointEngine;
+try { LiveFinTechEndpointEngine = require('./liveFintechEndpointEngine').LiveFinTechEndpointEngine; } catch (e) { LiveFinTechEndpointEngine = null; }
+
 const HOLD_ACCOUNT = 'SETTLEMENT_HOLD';
 const SETTLED_ACCOUNT = 'SETTLEMENT_SETTLED';
 
 const VALID_RAILS = new Set([
   'external_endpoint', 'wire', 'ach', 'open_banking', 'iso20022',
-  'mft_sftp', 'as2', 'stablecoin', 'manual'
+  'mft_sftp', 'as2', 'stablecoin', 'manual', 'live_fintech'
 ]);
 
 function generateId(prefix = 'SETL') {
@@ -81,7 +84,7 @@ class SettlementEngine {
         source_type TEXT DEFAULT 'manual',
         source_id TEXT,
         source_account_id TEXT,
-        rail TEXT NOT NULL CHECK (rail IN ('external_endpoint','wire','ach','open_banking','iso20022','mft_sftp','as2','stablecoin','manual')),
+        rail TEXT NOT NULL CHECK (rail IN ('external_endpoint','wire','ach','open_banking','iso20022','mft_sftp','as2','stablecoin','manual','live_fintech')),
         endpoint_id TEXT,
         connector TEXT,
         amount_cents BIGINT NOT NULL,
@@ -109,6 +112,8 @@ class SettlementEngine {
     `);
     await pool.query(`CREATE INDEX IF NOT EXISTS idx_settlements_status ON settlements(status)`);
     await pool.query(`CREATE INDEX IF NOT EXISTS idx_settlements_source_id ON settlements(source_id)`);
+    await pool.query(`ALTER TABLE settlements DROP CONSTRAINT IF EXISTS settlements_rail_check`);
+    await pool.query(`ALTER TABLE settlements ADD CONSTRAINT settlements_rail_check CHECK (rail IN ('external_endpoint','wire','ach','open_banking','iso20022','mft_sftp','as2','stablecoin','manual','live_fintech'))`);
     await this._ensureHoldAccounts();
   }
 
@@ -217,6 +222,8 @@ class SettlementEngine {
       result = await this._executeStablecoin(settlement);
     } else if (settlement.rail === 'external_endpoint') {
       result = await this._executeExternalEndpoint(settlement);
+    } else if (settlement.rail === 'live_fintech') {
+      result = await this._executeLiveFinTech(settlement);
     } else if (settlement.rail === 'wire' || settlement.rail === 'ach') {
       result = await this._executeWireOrAch(settlement);
     } else if (settlement.rail === 'open_banking' || settlement.rail === 'iso20022') {
@@ -355,6 +362,65 @@ class SettlementEngine {
         description: settlement.description,
         sourceType: 'settlement',
         settlementId: settlement.settlement_id,
+      });
+      status = this._mapExternalStatus(result.status);
+    } catch (e) {
+      error = e.message;
+      status = 'failed';
+    }
+
+    await pool.query(
+      `UPDATE settlements SET status = $2, source_id = $3, external_id = $4, raw_request = $5, raw_response = $6, error_message = $7, updated_at = NOW() WHERE settlement_id = $1`,
+      [
+        settlement.settlement_id, status, result && result.paymentId ? result.paymentId : null, result && result.externalId ? result.externalId : null,
+        rawRequest, result ? JSON.stringify(result) : null, error || (result && result.errorMessage ? result.errorMessage : null)
+      ]
+    );
+    if (error) throw new Error(error);
+    return this.getSettlement(settlement.settlement_id);
+  }
+
+  static async _executeLiveFinTech(settlement) {
+    if (!LiveFinTechEndpointEngine) throw new Error('LiveFinTechEndpointEngine not available');
+    if (!settlement.endpoint_id) throw new Error('endpoint_id is required for live_fintech rail');
+
+    const rawRequest = JSON.stringify({
+      endpoint_id: settlement.endpoint_id,
+      sourceAccountId: settlement.source_account_id,
+      amount: settlement.amount_cents / 100,
+      currency: settlement.currency,
+      creditorName: settlement.creditor_name,
+      creditorAccount: settlement.creditor_account,
+      creditorRouting: settlement.creditor_routing,
+      creditorBank: settlement.creditor_bank,
+      debtorName: settlement.debtor_name,
+      debtorAccount: settlement.debtor_account,
+      debtorRouting: settlement.debtor_routing,
+      debtorBank: settlement.debtor_bank,
+      paymentType: settlement.payment_type,
+      description: settlement.description,
+    });
+
+    let result;
+    let status = 'failed';
+    let error = null;
+    try {
+      result = await LiveFinTechEndpointEngine.executePayment({
+        endpointId: settlement.endpoint_id,
+        sourceAccountId: settlement.source_account_id,
+        sourceType: 'settlement',
+        amount: settlement.amount_cents / 100,
+        currency: settlement.currency,
+        creditorName: settlement.creditor_name,
+        creditorAccount: settlement.creditor_account,
+        creditorRouting: settlement.creditor_routing,
+        creditorBank: settlement.creditor_bank,
+        debtorName: settlement.debtor_name,
+        debtorAccount: settlement.debtor_account,
+        debtorRouting: settlement.debtor_routing,
+        debtorBank: settlement.debtor_bank,
+        paymentType: settlement.payment_type,
+        description: settlement.description,
       });
       status = this._mapExternalStatus(result.status);
     } catch (e) {
@@ -632,6 +698,7 @@ class SettlementEngine {
   static async getRails() {
     const rails = [
       { id: 'external_endpoint', name: 'External Endpoint Engine', needs: ['configured endpoint'] },
+      { id: 'live_fintech', name: 'Live FinTech Endpoint Engine', needs: ['configured live fintech endpoint'] },
       { id: 'wire', name: 'Fedwire Bank API', needs: ['WIRE_ENDPOINT / bank API key'] },
       { id: 'ach', name: 'ACH NACHA / AS2', needs: ['ACH partner config or ACH_SFTP_URL'] },
       { id: 'open_banking', name: 'Open Banking / ISO 20022', needs: ['OPENBANKING_ENDPOINT and OPENBANKING_API_KEY'] },
@@ -648,6 +715,11 @@ class SettlementEngine {
         if (rail.id === 'external_endpoint') {
           if (ExternalEndpointEngine) {
             const list = await ExternalEndpointEngine.listEndpoints({ enabled: true });
+            rail.ready = list.length > 0;
+          }
+        } else if (rail.id === 'live_fintech') {
+          if (LiveFinTechEndpointEngine) {
+            const list = await LiveFinTechEndpointEngine.listEndpoints({ enabled: true });
             rail.ready = list.length > 0;
           }
         } else if (rail.id === 'wire' || rail.id === 'ach') {
@@ -696,7 +768,7 @@ class SettlementEngine {
   }
 
   static _mapChildStatus(rail, status) {
-    if (rail === 'external_endpoint') return this._mapExternalStatus(status);
+    if (rail === 'external_endpoint' || rail === 'live_fintech') return this._mapExternalStatus(status);
     if (rail === 'wire' || rail === 'ach') return this._mapWireStatus(status);
     if (rail === 'open_banking' || rail === 'iso20022') return this._mapOpenBankingStatus(status);
     return status;
