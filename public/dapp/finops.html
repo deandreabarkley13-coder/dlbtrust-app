@@ -3771,6 +3771,8 @@
       '<div class="card" style="background:#0b1220;">' +
         '<h3>Lili MCP (M2M)</h3>' +
         `<p class="muted">Status: ${mcp.configured ? '<span class="badge completed">configured</span>' : '<span class="badge manual_pending">not configured</span>'} ${mcp.hasAccessToken ? ' (token present)' : ' (no token)'}</p>` +
+        '<div class="token-bar"><button class="btn" onclick="startLiliMcpOAuth()" ' + (mcp.configured ? 'disabled' : '') + '>Connect Lili Account (OAuth)</button></div>' +
+        '<div id="lili-oauth-url" class="hidden" style="font-size:11px;word-break:break-all;background:#050a14;padding:8px;border-radius:6px;margin-top:8px;"></div>' +
         '<div class="token-bar"><input id="lili-mcp-tool" style="flex:1" placeholder="Tool name (e.g. lili_get_account_summary)" /></div>' +
         '<div class="token-bar"><input id="lili-mcp-args" style="flex:1" placeholder="Args JSON (optional)" /></div>' +
         '<button class="btn" onclick="callLiliMcpTool()">Call Tool</button>' +
@@ -3806,6 +3808,16 @@
       loadAll();
     } catch(e) { show(e.message, true, 'lili-create-status'); }
     status.classList.remove('hidden');
+  }
+
+  async function startLiliMcpOAuth() {
+    const out = el('lili-oauth-url');
+    out.classList.add('hidden');
+    try {
+      const res = await api('/api/finops/lili/mcp/oauth/start', { method: 'POST', body: '{}' });
+      out.innerHTML = '<p class="muted">Open this URL in a browser and authorize Lili. After redirect, the callback will exchange the code and store tokens.</p><a href="' + res.data.authUrl + '" target="_blank" style="color:#3b82f6;">' + res.data.authUrl + '</a>';
+      out.classList.remove('hidden');
+    } catch(e) { out.textContent = 'Error: ' + e.message; out.classList.remove('hidden'); }
   }
 
   async function callLiliMcpTool() {

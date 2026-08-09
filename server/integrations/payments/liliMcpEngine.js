@@ -17,9 +17,16 @@
  *   LILI_BUSINESS_USER_ID   Lili business user external id (optional for owner accounts)
  */
 
+const crypto = require('crypto');
+
+let pool;
+try { pool = require('../bonds/pgPool'); } catch (e) { pool = null; }
+
 let SystemSettings;
+let PaymentCrypto;
 function loadDeps() {
   try { ({ SystemSettings } = require('../ach/systemSettings')); } catch (e) { SystemSettings = null; }
+  try { PaymentCrypto = require('../paymentHub/paymentCrypto'); } catch (e) { PaymentCrypto = null; }
 }
 
 async function getSetting(name) {
@@ -33,19 +40,61 @@ async function getSetting(name) {
   return process.env[name] || null;
 }
 
+async function setSetting(name, value, updatedBy = 'system') {
+  loadDeps();
+  if (SystemSettings && typeof SystemSettings.set === 'function') {
+    await SystemSettings.set(name, value, updatedBy);
+  }
+}
+
+function safeEncrypt(value) {
+  if (!value) return value;
+  if (PaymentCrypto && typeof PaymentCrypto.encrypt === 'function') {
+    try { return PaymentCrypto.encrypt(value); } catch (e) { /* fall through to plaintext */ }
+  }
+  return value;
+}
+
+function safeDecrypt(value) {
+  if (!value) return value;
+  if (PaymentCrypto && typeof PaymentCrypto.decrypt === 'function') {
+    try { return PaymentCrypto.decrypt(value); } catch (e) { return value; }
+  }
+  return value;
+}
+
 function generateId(prefix = 'MCP') {
   return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 8).toUpperCase()}`;
 }
 
+function generatePkce() {
+  const verifier = crypto.randomBytes(32).toString('base64url');
+  const challenge = crypto.createHash('sha256').update(verifier).digest('base64url');
+  return { verifier, challenge };
+}
+
 class LiliMcpEngine {
+  static async ensureTables() {
+    if (!pool) return;
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS lili_mcp_oauth_sessions (
+        state TEXT PRIMARY KEY,
+        code_verifier TEXT NOT NULL,
+        redirect_uri TEXT NOT NULL,
+        client_id TEXT,
+        created_at TIMESTAMPTZ DEFAULT NOW()
+      )
+    `);
+  }
+
   static async getConfig() {
     return {
       mcpUrl: (await getSetting('LILI_MCP_URL')) || process.env.LILI_MCP_URL || 'https://mcp.lili.co/mcp',
       oauthBaseUrl: (await getSetting('LILI_OAUTH_BASE_URL')) || process.env.LILI_OAUTH_BASE_URL || 'https://mcp.lili.co',
-      clientId: (await getSetting('LILI_OAUTH_CLIENT_ID')) || process.env.LILI_OAUTH_CLIENT_ID || null,
-      clientSecret: (await getSetting('LILI_OAUTH_CLIENT_SECRET')) || process.env.LILI_OAUTH_CLIENT_SECRET || null,
-      accessToken: (await getSetting('LILI_OAUTH_ACCESS_TOKEN')) || process.env.LILI_OAUTH_ACCESS_TOKEN || null,
-      refreshToken: (await getSetting('LILI_OAUTH_REFRESH_TOKEN')) || process.env.LILI_OAUTH_REFRESH_TOKEN || null,
+      clientId: safeDecrypt(await getSetting('LILI_OAUTH_CLIENT_ID')) || process.env.LILI_OAUTH_CLIENT_ID || null,
+      clientSecret: safeDecrypt(await getSetting('LILI_OAUTH_CLIENT_SECRET')) || process.env.LILI_OAUTH_CLIENT_SECRET || null,
+      accessToken: safeDecrypt(await getSetting('LILI_OAUTH_ACCESS_TOKEN')) || process.env.LILI_OAUTH_ACCESS_TOKEN || null,
+      refreshToken: safeDecrypt(await getSetting('LILI_OAUTH_REFRESH_TOKEN')) || process.env.LILI_OAUTH_REFRESH_TOKEN || null,
       businessUserId: (await getSetting('LILI_BUSINESS_USER_ID')) || process.env.LILI_BUSINESS_USER_ID || null,
       mcpEnabled: ((await getSetting('LILI_MCP_ENABLED')) || process.env.LILI_MCP_ENABLED || 'false') === 'true',
     };
@@ -66,6 +115,116 @@ class LiliMcpEngine {
   static isConfigured(cfg) {
     if (!cfg) cfg = {};
     return Boolean(cfg.mcpEnabled && cfg.mcpUrl && (cfg.accessToken || cfg.refreshToken) && cfg.clientId);
+  }
+
+  static _getRedirectUri() {
+    return process.env.LILI_OAUTH_REDIRECT_URI || `https://${process.env.FLY_APP_NAME ? process.env.FLY_APP_NAME + '.fly.dev' : 'dlbtrust-app.fly.dev'}/api/finops/lili/mcp/oauth/callback`;
+  }
+
+  static async registerClient({ appName = 'DLB Trust MCP', redirectUri } = {}) {
+    const cfg = await this.getConfig();
+    const url = `${cfg.oauthBaseUrl.replace(/\/$/, '')}/oauth/register`;
+    const body = JSON.stringify({
+      client_name: appName,
+      redirect_uris: [redirectUri || this._getRedirectUri()],
+      grant_types: ['authorization_code', 'refresh_token'],
+      response_types: ['code'],
+      token_endpoint_auth_method: 'client_secret_post',
+    });
+    const res = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body,
+    });
+    const text = await res.text();
+    if (!res.ok) throw new Error(`Lili client registration failed: ${res.status} ${text}`);
+    try { return JSON.parse(text); } catch (e) { return { raw: text }; }
+  }
+
+  static async startOAuth({ appName, redirectUri, state: providedState } = {}) {
+    await this.ensureTables();
+    let cfg = await this.getConfig();
+    const redirect = redirectUri || this._getRedirectUri();
+
+    let clientId = cfg.clientId;
+    let clientSecret = cfg.clientSecret;
+    if (!clientId) {
+      const reg = await this.registerClient({ appName, redirectUri: redirect });
+      clientId = reg.client_id;
+      clientSecret = reg.client_secret;
+      if (!clientId) throw new Error('Lili client registration did not return client_id');
+      await setSetting('LILI_OAUTH_CLIENT_ID', safeEncrypt(clientId));
+      await setSetting('LILI_OAUTH_CLIENT_SECRET', safeEncrypt(clientSecret));
+      cfg = await this.getConfig();
+    }
+
+    const { verifier, challenge } = generatePkce();
+    const state = providedState || generateId('STATE');
+
+    if (pool) {
+      await pool.query(
+        `INSERT INTO lili_mcp_oauth_sessions (state, code_verifier, redirect_uri, client_id) VALUES ($1,$2,$3,$4)
+         ON CONFLICT (state) DO UPDATE SET code_verifier=$2, redirect_uri=$3, client_id=$4, created_at=NOW()`,
+        [state, verifier, redirect, clientId]
+      );
+    }
+
+    const authUrl = new URL(`${cfg.oauthBaseUrl.replace(/\/$/, '')}/oauth/authorize`);
+    authUrl.searchParams.append('response_type', 'code');
+    authUrl.searchParams.append('client_id', clientId);
+    authUrl.searchParams.append('redirect_uri', redirect);
+    authUrl.searchParams.append('scope', 'openid profile lili_api');
+    authUrl.searchParams.append('state', state);
+    authUrl.searchParams.append('code_challenge', challenge);
+    authUrl.searchParams.append('code_challenge_method', 'S256');
+
+    return { authUrl: authUrl.toString(), state, redirectUri: redirect };
+  }
+
+  static async handleCallback(code, state) {
+    if (!pool) throw new Error('Database not available for OAuth session lookup');
+    const res = await pool.query('SELECT * FROM lili_mcp_oauth_sessions WHERE state = $1', [state]);
+    const session = res.rows[0];
+    if (!session) throw new Error('OAuth session not found or expired');
+
+    const tokenRes = await this._exchangeCode({
+      code,
+      codeVerifier: session.code_verifier,
+      redirectUri: session.redirect_uri,
+      clientId: session.client_id,
+    });
+
+    if (tokenRes.access_token) await setSetting('LILI_OAUTH_ACCESS_TOKEN', safeEncrypt(tokenRes.access_token));
+    if (tokenRes.refresh_token) await setSetting('LILI_OAUTH_REFRESH_TOKEN', safeEncrypt(tokenRes.refresh_token));
+
+    await pool.query('DELETE FROM lili_mcp_oauth_sessions WHERE state = $1', [state]);
+
+    return {
+      success: true,
+      accessTokenMasked: tokenRes.access_token ? `***${tokenRes.access_token.slice(-8)}` : null,
+      refreshTokenMasked: tokenRes.refresh_token ? `***${tokenRes.refresh_token.slice(-8)}` : null,
+      expiresIn: tokenRes.expires_in,
+    };
+  }
+
+  static async _exchangeCode({ code, codeVerifier, redirectUri, clientId }) {
+    const cfg = await this.getConfig();
+    const clientSecret = cfg.clientSecret;
+    const url = `${cfg.oauthBaseUrl.replace(/\/$/, '')}/oauth/token`;
+    const params = new URLSearchParams();
+    params.append('grant_type', 'authorization_code');
+    params.append('client_id', clientId);
+    if (clientSecret) params.append('client_secret', clientSecret);
+    params.append('code', code);
+    params.append('redirect_uri', redirectUri);
+    params.append('code_verifier', codeVerifier);
+    const res = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: params.toString(),
+    });
+    if (!res.ok) throw new Error(`OAuth token exchange failed: ${res.status} ${await res.text()}`);
+    return await res.json();
   }
 
   static async getAccessToken() {
@@ -99,9 +258,6 @@ class LiliMcpEngine {
     if (!res.ok) throw new Error(`OAuth refresh failed: ${res.status} ${await res.text()}`);
     const data = await res.json();
     if (!data.access_token) throw new Error('OAuth refresh did not return access_token');
-    // If running in memory-only mode, we cannot persist the new token.  Persisting
-    // would require updating system_settings or secrets; for now we return it and
-    // rely on the caller to use immediately.
     return data;
   }
 
@@ -138,7 +294,6 @@ class LiliMcpEngine {
         }
       }
       if (!messages.length) return null;
-      // Return the last response that contains a result or error.
       for (let i = messages.length - 1; i >= 0; i--) {
         if (messages[i].result !== undefined || messages[i].error !== undefined) return messages[i];
       }
@@ -158,7 +313,6 @@ class LiliMcpEngine {
         clientInfo: { name: 'dlbtrust-lili-mcp', version: '1.0.0' },
       },
     });
-    // Send initialized notification.
     try {
       await this._mcpPost({
         jsonrpc: '2.0',
@@ -269,11 +423,6 @@ class LiliMcpEngine {
     return this._extractText(res);
   }
 
-  /**
-   * End-to-end attempt to pay a vendor through Lili Bill Pay using the MCP server.
-   * Because Lili does not document the exact bill-pay tool names, we try common
-   * tool names and fall back to a manual_pending instruction if any step fails.
-   */
   static async payToPayee({
     amount,
     recipientName,
@@ -289,7 +438,6 @@ class LiliMcpEngine {
       return { status: 'manual_pending', reason: 'Lili MCP not configured', requires: ['LILI_MCP_ENABLED', 'LILI_OAUTH_CLIENT_ID', 'LILI_OAUTH_ACCESS_TOKEN or REFRESH_TOKEN'] };
     }
 
-    // Verify connectivity and discover tools.
     let tools = [];
     try {
       await this.initialize();
@@ -302,7 +450,6 @@ class LiliMcpEngine {
 
     const toolNames = new Set(tools.map(t => t.name));
 
-    // Find or create supplier.
     let supplierId = null;
     try {
       if (toolNames.has('lili_list_suppliers')) {
@@ -329,7 +476,6 @@ class LiliMcpEngine {
       return { status: 'manual_pending', reason: 'Could not create or find supplier via Lili MCP', requires: ['Enable bill-pay and supplier tools in Lili'] };
     }
 
-    // Create bill if the tool exists.
     let billId = null;
     try {
       if (toolNames.has('lili_create_bill')) {
@@ -341,7 +487,6 @@ class LiliMcpEngine {
       return { status: 'manual_pending', reason: `Bill creation failed: ${e.message}`, supplierId };
     }
 
-    // Pay bill if tool exists.
     if (toolNames.has('lili_pay_bill') && billId) {
       try {
         const payment = await this.payBill({ businessUserId, billId });

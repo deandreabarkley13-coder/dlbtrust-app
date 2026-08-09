@@ -319,6 +319,12 @@ async function initializeDatabase() {
   } catch(e) { console.warn('[lili-bank] table init:', e.message); }
 
   try {
+    var LiliMcpEngine = require(path.join(HD, 'server', 'integrations', 'payments', 'liliMcpEngine')).LiliMcpEngine;
+    await LiliMcpEngine.ensureTables();
+    console.log('[lili-mcp] tables ensured');
+  } catch(e) { console.warn('[lili-mcp] table init:', e.message); }
+
+  try {
     var ComplianceEngine = require(path.join(HD, 'server', 'integrations', 'compliance', 'complianceEngine')).ComplianceEngine;
     await ComplianceEngine.ensureTables();
     console.log('[compliance] tables ensured');

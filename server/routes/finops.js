@@ -1412,4 +1412,23 @@ router.post('/lili/mcp/pay', operatorAuth, writeRateLimiter(), async (req, res) 
   try { res.status(201).json({ success: true, data: await LiliMcpEngine.payToPayee({ ...req.body }) }); } catch (err) { sendError(res, err); }
 });
 
+router.post('/lili/mcp/oauth/start', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try {
+    const data = await LiliMcpEngine.startOAuth({ ...req.body });
+    res.json({ success: true, data });
+  } catch (err) { sendError(res, err); }
+});
+
+router.get('/lili/mcp/oauth/callback', async (req, res) => {
+  try {
+    const { code, state, error, error_description } = req.query;
+    if (error) throw new Error(`OAuth error: ${error} ${error_description || ''}`);
+    if (!code || !state) throw new Error('Missing code or state');
+    const data = await LiliMcpEngine.handleCallback(code, state);
+    res.json({ success: true, data });
+  } catch (err) {
+    res.status(400).json({ success: false, error: err.message });
+  }
+});
+
 module.exports = router;
