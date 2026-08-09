@@ -443,6 +443,35 @@ SELECT fit_id, type, amount_cents, name, memo FROM ofx_transactions;
 - **Caution:** `execute` may actually succeed on mainnet even with a low ETH balance, minting DLBUSD from the source ledger and locking it in the `ModuleTokenSwap` contract. Test with tiny amounts or a shadow/testnet environment; do not assume operator gas will fail.
 - The `_p2pDisplayFromRaw` helper now uses `viem.formatUnits(raw, 6)` so `ModuleP2PSwapEngine.createOrder` receives the correct display string for both 6- and 18-decimal tokens despite its hard-coded 6-decimal parse.
 
+## Canonical USDS Swap (`/dapp/finops.html`)
+
+- Module card: **Canonical USDS Swap** (`key:'canonical-swap'`, `action:'openDlbCanonicalSwapPanel'`).
+- Backend: `server/integrations/dapp/dlbCanonicalSwapEngine.js`; routes in `server/routes/finops.js`:
+  - `GET /api/finops/canonical-swap/readiness` — returns `mode` (`live`/`shadow`), `contractAddress`, and `issues`.
+  - `GET /api/finops/canonical-swap/orders` — lists active orders from the on-chain `DlbCanonicalSwap` contract.
+  - `GET /api/finops/canonical-swap/orders/:id` — single order details.
+  - `POST /api/finops/canonical-swap/quote` — returns a 1:1 quote.
+  - `POST /api/finops/canonical-swap/orders` — create order (write; requires operator ETH).
+  - `POST /api/finops/canonical-swap/orders/:id/fill` — fill order (write).
+  - `POST /api/finops/canonical-swap/orders/:id/cancel` — cancel order (write).
+- Deployed mainnet contract: `0xf06f89f03d3a6003d8bc1bf5934b857c41258f75`.
+- Live tokens used by the contract:
+  - DLBUSD: `0x6bA8D02596a3b091A7246e38e3e078f770D33985` (6 decimals)
+  - USDS: `0xdC035D45d973E3EC169d2276DDab16f1e407384F` (18 decimals)
+  - USDC: `0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48`
+  - DAI: `0x6B175474E89094C44Da98b954EedeAC495271d0F`
+  - WETH: `0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2`
+- UI panel sections:
+  - **Contract** — shows readiness badge (`live`/`shadow`) and the deployed contract address; a **Deploy Contract** button and a **Refresh Orders** button.
+  - **Create Order** — inputs for `tokenIn`, `tokenOut`, `amountIn`, `amountOut`, and `recipient`; **Create Order** button.
+  - **Active Orders** — table with columns `ID`, `Token In`, `Amount In`, `Token Out`, `Amount Out`, `Recipient`, `Status`, and a **Cancel** button per row.
+- Read-only verification:
+  - `GET /api/finops/canonical-swap/readiness` should return `ready: true`, `mode: 'live'`, and `contractAddress: '0xf06f89f03d3a6003d8bc1bf5934b857c41258f75'`.
+  - `GET /api/finops/canonical-swap/orders` should return a live order with `orderId: '2'`, `tokenIn` = `0x6bA8D02596a3b091A7246e38e3e078f770D33985`, `tokenOut` = `0xdC035D45d973E3EC169d2276DDab16f1e407384F`, `active: true`, and raw `amountIn`/`amountOut` strings.
+  - `POST /api/finops/canonical-swap/quote` with `{"tokenIn":"0x6bA8...","amountIn":"1","tokenOut":"0xdC035D..."}` returns `success: true`, `data.price: '1.0'`, and `data.amountOut: '1'`.
+- **Caution:** `listOrders()` returns raw on-chain amounts. The UI table currently displays these raw values without `viem.formatUnits`, so the `Amount In`/`Amount Out` columns may show very large integers rather than human-readable token amounts. This is cosmetic but should be fixed before operators rely on the table.
+- Do **not** click **Cancel** or **Create Order** on a live order unless explicitly testing write flows with a funded operator wallet.
+
 ## Paired Asset Engine (PR #275+)
 
 - Module card: **Paired Asset Engine** (`key:'paired-assets'`, `action:'openPairedAssetsPanel'`).

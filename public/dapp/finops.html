@@ -170,6 +170,8 @@
     { key:'ramps', name:'Ramp Center', desc:'Fiat on/off ramps and counterparty rail aggregator', stat:'', endpoint:null, action:'openRampsPanel' },
     { key:'intent-routing', name:'Intent Routing', desc:'Natural-language orchestration of on/off-ramp and conversion flows', stat:'', endpoint:null, action:'openIntentRoutingPanel' },
     { key:'external-wallet', name:'External Wallets', desc:'Hardware/MetaMask/GridPlus wallet as ledger source and DAI/USDS swaps', stat:'', endpoint:null, action:'openExternalWalletPanel' },
+    { key:'canonical-swap', name:'Canonical USDS Swap', desc:'Audited P2P contract: DLBUSD/DLB-PTCUSD → USDS/USDC/DAI', stat:'', endpoint:null, action:'openDlbCanonicalSwapPanel' },
+    { key:'computing', name:'Computing Engine', desc:'Off-chain valuation, yield, accrual and canonical quote jobs', stat:'', endpoint:null, action:'openTrustComputingPanel' },
     { key:'coordination', name:'Coordination Engine', desc:'System health, AI command queue and stability checks', stat:'', endpoint:null, action:'openCoordinationPanel' },
     { key:'clearing', name:'Clearing Engine', desc:'Bilateral and net settlement on Hyperledger Besu', stat:'', endpoint:null, action:'openClearingPanel' },
     { key:'redemption-gateway', name:'Redemption Gateway', desc:'Bridge DLB-PTCUSD to external clearing/stablecoin rails', stat:'', endpoint:null, action:'openRedemptionGatewayPanel' },
@@ -336,7 +338,7 @@
     renderModules();
     renderFlow();
     try {
-      const [sof, accts, wallets, bond, crm, p2p, ptc, consensus, xchain, paired, trustMarket, ramps, intents, externalWallets, externalSwaps] = await Promise.all([
+      const [sof, accts, wallets, bond, crm, p2p, ptc, consensus, xchain, paired, trustMarket, ramps, intents, externalWallets, externalSwaps, computing] = await Promise.all([
         api('/api/finops/source-of-funds').catch(()=>null),
         api('/api/accounting/accounts').catch(()=>null),
         api('/api/finops/wallets').catch(()=>null),
@@ -352,6 +354,7 @@
         api('/api/finops/intents').catch(()=>null),
         api('/api/finops/external-wallets').catch(()=>null),
         api('/api/finops/external-wallets/swaps').catch(()=>null),
+        api('/api/finops/computing/jobs').catch(()=>null),
       ]);
       const balances = normalizeBalances(sof && sof.data);
       if (balances.length) {
@@ -397,6 +400,9 @@
       }
       if (Array.isArray(externalWallets && externalWallets.data)) {
         setStat('external-wallet', String(externalWallets.data.length));
+      }
+      if (computing && computing.data && Array.isArray(computing.data)) {
+        setStat('computing', String(computing.data.length));
       }
       renderModules();
     } catch(e) { console.error('loadAll error', e); }
@@ -2458,6 +2464,192 @@
       loadJournalEntryAccounts();
       loadJournalEntries();
     } catch(e) { show(e.message, true, 'je-status'); }
+  }
+
+  // ─── Canonical USDS Swap panel ───────────────────────────────────────────────
+  async function openDlbCanonicalSwapPanel() {
+    const panel = el('module-panel');
+    const body = el('panel-body');
+    el('panel-title').textContent = 'Canonical USDS Swap';
+    panel.classList.add('active');
+    body.innerHTML = renderDlbCanonicalSwapPanel();
+    loadDlbCanonicalSwapReadiness();
+    await loadDlbCanonicalSwapOrders();
+  }
+
+  function renderDlbCanonicalSwapPanel() {
+    return '<div style="display:flex; flex-direction:column; gap:12px;">' +
+      '<div class="card" style="background:#0b1220;">' +
+        '<h3>Contract</h3>' +
+        '<p class="muted">Deploy the audited DlbCanonicalSwap contract and list orders to swap DLB trust tokens for canonical stablecoins.</p>' +
+        '<div id="cs-readiness" class="muted">Loading readiness…</div>' +
+        '<div style="margin-top:10px; display:flex; gap:8px;">' +
+          '<button class="btn" onclick="deployDlbCanonicalSwap()">Deploy Contract</button>' +
+          '<button class="btn btn-sec" onclick="loadDlbCanonicalSwapOrders()">Refresh Orders</button>' +
+        '</div>' +
+        '<div id="cs-deploy-status" class="status hidden"></div>' +
+      '</div>' +
+      '<div class="card" style="background:#0b1220;">' +
+        '<h3>Create Order</h3>' +
+        '<div class="token-bar"><input id="cs-tokenIn" placeholder="tokenIn (DLBUSD address)" style="flex:2;" /></div>' +
+        '<div class="token-bar"><input id="cs-tokenOut" placeholder="tokenOut (USDS/USDC/DAI)" style="flex:2;" /></div>' +
+        '<div class="token-bar"><input id="cs-amountIn" type="number" step="0.01" placeholder="amountIn (human units)" /></div>' +
+        '<div class="token-bar"><input id="cs-amountOut" type="number" step="0.01" placeholder="amountOut (human units)" /></div>' +
+        '<div class="token-bar"><input id="cs-recipient" placeholder="recipient (defaults to operator)" style="flex:2;" /></div>' +
+        '<button class="btn" onclick="createDlbCanonicalSwapOrder()">Create Order</button>' +
+        '<div id="cs-create-status" class="status hidden"></div>' +
+      '</div>' +
+      '<div class="card" style="background:#0b1220;">' +
+        '<h3>Active Orders</h3>' +
+        '<div id="cs-orders">Loading…</div>' +
+      '</div>' +
+    '</div>';
+  }
+
+  async function loadDlbCanonicalSwapReadiness() {
+    const d = el('cs-readiness');
+    if (!d) return;
+    try {
+      const res = await api('/api/finops/canonical-swap/readiness');
+      d.innerHTML = '<span class="badge">' + res.data.mode + '</span> ' + (res.data.contractAddress || 'not deployed') + '<br><span class="muted">' + (res.data.issues || []).join('; ') + '</span>';
+    } catch(e) { d.innerHTML = '<span class="status err">' + e.message + '</span>'; }
+  }
+
+  async function deployDlbCanonicalSwap() {
+    const status = el('cs-deploy-status');
+    status.classList.add('hidden');
+    try {
+      const res = await api('/api/finops/canonical-swap/deploy', { method: 'POST', body: '{}' });
+      show('Deployed: ' + res.data.contractAddress + ' tx=' + res.data.deployTxHash, false, 'cs-deploy-status');
+      loadDlbCanonicalSwapReadiness();
+    } catch(e) { show(e.message, true, 'cs-deploy-status'); }
+  }
+
+  async function createDlbCanonicalSwapOrder() {
+    const status = el('cs-create-status');
+    status.classList.add('hidden');
+    const tokenIn = el('cs-tokenIn').value.trim();
+    const tokenOut = el('cs-tokenOut').value.trim();
+    const amountIn = el('cs-amountIn').value;
+    const amountOut = el('cs-amountOut').value;
+    const recipient = el('cs-recipient').value.trim();
+    if (!tokenIn || !tokenOut || !amountIn || !amountOut) { show('Fill all fields', true, 'cs-create-status'); return; }
+    try {
+      const res = await api('/api/finops/canonical-swap/orders', {
+        method: 'POST',
+        body: JSON.stringify({ tokenIn, tokenOut, amountIn, amountOut, recipient }),
+      });
+      show('Order ' + res.data.orderId + ' created: tx=' + res.data.txHash, false, 'cs-create-status');
+      await loadDlbCanonicalSwapOrders();
+      loadDlbCanonicalSwapReadiness();
+    } catch(e) { show(e.message, true, 'cs-create-status'); }
+  }
+
+  async function loadDlbCanonicalSwapOrders() {
+    const d = el('cs-orders');
+    if (!d) return;
+    try {
+      const res = await api('/api/finops/canonical-swap/orders');
+      const rows = res.data || [];
+      if (!rows.length) { d.innerHTML = '<p class="muted">No active orders.</p>'; return; }
+      d.innerHTML = '<table class="table"><thead><tr><th>ID</th><th>Token In</th><th>Amount In</th><th>Token Out</th><th>Amount Out</th><th>Recipient</th><th>Status</th><th></th></tr></thead><tbody>' +
+        rows.map(o => `<tr><td>${o.orderId}</td><td class="muted">${o.tokenIn.slice(0,10)}…</td><td>${o.amountInFormatted || o.amountIn}</td><td class="muted">${o.tokenOut.slice(0,10)}…</td><td>${o.amountOutFormatted || o.amountOut}</td><td class="muted">${o.recipient.slice(0,10)}…</td><td>${o.active?'active':'inactive'}</td><td><button class="btn btn-sec" onclick="cancelDlbCanonicalSwapOrder('${o.orderId}')">Cancel</button></td></tr>`).join('') +
+        '</tbody></table>';
+    } catch(e) { d.innerHTML = '<div class="status err">' + e.message + '</div>'; }
+  }
+
+  async function cancelDlbCanonicalSwapOrder(orderId) {
+    try {
+      await api('/api/finops/canonical-swap/orders/' + orderId + '/cancel', { method: 'POST', body: '{}' });
+      await loadDlbCanonicalSwapOrders();
+    } catch(e) { alert(e.message); }
+  }
+
+  // ─── Trust Computing Engine Panel ───────────────────────────────────────────
+
+  let computingFunctions = [];
+
+  async function openTrustComputingPanel() {
+    const panel = el('module-panel');
+    const body = el('panel-body');
+    el('panel-title').textContent = 'Computing Engine';
+    panel.classList.add('active');
+    body.innerHTML = '<div class="muted">Loading compute functions…</div>';
+    try {
+      const res = await api('/api/finops/computing/functions');
+      computingFunctions = res.data || [];
+      body.innerHTML = renderTrustComputingPanel();
+      loadTrustComputingJobs();
+    } catch(e) { body.innerHTML = '<div class="status err">' + e.message + '</div>'; }
+  }
+
+  function renderTrustComputingPanel() {
+    const fnOptions = computingFunctions.map(f => `<option value="${f.id}">${f.name}</option>`).join('');
+    return '<div style="display:flex; flex-direction:column; gap:12px;">' +
+      '<div class="card" style="background:#0b1220;">' +
+        '<h3>Run Compute Job</h3>' +
+        '<p class="muted">Select a function, fill its parameters, and run an off-chain computation.</p>' +
+        '<div class="token-bar">' +
+          '<select id="tc-function" onchange="renderTcParams()" style="flex:1;"><option value="">Select function…</option>' + fnOptions + '</select>' +
+        '</div>' +
+        '<div id="tc-params"></div>' +
+        '<button class="btn" onclick="runTrustComputingJob()">Run</button>' +
+        '<div id="tc-status" class="status hidden"></div>' +
+      '</div>' +
+      '<div class="card" style="background:#0b1220;">' +
+        '<h3>Recent Jobs</h3>' +
+        '<div id="tc-jobs">Loading…</div>' +
+      '</div>' +
+    '</div>';
+  }
+
+  function renderTcParams() {
+    const fnId = el('tc-function').value;
+    const fn = computingFunctions.find(f => f.id === fnId);
+    const wrap = el('tc-params');
+    if (!fn || !wrap) return;
+    if (!fn.params || !fn.params.length) { wrap.innerHTML = '<p class="muted">No parameters.</p>'; return; }
+    wrap.innerHTML = fn.params.map(p => {
+      const id = 'tc-param-' + p.name;
+      const ph = p.type === 'date' ? 'YYYY-MM-DD' : (p.default !== undefined ? 'default: ' + p.default : '');
+      const input = p.type === 'date'
+        ? `<input type="date" id="${id}" placeholder="${ph}" />`
+        : `<input type="${p.type === 'number' ? 'number' : 'text'}" id="${id}" placeholder="${p.name}${p.required ? ' *' : ''}${ph ? ' (' + ph + ')' : ''}" />`;
+      return '<div class="token-bar">' + input + '</div>';
+    }).join('');
+  }
+
+  async function runTrustComputingJob() {
+    const status = el('tc-status');
+    status.classList.add('hidden');
+    const fnId = el('tc-function').value;
+    if (!fnId) { show('Select a function first', true, 'tc-status'); return; }
+    const fn = computingFunctions.find(f => f.id === fnId);
+    const params = {};
+    if (fn && fn.params) {
+      for (const p of fn.params) {
+        const v = el('tc-param-' + p.name).value.trim();
+        if (v) params[p.name] = p.type === 'number' ? Number(v) : v;
+      }
+    }
+    try {
+      const res = await api('/api/finops/computing/jobs', { method: 'POST', body: JSON.stringify({ functionId: fnId, params }) });
+      show('Job ' + res.data.id + ': ' + res.data.status, false, 'tc-status');
+      await loadTrustComputingJobs();
+    } catch(e) { show(e.message, true, 'tc-status'); }
+  }
+
+  async function loadTrustComputingJobs() {
+    const d = el('tc-jobs');
+    if (!d) return;
+    try {
+      const res = await api('/api/finops/computing/jobs');
+      const rows = (res.data || []).slice(0, 20);
+      if (!rows.length) { d.innerHTML = '<p class="muted">No jobs yet.</p>'; return; }
+      d.innerHTML = '<table class="table"><thead><tr><th>ID</th><th>Function</th><th>Status</th><th>Created</th></tr></thead><tbody>' +
+        rows.map(j => `<tr><td>${j.id}</td><td>${j.functionName}</td><td>${j.status}</td><td class="muted">${new Date(j.createdAt).toLocaleString()}</td></tr>`).join('') +
+        '</tbody></table>';
+    } catch(e) { d.innerHTML = '<div class="status err">' + e.message + '</div>'; }
   }
 
   window.addEventListener('DOMContentLoaded', () => {

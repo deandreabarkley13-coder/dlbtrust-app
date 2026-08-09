@@ -627,21 +627,25 @@ class CrossChainConversionEngine {
 
     let tokenIn = '';
     let rawIn = 0n;
-    let decimalsIn = 6;
+    let displayIn = String(amount);
 
     if (sourceType) {
       if (!StablecoinDexEngine) throw new Error('StablecoinDexEngine not available');
       const mint = await StablecoinDexEngine.mintFromSource({ sourceType, sourceAccountId, amount, targetAddress: this.getConfig().operatorAddress });
       tokenIn = mint.tokenAddress;
-      rawIn = viem.parseUnits(String(mint.minted || amount), 6);
-      decimalsIn = 6;
+      displayIn = String(mint.minted || amount);
+      rawIn = viem.parseUnits(displayIn, 6);
     } else if (sourceToken && sourceToken.toLowerCase() === 'dlb-ptcusd') {
       tokenIn = process.env.DLB_PTCUSD_ADDRESS || '';
       rawIn = viem.parseUnits(String(amount), 18);
-      decimalsIn = 18;
     } else if (sourceToken) {
-      tokenIn = sourceToken;
-      decimalsIn = 6;
+      if (String(sourceToken).toLowerCase() === 'dlbusd') {
+        if (!StablecoinDexEngine) throw new Error('StablecoinDexEngine not available');
+        const dlb = await StablecoinDexEngine.getOrCreateDLBUSDToken();
+        tokenIn = dlb.token_address;
+      } else {
+        tokenIn = sourceToken;
+      }
       rawIn = viem.parseUnits(String(amount), 6);
     } else if (sourceModule) {
       if (!PtcStablecoinEngine) throw new Error('PtcStablecoinEngine not available');
@@ -649,20 +653,15 @@ class CrossChainConversionEngine {
       const deposit = await PtcStablecoinEngine.approveAndDeposit({ moduleKey, amount, recipient: this.getConfig().operatorAddress });
       tokenIn = process.env.DLB_PTCUSD_ADDRESS || '';
       rawIn = BigInt(deposit?.mintedStablecoin || 0);
-      decimalsIn = 18;
     }
 
     if (!tokenIn || rawIn <= 0n) throw new Error('Could not determine tokenIn for P2P order');
 
     if (!ModuleP2PSwapEngine) throw new Error('ModuleP2PSwapEngine not available');
 
-    const targetDecimals = this._targetDecimals(targetAsset);
-    const rawOut = viem.parseUnits(String(amount), targetDecimals);
-
-    // ModuleP2PSwapEngine.createOrder internally uses 6 decimals for both in/out.
-    // We therefore pass display values equal to raw / 1e6 so the engine recomputes the correct raw amount.
-    const displayIn = this._p2pDisplayFromRaw(rawIn);
-    const displayOut = this._p2pDisplayFromRaw(rawOut);
+    // ModuleP2PSwapEngine.createOrder reads token decimals from the token contracts
+    // and parses display amounts, so pass plain display values to preserve precision.
+    const displayOut = String(amount);
 
     return await ModuleP2PSwapEngine.createOrder({
       tokenIn,

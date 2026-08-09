@@ -34,6 +34,11 @@ const erc20Abi = [
   { type: 'function', name: 'transfer', inputs: [{ type: 'address' }, { type: 'uint256' }], outputs: [{ type: 'bool' }], stateMutability: 'nonpayable' },
 ];
 
+const whitelistAbi = [
+  { type: 'function', name: 'whitelisted', inputs: [{ type: 'address' }], outputs: [{ type: 'bool' }], stateMutability: 'view' },
+  { type: 'function', name: 'setWhitelisted', inputs: [{ type: 'address' }, { type: 'bool' }], outputs: [], stateMutability: 'nonpayable' },
+];
+
 const uniswapV2RouterAbi = [
   { type: 'function', name: 'getAmountsOut', inputs: [{ type: 'uint256' }, { type: 'address[]' }], outputs: [{ type: 'uint256[]' }], stateMutability: 'view' },
   { type: 'function', name: 'swapExactTokensForTokens', inputs: [{ type: 'uint256' }, { type: 'uint256' }, { type: 'address[]' }, { type: 'address' }, { type: 'uint256' }], outputs: [{ type: 'uint256[]' }], stateMutability: 'nonpayable' },
@@ -373,6 +378,18 @@ class DexSwapEngine {
     const receipt = await publicClient.waitForTransactionReceipt({ hash: deployHash, timeout: 120000 });
     if (receipt.status !== 'success') throw new Error(`pool deploy failed: ${receipt.transactionHash}`);
     const poolAddress = receipt.contractAddress;
+
+    // Permissioned stablecoin tokens require the pool contract to be whitelisted before
+    // it can receive tokens. We best-effort whitelist on both sides and ignore failures.
+    for (const token of [token0, token1]) {
+      try {
+        const isWhitelisted = await publicClient.readContract({ address: token, abi: whitelistAbi, functionName: 'whitelisted', args: [poolAddress] }).catch(() => true);
+        if (isWhitelisted === false) {
+          const wlHash = await wallet.writeContract({ address: token, abi: whitelistAbi, functionName: 'setWhitelisted', args: [poolAddress, true], gas: 100000n, ...fees });
+          await publicClient.waitForTransactionReceipt({ hash: wlHash, timeout: 120000 });
+        }
+      } catch (e) { /* token may not implement whitelisting or operator may not be admin; continue */ }
+    }
 
     const approve0 = await wallet.writeContract({
       address: token0,
