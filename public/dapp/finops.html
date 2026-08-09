@@ -3813,11 +3813,11 @@
   async function startLiliMcpOAuth() {
     const out = el('lili-oauth-url');
     out.classList.add('hidden');
-    try {
-      const res = await api('/api/finops/lili/mcp/oauth/start', { method: 'POST', body: '{}' });
-      out.innerHTML = '<p class="muted">Open this URL in a browser and authorize Lili. After redirect, the callback will exchange the code and store tokens.</p><a href="' + res.data.authUrl + '" target="_blank" style="color:#3b82f6;">' + res.data.authUrl + '</a>';
-      out.classList.remove('hidden');
-    } catch(e) { out.textContent = 'Error: ' + e.message; out.classList.remove('hidden'); }
+    out.innerHTML = '<p class="muted">Lili MCP OAuth requires a <strong>localhost</strong> redirect capture. ' +
+      'Download <code>server/scripts/liliMcpOAuthSetup.js</code>, set <code>ADMIN_TOKEN</code>, and run it on the machine where you will log in to Lili. ' +
+      'It will print and open the authorization URL, capture the code on <code>http://localhost:&lt;port&gt;/callback</code>, and store the tokens in the app.</p>' +
+      '<pre style="font-size:11px;background:#050a14;padding:8px;border-radius:6px;margin-top:8px;">ADMIN_TOKEN=dlb-admin-2026-trust node server/scripts/liliMcpOAuthSetup.js</pre>';
+    out.classList.remove('hidden');
   }
 
   async function callLiliMcpTool() {

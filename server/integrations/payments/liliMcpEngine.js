@@ -118,7 +118,10 @@ class LiliMcpEngine {
   }
 
   static _getRedirectUri() {
-    return process.env.LILI_OAUTH_REDIRECT_URI || `https://${process.env.FLY_APP_NAME ? process.env.FLY_APP_NAME + '.fly.dev' : 'dlbtrust-app.fly.dev'}/api/finops/lili/mcp/oauth/callback`;
+    // Lili's MCP OAuth server only permits loopback redirect URIs for native
+    // clients. The default is localhost:3000; override via LILI_OAUTH_REDIRECT_URI
+    // if you are running the capture server on a different port.
+    return process.env.LILI_OAUTH_REDIRECT_URI || 'http://localhost:3000/callback';
   }
 
   static async registerClient({ appName = 'DLB Trust MCP', redirectUri } = {}) {
@@ -129,7 +132,7 @@ class LiliMcpEngine {
       redirect_uris: [redirectUri || this._getRedirectUri()],
       grant_types: ['authorization_code', 'refresh_token'],
       response_types: ['code'],
-      token_endpoint_auth_method: 'client_secret_post',
+      token_endpoint_auth_method: 'none',
     });
     const res = await fetch(url, {
       method: 'POST',
