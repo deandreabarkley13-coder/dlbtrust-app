@@ -981,6 +981,10 @@ router.post('/holdings/:id/canonize', operatorAuth, writeRateLimiter(), async (r
   try { res.json({ success: true, data: await HoldingManagementEngine.canonizeHolding({ holdingId: req.params.id, createdBy: getUserEmail(req) }) }); } catch (err) { sendError(res, err); }
 });
 
+router.post('/holdings/:id/cancel', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try { res.json({ success: true, data: await HoldingManagementEngine.cancelHolding({ holdingId: req.params.id, createdBy: getUserEmail(req) }) }); } catch (err) { sendError(res, err); }
+});
+
 router.post('/holdings/:id/sync', operatorAuth, async (req, res) => {
   try { res.json({ success: true, data: await HoldingManagementEngine.syncHoldingStatus(req.params.id) }); } catch (err) { sendError(res, err); }
 });
