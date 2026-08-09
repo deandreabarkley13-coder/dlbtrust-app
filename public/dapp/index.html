@@ -1,26 +1,147 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
-  <meta http-equiv="Pragma" content="no-cache">
-  <meta http-equiv="Expires" content="0">
-  <meta http-equiv="refresh" content="0; url=/dashboard">
-  <title>DLB Trust — Private Trust Command Center</title>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate" />
+  <meta http-equiv="Pragma" content="no-cache" />
+  <meta http-equiv="Expires" content="0" />
+  <title>DLB Trust — Private Trust Login</title>
   <style>
-    body { margin:0; background:#0a0e17; color:#f8fafc; font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif; display:grid; place-items:center; min-height:100vh; text-align:center; }
-    a { color:#4f87ff; text-decoration:none; }
-    .card { background:#111a2b; border:1px solid #26314a; border-radius:14px; padding:24px; max-width:420px; }
-    h1 { font-size:1.2rem; margin:0 0 8px; }
-    p { color:#94a3b8; font-size:.9rem; }
+    :root { --bg:#0a0e17; --card:#111a2b; --panel:#1e293b; --border:#26314a; --text:#f8fafc; --muted:#94a3b8; --accent:#3b82f6; --gold:#d4af37; --danger:#ef4444; --ok:#10b981; }
+    * { box-sizing:border-box; }
+    body { margin:0; min-height:100vh; font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif; background:linear-gradient(160deg, var(--bg) 0%, #0d1321 100%); color:var(--text); display:flex; flex-direction:column; align-items:center; justify-content:center; padding:24px; }
+    .brand { text-align:center; margin-bottom:28px; }
+    .brand-mark { width:52px; height:52px; background:linear-gradient(135deg, var(--gold), #b8932b); color:#000; border-radius:50%; display:grid; place-items:center; font-weight:700; font-size:20px; margin:0 auto 12px; }
+    .brand h1 { margin:0; font-size:22px; letter-spacing:-.2px; }
+    .brand p { margin:6px 0 0; color:var(--muted); font-size:14px; }
+    .login-grid { display:grid; grid-template-columns:repeat(auto-fit, minmax(320px, 1fr)); gap:20px; width:100%; max-width:800px; }
+    .card { background:var(--card); border:1px solid var(--border); border-radius:16px; padding:26px; }
+    .card h2 { margin:0 0 8px; font-size:18px; }
+    .card p { color:var(--muted); font-size:13px; margin:0 0 20px; }
+    label { display:block; font-size:12px; color:var(--muted); margin:14px 0 6px; text-transform:uppercase; letter-spacing:.3px; }
+    input { width:100%; background:#0b1220; border:1px solid var(--border); color:var(--text); padding:12px 14px; border-radius:10px; font-size:15px; }
+    input:focus { outline:none; border-color:var(--accent); }
+    .btn { width:100%; border:0; padding:13px; border-radius:10px; font-size:15px; font-weight:600; cursor:pointer; margin-top:18px; color:#000; }
+    .btn-gold { background:var(--gold); }
+    .btn-blue { background:var(--accent); color:#fff; }
+    .btn:hover { opacity:.92; }
+    .hidden { display:none; }
+    .status { margin-top:14px; padding:12px; border-radius:10px; background:#0b1220; border:1px solid var(--border); font-size:13px; word-break:break-word; }
+    .status.ok { border-color:var(--ok); color:var(--ok); }
+    .status.err { border-color:var(--danger); color:var(--danger); }
+    .back { margin-top:18px; text-align:center; }
+    .back a { color:var(--muted); font-size:13px; text-decoration:none; }
+    .back a:hover { color:var(--text); }
   </style>
 </head>
 <body>
-  <div class="card">
-    <h1>DLB Trust Command Center</h1>
-    <p>Redirecting to the private trust dashboard…</p>
-    <p><a href="/dashboard">Click here if you are not redirected</a></p>
+  <div class="brand">
+    <div class="brand-mark">DLB</div>
+    <h1>DeAndrea LaVar Barkley Trust</h1>
+    <p>Private Trust Company Platform</p>
   </div>
+
+  <div class="login-grid">
+    <div class="card">
+      <h2>Trustee / Beneficiary Login</h2>
+      <p>Enter your email to receive a one-time PIN. No password required.</p>
+      <label for="email">Email</label>
+      <input type="email" id="email" placeholder="you@email.com" inputmode="email" />
+      <button class="btn btn-gold" id="btn-send" onclick="sendPin()">Send PIN</button>
+
+      <div id="pin-box" class="hidden">
+        <label for="pin">One-time PIN</label>
+        <input type="number" id="pin" placeholder="123456" inputmode="numeric" autocomplete="one-time-code" />
+        <button class="btn btn-gold" onclick="verifyPin()">Verify & Enter</button>
+      </div>
+
+      <div id="status" class="status hidden"></div>
+    </div>
+
+    <div class="card">
+      <h2>Operator Login</h2>
+      <p>For trust officers and administrators only.</p>
+      <label for="admin-token">Admin / Operator Token</label>
+      <input type="password" id="admin-token" placeholder="Paste your x-admin-token" />
+      <button class="btn btn-blue" onclick="loginAdmin()">Enter Command Center</button>
+      <div id="admin-status" class="status hidden"></div>
+    </div>
+  </div>
+
+  <div class="back">
+    <a href="/">← Back to public site</a>
+  </div>
+
+  <script>
+    const el = id => document.getElementById(id);
+    function show(id, msg, isErr) {
+      const d = el(id);
+      d.textContent = msg;
+      d.className = 'status ' + (isErr ? 'err' : 'ok');
+      d.classList.remove('hidden');
+    }
+
+    async function api(path, opts={}) {
+      opts.headers = opts.headers || {};
+      opts.headers['Content-Type'] = 'application/json';
+      const res = await fetch(path, opts);
+      const text = await res.text();
+      try { return JSON.parse(text); } catch { return { success: res.ok, raw: text }; }
+    }
+
+    async function sendPin() {
+      const email = el('email').value.trim().toLowerCase();
+      if (!email) { show('status', 'Enter your email', true); return; }
+      el('btn-send').disabled = true;
+      show('status', 'Sending PIN…', false);
+      try {
+        const res = await api('/api/dapp/auth/send-code', { method: 'POST', body: JSON.stringify({ email }) });
+        if (!res.success) throw new Error(res.error || 'Failed to send PIN');
+        el('pin-box').classList.remove('hidden');
+        if (res.data && res.data.code) {
+          show('status', 'PIN: ' + res.data.code + ' (email not configured)', false);
+          el('pin').value = res.data.code;
+        } else {
+          show('status', 'PIN sent to ' + email + '. Check your inbox.', false);
+        }
+      } catch (e) {
+        show('status', e.message, true);
+      } finally { el('btn-send').disabled = false; }
+    }
+
+    async function verifyPin() {
+      const email = el('email').value.trim().toLowerCase();
+      const code = el('pin').value.trim();
+      if (!email || !code) { show('status', 'Enter email and PIN', true); return; }
+      show('status', 'Verifying…', false);
+      try {
+        const res = await api('/api/dapp/auth/verify', { method: 'POST', body: JSON.stringify({ email, code }) });
+        if (!res.success || !res.data || !res.data.token) throw new Error(res.error || 'No token returned');
+        localStorage.setItem('dlb-beneficiary-token', res.data.token);
+        if (res.data.user && res.data.user.email) localStorage.setItem('dlb-trust-email', res.data.user.email);
+        show('status', 'Login successful. Redirecting…', false);
+        setTimeout(() => location.href = '/dashboard', 400);
+      } catch (e) { show('status', e.message, true); }
+    }
+
+    async function loginAdmin() {
+      const token = el('admin-token').value.trim();
+      if (!token) { show('admin-status', 'Enter an admin token', true); return; }
+      show('admin-status', 'Checking…', false);
+      try {
+        const res = await api('/api/dapp/auth/me', { headers: { 'x-admin-token': token } });
+        if (!res.success) throw new Error(res.error || 'Invalid token');
+        localStorage.setItem('dlb-admin-token', token);
+        show('admin-status', 'Welcome. Redirecting…', false);
+        setTimeout(() => location.href = '/dashboard', 400);
+      } catch (e) { show('admin-status', e.message, true); }
+    }
+
+    // If already logged in, go straight to dashboard
+    if (localStorage.getItem('dlb-beneficiary-token') || localStorage.getItem('dlb-admin-token')) {
+      location.replace('/dashboard');
+    }
+  </script>
 </body>
 </html>
