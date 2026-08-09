@@ -33,6 +33,11 @@ function toCents(amount) {
   return Math.round((Number(amount) || 0) * 100);
 }
 
+async function skipFineract() {
+  const val = await getSetting('FINERACT_PAYOUT_SKIP_FINERACT');
+  return val === 'true' || val === true || (!FineractClient);
+}
+
 async function getSetting(name) {
   if (SystemSettings && typeof SystemSettings.get === 'function') {
     try { return await SystemSettings.get(name); } catch (e) { /* fall through */ }
@@ -95,8 +100,9 @@ class FineractPayoutBridge {
     let fineractTxId = null;
     let error = null;
     let balance = null;
+    const shouldSkip = await skipFineract();
 
-    if (FineractClient) {
+    if (!shouldSkip && FineractClient) {
       try {
         const account = await FineractClient.getAccountBalance(savingsAccountId);
         balance = Number((account && account.summary && account.summary.availableBalance) || (account && account.summary && account.summary.accountBalance) || 0);
@@ -104,8 +110,10 @@ class FineractPayoutBridge {
       } catch (e) {
         error = `Fineract balance check failed: ${e.message}`;
       }
-    } else {
+    } else if (!shouldSkip) {
       error = 'FineractClient not available';
+    } else {
+      fineractStatus = 'skipped';
     }
 
     const payoutId = generateId('FPB');
@@ -144,10 +152,11 @@ class FineractPayoutBridge {
     if (!row) throw new Error('Payout not found');
     if (!['pending','fineract_withdrawn'].includes(row.status)) throw new Error(`Payout status is ${row.status}`);
 
-    // Step 1: withdraw from Fineract savings account
+    // Step 1: withdraw from Fineract savings account (skip if configured or Fineract unavailable)
     let fineractResult = null;
     let status = row.status;
-    if (FineractClient && !['fineract_withdrawn','originated','sent','confirmed'].includes(row.status)) {
+    const shouldSkip = await skipFineract();
+    if (!shouldSkip && FineractClient && !['fineract_withdrawn','originated','sent','confirmed'].includes(row.status)) {
       try {
         fineractResult = await FineractClient.withdrawSavings({
           accountId: row.savings_account_id,
@@ -163,6 +172,8 @@ class FineractPayoutBridge {
         await pool.query(`UPDATE ${PAYOUT_TABLE} SET status='failed', error_message=$1, updated_at=NOW() WHERE payout_id=$2`, [err.message, payoutId]);
         throw err;
       }
+    } else if (shouldSkip) {
+      status = 'fineract_withdrawn';
     }
 
     // Step 2: route external payment through Open Banking or Wire Origination
