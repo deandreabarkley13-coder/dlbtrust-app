@@ -377,10 +377,12 @@ class DistributionRequestEngine {
       if (process.env.AUTO_EXECUTE_APPROVED_REQUESTS !== 'false') {
         try {
           const executed = await this.executeRequest(requestId);
+          result = this._rowToObject(await this.getRequest(requestId));
           result.payment = executed.payment;
           result.executed = true;
         } catch (execErr) {
           console.warn('[DistributionRequestEngine] auto-execute failed:', execErr.message);
+          result = this._rowToObject(await this.getRequest(requestId));
           result.execute_error = execErr.message;
         }
       }
