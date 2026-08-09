@@ -27,9 +27,9 @@ function toCents(amount) {
   return Math.round((Number(amount) || 0) * 100);
 }
 
-function getSetting(name) {
-  if (SystemSettings && typeof SystemSettings.getValue === 'function') {
-    return SystemSettings.getValue(name);
+async function getSetting(name) {
+  if (SystemSettings && typeof SystemSettings.get === 'function') {
+    return SystemSettings.get(name);
   }
   return process.env[name] || null;
 }
@@ -111,11 +111,11 @@ class BaseConnector {
 class ColumnConnector extends BaseConnector {
   constructor() { super('column'); }
   async readiness() {
-    const apiKey = getSetting('COLUMN_API_KEY');
+    const apiKey = await getSetting('COLUMN_API_KEY');
     return { ready: !!apiKey, needs: apiKey ? [] : ['COLUMN_API_KEY'], message: apiKey ? 'API key present' : 'COLUMN_API_KEY missing' };
   }
   async sendPayment(payment) {
-    const apiKey = getSetting('COLUMN_API_KEY');
+    const apiKey = await getSetting('COLUMN_API_KEY');
     if (!apiKey) throw new Error('COLUMN_API_KEY not configured');
     const body = {
       amount: String(payment.amount_cents / 100),
@@ -144,11 +144,11 @@ class ColumnConnector extends BaseConnector {
 class IncreaseConnector extends BaseConnector {
   constructor() { super('increase'); }
   async readiness() {
-    const apiKey = getSetting('INCREASE_API_KEY');
+    const apiKey = await getSetting('INCREASE_API_KEY');
     return { ready: !!apiKey, needs: apiKey ? [] : ['INCREASE_API_KEY'], message: apiKey ? 'API key present' : 'INCREASE_API_KEY missing' };
   }
   async sendPayment(payment) {
-    const apiKey = getSetting('INCREASE_API_KEY');
+    const apiKey = await getSetting('INCREASE_API_KEY');
     if (!apiKey) throw new Error('INCREASE_API_KEY not configured');
     const body = {
       amount: payment.amount_cents,
@@ -172,21 +172,21 @@ class IncreaseConnector extends BaseConnector {
 class PlaidConnector extends BaseConnector {
   constructor() { super('plaid'); }
   async readiness() {
-    const clientId = getSetting('PLAID_CLIENT_ID');
-    const secret = getSetting('PLAID_SECRET');
-    const env = getSetting('PLAID_ENV') || 'sandbox';
+    const clientId = await getSetting('PLAID_CLIENT_ID');
+    const secret = await getSetting('PLAID_SECRET');
+    const env = (await getSetting('PLAID_ENV')) || 'sandbox';
     return { ready: !!(clientId && secret), needs: clientId ? (secret ? [] : ['PLAID_SECRET']) : ['PLAID_CLIENT_ID','PLAID_SECRET'], message: `env: ${env}` };
   }
   async _post(path, body) {
-    const clientId = getSetting('PLAID_CLIENT_ID');
-    const secret = getSetting('PLAID_SECRET');
-    const env = getSetting('PLAID_ENV') || 'sandbox';
+    const clientId = await getSetting('PLAID_CLIENT_ID');
+    const secret = await getSetting('PLAID_SECRET');
+    const env = (await getSetting('PLAID_ENV')) || 'sandbox';
     const host = env === 'development' ? 'https://development.plaid.com' : env === 'production' ? 'https://production.plaid.com' : 'https://sandbox.plaid.com';
     if (!lib) throw new Error('HTTP library not available');
     return lib.request({ url: `${host}${path}`, method: 'POST', headers: { 'Content-Type': 'application/json' }, body: { ...body, client_id: clientId, secret } });
   }
   async sendPayment(payment) {
-    const accessToken = getSetting('PLAID_ACCESS_TOKEN');
+    const accessToken = await getSetting('PLAID_ACCESS_TOKEN');
     if (!accessToken) throw new Error('PLAID_ACCESS_TOKEN not configured');
     const res = await this._post('/transfer/initiate', {
       access_token: accessToken,
@@ -211,13 +211,13 @@ class PlaidConnector extends BaseConnector {
 class GenericRestConnector extends BaseConnector {
   constructor() { super('generic_rest'); }
   async readiness() {
-    const endpoint = getSetting('OPENBANKING_ENDPOINT');
-    const apiKey = getSetting('OPENBANKING_API_KEY');
+    const endpoint = await getSetting('OPENBANKING_ENDPOINT');
+    const apiKey = await getSetting('OPENBANKING_API_KEY');
     return { ready: !!(endpoint && apiKey), needs: endpoint ? (apiKey ? [] : ['OPENBANKING_API_KEY']) : ['OPENBANKING_ENDPOINT','OPENBANKING_API_KEY'] };
   }
   async sendPayment(payment) {
-    const endpoint = getSetting('OPENBANKING_ENDPOINT');
-    const apiKey = getSetting('OPENBANKING_API_KEY');
+    const endpoint = await getSetting('OPENBANKING_ENDPOINT');
+    const apiKey = await getSetting('OPENBANKING_API_KEY');
     if (!endpoint || !apiKey) throw new Error('OPENBANKING_ENDPOINT and OPENBANKING_API_KEY required');
     const xml = ISO20022.generatePain001({
       paymentId: payment.payment_id,
