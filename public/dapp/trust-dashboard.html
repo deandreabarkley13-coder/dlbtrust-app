@@ -590,8 +590,8 @@
   }
 
   // Load token on start
-  const saved = localStorage.getItem(TOKEN_KEY);
-  if (saved) { el('admin-token').value = saved; initDashboard(); }
+  const saved = getToken();
+  if (saved) initDashboard();
   </script>
 </body>
 </html>
