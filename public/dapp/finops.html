@@ -2720,7 +2720,7 @@
       const rows = (res.data || []).slice(0, 50);
       if (!rows.length) { d.innerHTML = '<p class="muted">No holdings yet.</p>'; return; }
       d.innerHTML = '<table class="table"><thead><tr><th>Name</th><th>Amount</th><th>Target</th><th>Status</th><th>Canonical</th><th></th></tr></thead><tbody>' +
-        rows.map(h => `<tr><td>${h.name}</td><td>$${Number(h.amount).toLocaleString()}</td><td>${h.targetAsset}</td><td>${h.status}</td><td class="muted">${h.canonicalAsset ? h.canonicalAmount + ' ' + h.canonicalAsset : '—'}</td><td>${h.status === 'held' ? `<button class="btn btn-sec" onclick="canonizeHolding('${h.id}')">Canonize</button>` : ''} <button class="btn btn-sec" onclick="syncHolding('${h.id}')">Sync</button></td></tr>`).join('') +
+        rows.map(h => `<tr><td>${h.name}</td><td>$${Number(h.amount).toLocaleString()}</td><td>${h.targetAsset}</td><td>${h.status}</td><td class="muted">${h.canonicalAsset ? h.canonicalAmount + ' ' + h.canonicalAsset : '—'}</td><td>${h.status === 'held' ? `<button class="btn btn-sec" onclick="canonizeHolding('${h.id}')">Canonize</button> <button class="btn btn-sec" onclick="cancelHolding('${h.id}')">Cancel</button>` : ''} <button class="btn btn-sec" onclick="syncHolding('${h.id}')">Sync</button></td></tr>`).join('') +
         '</tbody></table>';
     } catch(e) { d.innerHTML = '<div class="status err">' + e.message + '</div>'; }
   }
@@ -2735,6 +2735,15 @@
   async function syncHolding(id) {
     try {
       await api('/api/finops/holdings/' + id + '/sync', { method: 'POST', body: '{}' });
+      await loadHoldingsTable();
+      loadAll();
+    } catch(e) { alert(e.message); }
+  }
+
+  async function cancelHolding(id) {
+    if (!confirm('Cancel this holding and return funds to the source account?')) return;
+    try {
+      await api('/api/finops/holdings/' + id + '/cancel', { method: 'POST', body: '{}' });
       await loadHoldingsTable();
       loadAll();
     } catch(e) { alert(e.message); }

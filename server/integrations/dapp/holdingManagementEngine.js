@@ -132,6 +132,33 @@ class HoldingManagementEngine {
     return { holding, proposal };
   }
 
+  static async cancelHolding({ holdingId, createdBy = 'operator' } = {}) {
+    if (!holdingId) throw new Error('holdingId required');
+    const state = loadState();
+    const holding = (state.holdings || []).find(h => h.id === holdingId);
+    if (!holding) throw new Error(`Holding not found: ${holdingId}`);
+    if (holding.status !== 'held') throw new Error(`Holding status ${holding.status} cannot be cancelled`);
+
+    const journal = await TrustAccountingEngine.postJournalEntry({
+      entryDate: new Date(),
+      description: `Cancel holding ${holding.id} and return funds to ${holding.sourceAccountId}`,
+      referenceType: 'holding_cancel',
+      referenceId: holding.id,
+      postedBy: createdBy,
+      postToFineract: false,
+      lines: [
+        { accountCode: holding.sourceAccountId, debitAmount: holding.amount, creditAmount: 0, memo: 'Return funds from cancelled holding' },
+        { accountCode: holding.accountCode, debitAmount: 0, creditAmount: holding.amount, memo: 'Cancel holding account' },
+      ],
+    });
+
+    holding.status = 'cancelled';
+    holding.cancelJournalEntryId = journal.entry_id;
+    holding.updatedAt = new Date().toISOString();
+    saveState(state);
+    return holding;
+  }
+
   static async syncHoldingStatus(holdingId) {
     const state = loadState();
     const holding = (state.holdings || []).find(h => h.id === holdingId);
