@@ -37,7 +37,10 @@ function toCents(amount) {
 async function getSetting(name) {
   loadDeps();
   if (SystemSettings && typeof SystemSettings.get === 'function') {
-    try { return await SystemSettings.get(name); } catch (e) { /* fall through */ }
+    try {
+      const v = await SystemSettings.get(name);
+      if (v !== null && v !== undefined) return v;
+    } catch (e) { /* fall through */ }
   }
   return process.env[name] || null;
 }
