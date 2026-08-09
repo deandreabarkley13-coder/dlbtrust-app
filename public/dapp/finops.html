@@ -2942,7 +2942,8 @@
         '<div class="token-bar"><input id="va-payout-amount" type="number" step="0.01" placeholder="Amount" /></div>' +
         '<div class="token-bar"><input id="va-payout-to" placeholder="Recipient address, email or $cashtag" style="flex:2;" /></div>' +
         '<div class="token-bar"><select id="va-payout-asset"><option value="SIT">SIT</option><option value="USDC">USDC</option><option value="USDS">USDS</option><option value="DAI">DAI</option><option value="BTC">BTC</option></select></div>' +
-        '<div class="token-bar"><select id="va-payout-rail"><option value="sit">SIT token (on-chain)</option><option value="dex">DEX swap</option><option value="cashapp">Cash App</option><option value="btcpay">BTCPay</option></select></div>' +
+        '<div class="token-bar"><select id="va-payout-rail"><option value="sit">SIT token (on-chain)</option><option value="dex">DEX swap</option><option value="cashapp">Cash App</option><option value="btcpay">BTCPay</option><option value="skrill">Skrill link</option></select></div>' +
+        '<div class="token-bar"><input id="va-payout-skrill-email" placeholder="Skrill recipient email (for skrill rail)" style="flex:2;" /></div>' +
         '<button class="btn" onclick="payoutVirtualAccount()">Payout</button>' +
         '<div id="va-payout-status" class="status hidden"></div>' +
       '</div>' +
@@ -3022,7 +3023,8 @@
     const rail = el('va-payout-rail').value;
     if (!virtualAccountId || !amount || !recipientIdentifier) { show('Select account, amount and recipient', true, 'va-payout-status'); return; }
     try {
-      const res = await api('/api/finops/virtual-accounts/' + virtualAccountId + '/payout', { method: 'POST', body: JSON.stringify({ amount: Number(amount), asset, recipientIdentifier, rail }) });
+      const railOptions = rail === 'skrill' ? { recipientEmail: el('va-payout-skrill-email').value.trim() || undefined } : {};
+      const res = await api('/api/finops/virtual-accounts/' + virtualAccountId + '/payout', { method: 'POST', body: JSON.stringify({ amount: Number(amount), asset, recipientIdentifier, rail, railOptions }) });
       show('Payout created: ' + (res.data.payment && res.data.payment.id ? res.data.payment.id : 'OK'), false, 'va-payout-status');
       await loadVirtualAccountsTable();
       loadAll();

@@ -34,6 +34,9 @@ try { ({ ModuleFundingEngine } = require('./moduleFundingEngine')); } catch (e) 
 let BtcPayEngine;
 try { ({ BtcPayEngine } = require('../payments/btcPayEngine')); } catch (e) { BtcPayEngine = null; }
 
+let SkrillLinkEngine;
+try { ({ SkrillLinkEngine } = require('../payments/skrillLinkEngine')); } catch (e) { SkrillLinkEngine = null; }
+
 function id(prefix = 'PAY') { return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 8).toUpperCase()}`; }
 function isAddress(v) { return viem && viem.isAddress && viem.isAddress(v); }
 function safeJson(obj) { return JSON.stringify(obj, (k, v) => typeof v === 'bigint' ? String(v) : v); }
@@ -99,17 +102,19 @@ class PayoutCenterEngine {
     return /^[13][a-zA-Z0-9]{25,34}$/.test(addr) || /^(bc1|BC1)[a-zA-Z0-9]{11,71}$/.test(addr);
   }
 
-  static async resolveRecipient({ recipientType, identifier, asset = '' } = {}) {
+  static async resolveRecipient({ recipientType, identifier, asset = '', rail = '' } = {}) {
     const upper = String(asset).toUpperCase();
-    if (isAddress(identifier)) return { address: viem.getAddress ? viem.getAddress(identifier) : identifier.toLowerCase(), type: 'address' };
-    if (upper === 'BTC' && this.isBtcAddress(identifier)) {
-      let addr = identifier.trim();
+    const idTrim = String(identifier || '').trim();
+    if (isAddress(idTrim)) return { address: viem.getAddress ? viem.getAddress(idTrim) : idTrim.toLowerCase(), type: 'address' };
+    if (upper === 'BTC' && this.isBtcAddress(idTrim)) {
+      let addr = idTrim;
       if (addr.toLowerCase().startsWith('bitcoin:')) {
         const u = new URL(addr);
         addr = u.pathname || u.hostname;
       }
       return { address: addr, type: 'btc_address' };
     }
+    if (idTrim.toLowerCase().includes('skrill.me')) return { address: idTrim, type: 'skrill_link' };
     const DappEngine = getDappEngine();
     if (!DappEngine) throw new Error('Wallet address required or DappEngine not available');
     const user = await DappEngine.getUserByEmail(identifier).catch(() => null);
@@ -124,7 +129,7 @@ class PayoutCenterEngine {
     if (!recipientIdentifier) throw new Error('recipientIdentifier required');
     if (!amount || Number(amount) <= 0) throw new Error('amount must be positive');
 
-    const recipient = await this.resolveRecipient({ recipientType, identifier: recipientIdentifier, asset });
+    const recipient = await this.resolveRecipient({ recipientType, identifier: recipientIdentifier, asset, rail });
     const chosenRail = (rail || 'sit').toLowerCase();
     const recordId = id('PC');
     const base = {
@@ -231,6 +236,19 @@ class PayoutCenterEngine {
         });
         base.tx_hash = result.payoutId;
         base.status = 'awaiting_payment';
+        break;
+      }
+      case 'skrill': {
+        if (!SkrillLinkEngine) throw new Error('SkrillLinkEngine not available');
+        if (!recipient.address || !recipient.address.toLowerCase().includes('skrill.me')) throw new Error('Skrill rail requires a skrill.me/rq link as recipientIdentifier');
+        const skrillPayment = await SkrillLinkEngine.createAndPay({
+          linkUrl: recipient.address,
+          recipientEmail: railOptions.recipientEmail || recipient.user && recipient.user.email,
+          initiatedBy: 'payout-center',
+        });
+        base.tx_hash = skrillPayment.payment_id;
+        base.status = skrillPayment.status === 'paid' ? 'completed' : skrillPayment.status;
+        result = skrillPayment;
         break;
       }
       default:

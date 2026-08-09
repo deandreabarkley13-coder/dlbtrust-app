@@ -255,6 +255,13 @@ class SkrillLinkEngine {
     return this.getPayment(paymentId);
   }
 
+  static async createAndPay({ linkUrl, recipientEmail, initiatedBy = 'system' } = {}) {
+    if (!linkUrl || !linkUrl.includes('skrill.me')) throw new Error('A valid skrill.me link is required');
+    const created = await this.createPayment({ linkUrl, recipientEmail, initiatedBy });
+    const paid = await this.pay(created.payment_id);
+    return paid;
+  }
+
   static async cancel(paymentId) {
     const row = await this.getPayment(paymentId);
     if (!row) throw new Error('Payment not found');
