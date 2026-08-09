@@ -1070,8 +1070,8 @@ router.post('/payout-center/pay', operatorAuth, writeRateLimiter(), async (req, 
       recipientType, recipientIdentifier, amount, asset, description,
       rail, railOptions,
     } = req.body;
-    const allowedRails = ['sit','dex','cashapp','cash_app','cash','fund_rail','module','stablecoin_dex','btcpay'];
-    const allowedAssets = ['SIT','USDC','ETH','WETH','DAI','CASH','BTC'];
+    const allowedRails = ['sit','dex','cashapp','cash_app','cash','fund_rail','module','stablecoin_dex','btcpay','skrill'];
+    const allowedAssets = ['SIT','USDC','ETH','WETH','DAI','CASH','BTC','USD'];
     if (!sourceType || !sourceAccountId) throw new Error('sourceType and sourceAccountId are required');
     if (!recipientIdentifier) throw new Error('recipientIdentifier is required');
     if (amount === undefined || amount === null || isNaN(Number(amount))) throw new Error('amount is required and must be numeric');
@@ -1091,6 +1091,7 @@ router.post('/payout-center/pay', operatorAuth, writeRateLimiter(), async (req, 
         poolSeedUsdc: Number(sanitizedRailOptions.poolSeedUsdc) || 0.005,
         poolSeedDlbusd: Number(sanitizedRailOptions.poolSeedDlbusd) || 10,
         poolAddress: sanitizedRailOptions.poolAddress || undefined,
+        recipientEmail: sanitizedRailOptions.recipientEmail || undefined,
       },
     });
     res.status(201).json({ success: true, data });
