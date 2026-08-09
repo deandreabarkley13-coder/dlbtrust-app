@@ -27,6 +27,7 @@ const { IntentRoutingEngine } = require('../integrations/dapp/intentRoutingEngin
 const { ExternalWalletEngine } = require('../integrations/dapp/externalWalletEngine');
 const { JournalEntryEngine } = require('../integrations/dapp/journalEntryEngine');
 const { DlbCanonicalSwapEngine } = require('../integrations/dapp/dlbCanonicalSwapEngine');
+const { TrustComputingEngine } = require('../integrations/dapp/trustComputingEngine');
 
 const router = express.Router();
 const operatorAuth = requireAuth({ role: 'operator' });
@@ -933,6 +934,26 @@ router.post('/canonical-swap/orders/:id/fill', operatorAuth, writeRateLimiter(),
 
 router.post('/canonical-swap/orders/:id/cancel', operatorAuth, writeRateLimiter(), async (req, res) => {
   try { res.json({ success: true, data: await DlbCanonicalSwapEngine.cancelOrder({ orderId: req.params.id }) }); } catch (err) { sendError(res, err); }
+});
+
+// ═════════════════════════════════════════════════════════════════════════════
+// Trust Computing Engine — off-chain valuation, yield, accrual and quote jobs
+// ═════════════════════════════════════════════════════════════════════════════
+
+router.get('/computing/functions', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: TrustComputingEngine.listFunctions() }); } catch (err) { sendError(res, err); }
+});
+
+router.get('/computing/jobs', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await TrustComputingEngine.listJobs(req.query) }); } catch (err) { sendError(res, err); }
+});
+
+router.get('/computing/jobs/:id', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await TrustComputingEngine.getJob(req.params.id) }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/computing/jobs', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try { res.status(201).json({ success: true, data: await TrustComputingEngine.compute({ ...req.body, createdBy: getUserEmail(req) }) }); } catch (err) { sendError(res, err); }
 });
 
 module.exports = router;
