@@ -95,6 +95,8 @@ class DistributionRequestEngine {
       `);
       await query(`CREATE INDEX IF NOT EXISTS idx_dapp_dist_requests_status ON dapp_distribution_requests(status)`);
       await query(`CREATE INDEX IF NOT EXISTS idx_dapp_dist_requests_beneficiary ON dapp_distribution_requests(beneficiary_email)`);
+      await query(`ALTER TABLE dapp_distribution_requests DROP CONSTRAINT IF EXISTS dapp_distribution_requests_status_check`);
+      await query(`ALTER TABLE dapp_distribution_requests ADD CONSTRAINT dapp_distribution_requests_status_check CHECK (status IN ('requested','under_review','approved','rejected','payout_created','executed','failed'))`);
     }, () => {});
   }
 
@@ -431,7 +433,7 @@ class DistributionRequestEngine {
       });
     } catch (payErr) {
       console.warn('[DistributionRequestEngine] payment execution failed:', payErr.message);
-      executeStatus = 'execution_failed';
+      executeStatus = 'failed';
       executeError = payErr.message;
       payment = { error: payErr.message, requestedAt: new Date().toISOString() };
     }
