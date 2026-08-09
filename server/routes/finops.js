@@ -31,6 +31,10 @@ const { TrustComputingEngine } = require('../integrations/dapp/trustComputingEng
 const { HoldingManagementEngine } = require('../integrations/dapp/holdingManagementEngine');
 const { CapitalFundEngine } = require('../integrations/dapp/capitalFundEngine');
 const { VirtualAccountEngine } = require('../integrations/dapp/virtualAccountEngine');
+const { WireOriginationEngine } = require('../integrations/dapp/wireOriginationEngine');
+const { ElectronicMoneyEngine } = require('../integrations/dapp/electronicMoneyEngine');
+let CashEngine;
+try { ({ CashEngine } = require('../integrations/cash/cashEngine')); } catch (e) { CashEngine = null; }
 
 const router = express.Router();
 const operatorAuth = requireAuth({ role: 'operator' });
@@ -1061,6 +1065,94 @@ router.post('/virtual-accounts/:id/payout', operatorAuth, writeRateLimiter(), as
 
 router.post('/virtual-accounts/:id/reconcile', operatorAuth, writeRateLimiter(), async (req, res) => {
   try { res.json({ success: true, data: await VirtualAccountEngine.reconcileDeposit({ ...req.body, createdBy: getUserEmail(req) }) }); } catch (err) { sendError(res, err); }
+});
+
+// ═════════════════════════════════════════════════════════════════════════════
+// Wire Origination Engine — fiat payout origination API
+// ═════════════════════════════════════════════════════════════════════════════
+
+router.get('/wire-origination/adapters', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await WireOriginationEngine.readiness() }); } catch (err) { sendError(res, err); }
+});
+
+router.get('/wire-origination/accounts', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await CashEngine.listAccounts() }); } catch (err) { sendError(res, err); }
+});
+
+router.get('/wire-origination', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await WireOriginationEngine.listPayouts(req.query) }); } catch (err) { sendError(res, err); }
+});
+
+router.get('/wire-origination/:id', operatorAuth, async (req, res) => {
+  try {
+    const data = await WireOriginationEngine.getPayout(req.params.id);
+    if (!data) return res.status(404).json({ success: false, error: 'Payout not found' });
+    res.json({ success: true, data });
+  } catch (err) { sendError(res, err); }
+});
+
+router.get('/wire-origination/:id/message', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await WireOriginationEngine.getMessage(req.params.id) }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/wire-origination', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try { res.status(201).json({ success: true, data: await WireOriginationEngine.createPayout({ ...req.body, initiatedBy: getUserEmail(req) }) }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/wire-origination/:id/approve', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try { res.json({ success: true, data: await WireOriginationEngine.approvePayout(req.params.id, getUserEmail(req)) }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/wire-origination/:id/cancel', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try { res.json({ success: true, data: await WireOriginationEngine.cancelPayout(req.params.id) }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/wire-origination/:id/send', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try { res.json({ success: true, data: await WireOriginationEngine.sendPayout(req.params.id) }); } catch (err) { sendError(res, err); }
+});
+
+// ═════════════════════════════════════════════════════════════════════════════
+// Electronic Money Engine — stored-value fiat ledger for P2P transfers
+// ═════════════════════════════════════════════════════════════════════════════
+
+router.get('/electronic-money/summary', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await ElectronicMoneyEngine.getSummary() }); } catch (err) { sendError(res, err); }
+});
+
+router.get('/electronic-money/accounts', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await ElectronicMoneyEngine.listAccounts(req.query) }); } catch (err) { sendError(res, err); }
+});
+
+router.get('/electronic-money/accounts/:id', operatorAuth, async (req, res) => {
+  try {
+    const data = await ElectronicMoneyEngine.getAccount(req.params.id);
+    if (!data) return res.status(404).json({ success: false, error: 'Account not found' });
+    res.json({ success: true, data });
+  } catch (err) { sendError(res, err); }
+});
+
+router.get('/electronic-money/accounts/:id/transactions', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await ElectronicMoneyEngine.listTransactions({ accountId: req.params.id, limit: req.query.limit }) }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/electronic-money/accounts', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try { res.status(201).json({ success: true, data: await ElectronicMoneyEngine.createAccount({ ...req.body, createdBy: getUserEmail(req) }) }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/electronic-money/issue', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try { res.json({ success: true, data: await ElectronicMoneyEngine.issue({ ...req.body, createdBy: getUserEmail(req) }) }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/electronic-money/transfer', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try { res.json({ success: true, data: await ElectronicMoneyEngine.transfer({ ...req.body, createdBy: getUserEmail(req) }) }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/electronic-money/redeem', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try { res.json({ success: true, data: await ElectronicMoneyEngine.redeem({ ...req.body, createdBy: getUserEmail(req) }) }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/electronic-money/payout', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try { res.json({ success: true, data: await ElectronicMoneyEngine.payout({ ...req.body, createdBy: getUserEmail(req) }) }); } catch (err) { sendError(res, err); }
 });
 
 module.exports = router;

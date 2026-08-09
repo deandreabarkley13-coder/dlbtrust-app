@@ -265,6 +265,18 @@ async function initializeDatabase() {
   } catch(e) { console.warn('[wire] table init:', e.message); }
 
   try {
+    var WireOriginationEngine = require(path.join(HD, 'server', 'integrations', 'dapp', 'wireOriginationEngine')).WireOriginationEngine;
+    await WireOriginationEngine.ensureTables();
+    console.log('[wire-origination] tables ensured');
+  } catch(e) { console.warn('[wire-origination] table init:', e.message); }
+
+  try {
+    var ElectronicMoneyEngine = require(path.join(HD, 'server', 'integrations', 'dapp', 'electronicMoneyEngine')).ElectronicMoneyEngine;
+    await ElectronicMoneyEngine.ensureTables();
+    console.log('[electronic-money] tables ensured');
+  } catch(e) { console.warn('[electronic-money] table init:', e.message); }
+
+  try {
     var TrusteeAgent = require(path.join(HD, 'server', 'integrations', 'agents', 'trusteeAgent')).TrusteeAgent;
     var BookkeepingAgent = require(path.join(HD, 'server', 'integrations', 'agents', 'bookkeepingAgent')).BookkeepingAgent;
     await TrusteeAgent.ensureTables();
