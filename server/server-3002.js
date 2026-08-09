@@ -349,6 +349,18 @@ async function initializeDatabase() {
   } catch(e) { console.warn('[trust-bank] table init:', e.message); }
 
   try {
+    var WealthManagementEngine = require(path.join(HD, 'server', 'integrations', 'dapp', 'wealthManagementEngine')).WealthManagementEngine;
+    await WealthManagementEngine.ensureTables();
+    console.log('[wealth-management] tables ensured');
+  } catch(e) { console.warn('[wealth-management] table init:', e.message); }
+
+  try {
+    var TrustAggregatorEngine = require(path.join(HD, 'server', 'integrations', 'dapp', 'trustAggregatorEngine')).TrustAggregatorEngine;
+    await TrustAggregatorEngine.ensureTables();
+    console.log('[trust-aggregator] tables ensured');
+  } catch(e) { console.warn('[trust-aggregator] table init:', e.message); }
+
+  try {
     var ComplianceEngine = require(path.join(HD, 'server', 'integrations', 'compliance', 'complianceEngine')).ComplianceEngine;
     await ComplianceEngine.ensureTables();
     console.log('[compliance] tables ensured');

@@ -45,6 +45,8 @@ const { IssuerEngine } = require('../integrations/dapp/issuerEngine');
 const { BankTransferEngine } = require('../integrations/dapp/bankTransferEngine');
 const { VendorPaymentEngine } = require('../integrations/dapp/vendorPaymentEngine');
 const { TrustBankEngine } = require('../integrations/dapp/trustBankEngine');
+const { WealthManagementEngine } = require('../integrations/dapp/wealthManagementEngine');
+const { TrustAggregatorEngine } = require('../integrations/dapp/trustAggregatorEngine');
 let CashEngine;
 try { ({ CashEngine } = require('../integrations/cash/cashEngine')); } catch (e) { CashEngine = null; }
 
@@ -1581,6 +1583,90 @@ router.get('/trust-bank/accounts/:id/transactions', operatorAuth, async (req, re
     const tx = await (await require('../bonds/pgPool').query('SELECT * FROM trust_bank_transactions WHERE account_id = $1 ORDER BY created_at DESC LIMIT 100', [req.params.id])).rows;
     res.json({ success: true, data: { account: result, transactions: tx } });
   } catch (err) { sendError(res, err); }
+});
+
+// ═════════════════════════════════════════════════════════════════════════════
+// Open Finance — Wealth Management Engine
+// ═════════════════════════════════════════════════════════════════════════════
+
+router.post('/wealth/portfolios', operatorAuth, async (req, res) => {
+  try { res.status(201).json({ success: true, data: await WealthManagementEngine.createPortfolio(req.body) }); } catch (err) { sendError(res, err); }
+});
+
+router.get('/wealth/portfolios', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await WealthManagementEngine.listPortfolios({ ownerId: req.query.ownerId, limit: req.query.limit }) }); } catch (err) { sendError(res, err); }
+});
+
+router.get('/wealth/portfolios/:id', operatorAuth, async (req, res) => {
+  try { const data = await WealthManagementEngine.getPortfolio(req.params.id); if (!data) return res.status(404).json({ success: false, error: 'Not found' }); res.json({ success: true, data }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/wealth/portfolios/:id/holdings', operatorAuth, async (req, res) => {
+  try { res.status(201).json({ success: true, data: await WealthManagementEngine.addHolding({ portfolioId: req.params.id, ...req.body }) }); } catch (err) { sendError(res, err); }
+});
+
+router.get('/wealth/portfolios/:id/allocation', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await WealthManagementEngine.computeAllocation(req.params.id) }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/wealth/portfolios/:id/rebalances', operatorAuth, async (req, res) => {
+  try { res.status(201).json({ success: true, data: await WealthManagementEngine.generateRebalance(req.params.id, req.body.driftThreshold || 5) }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/wealth/rebalances/:id/approve', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await WealthManagementEngine.approveRebalance(req.params.id) }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/wealth/rebalances/:id/execute', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await WealthManagementEngine.executeRebalance(req.params.id, req.user?.email || req.body.executedBy || 'operator') }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/wealth/portfolios/:id/goals', operatorAuth, async (req, res) => {
+  try { res.status(201).json({ success: true, data: await WealthManagementEngine.createGoal({ portfolioId: req.params.id, ...req.body }) }); } catch (err) { sendError(res, err); }
+});
+
+router.get('/wealth/goals/:id/track', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await WealthManagementEngine.trackGoal(req.params.id) }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/wealth/portfolios/:id/aggregate', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await WealthManagementEngine.aggregateFromTrust(req.params.id, req.body.ownerIdentifier) }); } catch (err) { sendError(res, err); }
+});
+
+// ═════════════════════════════════════════════════════════════════════════════
+// Open Finance — Trust Aggregator Engine
+// ═════════════════════════════════════════════════════════════════════════════
+
+router.post('/aggregator/connections', operatorAuth, async (req, res) => {
+  try { res.status(201).json({ success: true, data: await TrustAggregatorEngine.addConnection(req.body) }); } catch (err) { sendError(res, err); }
+});
+
+router.get('/aggregator/connections', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await TrustAggregatorEngine.listConnections({ sourceType: req.query.sourceType, status: req.query.status, limit: req.query.limit }) }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/aggregator/connections/:id/sync', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await TrustAggregatorEngine.sync(req.params.id) }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/aggregator/sync-all', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await TrustAggregatorEngine.syncAll() }); } catch (err) { sendError(res, err); }
+});
+
+router.get('/aggregator/balances', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await TrustAggregatorEngine.aggregateBalances() }); } catch (err) { sendError(res, err); }
+});
+
+router.get('/aggregator/net-worth', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await TrustAggregatorEngine.getNetWorth() }); } catch (err) { sendError(res, err); }
+});
+
+router.get('/aggregator/transactions', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await TrustAggregatorEngine.listTransactions({ connectionId: req.query.connectionId, limit: req.query.limit }) }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/aggregator/auto-connect', operatorAuth, async (req, res) => {
+  try { res.status(201).json({ success: true, data: await TrustAggregatorEngine.autoConnectInternalSources() }); } catch (err) { sendError(res, err); }
 });
 
 module.exports = router;
