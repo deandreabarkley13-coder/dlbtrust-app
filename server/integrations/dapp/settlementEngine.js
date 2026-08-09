@@ -43,6 +43,9 @@ try { StablecoinEngine = require('./stablecoinEngine').StablecoinEngine; } catch
 let SystemSettings;
 try { SystemSettings = require('../ach/systemSettings').SystemSettings; } catch (e) { SystemSettings = null; }
 
+let PaymentIdEngine;
+try { PaymentIdEngine = require('./paymentIdEngine').PaymentIdEngine; } catch (e) { PaymentIdEngine = null; }
+
 const HOLD_ACCOUNT = 'SETTLEMENT_HOLD';
 const SETTLED_ACCOUNT = 'SETTLEMENT_SETTLED';
 
@@ -165,6 +168,19 @@ class SettlementEngine {
       ]
     );
 
+    if (PaymentIdEngine) {
+      try {
+        await PaymentIdEngine.createPaymentId({
+          sourceType: 'settlement', sourceId: settlementId,
+          rail, amount: amountCents / 100, currency,
+          debtorName, debtorAccount, debtorRouting, debtorBank,
+          creditorName, creditorAccount, creditorRouting, creditorBank,
+          description,
+          metadata: { endpoint_id: endpointId, connector }
+        });
+      } catch (e) { console.warn('[settlement] payment-id create:', e.message); }
+    }
+
     return this.getSettlement(settlementId);
   }
 
@@ -192,25 +208,40 @@ class SettlementEngine {
     if (!settlement) throw new Error('Settlement not found');
     if (settlement.status !== 'pending') throw new Error(`Settlement cannot be executed from status ${settlement.status}`);
 
+    let result;
     if (settlement.rail === 'manual') {
-      return this._executeManual(settlement);
+      result = await this._executeManual(settlement);
+    } else if (settlement.rail === 'mft_sftp' || settlement.rail === 'as2') {
+      result = await this._executeQueued(settlement);
+    } else if (settlement.rail === 'stablecoin') {
+      result = await this._executeStablecoin(settlement);
+    } else if (settlement.rail === 'external_endpoint') {
+      result = await this._executeExternalEndpoint(settlement);
+    } else if (settlement.rail === 'wire' || settlement.rail === 'ach') {
+      result = await this._executeWireOrAch(settlement);
+    } else if (settlement.rail === 'open_banking' || settlement.rail === 'iso20022') {
+      result = await this._executeOpenBanking(settlement);
+    } else {
+      throw new Error(`Unsupported rail: ${settlement.rail}`);
     }
-    if (settlement.rail === 'mft_sftp' || settlement.rail === 'as2') {
-      return this._executeQueued(settlement);
+
+    if (PaymentIdEngine && result) {
+      try {
+        const childType = 'settlement';
+        const childId = result.settlement_id;
+        await PaymentIdEngine.linkChildToSource('settlement', result.settlement_id, {
+          childType, childId,
+          externalId: result.external_id || null,
+          externalStatus: result.status,
+          status: result.status,
+          rawRequest: result.raw_request || null,
+          rawResponse: result.raw_response || null,
+          errorMessage: result.error_message || null
+        });
+      } catch (e) { console.warn('[settlement] payment-id register:', e.message); }
     }
-    if (settlement.rail === 'stablecoin') {
-      return this._executeStablecoin(settlement);
-    }
-    if (settlement.rail === 'external_endpoint') {
-      return this._executeExternalEndpoint(settlement);
-    }
-    if (settlement.rail === 'wire' || settlement.rail === 'ach') {
-      return this._executeWireOrAch(settlement);
-    }
-    if (settlement.rail === 'open_banking' || settlement.rail === 'iso20022') {
-      return this._executeOpenBanking(settlement);
-    }
-    throw new Error(`Unsupported rail: ${settlement.rail}`);
+
+    return result;
   }
 
   static async _executeManual(settlement) {

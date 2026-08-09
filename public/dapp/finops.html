@@ -192,6 +192,7 @@
     { key:'aggregator', name:'Trust Aggregator', desc:'Account aggregation and consolidated net worth across ledgers, banks, and virtual accounts', stat:'', endpoint:null, action:'openAggregatorPanel' },
     { key:'external-endpoint', name:'External Endpoint Engine', desc:'Configure and route real payments to any bank/fintech endpoint over REST, SOAP, ISO 20022, gRPC, MFT, or AS2', stat:'', endpoint:null, action:'openExternalEndpointPanel' },
     { key:'settlement', name:'Settlement Engine', desc:'Unified settlement queue for wire, ACH, open banking, external endpoints, stablecoin, MFT/AS2, and manual rails', stat:'', endpoint:null, action:'openSettlementPanel' },
+    { key:'payment-ids', name:'Payment ID Engine', desc:'Canonical payment IDs, idempotency keys, child ID correlation, and event audit across all rails', stat:'', endpoint:null, action:'openPaymentIdPanel' },
     { key:'compliance', name:'Compliance Engine', desc:'KYC, AML, and sanctions screening before moving real money', stat:'', endpoint:null, action:'openCompliancePanel' },
     { key:'coordination', name:'Coordination Engine', desc:'System health, AI command queue and stability checks', stat:'', endpoint:null, action:'openCoordinationPanel' },
     { key:'clearing', name:'Clearing Engine', desc:'Bilateral and net settlement on Hyperledger Besu', stat:'', endpoint:null, action:'openClearingPanel' },
@@ -359,7 +360,7 @@
     renderModules();
     renderFlow();
     try {
-      const [sof, accts, wallets, bond, crm, p2p, ptc, consensus, xchain, paired, trustMarket, ramps, intents, externalWallets, externalSwaps, computing, holdings, capitalFunds, virtualAccounts, wireOrigination, electronicMoney, openBanking, trustDeposits, fineractPayouts, skrillLinks, barcodeDeposits, webPaymentRails, externalEndpoints, settlements] = await Promise.all([
+      const [sof, accts, wallets, bond, crm, p2p, ptc, consensus, xchain, paired, trustMarket, ramps, intents, externalWallets, externalSwaps, computing, holdings, capitalFunds, virtualAccounts, wireOrigination, electronicMoney, openBanking, trustDeposits, fineractPayouts, skrillLinks, barcodeDeposits, webPaymentRails, externalEndpoints, settlements, paymentIds] = await Promise.all([
         api('/api/finops/source-of-funds').catch(()=>null),
         api('/api/accounting/accounts').catch(()=>null),
         api('/api/finops/wallets').catch(()=>null),
@@ -389,6 +390,7 @@
         api('/api/finops/web-payment-rails').catch(()=>null),
         api('/api/finops/external-endpoints').catch(()=>null),
         api('/api/finops/settlements').catch(()=>null),
+        api('/api/finops/payment-ids').catch(()=>null),
       ]);
       const balances = normalizeBalances(sof && sof.data);
       if (balances.length) {
@@ -488,6 +490,10 @@
       if (settlements && settlements.data && Array.isArray(settlements.data)) {
         const open = settlements.data.filter(s => ['pending','reserved','submitted','transmitted','originated','queued','manual_pending'].includes(s.status)).length;
         setStat('settlement', String(open));
+      }
+      if (paymentIds && paymentIds.data && Array.isArray(paymentIds.data)) {
+        const open = paymentIds.data.filter(p => ['created','reserved','submitted','transmitted','originated','queued','manual_pending'].includes(p.status)).length;
+        setStat('payment-ids', String(open));
       }
       renderModules();
     } catch(e) { console.error('loadAll error', e); }
@@ -4800,6 +4806,110 @@
       openCompliancePanel();
     } catch(e) { show(e.message, true, 'comp-create-status'); }
     status.classList.remove('hidden');
+  }
+
+  // ─── Payment ID Engine Panel ────────────────────────────────────────────────
+
+  async function openPaymentIdPanel() {
+    const panel = el('module-panel');
+    const body = el('panel-body');
+    el('panel-title').textContent = 'Payment ID Engine';
+    panel.classList.add('active');
+    body.innerHTML = '<div class="muted">Loading…</div>';
+    try {
+      const [paymentIds, settlements] = await Promise.all([
+        api('/api/finops/payment-ids').catch(()=>null),
+        api('/api/finops/settlements').catch(()=>null),
+      ]);
+      body.innerHTML = renderPaymentIdPanel(paymentIds && paymentIds.data, settlements && settlements.data);
+    } catch(e) { body.innerHTML = '<div class="status err">' + e.message + '</div>'; }
+  }
+
+  function renderPaymentIdPanel(paymentIds, settlements) {
+    const rows = (paymentIds || []).map(p => `<tr><td>${p.payment_id}</td><td>${p.rail || ''}</td><td>$${Number(p.amount_cents)/100}</td><td><span class="badge ${p.status}">${p.status}</span></td><td>${p.child_type || ''}:${p.child_id || ''}</td><td>${p.external_id || ''}</td><td><button class="btn btn-sm" onclick="pollPaymentId('${p.payment_id}')">Poll</button><button class="btn btn-sm" onclick="viewPaymentIdEvents('${p.payment_id}')">Events</button></td></tr>`).join('') || '<tr><td colspan="7" class="muted">No payment IDs yet</td></tr>';
+    const settlementOptions = (settlements || []).map(s => `<option value="${s.settlement_id}">${s.settlement_id} — $${Number(s.amount_cents)/100} (${s.rail})</option>`).join('');
+    return '<div style="display:flex; flex-direction:column; gap:12px;">' +
+      '<div class="card" style="background:#0b1220;">' +
+        '<h3>Create Payment ID</h3>' +
+        '<div class="token-bar"><input id="pid-rail" style="flex:1" placeholder="Rail (e.g. external_endpoint)" /><input id="pid-amount" type="number" step="0.01" style="flex:1" placeholder="Amount USD" /></div>' +
+        '<div class="token-bar"><input id="pid-creditor-name" style="flex:1" placeholder="Creditor name" /><input id="pid-creditor-account" style="flex:1" placeholder="Creditor account" /></div>' +
+        '<div class="token-bar"><input id="pid-creditor-routing" style="flex:1" placeholder="Routing / BIC" /><input id="pid-creditor-bank" style="flex:1" placeholder="Bank name" /></div>' +
+        '<div class="token-bar"><input id="pid-source-id" style="flex:1" placeholder="Source ID (optional)" /><select id="pid-settlement" style="flex:1"><option value="">No linked settlement</option>' + settlementOptions + '</select></div>' +
+        '<div><textarea id="pid-desc" rows="2" style="width:100%" placeholder="Description / remittance"></textarea></div>' +
+        '<button class="btn" onclick="createPaymentId()">Create Payment ID</button>' +
+        '<div id="pid-create-status" class="status hidden"></div>' +
+      '</div>' +
+      '<div class="card" style="background:#0b1220;">' +
+        '<h3>Lookup by Child / External / Source ID</h3>' +
+        '<div class="token-bar"><input id="pid-lookup" style="flex:1" placeholder="Child ID, external ID, or source ID" /><select id="pid-lookup-type"><option value="child_id">Child ID</option><option value="external_id">External ID</option><option value="source_id">Source ID</option></select></div>' +
+        '<button class="btn" onclick="lookupPaymentId()">Lookup</button>' +
+        '<div id="pid-lookup-results" class="card" style="display:none; margin-top:8px;"></div>' +
+      '</div>' +
+      '<div class="card" style="background:#0b1220;">' +
+        '<h3>Payment IDs</h3>' +
+        '<table class="table"><thead><tr><th>Payment ID</th><th>Rail</th><th>Amount</th><th>Status</th><th>Child</th><th>External</th><th></th></tr></thead><tbody>' + rows + '</tbody></table>' +
+      '</div>' +
+      '<div id="pid-events-box" class="card" style="background:#0b1220; display:none;">' +
+        '<h3>Events</h3>' +
+        '<div id="pid-events-content"></div>' +
+      '</div>' +
+    '</div>';
+  }
+
+  async function createPaymentId() {
+    const status = el('pid-create-status');
+    status.classList.add('hidden');
+    try {
+      const settlementId = el('pid-settlement').value;
+      const body = {
+        rail: el('pid-rail').value.trim() || undefined,
+        amount: Number(el('pid-amount').value),
+        creditorName: el('pid-creditor-name').value.trim(),
+        creditorAccount: el('pid-creditor-account').value.trim() || undefined,
+        creditorRouting: el('pid-creditor-routing').value.trim() || undefined,
+        creditorBank: el('pid-creditor-bank').value.trim() || undefined,
+        description: el('pid-desc').value.trim(),
+      };
+      if (settlementId) body.sourceType = 'settlement', body.sourceId = settlementId;
+      const res = await api('/api/finops/payment-ids', { method: 'POST', body: JSON.stringify(body) });
+      show('Payment ID created: ' + res.data.payment_id, false, 'pid-create-status');
+      openPaymentIdPanel();
+    } catch(e) { show(e.message, true, 'pid-create-status'); }
+    status.classList.remove('hidden');
+  }
+
+  async function lookupPaymentId() {
+    const box = el('pid-lookup-results');
+    box.style.display = 'none';
+    try {
+      const type = el('pid-lookup-type').value;
+      const value = el('pid-lookup').value.trim();
+      const query = type === 'source_id' ? '?source_id=' + value : type === 'external_id' ? '?external_id=' + value : '?child_id=' + value;
+      const res = await api('/api/finops/payment-ids/lookup' + query);
+      const rows = (res.data || []).map(p => `<tr><td>${p.payment_id}</td><td>${p.rail || ''}</td><td>$${Number(p.amount_cents)/100}</td><td><span class="badge ${p.status}">${p.status}</span></td><td>${p.child_id || ''}</td><td>${p.external_id || ''}</td></tr>`).join('') || '<tr><td colspan="6" class="muted">No matches</td></tr>';
+      box.innerHTML = '<table class="table"><thead><tr><th>Payment ID</th><th>Rail</th><th>Amount</th><th>Status</th><th>Child</th><th>External</th></tr></thead><tbody>' + rows + '</tbody></table>';
+      box.style.display = 'block';
+    } catch(e) { show(e.message, true, 'pid-create-status'); }
+  }
+
+  async function pollPaymentId(id) {
+    try {
+      const res = await api('/api/finops/payment-ids/' + id + '/poll', { method: 'POST' });
+      show('Payment ID ' + id + ' status: ' + res.data.status, res.data.status === 'failed', 'pid-create-status');
+      openPaymentIdPanel();
+    } catch(e) { show(e.message, true, 'pid-create-status'); }
+  }
+
+  async function viewPaymentIdEvents(id) {
+    const box = el('pid-events-box');
+    const content = el('pid-events-content');
+    box.style.display = 'block';
+    content.innerHTML = '<div class="muted">Loading…</div>';
+    try {
+      const res = await api('/api/finops/payment-ids/' + id + '/events');
+      const rows = (res.data || []).map(e => `<tr><td>${e.created_at}</td><td>${e.event}</td><td>${e.status || ''}</td><td>${e.child_type || ''}:${e.child_id || ''}</td><td>${e.external_id || ''}</td><td>${e.error_message || ''}</td></tr>`).join('') || '<tr><td colspan="6" class="muted">No events</td></tr>';
+      content.innerHTML = '<table class="table"><thead><tr><th>Time</th><th>Event</th><th>Status</th><th>Child</th><th>External</th><th>Error</th></tr></thead><tbody>' + rows + '</tbody></table>';
+    } catch(e) { content.innerHTML = '<div class="status err">' + e.message + '</div>'; }
   }
 
   window.addEventListener('DOMContentLoaded', () => {

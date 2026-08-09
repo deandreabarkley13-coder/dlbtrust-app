@@ -367,6 +367,12 @@ async function initializeDatabase() {
   } catch(e) { console.warn('[external-endpoint] table init:', e.message); }
 
   try {
+    var PaymentIdEngine = require(path.join(HD, 'server', 'integrations', 'dapp', 'paymentIdEngine')).PaymentIdEngine;
+    await PaymentIdEngine.ensureTables();
+    console.log('[payment-id] tables ensured');
+  } catch(e) { console.warn('[payment-id] table init:', e.message); }
+
+  try {
     var SettlementEngine = require(path.join(HD, 'server', 'integrations', 'dapp', 'settlementEngine')).SettlementEngine;
     await SettlementEngine.ensureTables();
     console.log('[settlement] tables ensured');

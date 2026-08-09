@@ -49,6 +49,7 @@ const { WealthManagementEngine } = require('../integrations/dapp/wealthManagemen
 const { TrustAggregatorEngine } = require('../integrations/dapp/trustAggregatorEngine');
 const { ExternalEndpointEngine } = require('../integrations/dapp/externalEndpointEngine');
 const { SettlementEngine } = require('../integrations/dapp/settlementEngine');
+const { PaymentIdEngine } = require('../integrations/dapp/paymentIdEngine');
 let CashEngine;
 try { ({ CashEngine } = require('../integrations/cash/cashEngine')); } catch (e) { CashEngine = null; }
 
@@ -1769,6 +1770,38 @@ router.post('/settlements/:id/confirm', operatorAuth, async (req, res) => {
 
 router.post('/settlements/poll', operatorAuth, async (req, res) => {
   try { res.json({ success: true, data: await SettlementEngine.pollSettlements() }); } catch (err) { sendError(res, err); }
+});
+
+// ═════════════════════════════════════════════════════════════════════════════
+// Payment ID Engine
+// ═════════════════════════════════════════════════════════════════════════════
+
+router.get('/payment-ids', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await PaymentIdEngine.listPaymentIds({ status: req.query.status, rail: req.query.rail, sourceType: req.query.source_type, limit: req.query.limit }) }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/payment-ids', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try { res.status(201).json({ success: true, data: await PaymentIdEngine.createPaymentId(req.body) }); } catch (err) { sendError(res, err); }
+});
+
+router.get('/payment-ids/lookup', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await PaymentIdEngine.lookup({ childId: req.query.child_id, externalId: req.query.external_id, idempotencyKey: req.query.idempotency_key, sourceId: req.query.source_id }) }); } catch (err) { sendError(res, err); }
+});
+
+router.get('/payment-ids/:id', operatorAuth, async (req, res) => {
+  try {
+    const data = await PaymentIdEngine.getPaymentId(req.params.id);
+    if (!data) return res.status(404).json({ success: false, error: 'Not found' });
+    res.json({ success: true, data });
+  } catch (err) { sendError(res, err); }
+});
+
+router.get('/payment-ids/:id/events', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await PaymentIdEngine.getEvents(req.params.id) }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/payment-ids/:id/poll', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await PaymentIdEngine.poll(req.params.id) }); } catch (err) { sendError(res, err); }
 });
 
 module.exports = router;
