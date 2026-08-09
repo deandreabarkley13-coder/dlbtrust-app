@@ -14,10 +14,11 @@
 let pool;
 try { pool = require('../bonds/pgPool'); } catch (e) { pool = null; }
 
-let SystemSettings, CashEngine;
+let SystemSettings, CashEngine, ComplianceEngine;
 function loadDeps() {
   try { ({ SystemSettings } = require('../ach/systemSettings')); } catch (e) { SystemSettings = null; }
   try { CashEngine = require('../cash/cashEngine'); } catch (e) { CashEngine = null; }
+  try { ({ ComplianceEngine } = require('../compliance/complianceEngine')); } catch (e) { ComplianceEngine = null; }
 }
 
 const https = require('https');
@@ -155,7 +156,7 @@ class WebPaymentRailEngine {
     for (const key of Object.keys(process.env)) {
       if (key.startsWith('WEB_PAYMENT_RAIL_') && key.endsWith('_ENDPOINT')) {
         const mid = key.replace(/^WEB_PAYMENT_RAIL_/, '').replace(/_ENDPOINT$/, '');
-        if (mid && mid !== 'DEFAULT') names.add(mid.toLowerCase());
+        if (mid && mid !== 'DEFAULT' && mid !== 'ENDPOINT') names.add(mid.toLowerCase());
       }
     }
     const list = [];
@@ -175,6 +176,7 @@ class WebPaymentRailEngine {
     recipientAccount,
     recipientBank,
     recipientRouting,
+    recipientCountry,
     sourceType = 'cash',
     sourceAccountId,
     description,
@@ -185,6 +187,18 @@ class WebPaymentRailEngine {
     if (!cfg.endpoint) throw new Error(`Web payment rail ${adapterName} has no endpoint configured`);
     const cents = toCents(amount);
     if (cents <= 0) throw new Error('amount must be positive');
+
+    // KYC/AML/Sanctions screening before moving real value
+    if (ComplianceEngine && process.env.COMPLIANCE_SCREEN_PAYOUTS !== 'false') {
+      const screening = await ComplianceEngine.screenRecipientForPayout({
+        fullName: recipientName,
+        businessName: recipientBank,
+        bankAccount: recipientAccount,
+        routingNumber: recipientRouting,
+        country: recipientCountry || 'US',
+      }, amount, sourceAccountId);
+      ComplianceEngine.mustPass(screening);
+    }
 
     const paymentId = generateId('WPR');
     const context = {

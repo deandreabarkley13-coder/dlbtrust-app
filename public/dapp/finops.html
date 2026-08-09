@@ -183,6 +183,8 @@
     { key:'skrill-links', name:'Skrill Links', desc:'Pay Skrill.me/rq request links from the trust ledger', stat:'', endpoint:null, action:'openSkrillLinksPanel' },
     { key:'barcode-deposits', name:'Barcode Deposits', desc:'Scan barcodes/QRs to record and credit deposits', stat:'', endpoint:null, action:'openBarcodeDepositsPanel' },
     { key:'web-payment-rails', name:'Web Payment Rails', desc:'Send real payments over HTTPS to any bank/fintech endpoint', stat:'', endpoint:null, action:'openWebPaymentRailsPanel' },
+    { key:'lili', name:'Lili Bank Engine', desc:'Lili business banking adapter: ACH/wire payment preparation and application onboarding', stat:'', endpoint:null, action:'openLiliBankPanel' },
+    { key:'compliance', name:'Compliance Engine', desc:'KYC, AML, and sanctions screening before moving real money', stat:'', endpoint:null, action:'openCompliancePanel' },
     { key:'coordination', name:'Coordination Engine', desc:'System health, AI command queue and stability checks', stat:'', endpoint:null, action:'openCoordinationPanel' },
     { key:'clearing', name:'Clearing Engine', desc:'Bilateral and net settlement on Hyperledger Besu', stat:'', endpoint:null, action:'openClearingPanel' },
     { key:'redemption-gateway', name:'Redemption Gateway', desc:'Bridge DLB-PTCUSD to external clearing/stablecoin rails', stat:'', endpoint:null, action:'openRedemptionGatewayPanel' },
@@ -3727,6 +3729,133 @@
       openWebPaymentRailsPanel();
       loadAll();
     } catch(e) { alert(e.message); }
+  }
+
+  // ─── Lili Bank Engine Panel ─────────────────────────────────────────────────
+
+  async function openLiliBankPanel() {
+    const panel = el('module-panel');
+    const body = el('panel-body');
+    el('panel-title').textContent = 'Lili Bank Engine';
+    panel.classList.add('active');
+    body.innerHTML = '<div class="muted">Loading…</div>';
+    try {
+      const [cfg, payments] = await Promise.all([
+        api('/api/finops/lili/config').catch(()=>null),
+        api('/api/finops/lili/payments').catch(()=>null),
+      ]);
+      body.innerHTML = renderLiliBankPanel(cfg && cfg.data, payments && payments.data);
+    } catch(e) { body.innerHTML = '<div class="status err">' + e.message + '</div>'; }
+  }
+
+  function renderLiliBankPanel(config, items) {
+    const cfgText = config ? `<pre>${JSON.stringify(config, null, 2)}</pre>` : '<p class="muted">No Lili config returned</p>';
+    const rows = (items || []).map(p => `<tr><td>${p.payment_id}</td><td>$${Number(p.amount_cents || 0)/100} ${p.currency || ''}</td><td>${p.recipient_name || ''}</td><td>${p.recipient_bank || ''}</td><td>${p.status}</td><td>${p.external_tx_id || ''}</td></tr>`).join('') || '<tr><td colspan="6" class="muted">No Lili payments yet</td></tr>';
+    return '<div style="display:flex; flex-direction:column; gap:12px;">' +
+      '<div class="card" style="background:#0b1220;">' +
+        '<h3>New Lili Payment</h3>' +
+        '<p class="muted">Lili does not expose a public outbound payment API. This panel prepares a record and optionally POSTs to a configured LILI_PAYMENT_ENDPOINT. Without that endpoint, status becomes <em>manual_pending</em> and you complete it in the Lili app.</p>' +
+        '<div class="token-bar"><input id="lili-source" style="flex:1" placeholder="Source cash account id (e.g. CA-OPERATING)" /></div>' +
+        '<div class="token-bar"><input id="lili-amount" type="number" style="flex:1" placeholder="Amount" />' +
+        '<select id="lili-currency"><option value="USD">USD</option></select></div>' +
+        '<div class="token-bar"><input id="lili-name" style="flex:1" placeholder="Recipient name / business" /></div>' +
+        '<div class="token-bar"><input id="lili-account" style="flex:1" placeholder="Account number" /></div>' +
+        '<div class="token-bar"><input id="lili-routing" style="flex:1" placeholder="Routing number" /></div>' +
+        '<div class="token-bar"><input id="lili-bank" style="flex:1" placeholder="Bank name" /></div>' +
+        '<div class="token-bar"><input id="lili-email" style="flex:1" placeholder="Recipient email (optional)" /></div>' +
+        '<button class="btn" onclick="createLiliPayment()">Create Payment</button>' +
+        '<div id="lili-create-status" class="status hidden"></div>' +
+      '</div>' +
+      '<div class="card" style="background:#0b1220;">' +
+        '<h3>Config</h3>' + cfgText +
+      '</div>' +
+      '<div class="card" style="background:#0b1220;">' +
+        '<h3>Recent Lili Payments</h3>' +
+        '<table class="table"><thead><tr><th>Payment ID</th><th>Amount</th><th>Recipient</th><th>Bank</th><th>Status</th><th>External TX</th></tr></thead><tbody>' + rows + '</tbody></table>' +
+      '</div>' +
+    '</div>';
+  }
+
+  async function createLiliPayment() {
+    const status = el('lili-create-status');
+    status.classList.add('hidden');
+    try {
+      const body = {
+        sourceAccountId: el('lili-source').value.trim() || undefined,
+        amount: el('lili-amount').value,
+        currency: el('lili-currency').value,
+        recipientName: el('lili-name').value.trim() || undefined,
+        recipientAccount: el('lili-account').value.trim() || undefined,
+        recipientRouting: el('lili-routing').value.trim() || undefined,
+        recipientBank: el('lili-bank').value.trim() || undefined,
+        recipientEmail: el('lili-email').value.trim() || undefined,
+      };
+      const res = await api('/api/finops/lili/payments', { method: 'POST', body: JSON.stringify(body) });
+      show('Lili payment created: ' + res.data.payment_id + ' (' + res.data.status + ')', false, 'lili-create-status');
+      openLiliBankPanel();
+      loadAll();
+    } catch(e) { show(e.message, true, 'lili-create-status'); }
+    status.classList.remove('hidden');
+  }
+
+  // ─── Compliance Engine Panel ────────────────────────────────────────────────
+
+  async function openCompliancePanel() {
+    const panel = el('module-panel');
+    const body = el('panel-body');
+    el('panel-title').textContent = 'Compliance Engine';
+    panel.classList.add('active');
+    body.innerHTML = '<div class="muted">Loading…</div>';
+    try {
+      const screenings = await api('/api/finops/compliance/screenings').catch(()=>null);
+      body.innerHTML = renderCompliancePanel(screenings && screenings.data);
+    } catch(e) { body.innerHTML = '<div class="status err">' + e.message + '</div>'; }
+  }
+
+  function renderCompliancePanel(items) {
+    const rows = (items || []).map(s => `<tr><td>${s.screening_id}</td><td>${s.type}</td><td>${s.entity_type}</td><td>${s.full_name || s.business_name || ''}</td><td>${s.country || ''}</td><td>${s.risk_level} (${s.risk_score})</td><td><span class="badge ${s.status}">${s.status}</span></td><td>${s.provider || 'local'}</td></tr>`).join('') || '<tr><td colspan="8" class="muted">No screenings yet</td></tr>';
+    return '<div style="display:flex; flex-direction:column; gap:12px;">' +
+      '<div class="card" style="background:#0b1220;">' +
+        '<h3>New Screening</h3>' +
+        '<div class="token-bar"><select id="comp-type"><option value="combined">Combined (KYC+AML+Sanctions)</option><option value="kyc">KYC</option><option value="aml">AML</option><option value="sanctions">Sanctions</option></select>' +
+        '<select id="comp-entity"><option value="individual">Individual</option><option value="business">Business</option></select></div>' +
+        '<div class="token-bar"><input id="comp-fullname" style="flex:1" placeholder="Full name" /></div>' +
+        '<div class="token-bar"><input id="comp-business" style="flex:1" placeholder="Business name" /></div>' +
+        '<div class="token-bar"><input id="comp-email" style="flex:1" placeholder="Email" /></div>' +
+        '<div class="token-bar"><input id="comp-country" style="flex:1" placeholder="Country (ISO 3166-1 alpha-2, e.g. US)" /></div>' +
+        '<div class="token-bar"><input id="comp-bank" style="flex:1" placeholder="Bank account number" /></div>' +
+        '<div class="token-bar"><input id="comp-routing" style="flex:1" placeholder="Routing / IBAN" /></div>' +
+        '<div class="token-bar"><input id="comp-amount" type="number" style="flex:1" placeholder="Amount USD" /></div>' +
+        '<button class="btn" onclick="createComplianceScreening()">Screen</button>' +
+        '<div id="comp-create-status" class="status hidden"></div>' +
+      '</div>' +
+      '<div class="card" style="background:#0b1220;">' +
+        '<h3>Screenings</h3>' +
+        '<table class="table"><thead><tr><th>ID</th><th>Type</th><th>Entity</th><th>Name</th><th>Country</th><th>Risk</th><th>Status</th><th>Provider</th></tr></thead><tbody>' + rows + '</tbody></table>' +
+      '</div>' +
+    '</div>';
+  }
+
+  async function createComplianceScreening() {
+    const status = el('comp-create-status');
+    status.classList.add('hidden');
+    try {
+      const body = {
+        type: el('comp-type').value,
+        entityType: el('comp-entity').value,
+        fullName: el('comp-fullname').value.trim() || undefined,
+        businessName: el('comp-business').value.trim() || undefined,
+        email: el('comp-email').value.trim() || undefined,
+        country: el('comp-country').value.trim().toUpperCase() || undefined,
+        bankAccount: el('comp-bank').value.trim() || undefined,
+        routingNumber: el('comp-routing').value.trim() || undefined,
+        amount: el('comp-amount').value,
+      };
+      const res = await api('/api/finops/compliance/screenings', { method: 'POST', body: JSON.stringify(body) });
+      show('Screening created: ' + res.data.screening_id + ' — ' + res.data.status + ' (' + res.data.risk_level + ')', res.data.status === 'blocked', 'comp-create-status');
+      openCompliancePanel();
+    } catch(e) { show(e.message, true, 'comp-create-status'); }
+    status.classList.remove('hidden');
   }
 
   window.addEventListener('DOMContentLoaded', () => {
