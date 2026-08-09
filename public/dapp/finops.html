@@ -3325,13 +3325,13 @@
 
   function renderOpenBankingPanel(connectors, payments) {
     const cashOptions = (window.wireOriginationAccounts || []).length ? window.wireOriginationAccounts.map(a => `<option value="${a.account_id}">${a.account_id}</option>`).join('') : '<option value="CA-OPERATING">CA-OPERATING</option>';
-    const connectorOptions = (connectors || []).map(c => `<option value="${c.id}">${c.name} — ${c.readiness && c.readiness.ready ? 'ready' : 'needs config'}</option>`).join('') || '<option value="">No connectors</option>';
+    const connectorOptions = (connectors || []).map(c => `<option value="${c.id}">${c.name} — ${c.ready ? 'ready' : 'needs config'}</option>`).join('') || '<option value="">No connectors</option>';
     const rows = (payments || []).map(p => `<tr><td>${p.payment_id}</td><td>${p.connector}</td><td>$${Number(p.amount_cents || 0)/100}</td><td>${p.status}</td><td>${p.creditor_name || ''}</td><td>${p.error_message || ''}</td></tr>`).join('') || '<tr><td colspan="6" class="muted">No payments yet</td></tr>';
     return '<div style="display:flex; flex-direction:column; gap:12px;">' +
       '<div class="card" style="background:#0b1220;">' +
         '<h3>Connector Readiness</h3>' +
         '<p class="muted">Programmatic credit-push only. Set API keys in env/system_settings to activate a connector.</p>' +
-        '<ul style="font-size:13px; padding-left:18px;">' + (connectors || []).map(c => `<li><strong>${c.name}</strong>: ${c.readiness && c.readiness.ready ? 'ready' : 'needs ' + (c.readiness ? c.readiness.needs.join(', ') : 'config')}</li>`).join('') + '</ul>' +
+        '<ul style="font-size:13px; padding-left:18px;">' + (connectors || []).map(c => `<li><strong>${c.name}</strong>: ${c.ready ? 'ready' : 'needs ' + (c.needs ? c.needs.join(', ') : 'config')}</li>`).join('') + '</ul>' +
       '</div>' +
       '<div class="card" style="background:#0b1220;">' +
         '<h3>Initiate ISO 20022 Payment</h3>' +

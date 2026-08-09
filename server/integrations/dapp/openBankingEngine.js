@@ -282,19 +282,21 @@ class OpenBankingEngine {
     await pool.query(`CREATE INDEX IF NOT EXISTS idx_ob_payments_status ON open_banking_payments(status)`);
   }
 
-  static getConnectors() {
+  static async getConnectors() {
     const list = [
       { id: 'column', name: 'Column (Wire)' },
       { id: 'increase', name: 'Increase (Wire/ACH)' },
       { id: 'plaid', name: 'Plaid Transfer (ACH)' },
       { id: 'generic_rest', name: 'Generic ISO 20022 REST/SOAP' },
     ];
-    return list.map(c => {
+    const out = [];
+    for (const c of list) {
       const Ctor = CONNECTORS[c.id];
       const inst = new Ctor();
-      const r = inst.readiness();
-      return { ...c, readiness: r };
-    });
+      const r = await inst.readiness();
+      out.push({ ...c, ready: r.ready, needs: r.needs, message: r.message });
+    }
+    return out;
   }
 
   static _connector(name) {
