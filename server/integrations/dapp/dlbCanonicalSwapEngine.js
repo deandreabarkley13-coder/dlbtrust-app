@@ -411,13 +411,17 @@ class DlbCanonicalSwapEngine {
       functionName: 'orders',
       args: [BigInt(orderId)],
     });
+    const decimalsIn = await this._decimals(o[2]);
+    const decimalsOut = await this._decimals(o[4]);
     return {
       orderId: String(o[0]),
       maker: o[1],
       tokenIn: o[2],
       amountIn: String(o[3]),
+      amountInFormatted: viem ? viem.formatUnits(o[3], decimalsIn) : String(o[3]),
       tokenOut: o[4],
       amountOut: String(o[5]),
+      amountOutFormatted: viem ? viem.formatUnits(o[5], decimalsOut) : String(o[5]),
       recipient: o[6],
       active: o[7],
     };
@@ -439,13 +443,17 @@ class DlbCanonicalSwapEngine {
       const o = await publicClient.readContract({ address: cfg.contractAddress, abi, functionName: 'orders', args: [id] });
       const active = o[7];
       if (activeOnly && !active) continue;
+      const decimalsIn = await this._decimals(o[2]);
+      const decimalsOut = await this._decimals(o[4]);
       orders.push({
         orderId: String(o[0]),
         maker: o[1],
         tokenIn: o[2],
         amountIn: String(o[3]),
+        amountInFormatted: viem ? viem.formatUnits(o[3], decimalsIn) : String(o[3]),
         tokenOut: o[4],
         amountOut: String(o[5]),
+        amountOutFormatted: viem ? viem.formatUnits(o[5], decimalsOut) : String(o[5]),
         recipient: o[6],
         active,
       });
