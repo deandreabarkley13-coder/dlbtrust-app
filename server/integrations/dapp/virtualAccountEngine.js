@@ -106,8 +106,8 @@ class VirtualAccountEngine {
     await TrustAccountingEngine.createAccount({
       accountCode,
       accountName: `Virtual Account: ${name}`,
-      accountType: 'liability',
-      subType: 'payable',
+      accountType: 'asset',
+      subType: 'cash',
       description: description || `Virtual account ${acctNum} for ${email || name}`,
     });
 
