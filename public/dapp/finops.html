@@ -180,6 +180,7 @@
     { key:'open-banking', name:'Open Banking', desc:'ISO 20022 + bank connectors (Column, Increase, Plaid, REST) for direct payouts', stat:'', endpoint:null, action:'openOpenBankingPanel' },
     { key:'trust-deposits', name:'Trust Deposits', desc:'Script deposits to bank, e-money, or wallet destinations', stat:'', endpoint:null, action:'openTrustDepositsPanel' },
     { key:'fineract-payouts', name:'Fineract/Mifos Payouts', desc:'Withdraw from Fineract/Mifos savings and route externally via Open Banking or Wire', stat:'', endpoint:null, action:'openFineractPayoutsPanel' },
+    { key:'skrill-links', name:'Skrill Links', desc:'Pay Skrill.me/rq request links from the trust ledger', stat:'', endpoint:null, action:'openSkrillLinksPanel' },
     { key:'coordination', name:'Coordination Engine', desc:'System health, AI command queue and stability checks', stat:'', endpoint:null, action:'openCoordinationPanel' },
     { key:'clearing', name:'Clearing Engine', desc:'Bilateral and net settlement on Hyperledger Besu', stat:'', endpoint:null, action:'openClearingPanel' },
     { key:'redemption-gateway', name:'Redemption Gateway', desc:'Bridge DLB-PTCUSD to external clearing/stablecoin rails', stat:'', endpoint:null, action:'openRedemptionGatewayPanel' },
@@ -346,7 +347,7 @@
     renderModules();
     renderFlow();
     try {
-      const [sof, accts, wallets, bond, crm, p2p, ptc, consensus, xchain, paired, trustMarket, ramps, intents, externalWallets, externalSwaps, computing, holdings, capitalFunds, virtualAccounts, wireOrigination, electronicMoney, openBanking, trustDeposits, fineractPayouts] = await Promise.all([
+      const [sof, accts, wallets, bond, crm, p2p, ptc, consensus, xchain, paired, trustMarket, ramps, intents, externalWallets, externalSwaps, computing, holdings, capitalFunds, virtualAccounts, wireOrigination, electronicMoney, openBanking, trustDeposits, fineractPayouts, skrillLinks] = await Promise.all([
         api('/api/finops/source-of-funds').catch(()=>null),
         api('/api/accounting/accounts').catch(()=>null),
         api('/api/finops/wallets').catch(()=>null),
@@ -371,6 +372,7 @@
         api('/api/finops/open-banking/payments').catch(()=>null),
         api('/api/finops/trust-deposits').catch(()=>null),
         api('/api/fineract/payouts').catch(()=>null),
+        api('/api/finops/skrill-links').catch(()=>null),
       ]);
       const balances = normalizeBalances(sof && sof.data);
       if (balances.length) {
@@ -450,6 +452,10 @@
       if (fineractPayouts && fineractPayouts.data && Array.isArray(fineractPayouts.data)) {
         const pending = fineractPayouts.data.filter(p => ['pending','fineract_withdrawn'].includes(p.status)).length;
         setStat('fineract-payouts', String(pending));
+      }
+      if (skrillLinks && skrillLinks.data && Array.isArray(skrillLinks.data)) {
+        const pending = skrillLinks.data.filter(p => ['pending','manual','needs_config'].includes(p.status)).length;
+        setStat('skrill-links', String(pending));
       }
       renderModules();
     } catch(e) { console.error('loadAll error', e); }
@@ -3534,6 +3540,54 @@
       openFineractPayoutsPanel();
       loadAll();
     } catch(e) { show(e.message, true, 'fpb-create-status'); }
+    status.classList.remove('hidden');
+  }
+
+  // ─── Skrill Links Panel ─────────────────────────────────────────────────────
+  async function openSkrillLinksPanel() {
+    const panel = el('module-panel');
+    const body = el('panel-body');
+    el('panel-title').textContent = 'Skrill Links';
+    panel.classList.add('active');
+    body.innerHTML = '<div class="muted">Loading…</div>';
+    try {
+      const links = await api('/api/finops/skrill-links').catch(()=>null);
+      body.innerHTML = renderSkrillLinksPanel(links && links.data);
+    } catch(e) { body.innerHTML = '<div class="status err">' + e.message + '</div>'; }
+  }
+
+  function renderSkrillLinksPanel(items) {
+    const rows = (items || []).map(i => `<tr><td>${i.payment_id}</td><td>${i.recipient || ''}</td><td>${i.recipient_email || ''}</td><td>$${Number(i.amount_cents || 0)/100} ${i.currency || ''}</td><td>${i.status}</td><td>${i.error_message || ''}</td></tr>`).join('') || '<tr><td colspan="6" class="muted">No Skrill links yet</td></tr>';
+    return '<div style="display:flex; flex-direction:column; gap:12px;">' +
+      '<div class="card" style="background:#0b1220;">' +
+        '<h3>Pay a Skrill.me/rq Link</h3>' +
+        '<p class="muted">Paste a Skrill request link. The system will parse amount/currency, store the payable request, and attempt to settle it via the Skrill send-money API when credentials are configured.</p>' +
+        '<div class="token-bar"><input id="skrill-link" style="flex:1" placeholder="https://skrill.me/rq/..." /></div>' +
+        '<div class="token-bar"><input id="skrill-recipient-email" style="flex:1" placeholder="Recipient email (required for API payout)" /></div>' +
+        '<button class="btn" onclick="createSkrillLinkPayment()">Create &amp; Pay</button>' +
+        '<div id="skrill-create-status" class="status hidden"></div>' +
+      '</div>' +
+      '<div class="card" style="background:#0b1220;">' +
+        '<h3>Recent Skrill Link Payments</h3>' +
+        '<table class="table"><thead><tr><th>Payment ID</th><th>Recipient</th><th>Email</th><th>Amount</th><th>Status</th><th>Error</th></tr></thead><tbody>' + rows + '</tbody></table>' +
+      '</div>' +
+    '</div>';
+  }
+
+  async function createSkrillLinkPayment() {
+    const status = el('skrill-create-status');
+    status.classList.add('hidden');
+    try {
+      const body = {
+        linkUrl: el('skrill-link').value.trim(),
+        recipientEmail: el('skrill-recipient-email').value.trim() || undefined,
+      };
+      const res = await api('/api/finops/skrill-links', { method: 'POST', body: JSON.stringify(body) });
+      const payRes = await api('/api/finops/skrill-links/' + res.data.payment_id + '/pay', { method: 'POST', body: JSON.stringify({}) });
+      show('Skrill link payment created: ' + res.data.payment_id + ' — status: ' + payRes.data.status, false, 'skrill-create-status');
+      openSkrillLinksPanel();
+      loadAll();
+    } catch(e) { show(e.message, true, 'skrill-create-status'); }
     status.classList.remove('hidden');
   }
 

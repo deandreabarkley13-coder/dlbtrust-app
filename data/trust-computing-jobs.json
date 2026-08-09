@@ -1,0 +1,24 @@
+[
+  {
+    "id": "COMP-1786233914948-OJ2KK7",
+    "functionId": "interest_accrual",
+    "functionName": "Interest Accrual",
+    "params": {
+      "principal": 100000,
+      "rate": 5.5,
+      "days": 90
+    },
+    "status": "completed",
+    "result": {
+      "principal": 100000,
+      "rate": 5.5,
+      "days": 90,
+      "interest": 1356.16,
+      "total": 101356.16
+    },
+    "error": null,
+    "createdBy": "operator",
+    "createdAt": "2026-08-09T00:05:14.948Z",
+    "completedAt": "2026-08-09T00:05:14.949Z"
+  }
+]
