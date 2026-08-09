@@ -29,6 +29,7 @@ const { JournalEntryEngine } = require('../integrations/dapp/journalEntryEngine'
 const { DlbCanonicalSwapEngine } = require('../integrations/dapp/dlbCanonicalSwapEngine');
 const { TrustComputingEngine } = require('../integrations/dapp/trustComputingEngine');
 const { HoldingManagementEngine } = require('../integrations/dapp/holdingManagementEngine');
+const { CapitalFundEngine } = require('../integrations/dapp/capitalFundEngine');
 
 const router = express.Router();
 const operatorAuth = requireAuth({ role: 'operator' });
@@ -987,6 +988,38 @@ router.post('/holdings/:id/cancel', operatorAuth, writeRateLimiter(), async (req
 
 router.post('/holdings/:id/sync', operatorAuth, async (req, res) => {
   try { res.json({ success: true, data: await HoldingManagementEngine.syncHoldingStatus(req.params.id) }); } catch (err) { sendError(res, err); }
+});
+
+// ═════════════════════════════════════════════════════════════════════════════
+// Capital Fund Engine — fiat-to-stablecoin conversion and pool allocation
+// ═════════════════════════════════════════════════════════════════════════════
+
+router.get('/capital-fund/accounts', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await CapitalFundEngine.listSourceAccounts() }); } catch (err) { sendError(res, err); }
+});
+
+router.get('/capital-fund', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: CapitalFundEngine.listFunds(req.query) }); } catch (err) { sendError(res, err); }
+});
+
+router.get('/capital-fund/:id', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await CapitalFundEngine.getFundDetail(req.params.id) }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/capital-fund', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try { res.status(201).json({ success: true, data: await CapitalFundEngine.createFund({ ...req.body, createdBy: getUserEmail(req) }) }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/capital-fund/:id/approve', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try { res.json({ success: true, data: await CapitalFundEngine.approveFund({ fundId: req.params.id, ...req.body }) }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/capital-fund/:id/execute', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try { res.json({ success: true, data: await CapitalFundEngine.executeFund(req.params.id) }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/capital-fund/:id/sync', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await CapitalFundEngine.syncFund(req.params.id) }); } catch (err) { sendError(res, err); }
 });
 
 module.exports = router;

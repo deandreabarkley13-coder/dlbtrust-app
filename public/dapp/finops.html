@@ -173,6 +173,7 @@
     { key:'canonical-swap', name:'Canonical USDS Swap', desc:'Audited P2P contract: DLBUSD/DLB-PTCUSD → USDS/USDC/DAI', stat:'', endpoint:null, action:'openDlbCanonicalSwapPanel' },
     { key:'computing', name:'Computing Engine', desc:'Off-chain valuation, yield, accrual and canonical quote jobs', stat:'', endpoint:null, action:'openTrustComputingPanel' },
     { key:'holdings', name:'Holding Management', desc:'Hold ledger funds and canonize to spendable stablecoins', stat:'', endpoint:null, action:'openHoldingManagementPanel' },
+    { key:'capital-fund', name:'Capital Fund', desc:'Fiat-to-stablecoin capital calls and pool allocation', stat:'', endpoint:null, action:'openCapitalFundPanel' },
     { key:'coordination', name:'Coordination Engine', desc:'System health, AI command queue and stability checks', stat:'', endpoint:null, action:'openCoordinationPanel' },
     { key:'clearing', name:'Clearing Engine', desc:'Bilateral and net settlement on Hyperledger Besu', stat:'', endpoint:null, action:'openClearingPanel' },
     { key:'redemption-gateway', name:'Redemption Gateway', desc:'Bridge DLB-PTCUSD to external clearing/stablecoin rails', stat:'', endpoint:null, action:'openRedemptionGatewayPanel' },
@@ -339,7 +340,7 @@
     renderModules();
     renderFlow();
     try {
-      const [sof, accts, wallets, bond, crm, p2p, ptc, consensus, xchain, paired, trustMarket, ramps, intents, externalWallets, externalSwaps, computing, holdings] = await Promise.all([
+      const [sof, accts, wallets, bond, crm, p2p, ptc, consensus, xchain, paired, trustMarket, ramps, intents, externalWallets, externalSwaps, computing, holdings, capitalFunds] = await Promise.all([
         api('/api/finops/source-of-funds').catch(()=>null),
         api('/api/accounting/accounts').catch(()=>null),
         api('/api/finops/wallets').catch(()=>null),
@@ -357,6 +358,7 @@
         api('/api/finops/external-wallets/swaps').catch(()=>null),
         api('/api/finops/computing/jobs').catch(()=>null),
         api('/api/finops/holdings').catch(()=>null),
+        api('/api/finops/capital-fund').catch(()=>null),
       ]);
       const balances = normalizeBalances(sof && sof.data);
       if (balances.length) {
@@ -409,6 +411,10 @@
       if (holdings && holdings.data && Array.isArray(holdings.data)) {
         const ready = holdings.data.filter(h => h.status === 'canonical_ready').length;
         setStat('holdings', String(ready) + '/' + String(holdings.data.length));
+      }
+      if (capitalFunds && capitalFunds.data && Array.isArray(capitalFunds.data)) {
+        const active = capitalFunds.data.filter(f => f.status === 'pending_approval' || f.status === 'awaiting_buyer' || f.status === 'awaiting_onramp').length;
+        setStat('capital-fund', String(active));
       }
       renderModules();
     } catch(e) { console.error('loadAll error', e); }
@@ -2745,6 +2751,103 @@
     try {
       await api('/api/finops/holdings/' + id + '/cancel', { method: 'POST', body: '{}' });
       await loadHoldingsTable();
+      loadAll();
+    } catch(e) { alert(e.message); }
+  }
+
+  // ─── Capital Fund Engine Panel ───────────────────────────────────────────────
+
+  async function openCapitalFundPanel() {
+    const panel = el('module-panel');
+    const body = el('panel-body');
+    el('panel-title').textContent = 'Capital Fund';
+    panel.classList.add('active');
+    body.innerHTML = '<div class="muted">Loading…</div>';
+    try {
+      const [funds, accounts] = await Promise.all([
+        api('/api/finops/capital-fund').catch(()=>null),
+        api('/api/finops/capital-fund/accounts').catch(()=>null),
+      ]);
+      body.innerHTML = renderCapitalFundPanel(funds && funds.data, accounts && accounts.data);
+      await loadCapitalFundTable();
+    } catch(e) { body.innerHTML = '<div class="status err">' + e.message + '</div>'; }
+  }
+
+  function renderCapitalFundPanel(funds, accounts) {
+    const accountOptions = (accounts || []).map(a => `<option value="${a.account_code}">${a.account_code} — ${a.account_name} ($${Number(a.balance || 0).toLocaleString()})</option>`).join('');
+    return '<div style="display:flex; flex-direction:column; gap:12px;">' +
+      '<div class="card" style="background:#0b1220;">' +
+        '<h3>Create Capital Fund</h3>' +
+        '<p class="muted">Stage ledger funds for fiat-to-stablecoin conversion or pool allocation.</p>' +
+        '<div class="token-bar"><input id="cf-name" placeholder="Fund name" style="flex:2;" /></div>' +
+        '<div class="token-bar"><select id="cf-source"><option value="">Select source account…</option>' + accountOptions + '</select></div>' +
+        '<div class="token-bar"><input id="cf-amount" type="number" step="0.01" placeholder="Amount" /></div>' +
+        '<div class="token-bar"><select id="cf-asset"><option value="USDC">USDC</option><option value="USDS">USDS</option><option value="DAI">DAI</option></select></div>' +
+        '<div class="token-bar"><select id="cf-strategy"><option value="p2p_sell">P2P Sell DLBUSD for stablecoin</option><option value="onramp">Fiat On-Ramp to stablecoin</option><option value="seed_pool">Seed DLBUSD/stablecoin pool</option></select></div>' +
+        '<div class="token-bar"><select id="cf-allocation"><option value="reserve">Hold as reserve</option><option value="seed_pool">Seed pool after on-ramp</option><option value="p2p_buy">P2P buy DLBUSD after on-ramp</option></select></div>' +
+        '<button class="btn" onclick="createCapitalFund()">Create Fund</button>' +
+        '<div id="cf-create-status" class="status hidden"></div>' +
+      '</div>' +
+      '<div class="card" style="background:#0b1220;">' +
+        '<h3>Capital Funds</h3>' +
+        '<div id="cf-funds">Loading…</div>' +
+      '</div>' +
+    '</div>';
+  }
+
+  async function createCapitalFund() {
+    const status = el('cf-create-status');
+    status.classList.add('hidden');
+    const name = el('cf-name').value.trim();
+    const sourceAccountId = el('cf-source').value;
+    const amount = el('cf-amount').value;
+    const targetAsset = el('cf-asset').value;
+    const strategy = el('cf-strategy').value;
+    const targetAllocation = el('cf-allocation').value;
+    if (!name || !sourceAccountId || !amount) { show('Fill all fields', true, 'cf-create-status'); return; }
+    try {
+      const res = await api('/api/finops/capital-fund', { method: 'POST', body: JSON.stringify({ name, sourceType: 'trust', sourceAccountId, amount, targetAsset, strategy, targetAllocation }) });
+      show('Fund created: ' + res.data.id, false, 'cf-create-status');
+      await loadCapitalFundTable();
+      loadAll();
+    } catch(e) { show(e.message, true, 'cf-create-status'); }
+  }
+
+  async function loadCapitalFundTable() {
+    const d = el('cf-funds');
+    if (!d) return;
+    try {
+      const res = await api('/api/finops/capital-fund');
+      const rows = (res.data || []).slice(0, 50);
+      if (!rows.length) { d.innerHTML = '<p class="muted">No capital funds yet.</p>'; return; }
+      d.innerHTML = '<table class="table"><thead><tr><th>Name</th><th>Amount</th><th>Target</th><th>Strategy</th><th>Status</th><th>Canonical</th><th></th></tr></thead><tbody>' +
+        rows.map(f => `<tr><td>${f.name}</td><td>$${Number(f.amount).toLocaleString()}</td><td>${f.targetAsset}</td><td>${f.strategy}</td><td>${f.status}</td><td class="muted">${f.canonicalAmount ? f.canonicalAmount + ' ' + f.targetAsset : '—'}</td><td>${f.status === 'pending_approval' || f.status === 'approved' ? `<button class="btn btn-sec" onclick="approveCapitalFund('${f.id}')">Approve</button>` : ''} ${f.status === 'awaiting_onramp' || f.status === 'awaiting_buyer' || f.status === 'awaiting_seller' ? `<button class="btn btn-sec" onclick="syncCapitalFund('${f.id}')">Sync</button>` : ''} <button class="btn btn-sec" onclick="executeCapitalFund('${f.id}')">Exec</button></td></tr>`).join('') +
+        '</tbody></table>';
+    } catch(e) { d.innerHTML = '<div class="status err">' + e.message + '</div>'; }
+  }
+
+  async function approveCapitalFund(id) {
+    const role = prompt('Approver role (maker/checker):', 'checker');
+    if (!role) return;
+    try {
+      await api('/api/finops/capital-fund/' + id + '/approve', { method: 'POST', body: JSON.stringify({ role, approverEmail: getEmail() }) });
+      await loadCapitalFundTable();
+      loadAll();
+    } catch(e) { alert(e.message); }
+  }
+
+  async function executeCapitalFund(id) {
+    try {
+      await api('/api/finops/capital-fund/' + id + '/execute', { method: 'POST', body: '{}' });
+      await loadCapitalFundTable();
+      loadAll();
+    } catch(e) { alert(e.message); }
+  }
+
+  async function syncCapitalFund(id) {
+    try {
+      await api('/api/finops/capital-fund/' + id + '/sync', { method: 'POST', body: '{}' });
+      await loadCapitalFundTable();
       loadAll();
     } catch(e) { alert(e.message); }
   }
