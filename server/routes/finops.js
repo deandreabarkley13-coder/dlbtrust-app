@@ -1399,6 +1399,10 @@ router.post('/lili/mcp/initialize', operatorAuth, writeRateLimiter(), async (req
   try { res.json({ success: true, data: await LiliMcpEngine.initialize() }); } catch (err) { sendError(res, err); }
 });
 
+router.post('/lili/mcp/tools', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await LiliMcpEngine.listTools() }); } catch (err) { sendError(res, err); }
+});
+
 router.post('/lili/mcp/tool', operatorAuth, writeRateLimiter(), async (req, res) => {
   try {
     const { tool, args = {}, businessUserId } = req.body;
