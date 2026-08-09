@@ -192,7 +192,8 @@ class HostToHostEngine {
 
   // ─── Payload builders ──────────────────────────────────────────────────────────
   static _buildPayload(partner, payment = {}) {
-    const amount = dollars(payment.amount_cents || payment.amountCents || 0);
+    const amountCents = Number(payment.amount_cents) || Number(payment.amountCents) || toCents(Number(payment.amount) || 0) || 0;
+    const amount = dollars(amountCents);
     const ctx = {
       paymentId: payment.paymentId || payment.transmissionId || id('H2H-PMT'),
       amount,
