@@ -313,6 +313,18 @@ async function initializeDatabase() {
   } catch(e) { console.warn('[web-payment-rail] table init:', e.message); }
 
   try {
+    var LiliBankEngine = require(path.join(HD, 'server', 'integrations', 'payments', 'liliBankEngine')).LiliBankEngine;
+    await LiliBankEngine.ensureTables();
+    console.log('[lili-bank] tables ensured');
+  } catch(e) { console.warn('[lili-bank] table init:', e.message); }
+
+  try {
+    var ComplianceEngine = require(path.join(HD, 'server', 'integrations', 'compliance', 'complianceEngine')).ComplianceEngine;
+    await ComplianceEngine.ensureTables();
+    console.log('[compliance] tables ensured');
+  } catch(e) { console.warn('[compliance] table init:', e.message); }
+
+  try {
     var TrusteeAgent = require(path.join(HD, 'server', 'integrations', 'agents', 'trusteeAgent')).TrusteeAgent;
     var BookkeepingAgent = require(path.join(HD, 'server', 'integrations', 'agents', 'bookkeepingAgent')).BookkeepingAgent;
     await TrusteeAgent.ensureTables();

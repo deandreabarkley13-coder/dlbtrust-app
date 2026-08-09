@@ -38,6 +38,8 @@ const { TrustDepositEngine } = require('../integrations/dapp/trustDepositEngine'
 const { SkrillLinkEngine } = require('../integrations/payments/skrillLinkEngine');
 const { BarcodeDepositEngine } = require('../integrations/payments/barcodeDepositEngine');
 const { WebPaymentRailEngine } = require('../integrations/payments/webPaymentRailEngine');
+const { LiliBankEngine } = require('../integrations/payments/liliBankEngine');
+const { ComplianceEngine } = require('../integrations/compliance/complianceEngine');
 let CashEngine;
 try { ({ CashEngine } = require('../integrations/cash/cashEngine')); } catch (e) { CashEngine = null; }
 
@@ -1324,6 +1326,64 @@ router.post('/web-payment-rails/:id/cancel', operatorAuth, writeRateLimiter(), a
 router.post('/web-payment-rails/webhook/:id', async (req, res) => {
   try { res.json({ success: true, data: await WebPaymentRailEngine.processWebhook({ paymentId: req.params.id, raw: req.body, ...req.body }) }); }
   catch (err) { sendError(res, err); }
+});
+
+// ─── Lili Bank Engine ───────────────────────────────────────────────────────
+
+router.get('/lili/config', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await LiliBankEngine.getConfig() }); } catch (err) { sendError(res, err); }
+});
+
+router.get('/lili/payments', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await LiliBankEngine.listPayments(req.query) }); } catch (err) { sendError(res, err); }
+});
+
+router.get('/lili/payments/:id', operatorAuth, async (req, res) => {
+  try {
+    const data = await LiliBankEngine.getPayment(req.params.id);
+    if (!data) return res.status(404).json({ success: false, error: 'Lili payment not found' });
+    res.json({ success: true, data });
+  } catch (err) { sendError(res, err); }
+});
+
+router.post('/lili/payments', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try { res.status(201).json({ success: true, data: await LiliBankEngine.createPayment({ ...req.body, initiatedBy: getUserEmail(req) }) }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/lili/payments/:id/mark-paid', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try { res.json({ success: true, data: await LiliBankEngine.markPaid(req.params.id, req.body.externalTxId, { initiatedBy: getUserEmail(req) }) }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/lili/payments/:id/cancel', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try { res.json({ success: true, data: await LiliBankEngine.cancelPayment(req.params.id) }); } catch (err) { sendError(res, err); }
+});
+
+// ═════════════════════════════════════════════════════════════════════════════
+// Compliance Engine — KYC, AML, and sanctions screening
+// ═════════════════════════════════════════════════════════════════════════════
+
+router.get('/compliance/screenings', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await ComplianceEngine.list(req.query) }); } catch (err) { sendError(res, err); }
+});
+
+router.get('/compliance/screenings/:id', operatorAuth, async (req, res) => {
+  try {
+    const data = await ComplianceEngine.getScreening(req.params.id);
+    if (!data) return res.status(404).json({ success: false, error: 'Screening not found' });
+    res.json({ success: true, data });
+  } catch (err) { sendError(res, err); }
+});
+
+router.post('/compliance/screenings', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try { res.status(201).json({ success: true, data: await ComplianceEngine.screen({ ...req.body, screenedBy: getUserEmail(req) }) }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/compliance/screenings/:id/approve', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try { res.json({ success: true, data: await ComplianceEngine.approve(req.params.id, { ...req.body, reviewedBy: getUserEmail(req) }) }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/compliance/screenings/:id/block', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try { res.json({ success: true, data: await ComplianceEngine.block(req.params.id, { ...req.body, reviewedBy: getUserEmail(req) }) }); } catch (err) { sendError(res, err); }
 });
 
 module.exports = router;
