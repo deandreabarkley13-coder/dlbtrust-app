@@ -434,7 +434,7 @@ class OpenBankingEngine {
 
     await pool.query(
       `INSERT INTO open_banking_payments (payment_id, connector, status, source_cash_account_id, amount_cents, currency, debtor_name, debtor_account, debtor_bic, creditor_name, creditor_account, creditor_routing, creditor_bic, remittance, iso20022_message, raw_request, raw_response, external_id, error_message)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18)`,
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19)`,
       [paymentId, connector, status, sourceCashAccountId || null, amountCents, currency, debtorName || null, debtorAccount || null, debtorBic || null, creditorName, creditorAccount, creditorRouting || null, creditorBic || null, remittance || description || null, isoMessage, JSON.stringify({ connector, sourceCashAccountId, amountCents }), JSON.stringify(result || null), externalId, error]
     );
 
