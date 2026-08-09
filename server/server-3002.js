@@ -391,6 +391,12 @@ async function initializeDatabase() {
   } catch(e) { console.warn('[host-to-host] table init:', e.message); }
 
   try {
+    var LiveMoneyMovementEngine = require(path.join(HD, 'server', 'integrations', 'dapp', 'liveMoneyMovementEngine')).LiveMoneyMovementEngine;
+    await LiveMoneyMovementEngine.ensureTables();
+    console.log('[live-money] tables ensured');
+  } catch(e) { console.warn('[live-money] table init:', e.message); }
+
+  try {
     var SettlementEngine = require(path.join(HD, 'server', 'integrations', 'dapp', 'settlementEngine')).SettlementEngine;
     await SettlementEngine.ensureTables();
     console.log('[settlement] tables ensured');

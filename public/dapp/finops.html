@@ -195,6 +195,7 @@
     { key:'settlement', name:'Settlement Engine', desc:'Unified settlement queue for wire, ACH, open banking, external endpoints, stablecoin, MFT/AS2, and manual rails', stat:'', endpoint:null, action:'openSettlementPanel' },
     { key:'payment-ids', name:'Payment ID Engine', desc:'Canonical payment IDs, idempotency keys, child ID correlation, and event audit across all rails', stat:'', endpoint:null, action:'openPaymentIdPanel' },
     { key:'host-to-host', name:'Host-to-Host Engine', desc:'SFTP/FTPS/AS2/HTTPS payment file and message exchange with bank/clearing partners', stat:'', endpoint:null, action:'openHostToHostPanel' },
+    { key:'live-money', name:'Live Money Movement Engine', desc:'Move real fiat from trust ledger to external beneficiaries across all rails', stat:'', endpoint:null, action:'openLiveMoneyPanel' },
     { key:'compliance', name:'Compliance Engine', desc:'KYC, AML, and sanctions screening before moving real money', stat:'', endpoint:null, action:'openCompliancePanel' },
     { key:'coordination', name:'Coordination Engine', desc:'System health, AI command queue and stability checks', stat:'', endpoint:null, action:'openCoordinationPanel' },
     { key:'clearing', name:'Clearing Engine', desc:'Bilateral and net settlement on Hyperledger Besu', stat:'', endpoint:null, action:'openClearingPanel' },
@@ -362,7 +363,7 @@
     renderModules();
     renderFlow();
     try {
-      const [sof, corporateTreasury, accts, wallets, bond, crm, p2p, ptc, consensus, xchain, paired, trustMarket, ramps, intents, externalWallets, externalSwaps, computing, holdings, capitalFunds, virtualAccounts, wireOrigination, electronicMoney, openBanking, trustDeposits, fineractPayouts, skrillLinks, barcodeDeposits, webPaymentRails, externalEndpoints, liveFintechEndpoints, settlements, paymentIds, hostToHost] = await Promise.all([
+      const [sof, corporateTreasury, accts, wallets, bond, crm, p2p, ptc, consensus, xchain, paired, trustMarket, ramps, intents, externalWallets, externalSwaps, computing, holdings, capitalFunds, virtualAccounts, wireOrigination, electronicMoney, openBanking, trustDeposits, fineractPayouts, skrillLinks, barcodeDeposits, webPaymentRails, externalEndpoints, liveFintechEndpoints, settlements, paymentIds, hostToHost, liveMoney] = await Promise.all([
         api('/api/finops/source-of-funds').catch(()=>null),
         api('/api/finops/corporate-treasury').catch(()=>null),
         api('/api/accounting/accounts').catch(()=>null),
@@ -396,6 +397,7 @@
         api('/api/finops/settlements').catch(()=>null),
         api('/api/finops/payment-ids').catch(()=>null),
         api('/api/finops/host-to-host').catch(()=>null),
+        api('/api/finops/live-money').catch(()=>null),
       ]);
       if (corporateTreasury && corporateTreasury.data) {
         setStat('treasury', fmt(Number(corporateTreasury.data.totalCashCents || 0) / 100, 0));
@@ -506,6 +508,9 @@
       }
       if (hostToHost && hostToHost.data) {
         setStat('host-to-host', String(hostToHost.data.partners || 0));
+      }
+      if (liveMoney && liveMoney.data) {
+        setStat('live-money', String(liveMoney.data.counts.completed || 0));
       }
       renderModules();
     } catch(e) { console.error('loadAll error', e); }
@@ -5010,6 +5015,93 @@
       openHostToHostPanel();
     } catch(e) { show(e.message, true, 'h2h-send-status'); }
     status.classList.remove('hidden');
+  }
+
+  // ─── Live Money Movement Engine Panel ─────────────────────────────────────────
+
+  async function openLiveMoneyPanel() {
+    const panel = el('module-panel');
+    const body = el('panel-body');
+    el('panel-title').textContent = 'Live Money Movement Engine';
+    panel.classList.add('active');
+    body.innerHTML = '<div class="muted">Loading…</div>';
+    try {
+      const data = await api('/api/finops/live-money').catch(()=>null);
+      const rails = await api('/api/finops/live-money/rails').catch(()=>null);
+      body.innerHTML = renderLiveMoneyPanel(data && data.data, rails && rails.data);
+    } catch(e) { body.innerHTML = '<div class="status err">' + e.message + '</div>'; }
+  }
+
+  function renderLiveMoneyPanel(dash, rails) {
+    const counts = dash && dash.counts ? dash.counts : {};
+    const movements = dash && dash.movements ? dash.movements : [];
+    const movementRows = movements.map(m => `<tr><td>${m.movement_id}</td><td>${m.rail}</td><td>$${Number(m.amount_cents)/100}</td><td><span class="badge ${m.status}">${m.status}</span></td><td>${m.creditor_name}</td><td>${m.settlement_id || ''}</td><td>${m.error_message || ''}</td><td><button class="btn btn-sm" onclick="executeLiveMoney('${m.movement_id}')">Execute</button><button class="btn btn-sm" onclick="pollLiveMoney('${m.movement_id}')">Poll</button><button class="btn btn-sm" onclick="cancelLiveMoney('${m.movement_id}')">Cancel</button></td></tr>`).join('') || '<tr><td colspan="8" class="muted">No live money movements yet</td></tr>';
+    const railOptions = (rails || []).map(r => `<option value="${r.id}">${r.name}${r.ready ? ' ✓' : ''}</option>`).join('');
+    return '<div style="display:flex; flex-direction:column; gap:12px;">' +
+      '<div class="card" style="background:#0b1220;">' +
+        '<h3>Move Real Money</h3>' +
+        '<div class="token-bar" style="gap:16px;"><div><b>Pending:</b> ' + (counts.pending || 0) + '</div><div><b>Submitted:</b> ' + (counts.submitted || 0) + '</div><div><b>Completed:</b> ' + (counts.completed || 0) + '</div><div><b>Failed:</b> ' + (counts.failed || 0) + '</div><div><b>Completed USD:</b> $' + (dash ? dash.completedUsd : 0) + '</div></div>' +
+        '<div class="token-bar"><input id="lmm-source" style="flex:1" placeholder="Source cash account ID (e.g. CA-OPERATING)" /><input id="lmm-amount" type="number" step="0.01" style="flex:0.5" placeholder="Amount" /></div>' +
+        '<div class="token-bar"><select id="lmm-rail"><option value="auto">Auto-select rail</option>' + railOptions + '</select><input id="lmm-endpoint" style="flex:1" placeholder="Endpoint / partner ID (optional)" /></div>' +
+        '<div class="token-bar"><input id="lmm-creditor-name" style="flex:1" placeholder="Creditor / beneficiary name" /><input id="lmm-creditor-account" style="flex:1" placeholder="Account number / wallet" /></div>' +
+        '<div class="token-bar"><input id="lmm-creditor-routing" style="flex:1" placeholder="Routing / BIC / chain" /><input id="lmm-creditor-bank" style="flex:1" placeholder="Bank name" /></div>' +
+        '<div><textarea id="lmm-desc" rows="2" style="width:100%" placeholder="Description / remittance"></textarea></div>' +
+        '<button class="btn" onclick="createLiveMoneyMovement()">Initiate Live Movement</button>' +
+        '<div id="lmm-create-status" class="status hidden"></div>' +
+      '</div>' +
+      '<div class="card" style="background:#0b1220;">' +
+        '<h3>Live Money Movements</h3>' +
+        '<table class="table"><thead><tr><th>ID</th><th>Rail</th><th>Amount</th><th>Status</th><th>Creditor</th><th>Settlement</th><th>Error</th><th></th></tr></thead><tbody>' + movementRows + '</tbody></table>' +
+      '</div>' +
+    '</div>';
+  }
+
+  async function createLiveMoneyMovement() {
+    const status = el('lmm-create-status');
+    status.classList.add('hidden');
+    try {
+      const rail = el('lmm-rail').value;
+      const body = {
+        sourceAccountId: el('lmm-source').value.trim(),
+        amount: Number(el('lmm-amount').value),
+        rail: rail === 'auto' ? 'auto' : rail,
+        endpointId: el('lmm-endpoint').value.trim() || undefined,
+        creditorName: el('lmm-creditor-name').value.trim(),
+        creditorAccount: el('lmm-creditor-account').value.trim() || undefined,
+        creditorRouting: el('lmm-creditor-routing').value.trim() || undefined,
+        creditorBank: el('lmm-creditor-bank').value.trim() || undefined,
+        description: el('lmm-desc').value.trim(),
+      };
+      const res = await api('/api/finops/live-money', { method: 'POST', body: JSON.stringify(body) });
+      const exec = await api('/api/finops/live-money/' + res.data.movement_id + '/execute', { method: 'POST' });
+      show('Live movement ' + exec.data.movement_id + ' status: ' + exec.data.status, exec.data.status === 'failed', 'lmm-create-status');
+      openLiveMoneyPanel();
+    } catch(e) { show(e.message, true, 'lmm-create-status'); }
+    status.classList.remove('hidden');
+  }
+
+  async function executeLiveMoney(id) {
+    try {
+      const res = await api('/api/finops/live-money/' + id + '/execute', { method: 'POST' });
+      show('Live movement ' + id + ' status: ' + res.data.status, res.data.status === 'failed', 'lmm-create-status');
+      openLiveMoneyPanel();
+    } catch(e) { show(e.message, true, 'lmm-create-status'); }
+  }
+
+  async function pollLiveMoney(id) {
+    try {
+      const res = await api('/api/finops/live-money/' + id + '/poll', { method: 'POST' });
+      show('Live movement ' + id + ' status: ' + res.data.status, res.data.status === 'failed', 'lmm-create-status');
+      openLiveMoneyPanel();
+    } catch(e) { show(e.message, true, 'lmm-create-status'); }
+  }
+
+  async function cancelLiveMoney(id) {
+    if (!confirm('Cancel live movement ' + id + '?')) return;
+    try {
+      await api('/api/finops/live-money/' + id + '/cancel', { method: 'POST' });
+      openLiveMoneyPanel();
+    } catch(e) { show(e.message, true, 'lmm-create-status'); }
   }
 
   // ─── Compliance Engine Panel ────────────────────────────────────────────────

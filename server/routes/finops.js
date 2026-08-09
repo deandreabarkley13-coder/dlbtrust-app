@@ -53,6 +53,7 @@ const { CorporateTreasuryEngine } = require('../integrations/finops/corporateTre
 const { SettlementEngine } = require('../integrations/dapp/settlementEngine');
 const { PaymentIdEngine } = require('../integrations/dapp/paymentIdEngine');
 const { HostToHostEngine } = require('../integrations/dapp/hostToHostEngine');
+const { LiveMoneyMovementEngine } = require('../integrations/dapp/liveMoneyMovementEngine');
 let CashEngine;
 try { ({ CashEngine } = require('../integrations/cash/cashEngine')); } catch (e) { CashEngine = null; }
 
@@ -2047,6 +2048,39 @@ router.get('/host-to-host/transmissions', operatorAuth, async (req, res) => {
 router.get('/host-to-host/transmissions/:id', operatorAuth, async (req, res) => {
   try {
     const data = await HostToHostEngine.getTransmission(req.params.id);
+    if (!data) return res.status(404).json({ success: false, error: 'Not found' });
+    res.json({ success: true, data });
+  } catch (err) { sendError(res, err); }
+});
+
+// Live Money Movement Engine routes
+router.get('/live-money', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await LiveMoneyMovementEngine.getDashboard() }); } catch (err) { sendError(res, err); }
+});
+
+router.get('/live-money/rails', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await LiveMoneyMovementEngine.getAvailableRails() }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/live-money', operatorAuth, async (req, res) => {
+  try { res.status(201).json({ success: true, data: await LiveMoneyMovementEngine.initiateMovement(req.body) }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/live-money/:id/execute', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await LiveMoneyMovementEngine.executeMovement(req.params.id) }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/live-money/:id/poll', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await LiveMoneyMovementEngine.pollMovement(req.params.id) }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/live-money/:id/cancel', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await LiveMoneyMovementEngine.cancelMovement(req.params.id) }); } catch (err) { sendError(res, err); }
+});
+
+router.get('/live-money/:id', operatorAuth, async (req, res) => {
+  try {
+    const data = await LiveMoneyMovementEngine.getMovement(req.params.id);
     if (!data) return res.status(404).json({ success: false, error: 'Not found' });
     res.json({ success: true, data });
   } catch (err) { sendError(res, err); }
