@@ -277,6 +277,24 @@ async function initializeDatabase() {
   } catch(e) { console.warn('[electronic-money] table init:', e.message); }
 
   try {
+    var OpenBankingEngine = require(path.join(HD, 'server', 'integrations', 'dapp', 'openBankingEngine')).OpenBankingEngine;
+    await OpenBankingEngine.ensureTables();
+    console.log('[open-banking] tables ensured');
+  } catch(e) { console.warn('[open-banking] table init:', e.message); }
+
+  try {
+    var TrustDepositEngine = require(path.join(HD, 'server', 'integrations', 'dapp', 'trustDepositEngine')).TrustDepositEngine;
+    await TrustDepositEngine.ensureTables();
+    console.log('[trust-deposit] tables ensured');
+  } catch(e) { console.warn('[trust-deposit] table init:', e.message); }
+
+  try {
+    var FineractPayoutBridge = require(path.join(HD, 'server', 'integrations', 'fineract', 'fineractPayoutBridge')).FineractPayoutBridge;
+    await FineractPayoutBridge.ensureTables();
+    console.log('[fineract-payout] tables ensured');
+  } catch(e) { console.warn('[fineract-payout] table init:', e.message); }
+
+  try {
     var TrusteeAgent = require(path.join(HD, 'server', 'integrations', 'agents', 'trusteeAgent')).TrusteeAgent;
     var BookkeepingAgent = require(path.join(HD, 'server', 'integrations', 'agents', 'bookkeepingAgent')).BookkeepingAgent;
     await TrusteeAgent.ensureTables();

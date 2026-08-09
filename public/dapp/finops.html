@@ -177,6 +177,9 @@
     { key:'virtual-accounts', name:'Virtual Accounts', desc:'Ledger-backed virtual accounts for frictionless fiat+on-chain transactions', stat:'', endpoint:null, action:'openVirtualAccountsPanel' },
     { key:'wire-origination', name:'Wire Origination', desc:'Fiat payout origination API: wire, ACH, check, crypto rails', stat:'', endpoint:null, action:'openWireOriginationPanel' },
     { key:'electronic-money', name:'Electronic Money', desc:'Stored-value USD ledger for instant P2P transfers', stat:'', endpoint:null, action:'openElectronicMoneyPanel' },
+    { key:'open-banking', name:'Open Banking', desc:'ISO 20022 + bank connectors (Column, Increase, Plaid, REST) for direct payouts', stat:'', endpoint:null, action:'openOpenBankingPanel' },
+    { key:'trust-deposits', name:'Trust Deposits', desc:'Script deposits to bank, e-money, or wallet destinations', stat:'', endpoint:null, action:'openTrustDepositsPanel' },
+    { key:'fineract-payouts', name:'Fineract/Mifos Payouts', desc:'Withdraw from Fineract/Mifos savings and route externally via Open Banking or Wire', stat:'', endpoint:null, action:'openFineractPayoutsPanel' },
     { key:'coordination', name:'Coordination Engine', desc:'System health, AI command queue and stability checks', stat:'', endpoint:null, action:'openCoordinationPanel' },
     { key:'clearing', name:'Clearing Engine', desc:'Bilateral and net settlement on Hyperledger Besu', stat:'', endpoint:null, action:'openClearingPanel' },
     { key:'redemption-gateway', name:'Redemption Gateway', desc:'Bridge DLB-PTCUSD to external clearing/stablecoin rails', stat:'', endpoint:null, action:'openRedemptionGatewayPanel' },
@@ -343,7 +346,7 @@
     renderModules();
     renderFlow();
     try {
-      const [sof, accts, wallets, bond, crm, p2p, ptc, consensus, xchain, paired, trustMarket, ramps, intents, externalWallets, externalSwaps, computing, holdings, capitalFunds, virtualAccounts, wireOrigination, electronicMoney] = await Promise.all([
+      const [sof, accts, wallets, bond, crm, p2p, ptc, consensus, xchain, paired, trustMarket, ramps, intents, externalWallets, externalSwaps, computing, holdings, capitalFunds, virtualAccounts, wireOrigination, electronicMoney, openBanking, trustDeposits, fineractPayouts] = await Promise.all([
         api('/api/finops/source-of-funds').catch(()=>null),
         api('/api/accounting/accounts').catch(()=>null),
         api('/api/finops/wallets').catch(()=>null),
@@ -365,6 +368,9 @@
         api('/api/finops/virtual-accounts').catch(()=>null),
         api('/api/finops/wire-origination').catch(()=>null),
         api('/api/finops/electronic-money/summary').catch(()=>null),
+        api('/api/finops/open-banking/payments').catch(()=>null),
+        api('/api/finops/trust-deposits').catch(()=>null),
+        api('/api/fineract/payouts').catch(()=>null),
       ]);
       const balances = normalizeBalances(sof && sof.data);
       if (balances.length) {
@@ -432,6 +438,18 @@
       }
       if (electronicMoney && electronicMoney.data) {
         setStat('electronic-money', fmt(Number(electronicMoney.data.totalBalanceDollars || 0), 0));
+      }
+      if (openBanking && openBanking.data && Array.isArray(openBanking.data)) {
+        const pending = openBanking.data.filter(p => ['pending','originated'].includes(p.status)).length;
+        setStat('open-banking', String(pending));
+      }
+      if (trustDeposits && trustDeposits.data && Array.isArray(trustDeposits.data)) {
+        const pending = trustDeposits.data.filter(d => ['pending','approved'].includes(d.status)).length;
+        setStat('trust-deposits', String(pending));
+      }
+      if (fineractPayouts && fineractPayouts.data && Array.isArray(fineractPayouts.data)) {
+        const pending = fineractPayouts.data.filter(p => ['pending','fineract_withdrawn'].includes(p.status)).length;
+        setStat('fineract-payouts', String(pending));
       }
       renderModules();
     } catch(e) { console.error('loadAll error', e); }
@@ -3299,6 +3317,224 @@
       const rows = res.data || [];
       alert('Transactions for ' + accountId + ':\n' + rows.map(t => `${t.tx_type} $${t.amount_cents/100} ${t.status}`).join('\n'));
     } catch(e) { alert(e.message); }
+  }
+
+  // ─── Open Banking Engine Panel ───────────────────────────────────────────────
+  async function openOpenBankingPanel() {
+    const panel = el('module-panel');
+    const body = el('panel-body');
+    el('panel-title').textContent = 'Open Banking';
+    panel.classList.add('active');
+    body.innerHTML = '<div class="muted">Loading…</div>';
+    try {
+      const [connectors, payments] = await Promise.all([
+        api('/api/finops/open-banking/connectors').catch(()=>null),
+        api('/api/finops/open-banking/payments').catch(()=>null),
+      ]);
+      body.innerHTML = renderOpenBankingPanel(connectors && connectors.data, payments && payments.data);
+    } catch(e) { body.innerHTML = '<div class="status err">' + e.message + '</div>'; }
+  }
+
+  function renderOpenBankingPanel(connectors, payments) {
+    const cashOptions = (window.wireOriginationAccounts || []).length ? window.wireOriginationAccounts.map(a => `<option value="${a.account_id}">${a.account_id}</option>`).join('') : '<option value="CA-OPERATING">CA-OPERATING</option>';
+    const connectorOptions = (connectors || []).map(c => `<option value="${c.id}">${c.name} — ${c.ready ? 'ready' : 'needs config'}</option>`).join('') || '<option value="">No connectors</option>';
+    const rows = (payments || []).map(p => `<tr><td>${p.payment_id}</td><td>${p.connector}</td><td>$${Number(p.amount_cents || 0)/100}</td><td>${p.status}</td><td>${p.creditor_name || ''}</td><td>${p.error_message || ''}</td></tr>`).join('') || '<tr><td colspan="6" class="muted">No payments yet</td></tr>';
+    return '<div style="display:flex; flex-direction:column; gap:12px;">' +
+      '<div class="card" style="background:#0b1220;">' +
+        '<h3>Connector Readiness</h3>' +
+        '<p class="muted">Programmatic credit-push only. Set API keys in env/system_settings to activate a connector.</p>' +
+        '<ul style="font-size:13px; padding-left:18px;">' + (connectors || []).map(c => `<li><strong>${c.name}</strong>: ${c.ready ? 'ready' : 'needs ' + (c.needs ? c.needs.join(', ') : 'config')}</li>`).join('') + '</ul>' +
+      '</div>' +
+      '<div class="card" style="background:#0b1220;">' +
+        '<h3>Initiate ISO 20022 Payment</h3>' +
+        '<div class="token-bar"><select id="ob-connector">' + connectorOptions + '</select></div>' +
+        '<div class="token-bar"><select id="ob-source-account">' + cashOptions + '</select></div>' +
+        '<div class="token-bar"><input id="ob-amount" type="number" step="0.01" placeholder="Amount USD" /></div>' +
+        '<div class="token-bar"><input id="ob-creditor-name" placeholder="Beneficiary name" /></div>' +
+        '<div class="token-bar"><input id="ob-creditor-account" placeholder="Beneficiary account" /></div>' +
+        '<div class="token-bar"><input id="ob-creditor-routing" placeholder="Routing / ABA" /></div>' +
+        '<div class="token-bar"><input id="ob-creditor-bic" placeholder="BIC (optional)" /></div>' +
+        '<div class="token-bar"><input id="ob-remittance" placeholder="Remittance / description" /></div>' +
+        '<button class="btn" onclick="createOpenBankingPayment()">Create Payment</button>' +
+        '<div id="ob-create-status" class="status hidden"></div>' +
+      '</div>' +
+      '<div class="card" style="background:#0b1220;">' +
+        '<h3>Recent Payments</h3>' +
+        '<table class="table"><thead><tr><th>Payment ID</th><th>Connector</th><th>Amount</th><th>Status</th><th>Beneficiary</th><th>Error</th></tr></thead><tbody>' + rows + '</tbody></table>' +
+      '</div>' +
+    '</div>';
+  }
+
+  async function createOpenBankingPayment() {
+    const status = el('ob-create-status');
+    status.classList.add('hidden');
+    try {
+      const connector = el('ob-connector').value;
+      const sourceCashAccountId = el('ob-source-account').value;
+      const amount = el('ob-amount').value;
+      const creditorName = el('ob-creditor-name').value;
+      const creditorAccount = el('ob-creditor-account').value;
+      const creditorRouting = el('ob-creditor-routing').value;
+      const creditorBic = el('ob-creditor-bic').value;
+      const remittance = el('ob-remittance').value;
+      if (!connector || !amount || !creditorName || !creditorAccount || !creditorRouting) throw new Error('Connector, amount, beneficiary name, account and routing required');
+      const res = await api('/api/finops/open-banking/payments', { method: 'POST', body: JSON.stringify({ connector, sourceCashAccountId, amount, creditorName, creditorAccount, creditorRouting, creditorBic, remittance }) });
+      show('Payment created: ' + res.data.paymentId + ' — status: ' + res.data.status, res.data.status === 'failed', 'ob-create-status');
+      openOpenBankingPanel();
+    } catch(e) { show(e.message, true, 'ob-create-status'); }
+    status.classList.remove('hidden');
+  }
+
+  // ─── Trust Deposit Engine Panel ──────────────────────────────────────────────
+  async function openTrustDepositsPanel() {
+    const panel = el('module-panel');
+    const body = el('panel-body');
+    el('panel-title').textContent = 'Trust Deposits';
+    panel.classList.add('active');
+    body.innerHTML = '<div class="muted">Loading…</div>';
+    try {
+      const [deposits, emAccounts] = await Promise.all([
+        api('/api/finops/trust-deposits').catch(()=>null),
+        api('/api/finops/electronic-money/accounts').catch(()=>null),
+      ]);
+      body.innerHTML = renderTrustDepositsPanel(deposits && deposits.data, emAccounts && emAccounts.data);
+    } catch(e) { body.innerHTML = '<div class="status err">' + e.message + '</div>'; }
+  }
+
+  function renderTrustDepositsPanel(deposits, emAccounts) {
+    const cashOptions = (window.wireOriginationAccounts || []).length ? window.wireOriginationAccounts.map(a => `<option value="${a.account_id}">${a.account_id}</option>`).join('') : '<option value="CA-OPERATING">CA-OPERATING</option>';
+    const emOptions = (emAccounts || []).map(a => `<option value="${a.account_id}">${a.account_id} — ${a.holder_name || a.holder_email || 'no name'}</option>`).join('') || '<option value="">No e-money accounts</option>';
+    const rows = (deposits || []).map(d => `<tr><td>${d.deposit_id}</td><td>${d.deposit_method}</td><td>$${Number(d.amount_cents || 0)/100}</td><td>${d.status}</td><td>${d.destination_name || ''}</td><td>${d.error_message || ''}</td></tr>`).join('') || '<tr><td colspan="6" class="muted">No deposits yet</td></tr>';
+    return '<div style="display:flex; flex-direction:column; gap:12px;">' +
+      '<div class="card" style="background:#0b1220;">' +
+        '<h3>Create Trust Deposit</h3>' +
+        '<p class="muted">Reserve source funds and script a deposit to a bank account, e-money account, or wallet.</p>' +
+        '<div class="token-bar"><select id="td-method"><option value="wire">Wire (manual message)</option><option value="ach">ACH (manual NACHA)</option><option value="open_banking">Open Banking</option><option value="emoney">E-Money account</option><option value="sit">SIT wallet</option></select></div>' +
+        '<div class="token-bar"><select id="td-source-account">' + cashOptions + '</select></div>' +
+        '<div class="token-bar"><input id="td-amount" type="number" step="0.01" placeholder="Amount USD" /></div>' +
+        '<div class="token-bar"><input id="td-dest-name" placeholder="Destination name" /></div>' +
+        '<div class="token-bar" id="td-bank-fields" style="display:flex; flex-direction:column; gap:8px;">' +
+          '<input id="td-dest-routing" placeholder="Routing / ABA" />' +
+          '<input id="td-dest-account" placeholder="Account number" />' +
+          '<input id="td-dest-bank" placeholder="Bank name" />' +
+        '</div>' +
+        '<div class="token-bar" id="td-emoney-field" style="display:none;"><select id="td-dest-emoney">' + emOptions + '</select></div>' +
+        '<div class="token-bar" id="td-wallet-field" style="display:none;"><input id="td-dest-wallet" placeholder="Wallet address" /></div>' +
+        '<div class="token-bar"><input id="td-memo" placeholder="Memo" /></div>' +
+        '<button class="btn" onclick="createTrustDeposit()">Create &amp; Send Deposit</button>' +
+        '<div id="td-create-status" class="status hidden"></div>' +
+      '</div>' +
+      '<div class="card" style="background:#0b1220;">' +
+        '<h3>Recent Deposits</h3>' +
+        '<table class="table"><thead><tr><th>Deposit ID</th><th>Method</th><th>Amount</th><th>Status</th><th>Destination</th><th>Error</th></tr></thead><tbody>' + rows + '</tbody></table>' +
+      '</div>' +
+    '</div>';
+  }
+
+  document.addEventListener('change', function(e) {
+    const method = el('td-method');
+    if (!method) return;
+    const bank = el('td-bank-fields');
+    const em = el('td-emoney-field');
+    const wallet = el('td-wallet-field');
+    bank.style.display = ['wire','ach','open_banking','check'].includes(method.value) ? 'flex' : 'none';
+    em.style.display = method.value === 'emoney' ? 'flex' : 'none';
+    wallet.style.display = method.value === 'sit' ? 'flex' : 'none';
+  });
+
+  async function createTrustDeposit() {
+    const status = el('td-create-status');
+    status.classList.add('hidden');
+    try {
+      const method = el('td-method').value;
+      const sourceAccountId = el('td-source-account').value;
+      const amount = el('td-amount').value;
+      const destinationName = el('td-dest-name').value.trim();
+      const memo = el('td-memo').value.trim();
+      const body = { sourceType: 'cash', sourceAccountId, amount, depositMethod: method, destinationName, memo };
+      if (['wire','ach','open_banking','check'].includes(method)) {
+        body.destinationType = 'bank_account';
+        body.destinationRouting = el('td-dest-routing').value.trim();
+        body.destinationAccount = el('td-dest-account').value.trim();
+        body.destinationBankName = el('td-dest-bank').value.trim();
+      } else if (method === 'emoney') {
+        body.destinationType = 'emoney_account';
+        body.destinationEmoneyAccountId = el('td-dest-emoney').value;
+      } else if (method === 'sit') {
+        body.destinationType = 'wallet';
+        body.destinationWalletAddress = el('td-dest-wallet').value.trim();
+      }
+      const res = await api('/api/finops/trust-deposits', { method: 'POST', body: JSON.stringify(body) });
+      await api('/api/finops/trust-deposits/' + res.data.deposit_id + '/send', { method: 'POST', body: JSON.stringify({}) });
+      show('Deposit created and sent: ' + res.data.deposit_id, false, 'td-create-status');
+      openTrustDepositsPanel();
+      loadAll();
+    } catch(e) { show(e.message, true, 'td-create-status'); }
+    status.classList.remove('hidden');
+  }
+
+  // ─── Fineract / Mifos Payouts Panel ──────────────────────────────────────────
+  async function openFineractPayoutsPanel() {
+    const panel = el('module-panel');
+    const body = el('panel-body');
+    el('panel-title').textContent = 'Fineract / Mifos Payouts';
+    panel.classList.add('active');
+    body.innerHTML = '<div class="muted">Loading…</div>';
+    try {
+      const payouts = await api('/api/fineract/payouts').catch(()=>null);
+      body.innerHTML = renderFineractPayoutsPanel(payouts && payouts.data);
+    } catch(e) { body.innerHTML = '<div class="status err">' + e.message + '</div>'; }
+  }
+
+  function renderFineractPayoutsPanel(payouts) {
+    const rows = (payouts || []).map(p => `<tr><td>${p.payout_id}</td><td>${p.payout_method}</td><td>${p.savings_account_id}</td><td>$${Number(p.amount_cents || 0)/100}</td><td>${p.status}</td><td>${p.beneficiary_name || ''}</td><td>${p.error_message || ''}</td></tr>`).join('') || '<tr><td colspan="7" class="muted">No payouts yet</td></tr>';
+    return '<div style="display:flex; flex-direction:column; gap:12px;">' +
+      '<div class="card" style="background:#0b1220;">' +
+        '<h3>Create Fineract / Mifos Payout</h3>' +
+        '<p class="muted">Withdraw from a Fineract/Mifos savings account and send externally.</p>' +
+        '<div class="token-bar"><input id="fpb-savings-account" placeholder="Savings account ID" /></div>' +
+        '<div class="token-bar"><input id="fpb-client-id" placeholder="Client ID (optional)" /></div>' +
+        '<div class="token-bar"><input id="fpb-amount" type="number" step="0.01" placeholder="Amount USD" /></div>' +
+        '<div class="token-bar"><select id="fpb-method"><option value="open_banking">Open Banking (ISO 20022)</option><option value="wire">Wire</option><option value="ach">ACH</option></select></div>' +
+        '<div class="token-bar"><select id="fpb-connector"><option value="generic_rest">Generic ISO 20022 REST</option><option value="column">Column</option><option value="increase">Increase</option><option value="plaid">Plaid Transfer</option></select></div>' +
+        '<div class="token-bar"><input id="fpb-beneficiary-name" placeholder="Beneficiary name" /></div>' +
+        '<div class="token-bar"><input id="fpb-beneficiary-routing" placeholder="Routing / ABA" /></div>' +
+        '<div class="token-bar"><input id="fpb-beneficiary-account" placeholder="Account number" /></div>' +
+        '<div class="token-bar"><input id="fpb-beneficiary-bank" placeholder="Bank name / BIC" /></div>' +
+        '<div class="token-bar"><input id="fpb-remittance" placeholder="Remittance / note" /></div>' +
+        '<button class="btn" onclick="createFineractPayout()">Create &amp; Send Payout</button>' +
+        '<div id="fpb-create-status" class="status hidden"></div>' +
+      '</div>' +
+      '<div class="card" style="background:#0b1220;">' +
+        '<h3>Recent Payouts</h3>' +
+        '<table class="table"><thead><tr><th>Payout ID</th><th>Method</th><th>Savings Acct</th><th>Amount</th><th>Status</th><th>Beneficiary</th><th>Error</th></tr></thead><tbody>' + rows + '</tbody></table>' +
+      '</div>' +
+    '</div>';
+  }
+
+  async function createFineractPayout() {
+    const status = el('fpb-create-status');
+    status.classList.add('hidden');
+    try {
+      const body = {
+        savingsAccountId: Number(el('fpb-savings-account').value),
+        clientId: Number(el('fpb-client-id').value) || undefined,
+        amount: el('fpb-amount').value,
+        payoutMethod: el('fpb-method').value,
+        connector: el('fpb-connector').value,
+        beneficiaryName: el('fpb-beneficiary-name').value.trim(),
+        beneficiaryRouting: el('fpb-beneficiary-routing').value.trim(),
+        beneficiaryAccount: el('fpb-beneficiary-account').value.trim(),
+        beneficiaryBankName: el('fpb-beneficiary-bank').value.trim(),
+        remittance: el('fpb-remittance').value.trim(),
+      };
+      const res = await api('/api/fineract/payouts', { method: 'POST', body: JSON.stringify(body) });
+      await api('/api/fineract/payouts/' + res.data.payout_id + '/send', { method: 'POST', body: JSON.stringify({}) });
+      show('Payout created and sent: ' + res.data.payout_id, false, 'fpb-create-status');
+      openFineractPayoutsPanel();
+      loadAll();
+    } catch(e) { show(e.message, true, 'fpb-create-status'); }
+    status.classList.remove('hidden');
   }
 
   window.addEventListener('DOMContentLoaded', () => {

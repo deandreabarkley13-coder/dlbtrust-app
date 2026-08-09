@@ -61,17 +61,15 @@ class ElectronicMoneyEngine {
   static async ensureReserveAccount() {
     if (!CashEngine) return;
     try {
-      await CashEngine.getAccount(EM_RESERVE_ACCOUNT);
-    } catch (e) {
-      try {
-        await CashEngine.createAccount({
-          accountId: EM_RESERVE_ACCOUNT,
-          accountName: 'Electronic Money Reserve',
-          accountType: 'escrow',
-          notes: 'Backing reserve for e-money balances',
-        });
-      } catch (err) { /* may already exist */ }
-    }
+      const existing = await CashEngine.getAccount(EM_RESERVE_ACCOUNT);
+      if (existing) return;
+      await CashEngine.createAccount({
+        accountId: EM_RESERVE_ACCOUNT,
+        accountName: 'Electronic Money Reserve',
+        accountType: 'escrow',
+        notes: 'Backing reserve for e-money balances',
+      });
+    } catch (e) { /* may already exist */ }
   }
 
   static async createAccount({ holderEmail, holderName, metadata = {} } = {}) {
