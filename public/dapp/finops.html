@@ -172,6 +172,7 @@
     { key:'external-wallet', name:'External Wallets', desc:'Hardware/MetaMask/GridPlus wallet as ledger source and DAI/USDS swaps', stat:'', endpoint:null, action:'openExternalWalletPanel' },
     { key:'canonical-swap', name:'Canonical USDS Swap', desc:'Audited P2P contract: DLBUSD/DLB-PTCUSD → USDS/USDC/DAI', stat:'', endpoint:null, action:'openDlbCanonicalSwapPanel' },
     { key:'computing', name:'Computing Engine', desc:'Off-chain valuation, yield, accrual and canonical quote jobs', stat:'', endpoint:null, action:'openTrustComputingPanel' },
+    { key:'holdings', name:'Holding Management', desc:'Hold ledger funds and canonize to spendable stablecoins', stat:'', endpoint:null, action:'openHoldingManagementPanel' },
     { key:'coordination', name:'Coordination Engine', desc:'System health, AI command queue and stability checks', stat:'', endpoint:null, action:'openCoordinationPanel' },
     { key:'clearing', name:'Clearing Engine', desc:'Bilateral and net settlement on Hyperledger Besu', stat:'', endpoint:null, action:'openClearingPanel' },
     { key:'redemption-gateway', name:'Redemption Gateway', desc:'Bridge DLB-PTCUSD to external clearing/stablecoin rails', stat:'', endpoint:null, action:'openRedemptionGatewayPanel' },
@@ -338,7 +339,7 @@
     renderModules();
     renderFlow();
     try {
-      const [sof, accts, wallets, bond, crm, p2p, ptc, consensus, xchain, paired, trustMarket, ramps, intents, externalWallets, externalSwaps, computing] = await Promise.all([
+      const [sof, accts, wallets, bond, crm, p2p, ptc, consensus, xchain, paired, trustMarket, ramps, intents, externalWallets, externalSwaps, computing, holdings] = await Promise.all([
         api('/api/finops/source-of-funds').catch(()=>null),
         api('/api/accounting/accounts').catch(()=>null),
         api('/api/finops/wallets').catch(()=>null),
@@ -355,6 +356,7 @@
         api('/api/finops/external-wallets').catch(()=>null),
         api('/api/finops/external-wallets/swaps').catch(()=>null),
         api('/api/finops/computing/jobs').catch(()=>null),
+        api('/api/finops/holdings').catch(()=>null),
       ]);
       const balances = normalizeBalances(sof && sof.data);
       if (balances.length) {
@@ -403,6 +405,10 @@
       }
       if (computing && computing.data && Array.isArray(computing.data)) {
         setStat('computing', String(computing.data.length));
+      }
+      if (holdings && holdings.data && Array.isArray(holdings.data)) {
+        const ready = holdings.data.filter(h => h.status === 'canonical_ready').length;
+        setStat('holdings', String(ready) + '/' + String(holdings.data.length));
       }
       renderModules();
     } catch(e) { console.error('loadAll error', e); }
@@ -2650,6 +2656,88 @@
         rows.map(j => `<tr><td>${j.id}</td><td>${j.functionName}</td><td>${j.status}</td><td class="muted">${new Date(j.createdAt).toLocaleString()}</td></tr>`).join('') +
         '</tbody></table>';
     } catch(e) { d.innerHTML = '<div class="status err">' + e.message + '</div>'; }
+  }
+
+  // ─── Holding Management Engine Panel ────────────────────────────────────────
+
+  async function openHoldingManagementPanel() {
+    const panel = el('module-panel');
+    const body = el('panel-body');
+    el('panel-title').textContent = 'Holding Management';
+    panel.classList.add('active');
+    body.innerHTML = '<div class="muted">Loading…</div>';
+    try {
+      const [holdings, accounts] = await Promise.all([
+        api('/api/finops/holdings').catch(()=>null),
+        api('/api/finops/holdings/accounts').catch(()=>null),
+      ]);
+      body.innerHTML = renderHoldingManagementPanel(holdings && holdings.data, accounts && accounts.data);
+      await loadHoldingsTable();
+    } catch(e) { body.innerHTML = '<div class="status err">' + e.message + '</div>'; }
+  }
+
+  function renderHoldingManagementPanel(holdings, accounts) {
+    const accountOptions = (accounts || []).map(a => `<option value="${a.account_code}">${a.account_code} — ${a.account_name} ($${Number(a.balance || 0).toLocaleString()})</option>`).join('');
+    return '<div style="display:flex; flex-direction:column; gap:12px;">' +
+      '<div class="card" style="background:#0b1220;">' +
+        '<h3>Create Holding</h3>' +
+        '<p class="muted">Move ledger funds into a holding account, then canonize them to a spendable stablecoin.</p>' +
+        '<div class="token-bar"><input id="hm-name" placeholder="Holding name" style="flex:2;" /></div>' +
+        '<div class="token-bar"><select id="hm-source"><option value="">Select source account…</option>' + accountOptions + '</select></div>' +
+        '<div class="token-bar"><input id="hm-amount" type="number" step="0.01" placeholder="Amount to hold" /></div>' +
+        '<div class="token-bar"><select id="hm-target"><option value="USDC">USDC</option><option value="USDS">USDS</option><option value="DAI">DAI</option><option value="WETH">WETH</option></select></div>' +
+        '<button class="btn" onclick="createHolding()">Create Holding</button>' +
+        '<div id="hm-create-status" class="status hidden"></div>' +
+      '</div>' +
+      '<div class="card" style="background:#0b1220;">' +
+        '<h3>Holdings</h3>' +
+        '<div id="hm-holdings">Loading…</div>' +
+      '</div>' +
+    '</div>';
+  }
+
+  async function createHolding() {
+    const status = el('hm-create-status');
+    status.classList.add('hidden');
+    const name = el('hm-name').value.trim();
+    const sourceAccountId = el('hm-source').value;
+    const amount = el('hm-amount').value;
+    const targetAsset = el('hm-target').value;
+    if (!name || !sourceAccountId || !amount) { show('Fill all fields', true, 'hm-create-status'); return; }
+    try {
+      const res = await api('/api/finops/holdings', { method: 'POST', body: JSON.stringify({ name, sourceType: 'trust', sourceAccountId, amount, targetAsset }) });
+      show('Holding created: ' + res.data.id, false, 'hm-create-status');
+      await loadHoldingsTable();
+      loadAll();
+    } catch(e) { show(e.message, true, 'hm-create-status'); }
+  }
+
+  async function loadHoldingsTable() {
+    const d = el('hm-holdings');
+    if (!d) return;
+    try {
+      const res = await api('/api/finops/holdings');
+      const rows = (res.data || []).slice(0, 50);
+      if (!rows.length) { d.innerHTML = '<p class="muted">No holdings yet.</p>'; return; }
+      d.innerHTML = '<table class="table"><thead><tr><th>Name</th><th>Amount</th><th>Target</th><th>Status</th><th>Canonical</th><th></th></tr></thead><tbody>' +
+        rows.map(h => `<tr><td>${h.name}</td><td>$${Number(h.amount).toLocaleString()}</td><td>${h.targetAsset}</td><td>${h.status}</td><td class="muted">${h.canonicalAsset ? h.canonicalAmount + ' ' + h.canonicalAsset : '—'}</td><td>${h.status === 'held' ? `<button class="btn btn-sec" onclick="canonizeHolding('${h.id}')">Canonize</button>` : ''} <button class="btn btn-sec" onclick="syncHolding('${h.id}')">Sync</button></td></tr>`).join('') +
+        '</tbody></table>';
+    } catch(e) { d.innerHTML = '<div class="status err">' + e.message + '</div>'; }
+  }
+
+  async function canonizeHolding(id) {
+    try {
+      await api('/api/finops/holdings/' + id + '/canonize', { method: 'POST', body: '{}' });
+      await loadHoldingsTable();
+    } catch(e) { alert(e.message); }
+  }
+
+  async function syncHolding(id) {
+    try {
+      await api('/api/finops/holdings/' + id + '/sync', { method: 'POST', body: '{}' });
+      await loadHoldingsTable();
+      loadAll();
+    } catch(e) { alert(e.message); }
   }
 
   window.addEventListener('DOMContentLoaded', () => {
