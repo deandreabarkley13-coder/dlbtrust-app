@@ -175,6 +175,8 @@
     { key:'holdings', name:'Holding Management', desc:'Hold ledger funds and canonize to spendable stablecoins', stat:'', endpoint:null, action:'openHoldingManagementPanel' },
     { key:'capital-fund', name:'Capital Fund', desc:'Fiat-to-stablecoin capital calls and pool allocation', stat:'', endpoint:null, action:'openCapitalFundPanel' },
     { key:'virtual-accounts', name:'Virtual Accounts', desc:'Ledger-backed virtual accounts for frictionless fiat+on-chain transactions', stat:'', endpoint:null, action:'openVirtualAccountsPanel' },
+    { key:'wire-origination', name:'Wire Origination', desc:'Fiat payout origination API: wire, ACH, check, crypto rails', stat:'', endpoint:null, action:'openWireOriginationPanel' },
+    { key:'electronic-money', name:'Electronic Money', desc:'Stored-value USD ledger for instant P2P transfers', stat:'', endpoint:null, action:'openElectronicMoneyPanel' },
     { key:'coordination', name:'Coordination Engine', desc:'System health, AI command queue and stability checks', stat:'', endpoint:null, action:'openCoordinationPanel' },
     { key:'clearing', name:'Clearing Engine', desc:'Bilateral and net settlement on Hyperledger Besu', stat:'', endpoint:null, action:'openClearingPanel' },
     { key:'redemption-gateway', name:'Redemption Gateway', desc:'Bridge DLB-PTCUSD to external clearing/stablecoin rails', stat:'', endpoint:null, action:'openRedemptionGatewayPanel' },
@@ -341,7 +343,7 @@
     renderModules();
     renderFlow();
     try {
-      const [sof, accts, wallets, bond, crm, p2p, ptc, consensus, xchain, paired, trustMarket, ramps, intents, externalWallets, externalSwaps, computing, holdings, capitalFunds, virtualAccounts] = await Promise.all([
+      const [sof, accts, wallets, bond, crm, p2p, ptc, consensus, xchain, paired, trustMarket, ramps, intents, externalWallets, externalSwaps, computing, holdings, capitalFunds, virtualAccounts, wireOrigination, electronicMoney] = await Promise.all([
         api('/api/finops/source-of-funds').catch(()=>null),
         api('/api/accounting/accounts').catch(()=>null),
         api('/api/finops/wallets').catch(()=>null),
@@ -361,6 +363,8 @@
         api('/api/finops/holdings').catch(()=>null),
         api('/api/finops/capital-fund').catch(()=>null),
         api('/api/finops/virtual-accounts').catch(()=>null),
+        api('/api/finops/wire-origination').catch(()=>null),
+        api('/api/finops/electronic-money/summary').catch(()=>null),
       ]);
       const balances = normalizeBalances(sof && sof.data);
       if (balances.length) {
@@ -421,6 +425,13 @@
       if (virtualAccounts && virtualAccounts.data && Array.isArray(virtualAccounts.data)) {
         const active = virtualAccounts.data.filter(a => a.status === 'active').length;
         setStat('virtual-accounts', String(active));
+      }
+      if (wireOrigination && wireOrigination.data && Array.isArray(wireOrigination.data)) {
+        const pending = wireOrigination.data.filter(p => ['pending','approved','needs_setup','manual_pending'].includes(p.status)).length;
+        setStat('wire-origination', String(pending));
+      }
+      if (electronicMoney && electronicMoney.data) {
+        setStat('electronic-money', fmt(Number(electronicMoney.data.totalBalanceDollars || 0), 0));
       }
       renderModules();
     } catch(e) { console.error('loadAll error', e); }
@@ -2988,6 +2999,307 @@
     } catch(e) { show(e.message, true, 'va-payout-status'); }
   }
 
+
+  // ─── Wire Origination Engine Panel ───────────────────────────────────────────
+  let wireOriginationAdapters = [];
+  window.wireOriginationAccounts = [];
+
+  async function openWireOriginationPanel() {
+    const panel = el('module-panel');
+    const body = el('panel-body');
+    el('panel-title').textContent = 'Wire Origination';
+    panel.classList.add('active');
+    body.innerHTML = '<div class="muted">Loading…</div>';
+    try {
+      const [adapters, accounts, payouts] = await Promise.all([
+        api('/api/finops/wire-origination/adapters').catch(()=>null),
+        api('/api/finops/wire-origination/accounts').catch(()=>null),
+        api('/api/finops/wire-origination').catch(()=>null),
+      ]);
+      wireOriginationAdapters = (adapters && adapters.data && adapters.data.adapters) || [];
+      window.wireOriginationAccounts = (accounts && accounts.data) || [];
+      body.innerHTML = renderWireOriginationPanel();
+      await loadWireOriginationTable();
+      if (payouts && payouts.data) updateWireOriginationTable(payouts.data);
+    } catch(e) { body.innerHTML = '<div class="status err">' + e.message + '</div>'; }
+  }
+
+  function renderWireOriginationPanel() {
+    const adapterOptions = wireOriginationAdapters.map(a => `<option value="${a.id}">${a.name}${a.ready ? ' (ready)' : ''}</option>`).join('');
+    const accountOptions = wireOriginationAccounts.filter(a => (a.balance_cents || 0) > 0 || a.account_id).map(a => `<option value="${a.account_id}">${a.account_id} — ${a.account_name} ($${Number(a.balance_cents || 0) / 100})</option>`).join('') || '<option value="CA-OPERATING">CA-OPERATING</option>';
+    const readyList = wireOriginationAdapters.filter(a => a.ready).map(a => `<li><strong>${a.name}</strong></li>`).join('') || '<li class="muted">No adapters configured yet</li>';
+    return '<div style="display:flex; flex-direction:column; gap:12px;">' +
+      '<div class="card" style="background:#0b1220;">' +
+        '<h3>Adapter Readiness</h3>' +
+        '<ul style="font-size:12px;padding-left:16px;">' + readyList + '</ul>' +
+        '<p class="muted">Wire and ACH need a live bank API endpoint or AS2 partner. Manual/check works without setup.</p>' +
+      '</div>' +
+      '<div class="card" style="background:#0b1220;">' +
+        '<h3>Originate Fiat Payout</h3>' +
+        '<p class="muted">Funds stay in USD. Select an adapter; for crypto rail, the payout is converted to the selected stablecoin only if you explicitly choose it.</p>' +
+        '<div class="token-bar"><select id="wo-adapter">' + adapterOptions + '</select></div>' +
+        '<div class="token-bar"><select id="wo-source">' + accountOptions + '</select></div>' +
+        '<div class="token-bar"><input id="wo-amount" type="number" step="0.01" placeholder="Amount USD" /></div>' +
+        '<div class="token-bar"><input id="wo-beneficiary" placeholder="Beneficiary name" /></div>' +
+        '<div class="token-bar"><input id="wo-routing" placeholder="Routing / ABA" /></div>' +
+        '<div class="token-bar"><input id="wo-account" placeholder="Account number" /></div>' +
+        '<div class="token-bar"><input id="wo-bank" placeholder="Bank name" /></div>' +
+        '<div class="token-bar"><input id="wo-purpose" placeholder="Purpose / OBI" /></div>' +
+        '<div class="token-bar"><input id="wo-desc" placeholder="Description" /></div>' +
+        '<div class="token-bar" id="wo-crypto-fields" style="display:none;">' +
+          '<input id="wo-crypto-address" placeholder="Crypto address" style="flex:2;" />' +
+          '<select id="wo-crypto-asset"><option value="USDC">USDC</option><option value="USDS">USDS</option><option value="DAI">DAI</option><option value="SIT">SIT</option></select>' +
+          '<select id="wo-crypto-rail"><option value="dex">DEX</option><option value="sit">SIT</option></select>' +
+        '</div>' +
+        '<button class="btn" onclick="createWireOriginationPayout()">Create Payout</button>' +
+        '<div id="wo-create-status" class="status hidden"></div>' +
+      '</div>' +
+      '<div class="card" style="background:#0b1220;">' +
+        '<h3>Payout Queue</h3>' +
+        '<div id="wo-table">Loading…</div>' +
+      '</div>' +
+    '</div>';
+  }
+
+  document.addEventListener('input', function(e) {
+    const sel = el('wo-adapter');
+    const cryptoFields = el('wo-crypto-fields');
+    if (sel && cryptoFields) cryptoFields.style.display = sel.value === 'crypto' ? 'flex' : 'none';
+  });
+
+  async function createWireOriginationPayout() {
+    const status = el('wo-create-status');
+    status.classList.add('hidden');
+    try {
+      const adapter = el('wo-adapter').value;
+      const sourceAccountId = el('wo-source').value;
+      const amount = el('wo-amount').value;
+      const beneficiaryName = el('wo-beneficiary').value.trim();
+      const beneficiaryRouting = el('wo-routing').value.trim();
+      const beneficiaryAccount = el('wo-account').value.trim();
+      const beneficiaryBankName = el('wo-bank').value.trim();
+      const purpose = el('wo-purpose').value.trim();
+      const description = el('wo-desc').value.trim();
+      if (!amount || !beneficiaryName) throw new Error('Amount and beneficiary required');
+      const payload = {
+        sourceType: 'cash', sourceAccountId, amount, adapter,
+        beneficiaryName, beneficiaryRouting, beneficiaryAccount, beneficiaryBankName,
+        paymentType: 'vendor_payment', purpose, description,
+      };
+      if (adapter === 'crypto') {
+        const cryptoAddress = el('wo-crypto-address').value.trim();
+        const cryptoAsset = el('wo-crypto-asset').value;
+        const cryptoRail = el('wo-crypto-rail').value;
+        if (!cryptoAddress) throw new Error('Crypto address required for crypto adapter');
+        payload.metadata = { cryptoAddress, cryptoAsset, cryptoRail };
+      }
+      const res = await api('/api/finops/wire-origination', { method: 'POST', body: JSON.stringify(payload) });
+      show('Payout created: ' + res.data.payout_id + ' (' + res.data.status + ')', false, 'wo-create-status');
+      await loadWireOriginationTable();
+      loadAll();
+    } catch(e) { show(e.message, true, 'wo-create-status'); }
+    status.classList.remove('hidden');
+  }
+
+  async function loadWireOriginationTable() {
+    const d = el('wo-table');
+    if (!d) return;
+    try {
+      const res = await api('/api/finops/wire-origination');
+      updateWireOriginationTable(res.data || []);
+    } catch(e) { d.innerHTML = '<div class="status err">' + e.message + '</div>'; }
+  }
+
+  function updateWireOriginationTable(rows) {
+    const d = el('wo-table');
+    if (!d) return;
+    if (!rows.length) { d.innerHTML = '<p class="muted">No payouts yet.</p>'; return; }
+    d.innerHTML = '<table class="table"><thead><tr><th>ID</th><th>Adapter</th><th>Amount</th><th>Beneficiary</th><th>Status</th><th></th></tr></thead><tbody>' +
+      rows.map(p => `<tr><td>${p.payout_id}</td><td>${p.adapter}</td><td>$${Number(p.amount_cents / 100).toFixed(2)}</td><td>${p.beneficiary_name}</td><td>${p.status}</td><td>` +
+        (p.status === 'pending' ? `<button class="btn btn-sec" onclick="approveWireOrigination('${p.payout_id}')">Approve</button>` : '') +
+        (p.status === 'approved' || p.status === 'needs_setup' ? `<button class="btn" onclick="sendWireOrigination('${p.payout_id}')">Send</button>` : '') +
+        (p.status === 'manual_pending' ? `<button class="btn btn-sec" onclick="downloadWireOriginationMessage('${p.payout_id}')">Message</button>` : '') +
+        (['pending','approved','needs_setup','manual_pending'].includes(p.status) ? ` <button class="btn btn-danger" onclick="cancelWireOrigination('${p.payout_id}')">Cancel</button>` : '') +
+        `</td></tr>`).join('') +
+      '</tbody></table>';
+  }
+
+  async function approveWireOrigination(payoutId) {
+    try { await api('/api/finops/wire-origination/' + payoutId + '/approve', { method: 'POST', body: '{}' }); await loadWireOriginationTable(); loadAll(); }
+    catch(e) { alert(e.message); }
+  }
+
+  async function sendWireOrigination(payoutId) {
+    try { await api('/api/finops/wire-origination/' + payoutId + '/send', { method: 'POST', body: '{}' }); await loadWireOriginationTable(); loadAll(); }
+    catch(e) { alert(e.message); }
+  }
+
+  async function cancelWireOrigination(payoutId) {
+    try { await api('/api/finops/wire-origination/' + payoutId + '/cancel', { method: 'POST', body: '{}' }); await loadWireOriginationTable(); loadAll(); }
+    catch(e) { alert(e.message); }
+  }
+
+  async function downloadWireOriginationMessage(payoutId) {
+    try {
+      const res = await api('/api/finops/wire-origination/' + payoutId + '/message');
+      const text = JSON.stringify(res.data, null, 2);
+      const blob = new Blob([text], { type: 'application/json' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = payoutId + '.json';
+      a.click();
+      URL.revokeObjectURL(url);
+    } catch(e) { alert(e.message); }
+  }
+
+  // ─── Electronic Money Engine Panel ───────────────────────────────────────────
+  let emAccounts = [];
+
+  async function openElectronicMoneyPanel() {
+    const panel = el('module-panel');
+    const body = el('panel-body');
+    el('panel-title').textContent = 'Electronic Money';
+    panel.classList.add('active');
+    body.innerHTML = '<div class="muted">Loading…</div>';
+    try {
+      const [summary, accounts] = await Promise.all([
+        api('/api/finops/electronic-money/summary').catch(()=>null),
+        api('/api/finops/electronic-money/accounts').catch(()=>null),
+      ]);
+      emAccounts = (accounts && accounts.data) || [];
+      body.innerHTML = renderElectronicMoneyPanel(summary && summary.data);
+      await loadElectronicMoneyTable();
+    } catch(e) { body.innerHTML = '<div class="status err">' + e.message + '</div>'; }
+  }
+
+  function renderElectronicMoneyPanel(summary) {
+    const cashOptions = (window.wireOriginationAccounts || []).length ? window.wireOriginationAccounts.map(a => `<option value="${a.account_id}">${a.account_id}</option>`).join('') : '<option value="CA-OPERATING">CA-OPERATING</option>';
+    return '<div style="display:flex; flex-direction:column; gap:12px;">' +
+      '<div class="card" style="background:#0b1220;">' +
+        '<h3>E-Money Summary</h3>' +
+        '<p class="muted">Stored-value USD balances backed by cash. On-platform transfers are instant; external payout redeems to cash then routes through Wire Origination.</p>' +
+        (summary ? '<div style="font-size:13px;">Active accounts: <strong>' + summary.activeAccounts + '</strong><br/>Total balance: <strong>$' + fmt(summary.totalBalanceDollars, 2) + '</strong><br/>Transactions: <strong>' + summary.transactionCount + '</strong></div>' : '<span class="muted">No summary</span>') +
+      '</div>' +
+      '<div class="card" style="background:#0b1220;">' +
+        '<h3>Create E-Money Account</h3>' +
+        '<div class="token-bar"><input id="em-holder-email" placeholder="Holder email" /></div>' +
+        '<div class="token-bar"><input id="em-holder-name" placeholder="Holder name" /></div>' +
+        '<button class="btn" onclick="createEmAccount()">Create Account</button>' +
+        '<div id="em-create-status" class="status hidden"></div>' +
+      '</div>' +
+      '<div class="card" style="background:#0b1220;">' +
+        '<h3>Issue / Transfer / Redeem / Payout</h3>' +
+        '<div class="token-bar"><select id="em-action"><option value="issue">Issue from cash</option><option value="transfer">Transfer P2P</option><option value="redeem">Redeem to cash</option><option value="payout">External payout</option></select></div>' +
+        '<div class="token-bar"><select id="em-account-id">' + emAccounts.map(a => `<option value="${a.account_id}">${a.account_id} — ${a.holder_name || a.holder_email || 'no name'} ($${Number(a.balance_cents || 0)/100})</option>`).join('') + '</select></div>' +
+        '<div class="token-bar" id="em-target-bar"><input id="em-target" placeholder="Target account / cash account / recipient" /></div>' +
+        '<div class="token-bar" id="em-cash-source-bar" style="display:none;"><select id="em-cash-source">' + cashOptions + '</select></div>' +
+        '<div class="token-bar"><input id="em-amount" type="number" step="0.01" placeholder="Amount USD" /></div>' +
+        '<div class="token-bar"><input id="em-memo" placeholder="Memo" /></div>' +
+        '<div id="em-payout-fields" style="display:none; flex-direction:column; gap:8px;">' +
+          '<div class="token-bar"><select id="em-payout-adapter"><option value="wire">Wire</option><option value="ach">ACH</option><option value="manual">Manual</option><option value="crypto">Crypto</option></select></div>' +
+          '<div class="token-bar"><input id="em-payout-routing" placeholder="Routing / ABA" /></div>' +
+          '<div class="token-bar"><input id="em-payout-account" placeholder="Account number" /></div>' +
+          '<div class="token-bar"><input id="em-payout-bank" placeholder="Bank name" /></div>' +
+          '<div class="token-bar"><input id="em-payout-crypto-address" placeholder="Crypto address (crypto only)" /></div>' +
+          '<div class="token-bar"><select id="em-payout-crypto-asset"><option value="USDC">USDC</option><option value="USDS">USDS</option><option value="DAI">DAI</option></select></div>' +
+        '</div>' +
+        '<button class="btn" onclick="executeEmAction()">Execute</button>' +
+        '<div id="em-action-status" class="status hidden"></div>' +
+      '</div>' +
+      '<div class="card" style="background:#0b1220;">' +
+        '<h3>E-Money Accounts</h3>' +
+        '<div id="em-table">Loading…</div>' +
+      '</div>' +
+    '</div>';
+  }
+
+  document.addEventListener('change', function(e) {
+    const action = el('em-action');
+    const cashBar = el('em-cash-source-bar');
+    const payoutFields = el('em-payout-fields');
+    const targetBar = el('em-target-bar');
+    if (!action || !cashBar) return;
+    cashBar.style.display = action.value === 'issue' ? 'flex' : 'none';
+    payoutFields.style.display = action.value === 'payout' ? 'flex' : 'none';
+    if (targetBar) targetBar.style.display = action.value === 'issue' ? 'none' : 'flex';
+  });
+
+  async function createEmAccount() {
+    const status = el('em-create-status');
+    status.classList.add('hidden');
+    try {
+      const holderEmail = el('em-holder-email').value.trim();
+      const holderName = el('em-holder-name').value.trim();
+      const res = await api('/api/finops/electronic-money/accounts', { method: 'POST', body: JSON.stringify({ holderEmail, holderName }) });
+      show('Account created: ' + res.data.account_id, false, 'em-create-status');
+      await loadElectronicMoneyTable();
+      loadAll();
+    } catch(e) { show(e.message, true, 'em-create-status'); }
+    status.classList.remove('hidden');
+  }
+
+  async function executeEmAction() {
+    const status = el('em-action-status');
+    status.classList.add('hidden');
+    try {
+      const action = el('em-action').value;
+      const accountId = el('em-account-id').value;
+      const target = el('em-target').value.trim();
+      const amount = el('em-amount').value;
+      const memo = el('em-memo').value.trim();
+      if (!accountId || !amount) throw new Error('Account and amount required');
+      let res;
+      if (action === 'issue') {
+        const sourceCashAccountId = el('em-cash-source').value;
+        res = await api('/api/finops/electronic-money/issue', { method: 'POST', body: JSON.stringify({ sourceCashAccountId, emAccountId: accountId, amount, memo }) });
+      } else if (action === 'transfer') {
+        if (!target) throw new Error('Target account required');
+        res = await api('/api/finops/electronic-money/transfer', { method: 'POST', body: JSON.stringify({ fromAccountId: accountId, toAccountId: target, amount, memo }) });
+      } else if (action === 'redeem') {
+        if (!target) throw new Error('Target cash account required');
+        res = await api('/api/finops/electronic-money/redeem', { method: 'POST', body: JSON.stringify({ emAccountId: accountId, targetCashAccountId: target, amount, memo }) });
+      } else if (action === 'payout') {
+        const adapter = el('em-payout-adapter').value;
+        const payoutOptions = { adapter, beneficiaryName: memo || 'E-money payout' };
+        if (adapter === 'crypto') {
+          payoutOptions.beneficiaryCryptoAddress = el('em-payout-crypto-address').value.trim();
+          payoutOptions.metadata = { cryptoAddress: payoutOptions.beneficiaryCryptoAddress, cryptoAsset: el('em-payout-crypto-asset').value, cryptoRail: 'dex' };
+        } else {
+          payoutOptions.beneficiaryRouting = el('em-payout-routing').value.trim();
+          payoutOptions.beneficiaryAccount = el('em-payout-account').value.trim();
+          payoutOptions.beneficiaryBankName = el('em-payout-bank').value.trim();
+        }
+        res = await api('/api/finops/electronic-money/payout', { method: 'POST', body: JSON.stringify({ emAccountId: accountId, amount, memo, payoutOptions }) });
+      }
+      show(action + ' completed: ' + (res.data.transaction ? res.data.transaction.tx_id : (res.data.payout_id || res.data.account_id)), false, 'em-action-status');
+      await loadElectronicMoneyTable();
+      loadAll();
+    } catch(e) { show(e.message, true, 'em-action-status'); }
+    status.classList.remove('hidden');
+  }
+
+  async function loadElectronicMoneyTable() {
+    const d = el('em-table');
+    if (!d) return;
+    try {
+      const res = await api('/api/finops/electronic-money/accounts');
+      const rows = res.data || [];
+      emAccounts = rows;
+      if (!rows.length) { d.innerHTML = '<p class="muted">No e-money accounts yet.</p>'; return; }
+      d.innerHTML = '<table class="table"><thead><tr><th>Account</th><th>Holder</th><th>Balance</th><th>Status</th><th></th></tr></thead><tbody>' +
+        rows.map(a => `<tr><td>${a.account_id}</td><td>${a.holder_name || a.holder_email || '—'}</td><td>$${Number(a.balance_cents || 0)/100}</td><td>${a.status}</td><td><button class="btn btn-sec" onclick="viewEmTransactions('${a.account_id}')">Txns</button></td></tr>`).join('') +
+        '</tbody></table>';
+    } catch(e) { d.innerHTML = '<div class="status err">' + e.message + '</div>'; }
+  }
+
+  async function viewEmTransactions(accountId) {
+    try {
+      const res = await api('/api/finops/electronic-money/accounts/' + accountId + '/transactions');
+      const rows = res.data || [];
+      alert('Transactions for ' + accountId + ':\n' + rows.map(t => `${t.tx_type} $${t.amount_cents/100} ${t.status}`).join('\n'));
+    } catch(e) { alert(e.message); }
+  }
 
   window.addEventListener('DOMContentLoaded', () => {
     resumeSession();
