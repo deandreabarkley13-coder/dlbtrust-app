@@ -283,6 +283,12 @@ async function initializeDatabase() {
   } catch(e) { console.warn('[open-banking] table init:', e.message); }
 
   try {
+    var TrustDepositEngine = require(path.join(HD, 'server', 'integrations', 'dapp', 'trustDepositEngine')).TrustDepositEngine;
+    await TrustDepositEngine.ensureTables();
+    console.log('[trust-deposit] tables ensured');
+  } catch(e) { console.warn('[trust-deposit] table init:', e.message); }
+
+  try {
     var TrusteeAgent = require(path.join(HD, 'server', 'integrations', 'agents', 'trusteeAgent')).TrusteeAgent;
     var BookkeepingAgent = require(path.join(HD, 'server', 'integrations', 'agents', 'bookkeepingAgent')).BookkeepingAgent;
     await TrusteeAgent.ensureTables();

@@ -34,6 +34,7 @@ const { VirtualAccountEngine } = require('../integrations/dapp/virtualAccountEng
 const { WireOriginationEngine } = require('../integrations/dapp/wireOriginationEngine');
 const { ElectronicMoneyEngine } = require('../integrations/dapp/electronicMoneyEngine');
 const { OpenBankingEngine } = require('../integrations/dapp/openBankingEngine');
+const { TrustDepositEngine } = require('../integrations/dapp/trustDepositEngine');
 let CashEngine;
 try { ({ CashEngine } = require('../integrations/cash/cashEngine')); } catch (e) { CashEngine = null; }
 
@@ -1195,6 +1196,38 @@ router.post('/open-banking/payments/:id/cancel', operatorAuth, writeRateLimiter(
 
 router.post('/open-banking/verify-account', operatorAuth, writeRateLimiter(), async (req, res) => {
   try { res.json({ success: true, data: await OpenBankingEngine.verifyAccount(req.body) }); } catch (err) { sendError(res, err); }
+});
+
+// ═════════════════════════════════════════════════════════════════════════════
+// Trust Deposit Engine — script deposits to bank accounts, e-money, or wallets
+// ═════════════════════════════════════════════════════════════════════════════
+
+router.get('/trust-deposits', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await TrustDepositEngine.listDeposits(req.query) }); } catch (err) { sendError(res, err); }
+});
+
+router.get('/trust-deposits/:id', operatorAuth, async (req, res) => {
+  try {
+    const data = await TrustDepositEngine.getDeposit(req.params.id);
+    if (!data) return res.status(404).json({ success: false, error: 'Deposit not found' });
+    res.json({ success: true, data });
+  } catch (err) { sendError(res, err); }
+});
+
+router.get('/trust-deposits/:id/message', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await TrustDepositEngine.getMessage(req.params.id) }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/trust-deposits', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try { res.status(201).json({ success: true, data: await TrustDepositEngine.createDeposit({ ...req.body, initiatedBy: getUserEmail(req) }) }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/trust-deposits/:id/send', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try { res.json({ success: true, data: await TrustDepositEngine.sendDeposit(req.params.id, req.body) }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/trust-deposits/:id/cancel', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try { res.json({ success: true, data: await TrustDepositEngine.cancelDeposit(req.params.id) }); } catch (err) { sendError(res, err); }
 });
 
 module.exports = router;
