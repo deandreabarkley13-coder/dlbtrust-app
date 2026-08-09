@@ -191,6 +191,7 @@
     { key:'wealth', name:'Wealth Management', desc:'Open-finance portfolio, allocation, goals, and rebalancing', stat:'', endpoint:null, action:'openWealthPanel' },
     { key:'aggregator', name:'Trust Aggregator', desc:'Account aggregation and consolidated net worth across ledgers, banks, and virtual accounts', stat:'', endpoint:null, action:'openAggregatorPanel' },
     { key:'external-endpoint', name:'External Endpoint Engine', desc:'Configure and route real payments to any bank/fintech endpoint over REST, SOAP, ISO 20022, gRPC, MFT, or AS2', stat:'', endpoint:null, action:'openExternalEndpointPanel' },
+    { key:'settlement', name:'Settlement Engine', desc:'Unified settlement queue for wire, ACH, open banking, external endpoints, stablecoin, MFT/AS2, and manual rails', stat:'', endpoint:null, action:'openSettlementPanel' },
     { key:'compliance', name:'Compliance Engine', desc:'KYC, AML, and sanctions screening before moving real money', stat:'', endpoint:null, action:'openCompliancePanel' },
     { key:'coordination', name:'Coordination Engine', desc:'System health, AI command queue and stability checks', stat:'', endpoint:null, action:'openCoordinationPanel' },
     { key:'clearing', name:'Clearing Engine', desc:'Bilateral and net settlement on Hyperledger Besu', stat:'', endpoint:null, action:'openClearingPanel' },
@@ -358,7 +359,7 @@
     renderModules();
     renderFlow();
     try {
-      const [sof, accts, wallets, bond, crm, p2p, ptc, consensus, xchain, paired, trustMarket, ramps, intents, externalWallets, externalSwaps, computing, holdings, capitalFunds, virtualAccounts, wireOrigination, electronicMoney, openBanking, trustDeposits, fineractPayouts, skrillLinks, barcodeDeposits, webPaymentRails, externalEndpoints] = await Promise.all([
+      const [sof, accts, wallets, bond, crm, p2p, ptc, consensus, xchain, paired, trustMarket, ramps, intents, externalWallets, externalSwaps, computing, holdings, capitalFunds, virtualAccounts, wireOrigination, electronicMoney, openBanking, trustDeposits, fineractPayouts, skrillLinks, barcodeDeposits, webPaymentRails, externalEndpoints, settlements] = await Promise.all([
         api('/api/finops/source-of-funds').catch(()=>null),
         api('/api/accounting/accounts').catch(()=>null),
         api('/api/finops/wallets').catch(()=>null),
@@ -387,6 +388,7 @@
         api('/api/finops/barcode-deposits').catch(()=>null),
         api('/api/finops/web-payment-rails').catch(()=>null),
         api('/api/finops/external-endpoints').catch(()=>null),
+        api('/api/finops/settlements').catch(()=>null),
       ]);
       const balances = normalizeBalances(sof && sof.data);
       if (balances.length) {
@@ -482,6 +484,10 @@
       if (externalEndpoints && externalEndpoints.data && Array.isArray(externalEndpoints.data)) {
         const active = externalEndpoints.data.filter(e => e.enabled).length;
         setStat('external-endpoint', String(active));
+      }
+      if (settlements && settlements.data && Array.isArray(settlements.data)) {
+        const open = settlements.data.filter(s => ['pending','reserved','submitted','transmitted','originated','queued','manual_pending'].includes(s.status)).length;
+        setStat('settlement', String(open));
       }
       renderModules();
     } catch(e) { console.error('loadAll error', e); }
@@ -4622,6 +4628,118 @@
       openExternalEndpointPanel();
     } catch(e) { show(e.message, true, 'eep-pay-status'); }
     status.classList.remove('hidden');
+  }
+
+  // ─── Settlement Engine Panel ────────────────────────────────────────────────
+
+  async function openSettlementPanel() {
+    const panel = el('module-panel');
+    const body = el('panel-body');
+    el('panel-title').textContent = 'Settlement Engine';
+    panel.classList.add('active');
+    body.innerHTML = '<div class="muted">Loading…</div>';
+    try {
+      const [rails, endpoints, settlements] = await Promise.all([
+        api('/api/finops/settlements/rails').catch(()=>null),
+        api('/api/finops/external-endpoints').catch(()=>null),
+        api('/api/finops/settlements').catch(()=>null),
+      ]);
+      body.innerHTML = renderSettlementPanel(rails && rails.data, endpoints && endpoints.data, settlements && settlements.data);
+    } catch(e) { body.innerHTML = '<div class="status err">' + e.message + '</div>'; }
+  }
+
+  function railOptions(rails, selected) {
+    return (rails || []).map(r => `<option value="${r.id}" ${r.id === selected ? 'selected' : ''}>${r.name}${r.ready ? ' ✓' : ''}</option>`).join('');
+  }
+
+  function endpointOptionsForSettlement(endpoints, selected) {
+    return (endpoints || []).map(e => `<option value="${e.endpoint_id}" ${e.endpoint_id === selected ? 'selected' : ''}>${e.name} (${e.protocol})</option>`).join('');
+  }
+
+  function renderSettlementPanel(rails, endpoints, settlements) {
+    const rows = (settlements || []).map(s => `<tr><td>${s.settlement_id}</td><td>${s.rail}</td><td>$${Number(s.amount_cents)/100}</td><td><span class="badge ${s.status}">${s.status}</span></td><td>${s.source_id || ''}</td><td>${s.error_message || ''}</td><td><button class="btn btn-sm" onclick="executeSettlement('${s.settlement_id}')">Execute</button><button class="btn btn-sm" onclick="cancelSettlement('${s.settlement_id}')">Cancel</button></td></tr>`).join('') || '<tr><td colspan="7" class="muted">No settlements yet</td></tr>';
+    const railList = (rails || []).map(r => `<tr><td>${r.id}</td><td>${r.name}</td><td><span class="badge ${r.ready ? 'active' : 'inactive'}">${r.ready ? 'ready' : 'not ready'}</span></td><td>${r.needs.join(', ')}</td></tr>`).join('') || '<tr><td colspan="4" class="muted">No rails configured</td></tr>';
+    return '<div style="display:flex; flex-direction:column; gap:12px;">' +
+      '<div class="card" style="background:#0b1220;">' +
+        '<h3>Create Settlement</h3>' +
+        '<div class="token-bar"><select id="setl-rail" onchange="toggleSettlementFields()">' + railOptions(rails) + '</select>' +
+        '<select id="setl-endpoint" class="hidden" style="flex:1">' + endpointOptionsForSettlement(endpoints) + '</select></div>' +
+        '<div class="token-bar"><input id="setl-source" style="flex:1" placeholder="Source cash account ID (e.g. CA-OPERATING)" /><input id="setl-amount" type="number" step="0.01" style="flex:1" placeholder="Amount USD" /></div>' +
+        '<div class="token-bar"><input id="setl-creditor-name" style="flex:1" placeholder="Creditor / beneficiary name" /><input id="setl-creditor-account" style="flex:1" placeholder="Account number / wallet" /></div>' +
+        '<div class="token-bar"><input id="setl-creditor-routing" style="flex:1" placeholder="Routing / BIC / chain" /><input id="setl-creditor-bank" style="flex:1" placeholder="Bank name" /></div>' +
+        '<div class="token-bar"><input id="setl-debtor-name" style="flex:1" placeholder="Debtor name (optional)" /><input id="setl-debtor-account" style="flex:1" placeholder="Debtor account (optional)" /></div>' +
+        '<div class="token-bar"><input id="setl-connector" class="hidden" style="flex:1" placeholder="Open banking connector (default generic_rest)" /></div>' +
+        '<div><textarea id="setl-desc" rows="2" style="width:100%" placeholder="Description / remittance"></textarea></div>' +
+        '<button class="btn" onclick="createSettlement()">Create Settlement</button>' +
+        '<div id="setl-create-status" class="status hidden"></div>' +
+      '</div>' +
+      '<div class="card" style="background:#0b1220;">' +
+        '<h3>Settlement Rails</h3>' +
+        '<table class="table"><thead><tr><th>Rail</th><th>Name</th><th>Ready</th><th>Needs</th></tr></thead><tbody>' + railList + '</tbody></table>' +
+      '</div>' +
+      '<div class="card" style="background:#0b1220;">' +
+        '<h3>Settlements Queue <button class="btn btn-sm" onclick="pollSettlements()">Poll</button></h3>' +
+        '<table class="table"><thead><tr><th>ID</th><th>Rail</th><th>Amount</th><th>Status</th><th>Child ID</th><th>Error</th><th></th></tr></thead><tbody>' + rows + '</tbody></table>' +
+      '</div>' +
+    '</div>';
+  }
+
+  function toggleSettlementFields() {
+    const rail = el('setl-rail').value;
+    const ep = el('setl-endpoint');
+    const conn = el('setl-connector');
+    if (ep) ep.classList.toggle('hidden', rail !== 'external_endpoint');
+    if (conn) conn.classList.toggle('hidden', rail !== 'open_banking' && rail !== 'iso20022');
+  }
+
+  async function createSettlement() {
+    const status = el('setl-create-status');
+    status.classList.add('hidden');
+    try {
+      const rail = el('setl-rail').value;
+      const body = {
+        rail,
+        sourceAccountId: el('setl-source').value.trim() || undefined,
+        amount: Number(el('setl-amount').value),
+        creditorName: el('setl-creditor-name').value.trim(),
+        creditorAccount: el('setl-creditor-account').value.trim() || undefined,
+        creditorRouting: el('setl-creditor-routing').value.trim() || undefined,
+        creditorBank: el('setl-creditor-bank').value.trim() || undefined,
+        debtorName: el('setl-debtor-name').value.trim() || undefined,
+        debtorAccount: el('setl-debtor-account').value.trim() || undefined,
+        description: el('setl-desc').value.trim(),
+      };
+      if (rail === 'external_endpoint') body.endpointId = el('setl-endpoint').value;
+      if (rail === 'open_banking' || rail === 'iso20022') body.connector = el('setl-connector').value.trim() || 'generic_rest';
+      const res = await api('/api/finops/settlements', { method: 'POST', body: JSON.stringify(body) });
+      show('Settlement created: ' + res.data.settlement_id + ' (' + res.data.status + ')', false, 'setl-create-status');
+      openSettlementPanel();
+    } catch(e) { show(e.message, true, 'setl-create-status'); }
+    status.classList.remove('hidden');
+  }
+
+  async function executeSettlement(id) {
+    try {
+      const res = await api('/api/finops/settlements/' + id + '/execute', { method: 'POST' });
+      show('Settlement ' + id + ' status: ' + res.data.status, res.data.status === 'failed', 'setl-create-status');
+      openSettlementPanel();
+    } catch(e) { show(e.message, true, 'setl-create-status'); }
+  }
+
+  async function cancelSettlement(id) {
+    if (!confirm('Cancel settlement ' + id + '?')) return;
+    try {
+      await api('/api/finops/settlements/' + id + '/cancel', { method: 'POST' });
+      openSettlementPanel();
+    } catch(e) { show(e.message, true, 'setl-create-status'); }
+  }
+
+  async function pollSettlements() {
+    try {
+      const res = await api('/api/finops/settlements/poll', { method: 'POST' });
+      show('Polled ' + (res.data || []).length + ' settlements', false, 'setl-create-status');
+      openSettlementPanel();
+    } catch(e) { show(e.message, true, 'setl-create-status'); }
   }
 
   // ─── Compliance Engine Panel ────────────────────────────────────────────────

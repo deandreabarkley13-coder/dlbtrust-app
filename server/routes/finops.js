@@ -48,6 +48,7 @@ const { TrustBankEngine } = require('../integrations/dapp/trustBankEngine');
 const { WealthManagementEngine } = require('../integrations/dapp/wealthManagementEngine');
 const { TrustAggregatorEngine } = require('../integrations/dapp/trustAggregatorEngine');
 const { ExternalEndpointEngine } = require('../integrations/dapp/externalEndpointEngine');
+const { SettlementEngine } = require('../integrations/dapp/settlementEngine');
 let CashEngine;
 try { ({ CashEngine } = require('../integrations/cash/cashEngine')); } catch (e) { CashEngine = null; }
 
@@ -1724,6 +1725,50 @@ router.get('/external-payments/:id', operatorAuth, async (req, res) => {
 
 router.post('/external-payments/:id/send', operatorAuth, async (req, res) => {
   try { res.json({ success: true, data: await ExternalEndpointEngine.sendPayment(req.params.id) }); } catch (err) { sendError(res, err); }
+});
+
+// ═════════════════════════════════════════════════════════════════════════════
+// Settlement Engine
+// ═════════════════════════════════════════════════════════════════════════════
+
+router.get('/settlements/dashboard', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await SettlementEngine.getDashboard() }); } catch (err) { sendError(res, err); }
+});
+
+router.get('/settlements/rails', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await SettlementEngine.getRails() }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/settlements', operatorAuth, async (req, res) => {
+  try { res.status(201).json({ success: true, data: await SettlementEngine.createSettlement(req.body) }); } catch (err) { sendError(res, err); }
+});
+
+router.get('/settlements', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await SettlementEngine.listSettlements({ status: req.query.status, rail: req.query.rail, limit: req.query.limit }) }); } catch (err) { sendError(res, err); }
+});
+
+router.get('/settlements/:id', operatorAuth, async (req, res) => {
+  try {
+    const data = await SettlementEngine.getSettlement(req.params.id);
+    if (!data) return res.status(404).json({ success: false, error: 'Not found' });
+    res.json({ success: true, data });
+  } catch (err) { sendError(res, err); }
+});
+
+router.post('/settlements/:id/execute', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await SettlementEngine.executeSettlement(req.params.id) }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/settlements/:id/cancel', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await SettlementEngine.cancelSettlement(req.params.id) }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/settlements/:id/confirm', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await SettlementEngine.confirmSettlement(req.params.id, req.body || {}) }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/settlements/poll', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await SettlementEngine.pollSettlements() }); } catch (err) { sendError(res, err); }
 });
 
 module.exports = router;
