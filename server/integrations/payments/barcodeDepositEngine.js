@@ -163,7 +163,7 @@ class BarcodeDepositEngine {
       reference: parsed.reference || parsed.key || null,
       notes: parsed.note || parsed.purpose || null,
       parsed: JSON.stringify(parsed),
-      target_account_id: targetAccountId || null,
+      target_account_id: (targetAccountId || '').trim().toUpperCase().replace(/\s+/g, '-') || null,
       initiated_by: initiatedBy,
     };
 
@@ -201,7 +201,8 @@ class BarcodeDepositEngine {
     if (!row) throw new Error('Deposit not found');
     if (!['pending','approved'].includes(row.status)) throw new Error(`Deposit status is ${row.status}`);
 
-    const target = targetAccountId || row.target_account_id || 'CA-OPERATING';
+    const targetRaw = (targetAccountId || row.target_account_id || 'CA-OPERATING').trim().toUpperCase().replace(/\s+/g, '-');
+    const target = targetRaw;
 
     // Create an external-source cash movement representing the deposit
     const client = await pool.connect();
