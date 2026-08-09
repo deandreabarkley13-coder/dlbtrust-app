@@ -37,6 +37,12 @@ try { ({ BtcPayEngine } = require('../payments/btcPayEngine')); } catch (e) { Bt
 let SpritzEngine;
 try { ({ SpritzEngine } = require('../payments/spritzEngine')); } catch (e) { SpritzEngine = null; }
 
+let ComplianceEngine;
+try { ({ ComplianceEngine } = require('../compliance/complianceEngine')); } catch (e) { ComplianceEngine = null; }
+
+let LiliBankEngine;
+try { ({ LiliBankEngine } = require('../payments/liliBankEngine')); } catch (e) { LiliBankEngine = null; }
+
 function id(prefix = 'PAY') { return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 8).toUpperCase()}`; }
 function isAddress(v) { return viem && viem.isAddress && viem.isAddress(v); }
 function safeJson(obj) { return JSON.stringify(obj, (k, v) => typeof v === 'bigint' ? String(v) : v); }
@@ -160,6 +166,25 @@ class PayoutCenterEngine {
       await query(`INSERT INTO dapp_payout_center (${cols}) VALUES (${vals})`, keys.map(k => (k === 'tx_data' || k === 'metadata') ? safeJson(base[k]) : base[k]));
     }, () => {});
 
+    // KYC/AML/Sanctions screening before moving real value
+    if (ComplianceEngine && process.env.COMPLIANCE_SCREEN_PAYOUTS !== 'false') {
+      const screening = await ComplianceEngine.screenRecipientForPayout({
+        fullName: railOptions.fullName || railOptions.recipientName,
+        businessName: railOptions.businessName || railOptions.recipientBusinessName,
+        email: recipient.user ? recipient.user.email : recipientIdentifier,
+        bankAccount: railOptions.accountNumber || railOptions.bankAccount,
+        routingNumber: railOptions.routingNumber || railOptions.routing,
+        country: railOptions.country || 'US',
+        address: railOptions.address,
+        dateOfBirth: railOptions.dateOfBirth,
+      }, amount, sourceAccountId);
+      ComplianceEngine.mustPass(screening);
+      base.metadata = { ...base.metadata, complianceScreeningId: screening.screening_id };
+      await withFallback(async () => {
+        await query(`UPDATE dapp_payout_center SET metadata = $1 WHERE id = $2`, [safeJson(base.metadata), base.id]);
+      }, () => {});
+    }
+
     let result = null;
     // Reuse the latest valid DEX pool for this asset to avoid paying creation gas each time.
     if (chosenRail === 'dex' && !railOptions.poolAddress) {
@@ -259,6 +284,27 @@ class PayoutCenterEngine {
         });
         base.tx_hash = result.payment && (result.payment.payHash || result.payment.approveHash);
         base.status = result.payment && result.payment.payHash ? 'completed' : 'pending';
+        break;
+      }
+      case 'lili':
+      case 'lili_bank': {
+        if (!LiliBankEngine) throw new Error('LiliBankEngine not available');
+        result = await LiliBankEngine.createPayment({
+          amount,
+          currency: asset.toUpperCase() === 'USD' ? 'USD' : 'USD',
+          recipientName: railOptions.fullName || railOptions.recipientName || railOptions.businessName || railOptions.recipientBusinessName,
+          recipientAccount: railOptions.accountNumber || railOptions.account,
+          recipientRouting: railOptions.routingNumber || railOptions.routing,
+          recipientBank: railOptions.bankName,
+          recipientEmail: railOptions.email,
+          sourceAccountId,
+          liliAccountId: railOptions.liliAccountId,
+          liliBusinessUserId: railOptions.liliBusinessUserId,
+          speed: railOptions.speed || 'standard',
+          initiatedBy: railOptions.initiatedBy,
+        });
+        base.tx_hash = result.payment_id;
+        base.status = result.status === 'completed' ? 'completed' : (result.status === 'api_pending' ? 'api_pending' : 'manual_pending');
         break;
       }
       default:

@@ -34,6 +34,8 @@ function getSwapAbi() {
   return getArtifact('contracts_ModuleTokenSwap_sol_ModuleTokenSwap.abi');
 }
 
+const ERC20_DECIMALS_ABI = [{ type: 'function', name: 'decimals', inputs: [], outputs: [{ type: 'uint8' }], stateMutability: 'view' }];
+
 function chainById(id) {
   switch (id) {
     case 1: return chains?.mainnet;
@@ -105,8 +107,8 @@ class ModuleP2PSwapEngine {
     if (!tokenIn || !tokenOut || !amountIn || !amountOut || !recipient) throw new Error('tokenIn, amountIn, tokenOut, amountOut, recipient required');
     const { account, publicClient, walletClient } = this._clients(cfg);
     const abi = getSwapAbi();
-    const decimalsIn = 6; // module tokens use 6 decimals
-    const decimalsOut = 6; // USDC
+    const decimalsIn = Number(await publicClient.readContract({ address: tokenIn, abi: ERC20_DECIMALS_ABI, functionName: 'decimals' }).catch(() => 6));
+    const decimalsOut = Number(await publicClient.readContract({ address: tokenOut, abi: ERC20_DECIMALS_ABI, functionName: 'decimals' }).catch(() => 6));
     const rawIn = viem.parseUnits(String(amountIn), decimalsIn);
     const rawOut = viem.parseUnits(String(amountOut), decimalsOut);
 

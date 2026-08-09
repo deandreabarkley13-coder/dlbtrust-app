@@ -23,6 +23,8 @@ try { viem = require('viem'); ({ privateKeyToAccount } = require('viem/accounts'
 function str(name, fallback = '') { return (process.env[name] || fallback).trim(); }
 function bool(name, fallback = false) { const v = process.env[name]; return v ? String(v).toLowerCase() === 'true' : fallback; }
 
+const MAINNET_USDS = '0xdC035D45d973E3EC169d2276DDab16f1e407384F';
+
 function id(prefix = 'SDEX') { return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 8).toUpperCase()}`; }
 
 function getOperatorAddress(cfg) {
@@ -71,7 +73,9 @@ class StablecoinDexEngine {
       rpcUrl: cfg.rpcUrl,
       privateKey: cfg.privateKey,
       usdcAddress: cfg.usdcAddress,
-      usdsAddress: str('DAPP_USDS_ADDRESS', ''),
+      usdsAddress: str('DAPP_USDS_ADDRESS', cfg.chainId === 1 ? MAINNET_USDS : ''),
+      dlbusdAddress: str('DAPP_DLBUSD_ADDRESS', ''),
+      poolAddress: str('BOND_DEX_ADDRESS', ''),
       wethAddress: cfg.wethAddress,
       daiAddress: str('DAPP_DAI_ADDRESS', '0x6B175474E89094C44Da98b954EedeAC495271d0F'),
       operatorAddress: cfg.operatorAddress || getOperatorAddress(cfg),
@@ -114,8 +118,33 @@ class StablecoinDexEngine {
 
   static async getOrCreateDLBUSDToken() {
     if (!BondTokenizationEngine) throw new Error('BondTokenizationEngine not available');
-    let token = await BondTokenizationEngine.getTokenBySymbol('DLBUSD');
-    if (token && token.token_address && !this.getConfig().shadow) {
+    const cfg = this.getConfig();
+    let tokenAddress = cfg.dlbusdAddress;
+
+    if (!tokenAddress && cfg.poolAddress && !cfg.shadow && viem) {
+      try {
+        const { publicClient } = walletClient();
+        const bondDexAbi = [
+          { type: 'function', name: 'token0', inputs: [], outputs: [{ type: 'address' }], stateMutability: 'view' },
+          { type: 'function', name: 'token1', inputs: [], outputs: [{ type: 'address' }], stateMutability: 'view' },
+        ];
+        const [t0, t1] = await Promise.all([
+          publicClient.readContract({ address: cfg.poolAddress, abi: bondDexAbi, functionName: 'token0' }),
+          publicClient.readContract({ address: cfg.poolAddress, abi: bondDexAbi, functionName: 'token1' }),
+        ]);
+        const wethLower = (cfg.wethAddress || '').toLowerCase();
+        const candidate = String(t0).toLowerCase() === wethLower ? t1 : t0;
+        if (candidate && String(candidate).toLowerCase() !== wethLower) tokenAddress = candidate;
+      } catch (e) { console.warn('[StablecoinDexEngine] pool DLBUSD token detection failed:', e.message); }
+    }
+
+    let token = null;
+    if (tokenAddress) {
+      try { token = await BondTokenizationEngine.getTokenByAddress(tokenAddress); } catch (e) { /* ignore */ }
+    }
+    if (!token) token = await BondTokenizationEngine.getTokenBySymbol('DLBUSD');
+
+    if (token && token.token_address && !cfg.shadow) {
       const { publicClient } = walletClient();
       const code = await publicClient.getBytecode({ address: token.token_address }).catch(() => '0x');
       if (!code || code === '0x') token = null;
@@ -124,6 +153,7 @@ class StablecoinDexEngine {
       token = await BondTokenizationEngine.createToken({
         tokenName: 'DLBUSD',
         tokenSymbol: 'DLBUSD',
+        tokenAddress: tokenAddress || undefined,
         decimals: 6,
       });
     }
@@ -134,7 +164,7 @@ class StablecoinDexEngine {
     const cfg = this.getConfig();
     const t = String(targetAsset).toUpperCase();
     if (t === 'USD' || t === 'USDC') return cfg.usdcAddress;
-    if (t === 'USDS') return cfg.usdsAddress || cfg.usdcAddress;
+    if (t === 'USDS') return cfg.usdsAddress || (cfg.chainId === 1 ? MAINNET_USDS : cfg.usdcAddress);
     if (t === 'ETH' || t === 'WETH') return cfg.wethAddress || '';
     if (t === 'DAI') return cfg.daiAddress || '';
     return '';
@@ -142,8 +172,7 @@ class StablecoinDexEngine {
 
   static targetTokenDecimals(targetAsset) {
     const t = String(targetAsset).toUpperCase();
-    if (t === 'ETH' || t === 'WETH') return 18;
-    if (t === 'DAI' || t === 'USDS') return 18;
+    if (t === 'ETH' || t === 'WETH' || t === 'DAI' || t === 'USDS') return 18;
     return 6;
   }
 
@@ -366,7 +395,7 @@ class StablecoinDexEngine {
 
     // 1. Resolve or create the DEX pool BEFORE debiting the source ledger
     const targetUpper = (targetAsset || '').toUpperCase();
-    const needsWethPool = ['DAI','ETH','USDC','USDS'].includes(targetUpper);
+    const needsWethPool = ['DAI', 'ETH', 'USDS', 'USDC'].includes(targetUpper);
     const poolTargetAsset = needsWethPool ? 'WETH' : targetAsset;
     let resolvedPool = poolAddress;
     let poolInfo = null;
@@ -395,13 +424,13 @@ class StablecoinDexEngine {
     // 3. Execute the DEX swap (operator relayer pays gas; user is gasless)
     let isEthTarget = targetUpper === 'ETH';
     let isDaiTarget = targetUpper === 'DAI';
-    let isUsdcTarget = targetUpper === 'USDC';
     let isUsdsTarget = targetUpper === 'USDS';
-    let needsUniswapRoute = isDaiTarget || isUsdcTarget || isUsdsTarget;
+    let isUsdcTarget = targetUpper === 'USDC';
     let swapTarget = needsWethPool ? 'WETH' : targetAsset;
-    // For WETH-routed outputs keep WETH in the operator wallet until the final Uniswap swap.
+    // For WETH/ETH/DAI/USDS routes the first leg (DLBUSD -> WETH) lands in the operator wallet
+    // so the operator can perform the second leg or unwrap without needing gas from the recipient.
     let swapRecipient = needsWethPool ? cfg.operatorAddress : (recipient || cfg.operatorAddress);
-    let quote, swap, finalSwap;
+    let quote, swap, daiSwap, usdsSwap, usdcSwap;
     try {
       const swapResult = await this.swap({
         amount,
@@ -413,11 +442,11 @@ class StablecoinDexEngine {
       swap = swapResult.swap;
     } catch (swapErr) {
       // Try an ETH fallback so bond interest is not left stranded as DLBUSD in the operator wallet.
-      if (isEthTarget || needsUniswapRoute) {
-        console.warn('[StablecoinDexEngine] primary swap failed and target is WETH/ETH/DAI/USDC/USDS; DLBUSD held by operator:', swapErr.message);
+      if (needsWethPool) {
+        console.warn('[StablecoinDexEngine] primary WETH-route swap failed; DLBUSD held by operator:', swapErr.message);
         throw swapErr;
       }
-      console.warn('[StablecoinDexEngine] primary swap failed, trying ETH fallback:', swapErr.message);
+      console.warn('[StablecoinDexEngine] primary swap failed, trying WETH fallback:', swapErr.message);
       try {
         const ethSwapResult = await this.swap({
           amount,
@@ -429,29 +458,31 @@ class StablecoinDexEngine {
         swap = ethSwapResult.swap;
         isEthTarget = true;
       } catch (ethErr) {
-        console.warn('[StablecoinDexEngine] ETH fallback swap failed; DLBUSD held by operator:', ethErr.message);
+        console.warn('[StablecoinDexEngine] WETH fallback swap failed; DLBUSD held by operator:', ethErr.message);
         throw ethErr;
       }
     }
 
-    // 3b. For DAI/USDC/USDS payouts, route the WETH through Uniswap V2 to the target token.
-    if (!cfg.shadow && needsUniswapRoute) {
-      const targetAddress = this.targetTokenAddress(targetAsset);
+    // 3b. Route WETH through Uniswap V2 for DAI, USDC, or USDS payouts.
+    if (!cfg.shadow && (isDaiTarget || isUsdcTarget || isUsdsTarget)) {
       const wethAddress = cfg.wethAddress;
-      const decimalsOut = this.targetTokenDecimals(targetAsset);
-      if (!targetAddress || !wethAddress) throw new Error(`${targetAsset} or WETH address not configured`);
+      const outAddress = isDaiTarget ? this.targetTokenAddress('DAI') : (isUsdsTarget ? this.targetTokenAddress('USDS') : cfg.usdcAddress);
+      if (!outAddress || !wethAddress) throw new Error(`${targetAsset} or WETH address not configured`);
+      const decimalsOut = isDaiTarget || isUsdsTarget ? 18 : 6;
       try {
-        finalSwap = await DexSwapEngine.swapOnUniswapV2({
-          tokenIn: wethAddress,
-          tokenOut: targetAddress,
+        const swapResult = await DexSwapEngine.swapOnUniswapV2({
+          path: [wethAddress, outAddress],
           amountIn: swap.amountOut,
           recipient: recipient || cfg.operatorAddress,
           decimalsIn: 18,
           decimalsOut,
         });
-      } catch (routeErr) {
-        console.warn(`[StablecoinDexEngine] WETH -> ${targetAsset} Uniswap swap failed:`, routeErr.message);
-        throw routeErr;
+        if (isDaiTarget) daiSwap = swapResult;
+        else if (isUsdsTarget) usdsSwap = swapResult;
+        else usdcSwap = swapResult;
+      } catch (secondaryErr) {
+        console.warn(`[StablecoinDexEngine] WETH -> ${targetAsset} Uniswap swap failed:`, secondaryErr.message);
+        throw secondaryErr;
       }
     }
 
@@ -460,8 +491,8 @@ class StablecoinDexEngine {
       try { unwrap = await this.unwrapWethToEth({ amount: swap.amountOut, recipient: recipient || cfg.operatorAddress }); } catch (e) { unwrap = { skipped: false, error: e.message }; }
     }
 
-    const actualTargetAsset = isEthTarget ? 'ETH' : (needsUniswapRoute ? targetAsset : targetAsset);
-    const actualAmountOut = isEthTarget ? (unwrap.amountEth || swap.amountOut || 0) : (needsUniswapRoute && finalSwap ? finalSwap.amountOut : (swap.amountOut || 0));
+    const actualTargetAsset = isEthTarget ? 'ETH' : (isDaiTarget ? 'DAI' : (isUsdsTarget ? 'USDS' : (isUsdcTarget ? 'USDC' : targetAsset)));
+    const actualAmountOut = isEthTarget ? (unwrap.amountEth || swap.amountOut || 0) : (isDaiTarget ? ((daiSwap && daiSwap.amountOut) || 0) : (isUsdsTarget ? ((usdsSwap && usdsSwap.amountOut) || 0) : (isUsdcTarget ? ((usdcSwap && usdcSwap.amountOut) || 0) : (swap.amountOut || 0))));
 
     return {
       operationId,
@@ -478,7 +509,9 @@ class StablecoinDexEngine {
       poolCreated: !!poolInfo,
       quote,
       swap,
-      finalSwap,
+      daiSwap,
+      usdsSwap,
+      usdcSwap,
       unwrap,
       recipient: recipient || cfg.operatorAddress,
       amountOut: actualAmountOut,

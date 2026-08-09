@@ -24,7 +24,6 @@ contract SovereignTrustPaymaster is IPaymaster06 {
     address public immutable entryPoint;
     address public owner;
     mapping(address => bool) public whitelisted;
-    mapping(address => uint256) public senderNonce;
 
     uint256 private constant VALID_TIMESTAMP_OFFSET = 20;
     uint256 private constant SIGNATURE_OFFSET = 84;
@@ -64,33 +63,22 @@ contract SovereignTrustPaymaster is IPaymaster06 {
     }
 
     /**
-     * @notice Copy the userOp calldata up to (but not including) paymasterAndData.
-     * This is the same encoding the EntryPoint uses, minus the paymasterAndData field.
-     */
-    function pack(UserOperation06 calldata userOp) internal pure returns (bytes memory ret) {
-        bytes calldata pnd = userOp.paymasterAndData;
-        assembly {
-            let ofs := userOp
-            let len := sub(sub(pnd.offset, ofs), 32)
-            ret := mload(0x40)
-            mstore(0x40, add(ret, add(len, 32)))
-            mstore(ret, len)
-            calldatacopy(add(ret, 32), ofs, len)
-        }
-    }
-
-    /**
      * @notice Hash used by the off-chain service and on-chain verification.
-     * Excludes paymasterAndData and signature, and includes a per-sender nonce
-     * and validity time window to prevent replay.
+     * Excludes paymasterAndData and signature, and hashes initCode/callData
+     * to avoid circular dependencies on paymasterAndData. Includes a validity
+     * window, the paymaster address, and chain ID to prevent replay.
      */
     function getHash(UserOperation06 calldata userOp, uint48 validUntil, uint48 validAfter) public view returns (bytes32) {
+        // Exclude gas/fee fields and the paymasterAndData/signature so the
+        // operator signature remains valid across bundler gas re-estimation.
         return keccak256(
             abi.encode(
-                pack(userOp),
+                userOp.sender,
+                userOp.nonce,
+                keccak256(userOp.initCode),
+                keccak256(userOp.callData),
                 block.chainid,
                 address(this),
-                senderNonce[userOp.sender],
                 validUntil,
                 validAfter
             )
@@ -103,7 +91,13 @@ contract SovereignTrustPaymaster is IPaymaster06 {
 
     function parsePaymasterAndData(bytes calldata paymasterAndData) public pure returns (uint48 validUntil, uint48 validAfter, bytes calldata signature) {
         require(paymasterAndData.length >= SIGNATURE_OFFSET, "SovereignTrustPaymaster: bad paymasterAndData");
-        (validUntil, validAfter) = abi.decode(paymasterAndData[VALID_TIMESTAMP_OFFSET:SIGNATURE_OFFSET], (uint48, uint48));
+        // validityBytes are two 32-byte words with uint48 values padded to the right.
+        // Read the low 48 bits of each word directly from the calldata slice.
+        assembly {
+            let start := add(paymasterAndData.offset, VALID_TIMESTAMP_OFFSET)
+            validUntil := and(calldataload(start), 0xffffffffffff)
+            validAfter := and(calldataload(add(start, 32)), 0xffffffffffff)
+        }
         signature = paymasterAndData[SIGNATURE_OFFSET:];
     }
 
@@ -132,11 +126,10 @@ contract SovereignTrustPaymaster is IPaymaster06 {
         address signer = ecrecover(hash, v, r, s);
         require(signer == owner, "SovereignTrustPaymaster: invalid signature");
 
-        senderNonce[userOp.sender]++;
-
-        // validationData = validUntil (6 bytes) | validAfter (6 bytes) | 0 (20 bytes sig-fail)
-        uint256 validUntilBits = uint256(validUntil) << 208;
-        uint256 validAfterBits = uint256(validAfter) << 160;
+        // Layout matches Helpers._parseValidationData: bits 0..159 aggregator (0 here),
+        // bits 160..207 validUntil, bits 208..255 validAfter.
+        uint256 validUntilBits = uint256(validUntil) << 160;
+        uint256 validAfterBits = uint256(validAfter) << 208;
         validationData = validUntilBits | validAfterBits;
 
         return ("", validationData);

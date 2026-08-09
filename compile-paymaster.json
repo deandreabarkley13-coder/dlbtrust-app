@@ -1,0 +1,20 @@
+{
+  "language": "Solidity",
+  "sources": {
+    "contracts/SovereignTrustPaymaster.sol": {
+      "urls": ["contracts/SovereignTrustPaymaster.sol"]
+    }
+  },
+  "settings": {
+    "viaIR": true,
+    "optimizer": {
+      "enabled": true,
+      "runs": 200
+    },
+    "outputSelection": {
+      "*": {
+        "*": ["abi", "evm.bytecode.object"]
+      }
+    }
+  }
+}

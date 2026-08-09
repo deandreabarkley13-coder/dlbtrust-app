@@ -265,6 +265,66 @@ async function initializeDatabase() {
   } catch(e) { console.warn('[wire] table init:', e.message); }
 
   try {
+    var WireOriginationEngine = require(path.join(HD, 'server', 'integrations', 'dapp', 'wireOriginationEngine')).WireOriginationEngine;
+    await WireOriginationEngine.ensureTables();
+    console.log('[wire-origination] tables ensured');
+  } catch(e) { console.warn('[wire-origination] table init:', e.message); }
+
+  try {
+    var ElectronicMoneyEngine = require(path.join(HD, 'server', 'integrations', 'dapp', 'electronicMoneyEngine')).ElectronicMoneyEngine;
+    await ElectronicMoneyEngine.ensureTables();
+    console.log('[electronic-money] tables ensured');
+  } catch(e) { console.warn('[electronic-money] table init:', e.message); }
+
+  try {
+    var OpenBankingEngine = require(path.join(HD, 'server', 'integrations', 'dapp', 'openBankingEngine')).OpenBankingEngine;
+    await OpenBankingEngine.ensureTables();
+    console.log('[open-banking] tables ensured');
+  } catch(e) { console.warn('[open-banking] table init:', e.message); }
+
+  try {
+    var TrustDepositEngine = require(path.join(HD, 'server', 'integrations', 'dapp', 'trustDepositEngine')).TrustDepositEngine;
+    await TrustDepositEngine.ensureTables();
+    console.log('[trust-deposit] tables ensured');
+  } catch(e) { console.warn('[trust-deposit] table init:', e.message); }
+
+  try {
+    var FineractPayoutBridge = require(path.join(HD, 'server', 'integrations', 'fineract', 'fineractPayoutBridge')).FineractPayoutBridge;
+    await FineractPayoutBridge.ensureTables();
+    console.log('[fineract-payout] tables ensured');
+  } catch(e) { console.warn('[fineract-payout] table init:', e.message); }
+
+  try {
+    var SkrillLinkEngine = require(path.join(HD, 'server', 'integrations', 'payments', 'skrillLinkEngine')).SkrillLinkEngine;
+    await SkrillLinkEngine.ensureTables();
+    console.log('[skrill-link] tables ensured');
+  } catch(e) { console.warn('[skrill-link] table init:', e.message); }
+
+  try {
+    var BarcodeDepositEngine = require(path.join(HD, 'server', 'integrations', 'payments', 'barcodeDepositEngine')).BarcodeDepositEngine;
+    await BarcodeDepositEngine.ensureTables();
+    console.log('[barcode-deposit] tables ensured');
+  } catch(e) { console.warn('[barcode-deposit] table init:', e.message); }
+
+  try {
+    var WebPaymentRailEngine = require(path.join(HD, 'server', 'integrations', 'payments', 'webPaymentRailEngine')).WebPaymentRailEngine;
+    await WebPaymentRailEngine.ensureTables();
+    console.log('[web-payment-rail] tables ensured');
+  } catch(e) { console.warn('[web-payment-rail] table init:', e.message); }
+
+  try {
+    var LiliBankEngine = require(path.join(HD, 'server', 'integrations', 'payments', 'liliBankEngine')).LiliBankEngine;
+    await LiliBankEngine.ensureTables();
+    console.log('[lili-bank] tables ensured');
+  } catch(e) { console.warn('[lili-bank] table init:', e.message); }
+
+  try {
+    var ComplianceEngine = require(path.join(HD, 'server', 'integrations', 'compliance', 'complianceEngine')).ComplianceEngine;
+    await ComplianceEngine.ensureTables();
+    console.log('[compliance] tables ensured');
+  } catch(e) { console.warn('[compliance] table init:', e.message); }
+
+  try {
     var TrusteeAgent = require(path.join(HD, 'server', 'integrations', 'agents', 'trusteeAgent')).TrusteeAgent;
     var BookkeepingAgent = require(path.join(HD, 'server', 'integrations', 'agents', 'bookkeepingAgent')).BookkeepingAgent;
     await TrusteeAgent.ensureTables();

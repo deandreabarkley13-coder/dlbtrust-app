@@ -13,6 +13,7 @@
 const express = require('express');
 const router  = express.Router();
 const { FineractClient } = require('../integrations/fineract/fineractClient');
+const { FineractPayoutBridge } = require('../integrations/fineract/fineractPayoutBridge');
 
 // ─── GET /api/fineract/health ─────────────────────────────────────────────────
 router.get('/health', async (req, res) => {
@@ -243,6 +244,37 @@ router.post('/resilience/clean-locks', requireAdminForResilience, async (req, re
   } catch (err) {
     res.status(500).json({ success: false, error: err.message });
   }
+});
+
+// ─── Fineract / Mifos Payout Bridge ─────────────────────────────────────────
+
+router.get('/payouts', async (req, res) => {
+  try { res.json({ success: true, data: await FineractPayoutBridge.listPayouts(req.query) }); } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+router.get('/payouts/:id', async (req, res) => {
+  try {
+    const data = await FineractPayoutBridge.getPayout(req.params.id);
+    if (!data) return res.status(404).json({ success: false, error: 'Payout not found' });
+    res.json({ success: true, data });
+  } catch (err) { res.status(500).json({ success: false, error: err.message }); }
+});
+
+router.post('/payouts', async (req, res) => {
+  try { res.status(201).json({ success: true, data: await FineractPayoutBridge.createPayout({ ...req.body, initiatedBy: req.user || 'api' }) }); }
+  catch (err) { res.status(400).json({ success: false, error: err.message }); }
+});
+
+router.post('/payouts/:id/send', async (req, res) => {
+  try { res.json({ success: true, data: await FineractPayoutBridge.sendPayout(req.params.id) }); }
+  catch (err) { res.status(400).json({ success: false, error: err.message }); }
+});
+
+router.post('/payouts/:id/cancel', async (req, res) => {
+  try { res.json({ success: true, data: await FineractPayoutBridge.cancelPayout(req.params.id) }); }
+  catch (err) { res.status(400).json({ success: false, error: err.message }); }
 });
 
 module.exports = router;

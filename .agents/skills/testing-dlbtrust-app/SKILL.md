@@ -292,6 +292,194 @@ SELECT fit_id, type, amount_cents, name, memo FROM ofx_transactions;
   5. Click **Signal Intent (Base gas)**. Without Base ETH in `DAPP_OPERATOR_ADDRESS`, this should fail with a `gas required exceeds allowance (0)` message; the UI must not crash.
 - If testing the full happy path, fund the operator wallet with Base ETH and check `GET /api/finops/peer-onramp/intents` afterward for the recorded intent.
 
+## PR #264 — Fixed-Income Reconcile + Crypto Conversion (`devin/convert-fixed-income`)
+
+- The Fly deploy may be on `main` and not contain the new script. Deploy the branch before testing: `flyctl deploy --app dlbtrust-app --yes --local-only` from `/home/ubuntu/repos/dlbtrust-app` (requires `secret:org:FLY_API_TOKEN`).
+- The relevant UI is `https://dlbtrust-app.fly.dev/dapp/master-dashboard.html`:
+  - **Overview** shows aggregated fixed-income totals (all bonds).
+  - **Bond / Fixed Income** tab shows the `DLB-PRB` card with principal, accrued interest, total current value, next coupon, and coupon per period.
+  - **Master Wallets** tab shows the four master wallets; the Income Distribution Master lists `DAI`, `USDS`, `WETH`, and `DLBUSD` balances.
+- Tab buttons may not respond to mouse clicks; use `showTab('overview'|'masters'|'bonds'|'requests')` in the browser console to switch panels.
+- CLI conversion script: `node /app/server/scripts/convertFixedIncomeToCrypto.js DLB-PRB --target-asset=DAI --amount=0.01` (run via `flyctl ssh console -a dlbtrust-app -C '...'`):
+  - Uses `SourceOfFundsAdapter._fundSourceToTreasury({ sourceType: 'bond_interest', ... })` to debit bond accrued interest, then `StablecoinDexEngine.depositAndSwap` to mint DLBUSD, swap `DLBUSD -> WETH` on the BondDex pool, then `WETH -> DAI` on Uniswap V2.
+  - Add `--dry-run` to get a two-leg quote without broadcasting; add `--reconcile` to also run `BondTrustReconciliation.sync` (updates `trust_accounts` 1100/1200/4000 and zeros `CA-BOND-PROCEEDS`).
+  - A real conversion credits the Income Distribution Master internal ledger with `actualTargetAsset` and `amountOut`.
+- After a real conversion without `--reconcile`, run `POST /api/dapp/bonds/reconcile-trust` with `{"bondId":1}` to keep `trust_accounts` 1200/4000 in sync with `bond_balances`.
+- Useful API checks:
+  - `GET /api/dapp/bonds/portfolio` for DLB-PRB live metrics.
+  - `GET /api/dapp/source-of-funds` for trust account balances.
+  - `GET /api/dapp/master-wallets` for the Income Distribution Master asset balances.
+- Operator gas: the operator wallet (`0x3e53028...`) must have mainnet ETH for approval/swap transactions; current `DAPP_MAX_FEE_GWEI=3` makes conversions cheap at low base-fee periods.
+
+## PTC-backed Stablecoin (`/dapp/finops.html`)
+
+- Module card: **PTC Stablecoin** (`key:'ptc-stablecoin'`, `action:'openPtcStablecoinPanel'`) in `public/dapp/finops.html`.
+- Backend: `server/integrations/dapp/ptcStablecoinEngine.js` with routes in `server/routes/finops.js`:
+  - `GET /api/finops/ptc-stablecoin`
+  - `GET /api/finops/ptc-stablecoin/balance/:address`
+  - `POST /api/finops/ptc-stablecoin/deploy`
+  - `POST /api/finops/ptc-stablecoin/reserve-tokens`
+  - `POST /api/finops/ptc-stablecoin/reserve-tokens/default`
+  - `POST /api/finops/ptc-stablecoin/deposit`
+  - `POST /api/finops/ptc-stablecoin/deposit-all`
+  - `POST /api/finops/ptc-stablecoin/redeem`
+  - `POST /api/finops/ptc-stablecoin/transfer`
+  - `POST /api/finops/ptc-stablecoin/whitelist`
+- Expected live token/vault addresses are stored in `/data/ptc-stablecoin-state.json` on the Fly machine and returned by the `info()` method:
+  - Token `DLB-PTCUSD`: `0xb01e6280ffe6faac679a17b029df8e065e8d0002`
+  - Vault: `0xc8b2f6909b50a43ac839e74c3d0e82ae060094d1`
+- Read-only verification:
+  1. Load `/dapp/finops.html` and authenticate (trustee email/PIN or admin token in `dlb-admin-token`).
+  2. Because `resumeSession()` only auto-runs `loadAll()` for JWT sessions, admin-token users may need to call `loadAll()` from the console to populate card stats.
+  3. Confirm the **PTC Stablecoin** card shows a non-zero stat (e.g. `$211,187,497` from `totalSupply`).
+  4. Click the card; the panel should show token, vault, total supply, owner, and reserve tokens (DLB-BOND, DLB-FIXED-INCOME, DLB-TREASURY, DLB-TRUST, DLB-CORE) with vault balances.
+  5. `curl -H 'x-admin-token: dlb-admin-2026-trust' https://dlbtrust-app.fly.dev/api/finops/ptc-stablecoin` should return `deployed: true`, matching token/vault, `totalSupply > 0`, and reserves.
+  6. `curl -H 'x-admin-token: dlb-admin-2026-trust' https://dlbtrust-app.fly.dev/api/finops/ptc-stablecoin/balance/<address>` returns the on-chain balance.
+- Write operations (deploy, deposit, transfer, redeem) require `DAPP_PRIVATE_KEY` and mainnet ETH; do not execute in read-only tests without confirming gas.
+
+## Canonical Liquidity Engine (`/dapp/finops.html`)
+
+- Module card: **Canonical Liquidity** (`key:'canonical-liquidity'`, `action:'openCanonicalLiquidityPanel'`) in `public/dapp/finops.html`.
+- Backend: `server/integrations/dapp/canonicalLiquidityEngine.js` and routes in `server/routes/finops.js`:
+  - `GET /api/finops/liquidity` (list pools)
+  - `GET /api/finops/liquidity/proposals` (list proposals)
+  - `POST /api/finops/liquidity/proposals` (create proposal)
+  - `POST /api/finops/liquidity/proposals/:id/approve`
+  - `POST /api/finops/liquidity/proposals/:id/execute`
+- Proposals are stored as `category:'liquidity'` in the canonical consensus (`canonical_proposals`) table; `CanonicalLiquidityEngine` delegates execution to `DexSwapEngine.createPool`/`addLiquidity`/`swap`.
+- The panel supports `create_pool`, `add_liquidity`, and `swap` proposals; sample tiny `create_pool`:
+  - Token A: `0xb01e6280ffe6faac679a17b029df8e065e8d0002` (DLB-PTCUSD)
+  - Token B: `0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48` (USDC)
+  - Amounts: `0.001` / `0.001`
+- Approval flow:
+  1. The UI **Approve** button calls `canonicalLiquidityApprove(proposalId)` and now sends a JSON body with `role` and `approverEmail` (fixed in the build that added Canonical Money).
+  2. Select role `checker` and enter a valid checker email, then click **Approve**.
+  3. With threshold `1` and a single `checker` approval, the proposal auto-executes. Because `DAPP_SHADOW=false` on the live deploy, `DexSwapEngine` attempts a real mainnet pool deployment. The operator wallet (`0x3e5302...`) usually has too little ETH, so execution fails with `insufficient funds for gas * price + value` and the proposal `status` becomes `failed`. This is the expected on-chain failure.
+- Read-only verification:
+  1. `GET /api/finops/liquidity` should return `success: true` and `data: []` (or existing pools).
+  2. `GET /api/finops/liquidity/proposals` should return `success: true` and a list including the newly created/failed proposal with `category: 'liquidity'`.
+- The card stat is currently always `—`; `loadAll()` does not populate it from the proposal count. This is cosmetic if the panel functions correctly.
+
+## Canonical Money Engine (`/dapp/finops.html`)
+
+- Module card: **Canonical Money** (`key:'canonical-money'`, `action:'openCanonicalMoneyPanel'`).
+- Backend: `server/integrations/dapp/canonicalMoneyEngine.js`, routes in `server/routes/finops.js`:
+  - `GET /api/finops/canonical-money` — list conversion requests.
+  - `POST /api/finops/canonical-money/quote` — get route for a source/target combination.
+  - `POST /api/finops/canonical-money/requests` — propose a conversion (creates a `canonical_money` consensus proposal).
+  - `POST /api/finops/canonical-money/requests/:id/approve` — approve and auto-execute.
+- UI form fields:
+  - Source type: ledger sources (`cash`, `treasury`, `trust`, `bond`, `fixed_income`, `fineract`, `sub_ledger`) or token/module (`DLB-PTCUSD`, `DLB-PRB`, `DLB-FIXED-INCOME`, etc.).
+  - Source account / token address: ledger account id (e.g. `1`) for source types, or leave blank for tokens/modules.
+  - Target asset: `USDC`, `USDS`, `DAI`, `WETH`, `ETH`.
+  - Optional pool address and recipient.
+- Expected quote behavior:
+  - `fixed_income` source → route `action: 'mint_and_swap'`, note `Mint DLBUSD from ledger and swap on DEX`.
+  - `DLB-PTCUSD` source with no active pool → route `action: 'ptc_swap'`, `poolAddress: null`, note `No canonical liquidity pool found; create one first`.
+- Approval flow:
+  1. The **Approve** button calls `canonicalMoneyApprove(proposalId)` with `role` and `approverEmail` from the per-row dropdown/input (verify with a fetch interceptor or network tab).
+  2. Auto-execution runs through `CanonicalConsensusEngine._execute` → `CanonicalMoneyEngine._executeRoute`. For ledger sources it uses `StablecoinDexEngine.depositAndSwap`; for PTC/module sources it uses `PtcStablecoinEngine`/`DexSwapEngine`.
+  3. With operator ETH near zero, execution fails quickly with `insufficient funds for gas * price + value`. The `canonical_proposals` row is updated to `failed` with the error in `result`.
+- Caveat: `CanonicalMoneyEngine._execute` does not wrap `_executeRoute` in a try/catch, so `canonical_money_requests` is not updated to `failed` when the route throws. Check `canonical_proposals` status for the real execution result if the UI request list still shows `pending`.
+- Read-only verification:
+  - `GET /api/finops/canonical-money` returns `success: true` and an array of requests.
+  - `GET /api/finops/consensus/proposals/<proposalId>` returns the proposal with `category: 'canonical_money'`, approvals, and `status`/`result`.
+
+## Liquidity Pool Engine (`/dapp/finops.html`)
+
+- Module card: **Liquidity Pool Engine** (`key:'liquidity-pool'`, `action:'openLiquidityPoolPanel'`).
+- Backend: `server/integrations/dapp/liquidityPoolEngine.js`, routes in `server/routes/finops.js`:
+  - `GET /api/finops/liquidity-pool` — list pools from `canonical_liquidity_pools` (currently empty until pools are created through this engine).
+  - `GET /api/finops/liquidity-pool/:address` — on-chain pool info via `DexSwapEngine.getPoolInfo`.
+  - `POST /api/finops/liquidity-pool/create`
+  - `POST /api/finops/liquidity-pool/add-liquidity`
+  - `POST /api/finops/liquidity-pool/remove-liquidity`
+  - `POST /api/finops/liquidity-pool/quote`
+  - `POST /api/finops/liquidity-pool/swap`
+- UI panel sections:
+  - **Create Pool** — tokenA, tokenB, decimals A/B, amountA, amountB.
+  - **Add / Remove Liquidity** — pool address, amountA, amountB.
+  - **Swap / Quote** — pool address, tokenIn, amountIn, minOut/slippage, recipient.
+- Testing the quote (read-only):
+  - If `BOND_DEX_ADDRESS` is configured (env on Fly), use it as the pool address.
+  - Example payload for the live BondDex pool (`0x6d81a71daa0aea908d57c31251db0013b2e41aea`):
+    ```json
+    {
+      "poolAddress": "0x6d81a71daa0aea908d57c31251db0013b2e41aea",
+      "tokenIn": "0x6bA8D02596a3b091A7246e38e3e078f770D33985",
+      "amountIn": "1",
+      "decimalsIn": 6
+    }
+    ```
+  - Expected response: `success: true`, `data.tokenOut` is the other pool token, `data.amountOut` is a positive decimal string, `data.mode: 'live'`.
+- Note: `create`/`add`/`remove`/`swap` are write endpoints and require mainnet gas; skip them unless the operator wallet is funded.
+- The `GET /api/finops/liquidity-pool` list may be empty even when a BondDex pool exists on-chain, because `listPools()` only queries the `canonical_liquidity_pools` table populated by this engine.
+
+## Cross-Chain Conversion & Interoperability Engine (PR #275)
+
+- Module card: **Cross-Chain Conversion** (`key:'cross-chain'`, `action:'openCrossChainPanel'`).
+- Backend: `server/integrations/dapp/crossChainConversionEngine.js`; routes in `server/routes/finops.js`:
+  - `GET /api/finops/cross-chain` (list requests)
+  - `GET /api/finops/cross-chain/:id` (single request)
+  - `POST /api/finops/cross-chain/quote`
+  - `POST /api/finops/cross-chain/requests`
+  - `POST /api/finops/cross-chain/requests/:id/approve`
+  - `POST /api/finops/cross-chain/requests/:id/execute`
+  - `GET /api/finops/cross-chain/adapters/chains`
+  - `GET /api/finops/cross-chain/adapters/assets`
+- UI panel sections: New Conversion (source type/id, amount, target asset/chain/bridge, recipient, slippage), Quote Routes, Propose, Chains, Assets, Conversion Requests.
+- Example quote payload for a sub_ledger source:
+  ```json
+  {
+    "sourceType": "sub_ledger",
+    "sourceAccountId": "SL-INV-1782881392896-1200-MR1OZ6PO",
+    "amount": "433721.62",
+    "targetAsset": "USDS",
+    "targetChain": "ethereum"
+  }
+  ```
+- Expected quote response: `data.recommendation` is `p2p_order` when DEX liquidity is tiny; `same_chain_dex` route has `status: 'no_liquidity'` with a high-slippage warning; `p2p_order` route has `status: 'awaiting_buyer'`.
+- Propose/approve/execute flow creates a Canonical Consensus proposal under `category: 'cross_chain'`. The UI Approve button sends `role` and `approverEmail`.
+- **Caution:** `execute` may actually succeed on mainnet even with a low ETH balance, minting DLBUSD from the source ledger and locking it in the `ModuleTokenSwap` contract. Test with tiny amounts or a shadow/testnet environment; do not assume operator gas will fail.
+- The `_p2pDisplayFromRaw` helper now uses `viem.formatUnits(raw, 6)` so `ModuleP2PSwapEngine.createOrder` receives the correct display string for both 6- and 18-decimal tokens despite its hard-coded 6-decimal parse.
+
+## Canonical USDS Swap (`/dapp/finops.html`)
+
+- Module card: **Canonical USDS Swap** (`key:'canonical-swap'`, `action:'openDlbCanonicalSwapPanel'`).
+- Backend: `server/integrations/dapp/dlbCanonicalSwapEngine.js`; routes in `server/routes/finops.js`:
+  - `GET /api/finops/canonical-swap/readiness` — returns `mode` (`live`/`shadow`), `contractAddress`, and `issues`.
+  - `GET /api/finops/canonical-swap/orders` — lists active orders from the on-chain `DlbCanonicalSwap` contract.
+  - `GET /api/finops/canonical-swap/orders/:id` — single order details.
+  - `POST /api/finops/canonical-swap/quote` — returns a 1:1 quote.
+  - `POST /api/finops/canonical-swap/orders` — create order (write; requires operator ETH).
+  - `POST /api/finops/canonical-swap/orders/:id/fill` — fill order (write).
+  - `POST /api/finops/canonical-swap/orders/:id/cancel` — cancel order (write).
+- Deployed mainnet contract: `0xf06f89f03d3a6003d8bc1bf5934b857c41258f75`.
+- Live tokens used by the contract:
+  - DLBUSD: `0x6bA8D02596a3b091A7246e38e3e078f770D33985` (6 decimals)
+  - USDS: `0xdC035D45d973E3EC169d2276DDab16f1e407384F` (18 decimals)
+  - USDC: `0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48`
+  - DAI: `0x6B175474E89094C44Da98b954EedeAC495271d0F`
+  - WETH: `0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2`
+- UI panel sections:
+  - **Contract** — shows readiness badge (`live`/`shadow`) and the deployed contract address; a **Deploy Contract** button and a **Refresh Orders** button.
+  - **Create Order** — inputs for `tokenIn`, `tokenOut`, `amountIn`, `amountOut`, and `recipient`; **Create Order** button.
+  - **Active Orders** — table with columns `ID`, `Token In`, `Amount In`, `Token Out`, `Amount Out`, `Recipient`, `Status`, and a **Cancel** button per row.
+- Read-only verification:
+  - `GET /api/finops/canonical-swap/readiness` should return `ready: true`, `mode: 'live'`, and `contractAddress: '0xf06f89f03d3a6003d8bc1bf5934b857c41258f75'`.
+  - `GET /api/finops/canonical-swap/orders` should return a live order with `orderId: '2'`, `tokenIn` = `0x6bA8D02596a3b091A7246e38e3e078f770D33985`, `tokenOut` = `0xdC035D45d973E3EC169d2276DDab16f1e407384F`, `active: true`, and raw `amountIn`/`amountOut` strings.
+  - `POST /api/finops/canonical-swap/quote` with `{"tokenIn":"0x6bA8...","amountIn":"1","tokenOut":"0xdC035D..."}` returns `success: true`, `data.price: '1.0'`, and `data.amountOut: '1'`.
+- **Caution:** `listOrders()` returns raw on-chain amounts. The UI table currently displays these raw values without `viem.formatUnits`, so the `Amount In`/`Amount Out` columns may show very large integers rather than human-readable token amounts. This is cosmetic but should be fixed before operators rely on the table.
+- Do **not** click **Cancel** or **Create Order** on a live order unless explicitly testing write flows with a funded operator wallet.
+
+## Paired Asset Engine (PR #275+)
+
+- Module card: **Paired Asset Engine** (`key:'paired-assets'`, `action:'openPairedAssetsPanel'`).
+- Backend: `server/integrations/dapp/pairedAssetEngine.js`; routes in `server/routes/finops.js` under `/api/finops/paired-assets`.
+- Quote/propose/approve/execute flow sources the real canonical asset (USDS/USDC/DAI/WETH) needed to seed a `DLBUSD` pool, then adds liquidity through `LiquidityPoolEngine`.
+- Funding sources: `manual`, `counterparty`, `moonpay`, `circle_mint`, `coinbase_treasury`.
+- The engine cannot mint canonical stablecoins; it returns `awaiting_deposit`/`awaiting_onramp` until real paired capital is available.
+
 ## Devin Secrets Needed
 
 - `DATABASE_URL` or local Postgres credentials (`dlbtrust`/`dlbtrust`).

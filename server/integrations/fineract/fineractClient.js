@@ -270,6 +270,36 @@ class FineractClient {
   }
 
   /**
+   * Withdraw from a savings account.
+   * Maps to POST /savingsaccounts/{accountId}/transactions?command=withdrawal
+   */
+  static async withdrawSavings({ accountId, amount, transactionDate, paymentTypeId = 1, note }) {
+    return fineractRequest('POST', `savingsaccounts/${accountId}/transactions?command=withdrawal`, {
+      transactionDate: formatFineractDate(transactionDate || new Date()),
+      dateFormat: 'dd MMMM yyyy',
+      locale: 'en',
+      paymentTypeId,
+      amount,
+      note: note || '',
+    });
+  }
+
+  /**
+   * Deposit to a savings account.
+   * Maps to POST /savingsaccounts/{accountId}/transactions?command=deposit
+   */
+  static async depositSavings({ accountId, amount, transactionDate, paymentTypeId = 1, note }) {
+    return fineractRequest('POST', `savingsaccounts/${accountId}/transactions?command=deposit`, {
+      transactionDate: formatFineractDate(transactionDate || new Date()),
+      dateFormat: 'dd MMMM yyyy',
+      locale: 'en',
+      paymentTypeId,
+      amount,
+      note: note || '',
+    });
+  }
+
+  /**
    * Post a double-entry GL journal entry.
    * Maps to POST /journalentries
    *
