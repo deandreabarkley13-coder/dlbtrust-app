@@ -28,6 +28,7 @@ const { ExternalWalletEngine } = require('../integrations/dapp/externalWalletEng
 const { JournalEntryEngine } = require('../integrations/dapp/journalEntryEngine');
 const { DlbCanonicalSwapEngine } = require('../integrations/dapp/dlbCanonicalSwapEngine');
 const { TrustComputingEngine } = require('../integrations/dapp/trustComputingEngine');
+const { HoldingManagementEngine } = require('../integrations/dapp/holdingManagementEngine');
 
 const router = express.Router();
 const operatorAuth = requireAuth({ role: 'operator' });
@@ -954,6 +955,34 @@ router.get('/computing/jobs/:id', operatorAuth, async (req, res) => {
 
 router.post('/computing/jobs', operatorAuth, writeRateLimiter(), async (req, res) => {
   try { res.status(201).json({ success: true, data: await TrustComputingEngine.compute({ ...req.body, createdBy: getUserEmail(req) }) }); } catch (err) { sendError(res, err); }
+});
+
+// ═════════════════════════════════════════════════════════════════════════════
+// Holding Management Engine — hold ledger funds and canonize to stablecoins
+// ═════════════════════════════════════════════════════════════════════════════
+
+router.get('/holdings/accounts', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await HoldingManagementEngine.listSourceAccounts() }); } catch (err) { sendError(res, err); }
+});
+
+router.get('/holdings', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: HoldingManagementEngine.listHoldings(req.query) }); } catch (err) { sendError(res, err); }
+});
+
+router.get('/holdings/:id', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await HoldingManagementEngine.getHoldingDetail(req.params.id) }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/holdings', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try { res.status(201).json({ success: true, data: await HoldingManagementEngine.createHolding({ ...req.body, createdBy: getUserEmail(req) }) }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/holdings/:id/canonize', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try { res.json({ success: true, data: await HoldingManagementEngine.canonizeHolding({ holdingId: req.params.id, createdBy: getUserEmail(req) }) }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/holdings/:id/sync', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await HoldingManagementEngine.syncHoldingStatus(req.params.id) }); } catch (err) { sendError(res, err); }
 });
 
 module.exports = router;
