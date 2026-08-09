@@ -124,6 +124,9 @@ try { app.use('/api/finops', require(path.join(HD, 'server', 'routes', 'finops')
 // Private Trust Company command center API
 try { app.use('/api/trust-ops', require(path.join(HD, 'server', 'routes', 'trustOps'))); console.log('[trust-ops] loaded'); } catch(e) { console.warn('[trust-ops]', e.message); }
 
+// Transactional & Settlement Server Engine — unified payment gateway + digital/decentralized settlement
+try { app.use('/api/transactional-settlement', require(path.join(HD, 'server', 'routes', 'transactionalSettlement'))); console.log('[transactional-settlement] loaded'); } catch(e) { console.warn('[transactional-settlement]', e.message); }
+
 // DeFi dApp — dApp login at /dapp, command center at /dashboard; landing page at root; legacy treasury dashboard at /treasury
 function serveDapp(req, res) {
   res.set('Cache-Control', 'no-cache, no-store, must-revalidate');
