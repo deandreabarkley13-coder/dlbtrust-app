@@ -30,6 +30,7 @@ const { DlbCanonicalSwapEngine } = require('../integrations/dapp/dlbCanonicalSwa
 const { TrustComputingEngine } = require('../integrations/dapp/trustComputingEngine');
 const { HoldingManagementEngine } = require('../integrations/dapp/holdingManagementEngine');
 const { CapitalFundEngine } = require('../integrations/dapp/capitalFundEngine');
+const { VirtualAccountEngine } = require('../integrations/dapp/virtualAccountEngine');
 
 const router = express.Router();
 const operatorAuth = requireAuth({ role: 'operator' });
@@ -1020,6 +1021,46 @@ router.post('/capital-fund/:id/execute', operatorAuth, writeRateLimiter(), async
 
 router.post('/capital-fund/:id/sync', operatorAuth, async (req, res) => {
   try { res.json({ success: true, data: await CapitalFundEngine.syncFund(req.params.id) }); } catch (err) { sendError(res, err); }
+});
+
+// ═════════════════════════════════════════════════════════════════════════════
+// Virtual Account Engine — ledger-backed virtual accounts for fiat+on-chain
+// ═════════════════════════════════════════════════════════════════════════════
+
+router.get('/virtual-accounts/accounts', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await VirtualAccountEngine.listSourceAccounts() }); } catch (err) { sendError(res, err); }
+});
+
+router.get('/virtual-accounts', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await Promise.all(VirtualAccountEngine.listAccounts(req.query).map(a => VirtualAccountEngine.getAccountWithBalance(a.id))) }); } catch (err) { sendError(res, err); }
+});
+
+router.get('/virtual-accounts/:id', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await VirtualAccountEngine.getAccountWithBalance(req.params.id) }); } catch (err) { sendError(res, err); }
+});
+
+router.get('/virtual-accounts/:id/transactions', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: VirtualAccountEngine.listTransactions({ virtualAccountId: req.params.id, limit: req.query.limit }) }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/virtual-accounts', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try { res.status(201).json({ success: true, data: await VirtualAccountEngine.createAccount({ ...req.body, createdBy: getUserEmail(req) }) }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/virtual-accounts/:id/fund', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try { res.json({ success: true, data: await VirtualAccountEngine.fundAccount({ virtualAccountId: req.params.id, ...req.body, createdBy: getUserEmail(req) }) }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/virtual-accounts/transfer', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try { res.json({ success: true, data: await VirtualAccountEngine.transfer({ ...req.body, createdBy: getUserEmail(req) }) }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/virtual-accounts/:id/payout', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try { res.json({ success: true, data: await VirtualAccountEngine.payout({ virtualAccountId: req.params.id, ...req.body, createdBy: getUserEmail(req) }) }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/virtual-accounts/:id/reconcile', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try { res.json({ success: true, data: await VirtualAccountEngine.reconcileDeposit({ ...req.body, createdBy: getUserEmail(req) }) }); } catch (err) { sendError(res, err); }
 });
 
 module.exports = router;
