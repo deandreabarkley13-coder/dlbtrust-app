@@ -147,7 +147,7 @@
   const el = id => document.getElementById(id);
   const modules = [
     { key:'core-banking', name:'Core Banking', desc:'Fineract GL, cash accounts, sub-ledgers', stat:'', endpoint:'/api/finops/source-of-funds' },
-    { key:'treasury', name:'Treasury Management', desc:'Treasury Hot, source-of-funds, reserves', stat:'', endpoint:'/api/finops/source-of-funds' },
+    { key:'treasury', name:'Corporate Treasury Management', desc:'Multi-bank cash positioning, pools, liquidity forecast, investments, and treasury payment workflows', stat:'', endpoint:null, action:'openCorporateTreasuryPanel' },
     { key:'trust-accounting', name:'Trust Accounting', desc:'Trust accounts 1100/1200/4000', stat:'', endpoint:'/api/accounting/accounts' },
     { key:'journal-entries', name:'Journal Entries', desc:'Post principal and coupon interest credits', stat:'', endpoint:null, action:'openJournalEntryPanel' },
     { key:'crm', name:'CRM / Contacts', desc:'Trustees, beneficiaries, vendors', stat:'', endpoint:'/api/finops/crm' },
@@ -188,6 +188,14 @@
     { key:'bank-transfer', name:'Bank Transfer Engine', desc:'Push/receive bank credits and reconcile external accounts', stat:'', endpoint:null, action:'openBankTransferPanel' },
     { key:'trust-bank', name:'Trust Bank API', desc:'Operate the trust as its own bank: accounts, deposits, internal transfers, and external payments', stat:'', endpoint:null, action:'openTrustBankPanel' },
     { key:'vendor-payments', name:'Vendor Payments', desc:'Pay bills and vendors directly in fiat via wire, ACH, open banking, or web payment rails', stat:'', endpoint:null, action:'openVendorPaymentsPanel' },
+    { key:'wealth', name:'Wealth Management', desc:'Open-finance portfolio, allocation, goals, and rebalancing', stat:'', endpoint:null, action:'openWealthPanel' },
+    { key:'aggregator', name:'Trust Aggregator', desc:'Account aggregation and consolidated net worth across ledgers, banks, and virtual accounts', stat:'', endpoint:null, action:'openAggregatorPanel' },
+    { key:'external-endpoint', name:'External Endpoint Engine', desc:'Configure and route real payments to any bank/fintech endpoint over REST, SOAP, ISO 20022, gRPC, MFT, or AS2', stat:'', endpoint:null, action:'openExternalEndpointPanel' },
+    { key:'live-fintech', name:'Live FinTech Endpoint Engine', desc:'Live fintech/bank payment endpoint adapters with provider-specific payloads and external payment flow', stat:'', endpoint:null, action:'openLiveFinTechPanel' },
+    { key:'settlement', name:'Settlement Engine', desc:'Unified settlement queue for wire, ACH, open banking, external endpoints, stablecoin, MFT/AS2, and manual rails', stat:'', endpoint:null, action:'openSettlementPanel' },
+    { key:'payment-ids', name:'Payment ID Engine', desc:'Canonical payment IDs, idempotency keys, child ID correlation, and event audit across all rails', stat:'', endpoint:null, action:'openPaymentIdPanel' },
+    { key:'host-to-host', name:'Host-to-Host Engine', desc:'SFTP/FTPS/AS2/HTTPS payment file and message exchange with bank/clearing partners', stat:'', endpoint:null, action:'openHostToHostPanel' },
+    { key:'live-money', name:'Live Money Movement Engine', desc:'Move real fiat from trust ledger to external beneficiaries across all rails', stat:'', endpoint:null, action:'openLiveMoneyPanel' },
     { key:'compliance', name:'Compliance Engine', desc:'KYC, AML, and sanctions screening before moving real money', stat:'', endpoint:null, action:'openCompliancePanel' },
     { key:'coordination', name:'Coordination Engine', desc:'System health, AI command queue and stability checks', stat:'', endpoint:null, action:'openCoordinationPanel' },
     { key:'clearing', name:'Clearing Engine', desc:'Bilateral and net settlement on Hyperledger Besu', stat:'', endpoint:null, action:'openClearingPanel' },
@@ -355,8 +363,9 @@
     renderModules();
     renderFlow();
     try {
-      const [sof, accts, wallets, bond, crm, p2p, ptc, consensus, xchain, paired, trustMarket, ramps, intents, externalWallets, externalSwaps, computing, holdings, capitalFunds, virtualAccounts, wireOrigination, electronicMoney, openBanking, trustDeposits, fineractPayouts, skrillLinks, barcodeDeposits] = await Promise.all([
+      const [sof, corporateTreasury, accts, wallets, bond, crm, p2p, ptc, consensus, xchain, paired, trustMarket, ramps, intents, externalWallets, externalSwaps, computing, holdings, capitalFunds, virtualAccounts, wireOrigination, electronicMoney, openBanking, trustDeposits, fineractPayouts, skrillLinks, barcodeDeposits, webPaymentRails, externalEndpoints, liveFintechEndpoints, settlements, paymentIds, hostToHost, liveMoney] = await Promise.all([
         api('/api/finops/source-of-funds').catch(()=>null),
+        api('/api/finops/corporate-treasury').catch(()=>null),
         api('/api/accounting/accounts').catch(()=>null),
         api('/api/finops/wallets').catch(()=>null),
         api('/api/finops/bonds').catch(()=>null),
@@ -383,14 +392,20 @@
         api('/api/finops/skrill-links').catch(()=>null),
         api('/api/finops/barcode-deposits').catch(()=>null),
         api('/api/finops/web-payment-rails').catch(()=>null),
+        api('/api/finops/external-endpoints').catch(()=>null),
+        api('/api/finops/live-fintech-endpoints').catch(()=>null),
+        api('/api/finops/settlements').catch(()=>null),
+        api('/api/finops/payment-ids').catch(()=>null),
+        api('/api/finops/host-to-host').catch(()=>null),
+        api('/api/finops/live-money').catch(()=>null),
       ]);
+      if (corporateTreasury && corporateTreasury.data) {
+        setStat('treasury', fmt(Number(corporateTreasury.data.totalCashCents || 0) / 100, 0));
+      }
       const balances = normalizeBalances(sof && sof.data);
       if (balances.length) {
-        const treasury = balances.find(b => b.id === 'TREASURY_HOT' || (b.name||'').toLowerCase().includes('treasury'));
-        const treasuryBal = treasury ? balanceDollars(treasury) : 0;
         const cbTotal = balances.filter(b => b.type === 'cash' || b.type === 'core_banking').reduce((a,b)=>a+balanceDollars(b),0);
-        setStat('treasury', fmt(treasuryBal, 0));
-        setStat('core-banking', fmt(cbTotal || treasuryBal, 0));
+        setStat('core-banking', fmt(cbTotal, 0));
       }
       if (accts && accts.data) {
         const trustRows = accts.data.filter(b => ['1100','1200','4000'].includes(String(b.account_code)));
@@ -471,10 +486,31 @@
         const pending = barcodeDeposits.data.filter(d => d.status === 'pending').length;
         setStat('barcode-deposits', String(pending));
       }
-      const webPayments = results[20];
-      if (webPayments && webPayments.data && Array.isArray(webPayments.data)) {
-        const pending = webPayments.data.filter(d => d.status === 'pending').length;
+      if (webPaymentRails && webPaymentRails.data && Array.isArray(webPaymentRails.data)) {
+        const pending = webPaymentRails.data.filter(d => d.status === 'pending').length;
         setStat('web-payment-rails', String(pending));
+      }
+      if (externalEndpoints && externalEndpoints.data && Array.isArray(externalEndpoints.data)) {
+        const active = externalEndpoints.data.filter(e => e.enabled).length;
+        setStat('external-endpoint', String(active));
+      }
+      if (liveFintechEndpoints && liveFintechEndpoints.data && Array.isArray(liveFintechEndpoints.data)) {
+        const active = liveFintechEndpoints.data.filter(e => e.enabled).length;
+        setStat('live-fintech', String(active));
+      }
+      if (settlements && settlements.data && Array.isArray(settlements.data)) {
+        const open = settlements.data.filter(s => ['pending','reserved','submitted','transmitted','originated','queued','manual_pending'].includes(s.status)).length;
+        setStat('settlement', String(open));
+      }
+      if (paymentIds && paymentIds.data && Array.isArray(paymentIds.data)) {
+        const open = paymentIds.data.filter(p => ['created','reserved','submitted','transmitted','originated','queued','manual_pending'].includes(p.status)).length;
+        setStat('payment-ids', String(open));
+      }
+      if (hostToHost && hostToHost.data) {
+        setStat('host-to-host', String(hostToHost.data.partners || 0));
+      }
+      if (liveMoney && liveMoney.data) {
+        setStat('live-money', String(liveMoney.data.counts.completed || 0));
       }
       renderModules();
     } catch(e) { console.error('loadAll error', e); }
@@ -4204,18 +4240,20 @@
     panel.classList.add('active');
     body.innerHTML = '<div class="muted">Loading…</div>';
     try {
-      const [customers, accounts, payments] = await Promise.all([
+      const [customers, accounts, payments, endpoints] = await Promise.all([
         api('/api/finops/trust-bank/customers').catch(()=>null),
         api('/api/finops/trust-bank/accounts').catch(()=>null),
         api('/api/finops/trust-bank/payments?limit=20').catch(()=>null),
+        api('/api/finops/external-endpoints?enabled=true').catch(()=>null),
       ]);
-      body.innerHTML = renderTrustBankPanel(customers && customers.data, accounts && accounts.data, payments && payments.data);
+      body.innerHTML = renderTrustBankPanel(customers && customers.data, accounts && accounts.data, payments && payments.data, endpoints && endpoints.data);
     } catch(e) { body.innerHTML = '<div class="status err">' + e.message + '</div>'; }
   }
 
-  function renderTrustBankPanel(customers, accounts, payments) {
+  function renderTrustBankPanel(customers, accounts, payments, endpoints) {
     const customerOptions = (customers || []).map(c => `<option value="${c.customer_id}">${c.name} (${c.kyc_status})</option>`).join('');
     const accountOptions = (accounts || []).map(a => `<option value="${a.account_id}">${a.account_name} - $${Number(a.balance_cents)/100}</option>`).join('');
+    const endpointOptions = (endpoints || []).map(e => `<option value="${e.endpoint_id}">${e.name} (${e.protocol})</option>`).join('');
     const accountRows = (accounts || []).map(a => `<tr><td>${a.account_id}</td><td>${a.account_name}</td><td>${a.account_number}</td><td>$${Number(a.balance_cents)/100}</td><td>${a.status}</td></tr>`).join('') || '<tr><td colspan="5" class="muted">No accounts</td></tr>';
     const paymentRows = (payments || []).map(p => `<tr><td>${p.payment_id}</td><td>${p.rail}</td><td>$${Number(p.amount_cents)/100}</td><td><span class="badge ${p.status}">${p.status}</span></td><td>${p.external_tx_id || ''}</td></tr>`).join('') || '<tr><td colspan="5" class="muted">No payments</td></tr>';
     return '<div style="display:flex; flex-direction:column; gap:12px;">' +
@@ -4240,7 +4278,8 @@
         '<div class="token-bar"><input id="tb-pay-amount" type="number" step="0.01" style="flex:1" placeholder="Amount" /></div>' +
         '<div class="token-bar"><input id="tb-pay-routing" style="flex:1" placeholder="Routing number" /><input id="tb-pay-external" style="flex:1" placeholder="External account number" /></div>' +
         '<div class="token-bar"><input id="tb-pay-name" style="flex:1" placeholder="Beneficiary name" /><input id="tb-pay-bank" style="flex:1" placeholder="Bank name" /></div>' +
-        '<div class="token-bar"><select id="tb-pay-rail"><option value="wire">wire</option><option value="ach">ach</option><option value="iso20022">iso20022</option><option value="open_banking">open_banking</option></select></div>' +
+        '<div class="token-bar"><select id="tb-pay-rail"><option value="wire">wire</option><option value="ach">ach</option><option value="iso20022">iso20022</option><option value="open_banking">open_banking</option><option value="external">external endpoint</option></select>' +
+        '<select id="tb-pay-endpoint">' + endpointOptions + '</select></div>' +
         '<button class="btn" onclick="originateTrustBankPayment()">Originate Payment</button>' +
         '<div id="tb-pay-status" class="status hidden"></div>' +
       '</div>' +
@@ -4281,13 +4320,15 @@
     const status = el('tb-pay-status');
     status.classList.add('hidden');
     try {
+      const rail = el('tb-pay-rail').value;
       const body = {
         externalRouting: el('tb-pay-routing').value.trim(),
         externalAccount: el('tb-pay-external').value.trim(),
         externalAccountName: el('tb-pay-name').value.trim(),
         externalBankName: el('tb-pay-bank').value.trim(),
         amount: Number(el('tb-pay-amount').value),
-        rail: el('tb-pay-rail').value,
+        rail,
+        endpointId: rail === 'external' ? el('tb-pay-endpoint').value : undefined,
       };
       const res = await api('/api/finops/trust-bank/accounts/' + el('tb-pay-account').value + '/payments', { method: 'POST', body: JSON.stringify(body) });
       const payId = res.data.paymentId;
@@ -4296,6 +4337,771 @@
       openTrustBankPanel();
     } catch(e) { show(e.message, true, 'tb-pay-status'); }
     status.classList.remove('hidden');
+  }
+
+  // ─── Wealth Management Panel ────────────────────────────────────────────────
+
+  async function openWealthPanel() {
+    const panel = el('module-panel');
+    const body = el('panel-body');
+    el('panel-title').textContent = 'Wealth Management';
+    panel.classList.add('active');
+    body.innerHTML = '<div class="muted">Loading…</div>';
+    try {
+      const [portfolios] = await Promise.all([
+        api('/api/finops/wealth/portfolios?limit=20').catch(()=>null),
+      ]);
+      body.innerHTML = renderWealthPanel(portfolios && portfolios.data);
+    } catch(e) { body.innerHTML = '<div class="status err">' + e.message + '</div>'; }
+  }
+
+  function renderWealthPanel(portfolios) {
+    const portfolioOptions = (portfolios || []).map(p => `<option value="${p.portfolio_id}">${p.name} — $${Number(p.total_value_cents)/100}</option>`).join('');
+    const portfolioRows = (portfolios || []).map(p => `<tr><td>${p.portfolio_id}</td><td>${p.name}</td><td>$${Number(p.total_value_cents)/100}</td><td>${p.strategy}</td><td>${p.status}</td><td><button class="btn btn-sm" onclick="openPortfolioDetail('${p.portfolio_id}')">View</button></td></tr>`).join('') || '<tr><td colspan="6" class="muted">No portfolios</td></tr>';
+    return '<div style="display:flex; flex-direction:column; gap:12px;">' +
+      '<div class="card" style="background:#0b1220;">' +
+        '<h3>Create Portfolio</h3>' +
+        '<div class="token-bar"><input id="wm-portfolio-name" style="flex:1" placeholder="Portfolio name" /><select id="wm-portfolio-strategy"><option value="balanced">balanced</option><option value="growth">growth</option><option value="income">income</option><option value="capital_preservation">capital_preservation</option></select></div>' +
+        '<div class="token-bar"><input id="wm-target-allocation" style="flex:1" placeholder=\'{ "CASH": 10, "DLB-TRUST-USD": 50, "DLB-PRB": 40 }\' /></div>' +
+        '<button class="btn" onclick="createWealthPortfolio()">Create Portfolio</button>' +
+        '<div id="wm-portfolio-status" class="status hidden"></div>' +
+      '</div>' +
+      '<div class="card" style="background:#0b1220;">' +
+        '<h3>Portfolios</h3>' +
+        '<table class="table"><thead><tr><th>ID</th><th>Name</th><th>Value</th><th>Strategy</th><th>Status</th><th></th></tr></thead><tbody>' + portfolioRows + '</tbody></table>' +
+      '</div>' +
+      '<div class="card" style="background:#0b1220;">' +
+        '<h3>Manage Selected Portfolio</h3>' +
+        '<div class="token-bar"><select id="wm-selected-portfolio">' + portfolioOptions + '</select></div>' +
+        '<div class="token-bar"><input id="wm-goal-name" style="flex:1" placeholder="Goal name" /><input id="wm-goal-amount" type="number" step="0.01" style="width:100px" placeholder="Target" /><input id="wm-goal-deadline" type="date" style="width:120px" /></div>' +
+        '<button class="btn" onclick="addWealthGoal()">Add Goal</button>' +
+        '<div class="token-bar" style="margin-top:8px"><input id="wm-holding-code" style="flex:1" placeholder="Asset code" /><input id="wm-holding-qty" type="number" step="0.01" style="width:80px" placeholder="Qty" /><input id="wm-holding-price" type="number" step="0.01" style="width:80px" placeholder="Price" /></div>' +
+        '<button class="btn" onclick="addWealthHolding()">Add Holding</button>' +
+        '<div class="token-bar" style="margin-top:8px"><button class="btn btn-sec" onclick="generateWealthRebalance()">Generate Rebalance</button><button class="btn" onclick="aggregateWealthPortfolio()">Aggregate from Trust</button></div>' +
+        '<div id="wm-action-status" class="status hidden"></div>' +
+      '</div>' +
+      '<div class="card" style="background:#0b1220;">' +
+        '<h3>Portfolio Detail</h3>' +
+        '<div id="wm-detail-box"><div class="muted">Select a portfolio and click View</div></div>' +
+      '</div>' +
+    '</div>';
+  }
+
+  async function createWealthPortfolio() {
+    const status = el('wm-portfolio-status');
+    status.classList.add('hidden');
+    try {
+      let target = {};
+      try { target = JSON.parse(el('wm-target-allocation').value || '{}'); } catch {}
+      const res = await api('/api/finops/wealth/portfolios', { method: 'POST', body: JSON.stringify({ name: el('wm-portfolio-name').value.trim(), strategy: el('wm-portfolio-strategy').value, targetAllocation: target }) });
+      show('Portfolio created: ' + res.data.portfolio_id, false, 'wm-portfolio-status');
+      openWealthPanel();
+    } catch(e) { show(e.message, true, 'wm-portfolio-status'); }
+    status.classList.remove('hidden');
+  }
+
+  async function openPortfolioDetail(id) {
+    const box = el('wm-detail-box');
+    box.innerHTML = '<div class="muted">Loading…</div>';
+    try {
+      const [portfolio, alloc] = await Promise.all([
+        api('/api/finops/wealth/portfolios/' + id),
+        api('/api/finops/wealth/portfolios/' + id + '/allocation'),
+      ]);
+      const p = portfolio.data;
+      const holdings = (p.holdings || []).map(h => `<tr><td>${h.asset_code}</td><td>${h.asset_name}</td><td>${h.quantity}</td><td>$${Number(h.market_value_cents)/100}</td></tr>`).join('') || '<tr><td colspan="4" class="muted">No holdings</td></tr>';
+      const goals = (p.goals || []).map(g => `<tr><td>${g.name}</td><td>$${Number(g.target_cents)/100}</td><td>${g.deadline || ''}</td><td>${g.status}</td></tr>`).join('') || '<tr><td colspan="4" class="muted">No goals</td></tr>';
+      const allocRows = Object.entries(alloc.data.current || {}).map(([code, info]) => `<tr><td>${code}</td><td>${info.asset_name}</td><td>$${Number(info.market_value_cents)/100}</td><td>${info.percent}%</td></tr>`).join('') || '<tr><td colspan="4" class="muted">No allocation</td></tr>';
+      box.innerHTML = '<h4>' + p.name + ' — $' + Number(p.total_value_cents)/100 + '</h4>' +
+        '<h5>Holdings</h5><table class="table"><thead><tr><th>Code</th><th>Name</th><th>Qty</th><th>Value</th></tr></thead><tbody>' + holdings + '</tbody></table>' +
+        '<h5>Goals</h5><table class="table"><thead><tr><th>Name</th><th>Target</th><th>Deadline</th><th>Status</th></tr></thead><tbody>' + goals + '</tbody></table>' +
+        '<h5>Allocation</h5><table class="table"><thead><tr><th>Code</th><th>Name</th><th>Value</th><th>%</th></tr></thead><tbody>' + allocRows + '</tbody></table>';
+    } catch(e) { box.innerHTML = '<div class="status err">' + e.message + '</div>'; }
+  }
+
+  async function addWealthGoal() {
+    const status = el('wm-action-status');
+    status.classList.add('hidden');
+    try {
+      const pid = el('wm-selected-portfolio').value;
+      const res = await api('/api/finops/wealth/portfolios/' + pid + '/goals', { method: 'POST', body: JSON.stringify({ name: el('wm-goal-name').value.trim(), targetAmount: Number(el('wm-goal-amount').value), deadline: el('wm-goal-deadline').value || undefined }) });
+      show('Goal added: ' + res.data.goal_id, false, 'wm-action-status');
+      openPortfolioDetail(pid);
+    } catch(e) { show(e.message, true, 'wm-action-status'); }
+    status.classList.remove('hidden');
+  }
+
+  async function addWealthHolding() {
+    const status = el('wm-action-status');
+    status.classList.add('hidden');
+    try {
+      const pid = el('wm-selected-portfolio').value;
+      const res = await api('/api/finops/wealth/portfolios/' + pid + '/holdings', { method: 'POST', body: JSON.stringify({ assetCode: el('wm-holding-code').value.trim(), quantity: Number(el('wm-holding-qty').value), price: Number(el('wm-holding-price').value) }) });
+      show('Holding added: ' + res.data.holding_id, false, 'wm-action-status');
+      openPortfolioDetail(pid);
+    } catch(e) { show(e.message, true, 'wm-action-status'); }
+    status.classList.remove('hidden');
+  }
+
+  async function generateWealthRebalance() {
+    const status = el('wm-action-status');
+    status.classList.add('hidden');
+    try {
+      const pid = el('wm-selected-portfolio').value;
+      const res = await api('/api/finops/wealth/portfolios/' + pid + '/rebalances', { method: 'POST', body: JSON.stringify({}) });
+      const reb = res.data;
+      show('Rebalance draft: ' + reb.rebalanceId + ' drift ' + reb.drift + '%', false, 'wm-action-status');
+    } catch(e) { show(e.message, true, 'wm-action-status'); }
+    status.classList.remove('hidden');
+  }
+
+  async function aggregateWealthPortfolio() {
+    const status = el('wm-action-status');
+    status.classList.add('hidden');
+    try {
+      const pid = el('wm-selected-portfolio').value;
+      const res = await api('/api/finops/wealth/portfolios/' + pid + '/aggregate', { method: 'POST', body: JSON.stringify({}) });
+      show('Aggregated ' + res.data.holdings.length + ' holdings', false, 'wm-action-status');
+      openPortfolioDetail(pid);
+    } catch(e) { show(e.message, true, 'wm-action-status'); }
+    status.classList.remove('hidden');
+  }
+
+  // ─── Trust Aggregator Panel ─────────────────────────────────────────────────
+
+  async function openAggregatorPanel() {
+    const panel = el('module-panel');
+    const body = el('panel-body');
+    el('panel-title').textContent = 'Trust Aggregator';
+    panel.classList.add('active');
+    body.innerHTML = '<div class="muted">Loading…</div>';
+    try {
+      const [connections, netWorth, transactions] = await Promise.all([
+        api('/api/finops/aggregator/connections').catch(()=>null),
+        api('/api/finops/aggregator/net-worth').catch(()=>null),
+        api('/api/finops/aggregator/transactions?limit=50').catch(()=>null),
+      ]);
+      body.innerHTML = renderAggregatorPanel(connections && connections.data, netWorth && netWorth.data, transactions && transactions.data);
+    } catch(e) { body.innerHTML = '<div class="status err">' + e.message + '</div>'; }
+  }
+
+  function renderAggregatorPanel(connections, netWorth, transactions) {
+    const rows = (connections || []).map(c => `<tr><td>${c.connection_id}</td><td>${c.name}</td><td>${c.source_type}</td><td><span class="badge ${c.status}">${c.status}</span></td><td>${c.last_sync_at ? new Date(c.last_sync_at).toLocaleString() : 'never'}</td><td><button class="btn btn-sm" onclick="syncAggregatorConnection('${c.connection_id}')">Sync</button></td></tr>`).join('') || '<tr><td colspan="6" class="muted">No connections</td></tr>';
+    const txRows = (transactions || []).map(t => `<tr><td>${t.source_type}</td><td>${t.account_id}</td><td>${t.tx_type || ''}</td><td>$${Number(t.amount_cents)/100}</td><td>${t.description || ''}</td></tr>`).join('') || '<tr><td colspan="5" class="muted">No transactions</td></tr>';
+    const sourceBadges = netWorth && netWorth.by_source ? Object.entries(netWorth.by_source).map(([k,v]) => `<span class="badge">${k}: $${v.balance}</span>`).join(' ') : '';
+    return '<div style="display:flex; flex-direction:column; gap:12px;">' +
+      '<div class="card" style="background:#0b1220;">' +
+        '<h3>Net Worth: $' + (netWorth ? Number(netWorth.total).toFixed(2) : '0.00') + '</h3>' +
+        '<div>' + sourceBadges + '</div>' +
+        '<div class="token-bar" style="margin-top:8px"><button class="btn" onclick="autoConnectAggregator()">Auto-Connect Internal Sources</button><button class="btn" onclick="syncAllAggregator()">Sync All</button></div>' +
+      '</div>' +
+      '<div class="card" style="background:#0b1220;">' +
+        '<h3>Add Connection</h3>' +
+        '<div class="token-bar"><input id="agg-conn-name" style="flex:1" placeholder="Connection name" /><select id="agg-conn-type"><option value="cash">cash</option><option value="trust">trust</option><option value="issuer">issuer</option><option value="virtual">virtual</option><option value="trust_bank">trust_bank</option><option value="wire">wire</option><option value="bank_transfer">bank_transfer</option><option value="external">external</option><option value="manual">manual</option></select></div>' +
+        '<div class="token-bar"><input id="agg-conn-balance" type="number" step="0.01" style="flex:1" placeholder="Balance (for external/manual)" /></div>' +
+        '<button class="btn" onclick="createAggregatorConnection()">Add Connection</button>' +
+        '<div id="agg-conn-status" class="status hidden"></div>' +
+      '</div>' +
+      '<div class="card" style="background:#0b1220;">' +
+        '<h3>Connections</h3>' +
+        '<table class="table"><thead><tr><th>ID</th><th>Name</th><th>Type</th><th>Status</th><th>Last Sync</th><th></th></tr></thead><tbody>' + rows + '</tbody></table>' +
+      '</div>' +
+      '<div class="card" style="background:#0b1220;">' +
+        '<h3>Recent Transactions</h3>' +
+        '<table class="table"><thead><tr><th>Source</th><th>Account</th><th>Type</th><th>Amount</th><th>Description</th></tr></thead><tbody>' + txRows + '</tbody></table>' +
+      '</div>' +
+    '</div>';
+  }
+
+  async function createAggregatorConnection() {
+    const status = el('agg-conn-status');
+    status.classList.add('hidden');
+    try {
+      const creds = {};
+      const bal = el('agg-conn-balance').value;
+      if (bal) creds.balance_cents = Math.round(Number(bal) * 100);
+      const res = await api('/api/finops/aggregator/connections', { method: 'POST', body: JSON.stringify({ name: el('agg-conn-name').value.trim(), sourceType: el('agg-conn-type').value, credentials: creds }) });
+      show('Connection added: ' + res.data.connection_id, false, 'agg-conn-status');
+      openAggregatorPanel();
+    } catch(e) { show(e.message, true, 'agg-conn-status'); }
+    status.classList.remove('hidden');
+  }
+
+  async function syncAggregatorConnection(id) {
+    try { await api('/api/finops/aggregator/connections/' + id + '/sync', { method: 'POST' }); openAggregatorPanel(); } catch(e) { show(e.message, true, 'agg-conn-status'); }
+  }
+
+  async function syncAllAggregator() {
+    try { await api('/api/finops/aggregator/sync-all', { method: 'POST' }); openAggregatorPanel(); } catch(e) { show(e.message, true, 'agg-conn-status'); }
+  }
+
+  async function autoConnectAggregator() {
+    try { await api('/api/finops/aggregator/auto-connect', { method: 'POST' }); openAggregatorPanel(); } catch(e) { show(e.message, true, 'agg-conn-status'); }
+  }
+
+  // ─── External Endpoint Engine Panel ─────────────────────────────────────────
+
+  async function openExternalEndpointPanel() {
+    const panel = el('module-panel');
+    const body = el('panel-body');
+    el('panel-title').textContent = 'External Endpoint Engine';
+    panel.classList.add('active');
+    body.innerHTML = '<div class="muted">Loading…</div>';
+    try {
+      const [endpoints, payments] = await Promise.all([
+        api('/api/finops/external-endpoints').catch(()=>null),
+        api('/api/finops/external-payments?limit=50').catch(()=>null),
+      ]);
+      body.innerHTML = renderExternalEndpointPanel(endpoints && endpoints.data, payments && payments.data);
+    } catch(e) { body.innerHTML = '<div class="status err">' + e.message + '</div>'; }
+  }
+
+  function endpointOptions(endpoints, selected) {
+    return (endpoints || []).map(e => `<option value="${e.endpoint_id}" ${e.endpoint_id === selected ? 'selected' : ''}>${e.name} (${e.protocol})</option>`).join('');
+  }
+
+  function renderExternalEndpointPanel(endpoints, payments) {
+    const rows = (endpoints || []).map(e => `<tr><td>${e.endpoint_id}</td><td>${e.name}</td><td>${e.protocol}</td><td>${e.base_url}</td><td>${e.auth_type}</td><td><span class="badge ${e.enabled ? 'active' : 'inactive'}">${e.enabled ? 'enabled' : 'disabled'}</span></td><td><button class="btn btn-sm" onclick="testExternalEndpoint('${e.endpoint_id}')">Test</button><button class="btn btn-sm" onclick="deleteExternalEndpoint('${e.endpoint_id}')">Delete</button></td></tr>`).join('') || '<tr><td colspan="7" class="muted">No endpoints configured</td></tr>';
+    const payRows = (payments || []).map(p => `<tr><td>${p.payment_id}</td><td>${p.endpoint_id}</td><td>$${Number(p.amount_cents)/100}</td><td><span class="badge ${p.status}">${p.status}</span></td><td>${p.error_message || ''}</td></tr>`).join('') || '<tr><td colspan="5" class="muted">No payments yet</td></tr>';
+    return '<div style="display:flex; flex-direction:column; gap:12px;">' +
+      '<div class="card" style="background:#0b1220;">' +
+        '<h3>Add External Endpoint</h3>' +
+        '<div class="token-bar"><input id="eep-name" style="flex:1" placeholder="Endpoint name" /></div>' +
+        '<div class="token-bar"><select id="eep-protocol"><option value="rest_json">REST JSON</option><option value="rest_xml">REST XML</option><option value="soap">SOAP</option><option value="iso20022_xml">ISO 20022 XML</option><option value="grpc">gRPC</option><option value="mft_sftp">MFT/SFTP</option><option value="as2">AS2</option><option value="manual">Manual</option></select>' +
+        '<select id="eep-auth"><option value="none">No auth</option><option value="bearer">Bearer</option><option value="basic">Basic</option><option value="api_key">API Key header</option><option value="lili">Lili</option><option value="hmac">HMAC</option></select></div>' +
+        '<div class="token-bar"><input id="eep-url" style="flex:1" placeholder="https://bank.example.com/api/v1/payments" /></div>' +
+        '<div class="token-bar"><input id="eep-key" style="flex:1" placeholder="API key / access key" /><input id="eep-secret" style="flex:1" placeholder="API secret / secret key" /></div>' +
+        '<div class="token-bar"><input id="eep-success" style="flex:1" placeholder="Response success JSON path, e.g. status" /></div>' +
+        '<div><textarea id="eep-headers" rows="2" style="width:100%" placeholder="JSON object, e.g. {&#34;X-Custom&#34;:&#34;value&#34;}"></textarea></div>' +
+        '<div><textarea id="eep-template" rows="4" style="width:100%" placeholder="Optional payload template using {{creditorAccount}}, {{amount}}, {{referenceId}}, etc."></textarea></div>' +
+        '<button class="btn" onclick="createExternalEndpoint()">Save Endpoint</button>' +
+        '<div id="eep-status" class="status hidden"></div>' +
+      '</div>' +
+      '<div class="card" style="background:#0b1220;">' +
+        '<h3>Endpoints</h3>' +
+        '<table class="table"><thead><tr><th>ID</th><th>Name</th><th>Protocol</th><th>Base URL</th><th>Auth</th><th>Enabled</th><th></th></tr></thead><tbody>' + rows + '</tbody></table>' +
+      '</div>' +
+      '<div class="card" style="background:#0b1220;">' +
+        '<h3>Send Payment via Endpoint</h3>' +
+        '<div class="token-bar"><select id="eep-pay-endpoint" style="flex:1">' + endpointOptions(endpoints) + '</select></div>' +
+        '<div class="token-bar"><input id="eep-pay-source" style="flex:1" placeholder="Source cash account ID (optional)" /><input id="eep-pay-amount" type="number" step="0.01" style="flex:1" placeholder="Amount USD" /></div>' +
+        '<div class="token-bar"><input id="eep-pay-creditor-name" style="flex:1" placeholder="Creditor name" /><input id="eep-pay-creditor-account" style="flex:1" placeholder="Account number" /></div>' +
+        '<div class="token-bar"><input id="eep-pay-creditor-routing" style="flex:1" placeholder="Routing / BIC" /><input id="eep-pay-creditor-bank" style="flex:1" placeholder="Bank name" /></div>' +
+        '<div class="token-bar"><input id="eep-pay-debtor-name" style="flex:1" placeholder="Debtor name (optional)" /><input id="eep-pay-debtor-account" style="flex:1" placeholder="Debtor account (optional)" /></div>' +
+        '<div><textarea id="eep-pay-desc" rows="2" style="width:100%" placeholder="Description / remittance"></textarea></div>' +
+        '<button class="btn" onclick="createExternalPayment()">Create & Send Payment</button>' +
+        '<div id="eep-pay-status" class="status hidden"></div>' +
+      '</div>' +
+      '<div class="card" style="background:#0b1220;">' +
+        '<h3>Recent External Payments</h3>' +
+        '<table class="table"><thead><tr><th>Payment ID</th><th>Endpoint</th><th>Amount</th><th>Status</th><th>Error</th></tr></thead><tbody>' + payRows + '</tbody></table>' +
+      '</div>' +
+    '</div>';
+  }
+
+  async function createExternalEndpoint() {
+    const status = el('eep-status');
+    status.classList.add('hidden');
+    try {
+      let headers = {};
+      try { headers = JSON.parse(el('eep-headers').value || '{}'); } catch {}
+      const res = await api('/api/finops/external-endpoints', { method: 'POST', body: JSON.stringify({
+        name: el('eep-name').value.trim(),
+        protocol: el('eep-protocol').value,
+        baseUrl: el('eep-url').value.trim(),
+        authType: el('eep-auth').value,
+        apiKey: el('eep-key').value.trim(),
+        apiSecret: el('eep-secret').value.trim(),
+        extraHeaders: headers,
+        payloadTemplate: el('eep-template').value.trim(),
+        responseSuccessPath: el('eep-success').value.trim(),
+      }) });
+      show('Endpoint added: ' + res.data.endpoint_id, false, 'eep-status');
+      openExternalEndpointPanel();
+    } catch(e) { show(e.message, true, 'eep-status'); }
+    status.classList.remove('hidden');
+  }
+
+  async function testExternalEndpoint(id) {
+    try { const res = await api('/api/finops/external-endpoints/' + id + '/test', { method: 'POST' }); show(`Connection: ${res.data.connected ? 'OK' : 'FAIL'} ${res.data.statusCode || ''}`, !res.data.connected, 'eep-status'); openExternalEndpointPanel(); } catch(e) { show(e.message, true, 'eep-status'); }
+  }
+
+  async function deleteExternalEndpoint(id) {
+    if (!confirm('Delete endpoint ' + id + '?')) return;
+    try { await api('/api/finops/external-endpoints/' + id, { method: 'DELETE' }); openExternalEndpointPanel(); } catch(e) { show(e.message, true, 'eep-status'); }
+  }
+
+  async function createExternalPayment() {
+    const status = el('eep-pay-status');
+    status.classList.add('hidden');
+    try {
+      const endpointId = el('eep-pay-endpoint').value;
+      const res = await api('/api/finops/external-endpoints/' + endpointId + '/payments', { method: 'POST', body: JSON.stringify({
+        sourceAccountId: el('eep-pay-source').value.trim() || undefined,
+        amount: Number(el('eep-pay-amount').value),
+        creditorName: el('eep-pay-creditor-name').value.trim(),
+        creditorAccount: el('eep-pay-creditor-account').value.trim(),
+        creditorRouting: el('eep-pay-creditor-routing').value.trim(),
+        creditorBank: el('eep-pay-creditor-bank').value.trim(),
+        debtorName: el('eep-pay-debtor-name').value.trim() || undefined,
+        debtorAccount: el('eep-pay-debtor-account').value.trim() || undefined,
+        description: el('eep-pay-desc').value.trim(),
+      }) });
+      show(`Payment ${res.data.paymentId}: ${res.data.status}${res.data.externalId ? ' / ' + res.data.externalId : ''}`, res.data.status === 'failed', 'eep-pay-status');
+      openExternalEndpointPanel();
+    } catch(e) { show(e.message, true, 'eep-pay-status'); }
+    status.classList.remove('hidden');
+  }
+
+  // ─── Live FinTech Endpoint Engine Panel ─────────────────────────────────────
+
+  async function openLiveFinTechPanel() {
+    const panel = el('module-panel');
+    const body = el('panel-body');
+    el('panel-title').textContent = 'Live FinTech Endpoint Engine';
+    panel.classList.add('active');
+    body.innerHTML = '<div class="muted">Loading…</div>';
+    try {
+      const [providers, endpoints, payments] = await Promise.all([
+        api('/api/finops/live-fintech/providers').catch(()=>null),
+        api('/api/finops/live-fintech-endpoints').catch(()=>null),
+        api('/api/finops/live-fintech-payments?limit=50').catch(()=>null),
+      ]);
+      body.innerHTML = renderLiveFinTechPanel(providers && providers.data, endpoints && endpoints.data, payments && payments.data);
+    } catch(e) { body.innerHTML = '<div class="status err">' + e.message + '</div>'; }
+  }
+
+  function liveFintechProviderOptions(selected) {
+    const opts = { generic:'Generic REST/JSON', column:'Column', increase:'Increase', lili:'Lili', mercury:'Mercury', plaid:'Plaid', wise:'Wise', stripe:'Stripe', spritz:'Spritz', cashapp:'Cash App', skrill:'Skrill' };
+    return Object.entries(opts).map(([k, v]) => `<option value="${k}" ${k === selected ? 'selected' : ''}>${v}</option>`).join('');
+  }
+
+  function liveFintechEndpointOptions(endpoints, selected) {
+    return (endpoints || []).map(e => `<option value="${e.endpoint_id}" ${e.endpoint_id === selected ? 'selected' : ''}>${e.name} (${e.provider})</option>`).join('');
+  }
+
+  function renderLiveFinTechPanel(providers, endpoints, payments) {
+    const rows = (endpoints || []).map(e => `<tr><td>${e.endpoint_id}</td><td>${e.name}</td><td>${e.provider}</td><td>${e.base_url}</td><td>${e.auth_type}</td><td><span class="badge ${e.enabled ? 'active' : 'inactive'}">${e.enabled ? 'enabled' : 'disabled'}</span></td><td><button class="btn btn-sm" onclick="testLiveFinTechEndpoint('${e.endpoint_id}')">Test</button><button class="btn btn-sm" onclick="deleteLiveFinTechEndpoint('${e.endpoint_id}')">Delete</button></td></tr>`).join('') || '<tr><td colspan="7" class="muted">No live fintech endpoints configured</td></tr>';
+    const payRows = (payments || []).map(p => `<tr><td>${p.payment_id}</td><td>${p.endpoint_id}</td><td>$${Number(p.amount_cents)/100}</td><td><span class="badge ${p.status}">${p.status}</span></td><td>${p.external_id || ''}</td><td>${p.error_message || ''}</td></tr>`).join('') || '<tr><td colspan="6" class="muted">No payments yet</td></tr>';
+    return '<div style="display:flex; flex-direction:column; gap:12px;">' +
+      '<div class="card" style="background:#0b1220;">' +
+        '<h3>Add Live FinTech Endpoint</h3>' +
+        '<div class="token-bar"><input id="lft-name" style="flex:1" placeholder="Endpoint name" /></div>' +
+        '<div class="token-bar"><select id="lft-provider">' + liveFintechProviderOptions() + '</select>' +
+        '<select id="lft-auth"><option value="none">No auth</option><option value="bearer">Bearer</option><option value="basic">Basic</option><option value="api_key">API Key header</option><option value="lili">Lili</option><option value="hmac">HMAC</option></select></div>' +
+        '<div class="token-bar"><input id="lft-url" style="flex:1" placeholder="https://api.fintech.example.com/v1/transfers" /></div>' +
+        '<div class="token-bar"><input id="lft-key" style="flex:1" placeholder="API key / access key" /><input id="lft-secret" style="flex:1" placeholder="API secret / secret key" /></div>' +
+        '<div class="token-bar"><input id="lft-success" style="flex:1" placeholder="Response success JSON path (optional)" /><input id="lft-extid" style="flex:1" placeholder="External ID JSON path (optional)" /></div>' +
+        '<div><textarea id="lft-headers" rows="2" style="width:100%" placeholder="JSON object, e.g. {&#34;X-Custom&#34;:&#34;value&#34;}"></textarea></div>' +
+        '<div><textarea id="lft-template" rows="4" style="width:100%" placeholder="Optional payload template using {{creditorAccount}}, {{amount}}, {{referenceId}}, etc."></textarea></div>' +
+        '<button class="btn" onclick="createLiveFinTechEndpoint()">Save Endpoint</button>' +
+        '<div id="lft-status" class="status hidden"></div>' +
+      '</div>' +
+      '<div class="card" style="background:#0b1220;">' +
+        '<h3>Live FinTech Endpoints</h3>' +
+        '<table class="table"><thead><tr><th>ID</th><th>Name</th><th>Provider</th><th>Base URL</th><th>Auth</th><th>Enabled</th><th></th></tr></thead><tbody>' + rows + '</tbody></table>' +
+      '</div>' +
+      '<div class="card" style="background:#0b1220;">' +
+        '<h3>Send Payment via Live FinTech Endpoint</h3>' +
+        '<div class="token-bar"><select id="lft-pay-endpoint" style="flex:1">' + liveFintechEndpointOptions(endpoints) + '</select></div>' +
+        '<div class="token-bar"><input id="lft-pay-source" style="flex:1" placeholder="Source cash account ID (optional)" /><input id="lft-pay-amount" type="number" step="0.01" style="flex:1" placeholder="Amount USD" /></div>' +
+        '<div class="token-bar"><input id="lft-pay-creditor-name" style="flex:1" placeholder="Creditor name" /><input id="lft-pay-creditor-account" style="flex:1" placeholder="Account number" /></div>' +
+        '<div class="token-bar"><input id="lft-pay-creditor-routing" style="flex:1" placeholder="Routing / BIC" /><input id="lft-pay-creditor-bank" style="flex:1" placeholder="Bank name" /></div>' +
+        '<div class="token-bar"><input id="lft-pay-debtor-name" style="flex:1" placeholder="Debtor name (optional)" /><input id="lft-pay-debtor-account" style="flex:1" placeholder="Debtor account (optional)" /></div>' +
+        '<div><textarea id="lft-pay-desc" rows="2" style="width:100%" placeholder="Description / remittance"></textarea></div>' +
+        '<button class="btn" onclick="createLiveFinTechPayment()">Create & Send Payment</button>' +
+        '<div id="lft-pay-status" class="status hidden"></div>' +
+      '</div>' +
+      '<div class="card" style="background:#0b1220;">' +
+        '<h3>Recent Live FinTech Payments</h3>' +
+        '<table class="table"><thead><tr><th>Payment ID</th><th>Endpoint</th><th>Amount</th><th>Status</th><th>External ID</th><th>Error</th></tr></thead><tbody>' + payRows + '</tbody></table>' +
+      '</div>' +
+    '</div>';
+  }
+
+  async function createLiveFinTechEndpoint() {
+    const status = el('lft-status');
+    status.classList.add('hidden');
+    try {
+      let headers = {};
+      try { headers = JSON.parse(el('lft-headers').value || '{}'); } catch {}
+      const res = await api('/api/finops/live-fintech-endpoints', { method: 'POST', body: JSON.stringify({
+        name: el('lft-name').value.trim(),
+        provider: el('lft-provider').value,
+        baseUrl: el('lft-url').value.trim(),
+        authType: el('lft-auth').value,
+        apiKey: el('lft-key').value.trim(),
+        apiSecret: el('lft-secret').value.trim(),
+        extraHeaders: headers,
+        payloadTemplate: el('lft-template').value.trim(),
+        responseSuccessPath: el('lft-success').value.trim(),
+        responseExternalIdPath: el('lft-extid').value.trim(),
+      }) });
+      show('Live FinTech endpoint added: ' + res.data.endpoint_id, false, 'lft-status');
+      openLiveFinTechPanel();
+    } catch(e) { show(e.message, true, 'lft-status'); }
+    status.classList.remove('hidden');
+  }
+
+  async function testLiveFinTechEndpoint(id) {
+    try { const res = await api('/api/finops/live-fintech-endpoints/' + id + '/test', { method: 'POST' }); show(`Connection: ${res.data.connected ? 'OK' : 'FAIL'} ${res.data.statusCode || ''}`, !res.data.connected, 'lft-status'); openLiveFinTechPanel(); } catch(e) { show(e.message, true, 'lft-status'); }
+  }
+
+  async function deleteLiveFinTechEndpoint(id) {
+    if (!confirm('Delete endpoint ' + id + '?')) return;
+    try { await api('/api/finops/live-fintech-endpoints/' + id, { method: 'DELETE' }); openLiveFinTechPanel(); } catch(e) { show(e.message, true, 'lft-status'); }
+  }
+
+  async function createLiveFinTechPayment() {
+    const status = el('lft-pay-status');
+    status.classList.add('hidden');
+    try {
+      const endpointId = el('lft-pay-endpoint').value;
+      const res = await api('/api/finops/live-fintech-endpoints/' + endpointId + '/payments', { method: 'POST', body: JSON.stringify({
+        sourceAccountId: el('lft-pay-source').value.trim() || undefined,
+        amount: Number(el('lft-pay-amount').value),
+        creditorName: el('lft-pay-creditor-name').value.trim(),
+        creditorAccount: el('lft-pay-creditor-account').value.trim(),
+        creditorRouting: el('lft-pay-creditor-routing').value.trim(),
+        creditorBank: el('lft-pay-creditor-bank').value.trim(),
+        debtorName: el('lft-pay-debtor-name').value.trim() || undefined,
+        debtorAccount: el('lft-pay-debtor-account').value.trim() || undefined,
+        description: el('lft-pay-desc').value.trim(),
+      }) });
+      show(`Payment ${res.data.paymentId}: ${res.data.status}${res.data.externalId ? ' / ' + res.data.externalId : ''}`, res.data.status === 'failed', 'lft-pay-status');
+      openLiveFinTechPanel();
+    } catch(e) { show(e.message, true, 'lft-pay-status'); }
+    status.classList.remove('hidden');
+  }
+
+  // ─── Settlement Engine Panel ────────────────────────────────────────────────
+
+  async function openSettlementPanel() {
+    const panel = el('module-panel');
+    const body = el('panel-body');
+    el('panel-title').textContent = 'Settlement Engine';
+    panel.classList.add('active');
+    body.innerHTML = '<div class="muted">Loading…</div>';
+    try {
+      const [rails, endpoints, liveFintechEndpoints, h2hPartners, settlements] = await Promise.all([
+        api('/api/finops/settlements/rails').catch(()=>null),
+        api('/api/finops/external-endpoints').catch(()=>null),
+        api('/api/finops/live-fintech-endpoints').catch(()=>null),
+        api('/api/finops/host-to-host/partners').catch(()=>null),
+        api('/api/finops/settlements').catch(()=>null),
+      ]);
+      body.innerHTML = renderSettlementPanel(rails && rails.data, endpoints && endpoints.data, liveFintechEndpoints && liveFintechEndpoints.data, h2hPartners && h2hPartners.data, settlements && settlements.data);
+    } catch(e) { body.innerHTML = '<div class="status err">' + e.message + '</div>'; }
+  }
+
+  function railOptions(rails, selected) {
+    return (rails || []).map(r => `<option value="${r.id}" ${r.id === selected ? 'selected' : ''}>${r.name}${r.ready ? ' ✓' : ''}</option>`).join('');
+  }
+
+  function endpointOptionsForSettlement(endpoints, liveFintechEndpoints, h2hPartners, selected) {
+    const externalOpts = (endpoints || []).map(e => `<option value="${e.endpoint_id}" ${e.endpoint_id === selected ? 'selected' : ''}>${e.name} (${e.protocol || 'external'})</option>`).join('');
+    const liveOpts = (liveFintechEndpoints || []).map(e => `<option value="${e.endpoint_id}" ${e.endpoint_id === selected ? 'selected' : ''}>${e.name} (${e.provider})</option>`).join('');
+    const h2hOpts = (h2hPartners || []).map(p => `<option value="${p.partner_id}" ${p.partner_id === selected ? 'selected' : ''}>${p.name} (${p.protocol})</option>`).join('');
+    return (externalOpts ? '<optgroup label="External Endpoints">' + externalOpts + '</optgroup>' : '') + (liveOpts ? '<optgroup label="Live FinTech">' + liveOpts + '</optgroup>' : '') + (h2hOpts ? '<optgroup label="Host-to-Host">' + h2hOpts + '</optgroup>' : '');
+  }
+
+  function renderSettlementPanel(rails, endpoints, liveFintechEndpoints, h2hPartners, settlements) {
+    const rows = (settlements || []).map(s => `<tr><td>${s.settlement_id}</td><td>${s.rail}</td><td>$${Number(s.amount_cents)/100}</td><td><span class="badge ${s.status}">${s.status}</span></td><td>${s.source_id || ''}</td><td>${s.error_message || ''}</td><td><button class="btn btn-sm" onclick="executeSettlement('${s.settlement_id}')">Execute</button><button class="btn btn-sm" onclick="cancelSettlement('${s.settlement_id}')">Cancel</button></td></tr>`).join('') || '<tr><td colspan="7" class="muted">No settlements yet</td></tr>';
+    const railList = (rails || []).map(r => `<tr><td>${r.id}</td><td>${r.name}</td><td><span class="badge ${r.ready ? 'active' : 'inactive'}">${r.ready ? 'ready' : 'not ready'}</span></td><td>${r.needs.join(', ')}</td></tr>`).join('') || '<tr><td colspan="4" class="muted">No rails configured</td></tr>';
+    return '<div style="display:flex; flex-direction:column; gap:12px;">' +
+      '<div class="card" style="background:#0b1220;">' +
+        '<h3>Create Settlement</h3>' +
+        '<div class="token-bar"><select id="setl-rail" onchange="toggleSettlementFields()">' + railOptions(rails) + '</select>' +
+        '<select id="setl-endpoint" class="hidden" style="flex:1">' + endpointOptionsForSettlement(endpoints, liveFintechEndpoints, h2hPartners) + '</select></div>' +
+        '<div class="token-bar"><input id="setl-source" style="flex:1" placeholder="Source cash account ID (e.g. CA-OPERATING)" /><input id="setl-amount" type="number" step="0.01" style="flex:1" placeholder="Amount USD" /></div>' +
+        '<div class="token-bar"><input id="setl-creditor-name" style="flex:1" placeholder="Creditor / beneficiary name" /><input id="setl-creditor-account" style="flex:1" placeholder="Account number / wallet" /></div>' +
+        '<div class="token-bar"><input id="setl-creditor-routing" style="flex:1" placeholder="Routing / BIC / chain" /><input id="setl-creditor-bank" style="flex:1" placeholder="Bank name" /></div>' +
+        '<div class="token-bar"><input id="setl-debtor-name" style="flex:1" placeholder="Debtor name (optional)" /><input id="setl-debtor-account" style="flex:1" placeholder="Debtor account (optional)" /></div>' +
+        '<div class="token-bar"><input id="setl-connector" class="hidden" style="flex:1" placeholder="Open banking connector (default generic_rest)" /></div>' +
+        '<div><textarea id="setl-desc" rows="2" style="width:100%" placeholder="Description / remittance"></textarea></div>' +
+        '<button class="btn" onclick="createSettlement()">Create Settlement</button>' +
+        '<div id="setl-create-status" class="status hidden"></div>' +
+      '</div>' +
+      '<div class="card" style="background:#0b1220;">' +
+        '<h3>Settlement Rails</h3>' +
+        '<table class="table"><thead><tr><th>Rail</th><th>Name</th><th>Ready</th><th>Needs</th></tr></thead><tbody>' + railList + '</tbody></table>' +
+      '</div>' +
+      '<div class="card" style="background:#0b1220;">' +
+        '<h3>Settlements Queue <button class="btn btn-sm" onclick="pollSettlements()">Poll</button></h3>' +
+        '<table class="table"><thead><tr><th>ID</th><th>Rail</th><th>Amount</th><th>Status</th><th>Child ID</th><th>Error</th><th></th></tr></thead><tbody>' + rows + '</tbody></table>' +
+      '</div>' +
+    '</div>';
+  }
+
+  function toggleSettlementFields() {
+    const rail = el('setl-rail').value;
+    const ep = el('setl-endpoint');
+    const conn = el('setl-connector');
+    if (ep) ep.classList.toggle('hidden', rail !== 'external_endpoint' && rail !== 'live_fintech' && rail !== 'host_to_host' && rail !== 'mft_sftp' && rail !== 'as2');
+    if (conn) conn.classList.toggle('hidden', rail !== 'open_banking' && rail !== 'iso20022');
+  }
+
+  async function createSettlement() {
+    const status = el('setl-create-status');
+    status.classList.add('hidden');
+    try {
+      const rail = el('setl-rail').value;
+      const body = {
+        rail,
+        sourceAccountId: el('setl-source').value.trim() || undefined,
+        amount: Number(el('setl-amount').value),
+        creditorName: el('setl-creditor-name').value.trim(),
+        creditorAccount: el('setl-creditor-account').value.trim() || undefined,
+        creditorRouting: el('setl-creditor-routing').value.trim() || undefined,
+        creditorBank: el('setl-creditor-bank').value.trim() || undefined,
+        debtorName: el('setl-debtor-name').value.trim() || undefined,
+        debtorAccount: el('setl-debtor-account').value.trim() || undefined,
+        description: el('setl-desc').value.trim(),
+      };
+      if (rail === 'external_endpoint' || rail === 'live_fintech' || rail === 'host_to_host' || rail === 'mft_sftp' || rail === 'as2') body.endpointId = el('setl-endpoint').value;
+      if (rail === 'open_banking' || rail === 'iso20022') body.connector = el('setl-connector').value.trim() || 'generic_rest';
+      const res = await api('/api/finops/settlements', { method: 'POST', body: JSON.stringify(body) });
+      show('Settlement created: ' + res.data.settlement_id + ' (' + res.data.status + ')', false, 'setl-create-status');
+      openSettlementPanel();
+    } catch(e) { show(e.message, true, 'setl-create-status'); }
+    status.classList.remove('hidden');
+  }
+
+  async function executeSettlement(id) {
+    try {
+      const res = await api('/api/finops/settlements/' + id + '/execute', { method: 'POST' });
+      show('Settlement ' + id + ' status: ' + res.data.status, res.data.status === 'failed', 'setl-create-status');
+      openSettlementPanel();
+    } catch(e) { show(e.message, true, 'setl-create-status'); }
+  }
+
+  async function cancelSettlement(id) {
+    if (!confirm('Cancel settlement ' + id + '?')) return;
+    try {
+      await api('/api/finops/settlements/' + id + '/cancel', { method: 'POST' });
+      openSettlementPanel();
+    } catch(e) { show(e.message, true, 'setl-create-status'); }
+  }
+
+  async function pollSettlements() {
+    try {
+      const res = await api('/api/finops/settlements/poll', { method: 'POST' });
+      show('Polled ' + (res.data || []).length + ' settlements', false, 'setl-create-status');
+      openSettlementPanel();
+    } catch(e) { show(e.message, true, 'setl-create-status'); }
+  }
+
+  // ─── Host-to-Host Engine Panel ───────────────────────────────────────────────
+
+  async function openHostToHostPanel() {
+    const panel = el('module-panel');
+    const body = el('panel-body');
+    el('panel-title').textContent = 'Host-to-Host Engine';
+    panel.classList.add('active');
+    body.innerHTML = '<div class="muted">Loading…</div>';
+    try {
+      const [partners, transmissions] = await Promise.all([
+        api('/api/finops/host-to-host/partners').catch(()=>null),
+        api('/api/finops/host-to-host/transmissions').catch(()=>null),
+      ]);
+      body.innerHTML = renderHostToHostPanel(partners && partners.data, transmissions && transmissions.data);
+    } catch(e) { body.innerHTML = '<div class="status err">' + e.message + '</div>'; }
+  }
+
+  function renderHostToHostPanel(partners, transmissions) {
+    const partnerRows = (partners || []).map(p => `<tr><td>${p.partner_id}</td><td>${p.name}</td><td>${p.protocol}</td><td>${p.host}</td><td>${p.message_type}</td><td>${p.enabled ? 'enabled' : 'disabled'}</td><td><button class="btn btn-sm" onclick="testH2HPartner('${p.partner_id}')">Test</button><button class="btn btn-sm" onclick="deleteH2HPartner('${p.partner_id}')">Delete</button></td></tr>`).join('') || '<tr><td colspan="7" class="muted">No partners yet</td></tr>';
+    const transmissionRows = (transmissions || []).map(t => `<tr><td>${t.transmission_id}</td><td>${t.partner_id}</td><td>${t.direction}</td><td>${t.message_type}</td><td><span class="badge ${t.status}">${t.status}</span></td><td>${t.filename}</td><td>${Number(t.amount_cents||0)/100}</td><td>${t.error_message || ''}</td></tr>`).join('') || '<tr><td colspan="8" class="muted">No transmissions yet</td></tr>';
+    return '<div style="display:flex; flex-direction:column; gap:12px;">' +
+      '<div class="card" style="background:#0b1220;">' +
+        '<h3>Create Partner</h3>' +
+        '<div class="token-bar"><input id="h2h-name" style="flex:1" placeholder="Partner name" /><select id="h2h-protocol" onchange="toggleH2HFields()"><option value="https">HTTPS</option><option value="http">HTTP</option><option value="sftp">SFTP</option><option value="ftps">FTPS</option><option value="as2">AS2</option></select></div>' +
+        '<div class="token-bar"><input id="h2h-host" style="flex:1" placeholder="Host / endpoint" /><input id="h2h-port" type="number" style="flex:0.5" placeholder="Port" /></div>' +
+        '<div class="token-bar"><input id="h2h-username" style="flex:1" placeholder="Username (optional)" /><input id="h2h-password" type="password" style="flex:1" placeholder="Password / API key" /></div>' +
+        '<div class="token-bar"><input id="h2h-remote" style="flex:1" placeholder="Remote path / webhook path" /><select id="h2h-message"><option value="json">JSON</option><option value="xml">XML</option><option value="nacha">NACHA ACH</option><option value="iso20022">ISO 20022</option><option value="csv">CSV</option></select></div>' +
+        '<div id="h2h-as2" class="hidden" style="display:flex; flex-direction:column; gap:8px;">' +
+          '<input id="h2h-as2-id" style="flex:1" placeholder="AS2 partner ID" />' +
+          '<input id="h2h-as2-url" style="flex:1" placeholder="AS2 endpoint URL" />' +
+          '<textarea id="h2h-as2-signing-cert" rows="2" placeholder="Signing certificate (PEM)"></textarea>' +
+          '<textarea id="h2h-as2-signing-key" rows="2" placeholder="Signing private key (PEM)"></textarea>' +
+          '<textarea id="h2h-as2-partner-cert" rows="2" placeholder="Partner public certificate (PEM)"></textarea>' +
+        '</div>' +
+        '<div class="token-bar"><textarea id="h2h-template" rows="2" style="flex:1" placeholder="Optional payload template with {{amount}}, {{creditor.name}}, etc."></textarea></div>' +
+        '<button class="btn" onclick="createH2HPartner()">Create Partner</button>' +
+        '<div id="h2h-create-status" class="status hidden"></div>' +
+      '</div>' +
+      '<div class="card" style="background:#0b1220;">' +
+        '<h3>Partners</h3>' +
+        '<table class="table"><thead><tr><th>ID</th><th>Name</th><th>Protocol</th><th>Host</th><th>Type</th><th>Enabled</th><th></th></tr></thead><tbody>' + partnerRows + '</tbody></table>' +
+      '</div>' +
+      '<div class="card" style="background:#0b1220;">' +
+        '<h3>Send Payment</h3>' +
+        '<div class="token-bar"><select id="h2h-send-partner">' + (partners || []).map(p => `<option value="${p.partner_id}">${p.name} (${p.protocol})</option>`).join('') + '</select><input id="h2h-send-amount" type="number" step="0.01" style="flex:0.5" placeholder="Amount" /></div>' +
+        '<div class="token-bar"><input id="h2h-send-creditor-name" style="flex:1" placeholder="Creditor name" /><input id="h2h-send-creditor-account" style="flex:1" placeholder="Account" /></div>' +
+        '<div class="token-bar"><input id="h2h-send-creditor-routing" style="flex:1" placeholder="Routing / IBAN" /><input id="h2h-send-creditor-bank" style="flex:1" placeholder="Bank" /></div>' +
+        '<button class="btn" onclick="sendH2HPayment()">Send Payment File / Message</button>' +
+        '<div id="h2h-send-status" class="status hidden"></div>' +
+      '</div>' +
+      '<div class="card" style="background:#0b1220;">' +
+        '<h3>Transmissions</h3>' +
+        '<table class="table"><thead><tr><th>ID</th><th>Partner</th><th>Dir</th><th>Type</th><th>Status</th><th>Filename</th><th>Amount</th><th>Error</th></tr></thead><tbody>' + transmissionRows + '</tbody></table>' +
+      '</div>' +
+    '</div>';
+  }
+
+  function toggleH2HFields() {
+    const protocol = el('h2h-protocol').value;
+    const as2 = el('h2h-as2');
+    if (as2) as2.classList.toggle('hidden', protocol !== 'as2');
+  }
+
+  async function createH2HPartner() {
+    const status = el('h2h-create-status');
+    status.classList.add('hidden');
+    try {
+      const body = {
+        name: el('h2h-name').value.trim(),
+        protocol: el('h2h-protocol').value,
+        host: el('h2h-host').value.trim(),
+        port: el('h2h-port').value ? Number(el('h2h-port').value) : undefined,
+        username: el('h2h-username').value.trim() || undefined,
+        password: el('h2h-password').value || undefined,
+        remotePath: el('h2h-remote').value.trim() || '/',
+        messageType: el('h2h-message').value,
+        template: el('h2h-template').value.trim() || undefined,
+      };
+      if (body.protocol === 'as2') {
+        body.as2Id = el('h2h-as2-id').value.trim();
+        body.as2Url = el('h2h-as2-url').value.trim();
+        body.as2SigningCert = el('h2h-as2-signing-cert').value.trim();
+        body.as2SigningKey = el('h2h-as2-signing-key').value.trim();
+        body.as2PartnerCert = el('h2h-as2-partner-cert').value.trim();
+      }
+      const res = await api('/api/finops/host-to-host/partners', { method: 'POST', body: JSON.stringify(body) });
+      show('Partner created: ' + res.data.partner_id, false, 'h2h-create-status');
+      openHostToHostPanel();
+    } catch(e) { show(e.message, true, 'h2h-create-status'); }
+    status.classList.remove('hidden');
+  }
+
+  async function testH2HPartner(id) {
+    try {
+      const res = await api('/api/finops/host-to-host/partners/' + id + '/test', { method: 'POST' });
+      alert('Test result: ' + JSON.stringify(res.data));
+    } catch(e) { alert(e.message); }
+  }
+
+  async function deleteH2HPartner(id) {
+    if (!confirm('Delete partner ' + id + '?')) return;
+    try {
+      await api('/api/finops/host-to-host/partners/' + id, { method: 'DELETE' });
+      openHostToHostPanel();
+    } catch(e) { alert(e.message); }
+  }
+
+  async function sendH2HPayment() {
+    const status = el('h2h-send-status');
+    status.classList.add('hidden');
+    try {
+      const body = {
+        partnerId: el('h2h-send-partner').value,
+        amount: Number(el('h2h-send-amount').value),
+        creditorName: el('h2h-send-creditor-name').value.trim(),
+        creditorAccount: el('h2h-send-creditor-account').value.trim() || undefined,
+        creditorRouting: el('h2h-send-creditor-routing').value.trim() || undefined,
+        creditorBank: el('h2h-send-creditor-bank').value.trim() || undefined,
+      };
+      const res = await api('/api/finops/host-to-host/payments', { method: 'POST', body: JSON.stringify(body) });
+      show('Transmission ' + res.data.transmission_id + ' status: ' + res.data.status, res.data.status === 'failed', 'h2h-send-status');
+      openHostToHostPanel();
+    } catch(e) { show(e.message, true, 'h2h-send-status'); }
+    status.classList.remove('hidden');
+  }
+
+  // ─── Live Money Movement Engine Panel ─────────────────────────────────────────
+
+  async function openLiveMoneyPanel() {
+    const panel = el('module-panel');
+    const body = el('panel-body');
+    el('panel-title').textContent = 'Live Money Movement Engine';
+    panel.classList.add('active');
+    body.innerHTML = '<div class="muted">Loading…</div>';
+    try {
+      const data = await api('/api/finops/live-money').catch(()=>null);
+      const rails = await api('/api/finops/live-money/rails').catch(()=>null);
+      body.innerHTML = renderLiveMoneyPanel(data && data.data, rails && rails.data);
+    } catch(e) { body.innerHTML = '<div class="status err">' + e.message + '</div>'; }
+  }
+
+  function renderLiveMoneyPanel(dash, rails) {
+    const counts = dash && dash.counts ? dash.counts : {};
+    const movements = dash && dash.movements ? dash.movements : [];
+    const movementRows = movements.map(m => `<tr><td>${m.movement_id}</td><td>${m.rail}</td><td>$${Number(m.amount_cents)/100}</td><td><span class="badge ${m.status}">${m.status}</span></td><td>${m.creditor_name}</td><td>${m.settlement_id || ''}</td><td>${m.error_message || ''}</td><td><button class="btn btn-sm" onclick="executeLiveMoney('${m.movement_id}')">Execute</button><button class="btn btn-sm" onclick="pollLiveMoney('${m.movement_id}')">Poll</button><button class="btn btn-sm" onclick="cancelLiveMoney('${m.movement_id}')">Cancel</button></td></tr>`).join('') || '<tr><td colspan="8" class="muted">No live money movements yet</td></tr>';
+    const railOptions = (rails || []).map(r => `<option value="${r.id}">${r.name}${r.ready ? ' ✓' : ''}</option>`).join('');
+    return '<div style="display:flex; flex-direction:column; gap:12px;">' +
+      '<div class="card" style="background:#0b1220;">' +
+        '<h3>Move Real Money</h3>' +
+        '<div class="token-bar" style="gap:16px;"><div><b>Pending:</b> ' + (counts.pending || 0) + '</div><div><b>Submitted:</b> ' + (counts.submitted || 0) + '</div><div><b>Completed:</b> ' + (counts.completed || 0) + '</div><div><b>Failed:</b> ' + (counts.failed || 0) + '</div><div><b>Completed USD:</b> $' + (dash ? dash.completedUsd : 0) + '</div></div>' +
+        '<div class="token-bar"><input id="lmm-source" style="flex:1" placeholder="Source cash account ID (e.g. CA-OPERATING)" /><input id="lmm-amount" type="number" step="0.01" style="flex:0.5" placeholder="Amount" /></div>' +
+        '<div class="token-bar"><select id="lmm-rail"><option value="auto">Auto-select rail</option>' + railOptions + '</select><input id="lmm-endpoint" style="flex:1" placeholder="Endpoint / partner ID (optional)" /></div>' +
+        '<div class="token-bar"><input id="lmm-creditor-name" style="flex:1" placeholder="Creditor / beneficiary name" /><input id="lmm-creditor-account" style="flex:1" placeholder="Account number / wallet" /></div>' +
+        '<div class="token-bar"><input id="lmm-creditor-routing" style="flex:1" placeholder="Routing / BIC / chain" /><input id="lmm-creditor-bank" style="flex:1" placeholder="Bank name" /></div>' +
+        '<div><textarea id="lmm-desc" rows="2" style="width:100%" placeholder="Description / remittance"></textarea></div>' +
+        '<button class="btn" onclick="createLiveMoneyMovement()">Initiate Live Movement</button>' +
+        '<div id="lmm-create-status" class="status hidden"></div>' +
+      '</div>' +
+      '<div class="card" style="background:#0b1220;">' +
+        '<h3>Live Money Movements</h3>' +
+        '<table class="table"><thead><tr><th>ID</th><th>Rail</th><th>Amount</th><th>Status</th><th>Creditor</th><th>Settlement</th><th>Error</th><th></th></tr></thead><tbody>' + movementRows + '</tbody></table>' +
+      '</div>' +
+    '</div>';
+  }
+
+  async function createLiveMoneyMovement() {
+    const status = el('lmm-create-status');
+    status.classList.add('hidden');
+    try {
+      const rail = el('lmm-rail').value;
+      const body = {
+        sourceAccountId: el('lmm-source').value.trim(),
+        amount: Number(el('lmm-amount').value),
+        rail: rail === 'auto' ? 'auto' : rail,
+        endpointId: el('lmm-endpoint').value.trim() || undefined,
+        creditorName: el('lmm-creditor-name').value.trim(),
+        creditorAccount: el('lmm-creditor-account').value.trim() || undefined,
+        creditorRouting: el('lmm-creditor-routing').value.trim() || undefined,
+        creditorBank: el('lmm-creditor-bank').value.trim() || undefined,
+        description: el('lmm-desc').value.trim(),
+      };
+      const res = await api('/api/finops/live-money', { method: 'POST', body: JSON.stringify(body) });
+      const exec = await api('/api/finops/live-money/' + res.data.movement_id + '/execute', { method: 'POST' });
+      show('Live movement ' + exec.data.movement_id + ' status: ' + exec.data.status, exec.data.status === 'failed', 'lmm-create-status');
+      openLiveMoneyPanel();
+    } catch(e) { show(e.message, true, 'lmm-create-status'); }
+    status.classList.remove('hidden');
+  }
+
+  async function executeLiveMoney(id) {
+    try {
+      const res = await api('/api/finops/live-money/' + id + '/execute', { method: 'POST' });
+      show('Live movement ' + id + ' status: ' + res.data.status, res.data.status === 'failed', 'lmm-create-status');
+      openLiveMoneyPanel();
+    } catch(e) { show(e.message, true, 'lmm-create-status'); }
+  }
+
+  async function pollLiveMoney(id) {
+    try {
+      const res = await api('/api/finops/live-money/' + id + '/poll', { method: 'POST' });
+      show('Live movement ' + id + ' status: ' + res.data.status, res.data.status === 'failed', 'lmm-create-status');
+      openLiveMoneyPanel();
+    } catch(e) { show(e.message, true, 'lmm-create-status'); }
+  }
+
+  async function cancelLiveMoney(id) {
+    if (!confirm('Cancel live movement ' + id + '?')) return;
+    try {
+      await api('/api/finops/live-money/' + id + '/cancel', { method: 'POST' });
+      openLiveMoneyPanel();
+    } catch(e) { show(e.message, true, 'lmm-create-status'); }
   }
 
   // ─── Compliance Engine Panel ────────────────────────────────────────────────
@@ -4356,6 +5162,275 @@
       openCompliancePanel();
     } catch(e) { show(e.message, true, 'comp-create-status'); }
     status.classList.remove('hidden');
+  }
+
+  // ─── Payment ID Engine Panel ────────────────────────────────────────────────
+
+  async function openPaymentIdPanel() {
+    const panel = el('module-panel');
+    const body = el('panel-body');
+    el('panel-title').textContent = 'Payment ID Engine';
+    panel.classList.add('active');
+    body.innerHTML = '<div class="muted">Loading…</div>';
+    try {
+      const [paymentIds, settlements] = await Promise.all([
+        api('/api/finops/payment-ids').catch(()=>null),
+        api('/api/finops/settlements').catch(()=>null),
+      ]);
+      body.innerHTML = renderPaymentIdPanel(paymentIds && paymentIds.data, settlements && settlements.data);
+    } catch(e) { body.innerHTML = '<div class="status err">' + e.message + '</div>'; }
+  }
+
+  function renderPaymentIdPanel(paymentIds, settlements) {
+    const rows = (paymentIds || []).map(p => `<tr><td>${p.payment_id}</td><td>${p.rail || ''}</td><td>$${Number(p.amount_cents)/100}</td><td><span class="badge ${p.status}">${p.status}</span></td><td>${p.child_type || ''}:${p.child_id || ''}</td><td>${p.external_id || ''}</td><td><button class="btn btn-sm" onclick="pollPaymentId('${p.payment_id}')">Poll</button><button class="btn btn-sm" onclick="viewPaymentIdEvents('${p.payment_id}')">Events</button></td></tr>`).join('') || '<tr><td colspan="7" class="muted">No payment IDs yet</td></tr>';
+    const settlementOptions = (settlements || []).map(s => `<option value="${s.settlement_id}">${s.settlement_id} — $${Number(s.amount_cents)/100} (${s.rail})</option>`).join('');
+    return '<div style="display:flex; flex-direction:column; gap:12px;">' +
+      '<div class="card" style="background:#0b1220;">' +
+        '<h3>Create Payment ID</h3>' +
+        '<div class="token-bar"><input id="pid-rail" style="flex:1" placeholder="Rail (e.g. external_endpoint)" /><input id="pid-amount" type="number" step="0.01" style="flex:1" placeholder="Amount USD" /></div>' +
+        '<div class="token-bar"><input id="pid-creditor-name" style="flex:1" placeholder="Creditor name" /><input id="pid-creditor-account" style="flex:1" placeholder="Creditor account" /></div>' +
+        '<div class="token-bar"><input id="pid-creditor-routing" style="flex:1" placeholder="Routing / BIC" /><input id="pid-creditor-bank" style="flex:1" placeholder="Bank name" /></div>' +
+        '<div class="token-bar"><input id="pid-source-id" style="flex:1" placeholder="Source ID (optional)" /><select id="pid-settlement" style="flex:1"><option value="">No linked settlement</option>' + settlementOptions + '</select></div>' +
+        '<div><textarea id="pid-desc" rows="2" style="width:100%" placeholder="Description / remittance"></textarea></div>' +
+        '<button class="btn" onclick="createPaymentId()">Create Payment ID</button>' +
+        '<div id="pid-create-status" class="status hidden"></div>' +
+      '</div>' +
+      '<div class="card" style="background:#0b1220;">' +
+        '<h3>Lookup by Child / External / Source ID</h3>' +
+        '<div class="token-bar"><input id="pid-lookup" style="flex:1" placeholder="Child ID, external ID, or source ID" /><select id="pid-lookup-type"><option value="child_id">Child ID</option><option value="external_id">External ID</option><option value="source_id">Source ID</option></select></div>' +
+        '<button class="btn" onclick="lookupPaymentId()">Lookup</button>' +
+        '<div id="pid-lookup-results" class="card" style="display:none; margin-top:8px;"></div>' +
+      '</div>' +
+      '<div class="card" style="background:#0b1220;">' +
+        '<h3>Payment IDs</h3>' +
+        '<table class="table"><thead><tr><th>Payment ID</th><th>Rail</th><th>Amount</th><th>Status</th><th>Child</th><th>External</th><th></th></tr></thead><tbody>' + rows + '</tbody></table>' +
+      '</div>' +
+      '<div id="pid-events-box" class="card" style="background:#0b1220; display:none;">' +
+        '<h3>Events</h3>' +
+        '<div id="pid-events-content"></div>' +
+      '</div>' +
+    '</div>';
+  }
+
+  async function createPaymentId() {
+    const status = el('pid-create-status');
+    status.classList.add('hidden');
+    try {
+      const settlementId = el('pid-settlement').value;
+      const body = {
+        rail: el('pid-rail').value.trim() || undefined,
+        amount: Number(el('pid-amount').value),
+        creditorName: el('pid-creditor-name').value.trim(),
+        creditorAccount: el('pid-creditor-account').value.trim() || undefined,
+        creditorRouting: el('pid-creditor-routing').value.trim() || undefined,
+        creditorBank: el('pid-creditor-bank').value.trim() || undefined,
+        description: el('pid-desc').value.trim(),
+      };
+      if (settlementId) body.sourceType = 'settlement', body.sourceId = settlementId;
+      const res = await api('/api/finops/payment-ids', { method: 'POST', body: JSON.stringify(body) });
+      show('Payment ID created: ' + res.data.payment_id, false, 'pid-create-status');
+      openPaymentIdPanel();
+    } catch(e) { show(e.message, true, 'pid-create-status'); }
+    status.classList.remove('hidden');
+  }
+
+  async function lookupPaymentId() {
+    const box = el('pid-lookup-results');
+    box.style.display = 'none';
+    try {
+      const type = el('pid-lookup-type').value;
+      const value = el('pid-lookup').value.trim();
+      const query = type === 'source_id' ? '?source_id=' + value : type === 'external_id' ? '?external_id=' + value : '?child_id=' + value;
+      const res = await api('/api/finops/payment-ids/lookup' + query);
+      const rows = (res.data || []).map(p => `<tr><td>${p.payment_id}</td><td>${p.rail || ''}</td><td>$${Number(p.amount_cents)/100}</td><td><span class="badge ${p.status}">${p.status}</span></td><td>${p.child_id || ''}</td><td>${p.external_id || ''}</td></tr>`).join('') || '<tr><td colspan="6" class="muted">No matches</td></tr>';
+      box.innerHTML = '<table class="table"><thead><tr><th>Payment ID</th><th>Rail</th><th>Amount</th><th>Status</th><th>Child</th><th>External</th></tr></thead><tbody>' + rows + '</tbody></table>';
+      box.style.display = 'block';
+    } catch(e) { show(e.message, true, 'pid-create-status'); }
+  }
+
+  async function pollPaymentId(id) {
+    try {
+      const res = await api('/api/finops/payment-ids/' + id + '/poll', { method: 'POST' });
+      show('Payment ID ' + id + ' status: ' + res.data.status, res.data.status === 'failed', 'pid-create-status');
+      openPaymentIdPanel();
+    } catch(e) { show(e.message, true, 'pid-create-status'); }
+  }
+
+  async function viewPaymentIdEvents(id) {
+    const box = el('pid-events-box');
+    const content = el('pid-events-content');
+    box.style.display = 'block';
+    content.innerHTML = '<div class="muted">Loading…</div>';
+    try {
+      const res = await api('/api/finops/payment-ids/' + id + '/events');
+      const rows = (res.data || []).map(e => `<tr><td>${e.created_at}</td><td>${e.event}</td><td>${e.status || ''}</td><td>${e.child_type || ''}:${e.child_id || ''}</td><td>${e.external_id || ''}</td><td>${e.error_message || ''}</td></tr>`).join('') || '<tr><td colspan="6" class="muted">No events</td></tr>';
+      content.innerHTML = '<table class="table"><thead><tr><th>Time</th><th>Event</th><th>Status</th><th>Child</th><th>External</th><th>Error</th></tr></thead><tbody>' + rows + '</tbody></table>';
+    } catch(e) { content.innerHTML = '<div class="status err">' + e.message + '</div>'; }
+  }
+
+  // ─── Corporate Treasury Management Panel ──────────────────────────────────────
+
+  async function openCorporateTreasuryPanel() {
+    const panel = el('module-panel');
+    const body = el('panel-body');
+    el('panel-title').textContent = 'Corporate Treasury Management';
+    panel.classList.add('active');
+    body.innerHTML = '<div class="muted">Loading…</div>';
+    try {
+      const [dashboard, accounts, pools, flows, investments, policies, workflows, forecast] = await Promise.all([
+        api('/api/finops/corporate-treasury').catch(()=>null),
+        api('/api/finops/corporate-treasury/accounts').catch(()=>null),
+        api('/api/finops/corporate-treasury/pools').catch(()=>null),
+        api('/api/finops/corporate-treasury/cash-flows').catch(()=>null),
+        api('/api/finops/corporate-treasury/investments').catch(()=>null),
+        api('/api/finops/corporate-treasury/policies').catch(()=>null),
+        api('/api/finops/corporate-treasury/workflows').catch(()=>null),
+        api('/api/finops/corporate-treasury/forecast').catch(()=>null),
+      ]);
+      body.innerHTML = renderCorporateTreasuryPanel(
+        dashboard && dashboard.data,
+        accounts && accounts.data,
+        pools && pools.data,
+        flows && flows.data,
+        investments && investments.data,
+        policies && policies.data,
+        workflows && workflows.data,
+        forecast && forecast.data
+      );
+    } catch(e) { body.innerHTML = '<div class="status err">' + e.message + '</div>'; }
+  }
+
+  function fmtCents(c) { return fmt(Number(c || 0) / 100, 2); }
+
+  function renderCorporateTreasuryPanel(dash, accounts, pools, flows, investments, policies, workflows, forecast) {
+    const totalCash = dash ? fmtCents(dash.totalCashCents) : '—';
+    const totalInvest = dash ? fmtCents(dash.totalInvestmentsCents) : '—';
+    const inflows = dash ? fmtCents(dash.upcomingInflowsCents) : '—';
+    const outflows = dash ? fmtCents(dash.upcomingOutflowsCents) : '—';
+    const pendingWf = dash ? dash.pendingWorkflows : 0;
+    const acctRows = (accounts || []).map(a => `<tr><td>${a.account_id}</td><td>${a.name}</td><td>${a.type}</td><td>${a.category}</td><td>${fmtCents(a.balance_cents)}</td><td>${fmtCents(a.available_cents)}</td><td><span class="badge ${a.enabled ? 'active' : 'inactive'}">${a.enabled ? 'enabled' : 'disabled'}</span></td></tr>`).join('') || '<tr><td colspan="7" class="muted">No treasury accounts</td></tr>';
+    const poolRows = (pools || []).map(p => `<tr><td>${p.pool_id}</td><td>${p.name}</td><td>${p.sweep_direction}</td><td>${fmtCents(p.target_balance_cents)}</td><td>${fmtCents(p.sweep_threshold_cents)}</td><td><button class="btn btn-sm" onclick="sweepCorporateTreasuryPool('${p.pool_id}')">Sweep</button></td></tr>`).join('') || '<tr><td colspan="6" class="muted">No cash pools</td></tr>';
+    const flowRows = (flows || []).map(f => `<tr><td>${f.flow_id}</td><td>${f.type}</td><td>${fmtCents(f.amount_cents)}</td><td>${f.expected_date}</td><td><span class="badge ${f.status}">${f.status}</span></td><td>${f.counterparty || ''}</td></tr>`).join('') || '<tr><td colspan="6" class="muted">No cash flows</td></tr>';
+    const invRows = (investments || []).map(i => `<tr><td>${i.investment_id}</td><td>${i.type}</td><td>${fmtCents(i.amount_cents)}</td><td>${i.maturity_date || ''}</td><td><span class="badge ${i.status}">${i.status}</span></td></tr>`).join('') || '<tr><td colspan="5" class="muted">No investments</td></tr>';
+    const polRows = (policies || []).map(p => `<tr><td>${p.policy_id}</td><td>${p.name}</td><td>${p.type}</td><td>${fmtCents(p.threshold_cents || p.max_amount_cents)}</td><td><span class="badge ${p.enabled ? 'active' : 'inactive'}">${p.enabled ? 'enabled' : 'disabled'}</span></td></tr>`).join('') || '<tr><td colspan="5" class="muted">No policies</td></tr>';
+    const wfRows = (workflows || []).map(w => `<tr><td>${w.workflow_id}</td><td>${w.type}</td><td>${fmtCents(w.amount_cents)}</td><td><span class="badge ${w.status}">${w.status}</span></td><td>${w.approvals.length||0}/${w.required_approvals}</td><td>${w.description || ''}</td><td>${w.status === 'pending' ? `<button class="btn btn-sm" onclick="approveCorporateTreasuryWorkflow('${w.workflow_id}')">Approve</button>` : ''}</td></tr>`).join('') || '<tr><td colspan="7" class="muted">No workflows</td></tr>';
+    const foreRows = (forecast || []).slice(0, 8).map(d => `<tr><td>${d.date}</td><td>${fmt(d.projected, 2)}</td><td>${fmtCents(d.dayChange)}</td></tr>`).join('') || '<tr><td colspan="3" class="muted">No forecast</td></tr>';
+
+    return '<div style="display:flex; flex-direction:column; gap:12px;">' +
+      '<div class="card" style="background:#0b1220;">' +
+        '<h3>Cash Position</h3>' +
+        '<div style="display:grid; grid-template-columns: repeat(4, 1fr); gap:12px;">' +
+          '<div><div class="muted">Total Cash</div><div style="font-size:20px; font-weight:700;">' + totalCash + '</div></div>' +
+          '<div><div class="muted">Investments</div><div style="font-size:20px; font-weight:700;">' + totalInvest + '</div></div>' +
+          '<div><div class="muted">Pending Inflows</div><div style="font-size:20px; font-weight:700;">' + inflows + '</div></div>' +
+          '<div><div class="muted">Pending Outflows</div><div style="font-size:20px; font-weight:700;">' + outflows + '</div></div>' +
+        '</div>' +
+        '<div style="margin-top:8px;"><button class="btn" onclick="syncCorporateTreasury()">Sync Balances</button> <button class="btn" onclick="openCorporateTreasuryPanel()">Refresh</button></div>' +
+        '<div id="ct-status" class="status hidden"></div>' +
+      '</div>' +
+      '<div class="card" style="background:#0b1220;">' +
+        '<h3>Add Treasury Account</h3>' +
+        '<div class="token-bar"><input id="ct-acct-name" style="flex:1" placeholder="Account name" /><select id="ct-acct-type"><option value="bank">Bank</option><option value="ledger">Ledger</option><option value="crypto">Crypto</option><option value="internal">Internal</option></select></div>' +
+        '<div class="token-bar"><select id="ct-acct-category"><option value="operating">Operating</option><option value="reserve">Reserve</option><option value="payroll">Payroll</option><option value="tax">Tax</option><option value="capital">Capital</option><option value="investment">Investment</option><option value="escrow">Escrow</option><option value="custodian">Custodian</option><option value="issuer">Issuer</option><option value="trust_corpus">Trust Corpus</option><option value="beneficiary">Beneficiary</option><option value="general_reserve">General Reserve</option></select>' +
+        '<input id="ct-acct-currency" style="flex:1" value="USD" placeholder="Currency" /></div>' +
+        '<div class="token-bar"><input id="ct-acct-source-type" style="flex:1" placeholder="Linked source type (cash, trust, treasury)" /><input id="ct-acct-source-id" style="flex:1" placeholder="Linked source ID" /></div>' +
+        '<div class="token-bar"><input id="ct-acct-target" style="flex:1" type="number" step="0.01" placeholder="Target balance USD" /></div>' +
+        '<button class="btn" onclick="createCorporateTreasuryAccount()">Add Account</button>' +
+      '</div>' +
+      '<div class="card" style="background:#0b1220;">' +
+        '<h3>Treasury Accounts</h3>' +
+        '<table class="table"><thead><tr><th>ID</th><th>Name</th><th>Type</th><th>Category</th><th>Balance</th><th>Available</th><th>Enabled</th></tr></thead><tbody>' + acctRows + '</tbody></table>' +
+      '</div>' +
+      '<div class="card" style="background:#0b1220;">' +
+        '<h3>Cash Pools</h3>' +
+        '<table class="table"><thead><tr><th>ID</th><th>Name</th><th>Direction</th><th>Target</th><th>Threshold</th><th></th></tr></thead><tbody>' + poolRows + '</tbody></table>' +
+      '</div>' +
+      '<div class="card" style="background:#0b1220;">' +
+        '<h3>Add Cash Flow</h3>' +
+        '<div class="token-bar"><select id="ct-flow-type"><option value="inflow">Inflow</option><option value="outflow">Outflow</option></select><input id="ct-flow-amount" type="number" step="0.01" style="flex:1" placeholder="Amount USD" /></div>' +
+        '<div class="token-bar"><input id="ct-flow-date" type="date" style="flex:1" /><input id="ct-flow-cp" style="flex:1" placeholder="Counterparty" /></div>' +
+        '<div><textarea id="ct-flow-desc" rows="2" style="width:100%" placeholder="Description"></textarea></div>' +
+        '<button class="btn" onclick="createCorporateTreasuryCashFlow()">Add Cash Flow</button>' +
+      '</div>' +
+      '<div class="card" style="background:#0b1220;">' +
+        '<h3>Cash Flows</h3>' +
+        '<table class="table"><thead><tr><th>ID</th><th>Type</th><th>Amount</th><th>Date</th><th>Status</th><th>Counterparty</th></tr></thead><tbody>' + flowRows + '</tbody></table>' +
+      '</div>' +
+      '<div class="card" style="background:#0b1220;">' +
+        '<h3>Add Investment</h3>' +
+        '<div class="token-bar"><select id="ct-inv-type"><option value="t_bill">T-Bill</option><option value="repo">Repo</option><option value="mmf">MMF</option><option value="term_deposit">Term Deposit</option><option value="intercompany">Intercompany</option></select><input id="ct-inv-amount" type="number" step="0.01" style="flex:1" placeholder="Amount USD" /></div>' +
+        '<div class="token-bar"><input id="ct-inv-cp" style="flex:1" placeholder="Counterparty" /><input id="ct-inv-maturity" type="date" style="flex:1" /></div>' +
+        '<button class="btn" onclick="createCorporateTreasuryInvestment()">Add Investment</button>' +
+      '</div>' +
+      '<div class="card" style="background:#0b1220;">' +
+        '<h3>Investments</h3>' +
+        '<table class="table"><thead><tr><th>ID</th><th>Type</th><th>Amount</th><th>Maturity</th><th>Status</th></tr></thead><tbody>' + invRows + '</tbody></table>' +
+      '</div>' +
+      '<div class="card" style="background:#0b1220;">' +
+        '<h3>Treasury Policies</h3>' +
+        '<table class="table"><thead><tr><th>ID</th><th>Name</th><th>Type</th><th>Threshold</th><th>Enabled</th></tr></thead><tbody>' + polRows + '</tbody></table>' +
+      '</div>' +
+      '<div class="card" style="background:#0b1220;">' +
+        '<h3>Pending Workflows (' + pendingWf + ')</h3>' +
+        '<table class="table"><thead><tr><th>ID</th><th>Type</th><th>Amount</th><th>Status</th><th>Approvals</th><th>Description</th><th></th></tr></thead><tbody>' + wfRows + '</tbody></table>' +
+      '</div>' +
+      '<div class="card" style="background:#0b1220;">' +
+        '<h3>Liquidity Forecast (30 days)</h3>' +
+        '<table class="table"><thead><tr><th>Date</th><th>Projected</th><th>Day Change</th></tr></thead><tbody>' + foreRows + '</tbody></table>' +
+      '</div>' +
+    '</div>';
+  }
+
+  async function syncCorporateTreasury() {
+    try { const res = await api('/api/finops/corporate-treasury/sync', { method: 'POST' }); show('Synced ' + res.data.updated + ' accounts', false, 'ct-status'); openCorporateTreasuryPanel(); } catch(e) { show(e.message, true, 'ct-status'); }
+  }
+
+  async function createCorporateTreasuryAccount() {
+    try {
+      await api('/api/finops/corporate-treasury/accounts', { method: 'POST', body: JSON.stringify({
+        name: el('ct-acct-name').value.trim(),
+        type: el('ct-acct-type').value,
+        category: el('ct-acct-category').value,
+        currency: el('ct-acct-currency').value.trim() || 'USD',
+        linkedSourceType: el('ct-acct-source-type').value.trim() || undefined,
+        linkedSourceId: el('ct-acct-source-id').value.trim() || undefined,
+        targetBalance: Number(el('ct-acct-target').value) || 0,
+      }) });
+      openCorporateTreasuryPanel();
+    } catch(e) { show(e.message, true, 'ct-status'); }
+  }
+
+  async function createCorporateTreasuryCashFlow() {
+    try {
+      await api('/api/finops/corporate-treasury/cash-flows', { method: 'POST', body: JSON.stringify({
+        type: el('ct-flow-type').value,
+        amount: Number(el('ct-flow-amount').value),
+        expectedDate: el('ct-flow-date').value,
+        counterparty: el('ct-flow-cp').value.trim(),
+        description: el('ct-flow-desc').value.trim(),
+      }) });
+      openCorporateTreasuryPanel();
+    } catch(e) { show(e.message, true, 'ct-status'); }
+  }
+
+  async function createCorporateTreasuryInvestment() {
+    try {
+      await api('/api/finops/corporate-treasury/investments', { method: 'POST', body: JSON.stringify({
+        type: el('ct-inv-type').value,
+        amount: Number(el('ct-inv-amount').value),
+        counterparty: el('ct-inv-cp').value.trim(),
+        maturityDate: el('ct-inv-maturity').value,
+      }) });
+      openCorporateTreasuryPanel();
+    } catch(e) { show(e.message, true, 'ct-status'); }
+  }
+
+  async function sweepCorporateTreasuryPool(poolId) {
+    try { await api('/api/finops/corporate-treasury/pools/' + poolId + '/sweep', { method: 'POST' }); openCorporateTreasuryPanel(); } catch(e) { show(e.message, true, 'ct-status'); }
+  }
+
+  async function approveCorporateTreasuryWorkflow(workflowId) {
+    try { await api('/api/finops/corporate-treasury/workflows/' + workflowId + '/approve', { method: 'POST' }); openCorporateTreasuryPanel(); } catch(e) { show(e.message, true, 'ct-status'); }
   }
 
   window.addEventListener('DOMContentLoaded', () => {

@@ -1,157 +1,26 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-  <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate" />
-  <meta http-equiv="Pragma" content="no-cache" />
-  <meta http-equiv="Expires" content="0" />
-  <title>DLB Trust — DeFi Portal</title>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
+  <meta http-equiv="Pragma" content="no-cache">
+  <meta http-equiv="Expires" content="0">
+  <meta http-equiv="refresh" content="0; url=/dashboard">
+  <title>DLB Trust — Private Trust Command Center</title>
   <style>
-    :root { --bg:#0b0f17; --card:#131925; --panel:#1e293b; --border:#2a3548; --text:#f8fafc; --muted:#94a3b8; --accent:#3b82f6; --accent-2:#10b981; --gold:#f59e0b; --danger:#ef4444; }
-    * { box-sizing:border-box; }
-    body { margin:0; font-family:system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif; background:var(--bg); color:var(--text); }
-    header { background:var(--card); border-bottom:1px solid var(--border); padding:16px 24px; display:flex; align-items:center; justify-content:space-between; }
-    header h1 { margin:0; font-size:20px; }
-    header a { color:var(--muted); text-decoration:none; font-size:14px; margin-left:12px; }
-    header a:hover { color:var(--text); }
-    .container { max-width:1200px; margin:24px auto; padding:0 16px; }
-    .card { background:var(--card); border:1px solid var(--border); border-radius:12px; padding:24px; margin-bottom:20px; }
-    .card h2 { margin:0 0 10px; font-size:18px; }
-    .card p { color:var(--muted); font-size:14px; margin:0 0 16px; }
-    .topbar { display:flex; gap:12px; align-items:end; flex-wrap:wrap; margin-bottom:18px; }
-    .topbar label { font-size:12px; color:var(--muted); display:block; margin-bottom:4px; }
-    .topbar input { background:#0b1220; border:1px solid var(--border); color:var(--text); padding:8px 10px; border-radius:6px; font-size:14px; min-width:260px; }
-    .btn { background:var(--accent); color:#fff; border:0; padding:10px 18px; border-radius:8px; cursor:pointer; font-size:14px; text-decoration:none; display:inline-block; }
-    .btn:hover { opacity:.9; }
-    .btn-sec { background:var(--border); color:var(--text); }
-    .btn-gold { background:var(--gold); color:#000; }
-    .grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(300px,1fr)); gap:16px; }
-    .portal-card { background:var(--card); border:1px solid var(--border); border-radius:12px; padding:20px; transition:border-color .15s; }
-    .portal-card:hover { border-color:var(--accent); }
-    .portal-card h3 { margin:0 0 8px; font-size:17px; }
-    .portal-card p { color:var(--muted); font-size:13px; margin:0 0 14px; }
-    .status { padding:12px; border-radius:8px; background:#0b1220; border:1px solid var(--border); font-size:13px; margin-top:14px; }
-    .status.ok { border-color:var(--accent-2); color:var(--accent-2); }
-    .status.err { border-color:var(--danger); color:var(--danger); }
-    .muted { color:var(--muted); font-size:13px; }
-    .badge { background:#0b1220; border:1px solid var(--border); padding:2px 8px; border-radius:999px; font-size:12px; color:var(--muted); margin:0 4px 4px 0; display:inline-block; }
-    .hidden { display:none; }
+    body { margin:0; background:#0a0e17; color:#f8fafc; font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif; display:grid; place-items:center; min-height:100vh; text-align:center; }
+    a { color:#4f87ff; text-decoration:none; }
+    .card { background:#111a2b; border:1px solid #26314a; border-radius:14px; padding:24px; max-width:420px; }
+    h1 { font-size:1.2rem; margin:0 0 8px; }
+    p { color:#94a3b8; font-size:.9rem; }
   </style>
 </head>
 <body>
-  <header>
-    <h1>DLB Trust — DeFi Portal</h1>
-    <div>
-      <a href="/dapp/wallets.html?v=2">Wallets</a>
-      <a href="/dapp/master-dashboard.html?v=2">Master Dashboard</a>
-      <a href="/dapp/payout-center.html?v=2">Payout Center</a>
-      <a href="/dapp/legacy.html?v=2">Legacy dApp</a>
-    </div>
-  </header>
-
-  <div class="container">
-    <div class="card">
-      <h2>Operator token</h2>
-      <p class="muted">For trust operators and admins only. Beneficiaries and trustees should use the mobile email/PIN portal below.</p>
-      <div class="topbar">
-        <div>
-          <label for="admin-token">Admin / Operator Token</label>
-          <input type="password" id="admin-token" placeholder="Paste your x-admin-token" />
-        </div>
-        <button class="btn" onclick="saveToken()">Save token</button>
-      </div>
-      <div id="token-status" class="status hidden"></div>
-    </div>
-
-    <div class="card">
-      <h2>System status</h2>
-      <p class="muted">Live health check and key ledger counts.</p>
-      <div id="system-status" class="muted">Loading…</div>
-    </div>
-
-    <div class="card">
-      <h2>Simple workflows</h2>
-      <div class="grid">
-        <div class="portal-card">
-          <h3>Trust Wallets</h3>
-          <p>View trustee and beneficiary wallets, fund from ledger balances, and process internal or external transactions.</p>
-          <a class="btn" href="/dapp/wallets.html?v=2">Open Wallets</a>
-        </div>
-        <div class="portal-card">
-          <h3>Master Dashboard</h3>
-          <p>Master wallets, bond / fixed-income values, one-click automation, and maker/checker approvals.</p>
-          <a class="btn" href="/dapp/master-dashboard.html?v=2">Open Dashboard</a>
-        </div>
-        <div class="portal-card">
-          <h3>AI FinOps Agent</h3>
-          <p>Natural-language command center with live module cards, conversion flow, and human-in-the-loop approvals.</p>
-          <a class="btn btn-gold" href="/finops">Open FinOps Agent</a>
-        </div>
-        <div class="portal-card">
-          <h3>Payout Center</h3>
-          <p>Single form for distributions, disbursements, and expenses across SIT, stablecoin, and payment rails.</p>
-          <a class="btn" href="/dapp/payout-center.html?v=2">Open Payout Center</a>
-        </div>
-        <div class="portal-card">
-          <h3>Beneficiary / Trustee Mobile Wallet</h3>
-          <p>Email/PIN login with no operator token. QR pay/receive, BitPay invoice scanning, and transaction history for each user.</p>
-          <a class="btn btn-gold" href="/dapp/mobile.html?v=2">Login with Email PIN</a>
-        </div>
-        <div class="portal-card">
-          <h3>Legacy Full dApp</h3>
-          <p>Original full-featured dApp with all modules, tabs, and advanced rails.</p>
-          <a class="btn btn-sec" href="/dapp/legacy.html?v=2">Open Legacy</a>
-        </div>
-      </div>
-    </div>
+  <div class="card">
+    <h1>DLB Trust Command Center</h1>
+    <p>Redirecting to the private trust dashboard…</p>
+    <p><a href="/dashboard">Click here if you are not redirected</a></p>
   </div>
-
-  <script>
-    const el = id => document.getElementById(id);
-    function show(msg, isErr, id) {
-      const d = el(id);
-      d.textContent = msg;
-      d.className = 'status ' + (isErr ? 'err' : 'ok');
-      d.classList.remove('hidden');
-    }
-    async function saveToken() {
-      const v = el('admin-token').value.trim();
-      if (!v) { show('Enter a token', true, 'token-status'); return; }
-      try {
-        const res = await fetch('/api/dapp/auth/me', { headers: { 'x-admin-token': v } });
-        const text = await res.text();
-        let data; try { data = JSON.parse(text); } catch { data = {}; }
-        if (!res.ok || !data.success) throw new Error((data && data.error) || 'Invalid token');
-        localStorage.setItem('dlb-admin-token', v);
-        show('Token saved for all modules. Dashboard links are now active.', false, 'token-status');
-        loadHealth();
-      } catch (e) { show(e.message || 'Token validation failed', true, 'token-status'); }
-    }
-    async function loadHealth() {
-      try {
-        const token = localStorage.getItem('dlb-admin-token') || '';
-        const headers = {};
-        if (token) headers['x-admin-token'] = token;
-        const res = await fetch('/api/health', { headers });
-        const text = await res.text();
-        const data = JSON.parse(text);
-        const c = data.checks || {};
-        const lines = [
-          `Database: ${data.status}`,
-          `Bonds: ${c.bonds?.count || 0} active`,
-          `Cash accounts: ${c.cashAccounts?.count || 0}`,
-          `Trust accounts: ${c.trustAccounts?.count || 0}`,
-          `Auth users: ${c.authUsers?.count || 0}`,
-        ];
-        el('system-status').innerHTML = lines.map(l => `<span class="badge">${l}</span>`).join(' ');
-      } catch (e) {
-        el('system-status').textContent = 'Health check unavailable. Save a token and try again.';
-      }
-    }
-    const saved = localStorage.getItem('dlb-admin-token');
-    if (saved) { el('admin-token').value = saved; }
-    loadHealth();
-  </script>
 </body>
 </html>

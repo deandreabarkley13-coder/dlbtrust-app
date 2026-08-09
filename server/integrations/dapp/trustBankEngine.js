@@ -11,7 +11,7 @@
 
 const pool = require('../bonds/pgPool');
 
-let CashEngine, TrustAccountingEngine, BankTransferEngine, WireOriginationEngine, OpenBankingEngine, ComplianceEngine;
+let CashEngine, TrustAccountingEngine, BankTransferEngine, WireOriginationEngine, OpenBankingEngine, ComplianceEngine, ExternalEndpointEngine;
 function loadDeps() {
   try { ({ CashEngine } = require('../cash/cashEngine')); } catch (e) { CashEngine = null; }
   try { ({ TrustAccountingEngine } = require('../accounting/trustAccountingEngine')); } catch (e) { TrustAccountingEngine = null; }
@@ -19,6 +19,7 @@ function loadDeps() {
   try { ({ WireOriginationEngine } = require('./wireOriginationEngine')); } catch (e) { WireOriginationEngine = null; }
   try { ({ OpenBankingEngine } = require('./openBankingEngine')); } catch (e) { OpenBankingEngine = null; }
   try { ({ ComplianceEngine } = require('../compliance/complianceEngine')); } catch (e) { ComplianceEngine = null; }
+  try { ({ ExternalEndpointEngine } = require('./externalEndpointEngine')); } catch (e) { ExternalEndpointEngine = null; }
 }
 
 function generateId(prefix = 'TBA') {
@@ -87,7 +88,7 @@ class TrustBankEngine {
         external_bank_name TEXT,
         amount_cents BIGINT NOT NULL,
         currency TEXT NOT NULL DEFAULT 'USD',
-        rail TEXT NOT NULL CHECK (rail IN ('internal','wire','ach','open_banking','iso20022','book_transfer')),
+        rail TEXT NOT NULL CHECK (rail IN ('internal','wire','ach','open_banking','iso20022','book_transfer','external')),
         status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending','compliance_review','originated','manual_pending','completed','failed','cancelled')),
         raw_message TEXT,
         external_tx_id TEXT,
@@ -106,6 +107,11 @@ class TrustBankEngine {
       await pool.query(`ALTER TABLE trust_bank_payments DROP CONSTRAINT IF EXISTS trust_bank_payments_status_check`);
       await pool.query(`ALTER TABLE trust_bank_payments ADD CONSTRAINT trust_bank_payments_status_check CHECK (status IN ('pending','compliance_review','originated','manual_pending','completed','failed','cancelled'))`);
     } catch (e) { console.warn('[trust-bank] status constraint update:', e.message); }
+    // Expand rail enum if older constraint exists
+    try {
+      await pool.query(`ALTER TABLE trust_bank_payments DROP CONSTRAINT IF EXISTS trust_bank_payments_rail_check`);
+      await pool.query(`ALTER TABLE trust_bank_payments ADD CONSTRAINT trust_bank_payments_rail_check CHECK (rail IN ('internal','wire','ach','open_banking','iso20022','book_transfer','external'))`);
+    } catch (e) { console.warn('[trust-bank] rail constraint update:', e.message); }
   }
 
   static async createCustomer({ name, email, phone, metadata } = {}) {
@@ -233,7 +239,7 @@ class TrustBankEngine {
     }
   }
 
-  static async originatePayment({ fromAccountId, externalRouting, externalAccount, externalAccountName, externalBankName, amount, rail = 'wire', currency = 'USD', description, initiatedBy = 'system' } = {}) {
+  static async originatePayment({ fromAccountId, externalRouting, externalAccount, externalAccountName, externalBankName, amount, rail = 'wire', currency = 'USD', description, initiatedBy = 'system', endpointId, metadata = {} } = {}) {
     if (!fromAccountId || !externalAccount || !externalRouting || !amount) throw new Error('fromAccountId, externalRouting, externalAccount, and amount required');
     await this.ensureTables();
     const cents = toCents(amount);
@@ -244,10 +250,11 @@ class TrustBankEngine {
     if (parseInt(from.balance_cents, 10) < cents) throw new Error(`Insufficient trust bank balance: ${parseInt(from.balance_cents,10)/100} < ${amount}`);
 
     const paymentId = generateId('TBP');
+    const finalMetadata = { ...metadata, endpointId };
     await pool.query(
-      `INSERT INTO trust_bank_payments (payment_id, from_account_id, external_routing, external_account, external_account_name, external_bank_name, amount_cents, currency, rail, status, initiated_by)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 'pending', $10)`,
-      [paymentId, fromAccountId, externalRouting, externalAccount, externalAccountName || null, externalBankName || null, cents, currency, rail, initiatedBy]
+      `INSERT INTO trust_bank_payments (payment_id, from_account_id, external_routing, external_account, external_account_name, external_bank_name, amount_cents, currency, rail, status, initiated_by, metadata)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 'pending', $10, $11)`,
+      [paymentId, fromAccountId, externalRouting, externalAccount, externalAccountName || null, externalBankName || null, cents, currency, rail, initiatedBy, JSON.stringify(finalMetadata)]
     );
     return { paymentId, status: 'pending', amount_cents: cents };
   }
@@ -355,6 +362,33 @@ class TrustBankEngine {
         externalTxId = p.paymentId;
         rawMessage = p.iso20022_message;
         status = p.status === 'originated' ? 'originated' : p.status;
+      } else if (payment.rail === 'external' && ExternalEndpointEngine) {
+        let meta = payment.metadata || {};
+        if (typeof meta === 'string') { try { meta = JSON.parse(meta); } catch { meta = {}; } }
+        let endpointId = meta && meta.endpointId;
+        if (!endpointId) {
+          const list = await ExternalEndpointEngine.listEndpoints({ enabled: true });
+          if (!list.length) throw new Error('No enabled external endpoint configured');
+          endpointId = list[0].endpoint_id;
+        }
+        const epResult = await ExternalEndpointEngine.executePayment({
+          endpointId,
+          sourceType: 'cash',
+          sourceAccountId: from.linked_cash_account_id,
+          amount: payment.amount_cents / 100,
+          debtorName: 'DLB Trust',
+          debtorAccount: from.account_number,
+          creditorName: payment.external_account_name || 'External Beneficiary',
+          creditorAccount: payment.external_account,
+          creditorRouting: payment.external_routing,
+          creditorBank: payment.external_bank_name || null,
+          paymentType: 'trust_bank_external',
+          description: `Trust bank payment ${paymentId}`,
+        });
+        externalTxId = epResult.externalId;
+        rawMessage = JSON.stringify(epResult);
+        status = epResult.status === 'completed' ? 'completed' : (epResult.status === 'originated' ? 'originated' : (epResult.status === 'manual_pending' ? 'manual_pending' : 'failed'));
+        if (epResult.errorMessage) error = epResult.errorMessage;
       } else if (payment.rail === 'book_transfer') {
         // Internal book transfer to an external account (manual/clearing)
         status = 'originated';

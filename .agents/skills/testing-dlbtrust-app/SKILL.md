@@ -480,6 +480,35 @@ SELECT fit_id, type, amount_cents, name, memo FROM ofx_transactions;
 - Funding sources: `manual`, `counterparty`, `moonpay`, `circle_mint`, `coinbase_treasury`.
 - The engine cannot mint canonical stablecoins; it returns `awaiting_deposit`/`awaiting_onramp` until real paired capital is available.
 
+## External Endpoint Engine (`/dapp/finops.html`)
+
+- Module card: **External Endpoint Engine** (`key:'external-endpoint'`, `action:'openExternalEndpointPanel'`).
+- Backend: `server/integrations/dapp/externalEndpointEngine.js`; routes in `server/routes/finops.js`:
+  - `GET /api/finops/external-endpoints` — list endpoints.
+  - `POST /api/finops/external-endpoints` — create an endpoint.
+  - `GET /api/finops/external-endpoints/:id` — get one endpoint.
+  - `POST /api/finops/external-endpoints/:id/test` — test the connection.
+  - `POST /api/finops/external-endpoints/:id/payments` — create and send a payment through the endpoint.
+  - `GET /api/finops/external-payments` — list recent payments.
+  - `GET /api/finops/external-payments/:id` — get a single payment (includes `raw_request` and `raw_response`).
+  - `POST /api/finops/external-payments/:id/send` — resend a pending payment.
+- UI panel sections:
+  - **Add External Endpoint** — name, protocol (`rest_json`/`rest_xml`/`soap`/`iso20022_xml`/`grpc`/`mft_sftp`/`as2`/`manual`), auth type, base URL, API key/secret, response-success JSON path, extra headers, payload template.
+  - **Endpoints** table with **Test** and **Delete** buttons.
+  - **Send Payment via Endpoint** — select endpoint, optional source cash account, amount, creditor (name / account / routing / bank), optional debtor, description.
+  - **Recent External Payments** table showing `payment_id`, `endpoint_id`, amount, status, and error.
+- Test endpoints against public test URLs:
+  - `https://httpbin.org/anything` accepts GET and POST — connection test returns `connected: true` and payments usually end in `manual_pending` because the echo response does not contain a payment `id`/`payment_id`/`transaction_id`.
+  - `https://httpbin.org/post` only accepts POST — the built-in **Test** button sends a GET, so it returns `connected: false` with a 405 error. Use `/anything` for a reliable positive connection test.
+- Payment flow verification:
+  - A `$0.01` REST/JSON payment to `/anything` should create a payment with `status: manual_pending` and `raw_response` containing the full httpbin echo (including `url`, `data`, `json`, `headers`, and `method: POST`).
+  - `raw_request` is a JSON string with `reference_id`, `amount`, `currency`, `payment_type`, `description`, `debtor`, and `creditor` objects.
+- Trust Bank integration:
+  - Trust Bank API panel can originate payments with `rail: external` and select an external endpoint from the dropdown.
+  - The balance of the trust bank account is debited; a linked external payment record is created with `payment_type: trust_bank_external`.
+- `manual` protocol is intended for offline/CSV/SWIFT/fax rails and stores `raw_request` without making an HTTP call.
+- **Known issue:** `loadAll()` in `public/dapp/finops.html` references an undefined `results` variable at `const webPayments = results[20];`, so `loadAll()` logs a console error and module card stats remain `—`. This does not block the panel functions but should be fixed.
+
 ## Devin Secrets Needed
 
 - `DATABASE_URL` or local Postgres credentials (`dlbtrust`/`dlbtrust`).

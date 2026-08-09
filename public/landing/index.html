@@ -6,74 +6,78 @@
 <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
 <meta http-equiv="Pragma" content="no-cache">
 <meta http-equiv="Expires" content="0">
-<title>DeAndrea LaVar Barkley Trust — Web3 DeFi Portal</title>
+<title>DeAndrea LaVar Barkley Trust — Private Trust Company</title>
 <style>
 :root{
-  --bg:#0a0e1a;
-  --bg-2:#0f1424;
-  --surface:#111827;
-  --surface-2:#1f2937;
-  --border:#374151;
-  --primary:#3b82f6;
-  --primary-hover:#2563eb;
-  --primary-glow:rgba(59,130,246,.25);
-  --success:#10b981;
+  --bg:#0a0e17;
+  --bg-2:#0d1320;
+  --surface:#111a2b;
+  --surface-2:#172337;
+  --border:#26314a;
+  --primary:#4f87ff;
+  --primary-hover:#3a70e0;
+  --primary-glow:rgba(79,135,255,.22);
+  --gold:#d4af37;
+  --gold-hover:#bfa02f;
+  --gold-glow:rgba(212,175,55,.16);
+  --success:#22c55e;
   --warning:#f59e0b;
   --danger:#ef4444;
-  --text:#f9fafb;
-  --text-muted:#9ca3af;
-  --gold:#d4af37;
-  --gold-glow:rgba(212,175,55,.18);
+  --text:#f8fafc;
+  --text-muted:#94a3b8;
   --radius:14px;
+  --shadow:0 16px 48px rgba(0,0,0,.28);
 }
 *{margin:0;padding:0;box-sizing:border-box}
 html{scroll-behavior:smooth}
-body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;background:var(--bg);color:var(--text);line-height:1.6}
+body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;background:var(--bg);color:var(--text);line-height:1.55}
 a{color:var(--primary);text-decoration:none}
-.header{position:sticky;top:0;z-index:50;background:rgba(10,14,26,.92);backdrop-filter:blur(10px);border-bottom:1px solid var(--border)}
-.header-inner{max-width:1200px;margin:0 auto;padding:1rem 1.5rem;display:flex;align-items:center;justify-content:space-between}
-.brand{display:flex;align-items:center;gap:.75rem}
-.brand-mark{width:40px;height:40px;border-radius:50%;background:linear-gradient(135deg,var(--gold),#b8860b);display:grid;place-items:center;font-weight:800;color:#0b0f1a}
-.brand-text h1{font-size:1.1rem;letter-spacing:.3px}
-.brand-text span{font-size:.75rem;color:var(--text-muted);display:block}
-.nav-links{display:flex;gap:1.5rem;align-items:center;font-size:.85rem}
+.header{position:sticky;top:0;z-index:50;background:rgba(10,14,23,.92);backdrop-filter:blur(12px);border-bottom:1px solid var(--border)}
+.header-inner{max-width:1200px;margin:0 auto;padding:1.1rem 1.5rem;display:flex;align-items:center;justify-content:space-between;gap:1rem;flex-wrap:wrap}
+.brand{display:flex;align-items:center;gap:.85rem}
+.brand-mark{width:42px;height:42px;border-radius:50%;background:linear-gradient(135deg,var(--gold),#a88a2a);display:grid;place-items:center;font-weight:800;color:#0b0f17;font-size:.9rem;box-shadow:0 0 18px var(--gold-glow)}
+.brand-text h1{font-size:1.05rem;letter-spacing:.2px;font-weight:600}
+.brand-text span{font-size:.72rem;color:var(--text-muted);display:block}
+.nav-links{display:flex;gap:1.5rem;align-items:center;font-size:.84rem}
 .nav-links a{color:var(--text-muted);transition:color .2s}
 .nav-links a:hover{color:var(--text)}
-.btn{display:inline-flex;align-items:center;justify-content:center;gap:.5rem;padding:.7rem 1.25rem;border-radius:var(--radius);border:none;font-size:.9rem;font-weight:600;cursor:pointer;transition:all .2s}
-.btn-primary{background:var(--primary);color:#fff;box-shadow:0 4px 16px var(--primary-glow)}
+.btn{display:inline-flex;align-items:center;justify-content:center;gap:.5rem;padding:.75rem 1.25rem;border-radius:var(--radius);border:none;font-size:.9rem;font-weight:600;cursor:pointer;transition:all .2s}
+.btn-primary{background:var(--primary);color:#fff;box-shadow:0 4px 18px var(--primary-glow)}
 .btn-primary:hover{background:var(--primary-hover);transform:translateY(-1px)}
-.btn-gold{background:var(--gold);color:#0b0f1a}
-.btn-gold:hover{filter:brightness(1.05);transform:translateY(-1px)}
-.hero{position:relative;overflow:hidden;padding:6rem 1.5rem 4rem;background:radial-gradient(circle at 70% 10%,rgba(59,130,246,.12),transparent 40%),radial-gradient(circle at 20% 80%,rgba(212,175,55,.1),transparent 35%)}
+.btn-gold{background:var(--gold);color:#0b0f17}
+.btn-gold:hover{background:var(--gold-hover);transform:translateY(-1px)}
+.btn-outline{background:transparent;color:var(--text);border:1px solid var(--border)}
+.btn-outline:hover{border-color:var(--gold);color:var(--gold)}
+.hero{position:relative;overflow:hidden;padding:6rem 1.5rem 4.5rem;background:radial-gradient(circle at 75% 10%,rgba(79,135,255,.10),transparent 38%),radial-gradient(circle at 25% 85%,rgba(212,175,55,.09),transparent 35%)}
 .hero-inner{max-width:1200px;margin:0 auto;display:grid;grid-template-columns:1.1fr .9fr;gap:3rem;align-items:center}
-.hero h2{font-size:2.75rem;line-height:1.15;margin-bottom:1rem;background:linear-gradient(90deg,#fff,var(--gold));-webkit-background-clip:text;background-clip:text;color:transparent}
+.hero h2{font-size:2.6rem;line-height:1.18;margin-bottom:1rem;background:linear-gradient(90deg,#fff 40%,var(--gold));-webkit-background-clip:text;background-clip:text;color:transparent}
 .hero p{color:var(--text-muted);font-size:1.05rem;margin-bottom:2rem;max-width:520px}
 .hero-actions{display:flex;gap:1rem;flex-wrap:wrap}
-.card{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:1.75rem;box-shadow:0 10px 40px rgba(0,0,0,.2)}
-.card h3{font-size:1.15rem;margin-bottom:.75rem;display:flex;align-items:center;gap:.5rem}
+.card{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:1.75rem;box-shadow:var(--shadow)}
+.card h3{font-size:1.15rem;margin-bottom:.75rem;display:flex;align-items:center;gap:.5rem;font-weight:600}
 .card p{color:var(--text-muted);font-size:.9rem;margin-bottom:1rem}
 .form-group{margin-bottom:1rem}
-.form-group label{display:block;font-size:.7rem;color:var(--text-muted);text-transform:uppercase;letter-spacing:.5px;margin-bottom:.35rem}
-.form-group input,.form-group textarea,.form-group select{width:100%;padding:.75rem;background:var(--surface-2);border:1px solid var(--border);border-radius:8px;color:var(--text);font-size:.9rem}
+.form-group label{display:block;font-size:.68rem;color:var(--text-muted);text-transform:uppercase;letter-spacing:.6px;margin-bottom:.35rem}
+.form-group input,.form-group textarea,.form-group select{width:100%;padding:.8rem;background:var(--surface-2);border:1px solid var(--border);border-radius:10px;color:var(--text);font-size:.92rem}
 .form-group input:focus,.form-group textarea:focus,.form-group select:focus{outline:none;border-color:var(--primary);box-shadow:0 0 0 3px var(--primary-glow)}
 .form-group textarea{min-height:90px;resize:vertical}
 .form-row{display:grid;grid-template-columns:1fr 1fr;gap:1rem}
-.status{padding:.85rem 1rem;border-radius:8px;font-size:.9rem;margin-top:1rem;display:none}
+.status{padding:.9rem 1rem;border-radius:10px;font-size:.9rem;margin-top:1rem;display:none}
 .status.show{display:block}
-.status.success{background:rgba(16,185,129,.12);color:var(--success);border:1px solid rgba(16,185,129,.25)}
-.status.error{background:rgba(239,68,68,.12);color:var(--danger);border:1px solid rgba(239,68,68,.25)}
-.pins{background:var(--bg-2);border:1px solid var(--border);border-radius:8px;padding:1rem;margin-top:1rem}
-.pins code{font-family:monospace;color:var(--gold);font-size:1rem}
-.section{padding:4rem 1.5rem}
+.status.success{background:rgba(34,197,94,.10);color:var(--success);border:1px solid rgba(34,197,94,.25)}
+.status.error{background:rgba(239,68,68,.10);color:var(--danger);border:1px solid rgba(239,68,68,.25)}
+.section{padding:4.5rem 1.5rem}
 .section.alt{background:var(--bg-2)}
 .section-inner{max-width:1200px;margin:0 auto}
-.section h2{font-size:1.8rem;margin-bottom:1rem}
-.section p{color:var(--text-muted);max-width:720px}
+.section h2{font-size:1.7rem;margin-bottom:.75rem;font-weight:600}
+.section p{color:var(--text-muted);max-width:720px;font-size:.95rem}
 .grid-3{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:1.5rem;margin-top:2rem}
 .feature{display:flex;flex-direction:column;gap:.75rem}
-.feature-icon{width:44px;height:44px;border-radius:10px;background:var(--surface-2);border:1px solid var(--border);display:grid;place-items:center;color:var(--gold);font-size:1.25rem}
-.footer{border-top:1px solid var(--border);padding:2rem 1.5rem;text-align:center;color:var(--text-muted);font-size:.8rem}
-@media (max-width:900px){.hero-inner{grid-template-columns:1fr}.hero h2{font-size:2rem}}
+.feature-icon{width:44px;height:44px;border-radius:12px;background:var(--surface-2);border:1px solid var(--border);display:grid;place-items:center;color:var(--gold);font-size:1.1rem;font-weight:700}
+.feature h3{font-size:1.05rem;margin:0}
+.feature p{color:var(--text-muted);font-size:.85rem;margin:0}
+.footer{border-top:1px solid var(--border);padding:2.5rem 1.5rem;text-align:center;color:var(--text-muted);font-size:.78rem;background:var(--bg-2)}
+@media (max-width:900px){.hero-inner{grid-template-columns:1fr}.hero h2{font-size:2rem}.nav-links{display:none}}
 </style>
 </head>
 <body>
@@ -83,14 +87,14 @@ a{color:var(--primary);text-decoration:none}
       <div class="brand-mark">DLB</div>
       <div class="brand-text">
         <h1>DeAndrea LaVar Barkley Trust</h1>
-        <span>Web3 DeFi Trust Management</span>
+        <span>Private Trust Company Platform</span>
       </div>
     </div>
     <nav class="nav-links">
       <a href="#request">Request Distribution</a>
-      <a href="#messaging">Message Trustees</a>
-      <a href="#portal">Trustee Portal</a>
-      <a href="/dapp?v=2" class="btn btn-primary" style="padding:.55rem 1rem">Launch Portal</a>
+      <a href="#about">About</a>
+      <a href="#contact">Contact Trustees</a>
+      <a href="/dashboard" class="btn btn-gold" style="padding:.55rem 1rem">Trustee Dashboard</a>
     </nav>
   </div>
 </header>
@@ -98,19 +102,19 @@ a{color:var(--primary);text-decoration:none}
 <section class="hero">
   <div class="hero-inner">
     <div>
-      <h2>Self-Issued Sovereign Trust. On-Chain Transparency. Real-Time Distribution.</h2>
-      <p>A private, permissioned DeFi portal for trustees, makers, checkers, and beneficiaries. Submit requests, message the trust team, and track every disbursement from source-of-funds ledgers to your wallet.</p>
+      <h2>Family Wealth. Professional Custody. Purpose-Driven Distribution.</h2>
+      <p>A secure, private trust platform for trustees, beneficiaries, and fiduciaries. Submit distribution requests, approve disbursements, manage vendor payments, and view real-time trust reserves — all with maker/checker control and a full audit trail.</p>
       <div class="hero-actions">
         <a href="#request" class="btn btn-primary">Request a Distribution</a>
-        <a href="/dapp/legacy.html?v=2" class="btn btn-gold">Trustee Login</a>
+        <a href="/dashboard" class="btn btn-gold">Trustee Login</a>
       </div>
     </div>
     <div class="card" style="border-color:var(--gold);background:linear-gradient(135deg,var(--surface),rgba(212,175,55,.05))">
-      <h3>Portal Status</h3>
+      <h3>Trust Snapshot</h3>
       <p id="status-text">Loading live trust data…</p>
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:1rem;margin-top:1rem">
-        <div><div class="text-muted" style="font-size:.75rem">Treasury</div><div style="font-size:1.25rem;font-weight:700;color:var(--success)">Active</div></div>
-        <div><div class="text-muted" style="font-size:.75rem">2-Sig Approval</div><div style="font-size:1.25rem;font-weight:700;color:var(--gold)">Required</div></div>
+        <div><div class="text-muted" style="font-size:.75rem;color:var(--text-muted)">Trust Status</div><div style="font-size:1.25rem;font-weight:700;color:var(--success)">Active</div></div>
+        <div><div class="text-muted" style="font-size:.75rem;color:var(--text-muted)">Approval</div><div style="font-size:1.25rem;font-weight:700;color:var(--gold)">Maker / Checker</div></div>
       </div>
     </div>
   </div>
@@ -119,7 +123,7 @@ a{color:var(--primary);text-decoration:none}
 <section id="request" class="section">
   <div class="section-inner">
     <h2>Beneficiary Distribution Request</h2>
-    <p>Complete the form below. The system will create your secure login, run an asset-to-debt proof, generate a distribution request, and send one-time PINs to the maker and checker for approval.</p>
+    <p>Submit a request for a trust distribution or disbursement. The system will create a secure record, run an asset-to-debt proof, and send one-time approval notifications to the maker and checker trustees.</p>
     <div class="grid-3" style="margin-top:1.5rem;grid-template-columns:1fr">
       <div class="card">
         <form id="request-form" onsubmit="submitRequest(event)">
@@ -139,8 +143,8 @@ a{color:var(--primary);text-decoration:none}
               <input type="tel" id="req-phone" placeholder="(000) 000-0000" />
             </div>
             <div class="form-group">
-              <label>Wallet Address (optional)</label>
-              <input type="text" id="req-wallet" placeholder="0x... or Hedera account" />
+              <label>Wallet / Account (optional)</label>
+              <input type="text" id="req-wallet" placeholder="0x... or bank account" />
             </div>
           </div>
           <div class="form-row">
@@ -149,7 +153,7 @@ a{color:var(--primary);text-decoration:none}
               <input type="number" id="req-amount" min="0.01" step="0.01" placeholder="0.00" required />
             </div>
             <div class="form-group">
-              <label>Distribution Type</label>
+              <label>Request Type</label>
               <select id="req-type"><option value="distribution">Distribution</option><option value="disbursement">Disbursement</option></select>
             </div>
           </div>
@@ -157,7 +161,7 @@ a{color:var(--primary);text-decoration:none}
             <label>Message / Purpose</label>
             <textarea id="req-message" placeholder="Briefly describe the purpose of this request…"></textarea>
           </div>
-          <button type="submit" class="btn btn-primary" style="width:100%">Submit Request & Start Automation</button>
+          <button type="submit" class="btn btn-primary" style="width:100%">Submit Request for Trustee Approval</button>
           <div id="request-status" class="status"></div>
         </form>
       </div>
@@ -165,10 +169,25 @@ a{color:var(--primary);text-decoration:none}
   </div>
 </section>
 
-<section id="messaging" class="section alt">
+<section id="about" class="section alt">
+  <div class="section-inner">
+    <h2>Private Trust Company Workflows</h2>
+    <p>Everything the trust needs to manage capital, reserves, and beneficiary distributions in one secure command center.</p>
+    <div class="grid-3">
+      <div class="card feature"><div class="feature-icon">1</div><h3>Maker / Checker Approvals</h3><p>Every distribution, disbursement, and payment requires two-trustee approval before funds move.</p></div>
+      <div class="card feature"><div class="feature-icon">2</div><h3>Vendor & Merchant Payments</h3><p>Pay invoices, bills, and merchants from trust ledgers via wire, ACH, or open banking rails.</p></div>
+      <div class="card feature"><div class="feature-icon">3</div><h3>On / Off Ramps</h3><p>Move between fiat reserves, stablecoins, and DEX swaps with full reserve backing and audit.</p></div>
+      <div class="card feature"><div class="feature-icon">4</div><h3>Hold Accounts</h3><p>Create sub-accounts for trustees and beneficiaries with segregated balances and transaction history.</p></div>
+      <div class="card feature"><div class="feature-icon">5</div><h3>Bond & Fixed Income Data</h3><p>Real-time bond values, accrued interest, and fixed-income reserve positions feed the trust ledger.</p></div>
+      <div class="card feature"><div class="feature-icon">6</div><h3>Beneficiary Portal</h3><p>Beneficiaries can request distributions, view status, and message trustees without operator access.</p></div>
+    </div>
+  </div>
+</section>
+
+<section id="contact" class="section">
   <div class="section-inner">
     <h2>Message the Trustees</h2>
-    <p>Send a secure message to the trust administration team. You do not need an account — the trustees will be notified by email.</p>
+    <p>Send a secure message to the trust administration team. A trustee will respond through the dashboard or by email.</p>
     <div class="grid-3" style="margin-top:1.5rem;grid-template-columns:1fr">
       <div class="card">
         <form id="message-form" onsubmit="submitMessage(event)">
@@ -194,20 +213,8 @@ a{color:var(--primary);text-decoration:none}
   </div>
 </section>
 
-<section id="portal" class="section">
-  <div class="section-inner">
-    <h2>Trustee Portal</h2>
-    <p>Makers and checkers log in with email + one-time PIN. The portal supports beneficiary view-only access, maker/checker approvals, and full treasury administration.</p>
-    <div class="grid-3" style="margin-top:1.5rem">
-      <div class="card feature"><div class="feature-icon">🔐</div><h3>RBAC Login</h3><p>Beneficiary, maker, checker, and admin roles with automatic role switching and sign-out.</p></div>
-      <div class="card feature"><div class="feature-icon">📜</div><h3>Smart Contract Automation</h3><p>Asset-to-debt proof, distribution request, 2-sig approval, and execution pipeline in one flow.</p></div>
-      <div class="card feature"><div class="feature-icon">💬</div><h3>Messaging & Documents</h3><p>Threaded messaging, calendar events, and a document vault tied to every request.</p></div>
-    </div>
-  </div>
-</section>
-
 <footer class="footer">
-  <p>&copy; 2026 DeAndrea LaVar Barkley Trust. Private permissioned DeFi trust management.</p>
+  <p>&copy; 2026 DeAndrea LaVar Barkley Trust. Private Trust Company. All rights reserved.</p>
 </footer>
 
 <script>
@@ -238,7 +245,7 @@ async function submitRequest(e){
     const res=await api('/public/request',{method:'POST',body:JSON.stringify(body)});
     const data=res.data;
     const reqId=(data.run && data.run.requests && data.run.requests[0] && data.run.requests[0].id) || 'created';
-    status('request-status', `Request submitted: ${reqId}. The maker trustee will receive a one-time PIN by email to approve, and the checker trustee will be notified next.`);
+    status('request-status', `Request submitted: ${reqId}. The maker trustee will be notified by email to approve, and the checker trustee will be notified next.`);
   }catch(err){ status('request-status', err.message, true); }
 }
 async function submitMessage(e){
@@ -249,7 +256,7 @@ async function submitMessage(e){
     body: document.getElementById('msg-body').value.trim(),
   };
   try{
-    const res=await api('/public/message',{method:'POST',body:JSON.stringify(body)});
+    await api('/public/message',{method:'POST',body:JSON.stringify(body)});
     status('message-status', 'Message sent. A trustee will respond shortly.');
   }catch(err){ status('message-status', err.message, true); }
 }
