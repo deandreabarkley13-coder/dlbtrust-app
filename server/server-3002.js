@@ -129,7 +129,7 @@ function serveDapp(req, res) {
   res.set('Cache-Control', 'no-cache, no-store, must-revalidate');
   res.set('Pragma', 'no-cache');
   res.set('Expires', '0');
-  res.sendFile(path.join(HD, 'public', 'dapp', 'index.html'));
+  res.redirect('/dashboard');
 }
 function serveLanding(req, res) {
   res.set('Cache-Control', 'no-cache, no-store, must-revalidate');
@@ -141,7 +141,7 @@ function serveFinops(req, res) {
   res.set('Cache-Control', 'no-cache, no-store, must-revalidate');
   res.set('Pragma', 'no-cache');
   res.set('Expires', '0');
-  res.sendFile(path.join(HD, 'public', 'dapp', 'finops.html'));
+  res.redirect('/dashboard');
 }
 function serveTrustDashboard(req, res) {
   res.set('Cache-Control', 'no-cache, no-store, must-revalidate');
