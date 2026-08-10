@@ -145,7 +145,7 @@ class TreasuryOnRampBridgeEngine {
         internal_amount   NUMERIC(24,6),
         target_asset      TEXT NOT NULL DEFAULT 'DAI',
         recipient         TEXT,
-        status            TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending','quoted','source_reserved','wire_pending','fiat_received','canonical_received','swapped','redeemed','completed','failed','needs_deposit','needs_config')),
+        status            TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending','quoted','source_reserved','wire_pending','fiat_received','canonical_received','swapped','redeemed','completed','failed','needs_deposit','needs_config','insufficient_source','awaiting_deposit','awaiting_onramp','needs_recipient_setup','reserved','deposit_initiated','awaiting_canonical','ready')),
         stage             TEXT NOT NULL DEFAULT 'on_ramp',
         result            JSONB DEFAULT '{}',
         error             TEXT,
@@ -155,6 +155,8 @@ class TreasuryOnRampBridgeEngine {
       )
     `);
     await queryFn(`CREATE INDEX IF NOT EXISTS idx_treasury_on_ramp_status ON treasury_on_ramp_operations(status)`);
+    await queryFn(`ALTER TABLE treasury_on_ramp_operations DROP CONSTRAINT IF EXISTS treasury_on_ramp_operations_status_check`);
+    await queryFn(`ALTER TABLE treasury_on_ramp_operations ADD CONSTRAINT treasury_on_ramp_operations_status_check CHECK (status IN ('pending','quoted','source_reserved','wire_pending','fiat_received','canonical_received','swapped','redeemed','completed','failed','needs_deposit','needs_config','insufficient_source','awaiting_deposit','awaiting_onramp','needs_recipient_setup','reserved','deposit_initiated','awaiting_canonical','ready'))`);
   }
 
   static async _resolveToken(token) {
@@ -282,9 +284,9 @@ class TreasuryOnRampBridgeEngine {
 
     let status = 'needs_config';
     if (!onRampReady.ready) status = 'needs_config';
+    else if (sourceBalanceCents !== null && sourceBalanceCents < toCents(amountNum) && sourceMethod !== 'manual' && sourceMethod !== 'moonpay') status = 'insufficient_source';
     else if (sourceMethod === 'manual') status = 'awaiting_deposit';
     else if (sourceMethod === 'core_banking_wire') status = 'wire_pending';
-    else if (sourceBalanceCents !== null && sourceBalanceCents < toCents(amountNum)) status = 'insufficient_source';
     else if (sourceMethod === 'circle_mint') status = 'ready';
     else if (sourceMethod === 'coinbase_treasury') status = 'pending';
     else if (sourceMethod === 'moonpay') status = 'awaiting_onramp';
@@ -406,10 +408,17 @@ class TreasuryOnRampBridgeEngine {
     return rows.rows.map(r => this._parseRow(r));
   }
 
-  static async approve({ proposalId, role, approverEmail }) {
+  static async approve({ operationId, proposalId, role, approverEmail }) {
     const CCE = canonicalConsensusEngine();
     if (!CCE) throw new Error('CanonicalConsensusEngine not available');
-    return CCE.approveProposal({ proposalId, role, approverEmail });
+    let pid = proposalId;
+    if (!pid && operationId) {
+      const op = await this.getOperation(operationId);
+      if (!op) throw new Error('Operation not found');
+      pid = op.proposalId;
+    }
+    if (!pid) throw new Error('proposalId or operationId is required');
+    return CCE.approveProposal({ proposalId: pid, role, approverEmail });
   }
 
   static async executeOperation(operationId, { autoContinue = false } = {}) {
@@ -468,10 +477,20 @@ class TreasuryOnRampBridgeEngine {
     const { sourceMethod, sourceType, sourceAccountId, amount, targetAsset } = op;
 
     if (sourceMethod === 'manual') {
+      const target = await this._resolveToken(targetAsset);
+      const targetBal = await this._operatorBalance(target.address, target.decimals);
+      if (Number(targetBal.formatted) >= Number(amount)) {
+        return this._continue({ ...op, stage: 'canonical_swap' }, onRampBankDetails);
+      }
       return { operationId: op.id, stage: 'on_ramp', status: 'awaiting_deposit', instructions: `Deposit ${amount} ${targetAsset.toUpperCase()} to operator wallet ${cfg.operatorAddress}.` };
     }
 
     if (sourceMethod === 'moonpay') {
+      const target = await this._resolveToken(targetAsset);
+      const targetBal = await this._operatorBalance(target.address, target.decimals);
+      if (Number(targetBal.formatted) >= Number(amount)) {
+        return this._continue({ ...op, stage: 'canonical_swap' }, onRampBankDetails);
+      }
       const url = MoonPayEngine ? MoonPayEngine.buildUrl({ currencyCode: String(targetAsset).toLowerCase(), walletAddress: cfg.operatorAddress, amount: String(amount) }) : '';
       return { operationId: op.id, stage: 'on_ramp', status: 'awaiting_onramp', onrampUrl: url, instructions: 'Complete MoonPay widget. Once funds arrive, continue the operation.' };
     }
@@ -543,7 +562,7 @@ class TreasuryOnRampBridgeEngine {
   static async _swapToTarget(op) {
     const cfg = this.getConfig();
     const { targetAsset, amount } = op;
-    const onRampAmount = Number(op.on_ramp_amount || amount);
+    const onRampAmount = Number(op.onRampAmount || amount);
     const usdc = await this._resolveToken('USDC');
     const target = await this._resolveToken(targetAsset);
     const targetBal = await this._operatorBalance(target.address, target.decimals);
@@ -632,7 +651,14 @@ class TreasuryOnRampBridgeEngine {
   static async continue({ operationId, onRampBankDetails = {} } = {}) {
     const op = await this.getOperation(operationId);
     if (!op) throw new Error('Operation not found');
-    return this._continue(op, onRampBankDetails);
+    try {
+      const result = await this._continue(op, onRampBankDetails);
+      await queryFn(`UPDATE treasury_on_ramp_operations SET status=$1, result=$2, updated_at=NOW() WHERE id=$3`, [result.status, safeJson(result), operationId]);
+      return result;
+    } catch (err) {
+      await queryFn(`UPDATE treasury_on_ramp_operations SET status='failed', error=$1, result=$2, updated_at=NOW() WHERE id=$3`, [err.message, safeJson({ error: err.message }), operationId]);
+      throw err;
+    }
   }
 }
 
