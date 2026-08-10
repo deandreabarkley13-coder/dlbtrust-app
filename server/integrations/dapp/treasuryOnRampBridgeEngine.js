@@ -25,6 +25,18 @@ try { pool = require('../bonds/pgPool'); } catch (e) { /* optional */ }
 let SourceOfFundsAdapter;
 try { ({ SourceOfFundsAdapter } = require('../stablecoin/sourceOfFundsAdapter')); } catch (e) {}
 
+let TrustAccountingEngine;
+try { ({ TrustAccountingEngine } = require('../accounting/trustAccountingEngine')); } catch (e) {}
+
+let CashEngine;
+try { ({ CashEngine } = require('../cash/cashEngine')); } catch (e) {}
+
+let TreasuryEngine;
+try { ({ TreasuryEngine } = require('../stablecoin/treasuryEngine')); } catch (e) {}
+
+let FineractClient;
+try { ({ FineractClient } = require('../fineract/fineractClient')); } catch (e) {}
+
 let StablecoinDexEngine;
 try { ({ StablecoinDexEngine } = require('./stablecoinDexEngine')); } catch (e) {}
 
@@ -183,8 +195,41 @@ class TreasuryOnRampBridgeEngine {
   }
 
   static async _sourceBalance(sourceType, sourceAccountId) {
-    if (!SourceOfFundsAdapter) return null;
-    try { return await SourceOfFundsAdapter.getBalance({ sourceType, sourceAccountId }); } catch (e) { return null; }
+    if (!sourceAccountId) return null;
+    const isAccountCode = /^\d+$/.test(String(sourceAccountId));
+    let balanceCents = null;
+    if (SourceOfFundsAdapter) {
+      try { balanceCents = await SourceOfFundsAdapter.getBalance({ sourceType, sourceAccountId }); } catch (e) {}
+    }
+    if (balanceCents && balanceCents > 0) return balanceCents;
+
+    // Fall back to the canonical financial engines the user has designated as truth of source.
+    if (isAccountCode && TrustAccountingEngine) {
+      try {
+        const acct = await TrustAccountingEngine.getAccount(sourceAccountId);
+        if (acct && acct.balance != null) return toCents(acct.balance);
+      } catch (e) {}
+    }
+    if (sourceType === 'cash' && CashEngine) {
+      try {
+        const acct = await CashEngine.getAccount(sourceAccountId);
+        if (acct && acct.balance_cents != null) return Number(acct.balance_cents);
+      } catch (e) {}
+    }
+    if (sourceType === 'treasury' && TreasuryEngine) {
+      try {
+        const pos = await TreasuryEngine.getPosition(sourceAccountId);
+        if (pos && pos.availableCents != null) return Number(pos.availableCents);
+      } catch (e) {}
+    }
+    if (sourceType === 'fineract' && FineractClient) {
+      try {
+        const acct = await FineractClient.getAccountBalance(sourceAccountId);
+        const balance = (acct && acct.summary && (acct.summary.availableBalance != null ? acct.summary.availableBalance : acct.summary.accountBalance)) || 0;
+        if (balance) return toCents(Number(balance));
+      } catch (e) {}
+    }
+    return balanceCents;
   }
 
   static async _onRampReadiness(method) {
