@@ -171,6 +171,7 @@
     { key:'decentralized-ramps', name:'Decentralized Ramps', desc:'DEX, P2P, cross-chain, and fiat on/off-ramp aggregator', stat:'', endpoint:null, action:'openDecentralizedRampsPanel' },
     { key:'internal-market-maker', name:'Internal Market Maker', desc:'Tokenize reserves (interest income, bonds, fixed income) and seed deeper BondDex pools', stat:'', endpoint:null, action:'openInternalMarketMakerPanel' },
     { key:'reserve-vault', name:'Reserve Vault (CDP)', desc:'Tokenize ledger/module reserves into a vault stablecoin position and quote swaps to canonical assets', stat:'', endpoint:null, action:'openReserveVaultPanel' },
+    { key:'treasury-on-ramp', name:'Treasury On-Ramp Bridge', desc:'Wire core-banking fiat to an on-ramp, receive DAI/USDC, and redeem internal tokens 1:1', stat:'', endpoint:null, action:'openTreasuryOnRampPanel' },
     { key:'dex-aggregator', name:'DEX Aggregator & V3', desc:'Multi-source DEX aggregator and Uniswap V3 canonical pair swaps', stat:'', endpoint:null, action:'openDexAggregatorPanel' },
     { key:'intent-routing', name:'Intent Routing', desc:'Natural-language orchestration of on/off-ramp and conversion flows', stat:'', endpoint:null, action:'openIntentRoutingPanel' },
     { key:'external-wallet', name:'External Wallets', desc:'Hardware/MetaMask/GridPlus wallet as ledger source and DAI/USDS swaps', stat:'', endpoint:null, action:'openExternalWalletPanel' },
@@ -2616,6 +2617,117 @@
       });
       html += '</table>';
       if (!rows.length) html = '<div class="muted">No vault positions yet.</div>';
+      wrap.innerHTML = html;
+    } catch(e) { wrap.innerHTML = '<div class="status err">' + e.message + '</div>'; }
+  }
+
+  // ─── Treasury On-Ramp Bridge panel ───────────────────────────────────────────────
+  function openTreasuryOnRampPanel() {
+    const panel = el('module-panel');
+    const body = el('panel-body');
+    el('panel-title').textContent = 'Treasury On-Ramp Bridge';
+    panel.classList.add('active');
+    body.innerHTML = '<div class="muted" style="margin-bottom:12px;">Wire/on-ramp fiat from core-banking or treasury reserves, receive canonical DAI/USDC, and redeem internal tokens (DLBUSD/PTC) 1:1.</div>' +
+      '<h3 style="font-size:14px;margin:0 0 8px;">1. Quote On-Ramp Bridge</h3>' +
+      '<div class="token-bar"><select id="torb-source-type"><option value="fixed_income">fixed_income</option><option value="bond">bond</option><option value="treasury">treasury</option><option value="cash">cash</option><option value="trust_account">trust_account</option></select></div>' +
+      '<div class="token-bar"><input id="torb-source-account" value="4000" placeholder="source account / module key" /></div>' +
+      '<div class="token-bar"><input id="torb-amount" value="100" placeholder="fiat amount (USD)" /></div>' +
+      '<div class="token-bar"><select id="torb-source-method"><option value="core_banking_wire">core_banking_wire</option><option value="circle_mint">circle_mint</option><option value="coinbase_treasury">coinbase_treasury</option><option value="moonpay">moonpay</option><option value="manual">manual</option></select></div>' +
+      '<div class="token-bar"><select id="torb-internal-asset"><option value="DLBUSD">DLBUSD</option><option value="DLB-PTCUSD">DLB-PTCUSD</option></select></div>' +
+      '<div class="token-bar"><input id="torb-internal-amount" value="" placeholder="internal amount to redeem (defaults to fiat amount)" /></div>' +
+      '<div class="token-bar"><input id="torb-target" value="DAI" placeholder="target canonical asset" /></div>' +
+      '<div class="token-bar"><input id="torb-recipient" value="" placeholder="recipient address (defaults to operator)" /></div>' +
+      '<div class="approval-actions"><button class="btn" onclick="torbQuote()">Quote</button><button class="btn" onclick="torbPropose()">Propose</button></div>' +
+      '<div id="torb-quote-status" style="margin-top:8px;"></div>' +
+      '<h3 style="font-size:14px;margin:16px 0 8px;">2. Execute / Continue</h3>' +
+      '<div class="token-bar"><input id="torb-op-id" placeholder="operation id" /></div>' +
+      '<div class="approval-actions"><button class="btn" onclick="torbExecute()">Execute</button><button class="btn" onclick="torbContinue()">Continue</button><button class="btn" onclick="torbLoad()">Load Operations</button></div>' +
+      '<div id="torb-op-status" style="margin-top:8px;"></div>' +
+      '<h3 style="font-size:14px;margin:16px 0 8px;">Operations</h3>' +
+      '<div id="torb-ops" style="font-size:12px;"></div>';
+    torbLoad();
+  }
+
+  async function torbQuote() {
+    const wrap = el('torb-quote-status');
+    wrap.innerHTML = '<div class="muted">Quoting…</div>';
+    try {
+      const body = {
+        sourceType: el('torb-source-type').value,
+        sourceAccountId: el('torb-source-account').value,
+        amount: el('torb-amount').value,
+        sourceMethod: el('torb-source-method').value,
+        internalAsset: el('torb-internal-asset').value,
+        internalAmount: el('torb-internal-amount').value || undefined,
+        targetAsset: el('torb-target').value,
+        recipient: el('torb-recipient').value || undefined,
+      };
+      const r = await api('/api/finops/treasury-on-ramp/quote', { method: 'POST', body: JSON.stringify(body) });
+      if (!r.success) throw new Error(r.error || 'quote failed');
+      wrap.innerHTML = '<div class="status ok">Status: ' + htmlEscape(r.data.status) + '<br/>On-ramp amount: ' + htmlEscape(r.data.onRampAmount) + ' ' + htmlEscape(r.data.targetAsset) + '<br/>Instructions: ' + htmlEscape(typeof r.data.instructions === 'string' ? r.data.instructions : JSON.stringify(r.data.instructions)) + '</div>';
+    } catch(e) { wrap.innerHTML = '<div class="status err">' + e.message + '</div>'; }
+  }
+
+  async function torbPropose() {
+    const wrap = el('torb-quote-status');
+    wrap.innerHTML = '<div class="muted">Creating proposal…</div>';
+    try {
+      const body = {
+        sourceType: el('torb-source-type').value,
+        sourceAccountId: el('torb-source-account').value,
+        amount: el('torb-amount').value,
+        sourceMethod: el('torb-source-method').value,
+        internalAsset: el('torb-internal-asset').value,
+        internalAmount: el('torb-internal-amount').value || undefined,
+        targetAsset: el('torb-target').value,
+        recipient: el('torb-recipient').value || undefined,
+      };
+      const r = await api('/api/finops/treasury-on-ramp/propose', { method: 'POST', body: JSON.stringify(body) });
+      if (!r.success) throw new Error(r.error || 'propose failed');
+      wrap.innerHTML = '<div class="status ok">Operation: <code>' + htmlEscape(r.data.operationId) + '</code><br/>Proposal: <code>' + htmlEscape(r.data.proposalId) + '</code><br/>Status: ' + htmlEscape(r.data.quote && r.data.quote.status) + '</div>';
+      el('torb-op-id').value = r.data.operationId;
+      torbLoad();
+    } catch(e) { wrap.innerHTML = '<div class="status err">' + e.message + '</div>'; }
+  }
+
+  async function torbExecute() {
+    const wrap = el('torb-op-status');
+    const id = el('torb-op-id').value;
+    if (!id) { wrap.innerHTML = '<div class="status err">Enter operation id</div>'; return; }
+    wrap.innerHTML = '<div class="muted">Executing…</div>';
+    try {
+      const r = await api('/api/finops/treasury-on-ramp/operations/' + encodeURIComponent(id) + '/execute', { method: 'POST', body: '{}' });
+      if (!r.success) throw new Error(r.error || 'execute failed');
+      wrap.innerHTML = '<div class="status ok">Status: ' + htmlEscape(r.data.status) + '<br/>Stage: ' + htmlEscape(r.data.stage) + (r.data.instructions ? '<br/>Instructions: ' + htmlEscape(typeof r.data.instructions === 'string' ? r.data.instructions : JSON.stringify(r.data.instructions)) : '') + '</div>';
+      torbLoad();
+    } catch(e) { wrap.innerHTML = '<div class="status err">' + e.message + '</div>'; }
+  }
+
+  async function torbContinue() {
+    const wrap = el('torb-op-status');
+    const id = el('torb-op-id').value;
+    if (!id) { wrap.innerHTML = '<div class="status err">Enter operation id</div>'; return; }
+    wrap.innerHTML = '<div class="muted">Continuing…</div>';
+    try {
+      const r = await api('/api/finops/treasury-on-ramp/operations/' + encodeURIComponent(id) + '/continue', { method: 'POST', body: '{}' });
+      if (!r.success) throw new Error(r.error || 'continue failed');
+      wrap.innerHTML = '<div class="status ok">Status: ' + htmlEscape(r.data.status) + '<br/>Stage: ' + htmlEscape(r.data.stage) + (r.data.instructions ? '<br/>Instructions: ' + htmlEscape(typeof r.data.instructions === 'string' ? r.data.instructions : JSON.stringify(r.data.instructions)) : '') + '</div>';
+      torbLoad();
+    } catch(e) { wrap.innerHTML = '<div class="status err">' + e.message + '</div>'; }
+  }
+
+  async function torbLoad() {
+    const wrap = el('torb-ops');
+    try {
+      const r = await api('/api/finops/treasury-on-ramp/operations');
+      if (!r.success) throw new Error(r.error || 'load failed');
+      const rows = r.data || [];
+      let html = '<table class="small-table"><thead><tr><th>ID</th><th>Source</th><th>Method</th><th>Amount</th><th>Internal</th><th>Target</th><th>Status</th></tr></thead>';
+      rows.forEach(p => {
+        html += '<tr><td>' + htmlEscape(p.id) + '</td><td>' + htmlEscape(p.source_type) + ' ' + htmlEscape(p.source_account_id) + '</td><td>' + htmlEscape(p.source_method) + '</td><td>' + htmlEscape(p.amount) + '</td><td>' + htmlEscape(p.internal_amount) + ' ' + htmlEscape(p.internal_asset) + '</td><td>' + htmlEscape(p.target_asset) + '</td><td>' + htmlEscape(p.status) + '</td></tr>';
+      });
+      html += '</table>';
+      if (!rows.length) html = '<div class="muted">No treasury on-ramp operations yet.</div>';
       wrap.innerHTML = html;
     } catch(e) { wrap.innerHTML = '<div class="status err">' + e.message + '</div>'; }
   }

@@ -279,6 +279,11 @@ class CanonicalConsensusEngine {
         if (!CapitalFundEngine) throw new Error('CapitalFundEngine not available');
         return CapitalFundEngine.executeFund(proposal.payload && proposal.payload.fundId);
       }
+      case 'treasury_on_ramp': {
+        const { TreasuryOnRampBridgeEngine } = require('./treasuryOnRampBridgeEngine');
+        if (!TreasuryOnRampBridgeEngine) throw new Error('TreasuryOnRampBridgeEngine not available');
+        return TreasuryOnRampBridgeEngine._execute(proposal);
+      }
       case 'custom':
         return { status: 'approved', message: 'Custom proposal approved, no automatic execution configured', payload };
       default:
