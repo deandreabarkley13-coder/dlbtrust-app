@@ -236,7 +236,7 @@ class DexAggregatorEngine {
         }
       } catch (e) {}
 
-      return { status: 'executed', provider: 'openocean', txHash: hash, amountOut: actualOut, expectedAmountOut: quote.amountOut, amountOutMinimum: quote.amountOutMinimum, tokenIn, tokenOut, amountIn, recipient: finalRecipient, exchange: to, mode: 'live', receipt };
+      return { status: 'executed', provider: 'openocean', txHash: hash, amountOut: actualOut, expectedAmountOut: quote.amountOut, amountOutMinimum: quote.amountOutMinimum, tokenIn, tokenOut, amountIn, recipient: finalRecipient, exchange: to, mode: 'live' };
     });
   }
 

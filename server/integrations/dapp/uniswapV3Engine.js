@@ -176,8 +176,8 @@ class UniswapV3Engine {
         gas: 500000n,
         ...fees,
       });
-      const receipt = await publicClient.waitForTransactionReceipt({ hash, timeout: 180000 });
-      return { status: 'executed', txHash: hash, amountOut: quote.amountOut, amountOutMinimum: viem.formatUnits(rawMinOut, Number(decimalsOut) || 18), tokenIn, tokenOut, amountIn, fee: quote.fee, recipient: finalRecipient, mode: 'live', receipt };
+      await publicClient.waitForTransactionReceipt({ hash, timeout: 180000 });
+      return { status: 'executed', txHash: hash, amountOut: quote.amountOut, amountOutMinimum: viem.formatUnits(rawMinOut, Number(decimalsOut) || 18), tokenIn, tokenOut, amountIn, fee: quote.fee, recipient: finalRecipient, mode: 'live' };
     });
   }
 
