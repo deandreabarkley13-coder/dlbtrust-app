@@ -237,9 +237,9 @@ class TreasuryOnRampBridgeEngine {
 
     let status = 'needs_config';
     if (!onRampReady.ready) status = 'needs_config';
-    else if (sourceBalanceCents !== null && sourceBalanceCents < toCents(amountNum)) status = 'insufficient_source';
     else if (sourceMethod === 'manual') status = 'awaiting_deposit';
     else if (sourceMethod === 'core_banking_wire') status = 'wire_pending';
+    else if (sourceBalanceCents !== null && sourceBalanceCents < toCents(amountNum)) status = 'insufficient_source';
     else if (sourceMethod === 'circle_mint') status = 'ready';
     else if (sourceMethod === 'coinbase_treasury') status = 'pending';
     else if (sourceMethod === 'moonpay') status = 'awaiting_onramp';
@@ -414,23 +414,29 @@ class TreasuryOnRampBridgeEngine {
     }
 
     if (sourceMethod === 'core_banking_wire') {
-      if (!WireOriginationEngine) throw new Error('WireOriginationEngine not available');
-      const wire = await WireOriginationEngine.createPayout({
-        sourceType: 'cash',
-        sourceAccountId: sourceAccountId,
-        amount,
-        beneficiaryName: (onRampBankDetails && onRampBankDetails.name) || cfg.wireBeneficiary.name,
-        beneficiaryRouting: (onRampBankDetails && onRampBankDetails.routing) || cfg.wireBeneficiary.routing,
-        beneficiaryAccount: (onRampBankDetails && onRampBankDetails.account) || cfg.wireBeneficiary.account,
-        beneficiaryBankName: (onRampBankDetails && onRampBankDetails.bankName) || '',
-        paymentType: 'vendor_payment',
-        purpose: `Treasury on-ramp to ${targetAsset}`,
-        description: `Bridge ${amount} USD from core banking to on-ramp for canonical stablecoin`,
-        adapter: 'wire',
-        initiatedBy: 'treasury-on-ramp',
-      });
-      await queryFn(`UPDATE treasury_on_ramp_operations SET stage='canonical_swap', status='wire_pending', metadata=jsonb_set(metadata, '{wire}', $1::jsonb) WHERE id=$2`, [safeJson(wire), op.id]);
-      return { operationId: op.id, stage: 'canonical_swap', status: 'wire_pending', wire, instructions: 'Wire originated. Once the on-ramp credits the operator wallet, call continue/execute to swap and redeem.' };
+      const instructions = this._buildInstructions({ sourceMethod, targetAsset, amount: Number(amount), onRampAmount: Number(amount), onRampBankDetails, cfg });
+      try {
+        if (!WireOriginationEngine) throw new Error('WireOriginationEngine not available');
+        const wire = await WireOriginationEngine.createPayout({
+          sourceType,
+          sourceAccountId,
+          amount,
+          beneficiaryName: (onRampBankDetails && onRampBankDetails.name) || cfg.wireBeneficiary.name,
+          beneficiaryRouting: (onRampBankDetails && onRampBankDetails.routing) || cfg.wireBeneficiary.routing,
+          beneficiaryAccount: (onRampBankDetails && onRampBankDetails.account) || cfg.wireBeneficiary.account,
+          beneficiaryBankName: (onRampBankDetails && onRampBankDetails.bankName) || '',
+          paymentType: 'vendor_payment',
+          purpose: `Treasury on-ramp to ${targetAsset}`,
+          description: `Bridge ${amount} USD from core banking to on-ramp for canonical stablecoin`,
+          adapter: 'wire',
+          initiatedBy: 'treasury-on-ramp',
+        });
+        await queryFn(`UPDATE treasury_on_ramp_operations SET stage='canonical_swap', status='wire_pending', metadata=jsonb_set(metadata, '{wire}', $1::jsonb) WHERE id=$2`, [safeJson(wire), op.id]);
+        return { operationId: op.id, stage: 'canonical_swap', status: 'wire_pending', wire, instructions: 'Wire originated. Once the on-ramp credits the operator wallet, call continue/execute to swap and redeem.' };
+      } catch (err) {
+        await queryFn(`UPDATE treasury_on_ramp_operations SET stage='canonical_swap', status='wire_pending', error=$1, metadata=jsonb_set(metadata, '{wireError}', $2::jsonb) WHERE id=$3`, [err.message, safeJson({ message: err.message }), op.id]);
+        return { operationId: op.id, stage: 'canonical_swap', status: 'wire_pending', error: err.message, instructions };
+      }
     }
 
     if (sourceMethod === 'coinbase_treasury') {
