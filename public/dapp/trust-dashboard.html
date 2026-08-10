@@ -587,6 +587,7 @@
   const showStatus = (id, msg, isErr) => {
     const d = el(id); d.textContent = msg; d.className = 'status show ' + (isErr ? 'err' : 'ok');
   };
+  const escapeHtml = (s) => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#039;');
 
   function logout() {
     localStorage.removeItem(ADMIN_KEY);
@@ -902,12 +903,12 @@
         rallyWallets = walletsRes.data || [];
         renderRallyWallets(rallyWallets, readyText);
       } catch (we) {
-        el('rally-wallets').innerHTML = '<p class="muted">' + we.message + '</p>';
+        el('rally-wallets').innerHTML = '<p class="muted">' + escapeHtml(we.message) + '</p>';
       }
       try {
         const payoutsRes = await api('/api/rally/payouts');
         renderRallyPayouts(payoutsRes.data || []);
-      } catch (pe) { el('rally-payouts').innerHTML = '<p class="muted">' + pe.message + '</p>'; }
+      } catch (pe) { el('rally-payouts').innerHTML = '<p class="muted">' + escapeHtml(pe.message) + '</p>'; }
 
       const params = new URLSearchParams(window.location.search);
       const payTo = params.get('payTo');
@@ -920,14 +921,14 @@
   }
 
   function renderRallyWalletOptions() {
-    const opts = rallyWallets.map(w => `<option value="${w.id}">${w.label} · ${w.wallet_address.slice(0,8)}… · index ${w.wallet_index}</option>`).join('');
+    const opts = rallyWallets.map(w => `<option value="${escapeHtml(w.id)}">${escapeHtml(w.label)} · ${escapeHtml(w.wallet_address ? w.wallet_address.slice(0,8) : '')}… · index ${escapeHtml(w.wallet_index)}</option>`).join('');
     ['rally-fund-wallet','rally-req-wallet','rally-pay-wallet'].forEach(id => { if (el(id)) el(id).innerHTML = opts; });
   }
 
   function renderRallyWallets(wallets, readyText) {
     renderRallyWalletOptions();
-    if (!wallets.length) { el('rally-wallets').innerHTML = `<p class="muted">${readyText} · No wallets yet.</p>`; return; }
-    el('rally-wallets').innerHTML = `<table class="table"><thead><tr><th>ID</th><th>Label</th><th>Address</th><th>Index</th><th>Balance</th></tr></thead><tbody>${wallets.map(w => `<tr><td>${w.id}</td><td>${w.label}</td><td>${w.wallet_address}</td><td>${w.wallet_index}</td><td><button class="btn btn-sm" onclick="loadRallyBalance('${w.id}')">Balance</button></td></tr>`).join('')}</tbody></table>`;
+    if (!wallets.length) { el('rally-wallets').innerHTML = `<p class="muted">${escapeHtml(readyText)} · No wallets yet.</p>`; return; }
+    el('rally-wallets').innerHTML = `<table class="table"><thead><tr><th>ID</th><th>Label</th><th>Address</th><th>Index</th><th>Balance</th></tr></thead><tbody>${wallets.map(w => `<tr><td>${escapeHtml(w.id)}</td><td>${escapeHtml(w.label)}</td><td>${escapeHtml(w.wallet_address)}</td><td>${escapeHtml(w.wallet_index)}</td><td><button class="btn btn-sm" onclick="loadRallyBalance('${escapeHtml(w.id)}')">Balance</button></td></tr>`).join('')}</tbody></table>`;
   }
 
   async function loadRallyBalance(walletId) {
@@ -940,7 +941,7 @@
 
   function renderRallyPayouts(payouts) {
     if (!payouts.length) { el('rally-payouts').innerHTML = '<p class="muted">No payouts yet.</p>'; return; }
-    el('rally-payouts').innerHTML = `<table class="table"><thead><tr><th>ID</th><th>From</th><th>To</th><th>Amount</th><th>Status</th><th>Tx</th></tr></thead><tbody>${payouts.map(p => `<tr><td>${p.id}</td><td>${p.from_address.slice(0,10)}…</td><td>${p.to_address.slice(0,10)}…</td><td>${p.amount} ${p.currency}</td><td><span class="badge ${p.status === 'completed' ? 'approved' : 'pending'}">${p.status}</span></td><td>${p.tx_hash ? `<a href="https://etherscan.io/tx/${p.tx_hash}" target="_blank" style="color:var(--primary)">view</a>` : '—'}</td></tr>`).join('')}</tbody></table>`;
+    el('rally-payouts').innerHTML = `<table class="table"><thead><tr><th>ID</th><th>From</th><th>To</th><th>Amount</th><th>Status</th><th>Tx</th></tr></thead><tbody>${payouts.map(p => `<tr><td>${escapeHtml(p.id)}</td><td>${escapeHtml(p.from_address ? p.from_address.slice(0,10) : '')}…</td><td>${escapeHtml(p.to_address ? p.to_address.slice(0,10) : '')}…</td><td>${escapeHtml(p.amount)} ${escapeHtml(p.currency)}</td><td><span class="badge ${p.status === 'completed' ? 'approved' : 'pending'}">${escapeHtml(p.status)}</span></td><td>${p.tx_hash ? `<a href="https://etherscan.io/tx/${escapeHtml(p.tx_hash)}" target="_blank" style="color:var(--primary)">view</a>` : '—'}</td></tr>`).join('')}</tbody></table>`;
   }
 
   async function createRallyWallet() {
@@ -973,7 +974,8 @@
       const memo = el('rally-req-memo').value.trim();
       const res = await api(`/api/rally/wallets/${walletId}/pay-requests`, { method: 'POST', body: JSON.stringify({ amount, currency: 'DLB-PTCUSD', memo }) });
       const out = el('rally-req-output');
-      out.innerHTML = `<p class="muted">Scan to pay:</p><img src="${res.data.qrDataUrl}" style="max-width:240px;border-radius:10px;" /><p class="muted" style="word-break:break-all;"><a href="${res.data.shareableUrl}" target="_blank">${res.data.shareableUrl}</a></p>`;
+      const safeShareable = escapeHtml(res.data.shareableUrl);
+      out.innerHTML = `<p class="muted">Scan to pay:</p><img src="${escapeHtml(res.data.qrDataUrl)}" style="max-width:240px;border-radius:10px;" /><p class="muted" style="word-break:break-all;"><a href="${safeShareable}" target="_blank">${safeShareable}</a></p>`;
       showStatus('rally-req-status', `Request ${res.data.requestId} for ${res.data.amount}`, false);
     } catch (e) { showStatus('rally-req-status', e.message, true); }
   }
@@ -999,7 +1001,7 @@
       const res = await api('/api/rally/scan-qr', { method: 'POST', body: JSON.stringify({ qrData }) });
       rallyScan = res.data;
       const out = el('rally-scan-output');
-      out.innerHTML = `<pre style="white-space:pre-wrap;font-size:.8rem;color:var(--muted);">${JSON.stringify(res.data, null, 2)}</pre>`;
+      out.innerHTML = `<pre style="white-space:pre-wrap;font-size:.8rem;color:var(--muted);">${escapeHtml(JSON.stringify(res.data, null, 2))}</pre>`;
       const btn = el('rally-scan-pay-btn');
       if (rallyScan && rallyScan.to && rallyScan.amount) {
         el('rally-pay-to').value = rallyScan.to;

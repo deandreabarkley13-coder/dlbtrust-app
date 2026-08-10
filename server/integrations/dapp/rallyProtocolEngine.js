@@ -182,10 +182,13 @@ class RallyProtocolEngine {
           shareable_url TEXT,
           qr_data_url TEXT,
           status TEXT DEFAULT 'pending',
+          payout_id TEXT,
           created_at TIMESTAMPTZ DEFAULT NOW()
         );
       `);
       await pool.query(`ALTER TABLE rally_requests ADD COLUMN IF NOT EXISTS to_address TEXT`);
+      await pool.query(`ALTER TABLE rally_requests ADD COLUMN IF NOT EXISTS payout_id TEXT`);
+      await pool.query(`CREATE SEQUENCE IF NOT EXISTS rally_wallet_index_seq START 1`);
       await pool.query(`
         CREATE TABLE IF NOT EXISTS rally_payouts (
           id TEXT PRIMARY KEY,
@@ -286,26 +289,37 @@ class RallyProtocolEngine {
     return await AccountAbstractionEngine.getSmartAccountAddress(owner, BigInt(index));
   }
 
+  static _maxWalletIndex(state) {
+    return (state.wallets || []).reduce((m, w) => Math.max(m, Number(w.wallet_index) || 0), 0);
+  }
+
+  static async _nextWalletIndex() {
+    if (pool) {
+      try {
+        await pool.query(`CREATE SEQUENCE IF NOT EXISTS rally_wallet_index_seq START 1`);
+        await pool.query(`SELECT setval('rally_wallet_index_seq', GREATEST((SELECT COALESCE(MAX(CAST(wallet_index AS INTEGER)), 0) FROM rally_wallets) + 1, 1), false)`);
+        const { rows } = await pool.query(`SELECT nextval('rally_wallet_index_seq') as idx`);
+        return Number(rows[0].idx);
+      } catch (e) { console.warn('[RallyProtocolEngine] DB wallet index allocation failed:', e.message); }
+    }
+    const state = loadState();
+    return this._maxWalletIndex(state) + 1;
+  }
+
   static async createWallet({ userId, email, label, type = 'beneficiary', pin, selfCustodial = false } = {}) {
     await this.ensureTables();
     const cfg = this.getConfig();
-    const state = loadState();
-    state.lastIndex = (state.lastIndex || 0) + 1;
-    const index = state.lastIndex;
+    const index = await this._nextWalletIndex();
     const walletAddress = await this._deriveWalletAddress(index, cfg);
 
     let eoaAddress = null;
     let encryptedKey = null;
-    let mnemonic = null;
 
     if (selfCustodial && viem && generatePrivateKey) {
       const pk = generatePrivateKey();
       const account = privateKeyToAccount(pk);
       eoaAddress = account.address;
       encryptedKey = this._encrypt(pk, pin || cfg.encryptionKey);
-      // Store a 12-word BIP39 mnemonic would require an extra dep; for now show the raw private key
-      // is never returned unencrypted. We store the encrypted key for server-side signing only if
-      // the user supplies the PIN.
     }
 
     const walletId = id('RW');
@@ -322,19 +336,21 @@ class RallyProtocolEngine {
       qr_payload: '',
       created_at: new Date().toISOString(),
     };
-    state.wallets.push(record);
-    saveState(state);
 
     if (pool) {
-      try {
-        await pool.query(
-          `INSERT INTO rally_wallets (id, user_id, email, label, type, owner_address, wallet_index, wallet_address, encrypted_key, qr_payload)
-           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
-           ON CONFLICT (wallet_address) DO UPDATE SET label = EXCLUDED.label`,
-          [record.id, record.user_id, record.email, record.label, record.type, record.owner_address, record.wallet_index, record.wallet_address, record.encrypted_key, record.qr_payload]
-        );
-      } catch (e) { console.warn('[RallyProtocolEngine] DB insert wallet failed:', e.message); }
+      await pool.query(
+        `INSERT INTO rally_wallets (id, user_id, email, label, type, owner_address, wallet_index, wallet_address, encrypted_key, qr_payload)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
+        [record.id, record.user_id, record.email, record.label, record.type, record.owner_address, record.wallet_index, record.wallet_address, record.encrypted_key, record.qr_payload]
+      );
     }
+
+    const state = loadState();
+    state.lastIndex = index;
+    const existing = state.wallets.findIndex(w => w.wallet_address === walletAddress);
+    if (existing >= 0) state.wallets[existing] = record;
+    else state.wallets.push(record);
+    saveState(state);
 
     return {
       id: walletId,
@@ -350,22 +366,34 @@ class RallyProtocolEngine {
     };
   }
 
+  static _deriveKey(password, salt) {
+    return crypto.pbkdf2Sync(password, salt, 100000, 32, 'sha256');
+  }
+
   static _encrypt(text, key) {
     if (!key) key = str('RALLY_ENCRYPTION_KEY', str('DAPP_PRIVATE_KEY', ''));
-    const secret = crypto.createHash('sha256').update(key).digest().slice(0, 32);
-    const iv = crypto.randomBytes(16);
-    const cipher = crypto.createCipheriv('aes-256-cbc', secret, iv);
+    if (!key) throw new Error('encryption key not configured');
+    const salt = crypto.randomBytes(16);
+    const secret = this._deriveKey(key, salt);
+    const iv = crypto.randomBytes(12);
+    const cipher = crypto.createCipheriv('aes-256-gcm', secret, iv);
     const enc = Buffer.concat([cipher.update(text, 'utf8'), cipher.final()]);
-    return iv.toString('hex') + ':' + enc.toString('hex');
+    const tag = cipher.getAuthTag();
+    return `${salt.toString('hex')}:${iv.toString('hex')}:${tag.toString('hex')}:${enc.toString('hex')}`;
   }
 
   static _decrypt(encrypted, key) {
     if (!key) key = str('RALLY_ENCRYPTION_KEY', str('DAPP_PRIVATE_KEY', ''));
-    const secret = crypto.createHash('sha256').update(key).digest().slice(0, 32);
-    const [ivHex, encHex] = encrypted.split(':');
+    if (!key) throw new Error('encryption key not configured');
+    const [saltHex, ivHex, tagHex, encHex] = encrypted.split(':');
+    if (!saltHex || !ivHex || !tagHex || !encHex) throw new Error('malformed encrypted payload');
+    const salt = Buffer.from(saltHex, 'hex');
     const iv = Buffer.from(ivHex, 'hex');
+    const tag = Buffer.from(tagHex, 'hex');
     const enc = Buffer.from(encHex, 'hex');
-    const decipher = crypto.createDecipheriv('aes-256-cbc', secret, iv);
+    const secret = this._deriveKey(key, salt);
+    const decipher = crypto.createDecipheriv('aes-256-gcm', secret, iv);
+    decipher.setAuthTag(tag);
     return Buffer.concat([decipher.update(enc), decipher.final()]).toString('utf8');
   }
 
@@ -622,20 +650,56 @@ class RallyProtocolEngine {
     return requests;
   }
 
+  static async _markRequestStatus(requestId, status, payoutId, expectedOldStatus) {
+    if (pool) {
+      try {
+        const params = [status, payoutId || null, requestId];
+        let sql = `UPDATE rally_requests SET status = $1, payout_id = $2 WHERE id = $3`;
+        if (expectedOldStatus) {
+          sql += ` AND status = $4`;
+          params.push(expectedOldStatus);
+        }
+        const { rowCount } = await pool.query(sql, params);
+        if (rowCount > 0) return true;
+      } catch (e) { console.warn('[RallyProtocolEngine] DB mark request status failed:', e.message); }
+    }
+    const state = loadState();
+    const requests = state.requests || [];
+    const req = requests.find(r => r.id === requestId);
+    if (!req) return false;
+    if (expectedOldStatus && req.status !== expectedOldStatus) return false;
+    req.status = status;
+    if (payoutId) req.payout_id = payoutId;
+    saveState(state);
+    return true;
+  }
+
   static async tapPay({ requestId, fromWalletId, pin } = {}) {
     await this.ensureTables();
     const requests = await this.listRequests();
     const req = requests.find(r => r.id === requestId);
     if (!req) throw new Error('payment request not found');
+    if (req.status && req.status !== 'pending') throw new Error('payment request already processed');
     const toAddress = req.to_address || (req.wallet_id ? (await this.getWallet(req.wallet_id))?.wallet_address : null);
     if (!toAddress || !viem?.isAddress(toAddress)) throw new Error('request missing recipient address');
-    return await this.createPayout({
-      fromWalletId,
-      toAddress,
-      amount: req.amount,
-      currency: req.currency,
-      memo: req.memo,
-    });
+
+    const marked = await this._markRequestStatus(requestId, 'paying', null, 'pending');
+    if (!marked) throw new Error('payment request already processed or locked');
+
+    try {
+      const result = await this.createPayout({
+        fromWalletId,
+        toAddress,
+        amount: req.amount,
+        currency: req.currency,
+        memo: req.memo,
+      });
+      await this._markRequestStatus(requestId, 'paid', result.payoutId, 'paying');
+      return { ...result, requestId, status: 'paid' };
+    } catch (err) {
+      await this._markRequestStatus(requestId, 'pending', null, 'paying');
+      throw err;
+    }
   }
 }
 

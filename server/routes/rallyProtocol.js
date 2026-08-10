@@ -11,11 +11,10 @@ const viewerAuth = requireAuth({ role: 'viewer' });
 function sendError(res, err) {
   console.error('[rally]', err);
   const message = err && (err.message || err.error || err.detail || err.title) ? (err.message || err.error || err.detail || err.title) : (typeof err === 'string' ? err : 'Unknown error');
-  const safeRaw = typeof err === 'object' && err ? JSON.parse(JSON.stringify(err, (k, v) => typeof v === 'bigint' ? String(v) : v)) : undefined;
-  res.status(500).json({ success: false, error: message, raw: safeRaw });
+  res.status(500).json({ success: false, error: message });
 }
 
-router.get('/readiness', async (req, res) => {
+router.get('/readiness', operatorAuth, async (req, res) => {
   try { res.json({ success: true, data: await RallyProtocolEngine.readiness() }); } catch (err) { sendError(res, err); }
 });
 
