@@ -2303,12 +2303,20 @@
       '<div class="token-bar"><input id="dramp-target-address" placeholder="recipient address (optional)" /></div>' +
       '<div class="approval-actions"><button class="btn" onclick="drampQuote()">Quote</button><button class="btn" onclick="drampPropose()">Propose</button></div>' +
       '<div id="dramp-quote" style="margin-top:12px;"></div>' +
+      '<h3 style="font-size:14px;margin:16px 0 8px;">Seed DLB-PTCUSD Pool</h3>' +
+      '<div class="token-bar"><input id="seed-ptc-target" value="DAI" placeholder="target asset (DAI, WETH)" /></div>' +
+      '<div class="token-bar"><input id="seed-ptc-amount" value="0.01" placeholder="PTC seed amount" /></div>' +
+      '<div class="token-bar"><input id="seed-ptc-paired" placeholder="paired seed amount (default 0.01 DAI / 0.000005 WETH)" /></div>' +
+      '<div class="approval-actions"><button class="btn" onclick="seedPtcPool()">Seed Pool</button><button class="btn btn-sec" onclick="loadSeedLiquidityPools()">Refresh Pools</button></div>' +
+      '<div id="seed-liquidity-status" style="margin-top:8px;"></div>' +
+      '<div id="seed-liquidity-pools" style="margin-top:8px;font-size:12px;"></div>' +
       '<h3 style="font-size:14px;margin:16px 0 8px;">Providers</h3>' +
       '<div id="dramp-providers"></div>' +
       '<h3 style="font-size:14px;margin:16px 0 8px;">Decentralized Ramp Requests</h3>' +
       '<div id="dramp-requests"></div>';
     loadDecentralizedRampProviders();
     loadDecentralizedRampRequests();
+    loadSeedLiquidityPools();
   }
 
   function drampDirectionChanged() {
@@ -2393,6 +2401,36 @@
       await api('/api/finops/decentralized-ramps/requests/' + proposalId + '/execute', { method:'POST', body: '{}' });
       await loadDecentralizedRampRequests();
     } catch(e) { alert(e.message); }
+  }
+
+  async function seedPtcPool() {
+    const wrap = el('seed-liquidity-status');
+    wrap.innerHTML = '<div class="status">Seeding...</div>';
+    try {
+      const body = {
+        targetAsset: el('seed-ptc-target').value.trim() || 'DAI',
+        seedPtcAmount: el('seed-ptc-amount').value.trim() || '0.01',
+        seedPairedAmount: el('seed-ptc-paired').value.trim() || undefined,
+      };
+      const res = await api('/api/finops/seed-liquidity/ptc-pool', { method:'POST', body: JSON.stringify(body) });
+      wrap.innerHTML = '<div class="status ok">Seeded pool: ' + (res.data.poolAddress || res.data.pool_address) + ' tx ' + (res.data.txHash || '') + '</div>';
+      await loadSeedLiquidityPools();
+    } catch(e) { wrap.innerHTML = '<div class="status err">' + e.message + '</div>'; }
+  }
+
+  async function loadSeedLiquidityPools() {
+    const wrap = el('seed-liquidity-pools');
+    try {
+      const res = await api('/api/finops/seed-liquidity/pools');
+      const rows = res.data || [];
+      if (!rows.length) { wrap.innerHTML = '<span class="muted">No pools yet.</span>'; return; }
+      let html = '<table style="width:100%;font-size:12px;border-collapse:collapse;"><tr><th align="left">Pool</th><th align="left">Token0</th><th align="left">Token1</th><th align="left">Reserve0</th><th align="left">Reserve1</th></tr>';
+      rows.forEach(p => {
+        html += '<tr><td>' + (p.pool_address || p.poolAddress || p.id) + '</td><td>' + (p.token0 || '') + '</td><td>' + (p.token1 || '') + '</td><td>' + (p.reserve0 || '') + '</td><td>' + (p.reserve1 || '') + '</td></tr>';
+      });
+      html += '</table>';
+      wrap.innerHTML = html;
+    } catch(e) { wrap.innerHTML = '<div class="status err">' + e.message + '</div>'; }
   }
 
   // ─── Intent Routing Engine panel ──────────────────────────────────────────────

@@ -29,6 +29,8 @@ function loadEngines() {
     'StablecoinDexEngine',
     'DexSwapEngine',
     'ModuleP2PSwapEngine',
+    'PtcDexEngine',
+    'SeedLiquidityEngine',
     'CanonicalConsensusEngine',
   ];
   for (const name of names) {
@@ -59,6 +61,8 @@ function loadEngines() {
   try { if (!engineCache.StablecoinDexEngine) engineCache.StablecoinDexEngine = require('./stablecoinDexEngine').StablecoinDexEngine; } catch (e) {}
   try { if (!engineCache.DexSwapEngine) engineCache.DexSwapEngine = require('./dexSwapEngine').DexSwapEngine; } catch (e) {}
   try { if (!engineCache.ModuleP2PSwapEngine) engineCache.ModuleP2PSwapEngine = require('./moduleP2PSwapEngine').ModuleP2PSwapEngine; } catch (e) {}
+  try { if (!engineCache.PtcDexEngine) engineCache.PtcDexEngine = require('./ptcDexEngine').PtcDexEngine; } catch (e) {}
+  try { if (!engineCache.SeedLiquidityEngine) engineCache.SeedLiquidityEngine = require('./seedLiquidityEngine').SeedLiquidityEngine; } catch (e) {}
   try { if (!engineCache.CanonicalConsensusEngine) engineCache.CanonicalConsensusEngine = require('./canonicalConsensusEngine').CanonicalConsensusEngine; } catch (e) {}
   return engineCache;
 }
@@ -90,7 +94,7 @@ class DecentralizedRampEngine {
   static get config() { return getConfig(); }
 
   static async providers() {
-    const { OnOffRampEngine, CrossChainConversionEngine, TrustMarketEngine, DlbCanonicalSwapEngine, StablecoinDexEngine, DexSwapEngine } = loadEngines();
+    const { OnOffRampEngine, CrossChainConversionEngine, TrustMarketEngine, DlbCanonicalSwapEngine, StablecoinDexEngine, DexSwapEngine, PtcDexEngine } = loadEngines();
     const providers = [];
     if (OnOffRampEngine) {
       try { providers.push(...(await OnOffRampEngine.providers())); } catch (e) {}
@@ -100,6 +104,7 @@ class DecentralizedRampEngine {
       { id: 'trust_market', name: 'DLB Trust Market (1:1 P2P)', directions: ['exchange', 'crypto_to_crypto'], ready: !!TrustMarketEngine, issues: TrustMarketEngine ? [] : ['TrustMarketEngine not available'] },
       { id: 'p2p_canonical_swap', name: 'DLB Canonical P2P Swap', directions: ['exchange', 'crypto_to_crypto'], ready: !!DlbCanonicalSwapEngine, issues: DlbCanonicalSwapEngine ? [] : ['DlbCanonicalSwapEngine not available'] },
       { id: 'stablecoin_dex', name: 'Stablecoin DEX (DLBUSD -> canonical)', directions: ['exchange', 'crypto_to_crypto'], ready: !!StablecoinDexEngine, issues: StablecoinDexEngine ? [] : ['StablecoinDexEngine not available'] },
+      { id: 'ptc_bondex', name: 'DLB-PTCUSD BondDex + Uniswap V2', directions: ['exchange', 'crypto_to_crypto'], ready: !!PtcDexEngine, issues: PtcDexEngine ? [] : ['PtcDexEngine not available'] },
     ];
     // de-dupe by id
     const seen = new Set(providers.map(p => p.id));
@@ -123,7 +128,7 @@ class DecentralizedRampEngine {
     slippageBps = 100,
   } = {}) {
     const cfg = this.config;
-    const { CrossChainConversionEngine, OnOffRampEngine, TrustMarketEngine, DlbCanonicalSwapEngine, StablecoinDexEngine, DexSwapEngine } = loadEngines();
+    const { CrossChainConversionEngine, OnOffRampEngine, TrustMarketEngine, DlbCanonicalSwapEngine, StablecoinDexEngine, DexSwapEngine, PtcDexEngine } = loadEngines();
     const routes = [];
     const dir = String(direction).toLowerCase();
     const src = normalizeAsset(sourceAsset);
@@ -142,6 +147,28 @@ class DecentralizedRampEngine {
     }
 
     if (['exchange', 'crypto_to_crypto', 'reserve_to_canonical'].includes(dir)) {
+      if (src === 'DLB-PTCUSD' && PtcDexEngine) {
+        try {
+          const pq = await PtcDexEngine.quote({ amount, targetAsset: tgt || 'DAI', autoCreatePool: false });
+          routes.push({
+            provider: 'ptc_bondex',
+            name: `DLB-PTCUSD BondDex (${pq.route || 'direct'}) -> ${pq.targetAsset || (tgt || 'DAI')}`,
+            direction: 'exchange',
+            sourceAsset,
+            targetAsset,
+            amount,
+            estimatedOutput: Number(pq.amountOut) || 0,
+            outputAsset: pq.targetAsset || targetAsset,
+            status: pq.status,
+            instructions: pq.instructions || '',
+            quote: pq,
+            engine: 'PtcDexEngine',
+          });
+        } catch (e) {
+          routes.push({ provider: 'ptc_bondex', name: 'DLB-PTCUSD BondDex', status: 'error', instructions: e.message, engine: 'PtcDexEngine' });
+        }
+      }
+
       if (CrossChainConversionEngine) {
         try {
           const q = await CrossChainConversionEngine.quote({
@@ -252,7 +279,12 @@ class DecentralizedRampEngine {
 
     const readyStatuses = new Set(['ready', 'awaiting_buyer', 'awaiting_onramp', 'awaiting_funds', 'awaiting_bridge']);
     const ready = routes.filter(r => readyStatuses.has(r.status));
-    const recommended = ready.sort((a, b) => (Number(b.estimatedOutput) || 0) - (Number(a.estimatedOutput) || 0))[0] || routes[0] || null;
+    const statusRank = s => ({ ready: 3, executed: 3, awaiting_buyer: 2, awaiting_onramp: 2, awaiting_funds: 1, awaiting_bridge: 1 }[s] || 0);
+    const recommended = ready.sort((a, b) => {
+      const rankDiff = statusRank(b.status) - statusRank(a.status);
+      if (rankDiff !== 0) return rankDiff;
+      return (Number(b.estimatedOutput) || 0) - (Number(a.estimatedOutput) || 0);
+    })[0] || routes[0] || null;
 
     return {
       direction: dir,
@@ -332,7 +364,7 @@ class DecentralizedRampEngine {
 
   static async _execute(proposal) {
     const cfg = this.config;
-    const { CrossChainConversionEngine, OnOffRampEngine, TrustMarketEngine, DlbCanonicalSwapEngine, StablecoinDexEngine, DexSwapEngine } = loadEngines();
+    const { CrossChainConversionEngine, OnOffRampEngine, TrustMarketEngine, DlbCanonicalSwapEngine, StablecoinDexEngine, DexSwapEngine, PtcDexEngine, SeedLiquidityEngine } = loadEngines();
     const p = proposal.payload || {};
     let { routeProvider, route } = p;
     const { direction, sourceAsset, targetAsset, amount, sourceType, sourceAccountId, sourceModule, targetAddress, network, bridgeProvider, slippageBps } = p;
@@ -387,6 +419,11 @@ class DecentralizedRampEngine {
         return StablecoinDexEngine.depositAndSwap({ sourceType, sourceAccountId, amount, targetAsset, recipient: targetAddress });
       }
       return StablecoinDexEngine.swap({ amount, targetAsset, recipient: targetAddress });
+    }
+
+    if (provider.includes('ptc_bondex')) {
+      if (!PtcDexEngine) throw new Error('PtcDexEngine not available');
+      return PtcDexEngine.swap({ amount, targetAsset, recipient: targetAddress, autoSeed: false });
     }
 
     throw new Error(`Decentralized ramp provider "${routeProvider}" is not implemented`);
