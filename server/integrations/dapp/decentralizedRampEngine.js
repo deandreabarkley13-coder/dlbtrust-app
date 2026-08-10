@@ -96,8 +96,7 @@ function normalizeAsset(asset) {
 
 function tokenDecimals(asset) {
   const a = normalizeAsset(asset);
-  if (['DAI', 'USDS', 'WETH', 'ETH'].includes(a)) return 18;
-  if (a === 'USDC') return 6;
+  if (['DLBUSD', 'USDC'].includes(a)) return 6;
   return 18;
 }
 
