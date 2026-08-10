@@ -62,13 +62,13 @@ class InternalMarketMakerEngine {
     };
   }
 
-  static _withLowFees(fn) {
+  static async _withLowFees(fn) {
     const prevMax = process.env.DAPP_MAX_FEE_GWEI;
     const prevPriority = process.env.DAPP_PRIORITY_FEE_GWEI;
     process.env.DAPP_MAX_FEE_GWEI = '1';
     process.env.DAPP_PRIORITY_FEE_GWEI = '0.05';
     try {
-      return fn();
+      return await fn();
     } finally {
       if (prevMax !== undefined) process.env.DAPP_MAX_FEE_GWEI = prevMax;
       else delete process.env.DAPP_MAX_FEE_GWEI;
