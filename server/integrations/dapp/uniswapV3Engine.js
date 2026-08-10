@@ -147,7 +147,7 @@ class UniswapV3Engine {
     if (quote.status !== 'ready') throw new Error(quote.instructions || 'Uniswap V3 quote not ready');
     const rawIn = viem.parseUnits(String(amountIn), Number(decimalsIn) || 18);
     const rawMinOut = minOut !== undefined ? viem.parseUnits(String(minOut), Number(decimalsOut) || 18) : (quote.rawOut ? BigInt(quote.rawOut) * BigInt(10000 - (slippageBps !== undefined ? Number(slippageBps) : cfg.slippageBps)) / 10000n : 0n);
-    const { wallet, publicClient, account, fees } = await this._walletClient();
+    const { wallet, publicClient, account } = await this._walletClient();
     const finalRecipient = recipient || account.address;
 
     return this._withLowerFees(async () => {
@@ -161,7 +161,8 @@ class UniswapV3Engine {
             functionName: 'approve',
             args: [cfg.swapRouter, rawIn],
             gas: 100000n,
-            ...fees,
+            maxFeePerGas: viem.parseGwei('1'),
+            maxPriorityFeePerGas: viem.parseGwei('0.05'),
           });
           await publicClient.waitForTransactionReceipt({ hash: approveHash, timeout: 120000 });
         }
@@ -174,7 +175,8 @@ class UniswapV3Engine {
         functionName: 'exactInputSingle',
         args: [[tokenIn, tokenOut, quote.fee, finalRecipient, deadline, rawIn, rawMinOut, 0n]],
         gas: 500000n,
-        ...fees,
+        maxFeePerGas: viem.parseGwei('1'),
+        maxPriorityFeePerGas: viem.parseGwei('0.05'),
       });
       await publicClient.waitForTransactionReceipt({ hash, timeout: 180000 });
       return { status: 'executed', txHash: hash, amountOut: quote.amountOut, amountOutMinimum: viem.formatUnits(rawMinOut, Number(decimalsOut) || 18), tokenIn, tokenOut, amountIn, fee: quote.fee, recipient: finalRecipient, mode: 'live' };
