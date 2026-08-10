@@ -29,6 +29,7 @@ const { UniswapV3Engine } = require('../integrations/dapp/uniswapV3Engine');
 const { DexAggregatorEngine } = require('../integrations/dapp/dexAggregatorEngine');
 const { InternalMarketMakerEngine } = require('../integrations/dapp/internalMarketMakerEngine');
 const { ReserveVaultEngine } = require('../integrations/dapp/reserveVaultEngine');
+const { TreasuryOnRampBridgeEngine } = require('../integrations/dapp/treasuryOnRampBridgeEngine');
 const { TrustMarketEngine } = require('../integrations/dapp/trustMarketEngine');
 const { IntentRoutingEngine } = require('../integrations/dapp/intentRoutingEngine');
 const { ExternalWalletEngine } = require('../integrations/dapp/externalWalletEngine');
@@ -978,6 +979,38 @@ router.post('/reserve-vault/quote', operatorAuth, async (req, res) => {
 
 router.post('/reserve-vault/swap', operatorAuth, writeRateLimiter(), async (req, res) => {
   try { res.status(201).json({ success: true, data: await ReserveVaultEngine.swapToTarget(req.body) }); } catch (err) { sendError(res, err); }
+});
+
+// ═════════════════════════════════════════════════════════════════════════════
+// Treasury On-Ramp Bridge Engine (fiat -> canonical -> internal token redemption)
+// ═════════════════════════════════════════════════════════════════════════════
+
+router.get('/treasury-on-ramp/operations', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await TreasuryOnRampBridgeEngine.listOperations(req.query) }); } catch (err) { sendError(res, err); }
+});
+
+router.get('/treasury-on-ramp/operations/:id', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await TreasuryOnRampBridgeEngine.getOperation(req.params.id) }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/treasury-on-ramp/quote', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await TreasuryOnRampBridgeEngine.quote(req.body) }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/treasury-on-ramp/propose', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try { res.status(201).json({ success: true, data: await TreasuryOnRampBridgeEngine.propose({ ...req.body, createdBy: getUserId(req) }) }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/treasury-on-ramp/operations/:id/approve', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try { res.json({ success: true, data: await TreasuryOnRampBridgeEngine.approve({ proposalId: req.params.id, ...req.body }) }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/treasury-on-ramp/operations/:id/execute', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try { res.json({ success: true, data: await TreasuryOnRampBridgeEngine.executeOperation(req.params.id, req.body) }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/treasury-on-ramp/operations/:id/continue', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try { res.json({ success: true, data: await TreasuryOnRampBridgeEngine.continue({ operationId: req.params.id, onRampBankDetails: req.body.onRampBankDetails || {} }) }); } catch (err) { sendError(res, err); }
 });
 
 // ═════════════════════════════════════════════════════════════════════════════
