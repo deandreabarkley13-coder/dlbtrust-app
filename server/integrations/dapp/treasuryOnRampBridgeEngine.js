@@ -103,6 +103,7 @@ const SOURCE_METHODS = {
   coinbase_treasury: { name: 'Coinbase Treasury Bridge', note: 'Stage a fiat deposit from a ledger source through Coinbase, then buy and send crypto.' },
   moonpay: { name: 'MoonPay on-ramp', note: 'Generate a MoonPay widget URL to buy crypto into the operator wallet.' },
   core_banking_wire: { name: 'Core-banking wire', note: 'Generate a wire/ACH payout from a core-banking cash account to the on-ramp bank account.' },
+  journal_entry: { name: 'Journal entry to on-ramp', note: 'Post a live journal entry to move ledger funds to the on-ramp clearing account, then purchase the canonical asset.' },
 };
 
 class TreasuryOnRampBridgeEngine {
@@ -123,6 +124,7 @@ class TreasuryOnRampBridgeEngine {
       wethAddress: cfg.wethAddress,
       circleMintApiKey: process.env.CIRCLE_MINT_API_KEY || cfg.circleMintApiKey || '',
       onRampFeeBps: Number(process.env.TREASURY_ON_RAMP_FEE_BPS || '0') || 0,
+      onRampClearingAccount: process.env.TREASURY_ON_RAMP_CLEARING_ACCOUNT || cfg.onRampClearingAccount || '8100',
       wireBeneficiary: {
         name: process.env.TREASURY_ON_RAMP_BANK_NAME || 'Circle Internet Financial',
         routing: process.env.TREASURY_ON_RAMP_BANK_ROUTING || '',
@@ -234,6 +236,40 @@ class TreasuryOnRampBridgeEngine {
     return balanceCents;
   }
 
+  static async _ensureOnRampClearingAccount(cfg) {
+    if (!TrustAccountingEngine) throw new Error('TrustAccountingEngine not available');
+    const code = cfg.onRampClearingAccount;
+    const acct = await TrustAccountingEngine.getAccount(code).catch(() => null);
+    if (!acct) {
+      await TrustAccountingEngine.createAccount({
+        accountCode: code,
+        accountName: 'On-Ramp Clearing',
+        accountType: 'asset',
+        subType: 'reserve',
+      });
+    }
+    return code;
+  }
+
+  static async _postJournalEntryToOnRamp({ sourceType, sourceAccountId, amount, cfg, description = 'Treasury on-ramp journal entry' }) {
+    if (!TrustAccountingEngine) throw new Error('TrustAccountingEngine not available');
+    const clearingAccount = await this._ensureOnRampClearingAccount(cfg);
+    const amt = Number(amount);
+    const journal = await TrustAccountingEngine.postJournalEntry({
+      entryDate: new Date(),
+      description,
+      referenceType: 'treasury_on_ramp',
+      referenceId: `TORB-${Date.now()}`,
+      postedBy: 'treasury-on-ramp-bridge',
+      postToFineract: false,
+      lines: [
+        { accountCode: clearingAccount, debitAmount: amt, creditAmount: 0, memo: `Move ${sourceType}:${sourceAccountId} to on-ramp clearing` },
+        { accountCode: sourceAccountId, debitAmount: 0, creditAmount: amt, memo: 'Source funds allocated for on-ramp' },
+      ],
+    });
+    return journal;
+  }
+
   static async _onRampReadiness(method) {
     const cfg = this.getConfig();
     const base = { method, ...SOURCE_METHODS[method], ready: false, issues: [] };
@@ -265,6 +301,7 @@ class TreasuryOnRampBridgeEngine {
     internalAmount,
     targetAsset = 'DAI',
     sourceMethod = 'core_banking_wire',
+    onRampProvider = '',
     onRampBankDetails = {},
   } = {}) {
     const cfg = this.getConfig();
@@ -275,23 +312,26 @@ class TreasuryOnRampBridgeEngine {
     const sourceBalanceCents = await this._sourceBalance(sourceType, sourceAccountId);
     const internal = await this._resolveToken(internalAsset);
     const target = await this._resolveToken(targetAsset);
-    const onRampReady = await this._onRampReadiness(sourceMethod);
+    const onRampMethod = sourceMethod === 'journal_entry' ? (onRampProvider || 'manual') : sourceMethod;
+    const onRampReady = await this._onRampReadiness(onRampMethod);
     const feeBps = cfg.onRampFeeBps;
     const onRampAmount = amountNum * (1 - feeBps / 10000);
     const targetBal = await this._operatorBalance(target.address, target.decimals);
     const internalBal = await this._operatorBalance(internal.address, internal.decimals);
     const needInternal = Number(internalAmount || amount);
 
+    const balanceRequired = !['manual', 'moonpay'].includes(sourceMethod);
     let status = 'needs_config';
     if (!onRampReady.ready) status = 'needs_config';
-    else if (sourceBalanceCents !== null && sourceBalanceCents < toCents(amountNum) && sourceMethod !== 'manual' && sourceMethod !== 'moonpay') status = 'insufficient_source';
+    else if (balanceRequired && sourceBalanceCents !== null && sourceBalanceCents < toCents(amountNum)) status = 'insufficient_source';
+    else if (sourceMethod === 'journal_entry') status = this._journalEntryStatus(onRampMethod, cfg);
     else if (sourceMethod === 'manual') status = 'awaiting_deposit';
     else if (sourceMethod === 'core_banking_wire') status = 'wire_pending';
     else if (sourceMethod === 'circle_mint') status = 'ready';
     else if (sourceMethod === 'coinbase_treasury') status = 'pending';
     else if (sourceMethod === 'moonpay') status = 'awaiting_onramp';
 
-    const instructions = this._buildInstructions({ sourceMethod, targetAsset, amount: amountNum, onRampAmount, onRampBankDetails, cfg });
+    const instructions = this._buildInstructions({ sourceMethod: onRampMethod, targetAsset, amount: amountNum, onRampAmount, onRampBankDetails, cfg, journalEntry: sourceMethod === 'journal_entry' });
 
     return {
       sourceType,
@@ -301,6 +341,7 @@ class TreasuryOnRampBridgeEngine {
       internalAsset,
       internalAmount: needInternal,
       targetAsset,
+      onRampProvider: onRampMethod,
       operatorTargetBalance: targetBal.formatted,
       operatorInternalBalance: internalBal.formatted,
       sourceBalanceCents,
@@ -311,18 +352,32 @@ class TreasuryOnRampBridgeEngine {
     };
   }
 
-  static _buildInstructions({ sourceMethod, targetAsset, amount, onRampAmount, onRampBankDetails, cfg }) {
+  static _journalEntryStatus(onRampMethod, cfg) {
+    if (onRampMethod === 'manual') return 'awaiting_deposit';
+    if (onRampMethod === 'core_banking_wire') return 'wire_pending';
+    if (onRampMethod === 'moonpay') return 'awaiting_onramp';
+    if (onRampMethod === 'circle_mint') {
+      if (!cfg.circleMintApiKey) return 'needs_config';
+      if (!process.env.CIRCLE_MINT_OPERATOR_RECIPIENT_ID) return 'needs_recipient_setup';
+      return 'ready';
+    }
+    if (onRampMethod === 'coinbase_treasury') return CoinbaseTreasuryBridge ? 'pending' : 'needs_config';
+    return 'needs_config';
+  }
+
+  static _buildInstructions({ sourceMethod, targetAsset, amount, onRampAmount, onRampBankDetails, cfg, journalEntry = false }) {
     const targetUpper = String(targetAsset).toUpperCase();
-    if (sourceMethod === 'manual') return `Deposit ${onRampAmount.toFixed(2)} ${targetUpper} to operator wallet ${cfg.operatorAddress}.`;
+    const je = journalEntry ? 'A live journal entry will debit the ledger source and credit the on-ramp clearing account, then ' : '';
+    if (sourceMethod === 'manual') return `${je}deposit ${onRampAmount.toFixed(2)} ${targetUpper} to operator wallet ${cfg.operatorAddress}.`;
     if (sourceMethod === 'moonpay') {
       const url = MoonPayEngine ? MoonPayEngine.buildUrl({ currencyCode: targetUpper.toLowerCase(), walletAddress: cfg.operatorAddress, amount: String(amount) }) : '';
-      return { message: `Complete MoonPay on-ramp for ${onRampAmount.toFixed(2)} ${targetUpper}.`, onrampUrl: url };
+      return { message: `${je}complete MoonPay on-ramp for ${onRampAmount.toFixed(2)} ${targetUpper}.`, onrampUrl: url };
     }
-    if (sourceMethod === 'circle_mint') return `Use Circle Mint to transfer ${onRampAmount.toFixed(2)} USDC to ${cfg.operatorAddress}; then swap USDC -> ${targetUpper} if needed.`;
-    if (sourceMethod === 'coinbase_treasury') return `Stage ${amount.toFixed(2)} USD from source ledger through Coinbase Treasury Bridge, buy ${targetUpper}, and send to ${cfg.operatorAddress}.`;
+    if (sourceMethod === 'circle_mint') return `${je}use Circle Mint to transfer ${onRampAmount.toFixed(2)} USDC to ${cfg.operatorAddress}; then swap USDC -> ${targetUpper} if needed.`;
+    if (sourceMethod === 'coinbase_treasury') return `${je}stage ${amount.toFixed(2)} USD through Coinbase Treasury Bridge, buy ${targetUpper}, and send to ${cfg.operatorAddress}.`;
     if (sourceMethod === 'core_banking_wire') {
       const bank = onRampBankDetails.name || cfg.wireBeneficiary.name || 'on-ramp bank';
-      return `Originate a wire/ACH of ${amount.toFixed(2)} USD from core-banking source to ${bank} account (routing: ${onRampBankDetails.routing || cfg.wireBeneficiary.routing || 'TBD'}, account: ${onRampBankDetails.account || cfg.wireBeneficiary.account || 'TBD'}). Once the on-ramp credits the wallet, call continue/execute to swap to ${targetUpper} and redeem internal tokens.`;
+      return `${je}originate a wire/ACH of ${amount.toFixed(2)} USD from the on-ramp clearing account to ${bank} (routing: ${onRampBankDetails.routing || cfg.wireBeneficiary.routing || 'TBD'}, account: ${onRampBankDetails.account || cfg.wireBeneficiary.account || 'TBD'}). Once the on-ramp credits the wallet, call continue/execute to swap to ${targetUpper} and redeem internal tokens.`;
     }
     return 'Unknown source method.';
   }
@@ -335,20 +390,22 @@ class TreasuryOnRampBridgeEngine {
     internalAmount,
     targetAsset = 'DAI',
     sourceMethod = 'core_banking_wire',
+    onRampProvider = '',
     recipient = '',
     onRampBankDetails = {},
     createdBy = 'operator',
   } = {}) {
     await this.ensureTables();
-    const q = await this.quote({ sourceType, sourceAccountId, amount, internalAsset, internalAmount, targetAsset, sourceMethod, onRampBankDetails });
+    const q = await this.quote({ sourceType, sourceAccountId, amount, internalAsset, internalAmount, targetAsset, sourceMethod, onRampProvider, onRampBankDetails });
     const operationId = id('TORB-OP');
     const CCE = canonicalConsensusEngine();
     if (!CCE) throw new Error('CanonicalConsensusEngine not available');
+    const onRampMethod = sourceMethod === 'journal_entry' ? (onRampProvider || 'manual') : sourceMethod;
 
     const proposal = await CCE.createProposal({
       category: 'treasury_on_ramp',
       title: `Treasury on-ramp: ${amount} USD -> ${targetAsset} and redeem ${internalAmount || amount} ${internalAsset}`,
-      description: `Bridge fiat from ${sourceType}:${sourceAccountId} via ${sourceMethod}, convert to ${targetAsset}, and retire internal tokens 1:1.`,
+      description: `Bridge fiat from ${sourceType}:${sourceAccountId} via ${sourceMethod}${sourceMethod === 'journal_entry' ? ' -> ' + onRampMethod : ''}, convert to ${targetAsset}, and retire internal tokens 1:1.`,
       payload: {
         operationId,
         sourceType,
@@ -358,6 +415,7 @@ class TreasuryOnRampBridgeEngine {
         internalAmount: Number(internalAmount || amount),
         targetAsset,
         sourceMethod,
+        onRampProvider: onRampMethod,
         recipient: recipient || this.getConfig().operatorAddress,
         onRampBankDetails,
         quote: q,
@@ -368,7 +426,7 @@ class TreasuryOnRampBridgeEngine {
     await queryFn(
       `INSERT INTO treasury_on_ramp_operations (id, proposal_id, source_type, source_account_id, source_method, amount, on_ramp_amount, internal_asset, internal_amount, target_asset, recipient, status, stage, metadata)
        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)`,
-      [operationId, proposal.id, sourceType, sourceAccountId, sourceMethod, Number(amount), q.onRampAmount, internalAsset, Number(internalAmount || amount), targetAsset, recipient || this.getConfig().operatorAddress, q.status, 'on_ramp', safeJson({ quote: q, onRampBankDetails, createdBy })]
+      [operationId, proposal.id, sourceType, sourceAccountId, sourceMethod, Number(amount), q.onRampAmount, internalAsset, Number(internalAmount || amount), targetAsset, recipient || this.getConfig().operatorAddress, q.status, 'on_ramp', safeJson({ quote: q, onRampBankDetails, onRampProvider: onRampMethod, createdBy })]
     );
 
     return { operationId, proposalId: proposal.id, quote: q, proposal };
@@ -475,6 +533,21 @@ class TreasuryOnRampBridgeEngine {
   static async _stageOnRamp(op, onRampBankDetails) {
     const cfg = this.getConfig();
     const { sourceMethod, sourceType, sourceAccountId, amount, targetAsset } = op;
+
+    if (sourceMethod === 'journal_entry') {
+      const onRampProvider = (op.onRampProvider || (op.metadata && op.metadata.onRampProvider)) || 'manual';
+      const journal = await this._postJournalEntryToOnRamp({ sourceType, sourceAccountId, amount, cfg });
+      const meta = { ...(op.metadata || {}), onRampProvider, journalEntryId: journal.entry_id, journalRef: journal };
+      await queryFn(`UPDATE treasury_on_ramp_operations SET source_method=$1, metadata=$2::jsonb WHERE id=$3`, [onRampProvider, safeJson(meta), op.id]);
+      try {
+        return await this._stageOnRamp({ ...op, sourceMethod: onRampProvider, metadata: meta }, onRampBankDetails);
+      } catch (err) {
+        if (TrustAccountingEngine && journal && journal.entry_id) {
+          try { await TrustAccountingEngine.reverseJournalEntry(journal.entry_id, { postedBy: 'treasury-on-ramp-bridge' }); } catch (revErr) { /* best effort */ }
+        }
+        throw err;
+      }
+    }
 
     if (sourceMethod === 'manual') {
       const target = await this._resolveToken(targetAsset);
@@ -591,6 +664,17 @@ class TreasuryOnRampBridgeEngine {
     return { operationId: op.id, stage: 'canonical_swap', status: 'awaiting_canonical', instructions: `Waiting for ${onRampAmount} USDC or ${targetAsset} to arrive in operator wallet ${cfg.operatorAddress}.` };
   }
 
+  static async _withLowFees(fn) {
+    const oldMax = process.env.DAPP_MAX_FEE_GWEI;
+    const oldPri = process.env.DAPP_PRIORITY_FEE_GWEI;
+    process.env.DAPP_MAX_FEE_GWEI = '1';
+    process.env.DAPP_PRIORITY_FEE_GWEI = '0.05';
+    try { return await fn(); } finally {
+      if (oldMax !== undefined) process.env.DAPP_MAX_FEE_GWEI = oldMax; else delete process.env.DAPP_MAX_FEE_GWEI;
+      if (oldPri !== undefined) process.env.DAPP_PRIORITY_FEE_GWEI = oldPri; else delete process.env.DAPP_PRIORITY_FEE_GWEI;
+    }
+  }
+
   static async _redeemInternal(op) {
     const cfg = this.getConfig();
     const { internalAsset, internalAmount, targetAsset, recipient } = op;
@@ -618,7 +702,7 @@ class TreasuryOnRampBridgeEngine {
     const chain = cfg.chainId === 11155111 ? sepolia : mainnet;
     const { privateKeyToAccount } = require('viem/accounts');
     const account = privateKeyToAccount(cfg.privateKey.startsWith('0x') ? cfg.privateKey : `0x${cfg.privateKey}`);
-    const fees = cfg.getFees ? (cfg.getFees() || { maxFeePerGas: viem.parseGwei('20'), maxPriorityFeePerGas: viem.parseGwei('0.5') }) : { maxFeePerGas: viem.parseGwei('20'), maxPriorityFeePerGas: viem.parseGwei('0.5') };
+    const fees = await this._withLowFees(() => cfg.getFees ? (cfg.getFees() || { maxFeePerGas: viem.parseGwei('3'), maxPriorityFeePerGas: viem.parseGwei('0.1') }) : { maxFeePerGas: viem.parseGwei('3'), maxPriorityFeePerGas: viem.parseGwei('0.1') });
     const wallet = viem.createWalletClient({ account, chain, transport: viem.http(cfg.rpcUrl) });
     const publicClient = viem.createPublicClient({ chain, transport: viem.http(cfg.rpcUrl) });
 
