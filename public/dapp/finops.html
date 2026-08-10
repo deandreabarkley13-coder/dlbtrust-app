@@ -169,6 +169,7 @@
     { key:'trust-market', name:'Trust Market Maker', desc:'1:1 reserve-backed token <-> canonical stablecoin P2P market', stat:'', endpoint:null, action:'openTrustMarketPanel' },
     { key:'ramps', name:'Ramp Center', desc:'Fiat on/off ramps and counterparty rail aggregator', stat:'', endpoint:null, action:'openRampsPanel' },
     { key:'decentralized-ramps', name:'Decentralized Ramps', desc:'DEX, P2P, cross-chain, and fiat on/off-ramp aggregator', stat:'', endpoint:null, action:'openDecentralizedRampsPanel' },
+    { key:'internal-market-maker', name:'Internal Market Maker', desc:'Tokenize reserves (interest income, bonds, fixed income) and seed deeper BondDex pools', stat:'', endpoint:null, action:'openInternalMarketMakerPanel' },
     { key:'dex-aggregator', name:'DEX Aggregator & V3', desc:'Multi-source DEX aggregator and Uniswap V3 canonical pair swaps', stat:'', endpoint:null, action:'openDexAggregatorPanel' },
     { key:'intent-routing', name:'Intent Routing', desc:'Natural-language orchestration of on/off-ramp and conversion flows', stat:'', endpoint:null, action:'openIntentRoutingPanel' },
     { key:'external-wallet', name:'External Wallets', desc:'Hardware/MetaMask/GridPlus wallet as ledger source and DAI/USDS swaps', stat:'', endpoint:null, action:'openExternalWalletPanel' },
@@ -2430,6 +2431,103 @@
         html += '<tr><td>' + (p.pool_address || p.poolAddress || p.id) + '</td><td>' + (p.token0 || '') + '</td><td>' + (p.token1 || '') + '</td><td>' + (p.reserve0 || '') + '</td><td>' + (p.reserve1 || '') + '</td></tr>';
       });
       html += '</table>';
+      wrap.innerHTML = html;
+    } catch(e) { wrap.innerHTML = '<div class="status err">' + e.message + '</div>'; }
+  }
+
+  // ─── Internal Market Maker panel ────────────────────────────────────────────────
+  let currentInternalMMQuote = null;
+
+  function openInternalMarketMakerPanel() {
+    const panel = el('module-panel');
+    const body = el('panel-body');
+    el('panel-title').textContent = 'Internal Market Maker';
+    panel.classList.add('active');
+    body.innerHTML = '<div class="muted" style="margin-bottom:12px;">Tokenize internal reserves (interest income, bond/fixed-income/cash accounts) and seed deeper BondDex liquidity paired with canonical or other trust tokens.</div>' +
+      '<h3 style="font-size:14px;margin:0 0 8px;">Tokenize & Seed Pool</h3>' +
+      '<div class="token-bar"><input id="imm-name" placeholder="pool name (optional)" /></div>' +
+      '<div class="token-bar"><input id="imm-source-type" value="trust_account" placeholder="source type (trust_account, cash, bond...)" /></div>' +
+      '<div class="token-bar"><input id="imm-source-account" value="4000" placeholder="source account id / code" /></div>' +
+      '<div class="token-bar"><input id="imm-trust-asset" value="DLBUSD" placeholder="trust asset (DLBUSD, DLB-PTCUSD)" /></div>' +
+      '<div class="token-bar"><input id="imm-canonical-asset" value="DLB-PTCUSD" placeholder="paired asset (DAI, USDC, DLB-PTCUSD)" /></div>' +
+      '<div class="token-bar"><input id="imm-amount" value="2424928.27" placeholder="amount to tokenize" /></div>' +
+      '<div class="token-bar"><input id="imm-pool-address" value="" placeholder="existing pool address (optional)" /></div>' +
+      '<div class="token-bar"><input id="imm-apy" value="0" placeholder="apy bps (optional)" /></div>' +
+      '<div class="approval-actions"><button class="btn" onclick="immTokenizeAndSeed()">Tokenize & Seed</button></div>' +
+      '<div id="imm-tokenize-status" style="margin-top:8px;"></div>' +
+      '<h3 style="font-size:14px;margin:16px 0 8px;">Quote / Swap via Internal Pool</h3>' +
+      '<div class="token-bar"><input id="imm-pool-quote-address" value="" placeholder="pool address" /></div>' +
+      '<div class="token-bar"><input id="imm-token-in" value="" placeholder="token in address / symbol" /></div>' +
+      '<div class="token-bar"><input id="imm-amount-in" value="0.01" placeholder="amount in" /></div>' +
+      '<div class="approval-actions"><button class="btn" onclick="immQuote()">Quote</button><button class="btn" onclick="immSwap()">Swap</button></div>' +
+      '<div id="imm-quote-status" style="margin-top:8px;"></div>' +
+      '<h3 style="font-size:14px;margin:16px 0 8px;">Pools</h3><button class="btn" style="margin-bottom:8px;" onclick="immLoadPools()">Load Pools</button>' +
+      '<div id="imm-pools" style="font-size:12px;"></div>';
+    immLoadPools();
+  }
+
+  async function immTokenizeAndSeed() {
+    const wrap = el('imm-tokenize-status');
+    wrap.innerHTML = '<div class="muted">Tokenizing and seeding pool…</div>';
+    try {
+      const body = {
+        name: el('imm-name').value,
+        sourceType: el('imm-source-type').value,
+        sourceAccountId: el('imm-source-account').value,
+        trustAsset: el('imm-trust-asset').value,
+        canonicalAsset: el('imm-canonical-asset').value,
+        trustAmount: Number(el('imm-amount').value),
+        poolAddress: el('imm-pool-address').value || undefined,
+        apyBps: Number(el('imm-apy').value) || 0,
+      };
+      const r = await api('/api/finops/internal-market-maker/pools', { method: 'POST', body: JSON.stringify(body) });
+      if (!r.success) throw new Error(r.error || 'tokenize/seed failed');
+      wrap.innerHTML = '<div class="status ok">Seeded pool: ' + (r.data.poolAddress || r.data.poolResult.poolAddress) + '</div>';
+      currentInternalMMQuote = null;
+      immLoadPools();
+    } catch(e) { wrap.innerHTML = '<div class="status err">' + e.message + '</div>'; }
+  }
+
+  async function immQuote() {
+    const wrap = el('imm-quote-status');
+    wrap.innerHTML = '<div class="muted">Quoting…</div>';
+    try {
+      const poolAddress = el('imm-pool-quote-address').value;
+      const tokenIn = el('imm-token-in').value;
+      const amountIn = el('imm-amount-in').value;
+      const r = await api('/api/finops/internal-market-maker/pools/' + poolAddress + '/quote', { method: 'POST', body: JSON.stringify({ tokenIn, amountIn: Number(amountIn) }) });
+      if (!r.success) throw new Error(r.error || 'quote failed');
+      currentInternalMMQuote = r.data;
+      wrap.innerHTML = '<div class="status ok">Out: ' + r.data.amountOut + ' (price ' + r.data.price + ')</div>';
+    } catch(e) { wrap.innerHTML = '<div class="status err">' + e.message + '</div>'; }
+  }
+
+  async function immSwap() {
+    const wrap = el('imm-quote-status');
+    if (!currentInternalMMQuote) { wrap.innerHTML = '<div class="status err">Quote first</div>'; return; }
+    wrap.innerHTML = '<div class="muted">Swapping…</div>';
+    try {
+      const poolAddress = el('imm-pool-quote-address').value;
+      const tokenIn = el('imm-token-in').value;
+      const amountIn = el('imm-amount-in').value;
+      const r = await api('/api/finops/internal-market-maker/pools/' + poolAddress + '/swap', { method: 'POST', body: JSON.stringify({ tokenIn, amountIn: Number(amountIn), minOut: currentInternalMMQuote.amountOutMinimum }) });
+      if (!r.success) throw new Error(r.error || 'swap failed');
+      wrap.innerHTML = '<div class="status ok">Swap tx: ' + (r.data.txHash || r.data.poolResult.txHash) + '</div>';
+    } catch(e) { wrap.innerHTML = '<div class="status err">' + e.message + '</div>'; }
+  }
+
+  async function immLoadPools() {
+    const wrap = el('imm-pools');
+    try {
+      const r = await api('/api/finops/internal-market-maker/pools');
+      if (!r.success) throw new Error(r.error || 'load failed');
+      const rows = r.data || [];
+      let html = '<table class="small-table"><thead><tr><th>Pool</th><th>Trust</th><th>Paired</th><th>Status</th></tr></thead>';
+      rows.forEach(p => {
+        html += '<tr><td>' + (p.pool_address || p.id) + '</td><td>' + (p.trust_asset || '') + '</td><td>' + (p.canonical_asset || '') + '</td><td>' + (p.status || '') + '</td></tr>';
+      });
+      html += '</table>';
+      if (!rows.length) html = '<div class="muted">No internal market maker pools yet.</div>';
       wrap.innerHTML = html;
     } catch(e) { wrap.innerHTML = '<div class="status err">' + e.message + '</div>'; }
   }
