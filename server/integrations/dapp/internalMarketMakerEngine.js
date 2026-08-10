@@ -137,6 +137,16 @@ class InternalMarketMakerEngine {
     return asset;
   }
 
+  static async _resolveTokenAddressAsync(asset) {
+    const key = String(asset || '').toUpperCase();
+    if (key === 'DLBUSD' || key === 'DLB-USD') {
+      if (!StablecoinDexEngine) throw new Error('StablecoinDexEngine not available');
+      const token = await StablecoinDexEngine.getOrCreateDLBUSDToken();
+      return token.token_address || token.tokenAddress || '';
+    }
+    return this._resolveTokenAddress(asset);
+  }
+
   static async _resolveDecimals(tokenAddress) {
     if (!viem || !tokenAddress) return 18;
     const cfg = this.getConfig();
@@ -151,8 +161,8 @@ class InternalMarketMakerEngine {
 
   static async _getOrFindPool({ trustAsset, canonicalAsset, createIfMissing = false }) {
     const cfg = this.getConfig();
-    const tokenA = this._resolveTokenAddress(trustAsset);
-    const tokenB = this._resolveTokenAddress(canonicalAsset);
+    const tokenA = await this._resolveTokenAddressAsync(trustAsset);
+    const tokenB = await this._resolveTokenAddressAsync(canonicalAsset);
     if (!tokenA || !tokenB) throw new Error(`Cannot resolve token addresses for ${trustAsset} / ${canonicalAsset}`);
 
     if (query) {
@@ -185,6 +195,11 @@ class InternalMarketMakerEngine {
     throw new Error(`No internal market maker pool found for ${trustAsset} / ${canonicalAsset}`);
   }
 
+  static async _quoteFromPool({ poolAddress, tokenIn, amountIn, decimalsIn }) {
+    if (!poolAddress || !tokenIn || !amountIn) throw new Error('poolAddress, tokenIn, and amountIn required');
+    return LiquidityPoolEngine.quote({ poolAddress, tokenIn, amountIn, decimalsIn });
+  }
+
   static async _getPoolInfo(poolAddress) {
     if (!DexSwapEngine || !poolAddress) return null;
     return DexSwapEngine.getPoolInfo({ poolAddress }).catch(() => null);
@@ -209,7 +224,7 @@ class InternalMarketMakerEngine {
   static async _ensureCanonicalSide({ canonicalAsset, canonicalAmount, canonicalSourceType, canonicalSourceAccountId, operatorAddress }) {
     const cfg = this.getConfig();
     const upper = String(canonicalAsset || '').toUpperCase();
-    const tokenAddress = this._resolveTokenAddress(canonicalAsset);
+    const tokenAddress = await this._resolveTokenAddressAsync(canonicalAsset);
 
     if (upper === 'ETH' || upper === 'WETH') {
       if (!viem || !tokenAddress) throw new Error('WETH not configured');
@@ -271,7 +286,7 @@ class InternalMarketMakerEngine {
     const trustSide = await this._mintTrustSide({ trustAsset, trustAmount, sourceType, sourceAccountId, moduleKey });
     const canonical = await this._ensureCanonicalSide({ canonicalAsset, canonicalAmount: canonicalAmount || trustAmount, canonicalSourceType, canonicalSourceAccountId, operatorAddress: operator });
 
-    const trustAddress = this._resolveTokenAddress(trustAsset);
+    const trustAddress = await this._resolveTokenAddressAsync(trustAsset);
     const canonicalAddress = canonical.tokenAddress;
 
     if (!poolAddress) {
@@ -389,14 +404,18 @@ class InternalMarketMakerEngine {
     return this._withLowFees(() => LiquidityPoolEngine.removeLiquidity({ poolAddress, lpAmount, recipient }));
   }
 
-  static async quote({ poolAddress, tokenIn, amountIn, decimalsIn = 18 }) {
+  static async quote({ poolAddress, tokenIn, amountIn, decimalsIn } = {}) {
     if (!poolAddress || !tokenIn || !amountIn) throw new Error('poolAddress, tokenIn, and amountIn required');
-    return LiquidityPoolEngine.quote({ poolAddress, tokenIn, amountIn, decimalsIn });
+    const resolved = await this._resolveTokenAddressAsync(tokenIn);
+    const dec = decimalsIn || await this._resolveDecimals(resolved);
+    return LiquidityPoolEngine.quote({ poolAddress, tokenIn: resolved, amountIn, decimalsIn: dec });
   }
 
-  static async swap({ poolAddress, tokenIn, amountIn, minOut, recipient, decimalsIn = 18 }) {
+  static async swap({ poolAddress, tokenIn, amountIn, minOut, recipient, decimalsIn } = {}) {
     if (!poolAddress || !tokenIn || !amountIn) throw new Error('poolAddress, tokenIn, and amountIn required');
-    const result = await this._withLowFees(() => LiquidityPoolEngine.swap({ poolAddress, tokenIn, amountIn, minOut, recipient, decimalsIn }));
+    const resolved = await this._resolveTokenAddressAsync(tokenIn);
+    const dec = decimalsIn || await this._resolveDecimals(resolved);
+    const result = await this._withLowFees(() => LiquidityPoolEngine.swap({ poolAddress, tokenIn: resolved, amountIn, minOut, recipient, decimalsIn: dec }));
     return result;
   }
 
