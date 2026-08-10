@@ -120,13 +120,14 @@ class DexAggregatorEngine {
         if (data && data.outAmount) {
           const outDecimals = decimalsOut || await this._tokenDecimals(tokenOut);
           const amountOut = Number(viem.formatUnits(BigInt(data.outAmount), outDecimals));
-          const minOutRaw = BigInt(data.minOutAmount || 0);
+          const bips = Math.max(0, Math.min(10000, Math.round(slip * 100)));
+          const minOutRaw = data.minOutAmount && BigInt(data.minOutAmount) > 0n ? BigInt(data.minOutAmount) : (BigInt(data.outAmount) * BigInt(10000 - bips) / 10000n);
           return {
             status: 'ready',
             provider: 'openocean',
             amountOut,
             amountOutMinimum: viem.formatUnits(minOutRaw, outDecimals),
-            minOutAmount: data.minOutAmount,
+            minOutAmount: String(minOutRaw),
             rawInAmount: data.inAmount,
             rawOutAmount: data.outAmount,
             estimatedGas: data.estimatedGas,

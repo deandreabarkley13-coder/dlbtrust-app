@@ -127,6 +127,8 @@ class UniswapV3Engine {
       status: 'ready',
       amountOut: best.amountOut,
       amountOutMinimum: viem.formatUnits(minOut, Number(decimalsOut) || 18),
+      rawOut: String(best.rawOut),
+      rawIn: String(rawIn),
       fee: best.fee,
       tokenIn,
       tokenOut,
