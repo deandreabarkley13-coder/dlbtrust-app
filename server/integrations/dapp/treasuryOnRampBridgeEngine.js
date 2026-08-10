@@ -327,12 +327,27 @@ class TreasuryOnRampBridgeEngine {
     return { operationId, proposalId: proposal.id, quote: q, proposal };
   }
 
+  static _rowToCamel(r) {
+    const out = {};
+    for (const key of Object.keys(r)) {
+      const camel = key.replace(/_([a-z])/g, (_, c) => c.toUpperCase());
+      out[camel] = r[key];
+    }
+    return out;
+  }
+
+  static _parseRow(r) {
+    const row = this._rowToCamel(r);
+    if (typeof row.result === 'string') row.result = JSON.parse(row.result);
+    if (typeof row.metadata === 'string') row.metadata = JSON.parse(row.metadata);
+    return row;
+  }
+
   static async getOperation(operationId) {
     await this.ensureTables();
     const rows = await queryFn('SELECT * FROM treasury_on_ramp_operations WHERE id = $1', [operationId]);
     if (!rows.rows.length) return null;
-    const r = rows.rows[0];
-    return { ...r, result: typeof r.result === 'string' ? JSON.parse(r.result) : r.result, metadata: typeof r.metadata === 'string' ? JSON.parse(r.metadata) : r.metadata };
+    return this._parseRow(rows.rows[0]);
   }
 
   static async listOperations({ status, limit = 50, offset = 0 } = {}) {
@@ -343,7 +358,7 @@ class TreasuryOnRampBridgeEngine {
     sql += ` ORDER BY created_at DESC LIMIT $${params.length + 1} OFFSET $${params.length + 2}`;
     params.push(Number(limit), Number(offset));
     const rows = await queryFn(sql, params);
-    return rows.rows.map(r => ({ ...r, result: typeof r.result === 'string' ? JSON.parse(r.result) : r.result, metadata: typeof r.metadata === 'string' ? JSON.parse(r.metadata) : r.metadata }));
+    return rows.rows.map(r => this._parseRow(r));
   }
 
   static async approve({ proposalId, role, approverEmail }) {
