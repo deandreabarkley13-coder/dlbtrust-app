@@ -260,6 +260,11 @@ class CanonicalConsensusEngine {
       case 'ramp':
         if (!OnOffRampEngine) throw new Error('OnOffRampEngine not available');
         return OnOffRampEngine._execute(proposal);
+      case 'decentralized_ramp': {
+        const { DecentralizedRampEngine } = require('./decentralizedRampEngine');
+        if (!DecentralizedRampEngine) throw new Error('DecentralizedRampEngine not available');
+        return DecentralizedRampEngine._execute(proposal);
+      }
       case 'trust_market':
         if (!TrustMarketEngine) throw new Error('TrustMarketEngine not available');
         return TrustMarketEngine._execute(proposal);

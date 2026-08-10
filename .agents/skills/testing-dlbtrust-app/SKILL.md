@@ -532,7 +532,27 @@ SELECT fit_id, type, amount_cents, name, memo FROM ofx_transactions;
 - The engine runs in `aa-fallback` mode (`RALLY_API_KEY` not set), using the existing `AccountAbstractionEngine` / `SovereignTrustPaymaster` for gasless transfers.
 - Token: DLB-PTCUSD (`0xb01e6280ffe6faac679a17b029df8e065e8d0002`). Paymaster: `0x6f0c2c593bb3942cf11eacbef46c78fd51b99948`. Operator: `0x3e53028cf69949f3B961ce786Baf2D4D75166562`.
 - UI escape: `escapeHtml()` is applied to wallet labels, addresses, IDs, payout fields, shareable URLs, and QR scan output, so creating a wallet with label `<script>alert(1)</script> Test` renders literally and does not execute.
-- **Gotcha:** a brand-new wallet must be deployed on-chain before it can send a direct payout. The `fund` call funds the wallet address from the hot wallet but does not deploy the smart-account; the first *outgoing* transfer from a new wallet may fail with `maxFeePerGas too low` / `paymaster deposit insufficient` because the userOp includes `initCode` and the paymaster deposit cannot cover deployment gas. Prefer using an existing, already-deployed wallet as the sender for direct payout tests, or top up the paymaster deposit.
+- **Auto-deploy fix:** `RallyProtocolEngine.fundWallet` and `createPayout` now call `_ensureSmartAccountDeployed(wallet, cfg)` to deploy the smart account via `SimpleAccountFactory.createAccount` from the operator EOA, so the first outgoing direct payout/tap-pay no longer carries `initCode`. The userOp shown in error responses will have `initCode: "0x"` after this fix.
+- **Paymaster deposit is still required:** the paymaster's EntryPoint deposit is what caps `maxFeePerGas` in `AccountAbstractionEngine._feeValues`. If deposit is low, the bundler rejects the userOp with `maxFeePerGas or maxPriorityFeePerGas is too low` even though the account is deployed. Check `/api/finops/account-abstraction/balance` first; if `entryPointDeposit` is < ~0.0001 ETH, fund the paymaster with `POST /api/finops/account-abstraction/fund-paymaster` (e.g. `amountEth: "0.0001"`) from operator ETH before testing a first outgoing payout from a new wallet.
+- **Gotcha:** a brand-new wallet must be deployed on-chain before it can send a direct payout. The auto-deploy in `fundWallet`/`createPayout` deploys the smart-account from the operator EOA, but the first *outgoing* transfer will still fail if the paymaster deposit cannot cover the gas. Prefer checking the paymaster balance and topping up when needed.
+
+## Decentralized Ramps (`/dapp/finops.html`)
+
+- Routes:
+  - `GET /api/finops/decentralized-ramps/providers`
+  - `POST /api/finops/decentralized-ramps/quote`
+  - `POST /api/finops/decentralized-ramps/requests`
+  - `GET /api/finops/decentralized-ramps/requests/:id`
+  - `GET /api/finops/decentralized-ramps/requests`
+  - `POST /api/finops/decentralized-ramps/requests/:id/approve`
+  - `POST /api/finops/decentralized-ramps/requests/:id/execute`
+- UI IDs: `dramp-direction`, `dramp-source`, `dramp-target`, `dramp-amount`, `dramp-source-type`, `dramp-source-account`, `dramp-target-address`; buttons call `drampQuote()` and `drampPropose()`; results render in `dramp-quote`, `dramp-providers`, `dramp-requests`.
+- Test quote: direction `exchange`, source `DLB-PTCUSD`, target `DAI`, amount `0.001`.
+- Expected route providers: `cross_chain` (`ModuleTokenSwap / OTC order book`), `trust_market` (`DLB Trust P2P Market`), `p2p_canonical_swap` (`DLB Canonical P2P Swap`). `stablecoin_dex` appears if source is `DLBUSD`.
+- Canonical Consensus approval: one approval from `maker` (`annrobinson9800@yahoo.com`) or `checker` (`dbnettrust@gmail.com`); `required_approvals` defaults to 1.
+- **Known issue:** the UI `drampPropose()` only sends `routeProvider` (display string) and not the full `route` object. `DecentralizedRampEngine.propose()` skips re-quoting when `routeProvider` is provided, so `payload.route` is `null` and `_execute` cannot dispatch `cross_chain`/`p2p_order` routes. Work-around: use the API directly and include the `route` object, or select the `trust_market` provider, whose execution path depends only on the `routeProvider` string. A proper fix is needed in the UI or engine before the recommended cross-chain route works end-to-end from the panel.
+- `trust_market` execution calls `TrustMarketEngine.createOffer()`, which returns an existing active P2P order (e.g. `orderId: "10"`) without locking new tokens or spending gas when a matching order already exists.
+- Dashboard stat badge `decentralized-ramps` is the count of requests with `status === 'pending'`.
 
 ## Devin Secrets Needed
 

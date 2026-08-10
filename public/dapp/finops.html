@@ -168,6 +168,7 @@
     { key:'paired-assets', name:'Paired Asset Engine', desc:'Source real canonical assets to seed DEX liquidity pools', stat:'', endpoint:null, action:'openPairedAssetsPanel' },
     { key:'trust-market', name:'Trust Market Maker', desc:'1:1 reserve-backed token <-> canonical stablecoin P2P market', stat:'', endpoint:null, action:'openTrustMarketPanel' },
     { key:'ramps', name:'Ramp Center', desc:'Fiat on/off ramps and counterparty rail aggregator', stat:'', endpoint:null, action:'openRampsPanel' },
+    { key:'decentralized-ramps', name:'Decentralized Ramps', desc:'DEX, P2P, cross-chain, and fiat on/off-ramp aggregator', stat:'', endpoint:null, action:'openDecentralizedRampsPanel' },
     { key:'intent-routing', name:'Intent Routing', desc:'Natural-language orchestration of on/off-ramp and conversion flows', stat:'', endpoint:null, action:'openIntentRoutingPanel' },
     { key:'external-wallet', name:'External Wallets', desc:'Hardware/MetaMask/GridPlus wallet as ledger source and DAI/USDS swaps', stat:'', endpoint:null, action:'openExternalWalletPanel' },
     { key:'canonical-swap', name:'Canonical USDS Swap', desc:'Audited P2P contract: DLBUSD/DLB-PTCUSD → USDS/USDC/DAI', stat:'', endpoint:null, action:'openDlbCanonicalSwapPanel' },
@@ -363,7 +364,7 @@
     renderModules();
     renderFlow();
     try {
-      const [sof, corporateTreasury, accts, wallets, bond, crm, p2p, ptc, consensus, xchain, paired, trustMarket, ramps, intents, externalWallets, externalSwaps, computing, holdings, capitalFunds, virtualAccounts, wireOrigination, electronicMoney, openBanking, trustDeposits, fineractPayouts, skrillLinks, barcodeDeposits, webPaymentRails, externalEndpoints, liveFintechEndpoints, settlements, paymentIds, hostToHost, liveMoney] = await Promise.all([
+      const [sof, corporateTreasury, accts, wallets, bond, crm, p2p, ptc, consensus, xchain, paired, trustMarket, ramps, decentralizedRamps, intents, externalWallets, externalSwaps, computing, holdings, capitalFunds, virtualAccounts, wireOrigination, electronicMoney, openBanking, trustDeposits, fineractPayouts, skrillLinks, barcodeDeposits, webPaymentRails, externalEndpoints, liveFintechEndpoints, settlements, paymentIds, hostToHost, liveMoney] = await Promise.all([
         api('/api/finops/source-of-funds').catch(()=>null),
         api('/api/finops/corporate-treasury').catch(()=>null),
         api('/api/accounting/accounts').catch(()=>null),
@@ -377,6 +378,7 @@
         api('/api/finops/paired-assets').catch(()=>null),
         api('/api/finops/trust-market/orders').catch(()=>null),
         api('/api/finops/ramps/requests').catch(()=>null),
+        api('/api/finops/decentralized-ramps/requests').catch(()=>null),
         api('/api/finops/intents').catch(()=>null),
         api('/api/finops/external-wallets').catch(()=>null),
         api('/api/finops/external-wallets/swaps').catch(()=>null),
@@ -436,6 +438,10 @@
       if (ramps && ramps.data && Array.isArray(ramps.data)) {
         const pending = ramps.data.filter(r => r.status === 'pending').length;
         setStat('ramps', String(pending));
+      }
+      if (decentralizedRamps && decentralizedRamps.data && Array.isArray(decentralizedRamps.data)) {
+        const pending = decentralizedRamps.data.filter(r => r.status === 'pending').length;
+        setStat('decentralized-ramps', String(pending));
       }
       if (intents && intents.data && Array.isArray(intents.data)) {
         const pending = intents.data.filter(r => r.status === 'pending').length;
@@ -2275,6 +2281,117 @@
     try {
       await api('/api/finops/ramps/requests/' + proposalId + '/execute', { method:'POST', body: '{}' });
       await loadRampRequests();
+    } catch(e) { alert(e.message); }
+  }
+
+  // ─── Decentralized Ramp Engine panel ────────────────────────────────────────────
+  let currentDecentralizedRampQuote = null;
+
+  function openDecentralizedRampsPanel() {
+    const panel = el('module-panel');
+    const body = el('panel-body');
+    el('panel-title').textContent = 'Decentralized Ramps';
+    panel.classList.add('active');
+    body.innerHTML = '<div class="muted" style="margin-bottom:12px;">Aggregate DEX, P2P, cross-chain, and fiat on/off ramps. Find the best route to convert trust stablecoins into canonical assets or fiat.</div>' +
+      '<h3 style="font-size:14px;margin:0 0 8px;">Quote Ramp</h3>' +
+      '<div class="token-bar"><select id="dramp-direction" onchange="drampDirectionChanged()"><option value="exchange">Crypto -> Crypto (DEX/P2P)</option><option value="onramp">Fiat -> Crypto</option><option value="offramp">Crypto -> Fiat</option></select></div>' +
+      '<div class="token-bar"><input id="dramp-source" placeholder="source (DLB-PTCUSD, DLBUSD, USD...)" /></div>' +
+      '<div class="token-bar"><input id="dramp-target" placeholder="target (DAI, USDC, USDS, USD...)" /></div>' +
+      '<div class="token-bar"><input id="dramp-amount" placeholder="amount" /></div>' +
+      '<div class="token-bar"><input id="dramp-source-type" placeholder="source type (optional: trust/bond/fixed_income)" /></div>' +
+      '<div class="token-bar"><input id="dramp-source-account" placeholder="source account id (optional)" /></div>' +
+      '<div class="token-bar"><input id="dramp-target-address" placeholder="recipient address (optional)" /></div>' +
+      '<div class="approval-actions"><button class="btn" onclick="drampQuote()">Quote</button><button class="btn" onclick="drampPropose()">Propose</button></div>' +
+      '<div id="dramp-quote" style="margin-top:12px;"></div>' +
+      '<h3 style="font-size:14px;margin:16px 0 8px;">Providers</h3>' +
+      '<div id="dramp-providers"></div>' +
+      '<h3 style="font-size:14px;margin:16px 0 8px;">Decentralized Ramp Requests</h3>' +
+      '<div id="dramp-requests"></div>';
+    loadDecentralizedRampProviders();
+    loadDecentralizedRampRequests();
+  }
+
+  function drampDirectionChanged() {
+    const d = el('dramp-direction').value;
+    el('dramp-source').placeholder = d === 'onramp' ? 'source (USD)' : (d === 'offramp' ? 'source (USDC/DAI)' : 'source (DLB-PTCUSD, DLBUSD, USDC...)');
+    el('dramp-target').placeholder = d === 'onramp' ? 'target (USDC/DAI/ETH)' : (d === 'offramp' ? 'target (USD)' : 'target (DAI, USDC, USDS...)');
+  }
+
+  async function loadDecentralizedRampProviders() {
+    const wrap = el('dramp-providers');
+    try {
+      const res = await api('/api/finops/decentralized-ramps/providers');
+      wrap.innerHTML = (res.data || []).map(p => '<div style="font-size:12px;border-bottom:1px solid var(--border);padding:4px 0;"><strong>' + p.name + '</strong> <em>(' + (p.ready ? 'ready' : 'not ready') + ')</em><br/><span class="muted">' + (p.directions || []).join(', ') + ' ' + (p.issues?.join('; ') || '') + '</span></div>').join('') || '<span class="muted">No providers configured.</span>';
+    } catch(e) { wrap.innerHTML = '<div class="status err">' + e.message + '</div>'; }
+  }
+
+  async function drampQuote() {
+    try {
+      const body = {
+        direction: el('dramp-direction').value,
+        sourceAsset: el('dramp-source').value.trim(),
+        targetAsset: el('dramp-target').value.trim(),
+        amount: el('dramp-amount').value.trim(),
+        sourceType: el('dramp-source-type').value.trim() || undefined,
+        sourceAccountId: el('dramp-source-account').value.trim() || undefined,
+        targetAddress: el('dramp-target-address').value.trim() || undefined,
+      };
+      const res = await api('/api/finops/decentralized-ramps/quote', { method:'POST', body: JSON.stringify(body) });
+      const q = res.data;
+      currentDecentralizedRampQuote = q;
+      let html = '<div class="status ok"><strong>Direction:</strong> ' + q.direction + '<br/><strong>Recommended:</strong> ' + (q.recommended ? q.recommended.provider : 'none') + '<br/><strong>Routes:</strong><ul style="margin:4px 0;padding-left:16px;font-size:12px;">';
+      (q.routes || []).forEach(r => { html += '<li><strong>' + (r.provider || r.name) + '</strong> (' + r.status + '): ' + (r.instructions || '') + '</li>'; });
+      html += '</ul></div>';
+      if (q.recommended && q.recommended.onrampUrl) html += '<div style="margin-top:8px;"><a class="btn" href="' + q.recommended.onrampUrl + '" target="_blank">Open On-Ramp</a></div>';
+      el('dramp-quote').innerHTML = html;
+    } catch(e) { el('dramp-quote').innerHTML = '<div class="status err">' + e.message + '</div>'; }
+  }
+
+  async function drampPropose() {
+    try {
+      const q = currentDecentralizedRampQuote && currentDecentralizedRampQuote.recommended;
+      if (!q) { drampQuote(); return; }
+      const body = {
+        direction: el('dramp-direction').value,
+        sourceAsset: el('dramp-source').value.trim(),
+        targetAsset: el('dramp-target').value.trim(),
+        amount: el('dramp-amount').value.trim(),
+        routeProvider: q.provider || q.name,
+        route: q,
+        sourceType: el('dramp-source-type').value.trim() || undefined,
+        sourceAccountId: el('dramp-source-account').value.trim() || undefined,
+        targetAddress: el('dramp-target-address').value.trim() || undefined,
+      };
+      const res = await api('/api/finops/decentralized-ramps/requests', { method:'POST', body: JSON.stringify(body) });
+      el('dramp-quote').innerHTML = '<div class="status ok">Proposed: ' + res.data.proposalId + ' (' + res.data.status + ')</div>';
+      await loadDecentralizedRampRequests();
+    } catch(e) { el('dramp-quote').innerHTML = '<div class="status err">' + e.message + '</div>'; }
+  }
+
+  async function loadDecentralizedRampRequests() {
+    const wrap = el('dramp-requests');
+    try {
+      const res = await api('/api/finops/decentralized-ramps/requests');
+      wrap.innerHTML = (res.data || []).map(r => `<div style="font-size:12px;border-bottom:1px solid var(--border);padding:4px 0;">${r.id}: ${r.title} <em>${r.status}</em>` +
+        (r.status === 'pending' ? ` <select id="dramp-role-${r.id}"><option value="maker">maker</option><option value="checker">checker</option></select><input id="dramp-email-${r.id}" placeholder="email" style="width:100px;" /><button class="btn" onclick="drampApprove('${r.id}')">Approve</button>` : '') +
+        (r.status === 'approved' ? ` <button class="btn" onclick="drampExecute('${r.id}')">Execute</button>` : '') +
+        `</div>`).join('') || '<span class="muted">No decentralized ramp requests yet.</span>';
+    } catch(e) { wrap.innerHTML = '<div class="status err">' + e.message + '</div>'; }
+  }
+
+  async function drampApprove(proposalId) {
+    try {
+      const role = el('dramp-role-' + proposalId).value;
+      const email = el('dramp-email-' + proposalId).value.trim();
+      await api('/api/finops/decentralized-ramps/requests/' + proposalId + '/approve', { method:'POST', body: JSON.stringify({ role, approverEmail: email }) });
+      await loadDecentralizedRampRequests();
+    } catch(e) { alert(e.message); }
+  }
+
+  async function drampExecute(proposalId) {
+    try {
+      await api('/api/finops/decentralized-ramps/requests/' + proposalId + '/execute', { method:'POST', body: '{}' });
+      await loadDecentralizedRampRequests();
     } catch(e) { alert(e.message); }
   }
 

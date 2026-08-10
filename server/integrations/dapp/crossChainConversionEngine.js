@@ -42,6 +42,15 @@ function str(name, fallback = '') { return process.env[name] || fallback; }
 function num(name, fallback = 0) { const n = Number(process.env[name]); return Number.isFinite(n) ? n : fallback; }
 function bool(name, fallback = false) { const v = process.env[name]; return v === 'true' || v === '1' || (v === undefined ? fallback : false); }
 
+async function ptcTokenAddress() {
+  let addr = process.env.DLB_PTCUSD_ADDRESS || '';
+  if (!addr && PtcStablecoinEngine) {
+    const info = await PtcStablecoinEngine.info().catch(() => ({}));
+    addr = info.tokenAddress || '';
+  }
+  return addr || '0xb01e6280ffe6faac679a17b029df8e065e8d0002';
+}
+
 const CHAIN_CONFIG = {
   ethereum: { name: 'Ethereum', chainId: 1, nativeSymbol: 'ETH' },
   base: { name: 'Base', chainId: 8453, nativeSymbol: 'ETH' },
@@ -148,7 +157,7 @@ class CrossChainConversionEngine {
       { symbol: 'USDS', address: cfg.usdsAddress, decimals: 18, type: 'canonical' },
       { symbol: 'DAI', address: cfg.daiAddress, decimals: 18, type: 'canonical' },
       { symbol: 'WETH', address: cfg.wethAddress, decimals: 18, type: 'canonical' },
-      { symbol: 'DLB-PTCUSD', address: process.env.DLB_PTCUSD_ADDRESS || '', decimals: 18, type: 'trust' },
+      { symbol: 'DLB-PTCUSD', address: process.env.DLB_PTCUSD_ADDRESS || '0xb01e6280ffe6faac679a17b029df8e065e8d0002', decimals: 18, type: 'trust' },
       { symbol: 'DLB-PRB', address: process.env.DLB_PRB_ADDRESS || '', decimals: 6, type: 'trust' },
       { symbol: 'DLB-FIXED-INCOME', address: process.env.DLB_FIXED_INCOME_ADDRESS || '', decimals: 6, type: 'trust' },
       { symbol: 'DLB-TREASURY', address: process.env.DLB_TREASURY_ADDRESS || '', decimals: 6, type: 'trust' },
@@ -555,7 +564,7 @@ class CrossChainConversionEngine {
     }
 
     if (sourceToken && sourceToken.toLowerCase() === 'dlb-ptcusd') {
-      const token = process.env.DLB_PTCUSD_ADDRESS || sourceToken;
+      const token = await ptcTokenAddress();
       return await this._dexSwapOrP2P(token, targetAsset, amount, recipient, route);
     }
 
@@ -567,7 +576,7 @@ class CrossChainConversionEngine {
       if (!PtcStablecoinEngine) throw new Error('PtcStablecoinEngine not available');
       const moduleKey = this._normalizeModuleKey(sourceModule);
       const deposit = await PtcStablecoinEngine.approveAndDeposit({ moduleKey, amount, recipient: this.getConfig().operatorAddress });
-      const token = process.env.DLB_PTCUSD_ADDRESS || '';
+      const token = await ptcTokenAddress();
       const swap = await this._dexSwapOrP2P(token, targetAsset, this._formatUnits(deposit.mintedStablecoin, 18), recipient, route);
       return { deposit, swap };
     }
@@ -606,7 +615,8 @@ class CrossChainConversionEngine {
   }
 
   static _tokenDecimals(tokenAddress) {
-    if ((tokenAddress || '').toLowerCase() === (process.env.DLB_PTCUSD_ADDRESS || '').toLowerCase()) return 18;
+    const knownPtc = process.env.DLB_PTCUSD_ADDRESS || '0xb01e6280ffe6faac679a17b029df8e065e8d0002';
+    if ((tokenAddress || '').toLowerCase() === knownPtc.toLowerCase()) return 18;
     return 6;
   }
 
@@ -625,6 +635,7 @@ class CrossChainConversionEngine {
     if (!targetAddr) throw new Error(`Target asset ${targetAsset} has no configured address`);
     if (!viem) throw new Error('viem not available');
 
+    const ptcAddress = await ptcTokenAddress();
     let tokenIn = '';
     let rawIn = 0n;
     let displayIn = String(amount);
@@ -636,7 +647,7 @@ class CrossChainConversionEngine {
       displayIn = String(mint.minted || amount);
       rawIn = viem.parseUnits(displayIn, 6);
     } else if (sourceToken && sourceToken.toLowerCase() === 'dlb-ptcusd') {
-      tokenIn = process.env.DLB_PTCUSD_ADDRESS || '';
+      tokenIn = ptcAddress;
       rawIn = viem.parseUnits(String(amount), 18);
     } else if (sourceToken) {
       if (String(sourceToken).toLowerCase() === 'dlbusd') {
@@ -651,7 +662,7 @@ class CrossChainConversionEngine {
       if (!PtcStablecoinEngine) throw new Error('PtcStablecoinEngine not available');
       const moduleKey = this._normalizeModuleKey(sourceModule);
       const deposit = await PtcStablecoinEngine.approveAndDeposit({ moduleKey, amount, recipient: this.getConfig().operatorAddress });
-      tokenIn = process.env.DLB_PTCUSD_ADDRESS || '';
+      tokenIn = ptcAddress;
       rawIn = BigInt(deposit?.mintedStablecoin || 0);
     }
 
