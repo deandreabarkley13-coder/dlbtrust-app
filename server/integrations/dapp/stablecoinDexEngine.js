@@ -80,7 +80,7 @@ class StablecoinDexEngine {
       privateKey: cfg.privateKey,
       usdcAddress: cfg.usdcAddress,
       usdsAddress: str('DAPP_USDS_ADDRESS', cfg.chainId === 1 ? MAINNET_USDS : ''),
-      dlbusdAddress: str('DAPP_DLBUSD_ADDRESS', ''),
+      dlbusdAddress: str('DAPP_DLBUSD_ADDRESS', process.env.DLBUSD_ADDRESS || (cfg.chainId === 1 ? '0x6ba8d02596a3b091a7246e38e3e078f770d33985' : '')),
       poolAddress: str('BOND_DEX_ADDRESS', ''),
       wethAddress: cfg.wethAddress,
       daiAddress: str('DAPP_DAI_ADDRESS', '0x6B175474E89094C44Da98b954EedeAC495271d0F'),

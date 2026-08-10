@@ -170,6 +170,7 @@
     { key:'ramps', name:'Ramp Center', desc:'Fiat on/off ramps and counterparty rail aggregator', stat:'', endpoint:null, action:'openRampsPanel' },
     { key:'decentralized-ramps', name:'Decentralized Ramps', desc:'DEX, P2P, cross-chain, and fiat on/off-ramp aggregator', stat:'', endpoint:null, action:'openDecentralizedRampsPanel' },
     { key:'internal-market-maker', name:'Internal Market Maker', desc:'Tokenize reserves (interest income, bonds, fixed income) and seed deeper BondDex pools', stat:'', endpoint:null, action:'openInternalMarketMakerPanel' },
+    { key:'reserve-vault', name:'Reserve Vault (CDP)', desc:'Tokenize ledger/module reserves into a vault stablecoin position and quote swaps to canonical assets', stat:'', endpoint:null, action:'openReserveVaultPanel' },
     { key:'dex-aggregator', name:'DEX Aggregator & V3', desc:'Multi-source DEX aggregator and Uniswap V3 canonical pair swaps', stat:'', endpoint:null, action:'openDexAggregatorPanel' },
     { key:'intent-routing', name:'Intent Routing', desc:'Natural-language orchestration of on/off-ramp and conversion flows', stat:'', endpoint:null, action:'openIntentRoutingPanel' },
     { key:'external-wallet', name:'External Wallets', desc:'Hardware/MetaMask/GridPlus wallet as ledger source and DAI/USDS swaps', stat:'', endpoint:null, action:'openExternalWalletPanel' },
@@ -2528,6 +2529,93 @@
       });
       html += '</table>';
       if (!rows.length) html = '<div class="muted">No internal market maker pools yet.</div>';
+      wrap.innerHTML = html;
+    } catch(e) { wrap.innerHTML = '<div class="status err">' + e.message + '</div>'; }
+  }
+
+  function htmlEscape(s) {
+    return String(s == null ? '' : s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+  }
+
+  // ─── Reserve Vault (CDP) panel ──────────────────────────────────────────────────
+  let currentReserveVaultQuote = null;
+
+  function openReserveVaultPanel() {
+    const panel = el('module-panel');
+    const body = el('panel-body');
+    el('panel-title').textContent = 'Reserve Vault (CDP)';
+    panel.classList.add('active');
+    body.innerHTML = '<div class="muted" style="margin-bottom:12px;">Tokenize trust ledger or module reserves into a vault stablecoin (DLBUSD) position. Swapping to DAI/USDC still requires a counterparty or canonical liquidity.</div>' +
+      '<h3 style="font-size:14px;margin:0 0 8px;">Mint Vault Position</h3>' +
+      '<div class="token-bar"><select id="rv-source-type"><option value="trust_account">trust_account</option><option value="cash">cash</option><option value="bond">bond</option><option value="fixed_income">fixed_income</option></select></div>' +
+      '<div class="token-bar"><input id="rv-source-account" value="4000" placeholder="source account id / module key" /></div>' +
+      '<div class="token-bar"><input id="rv-amount" value="1" placeholder="amount to tokenize" /></div>' +
+      '<div class="token-bar"><input id="rv-target" value="" placeholder="recipient address (optional)" /></div>' +
+      '<div class="approval-actions"><button class="btn" onclick="rvMint()">Mint Vault Token</button></div>' +
+      '<div id="rv-mint-status" style="margin-top:8px;"></div>' +
+      '<h3 style="font-size:14px;margin:16px 0 8px;">Quote / Swap Position to Target</h3>' +
+      '<div class="token-bar"><input id="rv-position-id" placeholder="position id" /></div>' +
+      '<div class="token-bar"><input id="rv-target-asset" value="DAI" placeholder="target asset (DAI, USDC, etc.)" /></div>' +
+      '<div class="approval-actions"><button class="btn" onclick="rvQuote()">Quote</button><button class="btn" onclick="rvSwap()">Swap</button></div>' +
+      '<div id="rv-quote-status" style="margin-top:8px;"></div>' +
+      '<h3 style="font-size:14px;margin:16px 0 8px;">Positions</h3>' +
+      '<button class="btn" style="margin-bottom:8px;" onclick="rvLoadPositions()">Load Positions</button>' +
+      '<div id="rv-positions" style="font-size:12px;"></div>';
+    rvLoadPositions();
+  }
+
+  async function rvMint() {
+    const wrap = el('rv-mint-status');
+    wrap.innerHTML = '<div class="muted">Minting vault position…</div>';
+    try {
+      const body = {
+        sourceType: el('rv-source-type').value,
+        sourceAccountId: el('rv-source-account').value,
+        amount: Number(el('rv-amount').value),
+        targetAddress: el('rv-target').value || undefined,
+      };
+      const r = await api('/api/finops/reserve-vault/mint', { method: 'POST', body: JSON.stringify(body) });
+      if (!r.success) throw new Error(r.error || 'mint failed');
+      wrap.innerHTML = '<div class="status ok">Minted ' + htmlEscape(r.data.mintAmount) + ' ' + htmlEscape(r.data.tokenSymbol) + ' (position <code>' + htmlEscape(r.data.positionId) + '</code>)</div>';
+      rvLoadPositions();
+    } catch(e) { wrap.innerHTML = '<div class="status err">' + e.message + '</div>'; }
+  }
+
+  async function rvQuote() {
+    const wrap = el('rv-quote-status');
+    wrap.innerHTML = '<div class="muted">Quoting…</div>';
+    try {
+      const r = await api('/api/finops/reserve-vault/quote', { method: 'POST', body: JSON.stringify({ positionId: el('rv-position-id').value, targetAsset: el('rv-target-asset').value }) });
+      if (!r.success) throw new Error(r.error || 'quote failed');
+      currentReserveVaultQuote = r.data;
+      const recommended = (r.data.recommended && r.data.recommended.name) ? r.data.recommended.name : 'none';
+      wrap.innerHTML = '<div class="status ok">Best route: ' + htmlEscape(recommended) + '<br/>Routes: ' + (r.data.routes || []).map(x => htmlEscape(x.provider || x.engine) + ' (' + htmlEscape(x.status || 'unknown') + ', out ~' + htmlEscape(x.estimatedOutput || 0) + ')').join(', ') + '</div>';
+    } catch(e) { wrap.innerHTML = '<div class="status err">' + e.message + '</div>'; }
+  }
+
+  async function rvSwap() {
+    const wrap = el('rv-quote-status');
+    if (!currentReserveVaultQuote) { wrap.innerHTML = '<div class="status err">Quote first</div>'; return; }
+    wrap.innerHTML = '<div class="muted">Creating decentralized ramp proposal…</div>';
+    try {
+      const r = await api('/api/finops/reserve-vault/swap', { method: 'POST', body: JSON.stringify({ positionId: el('rv-position-id').value, targetAsset: el('rv-target-asset').value, routeProvider: (currentReserveVaultQuote.recommended && currentReserveVaultQuote.recommended.provider) || '' }) });
+      if (!r.success) throw new Error(r.error || 'swap failed');
+      wrap.innerHTML = '<div class="status ok">Proposal: ' + htmlEscape((r.data.proposal && r.data.proposal.proposalId) || '') + '</div>';
+    } catch(e) { wrap.innerHTML = '<div class="status err">' + e.message + '</div>'; }
+  }
+
+  async function rvLoadPositions() {
+    const wrap = el('rv-positions');
+    try {
+      const r = await api('/api/finops/reserve-vault/positions');
+      if (!r.success) throw new Error(r.error || 'load failed');
+      const rows = r.data || [];
+      let html = '<table class="small-table"><thead><tr><th>ID</th><th>Source</th><th>Collateral</th><th>Minted</th><th>Status</th><th>Tx</th></tr></thead>';
+      rows.forEach(p => {
+        html += '<tr><td>' + htmlEscape(p.id) + '</td><td>' + htmlEscape(p.source_type) + ' ' + htmlEscape(p.source_account_id) + '</td><td>' + htmlEscape(p.collateral_amount || 0) + '</td><td>' + htmlEscape(p.minted_amount || 0) + ' ' + htmlEscape(p.token_symbol) + '</td><td>' + htmlEscape(p.status) + '</td><td>' + (p.mint_tx_hash ? htmlEscape(p.mint_tx_hash.slice(0,18)) + '…' : '') + '</td></tr>';
+      });
+      html += '</table>';
+      if (!rows.length) html = '<div class="muted">No vault positions yet.</div>';
       wrap.innerHTML = html;
     } catch(e) { wrap.innerHTML = '<div class="status err">' + e.message + '</div>'; }
   }

@@ -28,6 +28,7 @@ const { PtcDexEngine } = require('../integrations/dapp/ptcDexEngine');
 const { UniswapV3Engine } = require('../integrations/dapp/uniswapV3Engine');
 const { DexAggregatorEngine } = require('../integrations/dapp/dexAggregatorEngine');
 const { InternalMarketMakerEngine } = require('../integrations/dapp/internalMarketMakerEngine');
+const { ReserveVaultEngine } = require('../integrations/dapp/reserveVaultEngine');
 const { TrustMarketEngine } = require('../integrations/dapp/trustMarketEngine');
 const { IntentRoutingEngine } = require('../integrations/dapp/intentRoutingEngine');
 const { ExternalWalletEngine } = require('../integrations/dapp/externalWalletEngine');
@@ -940,6 +941,43 @@ router.post('/internal-market-maker/pools/:id/remove-liquidity', operatorAuth, w
 
 router.post('/internal-market-maker/pools/:id/accrue-yield', operatorAuth, async (req, res) => {
   try { res.json({ success: true, data: await InternalMarketMakerEngine.accrueYield({ poolAddress: req.params.id, apyBps: req.body.apyBps }) }); } catch (err) { sendError(res, err); }
+});
+
+// ═════════════════════════════════════════════════════════════════════════════
+// Reserve Vault Engine (CDP) - tokenize reserves into a vault stablecoin
+// ═════════════════════════════════════════════════════════════════════════════
+
+router.get('/reserve-vault/readiness', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: ReserveVaultEngine.readiness() }); } catch (err) { sendError(res, err); }
+});
+
+router.get('/reserve-vault/info', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await ReserveVaultEngine.info() }); } catch (err) { sendError(res, err); }
+});
+
+router.get('/reserve-vault/positions', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await ReserveVaultEngine.listPositions({
+    sourceType: req.query.sourceType,
+    sourceAccountId: req.query.sourceAccountId,
+    status: req.query.status,
+    holder: req.query.holder
+  }) }); } catch (err) { sendError(res, err); }
+});
+
+router.get('/reserve-vault/positions/:id', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await ReserveVaultEngine.getPosition(req.params.id) }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/reserve-vault/mint', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try { res.status(201).json({ success: true, data: await ReserveVaultEngine.mint(req.body) }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/reserve-vault/quote', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await ReserveVaultEngine.quoteToTarget(req.body) }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/reserve-vault/swap', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try { res.status(201).json({ success: true, data: await ReserveVaultEngine.swapToTarget(req.body) }); } catch (err) { sendError(res, err); }
 });
 
 // ═════════════════════════════════════════════════════════════════════════════
