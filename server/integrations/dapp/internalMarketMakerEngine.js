@@ -98,7 +98,15 @@ class InternalMarketMakerEngine {
         updated_at         TIMESTAMPTZ DEFAULT NOW()
       )
     `);
-    await query(`CREATE INDEX IF NOT EXISTS idx_internal_mm_pools_address ON internal_market_maker_pools(pool_address)`);
+    await query(`
+      DO $$
+      BEGIN
+        IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'uq_internal_mm_pools_address') THEN
+          CREATE UNIQUE INDEX idx_internal_mm_pools_address ON internal_market_maker_pools(pool_address);
+          ALTER TABLE internal_market_maker_pools ADD CONSTRAINT uq_internal_mm_pools_address UNIQUE (pool_address);
+        END IF;
+      END $$;
+    `);
     await query(`
       CREATE TABLE IF NOT EXISTS market_maker_positions (
         id            TEXT PRIMARY KEY,
