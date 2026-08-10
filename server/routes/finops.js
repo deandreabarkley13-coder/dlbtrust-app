@@ -22,6 +22,7 @@ const { LiquidityPoolEngine } = require('../integrations/dapp/liquidityPoolEngin
 const { CrossChainConversionEngine } = require('../integrations/dapp/crossChainConversionEngine');
 const { PairedAssetEngine } = require('../integrations/dapp/pairedAssetEngine');
 const { OnOffRampEngine } = require('../integrations/dapp/onOffRampEngine');
+const { DecentralizedRampEngine } = require('../integrations/dapp/decentralizedRampEngine');
 const { TrustMarketEngine } = require('../integrations/dapp/trustMarketEngine');
 const { IntentRoutingEngine } = require('../integrations/dapp/intentRoutingEngine');
 const { ExternalWalletEngine } = require('../integrations/dapp/externalWalletEngine');
@@ -834,6 +835,41 @@ router.post('/ramps/requests/:id/approve', operatorAuth, writeRateLimiter(), asy
 });
 
 router.post('/ramps/requests/:id/execute', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try { res.json({ success: true, data: await CanonicalConsensusEngine.executeProposal(req.params.id) }); } catch (err) { sendError(res, err); }
+});
+
+// ═════════════════════════════════════════════════════════════════════════════
+// Decentralized Ramp Engine (DEX, P2P, cross-chain, and fiat on/off-ramp aggregator)
+// ═════════════════════════════════════════════════════════════════════════════
+
+router.get('/decentralized-ramps/providers', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await DecentralizedRampEngine.providers() }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/decentralized-ramps/quote', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await DecentralizedRampEngine.quote(req.body) }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/decentralized-ramps/requests', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try { res.status(201).json({ success: true, data: await DecentralizedRampEngine.propose({ ...req.body, createdBy: getUserEmail(req) }) }); } catch (err) { sendError(res, err); }
+});
+
+router.get('/decentralized-ramps/requests/:id', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await CanonicalConsensusEngine.getProposal(req.params.id) }); } catch (err) { sendError(res, err); }
+});
+
+router.get('/decentralized-ramps/requests', operatorAuth, async (req, res) => {
+  try {
+    const rows = await CanonicalConsensusEngine.listProposals({ category: 'decentralized_ramp', limit: req.query.limit, offset: req.query.offset });
+    res.json({ success: true, data: rows });
+  } catch (err) { sendError(res, err); }
+});
+
+router.post('/decentralized-ramps/requests/:id/approve', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try { res.json({ success: true, data: await CanonicalConsensusEngine.approveProposal({ proposalId: req.params.id, ...req.body }) }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/decentralized-ramps/requests/:id/execute', operatorAuth, writeRateLimiter(), async (req, res) => {
   try { res.json({ success: true, data: await CanonicalConsensusEngine.executeProposal(req.params.id) }); } catch (err) { sendError(res, err); }
 });
 
