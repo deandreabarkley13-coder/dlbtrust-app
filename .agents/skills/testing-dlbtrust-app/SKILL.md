@@ -554,6 +554,23 @@ SELECT fit_id, type, amount_cents, name, memo FROM ofx_transactions;
 - `trust_market` execution calls `TrustMarketEngine.createOffer()`, which returns an existing active P2P order (e.g. `orderId: "10"`) without locking new tokens or spending gas when a matching order already exists.
 - Dashboard stat badge `decentralized-ramps` is the count of requests with `status === 'pending'`.
 
+## Reserve Vault (CDP) (`/dapp/finops.html`)
+
+- Routes:
+  - `GET /api/finops/reserve-vault/readiness`
+  - `GET /api/finops/reserve-vault/info`
+  - `GET /api/finops/reserve-vault/positions`
+  - `GET /api/finops/reserve-vault/positions/:id`
+  - `POST /api/finops/reserve-vault/mint`
+  - `POST /api/finops/reserve-vault/quote`
+  - `POST /api/finops/reserve-vault/swap`
+- UI IDs: `rv-source-type`, `rv-source-account`, `rv-amount`, `rv-target`, `rv-position-id`, `rv-target-asset`; buttons call `rvMint()`, `rvQuote()`, `rvSwap()`; positions list `rv-positions`.
+- Minting requires `StablecoinDexEngine` to be available; it creates a `reserve_vault_positions` row and a mainnet `mintTxHash`.
+- Test mint: `sourceType: 'trust_account'`, `sourceAccountId: '4000'`, `amount: 1` (or any small positive value).
+- Quote: `POST /api/finops/reserve-vault/quote` with `{ positionId, targetAsset: 'DAI' }` returns routes from `DecentralizedRampEngine.quote`.
+- For `DLBUSD -> DAI`, expect `stablecoin_dex` (tiny/near-zero output if no DAI liquidity), `trust_market`/`p2p_canonical_swap` ready at 1:1, `ptc_bondex` if source is `DLB-PTCUSD`, and `BondDex + Uniswap V2` likely `no_liquidity`.
+- Operator wallet `0x3e53028c...` needs mainnet ETH for gas; gas costs are tiny when base fee is low.
+
 ## Devin Secrets Needed
 
 - `DATABASE_URL` or local Postgres credentials (`dlbtrust`/`dlbtrust`).

@@ -104,7 +104,7 @@ class DecentralizedRampEngine {
   static get config() { return getConfig(); }
 
   static async providers() {
-    const { OnOffRampEngine, CrossChainConversionEngine, TrustMarketEngine, DlbCanonicalSwapEngine, StablecoinDexEngine, DexSwapEngine, PtcDexEngine, UniswapV3Engine, DexAggregatorEngine } = loadEngines();
+    const { OnOffRampEngine, CrossChainConversionEngine, TrustMarketEngine, DlbCanonicalSwapEngine, StablecoinDexEngine, DexSwapEngine, PtcDexEngine, UniswapV3Engine, DexAggregatorEngine, InternalMarketMakerEngine } = loadEngines();
     const providers = [];
     if (OnOffRampEngine) {
       try { providers.push(...(await OnOffRampEngine.providers())); } catch (e) {}
