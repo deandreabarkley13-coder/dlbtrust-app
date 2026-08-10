@@ -17,6 +17,12 @@ try { BondTokenizationEngine = require('./bondTokenizationEngine').BondTokenizat
 let DexSwapEngine = null;
 try { DexSwapEngine = require('./dexSwapEngine').DexSwapEngine; } catch (e) { /* optional */ }
 
+let UniswapV3Engine = null;
+try { UniswapV3Engine = require('./uniswapV3Engine').UniswapV3Engine; } catch (e) { /* optional */ }
+
+let DexAggregatorEngine = null;
+try { DexAggregatorEngine = require('./dexAggregatorEngine').DexAggregatorEngine; } catch (e) { /* optional */ }
+
 let viem, privateKeyToAccount;
 try { viem = require('viem'); ({ privateKeyToAccount } = require('viem/accounts')); } catch (e) { }
 
@@ -174,6 +180,42 @@ class StablecoinDexEngine {
     const t = String(targetAsset).toUpperCase();
     if (t === 'ETH' || t === 'WETH' || t === 'DAI' || t === 'USDS') return 18;
     return 6;
+  }
+
+  static async _quoteSecondLeg({ tokenIn, tokenOut, amountIn, decimalsIn = 18, decimalsOut = 18 } = {}) {
+    const errors = [];
+    if (DexAggregatorEngine) {
+      try {
+        const q = await DexAggregatorEngine.quote({ tokenIn, tokenOut, amountIn, decimalsIn, decimalsOut });
+        if (Number(q?.amountOut) > 0) return { ...q, route: 'aggregator', engine: 'DexAggregatorEngine' };
+      } catch (e) { errors.push(`aggregator: ${e.message}`); }
+    }
+    if (UniswapV3Engine) {
+      try {
+        const q = await UniswapV3Engine.quote({ tokenIn, tokenOut, amountIn, decimalsIn, decimalsOut });
+        if (q?.status === 'ready' && Number(q.amountOut) > 0) return { ...q, route: 'uniswap_v3', engine: 'UniswapV3Engine' };
+      } catch (e) { errors.push(`uniswap_v3: ${e.message}`); }
+    }
+    if (DexSwapEngine) {
+      try {
+        const q = await DexSwapEngine.quoteUniswapV2({ tokenIn, tokenOut, amountIn, decimalsIn, decimalsOut, path: [tokenIn, tokenOut] });
+        if (Number(q?.amountOut) > 0) return { ...q, route: 'uniswap_v2', engine: 'DexSwapEngine' };
+      } catch (e) { errors.push(`uniswap_v2: ${e.message}`); }
+    }
+    throw new Error(`No second-leg route for ${tokenIn} -> ${tokenOut}: ${errors.join('; ')}`);
+  }
+
+  static async _swapSecondLeg({ tokenIn, tokenOut, amountIn, decimalsIn = 18, decimalsOut = 18, recipient, quote } = {}) {
+    if (quote?.route === 'aggregator' && DexAggregatorEngine) {
+      return DexAggregatorEngine.swap({ tokenIn, tokenOut, amountIn, decimalsIn, decimalsOut, recipient, minOut: quote.amountOutMinimum });
+    }
+    if (quote?.route === 'uniswap_v3' && UniswapV3Engine) {
+      return UniswapV3Engine.swap({ tokenIn, tokenOut, amountIn, decimalsIn, decimalsOut, recipient, minOut: quote.amountOutMinimum });
+    }
+    if (DexSwapEngine) {
+      return DexSwapEngine.swapOnUniswapV2({ tokenIn, tokenOut, amountIn, amountOutMinimum: quote?.amountOutMinimum, decimalsIn, decimalsOut, recipient, path: [tokenIn, tokenOut] });
+    }
+    throw new Error('No second-leg swap engine available');
   }
 
   static async quote({ amount, targetAsset = 'USDC', poolAddress }) {
@@ -463,25 +505,20 @@ class StablecoinDexEngine {
       }
     }
 
-    // 3b. Route WETH through Uniswap V2 for DAI, USDC, or USDS payouts.
+    // 3b. Route WETH through the best available DEX (aggregator, V3, V2) for DAI, USDC, or USDS payouts.
     if (!cfg.shadow && (isDaiTarget || isUsdcTarget || isUsdsTarget)) {
       const wethAddress = cfg.wethAddress;
       const outAddress = isDaiTarget ? this.targetTokenAddress('DAI') : (isUsdsTarget ? this.targetTokenAddress('USDS') : cfg.usdcAddress);
       if (!outAddress || !wethAddress) throw new Error(`${targetAsset} or WETH address not configured`);
       const decimalsOut = isDaiTarget || isUsdsTarget ? 18 : 6;
       try {
-        const swapResult = await DexSwapEngine.swapOnUniswapV2({
-          path: [wethAddress, outAddress],
-          amountIn: swap.amountOut,
-          recipient: recipient || cfg.operatorAddress,
-          decimalsIn: 18,
-          decimalsOut,
-        });
+        const secondLegQuote = await this._quoteSecondLeg({ tokenIn: wethAddress, tokenOut: outAddress, amountIn: swap.amountOut, decimalsIn: 18, decimalsOut });
+        const swapResult = await this._swapSecondLeg({ tokenIn: wethAddress, tokenOut: outAddress, amountIn: swap.amountOut, decimalsIn: 18, decimalsOut, recipient: recipient || cfg.operatorAddress, quote: secondLegQuote });
         if (isDaiTarget) daiSwap = swapResult;
         else if (isUsdsTarget) usdsSwap = swapResult;
         else usdcSwap = swapResult;
       } catch (secondaryErr) {
-        console.warn(`[StablecoinDexEngine] WETH -> ${targetAsset} Uniswap swap failed:`, secondaryErr.message);
+        console.warn(`[StablecoinDexEngine] WETH -> ${targetAsset} second-leg swap failed:`, secondaryErr.message);
         throw secondaryErr;
       }
     }

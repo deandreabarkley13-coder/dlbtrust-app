@@ -63,6 +63,8 @@ function loadEngines() {
   try { if (!engineCache.ModuleP2PSwapEngine) engineCache.ModuleP2PSwapEngine = require('./moduleP2PSwapEngine').ModuleP2PSwapEngine; } catch (e) {}
   try { if (!engineCache.PtcDexEngine) engineCache.PtcDexEngine = require('./ptcDexEngine').PtcDexEngine; } catch (e) {}
   try { if (!engineCache.SeedLiquidityEngine) engineCache.SeedLiquidityEngine = require('./seedLiquidityEngine').SeedLiquidityEngine; } catch (e) {}
+  try { if (!engineCache.UniswapV3Engine) engineCache.UniswapV3Engine = require('./uniswapV3Engine').UniswapV3Engine; } catch (e) {}
+  try { if (!engineCache.DexAggregatorEngine) engineCache.DexAggregatorEngine = require('./dexAggregatorEngine').DexAggregatorEngine; } catch (e) {}
   try { if (!engineCache.CanonicalConsensusEngine) engineCache.CanonicalConsensusEngine = require('./canonicalConsensusEngine').CanonicalConsensusEngine; } catch (e) {}
   return engineCache;
 }
@@ -90,11 +92,18 @@ function normalizeAsset(asset) {
   return String(asset || '').toUpperCase().trim();
 }
 
+function tokenDecimals(asset) {
+  const a = normalizeAsset(asset);
+  if (['DAI', 'USDS', 'WETH', 'ETH'].includes(a)) return 18;
+  if (a === 'USDC') return 6;
+  return 18;
+}
+
 class DecentralizedRampEngine {
   static get config() { return getConfig(); }
 
   static async providers() {
-    const { OnOffRampEngine, CrossChainConversionEngine, TrustMarketEngine, DlbCanonicalSwapEngine, StablecoinDexEngine, DexSwapEngine, PtcDexEngine } = loadEngines();
+    const { OnOffRampEngine, CrossChainConversionEngine, TrustMarketEngine, DlbCanonicalSwapEngine, StablecoinDexEngine, DexSwapEngine, PtcDexEngine, UniswapV3Engine, DexAggregatorEngine } = loadEngines();
     const providers = [];
     if (OnOffRampEngine) {
       try { providers.push(...(await OnOffRampEngine.providers())); } catch (e) {}
@@ -104,7 +113,9 @@ class DecentralizedRampEngine {
       { id: 'trust_market', name: 'DLB Trust Market (1:1 P2P)', directions: ['exchange', 'crypto_to_crypto'], ready: !!TrustMarketEngine, issues: TrustMarketEngine ? [] : ['TrustMarketEngine not available'] },
       { id: 'p2p_canonical_swap', name: 'DLB Canonical P2P Swap', directions: ['exchange', 'crypto_to_crypto'], ready: !!DlbCanonicalSwapEngine, issues: DlbCanonicalSwapEngine ? [] : ['DlbCanonicalSwapEngine not available'] },
       { id: 'stablecoin_dex', name: 'Stablecoin DEX (DLBUSD -> canonical)', directions: ['exchange', 'crypto_to_crypto'], ready: !!StablecoinDexEngine, issues: StablecoinDexEngine ? [] : ['StablecoinDexEngine not available'] },
-      { id: 'ptc_bondex', name: 'DLB-PTCUSD BondDex + Uniswap V2', directions: ['exchange', 'crypto_to_crypto'], ready: !!PtcDexEngine, issues: PtcDexEngine ? [] : ['PtcDexEngine not available'] },
+      { id: 'ptc_bondex', name: 'DLB-PTCUSD BondDex + DEX aggregator', directions: ['exchange', 'crypto_to_crypto'], ready: !!PtcDexEngine, issues: PtcDexEngine ? [] : ['PtcDexEngine not available'] },
+      { id: 'uniswap_v3', name: 'Uniswap V3 (canonical pair)', directions: ['exchange', 'crypto_to_crypto'], ready: !!UniswapV3Engine, issues: UniswapV3Engine ? [] : ['UniswapV3Engine not available'] },
+      { id: 'dex_aggregator', name: 'DEX Aggregator (OpenOcean multi-source)', directions: ['exchange', 'crypto_to_crypto'], ready: !!DexAggregatorEngine, issues: DexAggregatorEngine ? [] : ['DexAggregatorEngine not available'] },
     ];
     // de-dupe by id
     const seen = new Set(providers.map(p => p.id));
@@ -128,7 +139,7 @@ class DecentralizedRampEngine {
     slippageBps = 100,
   } = {}) {
     const cfg = this.config;
-    const { CrossChainConversionEngine, OnOffRampEngine, TrustMarketEngine, DlbCanonicalSwapEngine, StablecoinDexEngine, DexSwapEngine, PtcDexEngine } = loadEngines();
+    const { CrossChainConversionEngine, OnOffRampEngine, TrustMarketEngine, DlbCanonicalSwapEngine, StablecoinDexEngine, DexSwapEngine, PtcDexEngine, UniswapV3Engine, DexAggregatorEngine } = loadEngines();
     const routes = [];
     const dir = String(direction).toLowerCase();
     const src = normalizeAsset(sourceAsset);
@@ -152,7 +163,7 @@ class DecentralizedRampEngine {
           const pq = await PtcDexEngine.quote({ amount, targetAsset: tgt || 'DAI', autoCreatePool: false });
           routes.push({
             provider: 'ptc_bondex',
-            name: `DLB-PTCUSD BondDex (${pq.route || 'direct'}) -> ${pq.targetAsset || (tgt || 'DAI')}`,
+            name: `DLB-PTCUSD BondDex (${pq.route || 'direct'}${pq.secondLeg ? ` + ${pq.secondLeg}` : ''}) -> ${pq.targetAsset || (tgt || 'DAI')}`,
             direction: 'exchange',
             sourceAsset,
             targetAsset,
@@ -275,6 +286,35 @@ class DecentralizedRampEngine {
         }
       }
 
+      // Direct canonical-pair routes using Uniswap V3 or DEX aggregator
+      const tokenIn = resolveTokenAddress(src, cfg);
+      const tokenOut = resolveTokenAddress(tgt, cfg);
+      const canonicalTokens = new Set(['DAI', 'USDC', 'USDS', 'WETH', 'ETH']);
+      if (tokenIn && tokenOut && canonicalTokens.has(src) && canonicalTokens.has(tgt) && src !== tgt) {
+        if (DexAggregatorEngine) {
+          try {
+            const aq = await DexAggregatorEngine.quote({ tokenIn, tokenOut, amountIn: amount, decimalsIn: tokenDecimals(src), decimalsOut: tokenDecimals(tgt) });
+            routes.push({
+              provider: 'dex_aggregator', name: `DEX Aggregator (${src} -> ${tgt})`, direction: 'exchange', sourceAsset, targetAsset, amount,
+              estimatedOutput: Number(aq.amountOut) || 0, outputAsset: targetAsset, status: aq.status || 'ready', instructions: aq.instructions || '', quote: aq, engine: 'DexAggregatorEngine',
+            });
+          } catch (e) {
+            routes.push({ provider: 'dex_aggregator', name: `DEX Aggregator (${src} -> ${tgt})`, status: 'error', instructions: e.message, engine: 'DexAggregatorEngine' });
+          }
+        }
+        if (UniswapV3Engine) {
+          try {
+            const uq = await UniswapV3Engine.quote({ tokenIn, tokenOut, amountIn: amount, decimalsIn: tokenDecimals(src), decimalsOut: tokenDecimals(tgt), slippageBps });
+            routes.push({
+              provider: 'uniswap_v3', name: `Uniswap V3 (${src} -> ${tgt})`, direction: 'exchange', sourceAsset, targetAsset, amount,
+              estimatedOutput: Number(uq.amountOut) || 0, outputAsset: targetAsset, status: uq.status || 'ready', instructions: uq.instructions || '', quote: uq, engine: 'UniswapV3Engine',
+            });
+          } catch (e) {
+            routes.push({ provider: 'uniswap_v3', name: `Uniswap V3 (${src} -> ${tgt})`, status: 'error', instructions: e.message, engine: 'UniswapV3Engine' });
+          }
+        }
+      }
+
     }
 
     const readyStatuses = new Set(['ready', 'awaiting_buyer', 'awaiting_onramp', 'awaiting_funds', 'awaiting_bridge']);
@@ -364,7 +404,7 @@ class DecentralizedRampEngine {
 
   static async _execute(proposal) {
     const cfg = this.config;
-    const { CrossChainConversionEngine, OnOffRampEngine, TrustMarketEngine, DlbCanonicalSwapEngine, StablecoinDexEngine, DexSwapEngine, PtcDexEngine, SeedLiquidityEngine } = loadEngines();
+    const { CrossChainConversionEngine, OnOffRampEngine, TrustMarketEngine, DlbCanonicalSwapEngine, StablecoinDexEngine, DexSwapEngine, PtcDexEngine, SeedLiquidityEngine, UniswapV3Engine, DexAggregatorEngine } = loadEngines();
     const p = proposal.payload || {};
     let { routeProvider, route } = p;
     const { direction, sourceAsset, targetAsset, amount, sourceType, sourceAccountId, sourceModule, targetAddress, network, bridgeProvider, slippageBps } = p;
@@ -424,6 +464,20 @@ class DecentralizedRampEngine {
     if (provider.includes('ptc_bondex')) {
       if (!PtcDexEngine) throw new Error('PtcDexEngine not available');
       return PtcDexEngine.swap({ amount, targetAsset, recipient: targetAddress, autoSeed: false });
+    }
+
+    if (provider.includes('uniswap_v3')) {
+      if (!UniswapV3Engine) throw new Error('UniswapV3Engine not available');
+      const tokenIn = resolveTokenAddress(sourceAsset, cfg);
+      const tokenOut = resolveTokenAddress(targetAsset, cfg);
+      return UniswapV3Engine.swap({ tokenIn, tokenOut, amountIn: amount, decimalsIn: tokenDecimals(sourceAsset), decimalsOut: tokenDecimals(targetAsset), recipient: targetAddress, slippageBps });
+    }
+
+    if (provider.includes('dex_aggregator')) {
+      if (!DexAggregatorEngine) throw new Error('DexAggregatorEngine not available');
+      const tokenIn = resolveTokenAddress(sourceAsset, cfg);
+      const tokenOut = resolveTokenAddress(targetAsset, cfg);
+      return DexAggregatorEngine.swap({ tokenIn, tokenOut, amountIn: amount, decimalsIn: tokenDecimals(sourceAsset), decimalsOut: tokenDecimals(targetAsset), recipient: targetAddress, slippage: slippageBps / 100 });
     }
 
     throw new Error(`Decentralized ramp provider "${routeProvider}" is not implemented`);
