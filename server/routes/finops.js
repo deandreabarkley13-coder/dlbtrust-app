@@ -27,6 +27,7 @@ const { SeedLiquidityEngine } = require('../integrations/dapp/seedLiquidityEngin
 const { PtcDexEngine } = require('../integrations/dapp/ptcDexEngine');
 const { UniswapV3Engine } = require('../integrations/dapp/uniswapV3Engine');
 const { DexAggregatorEngine } = require('../integrations/dapp/dexAggregatorEngine');
+const { InternalMarketMakerEngine } = require('../integrations/dapp/internalMarketMakerEngine');
 const { TrustMarketEngine } = require('../integrations/dapp/trustMarketEngine');
 const { IntentRoutingEngine } = require('../integrations/dapp/intentRoutingEngine');
 const { ExternalWalletEngine } = require('../integrations/dapp/externalWalletEngine');
@@ -895,6 +896,50 @@ router.post('/seed-liquidity/ptc-pool', operatorAuth, writeRateLimiter(), async 
 
 router.post('/seed-liquidity/seed-pool', operatorAuth, writeRateLimiter(), async (req, res) => {
   try { res.status(201).json({ success: true, data: await SeedLiquidityEngine.seedPool(req.body) }); } catch (err) { sendError(res, err); }
+});
+
+// ═════════════════════════════════════════════════════════════════════════════
+// Internal Market Maker Engine (tokenize reserves and seed BondDex pools)
+// ═════════════════════════════════════════════════════════════════════════════
+
+router.get('/internal-market-maker/readiness', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: InternalMarketMakerEngine.readiness() }); } catch (err) { sendError(res, err); }
+});
+
+router.get('/internal-market-maker/pools', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await InternalMarketMakerEngine.listPools() }); } catch (err) { sendError(res, err); }
+});
+
+router.get('/internal-market-maker/pools/:id', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await InternalMarketMakerEngine.getPool(req.params.id) }); } catch (err) { sendError(res, err); }
+});
+
+router.get('/internal-market-maker/positions', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await InternalMarketMakerEngine.listPositions({ holder: req.query.holder }) }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/internal-market-maker/pools', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try { res.status(201).json({ success: true, data: await InternalMarketMakerEngine.tokenizeAndSeed(req.body) }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/internal-market-maker/pools/:id/add-liquidity', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try { res.json({ success: true, data: await InternalMarketMakerEngine.addLiquidity({ ...req.body, poolAddress: req.params.id }) }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/internal-market-maker/pools/:id/quote', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await InternalMarketMakerEngine.quote({ ...req.body, poolAddress: req.params.id }) }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/internal-market-maker/pools/:id/swap', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try { res.status(201).json({ success: true, data: await InternalMarketMakerEngine.swap({ ...req.body, poolAddress: req.params.id }) }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/internal-market-maker/pools/:id/remove-liquidity', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try { res.json({ success: true, data: await InternalMarketMakerEngine.removeLiquidity({ ...req.body, poolAddress: req.params.id }) }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/internal-market-maker/pools/:id/accrue-yield', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await InternalMarketMakerEngine.accrueYield({ poolAddress: req.params.id, apyBps: req.body.apyBps }) }); } catch (err) { sendError(res, err); }
 });
 
 // ═════════════════════════════════════════════════════════════════════════════

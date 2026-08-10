@@ -31,6 +31,7 @@ function loadEngines() {
     'ModuleP2PSwapEngine',
     'PtcDexEngine',
     'SeedLiquidityEngine',
+    'InternalMarketMakerEngine',
     'CanonicalConsensusEngine',
   ];
   for (const name of names) {
@@ -65,6 +66,7 @@ function loadEngines() {
   try { if (!engineCache.SeedLiquidityEngine) engineCache.SeedLiquidityEngine = require('./seedLiquidityEngine').SeedLiquidityEngine; } catch (e) {}
   try { if (!engineCache.UniswapV3Engine) engineCache.UniswapV3Engine = require('./uniswapV3Engine').UniswapV3Engine; } catch (e) {}
   try { if (!engineCache.DexAggregatorEngine) engineCache.DexAggregatorEngine = require('./dexAggregatorEngine').DexAggregatorEngine; } catch (e) {}
+  try { if (!engineCache.InternalMarketMakerEngine) engineCache.InternalMarketMakerEngine = require('./internalMarketMakerEngine').InternalMarketMakerEngine; } catch (e) {}
   try { if (!engineCache.CanonicalConsensusEngine) engineCache.CanonicalConsensusEngine = require('./canonicalConsensusEngine').CanonicalConsensusEngine; } catch (e) {}
   return engineCache;
 }
@@ -116,6 +118,7 @@ class DecentralizedRampEngine {
       { id: 'ptc_bondex', name: 'DLB-PTCUSD BondDex + DEX aggregator', directions: ['exchange', 'crypto_to_crypto'], ready: !!PtcDexEngine, issues: PtcDexEngine ? [] : ['PtcDexEngine not available'] },
       { id: 'uniswap_v3', name: 'Uniswap V3 (canonical pair)', directions: ['exchange', 'crypto_to_crypto'], ready: !!UniswapV3Engine, issues: UniswapV3Engine ? [] : ['UniswapV3Engine not available'] },
       { id: 'dex_aggregator', name: 'DEX Aggregator (OpenOcean multi-source)', directions: ['exchange', 'crypto_to_crypto'], ready: !!DexAggregatorEngine, issues: DexAggregatorEngine ? [] : ['DexAggregatorEngine not available'] },
+      { id: 'internal_market_maker', name: 'Internal Market Maker (trust reserve pool)', directions: ['exchange', 'crypto_to_crypto', 'reserve_to_canonical'], ready: !!InternalMarketMakerEngine, issues: InternalMarketMakerEngine ? [] : ['InternalMarketMakerEngine not available'] },
     ];
     // de-dupe by id
     const seen = new Set(providers.map(p => p.id));
@@ -139,7 +142,7 @@ class DecentralizedRampEngine {
     slippageBps = 100,
   } = {}) {
     const cfg = this.config;
-    const { CrossChainConversionEngine, OnOffRampEngine, TrustMarketEngine, DlbCanonicalSwapEngine, StablecoinDexEngine, DexSwapEngine, PtcDexEngine, UniswapV3Engine, DexAggregatorEngine } = loadEngines();
+    const { CrossChainConversionEngine, OnOffRampEngine, TrustMarketEngine, DlbCanonicalSwapEngine, StablecoinDexEngine, DexSwapEngine, PtcDexEngine, UniswapV3Engine, DexAggregatorEngine, InternalMarketMakerEngine } = loadEngines();
     const routes = [];
     const dir = String(direction).toLowerCase();
     const src = normalizeAsset(sourceAsset);
@@ -287,6 +290,21 @@ class DecentralizedRampEngine {
       }
 
       // Direct canonical-pair routes using Uniswap V3 or DEX aggregator
+      // Internal Market Maker: if an internal pool exists for this pair, quote against it.
+      if (InternalMarketMakerEngine && ['DLB-PTCUSD', 'DLBUSD', 'SIT'].includes(src) && (['DAI', 'USDC', 'USDS', 'WETH', 'ETH', 'DLBUSD', 'DLB-PTCUSD', 'PTC'].includes(tgt) || ['DLB-PTCUSD', 'DLBUSD', 'SIT'].includes(tgt))) {
+        try {
+          const pool = await InternalMarketMakerEngine._getOrFindPool({ trustAsset: src, canonicalAsset: tgt, createIfMissing: false });
+          if (pool && pool.pool_address) {
+            const pq = await InternalMarketMakerEngine.quote({ poolAddress: pool.pool_address, tokenIn: resolveTokenAddress(src, cfg), amountIn: amount, decimalsIn: tokenDecimals(src) });
+            routes.push({
+              provider: 'internal_market_maker', name: `Internal Market Maker (${src} -> ${tgt})`, direction: 'exchange', sourceAsset, targetAsset, amount,
+              estimatedOutput: Number(pq.amountOut) || 0, outputAsset: targetAsset, status: Number(pq.amountOut) > 0 ? 'ready' : 'no_liquidity',
+              instructions: `Swap via internal ${src}/${tgt} BondDex pool`, quote: pq, engine: 'InternalMarketMakerEngine', poolAddress: pool.pool_address,
+            });
+          }
+        } catch (e) { routes.push({ provider: 'internal_market_maker', name: 'Internal Market Maker', status: 'error', instructions: e.message, engine: 'InternalMarketMakerEngine' }); }
+      }
+
       const tokenIn = resolveTokenAddress(src, cfg);
       const tokenOut = resolveTokenAddress(tgt, cfg);
       const canonicalTokens = new Set(['DAI', 'USDC', 'USDS', 'WETH', 'ETH']);
@@ -404,7 +422,7 @@ class DecentralizedRampEngine {
 
   static async _execute(proposal) {
     const cfg = this.config;
-    const { CrossChainConversionEngine, OnOffRampEngine, TrustMarketEngine, DlbCanonicalSwapEngine, StablecoinDexEngine, DexSwapEngine, PtcDexEngine, SeedLiquidityEngine, UniswapV3Engine, DexAggregatorEngine } = loadEngines();
+    const { CrossChainConversionEngine, OnOffRampEngine, TrustMarketEngine, DlbCanonicalSwapEngine, StablecoinDexEngine, DexSwapEngine, PtcDexEngine, SeedLiquidityEngine, UniswapV3Engine, DexAggregatorEngine, InternalMarketMakerEngine } = loadEngines();
     const p = proposal.payload || {};
     let { routeProvider, route } = p;
     const { direction, sourceAsset, targetAsset, amount, sourceType, sourceAccountId, sourceModule, targetAddress, network, bridgeProvider, slippageBps } = p;
@@ -478,6 +496,14 @@ class DecentralizedRampEngine {
       const tokenIn = resolveTokenAddress(sourceAsset, cfg);
       const tokenOut = resolveTokenAddress(targetAsset, cfg);
       return DexAggregatorEngine.swap({ tokenIn, tokenOut, amountIn: amount, decimalsIn: tokenDecimals(sourceAsset), decimalsOut: tokenDecimals(targetAsset), recipient: targetAddress, slippage: slippageBps / 100 });
+    }
+
+    if (provider.includes('internal_market_maker')) {
+      if (!InternalMarketMakerEngine) throw new Error('InternalMarketMakerEngine not available');
+      const pool = await InternalMarketMakerEngine._getOrFindPool({ trustAsset: sourceAsset, canonicalAsset: targetAsset, createIfMissing: false });
+      if (!pool || !pool.pool_address) throw new Error(`No internal market maker pool for ${sourceAsset} -> ${targetAsset}`);
+      const tokenIn = resolveTokenAddress(sourceAsset, cfg);
+      return InternalMarketMakerEngine.swap({ poolAddress: pool.pool_address, tokenIn, amountIn: amount, minOut: route && route.quote && route.quote.amountOutMinimum, recipient: targetAddress, decimalsIn: tokenDecimals(sourceAsset) });
     }
 
     throw new Error(`Decentralized ramp provider "${routeProvider}" is not implemented`);
