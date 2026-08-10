@@ -12,16 +12,24 @@
 
 const { getConfig } = require('./config');
 
-let SeedLiquidityEngine, DexSwapEngine, PtcStablecoinEngine;
+let SeedLiquidityEngine, DexSwapEngine, PtcStablecoinEngine, UniswapV3Engine, DexAggregatorEngine;
 try { ({ SeedLiquidityEngine } = require('./seedLiquidityEngine')); } catch (e) {}
 try { ({ DexSwapEngine } = require('./dexSwapEngine')); } catch (e) {}
 try { ({ PtcStablecoinEngine } = require('./ptcStablecoinEngine')); } catch (e) {}
+try { ({ UniswapV3Engine } = require('./uniswapV3Engine')); } catch (e) {}
+try { ({ DexAggregatorEngine } = require('./dexAggregatorEngine')); } catch (e) {}
 
 let viem;
 try { viem = require('viem'); } catch (e) {}
 
 const DEFAULT_PTC = '0xb01e6280ffe6faac679a17b029df8e065e8d0002';
 const DEFAULT_WETH = '0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2';
+
+const secondLegEngines = [
+  { name: 'aggregator', engine: () => DexAggregatorEngine, method: 'quote' },
+  { name: 'uniswap_v3', engine: () => UniswapV3Engine, method: 'quote' },
+  { name: 'uniswap_v2', engine: () => DexSwapEngine, method: 'quoteUniswapV2' },
+];
 
 class PtcDexEngine {
   static getConfig() {
@@ -141,13 +149,13 @@ class PtcDexEngine {
         const q1 = await DexSwapEngine.quote({ tokenIn: ptcAddress, tokenOut: wethAddress, amountIn: amount, decimalsIn: 18, decimalsOut: 18, router: poolAddr });
         if (Number(q1.amountOut) > 0) {
           const decimalsOut = this._pairedDecimals(finalAsset);
-          const q2 = await DexSwapEngine.quoteUniswapV2({
-            tokenIn: wethAddress,
-            tokenOut: finalAddress,
+          const q2 = await this._quoteSecondLeg({
+            inputToken: wethAddress,
+            outputToken: finalAddress,
             amountIn: q1.amountOut,
             decimalsIn: 18,
             decimalsOut,
-            path: [wethAddress, finalAddress],
+            targetAsset: finalAsset,
           });
           return {
             status: Number(q2.amountOut) > 0 ? 'ready' : 'no_liquidity',
@@ -156,9 +164,10 @@ class PtcDexEngine {
             targetAsset: finalAsset,
             poolAddress: poolAddr,
             route: 'two_leg',
+            secondLeg: q2.route,
             bondQuote: q1,
-            uniQuote: q2,
-            instructions: `Swap ${amount} DLB-PTCUSD for ~${q2.amountOut} ${finalAsset} via PTC/WETH BondDex + Uniswap V2`,
+            secondLegQuote: q2,
+            instructions: `Swap ${amount} DLB-PTCUSD for ~${q2.amountOut} ${finalAsset} via PTC/WETH BondDex + ${q2.route}`,
           };
         }
       }
@@ -215,7 +224,7 @@ class PtcDexEngine {
       return result;
     }
 
-    // Two-leg PTC/WETH -> Uniswap V2 -> target
+    // Two-leg PTC/WETH -> V3/aggregator/V2 -> target
     if (finalAsset !== 'WETH') {
       const wethPool = await this._findWethPool();
       if (!wethPool || !wethPool.pool_address) throw new Error(`No PTC/${finalAsset} or PTC/WETH pool found. Seed liquidity first.`);
@@ -232,25 +241,44 @@ class PtcDexEngine {
         recipient: operatorAddress,
       });
       const decimalsOut = this._pairedDecimals(finalAsset);
-      const q2 = await DexSwapEngine.quoteUniswapV2({ tokenIn: cfg.wethAddress || DEFAULT_WETH, tokenOut: finalAddress, amountIn: bondSwap.amountOut, decimalsIn: 18, decimalsOut, path: [cfg.wethAddress || DEFAULT_WETH, finalAddress] });
+      const q2 = await this._quoteSecondLeg({ inputToken: cfg.wethAddress || DEFAULT_WETH, outputToken: finalAddress, amountIn: bondSwap.amountOut, decimalsIn: 18, decimalsOut, targetAsset: finalAsset });
       const outMin = minOut || q2.amountOutMinimum;
-      const uniSwap = await DexSwapEngine.swapOnUniswapV2({
-        tokenIn: cfg.wethAddress || DEFAULT_WETH,
-        tokenOut: finalAddress,
-        amountIn: bondSwap.amountOut,
-        amountOutMinimum: outMin,
-        decimalsIn: 18,
-        decimalsOut,
-        recipient: finalRecipient,
-        path: [cfg.wethAddress || DEFAULT_WETH, finalAddress],
-      });
-      const result = { status: 'executed', amountOut: uniSwap.amountOut, bondSwap, uniSwap, route: 'two_leg', recipient: finalRecipient };
-      if (this._isNativeEth(targetAsset)) result.unwrap = await this._unwrapWeth(uniSwap.amountOut, finalRecipient);
+      const secondLegSwap = await this._swapSecondLeg({ inputToken: cfg.wethAddress || DEFAULT_WETH, outputToken: finalAddress, amountIn: bondSwap.amountOut, decimalsIn: 18, decimalsOut, recipient: finalRecipient, minOut: outMin, quote: q2 });
+      const result = { status: 'executed', amountOut: secondLegSwap.amountOut, bondSwap, secondLegSwap, route: 'two_leg', secondLeg: q2.route, recipient: finalRecipient };
+      if (this._isNativeEth(targetAsset)) result.unwrap = await this._unwrapWeth(secondLegSwap.amountOut, finalRecipient);
       return result;
     }
 
     throw new Error(`Cannot find or create a PTC/${finalAsset} pool`);
     });
+  }
+
+  static async _quoteSecondLeg({ inputToken, outputToken, amountIn, decimalsIn, decimalsOut, targetAsset } = {}) {
+    const errors = [];
+    for (const { name, engine, method } of secondLegEngines) {
+      const E = engine();
+      if (!E || typeof E[method] !== 'function') continue;
+      try {
+        const args = { tokenIn: inputToken, tokenOut: outputToken, amountIn, decimalsIn, decimalsOut };
+        const q = await E[method](args);
+        const out = Number(q?.amountOut) || 0;
+        if (out > 0) return { ...q, route: name, engine: name };
+      } catch (e) { errors.push(`${name}: ${e.message}`); }
+    }
+    throw new Error(`No second-leg route for ${inputToken} -> ${outputToken}: ${errors.join('; ')}`);
+  }
+
+  static async _swapSecondLeg({ inputToken, outputToken, amountIn, decimalsIn, decimalsOut, recipient, minOut, quote } = {}) {
+    if (quote?.route === 'aggregator' && DexAggregatorEngine) {
+      return DexAggregatorEngine.swap({ tokenIn: inputToken, tokenOut: outputToken, amountIn, decimalsIn, decimalsOut, recipient, minOut });
+    }
+    if (quote?.route === 'uniswap_v3' && UniswapV3Engine) {
+      return UniswapV3Engine.swap({ tokenIn: inputToken, tokenOut: outputToken, amountIn, decimalsIn, decimalsOut, recipient, minOut });
+    }
+    if (DexSwapEngine) {
+      return DexSwapEngine.swapOnUniswapV2({ tokenIn: inputToken, tokenOut: outputToken, amountIn, amountOutMinimum: minOut || quote?.amountOutMinimum, decimalsIn, decimalsOut, recipient, path: [inputToken, outputToken] });
+    }
+    throw new Error('No second-leg swap engine available');
   }
 
   static async _unwrapWeth(amount, recipient) {

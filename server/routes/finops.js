@@ -25,6 +25,8 @@ const { OnOffRampEngine } = require('../integrations/dapp/onOffRampEngine');
 const { DecentralizedRampEngine } = require('../integrations/dapp/decentralizedRampEngine');
 const { SeedLiquidityEngine } = require('../integrations/dapp/seedLiquidityEngine');
 const { PtcDexEngine } = require('../integrations/dapp/ptcDexEngine');
+const { UniswapV3Engine } = require('../integrations/dapp/uniswapV3Engine');
+const { DexAggregatorEngine } = require('../integrations/dapp/dexAggregatorEngine');
 const { TrustMarketEngine } = require('../integrations/dapp/trustMarketEngine');
 const { IntentRoutingEngine } = require('../integrations/dapp/intentRoutingEngine');
 const { ExternalWalletEngine } = require('../integrations/dapp/externalWalletEngine');
@@ -905,6 +907,34 @@ router.post('/ptc-dex/quote', operatorAuth, async (req, res) => {
 
 router.post('/ptc-dex/swap', operatorAuth, writeRateLimiter(), async (req, res) => {
   try { res.status(201).json({ success: true, data: await PtcDexEngine.swap(req.body) }); } catch (err) { sendError(res, err); }
+});
+
+// ═════════════════════════════════════════════════════════════════════════════
+// Uniswap V3 & DEX Aggregator Engine routes (canonical token swaps)
+// ═════════════════════════════════════════════════════════════════════════════
+
+router.get('/uniswap-v3/readiness', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await UniswapV3Engine.readiness() }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/uniswap-v3/quote', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await UniswapV3Engine.quote(req.body) }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/uniswap-v3/swap', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try { res.status(201).json({ success: true, data: await UniswapV3Engine.swap(req.body) }); } catch (err) { sendError(res, err); }
+});
+
+router.get('/dex-aggregator/readiness', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await DexAggregatorEngine.readiness() }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/dex-aggregator/quote', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await DexAggregatorEngine.quote(req.body) }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/dex-aggregator/swap', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try { res.status(201).json({ success: true, data: await DexAggregatorEngine.swap(req.body) }); } catch (err) { sendError(res, err); }
 });
 
 // ═════════════════════════════════════════════════════════════════════════════

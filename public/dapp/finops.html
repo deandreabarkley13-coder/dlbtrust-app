@@ -169,6 +169,7 @@
     { key:'trust-market', name:'Trust Market Maker', desc:'1:1 reserve-backed token <-> canonical stablecoin P2P market', stat:'', endpoint:null, action:'openTrustMarketPanel' },
     { key:'ramps', name:'Ramp Center', desc:'Fiat on/off ramps and counterparty rail aggregator', stat:'', endpoint:null, action:'openRampsPanel' },
     { key:'decentralized-ramps', name:'Decentralized Ramps', desc:'DEX, P2P, cross-chain, and fiat on/off-ramp aggregator', stat:'', endpoint:null, action:'openDecentralizedRampsPanel' },
+    { key:'dex-aggregator', name:'DEX Aggregator & V3', desc:'Multi-source DEX aggregator and Uniswap V3 canonical pair swaps', stat:'', endpoint:null, action:'openDexAggregatorPanel' },
     { key:'intent-routing', name:'Intent Routing', desc:'Natural-language orchestration of on/off-ramp and conversion flows', stat:'', endpoint:null, action:'openIntentRoutingPanel' },
     { key:'external-wallet', name:'External Wallets', desc:'Hardware/MetaMask/GridPlus wallet as ledger source and DAI/USDS swaps', stat:'', endpoint:null, action:'openExternalWalletPanel' },
     { key:'canonical-swap', name:'Canonical USDS Swap', desc:'Audited P2P contract: DLBUSD/DLB-PTCUSD → USDS/USDC/DAI', stat:'', endpoint:null, action:'openDlbCanonicalSwapPanel' },
@@ -2431,6 +2432,51 @@
       html += '</table>';
       wrap.innerHTML = html;
     } catch(e) { wrap.innerHTML = '<div class="status err">' + e.message + '</div>'; }
+  }
+
+  // ─── DEX Aggregator & Uniswap V3 panel ──────────────────────────────────────────
+  let currentDexAggQuote = null;
+
+  function openDexAggregatorPanel() {
+    const panel = el('module-panel');
+    const body = el('panel-body');
+    el('panel-title').textContent = 'DEX Aggregator & Uniswap V3';
+    panel.classList.add('active');
+    body.innerHTML = '<div class="muted" style="margin-bottom:12px;">Get the best route for canonical token pairs (WETH, USDC, DAI, USDS) using the OpenOcean DEX aggregator and/or Uniswap V3.</div>' +
+      '<h3 style="font-size:14px;margin:0 0 8px;">Quote & Swap</h3>' +
+      '<div class="token-bar"><select id="dex-token-in"><option value="WETH">WETH</option><option value="DAI">DAI</option><option value="USDC">USDC</option><option value="USDS">USDS</option><option value="ETH">ETH</option></select></div>' +
+      '<div class="token-bar"><select id="dex-token-out"><option value="DAI" selected>DAI</option><option value="USDC">USDC</option><option value="USDS">USDS</option><option value="WETH">WETH</option></select></div>' +
+      '<div class="token-bar"><input id="dex-amount" placeholder="amount (token units)" /></div>' +
+      '<div class="token-bar"><select id="dex-engine"><option value="aggregator">DEX Aggregator (OpenOcean)</option><option value="uniswap_v3">Uniswap V3</option></select></div>' +
+      '<div class="approval-actions"><button class="btn" onclick="dexAggQuote()">Quote</button><button class="btn" onclick="dexAggSwap()">Swap</button></div>' +
+      '<div id="dex-agg-result" style="margin-top:12px;"></div>';
+  }
+
+  async function dexAggQuote() {
+    try {
+      const tokenIn = el('dex-token-in').value;
+      const tokenOut = el('dex-token-out').value;
+      const amount = el('dex-amount').value.trim();
+      const engine = el('dex-engine').value;
+      if (!amount) throw new Error('Enter amount');
+      const endpoint = engine === 'uniswap_v3' ? '/api/finops/uniswap-v3/quote' : '/api/finops/dex-aggregator/quote';
+      const res = await api(endpoint, { method: 'POST', body: JSON.stringify({ tokenIn, tokenOut, amountIn: amount }) });
+      currentDexAggQuote = res.data;
+      el('dex-agg-result').innerHTML = '<div class="status ok"><strong>Route:</strong> ' + engine + '<br/><strong>Amount out:</strong> ' + (res.data.amountOut || '0') + ' ' + tokenOut + '<br/><strong>Status:</strong> ' + (res.data.status || 'ready') + '</div>';
+    } catch(e) { el('dex-agg-result').innerHTML = '<div class="status err">' + e.message + '</div>'; }
+  }
+
+  async function dexAggSwap() {
+    try {
+      if (!currentDexAggQuote) { await dexAggQuote(); if (!currentDexAggQuote) return; }
+      const tokenIn = el('dex-token-in').value;
+      const tokenOut = el('dex-token-out').value;
+      const amount = el('dex-amount').value.trim();
+      const engine = el('dex-engine').value;
+      const endpoint = engine === 'uniswap_v3' ? '/api/finops/uniswap-v3/swap' : '/api/finops/dex-aggregator/swap';
+      const res = await api(endpoint, { method: 'POST', body: JSON.stringify({ tokenIn, tokenOut, amountIn: amount }) });
+      el('dex-agg-result').innerHTML = '<div class="status ok"><strong>Swap executed:</strong> tx ' + (res.data.txHash || '') + '<br/><strong>Output:</strong> ' + (res.data.amountOut || '0') + ' ' + tokenOut + '</div>';
+    } catch(e) { el('dex-agg-result').innerHTML = '<div class="status err">' + e.message + '</div>'; }
   }
 
   // ─── Intent Routing Engine panel ──────────────────────────────────────────────
