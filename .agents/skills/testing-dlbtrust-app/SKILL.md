@@ -509,6 +509,31 @@ SELECT fit_id, type, amount_cents, name, memo FROM ofx_transactions;
 - `manual` protocol is intended for offline/CSV/SWIFT/fax rails and stores `raw_request` without making an HTTP call.
 - **Known issue:** `loadAll()` in `public/dapp/finops.html` references an undefined `results` variable at `const webPayments = results[20];`, so `loadAll()` logs a console error and module card stats remain `—`. This does not block the panel functions but should be fixed.
 
+## Rally Protocol (`/dashboard` Rally Wallet tab)
+
+- Tab: **Rally Wallet** in `public/dapp/trust-dashboard.html`.
+- Backend: `server/integrations/dapp/rallyProtocolEngine.js`; routes in `server/routes/rallyProtocol.js`:
+  - `GET /api/rally/readiness` (auth-protected by `operatorAuth`).
+  - `GET /api/rally/wallets`, `POST /api/rally/wallets`.
+  - `GET /api/rally/wallets/:id/balance`, `POST /api/rally/wallets/:id/fund`.
+  - `POST /api/rally/wallets/:id/pay-requests`.
+  - `POST /api/rally/payouts`, `GET /api/rally/payouts`.
+  - `POST /api/rally/scan-qr`, `POST /api/rally/tap-pay`.
+  - `GET /api/rally/requests`.
+- Authentication: dashboard uses `localStorage` key `dlb-admin-token` (`dlb-admin-2026-trust` on Fly), which is sent as `x-admin-token`.
+- Typical end-to-end flow:
+  1. Create wallet: fills `rally-label`, `rally-email`, `rally-type`; call `createRallyWallet()`.
+  2. Fund wallet: select wallet in `rally-fund-wallet`, amount in `rally-fund-amount`; call `fundRallyWallet()`.
+  3. Request payment (QR): select wallet in `rally-req-wallet`, amount/memo; call `createRallyRequest()`. The panel shows a base64 PNG (`qrDataUrl`) and a deep link (`shareableUrl`).
+  4. Tap-pay: paste the deep link in `rally-qr-data` and call `scanRallyQr()`; select a different funded payer wallet in `rally-pay-wallet`; call `rallyTapPay()`.
+  5. Duplicate tap-pay: calling `rallyTapPay()` again with the same `requestId` returns `payment request already processed` and no second payout is created.
+  6. Direct payout: fill `rally-pay-wallet`, `rally-pay-to`, `rally-pay-amount`, `rally-pay-memo`; call `createRallyPayout()`.
+- Wallet address derivation uses `AccountAbstractionEngine.getSmartAccountAddress(owner, BigInt(index))`. The new wallet index is allocated atomically from a Postgres sequence (`rally_wallet_index_seq`) or `max(file state) + 1` fallback, and the record is inserted to the DB before JSON state.
+- The engine runs in `aa-fallback` mode (`RALLY_API_KEY` not set), using the existing `AccountAbstractionEngine` / `SovereignTrustPaymaster` for gasless transfers.
+- Token: DLB-PTCUSD (`0xb01e6280ffe6faac679a17b029df8e065e8d0002`). Paymaster: `0x6f0c2c593bb3942cf11eacbef46c78fd51b99948`. Operator: `0x3e53028cf69949f3B961ce786Baf2D4D75166562`.
+- UI escape: `escapeHtml()` is applied to wallet labels, addresses, IDs, payout fields, shareable URLs, and QR scan output, so creating a wallet with label `<script>alert(1)</script> Test` renders literally and does not execute.
+- **Gotcha:** a brand-new wallet must be deployed on-chain before it can send a direct payout. The `fund` call funds the wallet address from the hot wallet but does not deploy the smart-account; the first *outgoing* transfer from a new wallet may fail with `maxFeePerGas too low` / `paymaster deposit insufficient` because the userOp includes `initCode` and the paymaster deposit cannot cover deployment gas. Prefer using an existing, already-deployed wallet as the sender for direct payout tests, or top up the paymaster deposit.
+
 ## Devin Secrets Needed
 
 - `DATABASE_URL` or local Postgres credentials (`dlbtrust`/`dlbtrust`).
