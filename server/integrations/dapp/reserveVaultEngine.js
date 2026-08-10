@@ -36,6 +36,14 @@ function id(prefix = 'RV') {
   return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 8).toUpperCase()}`;
 }
 
+function formatUnits(value, decimals = 18) {
+  const v = String(value || 0).replace(/[^0-9]/g, '');
+  if (!v) return '0';
+  const whole = v.length > decimals ? v.slice(0, v.length - decimals) : '0';
+  const frac = v.length > decimals ? v.slice(v.length - decimals).replace(/0+$/, '') : v.padStart(decimals, '0').replace(/^0+|0+$/g, '');
+  return frac ? `${whole}.${frac}` : whole;
+}
+
 class ReserveVaultEngine {
   static getConfig() {
     const cfg = getConfig();
@@ -133,8 +141,18 @@ class ReserveVaultEngine {
     const mintAmount = (collateralAmount * ratio) / 10000;
 
     let mintResult;
+    let tokenSymbol;
+    let tokenAddress;
+    let tokenId;
+    let recordedMinted;
     if (moduleKey && PtcStablecoinEngine) {
-      mintResult = await PtcStablecoinEngine.approveAndDeposit({ moduleKey, amount: String(mintAmount), recipient: holder });
+      // For module reserves, deposit the raw collateral amount into the PTC vault and record what was actually minted.
+      mintResult = await PtcStablecoinEngine.approveAndDeposit({ moduleKey, amount: String(collateralAmount), recipient: holder });
+      const ptcInfo = await PtcStablecoinEngine.info();
+      tokenSymbol = ptcInfo.tokenSymbol || 'DLB-PTCUSD';
+      tokenAddress = ptcInfo.tokenAddress || '';
+      tokenId = null;
+      recordedMinted = formatUnits(mintResult.mintedStablecoin, 18);
     } else if (sourceType && sourceAccountId && StablecoinDexEngine) {
       // Mint only the ratio-adjusted amount from the ledger source.
       mintResult = await StablecoinDexEngine.mintFromSource({
@@ -143,21 +161,23 @@ class ReserveVaultEngine {
         amount: String(mintAmount),
         targetAddress: holder,
       });
+      tokenSymbol = vaultToken.symbol;
+      tokenAddress = vaultToken.token_address;
+      tokenId = vaultToken.id;
+      recordedMinted = mintResult.minted;
     } else {
       throw new Error('Either (sourceType, sourceAccountId) or moduleKey is required');
     }
 
     const positionId = id('RVP');
-    const tokenSymbol = vaultToken.symbol;
-    const tokenAddress = vaultToken.token_address;
     if (query) {
       await query(
         `INSERT INTO reserve_vault_positions (id, token_id, source_type, source_account_id, module_key, collateral_amount, minted_amount, collateral_ratio_bps, token_symbol, token_address, holder_address, status, mint_tx_hash, metadata)
          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)`,
-        [positionId, vaultToken.id, sourceType || 'module', sourceAccountId || null, moduleKey || null, collateralAmount, mintAmount, ratio, tokenSymbol, tokenAddress, holder, 'active', (mintResult && mintResult.mintTxHash) || null, JSON.stringify({ memo, mintResult })]
+        [positionId, tokenId, sourceType || 'module', sourceAccountId || null, moduleKey || null, collateralAmount, recordedMinted, ratio, tokenSymbol, tokenAddress, holder, 'active', (mintResult && (mintResult.mintTxHash || mintResult.txHash)) || null, JSON.stringify({ memo, mintResult })]
       );
     }
-    return { positionId, sourceType, sourceAccountId, moduleKey, collateralAmount, mintAmount, tokenSymbol, tokenAddress, holder, mintResult };
+    return { positionId, sourceType, sourceAccountId, moduleKey, collateralAmount, mintAmount: recordedMinted, tokenSymbol, tokenAddress, holder, mintResult };
   }
 
   static async getPosition(positionId) {
@@ -224,7 +244,7 @@ class ReserveVaultEngine {
       sourceAsset: position.token_symbol,
       targetAsset,
       amount: String(swapAmount),
-      route,
+      route: chosen,
       routeProvider: chosen.provider || chosen.engine,
       sourceType: position.source_type,
       sourceAccountId: position.source_account_id,
@@ -232,7 +252,8 @@ class ReserveVaultEngine {
     });
 
     if (query) {
-      await query("UPDATE reserve_vault_positions SET target_asset = $1, status = 'swapped', updated_at = NOW() WHERE id = $2", [targetAsset, positionId]);
+      const meta = { ...position.metadata, swapProposal: proposal, targetAsset, swapAmount };
+      await query("UPDATE reserve_vault_positions SET target_asset = $1, updated_at = NOW(), metadata = $2 WHERE id = $3", [targetAsset, JSON.stringify(meta), positionId]);
     }
     return { position, targetAsset, swapAmount, route: chosen, proposal };
   }

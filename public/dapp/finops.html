@@ -2533,6 +2533,10 @@
     } catch(e) { wrap.innerHTML = '<div class="status err">' + e.message + '</div>'; }
   }
 
+  function htmlEscape(s) {
+    return String(s == null ? '' : s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+  }
+
   // ─── Reserve Vault (CDP) panel ──────────────────────────────────────────────────
   let currentReserveVaultQuote = null;
 
@@ -2572,7 +2576,7 @@
       };
       const r = await api('/api/finops/reserve-vault/mint', { method: 'POST', body: JSON.stringify(body) });
       if (!r.success) throw new Error(r.error || 'mint failed');
-      wrap.innerHTML = '<div class="status ok">Minted ' + r.data.mintAmount + ' ' + r.data.tokenSymbol + ' (position <code>' + r.data.positionId + '</code>)</div>';
+      wrap.innerHTML = '<div class="status ok">Minted ' + htmlEscape(r.data.mintAmount) + ' ' + htmlEscape(r.data.tokenSymbol) + ' (position <code>' + htmlEscape(r.data.positionId) + '</code>)</div>';
       rvLoadPositions();
     } catch(e) { wrap.innerHTML = '<div class="status err">' + e.message + '</div>'; }
   }
@@ -2585,7 +2589,7 @@
       if (!r.success) throw new Error(r.error || 'quote failed');
       currentReserveVaultQuote = r.data;
       const recommended = (r.data.recommended && r.data.recommended.name) ? r.data.recommended.name : 'none';
-      wrap.innerHTML = '<div class="status ok">Best route: ' + recommended + '<br/>Routes: ' + (r.data.routes || []).map(x => (x.provider || x.engine) + ' (' + (x.status || 'unknown') + ', out ~' + (x.estimatedOutput || 0) + ')').join(', ') + '</div>';
+      wrap.innerHTML = '<div class="status ok">Best route: ' + htmlEscape(recommended) + '<br/>Routes: ' + (r.data.routes || []).map(x => htmlEscape(x.provider || x.engine) + ' (' + htmlEscape(x.status || 'unknown') + ', out ~' + htmlEscape(x.estimatedOutput || 0) + ')').join(', ') + '</div>';
     } catch(e) { wrap.innerHTML = '<div class="status err">' + e.message + '</div>'; }
   }
 
@@ -2596,7 +2600,7 @@
     try {
       const r = await api('/api/finops/reserve-vault/swap', { method: 'POST', body: JSON.stringify({ positionId: el('rv-position-id').value, targetAsset: el('rv-target-asset').value, routeProvider: (currentReserveVaultQuote.recommended && currentReserveVaultQuote.recommended.provider) || '' }) });
       if (!r.success) throw new Error(r.error || 'swap failed');
-      wrap.innerHTML = '<div class="status ok">Proposal: ' + (r.data.proposal && r.data.proposal.proposalId) + '</div>';
+      wrap.innerHTML = '<div class="status ok">Proposal: ' + htmlEscape((r.data.proposal && r.data.proposal.proposalId) || '') + '</div>';
     } catch(e) { wrap.innerHTML = '<div class="status err">' + e.message + '</div>'; }
   }
 
@@ -2608,7 +2612,7 @@
       const rows = r.data || [];
       let html = '<table class="small-table"><thead><tr><th>ID</th><th>Source</th><th>Collateral</th><th>Minted</th><th>Status</th><th>Tx</th></tr></thead>';
       rows.forEach(p => {
-        html += '<tr><td>' + (p.id || '') + '</td><td>' + (p.source_type || '') + ' ' + (p.source_account_id || '') + '</td><td>' + (p.collateral_amount || 0) + '</td><td>' + (p.minted_amount || 0) + ' ' + (p.token_symbol || '') + '</td><td>' + (p.status || '') + '</td><td>' + (p.mint_tx_hash ? p.mint_tx_hash.slice(0,18) + '…' : '') + '</td></tr>';
+        html += '<tr><td>' + htmlEscape(p.id) + '</td><td>' + htmlEscape(p.source_type) + ' ' + htmlEscape(p.source_account_id) + '</td><td>' + htmlEscape(p.collateral_amount || 0) + '</td><td>' + htmlEscape(p.minted_amount || 0) + ' ' + htmlEscape(p.token_symbol) + '</td><td>' + htmlEscape(p.status) + '</td><td>' + (p.mint_tx_hash ? htmlEscape(p.mint_tx_hash.slice(0,18)) + '…' : '') + '</td></tr>';
       });
       html += '</table>';
       if (!rows.length) html = '<div class="muted">No vault positions yet.</div>';
