@@ -97,6 +97,7 @@
       <button data-tab="ramps">On/Off Ramps</button>
       <button data-tab="agent">AI Agent</button>
       <button data-tab="settlement">Settlement Gateway</button>
+      <button data-tab="rally">Rally Wallet</button>
     </nav>
     <div class="user">
       <span id="user-info"></span>
@@ -463,6 +464,104 @@
           </div>
         </div>
       </div>
+
+      <div id="tab-rally" class="tabs">
+        <div class="workflow">
+          <div class="card" style="flex:1.2;">
+            <h2>Rally Wallet</h2>
+            <p class="muted">Embedded smart-account wallet for tap, QR, and gasless payouts using the trust's paymaster.</p>
+            <div class="form-row">
+              <div class="form-group">
+                <label>Label</label>
+                <input type="text" id="rally-label" placeholder="DeAndrea Rally Wallet" />
+              </div>
+              <div class="form-group">
+                <label>Email / User ID</label>
+                <input type="text" id="rally-email" placeholder="email or user id" />
+              </div>
+              <div class="form-group">
+                <label>Type</label>
+                <select id="rally-type"><option value="beneficiary">Beneficiary</option><option value="trustee">Trustee</option><option value="merchant">Merchant</option><option value="operator">Operator</option></select>
+              </div>
+            </div>
+            <button class="btn" onclick="createRallyWallet()">Create Wallet</button>
+            <div id="rally-create-status" class="status"></div>
+
+            <h3 style="margin-top:18px;">Wallet List</h3>
+            <div id="rally-wallets" class="muted">Loading…</div>
+
+            <h3 style="margin-top:18px;">Fund Wallet</h3>
+            <div class="form-row">
+              <div class="form-group">
+                <label>Wallet</label>
+                <select id="rally-fund-wallet"></select>
+              </div>
+              <div class="form-group">
+                <label>Amount</label>
+                <input type="number" id="rally-fund-amount" placeholder="0.00" step="0.01" />
+              </div>
+            </div>
+            <button class="btn btn-sec" onclick="fundRallyWallet()">Fund from Trust Hot Wallet</button>
+            <div id="rally-fund-status" class="status"></div>
+          </div>
+
+          <div class="card" style="flex:0.8;">
+            <h3>Request Payment (QR)</h3>
+            <div class="form-row">
+              <div class="form-group">
+                <label>Wallet</label>
+                <select id="rally-req-wallet"></select>
+              </div>
+              <div class="form-group">
+                <label>Amount</label>
+                <input type="number" id="rally-req-amount" placeholder="0.00" step="0.01" />
+              </div>
+              <div class="form-group" style="flex:2;">
+                <label>Memo</label>
+                <input type="text" id="rally-req-memo" placeholder="Purpose" />
+              </div>
+            </div>
+            <button class="btn" onclick="createRallyRequest()">Generate QR</button>
+            <div id="rally-req-output" style="margin-top:12px;"></div>
+            <div id="rally-req-status" class="status"></div>
+
+            <h3 style="margin-top:18px;">Payout / Tap Pay</h3>
+            <div class="form-row">
+              <div class="form-group">
+                <label>From Wallet</label>
+                <select id="rally-pay-wallet"></select>
+              </div>
+              <div class="form-group">
+                <label>To Address</label>
+                <input type="text" id="rally-pay-to" placeholder="0x..." />
+              </div>
+              <div class="form-group">
+                <label>Amount</label>
+                <input type="number" id="rally-pay-amount" placeholder="0.00" step="0.01" />
+              </div>
+            </div>
+            <div class="form-row">
+              <div class="form-group" style="flex:2;">
+                <label>Memo</label>
+                <input type="text" id="rally-pay-memo" placeholder="Purpose" />
+              </div>
+            </div>
+            <button class="btn btn-gold" onclick="createRallyPayout()">Send Gasless Payout</button>
+            <div id="rally-pay-status" class="status"></div>
+
+            <h3 style="margin-top:18px;">Scan QR / Deep Link</h3>
+            <div class="form-group">
+              <textarea id="rally-qr-data" rows="2" placeholder="Paste QR payload or deep link"></textarea>
+            </div>
+            <button class="btn btn-sec" onclick="scanRallyQr()">Scan / Parse</button>
+            <div id="rally-scan-output" style="margin-top:8px;"></div>
+            <button class="btn btn-gold hidden" id="rally-scan-pay-btn" onclick="rallyTapPay()">Tap Pay</button>
+
+            <h3 style="margin-top:18px;">Recent Payouts</h3>
+            <div id="rally-payouts" class="muted">Loading…</div>
+          </div>
+        </div>
+      </div>
     </div>
   </div>
 
@@ -505,6 +604,7 @@
     if (key === 'payouts') loadPayouts();
     if (key === 'holds') loadHolds();
     if (key === 'settlement') loadSettlement();
+    if (key === 'rally') loadRally();
   }
 
   document.querySelectorAll('.nav button').forEach(b => b.onclick = () => switchTab(b.dataset.tab));
@@ -522,6 +622,8 @@
       const name = u ? (u.name || u.email || roleLabel) : (isAdmin() ? 'Operator' : 'Trustee');
       el('user-info').textContent = name + (roleLabel ? ' · ' + roleLabel : '');
       loadOverview();
+      const params = new URLSearchParams(window.location.search);
+      if (params.get('tab') === 'rally') { switchTab('rally'); }
     } catch (e) { showStatus('token-status', e.message, true); }
   }
 
@@ -785,6 +887,137 @@
       showStatus('txs-status', `Executed: ${res.data.order_id} → ${res.data.status}`, false);
       loadSettlement();
     } catch (e) { showStatus('txs-status', e.message, true); }
+  }
+
+  let rallyWallets = [];
+  let rallyScan = null;
+
+  async function loadRally() {
+    try {
+      const res = await api('/api/rally/readiness');
+      const readiness = res.data || {};
+      const readyText = readiness.ready ? `Ready (${readiness.mode})` : 'Not ready: ' + (readiness.issues || []).join('; ');
+      try {
+        const walletsRes = await api('/api/rally/wallets');
+        rallyWallets = walletsRes.data || [];
+        renderRallyWallets(rallyWallets, readyText);
+      } catch (we) {
+        el('rally-wallets').innerHTML = '<p class="muted">' + we.message + '</p>';
+      }
+      try {
+        const payoutsRes = await api('/api/rally/payouts');
+        renderRallyPayouts(payoutsRes.data || []);
+      } catch (pe) { el('rally-payouts').innerHTML = '<p class="muted">' + pe.message + '</p>'; }
+
+      const params = new URLSearchParams(window.location.search);
+      const payTo = params.get('payTo');
+      if (payTo) {
+        el('rally-pay-to').value = payTo;
+        el('rally-pay-amount').value = params.get('amount') || '';
+        el('rally-pay-memo').value = params.get('memo') || '';
+      }
+    } catch (e) { showStatus('rally-create-status', e.message, true); }
+  }
+
+  function renderRallyWalletOptions() {
+    const opts = rallyWallets.map(w => `<option value="${w.id}">${w.label} · ${w.wallet_address.slice(0,8)}… · index ${w.wallet_index}</option>`).join('');
+    ['rally-fund-wallet','rally-req-wallet','rally-pay-wallet'].forEach(id => { if (el(id)) el(id).innerHTML = opts; });
+  }
+
+  function renderRallyWallets(wallets, readyText) {
+    renderRallyWalletOptions();
+    if (!wallets.length) { el('rally-wallets').innerHTML = `<p class="muted">${readyText} · No wallets yet.</p>`; return; }
+    el('rally-wallets').innerHTML = `<table class="table"><thead><tr><th>ID</th><th>Label</th><th>Address</th><th>Index</th><th>Balance</th></tr></thead><tbody>${wallets.map(w => `<tr><td>${w.id}</td><td>${w.label}</td><td>${w.wallet_address}</td><td>${w.wallet_index}</td><td><button class="btn btn-sm" onclick="loadRallyBalance('${w.id}')">Balance</button></td></tr>`).join('')}</tbody></table>`;
+  }
+
+  async function loadRallyBalance(walletId) {
+    try {
+      const res = await api(`/api/rally/wallets/${walletId}/balance`);
+      const b = (res.data.balances || []).map(x => `${x.symbol}: ${x.balance}`).join(' | ');
+      showStatus('rally-create-status', `Balance ${res.data.walletId || res.data.address}: ${b}`, false);
+    } catch (e) { showStatus('rally-create-status', e.message, true); }
+  }
+
+  function renderRallyPayouts(payouts) {
+    if (!payouts.length) { el('rally-payouts').innerHTML = '<p class="muted">No payouts yet.</p>'; return; }
+    el('rally-payouts').innerHTML = `<table class="table"><thead><tr><th>ID</th><th>From</th><th>To</th><th>Amount</th><th>Status</th><th>Tx</th></tr></thead><tbody>${payouts.map(p => `<tr><td>${p.id}</td><td>${p.from_address.slice(0,10)}…</td><td>${p.to_address.slice(0,10)}…</td><td>${p.amount} ${p.currency}</td><td><span class="badge ${p.status === 'completed' ? 'approved' : 'pending'}">${p.status}</span></td><td>${p.tx_hash ? `<a href="https://etherscan.io/tx/${p.tx_hash}" target="_blank" style="color:var(--primary)">view</a>` : '—'}</td></tr>`).join('')}</tbody></table>`;
+  }
+
+  async function createRallyWallet() {
+    try {
+      const body = {
+        label: el('rally-label').value.trim() || 'Rally Wallet',
+        email: el('rally-email').value.trim(),
+        type: el('rally-type').value,
+      };
+      const res = await api('/api/rally/wallets', { method: 'POST', body: JSON.stringify(body) });
+      showStatus('rally-create-status', `Wallet ${res.data.id} created at ${res.data.walletAddress}`, false);
+      loadRally();
+    } catch (e) { showStatus('rally-create-status', e.message, true); }
+  }
+
+  async function fundRallyWallet() {
+    try {
+      const walletId = el('rally-fund-wallet').value;
+      const amount = el('rally-fund-amount').value;
+      const res = await api(`/api/rally/wallets/${walletId}/fund`, { method: 'POST', body: JSON.stringify({ amount, currency: 'DLB-PTCUSD' }) });
+      showStatus('rally-fund-status', `Funded ${res.data.amount} → ${res.data.tx}`, false);
+      loadRally();
+    } catch (e) { showStatus('rally-fund-status', e.message, true); }
+  }
+
+  async function createRallyRequest() {
+    try {
+      const walletId = el('rally-req-wallet').value;
+      const amount = el('rally-req-amount').value;
+      const memo = el('rally-req-memo').value.trim();
+      const res = await api(`/api/rally/wallets/${walletId}/pay-requests`, { method: 'POST', body: JSON.stringify({ amount, currency: 'DLB-PTCUSD', memo }) });
+      const out = el('rally-req-output');
+      out.innerHTML = `<p class="muted">Scan to pay:</p><img src="${res.data.qrDataUrl}" style="max-width:240px;border-radius:10px;" /><p class="muted" style="word-break:break-all;"><a href="${res.data.shareableUrl}" target="_blank">${res.data.shareableUrl}</a></p>`;
+      showStatus('rally-req-status', `Request ${res.data.requestId} for ${res.data.amount}`, false);
+    } catch (e) { showStatus('rally-req-status', e.message, true); }
+  }
+
+  async function createRallyPayout() {
+    try {
+      const body = {
+        fromWalletId: el('rally-pay-wallet').value,
+        toAddress: el('rally-pay-to').value.trim(),
+        amount: el('rally-pay-amount').value,
+        currency: 'DLB-PTCUSD',
+        memo: el('rally-pay-memo').value.trim(),
+      };
+      const res = await api('/api/rally/payouts', { method: 'POST', body: JSON.stringify(body) });
+      showStatus('rally-pay-status', `Payout ${res.data.payoutId} → ${res.data.tx}`, false);
+      loadRally();
+    } catch (e) { showStatus('rally-pay-status', e.message, true); }
+  }
+
+  async function scanRallyQr() {
+    try {
+      const qrData = el('rally-qr-data').value.trim();
+      const res = await api('/api/rally/scan-qr', { method: 'POST', body: JSON.stringify({ qrData }) });
+      rallyScan = res.data;
+      const out = el('rally-scan-output');
+      out.innerHTML = `<pre style="white-space:pre-wrap;font-size:.8rem;color:var(--muted);">${JSON.stringify(res.data, null, 2)}</pre>`;
+      const btn = el('rally-scan-pay-btn');
+      if (rallyScan && rallyScan.to && rallyScan.amount) {
+        el('rally-pay-to').value = rallyScan.to;
+        el('rally-pay-amount').value = rallyScan.amount;
+        el('rally-pay-memo').value = rallyScan.memo || '';
+        btn.classList.remove('hidden');
+      } else { btn.classList.add('hidden'); }
+    } catch (e) { showStatus('rally-pay-status', e.message, true); }
+  }
+
+  async function rallyTapPay() {
+    if (!rallyScan || !rallyScan.requestId) return;
+    try {
+      const fromWalletId = el('rally-pay-wallet').value;
+      const res = await api('/api/rally/tap-pay', { method: 'POST', body: JSON.stringify({ requestId: rallyScan.requestId, fromWalletId }) });
+      showStatus('rally-pay-status', `Tap-pay ${res.data.payoutId} → ${res.data.tx}`, false);
+      loadRally();
+    } catch (e) { showStatus('rally-pay-status', e.message, true); }
   }
 
   // Load token on start

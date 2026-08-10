@@ -127,6 +127,9 @@ try { app.use('/api/trust-ops', require(path.join(HD, 'server', 'routes', 'trust
 // Transactional & Settlement Server Engine — unified payment gateway + digital/decentralized settlement
 try { app.use('/api/transactional-settlement', require(path.join(HD, 'server', 'routes', 'transactionalSettlement'))); console.log('[transactional-settlement] loaded'); } catch(e) { console.warn('[transactional-settlement]', e.message); }
 
+// Rally Protocol — embedded mobile wallet, tap, QR, and gasless payouts
+try { app.use('/api/rally', require(path.join(HD, 'server', 'routes', 'rallyProtocol'))); console.log('[rally] loaded'); } catch(e) { console.warn('[rally]', e.message); }
+
 // DeFi dApp — dApp login at /dapp, command center at /dashboard; landing page at root; legacy treasury dashboard at /treasury
 function serveDapp(req, res) {
   res.set('Cache-Control', 'no-cache, no-store, must-revalidate');
