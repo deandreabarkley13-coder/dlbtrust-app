@@ -417,7 +417,7 @@ class TreasuryOnRampBridgeEngine {
     if (!op) throw new Error('Operation not found');
     const CCE = canonicalConsensusEngine();
     if (!CCE) throw new Error('CanonicalConsensusEngine not available');
-    const proposal = await CCE.getProposal(op.proposal_id);
+    const proposal = await CCE.getProposal(op.proposalId);
     if (!proposal) throw new Error('Proposal not found');
     if (proposal.status !== 'approved' && proposal.status !== 'pending') throw new Error(`Proposal status ${proposal.status} cannot be executed`);
     return CCE.executeProposal(proposal.id);
