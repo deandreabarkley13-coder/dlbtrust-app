@@ -272,6 +272,7 @@ class DecentralizedRampEngine {
     targetAsset = '',
     amount = '0',
     routeProvider = '',
+    route: routeArg = null,
     sourceType = '',
     sourceAccountId = '',
     sourceModule = '',
@@ -285,15 +286,25 @@ class DecentralizedRampEngine {
     const CCE = canonicalConsensusEngine();
     if (!CCE) throw new Error('CanonicalConsensusEngine not available');
 
-    let route = null;
-    if (!routeProvider) {
+    let route = routeArg || payload.route || null;
+    let provider = routeProvider || (route && (route.provider || route.name)) || '';
+    if (!route || !provider) {
       const q = await this.quote({ direction, sourceAsset, targetAsset, amount, sourceType, sourceAccountId, sourceModule, targetAddress, network, bridgeProvider, slippageBps });
-      route = q.recommended;
-      routeProvider = route ? (route.provider || route.name) : undefined;
+      if (!provider) {
+        route = q.recommended;
+      } else {
+        const want = String(provider).toLowerCase();
+        route = (q.routes || []).find(r =>
+          (r.provider && String(r.provider).toLowerCase() === want) ||
+          (r.name && String(r.name).toLowerCase() === want) ||
+          (r.engine && String(r.engine).toLowerCase() === want)
+        ) || q.recommended;
+      }
+      provider = route ? (route.provider || route.name || provider) : provider;
     }
 
     const title = `Decentralized ramp: ${direction} ${amount} ${sourceAsset || ''} -> ${targetAsset || ''}`;
-    const description = `Route via ${routeProvider || 'best provider'} for decentralized on/off ramp.`;
+    const description = `Route via ${provider || 'best provider'} for decentralized on/off ramp.`;
     const proposal = await CCE.createProposal({
       category: 'decentralized_ramp',
       title,
@@ -303,7 +314,7 @@ class DecentralizedRampEngine {
         sourceAsset,
         targetAsset,
         amount,
-        routeProvider,
+        routeProvider: provider,
         route,
         sourceType,
         sourceAccountId,
@@ -329,9 +340,11 @@ class DecentralizedRampEngine {
 
     if (!provider) throw new Error('No route provider selected for decentralized ramp execution');
 
-    if (provider.includes('cross_chain') || (route && ['same_chain_dex', 'p2p_order', 'cross_chain_bridge'].includes(route.name))) {
+    const crossChainRouteNames = new Set(['same_chain_dex', 'p2p_order', 'cross_chain_bridge']);
+    const isCrossChain = provider.includes('cross_chain') || provider.includes('moduletokenswap') || provider.includes('otc') || provider.includes('order book') || (route && crossChainRouteNames.has(route.name));
+    if (isCrossChain) {
       if (!CrossChainConversionEngine) throw new Error('CrossChainConversionEngine not available');
-      const routeName = route ? route.name : (provider.includes('p2p') ? 'p2p_order' : 'same_chain_dex');
+      const routeName = route ? route.name : (provider.includes('p2p') || provider.includes('moduletokenswap') || provider.includes('otc') || provider.includes('order book') ? 'p2p_order' : (provider.includes('bridge') ? 'cross_chain_bridge' : 'same_chain_dex'));
       return CrossChainConversionEngine._execute({
         payload: {
           sourceType,
