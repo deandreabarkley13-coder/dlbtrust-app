@@ -89,6 +89,11 @@ const PAYMASTER_ABI = [
   { inputs: [{ name: 'accounts', type: 'address[]' }, { name: 'allowed', type: 'bool' }], name: 'batchWhitelist', outputs: [], stateMutability: 'nonpayable', type: 'function' },
 ];
 
+const FACTORY_ABI = viem?.parseAbi ? viem.parseAbi([
+  'function createAccount(address owner, uint256 salt) external returns (address)',
+  'function getAddress(address owner, uint256 salt) external view returns (address)',
+]) : [];
+
 const STABLECOIN_ABI = [
   { inputs: [{ name: '', type: 'address' }], name: 'whitelisted', outputs: [{ name: '', type: 'bool' }], stateMutability: 'view', type: 'function' },
 ];
@@ -113,6 +118,7 @@ class RallyProtocolEngine {
       tokenAddress: str('RALLY_TOKEN_ADDRESS', PtcStablecoinEngine ? '' : ''),
       hotWalletIndex: num('RALLY_HOT_WALLET_INDEX', 0),
       baseUrl: str('RALLY_BASE_URL', 'https://dlbtrust-app.fly.dev'),
+      factory: str('AA_FACTORY', aaCfg.factory || '0x9406Cc6185a346906296840746125a0E44976454'),
       encryptionKey: str('RALLY_ENCRYPTION_KEY', privateKey),
     };
   }
@@ -228,6 +234,26 @@ class RallyProtocolEngine {
     if (!PtcStablecoinEngine) return;
     const ok = await this._isTokenRecipientWhitelisted(address);
     if (!ok) await PtcStablecoinEngine.whitelist(address, true);
+  }
+
+  static async _ensureSmartAccountDeployed(wallet, cfg) {
+    if (!viem || !AccountAbstractionEngine) return { skipped: true };
+    const publicClient = this._publicClient(cfg);
+    const code = await publicClient.getBytecode({ address: wallet.wallet_address }).catch(() => '0x');
+    if (code && code !== '0x') return { alreadyDeployed: true };
+    if (!cfg.privateKey || !cfg.factory) throw new Error('operator key or factory not configured; cannot deploy smart account');
+    const account = privateKeyToAccount(cfg.privateKey);
+    const walletClient = viem.createWalletClient({ account, chain: getChain(cfg.chainId), transport: viem.http(cfg.rpcUrl) });
+    const hash = await walletClient.writeContract({
+      address: cfg.factory,
+      abi: FACTORY_ABI,
+      functionName: 'createAccount',
+      args: [cfg.operatorAddress, BigInt(wallet.wallet_index)],
+      gas: 300000n,
+    });
+    const receipt = await publicClient.waitForTransactionReceipt({ hash, timeout: 120000 });
+    if (receipt.status !== 'success') throw new Error(`smart account deployment failed: ${hash}`);
+    return { deployed: true, tx: hash };
   }
 
   static async _isWhitelisted(address) {
@@ -454,12 +480,15 @@ class RallyProtocolEngine {
     return this.getConfig().tokenAddress;
   }
 
-  static async fundWallet({ walletId, amount, currency = 'DLB-PTCUSD', tokenAddress } = {}) {
+  static async fundWallet({ walletId, amount, currency = 'DLB-PTCUSD', tokenAddress, deploy = true } = {}) {
     await this.ensureTables();
     const cfg = this.getConfig();
     if (!AccountAbstractionEngine) throw new Error('AccountAbstractionEngine not available');
     const wallet = await this.getWallet(walletId);
     if (!wallet) throw new Error('wallet not found');
+    if (deploy) {
+      await this._ensureSmartAccountDeployed(wallet, cfg).catch(e => console.warn('[RallyProtocolEngine] deploy during fund failed:', e.message));
+    }
     const to = wallet.wallet_address;
     const tk = tokenAddress || cfg.tokenAddress || await this._ptcTokenAddress();
     if (!tk) throw new Error('token address not configured');
@@ -494,7 +523,7 @@ class RallyProtocolEngine {
       created_at: new Date().toISOString(),
     };
     this._savePayout(record);
-    return { success: true, payoutId, tx: sub.tx, userOpHash: sub.userOpHash, walletId, amount, to };
+    return { success: true, payoutId, tx: sub.tx, userOpHash: sub.userOpHash, walletId, amount, to, deployed: deploy };
   }
 
   static _savePayout(record) {
@@ -579,6 +608,7 @@ class RallyProtocolEngine {
     if (!viem?.isAddress(toAddress)) throw new Error('invalid toAddress');
     const wallet = await this.getWallet(fromWalletId);
     if (!wallet) throw new Error('wallet not found');
+    const deployRes = await this._ensureSmartAccountDeployed(wallet, cfg).catch(e => { console.warn('[RallyProtocolEngine] deploy before payout failed:', e.message); return { error: e.message }; });
     const from = wallet.wallet_address;
     const tokenAddress = cfg.tokenAddress || await this._ptcTokenAddress();
     if (!tokenAddress) throw new Error('token address not configured');
@@ -613,7 +643,7 @@ class RallyProtocolEngine {
       created_at: new Date().toISOString(),
     };
     this._savePayout(record);
-    return { success: true, payoutId, tx: sub.tx, userOpHash: sub.userOpHash, from, to: toAddress, amount, currency, memo };
+    return { success: true, payoutId, tx: sub.tx, userOpHash: sub.userOpHash, from, to: toAddress, amount, currency, memo, deployed: deployRes };
   }
 
   static async listPayouts({ walletId } = {}) {
