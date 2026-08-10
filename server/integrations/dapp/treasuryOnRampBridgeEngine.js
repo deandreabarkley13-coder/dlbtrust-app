@@ -420,7 +420,10 @@ class TreasuryOnRampBridgeEngine {
     const proposal = await CCE.getProposal(op.proposalId);
     if (!proposal) throw new Error('Proposal not found');
     if (proposal.status !== 'approved' && proposal.status !== 'pending') throw new Error(`Proposal status ${proposal.status} cannot be executed`);
-    return CCE.executeProposal(proposal.id);
+    const proposalRes = await CCE.executeProposal(proposal.id);
+    const engineResult = proposalRes && proposalRes.result ? proposalRes.result : proposalRes;
+    await queryFn(`UPDATE treasury_on_ramp_operations SET status=$1, result=$2, updated_at=NOW() WHERE id=$3`, [engineResult.status || proposalRes.status, safeJson(engineResult), operationId]);
+    return engineResult;
   }
 
   static async _execute(proposal) {
