@@ -1002,7 +1002,7 @@ router.post('/treasury-on-ramp/propose', operatorAuth, writeRateLimiter(), async
 });
 
 router.post('/treasury-on-ramp/operations/:id/approve', operatorAuth, writeRateLimiter(), async (req, res) => {
-  try { res.json({ success: true, data: await TreasuryOnRampBridgeEngine.approve({ proposalId: req.params.id, ...req.body }) }); } catch (err) { sendError(res, err); }
+  try { res.json({ success: true, data: await TreasuryOnRampBridgeEngine.approve({ operationId: req.params.id, ...req.body }) }); } catch (err) { sendError(res, err); }
 });
 
 router.post('/treasury-on-ramp/operations/:id/execute', operatorAuth, writeRateLimiter(), async (req, res) => {
