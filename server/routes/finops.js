@@ -23,6 +23,8 @@ const { CrossChainConversionEngine } = require('../integrations/dapp/crossChainC
 const { PairedAssetEngine } = require('../integrations/dapp/pairedAssetEngine');
 const { OnOffRampEngine } = require('../integrations/dapp/onOffRampEngine');
 const { DecentralizedRampEngine } = require('../integrations/dapp/decentralizedRampEngine');
+const { SeedLiquidityEngine } = require('../integrations/dapp/seedLiquidityEngine');
+const { PtcDexEngine } = require('../integrations/dapp/ptcDexEngine');
 const { TrustMarketEngine } = require('../integrations/dapp/trustMarketEngine');
 const { IntentRoutingEngine } = require('../integrations/dapp/intentRoutingEngine');
 const { ExternalWalletEngine } = require('../integrations/dapp/externalWalletEngine');
@@ -871,6 +873,38 @@ router.post('/decentralized-ramps/requests/:id/approve', operatorAuth, writeRate
 
 router.post('/decentralized-ramps/requests/:id/execute', operatorAuth, writeRateLimiter(), async (req, res) => {
   try { res.json({ success: true, data: await CanonicalConsensusEngine.executeProposal(req.params.id) }); } catch (err) { sendError(res, err); }
+});
+
+// ═════════════════════════════════════════════════════════════════════════════
+// Seed Liquidity Engine (BondDex pool creation and liquidity management)
+// ═════════════════════════════════════════════════════════════════════════════
+
+router.get('/seed-liquidity/pools', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await SeedLiquidityEngine.listPools() }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/seed-liquidity/ptc-pool', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try {
+    const { targetAsset, seedPtcAmount, seedPairedAmount, moduleKey, createIfMissing } = req.body || {};
+    const result = await SeedLiquidityEngine.ensurePtcPool({ targetAsset, seedPtcAmount, seedPairedAmount, moduleKey, createIfMissing: createIfMissing !== false });
+    res.status(201).json({ success: true, data: result });
+  } catch (err) { sendError(res, err); }
+});
+
+router.post('/seed-liquidity/seed-pool', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try { res.status(201).json({ success: true, data: await SeedLiquidityEngine.seedPool(req.body) }); } catch (err) { sendError(res, err); }
+});
+
+// ═════════════════════════════════════════════════════════════════════════════
+// PtcDex Engine (DLB-PTCUSD -> DAI/USDC/USDS/WETH/ETH via BondDex)
+// ═════════════════════════════════════════════════════════════════════════════
+
+router.post('/ptc-dex/quote', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await PtcDexEngine.quote(req.body) }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/ptc-dex/swap', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try { res.status(201).json({ success: true, data: await PtcDexEngine.swap(req.body) }); } catch (err) { sendError(res, err); }
 });
 
 // ═════════════════════════════════════════════════════════════════════════════
