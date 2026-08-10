@@ -102,6 +102,7 @@ class InternalMarketMakerEngine {
       DO $$
       BEGIN
         IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'uq_internal_mm_pools_address') THEN
+          DROP INDEX IF EXISTS idx_internal_mm_pools_address;
           CREATE UNIQUE INDEX idx_internal_mm_pools_address ON internal_market_maker_pools(pool_address);
           ALTER TABLE internal_market_maker_pools ADD CONSTRAINT uq_internal_mm_pools_address UNIQUE (pool_address);
         END IF;
