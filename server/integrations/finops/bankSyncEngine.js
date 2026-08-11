@@ -58,6 +58,7 @@ class BankSyncEngine {
         currency TEXT,
         balance_current NUMERIC,
         balance_available NUMERIC,
+        last_synced_balance NUMERIC,
         raw JSONB,
         synced_at TIMESTAMPTZ DEFAULT NOW()
       )
@@ -110,11 +111,13 @@ class BankSyncEngine {
       await this.ensureTables();
       for (const a of accounts) {
         const balance = a.balance || a.balances || {};
+        const currentBalance = balance.current ?? a.currentBalance ?? null;
+        const availableBalance = balance.available ?? a.availableBalance ?? null;
         await query(`
           INSERT INTO banksync_accounts (id, bank_id, name, type, subtype, currency, balance_current, balance_available, raw, synced_at)
           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9::jsonb,NOW())
           ON CONFLICT (id) DO UPDATE SET name=$3, type=$4, subtype=$5, currency=$6, balance_current=$7, balance_available=$8, raw=$9::jsonb, synced_at=NOW()
-        `, [a.id, bid, a.name, a.type, a.subtype, a.currency, balance.current || a.currentBalance || null, balance.available || a.availableBalance || null, safeJson(a)]).catch(() => {});
+        `, [a.id, bid, a.name, a.type, a.subtype, a.currency, currentBalance, availableBalance, safeJson(a)]).catch(() => {});
       }
     }
     return data;
@@ -161,32 +164,53 @@ class BankSyncEngine {
     try { ({ TrustAccountingEngine } = require('../accounting/trustAccountingEngine')); } catch (e) { TrustAccountingEngine = null; }
     const account = (await query('SELECT * FROM banksync_accounts WHERE id=$1', [accountId]).catch(() => ({ rows: [] }))).rows[0];
     const memo = `BankSync sync ${account?.name || accountId}`;
+    const previousBalance = Number(account?.last_synced_balance ?? 0);
+    const diff = Math.round((current - previousBalance) * 100) / 100;
+
+    const result = { accountId, current, previousBalance, diff, balance, memo, cashResult: null, cashError: null, journalResult: null, journalError: null };
+
     if (CashEngine) {
       try { await CashEngine.createAccount({ accountId: `BS-${accountId}`, accountName: account?.name || `BankSync ${accountId}`, accountType: 'asset' }); } catch (e) {}
       try {
         const acct = await CashEngine.getAccount(`BS-${accountId}`);
         if (acct) {
-          const diff = Math.round((current * 100) - (acct.balance_cents || 0));
-          if (diff !== 0) {
-            await CashEngine.transfer({ fromAccountId: diff > 0 ? cashAccountId : `BS-${accountId}`, toAccountId: diff > 0 ? `BS-${accountId}` : cashAccountId, amountCents: Math.abs(diff), movementType: 'sync' });
+          const cashDiff = Math.round((current * 100) - (acct.balance_cents || 0));
+          if (cashDiff !== 0) {
+            result.cashResult = await CashEngine.transfer({ fromAccountId: cashDiff > 0 ? cashAccountId : `BS-${accountId}`, toAccountId: cashDiff > 0 ? `BS-${accountId}` : cashAccountId, amountCents: Math.abs(cashDiff), movementType: 'sync' });
+          } else {
+            result.cashResult = 'no-change';
           }
         }
-      } catch (e) {}
+      } catch (e) { result.cashError = e.message; }
     }
+
     if (TrustAccountingEngine) {
       try { await TrustAccountingEngine.createAccount({ accountCode: `BS-${accountId}`, accountName: account?.name || `BankSync ${accountId}`, accountType: 'asset' }); } catch (e) {}
-      try {
-        await TrustAccountingEngine.postJournalEntry({
-          entryDate: new Date(),
-          description: memo,
-          referenceType: 'banksync_sync',
-          referenceId: accountId,
-          postedBy: 'BankSyncEngine',
-          lines: [{ accountCode: `BS-${accountId}`, debitAmount: current }, { accountCode: trustAccountCode, creditAmount: current }],
-        });
-      } catch (e) {}
+      if (diff !== 0) {
+        try {
+          const bsDebit = diff > 0 ? diff : 0;
+          const bsCredit = diff < 0 ? -diff : 0;
+          const trustDebit = diff < 0 ? -diff : 0;
+          const trustCredit = diff > 0 ? diff : 0;
+          result.journalResult = await TrustAccountingEngine.postJournalEntry({
+            entryDate: new Date(),
+            description: memo,
+            referenceType: 'banksync_sync',
+            referenceId: accountId,
+            postedBy: 'BankSyncEngine',
+            lines: [
+              { accountCode: `BS-${accountId}`, debitAmount: bsDebit, creditAmount: bsCredit },
+              { accountCode: trustAccountCode, debitAmount: trustDebit, creditAmount: trustCredit },
+            ],
+          });
+          await query('UPDATE banksync_accounts SET last_synced_balance = $1, synced_at = NOW() WHERE id = $2', [current, accountId]).catch(() => {});
+        } catch (e) { result.journalError = e.message; }
+      } else {
+        result.journalResult = 'no-change';
+      }
     }
-    return { balance, current, memo, accountId };
+
+    return result;
   }
 
   static async getCachedBanks() {

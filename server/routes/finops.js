@@ -2589,7 +2589,7 @@ router.get('/banksync/banks/:bid/accounts/:aid/transactions', operatorAuth, asyn
 });
 
 router.post('/banksync/banks/:bid/accounts/:aid/sync', operatorAuth, writeRateLimiter(), async (req, res) => {
-  try { res.json({ success: true, data: await BankSyncEngine.syncToLedger({ bankId: req.params.bid, accountId: req.params.aid, ...req.body }) }); } catch (err) { sendError(res, err); }
+  try { res.json({ success: true, data: await BankSyncEngine.syncToLedger({ ...req.body, bankId: req.params.bid, accountId: req.params.aid }) }); } catch (err) { sendError(res, err); }
 });
 
 router.get('/banksync/cached/banks', operatorAuth, async (req, res) => {
