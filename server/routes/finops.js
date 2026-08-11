@@ -69,6 +69,7 @@ const { PushToCardEngine } = require('../integrations/payments/pushToCardEngine'
 const { NetworkingEngine } = require('../integrations/dapp/networkingEngine');
 const { FinosCdmEngine } = require('../integrations/finops/finosCdmEngine');
 const { BankSyncEngine } = require('../integrations/finops/bankSyncEngine');
+const { PrivateTrustCompanyEngine } = require('../integrations/dapp/privateTrustCompanyEngine');
 const { WalletVirtualAccountEngine } = require('../integrations/dapp/walletVirtualAccountEngine');
 let CashEngine;
 try { ({ CashEngine } = require('../integrations/cash/cashEngine')); } catch (e) { CashEngine = null; }
@@ -2605,6 +2606,43 @@ router.get('/banksync/cached/accounts', operatorAuth, async (req, res) => {
 
 router.get('/banksync/cached/accounts/:id/transactions', operatorAuth, async (req, res) => {
   try { res.json({ success: true, data: await BankSyncEngine.getCachedTransactions({ accountId: req.params.id, limit: req.query.limit, offset: req.query.offset }) }); } catch (err) { sendError(res, err); }
+});
+
+// ─── Private Trust Company (Family Support) ────────────────────────────────────
+router.get('/private-trust-company/source-of-truth', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await PrivateTrustCompanyEngine.getSourceOfTruth() }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/private-trust-company/refresh-capacity', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try { res.json({ success: true, data: await PrivateTrustCompanyEngine.refreshPoolCapacity() }); } catch (err) { sendError(res, err); }
+});
+
+router.get('/private-trust-company/beneficiaries', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await PrivateTrustCompanyEngine.listBeneficiaries() }); } catch (err) { sendError(res, err); }
+});
+
+router.get('/private-trust-company/beneficiaries/:id/statement', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await PrivateTrustCompanyEngine.getBeneficiaryStatement(req.params.id) }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/private-trust-company/distributions', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try { res.json({ success: true, data: await PrivateTrustCompanyEngine.createDistribution(req.body || {}) }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/private-trust-company/distribute/bond-interest', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try { res.json({ success: true, data: await PrivateTrustCompanyEngine.distributeAllBondInterest(req.body || {}) }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/private-trust-company/distribute/bond/:id/interest', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try { res.json({ success: true, data: await PrivateTrustCompanyEngine.distributeFromBonds({ bondId: req.params.id, type: 'interest', ...req.body }) }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/private-trust-company/distribute/bond/:id/principal', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try { res.json({ success: true, data: await PrivateTrustCompanyEngine.distributeFromBonds({ bondId: req.params.id, type: 'principal', ...req.body }) }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/private-trust-company/redeem', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try { res.json({ success: true, data: await PrivateTrustCompanyEngine.redeemSupport(req.body || {}) }); } catch (err) { sendError(res, err); }
 });
 
 module.exports = router;
