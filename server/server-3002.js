@@ -155,6 +155,18 @@ function serveTrustDashboard(req, res) {
   res.set('Expires', '0');
   res.sendFile(path.join(HD, 'public', 'dapp', 'trust-dashboard.html'));
 }
+function serveTrustPortal(req, res) {
+  res.set('Cache-Control', 'no-cache, no-store, must-revalidate');
+  res.set('Pragma', 'no-cache');
+  res.set('Expires', '0');
+  res.sendFile(path.join(HD, 'public', 'trust-portal', 'index.html'));
+}
+function serveTrustPortalDashboard(req, res) {
+  res.set('Cache-Control', 'no-cache, no-store, must-revalidate');
+  res.set('Pragma', 'no-cache');
+  res.set('Expires', '0');
+  res.sendFile(path.join(HD, 'public', 'trust-portal', 'dashboard.html'));
+}
 app.get('/', serveLanding);
 app.get('/dapp', serveDapp);
 app.get('/finops', serveFinops);
@@ -165,6 +177,9 @@ app.get('/treasury', function(req, res) {
   res.set('Expires', '0');
   res.sendFile(path.join(HD, 'public', 'dashboard.html'));
 });
+app.get('/trust-portal', serveTrustPortal);
+app.get('/trust-portal/dashboard.html', serveTrustPortalDashboard);
+app.get('/trust-portal/index.html', serveTrustPortal);
 // ─── Health / Data Integrity Endpoint ──────────────────────────────────────
 app.get('/api/health', async function(req, res) {
   try {
@@ -456,6 +471,9 @@ async function initializeDatabase() {
     console.log('[dapp] tables ensured');
     await DappEngine.ensurePortalUsers();
     console.log('[dapp] portal users seeded');
+    var PtcPortalEngine = require(path.join(HD, 'server', 'integrations', 'dapp', 'ptcPortalEngine')).PtcPortalEngine;
+    await PtcPortalEngine.ensureMembers();
+    console.log('[ptc] members seeded');
     var WalletEngine = require(path.join(HD, 'server', 'integrations', 'dapp', 'walletEngine')).WalletEngine;
     await WalletEngine.ensureTables();
     await WalletEngine.ensureWalletsForAllUsers();

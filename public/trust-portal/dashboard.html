@@ -1,0 +1,395 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate" />
+  <meta http-equiv="Pragma" content="no-cache" />
+  <meta http-equiv="Expires" content="0" />
+  <title>Barkley Trust — PTC Dashboard</title>
+  <style>
+    :root { --bg:#0a0e17; --card:#111a2b; --panel:#1e293b; --border:#26314a; --text:#f8fafc; --muted:#94a3b8; --accent:#4f87ff; --gold:#d4af37; --danger:#ef4444; --ok:#22c55e; --warning:#f59e0b; }
+    * { box-sizing:border-box; }
+    body { margin:0; font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif; background:var(--bg); color:var(--text); }
+    a { color:var(--accent); text-decoration:none; }
+    .header { position:sticky; top:0; z-index:50; background:rgba(10,14,23,.92); backdrop-filter:blur(12px); border-bottom:1px solid var(--border); }
+    .header-inner { max-width:1200px; margin:0 auto; padding:1rem 1.5rem; display:flex; align-items:center; justify-content:space-between; gap:1rem; flex-wrap:wrap; }
+    .brand { display:flex; align-items:center; gap:.75rem; }
+    .brand-mark { width:38px; height:38px; border-radius:50%; background:linear-gradient(135deg,var(--gold),#a88a2a); display:grid; place-items:center; font-weight:800; color:#0b0f17; font-size:.85rem; }
+    .brand h1 { font-size:1.05rem; margin:0; }
+    .brand p { font-size:.72rem; color:var(--muted); margin:0; }
+    .user { display:flex; align-items:center; gap:.75rem; font-size:.85rem; color:var(--muted); }
+    .badge { padding:.35rem .65rem; border-radius:20px; font-size:.75rem; font-weight:600; background:var(--panel); border:1px solid var(--border); }
+    .badge.trustee { color:var(--gold); border-color:rgba(212,175,55,.35); }
+    .badge.beneficiary { color:var(--accent); border-color:rgba(79,135,255,.35); }
+    .main { max-width:1200px; margin:0 auto; padding:1.5rem; }
+    .tabs { display:flex; gap:.5rem; border-bottom:1px solid var(--border); margin-bottom:1.5rem; flex-wrap:wrap; }
+    .tab { padding:.75rem 1rem; font-size:.85rem; color:var(--muted); cursor:pointer; border-bottom:2px solid transparent; }
+    .tab.active { color:var(--text); border-bottom-color:var(--accent); }
+    .grid-4 { display:grid; grid-template-columns:repeat(auto-fit,minmax(200px,1fr)); gap:1rem; margin-bottom:1.5rem; }
+    .card { background:var(--card); border:1px solid var(--border); border-radius:14px; padding:1.25rem; }
+    .card h3 { font-size:.95rem; color:var(--muted); margin:0 0 .35rem; text-transform:uppercase; letter-spacing:.5px; }
+    .card .value { font-size:1.65rem; font-weight:700; margin:0; }
+    .card .sub { font-size:.8rem; color:var(--muted); margin-top:.25rem; }
+    .section-title { font-size:1.25rem; font-weight:600; margin:1.5rem 0 .75rem; }
+    .grid-2 { display:grid; grid-template-columns:repeat(auto-fit,minmax(320px,1fr)); gap:1.5rem; }
+    .form-group { margin-bottom:1rem; }
+    .form-group label { display:block; font-size:.75rem; color:var(--muted); text-transform:uppercase; letter-spacing:.5px; margin-bottom:.35rem; }
+    .form-group input, .form-group select, .form-group textarea { width:100%; padding:.75rem; background:#0b1220; border:1px solid var(--border); border-radius:10px; color:var(--text); font-size:.95rem; }
+    .form-group input:focus, .form-group select:focus, .form-group textarea:focus { outline:none; border-color:var(--accent); }
+    .form-group textarea { min-height:80px; resize:vertical; }
+    .btn { padding:.75rem 1.25rem; border-radius:10px; border:0; font-weight:600; cursor:pointer; font-size:.9rem; }
+    .btn-primary { background:var(--accent); color:#fff; }
+    .btn-gold { background:var(--gold); color:#000; }
+    .btn-outline { background:transparent; color:var(--text); border:1px solid var(--border); }
+    .btn:hover { opacity:.92; }
+    .btn:disabled { opacity:.5; cursor:not-allowed; }
+    .status { margin-top:1rem; padding:.75rem 1rem; border-radius:10px; font-size:.9rem; display:none; }
+    .status.show { display:block; }
+    .status.ok { background:rgba(34,197,94,.1); color:var(--ok); border:1px solid rgba(34,197,94,.25); }
+    .status.err { background:rgba(239,68,68,.1); color:var(--danger); border:1px solid rgba(239,68,68,.25); }
+    table { width:100%; border-collapse:collapse; font-size:.85rem; }
+    th, td { text-align:left; padding:.7rem; border-bottom:1px solid var(--border); }
+    th { color:var(--muted); font-weight:500; }
+    .pill { display:inline-block; padding:.25rem .55rem; border-radius:20px; font-size:.75rem; font-weight:600; }
+    .pill.pending { background:rgba(245,158,11,.15); color:var(--warning); }
+    .pill.approved { background:rgba(79,135,255,.15); color:var(--accent); }
+    .pill.completed { background:rgba(34,197,94,.15); color:var(--ok); }
+    .pill.rejected { background:rgba(239,68,68,.15); color:var(--danger); }
+    .hidden { display:none !important; }
+    .muted { color:var(--muted); }
+    .panel { margin-bottom:1.5rem; }
+    .panel h2 { font-size:1.1rem; margin:0 0 .75rem; }
+    .panel p { font-size:.85rem; color:var(--muted); margin:0 0 1rem; }
+    .members { display:grid; grid-template-columns:repeat(auto-fit,minmax(220px,1fr)); gap:1rem; }
+    .member { background:var(--card); border:1px solid var(--border); border-radius:12px; padding:1rem; }
+    .member .name { font-weight:600; }
+    .member .role { font-size:.8rem; color:var(--muted); margin-top:.25rem; }
+    @media (max-width:900px){ .grid-4 { grid-template-columns:1fr 1fr; } }
+    @media (max-width:600px){ .grid-4 { grid-template-columns:1fr; } .grid-2 { grid-template-columns:1fr; } }
+  </style>
+</head>
+<body>
+  <header class="header">
+    <div class="header-inner">
+      <div class="brand">
+        <div class="brand-mark">DLB</div>
+        <div>
+          <h1>Barkley Family Trust</h1>
+          <p>Private Trust Company Dashboard</p>
+        </div>
+      </div>
+      <div class="user">
+        <span id="user-email" class="muted"></span>
+        <span id="user-role" class="badge beneficiary"></span>
+        <button class="btn btn-outline" onclick="logout()">Logout</button>
+      </div>
+    </div>
+  </header>
+
+  <main class="main">
+    <div class="tabs">
+      <div class="tab active" data-tab="overview" onclick="showTab('overview')">Overview</div>
+      <div class="tab" data-tab="portfolio" onclick="showTab('portfolio')">Portfolio</div>
+      <div class="tab hidden" id="tab-trustee" data-tab="trustee" onclick="showTab('trustee')">Trustee Actions</div>
+      <div class="tab hidden" id="tab-beneficiary" data-tab="beneficiary" onclick="showTab('beneficiary')">Beneficiary</div>
+    </div>
+
+    <div id="overview" class="tab-content">
+      <div class="grid-4" id="sot-cards">
+        <div class="card"><h3>Net Worth</h3><p class="value" id="sot-net">—</p><p class="sub" id="sot-net-sub">Source of truth</p></div>
+        <div class="card"><h3>Principal</h3><p class="value" id="sot-principal">—</p><p class="sub">Bond / fixed-income reserves</p></div>
+        <div class="card"><h3>Accrued Interest</h3><p class="value" id="sot-interest">—</p><p class="sub">Coupon income available</p></div>
+        <div class="card"><h3>Taxable Income (est.)</h3><p class="value" id="sot-tax">—</p><p class="sub">Tax engine estimate</p></div>
+      </div>
+      <h2 class="section-title">Trust Members</h2>
+      <div class="members" id="members-list">Loading…</div>
+    </div>
+
+    <div id="portfolio" class="tab-content hidden">
+      <div class="grid-2">
+        <div class="card panel">
+          <h2>Bond & Fixed-Income Holdings</h2>
+          <p>Live principal and accrued coupon from the bond portfolio engine.</p>
+          <div id="bonds-list">Loading…</div>
+        </div>
+        <div class="card panel">
+          <h2>Trust Accounts</h2>
+          <p>Canonical trust accounting ledger positions feeding the PTC source of truth.</p>
+          <div id="accounts-list">Loading…</div>
+        </div>
+      </div>
+      <div class="card panel" style="margin-top:1.5rem">
+        <h2>Tax Snapshot</h2>
+        <p>Trust income, deductions, and estimated tax from the tax engine.</p>
+        <div id="tax-list">Loading…</div>
+      </div>
+    </div>
+
+    <div id="trustee" class="tab-content hidden">
+      <div class="grid-2">
+        <div class="card panel">
+          <h2>Pending Distribution Requests</h2>
+          <p>Review and approve beneficiary requests. Maker and checker approvals are required before execution.</p>
+          <div id="pending-requests">Loading…</div>
+        </div>
+        <div class="card panel">
+          <h2>Execute Approved Payout</h2>
+          <p>After two-trustee approval, choose the rail and send funds from the trust ledger.</p>
+          <div class="form-group">
+            <label>Approved Request ID</label>
+            <input type="text" id="exec-request-id" placeholder="REQ-..." />
+          </div>
+          <div class="form-group">
+            <label>Payout Rail</label>
+            <select id="exec-rail">
+              <option value="wire">Wire / ACH (Bank)</option>
+              <option value="push_to_card">Push-to-Card (Visa/MC)</option>
+              <option value="vendor">Vendor Payment</option>
+              <option value="wallet">Wallet Transfer</option>
+              <option value="payout_center">Payout Center (multi-rail)</option>
+            </select>
+          </div>
+          <div class="form-group">
+            <label>Recipient Identifier (account #, wallet address, or cashtag)</label>
+            <input type="text" id="exec-identifier" placeholder="Routing/Account, 0x..., $cashtag" />
+          </div>
+          <div class="form-group">
+            <label>Extra JSON (optional)</label>
+            <textarea id="exec-options" placeholder='{"routing":"121145307","account":"..."}'></textarea>
+          </div>
+          <button class="btn btn-primary" onclick="executePayout()">Execute Payout</button>
+          <div id="exec-status" class="status"></div>
+        </div>
+      </div>
+      <div class="card panel" style="margin-top:1.5rem">
+        <h2>Recent Payouts</h2>
+        <div id="recent-payouts">Loading…</div>
+      </div>
+    </div>
+
+    <div id="beneficiary" class="tab-content hidden">
+      <div class="grid-2">
+        <div class="card panel">
+          <h2>Request Support Distribution</h2>
+          <p>Submit a request for support from your PTC balance. Trustees will review and execute.</p>
+          <div class="form-group">
+            <label>Amount (USD)</label>
+            <input type="number" id="req-amount" min="0.01" step="0.01" placeholder="0.00" />
+          </div>
+          <div class="form-group">
+            <label>Purpose</label>
+            <input type="text" id="req-purpose" placeholder="Education, health, maintenance, support" />
+          </div>
+          <div class="form-group">
+            <label>Preferred Rail</label>
+            <select id="req-rail">
+              <option value="wire">Bank Wire / ACH</option>
+              <option value="push_to_card">Push-to-Card</option>
+              <option value="vendor">Vendor / Merchant</option>
+              <option value="wallet">Wallet Transfer</option>
+            </select>
+          </div>
+          <div class="form-group">
+            <label>Bank / Wallet / Recipient Details</label>
+            <textarea id="req-details" placeholder="Routing, account, wallet address, cashtag, or vendor name"></textarea>
+          </div>
+          <button class="btn btn-gold" onclick="submitRequest()">Submit Request</button>
+          <div id="req-status" class="status"></div>
+        </div>
+        <div class="card panel">
+          <h2>My Support Statement</h2>
+          <div id="beneficiary-statement">Loading…</div>
+        </div>
+      </div>
+    </div>
+  </main>
+
+  <script>
+    const el = id => document.getElementById(id);
+    const token = localStorage.getItem('dlb-beneficiary-token');
+    const userEmail = localStorage.getItem('dlb-trust-email');
+    let user = null;
+    let dashboard = null;
+
+    if (!token) location.href = '/trust-portal/index.html';
+
+    function fmtMoney(n) {
+      return new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD', maximumFractionDigits: 2 }).format(Number(n) || 0);
+    }
+    function fmtStatus(s) {
+      return `<span class="pill ${s}">${s}</span>`;
+    }
+
+    async function api(path, opts={}) {
+      opts.headers = opts.headers || {};
+      opts.headers['Authorization'] = 'Bearer ' + token;
+      opts.headers['Content-Type'] = 'application/json';
+      const res = await fetch(path, opts);
+      const text = await res.text();
+      let json; try { json = JSON.parse(text); } catch { json = { success: false, error: text }; }
+      if (!res.ok || !json.success) throw new Error(json.error || `HTTP ${res.status}`);
+      return json;
+    }
+
+    function show(id, msg, isErr) {
+      const d = el(id);
+      d.textContent = msg;
+      d.className = 'status show ' + (isErr ? 'err' : 'ok');
+    }
+
+    async function loadMe() {
+      const res = await api('/api/dapp/auth/me');
+      user = res.data.user || {};
+      el('user-email').textContent = user.email || userEmail || '';
+      const roles = user.roles || [user.role] || ['beneficiary'];
+      const isTrustee = roles.some(r => String(r).includes('trustee'));
+      el('user-role').textContent = isTrustee ? 'Trustee' : 'Beneficiary';
+      el('user-role').className = 'badge ' + (isTrustee ? 'trustee' : 'beneficiary');
+      if (isTrustee) {
+        el('tab-trustee').classList.remove('hidden');
+      } else {
+        el('tab-beneficiary').classList.remove('hidden');
+      }
+    }
+
+    async function loadDashboard() {
+      try {
+        const res = await api('/api/dapp/ptc/dashboard');
+        dashboard = res.data;
+        renderOverview(dashboard);
+        renderPortfolio(dashboard);
+        if (user && (user.roles || []).some(r => String(r).includes('trustee'))) renderTrustee(dashboard);
+        else renderBeneficiary(dashboard);
+      } catch (e) { console.error('dashboard load failed', e); }
+    }
+
+    function renderOverview(d) {
+      const sot = d.sourceOfTruth || {};
+      el('sot-net').textContent = fmtMoney(sot.netWorth || 0);
+      el('sot-principal').textContent = fmtMoney(sot.principal || 0);
+      el('sot-interest').textContent = fmtMoney(sot.interest || 0);
+      el('sot-tax').textContent = fmtMoney((d.taxSnapshot && d.taxSnapshot.estimatedTax) || 0);
+
+      const members = d.members || [];
+      el('members-list').innerHTML = members.map(m => `
+        <div class="member">
+          <div class="name">${m.name || m.email}</div>
+          <div class="role">${m.type}${m.role ? ' — ' + m.role : ''}</div>
+          ${m.allocation_percent ? `<div class="role">Allocation ${m.allocation_percent}%</div>` : ''}
+        </div>
+      `).join('') || '<p class="muted">No members configured.</p>';
+    }
+
+    function renderPortfolio(d) {
+      const bonds = (d.sourceOfTruth && d.sourceOfTruth.bonds) || [];
+      el('bonds-list').innerHTML = bonds.length ? `<table><thead><tr><th>Bond</th><th>Principal</th><th>Accrued Interest</th></tr></thead><tbody>${bonds.map(b => `<tr><td>${b.name || b.id}</td><td>${fmtMoney(b.principal || 0)}</td><td>${fmtMoney(b.accruedInterest || 0)}</td></tr>`).join('')}</tbody></table>` : '<p class="muted">No bond holdings.</p>';
+      const accounts = (d.sourceOfTruth && d.sourceOfTruth.trustAccounts) || [];
+      el('accounts-list').innerHTML = accounts.length ? `<table><thead><tr><th>Account</th><th>Balance</th></tr></thead><tbody>${accounts.map(a => `<tr><td>${a.code}<br/><span class="muted">${a.name}</span></td><td>${fmtMoney(a.balance || 0)}</td></tr>`).join('')}</tbody></table>` : '<p class="muted">No trust accounts.</p>';
+
+      const tax = d.taxSnapshot || {};
+      const rows = [
+        ['Taxable Income', fmtMoney(tax.taxableIncome || 0)],
+        ['Estimated Tax', fmtMoney(tax.estimatedTax || 0)],
+        ['Deductions', fmtMoney(tax.deductions || 0)],
+        ['Effective Rate', ((tax.effectiveRate || 0) * 100).toFixed(2) + '%'],
+      ];
+      el('tax-list').innerHTML = `<table><tbody>${rows.map(r => `<tr><td>${r[0]}</td><td>${r[1]}</td></tr>`).join('')}</tbody></table>`;
+    }
+
+    function renderTrustee(d) {
+      const requests = d.pendingRequests || [];
+      el('pending-requests').innerHTML = requests.length ? `<table><thead><tr><th>Date</th><th>Member</th><th>Amount</th><th>Purpose</th><th>Rail</th><th>Status</th><th>Actions</th></tr></thead><tbody>${requests.map(r => `<tr>
+        <td>${new Date(r.created_at).toLocaleDateString()}</td>
+        <td>${r.member_name || r.member_email}</td>
+        <td>${fmtMoney((r.amount_cents || 0) / 100)}</td>
+        <td>${r.purpose || ''}</td>
+        <td>${r.rail_preference || ''}</td>
+        <td>${fmtStatus(r.status)}</td>
+        <td><button class="btn btn-outline" onclick="approveRequest('${r.request_id}')">Approve</button></td>
+      </tr>`).join('')}</tbody></table>` : '<p class="muted">No pending requests.</p>';
+
+      const payouts = d.recentPayouts || [];
+      el('recent-payouts').innerHTML = payouts.length ? `<table><thead><tr><th>Date</th><th>Member</th><th>Amount</th><th>Rail</th><th>Status</th><th>Reference</th></tr></thead><tbody>${payouts.map(p => `<tr>
+        <td>${new Date(p.created_at).toLocaleDateString()}</td>
+        <td>${p.member_name || p.member_email}</td>
+        <td>${fmtMoney((p.amount_cents || 0) / 100)}</td>
+        <td>${p.rail || ''}</td>
+        <td>${fmtStatus(p.status)}</td>
+        <td class="muted">${p.payout_id || ''}</td>
+      </tr>`).join('')}</tbody></table>` : '<p class="muted">No payouts yet.</p>';
+    }
+
+    function renderBeneficiary(d) {
+      const stmt = d.myStatement || {};
+      const balances = stmt.balances || [];
+      const distributions = stmt.distributions || [];
+      let html = `<p class="muted">Support balance</p>`;
+      html += balances.map(b => `<p class="value">${fmtMoney((b.balance_cents || 0) / 100)}</p><p class="sub">${b.form}${b.asset_code ? ' / ' + b.asset_code : ''}</p>`).join('') || '<p class="muted">No balance.</p>';
+      html += `<h3 class="section-title" style="font-size:1rem">Recent Distributions</h3>`;
+      html += distributions.length ? `<table><thead><tr><th>Date</th><th>Type</th><th>Amount</th></tr></thead><tbody>${distributions.map(x => `<tr><td>${new Date(x.created_at).toLocaleDateString()}</td><td>${x.type}</td><td>${fmtMoney((x.total_cents || x.amount_cents || 0) / 100)}</td></tr>`).join('')}</tbody></table>` : '<p class="muted">No distributions yet.</p>';
+      el('beneficiary-statement').innerHTML = html;
+    }
+
+    function showTab(name) {
+      document.querySelectorAll('.tab-content').forEach(c => c.classList.add('hidden'));
+      document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+      el(name).classList.remove('hidden');
+      document.querySelector(`.tab[data-tab="${name}"]`).classList.add('active');
+    }
+
+    async function submitRequest() {
+      const amount = Number(el('req-amount').value);
+      const purpose = el('req-purpose').value.trim();
+      const rail = el('req-rail').value;
+      const details = el('req-details').value.trim();
+      if (!amount || amount <= 0) { show('req-status', 'Enter a positive amount', true); return; }
+      show('req-status', 'Submitting…', false);
+      try {
+        const res = await api('/api/dapp/ptc/request', { method: 'POST', body: JSON.stringify({ amount, purpose, railPreference: rail, recipientDetails: details }) });
+        show('req-status', `Request submitted: ${res.data.requestId}. Pending trustee approval.`, false);
+        setTimeout(loadDashboard, 1000);
+      } catch (e) { show('req-status', e.message, true); }
+    }
+
+    async function approveRequest(id) {
+      try {
+        const res = await api(`/api/dapp/ptc/requests/${id}/approve`, { method: 'POST' });
+        alert('Approved: ' + res.data.status);
+        loadDashboard();
+      } catch (e) { alert(e.message); }
+    }
+
+    async function executePayout() {
+      const requestId = el('exec-request-id').value.trim();
+      const rail = el('exec-rail').value;
+      const identifier = el('exec-identifier').value.trim();
+      let options = {};
+      try { if (el('exec-options').value.trim()) options = JSON.parse(el('exec-options').value); } catch (e) { show('exec-status', 'Invalid options JSON', true); return; }
+      if (!requestId) { show('exec-status', 'Enter request ID', true); return; }
+      show('exec-status', 'Executing…', false);
+      try {
+        const res = await api(`/api/dapp/ptc/requests/${requestId}/execute`, { method: 'POST', body: JSON.stringify({ rail, recipientIdentifier: identifier, options }) });
+        show('exec-status', `Payout ${res.data.status}. ${res.data.reference || ''}`, false);
+        setTimeout(loadDashboard, 1000);
+      } catch (e) { show('exec-status', e.message, true); }
+    }
+
+    function logout() {
+      localStorage.removeItem('dlb-beneficiary-token');
+      localStorage.removeItem('dlb-trust-email');
+      location.href = '/trust-portal/index.html';
+    }
+
+    (async function init() {
+      try {
+        await loadMe();
+        await loadDashboard();
+      } catch (e) {
+        console.error(e);
+        location.href = '/trust-portal/index.html';
+      }
+    })();
+  </script>
+</body>
+</html>
