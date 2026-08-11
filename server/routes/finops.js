@@ -2557,7 +2557,10 @@ router.post('/finos-cdm/push-to-card/:id/event', operatorAuth, writeRateLimiter(
 
 // ─── BankSync Integration (Open Banking) ──────────────────────────────────────
 router.get('/banksync/whoami', operatorAuth, async (req, res) => {
-  try { res.json({ success: true, data: await BankSyncEngine.getWorkspace() }); } catch (err) { sendError(res, err); }
+  try {
+    const raw = await BankSyncEngine.getWorkspace();
+    res.json({ success: true, data: raw.data || raw });
+  } catch (err) { sendError(res, err); }
 });
 
 router.get('/banksync/banks', operatorAuth, async (req, res) => {

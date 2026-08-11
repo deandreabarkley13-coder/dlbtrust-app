@@ -32,6 +32,7 @@ async function banksyncRequest(path, opts = {}) {
   const text = await res.text();
   const json = text ? JSON.parse(text) : {};
   if (!res.ok) throw new Error(json.message || json.error || `BankSync HTTP ${res.status}`);
+  if (json && typeof json === 'object' && json.success === true && json.data !== undefined) return json.data;
   return json;
 }
 
