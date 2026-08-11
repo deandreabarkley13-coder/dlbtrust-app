@@ -201,6 +201,10 @@
     { key:'payment-ids', name:'Payment ID Engine', desc:'Canonical payment IDs, idempotency keys, child ID correlation, and event audit across all rails', stat:'', endpoint:null, action:'openPaymentIdPanel' },
     { key:'host-to-host', name:'Host-to-Host Engine', desc:'SFTP/FTPS/AS2/HTTPS payment file and message exchange with bank/clearing partners', stat:'', endpoint:null, action:'openHostToHostPanel' },
     { key:'live-money', name:'Live Money Movement Engine', desc:'Move real fiat from trust ledger to external beneficiaries across all rails', stat:'', endpoint:null, action:'openLiveMoneyPanel' },
+    { key:'web3', name:'Web3 Engine', desc:'Multi-chain balances, gas, sends, and contract calls', stat:'', endpoint:null, action:'openWeb3Panel' },
+    { key:'wallet-creation', name:'Wallet Creation Engine', desc:'Create and manage internal and external trust wallets', stat:'', endpoint:null, action:'openWalletCreationPanel' },
+    { key:'payment-blockchain', name:'Payment Blockchain API', desc:'Create and execute payments on blockchain rails', stat:'', endpoint:null, action:'openPaymentBlockchainPanel' },
+    { key:'networking', name:'Network & Networking Engine', desc:'Transmit and receive transactional financial data across internal and external rails', stat:'', endpoint:null, action:'openNetworkingPanel' },
     { key:'compliance', name:'Compliance Engine', desc:'KYC, AML, and sanctions screening before moving real money', stat:'', endpoint:null, action:'openCompliancePanel' },
     { key:'coordination', name:'Coordination Engine', desc:'System health, AI command queue and stability checks', stat:'', endpoint:null, action:'openCoordinationPanel' },
     { key:'clearing', name:'Clearing Engine', desc:'Bilateral and net settlement on Hyperledger Besu', stat:'', endpoint:null, action:'openClearingPanel' },
@@ -5930,6 +5934,283 @@
 
   async function approveCorporateTreasuryWorkflow(workflowId) {
     try { await api('/api/finops/corporate-treasury/workflows/' + workflowId + '/approve', { method: 'POST' }); openCorporateTreasuryPanel(); } catch(e) { show(e.message, true, 'ct-status'); }
+  }
+
+  // ─── Web3 Engine panel ────────────────────────────────────────────────────────
+  async function openWeb3Panel() {
+    const panel = el('module-panel');
+    const body = el('panel-body');
+    panel.classList.add('active');
+    el('panel-title').textContent = 'Web3 Engine';
+    const cfg = await api('/api/finops/web3/info').catch(() => ({ data: {} }));
+    const info = cfg.data || {};
+    body.innerHTML = '<p class="muted">Operator: ' + (info.operatorAddress || 'N/A') + ' | Chain: ' + (info.chainId || 'N/A') + '</p>' +
+      '<div class="token-bar"><input id="w3-address" placeholder="0x... address" style="flex:2;" value="' + (info.operatorAddress || '') + '"></div>' +
+      '<div class="token-bar"><button class="btn" onclick="web3GetBalances()">Get Balances</button><button class="btn btn-sec" onclick="web3GetGas()">Gas Price</button></div>' +
+      '<div id="w3-balances" class="status hidden" style="margin-top:10px;"></div>' +
+      '<h3 style="margin-top:18px;font-size:14px;">Send Native</h3>' +
+      '<div class="token-bar"><input id="w3-send-to" placeholder="to 0x..."><input id="w3-send-amount" placeholder="ETH amount"></div>' +
+      '<button class="btn" onclick="web3Send()">Send ETH</button>' +
+      '<h3 style="margin-top:18px;font-size:14px;">Send Token</h3>' +
+      '<div class="token-bar"><input id="w3-token" placeholder="USDC / DAI / token address" style="flex:1;"><input id="w3-token-to" placeholder="to 0x..."><input id="w3-token-amount" placeholder="amount"></div>' +
+      '<button class="btn" onclick="web3SendToken()">Send Token</button>' +
+      '<h3 style="margin-top:18px;font-size:14px;">Contract Call / Write</h3>' +
+      '<div class="token-bar"><input id="w3-contract" placeholder="contract 0x..." style="flex:1;"><input id="w3-func" placeholder="functionName"></div>' +
+      '<div class="token-bar"><input id="w3-args" placeholder="args (comma separated)" style="flex:1;"><select id="w3-mode"><option value="call">Call</option><option value="write">Write</option></select></div>' +
+      '<button class="btn" onclick="web3Contract()">Run</button>' +
+      '<div id="w3-status" class="status hidden" style="margin-top:10px;"></div>';
+  }
+
+  async function web3GetBalances() {
+    show('Loading…', false, 'w3-balances');
+    try {
+      const address = el('w3-address').value.trim();
+      const res = await api('/api/finops/web3/balances?address=' + encodeURIComponent(address));
+      const b = res.data;
+      el('w3-balances').innerHTML = '<b>Native:</b> ' + (b.native && b.native.balance) + ' ' + (b.native && b.native.symbol) + '<br>' +
+        '<b>USDC:</b> ' + (b.usdc && b.usdc.formatted) + '<br><b>USDS:</b> ' + (b.usds && b.usds.formatted) + '<br>' +
+        '<b>DAI:</b> ' + (b.dai && b.dai.formatted) + '<br><b>WETH:</b> ' + (b.weth && b.weth.formatted);
+      el('w3-balances').classList.remove('hidden');
+    } catch(e) { show(e.message, true, 'w3-balances'); }
+  }
+
+  async function web3GetGas() {
+    show('Loading…', false, 'w3-status');
+    try {
+      const res = await api('/api/finops/web3/gas');
+      const g = res.data;
+      show('Gas: ' + (g.gasPrice || 'N/A') + ' | baseFee: ' + (g.baseFeePerGas || 'N/A') + ' | suggestedMax: ' + (g.suggestedMaxFeePerGas || 'N/A'), false, 'w3-status');
+    } catch(e) { show(e.message, true, 'w3-status'); }
+  }
+
+  async function web3Send() {
+    show('Sending…', false, 'w3-status');
+    try {
+      const res = await api('/api/finops/web3/send', { method: 'POST', body: JSON.stringify({ to: el('w3-send-to').value, value: el('w3-send-amount').value }) });
+      show('Tx: ' + res.data.txHash, false, 'w3-status');
+    } catch(e) { show(e.message, true, 'w3-status'); }
+  }
+
+  async function web3SendToken() {
+    show('Sending…', false, 'w3-status');
+    try {
+      const res = await api('/api/finops/web3/send-token', { method: 'POST', body: JSON.stringify({ token: el('w3-token').value, to: el('w3-token-to').value, amount: el('w3-token-amount').value }) });
+      show('Token tx: ' + res.data.txHash, false, 'w3-status');
+    } catch(e) { show(e.message, true, 'w3-status'); }
+  }
+
+  function _parseArgs(str) {
+    if (!str.trim()) return [];
+    return str.split(',').map(s => {
+      const t = s.trim();
+      if (t.startsWith('0x')) return t;
+      if (!isNaN(t) && t !== '') return Number(t);
+      return t;
+    });
+  }
+
+  async function web3Contract() {
+    show('Running…', false, 'w3-status');
+    try {
+      const body = { address: el('w3-contract').value, functionName: el('w3-func').value, args: _parseArgs(el('w3-args').value) };
+      const path = el('w3-mode').value === 'write' ? '/api/finops/web3/write' : '/api/finops/web3/call';
+      const res = await api(path, { method: 'POST', body: JSON.stringify(body) });
+      show('Result: ' + JSON.stringify(res.data).slice(0, 300), false, 'w3-status');
+    } catch(e) { show(e.message, true, 'w3-status'); }
+  }
+
+  // ─── Wallet Creation Engine panel ─────────────────────────────────────────────
+  async function openWalletCreationPanel() {
+    const panel = el('module-panel');
+    const body = el('panel-body');
+    panel.classList.add('active');
+    el('panel-title').textContent = 'Wallet Creation Engine';
+    const info = await api('/api/finops/wallet-creation/info').catch(() => ({ data: {} }));
+    body.innerHTML = '<p class="muted">' + (info.data.note || '') + '</p>' +
+      '<div class="token-bar"><input id="wc-email" placeholder="user email or userId" style="flex:1;"><input id="wc-name" placeholder="wallet name"></div>' +
+      '<div class="token-bar"><select id="wc-type"><option value="internal">internal</option><option value="external">external</option></select>' +
+      '<input id="wc-subtype" placeholder="subtype (operator / beneficiary)"></div>' +
+      '<div class="token-bar"><input id="wc-address" placeholder="external address (if external)" style="flex:1;"><input id="wc-pk" placeholder="private key (optional, encrypted)"></div>' +
+      '<button class="btn" onclick="createWallet()">Create Wallet</button><button class="btn btn-sec" onclick="importWallet()" style="margin-left:8px;">Import External</button>' +
+      '<div id="wc-status" class="status hidden" style="margin-top:10px;"></div>' +
+      '<h3 style="margin-top:18px;font-size:14px;">Wallets</h3><div id="wc-list"></div>';
+    loadWallets();
+  }
+
+  async function loadWallets() {
+    const list = el('wc-list');
+    if (!list) return;
+    list.innerHTML = 'Loading…';
+    try {
+      const res = await api('/api/finops/wallet-creation/wallets');
+      const rows = res.data || [];
+      if (!rows.length) { list.innerHTML = '<p class="muted">No wallets found.</p>'; return; }
+      list.innerHTML = '<table class="table"><thead><tr><th>Name</th><th>Type</th><th>Address</th><th>User</th></tr></thead><tbody>' +
+        rows.map(w => '<tr><td>' + (w.name || '') + '</td><td>' + (w.type || '') + '</td><td>' + (w.address || '').slice(0,10) + '…' + (w.address || '').slice(-6) + '</td><td>' + (w.user_name || w.user_id || '') + '</td></tr>').join('') +
+        '</tbody></table>';
+    } catch(e) { list.innerHTML = '<p class="muted">' + e.message + '</p>'; }
+  }
+
+  async function createWallet() {
+    show('Creating…', false, 'wc-status');
+    try {
+      await api('/api/finops/wallet-creation/wallets', { method: 'POST', body: JSON.stringify({
+        email: el('wc-email').value, name: el('wc-name').value, type: el('wc-type').value, subtype: el('wc-subtype').value
+      }) });
+      show('Wallet created', false, 'wc-status'); loadWallets();
+    } catch(e) { show(e.message, true, 'wc-status'); }
+  }
+
+  async function importWallet() {
+    show('Importing…', false, 'wc-status');
+    try {
+      await api('/api/finops/wallet-creation/wallets/import', { method: 'POST', body: JSON.stringify({
+        email: el('wc-email').value, name: el('wc-name').value, address: el('wc-address').value, privateKey: el('wc-pk').value, subtype: el('wc-subtype').value
+      }) });
+      show('Wallet imported', false, 'wc-status'); loadWallets();
+    } catch(e) { show(e.message, true, 'wc-status'); }
+  }
+
+  // ─── Payment Blockchain API panel ─────────────────────────────────────────────
+  async function openPaymentBlockchainPanel() {
+    const panel = el('module-panel');
+    const body = el('panel-body');
+    panel.classList.add('active');
+    el('panel-title').textContent = 'Payment Blockchain API';
+    const info = await api('/api/finops/payment-blockchain/info').catch(() => ({ data: {} }));
+    body.innerHTML = '<p class="muted">Rails: ' + (info.data.rails ? info.data.rails.join(', ') : 'N/A') + ' | operator: ' + (info.data.operatorAddress || 'N/A') + '</p>' +
+      '<div class="token-bar"><select id="pb-rail"><option value="wallet">wallet</option><option value="ptc">ptc</option><option value="stablecoin">stablecoin</option></select>' +
+      '<input id="pb-asset" placeholder="asset" value="SIT"><input id="pb-amount" placeholder="amount"></div>' +
+      '<div class="token-bar"><input id="pb-to" placeholder="to 0x..." style="flex:1;"><input id="pb-wallet" placeholder="fromWalletId (wallet rail)" style="flex:1;"></div>' +
+      '<div class="token-bar"><input id="pb-source" placeholder="sourceAccountId (optional)" style="flex:1;"><input id="pb-memo" placeholder="memo" style="flex:1;"></div>' +
+      '<button class="btn" onclick="createBlockchainPayment()">Create Payment</button>' +
+      '<div id="pb-status" class="status hidden" style="margin-top:10px;"></div>' +
+      '<h3 style="margin-top:18px;font-size:14px;">Payments</h3><div id="pb-list"></div>';
+    loadBlockchainPayments();
+  }
+
+  async function loadBlockchainPayments() {
+    const list = el('pb-list');
+    if (!list) return;
+    list.innerHTML = 'Loading…';
+    try {
+      const res = await api('/api/finops/payment-blockchain/payments');
+      const rows = res.data || [];
+      if (!rows.length) { list.innerHTML = '<p class="muted">No payments.</p>'; return; }
+      list.innerHTML = '<table class="table"><thead><tr><th>ID</th><th>Rail</th><th>To</th><th>Asset</th><th>Amount</th><th>Status</th><th>Action</th></tr></thead><tbody>' +
+        rows.map(p => '<tr><td>' + (p.payment_id || '').slice(-12) + '</td><td>' + (p.rail || '') + '</td><td title="' + (p.to_address || '') + '">' + (p.to_address || '').slice(0,8) + '…</td><td>' + (p.asset || '') + '</td><td>' + (p.amount || '') + '</td><td>' + (p.status || '') + '</td><td>' + (p.status === 'pending' ? '<button class="btn" onclick="executeBlockchainPayment(' + "'" + p.payment_id + "'" + ')">Execute</button>' : '') + '</td></tr>').join('') +
+        '</tbody></table>';
+    } catch(e) { list.innerHTML = '<p class="muted">' + e.message + '</p>'; }
+  }
+
+  async function createBlockchainPayment() {
+    show('Creating…', false, 'pb-status');
+    try {
+      const res = await api('/api/finops/payment-blockchain/payments', { method: 'POST', body: JSON.stringify({
+        rail: el('pb-rail').value, asset: el('pb-asset').value, amount: el('pb-amount').value,
+        to: el('pb-to').value, fromWalletId: el('pb-wallet').value, sourceAccountId: el('pb-source').value, memo: el('pb-memo').value
+      }) });
+      show('Payment created: ' + res.data.payment_id, false, 'pb-status');
+      loadBlockchainPayments();
+    } catch(e) { show(e.message, true, 'pb-status'); }
+  }
+
+  async function executeBlockchainPayment(paymentId) {
+    try {
+      await api('/api/finops/payment-blockchain/payments/' + paymentId + '/execute', { method: 'POST' });
+      loadBlockchainPayments();
+    } catch(e) { show(e.message, true, 'pb-status'); }
+  }
+
+  // ─── Network & Networking Engine panel ────────────────────────────────────────
+  async function openNetworkingPanel() {
+    const panel = el('module-panel');
+    const body = el('panel-body');
+    panel.classList.add('active');
+    el('panel-title').textContent = 'Network & Networking Engine';
+    const info = await api('/api/finops/networking/info').catch(() => ({ data: {} }));
+    body.innerHTML = '<p class="muted">Networks: ' + (info.data.networks ? info.data.networks.join(', ') : 'N/A') + '</p>' +
+      '<h3 style="font-size:14px;">Transmit</h3>' +
+      '<div class="token-bar"><select id="nw-network"><option value="h2h">h2h</option><option value="external_endpoint">external_endpoint</option><option value="web_payment">web_payment</option><option value="live_money">live_money</option><option value="manual">manual</option></select>' +
+      '<select id="nw-endpoint" style="flex:1;"><option value="">-- load endpoints --</option></select></div>' +
+      '<div class="token-bar"><input id="nw-amount" placeholder="amount"><input id="nw-currency" placeholder="currency" value="USD"><input id="nw-ref" placeholder="reference id" style="flex:1;"></div>' +
+      '<div class="token-bar"><input id="nw-creditor" placeholder="creditor JSON {name,account,routing,bank}" style="flex:1;"><input id="nw-source" placeholder="source account id"></div>' +
+      '<textarea id="nw-payload" placeholder="payload / message / description" style="width:100%;height:80px;margin-top:8px;"></textarea>' +
+      '<button class="btn" onclick="networkTransmit()">Transmit</button><button class="btn btn-sec" onclick="networkReceive()" style="margin-left:8px;">Receive Inbound</button>' +
+      '<div id="nw-status" class="status hidden" style="margin-top:10px;"></div>' +
+      '<h3 style="margin-top:18px;font-size:14px;">Endpoints</h3><div id="nw-endpoints"></div>' +
+      '<h3 style="margin-top:18px;font-size:14px;">Transmissions</h3><div id="nw-list"></div>';
+    loadNetworkEndpoints();
+    loadNetworkTransmissions();
+  }
+
+  async function loadNetworkEndpoints() {
+    const sel = el('nw-endpoint');
+    const list = el('nw-endpoints');
+    if (!sel || !list) return;
+    try {
+      const res = await api('/api/finops/networking/endpoints');
+      const rows = res.data || [];
+      sel.innerHTML = rows.map(e => '<option value="' + (e.id || '') + '">' + (e.network || '') + ' / ' + (e.name || e.id || '') + '</option>').join('');
+      list.innerHTML = '<table class="table"><thead><tr><th>Network</th><th>ID</th><th>Name</th><th>Protocol</th><th>Enabled</th></tr></thead><tbody>' +
+        rows.map(e => '<tr><td>' + (e.network || '') + '</td><td>' + (e.id || '').slice(-12) + '</td><td>' + (e.name || '') + '</td><td>' + (e.protocol || '') + '</td><td>' + (e.enabled ? 'yes' : 'no') + '</td></tr>').join('') +
+        '</tbody></table>';
+    } catch(e) { if (list) list.innerHTML = '<p class="muted">' + e.message + '</p>'; }
+  }
+
+  async function networkTransmit() {
+    show('Transmitting…', false, 'nw-status');
+    try {
+      let creditor = {};
+      try { creditor = JSON.parse(el('nw-creditor').value || '{}'); } catch (e) {}
+      const res = await api('/api/finops/networking/transmit', { method: 'POST', body: JSON.stringify({
+        network: el('nw-network').value,
+        endpointId: el('nw-endpoint').value,
+        amount: el('nw-amount').value,
+        currency: el('nw-currency').value,
+        payload: el('nw-payload').value,
+        referenceId: el('nw-ref').value,
+        sourceAccountId: el('nw-source').value,
+        creditor
+      }) });
+      show('Transmitted: ' + res.data.transmissionId + ' status=' + res.data.status, false, 'nw-status');
+      loadNetworkTransmissions();
+    } catch(e) { show(e.message, true, 'nw-status'); }
+  }
+
+  async function networkReceive() {
+    show('Receiving…', false, 'nw-status');
+    try {
+      const res = await api('/api/finops/networking/receive', { method: 'POST', body: JSON.stringify({
+        network: el('nw-network').value,
+        endpointId: el('nw-endpoint').value,
+        payload: el('nw-payload').value,
+        referenceId: el('nw-ref').value,
+        amount: el('nw-amount').value,
+        currency: el('nw-currency').value
+      }) });
+      show('Inbound: ' + res.data.transmissionId, false, 'nw-status');
+      loadNetworkTransmissions();
+    } catch(e) { show(e.message, true, 'nw-status'); }
+  }
+
+  async function loadNetworkTransmissions() {
+    const list = el('nw-list');
+    if (!list) return;
+    list.innerHTML = 'Loading…';
+    try {
+      const res = await api('/api/finops/networking/transmissions');
+      const rows = res.data || [];
+      if (!rows.length) { list.innerHTML = '<p class="muted">No transmissions.</p>'; return; }
+      list.innerHTML = '<table class="table"><thead><tr><th>ID</th><th>Network</th><th>Endpoint</th><th>Dir</th><th>Amount</th><th>Status</th><th>Action</th></tr></thead><tbody>' +
+        rows.map(t => '<tr><td>' + (t.transmission_id || '').slice(-12) + '</td><td>' + (t.network || '') + '</td><td>' + (t.endpoint_id || '').slice(0,8) + '…</td><td>' + (t.direction || '') + '</td><td>' + (t.amount || '') + ' ' + (t.currency || '') + '</td><td>' + (t.status || '') + '</td><td>' + (t.status === 'failed' ? '<button class="btn" onclick="networkRetry(' + "'" + t.transmission_id + "'" + ')">Retry</button>' : '') + '</td></tr>').join('') +
+        '</tbody></table>';
+    } catch(e) { list.innerHTML = '<p class="muted">' + e.message + '</p>'; }
+  }
+
+  async function networkRetry(transmissionId) {
+    try { await api('/api/finops/networking/transmissions/' + transmissionId + '/retry', { method: 'POST' }); loadNetworkTransmissions(); }
+    catch(e) { show(e.message, true, 'nw-status'); }
   }
 
   window.addEventListener('DOMContentLoaded', () => {
