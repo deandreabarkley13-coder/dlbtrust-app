@@ -549,6 +549,10 @@
     return '$' + num.toLocaleString(undefined, { minimumFractionDigits: decimals, maximumFractionDigits: decimals });
   }
 
+  function escapeHtml(s) {
+    return String(s == null ? '' : s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+  }
+
   function openModule(key) {
     const m = modules.find(x => x.key === key);
     if (!m) return;
@@ -6248,7 +6252,7 @@
       const rows = res.data || [];
       if (!rows.length) { list.innerHTML = '<p class="muted">No virtual accounts.</p>'; return; }
       list.innerHTML = '<table class="table"><thead><tr><th>Name</th><th>Number</th><th>Wallet</th><th>Type</th><th>Asset</th><th>Status</th></tr></thead><tbody>' +
-        rows.map(a => '<tr><td>' + (a.name || '') + '</td><td>' + (a.account_number || '') + '</td><td>' + ((a.wallet_id || '').slice(-8)) + '</td><td>' + (a.owner_type || '') + '</td><td>' + (a.asset || '') + '</td><td>' + (a.status || '') + '</td></tr>').join('') +
+        rows.map(a => '<tr><td>' + escapeHtml(a.name || '') + '</td><td>' + escapeHtml(a.account_number || '') + '</td><td>' + escapeHtml((a.wallet_id || '').slice(-8)) + '</td><td>' + escapeHtml(a.owner_type || '') + '</td><td>' + escapeHtml(a.asset || '') + '</td><td>' + escapeHtml(a.status || '') + '</td></tr>').join('') +
         '</tbody></table>';
     } catch(e) { list.innerHTML = '<p class="muted">' + e.message + '</p>'; }
   }
@@ -6299,7 +6303,7 @@
       const rows = res.data || [];
       if (!rows.length) { list.innerHTML = '<p class="muted">No push-to-card payments.</p>'; return; }
       list.innerHTML = '<table class="table"><thead><tr><th>ID</th><th>Provider</th><th>Name</th><th>Last4</th><th>Amount</th><th>Status</th><th>Action</th></tr></thead><tbody>' +
-        rows.map(p => '<tr><td>' + (p.payment_id || '').slice(-12) + '</td><td>' + (p.provider || '') + '</td><td>' + (p.cardholder_name || '') + '</td><td>' + (p.card_last4 || '') + '</td><td>' + (p.amount || '') + ' ' + (p.currency || '') + '</td><td>' + (p.status || '') + '</td><td>' + (p.status === 'pending' ? '<button class="btn" onclick="executePushToCard(' + "'" + p.payment_id + "'" + ')">Execute</button>' : '') + '</td></tr>').join('') +
+        rows.map(p => '<tr><td>' + escapeHtml((p.payment_id || '').slice(-12)) + '</td><td>' + escapeHtml(p.provider || '') + '</td><td>' + escapeHtml(p.cardholder_name || '') + '</td><td>' + escapeHtml(p.card_last4 || '') + '</td><td>' + escapeHtml(p.amount || '') + ' ' + escapeHtml(p.currency || '') + '</td><td>' + escapeHtml(p.status || '') + '</td><td>' + (p.status === 'pending' ? '<button class="btn" onclick="executePushToCard(' + "'" + escapeHtml(String(p.payment_id || '')).replace(/'/g, '&#39;') + "'" + ')">Execute</button>' : '') + '</td></tr>').join('') +
         '</tbody></table>';
     } catch(e) { list.innerHTML = '<p class="muted">' + e.message + '</p>'; }
   }

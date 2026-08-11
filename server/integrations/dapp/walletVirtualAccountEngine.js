@@ -40,6 +40,8 @@ function fromCents(cents, asset = '') {
   return (Number(cents) / (decimals === 18 ? 1e18 : 1e6)).toFixed(decimals === 18 ? 18 : 6).replace(/\.?0+$/, '');
 }
 function safeJson(obj) { return JSON.stringify(obj, (k, v) => typeof v === 'bigint' ? String(v) : v); }
+function isAddress(addr) { return typeof addr === 'string' && /^0x[a-fA-F0-9]{40}$/.test(addr); }
+const ALLOWED_ASSETS = ['SIT','USDC','DAI','USDS','DLBUSD','DLB-PTCUSD','ETH','WETH'];
 
 async function query(sql, params) {
   if (!pool || !pool.query) throw new Error('Postgres pool unavailable');
@@ -94,13 +96,14 @@ class WalletVirtualAccountEngine {
     return out;
   }
 
-  static async _ensureWallet({ walletId, userEmail, name }) {
+  static async _ensureWallet({ walletId, userEmail, name, createWallet = true }) {
     loadDeps();
     if (walletId) {
       const wallet = await WalletEngine.getWallet(walletId);
       if (wallet) return wallet;
+      throw new Error(`Wallet not found: ${walletId}`);
     }
-    if (WalletCreationEngine) {
+    if (createWallet && WalletCreationEngine) {
       return WalletCreationEngine.createWallet({
         email: userEmail || `va-${Date.now()}@dlbtrust.local`,
         name: name || 'Virtual Account Wallet',
@@ -128,13 +131,21 @@ class WalletVirtualAccountEngine {
     loadDeps();
     await this.ensureTables();
     if (!name) throw new Error('name is required');
+    const allowedOwnerTypes = ['wallet','merchant','vendor','external'];
+    if (!allowedOwnerTypes.includes(ownerType)) throw new Error(`ownerType must be one of ${allowedOwnerTypes.join(', ')}`);
+    const allowedStatuses = ['active','inactive','closed'];
+    if (!allowedStatuses.includes(status)) throw new Error(`status must be one of ${allowedStatuses.join(', ')}`);
+    if (ownerAddress && !isAddress(ownerAddress)) throw new Error('ownerAddress must be a valid EVM address (0x...)');
+    const assetUpper = (asset || 'SIT').toUpperCase();
+    if (!ALLOWED_ASSETS.includes(assetUpper)) throw new Error(`asset must be one of ${ALLOWED_ASSETS.join(', ')}`);
+    if (metadata && typeof metadata !== 'object') throw new Error('metadata must be an object');
 
     let resolvedAddress = ownerAddress;
     if (!resolvedAddress && (ownerType === 'vendor' || ownerType === 'merchant')) {
       resolvedAddress = await this._resolveVendorAddress(ownerId);
     }
 
-    const wallet = await this._ensureWallet({ walletId, userEmail: email || userEmail, name });
+    const wallet = await this._ensureWallet({ walletId, userEmail: email || userEmail, name, createWallet });
 
     const accountId = id();
     const number = accountNumber();
@@ -142,7 +153,7 @@ class WalletVirtualAccountEngine {
     await query(`
       INSERT INTO wallet_virtual_accounts (id, account_number, wallet_id, name, email, owner_type, owner_id, owner_address, asset, status, metadata)
       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11::jsonb)
-    `, [accountId, number, wallet.id, name, email || null, ownerType, ownerId || null, resolvedAddress, asset.toUpperCase(), status, safeJson(meta)]);
+    `, [accountId, number, wallet.id, name, email || null, ownerType, ownerId || null, resolvedAddress || null, assetUpper, status, safeJson(meta)]);
 
     return { ...await this.getVirtualAccount(accountId), wallet };
   }
@@ -177,14 +188,17 @@ class WalletVirtualAccountEngine {
     loadDeps();
     const acct = await this.getVirtualAccount(virtualAccountId);
     if (!acct) throw new Error('Virtual account not found');
-    const walletBalance = await WalletEngine.getBalance(acct.wallet_id, acct.asset).catch(() => ({ [acct.asset]: '0' }));
+    const walletBalance = await WalletEngine.getBalance(acct.wallet_id, acct.asset).catch(() => ({ internal: { [acct.asset]: '0' } }));
     const onChain = await Web3Engine.getBalances({ address: await this._getWalletAddress(acct.wallet_id) }).catch(() => null);
     const tokenKey = acct.asset.toLowerCase();
+    const internalBal = walletBalance && walletBalance.internal && walletBalance.internal[acct.asset] !== undefined
+      ? walletBalance.internal[acct.asset]
+      : (walletBalance && walletBalance[acct.asset] ? walletBalance[acct.asset] : '0');
     return {
       virtualAccountId,
       accountNumber: acct.account_number,
       asset: acct.asset,
-      internal: walletBalance && walletBalance[acct.asset] ? walletBalance[acct.asset] : walletBalance,
+      internal: internalBal,
       onChain: onChain && onChain[tokenKey] ? onChain[tokenKey].formatted : '0',
     };
   }
@@ -244,18 +258,18 @@ class WalletVirtualAccountEngine {
     if (!vendor) throw new Error('Vendor not found');
     const address = vendor.crypto_address || vendor.wallet_address || vendor.blockchain_address;
     if (address) {
-      return this.payExternal({ virtualAccountId, toAddress: address, amount, memo: memo || `Pay vendor ${vendor.name}` });
+      return this.payExternal({ virtualAccountId, toAddress: address, amount, memo: memo || `Pay vendor ${vendor.vendor_name || vendorId}` });
     }
     const payment = await VendorEngine.initiatePayment({
       vendor_id: vendorId,
       amount,
       source_type: 'virtual_account',
-      source_account_id: acct.id,
+      source_account_code: acct.account_number,
       reference: acct.account_number,
       description: memo || `Virtual account payment for ${acct.name}`,
     });
-    const txId = await this._recordTx({ virtualAccountId, direction: 'outbound', asset: acct.asset, amount, counterparty: vendorId, counterpartyType: 'vendor', memo: memo || `Vendor payment ${vendorId}` });
-    return { virtualAccountId, txId, vendorPaymentId: payment.payment_id, status: 'pending' };
+    const txId = await this._recordTx({ virtualAccountId, direction: 'outbound', asset: acct.asset, amount, counterparty: vendorId, counterpartyType: 'vendor', memo: memo || `Vendor payment ${vendor.vendor_name || vendorId}` });
+    return { virtualAccountId, txId, vendorPaymentId: payment.payment && payment.payment.payment_id ? payment.payment.payment_id : payment.payment_id, status: 'pending' };
   }
 
   static async receivePayment({ virtualAccountId, fromAddress, amount, txHash, memo } = {}) {
@@ -277,6 +291,7 @@ class WalletVirtualAccountEngine {
     if (!from || !to) throw new Error('Virtual account not found');
     const result = await WalletEngine.transfer({ fromWalletId: from.wallet_id, toWalletId: to.wallet_id, amount, asset: from.asset, memo: memo || `VA ${from.account_number} -> ${to.account_number}` });
     const txId = await this._recordTx({ virtualAccountId: fromVirtualAccountId, direction: 'transfer', asset: from.asset, amount, counterparty: to.account_number, counterpartyType: 'virtual_account', txHash: result.txHash, memo: memo || `Transfer to ${to.account_number}` });
+    await this._recordTx({ virtualAccountId: toVirtualAccountId, direction: 'inbound', asset: from.asset, amount, counterparty: from.account_number, counterpartyType: 'virtual_account', txHash: result.txHash, memo: memo || `Transfer from ${from.account_number}` });
     return { fromVirtualAccountId, toVirtualAccountId, txId, ...result };
   }
 
