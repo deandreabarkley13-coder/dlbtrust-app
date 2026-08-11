@@ -262,7 +262,7 @@ class WireOriginationEngine {
     await this.ensureTables();
     const row = await this.getPayout(payoutId);
     if (!row) throw new Error('Payout not found');
-    if (row.status !== 'approved') throw new Error(`Payout must be approved, current: ${row.status}`);
+    if (!['approved','needs_setup'].includes(row.status)) throw new Error(`Payout cannot be sent from status ${row.status}`);
 
     await pool.query(`UPDATE wire_origination_payouts SET status = 'originating', updated_at = NOW() WHERE payout_id = $1`, [payoutId]);
 
