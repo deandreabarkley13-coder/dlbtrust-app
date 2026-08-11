@@ -205,6 +205,7 @@
     { key:'wallet-creation', name:'Wallet Creation Engine', desc:'Create and manage internal and external trust wallets', stat:'', endpoint:null, action:'openWalletCreationPanel' },
     { key:'payment-blockchain', name:'Payment Blockchain API', desc:'Create and execute payments on blockchain rails', stat:'', endpoint:null, action:'openPaymentBlockchainPanel' },
     { key:'networking', name:'Network & Networking Engine', desc:'Transmit and receive transactional financial data across internal and external rails', stat:'', endpoint:null, action:'openNetworkingPanel' },
+    { key:'wallet-virtual-accounts', name:'Wallet Virtual Account Generator', desc:'Create virtual accounts for wallets to transact with merchants, vendors, and other wallets', stat:'', endpoint:null, action:'openWalletVirtualAccountsPanel' },
     { key:'compliance', name:'Compliance Engine', desc:'KYC, AML, and sanctions screening before moving real money', stat:'', endpoint:null, action:'openCompliancePanel' },
     { key:'coordination', name:'Coordination Engine', desc:'System health, AI command queue and stability checks', stat:'', endpoint:null, action:'openCoordinationPanel' },
     { key:'clearing', name:'Clearing Engine', desc:'Bilateral and net settlement on Hyperledger Besu', stat:'', endpoint:null, action:'openClearingPanel' },
@@ -6211,6 +6212,56 @@
   async function networkRetry(transmissionId) {
     try { await api('/api/finops/networking/transmissions/' + transmissionId + '/retry', { method: 'POST' }); loadNetworkTransmissions(); }
     catch(e) { show(e.message, true, 'nw-status'); }
+  }
+
+  // ─── Wallet Virtual Account Generator panel ───────────────────────────────────
+  async function openWalletVirtualAccountsPanel() {
+    const panel = el('module-panel');
+    const body = el('panel-body');
+    panel.classList.add('active');
+    el('panel-title').textContent = 'Wallet Virtual Account Generator';
+    const info = await api('/api/finops/wallet-virtual-accounts/info').catch(() => ({ data: {} }));
+    body.innerHTML = '<p class="muted">Networks: ' + ((info.data.networks || []).join(', ') || 'N/A') + '</p>' +
+      '<h3 style="font-size:14px;">Create Virtual Account</h3>' +
+      '<div class="token-bar"><input id="wva-name" placeholder="account name" style="flex:1;"><select id="wva-type"><option value="wallet">wallet</option><option value="merchant">merchant</option><option value="vendor">vendor</option><option value="external">external</option></select></div>' +
+      '<div class="token-bar"><input id="wva-email" placeholder="email (optional)" style="flex:1;"><input id="wva-wallet" placeholder="existing walletId (optional)"></div>' +
+      '<div class="token-bar"><input id="wva-owner" placeholder="owner/vendor id (optional)" style="flex:1;"><input id="wva-address" placeholder="owner address (optional)"></div>' +
+      '<div class="token-bar"><select id="wva-asset"><option value="SIT">SIT</option><option value="USDC">USDC</option><option value="DAI">DAI</option><option value="DLBUSD">DLBUSD</option></select></div>' +
+      '<button class="btn" onclick="createWalletVirtualAccount()">Generate VA</button>' +
+      '<div id="wva-status" class="status hidden" style="margin-top:10px;"></div>' +
+      '<h3 style="margin-top:18px;font-size:14px;">Existing Accounts</h3><div id="wva-list"></div>';
+    loadWalletVirtualAccounts();
+  }
+
+  async function loadWalletVirtualAccounts() {
+    const list = el('wva-list');
+    if (!list) return;
+    list.innerHTML = 'Loading…';
+    try {
+      const res = await api('/api/finops/wallet-virtual-accounts');
+      const rows = res.data || [];
+      if (!rows.length) { list.innerHTML = '<p class="muted">No virtual accounts.</p>'; return; }
+      list.innerHTML = '<table class="table"><thead><tr><th>Name</th><th>Number</th><th>Wallet</th><th>Type</th><th>Asset</th><th>Status</th></tr></thead><tbody>' +
+        rows.map(a => '<tr><td>' + (a.name || '') + '</td><td>' + (a.account_number || '') + '</td><td>' + ((a.wallet_id || '').slice(-8)) + '</td><td>' + (a.owner_type || '') + '</td><td>' + (a.asset || '') + '</td><td>' + (a.status || '') + '</td></tr>').join('') +
+        '</tbody></table>';
+    } catch(e) { list.innerHTML = '<p class="muted">' + e.message + '</p>'; }
+  }
+
+  async function createWalletVirtualAccount() {
+    show('Generating…', false, 'wva-status');
+    try {
+      const res = await api('/api/finops/wallet-virtual-accounts', { method: 'POST', body: JSON.stringify({
+        name: el('wva-name').value,
+        email: el('wva-email').value,
+        ownerType: el('wva-type').value,
+        ownerId: el('wva-owner').value,
+        ownerAddress: el('wva-address').value,
+        walletId: el('wva-wallet').value,
+        asset: el('wva-asset').value
+      }) });
+      show('Created ' + res.data.account_number + ' for wallet ' + res.data.wallet_id, false, 'wva-status');
+      loadWalletVirtualAccounts();
+    } catch(e) { show(e.message, true, 'wva-status'); }
   }
 
   window.addEventListener('DOMContentLoaded', () => {

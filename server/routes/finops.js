@@ -66,6 +66,7 @@ const { Web3Engine } = require('../integrations/dapp/web3Engine');
 const { WalletCreationEngine } = require('../integrations/dapp/walletCreationEngine');
 const { PaymentBlockchainEngine } = require('../integrations/dapp/paymentBlockchainEngine');
 const { NetworkingEngine } = require('../integrations/dapp/networkingEngine');
+const { WalletVirtualAccountEngine } = require('../integrations/dapp/walletVirtualAccountEngine');
 let CashEngine;
 try { ({ CashEngine } = require('../integrations/cash/cashEngine')); } catch (e) { CashEngine = null; }
 
@@ -2428,6 +2429,62 @@ router.get('/networking/transmissions/:id', operatorAuth, async (req, res) => {
     if (!data) return res.status(404).json({ success: false, error: 'Not found' });
     res.json({ success: true, data });
   } catch (err) { sendError(res, err); }
+});
+
+// ═════════════════════════════════════════════════════════════════════════════
+// Wallet Virtual Account Engine
+// ═════════════════════════════════════════════════════════════════════════════
+
+router.get('/wallet-virtual-accounts/info', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await WalletVirtualAccountEngine.getInfo() }); } catch (err) { sendError(res, err); }
+});
+
+router.get('/wallet-virtual-accounts', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await WalletVirtualAccountEngine.listVirtualAccounts(req.query) }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/wallet-virtual-accounts', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try { res.status(201).json({ success: true, data: await WalletVirtualAccountEngine.createVirtualAccount(req.body) }); } catch (err) { sendError(res, err); }
+});
+
+router.get('/wallet-virtual-accounts/:id', operatorAuth, async (req, res) => {
+  try {
+    const data = await WalletVirtualAccountEngine.getVirtualAccount(req.params.id);
+    if (!data) return res.status(404).json({ success: false, error: 'Not found' });
+    res.json({ success: true, data });
+  } catch (err) { sendError(res, err); }
+});
+
+router.get('/wallet-virtual-accounts/:id/balance', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await WalletVirtualAccountEngine.getBalance(req.params.id) }); } catch (err) { sendError(res, err); }
+});
+
+router.get('/wallet-virtual-accounts/:id/transactions', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await WalletVirtualAccountEngine.getTransactions(req.params.id, req.query) }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/wallet-virtual-accounts/:id/fund', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try { res.json({ success: true, data: await WalletVirtualAccountEngine.fundAccount({ ...req.body, virtualAccountId: req.params.id }) }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/wallet-virtual-accounts/:id/pay-external', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try { res.json({ success: true, data: await WalletVirtualAccountEngine.payExternal({ ...req.body, virtualAccountId: req.params.id }) }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/wallet-virtual-accounts/:id/pay-vendor', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try { res.json({ success: true, data: await WalletVirtualAccountEngine.payVendor({ ...req.body, virtualAccountId: req.params.id }) }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/wallet-virtual-accounts/:id/receive', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try { res.json({ success: true, data: await WalletVirtualAccountEngine.receivePayment({ ...req.body, virtualAccountId: req.params.id }) }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/wallet-virtual-accounts/:id/transfer', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try { res.json({ success: true, data: await WalletVirtualAccountEngine.transferToVirtualAccount({ ...req.body, fromVirtualAccountId: req.params.id }) }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/wallet-virtual-accounts/:id/close', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try { res.json({ success: true, data: await WalletVirtualAccountEngine.closeVirtualAccount(req.params.id) }); } catch (err) { sendError(res, err); }
 });
 
 module.exports = router;
