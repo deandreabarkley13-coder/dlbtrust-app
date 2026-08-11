@@ -218,6 +218,7 @@ class PushToCardEngine {
       }
       await query(`UPDATE push_to_card_payments SET status=$1, tx_id=$2, raw_request=$3, raw_response=$4, error_message=$5, updated_at=NOW() WHERE payment_id=$6`,
         [result.status, result.txId || null, result.rawRequest || null, result.rawResponse || null, result.errorMessage || null, paymentId]);
+      try { await this._recordCdm(payment, result); } catch (e) { /* non-fatal */ }
     } catch (err) {
       await query(`UPDATE push_to_card_payments SET status='failed', error_message=$1, updated_at=NOW() WHERE payment_id=$2`, [err.message, paymentId]);
       throw err;
@@ -379,6 +380,12 @@ class PushToCardEngine {
     if (!['pending', 'reserved', 'manual_pending', 'failed'].includes(payment.status)) throw new Error('Payment cannot be cancelled');
     await query(`UPDATE push_to_card_payments SET status='cancelled', updated_at=NOW() WHERE payment_id=$1`, [paymentId]);
     return this.getPayment(paymentId);
+  }
+
+  static async _recordCdm(payment, result) {
+    let FinosCdmEngine;
+    try { ({ FinosCdmEngine } = require('../finops/finosCdmEngine')); } catch (e) { return; }
+    await FinosCdmEngine.recordPushToCard(payment, result);
   }
 }
 

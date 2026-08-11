@@ -67,6 +67,7 @@ const { WalletCreationEngine } = require('../integrations/dapp/walletCreationEng
 const { PaymentBlockchainEngine } = require('../integrations/dapp/paymentBlockchainEngine');
 const { PushToCardEngine } = require('../integrations/payments/pushToCardEngine');
 const { NetworkingEngine } = require('../integrations/dapp/networkingEngine');
+const { FinosCdmEngine } = require('../integrations/finops/finosCdmEngine');
 const { WalletVirtualAccountEngine } = require('../integrations/dapp/walletVirtualAccountEngine');
 let CashEngine;
 try { ({ CashEngine } = require('../integrations/cash/cashEngine')); } catch (e) { CashEngine = null; }
@@ -2521,6 +2522,35 @@ router.get('/push-to-card/payments/:id', operatorAuth, async (req, res) => {
     const data = await PushToCardEngine.getPayment(req.params.id);
     if (!data) return res.status(404).json({ success: false, error: 'Not found' });
     res.json({ success: true, data });
+  } catch (err) { sendError(res, err); }
+});
+
+// ─── FINOS Common Domain Model (CDM) events ───────────────────────────────────
+router.get('/finos-cdm/events', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await FinosCdmEngine.listEvents({ referenceId: req.query.referenceId, limit: Number(req.query.limit) || 50, offset: Number(req.query.offset) || 0 }) }); } catch (err) { sendError(res, err); }
+});
+
+router.get('/finos-cdm/events/:id', operatorAuth, async (req, res) => {
+  try {
+    const data = await FinosCdmEngine.getEvent(req.params.id);
+    if (!data) return res.status(404).json({ success: false, error: 'Not found' });
+    res.json({ success: true, data });
+  } catch (err) { sendError(res, err); }
+});
+
+router.post('/finos-cdm/events', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try { res.status(201).json({ success: true, data: await FinosCdmEngine.createEvent(req.body) }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/finos-cdm/events/:id/validate', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try { res.json({ success: true, data: await FinosCdmEngine.validateEvent(req.params.id) }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/finos-cdm/push-to-card/:id/event', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try {
+    const payment = await PushToCardEngine.getPayment(req.params.id);
+    if (!payment) return res.status(404).json({ success: false, error: 'Payment not found' });
+    res.status(201).json({ success: true, data: await FinosCdmEngine.recordPushToCard(payment, req.body || {}) });
   } catch (err) { sendError(res, err); }
 });
 
