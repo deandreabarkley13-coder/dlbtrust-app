@@ -631,7 +631,7 @@ SELECT fit_id, type, amount_cents, name, memo FROM ofx_transactions;
 - Required secret on Fly: `BANKSYNC_API_KEY`.
 - UI IDs: workspace display `bs-whoami`, banks list `bs-banks`, accounts `bs-accounts`, transactions `bs-txs`, status `bs-status`.
 - Panel buttons: `loadBankSyncBanks()` fetches banks; `loadBankSyncTransactions()` fetches txns for the account id in `bs-account-id`.
-- Known gotcha: `GET /api/finops/banksync/whoami` returns `{ success:true, data: { success:true, data:{ workspaceId, workspaceName, ... }}}` (double-wrapped). The UI `loadBankSyncWhoami()` reads `res.data.workspaceName`, so it displays `Unknown` unless the route or UI unwraps the nested `data.data`.
+- `GET /api/finops/banksync/whoami` returns `{ success:true, data:{ workspaceId, workspaceName, authMethod, scopes, planTier }}` (the BankSync `{success, data}` envelope is unwrapped in `bankSyncEngine.banksyncRequest` and the route returns `data: raw.data || raw`). The UI `loadBankSyncWhoami()` reads `res.data.workspaceName` and should display the workspace name.
 - With a write-only API key, `GET /api/finops/banksync/banks` returns `Missing required scope: banks:read`; the UI should surface this in `bs-banks` and remain usable.
 - Native clicks on module cards may be unreliable in scaled viewports; if so, call `openModule('banksync')` from the browser console.
 

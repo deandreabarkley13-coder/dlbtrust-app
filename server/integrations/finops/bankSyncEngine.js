@@ -16,6 +16,17 @@ const API_KEY = process.env.BANKSYNC_API_KEY;
 
 function id(prefix = 'BS') { return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 8).toUpperCase()}`; }
 function safeJson(obj) { return JSON.stringify(obj, (k, v) => typeof v === 'bigint' ? String(v) : v); }
+function normalizeList(payload, key) {
+  if (Array.isArray(payload)) return payload;
+  if (payload && typeof payload === 'object') {
+    if (Array.isArray(payload[key])) return payload[key];
+    if (Array.isArray(payload.data)) return payload.data;
+    if (Array.isArray(payload.banks) && key !== 'banks') return payload.banks;
+    if (Array.isArray(payload.accounts) && key !== 'accounts') return payload.accounts;
+    if (Array.isArray(payload.transactions) && key !== 'transactions') return payload.transactions;
+  }
+  return [];
+}
 
 async function query(text, params) {
   if (!pool) throw new Error('Postgres pool not available');
@@ -87,8 +98,8 @@ class BankSyncEngine {
 
   static async listBanks() {
     const data = await banksyncRequest('/banks');
-    if (pool && Array.isArray(data?.banks || data?.data)) {
-      const banks = data.banks || data.data;
+    const banks = normalizeList(data, 'banks');
+    if (pool && banks.length) {
       await this.ensureTables();
       for (const b of banks) {
         await query(`
@@ -107,8 +118,8 @@ class BankSyncEngine {
 
   static async listAccounts(bid) {
     const data = await banksyncRequest(`/banks/${encodeURIComponent(bid)}/accounts`);
-    if (pool && Array.isArray(data?.accounts || data?.data)) {
-      const accounts = data.accounts || data.data;
+    const accounts = normalizeList(data, 'accounts');
+    if (pool && accounts.length) {
       await this.ensureTables();
       for (const a of accounts) {
         const balance = a.balance || a.balances || {};
@@ -142,8 +153,8 @@ class BankSyncEngine {
     if (limit) qs.set('limit', String(limit));
     if (qs.toString()) path += `?${qs.toString()}`;
     const data = await banksyncRequest(path);
-    if (pool && Array.isArray(data?.transactions || data?.data)) {
-      const txs = data.transactions || data.data;
+    const txs = normalizeList(data, 'transactions');
+    if (pool && txs.length) {
       await this.ensureTables();
       for (const t of txs) {
         await query(`
