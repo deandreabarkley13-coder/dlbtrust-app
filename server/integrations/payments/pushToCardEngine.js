@@ -148,7 +148,7 @@ class PushToCardEngine {
     amount, currency = 'USD',
     cardholderName, cardLast4, cardNetwork = 'Visa',
     recipientName, senderName = 'DLB Trust',
-    connectorId, sourceAccountId: formanceSourceAccountId, destinationAccountId, pushUrl,
+    connectorId, formanceSourceAccountId, destinationAccountId, pushUrl,
     memo, metadata = {},
   } = {}) {
     loadDeps();
