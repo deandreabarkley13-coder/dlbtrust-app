@@ -7,7 +7,7 @@ function fail($code, $message) {
     exit;
 }
 
-$expectedKey = getenv('APACHE_HTTP_API_KEY') ?: '';
+$expectedKey = getenv('APACHE_WIRE_API_KEY') ?: (getenv('APACHE_HTTP_API_KEY') ?: '');
 $headers = getallheaders();
 $apiKey = '';
 foreach ($headers as $name => $value) {
@@ -17,7 +17,10 @@ foreach ($headers as $name => $value) {
     }
 }
 
-if ($expectedKey !== '' && $apiKey !== $expectedKey) {
+if ($expectedKey === '') {
+    fail(500, 'Wire endpoint is not configured with an API key');
+}
+if ($apiKey !== $expectedKey) {
     fail(401, 'Invalid or missing x-api-key');
 }
 
@@ -34,19 +37,13 @@ if (!is_array($data)) {
 $reference = $data['reference'] ?? ($data['wire_id'] ?? 'UNKNOWN');
 $amount = $data['amount_cents'] ?? '0';
 $currency = $data['currency'] ?? 'USD';
-$beneficiary = $data['beneficiary_name'] ?? '';
-$routing = $data['beneficiary_routing'] ?? '';
-$account = $data['beneficiary_account'] ?? '';
 
 $logLine = sprintf(
-    "[%s] wire reference=%s amount=%s %s beneficiary=%s routing=%s account=%s ip=%s\n",
+    "[%s] wire reference=%s amount=%s %s ip=%s\n",
     gmdate('c'),
     $reference,
     $amount,
     $currency,
-    $beneficiary,
-    $routing,
-    substr($account, -4),
     $_SERVER['REMOTE_ADDR'] ?? 'unknown'
 );
 error_log($logLine, 3, '/var/log/apache2/wire-origination.log');

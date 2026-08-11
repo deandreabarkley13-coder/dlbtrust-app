@@ -357,8 +357,15 @@ class PrivateTrustCompanyEngine {
     if (!amount || amount <= 0) throw new Error('amount must be positive');
     const cents = toCents(amount);
     await this.ensureTables();
-    const [balanceRow] = (await query('SELECT * FROM ptc_support_balances WHERE beneficiary_id = $1 AND form = $2 AND asset_code IS NULL', [beneficiaryId, form])).rows;
-    if (!balanceRow || balanceRow.balance_cents < cents) throw new Error('Insufficient support balance');
+    const balanceRows = (await query('SELECT * FROM ptc_support_balances WHERE beneficiary_id = $1 AND form = $2 AND asset_code IS NULL ORDER BY balance_cents DESC', [beneficiaryId, form])).rows;
+    const totalCents = balanceRows.reduce((sum, r) => sum + Number(r.balance_cents || 0), 0);
+    if (totalCents < cents) throw new Error('Insufficient support balance');
+
+    let targetTrustAccountCode = targetCashAccountId || '1000';
+    if (targetCashAccountId && targetCashAccountId.startsWith('CA-')) {
+      const linked = (await query('SELECT account_code FROM trust_accounts WHERE linked_cash_account = $1 LIMIT 1', [targetCashAccountId])).rows[0];
+      targetTrustAccountCode = linked ? linked.account_code : '1000';
+    }
 
     const journalResult = { id: null };
     if (TrustAccountingEngine && form === 'ledger') {
@@ -371,7 +378,7 @@ class PrivateTrustCompanyEngine {
           postedBy: 'PrivateTrustCompanyEngine',
           lines: [
             { accountCode: 'PTC-SUPPORT-PAYABLE', debitAmount: round2(cents / 100) },
-            { accountCode: targetCashAccountId || '1000', creditAmount: round2(cents / 100) },
+            { accountCode: targetTrustAccountCode, creditAmount: round2(cents / 100) },
           ],
         });
         journalResult.id = je.entry_id || je.id || null;
@@ -385,7 +392,15 @@ class PrivateTrustCompanyEngine {
       } catch (e) { journalResult.error = e.message; }
     }
 
-    await query('UPDATE ptc_support_balances SET balance_cents = balance_cents - $1, updated_at = NOW() WHERE balance_id = $2', [cents, balanceRow.balance_id]);
+    if (journalResult.error) throw new Error(journalResult.error);
+
+    let remaining = cents;
+    for (const row of balanceRows) {
+      if (remaining <= 0) break;
+      const deduct = Math.min(remaining, Number(row.balance_cents || 0));
+      await query('UPDATE ptc_support_balances SET balance_cents = balance_cents - $1, updated_at = NOW() WHERE balance_id = $2', [deduct, row.balance_id]);
+      remaining -= deduct;
+    }
     await query('UPDATE ptc_support_pools SET redeemed_cents = redeemed_cents + $1, updated_at = NOW() WHERE pool_id = (SELECT pool_id FROM ptc_beneficiaries WHERE beneficiary_id = $2 LIMIT 1)', [cents, beneficiaryId]);
     return { beneficiaryId, amount, cents, form, journalEntryId: journalResult.id, tokenOperation: journalResult.tokenOperation };
   }

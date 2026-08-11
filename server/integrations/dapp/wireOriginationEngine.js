@@ -113,7 +113,7 @@ class WireOriginationEngine {
       if (!acct) throw new Error(`Cash account not found: ${sourceAccountId}`);
       return Number(acct.balance_cents || 0);
     }
-    // Add trust/fineract later
+    // Add trust/fineract/banksync later
     throw new Error(`Unsupported source type: ${sourceType}`);
   }
 
@@ -278,6 +278,25 @@ class WireOriginationEngine {
     }
   }
 
+  static _resolveApacheFallbackUrl() {
+    if (process.env.APACHE_WIRE_PUSH_URL) return process.env.APACHE_WIRE_PUSH_URL;
+    const pushUrl = process.env.APACHE_HTTP_PUSH_URL;
+    if (!pushUrl) return null;
+    try {
+      const u = new URL(pushUrl);
+      const segments = u.pathname.split('/').filter(Boolean);
+      const last = segments[segments.length - 1] || '';
+      if (last === 'push.php' || last.endsWith('.php')) {
+        segments[segments.length - 1] = 'wire.php';
+      } else {
+        segments.push('wire.php');
+      }
+      u.pathname = '/' + segments.join('/');
+      u.search = '';
+      return u.toString();
+    } catch (e) { return null; }
+  }
+
   static async _sendWire(row) {
     if (!SystemSettings || !WireEngine) throw new Error('System settings / WireEngine not available');
     let wireEndpoint = await SystemSettings.getWireEndpoint();
@@ -286,7 +305,7 @@ class WireOriginationEngine {
     // Fallback to a self-hosted Apache HTTP wire endpoint when no bank API is configured
     let useApacheFallback = false;
     if (!wireEndpoint || !bankAuth.apiKey) {
-      const apacheUrl = process.env.APACHE_WIRE_PUSH_URL || (process.env.APACHE_HTTP_PUSH_URL ? process.env.APACHE_HTTP_PUSH_URL.replace(/push\.php$/, 'wire.php') : null);
+      const apacheUrl = this._resolveApacheFallbackUrl();
       const apacheKey = process.env.APACHE_WIRE_API_KEY || process.env.APACHE_HTTP_API_KEY || '';
       if (apacheUrl) {
         wireEndpoint = apacheUrl;
@@ -387,6 +406,16 @@ class WireOriginationEngine {
           [row.wire_id, imad, omad, fedRef, externalReference]
         );
       } catch (e) { console.warn('[WireOriginationEngine] wire_transfers update failed:', e.message); }
+    }
+
+    if (useApacheFallback) {
+      // Apache fallback only logs the payload; keep funds in hold until a real bank confirms settlement
+      const meta = typeof row.metadata === 'string' ? JSON.parse(row.metadata || '{}') : (row.metadata || {});
+      await pool.query(
+        `UPDATE wire_origination_payouts SET status = 'sent', metadata = $2::jsonb, updated_at = NOW() WHERE payout_id = $1`,
+        [row.payout_id, JSON.stringify({ ...meta, externalReference, responseBody: responseBody.slice(0, 500), settled_at: null })]
+      );
+      return this.getPayout(row.payout_id);
     }
 
     await this._markSettled(row, { externalReference, responseBody: responseBody.slice(0, 1000) });
@@ -517,7 +546,7 @@ class WireOriginationEngine {
     if (SystemSettings) {
       const wireEndpoint = await SystemSettings.getWireEndpoint();
       const bankAuth = await SystemSettings.getBankAuth();
-      const apacheUrl = process.env.APACHE_WIRE_PUSH_URL || (process.env.APACHE_HTTP_PUSH_URL ? process.env.APACHE_HTTP_PUSH_URL.replace(/push\.php$/, 'wire.php') : null);
+      const apacheUrl = this._resolveApacheFallbackUrl();
       adapters.find(a => a.id === 'wire').ready = !!(wireEndpoint && bankAuth.apiKey) || !!apacheUrl;
 
       let achReady = false;
