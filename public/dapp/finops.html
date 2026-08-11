@@ -6412,7 +6412,7 @@
     const box = el('bs-banks');
     try {
       const res = await api('/api/finops/banksync/banks');
-      const banks = res.data?.banks || res.data?.data || [];
+      const banks = Array.isArray(res.data) ? res.data : res.data?.banks || res.data?.data || [];
       if (!banks.length) { box.innerHTML = '<p class="muted">No connected banks.</p>'; return; }
       box.innerHTML = '<table class="table"><thead><tr><th>ID</th><th>Name</th><th>Provider</th><th>Status</th><th>Action</th></tr></thead><tbody>' +
         banks.map(b => '<tr><td>' + escapeHtml(String(b.id || '').slice(-12)) + '</td><td>' + escapeHtml(b.name || '') + '</td><td>' + escapeHtml(b.provider || '') + '</td><td>' + escapeHtml(b.status || '') + '</td><td><button class="btn" onclick="loadBankSyncAccounts(' + "'" + escapeHtml(String(b.id || '')).replace(/'/g, '&#39;') + "'" + ')">Accounts</button></td></tr>').join('') +
@@ -6424,7 +6424,7 @@
     const box = el('bs-accounts');
     try {
       const res = await api('/api/finops/banksync/banks/' + encodeURIComponent(bankId) + '/accounts');
-      const accounts = res.data?.accounts || res.data?.data || [];
+      const accounts = Array.isArray(res.data) ? res.data : res.data?.accounts || res.data?.data || [];
       if (!accounts.length) { box.innerHTML = '<p class="muted">No accounts.</p>'; return; }
       box.innerHTML = '<table class="table"><thead><tr><th>ID</th><th>Name</th><th>Type</th><th>Balance</th><th>Action</th></tr></thead><tbody>' +
         accounts.map(a => '<tr><td>' + escapeHtml((a.id || '').slice(-12)) + '</td><td>' + escapeHtml(a.name || '') + '</td><td>' + escapeHtml(a.type || '') + (a.subtype ? '/' + escapeHtml(a.subtype) : '') + '</td><td>' + escapeHtml(String(a.currentBalance ?? (a.balance?.current ?? ''))) + ' ' + escapeHtml(a.currency || '') + '</td><td><button class="btn" onclick="loadBankSyncTxForAccount(' + "'" + escapeHtml(String(bankId || '')).replace(/'/g, '&#39;') + "','" + escapeHtml(String(a.id || '')).replace(/'/g, '&#39;') + "'" + ')">Txns</button></td></tr>').join('') +
@@ -6444,8 +6444,7 @@
     show('Loading…', false, 'bs-status');
     try {
       const res = await api('/api/finops/banksync/accounts/' + encodeURIComponent(accountId) + '/transactions');
-      const data = res.data || {};
-      const txs = data.transactions || data.data || [];
+      const txs = Array.isArray(res.data) ? res.data : res.data?.transactions || res.data?.data || [];
       if (!txs.length) { box.innerHTML = '<p class="muted">No transactions found.</p>'; show('No transactions', false, 'bs-status'); return; }
       box.innerHTML = '<table class="table"><thead><tr><th>Date</th><th>Description</th><th>Amount</th><th>Status</th></tr></thead><tbody>' +
         txs.map(t => '<tr><td>' + escapeHtml(t.date || '') + '</td><td>' + escapeHtml(t.description || '') + '</td><td>' + escapeHtml(String(t.amount || '')) + ' ' + escapeHtml(t.currency || '') + '</td><td>' + (t.pending ? 'pending' : 'posted') + '</td></tr>').join('') +

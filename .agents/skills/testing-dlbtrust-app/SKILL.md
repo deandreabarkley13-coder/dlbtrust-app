@@ -612,6 +612,29 @@ SELECT fit_id, type, amount_cents, name, memo FROM ofx_transactions;
 - To test manually: open the panel, enter a PTC `payment_id` in `cdm-ptc-id`, and click **Record CDM Event**.
 - `GET /api/finops/finos-cdm/events?referenceId=PTC-...` should return the event with `event_type: 'CashTransfer'`, `counterparty_id` set to the cardholder name, `amount` in USD, and `payload` containing `meta`, `eventIdentifier`, `functionEvent.primitive.cashTransfer`, and `metadata` (cardholder, last4, network).
 
+## BankSync Integration (`/dapp/finops.html`)
+
+- Module card: **BankSync Integration** (`key:'banksync'`, `action:'openBankSyncPanel'`).
+- Backend: `server/integrations/finops/bankSyncEngine.js`; routes in `server/routes/finops.js`:
+  - `GET /api/finops/banksync/whoami`
+  - `GET /api/finops/banksync/banks`
+  - `GET /api/finops/banksync/banks/:id`
+  - `GET /api/finops/banksync/banks/:id/accounts`
+  - `GET /api/finops/banksync/accounts/:aid/balances`
+  - `GET /api/finops/banksync/accounts/:aid/transactions`
+  - `GET /api/finops/banksync/banks/:bid/accounts/:aid/balances`
+  - `GET /api/finops/banksync/banks/:bid/accounts/:aid/transactions`
+  - `POST /api/finops/banksync/banks/:bid/accounts/:aid/sync`
+  - `GET /api/finops/banksync/cached/banks`
+  - `GET /api/finops/banksync/cached/accounts`
+  - `GET /api/finops/banksync/cached/accounts/:id/transactions`
+- Required secret on Fly: `BANKSYNC_API_KEY`.
+- UI IDs: workspace display `bs-whoami`, banks list `bs-banks`, accounts `bs-accounts`, transactions `bs-txs`, status `bs-status`.
+- Panel buttons: `loadBankSyncBanks()` fetches banks; `loadBankSyncTransactions()` fetches txns for the account id in `bs-account-id`.
+- `GET /api/finops/banksync/whoami` returns `{ success:true, data:{ workspaceId, workspaceName, authMethod, scopes, planTier }}` (the BankSync `{success, data}` envelope is unwrapped in `bankSyncEngine.banksyncRequest` and the route returns `data: raw.data || raw`). The UI `loadBankSyncWhoami()` reads `res.data.workspaceName` and should display the workspace name.
+- With a write-only API key, `GET /api/finops/banksync/banks` returns `Missing required scope: banks:read`; the UI should surface this in `bs-banks` and remain usable.
+- Native clicks on module cards may be unreliable in scaled viewports; if so, call `openModule('banksync')` from the browser console.
+
 ## Devin Secrets Needed
 
 - `DATABASE_URL` or local Postgres credentials (`dlbtrust`/`dlbtrust`).
