@@ -209,6 +209,7 @@
     { key:'push-to-card', name:'Push-to-Card Engine', desc:'Instant debit-card funding via Visa Direct, Mastercard Send, Formance, Apache HTTP, or manual push', stat:'', endpoint:null, action:'openPushToCardPanel' },
     { key:'finos-cdm', name:'FINOS CDM Engine', desc:'Common Domain Model event adapter for private cloud banking interoperability', stat:'', endpoint:null, action:'openFinosCdmPanel' },
     { key:'banksync', name:'BankSync Integration', desc:'Open-banking bank/ account/ balance/ transaction sync from BankSync', stat:'', endpoint:null, action:'openBankSyncPanel' },
+    { key:'private-trust-company', name:'Private Trust Company', desc:'Family support pool: PTC as custodian/issuer of principal and interest from bond/fixed income', stat:'', endpoint:null, action:'openPrivateTrustCompanyPanel' },
     { key:'compliance', name:'Compliance Engine', desc:'KYC, AML, and sanctions screening before moving real money', stat:'', endpoint:null, action:'openCompliancePanel' },
     { key:'coordination', name:'Coordination Engine', desc:'System health, AI command queue and stability checks', stat:'', endpoint:null, action:'openCoordinationPanel' },
     { key:'clearing', name:'Clearing Engine', desc:'Bilateral and net settlement on Hyperledger Besu', stat:'', endpoint:null, action:'openClearingPanel' },
@@ -6451,6 +6452,98 @@
         '</tbody></table>';
       show('Loaded ' + txs.length + ' transactions', false, 'bs-status');
     } catch(e) { box.innerHTML = '<p class="muted">' + e.message + '</p>'; show(e.message, true, 'bs-status'); }
+  }
+
+  // ─── Private Trust Company (Family Support) panel ─────────────────────────────
+  async function openPrivateTrustCompanyPanel() {
+    const panel = el('module-panel');
+    const body = el('panel-body');
+    panel.classList.add('active');
+    el('panel-title').textContent = 'Private Trust Company — Family Support';
+    body.innerHTML = '<h3 style="font-size:14px;">Source of Truth</h3>' +
+      '<div id="ptc-sot" class="muted">Loading…</div>' +
+      '<div class="token-bar"><button class="btn" onclick="loadPtcSourceOfTruth()">Refresh</button><button class="btn" onclick="refreshPtcCapacity()">Refresh Capacity</button></div>' +
+      '<h3 style="margin-top:14px;font-size:14px;">Beneficiary Statement</h3>' +
+      '<div class="token-bar"><input id="ptc-ben-id" placeholder="beneficiary id" style="flex:1;"><button class="btn" onclick="loadPtcBeneficiary()">Load</button></div>' +
+      '<div id="ptc-ben" style="margin-top:8px;"></div>' +
+      '<h3 style="margin-top:14px;font-size:14px;">Distribute Interest / Principal</h3>' +
+      '<div class="token-bar"><input id="ptc-bond-id" placeholder="bond id (optional for all interest)" style="flex:1;"><select id="ptc-type"><option value="interest">Interest</option><option value="principal">Principal</option><option value="support">Support</option></select><select id="ptc-form"><option value="ledger">Ledger Credit</option><option value="token">Token</option><option value="both">Both</option></select><button class="btn" onclick="ptcDistribute()">Distribute</button></div>' +
+      '<h3 style="margin-top:14px;font-size:14px;">Custom Distribution</h3>' +
+      '<div class="token-bar"><input id="ptc-amount" placeholder="amount USD" style="flex:1;"><select id="ptc-custom-form"><option value="ledger">Ledger Credit</option><option value="token">Token</option><option value="both">Both</option></select><button class="btn" onclick="ptcCustomDistribute()">Issue</button></div>' +
+      '<div id="ptc-status" class="status hidden" style="margin-top:10px;"></div>';
+    loadPtcSourceOfTruth();
+    loadPtcBeneficiaries();
+  }
+
+  async function loadPtcSourceOfTruth() {
+    const box = el('ptc-sot');
+    try {
+      const res = await api('/api/finops/private-trust-company/source-of-truth');
+      const s = res.data;
+      box.innerHTML = '<table class="table"><tbody>' +
+        '<tr><td>Net Worth</td><td>$' + escapeHtml(String(s.netWorth || 0)) + '</td></tr>' +
+        '<tr><td>Principal</td><td>$' + escapeHtml(String(s.principal || 0)) + '</td></tr>' +
+        '<tr><td>Interest</td><td>$' + escapeHtml(String(s.interest || 0)) + '</td></tr>' +
+        '<tr><td>Bonds</td><td>' + (s.bonds || []).length + '</td></tr>' +
+        '</tbody></table>';
+    } catch(e) { box.innerHTML = '<p class="muted">' + e.message + '</p>'; }
+  }
+
+  async function refreshPtcCapacity() {
+    show('Refreshing…', false, 'ptc-status');
+    try { const res = await api('/api/finops/private-trust-company/refresh-capacity', { method: 'POST' }); show('Pool capacity: $' + escapeHtml(String(res.data.capacityCents / 100)), false, 'ptc-status'); loadPtcSourceOfTruth(); }
+    catch(e) { show(e.message, true, 'ptc-status'); }
+  }
+
+  async function loadPtcBeneficiaries() {
+    try {
+      const res = await api('/api/finops/private-trust-company/beneficiaries');
+      const ben = (res.data || [])[0];
+      if (ben) el('ptc-ben-id').value = ben.beneficiary_id;
+      if (ben) loadPtcBeneficiary();
+    } catch(e) {}
+  }
+
+  async function loadPtcBeneficiary() {
+    const id = el('ptc-ben-id').value;
+    if (!id) { show('Enter beneficiary id', true, 'ptc-status'); return; }
+    const box = el('ptc-ben');
+    try {
+      const res = await api('/api/finops/private-trust-company/beneficiaries/' + encodeURIComponent(id) + '/statement');
+      const b = res.data.beneficiary || {};
+      const balances = res.data.balances || [];
+      box.innerHTML = '<p><b>' + escapeHtml(b.first_name || '') + ' ' + escapeHtml(b.last_name || '') + '</b> (' + escapeHtml(b.allocation_percent || '') + '%)</p>' +
+        '<table class="table"><thead><tr><th>Form</th><th>Balance</th><th>Asset</th></tr></thead><tbody>' +
+        balances.map(bal => '<tr><td>' + escapeHtml(bal.form || '') + '</td><td>$' + escapeHtml(String((bal.balance_cents || 0) / 100)) + '</td><td>' + escapeHtml(bal.asset_code || '') + '</td></tr>').join('') +
+        '</tbody></table>';
+    } catch(e) { box.innerHTML = '<p class="muted">' + e.message + '</p>'; }
+  }
+
+  async function ptcDistribute() {
+    const bondId = el('ptc-bond-id').value;
+    const type = el('ptc-type').value;
+    const form = el('ptc-form').value;
+    show('Distributing…', false, 'ptc-status');
+    try {
+      let res;
+      if (type === 'interest' && !bondId) res = await api('/api/finops/private-trust-company/distribute/bond-interest', { method: 'POST', body: JSON.stringify({ form }) });
+      else if (bondId) res = await api('/api/finops/private-trust-company/distribute/bond/' + encodeURIComponent(bondId) + '/' + encodeURIComponent(type), { method: 'POST', body: JSON.stringify({ form }) });
+      else throw new Error('Enter bond id or choose interest-all');
+      show('Distributed: ' + JSON.stringify(res.data), false, 'ptc-status');
+      loadPtcBeneficiary();
+    } catch(e) { show(e.message, true, 'ptc-status'); }
+  }
+
+  async function ptcCustomDistribute() {
+    const amount = parseFloat(el('ptc-amount').value);
+    const form = el('ptc-custom-form').value;
+    if (!amount || amount <= 0) { show('Enter positive amount', true, 'ptc-status'); return; }
+    show('Issuing…', false, 'ptc-status');
+    try {
+      const res = await api('/api/finops/private-trust-company/distributions', { method: 'POST', body: JSON.stringify({ totalCents: Math.round(amount * 100), form, type: 'support' }) });
+      show('Issued distribution ' + escapeHtml(res.data.distributionId || ''), false, 'ptc-status');
+      loadPtcBeneficiary();
+    } catch(e) { show(e.message, true, 'ptc-status'); }
   }
 
   window.addEventListener('DOMContentLoaded', () => {
