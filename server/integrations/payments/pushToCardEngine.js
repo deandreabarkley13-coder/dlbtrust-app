@@ -319,9 +319,6 @@ class PushToCardEngine {
   static async _sendApacheHttp(payment, options = {}) {
     const pushUrl = options.pushUrl || payment.metadata.pushUrl || process.env.APACHE_HTTP_PUSH_URL;
     const apiKey = options.apiKey || process.env.APACHE_HTTP_API_KEY;
-    if (!pushUrl) {
-      return this._sendManual(payment, { note: 'Apache HTTP push URL not configured; manual instructions generated' });
-    }
     const payload = {
       reference: payment.payment_id,
       amount: fromCents(payment.amount_cents),
@@ -332,6 +329,9 @@ class PushToCardEngine {
       recipientName: payment.recipient_name,
       memo: payment.memo,
     };
+    if (!pushUrl) {
+      return this._sendManual(payment, { note: 'Apache HTTP push URL not configured; manual instructions generated', apachePayload: payload });
+    }
     const rawRequest = safeJson(payload);
     const headers = { 'Content-Type': 'application/json' };
     if (apiKey) headers['x-api-key'] = apiKey;
