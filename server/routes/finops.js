@@ -62,6 +62,10 @@ const { SettlementEngine } = require('../integrations/dapp/settlementEngine');
 const { PaymentIdEngine } = require('../integrations/dapp/paymentIdEngine');
 const { HostToHostEngine } = require('../integrations/dapp/hostToHostEngine');
 const { LiveMoneyMovementEngine } = require('../integrations/dapp/liveMoneyMovementEngine');
+const { Web3Engine } = require('../integrations/dapp/web3Engine');
+const { WalletCreationEngine } = require('../integrations/dapp/walletCreationEngine');
+const { PaymentBlockchainEngine } = require('../integrations/dapp/paymentBlockchainEngine');
+const { NetworkingEngine } = require('../integrations/dapp/networkingEngine');
 let CashEngine;
 try { ({ CashEngine } = require('../integrations/cash/cashEngine')); } catch (e) { CashEngine = null; }
 
@@ -2297,6 +2301,130 @@ router.post('/live-money/:id/cancel', operatorAuth, async (req, res) => {
 router.get('/live-money/:id', operatorAuth, async (req, res) => {
   try {
     const data = await LiveMoneyMovementEngine.getMovement(req.params.id);
+    if (!data) return res.status(404).json({ success: false, error: 'Not found' });
+    res.json({ success: true, data });
+  } catch (err) { sendError(res, err); }
+});
+
+// ═════════════════════════════════════════════════════════════════════════════
+// Web3 Engine
+// ═════════════════════════════════════════════════════════════════════════════
+
+router.get('/web3/info', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await Web3Engine.info() }); } catch (err) { sendError(res, err); }
+});
+
+router.get('/web3/balances', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await Web3Engine.getBalances(req.query) }); } catch (err) { sendError(res, err); }
+});
+
+router.get('/web3/gas', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await Web3Engine.getGasPrice() }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/web3/call', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await Web3Engine.callContract(req.body) }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/web3/send', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try { res.json({ success: true, data: await Web3Engine.sendTransaction(req.body) }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/web3/write', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try { res.json({ success: true, data: await Web3Engine.writeContract(req.body) }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/web3/send-token', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try { res.json({ success: true, data: await Web3Engine.sendToken(req.body) }); } catch (err) { sendError(res, err); }
+});
+
+// ═════════════════════════════════════════════════════════════════════════════
+// Wallet Creation Engine
+// ═════════════════════════════════════════════════════════════════════════════
+
+router.get('/wallet-creation/info', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await WalletCreationEngine.info() }); } catch (err) { sendError(res, err); }
+});
+
+router.get('/wallet-creation/wallets', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await WalletCreationEngine.listWallets(req.query) }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/wallet-creation/wallets', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try { res.status(201).json({ success: true, data: await WalletCreationEngine.createWallet(req.body) }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/wallet-creation/wallets/import', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try { res.status(201).json({ success: true, data: await WalletCreationEngine.importWallet(req.body) }); } catch (err) { sendError(res, err); }
+});
+
+router.get('/wallet-creation/wallets/:id', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await WalletCreationEngine.getWallet(req.params.id) }); } catch (err) { sendError(res, err); }
+});
+
+// ═════════════════════════════════════════════════════════════════════════════
+// Payment Blockchain API Engine
+// ═════════════════════════════════════════════════════════════════════════════
+
+router.get('/payment-blockchain/info', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await PaymentBlockchainEngine.getInfo() }); } catch (err) { sendError(res, err); }
+});
+
+router.get('/payment-blockchain/payments', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await PaymentBlockchainEngine.listPayments(req.query) }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/payment-blockchain/payments', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try { res.status(201).json({ success: true, data: await PaymentBlockchainEngine.createPayment(req.body) }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/payment-blockchain/payments/:id/execute', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try { res.json({ success: true, data: await PaymentBlockchainEngine.executePayment(req.params.id) }); } catch (err) { sendError(res, err); }
+});
+
+router.get('/payment-blockchain/payments/:id', operatorAuth, async (req, res) => {
+  try {
+    const data = await PaymentBlockchainEngine.getPayment(req.params.id);
+    if (!data) return res.status(404).json({ success: false, error: 'Not found' });
+    res.json({ success: true, data });
+  } catch (err) { sendError(res, err); }
+});
+
+// ═════════════════════════════════════════════════════════════════════════════
+// Network and Networking Engine
+// ═════════════════════════════════════════════════════════════════════════════
+
+router.get('/networking/info', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await NetworkingEngine.getInfo() }); } catch (err) { sendError(res, err); }
+});
+
+router.get('/networking/endpoints', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await NetworkingEngine.listEndpoints(req.query) }); } catch (err) { sendError(res, err); }
+});
+
+router.get('/networking/transmissions', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await NetworkingEngine.listTransmissions(req.query) }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/networking/transmit', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try { res.status(201).json({ success: true, data: await NetworkingEngine.transmit(req.body) }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/networking/receive', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try { res.status(201).json({ success: true, data: await NetworkingEngine.receiveInbound(req.body) }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/networking/transmissions/:id/retry', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try { res.json({ success: true, data: await NetworkingEngine.retryTransmission(req.params.id) }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/networking/transmissions/:id/cancel', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try { res.json({ success: true, data: await NetworkingEngine.cancelTransmission(req.params.id) }); } catch (err) { sendError(res, err); }
+});
+
+router.get('/networking/transmissions/:id', operatorAuth, async (req, res) => {
+  try {
+    const data = await NetworkingEngine.getTransmission(req.params.id);
     if (!data) return res.status(404).json({ success: false, error: 'Not found' });
     res.json({ success: true, data });
   } catch (err) { sendError(res, err); }
