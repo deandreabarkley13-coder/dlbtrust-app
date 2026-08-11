@@ -65,6 +65,7 @@ const { LiveMoneyMovementEngine } = require('../integrations/dapp/liveMoneyMovem
 const { Web3Engine } = require('../integrations/dapp/web3Engine');
 const { WalletCreationEngine } = require('../integrations/dapp/walletCreationEngine');
 const { PaymentBlockchainEngine } = require('../integrations/dapp/paymentBlockchainEngine');
+const { PushToCardEngine } = require('../integrations/payments/pushToCardEngine');
 const { NetworkingEngine } = require('../integrations/dapp/networkingEngine');
 const { WalletVirtualAccountEngine } = require('../integrations/dapp/walletVirtualAccountEngine');
 let CashEngine;
@@ -2485,6 +2486,42 @@ router.post('/wallet-virtual-accounts/:id/transfer', operatorAuth, writeRateLimi
 
 router.post('/wallet-virtual-accounts/:id/close', operatorAuth, writeRateLimiter(), async (req, res) => {
   try { res.json({ success: true, data: await WalletVirtualAccountEngine.closeVirtualAccount(req.params.id) }); } catch (err) { sendError(res, err); }
+});
+
+// ═════════════════════════════════════════════════════════════════════════════
+// Push to Card Engine
+// ═════════════════════════════════════════════════════════════════════════════
+
+router.get('/push-to-card/info', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await PushToCardEngine.getInfo() }); } catch (err) { sendError(res, err); }
+});
+
+router.get('/push-to-card/providers', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await PushToCardEngine.listProviders() }); } catch (err) { sendError(res, err); }
+});
+
+router.get('/push-to-card/payments', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await PushToCardEngine.listPayments(req.query) }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/push-to-card/payments', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try { res.status(201).json({ success: true, data: await PushToCardEngine.createPayment(req.body) }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/push-to-card/payments/:id/execute', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try { res.json({ success: true, data: await PushToCardEngine.executePayment(req.params.id) }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/push-to-card/payments/:id/cancel', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try { res.json({ success: true, data: await PushToCardEngine.cancelPayment(req.params.id) }); } catch (err) { sendError(res, err); }
+});
+
+router.get('/push-to-card/payments/:id', operatorAuth, async (req, res) => {
+  try {
+    const data = await PushToCardEngine.getPayment(req.params.id);
+    if (!data) return res.status(404).json({ success: false, error: 'Not found' });
+    res.json({ success: true, data });
+  } catch (err) { sendError(res, err); }
 });
 
 module.exports = router;

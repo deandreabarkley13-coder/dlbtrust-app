@@ -206,6 +206,7 @@
     { key:'payment-blockchain', name:'Payment Blockchain API', desc:'Create and execute payments on blockchain rails', stat:'', endpoint:null, action:'openPaymentBlockchainPanel' },
     { key:'networking', name:'Network & Networking Engine', desc:'Transmit and receive transactional financial data across internal and external rails', stat:'', endpoint:null, action:'openNetworkingPanel' },
     { key:'wallet-virtual-accounts', name:'Wallet Virtual Account Generator', desc:'Create virtual accounts for wallets to transact with merchants, vendors, and other wallets', stat:'', endpoint:null, action:'openWalletVirtualAccountsPanel' },
+    { key:'push-to-card', name:'Push-to-Card Engine', desc:'Instant debit-card funding via Visa Direct, Mastercard Send, or manual push', stat:'', endpoint:null, action:'openPushToCardPanel' },
     { key:'compliance', name:'Compliance Engine', desc:'KYC, AML, and sanctions screening before moving real money', stat:'', endpoint:null, action:'openCompliancePanel' },
     { key:'coordination', name:'Coordination Engine', desc:'System health, AI command queue and stability checks', stat:'', endpoint:null, action:'openCoordinationPanel' },
     { key:'clearing', name:'Clearing Engine', desc:'Bilateral and net settlement on Hyperledger Besu', stat:'', endpoint:null, action:'openClearingPanel' },
@@ -6262,6 +6263,66 @@
       show('Created ' + res.data.account_number + ' for wallet ' + res.data.wallet_id, false, 'wva-status');
       loadWalletVirtualAccounts();
     } catch(e) { show(e.message, true, 'wva-status'); }
+  }
+
+  // ─── Push-to-Card Engine panel ────────────────────────────────────────────────
+  async function openPushToCardPanel() {
+    const panel = el('module-panel');
+    const body = el('panel-body');
+    panel.classList.add('active');
+    el('panel-title').textContent = 'Push-to-Card Engine';
+    const info = await api('/api/finops/push-to-card/info').catch(() => ({ data: {} }));
+    body.innerHTML = '<p class="muted">' + (info.data.note || '') + '</p>' +
+      '<h3 style="font-size:14px;">Send Push-to-Card</h3>' +
+      '<div class="token-bar"><select id="ptc-provider"><option value="visa_direct">Visa Direct</option><option value="mastercard_send">Mastercard Send</option><option value="manual">Manual / Processor Portal</option></select>' +
+      '<select id="ptc-source"><option value="cash:CA-OPERATING">CA-OPERATING</option><option value="ledger:4000">Interest Income 4000</option></select></div>' +
+      '<div class="token-bar"><input id="ptc-name" placeholder="cardholder name" style="flex:1;"><input id="ptc-last4" placeholder="card last 4" style="width:80px;"><input id="ptc-network" value="Visa" placeholder="network" style="width:80px;"></div>' +
+      '<div class="token-bar"><input id="ptc-recipient" placeholder="recipient name (optional)" style="flex:1;"><input id="ptc-amount" placeholder="amount"><input id="ptc-currency" value="USD" placeholder="currency" style="width:60px;"></div>' +
+      '<input id="ptc-memo" placeholder="memo / reference" style="width:100%;margin-top:8px;">' +
+      '<button class="btn" onclick="createPushToCard()">Create Push-to-Card</button>' +
+      '<div id="ptc-status" class="status hidden" style="margin-top:10px;"></div>' +
+      '<h3 style="margin-top:18px;font-size:14px;">Payments</h3><div id="ptc-list"></div>';
+    loadPushToCardPayments();
+  }
+
+  async function loadPushToCardPayments() {
+    const list = el('ptc-list');
+    if (!list) return;
+    list.innerHTML = 'Loading…';
+    try {
+      const res = await api('/api/finops/push-to-card/payments');
+      const rows = res.data || [];
+      if (!rows.length) { list.innerHTML = '<p class="muted">No push-to-card payments.</p>'; return; }
+      list.innerHTML = '<table class="table"><thead><tr><th>ID</th><th>Provider</th><th>Name</th><th>Last4</th><th>Amount</th><th>Status</th><th>Action</th></tr></thead><tbody>' +
+        rows.map(p => '<tr><td>' + (p.payment_id || '').slice(-12) + '</td><td>' + (p.provider || '') + '</td><td>' + (p.cardholder_name || '') + '</td><td>' + (p.card_last4 || '') + '</td><td>' + (p.amount || '') + ' ' + (p.currency || '') + '</td><td>' + (p.status || '') + '</td><td>' + (p.status === 'pending' ? '<button class="btn" onclick="executePushToCard(' + "'" + p.payment_id + "'" + ')">Execute</button>' : '') + '</td></tr>').join('') +
+        '</tbody></table>';
+    } catch(e) { list.innerHTML = '<p class="muted">' + e.message + '</p>'; }
+  }
+
+  async function createPushToCard() {
+    show('Creating…', false, 'ptc-status');
+    try {
+      const source = el('ptc-source').value.split(':');
+      const res = await api('/api/finops/push-to-card/payments', { method: 'POST', body: JSON.stringify({
+        provider: el('ptc-provider').value,
+        sourceType: source[0],
+        sourceAccountId: source[1],
+        amount: el('ptc-amount').value,
+        currency: el('ptc-currency').value,
+        cardholderName: el('ptc-name').value,
+        cardLast4: el('ptc-last4').value,
+        cardNetwork: el('ptc-network').value,
+        recipientName: el('ptc-recipient').value,
+        memo: el('ptc-memo').value
+      }) });
+      show('Created ' + res.data.payment_id + ' status=' + res.data.status, false, 'ptc-status');
+      loadPushToCardPayments();
+    } catch(e) { show(e.message, true, 'ptc-status'); }
+  }
+
+  async function executePushToCard(paymentId) {
+    try { await api('/api/finops/push-to-card/payments/' + paymentId + '/execute', { method: 'POST' }); loadPushToCardPayments(); }
+    catch(e) { show(e.message, true, 'ptc-status'); }
   }
 
   window.addEventListener('DOMContentLoaded', () => {
