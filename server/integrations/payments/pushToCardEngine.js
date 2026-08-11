@@ -69,13 +69,15 @@ class PushToCardEngine {
   static async getInfo() {
     loadDeps();
     const visaReady = !!(process.env.VISA_DIRECT_API_KEY && process.env.VISA_DIRECT_URL);
-    const hyperswitchReady = !!(process.env.HYPERSWITCH_API_KEY && process.env.HYPERSWITCH_BASE_URL);
+    const formanceReady = !!(process.env.FORMANCE_API_URL && process.env.FORMANCE_API_TOKEN);
+    const apacheReady = !!(process.env.APACHE_HTTP_PUSH_URL);
     return {
-      providers: ['visa_direct', 'mastercard_send', 'hyperswitch', 'manual', 'card_vault'],
+      providers: ['visa_direct', 'mastercard_send', 'formance', 'apache_http', 'manual', 'card_vault'],
       visaDirectReady: visaReady,
-      hyperswitchReady,
+      formanceReady,
+      apacheReady,
       liveMode: visaReady && process.env.VISA_DIRECT_LIVE === 'true',
-      note: 'Set VISA_DIRECT_API_KEY, VISA_DIRECT_SHARED_SECRET, VISA_DIRECT_URL and VISA_DIRECT_LIVE=true for live Visa Direct pushes. Set HYPERSWITCH_API_KEY and HYPERSWITCH_BASE_URL for self-hosted Hyperswitch push-to-card.',
+      note: 'Set VISA_DIRECT_* for Visa Direct, FORMANCE_API_URL/TOKEN/CONNECTOR_ID/SOURCE_ACCOUNT_ID/DESTINATION_ACCOUNT_ID for Formance, or APACHE_HTTP_PUSH_URL/APACHE_HTTP_API_KEY for self-hosted Apache HTTP.',
     };
   }
 
@@ -84,7 +86,8 @@ class PushToCardEngine {
     return [
       { id: 'visa_direct', name: 'Visa Direct', ready: info.visaDirectReady, live: info.liveMode },
       { id: 'mastercard_send', name: 'Mastercard Send', ready: false, live: false },
-      { id: 'hyperswitch', name: 'Hyperswitch (self-hosted)', ready: info.hyperswitchReady, live: info.hyperswitchReady && process.env.HYPERSWITCH_LIVE === 'true' },
+      { id: 'formance', name: 'Formance (self-hosted)', ready: info.formanceReady, live: info.formanceReady },
+      { id: 'apache_http', name: 'Apache HTTP (self-hosted)', ready: info.apacheReady, live: info.apacheReady },
       { id: 'manual', name: 'Manual / Processor Portal', ready: true, live: false },
       { id: 'card_vault', name: 'Encrypted Card Vault', ready: false, live: false },
     ];
@@ -145,7 +148,7 @@ class PushToCardEngine {
     amount, currency = 'USD',
     cardholderName, cardLast4, cardNetwork = 'Visa',
     recipientName, senderName = 'DLB Trust',
-    payoutToken, customerId, billing,
+    connectorId, sourceAccountId: formanceSourceAccountId, destinationAccountId, pushUrl,
     memo, metadata = {},
   } = {}) {
     loadDeps();
@@ -156,7 +159,13 @@ class PushToCardEngine {
     if (!sourceType || !sourceAccountId) throw new Error('sourceType and sourceAccountId required');
     const amountCents = toCents(amount);
     const paymentId = id();
-    const meta = { ...metadata, payoutToken: payoutToken || null, customerId: customerId || null, billing: billing || null };
+    const meta = {
+      ...metadata,
+      connectorId: connectorId || metadata.connectorId || null,
+      formanceSourceAccountId: formanceSourceAccountId || metadata.formanceSourceAccountId || null,
+      destinationAccountId: destinationAccountId || metadata.destinationAccountId || null,
+      pushUrl: pushUrl || metadata.pushUrl || null,
+    };
     await query(`
       INSERT INTO push_to_card_payments (payment_id, status, provider, source_type, source_account_id, amount_cents, currency,
         cardholder_name, card_last4, card_network, recipient_name, sender_name, memo, metadata)
@@ -200,8 +209,10 @@ class PushToCardEngine {
         result = await this._sendVisaDirect(payment, options);
       } else if (payment.provider === 'mastercard_send') {
         result = await this._sendMastercardSend(payment, options);
-      } else if (payment.provider === 'hyperswitch') {
-        result = await this._sendHyperswitch(payment, options);
+      } else if (payment.provider === 'formance') {
+        result = await this._sendFormance(payment, options);
+      } else if (payment.provider === 'apache_http') {
+        result = await this._sendApacheHttp(payment, options);
       } else {
         result = await this._sendManual(payment);
       }
@@ -249,72 +260,103 @@ class PushToCardEngine {
     return this._sendManual(payment, { note: 'Mastercard Send not yet implemented; manual instructions generated' });
   }
 
-  static async _sendHyperswitch(payment, options = {}) {
-    const apiKey = process.env.HYPERSWITCH_API_KEY;
-    const baseUrl = (process.env.HYPERSWITCH_BASE_URL || 'https://sandbox.hyperswitch.io').replace(/\/$/, '');
-    const live = process.env.HYPERSWITCH_LIVE === 'true';
-    const payoutToken = options.payoutToken || payment.metadata.payoutToken || null;
-    const customerId = options.customerId || payment.metadata.customerId || `dlb-${payment.payment_id}`;
-    const billing = options.billing || payment.metadata.billing || {};
+  static async _sendFormance(payment, options = {}) {
+    const apiUrl = (process.env.FORMANCE_API_URL || '').replace(/\/$/, '');
+    const token = process.env.FORMANCE_API_TOKEN;
+    const connectorId = options.connectorId || payment.metadata.connectorId || process.env.FORMANCE_CONNECTOR_ID;
+    const sourceAccountId = options.sourceAccountId || payment.metadata.formanceSourceAccountId || process.env.FORMANCE_SOURCE_ACCOUNT_ID;
+    const destinationAccountId = options.destinationAccountId || payment.metadata.destinationAccountId || process.env.FORMANCE_DESTINATION_ACCOUNT_ID;
 
-    const amountCents = Number(payment.amount_cents);
     const payload = {
-      amount: amountCents,
-      currency: payment.currency,
-      customer_id: customerId,
-      payout_type: 'card',
+      reference: payment.payment_id,
+      connectorID: connectorId,
+      type: 'PAYOUT',
+      amount: Number(payment.amount_cents),
+      asset: `${payment.currency}/2`,
+      sourceAccountID: sourceAccountId,
+      destinationAccountID: destinationAccountId,
       description: payment.memo || `Push-to-card ${payment.payment_id}`,
-      auto_fulfill: true,
-      confirm: true,
+      validated: true,
+      metadata: { cardholder: payment.cardholder_name, last4: payment.card_last4, network: payment.card_network },
     };
-    if (payoutToken) {
-      payload.payout_token = payoutToken;
-    } else if (options.cardNumber) {
-      payload.payout_method_data = {
-        card: {
-          card_number: options.cardNumber,
-          card_exp_month: options.expiryMonth || '12',
-          card_exp_year: options.expiryYear || '30',
-          card_holder_name: payment.cardholder_name || payment.recipient_name || 'Cardholder',
-        },
-      };
-      if (billing && billing.address) payload.billing = billing;
-    }
 
-    if (!apiKey || !payload.payout_token && !payload.payout_method_data) {
+    if (!apiUrl || !token || !connectorId || !sourceAccountId || !destinationAccountId) {
       return this._sendManual(payment, {
-        note: 'Hyperswitch not configured or no payout token/card data; manual instructions generated',
-        hyperswitchPayload: { ...payload, payout_token: payoutToken || '[PAYOUT_TOKEN]' },
+        note: 'Formance not configured; manual instructions generated',
+        formancePayload: payload,
       });
     }
 
-    const rawRequest = safeJson({ ...payload, payout_token: payload.payout_token || '[REDACTED]', payout_method_data: payload.payout_method_data ? { card: { ...payload.payout_method_data.card, card_number: '[REDACTED]' } } : undefined });
+    const rawRequest = safeJson(payload);
     let rawResponse;
     let status = 'manual_pending';
     let txId = null;
     let errorMessage = null;
     try {
-      const res = await fetch(`${baseUrl}/payouts/create`, {
+      const res = await fetch(`${apiUrl}/api/payments/v3/payment-initiations`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'api-key': apiKey },
-        body: safeJson(payload),
+        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
+        body: rawRequest,
       });
       const text = await res.text();
       rawResponse = text;
       const json = text ? JSON.parse(text) : {};
-      txId = json.payout_id || json.payment_id || null;
+      txId = json.id || json.reference || null;
       if (res.ok) {
-        status = live ? 'submitted' : 'manual_pending';
+        status = 'submitted';
       } else {
         status = 'failed';
-        errorMessage = json.message || json.error_message || `Hyperswitch HTTP ${res.status}`;
+        errorMessage = json.message || json.errorMessage || `Formance HTTP ${res.status}`;
       }
     } catch (err) {
       status = 'failed';
       errorMessage = err.message;
       rawResponse = rawResponse || err.message;
     }
-    return { status, txId, rawRequest, rawResponse: safeJson({ provider: 'hyperswitch', live, baseUrl, response: rawResponse }), errorMessage };
+    return { status, txId, rawRequest, rawResponse: safeJson({ provider: 'formance', apiUrl, response: rawResponse }), errorMessage };
+  }
+
+  static async _sendApacheHttp(payment, options = {}) {
+    const pushUrl = options.pushUrl || payment.metadata.pushUrl || process.env.APACHE_HTTP_PUSH_URL;
+    const apiKey = options.apiKey || process.env.APACHE_HTTP_API_KEY;
+    if (!pushUrl) {
+      return this._sendManual(payment, { note: 'Apache HTTP push URL not configured; manual instructions generated' });
+    }
+    const payload = {
+      reference: payment.payment_id,
+      amount: fromCents(payment.amount_cents),
+      currency: payment.currency,
+      cardholderName: payment.cardholder_name,
+      cardLast4: payment.card_last4,
+      cardNetwork: payment.card_network,
+      recipientName: payment.recipient_name,
+      memo: payment.memo,
+    };
+    const rawRequest = safeJson(payload);
+    const headers = { 'Content-Type': 'application/json' };
+    if (apiKey) headers['x-api-key'] = apiKey;
+    let rawResponse;
+    let status = 'manual_pending';
+    let txId = null;
+    let errorMessage = null;
+    try {
+      const res = await fetch(pushUrl, { method: 'POST', headers, body: rawRequest });
+      const text = await res.text();
+      rawResponse = text;
+      const json = text ? JSON.parse(text) : {};
+      txId = json.txId || json.reference || json.id || null;
+      if (res.ok) {
+        status = 'submitted';
+      } else {
+        status = 'failed';
+        errorMessage = json.message || json.error || `Apache HTTP ${res.status}`;
+      }
+    } catch (err) {
+      status = 'failed';
+      errorMessage = err.message;
+      rawResponse = rawResponse || err.message;
+    }
+    return { status, txId, rawRequest, rawResponse: safeJson({ provider: 'apache_http', pushUrl, response: rawResponse }), errorMessage };
   }
 
   static async _sendManual(payment, extra = {}) {
