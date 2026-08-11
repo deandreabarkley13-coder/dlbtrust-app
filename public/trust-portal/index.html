@@ -1,0 +1,118 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate" />
+  <meta http-equiv="Pragma" content="no-cache" />
+  <meta http-equiv="Expires" content="0" />
+  <title>Barkley Trust — Trustee & Beneficiary Portal</title>
+  <style>
+    :root { --bg:#0a0e17; --card:#111a2b; --panel:#1e293b; --border:#26314a; --text:#f8fafc; --muted:#94a3b8; --accent:#3b82f6; --gold:#d4af37; --danger:#ef4444; --ok:#10b981; }
+    * { box-sizing:border-box; }
+    body { margin:0; min-height:100vh; font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif; background:linear-gradient(160deg, var(--bg) 0%, #0d1321 100%); color:var(--text); display:flex; flex-direction:column; align-items:center; justify-content:center; padding:24px; }
+    .brand { text-align:center; margin-bottom:28px; }
+    .brand-mark { width:56px; height:56px; background:linear-gradient(135deg, var(--gold), #b8932b); color:#000; border-radius:50%; display:grid; place-items:center; font-weight:700; font-size:22px; margin:0 auto 12px; }
+    .brand h1 { margin:0; font-size:22px; letter-spacing:-.2px; }
+    .brand p { margin:6px 0 0; color:var(--muted); font-size:14px; }
+    .card { background:var(--card); border:1px solid var(--border); border-radius:16px; padding:28px; width:100%; max-width:420px; box-shadow:0 16px 48px rgba(0,0,0,.25); }
+    .card h2 { margin:0 0 8px; font-size:18px; }
+    .card p { color:var(--muted); font-size:13px; margin:0 0 20px; }
+    label { display:block; font-size:12px; color:var(--muted); margin:14px 0 6px; text-transform:uppercase; letter-spacing:.3px; }
+    input { width:100%; background:#0b1220; border:1px solid var(--border); color:var(--text); padding:12px 14px; border-radius:10px; font-size:15px; }
+    input:focus { outline:none; border-color:var(--accent); }
+    .btn { width:100%; border:0; padding:13px; border-radius:10px; font-size:15px; font-weight:600; cursor:pointer; margin-top:18px; color:#000; background:var(--gold); }
+    .btn:hover { opacity:.92; }
+    .btn:disabled { opacity:.5; cursor:not-allowed; }
+    .hidden { display:none; }
+    .status { margin-top:14px; padding:12px; border-radius:10px; background:#0b1220; border:1px solid var(--border); font-size:13px; word-break:break-word; }
+    .status.ok { border-color:var(--ok); color:var(--ok); }
+    .status.err { border-color:var(--danger); color:var(--danger); }
+    .back { margin-top:18px; text-align:center; }
+    .back a { color:var(--muted); font-size:13px; text-decoration:none; }
+    .back a:hover { color:var(--text); }
+    .hint { margin-top:12px; font-size:12px; color:var(--muted); text-align:center; }
+  </style>
+</head>
+<body>
+  <div class="brand">
+    <div class="brand-mark">DLB</div>
+    <h1>DeAndrea LaVar Barkley Trust</h1>
+    <p>Trustee & Beneficiary Portal</p>
+  </div>
+
+  <div class="card">
+    <h2>Secure Login</h2>
+    <p>Enter your email to receive a one-time PIN. No password required.</p>
+    <label for="email">Email</label>
+    <input type="email" id="email" placeholder="you@email.com" inputmode="email" />
+    <button class="btn" id="btn-send" onclick="sendPin()">Send PIN</button>
+
+    <div id="pin-box" class="hidden">
+      <label for="pin">One-time PIN</label>
+      <input type="number" id="pin" placeholder="123456" inputmode="numeric" autocomplete="one-time-code" />
+      <button class="btn" onclick="verifyPin()">Verify & Enter</button>
+    </div>
+
+    <div id="status" class="status hidden"></div>
+  </div>
+
+  <div class="back">
+    <a href="/">← Back to public site</a>
+  </div>
+  <div class="hint">For trustees and approved beneficiaries only.</div>
+
+  <script>
+    const el = id => document.getElementById(id);
+    function show(id, msg, isErr) {
+      const d = el(id);
+      d.textContent = msg;
+      d.className = 'status ' + (isErr ? 'err' : 'ok');
+      d.classList.remove('hidden');
+    }
+    async function api(path, opts={}) {
+      opts.headers = opts.headers || {};
+      opts.headers['Content-Type'] = 'application/json';
+      const res = await fetch(path, opts);
+      const text = await res.text();
+      try { return JSON.parse(text); } catch { return { success: res.ok, raw: text }; }
+    }
+    async function sendPin() {
+      const email = el('email').value.trim().toLowerCase();
+      if (!email) { show('status', 'Enter your email', true); return; }
+      el('btn-send').disabled = true;
+      show('status', 'Sending PIN…', false);
+      try {
+        const res = await api('/api/dapp/auth/send-code', { method: 'POST', body: JSON.stringify({ email }) });
+        if (!res.success) throw new Error(res.error || 'Failed to send PIN');
+        el('pin-box').classList.remove('hidden');
+        if (res.data && res.data.code) {
+          show('status', 'PIN: ' + res.data.code + ' (email not configured)', false);
+          el('pin').value = res.data.code;
+        } else {
+          show('status', 'PIN sent to ' + email + '. Check your inbox.', false);
+        }
+      } catch (e) {
+        show('status', e.message, true);
+      } finally { el('btn-send').disabled = false; }
+    }
+    async function verifyPin() {
+      const email = el('email').value.trim().toLowerCase();
+      const code = el('pin').value.trim();
+      if (!email || !code) { show('status', 'Enter email and PIN', true); return; }
+      show('status', 'Verifying…', false);
+      try {
+        const res = await api('/api/dapp/auth/verify', { method: 'POST', body: JSON.stringify({ email, code }) });
+        if (!res.success || !res.data || !res.data.token) throw new Error(res.error || 'No token returned');
+        localStorage.setItem('dlb-beneficiary-token', res.data.token);
+        if (res.data.email) localStorage.setItem('dlb-trust-email', res.data.email);
+        show('status', 'Login successful. Redirecting…', false);
+        setTimeout(() => location.href = '/trust-portal/dashboard.html', 400);
+      } catch (e) { show('status', e.message, true); }
+    }
+    if (localStorage.getItem('dlb-beneficiary-token')) {
+      location.replace('/trust-portal/dashboard.html');
+    }
+  </script>
+</body>
+</html>
