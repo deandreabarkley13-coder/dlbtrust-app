@@ -248,7 +248,7 @@ class PrivateTrustCompanyEngine {
       lines.push({ beneficiaryId: b.beneficiary_id, supportAccountId: b.support_account_id, tokenAccountId: b.token_account_id, allocationPercent: Number(b.allocation_percent || 0), amountCents });
     }
 
-    const sourceCode = sourceAccountCode || (type === 'interest' ? '4000 Interest Income' : (type === 'principal' ? '1100 Bond Investments' : '3000 Trust Corpus'));
+    const sourceCode = sourceAccountCode || (type === 'interest' ? '4000' : (type === 'principal' ? '1100' : '3000'));
     const journalResult = { id: null };
     const tokenResults = [];
 
@@ -335,7 +335,7 @@ class PrivateTrustCompanyEngine {
     const metrics = await LiveBondEngine.getBondLiveMetrics(bondId);
     const amountDollars = type === 'interest' ? (metrics.accrued_interest_total || 0) : (metrics.principal_balance || 0);
     if (amountDollars <= 0) throw new Error(`No ${type} available for bond ${bondId}`);
-    const sourceAccountCode = type === 'interest' ? '4000 Interest Income' : '1100 Bond Investments';
+    const sourceAccountCode = type === 'interest' ? '4000' : '1100';
     return this.createDistribution({ poolId: pool.pool_id, type, totalCents: toCents(amountDollars), form, memo: memo || `PTC ${type} from ${metrics.bond_name}`, sourceAccountCode });
   }
 
@@ -371,7 +371,7 @@ class PrivateTrustCompanyEngine {
           postedBy: 'PrivateTrustCompanyEngine',
           lines: [
             { accountCode: 'PTC-SUPPORT-PAYABLE', debitAmount: round2(cents / 100) },
-            { accountCode: targetCashAccountId || '1000 Trust Cash & Equivalents', creditAmount: round2(cents / 100) },
+            { accountCode: targetCashAccountId || '1000', creditAmount: round2(cents / 100) },
           ],
         });
         journalResult.id = je.entry_id || je.id || null;
