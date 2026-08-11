@@ -582,17 +582,35 @@ SELECT fit_id, type, amount_cents, name, memo FROM ofx_transactions;
   - `POST /api/finops/push-to-card/payments/:id/execute`
   - `POST /api/finops/push-to-card/payments/:id/cancel`
   - `GET /api/finops/push-to-card/payments/:id`
-- UI IDs: `ptc-provider`, `ptc-source`, `ptc-name`, `ptc-last4`, `ptc-network`, `ptc-recipient`, `ptc-amount`, `ptc-currency`, `ptc-memo`; buttons call `createPushToCard()` and `executePushToCard(paymentId)`; status area `ptc-status`; payments table `ptc-list`.
-- Providers exposed: `visa_direct`, `mastercard_send`, `manual`, `card_vault`.
+- UI IDs: `ptc-provider`, `ptc-source`, `ptc-name`, `ptc-last4`, `ptc-network`, `ptc-recipient`, `ptc-amount`, `ptc-currency`, `ptc-config`, `ptc-memo`; buttons call `createPushToCard()` and `executePushToCard(paymentId)`; status area `ptc-status`; payments table `ptc-list`.
+- Providers exposed: `visa_direct`, `mastercard_send`, `formance`, `apache_http`, `manual`, `card_vault`.
 - Sources: `cash:CA-OPERATING` and `ledger:4000` (hardcoded in the UI select).
+- Provider config JSON (`ptc-config`) can override `connectorId`, `formanceSourceAccountId`, `destinationAccountId`, `pushUrl`. Note: `formance` looks for `formanceSourceAccountId` (not `sourceAccountId`) when reading from the stored config.
+- **Apache HTTP (self-hosted)**: requires `APACHE_HTTP_PUSH_URL` and optional `APACHE_HTTP_API_KEY`. The UI calls `POST /api/finops/push-to-card/payments/:id/execute`; the backend POSTs to `push.php` with `x-api-key`. The endpoint returns `{ status: 'submitted', txId: 'TX-...' }` and the payment row becomes `submitted`.
+- **Formance (self-hosted)**: requires `FORMANCE_API_URL`, `FORMANCE_API_TOKEN`, `FORMANCE_CONNECTOR_ID/SOURCE_ACCOUNT_ID/DESTINATION_ACCOUNT_ID` (or config overrides). If not configured, execution falls back to `manual_pending` and `raw_response` contains the `PAYOUT` payload plus a manual-instruction note.
 - Live Visa Direct requires `VISA_DIRECT_API_KEY`, `VISA_DIRECT_SHARED_SECRET`, `VISA_DIRECT_URL`, and `VISA_DIRECT_LIVE=true`. Without them, `visa_direct` falls back to `manual_pending` with manual instructions.
 - Test flow:
-  1. Select `manual` provider and `cash:CA-OPERATING` (or `ledger:4000`).
-  2. Fill cardholder name, last 4, amount, currency, optional memo.
+  1. Select `apache_http` provider and `cash:CA-OPERATING` (or `ledger:4000`).
+  2. Fill cardholder name, last 4, amount, currency, optional memo. Leave `ptc-config` empty to use Fly secrets.
   3. Click **Create Push-to-Card** — a `pending` `push_to_card_payments` row is created.
-  4. Click **Execute** on the row — funds are reserved (cash transferred to `PTC-HOLD` or a ledger JE posted to `PTC-HOLD`) and status becomes `manual_pending`.
-  5. `GET /api/finops/push-to-card/payments/:id` should show `status: 'manual_pending'`, `tx_id: null`, and `raw_response` with instructions referencing the payment ID, cardholder, card network, and last 4.
+  4. Click **Execute** on the row — funds are reserved (cash transferred to `PTC-HOLD` or a ledger JE posted to `PTC-HOLD`) and status becomes `submitted` with a `tx_id` from the Apache endpoint.
+  5. `GET /api/finops/push-to-card/payments/:id` should show `status: 'submitted'`, non-null `tx_id`, and `raw_response` containing the Apache `pushUrl` and the endpoint's JSON response.
 - `metadata.reserve` is populated with `holdAccount: 'PTC-HOLD'` or `journalEntryId` for ledger sources.
+- The dashboard `loadAll()` now fetches `/api/finops/push-to-card/payments` and calls `setStat('push-to-card', activeCount)`; the module badge reflects the count of `pending`/`reserved`/`manual_pending`/`submitted` payments.
+
+## FINOS CDM Engine (`/dapp/finops.html`)
+
+- Module card: **FINOS CDM Engine** (`key:'finos-cdm'`, `action:'openFinosCdmPanel'`).
+- Backend: `server/integrations/finops/finosCdmEngine.js`; routes in `server/routes/finops.js`:
+  - `GET /api/finops/finos-cdm/events?referenceId=...`
+  - `GET /api/finops/finos-cdm/events/:id`
+  - `POST /api/finops/finos-cdm/events`
+  - `POST /api/finops/finos-cdm/events/:id/validate`
+  - `POST /api/finops/finos-cdm/push-to-card/:id/event`
+- UI IDs: `cdm-reference`, `cdm-ptc-id`; buttons call `loadCdmEvents()` and `recordCdmPushToCard()`; status area `cdm-status`; events table `cdm-list`.
+- `PushToCardEngine.executePayment()` auto-calls `FinosCdmEngine.recordPushToCard()` on successful execution, so a CDM `CashTransfer` event is created with `intent: 'PUSH_TO_CARD_PAYMENT'`, `reference_id` matching the `payment_id`, and `status` matching the payment status.
+- To test manually: open the panel, enter a PTC `payment_id` in `cdm-ptc-id`, and click **Record CDM Event**.
+- `GET /api/finops/finos-cdm/events?referenceId=PTC-...` should return the event with `event_type: 'CashTransfer'`, `counterparty_id` set to the cardholder name, `amount` in USD, and `payload` containing `meta`, `eventIdentifier`, `functionEvent.primitive.cashTransfer`, and `metadata` (cardholder, last4, network).
 
 ## Devin Secrets Needed
 

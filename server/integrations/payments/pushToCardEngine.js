@@ -265,7 +265,7 @@ class PushToCardEngine {
     const apiUrl = (process.env.FORMANCE_API_URL || '').replace(/\/$/, '');
     const token = process.env.FORMANCE_API_TOKEN;
     const connectorId = options.connectorId || payment.metadata.connectorId || process.env.FORMANCE_CONNECTOR_ID;
-    const sourceAccountId = options.sourceAccountId || payment.metadata.formanceSourceAccountId || process.env.FORMANCE_SOURCE_ACCOUNT_ID;
+    const sourceAccountId = options.sourceAccountId || payment.metadata.formanceSourceAccountId || payment.metadata.sourceAccountId || process.env.FORMANCE_SOURCE_ACCOUNT_ID;
     const destinationAccountId = options.destinationAccountId || payment.metadata.destinationAccountId || process.env.FORMANCE_DESTINATION_ACCOUNT_ID;
 
     const payload = {
