@@ -206,6 +206,8 @@
     { key:'payment-blockchain', name:'Payment Blockchain API', desc:'Create and execute payments on blockchain rails', stat:'', endpoint:null, action:'openPaymentBlockchainPanel' },
     { key:'networking', name:'Network & Networking Engine', desc:'Transmit and receive transactional financial data across internal and external rails', stat:'', endpoint:null, action:'openNetworkingPanel' },
     { key:'wallet-virtual-accounts', name:'Wallet Virtual Account Generator', desc:'Create virtual accounts for wallets to transact with merchants, vendors, and other wallets', stat:'', endpoint:null, action:'openWalletVirtualAccountsPanel' },
+    { key:'push-to-card', name:'Push-to-Card Engine', desc:'Instant debit-card funding via Visa Direct, Mastercard Send, Formance, Apache HTTP, or manual push', stat:'', endpoint:null, action:'openPushToCardPanel' },
+    { key:'finos-cdm', name:'FINOS CDM Engine', desc:'Common Domain Model event adapter for private cloud banking interoperability', stat:'', endpoint:null, action:'openFinosCdmPanel' },
     { key:'compliance', name:'Compliance Engine', desc:'KYC, AML, and sanctions screening before moving real money', stat:'', endpoint:null, action:'openCompliancePanel' },
     { key:'coordination', name:'Coordination Engine', desc:'System health, AI command queue and stability checks', stat:'', endpoint:null, action:'openCoordinationPanel' },
     { key:'clearing', name:'Clearing Engine', desc:'Bilateral and net settlement on Hyperledger Besu', stat:'', endpoint:null, action:'openClearingPanel' },
@@ -373,7 +375,7 @@
     renderModules();
     renderFlow();
     try {
-      const [sof, corporateTreasury, accts, wallets, bond, crm, p2p, ptc, consensus, xchain, paired, trustMarket, ramps, decentralizedRamps, intents, externalWallets, externalSwaps, computing, holdings, capitalFunds, virtualAccounts, wireOrigination, electronicMoney, openBanking, trustDeposits, fineractPayouts, skrillLinks, barcodeDeposits, webPaymentRails, externalEndpoints, liveFintechEndpoints, settlements, paymentIds, hostToHost, liveMoney] = await Promise.all([
+      const [sof, corporateTreasury, accts, wallets, bond, crm, p2p, ptc, consensus, xchain, paired, trustMarket, ramps, decentralizedRamps, intents, externalWallets, externalSwaps, computing, holdings, capitalFunds, virtualAccounts, wireOrigination, electronicMoney, openBanking, trustDeposits, fineractPayouts, skrillLinks, barcodeDeposits, webPaymentRails, externalEndpoints, liveFintechEndpoints, settlements, paymentIds, hostToHost, liveMoney, pushToCard] = await Promise.all([
         api('/api/finops/source-of-funds').catch(()=>null),
         api('/api/finops/corporate-treasury').catch(()=>null),
         api('/api/accounting/accounts').catch(()=>null),
@@ -409,6 +411,7 @@
         api('/api/finops/payment-ids').catch(()=>null),
         api('/api/finops/host-to-host').catch(()=>null),
         api('/api/finops/live-money').catch(()=>null),
+        api('/api/finops/push-to-card/payments').catch(()=>null),
       ]);
       if (corporateTreasury && corporateTreasury.data) {
         setStat('treasury', fmt(Number(corporateTreasury.data.totalCashCents || 0) / 100, 0));
@@ -527,6 +530,10 @@
       if (liveMoney && liveMoney.data) {
         setStat('live-money', String(liveMoney.data.counts.completed || 0));
       }
+      if (pushToCard && pushToCard.data && Array.isArray(pushToCard.data)) {
+        const active = pushToCard.data.filter(p => ['pending','reserved','manual_pending','submitted'].includes(p.status)).length;
+        setStat('push-to-card', String(active));
+      }
       renderModules();
     } catch(e) { console.error('loadAll error', e); }
     loadApprovals();
@@ -541,6 +548,10 @@
     const num = Number(n || 0);
     if (isNaN(num)) return '—';
     return '$' + num.toLocaleString(undefined, { minimumFractionDigits: decimals, maximumFractionDigits: decimals });
+  }
+
+  function escapeHtml(s) {
+    return String(s == null ? '' : s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
   }
 
   function openModule(key) {
@@ -6242,7 +6253,7 @@
       const rows = res.data || [];
       if (!rows.length) { list.innerHTML = '<p class="muted">No virtual accounts.</p>'; return; }
       list.innerHTML = '<table class="table"><thead><tr><th>Name</th><th>Number</th><th>Wallet</th><th>Type</th><th>Asset</th><th>Status</th></tr></thead><tbody>' +
-        rows.map(a => '<tr><td>' + (a.name || '') + '</td><td>' + (a.account_number || '') + '</td><td>' + ((a.wallet_id || '').slice(-8)) + '</td><td>' + (a.owner_type || '') + '</td><td>' + (a.asset || '') + '</td><td>' + (a.status || '') + '</td></tr>').join('') +
+        rows.map(a => '<tr><td>' + escapeHtml(a.name || '') + '</td><td>' + escapeHtml(a.account_number || '') + '</td><td>' + escapeHtml((a.wallet_id || '').slice(-8)) + '</td><td>' + escapeHtml(a.owner_type || '') + '</td><td>' + escapeHtml(a.asset || '') + '</td><td>' + escapeHtml(a.status || '') + '</td></tr>').join('') +
         '</tbody></table>';
     } catch(e) { list.innerHTML = '<p class="muted">' + e.message + '</p>'; }
   }
@@ -6262,6 +6273,113 @@
       show('Created ' + res.data.account_number + ' for wallet ' + res.data.wallet_id, false, 'wva-status');
       loadWalletVirtualAccounts();
     } catch(e) { show(e.message, true, 'wva-status'); }
+  }
+
+  // ─── Push-to-Card Engine panel ────────────────────────────────────────────────
+  async function openPushToCardPanel() {
+    const panel = el('module-panel');
+    const body = el('panel-body');
+    panel.classList.add('active');
+    el('panel-title').textContent = 'Push-to-Card Engine';
+    const info = await api('/api/finops/push-to-card/info').catch(() => ({ data: {} }));
+    body.innerHTML = '<p class="muted">' + (info.data.note || '') + '</p>' +
+      '<h3 style="font-size:14px;">Send Push-to-Card</h3>' +
+      '<div class="token-bar"><select id="ptc-provider"><option value="visa_direct">Visa Direct</option><option value="mastercard_send">Mastercard Send</option><option value="formance">Formance (self-hosted)</option><option value="apache_http">Apache HTTP (self-hosted)</option><option value="manual">Manual / Processor Portal</option></select>' +
+      '<select id="ptc-source"><option value="cash:CA-OPERATING">CA-OPERATING</option><option value="ledger:4000">Interest Income 4000</option></select></div>' +
+      '<div class="token-bar"><input id="ptc-name" placeholder="cardholder name" style="flex:1;"><input id="ptc-last4" placeholder="card last 4" style="width:80px;"><input id="ptc-network" value="Visa" placeholder="network" style="width:80px;"></div>' +
+      '<div class="token-bar"><input id="ptc-recipient" placeholder="recipient name (optional)" style="flex:1;"><input id="ptc-amount" placeholder="amount"><input id="ptc-currency" value="USD" placeholder="currency" style="width:60px;"></div>' +
+      '<textarea id="ptc-config" placeholder="{&quot;connectorId&quot;:&quot;...&quot;,&quot;formanceSourceAccountId&quot;:&quot;...&quot;,&quot;destinationAccountId&quot;:&quot;...&quot;,&quot;pushUrl&quot;:&quot;...&quot;}" style="width:100%;height:60px;margin-top:8px;"></textarea>' +
+      '<input id="ptc-memo" placeholder="memo / reference" style="width:100%;margin-top:8px;">' +
+      '<button class="btn" onclick="createPushToCard()">Create Push-to-Card</button>' +
+      '<div id="ptc-status" class="status hidden" style="margin-top:10px;"></div>' +
+      '<h3 style="margin-top:18px;font-size:14px;">Payments</h3><div id="ptc-list"></div>';
+    loadPushToCardPayments();
+  }
+
+  async function loadPushToCardPayments() {
+    const list = el('ptc-list');
+    if (!list) return;
+    list.innerHTML = 'Loading…';
+    try {
+      const res = await api('/api/finops/push-to-card/payments');
+      const rows = res.data || [];
+      if (!rows.length) { list.innerHTML = '<p class="muted">No push-to-card payments.</p>'; return; }
+      list.innerHTML = '<table class="table"><thead><tr><th>ID</th><th>Provider</th><th>Name</th><th>Last4</th><th>Amount</th><th>Status</th><th>Action</th></tr></thead><tbody>' +
+        rows.map(p => '<tr><td>' + escapeHtml((p.payment_id || '').slice(-12)) + '</td><td>' + escapeHtml(p.provider || '') + '</td><td>' + escapeHtml(p.cardholder_name || '') + '</td><td>' + escapeHtml(p.card_last4 || '') + '</td><td>' + escapeHtml(p.amount || '') + ' ' + escapeHtml(p.currency || '') + '</td><td>' + escapeHtml(p.status || '') + '</td><td>' + (p.status === 'pending' ? '<button class="btn" onclick="executePushToCard(' + "'" + escapeHtml(String(p.payment_id || '')).replace(/'/g, '&#39;') + "'" + ')">Execute</button>' : '') + '</td></tr>').join('') +
+        '</tbody></table>';
+    } catch(e) { list.innerHTML = '<p class="muted">' + e.message + '</p>'; }
+  }
+
+  async function createPushToCard() {
+    show('Creating…', false, 'ptc-status');
+    try {
+      const source = el('ptc-source').value.split(':');
+      const cfgText = el('ptc-config').value;
+      const config = cfgText ? JSON.parse(cfgText) : {};
+      const body = {
+        provider: el('ptc-provider').value,
+        sourceType: source[0],
+        sourceAccountId: source[1],
+        amount: el('ptc-amount').value,
+        currency: el('ptc-currency').value,
+        cardholderName: el('ptc-name').value,
+        cardLast4: el('ptc-last4').value,
+        cardNetwork: el('ptc-network').value,
+        recipientName: el('ptc-recipient').value,
+        memo: el('ptc-memo').value,
+        ...config
+      };
+      const res = await api('/api/finops/push-to-card/payments', { method: 'POST', body: JSON.stringify(body) });
+      show('Created ' + res.data.payment_id + ' status=' + res.data.status, false, 'ptc-status');
+      loadPushToCardPayments();
+    } catch(e) { show(e.message, true, 'ptc-status'); }
+  }
+
+  async function executePushToCard(paymentId) {
+    try { await api('/api/finops/push-to-card/payments/' + paymentId + '/execute', { method: 'POST' }); loadPushToCardPayments(); }
+    catch(e) { show(e.message, true, 'ptc-status'); }
+  }
+
+  // ─── FINOS CDM Engine panel ───────────────────────────────────────────────────
+  async function openFinosCdmPanel() {
+    const panel = el('module-panel');
+    const body = el('panel-body');
+    panel.classList.add('active');
+    el('panel-title').textContent = 'FINOS CDM Engine';
+    body.innerHTML = '<h3 style="font-size:14px;">CDM Events</h3>' +
+      '<div class="token-bar"><input id="cdm-reference" placeholder="reference id (optional)" style="flex:1;"><button class="btn" onclick="loadCdmEvents()">Load</button></div>' +
+      '<h3 style="margin-top:14px;font-size:14px;">Push-to-Card → CDM Event</h3>' +
+      '<div class="token-bar"><input id="cdm-ptc-id" placeholder="PTC payment id" style="flex:1;"><button class="btn" onclick="recordCdmPushToCard()">Record CDM Event</button></div>' +
+      '<div id="cdm-status" class="status hidden" style="margin-top:10px;"></div>' +
+      '<div id="cdm-list" style="margin-top:10px;"></div>';
+    loadCdmEvents();
+  }
+
+  async function loadCdmEvents() {
+    const list = el('cdm-list');
+    if (!list) return;
+    list.innerHTML = 'Loading…';
+    try {
+      const ref = el('cdm-reference').value;
+      const url = '/api/finops/finos-cdm/events' + (ref ? '?referenceId=' + encodeURIComponent(ref) : '');
+      const res = await api(url);
+      const rows = res.data || [];
+      if (!rows.length) { list.innerHTML = '<p class="muted">No CDM events.</p>'; return; }
+      list.innerHTML = '<table class="table"><thead><tr><th>ID</th><th>Type</th><th>Reference</th><th>Counterparty</th><th>Amount</th><th>Status</th></tr></thead><tbody>' +
+        rows.map(e => '<tr><td>' + escapeHtml((e.event_id || '').slice(-12)) + '</td><td>' + escapeHtml(e.event_type || '') + '</td><td>' + escapeHtml(e.reference_id || '') + '</td><td>' + escapeHtml(e.counterparty_id || '') + '</td><td>' + escapeHtml(e.amount || '') + ' ' + escapeHtml(e.currency || '') + '</td><td>' + escapeHtml(e.status || '') + '</td></tr>').join('') +
+        '</tbody></table>';
+    } catch(e) { list.innerHTML = '<p class="muted">' + e.message + '</p>'; }
+  }
+
+  async function recordCdmPushToCard() {
+    const id = el('cdm-ptc-id').value;
+    if (!id) { show('Enter a payment id', true, 'cdm-status'); return; }
+    show('Recording CDM event…', false, 'cdm-status');
+    try {
+      const res = await api('/api/finops/finos-cdm/push-to-card/' + encodeURIComponent(id) + '/event', { method: 'POST' });
+      show('Recorded CDM event ' + res.data.event_id, false, 'cdm-status');
+      loadCdmEvents();
+    } catch(e) { show(e.message, true, 'cdm-status'); }
   }
 
   window.addEventListener('DOMContentLoaded', () => {
