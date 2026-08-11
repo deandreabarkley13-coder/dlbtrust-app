@@ -374,7 +374,7 @@
     renderModules();
     renderFlow();
     try {
-      const [sof, corporateTreasury, accts, wallets, bond, crm, p2p, ptc, consensus, xchain, paired, trustMarket, ramps, decentralizedRamps, intents, externalWallets, externalSwaps, computing, holdings, capitalFunds, virtualAccounts, wireOrigination, electronicMoney, openBanking, trustDeposits, fineractPayouts, skrillLinks, barcodeDeposits, webPaymentRails, externalEndpoints, liveFintechEndpoints, settlements, paymentIds, hostToHost, liveMoney] = await Promise.all([
+      const [sof, corporateTreasury, accts, wallets, bond, crm, p2p, ptc, consensus, xchain, paired, trustMarket, ramps, decentralizedRamps, intents, externalWallets, externalSwaps, computing, holdings, capitalFunds, virtualAccounts, wireOrigination, electronicMoney, openBanking, trustDeposits, fineractPayouts, skrillLinks, barcodeDeposits, webPaymentRails, externalEndpoints, liveFintechEndpoints, settlements, paymentIds, hostToHost, liveMoney, pushToCard] = await Promise.all([
         api('/api/finops/source-of-funds').catch(()=>null),
         api('/api/finops/corporate-treasury').catch(()=>null),
         api('/api/accounting/accounts').catch(()=>null),
@@ -410,6 +410,7 @@
         api('/api/finops/payment-ids').catch(()=>null),
         api('/api/finops/host-to-host').catch(()=>null),
         api('/api/finops/live-money').catch(()=>null),
+        api('/api/finops/push-to-card/payments').catch(()=>null),
       ]);
       if (corporateTreasury && corporateTreasury.data) {
         setStat('treasury', fmt(Number(corporateTreasury.data.totalCashCents || 0) / 100, 0));
@@ -527,6 +528,10 @@
       }
       if (liveMoney && liveMoney.data) {
         setStat('live-money', String(liveMoney.data.counts.completed || 0));
+      }
+      if (pushToCard && pushToCard.data && Array.isArray(pushToCard.data)) {
+        const active = pushToCard.data.filter(p => ['pending','reserved','manual_pending','submitted'].includes(p.status)).length;
+        setStat('push-to-card', String(active));
       }
       renderModules();
     } catch(e) { console.error('loadAll error', e); }

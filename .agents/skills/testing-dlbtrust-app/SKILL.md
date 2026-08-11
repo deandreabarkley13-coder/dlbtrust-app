@@ -571,6 +571,29 @@ SELECT fit_id, type, amount_cents, name, memo FROM ofx_transactions;
 - For `DLBUSD -> DAI`, expect `stablecoin_dex` (tiny/near-zero output if no DAI liquidity), `trust_market`/`p2p_canonical_swap` ready at 1:1, `ptc_bondex` if source is `DLB-PTCUSD`, and `BondDex + Uniswap V2` likely `no_liquidity`.
 - Operator wallet `0x3e53028c...` needs mainnet ETH for gas; gas costs are tiny when base fee is low.
 
+## Push-to-Card Engine (`/dapp/finops.html`)
+
+- Module card: **Push-to-Card Engine** (`key:'push-to-card'`, `action:'openPushToCardPanel'`).
+- Backend: `server/integrations/payments/pushToCardEngine.js`; routes in `server/routes/finops.js`:
+  - `GET /api/finops/push-to-card/info`
+  - `GET /api/finops/push-to-card/providers`
+  - `GET /api/finops/push-to-card/payments`
+  - `POST /api/finops/push-to-card/payments`
+  - `POST /api/finops/push-to-card/payments/:id/execute`
+  - `POST /api/finops/push-to-card/payments/:id/cancel`
+  - `GET /api/finops/push-to-card/payments/:id`
+- UI IDs: `ptc-provider`, `ptc-source`, `ptc-name`, `ptc-last4`, `ptc-network`, `ptc-recipient`, `ptc-amount`, `ptc-currency`, `ptc-memo`; buttons call `createPushToCard()` and `executePushToCard(paymentId)`; status area `ptc-status`; payments table `ptc-list`.
+- Providers exposed: `visa_direct`, `mastercard_send`, `manual`, `card_vault`.
+- Sources: `cash:CA-OPERATING` and `ledger:4000` (hardcoded in the UI select).
+- Live Visa Direct requires `VISA_DIRECT_API_KEY`, `VISA_DIRECT_SHARED_SECRET`, `VISA_DIRECT_URL`, and `VISA_DIRECT_LIVE=true`. Without them, `visa_direct` falls back to `manual_pending` with manual instructions.
+- Test flow:
+  1. Select `manual` provider and `cash:CA-OPERATING` (or `ledger:4000`).
+  2. Fill cardholder name, last 4, amount, currency, optional memo.
+  3. Click **Create Push-to-Card** — a `pending` `push_to_card_payments` row is created.
+  4. Click **Execute** on the row — funds are reserved (cash transferred to `PTC-HOLD` or a ledger JE posted to `PTC-HOLD`) and status becomes `manual_pending`.
+  5. `GET /api/finops/push-to-card/payments/:id` should show `status: 'manual_pending'`, `tx_id: null`, and `raw_response` with instructions referencing the payment ID, cardholder, card network, and last 4.
+- `metadata.reserve` is populated with `holdAccount: 'PTC-HOLD'` or `journalEntryId` for ledger sources.
+
 ## Devin Secrets Needed
 
 - `DATABASE_URL` or local Postgres credentials (`dlbtrust`/`dlbtrust`).
