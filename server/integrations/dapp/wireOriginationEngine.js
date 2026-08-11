@@ -262,7 +262,7 @@ class WireOriginationEngine {
     await this.ensureTables();
     const row = await this.getPayout(payoutId);
     if (!row) throw new Error('Payout not found');
-    if (row.status !== 'approved') throw new Error(`Payout must be approved, current: ${row.status}`);
+    if (!['approved','needs_setup'].includes(row.status)) throw new Error(`Payout cannot be sent from status ${row.status}`);
 
     await pool.query(`UPDATE wire_origination_payouts SET status = 'originating', updated_at = NOW() WHERE payout_id = $1`, [payoutId]);
 
@@ -280,11 +280,22 @@ class WireOriginationEngine {
 
   static async _sendWire(row) {
     if (!SystemSettings || !WireEngine) throw new Error('System settings / WireEngine not available');
-    const systemMode = await SystemSettings.getMode();
-    const wireEndpoint = await SystemSettings.getWireEndpoint();
-    const bankAuth = await SystemSettings.getBankAuth();
+    let wireEndpoint = await SystemSettings.getWireEndpoint();
+    let bankAuth = await SystemSettings.getBankAuth();
 
-    if (systemMode !== 'production' || !wireEndpoint || !bankAuth.apiKey) {
+    // Fallback to a self-hosted Apache HTTP wire endpoint when no bank API is configured
+    let useApacheFallback = false;
+    if (!wireEndpoint || !bankAuth.apiKey) {
+      const apacheUrl = process.env.APACHE_WIRE_PUSH_URL || (process.env.APACHE_HTTP_PUSH_URL ? process.env.APACHE_HTTP_PUSH_URL.replace(/push\.php$/, 'wire.php') : null);
+      const apacheKey = process.env.APACHE_WIRE_API_KEY || process.env.APACHE_HTTP_API_KEY || '';
+      if (apacheUrl) {
+        wireEndpoint = apacheUrl;
+        bankAuth = { authType: 'api_key', apiKey: apacheKey, apiSecret: '', useMtls: false };
+        useApacheFallback = true;
+      }
+    }
+
+    if (!wireEndpoint) {
       await pool.query(`UPDATE wire_origination_payouts SET status = 'needs_setup', updated_at = NOW() WHERE payout_id = $1`, [row.payout_id]);
       return this.getPayout(row.payout_id);
     }
@@ -362,17 +373,23 @@ class WireOriginationEngine {
       return this.getPayout(row.payout_id);
     }
 
+    let externalReference = confirmationNumber;
+    try {
+      const parsedBody = JSON.parse(responseBody);
+      if (parsedBody.referenceNumber) externalReference = parsedBody.referenceNumber;
+    } catch (e) {}
+
     // Update wire_transfers record (best effort)
     if (row.wire_id) {
       try {
         await pool.query(
           `UPDATE wire_transfers SET status = 'sent', imad = $2, omad = $3, fed_reference = $4, confirmation_number = $5, sent_at = NOW(), updated_at = NOW() WHERE wire_id = $1`,
-          [row.wire_id, imad, omad, fedRef, confirmationNumber]
+          [row.wire_id, imad, omad, fedRef, externalReference]
         );
       } catch (e) { console.warn('[WireOriginationEngine] wire_transfers update failed:', e.message); }
     }
 
-    await this._markSettled(row);
+    await this._markSettled(row, { externalReference, responseBody: responseBody.slice(0, 1000) });
     return this.getPayout(row.payout_id);
   }
 
@@ -434,7 +451,7 @@ class WireOriginationEngine {
     return this.getPayout(row.payout_id);
   }
 
-  static async _markSettled(row) {
+  static async _markSettled(row, extra = {}) {
     if (CashEngine) {
       try {
         await CashEngine.transfer({
@@ -448,7 +465,9 @@ class WireOriginationEngine {
         });
       } catch (e) { console.warn('[WireOriginationEngine] settle transfer failed:', e.message); }
     }
-    await pool.query(`UPDATE wire_origination_payouts SET status = 'settled', updated_at = NOW() WHERE payout_id = $1`, [row.payout_id]);
+    const meta = typeof row.metadata === 'string' ? JSON.parse(row.metadata || '{}') : (row.metadata || {});
+    const merged = JSON.stringify({ ...meta, ...extra, settled_at: new Date().toISOString() });
+    await pool.query(`UPDATE wire_origination_payouts SET status = 'settled', metadata = $2::jsonb, updated_at = NOW() WHERE payout_id = $1`, [row.payout_id, merged]);
   }
 
   static async getPayout(payoutId) {
@@ -498,7 +517,8 @@ class WireOriginationEngine {
     if (SystemSettings) {
       const wireEndpoint = await SystemSettings.getWireEndpoint();
       const bankAuth = await SystemSettings.getBankAuth();
-      adapters.find(a => a.id === 'wire').ready = !!(wireEndpoint && bankAuth.apiKey);
+      const apacheUrl = process.env.APACHE_WIRE_PUSH_URL || (process.env.APACHE_HTTP_PUSH_URL ? process.env.APACHE_HTTP_PUSH_URL.replace(/push\.php$/, 'wire.php') : null);
+      adapters.find(a => a.id === 'wire').ready = !!(wireEndpoint && bankAuth.apiKey) || !!apacheUrl;
 
       let achReady = false;
       try {
