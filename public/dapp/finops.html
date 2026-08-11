@@ -6283,9 +6283,10 @@
     const info = await api('/api/finops/push-to-card/info').catch(() => ({ data: {} }));
     body.innerHTML = '<p class="muted">' + (info.data.note || '') + '</p>' +
       '<h3 style="font-size:14px;">Send Push-to-Card</h3>' +
-      '<div class="token-bar"><select id="ptc-provider"><option value="visa_direct">Visa Direct</option><option value="mastercard_send">Mastercard Send</option><option value="manual">Manual / Processor Portal</option></select>' +
+      '<div class="token-bar"><select id="ptc-provider"><option value="visa_direct">Visa Direct</option><option value="mastercard_send">Mastercard Send</option><option value="hyperswitch">Hyperswitch (self-hosted)</option><option value="manual">Manual / Processor Portal</option></select>' +
       '<select id="ptc-source"><option value="cash:CA-OPERATING">CA-OPERATING</option><option value="ledger:4000">Interest Income 4000</option></select></div>' +
       '<div class="token-bar"><input id="ptc-name" placeholder="cardholder name" style="flex:1;"><input id="ptc-last4" placeholder="card last 4" style="width:80px;"><input id="ptc-network" value="Visa" placeholder="network" style="width:80px;"></div>' +
+      '<input id="ptc-payout-token" placeholder="Hyperswitch payout token (optional; tokenize card in Hyperswitch vault first)" style="width:100%;margin-top:8px;">' +
       '<div class="token-bar"><input id="ptc-recipient" placeholder="recipient name (optional)" style="flex:1;"><input id="ptc-amount" placeholder="amount"><input id="ptc-currency" value="USD" placeholder="currency" style="width:60px;"></div>' +
       '<input id="ptc-memo" placeholder="memo / reference" style="width:100%;margin-top:8px;">' +
       '<button class="btn" onclick="createPushToCard()">Create Push-to-Card</button>' +
@@ -6321,6 +6322,7 @@
         cardholderName: el('ptc-name').value,
         cardLast4: el('ptc-last4').value,
         cardNetwork: el('ptc-network').value,
+        payoutToken: el('ptc-payout-token').value || undefined,
         recipientName: el('ptc-recipient').value,
         memo: el('ptc-memo').value
       }) });

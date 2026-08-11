@@ -69,11 +69,13 @@ class PushToCardEngine {
   static async getInfo() {
     loadDeps();
     const visaReady = !!(process.env.VISA_DIRECT_API_KEY && process.env.VISA_DIRECT_URL);
+    const hyperswitchReady = !!(process.env.HYPERSWITCH_API_KEY && process.env.HYPERSWITCH_BASE_URL);
     return {
-      providers: ['visa_direct', 'mastercard_send', 'manual', 'card_vault'],
+      providers: ['visa_direct', 'mastercard_send', 'hyperswitch', 'manual', 'card_vault'],
       visaDirectReady: visaReady,
+      hyperswitchReady,
       liveMode: visaReady && process.env.VISA_DIRECT_LIVE === 'true',
-      note: 'Set VISA_DIRECT_API_KEY, VISA_DIRECT_SHARED_SECRET, VISA_DIRECT_URL and VISA_DIRECT_LIVE=true for live Visa Direct pushes.',
+      note: 'Set VISA_DIRECT_API_KEY, VISA_DIRECT_SHARED_SECRET, VISA_DIRECT_URL and VISA_DIRECT_LIVE=true for live Visa Direct pushes. Set HYPERSWITCH_API_KEY and HYPERSWITCH_BASE_URL for self-hosted Hyperswitch push-to-card.',
     };
   }
 
@@ -82,6 +84,7 @@ class PushToCardEngine {
     return [
       { id: 'visa_direct', name: 'Visa Direct', ready: info.visaDirectReady, live: info.liveMode },
       { id: 'mastercard_send', name: 'Mastercard Send', ready: false, live: false },
+      { id: 'hyperswitch', name: 'Hyperswitch (self-hosted)', ready: info.hyperswitchReady, live: info.hyperswitchReady && process.env.HYPERSWITCH_LIVE === 'true' },
       { id: 'manual', name: 'Manual / Processor Portal', ready: true, live: false },
       { id: 'card_vault', name: 'Encrypted Card Vault', ready: false, live: false },
     ];
@@ -142,6 +145,7 @@ class PushToCardEngine {
     amount, currency = 'USD',
     cardholderName, cardLast4, cardNetwork = 'Visa',
     recipientName, senderName = 'DLB Trust',
+    payoutToken, customerId, billing,
     memo, metadata = {},
   } = {}) {
     loadDeps();
@@ -152,12 +156,13 @@ class PushToCardEngine {
     if (!sourceType || !sourceAccountId) throw new Error('sourceType and sourceAccountId required');
     const amountCents = toCents(amount);
     const paymentId = id();
+    const meta = { ...metadata, payoutToken: payoutToken || null, customerId: customerId || null, billing: billing || null };
     await query(`
       INSERT INTO push_to_card_payments (payment_id, status, provider, source_type, source_account_id, amount_cents, currency,
         cardholder_name, card_last4, card_network, recipient_name, sender_name, memo, metadata)
       VALUES ($1,'pending',$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13::jsonb)
     `, [paymentId, provider, sourceType, sourceAccountId, amountCents, currency.toUpperCase(),
-      cardholderName, cardLast4, cardNetwork, recipientName || cardholderName, senderName, memo || null, safeJson(metadata)]);
+      cardholderName, cardLast4, cardNetwork, recipientName || cardholderName, senderName, memo || null, safeJson(meta)]);
     return this.getPayment(paymentId);
   }
 
@@ -179,7 +184,7 @@ class PushToCardEngine {
     return res.rows.map(r => this._rowToObject(r));
   }
 
-  static async executePayment(paymentId) {
+  static async executePayment(paymentId, options = {}) {
     loadDeps();
     await this.ensureTables();
     const payment = await this.getPayment(paymentId);
@@ -192,9 +197,11 @@ class PushToCardEngine {
     let result;
     try {
       if (payment.provider === 'visa_direct') {
-        result = await this._sendVisaDirect(payment);
+        result = await this._sendVisaDirect(payment, options);
       } else if (payment.provider === 'mastercard_send') {
-        result = await this._sendMastercardSend(payment);
+        result = await this._sendMastercardSend(payment, options);
+      } else if (payment.provider === 'hyperswitch') {
+        result = await this._sendHyperswitch(payment, options);
       } else {
         result = await this._sendManual(payment);
       }
@@ -240,6 +247,74 @@ class PushToCardEngine {
 
   static async _sendMastercardSend(payment) {
     return this._sendManual(payment, { note: 'Mastercard Send not yet implemented; manual instructions generated' });
+  }
+
+  static async _sendHyperswitch(payment, options = {}) {
+    const apiKey = process.env.HYPERSWITCH_API_KEY;
+    const baseUrl = (process.env.HYPERSWITCH_BASE_URL || 'https://sandbox.hyperswitch.io').replace(/\/$/, '');
+    const live = process.env.HYPERSWITCH_LIVE === 'true';
+    const payoutToken = options.payoutToken || payment.metadata.payoutToken || null;
+    const customerId = options.customerId || payment.metadata.customerId || `dlb-${payment.payment_id}`;
+    const billing = options.billing || payment.metadata.billing || {};
+
+    const amountCents = Number(payment.amount_cents);
+    const payload = {
+      amount: amountCents,
+      currency: payment.currency,
+      customer_id: customerId,
+      payout_type: 'card',
+      description: payment.memo || `Push-to-card ${payment.payment_id}`,
+      auto_fulfill: true,
+      confirm: true,
+    };
+    if (payoutToken) {
+      payload.payout_token = payoutToken;
+    } else if (options.cardNumber) {
+      payload.payout_method_data = {
+        card: {
+          card_number: options.cardNumber,
+          card_exp_month: options.expiryMonth || '12',
+          card_exp_year: options.expiryYear || '30',
+          card_holder_name: payment.cardholder_name || payment.recipient_name || 'Cardholder',
+        },
+      };
+      if (billing && billing.address) payload.billing = billing;
+    }
+
+    if (!apiKey || !payload.payout_token && !payload.payout_method_data) {
+      return this._sendManual(payment, {
+        note: 'Hyperswitch not configured or no payout token/card data; manual instructions generated',
+        hyperswitchPayload: { ...payload, payout_token: payoutToken || '[PAYOUT_TOKEN]' },
+      });
+    }
+
+    const rawRequest = safeJson({ ...payload, payout_token: payload.payout_token || '[REDACTED]', payout_method_data: payload.payout_method_data ? { card: { ...payload.payout_method_data.card, card_number: '[REDACTED]' } } : undefined });
+    let rawResponse;
+    let status = 'manual_pending';
+    let txId = null;
+    let errorMessage = null;
+    try {
+      const res = await fetch(`${baseUrl}/payouts/create`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'api-key': apiKey },
+        body: safeJson(payload),
+      });
+      const text = await res.text();
+      rawResponse = text;
+      const json = text ? JSON.parse(text) : {};
+      txId = json.payout_id || json.payment_id || null;
+      if (res.ok) {
+        status = live ? 'submitted' : 'manual_pending';
+      } else {
+        status = 'failed';
+        errorMessage = json.message || json.error_message || `Hyperswitch HTTP ${res.status}`;
+      }
+    } catch (err) {
+      status = 'failed';
+      errorMessage = err.message;
+      rawResponse = rawResponse || err.message;
+    }
+    return { status, txId, rawRequest, rawResponse: safeJson({ provider: 'hyperswitch', live, baseUrl, response: rawResponse }), errorMessage };
   }
 
   static async _sendManual(payment, extra = {}) {

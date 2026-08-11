@@ -2509,7 +2509,7 @@ router.post('/push-to-card/payments', operatorAuth, writeRateLimiter(), async (r
 });
 
 router.post('/push-to-card/payments/:id/execute', operatorAuth, writeRateLimiter(), async (req, res) => {
-  try { res.json({ success: true, data: await PushToCardEngine.executePayment(req.params.id) }); } catch (err) { sendError(res, err); }
+  try { res.json({ success: true, data: await PushToCardEngine.executePayment(req.params.id, req.body || {}) }); } catch (err) { sendError(res, err); }
 });
 
 router.post('/push-to-card/payments/:id/cancel', operatorAuth, writeRateLimiter(), async (req, res) => {
