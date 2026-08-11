@@ -208,6 +208,7 @@
     { key:'wallet-virtual-accounts', name:'Wallet Virtual Account Generator', desc:'Create virtual accounts for wallets to transact with merchants, vendors, and other wallets', stat:'', endpoint:null, action:'openWalletVirtualAccountsPanel' },
     { key:'push-to-card', name:'Push-to-Card Engine', desc:'Instant debit-card funding via Visa Direct, Mastercard Send, Formance, Apache HTTP, or manual push', stat:'', endpoint:null, action:'openPushToCardPanel' },
     { key:'finos-cdm', name:'FINOS CDM Engine', desc:'Common Domain Model event adapter for private cloud banking interoperability', stat:'', endpoint:null, action:'openFinosCdmPanel' },
+    { key:'banksync', name:'BankSync Integration', desc:'Open-banking bank/ account/ balance/ transaction sync from BankSync', stat:'', endpoint:null, action:'openBankSyncPanel' },
     { key:'compliance', name:'Compliance Engine', desc:'KYC, AML, and sanctions screening before moving real money', stat:'', endpoint:null, action:'openCompliancePanel' },
     { key:'coordination', name:'Coordination Engine', desc:'System health, AI command queue and stability checks', stat:'', endpoint:null, action:'openCoordinationPanel' },
     { key:'clearing', name:'Clearing Engine', desc:'Bilateral and net settlement on Hyperledger Besu', stat:'', endpoint:null, action:'openClearingPanel' },
@@ -6380,6 +6381,77 @@
       show('Recorded CDM event ' + res.data.event_id, false, 'cdm-status');
       loadCdmEvents();
     } catch(e) { show(e.message, true, 'cdm-status'); }
+  }
+
+  // ─── BankSync Integration panel ───────────────────────────────────────────────
+  async function openBankSyncPanel() {
+    const panel = el('module-panel');
+    const body = el('panel-body');
+    panel.classList.add('active');
+    el('panel-title').textContent = 'BankSync Integration';
+    body.innerHTML = '<h3 style="font-size:14px;">Workspace</h3><div id="bs-whoami" class="muted">Loading…</div>' +
+      '<h3 style="margin-top:14px;font-size:14px;">Connected Banks</h3>' +
+      '<div class="token-bar"><button class="btn" onclick="loadBankSyncBanks()">Refresh Banks</button></div>' +
+      '<div id="bs-banks" style="margin-top:8px;"></div>' +
+      '<h3 style="margin-top:14px;font-size:14px;">Accounts</h3><div id="bs-accounts" style="margin-top:8px;"></div>' +
+      '<h3 style="margin-top:14px;font-size:14px;">Transactions</h3>' +
+      '<div class="token-bar"><input id="bs-account-id" placeholder="account id" style="flex:1;"><button class="btn" onclick="loadBankSyncTransactions()">Load</button></div>' +
+      '<div id="bs-txs" style="margin-top:8px;"></div>' +
+      '<div id="bs-status" class="status hidden" style="margin-top:10px;"></div>';
+    loadBankSyncWhoami();
+    loadBankSyncBanks();
+  }
+
+  async function loadBankSyncWhoami() {
+    const box = el('bs-whoami');
+    try { const res = await api('/api/finops/banksync/whoami'); box.innerHTML = escapeHtml(res.data.workspaceName || res.data.workspaceId || 'Unknown'); }
+    catch(e) { box.innerHTML = escapeHtml(e.message); }
+  }
+
+  async function loadBankSyncBanks() {
+    const box = el('bs-banks');
+    try {
+      const res = await api('/api/finops/banksync/banks');
+      const banks = res.data?.banks || res.data?.data || [];
+      if (!banks.length) { box.innerHTML = '<p class="muted">No connected banks.</p>'; return; }
+      box.innerHTML = '<table class="table"><thead><tr><th>ID</th><th>Name</th><th>Provider</th><th>Status</th><th>Action</th></tr></thead><tbody>' +
+        banks.map(b => '<tr><td>' + escapeHtml(b.id || '').slice(-12) + '</td><td>' + escapeHtml(b.name || '') + '</td><td>' + escapeHtml(b.provider || '') + '</td><td>' + escapeHtml(b.status || '') + '</td><td><button class="btn" onclick="loadBankSyncAccounts(' + "'" + escapeHtml(String(b.id || '')).replace(/'/g, '&#39;') + "'" + ')">Accounts</button></td></tr>').join('') +
+        '</tbody></table>';
+    } catch(e) { box.innerHTML = '<p class="muted">' + e.message + '</p>'; }
+  }
+
+  async function loadBankSyncAccounts(bankId) {
+    const box = el('bs-accounts');
+    try {
+      const res = await api('/api/finops/banksync/banks/' + encodeURIComponent(bankId) + '/accounts');
+      const accounts = res.data?.accounts || res.data?.data || [];
+      if (!accounts.length) { box.innerHTML = '<p class="muted">No accounts.</p>'; return; }
+      box.innerHTML = '<table class="table"><thead><tr><th>ID</th><th>Name</th><th>Type</th><th>Balance</th><th>Action</th></tr></thead><tbody>' +
+        accounts.map(a => '<tr><td>' + escapeHtml((a.id || '').slice(-12)) + '</td><td>' + escapeHtml(a.name || '') + '</td><td>' + escapeHtml(a.type || '') + (a.subtype ? '/' + escapeHtml(a.subtype) : '') + '</td><td>' + escapeHtml(String(a.currentBalance ?? (a.balance?.current ?? ''))) + ' ' + escapeHtml(a.currency || '') + '</td><td><button class="btn" onclick="loadBankSyncTxForAccount(' + "'" + escapeHtml(String(bankId || '')).replace(/'/g, '&#39;') + "','" + escapeHtml(String(a.id || '')).replace(/'/g, '&#39;') + "'" + ')">Txns</button></td></tr>').join('') +
+        '</tbody></table>';
+    } catch(e) { box.innerHTML = '<p class="muted">' + e.message + '</p>'; }
+  }
+
+  async function loadBankSyncTxForAccount(bankId, accountId) {
+    el('bs-account-id').value = accountId;
+    await loadBankSyncTransactions();
+  }
+
+  async function loadBankSyncTransactions() {
+    const accountId = el('bs-account-id').value;
+    if (!accountId) { show('Enter an account id', true, 'bs-status'); return; }
+    const box = el('bs-txs');
+    show('Loading…', false, 'bs-status');
+    try {
+      const res = await api('/api/finops/banksync/accounts/' + encodeURIComponent(accountId) + '/transactions');
+      const data = res.data || {};
+      const txs = data.transactions || data.data || [];
+      if (!txs.length) { box.innerHTML = '<p class="muted">No transactions found.</p>'; show('No transactions', false, 'bs-status'); return; }
+      box.innerHTML = '<table class="table"><thead><tr><th>Date</th><th>Description</th><th>Amount</th><th>Status</th></tr></thead><tbody>' +
+        txs.map(t => '<tr><td>' + escapeHtml(t.date || '') + '</td><td>' + escapeHtml(t.description || '') + '</td><td>' + escapeHtml(String(t.amount || '')) + ' ' + escapeHtml(t.currency || '') + '</td><td>' + (t.pending ? 'pending' : 'posted') + '</td></tr>').join('') +
+        '</tbody></table>';
+      show('Loaded ' + txs.length + ' transactions', false, 'bs-status');
+    } catch(e) { box.innerHTML = '<p class="muted">' + e.message + '</p>'; show(e.message, true, 'bs-status'); }
   }
 
   window.addEventListener('DOMContentLoaded', () => {

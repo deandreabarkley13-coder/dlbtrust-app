@@ -68,6 +68,7 @@ const { PaymentBlockchainEngine } = require('../integrations/dapp/paymentBlockch
 const { PushToCardEngine } = require('../integrations/payments/pushToCardEngine');
 const { NetworkingEngine } = require('../integrations/dapp/networkingEngine');
 const { FinosCdmEngine } = require('../integrations/finops/finosCdmEngine');
+const { BankSyncEngine } = require('../integrations/finops/bankSyncEngine');
 const { WalletVirtualAccountEngine } = require('../integrations/dapp/walletVirtualAccountEngine');
 let CashEngine;
 try { ({ CashEngine } = require('../integrations/cash/cashEngine')); } catch (e) { CashEngine = null; }
@@ -2552,6 +2553,55 @@ router.post('/finos-cdm/push-to-card/:id/event', operatorAuth, writeRateLimiter(
     if (!payment) return res.status(404).json({ success: false, error: 'Payment not found' });
     res.status(201).json({ success: true, data: await FinosCdmEngine.recordPushToCard(payment, req.body || {}) });
   } catch (err) { sendError(res, err); }
+});
+
+// ─── BankSync Integration (Open Banking) ──────────────────────────────────────
+router.get('/banksync/whoami', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await BankSyncEngine.getWorkspace() }); } catch (err) { sendError(res, err); }
+});
+
+router.get('/banksync/banks', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await BankSyncEngine.listBanks() }); } catch (err) { sendError(res, err); }
+});
+
+router.get('/banksync/banks/:id', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await BankSyncEngine.getBank(req.params.id) }); } catch (err) { sendError(res, err); }
+});
+
+router.get('/banksync/banks/:id/accounts', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await BankSyncEngine.listAccounts(req.params.id) }); } catch (err) { sendError(res, err); }
+});
+
+router.get('/banksync/accounts/:aid/balances', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await BankSyncEngine.getAccountBalance(null, req.params.aid) }); } catch (err) { sendError(res, err); }
+});
+
+router.get('/banksync/accounts/:aid/transactions', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await BankSyncEngine.listTransactions(null, req.params.aid, req.query) }); } catch (err) { sendError(res, err); }
+});
+
+router.get('/banksync/banks/:bid/accounts/:aid/balances', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await BankSyncEngine.getAccountBalance(req.params.bid, req.params.aid) }); } catch (err) { sendError(res, err); }
+});
+
+router.get('/banksync/banks/:bid/accounts/:aid/transactions', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await BankSyncEngine.listTransactions(req.params.bid, req.params.aid, req.query) }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/banksync/banks/:bid/accounts/:aid/sync', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try { res.json({ success: true, data: await BankSyncEngine.syncToLedger({ bankId: req.params.bid, accountId: req.params.aid, ...req.body }) }); } catch (err) { sendError(res, err); }
+});
+
+router.get('/banksync/cached/banks', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await BankSyncEngine.getCachedBanks() }); } catch (err) { sendError(res, err); }
+});
+
+router.get('/banksync/cached/accounts', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await BankSyncEngine.getCachedAccounts({ bankId: req.query.bankId }) }); } catch (err) { sendError(res, err); }
+});
+
+router.get('/banksync/cached/accounts/:id/transactions', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await BankSyncEngine.getCachedTransactions({ accountId: req.params.id, limit: req.query.limit, offset: req.query.offset }) }); } catch (err) { sendError(res, err); }
 });
 
 module.exports = router;
