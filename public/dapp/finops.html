@@ -1517,7 +1517,7 @@
     html += '<div style="margin:12px 0;"><strong>System health:</strong> ' + (health && health.ok ? '<span style="color:var(--accent-2)">OK</span>' : '<span style="color:var(--danger)">Degraded</span>') + '</div>';
     html += '<div style="margin:16px 0; border-top:1px solid var(--border); padding-top:12px;">' +
       '<h3 style="margin:0 0 10px; font-size:14px;">Run Operating Command</h3>' +
-      '<div class="chat-input"><input id="fose-command" placeholder="e.g. cash position, list processors, pay $0.25 manual" style="flex:1;" onkeydown="if(event.key==='Enter') foseExecute()" /><button class="btn" onclick="foseExecute()">Execute</button></div>' +
+      '<div class="chat-input"><input id="fose-command" placeholder="e.g. cash position, list processors, pay $0.25 manual" style="flex:1;" onkeydown="if(event.key===&quot;Enter&quot;) foseExecute()" /><button class="btn" onclick="foseExecute()">Execute</button></div>' +
       '</div>';
     if (cash && cash.sources) {
       html += '<h3 style="font-size:14px; margin:16px 0 8px;">Cash Position</h3>';

@@ -635,6 +635,28 @@ SELECT fit_id, type, amount_cents, name, memo FROM ofx_transactions;
 - With a write-only API key, `GET /api/finops/banksync/banks` returns `Missing required scope: banks:read`; the UI should surface this in `bs-banks` and remain usable.
 - Native clicks on module cards may be unreliable in scaled viewports; if so, call `openModule('banksync')` from the browser console.
 
+## Finance Operating Server (`/dapp/finops.html`)
+
+- Backend: `server/integrations/finops/financeOperatingServerEngine.js` (ensure tables, execute command, health, cash position, processors, sessions, command logging).
+- Routes under `/api/finops/finance-operating/*` in `server/routes/finops.js` (all `operatorAuth`):
+  - `POST /execute` — natural-language command dispatch
+  - `POST /sessions`, `GET /sessions`, `GET /sessions/:id`
+  - `GET /commands`
+  - `GET /health`
+  - `GET /cash-position`
+  - `GET /processors`
+- Tables: `finance_operating_sessions` and `finance_operating_commands` are ensured by `server/server-3002.js` on startup (log line `[finance-operating] tables ensured`).
+- Login: use `dlb-admin-2026-trust` stored in `localStorage` as `dlb-admin-token` (set via `javascript:localStorage.setItem('dlb-admin-token','dlb-admin-2026-trust');location.reload()`). The page also supports email/PIN trustee login.
+- UI: module card key `finance-operating` calls `openFinanceOperatingPanel()`. The panel shows system health, a `Run Operating Command` input (`#fose-command`) with `foseExecute()`, a cash-position JSON block, a processor grid, and a `Recent Commands` table.
+- The FinOps Agent chat on the right sidebar (`#chat-input` / `sendChat()`) also posts to `/api/finops/finance-operating/execute`.
+- Example commands:
+  - `health` → panel status `System health: OK/degraded`
+  - `cash position` → cash-position JSON block refreshes
+  - `list processors` → processor grid with 8 processors (stripe_treasury, clearing, deposit_settlement, payout_center, lili, skrill, web_payment_rail, payment_hub)
+  - `pay $0.25 manual` → dispatches to `PaymentProcessorServerEngine` / `ClearingApiEngine`, returns `status: manual` and a `CLR-` clearing row with `manual_pending`
+- **Known gotcha (PR #321):** `public/dapp/finops.html` line `onkeydown="if(event.key==='Enter') foseExecute()"` is inside a single-quoted JS string and terminates it, causing the entire page script to fail (blank module grid). Patch: change the inner single quotes to HTML entities (`&quot;`) so the attribute becomes `onkeydown="if(event.key===&quot;Enter&quot;) foseExecute()"`.
+- Commands are persisted and retrievable via `GET /api/finops/finance-operating/commands`; `POST /sessions` creates a `FOS-` session ID.
+
 ## Deposit & Settlement / Clearing (`/trust-portal/dashboard.html`)
 
 - New backend engines: `server/integrations/payments/depositAndSettlementEngine.js` and `clearingApiEngine.js`.
