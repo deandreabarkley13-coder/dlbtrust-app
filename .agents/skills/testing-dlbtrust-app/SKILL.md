@@ -635,6 +635,28 @@ SELECT fit_id, type, amount_cents, name, memo FROM ofx_transactions;
 - With a write-only API key, `GET /api/finops/banksync/banks` returns `Missing required scope: banks:read`; the UI should surface this in `bs-banks` and remain usable.
 - Native clicks on module cards may be unreliable in scaled viewports; if so, call `openModule('banksync')` from the browser console.
 
+## Trust-Portal Compliance / CIP (`/trust-portal/dashboard.html`)
+
+- Backend: `server/integrations/compliance/customerIdentificationEngine.js`; routes in `server/routes/dapp.js`:
+  - `GET /api/dapp/ptc/cip/records`
+  - `POST /api/dapp/ptc/cip/records`
+  - `POST /api/dapp/ptc/cip/records/:id/approve`
+  - `POST /api/dapp/ptc/cip/records/:id/block`
+  - `GET /api/dapp/ptc/cip/status`
+- UI tabs are shown based on role; trustees see **Trustee Actions**, **Stripe Treasury**, and **Compliance**.
+- Login is email/PIN via `/api/dapp/auth/send-code` and `/api/dapp/auth/verify`. When no email provider is configured, the PIN is displayed in the UI (`#status`) and can be entered.
+- The **Compliance** tab contains:
+  - `Download Compliance PDF` link → `/trust-portal/stripe-treasury-compliance-package.pdf`.
+  - CIP / KYC onboarding form with `cip-name`, `cip-email`, etc.; `submitCip()` posts to `/api/dapp/ptc/cip/records`.
+  - CIP records table `cip-records`, loaded by `loadCipRecords()` (calls the CIP GET route). It shows columns Name, Email, Status, Score, Actions.
+- Environment flag for payout blocking: set `STRIPE_TREASURY_CIP_REQUIRED=true`. With this flag, `PtcPortalEngine.executeRequest()` blocks `stripe_*` rails when `CustomerIdentificationEngine.validatePayoutRecipient()` returns `valid: false` (no CIP record or status not `clear`).
+- `createRecord` now defaults to `kyc_status: 'pending'` and only auto-clears when both `idVerificationProvider` and `idVerificationReference` are supplied and `ComplianceEngine.screen()` returns `clear`.
+- `ptcPortalEngine.executeRequest` runs the CIP gate **before** `PrivateTrustCompanyEngine.createDistribution`/`redeemSupport`, so a blocked `stripe_*` payout leaves no `ptc_payouts` or ledger side effects.
+- After a CIP record is cleared, re-executing the same `stripe_ach` request should no longer produce a `CIP required` error; it will fail at the next stage (e.g., `Stripe secret key not configured`) depending on environment.
+- Trust-portal CIP table escapes HTML (`escapeHtml`) and uses `data-record-id` buttons with `addEventListener` instead of inline `onclick`. To test XSS handling, create a record whose `fullLegalName` contains `<b>` or `&` and confirm it is rendered as literal text, not HTML.
+- Test CIP enforcement: beneficiary creates a support request (`POST /api/dapp/ptc/request`), two trustees approve (`POST /api/dapp/ptc/requests/:id/approve`), then a trustee executes with `rail=stripe_ach` and an email without an approved CIP record. Expect `success: false` and error containing `CIP required for Stripe Treasury payout`.
+- Local DB gotcha: if `dapp_users` was created from an older migration, it may be missing `roles`, `active_role`, and `is_active` columns and the `role` check constraint can reject trustee roles. Run `DappEngine.ensureTables()` or `ALTER TABLE dapp_users ADD COLUMN ...` and `DROP CONSTRAINT IF EXISTS dapp_users_role_check` to unblock portal login.
+
 ## Devin Secrets Needed
 
 - `DATABASE_URL` or local Postgres credentials (`dlbtrust`/`dlbtrust`).

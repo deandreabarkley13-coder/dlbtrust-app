@@ -93,6 +93,9 @@
       <div class="tab" data-tab="portfolio" onclick="showTab('portfolio')">Portfolio</div>
       <div class="tab hidden" id="tab-trustee" data-tab="trustee" onclick="showTab('trustee')">Trustee Actions</div>
       <div class="tab hidden" id="tab-treasury" data-tab="treasury" onclick="showTab('treasury')">Stripe Treasury</div>
+      <div class="tab hidden" id="tab-compliance" data-tab="compliance" onclick="showTab('compliance')">Compliance</div>
+      <div class="tab hidden" id="tab-deposit-settlement" data-tab="deposit-settlement" onclick="showTab('deposit-settlement')">Deposit & Settlement</div>
+      <div class="tab hidden" id="tab-payments" data-tab="payments" onclick="showTab('payments')">Payments</div>
       <div class="tab hidden" id="tab-beneficiary" data-tab="beneficiary" onclick="showTab('beneficiary')">Beneficiary</div>
     </div>
 
@@ -218,6 +221,130 @@
       </div>
     </div>
 
+    <div id="compliance" class="tab-content hidden">
+      <div class="card panel" style="margin-bottom:1.5rem">
+        <h2>Stripe Treasury Compliance Package</h2>
+        <p>Download the policies and procedures document prepared for Stripe Treasury verification.</p>
+        <a class="btn btn-gold" href="/trust-portal/stripe-treasury-compliance-package.pdf" target="_blank">Download Compliance PDF</a>
+      </div>
+      <div class="grid-2">
+        <div class="card panel">
+          <h2>CIP / KYC Onboarding</h2>
+          <p>Collect identity and beneficial-ownership information for trustees, beneficiaries, and vendors. No full SSN or ID numbers are stored.</p>
+          <div class="form-group"><label>Full Legal Name</label><input type="text" id="cip-name" placeholder="Full legal name" /></div>
+          <div class="form-group"><label>Email</label><input type="email" id="cip-email" placeholder="email@example.com" /></div>
+          <div class="form-group"><label>Date of Birth</label><input type="date" id="cip-dob" /></div>
+          <div class="form-group"><label>Street Address</label><input type="text" id="cip-street" placeholder="123 Main St" /></div>
+          <div class="form-group"><label>City / State / ZIP</label><input type="text" id="cip-city" placeholder="Columbus, OH 43215" /></div>
+          <div class="form-group"><label>Country</label><input type="text" id="cip-country" value="US" /></div>
+          <div class="form-group"><label>ID Type</label><select id="cip-id-type"><option value="drivers_license">Driver's License</option><option value="passport">Passport</option><option value="state_id">State ID</option></select></div>
+          <div class="form-group"><label>ID Issuing State</label><input type="text" id="cip-id-state" placeholder="OH" /></div>
+          <div class="form-group"><label>ID Expiry</label><input type="date" id="cip-id-expiry" /></div>
+          <div class="form-group"><label>Verification Provider</label><input type="text" id="cip-provider" placeholder="stripe_identity, manual, etc." /></div>
+          <div class="form-group"><label>Verification Reference</label><input type="text" id="cip-ref" placeholder="Provider session / reference ID" /></div>
+          <div class="form-group"><label>Source of Funds</label><input type="text" id="cip-source" placeholder="Trust corpus, investment income, employment" /></div>
+          <div class="form-group"><label>Politically Exposed Person</label><select id="cip-pep"><option value="false">No</option><option value="true">Yes</option></select></div>
+          <div class="form-group"><label>Beneficial Owners (JSON array)</label><textarea id="cip-owners" placeholder='[{"name":"Jane Doe","ownershipPercent":100}]'></textarea></div>
+          <button class="btn btn-primary" onclick="submitCip()">Submit CIP Record</button>
+          <div id="cip-status" class="status"></div>
+        </div>
+        <div class="card panel">
+          <h2>CIP Records</h2>
+          <p>Review and approve KYC/CIP records. A cleared record is required for Stripe Treasury fiat payouts when CIP enforcement is enabled.</p>
+          <button class="btn btn-outline" onclick="loadCipRecords()" style="margin-bottom:1rem">Refresh</button>
+          <div id="cip-records">Loading…</div>
+        </div>
+      </div>
+    </div>
+
+    <div id="deposit-settlement" class="tab-content hidden">
+      <div class="grid-2">
+        <div class="card panel">
+          <h2>Record Deposit</h2>
+          <p>When fiat lands in the Stripe Treasury custodial account, credit the PTC ledger here.</p>
+          <div class="form-group"><label>Amount (USD)</label><input type="number" id="ds-deposit-amount" min="0.01" step="0.01" placeholder="0.00" /></div>
+          <div class="form-group"><label>Rail</label><select id="ds-deposit-rail"><option value="stripe_treasury">Stripe Treasury</option><option value="wire">Wire</option><option value="ach">ACH</option><option value="generic">Generic</option></select></div>
+          <div class="form-group"><label>Trust Credit Account</label><select id="ds-deposit-credit"><option value="PTC-DEPOSIT-CLEARING">Deposit Clearing</option><option value="4000">Interest Income (4000)</option><option value="3000">Trust Corpus (3000)</option></select></div>
+          <div class="form-group"><label>Cash Account</label><input type="text" id="ds-deposit-cash" value="CA-STRIPE-TREASURY" /></div>
+          <div class="form-group"><label>External Reference</label><input type="text" id="ds-deposit-ref" placeholder="ReceivedCredit ID, wire ref, etc." /></div>
+          <button class="btn btn-primary" onclick="recordDsDeposit()">Record Deposit</button>
+          <div id="ds-deposit-status" class="status"></div>
+        </div>
+        <div class="card panel">
+          <h2>Initiate Settlement</h2>
+          <p>Pay a beneficiary or vendor from the PTC ledger through a clearing rail.</p>
+          <div class="form-group"><label>Amount (USD)</label><input type="number" id="ds-settle-amount" min="0.01" step="0.01" placeholder="0.00" /></div>
+          <div class="form-group"><label>Rail</label><select id="ds-settle-rail"><option value="stripe_ach">Stripe Treasury ACH</option><option value="stripe_wire">Stripe Treasury Wire</option><option value="ach">ACH (SettlementEngine)</option><option value="wire">Wire (SettlementEngine)</option><option value="generic">Generic API</option><option value="manual">Manual</option></select></div>
+          <div class="form-group"><label>Source Cash Account</label><input type="text" id="ds-settle-source-cash" value="CA-OPERATING" /></div>
+          <div class="form-group"><label>Destination JSON</label><textarea id="ds-settle-destination" placeholder='{"accountNumber":"000123456789","routingNumber":"110000000","accountHolderName":"DeAndrea Barkley","email":"deandreabarkley13@gmail.com","accountType":"checking"}'></textarea></div>
+          <div class="form-group"><label>CIP Required</label><select id="ds-settle-cip"><option value="true">Yes</option><option value="false">No</option></select></div>
+          <button class="btn btn-gold" onclick="initiateDsSettlement()">Initiate Settlement</button>
+          <div id="ds-settle-status" class="status"></div>
+        </div>
+      </div>
+      <div class="grid-2">
+        <div class="card panel">
+          <h2>Reconcile Order</h2>
+          <p>Update a deposit/settlement order from an external settlement event.</p>
+          <div class="form-group"><label>Order ID / External Ref</label><input type="text" id="ds-reconcile-id" placeholder="SET-... or Stripe payout ID" /></div>
+          <div class="form-group"><label>Status</label><select id="ds-reconcile-status"><option value="completed">Completed</option><option value="failed">Failed</option><option value="returned">Returned</option></select></div>
+          <div class="form-group"><label>Raw Response JSON (optional)</label><textarea id="ds-reconcile-raw" placeholder='{}'></textarea></div>
+          <button class="btn btn-primary" onclick="reconcileDsOrder()">Reconcile</button>
+          <div id="ds-reconcile-status" class="status"></div>
+        </div>
+        <div class="card panel">
+          <h2>Deposit & Settlement Orders</h2>
+          <button class="btn btn-outline" onclick="loadDsOrders()" style="margin-bottom:1rem">Refresh</button>
+          <div id="ds-orders">Loading…</div>
+        </div>
+      </div>
+    </div>
+
+    <div id="payments" class="tab-content hidden">
+      <div class="grid-2">
+        <div class="card panel">
+          <h2>Process Payment (Processor Server)</h2>
+          <p>Route a payout through any configured processor and rail. The processor server logs the transaction and dispatches to the right engine.</p>
+          <div class="form-group"><label>Processor</label><select id="pp-processor"><option value="">(auto)</option><option value="payout_center">Payout Center</option><option value="stripe_treasury">Stripe Treasury</option><option value="clearing">Clearing API</option><option value="deposit_settlement">Deposit &amp; Settlement</option><option value="lili">Lili Bank</option><option value="web_payment_rail">Web Payment Rail</option><option value="payment_hub">Payment Hub</option></select></div>
+          <div class="form-group"><label>Rail</label><input type="text" id="pp-rail" placeholder="stripe_ach, ach, deposit, inbound, wire" /></div>
+          <div class="form-group"><label>Amount (USD)</label><input type="number" id="pp-amount" min="0.01" step="0.01" placeholder="0.00" /></div>
+          <div class="form-group"><label>Source JSON</label><textarea id="pp-source" placeholder='{"accountId":"CA-OPERATING","type":"cash"}'></textarea></div>
+          <div class="form-group"><label>Destination JSON</label><textarea id="pp-destination" placeholder='{"accountNumber":"000123456789","routingNumber":"110000000","accountHolderName":"DeAndrea Barkley"}'></textarea></div>
+          <div class="form-group"><label>Reference</label><input type="text" id="pp-reference" placeholder="Optional" /></div>
+          <button class="btn btn-primary" onclick="processPayment()">Process Payment</button>
+          <div id="pp-status" class="status"></div>
+        </div>
+        <div class="card panel">
+          <h2>Gateway Tokenize &amp; Sale</h2>
+          <p>Tokenize a card, ACH account, wallet, or crypto address and run a gateway sale.</p>
+          <div class="form-group"><label>Method Type</label><select id="pg-type"><option value="ach">ACH</option><option value="card">Card</option><option value="wallet">Wallet</option><option value="crypto">Crypto</option></select></div>
+          <div class="form-group"><label>Payload JSON</label><textarea id="pg-payload" placeholder='{"accountNumber":"000123456789","routingNumber":"110000000","accountType":"checking","accountHolderName":"DeAndrea Barkley"}'></textarea></div>
+          <div class="form-group"><label>Amount (USD)</label><input type="number" id="pg-amount" min="0.01" step="0.01" placeholder="0.00" /></div>
+          <div class="form-group"><label>Direction</label><select id="pg-direction"><option value="outbound">Outbound</option><option value="inbound">Inbound</option></select></div>
+          <div class="form-group"><label>Processor Override</label><input type="text" id="pg-processor" placeholder="optional: stripe_treasury, clearing, lili" /></div>
+          <button class="btn btn-gold" onclick="gatewaySale()">Tokenize &amp; Sale</button>
+          <div id="pg-status" class="status"></div>
+        </div>
+      </div>
+      <div class="grid-2">
+        <div class="card panel">
+          <h2>Payment Methods</h2>
+          <button class="btn btn-outline" onclick="loadPaymentMethods()" style="margin-bottom:1rem">Refresh</button>
+          <div id="pg-methods">Loading…</div>
+        </div>
+        <div class="card panel">
+          <h2>Processor Transactions</h2>
+          <button class="btn btn-outline" onclick="loadProcessorTxs()" style="margin-bottom:1rem">Refresh</button>
+          <div id="pp-txs">Loading…</div>
+        </div>
+      </div>
+      <div class="card panel" style="margin-top:1.5rem">
+        <h2>Gateway Transactions</h2>
+        <button class="btn btn-outline" onclick="loadGatewayTxs()" style="margin-bottom:1rem">Refresh</button>
+        <div id="pg-txs">Loading…</div>
+      </div>
+    </div>
+
     <div id="beneficiary" class="tab-content hidden">
       <div class="grid-2">
         <div class="card panel">
@@ -270,7 +397,8 @@
       return new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD', maximumFractionDigits: 2 }).format(Number(n) || 0);
     }
     function fmtStatus(s) {
-      return `<span class="pill ${s}">${s}</span>`;
+      const v = escapeHtml(s);
+      return `<span class="pill ${v}">${v}</span>`;
     }
 
     async function api(path, opts={}) {
@@ -290,6 +418,10 @@
       d.className = 'status show ' + (isErr ? 'err' : 'ok');
     }
 
+    function escapeHtml(str) {
+      return String(str).replace(/[&<>"']/g, m => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[m]));
+    }
+
     async function loadMe() {
       const res = await api('/api/dapp/auth/me');
       user = res.data.user || {};
@@ -301,6 +433,9 @@
       if (isTrustee) {
         el('tab-trustee').classList.remove('hidden');
         el('tab-treasury').classList.remove('hidden');
+        el('tab-compliance').classList.remove('hidden');
+        el('tab-deposit-settlement').classList.remove('hidden');
+        el('tab-payments').classList.remove('hidden');
       } else {
         el('tab-beneficiary').classList.remove('hidden');
       }
@@ -389,6 +524,9 @@
       document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
       el(name).classList.remove('hidden');
       document.querySelector(`.tab[data-tab="${name}"]`).classList.add('active');
+      if (name === 'compliance') loadCipRecords();
+      if (name === 'deposit-settlement') loadDsOrders();
+      if (name === 'payments') { loadPaymentMethods(); loadProcessorTxs(); loadGatewayTxs(); }
     }
 
     async function submitRequest() {
@@ -470,6 +608,242 @@
         el('batch-results').innerHTML = html;
         show('batch-status', `Batch ${data.batchId} processed.`, false);
       } catch (e) { show('batch-status', e.message, true); }
+    }
+
+    async function submitCip() {
+      let owners = [];
+      try { if (el('cip-owners').value.trim()) owners = JSON.parse(el('cip-owners').value); } catch (e) { show('cip-status', 'Invalid beneficial owners JSON', true); return; }
+      const body = {
+        fullLegalName: el('cip-name').value.trim(),
+        email: el('cip-email').value.trim(),
+        dateOfBirth: el('cip-dob').value || undefined,
+        address: {
+          street: el('cip-street').value.trim(),
+          cityStateZip: el('cip-city').value.trim(),
+          country: el('cip-country').value.trim()
+        },
+        idType: el('cip-id-type').value,
+        idIssuingState: el('cip-id-state').value.trim(),
+        idExpiry: el('cip-id-expiry').value || undefined,
+        idVerificationProvider: el('cip-provider').value.trim() || undefined,
+        idVerificationReference: el('cip-ref').value.trim() || undefined,
+        sourceOfFunds: el('cip-source').value.trim() || undefined,
+        politicallyExposedPerson: el('cip-pep').value === 'true',
+        beneficialOwners: owners
+      };
+      show('cip-status', 'Submitting…', false);
+      try {
+        const res = await api('/api/dapp/ptc/cip/records', { method: 'POST', body: JSON.stringify(body) });
+        show('cip-status', `CIP record created: ${res.data.record_id} — status ${res.data.kyc_status}`, false);
+        loadCipRecords();
+      } catch (e) { show('cip-status', e.message, true); }
+    }
+
+    async function loadCipRecords() {
+      try {
+        const res = await api('/api/dapp/ptc/cip/records?limit=50');
+        const rows = res.data || [];
+        const container = el('cip-records');
+        container.innerHTML = rows.length ? `<table><thead><tr><th>Name</th><th>Email</th><th>Status</th><th>Score</th><th>Actions</th></tr></thead><tbody>${rows.map(r => {
+          const recordId = escapeHtml(r.record_id);
+          return `<tr>
+          <td>${escapeHtml(r.full_legal_name)}</td>
+          <td>${escapeHtml(r.email || '')}</td>
+          <td>${fmtStatus(r.kyc_status)}</td>
+          <td>${escapeHtml(r.risk_score)}</td>
+          <td>
+            ${r.kyc_status !== 'clear' ? `<button class="btn btn-outline cip-approve" data-record-id="${recordId}">Approve</button>` : ''}
+            ${r.kyc_status !== 'blocked' ? `<button class="btn btn-outline cip-block" data-record-id="${recordId}">Block</button>` : ''}
+          </td>
+        </tr>`;
+        }).join('')}</tbody></table>` : '<p class="muted">No CIP records yet.</p>';
+        container.querySelectorAll('.cip-approve').forEach(b => b.addEventListener('click', () => approveCip(b.dataset.recordId)));
+        container.querySelectorAll('.cip-block').forEach(b => b.addEventListener('click', () => blockCip(b.dataset.recordId)));
+      } catch (e) { el('cip-records').innerHTML = '<p class="muted">Unable to load CIP records.</p>'; }
+    }
+
+    async function approveCip(recordId) {
+      try {
+        await api(`/api/dapp/ptc/cip/records/${recordId}/approve`, { method: 'POST' });
+        loadCipRecords();
+      } catch (e) { alert(e.message); }
+    }
+
+    async function blockCip(recordId) {
+      try {
+        await api(`/api/dapp/ptc/cip/records/${recordId}/block`, { method: 'POST' });
+        loadCipRecords();
+      } catch (e) { alert(e.message); }
+    }
+
+    async function recordDsDeposit() {
+      const amount = Number(el('ds-deposit-amount').value);
+      const rail = el('ds-deposit-rail').value;
+      const creditAccount = el('ds-deposit-credit').value;
+      const cashAccount = el('ds-deposit-cash').value.trim();
+      const reference = el('ds-deposit-ref').value.trim();
+      if (!amount || amount <= 0) { show('ds-deposit-status', 'Enter a positive amount', true); return; }
+      show('ds-deposit-status', 'Recording…', false);
+      try {
+        const res = await api('/api/dapp/ptc/deposit-settlement/deposit', {
+          method: 'POST',
+          body: JSON.stringify({ amount, rail, cashAccountId: cashAccount, trustAccountCode: creditAccount, externalReference: reference || undefined })
+        });
+        show('ds-deposit-status', `Deposit recorded: ${res.data.orderId}`, false);
+        setTimeout(loadDsOrders, 1000);
+      } catch (e) { show('ds-deposit-status', e.message, true); }
+    }
+
+    async function initiateDsSettlement() {
+      const amount = Number(el('ds-settle-amount').value);
+      const rail = el('ds-settle-rail').value;
+      const sourceCash = el('ds-settle-source-cash').value.trim();
+      const requireCip = el('ds-settle-cip').value === 'true';
+      let destination = {};
+      try { destination = JSON.parse(el('ds-settle-destination').value.trim()); } catch (e) { show('ds-settle-status', 'Invalid destination JSON', true); return; }
+      if (!amount || amount <= 0) { show('ds-settle-status', 'Enter a positive amount', true); return; }
+      show('ds-settle-status', 'Initiating…', false);
+      try {
+        const res = await api('/api/dapp/ptc/deposit-settlement/settle', {
+          method: 'POST',
+          body: JSON.stringify({ amount, rail, sourceCashAccountId: sourceCash, destination, requireCip })
+        });
+        const msg = res.data.status === 'manual' ? `Manual prefund required: ${res.data.instruction}` : `Settlement initiated: ${res.data.orderId} / ${res.data.externalReference || res.data.clearingId}`;
+        show('ds-settle-status', msg, false);
+        setTimeout(loadDsOrders, 1000);
+      } catch (e) { show('ds-settle-status', e.message, true); }
+    }
+
+    async function reconcileDsOrder() {
+      const idVal = el('ds-reconcile-id').value.trim();
+      const status = el('ds-reconcile-status').value;
+      let raw = {};
+      try { if (el('ds-reconcile-raw').value.trim()) raw = JSON.parse(el('ds-reconcile-raw').value.trim()); } catch (e) { show('ds-reconcile-status', 'Invalid raw response JSON', true); return; }
+      if (!idVal) { show('ds-reconcile-status', 'Enter order ID or external reference', true); return; }
+      show('ds-reconcile-status', 'Reconciling…', false);
+      try {
+        const key = idVal.startsWith('SET-') || idVal.startsWith('DEP-') ? 'orderId' : 'externalReference';
+        const res = await api('/api/dapp/ptc/deposit-settlement/reconcile', {
+          method: 'POST',
+          body: JSON.stringify({ [key]: idVal, status, rawResponse: raw })
+        });
+        show('ds-reconcile-status', `Reconciled ${res.data.orderId} -> ${res.data.status}`, false);
+        setTimeout(loadDsOrders, 1000);
+      } catch (e) { show('ds-reconcile-status', e.message, true); }
+    }
+
+    async function loadDsOrders() {
+      try {
+        const res = await api('/api/dapp/ptc/deposit-settlement/orders?limit=50');
+        const rows = res.data || [];
+        const container = el('ds-orders');
+        container.innerHTML = rows.length ? `<table><thead><tr><th>Order</th><th>Direction</th><th>Rail</th><th>Amount</th><th>Status</th><th>External Ref</th></tr></thead><tbody>${rows.map(r => `<tr>
+          <td>${escapeHtml(r.order_id)}</td>
+          <td>${escapeHtml(r.direction)}</td>
+          <td>${escapeHtml(r.rail || '')}</td>
+          <td>${fmtMoney((r.amount_cents || 0) / 100)}</td>
+          <td>${fmtStatus(r.status)}</td>
+          <td class="muted">${escapeHtml(r.external_reference || '')}</td>
+        </tr>`).join('')}</tbody></table>` : '<p class="muted">No deposit or settlement orders yet.</p>';
+      } catch (e) { el('ds-orders').innerHTML = '<p class="muted">Unable to load orders.</p>'; }
+    }
+
+    async function processPayment() {
+      const amount = Number(el('pp-amount').value);
+      const processor = el('pp-processor').value;
+      const rail = el('pp-rail').value.trim();
+      const reference = el('pp-reference').value.trim();
+      let source = {}, destination = {};
+      try { if (el('pp-source').value.trim()) source = JSON.parse(el('pp-source').value); } catch (e) { show('pp-status', 'Invalid source JSON', true); return; }
+      try { if (el('pp-destination').value.trim()) destination = JSON.parse(el('pp-destination').value); } catch (e) { show('pp-status', 'Invalid destination JSON', true); return; }
+      if (!amount || amount <= 0) { show('pp-status', 'Enter a positive amount', true); return; }
+      show('pp-status', 'Dispatching…', false);
+      try {
+        const body = { amount, currency: 'USD', source, destination, reference };
+        if (processor) body.processor = processor;
+        if (rail) body.rail = rail;
+        const res = await api('/api/dapp/payment-processor/process', { method: 'POST', body: JSON.stringify(body) });
+        show('pp-status', `Processor ${res.data.status}: ${res.data.processorTxId}${res.data.result && res.data.result.transactionId ? ' / ' + res.data.result.transactionId : ''}`, false);
+        loadProcessorTxs();
+      } catch (e) { show('pp-status', e.message, true); }
+    }
+
+    async function gatewaySale() {
+      const amount = Number(el('pg-amount').value);
+      const type = el('pg-type').value;
+      const direction = el('pg-direction').value;
+      const processor = el('pg-processor').value.trim();
+      let payload = {};
+      try { payload = JSON.parse(el('pg-payload').value.trim()); } catch (e) { show('pg-status', 'Invalid payload JSON', true); return; }
+      if (!amount || amount <= 0) { show('pg-status', 'Enter a positive amount', true); return; }
+      show('pg-status', 'Tokenizing…', false);
+      try {
+        const tokenRes = await api('/api/dapp/payment-gateway/tokenize', {
+          method: 'POST',
+          body: JSON.stringify({ type, processor: processor || undefined, payload })
+        });
+        const methodId = tokenRes.data.methodId;
+        show('pg-status', `Tokenized ${methodId}. Running sale…`, false);
+        const saleRes = await api('/api/dapp/payment-gateway/sale', {
+          method: 'POST',
+          body: JSON.stringify({
+            amount,
+            currency: 'USD',
+            methodId,
+            direction,
+            processor: processor || undefined,
+            destination: payload,
+            source: { accountId: 'CA-OPERATING', type: 'cash' },
+            metadata: { gateway: true }
+          })
+        });
+        show('pg-status', `Gateway sale ${saleRes.data.status}: ${saleRes.data.gatewayTxId}${saleRes.data.processorTxId ? ' / ' + saleRes.data.processorTxId : ''}`, false);
+        loadPaymentMethods(); loadGatewayTxs(); loadProcessorTxs();
+      } catch (e) { show('pg-status', e.message, true); }
+    }
+
+    async function loadPaymentMethods() {
+      try {
+        const res = await api('/api/dapp/payment-gateway/methods?limit=50');
+        const rows = res.data || [];
+        el('pg-methods').innerHTML = rows.length ? `<table><thead><tr><th>Type</th><th>Processor</th><th>Last4</th><th>Network</th><th>Status</th></tr></thead><tbody>${rows.map(m => `<tr>
+          <td>${escapeHtml(m.type)}</td>
+          <td>${escapeHtml(m.processor || '')}</td>
+          <td>${escapeHtml(m.last4 || '')}</td>
+          <td>${escapeHtml(m.network || '')}</td>
+          <td>${fmtStatus(m.status)}</td>
+        </tr>`).join('')}</tbody></table>` : '<p class="muted">No tokenized payment methods.</p>';
+      } catch (e) { el('pg-methods').innerHTML = '<p class="muted">Unable to load methods.</p>'; }
+    }
+
+    async function loadProcessorTxs() {
+      try {
+        const res = await api('/api/dapp/payment-processor/list?limit=50');
+        const rows = res.data || [];
+        el('pp-txs').innerHTML = rows.length ? `<table><thead><tr><th>Tx</th><th>Processor</th><th>Rail</th><th>Amount</th><th>Status</th><th>External Ref</th></tr></thead><tbody>${rows.map(r => `<tr>
+          <td>${escapeHtml(r.processor_tx_id)}</td>
+          <td>${escapeHtml(r.processor)}</td>
+          <td>${escapeHtml(r.rail || '')}</td>
+          <td>${fmtMoney((r.amount_cents || 0) / 100)}</td>
+          <td>${fmtStatus(r.status)}</td>
+          <td class="muted">${escapeHtml(r.external_reference || '')}</td>
+        </tr>`).join('')}</tbody></table>` : '<p class="muted">No processor transactions yet.</p>';
+      } catch (e) { el('pp-txs').innerHTML = '<p class="muted">Unable to load transactions.</p>'; }
+    }
+
+    async function loadGatewayTxs() {
+      try {
+        const res = await api('/api/dapp/payment-gateway/transactions?limit=50');
+        const rows = res.data || [];
+        el('pg-txs').innerHTML = rows.length ? `<table><thead><tr><th>Tx</th><th>Type</th><th>Method</th><th>Amount</th><th>Status</th><th>Processor Tx</th></tr></thead><tbody>${rows.map(r => `<tr>
+          <td>${escapeHtml(r.gateway_tx_id)}</td>
+          <td>${escapeHtml(r.type)}</td>
+          <td class="muted">${escapeHtml(r.method_id || '')}</td>
+          <td>${fmtMoney((r.amount_cents || 0) / 100)}</td>
+          <td>${fmtStatus(r.status)}</td>
+          <td class="muted">${escapeHtml(r.processor_tx_id || '')}</td>
+        </tr>`).join('')}</tbody></table>` : '<p class="muted">No gateway transactions yet.</p>';
+      } catch (e) { el('pg-txs').innerHTML = '<p class="muted">Unable to load transactions.</p>'; }
     }
 
     function logout() {

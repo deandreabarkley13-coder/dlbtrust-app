@@ -24,6 +24,10 @@ const { DisbursementAutomationEngine } = require('../integrations/dapp/disbursem
 const { FundingEngine } = require('../integrations/dapp/fundingEngine');
 const { PayoutCenterEngine } = require('../integrations/dapp/payoutCenterEngine');
 const { StripeTreasuryBatchEngine } = require('../integrations/payments/stripeTreasuryBatchEngine');
+const { DepositAndSettlementEngine } = require('../integrations/payments/depositAndSettlementEngine');
+const { ClearingApiEngine } = require('../integrations/payments/clearingApiEngine');
+const { PaymentProcessorServerEngine } = require('../integrations/payments/paymentProcessorServerEngine');
+const { PaymentGatewayServerEngine } = require('../integrations/payments/paymentGatewayServerEngine');
 const { WalletEngine } = require('../integrations/dapp/walletEngine');
 const { BitPayEngine } = require('../integrations/dapp/bitpayEngine');
 const { WalletFundingEngine } = require('../integrations/dapp/walletFundingEngine');
@@ -34,6 +38,8 @@ try { BondEngine = require('../integrations/bonds/bondEngine').BondEngine; } cat
 try { LiveBondEngine = require('../integrations/bonds/liveEngine').LiveBondEngine; } catch (e) { LiveBondEngine = null; }
 let BondTrustReconciliation;
 try { BondTrustReconciliation = require('../integrations/bonds/bondTrustReconciliation').BondTrustReconciliation; } catch (e) { BondTrustReconciliation = null; }
+let CustomerIdentificationEngine;
+try { ({ CustomerIdentificationEngine } = require('../integrations/compliance/customerIdentificationEngine')); } catch (e) { CustomerIdentificationEngine = null; }
 const { requireAuth, writeRateLimiter, authRateLimiter } = require('../integrations/auth/securityMiddleware');
 
 const router = express.Router();
@@ -1445,6 +1451,234 @@ router.post('/ptc/stripe-treasury/batch-payouts', operatorAuth, writeRateLimiter
       skipPrefund,
     });
     res.status(201).json({ success: true, data });
+  } catch (err) { sendError(res, err); }
+});
+
+// ─── Customer Identification Program (CIP) ────────────────────────────────────
+router.get('/ptc/cip/records', operatorAuth, async (req, res) => {
+  try {
+    if (!CustomerIdentificationEngine) throw new Error('CustomerIdentificationEngine not available');
+    const data = await CustomerIdentificationEngine.list(req.query);
+    res.json({ success: true, data });
+  } catch (err) { sendError(res, err); }
+});
+
+router.get('/ptc/cip/records/:id', operatorAuth, async (req, res) => {
+  try {
+    if (!CustomerIdentificationEngine) throw new Error('CustomerIdentificationEngine not available');
+    const data = await CustomerIdentificationEngine.getRecord(req.params.id);
+    res.json({ success: true, data });
+  } catch (err) { sendError(res, err); }
+});
+
+router.post('/ptc/cip/records', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try {
+    if (!CustomerIdentificationEngine) throw new Error('CustomerIdentificationEngine not available');
+    const data = await CustomerIdentificationEngine.createRecord({ ...req.body, screenedBy: req.user && (req.user.email || req.user.username) });
+    res.status(201).json({ success: true, data });
+  } catch (err) { sendError(res, err); }
+});
+
+router.post('/ptc/cip/records/:id/approve', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try {
+    if (!CustomerIdentificationEngine) throw new Error('CustomerIdentificationEngine not available');
+    const data = await CustomerIdentificationEngine.approve(req.params.id, { reviewedBy: req.user && (req.user.email || req.user.username), notes: req.body && req.body.notes });
+    res.json({ success: true, data });
+  } catch (err) { sendError(res, err); }
+});
+
+router.post('/ptc/cip/records/:id/block', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try {
+    if (!CustomerIdentificationEngine) throw new Error('CustomerIdentificationEngine not available');
+    const data = await CustomerIdentificationEngine.block(req.params.id, { reviewedBy: req.user && (req.user.email || req.user.username), notes: req.body && req.body.notes });
+    res.json({ success: true, data });
+  } catch (err) { sendError(res, err); }
+});
+
+router.get('/ptc/cip/status', portalAuth, async (req, res) => {
+  try {
+    if (!CustomerIdentificationEngine) throw new Error('CustomerIdentificationEngine not available');
+    const email = req.user && req.user.email;
+    if (!email) throw new Error('No email in session');
+    const data = await CustomerIdentificationEngine.getRecordByEmail(email);
+    res.json({ success: true, data });
+  } catch (err) { sendError(res, err); }
+});
+
+// ─── Deposit & Settlement Engine ────────────────────────────────────────────────
+router.get('/ptc/deposit-settlement/orders', operatorAuth, async (req, res) => {
+  try {
+    if (!DepositAndSettlementEngine) throw new Error('DepositAndSettlementEngine not available');
+    const data = await DepositAndSettlementEngine.list(req.query);
+    res.json({ success: true, data });
+  } catch (err) { sendError(res, err); }
+});
+
+router.get('/ptc/deposit-settlement/orders/:id', operatorAuth, async (req, res) => {
+  try {
+    if (!DepositAndSettlementEngine) throw new Error('DepositAndSettlementEngine not available');
+    const data = await DepositAndSettlementEngine.get(req.params.id);
+    res.json({ success: true, data });
+  } catch (err) { sendError(res, err); }
+});
+
+router.post('/ptc/deposit-settlement/deposit', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try {
+    if (!DepositAndSettlementEngine) throw new Error('DepositAndSettlementEngine not available');
+    const data = await DepositAndSettlementEngine.recordDeposit({ ...req.body, initiatedBy: req.user && (req.user.email || req.user.username) });
+    res.status(201).json({ success: true, data });
+  } catch (err) { sendError(res, err); }
+});
+
+router.post('/ptc/deposit-settlement/settle', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try {
+    if (!DepositAndSettlementEngine) throw new Error('DepositAndSettlementEngine not available');
+    const data = await DepositAndSettlementEngine.initiateSettlement({ ...req.body, initiatedBy: req.user && (req.user.email || req.user.username) });
+    res.status(201).json({ success: true, data });
+  } catch (err) { sendError(res, err); }
+});
+
+router.post('/ptc/deposit-settlement/reconcile', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try {
+    if (!DepositAndSettlementEngine) throw new Error('DepositAndSettlementEngine not available');
+    const data = await DepositAndSettlementEngine.reconcile({ ...req.body, initiatedBy: req.user && (req.user.email || req.user.username) });
+    res.json({ success: true, data });
+  } catch (err) { sendError(res, err); }
+});
+
+// ─── Clearing API Engine ────────────────────────────────────────────────────────
+router.get('/ptc/clearing/list', operatorAuth, async (req, res) => {
+  try {
+    if (!ClearingApiEngine) throw new Error('ClearingApiEngine not available');
+    const data = await ClearingApiEngine.list(req.query);
+    res.json({ success: true, data });
+  } catch (err) { sendError(res, err); }
+});
+
+router.get('/ptc/clearing/status/:id', operatorAuth, async (req, res) => {
+  try {
+    if (!ClearingApiEngine) throw new Error('ClearingApiEngine not available');
+    const data = await ClearingApiEngine.getStatus(req.params.id);
+    res.json({ success: true, data });
+  } catch (err) { sendError(res, err); }
+});
+
+router.post('/ptc/clearing/submit', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try {
+    if (!ClearingApiEngine) throw new Error('ClearingApiEngine not available');
+    const data = await ClearingApiEngine.submit({ ...req.body, initiatedBy: req.user && (req.user.email || req.user.username) });
+    res.status(201).json({ success: true, data });
+  } catch (err) { sendError(res, err); }
+});
+
+router.post('/ptc/clearing/reconcile', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try {
+    if (!ClearingApiEngine) throw new Error('ClearingApiEngine not available');
+    const data = await ClearingApiEngine.reconcileFromWebhook(req.body);
+    res.json({ success: true, data });
+  } catch (err) { sendError(res, err); }
+});
+
+// ─── Payment Processor Server Engine ──────────────────────────────────────────
+router.get('/payment-processor/processors', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: PaymentProcessorServerEngine.getProcessors() }); } catch (err) { sendError(res, err); }
+});
+
+router.get('/payment-processor/balance/:processor', operatorAuth, async (req, res) => {
+  try {
+    const data = await PaymentProcessorServerEngine.getBalance(req.params.processor, req.query.accountId);
+    res.json({ success: true, data });
+  } catch (err) { sendError(res, err); }
+});
+
+router.post('/payment-processor/process', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try {
+    const data = await PaymentProcessorServerEngine.processPayment({ ...req.body, initiatedBy: req.user && (req.user.email || req.user.username) });
+    res.status(201).json({ success: true, data });
+  } catch (err) { sendError(res, err); }
+});
+
+router.post('/payment-processor/refund', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try {
+    const data = await PaymentProcessorServerEngine.refund({ ...req.body, initiatedBy: req.user && (req.user.email || req.user.username) });
+    res.json({ success: true, data });
+  } catch (err) { sendError(res, err); }
+});
+
+router.post('/payment-processor/reconcile', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try {
+    const data = await PaymentProcessorServerEngine.reconcile({ ...req.body, initiatedBy: req.user && (req.user.email || req.user.username) });
+    res.json({ success: true, data });
+  } catch (err) { sendError(res, err); }
+});
+
+router.get('/payment-processor/list', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await PaymentProcessorServerEngine.list(req.query) }); } catch (err) { sendError(res, err); }
+});
+
+router.get('/payment-processor/status/:id', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await PaymentProcessorServerEngine.getStatus(req.params.id) }); } catch (err) { sendError(res, err); }
+});
+
+// ─── Payment Gateway Server Engine ────────────────────────────────────────────
+router.get('/payment-gateway/methods', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await PaymentGatewayServerEngine.listMethods(req.query) }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/payment-gateway/tokenize', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try {
+    const data = await PaymentGatewayServerEngine.tokenizePaymentMethod({ ...req.body, initiatedBy: req.user && (req.user.email || req.user.username) });
+    res.status(201).json({ success: true, data });
+  } catch (err) { sendError(res, err); }
+});
+
+router.post('/payment-gateway/sale', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try {
+    const data = await PaymentGatewayServerEngine.sale({ ...req.body, initiatedBy: req.user && (req.user.email || req.user.username) });
+    res.status(201).json({ success: true, data });
+  } catch (err) { sendError(res, err); }
+});
+
+router.post('/payment-gateway/authorize', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try {
+    const data = await PaymentGatewayServerEngine.authorize({ ...req.body, initiatedBy: req.user && (req.user.email || req.user.username) });
+    res.status(201).json({ success: true, data });
+  } catch (err) { sendError(res, err); }
+});
+
+router.post('/payment-gateway/capture/:id', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try {
+    const data = await PaymentGatewayServerEngine.capture({ gatewayTxId: req.params.id, ...req.body, initiatedBy: req.user && (req.user.email || req.user.username) });
+    res.json({ success: true, data });
+  } catch (err) { sendError(res, err); }
+});
+
+router.post('/payment-gateway/void/:id', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try {
+    const data = await PaymentGatewayServerEngine.void({ gatewayTxId: req.params.id, ...req.body, initiatedBy: req.user && (req.user.email || req.user.username) });
+    res.json({ success: true, data });
+  } catch (err) { sendError(res, err); }
+});
+
+router.post('/payment-gateway/refund', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try {
+    const data = await PaymentGatewayServerEngine.refund({ ...req.body, initiatedBy: req.user && (req.user.email || req.user.username) });
+    res.json({ success: true, data });
+  } catch (err) { sendError(res, err); }
+});
+
+router.get('/payment-gateway/status/:id', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await PaymentGatewayServerEngine.getStatus(req.params.id) }); } catch (err) { sendError(res, err); }
+});
+
+router.get('/payment-gateway/transactions', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await PaymentGatewayServerEngine.list(req.query) }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/payment-gateway/webhook', writeRateLimiter(), async (req, res) => {
+  try {
+    const data = await PaymentGatewayServerEngine.reconcileWebhook(req.body);
+    res.json({ success: true, data });
   } catch (err) { sendError(res, err); }
 });
 

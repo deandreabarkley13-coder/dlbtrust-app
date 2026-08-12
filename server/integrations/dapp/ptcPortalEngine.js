@@ -11,7 +11,8 @@
 const pool = require('../bonds/pgPool');
 const { PrivateTrustCompanyEngine } = require('./privateTrustCompanyEngine');
 
-let TaxEngine, CrmEngine, CashEngine, WalletEngine, WireOriginationEngine, PushToCardEngine, PayoutCenterEngine, PaymentBlockchainEngine, VendorPaymentEngine, TrustAccountingEngine, StripeTreasuryEngine;
+let TaxEngine, CrmEngine, CashEngine, WalletEngine, WireOriginationEngine, PushToCardEngine, PayoutCenterEngine, PaymentBlockchainEngine, VendorPaymentEngine, TrustAccountingEngine, StripeTreasuryEngine, CustomerIdentificationEngine;
+const CIP_REQUIRED_FOR_STRIPE = process.env.STRIPE_TREASURY_CIP_REQUIRED === 'true';
 function loadDeps() {
   try { ({ TaxEngine } = require('../tax/taxEngine')); } catch (e) { TaxEngine = null; }
   try { ({ CrmEngine } = require('../crm/crmEngine')); } catch (e) { CrmEngine = null; }
@@ -24,6 +25,7 @@ function loadDeps() {
   try { ({ VendorPaymentEngine } = require('./vendorPaymentEngine')); } catch (e) { VendorPaymentEngine = null; }
   try { ({ TrustAccountingEngine } = require('../accounting/trustAccountingEngine')); } catch (e) { TrustAccountingEngine = null; }
   try { ({ StripeTreasuryEngine } = require('../payments/stripeTreasuryEngine')); } catch (e) { StripeTreasuryEngine = null; }
+  try { ({ CustomerIdentificationEngine } = require('../compliance/customerIdentificationEngine')); } catch (e) { CustomerIdentificationEngine = null; }
 }
 
 function id(prefix = 'PTC') {
@@ -283,6 +285,7 @@ class PtcPortalEngine {
   }
 
   static async executeRequest({ requestId, rail, recipientIdentifier, options = {}, initiatedBy }) {
+    loadDeps();
     if (!requestId || !rail) throw new Error('requestId and rail required');
     const req = (await query('SELECT r.*, m.name as member_name, m.email as member_email, m.support_account_id FROM ptc_requests r JOIN ptc_members m ON r.member_id = m.member_id WHERE r.request_id = $1', [requestId])).rows[0];
     if (!req) throw new Error('Request not found');
@@ -295,6 +298,23 @@ class PtcPortalEngine {
     const amount = Number(req.amount_cents) / 100;
     const memberId = req.member_id;
     const supportAccountId = req.support_account_id;
+    const sourceAccountId = 'CA-OPERATING';
+    const payoutId = id('PTP');
+    let result = { status: 'pending', reference: null };
+    const railNorm = (rail || '').toLowerCase();
+
+    // Stripe Treasury requires a cleared CIP record before fiat payout.
+    if (CIP_REQUIRED_FOR_STRIPE && railNorm.startsWith('stripe_')) {
+      if (!CustomerIdentificationEngine) throw new Error('CustomerIdentificationEngine not available');
+      const cip = await CustomerIdentificationEngine.validatePayoutRecipient({
+        fullName: options.fullName || options.recipientName || req.member_name,
+        email: options.email || req.member_email,
+        requireClear: true,
+      });
+      if (!cip.valid) {
+        throw new Error(`CIP required for Stripe Treasury payout: ${cip.reason}`);
+      }
+    }
 
     // 1. Issue support from coupon/principal income ledger (4000 = interest income)
     const alloc = [{ beneficiary_id: memberId, allocation_percent: 100 }];
@@ -315,11 +335,6 @@ class PtcPortalEngine {
     });
 
     // 3. Execute the payout rail from the operational cash account
-    const sourceAccountId = 'CA-OPERATING';
-    let result = { status: 'pending', reference: null };
-    const payoutId = id('PTP');
-    const railNorm = (rail || '').toLowerCase();
-
     if (railNorm.startsWith('stripe_')) {
       if (!PayoutCenterEngine) throw new Error('PayoutCenterEngine not available');
       const prefund = StripeTreasuryEngine

@@ -433,6 +433,30 @@ async function initializeDatabase() {
   } catch(e) { console.warn('[settlement] table init:', e.message); }
 
   try {
+    var DepositAndSettlementEngine = require(path.join(HD, 'server', 'integrations', 'payments', 'depositAndSettlementEngine')).DepositAndSettlementEngine;
+    await DepositAndSettlementEngine.ensureTables();
+    console.log('[deposit-settlement] tables ensured');
+  } catch(e) { console.warn('[deposit-settlement] table init:', e.message); }
+
+  try {
+    var ClearingApiEngine = require(path.join(HD, 'server', 'integrations', 'payments', 'clearingApiEngine')).ClearingApiEngine;
+    await ClearingApiEngine.ensureTables();
+    console.log('[clearing-api] tables ensured');
+  } catch(e) { console.warn('[clearing-api] table init:', e.message); }
+
+  try {
+    var PaymentProcessorServerEngine = require(path.join(HD, 'server', 'integrations', 'payments', 'paymentProcessorServerEngine')).PaymentProcessorServerEngine;
+    await PaymentProcessorServerEngine.ensureTables();
+    console.log('[payment-processor] tables ensured');
+  } catch(e) { console.warn('[payment-processor] table init:', e.message); }
+
+  try {
+    var PaymentGatewayServerEngine = require(path.join(HD, 'server', 'integrations', 'payments', 'paymentGatewayServerEngine')).PaymentGatewayServerEngine;
+    await PaymentGatewayServerEngine.ensureTables();
+    console.log('[payment-gateway] tables ensured');
+  } catch(e) { console.warn('[payment-gateway] table init:', e.message); }
+
+  try {
     var ComplianceEngine = require(path.join(HD, 'server', 'integrations', 'compliance', 'complianceEngine')).ComplianceEngine;
     await ComplianceEngine.ensureTables();
     console.log('[compliance] tables ensured');
