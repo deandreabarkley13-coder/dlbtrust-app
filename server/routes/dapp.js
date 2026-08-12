@@ -23,6 +23,7 @@ const { ExpenseManagementEngine } = require('../integrations/accounting/expenseM
 const { DisbursementAutomationEngine } = require('../integrations/dapp/disbursementAutomationEngine');
 const { FundingEngine } = require('../integrations/dapp/fundingEngine');
 const { PayoutCenterEngine } = require('../integrations/dapp/payoutCenterEngine');
+const { StripeTreasuryBatchEngine } = require('../integrations/payments/stripeTreasuryBatchEngine');
 const { WalletEngine } = require('../integrations/dapp/walletEngine');
 const { BitPayEngine } = require('../integrations/dapp/bitpayEngine');
 const { WalletFundingEngine } = require('../integrations/dapp/walletFundingEngine');
@@ -1419,6 +1420,31 @@ router.post('/ptc/requests/:id/execute', portalAuth, writeRateLimiter(), async (
     const { rail, recipientIdentifier, options } = req.body || {};
     const data = await PtcPortalEngine.executeRequest({ requestId: req.params.id, rail, recipientIdentifier, options, initiatedBy: email });
     res.json({ success: true, data });
+  } catch (err) { sendError(res, err); }
+});
+
+// ─── Stripe Treasury Batch Bridge ─────────────────────────────────────────────
+router.post('/ptc/stripe-treasury/deposit', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try {
+    const { amount, financialAccountId, creditAccountCode, depositType, description, reference } = req.body || {};
+    const data = await StripeTreasuryBatchEngine.recordDeposit({ amount, financialAccountId, creditAccountCode, depositType, description, reference });
+    res.status(201).json({ success: true, data });
+  } catch (err) { sendError(res, err); }
+});
+
+router.post('/ptc/stripe-treasury/batch-payouts', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try {
+    const { file, sourceCashAccountCode, sourceCashAccountId, financialAccountId, network, skipPrefund } = req.body || {};
+    const data = await StripeTreasuryBatchEngine.processPaymentFile({
+      file,
+      sourceCashAccountCode,
+      sourceCashAccountId,
+      financialAccountId,
+      initiatedBy: req.user && (req.user.email || req.user.username || 'batch'),
+      network,
+      skipPrefund,
+    });
+    res.status(201).json({ success: true, data });
   } catch (err) { sendError(res, err); }
 });
 
