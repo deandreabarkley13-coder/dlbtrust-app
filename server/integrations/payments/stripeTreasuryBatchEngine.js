@@ -120,14 +120,14 @@ class StripeTreasuryBatchEngine {
     if (!skipPrefund) {
       const prefund = await StripeTreasuryEngine.prefundFromPtc({
         amount: totalAmount,
-        sourceCashAccountId,
+        sourceCashAccountId: sourceAccountId,
         financialAccountId: financialAccountId || process.env.STRIPE_TREASURY_FINANCIAL_ACCOUNT_ID,
         description: `Batch prefund ${id('BATCH')}`,
       });
       if (!prefund.prefunded) throw new Error(prefund.instruction || 'Unable to prefund Stripe Treasury for batch');
     }
 
-    await ensureAccount({ accountCode: sourceCashAccountCode, accountName: 'Cash', accountType: 'asset', subType: 'cash', linkedCashAccount: sourceCashAccountId });
+    await ensureAccount({ accountCode: sourceCashAccountCode, accountName: 'Cash', accountType: 'asset', subType: 'cash', linkedCashAccount: sourceAccountId });
     await ensureAccount({ accountCode: 'PTC-PAYOUTS-CLEARED', accountName: 'PTC Payouts Cleared', accountType: 'liability', subType: 'payable' });
 
     const results = [];
