@@ -2645,12 +2645,13 @@
     const body = el('panel-body');
     el('panel-title').textContent = 'Treasury On-Ramp Bridge';
     panel.classList.add('active');
-    body.innerHTML = '<div class="muted" style="margin-bottom:12px;">Wire/on-ramp fiat from core-banking or treasury reserves, receive canonical DAI/USDC, and redeem internal tokens (DLBUSD/PTC) 1:1.</div>' +
+    body.innerHTML = '<div class="muted" style="margin-bottom:12px;">Wire, journal-entry, or on-ramp fiat from core-banking or treasury reserves, receive canonical DAI/USDC, and redeem internal tokens (DLBUSD/PTC) 1:1.</div>' +
       '<h3 style="font-size:14px;margin:0 0 8px;">1. Quote On-Ramp Bridge</h3>' +
       '<div class="token-bar"><select id="torb-source-type"><option value="fixed_income">fixed_income</option><option value="bond">bond</option><option value="treasury">treasury</option><option value="cash">cash</option><option value="trust_account">trust_account</option></select></div>' +
       '<div class="token-bar"><input id="torb-source-account" value="4000" placeholder="source account / module key" /></div>' +
       '<div class="token-bar"><input id="torb-amount" value="100" placeholder="fiat amount (USD)" /></div>' +
-      '<div class="token-bar"><select id="torb-source-method"><option value="core_banking_wire">core_banking_wire</option><option value="circle_mint">circle_mint</option><option value="coinbase_treasury">coinbase_treasury</option><option value="moonpay">moonpay</option><option value="manual">manual</option></select></div>' +
+      '<div class="token-bar"><select id="torb-source-method" onchange="torbToggleProvider()" style="width:45%;"><option value="core_banking_wire">core_banking_wire</option><option value="journal_entry">journal_entry</option><option value="circle_mint">circle_mint</option><option value="coinbase_treasury">coinbase_treasury</option><option value="moonpay">moonpay</option><option value="manual">manual</option></select>' +
+      '<select id="torb-on-ramp-provider" style="width:45%;display:none;margin-left:10px;"><option value="manual">manual</option><option value="circle_mint">circle_mint</option><option value="coinbase_treasury">coinbase_treasury</option><option value="moonpay">moonpay</option><option value="core_banking_wire">core_banking_wire</option></select></div>' +
       '<div class="token-bar"><select id="torb-internal-asset"><option value="DLBUSD">DLBUSD</option><option value="DLB-PTCUSD">DLB-PTCUSD</option></select></div>' +
       '<div class="token-bar"><input id="torb-internal-amount" value="" placeholder="internal amount to redeem (defaults to fiat amount)" /></div>' +
       '<div class="token-bar"><input id="torb-target" value="DAI" placeholder="target canonical asset" /></div>' +
@@ -2666,20 +2667,31 @@
     torbLoad();
   }
 
+  function torbToggleProvider() {
+    const show = el('torb-source-method').value === 'journal_entry';
+    el('torb-on-ramp-provider').style.display = show ? 'inline-block' : 'none';
+  }
+
+  function torbBuildBody() {
+    const body = {
+      sourceType: el('torb-source-type').value,
+      sourceAccountId: el('torb-source-account').value,
+      amount: el('torb-amount').value,
+      sourceMethod: el('torb-source-method').value,
+      internalAsset: el('torb-internal-asset').value,
+      internalAmount: el('torb-internal-amount').value || undefined,
+      targetAsset: el('torb-target').value,
+      recipient: el('torb-recipient').value || undefined,
+    };
+    if (body.sourceMethod === 'journal_entry') body.onRampProvider = el('torb-on-ramp-provider').value;
+    return body;
+  }
+
   async function torbQuote() {
     const wrap = el('torb-quote-status');
     wrap.innerHTML = '<div class="muted">Quoting…</div>';
     try {
-      const body = {
-        sourceType: el('torb-source-type').value,
-        sourceAccountId: el('torb-source-account').value,
-        amount: el('torb-amount').value,
-        sourceMethod: el('torb-source-method').value,
-        internalAsset: el('torb-internal-asset').value,
-        internalAmount: el('torb-internal-amount').value || undefined,
-        targetAsset: el('torb-target').value,
-        recipient: el('torb-recipient').value || undefined,
-      };
+      const body = torbBuildBody();
       const r = await api('/api/finops/treasury-on-ramp/quote', { method: 'POST', body: JSON.stringify(body) });
       if (!r.success) throw new Error(r.error || 'quote failed');
       wrap.innerHTML = '<div class="status ok">Status: ' + htmlEscape(r.data.status) + '<br/>On-ramp amount: ' + htmlEscape(r.data.onRampAmount) + ' ' + htmlEscape(r.data.targetAsset) + '<br/>Instructions: ' + htmlEscape(typeof r.data.instructions === 'string' ? r.data.instructions : JSON.stringify(r.data.instructions)) + '</div>';
@@ -2690,16 +2702,7 @@
     const wrap = el('torb-quote-status');
     wrap.innerHTML = '<div class="muted">Creating proposal…</div>';
     try {
-      const body = {
-        sourceType: el('torb-source-type').value,
-        sourceAccountId: el('torb-source-account').value,
-        amount: el('torb-amount').value,
-        sourceMethod: el('torb-source-method').value,
-        internalAsset: el('torb-internal-asset').value,
-        internalAmount: el('torb-internal-amount').value || undefined,
-        targetAsset: el('torb-target').value,
-        recipient: el('torb-recipient').value || undefined,
-      };
+      const body = torbBuildBody();
       const r = await api('/api/finops/treasury-on-ramp/propose', { method: 'POST', body: JSON.stringify(body) });
       if (!r.success) throw new Error(r.error || 'propose failed');
       wrap.innerHTML = '<div class="status ok">Operation: <code>' + htmlEscape(r.data.operationId) + '</code><br/>Proposal: <code>' + htmlEscape(r.data.proposalId) + '</code><br/>Status: ' + htmlEscape(r.data.quote && r.data.quote.status) + '</div>';
