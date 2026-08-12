@@ -102,7 +102,6 @@ class StripeTreasuryEngine {
       type: 'us_bank_account',
       us_bank_account: {
         account_holder_type: accountHolderType,
-        account_holder_name: opts.accountHolderName || opts.accountHolder || opts.beneficiaryName,
         account_type: accountType,
         routing_number: String(opts.routingNumber).trim(),
         account_number: String(opts.accountNumber).trim(),
