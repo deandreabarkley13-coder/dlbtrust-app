@@ -657,6 +657,37 @@ SELECT fit_id, type, amount_cents, name, memo FROM ofx_transactions;
 - Test CIP enforcement: beneficiary creates a support request (`POST /api/dapp/ptc/request`), two trustees approve (`POST /api/dapp/ptc/requests/:id/approve`), then a trustee executes with `rail=stripe_ach` and an email without an approved CIP record. Expect `success: false` and error containing `CIP required for Stripe Treasury payout`.
 - Local DB gotcha: if `dapp_users` was created from an older migration, it may be missing `roles`, `active_role`, and `is_active` columns and the `role` check constraint can reject trustee roles. Run `DappEngine.ensureTables()` or `ALTER TABLE dapp_users ADD COLUMN ...` and `DROP CONSTRAINT IF EXISTS dapp_users_role_check` to unblock portal login.
 
+## PR #253 Bond Maturity / Amortization Fix
+
+- Open `https://dlbtrust-app.fly.dev/dapp/master-dashboard.html` directly.
+- Use the real operator token supplied by the user/lead (stored in `/home/ubuntu/.dlbtrust-admin-token` on the box, or the current `ADMIN_SECRET_TOKEN` Fly secret). The legacy `dlb-admin-2026-trust` token should no longer be used on the deployed instance.
+- After the 2026-08-04 redeploy, `DLB-PRB` (id `1`) was converted to a level-payment amortizing bond:
+  - `face_value`: $100,000,000
+  - `coupon_rate`: 1% (0.01)
+  - `issue_date`: 2024-02-28
+  - `maturity_date`: 2124-02-28
+  - `payment_freq`: `semi-annual`
+  - `day_count`: `30/360`
+  - `status`: `active` (not matured)
+- As of 2026-08-04 the expected live numbers are approximately:
+  - `principal_balance`: $98,822,652.72
+  - `accrued_interest_total`: $428,231.50
+  - `total_current_value`: $99,250,884.22
+  - `total_principal_paid`: $1,177,347.28
+  - `total_interest_paid`: $1,991,206.60
+  - `total_interest_accrued_to_date`: $2,419,438.10
+  - `next_coupon_date`: 2026-08-28
+  - `payment_amount` (each semi-annual coupon): $792,138.47
+- Use the **Bond / Fixed Income** tab to view the DLB-PRB card and `payment_freq`.
+- The **Overview** tab shows:
+  - `total current value`: ~$99,250,991.56 (includes small test bonds)
+  - `Total face value`: $100,000,103.01
+  - `Total interest paid`: ~$1,991,206.88
+  - `Total interest accrued to date`: ~$2,419,442.71
+- `distributeFixedIncome()` now mints DLBUSD to the Income Distribution Master when no DEX pool exists; the panel text was updated to match this behavior.
+- The tab-switching buttons in `master-dashboard.html` use `data-tab` attributes and no longer rely on the deprecated global `event` object.
+- `BondEngine.payInterest` now returns both `remaining_accrued` and `new_accrued_interest` so downstream callers (e.g. `SourceOfFundsAdapter`) can read the updated accrued balance.
+
 ## Devin Secrets Needed
 
 - `DATABASE_URL` or local Postgres credentials (`dlbtrust`/`dlbtrust`).
