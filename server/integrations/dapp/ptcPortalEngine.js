@@ -333,7 +333,14 @@ class PtcPortalEngine {
         railOptions: { ...options, ptc_request_id: requestId, initiatedBy: initiatedBy || req.member_name },
       });
       const stripeError = pc.result && pc.result.response && pc.result.response.error && pc.result.response.error.message;
-      result = { status: pc.status || 'pending', reference: pc.id, engineId: pc.id, error: stripeError || (pc.result && pc.result.error) };
+      result = {
+        status: pc.status || 'pending',
+        reference: pc.id,
+        engineId: pc.id,
+        txHash: pc.tx_hash,
+        destinationLast4: pc.result && pc.result.destination_last4,
+        error: stripeError || (pc.result && pc.result.error),
+      };
     } else if (railNorm === 'wire' || railNorm === 'ach' || railNorm === 'vendor') {
       if (!WireOriginationEngine) throw new Error('WireOriginationEngine not available');
       const opts = { ...options };
