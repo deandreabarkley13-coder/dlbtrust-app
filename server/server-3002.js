@@ -520,6 +520,11 @@ async function initializeDatabase() {
     console.log('[finops-agent] tables ensured');
   } catch(e) { console.warn('[finops-agent] table init:', e.message); }
   try {
+    var FinanceOperatingServerEngine = require(path.join(HD, 'server', 'integrations', 'finops', 'financeOperatingServerEngine')).FinanceOperatingServerEngine;
+    await FinanceOperatingServerEngine.ensureTables();
+    console.log('[finance-operating] tables ensured');
+  } catch(e) { console.warn('[finance-operating] table init:', e.message); }
+  try {
     var CalendarEngine = require(path.join(HD, 'server', 'integrations', 'calendar', 'calendarEngine')).CalendarEngine;
     await CalendarEngine.ensureTables();
     console.log('[calendar] tables ensured');
