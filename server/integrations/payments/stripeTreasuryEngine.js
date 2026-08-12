@@ -239,7 +239,7 @@ class StripeTreasuryEngine {
       } catch (e) { console.warn('[StripeTreasuryEngine] cash ledger transfer failed:', e.message); }
     }
 
-    const isProduction = process.env.PAYMENT_MODE === 'production' || process.env.NODE_ENV === 'production';
+    const isProduction = process.env.PAYMENT_MODE === 'production';
     if (!isProduction) {
       const receivedCredit = await client.testHelpers.treasury.receivedCredits.create({
         financial_account: faId,
