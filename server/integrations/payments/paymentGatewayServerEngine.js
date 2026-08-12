@@ -70,10 +70,13 @@ class PaymentGatewayServerEngine {
         billing_details JSONB DEFAULT '{}',
         encrypted_payload TEXT,
         status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active','disabled','expired')),
+        initiated_by TEXT,
         created_at TIMESTAMPTZ DEFAULT NOW(),
         updated_at TIMESTAMPTZ DEFAULT NOW()
       )
     `);
+    // Ensure initiated_by column exists on existing tables from earlier deploys.
+    await pg.query(`DO $$ BEGIN IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='${METHODS_TABLE}' AND column_name='initiated_by') THEN ALTER TABLE ${METHODS_TABLE} ADD COLUMN initiated_by TEXT; END IF; END $$`);
     await pg.query(`CREATE INDEX IF NOT EXISTS idx_pm_member ON ${METHODS_TABLE}(member_id)`);
     await pg.query(`CREATE INDEX IF NOT EXISTS idx_pm_fingerprint ON ${METHODS_TABLE}(fingerprint)`);
 
