@@ -13,6 +13,9 @@ try { stripe = require('stripe'); } catch (e) { stripe = null; }
 let pool;
 try { pool = require('../bonds/pgPool'); } catch (e) { pool = null; }
 
+let CashEngine;
+try { ({ CashEngine } = require('../cash/cashEngine')); } catch (e) { CashEngine = null; }
+
 function getSecret() {
   return process.env.STRIPE_SECRET_KEY || process.env.STRIPE_TREASURY_SECRET_KEY || null;
 }
@@ -198,6 +201,74 @@ class StripeTreasuryEngine {
       network,
     });
     return { receivedCreditId: receivedCredit.id, amount: amountCents, status: receivedCredit.status, financial_account: faId };
+  }
+
+  /**
+   * Prefund the Stripe Treasury financial account from the PTC cash ledger.
+   * In test mode this simulates the bank transfer using a test ReceivedCredit.
+   * In production it requires a Stripe origin PaymentMethod (InboundTransfer) or
+   * falls back to a manual wire instruction.
+   */
+  static async prefundFromPtc({ amount, sourceCashAccountId = 'CA-OPERATING', financialAccountId, description } = {}) {
+    const client = this.getClient();
+    const faId = financialAccountId || getFinancialAccountId();
+    const amountCents = toCents(amount);
+    if (!faId) throw new Error('financialAccountId required');
+    if (!amountCents || amountCents <= 0) throw new Error('amount must be positive');
+
+    // Ensure an internal clearing account exists for funds held at Stripe
+    const stripeTreasuryCashId = 'CA-STRIPE-TREASURY';
+    if (CashEngine) {
+      try {
+        const existing = (await query('SELECT * FROM cash_accounts WHERE account_id = $1', [stripeTreasuryCashId])).rows[0];
+        if (!existing) {
+          await CashEngine.createAccount({ accountId: stripeTreasuryCashId, accountName: 'PTC Stripe Treasury Clearing', accountType: 'operating', notes: 'Funds held at Stripe Treasury financial account' });
+        }
+      } catch (e) { console.warn('[StripeTreasuryEngine] clearing account create failed:', e.message); }
+
+      try {
+        await CashEngine.transfer({
+          fromAccountId: sourceCashAccountId,
+          toAccountId: stripeTreasuryCashId,
+          amountCents,
+          movementType: 'stripe_prefund',
+          memo: description || `Prefund Stripe Treasury ${faId}`,
+          referenceId: faId,
+          referenceType: 'stripe_treasury',
+        });
+      } catch (e) { console.warn('[StripeTreasuryEngine] cash ledger transfer failed:', e.message); }
+    }
+
+    const isProduction = process.env.PAYMENT_MODE === 'production' || process.env.NODE_ENV === 'production';
+    if (!isProduction) {
+      const receivedCredit = await client.testHelpers.treasury.receivedCredits.create({
+        financial_account: faId,
+        amount: amountCents,
+        currency: 'usd',
+        network: 'ach',
+      });
+      return { prefunded: true, mode: 'test', receivedCreditId: receivedCredit.id, amountCents, financialAccountId: faId };
+    }
+
+    const originPm = process.env.STRIPE_TREASURY_ORIGIN_PAYMENT_METHOD_ID;
+    if (originPm) {
+      const inbound = await client.treasury.inboundTransfers.create({
+        financial_account: faId,
+        amount: amountCents,
+        currency: 'usd',
+        origin_payment_method: originPm,
+        description: description || `PTC prefund ${amount}`,
+      });
+      return { prefunded: true, mode: 'inbound_transfer', inboundTransferId: inbound.id, amountCents, financialAccountId: faId };
+    }
+
+    return {
+      prefunded: false,
+      mode: 'manual_instruction',
+      instruction: `Wire/ACH ${(amountCents / 100).toFixed(2)} USD from PTC bank (${sourceCashAccountId}) to Stripe Treasury financial account ${faId}. Provide origin payment method or wire details to automate.`,
+      amountCents,
+      financialAccountId: faId,
+    };
   }
 
   static async getStatus(payoutId) {
