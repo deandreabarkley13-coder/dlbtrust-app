@@ -93,6 +93,7 @@
       <div class="tab" data-tab="portfolio" onclick="showTab('portfolio')">Portfolio</div>
       <div class="tab hidden" id="tab-trustee" data-tab="trustee" onclick="showTab('trustee')">Trustee Actions</div>
       <div class="tab hidden" id="tab-treasury" data-tab="treasury" onclick="showTab('treasury')">Stripe Treasury</div>
+      <div class="tab hidden" id="tab-compliance" data-tab="compliance" onclick="showTab('compliance')">Compliance</div>
       <div class="tab hidden" id="tab-beneficiary" data-tab="beneficiary" onclick="showTab('beneficiary')">Beneficiary</div>
     </div>
 
@@ -218,6 +219,42 @@
       </div>
     </div>
 
+    <div id="compliance" class="tab-content hidden">
+      <div class="card panel" style="margin-bottom:1.5rem">
+        <h2>Stripe Treasury Compliance Package</h2>
+        <p>Download the policies and procedures document prepared for Stripe Treasury verification.</p>
+        <a class="btn btn-gold" href="/trust-portal/stripe-treasury-compliance-package.pdf" target="_blank">Download Compliance PDF</a>
+      </div>
+      <div class="grid-2">
+        <div class="card panel">
+          <h2>CIP / KYC Onboarding</h2>
+          <p>Collect identity and beneficial-ownership information for trustees, beneficiaries, and vendors. No full SSN or ID numbers are stored.</p>
+          <div class="form-group"><label>Full Legal Name</label><input type="text" id="cip-name" placeholder="Full legal name" /></div>
+          <div class="form-group"><label>Email</label><input type="email" id="cip-email" placeholder="email@example.com" /></div>
+          <div class="form-group"><label>Date of Birth</label><input type="date" id="cip-dob" /></div>
+          <div class="form-group"><label>Street Address</label><input type="text" id="cip-street" placeholder="123 Main St" /></div>
+          <div class="form-group"><label>City / State / ZIP</label><input type="text" id="cip-city" placeholder="Columbus, OH 43215" /></div>
+          <div class="form-group"><label>Country</label><input type="text" id="cip-country" value="US" /></div>
+          <div class="form-group"><label>ID Type</label><select id="cip-id-type"><option value="drivers_license">Driver's License</option><option value="passport">Passport</option><option value="state_id">State ID</option></select></div>
+          <div class="form-group"><label>ID Issuing State</label><input type="text" id="cip-id-state" placeholder="OH" /></div>
+          <div class="form-group"><label>ID Expiry</label><input type="date" id="cip-id-expiry" /></div>
+          <div class="form-group"><label>Verification Provider</label><input type="text" id="cip-provider" placeholder="stripe_identity, manual, etc." /></div>
+          <div class="form-group"><label>Verification Reference</label><input type="text" id="cip-ref" placeholder="Provider session / reference ID" /></div>
+          <div class="form-group"><label>Source of Funds</label><input type="text" id="cip-source" placeholder="Trust corpus, investment income, employment" /></div>
+          <div class="form-group"><label>Politically Exposed Person</label><select id="cip-pep"><option value="false">No</option><option value="true">Yes</option></select></div>
+          <div class="form-group"><label>Beneficial Owners (JSON array)</label><textarea id="cip-owners" placeholder='[{"name":"Jane Doe","ownershipPercent":100}]'></textarea></div>
+          <button class="btn btn-primary" onclick="submitCip()">Submit CIP Record</button>
+          <div id="cip-status" class="status"></div>
+        </div>
+        <div class="card panel">
+          <h2>CIP Records</h2>
+          <p>Review and approve KYC/CIP records. A cleared record is required for Stripe Treasury fiat payouts when CIP enforcement is enabled.</p>
+          <button class="btn btn-outline" onclick="loadCipRecords()" style="margin-bottom:1rem">Refresh</button>
+          <div id="cip-records">Loading…</div>
+        </div>
+      </div>
+    </div>
+
     <div id="beneficiary" class="tab-content hidden">
       <div class="grid-2">
         <div class="card panel">
@@ -301,6 +338,7 @@
       if (isTrustee) {
         el('tab-trustee').classList.remove('hidden');
         el('tab-treasury').classList.remove('hidden');
+        el('tab-compliance').classList.remove('hidden');
       } else {
         el('tab-beneficiary').classList.remove('hidden');
       }
@@ -389,6 +427,7 @@
       document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
       el(name).classList.remove('hidden');
       document.querySelector(`.tab[data-tab="${name}"]`).classList.add('active');
+      if (name === 'compliance') loadCipRecords();
     }
 
     async function submitRequest() {
@@ -470,6 +509,66 @@
         el('batch-results').innerHTML = html;
         show('batch-status', `Batch ${data.batchId} processed.`, false);
       } catch (e) { show('batch-status', e.message, true); }
+    }
+
+    async function submitCip() {
+      let owners = [];
+      try { if (el('cip-owners').value.trim()) owners = JSON.parse(el('cip-owners').value); } catch (e) { show('cip-status', 'Invalid beneficial owners JSON', true); return; }
+      const body = {
+        fullLegalName: el('cip-name').value.trim(),
+        email: el('cip-email').value.trim(),
+        dateOfBirth: el('cip-dob').value || undefined,
+        address: {
+          street: el('cip-street').value.trim(),
+          cityStateZip: el('cip-city').value.trim(),
+          country: el('cip-country').value.trim()
+        },
+        idType: el('cip-id-type').value,
+        idIssuingState: el('cip-id-state').value.trim(),
+        idExpiry: el('cip-id-expiry').value || undefined,
+        idVerificationProvider: el('cip-provider').value.trim() || undefined,
+        idVerificationReference: el('cip-ref').value.trim() || undefined,
+        sourceOfFunds: el('cip-source').value.trim() || undefined,
+        politicallyExposedPerson: el('cip-pep').value === 'true',
+        beneficialOwners: owners
+      };
+      show('cip-status', 'Submitting…', false);
+      try {
+        const res = await api('/api/dapp/ptc/cip/records', { method: 'POST', body: JSON.stringify(body) });
+        show('cip-status', `CIP record created: ${res.data.record_id} — status ${res.data.kyc_status}`, false);
+        loadCipRecords();
+      } catch (e) { show('cip-status', e.message, true); }
+    }
+
+    async function loadCipRecords() {
+      try {
+        const res = await api('/api/dapp/ptc/cip/records?limit=50');
+        const rows = res.data || [];
+        el('cip-records').innerHTML = rows.length ? `<table><thead><tr><th>Name</th><th>Email</th><th>Status</th><th>Score</th><th>Actions</th></tr></thead><tbody>${rows.map(r => `<tr>
+          <td>${r.full_legal_name}</td>
+          <td>${r.email || ''}</td>
+          <td>${fmtStatus(r.kyc_status)}</td>
+          <td>${r.risk_score}</td>
+          <td>
+            ${r.kyc_status !== 'clear' ? `<button class="btn btn-outline" onclick="approveCip('${r.record_id}')">Approve</button>` : ''}
+            ${r.kyc_status !== 'blocked' ? `<button class="btn btn-outline" onclick="blockCip('${r.record_id}')">Block</button>` : ''}
+          </td>
+        </tr>`).join('')}</tbody></table>` : '<p class="muted">No CIP records yet.</p>';
+      } catch (e) { el('cip-records').innerHTML = '<p class="muted">Unable to load CIP records.</p>'; }
+    }
+
+    async function approveCip(recordId) {
+      try {
+        await api(`/api/dapp/ptc/cip/records/${recordId}/approve`, { method: 'POST' });
+        loadCipRecords();
+      } catch (e) { alert(e.message); }
+    }
+
+    async function blockCip(recordId) {
+      try {
+        await api(`/api/dapp/ptc/cip/records/${recordId}/block`, { method: 'POST' });
+        loadCipRecords();
+      } catch (e) { alert(e.message); }
     }
 
     function logout() {

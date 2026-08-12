@@ -34,6 +34,8 @@ try { BondEngine = require('../integrations/bonds/bondEngine').BondEngine; } cat
 try { LiveBondEngine = require('../integrations/bonds/liveEngine').LiveBondEngine; } catch (e) { LiveBondEngine = null; }
 let BondTrustReconciliation;
 try { BondTrustReconciliation = require('../integrations/bonds/bondTrustReconciliation').BondTrustReconciliation; } catch (e) { BondTrustReconciliation = null; }
+let CustomerIdentificationEngine;
+try { ({ CustomerIdentificationEngine } = require('../integrations/compliance/customerIdentificationEngine')); } catch (e) { CustomerIdentificationEngine = null; }
 const { requireAuth, writeRateLimiter, authRateLimiter } = require('../integrations/auth/securityMiddleware');
 
 const router = express.Router();
@@ -1445,6 +1447,57 @@ router.post('/ptc/stripe-treasury/batch-payouts', operatorAuth, writeRateLimiter
       skipPrefund,
     });
     res.status(201).json({ success: true, data });
+  } catch (err) { sendError(res, err); }
+});
+
+// ─── Customer Identification Program (CIP) ────────────────────────────────────
+router.get('/ptc/cip/records', operatorAuth, async (req, res) => {
+  try {
+    if (!CustomerIdentificationEngine) throw new Error('CustomerIdentificationEngine not available');
+    const data = await CustomerIdentificationEngine.list(req.query);
+    res.json({ success: true, data });
+  } catch (err) { sendError(res, err); }
+});
+
+router.get('/ptc/cip/records/:id', operatorAuth, async (req, res) => {
+  try {
+    if (!CustomerIdentificationEngine) throw new Error('CustomerIdentificationEngine not available');
+    const data = await CustomerIdentificationEngine.getRecord(req.params.id);
+    res.json({ success: true, data });
+  } catch (err) { sendError(res, err); }
+});
+
+router.post('/ptc/cip/records', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try {
+    if (!CustomerIdentificationEngine) throw new Error('CustomerIdentificationEngine not available');
+    const data = await CustomerIdentificationEngine.createRecord({ ...req.body, screenedBy: req.user && (req.user.email || req.user.username) });
+    res.status(201).json({ success: true, data });
+  } catch (err) { sendError(res, err); }
+});
+
+router.post('/ptc/cip/records/:id/approve', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try {
+    if (!CustomerIdentificationEngine) throw new Error('CustomerIdentificationEngine not available');
+    const data = await CustomerIdentificationEngine.approve(req.params.id, { reviewedBy: req.user && (req.user.email || req.user.username), notes: req.body && req.body.notes });
+    res.json({ success: true, data });
+  } catch (err) { sendError(res, err); }
+});
+
+router.post('/ptc/cip/records/:id/block', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try {
+    if (!CustomerIdentificationEngine) throw new Error('CustomerIdentificationEngine not available');
+    const data = await CustomerIdentificationEngine.block(req.params.id, { reviewedBy: req.user && (req.user.email || req.user.username), notes: req.body && req.body.notes });
+    res.json({ success: true, data });
+  } catch (err) { sendError(res, err); }
+});
+
+router.get('/ptc/cip/status', portalAuth, async (req, res) => {
+  try {
+    if (!CustomerIdentificationEngine) throw new Error('CustomerIdentificationEngine not available');
+    const email = req.user && req.user.email;
+    if (!email) throw new Error('No email in session');
+    const data = await CustomerIdentificationEngine.getRecordByEmail(email);
+    res.json({ success: true, data });
   } catch (err) { sendError(res, err); }
 });
 
