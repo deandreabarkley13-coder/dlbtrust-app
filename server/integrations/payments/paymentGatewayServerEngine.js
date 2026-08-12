@@ -160,15 +160,16 @@ class PaymentGatewayServerEngine {
       encrypted = encryptSensitive(address);
     }
 
+    const processorName = processor || null;
     if (pg && pg.query) {
       await pg.query(
         `INSERT INTO ${METHODS_TABLE} (method_id, type, processor, member_id, last4, fingerprint, exp_month, exp_year, network, billing_details, encrypted_payload, status, initiated_by)
          VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)`,
-        [methodId, methodType, processor || 'generic', memberId || null, last4, fingerprint, expMonth, expYear, network, safeJson(billingDetails), encrypted, 'active', initiatedBy || 'system']
+        [methodId, methodType, processorName, memberId || null, last4, fingerprint, expMonth, expYear, network, safeJson(billingDetails), encrypted, 'active', initiatedBy || 'system']
       );
     }
 
-    return { methodId, type: methodType, processor: processor || 'generic', last4, fingerprint: fingerprint ? fingerprint.slice(0, 16) : null, network, status: 'active' };
+    return { methodId, type: methodType, processor: processorName, last4, fingerprint: fingerprint ? fingerprint.slice(0, 16) : null, network, status: 'active' };
   }
 
   static async getMethod(methodId, includePayload = false) {
@@ -271,7 +272,7 @@ class PaymentGatewayServerEngine {
     if (methodId && !(await this.getMethod(methodId))) throw new Error('Payment method not found');
 
     const method = methodId ? await this.getMethod(methodId, true) : null;
-    const chosenProcessor = processor || (method && method.processor) || this._processorFromMethod(method);
+    const chosenProcessor = processor || (method && method.processor && method.processor !== 'generic' ? method.processor : null) || this._processorFromMethod(method);
     const dest = { ...destination };
     if (method && method.type === 'ach') {
       dest.accountNumber = dest.accountNumber || 'last4:' + method.last4;
@@ -314,7 +315,8 @@ class PaymentGatewayServerEngine {
     const captureAmountCents = amount ? toCents(amount) : row.amount_cents;
 
     const method = row.method_id ? await this.getMethod(row.method_id, true) : null;
-    const chosenProcessor = row.metadata && row.metadata.processor ? row.metadata.processor : this._processorFromMethod(method);
+    const storedProcessor = row.metadata && row.metadata.processor;
+    const chosenProcessor = storedProcessor && storedProcessor !== 'generic' ? storedProcessor : this._processorFromMethod(method);
     const raw = typeof row.raw_request === 'string' ? JSON.parse(row.raw_request) : row.raw_request || {};
     const dest = { ...(raw.destination || {}) };
     if (method && method.type === 'ach') {

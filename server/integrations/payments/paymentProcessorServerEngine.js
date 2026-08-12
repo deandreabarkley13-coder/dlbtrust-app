@@ -245,9 +245,11 @@ class PaymentProcessorServerEngine {
 
   static async _processClearing({ rail, amount, currency, source, destination, reference, metadata, initiatedBy }) {
     if (!ClearingApiEngine) return { status: 'manual', instruction: 'Clearing API engine unavailable' };
+    const validRails = ['ach','wire','iso20022','open_banking','generic','manual'];
+    const clearingRail = validRails.includes(rail) ? rail : 'ach';
     return await ClearingApiEngine.submit({
       direction: 'outbound',
-      rail,
+      rail: clearingRail,
       amount,
       currency,
       sourceAccountId: source.accountId || source.account_id || source.cashAccountId || 'CA-OPERATING',
