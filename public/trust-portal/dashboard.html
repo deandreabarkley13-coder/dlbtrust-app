@@ -708,7 +708,8 @@
           method: 'POST',
           body: JSON.stringify({ amount, rail, sourceCashAccountId: sourceCash, destination, requireCip })
         });
-        const msg = res.data.status === 'manual' ? `Manual prefund required: ${res.data.instruction}` : `Settlement initiated: ${res.data.orderId} / ${res.data.externalReference || res.data.clearingId}`;
+        const instruction = res.data.instruction || (res.data.prefundResult && res.data.prefundResult.instruction) || (res.data.clearingResult && res.data.clearingResult.result && res.data.clearingResult.result.instruction);
+        const msg = res.data.status === 'manual' ? `Manual prefund required: ${instruction || 'see clearing result'}` : `Settlement initiated: ${res.data.orderId} / ${res.data.externalReference || res.data.clearingId}`;
         show('ds-settle-status', msg, false);
         setTimeout(loadDsOrders, 1000);
       } catch (e) { show('ds-settle-status', e.message, true); }
