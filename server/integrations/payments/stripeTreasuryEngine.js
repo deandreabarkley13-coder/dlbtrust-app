@@ -200,6 +200,60 @@ class StripeTreasuryEngine {
     return { receivedCreditId: receivedCredit.id, amount: amountCents, status: receivedCredit.status, financial_account: faId };
   }
 
+  /**
+   * Ensure the Stripe Treasury financial account has enough cash to cover a payout,
+   * prefunding from the PTC source when needed.
+   * In test/sandbox mode this simulates the bank transfer using a test ReceivedCredit.
+   * In production it creates a real treasury.InboundTransfer if an origin PaymentMethod
+   * is configured, otherwise returns a manual wire/ACH instruction.
+   */
+  static async prefundFromPtc({ amount, sourceCashAccountId = 'CA-OPERATING', financialAccountId, description } = {}) {
+    const client = this.getClient();
+    const faId = financialAccountId || getFinancialAccountId();
+    const amountCents = toCents(amount);
+    if (!faId) throw new Error('financialAccountId required');
+    if (!amountCents || amountCents <= 0) throw new Error('amount must be positive');
+
+    const fa = await client.treasury.financialAccounts.retrieve(faId);
+    const availableCents = (fa && fa.balance && fa.balance.cash && fa.balance.cash.usd) || 0;
+    if (Number(availableCents) >= amountCents) {
+      return { prefunded: true, mode: 'existing_balance', availableCents, amountCents, financialAccountId: faId };
+    }
+
+    const neededCents = amountCents - Number(availableCents);
+
+    const isProduction = process.env.PAYMENT_MODE === 'production';
+    if (!isProduction) {
+      const receivedCredit = await client.testHelpers.treasury.receivedCredits.create({
+        financial_account: faId,
+        amount: neededCents,
+        currency: 'usd',
+        network: 'ach',
+      });
+      return { prefunded: true, mode: 'test', receivedCreditId: receivedCredit.id, amountCents: neededCents, financialAccountId: faId };
+    }
+
+    const originPm = process.env.STRIPE_TREASURY_ORIGIN_PAYMENT_METHOD_ID;
+    if (originPm) {
+      const inbound = await client.treasury.inboundTransfers.create({
+        financial_account: faId,
+        amount: neededCents,
+        currency: 'usd',
+        origin_payment_method: originPm,
+        description: description || `PTC prefund ${amount}`,
+      });
+      return { prefunded: true, mode: 'inbound_transfer', inboundTransferId: inbound.id, amountCents: neededCents, financialAccountId: faId };
+    }
+
+    return {
+      prefunded: false,
+      mode: 'manual_instruction',
+      instruction: `Wire/ACH ${(neededCents / 100).toFixed(2)} USD from PTC bank (${sourceCashAccountId}) to Stripe Treasury financial account ${faId}. Provide STRIPE_TREASURY_ORIGIN_PAYMENT_METHOD_ID or wire details to automate.`,
+      amountCents: neededCents,
+      financialAccountId: faId,
+    };
+  }
+
   static async getStatus(payoutId) {
     await this.ensureTables();
     const row = (await query('SELECT * FROM stripe_treasury_payouts WHERE payout_id = $1', [payoutId])).rows[0];

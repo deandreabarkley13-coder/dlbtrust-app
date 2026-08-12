@@ -11,7 +11,7 @@
 const pool = require('../bonds/pgPool');
 const { PrivateTrustCompanyEngine } = require('./privateTrustCompanyEngine');
 
-let TaxEngine, CrmEngine, CashEngine, WalletEngine, WireOriginationEngine, PushToCardEngine, PayoutCenterEngine, PaymentBlockchainEngine, VendorPaymentEngine, TrustAccountingEngine;
+let TaxEngine, CrmEngine, CashEngine, WalletEngine, WireOriginationEngine, PushToCardEngine, PayoutCenterEngine, PaymentBlockchainEngine, VendorPaymentEngine, TrustAccountingEngine, StripeTreasuryEngine;
 function loadDeps() {
   try { ({ TaxEngine } = require('../tax/taxEngine')); } catch (e) { TaxEngine = null; }
   try { ({ CrmEngine } = require('../crm/crmEngine')); } catch (e) { CrmEngine = null; }
@@ -23,6 +23,7 @@ function loadDeps() {
   try { ({ PaymentBlockchainEngine } = require('./paymentBlockchainEngine')); } catch (e) { PaymentBlockchainEngine = null; }
   try { ({ VendorPaymentEngine } = require('./vendorPaymentEngine')); } catch (e) { VendorPaymentEngine = null; }
   try { ({ TrustAccountingEngine } = require('../accounting/trustAccountingEngine')); } catch (e) { TrustAccountingEngine = null; }
+  try { ({ StripeTreasuryEngine } = require('../payments/stripeTreasuryEngine')); } catch (e) { StripeTreasuryEngine = null; }
 }
 
 function id(prefix = 'PTC') {
@@ -321,6 +322,12 @@ class PtcPortalEngine {
 
     if (railNorm.startsWith('stripe_')) {
       if (!PayoutCenterEngine) throw new Error('PayoutCenterEngine not available');
+      const prefund = StripeTreasuryEngine
+        ? await StripeTreasuryEngine.prefundFromPtc({ amount, sourceCashAccountId: sourceAccountId, financialAccountId: options.financialAccountId || process.env.STRIPE_TREASURY_FINANCIAL_ACCOUNT_ID, description: `PTC prefund for ${requestId}` })
+        : { prefunded: false, mode: 'skipped' };
+      if (prefund.prefunded === false && prefund.mode !== 'skipped') {
+        throw new Error(prefund.instruction || 'Unable to prefund Stripe Treasury from PTC');
+      }
       const pc = await PayoutCenterEngine.createPayment({
         sourceType: 'cash',
         sourceAccountId,
@@ -340,6 +347,7 @@ class PtcPortalEngine {
         txHash: pc.tx_hash,
         destinationLast4: pc.result && pc.result.destination_last4,
         error: stripeError || (pc.result && pc.result.error),
+        prefund,
       };
     } else if (railNorm === 'wire' || railNorm === 'ach' || railNorm === 'vendor') {
       if (!WireOriginationEngine) throw new Error('WireOriginationEngine not available');
