@@ -92,6 +92,7 @@
       <div class="tab active" data-tab="overview" onclick="showTab('overview')">Overview</div>
       <div class="tab" data-tab="portfolio" onclick="showTab('portfolio')">Portfolio</div>
       <div class="tab hidden" id="tab-trustee" data-tab="trustee" onclick="showTab('trustee')">Trustee Actions</div>
+      <div class="tab hidden" id="tab-treasury" data-tab="treasury" onclick="showTab('treasury')">Stripe Treasury</div>
       <div class="tab hidden" id="tab-beneficiary" data-tab="beneficiary" onclick="showTab('beneficiary')">Beneficiary</div>
     </div>
 
@@ -167,6 +168,53 @@
       <div class="card panel" style="margin-top:1.5rem">
         <h2>Recent Payouts</h2>
         <div id="recent-payouts">Loading…</div>
+      </div>
+    </div>
+
+    <div id="treasury" class="tab-content hidden">
+      <div class="grid-2">
+        <div class="card panel">
+          <h2>Record Treasury Deposit</h2>
+          <p>When real fiat lands in the Stripe Treasury financial account, credit the PTC ledger here.</p>
+          <div class="form-group">
+            <label>Amount (USD)</label>
+            <input type="number" id="deposit-amount" min="0.01" step="0.01" placeholder="0.00" />
+          </div>
+          <div class="form-group">
+            <label>Ledger Credit Account</label>
+            <select id="deposit-credit-account">
+              <option value="PTC-TREASURY-DEPOSIT">PTC Treasury Deposit Clearing</option>
+              <option value="4000">Interest Income (4000)</option>
+              <option value="3000">Trust Corpus (3000)</option>
+            </select>
+          </div>
+          <div class="form-group">
+            <label>Reference / Deposit ID (optional)</label>
+            <input type="text" id="deposit-reference" placeholder="Wire reference, receipt ID, etc." />
+          </div>
+          <button class="btn btn-primary" onclick="recordDeposit()">Record Deposit</button>
+          <div id="deposit-status" class="status"></div>
+        </div>
+        <div class="card panel">
+          <h2>Batch Stripe Payouts</h2>
+          <p>Upload a CSV or JSON array of ACH/wire payouts. The system prefunds the Treasury account from the PTC source, creates Stripe OutboundPayments, and posts ledger entries.</p>
+          <div class="form-group">
+            <label>Payout File (CSV or JSON)</label>
+            <textarea id="batch-file" placeholder='[
+  {"amount":100,"routingNumber":"110000000","accountNumber":"000123456789","accountHolderName":"DeAndrea Barkley","description":"Support"}
+]'></textarea>
+          </div>
+          <div class="form-group">
+            <label>Default Network</label>
+            <select id="batch-network">
+              <option value="ach">ACH</option>
+              <option value="us_domestic_wire">US Domestic Wire</option>
+            </select>
+          </div>
+          <button class="btn btn-gold" onclick="processBatchPayouts()">Process Batch</button>
+          <div id="batch-status" class="status"></div>
+          <div id="batch-results" style="margin-top:1rem"></div>
+        </div>
       </div>
     </div>
 
@@ -252,6 +300,7 @@
       el('user-role').className = 'badge ' + (isTrustee ? 'trustee' : 'beneficiary');
       if (isTrustee) {
         el('tab-trustee').classList.remove('hidden');
+        el('tab-treasury').classList.remove('hidden');
       } else {
         el('tab-beneficiary').classList.remove('hidden');
       }
@@ -377,6 +426,50 @@
         show('exec-status', `Payout ${res.data.status}. ${res.data.reference || ''}`, false);
         setTimeout(loadDashboard, 1000);
       } catch (e) { show('exec-status', e.message, true); }
+    }
+
+    async function recordDeposit() {
+      const amount = Number(el('deposit-amount').value);
+      const creditAccount = el('deposit-credit-account').value;
+      const reference = el('deposit-reference').value.trim();
+      if (!amount || amount <= 0) { show('deposit-status', 'Enter a positive amount', true); return; }
+      show('deposit-status', 'Recording…', false);
+      try {
+        const res = await api('/api/dapp/ptc/stripe-treasury/deposit', {
+          method: 'POST',
+          body: JSON.stringify({ amount, creditAccountCode: creditAccount, reference: reference || undefined })
+        });
+        show('deposit-status', `Deposit recorded: ${res.data.batchId} / journal ${res.data.journalEntryId}`, false);
+        setTimeout(loadDashboard, 1000);
+      } catch (e) { show('deposit-status', e.message, true); }
+    }
+
+    async function processBatchPayouts() {
+      const raw = el('batch-file').value.trim();
+      const network = el('batch-network').value;
+      if (!raw) { show('batch-status', 'Paste a CSV or JSON payment file', true); return; }
+      let file;
+      try {
+        file = raw.startsWith('[') || raw.startsWith('{') ? JSON.parse(raw) : raw;
+      } catch (e) { show('batch-status', 'Invalid JSON or CSV: ' + e.message, true); return; }
+      show('batch-status', 'Processing batch…', false);
+      try {
+        const res = await api('/api/dapp/ptc/stripe-treasury/batch-payouts', {
+          method: 'POST',
+          body: JSON.stringify({ file, network })
+        });
+        const data = res.data;
+        const failures = data.results.filter(r => r.error);
+        const ok = data.results.filter(r => !r.error);
+        let html = `<p class="muted">${ok.length} sent, ${failures.length} failed, total $${data.totalAmount.toFixed(2)}</p>`;
+        if (failures.length) {
+          html += '<table><thead><tr><th>Row</th><th>Recipient</th><th>Amount</th><th>Error</th></tr></thead><tbody>' +
+            failures.map(r => `<tr><td>${r.row}</td><td>${r.recipient}</td><td>${fmtMoney(r.amount)}</td><td>${r.error}</td></tr>`).join('') +
+            '</tbody></table>';
+        }
+        el('batch-results').innerHTML = html;
+        show('batch-status', `Batch ${data.batchId} processed.`, false);
+      } catch (e) { show('batch-status', e.message, true); }
     }
 
     function logout() {
