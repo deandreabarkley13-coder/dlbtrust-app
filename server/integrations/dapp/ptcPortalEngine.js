@@ -325,7 +325,7 @@ class PtcPortalEngine {
       const prefund = StripeTreasuryEngine
         ? await StripeTreasuryEngine.prefundFromPtc({ amount, sourceCashAccountId: sourceAccountId, financialAccountId: options.financialAccountId || process.env.STRIPE_TREASURY_FINANCIAL_ACCOUNT_ID, description: `PTC prefund for ${requestId}` })
         : { prefunded: false, mode: 'skipped' };
-      if (prefund.prefunded === false && prefund.mode !== 'skipped' && prefund.mode !== 'manual_instruction') {
+      if (prefund.prefunded === false && prefund.mode !== 'skipped') {
         throw new Error(prefund.instruction || 'Unable to prefund Stripe Treasury from PTC');
       }
       const pc = await PayoutCenterEngine.createPayment({
