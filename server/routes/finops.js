@@ -69,6 +69,7 @@ const { PushToCardEngine } = require('../integrations/payments/pushToCardEngine'
 const { NetworkingEngine } = require('../integrations/dapp/networkingEngine');
 const { FinosCdmEngine } = require('../integrations/finops/finosCdmEngine');
 const { BankSyncEngine } = require('../integrations/finops/bankSyncEngine');
+const { FinanceOperatingServerEngine } = require('../integrations/finops/financeOperatingServerEngine');
 const { PrivateTrustCompanyEngine } = require('../integrations/dapp/privateTrustCompanyEngine');
 const { WalletVirtualAccountEngine } = require('../integrations/dapp/walletVirtualAccountEngine');
 let CashEngine;
@@ -2643,6 +2644,71 @@ router.post('/private-trust-company/distribute/bond/:id/principal', operatorAuth
 
 router.post('/private-trust-company/redeem', operatorAuth, writeRateLimiter(), async (req, res) => {
   try { res.json({ success: true, data: await PrivateTrustCompanyEngine.redeemSupport(req.body || {}) }); } catch (err) { sendError(res, err); }
+});
+
+// ─── Finance Operating Server Engine ──────────────────────────────────────────
+
+router.post('/finance-operating/execute', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try {
+    const { command, sessionId, params } = req.body || {};
+    if (!command || typeof command !== 'string') throw new Error('command string required');
+    const data = await FinanceOperatingServerEngine.executeCommand({
+      command,
+      userId: getUserId(req),
+      sessionId: sessionId || null,
+      params: params || {},
+    });
+    res.json({ success: true, data });
+  } catch (err) { sendError(res, err); }
+});
+
+router.post('/finance-operating/sessions', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try {
+    const data = await FinanceOperatingServerEngine.createSession({ userId: getUserId(req), metadata: req.body?.metadata });
+    res.status(201).json({ success: true, data });
+  } catch (err) { sendError(res, err); }
+});
+
+router.get('/finance-operating/sessions/:id', operatorAuth, async (req, res) => {
+  try {
+    const data = await FinanceOperatingServerEngine.getSession(req.params.id);
+    res.json({ success: true, data });
+  } catch (err) { sendError(res, err); }
+});
+
+router.get('/finance-operating/sessions', operatorAuth, async (req, res) => {
+  try {
+    const data = await FinanceOperatingServerEngine.listSessions({ userId: getUserId(req), limit: req.query.limit });
+    res.json({ success: true, data });
+  } catch (err) { sendError(res, err); }
+});
+
+router.get('/finance-operating/commands', operatorAuth, async (req, res) => {
+  try {
+    const data = await FinanceOperatingServerEngine.listCommands({ userId: getUserId(req), sessionId: req.query.sessionId, limit: req.query.limit });
+    res.json({ success: true, data });
+  } catch (err) { sendError(res, err); }
+});
+
+router.get('/finance-operating/health', operatorAuth, async (req, res) => {
+  try {
+    const data = await FinanceOperatingServerEngine.health();
+    res.json({ success: true, data });
+  } catch (err) { sendError(res, err); }
+});
+
+router.get('/finance-operating/cash-position', operatorAuth, async (req, res) => {
+  try {
+    const data = await FinanceOperatingServerEngine.cashPosition();
+    res.json({ success: true, data });
+  } catch (err) { sendError(res, err); }
+});
+
+router.get('/finance-operating/processors', operatorAuth, async (req, res) => {
+  try {
+    const data = await FinanceOperatingServerEngine.listProcessors();
+    res.json({ success: true, data });
+  } catch (err) { sendError(res, err); }
 });
 
 module.exports = router;

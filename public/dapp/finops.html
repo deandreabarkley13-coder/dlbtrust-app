@@ -215,6 +215,7 @@
     { key:'clearing', name:'Clearing Engine', desc:'Bilateral and net settlement on Hyperledger Besu', stat:'', endpoint:null, action:'openClearingPanel' },
     { key:'redemption-gateway', name:'Redemption Gateway', desc:'Bridge DLB-PTCUSD to external clearing/stablecoin rails', stat:'', endpoint:null, action:'openRedemptionGatewayPanel' },
     { key:'payout', name:'Payout Center', desc:'Disbursements, trades, off-ramps', stat:'', endpoint:null, link:'/dapp/payout-center.html?v=2' },
+    { key:'finance-operating', name:'Finance Operating Server', desc:'Unified command/response layer for cash, treasury, payments, and AI FinOps operations', stat:'', endpoint:null, action:'openFinanceOperatingPanel' },
     { key:'distribution', name:'Distribution', desc:'Trustee-approved beneficiary distributions', stat:'', endpoint:null, link:'/dapp/master-dashboard.html?v=2' },
   ];
 
@@ -1476,6 +1477,84 @@
     finally { if (btn) { btn.disabled = false; btn.textContent = 'Run now'; } }
   }
 
+  // ─── Finance Operating Server panel ───────────────────────────────────────────
+  let financeOperatingSessionId = null;
+
+  async function getOrCreateFinanceOperatingSession() {
+    if (financeOperatingSessionId) return financeOperatingSessionId;
+    try {
+      const res = await api('/api/finops/finance-operating/sessions', { method:'POST' });
+      financeOperatingSessionId = res.data.sessionId;
+      return financeOperatingSessionId;
+    } catch(e) { return null; }
+  }
+
+  function openFinanceOperatingPanel() {
+    const panel = el('module-panel');
+    const body = el('panel-body');
+    el('panel-title').textContent = 'Finance Operating Server';
+    panel.classList.add('active');
+    body.innerHTML = '<div class="muted">Loading operating dashboard…</div>';
+    loadFinanceOperatingPanel();
+  }
+
+  async function loadFinanceOperatingPanel() {
+    const body = el('panel-body');
+    try {
+      const [healthRes, cashRes, procRes, cmdRes] = await Promise.all([
+        api('/api/finops/finance-operating/health'),
+        api('/api/finops/finance-operating/cash-position'),
+        api('/api/finops/finance-operating/processors'),
+        api('/api/finops/finance-operating/commands?limit=5'),
+      ]);
+      body.innerHTML = renderFinanceOperatingPanel(healthRes.data, cashRes.data, procRes.data, cmdRes.data || []);
+    } catch(e) { body.innerHTML = '<div class="status err">' + e.message + '</div>'; }
+  }
+
+  function renderFinanceOperatingPanel(health, cash, processors, commands) {
+    let html = '<div id="fose-status" class="status hidden"></div>';
+    html += '<div class="muted" style="margin-bottom:12px;">Unified command layer for cash, treasury, payments, and AI FinOps.</div>';
+    html += '<div style="margin:12px 0;"><strong>System health:</strong> ' + (health && health.ok ? '<span style="color:var(--accent-2)">OK</span>' : '<span style="color:var(--danger)">Degraded</span>') + '</div>';
+    html += '<div style="margin:16px 0; border-top:1px solid var(--border); padding-top:12px;">' +
+      '<h3 style="margin:0 0 10px; font-size:14px;">Run Operating Command</h3>' +
+      '<div class="chat-input"><input id="fose-command" placeholder="e.g. cash position, list processors, pay $0.25 manual" style="flex:1;" onkeydown="if(event.key===&quot;Enter&quot;) foseExecute()" /><button class="btn" onclick="foseExecute()">Execute</button></div>' +
+      '</div>';
+    if (cash && cash.sources) {
+      html += '<h3 style="font-size:14px; margin:16px 0 8px;">Cash Position</h3>';
+      html += '<div style="font-size:13px; background:#0b1220; border-radius:8px; padding:12px; border:1px solid var(--border);">' +
+        '<pre style="margin:0; white-space:pre-wrap; word-break:break-word;">' + JSON.stringify(cash.sources, null, 2).slice(0, 1200) + '</pre></div>';
+    }
+    if (processors && processors.processors) {
+      html += '<h3 style="font-size:14px; margin:16px 0 8px;">Payment Processors</h3>';
+      html += '<div class="grid" style="grid-template-columns:repeat(auto-fill,minmax(160px,1fr));">' + processors.processors.map(p =>
+        '<div class="module-card"><h3>' + p.label + '</h3><div class="stat">' + p.name + '</div><p class="muted">' + (p.rails || []).join(', ') + '</p></div>'
+      ).join('') + '</div>';
+    }
+    if (commands.length) {
+      html += '<h3 style="font-size:14px; margin:16px 0 8px;">Recent Commands</h3>' +
+        '<table class="table"><thead><tr><th>Time</th><th>Intent</th><th>Status</th><th>Summary</th></tr></thead><tbody>' +
+        commands.map(c => '<tr><td>' + new Date(c.created_at).toLocaleString() + '</td><td>' + c.intent + '</td><td>' + c.status + '</td><td>' + escapeHtml(String(JSON.stringify(c.response).slice(0, 120))) + '</td></tr>').join('') +
+        '</tbody></table>';
+    }
+    return html;
+  }
+
+  async function foseExecute() {
+    const input = el('fose-command');
+    const cmd = input.value.trim();
+    if (!cmd) return;
+    const status = el('fose-status');
+    status.textContent = 'Executing…'; status.className = 'status'; status.classList.remove('hidden');
+    try {
+      const sessionId = await getOrCreateFinanceOperatingSession();
+      const res = await api('/api/finops/finance-operating/execute', { method:'POST', body: JSON.stringify({ command: cmd, sessionId }) });
+      status.textContent = res.data.summary || 'Done';
+      status.className = 'status ok';
+      await loadFinanceOperatingPanel();
+      if (res.data.type === 'data') await loadAll();
+    } catch(e) { status.textContent = e.message; status.className = 'status err'; }
+  }
+
   function addChat(sender, text) {
     const log = el('chat-log');
     const div = document.createElement('div');
@@ -1493,13 +1572,13 @@
     addChat('user', cmd);
     show('Processing…', false, 'chat-status');
     try {
-      const res = await api('/api/finops/agent', { method: 'POST', body: JSON.stringify({ command: cmd }) });
+      const res = await api('/api/finops/finance-operating/execute', { method: 'POST', body: JSON.stringify({ command: cmd }) });
       const data = res.data || {};
       addChat('agent', data.summary || 'Done');
       if (data.requiresApproval) {
         addChat('agent', 'This action requires approval. See Pending Approvals panel.');
       } else if (data.type === 'data') {
-        addChat('agent', 'Data loaded — click the matching module card.');
+        addChat('agent', 'Data loaded — click the Finance Operating Server module card to inspect.');
       }
       await loadApprovals();
       if (data.type === 'data') await loadAll();

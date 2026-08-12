@@ -635,6 +635,62 @@ SELECT fit_id, type, amount_cents, name, memo FROM ofx_transactions;
 - With a write-only API key, `GET /api/finops/banksync/banks` returns `Missing required scope: banks:read`; the UI should surface this in `bs-banks` and remain usable.
 - Native clicks on module cards may be unreliable in scaled viewports; if so, call `openModule('banksync')` from the browser console.
 
+## Finance Operating Server (`/dapp/finops.html`)
+
+- Backend: `server/integrations/finops/financeOperatingServerEngine.js` (ensure tables, execute command, health, cash position, processors, sessions, command logging).
+- Routes under `/api/finops/finance-operating/*` in `server/routes/finops.js` (all `operatorAuth`):
+  - `POST /execute` — natural-language command dispatch
+  - `POST /sessions`, `GET /sessions`, `GET /sessions/:id`
+  - `GET /commands`
+  - `GET /health`
+  - `GET /cash-position`
+  - `GET /processors`
+- Tables: `finance_operating_sessions` and `finance_operating_commands` are ensured by `server/server-3002.js` on startup (log line `[finance-operating] tables ensured`).
+- Login: use `dlb-admin-2026-trust` stored in `localStorage` as `dlb-admin-token` (set via `javascript:localStorage.setItem('dlb-admin-token','dlb-admin-2026-trust');location.reload()`). The page also supports email/PIN trustee login.
+- UI: module card key `finance-operating` calls `openFinanceOperatingPanel()`. The panel shows system health, a `Run Operating Command` input (`#fose-command`) with `foseExecute()`, a cash-position JSON block, a processor grid, and a `Recent Commands` table.
+- The FinOps Agent chat on the right sidebar (`#chat-input` / `sendChat()`) also posts to `/api/finops/finance-operating/execute`.
+- Example commands:
+  - `health` → panel status `System health: OK/degraded`
+  - `cash position` → cash-position JSON block refreshes
+  - `list processors` → processor grid with 8 processors (stripe_treasury, clearing, deposit_settlement, payout_center, lili, skrill, web_payment_rail, payment_hub)
+  - `pay $0.25 manual` → dispatches to `PaymentProcessorServerEngine` / `ClearingApiEngine`, returns `status: manual` and a `CLR-` clearing row with `manual_pending`
+- **Known gotcha (PR #321):** `public/dapp/finops.html` line `onkeydown="if(event.key==='Enter') foseExecute()"` is inside a single-quoted JS string and terminates it, causing the entire page script to fail (blank module grid). Patch: change the inner single quotes to HTML entities (`&quot;`) so the attribute becomes `onkeydown="if(event.key===&quot;Enter&quot;) foseExecute()"`.
+- Commands are persisted and retrievable via `GET /api/finops/finance-operating/commands`; `POST /sessions` creates a `FOS-` session ID.
+
+## Deposit & Settlement / Clearing (`/trust-portal/dashboard.html`)
+
+- New backend engines: `server/integrations/payments/depositAndSettlementEngine.js` and `clearingApiEngine.js`.
+- New routes (all require `operatorAuth`, i.e. admin token or a portal user with `operator`/`trustee` level):
+  - `GET /api/dapp/ptc/deposit-settlement/orders`
+  - `GET /api/dapp/ptc/deposit-settlement/orders/:id`
+  - `POST /api/dapp/ptc/deposit-settlement/deposit`
+  - `POST /api/dapp/ptc/deposit-settlement/settle`
+  - `POST /api/dapp/ptc/deposit-settlement/reconcile`
+  - `GET /api/dapp/ptc/clearing/list`
+  - `GET /api/dapp/ptc/clearing/status/:id`
+- Tables `deposit_settlement_orders` and `clearing_settlements` are created by `server/server-3002.js` on startup.
+- UI IDs: `#tab-deposit-settlement`, `recordDsDeposit()`, `initiateDsSettlement()`, `reconcileDsOrder()`, `loadDsOrders()`.
+- **Record Deposit**: `POST /api/dapp/ptc/deposit-settlement/deposit` with `{ amount, rail, cashAccountId, trustAccountCode, externalReference }` creates a `deposit_settlement_orders` row with `direction: 'deposit'`, `status: 'posted'`, plus a cash movement and trust journal entry. The default `cashAccountId` in the UI is `CA-STRIPE-TREASURY` and default `trustAccountCode` is `PTC-DEPOSIT-CLEARING`.
+- **Initiate Settlement**: `POST /api/dapp/ptc/deposit-settlement/settle` with `{ amount, rail, sourceCashAccountId, destination, requireCip }`.
+  - For `rail: 'stripe_ach'` (or any `stripe_*` rail) and `requireCip: true`, the engine calls `CustomerIdentificationEngine.validatePayoutRecipient({ fullName, email, requireClear: true })` first. If no `clear` CIP record exists for the email or name, it returns `CIP required for settlement: No CIP record found for recipient` without writing ledger entries or `ptc_payouts` rows.
+  - After a cleared CIP exists, the next failure is typically `Stripe secret key not configured` in local/sandbox environments.
+  - With `rail: 'manual'`, CIP is skipped, the source cash account balance is checked, a trust journal entry is posted (debit `PTC-SETTLEMENT-CLEARING`, credit `1100`), and `ClearingApiEngine.submit` creates a `clearing_settlements` row with `status: 'manual_pending'`.
+- **Reconcile**: `POST /api/dapp/ptc/deposit-settlement/reconcile` with `{ orderId, status }` updates the order status and, for `failed`/`returned`, posts a reversal journal. Allowed status values: `completed`, `failed`, `returned`, `posted`.
+- **List endpoints**: `GET /api/dapp/ptc/deposit-settlement/orders?limit=50` and `GET /api/dapp/ptc/clearing/list` return the persisted rows.
+- Environment: set `STRIPE_TREASURY_CIP_REQUIRED=true` to enforce CIP on Stripe rails. `CA-OPERATING` is the default settlement source cash account; record a deposit to the same cash account (or any other funded account) before testing settlement success.
+- UI gotchas in scaled viewports: native mouse clicks on the `Deposit & Settlement` tab and the form buttons may not register. Work around by navigating to `javascript:showTab('deposit-settlement')` and calling `recordDsDeposit()` / `initiateDsSettlement()` / `reconcileDsOrder()` from the address bar after filling fields via `javascript:` URLs, e.g.:
+  ```js
+  javascript:(function(){
+    el('ds-deposit-amount').value='1.23';
+    el('ds-deposit-rail').value='stripe_treasury';
+    el('ds-deposit-credit').value='PTC-DEPOSIT-CLEARING';
+    el('ds-deposit-cash').value='CA-STRIPE-TREASURY';
+    el('ds-deposit-ref').value='E2E-DEP-001';
+    recordDsDeposit();
+  })()
+  ```
+- Known UX note: when `initiateDsSettlement()` returns `status: 'manual'` with a manual clearing, the panel message reads `Manual prefund required: undefined` because the UI reads `res.data.instruction` but the engine returns the instruction inside `res.data.clearingResult.result.instruction`. The settlement and clearing rows are still created correctly.
+
 ## Trust-Portal Compliance / CIP (`/trust-portal/dashboard.html`)
 
 - Backend: `server/integrations/compliance/customerIdentificationEngine.js`; routes in `server/routes/dapp.js`:
