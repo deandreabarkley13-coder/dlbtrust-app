@@ -172,7 +172,8 @@ class PtcPortalEngine {
       try {
         const existingCash = (await query('SELECT * FROM cash_accounts WHERE account_id = $1', [cashAccountId])).rows[0];
         if (!existingCash) {
-          await CashEngine.createAccount({ accountId: cashAccountId, accountName: `PTC Member — ${m.name}`, accountType: 'checking', notes: `Cash sub-account for PTC member ${memberId}` });
+          const cashType = (m.type === 'beneficiary' || String(m.type).includes('beneficiary')) ? 'distribution' : 'operating';
+          await CashEngine.createAccount({ accountId: cashAccountId, accountName: `PTC Member — ${m.name}`, accountType: cashType, notes: `Cash sub-account for PTC member ${memberId}` });
         }
       } catch (e) { console.warn('[PtcPortalEngine] cash account create failed:', e.message); }
     }
@@ -285,6 +286,10 @@ class PtcPortalEngine {
     const req = (await query('SELECT r.*, m.name as member_name, m.email as member_email, m.support_account_id FROM ptc_requests r JOIN ptc_members m ON r.member_id = m.member_id WHERE r.request_id = $1', [requestId])).rows[0];
     if (!req) throw new Error('Request not found');
     if (req.status !== 'approved') throw new Error(`Request must be approved before execution (status: ${req.status})`);
+    if (req.payout_id) {
+      const existing = (await query('SELECT * FROM ptc_payouts WHERE payout_id = $1', [req.payout_id])).rows[0];
+      if (existing) return { requestId, payoutId: req.payout_id, status: existing.status, reference: existing.engine_id, alreadyExecuted: true };
+    }
 
     const amount = Number(req.amount_cents) / 100;
     const memberId = req.member_id;
@@ -327,7 +332,8 @@ class PtcPortalEngine {
         description: `PTC payout ${requestId}`,
         railOptions: { ...options, ptc_request_id: requestId, initiatedBy: initiatedBy || req.member_name },
       });
-      result = { status: pc.status || 'pending', reference: pc.id, engineId: pc.id };
+      const stripeError = pc.result && pc.result.response && pc.result.response.error && pc.result.response.error.message;
+      result = { status: pc.status || 'pending', reference: pc.id, engineId: pc.id, error: stripeError || (pc.result && pc.result.error) };
     } else if (railNorm === 'wire' || railNorm === 'ach' || railNorm === 'vendor') {
       if (!WireOriginationEngine) throw new Error('WireOriginationEngine not available');
       const opts = { ...options };
@@ -397,14 +403,23 @@ class PtcPortalEngine {
       result = { status: pc.status || 'pending', reference: pc.id, engineId: pc.id };
     }
 
+    const requestStatus = result.status === 'completed' ? 'completed' : (result.status === 'sent' ? 'completed' : (result.status === 'failed' ? 'failed' : 'approved'));
+
     await query(`
       INSERT INTO ptc_payouts (payout_id, request_id, member_id, amount_cents, rail, engine, engine_id, status, metadata)
       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9::jsonb)
     `, [payoutId, requestId, memberId, req.amount_cents, rail, railNorm, result.engineId || payoutId, result.status, safeJson(result)]);
 
-    await query('UPDATE ptc_requests SET status = $1, payout_id = $2, updated_at = NOW() WHERE request_id = $3', [result.status === 'completed' ? 'completed' : (result.status === 'sent' ? 'completed' : 'approved'), payoutId, requestId]);
+    await query('UPDATE ptc_requests SET status = $1, payout_id = $2, updated_at = NOW() WHERE request_id = $3', [requestStatus, payoutId, requestId]);
 
-    return { requestId, payoutId, status: result.status, reference: result.reference, distribution: dist, redemption };
+    if (result.status === 'failed') {
+      const err = new Error(result.error || `Payout failed on ${rail}`);
+      err.code = 'PAYOUT_FAILED';
+      err.payoutId = payoutId;
+      throw err;
+    }
+
+    return { requestId, payoutId, status: result.status, reference: result.reference, distribution: dist, redemption, result };
   }
 }
 

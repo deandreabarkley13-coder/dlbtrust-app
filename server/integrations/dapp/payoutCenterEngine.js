@@ -46,6 +46,14 @@ try { ({ StripeTreasuryEngine } = require('../payments/stripeTreasuryEngine')); 
 function id(prefix = 'PAY') { return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 8).toUpperCase()}`; }
 function isAddress(v) { return viem && viem.isAddress && viem.isAddress(v); }
 function safeJson(obj) { return JSON.stringify(obj, (k, v) => typeof v === 'bigint' ? String(v) : v); }
+function maskRailOptions(opts) {
+  if (!opts || typeof opts !== 'object') return opts;
+  const clone = { ...opts };
+  ['account', 'accountNumber', 'bankAccount', 'cardNumber', 'destinationAccount'].forEach(k => {
+    if (clone[k]) clone[k] = `****${String(clone[k]).slice(-4)}`;
+  });
+  return clone;
+}
 
 async function query(sql, params) {
   if (!pool || !pool.query) throw new Error('Postgres pool unavailable');
@@ -288,7 +296,7 @@ class PayoutCenterEngine {
       case 'stripe_ach':
       case 'stripe_wire': {
         if (!StripeTreasuryEngine || !StripeTreasuryEngine.isConfigured()) throw new Error('StripeTreasuryEngine not configured');
-        const network = rail === 'stripe_wire' ? 'us_domestic_wire' : 'ach';
+        const network = chosenRail === 'stripe_wire' ? 'us_domestic_wire' : 'ach';
         result = await StripeTreasuryEngine.createPayment({
           amount,
           financialAccountId: railOptions.financialAccountId || process.env.STRIPE_TREASURY_FINANCIAL_ACCOUNT_ID,
@@ -312,6 +320,11 @@ class PayoutCenterEngine {
     }
 
     base.tx_data = result || {};
+    if (chosenRail.startsWith('stripe_')) {
+      const acct = railOptions.accountNumber || railOptions.account || recipientIdentifier || '';
+      base.recipient_address = `****${String(acct).slice(-4)}`;
+      base.metadata = { ...base.metadata, railOptions: maskRailOptions(railOptions) };
+    }
     base.updated_at = new Date().toISOString();
     await withFallback(async () => {
       await query(`UPDATE dapp_payout_center SET status = $1, tx_hash = $2, tx_data = $3, updated_at = NOW() WHERE id = $4`,

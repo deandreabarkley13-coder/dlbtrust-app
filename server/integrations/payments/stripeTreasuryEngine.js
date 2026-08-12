@@ -94,24 +94,19 @@ class StripeTreasuryEngine {
 
     const accountType = opts.accountType === 'savings' ? 'savings' : 'checking';
     const accountHolderType = opts.accountHolderType === 'company' ? 'company' : 'individual';
-    const network = opts.network || 'ach';
+    const network = opts.network === 'us_domestic_wire' ? 'us_domestic_wire' : 'ach';
     const description = opts.description || `PTC payout ${id('PAYOUT')}`;
     const statementDescriptor = (opts.statementDescriptor || 'PTC PAYOUT').substring(0, 22);
 
-    const usBankAccount = {
-      account_holder_type: accountHolderType,
-      account_holder_name: opts.accountHolderName || opts.accountHolder || opts.beneficiaryName,
-      account_type: accountType,
-      routing_number: String(opts.routingNumber).trim(),
-      account_number: String(opts.accountNumber).trim(),
-    };
-    if (network === 'us_domestic_wire') {
-      usBankAccount.networks = ['us_domestic_wire'];
-    }
-
     const destinationPaymentMethodData = {
       type: 'us_bank_account',
-      us_bank_account: usBankAccount,
+      us_bank_account: {
+        account_holder_type: accountHolderType,
+        account_holder_name: opts.accountHolderName || opts.accountHolder || opts.beneficiaryName,
+        account_type: accountType,
+        routing_number: String(opts.routingNumber).trim(),
+        account_number: String(opts.accountNumber).trim(),
+      },
       billing_details: {
         name: opts.accountHolderName || opts.accountHolder || opts.beneficiaryName || 'Beneficiary',
       },
@@ -128,6 +123,9 @@ class StripeTreasuryEngine {
       description,
       statement_descriptor: statementDescriptor,
       destination_payment_method_data: destinationPaymentMethodData,
+      destination_payment_method_options: {
+        us_bank_account: { network },
+      },
       metadata: opts.metadata || { ptc: true },
     };
 
@@ -186,6 +184,21 @@ class StripeTreasuryEngine {
     if (!pool || !pool.query) return [];
     const rows = await query('SELECT * FROM stripe_treasury_payouts ORDER BY created_at DESC LIMIT $1', [limit]);
     return rows.rows;
+  }
+
+  static async fundWithTestReceivedCredit({ amount, financialAccountId, network = 'ach' } = {}) {
+    const client = this.getClient();
+    const faId = financialAccountId || getFinancialAccountId();
+    const amountCents = toCents(amount);
+    if (!faId) throw new Error('financialAccountId required');
+    if (!amountCents || amountCents <= 0) throw new Error('amount must be positive');
+    const receivedCredit = await client.testHelpers.treasury.receivedCredits.create({
+      financial_account: faId,
+      amount: amountCents,
+      currency: 'usd',
+      network,
+    });
+    return { receivedCreditId: receivedCredit.id, amount: amountCents, status: receivedCredit.status, financial_account: faId };
   }
 
   static async getStatus(payoutId) {
