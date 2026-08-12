@@ -95,6 +95,8 @@ class DistributionRequestEngine {
       `);
       await query(`CREATE INDEX IF NOT EXISTS idx_dapp_dist_requests_status ON dapp_distribution_requests(status)`);
       await query(`CREATE INDEX IF NOT EXISTS idx_dapp_dist_requests_beneficiary ON dapp_distribution_requests(beneficiary_email)`);
+      await query(`ALTER TABLE dapp_distribution_requests DROP CONSTRAINT IF EXISTS dapp_distribution_requests_status_check`);
+      await query(`ALTER TABLE dapp_distribution_requests ADD CONSTRAINT dapp_distribution_requests_status_check CHECK (status IN ('requested','under_review','approved','rejected','payout_created','executed','failed'))`);
     }, () => {});
   }
 
@@ -324,7 +326,7 @@ class DistributionRequestEngine {
     }
 
     const updated = await this._update(requestId, updates);
-    const result = this._rowToObject(updated);
+    let result = this._rowToObject(updated);
 
     try {
       if (MessagingEngine) {
@@ -375,10 +377,12 @@ class DistributionRequestEngine {
       if (process.env.AUTO_EXECUTE_APPROVED_REQUESTS !== 'false') {
         try {
           const executed = await this.executeRequest(requestId);
+          result = this._rowToObject(await this.getRequest(requestId));
           result.payment = executed.payment;
           result.executed = true;
         } catch (execErr) {
           console.warn('[DistributionRequestEngine] auto-execute failed:', execErr.message);
+          result = this._rowToObject(await this.getRequest(requestId));
           result.execute_error = execErr.message;
         }
       }
@@ -431,7 +435,7 @@ class DistributionRequestEngine {
       });
     } catch (payErr) {
       console.warn('[DistributionRequestEngine] payment execution failed:', payErr.message);
-      executeStatus = 'execution_failed';
+      executeStatus = 'failed';
       executeError = payErr.message;
       payment = { error: payErr.message, requestedAt: new Date().toISOString() };
     }

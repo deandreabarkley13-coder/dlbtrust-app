@@ -480,6 +480,161 @@ SELECT fit_id, type, amount_cents, name, memo FROM ofx_transactions;
 - Funding sources: `manual`, `counterparty`, `moonpay`, `circle_mint`, `coinbase_treasury`.
 - The engine cannot mint canonical stablecoins; it returns `awaiting_deposit`/`awaiting_onramp` until real paired capital is available.
 
+## External Endpoint Engine (`/dapp/finops.html`)
+
+- Module card: **External Endpoint Engine** (`key:'external-endpoint'`, `action:'openExternalEndpointPanel'`).
+- Backend: `server/integrations/dapp/externalEndpointEngine.js`; routes in `server/routes/finops.js`:
+  - `GET /api/finops/external-endpoints` — list endpoints.
+  - `POST /api/finops/external-endpoints` — create an endpoint.
+  - `GET /api/finops/external-endpoints/:id` — get one endpoint.
+  - `POST /api/finops/external-endpoints/:id/test` — test the connection.
+  - `POST /api/finops/external-endpoints/:id/payments` — create and send a payment through the endpoint.
+  - `GET /api/finops/external-payments` — list recent payments.
+  - `GET /api/finops/external-payments/:id` — get a single payment (includes `raw_request` and `raw_response`).
+  - `POST /api/finops/external-payments/:id/send` — resend a pending payment.
+- UI panel sections:
+  - **Add External Endpoint** — name, protocol (`rest_json`/`rest_xml`/`soap`/`iso20022_xml`/`grpc`/`mft_sftp`/`as2`/`manual`), auth type, base URL, API key/secret, response-success JSON path, extra headers, payload template.
+  - **Endpoints** table with **Test** and **Delete** buttons.
+  - **Send Payment via Endpoint** — select endpoint, optional source cash account, amount, creditor (name / account / routing / bank), optional debtor, description.
+  - **Recent External Payments** table showing `payment_id`, `endpoint_id`, amount, status, and error.
+- Test endpoints against public test URLs:
+  - `https://httpbin.org/anything` accepts GET and POST — connection test returns `connected: true` and payments usually end in `manual_pending` because the echo response does not contain a payment `id`/`payment_id`/`transaction_id`.
+  - `https://httpbin.org/post` only accepts POST — the built-in **Test** button sends a GET, so it returns `connected: false` with a 405 error. Use `/anything` for a reliable positive connection test.
+- Payment flow verification:
+  - A `$0.01` REST/JSON payment to `/anything` should create a payment with `status: manual_pending` and `raw_response` containing the full httpbin echo (including `url`, `data`, `json`, `headers`, and `method: POST`).
+  - `raw_request` is a JSON string with `reference_id`, `amount`, `currency`, `payment_type`, `description`, `debtor`, and `creditor` objects.
+- Trust Bank integration:
+  - Trust Bank API panel can originate payments with `rail: external` and select an external endpoint from the dropdown.
+  - The balance of the trust bank account is debited; a linked external payment record is created with `payment_type: trust_bank_external`.
+- `manual` protocol is intended for offline/CSV/SWIFT/fax rails and stores `raw_request` without making an HTTP call.
+- **Known issue:** `loadAll()` in `public/dapp/finops.html` references an undefined `results` variable at `const webPayments = results[20];`, so `loadAll()` logs a console error and module card stats remain `—`. This does not block the panel functions but should be fixed.
+
+## Rally Protocol (`/dashboard` Rally Wallet tab)
+
+- Tab: **Rally Wallet** in `public/dapp/trust-dashboard.html`.
+- Backend: `server/integrations/dapp/rallyProtocolEngine.js`; routes in `server/routes/rallyProtocol.js`:
+  - `GET /api/rally/readiness` (auth-protected by `operatorAuth`).
+  - `GET /api/rally/wallets`, `POST /api/rally/wallets`.
+  - `GET /api/rally/wallets/:id/balance`, `POST /api/rally/wallets/:id/fund`.
+  - `POST /api/rally/wallets/:id/pay-requests`.
+  - `POST /api/rally/payouts`, `GET /api/rally/payouts`.
+  - `POST /api/rally/scan-qr`, `POST /api/rally/tap-pay`.
+  - `GET /api/rally/requests`.
+- Authentication: dashboard uses `localStorage` key `dlb-admin-token` (`dlb-admin-2026-trust` on Fly), which is sent as `x-admin-token`.
+- Typical end-to-end flow:
+  1. Create wallet: fills `rally-label`, `rally-email`, `rally-type`; call `createRallyWallet()`.
+  2. Fund wallet: select wallet in `rally-fund-wallet`, amount in `rally-fund-amount`; call `fundRallyWallet()`.
+  3. Request payment (QR): select wallet in `rally-req-wallet`, amount/memo; call `createRallyRequest()`. The panel shows a base64 PNG (`qrDataUrl`) and a deep link (`shareableUrl`).
+  4. Tap-pay: paste the deep link in `rally-qr-data` and call `scanRallyQr()`; select a different funded payer wallet in `rally-pay-wallet`; call `rallyTapPay()`.
+  5. Duplicate tap-pay: calling `rallyTapPay()` again with the same `requestId` returns `payment request already processed` and no second payout is created.
+  6. Direct payout: fill `rally-pay-wallet`, `rally-pay-to`, `rally-pay-amount`, `rally-pay-memo`; call `createRallyPayout()`.
+- Wallet address derivation uses `AccountAbstractionEngine.getSmartAccountAddress(owner, BigInt(index))`. The new wallet index is allocated atomically from a Postgres sequence (`rally_wallet_index_seq`) or `max(file state) + 1` fallback, and the record is inserted to the DB before JSON state.
+- The engine runs in `aa-fallback` mode (`RALLY_API_KEY` not set), using the existing `AccountAbstractionEngine` / `SovereignTrustPaymaster` for gasless transfers.
+- Token: DLB-PTCUSD (`0xb01e6280ffe6faac679a17b029df8e065e8d0002`). Paymaster: `0x6f0c2c593bb3942cf11eacbef46c78fd51b99948`. Operator: `0x3e53028cf69949f3B961ce786Baf2D4D75166562`.
+- UI escape: `escapeHtml()` is applied to wallet labels, addresses, IDs, payout fields, shareable URLs, and QR scan output, so creating a wallet with label `<script>alert(1)</script> Test` renders literally and does not execute.
+- **Auto-deploy fix:** `RallyProtocolEngine.fundWallet` and `createPayout` now call `_ensureSmartAccountDeployed(wallet, cfg)` to deploy the smart account via `SimpleAccountFactory.createAccount` from the operator EOA, so the first outgoing direct payout/tap-pay no longer carries `initCode`. The userOp shown in error responses will have `initCode: "0x"` after this fix.
+- **Paymaster deposit is still required:** the paymaster's EntryPoint deposit is what caps `maxFeePerGas` in `AccountAbstractionEngine._feeValues`. If deposit is low, the bundler rejects the userOp with `maxFeePerGas or maxPriorityFeePerGas is too low` even though the account is deployed. Check `/api/finops/account-abstraction/balance` first; if `entryPointDeposit` is < ~0.0001 ETH, fund the paymaster with `POST /api/finops/account-abstraction/fund-paymaster` (e.g. `amountEth: "0.0001"`) from operator ETH before testing a first outgoing payout from a new wallet.
+- **Gotcha:** a brand-new wallet must be deployed on-chain before it can send a direct payout. The auto-deploy in `fundWallet`/`createPayout` deploys the smart-account from the operator EOA, but the first *outgoing* transfer will still fail if the paymaster deposit cannot cover the gas. Prefer checking the paymaster balance and topping up when needed.
+
+## Decentralized Ramps (`/dapp/finops.html`)
+
+- Routes:
+  - `GET /api/finops/decentralized-ramps/providers`
+  - `POST /api/finops/decentralized-ramps/quote`
+  - `POST /api/finops/decentralized-ramps/requests`
+  - `GET /api/finops/decentralized-ramps/requests/:id`
+  - `GET /api/finops/decentralized-ramps/requests`
+  - `POST /api/finops/decentralized-ramps/requests/:id/approve`
+  - `POST /api/finops/decentralized-ramps/requests/:id/execute`
+- UI IDs: `dramp-direction`, `dramp-source`, `dramp-target`, `dramp-amount`, `dramp-source-type`, `dramp-source-account`, `dramp-target-address`; buttons call `drampQuote()` and `drampPropose()`; results render in `dramp-quote`, `dramp-providers`, `dramp-requests`.
+- Test quote: direction `exchange`, source `DLB-PTCUSD`, target `DAI`, amount `0.001`.
+- Expected route providers: `cross_chain` (`ModuleTokenSwap / OTC order book`), `trust_market` (`DLB Trust P2P Market`), `p2p_canonical_swap` (`DLB Canonical P2P Swap`). `stablecoin_dex` appears if source is `DLBUSD`.
+- Canonical Consensus approval: one approval from `maker` (`annrobinson9800@yahoo.com`) or `checker` (`dbnettrust@gmail.com`); `required_approvals` defaults to 1.
+- **Known issue:** the UI `drampPropose()` only sends `routeProvider` (display string) and not the full `route` object. `DecentralizedRampEngine.propose()` skips re-quoting when `routeProvider` is provided, so `payload.route` is `null` and `_execute` cannot dispatch `cross_chain`/`p2p_order` routes. Work-around: use the API directly and include the `route` object, or select the `trust_market` provider, whose execution path depends only on the `routeProvider` string. A proper fix is needed in the UI or engine before the recommended cross-chain route works end-to-end from the panel.
+- `trust_market` execution calls `TrustMarketEngine.createOffer()`, which returns an existing active P2P order (e.g. `orderId: "10"`) without locking new tokens or spending gas when a matching order already exists.
+- Dashboard stat badge `decentralized-ramps` is the count of requests with `status === 'pending'`.
+
+## Reserve Vault (CDP) (`/dapp/finops.html`)
+
+- Routes:
+  - `GET /api/finops/reserve-vault/readiness`
+  - `GET /api/finops/reserve-vault/info`
+  - `GET /api/finops/reserve-vault/positions`
+  - `GET /api/finops/reserve-vault/positions/:id`
+  - `POST /api/finops/reserve-vault/mint`
+  - `POST /api/finops/reserve-vault/quote`
+  - `POST /api/finops/reserve-vault/swap`
+- UI IDs: `rv-source-type`, `rv-source-account`, `rv-amount`, `rv-target`, `rv-position-id`, `rv-target-asset`; buttons call `rvMint()`, `rvQuote()`, `rvSwap()`; positions list `rv-positions`.
+- Minting requires `StablecoinDexEngine` to be available; it creates a `reserve_vault_positions` row and a mainnet `mintTxHash`.
+- Test mint: `sourceType: 'trust_account'`, `sourceAccountId: '4000'`, `amount: 1` (or any small positive value).
+- Quote: `POST /api/finops/reserve-vault/quote` with `{ positionId, targetAsset: 'DAI' }` returns routes from `DecentralizedRampEngine.quote`.
+- For `DLBUSD -> DAI`, expect `stablecoin_dex` (tiny/near-zero output if no DAI liquidity), `trust_market`/`p2p_canonical_swap` ready at 1:1, `ptc_bondex` if source is `DLB-PTCUSD`, and `BondDex + Uniswap V2` likely `no_liquidity`.
+- Operator wallet `0x3e53028c...` needs mainnet ETH for gas; gas costs are tiny when base fee is low.
+
+## Push-to-Card Engine (`/dapp/finops.html`)
+
+- Module card: **Push-to-Card Engine** (`key:'push-to-card'`, `action:'openPushToCardPanel'`).
+- Backend: `server/integrations/payments/pushToCardEngine.js`; routes in `server/routes/finops.js`:
+  - `GET /api/finops/push-to-card/info`
+  - `GET /api/finops/push-to-card/providers`
+  - `GET /api/finops/push-to-card/payments`
+  - `POST /api/finops/push-to-card/payments`
+  - `POST /api/finops/push-to-card/payments/:id/execute`
+  - `POST /api/finops/push-to-card/payments/:id/cancel`
+  - `GET /api/finops/push-to-card/payments/:id`
+- UI IDs: `ptc-provider`, `ptc-source`, `ptc-name`, `ptc-last4`, `ptc-network`, `ptc-recipient`, `ptc-amount`, `ptc-currency`, `ptc-config`, `ptc-memo`; buttons call `createPushToCard()` and `executePushToCard(paymentId)`; status area `ptc-status`; payments table `ptc-list`.
+- Providers exposed: `visa_direct`, `mastercard_send`, `formance`, `apache_http`, `manual`, `card_vault`.
+- Sources: `cash:CA-OPERATING` and `ledger:4000` (hardcoded in the UI select).
+- Provider config JSON (`ptc-config`) can override `connectorId`, `formanceSourceAccountId`, `destinationAccountId`, `pushUrl`. Note: `formance` looks for `formanceSourceAccountId` (not `sourceAccountId`) when reading from the stored config.
+- **Apache HTTP (self-hosted)**: requires `APACHE_HTTP_PUSH_URL` and optional `APACHE_HTTP_API_KEY`. The UI calls `POST /api/finops/push-to-card/payments/:id/execute`; the backend POSTs to `push.php` with `x-api-key`. The endpoint returns `{ status: 'submitted', txId: 'TX-...' }` and the payment row becomes `submitted`.
+- **Formance (self-hosted)**: requires `FORMANCE_API_URL`, `FORMANCE_API_TOKEN`, `FORMANCE_CONNECTOR_ID/SOURCE_ACCOUNT_ID/DESTINATION_ACCOUNT_ID` (or config overrides). If not configured, execution falls back to `manual_pending` and `raw_response` contains the `PAYOUT` payload plus a manual-instruction note.
+- Live Visa Direct requires `VISA_DIRECT_API_KEY`, `VISA_DIRECT_SHARED_SECRET`, `VISA_DIRECT_URL`, and `VISA_DIRECT_LIVE=true`. Without them, `visa_direct` falls back to `manual_pending` with manual instructions.
+- Test flow:
+  1. Select `apache_http` provider and `cash:CA-OPERATING` (or `ledger:4000`).
+  2. Fill cardholder name, last 4, amount, currency, optional memo. Leave `ptc-config` empty to use Fly secrets.
+  3. Click **Create Push-to-Card** — a `pending` `push_to_card_payments` row is created.
+  4. Click **Execute** on the row — funds are reserved (cash transferred to `PTC-HOLD` or a ledger JE posted to `PTC-HOLD`) and status becomes `submitted` with a `tx_id` from the Apache endpoint.
+  5. `GET /api/finops/push-to-card/payments/:id` should show `status: 'submitted'`, non-null `tx_id`, and `raw_response` containing the Apache `pushUrl` and the endpoint's JSON response.
+- `metadata.reserve` is populated with `holdAccount: 'PTC-HOLD'` or `journalEntryId` for ledger sources.
+- The dashboard `loadAll()` now fetches `/api/finops/push-to-card/payments` and calls `setStat('push-to-card', activeCount)`; the module badge reflects the count of `pending`/`reserved`/`manual_pending`/`submitted` payments.
+
+## FINOS CDM Engine (`/dapp/finops.html`)
+
+- Module card: **FINOS CDM Engine** (`key:'finos-cdm'`, `action:'openFinosCdmPanel'`).
+- Backend: `server/integrations/finops/finosCdmEngine.js`; routes in `server/routes/finops.js`:
+  - `GET /api/finops/finos-cdm/events?referenceId=...`
+  - `GET /api/finops/finos-cdm/events/:id`
+  - `POST /api/finops/finos-cdm/events`
+  - `POST /api/finops/finos-cdm/events/:id/validate`
+  - `POST /api/finops/finos-cdm/push-to-card/:id/event`
+- UI IDs: `cdm-reference`, `cdm-ptc-id`; buttons call `loadCdmEvents()` and `recordCdmPushToCard()`; status area `cdm-status`; events table `cdm-list`.
+- `PushToCardEngine.executePayment()` auto-calls `FinosCdmEngine.recordPushToCard()` on successful execution, so a CDM `CashTransfer` event is created with `intent: 'PUSH_TO_CARD_PAYMENT'`, `reference_id` matching the `payment_id`, and `status` matching the payment status.
+- To test manually: open the panel, enter a PTC `payment_id` in `cdm-ptc-id`, and click **Record CDM Event**.
+- `GET /api/finops/finos-cdm/events?referenceId=PTC-...` should return the event with `event_type: 'CashTransfer'`, `counterparty_id` set to the cardholder name, `amount` in USD, and `payload` containing `meta`, `eventIdentifier`, `functionEvent.primitive.cashTransfer`, and `metadata` (cardholder, last4, network).
+
+## BankSync Integration (`/dapp/finops.html`)
+
+- Module card: **BankSync Integration** (`key:'banksync'`, `action:'openBankSyncPanel'`).
+- Backend: `server/integrations/finops/bankSyncEngine.js`; routes in `server/routes/finops.js`:
+  - `GET /api/finops/banksync/whoami`
+  - `GET /api/finops/banksync/banks`
+  - `GET /api/finops/banksync/banks/:id`
+  - `GET /api/finops/banksync/banks/:id/accounts`
+  - `GET /api/finops/banksync/accounts/:aid/balances`
+  - `GET /api/finops/banksync/accounts/:aid/transactions`
+  - `GET /api/finops/banksync/banks/:bid/accounts/:aid/balances`
+  - `GET /api/finops/banksync/banks/:bid/accounts/:aid/transactions`
+  - `POST /api/finops/banksync/banks/:bid/accounts/:aid/sync`
+  - `GET /api/finops/banksync/cached/banks`
+  - `GET /api/finops/banksync/cached/accounts`
+  - `GET /api/finops/banksync/cached/accounts/:id/transactions`
+- Required secret on Fly: `BANKSYNC_API_KEY`.
+- UI IDs: workspace display `bs-whoami`, banks list `bs-banks`, accounts `bs-accounts`, transactions `bs-txs`, status `bs-status`.
+- Panel buttons: `loadBankSyncBanks()` fetches banks; `loadBankSyncTransactions()` fetches txns for the account id in `bs-account-id`.
+- `GET /api/finops/banksync/whoami` returns `{ success:true, data:{ workspaceId, workspaceName, authMethod, scopes, planTier }}` (the BankSync `{success, data}` envelope is unwrapped in `bankSyncEngine.banksyncRequest` and the route returns `data: raw.data || raw`). The UI `loadBankSyncWhoami()` reads `res.data.workspaceName` and should display the workspace name.
+- With a write-only API key, `GET /api/finops/banksync/banks` returns `Missing required scope: banks:read`; the UI should surface this in `bs-banks` and remain usable.
+- Native clicks on module cards may be unreliable in scaled viewports; if so, call `openModule('banksync')` from the browser console.
+
 ## Devin Secrets Needed
 
 - `DATABASE_URL` or local Postgres credentials (`dlbtrust`/`dlbtrust`).

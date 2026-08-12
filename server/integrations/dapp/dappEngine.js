@@ -855,10 +855,12 @@ class DappEngine {
 
   static async ensurePortalUsers() {
     const seeded = [
-      { email: 'deandreabarkley13@gmail.com', name: 'DeAndrea Barkley', roles: ['trustee_admin', 'beneficiary'], activeRole: 'trustee_admin' },
-      { email: 'annrobinson9800@yahoo.com', name: 'Malissa Robinson', roles: ['trustee_maker', 'beneficiary'], activeRole: 'trustee_maker' },
-      { email: 'dbnettrust@gmail.com', name: 'Checker Trust', roles: ['trustee_checker', 'beneficiary'], activeRole: 'trustee_checker' },
-      { email: 'robinsonjeremy22a@gmail.com', name: 'Jeremy Robinson', roles: ['beneficiary'], activeRole: 'beneficiary' },
+      // Barkley Family Trust PTC: maker + checker trustees and 3 beneficiaries
+      { email: 'barkley420lavar@gmail.com', name: 'Malissa Robinson', roles: ['trustee_maker', 'beneficiary'], activeRole: 'trustee_maker' },
+      { email: 'dbarkley1130@gmail.com', name: 'DeAndrea Barkley', roles: ['trustee_checker', 'beneficiary'], activeRole: 'trustee_checker' },
+      { email: 'deandreabarkley13@gmail.com', name: 'DeAndrea L Barkley', roles: ['beneficiary'], activeRole: 'beneficiary' },
+      { email: 'annrobinson9800@yahoo.com', name: 'Malissa A Robinson', roles: ['beneficiary'], activeRole: 'beneficiary' },
+      { email: 'robinsonjeremy22a@gmail.com', name: 'Jeremy N Robinson', roles: ['beneficiary'], activeRole: 'beneficiary' },
     ];
     const results = [];
     for (const s of seeded) {

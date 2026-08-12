@@ -121,7 +121,16 @@ try { app.use('/api/agents', require(path.join(HD, 'server', 'routes', 'agents')
 // AI FinOps Agent — natural language commands with human-in-the-loop approvals
 try { app.use('/api/finops', require(path.join(HD, 'server', 'routes', 'finops'))); console.log('[finops] loaded'); } catch(e) { console.warn('[finops]', e.message); }
 
-// DeFi dApp — serve new dApp at /dapp and /dashboard; landing page at root; legacy treasury dashboard at /treasury
+// Private Trust Company command center API
+try { app.use('/api/trust-ops', require(path.join(HD, 'server', 'routes', 'trustOps'))); console.log('[trust-ops] loaded'); } catch(e) { console.warn('[trust-ops]', e.message); }
+
+// Transactional & Settlement Server Engine — unified payment gateway + digital/decentralized settlement
+try { app.use('/api/transactional-settlement', require(path.join(HD, 'server', 'routes', 'transactionalSettlement'))); console.log('[transactional-settlement] loaded'); } catch(e) { console.warn('[transactional-settlement]', e.message); }
+
+// Rally Protocol — embedded mobile wallet, tap, QR, and gasless payouts
+try { app.use('/api/rally', require(path.join(HD, 'server', 'routes', 'rallyProtocol'))); console.log('[rally] loaded'); } catch(e) { console.warn('[rally]', e.message); }
+
+// DeFi dApp — dApp login at /dapp, command center at /dashboard; landing page at root; legacy treasury dashboard at /treasury
 function serveDapp(req, res) {
   res.set('Cache-Control', 'no-cache, no-store, must-revalidate');
   res.set('Pragma', 'no-cache');
@@ -138,18 +147,39 @@ function serveFinops(req, res) {
   res.set('Cache-Control', 'no-cache, no-store, must-revalidate');
   res.set('Pragma', 'no-cache');
   res.set('Expires', '0');
-  res.sendFile(path.join(HD, 'public', 'dapp', 'finops.html'));
+  res.redirect('/dashboard');
+}
+function serveTrustDashboard(req, res) {
+  res.set('Cache-Control', 'no-cache, no-store, must-revalidate');
+  res.set('Pragma', 'no-cache');
+  res.set('Expires', '0');
+  res.sendFile(path.join(HD, 'public', 'dapp', 'trust-dashboard.html'));
+}
+function serveTrustPortal(req, res) {
+  res.set('Cache-Control', 'no-cache, no-store, must-revalidate');
+  res.set('Pragma', 'no-cache');
+  res.set('Expires', '0');
+  res.sendFile(path.join(HD, 'public', 'trust-portal', 'index.html'));
+}
+function serveTrustPortalDashboard(req, res) {
+  res.set('Cache-Control', 'no-cache, no-store, must-revalidate');
+  res.set('Pragma', 'no-cache');
+  res.set('Expires', '0');
+  res.sendFile(path.join(HD, 'public', 'trust-portal', 'dashboard.html'));
 }
 app.get('/', serveLanding);
 app.get('/dapp', serveDapp);
 app.get('/finops', serveFinops);
-app.get('/dashboard', serveDapp);
+app.get('/dashboard', serveTrustDashboard);
 app.get('/treasury', function(req, res) {
   res.set('Cache-Control', 'no-cache, no-store, must-revalidate');
   res.set('Pragma', 'no-cache');
   res.set('Expires', '0');
   res.sendFile(path.join(HD, 'public', 'dashboard.html'));
 });
+app.get('/trust-portal', serveTrustPortal);
+app.get('/trust-portal/dashboard.html', serveTrustPortalDashboard);
+app.get('/trust-portal/index.html', serveTrustPortal);
 // ─── Health / Data Integrity Endpoint ──────────────────────────────────────
 app.get('/api/health', async function(req, res) {
   try {
@@ -319,6 +349,90 @@ async function initializeDatabase() {
   } catch(e) { console.warn('[lili-bank] table init:', e.message); }
 
   try {
+    var LiliMcpEngine = require(path.join(HD, 'server', 'integrations', 'payments', 'liliMcpEngine')).LiliMcpEngine;
+    await LiliMcpEngine.ensureTables();
+    console.log('[lili-mcp] tables ensured');
+  } catch(e) { console.warn('[lili-mcp] table init:', e.message); }
+
+  try {
+    var IssuerEngine = require(path.join(HD, 'server', 'integrations', 'dapp', 'issuerEngine')).IssuerEngine;
+    await IssuerEngine.ensureTables();
+    console.log('[issuer] tables ensured');
+  } catch(e) { console.warn('[issuer] table init:', e.message); }
+
+  try {
+    var BankTransferEngine = require(path.join(HD, 'server', 'integrations', 'dapp', 'bankTransferEngine')).BankTransferEngine;
+    await BankTransferEngine.ensureTables();
+    console.log('[bank-transfer] tables ensured');
+  } catch(e) { console.warn('[bank-transfer] table init:', e.message); }
+
+  try {
+    var VendorPaymentEngine = require(path.join(HD, 'server', 'integrations', 'dapp', 'vendorPaymentEngine')).VendorPaymentEngine;
+    await VendorPaymentEngine.ensureTables();
+    console.log('[vendor-payments] tables ensured');
+  } catch(e) { console.warn('[vendor-payments] table init:', e.message); }
+
+  try {
+    var TrustBankEngine = require(path.join(HD, 'server', 'integrations', 'dapp', 'trustBankEngine')).TrustBankEngine;
+    await TrustBankEngine.ensureTables();
+    console.log('[trust-bank] tables ensured');
+  } catch(e) { console.warn('[trust-bank] table init:', e.message); }
+
+  try {
+    var WealthManagementEngine = require(path.join(HD, 'server', 'integrations', 'dapp', 'wealthManagementEngine')).WealthManagementEngine;
+    await WealthManagementEngine.ensureTables();
+    console.log('[wealth-management] tables ensured');
+  } catch(e) { console.warn('[wealth-management] table init:', e.message); }
+
+  try {
+    var TrustAggregatorEngine = require(path.join(HD, 'server', 'integrations', 'dapp', 'trustAggregatorEngine')).TrustAggregatorEngine;
+    await TrustAggregatorEngine.ensureTables();
+    console.log('[trust-aggregator] tables ensured');
+  } catch(e) { console.warn('[trust-aggregator] table init:', e.message); }
+
+  try {
+    var ExternalEndpointEngine = require(path.join(HD, 'server', 'integrations', 'dapp', 'externalEndpointEngine')).ExternalEndpointEngine;
+    await ExternalEndpointEngine.ensureTables();
+    console.log('[external-endpoint] tables ensured');
+  } catch(e) { console.warn('[external-endpoint] table init:', e.message); }
+
+  try {
+    var PaymentIdEngine = require(path.join(HD, 'server', 'integrations', 'dapp', 'paymentIdEngine')).PaymentIdEngine;
+    await PaymentIdEngine.ensureTables();
+    console.log('[payment-id] tables ensured');
+  } catch(e) { console.warn('[payment-id] table init:', e.message); }
+
+  try {
+    var LiveFinTechEndpointEngine = require(path.join(HD, 'server', 'integrations', 'dapp', 'liveFintechEndpointEngine')).LiveFinTechEndpointEngine;
+    await LiveFinTechEndpointEngine.ensureTables();
+    console.log('[live-fintech] tables ensured');
+  } catch(e) { console.warn('[live-fintech] table init:', e.message); }
+
+  try {
+    var CorporateTreasuryEngine = require(path.join(HD, 'server', 'integrations', 'finops', 'corporateTreasuryEngine')).CorporateTreasuryEngine;
+    await CorporateTreasuryEngine.ensureTables();
+    console.log('[corporate-treasury] tables ensured');
+  } catch(e) { console.warn('[corporate-treasury] table init:', e.message); }
+
+  try {
+    var HostToHostEngine = require(path.join(HD, 'server', 'integrations', 'dapp', 'hostToHostEngine')).HostToHostEngine;
+    await HostToHostEngine.ensureTables();
+    console.log('[host-to-host] tables ensured');
+  } catch(e) { console.warn('[host-to-host] table init:', e.message); }
+
+  try {
+    var LiveMoneyMovementEngine = require(path.join(HD, 'server', 'integrations', 'dapp', 'liveMoneyMovementEngine')).LiveMoneyMovementEngine;
+    await LiveMoneyMovementEngine.ensureTables();
+    console.log('[live-money] tables ensured');
+  } catch(e) { console.warn('[live-money] table init:', e.message); }
+
+  try {
+    var SettlementEngine = require(path.join(HD, 'server', 'integrations', 'dapp', 'settlementEngine')).SettlementEngine;
+    await SettlementEngine.ensureTables();
+    console.log('[settlement] tables ensured');
+  } catch(e) { console.warn('[settlement] table init:', e.message); }
+
+  try {
     var ComplianceEngine = require(path.join(HD, 'server', 'integrations', 'compliance', 'complianceEngine')).ComplianceEngine;
     await ComplianceEngine.ensureTables();
     console.log('[compliance] tables ensured');
@@ -357,6 +471,9 @@ async function initializeDatabase() {
     console.log('[dapp] tables ensured');
     await DappEngine.ensurePortalUsers();
     console.log('[dapp] portal users seeded');
+    var PtcPortalEngine = require(path.join(HD, 'server', 'integrations', 'dapp', 'ptcPortalEngine')).PtcPortalEngine;
+    await PtcPortalEngine.ensureMembers();
+    console.log('[ptc] members seeded');
     var WalletEngine = require(path.join(HD, 'server', 'integrations', 'dapp', 'walletEngine')).WalletEngine;
     await WalletEngine.ensureTables();
     await WalletEngine.ensureWalletsForAllUsers();

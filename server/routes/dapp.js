@@ -28,6 +28,7 @@ const { BitPayEngine } = require('../integrations/dapp/bitpayEngine');
 const { SpritzEngine } = require('../integrations/payments/spritzEngine');
 const { WalletFundingEngine } = require('../integrations/dapp/walletFundingEngine');
 const { MasterWalletEngine } = require('../integrations/dapp/masterWalletEngine');
+const { PtcPortalEngine } = require('../integrations/dapp/ptcPortalEngine');
 let BondEngine, LiveBondEngine;
 try { BondEngine = require('../integrations/bonds/bondEngine').BondEngine; } catch (e) { BondEngine = null; }
 try { LiveBondEngine = require('../integrations/bonds/liveEngine').LiveBondEngine; } catch (e) { LiveBondEngine = null; }
@@ -1407,6 +1408,59 @@ router.post('/beneficiary/bitpay/pay', portalAuth, writeRateLimiter(), async (re
     if (!wallet) throw new Error('No wallet found');
     const data = await BitPayEngine.payInvoice({ fromWalletId: wallet.id, invoiceUrl, asset: asset.toUpperCase() });
     res.status(201).json({ success: true, data });
+  } catch (err) { sendError(res, err); }
+});
+
+// ─── PTC Private Trust Portal ───────────────────────────────────────────────────
+router.get('/ptc/dashboard', portalAuth, async (req, res) => {
+  try {
+    const email = req.user && req.user.email;
+    const data = await PtcPortalEngine.getDashboard(email);
+    res.json({ success: true, data });
+  } catch (err) { sendError(res, err); }
+});
+
+router.get('/ptc/members', portalAuth, async (req, res) => {
+  try {
+    res.json({ success: true, data: await PtcPortalEngine.listMembers() });
+  } catch (err) { sendError(res, err); }
+});
+
+router.post('/ptc/seed', operatorAuth, async (req, res) => {
+  try {
+    const data = await PtcPortalEngine.ensureMembers();
+    res.json({ success: true, data });
+  } catch (err) { sendError(res, err); }
+});
+
+router.post('/ptc/request', portalAuth, writeRateLimiter(), async (req, res) => {
+  try {
+    const email = req.user && req.user.email;
+    if (!email) throw new Error('Not authenticated');
+    const { amount, purpose, railPreference, recipientDetails } = req.body || {};
+    const data = await PtcPortalEngine.requestDistribution({ email, amount, purpose, railPreference, recipientDetails });
+    res.status(201).json({ success: true, data });
+  } catch (err) { sendError(res, err); }
+});
+
+router.post('/ptc/requests/:id/approve', portalAuth, writeRateLimiter(), async (req, res) => {
+  try {
+    const email = req.user && req.user.email;
+    if (!email) throw new Error('Not authenticated');
+    const data = await PtcPortalEngine.approveRequest({ requestId: req.params.id, email });
+    res.json({ success: true, data });
+  } catch (err) { sendError(res, err); }
+});
+
+router.post('/ptc/requests/:id/execute', portalAuth, writeRateLimiter(), async (req, res) => {
+  try {
+    const email = req.user && req.user.email;
+    if (!email) throw new Error('Not authenticated');
+    const member = await PtcPortalEngine.getMemberByEmail(email);
+    if (!member || !String(member.type).includes('trustee')) throw new Error('Only trustees can execute payouts');
+    const { rail, recipientIdentifier, options } = req.body || {};
+    const data = await PtcPortalEngine.executeRequest({ requestId: req.params.id, rail, recipientIdentifier, options, initiatedBy: email });
+    res.json({ success: true, data });
   } catch (err) { sendError(res, err); }
 });
 

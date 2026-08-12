@@ -58,6 +58,10 @@ class VendorEngine {
         account_number      TEXT,
         account_type        TEXT DEFAULT 'checking'
                               CHECK (account_type IN ('checking','savings')),
+        -- Crypto / on-chain payout details
+        crypto_address      TEXT,
+        wallet_address      TEXT,
+        blockchain_address  TEXT,
         -- BILL integration
         bill_vendor_id      TEXT,
         -- Payment preferences
@@ -83,7 +87,7 @@ class VendorEngine {
         vendor_id           TEXT NOT NULL,
         -- Source account
         source_type         TEXT NOT NULL DEFAULT 'trust'
-                              CHECK (source_type IN ('trust','sub_ledger')),
+                              CHECK (source_type IN ('trust','sub_ledger','virtual_account')),
         source_account_code TEXT NOT NULL DEFAULT '1000',
         sub_ledger_id       TEXT,
         -- Payment details
@@ -123,6 +127,20 @@ class VendorEngine {
       CREATE INDEX IF NOT EXISTS idx_vp_vendor ON vendor_payments(vendor_id);
       CREATE INDEX IF NOT EXISTS idx_vp_status ON vendor_payments(status);
     `);
+
+    await pool.query(`
+      ALTER TABLE vendors
+        ADD COLUMN IF NOT EXISTS crypto_address TEXT,
+        ADD COLUMN IF NOT EXISTS wallet_address TEXT,
+        ADD COLUMN IF NOT EXISTS blockchain_address TEXT
+    `);
+
+    await pool.query(`
+      ALTER TABLE vendor_payments
+        DROP CONSTRAINT IF EXISTS vendor_payments_source_type_check,
+        ADD CONSTRAINT vendor_payments_source_type_check
+          CHECK (source_type IN ('trust','sub_ledger','virtual_account'))
+    `);
   }
 
   // ═══════════════════════════════════════════════════════════════════════════
@@ -139,15 +157,18 @@ class VendorEngine {
     const res = await pool.query(`
       INSERT INTO vendors (vendor_id, vendor_name, vendor_type, contact_name, contact_email,
         contact_phone, address, tax_id, bank_name, routing_number, account_number,
-        account_type, bill_vendor_id, payment_method, payment_terms, notes)
-      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)
+        account_type, crypto_address, wallet_address, blockchain_address, bill_vendor_id,
+        payment_method, payment_terms, notes)
+      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19)
       RETURNING *
     `, [
       vendorId, data.vendor_name, data.vendor_type || 'general',
       data.contact_name || null, data.contact_email || null, data.contact_phone || null,
       data.address || null, data.tax_id || null,
       data.bank_name || null, data.routing_number || null, data.account_number || null,
-      data.account_type || 'checking', data.bill_vendor_id || null,
+      data.account_type || 'checking',
+      data.crypto_address || null, data.wallet_address || null, data.blockchain_address || null,
+      data.bill_vendor_id || null,
       data.payment_method || 'ach', data.payment_terms || 'net_30',
       data.notes || null,
     ]);
@@ -178,6 +199,7 @@ class VendorEngine {
     let idx = 2;
     const allowed = ['vendor_name','vendor_type','contact_name','contact_email','contact_phone',
       'address','tax_id','bank_name','routing_number','account_number','account_type',
+      'crypto_address','wallet_address','blockchain_address',
       'bill_vendor_id','payment_method','payment_terms','status','notes'];
     for (const key of allowed) {
       if (data[key] !== undefined) { fields.push(`${key} = $${idx++}`); params.push(data[key]); }
