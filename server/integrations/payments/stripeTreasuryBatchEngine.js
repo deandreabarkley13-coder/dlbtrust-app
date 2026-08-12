@@ -60,11 +60,13 @@ class StripeTreasuryBatchEngine {
     if (!amountCents || amountCents <= 0) throw new Error('amount must be positive');
 
     await ensureAccount({ accountCode: '1100', accountName: 'Cash', accountType: 'asset', subType: 'cash' });
+    const creditType = creditAccountCode === '4000' ? 'income' : (creditAccountCode === '3000' ? 'equity' : 'liability');
+    const creditSubType = creditAccountCode === '4000' ? 'interest_income' : (creditAccountCode === '3000' ? 'trust_corpus' : 'payable');
     await ensureAccount({
       accountCode: creditAccountCode,
       accountName: creditAccountCode === '4000' ? 'Interest Income' : (creditAccountCode === '3000' ? 'Trust Corpus' : 'PTC Treasury Deposit Clearing'),
-      accountType: creditAccountCode === '4000' ? 'income' : (creditAccountCode === '3000' ? 'equity' : 'liability'),
-      subType: 'treasury',
+      accountType: creditType,
+      subType: creditSubType,
     });
 
     const je = await TrustAccountingEngine.postJournalEntry({
@@ -126,7 +128,7 @@ class StripeTreasuryBatchEngine {
     }
 
     await ensureAccount({ accountCode: sourceCashAccountCode, accountName: 'Cash', accountType: 'asset', subType: 'cash', linkedCashAccount: sourceCashAccountId });
-    await ensureAccount({ accountCode: 'PTC-PAYOUTS-CLEARED', accountName: 'PTC Payouts Cleared', accountType: 'liability', subType: 'payout' });
+    await ensureAccount({ accountCode: 'PTC-PAYOUTS-CLEARED', accountName: 'PTC Payouts Cleared', accountType: 'liability', subType: 'payable' });
 
     const results = [];
     for (let i = 0; i < normalized.length; i++) {
