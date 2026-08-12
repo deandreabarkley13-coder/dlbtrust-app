@@ -28,6 +28,7 @@ const { DepositAndSettlementEngine } = require('../integrations/payments/deposit
 const { ClearingApiEngine } = require('../integrations/payments/clearingApiEngine');
 const { PaymentProcessorServerEngine } = require('../integrations/payments/paymentProcessorServerEngine');
 const { PaymentGatewayServerEngine } = require('../integrations/payments/paymentGatewayServerEngine');
+const { OrchestrEngine } = require('../integrations/payments/orchestrEngine');
 const { WalletEngine } = require('../integrations/dapp/walletEngine');
 const { BitPayEngine } = require('../integrations/dapp/bitpayEngine');
 const { WalletFundingEngine } = require('../integrations/dapp/walletFundingEngine');
@@ -1680,6 +1681,21 @@ router.post('/payment-gateway/webhook', writeRateLimiter(), async (req, res) => 
     const data = await PaymentGatewayServerEngine.reconcileWebhook(req.body);
     res.json({ success: true, data });
   } catch (err) { sendError(res, err); }
+});
+
+// ─── Orchestr Payment Engine ──────────────────────────────────────────────────
+router.post('/payment-processor/orchestr/checkout', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try {
+    const data = await OrchestrEngine.createCheckoutSession({ ...req.body, initiatedBy: req.user && (req.user.email || req.user.username) });
+    res.status(201).json({ success: true, data });
+  } catch (err) { sendError(res, err); }
+});
+
+router.post('/payment-processor/orchestr/callback', writeRateLimiter(), async (req, res) => {
+  try {
+    const data = await OrchestrEngine.validateCallback(req.body);
+    res.status(200).send(data.valid ? 'OK' : 'ERROR');
+  } catch (err) { res.status(200).send('ERROR'); }
 });
 
 module.exports = router;
