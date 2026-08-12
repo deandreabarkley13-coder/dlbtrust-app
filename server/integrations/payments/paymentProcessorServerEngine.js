@@ -36,6 +36,7 @@ let SkrillLinkEngine;
 let WebPaymentRailEngine;
 let CashEngine;
 let PaymentHubEngine;
+let OrchestrEngine;
 
 function loadDeps() {
   try { ({ StripeTreasuryEngine } = require('./stripeTreasuryEngine')); } catch {}
@@ -47,6 +48,7 @@ function loadDeps() {
   try { ({ WebPaymentRailEngine } = require('./webPaymentRailEngine')); } catch {}
   try { ({ CashEngine } = require('../cash/cashEngine')); } catch {}
   try { ({ PaymentHubEngine } = require('../paymentHub/paymentHubEngine')); } catch {}
+  try { ({ OrchestrEngine } = require('./orchestrEngine')); } catch {}
 }
 
 const TABLE = 'payment_processor_transactions';
@@ -90,6 +92,7 @@ class PaymentProcessorServerEngine {
     if (r === 'web' || r === 'web_payment_rail' || r === 'https') return 'web_payment_rail';
     if (r === 'payout_center' || r === 'payout') return 'payout_center';
     if (r === 'payment_hub' || r === 'payment_intent') return 'payment_hub';
+    if (r === 'orchestr' || r === 'orchestra' || r.startsWith('orchestr_')) return 'orchestr';
     return 'payout_center';
   }
 
@@ -182,6 +185,9 @@ class PaymentProcessorServerEngine {
             break;
           case 'payment_hub':
             result = await this._processPaymentHub({ amount, currency, source, destination, reference, metadata, initiatedBy, extras, rail: chosenRail });
+            break;
+          case 'orchestr':
+            result = await this._processOrchestr({ amount, currency, source, destination, reference, metadata, initiatedBy, extras, rail: chosenRail });
             break;
           case 'payout_center':
           default:
@@ -345,6 +351,56 @@ class PaymentProcessorServerEngine {
     return { status: sent.status || 'pending', transactionId: sent.payment_id, externalReference: sent.external_tx_id, result: sent };
   }
 
+  static async _processOrchestr({ amount, currency, source, destination, reference, metadata, initiatedBy, extras, rail }) {
+    if (!OrchestrEngine || !OrchestrEngine.isConfigured()) return { status: 'manual', instruction: 'Orchestr not configured; set ORCHESTR_CHECKOUT_URL, ORCHESTR_PAYMENT_URL, ORCHESTR_MERCHANT_KEY, and ORCHESTR_PASSWORD' };
+    const mode = String(extras.mode || rail || 'sale').toLowerCase();
+    const isCheckout = mode === 'checkout' || mode === 'inbound';
+    const initiatedByUser = initiatedBy || 'system';
+    const orderNumber = reference || `ORCH-${Date.now()}`;
+    const description = metadata.description || `PTC orchestr ${isCheckout ? 'checkout' : 'payout'}`;
+    const successUrl = metadata.successUrl || `${process.env.PUBLIC_APP_URL || ''}/payment/orchestr/success`;
+    const cancelUrl = metadata.cancelUrl || `${process.env.PUBLIC_APP_URL || ''}/payment/orchestr/cancel`;
+
+    if (isCheckout) {
+      const res = await OrchestrEngine.createCheckoutSession({
+        amount,
+        currency,
+        orderNumber,
+        description,
+        successUrl,
+        cancelUrl,
+        customer: metadata.customer,
+        billingAddress: metadata.billingAddress,
+        methods: metadata.methods,
+        initiatedBy: initiatedByUser,
+        metadata: { source, destination, reference, ...metadata },
+      });
+      return { status: res.status, orchestrTxId: res.orchestrTxId, orderId: res.orderId, redirectUrl: res.redirectUrl, paymentId: res.paymentId, externalReference: res.paymentId || res.orderId, result: res.raw };
+    }
+
+    const card = extras.card || metadata.card;
+    const brand = extras.brand || destination.brand || metadata.brand;
+    const parameters = extras.parameters || metadata.parameters;
+    const res = await OrchestrEngine.sale({
+      action: extras.action,
+      amount,
+      currency,
+      orderNumber,
+      description,
+      brand,
+      identifier: orderNumber,
+      channelId: extras.channelId || metadata.channelId,
+      parameters,
+      card,
+      customer: metadata.customer || { email: destination.email, firstName: destination.firstName || destination.name, lastName: destination.lastName, ip: destination.ip },
+      returnUrl: metadata.returnUrl,
+      destination,
+      initiatedBy: initiatedByUser,
+      metadata: { source, reference, ...metadata },
+    });
+    return { status: res.status, orchestrTxId: res.orchestrTxId, orderId: res.orderId, transactionId: res.transId, externalReference: res.transId || res.paymentId, result: res.raw };
+  }
+
   static async _processPaymentHub({ amount, currency, source, destination, reference, metadata, initiatedBy, extras, rail }) {
     if (!PaymentHubEngine) return { status: 'manual', instruction: 'Payment Hub engine unavailable' };
     return await PaymentHubEngine.createIntent({
@@ -463,6 +519,7 @@ class PaymentProcessorServerEngine {
       { name: 'skrill', label: 'Skrill', available: !!SkrillLinkEngine, rails: ['skrill'] },
       { name: 'web_payment_rail', label: 'Web Payment Rail', available: !!WebPaymentRailEngine, rails: ['web','https'] },
       { name: 'payment_hub', label: 'Payment Hub', available: !!PaymentHubEngine, rails: ['payment_hub','ach','wire'] },
+      { name: 'orchestr', label: 'Orchestr', available: !!(OrchestrEngine && OrchestrEngine.isConfigured()), rails: ['orchestr','checkout','s2s','credit2virtual'] },
     ];
   }
 }

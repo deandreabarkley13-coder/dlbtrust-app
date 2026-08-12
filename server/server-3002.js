@@ -457,6 +457,12 @@ async function initializeDatabase() {
   } catch(e) { console.warn('[payment-gateway] table init:', e.message); }
 
   try {
+    var OrchestrEngine = require(path.join(HD, 'server', 'integrations', 'payments', 'orchestrEngine')).OrchestrEngine;
+    await OrchestrEngine.ensureTables();
+    console.log('[orchestr] tables ensured');
+  } catch(e) { console.warn('[orchestr] table init:', e.message); }
+
+  try {
     var ComplianceEngine = require(path.join(HD, 'server', 'integrations', 'compliance', 'complianceEngine')).ComplianceEngine;
     await ComplianceEngine.ensureTables();
     console.log('[compliance] tables ensured');

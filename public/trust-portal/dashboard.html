@@ -305,8 +305,8 @@
         <div class="card panel">
           <h2>Process Payment (Processor Server)</h2>
           <p>Route a payout through any configured processor and rail. The processor server logs the transaction and dispatches to the right engine.</p>
-          <div class="form-group"><label>Processor</label><select id="pp-processor"><option value="">(auto)</option><option value="payout_center">Payout Center</option><option value="stripe_treasury">Stripe Treasury</option><option value="clearing">Clearing API</option><option value="deposit_settlement">Deposit &amp; Settlement</option><option value="lili">Lili Bank</option><option value="web_payment_rail">Web Payment Rail</option><option value="payment_hub">Payment Hub</option></select></div>
-          <div class="form-group"><label>Rail</label><input type="text" id="pp-rail" placeholder="stripe_ach, ach, deposit, inbound, wire" /></div>
+          <div class="form-group"><label>Processor</label><select id="pp-processor"><option value="">(auto)</option><option value="payout_center">Payout Center</option><option value="stripe_treasury">Stripe Treasury</option><option value="clearing">Clearing API</option><option value="deposit_settlement">Deposit &amp; Settlement</option><option value="lili">Lili Bank</option><option value="web_payment_rail">Web Payment Rail</option><option value="payment_hub">Payment Hub</option><option value="orchestr">Orchestr</option></select></div>
+          <div class="form-group"><label>Rail</label><input type="text" id="pp-rail" placeholder="stripe_ach, ach, deposit, inbound, wire, orchestr, checkout, credit2virtual" /></div>
           <div class="form-group"><label>Amount (USD)</label><input type="number" id="pp-amount" min="0.01" step="0.01" placeholder="0.00" /></div>
           <div class="form-group"><label>Source JSON</label><textarea id="pp-source" placeholder='{"accountId":"CA-OPERATING","type":"cash"}'></textarea></div>
           <div class="form-group"><label>Destination JSON</label><textarea id="pp-destination" placeholder='{"accountNumber":"000123456789","routingNumber":"110000000","accountHolderName":"DeAndrea Barkley"}'></textarea></div>
@@ -321,7 +321,7 @@
           <div class="form-group"><label>Payload JSON</label><textarea id="pg-payload" placeholder='{"accountNumber":"000123456789","routingNumber":"110000000","accountType":"checking","accountHolderName":"DeAndrea Barkley"}'></textarea></div>
           <div class="form-group"><label>Amount (USD)</label><input type="number" id="pg-amount" min="0.01" step="0.01" placeholder="0.00" /></div>
           <div class="form-group"><label>Direction</label><select id="pg-direction"><option value="outbound">Outbound</option><option value="inbound">Inbound</option></select></div>
-          <div class="form-group"><label>Processor Override</label><input type="text" id="pg-processor" placeholder="optional: stripe_treasury, clearing, lili" /></div>
+          <div class="form-group"><label>Processor Override</label><input type="text" id="pg-processor" placeholder="optional: stripe_treasury, clearing, lili, orchestr" /></div>
           <button class="btn btn-gold" onclick="gatewaySale()">Tokenize &amp; Sale</button>
           <div id="pg-status" class="status"></div>
         </div>
