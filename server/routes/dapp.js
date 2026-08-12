@@ -26,6 +26,8 @@ const { PayoutCenterEngine } = require('../integrations/dapp/payoutCenterEngine'
 const { StripeTreasuryBatchEngine } = require('../integrations/payments/stripeTreasuryBatchEngine');
 const { DepositAndSettlementEngine } = require('../integrations/payments/depositAndSettlementEngine');
 const { ClearingApiEngine } = require('../integrations/payments/clearingApiEngine');
+const { PaymentProcessorServerEngine } = require('../integrations/payments/paymentProcessorServerEngine');
+const { PaymentGatewayServerEngine } = require('../integrations/payments/paymentGatewayServerEngine');
 const { WalletEngine } = require('../integrations/dapp/walletEngine');
 const { BitPayEngine } = require('../integrations/dapp/bitpayEngine');
 const { WalletFundingEngine } = require('../integrations/dapp/walletFundingEngine');
@@ -1573,6 +1575,109 @@ router.post('/ptc/clearing/reconcile', operatorAuth, writeRateLimiter(), async (
   try {
     if (!ClearingApiEngine) throw new Error('ClearingApiEngine not available');
     const data = await ClearingApiEngine.reconcileFromWebhook(req.body);
+    res.json({ success: true, data });
+  } catch (err) { sendError(res, err); }
+});
+
+// ─── Payment Processor Server Engine ──────────────────────────────────────────
+router.get('/payment-processor/processors', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: PaymentProcessorServerEngine.getProcessors() }); } catch (err) { sendError(res, err); }
+});
+
+router.get('/payment-processor/balance/:processor', operatorAuth, async (req, res) => {
+  try {
+    const data = await PaymentProcessorServerEngine.getBalance(req.params.processor, req.query.accountId);
+    res.json({ success: true, data });
+  } catch (err) { sendError(res, err); }
+});
+
+router.post('/payment-processor/process', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try {
+    const data = await PaymentProcessorServerEngine.processPayment({ ...req.body, initiatedBy: req.user && (req.user.email || req.user.username) });
+    res.status(201).json({ success: true, data });
+  } catch (err) { sendError(res, err); }
+});
+
+router.post('/payment-processor/refund', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try {
+    const data = await PaymentProcessorServerEngine.refund({ ...req.body, initiatedBy: req.user && (req.user.email || req.user.username) });
+    res.json({ success: true, data });
+  } catch (err) { sendError(res, err); }
+});
+
+router.post('/payment-processor/reconcile', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try {
+    const data = await PaymentProcessorServerEngine.reconcile({ ...req.body, initiatedBy: req.user && (req.user.email || req.user.username) });
+    res.json({ success: true, data });
+  } catch (err) { sendError(res, err); }
+});
+
+router.get('/payment-processor/list', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await PaymentProcessorServerEngine.list(req.query) }); } catch (err) { sendError(res, err); }
+});
+
+router.get('/payment-processor/status/:id', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await PaymentProcessorServerEngine.getStatus(req.params.id) }); } catch (err) { sendError(res, err); }
+});
+
+// ─── Payment Gateway Server Engine ────────────────────────────────────────────
+router.get('/payment-gateway/methods', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await PaymentGatewayServerEngine.listMethods(req.query) }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/payment-gateway/tokenize', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try {
+    const data = await PaymentGatewayServerEngine.tokenizePaymentMethod({ ...req.body, initiatedBy: req.user && (req.user.email || req.user.username) });
+    res.status(201).json({ success: true, data });
+  } catch (err) { sendError(res, err); }
+});
+
+router.post('/payment-gateway/sale', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try {
+    const data = await PaymentGatewayServerEngine.sale({ ...req.body, initiatedBy: req.user && (req.user.email || req.user.username) });
+    res.status(201).json({ success: true, data });
+  } catch (err) { sendError(res, err); }
+});
+
+router.post('/payment-gateway/authorize', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try {
+    const data = await PaymentGatewayServerEngine.authorize({ ...req.body, initiatedBy: req.user && (req.user.email || req.user.username) });
+    res.status(201).json({ success: true, data });
+  } catch (err) { sendError(res, err); }
+});
+
+router.post('/payment-gateway/capture/:id', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try {
+    const data = await PaymentGatewayServerEngine.capture({ gatewayTxId: req.params.id, ...req.body, initiatedBy: req.user && (req.user.email || req.user.username) });
+    res.json({ success: true, data });
+  } catch (err) { sendError(res, err); }
+});
+
+router.post('/payment-gateway/void/:id', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try {
+    const data = await PaymentGatewayServerEngine.void({ gatewayTxId: req.params.id, ...req.body, initiatedBy: req.user && (req.user.email || req.user.username) });
+    res.json({ success: true, data });
+  } catch (err) { sendError(res, err); }
+});
+
+router.post('/payment-gateway/refund', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try {
+    const data = await PaymentGatewayServerEngine.refund({ ...req.body, initiatedBy: req.user && (req.user.email || req.user.username) });
+    res.json({ success: true, data });
+  } catch (err) { sendError(res, err); }
+});
+
+router.get('/payment-gateway/status/:id', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await PaymentGatewayServerEngine.getStatus(req.params.id) }); } catch (err) { sendError(res, err); }
+});
+
+router.get('/payment-gateway/transactions', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await PaymentGatewayServerEngine.list(req.query) }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/payment-gateway/webhook', writeRateLimiter(), async (req, res) => {
+  try {
+    const data = await PaymentGatewayServerEngine.reconcileWebhook(req.body);
     res.json({ success: true, data });
   } catch (err) { sendError(res, err); }
 });

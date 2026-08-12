@@ -95,6 +95,7 @@
       <div class="tab hidden" id="tab-treasury" data-tab="treasury" onclick="showTab('treasury')">Stripe Treasury</div>
       <div class="tab hidden" id="tab-compliance" data-tab="compliance" onclick="showTab('compliance')">Compliance</div>
       <div class="tab hidden" id="tab-deposit-settlement" data-tab="deposit-settlement" onclick="showTab('deposit-settlement')">Deposit & Settlement</div>
+      <div class="tab hidden" id="tab-payments" data-tab="payments" onclick="showTab('payments')">Payments</div>
       <div class="tab hidden" id="tab-beneficiary" data-tab="beneficiary" onclick="showTab('beneficiary')">Beneficiary</div>
     </div>
 
@@ -299,6 +300,51 @@
       </div>
     </div>
 
+    <div id="payments" class="tab-content hidden">
+      <div class="grid-2">
+        <div class="card panel">
+          <h2>Process Payment (Processor Server)</h2>
+          <p>Route a payout through any configured processor and rail. The processor server logs the transaction and dispatches to the right engine.</p>
+          <div class="form-group"><label>Processor</label><select id="pp-processor"><option value="">(auto)</option><option value="payout_center">Payout Center</option><option value="stripe_treasury">Stripe Treasury</option><option value="clearing">Clearing API</option><option value="deposit_settlement">Deposit &amp; Settlement</option><option value="lili">Lili Bank</option><option value="web_payment_rail">Web Payment Rail</option><option value="payment_hub">Payment Hub</option></select></div>
+          <div class="form-group"><label>Rail</label><input type="text" id="pp-rail" placeholder="stripe_ach, ach, deposit, inbound, wire" /></div>
+          <div class="form-group"><label>Amount (USD)</label><input type="number" id="pp-amount" min="0.01" step="0.01" placeholder="0.00" /></div>
+          <div class="form-group"><label>Source JSON</label><textarea id="pp-source" placeholder='{"accountId":"CA-OPERATING","type":"cash"}'></textarea></div>
+          <div class="form-group"><label>Destination JSON</label><textarea id="pp-destination" placeholder='{"accountNumber":"000123456789","routingNumber":"110000000","accountHolderName":"DeAndrea Barkley"}'></textarea></div>
+          <div class="form-group"><label>Reference</label><input type="text" id="pp-reference" placeholder="Optional" /></div>
+          <button class="btn btn-primary" onclick="processPayment()">Process Payment</button>
+          <div id="pp-status" class="status"></div>
+        </div>
+        <div class="card panel">
+          <h2>Gateway Tokenize &amp; Sale</h2>
+          <p>Tokenize a card, ACH account, wallet, or crypto address and run a gateway sale.</p>
+          <div class="form-group"><label>Method Type</label><select id="pg-type"><option value="ach">ACH</option><option value="card">Card</option><option value="wallet">Wallet</option><option value="crypto">Crypto</option></select></div>
+          <div class="form-group"><label>Payload JSON</label><textarea id="pg-payload" placeholder='{"accountNumber":"000123456789","routingNumber":"110000000","accountType":"checking","accountHolderName":"DeAndrea Barkley"}'></textarea></div>
+          <div class="form-group"><label>Amount (USD)</label><input type="number" id="pg-amount" min="0.01" step="0.01" placeholder="0.00" /></div>
+          <div class="form-group"><label>Direction</label><select id="pg-direction"><option value="outbound">Outbound</option><option value="inbound">Inbound</option></select></div>
+          <div class="form-group"><label>Processor Override</label><input type="text" id="pg-processor" placeholder="optional: stripe_treasury, clearing, lili" /></div>
+          <button class="btn btn-gold" onclick="gatewaySale()">Tokenize &amp; Sale</button>
+          <div id="pg-status" class="status"></div>
+        </div>
+      </div>
+      <div class="grid-2">
+        <div class="card panel">
+          <h2>Payment Methods</h2>
+          <button class="btn btn-outline" onclick="loadPaymentMethods()" style="margin-bottom:1rem">Refresh</button>
+          <div id="pg-methods">Loading…</div>
+        </div>
+        <div class="card panel">
+          <h2>Processor Transactions</h2>
+          <button class="btn btn-outline" onclick="loadProcessorTxs()" style="margin-bottom:1rem">Refresh</button>
+          <div id="pp-txs">Loading…</div>
+        </div>
+      </div>
+      <div class="card panel" style="margin-top:1.5rem">
+        <h2>Gateway Transactions</h2>
+        <button class="btn btn-outline" onclick="loadGatewayTxs()" style="margin-bottom:1rem">Refresh</button>
+        <div id="pg-txs">Loading…</div>
+      </div>
+    </div>
+
     <div id="beneficiary" class="tab-content hidden">
       <div class="grid-2">
         <div class="card panel">
@@ -389,6 +435,7 @@
         el('tab-treasury').classList.remove('hidden');
         el('tab-compliance').classList.remove('hidden');
         el('tab-deposit-settlement').classList.remove('hidden');
+        el('tab-payments').classList.remove('hidden');
       } else {
         el('tab-beneficiary').classList.remove('hidden');
       }
@@ -479,6 +526,7 @@
       document.querySelector(`.tab[data-tab="${name}"]`).classList.add('active');
       if (name === 'compliance') loadCipRecords();
       if (name === 'deposit-settlement') loadDsOrders();
+      if (name === 'payments') { loadPaymentMethods(); loadProcessorTxs(); loadGatewayTxs(); }
     }
 
     async function submitRequest() {
@@ -698,6 +746,104 @@
           <td class="muted">${escapeHtml(r.external_reference || '')}</td>
         </tr>`).join('')}</tbody></table>` : '<p class="muted">No deposit or settlement orders yet.</p>';
       } catch (e) { el('ds-orders').innerHTML = '<p class="muted">Unable to load orders.</p>'; }
+    }
+
+    async function processPayment() {
+      const amount = Number(el('pp-amount').value);
+      const processor = el('pp-processor').value;
+      const rail = el('pp-rail').value.trim();
+      const reference = el('pp-reference').value.trim();
+      let source = {}, destination = {};
+      try { if (el('pp-source').value.trim()) source = JSON.parse(el('pp-source').value); } catch (e) { show('pp-status', 'Invalid source JSON', true); return; }
+      try { if (el('pp-destination').value.trim()) destination = JSON.parse(el('pp-destination').value); } catch (e) { show('pp-status', 'Invalid destination JSON', true); return; }
+      if (!amount || amount <= 0) { show('pp-status', 'Enter a positive amount', true); return; }
+      show('pp-status', 'Dispatching…', false);
+      try {
+        const body = { amount, currency: 'USD', source, destination, reference };
+        if (processor) body.processor = processor;
+        if (rail) body.rail = rail;
+        const res = await api('/api/dapp/payment-processor/process', { method: 'POST', body: JSON.stringify(body) });
+        show('pp-status', `Processor ${res.data.status}: ${res.data.processorTxId}${res.data.result && res.data.result.transactionId ? ' / ' + res.data.result.transactionId : ''}`, false);
+        loadProcessorTxs();
+      } catch (e) { show('pp-status', e.message, true); }
+    }
+
+    async function gatewaySale() {
+      const amount = Number(el('pg-amount').value);
+      const type = el('pg-type').value;
+      const direction = el('pg-direction').value;
+      const processor = el('pg-processor').value.trim();
+      let payload = {};
+      try { payload = JSON.parse(el('pg-payload').value.trim()); } catch (e) { show('pg-status', 'Invalid payload JSON', true); return; }
+      if (!amount || amount <= 0) { show('pg-status', 'Enter a positive amount', true); return; }
+      show('pg-status', 'Tokenizing…', false);
+      try {
+        const tokenRes = await api('/api/dapp/payment-gateway/tokenize', {
+          method: 'POST',
+          body: JSON.stringify({ type, processor: processor || undefined, payload })
+        });
+        const methodId = tokenRes.data.methodId;
+        show('pg-status', `Tokenized ${methodId}. Running sale…`, false);
+        const saleRes = await api('/api/dapp/payment-gateway/sale', {
+          method: 'POST',
+          body: JSON.stringify({
+            amount,
+            currency: 'USD',
+            methodId,
+            direction,
+            processor: processor || undefined,
+            destination: payload,
+            source: { accountId: 'CA-OPERATING', type: 'cash' },
+            metadata: { gateway: true }
+          })
+        });
+        show('pg-status', `Gateway sale ${saleRes.data.status}: ${saleRes.data.gatewayTxId}${saleRes.data.processorTxId ? ' / ' + saleRes.data.processorTxId : ''}`, false);
+        loadPaymentMethods(); loadGatewayTxs(); loadProcessorTxs();
+      } catch (e) { show('pg-status', e.message, true); }
+    }
+
+    async function loadPaymentMethods() {
+      try {
+        const res = await api('/api/dapp/payment-gateway/methods?limit=50');
+        const rows = res.data || [];
+        el('pg-methods').innerHTML = rows.length ? `<table><thead><tr><th>Type</th><th>Processor</th><th>Last4</th><th>Network</th><th>Status</th></tr></thead><tbody>${rows.map(m => `<tr>
+          <td>${escapeHtml(m.type)}</td>
+          <td>${escapeHtml(m.processor || '')}</td>
+          <td>${escapeHtml(m.last4 || '')}</td>
+          <td>${escapeHtml(m.network || '')}</td>
+          <td>${fmtStatus(m.status)}</td>
+        </tr>`).join('')}</tbody></table>` : '<p class="muted">No tokenized payment methods.</p>';
+      } catch (e) { el('pg-methods').innerHTML = '<p class="muted">Unable to load methods.</p>'; }
+    }
+
+    async function loadProcessorTxs() {
+      try {
+        const res = await api('/api/dapp/payment-processor/list?limit=50');
+        const rows = res.data || [];
+        el('pp-txs').innerHTML = rows.length ? `<table><thead><tr><th>Tx</th><th>Processor</th><th>Rail</th><th>Amount</th><th>Status</th><th>External Ref</th></tr></thead><tbody>${rows.map(r => `<tr>
+          <td>${escapeHtml(r.processor_tx_id)}</td>
+          <td>${escapeHtml(r.processor)}</td>
+          <td>${escapeHtml(r.rail || '')}</td>
+          <td>${fmtMoney((r.amount_cents || 0) / 100)}</td>
+          <td>${fmtStatus(r.status)}</td>
+          <td class="muted">${escapeHtml(r.external_reference || '')}</td>
+        </tr>`).join('')}</tbody></table>` : '<p class="muted">No processor transactions yet.</p>';
+      } catch (e) { el('pp-txs').innerHTML = '<p class="muted">Unable to load transactions.</p>'; }
+    }
+
+    async function loadGatewayTxs() {
+      try {
+        const res = await api('/api/dapp/payment-gateway/transactions?limit=50');
+        const rows = res.data || [];
+        el('pg-txs').innerHTML = rows.length ? `<table><thead><tr><th>Tx</th><th>Type</th><th>Method</th><th>Amount</th><th>Status</th><th>Processor Tx</th></tr></thead><tbody>${rows.map(r => `<tr>
+          <td>${escapeHtml(r.gateway_tx_id)}</td>
+          <td>${escapeHtml(r.type)}</td>
+          <td class="muted">${escapeHtml(r.method_id || '')}</td>
+          <td>${fmtMoney((r.amount_cents || 0) / 100)}</td>
+          <td>${fmtStatus(r.status)}</td>
+          <td class="muted">${escapeHtml(r.processor_tx_id || '')}</td>
+        </tr>`).join('')}</tbody></table>` : '<p class="muted">No gateway transactions yet.</p>';
+      } catch (e) { el('pg-txs').innerHTML = '<p class="muted">Unable to load transactions.</p>'; }
     }
 
     function logout() {
