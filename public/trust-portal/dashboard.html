@@ -94,6 +94,7 @@
       <div class="tab hidden" id="tab-trustee" data-tab="trustee" onclick="showTab('trustee')">Trustee Actions</div>
       <div class="tab hidden" id="tab-treasury" data-tab="treasury" onclick="showTab('treasury')">Stripe Treasury</div>
       <div class="tab hidden" id="tab-compliance" data-tab="compliance" onclick="showTab('compliance')">Compliance</div>
+      <div class="tab hidden" id="tab-deposit-settlement" data-tab="deposit-settlement" onclick="showTab('deposit-settlement')">Deposit & Settlement</div>
       <div class="tab hidden" id="tab-beneficiary" data-tab="beneficiary" onclick="showTab('beneficiary')">Beneficiary</div>
     </div>
 
@@ -255,6 +256,49 @@
       </div>
     </div>
 
+    <div id="deposit-settlement" class="tab-content hidden">
+      <div class="grid-2">
+        <div class="card panel">
+          <h2>Record Deposit</h2>
+          <p>When fiat lands in the Stripe Treasury custodial account, credit the PTC ledger here.</p>
+          <div class="form-group"><label>Amount (USD)</label><input type="number" id="ds-deposit-amount" min="0.01" step="0.01" placeholder="0.00" /></div>
+          <div class="form-group"><label>Rail</label><select id="ds-deposit-rail"><option value="stripe_treasury">Stripe Treasury</option><option value="wire">Wire</option><option value="ach">ACH</option><option value="generic">Generic</option></select></div>
+          <div class="form-group"><label>Trust Credit Account</label><select id="ds-deposit-credit"><option value="PTC-DEPOSIT-CLEARING">Deposit Clearing</option><option value="4000">Interest Income (4000)</option><option value="3000">Trust Corpus (3000)</option></select></div>
+          <div class="form-group"><label>Cash Account</label><input type="text" id="ds-deposit-cash" value="CA-STRIPE-TREASURY" /></div>
+          <div class="form-group"><label>External Reference</label><input type="text" id="ds-deposit-ref" placeholder="ReceivedCredit ID, wire ref, etc." /></div>
+          <button class="btn btn-primary" onclick="recordDsDeposit()">Record Deposit</button>
+          <div id="ds-deposit-status" class="status"></div>
+        </div>
+        <div class="card panel">
+          <h2>Initiate Settlement</h2>
+          <p>Pay a beneficiary or vendor from the PTC ledger through a clearing rail.</p>
+          <div class="form-group"><label>Amount (USD)</label><input type="number" id="ds-settle-amount" min="0.01" step="0.01" placeholder="0.00" /></div>
+          <div class="form-group"><label>Rail</label><select id="ds-settle-rail"><option value="stripe_ach">Stripe Treasury ACH</option><option value="stripe_wire">Stripe Treasury Wire</option><option value="ach">ACH (SettlementEngine)</option><option value="wire">Wire (SettlementEngine)</option><option value="generic">Generic API</option><option value="manual">Manual</option></select></div>
+          <div class="form-group"><label>Source Cash Account</label><input type="text" id="ds-settle-source-cash" value="CA-OPERATING" /></div>
+          <div class="form-group"><label>Destination JSON</label><textarea id="ds-settle-destination" placeholder='{"accountNumber":"000123456789","routingNumber":"110000000","accountHolderName":"DeAndrea Barkley","email":"deandreabarkley13@gmail.com","accountType":"checking"}'></textarea></div>
+          <div class="form-group"><label>CIP Required</label><select id="ds-settle-cip"><option value="true">Yes</option><option value="false">No</option></select></div>
+          <button class="btn btn-gold" onclick="initiateDsSettlement()">Initiate Settlement</button>
+          <div id="ds-settle-status" class="status"></div>
+        </div>
+      </div>
+      <div class="grid-2">
+        <div class="card panel">
+          <h2>Reconcile Order</h2>
+          <p>Update a deposit/settlement order from an external settlement event.</p>
+          <div class="form-group"><label>Order ID / External Ref</label><input type="text" id="ds-reconcile-id" placeholder="SET-... or Stripe payout ID" /></div>
+          <div class="form-group"><label>Status</label><select id="ds-reconcile-status"><option value="completed">Completed</option><option value="failed">Failed</option><option value="returned">Returned</option></select></div>
+          <div class="form-group"><label>Raw Response JSON (optional)</label><textarea id="ds-reconcile-raw" placeholder='{}'></textarea></div>
+          <button class="btn btn-primary" onclick="reconcileDsOrder()">Reconcile</button>
+          <div id="ds-reconcile-status" class="status"></div>
+        </div>
+        <div class="card panel">
+          <h2>Deposit & Settlement Orders</h2>
+          <button class="btn btn-outline" onclick="loadDsOrders()" style="margin-bottom:1rem">Refresh</button>
+          <div id="ds-orders">Loading…</div>
+        </div>
+      </div>
+    </div>
+
     <div id="beneficiary" class="tab-content hidden">
       <div class="grid-2">
         <div class="card panel">
@@ -344,6 +388,7 @@
         el('tab-trustee').classList.remove('hidden');
         el('tab-treasury').classList.remove('hidden');
         el('tab-compliance').classList.remove('hidden');
+        el('tab-deposit-settlement').classList.remove('hidden');
       } else {
         el('tab-beneficiary').classList.remove('hidden');
       }
@@ -433,6 +478,7 @@
       el(name).classList.remove('hidden');
       document.querySelector(`.tab[data-tab="${name}"]`).classList.add('active');
       if (name === 'compliance') loadCipRecords();
+      if (name === 'deposit-settlement') loadDsOrders();
     }
 
     async function submitRequest() {
@@ -580,6 +626,78 @@
         await api(`/api/dapp/ptc/cip/records/${recordId}/block`, { method: 'POST' });
         loadCipRecords();
       } catch (e) { alert(e.message); }
+    }
+
+    async function recordDsDeposit() {
+      const amount = Number(el('ds-deposit-amount').value);
+      const rail = el('ds-deposit-rail').value;
+      const creditAccount = el('ds-deposit-credit').value;
+      const cashAccount = el('ds-deposit-cash').value.trim();
+      const reference = el('ds-deposit-ref').value.trim();
+      if (!amount || amount <= 0) { show('ds-deposit-status', 'Enter a positive amount', true); return; }
+      show('ds-deposit-status', 'Recording…', false);
+      try {
+        const res = await api('/api/dapp/ptc/deposit-settlement/deposit', {
+          method: 'POST',
+          body: JSON.stringify({ amount, rail, cashAccountId: cashAccount, trustAccountCode: creditAccount, externalReference: reference || undefined })
+        });
+        show('ds-deposit-status', `Deposit recorded: ${res.data.orderId}`, false);
+        setTimeout(loadDsOrders, 1000);
+      } catch (e) { show('ds-deposit-status', e.message, true); }
+    }
+
+    async function initiateDsSettlement() {
+      const amount = Number(el('ds-settle-amount').value);
+      const rail = el('ds-settle-rail').value;
+      const sourceCash = el('ds-settle-source-cash').value.trim();
+      const requireCip = el('ds-settle-cip').value === 'true';
+      let destination = {};
+      try { destination = JSON.parse(el('ds-settle-destination').value.trim()); } catch (e) { show('ds-settle-status', 'Invalid destination JSON', true); return; }
+      if (!amount || amount <= 0) { show('ds-settle-status', 'Enter a positive amount', true); return; }
+      show('ds-settle-status', 'Initiating…', false);
+      try {
+        const res = await api('/api/dapp/ptc/deposit-settlement/settle', {
+          method: 'POST',
+          body: JSON.stringify({ amount, rail, sourceCashAccountId: sourceCash, destination, requireCip })
+        });
+        const msg = res.data.status === 'manual' ? `Manual prefund required: ${res.data.instruction}` : `Settlement initiated: ${res.data.orderId} / ${res.data.externalReference || res.data.clearingId}`;
+        show('ds-settle-status', msg, false);
+        setTimeout(loadDsOrders, 1000);
+      } catch (e) { show('ds-settle-status', e.message, true); }
+    }
+
+    async function reconcileDsOrder() {
+      const idVal = el('ds-reconcile-id').value.trim();
+      const status = el('ds-reconcile-status').value;
+      let raw = {};
+      try { if (el('ds-reconcile-raw').value.trim()) raw = JSON.parse(el('ds-reconcile-raw').value.trim()); } catch (e) { show('ds-reconcile-status', 'Invalid raw response JSON', true); return; }
+      if (!idVal) { show('ds-reconcile-status', 'Enter order ID or external reference', true); return; }
+      show('ds-reconcile-status', 'Reconciling…', false);
+      try {
+        const key = idVal.startsWith('SET-') || idVal.startsWith('DEP-') ? 'orderId' : 'externalReference';
+        const res = await api('/api/dapp/ptc/deposit-settlement/reconcile', {
+          method: 'POST',
+          body: JSON.stringify({ [key]: idVal, status, rawResponse: raw })
+        });
+        show('ds-reconcile-status', `Reconciled ${res.data.orderId} -> ${res.data.status}`, false);
+        setTimeout(loadDsOrders, 1000);
+      } catch (e) { show('ds-reconcile-status', e.message, true); }
+    }
+
+    async function loadDsOrders() {
+      try {
+        const res = await api('/api/dapp/ptc/deposit-settlement/orders?limit=50');
+        const rows = res.data || [];
+        const container = el('ds-orders');
+        container.innerHTML = rows.length ? `<table><thead><tr><th>Order</th><th>Direction</th><th>Rail</th><th>Amount</th><th>Status</th><th>External Ref</th></tr></thead><tbody>${rows.map(r => `<tr>
+          <td>${escapeHtml(r.order_id)}</td>
+          <td>${escapeHtml(r.direction)}</td>
+          <td>${escapeHtml(r.rail || '')}</td>
+          <td>${fmtMoney((r.amount_cents || 0) / 100)}</td>
+          <td>${fmtStatus(r.status)}</td>
+          <td class="muted">${escapeHtml(r.external_reference || '')}</td>
+        </tr>`).join('')}</tbody></table>` : '<p class="muted">No deposit or settlement orders yet.</p>';
+      } catch (e) { el('ds-orders').innerHTML = '<p class="muted">Unable to load orders.</p>'; }
     }
 
     function logout() {

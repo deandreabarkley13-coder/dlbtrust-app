@@ -24,6 +24,8 @@ const { DisbursementAutomationEngine } = require('../integrations/dapp/disbursem
 const { FundingEngine } = require('../integrations/dapp/fundingEngine');
 const { PayoutCenterEngine } = require('../integrations/dapp/payoutCenterEngine');
 const { StripeTreasuryBatchEngine } = require('../integrations/payments/stripeTreasuryBatchEngine');
+const { DepositAndSettlementEngine } = require('../integrations/payments/depositAndSettlementEngine');
+const { ClearingApiEngine } = require('../integrations/payments/clearingApiEngine');
 const { WalletEngine } = require('../integrations/dapp/walletEngine');
 const { BitPayEngine } = require('../integrations/dapp/bitpayEngine');
 const { WalletFundingEngine } = require('../integrations/dapp/walletFundingEngine');
@@ -1497,6 +1499,80 @@ router.get('/ptc/cip/status', portalAuth, async (req, res) => {
     const email = req.user && req.user.email;
     if (!email) throw new Error('No email in session');
     const data = await CustomerIdentificationEngine.getRecordByEmail(email);
+    res.json({ success: true, data });
+  } catch (err) { sendError(res, err); }
+});
+
+// ─── Deposit & Settlement Engine ────────────────────────────────────────────────
+router.get('/ptc/deposit-settlement/orders', operatorAuth, async (req, res) => {
+  try {
+    if (!DepositAndSettlementEngine) throw new Error('DepositAndSettlementEngine not available');
+    const data = await DepositAndSettlementEngine.list(req.query);
+    res.json({ success: true, data });
+  } catch (err) { sendError(res, err); }
+});
+
+router.get('/ptc/deposit-settlement/orders/:id', operatorAuth, async (req, res) => {
+  try {
+    if (!DepositAndSettlementEngine) throw new Error('DepositAndSettlementEngine not available');
+    const data = await DepositAndSettlementEngine.get(req.params.id);
+    res.json({ success: true, data });
+  } catch (err) { sendError(res, err); }
+});
+
+router.post('/ptc/deposit-settlement/deposit', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try {
+    if (!DepositAndSettlementEngine) throw new Error('DepositAndSettlementEngine not available');
+    const data = await DepositAndSettlementEngine.recordDeposit({ ...req.body, initiatedBy: req.user && (req.user.email || req.user.username) });
+    res.status(201).json({ success: true, data });
+  } catch (err) { sendError(res, err); }
+});
+
+router.post('/ptc/deposit-settlement/settle', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try {
+    if (!DepositAndSettlementEngine) throw new Error('DepositAndSettlementEngine not available');
+    const data = await DepositAndSettlementEngine.initiateSettlement({ ...req.body, initiatedBy: req.user && (req.user.email || req.user.username) });
+    res.status(201).json({ success: true, data });
+  } catch (err) { sendError(res, err); }
+});
+
+router.post('/ptc/deposit-settlement/reconcile', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try {
+    if (!DepositAndSettlementEngine) throw new Error('DepositAndSettlementEngine not available');
+    const data = await DepositAndSettlementEngine.reconcile({ ...req.body, initiatedBy: req.user && (req.user.email || req.user.username) });
+    res.json({ success: true, data });
+  } catch (err) { sendError(res, err); }
+});
+
+// ─── Clearing API Engine ────────────────────────────────────────────────────────
+router.get('/ptc/clearing/list', operatorAuth, async (req, res) => {
+  try {
+    if (!ClearingApiEngine) throw new Error('ClearingApiEngine not available');
+    const data = await ClearingApiEngine.list(req.query);
+    res.json({ success: true, data });
+  } catch (err) { sendError(res, err); }
+});
+
+router.get('/ptc/clearing/status/:id', operatorAuth, async (req, res) => {
+  try {
+    if (!ClearingApiEngine) throw new Error('ClearingApiEngine not available');
+    const data = await ClearingApiEngine.getStatus(req.params.id);
+    res.json({ success: true, data });
+  } catch (err) { sendError(res, err); }
+});
+
+router.post('/ptc/clearing/submit', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try {
+    if (!ClearingApiEngine) throw new Error('ClearingApiEngine not available');
+    const data = await ClearingApiEngine.submit({ ...req.body, initiatedBy: req.user && (req.user.email || req.user.username) });
+    res.status(201).json({ success: true, data });
+  } catch (err) { sendError(res, err); }
+});
+
+router.post('/ptc/clearing/reconcile', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try {
+    if (!ClearingApiEngine) throw new Error('ClearingApiEngine not available');
+    const data = await ClearingApiEngine.reconcileFromWebhook(req.body);
     res.json({ success: true, data });
   } catch (err) { sendError(res, err); }
 });
