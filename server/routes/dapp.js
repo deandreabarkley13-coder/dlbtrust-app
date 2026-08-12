@@ -1434,11 +1434,11 @@ router.post('/ptc/stripe-treasury/deposit', operatorAuth, writeRateLimiter(), as
 
 router.post('/ptc/stripe-treasury/batch-payouts', operatorAuth, writeRateLimiter(), async (req, res) => {
   try {
-    const { file, sourceCashAccountCode, sourceCashAccountId, financialAccountId, network, skipPrefund } = req.body || {};
+    const { file, sourceCashAccountCode, sourceAccountId, financialAccountId, network, skipPrefund } = req.body || {};
     const data = await StripeTreasuryBatchEngine.processPaymentFile({
       file,
       sourceCashAccountCode,
-      sourceCashAccountId,
+      sourceAccountId,
       financialAccountId,
       initiatedBy: req.user && (req.user.email || req.user.username || 'batch'),
       network,

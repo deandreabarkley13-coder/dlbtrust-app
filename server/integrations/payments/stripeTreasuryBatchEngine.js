@@ -92,7 +92,7 @@ class StripeTreasuryBatchEngine {
     };
   }
 
-  static async processPaymentFile({ file, sourceCashAccountCode = '1100', sourceCashAccountId = 'CA-OPERATING', financialAccountId, initiatedBy, network = 'ach', skipPrefund = false } = {}) {
+  static async processPaymentFile({ file, sourceCashAccountCode = '1100', sourceAccountId = 'CA-OPERATING', financialAccountId, initiatedBy, network = 'ach', skipPrefund = false } = {}) {
     if (!PayoutCenterEngine) throw new Error('PayoutCenterEngine not available');
     if (!StripeTreasuryEngine) throw new Error('StripeTreasuryEngine not available');
 
