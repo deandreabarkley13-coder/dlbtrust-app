@@ -307,7 +307,8 @@
       return new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD', maximumFractionDigits: 2 }).format(Number(n) || 0);
     }
     function fmtStatus(s) {
-      return `<span class="pill ${s}">${s}</span>`;
+      const v = escapeHtml(s);
+      return `<span class="pill ${v}">${v}</span>`;
     }
 
     async function api(path, opts={}) {
@@ -325,6 +326,10 @@
       const d = el(id);
       d.textContent = msg;
       d.className = 'status show ' + (isErr ? 'err' : 'ok');
+    }
+
+    function escapeHtml(str) {
+      return String(str).replace(/[&<>"']/g, m => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[m]));
     }
 
     async function loadMe() {
@@ -544,16 +549,22 @@
       try {
         const res = await api('/api/dapp/ptc/cip/records?limit=50');
         const rows = res.data || [];
-        el('cip-records').innerHTML = rows.length ? `<table><thead><tr><th>Name</th><th>Email</th><th>Status</th><th>Score</th><th>Actions</th></tr></thead><tbody>${rows.map(r => `<tr>
-          <td>${r.full_legal_name}</td>
-          <td>${r.email || ''}</td>
+        const container = el('cip-records');
+        container.innerHTML = rows.length ? `<table><thead><tr><th>Name</th><th>Email</th><th>Status</th><th>Score</th><th>Actions</th></tr></thead><tbody>${rows.map(r => {
+          const recordId = escapeHtml(r.record_id);
+          return `<tr>
+          <td>${escapeHtml(r.full_legal_name)}</td>
+          <td>${escapeHtml(r.email || '')}</td>
           <td>${fmtStatus(r.kyc_status)}</td>
-          <td>${r.risk_score}</td>
+          <td>${escapeHtml(r.risk_score)}</td>
           <td>
-            ${r.kyc_status !== 'clear' ? `<button class="btn btn-outline" onclick="approveCip('${r.record_id}')">Approve</button>` : ''}
-            ${r.kyc_status !== 'blocked' ? `<button class="btn btn-outline" onclick="blockCip('${r.record_id}')">Block</button>` : ''}
+            ${r.kyc_status !== 'clear' ? `<button class="btn btn-outline cip-approve" data-record-id="${recordId}">Approve</button>` : ''}
+            ${r.kyc_status !== 'blocked' ? `<button class="btn btn-outline cip-block" data-record-id="${recordId}">Block</button>` : ''}
           </td>
-        </tr>`).join('')}</tbody></table>` : '<p class="muted">No CIP records yet.</p>';
+        </tr>`;
+        }).join('')}</tbody></table>` : '<p class="muted">No CIP records yet.</p>';
+        container.querySelectorAll('.cip-approve').forEach(b => b.addEventListener('click', () => approveCip(b.dataset.recordId)));
+        container.querySelectorAll('.cip-block').forEach(b => b.addEventListener('click', () => blockCip(b.dataset.recordId)));
       } catch (e) { el('cip-records').innerHTML = '<p class="muted">Unable to load CIP records.</p>'; }
     }
 

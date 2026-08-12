@@ -298,6 +298,23 @@ class PtcPortalEngine {
     const amount = Number(req.amount_cents) / 100;
     const memberId = req.member_id;
     const supportAccountId = req.support_account_id;
+    const sourceAccountId = 'CA-OPERATING';
+    const payoutId = id('PTP');
+    let result = { status: 'pending', reference: null };
+    const railNorm = (rail || '').toLowerCase();
+
+    // Stripe Treasury requires a cleared CIP record before fiat payout.
+    if (CIP_REQUIRED_FOR_STRIPE && railNorm.startsWith('stripe_')) {
+      if (!CustomerIdentificationEngine) throw new Error('CustomerIdentificationEngine not available');
+      const cip = await CustomerIdentificationEngine.validatePayoutRecipient({
+        fullName: options.fullName || options.recipientName || req.member_name,
+        email: options.email || req.member_email,
+        requireClear: true,
+      });
+      if (!cip.valid) {
+        throw new Error(`CIP required for Stripe Treasury payout: ${cip.reason}`);
+      }
+    }
 
     // 1. Issue support from coupon/principal income ledger (4000 = interest income)
     const alloc = [{ beneficiary_id: memberId, allocation_percent: 100 }];
@@ -318,24 +335,6 @@ class PtcPortalEngine {
     });
 
     // 3. Execute the payout rail from the operational cash account
-    const sourceAccountId = 'CA-OPERATING';
-    let result = { status: 'pending', reference: null };
-    const payoutId = id('PTP');
-    const railNorm = (rail || '').toLowerCase();
-
-    // Stripe Treasury requires a cleared CIP record before fiat payout.
-    if (CIP_REQUIRED_FOR_STRIPE && railNorm.startsWith('stripe_')) {
-      if (!CustomerIdentificationEngine) throw new Error('CustomerIdentificationEngine not available');
-      const cip = await CustomerIdentificationEngine.validatePayoutRecipient({
-        fullName: options.fullName || options.recipientName || req.member_name,
-        email: options.email || req.member_email,
-        requireClear: true,
-      });
-      if (!cip.valid) {
-        throw new Error(`CIP required for Stripe Treasury payout: ${cip.reason}`);
-      }
-    }
-
     if (railNorm.startsWith('stripe_')) {
       if (!PayoutCenterEngine) throw new Error('PayoutCenterEngine not available');
       const prefund = StripeTreasuryEngine

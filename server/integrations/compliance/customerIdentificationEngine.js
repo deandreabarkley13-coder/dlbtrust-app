@@ -114,11 +114,18 @@ class CustomerIdentificationEngine {
         screenedBy,
         notes: `CIP record ${recordId}`,
       });
-      kycStatus = screening.status;
       riskScore = screening.risk_score || 0;
       riskLevel = screening.risk_level || 'low';
+      if (screening.status === 'blocked') {
+        kycStatus = 'blocked';
+      } else if (idVerificationProvider && idVerificationReference && screening.status === 'clear') {
+        kycStatus = 'clear';
+      } else if (screening.status === 'review') {
+        kycStatus = 'review';
+      }
     }
 
+    if (!pool) throw new Error('Database pool not available for CIP records');
     await pool.query(
       `INSERT INTO cip_records
          (record_id, contact_id, full_legal_name, date_of_birth, address, phone, email,
