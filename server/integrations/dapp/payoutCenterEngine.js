@@ -40,6 +40,9 @@ try { ({ ComplianceEngine } = require('../compliance/complianceEngine')); } catc
 let LiliBankEngine;
 try { ({ LiliBankEngine } = require('../payments/liliBankEngine')); } catch (e) { LiliBankEngine = null; }
 
+let StripeTreasuryEngine;
+try { ({ StripeTreasuryEngine } = require('../payments/stripeTreasuryEngine')); } catch (e) { StripeTreasuryEngine = null; }
+
 function id(prefix = 'PAY') { return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 8).toUpperCase()}`; }
 function isAddress(v) { return viem && viem.isAddress && viem.isAddress(v); }
 function safeJson(obj) { return JSON.stringify(obj, (k, v) => typeof v === 'bigint' ? String(v) : v); }
@@ -130,8 +133,10 @@ class PayoutCenterEngine {
     if (!recipientIdentifier) throw new Error('recipientIdentifier required');
     if (!amount || Number(amount) <= 0) throw new Error('amount must be positive');
 
-    const recipient = await this.resolveRecipient({ recipientType, identifier: recipientIdentifier, asset });
     const chosenRail = (rail || 'sit').toLowerCase();
+    const recipient = (chosenRail.startsWith('stripe_'))
+      ? { address: recipientIdentifier, type: 'external' }
+      : await this.resolveRecipient({ recipientType, identifier: recipientIdentifier, asset });
     const recordId = id('PC');
     const base = {
       id: recordId,
@@ -277,6 +282,29 @@ class PayoutCenterEngine {
         });
         base.tx_hash = result.payment_id;
         base.status = result.status === 'completed' ? 'completed' : (result.status === 'api_pending' ? 'api_pending' : 'manual_pending');
+        break;
+      }
+      case 'stripe_treasury':
+      case 'stripe_ach':
+      case 'stripe_wire': {
+        if (!StripeTreasuryEngine || !StripeTreasuryEngine.isConfigured()) throw new Error('StripeTreasuryEngine not configured');
+        const network = rail === 'stripe_wire' ? 'us_domestic_wire' : 'ach';
+        result = await StripeTreasuryEngine.createPayment({
+          amount,
+          financialAccountId: railOptions.financialAccountId || process.env.STRIPE_TREASURY_FINANCIAL_ACCOUNT_ID,
+          routingNumber: railOptions.routingNumber || railOptions.routing,
+          accountNumber: railOptions.accountNumber || railOptions.account,
+          accountHolderName: railOptions.recipientName || railOptions.beneficiaryName || railOptions.fullName,
+          accountHolderType: railOptions.accountHolderType || railOptions.holderType || 'individual',
+          accountType: railOptions.accountType || 'checking',
+          network,
+          description: description || `PTC payout ${base.id}`,
+          statementDescriptor: railOptions.statementDescriptor || 'PTC PAYOUT',
+          billingAddress: railOptions.billingAddress || railOptions.address,
+          metadata: { ptc_request_id: railOptions.ptc_request_id, initiatedBy: railOptions.initiatedBy, rail },
+        });
+        base.tx_hash = result.stripe_outbound_payment_id || result.payout_id;
+        base.status = result.status === 'completed' ? 'completed' : (result.status === 'failed' ? 'failed' : 'pending');
         break;
       }
       default:

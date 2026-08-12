@@ -314,7 +314,21 @@ class PtcPortalEngine {
     const payoutId = id('PTP');
     const railNorm = (rail || '').toLowerCase();
 
-    if (railNorm === 'wire' || railNorm === 'ach' || railNorm === 'vendor') {
+    if (railNorm.startsWith('stripe_')) {
+      if (!PayoutCenterEngine) throw new Error('PayoutCenterEngine not available');
+      const pc = await PayoutCenterEngine.createPayment({
+        sourceType: 'cash',
+        sourceAccountId,
+        recipientType: 'external',
+        recipientIdentifier,
+        amount,
+        asset: 'USD',
+        rail: railNorm,
+        description: `PTC payout ${requestId}`,
+        railOptions: { ...options, ptc_request_id: requestId, initiatedBy: initiatedBy || req.member_name },
+      });
+      result = { status: pc.status || 'pending', reference: pc.id, engineId: pc.id };
+    } else if (railNorm === 'wire' || railNorm === 'ach' || railNorm === 'vendor') {
       if (!WireOriginationEngine) throw new Error('WireOriginationEngine not available');
       const opts = { ...options };
       const payout = await WireOriginationEngine.createPayout({
