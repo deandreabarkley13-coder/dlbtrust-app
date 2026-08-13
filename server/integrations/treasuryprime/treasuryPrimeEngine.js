@@ -506,6 +506,7 @@ class TreasuryPrimeEngine {
       trustAccountCode,
       journalResult: null,
       journalError: null,
+      watermarkError: null,
     };
 
     if (isZeroAmount(drift)) {
@@ -544,11 +545,26 @@ class TreasuryPrimeEngine {
           { accountCode: trustAccountCode, debitAmount: increased ? '0.00' : magnitude, creditAmount: increased ? magnitude : '0.00', memo: `TP drift ${drift}` },
         ],
       });
-      if (pool) {
-        await query('UPDATE treasury_prime_accounts SET last_reconciled_balance = $1, synced_at = NOW() WHERE id = $2', [current, accountId]).catch(() => {});
-      }
     } catch (err) {
       result.journalError = err.message;
+      return result;
+    }
+
+    if (pool) {
+      try {
+        // Upsert, not UPDATE: reconciling an account that was never synced has
+        // no row yet, and a no-op update would replay this drift on every run.
+        await query(`
+          INSERT INTO treasury_prime_accounts
+            (id, name, account_type, available_balance, current_balance, last_reconciled_balance, synced_at)
+          VALUES ($1,$2,$3,$4,$5,$6,NOW())
+          ON CONFLICT (id) DO UPDATE SET last_reconciled_balance = $6, synced_at = NOW()
+        `, [accountId, account.name, account.accountType, account.availableBalance, account.currentBalance, current]);
+      } catch (err) {
+        // The journal is already posted, so surface this loudly: until the
+        // watermark advances the next run would double-post the same drift.
+        result.watermarkError = err.message;
+      }
     }
     return result;
   }

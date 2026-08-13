@@ -13,6 +13,7 @@
 
 const express = require('express');
 const { requireAuth, writeRateLimiter } = require('../integrations/auth/securityMiddleware');
+const { timingSafeEqual } = require('../integrations/paymentHub/paymentCrypto');
 const { TreasuryPrimeEngine } = require('../integrations/treasuryprime/treasuryPrimeEngine');
 
 const router = express.Router();
@@ -26,7 +27,9 @@ function sendError(res, err) {
 }
 
 // ─── Status & reference data ────────────────────────────────────────────────
-router.get('/status', async (req, res) => {
+// Operator-only: exposes which environment (sandbox vs. production banking
+// rails) the trust is pointed at, plus raw upstream error text.
+router.get('/status', operatorAuth, async (req, res) => {
   try { res.json({ success: true, data: await TreasuryPrimeEngine.getStatus() }); } catch (err) { sendError(res, err); }
 });
 
@@ -178,18 +181,25 @@ router.get('/webhooks/events', operatorAuth, async (req, res) => {
 });
 
 /**
- * Receiver Treasury Prime calls on status transitions. Unauthenticated by
- * design (Treasury Prime cannot present an operator token) but guarded by a
- * shared secret in the path-less header when TREASURY_PRIME_WEBHOOK_SECRET is
- * set, and it never trusts the payload: the object is re-fetched from the API
+ * Receiver Treasury Prime calls on status transitions. Treasury Prime cannot
+ * present an operator token, so this route authenticates with the shared
+ * secret in x-treasury-prime-secret (header only — a query parameter would
+ * land in access logs) compared in constant time. Outside development the
+ * secret is mandatory: without it the endpoint refuses to process anything.
+ *
+ * The payload itself is never trusted — the object is re-fetched from the API
  * before any status is believed.
  */
-router.post('/webhooks/receive', async (req, res) => {
+router.post('/webhooks/receive', writeRateLimiter(), async (req, res) => {
   try {
     const expected = process.env.TREASURY_PRIME_WEBHOOK_SECRET;
-    if (expected) {
-      const provided = req.headers['x-treasury-prime-secret'] || req.query.secret;
-      if (provided !== expected) return res.status(401).json({ success: false, error: 'Invalid webhook secret' });
+    if (!expected) {
+      if (process.env.NODE_ENV === 'production') {
+        return res.status(503).json({ success: false, error: 'TREASURY_PRIME_WEBHOOK_SECRET is not configured' });
+      }
+      console.warn('[treasury-prime] webhook receiver is unauthenticated: TREASURY_PRIME_WEBHOOK_SECRET is unset');
+    } else if (!timingSafeEqual(String(req.headers['x-treasury-prime-secret'] || ''), expected)) {
+      return res.status(401).json({ success: false, error: 'Invalid webhook secret' });
     }
     const data = await TreasuryPrimeEngine.handleWebhook(req.body || {});
     res.json({ success: true, data });

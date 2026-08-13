@@ -19,7 +19,11 @@ const { normalizeAmount } = require('./decimalAmount');
 
 const SANDBOX_BASE_URL = 'https://api.sandbox.treasuryprime.com';
 const PRODUCTION_BASE_URL = 'https://api.treasuryprime.com';
-const DEFAULT_TIMEOUT_MS = parseInt(process.env.TREASURY_PRIME_TIMEOUT_MS || '30000', 10);
+// A malformed override ("30s", "") must not silently become a 1ms (NaN) or
+// 30ms timeout that aborts every banking call before it can complete.
+const MIN_TIMEOUT_MS = 1000;
+const rawTimeout = (process.env.TREASURY_PRIME_TIMEOUT_MS || '').trim();
+const DEFAULT_TIMEOUT_MS = /^\d+$/.test(rawTimeout) && Number(rawTimeout) >= MIN_TIMEOUT_MS ? Number(rawTimeout) : 30000;
 
 function baseUrl() {
   return (process.env.TREASURY_PRIME_BASE_URL || SANDBOX_BASE_URL).replace(/\/$/, '');
