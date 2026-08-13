@@ -130,6 +130,9 @@ try { app.use('/api/transactional-settlement', require(path.join(HD, 'server', '
 // Rally Protocol — embedded mobile wallet, tap, QR, and gasless payouts
 try { app.use('/api/rally', require(path.join(HD, 'server', 'routes', 'rallyProtocol'))); console.log('[rally] loaded'); } catch(e) { console.warn('[rally]', e.message); }
 
+// Treasury Prime — BaaS accounts, balances, book transfers, ACH, wires (decimal-string amounts)
+try { app.use('/api/treasury-prime', require(path.join(HD, 'server', 'routes', 'treasuryPrime'))); console.log('[treasury-prime] loaded'); } catch(e) { console.warn('[treasury-prime]', e.message); }
+
 // DeFi dApp — dApp login at /dapp, command center at /dashboard; landing page at root; legacy treasury dashboard at /treasury
 function serveDapp(req, res) {
   res.set('Cache-Control', 'no-cache, no-store, must-revalidate');
