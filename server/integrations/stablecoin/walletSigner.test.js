@@ -209,14 +209,18 @@ async function testVaultSigner() {
     );
   });
 
-  // Wrong signer identity: the signature is valid but not for this public key.
+  // Wrong signer identity: well-formed signature, wrong key. Must be rejected
+  // locally rather than submitted and bounced as tx_bad_auth.
   const other = sdk.Keypair.random();
   await withStubbedFetch((url, body) => jsonResponse({
     data: { signature: `vault:v1:${other.sign(Buffer.from(body.input, 'base64')).toString('base64')}` },
   }), async () => {
     const wrongTx = buildTx(kp.publicKey());
-    await signing.createSigner(getConfig()).signTransaction(wrongTx);
-    assert.ok(!sdk.Keypair.fromPublicKey(kp.publicKey()).verify(wrongTx.hash(), wrongTx.signatures[0].signature()));
+    await assert.rejects(
+      signing.createSigner(getConfig()).signTransaction(wrongTx),
+      /does not verify against the distributor public key/
+    );
+    assert.strictEqual(wrongTx.signatures.length, 0);
   });
 
   delete process.env.VAULT_TOKEN;
@@ -280,6 +284,31 @@ async function testConfigValidation() {
   assert.strictEqual(signing.distributorPublicKey(getConfig()), null);
 }
 
+async function testCustodyStatus() {
+  // A public key without the matching secret cannot sign: report it rather than
+  // letting readiness pass and failing at settlement time.
+  resetEnv();
+  process.env.STABLECOIN_DISTRIBUTOR_PUBLIC = sdk.Keypair.random().publicKey();
+  const noSecret = signing.custodyStatus(getConfig());
+  assert.strictEqual(noSecret.backend, 'env');
+  assert.strictEqual(noSecret.custodial, false);
+  assert.match(noSecret.issues.join('|'), /STABLECOIN_DISTRIBUTOR_SECRET is required/);
+
+  resetEnv();
+  process.env.STABLECOIN_DISTRIBUTOR_SECRET = sdk.Keypair.random().secret();
+  assert.deepStrictEqual(signing.custodyStatus(getConfig()).issues, []);
+
+  // An unknown backend must be reported, not thrown, so /health still answers.
+  resetEnv();
+  process.env.STABLECOIN_SIGNER = 'valut';
+  const typo = signing.custodyStatus(getConfig());
+  assert.strictEqual(typo.backend, null);
+  assert.strictEqual(typo.custodial, false);
+  assert.strictEqual(typo.keyInEnvironment, false);
+  assert.strictEqual(typo.distributorPublic, null);
+  assert.match(typo.issues.join('|'), /STABLECOIN_SIGNER must be one of/);
+}
+
 async function testRedaction() {
   resetEnv();
   const { redact } = require('./config');
@@ -300,6 +329,7 @@ async function main() {
     testVaultSigner,
     testExternalSigner,
     testConfigValidation,
+    testCustodyStatus,
     testRedaction,
   ];
   for (const test of tests) {

@@ -88,10 +88,8 @@ class BlockchainEngine {
     if (cfg.mode === 'disabled') issues.push('STABLECOIN_MODE is disabled');
     const custody = signing.custodyStatus(cfg);
     custody.issues.forEach((i) => issues.push(i));
-    if (!custody.distributorPublic) {
-      issues.push(custody.keyInEnvironment
-        ? 'STABLECOIN_DISTRIBUTOR_SECRET is required to sign settlement transactions'
-        : 'STABLECOIN_DISTRIBUTOR_PUBLIC is required when signing with a remote key custodian');
+    if (!custody.distributorPublic && !custody.keyInEnvironment) {
+      issues.push('STABLECOIN_DISTRIBUTOR_PUBLIC is required when signing with a remote key custodian');
     }
     if (isProduction(cfg) && custody.keyInEnvironment) {
       warnings.push('Distributor key is held in the environment; move it to a custodian before mainnet settlement');

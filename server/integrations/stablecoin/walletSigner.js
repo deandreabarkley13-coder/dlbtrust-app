@@ -37,12 +37,17 @@ function requireSdk() {
 
 /**
  * Attach a raw 64-byte Ed25519 signature to a transaction on behalf of a public
- * key we do not hold the secret for.
+ * key we do not hold the secret for. The signature is verified against that key
+ * first, so a spoofed or misconfigured signer fails here rather than as a
+ * tx_bad_auth after submission.
  */
 function attachSignature(tx, publicKey, signature) {
   const s = requireSdk();
   if (!Buffer.isBuffer(signature) || signature.length !== 64) {
     throw new Error(`Signer returned a ${Buffer.isBuffer(signature) ? signature.length : 'non-buffer'} signature; expected 64 bytes`);
+  }
+  if (!s.Keypair.fromPublicKey(publicKey).verify(tx.hash(), signature)) {
+    throw new Error('Signer returned a signature that does not verify against the distributor public key');
   }
   const raw = s.StrKey.decodeEd25519PublicKey(publicKey);
   const hint = raw.slice(-4);
@@ -240,11 +245,18 @@ function custodyStatus(config) {
   } catch (e) {
     issues.push(e.message);
   }
+  let distributorPublic = cfg.distributorPublic || null;
+  if (!distributorPublic && backend) {
+    distributorPublic = distributorPublicKey(cfg);
+  }
+  if (backend === 'env' && !cfg.distributorSecret) {
+    issues.push('STABLECOIN_DISTRIBUTOR_SECRET is required to sign settlement transactions');
+  }
   return {
     backend,
-    custodial: backend !== 'env',
+    custodial: backend === 'vault' || backend === 'external',
     keyInEnvironment: backend === 'env',
-    distributorPublic: distributorPublicKey(cfg),
+    distributorPublic,
     issues,
   };
 }
