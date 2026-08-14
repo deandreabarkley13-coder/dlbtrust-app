@@ -215,8 +215,9 @@ router.get('/webhooks/events', operatorAuth, async (req, res) => {
  * authentication it offers is the HTTP Basic header built from the
  * basic_user/basic_secret stored on the webhook object, so that is what this
  * route compares — in constant time. The legacy x-treasury-prime-secret
- * header is still accepted for internal replays. Outside development the
- * secret is mandatory: without it the endpoint refuses to process anything.
+ * header is still accepted for internal replays. The secret is mandatory:
+ * without it the endpoint refuses to process anything unless a local
+ * operator explicitly sets TREASURY_PRIME_WEBHOOK_ALLOW_UNAUTHENTICATED.
  *
  * The payload itself is never trusted: it carries only an object id, and the
  * object is re-fetched from the API before any status is believed. Treasury
@@ -227,7 +228,7 @@ router.post('/webhooks/receive', writeRateLimiter(), async (req, res) => {
   try {
     const expected = process.env.TREASURY_PRIME_WEBHOOK_SECRET;
     if (!expected) {
-      if (process.env.NODE_ENV === 'production') {
+      if (process.env.TREASURY_PRIME_WEBHOOK_ALLOW_UNAUTHENTICATED !== 'true') {
         return res.status(503).json({ success: false, error: 'TREASURY_PRIME_WEBHOOK_SECRET is not configured' });
       }
       console.warn('[treasury-prime] webhook receiver is unauthenticated: TREASURY_PRIME_WEBHOOK_SECRET is unset');
