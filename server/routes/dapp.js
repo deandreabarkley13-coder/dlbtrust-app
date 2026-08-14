@@ -601,7 +601,8 @@ router.post('/finops-ai/tasks/:id/execute', operatorAuth, writeRateLimiter(), as
 // Granting and revoking authority is a trustee act, so these require admin.
 router.post('/mandates', adminAuth, writeRateLimiter(), async (req, res) => {
   try {
-    const data = await MandateEngine.createMandate({ agent: FinOpsAgent.AGENT_NAME, ...req.body });
+    // The agent a grant applies to is set by the server, never by the caller.
+    const data = await MandateEngine.createMandate({ ...req.body, agent: FinOpsAgent.AGENT_NAME });
     res.status(201).json({ success: true, data });
   } catch (err) { sendError(res, err); }
 });

@@ -195,4 +195,42 @@ for (const status of ['revoked', 'suspended']) {
   assert.notStrictEqual(decisionDigest(null, { ...fields, payee: OTHER }), first);
 }
 
+// ── FinOps intent mapping ──────────────────────────────────────────────────
+{
+  const { FinOpsAgent } = require('./finOpsAgent');
+
+  // The asset checked is the asset that actually settles, not the one asked for:
+  // USDC payouts route to SIT until the USDC pool exists, and a swap settles in
+  // its target asset.
+  const usdcPool = process.env.DLBUSD_USDC_POOL;
+  delete process.env.DLBUSD_USDC_POOL;
+  assert.strictEqual(FinOpsAgent.settlementAsset({ action: 'payment', asset: 'USDC' }), 'SIT');
+  assert.strictEqual(
+    FinOpsAgent.settlementAsset({ action: 'dex_swap', asset: 'DLBUSD', targetAsset: 'ETH' }),
+    'ETH',
+  );
+  if (usdcPool !== undefined) process.env.DLBUSD_USDC_POOL = usdcPool;
+
+  // Amounts finer than a cent are carried through unmeasured rather than
+  // throwing, so the no-mandate path keeps escalating to the trustees.
+  const legs = FinOpsAgent.mandateLegs({ action: 'payment', asset: 'ETH', amount: 0.0015, destination: PAYEE });
+  assert.strictEqual(legs.length, 1);
+  assert.strictEqual(legs[0].amount, null);
+  assert.strictEqual(legs[0].rawAmount, 0.0015);
+
+  // Non-value actions have no legs at all.
+  assert.deepStrictEqual(FinOpsAgent.mandateLegs({ action: 'overview' }), []);
+
+  // A distribution yields one leg per beneficiary so each is checked separately.
+  const dist = FinOpsAgent.mandateLegs({
+    action: 'distribution', asset: 'USDC',
+    beneficiaries: [
+      { address: PAYEE, amountUsd: 100 },
+      { address: OTHER, amountUsd: 250.5 },
+      { address: null, amountUsd: 10 },
+    ],
+  });
+  assert.deepStrictEqual(dist.map(l => [l.amount, l.payee]), [['100.00', PAYEE], ['250.50', OTHER]]);
+}
+
 console.log('Mandate policy validation passed');

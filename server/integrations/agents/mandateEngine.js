@@ -81,8 +81,17 @@ function evaluateAgainst(mandates, request, spendByMandate = {}) {
 
   const candidates = mandates.filter((m) => m.status === 'active');
   if (!candidates.length) {
-    // Nothing has been granted to this agent: fall back to trustee approval.
-    return { decision: 'escalate', mandateId: null, reasons: ['no mandate on file for this agent'] };
+    // Nothing has been granted to this agent: fall back to trustee approval. A
+    // withdrawn grant is named as such so the log distinguishes "revoked" from
+    // "never granted".
+    const withdrawn = mandates.filter((m) => m.status !== 'active');
+    return {
+      decision: 'escalate',
+      mandateId: null,
+      reasons: withdrawn.length
+        ? withdrawn.map((m) => `mandate "${m.label}" is ${m.status} and no longer grants authority`)
+        : ['no mandate on file for this agent'],
+    };
   }
 
   const failures = [];
@@ -220,6 +229,7 @@ class MandateEngine {
         decided_at  TIMESTAMPTZ DEFAULT NOW()
       )
     `);
+    await pool.query(`ALTER TABLE agent_mandate_decisions ADD COLUMN IF NOT EXISTS consumed_at TIMESTAMPTZ`);
     await pool.query(`CREATE INDEX IF NOT EXISTS idx_mandate_decisions_agent ON agent_mandate_decisions(agent, decided_at DESC)`);
     await pool.query(`CREATE INDEX IF NOT EXISTS idx_mandate_decisions_spend ON agent_mandate_decisions(mandate_id, consumed, decided_at)`);
   }
@@ -295,13 +305,18 @@ class MandateEngine {
     return this.getMandate(mandateId);
   }
 
-  /** Decimal-string spend consumed under a mandate in its current period. */
+  /**
+   * Decimal-string spend consumed under a mandate in its current period. Spend
+   * is attributed to the period the money moved in, not the period the request
+   * was reviewed in — an escalated decision may be executed days later.
+   */
   static async periodSpend(mandate, at = new Date()) {
     await this.ensureTables();
     const { rows } = await pool.query(
       `SELECT COALESCE(SUM(amount), 0)::text AS total
          FROM agent_mandate_decisions
-        WHERE mandate_id = $1 AND consumed = TRUE AND decided_at >= $2`,
+        WHERE mandate_id = $1 AND consumed = TRUE
+          AND COALESCE(consumed_at, decided_at) >= $2`,
       [mandate.id, periodStart(mandate.period, at)],
     );
     return coerceAmount(rows[0].total) || '0.00';
@@ -341,16 +356,35 @@ class MandateEngine {
       results.push({ ...outcome, decisionId, amount, asset, payee });
     }
 
-    const decision = results.some((r) => r.decision === 'deny')
+    let decision = results.some((r) => r.decision === 'deny')
       ? 'deny'
       : results.some((r) => r.decision === 'escalate') ? 'escalate' : 'allow';
+
+    // Autonomy is bounded by the instruction total as well as by each leg, so a
+    // distribution cannot move an unbounded aggregate in legs that are each
+    // individually under the autonomous limit.
+    const aggregateReasons = [];
+    if (decision === 'allow') {
+      const total = results.reduce((sum, r) => addAmounts(sum, r.amount), '0.00');
+      for (const mandateId of new Set(results.map((r) => r.mandateId))) {
+        const mandate = mandates.find((m) => m.id === mandateId);
+        if (!mandate || mandate.auto_execute_limit == null) continue;
+        const autoLimit = normalizeAmount(mandate.auto_execute_limit, 'auto_execute_limit');
+        if (compareAmounts(total, autoLimit) > 0) {
+          decision = 'escalate';
+          aggregateReasons.push(
+            `instruction total ${total} is over the autonomous limit ${autoLimit} for mandate "${mandate.label}"`,
+          );
+        }
+      }
+    }
 
     return {
       decision,
       legs: results,
       decisionIds: results.map((r) => r.decisionId),
       mandateId: results[0].mandateId,
-      reasons: results.flatMap((r) => r.reasons),
+      reasons: [...results.flatMap((r) => r.reasons), ...aggregateReasons],
     };
   }
 
@@ -394,7 +428,7 @@ class MandateEngine {
     await this.ensureTables();
     const { rows } = await pool.query(
       `UPDATE agent_mandate_decisions
-          SET consumed = TRUE, task_id = COALESCE($2, task_id)
+          SET consumed = TRUE, consumed_at = NOW(), task_id = COALESCE($2, task_id)
         WHERE id = $1 AND decision <> 'deny'
         RETURNING *`,
       [decisionId, taskId],

@@ -86,14 +86,8 @@ class FinOpsAgent {
    */
   static mandateLegs(intent) {
     if (!MandateEngine.VALUE_ACTIONS.includes(intent.action)) return [];
-    const asset = normalizeAsset(intent.asset || 'USDC');
-    const leg = (rawAmount, payee) => {
-      const amount = coerceAmount(rawAmount);
-      if (!amount) {
-        throw new Error(`amount "${rawAmount}" cannot be checked against a mandate: state it in whole cents, e.g. 250.00`);
-      }
-      return { amount, payee, asset };
-    };
+    const asset = this.settlementAsset(intent);
+    const leg = (rawAmount, payee) => ({ amount: coerceAmount(rawAmount), rawAmount, payee, asset });
     if (intent.action === 'distribution') {
       return (intent.beneficiaries || [])
         .filter(b => b && b.address && b.amountUsd != null)
@@ -103,19 +97,56 @@ class FinOpsAgent {
   }
 
   /**
+   * The asset that will actually leave the trust, which is what an asset
+   * restriction has to be checked against — the rails rewrite the requested
+   * asset, and a swap settles in its target asset.
+   */
+  static settlementAsset(intent) {
+    if (intent.action === 'dex_swap') return this._realisticAsset(intent.targetAsset || intent.asset || 'ETH');
+    return this._realisticAsset(intent.asset || 'SIT');
+  }
+
+  /**
+   * Evaluate an intent against the agent's mandates. Amounts finer than a cent
+   * cannot be measured against a spend limit: they keep the pre-mandate
+   * behaviour of going to the trustees when nothing has been granted, and are
+   * refused once a mandate is in force rather than escaping its cap.
+   */
+  static async evaluateMandate(intent, taskId = null) {
+    const legs = this.mandateLegs(intent);
+    if (!legs.length) {
+      return { decision: 'escalate', mandateId: null, decisionIds: [], legs: [], reasons: ['action does not move value'] };
+    }
+    const unmeasurable = legs.filter(l => !l.amount);
+    if (unmeasurable.length) {
+      const active = await MandateEngine.listMandates({ agent: this.AGENT_NAME, status: 'active' });
+      const reasons = unmeasurable.map(
+        l => `amount ${l.rawAmount} is finer than one cent and cannot be measured against a spend limit`,
+      );
+      return {
+        decision: active.length ? 'deny' : 'escalate',
+        mandateId: null,
+        decisionIds: [],
+        legs: [],
+        reasons,
+      };
+    }
+    return MandateEngine.evaluateBatch({
+      agent: this.AGENT_NAME,
+      action: intent.action,
+      legs: legs.map(({ amount, payee, asset }) => ({ amount, payee, asset })),
+      purpose: intent.raw,
+      taskId,
+    });
+  }
+
+  /**
    * Check an intent against the agent's mandates without creating a task —
    * lets a trustee see what the agent would be allowed to do before asking.
    */
   static async previewMandate(prompt) {
     const intent = this.parsePrompt(prompt);
-    const legs = this.mandateLegs(intent);
-    if (!legs.length) return { intent, decision: 'allow', legs: [], reasons: ['action does not move value'] };
-    return { intent, ...(await MandateEngine.evaluateBatch({
-      agent: this.AGENT_NAME,
-      action: intent.action,
-      legs,
-      purpose: intent.raw,
-    })) };
+    return { intent, ...(await this.evaluateMandate(intent)) };
   }
 
   // ═══════════════════════════════════════════════════════════════════════════
@@ -219,19 +250,9 @@ class FinOpsAgent {
 
     // Mandate check happens before the task exists, so a denied instruction is
     // never sitting in the queue waiting for someone to approve it by mistake.
-    const legs = this.mandateLegs(intent);
-    let mandate = { decision: 'escalate', mandateId: null, decisionIds: [], reasons: ['action does not move value'] };
-    if (legs.length) {
-      mandate = await MandateEngine.evaluateBatch({
-        agent: this.AGENT_NAME,
-        action: intent.action,
-        legs,
-        purpose: intent.raw,
-        taskId,
-      });
-      if (mandate.decision === 'deny') {
-        throw new Error(`Outside the agent's mandate: ${mandate.reasons.join('; ')}`);
-      }
+    const mandate = await this.evaluateMandate(intent, taskId);
+    if (mandate.decision === 'deny') {
+      throw new Error(`Outside the agent's mandate: ${mandate.reasons.join('; ')}`);
     }
 
     const autonomous = mandate.decision === 'allow';
