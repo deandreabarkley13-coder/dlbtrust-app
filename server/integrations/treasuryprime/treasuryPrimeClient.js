@@ -210,11 +210,31 @@ function createWire({ amount, accountId, counterpartyId, memo, purpose, instruct
 // ─── Reference data & webhooks ──────────────────────────────────────────────
 const lookupRoutingNumber = (routingNumber) => request('GET', `/routing_number/${encodeURIComponent(routingNumber)}`);
 const listWebhooks = async () => unwrapList(await request('GET', '/webhook'));
-const createWebhook = ({ url, enabledEvents }) => {
+/**
+ * Register one webhook per event. Treasury Prime's webhook object holds a
+ * single `event`, not a list, and authenticates its own callbacks with the
+ * basic_user/basic_secret pair recorded here: every notification to this URL
+ * then carries `Authorization: Basic base64(basic_user:basic_secret)`, which
+ * is the only way the receiver can tell a real callback from a forged one.
+ * basic_secret is write-only — it reads back as null.
+ */
+const createWebhook = ({ url, event, basicUser, basicSecret, userdata }) => {
   if (!url) throw new Error('url is required');
-  const body = { url };
-  if (enabledEvents) body.enabled_events = enabledEvents;
+  if (!event) throw new Error('event is required');
+  const body = { url, event };
+  if (basicUser) body.basic_user = basicUser;
+  if (basicSecret) body.basic_secret = basicSecret;
+  if (userdata) body.userdata = userdata;
   return request('POST', '/webhook', body);
+};
+const updateWebhook = (id, patch = {}) => {
+  if (!id) throw new Error('id is required');
+  const body = {};
+  if (patch.url) body.url = patch.url;
+  if (patch.status) body.status = patch.status;
+  if (patch.basicUser) body.basic_user = patch.basicUser;
+  if (patch.basicSecret) body.basic_secret = patch.basicSecret;
+  return request('PATCH', `/webhook/${encodeURIComponent(id)}`, body);
 };
 const deleteWebhook = (id) => request('DELETE', `/webhook/${encodeURIComponent(id)}`);
 
@@ -246,5 +266,6 @@ module.exports = {
   lookupRoutingNumber,
   listWebhooks,
   createWebhook,
+  updateWebhook,
   deleteWebhook,
 };

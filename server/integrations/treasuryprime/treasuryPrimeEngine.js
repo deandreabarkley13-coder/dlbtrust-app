@@ -435,35 +435,36 @@ class TreasuryPrimeEngine {
     return client.createWebhook(input);
   }
 
+  static async updateWebhook(id, patch) {
+    return client.updateWebhook(id, patch);
+  }
+
   static async deleteWebhook(id) {
     return client.deleteWebhook(id);
   }
 
   /**
-   * Ingest a Treasury Prime webhook. The event payload carries the changed
-   * object, so the status is persisted from the event and the object is then
-   * re-fetched to confirm — a webhook alone is never treated as settlement.
+   * Ingest a Treasury Prime webhook. The notification is only a pointer —
+   *   { event: "book.update", op: "update", id: "book_…", url: "…" }
+   * carrying no status of its own — so the object is always re-fetched from
+   * the API and a webhook alone is never treated as settlement. Deliveries
+   * are not ordered and may repeat, which is another reason the fetched
+   * object, not the payload, decides the stored status.
    */
   static async handleWebhook(payload = {}) {
-    const eventType = payload.event_type || payload.type || null;
-    const object = payload.data || payload.object || payload[eventType] || {};
-    const objectId = object.id || payload.object_id || null;
+    const eventType = payload.event || payload.event_type || payload.type || null;
+    const object = payload.data || payload.object || (eventType ? payload[eventType] : null) || {};
+    const objectId = payload.id || object.id || payload.object_id || null;
     let objectKind = null;
     if (typeof objectId === 'string') {
       if (objectId.startsWith('ach_')) objectKind = 'ach';
       else if (objectId.startsWith('wire_')) objectKind = 'wire';
       else if (objectId.startsWith('book_')) objectKind = 'book';
     }
-    const eventId = payload.id || payload.event_id || `evt-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-
-    if (pool) {
-      await this.ensureTables();
-      await query(`
-        INSERT INTO treasury_prime_webhook_events (id, event_type, object_id, object_kind, status, raw, received_at)
-        VALUES ($1,$2,$3,$4,$5,$6::jsonb,NOW())
-        ON CONFLICT (id) DO NOTHING
-      `, [eventId, eventType, objectId, objectKind, object.status || null, safeJson(payload)]).catch(() => {});
-    }
+    // Treasury Prime does not send a delivery id, and `payload.id` is the
+    // object's id — reusing it would collapse every event for one transfer
+    // into a single row and drop the retries.
+    const eventId = payload.event_id || `evt-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 
     let refreshed = null;
     let refreshError = null;
@@ -474,7 +475,18 @@ class TreasuryPrimeEngine {
         refreshError = err.message;
       }
     }
-    return { eventId, eventType, objectId, objectKind, refreshed, refreshError };
+    const status = (refreshed && refreshed.status) || object.status || null;
+
+    if (pool) {
+      await this.ensureTables();
+      await query(`
+        INSERT INTO treasury_prime_webhook_events (id, event_type, object_id, object_kind, status, raw, received_at)
+        VALUES ($1,$2,$3,$4,$5,$6::jsonb,NOW())
+        ON CONFLICT (id) DO NOTHING
+      `, [eventId, eventType, objectId, objectKind, status, safeJson(payload)]).catch(() => {});
+    }
+
+    return { eventId, eventType, objectId, objectKind, status, refreshed, refreshError };
   }
 
   // ─── GL reconciliation ────────────────────────────────────────────────────

@@ -190,12 +190,107 @@ async function testEngineGuards() {
   delete process.env.TREASURY_PRIME_API_SECRET;
 }
 
+/**
+ * Webhooks: registration carries the credentials Treasury Prime will present
+ * back, and a notification is only a pointer to an object that must be
+ * re-fetched.
+ */
+async function testWebhooks() {
+  process.env.TREASURY_PRIME_API_KEY_ID = 'key_test_001';
+  process.env.TREASURY_PRIME_API_SECRET = 'secret_test';
+  process.env.TREASURY_PRIME_WEBHOOK_USER = 'dlbtrust';
+  process.env.TREASURY_PRIME_WEBHOOK_SECRET = 'whsec_test';
+  const webhookAuth = require('./webhookAuth');
+  const { TreasuryPrimeEngine } = require('./treasuryPrimeEngine');
+
+  // One event per webhook object, plus the callback credentials.
+  await withStubbedFetch({ id: 'webhook_1', event: 'book.update', basic_secret: null }, async (calls) => {
+    await client.createWebhook({
+      url: 'https://trust.example/api/treasury-prime/webhooks/receive',
+      event: 'book.update',
+      basicUser: 'dlbtrust',
+      basicSecret: 'whsec_test',
+    });
+    assert.deepStrictEqual(calls[0].body, {
+      url: 'https://trust.example/api/treasury-prime/webhooks/receive',
+      event: 'book.update',
+      basic_user: 'dlbtrust',
+      basic_secret: 'whsec_test',
+    });
+    assert.strictEqual(calls[0].method, 'POST');
+  });
+
+  assert.throws(() => client.createWebhook({ url: 'https://trust.example/hook' }), /event is required/);
+  assert.throws(() => client.createWebhook({ event: 'book.update' }), /url is required/);
+
+  await withStubbedFetch({ id: 'webhook_1', status: 'enabled' }, async (calls) => {
+    await client.updateWebhook('webhook_1', { status: 'enabled' });
+    assert.strictEqual(calls[0].method, 'PATCH');
+    assert.deepStrictEqual(calls[0].body, { status: 'enabled' });
+  });
+
+  // The Basic header Treasury Prime sends is the only authentication available.
+  const basic = `Basic ${Buffer.from('dlbtrust:whsec_test').toString('base64')}`;
+  assert.strictEqual(webhookAuth.isAuthentic({ authorization: basic }, 'whsec_test'), true);
+  assert.strictEqual(webhookAuth.isAuthentic({ authorization: basic.replace('Basic', 'basic') }, 'whsec_test'), true);
+  assert.strictEqual(webhookAuth.isAuthentic({ authorization: `Basic ${Buffer.from('dlbtrust:wrong').toString('base64')}` }, 'whsec_test'), false);
+  assert.strictEqual(webhookAuth.isAuthentic({ authorization: `Basic ${Buffer.from('someoneelse:whsec_test').toString('base64')}` }, 'whsec_test'), false);
+  assert.strictEqual(webhookAuth.isAuthentic({}, 'whsec_test'), false);
+  assert.strictEqual(webhookAuth.isAuthentic({ authorization: basic }, ''), false);
+  // Internal replays may still use the shared-secret header.
+  assert.strictEqual(webhookAuth.isAuthentic({ 'x-treasury-prime-secret': 'whsec_test' }, 'whsec_test'), true);
+  assert.strictEqual(webhookAuth.isAuthentic({ 'x-treasury-prime-secret': 'nope' }, 'whsec_test'), false);
+
+  // Real payload shape: { event, op, id, url } — no status, so the object is
+  // re-fetched and the fetched status is what gets recorded.
+  await withStubbedFetch(
+    { id: 'book_1', amount: '250.00', status: 'sent', from_account_id: 'acct_a', to_account_id: 'acct_b' },
+    async (calls) => {
+      const result = await TreasuryPrimeEngine.handleWebhook({
+        event: 'book.update',
+        op: 'update',
+        id: 'book_1',
+        url: 'https://api.sandbox.treasuryprime.com/book/book_1',
+      });
+      assert.strictEqual(result.eventType, 'book.update');
+      assert.strictEqual(result.objectId, 'book_1');
+      assert.strictEqual(result.objectKind, 'book');
+      assert.strictEqual(result.status, 'sent');
+      assert.strictEqual(result.refreshed.amount, '250.00');
+      assert.strictEqual(result.refreshError, null);
+      // The event id must not be the object id, or retries collapse into one row.
+      assert.notStrictEqual(result.eventId, 'book_1');
+      assert.match(calls[0].url, /\/book\/book_1$/);
+    },
+  );
+
+  await withStubbedFetch({ id: 'ach_1', amount: '25.00', direction: 'credit', status: 'settled' }, async () => {
+    const result = await TreasuryPrimeEngine.handleWebhook({ event: 'ach.update', op: 'update', id: 'ach_1' });
+    assert.strictEqual(result.objectKind, 'ach');
+    assert.strictEqual(result.status, 'settled');
+  });
+
+  // Events for objects this engine does not track are recorded, not fetched.
+  await withStubbedFetch({}, async (calls) => {
+    const result = await TreasuryPrimeEngine.handleWebhook({ event: 'account.update', op: 'update', id: 'acct_a' });
+    assert.strictEqual(result.objectKind, null);
+    assert.strictEqual(result.refreshed, null);
+    assert.strictEqual(calls.length, 0);
+  });
+
+  delete process.env.TREASURY_PRIME_API_KEY_ID;
+  delete process.env.TREASURY_PRIME_API_SECRET;
+  delete process.env.TREASURY_PRIME_WEBHOOK_USER;
+  delete process.env.TREASURY_PRIME_WEBHOOK_SECRET;
+}
+
 async function main() {
   const originalEnv = { ...process.env };
   try {
     testDecimalAmounts();
     await testClientPayloads();
     await testEngineGuards();
+    await testWebhooks();
     console.log('Treasury Prime validation passed');
   } finally {
     for (const key of Object.keys(process.env)) {
