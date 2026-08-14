@@ -16,6 +16,7 @@ try {
 }
 
 const { getConfig, isProduction } = require('./config');
+const signing = require('./walletSigner');
 
 function centsToUnits(cents) {
   const value = Number(cents);
@@ -85,7 +86,16 @@ class BlockchainEngine {
     if (!cfg.enabled) issues.push('STABLECOIN_ENABLED is not true');
     if (cfg.mode === 'shadow') warnings.push('Blockchain engine is running in shadow/simulation mode');
     if (cfg.mode === 'disabled') issues.push('STABLECOIN_MODE is disabled');
-    if (!cfg.distributorSecret) issues.push('STABLECOIN_DISTRIBUTOR_SECRET is required to sign settlement transactions');
+    const custody = signing.custodyStatus(cfg);
+    custody.issues.forEach((i) => issues.push(i));
+    if (!custody.distributorPublic) {
+      issues.push(custody.keyInEnvironment
+        ? 'STABLECOIN_DISTRIBUTOR_SECRET is required to sign settlement transactions'
+        : 'STABLECOIN_DISTRIBUTOR_PUBLIC is required when signing with a remote key custodian');
+    }
+    if (isProduction(cfg) && custody.keyInEnvironment) {
+      warnings.push('Distributor key is held in the environment; move it to a custodian before mainnet settlement');
+    }
     if (!cfg.assetCode) issues.push('STABLECOIN_ASSET_CODE is required');
     if (isProduction(cfg) && !cfg.issuerPublic && !cfg.issuerSecret) {
       issues.push('Mainnet USDC requires STABLECOIN_ISSUER_PUBLIC (Circle issuer)');
@@ -114,23 +124,23 @@ class BlockchainEngine {
       assetCode: cfg.assetCode,
       horizonUrl: cfg.horizonUrl,
       horizonOk,
-      distributorPublic: cfg.distributorPublic || (cfg.distributorSecret ? loadKeypair(cfg.distributorSecret).publicKey() : null),
+      signer: { backend: custody.backend, custodial: custody.custodial },
+      distributorPublic: custody.distributorPublic,
     };
   }
 
   async _loadDistributor() {
     if (!sdk) throw new Error('Stellar SDK is not installed');
-    if (!this.cfg.distributorSecret) throw new Error('STABLECOIN_DISTRIBUTOR_SECRET not configured');
-    const kp = loadKeypair(this.cfg.distributorSecret);
-    await this._fundIfNeeded(kp);
-    const account = await this.server.loadAccount(kp.publicKey());
-    return { kp, account };
+    const signer = signing.createSigner(this.cfg);
+    await this._fundIfNeeded(signer.publicKey());
+    const account = await this.server.loadAccount(signer.publicKey());
+    return { signer, account };
   }
 
-  async _ensureTrustline(kp) {
+  async _ensureTrustline(signer) {
     if (!sdk || !this.cfg.issuerPublic) return;
     try {
-      const account = await this.server.loadAccount(kp.publicKey());
+      const account = await this.server.loadAccount(signer.publicKey());
       const trustline = account.balances.find(
         (b) => b.asset_code === this.cfg.assetCode && b.asset_issuer === this.cfg.issuerPublic
       );
@@ -142,19 +152,19 @@ class BlockchainEngine {
         .addOperation(sdk.Operation.changeTrust({ asset: getAsset(this.cfg) }))
         .setTimeout(60)
         .build();
-      tx.sign(kp);
+      await signer.signTransaction(tx);
       await this.server.submitTransaction(tx);
     } catch (e) {
       console.warn('[blockchainEngine] trustline ensure failed:', e.message);
     }
   }
 
-  async _fundIfNeeded(kp) {
+  async _fundIfNeeded(publicKey) {
     if (isProduction(this.cfg)) return;
     try {
-      await this.server.loadAccount(kp.publicKey());
+      await this.server.loadAccount(publicKey);
     } catch (e) {
-      if (this.cfg.friendbotUrl) await friendbot(kp.publicKey());
+      if (this.cfg.friendbotUrl) await friendbot(publicKey);
     }
   }
 
@@ -255,9 +265,9 @@ class BlockchainEngine {
       throw new Error('destination is not a valid Stellar public key');
     }
 
-    const { kp, account } = await this._loadDistributor();
-    await this._ensureTrustline(kp);
-    await this._fundIfNeeded(kp);
+    const { signer, account } = await this._loadDistributor();
+    await this._ensureTrustline(signer);
+    await this._fundIfNeeded(signer.publicKey());
     await this.ensureDestinationTrustline({ destination: destKey, destinationSecret });
 
     const amount = centsToUnits(amountCents);
@@ -274,7 +284,7 @@ class BlockchainEngine {
     if (memo) builder.addMemo(sdk.Memo.text(String(memo).slice(0, 28)));
 
     const tx = builder.build();
-    tx.sign(kp);
+    await signer.signTransaction(tx);
 
     const start = Date.now();
     const res = await this.server.submitTransaction(tx);
