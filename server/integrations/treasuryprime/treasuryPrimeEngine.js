@@ -135,6 +135,8 @@ class TreasuryPrimeEngine {
       configured: client.isConfigured(),
       baseUrl: client.baseUrl(),
       environment: client.isProduction() ? 'production' : 'sandbox',
+      // On production, originations stay blocked until this is explicitly on.
+      movementEnabled: !client.isProduction() || client.productionMovementEnabled(),
       amountFormat: 'decimal-string',
       reachable: false,
       apiVersion: null,

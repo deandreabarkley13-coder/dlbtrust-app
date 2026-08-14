@@ -42,6 +42,25 @@ function credentials() {
   return Buffer.from(`${keyId}:${secret}`).toString('base64');
 }
 
+/**
+ * Reads against production are harmless; originations are not. Pointing
+ * TREASURY_PRIME_BASE_URL at production is therefore not by itself consent to
+ * move real money — TREASURY_PRIME_ALLOW_PRODUCTION must also be "true".
+ */
+function productionMovementEnabled() {
+  return process.env.TREASURY_PRIME_ALLOW_PRODUCTION === 'true';
+}
+
+const MOVEMENT_PATH_RE = /^\/(book|ach|wire)(\/|$)/;
+
+function assertMovementAllowed(method, path) {
+  if (method !== 'POST' || !MOVEMENT_PATH_RE.test(path)) return;
+  if (!isProduction() || productionMovementEnabled()) return;
+  throw new Error(
+    `Refusing to originate ${path} against production Treasury Prime: set TREASURY_PRIME_ALLOW_PRODUCTION=true to move real money`
+  );
+}
+
 function isConfigured() {
   return !!(process.env.TREASURY_PRIME_API_KEY_ID && process.env.TREASURY_PRIME_API_SECRET);
 }
@@ -57,6 +76,7 @@ function buildQuery(params = {}) {
 }
 
 async function request(method, path, body) {
+  assertMovementAllowed(method, path);
   const url = `${baseUrl()}${path}`;
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), DEFAULT_TIMEOUT_MS);
@@ -223,6 +243,7 @@ module.exports = {
   PRODUCTION_BASE_URL,
   baseUrl,
   isProduction,
+  productionMovementEnabled,
   isConfigured,
   request,
   unwrapList,
