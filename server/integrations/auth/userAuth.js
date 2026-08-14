@@ -16,6 +16,7 @@ const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const crypto = require('crypto');
 const pool = require('../bonds/pgPool');
+const { getTrusteeByRole } = require('../dapp/trustees');
 
 const BCRYPT_ROUNDS = 12;
 const JWT_SECRET = process.env.JWT_SECRET || crypto.randomBytes(64).toString('hex');
@@ -92,10 +93,13 @@ class UserAuth {
       console.log('[auth] Default admin user created (username: admin)');
     }
 
-    // Seed trustee checker as an admin user when credentials are configured
-    const checkerEmail = (process.env.TRUST_CHECKER_EMAIL || 'dbarkley1130@gmail.com').toLowerCase().trim();
-    const checkerName = process.env.TRUST_CHECKER_NAME || 'DeAndrea Barkley';
-    const checkerPassword = process.env.TRUST_CHECKER_ADMIN_PASSWORD || process.env.ADMIN_SECRET_TOKEN;
+    // Seed trustee checker as an admin user when an explicit password is configured.
+    // The checker email/name default to the trustee config in integrations/dapp/trustees.js,
+    // but can be overridden via env. We intentionally do NOT fall back to ADMIN_SECRET_TOKEN.
+    const checker = getTrusteeByRole('checker') || {};
+    const checkerEmail = (process.env.TRUST_CHECKER_EMAIL || checker.email || '').toLowerCase().trim();
+    const checkerName = process.env.TRUST_CHECKER_NAME || checker.name || 'Trustee Checker';
+    const checkerPassword = process.env.TRUST_CHECKER_ADMIN_PASSWORD;
     if (checkerEmail && checkerPassword && checkerPassword.length >= 8) {
       const existingChecker = await pool.query('SELECT id FROM auth_users WHERE username = $1', [checkerEmail]);
       if (existingChecker.rows.length === 0) {
@@ -108,6 +112,8 @@ class UserAuth {
         });
         console.log('[auth] Trustee checker admin user created');
       }
+    } else if (checkerEmail) {
+      console.log('[auth] Trustee checker admin user not seeded: set TRUST_CHECKER_ADMIN_PASSWORD to a value with at least 8 characters');
     }
   }
 
