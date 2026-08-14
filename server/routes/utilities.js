@@ -22,10 +22,18 @@ function getUserId(req) {
   return String(u.username || u.userId || u.id || u.email || 'operator');
 }
 
+function isAdmin(req) {
+  const u = req.user || {};
+  if (u.role === 'admin') return true;
+  if (Array.isArray(u.roles) && u.roles.includes('admin')) return true;
+  return false;
+}
+
 // Live aggregated system status
 router.get('/status', operatorAuth, async (req, res) => {
   try {
-    const data = await OperationalUtilitiesEngine.getLiveStatus();
+    let data = await OperationalUtilitiesEngine.getLiveStatus();
+    if (!isAdmin(req)) data = OperationalUtilitiesEngine.redactForOperator(data);
     res.json({ success: true, data });
   } catch (err) { sendError(res, err); }
 });
@@ -33,7 +41,8 @@ router.get('/status', operatorAuth, async (req, res) => {
 // Quick health snapshot
 router.get('/health', operatorAuth, async (req, res) => {
   try {
-    const data = await OperationalUtilitiesEngine.getHealthSnapshot();
+    let data = await OperationalUtilitiesEngine.getHealthSnapshot();
+    if (!isAdmin(req)) data = OperationalUtilitiesEngine.redactForOperator(data);
     res.json({ success: true, data });
   } catch (err) { sendError(res, err); }
 });
@@ -41,7 +50,8 @@ router.get('/health', operatorAuth, async (req, res) => {
 // Module-by-module status
 router.get('/modules', operatorAuth, async (req, res) => {
   try {
-    const data = await OperationalUtilitiesEngine.getModuleStatus();
+    let data = await OperationalUtilitiesEngine.getModuleStatus();
+    if (!isAdmin(req)) data = OperationalUtilitiesEngine.redactForOperator(data);
     res.json({ success: true, data });
   } catch (err) { sendError(res, err); }
 });
@@ -68,8 +78,8 @@ router.post('/schedule/:utility', adminAuth, writeRateLimiter(), async (req, res
     const { utility } = req.params;
     const { enabled, interval_ms } = req.body || {};
     const data = await OperationalUtilitiesEngine.updateSchedule(utility, {
-      enabled: typeof enabled === 'boolean' ? enabled : true,
-      interval_ms: Number(interval_ms) || undefined,
+      enabled: typeof enabled === 'boolean' ? enabled : null,
+      interval_ms: Number(interval_ms) > 0 ? Number(interval_ms) : null,
     });
     res.json({ success: true, data });
   } catch (err) { sendError(res, err); }

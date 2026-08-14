@@ -676,7 +676,11 @@ initializeDatabase().then(function() {
   // Start operational utilities scheduler (live status + safe utilities)
   try {
     var OperationalUtilitiesEngine = require(path.join(HD, 'server', 'integrations', 'utilities', 'operationalUtilitiesEngine')).OperationalUtilitiesEngine;
-    OperationalUtilitiesEngine.startScheduler();
+    if (String(process.env.OPERATIONAL_UTILITIES_AUTO_RUN).toLowerCase() !== 'false') {
+      OperationalUtilitiesEngine.startScheduler();
+    } else {
+      console.log('[operational-utilities] auto-start disabled');
+    }
   } catch(e) { console.warn('[operational-utilities-scheduler]', e.message); }
 
   // Start trust cash sweep (hands-off fixed-income cash → Eaton Trust Checking).

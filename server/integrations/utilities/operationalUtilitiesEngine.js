@@ -40,13 +40,17 @@ const DEFAULT_SCHEDULE = [
 
 let _schedulerInterval = null;
 let _running = new Set();
+let _schedulerTickMs = null;
+let _schedulerStartedAt = null;
+
+const UNSCHEDULABLE_UTILITIES = new Set(['backup_full', 'export_system', 'sweep', 'bond_accrual', 'coupon_payout']);
 
 function safeRequire(relPath) {
   try { return require(relPath); } catch (e) { return null; }
 }
 
-function nowMs() {
-  return Number(process.env.OPERATIONAL_UTILITIES_INTERVAL_MS || 15 * 60 * 1000);
+function resolveTickMs(intervalMs) {
+  return Number(intervalMs) || Number(process.env.OPERATIONAL_UTILITIES_SCHEDULER_TICK_MS) || Number(process.env.OPERATIONAL_UTILITIES_INTERVAL_MS) || 60000;
 }
 
 class OperationalUtilitiesEngine {
@@ -95,10 +99,11 @@ class OperationalUtilitiesEngine {
 
   static async updateSchedule(utility, fields) {
     const res = await pool.query(
-      'UPDATE operational_utility_schedule SET enabled = $2, interval_ms = $3, last_run_at = COALESCE($4, last_run_at) ' +
+      'UPDATE operational_utility_schedule SET enabled = COALESCE($2, enabled), interval_ms = COALESCE($3, interval_ms), last_run_at = COALESCE($4, last_run_at) ' +
       'WHERE utility = $1 RETURNING *',
-      [utility, fields.enabled, fields.interval_ms, fields.last_run_at || null]
+      [utility, fields.enabled == null ? null : fields.enabled, fields.interval_ms == null ? null : fields.interval_ms, fields.last_run_at || null]
     );
+    if (!res.rowCount) throw new Error('Utility schedule not found: ' + utility);
     return res.rows[0];
   }
 
@@ -264,6 +269,20 @@ class OperationalUtilitiesEngine {
     return modules;
   }
 
+  static redactForOperator(obj) {
+    if (obj == null || typeof obj !== 'object') return obj;
+    if (Array.isArray(obj)) return obj.map(OperationalUtilitiesEngine.redactForOperator);
+    const out = {};
+    for (const [k, v] of Object.entries(obj)) {
+      if ((k === 'error' || k === 'reason') && typeof v === 'string') {
+        out[k] = '<redacted>';
+      } else {
+        out[k] = OperationalUtilitiesEngine.redactForOperator(v);
+      }
+    }
+    return out;
+  }
+
   static async getLiveStatus() {
     const [health, modules, runs, schedule] = await Promise.all([
       OperationalUtilitiesEngine.getHealthSnapshot(),
@@ -335,31 +354,55 @@ class OperationalUtilitiesEngine {
     return { timestamp: new Date().toISOString(), includeDangerous: Boolean(opts.includeDangerous), results };
   }
 
-  static async startScheduler(intervalMs) {
+  static startScheduler(intervalMs) {
     OperationalUtilitiesEngine.stopScheduler();
-    if (String(process.env.OPERATIONAL_UTILITIES_AUTO_RUN).toLowerCase() === 'false') {
-      console.log('[operational-utilities] scheduler disabled (OPERATIONAL_UTILITIES_AUTO_RUN=false)');
-      return;
-    }
-    const interval = Number(intervalMs) > 0 ? Number(intervalMs) : nowMs();
-    console.log('[operational-utilities] scheduler starting, interval=' + interval + 'ms');
+    const tick = resolveTickMs(intervalMs);
+    _schedulerTickMs = tick;
+    _schedulerStartedAt = Date.now();
+    console.log('[operational-utilities] scheduler starting, tick=' + tick + 'ms');
     _schedulerInterval = setInterval(async () => {
       try {
-        const summary = await OperationalUtilitiesEngine.runAll({}, 'scheduler');
-        console.log('[operational-utilities] scheduled run complete:', Object.keys(summary.results).length, 'utilities');
+        await OperationalUtilitiesEngine._runScheduledUtilities();
       } catch (e) {
-        console.warn('[operational-utilities] scheduled run failed:', e.message);
+        console.warn('[operational-utilities] scheduled tick failed:', e.message);
       }
-    }, interval);
+    }, tick);
     if (_schedulerInterval.unref) _schedulerInterval.unref();
+  }
+
+  static async _runScheduledUtilities() {
+    const schedule = await OperationalUtilitiesEngine.getSchedule();
+    const now = Date.now();
+    for (const row of schedule) {
+      if (!row.enabled || UNSCHEDULABLE_UTILITIES.has(row.utility)) continue;
+      const last = row.last_run_at ? new Date(row.last_run_at).getTime() : 0;
+      if ((now - last) < Number(row.interval_ms || 0)) continue;
+      if (_running.has(row.utility)) continue;
+      try {
+        await OperationalUtilitiesEngine.runUtility(row.utility, {}, 'scheduler');
+      } catch (e) {
+        console.warn('[operational-utilities] scheduled utility failed:', row.utility, e.message);
+      }
+      try {
+        await OperationalUtilitiesEngine.updateSchedule(row.utility, { last_run_at: new Date().toISOString() });
+      } catch (e) {
+        console.warn('[operational-utilities] failed to update last_run_at:', e.message);
+      }
+    }
   }
 
   static stopScheduler() {
     if (_schedulerInterval) { clearInterval(_schedulerInterval); _schedulerInterval = null; }
+    _schedulerTickMs = null;
+    _schedulerStartedAt = null;
   }
 
   static getSchedulerStatus() {
-    return { running: _schedulerInterval !== null, intervalMs: _schedulerInterval ? nowMs() : null };
+    return {
+      running: _schedulerInterval !== null,
+      tickMs: _schedulerTickMs,
+      startedAt: _schedulerStartedAt ? new Date(_schedulerStartedAt).toISOString() : null,
+    };
   }
 
   // ─── Individual utility implementations ─────────────────────────────────────
@@ -385,7 +428,7 @@ class OperationalUtilitiesEngine {
   static async _runSweep(opts) {
     const sweep = safeRequire('../payments/trustSweepScheduler');
     if (!sweep || typeof sweep.runOnce !== 'function') throw new Error('sweep scheduler unavailable');
-    return await sweep.runOnce({ force: true, initiated_by: 'operational-utilities', ...opts });
+    return await sweep.runOnce({ initiated_by: 'operational-utilities', ...opts });
   }
 
   static async _runReconcile() {
