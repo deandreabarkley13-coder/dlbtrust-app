@@ -91,6 +91,24 @@ class UserAuth {
       });
       console.log('[auth] Default admin user created (username: admin)');
     }
+
+    // Seed trustee checker as an admin user when credentials are configured
+    const checkerEmail = (process.env.TRUST_CHECKER_EMAIL || 'dbarkley1130@gmail.com').toLowerCase().trim();
+    const checkerName = process.env.TRUST_CHECKER_NAME || 'DeAndrea Barkley';
+    const checkerPassword = process.env.TRUST_CHECKER_ADMIN_PASSWORD || process.env.ADMIN_SECRET_TOKEN;
+    if (checkerEmail && checkerPassword && checkerPassword.length >= 8) {
+      const existingChecker = await pool.query('SELECT id FROM auth_users WHERE username = $1', [checkerEmail]);
+      if (existingChecker.rows.length === 0) {
+        await UserAuth.createUser({
+          username: checkerEmail,
+          password: checkerPassword,
+          displayName: checkerName,
+          email: checkerEmail,
+          role: 'admin',
+        });
+        console.log('[auth] Trustee checker admin user created');
+      }
+    }
   }
 
   /**
