@@ -12,6 +12,8 @@
 
 const { query } = require('../bonds/pgPool');
 
+let _ensureTablesPromise = null;
+
 let CanonicalMoneyEngine;
 try { ({ CanonicalMoneyEngine } = require('./canonicalMoneyEngine')); } catch (e) { /* optional */ }
 
@@ -25,6 +27,15 @@ function id(prefix = 'PM') { return `${prefix}-${Date.now()}-${Math.random().toS
 
 class ProgrammableMoneyEngine {
   static async ensureTables() {
+    if (_ensureTablesPromise) return _ensureTablesPromise;
+    _ensureTablesPromise = this._ensureTables().catch((err) => {
+      _ensureTablesPromise = null;
+      throw err;
+    });
+    return _ensureTablesPromise;
+  }
+
+  static async _ensureTables() {
     await query(`
       CREATE TABLE IF NOT EXISTS programmable_money_programs (
         id              TEXT PRIMARY KEY,
@@ -87,6 +98,8 @@ class ProgrammableMoneyEngine {
     if (!name) throw new Error('name is required');
     const numAmount = Number(amount);
     if (!Number.isFinite(numAmount) || numAmount <= 0) throw new Error('amount must be a positive number');
+    const amountString = String(amount).trim();
+    if (!amountString) throw new Error('amount is required');
     if (action && !['convert', 'swap', 'transfer', 'disburse'].includes(action)) throw new Error('action must be one of: convert, swap, transfer, disburse');
     if (targetAsset && typeof targetAsset !== 'string') throw new Error('targetAsset must be a string');
     if (sourceType && typeof sourceType !== 'string') throw new Error('sourceType must be a string');
@@ -101,14 +114,14 @@ class ProgrammableMoneyEngine {
     const proposal = await canonicalConsensusEngine().createProposal({
       category: 'programmable_money',
       title: `Programmable Money: ${name}`,
-      description: description || `Automated ${action} of ${numAmount} ${sourceType || sourceToken || sourceModule || 'funds'} to ${targetAsset}`,
+      description: description || `Automated ${action} of ${amountString} ${sourceType || sourceToken || sourceModule || 'funds'} to ${targetAsset}`,
       payload: {
         programId,
         sourceType,
         sourceAccount,
         sourceToken,
         sourceModule,
-        amount: String(numAmount),
+        amount: amountString,
         targetAsset,
         action,
         conditions,
@@ -122,7 +135,7 @@ class ProgrammableMoneyEngine {
       `INSERT INTO programmable_money_programs
        (id, name, description, source_type, source_account, source_token, source_module, amount, target_asset, action, conditions, schedule_cron, status, proposal_id, created_by)
        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)`,
-      [programId, name, description || '', sourceType || null, sourceAccount || null, sourceToken || null, sourceModule || null, String(numAmount), targetAsset, action, safeJson(conditions || {}), schedule || null, 'pending', proposal.id, createdBy || 'operator']
+      [programId, name, description || '', sourceType || null, sourceAccount || null, sourceToken || null, sourceModule || null, amountString, targetAsset, action, safeJson(conditions || {}), schedule || null, 'pending', proposal.id, createdBy || 'operator']
     );
 
     return { programId, proposalId: proposal.id, proposal };
