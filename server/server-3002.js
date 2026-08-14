@@ -136,6 +136,9 @@ try { app.use('/api/treasury-prime', require(path.join(HD, 'server', 'routes', '
 // Operational Utilities Engine — live status, cross-module reconciliation, and scheduled utilities
 try { app.use('/api/utilities', require(path.join(HD, 'server', 'routes', 'utilities'))); console.log('[utilities] loaded'); } catch(e) { console.warn('[utilities]', e.message); }
 
+// Programmable Money Engine — rule-based, consensus-gated trust asset execution
+try { app.use('/api/programmable-money', require(path.join(HD, 'server', 'routes', 'programmableMoney'))); console.log('[programmable-money] loaded'); } catch(e) { console.warn('[programmable-money]', e.message); }
+
 // DeFi dApp — dApp login at /dapp, command center at /dashboard; landing page at root; legacy treasury dashboard at /treasury
 function serveDapp(req, res) {
   res.set('Cache-Control', 'no-cache, no-store, must-revalidate');
@@ -644,6 +647,12 @@ async function initializeDatabase() {
     await OperationalUtilitiesEngine.ensureTables();
     console.log('[operational-utilities] tables ensured');
   } catch(e) { console.warn('[operational-utilities] table init:', e.message); }
+
+  try {
+    var ProgrammableMoneyEngine = require(path.join(HD, 'server', 'integrations', 'dapp', 'programmableMoneyEngine')).ProgrammableMoneyEngine;
+    await ProgrammableMoneyEngine.ensureTables();
+    console.log('[programmable-money] tables ensured');
+  } catch(e) { console.warn('[programmable-money] table init:', e.message); }
 
   console.log('[startup] All database migrations complete');
 }

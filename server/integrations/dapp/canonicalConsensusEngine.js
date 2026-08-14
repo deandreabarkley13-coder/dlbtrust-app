@@ -284,6 +284,11 @@ class CanonicalConsensusEngine {
         if (!TreasuryOnRampBridgeEngine) throw new Error('TreasuryOnRampBridgeEngine not available');
         return TreasuryOnRampBridgeEngine._execute(proposal);
       }
+      case 'programmable_money': {
+        const { ProgrammableMoneyEngine } = require('./programmableMoneyEngine');
+        if (!ProgrammableMoneyEngine) throw new Error('ProgrammableMoneyEngine not available');
+        return ProgrammableMoneyEngine.activateFromProposal(payload && payload.programId);
+      }
       case 'custom':
         return { status: 'approved', message: 'Custom proposal approved, no automatic execution configured', payload };
       default:
