@@ -12,6 +12,7 @@ const { MoonPayEngine } = require('../integrations/dapp/moonPayEngine');
 const { CoinbaseSpotEngine } = require('../integrations/dapp/coinbaseSpotEngine');
 const { CoinbaseTreasuryBridge } = require('../integrations/dapp/coinbaseTreasuryBridge');
 const { FinOpsAgent } = require('../integrations/agents/finOpsAgent');
+const { MandateEngine } = require('../integrations/agents/mandateEngine');
 const { CalendarEngine } = require('../integrations/calendar/calendarEngine');
 const { MessagingEngine } = require('../integrations/messaging/messagingEngine');
 const { DocumentEngine } = require('../integrations/documents/documentEngine');
@@ -591,6 +592,72 @@ router.post('/finops-ai/tasks/:id/execute', operatorAuth, writeRateLimiter(), as
     const data = await FinOpsAgent.executeTask(req.params.id);
     res.json({ success: true, data });
   } catch (err) { sendError(res, err); }
+});
+
+// ═════════════════════════════════════════════════════════════════════════════
+// Agent mandates — spend limits the agent cannot talk its way around
+// ═════════════════════════════════════════════════════════════════════════════
+
+// Granting and revoking authority is a trustee act, so these require admin.
+router.post('/mandates', adminAuth, writeRateLimiter(), async (req, res) => {
+  try {
+    // The agent a grant applies to is set by the server, never by the caller.
+    const data = await MandateEngine.createMandate({ ...req.body, agent: FinOpsAgent.AGENT_NAME });
+    res.status(201).json({ success: true, data });
+  } catch (err) { sendError(res, err); }
+});
+
+router.get('/mandates', operatorAuth, async (req, res) => {
+  try {
+    const { agent, status } = req.query;
+    res.json({ success: true, data: await MandateEngine.listMandates({ agent, status }) });
+  } catch (err) { sendError(res, err); }
+});
+
+router.get('/mandates/decisions', operatorAuth, async (req, res) => {
+  try {
+    const { agent, mandateId, decision, limit } = req.query;
+    res.json({
+      success: true,
+      data: await MandateEngine.listDecisions({ agent, mandateId, decision, limit: Number(limit) || 100 }),
+    });
+  } catch (err) { sendError(res, err); }
+});
+
+router.get('/mandates/audit/verify', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await MandateEngine.verifyAuditChain() }); } catch (err) { sendError(res, err); }
+});
+
+router.get('/mandates/:id', operatorAuth, async (req, res) => {
+  try {
+    const data = await MandateEngine.getMandate(req.params.id);
+    if (!data) return res.status(404).json({ success: false, error: 'Mandate not found' });
+    res.json({ success: true, data });
+  } catch (err) { sendError(res, err); }
+});
+
+router.post('/mandates/:id/status', adminAuth, writeRateLimiter(), async (req, res) => {
+  try {
+    const data = await MandateEngine.setMandateStatus(req.params.id, req.body.status);
+    res.json({ success: true, data });
+  } catch (err) { sendError(res, err); }
+});
+
+router.get('/mandates/:id/spend', operatorAuth, async (req, res) => {
+  try {
+    const mandate = await MandateEngine.getMandate(req.params.id);
+    if (!mandate) return res.status(404).json({ success: false, error: 'Mandate not found' });
+    const spent = await MandateEngine.periodSpend(mandate);
+    res.json({
+      success: true,
+      data: { mandateId: mandate.id, period: mandate.period, spent, periodLimit: mandate.period_limit },
+    });
+  } catch (err) { sendError(res, err); }
+});
+
+// Dry run: what would the agent be allowed to do with this instruction?
+router.post('/finops-ai/preview', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try { res.json({ success: true, data: await FinOpsAgent.previewMandate(req.body.prompt) }); } catch (err) { sendError(res, err); }
 });
 
 // ═════════════════════════════════════════════════════════════════════════════

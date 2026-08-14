@@ -713,6 +713,90 @@ SELECT fit_id, type, amount_cents, name, memo FROM ofx_transactions;
 - Test CIP enforcement: beneficiary creates a support request (`POST /api/dapp/ptc/request`), two trustees approve (`POST /api/dapp/ptc/requests/:id/approve`), then a trustee executes with `rail=stripe_ach` and an email without an approved CIP record. Expect `success: false` and error containing `CIP required for Stripe Treasury payout`.
 - Local DB gotcha: if `dapp_users` was created from an older migration, it may be missing `roles`, `active_role`, and `is_active` columns and the `role` check constraint can reject trustee roles. Run `DappEngine.ensureTables()` or `ALTER TABLE dapp_users ADD COLUMN ...` and `DROP CONSTRAINT IF EXISTS dapp_users_role_check` to unblock portal login.
 
+## Treasury Prime rails (`/api/treasury-prime`)
+
+- Backend only, no UI: `server/routes/treasuryPrime.js` + `server/integrations/treasuryprime/*`. Test with `curl`/node scripts, not the browser.
+- Offline unit test (fetch stubbed, no network): `node server/integrations/treasuryprime/treasuryPrime.test.js` — prints `Treasury Prime validation passed`.
+- Start the server with TP creds bound from secrets:
+  ```bash
+  set -a; . ./.env.bonds; set +a
+  TREASURY_PRIME_API_KEY_ID=... TREASURY_PRIME_API_SECRET=... \
+    ADMIN_SECRET_TOKEN=test-admin-token-123 PORT=3002 node server/server-3002.js
+  ```
+  Use `setsid nohup ... < /dev/null &` — a plain backgrounded `nohup` from the exec tool gets SIGTERM when the shell call ends, and the server logs `[shutdown] SIGTERM received`.
+- Sandbox host is the default (`https://api.sandbox.treasuryprime.com`). Never set `TREASURY_PRIME_BASE_URL` to production. Keep test transfers ≤ $1.00.
+- All routes need `x-admin-token: <ADMIN_SECRET_TOKEN>` except `POST /api/treasury-prime/webhooks/receive`; missing/wrong token returns 401 `Authentication required`.
+- Webhook auth: only enforced when `TREASURY_PRIME_WEBHOOK_SECRET` is set — start a second server on another port (e.g. 3012) with that env var to test the 401 path without disturbing the main one. Header is `x-treasury-prime-secret` (query `?secret=` also accepted).
+- Money invariant to check: every monetary field (`amount`, `balance`, `available_balance`, `current_balance`, `availableBalance`, `currentBalance`, `last_reconciled_balance`) must be a JSON **string** matching `^-?\d+\.\d{2}$`. A JSON walker over every read route is the fastest way to catch float leakage; Postgres NUMERIC columns come back as strings via `pg`.
+- Reconciliation (`POST /accounts/:id/reconcile`) is stateful: it writes `treasury_prime_accounts.last_reconciled_balance`. The first call after a balance change posts a journal entry; the immediate second call returns `journalResult: "no-change"` with `drift: "0.00"`. To re-test the posting path, move money (a $1 book transfer) or reset `last_reconciled_balance`.
+- Useful psql checks:
+  ```sql
+  SELECT id,kind,amount,status,hold_transaction_id,initiated_by FROM treasury_prime_transfers ORDER BY created_at DESC;
+  SELECT id,event_type,object_id,status FROM treasury_prime_webhook_events ORDER BY received_at DESC;
+  SELECT entry_id,account_code,debit_amount,credit_amount,memo FROM trust_journal_lines ORDER BY id;
+  ```
+- Note: `TrustAccountingEngine.postJournalEntry` internally balances with `parseFloat` and a $0.01 tolerance, so extreme-precision journal drift (many lines, >$0.01 accumulation) is a plausible weak spot to probe.
+
+## Stablecoin distributor signing on a real Stellar testnet (`/api/stablecoin`, dashboard "Stablecoin Payments")
+
+Use this to prove real on-chain settlement (not shadow mode) without touching mainnet or real funds.
+
+- Signing goes through `server/integrations/stablecoin/walletSigner.js` (`STABLECOIN_SIGNER=env|vault|external`); `blockchainEngine.js` calls `signer.signTransaction(tx)`. Unit test: `node server/integrations/stablecoin/walletSigner.test.js`.
+- Server env for a real testnet settle (start with `setsid nohup <script> > /tmp/sc-server.log 2>&1 < /dev/null & disown`, a plain background launch gets SIGTERM):
+  ```bash
+  STABLECOIN_ENABLED=true STABLECOIN_MODE=testnet STABLECOIN_NETWORK=testnet \
+  STABLECOIN_ASSET_CODE=USDC STABLECOIN_SIGNER=env \
+  HORIZON_URL=https://horizon-testnet.stellar.org FRIENDBOT_URL=https://friendbot.stellar.org \
+  STABLECOIN_DISTRIBUTOR_SECRET=<throwaway testnet seed> \
+  ADMIN_SECRET_TOKEN=test-admin-token-123 PORT=3002 node server/server-3002.js
+  ```
+  `STABLECOIN_MODE=shadow` returns fake `shadow-<ts>` hashes with `simulated:true` — it never proves signing, so always use `testnet`.
+- Leave `STABLECOIN_ISSUER_PUBLIC`/`ISSUER_SECRET` unset: `getAsset()` then falls back to native XLM, so no trustline setup is needed even with `STABLECOIN_ASSET_CODE=USDC`. Generate keys with `sdk.Keypair.random()`, store seeds in mode-600 files (e.g. `/tmp/sc-keys/*.secret`), never echo them, and fund both accounts via `https://friendbot.stellar.org?addr=<pub>`.
+- Fund the internal ledger before approving: credit `TREASURY_HOT` (e.g. 2000 cents) or approval fails with "Insufficient treasury balance".
+- UI flow (dashboard → **Stablecoin Payments**): destination public key + amount + Asset `USDC` + Network `Stellar Testnet` → **Get Quote** → **Create Payment** → **Approve** (takes a hold of `total_cents`) → **Settle**. The payments table is at the very bottom of the page (`End` key); Approve/Settle buttons shift position after each refresh, so re-screenshot before clicking.
+- After settle, verify on-chain, not just the UI:
+  ```bash
+  curl -s https://horizon-testnet.stellar.org/transactions/<hash> | jq '.successful,.ledger,.source_account,.signatures|length'
+  curl -s https://horizon-testnet.stellar.org/transactions/<hash>/operations | jq '._embedded.records[]|{type,asset_type,amount,to}'
+  curl -s https://horizon-testnet.stellar.org/accounts/<dest pub> | jq '.balances'
+  ```
+  A broken signer would fail submission with `tx_bad_auth`, so a `successful:true` tx with 1 signature and source == distributor public key is the decisive proof.
+- Ledger check: `GET /api/stablecoin/treasury/TREASURY_HOT` (needs `x-admin-token`) — hold goes 0 → `total_cents` on approve and back to 0 on settle. Note settle debits only `amount_cents` (the fee portion of the hold is released, not captured) — that is existing `sourceOfFundsAdapter.post` behavior, not a regression.
+- Mainnet custody guard: with `STABLECOIN_MODE/NETWORK=mainnet` and `STABLECOIN_SIGNER=env`, `createSigner`/`readiness`/`settle` all refuse with "Refusing to sign mainnet settlement…". Test it in an isolated node script that wraps `global.fetch` and asserts the recorded request list is empty — never against a live server. `STABLECOIN_ALLOW_ENV_KEY_MAINNET` is parsed by the repo-wide `bool()` helper, so it is case-insensitive (`TRUE` unlocks) but `1`/`yes`/`"true "` do not.
+- Remote-signer stub for signature verification: point `STABLECOIN_SIGNER=external` + `STABLECOIN_SIGNER_URL` at a tiny local http server; it receives `{publicKey,network,algorithm,payloadBase64}` and must answer `{"signature":"<base64 64-byte sig>"}`. Also set `signerTimeoutMs`/`STABLECOIN_SIGNER_TIMEOUT_MS` in hand-built configs, otherwise the abort timer fires immediately and you get "timed out after undefinedms". A signature from the wrong keypair is rejected locally with "does not verify against the distributor public key".
+- Leak check after any settle: `grep -c "$(cat /tmp/sc-keys/distributor.secret)" /tmp/sc-server.log` and `grep -oE '\bS[A-Z2-7]{55}\b'` over logs and captured responses; both should be 0.
+
+## Agent mandates / spend limits (FinOps agent)
+
+- Routes live on the dapp router mounted at `/api/dapp` (`server-3002.js:76`), so the endpoints are
+  `/api/dapp/mandates`, `/api/dapp/mandates/decisions`, `/api/dapp/mandates/audit/verify`,
+  `/api/dapp/mandates/:id/spend`, `/api/dapp/mandates/:id/status`, `/api/dapp/finops-ai/preview`.
+- Auth: `requireAuth` (`server/integrations/auth/securityMiddleware.js:141-207`) accepts a JWT, an API key, or
+  the legacy `x-admin-token` / `?adminToken=` value equal to `ADMIN_SECRET_TOKEN`. The legacy token maps to role
+  `admin` (level 100), which satisfies both `adminAuth` and `operatorAuth` — one header covers every mandate
+  route, and `?adminToken=…` lets you eyeball GET endpoints straight in the browser for recordings.
+- Test mandates safely with `POST /api/dapp/finops-ai/preview {"prompt":"…"}`: it evaluates and logs a decision
+  but never creates a task or moves value (verify with `select count(*) from finops_tasks`). `POST /mandates`
+  always forces `agent: "finops"`, so previews and mandates line up automatically.
+- Prompt parser (`finOpsAgent.js:125-190`): `pay|send|transfer` ⇒ action `payment`, the **first** number in the
+  string ⇒ amount, a `USDC|ETH|…` token ⇒ asset, `0x` + 40 hex ⇒ destination. `Pay 100 USDC to 0xAAAA…0001` is
+  the minimal allow-case prompt; put no other digits before the amount.
+- Period spend only counts *consumed* decisions (`consumed = TRUE`, set by `executeTask` on
+  `status === 'executed'`). To exercise cumulative `period_limit` without moving value, call
+  `MandateEngine.markConsumed('<decisionId>')` from a node script and then re-preview. Pick amounts so the
+  cumulative reason fires alone (e.g. 750.00 consumed + a 400.00 request under a 500.00 max / 1000.00 day cap),
+  otherwise the max-amount reason masks it.
+- Suspending/revoking a mandate makes the agent fall back to `escalate` with reason
+  `no mandate on file for this agent` (inactive mandates are filtered out, `mandateEngine.js:82-86`) — assert
+  "not allow" rather than a revoked-specific reason.
+- Audit chain: `GET /mandates/audit/verify` → `{ok,verified,brokenAt}`. Prove it is real by editing a row
+  (`UPDATE agent_mandate_decisions SET amount=1.00 WHERE id='MDEC-…'`) → `ok:false` with `brokenAt` naming the
+  row, then restore the value → `ok:true`.
+- All money fields come back as JSON decimal strings (`"500.00"`, `"750.00"`); a number in
+  `max_amount`/`amount`/`spent` is a failure.
+- `sendError` in `server/routes/dapp.js:51` returns **HTTP 500** for every error including validation
+  ("status must be one of…", "payees is required"), so don't expect 400s from dapp routes.
+
 ## Devin Secrets Needed
 
 - `DATABASE_URL` or local Postgres credentials (`dlbtrust`/`dlbtrust`).
@@ -720,3 +804,4 @@ SELECT fit_id, type, amount_cents, name, memo FROM ofx_transactions;
 - `secret:org:HEDERA_OPERATOR_KEY` — only needed for live (non-shadow) Hedera tests.
 - `secret:org:DLBTRUST_API_KEY` — for programmatic API access if enabled.
 - `secret:org:FLY_API_TOKEN` — needed for `flyctl deploy` and `flyctl secrets set` against `dlbtrust-app`.
+- `TREASURY_PRIME_API_KEY_ID` / `TREASURY_PRIME_API_SECRET` — Treasury Prime sandbox Basic-auth credentials, required for any `/api/treasury-prime` live testing.
