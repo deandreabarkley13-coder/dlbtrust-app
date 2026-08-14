@@ -23,6 +23,8 @@ try { DocumentEngine = require('../documents/documentEngine').DocumentEngine; } 
 try { GenerationEngine = require('../documents/generationEngine').GenerationEngine; } catch (e) { /* optional */ }
 
 const { TRUSTEES, REQUIRED_ROLES, normalizeRole, getTrusteeByRole } = require('../dapp/trustees');
+const { MandateEngine } = require('./mandateEngine');
+const { coerceAmount } = require('../treasuryprime/decimalAmount');
 
 function id(prefix = 'FINOPS') {
   return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 8).toUpperCase()}`;
@@ -64,6 +66,56 @@ class FinOpsAgent {
       )
     `);
     await pool.query(`CREATE INDEX IF NOT EXISTS idx_finops_tasks_status ON finops_tasks(status)`);
+    await pool.query(`ALTER TABLE finops_tasks ADD COLUMN IF NOT EXISTS mandate_id TEXT`);
+    await pool.query(`ALTER TABLE finops_tasks ADD COLUMN IF NOT EXISTS mandate_decision TEXT`);
+    await pool.query(`ALTER TABLE finops_tasks ADD COLUMN IF NOT EXISTS mandate_decision_ids JSONB DEFAULT '[]'`);
+    await pool.query(`ALTER TABLE finops_tasks ADD COLUMN IF NOT EXISTS mandate_reasons JSONB DEFAULT '[]'`);
+    await MandateEngine.ensureTables();
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // Mandates — machine-checked limits on what the agent may do unattended
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  static get AGENT_NAME() { return 'finops'; }
+
+  /**
+   * The value-moving legs of an intent, as decimal-string amounts. A
+   * distribution has one leg per beneficiary so each recipient is checked
+   * against the allowlist individually.
+   */
+  static mandateLegs(intent) {
+    if (!MandateEngine.VALUE_ACTIONS.includes(intent.action)) return [];
+    const asset = normalizeAsset(intent.asset || 'USDC');
+    const leg = (rawAmount, payee) => {
+      const amount = coerceAmount(rawAmount);
+      if (!amount) {
+        throw new Error(`amount "${rawAmount}" cannot be checked against a mandate: state it in whole cents, e.g. 250.00`);
+      }
+      return { amount, payee, asset };
+    };
+    if (intent.action === 'distribution') {
+      return (intent.beneficiaries || [])
+        .filter(b => b && b.address && b.amountUsd != null)
+        .map(b => leg(b.amountUsd, b.address));
+    }
+    return [leg(intent.amount, intent.destination)];
+  }
+
+  /**
+   * Check an intent against the agent's mandates without creating a task —
+   * lets a trustee see what the agent would be allowed to do before asking.
+   */
+  static async previewMandate(prompt) {
+    const intent = this.parsePrompt(prompt);
+    const legs = this.mandateLegs(intent);
+    if (!legs.length) return { intent, decision: 'allow', legs: [], reasons: ['action does not move value'] };
+    return { intent, ...(await MandateEngine.evaluateBatch({
+      agent: this.AGENT_NAME,
+      action: intent.action,
+      legs,
+      purpose: intent.raw,
+    })) };
   }
 
   // ═══════════════════════════════════════════════════════════════════════════
@@ -165,11 +217,42 @@ class FinOpsAgent {
       return { role: role, status: 'pending', trusteeEmail: trustee.email, trusteeName: trustee.name, signature: null, approvedAt: null };
     });
 
+    // Mandate check happens before the task exists, so a denied instruction is
+    // never sitting in the queue waiting for someone to approve it by mistake.
+    const legs = this.mandateLegs(intent);
+    let mandate = { decision: 'escalate', mandateId: null, decisionIds: [], reasons: ['action does not move value'] };
+    if (legs.length) {
+      mandate = await MandateEngine.evaluateBatch({
+        agent: this.AGENT_NAME,
+        action: intent.action,
+        legs,
+        purpose: intent.raw,
+        taskId,
+      });
+      if (mandate.decision === 'deny') {
+        throw new Error(`Outside the agent's mandate: ${mandate.reasons.join('; ')}`);
+      }
+    }
+
+    const autonomous = mandate.decision === 'allow';
     await pool.query(
-      `INSERT INTO finops_tasks (id, prompt, intent, status, required_roles, approvals, requested_by)
-       VALUES ($1,$2,$3,$4,$5,$6,$7)`,
-      [taskId, prompt, JSON.stringify(intent), 'pending_approval', JSON.stringify(REQUIRED_ROLES), JSON.stringify(approvals), requestedBy]
+      `INSERT INTO finops_tasks
+         (id, prompt, intent, status, required_roles, approvals, requested_by,
+          mandate_id, mandate_decision, mandate_decision_ids, mandate_reasons)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10::jsonb,$11::jsonb)`,
+      [
+        taskId, prompt, JSON.stringify(intent),
+        autonomous ? 'approved' : 'pending_approval',
+        JSON.stringify(autonomous ? [] : REQUIRED_ROLES),
+        JSON.stringify(autonomous ? [] : approvals),
+        requestedBy,
+        mandate.mandateId, mandate.decision,
+        JSON.stringify(mandate.decisionIds || []),
+        JSON.stringify(mandate.reasons || []),
+      ]
     );
+
+    if (autonomous) return this.executeTask(taskId);
 
     const task = await this.getTask(taskId);
     if (CalendarEngine) {
@@ -198,6 +281,8 @@ class FinOpsAgent {
     row.approvals = jsonb(row.approvals);
     row.required_roles = jsonb(row.required_roles);
     row.result = jsonb(row.result);
+    row.mandate_decision_ids = jsonb(row.mandate_decision_ids || []);
+    row.mandate_reasons = jsonb(row.mandate_reasons || []);
     return row;
   }
 
@@ -214,6 +299,8 @@ class FinOpsAgent {
       r.approvals = jsonb(r.approvals);
       r.required_roles = jsonb(r.required_roles);
       r.result = jsonb(r.result);
+      r.mandate_decision_ids = jsonb(r.mandate_decision_ids || []);
+      r.mandate_reasons = jsonb(r.mandate_reasons || []);
       return r;
     });
   }
@@ -301,6 +388,20 @@ class FinOpsAgent {
     if (!task) throw new Error('Task not found');
     const intent = task.intent || {};
 
+    // A mandate can be suspended or revoked between authorization and
+    // execution; the grant has to still be live at the moment value moves.
+    if (task.mandate_id) {
+      const mandate = await MandateEngine.getMandate(task.mandate_id);
+      if (!mandate || mandate.status !== 'active') {
+        const reason = `mandate ${task.mandate_id} is ${mandate ? mandate.status : 'missing'}; execution refused`;
+        await pool.query(
+          `UPDATE finops_tasks SET status = 'failed', result = $1, updated_at = NOW() WHERE id = $2`,
+          [JSON.stringify({ error: reason }), taskId],
+        );
+        throw new Error(reason);
+      }
+    }
+
     await pool.query(`UPDATE finops_tasks SET status = 'executing', updated_at = NOW() WHERE id = $1`, [taskId]);
 
     let result = {};
@@ -346,6 +447,13 @@ class FinOpsAgent {
       `UPDATE finops_tasks SET status = $1, result = $2, tx_hash = $3, updated_at = NOW() WHERE id = $4`,
       [status, JSON.stringify(result), txHash, taskId]
     );
+
+    // Only executed value actually consumes a mandate's cumulative cap.
+    if (status === 'executed') {
+      for (const decisionId of task.mandate_decision_ids || []) {
+        await MandateEngine.markConsumed(decisionId, taskId).catch(() => {});
+      }
+    }
 
     const updated = await this.getTask(taskId);
     if (MessagingEngine) {
