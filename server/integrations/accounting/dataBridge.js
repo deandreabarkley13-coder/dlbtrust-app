@@ -417,8 +417,14 @@ class DataBridge {
    * A trust-funded stablecoin payment produces two entries: funding
    * (Dr backing asset / Cr source) and settlement (Dr settlement account /
    * Cr backing asset).  This flags payments missing either entry and compares
-   * the backing-asset balance with the payments that are funded but not yet
-   * settled, which is what the on-chain balance should still be holding.
+   * the payments that are funded but not yet settled — what the on-chain
+   * balance should still be holding — with the net stablecoin activity booked
+   * on the backing account.
+   *
+   * The comparison deliberately uses journal activity attributable to the
+   * stablecoin flow rather than the account balance: the backing account is
+   * shared with other modules (e.g. module funding transfers), whose postings
+   * would otherwise register as drift.
    */
   static async reconcileStablecoinSettlements() {
     var syncId = 'RECON-SCP-' + Date.now() + '-' + Math.random().toString(36).slice(2, 6).toUpperCase();
@@ -483,11 +489,15 @@ class DataBridge {
         }
       }
 
-      var backing = await pool.query(
-        'SELECT COALESCE(balance, 0) AS balance FROM trust_accounts WHERE account_code = $1',
-        [assetAccount]
-      );
-      backingBalance = backing.rows.length ? parseFloat(backing.rows[0].balance) : 0;
+      var backing = await pool.query(`
+        SELECT COALESCE(SUM(l.debit_amount), 0) - COALESCE(SUM(l.credit_amount), 0) AS net
+        FROM trust_journal_lines l
+        JOIN trust_journal_entries je ON je.entry_id = l.entry_id
+        WHERE l.account_code = $1
+          AND je.status = 'posted'
+          AND je.reference_type IN ('stablecoin_payment', 'stablecoin_settlement')
+      `, [assetAccount]);
+      backingBalance = backing.rows.length ? parseFloat(backing.rows[0].net) : 0;
 
       var drift = backingBalance - expectedBackingBalance;
       if (Math.abs(drift) > 0.01) {
@@ -522,6 +532,7 @@ class DataBridge {
       checked: checked,
       reconciled: reconciled,
       assetAccount: assetAccount,
+      basis: 'stablecoin_journal_activity',
       backingBalance: backingBalance,
       expectedBackingBalance: expectedBackingBalance,
       difference: backingBalance - expectedBackingBalance,
