@@ -805,3 +805,36 @@ Use this to prove real on-chain settlement (not shadow mode) without touching ma
 - `secret:org:DLBTRUST_API_KEY` — for programmatic API access if enabled.
 - `secret:org:FLY_API_TOKEN` — needed for `flyctl deploy` and `flyctl secrets set` against `dlbtrust-app`.
 - `TREASURY_PRIME_API_KEY_ID` / `TREASURY_PRIME_API_SECRET` — Treasury Prime sandbox Basic-auth credentials, required for any `/api/treasury-prime` live testing.
+
+## Programmable Money Engine (PR #331)
+
+- Endpoints (all require an admin/operator JWT, e.g. from `/api/auth/login`):
+  - `GET /api/programmable-money/programs`
+  - `POST /api/programmable-money/programs`
+  - `GET /api/programmable-money/programs/<id>`
+  - `POST /api/programmable-money/programs/<id>/approve`
+  - `POST /api/programmable-money/programs/<id>/reject`
+  - `POST /api/programmable-money/programs/<id>/trigger`
+  - `GET /api/programmable-money/runs`
+  - `GET /api/programmable-money/runs/<id>`
+- There is no dashboard UI for these endpoints yet; test via `curl`/HTTP client.
+- Start the server with `ADMIN_SECRET_TOKEN` and `TRUST_CHECKER_ADMIN_PASSWORD` to seed the checker admin user (`dbarkley1130@gmail.com` / `test-admin-token-123` by default) with role `admin`.
+- End-to-end smoke test:
+  ```bash
+  TOKEN=$(curl -s -X POST http://localhost:3002/api/auth/login \
+    -H 'Content-Type: application/json' \
+    -d '{"username":"dbarkley1130@gmail.com","password":"test-admin-token-123"}' | jq -r .token)
+  PROG=$(curl -s -X POST http://localhost:3002/api/programmable-money/programs \
+    -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+    -d '{"name":"E2E Test Program","description":"convert to USDC","sourceType":"wallet","sourceAccount":"wallet-1","sourceToken":"USDT","amount":100,"targetAsset":"USDC","action":"convert"}' | jq -r .data.programId)
+  curl -s -H "Authorization: Bearer $TOKEN" http://localhost:3002/api/programmable-money/programs | jq
+  curl -s -X POST "http://localhost:3002/api/programmable-money/programs/$PROG/approve" \
+    -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+    -d '{"role":"checker","approverEmail":"dbarkley1130@gmail.com"}' | jq
+  curl -s -X POST "http://localhost:3002/api/programmable-money/programs/$PROG/trigger" \
+    -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+    -d '{"trigger":"manual"}' | jq
+  curl -s -H "Authorization: Bearer $TOKEN" http://localhost:3002/api/programmable-money/runs | jq
+  ```
+- In dev without `DAPP_PRIVATE_KEY`, the trigger reaches `CanonicalMoneyEngine` and fails with `DAPP_PRIVATE_KEY not configured`. The endpoint returns HTTP 400, `success: false`, and the run record is persisted with `status: failed` and `result.error` containing `DAPP_PRIVATE_KEY`.
+- If `STABLECOIN_DEX_SHADOW=true` or a valid `DAPP_PRIVATE_KEY` is present, the engine will instead attempt live/sepolia DEX execution; set `STABLECOIN_DEX_SHADOW=true` for safe local shadow execution.
