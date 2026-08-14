@@ -133,6 +133,9 @@ try { app.use('/api/rally', require(path.join(HD, 'server', 'routes', 'rallyProt
 // Treasury Prime — BaaS accounts, balances, book transfers, ACH, wires (decimal-string amounts)
 try { app.use('/api/treasury-prime', require(path.join(HD, 'server', 'routes', 'treasuryPrime'))); console.log('[treasury-prime] loaded'); } catch(e) { console.warn('[treasury-prime]', e.message); }
 
+// Operational Utilities Engine — live status, cross-module reconciliation, and scheduled utilities
+try { app.use('/api/utilities', require(path.join(HD, 'server', 'routes', 'utilities'))); console.log('[utilities] loaded'); } catch(e) { console.warn('[utilities]', e.message); }
+
 // DeFi dApp — dApp login at /dapp, command center at /dashboard; landing page at root; legacy treasury dashboard at /treasury
 function serveDapp(req, res) {
   res.set('Cache-Control', 'no-cache, no-store, must-revalidate');
@@ -636,6 +639,12 @@ async function initializeDatabase() {
     CouponService.scheduleCouponJob();
   } catch(e) { console.warn('[couponService] init:', e.message); }
 
+  try {
+    var OperationalUtilitiesEngine = require(path.join(HD, 'server', 'integrations', 'utilities', 'operationalUtilitiesEngine')).OperationalUtilitiesEngine;
+    await OperationalUtilitiesEngine.ensureTables();
+    console.log('[operational-utilities] tables ensured');
+  } catch(e) { console.warn('[operational-utilities] table init:', e.message); }
+
   console.log('[startup] All database migrations complete');
 }
 
@@ -663,6 +672,16 @@ initializeDatabase().then(function() {
     var aggregatorScheduler = require(path.join(HD, 'server', 'integrations', 'aggregator', 'aggregatorScheduler'));
     aggregatorScheduler.start();
   } catch(e) { console.warn('[aggregator-scheduler]', e.message); }
+
+  // Start operational utilities scheduler (live status + safe utilities)
+  try {
+    var OperationalUtilitiesEngine = require(path.join(HD, 'server', 'integrations', 'utilities', 'operationalUtilitiesEngine')).OperationalUtilitiesEngine;
+    if (String(process.env.OPERATIONAL_UTILITIES_AUTO_RUN).toLowerCase() !== 'false') {
+      OperationalUtilitiesEngine.startScheduler();
+    } else {
+      console.log('[operational-utilities] auto-start disabled');
+    }
+  } catch(e) { console.warn('[operational-utilities-scheduler]', e.message); }
 
   // Start trust cash sweep (hands-off fixed-income cash → Eaton Trust Checking).
   // OFF unless TRUST_SWEEP_ENABLED=true, since it moves money without a human.

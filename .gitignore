@@ -8,5 +8,6 @@ dist/
 coverage/
 tmp/
 data/
+backups/
 test-plan-*.md
 test-report-*.md
