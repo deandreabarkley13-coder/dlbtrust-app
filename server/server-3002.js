@@ -718,8 +718,12 @@ initializeDatabase().then(function() {
   setImmediate(function() {
     try {
       var OpenAgentIdEngine = require(path.join(HD, 'server', 'integrations', 'openAgentId', 'openAgentIdEngine')).OpenAgentIdEngine;
-      OpenAgentIdEngine.initialize().then(function() {
-        console.log('[open-agent-id] identity initialized');
+      OpenAgentIdEngine.initialize().then(function(result) {
+        if (result && result.ready) {
+          console.log('[open-agent-id] identity initialized:', result.identity ? result.identity.did : '');
+        } else {
+          console.log('[open-agent-id] initialization skipped:', (result && result.reason) || 'auto-register disabled');
+        }
       }).catch(function(err) {
         console.warn('[open-agent-id] initialization:', err.message);
       });
