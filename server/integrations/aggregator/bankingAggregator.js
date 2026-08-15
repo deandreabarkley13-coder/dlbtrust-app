@@ -58,6 +58,67 @@ class BankingAggregator {
   //  TABLE SETUP
   // ═══════════════════════════════════════════════════════════════════════════
 
+  static async _legacyTableHasColumn(client, table, column) {
+    const res = await client.query(
+      `SELECT 1 FROM information_schema.columns
+        WHERE table_schema = 'public' AND table_name = $1 AND column_name = $2`,
+      [table, column]
+    );
+    return res.rows.length > 0;
+  }
+
+  static async _migrateLegacyTables(client) {
+    try {
+      // Migrate legacy `aggregator_*` tables that match the banking schema.
+      // Trust-aggregator tables share the `aggregator_*` prefix but have a
+      // different schema (e.g. `connection_id` PK and `source_type`), so we
+      // check for banking-specific columns before copying.
+      if (await this._legacyTableHasColumn(client, 'aggregator_connections', 'connector_type')) {
+        await client.query(`
+          INSERT INTO banking_aggregator_connections (id, name, connector_type, direction, config, active, last_pull_at, last_push_at, created_at, updated_at)
+          SELECT id, name, connector_type, direction, config::jsonb, active, last_pull_at, last_push_at, created_at, updated_at
+          FROM aggregator_connections
+          ON CONFLICT (id) DO NOTHING
+        `);
+      }
+      if (await this._legacyTableHasColumn(client, 'aggregator_accounts', 'external_account_id')) {
+        await client.query(`
+          INSERT INTO banking_aggregator_accounts (id, connection_id, external_account_id, name, account_type, currency, mask, balance_available, balance_current, raw, updated_at)
+          SELECT id, connection_id, external_account_id, name, account_type, currency, mask, balance_available, balance_current, raw::jsonb, updated_at
+          FROM aggregator_accounts
+          ON CONFLICT (connection_id, external_account_id) DO NOTHING
+        `);
+      }
+      if (await this._legacyTableHasColumn(client, 'aggregator_transactions', 'external_txn_id')) {
+        await client.query(`
+          INSERT INTO banking_aggregator_transactions (id, connection_id, external_account_id, external_txn_id, posted_date, amount, currency, direction, description, category, status, raw, created_at)
+          SELECT id, connection_id, external_account_id, external_txn_id, posted_date, amount, currency, direction, description, category, status, raw::jsonb, created_at
+          FROM aggregator_transactions
+          ON CONFLICT (connection_id, external_txn_id) DO NOTHING
+        `);
+      }
+      if (await this._legacyTableHasColumn(client, 'aggregator_statements', 'external_statement_id')) {
+        await client.query(`
+          INSERT INTO banking_aggregator_statements (id, connection_id, external_account_id, external_statement_id, period_start, period_end, format, uri, raw, created_at)
+          SELECT id, connection_id, external_account_id, external_statement_id, period_start, period_end, format, uri, raw::jsonb, created_at
+          FROM aggregator_statements
+          ON CONFLICT (connection_id, external_statement_id) DO NOTHING
+        `);
+      }
+      if (await this._legacyTableHasColumn(client, 'aggregator_events', 'event_type')) {
+        await client.query(`
+          INSERT INTO banking_aggregator_events (id, connection_id, direction, event_type, payload, status, error, provider_ref, created_at)
+          SELECT id, connection_id, direction, event_type, payload::jsonb, status, error, provider_ref, created_at
+          FROM aggregator_events
+          ON CONFLICT (id) DO NOTHING
+        `);
+      }
+    } catch (e) {
+      // Migration must never break first-time table creation; log and continue.
+      console.warn('[BankingAggregator] legacy migration skipped:', e.message);
+    }
+  }
+
   static async ensureTables() {
     if (tablesReady) return;
     if (tablesReadyPromise) return tablesReadyPromise;
@@ -160,6 +221,8 @@ class BankingAggregator {
         created_at    TIMESTAMPTZ DEFAULT NOW()
       )
     `);
+
+    await BankingAggregator._migrateLegacyTables(client);
     } finally {
       await client.query('SELECT pg_advisory_unlock($1)', [MIGRATION_LOCK_KEY]).catch(function () {});
       client.release();

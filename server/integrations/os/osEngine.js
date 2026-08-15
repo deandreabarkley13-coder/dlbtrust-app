@@ -875,7 +875,8 @@ class AssetAcquisitionEngine extends BaseOSEngine {
     return ['real_estate', 'vehicle', 'boat', 'jewelry', 'equipment', 'art', 'collectible', 'other'];
   }
 
-  static normalizeCategory(raw) {
+  static normalizeCategory(raw, defaultValue = undefined) {
+    if (!raw && defaultValue === undefined) return undefined;
     const s = String(raw || 'other').toLowerCase().replace(/\s+/g, '_');
     const map = {
       real_estate: 'real_estate', realestate: 'real_estate', property: 'real_estate',
@@ -887,7 +888,7 @@ class AssetAcquisitionEngine extends BaseOSEngine {
       collectible: 'collectible', collectable: 'collectible', collectibles: 'collectible',
       other: 'other',
     };
-    return Object.hasOwn(map, s) ? map[s] : 'other';
+    return Object.hasOwn(map, s) ? map[s] : (defaultValue === undefined ? 'other' : defaultValue);
   }
 
   static async status() {
@@ -912,7 +913,7 @@ class AssetAcquisitionEngine extends BaseOSEngine {
       case 'purchase':
       case 'create': {
         if (!payload.name || payload.amountUsd == null) throw new Error('name and amountUsd required');
-        const category = this.normalizeCategory(payload.category);
+        const category = this.normalizeCategory(payload.category, 'other');
         const asset = await Expense.createRecord({
           type: 'asset',
           category,
@@ -957,8 +958,10 @@ class AssetAcquisitionEngine extends BaseOSEngine {
         }
         return { asset, journalEntry, category };
       }
-      case 'list':
-        return await Expense.listRecords({ type: 'asset', category: this.normalizeCategory(payload.category), status: payload.status, limit: payload.limit || 100 });
+      case 'list': {
+        const listCategory = payload.category ? this.normalizeCategory(payload.category) : undefined;
+        return await Expense.listRecords({ type: 'asset', category: listCategory, status: payload.status, limit: payload.limit || 100 });
+      }
       case 'get':
         if (!payload.assetId) throw new Error('assetId required');
         return await Expense.getRecord(payload.assetId);
@@ -1380,11 +1383,20 @@ class SmartRouterEngine extends BaseOSEngine {
     );
   }
 
+  static _mapExternalStatus(status) {
+    const s = String(status || '').toLowerCase();
+    if (['settled', 'completed', 'success', 'finalized', 'done'].includes(s)) return 'settled';
+    if (['failed', 'rejected', 'error', 'canceled', 'cancelled'].includes(s)) return 'failed';
+    if (['confirmed', 'approved', 'accepted', 'processed'].includes(s)) return 'confirmed';
+    if (['pending', 'pending_review', 'submitted', 'initiated', 'in_progress'].includes(s)) return 'pending';
+    return null;
+  }
+
   static async _updateConfirmation(paymentId, confirmation, status) {
     if (!pool) return;
     const setParts = ['confirmation = $1::jsonb', 'updated_at = NOW()'];
     const values = [safeJson(confirmation || {})];
-    if (status) { setParts.push('status = $3'); values.push(status); }
+    if (status) { setParts.push(`status = $${values.length + 1}`); values.push(status); }
     values.push(paymentId);
     await query(`UPDATE smart_router_payments SET ${setParts.join(', ')} WHERE id = $${values.length}`, values);
   }
@@ -1540,7 +1552,8 @@ class SmartRouterEngine extends BaseOSEngine {
   static async _confirm(payload, deps) {
     const paymentId = payload.paymentId || payload.id;
     if (!paymentId) throw new Error('paymentId or id required');
-    const row = await this.get(paymentId);
+    const rawRes = await query('SELECT * FROM smart_router_payments WHERE id = $1', [paymentId]);
+    const row = rawRes.rows[0];
     if (!row) throw new Error('payment not found');
     let externalStatus = null;
     if (row.rail === 'stablecoin' && row.confirmation && row.confirmation.stablecoinPaymentId && deps.Stablecoin) {
@@ -1551,12 +1564,13 @@ class SmartRouterEngine extends BaseOSEngine {
       externalStatus = await deps.Consensus.getProposal(row.confirmation.proposalId);
     }
     if (externalStatus) {
-      const status = externalStatus.status || row.status;
-      const confirmation = { ...row.confirmation, externalStatus };
+      const mapped = this._mapExternalStatus(externalStatus.status);
+      const status = mapped || row.status;
+      const confirmation = { ...(row.confirmation || {}), externalStatus };
       await this._updateConfirmation(paymentId, confirmation, status);
       return { paymentId, rail: row.rail, status, externalStatus: sanitize(externalStatus), confirmation: sanitize(confirmation) };
     }
-    return { paymentId, rail: row.rail, status: row.status, confirmation: row.confirmation, note: 'No external confirmation available' };
+    return { paymentId, rail: row.rail, status: row.status, confirmation: sanitize(row.confirmation), note: 'No external confirmation available' };
   }
 
   static async _process(action, payload) {
@@ -1569,8 +1583,9 @@ class SmartRouterEngine extends BaseOSEngine {
       case 'execute':
         return await this._deliverAndRecord(payload, deps);
       case 'confirm':
-      case 'status':
         return await this._confirm(payload, deps);
+      case 'status':
+        return await this.status();
       case 'receipt': {
         const row = await this.get(payload.paymentId || payload.id);
         if (!row) throw new Error('payment not found');
@@ -1672,16 +1687,16 @@ class BackOfficeEngine extends BaseOSEngine {
       try {
         const bs = await deps.TrustAccounting.getBalanceSheet({});
         summary.sources.trustAccounting = bs;
-        summary.totals.assetsCents += Number(bs.totalAssetsCents || 0);
-        summary.totals.liabilitiesCents += Number(bs.totalLiabilitiesCents || 0);
-        summary.totals.equityCents += Number(bs.totalEquityCents || 0);
+        summary.totals.assetsCents += Math.round(Number(bs.total_assets || 0) * 100);
+        summary.totals.liabilitiesCents += Math.round(Number(bs.total_liabilities || 0) * 100);
+        summary.totals.equityCents += Math.round(Number(bs.total_equity || 0) * 100);
       } catch (e) { summary.sources.trustAccountingError = e.message; }
     }
     if (deps.Cash) {
       try {
         const pos = await deps.Cash.getPositionSummary();
         summary.sources.cash = pos;
-        summary.totals.cashCents += Number(pos.totalBalanceCents || 0);
+        summary.totals.cashCents += Number(pos.grand_total_cents || 0);
       } catch (e) { summary.sources.cashError = e.message; }
     }
     if (deps.Bond) {
@@ -1689,7 +1704,7 @@ class BackOfficeEngine extends BaseOSEngine {
         const bonds = await deps.Bond.listBonds();
         summary.sources.bonds = bonds;
         summary.totals.bondsCents = Array.isArray(bonds)
-          ? bonds.reduce((sum, b) => sum + Number(b.balance_cents || b.face_value_cents || 0), 0)
+          ? bonds.reduce((sum, b) => sum + Math.round(Number(b.principal_balance || b.face_value || 0) * 100), 0)
           : 0;
       } catch (e) { summary.sources.bondsError = e.message; }
     }
