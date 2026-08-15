@@ -185,6 +185,42 @@ class BankEngine extends BaseOSEngine {
       case 'balance':
         if (BankSync && process.env.BANKSYNC_API_KEY && payload.bankId && payload.accountId) return await BankSync.getAccountBalance(payload.bankId, payload.accountId);
         return { mode: 'shadow', note: 'bankId and accountId required or BANKSYNC not configured' };
+      case 'getBank':
+        if (BankSync && process.env.BANKSYNC_API_KEY && payload.bankId) return await BankSync.getBank(payload.bankId);
+        return { mode: 'shadow', note: 'bankId required or BANKSYNC not configured' };
+      case 'transactions':
+      case 'listTransactions':
+        if (BankSync && process.env.BANKSYNC_API_KEY && payload.bankId && payload.accountId) {
+          return await BankSync.listTransactions(payload.bankId, payload.accountId, {
+            from: payload.from,
+            to: payload.to,
+            cursor: payload.cursor,
+            limit: payload.limit ? Number(payload.limit) : undefined,
+          });
+        }
+        return { mode: 'shadow', note: 'bankId and accountId required or BANKSYNC not configured' };
+      case 'syncToLedger':
+      case 'sync-to-ledger':
+        if (BankSync && process.env.BANKSYNC_API_KEY && payload.accountId) {
+          return await BankSync.syncToLedger({
+            bankId: payload.bankId,
+            accountId: payload.accountId,
+            trustAccountCode: payload.trustAccountCode,
+            cashAccountId: payload.cashAccountId,
+          });
+        }
+        return { mode: 'shadow', note: 'accountId required or BANKSYNC not configured' };
+      case 'cachedBanks':
+        if (BankSync && process.env.BANKSYNC_API_KEY) return await BankSync.getCachedBanks();
+        return { mode: 'shadow', note: 'BANKSYNC_API_KEY not configured' };
+      case 'cachedAccounts':
+        if (BankSync && process.env.BANKSYNC_API_KEY) return await BankSync.getCachedAccounts({ bankId: payload.bankId });
+        return { mode: 'shadow', note: 'BANKSYNC_API_KEY not configured' };
+      case 'cachedTransactions':
+        if (BankSync && process.env.BANKSYNC_API_KEY && payload.accountId) {
+          return await BankSync.getCachedTransactions({ accountId: payload.accountId, limit: payload.limit, offset: payload.offset });
+        }
+        return { mode: 'shadow', note: 'accountId required or BANKSYNC not configured' };
       case 'status':
       default:
         return await this.status();
