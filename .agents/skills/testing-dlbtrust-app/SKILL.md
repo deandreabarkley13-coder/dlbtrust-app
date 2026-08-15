@@ -797,6 +797,48 @@ Use this to prove real on-chain settlement (not shadow mode) without touching ma
 - `sendError` in `server/routes/dapp.js:51` returns **HTTP 500** for every error including validation
   ("status must be one of…", "payees is required"), so don't expect 400s from dapp routes.
 
+## OpenAgentID Backend Integration (PR #335)
+
+The `devin/open-agent-id` branch adds `/api/open-agent-id` for DID-backed agent identity, credit lookup, and request signing.
+
+### Startup and env
+
+- Needs the same `DATABASE_URL`, `JWT_SECRET`, `ADMIN_SECRET_TOKEN`, `PORT=3002` as other local tests.
+- Generate a 64-hex encryption key and set `OPEN_AGENT_ID_ENCRYPTION_KEY`.
+- Set `OPEN_AGENT_ID_AUTO_REGISTER=true` so the server creates/persists a `did:oaid:base:` identity on startup.
+- Example startup:
+  ```bash
+  ENCRYPTION_KEY=$(openssl rand -hex 32)
+  setsid nohup env \
+    DATABASE_URL=postgres://dlbtrust:dlbtrust@localhost:5432/dlbtrust \
+    ADMIN_SECRET_TOKEN=dlb-admin-2026-trust \
+    JWT_SECRET=dev-jwt-secret \
+    PORT=3002 \
+    OPEN_AGENT_ID_AUTO_REGISTER=true \
+    OPEN_AGENT_ID_ENCRYPTION_KEY=$ENCRYPTION_KEY \
+    OPEN_AGENT_ID_AGENT_NAME=dlbtrust \
+    node server/server-3002.js > /tmp/server-3002-oaid.log 2>&1 < /dev/null & disown
+  ```
+- If `open_agent_identities` has rows encrypted with a different key, startup will fail with `Unsupported state or unable to authenticate data`. Truncate the table (`TRUNCATE open_agent_identities RESTART IDENTITY;`) when testing with a fresh key, or reuse the previous key.
+- Wait for `[open-agent-id] identity initialized` in the log.
+
+### End-to-end smoke test
+
+Use `x-admin-token: dlb-admin-2026-trust` for all calls.
+
+1. `GET /api/open-agent-id/status` → expect `success: true`, `data.ready: true`, `data.identity.did` starting with `did:oaid:base:`, and `data.credit.credit_score` (or `creditScore`) `100`.
+2. `GET /api/open-agent-id/credit/:did` → returns credit record with `credit_score: 100`.
+3. `GET /api/open-agent-id/agent/:did` → returns agent record with `public_key`, `chain_status`, etc.
+4. `POST /api/open-agent-id/sign-request` with body `{"method":"GET","url":"https://api.openagentid.org/v1/agents/<did>"}` → returns `X-Agent-Timestamp`, `X-Agent-Nonce`, `X-Agent-Signature`, and `X-Agent-DID`.
+5. `POST /api/open-agent-id/verify-signature` with `{"did":"<did>","method":"GET","url":"...","timestamp":"...","nonce":"...","signature":"..."}` → returns `data.valid: true`.
+6. `POST /api/open-agent-id/register` with body `{"name":"test-agent","capabilities":["credit"]}` (admin token required) → returns `201` with a new DID; verify the response does **not** contain `walletPrivateKey`, `ed25519PrivateKey`, `wallet_private_key_encrypted`, or `ed25519_private_key_encrypted`.
+
+### What to watch for
+
+- `npm run lint` exits `0` but typically emits many pre-existing `no-unused-vars` warnings in other engines; verify the new `server/integrations/openAgentId/` and `server/routes/openAgentId.js` files have no new lint problems.
+- `npm run typecheck` (`tsc --noEmit`) should exit `0`.
+- Outbound HTTPS to `https://api.openagentid.org` must be reachable for register/status/credit/agent lookups and signature verification.
+
 ## Devin Secrets Needed
 
 - `DATABASE_URL` or local Postgres credentials (`dlbtrust`/`dlbtrust`).
