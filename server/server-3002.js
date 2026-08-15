@@ -5,6 +5,9 @@ var fs = require('fs');
 // HD = repo root (httpdocs on production, __dirname/.. locally)
 var HD = path.resolve(__dirname, '..');
 
+// Patch viem chain resolution for Base mainnet before any DApp modules load
+require(path.join(HD, 'server', 'integrations', 'dapp', 'viemChainPatch'));
+
 // Use local express (installed via npm install in HD)
 var express = require('express');
 var app = express();
