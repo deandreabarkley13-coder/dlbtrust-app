@@ -797,6 +797,38 @@ Use this to prove real on-chain settlement (not shadow mode) without touching ma
 - `sendError` in `server/routes/dapp.js:51` returns **HTTP 500** for every error including validation
   ("status must be one of…", "payees is required"), so don't expect 400s from dapp routes.
 
+## OS Engine Layer (PR #339)
+
+The `devin/os-engines` branch adds `server/integrations/os/osEngine.js` with `BaseOSEngine` plus `BankEngine`, `TreasuryEngine`, `PaymentEngine`, `ClearingEngine`, `SettlementEngine`, `ComplianceEngine`, `SecurityEngine`, and `RestApiEngine`, all exposed through `/api/os`.
+
+### Startup and env
+
+- Start with the standard local Postgres + admin token env.
+- `server/server-3002.js` calls `osEngine.ensureAll()` during startup. Verify log contains `[os-engines] all tables ensured` and `[dlbtrust-treasury] running on port 3002`.
+- No extra env vars are required for shadow mode; engines fall back to shadow/ready when third-party keys are absent.
+
+### End-to-end smoke test
+
+Use `x-admin-token: dlb-admin-2026-trust` for all calls.
+
+1. `GET /api/os` → expect 8 entries (bank, treasury, payment, clearing, settlement, compliance, security, rest-api), each `healthy: true`.
+2. `GET /api/os/bank/status` and `/api/os/bank/health` → `success: true`, `data.healthy: true`, `data.engine: 'bank'`.
+3. `POST /api/os/bank/process` with `{"action":"accounts","bankId":"..."}` → `success: true`, `data.eventId` present and an account list result. Without `bankId` it returns a shadow-mode note.
+4. `POST /api/os/treasury/process` with `{"action":"position"}` → `success: true`, `data.result` contains position info (or `mode: 'shadow'` if unconfigured).
+5. `POST /api/os/payment/process` with `{"action":"listMethods"}` → `success: true`, `data.result` (possibly an empty array in shadow/unconfigured mode).
+6. `POST /api/os/compliance/process` with `{"action":"screen","subject":"ACME Corp"}` → `success: true`, `data.result` contains a compliance record with `screening_id`, `status`, `risk_score`, etc.
+7. `POST /api/os/security/process` with `{"action":"audit","actor":"admin","resource":"/api/os","outcome":"allow"}` → `success: true`, `data.result.logged: true`.
+8. `POST /api/os/rest-api/process` with `{"action":"metrics"}` → `success: true`, `data.result.totalEvents`, `perEngine`, `recent`, `activeApiKeys`.
+9. `GET /api/os/bank/list` → array containing the bank event from step 3.
+10. `GET /api/os/bank/get/<eventId>` → single `os_events` row matching the eventId.
+11. `npm run lint` and `npm run typecheck` should exit `0`.
+
+### What to watch for
+
+- `os_events` and `os_audit_log` tables are created on startup. If `ensureAll()` fails, the `process` endpoints may fail to log or the `list`/`get` endpoints may return empty.
+- `ComplianceEngine.screen` may create a row with `status: 'review'` and `risk_score` when only `subject` is provided.
+- `npm run lint` may still show many pre-existing `no-unused-vars` warnings across other files, but the OS engine files should be clean.
+
 ## Devin Secrets Needed
 
 - `DATABASE_URL` or local Postgres credentials (`dlbtrust`/`dlbtrust`).
