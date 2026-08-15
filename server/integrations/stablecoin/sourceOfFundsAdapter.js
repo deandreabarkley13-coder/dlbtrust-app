@@ -354,6 +354,57 @@ class SourceOfFundsAdapter {
     }
   }
 
+  /**
+   * Relieve the on-chain backing asset once USDC has actually left the trust.
+   *
+   * Funding only converted trust cash into the backing asset (Dr 1210 / Cr source).
+   * Without this second entry the books keep carrying settled USDC as an asset, so
+   * the trial balance overstates assets by every settled payment.
+   *
+   * Idempotent on (reference_type, reference_id): a retried settlement never
+   * double-relieves the asset.
+   */
+  static async _postTrustSettlementEntry({ payment, txHash, amountCents }) {
+    if (!TrustAccountingEngine) throw new Error('TrustAccountingEngine not available');
+    const cfg = getConfig();
+    const assetAccount = (payment.source_ref && payment.source_ref.assetAccount)
+      || cfg.stablecoinAssetAccount || '1210';
+    const debitAccount = (payment.metadata && payment.metadata.settlementAccount)
+      || cfg.settlementDebitAccount || '2000';
+    const feeAccount = (payment.metadata && payment.metadata.feeAccount)
+      || cfg.settlementFeeAccount || '5300';
+
+    const existing = await TrustAccountingEngine.listJournalEntries({
+      referenceType: 'stablecoin_settlement',
+      referenceId: payment.id,
+      limit: 1,
+    });
+    if (existing.length) return existing[0];
+
+    // Funding moved the gateway fee into the backing asset too, so the relief
+    // covers the funded total: the payee leg plus the fee as an expense.
+    const amount = amountCents / 100;
+    const feeCents = Math.max(0, Number(payment.total_cents || amountCents) - Number(payment.amount_cents || amountCents));
+    const fee = feeCents / 100;
+    const lines = [
+      { accountCode: debitAccount, debitAmount: amount, creditAmount: 0, memo: `Settled to ${payment.destination_wallet}` },
+      { accountCode: assetAccount, debitAmount: 0, creditAmount: amount + fee, memo: `On-chain disbursement ${txHash || ''}`.trim() },
+    ];
+    if (fee > 0) {
+      lines.splice(1, 0, { accountCode: feeAccount, debitAmount: fee, creditAmount: 0, memo: 'Stablecoin gateway fee' });
+    }
+
+    return TrustAccountingEngine.postJournalEntry({
+      entryDate: new Date(),
+      description: `Stablecoin settlement ${payment.id}${txHash ? ` tx ${txHash}` : ''}`,
+      referenceType: 'stablecoin_settlement',
+      referenceId: payment.id,
+      postedBy: 'stablecoin-gateway',
+      postToFineract: false,
+      lines,
+    });
+  }
+
   static async post(payment, txHash, { settledAmountCents } = {}) {
     const sourceType = String(payment.source_type || 'treasury').toLowerCase();
     const sourceAccountId = payment.source_account_id || DEFAULT_ACCOUNT;
@@ -387,8 +438,16 @@ class SourceOfFundsAdapter {
         return { sourceType, sourceAccountId, movementId: sourceRef.movementId, posted: true };
       }
       case 'trust':
-      case 'trust_account':
-        return { sourceType, sourceAccountId, journalEntryId: sourceRef.journalEntryId, posted: true };
+      case 'trust_account': {
+        const settlement = await SourceOfFundsAdapter._postTrustSettlementEntry({ payment, txHash, amountCents });
+        return {
+          sourceType,
+          sourceAccountId,
+          journalEntryId: sourceRef.journalEntryId,
+          settlementJournalEntryId: settlement && settlement.entry_id,
+          posted: true,
+        };
+      }
       case 'bond':
       case 'fixed_income':
         return { sourceType, sourceAccountId, bondTransactionId: sourceRef.bondTransactionId, posted: true, newPrincipalCents: sourceRef.newPrincipalCents };

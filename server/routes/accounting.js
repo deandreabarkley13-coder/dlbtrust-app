@@ -378,6 +378,16 @@ router.get('/bridge/reconcile/fineract', async (req, res) => {
   }
 });
 
+// ─── GET /api/accounting/bridge/reconcile/stablecoin ──────────────────────────
+router.get('/bridge/reconcile/stablecoin', async (req, res) => {
+  try {
+    const result = await DataBridge.reconcileStablecoinSettlements();
+    res.json({ success: true, data: result });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
 // ─── GET /api/accounting/bridge/reconcile/wire ────────────────────────────────
 router.get('/bridge/reconcile/wire', async (req, res) => {
   try {

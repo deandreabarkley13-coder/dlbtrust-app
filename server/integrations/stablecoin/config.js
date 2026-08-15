@@ -128,6 +128,8 @@ function getConfig() {
     cashHoldingAccount: str('STABLECOIN_CASH_HOLDING_ACCOUNT', 'STABLECOIN_CASH_HOLD'),
     cashSettlementAccount: str('STABLECOIN_CASH_SETTLEMENT_ACCOUNT', ''),
     stablecoinAssetAccount: str('STABLECOIN_ASSET_ACCOUNT', '1210'),
+    settlementDebitAccount: str('STABLECOIN_SETTLEMENT_DEBIT_ACCOUNT', '2000'),
+    settlementFeeAccount: str('STABLECOIN_SETTLEMENT_FEE_ACCOUNT', '5300'),
     fineractStablecoinAssetGlId: str('STABLECOIN_FINERACT_ASSET_GL_ID', ''),
   };
 }
