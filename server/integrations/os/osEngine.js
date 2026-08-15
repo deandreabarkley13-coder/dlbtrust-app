@@ -23,6 +23,9 @@ let pool;
 try { pool = require('../bonds/pgPool'); } catch (e) { pool = null; }
 
 const crypto = require('crypto');
+const { execFile } = require('child_process');
+const { promisify } = require('util');
+const execFileAsync = promisify(execFile);
 
 function id(prefix = 'EVT') {
   return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 8).toUpperCase()}`;
@@ -1904,6 +1907,384 @@ class BackOfficeEngine extends BaseOSEngine {
   }
 }
 
+// ─── Alchemy Wallet Engine ─────────────────────────────────────────────────────
+//
+// Manages Alchemy CLI wallets (local + Agent session), queries balances via
+// Alchemy RPC, funds wallets from GL source-of-funds accounts, and sends on
+// Base/Eth mainnet through the Alchemy CLI signer.
+
+class AlchemyWalletEngine extends BaseOSEngine {
+  static get engineName() { return 'alchemy-wallet'; }
+
+  static async ensureTables() {
+    await super.ensureTables();
+    if (!pool) return;
+    await query(`
+      CREATE TABLE IF NOT EXISTS alchemy_wallet_funding_requests (
+        id TEXT PRIMARY KEY,
+        source_type TEXT,
+        source_account_id TEXT,
+        target_address TEXT NOT NULL,
+        asset TEXT NOT NULL,
+        amount_cents BIGINT NOT NULL,
+        hold_account TEXT,
+        status TEXT NOT NULL DEFAULT 'reserved' CHECK (status IN ('reserved','completed','pending_crypto','cancelled')),
+        funding_metadata JSONB DEFAULT '{}',
+        created_at TIMESTAMPTZ DEFAULT NOW(),
+        updated_at TIMESTAMPTZ DEFAULT NOW()
+      )
+    `);
+    await query(`CREATE INDEX IF NOT EXISTS idx_awfr_status ON alchemy_wallet_funding_requests(status)`);
+    await query(`CREATE INDEX IF NOT EXISTS idx_awfr_address ON alchemy_wallet_funding_requests(target_address)`);
+  }
+
+  static _alchemyApiEnv() {
+    const DappConfig = tryRequire('../dapp/config')?.getConfig;
+    const cfg = DappConfig ? DappConfig() : {};
+    return {
+      ...process.env,
+      ALCHEMY_API_KEY: process.env.ALCHEMY_API_KEY || cfg.alchemyApiKey || '',
+    };
+  }
+
+  static async _exec(args, { timeout = 60000, envExtra = {} } = {}) {
+    const env = { ...this._alchemyApiEnv(), ...envExtra };
+    try {
+      const { stdout, stderr } = await execFileAsync('alchemy', ['--json', '--no-interactive', ...args], { timeout, env });
+      if (stderr) console.warn(`[alchemy-wallet] stderr: ${stderr.trim()}`);
+      if (!stdout || !stdout.trim()) return {};
+      return JSON.parse(stdout);
+    } catch (err) {
+      let parsed = null;
+      try { parsed = JSON.parse(err.stdout || ''); } catch {}
+      if (parsed && parsed.error) {
+        const e = new Error(parsed.error.message || 'Alchemy CLI error');
+        e.code = parsed.error.code;
+        throw e;
+      }
+      throw new Error(`Alchemy CLI failed: ${err.message || err}`);
+    }
+  }
+
+  static _networkName(chainId) {
+    const map = {
+      1: 'eth-mainnet',
+      8453: 'base-mainnet',
+      137: 'polygon-mainnet',
+      42161: 'arb-mainnet',
+      11155111: 'eth-sepolia',
+    };
+    return map[chainId] || 'base-mainnet';
+  }
+
+  static _dappConfig() {
+    try {
+      const { getConfig } = require('../dapp/config');
+      return getConfig();
+    } catch (e) { return {}; }
+  }
+
+  static async _getWallets() {
+    const data = await this._exec(['wallet', 'address']);
+    return {
+      evm: data.evm || null,
+      solana: data.solana || null,
+      sessionEvm: data.session && data.session.evm ? data.session.evm : null,
+      activeSigner: data.activeSigner || 'local',
+    };
+  }
+
+  static async status() {
+    const cfg = this._dappConfig();
+    const cli = await this._exec(['wallet', 'status', '--verify']).catch((e) => ({ error: e.message }));
+    const wallets = await this._getWallets().catch((e) => ({ error: e.message }));
+    return {
+      engine: 'alchemy-wallet',
+      healthy: !cli.error,
+      mode: process.env.ALCHEMY_WALLET_SEND_LIVE === 'true' ? 'live' : 'shadow',
+      alchemyApiKeyConfigured: !!(process.env.ALCHEMY_API_KEY || cfg.alchemyApiKey),
+      chainId: cfg.chainId || 8453,
+      network: this._networkName(cfg.chainId || 8453),
+      cli,
+      wallets,
+      timestamp: new Date().toISOString(),
+    };
+  }
+
+  static async health() { return this.status(); }
+
+  static async _getBalancesForAddress(address) {
+    if (!address) throw new Error('address required');
+    const DappEngine = tryRequire('../dapp/dappEngine')?.DappEngine;
+    if (DappEngine && DappEngine.getWalletBalances) {
+      return await DappEngine.getWalletBalances({ chain: 'evm', address });
+    }
+    const bal = await this._exec(['evm', 'data', 'balance', address, '-n', this._networkName(this._dappConfig().chainId || 8453)]);
+    return {
+      chain: this._dappConfig().chainId || 8453,
+      address,
+      native: { symbol: 'ETH', balance: String(bal) },
+      usdc: null,
+    };
+  }
+
+  static async _switchSigner(signer) {
+    if (!['local', 'session'].includes(signer)) throw new Error('signer must be local or session');
+    return await this._exec(['wallet', 'use', signer]);
+  }
+
+  static async _createLocalWallet() {
+    return await this._exec(['wallet', 'connect', '--mode', 'local']);
+  }
+
+  static async _ensureCashHoldingAccount() {
+    const CashEngine = tryRequire('../cash/cashEngine')?.CashEngine;
+    if (!CashEngine) return null;
+    const StablecoinConfig = tryRequire('../stablecoin/config')?.getConfig;
+    const holdingId = StablecoinConfig ? StablecoinConfig().cashHoldingAccount : 'STABLECOIN_CASH_HOLD';
+    try {
+      const acct = await CashEngine.getAccount(holdingId);
+      if (acct) return acct;
+    } catch (e) { /* will create */ }
+    return await CashEngine.createAccount({
+      accountId: holdingId,
+      accountName: 'Stablecoin Cash Holding',
+      accountType: 'escrow',
+      notes: 'Holding account for stablecoin source-of-funds sweeps',
+    });
+  }
+
+  static async _ensureFundingHoldAccount() {
+    const TreasuryEngine = tryRequire('../stablecoin/treasuryEngine')?.TreasuryEngine;
+    if (!TreasuryEngine) throw new Error('TreasuryEngine not available');
+    return await TreasuryEngine.getOrCreateAccount('ALCHEMY-FUNDING-HOLD', { type: 'reserve', network: 'mainnet', assetCode: 'USD' });
+  }
+
+  static async _reserveSourceFunds({ sourceType, sourceAccountId, amountCents, memo }) {
+    const SourceOfFundsAdapter = tryRequire('../stablecoin/sourceOfFundsAdapter')?.SourceOfFundsAdapter;
+    const TreasuryEngine = tryRequire('../stablecoin/treasuryEngine')?.TreasuryEngine;
+    if (!SourceOfFundsAdapter || !TreasuryEngine) throw new Error('Funding adapters not available');
+    const paymentId = id('AWF-RESERVE');
+
+    if (String(sourceType).toLowerCase() === 'cash') {
+      await this._ensureCashHoldingAccount();
+    }
+
+    if (String(sourceType).toLowerCase() === 'treasury') {
+      const pos = await TreasuryEngine.getPosition(sourceAccountId || 'TREASURY_HOT');
+      if (Number(pos.availableCents || 0) < amountCents) throw new Error(`Insufficient treasury balance: ${pos.availableCents || 0} < ${amountCents}`);
+      await TreasuryEngine.debit(sourceAccountId || 'TREASURY_HOT', amountCents, { reason: `Alchemy wallet fund ${paymentId}`, source: 'alchemy_wallet_fund' });
+      await this._ensureFundingHoldAccount();
+      await TreasuryEngine.credit('ALCHEMY-FUNDING-HOLD', amountCents, { source: 'alchemy_wallet_fund', metadata: { paymentId, sourceType, sourceAccountId, memo } });
+      return { sourceType, sourceAccountId, holdAccount: 'ALCHEMY-FUNDING-HOLD', amountCents, paymentId };
+    }
+
+    const sweep = await SourceOfFundsAdapter._fundSourceToTreasury({ sourceType, sourceAccountId, paymentId, amountCents });
+    await this._ensureFundingHoldAccount();
+    await TreasuryEngine.debit('TREASURY_HOT', amountCents, { reason: `Alchemy wallet fund ${paymentId}`, source: 'alchemy_wallet_fund', metadata: { sourceType, sourceAccountId, sweep, memo } });
+    await TreasuryEngine.credit('ALCHEMY-FUNDING-HOLD', amountCents, { source: 'alchemy_wallet_fund', metadata: { paymentId, sourceType, sourceAccountId, sweep, memo } });
+    return { sourceType, sourceAccountId, holdAccount: 'ALCHEMY-FUNDING-HOLD', amountCents, paymentId, sweep };
+  }
+
+  static async _ensureWalletRecord(address) {
+    const WalletEngine = tryRequire('../dapp/walletEngine')?.WalletEngine;
+    if (!WalletEngine) throw new Error('WalletEngine not available');
+    const existing = await WalletEngine.getWalletByAddress(address);
+    if (existing) return existing;
+    const systemUser = await WalletEngine.getSystemUser();
+    return await WalletEngine.createWallet({
+      userId: systemUser.id,
+      name: `Alchemy Wallet ${address.slice(-6)}`,
+      type: 'external',
+      address,
+      metadata: { provider: 'alchemy', createdBy: 'AlchemyWalletEngine' },
+    });
+  }
+
+  static _isInternalAsset(asset) {
+    return ['SIT', 'DLBUSD', 'PTCUSD', 'DLB-PTCUSD'].includes(String(asset || '').toUpperCase());
+  }
+
+  static async _creditInternalWallet({ targetAddress, asset, amount, sourceType, sourceAccountId, paymentId, memo }) {
+    const WalletEngine = tryRequire('../dapp/walletEngine')?.WalletEngine;
+    const TreasuryEngine = tryRequire('../stablecoin/treasuryEngine')?.TreasuryEngine;
+    if (!WalletEngine) throw new Error('WalletEngine not available');
+    const wallet = await this._ensureWalletRecord(targetAddress);
+    const metadata = { memo: memo || `Alchemy fund from ${sourceType}:${sourceAccountId} (${paymentId})`, sourceType, sourceAccountId, paymentId };
+    await WalletEngine.credit(wallet.id, asset, amount, metadata);
+    if (TreasuryEngine) {
+      try {
+        await TreasuryEngine.debit('ALCHEMY-FUNDING-HOLD', Math.round(Number(amount) * 100), { reason: `Issue ${asset} to ${wallet.id}`, source: 'alchemy_wallet_fund' });
+      } catch (e) { console.warn('[AlchemyWalletEngine] hold debit failed:', e.message); }
+    }
+    return { walletId: wallet.id, address: targetAddress, asset, amount, internalBalance: await WalletEngine.getBalance(wallet.id) };
+  }
+
+  static async _fundFromSource(payload) {
+    const { sourceType, sourceAccountId, amount, asset = 'USDC', targetAddress, memo } = payload || {};
+    if (!sourceType || !sourceAccountId) throw new Error('sourceType and sourceAccountId required');
+    if (!amount || Number(amount) <= 0) throw new Error('amount must be positive');
+    if (!targetAddress || !String(targetAddress).startsWith('0x')) throw new Error('targetAddress must be a 0x EVM address');
+    const SourceOfFundsAdapter = tryRequire('../stablecoin/sourceOfFundsAdapter')?.SourceOfFundsAdapter;
+    if (!SourceOfFundsAdapter) throw new Error('SourceOfFundsAdapter not available');
+    const balanceCents = await SourceOfFundsAdapter.getBalance({ sourceType, sourceAccountId });
+    const amountCents = Math.round(Number(amount) * 100);
+    if (Number(balanceCents) < amountCents) throw new Error(`Insufficient source balance: ${balanceCents} cents < ${amountCents}`);
+
+    const reserve = await this._reserveSourceFunds({ sourceType, sourceAccountId, amountCents, memo });
+    const requestId = id('AWF');
+    const status = this._isInternalAsset(asset) ? 'completed' : 'pending_crypto';
+    let result = { reserve, requestId, status, amount, asset, targetAddress, sourceType, sourceAccountId };
+
+    if (this._isInternalAsset(asset)) {
+      const credit = await this._creditInternalWallet({ targetAddress, asset, amount, sourceType, sourceAccountId, paymentId: reserve.paymentId, memo });
+      result = { ...result, credit, completed: true };
+    } else {
+      result.instruction = `Send ${amount} ${asset.toUpperCase()} on ${this._networkName(this._dappConfig().chainId || 8453)} to ${targetAddress}. Once the on-chain deposit is confirmed, call confirmDeposit with requestId ${requestId} and txHash. The GL reserve (${amount} USD cents) is held in ${reserve.holdAccount}.`;
+      result.onRampSteps = [
+        'Transfer fiat or crypto from the source account to an exchange/on-ramp supporting Base mainnet.',
+        `Withdraw ${asset.toUpperCase()} (or swap to ${asset.toUpperCase()}) to ${targetAddress}.`,
+        `Once confirmed, call POST /api/os/alchemy-wallet/process with action confirmDeposit and requestId ${requestId} plus txHash.`,
+      ];
+    }
+
+    if (pool) {
+      await query(`
+        INSERT INTO alchemy_wallet_funding_requests (id, source_type, source_account_id, target_address, asset, amount_cents, hold_account, status, funding_metadata)
+        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9::jsonb)
+      `, [requestId, sourceType, sourceAccountId, targetAddress.toLowerCase(), asset.toUpperCase(), amountCents, reserve.holdAccount, status, safeJson({ reserve, memo })]);
+    }
+    return result;
+  }
+
+  static async _listFundingRequests(payload) {
+    if (!pool) return [];
+    const limit = Number(payload.limit) || 50;
+    const status = payload.status;
+    let sql = 'SELECT * FROM alchemy_wallet_funding_requests ORDER BY created_at DESC LIMIT $1';
+    const params = [limit];
+    if (status) {
+      sql = 'SELECT * FROM alchemy_wallet_funding_requests WHERE status = $1 ORDER BY created_at DESC LIMIT $2';
+      params.unshift(status);
+    }
+    const res = await query(sql, params);
+    return res.rows;
+  }
+
+  static async _getFundingRequest(payload) {
+    if (!pool) throw new Error('Postgres not available');
+    if (!payload.requestId && !payload.id) throw new Error('requestId required');
+    const res = await query('SELECT * FROM alchemy_wallet_funding_requests WHERE id = $1', [payload.requestId || payload.id]);
+    return res.rows[0] || null;
+  }
+
+  static async _confirmDeposit(payload) {
+    if (!pool) throw new Error('Postgres not available');
+    const { requestId, txHash, amount, asset } = payload || {};
+    if (!requestId) throw new Error('requestId required');
+    const existing = await this._getFundingRequest({ requestId });
+    if (!existing) throw new Error(`Funding request not found: ${requestId}`);
+    const newStatus = 'completed';
+    await query(`UPDATE alchemy_wallet_funding_requests SET status = $1, funding_metadata = funding_metadata || $2::jsonb, updated_at = NOW() WHERE id = $3`, [newStatus, safeJson({ confirmedAt: new Date().toISOString(), txHash, confirmedAmount: amount, confirmedAsset: asset }), requestId]);
+    return { requestId, status: newStatus, txHash, note: 'Deposit confirmed. The GL reserve can now be released to the wallet when the treasury settles crypto.' };
+  }
+
+  static async _cancelFundingRequest(payload) {
+    if (!pool) throw new Error('Postgres not available');
+    const { requestId } = payload || {};
+    if (!requestId) throw new Error('requestId required');
+    const existing = await this._getFundingRequest({ requestId });
+    if (!existing) throw new Error(`Funding request not found: ${requestId}`);
+    if (existing.status === 'completed') throw new Error('Cannot cancel completed request');
+    await query(`UPDATE alchemy_wallet_funding_requests SET status = 'cancelled', updated_at = NOW() WHERE id = $1`, [requestId]);
+    return { requestId, status: 'cancelled', note: 'Funding request cancelled; reverse the source hold manually if needed.' };
+  }
+
+  static async _tokenAddressForAsset(asset) {
+    const cfg = this._dappConfig();
+    const upper = String(asset || '').toUpperCase();
+    if (upper === 'ETH' || upper === (cfg.nativeTokenSymbol || 'ETH').toUpperCase()) return null;
+    if (upper === 'USDC') return cfg.usdcAddress;
+    if (upper === 'WETH') return cfg.wethAddress;
+    if (upper === 'USDT') return process.env.DAPP_USDT_ADDRESS || '';
+    return String(asset || '').startsWith('0x') ? asset : '';
+  }
+
+  static async _send(payload) {
+    const { to, amount, asset = 'ETH', tokenAddress, signer, dryRun, confirm, memo } = payload || {};
+    if (!to || !String(to).startsWith('0x')) throw new Error('to must be 0x address');
+    if (!amount || Number(amount) <= 0) throw new Error('amount must be positive');
+    const cfg = this._dappConfig();
+    const network = this._networkName(cfg.chainId || 8453);
+    const wallets = await this._getWallets();
+    const active = signer || wallets.activeSigner || 'local';
+    const token = tokenAddress || await this._tokenAddressForAsset(asset);
+    const isLive = process.env.ALCHEMY_WALLET_SEND_LIVE === 'true' && confirm === true && dryRun !== true;
+    const args = ['evm', 'send', to, String(amount), '-n', network];
+    if (token) args.push('--token', token);
+    if (active) args.push('--signer', active);
+    if (!isLive) args.push('--dry-run');
+    const result = await this._exec(args, { timeout: 120000 });
+    return { ...result, network, asset: token ? String(asset).toUpperCase() : (cfg.nativeTokenSymbol || 'ETH'), signer: active, live: isLive, preview: !isLive, memo };
+  }
+
+  static async _process(action, payload) {
+    switch (action) {
+      case 'status': return await this.status();
+      case 'health': return await this.health();
+      case 'listWallets':
+      case 'list-wallets':
+        return await this._getWallets();
+      case 'getBalances':
+      case 'get-balances':
+      case 'balances':
+        return await this._getBalancesForAddress(payload.address || payload.targetAddress || (await this._getWallets()).evm);
+      case 'switchSigner':
+      case 'switch-signer':
+        return await this._switchSigner(payload.signer);
+      case 'createLocalWallet':
+      case 'create-local-wallet':
+      case 'createWallet':
+        return await this._createLocalWallet();
+      case 'sessionStatus':
+      case 'session-status':
+        return await this._exec(['wallet', 'status', '--verify']);
+      case 'listSourceBalances':
+      case 'list-source-balances':
+      case 'sources': {
+        const DappEngine = tryRequire('../dapp/dappEngine')?.DappEngine;
+        if (DappEngine && DappEngine.listSourceBalances) return await DappEngine.listSourceBalances();
+        return { mode: 'shadow', note: 'DappEngine not available' };
+      }
+      case 'fundFromSource':
+      case 'fund-from-source':
+      case 'fund':
+        return await this._fundFromSource(payload || {});
+      case 'listFundingRequests':
+      case 'list-funding-requests':
+      case 'fundingRequests':
+        return await this._listFundingRequests(payload || {});
+      case 'getFundingRequest':
+      case 'get-funding-request':
+      case 'fundingRequest':
+        return await this._getFundingRequest(payload || {});
+      case 'confirmDeposit':
+      case 'confirm-deposit':
+        return await this._confirmDeposit(payload || {});
+      case 'cancelFundingRequest':
+      case 'cancel-funding-request':
+      case 'cancel':
+        return await this._cancelFundingRequest(payload || {});
+      case 'send':
+      case 'transfer':
+      case 'evm-send':
+        return await this._send(payload || {});
+      default:
+        return await this.status();
+    }
+  }
+}
+
 const ENGINES = {
   bank: BankEngine,
   treasury: TreasuryEngine,
@@ -1920,6 +2301,7 @@ const ENGINES = {
   funding: FundingOSEngine,
   'smart-router': SmartRouterEngine,
   'back-office': BackOfficeEngine,
+  'alchemy-wallet': AlchemyWalletEngine,
 };
 
 async function ensureAll() {
@@ -1949,6 +2331,7 @@ module.exports = {
   FundingOSEngine,
   SmartRouterEngine,
   BackOfficeEngine,
+  AlchemyWalletEngine,
   engines: ENGINES,
   ensureAll,
 };

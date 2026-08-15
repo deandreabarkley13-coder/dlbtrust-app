@@ -151,6 +151,7 @@
             <button onclick="loadEvents('funding')">Funding</button>
             <button onclick="loadEvents('smart-router')">Smart Router</button>
             <button onclick="loadEvents('back-office')">Back Office</button>
+            <button onclick="loadEvents('alchemy-wallet')">Alchemy Wallet</button>
           </div>
           <div id="events-table" style="margin-top:12px"></div>
           <div class="form-grid" style="margin-top:12px">
@@ -183,7 +184,8 @@
       'bank-aggregator': ['status', 'connectorTypes', 'listConnections', 'createConnection', 'getConnection', 'updateConnection', 'deleteConnection', 'pull', 'push', 'listAccounts', 'listTransactions', 'listStatements', 'listEvents', 'pullReturns', 'pullFileStatus'],
       funding: ['status', 'getStatus', 'getConfig', 'buildPlan', 'executePlan', 'depositInvoice', 'sourceBalances'],
       'smart-router': ['status', 'route', 'deliver', 'confirm', 'receipt', 'list', 'get'],
-      'back-office': ['status', 'treasurySummary', 'bankReconciliation', 'listDistributions', 'getDistribution', 'createDistribution', 'approveDistribution', 'rejectDistribution', 'executeDistribution', 'batchProcess']
+      'back-office': ['status', 'treasurySummary', 'bankReconciliation', 'listDistributions', 'getDistribution', 'createDistribution', 'approveDistribution', 'rejectDistribution', 'executeDistribution', 'batchProcess'],
+      'alchemy-wallet': ['status', 'listWallets', 'getBalances', 'switchSigner', 'createLocalWallet', 'sessionStatus', 'listSourceBalances', 'fundFromSource', 'listFundingRequests', 'getFundingRequest', 'confirmDeposit', 'cancelFundingRequest', 'send']
     };
     const samples = {
       bank: JSON.stringify({ bankId: 'SMOKE-BANK', accountId: 'SMOKE-ACCT', from: '2026-01-01', to: '2026-12-31', limit: 10 }, null, 2),
@@ -200,7 +202,8 @@
       'bank-aggregator': JSON.stringify({ action: 'createConnection', name: 'Sample Bank', connectorType: 'internal_rails', direction: 'both', config: {} }, null, 2),
       funding: JSON.stringify({ action: 'buildPlan', amountUsd: 100, sourceType: 'cash', sourceAccountId: 'CA-BOND-PROCEEDS', targetAsset: 'ETH', strategy: 'auto' }, null, 2),
       'smart-router': JSON.stringify({ action: 'deliver', amount: 100, currency: 'USD', destination: { type: 'bank', accountNumber: '123456789', routingNumber: '111000025' }, preferred: 'fiat', reference: 'SR-001', memo: 'Treasury disbursement' }, null, 2),
-      'back-office': JSON.stringify({ action: 'createDistribution', beneficiaryEmail: 'beneficiary@example.com', amountUsd: 100, destinationAddress: '0x0000000000000000000000000000000000000000', sourceType: 'cash', sourceAccountId: 'CA-OPERATING', memo: 'PTC distribution' }, null, 2)
+      'back-office': JSON.stringify({ action: 'createDistribution', beneficiaryEmail: 'beneficiary@example.com', amountUsd: 100, destinationAddress: '0x0000000000000000000000000000000000000000', sourceType: 'cash', sourceAccountId: 'CA-OPERATING', memo: 'PTC distribution' }, null, 2),
+      'alchemy-wallet': JSON.stringify({ action: 'send', to: '0x69a32f285ced1dbf102c7baedf0266f1d39580a1', amount: '0.0001', asset: 'ETH', dryRun: true }, null, 2)
     };
 
     function el(id) { return document.getElementById(id); }
