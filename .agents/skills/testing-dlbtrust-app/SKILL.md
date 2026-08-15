@@ -851,7 +851,7 @@ The `devin/open-agent-id` branch adds `/api/open-agent-id` for DID-backed agent 
     OPEN_AGENT_ID_AGENT_NAME=dlbtrust \
     node server/server-3002.js > /tmp/server-3002-oaid.log 2>&1 < /dev/null & disown
   ```
-- If `open_agent_identities` has rows encrypted with a different key, startup will fail with `Unsupported state or unable to authenticate data`. Truncate the table (`TRUNCATE open_agent_identities RESTART IDENTITY;`) when testing with a fresh key, or reuse the previous key.
+- If `open_agent_identities` has rows encrypted with a different key, startup logs `[open-agent-id] initialization: Unsupported state or unable to authenticate data` (the server still starts, but identity endpoints then return HTTP 400 with that message). Truncate the table (`TRUNCATE open_agent_identities RESTART IDENTITY;`) when testing with a fresh key, or reuse the previous key.
 - Wait for `[open-agent-id] identity initialized` in the log.
 
 ### End-to-end smoke test
