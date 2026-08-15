@@ -875,9 +875,9 @@ class AssetAcquisitionEngine extends BaseOSEngine {
     return ['real_estate', 'vehicle', 'boat', 'jewelry', 'equipment', 'art', 'collectible', 'other'];
   }
 
-  static normalizeCategory(raw, defaultValue = undefined) {
-    if (!raw && defaultValue === undefined) return undefined;
-    const s = String(raw || 'other').toLowerCase().replace(/\s+/g, '_');
+  static normalizeCategory(raw) {
+    if (!raw) return undefined;
+    const s = String(raw).toLowerCase().replace(/\s+/g, '_');
     const map = {
       real_estate: 'real_estate', realestate: 'real_estate', property: 'real_estate',
       vehicle: 'vehicle', motor_vehicle: 'vehicle', car: 'vehicle', auto: 'vehicle', truck: 'vehicle',
@@ -888,7 +888,18 @@ class AssetAcquisitionEngine extends BaseOSEngine {
       collectible: 'collectible', collectable: 'collectible', collectibles: 'collectible',
       other: 'other',
     };
-    return Object.hasOwn(map, s) ? map[s] : (defaultValue === undefined ? 'other' : defaultValue);
+    return Object.hasOwn(map, s) ? map[s] : undefined;
+  }
+
+  static assertAssetCategory(raw) {
+    const category = this.normalizeCategory(raw);
+    if (raw && !category) {
+      throw new Error(`Invalid asset category: ${raw}. Valid: ${this.assetCategories.join(', ')}`);
+    }
+    if (category && !this.assetCategories.includes(category)) {
+      throw new Error(`Invalid asset category: ${raw}. Valid: ${this.assetCategories.join(', ')}`);
+    }
+    return category;
   }
 
   static async status() {
@@ -913,7 +924,7 @@ class AssetAcquisitionEngine extends BaseOSEngine {
       case 'purchase':
       case 'create': {
         if (!payload.name || payload.amountUsd == null) throw new Error('name and amountUsd required');
-        const category = this.normalizeCategory(payload.category, 'other');
+        const category = this.assertAssetCategory(payload.category) || 'other';
         const asset = await Expense.createRecord({
           type: 'asset',
           category,
@@ -959,7 +970,7 @@ class AssetAcquisitionEngine extends BaseOSEngine {
         return { asset, journalEntry, category };
       }
       case 'list': {
-        const listCategory = payload.category ? this.normalizeCategory(payload.category) : undefined;
+        const listCategory = payload.category ? (this.assertAssetCategory(payload.category) || undefined) : undefined;
         return await Expense.listRecords({ type: 'asset', category: listCategory, status: payload.status, limit: payload.limit || 100 });
       }
       case 'get':
@@ -1385,10 +1396,10 @@ class SmartRouterEngine extends BaseOSEngine {
 
   static _mapExternalStatus(status) {
     const s = String(status || '').toLowerCase();
-    if (['settled', 'completed', 'success', 'finalized', 'done'].includes(s)) return 'settled';
-    if (['failed', 'rejected', 'error', 'canceled', 'cancelled'].includes(s)) return 'failed';
-    if (['confirmed', 'approved', 'accepted', 'processed'].includes(s)) return 'confirmed';
-    if (['pending', 'pending_review', 'submitted', 'initiated', 'in_progress'].includes(s)) return 'pending';
+    if (['settled', 'completed', 'success', 'finalized', 'done', 'captured', 'executed', 'committed'].includes(s)) return 'settled';
+    if (['failed', 'rejected', 'error', 'canceled', 'cancelled', 'declined', 'returned', 'bounced', 'voided', 'refunded', 'reversed', 'disputed', 'expired'].includes(s)) return 'failed';
+    if (['confirmed', 'approved', 'accepted', 'processed', 'authorized'].includes(s)) return 'confirmed';
+    if (['pending', 'pending_review', 'submitted', 'initiated', 'in_progress', 'queued', 'scheduled'].includes(s)) return 'pending';
     return null;
   }
 
@@ -1566,9 +1577,10 @@ class SmartRouterEngine extends BaseOSEngine {
     if (externalStatus) {
       const mapped = this._mapExternalStatus(externalStatus.status);
       const status = mapped || row.status;
-      const confirmation = { ...(row.confirmation || {}), externalStatus };
+      const sanitizedExternalStatus = sanitize(externalStatus);
+      const confirmation = { ...(row.confirmation || {}), externalStatus: sanitizedExternalStatus };
       await this._updateConfirmation(paymentId, confirmation, status);
-      return { paymentId, rail: row.rail, status, externalStatus: sanitize(externalStatus), confirmation: sanitize(confirmation) };
+      return { paymentId, rail: row.rail, status, externalStatus: sanitizedExternalStatus, confirmation: sanitize(confirmation) };
     }
     return { paymentId, rail: row.rail, status: row.status, confirmation: sanitize(row.confirmation), note: 'No external confirmation available' };
   }

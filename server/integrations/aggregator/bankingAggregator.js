@@ -68,7 +68,23 @@ class BankingAggregator {
   }
 
   static async _migrateLegacyTables(client) {
+    let begun = false;
     try {
+      // Run the legacy backfill exactly once per deployment. Wrap it in a
+      // transaction so a partial failure rolls back and the migration marker
+      // is only written when every table has been copied successfully.
+      await client.query('BEGIN');
+      begun = true;
+
+      const markerRes = await client.query(
+        `SELECT 1 FROM banking_aggregator_migrations WHERE key = $1`,
+        ['legacy_aggregator_v1']
+      );
+      if (markerRes.rows.length) {
+        await client.query('COMMIT');
+        return;
+      }
+
       // Migrate legacy `aggregator_*` tables that match the banking schema.
       // Trust-aggregator tables share the `aggregator_*` prefix but have a
       // different schema (e.g. `connection_id` PK and `source_type`), so we
@@ -113,9 +129,18 @@ class BankingAggregator {
           ON CONFLICT (id) DO NOTHING
         `);
       }
+
+      await client.query(`
+        INSERT INTO banking_aggregator_migrations (key, migrated_at)
+        VALUES ('legacy_aggregator_v1', NOW())
+        ON CONFLICT (key) DO NOTHING
+      `);
+
+      await client.query('COMMIT');
     } catch (e) {
-      // Migration must never break first-time table creation; log and continue.
-      console.warn('[BankingAggregator] legacy migration skipped:', e.message);
+      if (begun) await client.query('ROLLBACK').catch(() => {});
+      console.warn('[BankingAggregator] legacy migration failed:', e.message);
+      throw e;
     }
   }
 
@@ -219,6 +244,13 @@ class BankingAggregator {
         error         TEXT,
         provider_ref  TEXT,
         created_at    TIMESTAMPTZ DEFAULT NOW()
+      )
+    `);
+
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS banking_aggregator_migrations (
+        key          TEXT PRIMARY KEY,
+        migrated_at  TIMESTAMPTZ DEFAULT NOW()
       )
     `);
 
