@@ -8,10 +8,21 @@ function bool(name, def = false) { const v = process.env[name]; return v === 'tr
 function num(name, def = 0) { const v = Number(process.env[name]); return Number.isFinite(v) ? v : def; }
 
 const chainId = num('DAPP_CHAIN_ID', 1);
-const rpcUrl = str('DAPP_RPC_URL',
-  chainId === 8453 ? 'https://mainnet.base.org'
-    : chainId === 1 ? 'https://ethereum.publicnode.com'
-    : 'https://ethereum-sepolia-rpc.publicnode.com');
+const alchemyApiKey = str('ALCHEMY_API_KEY', '');
+
+function defaultRpcUrl(id) {
+  if (alchemyApiKey) {
+    if (id === 8453) return `https://base-mainnet.g.alchemy.com/v2/${alchemyApiKey}`;
+    if (id === 1) return `https://eth-mainnet.g.alchemy.com/v2/${alchemyApiKey}`;
+    if (id === 137) return `https://polygon-mainnet.g.alchemy.com/v2/${alchemyApiKey}`;
+    if (id === 42161) return `https://arb-mainnet.g.alchemy.com/v2/${alchemyApiKey}`;
+  }
+  if (id === 8453) return 'https://mainnet.base.org';
+  if (id === 1) return 'https://ethereum.publicnode.com';
+  return 'https://ethereum-sepolia-rpc.publicnode.com';
+}
+
+const rpcUrl = str('DAPP_RPC_URL', defaultRpcUrl(chainId));
 
 const wethAddress = str('DAPP_WETH_ADDRESS',
   chainId === 8453 ? '0x4200000000000000000000000000000000000006'
@@ -52,6 +63,7 @@ const config = {
   moduleP2PSwapAddress: str('MODULE_P2P_SWAP_ADDRESS', ''),
   coinbaseCdpKeyName: str('COINBASE_CDP_KEY_NAME', ''),
   coinbaseCdpPrivateKey: str('COINBASE_CDP_PRIVATE_KEY', ''),
+  alchemyApiKey: str('ALCHEMY_API_KEY', ''),
   supportedNetworks: ['ethereum', 'sepolia', 'polygon', 'arbitrum', 'base'],
   getFees,
 };
