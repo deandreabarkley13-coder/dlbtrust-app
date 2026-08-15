@@ -144,6 +144,13 @@
             <button onclick="loadEvents('payment')">Payment</button>
             <button onclick="loadEvents('security')">Security</button>
             <button onclick="loadEvents('rest-api')">REST API</button>
+            <button onclick="loadEvents('bookkeeping')">Bookkeeping</button>
+            <button onclick="loadEvents('cash')">Cash</button>
+            <button onclick="loadEvents('asset-acquisition')">Assets</button>
+            <button onclick="loadEvents('bank-aggregator')">Bank Aggregator</button>
+            <button onclick="loadEvents('funding')">Funding</button>
+            <button onclick="loadEvents('smart-router')">Smart Router</button>
+            <button onclick="loadEvents('back-office')">Back Office</button>
           </div>
           <div id="events-table" style="margin-top:12px"></div>
           <div class="form-grid" style="margin-top:12px">
@@ -169,7 +176,14 @@
       settlement: ['status', 'submit', 'get', 'list', 'execute', 'reconcile'],
       compliance: ['status', 'screen', 'get', 'list', 'approve', 'block', 'screenRecipient'],
       security: ['status', 'audit', 'threatCheck', 'rotateAdminToken'],
-      'rest-api': ['status', 'metrics', 'createApiKey', 'disableApiKey']
+      'rest-api': ['status', 'metrics', 'createApiKey', 'disableApiKey'],
+      bookkeeping: ['status', 'detectDuplicates', 'reverseDuplicate', 'postAdjustment', 'reverseTransaction', 'subLedgerList', 'subLedgerRollup', 'computeProof'],
+      cash: ['status', 'createAccount', 'listAccounts', 'getAccount', 'transfer', 'deposit', 'positionSummary', 'getMovements', 'reconcile'],
+      'asset-acquisition': ['status', 'acquire', 'list', 'get', 'update', 'dispose'],
+      'bank-aggregator': ['status', 'connectorTypes', 'listConnections', 'createConnection', 'getConnection', 'updateConnection', 'deleteConnection', 'pull', 'push', 'listAccounts', 'listTransactions', 'listStatements', 'listEvents', 'pullReturns', 'pullFileStatus'],
+      funding: ['status', 'getStatus', 'getConfig', 'buildPlan', 'executePlan', 'depositInvoice', 'sourceBalances'],
+      'smart-router': ['status', 'route', 'deliver', 'confirm', 'receipt', 'list', 'get'],
+      'back-office': ['status', 'treasurySummary', 'bankReconciliation', 'listDistributions', 'getDistribution', 'createDistribution', 'approveDistribution', 'rejectDistribution', 'executeDistribution', 'batchProcess']
     };
     const samples = {
       bank: JSON.stringify({ bankId: 'SMOKE-BANK', accountId: 'SMOKE-ACCT', from: '2026-01-01', to: '2026-12-31', limit: 10 }, null, 2),
@@ -179,7 +193,14 @@
       settlement: JSON.stringify({ settlementId: 'SET-1' }, null, 2),
       compliance: JSON.stringify({ subject: 'ACME Corp' }, null, 2),
       security: JSON.stringify({ actor: 'admin', resource: '/api/os', metadata: { outcome: 'allow' } }, null, 2),
-      'rest-api': JSON.stringify({ name: 'operator-key', role: 'operator', scopes: ['os:read'] }, null, 2)
+      'rest-api': JSON.stringify({ name: 'operator-key', role: 'operator', scopes: ['os:read'] }, null, 2),
+      bookkeeping: JSON.stringify({ minAmount: 1000, windowHours: 24 }, null, 2),
+      cash: JSON.stringify({ accountName: 'Operating Cash', accountType: 'operating' }, null, 2),
+      'asset-acquisition': JSON.stringify({ category: 'real_estate', name: 'Sample Property', amountUsd: 250000, identifier: 'DEED-123' }, null, 2),
+      'bank-aggregator': JSON.stringify({ action: 'createConnection', name: 'Sample Bank', connectorType: 'internal_rails', direction: 'both', config: {} }, null, 2),
+      funding: JSON.stringify({ action: 'buildPlan', amountUsd: 100, sourceType: 'cash', sourceAccountId: 'CA-BOND-PROCEEDS', targetAsset: 'ETH', strategy: 'auto' }, null, 2),
+      'smart-router': JSON.stringify({ action: 'deliver', amount: 100, currency: 'USD', destination: { type: 'bank', accountNumber: '123456789', routingNumber: '111000025' }, preferred: 'fiat', reference: 'SR-001', memo: 'Treasury disbursement' }, null, 2),
+      'back-office': JSON.stringify({ action: 'createDistribution', beneficiaryEmail: 'beneficiary@example.com', amountUsd: 100, destinationAddress: '0x0000000000000000000000000000000000000000', sourceType: 'cash', sourceAccountId: 'CA-OPERATING', memo: 'PTC distribution' }, null, 2)
     };
 
     function el(id) { return document.getElementById(id); }
