@@ -46,6 +46,25 @@ function tryRequire(mod) {
   try { return require(mod); } catch (e) { return null; }
 }
 
+const SENSITIVE_RE = /\b(api[_-]?key|private[_-]?key|\w*secret|password|pwd|\w*token|cvv|cvc|pan|card[_-]?number|account[_-]?number|routing[_-]?number|iban|bic|ssn|tax[_-]?id|authorization|signature|payload|instrument|track[12]?|emv)\b/i;
+
+function redact(value) {
+  if (value === null || value === undefined) return value;
+  if (Array.isArray(value)) return value.map(redact);
+  if (typeof value === 'object') {
+    const out = {};
+    for (const [k, v] of Object.entries(value)) {
+      out[k] = SENSITIVE_RE.test(String(k)) ? '[REDACTED]' : redact(v);
+    }
+    return out;
+  }
+  return value;
+}
+
+function sanitize(obj) {
+  try { return redact(JSON.parse(safeJson(obj || {}))); } catch { return {}; }
+}
+
 // ─── Base Engine ──────────────────────────────────────────────────────────────
 
 class BaseOSEngine {
@@ -76,7 +95,7 @@ class BaseOSEngine {
       try {
         await query(
           `INSERT INTO os_events (event_id, engine, action, status, payload, result) VALUES ($1,$2,$3,$4,$5::jsonb,$6::jsonb)`,
-          [eventId, this.engineName, action, status, safeJson(payload), safeJson(result)]
+          [eventId, this.engineName, action, status, safeJson(sanitize(payload)), safeJson(sanitize(result))]
         );
       } catch (e) { console.warn(`[os-${this.engineName}] log failed:`, e.message); }
     }
@@ -159,11 +178,12 @@ class BankEngine extends BaseOSEngine {
       case 'sync':
         if (BankSync && process.env.BANKSYNC_API_KEY) return await BankSync.listBanks();
         return { mode: 'shadow', note: 'BANKSYNC_API_KEY not configured' };
+      case 'accounts':
       case 'listAccounts':
-        if (BankSync && payload.bankId) return await BankSync.listAccounts(payload.bankId);
+        if (BankSync && process.env.BANKSYNC_API_KEY && payload.bankId) return await BankSync.listAccounts(payload.bankId);
         return { mode: 'shadow', note: 'bankId required or BANKSYNC not configured' };
       case 'balance':
-        if (BankSync && payload.bankId && payload.accountId) return await BankSync.getAccountBalance(payload.bankId, payload.accountId);
+        if (BankSync && process.env.BANKSYNC_API_KEY && payload.bankId && payload.accountId) return await BankSync.getAccountBalance(payload.bankId, payload.accountId);
         return { mode: 'shadow', note: 'bankId and accountId required or BANKSYNC not configured' };
       case 'status':
       default:
@@ -194,12 +214,12 @@ class TreasuryEngine extends BaseOSEngine {
     const StableTreasury = tryRequire('../stablecoin/treasuryEngine')?.TreasuryEngine;
     switch (action) {
       case 'position':
-        if (Corp && payload.accountId) return await Corp.getPosition(payload.accountId);
         if (StableTreasury) return await StableTreasury.getPosition(payload.accountId);
+        if (Corp && payload.accountId) return await Corp.getAccount(payload.accountId);
         return { mode: 'shadow', note: 'Treasury engines not configured' };
       case 'sweep':
-        if (Corp) return await Corp.sweep(payload.poolId || 'default', payload.amount);
-        return { mode: 'shadow', note: 'CorporateTreasuryEngine not available' };
+        if (Corp && payload.poolId) return await Corp.sweepCashPool(payload.poolId);
+        return { mode: 'shadow', note: 'poolId required or CorporateTreasuryEngine not available' };
       case 'reserve':
         if (StableTreasury) return await StableTreasury.hold(payload.paymentId || id('PMT-'), payload.accountId || 'TREASURY_HOT', toCents(payload.amount));
         return { mode: 'shadow', note: 'Stablecoin treasury not available' };
@@ -381,7 +401,7 @@ class SettlementEngine extends BaseOSEngine {
         if (Settle && payload.settlementId) return await Settle.executeSettlement(payload.settlementId);
         return { mode: 'shadow', note: 'settlementId required or engine not available' };
       case 'reconcile':
-        if (Settle && payload.settlementId) return await Settle.reconcile(payload.settlementId, payload.txHash, payload.settledAmountCents);
+        if (Settle && payload.settlementId) return await Settle.confirmSettlement(payload.settlementId, { txHash: payload.txHash, settledAmountCents: payload.settledAmountCents });
         return { mode: 'shadow', note: 'settlementId required or engine not available' };
       case 'status':
       default:
@@ -488,7 +508,7 @@ class SecurityEngine extends BaseOSEngine {
     const eventId = id('SEC-');
     await query(
       `INSERT INTO os_audit_log (event_id, actor, action, resource, metadata) VALUES ($1,$2,$3,$4,$5::jsonb)`,
-      [eventId, payload.actor || 'system', payload.action || 'audit', payload.resource || '', safeJson(payload.metadata)]
+      [eventId, payload.actor || 'system', payload.action || 'audit', payload.resource || '', safeJson(sanitize(payload.metadata))]
     );
     return { eventId, logged: true };
   }
@@ -599,7 +619,6 @@ const ENGINES = {
   compliance: ComplianceEngine,
   security: SecurityEngine,
   'rest-api': RestApiEngine,
-  restapi: RestApiEngine,
 };
 
 async function ensureAll() {

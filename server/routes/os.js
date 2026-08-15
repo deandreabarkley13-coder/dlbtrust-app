@@ -33,7 +33,6 @@ const ENGINES = {
   compliance: ComplianceEngine,
   security: SecurityEngine,
   'rest-api': RestApiEngine,
-  restapi: RestApiEngine,
 };
 
 function sendError(res, err) {
