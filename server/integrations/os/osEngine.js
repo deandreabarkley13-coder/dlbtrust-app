@@ -646,6 +646,360 @@ class RestApiEngine extends BaseOSEngine {
   }
 }
 
+// ─── Bookkeeping Engine ───────────────────────────────────────────────────────
+
+class BookkeepingEngine extends BaseOSEngine {
+  static get engineName() { return 'bookkeeping'; }
+
+  static async status() {
+    const BookkeepingAgent = tryRequire('../agents/bookkeepingAgent')?.BookkeepingAgent;
+    const SubLedger = tryRequire('../accounting/subLedgerEngine')?.SubLedgerEngine;
+    const TrustAccounting = tryRequire('../accounting/trustAccountingEngine')?.TrustAccountingEngine;
+    return {
+      engine: 'bookkeeping',
+      healthy: true,
+      mode: process.env.BOOKKEEPING_LIVE === 'true' ? 'live' : 'shadow',
+      integrations: { bookkeepingAgent: !!BookkeepingAgent, subLedger: !!SubLedger, trustAccounting: !!TrustAccounting },
+      timestamp: new Date().toISOString(),
+    };
+  }
+
+  static async _process(action, payload) {
+    const BookkeepingAgent = tryRequire('../agents/bookkeepingAgent')?.BookkeepingAgent;
+    const SubLedger = tryRequire('../accounting/subLedgerEngine')?.SubLedgerEngine;
+    const AssetDebtProof = tryRequire('../accounting/assetDebtProofEngine')?.AssetDebtProofEngine;
+
+    switch (action) {
+      case 'reverseTransaction':
+      case 'reverse-transaction':
+        if (BookkeepingAgent && payload.entryId) return await BookkeepingAgent.reverseTransaction(payload.entryId, { reason: payload.reason, approvedBy: payload.approvedBy });
+        return { mode: 'shadow', note: 'entryId required or BookkeepingAgent not available' };
+      case 'postAdjustment':
+      case 'post-adjustment':
+        if (BookkeepingAgent && payload.lines && payload.reason) return await BookkeepingAgent.postAdjustment({
+          description: payload.description,
+          lines: payload.lines,
+          reason: payload.reason,
+          adjustmentType: payload.adjustmentType,
+          originalEntryId: payload.originalEntryId,
+          approvedBy: payload.approvedBy,
+        });
+        return { mode: 'shadow', note: 'lines and reason required or BookkeepingAgent not available' };
+      case 'detectDuplicates':
+      case 'detect-duplicates':
+        if (BookkeepingAgent) return await BookkeepingAgent.detectDuplicates({ amount: payload.amount, windowHours: payload.windowHours, minAmount: payload.minAmount });
+        return { mode: 'shadow', note: 'BookkeepingAgent not available' };
+      case 'reverseDuplicate':
+      case 'reverse-duplicate':
+        if (BookkeepingAgent && payload.amount) return await BookkeepingAgent.reverseDuplicate(payload.amount, { reason: payload.reason, keepEntryId: payload.keepEntryId });
+        return { mode: 'shadow', note: 'amount required or BookkeepingAgent not available' };
+      case 'reconcileBILLCash':
+      case 'reconcile-bill-cash':
+        if (BookkeepingAgent) return await BookkeepingAgent.reconcileBILLCash();
+        return { mode: 'shadow', note: 'BookkeepingAgent not available' };
+      case 'processVendorPayment':
+      case 'process-vendor-payment':
+        if (process.env.BOOKKEEPING_LIVE !== 'true') return { mode: 'shadow', note: 'Set BOOKKEEPING_LIVE=true to execute real vendor payments' };
+        if (BookkeepingAgent && payload.paymentId) return await BookkeepingAgent.processVendorPayment(payload.paymentId);
+        return { mode: 'shadow', note: 'paymentId required or BookkeepingAgent not available' };
+      case 'subLedgerCreate':
+      case 'sub-ledger-create':
+        if (SubLedger) return await SubLedger.createSubLedger({
+          contactId: payload.contactId,
+          parentAccountCode: payload.parentAccountCode,
+          subAccountName: payload.subAccountName,
+          subAccountType: payload.subAccountType,
+          openingBalance: payload.openingBalance,
+          currency: payload.currency,
+          notes: payload.notes,
+        });
+        return { mode: 'shadow', note: 'SubLedgerEngine not available' };
+      case 'subLedgerGet':
+      case 'sub-ledger-get':
+        if (SubLedger && payload.subLedgerId) return await SubLedger.getSubLedger(payload.subLedgerId);
+        return { mode: 'shadow', note: 'subLedgerId required or SubLedgerEngine not available' };
+      case 'subLedgerList':
+      case 'sub-ledger-list':
+        if (SubLedger) return await SubLedger.listSubLedgers({ contactId: payload.contactId, parentAccountCode: payload.parentAccountCode, subAccountType: payload.subAccountType, status: payload.status });
+        return { mode: 'shadow', note: 'SubLedgerEngine not available' };
+      case 'subLedgerPost':
+      case 'sub-ledger-post':
+        if (SubLedger && payload.subLedgerId) return await SubLedger.postTransaction({
+          subLedgerId: payload.subLedgerId,
+          transactionType: payload.transactionType,
+          amount: payload.amount,
+          description: payload.description,
+          referenceType: payload.referenceType,
+          referenceId: payload.referenceId,
+          journalEntryId: payload.journalEntryId,
+          postedBy: payload.postedBy,
+        });
+        return { mode: 'shadow', note: 'subLedgerId required or SubLedgerEngine not available' };
+      case 'subLedgerTransfer':
+      case 'sub-ledger-transfer':
+        if (SubLedger && payload.fromSubLedgerId && payload.toSubLedgerId) return await SubLedger.transfer({
+          fromSubLedgerId: payload.fromSubLedgerId,
+          toSubLedgerId: payload.toSubLedgerId,
+          amount: payload.amount,
+          description: payload.description,
+          postedBy: payload.postedBy,
+        });
+        return { mode: 'shadow', note: 'fromSubLedgerId and toSubLedgerId required or SubLedgerEngine not available' };
+      case 'subLedgerRollup':
+      case 'sub-ledger-rollup':
+        if (SubLedger) return await SubLedger.getSubLedgerRollup();
+        return { mode: 'shadow', note: 'SubLedgerEngine not available' };
+      case 'getClientStatement':
+      case 'get-client-statement':
+        if (SubLedger && payload.contactId) return await SubLedger.getClientStatement(payload.contactId, { fromDate: payload.fromDate, toDate: payload.toDate });
+        return { mode: 'shadow', note: 'contactId required or SubLedgerEngine not available' };
+      case 'computeProof':
+      case 'compute-proof':
+        if (AssetDebtProof) return await AssetDebtProof.computeProof({
+          liabilities: payload.liabilities,
+          memo: payload.memo,
+          includePendingLiabilities: payload.includePendingLiabilities,
+          includeHardAssets: payload.includeHardAssets,
+          createdBy: payload.createdBy,
+        });
+        return { mode: 'shadow', note: 'AssetDebtProofEngine not available' };
+      case 'getLatestCertified':
+      case 'get-latest-certified':
+        if (AssetDebtProof) return await AssetDebtProof.getLatestCertified();
+        return { mode: 'shadow', note: 'AssetDebtProofEngine not available' };
+      case 'status':
+      default:
+        return await this.status();
+    }
+  }
+}
+
+// ─── Cash Engine ──────────────────────────────────────────────────────────────
+
+class CashOSEngine extends BaseOSEngine {
+  static get engineName() { return 'cash'; }
+
+  static async status() {
+    const Cash = tryRequire('../cash/cashEngine')?.CashEngine;
+    return {
+      engine: 'cash',
+      healthy: true,
+      mode: process.env.CASH_LIVE === 'true' ? 'live' : 'shadow',
+      integrations: { cashEngine: !!Cash },
+      timestamp: new Date().toISOString(),
+    };
+  }
+
+  static async _process(action, payload) {
+    const Cash = tryRequire('../cash/cashEngine')?.CashEngine;
+    switch (action) {
+      case 'createAccount':
+      case 'create-account':
+        if (Cash && payload.accountName) return await Cash.createAccount({
+          accountId: payload.accountId,
+          accountName: payload.accountName,
+          accountType: payload.accountType,
+          linkedFineractAccountId: payload.linkedFineractAccountId,
+          notes: payload.notes,
+        });
+        return { mode: 'shadow', note: 'accountName required or CashEngine not available' };
+      case 'getAccount':
+      case 'get-account':
+        if (Cash && payload.accountId) return await Cash.getAccount(payload.accountId);
+        return { mode: 'shadow', note: 'accountId required or CashEngine not available' };
+      case 'listAccounts':
+      case 'list-accounts':
+        if (Cash) return await Cash.listAccounts({ type: payload.type, status: payload.status });
+        return { mode: 'shadow', note: 'CashEngine not available' };
+      case 'transfer':
+        if (Cash && payload.fromAccountId && payload.toAccountId && payload.amount) {
+          return await Cash.transfer({
+            fromAccountId: payload.fromAccountId,
+            toAccountId: payload.toAccountId,
+            amountCents: toCents(payload.amount),
+            movementType: payload.movementType,
+            memo: payload.memo,
+            referenceId: payload.referenceId,
+            referenceType: payload.referenceType,
+            initiatedBy: payload.initiatedBy,
+            glDebitAccountId: payload.glDebitAccountId,
+            glCreditAccountId: payload.glCreditAccountId,
+            requireFineractPost: payload.requireFineractPost,
+          });
+        }
+        return { mode: 'shadow', note: 'fromAccountId, toAccountId and amount required or CashEngine not available' };
+      case 'deposit':
+        if (Cash && payload.toAccountId && payload.amount) {
+          return await Cash.deposit({
+            toAccountId: payload.toAccountId,
+            amountCents: toCents(payload.amount),
+            memo: payload.memo,
+            referenceId: payload.referenceId,
+            initiatedBy: payload.initiatedBy,
+          });
+        }
+        return { mode: 'shadow', note: 'toAccountId and amount required or CashEngine not available' };
+      case 'positionSummary':
+      case 'position-summary':
+        if (Cash) return await Cash.getPositionSummary();
+        return { mode: 'shadow', note: 'CashEngine not available' };
+      case 'getMovements':
+      case 'get-movements':
+        if (Cash) return await Cash.getMovements({
+          fromAccountId: payload.fromAccountId,
+          toAccountId: payload.toAccountId,
+          movementType: payload.movementType,
+          fromDate: payload.fromDate,
+          toDate: payload.toDate,
+          limit: payload.limit,
+          offset: payload.offset,
+        });
+        return { mode: 'shadow', note: 'CashEngine not available' };
+      case 'reconcile':
+        if (Cash && payload.accountId) return await Cash.reconcile(payload.accountId);
+        return { mode: 'shadow', note: 'accountId required or CashEngine not available' };
+      case 'status':
+      default:
+        return await this.status();
+    }
+  }
+}
+
+// ─── Asset Acquisition Engine ─────────────────────────────────────────────────
+
+class AssetAcquisitionEngine extends BaseOSEngine {
+  static get engineName() { return 'asset-acquisition'; }
+
+  static get assetCategories() {
+    return ['real_estate', 'vehicle', 'boat', 'jewelry', 'equipment', 'art', 'collectible', 'other'];
+  }
+
+  static normalizeCategory(raw) {
+    const s = String(raw || 'other').toLowerCase().replace(/\s+/g, '_');
+    const map = {
+      real_estate: 'real_estate', realestate: 'real_estate', property: 'real_estate',
+      vehicle: 'vehicle', motor_vehicle: 'vehicle', car: 'vehicle', auto: 'vehicle', truck: 'vehicle',
+      boat: 'boat', watercraft: 'boat', yacht: 'boat',
+      jewelry: 'jewelry', jewellery: 'jewelry', watch: 'jewelry', timepiece: 'jewelry',
+      equipment: 'equipment', machinery: 'equipment',
+      art: 'art', fine_art: 'art',
+      collectible: 'collectible', collectable: 'collectible', collectibles: 'collectible',
+      other: 'other',
+    };
+    return map[s] || 'other';
+  }
+
+  static async status() {
+    const Expense = tryRequire('../accounting/expenseManagementEngine')?.ExpenseManagementEngine;
+    return {
+      engine: 'asset-acquisition',
+      healthy: true,
+      mode: process.env.ASSET_ACQUISITION_LIVE === 'true' ? 'live' : 'shadow',
+      integrations: { expenseManagement: !!Expense },
+      categories: this.assetCategories,
+      timestamp: new Date().toISOString(),
+    };
+  }
+
+  static async _process(action, payload) {
+    const Expense = tryRequire('../accounting/expenseManagementEngine')?.ExpenseManagementEngine;
+    const TrustAccounting = tryRequire('../accounting/trustAccountingEngine')?.TrustAccountingEngine;
+    if (!Expense) return { mode: 'shadow', note: 'ExpenseManagementEngine not available' };
+
+    switch (action) {
+      case 'acquire':
+      case 'purchase':
+      case 'create': {
+        if (!payload.name || payload.amountUsd == null) throw new Error('name and amountUsd required');
+        const category = this.normalizeCategory(payload.category);
+        const asset = await Expense.createRecord({
+          type: 'asset',
+          category,
+          name: payload.name,
+          identifier: payload.identifier,
+          description: payload.description,
+          amountUsd: payload.amountUsd,
+          currency: payload.currency || 'USD',
+          owner: payload.owner,
+          linkedSourceType: payload.linkedSourceType,
+          linkedSourceAccountId: payload.linkedSourceAccountId,
+          documents: payload.documents,
+          metadata: { ...(payload.metadata || {}), acquiredVia: 'asset-acquisition' },
+          createdBy: payload.createdBy,
+        });
+        let journalEntry = null;
+        if (payload.postJournalEntry && TrustAccounting && payload.assetAccountCode && payload.cashAccountCode) {
+          try {
+            const assetAcct = await TrustAccounting.getAccount(payload.assetAccountCode);
+            const cashAcct = await TrustAccounting.getAccount(payload.cashAccountCode);
+            if (assetAcct && cashAcct) {
+              journalEntry = await TrustAccounting.postJournalEntry({
+                entryDate: new Date(),
+                description: `Asset acquisition: ${asset.name} (${asset.id})`,
+                referenceType: 'asset_acquisition',
+                referenceId: asset.id,
+                postedBy: payload.createdBy,
+                lines: [
+                  { accountCode: payload.assetAccountCode, debitAmount: payload.amountUsd, creditAmount: 0, memo: `Acquire ${asset.name}` },
+                  { accountCode: payload.cashAccountCode, debitAmount: 0, creditAmount: payload.amountUsd, memo: `Cash for ${asset.name}` },
+                ],
+              });
+            }
+          } catch (jeErr) {
+            journalEntry = { error: jeErr.message };
+          }
+        }
+        return { asset, journalEntry, category };
+      }
+      case 'list':
+        return await Expense.listRecords({ type: 'asset', category: this.normalizeCategory(payload.category), status: payload.status, limit: payload.limit || 100 });
+      case 'get':
+        if (!payload.assetId) throw new Error('assetId required');
+        return await Expense.getRecord(payload.assetId);
+      case 'update':
+        if (!payload.assetId) throw new Error('assetId required');
+        return await Expense.updateRecord(payload.assetId, payload.updates);
+      case 'dispose':
+      case 'sell': {
+        if (!payload.assetId) throw new Error('assetId required');
+        const updates = { status: 'sold', metadata: {} };
+        if (payload.saleAmountUsd != null) updates.amount_cents = toCents(payload.saleAmountUsd);
+        if (payload.metadata) updates.metadata = payload.metadata;
+        const asset = await Expense.updateRecord(payload.assetId, updates);
+        let journalEntry = null;
+        if (payload.postJournalEntry && TrustAccounting && payload.cashAccountCode && payload.gainAccountCode) {
+          try {
+            const original = await Expense.getRecord(payload.assetId);
+            const originalUsd = (original?.amount_cents || 0) / 100;
+            const saleUsd = Number(payload.saleAmountUsd || originalUsd);
+            const gain = saleUsd - originalUsd;
+            const lines = [
+              { accountCode: payload.cashAccountCode, debitAmount: saleUsd, creditAmount: 0, memo: `Proceeds from sale of ${original?.name}` },
+              { accountCode: payload.assetAccountCode || original?.metadata?.assetAccountCode, debitAmount: 0, creditAmount: originalUsd, memo: `Remove ${original?.name} from books` },
+            ];
+            if (gain > 0) lines.push({ accountCode: payload.gainAccountCode, debitAmount: 0, creditAmount: gain, memo: `Gain on sale` });
+            if (gain < 0) lines.push({ accountCode: payload.gainAccountCode, debitAmount: Math.abs(gain), creditAmount: 0, memo: `Loss on sale` });
+            journalEntry = await TrustAccounting.postJournalEntry({
+              entryDate: new Date(),
+              description: `Asset disposal: ${original?.name} (${payload.assetId})`,
+              referenceType: 'asset_disposal',
+              referenceId: payload.assetId,
+              postedBy: payload.postedBy,
+              lines,
+            });
+          } catch (jeErr) {
+            journalEntry = { error: jeErr.message };
+          }
+        }
+        return { asset, journalEntry };
+      }
+      case 'status':
+      default:
+        return await this.status();
+    }
+  }
+}
+
 const ENGINES = {
   bank: BankEngine,
   treasury: TreasuryEngine,
@@ -655,6 +1009,9 @@ const ENGINES = {
   compliance: ComplianceEngine,
   security: SecurityEngine,
   'rest-api': RestApiEngine,
+  bookkeeping: BookkeepingEngine,
+  cash: CashOSEngine,
+  'asset-acquisition': AssetAcquisitionEngine,
 };
 
 async function ensureAll() {
@@ -677,6 +1034,9 @@ module.exports = {
   ComplianceEngine,
   SecurityEngine,
   RestApiEngine,
+  BookkeepingEngine,
+  CashOSEngine,
+  AssetAcquisitionEngine,
   engines: ENGINES,
   ensureAll,
 };

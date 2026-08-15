@@ -4,8 +4,9 @@
 /**
  * OS Engine Smoke Test Runbook
  *
- * Exercises the eight OS engines (bank, treasury, payment, clearing,
- * settlement, compliance, security, rest-api) through the public `/api/os`
+ * Exercises the OS engines (bank, treasury, payment, clearing, settlement,
+ * compliance, security, rest-api, bookkeeping, cash, asset-acquisition)
+ * through the public `/api/os`
  * endpoints and prints a pass/fail report.
  *
  * Usage:
@@ -18,7 +19,7 @@ const BASE_URL = (process.env.OS_TEST_BASE_URL || 'http://localhost:3002').repla
 const TOKEN = process.env.ADMIN_SECRET_TOKEN || 'dlb-admin-2026-trust';
 const VERBOSE = process.env.OS_TEST_VERBOSE !== 'false';
 
-const engines = ['bank', 'treasury', 'payment', 'clearing', 'settlement', 'compliance', 'security', 'rest-api'];
+const engines = ['bank', 'treasury', 'payment', 'clearing', 'settlement', 'compliance', 'security', 'rest-api', 'bookkeeping', 'cash', 'asset-acquisition'];
 
 const results = [];
 let failed = false;
@@ -116,6 +117,9 @@ async function main() {
     { engine: 'compliance', action: 'screen', payload: { subject: 'ACME Corp' } },
     { engine: 'security', action: 'audit', payload: { actor: 'admin', resource: '/api/os', metadata: { outcome: 'allow' } } },
     { engine: 'rest-api', action: 'createApiKey', payload: { name: 'smoke-test', role: 'operator', scopes: ['os:read'] }, expectKey: true },
+    { engine: 'bookkeeping', action: 'detectDuplicates', payload: { minAmount: 100 } },
+    { engine: 'cash', action: 'listAccounts', payload: {} },
+    { engine: 'asset-acquisition', action: 'list', payload: {} },
   ];
 
   const bankEventIds = [];
