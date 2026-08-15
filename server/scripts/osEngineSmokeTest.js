@@ -6,7 +6,7 @@
  *
  * Exercises the OS engines (bank, treasury, payment, clearing, settlement,
  * compliance, security, rest-api, bookkeeping, cash, asset-acquisition,
- * bank-aggregator, funding, smart-router, back-office, alchemy-wallet) through
+ * bank-aggregator, funding, smart-router, back-office, wallet-onramp, alchemy-wallet) through
  * the public `/api/os` endpoints and prints a pass/fail report.
  *
  * Usage:
@@ -19,7 +19,7 @@ const BASE_URL = (process.env.OS_TEST_BASE_URL || 'http://localhost:3002').repla
 const TOKEN = process.env.ADMIN_SECRET_TOKEN || 'dlb-admin-2026-trust';
 const VERBOSE = process.env.OS_TEST_VERBOSE !== 'false';
 
-const engines = ['bank', 'treasury', 'payment', 'clearing', 'settlement', 'compliance', 'security', 'rest-api', 'bookkeeping', 'cash', 'asset-acquisition', 'bank-aggregator', 'funding', 'smart-router', 'back-office', 'alchemy-wallet'];
+const engines = ['bank', 'treasury', 'payment', 'clearing', 'settlement', 'compliance', 'security', 'rest-api', 'bookkeeping', 'cash', 'asset-acquisition', 'bank-aggregator', 'funding', 'smart-router', 'back-office', 'wallet-onramp', 'alchemy-wallet'];
 
 const results = [];
 let failed = false;
@@ -127,10 +127,10 @@ async function main() {
     { engine: 'back-office', action: 'treasurySummary', payload: {} },
     { engine: 'back-office', action: 'bankReconciliation', payload: {} },
     { engine: 'back-office', action: 'createDistribution', payload: { beneficiaryEmail: 'beneficiary@example.com', amountUsd: 100, destinationAddress: '0x0000000000000000000000000000000000000000', sourceType: 'cash', sourceAccountId: 'CA-OPERATING', memo: 'Smoke test' }, capture: 'backOfficeRequestId' },
-    { engine: 'alchemy-wallet', action: 'status', payload: {} },
+    { engine: 'wallet-onramp', action: 'providers', payload: {} },
+    { engine: 'wallet-onramp', action: 'fund', payload: { sourceType: 'cash', sourceAccountId: 'CA-BOND-PROCEEDS', amount: 0.01, asset: 'USDC', targetAddress: '0x69a32f285ced1dbf102c7baedf0266f1d39580a1', sourceMethod: 'manual' }, capture: 'walletOnRampOperationId' },
     { engine: 'alchemy-wallet', action: 'listWallets', payload: {} },
     { engine: 'alchemy-wallet', action: 'getBalances', payload: { address: '0x74204857713CC1d741670505003e7261EF626E98' } },
-    { engine: 'alchemy-wallet', action: 'listSourceBalances', payload: {} },
     { engine: 'alchemy-wallet', action: 'send', payload: { to: '0x69a32f285ced1dbf102c7baedf0266f1d39580a1', amount: '0.0001', asset: 'ETH', dryRun: true } },
     { engine: 'alchemy-wallet', action: 'fundFromSource', payload: { sourceType: 'cash', sourceAccountId: 'CA-BOND-PROCEEDS', amount: 0.01, asset: 'SIT', targetAddress: '0x74204857713CC1d741670505003e7261EF626E98', memo: 'Smoke test internal wallet credit' }, capture: 'alchemyFundingEventId' },
   ];
@@ -139,6 +139,7 @@ async function main() {
   const apiKeys = [];
   let smartRouterPaymentId = null;
   let backOfficeRequestId = null;
+  let walletOnRampOperationId = null;
   let alchemyFundingEventId = null;
 
   for (const { engine, action, payload, expectEvent, expectKey, capture } of processSteps) {
@@ -156,11 +157,19 @@ async function main() {
       if (capture && body.data && body.data.result) {
         if (capture === 'smartRouterPaymentId' && body.data.result.paymentId) smartRouterPaymentId = body.data.result.paymentId;
         if (capture === 'backOfficeRequestId' && body.data.result.id) backOfficeRequestId = body.data.result.id;
+        if (capture === 'walletOnRampOperationId' && body.data.result.operationId) walletOnRampOperationId = body.data.result.operationId;
       }
       if (capture && body.data && body.data.eventId) {
         if (capture === 'alchemyFundingEventId') alchemyFundingEventId = body.data.eventId;
       }
       return body.data;
+    });
+  }
+
+  if (walletOnRampOperationId) {
+    await runStep('wallet-onramp: operationId captured', async () => {
+      assert(walletOnRampOperationId && walletOnRampOperationId.startsWith('WOR-'), 'expected WOR- operationId');
+      return walletOnRampOperationId;
     });
   }
 

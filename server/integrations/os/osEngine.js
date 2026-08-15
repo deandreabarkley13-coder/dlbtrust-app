@@ -1907,6 +1907,227 @@ class BackOfficeEngine extends BaseOSEngine {
   }
 }
 
+// ─── Wallet On-Ramp Engine ────────────────────────────────────────────────────
+//
+// Bridges PTC source-of-funds into real Base/Eth canonical assets for the
+// Alchemy wallet, distributions, payouts, and bill-pay rails. Wraps the
+// TreasuryOnRampBridgeEngine so the on-ramp flow is exposed through /api/os.
+
+class WalletOnRampEngine extends BaseOSEngine {
+  static get engineName() { return 'wallet-onramp'; }
+
+  static _sof() { return tryRequire('../stablecoin/sourceOfFundsAdapter')?.SourceOfFundsAdapter; }
+  static _treasury() { return tryRequire('../stablecoin/treasuryEngine')?.TreasuryEngine; }
+
+  static _cfg() {
+    const DappConfig = tryRequire('../dapp/config')?.getConfig;
+    const cfg = DappConfig ? DappConfig() : {};
+    return {
+      enabled: (process.env.WALLET_ONRAMP_ENABLED || 'true') !== 'false',
+      chainId: cfg.chainId || 8453,
+      operatorAddress: cfg.operatorAddress || process.env.DAPP_OPERATOR_WALLET || '',
+      defaultSourceMethod: process.env.WALLET_ONRAMP_DEFAULT_METHOD || 'manual',
+      feeBps: Number(process.env.WALLET_ONRAMP_FEE_BPS || process.env.TREASURY_ON_RAMP_FEE_BPS || 0) || 0,
+    };
+  }
+
+  static async ensureTables() {
+    await super.ensureTables();
+    if (!pool) return;
+    await query(`
+      CREATE TABLE IF NOT EXISTS wallet_onramp_requests (
+        id TEXT PRIMARY KEY,
+        source_type TEXT,
+        source_account_id TEXT,
+        source_method TEXT,
+        target_address TEXT NOT NULL,
+        asset TEXT NOT NULL,
+        amount_cents BIGINT NOT NULL,
+        hold_account TEXT,
+        status TEXT NOT NULL DEFAULT 'awaiting_deposit' CHECK (status IN ('awaiting_deposit','pending_provider','completed','failed','cancelled')),
+        tx_hash TEXT,
+        instructions TEXT,
+        metadata JSONB DEFAULT '{}',
+        created_at TIMESTAMPTZ DEFAULT NOW(),
+        updated_at TIMESTAMPTZ DEFAULT NOW()
+      )
+    `);
+    await query(`CREATE INDEX IF NOT EXISTS idx_wor_status ON wallet_onramp_requests(status)`);
+    await query(`CREATE INDEX IF NOT EXISTS idx_wor_address ON wallet_onramp_requests(target_address)`);
+  }
+
+  static async status() {
+    const cfg = this._cfg();
+    const providers = await this._providers();
+    return { engine: 'wallet-onramp', healthy: true, enabled: cfg.enabled, chainId: cfg.chainId, operatorAddress: cfg.operatorAddress, providers, timestamp: new Date().toISOString() };
+  }
+
+  static async health() { return this.status(); }
+
+  static _networkName() {
+    const n = Number(this._cfg().chainId);
+    if (n === 8453) return 'Base mainnet';
+    if (n === 1) return 'Ethereum mainnet';
+    if (n === 137) return 'Polygon mainnet';
+    if (n === 42161) return 'Arbitrum One';
+    return `chain ${n}`;
+  }
+
+  static _payloadDefaults(payload) {
+    const cfg = this._cfg();
+    const sourceType = payload.sourceType || payload.source_type || 'treasury';
+    const sourceAccountId = payload.sourceAccountId || payload.source_account_id || 'TREASURY_HOT';
+    const amount = payload.amount;
+    const asset = payload.asset || 'USDC';
+    const targetAddress = payload.targetAddress || payload.recipient || cfg.operatorAddress;
+    const sourceMethod = payload.sourceMethod || payload.source_method || cfg.defaultSourceMethod;
+    const onRampBankDetails = payload.onRampBankDetails || payload.on_ramp_bank_details || {};
+    if (!amount || Number(amount) <= 0) throw new Error('amount must be positive');
+    if (!targetAddress) throw new Error('targetAddress required');
+    return { sourceType, sourceAccountId, amount, asset, targetAddress, sourceMethod, onRampBankDetails };
+  }
+
+  static _providerReadiness(method) {
+    const TORBE = tryRequire('../dapp/treasuryOnRampBridgeEngine')?.TreasuryOnRampBridgeEngine;
+    if (TORBE && TORBE._onRampReadiness) {
+      return TORBE._onRampReadiness(method).catch(() => ({ method, ready: false, issues: ['readiness check failed'] }));
+    }
+    if (method === 'manual') return { method, ready: true, issues: [] };
+    return { method, ready: false, issues: ['Provider not configured'] };
+  }
+
+  static async _providers() {
+    const methods = ['manual', 'circle_mint', 'coinbase_treasury', 'moonpay', 'core_banking_wire'];
+    const providers = {};
+    for (const m of methods) {
+      try { providers[m] = await this._providerReadiness(m); } catch (e) { providers[m] = { method: m, ready: false, error: e.message }; }
+    }
+    return providers;
+  }
+
+  static _buildInstructions(p) {
+    const asset = String(p.asset || 'USDC').toUpperCase();
+    const network = this._networkName();
+    const onRampAmount = Number(p.onRampAmount || p.amount).toFixed(6);
+    if (p.sourceMethod === 'manual') {
+      return `Deposit ${onRampAmount} ${asset} on ${network} to ${p.targetAddress}. The fiat equivalent has been reserved from ${p.sourceType}:${p.sourceAccountId}. Once the deposit confirms, call POST /api/os/wallet-onramp/process with action continue, operationId ${p.operationId}, and txHash.`;
+    }
+    if (p.sourceMethod === 'circle_mint') return `Use Circle Mint to transfer ${onRampAmount} ${asset} to ${p.targetAddress} on ${network}. Requires CIRCLE_MINT_API_KEY.`;
+    if (p.sourceMethod === 'coinbase_treasury') return `Use Coinbase Treasury to buy ${onRampAmount} ${asset} and withdraw to ${p.targetAddress} on ${network}.`;
+    if (p.sourceMethod === 'moonpay') return `Complete MoonPay on-ramp to buy ${onRampAmount} ${asset} into ${p.targetAddress} on ${network}.`;
+    if (p.sourceMethod === 'core_banking_wire') return `Initiate a wire/ACH from ${p.sourceType}:${p.sourceAccountId} to the on-ramp bank beneficiary; once credited, the provider will send ${onRampAmount} ${asset} to ${p.targetAddress} on ${network}.`;
+    return `On-ramp ${Number(p.amount).toFixed(2)} USD to ${asset} at ${p.targetAddress} via ${p.sourceMethod} on ${network}. Provider ready: ${p.providerReady}.`;
+  }
+
+  static async _quote(payload = {}) {
+    const SOF = this._sof();
+    if (!SOF) throw new Error('SourceOfFundsAdapter not available');
+    const p = this._payloadDefaults(payload);
+    const balanceCents = await SOF.getBalance({ sourceType: p.sourceType, sourceAccountId: p.sourceAccountId });
+    const amountCents = Math.round(Number(p.amount) * 100);
+    if (Number(balanceCents) < amountCents) throw new Error(`Insufficient source balance: ${balanceCents} cents < ${amountCents}`);
+    const cfg = this._cfg();
+    const feeBps = cfg.feeBps;
+    const onRampAmount = Number(p.amount) * (1 - feeBps / 10000);
+    const provider = await this._providerReadiness(p.sourceMethod);
+    const asset = String(p.asset).toUpperCase();
+    const instructions = this._buildInstructions({ ...p, operationId: null, onRampAmount, providerReady: provider.ready });
+    return { sourceType: p.sourceType, sourceAccountId: p.sourceAccountId, amount: p.amount, amountCents, asset, targetAddress: p.targetAddress, sourceMethod: p.sourceMethod, feeBps, onRampAmount, sourceBalanceCents: balanceCents, providerReady: provider.ready, instructions, status: provider.ready ? 'awaiting_deposit' : 'needs_config' };
+  }
+
+  static async _reserveSourceToHold({ sourceType, sourceAccountId, amount, operationId, targetAddress }) {
+    const SourceOfFundsAdapter = this._sof();
+    const TreasuryEngine = this._treasury();
+    if (!SourceOfFundsAdapter || !TreasuryEngine) return null;
+    const amountCents = Math.round(Number(amount) * 100);
+    const sweep = await SourceOfFundsAdapter._fundSourceToTreasury({ sourceType, sourceAccountId, paymentId: operationId, amountCents });
+    await TreasuryEngine.debit('TREASURY_HOT', amountCents, { reason: `Wallet on-ramp ${operationId}`, source: 'wallet_onramp' });
+    await TreasuryEngine.credit('ALCHEMY-FUNDING-HOLD', amountCents, { source: 'wallet_onramp', metadata: { operationId, sourceType, sourceAccountId, targetAddress } });
+    return { sweep, holdAccount: 'ALCHEMY-FUNDING-HOLD', amountCents };
+  }
+
+  static async _fund(payload = {}) {
+    const p = this._payloadDefaults(payload);
+    const quote = await this._quote(payload);
+    const operationId = id('WOR-');
+    const reserve = quote.providerReady ? await this._reserveSourceToHold({ sourceType: p.sourceType, sourceAccountId: p.sourceAccountId, amount: p.amount, operationId, targetAddress: p.targetAddress }) : null;
+    const status = quote.providerReady ? 'awaiting_deposit' : 'needs_config';
+    const instructions = this._buildInstructions({ ...p, operationId, onRampAmount: quote.onRampAmount, providerReady: quote.providerReady });
+    if (pool) {
+      await query(`
+        INSERT INTO wallet_onramp_requests (id, source_type, source_account_id, source_method, target_address, asset, amount_cents, hold_account, status, instructions, metadata)
+        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11::jsonb)
+      `, [operationId, p.sourceType, p.sourceAccountId, p.sourceMethod, p.targetAddress.toLowerCase(), String(p.asset).toUpperCase(), quote.amountCents, reserve?.holdAccount || null, status, instructions, safeJson({ quote, reserve, onRampBankDetails: p.onRampBankDetails, createdBy: 'wallet-onramp' })]);
+    }
+    return { operationId, quote: { ...quote, instructions }, targetAddress: p.targetAddress, sourceMethod: p.sourceMethod, reserve, instructions, status };
+  }
+
+  static async _getOperation(payload = {}) {
+    if (!pool) return null;
+    const opId = payload.operationId || payload.id || payload.operation_id;
+    if (!opId) throw new Error('operationId required');
+    const res = await query('SELECT * FROM wallet_onramp_requests WHERE id = $1', [opId]);
+    return res.rows[0] || null;
+  }
+
+  static async _listOperations(payload = {}) {
+    if (!pool) return [];
+    const limit = Number(payload.limit) || 50;
+    const offset = Number(payload.offset) || 0;
+    const status = payload.status;
+    let sql = 'SELECT * FROM wallet_onramp_requests ORDER BY created_at DESC LIMIT $1 OFFSET $2';
+    const params = [limit, offset];
+    if (status) { sql = 'SELECT * FROM wallet_onramp_requests WHERE status = $1 ORDER BY created_at DESC LIMIT $2 OFFSET $3'; params.unshift(status); }
+    const res = await query(sql, params);
+    return res.rows;
+  }
+
+  static async _continue(payload = {}) {
+    const opId = payload.operationId || payload.id || payload.operation_id;
+    if (!opId) throw new Error('operationId required');
+    const op = await this._getOperation({ id: opId });
+    if (!op) throw new Error('Operation not found');
+    if (op.status === 'completed') return op;
+    if (op.source_method === 'manual') {
+      const txHash = payload.txHash || payload.tx_hash;
+      if (!txHash) throw new Error('txHash required to confirm manual on-ramp deposit');
+      await query(`UPDATE wallet_onramp_requests SET status='completed', tx_hash=$1, updated_at=NOW(), metadata=metadata || $2::jsonb WHERE id=$3`, [txHash, safeJson({ confirmedAt: new Date().toISOString() }), opId]);
+      return { ...op, status: 'completed', txHash };
+    }
+    const TORBE = tryRequire('../dapp/treasuryOnRampBridgeEngine')?.TreasuryOnRampBridgeEngine;
+    if (!TORBE) throw new Error('TreasuryOnRampBridgeEngine not available for provider on-ramp continuation');
+    return await TORBE.continue({ operationId: opId, onRampBankDetails: payload.onRampBankDetails || payload.on_ramp_bank_details || {} });
+  }
+
+  static async _execute(payload = {}) { return await this._continue(payload); }
+
+  static async _process(action, payload) {
+    switch (action) {
+      case 'status': return await this.status();
+      case 'health': return await this.health();
+      case 'providers': return await this._providers();
+      case 'quote': return await this._quote(payload);
+      case 'fund':
+      case 'fund-wallet':
+      case 'fundAgentWallet':
+        return await this._fund(payload);
+      case 'getOperation':
+      case 'get-operation':
+      case 'operation':
+        return await this._getOperation(payload);
+      case 'listOperations':
+      case 'list-operations':
+      case 'operations':
+        return await this._listOperations(payload);
+      case 'continue':
+        return await this._continue(payload);
+      case 'execute':
+        return await this._execute(payload);
+      default:
+        return await this.status();
+    }
+  }
+}
 // ─── Alchemy Wallet Engine ─────────────────────────────────────────────────────
 //
 // Manages Alchemy CLI wallets (local + Agent session), queries balances via
@@ -2121,7 +2342,7 @@ class AlchemyWalletEngine extends BaseOSEngine {
   }
 
   static async _fundFromSource(payload) {
-    const { sourceType, sourceAccountId, amount, asset = 'USDC', targetAddress, memo } = payload || {};
+    const { sourceType, sourceAccountId, amount, asset = 'USDC', targetAddress, memo, sourceMethod } = payload || {};
     if (!sourceType || !sourceAccountId) throw new Error('sourceType and sourceAccountId required');
     if (!amount || Number(amount) <= 0) throw new Error('amount must be positive');
     if (!targetAddress || !String(targetAddress).startsWith('0x')) throw new Error('targetAddress must be a 0x EVM address');
@@ -2131,28 +2352,23 @@ class AlchemyWalletEngine extends BaseOSEngine {
     const amountCents = Math.round(Number(amount) * 100);
     if (Number(balanceCents) < amountCents) throw new Error(`Insufficient source balance: ${balanceCents} cents < ${amountCents}`);
 
-    const reserve = await this._reserveSourceFunds({ sourceType, sourceAccountId, amountCents, memo });
     const requestId = id('AWF');
-    const status = this._isInternalAsset(asset) ? 'completed' : 'pending_crypto';
-    let result = { reserve, requestId, status, amount, asset, targetAddress, sourceType, sourceAccountId };
+    let result = { requestId, amount, asset, targetAddress, sourceType, sourceAccountId };
 
     if (this._isInternalAsset(asset)) {
+      const reserve = await this._reserveSourceFunds({ sourceType, sourceAccountId, amountCents, memo });
       const credit = await this._creditInternalWallet({ targetAddress, asset, amount, sourceType, sourceAccountId, paymentId: reserve.paymentId, memo });
-      result = { ...result, credit, completed: true };
+      result = { ...result, reserve, credit, status: 'completed', completed: true };
     } else {
-      result.instruction = `Send ${amount} ${asset.toUpperCase()} on ${this._networkName(this._dappConfig().chainId || 8453)} to ${targetAddress}. Once the on-chain deposit is confirmed, call confirmDeposit with requestId ${requestId} and txHash. The GL reserve (${amount} USD cents) is held in ${reserve.holdAccount}.`;
-      result.onRampSteps = [
-        'Transfer fiat or crypto from the source account to an exchange/on-ramp supporting Base mainnet.',
-        `Withdraw ${asset.toUpperCase()} (or swap to ${asset.toUpperCase()}) to ${targetAddress}.`,
-        `Once confirmed, call POST /api/os/alchemy-wallet/process with action confirmDeposit and requestId ${requestId} plus txHash.`,
-      ];
+      const onRamp = await WalletOnRampEngine._fund({ sourceType, sourceAccountId, amount, asset, targetAddress, sourceMethod, memo });
+      result = { ...result, onRampOperationId: onRamp.operationId, status: 'pending_crypto', onRamp, completed: false };
     }
 
     if (pool) {
       await query(`
         INSERT INTO alchemy_wallet_funding_requests (id, source_type, source_account_id, target_address, asset, amount_cents, hold_account, status, funding_metadata)
         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9::jsonb)
-      `, [requestId, sourceType, sourceAccountId, targetAddress.toLowerCase(), asset.toUpperCase(), amountCents, reserve.holdAccount, status, safeJson({ reserve, memo })]);
+      `, [requestId, sourceType, sourceAccountId, targetAddress.toLowerCase(), asset.toUpperCase(), amountCents, (result.reserve?.holdAccount || result.onRamp?.reserve?.holdAccount || null), result.status, safeJson({ memo, onRamp: result.onRamp, onRampOperationId: result.onRampOperationId })]);
     }
     return result;
   }
@@ -2186,6 +2402,14 @@ class AlchemyWalletEngine extends BaseOSEngine {
     if (!existing) throw new Error(`Funding request not found: ${requestId}`);
     const newStatus = 'completed';
     await query(`UPDATE alchemy_wallet_funding_requests SET status = $1, funding_metadata = funding_metadata || $2::jsonb, updated_at = NOW() WHERE id = $3`, [newStatus, safeJson({ confirmedAt: new Date().toISOString(), txHash, confirmedAmount: amount, confirmedAsset: asset }), requestId]);
+    const onRampOpId = existing.funding_metadata?.onRamp?.operationId || existing.funding_metadata?.onRampOperationId;
+    if (onRampOpId) {
+      try {
+        await WalletOnRampEngine._continue({ operationId: onRampOpId, txHash });
+      } catch (e) {
+        console.warn('[AlchemyWalletEngine] wallet-onramp continue failed:', e.message);
+      }
+    }
     return { requestId, status: newStatus, txHash, note: 'Deposit confirmed. The GL reserve can now be released to the wallet when the treasury settles crypto.' };
   }
 
@@ -2301,6 +2525,7 @@ const ENGINES = {
   funding: FundingOSEngine,
   'smart-router': SmartRouterEngine,
   'back-office': BackOfficeEngine,
+  'wallet-onramp': WalletOnRampEngine,
   'alchemy-wallet': AlchemyWalletEngine,
 };
 
@@ -2331,6 +2556,7 @@ module.exports = {
   FundingOSEngine,
   SmartRouterEngine,
   BackOfficeEngine,
+  WalletOnRampEngine,
   AlchemyWalletEngine,
   engines: ENGINES,
   ensureAll,
