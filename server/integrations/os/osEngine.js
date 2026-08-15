@@ -3,9 +3,10 @@
 /**
  * OS Engines — unified operating-system layer for the treasury platform.
  *
- * Exposes eight domain engines (Bank, Treasury, Payment, Clearing, Settlement,
- * Compliance, Security, REST API) behind a common interface so they can be
- * wired, scripted, and monitored from a single endpoint tree:
+ * Exposes ten domain engines (Bank, Treasury, Payment, Clearing, Settlement,
+ * Compliance, Security, REST API, Bank Account Aggregator, Funding) behind a
+ * common interface so they can be wired, scripted, and monitored from a single
+ * endpoint tree:
  *
  *   GET  /api/os/:engine/status
  *   GET  /api/os/:engine/health
@@ -646,6 +647,168 @@ class RestApiEngine extends BaseOSEngine {
   }
 }
 
+class BankAccountAggregatorEngine extends BaseOSEngine {
+  static get engineName() { return 'bank-aggregator'; }
+
+  static async status() {
+    const Aggregator = tryRequire('../aggregator/bankingAggregator')?.BankingAggregator;
+    const Connectors = tryRequire('../aggregator/connectors');
+    return {
+      engine: 'bank-aggregator',
+      healthy: true,
+      mode: process.env.BANK_AGGREGATOR_LIVE === 'true' ? 'live' : 'shadow',
+      integrations: { bankingAggregator: !!Aggregator },
+      connectorsAvailable: Aggregator ? (Connectors?.listConnectorTypes() || []) : [],
+      timestamp: new Date().toISOString(),
+    };
+  }
+
+  static async _process(action, payload) {
+    const Aggregator = tryRequire('../aggregator/bankingAggregator')?.BankingAggregator;
+    const live = process.env.BANK_AGGREGATOR_LIVE === 'true';
+    switch (action) {
+      case 'connectorTypes':
+      case 'connector-types':
+        if (Aggregator) {
+          const Connectors = tryRequire('../aggregator/connectors');
+          return { connectors: Connectors?.listConnectorTypes() || [] };
+        }
+        return { mode: 'shadow', note: 'BankingAggregator not available' };
+      case 'listConnections':
+      case 'list-connections':
+        if (Aggregator) return await Aggregator.listConnections();
+        return { mode: 'shadow', note: 'BankingAggregator not available' };
+      case 'createConnection':
+      case 'create-connection':
+        if (Aggregator && payload.name && payload.connectorType) {
+          return await Aggregator.createConnection({
+            id: payload.id,
+            name: payload.name,
+            connectorType: payload.connectorType,
+            direction: payload.direction || 'both',
+            config: payload.config || {},
+            active: payload.active !== false,
+          });
+        }
+        return { mode: 'shadow', note: 'name and connectorType required or BankingAggregator not available' };
+      case 'getConnection':
+      case 'get-connection':
+        if (Aggregator && payload.connectionId) return await Aggregator.getConnection(payload.connectionId);
+        return { mode: 'shadow', note: 'connectionId required or BankingAggregator not available' };
+      case 'updateConnection':
+      case 'update-connection':
+        if (Aggregator && payload.connectionId) return await Aggregator.updateConnection(payload.connectionId, payload.updates || payload);
+        return { mode: 'shadow', note: 'connectionId required or BankingAggregator not available' };
+      case 'deleteConnection':
+      case 'delete-connection':
+        if (Aggregator && payload.connectionId) return { deleted: await Aggregator.deleteConnection(payload.connectionId) };
+        return { mode: 'shadow', note: 'connectionId required or BankingAggregator not available' };
+      case 'pull':
+        if (!live) return { mode: 'shadow', note: 'Set BANK_AGGREGATOR_LIVE=true to pull external financial data' };
+        if (Aggregator && payload.connectionId) return await Aggregator.pull(payload.connectionId, { kinds: payload.kinds, since: payload.since, accountId: payload.accountId });
+        return { mode: 'shadow', note: 'connectionId required or BankingAggregator not available' };
+      case 'push':
+        if (!live) return { mode: 'shadow', note: 'Set BANK_AGGREGATOR_LIVE=true to push outbound payments/financial data' };
+        if (Aggregator && payload.connectionId) return await Aggregator.push(payload.connectionId, payload);
+        return { mode: 'shadow', note: 'connectionId required or BankingAggregator not available' };
+      case 'listAccounts':
+      case 'list-accounts':
+        if (Aggregator) return await Aggregator.listAccounts(payload.connectionId);
+        return { mode: 'shadow', note: 'BankingAggregator not available' };
+      case 'listTransactions':
+      case 'list-transactions':
+        if (Aggregator) return await Aggregator.listTransactions({ connectionId: payload.connectionId, accountId: payload.accountId, limit: payload.limit });
+        return { mode: 'shadow', note: 'BankingAggregator not available' };
+      case 'listStatements':
+      case 'list-statements':
+        if (Aggregator) return await Aggregator.listStatements(payload.connectionId);
+        return { mode: 'shadow', note: 'BankingAggregator not available' };
+      case 'listEvents':
+      case 'list-events':
+        if (Aggregator) return await Aggregator.listEvents({ connectionId: payload.connectionId, direction: payload.direction, limit: payload.limit });
+        return { mode: 'shadow', note: 'BankingAggregator not available' };
+      case 'pullReturns':
+      case 'pull-returns':
+      case 'returns':
+        if (!live) return { mode: 'shadow', note: 'Set BANK_AGGREGATOR_LIVE=true to pull ACH returns' };
+        if (Aggregator && payload.connectionId) return await Aggregator.pullReturns(payload.connectionId, { limit: payload.limit, since: payload.since });
+        return { mode: 'shadow', note: 'connectionId required or BankingAggregator not available' };
+      case 'pullFileStatus':
+      case 'file-status':
+        if (!live) return { mode: 'shadow', note: 'Set BANK_AGGREGATOR_LIVE=true to pull payment file status' };
+        if (Aggregator && payload.connectionId) return await Aggregator.pullFileStatus(payload.connectionId, { submissionId: payload.submissionId });
+        return { mode: 'shadow', note: 'connectionId and submissionId required or BankingAggregator not available' };
+      case 'status':
+      default:
+        return await this.status();
+    }
+  }
+}
+
+// ─── Funding OS Engine ────────────────────────────────────────────────────────
+
+class FundingOSEngine extends BaseOSEngine {
+  static get engineName() { return 'funding'; }
+
+  static async status() {
+    const Funding = tryRequire('../dapp/fundingEngine')?.FundingEngine;
+    const status = {
+      engine: 'funding',
+      healthy: true,
+      mode: process.env.FUNDING_LIVE === 'true' ? 'live' : 'shadow',
+      integrations: { fundingEngine: !!Funding },
+      timestamp: new Date().toISOString(),
+    };
+    if (Funding) {
+      try { status.fundingStatus = await Funding.getStatus(); } catch (e) { status.fundingStatusError = e.message; }
+    }
+    return status;
+  }
+
+  static async _process(action, payload) {
+    const Funding = tryRequire('../dapp/fundingEngine')?.FundingEngine;
+    switch (action) {
+      case 'getStatus':
+      case 'get-status':
+      case 'status':
+        if (Funding) {
+          try { return await Funding.getStatus(); } catch (e) { return { mode: 'shadow', note: e.message }; }
+        }
+        return { mode: 'shadow', note: 'FundingEngine not available' };
+      case 'getConfig':
+      case 'get-config':
+      case 'config':
+        if (Funding) return Funding.getConfig();
+        return { mode: 'shadow', note: 'FundingEngine not available' };
+      case 'buildPlan':
+      case 'build-plan':
+      case 'plan':
+        if (Funding) return await Funding.buildPlan(payload || {});
+        return { mode: 'shadow', note: 'FundingEngine not available' };
+      case 'executePlan':
+      case 'execute-plan':
+      case 'execute':
+        if (process.env.FUNDING_LIVE !== 'true') return { mode: 'shadow', note: 'Set FUNDING_LIVE=true to execute funding rails that move value' };
+        if (Funding) return await Funding.executePlan(payload || {});
+        return { mode: 'shadow', note: 'FundingEngine not available' };
+      case 'depositInvoice':
+      case 'deposit-invoice':
+      case 'invoice':
+        if (Funding) return await Funding.getDepositInvoice(payload || {});
+        return { mode: 'shadow', note: 'FundingEngine not available' };
+      case 'sourceBalances':
+      case 'source-balances':
+        {
+          const DappEngine = tryRequire('../dapp/dappEngine')?.DappEngine;
+          if (DappEngine && DappEngine.listSourceBalances) return await DappEngine.listSourceBalances();
+          return { mode: 'shadow', note: 'DappEngine.listSourceBalances not available' };
+        }
+      default:
+        return await this.status();
+    }
+  }
+}
+
 const ENGINES = {
   bank: BankEngine,
   treasury: TreasuryEngine,
@@ -655,6 +818,8 @@ const ENGINES = {
   compliance: ComplianceEngine,
   security: SecurityEngine,
   'rest-api': RestApiEngine,
+  'bank-aggregator': BankAccountAggregatorEngine,
+  funding: FundingOSEngine,
 };
 
 async function ensureAll() {
@@ -677,6 +842,8 @@ module.exports = {
   ComplianceEngine,
   SecurityEngine,
   RestApiEngine,
+  BankAccountAggregatorEngine,
+  FundingOSEngine,
   engines: ENGINES,
   ensureAll,
 };
