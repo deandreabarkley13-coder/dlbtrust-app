@@ -52,6 +52,8 @@ try {
   const cached = require.cache[cacheKey];
   if (cached) {
     cached.exports = patched;
+  } else {
+    console.warn('[viemChainPatch] viem/chains module cache entry not found; Base chain patch NOT applied');
   }
 } catch (err) {
   console.warn('[viemChainPatch] could not apply Base chain patch:', err && err.message);
