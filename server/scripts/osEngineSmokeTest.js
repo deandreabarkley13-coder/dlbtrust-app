@@ -5,8 +5,9 @@
  * OS Engine Smoke Test Runbook
  *
  * Exercises the OS engines (bank, treasury, payment, clearing, settlement,
- * compliance, security, rest-api, bank-aggregator, funding) through the public
- * `/api/os` endpoints and prints a pass/fail report.
+ * compliance, security, rest-api, bookkeeping, cash, asset-acquisition,
+ * bank-aggregator, funding) through the public `/api/os`
+ * endpoints and prints a pass/fail report.
  *
  * Usage:
  *   node server/scripts/osEngineSmokeTest.js
@@ -18,7 +19,7 @@ const BASE_URL = (process.env.OS_TEST_BASE_URL || 'http://localhost:3002').repla
 const TOKEN = process.env.ADMIN_SECRET_TOKEN || 'dlb-admin-2026-trust';
 const VERBOSE = process.env.OS_TEST_VERBOSE !== 'false';
 
-const engines = ['bank', 'treasury', 'payment', 'clearing', 'settlement', 'compliance', 'security', 'rest-api', 'bank-aggregator', 'funding'];
+const engines = ['bank', 'treasury', 'payment', 'clearing', 'settlement', 'compliance', 'security', 'rest-api', 'bookkeeping', 'cash', 'asset-acquisition', 'bank-aggregator', 'funding'];
 
 const results = [];
 let failed = false;
@@ -116,6 +117,9 @@ async function main() {
     { engine: 'compliance', action: 'screen', payload: { subject: 'ACME Corp' } },
     { engine: 'security', action: 'audit', payload: { actor: 'admin', resource: '/api/os', metadata: { outcome: 'allow' } } },
     { engine: 'rest-api', action: 'createApiKey', payload: { name: 'smoke-test', role: 'operator', scopes: ['os:read'] }, expectKey: true },
+    { engine: 'bookkeeping', action: 'detectDuplicates', payload: { minAmount: 100 } },
+    { engine: 'cash', action: 'listAccounts', payload: {} },
+    { engine: 'asset-acquisition', action: 'list', payload: {} },
     { engine: 'bank-aggregator', action: 'createConnection', payload: { name: 'smoke-test-internal-rails', connectorType: 'internal_rails', direction: 'both', config: {} }, expectEvent: true },
     { engine: 'funding', action: 'buildPlan', payload: { amountUsd: 100, sourceType: 'cash', sourceAccountId: 'CA-BOND-PROCEEDS', targetAsset: 'ETH', strategy: 'auto' } },
   ];

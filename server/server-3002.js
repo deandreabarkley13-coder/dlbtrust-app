@@ -145,7 +145,7 @@ try { app.use('/api/programmable-money', require(path.join(HD, 'server', 'routes
 // Open Agent ID — DID-backed agent identity, credit lookups, and request signing
 try { app.use('/api/open-agent-id', require(path.join(HD, 'server', 'routes', 'openAgentId'))); console.log('[open-agent-id] loaded'); } catch(e) { console.warn('[open-agent-id]', e.message); }
 
-// OS Engines — unified operating-system layer for bank, treasury, payment, clearing, settlement, compliance, security, REST API, bank-aggregator, and funding
+// OS Engines — unified operating-system layer for bank, treasury, payment, clearing, settlement, compliance, security, REST API, bookkeeping, cash, asset-acquisition, bank-aggregator, and funding
 try { app.use('/api/os', require(path.join(HD, 'server', 'routes', 'os'))); console.log('[os-engines] loaded'); } catch(e) { console.warn('[os-engines]', e.message); }
 
 // DeFi dApp — dApp login at /dapp, command center at /dashboard; landing page at root; legacy treasury dashboard at /treasury
@@ -663,7 +663,7 @@ async function initializeDatabase() {
     console.log('[programmable-money] tables ensured');
   } catch(e) { console.warn('[programmable-money] table init:', e.message); }
 
-  // OS Engines — bank, treasury, payment, clearing, settlement, compliance, security, REST API, bank-aggregator, funding
+  // OS Engines — bank, treasury, payment, clearing, settlement, compliance, security, REST API, bookkeeping, cash, asset-acquisition, bank-aggregator, funding
   try {
     var OSEngine = require(path.join(HD, 'server', 'integrations', 'os', 'osEngine'));
     await OSEngine.ensureAll();

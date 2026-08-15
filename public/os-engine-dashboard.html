@@ -144,6 +144,9 @@
             <button onclick="loadEvents('payment')">Payment</button>
             <button onclick="loadEvents('security')">Security</button>
             <button onclick="loadEvents('rest-api')">REST API</button>
+            <button onclick="loadEvents('bookkeeping')">Bookkeeping</button>
+            <button onclick="loadEvents('cash')">Cash</button>
+            <button onclick="loadEvents('asset-acquisition')">Assets</button>
             <button onclick="loadEvents('bank-aggregator')">Bank Aggregator</button>
             <button onclick="loadEvents('funding')">Funding</button>
           </div>
@@ -172,6 +175,9 @@
       compliance: ['status', 'screen', 'get', 'list', 'approve', 'block', 'screenRecipient'],
       security: ['status', 'audit', 'threatCheck', 'rotateAdminToken'],
       'rest-api': ['status', 'metrics', 'createApiKey', 'disableApiKey'],
+      bookkeeping: ['status', 'detectDuplicates', 'reverseDuplicate', 'postAdjustment', 'reverseTransaction', 'subLedgerList', 'subLedgerRollup', 'computeProof'],
+      cash: ['status', 'createAccount', 'listAccounts', 'getAccount', 'transfer', 'deposit', 'positionSummary', 'getMovements', 'reconcile'],
+      'asset-acquisition': ['status', 'acquire', 'list', 'get', 'update', 'dispose'],
       'bank-aggregator': ['status', 'connectorTypes', 'listConnections', 'createConnection', 'getConnection', 'updateConnection', 'deleteConnection', 'pull', 'push', 'listAccounts', 'listTransactions', 'listStatements', 'listEvents', 'pullReturns', 'pullFileStatus'],
       funding: ['status', 'getStatus', 'getConfig', 'buildPlan', 'executePlan', 'depositInvoice', 'sourceBalances']
     };
@@ -184,7 +190,10 @@
       compliance: JSON.stringify({ subject: 'ACME Corp' }, null, 2),
       security: JSON.stringify({ actor: 'admin', resource: '/api/os', metadata: { outcome: 'allow' } }, null, 2),
       'rest-api': JSON.stringify({ name: 'operator-key', role: 'operator', scopes: ['os:read'] }, null, 2),
-      'bank-aggregator': JSON.stringify({ action: 'createConnection', name: 'Smoke Test Bank', connectorType: 'internal_rails', direction: 'both', config: {} }, null, 2),
+      bookkeeping: JSON.stringify({ minAmount: 1000, windowHours: 24 }, null, 2),
+      cash: JSON.stringify({ accountName: 'Operating Cash', accountType: 'operating' }, null, 2),
+      'asset-acquisition': JSON.stringify({ category: 'real_estate', name: 'Sample Property', amountUsd: 250000, identifier: 'DEED-123' }, null, 2),
+      'bank-aggregator': JSON.stringify({ action: 'createConnection', name: 'Sample Bank', connectorType: 'internal_rails', direction: 'both', config: {} }, null, 2),
       funding: JSON.stringify({ action: 'buildPlan', amountUsd: 100, sourceType: 'cash', sourceAccountId: 'CA-BOND-PROCEEDS', targetAsset: 'ETH', strategy: 'auto' }, null, 2)
     };
 
