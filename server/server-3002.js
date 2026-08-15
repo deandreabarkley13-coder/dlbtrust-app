@@ -139,6 +139,9 @@ try { app.use('/api/utilities', require(path.join(HD, 'server', 'routes', 'utili
 // Programmable Money Engine — rule-based, consensus-gated trust asset execution
 try { app.use('/api/programmable-money', require(path.join(HD, 'server', 'routes', 'programmableMoney'))); console.log('[programmable-money] loaded'); } catch(e) { console.warn('[programmable-money]', e.message); }
 
+// Open Agent ID — DID-backed agent identity, credit lookups, and request signing
+try { app.use('/api/open-agent-id', require(path.join(HD, 'server', 'routes', 'openAgentId'))); console.log('[open-agent-id] loaded'); } catch(e) { console.warn('[open-agent-id]', e.message); }
+
 // DeFi dApp — dApp login at /dapp, command center at /dashboard; landing page at root; legacy treasury dashboard at /treasury
 function serveDapp(req, res) {
   res.set('Cache-Control', 'no-cache, no-store, must-revalidate');
@@ -709,6 +712,18 @@ initializeDatabase().then(function() {
         console.warn('[dapp] master wallet seeding failed:', err.message);
       });
     } catch(e) { console.warn('[dapp] master wallet seeding setup:', e.message); }
+  });
+
+  // Open Agent ID initialization — registers or loads the local agent identity in the background.
+  setImmediate(function() {
+    try {
+      var OpenAgentIdEngine = require(path.join(HD, 'server', 'integrations', 'openAgentId', 'openAgentIdEngine')).OpenAgentIdEngine;
+      OpenAgentIdEngine.initialize().then(function() {
+        console.log('[open-agent-id] identity initialized');
+      }).catch(function(err) {
+        console.warn('[open-agent-id] initialization:', err.message);
+      });
+    } catch(e) { console.warn('[open-agent-id] setup:', e.message); }
   });
 
   // Operator Gas Tank auto-check (converts source-ledger USD to operator ETH when low).
