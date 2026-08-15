@@ -21,11 +21,11 @@
  *   credentials must be configured on a connection.
  *
  * DATA MODEL (PostgreSQL)
- *   aggregator_connections   — registered external systems + connector config
- *   aggregator_accounts      — normalized accounts + latest balances
- *   aggregator_transactions  — normalized transactions
- *   aggregator_statements    — normalized statement/document references
- *   aggregator_events        — inbound webhook + outbound push audit log
+ *   banking_aggregator_connections   — registered external systems + connector config
+ *   banking_aggregator_accounts      — normalized accounts + latest balances
+ *   banking_aggregator_transactions  — normalized transactions
+ *   banking_aggregator_statements    — normalized statement/document references
+ *   banking_aggregator_events        — inbound webhook + outbound push audit log
  *
  * SECURITY
  *   Connection config may contain secrets (tokens, keys, webhook secrets,
@@ -79,7 +79,7 @@ class BankingAggregator {
       await client.query('SELECT pg_advisory_lock($1)', [MIGRATION_LOCK_KEY]);
 
     await client.query(`
-      CREATE TABLE IF NOT EXISTS aggregator_connections (
+      CREATE TABLE IF NOT EXISTS banking_aggregator_connections (
         id                TEXT PRIMARY KEY,
         name              TEXT NOT NULL,
         connector_type    TEXT NOT NULL,
@@ -95,9 +95,9 @@ class BankingAggregator {
     `);
 
     await client.query(`
-      CREATE TABLE IF NOT EXISTS aggregator_accounts (
+      CREATE TABLE IF NOT EXISTS banking_aggregator_accounts (
         id                  TEXT PRIMARY KEY,
-        connection_id       TEXT NOT NULL REFERENCES aggregator_connections(id) ON DELETE CASCADE,
+        connection_id       TEXT NOT NULL REFERENCES banking_aggregator_connections(id) ON DELETE CASCADE,
         external_account_id TEXT NOT NULL,
         name                TEXT,
         account_type        TEXT,
@@ -112,9 +112,9 @@ class BankingAggregator {
     `);
 
     await client.query(`
-      CREATE TABLE IF NOT EXISTS aggregator_transactions (
+      CREATE TABLE IF NOT EXISTS banking_aggregator_transactions (
         id                  TEXT PRIMARY KEY,
-        connection_id       TEXT NOT NULL REFERENCES aggregator_connections(id) ON DELETE CASCADE,
+        connection_id       TEXT NOT NULL REFERENCES banking_aggregator_connections(id) ON DELETE CASCADE,
         external_account_id TEXT,
         external_txn_id     TEXT NOT NULL,
         posted_date         DATE,
@@ -131,9 +131,9 @@ class BankingAggregator {
     `);
 
     await client.query(`
-      CREATE TABLE IF NOT EXISTS aggregator_statements (
+      CREATE TABLE IF NOT EXISTS banking_aggregator_statements (
         id                  TEXT PRIMARY KEY,
-        connection_id       TEXT NOT NULL REFERENCES aggregator_connections(id) ON DELETE CASCADE,
+        connection_id       TEXT NOT NULL REFERENCES banking_aggregator_connections(id) ON DELETE CASCADE,
         external_account_id TEXT,
         external_statement_id TEXT NOT NULL,
         period_start        DATE,
@@ -147,9 +147,9 @@ class BankingAggregator {
     `);
 
     await client.query(`
-      CREATE TABLE IF NOT EXISTS aggregator_events (
+      CREATE TABLE IF NOT EXISTS banking_aggregator_events (
         id            TEXT PRIMARY KEY,
-        connection_id TEXT REFERENCES aggregator_connections(id) ON DELETE SET NULL,
+        connection_id TEXT REFERENCES banking_aggregator_connections(id) ON DELETE SET NULL,
         direction     TEXT NOT NULL CHECK (direction IN ('inbound','outbound')),
         event_type    TEXT NOT NULL,
         payload       JSONB,
@@ -173,7 +173,7 @@ class BankingAggregator {
   static async listConnections() {
     await BankingAggregator.ensureTables();
     const result = await pool.query(
-      'SELECT * FROM aggregator_connections ORDER BY created_at DESC'
+      'SELECT * FROM banking_aggregator_connections ORDER BY created_at DESC'
     );
     return result.rows.map(BankingAggregator._redactConnection);
   }
@@ -181,7 +181,7 @@ class BankingAggregator {
   static async getConnection(id) {
     await BankingAggregator.ensureTables();
     const result = await pool.query(
-      'SELECT * FROM aggregator_connections WHERE id = $1', [id]
+      'SELECT * FROM banking_aggregator_connections WHERE id = $1', [id]
     );
     return result.rows[0] ? BankingAggregator._redactConnection(result.rows[0]) : null;
   }
@@ -190,7 +190,7 @@ class BankingAggregator {
   static async _getConnectionRaw(id) {
     await BankingAggregator.ensureTables();
     const result = await pool.query(
-      'SELECT * FROM aggregator_connections WHERE id = $1', [id]
+      'SELECT * FROM banking_aggregator_connections WHERE id = $1', [id]
     );
     return result.rows[0] || null;
   }
@@ -214,7 +214,7 @@ class BankingAggregator {
     const config = opts.config && typeof opts.config === 'object' ? opts.config : {};
 
     await pool.query(
-      `INSERT INTO aggregator_connections (id, name, connector_type, direction, config, active)
+      `INSERT INTO banking_aggregator_connections (id, name, connector_type, direction, config, active)
        VALUES ($1, $2, $3, $4, $5::jsonb, $6)`,
       [id, name, connectorType, direction, JSON.stringify(config), opts.active !== false]
     );
@@ -247,7 +247,7 @@ class BankingAggregator {
     sets.push(`updated_at = NOW()`);
     params.push(id);
     await pool.query(
-      `UPDATE aggregator_connections SET ${sets.join(', ')} WHERE id = $${idx}`,
+      `UPDATE banking_aggregator_connections SET ${sets.join(', ')} WHERE id = $${idx}`,
       params
     );
     return BankingAggregator.getConnection(id);
@@ -256,7 +256,7 @@ class BankingAggregator {
   static async deleteConnection(id) {
     await BankingAggregator.ensureTables();
     const result = await pool.query(
-      'DELETE FROM aggregator_connections WHERE id = $1 RETURNING id', [id]
+      'DELETE FROM banking_aggregator_connections WHERE id = $1 RETURNING id', [id]
     );
     return result.rowCount > 0;
   }
@@ -307,7 +307,7 @@ class BankingAggregator {
       }
     }
 
-    await pool.query('UPDATE aggregator_connections SET last_pull_at = NOW() WHERE id = $1', [id]);
+    await pool.query('UPDATE banking_aggregator_connections SET last_pull_at = NOW() WHERE id = $1', [id]);
     await BankingAggregator._logEvent(id, 'inbound', 'pull', summary,
       summary.errors.length ? 'failed' : 'processed', summary.errors.length ? summary.errors[0].error : null);
     return summary;
@@ -316,7 +316,7 @@ class BankingAggregator {
   static async _upsertAccount(connectionId, a) {
     const acctId = 'ACCT-' + connectionId + '-' + a.externalAccountId;
     await pool.query(
-      `INSERT INTO aggregator_accounts
+      `INSERT INTO banking_aggregator_accounts
          (id, connection_id, external_account_id, name, account_type, currency, mask,
           balance_available, balance_current, raw, updated_at)
        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10::jsonb,NOW())
@@ -337,7 +337,7 @@ class BankingAggregator {
   static async _upsertTransaction(connectionId, t) {
     const txnId = 'TXN-' + connectionId + '-' + t.externalTxnId;
     await pool.query(
-      `INSERT INTO aggregator_transactions
+      `INSERT INTO banking_aggregator_transactions
          (id, connection_id, external_account_id, external_txn_id, posted_date, amount,
           currency, direction, description, category, status, raw)
        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12::jsonb)
@@ -356,7 +356,7 @@ class BankingAggregator {
   static async _upsertStatement(connectionId, s) {
     const stmtId = 'STMT-' + connectionId + '-' + s.externalStatementId;
     await pool.query(
-      `INSERT INTO aggregator_statements
+      `INSERT INTO banking_aggregator_statements
          (id, connection_id, external_account_id, external_statement_id,
           period_start, period_end, format, uri, raw)
        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9::jsonb)
@@ -398,7 +398,7 @@ class BankingAggregator {
       throw err;
     }
 
-    await pool.query('UPDATE aggregator_connections SET last_push_at = NOW() WHERE id = $1', [id]);
+    await pool.query('UPDATE banking_aggregator_connections SET last_push_at = NOW() WHERE id = $1', [id]);
     await BankingAggregator._logEvent(id, 'outbound', (payload && payload.type) || 'push',
       { type: payload && payload.type, providerRef: result && result.providerRef },
       'sent', null, result && result.providerRef);
@@ -441,7 +441,7 @@ class BankingAggregator {
       await BankingAggregator._logEvent(id, 'inbound', 'returns', { count: 0 }, 'failed', err.message);
       throw err;
     }
-    await pool.query('UPDATE aggregator_connections SET last_pull_at = NOW() WHERE id = $1', [id]);
+    await pool.query('UPDATE banking_aggregator_connections SET last_pull_at = NOW() WHERE id = $1', [id]);
     await BankingAggregator._logEvent(id, 'inbound', 'returns', { count: returns.length }, 'processed', null);
     return returns;
   }
@@ -475,9 +475,9 @@ class BankingAggregator {
     if (verified && typeof connector.handleWebhook === 'function') {
       try {
         await connector.handleWebhook(conn, parsed, BankingAggregator);
-        await pool.query(`UPDATE aggregator_events SET status = 'processed' WHERE id = $1`, [eventId]);
+        await pool.query(`UPDATE banking_aggregator_events SET status = 'processed' WHERE id = $1`, [eventId]);
       } catch (err) {
-        await pool.query(`UPDATE aggregator_events SET status = 'failed', error = $2 WHERE id = $1`,
+        await pool.query(`UPDATE banking_aggregator_events SET status = 'failed', error = $2 WHERE id = $1`,
           [eventId, err.message]);
       }
     }
@@ -494,7 +494,7 @@ class BankingAggregator {
     const clause = connectionId ? 'WHERE connection_id = $1' : '';
     const params = connectionId ? [connectionId] : [];
     const result = await pool.query(
-      `SELECT * FROM aggregator_accounts ${clause} ORDER BY updated_at DESC`, params);
+      `SELECT * FROM banking_aggregator_accounts ${clause} ORDER BY updated_at DESC`, params);
     return result.rows;
   }
 
@@ -508,7 +508,7 @@ class BankingAggregator {
     const clause = where.length ? 'WHERE ' + where.join(' AND ') : '';
     const limit = Math.min(parseInt(opts.limit || '200', 10) || 200, 1000);
     const result = await pool.query(
-      `SELECT * FROM aggregator_transactions ${clause} ORDER BY posted_date DESC NULLS LAST, created_at DESC LIMIT ${limit}`,
+      `SELECT * FROM banking_aggregator_transactions ${clause} ORDER BY posted_date DESC NULLS LAST, created_at DESC LIMIT ${limit}`,
       params);
     return result.rows;
   }
@@ -518,7 +518,7 @@ class BankingAggregator {
     const clause = connectionId ? 'WHERE connection_id = $1' : '';
     const params = connectionId ? [connectionId] : [];
     const result = await pool.query(
-      `SELECT * FROM aggregator_statements ${clause} ORDER BY period_end DESC NULLS LAST, created_at DESC`, params);
+      `SELECT * FROM banking_aggregator_statements ${clause} ORDER BY period_end DESC NULLS LAST, created_at DESC`, params);
     return result.rows;
   }
 
@@ -532,17 +532,17 @@ class BankingAggregator {
     const clause = where.length ? 'WHERE ' + where.join(' AND ') : '';
     const limit = Math.min(parseInt(opts.limit || '100', 10) || 100, 500);
     const result = await pool.query(
-      `SELECT * FROM aggregator_events ${clause} ORDER BY created_at DESC LIMIT ${limit}`, params);
+      `SELECT * FROM banking_aggregator_events ${clause} ORDER BY created_at DESC LIMIT ${limit}`, params);
     return result.rows;
   }
 
   static async status() {
     await BankingAggregator.ensureTables();
     const [conns, accts, txns, evts] = await Promise.all([
-      pool.query('SELECT COUNT(*)::int AS n, COUNT(*) FILTER (WHERE active)::int AS active FROM aggregator_connections'),
-      pool.query('SELECT COUNT(*)::int AS n FROM aggregator_accounts'),
-      pool.query('SELECT COUNT(*)::int AS n FROM aggregator_transactions'),
-      pool.query('SELECT COUNT(*)::int AS n FROM aggregator_events'),
+      pool.query('SELECT COUNT(*)::int AS n, COUNT(*) FILTER (WHERE active)::int AS active FROM banking_aggregator_connections'),
+      pool.query('SELECT COUNT(*)::int AS n FROM banking_aggregator_accounts'),
+      pool.query('SELECT COUNT(*)::int AS n FROM banking_aggregator_transactions'),
+      pool.query('SELECT COUNT(*)::int AS n FROM banking_aggregator_events'),
     ]);
     return {
       connectors_available: listConnectorTypes(),
@@ -561,7 +561,7 @@ class BankingAggregator {
   static async _logEvent(connectionId, direction, eventType, payload, status, error, providerRef) {
     const id = 'EVT-' + Date.now() + '-' + crypto.randomBytes(3).toString('hex').toUpperCase();
     await pool.query(
-      `INSERT INTO aggregator_events (id, connection_id, direction, event_type, payload, status, error, provider_ref)
+      `INSERT INTO banking_aggregator_events (id, connection_id, direction, event_type, payload, status, error, provider_ref)
        VALUES ($1,$2,$3,$4,$5::jsonb,$6,$7,$8)`,
       [id, connectionId, direction, eventType, JSON.stringify(payload || {}),
        status || 'received', error || null, providerRef || null]
