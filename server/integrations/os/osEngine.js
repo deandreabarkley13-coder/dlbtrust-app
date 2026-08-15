@@ -886,7 +886,7 @@ class AssetAcquisitionEngine extends BaseOSEngine {
       collectible: 'collectible', collectable: 'collectible', collectibles: 'collectible',
       other: 'other',
     };
-    return map[s] || 'other';
+    return Object.hasOwn(map, s) ? map[s] : 'other';
   }
 
   static async status() {
@@ -924,7 +924,12 @@ class AssetAcquisitionEngine extends BaseOSEngine {
           linkedSourceType: payload.linkedSourceType,
           linkedSourceAccountId: payload.linkedSourceAccountId,
           documents: payload.documents,
-          metadata: { ...(payload.metadata || {}), acquiredVia: 'asset-acquisition' },
+          metadata: {
+            ...(payload.metadata || {}),
+            acquiredVia: 'asset-acquisition',
+            assetAccountCode: payload.assetAccountCode || null,
+            cashAccountCode: payload.cashAccountCode || null,
+          },
           createdBy: payload.createdBy,
         });
         let journalEntry = null;
@@ -962,20 +967,29 @@ class AssetAcquisitionEngine extends BaseOSEngine {
       case 'dispose':
       case 'sell': {
         if (!payload.assetId) throw new Error('assetId required');
-        const updates = { status: 'sold', metadata: {} };
-        if (payload.saleAmountUsd != null) updates.amount_cents = toCents(payload.saleAmountUsd);
-        if (payload.metadata) updates.metadata = payload.metadata;
+        const original = await Expense.getRecord(payload.assetId);
+        const costBasisCents = original?.amount_cents || 0;
+        const costBasisUsd = costBasisCents / 100;
+        const saleUsd = payload.saleAmountUsd != null ? Number(payload.saleAmountUsd) : costBasisUsd;
+        const updates = {
+          status: 'sold',
+          metadata: {
+            ...(original?.metadata || {}),
+            ...(payload.metadata || {}),
+            saleAmountUsd: saleUsd,
+            soldAt: new Date().toISOString(),
+          },
+        };
         const asset = await Expense.updateRecord(payload.assetId, updates);
         let journalEntry = null;
         if (payload.postJournalEntry && TrustAccounting && payload.cashAccountCode && payload.gainAccountCode) {
           try {
-            const original = await Expense.getRecord(payload.assetId);
-            const originalUsd = (original?.amount_cents || 0) / 100;
-            const saleUsd = Number(payload.saleAmountUsd || originalUsd);
-            const gain = saleUsd - originalUsd;
+            const gain = saleUsd - costBasisUsd;
+            const assetAccountCode = payload.assetAccountCode || original?.metadata?.assetAccountCode;
+            if (!assetAccountCode) throw new Error('assetAccountCode required to post disposal journal entry');
             const lines = [
               { accountCode: payload.cashAccountCode, debitAmount: saleUsd, creditAmount: 0, memo: `Proceeds from sale of ${original?.name}` },
-              { accountCode: payload.assetAccountCode || original?.metadata?.assetAccountCode, debitAmount: 0, creditAmount: originalUsd, memo: `Remove ${original?.name} from books` },
+              { accountCode: assetAccountCode, debitAmount: 0, creditAmount: costBasisUsd, memo: `Remove ${original?.name} from books` },
             ];
             if (gain > 0) lines.push({ accountCode: payload.gainAccountCode, debitAmount: 0, creditAmount: gain, memo: `Gain on sale` });
             if (gain < 0) lines.push({ accountCode: payload.gainAccountCode, debitAmount: Math.abs(gain), creditAmount: 0, memo: `Loss on sale` });
@@ -991,7 +1005,7 @@ class AssetAcquisitionEngine extends BaseOSEngine {
             journalEntry = { error: jeErr.message };
           }
         }
-        return { asset, journalEntry };
+        return { asset, journalEntry, costBasisUsd, saleUsd, gain: saleUsd - costBasisUsd };
       }
       case 'status':
       default:
