@@ -5,7 +5,7 @@
  *
  * Provides a single, consistent interface to the operating-system engines:
  * bank, treasury, payment, clearing, settlement, compliance, security, rest-api,
- * bookkeeping, cash, asset-acquisition, bank-aggregator, and funding.
+ * bookkeeping, cash, asset-acquisition, bank-aggregator, funding, smart-router, and back-office.
  */
 
 const express = require('express');
@@ -24,6 +24,8 @@ const {
   AssetAcquisitionEngine,
   BankAccountAggregatorEngine,
   FundingOSEngine,
+  SmartRouterEngine,
+  BackOfficeEngine,
 } = require('../integrations/os/osEngine');
 
 const router = express.Router();
@@ -44,6 +46,8 @@ const ENGINES = {
   'asset-acquisition': AssetAcquisitionEngine,
   'bank-aggregator': BankAccountAggregatorEngine,
   funding: FundingOSEngine,
+  'smart-router': SmartRouterEngine,
+  'back-office': BackOfficeEngine,
 };
 
 function sendError(res, err) {

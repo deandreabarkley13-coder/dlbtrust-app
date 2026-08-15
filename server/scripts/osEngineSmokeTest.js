@@ -6,7 +6,7 @@
  *
  * Exercises the OS engines (bank, treasury, payment, clearing, settlement,
  * compliance, security, rest-api, bookkeeping, cash, asset-acquisition,
- * bank-aggregator, funding) through the public `/api/os`
+ * bank-aggregator, funding, smart-router) through the public `/api/os`
  * endpoints and prints a pass/fail report.
  *
  * Usage:
@@ -19,7 +19,7 @@ const BASE_URL = (process.env.OS_TEST_BASE_URL || 'http://localhost:3002').repla
 const TOKEN = process.env.ADMIN_SECRET_TOKEN || 'dlb-admin-2026-trust';
 const VERBOSE = process.env.OS_TEST_VERBOSE !== 'false';
 
-const engines = ['bank', 'treasury', 'payment', 'clearing', 'settlement', 'compliance', 'security', 'rest-api', 'bookkeeping', 'cash', 'asset-acquisition', 'bank-aggregator', 'funding'];
+const engines = ['bank', 'treasury', 'payment', 'clearing', 'settlement', 'compliance', 'security', 'rest-api', 'bookkeeping', 'cash', 'asset-acquisition', 'bank-aggregator', 'funding', 'smart-router', 'back-office'];
 
 const results = [];
 let failed = false;
@@ -108,8 +108,8 @@ async function main() {
 
   // Process actions
   const processSteps = [
-    { engine: 'bank', action: 'accounts', payload: { bankId: 'SMOKE-BANK' }, expectEvent: true },
-    { engine: 'bank', action: 'balance', payload: { bankId: 'SMOKE-BANK', accountId: 'SMOKE-ACCT' } },
+    { engine: 'bank', action: 'cachedBanks', payload: {}, expectEvent: true },
+    { engine: 'bank', action: 'cachedAccounts', payload: { bankId: 'SMOKE-BANK' } },
     { engine: 'treasury', action: 'position', payload: { accountId: 'TREASURY_HOT' } },
     { engine: 'payment', action: 'listMethods', payload: {} },
     { engine: 'clearing', action: 'list', payload: {} },
@@ -122,12 +122,19 @@ async function main() {
     { engine: 'asset-acquisition', action: 'list', payload: {} },
     { engine: 'bank-aggregator', action: 'createConnection', payload: { name: 'smoke-test-internal-rails', connectorType: 'internal_rails', direction: 'both', config: {} }, expectEvent: true },
     { engine: 'funding', action: 'buildPlan', payload: { amountUsd: 100, sourceType: 'cash', sourceAccountId: 'CA-BOND-PROCEEDS', targetAsset: 'ETH', strategy: 'auto' } },
+    { engine: 'smart-router', action: 'route', payload: { amount: 100, currency: 'USD', destination: { type: 'bank', accountNumber: '123456789', routingNumber: '111000025' }, preferred: 'fiat' } },
+    { engine: 'smart-router', action: 'deliver', payload: { amount: 100, currency: 'USD', destination: { type: 'bank', accountNumber: '123456789', routingNumber: '111000025' }, preferred: 'fiat', reference: 'SMOKE-SR-1', memo: 'Smoke test' }, capture: 'smartRouterPaymentId' },
+    { engine: 'back-office', action: 'treasurySummary', payload: {} },
+    { engine: 'back-office', action: 'bankReconciliation', payload: {} },
+    { engine: 'back-office', action: 'createDistribution', payload: { beneficiaryEmail: 'beneficiary@example.com', amountUsd: 100, destinationAddress: '0x0000000000000000000000000000000000000000', sourceType: 'cash', sourceAccountId: 'CA-OPERATING', memo: 'Smoke test' }, capture: 'backOfficeRequestId' },
   ];
 
   const bankEventIds = [];
   const apiKeys = [];
+  let smartRouterPaymentId = null;
+  let backOfficeRequestId = null;
 
-  for (const { engine, action, payload, expectEvent, expectKey } of processSteps) {
+  for (const { engine, action, payload, expectEvent, expectKey, capture } of processSteps) {
     await runStep(`${engine}: process ${action}`, async () => {
       const { ok, body } = await call('POST', `/api/os/${engine}/process`, { action, ...payload });
       assert(ok, body && body.error);
@@ -138,6 +145,10 @@ async function main() {
       if (expectKey) {
         assert(body.data && body.data.result && body.data.result.apiKey, 'expected apiKey');
         apiKeys.push(body.data.result.apiKey);
+      }
+      if (capture && body.data && body.data.result) {
+        if (capture === 'smartRouterPaymentId' && body.data.result.paymentId) smartRouterPaymentId = body.data.result.paymentId;
+        if (capture === 'backOfficeRequestId' && body.data.result.id) backOfficeRequestId = body.data.result.id;
       }
       return body.data;
     });
@@ -157,6 +168,47 @@ async function main() {
       const { ok, body } = await call('GET', `/api/os/bank/get/${eventId}`);
       assert(ok, body && body.error);
       assert(body.data && body.data.event_id === eventId, 'event_id mismatch');
+      return body.data;
+    });
+  }
+
+  // Back Office distribution follow-up
+  if (backOfficeRequestId) {
+    await runStep('back-office: listDistributions', async () => {
+      const { ok, body } = await call('POST', '/api/os/back-office/process', { action: 'listDistributions', limit: 10 });
+      assert(ok, body && body.error);
+      assert(Array.isArray(body.data && body.data.result), 'expected result array');
+      return `${(body.data.result || []).length} distributions`;
+    });
+
+    await runStep('back-office: getDistribution', async () => {
+      const { ok, body } = await call('POST', '/api/os/back-office/process', { action: 'getDistribution', requestId: backOfficeRequestId });
+      assert(ok, body && body.error);
+      assert(body.data && body.data.result && body.data.result.id === backOfficeRequestId, 'requestId mismatch');
+      return body.data.result;
+    });
+  }
+
+  // Smart Router receipt / confirm / get
+  if (smartRouterPaymentId) {
+    await runStep('smart-router: receipt', async () => {
+      const { ok, body } = await call('POST', '/api/os/smart-router/process', { action: 'receipt', paymentId: smartRouterPaymentId });
+      assert(ok, body && body.error);
+      assert(body.data && body.data.result && body.data.result.receipt && body.data.result.receipt.paymentId === smartRouterPaymentId, 'receipt paymentId mismatch');
+      return body.data.result.receipt;
+    });
+
+    await runStep('smart-router: confirm', async () => {
+      const { ok, body } = await call('POST', '/api/os/smart-router/process', { action: 'confirm', paymentId: smartRouterPaymentId });
+      assert(ok, body && body.error);
+      assert(body.data && body.data.result && body.data.result.paymentId === smartRouterPaymentId, 'confirm paymentId mismatch');
+      return body.data.result;
+    });
+
+    await runStep('smart-router: get', async () => {
+      const { ok, body } = await call('GET', `/api/os/smart-router/get/${encodeURIComponent(smartRouterPaymentId)}`);
+      assert(ok, body && body.error);
+      assert(body.data && body.data.id === smartRouterPaymentId, 'get id mismatch');
       return body.data;
     });
   }
