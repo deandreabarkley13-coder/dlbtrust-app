@@ -341,8 +341,8 @@ class DataBridge {
         SELECT t.id, t.connection_id, t.external_txn_id, t.external_account_id,
                t.posted_date, t.amount, t.currency, t.direction, t.description,
                t.created_at, c.name AS connection_name
-        FROM aggregator_transactions t
-        JOIN aggregator_connections c ON c.id = t.connection_id
+        FROM banking_aggregator_transactions t
+        JOIN banking_aggregator_connections c ON c.id = t.connection_id
         WHERE c.connector_type <> 'internal_rails'
           AND NOT EXISTS (
             SELECT 1 FROM trust_journal_entries je

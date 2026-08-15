@@ -402,6 +402,15 @@ async function initializeDatabase() {
     console.log('[wealth-management] tables ensured');
   } catch(e) { console.warn('[wealth-management] table init:', e.message); }
 
+  // Banking aggregator tables must be migrated before trust-aggregator runs,
+  // because trust-aggregator drops legacy `aggregator_*` tables that lack its
+  // `connection_id` column and would otherwise delete banking data.
+  try {
+    var { BankingAggregator } = require(path.join(HD, 'server', 'integrations', 'aggregator', 'bankingAggregator'));
+    await BankingAggregator.ensureTables();
+    console.log('[banking-aggregator] tables ensured and legacy data migrated');
+  } catch(e) { console.warn('[banking-aggregator] table init:', e.message); }
+
   try {
     var TrustAggregatorEngine = require(path.join(HD, 'server', 'integrations', 'dapp', 'trustAggregatorEngine')).TrustAggregatorEngine;
     await TrustAggregatorEngine.ensureTables();
