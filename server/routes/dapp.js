@@ -31,6 +31,7 @@ const { PaymentProcessorServerEngine } = require('../integrations/payments/payme
 const { PaymentGatewayServerEngine } = require('../integrations/payments/paymentGatewayServerEngine');
 const { WalletEngine } = require('../integrations/dapp/walletEngine');
 const { BitPayEngine } = require('../integrations/dapp/bitpayEngine');
+const { SpritzEngine } = require('../integrations/payments/spritzEngine');
 const { WalletFundingEngine } = require('../integrations/dapp/walletFundingEngine');
 const { MasterWalletEngine } = require('../integrations/dapp/masterWalletEngine');
 const { PtcPortalEngine } = require('../integrations/dapp/ptcPortalEngine');
@@ -1145,8 +1146,8 @@ router.post('/payout-center/pay', operatorAuth, writeRateLimiter(), async (req, 
       recipientType, recipientIdentifier, amount, asset, description,
       rail, railOptions,
     } = req.body;
-    const allowedRails = ['sit','dex','cashapp','cash_app','cash','fund_rail','module','stablecoin_dex','btcpay','lili','lili_bank'];
-    const allowedAssets = ['SIT','USDC','USD','ETH','WETH','DAI','CASH','BTC'];
+    const allowedRails = ['sit','dex','cashapp','cash_app','cash','fund_rail','module','stablecoin_dex','btcpay','spritz','lili','lili_bank'];
+    const allowedAssets = ['SIT','USDC','USD','ETH','WETH','DAI','CASH','BTC','SPRITZ'];
     if (!sourceType || !sourceAccountId) throw new Error('sourceType and sourceAccountId are required');
     if (!recipientIdentifier) throw new Error('recipientIdentifier is required');
     if (amount === undefined || amount === null || isNaN(Number(amount))) throw new Error('amount is required and must be numeric');
@@ -1168,6 +1169,47 @@ router.post('/payout-center/pay', operatorAuth, writeRateLimiter(), async (req, 
         poolSeedDlbusd: Number(sanitizedRailOptions.poolSeedDlbusd) || 10,
         poolAddress: sanitizedRailOptions.poolAddress || undefined,
       },
+    });
+    res.status(201).json({ success: true, data });
+  } catch (err) { sendError(res, err); }
+});
+
+// ─── Spritz Finance off-ramp rail ─────────────────────────────────────────────
+router.get('/payment-rails/spritz/readiness', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: SpritzEngine.readiness() }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/payment-rails/spritz/user', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try {
+    const { email } = req.body;
+    const data = await SpritzEngine.getOrCreateUser(email || SpritzEngine.getConfig().defaultEmail);
+    res.status(201).json({ success: true, data: { email: data.email, userId: data.userId } });
+  } catch (err) { sendError(res, err); }
+});
+
+router.get('/payment-rails/spritz/accounts', operatorAuth, async (req, res) => {
+  try {
+    const { email } = req.query;
+    const { apiKey } = await SpritzEngine.getOrCreateUser(email || SpritzEngine.getConfig().defaultEmail);
+    const data = await SpritzEngine.listBankAccounts(apiKey);
+    res.json({ success: true, data });
+  } catch (err) { sendError(res, err); }
+});
+
+router.post('/payment-rails/spritz/accounts', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try {
+    const { email, ...bankDetails } = req.body;
+    const { apiKey } = await SpritzEngine.getOrCreateUser(email || SpritzEngine.getConfig().defaultEmail);
+    const data = await SpritzEngine.createBankAccount({ apiKey, ...bankDetails });
+    res.status(201).json({ success: true, data });
+  } catch (err) { sendError(res, err); }
+});
+
+router.post('/payment-rails/spritz/offramp', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try {
+    const { sourceType, sourceAccountId, amount, targetAsset, accountId, bankAccount, email, deliveryMethod, amountMode, bufferPercent, memo } = req.body;
+    const data = await SpritzEngine.offRamp({
+      sourceType, sourceAccountId, amount, targetAsset, accountId, bankAccount, email, deliveryMethod, amountMode, bufferPercent, memo,
     });
     res.status(201).json({ success: true, data });
   } catch (err) { sendError(res, err); }

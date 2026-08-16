@@ -34,6 +34,9 @@ try { ({ ModuleFundingEngine } = require('./moduleFundingEngine')); } catch (e) 
 let BtcPayEngine;
 try { ({ BtcPayEngine } = require('../payments/btcPayEngine')); } catch (e) { BtcPayEngine = null; }
 
+let SpritzEngine;
+try { ({ SpritzEngine } = require('../payments/spritzEngine')); } catch (e) { SpritzEngine = null; }
+
 let ComplianceEngine;
 try { ({ ComplianceEngine } = require('../compliance/complianceEngine')); } catch (e) { ComplianceEngine = null; }
 
@@ -142,9 +145,14 @@ class PayoutCenterEngine {
     if (!amount || Number(amount) <= 0) throw new Error('amount must be positive');
 
     const chosenRail = (rail || 'sit').toLowerCase();
-    const recipient = (chosenRail.startsWith('stripe_'))
-      ? { address: recipientIdentifier, type: 'external' }
-      : await this.resolveRecipient({ recipientType, identifier: recipientIdentifier, asset });
+    let recipient;
+    if (chosenRail === 'spritz') {
+      recipient = { address: railOptions.accountId || JSON.stringify(railOptions.bankAccount) || recipientIdentifier, type: 'spritz', user: null };
+    } else if (chosenRail.startsWith('stripe_')) {
+      recipient = { address: recipientIdentifier, type: 'external' };
+    } else {
+      recipient = await this.resolveRecipient({ recipientType, identifier: recipientIdentifier, asset });
+    }
     const recordId = id('PC');
     const base = {
       id: recordId,
@@ -269,6 +277,26 @@ class PayoutCenterEngine {
         });
         base.tx_hash = result.payoutId;
         base.status = 'awaiting_payment';
+        break;
+      }
+      case 'spritz': {
+        if (!SpritzEngine || !SpritzEngine.isConfigured()) throw new Error('Spritz engine not configured');
+        const targetAsset = String(asset).toUpperCase() === 'SPRITZ' ? 'USDC' : String(asset).toUpperCase();
+        result = await SpritzEngine.offRamp({
+          sourceType,
+          sourceAccountId,
+          amount,
+          targetAsset,
+          accountId: railOptions.accountId,
+          bankAccount: railOptions.bankAccount,
+          email: railOptions.email,
+          deliveryMethod: railOptions.deliveryMethod,
+          amountMode: railOptions.amountMode,
+          bufferPercent: railOptions.bufferPercent,
+          memo: description,
+        });
+        base.tx_hash = result.payment && (result.payment.payHash || result.payment.approveHash);
+        base.status = result.payment && result.payment.payHash ? 'completed' : 'pending';
         break;
       }
       case 'lili':
