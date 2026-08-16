@@ -205,8 +205,8 @@
       funding: JSON.stringify({ action: 'buildPlan', amountUsd: 100, sourceType: 'cash', sourceAccountId: 'CA-BOND-PROCEEDS', targetAsset: 'ETH', strategy: 'auto' }, null, 2),
       'smart-router': JSON.stringify({ action: 'deliver', amount: 100, currency: 'USD', destination: { type: 'bank', accountNumber: '123456789', routingNumber: '111000025' }, preferred: 'fiat', reference: 'SR-001', memo: 'Treasury disbursement' }, null, 2),
       'back-office': JSON.stringify({ action: 'createDistribution', beneficiaryEmail: 'beneficiary@example.com', amountUsd: 100, destinationAddress: '0x0000000000000000000000000000000000000000', sourceType: 'cash', sourceAccountId: 'CA-OPERATING', memo: 'PTC distribution' }, null, 2),
-      'wallet-onramp': JSON.stringify({ action: 'fund', sourceType: 'treasury', sourceAccountId: 'TREASURY_HOT', amount: 100, asset: 'USDC', targetAddress: '0x69a32f285ced1dbf102c7baedf0266f1d39580a1', sourceMethod: 'manual' }, null, 2),
-      'alchemy-wallet': JSON.stringify({ action: 'fundFromOperating', amount: 0.01, asset: 'USDC', targetAddress: '0x69a32f285ced1dbf102c7baedf0266f1d39580a1', sourceMethod: 'manual', autoReplenish: true }, null, 2)
+      'wallet-onramp': JSON.stringify({ action: 'fund', sourceType: 'treasury', sourceAccountId: 'TREASURY_HOT', amount: 100, asset: 'USDC', targetAddress: '0x69a32f285ced1dbf102c7baedf0266f1d39580a1', sourceMethod: 'moonpay' }, null, 2),
+      'alchemy-wallet': JSON.stringify({ action: 'fundFromOperating', amount: 100, asset: 'USDC', targetAddress: '0x69a32f285ced1dbf102c7baedf0266f1d39580a1', sourceMethod: 'moonpay', autoReplenish: true }, null, 2)
     };
 
     function el(id) { return document.getElementById(id); }

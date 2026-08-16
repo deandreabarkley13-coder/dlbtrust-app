@@ -1988,6 +1988,10 @@ class WalletOnRampEngine extends BaseOSEngine {
   }
 
   static _providerReadiness(method) {
+    if (method === 'moonpay') {
+      const Cli = tryRequire('../onramps/moonpayCliEngine')?.MoonPayCliEngine;
+      if (Cli) return Cli.readiness().catch(e => ({ method, ready: false, issues: [e.message] }));
+    }
     const TORBE = tryRequire('../dapp/treasuryOnRampBridgeEngine')?.TreasuryOnRampBridgeEngine;
     if (TORBE && TORBE._onRampReadiness) {
       return TORBE._onRampReadiness(method).catch(() => ({ method, ready: false, issues: ['readiness check failed'] }));
@@ -2005,7 +2009,7 @@ class WalletOnRampEngine extends BaseOSEngine {
     return providers;
   }
 
-  static _buildInstructions(p) {
+  static async _buildInstructions(p) {
     const asset = String(p.asset || 'USDC').toUpperCase();
     const network = this._networkName();
     const onRampAmount = Number(p.onRampAmount || p.amount).toFixed(6);
@@ -2014,7 +2018,19 @@ class WalletOnRampEngine extends BaseOSEngine {
     }
     if (p.sourceMethod === 'circle_mint') return `Use Circle Mint to transfer ${onRampAmount} ${asset} to ${p.targetAddress} on ${network}. Requires CIRCLE_MINT_API_KEY.`;
     if (p.sourceMethod === 'coinbase_treasury') return `Use Coinbase Treasury to buy ${onRampAmount} ${asset} and withdraw to ${p.targetAddress} on ${network}.`;
-    if (p.sourceMethod === 'moonpay') return `Complete MoonPay on-ramp to buy ${onRampAmount} ${asset} into ${p.targetAddress} on ${network}.`;
+    if (p.sourceMethod === 'moonpay') {
+      const Cli = tryRequire('../onramps/moonpayCliEngine')?.MoonPayCliEngine;
+      if (Cli) {
+        try {
+          const cfg = this._cfg();
+          const buy = await Cli.buyUrl({ asset, chainId: cfg.chainId, walletAddress: p.targetAddress, amount: p.amount, explanation: `Wallet on-ramp ${p.operationId || ''}`.trim() });
+          return `Complete MoonPay checkout to buy ${onRampAmount} ${asset} on ${network} into ${p.targetAddress}: ${buy.url}`;
+        } catch (e) {
+          return `Complete MoonPay on-ramp to buy ${onRampAmount} ${asset} into ${p.targetAddress} on ${network}. (Could not generate checkout URL: ${e.message})`;
+        }
+      }
+      return `Complete MoonPay on-ramp to buy ${onRampAmount} ${asset} into ${p.targetAddress} on ${network}.`;
+    }
     if (p.sourceMethod === 'core_banking_wire') return `Initiate a wire/ACH from ${p.sourceType}:${p.sourceAccountId} to the on-ramp bank beneficiary; once credited, the provider will send ${onRampAmount} ${asset} to ${p.targetAddress} on ${network}.`;
     return `On-ramp ${Number(p.amount).toFixed(2)} USD to ${asset} at ${p.targetAddress} via ${p.sourceMethod} on ${network}. Provider ready: ${p.providerReady}.`;
   }
@@ -2031,7 +2047,7 @@ class WalletOnRampEngine extends BaseOSEngine {
     const onRampAmount = Number(p.amount) * (1 - feeBps / 10000);
     const provider = await this._providerReadiness(p.sourceMethod);
     const asset = String(p.asset).toUpperCase();
-    const instructions = this._buildInstructions({ ...p, operationId: null, onRampAmount, providerReady: provider.ready });
+    const instructions = await this._buildInstructions({ ...p, operationId: null, onRampAmount, providerReady: provider.ready });
     return { sourceType: p.sourceType, sourceAccountId: p.sourceAccountId, amount: p.amount, amountCents, asset, targetAddress: p.targetAddress, sourceMethod: p.sourceMethod, feeBps, onRampAmount, sourceBalanceCents: balanceCents, providerReady: provider.ready, instructions, status: provider.ready ? 'awaiting_deposit' : 'needs_config' };
   }
 
@@ -2052,7 +2068,7 @@ class WalletOnRampEngine extends BaseOSEngine {
     const operationId = id('WOR-');
     const reserve = quote.providerReady ? await this._reserveSourceToHold({ sourceType: p.sourceType, sourceAccountId: p.sourceAccountId, amount: p.amount, operationId, targetAddress: p.targetAddress }) : null;
     const status = quote.providerReady ? 'awaiting_deposit' : 'needs_config';
-    const instructions = this._buildInstructions({ ...p, operationId, onRampAmount: quote.onRampAmount, providerReady: quote.providerReady });
+    const instructions = await this._buildInstructions({ ...p, operationId, onRampAmount: quote.onRampAmount, providerReady: quote.providerReady });
     if (pool) {
       await query(`
         INSERT INTO wallet_onramp_requests (id, source_type, source_account_id, source_method, target_address, asset, amount_cents, hold_account, status, instructions, metadata)
@@ -2088,9 +2104,23 @@ class WalletOnRampEngine extends BaseOSEngine {
     const op = await this._getOperation({ id: opId });
     if (!op) throw new Error('Operation not found');
     if (op.status === 'completed') return op;
-    if (op.source_method === 'manual') {
+    if (op.source_method === 'manual' || op.source_method === 'moonpay') {
       const txHash = payload.txHash || payload.tx_hash;
-      if (!txHash) throw new Error('txHash required to confirm manual on-ramp deposit');
+      if (!txHash) {
+        if (op.source_method === 'moonpay') {
+          const Cli = tryRequire('../onramps/moonpayCliEngine')?.MoonPayCliEngine;
+          if (Cli) {
+            try {
+              const buy = await Cli.buyUrl({ asset: op.asset, chainId: this._cfg().chainId, walletAddress: op.target_address, amount: (op.amount_cents / 100).toFixed(2), explanation: `Wallet on-ramp continue ${opId}` });
+              await query(`UPDATE wallet_onramp_requests SET instructions=$1, metadata=metadata || $2::jsonb, updated_at=NOW() WHERE id=$3`, [buy.url, safeJson({ moonpay: buy, continuedAt: new Date().toISOString() }), opId]);
+              return { ...op, instructions: buy.url, moonpay: buy, status: 'awaiting_deposit' };
+            } catch (e) {
+              return { ...op, status: 'awaiting_deposit', error: e.message };
+            }
+          }
+        }
+        throw new Error('txHash required to confirm on-ramp deposit');
+      }
       await query(`UPDATE wallet_onramp_requests SET status='completed', tx_hash=$1, updated_at=NOW(), metadata=metadata || $2::jsonb WHERE id=$3`, [txHash, safeJson({ confirmedAt: new Date().toISOString() }), opId]);
       return { ...op, status: 'completed', txHash };
     }
