@@ -153,11 +153,11 @@ try { app.use('/api/os', require(path.join(HD, 'server', 'routes', 'os'))); cons
   let SettlementEndpointEngine;
   try { SettlementEndpointEngine = require(path.join(HD, 'server', 'integrations', 'os', 'osEngine')).SettlementEndpointEngine; } catch(e) { console.warn('[settlement-endpoint] engine not loaded:', e.message); return; }
   app.get('/.well-known/dlb-trust-settlement.json', function(req, res) { res.json(SettlementEndpointEngine.getWellKnown()); });
-  app.post('/api/settlement/handshake', async function(req, res) {
+  app.post('/api/settlement/handshake', security.writeRateLimiter(), async function(req, res) {
     try { const result = await SettlementEndpointEngine.receiveHandshake(req.body || {}); res.json(result); }
     catch (err) { res.status(err.status || 400).json({ success: false, error: err.message }); }
   });
-  app.post('/api/settlement/payment', async function(req, res) {
+  app.post('/api/settlement/payment', security.writeRateLimiter(), async function(req, res) {
     try { const result = await SettlementEndpointEngine.receivePayment(req.body || {}, req.headers); res.json(result); }
     catch (err) { res.status(err.status || 400).json({ success: false, error: err.message }); }
   });

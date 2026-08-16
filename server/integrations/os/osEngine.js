@@ -4550,22 +4550,29 @@ class PtcTreasuryEngine extends BaseOSEngine {
 //
 // Agent-to-agent settlement discovery and handshake. Publishes a well-known
 // manifest at /.well-known/dlb-trust-settlement.json, discovers remote manifests,
-// performs a token + challenge handshake, and registers remote settlement endpoints
-// as ExternalEndpointEngine endpoints so the PTC bank can route real fiat payments
-// machine-to-machine without manual credential entry.
+// performs a network-keyed + challenge handshake with per-peer bearer tokens,
+// and registers remote settlement endpoints as ExternalEndpointEngine endpoints
+// so the PTC bank can route real fiat payments machine-to-machine without
+// manual credential entry.
 
 class SettlementEndpointEngine extends BaseOSEngine {
   static get engineName() { return 'settlement-endpoint'; }
 
   static _cfg() {
     const port = process.env.PORT || 3002;
+    const networkKey = process.env.SETTLEMENT_NETWORK_KEY || process.env.JWT_SECRET || process.env.SETTLEMENT_API_KEY || '';
+    const allowPrivate = process.env.SETTLEMENT_ALLOW_PRIVATE
+      ? process.env.SETTLEMENT_ALLOW_PRIVATE === 'true'
+      : process.env.NODE_ENV !== 'production';
     return {
       agentId: process.env.SETTLEMENT_AGENT_ID || process.env.TRUST_NAME || 'dlb-trust-ptc',
       baseUrl: process.env.APP_URL || process.env.DEPLOY_URL || (process.env.NODE_ENV === 'production' ? null : `http://localhost:${port}`),
       discoveryUrls: (process.env.SETTLEMENT_DISCOVERY_URLS || '').split(',').map(s => s.trim()).filter(Boolean),
       autoHandshake: process.env.SETTLEMENT_AUTO_HANDSHAKE === 'true',
       autoDiscover: process.env.SETTLEMENT_AUTO_DISCOVER !== 'false',
-      verifySignatures: process.env.SETTLEMENT_VERIFY_SIGNATURES !== 'false',
+      networkKey,
+      allowPrivate,
+      verifySignatures: process.env.SETTLEMENT_VERIFY_SIGNATURES !== 'false' && !!networkKey,
     };
   }
 
@@ -4579,14 +4586,33 @@ class SettlementEndpointEngine extends BaseOSEngine {
     };
   }
 
-  static _sign({ challenge, timestamp, secret }) {
-    return crypto.createHmac('sha256', String(secret)).update(`${timestamp}.${challenge}`).digest('hex');
+  static _isAllowedTarget(urlStr) {
+    try {
+      const u = new URL(String(urlStr));
+      if (u.protocol !== 'http:' && u.protocol !== 'https:') return false;
+      const cfg = this._cfg();
+      if (cfg.allowPrivate) return true;
+      const hostname = u.hostname.toLowerCase();
+      if (hostname === 'localhost' || hostname.endsWith('.local') || hostname.endsWith('.localhost')) return false;
+      if (hostname === '0.0.0.0' || hostname === '::1' || hostname.startsWith('127.')) return false;
+      if (/^10\./.test(hostname) || /^172\.(1[6-9]|2[0-9]|3[01])\./.test(hostname) || /^192\.168\./.test(hostname)) return false;
+      if (hostname.startsWith('fc') || hostname.startsWith('fd')) return false;
+    } catch { return false; }
+    return true;
   }
 
-  static _verify({ challenge, timestamp, signature, secret, maxAgeMs = 300000 }) {
+  static _sign({ challenge, timestamp, secret, agentId }) {
+    return crypto.createHmac('sha256', String(secret)).update(`${timestamp}.${challenge}.${agentId || ''}`).digest('hex');
+  }
+
+  static _verify({ challenge, timestamp, signature, secret, agentId, maxAgeMs = 300000 }) {
     if (!challenge || !timestamp || !signature || !secret) return false;
     if (Date.now() - Number(timestamp) > maxAgeMs) return false;
-    return this._sign({ challenge, timestamp, secret }) === String(signature);
+    const expected = this._sign({ challenge, timestamp, secret, agentId });
+    const sigBuf = Buffer.from(String(signature));
+    const expBuf = Buffer.from(expected);
+    if (sigBuf.length !== expBuf.length) return false;
+    return crypto.timingSafeEqual(sigBuf, expBuf);
   }
 
   static async ensureTables() {
@@ -4693,18 +4719,22 @@ class SettlementEndpointEngine extends BaseOSEngine {
     };
   }
 
-  static async discover(rawUrl) {
+  static async discover(rawUrl, { autoHandshake } = {}) {
     if (!rawUrl) throw new Error('url required');
     let url = String(rawUrl).trim();
     if (!/^https?:\/\//i.test(url)) url = 'https://' + url;
+    if (!this._isAllowedTarget(url)) throw new Error('Discovery target is not allowed');
     const wellKnownUrl = url.endsWith('.json') ? url : `${url.replace(/\/$/, '')}/.well-known/dlb-trust-settlement.json`;
+    if (!this._isAllowedTarget(wellKnownUrl)) throw new Error('Discovery target is not allowed');
     let resp;
     try {
       resp = await fetch(wellKnownUrl, { headers: { Accept: 'application/json' }, signal: AbortSignal.timeout(15000) });
     } catch (e) { throw new Error(`Well-known fetch failed: ${e.message}`); }
     if (!resp.ok) {
       try {
-        resp = await fetch(`${url.replace(/\/$/, '')}/api/settlement/endpoints`, { headers: { Accept: 'application/json' }, signal: AbortSignal.timeout(15000) });
+        const fallback = `${url.replace(/\/$/, '')}/api/settlement/endpoints`;
+        if (!this._isAllowedTarget(fallback)) throw new Error('Discovery fallback target is not allowed');
+        resp = await fetch(fallback, { headers: { Accept: 'application/json' }, signal: AbortSignal.timeout(15000) });
       } catch (e) { throw new Error(`Discovery failed: ${e.message}`); }
       if (!resp.ok) throw new Error(`Discovery failed: ${resp.status} ${resp.statusText}`);
     }
@@ -4713,6 +4743,7 @@ class SettlementEndpointEngine extends BaseOSEngine {
     const paymentUrl = manifest.endpoints.payment || manifest.endpoints.payments;
     const handshakeUrl = manifest.endpoints.handshake;
     if (!paymentUrl || !handshakeUrl) throw new Error('Manifest missing handshake or payment endpoint');
+    if (!this._isAllowedTarget(paymentUrl) || !this._isAllowedTarget(handshakeUrl)) throw new Error('Manifest endpoints are not allowed');
     const baseUrl = manifest.baseUrl || url;
     const caps = JSON.stringify(manifest.capabilities || []);
     await this.ensureTables();
@@ -4730,9 +4761,10 @@ class SettlementEndpointEngine extends BaseOSEngine {
         status = 'discovered',
         updated_at = NOW()
       RETURNING *`,
-      [endpointId, manifest.agentId, baseUrl, paymentUrl, paymentUrl, handshakeUrl, 'rest_json', 'bearer', caps, JSON.stringify(manifest), 'discovered']
+      [endpointId, manifest.agentId, baseUrl, baseUrl, paymentUrl, handshakeUrl, 'rest_json', 'bearer', caps, JSON.stringify(manifest), 'discovered']
     );
-    if (this._cfg().autoHandshake) return await this.handshake(endpointId);
+    const doHandshake = autoHandshake !== undefined ? autoHandshake : this._cfg().autoHandshake;
+    if (doHandshake) return await this.handshake(res.rows[0].endpoint_id);
     return { discovered: true, endpointId: res.rows[0].endpoint_id, manifest };
   }
 
@@ -4741,7 +4773,7 @@ class SettlementEndpointEngine extends BaseOSEngine {
     if (!pool) throw new Error('Postgres pool not available');
     let endpoint;
     if (String(input).startsWith('http')) {
-      const discovered = await this.discover(input);
+      const discovered = await this.discover(input, { autoHandshake: false });
       endpoint = (await query(`SELECT * FROM settlement_endpoints WHERE endpoint_id = $1`, [discovered.endpointId])).rows[0];
     } else {
       endpoint = (await query(`SELECT * FROM settlement_endpoints WHERE endpoint_id = $1`, [input])).rows[0];
@@ -4750,12 +4782,15 @@ class SettlementEndpointEngine extends BaseOSEngine {
     if (!endpoint.handshake_url) throw new Error('No handshake_url for endpoint');
     const agent = await this.getOrCreateAgent();
     const cfg = this._cfg();
+    const networkKey = cfg.networkKey;
     const challenge = crypto.randomBytes(16).toString('hex');
     const timestamp = Date.now();
-    const sig = this._sign({ challenge, timestamp, secret: agent.agent_token });
+    const outboundToken = crypto.randomBytes(32).toString('hex');
+    await query(`UPDATE settlement_endpoints SET api_secret = $1, status = 'handshaking', updated_at = NOW() WHERE endpoint_id = $2`, [outboundToken, endpoint.endpoint_id]);
+    const sig = networkKey ? this._sign({ challenge, timestamp, secret: networkKey, agentId: agent.agent_id }) : '';
     const payload = {
       agentId: agent.agent_id,
-      agentToken: agent.agent_token,
+      agentToken: outboundToken,
       baseUrl: cfg.baseUrl,
       capabilities: ['book_transfer','ach','wire','external','iso20022'],
       endpoints: this._paths(),
@@ -4776,30 +4811,48 @@ class SettlementEndpointEngine extends BaseOSEngine {
       await query(`UPDATE settlement_endpoints SET status = 'failed', updated_at = NOW() WHERE endpoint_id = $1`, [endpoint.endpoint_id]);
       throw new Error(`Handshake rejected: ${resp.status} ${safeJson(remote).slice(0,200)}`);
     }
-    if (!remote.agentId || !remote.agentToken || !remote.signature) throw new Error('Invalid handshake response');
+    if (!remote.agentId || !remote.agentToken || (cfg.verifySignatures && !remote.signature)) throw new Error('Invalid handshake response');
     const remoteTs = Number(remote.timestamp || timestamp);
-    if (cfg.verifySignatures && !this._verify({ challenge, timestamp: remoteTs, signature: remote.signature, secret: remote.agentToken })) {
+    if (cfg.verifySignatures && !this._verify({ challenge, timestamp: remoteTs, signature: remote.signature, secret: networkKey, agentId: remote.agentId })) {
       await query(`UPDATE settlement_endpoints SET status = 'failed', updated_at = NOW() WHERE endpoint_id = $1`, [endpoint.endpoint_id]);
       throw new Error('Handshake signature verification failed');
     }
     const External = this._externalEngine();
     if (!External) throw new Error('ExternalEndpointEngine not available');
     await External.ensureTables();
-    const ep = await External.createEndpoint({
-      name: `Settlement: ${remote.agentId}`,
-      baseUrl: endpoint.payment_url,
-      authType: 'bearer',
-      apiKey: remote.agentToken,
-      apiSecret: '',
-      responseSuccessPath: 'success',
-      extraHeaders: { 'X-Settlement-Agent': remote.agentId },
-      config: { settlementEndpointId: endpoint.endpoint_id },
-    });
+    let ep;
+    if (endpoint.external_endpoint_id) {
+      const existing = await External.getEndpointWithSecrets(endpoint.external_endpoint_id);
+      if (existing) {
+        await External.updateEndpoint(endpoint.external_endpoint_id, {
+          name: `Settlement: ${remote.agentId}`,
+          base_url: endpoint.payment_url,
+          auth_type: 'bearer',
+          api_key: remote.agentToken,
+          extra_headers: { 'X-Settlement-Agent': agent.agent_id },
+          config: { settlementEndpointId: endpoint.endpoint_id },
+          enabled: true,
+        });
+        ep = { endpoint_id: endpoint.external_endpoint_id };
+      }
+    }
+    if (!ep) {
+      ep = await External.createEndpoint({
+        name: `Settlement: ${remote.agentId}`,
+        baseUrl: endpoint.payment_url,
+        authType: 'bearer',
+        apiKey: remote.agentToken,
+        apiSecret: '',
+        responseSuccessPath: 'success',
+        extraHeaders: { 'X-Settlement-Agent': agent.agent_id },
+        config: { settlementEndpointId: endpoint.endpoint_id },
+      });
+    }
     await query(`
       UPDATE settlement_endpoints
-      SET status = 'active', api_key = $1, api_secret = $2, metadata = jsonb_set(COALESCE(metadata,'{}'::jsonb), '{remote}', $3::jsonb), external_endpoint_id = $4, last_seen_at = NOW(), updated_at = NOW()
-      WHERE endpoint_id = $5`,
-      [remote.agentToken, '', JSON.stringify(remote), ep.endpoint_id, endpoint.endpoint_id]
+      SET status = 'active', api_key = $1, metadata = jsonb_set(COALESCE(metadata,'{}'::jsonb), '{remote}', $2::jsonb), external_endpoint_id = $3, last_seen_at = NOW(), updated_at = NOW()
+      WHERE endpoint_id = $4`,
+      [remote.agentToken, JSON.stringify(remote), ep.endpoint_id, endpoint.endpoint_id]
     );
     return { handshaked: true, endpointId: endpoint.endpoint_id, agentId: remote.agentId, externalEndpointId: ep.endpoint_id };
   }
@@ -4812,7 +4865,12 @@ class SettlementEndpointEngine extends BaseOSEngine {
     await this.ensureTables();
     const { name, url, paymentUrl, handshakeUrl, capabilities = [], metadata = {} } = opts;
     if (!url || !name) throw new Error('name and url required');
+    if (!this._isAllowedTarget(url)) throw new Error('url is not allowed');
     const endpointId = id('SET');
+    const baseUrl = url.replace(/\/$/, '');
+    const resolvedPayment = paymentUrl || `${baseUrl}/api/settlement/payment`;
+    const resolvedHandshake = handshakeUrl || `${baseUrl}/api/settlement/handshake`;
+    if (!this._isAllowedTarget(resolvedPayment) || !this._isAllowedTarget(resolvedHandshake)) throw new Error('payment/handshake url is not allowed');
     const res = await query(`
       INSERT INTO settlement_endpoints (endpoint_id, name, url, base_url, payment_url, handshake_url, capabilities, metadata, status)
       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
@@ -4825,9 +4883,9 @@ class SettlementEndpointEngine extends BaseOSEngine {
         metadata = EXCLUDED.metadata,
         updated_at = NOW()
       RETURNING *`,
-      [endpointId, name, url, paymentUrl || url, paymentUrl || url, handshakeUrl || `${url.replace(/\/$/, '')}/api/settlement/handshake`, JSON.stringify(capabilities), JSON.stringify(metadata), 'discovered']
+      [endpointId, name, url, url, resolvedPayment, resolvedHandshake, JSON.stringify(capabilities), JSON.stringify(metadata), 'discovered']
     );
-    return res.rows[0];
+    return sanitize(res.rows[0]);
   }
 
   static async list({ limit = 50, status } = {}) {
@@ -4838,13 +4896,13 @@ class SettlementEndpointEngine extends BaseOSEngine {
     sql += ` ORDER BY updated_at DESC LIMIT $${params.length + 1}`;
     params.push(limit);
     const res = await query(sql, params);
-    return res.rows;
+    return res.rows.map(r => sanitize(r));
   }
 
   static async get(endpointId) {
     await this.ensureTables();
     const res = await query(`SELECT * FROM settlement_endpoints WHERE endpoint_id = $1`, [endpointId]);
-    return res.rows[0] || null;
+    return res.rows[0] ? sanitize(res.rows[0]) : null;
   }
 
   static async autoDiscover() {
@@ -4859,39 +4917,42 @@ class SettlementEndpointEngine extends BaseOSEngine {
   static async receiveHandshake(payload = {}) {
     await this.ensureTables();
     const { agentId, agentToken, baseUrl, capabilities, endpoints, challenge, timestamp, signature } = payload;
-    if (!agentId || !agentToken || !challenge || !signature) throw new Error('Invalid handshake payload');
     const cfg = this._cfg();
-    if (cfg.verifySignatures && !this._verify({ challenge, timestamp, signature, secret: agentToken })) {
+    if (!agentId || !agentToken || !challenge || (cfg.verifySignatures && !signature)) throw new Error('Invalid handshake payload');
+    if (cfg.verifySignatures && !this._verify({ challenge, timestamp, signature, secret: cfg.networkKey, agentId })) {
       throw new Error('Handshake signature verification failed');
     }
     const agent = await this.getOrCreateAgent();
-    const responseSig = this._sign({ challenge, timestamp, secret: agent.agent_token });
+    const responseToken = crypto.randomBytes(32).toString('hex');
+    const responseSig = cfg.networkKey ? this._sign({ challenge, timestamp, secret: cfg.networkKey, agentId }) : '';
     const url = baseUrl || (endpoints && endpoints.wellKnown);
     if (url) {
+      if (!this._isAllowedTarget(url)) throw new Error('Handshake baseUrl is not allowed');
       const endpointId = id('SET');
+      const paymentUrl = endpoints && endpoints.payment ? endpoints.payment : `${url.replace(/\/$/, '')}/api/settlement/payment`;
+      const handshakeUrl = endpoints && endpoints.handshake ? endpoints.handshake : `${url.replace(/\/$/, '')}/api/settlement/handshake`;
+      if (!this._isAllowedTarget(paymentUrl) || !this._isAllowedTarget(handshakeUrl)) throw new Error('Handshake endpoints are not allowed');
       await query(`
-        INSERT INTO settlement_endpoints (endpoint_id, name, url, base_url, payment_url, handshake_url, capabilities, metadata, status, last_seen_at)
-        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,NOW())
+        INSERT INTO settlement_endpoints (endpoint_id, name, url, base_url, payment_url, handshake_url, api_key, api_secret, capabilities, metadata, status, last_seen_at)
+        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,NOW())
         ON CONFLICT (url) DO UPDATE SET
           name = EXCLUDED.name,
           base_url = EXCLUDED.base_url,
           payment_url = EXCLUDED.payment_url,
           handshake_url = EXCLUDED.handshake_url,
+          api_key = EXCLUDED.api_key,
+          api_secret = EXCLUDED.api_secret,
           capabilities = EXCLUDED.capabilities,
           metadata = EXCLUDED.metadata,
           status = 'active',
           last_seen_at = NOW(),
           updated_at = NOW()`,
-        [endpointId, agentId, url,
-         endpoints && endpoints.payment ? endpoints.payment : `${url.replace(/\/$/, '')}/api/settlement/payment`,
-         endpoints && endpoints.payment ? endpoints.payment : `${url.replace(/\/$/, '')}/api/settlement/payment`,
-         endpoints && endpoints.handshake ? endpoints.handshake : `${url.replace(/\/$/, '')}/api/settlement/handshake`,
-         JSON.stringify(capabilities || []), JSON.stringify(payload), 'active']
+        [endpointId, agentId, url, url, paymentUrl, handshakeUrl, agentToken, responseToken, JSON.stringify(capabilities || []), JSON.stringify(payload), 'active']
       );
     }
     return {
       agentId: agent.agent_id,
-      agentToken: agent.agent_token,
+      agentToken: responseToken,
       baseUrl: cfg.baseUrl,
       capabilities: ['book_transfer','ach','wire','external','iso20022'],
       endpoints: this._paths(),
@@ -4906,7 +4967,7 @@ class SettlementEndpointEngine extends BaseOSEngine {
     const auth = String(headers.authorization || headers.Authorization || '');
     const token = auth.toLowerCase().startsWith('bearer ') ? auth.slice(7).trim() : '';
     if (!token) throw Object.assign(new Error('Missing authorization'), { status: 401 });
-    const res = await query(`SELECT * FROM settlement_endpoints WHERE api_key = $1 AND status = 'active' LIMIT 1`, [token]);
+    const res = await query(`SELECT * FROM settlement_endpoints WHERE (api_secret = $1 OR api_key = $1) AND status = 'active' LIMIT 1`, [token]);
     if (!res.rows.length) throw Object.assign(new Error('Unknown settlement endpoint'), { status: 401 });
     const endpoint = res.rows[0];
     const referenceId = payload.referenceId || payload.reference_id;
@@ -4922,7 +4983,7 @@ class SettlementEndpointEngine extends BaseOSEngine {
       VALUES ($1,$2,'inbound',$3,$4,$5,$6,$7,$8,'received')`,
       [paymentId, endpoint.endpoint_id, referenceId, cents, currency, JSON.stringify(debtor), JSON.stringify(creditor), JSON.stringify(payload)]
     );
-    return { success: true, paymentId, payment_id: paymentId, transaction_id: paymentId, referenceId, status: 'originated', receivedAt: new Date().toISOString() };
+    return { success: true, paymentId, payment_id: paymentId, transaction_id: paymentId, referenceId, status: 'received', receivedAt: new Date().toISOString() };
   }
 
   static async resolvePaymentEndpoint(payment = {}) {
@@ -4947,7 +5008,7 @@ class SettlementEndpointEngine extends BaseOSEngine {
     const { endpointId, url, referenceId, amount, currency = 'USD', debtor, creditor, description } = payload;
     if (!amount || (!endpointId && !url)) throw new Error('endpointId or url, and amount required');
     let endpoint;
-    if (endpointId) endpoint = await this.get(endpointId);
+    if (endpointId) endpoint = (await query(`SELECT * FROM settlement_endpoints WHERE endpoint_id = $1`, [endpointId])).rows[0];
     else endpoint = (await query(`SELECT * FROM settlement_endpoints WHERE url = $1 OR base_url = $1 LIMIT 1`, [url])).rows[0];
     if (!endpoint || !endpoint.payment_url) throw new Error('Settlement endpoint not found');
     if (!endpoint.api_key) throw new Error('Endpoint has no active token');
@@ -4970,9 +5031,10 @@ class SettlementEndpointEngine extends BaseOSEngine {
     });
     let body = {};
     try { body = await resp.json(); } catch { body = {}; }
+    const envelopeSuccess = !!(body && body.success);
     if (body && body.success && body.data) body = body.data;
-    const status = resp.ok && body.success ? 'completed' : (resp.ok ? 'originated' : 'failed');
-    await query(`UPDATE settlement_payments SET status = $1, external_id = $2, raw_payload = jsonb_set(raw_payload, '{response}', $3::jsonb), updated_at = NOW() WHERE payment_id = $4`, [status, body.paymentId || null, JSON.stringify({ status: resp.status, body }), paymentId]);
+    const status = resp.ok && (envelopeSuccess || body.success) ? 'completed' : (resp.ok ? 'originated' : 'failed');
+    await query(`UPDATE settlement_payments SET status = $1, external_id = $2, raw_payload = jsonb_set(raw_payload, '{response}', $3::jsonb), updated_at = NOW() WHERE payment_id = $4`, [status, body.paymentId || body.payment_id || body.transaction_id || null, JSON.stringify({ status: resp.status, body }), paymentId]);
     return { paymentId, status, response: body };
   }
 
