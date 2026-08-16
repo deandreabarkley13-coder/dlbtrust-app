@@ -4026,6 +4026,158 @@ class MelioEngine extends BaseOSEngine {
   }
 }
 
+// ─── PTC Bank Engine ──────────────────────────────────────────────────────────
+
+class PtcBankEngine extends BaseOSEngine {
+  static get engineName() { return 'ptc-bank'; }
+
+  static _deps() {
+    return {
+      TrustBank: tryRequire('../dapp/trustBankEngine')?.TrustBankEngine,
+      WireEngine: tryRequire('../dapp/wireOriginationEngine')?.WireOriginationEngine,
+      AchEngine: tryRequire('../dapp/bankTransferEngine')?.BankTransferEngine,
+      OpenBankingEngine: tryRequire('../dapp/openBankingEngine')?.OpenBankingEngine,
+      ExternalEndpointEngine: tryRequire('../dapp/externalEndpointEngine')?.ExternalEndpointEngine,
+    };
+  }
+
+  static _cfg() {
+    return {
+      live: process.env.PTC_BANK_LIVE === 'true',
+      settlementAccount: process.env.PTC_BANK_SETTLEMENT_ACCOUNT || process.env.TRUST_BANK_ACCOUNT || '',
+      routing: process.env.PTC_BANK_ROUTING || process.env.TRUST_BANK_ROUTING || '111000025',
+      name: process.env.PTC_BANK_NAME || process.env.TRUST_BANK_NAME || 'DLB Trust PTC Bank',
+    };
+  }
+
+  static async ensureTables() {
+    await super.ensureTables();
+    const { TrustBank } = this._deps();
+    if (TrustBank) await TrustBank.ensureTables();
+  }
+
+  static async status() {
+    const { TrustBank, WireEngine, AchEngine, OpenBankingEngine, ExternalEndpointEngine } = this._deps();
+    const cfg = this._cfg();
+    return {
+      engine: this.engineName,
+      healthy: !!TrustBank,
+      mode: cfg.live ? 'live' : 'shadow',
+      settlementAccountConfigured: !!cfg.settlementAccount,
+      internalBank: !!TrustBank,
+      rails: {
+        wire: !!WireEngine,
+        ach: !!AchEngine,
+        openBanking: !!OpenBankingEngine,
+        iso20022: !!OpenBankingEngine,
+        external: !!ExternalEndpointEngine,
+        bookTransfer: true,
+      },
+      timestamp: new Date().toISOString(),
+    };
+  }
+
+  static async health() { return this.status(); }
+
+  static async _resolvePaymentId(paymentId) {
+    if (!paymentId || paymentId === 'latest') {
+      if (!pool) throw new Error('Postgres pool not available');
+      const res = await query(`SELECT payment_id FROM trust_bank_payments WHERE status = 'pending' ORDER BY created_at DESC LIMIT 1`);
+      if (!res.rows.length) throw new Error('No pending payment found');
+      return res.rows[0].payment_id;
+    }
+    return paymentId;
+  }
+
+  static async _process(action, payload = {}) {
+    const { TrustBank } = this._deps();
+    if (!TrustBank) throw new Error('TrustBankEngine not available');
+    const cfg = this._cfg();
+
+    switch (action) {
+      case 'status':
+      case 'health':
+        return await this.status();
+      case 'createCustomer':
+        return await TrustBank.createCustomer(payload);
+      case 'getCustomer':
+        return await TrustBank.getCustomer(payload.customerId);
+      case 'listCustomers':
+        return await TrustBank.listCustomers({ limit: payload.limit || 50 });
+      case 'createAccount': {
+        const account = await TrustBank.createAccount({
+          customerId: payload.customerId,
+          accountName: payload.accountName,
+          accountType: payload.accountType || 'checking',
+          currency: payload.currency || 'USD',
+          linkedCashAccountId: payload.linkedCashAccountId,
+          linkedTrustAccountCode: payload.linkedTrustAccountCode,
+          metadata: payload.metadata,
+        });
+        return account;
+      }
+      case 'getAccount':
+        return await TrustBank.getAccount(payload.accountId);
+      case 'listAccounts':
+        return await TrustBank.listAccounts({ customerId: payload.customerId, limit: payload.limit || 50 });
+      case 'deposit':
+        return await TrustBank.deposit({
+          accountId: payload.accountId,
+          amount: payload.amount,
+          description: payload.description,
+          initiatedBy: payload.initiatedBy || 'os-engine',
+        });
+      case 'internalTransfer':
+        return await TrustBank.internalTransfer({
+          fromAccountId: payload.fromAccountId,
+          toAccountId: payload.toAccountId,
+          amount: payload.amount,
+          description: payload.description,
+          initiatedBy: payload.initiatedBy || 'os-engine',
+        });
+      case 'originatePayment': {
+        const rail = payload.rail || (cfg.live ? 'wire' : 'book_transfer');
+        const payment = await TrustBank.originatePayment({
+          fromAccountId: payload.fromAccountId,
+          externalRouting: payload.externalRouting,
+          externalAccount: payload.externalAccount,
+          externalAccountName: payload.externalAccountName,
+          externalBankName: payload.externalBankName || cfg.name,
+          amount: payload.amount,
+          rail,
+          currency: payload.currency || 'USD',
+          description: payload.description,
+          initiatedBy: payload.initiatedBy || 'os-engine',
+          endpointId: payload.endpointId,
+          metadata: payload.metadata,
+        });
+        const instructions = rail === 'book_transfer'
+          ? `Book transfer ${payment.paymentId} originated for $${Number(payload.amount).toFixed(2)}. Settle manually or call settlePayment with an externalTxId.`
+          : `Payment ${payment.paymentId} originated via ${rail} for $${Number(payload.amount).toFixed(2)}. Call sendPayment to transmit.`;
+        return { ...payment, rail, instructions };
+      }
+      case 'sendPayment': {
+        const paymentId = await this._resolvePaymentId(payload.paymentId);
+        const sent = await TrustBank.sendPayment(paymentId);
+        return sent;
+      }
+      case 'settlePayment': {
+        const paymentId = await this._resolvePaymentId(payload.paymentId);
+        return await TrustBank.settlePayment(paymentId, payload.externalTxId);
+      }
+      case 'getPayment': {
+        const paymentId = await this._resolvePaymentId(payload.paymentId);
+        return await TrustBank.getPayment(paymentId);
+      }
+      case 'listPayments':
+        return await TrustBank.listPayments({ status: payload.status, limit: payload.limit || 50 });
+      case 'process':
+      default:
+        return await this.status();
+    }
+  }
+}
+
 const ENGINES = {
   bank: BankEngine,
   treasury: TreasuryEngine,
@@ -4048,6 +4200,7 @@ const ENGINES = {
   conduit: ConduitEngine,
   'issuer-bridge': IssuerBridgeEngine,
   melio: MelioEngine,
+  'ptc-bank': PtcBankEngine,
 };
 
 async function ensureAll() {
@@ -4083,6 +4236,7 @@ module.exports = {
   ConduitEngine,
   IssuerBridgeEngine,
   MelioEngine,
+  PtcBankEngine,
   engines: ENGINES,
   ensureAll,
 };

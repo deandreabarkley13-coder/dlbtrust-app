@@ -155,6 +155,7 @@
             <button onclick="loadEvents('alchemy-wallet')">Alchemy Wallet</button>
             <button onclick="loadEvents('issuer-bridge')">Issuer Bridge</button>
             <button onclick="loadEvents('melio')">Melio B2B</button>
+            <button onclick="loadEvents('ptc-bank')">PTC Bank</button>
           </div>
           <div id="events-table" style="margin-top:12px"></div>
           <div class="form-grid" style="margin-top:12px">
@@ -193,7 +194,8 @@
       'issuer-bridge': ['status', 'quote', 'issue', 'continue', 'confirm', 'listOperations', 'getOperation'],
       tokenization: ['status', 'configure', 'tokenize', 'mintStablecoin', 'swap', 'sendToAgentWallet', 'execute'],
       conduit: ['status', 'configure', 'collect', 'mintCanonical', 'swapToUsdc', 'sendToAgentWallet', 'balance', 'execute'],
-      melio: ['status', 'health', 'listVendors', 'createVendor', 'createBill', 'schedulePayment', 'getPayment', 'listPayments', 'webhook']
+      melio: ['status', 'health', 'listVendors', 'createVendor', 'createBill', 'schedulePayment', 'getPayment', 'listPayments', 'webhook'],
+      'ptc-bank': ['status', 'health', 'createCustomer', 'getCustomer', 'listCustomers', 'createAccount', 'getAccount', 'listAccounts', 'deposit', 'internalTransfer', 'originatePayment', 'sendPayment', 'settlePayment', 'getPayment', 'listPayments']
     };
     const samples = {
       bank: JSON.stringify({ bankId: 'SMOKE-BANK', accountId: 'SMOKE-ACCT', from: '2026-01-01', to: '2026-12-31', limit: 10 }, null, 2),
@@ -216,7 +218,8 @@
       'issuer-bridge': JSON.stringify({ action: 'issue', sourceType: 'trust', sourceAccountId: '1200', amount: 100, asset: 'USDC', recipient: '0x69a32f285ced1dbf102c7baedf0266f1d39580a1', sourceMethod: 'manual' }, null, 2),
       tokenization: JSON.stringify({ action: 'execute', sourceType: 'bond_interest', sourceAccountId: '1', amount: 100, tokenSymbol: 'DLB-PRB-INT', recipient: '0x69a32f285ced1dbf102c7baedf0266f1d39580a1' }, null, 2),
       conduit: JSON.stringify({ action: 'execute', sources: [{ sourceType: 'bond_interest', sourceAccountId: '1', amount: 100 }, { sourceType: 'cash', sourceAccountId: 'CA-OPERATING', amount: 0 }], recipient: '0x69a32f285ced1dbf102c7baedf0266f1d39580a1' }, null, 2),
-      melio: JSON.stringify({ action: 'schedulePayment', amount: 100, sourceType: 'trust', sourceAccountId: '1200', vendor: { name: 'Vendor Inc', email: 'pay@example.com', address: { line1: '123 Main St', city: 'Austin', state: 'TX', postalCode: '78701', country: 'US' }, bankAccount: { accountNumber: '000123456789', routingNumber: '111000025', accountType: 'checking' } }, deliveryMethod: 'ach', memo: 'B2B vendor payout' }, null, 2)
+      melio: JSON.stringify({ action: 'schedulePayment', amount: 100, sourceType: 'trust', sourceAccountId: '1200', vendor: { name: 'Vendor Inc', email: 'pay@example.com', address: { line1: '123 Main St', city: 'Austin', state: 'TX', postalCode: '78701', country: 'US' }, bankAccount: { accountNumber: '000123456789', routingNumber: '111000025', accountType: 'checking' } }, deliveryMethod: 'ach', memo: 'B2B vendor payout' }, null, 2),
+      'ptc-bank': JSON.stringify({ action: 'createCustomer', name: 'PTC Customer', email: 'customer@example.com', phone: '555-0100' }, null, 2)
     };
 
     function el(id) { return document.getElementById(id); }

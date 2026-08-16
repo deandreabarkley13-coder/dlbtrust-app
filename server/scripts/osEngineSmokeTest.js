@@ -19,7 +19,7 @@ const BASE_URL = (process.env.OS_TEST_BASE_URL || 'http://localhost:3002').repla
 const TOKEN = process.env.ADMIN_SECRET_TOKEN || 'dlb-admin-2026-trust';
 const VERBOSE = process.env.OS_TEST_VERBOSE !== 'false';
 
-const engines = ['bank', 'treasury', 'payment', 'clearing', 'settlement', 'compliance', 'security', 'rest-api', 'bookkeeping', 'cash', 'asset-acquisition', 'bank-aggregator', 'funding', 'smart-router', 'back-office', 'wallet-onramp', 'alchemy-wallet', 'tokenization', 'conduit', 'issuer-bridge', 'melio'];
+const engines = ['bank', 'treasury', 'payment', 'clearing', 'settlement', 'compliance', 'security', 'rest-api', 'bookkeeping', 'cash', 'asset-acquisition', 'bank-aggregator', 'funding', 'smart-router', 'back-office', 'wallet-onramp', 'alchemy-wallet', 'tokenization', 'conduit', 'issuer-bridge', 'melio', 'ptc-bank'];
 
 const results = [];
 let failed = false;
@@ -59,6 +59,18 @@ function assert(cond, msg) {
     failed = true;
     throw new Error(msg || 'assertion failed');
   }
+}
+
+const captures = {};
+
+function substitute(obj) {
+  return JSON.parse(JSON.stringify(obj, (k, v) => {
+    if (typeof v === 'string' && v.startsWith('${') && v.endsWith('}')) {
+      const key = v.slice(2, -1);
+      if (captures[key] !== undefined) return captures[key];
+    }
+    return v;
+  }));
 }
 
 async function runStep(name, fn) {
@@ -141,6 +153,15 @@ async function main() {
     { engine: 'melio', action: 'listVendors', payload: {} },
     { engine: 'melio', action: 'schedulePayment', payload: { amount: 0.01, sourceType: 'trust', sourceAccountId: '1200', vendor: { name: 'Smoke Test Vendor' }, deliveryMethod: 'ach' } },
     { engine: 'melio', action: 'getPayment', payload: { id: 'melio-payment-shadow' } },
+    { engine: 'ptc-bank', action: 'createCustomer', payload: { name: 'PTC Smoke Customer', email: 'smoke@example.com' }, capture: 'ptcBankCustomerId' },
+    { engine: 'ptc-bank', action: 'createAccount', payload: { customerId: '${ptcBankCustomerId}', accountName: 'PTC Smoke Checking', accountType: 'checking' }, capture: 'ptcBankAccountId' },
+    { engine: 'ptc-bank', action: 'deposit', payload: { accountId: '${ptcBankAccountId}', amount: 100, description: 'Smoke deposit' } },
+    { engine: 'ptc-bank', action: 'createAccount', payload: { customerId: '${ptcBankCustomerId}', accountName: 'PTC Smoke Savings', accountType: 'savings' }, capture: 'ptcBankToAccountId' },
+    { engine: 'ptc-bank', action: 'internalTransfer', payload: { fromAccountId: '${ptcBankAccountId}', toAccountId: '${ptcBankToAccountId}', amount: 10, description: 'Smoke internal transfer' } },
+    { engine: 'ptc-bank', action: 'originatePayment', payload: { fromAccountId: '${ptcBankAccountId}', externalRouting: '111000025', externalAccount: '000123456789', externalAccountName: 'Smoke Payee', externalBankName: 'Smoke Bank', amount: 5, rail: 'book_transfer', description: 'Smoke book transfer' }, capture: 'ptcBankPaymentId' },
+    { engine: 'ptc-bank', action: 'sendPayment', payload: { paymentId: '${ptcBankPaymentId}' } },
+    { engine: 'ptc-bank', action: 'getPayment', payload: { paymentId: '${ptcBankPaymentId}' } },
+    { engine: 'ptc-bank', action: 'listPayments', payload: { limit: 10 } },
   ];
 
   const bankEventIds = [];
@@ -155,7 +176,8 @@ async function main() {
   for (const { engine, action, payload, expectEvent, expectKey, capture } of processSteps) {
     await sleep(2500); // stay under the 30 POST/min write rate limiter
     await runStep(`${engine}: process ${action}`, async () => {
-      const { ok, body } = await call('POST', `/api/os/${engine}/process`, { action, ...payload });
+      const resolvedPayload = substitute(payload || {});
+      const { ok, body } = await call('POST', `/api/os/${engine}/process`, { action, ...resolvedPayload });
       assert(ok, body && body.error);
       if (expectEvent) {
         assert(body.data && body.data.eventId, 'expected eventId');
@@ -166,13 +188,30 @@ async function main() {
         apiKeys.push(body.data.result.apiKey);
       }
       if (capture && body.data && body.data.result) {
-        if (capture === 'smartRouterPaymentId' && body.data.result.paymentId) smartRouterPaymentId = body.data.result.paymentId;
-        if (capture === 'backOfficeRequestId' && body.data.result.id) backOfficeRequestId = body.data.result.id;
-        if (capture === 'walletOnRampOperationId' && body.data.result.operationId) walletOnRampOperationId = body.data.result.operationId;
-        if (capture === 'issuerBridgeOperationId' && body.data.result.operationId) issuerBridgeOperationId = body.data.result.operationId;
+        const r = body.data.result;
+        const captureValue =
+          (capture === 'smartRouterPaymentId' && r.paymentId) ? r.paymentId :
+          (capture === 'backOfficeRequestId' && r.id) ? r.id :
+          (capture === 'walletOnRampOperationId' && r.operationId) ? r.operationId :
+          (capture === 'issuerBridgeOperationId' && r.operationId) ? r.operationId :
+          (capture === 'ptcBankCustomerId' && r.customer_id) ? r.customer_id :
+          (capture === 'ptcBankAccountId' && r.account_id) ? r.account_id :
+          (capture === 'ptcBankToAccountId' && r.account_id) ? r.account_id :
+          (capture === 'ptcBankPaymentId' && r.paymentId) ? r.paymentId :
+          r[capture] || undefined;
+        if (captureValue) {
+          captures[capture] = captureValue;
+          if (capture === 'smartRouterPaymentId') smartRouterPaymentId = captureValue;
+          if (capture === 'backOfficeRequestId') backOfficeRequestId = captureValue;
+          if (capture === 'walletOnRampOperationId') walletOnRampOperationId = captureValue;
+          if (capture === 'issuerBridgeOperationId') issuerBridgeOperationId = captureValue;
+        }
       }
       if (capture && body.data && body.data.eventId) {
-        if (capture === 'alchemyFundingEventId') alchemyFundingEventId = body.data.eventId;
+        if (capture === 'alchemyFundingEventId') {
+          alchemyFundingEventId = body.data.eventId;
+          captures[capture] = body.data.eventId;
+        }
       }
       return body.data;
     });
