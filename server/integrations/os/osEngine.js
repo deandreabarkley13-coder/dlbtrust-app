@@ -4353,11 +4353,25 @@ class PtcTreasuryEngine extends BaseOSEngine {
     if (!fromAccountId || !sourceType || !sourceAccountId) return null;
     if (String(sourceType).toLowerCase() === 'ptc_bank') return null;
     const cfg = this._cfg();
+    const { TrustAccounting } = this._deps();
+    let fundSource = sourceAccountId;
+    let interestIncomeSource = null;
+    // If the requested source is an income/liability/equity account, use the accrued-interest
+    // GL as the balance-sheet cash source and charge the wire to the income account.
+    if (TrustAccounting) {
+      const src = await TrustAccounting.getAccount(sourceAccountId);
+      if (src && /^(income|revenue|liability|equity)$/i.test(src.account_type || '')) {
+        interestIncomeSource = sourceAccountId;
+        fundSource = '1200';
+        payload.paymentType = payload.paymentType || 'interest_payment';
+        payload._interestIncomeSource = interestIncomeSource;
+      }
+    }
     return await this._unwrap(await PtcBankEngine.process({
       action: 'fundFromSource',
       accountId: fromAccountId,
       sourceType,
-      sourceAccountId,
+      sourceAccountId: fundSource,
       amount,
       glAccountCode: glAccountCode || cfg.defaultPtcBankGl,
       description: description || `PTC Treasury workflow ${workflowId}`,
@@ -4377,6 +4391,11 @@ class PtcTreasuryEngine extends BaseOSEngine {
       throw new Error(isLili ? 'payee name required for Lili distribution' : 'payee routing, account, and name required');
     }
     const funded = await this._fundPtcBankIfNeeded(payload, workflowId);
+    const meta = payload.metadata || {};
+    if (payload.paymentType) meta.paymentType = payload.paymentType;
+    if (payload._interestIncomeSource) meta.interestIncomeSource = payload._interestIncomeSource;
+    if (payload.senderRouting) meta.senderRouting = payload.senderRouting;
+    if (payload.senderAccount) meta.senderAccount = payload.senderAccount;
     const originated = await this._unwrap(await PtcBankEngine.process({
       action: 'originatePayment',
       fromAccountId,
@@ -4389,6 +4408,7 @@ class PtcTreasuryEngine extends BaseOSEngine {
       rail,
       description: description || memo || `PTC Treasury distribution ${workflowId}`,
       initiatedBy,
+      metadata: meta,
     }));
     const paymentId = originated && originated.paymentId;
     let sent = null;

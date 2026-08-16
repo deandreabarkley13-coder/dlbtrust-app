@@ -45,10 +45,10 @@ const WIRE_TYPE_CODES = {
 
 // Account codes (matching PaymentOrchestrator)
 const ACCOUNT_CODES = {
-  CASH: '1000',
+  CASH: '1010',
   DISTRIBUTIONS: '5100',
   EXPENSES: '5200',
-  INTEREST_INCOME: '4100',
+  INTEREST_INCOME: '4000',
   ACCRUED_INTEREST: '1200',
 };
 
@@ -383,8 +383,8 @@ class WireEngine {
               journalDescription = `Wire distribution: ${wire.description || wire.beneficiary_name}`;
               break;
             case 'interest_payment':
-              debitAccountCode = ACCOUNT_CODES.DISTRIBUTIONS;
-              journalDescription = `Wire coupon distribution: ${wire.description || wire.beneficiary_name}`;
+              debitAccountCode = ACCOUNT_CODES.INTEREST_INCOME;
+              journalDescription = `Wire coupon/interest distribution: ${wire.description || wire.beneficiary_name}`;
               break;
             case 'vendor_payment':
             case 'principal_return':
