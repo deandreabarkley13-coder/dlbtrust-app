@@ -3410,8 +3410,8 @@ class IssuerBridgeEngine extends BaseOSEngine {
       postedBy: 'issuer-bridge',
       postToFineract: false,
       lines: [
-        { accountCode: sourceAccountId, debitAmount: amountCents / 100, creditAmount: 0, memo: `Reserve ${amount} from ${sourceAccountId}` },
-        { accountCode: assetAccount, debitAmount: 0, creditAmount: amountCents / 100, memo: `Backing asset for issuer bridge ${operationId}` },
+        { accountCode: assetAccount, debitAmount: amountCents / 100, creditAmount: 0, memo: `Stablecoin backing from ${sourceAccountId}` },
+        { accountCode: sourceAccountId, debitAmount: 0, creditAmount: amountCents / 100, memo: `Source funds to issuer bridge ${operationId}` },
       ],
     });
     await deps.Treasury.credit('TREASURY_HOT', amountCents, { source: 'issuer-bridge', txHash: null, metadata: { operationId, sourceType, sourceAccountId, journalEntryId: journal.entry_id } });
