@@ -119,9 +119,10 @@ class LiliMcpEngine {
 
   static _getRedirectUri() {
     // Lili's MCP OAuth server only permits loopback redirect URIs for native
-    // clients. The default is localhost:3000; override via LILI_OAUTH_REDIRECT_URI
-    // if you are running the capture server on a different port.
-    return process.env.LILI_OAUTH_REDIRECT_URI || 'http://localhost:3000/callback';
+    // clients. 127.0.0.1 is required by Lili's native flow. Override via
+    // LILI_OAUTH_REDIRECT_URI if you run the capture server on a different
+    // host/port/path.
+    return process.env.LILI_OAUTH_REDIRECT_URI || 'http://127.0.0.1:3000/oauth/callback';
   }
 
   static async registerClient({ appName = 'DLB Trust MCP', redirectUri } = {}) {
@@ -129,10 +130,14 @@ class LiliMcpEngine {
     const url = `${cfg.oauthBaseUrl.replace(/\/$/, '')}/oauth/register`;
     const body = JSON.stringify({
       client_name: appName,
+      client_uri: process.env.LILI_OAUTH_CLIENT_URI || 'https://github.com/deandreabarkley13-coder/dlbtrust-app',
       redirect_uris: [redirectUri || this._getRedirectUri()],
       grant_types: ['authorization_code', 'refresh_token'],
       response_types: ['code'],
       token_endpoint_auth_method: 'none',
+      scope: 'openid email profile',
+      software_id: process.env.LILI_OAUTH_SOFTWARE_ID || 'dlbtrust-lili-mcp',
+      software_version: process.env.LILI_OAUTH_SOFTWARE_VERSION || '1.0.0',
     });
     const res = await fetch(url, {
       method: 'POST',
@@ -144,7 +149,7 @@ class LiliMcpEngine {
     try { return JSON.parse(text); } catch (e) { return { raw: text }; }
   }
 
-  static async startOAuth({ appName, redirectUri, state: providedState } = {}) {
+  static async startOAuth({ appName, redirectUri, state: providedState, resource } = {}) {
     await this.ensureTables();
     let cfg = await this.getConfig();
     const redirect = redirectUri || this._getRedirectUri();
@@ -162,7 +167,7 @@ class LiliMcpEngine {
     }
 
     const { verifier, challenge } = generatePkce();
-    const state = providedState || generateId('STATE');
+    const state = providedState || (crypto.randomUUID ? crypto.randomUUID() : generateId('STATE'));
 
     if (pool) {
       await pool.query(
@@ -176,10 +181,11 @@ class LiliMcpEngine {
     authUrl.searchParams.append('response_type', 'code');
     authUrl.searchParams.append('client_id', clientId);
     authUrl.searchParams.append('redirect_uri', redirect);
-    authUrl.searchParams.append('scope', 'openid profile lili_api');
+    authUrl.searchParams.append('scope', 'openid email profile');
     authUrl.searchParams.append('state', state);
     authUrl.searchParams.append('code_challenge', challenge);
     authUrl.searchParams.append('code_challenge_method', 'S256');
+    authUrl.searchParams.append('resource', resource || process.env.LILI_OAUTH_RESOURCE || 'https://mcp.lili.co/');
 
     return { authUrl: authUrl.toString(), state, redirectUri: redirect };
   }

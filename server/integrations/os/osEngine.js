@@ -4040,6 +4040,7 @@ class PtcBankEngine extends BaseOSEngine {
       AchEngine: tryRequire('../dapp/bankTransferEngine')?.BankTransferEngine,
       OpenBankingEngine: tryRequire('../dapp/openBankingEngine')?.OpenBankingEngine,
       ExternalEndpointEngine: tryRequire('../dapp/externalEndpointEngine')?.ExternalEndpointEngine,
+      LiliBankEngine: tryRequire('../payments/liliBankEngine')?.LiliBankEngine,
     };
   }
 
@@ -4075,6 +4076,7 @@ class PtcBankEngine extends BaseOSEngine {
         iso20022: !!OpenBankingEngine,
         external: !!ExternalEndpointEngine,
         bookTransfer: true,
+        lili: !!this._deps().LiliBankEngine,
       },
       timestamp: new Date().toISOString(),
     };
@@ -4152,7 +4154,7 @@ class PtcBankEngine extends BaseOSEngine {
         const payment = await TrustBank.originatePayment({
           fromAccountId: payload.fromAccountId,
           externalRouting: payload.externalRouting,
-          externalAccount: payload.externalAccount,
+          externalAccount: payload.externalAccount || payload.recipientEmail,
           externalAccountName: payload.externalAccountName,
           externalBankName: payload.externalBankName || cfg.name,
           amount: payload.amount,
@@ -4162,6 +4164,7 @@ class PtcBankEngine extends BaseOSEngine {
           initiatedBy: payload.initiatedBy || 'os-engine',
           endpointId,
           metadata: payload.metadata,
+          recipientEmail: payload.recipientEmail,
         });
         const instructions = rail === 'book_transfer'
           ? `Book transfer ${payment.paymentId} originated for $${Number(payload.amount).toFixed(2)}. Settle manually or call settlePayment with an externalTxId.`
@@ -4252,6 +4255,7 @@ class PtcTreasuryEngine extends BaseOSEngine {
       TrustBank: tryRequire('../dapp/trustBankEngine')?.TrustBankEngine,
       TrustAccounting: tryRequire('../accounting/trustAccountingEngine')?.TrustAccountingEngine,
       DistributionRequest: tryRequire('../dapp/distributionRequestEngine')?.DistributionRequestEngine,
+      LiliBankEngine: tryRequire('../payments/liliBankEngine')?.LiliBankEngine,
     };
   }
 
@@ -4274,6 +4278,7 @@ class PtcTreasuryEngine extends BaseOSEngine {
       rails: {
         'ptc-bank': !!PtcBankEngine,
         melio: !!MelioEngine,
+        lili: !!this._deps().LiliBankEngine,
         'issuer-bridge': !!IssuerBridgeEngine,
         conduit: !!ConduitEngine,
         'wallet-onramp': !!WalletOnRampEngine,
@@ -4339,7 +4344,7 @@ class PtcTreasuryEngine extends BaseOSEngine {
   static _normalizePtcBankRail(rail) {
     const r = String(rail || 'book_transfer').toLowerCase().replace(/-/g, '_');
     if (r === 'ptc_bank' || r === 'book' || r === 'book_transfer' || r === 'check') return 'book_transfer';
-    if (['wire','ach','open_banking','iso20022','external'].includes(r)) return r;
+    if (['wire','ach','open_banking','iso20022','external','lili'].includes(r)) return r;
     return 'book_transfer';
   }
 
@@ -4363,12 +4368,15 @@ class PtcTreasuryEngine extends BaseOSEngine {
   static async _distributePtcBank(payload, workflowId) {
     const { amount, payee = {}, fromAccountId, externalRouting, externalAccount, externalAccountName, externalBankName, description, memo, initiatedBy } = payload;
     if (!fromAccountId) throw new Error('fromAccountId required for ptc-bank distribution');
+    const rail = this._normalizePtcBankRail(payload.rail);
     const routing = externalRouting || payee.routing || payee.routingNumber;
     const account = externalAccount || payee.account || payee.accountNumber;
     const accountName = externalAccountName || payee.name || payee.accountName;
-    if (!routing || !account || !accountName) throw new Error('payee routing, account, and name required');
+    const isLili = rail === 'lili';
+    if (!accountName || (!isLili && (!routing || !account))) {
+      throw new Error(isLili ? 'payee name required for Lili distribution' : 'payee routing, account, and name required');
+    }
     const funded = await this._fundPtcBankIfNeeded(payload, workflowId);
-    const rail = this._normalizePtcBankRail(payload.rail);
     const originated = await this._unwrap(await PtcBankEngine.process({
       action: 'originatePayment',
       fromAccountId,
@@ -4376,6 +4384,7 @@ class PtcTreasuryEngine extends BaseOSEngine {
       externalAccount: account,
       externalAccountName: accountName,
       externalBankName: externalBankName || payee.bankName || 'External Bank',
+      recipientEmail: payee.email || payload.recipientEmail,
       amount,
       rail,
       description: description || memo || `PTC Treasury distribution ${workflowId}`,
@@ -4492,7 +4501,7 @@ class PtcTreasuryEngine extends BaseOSEngine {
     const workflowId = payload.workflowId || id('PTT-');
     const initiatedBy = payload.initiatedBy || 'ptc-treasury';
 
-    if (rail === 'ptc-bank' || ['wire','ach','open_banking','iso20022','external','book','book_transfer','check'].includes(rail)) {
+    if (rail === 'ptc-bank' || ['wire','ach','open_banking','iso20022','external','book','book_transfer','check','lili'].includes(rail)) {
       return await this._distributePtcBank({ ...payload, initiatedBy }, workflowId);
     }
     if (rail === 'melio') {
