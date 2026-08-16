@@ -5,7 +5,8 @@
  *
  * Provides a single, consistent interface to the operating-system engines:
  * bank, treasury, payment, clearing, settlement, compliance, security, rest-api,
- * bookkeeping, cash, asset-acquisition, bank-aggregator, funding, smart-router, and back-office.
+ * bookkeeping, cash, asset-acquisition, bank-aggregator, funding, smart-router, back-office,
+ * wallet-onramp, and alchemy-wallet.
  */
 
 const express = require('express');
@@ -26,6 +27,8 @@ const {
   FundingOSEngine,
   SmartRouterEngine,
   BackOfficeEngine,
+  WalletOnRampEngine,
+  AlchemyWalletEngine,
 } = require('../integrations/os/osEngine');
 
 const router = express.Router();
@@ -48,6 +51,8 @@ const ENGINES = {
   funding: FundingOSEngine,
   'smart-router': SmartRouterEngine,
   'back-office': BackOfficeEngine,
+  'wallet-onramp': WalletOnRampEngine,
+  'alchemy-wallet': AlchemyWalletEngine,
 };
 
 function sendError(res, err) {

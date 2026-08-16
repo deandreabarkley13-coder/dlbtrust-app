@@ -894,12 +894,4 @@ With an Alchemy key the live `rpcUrl` returned by the API is redacted to `/v2/[h
 - The wallet balance endpoint reaches the configured RPC, so a misconfigured `rpcUrl` or unsupported `DAPP_CHAIN_ID` will surface as a `viem` / RPC error instead of a URL mismatch.
 - Without a real `ALCHEMY_API_KEY` in secrets you can verify URL construction with a fake key but cannot make a live Alchemy balance call.
 
-## Devin Secrets Needed
-
-- `DATABASE_URL` or local Postgres credentials (`dlbtrust`/`dlbtrust`).
-- `JWT_SECRET` and `ADMIN_SECRET_TOKEN` for stable auth.
-- `secret:org:HEDERA_OPERATOR_KEY` — only needed for live (non-shadow) Hedera tests.
-- `secret:org:DLBTRUST_API_KEY` — for programmatic API access if enabled.
-- `secret:org:FLY_API_TOKEN` — needed for `flyctl deploy` and `flyctl secrets set` against `dlbtrust-app`.
-- `TREASURY_PRIME_API_KEY_ID` / `TREASURY_PRIME_API_SECRET` — Treasury Prime sandbox Basic-auth credentials, required for any `/api/treasury-prime` live testing.
-- `ALCHEMY_API_KEY` — only needed for live Alchemy `/api/dapp/wallet/balances` calls on Base/Eth/Polygon/Arbitrum; URL construction can be verified with a fake key.
+origin/main
