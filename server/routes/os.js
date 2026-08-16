@@ -3,8 +3,10 @@
 /**
  * OS Engine Routes — /api/os
  *
- * Provides a single, consistent interface to the eight operating-system engines:
- * bank, treasury, payment, clearing, settlement, compliance, security, rest-api.
+ * Provides a single, consistent interface to the operating-system engines:
+ * bank, treasury, payment, clearing, settlement, compliance, security, rest-api,
+ * bookkeeping, cash, asset-acquisition, bank-aggregator, funding, smart-router, back-office,
+ * wallet-onramp, and alchemy-wallet.
  */
 
 const express = require('express');
@@ -18,6 +20,15 @@ const {
   ComplianceEngine,
   SecurityEngine,
   RestApiEngine,
+  BookkeepingEngine,
+  CashOSEngine,
+  AssetAcquisitionEngine,
+  BankAccountAggregatorEngine,
+  FundingOSEngine,
+  SmartRouterEngine,
+  BackOfficeEngine,
+  WalletOnRampEngine,
+  AlchemyWalletEngine,
 } = require('../integrations/os/osEngine');
 
 const router = express.Router();
@@ -33,6 +44,15 @@ const ENGINES = {
   compliance: ComplianceEngine,
   security: SecurityEngine,
   'rest-api': RestApiEngine,
+  bookkeeping: BookkeepingEngine,
+  cash: CashOSEngine,
+  'asset-acquisition': AssetAcquisitionEngine,
+  'bank-aggregator': BankAccountAggregatorEngine,
+  funding: FundingOSEngine,
+  'smart-router': SmartRouterEngine,
+  'back-office': BackOfficeEngine,
+  'wallet-onramp': WalletOnRampEngine,
+  'alchemy-wallet': AlchemyWalletEngine,
 };
 
 function sendError(res, err) {
