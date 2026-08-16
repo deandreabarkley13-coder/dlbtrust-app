@@ -188,7 +188,8 @@
       'back-office': ['status', 'treasurySummary', 'bankReconciliation', 'listDistributions', 'getDistribution', 'createDistribution', 'approveDistribution', 'rejectDistribution', 'executeDistribution', 'batchProcess'],
       'wallet-onramp': ['status', 'providers', 'quote', 'fund', 'getOperation', 'listOperations', 'continue', 'execute'],
       'alchemy-wallet': ['status', 'listWallets', 'getBalances', 'switchSigner', 'createLocalWallet', 'sessionStatus', 'listSourceBalances', 'fundFromSource', 'fundFromOperating', 'listFundingRequests', 'getFundingRequest', 'confirmDeposit', 'cancelFundingRequest', 'send'],
-      tokenization: ['status', 'configure', 'tokenize', 'mintStablecoin', 'swap', 'sendToAgentWallet', 'execute']
+      tokenization: ['status', 'configure', 'tokenize', 'mintStablecoin', 'swap', 'sendToAgentWallet', 'execute'],
+      conduit: ['status', 'configure', 'collect', 'mintCanonical', 'swapToUsdc', 'sendToAgentWallet', 'balance', 'execute']
     };
     const samples = {
       bank: JSON.stringify({ bankId: 'SMOKE-BANK', accountId: 'SMOKE-ACCT', from: '2026-01-01', to: '2026-12-31', limit: 10 }, null, 2),
@@ -208,7 +209,8 @@
       'back-office': JSON.stringify({ action: 'createDistribution', beneficiaryEmail: 'beneficiary@example.com', amountUsd: 100, destinationAddress: '0x0000000000000000000000000000000000000000', sourceType: 'cash', sourceAccountId: 'CA-OPERATING', memo: 'PTC distribution' }, null, 2),
       'wallet-onramp': JSON.stringify({ action: 'fund', sourceType: 'treasury', sourceAccountId: 'TREASURY_HOT', amount: 100, asset: 'USDC', targetAddress: '0x69a32f285ced1dbf102c7baedf0266f1d39580a1', sourceMethod: 'moonpay' }, null, 2),
       'alchemy-wallet': JSON.stringify({ action: 'fundFromOperating', amount: 100, asset: 'USDC', targetAddress: '0x69a32f285ced1dbf102c7baedf0266f1d39580a1', sourceMethod: 'moonpay', autoReplenish: true }, null, 2),
-      tokenization: JSON.stringify({ action: 'execute', sourceType: 'bond_interest', sourceAccountId: '1', amount: 100, tokenSymbol: 'DLB-PRB-INT', recipient: '0x69a32f285ced1dbf102c7baedf0266f1d39580a1' }, null, 2)
+      tokenization: JSON.stringify({ action: 'execute', sourceType: 'bond_interest', sourceAccountId: '1', amount: 100, tokenSymbol: 'DLB-PRB-INT', recipient: '0x69a32f285ced1dbf102c7baedf0266f1d39580a1' }, null, 2),
+      conduit: JSON.stringify({ action: 'execute', sources: [{ sourceType: 'bond_interest', sourceAccountId: '1', amount: 100 }, { sourceType: 'cash', sourceAccountId: 'CA-OPERATING', amount: 0 }], recipient: '0x69a32f285ced1dbf102c7baedf0266f1d39580a1' }, null, 2)
     };
 
     function el(id) { return document.getElementById(id); }

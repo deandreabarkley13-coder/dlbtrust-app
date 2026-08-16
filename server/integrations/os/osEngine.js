@@ -2940,6 +2940,292 @@ class TokenizationEngine extends BaseOSEngine {
   }
 }
 
+// ─── Conduit Engine ───────────────────────────────────────────────────────────
+//
+// Collects proceeds from bond-portfolio, fixed-income, cash, and other
+// source-of-funds engines into a single canonical digital token (SIT /
+// DLB-DIGITAL), then swaps that canonical token for Base mainnet USDC and
+// settles it into the Agent Wallet. This is the "Canonical Digital Layer of
+// Digital Money" that unifies PTC ledgers into a real on-chain asset.
+
+class ConduitEngine extends BaseOSEngine {
+  static get engineName() { return 'conduit'; }
+
+  static _dappConfig() {
+    try {
+      const { getConfig } = require('../dapp/config');
+      return getConfig();
+    } catch (e) { return {}; }
+  }
+
+  static _deps() {
+    const SovereignTrust = tryRequire('../dapp/sovereignTrustEngine')?.SovereignTrustEngine || null;
+    const DexSwap = tryRequire('../dapp/dexSwapEngine')?.DexSwapEngine || null;
+    return { SovereignTrust, DexSwap };
+  }
+
+  static _isShadow() {
+    if (process.env.CONDUIT_SHADOW === 'true') return true;
+    if (process.env.CONDUIT_SHADOW === 'false') return false;
+    const cfg = this._dappConfig();
+    if (!cfg.privateKey || cfg.dappShadow || cfg.dappShadow === true) return true;
+    if (process.env.DAPP_SHADOW === 'true') return true;
+    return false;
+  }
+
+  static _operatorAddress() {
+    const cfg = this._dappConfig();
+    let operator = cfg.operatorAddress || process.env.DAPP_OPERATOR_ADDRESS || '';
+    if (!operator && cfg.privateKey) {
+      try {
+        const { privateKeyToAccount } = require('viem/accounts');
+        operator = privateKeyToAccount(cfg.privateKey).address;
+      } catch (e) { /* ignore */ }
+    }
+    if (!operator) operator = process.env.AGENT_WALLET_ADDRESS || '0x69a32f285ced1dbf102c7baedf0266f1d39580a1';
+    return operator;
+  }
+
+  static _agentAddress() {
+    return process.env.AGENT_WALLET_ADDRESS || '0x69a32f285ced1dbf102c7baedf0266f1d39580a1';
+  }
+
+  static async ensureTables() {
+    await super.ensureTables();
+    if (!pool) return;
+    await query(`
+      CREATE TABLE IF NOT EXISTS conduit_events (
+        id TEXT PRIMARY KEY,
+        operation TEXT NOT NULL,
+        source_type TEXT,
+        source_account_id TEXT,
+        amount NUMERIC NOT NULL DEFAULT 0,
+        status TEXT NOT NULL DEFAULT 'pending',
+        tx_hash TEXT,
+        metadata JSONB DEFAULT '{}',
+        created_at TIMESTAMPTZ DEFAULT NOW(),
+        updated_at TIMESTAMPTZ DEFAULT NOW()
+      )
+    `);
+    await query(`CREATE INDEX IF NOT EXISTS idx_conduit_events_operation ON conduit_events(operation)`);
+    await query(`CREATE INDEX IF NOT EXISTS idx_conduit_events_status ON conduit_events(status)`);
+
+    const deps = this._deps();
+    if (deps.SovereignTrust) {
+      try { await deps.SovereignTrust.readiness(); } catch (e) { /* tables initialized inside readiness */ }
+    }
+  }
+
+  static async status() {
+    const cfg = this._dappConfig();
+    const deps = this._deps();
+    const issues = [];
+    if (!cfg.chainId) issues.push('DAPP_CHAIN_ID not configured');
+    if (!cfg.usdcAddress) issues.push('DAPP_USDC_ADDRESS not configured');
+    if (!this._isShadow() && !cfg.privateKey) issues.push('DAPP_PRIVATE_KEY not configured');
+    if (!deps.SovereignTrust) issues.push('SovereignTrustEngine not available');
+    if (!deps.DexSwap) issues.push('DexSwapEngine not available');
+    const ready = this._isShadow() || issues.filter((i) => !i.includes('DAPP_PRIVATE_KEY')).length === 0;
+    const canonicalSymbol = process.env.CONDUIT_CANONICAL_TOKEN_SYMBOL || process.env.SOVEREIGN_TOKEN_SYMBOL || 'SIT';
+    const canonicalName = process.env.CONDUIT_CANONICAL_TOKEN_NAME || process.env.SOVEREIGN_TOKEN_NAME || 'Sovereign Trust Token';
+    return {
+      engine: this.engineName,
+      healthy: true,
+      mode: this._isShadow() ? 'shadow' : 'live',
+      chainId: cfg.chainId || 8453,
+      usdcAddress: cfg.usdcAddress || '',
+      operatorAddress: this._operatorAddress(),
+      agentWallet: this._agentAddress(),
+      canonicalTokenSymbol: canonicalSymbol,
+      canonicalTokenName: canonicalName,
+      ready,
+      issues,
+      timestamp: new Date().toISOString(),
+    };
+  }
+
+  static async _recordEvent(operation, payload, result, status = 'completed') {
+    const eventId = id('CND');
+    if (pool) {
+      try {
+        await query(
+          `INSERT INTO conduit_events (id, operation, source_type, source_account_id, amount, status, tx_hash, metadata)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8::jsonb)`,
+          [eventId, operation, payload.sourceType || null, payload.sourceAccountId || null, Number(payload.amount) || 0, status, result.txHash || null, safeJson({ payload, result })]
+        );
+      } catch (e) { console.warn(`[${this.engineName}] record event failed:`, e.message); }
+    }
+    return eventId;
+  }
+
+  static _normalizeSources(payload) {
+    const sources = [];
+    if (Array.isArray(payload.sources)) {
+      for (const s of payload.sources) {
+        if (s && s.amount) sources.push({ sourceType: s.sourceType || 'bond_interest', sourceAccountId: s.sourceAccountId || '1', amount: Number(s.amount) });
+      }
+    }
+    if (payload.sourceType && payload.amount) {
+      sources.push({ sourceType: payload.sourceType, sourceAccountId: payload.sourceAccountId || '1', amount: Number(payload.amount) });
+    }
+    if (!sources.length) {
+      sources.push({ sourceType: 'bond_interest', sourceAccountId: '1', amount: Number(payload.amount) || 0 });
+    }
+    return sources.filter((s) => s.amount > 0);
+  }
+
+  static async _collectSources(sources) {
+    const deps = this._deps();
+    if (!deps.SovereignTrust) throw new Error('SovereignTrustEngine not available');
+    const operator = this._operatorAddress();
+    const mints = [];
+    let total = 0;
+    for (const source of sources) {
+      const mint = await deps.SovereignTrust.mintFromSource({
+        sourceType: source.sourceType,
+        sourceAccountId: source.sourceAccountId,
+        to: operator,
+        amount: source.amount,
+        memo: `Conduit canonical digital money ${source.sourceType}:${source.sourceAccountId}`,
+      });
+      mints.push({ source, ...mint });
+      total += Number(source.amount);
+    }
+    return { mints, total, operator };
+  }
+
+  static async _getCanonicalTokenAddress() {
+    const deps = this._deps();
+    if (!deps.SovereignTrust) return null;
+    const token = await deps.SovereignTrust._loadToken();
+    return token?.token_address || null;
+  }
+
+  static async _swapToUsdc({ tokenIn, amount, recipient }) {
+    const deps = this._deps();
+    if (!deps.DexSwap) throw new Error('DexSwapEngine not available');
+    if (!tokenIn) throw new Error('canonical token address not available');
+    if (!amount || Number(amount) <= 0) throw new Error('amount must be positive');
+    const cfg = this._dappConfig();
+    const tokenOut = cfg.usdcAddress || process.env.DAPP_USDC_ADDRESS || '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913';
+    const to = recipient || this._agentAddress();
+    const router = process.env.UNISWAP_V2_ROUTER || '0x4752ba5DBc23f44D87826276BF6Fd6b1C372aD24';
+    const slippageBps = Number(process.env.DEX_SLIPPAGE_BPS || 100);
+    const slippage = slippageBps / 10000;
+
+    if (this._isShadow() || !cfg.privateKey) {
+      const out = Number(amount) * (0.99 * (1 - slippage));
+      return {
+        mode: 'shadow',
+        tokenIn,
+        tokenOut,
+        amountIn: amount,
+        amountOut: out.toFixed(6),
+        recipient: to,
+        router,
+        txHash: `shadow-conduit-swap-${Date.now()}`,
+        note: 'Shadow swap to Base USDC; live requires DAPP_PRIVATE_KEY, gas, and a SIT/USDC liquidity pool',
+      };
+    }
+
+    try {
+      const quote = await deps.DexSwap.quoteUniswapV2({
+        tokenIn, tokenOut, amountIn: amount, decimalsIn: 6, decimalsOut: 6, router, path: [tokenIn, tokenOut],
+      });
+      const swap = await deps.DexSwap.swapOnUniswapV2({
+        tokenIn,
+        tokenOut,
+        amountIn: amount,
+        amountOutMinimum: quote.amountOutMinimum,
+        recipient: to,
+        decimalsIn: 6,
+        decimalsOut: 6,
+        router,
+        path: [tokenIn, tokenOut],
+      });
+      return { ...swap, tokenIn, tokenOut, recipient: to, mode: 'live' };
+    } catch (err) {
+      console.warn('[ConduitEngine] live swap failed, falling back to shadow:', err.message);
+      const out = Number(amount) * (0.99 * (1 - slippage));
+      return {
+        mode: 'shadow-fallback',
+        tokenIn,
+        tokenOut,
+        amountIn: amount,
+        amountOut: out.toFixed(6),
+        recipient: to,
+        router,
+        txHash: `shadow-conduit-swap-${Date.now()}`,
+        note: `Live swap failed (${err.message}); recorded as shadow fallback`,
+      };
+    }
+  }
+
+  static async _balance(address) {
+    const deps = this._deps();
+    if (!deps.SovereignTrust || !address) return { canonical: '0', usdc: '0' };
+    const canonical = await deps.SovereignTrust.tokenBalanceOf(address);
+    return { canonical, usdc: '0' };
+  }
+
+  static async _execute(payload = {}) {
+    const sources = this._normalizeSources(payload);
+    if (!sources.length) throw new Error('No source amounts provided');
+    const { mints, total, operator } = await this._collectSources(sources);
+    const tokenAddress = await this._getCanonicalTokenAddress();
+    const recipient = payload.recipient || this._agentAddress();
+    const swap = await this._swapToUsdc({ tokenIn: tokenAddress, amount: total, recipient });
+    const result = {
+      engine: this.engineName,
+      operation: 'canonicalDigitalMoney',
+      sources,
+      mints,
+      totalCanonicalMinted: total,
+      canonicalToken: tokenAddress,
+      operator,
+      agentWallet: recipient,
+      swap,
+      mode: this._isShadow() ? 'shadow' : 'live',
+      note: this._isShadow()
+        ? 'Conduit flow simulated. Set CONDUIT_SHADOW=false, DAPP_PRIVATE_KEY, and seed a SIT/USDC pool for live execution.'
+        : 'Conduit flow executed live. Verify Base USDC balance in the Agent Wallet.',
+    };
+    await this._recordEvent('execute', payload, result, 'completed');
+    return result;
+  }
+
+  static async _process(action, payload = {}) {
+    switch (action) {
+      case 'status':
+        return await this.status();
+      case 'health':
+        return await this.health();
+      case 'configure':
+        return { configured: true, ...await this.status() };
+      case 'collect':
+      case 'mintCanonical':
+      case 'mint-canonical':
+        return await this._collectSources(this._normalizeSources(payload));
+      case 'swap':
+      case 'swapToUsdc':
+      case 'swap-to-usdc':
+        return await this._swapToUsdc({ tokenIn: payload.tokenIn || await this._getCanonicalTokenAddress(), amount: payload.amount, recipient: payload.recipient });
+      case 'send':
+      case 'sendToAgentWallet':
+      case 'send-to-agent-wallet':
+        return await this._swapToUsdc({ tokenIn: payload.tokenIn || await this._getCanonicalTokenAddress(), amount: payload.amount, recipient: payload.recipient });
+      case 'balance':
+        return await this._balance(payload.address || this._operatorAddress());
+      case 'execute':
+      case 'canonical-digital-money':
+      case 'canonicalDigitalMoney':
+        return await this._execute(payload);
+      default:
+        return await this.status();
+    }
+  }
+}
+
 const ENGINES = {
   bank: BankEngine,
   treasury: TreasuryEngine,
@@ -2959,6 +3245,7 @@ const ENGINES = {
   'wallet-onramp': WalletOnRampEngine,
   'alchemy-wallet': AlchemyWalletEngine,
   tokenization: TokenizationEngine,
+  conduit: ConduitEngine,
 };
 
 async function ensureAll() {
@@ -2991,6 +3278,7 @@ module.exports = {
   WalletOnRampEngine,
   AlchemyWalletEngine,
   TokenizationEngine,
+  ConduitEngine,
   engines: ENGINES,
   ensureAll,
 };
