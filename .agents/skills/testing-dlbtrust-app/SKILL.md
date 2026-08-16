@@ -829,6 +829,54 @@ Use `x-admin-token: dlb-admin-2026-trust` for all calls.
 - `ComplianceEngine.screen` may create a row with `status: 'review'` and `risk_score` when only `subject` is provided.
 - `npm run lint` may still show many pre-existing `no-unused-vars` warnings across other files, but the OS engine files should be clean.
 
+## Wallet On-Ramp OS Engine (PR #350)
+
+The `devin/wallet-onramp-sourceofunds` branch adds `WalletOnRampEngine` (`wallet-onramp`) and `AlchemyWalletEngine` (`alchemy-wallet`) to `server/integrations/os/osEngine.js` and exposes them through `/api/os` and `public/os-engine-dashboard.html`.
+
+### Startup and env
+
+- Start with the standard local Postgres + admin token env.
+- Set `DAPP_CHAIN_ID=8453` (Base mainnet) and a real `ALCHEMY_API_KEY` for live balance reads.
+- The server must have already ensured `wallet_onramp_requests` and `alchemy_wallet_funding_requests` tables via `osEngine.ensureAll()`.
+- The flow is shadow/manual by default; no real on-chain value moves.
+
+### End-to-end verification
+
+Use `x-admin-token: dlb-admin-2026-trust` for all calls.
+
+1. `GET /api/os` → expect 17 entries including `wallet-onramp` and `alchemy-wallet`, both `healthy: true`.
+2. `POST /api/os/wallet-onramp/process` action `fund` with the cash source:
+   ```json
+   {
+     "action": "fund",
+     "sourceType": "cash",
+     "sourceAccountId": "CA-BOND-PROCEEDS",
+     "amount": 0.01,
+     "asset": "USDC",
+     "targetAddress": "0x69a32f285ced1dbf102c7baedf0266f1d39580a1",
+     "sourceMethod": "manual"
+   }
+   ```
+   Expected: `success: true`, `data.result.operationId` starts with `WOR-`, `data.result.status` is `awaiting_deposit`, and `data.result.instructions` contains `Deposit 0.010000 USDC on Base mainnet to 0x69a32f285ced1dbf102c7baedf0266f1d39580a1`.
+3. `POST /api/os/alchemy-wallet/process` action `getBalances`:
+   ```json
+   {"action": "getBalances", "address": "0x62EE94918C008849fDebe69651174334841E1ABd"}
+   ```
+   Expected: `data.result.chain` is `8453`, `data.result.usdc.tokenAddress` is `0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913`, `data.result.rpcUrl` contains `base-mainnet.g.alchemy.com/v2/` and **not** the raw API key, and `data.result.native.symbol` is `ETH`.
+4. Operator dashboard at `/os-engine-dashboard.html`:
+   - Registry shows cards for `wallet-onramp` and `alchemy-wallet` with `HEALTHY` badges.
+   - `Process Action` engine dropdown contains both engines.
+   - Selecting `wallet-onramp` reveals action `fund`; selecting `alchemy-wallet` reveals action `getBalances`.
+   - `Event Log` shows `Wallet On-Ramp` and `Alchemy Wallet` buttons and lists the corresponding `os_events` rows.
+5. `npm run lint` and `npm run typecheck` should exit `0`.
+6. `node server/scripts/osEngineSmokeTest.js` should pass (70/70) and include `wallet-onramp: process fund` and `alchemy-wallet: process getBalances`.
+
+### What to watch for
+
+- If `ALCHEMY_API_KEY` is missing, `alchemy-wallet` `getBalances` falls back to the public Base RPC and still returns `chain: 8453` but `balance` will be `0` (no live Alchemy call).
+- The dashboard's `Run` button and payload textarea can be hard to interact with via scaled coordinate tools. Use `document.getElementById('proc-payload').value` and `runProcess()` in the browser console if UI typing is not registering, then click the `Run` button.
+- Rapid repeated `process` calls can trigger the server's `Too many write operations. Please slow down.` rate limit. Wait 30–60 s between bursts or rely on the `osEngineSmokeTest.js` output for the final assertion.
+
 ## Devin Secrets Needed
 
 - `DATABASE_URL` or local Postgres credentials (`dlbtrust`/`dlbtrust`).
@@ -837,3 +885,4 @@ Use `x-admin-token: dlb-admin-2026-trust` for all calls.
 - `secret:org:DLBTRUST_API_KEY` — for programmatic API access if enabled.
 - `secret:org:FLY_API_TOKEN` — needed for `flyctl deploy` and `flyctl secrets set` against `dlbtrust-app`.
 - `TREASURY_PRIME_API_KEY_ID` / `TREASURY_PRIME_API_SECRET` — Treasury Prime sandbox Basic-auth credentials, required for any `/api/treasury-prime` live testing.
+- `ALCHEMY_API_KEY` — only needed to exercise the live Alchemy Base RPC balance call; the dashboard/engine still work in shadow/fallback mode without it.
