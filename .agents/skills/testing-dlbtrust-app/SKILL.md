@@ -887,6 +887,104 @@ Use `x-admin-token: dlb-admin-2026-trust` for all calls.
 - `TREASURY_PRIME_API_KEY_ID` / `TREASURY_PRIME_API_SECRET` — Treasury Prime sandbox Basic-auth credentials, required for any `/api/treasury-prime` live testing.
 - `ALCHEMY_API_KEY` — only needed to exercise the live Alchemy Base RPC balance call; the dashboard/engine still work in shadow/fallback mode without it.
 
+## Melio B2B OS Engine (PR #351)
+
+The `devin/moonpay-cli-onramp` branch adds `MelioEngine` (`melio`) to `server/integrations/os/osEngine.js` and registers it at `/api/os/melio`. It also adds `public/os-engine-dashboard.html` wiring and the CLI helper `server/scripts/sendB2BPaymentViaMelio.js`.
+
+### Startup and env
+
+- Start with the standard local Postgres + admin token env.
+- No `MELIO_API_KEY` is needed; the engine runs in shadow/demo mode by default.
+- Trust account `1200` has sufficient balance for shadow `$100` test payments; cash sources can also be used.
+- The server must call `osEngine.ensureAll()` on startup to create `melio_payments`. If the table is missing, restart the server.
+
+### End-to-end verification
+
+Use `x-admin-token: dlb-admin-2026-trust` for all calls.
+
+1. `GET /api/os` → expect 21 engines including `melio` with `healthy: true` and `mode: 'shadow'`.
+2. `POST /api/os/melio/process` action `status` with `{}` → `success: true`, `data.result.mode` is `shadow`, `healthy` is `true`.
+3. `POST /api/os/melio/process` action `listVendors` with `{}` → `success: true`, `data.result.data` contains a shadow vendor record.
+4. `POST /api/os/melio/process` action `schedulePayment`:
+   ```json
+   {
+     "action": "schedulePayment",
+     "amount": 100,
+     "sourceType": "trust",
+     "sourceAccountId": "1200",
+     "vendor": {
+       "name": "Vendor Inc",
+       "email": "pay@example.com",
+       "address": { "line1": "123 Main St", "city": "Austin", "state": "TX", "postalCode": "78701", "country": "US" },
+       "bankAccount": { "accountNumber": "000123456789", "routingNumber": "111000025", "accountType": "checking" }
+     },
+     "deliveryMethod": "ach",
+     "memo": "B2B vendor payout"
+   }
+   ```
+   Expected: `success: true`, `data.result.id` starts with `MEL-`, `data.result.status` is `scheduled`, `data.result.instructions` is non-empty.
+5. CLI script:
+   ```bash
+   ADMIN_SECRET_TOKEN=dlb-admin-2026-trust node server/scripts/sendB2BPaymentViaMelio.js \
+     --amount 0.01 --sourceAccountId 1200 --sourceType trust \
+     --vendorName "Test Vendor" --routing 111000025 --account 000123456789
+   ```
+   Expected exit `0`, `success: true`, and a `MEL-` payment record.
+6. Operator dashboard at `/os-engine-dashboard.html`:
+   - Registry shows a `melio` card with `healthy` badge.
+   - `Process Action` engine dropdown contains `melio` and the action dropdown contains `schedulePayment`.
+   - `Autofill Sample` populates `vendor`, `bankAccount`, `routingNumber`, and `accountNumber`.
+   - `status`, `listVendors`, and `schedulePayment` run successfully from the UI.
+   - `Event Log` contains a `Melio B2B` button and lists `melio` events.
+7. `npm run lint` and `npm run typecheck` should exit `0`.
+8. `node server/scripts/osEngineSmokeTest.js` should report `85/87` passed with all `melio` steps green. The two expected failures are `alchemy-wallet: send` and `tokenization: execute`.
+
+### What to watch for
+
+- The dashboard `Run` button and payload textarea may not register scaled coordinate typing. Set `document.getElementById('proc-payload').value` and/or `proc-engine`/`proc-action` values via the browser console, then click `Run`.
+- The dashboard `runProcess` builds the request as `{ action, ...payload }`, so if the payload itself contains an `action` field it will override the Action dropdown selection. Clear the payload to `{}` when testing `status` or `listVendors`.
+- Shadow-mode `schedulePayment` returns `reserveId: null`; the `instructions` string will say `Reserve null will be posted when payment completes.` This is expected when no live Melio API key is configured.
+
+## PTC Bank OS Engine (PR #351 ptc-bank update)
+
+The `devin/moonpay-cli-onramp` branch also adds `PtcBankEngine` (`ptc-bank`) to `server/integrations/os/osEngine.js` and registers it at `/api/os/ptc-bank`. It wraps `TrustBankEngine` and exposes customer/account/deposit/transfer/payment actions. The CLI helper is `server/scripts/sendPaymentViaPtcBank.js` and the dashboard adds a `PTC Bank` event-log button.
+
+### Startup and env
+
+- Start with the standard local Postgres + admin token env.
+- No `PTC_BANK_*` env vars are required for shadow mode; `PTC_BANK_LIVE` defaults to `false`.
+- `PtcBankEngine.ensureTables()` calls `TrustBankEngine.ensureTables()` and creates `trust_bank_customers`, `trust_bank_accounts`, `trust_bank_payments`, and `trust_bank_transactions`.
+
+### End-to-end verification
+
+Use `x-admin-token: dlb-admin-2026-trust` for all calls.
+
+1. `GET /api/os` → expect 22 engines including `ptc-bank` with `healthy: true` and `mode: 'shadow'`.
+2. `GET /api/os/ptc-bank/status` → `success: true`, `data.healthy: true`, `data.mode: 'shadow'`, `data.internalBank: true`, `data.rails.bookTransfer: true`.
+3. Dashboard `/os-engine-dashboard.html`:
+   - Registry shows `ptc-bank` healthy.
+   - `Process Action` engine dropdown contains `ptc-bank`; action dropdown contains `createCustomer`, `createAccount`, `deposit`, `internalTransfer`, `originatePayment`, etc.
+   - `Autofill Sample` for `ptc-bank`/`createCustomer` populates `name`, `email`, `phone`.
+   - Run `createCustomer`, `createAccount` (twice for checking + savings), `deposit`, `internalTransfer`, and `originatePayment` (rail `book_transfer`).
+   - Expected IDs: `customer_id` starts with `TBC-`, `account_id` starts with `TBA-`, internal-transfer and payment IDs start with `TBP-`.
+   - `originatePayment` should return `status: 'pending'`, `rail: 'book_transfer'`, and instructions containing `Book transfer ... originated for $...`.
+4. CLI script (expected to work; if it fails with `createCustomer did not return customer_id`, the script is not reading the nested `data.result` response shape — see below):
+   ```bash
+   ADMIN_SECRET_TOKEN=dlb-admin-2026-trust node server/scripts/sendPaymentViaPtcBank.js \
+     --action full --name "PTC Test Customer" --accountName "PTC Checking" --amount 10 \
+     --routing 111000025 --account 000123456789 --payeeName "Test Vendor" --rail book_transfer
+   ```
+   Expected: exit `0`, a `TBC-` customer, a `TBA-` account, a deposit, and a `TBP-` payment ID.
+5. `npm run lint` and `npm run typecheck` exit `0`.
+6. `node server/scripts/osEngineSmokeTest.js` passes all `ptc-bank` steps; the only expected failures are `alchemy-wallet: send` and `tokenization: execute`.
+
+### What to watch for
+
+- The CLI script `sendPaymentViaPtcBank.js` as of the tested commit parses `customer.data.customer_id`, `account.data.account_id`, and `paymentResult.data.paymentId`, but the `/api/os/ptc-bank/process` response is wrapped as `{ success: true, data: { success: true, engine, action, eventId, result: { ... } } }`. The script needs to read `data.result.customer_id`, `data.result.account_id`, and `data.result.paymentId` (or handle both shapes).
+- The dashboard `Run` button may not register scaled coordinate typing. Set `proc-engine`, `proc-action`, and `proc-payload` values via the browser console, then click `Run`.
+- The dashboard `runProcess` builds the request as `{ action, ...payload }`. If the payload contains an `action` field, it overrides the dropdown; keep them matching.
+- `deposit` returns `{ account: { ... }, transaction_id: <accountId> }` (transaction_id mirrors account_id in the current implementation).
+
 ## Programmable Money Engine (PR #331)
 
 - Endpoints (all require an admin/operator JWT, e.g. from `/api/auth/login`):
