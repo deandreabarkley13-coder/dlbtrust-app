@@ -136,6 +136,8 @@ class WireEngine {
       CREATE INDEX IF NOT EXISTS idx_wire_beneficiary ON wire_transfers(beneficiary_name);
     `);
 
+    await pool.query(`ALTER TABLE wire_transfers ADD COLUMN IF NOT EXISTS metadata JSONB DEFAULT '{}';`);
+
     // Wire audit log
     await pool.query(`
       CREATE TABLE IF NOT EXISTS wire_audit_log (
@@ -203,9 +205,12 @@ class WireEngine {
       initiatedBy, requiresApproval,
       intermediaryRouting, intermediaryName,
       senderName, senderRouting, senderAccount, senderAddress,
+      metadata,
     } = opts;
+    const amountCentsNum = Number(amountCents);
+    const wireMetadata = metadata || {};
 
-    if (!amountCents || amountCents <= 0) throw new Error('amountCents must be positive');
+    if (!Number.isFinite(amountCentsNum) || amountCentsNum <= 0) throw new Error('amountCents must be positive');
     if (!beneficiaryName) throw new Error('beneficiaryName is required');
     if (!beneficiaryRouting) throw new Error('beneficiaryRouting is required');
     if (!beneficiaryAccount) throw new Error('beneficiaryAccount is required');
@@ -217,7 +222,7 @@ class WireEngine {
 
     // Security: per-transaction limit ($10M)
     const PER_WIRE_LIMIT_CENTS = 1000000000; // $10M
-    if (amountCents > PER_WIRE_LIMIT_CENTS) {
+    if (amountCentsNum > PER_WIRE_LIMIT_CENTS) {
       throw new Error('Wire amount exceeds per-transaction limit of $10,000,000');
     }
 
@@ -227,7 +232,7 @@ class WireEngine {
       `SELECT COALESCE(SUM(amount_cents), 0) AS total FROM wire_transfers
        WHERE DATE(created_at) = CURRENT_DATE AND status NOT IN ('cancelled', 'rejected', 'failed', 'returned')`
     );
-    if (parseInt(todayTotal.rows[0].total, 10) + amountCents > DAILY_LIMIT_CENTS) {
+    if (parseInt(todayTotal.rows[0].total, 10) + amountCentsNum > DAILY_LIMIT_CENTS) {
       throw new Error('Wire would exceed daily aggregate limit of $25,000,000. Current daily total: $' +
         (parseInt(todayTotal.rows[0].total, 10) / 100).toLocaleString());
     }
@@ -255,7 +260,7 @@ class WireEngine {
          beneficiary_name, beneficiary_routing, beneficiary_account,
          beneficiary_bank_name, beneficiary_address,
          intermediary_routing, intermediary_name,
-         initiated_by, requires_approval,
+         initiated_by, requires_approval, metadata,
          initiated_at, created_at, updated_at)
        VALUES ($1, $2, $3, 'USD',
                $4, $5, $6,
@@ -263,11 +268,11 @@ class WireEngine {
                $10, $11, $12, $13,
                $14, $15, $16, $17, $18,
                $19, $20,
-               $21, $22,
+               $21, $22, $23,
                NOW(), NOW(), NOW())
        RETURNING *`,
       [
-        wireId, initialStatus, amountCents,
+        wireId, initialStatus, amountCentsNum,
         wType, typeInfo.type, typeInfo.subtype,
         paymentType || 'trust_distribution', purpose || null, description || null,
         senderName || 'DLB Trust', senderRouting || '241075470',
@@ -276,6 +281,7 @@ class WireEngine {
         beneficiaryBankName || null, beneficiaryAddress || null,
         intermediaryRouting || null, intermediaryName || null,
         initiatedBy || 'system', needsApproval,
+        JSON.stringify(wireMetadata),
       ]
     );
 
@@ -283,7 +289,7 @@ class WireEngine {
 
     // Audit log
     await WireEngine.logAudit(wireId, 'initiated', initiatedBy || 'system', {
-      amount_cents: amountCents,
+      amount_cents: amountCentsNum,
       beneficiary: beneficiaryName,
       payment_type: paymentType,
       requires_approval: needsApproval,
@@ -375,16 +381,14 @@ class WireEngine {
         try {
           const totalDollars = wire.amount_cents / 100;
           let debitAccountCode;
+          let creditAccountCode = ACCOUNT_CODES.CASH;
           let journalDescription;
 
           switch (wire.payment_type) {
             case 'trust_distribution':
-              debitAccountCode = ACCOUNT_CODES.DISTRIBUTIONS;
-              journalDescription = `Wire distribution: ${wire.description || wire.beneficiary_name}`;
-              break;
             case 'interest_payment':
               debitAccountCode = ACCOUNT_CODES.DISTRIBUTIONS;
-              journalDescription = `Wire coupon distribution: ${wire.description || wire.beneficiary_name}`;
+              journalDescription = `Wire distribution: ${wire.description || wire.beneficiary_name}`;
               break;
             case 'vendor_payment':
             case 'principal_return':
@@ -393,6 +397,15 @@ class WireEngine {
               journalDescription = `Wire payment: ${wire.description || wire.beneficiary_name}`;
               break;
           }
+
+          // Per-wire metadata overrides let specific flows (e.g. PTC interest) scope
+          // GL account choices without mutating the global ACCOUNT_CODES map.
+          let wireMetadata = wire.metadata || {};
+          if (typeof wireMetadata === 'string') {
+            try { wireMetadata = JSON.parse(wireMetadata); } catch { wireMetadata = {}; }
+          }
+          if (wireMetadata.glDebitAccountCode) debitAccountCode = wireMetadata.glDebitAccountCode;
+          if (wireMetadata.glCreditAccountCode) creditAccountCode = wireMetadata.glCreditAccountCode;
 
           const journalEntry = await TrustAccountingEngine.postJournalEntry({
             entryDate: new Date(),
@@ -405,7 +418,7 @@ class WireEngine {
                 memo: `Wire ${wireId}: ${wire.description || wire.payment_type}`,
               },
               {
-                accountCode: ACCOUNT_CODES.CASH,
+                accountCode: creditAccountCode,
                 debitAmount: 0,
                 creditAmount: totalDollars,
                 memo: `Wire outflow: ${wireId}`,

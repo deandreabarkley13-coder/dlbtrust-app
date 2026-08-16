@@ -11,12 +11,13 @@
 
 const pool = require('../bonds/pgPool');
 
-let CashEngine, TrustAccountingEngine, BankTransferEngine, WireOriginationEngine, OpenBankingEngine, ComplianceEngine, ExternalEndpointEngine, LiliBankEngine;
+let CashEngine, TrustAccountingEngine, BankTransferEngine, WireOriginationEngine, WireEngine, OpenBankingEngine, ComplianceEngine, ExternalEndpointEngine, LiliBankEngine;
 function loadDeps() {
   try { ({ CashEngine } = require('../cash/cashEngine')); } catch (e) { CashEngine = null; }
   try { ({ TrustAccountingEngine } = require('../accounting/trustAccountingEngine')); } catch (e) { TrustAccountingEngine = null; }
   try { ({ BankTransferEngine } = require('./bankTransferEngine')); } catch (e) { BankTransferEngine = null; }
   try { ({ WireOriginationEngine } = require('./wireOriginationEngine')); } catch (e) { WireOriginationEngine = null; }
+  try { ({ WireEngine } = require('../wire/wireEngine')); } catch (e) { WireEngine = null; }
   try { ({ OpenBankingEngine } = require('./openBankingEngine')); } catch (e) { OpenBankingEngine = null; }
   try { ({ ComplianceEngine } = require('../compliance/complianceEngine')); } catch (e) { ComplianceEngine = null; }
   try { ({ ExternalEndpointEngine } = require('./externalEndpointEngine')); } catch (e) { ExternalEndpointEngine = null; }
@@ -300,32 +301,59 @@ class TrustBankEngine {
     let error = null;
 
     function mapWireStatus(s) {
-      if (s === 'settled') return 'completed';
+      if (s === 'completed' || s === 'settled' || s === 'confirmed' || s === 'sent') return 'completed';
       if (s === 'needs_setup' || s === 'manual_pending') return 'manual_pending';
       if (s === 'failed' || s === 'cancelled') return 'failed';
       return 'originated';
     }
 
+    function mapBankTransferStatus(s) {
+      if (s === 'completed' || s === 'settled') return 'completed';
+      if (s === 'initiated') return 'originated';
+      if (s === 'manual_pending' || s === 'needs_setup') return 'manual_pending';
+      if (s === 'failed') return 'failed';
+      if (s === 'cancelled') return 'cancelled';
+      return 'originated';
+    }
+
     try {
-      if (payment.rail === 'wire' && WireOriginationEngine) {
-        const payout = await WireOriginationEngine.createPayout({
-          sourceType: 'cash',
-          sourceAccountId: from.linked_cash_account_id,
-          amount: payment.amount_cents / 100,
+      if (payment.rail === 'wire' && WireEngine) {
+        let meta = payment.metadata || {};
+        if (typeof meta === 'string') { try { meta = JSON.parse(meta); } catch { meta = {}; } }
+        const senderRouting = meta.senderRouting || process.env.PTC_BANK_ROUTING || process.env.TRUST_BANK_ROUTING || '111000025';
+        const senderAccount = meta.senderAccount || process.env.PTC_BANK_SETTLEMENT_ACCOUNT || process.env.TRUST_BANK_ACCOUNT || from.account_number;
+        const paymentType = meta.paymentType || (payment.description && /interest/i.test(payment.description) ? 'interest_payment' : 'trust_distribution');
+        const isPtcInterest = meta.interestIncomeSource === '4000' || meta.paymentType === 'interest_payment' || (payment.description && /interest income/i.test(payment.description));
+        if (isPtcInterest) {
+          meta.glDebitAccountCode = meta.glDebitAccountCode || '4000';
+          meta.glCreditAccountCode = meta.glCreditAccountCode || from.linked_trust_account_code || process.env.PTC_BANK_GL_ACCOUNT || '1010';
+          meta.paymentType = meta.paymentType || 'interest_payment';
+        }
+        const requiresApproval = meta.requiresApproval !== undefined
+          ? meta.requiresApproval
+          : (process.env.PTC_BANK_WIRE_AUTO_APPROVE === 'true' ? false : true);
+        const wire = await WireEngine.initiateWire({
+          amountCents: Number(payment.amount_cents),
           beneficiaryName: payment.external_account_name || 'External Beneficiary',
           beneficiaryRouting: payment.external_routing,
           beneficiaryAccount: payment.external_account,
           beneficiaryBankName: payment.external_bank_name,
-          description: `Trust bank payment ${paymentId}`,
+          senderName: process.env.PTC_BANK_NAME || process.env.TRUST_BANK_NAME || 'DLB Trust PTC Bank',
+          senderRouting,
+          senderAccount,
+          paymentType,
+          description: payment.description || `Trust bank payment ${paymentId}`,
           initiatedBy: payment.initiated_by,
+          requiresApproval,
+          metadata: meta,
         });
-        externalTxId = payout.payout_id;
-        rawMessage = JSON.stringify(payout);
-        status = payout.status === 'approved' ? 'originated' : payout.status;
-        if (payout.status === 'approved') {
+        externalTxId = wire.wire_id;
+        rawMessage = JSON.stringify(wire);
+        status = wire.status === 'approved' ? 'originated' : mapWireStatus(wire.status);
+        if (wire.status === 'approved') {
           try {
-            const sent = await WireOriginationEngine.sendPayout(payout.payout_id);
-            externalTxId = sent.payout_id;
+            const sent = await WireEngine.sendWire(wire.wire_id);
+            externalTxId = sent.wire_id;
             rawMessage = JSON.stringify(sent);
             status = mapWireStatus(sent.status);
           } catch (sendErr) {
@@ -350,7 +378,7 @@ class TrustBankEngine {
         });
         externalTxId = transfer.transfer_id;
         rawMessage = JSON.stringify(transfer);
-        status = transfer.status || 'originated';
+        status = mapBankTransferStatus(transfer.status);
       } else if (payment.rail === 'iso20022' && OpenBankingEngine) {
         const p = await OpenBankingEngine.createPayment({
           connector: 'generic_rest',
