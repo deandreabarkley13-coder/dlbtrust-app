@@ -148,6 +148,22 @@ try { app.use('/api/open-agent-id', require(path.join(HD, 'server', 'routes', 'o
 // OS Engines — unified operating-system layer for bank, treasury, payment, clearing, settlement, compliance, security, REST API, bookkeeping, cash, asset-acquisition, bank-aggregator, funding, smart-router, and back-office
 try { app.use('/api/os', require(path.join(HD, 'server', 'routes', 'os'))); console.log('[os-engines] loaded'); } catch(e) { console.warn('[os-engines]', e.message); }
 
+// Settlement Endpoint — agent-to-agent discovery, handshake, and inbound payment
+(function() {
+  let SettlementEndpointEngine;
+  try { SettlementEndpointEngine = require(path.join(HD, 'server', 'integrations', 'os', 'osEngine')).SettlementEndpointEngine; } catch(e) { console.warn('[settlement-endpoint] engine not loaded:', e.message); return; }
+  app.get('/.well-known/dlb-trust-settlement.json', function(req, res) { res.json(SettlementEndpointEngine.getWellKnown()); });
+  app.post('/api/settlement/handshake', security.writeRateLimiter(), async function(req, res) {
+    try { const result = await SettlementEndpointEngine.receiveHandshake(req.body || {}); res.json(result); }
+    catch (err) { res.status(err.status || 400).json({ success: false, error: err.message }); }
+  });
+  app.post('/api/settlement/payment', security.writeRateLimiter(), async function(req, res) {
+    try { const result = await SettlementEndpointEngine.receivePayment(req.body || {}, req.headers); res.json(result); }
+    catch (err) { res.status(err.status || 400).json({ success: false, error: err.message }); }
+  });
+  console.log('[settlement-endpoint] routes loaded');
+})();
+
 // DeFi dApp — dApp login at /dapp, command center at /dashboard; landing page at root; legacy treasury dashboard at /treasury
 function serveDapp(req, res) {
   res.set('Cache-Control', 'no-cache, no-store, must-revalidate');
