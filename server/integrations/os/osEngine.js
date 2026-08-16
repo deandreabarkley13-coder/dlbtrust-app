@@ -4396,6 +4396,8 @@ class PtcTreasuryEngine extends BaseOSEngine {
     if (payload._interestIncomeSource) meta.interestIncomeSource = payload._interestIncomeSource;
     if (payload.senderRouting) meta.senderRouting = payload.senderRouting;
     if (payload.senderAccount) meta.senderAccount = payload.senderAccount;
+    if (payload.requiresApproval !== undefined) meta.requiresApproval = payload.requiresApproval;
+    if (process.env.PTC_BANK_WIRE_AUTO_APPROVE === 'true' && meta.requiresApproval === undefined) meta.requiresApproval = false;
     const originated = await this._unwrap(await PtcBankEngine.process({
       action: 'originatePayment',
       fromAccountId,

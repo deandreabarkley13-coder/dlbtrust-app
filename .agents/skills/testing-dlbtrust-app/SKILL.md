@@ -984,3 +984,53 @@ Use `x-admin-token: dlb-admin-2026-trust` for all calls.
 - The dashboard `Run` button may not register scaled coordinate typing. Set `proc-engine`, `proc-action`, and `proc-payload` values via the browser console, then click `Run`.
 - The dashboard `runProcess` builds the request as `{ action, ...payload }`. If the payload contains an `action` field, it overrides the dropdown; keep them matching.
 - `deposit` returns `{ account: { ... }, transaction_id: <accountId> }` (transaction_id mirrors account_id in the current implementation).
+
+## PTC Treasury / Wire Interest Payment (PR #353 wire-PTC-bank-interest)
+
+The `wire-PTC-bank-interest` branch extends `PtcTreasuryEngine` (`ptc-treasury`) and `PtcBankEngine` (`ptc-bank`) to originate real fiat wire transfers for interest payments. `PtcTreasuryEngine._distribute` with `rail: 'wire'` maps an income/liability/equity source GL account (e.g. `4000` Interest Income) to the accrued-interest asset account `1200`, funds the internal PTC bank account from cash account `1010`, and then calls `PtcBankEngine` `originatePayment` + `sendPayment` with `rail: 'wire'`. `TrustBankEngine.sendPayment` invokes `WireEngine.initiateWire` + `WireEngine.sendWire`, which posts a GL entry and writes wire message artifacts to `data/wire-messages/<wire_id>.json` and `.pacs.008.xml`.
+
+### Startup and env
+
+- Start with the standard local Postgres + admin token env.
+- Set `PTC_BANK_LIVE=true` and `PTC_TREASURY_LIVE=true` to exercise the live wire path (the transmission is still simulated locally; no real Fedwire call is made unless `SystemSettings` returns a production `wireEndpoint`).
+- `WireEngine` creates `wire_transfers` and `wire_audit_log` tables.
+
+### End-to-end verification
+
+Use `x-admin-token: dlb-admin-2026-trust` for all calls.
+
+1. `GET /api/os` → expect `ptc-bank`, `ptc-treasury`, and `settlement-endpoint` engines `healthy: true`.
+2. `GET /api/os/ptc-treasury/status` → `mode: 'live'` when `PTC_TREASURY_LIVE=true`.
+3. `npm run lint` and `npm run typecheck` exit `0`.
+4. `node server/scripts/osEngineSmokeTest.js` → all `ptc-bank`, `ptc-treasury`, and `settlement-endpoint` steps pass. The only expected failures are `alchemy-wallet: send` and `tokenization: execute`.
+5. Existing manual wire verification:
+   - `trust_bank_payments.payment_id = 'TBP-1786921825782-PTV4A4'` exists, `status = 'completed'`, `external_tx_id = 'WIRE-20260816-8YTIL9'`, `amount_cents = 500000`, `rail = 'wire'`, `raw_message` non-null.
+   - `wire_transfers.wire_id = 'WIRE-20260816-8YTIL9'` exists, `status` in (`confirmed`, `settled`), `amount_cents = 500000`, `payment_type = 'interest_payment'`, beneficiary `DB NET MGMT` at Lili Bank routing `121145307` / account `692101092959`.
+   - Artifacts `data/wire-messages/WIRE-20260816-8YTIL9.json` and `.pacs.008.xml` exist and are well-formed.
+   - GL impact of the wire (funding + send, ignoring the reversal of the replaced ACH payment): `1010` cash unchanged net, `1200` Accrued Interest Receivable down $5,000, `4000` Interest Income down $5,000.
+6. Optional tiny distribution API test:
+   ```bash
+   curl -s -X POST http://localhost:3002/api/os/ptc-treasury/process \
+     -H 'Content-Type: application/json' \
+     -H 'x-admin-token: dlb-admin-2026-trust' \
+     -d '{
+       "action": "distribute",
+       "rail": "wire",
+       "amount": 0.01,
+       "sourceAccountId": "4000",
+       "sourceType": "trust",
+       "fromAccountId": "<active-ptc-checking-account-id>",
+       "payee": { "name": "Test Payee", "bankName": "Test Bank", "routing": "111000025", "account": "000987654321" },
+       "description": "PR353 tiny wire test",
+       "autoSend": true
+     }'
+   ```
+   Expected: `data.result.status` is `completed`, `data.result.sent.externalTxId` starts with `WIRE-`, a new `trust_bank_payments` row for `amount_cents = 1`, and a new `wire_transfers` row for `amount_cents = 1`. The GL impact should mirror the $5,000 wire scaled to the tiny amount (`1200` and `4000` each down by the amount, `1010` unchanged net).
+
+### What to watch for
+
+- `PtcBankEngine.process` returns `{ success: true, engine, action, eventId, result }` at the top level (not nested under `data.result`). Scripts calling it directly should read `res.result`.
+- `WireEngine.sendWire` marks wires `confirmed` when `SystemSettings.get('auto_settle')` is `'true'`; otherwise `sent`. `TrustBankEngine.sendPayment` maps both to `completed` for `trust_bank_payments`.
+- The `ptc-treasury` `distribute` action with an income/liability/equity `sourceAccountId` (like `4000`) internally substitutes `1200` as the balance-sheet cash source and posts `debit 1010 / credit 1200` before the wire. The wire send then posts `debit 4000 / credit 1010`.
+- If the `fromAccountId` has no `linked_trust_account_code`, the default `PTC_BANK_GL_ACCOUNT` (or `1010`) is used for the funding journal.
+- `data/wire-messages/` is created automatically; the JSON artifact is `WireEngine.formatWireMessage(wire)` and the XML artifact is a manually generated `pacs.008.001.08` document.

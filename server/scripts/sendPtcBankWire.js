@@ -18,7 +18,8 @@
  *     --name "DB NET MGMT" \
  *     --bankName "Lili Bank" \
  *     --senderRouting 121145307 \
- *     --senderAccount TBN-...
+ *     --senderAccount TBN-... \
+ *     --requiresApproval false
  */
 
 require('dotenv').config({ path: require('path').join(__dirname, '..', '..', '.env') });
@@ -228,11 +229,20 @@ async function main() {
   if (args.replacePaymentId) {
     console.log(`Reversing prior payment ${args.replacePaymentId}...`);
     const reversals = await reversePaymentJournals(args.replacePaymentId, fromAccount.account_id, name);
+    const priorRes = await pool.query(`SELECT external_tx_id FROM trust_bank_payments WHERE payment_id = $1`, [args.replacePaymentId]);
+    const priorTxId = priorRes.rows[0]?.external_tx_id;
     await pool.query(`UPDATE trust_bank_payments SET status = 'cancelled', updated_at = NOW() WHERE payment_id = $1`, [args.replacePaymentId]);
-    await pool.query(`UPDATE bank_transfers SET status = 'cancelled', updated_at = NOW() WHERE external_tx_id = (SELECT external_tx_id FROM trust_bank_payments WHERE payment_id = $1)`, [args.replacePaymentId]);
-    await pool.query(`UPDATE ach_batches SET status = 'cancelled', updated_at = NOW() WHERE batch_id = (SELECT external_tx_id FROM trust_bank_payments WHERE payment_id = $1)`, [args.replacePaymentId]);
+    if (priorTxId) {
+      await pool.query(`UPDATE bank_transfers SET status = 'cancelled', updated_at = NOW() WHERE transfer_id = $1`, [priorTxId]);
+      const batchRes = await pool.query(`SELECT ach_batch_id FROM bank_transfers WHERE transfer_id = $1`, [priorTxId]);
+      if (batchRes.rows[0]?.ach_batch_id) {
+        await pool.query(`UPDATE ach_batches SET status = 'cancelled', updated_at = NOW() WHERE batch_id = $1`, [batchRes.rows[0].ach_batch_id]);
+      }
+    }
     console.log('Reversed prior payment:', reversals);
   }
+
+  const requiresApproval = args.requiresApproval === 'true' || false;
 
   const payload = {
     action: 'distribute',
@@ -252,6 +262,7 @@ async function main() {
     autoSend: true,
     senderRouting,
     senderAccount,
+    requiresApproval,
   };
 
   console.log('Originating PTC bank wire with payload:');

@@ -323,8 +323,17 @@ class TrustBankEngine {
         const senderRouting = meta.senderRouting || process.env.PTC_BANK_ROUTING || process.env.TRUST_BANK_ROUTING || '111000025';
         const senderAccount = meta.senderAccount || process.env.PTC_BANK_SETTLEMENT_ACCOUNT || process.env.TRUST_BANK_ACCOUNT || from.account_number;
         const paymentType = meta.paymentType || (payment.description && /interest/i.test(payment.description) ? 'interest_payment' : 'trust_distribution');
+        const isPtcInterest = meta.interestIncomeSource === '4000' || meta.paymentType === 'interest_payment' || (payment.description && /interest income/i.test(payment.description));
+        if (isPtcInterest) {
+          meta.glDebitAccountCode = meta.glDebitAccountCode || '4000';
+          meta.glCreditAccountCode = meta.glCreditAccountCode || from.linked_trust_account_code || process.env.PTC_BANK_GL_ACCOUNT || '1010';
+          meta.paymentType = meta.paymentType || 'interest_payment';
+        }
+        const requiresApproval = meta.requiresApproval !== undefined
+          ? meta.requiresApproval
+          : (process.env.PTC_BANK_WIRE_AUTO_APPROVE === 'true' ? false : true);
         const wire = await WireEngine.initiateWire({
-          amountCents: payment.amount_cents,
+          amountCents: Number(payment.amount_cents),
           beneficiaryName: payment.external_account_name || 'External Beneficiary',
           beneficiaryRouting: payment.external_routing,
           beneficiaryAccount: payment.external_account,
@@ -335,7 +344,8 @@ class TrustBankEngine {
           paymentType,
           description: payment.description || `Trust bank payment ${paymentId}`,
           initiatedBy: payment.initiated_by,
-          requiresApproval: false,
+          requiresApproval,
+          metadata: meta,
         });
         externalTxId = wire.wire_id;
         rawMessage = JSON.stringify(wire);
