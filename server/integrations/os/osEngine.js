@@ -2424,6 +2424,64 @@ class AlchemyWalletEngine extends BaseOSEngine {
     return { requestId, status: 'cancelled', note: 'Funding request cancelled; reverse the source hold manually if needed.' };
   }
 
+  static _operatingConfig(payload = {}) {
+    return {
+      operatingAccountId: payload.operatingAccountId || process.env.AGENT_WALLET_OPERATING_ACCOUNT || 'CA-OPERATING',
+      replenishSourceAccountId: payload.replenishSourceAccountId || process.env.AGENT_WALLET_REPLENISH_SOURCE || 'CA-BOND-PROCEEDS',
+      autoReplenish: payload.autoReplenish !== false && (process.env.AGENT_WALLET_AUTO_REPLENISH || 'true') !== 'false',
+      sourceMethod: payload.sourceMethod || process.env.AGENT_WALLET_SOURCE_METHOD || 'manual',
+    };
+  }
+
+  static async _fundFromOperating(payload = {}) {
+    const { amount, asset = 'USDC', targetAddress, memo } = payload || {};
+    if (!amount || Number(amount) <= 0) throw new Error('amount must be positive');
+    const cfg = this._operatingConfig(payload);
+    const SourceOfFundsAdapter = tryRequire('../stablecoin/sourceOfFundsAdapter')?.SourceOfFundsAdapter;
+    const CashEngine = tryRequire('../cash/cashEngine')?.CashEngine;
+    if (!SourceOfFundsAdapter || !CashEngine) throw new Error('SourceOfFundsAdapter or CashEngine not available');
+    const amountCents = Math.round(Number(amount) * 100);
+    const wallets = await this._getWallets().catch(() => ({ evm: null, sessionEvm: null }));
+    const resolvedTarget = targetAddress || payload.address || wallets.sessionEvm || wallets.evm || '';
+    if (!String(resolvedTarget).startsWith('0x')) throw new Error('targetAddress must be a 0x EVM address');
+
+    let operatingBalance = Number(await SourceOfFundsAdapter.getBalance({ sourceType: 'cash', sourceAccountId: cfg.operatingAccountId }));
+    let replenishment = null;
+    if (operatingBalance < amountCents) {
+      if (!cfg.autoReplenish) throw new Error(`Insufficient operating balance: ${operatingBalance} cents < ${amountCents}`);
+      const replenishAmountCents = amountCents - operatingBalance;
+      const replenishBalance = Number(await SourceOfFundsAdapter.getBalance({ sourceType: 'cash', sourceAccountId: cfg.replenishSourceAccountId }));
+      if (replenishBalance < replenishAmountCents) throw new Error(`Insufficient replenish source balance: ${replenishBalance} cents < ${replenishAmountCents}`);
+      const movement = await CashEngine.transfer({
+        fromAccountId: cfg.replenishSourceAccountId,
+        toAccountId: cfg.operatingAccountId,
+        amountCents: replenishAmountCents,
+        movementType: 'transfer',
+        memo: `Replenish operating account for Agent Wallet fund`,
+        referenceId: `AWF-REPLENISH-${Date.now()}`,
+        referenceType: 'alchemy_wallet_fund',
+      });
+      replenishment = { from: cfg.replenishSourceAccountId, to: cfg.operatingAccountId, amountCents: replenishAmountCents, movementId: movement.movement_id };
+      operatingBalance += replenishAmountCents;
+    }
+    if (operatingBalance < amountCents) throw new Error(`Operating account still insufficient after replenishment: ${operatingBalance} cents < ${amountCents}`);
+
+    const sourceMemo = memo || `Agent Wallet operating fund${replenishment ? ` (replenished from ${cfg.replenishSourceAccountId})` : ''}`;
+    const result = await this._fundFromSource({
+      sourceType: 'cash',
+      sourceAccountId: cfg.operatingAccountId,
+      amount,
+      asset,
+      targetAddress: resolvedTarget,
+      sourceMethod: cfg.sourceMethod,
+      memo: sourceMemo,
+    });
+    if (pool && result.requestId) {
+      await query(`UPDATE alchemy_wallet_funding_requests SET funding_metadata = funding_metadata || $1::jsonb WHERE id = $2`, [safeJson({ operatingAccountId: cfg.operatingAccountId, replenishment, agentWalletFund: true }), result.requestId]);
+    }
+    return { ...result, operatingAccountId: cfg.operatingAccountId, replenishment };
+  }
+
   static async _tokenAddressForAsset(asset) {
     const cfg = this._dappConfig();
     const upper = String(asset || '').toUpperCase();
@@ -2499,6 +2557,11 @@ class AlchemyWalletEngine extends BaseOSEngine {
       case 'cancel-funding-request':
       case 'cancel':
         return await this._cancelFundingRequest(payload || {});
+      case 'fundFromOperating':
+      case 'fund-operating':
+      case 'fundAgentWalletFromOperating':
+      case 'fundOperatingToAgent':
+        return await this._fundFromOperating(payload || {});
       case 'send':
       case 'transfer':
       case 'evm-send':
