@@ -3226,6 +3226,439 @@ class ConduitEngine extends BaseOSEngine {
   }
 }
 
+// ─── Issuer Bridge Engine ─────────────────────────────────────────────────────
+//
+// Bridges PTC ledger balances (coupon / accrued interest GL accounts such as
+// 1200 Accrued Interest Receivable) to real on-chain USDC through regulated
+// issuer rails, primarily Circle Mint. It reserves the source account in the
+// trust ledger, credits the stablecoin backing asset account (1210), and
+// initiates a 1:1 USDC transfer on Base mainnet to the Agent Wallet. When no
+// issuer API is configured it falls back to manual on-ramp instructions.
+
+class IssuerBridgeEngine extends BaseOSEngine {
+  static get engineName() { return 'issuer-bridge'; }
+
+  static _dappConfig() {
+    try {
+      const { getConfig } = require('../dapp/config');
+      return getConfig();
+    } catch (e) { return {}; }
+  }
+
+  static _deps() {
+    return {
+      SourceOfFunds: tryRequire('../stablecoin/sourceOfFundsAdapter')?.SourceOfFundsAdapter || null,
+      Treasury: tryRequire('../stablecoin/treasuryEngine')?.TreasuryEngine || null,
+      Circle: tryRequire('../stablecoin/circleMintClient')?.CircleMintClient || null,
+      MoonPay: tryRequire('../onramps/moonpayCliEngine')?.MoonPayCliEngine || null,
+      TrustAcct: tryRequire('../accounting/trustAccountingEngine')?.TrustAccountingEngine || null,
+      Cash: tryRequire('../cash/cashEngine')?.CashEngine || null,
+    };
+  }
+
+  static _cfg() {
+    const cfg = this._dappConfig();
+    return {
+      chainId: cfg.chainId || Number(process.env.DAPP_CHAIN_ID) || 8453,
+      usdcAddress: cfg.usdcAddress || process.env.DAPP_USDC_ADDRESS || '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913',
+      agentWallet: process.env.AGENT_WALLET_ADDRESS || '0x69a32f285ced1dbf102c7baedf0266f1d39580a1',
+      operatorAddress: cfg.operatorAddress || process.env.DAPP_OPERATOR_ADDRESS || process.env.AGENT_WALLET_ADDRESS || '0x69a32f285ced1dbf102c7baedf0266f1d39580a1',
+      circleApiKey: process.env.CIRCLE_MINT_API_KEY || cfg.circleMintApiKey || '',
+      circleBaseUrl: process.env.CIRCLE_MINT_BASE_URL || 'https://api.circle.com',
+      circleRecipientId: process.env.CIRCLE_MINT_RECIPIENT_ID || '',
+      circleChain: process.env.CIRCLE_MINT_CHAIN || 'BASE',
+      defaultSourceType: process.env.ISSUER_BRIDGE_SOURCE_TYPE || 'trust',
+      defaultSourceAccountId: process.env.ISSUER_BRIDGE_SOURCE_ACCOUNT_ID || '1200',
+      defaultAsset: process.env.ISSUER_BRIDGE_ASSET || 'USDC',
+      defaultMethod: process.env.ISSUER_BRIDGE_SOURCE_METHOD || (process.env.CIRCLE_MINT_API_KEY ? 'circle_mint' : 'manual'),
+      assetAccount: process.env.ISSUER_BRIDGE_ASSET_ACCOUNT || '1210',
+      enabled: (process.env.ISSUER_BRIDGE_ENABLED || 'true') !== 'false',
+      shadow: (process.env.ISSUER_BRIDGE_SHADOW || 'false') === 'true',
+    };
+  }
+
+  static _isShadow() { return this._cfg().shadow; }
+
+  static async ensureTables() {
+    await super.ensureTables();
+    if (!pool) return;
+    await query(`
+      CREATE TABLE IF NOT EXISTS issuer_bridge_requests (
+        id TEXT PRIMARY KEY,
+        source_type TEXT NOT NULL,
+        source_account_id TEXT NOT NULL,
+        source_method TEXT NOT NULL,
+        asset TEXT NOT NULL DEFAULT 'USDC',
+        amount NUMERIC(18,2) NOT NULL,
+        amount_cents BIGINT NOT NULL,
+        recipient TEXT NOT NULL,
+        status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending','quoted','source_reserved','needs_config','needs_deposit','needs_recipient_setup','awaiting_deposit','pending_onramp','completed','failed','cancelled')),
+        provider TEXT,
+        reserve_id TEXT,
+        journal_entry_id TEXT,
+        tx_hash TEXT,
+        instructions TEXT,
+        result JSONB DEFAULT '{}',
+        metadata JSONB DEFAULT '{}',
+        created_at TIMESTAMPTZ DEFAULT NOW(),
+        updated_at TIMESTAMPTZ DEFAULT NOW()
+      )
+    `);
+    await query(`CREATE INDEX IF NOT EXISTS idx_issuer_bridge_status ON issuer_bridge_requests(status)`);
+    await query(`CREATE INDEX IF NOT EXISTS idx_issuer_bridge_source ON issuer_bridge_requests(source_type, source_account_id)`);
+  }
+
+  static async _sourceBalance(sourceType, sourceAccountId) {
+    const deps = this._deps();
+    sourceType = String(sourceType || this._cfg().defaultSourceType).toLowerCase();
+    sourceAccountId = sourceAccountId || this._cfg().defaultSourceAccountId;
+    if (sourceType === 'trust' || sourceType === 'trust_account') {
+      if (!deps.TrustAcct) throw new Error('TrustAccountingEngine not available');
+      const acct = await deps.TrustAcct.getAccount(sourceAccountId);
+      return acct ? { balanceCents: Math.round(Number(acct.balance || 0) * 100), account: acct } : { balanceCents: 0, account: null };
+    }
+    if (sourceType === 'cash') {
+      if (!deps.Cash) throw new Error('CashEngine not available');
+      const acct = await deps.Cash.getAccount(sourceAccountId);
+      return acct ? { balanceCents: Number(acct.balance_cents || 0), account: acct } : { balanceCents: 0, account: null };
+    }
+    if (deps.SourceOfFunds) {
+      const balanceCents = await deps.SourceOfFunds.getBalance({ sourceType, sourceAccountId });
+      return { balanceCents: Number(balanceCents || 0), account: null };
+    }
+    return { balanceCents: 0, account: null };
+  }
+
+  static async _providerReadiness(method) {
+    const deps = this._deps();
+    const cfg = this._cfg();
+    const base = { method, ready: false, issues: [] };
+    if (method === 'manual') return { ...base, ready: true };
+    if (method === 'circle_mint') {
+      const issues = [];
+      if (!cfg.circleApiKey) issues.push('CIRCLE_MINT_API_KEY not configured');
+      return { ...base, ready: issues.length === 0, issues };
+    }
+    if (method === 'moonpay') {
+      if (!deps.MoonPay) return { ...base, issues: ['MoonPayCliEngine not available'] };
+      const r = await deps.MoonPay.readiness().catch(e => ({ ready: false, issues: [e.message] }));
+      return { ...base, ready: !!r.ready, issues: r.issues || [] };
+    }
+    return { ...base, issues: ['Unsupported source method'] };
+  }
+
+  static async status() {
+    const cfg = this._cfg();
+    const sourceInfo = await this._sourceBalance(cfg.defaultSourceType, cfg.defaultSourceAccountId).catch(e => ({ balanceCents: 0, error: e.message }));
+    const providers = {
+      manual: await this._providerReadiness('manual'),
+      circle_mint: await this._providerReadiness('circle_mint'),
+      moonpay: await this._providerReadiness('moonpay'),
+    };
+    const issues = [];
+    if (!cfg.enabled) issues.push('ISSUER_BRIDGE_ENABLED is false');
+    if (sourceInfo.error) issues.push(sourceInfo.error);
+    return {
+      engine: this.engineName,
+      healthy: true,
+      enabled: cfg.enabled,
+      mode: this._isShadow() ? 'shadow' : 'live',
+      chainId: cfg.chainId,
+      usdcAddress: cfg.usdcAddress,
+      agentWallet: cfg.agentWallet,
+      defaultSourceType: cfg.defaultSourceType,
+      defaultSourceAccountId: cfg.defaultSourceAccountId,
+      sourceBalanceCents: sourceInfo.balanceCents,
+      sourceBalanceUsd: ((sourceInfo.balanceCents || 0) / 100).toFixed(2),
+      providers,
+      issues,
+      timestamp: new Date().toISOString(),
+    };
+  }
+
+  static async health() { return this.status(); }
+
+  static _payloadDefaults(payload) {
+    const cfg = this._cfg();
+    const sourceType = payload.sourceType || payload.source_type || cfg.defaultSourceType;
+    const sourceAccountId = payload.sourceAccountId || payload.source_account_id || cfg.defaultSourceAccountId;
+    const amount = Number(payload.amount);
+    const asset = String(payload.asset || cfg.defaultAsset || 'USDC').toUpperCase();
+    const recipient = payload.recipient || payload.targetAddress || cfg.agentWallet;
+    const sourceMethod = payload.sourceMethod || payload.source_method || cfg.defaultMethod;
+    const assetAccount = payload.assetAccount || cfg.assetAccount;
+    if (!amount || amount <= 0) throw new Error('amount must be positive');
+    if (!recipient || !String(recipient).startsWith('0x')) throw new Error('recipient must be a 0x address');
+    return { sourceType, sourceAccountId, amount, asset, recipient, sourceMethod, assetAccount };
+  }
+
+  static async _reserveSource({ sourceType, sourceAccountId, amount, operationId, assetAccount }) {
+    const deps = this._deps();
+    if (!deps.TrustAcct) throw new Error('TrustAccountingEngine not available for GL reservation');
+    if (!deps.Treasury) throw new Error('TreasuryEngine not available');
+    const amountCents = toCents(amount);
+    const source = await deps.TrustAcct.getAccount(sourceAccountId);
+    if (!source) throw new Error(`Trust account not found: ${sourceAccountId}`);
+    const asset = await deps.TrustAcct.getAccount(assetAccount);
+    if (!asset) throw new Error(`Backing asset account not found: ${assetAccount}`);
+    if (Number(source.balance || 0) * 100 < amountCents) throw new Error(`Insufficient source balance in ${sourceAccountId}: ${source.balance} < ${amount}`);
+    const journal = await deps.TrustAcct.postJournalEntry({
+      entryDate: new Date(),
+      description: `Issuer Bridge reserve ${operationId}`,
+      referenceType: 'issuer_bridge',
+      referenceId: operationId,
+      postedBy: 'issuer-bridge',
+      postToFineract: false,
+      lines: [
+        { accountCode: sourceAccountId, debitAmount: amountCents / 100, creditAmount: 0, memo: `Reserve ${amount} from ${sourceAccountId}` },
+        { accountCode: assetAccount, debitAmount: 0, creditAmount: amountCents / 100, memo: `Backing asset for issuer bridge ${operationId}` },
+      ],
+    });
+    await deps.Treasury.credit('TREASURY_HOT', amountCents, { source: 'issuer-bridge', txHash: null, metadata: { operationId, sourceType, sourceAccountId, journalEntryId: journal.entry_id } });
+    const hold = await deps.Treasury.hold(operationId, 'TREASURY_HOT', amountCents);
+    return { journalEntryId: journal.entry_id, reserveId: hold.reserveId, amountCents };
+  }
+
+  static async _createOperation(data) {
+    if (!pool) return;
+    const record = {
+      id: data.id,
+      source_type: data.sourceType,
+      source_account_id: data.sourceAccountId,
+      source_method: data.sourceMethod,
+      asset: data.asset,
+      amount: data.amount,
+      amount_cents: data.amountCents,
+      recipient: data.recipient,
+      status: data.status,
+      reserve_id: data.reserveId || null,
+      journal_entry_id: data.journalEntryId || null,
+      tx_hash: data.txHash || null,
+      instructions: data.instructions || null,
+      provider: data.provider || null,
+      result: safeJson(data.result || {}),
+      metadata: safeJson(data.metadata || {}),
+    };
+    const cols = Object.keys(record).join(', ');
+    const vals = Object.keys(record).map((_, i) => `$${i + 1}`).join(', ');
+    await query(`INSERT INTO issuer_bridge_requests (${cols}) VALUES (${vals})`, Object.values(record));
+  }
+
+  static async _updateOperation(operationId, updates) {
+    if (!pool || !operationId) return;
+    const parts = [];
+    const values = [];
+    let idx = 1;
+    if (updates.status !== undefined) { parts.push(`status=$${idx++}`); values.push(updates.status); }
+    if (updates.txHash !== undefined) { parts.push(`tx_hash=$${idx++}`); values.push(updates.txHash); }
+    if (updates.instructions !== undefined) { parts.push(`instructions=$${idx++}`); values.push(updates.instructions); }
+    if (updates.result !== undefined) { parts.push(`result=$${idx++}::jsonb`); values.push(safeJson(updates.result)); }
+    if (updates.provider !== undefined) { parts.push(`provider=$${idx++}`); values.push(updates.provider); }
+    if (updates.metadata !== undefined) { parts.push(`metadata=$${idx++}::jsonb`); values.push(safeJson(updates.metadata)); }
+    if (!parts.length) return;
+    values.push(operationId);
+    await query(`UPDATE issuer_bridge_requests SET ${parts.join(', ')}, updated_at=NOW() WHERE id=$${idx}`, values);
+  }
+
+  static async _getOperation(operationId) {
+    if (!pool || !operationId) return null;
+    const res = await query('SELECT * FROM issuer_bridge_requests WHERE id = $1', [operationId]);
+    return res.rows[0] || null;
+  }
+
+  static async _listOperations({ limit = 50, offset = 0, status } = {}) {
+    if (!pool) return [];
+    let sql = 'SELECT * FROM issuer_bridge_requests';
+    const params = [];
+    if (status) { sql += ' WHERE status=$1'; params.push(status); }
+    sql += ` ORDER BY created_at DESC LIMIT $${params.length + 1} OFFSET $${params.length + 2}`;
+    params.push(Number(limit), Number(offset));
+    const res = await query(sql, params);
+    return res.rows;
+  }
+
+  static async list({ limit = 50, offset = 0, status } = {}) {
+    return await this._listOperations({ limit, offset, status });
+  }
+
+  static async get(operationId) {
+    return await this._getOperation(operationId);
+  }
+
+  static async _finalize(reserveId, txHash) {
+    const deps = this._deps();
+    if (deps.Treasury && reserveId) {
+      await deps.Treasury.post(reserveId, txHash);
+    }
+  }
+
+  static _buildInstructions(cfg, p, operationId, overrideMethod) {
+    const method = overrideMethod || p.sourceMethod;
+    const amount = Number(p.amount).toFixed(2);
+    if (method === 'manual') {
+      return `Send ${amount} ${p.asset} on Base mainnet to ${p.recipient} (token ${cfg.usdcAddress}). The fiat equivalent has been reserved from ${p.sourceType}:${p.sourceAccountId}. Once the deposit confirms, call /api/os/issuer-bridge/process with action 'confirm', operationId '${operationId}', and txHash.`;
+    }
+    if (method === 'circle_mint') {
+      return `Use Circle Mint to transfer ${amount} USDC to ${p.recipient} on ${cfg.circleChain}. Operation ${operationId}.`;
+    }
+    if (method === 'moonpay') {
+      return `Use MoonPay to buy ${amount} ${p.asset} on Base into ${p.recipient}. Operation ${operationId}.`;
+    }
+    return `On-ramp ${amount} USD to ${p.asset} at ${p.recipient} via ${method}. Operation ${operationId}.`;
+  }
+
+  static async _issueManual(operationId, p) {
+    const cfg = this._cfg();
+    return { status: 'awaiting_deposit', provider: 'manual', instructions: this._buildInstructions(cfg, p, operationId, 'manual') };
+  }
+
+  static async _issueCircle(operationId, p) {
+    const cfg = this._cfg();
+    if (!cfg.circleApiKey) throw new Error('CIRCLE_MINT_API_KEY not configured');
+    const deps = this._deps();
+    if (!deps.Circle) throw new Error('CircleMintClient not available');
+    const client = new deps.Circle({ apiKey: cfg.circleApiKey, baseUrl: cfg.circleBaseUrl });
+    const balances = await client.getBalances();
+    const usd = balances && balances.data && balances.data.find((b) => b.currency === 'USD' || b.currency === 'USDC');
+    const available = usd ? Number(usd.availableAmount) : 0;
+    if (available < Number(p.amount)) {
+      return { status: 'needs_deposit', provider: 'circle_mint', available, needed: p.amount, instructions: `Wire USD to Circle Mint. Available: ${available} USD; needed: ${p.amount} USD.` };
+    }
+    let recipientAddressId = cfg.circleRecipientId;
+    if (!recipientAddressId) {
+      const created = await client.createRecipientAddress({ address: p.recipient, chain: cfg.circleChain, currency: 'USD', description: `Issuer Bridge Agent Wallet ${operationId}`, idempotencyKey: operationId });
+      const rec = created && created.data;
+      recipientAddressId = rec && rec.id;
+      if (!recipientAddressId) {
+        return { status: 'needs_recipient_setup', provider: 'circle_mint', circleResponse: created, instructions: `Create and approve a Circle Mint recipient address for ${p.recipient} on ${cfg.circleChain}, then set CIRCLE_MINT_RECIPIENT_ID and retry.` };
+      }
+    }
+    const transfer = await client.createTransfer({ destinationAddressId: recipientAddressId, amount: String(p.amount), currency: 'USD', idempotencyKey: operationId });
+    const tx = transfer && transfer.data;
+    const txHash = tx && tx.transactionHash;
+    const status = tx && tx.status === 'complete' ? 'completed' : 'pending_onramp';
+    return { status, provider: 'circle_mint', recipientAddressId, transfer: tx, txHash, instructions: txHash ? `Circle Mint transfer ${tx.id} submitted. Track on Base: ${txHash}` : `Circle Mint transfer ${tx && tx.id} pending. Call continue with operationId.` };
+  }
+
+  static async _issueMoonpay(operationId, p) {
+    const deps = this._deps();
+    const cfg = this._cfg();
+    if (!deps.MoonPay) throw new Error('MoonPayCliEngine not available');
+    const buy = await deps.MoonPay.buyUrl({ asset: p.asset, chainId: cfg.chainId, walletAddress: p.recipient, amount: p.amount, explanation: `Issuer Bridge ${operationId}` });
+    return { status: 'awaiting_onramp', provider: 'moonpay', instructions: `Complete MoonPay checkout for ${Number(p.amount).toFixed(2)} ${p.asset} on Base to ${p.recipient}: ${buy.url}`, moonpay: buy };
+  }
+
+  static async _quote(payload) {
+    const cfg = this._cfg();
+    const p = this._payloadDefaults(payload);
+    const sourceInfo = await this._sourceBalance(p.sourceType, p.sourceAccountId);
+    const amountCents = toCents(p.amount);
+    if ((sourceInfo.balanceCents || 0) < amountCents) throw new Error(`Insufficient source balance: ${((sourceInfo.balanceCents || 0) / 100).toFixed(2)} < ${p.amount}`);
+    const provider = await this._providerReadiness(p.sourceMethod);
+    return {
+      sourceType: p.sourceType,
+      sourceAccountId: p.sourceAccountId,
+      amount: p.amount,
+      asset: p.asset,
+      recipient: p.recipient,
+      sourceMethod: p.sourceMethod,
+      sourceBalanceCents: sourceInfo.balanceCents,
+      providerReady: provider.ready,
+      providerIssues: provider.issues,
+      instructions: this._buildInstructions(cfg, p, null),
+      status: 'quoted',
+    };
+  }
+
+  static async _issue(payload) {
+    const p = this._payloadDefaults(payload);
+    const sourceInfo = await this._sourceBalance(p.sourceType, p.sourceAccountId);
+    const amountCents = toCents(p.amount);
+    if ((sourceInfo.balanceCents || 0) < amountCents) throw new Error(`Insufficient source balance: ${((sourceInfo.balanceCents || 0) / 100).toFixed(2)} < ${p.amount}`);
+    const operationId = id('IB-');
+    const reserve = await this._reserveSource({ sourceType: p.sourceType, sourceAccountId: p.sourceAccountId, amount: p.amount, operationId, assetAccount: p.assetAccount });
+    let providerResult;
+    if (p.sourceMethod === 'circle_mint') providerResult = await this._issueCircle(operationId, p);
+    else if (p.sourceMethod === 'manual') providerResult = await this._issueManual(operationId, p);
+    else if (p.sourceMethod === 'moonpay') providerResult = await this._issueMoonpay(operationId, p);
+    else providerResult = { status: 'needs_config', provider: p.sourceMethod, instructions: `Source method ${p.sourceMethod} not supported by IssuerBridgeEngine` };
+    const status = providerResult.status === 'completed' ? 'completed' : providerResult.status;
+    const txHash = providerResult.txHash || null;
+    const result = { ...providerResult, operationId, reserve };
+    await this._createOperation({ id: operationId, sourceType: p.sourceType, sourceAccountId: p.sourceAccountId, sourceMethod: p.sourceMethod, asset: p.asset, amount: p.amount, amountCents, recipient: p.recipient, status, reserveId: reserve.reserveId, journalEntryId: reserve.journalEntryId, txHash, instructions: providerResult.instructions, provider: providerResult.provider, result, metadata: { payload: p } });
+    if (status === 'completed' && reserve.reserveId && txHash) {
+      await this._finalize(reserve.reserveId, txHash);
+    }
+    return { operationId, sourceType: p.sourceType, sourceAccountId: p.sourceAccountId, amount: p.amount, asset: p.asset, recipient: p.recipient, status, txHash, instructions: providerResult.instructions, result };
+  }
+
+  static async _continue(payload) {
+    const cfg = this._cfg();
+    const operationId = payload.operationId || payload.id || payload.operation_id;
+    if (!operationId) throw new Error('operationId required');
+    const op = await this._getOperation(operationId);
+    if (!op) throw new Error('Operation not found');
+    if (op.status === 'completed') return op;
+    let result;
+    if (op.source_method === 'circle_mint') {
+      const prev = (op.result && op.result.transfer && op.result.transfer.id) ? op.result.transfer.id : null;
+      if (!prev) throw new Error('No Circle transfer id recorded');
+      const deps = this._deps();
+      if (!deps.Circle) throw new Error('CircleMintClient not available');
+      const client = new deps.Circle({ apiKey: cfg.circleApiKey, baseUrl: cfg.circleBaseUrl });
+      const txResp = await client.getTransfer(prev);
+      const tx = txResp && txResp.data;
+      const txHash = tx && tx.transactionHash;
+      const status = tx && tx.status === 'complete' ? 'completed' : 'pending_onramp';
+      result = { ...op.result, transfer: tx, status, txHash };
+      if (status === 'completed' && op.reserve_id && txHash) {
+        await this._finalize(op.reserve_id, txHash);
+      }
+      await this._updateOperation(operationId, { status, txHash, result, instructions: tx ? `Circle transfer ${tx.id} status: ${tx.status}` : op.instructions });
+      return { operationId, status, txHash, result };
+    }
+    const txHash = payload.txHash || payload.tx_hash;
+    if (!txHash) throw new Error('txHash required to confirm deposit');
+    if (op.reserve_id) await this._finalize(op.reserve_id, txHash);
+    result = { ...(op.result || {}), txHash, status: 'completed' };
+    await this._updateOperation(operationId, { status: 'completed', txHash, result });
+    return { operationId, status: 'completed', txHash, result };
+  }
+
+  static async _confirm(payload) {
+    const operationId = payload.operationId || payload.id || payload.operation_id;
+    const txHash = payload.txHash || payload.tx_hash;
+    if (!operationId) throw new Error('operationId required');
+    if (!txHash) throw new Error('txHash required');
+    const op = await this._getOperation(operationId);
+    if (!op) throw new Error('Operation not found');
+    if (op.status === 'completed') return op;
+    if (op.reserve_id) await this._finalize(op.reserve_id, txHash);
+    const result = { ...(op.result || {}), txHash, status: 'completed' };
+    await this._updateOperation(operationId, { status: 'completed', txHash, result });
+    return await this._getOperation(operationId);
+  }
+
+  static async _process(action, payload = {}) {
+    switch (action) {
+      case 'status': return await this.status();
+      case 'health': return await this.health();
+      case 'quote': return await this._quote(payload);
+      case 'issue':
+      case 'execute':
+      case 'issueAndSend':
+        return await this._issue(payload);
+      case 'continue': return await this._continue(payload);
+      case 'confirm': return await this._confirm(payload);
+      case 'get':
+      case 'getOperation': return await this.get(payload.operationId || payload.id || payload.operation_id);
+      case 'list':
+      case 'listOperations': return await this._listOperations({ limit: payload.limit, offset: payload.offset, status: payload.status });
+      default: return await this.status();
+    }
+  }
+}
+
 const ENGINES = {
   bank: BankEngine,
   treasury: TreasuryEngine,
@@ -3246,6 +3679,7 @@ const ENGINES = {
   'alchemy-wallet': AlchemyWalletEngine,
   tokenization: TokenizationEngine,
   conduit: ConduitEngine,
+  'issuer-bridge': IssuerBridgeEngine,
 };
 
 async function ensureAll() {
@@ -3279,6 +3713,7 @@ module.exports = {
   AlchemyWalletEngine,
   TokenizationEngine,
   ConduitEngine,
+  IssuerBridgeEngine,
   engines: ENGINES,
   ensureAll,
 };

@@ -31,6 +31,7 @@ const {
   AlchemyWalletEngine,
   TokenizationEngine,
   ConduitEngine,
+  IssuerBridgeEngine,
 } = require('../integrations/os/osEngine');
 
 const router = express.Router();
@@ -57,6 +58,7 @@ const ENGINES = {
   'alchemy-wallet': AlchemyWalletEngine,
   tokenization: TokenizationEngine,
   conduit: ConduitEngine,
+  'issuer-bridge': IssuerBridgeEngine,
 };
 
 function sendError(res, err) {

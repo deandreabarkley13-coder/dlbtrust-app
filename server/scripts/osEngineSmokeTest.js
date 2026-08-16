@@ -19,7 +19,7 @@ const BASE_URL = (process.env.OS_TEST_BASE_URL || 'http://localhost:3002').repla
 const TOKEN = process.env.ADMIN_SECRET_TOKEN || 'dlb-admin-2026-trust';
 const VERBOSE = process.env.OS_TEST_VERBOSE !== 'false';
 
-const engines = ['bank', 'treasury', 'payment', 'clearing', 'settlement', 'compliance', 'security', 'rest-api', 'bookkeeping', 'cash', 'asset-acquisition', 'bank-aggregator', 'funding', 'smart-router', 'back-office', 'wallet-onramp', 'alchemy-wallet', 'tokenization', 'conduit'];
+const engines = ['bank', 'treasury', 'payment', 'clearing', 'settlement', 'compliance', 'security', 'rest-api', 'bookkeeping', 'cash', 'asset-acquisition', 'bank-aggregator', 'funding', 'smart-router', 'back-office', 'wallet-onramp', 'alchemy-wallet', 'tokenization', 'conduit', 'issuer-bridge'];
 
 const results = [];
 let failed = false;
@@ -135,6 +135,8 @@ async function main() {
     { engine: 'alchemy-wallet', action: 'fundFromSource', payload: { sourceType: 'cash', sourceAccountId: 'CA-BOND-PROCEEDS', amount: 0.01, asset: 'SIT', targetAddress: '0x74204857713CC1d741670505003e7261EF626E98', memo: 'Smoke test internal wallet credit' }, capture: 'alchemyFundingEventId' },
     { engine: 'tokenization', action: 'execute', payload: { sourceType: 'bond_interest', sourceAccountId: '1', amount: 0.01, tokenSymbol: 'DLB-PRB-INT' } },
     { engine: 'conduit', action: 'execute', payload: { sources: [{ sourceType: 'bond_interest', sourceAccountId: '1', amount: 0.01 }], recipient: '0x69a32f285ced1dbf102c7baedf0266f1d39580a1' } },
+    { engine: 'issuer-bridge', action: 'quote', payload: { sourceType: 'trust', sourceAccountId: '1200', amount: 0.01, asset: 'USDC', recipient: '0x69a32f285ced1dbf102c7baedf0266f1d39580a1', sourceMethod: 'manual' } },
+    { engine: 'issuer-bridge', action: 'issue', payload: { sourceType: 'trust', sourceAccountId: '1200', amount: 0.01, asset: 'USDC', recipient: '0x69a32f285ced1dbf102c7baedf0266f1d39580a1', sourceMethod: 'manual' }, capture: 'issuerBridgeOperationId' },
   ];
 
   const bankEventIds = [];
@@ -143,6 +145,7 @@ async function main() {
   let backOfficeRequestId = null;
   let walletOnRampOperationId = null;
   let alchemyFundingEventId = null;
+  let issuerBridgeOperationId = null;
 
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   for (const { engine, action, payload, expectEvent, expectKey, capture } of processSteps) {
@@ -162,6 +165,7 @@ async function main() {
         if (capture === 'smartRouterPaymentId' && body.data.result.paymentId) smartRouterPaymentId = body.data.result.paymentId;
         if (capture === 'backOfficeRequestId' && body.data.result.id) backOfficeRequestId = body.data.result.id;
         if (capture === 'walletOnRampOperationId' && body.data.result.operationId) walletOnRampOperationId = body.data.result.operationId;
+        if (capture === 'issuerBridgeOperationId' && body.data.result.operationId) issuerBridgeOperationId = body.data.result.operationId;
       }
       if (capture && body.data && body.data.eventId) {
         if (capture === 'alchemyFundingEventId') alchemyFundingEventId = body.data.eventId;
@@ -233,6 +237,17 @@ async function main() {
       assert(ok, body && body.error);
       assert(body.data && body.data.id === smartRouterPaymentId, 'get id mismatch');
       return body.data;
+    });
+  }
+
+  // Issuer Bridge confirm with dummy txHash (manual on-ramp)
+  if (issuerBridgeOperationId) {
+    await sleep(2500);
+    await runStep('issuer-bridge: confirm deposit', async () => {
+      const { ok, body } = await call('POST', '/api/os/issuer-bridge/process', { action: 'confirm', operationId: issuerBridgeOperationId, txHash: `0xsmoke${Date.now()}` });
+      assert(ok, body && body.error);
+      assert(body.data && body.data.result && body.data.result.status === 'completed', 'expected completed status');
+      return body.data.result;
     });
   }
 
