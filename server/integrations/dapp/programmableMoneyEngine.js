@@ -12,6 +12,8 @@
 
 const { query } = require('../bonds/pgPool');
 
+let _ensureTablesPromise = null;
+
 let CanonicalMoneyEngine;
 try { ({ CanonicalMoneyEngine } = require('./canonicalMoneyEngine')); } catch (e) { /* optional */ }
 
@@ -25,6 +27,15 @@ function id(prefix = 'PM') { return `${prefix}-${Date.now()}-${Math.random().toS
 
 class ProgrammableMoneyEngine {
   static async ensureTables() {
+    if (_ensureTablesPromise) return _ensureTablesPromise;
+    _ensureTablesPromise = this._ensureTables().catch((err) => {
+      _ensureTablesPromise = null;
+      throw err;
+    });
+    return _ensureTablesPromise;
+  }
+
+  static async _ensureTables() {
     await query(`
       CREATE TABLE IF NOT EXISTS programmable_money_programs (
         id              TEXT PRIMARY KEY,
@@ -39,7 +50,7 @@ class ProgrammableMoneyEngine {
         action          TEXT DEFAULT 'convert',
         conditions      JSONB DEFAULT '{}',
         schedule_cron   TEXT,
-        status          TEXT DEFAULT 'pending' CHECK (status IN ('pending','approved','active','paused','executed','failed')),
+        status          TEXT DEFAULT 'pending' CHECK (status IN ('pending','approved','active','paused','executed','failed','rejected')),
         proposal_id     TEXT,
         result          JSONB DEFAULT '{}',
         created_by      TEXT,
@@ -63,6 +74,10 @@ class ProgrammableMoneyEngine {
       )
     `);
     await query(`CREATE INDEX IF NOT EXISTS idx_programmable_money_runs_program ON programmable_money_runs(program_id)`);
+
+    // Allow 'rejected' status on tables created before this migration
+    await query(`ALTER TABLE programmable_money_programs DROP CONSTRAINT IF EXISTS programmable_money_programs_status_check`);
+    await query(`ALTER TABLE programmable_money_programs ADD CONSTRAINT programmable_money_programs_status_check CHECK (status IN ('pending','approved','active','paused','executed','failed','rejected'))`);
   }
 
   static async createProgram({
@@ -81,21 +96,32 @@ class ProgrammableMoneyEngine {
   } = {}) {
     await this.ensureTables();
     if (!name) throw new Error('name is required');
-    if (!amount || Number(amount) <= 0) throw new Error('amount must be positive');
+    const numAmount = Number(amount);
+    if (!Number.isFinite(numAmount) || numAmount <= 0) throw new Error('amount must be a positive number');
+    const amountString = String(amount).trim();
+    if (!/^\d+(\.\d+)?$/.test(amountString)) throw new Error('amount must be a plain positive decimal number (e.g. 100 or 100.50)');
+    if (action && !['convert', 'swap', 'transfer', 'disburse'].includes(action)) throw new Error('action must be one of: convert, swap, transfer, disburse');
+    if (targetAsset && typeof targetAsset !== 'string') throw new Error('targetAsset must be a string');
+    if (sourceType && typeof sourceType !== 'string') throw new Error('sourceType must be a string');
+    if (sourceAccount && typeof sourceAccount !== 'string') throw new Error('sourceAccount must be a string');
+    if (sourceToken && typeof sourceToken !== 'string') throw new Error('sourceToken must be a string');
+    if (sourceModule && typeof sourceModule !== 'string') throw new Error('sourceModule must be a string');
+    if (conditions && (typeof conditions !== 'object' || Array.isArray(conditions))) throw new Error('conditions must be a plain object');
+    if (schedule && typeof schedule !== 'string') throw new Error('schedule must be a string');
     if (!CanonicalMoneyEngine) throw new Error('CanonicalMoneyEngine is required for programmable money execution');
 
     const programId = id();
     const proposal = await canonicalConsensusEngine().createProposal({
       category: 'programmable_money',
       title: `Programmable Money: ${name}`,
-      description: description || `Automated ${action} of ${amount} ${sourceType || sourceToken || sourceModule || 'funds'} to ${targetAsset}`,
+      description: description || `Automated ${action} of ${amountString} ${sourceType || sourceToken || sourceModule || 'funds'} to ${targetAsset}`,
       payload: {
         programId,
         sourceType,
         sourceAccount,
         sourceToken,
         sourceModule,
-        amount,
+        amount: amountString,
         targetAsset,
         action,
         conditions,
@@ -109,7 +135,7 @@ class ProgrammableMoneyEngine {
       `INSERT INTO programmable_money_programs
        (id, name, description, source_type, source_account, source_token, source_module, amount, target_asset, action, conditions, schedule_cron, status, proposal_id, created_by)
        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)`,
-      [programId, name, description || '', sourceType || null, sourceAccount || null, sourceToken || null, sourceModule || null, String(amount), targetAsset, action, safeJson(conditions), schedule || null, 'pending', proposal.id, createdBy || 'operator']
+      [programId, name, description || '', sourceType || null, sourceAccount || null, sourceToken || null, sourceModule || null, amountString, targetAsset, action, safeJson(conditions || {}), schedule || null, 'pending', proposal.id, createdBy || 'operator']
     );
 
     return { programId, proposalId: proposal.id, proposal };
@@ -147,6 +173,16 @@ class ProgrammableMoneyEngine {
     const program = await this.getProgram(programId);
     if (!program) throw new Error('Program not found');
     const proposal = await canonicalConsensusEngine().rejectProposal({ proposalId: program.proposal_id, role, rejectorEmail, reason });
+    const rejectionResult = {
+      rejected: proposal.status === 'rejected',
+      proposalStatus: proposal.status,
+      reason: reason || 'Rejected by trustee',
+      rejectedAt: new Date().toISOString(),
+    };
+    await query(
+      `UPDATE programmable_money_programs SET status = CASE WHEN $1 = 'rejected' THEN 'rejected' ELSE status END, result = COALESCE(result,'{}'::jsonb) || $2::jsonb, updated_at=NOW() WHERE id=$3`,
+      [proposal.status, safeJson(rejectionResult), programId]
+    );
     const updated = await this.getProgram(programId);
     return { program: { ...updated, proposal } };
   }
@@ -158,6 +194,11 @@ class ProgrammableMoneyEngine {
     if (program.status !== 'active' && program.status !== 'approved') {
       throw new Error(`Program is ${program.status}; must be approved or active to trigger`);
     }
+    if (program.status === 'approved') {
+      // First trigger transitions approved program to active lifecycle
+      await query(`UPDATE programmable_money_programs SET status='active', updated_at=NOW() WHERE id=$1`, [programId]);
+      program.status = 'active';
+    }
 
     const runId = id('PMR');
     await query(
@@ -168,27 +209,61 @@ class ProgrammableMoneyEngine {
 
     try {
       const result = await this._executeProgram(program, payload);
+      const completedAt = new Date().toISOString();
+      const runResult = { ...result, runId, completedAt };
+      const runStatus = result.status || 'completed';
       await query(
         `UPDATE programmable_money_runs SET status=$1, result=$2, updated_at=NOW() WHERE id=$3`,
-        [result.status || 'completed', safeJson(result), runId]
+        [runStatus, safeJson(runResult), runId]
       );
-      await query(
-        `UPDATE programmable_money_programs SET status=$1, result=$2, updated_at=NOW() WHERE id=$3`,
-        [result.status === 'failed' ? 'failed' : 'executed', safeJson(result), programId]
-      );
+      await this._updateProgramAfterRun({ programId, runStatus, runResult });
       return { runId, result };
     } catch (err) {
-      const errorResult = { status: 'failed', error: err.message };
+      const failedAt = new Date().toISOString();
+      const errorResult = { status: 'failed', error: err.message, runId, failedAt };
       await query(
         `UPDATE programmable_money_runs SET status=$1, result=$2, updated_at=NOW() WHERE id=$3`,
         ['failed', safeJson(errorResult), runId]
       );
-      await query(
-        `UPDATE programmable_money_programs SET status='failed', result=$1, updated_at=NOW() WHERE id=$2`,
-        [safeJson(errorResult), programId]
-      );
+      await this._updateProgramAfterRun({ programId, runStatus: 'failed', runResult: errorResult });
       throw err;
     }
+  }
+
+  static async _updateProgramAfterRun({ programId, runStatus, runResult }) {
+    const lastRunJson = safeJson(runResult);
+    await query(
+      `WITH new_counts AS (
+         SELECT
+           CASE
+             WHEN $2 = 'failed' THEN COALESCE((result->>'consecutiveFailures')::int, 0) + 1
+             ELSE 0
+           END AS consecutive_failures
+         FROM programmable_money_programs
+         WHERE id = $3
+       )
+       UPDATE programmable_money_programs p
+       SET result = jsonb_set(
+                      jsonb_set(
+                        COALESCE(p.result, '{}'::jsonb),
+                        '{lastRun}',
+                        $1::jsonb,
+                        true
+                      ),
+                      '{consecutiveFailures}',
+                      to_jsonb(n.consecutive_failures),
+                      true
+                    ),
+           status = CASE
+                      WHEN n.consecutive_failures >= 3 THEN 'paused'
+                      WHEN p.status = 'approved' THEN 'active'
+                      ELSE p.status
+                    END,
+           updated_at = NOW()
+       FROM new_counts n
+       WHERE p.id = $3`,
+      [lastRunJson, runStatus, programId]
+    );
   }
 
   static async listRuns({ programId, status, limit = 50, offset = 0 } = {}) {

@@ -9,8 +9,12 @@
 -- BankingAggregator.ensureTables(); this script mirrors that schema so the
 -- database can be provisioned ahead of first use. All statements are safe to
 -- re-run.
+--
+-- NOTE: Legacy `aggregator_*` table names have been superseded by
+-- `banking_aggregator_*` to avoid collision with the unrelated trust-ledger
+-- aggregator module.
 
-CREATE TABLE IF NOT EXISTS aggregator_connections (
+CREATE TABLE IF NOT EXISTS banking_aggregator_connections (
   id                TEXT PRIMARY KEY,
   name              TEXT NOT NULL,
   connector_type    TEXT NOT NULL,
@@ -24,9 +28,9 @@ CREATE TABLE IF NOT EXISTS aggregator_connections (
   updated_at        TIMESTAMPTZ DEFAULT NOW()
 );
 
-CREATE TABLE IF NOT EXISTS aggregator_accounts (
+CREATE TABLE IF NOT EXISTS banking_aggregator_accounts (
   id                  TEXT PRIMARY KEY,
-  connection_id       TEXT NOT NULL REFERENCES aggregator_connections(id) ON DELETE CASCADE,
+  connection_id       TEXT NOT NULL REFERENCES banking_aggregator_connections(id) ON DELETE CASCADE,
   external_account_id TEXT NOT NULL,
   name                TEXT,
   account_type        TEXT,
@@ -39,9 +43,9 @@ CREATE TABLE IF NOT EXISTS aggregator_accounts (
   UNIQUE (connection_id, external_account_id)
 );
 
-CREATE TABLE IF NOT EXISTS aggregator_transactions (
+CREATE TABLE IF NOT EXISTS banking_aggregator_transactions (
   id                  TEXT PRIMARY KEY,
-  connection_id       TEXT NOT NULL REFERENCES aggregator_connections(id) ON DELETE CASCADE,
+  connection_id       TEXT NOT NULL REFERENCES banking_aggregator_connections(id) ON DELETE CASCADE,
   external_account_id TEXT,
   external_txn_id     TEXT NOT NULL,
   posted_date         DATE,
@@ -56,23 +60,23 @@ CREATE TABLE IF NOT EXISTS aggregator_transactions (
   UNIQUE (connection_id, external_txn_id)
 );
 
-CREATE TABLE IF NOT EXISTS aggregator_statements (
+CREATE TABLE IF NOT EXISTS banking_aggregator_statements (
   id                    TEXT PRIMARY KEY,
-  connection_id         TEXT NOT NULL REFERENCES aggregator_connections(id) ON DELETE CASCADE,
+  connection_id         TEXT NOT NULL REFERENCES banking_aggregator_connections(id) ON DELETE CASCADE,
   external_account_id   TEXT,
   external_statement_id TEXT NOT NULL,
-  period_start          DATE,
-  period_end            DATE,
-  format                TEXT,
-  uri                   TEXT,
-  raw                   JSONB,
-  created_at            TIMESTAMPTZ DEFAULT NOW(),
+  period_start        DATE,
+  period_end          DATE,
+  format              TEXT,
+  uri                 TEXT,
+  raw                 JSONB,
+  created_at          TIMESTAMPTZ DEFAULT NOW(),
   UNIQUE (connection_id, external_statement_id)
 );
 
-CREATE TABLE IF NOT EXISTS aggregator_events (
+CREATE TABLE IF NOT EXISTS banking_aggregator_events (
   id            TEXT PRIMARY KEY,
-  connection_id TEXT REFERENCES aggregator_connections(id) ON DELETE SET NULL,
+  connection_id TEXT REFERENCES banking_aggregator_connections(id) ON DELETE SET NULL,
   direction     TEXT NOT NULL CHECK (direction IN ('inbound','outbound')),
   event_type    TEXT NOT NULL,
   payload       JSONB,
@@ -83,6 +87,6 @@ CREATE TABLE IF NOT EXISTS aggregator_events (
   created_at    TIMESTAMPTZ DEFAULT NOW()
 );
 
-CREATE INDEX IF NOT EXISTS idx_agg_txn_conn ON aggregator_transactions (connection_id, posted_date DESC);
-CREATE INDEX IF NOT EXISTS idx_agg_acct_conn ON aggregator_accounts (connection_id);
-CREATE INDEX IF NOT EXISTS idx_agg_events_conn ON aggregator_events (connection_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_banking_agg_txn_conn ON banking_aggregator_transactions (connection_id, posted_date DESC);
+CREATE INDEX IF NOT EXISTS idx_banking_agg_acct_conn ON banking_aggregator_accounts (connection_id);
+CREATE INDEX IF NOT EXISTS idx_banking_agg_events_conn ON banking_aggregator_events (connection_id, created_at DESC);

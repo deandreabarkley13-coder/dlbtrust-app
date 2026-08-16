@@ -1,0 +1,338 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>DLB Trust — OS Engine Operator Panel</title>
+  <style>
+    :root {
+      --bg: #0f1117;
+      --sidebar: #161922;
+      --card: #1a1d27;
+      --border: #2a2d37;
+      --text: #e5e7eb;
+      --muted: #9ca3af;
+      --accent: #3b82f6;
+      --green: #10b981;
+      --red: #ef4444;
+      --gold: #f59e0b;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+    }
+    .layout { display: flex; min-height: 100vh; }
+    .sidebar {
+      width: 240px;
+      background: var(--sidebar);
+      border-right: 1px solid var(--border);
+      padding: 20px 0;
+      position: fixed;
+      top: 0; left: 0; bottom: 0;
+      overflow-y: auto;
+    }
+    .logo { padding: 0 20px 20px; border-bottom: 1px solid var(--border); margin-bottom: 12px; }
+    .logo h1 { font-size: 16px; margin: 0; color: var(--accent); }
+    .logo p { font-size: 11px; color: var(--muted); margin: 4px 0 0; }
+    .nav-section { padding: 8px 20px 4px; font-size: 10px; text-transform: uppercase; letter-spacing: 0.1em; color: var(--muted); }
+    .nav-item { padding: 10px 20px; font-size: 13px; cursor: pointer; color: var(--muted); }
+    .nav-item:hover, .nav-item.active { color: var(--text); background: rgba(59,130,246,0.08); }
+    .main { margin-left: 240px; flex: 1; padding: 24px; max-width: 1200px; }
+    .header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 24px; }
+    .header h2 { margin: 0; font-size: 22px; }
+    .card { background: var(--card); border: 1px solid var(--border); border-radius: 8px; padding: 16px; margin-bottom: 16px; }
+    .card h3 { margin: 0 0 12px; font-size: 14px; text-transform: uppercase; color: var(--muted); font-weight: 600; }
+    .row { display: flex; gap: 16px; flex-wrap: wrap; }
+    .token-input { display: flex; gap: 8px; align-items: center; }
+    input, select, textarea, button {
+      background: #11131a;
+      border: 1px solid var(--border);
+      color: var(--text);
+      border-radius: 6px;
+      padding: 8px 10px;
+      font-size: 13px;
+    }
+    input:focus, select:focus, textarea:focus { outline: none; border-color: var(--accent); }
+    button { cursor: pointer; background: var(--accent); border-color: var(--accent); color: #fff; font-weight: 600; }
+    button.secondary { background: transparent; border-color: var(--border); color: var(--text); }
+    button:hover { opacity: 0.92; }
+    .engine-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 12px; }
+    .engine-card { border-left: 3px solid transparent; }
+    .engine-card.healthy { border-left-color: var(--green); }
+    .engine-card.unhealthy { border-left-color: var(--red); }
+    .engine-card h4 { margin: 0 0 6px; font-size: 15px; display: flex; justify-content: space-between; }
+    .badge { font-size: 10px; padding: 2px 8px; border-radius: 4px; text-transform: uppercase; font-weight: 700; }
+    .badge.healthy { background: rgba(16,185,129,0.15); color: var(--green); }
+    .badge.unhealthy { background: rgba(239,68,68,0.15); color: var(--red); }
+    .badge.shadow { background: rgba(245,158,11,0.15); color: var(--gold); }
+    .muted { color: var(--muted); font-size: 12px; }
+    .form-grid { display: grid; grid-template-columns: 120px 1fr; gap: 10px; align-items: center; }
+    .form-grid label { color: var(--muted); font-size: 12px; }
+    .output { background: #11131a; border: 1px solid var(--border); border-radius: 6px; padding: 10px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; white-space: pre-wrap; max-height: 300px; overflow: auto; color: #d1d5db; margin-top: 12px; }
+    .actions { display: flex; gap: 8px; margin-top: 12px; }
+    table { width: 100%; border-collapse: collapse; font-size: 12px; }
+    th, td { padding: 8px; border-bottom: 1px solid var(--border); text-align: left; }
+    th { color: var(--muted); text-transform: uppercase; font-size: 10px; letter-spacing: 0.05em; }
+    .hidden { display: none; }
+    .flash { padding: 10px 12px; border-radius: 6px; margin-bottom: 12px; font-size: 13px; }
+    .flash.error { background: rgba(239,68,68,0.1); color: var(--red); border: 1px solid rgba(239,68,68,0.3); }
+    .flash.success { background: rgba(16,185,129,0.1); color: var(--green); border: 1px solid rgba(16,185,129,0.3); }
+  </style>
+</head>
+<body>
+  <div class="layout">
+    <aside class="sidebar">
+      <div class="logo">
+        <h1>DLB Trust</h1>
+        <p>OS Engine Operator Panel</p>
+      </div>
+      <div class="nav-section">Views</div>
+      <div class="nav-item active" onclick="show('registry')">Registry</div>
+      <div class="nav-item" onclick="show('process')">Process Action</div>
+      <div class="nav-item" onclick="show('events')">Event Log</div>
+      <div class="nav-item" onclick="location.href='/'">Back to Dashboard</div>
+    </aside>
+    <main class="main">
+      <div class="header">
+        <h2>OS Engine Operator Panel</h2>
+        <div class="token-input">
+          <input type="password" id="token" placeholder="x-admin-token" style="width:200px" value="dlb-admin-2026-trust">
+          <button onclick="saveToken()">Set Token</button>
+          <button class="secondary" onclick="loadRegistry()">Refresh</button>
+        </div>
+      </div>
+
+      <div id="flash"></div>
+
+      <section id="registry">
+        <div class="card">
+          <h3>Engine Registry</h3>
+          <div id="engines" class="engine-grid">
+            <div class="muted">Loading...</div>
+          </div>
+        </div>
+      </section>
+
+      <section id="process" class="hidden">
+        <div class="card">
+          <h3>Process an Engine Action</h3>
+          <div class="form-grid">
+            <label>Engine</label>
+            <select id="proc-engine"></select>
+            <label>Action</label>
+            <select id="proc-action"></select>
+            <label>Payload</label>
+            <textarea id="proc-payload" rows="6" placeholder='{"bankId":"..."}'></textarea>
+          </div>
+          <div class="actions">
+            <button onclick="runProcess()">Run</button>
+            <button class="secondary" onclick="autofill()">Autofill Sample</button>
+          </div>
+          <pre id="proc-output" class="output hidden"></pre>
+        </div>
+      </section>
+
+      <section id="events" class="hidden">
+        <div class="card">
+          <h3>Recent OS Events</h3>
+          <div class="actions">
+            <button onclick="loadEvents('bank')">Bank</button>
+            <button onclick="loadEvents('treasury')">Treasury</button>
+            <button onclick="loadEvents('payment')">Payment</button>
+            <button onclick="loadEvents('security')">Security</button>
+            <button onclick="loadEvents('rest-api')">REST API</button>
+            <button onclick="loadEvents('bookkeeping')">Bookkeeping</button>
+            <button onclick="loadEvents('cash')">Cash</button>
+            <button onclick="loadEvents('asset-acquisition')">Assets</button>
+            <button onclick="loadEvents('bank-aggregator')">Bank Aggregator</button>
+            <button onclick="loadEvents('funding')">Funding</button>
+            <button onclick="loadEvents('smart-router')">Smart Router</button>
+            <button onclick="loadEvents('back-office')">Back Office</button>
+            <button onclick="loadEvents('wallet-onramp')">Wallet On-Ramp</button>
+            <button onclick="loadEvents('alchemy-wallet')">Alchemy Wallet</button>
+          </div>
+          <div id="events-table" style="margin-top:12px"></div>
+          <div class="form-grid" style="margin-top:12px">
+            <label>Event ID</label>
+            <input type="text" id="event-id" placeholder="bank-...">
+            <label>Engine</label>
+            <input type="text" id="event-engine" value="bank" placeholder="bank">
+          </div>
+          <button onclick="getEvent()">Get Event</button>
+          <pre id="event-output" class="output hidden"></pre>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <script>
+    let engines = [];
+    const actionsByEngine = {
+      bank: ['status', 'sync', 'accounts', 'balance', 'transactions', 'syncToLedger', 'cachedBanks', 'cachedAccounts', 'cachedTransactions'],
+      treasury: ['status', 'position', 'sweep', 'reserve', 'release', 'post'],
+      payment: ['status', 'listMethods', 'tokenize', 'authorize', 'sale', 'capture', 'refund', 'void', 'listTx'],
+      clearing: ['status', 'submit', 'get', 'list', 'reconcile'],
+      settlement: ['status', 'submit', 'get', 'list', 'execute', 'reconcile'],
+      compliance: ['status', 'screen', 'get', 'list', 'approve', 'block', 'screenRecipient'],
+      security: ['status', 'audit', 'threatCheck', 'rotateAdminToken'],
+      'rest-api': ['status', 'metrics', 'createApiKey', 'disableApiKey'],
+      bookkeeping: ['status', 'detectDuplicates', 'reverseDuplicate', 'postAdjustment', 'reverseTransaction', 'subLedgerList', 'subLedgerRollup', 'computeProof'],
+      cash: ['status', 'createAccount', 'listAccounts', 'getAccount', 'transfer', 'deposit', 'positionSummary', 'getMovements', 'reconcile'],
+      'asset-acquisition': ['status', 'acquire', 'list', 'get', 'update', 'dispose'],
+      'bank-aggregator': ['status', 'connectorTypes', 'listConnections', 'createConnection', 'getConnection', 'updateConnection', 'deleteConnection', 'pull', 'push', 'listAccounts', 'listTransactions', 'listStatements', 'listEvents', 'pullReturns', 'pullFileStatus'],
+      funding: ['status', 'getStatus', 'getConfig', 'buildPlan', 'executePlan', 'depositInvoice', 'sourceBalances'],
+      'smart-router': ['status', 'route', 'deliver', 'confirm', 'receipt', 'list', 'get'],
+      'back-office': ['status', 'treasurySummary', 'bankReconciliation', 'listDistributions', 'getDistribution', 'createDistribution', 'approveDistribution', 'rejectDistribution', 'executeDistribution', 'batchProcess'],
+      'wallet-onramp': ['status', 'providers', 'quote', 'fund', 'getOperation', 'listOperations', 'continue', 'execute'],
+      'alchemy-wallet': ['status', 'listWallets', 'getBalances', 'switchSigner', 'createLocalWallet', 'sessionStatus', 'listSourceBalances', 'fundFromSource', 'fundFromOperating', 'listFundingRequests', 'getFundingRequest', 'confirmDeposit', 'cancelFundingRequest', 'send']
+    };
+    const samples = {
+      bank: JSON.stringify({ bankId: 'SMOKE-BANK', accountId: 'SMOKE-ACCT', from: '2026-01-01', to: '2026-12-31', limit: 10 }, null, 2),
+      treasury: JSON.stringify({ accountId: 'TREASURY_HOT', poolId: 'POOL-1', amount: 100 }, null, 2),
+      payment: JSON.stringify({ type: 'card', memberId: 'M-1' }, null, 2),
+      clearing: JSON.stringify({ direction: 'debit', rail: 'ach', amount: 100, currency: 'USD' }, null, 2),
+      settlement: JSON.stringify({ settlementId: 'SET-1' }, null, 2),
+      compliance: JSON.stringify({ subject: 'ACME Corp' }, null, 2),
+      security: JSON.stringify({ actor: 'admin', resource: '/api/os', metadata: { outcome: 'allow' } }, null, 2),
+      'rest-api': JSON.stringify({ name: 'operator-key', role: 'operator', scopes: ['os:read'] }, null, 2),
+      bookkeeping: JSON.stringify({ minAmount: 1000, windowHours: 24 }, null, 2),
+      cash: JSON.stringify({ accountName: 'Operating Cash', accountType: 'operating' }, null, 2),
+      'asset-acquisition': JSON.stringify({ category: 'real_estate', name: 'Sample Property', amountUsd: 250000, identifier: 'DEED-123' }, null, 2),
+      'bank-aggregator': JSON.stringify({ action: 'createConnection', name: 'Sample Bank', connectorType: 'internal_rails', direction: 'both', config: {} }, null, 2),
+      funding: JSON.stringify({ action: 'buildPlan', amountUsd: 100, sourceType: 'cash', sourceAccountId: 'CA-BOND-PROCEEDS', targetAsset: 'ETH', strategy: 'auto' }, null, 2),
+      'smart-router': JSON.stringify({ action: 'deliver', amount: 100, currency: 'USD', destination: { type: 'bank', accountNumber: '123456789', routingNumber: '111000025' }, preferred: 'fiat', reference: 'SR-001', memo: 'Treasury disbursement' }, null, 2),
+      'back-office': JSON.stringify({ action: 'createDistribution', beneficiaryEmail: 'beneficiary@example.com', amountUsd: 100, destinationAddress: '0x0000000000000000000000000000000000000000', sourceType: 'cash', sourceAccountId: 'CA-OPERATING', memo: 'PTC distribution' }, null, 2),
+      'wallet-onramp': JSON.stringify({ action: 'fund', sourceType: 'treasury', sourceAccountId: 'TREASURY_HOT', amount: 100, asset: 'USDC', targetAddress: '0x69a32f285ced1dbf102c7baedf0266f1d39580a1', sourceMethod: 'manual' }, null, 2),
+      'alchemy-wallet': JSON.stringify({ action: 'fundFromOperating', amount: 0.01, asset: 'USDC', targetAddress: '0x69a32f285ced1dbf102c7baedf0266f1d39580a1', sourceMethod: 'manual', autoReplenish: true }, null, 2)
+    };
+
+    function el(id) { return document.getElementById(id); }
+    function token() { return el('token').value.trim(); }
+    function flash(msg, ok) {
+      const f = el('flash');
+      f.className = 'flash ' + (ok ? 'success' : 'error');
+      f.textContent = msg;
+      setTimeout(() => { f.className = ''; f.textContent = ''; }, 5000);
+    }
+
+    async function api(method, path, body) {
+      const opts = {
+        method,
+        headers: {
+          'Content-Type': 'application/json',
+          'x-admin-token': token()
+        }
+      };
+      if (body !== undefined) opts.body = JSON.stringify(body);
+      const res = await fetch(path, opts);
+      const text = await res.text();
+      let json = null;
+      try { json = JSON.parse(text); } catch {}
+      return { ok: res.ok, body: json || text };
+    }
+
+    function show(id) {
+      ['registry', 'process', 'events'].forEach((s) => el(s).classList.add('hidden'));
+      el(id).classList.remove('hidden');
+      document.querySelectorAll('.nav-item').forEach((n) => n.classList.remove('active'));
+      event.target.classList.add('active');
+      if (id === 'registry') loadRegistry();
+      if (id === 'process') populateEngines();
+    }
+
+    async function loadRegistry() {
+      const out = el('engines');
+      const { ok, body } = await api('GET', '/api/os');
+      if (!ok) { out.innerHTML = '<div class="muted">Error: ' + (body.error || 'unknown') + '</div>'; return; }
+      engines = body.data || [];
+      out.innerHTML = engines.map((e) => {
+        const healthy = e.healthy && e.data && e.data.healthy !== false;
+        const mode = e.data && e.data.mode ? e.data.mode : 'shadow';
+        return `
+          <div class="card engine-card ${healthy ? 'healthy' : 'unhealthy'}">
+            <h4>
+              <span>${esc(e.name)}</span>
+              <span class="badge ${healthy ? 'healthy' : 'unhealthy'}">${healthy ? 'healthy' : 'unhealthy'}</span>
+            </h4>
+            <div class="muted">mode: ${mode}</div>
+            <pre class="output" style="max-height:120px;font-size:11px">${esc(JSON.stringify(e.data, null, 2))}</pre>
+          </div>`;
+      }).join('');
+    }
+
+    function populateEngines() {
+      const engSel = el('proc-engine');
+      engSel.innerHTML = engines.map((e) => `<option value="${esc(e.name)}">${esc(e.name)}</option>`).join('');
+      updateActions();
+    }
+
+    function updateActions() {
+      const eng = el('proc-engine').value;
+      const actSel = el('proc-action');
+      const acts = actionsByEngine[eng] || ['status'];
+      actSel.innerHTML = acts.map((a) => `<option value="${esc(a)}">${esc(a)}</option>`).join('');
+      autofill();
+    }
+
+    function autofill() {
+      const eng = el('proc-engine').value;
+      el('proc-payload').value = samples[eng] || '{}';
+    }
+
+    async function runProcess() {
+      const engine = el('proc-engine').value;
+      const action = el('proc-action').value;
+      let payload = {};
+      try { payload = JSON.parse(el('proc-payload').value || '{}'); } catch (err) { flash('Invalid JSON payload', false); return; }
+      const { ok, body } = await api('POST', `/api/os/${engine}/process`, { action, ...payload });
+      const out = el('proc-output');
+      out.classList.remove('hidden');
+      out.textContent = JSON.stringify(body, null, 2);
+      flash(ok ? 'Process succeeded' : (body.error || 'Process failed'), ok);
+    }
+
+    async function loadEvents(engine) {
+      const { ok, body } = await api('GET', `/api/os/${engine}/list?limit=10`);
+      const wrap = el('events-table');
+      if (!ok) { wrap.innerHTML = '<div class="muted">Error: ' + (body.error || 'unknown') + '</div>'; return; }
+      const rows = body.data || [];
+      if (!rows.length) { wrap.innerHTML = '<div class="muted">No events</div>'; return; }
+      wrap.innerHTML = '<table><thead><tr><th>event_id</th><th>action</th><th>status</th><th>created_at</th></tr></thead><tbody>' +
+        rows.map((r) => `<tr><td>${esc(r.event_id)}</td><td>${esc(r.action)}</td><td>${esc(r.status)}</td><td>${esc(r.created_at)}</td></tr>`).join('') +
+        '</tbody></table>';
+    }
+
+    async function getEvent() {
+      const id = el('event-id').value.trim();
+      const engine = (el('event-engine').value || 'bank').trim();
+      if (!id || !engine) { flash('Enter event id and engine', false); return; }
+      const { ok, body } = await api('GET', `/api/os/${engine}/get/${encodeURIComponent(id)}`);
+      const out = el('event-output');
+      out.classList.remove('hidden');
+      out.textContent = JSON.stringify(body, null, 2);
+      flash(ok ? 'Event fetched' : (body.error || 'Fetch failed'), ok);
+    }
+
+    function esc(s) {
+      if (s == null) return '';
+      return String(s).replace(/[&<>"']/g, (c) => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+    }
+
+    function saveToken() {
+      localStorage.setItem('os-admin-token', token());
+      flash('Token set', true);
+      loadRegistry();
+    }
+
+    el('proc-engine').addEventListener('change', updateActions);
+    window.addEventListener('DOMContentLoaded', () => {
+      const saved = localStorage.getItem('os-admin-token');
+      if (saved) el('token').value = saved;
+      loadRegistry();
+    });
+  </script>
+</body>
+</html>

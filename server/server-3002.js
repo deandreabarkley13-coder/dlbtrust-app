@@ -5,6 +5,9 @@ var fs = require('fs');
 // HD = repo root (httpdocs on production, __dirname/.. locally)
 var HD = path.resolve(__dirname, '..');
 
+// Patch viem chain resolution for Base mainnet before any DApp modules load
+require(path.join(HD, 'server', 'integrations', 'dapp', 'viemChainPatch'));
+
 // Use local express (installed via npm install in HD)
 var express = require('express');
 var app = express();
@@ -138,6 +141,12 @@ try { app.use('/api/utilities', require(path.join(HD, 'server', 'routes', 'utili
 
 // Programmable Money Engine — rule-based, consensus-gated trust asset execution
 try { app.use('/api/programmable-money', require(path.join(HD, 'server', 'routes', 'programmableMoney'))); console.log('[programmable-money] loaded'); } catch(e) { console.warn('[programmable-money]', e.message); }
+
+// Open Agent ID — DID-backed agent identity, credit lookups, and request signing
+try { app.use('/api/open-agent-id', require(path.join(HD, 'server', 'routes', 'openAgentId'))); console.log('[open-agent-id] loaded'); } catch(e) { console.warn('[open-agent-id]', e.message); }
+
+// OS Engines — unified operating-system layer for bank, treasury, payment, clearing, settlement, compliance, security, REST API, bookkeeping, cash, asset-acquisition, bank-aggregator, funding, smart-router, and back-office
+try { app.use('/api/os', require(path.join(HD, 'server', 'routes', 'os'))); console.log('[os-engines] loaded'); } catch(e) { console.warn('[os-engines]', e.message); }
 
 // DeFi dApp — dApp login at /dapp, command center at /dashboard; landing page at root; legacy treasury dashboard at /treasury
 function serveDapp(req, res) {
@@ -392,6 +401,15 @@ async function initializeDatabase() {
     await WealthManagementEngine.ensureTables();
     console.log('[wealth-management] tables ensured');
   } catch(e) { console.warn('[wealth-management] table init:', e.message); }
+
+  // Banking aggregator tables must be migrated before trust-aggregator runs,
+  // because trust-aggregator drops legacy `aggregator_*` tables that lack its
+  // `connection_id` column and would otherwise delete banking data.
+  try {
+    var { BankingAggregator } = require(path.join(HD, 'server', 'integrations', 'aggregator', 'bankingAggregator'));
+    await BankingAggregator.ensureTables();
+    console.log('[banking-aggregator] tables ensured and legacy data migrated');
+  } catch(e) { console.warn('[banking-aggregator] table init:', e.message); }
 
   try {
     var TrustAggregatorEngine = require(path.join(HD, 'server', 'integrations', 'dapp', 'trustAggregatorEngine')).TrustAggregatorEngine;
@@ -654,6 +672,13 @@ async function initializeDatabase() {
     console.log('[programmable-money] tables ensured');
   } catch(e) { console.warn('[programmable-money] table init:', e.message); }
 
+  // OS Engines — bank, treasury, payment, clearing, settlement, compliance, security, REST API, bookkeeping, cash, asset-acquisition, bank-aggregator, funding, smart-router, back-office
+  try {
+    var OSEngine = require(path.join(HD, 'server', 'integrations', 'os', 'osEngine'));
+    await OSEngine.ensureAll();
+    console.log('[os-engines] all tables ensured');
+  } catch(e) { console.warn('[os-engines] table init:', e.message); }
+
   console.log('[startup] All database migrations complete');
 }
 
@@ -709,6 +734,22 @@ initializeDatabase().then(function() {
         console.warn('[dapp] master wallet seeding failed:', err.message);
       });
     } catch(e) { console.warn('[dapp] master wallet seeding setup:', e.message); }
+  });
+
+  // Open Agent ID initialization — registers or loads the local agent identity in the background.
+  setImmediate(function() {
+    try {
+      var OpenAgentIdEngine = require(path.join(HD, 'server', 'integrations', 'openAgentId', 'openAgentIdEngine')).OpenAgentIdEngine;
+      OpenAgentIdEngine.initialize().then(function(result) {
+        if (result && result.ready) {
+          console.log('[open-agent-id] identity initialized:', result.identity ? result.identity.did : '');
+        } else {
+          console.log('[open-agent-id] initialization skipped:', (result && result.reason) || 'auto-register disabled');
+        }
+      }).catch(function(err) {
+        console.warn('[open-agent-id] initialization:', err.message);
+      });
+    } catch(e) { console.warn('[open-agent-id] setup:', e.message); }
   });
 
   // Operator Gas Tank auto-check (converts source-ledger USD to operator ETH when low).

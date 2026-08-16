@@ -27,6 +27,7 @@
     "@hashgraph/stablecoin-npm-sdk": "^4.4.0",
     "@hiero-ledger/sdk": "^2.79.0",
     "@magic-sdk/admin": "^2.8.2",
+    "@open-agent-id/sdk": "^0.3.1",
     "@safe-global/api-kit": "^5.0.1",
     "@safe-global/protocol-kit": "^8.0.4",
     "@stellar/stellar-sdk": "^16.1.0",
@@ -59,6 +60,7 @@
     "zod": "^3.23.8"
   },
   "devDependencies": {
+    "@eslint/js": "^9.39.5",
     "@types/better-sqlite3": "^7.6.11",
     "@types/cors": "^2.8.17",
     "@types/express": "^4.17.21",
@@ -70,6 +72,7 @@
     "@vitejs/plugin-react": "^4.3.1",
     "concurrently": "^9.0.0",
     "eslint": "^9.9.0",
+    "globals": "^14.0.0",
     "solc": "^0.8.36",
     "tsx": "^4.19.0",
     "typescript": "^5.5.4",

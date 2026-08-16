@@ -134,6 +134,15 @@ class SourceOfFundsAdapter {
         if (!acct) throw new Error(`Cash account not found: ${sourceAccountId}`);
         if (Number(acct.balance_cents || 0) < amountCents) throw new Error(`Insufficient cash balance in ${sourceAccountId}`);
         const holdingAccount = cfg.cashHoldingAccount || 'STABLECOIN_CASH_HOLD';
+        const holdingAcct = await CashEngine.getAccount(holdingAccount);
+        if (!holdingAcct) {
+          await CashEngine.createAccount({
+            accountId: holdingAccount,
+            accountName: 'Stablecoin Cash Hold',
+            accountType: 'reserve',
+            notes: 'Intermediary hold for stablecoin and wallet on-ramp funding',
+          });
+        }
         const movement = await CashEngine.transfer({
           fromAccountId: sourceAccountId,
           toAccountId: holdingAccount,
