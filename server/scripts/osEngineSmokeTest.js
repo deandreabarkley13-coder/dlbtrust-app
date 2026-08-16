@@ -19,7 +19,7 @@ const BASE_URL = (process.env.OS_TEST_BASE_URL || 'http://localhost:3002').repla
 const TOKEN = process.env.ADMIN_SECRET_TOKEN || 'dlb-admin-2026-trust';
 const VERBOSE = process.env.OS_TEST_VERBOSE !== 'false';
 
-const engines = ['bank', 'treasury', 'payment', 'clearing', 'settlement', 'compliance', 'security', 'rest-api', 'bookkeeping', 'cash', 'asset-acquisition', 'bank-aggregator', 'funding', 'smart-router', 'back-office', 'wallet-onramp', 'alchemy-wallet'];
+const engines = ['bank', 'treasury', 'payment', 'clearing', 'settlement', 'compliance', 'security', 'rest-api', 'bookkeeping', 'cash', 'asset-acquisition', 'bank-aggregator', 'funding', 'smart-router', 'back-office', 'wallet-onramp', 'alchemy-wallet', 'tokenization'];
 
 const results = [];
 let failed = false;
@@ -133,6 +133,7 @@ async function main() {
     { engine: 'alchemy-wallet', action: 'getBalances', payload: { address: '0x74204857713CC1d741670505003e7261EF626E98' } },
     { engine: 'alchemy-wallet', action: 'send', payload: { to: '0x69a32f285ced1dbf102c7baedf0266f1d39580a1', amount: '0.0001', asset: 'ETH', dryRun: true } },
     { engine: 'alchemy-wallet', action: 'fundFromSource', payload: { sourceType: 'cash', sourceAccountId: 'CA-BOND-PROCEEDS', amount: 0.01, asset: 'SIT', targetAddress: '0x74204857713CC1d741670505003e7261EF626E98', memo: 'Smoke test internal wallet credit' }, capture: 'alchemyFundingEventId' },
+    { engine: 'tokenization', action: 'execute', payload: { sourceType: 'bond_interest', sourceAccountId: '1', amount: 0.01, tokenSymbol: 'DLB-PRB-INT' } },
   ];
 
   const bankEventIds = [];

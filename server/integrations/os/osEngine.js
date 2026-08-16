@@ -2602,6 +2602,344 @@ class AlchemyWalletEngine extends BaseOSEngine {
   }
 }
 
+// ─── Tokenization Engine ──────────────────────────────────────────────────────
+
+class TokenizationEngine extends BaseOSEngine {
+  static get engineName() { return 'tokenization'; }
+
+  static _dappConfig() {
+    try {
+      const { getConfig } = require('../dapp/config');
+      return getConfig();
+    } catch (e) { return {}; }
+  }
+
+  static _deps() {
+    const BondTokenization = tryRequire('../dapp/bondTokenizationEngine')?.BondTokenizationEngine || null;
+    const PtcStablecoin = tryRequire('../dapp/ptcStablecoinEngine')?.PtcStablecoinEngine || null;
+    const DexSwap = tryRequire('../dapp/dexSwapEngine')?.DexSwapEngine || null;
+    const BondEngine = tryRequire('../bonds/bondEngine')?.BondEngine || null;
+    const LiveBond = tryRequire('../bonds/liveEngine')?.LiveBondEngine || null;
+    const SourceOfFunds = tryRequire('../stablecoin/sourceOfFundsAdapter')?.SourceOfFundsAdapter || null;
+    return { BondTokenization, PtcStablecoin, DexSwap, BondEngine, LiveBond, SourceOfFunds };
+  }
+
+  static _isShadow() {
+    if (process.env.TOKENIZATION_SHADOW === 'true') return true;
+    const cfg = this._dappConfig();
+    if (!cfg.privateKey || cfg.dappShadow || cfg.dappShadow === true) return true;
+    if (process.env.DAPP_SHADOW === 'true') return true;
+    return false;
+  }
+
+  static async ensureTables() {
+    await super.ensureTables();
+    if (!pool) return;
+    await query(`
+      CREATE TABLE IF NOT EXISTS tokenization_events (
+        id TEXT PRIMARY KEY,
+        operation TEXT NOT NULL,
+        source_type TEXT,
+        source_account_id TEXT,
+        amount NUMERIC NOT NULL DEFAULT 0,
+        status TEXT NOT NULL DEFAULT 'pending',
+        tx_hash TEXT,
+        metadata JSONB DEFAULT '{}',
+        created_at TIMESTAMPTZ DEFAULT NOW(),
+        updated_at TIMESTAMPTZ DEFAULT NOW()
+      )
+    `);
+    await query(`CREATE INDEX IF NOT EXISTS idx_tokenization_events_operation ON tokenization_events(operation)`);
+    await query(`CREATE INDEX IF NOT EXISTS idx_tokenization_events_status ON tokenization_events(status)`);
+  }
+
+  static async status() {
+    const cfg = this._dappConfig();
+    const deps = this._deps();
+    const shadow = this._isShadow();
+    const issues = [];
+    if (!cfg.chainId) issues.push('DAPP_CHAIN_ID not configured');
+    if (!cfg.usdcAddress) issues.push('DAPP_USDC_ADDRESS not configured');
+    if (!cfg.privateKey && !shadow) issues.push('DAPP_PRIVATE_KEY not configured (running shadow)');
+    if (!deps.BondTokenization) issues.push('BondTokenizationEngine not available');
+    if (!deps.PtcStablecoin) issues.push('PtcStablecoinEngine not available');
+    if (!deps.DexSwap) issues.push('DexSwapEngine not available');
+    if (!deps.BondEngine) issues.push('BondEngine not available');
+    if (!deps.SourceOfFunds) issues.push('SourceOfFundsAdapter not available');
+    const ready = shadow || issues.filter((i) => !i.includes('running shadow')).length === 0;
+    return {
+      engine: this.engineName,
+      healthy: true,
+      mode: shadow ? 'shadow' : 'live',
+      chainId: cfg.chainId || 8453,
+      usdcAddress: cfg.usdcAddress || '',
+      operatorAddress: cfg.operatorAddress || '',
+      agentWallet: process.env.AGENT_WALLET_ADDRESS || '0x69a32f285ced1dbf102c7baedf0266f1d39580a1',
+      ready,
+      issues,
+      timestamp: new Date().toISOString(),
+    };
+  }
+
+  static async _recordOperation(operation, payload, result, status = 'completed') {
+    const eventId = id('TOK');
+    if (pool) {
+      try {
+        await query(
+          `INSERT INTO tokenization_events (id, operation, source_type, source_account_id, amount, status, tx_hash, metadata)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8::jsonb)`,
+          [eventId, operation, payload.sourceType || null, payload.sourceAccountId || null, Number(payload.amount) || 0, status, result.txHash || null, safeJson({ payload, result })]
+        );
+      } catch (e) { console.warn(`[${this.engineName}] record operation failed:`, e.message); }
+    }
+    return eventId;
+  }
+
+  static async _reserveSource({ sourceType, sourceAccountId, amount, paymentId }) {
+    const deps = this._deps();
+    if (!deps.SourceOfFunds) throw new Error('SourceOfFundsAdapter not available');
+    const amountCents = Math.round(Number(amount) * 100);
+    const reserve = await deps.SourceOfFunds.reserve({
+      id: paymentId,
+      source_type: sourceType,
+      source_account_id: sourceAccountId,
+      total_cents: amountCents,
+    });
+    return reserve;
+  }
+
+  static async _tokenizeBondInterest({ bondId, amount, tokenName, tokenSymbol, paymentId }) {
+    const deps = this._deps();
+    if (!deps.BondEngine) throw new Error('BondEngine not available');
+    if (!deps.BondTokenization) throw new Error('BondTokenizationEngine not available');
+    const cfg = this._dappConfig();
+    const operatorAddress = cfg.operatorAddress || process.env.DAPP_OPERATOR_ADDRESS || process.env.AGENT_WALLET_ADDRESS || '0x69a32f285ced1dbf102c7baedf0266f1d39580a1';
+
+    const bond = await deps.BondEngine.getBond(bondId);
+    if (!bond) throw new Error(`Bond not found: ${bondId}`);
+
+    const token = await deps.BondTokenization.createToken({
+      bondId: Number(bondId),
+      tokenName: tokenName || `${bond.bond_name} Interest Token`,
+      tokenSymbol: tokenSymbol || `DLB-${bond.id}-INT`,
+      decimals: 6,
+    });
+
+    const mint = await deps.BondTokenization.mint({
+      tokenId: token.id,
+      principal: 0,
+      interest: Number(amount),
+      holderAddress: operatorAddress,
+    });
+
+    return { bond, bondToken: token, mint, paymentId, operatorAddress };
+  }
+
+  static async _mintStablecoin({ bondTokenAddress, amount, recipient } = {}) {
+    const deps = this._deps();
+    if (!deps.PtcStablecoin) throw new Error('PtcStablecoinEngine not available');
+    if (!bondTokenAddress) throw new Error('bondTokenAddress required');
+    if (!this._isShadow() && !String(bondTokenAddress).startsWith('0x')) throw new Error('bondTokenAddress must be a 0x address in live mode');
+    const cfg = this._dappConfig();
+    const to = recipient || cfg.operatorAddress || process.env.DAPP_OPERATOR_ADDRESS || process.env.AGENT_WALLET_ADDRESS || '0x69a32f285ced1dbf102c7baedf0266f1d39580a1';
+    if (!to || !String(to).startsWith('0x')) throw new Error('recipient/operatorAddress required');
+
+    if (this._isShadow()) {
+      return {
+        mode: 'shadow',
+        tokenAddress: `shadow-ptcusd-${Date.now()}`,
+        vaultAddress: `shadow-vault-${Date.now()}`,
+        bondTokenAddress,
+        minted: Number(amount),
+        recipient: to,
+        note: 'Shadow PTC stablecoin mint; set DAPP_PRIVATE_KEY and DAPP_SHADOW=false for live deployment',
+      };
+    }
+
+    if (!cfg.privateKey) throw new Error('DAPP_PRIVATE_KEY not configured for live stablecoin mint');
+    const deploy = await deps.PtcStablecoin.deploy({ tokenName: 'DLB PTC Stablecoin', tokenSymbol: 'DLB-PTCUSD' });
+    await deps.PtcStablecoin.addReserveToken({ token: bondTokenAddress, decimals: 6, price: '1000000000000000000' });
+    const deposit = await deps.PtcStablecoin.approveAndDeposit({ token: bondTokenAddress, amount: String(amount), recipient: to });
+    const info = await deps.PtcStablecoin.info();
+    return {
+      mode: 'live',
+      tokenAddress: info.tokenAddress,
+      vaultAddress: info.vaultAddress,
+      bondTokenAddress,
+      minted: deposit.mintedStablecoin,
+      recipient: to,
+      deployTx: deploy.deployTx,
+      depositTx: deposit.txHash,
+    };
+  }
+
+  static async _swapToUsdc({ tokenIn, amount, recipient, poolAddress, swapRouter } = {}) {
+    const deps = this._deps();
+    if (!deps.DexSwap) throw new Error('DexSwapEngine not available');
+    if (!tokenIn) throw new Error('tokenIn required');
+    if (!this._isShadow() && !String(tokenIn).startsWith('0x')) throw new Error('tokenIn must be a 0x address in live mode');
+    const cfg = this._dappConfig();
+    const tokenOut = cfg.usdcAddress || process.env.DAPP_USDC_ADDRESS || '';
+    if (!tokenOut) throw new Error('DAPP_USDC_ADDRESS not configured');
+    const to = recipient || process.env.AGENT_WALLET_ADDRESS || '0x69a32f285ced1dbf102c7baedf0266f1d39580a1';
+
+    if (this._isShadow()) {
+      return {
+        mode: 'shadow',
+        tokenIn,
+        tokenOut,
+        amountIn: amount,
+        amountOut: (Number(amount) * 0.98).toFixed(6),
+        recipient: to,
+        txHash: `shadow-swap-${Date.now()}`,
+        note: 'Shadow DEX swap; live swap requires an approved pool/router with USDC liquidity',
+      };
+    }
+
+    if (!cfg.privateKey) throw new Error('DAPP_PRIVATE_KEY not configured for live DEX swap');
+
+    if (poolAddress) {
+      const quote = await deps.DexSwap.quote({ tokenIn, tokenOut, amountIn: amount, decimalsIn: 18, decimalsOut: 6, router: poolAddress });
+      const swap = await deps.DexSwap.swap({ tokenIn, tokenOut, amountIn: amount, amountOutMinimum: quote.amountOutMinimum, recipient: to, decimalsIn: 18, decimalsOut: 6, router: poolAddress });
+      return { ...swap, tokenIn, tokenOut, recipient: to, mode: 'live' };
+    }
+
+    const quote = await deps.DexSwap.quoteUniswapV2({ tokenIn, tokenOut, amountIn: amount, decimalsIn: 18, decimalsOut: 6, path: [tokenIn, tokenOut], router: swapRouter });
+    const swap = await deps.DexSwap.swapOnUniswapV2({
+      tokenIn,
+      tokenOut,
+      amountIn: amount,
+      amountOutMinimum: quote.amountOutMinimum,
+      recipient: to,
+      decimalsIn: 18,
+      decimalsOut: 6,
+      path: [tokenIn, tokenOut],
+      router: swapRouter,
+    });
+    return { ...swap, tokenIn, tokenOut, recipient: to, mode: 'live' };
+  }
+
+  static async _sendToAgentWallet({ asset, amount, to, tokenAddress } = {}) {
+    const cfg = this._dappConfig();
+    const target = to || process.env.AGENT_WALLET_ADDRESS || '0x69a32f285ced1dbf102c7baedf0266f1d39580a1';
+    if (!tokenAddress || !String(tokenAddress).startsWith('0x')) throw new Error('tokenAddress required');
+
+    if (this._isShadow()) {
+      return {
+        mode: 'shadow',
+        asset,
+        amount,
+        to: target,
+        tokenAddress,
+        txHash: `shadow-send-${Date.now()}`,
+        note: 'Shadow token send to Agent Wallet',
+      };
+    }
+
+    if (!cfg.privateKey) throw new Error('DAPP_PRIVATE_KEY not configured for live token send');
+    let viem = null; try { viem = require('viem'); } catch (e) {}
+    let privateKeyToAccount; try { ({ privateKeyToAccount } = require('viem/accounts')); } catch (e) {}
+    let chains; try { chains = require('viem/chains'); } catch (e) {}
+    if (!viem || !privateKeyToAccount) throw new Error('viem not installed');
+
+    const account = privateKeyToAccount(cfg.privateKey);
+    const chain = cfg.chainId === 8453 && chains?.base ? chains.base : (cfg.chainId === 11155111 ? chains?.sepolia : chains?.mainnet);
+    const publicClient = viem.createPublicClient({ chain, transport: viem.http(cfg.rpcUrl) });
+    const walletClient = viem.createWalletClient({ account, chain, transport: viem.http(cfg.rpcUrl) });
+    const raw = viem.parseUnits(String(amount), 6);
+    const hash = await walletClient.writeContract({
+      address: tokenAddress,
+      abi: [{ type: 'function', name: 'transfer', inputs: [{ type: 'address' }, { type: 'uint256' }], outputs: [{ type: 'bool' }], stateMutability: 'nonpayable' }],
+      functionName: 'transfer',
+      args: [target, raw],
+    });
+    const receipt = await publicClient.waitForTransactionReceipt({ hash, timeout: 120000 });
+    if (receipt.status !== 'success') throw new Error(`transfer failed: ${hash}`);
+    return { mode: 'live', asset, amount, to: target, tokenAddress, txHash: hash };
+  }
+
+  static async _tokenizeAndSend(payload = {}) {
+    const {
+      amount, sourceType = 'bond_interest', sourceAccountId = '1',
+      tokenName, tokenSymbol, recipient,
+      poolAddress, swapRouter,
+    } = payload;
+    if (!amount || Number(amount) <= 0) throw new Error('amount must be positive');
+    const cfg = this._dappConfig();
+    const operatorAddress = cfg.operatorAddress || process.env.DAPP_OPERATOR_ADDRESS || process.env.AGENT_WALLET_ADDRESS || '0x69a32f285ced1dbf102c7baedf0266f1d39580a1';
+    const targetAddress = recipient || process.env.AGENT_WALLET_ADDRESS || '0x69a32f285ced1dbf102c7baedf0266f1d39580a1';
+    const paymentId = id('TOKPAY');
+
+    // 1. Reserve the coupon interest in the GL
+    const reserve = await this._reserveSource({ sourceType, sourceAccountId, amount, paymentId });
+
+    // 2. Mint a bond-interest ERC-20 to the operator
+    const tokenizeResult = await this._tokenizeBondInterest({ bondId: sourceAccountId, amount, tokenName, tokenSymbol, paymentId });
+    const bondTokenAddress = tokenizeResult.bondToken.token_address;
+
+    // 3. Deposit bond token into PTC reserve vault and mint DLB-PTCUSD 1:1
+    const stablecoin = await this._mintStablecoin({ bondTokenAddress, amount, recipient: operatorAddress });
+
+    // 4. Swap DLB-PTCUSD to USDC and deliver to Agent Wallet
+    const stablecoinAddress = stablecoin.tokenAddress;
+    const swap = await this._swapToUsdc({ tokenIn: stablecoinAddress, amount, recipient: targetAddress, poolAddress, swapRouter });
+
+    // 5. If the swap did not deliver to the Agent Wallet, sweep the resulting tokens
+    const finalSend = swap.recipient && String(swap.recipient).toLowerCase() === String(targetAddress).toLowerCase()
+      ? null
+      : await this._sendToAgentWallet({ asset: 'USDC', amount: swap.amountOut, to: targetAddress, tokenAddress: cfg.usdcAddress });
+
+    const result = {
+      paymentId,
+      sourceType,
+      sourceAccountId,
+      amount,
+      agentWallet: targetAddress,
+      reserve,
+      tokenizeResult,
+      stablecoin,
+      swap,
+      finalSend,
+      mode: this._isShadow() ? 'shadow' : 'live',
+      note: this._isShadow()
+        ? 'End-to-end tokenization flow simulated. Set DAPP_PRIVATE_KEY, fund gas, and provide a USDC pool/router to execute live.'
+        : 'Tokenization flow executed live. Verify USDC balance in the Agent Wallet.',
+    };
+    return result;
+  }
+
+  static async _process(action, payload = {}) {
+    switch (action) {
+      case 'status':
+        return await this.status();
+      case 'health':
+        return await this.health();
+      case 'configure':
+        return { configured: true, ...await this.status() };
+      case 'tokenize':
+        return await this._tokenizeBondInterest({ ...payload, paymentId: id('TOKPAY') });
+      case 'mintStablecoin':
+      case 'mint-stablecoin':
+        return await this._mintStablecoin(payload || {});
+      case 'swap':
+        return await this._swapToUsdc(payload || {});
+      case 'send':
+      case 'sendToAgentWallet':
+      case 'send-to-agent-wallet':
+        return await this._sendToAgentWallet(payload || {});
+      case 'execute':
+      case 'tokenizeAndSend':
+      case 'tokenize-and-send': {
+        const result = await this._tokenizeAndSend(payload || {});
+        await this._recordOperation('tokenizeAndSend', payload || {}, result, 'completed');
+        return result;
+      }
+      default:
+        return await this.status();
+    }
+  }
+}
+
 const ENGINES = {
   bank: BankEngine,
   treasury: TreasuryEngine,
@@ -2620,6 +2958,7 @@ const ENGINES = {
   'back-office': BackOfficeEngine,
   'wallet-onramp': WalletOnRampEngine,
   'alchemy-wallet': AlchemyWalletEngine,
+  tokenization: TokenizationEngine,
 };
 
 async function ensureAll() {
@@ -2651,6 +2990,7 @@ module.exports = {
   BackOfficeEngine,
   WalletOnRampEngine,
   AlchemyWalletEngine,
+  TokenizationEngine,
   engines: ENGINES,
   ensureAll,
 };

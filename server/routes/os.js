@@ -29,6 +29,7 @@ const {
   BackOfficeEngine,
   WalletOnRampEngine,
   AlchemyWalletEngine,
+  TokenizationEngine,
 } = require('../integrations/os/osEngine');
 
 const router = express.Router();
@@ -53,6 +54,7 @@ const ENGINES = {
   'back-office': BackOfficeEngine,
   'wallet-onramp': WalletOnRampEngine,
   'alchemy-wallet': AlchemyWalletEngine,
+  tokenization: TokenizationEngine,
 };
 
 function sendError(res, err) {
