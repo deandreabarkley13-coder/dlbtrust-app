@@ -6,7 +6,7 @@
  * Provides a single, consistent interface to the operating-system engines:
  * bank, treasury, payment, clearing, settlement, compliance, security, rest-api,
  * bookkeeping, cash, asset-acquisition, bank-aggregator, funding, smart-router, back-office,
- * wallet-onramp, and alchemy-wallet.
+ * wallet-onramp, alchemy-wallet, issuer-bridge, conduit, tokenization, and melio.
  */
 
 const express = require('express');
@@ -32,6 +32,7 @@ const {
   TokenizationEngine,
   ConduitEngine,
   IssuerBridgeEngine,
+  MelioEngine,
 } = require('../integrations/os/osEngine');
 
 const router = express.Router();
@@ -59,6 +60,7 @@ const ENGINES = {
   tokenization: TokenizationEngine,
   conduit: ConduitEngine,
   'issuer-bridge': IssuerBridgeEngine,
+  melio: MelioEngine,
 };
 
 function sendError(res, err) {

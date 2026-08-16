@@ -19,7 +19,7 @@ const BASE_URL = (process.env.OS_TEST_BASE_URL || 'http://localhost:3002').repla
 const TOKEN = process.env.ADMIN_SECRET_TOKEN || 'dlb-admin-2026-trust';
 const VERBOSE = process.env.OS_TEST_VERBOSE !== 'false';
 
-const engines = ['bank', 'treasury', 'payment', 'clearing', 'settlement', 'compliance', 'security', 'rest-api', 'bookkeeping', 'cash', 'asset-acquisition', 'bank-aggregator', 'funding', 'smart-router', 'back-office', 'wallet-onramp', 'alchemy-wallet', 'tokenization', 'conduit', 'issuer-bridge'];
+const engines = ['bank', 'treasury', 'payment', 'clearing', 'settlement', 'compliance', 'security', 'rest-api', 'bookkeeping', 'cash', 'asset-acquisition', 'bank-aggregator', 'funding', 'smart-router', 'back-office', 'wallet-onramp', 'alchemy-wallet', 'tokenization', 'conduit', 'issuer-bridge', 'melio'];
 
 const results = [];
 let failed = false;
@@ -137,6 +137,10 @@ async function main() {
     { engine: 'conduit', action: 'execute', payload: { sources: [{ sourceType: 'bond_interest', sourceAccountId: '1', amount: 0.01 }], recipient: '0x69a32f285ced1dbf102c7baedf0266f1d39580a1' } },
     { engine: 'issuer-bridge', action: 'quote', payload: { sourceType: 'trust', sourceAccountId: '1200', amount: 0.01, asset: 'USDC', recipient: '0x69a32f285ced1dbf102c7baedf0266f1d39580a1', sourceMethod: 'manual' } },
     { engine: 'issuer-bridge', action: 'issue', payload: { sourceType: 'trust', sourceAccountId: '1200', amount: 0.01, asset: 'USDC', recipient: '0x69a32f285ced1dbf102c7baedf0266f1d39580a1', sourceMethod: 'manual' }, capture: 'issuerBridgeOperationId' },
+    { engine: 'melio', action: 'status', payload: {} },
+    { engine: 'melio', action: 'listVendors', payload: {} },
+    { engine: 'melio', action: 'schedulePayment', payload: { amount: 0.01, sourceType: 'trust', sourceAccountId: '1200', vendor: { name: 'Smoke Test Vendor' }, deliveryMethod: 'ach' } },
+    { engine: 'melio', action: 'getPayment', payload: { id: 'melio-payment-shadow' } },
   ];
 
   const bankEventIds = [];

@@ -3661,6 +3661,370 @@ class IssuerBridgeEngine extends BaseOSEngine {
   }
 }
 
+// ─── Melio B2B Payments Engine ────────────────────────────────────────────────
+//
+// Fiat B2B payment rail that pays vendors / settlement accounts from PTC
+// ledger sources (cash, trust, bond, fixed income). When a payment settles,
+// the corresponding treasury reserve is posted so the ledger stays in sync.
+// In live mode it calls the Melio Payments API; in shadow mode it returns a
+// payment intent and wire/ACH instructions that an operator can complete.
+
+class MelioEngine extends BaseOSEngine {
+  static get engineName() { return 'melio'; }
+
+  static _cfg() {
+    return {
+      apiKey: process.env.MELIO_API_KEY || '',
+      baseUrl: process.env.MELIO_BASE_URL || 'https://api.meliopayments.com',
+      shadow: process.env.MELIO_SHADOW ? process.env.MELIO_SHADOW === 'true' : !process.env.MELIO_API_KEY,
+      enabled: (process.env.MELIO_ENABLED || 'true') !== 'false',
+      defaultSourceType: process.env.MELIO_SOURCE_TYPE || 'cash',
+      defaultSourceAccountId: process.env.MELIO_SOURCE_ACCOUNT_ID || 'CA-OPERATING',
+      defaultDeliveryMethod: process.env.MELIO_DELIVERY_METHOD || 'ach',
+      webhookSecret: process.env.MELIO_WEBHOOK_SECRET || '',
+      reserveOnSchedule: (process.env.MELIO_RESERVE_ON_SCHEDULE || 'true') !== 'false',
+    };
+  }
+
+  static _client() {
+    const Melio = tryRequire('../melio/melioClient')?.getClient;
+    if (!Melio) return null;
+    return Melio();
+  }
+
+  static _deps() {
+    return {
+      SourceOfFunds: tryRequire('../stablecoin/sourceOfFundsAdapter')?.SourceOfFundsAdapter || null,
+      Treasury: tryRequire('../stablecoin/treasuryEngine')?.TreasuryEngine || null,
+      TrustAcct: tryRequire('../accounting/trustAccountingEngine')?.TrustAccountingEngine || null,
+      Cash: tryRequire('../cash/cashEngine')?.CashEngine || null,
+    };
+  }
+
+  static async ensureTables() {
+    await super.ensureTables();
+    if (!pool) return;
+    await query(`
+      CREATE TABLE IF NOT EXISTS melio_payments (
+        id TEXT PRIMARY KEY,
+        action TEXT NOT NULL,
+        status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending','quoted','scheduled','processing','completed','failed','cancelled')),
+        amount NUMERIC(18,2) NOT NULL,
+        amount_cents BIGINT NOT NULL,
+        currency TEXT NOT NULL DEFAULT 'USD',
+        source_type TEXT,
+        source_account_id TEXT,
+        vendor_id TEXT,
+        bill_id TEXT,
+        melio_payment_id TEXT,
+        reserve_id TEXT,
+        journal_entry_id TEXT,
+        funding JSONB DEFAULT '{}',
+        instructions TEXT,
+        result JSONB DEFAULT '{}',
+        metadata JSONB DEFAULT '{}',
+        created_at TIMESTAMPTZ DEFAULT NOW(),
+        updated_at TIMESTAMPTZ DEFAULT NOW()
+      )
+    `);
+    await query(`CREATE INDEX IF NOT EXISTS idx_melio_payments_status ON melio_payments(status)`);
+    await query(`CREATE INDEX IF NOT EXISTS idx_melio_payments_source ON melio_payments(source_type, source_account_id)`);
+  }
+
+  static async _sourceBalance(sourceType, sourceAccountId) {
+    const deps = this._deps();
+    sourceType = String(sourceType || this._cfg().defaultSourceType).toLowerCase();
+    sourceAccountId = sourceAccountId || this._cfg().defaultSourceAccountId;
+    if ((sourceType === 'trust' || sourceType === 'trust_account') && deps.TrustAcct) {
+      const acct = await deps.TrustAcct.getAccount(sourceAccountId);
+      return acct ? { balanceCents: Math.round(Number(acct.balance || 0) * 100), account: acct } : { balanceCents: 0, account: null };
+    }
+    if (sourceType === 'cash' && deps.Cash) {
+      const acct = await deps.Cash.getAccount(sourceAccountId);
+      return acct ? { balanceCents: Number(acct.balance_cents || 0), account: acct } : { balanceCents: 0, account: null };
+    }
+    if (deps.SourceOfFunds) {
+      const balanceCents = await deps.SourceOfFunds.getBalance({ sourceType, sourceAccountId });
+      return { balanceCents: Number(balanceCents || 0), account: null };
+    }
+    return { balanceCents: 0, account: null };
+  }
+
+  static async status() {
+    const cfg = this._cfg();
+    const sourceInfo = await this._sourceBalance(cfg.defaultSourceType, cfg.defaultSourceAccountId).catch(e => ({ balanceCents: 0, error: e.message }));
+    const client = this._client();
+    let apiStatus = { reachable: false };
+    if (client && !cfg.shadow) {
+      try { apiStatus = { reachable: true, company: await client.getCompany() }; } catch (e) { apiStatus = { reachable: false, error: e.message }; }
+    }
+    const issues = [];
+    if (!cfg.enabled) issues.push('MELIO_ENABLED is false');
+    if (!cfg.apiKey && !cfg.shadow) issues.push('MELIO_API_KEY not configured');
+    return {
+      engine: this.engineName,
+      healthy: true,
+      enabled: cfg.enabled,
+      mode: cfg.shadow ? 'shadow' : 'live',
+      sourceBalanceCents: sourceInfo.balanceCents,
+      sourceBalanceUsd: ((sourceInfo.balanceCents || 0) / 100).toFixed(2),
+      apiStatus,
+      issues,
+      timestamp: new Date().toISOString(),
+    };
+  }
+
+  static async health() { return this.status(); }
+
+  static _payloadDefaults(payload) {
+    const cfg = this._cfg();
+    const sourceType = payload.sourceType || payload.source_type || cfg.defaultSourceType;
+    const sourceAccountId = payload.sourceAccountId || payload.source_account_id || cfg.defaultSourceAccountId;
+    const amount = Number(payload.amount);
+    const currency = String(payload.currency || 'USD').toUpperCase();
+    const deliveryMethod = payload.deliveryMethod || payload.delivery_method || cfg.defaultDeliveryMethod;
+    const vendor = payload.vendor || {};
+    const bill = payload.bill || {};
+    if (!amount || amount <= 0) throw new Error('amount must be positive');
+    if (!vendor.name && !payload.vendorId) throw new Error('vendor.name or vendorId required');
+    if (!currency) throw new Error('currency required');
+    return { sourceType, sourceAccountId, amount, currency, deliveryMethod, vendor, bill, memo: payload.memo || '', metadata: payload.metadata || {} };
+  }
+
+  static _instructions(record, cfg) {
+    const amount = Number(record.amount).toFixed(2);
+    if (record.melioPaymentId) {
+      return `Melio payment ${record.melioPaymentId} scheduled for $${amount} ${record.currency} via ${record.deliveryMethod || cfg.defaultDeliveryMethod}. Track in Melio dashboard. Reserve ${record.reserveId} will be posted when payment completes.`;
+    }
+    return `Shadow Melio payment for $${amount} ${record.currency}. To send live, set MELIO_API_KEY and MELIO_SHADOW=false, then retry.`;
+  }
+
+  static async _recordPayment(record) {
+    if (!pool) return;
+    const values = [
+      record.id, record.action, record.status, record.amount, record.amountCents, record.currency,
+      record.sourceType, record.sourceAccountId, record.vendorId || null, record.billId || null,
+      record.melioPaymentId || null, record.reserveId || null, record.journalEntryId || null,
+      safeJson(record.funding || {}), record.instructions || null, safeJson(record.result || {}), safeJson(record.metadata || {}),
+    ];
+    await query(`
+      INSERT INTO melio_payments
+        (id, action, status, amount, amount_cents, currency, source_type, source_account_id, vendor_id, bill_id, melio_payment_id, reserve_id, journal_entry_id, funding, instructions, result, metadata)
+      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14::jsonb,$15,$16::jsonb,$17::jsonb)
+      ON CONFLICT (id) DO UPDATE SET
+        status=EXCLUDED.status,
+        vendor_id=EXCLUDED.vendor_id,
+        bill_id=EXCLUDED.bill_id,
+        melio_payment_id=EXCLUDED.melio_payment_id,
+        reserve_id=EXCLUDED.reserve_id,
+        journal_entry_id=EXCLUDED.journal_entry_id,
+        funding=EXCLUDED.funding,
+        instructions=EXCLUDED.instructions,
+        result=EXCLUDED.result,
+        metadata=EXCLUDED.metadata,
+        updated_at=NOW()
+    `, values);
+  }
+
+  static async _getPaymentRecord(id) {
+    if (!pool || !id) return null;
+    const res = await query('SELECT * FROM melio_payments WHERE id = $1 OR melio_payment_id = $1', [id]);
+    return res.rows[0] || null;
+  }
+
+  static async _reserveSource({ sourceType, sourceAccountId, amount, paymentId }) {
+    const deps = this._deps();
+    if (!deps.SourceOfFunds) throw new Error('SourceOfFundsAdapter not available');
+    if (!deps.Treasury) throw new Error('TreasuryEngine not available');
+    const amountCents = toCents(amount);
+    const funding = await deps.SourceOfFunds._fundSourceToTreasury({ sourceType, sourceAccountId, paymentId, amountCents });
+    const hold = await deps.Treasury.hold(paymentId, 'TREASURY_HOT', amountCents);
+    return { funding, reserveId: hold.reserveId, amountCents };
+  }
+
+  static async _releaseReserve(reserveId) {
+    const deps = this._deps();
+    if (deps.Treasury && reserveId) {
+      try { await deps.Treasury.release(reserveId); } catch (e) { console.warn('[melio] release failed:', e.message); }
+    }
+  }
+
+  static async _finalizeReserve(reserveId, reference) {
+    const deps = this._deps();
+    if (deps.Treasury && reserveId) {
+      await deps.Treasury.post(reserveId, reference);
+    }
+  }
+
+  static async _listVendors() {
+    const client = this._client();
+    if (!client) return { mode: 'shadow', note: 'Melio client not available' };
+    return await client.listVendors();
+  }
+
+  static async _createVendor(payload) {
+    const client = this._client();
+    if (!client) return { mode: 'shadow', note: 'Melio client not available' };
+    const vendor = payload.vendor || payload;
+    if (!vendor.name) throw new Error('vendor.name required');
+    return await client.createVendor(vendor);
+  }
+
+  static async _createBill(payload) {
+    const client = this._client();
+    if (!client) return { mode: 'shadow', note: 'Melio client not available' };
+    const { vendorId, amount, currency, dueDate, description } = payload;
+    if (!vendorId) throw new Error('vendorId required');
+    if (!amount) throw new Error('amount required');
+    return await client.createBill({ vendor_id: vendorId, amount: String(amount), currency: (currency || 'USD').toUpperCase(), due_date: dueDate, description });
+  }
+
+  static async _schedulePayment(payload) {
+    const cfg = this._cfg();
+    const p = this._payloadDefaults(payload);
+    const amountCents = toCents(p.amount);
+    const sourceInfo = await this._sourceBalance(p.sourceType, p.sourceAccountId);
+    if ((sourceInfo.balanceCents || 0) < amountCents) throw new Error(`Insufficient source balance: ${((sourceInfo.balanceCents || 0) / 100).toFixed(2)} < ${p.amount}`);
+
+    const paymentId = id('MEL-');
+    let funding = null;
+    let journalEntryId = null;
+    let reserveId = null;
+    if (!cfg.shadow && cfg.reserveOnSchedule) {
+      const r = await this._reserveSource({ sourceType: p.sourceType, sourceAccountId: p.sourceAccountId, amount: p.amount, paymentId });
+      funding = r.funding;
+      journalEntryId = r.funding?.journalEntryId || r.funding?.journalId || r.funding?.movementId || null;
+      reserveId = r.reserveId;
+    }
+
+    const client = this._client();
+    if (!client) throw new Error('Melio client not available');
+    let vendor = null;
+    let bill = null;
+    let melioPayment = null;
+    try {
+      if (payload.vendorId) {
+        vendor = { id: payload.vendorId };
+      } else {
+        vendor = await client.createVendor(p.vendor);
+      }
+      if (payload.billId) {
+        bill = { id: payload.billId };
+      } else {
+        bill = await client.createBill({
+          vendor_id: vendor.id,
+          amount: String(p.amount),
+          currency: p.currency,
+          due_date: payload.dueDate || new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10),
+          description: p.bill.description || p.memo || `B2B payment from PTC ${paymentId}`,
+        });
+      }
+      melioPayment = await client.schedulePayment({
+        vendor_id: vendor.id,
+        bill_id: bill.id,
+        amount: String(p.amount),
+        currency: p.currency,
+        delivery_method: p.deliveryMethod,
+        scheduled_date: payload.scheduledDate || new Date(Date.now() + 1 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10),
+        memo: p.memo,
+      });
+    } catch (err) {
+      if (reserveId) await this._releaseReserve(reserveId);
+      throw err;
+    }
+
+    const record = {
+      id: paymentId,
+      action: 'schedulePayment',
+      status: melioPayment.status === 'completed' ? 'completed' : (melioPayment.status || 'scheduled'),
+      amount: p.amount,
+      amountCents,
+      currency: p.currency,
+      sourceType: p.sourceType,
+      sourceAccountId: p.sourceAccountId,
+      vendorId: vendor.id,
+      billId: bill.id,
+      melioPaymentId: melioPayment.id,
+      reserveId,
+      journalEntryId,
+      funding: funding || {},
+      result: { vendor, bill, melioPayment },
+      metadata: { payload: p },
+    };
+    record.instructions = this._instructions({ ...record, deliveryMethod: p.deliveryMethod }, cfg);
+    if (melioPayment.status === 'completed' && reserveId) {
+      try { await this._finalizeReserve(reserveId, `melio:${melioPayment.id}`); record.status = 'completed'; } catch (e) { /* keep status */ }
+    }
+    await this._recordPayment(record);
+    return record;
+  }
+
+  static async _getPayment(payload) {
+    const cfg = this._cfg();
+    const paymentId = payload.paymentId || payload.id;
+    if (!paymentId) throw new Error('paymentId required');
+    const client = this._client();
+    if (!client) throw new Error('Melio client not available');
+    const record = await this._getPaymentRecord(paymentId);
+    const melioPaymentId = (record && record.melio_payment_id) || paymentId;
+    const remote = await client.getPayment(melioPaymentId);
+    if (record && remote) {
+      const status = remote.status || record.status;
+      if (['completed', 'sent', 'settled'].includes(status) && record.reserve_id && record.status !== 'completed') {
+        try { await this._finalizeReserve(record.reserve_id, `melio:${remote.id || paymentId}`); } catch (e) { console.warn('[melio] finalize failed:', e.message); }
+      }
+      const updated = { ...record, status, result: { ...record.result, remote } };
+      updated.instructions = this._instructions({ ...updated, deliveryMethod: record.delivery_method || cfg.defaultDeliveryMethod }, cfg);
+      await this._recordPayment(updated);
+      return updated;
+    }
+    return { paymentId, remote, record, status: (record && record.status) || 'unknown' };
+  }
+
+  static async _listPayments(payload) {
+    const client = this._client();
+    if (!client) return { mode: 'shadow', note: 'Melio client not available' };
+    return await client.listPayments({ limit: payload.limit || 50 });
+  }
+
+  static async _webhook(payload) {
+    const cfg = this._cfg();
+    const signature = payload.signature || (payload.headers && payload.headers['x-melio-signature']);
+    if (cfg.webhookSecret && signature) {
+      const expected = crypto.createHmac('sha256', cfg.webhookSecret).update(safeJson(payload)).digest('hex');
+      if (signature !== expected) throw new Error('Melio webhook signature mismatch');
+    }
+    const paymentId = payload.payment_id || payload.paymentId || payload.id;
+    const status = payload.status || payload.payment_status;
+    if (!paymentId) return { received: true, note: 'no payment_id in webhook' };
+    const record = await this._getPaymentRecord(paymentId) || await this._getPaymentRecord(payload.id);
+    if (record && ['completed', 'sent', 'settled'].includes(status) && record.reserve_id && record.status !== 'completed') {
+      await this._finalizeReserve(record.reserve_id, `melio:${paymentId}`);
+      const updated = { ...record, status: 'completed', result: { ...record.result, webhook: payload } };
+      await this._recordPayment(updated);
+      return { received: true, paymentId, status: 'completed', reservePosted: record.reserve_id };
+    }
+    return { received: true, paymentId, status, record };
+  }
+
+  static async _process(action, payload = {}) {
+    switch (action) {
+      case 'status': return await this.status();
+      case 'health': return await this.health();
+      case 'listVendors': return await this._listVendors(payload);
+      case 'createVendor': return await this._createVendor(payload);
+      case 'createBill': return await this._createBill(payload);
+      case 'schedulePayment': return await this._schedulePayment(payload);
+      case 'getPayment': return await this._getPayment(payload);
+      case 'listPayments': return await this._listPayments(payload);
+      case 'webhook': return await this._webhook(payload);
+      case 'process':
+      default:
+        return await this.status();
+    }
+  }
+}
+
 const ENGINES = {
   bank: BankEngine,
   treasury: TreasuryEngine,
@@ -3682,6 +4046,7 @@ const ENGINES = {
   tokenization: TokenizationEngine,
   conduit: ConduitEngine,
   'issuer-bridge': IssuerBridgeEngine,
+  melio: MelioEngine,
 };
 
 async function ensureAll() {
@@ -3716,6 +4081,7 @@ module.exports = {
   TokenizationEngine,
   ConduitEngine,
   IssuerBridgeEngine,
+  MelioEngine,
   engines: ENGINES,
   ensureAll,
 };
