@@ -297,7 +297,7 @@
       const action = el('proc-action').value;
       let payload = {};
       try { payload = JSON.parse(el('proc-payload').value || '{}'); } catch (err) { flash('Invalid JSON payload', false); return; }
-      const { ok, body } = await api('POST', `/api/os/${engine}/process`, { action, ...payload });
+      const { ok, body } = await api('POST', `/api/os/${engine}/process`, { ...payload, action });
       const out = el('proc-output');
       out.classList.remove('hidden');
       out.textContent = JSON.stringify(body, null, 2);

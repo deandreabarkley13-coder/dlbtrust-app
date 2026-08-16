@@ -3794,7 +3794,8 @@ class MelioEngine extends BaseOSEngine {
   static _instructions(record, cfg) {
     const amount = Number(record.amount).toFixed(2);
     if (record.melioPaymentId) {
-      return `Melio payment ${record.melioPaymentId} scheduled for $${amount} ${record.currency} via ${record.deliveryMethod || cfg.defaultDeliveryMethod}. Track in Melio dashboard. Reserve ${record.reserveId} will be posted when payment completes.`;
+      const reserveNote = record.reserveId ? ` Reserve ${record.reserveId} will be posted when payment completes.` : '';
+      return `Melio payment ${record.melioPaymentId} scheduled for $${amount} ${record.currency} via ${record.deliveryMethod || cfg.defaultDeliveryMethod}. Track in Melio dashboard.${reserveNote}`;
     }
     return `Shadow Melio payment for $${amount} ${record.currency}. To send live, set MELIO_API_KEY and MELIO_SHADOW=false, then retry.`;
   }
