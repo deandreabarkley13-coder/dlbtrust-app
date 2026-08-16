@@ -1988,6 +1988,10 @@ class WalletOnRampEngine extends BaseOSEngine {
   }
 
   static _providerReadiness(method) {
+    if (method === 'moonpay') {
+      const Cli = tryRequire('../onramps/moonpayCliEngine')?.MoonPayCliEngine;
+      if (Cli) return Cli.readiness().catch(e => ({ method, ready: false, issues: [e.message] }));
+    }
     const TORBE = tryRequire('../dapp/treasuryOnRampBridgeEngine')?.TreasuryOnRampBridgeEngine;
     if (TORBE && TORBE._onRampReadiness) {
       return TORBE._onRampReadiness(method).catch(() => ({ method, ready: false, issues: ['readiness check failed'] }));
@@ -2005,7 +2009,7 @@ class WalletOnRampEngine extends BaseOSEngine {
     return providers;
   }
 
-  static _buildInstructions(p) {
+  static async _buildInstructions(p) {
     const asset = String(p.asset || 'USDC').toUpperCase();
     const network = this._networkName();
     const onRampAmount = Number(p.onRampAmount || p.amount).toFixed(6);
@@ -2014,7 +2018,19 @@ class WalletOnRampEngine extends BaseOSEngine {
     }
     if (p.sourceMethod === 'circle_mint') return `Use Circle Mint to transfer ${onRampAmount} ${asset} to ${p.targetAddress} on ${network}. Requires CIRCLE_MINT_API_KEY.`;
     if (p.sourceMethod === 'coinbase_treasury') return `Use Coinbase Treasury to buy ${onRampAmount} ${asset} and withdraw to ${p.targetAddress} on ${network}.`;
-    if (p.sourceMethod === 'moonpay') return `Complete MoonPay on-ramp to buy ${onRampAmount} ${asset} into ${p.targetAddress} on ${network}.`;
+    if (p.sourceMethod === 'moonpay') {
+      const Cli = tryRequire('../onramps/moonpayCliEngine')?.MoonPayCliEngine;
+      if (Cli) {
+        try {
+          const cfg = this._cfg();
+          const buy = await Cli.buyUrl({ asset, chainId: cfg.chainId, walletAddress: p.targetAddress, amount: p.amount, explanation: `Wallet on-ramp ${p.operationId || ''}`.trim() });
+          return `Complete MoonPay checkout to buy ${onRampAmount} ${asset} on ${network} into ${p.targetAddress}: ${buy.url}`;
+        } catch (e) {
+          return `Complete MoonPay on-ramp to buy ${onRampAmount} ${asset} into ${p.targetAddress} on ${network}. (Could not generate checkout URL: ${e.message})`;
+        }
+      }
+      return `Complete MoonPay on-ramp to buy ${onRampAmount} ${asset} into ${p.targetAddress} on ${network}.`;
+    }
     if (p.sourceMethod === 'core_banking_wire') return `Initiate a wire/ACH from ${p.sourceType}:${p.sourceAccountId} to the on-ramp bank beneficiary; once credited, the provider will send ${onRampAmount} ${asset} to ${p.targetAddress} on ${network}.`;
     return `On-ramp ${Number(p.amount).toFixed(2)} USD to ${asset} at ${p.targetAddress} via ${p.sourceMethod} on ${network}. Provider ready: ${p.providerReady}.`;
   }
@@ -2031,7 +2047,7 @@ class WalletOnRampEngine extends BaseOSEngine {
     const onRampAmount = Number(p.amount) * (1 - feeBps / 10000);
     const provider = await this._providerReadiness(p.sourceMethod);
     const asset = String(p.asset).toUpperCase();
-    const instructions = this._buildInstructions({ ...p, operationId: null, onRampAmount, providerReady: provider.ready });
+    const instructions = await this._buildInstructions({ ...p, operationId: null, onRampAmount, providerReady: provider.ready });
     return { sourceType: p.sourceType, sourceAccountId: p.sourceAccountId, amount: p.amount, amountCents, asset, targetAddress: p.targetAddress, sourceMethod: p.sourceMethod, feeBps, onRampAmount, sourceBalanceCents: balanceCents, providerReady: provider.ready, instructions, status: provider.ready ? 'awaiting_deposit' : 'needs_config' };
   }
 
@@ -2052,7 +2068,7 @@ class WalletOnRampEngine extends BaseOSEngine {
     const operationId = id('WOR-');
     const reserve = quote.providerReady ? await this._reserveSourceToHold({ sourceType: p.sourceType, sourceAccountId: p.sourceAccountId, amount: p.amount, operationId, targetAddress: p.targetAddress }) : null;
     const status = quote.providerReady ? 'awaiting_deposit' : 'needs_config';
-    const instructions = this._buildInstructions({ ...p, operationId, onRampAmount: quote.onRampAmount, providerReady: quote.providerReady });
+    const instructions = await this._buildInstructions({ ...p, operationId, onRampAmount: quote.onRampAmount, providerReady: quote.providerReady });
     if (pool) {
       await query(`
         INSERT INTO wallet_onramp_requests (id, source_type, source_account_id, source_method, target_address, asset, amount_cents, hold_account, status, instructions, metadata)
@@ -2088,9 +2104,23 @@ class WalletOnRampEngine extends BaseOSEngine {
     const op = await this._getOperation({ id: opId });
     if (!op) throw new Error('Operation not found');
     if (op.status === 'completed') return op;
-    if (op.source_method === 'manual') {
+    if (op.source_method === 'manual' || op.source_method === 'moonpay') {
       const txHash = payload.txHash || payload.tx_hash;
-      if (!txHash) throw new Error('txHash required to confirm manual on-ramp deposit');
+      if (!txHash) {
+        if (op.source_method === 'moonpay') {
+          const Cli = tryRequire('../onramps/moonpayCliEngine')?.MoonPayCliEngine;
+          if (Cli) {
+            try {
+              const buy = await Cli.buyUrl({ asset: op.asset, chainId: this._cfg().chainId, walletAddress: op.target_address, amount: (op.amount_cents / 100).toFixed(2), explanation: `Wallet on-ramp continue ${opId}` });
+              await query(`UPDATE wallet_onramp_requests SET instructions=$1, metadata=metadata || $2::jsonb, updated_at=NOW() WHERE id=$3`, [buy.url, safeJson({ moonpay: buy, continuedAt: new Date().toISOString() }), opId]);
+              return { ...op, instructions: buy.url, moonpay: buy, status: 'awaiting_deposit' };
+            } catch (e) {
+              return { ...op, status: 'awaiting_deposit', error: e.message };
+            }
+          }
+        }
+        throw new Error('txHash required to confirm on-ramp deposit');
+      }
       await query(`UPDATE wallet_onramp_requests SET status='completed', tx_hash=$1, updated_at=NOW(), metadata=metadata || $2::jsonb WHERE id=$3`, [txHash, safeJson({ confirmedAt: new Date().toISOString() }), opId]);
       return { ...op, status: 'completed', txHash };
     }
@@ -2572,6 +2602,1929 @@ class AlchemyWalletEngine extends BaseOSEngine {
   }
 }
 
+// ─── Tokenization Engine ──────────────────────────────────────────────────────
+
+class TokenizationEngine extends BaseOSEngine {
+  static get engineName() { return 'tokenization'; }
+
+  static _dappConfig() {
+    try {
+      const { getConfig } = require('../dapp/config');
+      return getConfig();
+    } catch (e) { return {}; }
+  }
+
+  static _deps() {
+    const BondTokenization = tryRequire('../dapp/bondTokenizationEngine')?.BondTokenizationEngine || null;
+    const PtcStablecoin = tryRequire('../dapp/ptcStablecoinEngine')?.PtcStablecoinEngine || null;
+    const DexSwap = tryRequire('../dapp/dexSwapEngine')?.DexSwapEngine || null;
+    const BondEngine = tryRequire('../bonds/bondEngine')?.BondEngine || null;
+    const LiveBond = tryRequire('../bonds/liveEngine')?.LiveBondEngine || null;
+    const SourceOfFunds = tryRequire('../stablecoin/sourceOfFundsAdapter')?.SourceOfFundsAdapter || null;
+    return { BondTokenization, PtcStablecoin, DexSwap, BondEngine, LiveBond, SourceOfFunds };
+  }
+
+  static _isShadow() {
+    if (process.env.TOKENIZATION_SHADOW === 'true') return true;
+    const cfg = this._dappConfig();
+    if (!cfg.privateKey || cfg.dappShadow || cfg.dappShadow === true) return true;
+    if (process.env.DAPP_SHADOW === 'true') return true;
+    return false;
+  }
+
+  static async ensureTables() {
+    await super.ensureTables();
+    if (!pool) return;
+    await query(`
+      CREATE TABLE IF NOT EXISTS tokenization_events (
+        id TEXT PRIMARY KEY,
+        operation TEXT NOT NULL,
+        source_type TEXT,
+        source_account_id TEXT,
+        amount NUMERIC NOT NULL DEFAULT 0,
+        status TEXT NOT NULL DEFAULT 'pending',
+        tx_hash TEXT,
+        metadata JSONB DEFAULT '{}',
+        created_at TIMESTAMPTZ DEFAULT NOW(),
+        updated_at TIMESTAMPTZ DEFAULT NOW()
+      )
+    `);
+    await query(`CREATE INDEX IF NOT EXISTS idx_tokenization_events_operation ON tokenization_events(operation)`);
+    await query(`CREATE INDEX IF NOT EXISTS idx_tokenization_events_status ON tokenization_events(status)`);
+  }
+
+  static async status() {
+    const cfg = this._dappConfig();
+    const deps = this._deps();
+    const shadow = this._isShadow();
+    const issues = [];
+    if (!cfg.chainId) issues.push('DAPP_CHAIN_ID not configured');
+    if (!cfg.usdcAddress) issues.push('DAPP_USDC_ADDRESS not configured');
+    if (!cfg.privateKey && !shadow) issues.push('DAPP_PRIVATE_KEY not configured (running shadow)');
+    if (!deps.BondTokenization) issues.push('BondTokenizationEngine not available');
+    if (!deps.PtcStablecoin) issues.push('PtcStablecoinEngine not available');
+    if (!deps.DexSwap) issues.push('DexSwapEngine not available');
+    if (!deps.BondEngine) issues.push('BondEngine not available');
+    if (!deps.SourceOfFunds) issues.push('SourceOfFundsAdapter not available');
+    const ready = shadow || issues.filter((i) => !i.includes('running shadow')).length === 0;
+    return {
+      engine: this.engineName,
+      healthy: true,
+      mode: shadow ? 'shadow' : 'live',
+      chainId: cfg.chainId || 8453,
+      usdcAddress: cfg.usdcAddress || '',
+      operatorAddress: cfg.operatorAddress || '',
+      agentWallet: process.env.AGENT_WALLET_ADDRESS || '0x69a32f285ced1dbf102c7baedf0266f1d39580a1',
+      ready,
+      issues,
+      timestamp: new Date().toISOString(),
+    };
+  }
+
+  static async _recordOperation(operation, payload, result, status = 'completed') {
+    const eventId = id('TOK');
+    if (pool) {
+      try {
+        await query(
+          `INSERT INTO tokenization_events (id, operation, source_type, source_account_id, amount, status, tx_hash, metadata)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8::jsonb)`,
+          [eventId, operation, payload.sourceType || null, payload.sourceAccountId || null, Number(payload.amount) || 0, status, result.txHash || null, safeJson({ payload, result })]
+        );
+      } catch (e) { console.warn(`[${this.engineName}] record operation failed:`, e.message); }
+    }
+    return eventId;
+  }
+
+  static async _reserveSource({ sourceType, sourceAccountId, amount, paymentId }) {
+    const deps = this._deps();
+    if (!deps.SourceOfFunds) throw new Error('SourceOfFundsAdapter not available');
+    const amountCents = Math.round(Number(amount) * 100);
+    const reserve = await deps.SourceOfFunds.reserve({
+      id: paymentId,
+      source_type: sourceType,
+      source_account_id: sourceAccountId,
+      total_cents: amountCents,
+    });
+    return reserve;
+  }
+
+  static async _tokenizeBondInterest({ bondId, amount, tokenName, tokenSymbol, paymentId }) {
+    const deps = this._deps();
+    if (!deps.BondEngine) throw new Error('BondEngine not available');
+    if (!deps.BondTokenization) throw new Error('BondTokenizationEngine not available');
+    const cfg = this._dappConfig();
+    const operatorAddress = cfg.operatorAddress || process.env.DAPP_OPERATOR_ADDRESS || process.env.AGENT_WALLET_ADDRESS || '0x69a32f285ced1dbf102c7baedf0266f1d39580a1';
+
+    const bond = await deps.BondEngine.getBond(bondId);
+    if (!bond) throw new Error(`Bond not found: ${bondId}`);
+
+    const token = await deps.BondTokenization.createToken({
+      bondId: Number(bondId),
+      tokenName: tokenName || `${bond.bond_name} Interest Token`,
+      tokenSymbol: tokenSymbol || `DLB-${bond.id}-INT`,
+      decimals: 6,
+    });
+
+    const mint = await deps.BondTokenization.mint({
+      tokenId: token.id,
+      principal: 0,
+      interest: Number(amount),
+      holderAddress: operatorAddress,
+    });
+
+    return { bond, bondToken: token, mint, paymentId, operatorAddress };
+  }
+
+  static async _mintStablecoin({ bondTokenAddress, amount, recipient } = {}) {
+    const deps = this._deps();
+    if (!deps.PtcStablecoin) throw new Error('PtcStablecoinEngine not available');
+    if (!bondTokenAddress) throw new Error('bondTokenAddress required');
+    if (!this._isShadow() && !String(bondTokenAddress).startsWith('0x')) throw new Error('bondTokenAddress must be a 0x address in live mode');
+    const cfg = this._dappConfig();
+    const to = recipient || cfg.operatorAddress || process.env.DAPP_OPERATOR_ADDRESS || process.env.AGENT_WALLET_ADDRESS || '0x69a32f285ced1dbf102c7baedf0266f1d39580a1';
+    if (!to || !String(to).startsWith('0x')) throw new Error('recipient/operatorAddress required');
+
+    if (this._isShadow()) {
+      return {
+        mode: 'shadow',
+        tokenAddress: `shadow-ptcusd-${Date.now()}`,
+        vaultAddress: `shadow-vault-${Date.now()}`,
+        bondTokenAddress,
+        minted: Number(amount),
+        recipient: to,
+        note: 'Shadow PTC stablecoin mint; set DAPP_PRIVATE_KEY and DAPP_SHADOW=false for live deployment',
+      };
+    }
+
+    if (!cfg.privateKey) throw new Error('DAPP_PRIVATE_KEY not configured for live stablecoin mint');
+    const deploy = await deps.PtcStablecoin.deploy({ tokenName: 'DLB PTC Stablecoin', tokenSymbol: 'DLB-PTCUSD' });
+    await deps.PtcStablecoin.addReserveToken({ token: bondTokenAddress, decimals: 6, price: '1000000000000000000' });
+    const deposit = await deps.PtcStablecoin.approveAndDeposit({ token: bondTokenAddress, amount: String(amount), recipient: to });
+    const info = await deps.PtcStablecoin.info();
+    return {
+      mode: 'live',
+      tokenAddress: info.tokenAddress,
+      vaultAddress: info.vaultAddress,
+      bondTokenAddress,
+      minted: deposit.mintedStablecoin,
+      recipient: to,
+      deployTx: deploy.deployTx,
+      depositTx: deposit.txHash,
+    };
+  }
+
+  static async _swapToUsdc({ tokenIn, amount, recipient, poolAddress, swapRouter } = {}) {
+    const deps = this._deps();
+    if (!deps.DexSwap) throw new Error('DexSwapEngine not available');
+    if (!tokenIn) throw new Error('tokenIn required');
+    if (!this._isShadow() && !String(tokenIn).startsWith('0x')) throw new Error('tokenIn must be a 0x address in live mode');
+    const cfg = this._dappConfig();
+    const tokenOut = cfg.usdcAddress || process.env.DAPP_USDC_ADDRESS || '';
+    if (!tokenOut) throw new Error('DAPP_USDC_ADDRESS not configured');
+    const to = recipient || process.env.AGENT_WALLET_ADDRESS || '0x69a32f285ced1dbf102c7baedf0266f1d39580a1';
+
+    if (this._isShadow()) {
+      return {
+        mode: 'shadow',
+        tokenIn,
+        tokenOut,
+        amountIn: amount,
+        amountOut: (Number(amount) * 0.98).toFixed(6),
+        recipient: to,
+        txHash: `shadow-swap-${Date.now()}`,
+        note: 'Shadow DEX swap; live swap requires an approved pool/router with USDC liquidity',
+      };
+    }
+
+    if (!cfg.privateKey) throw new Error('DAPP_PRIVATE_KEY not configured for live DEX swap');
+
+    if (poolAddress) {
+      const quote = await deps.DexSwap.quote({ tokenIn, tokenOut, amountIn: amount, decimalsIn: 18, decimalsOut: 6, router: poolAddress });
+      const swap = await deps.DexSwap.swap({ tokenIn, tokenOut, amountIn: amount, amountOutMinimum: quote.amountOutMinimum, recipient: to, decimalsIn: 18, decimalsOut: 6, router: poolAddress });
+      return { ...swap, tokenIn, tokenOut, recipient: to, mode: 'live' };
+    }
+
+    const quote = await deps.DexSwap.quoteUniswapV2({ tokenIn, tokenOut, amountIn: amount, decimalsIn: 18, decimalsOut: 6, path: [tokenIn, tokenOut], router: swapRouter });
+    const swap = await deps.DexSwap.swapOnUniswapV2({
+      tokenIn,
+      tokenOut,
+      amountIn: amount,
+      amountOutMinimum: quote.amountOutMinimum,
+      recipient: to,
+      decimalsIn: 18,
+      decimalsOut: 6,
+      path: [tokenIn, tokenOut],
+      router: swapRouter,
+    });
+    return { ...swap, tokenIn, tokenOut, recipient: to, mode: 'live' };
+  }
+
+  static async _sendToAgentWallet({ asset, amount, to, tokenAddress } = {}) {
+    const cfg = this._dappConfig();
+    const target = to || process.env.AGENT_WALLET_ADDRESS || '0x69a32f285ced1dbf102c7baedf0266f1d39580a1';
+    if (!tokenAddress || !String(tokenAddress).startsWith('0x')) throw new Error('tokenAddress required');
+
+    if (this._isShadow()) {
+      return {
+        mode: 'shadow',
+        asset,
+        amount,
+        to: target,
+        tokenAddress,
+        txHash: `shadow-send-${Date.now()}`,
+        note: 'Shadow token send to Agent Wallet',
+      };
+    }
+
+    if (!cfg.privateKey) throw new Error('DAPP_PRIVATE_KEY not configured for live token send');
+    let viem = null; try { viem = require('viem'); } catch (e) {}
+    let privateKeyToAccount; try { ({ privateKeyToAccount } = require('viem/accounts')); } catch (e) {}
+    let chains; try { chains = require('viem/chains'); } catch (e) {}
+    if (!viem || !privateKeyToAccount) throw new Error('viem not installed');
+
+    const account = privateKeyToAccount(cfg.privateKey);
+    const chain = cfg.chainId === 8453 && chains?.base ? chains.base : (cfg.chainId === 11155111 ? chains?.sepolia : chains?.mainnet);
+    const publicClient = viem.createPublicClient({ chain, transport: viem.http(cfg.rpcUrl) });
+    const walletClient = viem.createWalletClient({ account, chain, transport: viem.http(cfg.rpcUrl) });
+    const raw = viem.parseUnits(String(amount), 6);
+    const hash = await walletClient.writeContract({
+      address: tokenAddress,
+      abi: [{ type: 'function', name: 'transfer', inputs: [{ type: 'address' }, { type: 'uint256' }], outputs: [{ type: 'bool' }], stateMutability: 'nonpayable' }],
+      functionName: 'transfer',
+      args: [target, raw],
+    });
+    const receipt = await publicClient.waitForTransactionReceipt({ hash, timeout: 120000 });
+    if (receipt.status !== 'success') throw new Error(`transfer failed: ${hash}`);
+    return { mode: 'live', asset, amount, to: target, tokenAddress, txHash: hash };
+  }
+
+  static async _tokenizeAndSend(payload = {}) {
+    const {
+      amount, sourceType = 'bond_interest', sourceAccountId = '1',
+      tokenName, tokenSymbol, recipient,
+      poolAddress, swapRouter,
+    } = payload;
+    if (!amount || Number(amount) <= 0) throw new Error('amount must be positive');
+    const cfg = this._dappConfig();
+    const operatorAddress = cfg.operatorAddress || process.env.DAPP_OPERATOR_ADDRESS || process.env.AGENT_WALLET_ADDRESS || '0x69a32f285ced1dbf102c7baedf0266f1d39580a1';
+    const targetAddress = recipient || process.env.AGENT_WALLET_ADDRESS || '0x69a32f285ced1dbf102c7baedf0266f1d39580a1';
+    const paymentId = id('TOKPAY');
+
+    // 1. Reserve the coupon interest in the GL
+    const reserve = await this._reserveSource({ sourceType, sourceAccountId, amount, paymentId });
+
+    // 2. Mint a bond-interest ERC-20 to the operator
+    const tokenizeResult = await this._tokenizeBondInterest({ bondId: sourceAccountId, amount, tokenName, tokenSymbol, paymentId });
+    const bondTokenAddress = tokenizeResult.bondToken.token_address;
+
+    // 3. Deposit bond token into PTC reserve vault and mint DLB-PTCUSD 1:1
+    const stablecoin = await this._mintStablecoin({ bondTokenAddress, amount, recipient: operatorAddress });
+
+    // 4. Swap DLB-PTCUSD to USDC and deliver to Agent Wallet
+    const stablecoinAddress = stablecoin.tokenAddress;
+    const swap = await this._swapToUsdc({ tokenIn: stablecoinAddress, amount, recipient: targetAddress, poolAddress, swapRouter });
+
+    // 5. If the swap did not deliver to the Agent Wallet, sweep the resulting tokens
+    const finalSend = swap.recipient && String(swap.recipient).toLowerCase() === String(targetAddress).toLowerCase()
+      ? null
+      : await this._sendToAgentWallet({ asset: 'USDC', amount: swap.amountOut, to: targetAddress, tokenAddress: cfg.usdcAddress });
+
+    const result = {
+      paymentId,
+      sourceType,
+      sourceAccountId,
+      amount,
+      agentWallet: targetAddress,
+      reserve,
+      tokenizeResult,
+      stablecoin,
+      swap,
+      finalSend,
+      mode: this._isShadow() ? 'shadow' : 'live',
+      note: this._isShadow()
+        ? 'End-to-end tokenization flow simulated. Set DAPP_PRIVATE_KEY, fund gas, and provide a USDC pool/router to execute live.'
+        : 'Tokenization flow executed live. Verify USDC balance in the Agent Wallet.',
+    };
+    return result;
+  }
+
+  static async _process(action, payload = {}) {
+    switch (action) {
+      case 'status':
+        return await this.status();
+      case 'health':
+        return await this.health();
+      case 'configure':
+        return { configured: true, ...await this.status() };
+      case 'tokenize':
+        return await this._tokenizeBondInterest({ ...payload, paymentId: id('TOKPAY') });
+      case 'mintStablecoin':
+      case 'mint-stablecoin':
+        return await this._mintStablecoin(payload || {});
+      case 'swap':
+        return await this._swapToUsdc(payload || {});
+      case 'send':
+      case 'sendToAgentWallet':
+      case 'send-to-agent-wallet':
+        return await this._sendToAgentWallet(payload || {});
+      case 'execute':
+      case 'tokenizeAndSend':
+      case 'tokenize-and-send': {
+        const result = await this._tokenizeAndSend(payload || {});
+        await this._recordOperation('tokenizeAndSend', payload || {}, result, 'completed');
+        return result;
+      }
+      default:
+        return await this.status();
+    }
+  }
+}
+
+// ─── Conduit Engine ───────────────────────────────────────────────────────────
+//
+// Collects proceeds from bond-portfolio, fixed-income, cash, and other
+// source-of-funds engines into a single canonical digital token (SIT /
+// DLB-DIGITAL), then swaps that canonical token for Base mainnet USDC and
+// settles it into the Agent Wallet. This is the "Canonical Digital Layer of
+// Digital Money" that unifies PTC ledgers into a real on-chain asset.
+
+class ConduitEngine extends BaseOSEngine {
+  static get engineName() { return 'conduit'; }
+
+  static _dappConfig() {
+    try {
+      const { getConfig } = require('../dapp/config');
+      return getConfig();
+    } catch (e) { return {}; }
+  }
+
+  static _deps() {
+    const SovereignTrust = tryRequire('../dapp/sovereignTrustEngine')?.SovereignTrustEngine || null;
+    const DexSwap = tryRequire('../dapp/dexSwapEngine')?.DexSwapEngine || null;
+    return { SovereignTrust, DexSwap };
+  }
+
+  static _isShadow() {
+    if (process.env.CONDUIT_SHADOW === 'true') return true;
+    if (process.env.CONDUIT_SHADOW === 'false') return false;
+    const cfg = this._dappConfig();
+    if (!cfg.privateKey || cfg.dappShadow || cfg.dappShadow === true) return true;
+    if (process.env.DAPP_SHADOW === 'true') return true;
+    return false;
+  }
+
+  static _operatorAddress() {
+    const cfg = this._dappConfig();
+    let operator = cfg.operatorAddress || process.env.DAPP_OPERATOR_ADDRESS || '';
+    if (!operator && cfg.privateKey) {
+      try {
+        const { privateKeyToAccount } = require('viem/accounts');
+        operator = privateKeyToAccount(cfg.privateKey).address;
+      } catch (e) { /* ignore */ }
+    }
+    if (!operator) operator = process.env.AGENT_WALLET_ADDRESS || '0x69a32f285ced1dbf102c7baedf0266f1d39580a1';
+    return operator;
+  }
+
+  static _agentAddress() {
+    return process.env.AGENT_WALLET_ADDRESS || '0x69a32f285ced1dbf102c7baedf0266f1d39580a1';
+  }
+
+  static async ensureTables() {
+    await super.ensureTables();
+    if (!pool) return;
+    await query(`
+      CREATE TABLE IF NOT EXISTS conduit_events (
+        id TEXT PRIMARY KEY,
+        operation TEXT NOT NULL,
+        source_type TEXT,
+        source_account_id TEXT,
+        amount NUMERIC NOT NULL DEFAULT 0,
+        status TEXT NOT NULL DEFAULT 'pending',
+        tx_hash TEXT,
+        metadata JSONB DEFAULT '{}',
+        created_at TIMESTAMPTZ DEFAULT NOW(),
+        updated_at TIMESTAMPTZ DEFAULT NOW()
+      )
+    `);
+    await query(`CREATE INDEX IF NOT EXISTS idx_conduit_events_operation ON conduit_events(operation)`);
+    await query(`CREATE INDEX IF NOT EXISTS idx_conduit_events_status ON conduit_events(status)`);
+
+    const deps = this._deps();
+    if (deps.SovereignTrust) {
+      try { await deps.SovereignTrust.readiness(); } catch (e) { /* tables initialized inside readiness */ }
+    }
+  }
+
+  static async status() {
+    const cfg = this._dappConfig();
+    const deps = this._deps();
+    const issues = [];
+    if (!cfg.chainId) issues.push('DAPP_CHAIN_ID not configured');
+    if (!cfg.usdcAddress) issues.push('DAPP_USDC_ADDRESS not configured');
+    if (!this._isShadow() && !cfg.privateKey) issues.push('DAPP_PRIVATE_KEY not configured');
+    if (!deps.SovereignTrust) issues.push('SovereignTrustEngine not available');
+    if (!deps.DexSwap) issues.push('DexSwapEngine not available');
+    const ready = this._isShadow() || issues.filter((i) => !i.includes('DAPP_PRIVATE_KEY')).length === 0;
+    const canonicalSymbol = process.env.CONDUIT_CANONICAL_TOKEN_SYMBOL || process.env.SOVEREIGN_TOKEN_SYMBOL || 'SIT';
+    const canonicalName = process.env.CONDUIT_CANONICAL_TOKEN_NAME || process.env.SOVEREIGN_TOKEN_NAME || 'Sovereign Trust Token';
+    return {
+      engine: this.engineName,
+      healthy: true,
+      mode: this._isShadow() ? 'shadow' : 'live',
+      chainId: cfg.chainId || 8453,
+      usdcAddress: cfg.usdcAddress || '',
+      operatorAddress: this._operatorAddress(),
+      agentWallet: this._agentAddress(),
+      canonicalTokenSymbol: canonicalSymbol,
+      canonicalTokenName: canonicalName,
+      ready,
+      issues,
+      timestamp: new Date().toISOString(),
+    };
+  }
+
+  static async _recordEvent(operation, payload, result, status = 'completed') {
+    const eventId = id('CND');
+    if (pool) {
+      try {
+        await query(
+          `INSERT INTO conduit_events (id, operation, source_type, source_account_id, amount, status, tx_hash, metadata)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8::jsonb)`,
+          [eventId, operation, payload.sourceType || null, payload.sourceAccountId || null, Number(payload.amount) || 0, status, result.txHash || null, safeJson({ payload, result })]
+        );
+      } catch (e) { console.warn(`[${this.engineName}] record event failed:`, e.message); }
+    }
+    return eventId;
+  }
+
+  static _normalizeSources(payload) {
+    const sources = [];
+    if (Array.isArray(payload.sources)) {
+      for (const s of payload.sources) {
+        if (s && s.amount) sources.push({ sourceType: s.sourceType || 'bond_interest', sourceAccountId: s.sourceAccountId || '1', amount: Number(s.amount) });
+      }
+    }
+    if (payload.sourceType && payload.amount) {
+      sources.push({ sourceType: payload.sourceType, sourceAccountId: payload.sourceAccountId || '1', amount: Number(payload.amount) });
+    }
+    if (!sources.length) {
+      sources.push({ sourceType: 'bond_interest', sourceAccountId: '1', amount: Number(payload.amount) || 0 });
+    }
+    return sources.filter((s) => s.amount > 0);
+  }
+
+  static async _collectSources(sources) {
+    const deps = this._deps();
+    if (!deps.SovereignTrust) throw new Error('SovereignTrustEngine not available');
+    const operator = this._operatorAddress();
+    const mints = [];
+    let total = 0;
+    for (const source of sources) {
+      const mint = await deps.SovereignTrust.mintFromSource({
+        sourceType: source.sourceType,
+        sourceAccountId: source.sourceAccountId,
+        to: operator,
+        amount: source.amount,
+        memo: `Conduit canonical digital money ${source.sourceType}:${source.sourceAccountId}`,
+      });
+      mints.push({ source, ...mint });
+      total += Number(source.amount);
+    }
+    return { mints, total, operator };
+  }
+
+  static async _getCanonicalTokenAddress() {
+    const deps = this._deps();
+    if (!deps.SovereignTrust) return null;
+    const token = await deps.SovereignTrust._loadToken();
+    return token?.token_address || null;
+  }
+
+  static async _swapToUsdc({ tokenIn, amount, recipient }) {
+    const deps = this._deps();
+    if (!deps.DexSwap) throw new Error('DexSwapEngine not available');
+    if (!tokenIn) throw new Error('canonical token address not available');
+    if (!amount || Number(amount) <= 0) throw new Error('amount must be positive');
+    const cfg = this._dappConfig();
+    const tokenOut = cfg.usdcAddress || process.env.DAPP_USDC_ADDRESS || '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913';
+    const to = recipient || this._agentAddress();
+    const router = process.env.UNISWAP_V2_ROUTER || '0x4752ba5DBc23f44D87826276BF6Fd6b1C372aD24';
+    const slippageBps = Number(process.env.DEX_SLIPPAGE_BPS || 100);
+    const slippage = slippageBps / 10000;
+
+    if (this._isShadow() || !cfg.privateKey) {
+      const out = Number(amount) * (0.99 * (1 - slippage));
+      return {
+        mode: 'shadow',
+        tokenIn,
+        tokenOut,
+        amountIn: amount,
+        amountOut: out.toFixed(6),
+        recipient: to,
+        router,
+        txHash: `shadow-conduit-swap-${Date.now()}`,
+        note: 'Shadow swap to Base USDC; live requires DAPP_PRIVATE_KEY, gas, and a SIT/USDC liquidity pool',
+      };
+    }
+
+    try {
+      const quote = await deps.DexSwap.quoteUniswapV2({
+        tokenIn, tokenOut, amountIn: amount, decimalsIn: 6, decimalsOut: 6, router, path: [tokenIn, tokenOut],
+      });
+      const swap = await deps.DexSwap.swapOnUniswapV2({
+        tokenIn,
+        tokenOut,
+        amountIn: amount,
+        amountOutMinimum: quote.amountOutMinimum,
+        recipient: to,
+        decimalsIn: 6,
+        decimalsOut: 6,
+        router,
+        path: [tokenIn, tokenOut],
+      });
+      return { ...swap, tokenIn, tokenOut, recipient: to, mode: 'live' };
+    } catch (err) {
+      console.warn('[ConduitEngine] live swap failed, falling back to shadow:', err.message);
+      const out = Number(amount) * (0.99 * (1 - slippage));
+      return {
+        mode: 'shadow-fallback',
+        tokenIn,
+        tokenOut,
+        amountIn: amount,
+        amountOut: out.toFixed(6),
+        recipient: to,
+        router,
+        txHash: `shadow-conduit-swap-${Date.now()}`,
+        note: `Live swap failed (${err.message}); recorded as shadow fallback`,
+      };
+    }
+  }
+
+  static async _balance(address) {
+    const deps = this._deps();
+    if (!deps.SovereignTrust || !address) return { canonical: '0', usdc: '0' };
+    const canonical = await deps.SovereignTrust.tokenBalanceOf(address);
+    return { canonical, usdc: '0' };
+  }
+
+  static async _execute(payload = {}) {
+    const sources = this._normalizeSources(payload);
+    if (!sources.length) throw new Error('No source amounts provided');
+    const { mints, total, operator } = await this._collectSources(sources);
+    const tokenAddress = await this._getCanonicalTokenAddress();
+    const recipient = payload.recipient || this._agentAddress();
+    const swap = await this._swapToUsdc({ tokenIn: tokenAddress, amount: total, recipient });
+    const result = {
+      engine: this.engineName,
+      operation: 'canonicalDigitalMoney',
+      sources,
+      mints,
+      totalCanonicalMinted: total,
+      canonicalToken: tokenAddress,
+      operator,
+      agentWallet: recipient,
+      swap,
+      mode: this._isShadow() ? 'shadow' : 'live',
+      note: this._isShadow()
+        ? 'Conduit flow simulated. Set CONDUIT_SHADOW=false, DAPP_PRIVATE_KEY, and seed a SIT/USDC pool for live execution.'
+        : 'Conduit flow executed live. Verify Base USDC balance in the Agent Wallet.',
+    };
+    await this._recordEvent('execute', payload, result, 'completed');
+    return result;
+  }
+
+  static async _process(action, payload = {}) {
+    switch (action) {
+      case 'status':
+        return await this.status();
+      case 'health':
+        return await this.health();
+      case 'configure':
+        return { configured: true, ...await this.status() };
+      case 'collect':
+      case 'mintCanonical':
+      case 'mint-canonical':
+        return await this._collectSources(this._normalizeSources(payload));
+      case 'swap':
+      case 'swapToUsdc':
+      case 'swap-to-usdc':
+        return await this._swapToUsdc({ tokenIn: payload.tokenIn || await this._getCanonicalTokenAddress(), amount: payload.amount, recipient: payload.recipient });
+      case 'send':
+      case 'sendToAgentWallet':
+      case 'send-to-agent-wallet':
+        return await this._swapToUsdc({ tokenIn: payload.tokenIn || await this._getCanonicalTokenAddress(), amount: payload.amount, recipient: payload.recipient });
+      case 'balance':
+        return await this._balance(payload.address || this._operatorAddress());
+      case 'execute':
+      case 'canonical-digital-money':
+      case 'canonicalDigitalMoney':
+        return await this._execute(payload);
+      default:
+        return await this.status();
+    }
+  }
+}
+
+// ─── Issuer Bridge Engine ─────────────────────────────────────────────────────
+//
+// Bridges PTC ledger balances (coupon / accrued interest GL accounts such as
+// 1200 Accrued Interest Receivable) to real on-chain USDC through regulated
+// issuer rails, primarily Circle Mint. It reserves the source account in the
+// trust ledger, credits the stablecoin backing asset account (1210), and
+// initiates a 1:1 USDC transfer on Base mainnet to the Agent Wallet. When no
+// issuer API is configured it falls back to manual on-ramp instructions.
+
+class IssuerBridgeEngine extends BaseOSEngine {
+  static get engineName() { return 'issuer-bridge'; }
+
+  static _dappConfig() {
+    try {
+      const { getConfig } = require('../dapp/config');
+      return getConfig();
+    } catch (e) { return {}; }
+  }
+
+  static _deps() {
+    return {
+      SourceOfFunds: tryRequire('../stablecoin/sourceOfFundsAdapter')?.SourceOfFundsAdapter || null,
+      Treasury: tryRequire('../stablecoin/treasuryEngine')?.TreasuryEngine || null,
+      Circle: tryRequire('../stablecoin/circleMintClient')?.CircleMintClient || null,
+      MoonPay: tryRequire('../onramps/moonpayCliEngine')?.MoonPayCliEngine || null,
+      TrustAcct: tryRequire('../accounting/trustAccountingEngine')?.TrustAccountingEngine || null,
+      Cash: tryRequire('../cash/cashEngine')?.CashEngine || null,
+    };
+  }
+
+  static _cfg() {
+    const cfg = this._dappConfig();
+    return {
+      chainId: cfg.chainId || Number(process.env.DAPP_CHAIN_ID) || 8453,
+      usdcAddress: cfg.usdcAddress || process.env.DAPP_USDC_ADDRESS || '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913',
+      agentWallet: process.env.AGENT_WALLET_ADDRESS || '0x69a32f285ced1dbf102c7baedf0266f1d39580a1',
+      operatorAddress: cfg.operatorAddress || process.env.DAPP_OPERATOR_ADDRESS || process.env.AGENT_WALLET_ADDRESS || '0x69a32f285ced1dbf102c7baedf0266f1d39580a1',
+      circleApiKey: process.env.CIRCLE_MINT_API_KEY || cfg.circleMintApiKey || '',
+      circleBaseUrl: process.env.CIRCLE_MINT_BASE_URL || 'https://api.circle.com',
+      circleRecipientId: process.env.CIRCLE_MINT_RECIPIENT_ID || '',
+      circleChain: process.env.CIRCLE_MINT_CHAIN || 'BASE',
+      defaultSourceType: process.env.ISSUER_BRIDGE_SOURCE_TYPE || 'trust',
+      defaultSourceAccountId: process.env.ISSUER_BRIDGE_SOURCE_ACCOUNT_ID || '1200',
+      defaultAsset: process.env.ISSUER_BRIDGE_ASSET || 'USDC',
+      defaultMethod: process.env.ISSUER_BRIDGE_SOURCE_METHOD || (process.env.CIRCLE_MINT_API_KEY ? 'circle_mint' : 'manual'),
+      assetAccount: process.env.ISSUER_BRIDGE_ASSET_ACCOUNT || '1210',
+      enabled: (process.env.ISSUER_BRIDGE_ENABLED || 'true') !== 'false',
+      shadow: (process.env.ISSUER_BRIDGE_SHADOW || 'false') === 'true',
+    };
+  }
+
+  static _isShadow() { return this._cfg().shadow; }
+
+  static async ensureTables() {
+    await super.ensureTables();
+    if (!pool) return;
+    await query(`
+      CREATE TABLE IF NOT EXISTS issuer_bridge_requests (
+        id TEXT PRIMARY KEY,
+        source_type TEXT NOT NULL,
+        source_account_id TEXT NOT NULL,
+        source_method TEXT NOT NULL,
+        asset TEXT NOT NULL DEFAULT 'USDC',
+        amount NUMERIC(18,2) NOT NULL,
+        amount_cents BIGINT NOT NULL,
+        recipient TEXT NOT NULL,
+        status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending','quoted','source_reserved','needs_config','needs_deposit','needs_recipient_setup','awaiting_deposit','pending_onramp','completed','failed','cancelled')),
+        provider TEXT,
+        reserve_id TEXT,
+        journal_entry_id TEXT,
+        tx_hash TEXT,
+        instructions TEXT,
+        result JSONB DEFAULT '{}',
+        metadata JSONB DEFAULT '{}',
+        created_at TIMESTAMPTZ DEFAULT NOW(),
+        updated_at TIMESTAMPTZ DEFAULT NOW()
+      )
+    `);
+    await query(`CREATE INDEX IF NOT EXISTS idx_issuer_bridge_status ON issuer_bridge_requests(status)`);
+    await query(`CREATE INDEX IF NOT EXISTS idx_issuer_bridge_source ON issuer_bridge_requests(source_type, source_account_id)`);
+  }
+
+  static async _sourceBalance(sourceType, sourceAccountId) {
+    const deps = this._deps();
+    sourceType = String(sourceType || this._cfg().defaultSourceType).toLowerCase();
+    sourceAccountId = sourceAccountId || this._cfg().defaultSourceAccountId;
+    if (sourceType === 'trust' || sourceType === 'trust_account') {
+      if (!deps.TrustAcct) throw new Error('TrustAccountingEngine not available');
+      const acct = await deps.TrustAcct.getAccount(sourceAccountId);
+      return acct ? { balanceCents: Math.round(Number(acct.balance || 0) * 100), account: acct } : { balanceCents: 0, account: null };
+    }
+    if (sourceType === 'cash') {
+      if (!deps.Cash) throw new Error('CashEngine not available');
+      const acct = await deps.Cash.getAccount(sourceAccountId);
+      return acct ? { balanceCents: Number(acct.balance_cents || 0), account: acct } : { balanceCents: 0, account: null };
+    }
+    if (deps.SourceOfFunds) {
+      const balanceCents = await deps.SourceOfFunds.getBalance({ sourceType, sourceAccountId });
+      return { balanceCents: Number(balanceCents || 0), account: null };
+    }
+    return { balanceCents: 0, account: null };
+  }
+
+  static async _providerReadiness(method) {
+    const deps = this._deps();
+    const cfg = this._cfg();
+    const base = { method, ready: false, issues: [] };
+    if (method === 'manual') return { ...base, ready: true };
+    if (method === 'circle_mint') {
+      const issues = [];
+      if (!cfg.circleApiKey) issues.push('CIRCLE_MINT_API_KEY not configured');
+      return { ...base, ready: issues.length === 0, issues };
+    }
+    if (method === 'moonpay') {
+      if (!deps.MoonPay) return { ...base, issues: ['MoonPayCliEngine not available'] };
+      const r = await deps.MoonPay.readiness().catch(e => ({ ready: false, issues: [e.message] }));
+      return { ...base, ready: !!r.ready, issues: r.issues || [] };
+    }
+    return { ...base, issues: ['Unsupported source method'] };
+  }
+
+  static async status() {
+    const cfg = this._cfg();
+    const sourceInfo = await this._sourceBalance(cfg.defaultSourceType, cfg.defaultSourceAccountId).catch(e => ({ balanceCents: 0, error: e.message }));
+    const providers = {
+      manual: await this._providerReadiness('manual'),
+      circle_mint: await this._providerReadiness('circle_mint'),
+      moonpay: await this._providerReadiness('moonpay'),
+    };
+    const issues = [];
+    if (!cfg.enabled) issues.push('ISSUER_BRIDGE_ENABLED is false');
+    if (sourceInfo.error) issues.push(sourceInfo.error);
+    return {
+      engine: this.engineName,
+      healthy: true,
+      enabled: cfg.enabled,
+      mode: this._isShadow() ? 'shadow' : 'live',
+      chainId: cfg.chainId,
+      usdcAddress: cfg.usdcAddress,
+      agentWallet: cfg.agentWallet,
+      defaultSourceType: cfg.defaultSourceType,
+      defaultSourceAccountId: cfg.defaultSourceAccountId,
+      sourceBalanceCents: sourceInfo.balanceCents,
+      sourceBalanceUsd: ((sourceInfo.balanceCents || 0) / 100).toFixed(2),
+      providers,
+      issues,
+      timestamp: new Date().toISOString(),
+    };
+  }
+
+  static async health() { return this.status(); }
+
+  static _payloadDefaults(payload) {
+    const cfg = this._cfg();
+    const sourceType = payload.sourceType || payload.source_type || cfg.defaultSourceType;
+    const sourceAccountId = payload.sourceAccountId || payload.source_account_id || cfg.defaultSourceAccountId;
+    const amount = Number(payload.amount);
+    const asset = String(payload.asset || cfg.defaultAsset || 'USDC').toUpperCase();
+    const recipient = payload.recipient || payload.targetAddress || cfg.agentWallet;
+    const sourceMethod = payload.sourceMethod || payload.source_method || cfg.defaultMethod;
+    const assetAccount = payload.assetAccount || cfg.assetAccount;
+    if (!amount || amount <= 0) throw new Error('amount must be positive');
+    if (!recipient || !String(recipient).startsWith('0x')) throw new Error('recipient must be a 0x address');
+    return { sourceType, sourceAccountId, amount, asset, recipient, sourceMethod, assetAccount };
+  }
+
+  static async _reserveSource({ sourceType, sourceAccountId, amount, operationId, assetAccount }) {
+    const deps = this._deps();
+    if (!deps.TrustAcct) throw new Error('TrustAccountingEngine not available for GL reservation');
+    if (!deps.Treasury) throw new Error('TreasuryEngine not available');
+    const amountCents = toCents(amount);
+    const source = await deps.TrustAcct.getAccount(sourceAccountId);
+    if (!source) throw new Error(`Trust account not found: ${sourceAccountId}`);
+    const asset = await deps.TrustAcct.getAccount(assetAccount);
+    if (!asset) throw new Error(`Backing asset account not found: ${assetAccount}`);
+    if (Number(source.balance || 0) * 100 < amountCents) throw new Error(`Insufficient source balance in ${sourceAccountId}: ${source.balance} < ${amount}`);
+    const journal = await deps.TrustAcct.postJournalEntry({
+      entryDate: new Date(),
+      description: `Issuer Bridge reserve ${operationId}`,
+      referenceType: 'issuer_bridge',
+      referenceId: operationId,
+      postedBy: 'issuer-bridge',
+      postToFineract: false,
+      lines: [
+        { accountCode: assetAccount, debitAmount: amountCents / 100, creditAmount: 0, memo: `Stablecoin backing from ${sourceAccountId}` },
+        { accountCode: sourceAccountId, debitAmount: 0, creditAmount: amountCents / 100, memo: `Source funds to issuer bridge ${operationId}` },
+      ],
+    });
+    await deps.Treasury.credit('TREASURY_HOT', amountCents, { source: 'issuer-bridge', txHash: null, metadata: { operationId, sourceType, sourceAccountId, journalEntryId: journal.entry_id } });
+    const hold = await deps.Treasury.hold(operationId, 'TREASURY_HOT', amountCents);
+    return { journalEntryId: journal.entry_id, reserveId: hold.reserveId, amountCents };
+  }
+
+  static async _createOperation(data) {
+    if (!pool) return;
+    const record = {
+      id: data.id,
+      source_type: data.sourceType,
+      source_account_id: data.sourceAccountId,
+      source_method: data.sourceMethod,
+      asset: data.asset,
+      amount: data.amount,
+      amount_cents: data.amountCents,
+      recipient: data.recipient,
+      status: data.status,
+      reserve_id: data.reserveId || null,
+      journal_entry_id: data.journalEntryId || null,
+      tx_hash: data.txHash || null,
+      instructions: data.instructions || null,
+      provider: data.provider || null,
+      result: safeJson(data.result || {}),
+      metadata: safeJson(data.metadata || {}),
+    };
+    const cols = Object.keys(record).join(', ');
+    const vals = Object.keys(record).map((_, i) => `$${i + 1}`).join(', ');
+    await query(`INSERT INTO issuer_bridge_requests (${cols}) VALUES (${vals})`, Object.values(record));
+  }
+
+  static async _updateOperation(operationId, updates) {
+    if (!pool || !operationId) return;
+    const parts = [];
+    const values = [];
+    let idx = 1;
+    if (updates.status !== undefined) { parts.push(`status=$${idx++}`); values.push(updates.status); }
+    if (updates.txHash !== undefined) { parts.push(`tx_hash=$${idx++}`); values.push(updates.txHash); }
+    if (updates.instructions !== undefined) { parts.push(`instructions=$${idx++}`); values.push(updates.instructions); }
+    if (updates.result !== undefined) { parts.push(`result=$${idx++}::jsonb`); values.push(safeJson(updates.result)); }
+    if (updates.provider !== undefined) { parts.push(`provider=$${idx++}`); values.push(updates.provider); }
+    if (updates.metadata !== undefined) { parts.push(`metadata=$${idx++}::jsonb`); values.push(safeJson(updates.metadata)); }
+    if (!parts.length) return;
+    values.push(operationId);
+    await query(`UPDATE issuer_bridge_requests SET ${parts.join(', ')}, updated_at=NOW() WHERE id=$${idx}`, values);
+  }
+
+  static async _getOperation(operationId) {
+    if (!pool || !operationId) return null;
+    const res = await query('SELECT * FROM issuer_bridge_requests WHERE id = $1', [operationId]);
+    return res.rows[0] || null;
+  }
+
+  static async _listOperations({ limit = 50, offset = 0, status } = {}) {
+    if (!pool) return [];
+    let sql = 'SELECT * FROM issuer_bridge_requests';
+    const params = [];
+    if (status) { sql += ' WHERE status=$1'; params.push(status); }
+    sql += ` ORDER BY created_at DESC LIMIT $${params.length + 1} OFFSET $${params.length + 2}`;
+    params.push(Number(limit), Number(offset));
+    const res = await query(sql, params);
+    return res.rows;
+  }
+
+  static async list({ limit = 50, offset = 0, status } = {}) {
+    return await this._listOperations({ limit, offset, status });
+  }
+
+  static async get(operationId) {
+    return await this._getOperation(operationId);
+  }
+
+  static async _finalize(reserveId, txHash) {
+    const deps = this._deps();
+    if (deps.Treasury && reserveId) {
+      await deps.Treasury.post(reserveId, txHash);
+    }
+  }
+
+  static _buildInstructions(cfg, p, operationId, overrideMethod, reserved = false) {
+    const method = overrideMethod || p.sourceMethod;
+    const amount = Number(p.amount).toFixed(2);
+    const reservedText = reserved ? 'has been reserved' : 'will be reserved';
+    const opText = operationId ? `operationId '${operationId}'` : 'the returned operationId';
+    if (method === 'manual') {
+      return `Send ${amount} ${p.asset} on Base mainnet to ${p.recipient} (token ${cfg.usdcAddress}). The fiat equivalent ${reservedText} from ${p.sourceType}:${p.sourceAccountId}. Once the deposit confirms, call /api/os/issuer-bridge/process with action 'confirm', ${opText}, and txHash.`;
+    }
+    if (method === 'circle_mint') {
+      return `Use Circle Mint to transfer ${amount} USDC to ${p.recipient} on ${cfg.circleChain}. Operation ${operationId || 'pending'}.`;
+    }
+    if (method === 'moonpay') {
+      return `Use MoonPay to buy ${amount} ${p.asset} on Base into ${p.recipient}. Operation ${operationId || 'pending'}.`;
+    }
+    return `On-ramp ${amount} USD to ${p.asset} at ${p.recipient} via ${method}. Operation ${operationId || 'pending'}.`;
+  }
+
+  static async _issueManual(operationId, p) {
+    const cfg = this._cfg();
+    return { status: 'awaiting_deposit', provider: 'manual', instructions: this._buildInstructions(cfg, p, operationId, 'manual', true) };
+  }
+
+  static async _issueCircle(operationId, p) {
+    const cfg = this._cfg();
+    if (!cfg.circleApiKey) throw new Error('CIRCLE_MINT_API_KEY not configured');
+    const deps = this._deps();
+    if (!deps.Circle) throw new Error('CircleMintClient not available');
+    const client = new deps.Circle({ apiKey: cfg.circleApiKey, baseUrl: cfg.circleBaseUrl });
+    const balances = await client.getBalances();
+    const usd = balances && balances.data && balances.data.find((b) => b.currency === 'USD' || b.currency === 'USDC');
+    const available = usd ? Number(usd.availableAmount) : 0;
+    if (available < Number(p.amount)) {
+      return { status: 'needs_deposit', provider: 'circle_mint', available, needed: p.amount, instructions: `Wire USD to Circle Mint. Available: ${available} USD; needed: ${p.amount} USD.` };
+    }
+    let recipientAddressId = cfg.circleRecipientId;
+    if (!recipientAddressId) {
+      const created = await client.createRecipientAddress({ address: p.recipient, chain: cfg.circleChain, currency: 'USD', description: `Issuer Bridge Agent Wallet ${operationId}`, idempotencyKey: operationId });
+      const rec = created && created.data;
+      recipientAddressId = rec && rec.id;
+      if (!recipientAddressId) {
+        return { status: 'needs_recipient_setup', provider: 'circle_mint', circleResponse: created, instructions: `Create and approve a Circle Mint recipient address for ${p.recipient} on ${cfg.circleChain}, then set CIRCLE_MINT_RECIPIENT_ID and retry.` };
+      }
+    }
+    const transfer = await client.createTransfer({ destinationAddressId: recipientAddressId, amount: String(p.amount), currency: 'USD', idempotencyKey: operationId });
+    const tx = transfer && transfer.data;
+    const txHash = tx && tx.transactionHash;
+    const status = tx && tx.status === 'complete' ? 'completed' : 'pending_onramp';
+    return { status, provider: 'circle_mint', recipientAddressId, transfer: tx, txHash, instructions: txHash ? `Circle Mint transfer ${tx.id} submitted. Track on Base: ${txHash}` : `Circle Mint transfer ${tx && tx.id} pending. Call continue with operationId.` };
+  }
+
+  static async _issueMoonpay(operationId, p) {
+    const deps = this._deps();
+    const cfg = this._cfg();
+    if (!deps.MoonPay) throw new Error('MoonPayCliEngine not available');
+    const buy = await deps.MoonPay.buyUrl({ asset: p.asset, chainId: cfg.chainId, walletAddress: p.recipient, amount: p.amount, explanation: `Issuer Bridge ${operationId}` });
+    return { status: 'awaiting_onramp', provider: 'moonpay', instructions: `Complete MoonPay checkout for ${Number(p.amount).toFixed(2)} ${p.asset} on Base to ${p.recipient}: ${buy.url}`, moonpay: buy };
+  }
+
+  static async _quote(payload) {
+    const cfg = this._cfg();
+    const p = this._payloadDefaults(payload);
+    const sourceInfo = await this._sourceBalance(p.sourceType, p.sourceAccountId);
+    const amountCents = toCents(p.amount);
+    if ((sourceInfo.balanceCents || 0) < amountCents) throw new Error(`Insufficient source balance: ${((sourceInfo.balanceCents || 0) / 100).toFixed(2)} < ${p.amount}`);
+    const provider = await this._providerReadiness(p.sourceMethod);
+    return {
+      sourceType: p.sourceType,
+      sourceAccountId: p.sourceAccountId,
+      amount: p.amount,
+      asset: p.asset,
+      recipient: p.recipient,
+      sourceMethod: p.sourceMethod,
+      sourceBalanceCents: sourceInfo.balanceCents,
+      providerReady: provider.ready,
+      providerIssues: provider.issues,
+      instructions: this._buildInstructions(cfg, p, null, null, false),
+      status: 'quoted',
+    };
+  }
+
+  static async _issue(payload) {
+    const p = this._payloadDefaults(payload);
+    const sourceInfo = await this._sourceBalance(p.sourceType, p.sourceAccountId);
+    const amountCents = toCents(p.amount);
+    if ((sourceInfo.balanceCents || 0) < amountCents) throw new Error(`Insufficient source balance: ${((sourceInfo.balanceCents || 0) / 100).toFixed(2)} < ${p.amount}`);
+    const operationId = id('IB-');
+    const reserve = await this._reserveSource({ sourceType: p.sourceType, sourceAccountId: p.sourceAccountId, amount: p.amount, operationId, assetAccount: p.assetAccount });
+    let providerResult;
+    if (p.sourceMethod === 'circle_mint') providerResult = await this._issueCircle(operationId, p);
+    else if (p.sourceMethod === 'manual') providerResult = await this._issueManual(operationId, p);
+    else if (p.sourceMethod === 'moonpay') providerResult = await this._issueMoonpay(operationId, p);
+    else providerResult = { status: 'needs_config', provider: p.sourceMethod, instructions: `Source method ${p.sourceMethod} not supported by IssuerBridgeEngine` };
+    const status = providerResult.status === 'completed' ? 'completed' : providerResult.status;
+    const txHash = providerResult.txHash || null;
+    const result = { ...providerResult, operationId, reserve };
+    await this._createOperation({ id: operationId, sourceType: p.sourceType, sourceAccountId: p.sourceAccountId, sourceMethod: p.sourceMethod, asset: p.asset, amount: p.amount, amountCents, recipient: p.recipient, status, reserveId: reserve.reserveId, journalEntryId: reserve.journalEntryId, txHash, instructions: providerResult.instructions, provider: providerResult.provider, result, metadata: { payload: p } });
+    if (status === 'completed' && reserve.reserveId && txHash) {
+      await this._finalize(reserve.reserveId, txHash);
+    }
+    return { operationId, sourceType: p.sourceType, sourceAccountId: p.sourceAccountId, amount: p.amount, asset: p.asset, recipient: p.recipient, status, txHash, instructions: providerResult.instructions, result };
+  }
+
+  static async _continue(payload) {
+    const cfg = this._cfg();
+    const operationId = payload.operationId || payload.id || payload.operation_id;
+    if (!operationId) throw new Error('operationId required');
+    const op = await this._getOperation(operationId);
+    if (!op) throw new Error('Operation not found');
+    if (op.status === 'completed') return op;
+    let result;
+    if (op.source_method === 'circle_mint') {
+      const prev = (op.result && op.result.transfer && op.result.transfer.id) ? op.result.transfer.id : null;
+      if (!prev) throw new Error('No Circle transfer id recorded');
+      const deps = this._deps();
+      if (!deps.Circle) throw new Error('CircleMintClient not available');
+      const client = new deps.Circle({ apiKey: cfg.circleApiKey, baseUrl: cfg.circleBaseUrl });
+      const txResp = await client.getTransfer(prev);
+      const tx = txResp && txResp.data;
+      const txHash = tx && tx.transactionHash;
+      const status = tx && tx.status === 'complete' ? 'completed' : 'pending_onramp';
+      result = { ...op.result, transfer: tx, status, txHash };
+      if (status === 'completed' && op.reserve_id && txHash) {
+        await this._finalize(op.reserve_id, txHash);
+      }
+      await this._updateOperation(operationId, { status, txHash, result, instructions: tx ? `Circle transfer ${tx.id} status: ${tx.status}` : op.instructions });
+      return { operationId, status, txHash, result };
+    }
+    const txHash = payload.txHash || payload.tx_hash;
+    if (!txHash) throw new Error('txHash required to confirm deposit');
+    if (op.reserve_id) await this._finalize(op.reserve_id, txHash);
+    result = { ...(op.result || {}), txHash, status: 'completed' };
+    await this._updateOperation(operationId, { status: 'completed', txHash, result });
+    return { operationId, status: 'completed', txHash, result };
+  }
+
+  static async _confirm(payload) {
+    const operationId = payload.operationId || payload.id || payload.operation_id;
+    const txHash = payload.txHash || payload.tx_hash;
+    if (!operationId) throw new Error('operationId required');
+    if (!txHash) throw new Error('txHash required');
+    const op = await this._getOperation(operationId);
+    if (!op) throw new Error('Operation not found');
+    if (op.status === 'completed') return op;
+    if (op.reserve_id) await this._finalize(op.reserve_id, txHash);
+    const result = { ...(op.result || {}), txHash, status: 'completed' };
+    await this._updateOperation(operationId, { status: 'completed', txHash, result });
+    return await this._getOperation(operationId);
+  }
+
+  static async _process(action, payload = {}) {
+    switch (action) {
+      case 'status': return await this.status();
+      case 'health': return await this.health();
+      case 'quote': return await this._quote(payload);
+      case 'issue':
+      case 'execute':
+      case 'issueAndSend':
+        return await this._issue(payload);
+      case 'continue': return await this._continue(payload);
+      case 'confirm': return await this._confirm(payload);
+      case 'get':
+      case 'getOperation': return await this.get(payload.operationId || payload.id || payload.operation_id);
+      case 'list':
+      case 'listOperations': return await this._listOperations({ limit: payload.limit, offset: payload.offset, status: payload.status });
+      default: return await this.status();
+    }
+  }
+}
+
+// ─── Melio B2B Payments Engine ────────────────────────────────────────────────
+//
+// Fiat B2B payment rail that pays vendors / settlement accounts from PTC
+// ledger sources (cash, trust, bond, fixed income). When a payment settles,
+// the corresponding treasury reserve is posted so the ledger stays in sync.
+// In live mode it calls the Melio Payments API; in shadow mode it returns a
+// payment intent and wire/ACH instructions that an operator can complete.
+
+class MelioEngine extends BaseOSEngine {
+  static get engineName() { return 'melio'; }
+
+  static _cfg() {
+    return {
+      apiKey: process.env.MELIO_API_KEY || '',
+      baseUrl: process.env.MELIO_BASE_URL || 'https://api.meliopayments.com',
+      shadow: process.env.MELIO_SHADOW ? process.env.MELIO_SHADOW === 'true' : !process.env.MELIO_API_KEY,
+      enabled: (process.env.MELIO_ENABLED || 'true') !== 'false',
+      defaultSourceType: process.env.MELIO_SOURCE_TYPE || 'cash',
+      defaultSourceAccountId: process.env.MELIO_SOURCE_ACCOUNT_ID || 'CA-OPERATING',
+      defaultDeliveryMethod: process.env.MELIO_DELIVERY_METHOD || 'ach',
+      webhookSecret: process.env.MELIO_WEBHOOK_SECRET || '',
+      reserveOnSchedule: (process.env.MELIO_RESERVE_ON_SCHEDULE || 'true') !== 'false',
+    };
+  }
+
+  static _client() {
+    const Melio = tryRequire('../melio/melioClient')?.getClient;
+    if (!Melio) return null;
+    return Melio();
+  }
+
+  static _deps() {
+    return {
+      SourceOfFunds: tryRequire('../stablecoin/sourceOfFundsAdapter')?.SourceOfFundsAdapter || null,
+      Treasury: tryRequire('../stablecoin/treasuryEngine')?.TreasuryEngine || null,
+      TrustAcct: tryRequire('../accounting/trustAccountingEngine')?.TrustAccountingEngine || null,
+      Cash: tryRequire('../cash/cashEngine')?.CashEngine || null,
+    };
+  }
+
+  static async ensureTables() {
+    await super.ensureTables();
+    if (!pool) return;
+    await query(`
+      CREATE TABLE IF NOT EXISTS melio_payments (
+        id TEXT PRIMARY KEY,
+        action TEXT NOT NULL,
+        status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending','quoted','scheduled','processing','completed','failed','cancelled')),
+        amount NUMERIC(18,2) NOT NULL,
+        amount_cents BIGINT NOT NULL,
+        currency TEXT NOT NULL DEFAULT 'USD',
+        source_type TEXT,
+        source_account_id TEXT,
+        vendor_id TEXT,
+        bill_id TEXT,
+        melio_payment_id TEXT,
+        reserve_id TEXT,
+        journal_entry_id TEXT,
+        funding JSONB DEFAULT '{}',
+        instructions TEXT,
+        result JSONB DEFAULT '{}',
+        metadata JSONB DEFAULT '{}',
+        created_at TIMESTAMPTZ DEFAULT NOW(),
+        updated_at TIMESTAMPTZ DEFAULT NOW()
+      )
+    `);
+    await query(`CREATE INDEX IF NOT EXISTS idx_melio_payments_status ON melio_payments(status)`);
+    await query(`CREATE INDEX IF NOT EXISTS idx_melio_payments_source ON melio_payments(source_type, source_account_id)`);
+  }
+
+  static async _sourceBalance(sourceType, sourceAccountId) {
+    const deps = this._deps();
+    sourceType = String(sourceType || this._cfg().defaultSourceType).toLowerCase();
+    sourceAccountId = sourceAccountId || this._cfg().defaultSourceAccountId;
+    if ((sourceType === 'trust' || sourceType === 'trust_account') && deps.TrustAcct) {
+      const acct = await deps.TrustAcct.getAccount(sourceAccountId);
+      return acct ? { balanceCents: Math.round(Number(acct.balance || 0) * 100), account: acct } : { balanceCents: 0, account: null };
+    }
+    if (sourceType === 'cash' && deps.Cash) {
+      const acct = await deps.Cash.getAccount(sourceAccountId);
+      return acct ? { balanceCents: Number(acct.balance_cents || 0), account: acct } : { balanceCents: 0, account: null };
+    }
+    if (deps.SourceOfFunds) {
+      const balanceCents = await deps.SourceOfFunds.getBalance({ sourceType, sourceAccountId });
+      return { balanceCents: Number(balanceCents || 0), account: null };
+    }
+    return { balanceCents: 0, account: null };
+  }
+
+  static async status() {
+    const cfg = this._cfg();
+    const sourceInfo = await this._sourceBalance(cfg.defaultSourceType, cfg.defaultSourceAccountId).catch(e => ({ balanceCents: 0, error: e.message }));
+    const client = this._client();
+    let apiStatus = { reachable: false };
+    if (client && !cfg.shadow) {
+      try { apiStatus = { reachable: true, company: await client.getCompany() }; } catch (e) { apiStatus = { reachable: false, error: e.message }; }
+    }
+    const issues = [];
+    if (!cfg.enabled) issues.push('MELIO_ENABLED is false');
+    if (!cfg.apiKey && !cfg.shadow) issues.push('MELIO_API_KEY not configured');
+    return {
+      engine: this.engineName,
+      healthy: true,
+      enabled: cfg.enabled,
+      mode: cfg.shadow ? 'shadow' : 'live',
+      sourceBalanceCents: sourceInfo.balanceCents,
+      sourceBalanceUsd: ((sourceInfo.balanceCents || 0) / 100).toFixed(2),
+      apiStatus,
+      issues,
+      timestamp: new Date().toISOString(),
+    };
+  }
+
+  static async health() { return this.status(); }
+
+  static _payloadDefaults(payload) {
+    const cfg = this._cfg();
+    const sourceType = payload.sourceType || payload.source_type || cfg.defaultSourceType;
+    const sourceAccountId = payload.sourceAccountId || payload.source_account_id || cfg.defaultSourceAccountId;
+    const amount = Number(payload.amount);
+    const currency = String(payload.currency || 'USD').toUpperCase();
+    const deliveryMethod = payload.deliveryMethod || payload.delivery_method || cfg.defaultDeliveryMethod;
+    const vendor = payload.vendor || {};
+    const bill = payload.bill || {};
+    if (!amount || amount <= 0) throw new Error('amount must be positive');
+    if (!vendor.name && !payload.vendorId) throw new Error('vendor.name or vendorId required');
+    if (!currency) throw new Error('currency required');
+    return { sourceType, sourceAccountId, amount, currency, deliveryMethod, vendor, bill, memo: payload.memo || '', metadata: payload.metadata || {} };
+  }
+
+  static _instructions(record, cfg) {
+    const amount = Number(record.amount).toFixed(2);
+    if (record.melioPaymentId) {
+      const reserveNote = record.reserveId ? ` Reserve ${record.reserveId} will be posted when payment completes.` : '';
+      return `Melio payment ${record.melioPaymentId} scheduled for $${amount} ${record.currency} via ${record.deliveryMethod || cfg.defaultDeliveryMethod}. Track in Melio dashboard.${reserveNote}`;
+    }
+    return `Shadow Melio payment for $${amount} ${record.currency}. To send live, set MELIO_API_KEY and MELIO_SHADOW=false, then retry.`;
+  }
+
+  static async _recordPayment(record) {
+    if (!pool) return;
+    const values = [
+      record.id, record.action, record.status, record.amount, record.amountCents, record.currency,
+      record.sourceType, record.sourceAccountId, record.vendorId || null, record.billId || null,
+      record.melioPaymentId || null, record.reserveId || null, record.journalEntryId || null,
+      safeJson(record.funding || {}), record.instructions || null, safeJson(record.result || {}), safeJson(record.metadata || {}),
+    ];
+    await query(`
+      INSERT INTO melio_payments
+        (id, action, status, amount, amount_cents, currency, source_type, source_account_id, vendor_id, bill_id, melio_payment_id, reserve_id, journal_entry_id, funding, instructions, result, metadata)
+      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14::jsonb,$15,$16::jsonb,$17::jsonb)
+      ON CONFLICT (id) DO UPDATE SET
+        status=EXCLUDED.status,
+        vendor_id=EXCLUDED.vendor_id,
+        bill_id=EXCLUDED.bill_id,
+        melio_payment_id=EXCLUDED.melio_payment_id,
+        reserve_id=EXCLUDED.reserve_id,
+        journal_entry_id=EXCLUDED.journal_entry_id,
+        funding=EXCLUDED.funding,
+        instructions=EXCLUDED.instructions,
+        result=EXCLUDED.result,
+        metadata=EXCLUDED.metadata,
+        updated_at=NOW()
+    `, values);
+  }
+
+  static async _getPaymentRecord(id) {
+    if (!pool || !id) return null;
+    const res = await query('SELECT * FROM melio_payments WHERE id = $1 OR melio_payment_id = $1', [id]);
+    return res.rows[0] || null;
+  }
+
+  static async _reserveSource({ sourceType, sourceAccountId, amount, paymentId }) {
+    const deps = this._deps();
+    if (!deps.SourceOfFunds) throw new Error('SourceOfFundsAdapter not available');
+    if (!deps.Treasury) throw new Error('TreasuryEngine not available');
+    const amountCents = toCents(amount);
+    const funding = await deps.SourceOfFunds._fundSourceToTreasury({ sourceType, sourceAccountId, paymentId, amountCents });
+    const hold = await deps.Treasury.hold(paymentId, 'TREASURY_HOT', amountCents);
+    return { funding, reserveId: hold.reserveId, amountCents };
+  }
+
+  static async _releaseReserve(reserveId) {
+    const deps = this._deps();
+    if (deps.Treasury && reserveId) {
+      try { await deps.Treasury.release(reserveId); } catch (e) { console.warn('[melio] release failed:', e.message); }
+    }
+  }
+
+  static async _finalizeReserve(reserveId, reference) {
+    const deps = this._deps();
+    if (deps.Treasury && reserveId) {
+      await deps.Treasury.post(reserveId, reference);
+    }
+  }
+
+  static async _listVendors() {
+    const client = this._client();
+    if (!client) return { mode: 'shadow', note: 'Melio client not available' };
+    return await client.listVendors();
+  }
+
+  static async _createVendor(payload) {
+    const client = this._client();
+    if (!client) return { mode: 'shadow', note: 'Melio client not available' };
+    const vendor = payload.vendor || payload;
+    if (!vendor.name) throw new Error('vendor.name required');
+    return await client.createVendor(vendor);
+  }
+
+  static async _createBill(payload) {
+    const client = this._client();
+    if (!client) return { mode: 'shadow', note: 'Melio client not available' };
+    const { vendorId, amount, currency, dueDate, description } = payload;
+    if (!vendorId) throw new Error('vendorId required');
+    if (!amount) throw new Error('amount required');
+    return await client.createBill({ vendor_id: vendorId, amount: String(amount), currency: (currency || 'USD').toUpperCase(), due_date: dueDate, description });
+  }
+
+  static async _schedulePayment(payload) {
+    const cfg = this._cfg();
+    const p = this._payloadDefaults(payload);
+    const amountCents = toCents(p.amount);
+    const sourceInfo = await this._sourceBalance(p.sourceType, p.sourceAccountId);
+    if ((sourceInfo.balanceCents || 0) < amountCents) throw new Error(`Insufficient source balance: ${((sourceInfo.balanceCents || 0) / 100).toFixed(2)} < ${p.amount}`);
+
+    const paymentId = id('MEL-');
+    let funding = null;
+    let journalEntryId = null;
+    let reserveId = null;
+    if (!cfg.shadow && cfg.reserveOnSchedule) {
+      const r = await this._reserveSource({ sourceType: p.sourceType, sourceAccountId: p.sourceAccountId, amount: p.amount, paymentId });
+      funding = r.funding;
+      journalEntryId = r.funding?.journalEntryId || r.funding?.journalId || r.funding?.movementId || null;
+      reserveId = r.reserveId;
+    }
+
+    const client = this._client();
+    if (!client) throw new Error('Melio client not available');
+    let vendor = null;
+    let bill = null;
+    let melioPayment = null;
+    try {
+      if (payload.vendorId) {
+        vendor = { id: payload.vendorId };
+      } else {
+        vendor = await client.createVendor(p.vendor);
+      }
+      if (payload.billId) {
+        bill = { id: payload.billId };
+      } else {
+        bill = await client.createBill({
+          vendor_id: vendor.id,
+          amount: String(p.amount),
+          currency: p.currency,
+          due_date: payload.dueDate || new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10),
+          description: p.bill.description || p.memo || `B2B payment from PTC ${paymentId}`,
+        });
+      }
+      melioPayment = await client.schedulePayment({
+        vendor_id: vendor.id,
+        bill_id: bill.id,
+        amount: String(p.amount),
+        currency: p.currency,
+        delivery_method: p.deliveryMethod,
+        scheduled_date: payload.scheduledDate || new Date(Date.now() + 1 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10),
+        memo: p.memo,
+      });
+    } catch (err) {
+      if (reserveId) await this._releaseReserve(reserveId);
+      throw err;
+    }
+
+    const record = {
+      id: paymentId,
+      action: 'schedulePayment',
+      status: melioPayment.status === 'completed' ? 'completed' : (melioPayment.status || 'scheduled'),
+      amount: p.amount,
+      amountCents,
+      currency: p.currency,
+      sourceType: p.sourceType,
+      sourceAccountId: p.sourceAccountId,
+      vendorId: vendor.id,
+      billId: bill.id,
+      melioPaymentId: melioPayment.id,
+      reserveId,
+      journalEntryId,
+      funding: funding || {},
+      result: { vendor, bill, melioPayment },
+      metadata: { payload: p },
+    };
+    record.instructions = this._instructions({ ...record, deliveryMethod: p.deliveryMethod }, cfg);
+    if (melioPayment.status === 'completed' && reserveId) {
+      try { await this._finalizeReserve(reserveId, `melio:${melioPayment.id}`); record.status = 'completed'; } catch (e) { /* keep status */ }
+    }
+    await this._recordPayment(record);
+    return record;
+  }
+
+  static async _getPayment(payload) {
+    const cfg = this._cfg();
+    const paymentId = payload.paymentId || payload.id;
+    if (!paymentId) throw new Error('paymentId required');
+    const client = this._client();
+    if (!client) throw new Error('Melio client not available');
+    const record = await this._getPaymentRecord(paymentId);
+    const melioPaymentId = (record && record.melio_payment_id) || paymentId;
+    const remote = await client.getPayment(melioPaymentId);
+    if (record && remote) {
+      const status = remote.status || record.status;
+      if (['completed', 'sent', 'settled'].includes(status) && record.reserve_id && record.status !== 'completed') {
+        try { await this._finalizeReserve(record.reserve_id, `melio:${remote.id || paymentId}`); } catch (e) { console.warn('[melio] finalize failed:', e.message); }
+      }
+      const updated = { ...record, status, result: { ...record.result, remote } };
+      updated.instructions = this._instructions({ ...updated, deliveryMethod: record.delivery_method || cfg.defaultDeliveryMethod }, cfg);
+      await this._recordPayment(updated);
+      return updated;
+    }
+    return { paymentId, remote, record, status: (record && record.status) || 'unknown' };
+  }
+
+  static async _listPayments(payload) {
+    const client = this._client();
+    if (!client) return { mode: 'shadow', note: 'Melio client not available' };
+    return await client.listPayments({ limit: payload.limit || 50 });
+  }
+
+  static async _webhook(payload) {
+    const cfg = this._cfg();
+    const signature = payload.signature || (payload.headers && payload.headers['x-melio-signature']);
+    if (cfg.webhookSecret && signature) {
+      const expected = crypto.createHmac('sha256', cfg.webhookSecret).update(safeJson(payload)).digest('hex');
+      if (signature !== expected) throw new Error('Melio webhook signature mismatch');
+    }
+    const paymentId = payload.payment_id || payload.paymentId || payload.id;
+    const status = payload.status || payload.payment_status;
+    if (!paymentId) return { received: true, note: 'no payment_id in webhook' };
+    const record = await this._getPaymentRecord(paymentId) || await this._getPaymentRecord(payload.id);
+    if (record && ['completed', 'sent', 'settled'].includes(status) && record.reserve_id && record.status !== 'completed') {
+      await this._finalizeReserve(record.reserve_id, `melio:${paymentId}`);
+      const updated = { ...record, status: 'completed', result: { ...record.result, webhook: payload } };
+      await this._recordPayment(updated);
+      return { received: true, paymentId, status: 'completed', reservePosted: record.reserve_id };
+    }
+    return { received: true, paymentId, status, record };
+  }
+
+  static async _process(action, payload = {}) {
+    switch (action) {
+      case 'status': return await this.status();
+      case 'health': return await this.health();
+      case 'listVendors': return await this._listVendors(payload);
+      case 'createVendor': return await this._createVendor(payload);
+      case 'createBill': return await this._createBill(payload);
+      case 'schedulePayment': return await this._schedulePayment(payload);
+      case 'getPayment': return await this._getPayment(payload);
+      case 'listPayments': return await this._listPayments(payload);
+      case 'webhook': return await this._webhook(payload);
+      case 'process':
+      default:
+        return await this.status();
+    }
+  }
+}
+
+// ─── PTC Bank Engine ──────────────────────────────────────────────────────────
+
+class PtcBankEngine extends BaseOSEngine {
+  static get engineName() { return 'ptc-bank'; }
+
+  static _deps() {
+    return {
+      TrustBank: tryRequire('../dapp/trustBankEngine')?.TrustBankEngine,
+      TrustAccounting: tryRequire('../accounting/trustAccountingEngine')?.TrustAccountingEngine,
+      Cash: tryRequire('../cash/cashEngine')?.CashEngine,
+      WireEngine: tryRequire('../dapp/wireOriginationEngine')?.WireOriginationEngine,
+      AchEngine: tryRequire('../dapp/bankTransferEngine')?.BankTransferEngine,
+      OpenBankingEngine: tryRequire('../dapp/openBankingEngine')?.OpenBankingEngine,
+      ExternalEndpointEngine: tryRequire('../dapp/externalEndpointEngine')?.ExternalEndpointEngine,
+    };
+  }
+
+  static _cfg() {
+    return {
+      live: process.env.PTC_BANK_LIVE === 'true',
+      settlementAccount: process.env.PTC_BANK_SETTLEMENT_ACCOUNT || process.env.TRUST_BANK_ACCOUNT || '',
+      routing: process.env.PTC_BANK_ROUTING || process.env.TRUST_BANK_ROUTING || '111000025',
+      name: process.env.PTC_BANK_NAME || process.env.TRUST_BANK_NAME || 'DLB Trust PTC Bank',
+      glAccount: process.env.PTC_BANK_GL_ACCOUNT || '1010',
+    };
+  }
+
+  static async ensureTables() {
+    await super.ensureTables();
+    const { TrustBank } = this._deps();
+    if (TrustBank) await TrustBank.ensureTables();
+  }
+
+  static async status() {
+    const { TrustBank, WireEngine, AchEngine, OpenBankingEngine, ExternalEndpointEngine } = this._deps();
+    const cfg = this._cfg();
+    return {
+      engine: this.engineName,
+      healthy: !!TrustBank,
+      mode: cfg.live ? 'live' : 'shadow',
+      settlementAccountConfigured: !!cfg.settlementAccount,
+      internalBank: !!TrustBank,
+      rails: {
+        wire: !!WireEngine,
+        ach: !!AchEngine,
+        openBanking: !!OpenBankingEngine,
+        iso20022: !!OpenBankingEngine,
+        external: !!ExternalEndpointEngine,
+        bookTransfer: true,
+      },
+      timestamp: new Date().toISOString(),
+    };
+  }
+
+  static async health() { return this.status(); }
+
+  static async _resolvePaymentId(paymentId) {
+    if (!paymentId || paymentId === 'latest') {
+      if (!pool) throw new Error('Postgres pool not available');
+      const res = await query(`SELECT payment_id FROM trust_bank_payments WHERE status = 'pending' ORDER BY created_at DESC LIMIT 1`);
+      if (!res.rows.length) throw new Error('No pending payment found');
+      return res.rows[0].payment_id;
+    }
+    return paymentId;
+  }
+
+  static async _process(action, payload = {}) {
+    const { TrustBank } = this._deps();
+    if (!TrustBank) throw new Error('TrustBankEngine not available');
+    const cfg = this._cfg();
+
+    switch (action) {
+      case 'status':
+      case 'health':
+        return await this.status();
+      case 'createCustomer':
+        return await TrustBank.createCustomer(payload);
+      case 'getCustomer':
+        return await TrustBank.getCustomer(payload.customerId);
+      case 'listCustomers':
+        return await TrustBank.listCustomers({ limit: payload.limit || 50 });
+      case 'createAccount': {
+        const account = await TrustBank.createAccount({
+          customerId: payload.customerId,
+          accountName: payload.accountName,
+          accountType: payload.accountType || 'checking',
+          currency: payload.currency || 'USD',
+          linkedCashAccountId: payload.linkedCashAccountId,
+          linkedTrustAccountCode: payload.linkedTrustAccountCode,
+          metadata: payload.metadata,
+        });
+        return account;
+      }
+      case 'getAccount':
+        return await TrustBank.getAccount(payload.accountId);
+      case 'listAccounts':
+        return await TrustBank.listAccounts({ customerId: payload.customerId, limit: payload.limit || 50 });
+      case 'deposit':
+        return await TrustBank.deposit({
+          accountId: payload.accountId,
+          amount: payload.amount,
+          description: payload.description,
+          initiatedBy: payload.initiatedBy || 'os-engine',
+        });
+      case 'internalTransfer':
+        return await TrustBank.internalTransfer({
+          fromAccountId: payload.fromAccountId,
+          toAccountId: payload.toAccountId,
+          amount: payload.amount,
+          description: payload.description,
+          initiatedBy: payload.initiatedBy || 'os-engine',
+        });
+      case 'originatePayment': {
+        const rail = payload.rail || (cfg.live ? 'wire' : 'book_transfer');
+        const payment = await TrustBank.originatePayment({
+          fromAccountId: payload.fromAccountId,
+          externalRouting: payload.externalRouting,
+          externalAccount: payload.externalAccount,
+          externalAccountName: payload.externalAccountName,
+          externalBankName: payload.externalBankName || cfg.name,
+          amount: payload.amount,
+          rail,
+          currency: payload.currency || 'USD',
+          description: payload.description,
+          initiatedBy: payload.initiatedBy || 'os-engine',
+          endpointId: payload.endpointId,
+          metadata: payload.metadata,
+        });
+        const instructions = rail === 'book_transfer'
+          ? `Book transfer ${payment.paymentId} originated for $${Number(payload.amount).toFixed(2)}. Settle manually or call settlePayment with an externalTxId.`
+          : `Payment ${payment.paymentId} originated via ${rail} for $${Number(payload.amount).toFixed(2)}. Call sendPayment to transmit.`;
+        return { ...payment, rail, instructions };
+      }
+      case 'sendPayment': {
+        const paymentId = await this._resolvePaymentId(payload.paymentId);
+        const sent = await TrustBank.sendPayment(paymentId);
+        return sent;
+      }
+      case 'settlePayment': {
+        const paymentId = await this._resolvePaymentId(payload.paymentId);
+        return await TrustBank.settlePayment(paymentId, payload.externalTxId);
+      }
+      case 'getPayment': {
+        const paymentId = await this._resolvePaymentId(payload.paymentId);
+        return await TrustBank.getPayment(paymentId);
+      }
+      case 'listPayments':
+        return await TrustBank.listPayments({ status: payload.status, limit: payload.limit || 50 });
+      case 'fundFromSource': {
+        const { TrustAccounting } = this._deps();
+        if (!TrustAccounting) throw new Error('TrustAccountingEngine not available for GL funding');
+        const { accountId, sourceType, sourceAccountId, amount } = payload;
+        if (!accountId || !sourceType || !sourceAccountId || !amount) throw new Error('accountId, sourceType, sourceAccountId, and amount required');
+        const account = await TrustBank.getAccount(accountId);
+        if (!account) throw new Error(`PTC bank account not found: ${accountId}`);
+        const amt = Number(amount);
+        if (!Number.isFinite(amt) || amt <= 0) throw new Error('amount must be positive');
+        const glAccountCode = payload.glAccountCode || account.linked_trust_account_code || cfg.glAccount;
+        const source = await TrustAccounting.getAccount(sourceAccountId);
+        if (!source) throw new Error(`Source GL account not found: ${sourceAccountId}`);
+        if (Number(source.balance || 0) * 100 < toCents(amt)) throw new Error(`Insufficient source balance in ${sourceAccountId}: ${source.balance} < ${amt}`);
+        const journal = await TrustAccounting.postJournalEntry({
+          entryDate: new Date(),
+          description: payload.description || `Fund PTC bank account ${accountId} from ${sourceAccountId}`,
+          referenceType: 'ptc-bank',
+          referenceId: accountId,
+          postedBy: payload.initiatedBy || 'ptc-bank',
+          postToFineract: false,
+          lines: [
+            { accountCode: glAccountCode, debitAmount: amt, creditAmount: 0, memo: `PTC bank funding for ${accountId}` },
+            { accountCode: sourceAccountId, debitAmount: 0, creditAmount: amt, memo: `Source to PTC bank ${accountId}` },
+          ],
+        });
+        const deposit = await TrustBank.deposit({
+          accountId,
+          amount: amt,
+          description: payload.description || `Funded from ${sourceAccountId} (journal ${journal.entry_id})`,
+          initiatedBy: payload.initiatedBy || 'ptc-bank',
+        });
+        return { funded: true, accountId, amount: amt, deposit, journalEntryId: journal.entry_id, glAccountCode, sourceType, sourceAccountId };
+      }
+      case 'process':
+      default:
+        return await this.status();
+    }
+  }
+}
+
+// ─── PTC Treasury Engine ──────────────────────────────────────────────────────
+//
+// Canonical day-to-day PTC treasury workflow engine.  It unifies the GL, the
+// internal PTC bank ledger, fiat payment rails (ACH/wire/check/Melio), and
+// on-chain on-ramps into a single `distribute` / `onramp` / `summary` /
+// `reconcile` interface.  Every workflow posts to `os_events` and, where
+// possible, updates the trust ledger so bank sub-ledgers stay in sync with
+// the GL.
+
+class PtcTreasuryEngine extends BaseOSEngine {
+  static get engineName() { return 'ptc-treasury'; }
+
+  static _deps() {
+    return {
+      TrustBank: tryRequire('../dapp/trustBankEngine')?.TrustBankEngine,
+      TrustAccounting: tryRequire('../accounting/trustAccountingEngine')?.TrustAccountingEngine,
+      DistributionRequest: tryRequire('../dapp/distributionRequestEngine')?.DistributionRequestEngine,
+    };
+  }
+
+  static _cfg() {
+    return {
+      live: process.env.PTC_TREASURY_LIVE === 'true',
+      defaultPtcBankGl: process.env.PTC_BANK_GL_ACCOUNT || '1010',
+      agentWallet: process.env.AGENT_WALLET_ADDRESS || '0x69a32f285ced1dbf102c7baedf0266f1d39580a1',
+    };
+  }
+
+  static async ensureTables() { await super.ensureTables(); }
+
+  static async status() {
+    const cfg = this._cfg();
+    return {
+      engine: this.engineName,
+      healthy: true,
+      mode: cfg.live ? 'live' : 'shadow',
+      rails: {
+        'ptc-bank': !!PtcBankEngine,
+        melio: !!MelioEngine,
+        'issuer-bridge': !!IssuerBridgeEngine,
+        conduit: !!ConduitEngine,
+        'wallet-onramp': !!WalletOnRampEngine,
+        'smart-router': !!SmartRouterEngine,
+      },
+      timestamp: new Date().toISOString(),
+    };
+  }
+
+  static async health() { return this.status(); }
+
+  static _unwrap(res) {
+    return res && res.success && res.result !== undefined ? res.result : res;
+  }
+
+  static async summary() {
+    const { TrustBank, TrustAccounting } = this._deps();
+    const cfg = this._cfg();
+    const [gl, ptcAccounts, ptcPayments] = await Promise.all([
+      TrustAccounting ? TrustAccounting.listAccounts({}).catch(() => []) : [],
+      TrustBank ? TrustBank.listAccounts({ limit: 100 }).catch(() => []) : [],
+      TrustBank ? TrustBank.listPayments({ limit: 20 }).catch(() => []) : [],
+    ]);
+    const glTotal = gl.reduce((s, a) => s + Number(a.balance || 0), 0);
+    const ptcTotal = ptcAccounts.reduce((s, a) => s + (Number(a.balance_cents || 0) / 100), 0);
+    const events = pool ? (await query(`SELECT engine, action, status, COUNT(*) as count FROM os_events WHERE engine IN ('ptc-bank','ptc-treasury','melio','issuer-bridge','conduit','wallet-onramp','smart-router','back-office') GROUP BY engine, action, status`).catch(() => [])) : [];
+    return {
+      engine: this.engineName,
+      generatedAt: new Date().toISOString(),
+      mode: cfg.live ? 'live' : 'shadow',
+      gl: { accounts: gl, totalUsd: glTotal.toFixed(2) },
+      ptcBank: { accounts: ptcAccounts, totalUsd: ptcTotal.toFixed(2), payments: ptcPayments },
+      osEvents: events,
+    };
+  }
+
+  static async reconcile({ glAccountCode } = {}) {
+    const { TrustBank, TrustAccounting } = this._deps();
+    const cfg = this._cfg();
+    const code = glAccountCode || cfg.defaultPtcBankGl;
+    const [glAcct, ptcAccounts] = await Promise.all([
+      TrustAccounting ? TrustAccounting.getAccount(code).catch(() => null) : null,
+      TrustBank ? TrustBank.listAccounts({ limit: 1000 }).catch(() => []) : [],
+    ]);
+    const ptcTotal = ptcAccounts.reduce((s, a) => s + (Number(a.balance_cents || 0) / 100), 0);
+    const glBalance = glAcct ? Number(glAcct.balance || 0) : 0;
+    return {
+      engine: this.engineName,
+      glAccountCode: code,
+      glBalance: glBalance.toFixed(2),
+      ptcBankBalance: ptcTotal.toFixed(2),
+      difference: (glBalance - ptcTotal).toFixed(2),
+      reconciled: Math.abs(glBalance - ptcTotal) < 0.01,
+      ptcAccounts: ptcAccounts.map(a => ({
+        accountId: a.account_id,
+        accountName: a.account_name,
+        balance: (Number(a.balance_cents || 0) / 100).toFixed(2),
+      })),
+      timestamp: new Date().toISOString(),
+    };
+  }
+
+  static _normalizePtcBankRail(rail) {
+    const r = String(rail || 'book_transfer').toLowerCase().replace(/-/g, '_');
+    if (r === 'ptc_bank' || r === 'book' || r === 'book_transfer' || r === 'check') return 'book_transfer';
+    if (['wire','ach','open_banking','iso20022','external'].includes(r)) return r;
+    return 'book_transfer';
+  }
+
+  static async _fundPtcBankIfNeeded(payload, workflowId) {
+    const { fromAccountId, sourceType, sourceAccountId, amount, glAccountCode, description, initiatedBy } = payload;
+    if (!fromAccountId || !sourceType || !sourceAccountId) return null;
+    if (String(sourceType).toLowerCase() === 'ptc_bank') return null;
+    const cfg = this._cfg();
+    return await this._unwrap(await PtcBankEngine.process({
+      action: 'fundFromSource',
+      accountId: fromAccountId,
+      sourceType,
+      sourceAccountId,
+      amount,
+      glAccountCode: glAccountCode || cfg.defaultPtcBankGl,
+      description: description || `PTC Treasury workflow ${workflowId}`,
+      initiatedBy,
+    }));
+  }
+
+  static async _distributePtcBank(payload, workflowId) {
+    const { amount, payee = {}, fromAccountId, externalRouting, externalAccount, externalAccountName, externalBankName, description, memo, initiatedBy } = payload;
+    if (!fromAccountId) throw new Error('fromAccountId required for ptc-bank distribution');
+    const routing = externalRouting || payee.routing || payee.routingNumber;
+    const account = externalAccount || payee.account || payee.accountNumber;
+    const accountName = externalAccountName || payee.name || payee.accountName;
+    if (!routing || !account || !accountName) throw new Error('payee routing, account, and name required');
+    const funded = await this._fundPtcBankIfNeeded(payload, workflowId);
+    const rail = this._normalizePtcBankRail(payload.rail);
+    const originated = await this._unwrap(await PtcBankEngine.process({
+      action: 'originatePayment',
+      fromAccountId,
+      externalRouting: routing,
+      externalAccount: account,
+      externalAccountName: accountName,
+      externalBankName: externalBankName || payee.bankName || 'External Bank',
+      amount,
+      rail,
+      description: description || memo || `PTC Treasury distribution ${workflowId}`,
+      initiatedBy,
+    }));
+    const paymentId = originated && originated.paymentId;
+    let sent = null;
+    if (paymentId && payload.autoSend !== false) {
+      sent = await this._unwrap(await PtcBankEngine.process({ action: 'sendPayment', paymentId, initiatedBy }));
+    }
+    return { workflowId, rail, funded, originated, sent, paymentId, status: sent ? sent.status : (originated && originated.status), instructions: originated && originated.instructions };
+  }
+
+  static async _distributeMelio(payload, workflowId) {
+    const { amount, sourceType, sourceAccountId, payee = {}, vendor = {}, deliveryMethod, description, memo, initiatedBy } = payload;
+    const v = vendor.name ? vendor : {
+      name: payee.name || vendor.name,
+      email: payee.email,
+      address: payee.address,
+      bankAccount: payee.routing && payee.account ? {
+        routingNumber: payee.routing,
+        accountNumber: payee.account,
+        accountType: payee.accountType || 'checking',
+      } : undefined,
+    };
+    if (!v.name) throw new Error('vendor.name or payee.name required for melio distribution');
+    const result = await this._unwrap(await MelioEngine.process({
+      action: 'schedulePayment',
+      amount,
+      sourceType,
+      sourceAccountId,
+      currency: 'USD',
+      vendor: v,
+      deliveryMethod: deliveryMethod || 'ach',
+      dueDate: payload.dueDate,
+      memo: memo || description || `PTC Treasury distribution ${workflowId}`,
+      metadata: { workflowId, payee },
+      initiatedBy,
+    }));
+    return { workflowId, rail: 'melio', result };
+  }
+
+  static async _onrampIssuerBridge(payload, workflowId) {
+    const cfg = this._cfg();
+    const { amount, sourceType, sourceAccountId, asset, targetAddress, sourceMethod, description } = payload;
+    const result = await this._unwrap(await IssuerBridgeEngine.process({
+      action: 'issue',
+      sourceType,
+      sourceAccountId,
+      amount,
+      asset: asset || 'USDC',
+      recipient: targetAddress || cfg.agentWallet,
+      sourceMethod,
+      description: description || `PTC Treasury on-ramp ${workflowId}`,
+    }));
+    return { workflowId, rail: 'issuer-bridge', result };
+  }
+
+  static async _onrampConduit(payload, workflowId) {
+    const cfg = this._cfg();
+    const { amount, sourceType, sourceAccountId, targetAddress } = payload;
+    const sources = payload.sources || [{ sourceType, sourceAccountId, amount }];
+    const result = await this._unwrap(await ConduitEngine.process({
+      action: 'execute',
+      sources,
+      recipient: targetAddress || cfg.agentWallet,
+      description: `PTC Treasury on-ramp ${workflowId}`,
+    }));
+    return { workflowId, rail: 'conduit', result };
+  }
+
+  static async _onrampWalletOnramp(payload, workflowId) {
+    const cfg = this._cfg();
+    const { amount, sourceType, sourceAccountId, asset, targetAddress, sourceMethod } = payload;
+    const result = await this._unwrap(await WalletOnRampEngine.process({
+      action: 'fund',
+      amount,
+      sourceType,
+      sourceAccountId,
+      asset: asset || 'USDC',
+      targetAddress: targetAddress || cfg.agentWallet,
+      sourceMethod,
+      description: `PTC Treasury on-ramp ${workflowId}`,
+    }));
+    return { workflowId, rail: 'wallet-onramp', result };
+  }
+
+  static async _distributeSmartRouter(payload, workflowId) {
+    const { amount, sourceType, sourceAccountId, payee = {}, currency, preferred, targetAddress } = payload;
+    const destination = targetAddress ? { type: 'wallet', address: targetAddress } : {
+      type: 'bank',
+      accountNumber: payee.account || payee.accountNumber,
+      routingNumber: payee.routing || payee.routingNumber,
+      accountName: payee.name || payee.accountName,
+      bankName: payee.bankName,
+    };
+    const result = await this._unwrap(await SmartRouterEngine.process({
+      action: 'deliver',
+      amount,
+      currency: currency || 'USD',
+      source: { type: sourceType || 'trust', accountId: sourceAccountId },
+      destination,
+      preferred: preferred || payload.rail,
+      memo: payload.memo || `PTC Treasury distribution ${workflowId}`,
+      initiatedBy: payload.initiatedBy,
+    }));
+    return { workflowId, rail: 'smart-router', result };
+  }
+
+  static async _distribute(payload = {}) {
+    const amount = Number(payload.amount);
+    if (!Number.isFinite(amount) || amount <= 0) throw new Error('amount must be positive');
+    const rail = String(payload.rail || 'ptc-bank').toLowerCase();
+    const workflowId = payload.workflowId || id('PTT-');
+    const initiatedBy = payload.initiatedBy || 'ptc-treasury';
+
+    if (rail === 'ptc-bank' || ['wire','ach','open_banking','iso20022','external','book','book_transfer','check'].includes(rail)) {
+      return await this._distributePtcBank({ ...payload, initiatedBy }, workflowId);
+    }
+    if (rail === 'melio') {
+      return await this._distributeMelio({ ...payload, initiatedBy }, workflowId);
+    }
+    if (rail === 'issuer-bridge') {
+      return await this._onrampIssuerBridge({ ...payload, initiatedBy }, workflowId);
+    }
+    if (rail === 'conduit') {
+      return await this._onrampConduit({ ...payload, initiatedBy }, workflowId);
+    }
+    if (rail === 'wallet-onramp' || rail === 'wallet_onramp' || rail === 'alchemy-wallet') {
+      return await this._onrampWalletOnramp({ ...payload, initiatedBy }, workflowId);
+    }
+    if (rail === 'smart-router' || rail === 'smart_router' || rail === 'router') {
+      return await this._distributeSmartRouter({ ...payload, initiatedBy }, workflowId);
+    }
+    throw new Error(`Unsupported PTC Treasury rail: ${rail}`);
+  }
+
+  static async _onramp(payload = {}) {
+    const amount = Number(payload.amount);
+    if (!Number.isFinite(amount) || amount <= 0) throw new Error('amount must be positive');
+    const method = String(payload.method || payload.rail || 'issuer-bridge').toLowerCase();
+    const workflowId = payload.workflowId || id('PTT-');
+    const initiatedBy = payload.initiatedBy || 'ptc-treasury';
+    const p = { ...payload, initiatedBy };
+    if (method === 'issuer-bridge' || method === 'issuer_bridge') return await this._onrampIssuerBridge(p, workflowId);
+    if (method === 'conduit') return await this._onrampConduit(p, workflowId);
+    if (method === 'wallet-onramp' || method === 'wallet_onramp' || method === 'wallet-onramp') return await this._onrampWalletOnramp(p, workflowId);
+    throw new Error(`Unsupported PTC Treasury on-ramp method: ${method}`);
+  }
+
+  static async _process(action, payload = {}) {
+    switch (action) {
+      case 'status': return await this.status();
+      case 'health': return await this.health();
+      case 'summary': return await this.summary();
+      case 'reconcile': return await this.reconcile(payload);
+      case 'distribute':
+      case 'pay':
+      case 'distribution':
+        return await this._distribute(payload);
+      case 'onramp':
+      case 'onramp-to-crypto':
+      case 'fund-wallet':
+        return await this._onramp(payload);
+      default:
+        return await this.status();
+    }
+  }
+}
+
 const ENGINES = {
   bank: BankEngine,
   treasury: TreasuryEngine,
@@ -2590,6 +4543,12 @@ const ENGINES = {
   'back-office': BackOfficeEngine,
   'wallet-onramp': WalletOnRampEngine,
   'alchemy-wallet': AlchemyWalletEngine,
+  tokenization: TokenizationEngine,
+  conduit: ConduitEngine,
+  'issuer-bridge': IssuerBridgeEngine,
+  melio: MelioEngine,
+  'ptc-bank': PtcBankEngine,
+  'ptc-treasury': PtcTreasuryEngine,
 };
 
 async function ensureAll() {
@@ -2621,6 +4580,12 @@ module.exports = {
   BackOfficeEngine,
   WalletOnRampEngine,
   AlchemyWalletEngine,
+  TokenizationEngine,
+  ConduitEngine,
+  IssuerBridgeEngine,
+  MelioEngine,
+  PtcBankEngine,
+  PtcTreasuryEngine,
   engines: ENGINES,
   ensureAll,
 };

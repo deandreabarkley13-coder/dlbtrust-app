@@ -19,7 +19,7 @@ const BASE_URL = (process.env.OS_TEST_BASE_URL || 'http://localhost:3002').repla
 const TOKEN = process.env.ADMIN_SECRET_TOKEN || 'dlb-admin-2026-trust';
 const VERBOSE = process.env.OS_TEST_VERBOSE !== 'false';
 
-const engines = ['bank', 'treasury', 'payment', 'clearing', 'settlement', 'compliance', 'security', 'rest-api', 'bookkeeping', 'cash', 'asset-acquisition', 'bank-aggregator', 'funding', 'smart-router', 'back-office', 'wallet-onramp', 'alchemy-wallet'];
+const engines = ['bank', 'treasury', 'payment', 'clearing', 'settlement', 'compliance', 'security', 'rest-api', 'bookkeeping', 'cash', 'asset-acquisition', 'bank-aggregator', 'funding', 'smart-router', 'back-office', 'wallet-onramp', 'alchemy-wallet', 'tokenization', 'conduit', 'issuer-bridge', 'melio', 'ptc-bank', 'ptc-treasury'];
 
 const results = [];
 let failed = false;
@@ -59,6 +59,18 @@ function assert(cond, msg) {
     failed = true;
     throw new Error(msg || 'assertion failed');
   }
+}
+
+const captures = {};
+
+function substitute(obj) {
+  return JSON.parse(JSON.stringify(obj, (k, v) => {
+    if (typeof v === 'string' && v.startsWith('${') && v.endsWith('}')) {
+      const key = v.slice(2, -1);
+      if (captures[key] !== undefined) return captures[key];
+    }
+    return v;
+  }));
 }
 
 async function runStep(name, fn) {
@@ -133,6 +145,27 @@ async function main() {
     { engine: 'alchemy-wallet', action: 'getBalances', payload: { address: '0x74204857713CC1d741670505003e7261EF626E98' } },
     { engine: 'alchemy-wallet', action: 'send', payload: { to: '0x69a32f285ced1dbf102c7baedf0266f1d39580a1', amount: '0.0001', asset: 'ETH', dryRun: true } },
     { engine: 'alchemy-wallet', action: 'fundFromSource', payload: { sourceType: 'cash', sourceAccountId: 'CA-BOND-PROCEEDS', amount: 0.01, asset: 'SIT', targetAddress: '0x74204857713CC1d741670505003e7261EF626E98', memo: 'Smoke test internal wallet credit' }, capture: 'alchemyFundingEventId' },
+    { engine: 'tokenization', action: 'execute', payload: { sourceType: 'bond_interest', sourceAccountId: '1', amount: 0.01, tokenSymbol: 'DLB-PRB-INT' } },
+    { engine: 'conduit', action: 'execute', payload: { sources: [{ sourceType: 'bond_interest', sourceAccountId: '1', amount: 0.01 }], recipient: '0x69a32f285ced1dbf102c7baedf0266f1d39580a1' } },
+    { engine: 'issuer-bridge', action: 'quote', payload: { sourceType: 'trust', sourceAccountId: '1200', amount: 0.01, asset: 'USDC', recipient: '0x69a32f285ced1dbf102c7baedf0266f1d39580a1', sourceMethod: 'manual' } },
+    { engine: 'issuer-bridge', action: 'issue', payload: { sourceType: 'trust', sourceAccountId: '1200', amount: 0.01, asset: 'USDC', recipient: '0x69a32f285ced1dbf102c7baedf0266f1d39580a1', sourceMethod: 'manual' }, capture: 'issuerBridgeOperationId' },
+    { engine: 'melio', action: 'status', payload: {} },
+    { engine: 'melio', action: 'listVendors', payload: {} },
+    { engine: 'melio', action: 'schedulePayment', payload: { amount: 0.01, sourceType: 'trust', sourceAccountId: '1200', vendor: { name: 'Smoke Test Vendor' }, deliveryMethod: 'ach' } },
+    { engine: 'melio', action: 'getPayment', payload: { id: 'melio-payment-shadow' } },
+    { engine: 'ptc-bank', action: 'createCustomer', payload: { name: 'PTC Smoke Customer', email: 'smoke@example.com' }, capture: 'ptcBankCustomerId' },
+    { engine: 'ptc-bank', action: 'createAccount', payload: { customerId: '${ptcBankCustomerId}', accountName: 'PTC Smoke Checking', accountType: 'checking' }, capture: 'ptcBankAccountId' },
+    { engine: 'ptc-bank', action: 'deposit', payload: { accountId: '${ptcBankAccountId}', amount: 100, description: 'Smoke deposit' } },
+    { engine: 'ptc-bank', action: 'createAccount', payload: { customerId: '${ptcBankCustomerId}', accountName: 'PTC Smoke Savings', accountType: 'savings' }, capture: 'ptcBankToAccountId' },
+    { engine: 'ptc-bank', action: 'internalTransfer', payload: { fromAccountId: '${ptcBankAccountId}', toAccountId: '${ptcBankToAccountId}', amount: 10, description: 'Smoke internal transfer' } },
+    { engine: 'ptc-bank', action: 'originatePayment', payload: { fromAccountId: '${ptcBankAccountId}', externalRouting: '111000025', externalAccount: '000123456789', externalAccountName: 'Smoke Payee', externalBankName: 'Smoke Bank', amount: 5, rail: 'book_transfer', description: 'Smoke book transfer' }, capture: 'ptcBankPaymentId' },
+    { engine: 'ptc-bank', action: 'sendPayment', payload: { paymentId: '${ptcBankPaymentId}' } },
+    { engine: 'ptc-bank', action: 'getPayment', payload: { paymentId: '${ptcBankPaymentId}' } },
+    { engine: 'ptc-bank', action: 'listPayments', payload: { limit: 10 } },
+    { engine: 'ptc-treasury', action: 'summary', payload: {} },
+    { engine: 'ptc-treasury', action: 'reconcile', payload: { glAccountCode: '1010' } },
+    { engine: 'ptc-treasury', action: 'distribute', payload: { amount: 100, rail: 'ptc-bank', sourceType: 'trust', sourceAccountId: '1200', fromAccountId: '${ptcBankAccountId}', payee: { name: 'PTC Treasury Payee', bankName: 'Smoke Bank', routing: '111000025', account: '000123456789' }, description: 'PTC Treasury smoke distribution' } },
+    { engine: 'ptc-treasury', action: 'onramp', payload: { amount: 0.01, method: 'issuer-bridge', sourceType: 'trust', sourceAccountId: '1200', asset: 'USDC', targetAddress: '0x69a32f285ced1dbf102c7baedf0266f1d39580a1', sourceMethod: 'manual' } },
   ];
 
   const bankEventIds = [];
@@ -141,10 +174,14 @@ async function main() {
   let backOfficeRequestId = null;
   let walletOnRampOperationId = null;
   let alchemyFundingEventId = null;
+  let issuerBridgeOperationId = null;
 
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   for (const { engine, action, payload, expectEvent, expectKey, capture } of processSteps) {
+    await sleep(2500); // stay under the 30 POST/min write rate limiter
     await runStep(`${engine}: process ${action}`, async () => {
-      const { ok, body } = await call('POST', `/api/os/${engine}/process`, { action, ...payload });
+      const resolvedPayload = substitute(payload || {});
+      const { ok, body } = await call('POST', `/api/os/${engine}/process`, { action, ...resolvedPayload });
       assert(ok, body && body.error);
       if (expectEvent) {
         assert(body.data && body.data.eventId, 'expected eventId');
@@ -155,12 +192,30 @@ async function main() {
         apiKeys.push(body.data.result.apiKey);
       }
       if (capture && body.data && body.data.result) {
-        if (capture === 'smartRouterPaymentId' && body.data.result.paymentId) smartRouterPaymentId = body.data.result.paymentId;
-        if (capture === 'backOfficeRequestId' && body.data.result.id) backOfficeRequestId = body.data.result.id;
-        if (capture === 'walletOnRampOperationId' && body.data.result.operationId) walletOnRampOperationId = body.data.result.operationId;
+        const r = body.data.result;
+        const captureValue =
+          (capture === 'smartRouterPaymentId' && r.paymentId) ? r.paymentId :
+          (capture === 'backOfficeRequestId' && r.id) ? r.id :
+          (capture === 'walletOnRampOperationId' && r.operationId) ? r.operationId :
+          (capture === 'issuerBridgeOperationId' && r.operationId) ? r.operationId :
+          (capture === 'ptcBankCustomerId' && r.customer_id) ? r.customer_id :
+          (capture === 'ptcBankAccountId' && r.account_id) ? r.account_id :
+          (capture === 'ptcBankToAccountId' && r.account_id) ? r.account_id :
+          (capture === 'ptcBankPaymentId' && r.paymentId) ? r.paymentId :
+          r[capture] || undefined;
+        if (captureValue) {
+          captures[capture] = captureValue;
+          if (capture === 'smartRouterPaymentId') smartRouterPaymentId = captureValue;
+          if (capture === 'backOfficeRequestId') backOfficeRequestId = captureValue;
+          if (capture === 'walletOnRampOperationId') walletOnRampOperationId = captureValue;
+          if (capture === 'issuerBridgeOperationId') issuerBridgeOperationId = captureValue;
+        }
       }
       if (capture && body.data && body.data.eventId) {
-        if (capture === 'alchemyFundingEventId') alchemyFundingEventId = body.data.eventId;
+        if (capture === 'alchemyFundingEventId') {
+          alchemyFundingEventId = body.data.eventId;
+          captures[capture] = body.data.eventId;
+        }
       }
       return body.data;
     });
@@ -229,6 +284,17 @@ async function main() {
       assert(ok, body && body.error);
       assert(body.data && body.data.id === smartRouterPaymentId, 'get id mismatch');
       return body.data;
+    });
+  }
+
+  // Issuer Bridge confirm with dummy txHash (manual on-ramp)
+  if (issuerBridgeOperationId) {
+    await sleep(2500);
+    await runStep('issuer-bridge: confirm deposit', async () => {
+      const { ok, body } = await call('POST', '/api/os/issuer-bridge/process', { action: 'confirm', operationId: issuerBridgeOperationId, txHash: `0xsmoke${Date.now()}` });
+      assert(ok, body && body.error);
+      assert(body.data && body.data.result && body.data.result.status === 'completed', 'expected completed status');
+      return body.data.result;
     });
   }
 

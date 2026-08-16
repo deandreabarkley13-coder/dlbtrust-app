@@ -22,6 +22,7 @@ const TOKEN = process.env.ADMIN_SECRET_TOKEN || 'dlb-admin-2026-trust';
 const amount = process.argv[2] || '0.01';
 const asset = process.argv[3] || 'USDC';
 const targetAddress = process.argv[4] || '';
+const sourceMethod = process.argv[5] || process.env.AGENT_WALLET_SOURCE_METHOD || 'manual';
 
 async function post(engine, body) {
   const res = await fetch(`${BASE_URL}/api/os/${engine}/process`, {
@@ -55,7 +56,7 @@ async function main() {
     amount,
     asset,
     targetAddress: resolvedTarget,
-    sourceMethod: 'manual',
+    sourceMethod,
     autoReplenish: true,
   });
 

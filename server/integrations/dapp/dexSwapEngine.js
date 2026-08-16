@@ -26,6 +26,18 @@ function num(name, fallback = 0) { const n = Number(process.env[name]); return N
 
 const SWAP_ROUTER_02 = '0x68b3465833fb72A70ecDF485E0e4C7bD8665Fc45';
 const UNISWAP_V2_ROUTER_02 = '0x7a250d5630B4cF539739dF2C5dAcb4c659F2488D';
+const UNISWAP_V2_ROUTER_02_BASE = '0x4752ba5DBc23f44D87826276BF6Fd6b1C372aD24';
+
+function chainById(id) {
+  if (!chains) return undefined;
+  if (id === 8453) return chains.base;
+  if (id === 11155111) return chains.sepolia;
+  return chains.mainnet;
+}
+
+function defaultUniswapV2Router(chainId) {
+  return chainId === 8453 ? UNISWAP_V2_ROUTER_02_BASE : UNISWAP_V2_ROUTER_02;
+}
 
 const erc20Abi = [
   { type: 'function', name: 'decimals', inputs: [], outputs: [{ type: 'uint8' }], stateMutability: 'view' },
@@ -68,7 +80,7 @@ function walletClient() {
   const cfg = getConfig();
   if (!cfg.privateKey) throw new Error('DAPP_PRIVATE_KEY not configured');
   const account = privateKeyToAccount(cfg.privateKey);
-  const chain = cfg.chainId === 1 ? (chains && chains.mainnet) : (chains && chains.sepolia) || undefined;
+  const chain = chainById(cfg.chainId);
   const fees = cfg.getFees ? (cfg.getFees() || { maxFeePerGas: viem.parseGwei('20'), maxPriorityFeePerGas: viem.parseGwei('0.5') }) : { maxFeePerGas: viem.parseGwei('20'), maxPriorityFeePerGas: viem.parseGwei('0.5') };
   return {
     account,
@@ -227,7 +239,7 @@ class DexSwapEngine {
     const amount = Number(amountIn) || 0;
     if (amount <= 0) throw new Error('amountIn must be positive');
 
-    const routerAddress = router || str('UNISWAP_V2_ROUTER', UNISWAP_V2_ROUTER_02);
+    const routerAddress = router || str('UNISWAP_V2_ROUTER', defaultUniswapV2Router(cfg.chainId));
     const swapPath = Array.isArray(path) && path.length >= 2 ? path : [tokenIn, tokenOut];
     const inputToken = tokenIn || swapPath[0];
     const outputToken = tokenOut || swapPath[swapPath.length - 1];
@@ -280,7 +292,7 @@ class DexSwapEngine {
     const amount = Number(amountIn) || 0;
     if (amount <= 0) throw new Error('amountIn must be positive');
 
-    const routerAddress = router || str('UNISWAP_V2_ROUTER', UNISWAP_V2_ROUTER_02);
+    const routerAddress = router || str('UNISWAP_V2_ROUTER', defaultUniswapV2Router(cfg.chainId));
     const swapPath = Array.isArray(path) && path.length >= 2 ? path : [tokenIn, tokenOut];
     const inputToken = tokenIn || swapPath[0];
     const outputToken = tokenOut || swapPath[swapPath.length - 1];
@@ -306,7 +318,7 @@ class DexSwapEngine {
     let wallet, publicClient, fees;
     if (privateKey && privateKeyToAccount) {
       const account = privateKeyToAccount(privateKey);
-      const chain = cfg.chainId === 11155111 ? chains.sepolia : chains.mainnet;
+      const chain = chainById(cfg.chainId);
       fees = cfg.getFees ? (cfg.getFees() || { maxFeePerGas: viem.parseGwei('20'), maxPriorityFeePerGas: viem.parseGwei('0.5') }) : { maxFeePerGas: viem.parseGwei('20'), maxPriorityFeePerGas: viem.parseGwei('0.5') };
       wallet = viem.createWalletClient({ account, chain, transport: viem.http(cfg.rpcUrl) });
       publicClient = viem.createPublicClient({ chain, transport: viem.http(cfg.rpcUrl) });

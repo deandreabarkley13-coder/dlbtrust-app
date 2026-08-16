@@ -6,7 +6,7 @@
  * Provides a single, consistent interface to the operating-system engines:
  * bank, treasury, payment, clearing, settlement, compliance, security, rest-api,
  * bookkeeping, cash, asset-acquisition, bank-aggregator, funding, smart-router, back-office,
- * wallet-onramp, and alchemy-wallet.
+ * wallet-onramp, alchemy-wallet, issuer-bridge, conduit, tokenization, melio, and ptc-bank.
  */
 
 const express = require('express');
@@ -29,6 +29,12 @@ const {
   BackOfficeEngine,
   WalletOnRampEngine,
   AlchemyWalletEngine,
+  TokenizationEngine,
+  ConduitEngine,
+  IssuerBridgeEngine,
+  MelioEngine,
+  PtcBankEngine,
+  PtcTreasuryEngine,
 } = require('../integrations/os/osEngine');
 
 const router = express.Router();
@@ -53,6 +59,12 @@ const ENGINES = {
   'back-office': BackOfficeEngine,
   'wallet-onramp': WalletOnRampEngine,
   'alchemy-wallet': AlchemyWalletEngine,
+  tokenization: TokenizationEngine,
+  conduit: ConduitEngine,
+  'issuer-bridge': IssuerBridgeEngine,
+  melio: MelioEngine,
+  'ptc-bank': PtcBankEngine,
+  'ptc-treasury': PtcTreasuryEngine,
 };
 
 function sendError(res, err) {

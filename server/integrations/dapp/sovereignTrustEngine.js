@@ -39,6 +39,19 @@ function toCents(amount) { return Math.round((Number(amount) || 0) * 1_000_000);
 function fromCents(cents) { return (Number(cents || 0) / 1_000_000).toFixed(6); }
 function toUsdCents(microCents) { return Math.max(0, Math.round(Number(microCents || 0) / 10000)); }
 function safeJson(obj) { return JSON.stringify(obj, (k, v) => typeof v === 'bigint' ? String(v) : v); }
+function chainById(id) {
+  if (!chains) return undefined;
+  if (id === 8453) return chains.base;
+  if (id === 1) return chains.mainnet;
+  if (id === 11155111) return chains.sepolia;
+  return chains.mainnet;
+}
+function networkName(id) {
+  if (id === 8453) return 'base';
+  if (id === 1) return 'mainnet';
+  if (id === 11155111) return 'sepolia';
+  return 'mainnet';
+}
 
 const memory = {
   token: null,
@@ -113,7 +126,7 @@ function walletClient() {
   const cfg = getConfig();
   if (!cfg.privateKey) throw new Error('DAPP_PRIVATE_KEY not configured');
   const account = privateKeyToAccount(cfg.privateKey);
-  const chain = cfg.chainId === 1 ? (chains && chains.mainnet) : (chains && chains.sepolia) || undefined;
+  const chain = chainById(cfg.chainId);
   const fees = cfg.getFees ? (cfg.getFees() || { maxFeePerGas: viem.parseGwei('20'), maxPriorityFeePerGas: viem.parseGwei('0.5') }) : { maxFeePerGas: viem.parseGwei('20'), maxPriorityFeePerGas: viem.parseGwei('0.5') };
   return {
     account,
@@ -182,7 +195,7 @@ class SovereignTrustEngine {
       issues,
       token: token ? { address: token.token_address, forwarder: token.forwarder_address, symbol: token.token_symbol } : null,
       operatorAddress: cfg.operatorAddress,
-      network: cfg.chainId === 1 ? 'mainnet' : 'sepolia',
+      network: networkName(cfg.chainId),
     };
   }
 
@@ -201,7 +214,7 @@ class SovereignTrustEngine {
     if (!pool) return record;
     const cfg = this.getConfig();
     const params = [
-      record.id, cfg.chainId === 1 ? 'mainnet' : 'sepolia', cfg.chainId,
+      record.id, networkName(cfg.chainId), cfg.chainId,
       record.token_address, record.forwarder_address, cfg.tokenSymbol, cfg.tokenName,
       'active', cfg.shadow, safeJson(record.metadata || {})
     ];
@@ -320,8 +333,16 @@ class SovereignTrustEngine {
   }
 
   static async _ensureDeployed() {
-    const token = await this._loadToken();
-    if (token && token.token_address && token.forwarder_address) return token;
+    const cfg = this.getConfig();
+    let token = await this._loadToken();
+    if (token && token.token_address && token.forwarder_address) {
+      if (!cfg.shadow && (String(token.token_address).startsWith('shadow-') || String(token.forwarder_address).startsWith('shadow-'))) {
+        // a shadow token exists but we are now live; redeploy real contracts
+        token = null;
+      } else {
+        return token;
+      }
+    }
     return (await this.deployContracts()).token ? await this._loadToken() : null;
   }
 
@@ -397,7 +418,7 @@ class SovereignTrustEngine {
         metadata: { sourceType, sourceAccountId, paymentId, target: to, sourceRef },
       });
     }
-    await TreasuryEngine.getOrCreateAccount(cfg.reserveAccount, { type: 'reserve', network: cfg.chainId === 1 ? 'mainnet' : 'sepolia', assetCode: cfg.tokenSymbol });
+    await TreasuryEngine.getOrCreateAccount(cfg.reserveAccount, { type: 'reserve', network: networkName(cfg.chainId), assetCode: cfg.tokenSymbol });
     await TreasuryEngine.credit(cfg.reserveAccount, usdCents, {
       source: 'sovereign_mint',
       metadata: { sourceType, sourceAccountId, paymentId, target: to, sourceRef },
