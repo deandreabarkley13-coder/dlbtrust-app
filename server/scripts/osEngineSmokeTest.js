@@ -19,7 +19,7 @@ const BASE_URL = (process.env.OS_TEST_BASE_URL || 'http://localhost:3002').repla
 const TOKEN = process.env.ADMIN_SECRET_TOKEN || 'dlb-admin-2026-trust';
 const VERBOSE = process.env.OS_TEST_VERBOSE !== 'false';
 
-const engines = ['bank', 'treasury', 'payment', 'clearing', 'settlement', 'compliance', 'security', 'rest-api', 'bookkeeping', 'cash', 'asset-acquisition', 'bank-aggregator', 'funding', 'smart-router', 'back-office', 'wallet-onramp', 'alchemy-wallet', 'tokenization', 'conduit', 'issuer-bridge', 'melio', 'ptc-bank', 'ptc-treasury'];
+const engines = ['bank', 'treasury', 'payment', 'clearing', 'settlement', 'compliance', 'security', 'rest-api', 'bookkeeping', 'cash', 'asset-acquisition', 'bank-aggregator', 'funding', 'smart-router', 'back-office', 'wallet-onramp', 'alchemy-wallet', 'tokenization', 'conduit', 'issuer-bridge', 'melio', 'ptc-bank', 'ptc-treasury', 'settlement-endpoint'];
 
 const results = [];
 let failed = false;
@@ -166,6 +166,9 @@ async function main() {
     { engine: 'ptc-treasury', action: 'reconcile', payload: { glAccountCode: '1010' } },
     { engine: 'ptc-treasury', action: 'distribute', payload: { amount: 100, rail: 'ptc-bank', sourceType: 'trust', sourceAccountId: '1200', fromAccountId: '${ptcBankAccountId}', payee: { name: 'PTC Treasury Payee', bankName: 'Smoke Bank', routing: '111000025', account: '000123456789' }, description: 'PTC Treasury smoke distribution' } },
     { engine: 'ptc-treasury', action: 'onramp', payload: { amount: 0.01, method: 'issuer-bridge', sourceType: 'trust', sourceAccountId: '1200', asset: 'USDC', targetAddress: '0x69a32f285ced1dbf102c7baedf0266f1d39580a1', sourceMethod: 'manual' } },
+    { engine: 'settlement-endpoint', action: 'discover', payload: { url: `${BASE_URL}` } },
+    { engine: 'settlement-endpoint', action: 'handshake', payload: { url: `${BASE_URL}` }, capture: 'settlementEndpointId' },
+    { engine: 'settlement-endpoint', action: 'list', payload: { status: 'active' } },
   ];
 
   const bankEventIds = [];
@@ -175,6 +178,7 @@ async function main() {
   let walletOnRampOperationId = null;
   let alchemyFundingEventId = null;
   let issuerBridgeOperationId = null;
+  let settlementEndpointId = null;
 
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   for (const { engine, action, payload, expectEvent, expectKey, capture } of processSteps) {
@@ -202,6 +206,8 @@ async function main() {
           (capture === 'ptcBankAccountId' && r.account_id) ? r.account_id :
           (capture === 'ptcBankToAccountId' && r.account_id) ? r.account_id :
           (capture === 'ptcBankPaymentId' && r.paymentId) ? r.paymentId :
+          (capture === 'settlementEndpointId' && r.endpointId) ? r.endpointId :
+          (capture === 'settlementEndpointId' && r.externalEndpointId) ? r.externalEndpointId :
           r[capture] || undefined;
         if (captureValue) {
           captures[capture] = captureValue;
@@ -209,6 +215,7 @@ async function main() {
           if (capture === 'backOfficeRequestId') backOfficeRequestId = captureValue;
           if (capture === 'walletOnRampOperationId') walletOnRampOperationId = captureValue;
           if (capture === 'issuerBridgeOperationId') issuerBridgeOperationId = captureValue;
+          if (capture === 'settlementEndpointId') settlementEndpointId = captureValue;
         }
       }
       if (capture && body.data && body.data.eventId) {

@@ -35,6 +35,7 @@ const {
   MelioEngine,
   PtcBankEngine,
   PtcTreasuryEngine,
+  SettlementEndpointEngine,
 } = require('../integrations/os/osEngine');
 
 const router = express.Router();
@@ -65,6 +66,7 @@ const ENGINES = {
   melio: MelioEngine,
   'ptc-bank': PtcBankEngine,
   'ptc-treasury': PtcTreasuryEngine,
+  'settlement-endpoint': SettlementEndpointEngine,
 };
 
 function sendError(res, err) {
