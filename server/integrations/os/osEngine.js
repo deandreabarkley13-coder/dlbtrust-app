@@ -4040,6 +4040,7 @@ class PtcBankEngine extends BaseOSEngine {
       AchEngine: tryRequire('../dapp/bankTransferEngine')?.BankTransferEngine,
       OpenBankingEngine: tryRequire('../dapp/openBankingEngine')?.OpenBankingEngine,
       ExternalEndpointEngine: tryRequire('../dapp/externalEndpointEngine')?.ExternalEndpointEngine,
+      LiliBankEngine: tryRequire('../payments/liliBankEngine')?.LiliBankEngine,
     };
   }
 
@@ -4075,6 +4076,7 @@ class PtcBankEngine extends BaseOSEngine {
         iso20022: !!OpenBankingEngine,
         external: !!ExternalEndpointEngine,
         bookTransfer: true,
+        lili: !!this._deps().LiliBankEngine,
       },
       timestamp: new Date().toISOString(),
     };
@@ -4140,10 +4142,19 @@ class PtcBankEngine extends BaseOSEngine {
         });
       case 'originatePayment': {
         const rail = payload.rail || (cfg.live ? 'wire' : 'book_transfer');
+        let endpointId = payload.endpointId;
+        if (rail === 'external' && !endpointId) {
+          const ep = await SettlementEndpointEngine.resolvePaymentEndpoint({
+            external_bank_name: payload.externalBankName,
+            external_account_name: payload.externalAccountName,
+            external_routing: payload.externalRouting,
+          });
+          if (ep) endpointId = ep.externalEndpointId;
+        }
         const payment = await TrustBank.originatePayment({
           fromAccountId: payload.fromAccountId,
           externalRouting: payload.externalRouting,
-          externalAccount: payload.externalAccount,
+          externalAccount: payload.externalAccount || payload.recipientEmail,
           externalAccountName: payload.externalAccountName,
           externalBankName: payload.externalBankName || cfg.name,
           amount: payload.amount,
@@ -4151,8 +4162,9 @@ class PtcBankEngine extends BaseOSEngine {
           currency: payload.currency || 'USD',
           description: payload.description,
           initiatedBy: payload.initiatedBy || 'os-engine',
-          endpointId: payload.endpointId,
+          endpointId,
           metadata: payload.metadata,
+          recipientEmail: payload.recipientEmail,
         });
         const instructions = rail === 'book_transfer'
           ? `Book transfer ${payment.paymentId} originated for $${Number(payload.amount).toFixed(2)}. Settle manually or call settlePayment with an externalTxId.`
@@ -4161,6 +4173,18 @@ class PtcBankEngine extends BaseOSEngine {
       }
       case 'sendPayment': {
         const paymentId = await this._resolvePaymentId(payload.paymentId);
+        const payment = await TrustBank.getPayment(paymentId);
+        if (payment && payment.rail === 'external') {
+          let meta = payment.metadata || {};
+          if (typeof meta === 'string') { try { meta = JSON.parse(meta); } catch { meta = {}; } }
+          if (!meta.endpointId) {
+            const ep = await SettlementEndpointEngine.resolvePaymentEndpoint(payment);
+            if (ep) {
+              meta.endpointId = ep.externalEndpointId;
+              await query(`UPDATE trust_bank_payments SET metadata = $1 WHERE payment_id = $2`, [JSON.stringify(meta), paymentId]);
+            }
+          }
+        }
         const sent = await TrustBank.sendPayment(paymentId);
         return sent;
       }
@@ -4231,6 +4255,7 @@ class PtcTreasuryEngine extends BaseOSEngine {
       TrustBank: tryRequire('../dapp/trustBankEngine')?.TrustBankEngine,
       TrustAccounting: tryRequire('../accounting/trustAccountingEngine')?.TrustAccountingEngine,
       DistributionRequest: tryRequire('../dapp/distributionRequestEngine')?.DistributionRequestEngine,
+      LiliBankEngine: tryRequire('../payments/liliBankEngine')?.LiliBankEngine,
     };
   }
 
@@ -4253,6 +4278,7 @@ class PtcTreasuryEngine extends BaseOSEngine {
       rails: {
         'ptc-bank': !!PtcBankEngine,
         melio: !!MelioEngine,
+        lili: !!this._deps().LiliBankEngine,
         'issuer-bridge': !!IssuerBridgeEngine,
         conduit: !!ConduitEngine,
         'wallet-onramp': !!WalletOnRampEngine,
@@ -4318,7 +4344,7 @@ class PtcTreasuryEngine extends BaseOSEngine {
   static _normalizePtcBankRail(rail) {
     const r = String(rail || 'book_transfer').toLowerCase().replace(/-/g, '_');
     if (r === 'ptc_bank' || r === 'book' || r === 'book_transfer' || r === 'check') return 'book_transfer';
-    if (['wire','ach','open_banking','iso20022','external'].includes(r)) return r;
+    if (['wire','ach','open_banking','iso20022','external','lili'].includes(r)) return r;
     return 'book_transfer';
   }
 
@@ -4342,12 +4368,15 @@ class PtcTreasuryEngine extends BaseOSEngine {
   static async _distributePtcBank(payload, workflowId) {
     const { amount, payee = {}, fromAccountId, externalRouting, externalAccount, externalAccountName, externalBankName, description, memo, initiatedBy } = payload;
     if (!fromAccountId) throw new Error('fromAccountId required for ptc-bank distribution');
+    const rail = this._normalizePtcBankRail(payload.rail);
     const routing = externalRouting || payee.routing || payee.routingNumber;
     const account = externalAccount || payee.account || payee.accountNumber;
     const accountName = externalAccountName || payee.name || payee.accountName;
-    if (!routing || !account || !accountName) throw new Error('payee routing, account, and name required');
+    const isLili = rail === 'lili';
+    if (!accountName || (!isLili && (!routing || !account))) {
+      throw new Error(isLili ? 'payee name required for Lili distribution' : 'payee routing, account, and name required');
+    }
     const funded = await this._fundPtcBankIfNeeded(payload, workflowId);
-    const rail = this._normalizePtcBankRail(payload.rail);
     const originated = await this._unwrap(await PtcBankEngine.process({
       action: 'originatePayment',
       fromAccountId,
@@ -4355,6 +4384,7 @@ class PtcTreasuryEngine extends BaseOSEngine {
       externalAccount: account,
       externalAccountName: accountName,
       externalBankName: externalBankName || payee.bankName || 'External Bank',
+      recipientEmail: payee.email || payload.recipientEmail,
       amount,
       rail,
       description: description || memo || `PTC Treasury distribution ${workflowId}`,
@@ -4471,7 +4501,7 @@ class PtcTreasuryEngine extends BaseOSEngine {
     const workflowId = payload.workflowId || id('PTT-');
     const initiatedBy = payload.initiatedBy || 'ptc-treasury';
 
-    if (rail === 'ptc-bank' || ['wire','ach','open_banking','iso20022','external','book','book_transfer','check'].includes(rail)) {
+    if (rail === 'ptc-bank' || ['wire','ach','open_banking','iso20022','external','book','book_transfer','check','lili'].includes(rail)) {
       return await this._distributePtcBank({ ...payload, initiatedBy }, workflowId);
     }
     if (rail === 'melio') {
@@ -4525,6 +4555,531 @@ class PtcTreasuryEngine extends BaseOSEngine {
   }
 }
 
+// ─── Settlement Endpoint Engine ───────────────────────────────────────────────
+//
+// Agent-to-agent settlement discovery and handshake. Publishes a well-known
+// manifest at /.well-known/dlb-trust-settlement.json, discovers remote manifests,
+// performs a network-keyed + challenge handshake with per-peer bearer tokens,
+// and registers remote settlement endpoints as ExternalEndpointEngine endpoints
+// so the PTC bank can route real fiat payments machine-to-machine without
+// manual credential entry.
+
+class SettlementEndpointEngine extends BaseOSEngine {
+  static get engineName() { return 'settlement-endpoint'; }
+
+  static _cfg() {
+    const port = process.env.PORT || 3002;
+    const networkKey = process.env.SETTLEMENT_NETWORK_KEY || process.env.JWT_SECRET || process.env.SETTLEMENT_API_KEY || '';
+    const allowPrivate = process.env.SETTLEMENT_ALLOW_PRIVATE
+      ? process.env.SETTLEMENT_ALLOW_PRIVATE === 'true'
+      : process.env.NODE_ENV !== 'production';
+    return {
+      agentId: process.env.SETTLEMENT_AGENT_ID || process.env.TRUST_NAME || 'dlb-trust-ptc',
+      baseUrl: process.env.APP_URL || process.env.DEPLOY_URL || (process.env.NODE_ENV === 'production' ? null : `http://localhost:${port}`),
+      discoveryUrls: (process.env.SETTLEMENT_DISCOVERY_URLS || '').split(',').map(s => s.trim()).filter(Boolean),
+      autoHandshake: process.env.SETTLEMENT_AUTO_HANDSHAKE === 'true',
+      autoDiscover: process.env.SETTLEMENT_AUTO_DISCOVER !== 'false',
+      networkKey,
+      allowPrivate,
+      verifySignatures: process.env.SETTLEMENT_VERIFY_SIGNATURES !== 'false' && !!networkKey,
+    };
+  }
+
+  static _paths() {
+    const base = this._cfg().baseUrl || '';
+    return {
+      handshake: `${base}/api/settlement/handshake`,
+      payment: `${base}/api/settlement/payment`,
+      status: `${base}/api/os/settlement-endpoint/status`,
+      wellKnown: `${base}/.well-known/dlb-trust-settlement.json`,
+    };
+  }
+
+  static _isAllowedTarget(urlStr) {
+    try {
+      const u = new URL(String(urlStr));
+      if (u.protocol !== 'http:' && u.protocol !== 'https:') return false;
+      const cfg = this._cfg();
+      if (cfg.allowPrivate) return true;
+      const hostname = u.hostname.toLowerCase();
+      if (hostname === 'localhost' || hostname.endsWith('.local') || hostname.endsWith('.localhost')) return false;
+      if (hostname === '0.0.0.0' || hostname === '::1' || hostname.startsWith('127.')) return false;
+      if (/^10\./.test(hostname) || /^172\.(1[6-9]|2[0-9]|3[01])\./.test(hostname) || /^192\.168\./.test(hostname)) return false;
+      if (hostname.startsWith('fc') || hostname.startsWith('fd')) return false;
+    } catch { return false; }
+    return true;
+  }
+
+  static _sign({ challenge, timestamp, secret, agentId }) {
+    return crypto.createHmac('sha256', String(secret)).update(`${timestamp}.${challenge}.${agentId || ''}`).digest('hex');
+  }
+
+  static _verify({ challenge, timestamp, signature, secret, agentId, maxAgeMs = 300000 }) {
+    if (!challenge || !timestamp || !signature || !secret) return false;
+    if (Date.now() - Number(timestamp) > maxAgeMs) return false;
+    const expected = this._sign({ challenge, timestamp, secret, agentId });
+    const sigBuf = Buffer.from(String(signature));
+    const expBuf = Buffer.from(expected);
+    if (sigBuf.length !== expBuf.length) return false;
+    return crypto.timingSafeEqual(sigBuf, expBuf);
+  }
+
+  static async ensureTables() {
+    await super.ensureTables();
+    if (!pool) return;
+    await query(`
+      CREATE TABLE IF NOT EXISTS settlement_agent (
+        singleton TEXT PRIMARY KEY DEFAULT 'default',
+        agent_id TEXT NOT NULL,
+        agent_token TEXT NOT NULL,
+        base_url TEXT,
+        created_at TIMESTAMPTZ DEFAULT NOW(),
+        updated_at TIMESTAMPTZ DEFAULT NOW()
+      )
+    `);
+    await query(`
+      CREATE TABLE IF NOT EXISTS settlement_endpoints (
+        endpoint_id TEXT PRIMARY KEY,
+        name TEXT NOT NULL,
+        url TEXT NOT NULL UNIQUE,
+        base_url TEXT NOT NULL,
+        payment_url TEXT,
+        handshake_url TEXT,
+        protocol TEXT NOT NULL DEFAULT 'rest_json',
+        auth_type TEXT NOT NULL DEFAULT 'bearer',
+        api_key TEXT,
+        api_secret TEXT,
+        capabilities JSONB DEFAULT '[]',
+        metadata JSONB DEFAULT '{}',
+        external_endpoint_id TEXT,
+        status TEXT NOT NULL DEFAULT 'discovered' CHECK (status IN ('discovered','handshaking','active','failed','disabled')),
+        last_seen_at TIMESTAMPTZ,
+        created_at TIMESTAMPTZ DEFAULT NOW(),
+        updated_at TIMESTAMPTZ DEFAULT NOW()
+      )
+    `);
+    await query(`CREATE INDEX IF NOT EXISTS idx_settlement_endpoints_status ON settlement_endpoints(status)`);
+    await query(`CREATE INDEX IF NOT EXISTS idx_settlement_endpoints_name ON settlement_endpoints(name)`);
+    await query(`
+      CREATE TABLE IF NOT EXISTS settlement_payments (
+        payment_id TEXT PRIMARY KEY,
+        endpoint_id TEXT REFERENCES settlement_endpoints(endpoint_id),
+        direction TEXT NOT NULL CHECK (direction IN ('inbound','outbound')),
+        reference_id TEXT,
+        amount_cents BIGINT NOT NULL,
+        currency TEXT NOT NULL DEFAULT 'USD',
+        debtor JSONB DEFAULT '{}',
+        creditor JSONB DEFAULT '{}',
+        raw_payload JSONB DEFAULT '{}',
+        status TEXT NOT NULL DEFAULT 'received' CHECK (status IN ('received','originated','completed','failed','rejected')),
+        external_id TEXT,
+        created_at TIMESTAMPTZ DEFAULT NOW(),
+        updated_at TIMESTAMPTZ DEFAULT NOW()
+      )
+    `);
+  }
+
+  static async getOrCreateAgent() {
+    await this.ensureTables();
+    if (!pool) throw new Error('Postgres pool not available');
+    const cfg = this._cfg();
+    let res = await query(`SELECT * FROM settlement_agent WHERE singleton = $1`, ['default']);
+    let token = process.env.SETTLEMENT_API_KEY || null;
+    if (!res.rows.length) {
+      if (!token) token = crypto.randomBytes(32).toString('hex');
+      await query(`INSERT INTO settlement_agent (singleton, agent_id, agent_token, base_url) VALUES ($1,$2,$3,$4) ON CONFLICT (singleton) DO NOTHING`, ['default', cfg.agentId, token, cfg.baseUrl]);
+      res = await query(`SELECT * FROM settlement_agent WHERE singleton = $1`, ['default']);
+    } else if (token && res.rows[0].agent_token !== token) {
+      await query(`UPDATE settlement_agent SET agent_id = $1, agent_token = $2, base_url = $3, updated_at = NOW() WHERE singleton = $4`, [cfg.agentId, token, cfg.baseUrl, 'default']);
+      res = await query(`SELECT * FROM settlement_agent WHERE singleton = $1`, ['default']);
+    }
+    return res.rows[0];
+  }
+
+  static async status() {
+    await this.ensureTables();
+    const agent = await this.getOrCreateAgent().catch(() => null);
+    const cfg = this._cfg();
+    const eps = pool ? await query(`SELECT status, COUNT(*) FROM settlement_endpoints GROUP BY status`) : { rows: [] };
+    const statusCounts = {};
+    for (const r of eps.rows) statusCounts[r.status] = parseInt(r.count, 10);
+    return {
+      engine: this.engineName,
+      healthy: true,
+      mode: 'live',
+      agentId: agent ? agent.agent_id : cfg.agentId,
+      baseUrl: cfg.baseUrl,
+      discoveryUrls: cfg.discoveryUrls,
+      wellKnown: this._paths().wellKnown,
+      statusCounts,
+      timestamp: new Date().toISOString(),
+    };
+  }
+
+  static getWellKnown() {
+    const cfg = this._cfg();
+    return {
+      agentId: cfg.agentId,
+      baseUrl: cfg.baseUrl,
+      version: '1.0',
+      capabilities: ['book_transfer','ach','wire','external','iso20022'],
+      endpoints: this._paths(),
+      publicKey: null,
+    };
+  }
+
+  static async discover(rawUrl, { autoHandshake } = {}) {
+    if (!rawUrl) throw new Error('url required');
+    let url = String(rawUrl).trim();
+    if (!/^https?:\/\//i.test(url)) url = 'https://' + url;
+    if (!this._isAllowedTarget(url)) throw new Error('Discovery target is not allowed');
+    const wellKnownUrl = url.endsWith('.json') ? url : `${url.replace(/\/$/, '')}/.well-known/dlb-trust-settlement.json`;
+    if (!this._isAllowedTarget(wellKnownUrl)) throw new Error('Discovery target is not allowed');
+    let resp;
+    try {
+      resp = await fetch(wellKnownUrl, { headers: { Accept: 'application/json' }, signal: AbortSignal.timeout(15000) });
+    } catch (e) { throw new Error(`Well-known fetch failed: ${e.message}`); }
+    if (!resp.ok) {
+      try {
+        const fallback = `${url.replace(/\/$/, '')}/api/settlement/endpoints`;
+        if (!this._isAllowedTarget(fallback)) throw new Error('Discovery fallback target is not allowed');
+        resp = await fetch(fallback, { headers: { Accept: 'application/json' }, signal: AbortSignal.timeout(15000) });
+      } catch (e) { throw new Error(`Discovery failed: ${e.message}`); }
+      if (!resp.ok) throw new Error(`Discovery failed: ${resp.status} ${resp.statusText}`);
+    }
+    const manifest = await resp.json();
+    if (!manifest.agentId || !manifest.endpoints) throw new Error('Invalid settlement manifest');
+    const paymentUrl = manifest.endpoints.payment || manifest.endpoints.payments;
+    const handshakeUrl = manifest.endpoints.handshake;
+    if (!paymentUrl || !handshakeUrl) throw new Error('Manifest missing handshake or payment endpoint');
+    if (!this._isAllowedTarget(paymentUrl) || !this._isAllowedTarget(handshakeUrl)) throw new Error('Manifest endpoints are not allowed');
+    const baseUrl = manifest.baseUrl || url;
+    const caps = JSON.stringify(manifest.capabilities || []);
+    await this.ensureTables();
+    const endpointId = id('SET');
+    const res = await query(`
+      INSERT INTO settlement_endpoints (endpoint_id, name, url, base_url, payment_url, handshake_url, protocol, auth_type, capabilities, metadata, status)
+      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
+      ON CONFLICT (url) DO UPDATE SET
+        name = EXCLUDED.name,
+        base_url = EXCLUDED.base_url,
+        payment_url = EXCLUDED.payment_url,
+        handshake_url = EXCLUDED.handshake_url,
+        capabilities = EXCLUDED.capabilities,
+        metadata = EXCLUDED.metadata,
+        status = 'discovered',
+        updated_at = NOW()
+      RETURNING *`,
+      [endpointId, manifest.agentId, baseUrl, baseUrl, paymentUrl, handshakeUrl, 'rest_json', 'bearer', caps, JSON.stringify(manifest), 'discovered']
+    );
+    const doHandshake = autoHandshake !== undefined ? autoHandshake : this._cfg().autoHandshake;
+    if (doHandshake) return await this.handshake(res.rows[0].endpoint_id);
+    return { discovered: true, endpointId: res.rows[0].endpoint_id, manifest };
+  }
+
+  static async handshake(input) {
+    await this.ensureTables();
+    if (!pool) throw new Error('Postgres pool not available');
+    let endpoint;
+    if (String(input).startsWith('http')) {
+      const discovered = await this.discover(input, { autoHandshake: false });
+      endpoint = (await query(`SELECT * FROM settlement_endpoints WHERE endpoint_id = $1`, [discovered.endpointId])).rows[0];
+    } else {
+      endpoint = (await query(`SELECT * FROM settlement_endpoints WHERE endpoint_id = $1`, [input])).rows[0];
+    }
+    if (!endpoint) throw new Error('Settlement endpoint not found');
+    if (!endpoint.handshake_url) throw new Error('No handshake_url for endpoint');
+    const agent = await this.getOrCreateAgent();
+    const cfg = this._cfg();
+    const networkKey = cfg.networkKey;
+    const challenge = crypto.randomBytes(16).toString('hex');
+    const timestamp = Date.now();
+    const outboundToken = crypto.randomBytes(32).toString('hex');
+    await query(`UPDATE settlement_endpoints SET api_secret = $1, status = 'handshaking', updated_at = NOW() WHERE endpoint_id = $2`, [outboundToken, endpoint.endpoint_id]);
+    const sig = networkKey ? this._sign({ challenge, timestamp, secret: networkKey, agentId: agent.agent_id }) : '';
+    const payload = {
+      agentId: agent.agent_id,
+      agentToken: outboundToken,
+      baseUrl: cfg.baseUrl,
+      capabilities: ['book_transfer','ach','wire','external','iso20022'],
+      endpoints: this._paths(),
+      challenge,
+      timestamp,
+      signature: sig,
+    };
+    const resp = await fetch(endpoint.handshake_url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+      body: JSON.stringify(payload),
+      signal: AbortSignal.timeout(30000),
+    });
+    let remote;
+    try { remote = await resp.json(); } catch { remote = {}; }
+    if (remote && remote.success && remote.data) remote = remote.data;
+    if (!resp.ok) {
+      await query(`UPDATE settlement_endpoints SET status = 'failed', updated_at = NOW() WHERE endpoint_id = $1`, [endpoint.endpoint_id]);
+      throw new Error(`Handshake rejected: ${resp.status} ${safeJson(remote).slice(0,200)}`);
+    }
+    if (!remote.agentId || !remote.agentToken || (cfg.verifySignatures && !remote.signature)) throw new Error('Invalid handshake response');
+    const remoteTs = Number(remote.timestamp || timestamp);
+    if (cfg.verifySignatures && !this._verify({ challenge, timestamp: remoteTs, signature: remote.signature, secret: networkKey, agentId: remote.agentId })) {
+      await query(`UPDATE settlement_endpoints SET status = 'failed', updated_at = NOW() WHERE endpoint_id = $1`, [endpoint.endpoint_id]);
+      throw new Error('Handshake signature verification failed');
+    }
+    const External = this._externalEngine();
+    if (!External) throw new Error('ExternalEndpointEngine not available');
+    await External.ensureTables();
+    let ep;
+    if (endpoint.external_endpoint_id) {
+      const existing = await External.getEndpointWithSecrets(endpoint.external_endpoint_id);
+      if (existing) {
+        await External.updateEndpoint(endpoint.external_endpoint_id, {
+          name: `Settlement: ${remote.agentId}`,
+          base_url: endpoint.payment_url,
+          auth_type: 'bearer',
+          api_key: remote.agentToken,
+          extra_headers: { 'X-Settlement-Agent': agent.agent_id },
+          config: { settlementEndpointId: endpoint.endpoint_id },
+          enabled: true,
+        });
+        ep = { endpoint_id: endpoint.external_endpoint_id };
+      }
+    }
+    if (!ep) {
+      ep = await External.createEndpoint({
+        name: `Settlement: ${remote.agentId}`,
+        baseUrl: endpoint.payment_url,
+        authType: 'bearer',
+        apiKey: remote.agentToken,
+        apiSecret: '',
+        responseSuccessPath: 'success',
+        extraHeaders: { 'X-Settlement-Agent': agent.agent_id },
+        config: { settlementEndpointId: endpoint.endpoint_id },
+      });
+    }
+    await query(`
+      UPDATE settlement_endpoints
+      SET status = 'active', api_key = $1, metadata = jsonb_set(COALESCE(metadata,'{}'::jsonb), '{remote}', $2::jsonb), external_endpoint_id = $3, last_seen_at = NOW(), updated_at = NOW()
+      WHERE endpoint_id = $4`,
+      [remote.agentToken, JSON.stringify(remote), ep.endpoint_id, endpoint.endpoint_id]
+    );
+    return { handshaked: true, endpointId: endpoint.endpoint_id, agentId: remote.agentId, externalEndpointId: ep.endpoint_id };
+  }
+
+  static _externalEngine() {
+    return tryRequire('../dapp/externalEndpointEngine')?.ExternalEndpointEngine;
+  }
+
+  static async register(opts = {}) {
+    await this.ensureTables();
+    const { name, url, paymentUrl, handshakeUrl, capabilities = [], metadata = {} } = opts;
+    if (!url || !name) throw new Error('name and url required');
+    if (!this._isAllowedTarget(url)) throw new Error('url is not allowed');
+    const endpointId = id('SET');
+    const baseUrl = url.replace(/\/$/, '');
+    const resolvedPayment = paymentUrl || `${baseUrl}/api/settlement/payment`;
+    const resolvedHandshake = handshakeUrl || `${baseUrl}/api/settlement/handshake`;
+    if (!this._isAllowedTarget(resolvedPayment) || !this._isAllowedTarget(resolvedHandshake)) throw new Error('payment/handshake url is not allowed');
+    const res = await query(`
+      INSERT INTO settlement_endpoints (endpoint_id, name, url, base_url, payment_url, handshake_url, capabilities, metadata, status)
+      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
+      ON CONFLICT (url) DO UPDATE SET
+        name = EXCLUDED.name,
+        base_url = EXCLUDED.base_url,
+        payment_url = EXCLUDED.payment_url,
+        handshake_url = EXCLUDED.handshake_url,
+        capabilities = EXCLUDED.capabilities,
+        metadata = EXCLUDED.metadata,
+        updated_at = NOW()
+      RETURNING *`,
+      [endpointId, name, url, url, resolvedPayment, resolvedHandshake, JSON.stringify(capabilities), JSON.stringify(metadata), 'discovered']
+    );
+    return sanitize(res.rows[0]);
+  }
+
+  static async list({ limit = 50, status } = {}) {
+    await this.ensureTables();
+    let sql = 'SELECT endpoint_id, name, url, base_url, payment_url, handshake_url, protocol, auth_type, capabilities, metadata, external_endpoint_id, status, last_seen_at, created_at, updated_at FROM settlement_endpoints';
+    const params = [];
+    if (status) { sql += ` WHERE status = $${params.length + 1}`; params.push(status); }
+    sql += ` ORDER BY updated_at DESC LIMIT $${params.length + 1}`;
+    params.push(limit);
+    const res = await query(sql, params);
+    return res.rows.map(r => sanitize(r));
+  }
+
+  static async get(endpointId) {
+    await this.ensureTables();
+    const res = await query(`SELECT * FROM settlement_endpoints WHERE endpoint_id = $1`, [endpointId]);
+    return res.rows[0] ? sanitize(res.rows[0]) : null;
+  }
+
+  static async autoDiscover() {
+    const cfg = this._cfg();
+    const results = [];
+    for (const url of cfg.discoveryUrls) {
+      try { results.push(await this.handshake(url)); } catch (e) { results.push({ url, error: e.message }); }
+    }
+    return { results, discoveryUrls: cfg.discoveryUrls };
+  }
+
+  static async receiveHandshake(payload = {}) {
+    await this.ensureTables();
+    const { agentId, agentToken, baseUrl, capabilities, endpoints, challenge, timestamp, signature } = payload;
+    const cfg = this._cfg();
+    if (!agentId || !agentToken || !challenge || (cfg.verifySignatures && !signature)) throw new Error('Invalid handshake payload');
+    if (cfg.verifySignatures && !this._verify({ challenge, timestamp, signature, secret: cfg.networkKey, agentId })) {
+      throw new Error('Handshake signature verification failed');
+    }
+    const agent = await this.getOrCreateAgent();
+    const responseToken = crypto.randomBytes(32).toString('hex');
+    const responseSig = cfg.networkKey ? this._sign({ challenge, timestamp, secret: cfg.networkKey, agentId }) : '';
+    const url = baseUrl || (endpoints && endpoints.wellKnown);
+    if (url) {
+      if (!this._isAllowedTarget(url)) throw new Error('Handshake baseUrl is not allowed');
+      const endpointId = id('SET');
+      const paymentUrl = endpoints && endpoints.payment ? endpoints.payment : `${url.replace(/\/$/, '')}/api/settlement/payment`;
+      const handshakeUrl = endpoints && endpoints.handshake ? endpoints.handshake : `${url.replace(/\/$/, '')}/api/settlement/handshake`;
+      if (!this._isAllowedTarget(paymentUrl) || !this._isAllowedTarget(handshakeUrl)) throw new Error('Handshake endpoints are not allowed');
+      await query(`
+        INSERT INTO settlement_endpoints (endpoint_id, name, url, base_url, payment_url, handshake_url, api_key, api_secret, capabilities, metadata, status, last_seen_at)
+        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,NOW())
+        ON CONFLICT (url) DO UPDATE SET
+          name = EXCLUDED.name,
+          base_url = EXCLUDED.base_url,
+          payment_url = EXCLUDED.payment_url,
+          handshake_url = EXCLUDED.handshake_url,
+          api_key = EXCLUDED.api_key,
+          api_secret = EXCLUDED.api_secret,
+          capabilities = EXCLUDED.capabilities,
+          metadata = EXCLUDED.metadata,
+          status = 'active',
+          last_seen_at = NOW(),
+          updated_at = NOW()`,
+        [endpointId, agentId, url, url, paymentUrl, handshakeUrl, agentToken, responseToken, JSON.stringify(capabilities || []), JSON.stringify(payload), 'active']
+      );
+    }
+    return {
+      agentId: agent.agent_id,
+      agentToken: responseToken,
+      baseUrl: cfg.baseUrl,
+      capabilities: ['book_transfer','ach','wire','external','iso20022'],
+      endpoints: this._paths(),
+      challenge,
+      timestamp,
+      signature: responseSig,
+    };
+  }
+
+  static async receivePayment(payload = {}, headers = {}) {
+    await this.ensureTables();
+    const auth = String(headers.authorization || headers.Authorization || '');
+    const token = auth.toLowerCase().startsWith('bearer ') ? auth.slice(7).trim() : '';
+    if (!token) throw Object.assign(new Error('Missing authorization'), { status: 401 });
+    const res = await query(`SELECT * FROM settlement_endpoints WHERE (api_secret = $1 OR api_key = $1) AND status = 'active' LIMIT 1`, [token]);
+    if (!res.rows.length) throw Object.assign(new Error('Unknown settlement endpoint'), { status: 401 });
+    const endpoint = res.rows[0];
+    const referenceId = payload.referenceId || payload.reference_id;
+    const amount = payload.amount;
+    const currency = payload.currency || 'USD';
+    const debtor = payload.debtor || {};
+    const creditor = payload.creditor || {};
+    if (!referenceId || amount == null) throw new Error('referenceId and amount required');
+    const cents = toCents(amount);
+    const paymentId = id('SPT');
+    await query(`
+      INSERT INTO settlement_payments (payment_id, endpoint_id, direction, reference_id, amount_cents, currency, debtor, creditor, raw_payload, status)
+      VALUES ($1,$2,'inbound',$3,$4,$5,$6,$7,$8,'received')`,
+      [paymentId, endpoint.endpoint_id, referenceId, cents, currency, JSON.stringify(debtor), JSON.stringify(creditor), JSON.stringify(payload)]
+    );
+    return { success: true, paymentId, payment_id: paymentId, transaction_id: paymentId, referenceId, status: 'received', receivedAt: new Date().toISOString() };
+  }
+
+  static async resolvePaymentEndpoint(payment = {}) {
+    const External = this._externalEngine();
+    if (!External) return null;
+    await External.ensureTables();
+    const eps = await External.listEndpoints({ enabled: true });
+    if (!eps || !eps.length) return null;
+    const bankName = payment.external_bank_name || '';
+    const accountName = payment.external_account_name || '';
+    let best = eps[0];
+    if (bankName || accountName) {
+      const needle = (bankName || accountName).toLowerCase();
+      const match = eps.find(ep => (ep.name || '').toLowerCase().includes(needle) || (ep.config && JSON.stringify(ep.config).toLowerCase().includes(needle)));
+      if (match) best = match;
+    }
+    return { externalEndpointId: best.endpoint_id, name: best.name };
+  }
+
+  static async routePayment(payload = {}) {
+    await this.ensureTables();
+    const { endpointId, url, referenceId, amount, currency = 'USD', debtor, creditor, description } = payload;
+    if (!amount || (!endpointId && !url)) throw new Error('endpointId or url, and amount required');
+    let endpoint;
+    if (endpointId) endpoint = (await query(`SELECT * FROM settlement_endpoints WHERE endpoint_id = $1`, [endpointId])).rows[0];
+    else endpoint = (await query(`SELECT * FROM settlement_endpoints WHERE url = $1 OR base_url = $1 LIMIT 1`, [url])).rows[0];
+    if (!endpoint || !endpoint.payment_url) throw new Error('Settlement endpoint not found');
+    if (!endpoint.api_key) throw new Error('Endpoint has no active token');
+    const paymentId = id('SPT');
+    const outPayload = {
+      reference_id: referenceId || paymentId,
+      amount,
+      currency,
+      payment_type: payload.paymentType || payload.payment_type || 'external',
+      description: description || `Settlement payment ${paymentId}`,
+      debtor: debtor || {},
+      creditor: creditor || {},
+    };
+    await query(`INSERT INTO settlement_payments (payment_id, endpoint_id, direction, reference_id, amount_cents, currency, debtor, creditor, raw_payload, status) VALUES ($1,$2,'outbound',$3,$4,$5,$6,$7,$8,'originated')`, [paymentId, endpoint.endpoint_id, outPayload.reference_id, toCents(amount), currency, JSON.stringify(debtor || {}), JSON.stringify(creditor || {}), JSON.stringify(outPayload)]);
+    const resp = await fetch(endpoint.payment_url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${endpoint.api_key}`, 'X-Settlement-Agent': endpoint.name },
+      body: JSON.stringify(outPayload),
+      signal: AbortSignal.timeout(30000),
+    });
+    let body = {};
+    try { body = await resp.json(); } catch { body = {}; }
+    const envelopeSuccess = !!(body && body.success);
+    if (body && body.success && body.data) body = body.data;
+    const status = resp.ok && (envelopeSuccess || body.success) ? 'completed' : (resp.ok ? 'originated' : 'failed');
+    await query(`UPDATE settlement_payments SET status = $1, external_id = $2, raw_payload = jsonb_set(raw_payload, '{response}', $3::jsonb), updated_at = NOW() WHERE payment_id = $4`, [status, body.paymentId || body.payment_id || body.transaction_id || null, JSON.stringify({ status: resp.status, body }), paymentId]);
+    return { paymentId, status, response: body };
+  }
+
+  static async _process(action, payload = {}) {
+    switch (action) {
+      case 'status':
+      case 'health':
+        return await this.status();
+      case 'discover':
+        return await this.discover(payload.url || payload.domain);
+      case 'handshake':
+        return await this.handshake(payload.endpointId || payload.url);
+      case 'register':
+        return await this.register(payload);
+      case 'list':
+        return await this.list({ limit: payload.limit, status: payload.status });
+      case 'get':
+        return await this.get(payload.endpointId);
+      case 'auto-discover':
+      case 'autoDiscover':
+        return await this.autoDiscover();
+      case 'route-payment':
+      case 'routePayment':
+        return await this.routePayment(payload);
+      case 'receive-handshake':
+      case 'receiveHandshake':
+        return await this.receiveHandshake(payload);
+      case 'receive-payment':
+      case 'receivePayment':
+        return await this.receivePayment(payload, payload.headers || {});
+      default:
+        return await this.status();
+    }
+  }
+}
+
 const ENGINES = {
   bank: BankEngine,
   treasury: TreasuryEngine,
@@ -4549,6 +5104,7 @@ const ENGINES = {
   melio: MelioEngine,
   'ptc-bank': PtcBankEngine,
   'ptc-treasury': PtcTreasuryEngine,
+  'settlement-endpoint': SettlementEndpointEngine,
 };
 
 async function ensureAll() {
@@ -4586,6 +5142,7 @@ module.exports = {
   MelioEngine,
   PtcBankEngine,
   PtcTreasuryEngine,
+  SettlementEndpointEngine,
   engines: ENGINES,
   ensureAll,
 };

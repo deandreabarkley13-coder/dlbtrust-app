@@ -11,7 +11,7 @@
 
 const pool = require('../bonds/pgPool');
 
-let CashEngine, TrustAccountingEngine, BankTransferEngine, WireOriginationEngine, OpenBankingEngine, ComplianceEngine, ExternalEndpointEngine;
+let CashEngine, TrustAccountingEngine, BankTransferEngine, WireOriginationEngine, OpenBankingEngine, ComplianceEngine, ExternalEndpointEngine, LiliBankEngine;
 function loadDeps() {
   try { ({ CashEngine } = require('../cash/cashEngine')); } catch (e) { CashEngine = null; }
   try { ({ TrustAccountingEngine } = require('../accounting/trustAccountingEngine')); } catch (e) { TrustAccountingEngine = null; }
@@ -20,6 +20,7 @@ function loadDeps() {
   try { ({ OpenBankingEngine } = require('./openBankingEngine')); } catch (e) { OpenBankingEngine = null; }
   try { ({ ComplianceEngine } = require('../compliance/complianceEngine')); } catch (e) { ComplianceEngine = null; }
   try { ({ ExternalEndpointEngine } = require('./externalEndpointEngine')); } catch (e) { ExternalEndpointEngine = null; }
+  try { ({ LiliBankEngine } = require('../payments/liliBankEngine')); } catch (e) { LiliBankEngine = null; }
 }
 
 function generateId(prefix = 'TBA') {
@@ -88,7 +89,7 @@ class TrustBankEngine {
         external_bank_name TEXT,
         amount_cents BIGINT NOT NULL,
         currency TEXT NOT NULL DEFAULT 'USD',
-        rail TEXT NOT NULL CHECK (rail IN ('internal','wire','ach','open_banking','iso20022','book_transfer','external')),
+        rail TEXT NOT NULL CHECK (rail IN ('internal','wire','ach','open_banking','iso20022','book_transfer','external','lili')),
         status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending','compliance_review','originated','manual_pending','completed','failed','cancelled')),
         raw_message TEXT,
         external_tx_id TEXT,
@@ -110,7 +111,7 @@ class TrustBankEngine {
     // Expand rail enum if older constraint exists
     try {
       await pool.query(`ALTER TABLE trust_bank_payments DROP CONSTRAINT IF EXISTS trust_bank_payments_rail_check`);
-      await pool.query(`ALTER TABLE trust_bank_payments ADD CONSTRAINT trust_bank_payments_rail_check CHECK (rail IN ('internal','wire','ach','open_banking','iso20022','book_transfer','external'))`);
+      await pool.query(`ALTER TABLE trust_bank_payments ADD CONSTRAINT trust_bank_payments_rail_check CHECK (rail IN ('internal','wire','ach','open_banking','iso20022','book_transfer','external','lili'))`);
     } catch (e) { console.warn('[trust-bank] rail constraint update:', e.message); }
   }
 
@@ -239,8 +240,9 @@ class TrustBankEngine {
     }
   }
 
-  static async originatePayment({ fromAccountId, externalRouting, externalAccount, externalAccountName, externalBankName, amount, rail = 'wire', currency = 'USD', description, initiatedBy = 'system', endpointId, metadata = {} } = {}) {
-    if (!fromAccountId || !externalAccount || !externalRouting || !amount) throw new Error('fromAccountId, externalRouting, externalAccount, and amount required');
+  static async originatePayment({ fromAccountId, externalRouting, externalAccount, externalAccountName, externalBankName, amount, rail = 'wire', currency = 'USD', description, initiatedBy = 'system', endpointId, metadata = {}, recipientEmail } = {}) {
+    if (!fromAccountId || !amount) throw new Error('fromAccountId and amount required');
+    if (rail !== 'lili' && (!externalAccount || !externalRouting)) throw new Error('externalRouting and externalAccount required for this rail');
     await this.ensureTables();
     const cents = toCents(amount);
     if (cents <= 0) throw new Error('amount must be positive');
@@ -250,11 +252,11 @@ class TrustBankEngine {
     if (parseInt(from.balance_cents, 10) < cents) throw new Error(`Insufficient trust bank balance: ${parseInt(from.balance_cents,10)/100} < ${amount}`);
 
     const paymentId = generateId('TBP');
-    const finalMetadata = { ...metadata, endpointId };
+    const finalMetadata = { ...metadata, endpointId, recipientEmail };
     await pool.query(
       `INSERT INTO trust_bank_payments (payment_id, from_account_id, external_routing, external_account, external_account_name, external_bank_name, amount_cents, currency, rail, status, initiated_by, metadata)
        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 'pending', $10, $11)`,
-      [paymentId, fromAccountId, externalRouting, externalAccount, externalAccountName || null, externalBankName || null, cents, currency, rail, initiatedBy, JSON.stringify(finalMetadata)]
+      [paymentId, fromAccountId, externalRouting || null, externalAccount || null, externalAccountName || null, externalBankName || null, cents, currency, rail, initiatedBy, JSON.stringify(finalMetadata)]
     );
     return { paymentId, status: 'pending', amount_cents: cents };
   }
@@ -389,6 +391,25 @@ class TrustBankEngine {
         rawMessage = JSON.stringify(epResult);
         status = epResult.status === 'completed' ? 'completed' : (epResult.status === 'originated' ? 'originated' : (epResult.status === 'manual_pending' ? 'manual_pending' : 'failed'));
         if (epResult.errorMessage) error = epResult.errorMessage;
+      } else if (payment.rail === 'lili' && LiliBankEngine) {
+        let meta = payment.metadata || {};
+        if (typeof meta === 'string') { try { meta = JSON.parse(meta); } catch { meta = {}; } }
+        const isEmail = payment.external_account && payment.external_account.includes('@') && !payment.external_routing;
+        const liliResult = await LiliBankEngine.createPayment({
+          amount: payment.amount_cents / 100,
+          currency: payment.currency,
+          recipientName: payment.external_account_name || 'External Beneficiary',
+          recipientAccount: isEmail ? null : payment.external_account,
+          recipientRouting: isEmail ? null : payment.external_routing,
+          recipientBank: payment.external_bank_name,
+          recipientEmail: meta.recipientEmail || (isEmail ? payment.external_account : null),
+          sourceAccountId: payment.from_account_id,
+          liliBusinessUserId: meta.liliBusinessUserId || null,
+          initiatedBy: payment.initiated_by,
+        });
+        externalTxId = liliResult && (liliResult.external_tx_id || liliResult.payment_id);
+        rawMessage = JSON.stringify(liliResult);
+        status = liliResult && liliResult.status ? (liliResult.status === 'api_pending' ? 'originated' : (liliResult.status === 'completed' ? 'completed' : (liliResult.status === 'manual_pending' ? 'manual_pending' : liliResult.status))) : 'manual_pending';
       } else if (payment.rail === 'book_transfer') {
         // Internal book transfer to an external account (manual/clearing)
         status = 'originated';
