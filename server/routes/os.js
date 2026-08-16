@@ -34,6 +34,7 @@ const {
   IssuerBridgeEngine,
   MelioEngine,
   PtcBankEngine,
+  PtcTreasuryEngine,
 } = require('../integrations/os/osEngine');
 
 const router = express.Router();
@@ -63,6 +64,7 @@ const ENGINES = {
   'issuer-bridge': IssuerBridgeEngine,
   melio: MelioEngine,
   'ptc-bank': PtcBankEngine,
+  'ptc-treasury': PtcTreasuryEngine,
 };
 
 function sendError(res, err) {

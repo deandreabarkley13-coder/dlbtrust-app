@@ -944,3 +944,43 @@ Use `x-admin-token: dlb-admin-2026-trust` for all calls.
 - The dashboard `Run` button and payload textarea may not register scaled coordinate typing. Set `document.getElementById('proc-payload').value` and/or `proc-engine`/`proc-action` values via the browser console, then click `Run`.
 - The dashboard `runProcess` builds the request as `{ action, ...payload }`, so if the payload itself contains an `action` field it will override the Action dropdown selection. Clear the payload to `{}` when testing `status` or `listVendors`.
 - Shadow-mode `schedulePayment` returns `reserveId: null`; the `instructions` string will say `Reserve null will be posted when payment completes.` This is expected when no live Melio API key is configured.
+
+## PTC Bank OS Engine (PR #351 ptc-bank update)
+
+The `devin/moonpay-cli-onramp` branch also adds `PtcBankEngine` (`ptc-bank`) to `server/integrations/os/osEngine.js` and registers it at `/api/os/ptc-bank`. It wraps `TrustBankEngine` and exposes customer/account/deposit/transfer/payment actions. The CLI helper is `server/scripts/sendPaymentViaPtcBank.js` and the dashboard adds a `PTC Bank` event-log button.
+
+### Startup and env
+
+- Start with the standard local Postgres + admin token env.
+- No `PTC_BANK_*` env vars are required for shadow mode; `PTC_BANK_LIVE` defaults to `false`.
+- `PtcBankEngine.ensureTables()` calls `TrustBankEngine.ensureTables()` and creates `trust_bank_customers`, `trust_bank_accounts`, `trust_bank_payments`, and `trust_bank_transactions`.
+
+### End-to-end verification
+
+Use `x-admin-token: dlb-admin-2026-trust` for all calls.
+
+1. `GET /api/os` → expect 22 engines including `ptc-bank` with `healthy: true` and `mode: 'shadow'`.
+2. `GET /api/os/ptc-bank/status` → `success: true`, `data.healthy: true`, `data.mode: 'shadow'`, `data.internalBank: true`, `data.rails.bookTransfer: true`.
+3. Dashboard `/os-engine-dashboard.html`:
+   - Registry shows `ptc-bank` healthy.
+   - `Process Action` engine dropdown contains `ptc-bank`; action dropdown contains `createCustomer`, `createAccount`, `deposit`, `internalTransfer`, `originatePayment`, etc.
+   - `Autofill Sample` for `ptc-bank`/`createCustomer` populates `name`, `email`, `phone`.
+   - Run `createCustomer`, `createAccount` (twice for checking + savings), `deposit`, `internalTransfer`, and `originatePayment` (rail `book_transfer`).
+   - Expected IDs: `customer_id` starts with `TBC-`, `account_id` starts with `TBA-`, internal-transfer and payment IDs start with `TBP-`.
+   - `originatePayment` should return `status: 'pending'`, `rail: 'book_transfer'`, and instructions containing `Book transfer ... originated for $...`.
+4. CLI script (expected to work; if it fails with `createCustomer did not return customer_id`, the script is not reading the nested `data.result` response shape — see below):
+   ```bash
+   ADMIN_SECRET_TOKEN=dlb-admin-2026-trust node server/scripts/sendPaymentViaPtcBank.js \
+     --action full --name "PTC Test Customer" --accountName "PTC Checking" --amount 10 \
+     --routing 111000025 --account 000123456789 --payeeName "Test Vendor" --rail book_transfer
+   ```
+   Expected: exit `0`, a `TBC-` customer, a `TBA-` account, a deposit, and a `TBP-` payment ID.
+5. `npm run lint` and `npm run typecheck` exit `0`.
+6. `node server/scripts/osEngineSmokeTest.js` passes all `ptc-bank` steps; the only expected failures are `alchemy-wallet: send` and `tokenization: execute`.
+
+### What to watch for
+
+- The CLI script `sendPaymentViaPtcBank.js` as of the tested commit parses `customer.data.customer_id`, `account.data.account_id`, and `paymentResult.data.paymentId`, but the `/api/os/ptc-bank/process` response is wrapped as `{ success: true, data: { success: true, engine, action, eventId, result: { ... } } }`. The script needs to read `data.result.customer_id`, `data.result.account_id`, and `data.result.paymentId` (or handle both shapes).
+- The dashboard `Run` button may not register scaled coordinate typing. Set `proc-engine`, `proc-action`, and `proc-payload` values via the browser console, then click `Run`.
+- The dashboard `runProcess` builds the request as `{ action, ...payload }`. If the payload contains an `action` field, it overrides the dropdown; keep them matching.
+- `deposit` returns `{ account: { ... }, transaction_id: <accountId> }` (transaction_id mirrors account_id in the current implementation).

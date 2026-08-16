@@ -4034,6 +4034,8 @@ class PtcBankEngine extends BaseOSEngine {
   static _deps() {
     return {
       TrustBank: tryRequire('../dapp/trustBankEngine')?.TrustBankEngine,
+      TrustAccounting: tryRequire('../accounting/trustAccountingEngine')?.TrustAccountingEngine,
+      Cash: tryRequire('../cash/cashEngine')?.CashEngine,
       WireEngine: tryRequire('../dapp/wireOriginationEngine')?.WireOriginationEngine,
       AchEngine: tryRequire('../dapp/bankTransferEngine')?.BankTransferEngine,
       OpenBankingEngine: tryRequire('../dapp/openBankingEngine')?.OpenBankingEngine,
@@ -4047,6 +4049,7 @@ class PtcBankEngine extends BaseOSEngine {
       settlementAccount: process.env.PTC_BANK_SETTLEMENT_ACCOUNT || process.env.TRUST_BANK_ACCOUNT || '',
       routing: process.env.PTC_BANK_ROUTING || process.env.TRUST_BANK_ROUTING || '111000025',
       name: process.env.PTC_BANK_NAME || process.env.TRUST_BANK_NAME || 'DLB Trust PTC Bank',
+      glAccount: process.env.PTC_BANK_GL_ACCOUNT || '1010',
     };
   }
 
@@ -4171,7 +4174,351 @@ class PtcBankEngine extends BaseOSEngine {
       }
       case 'listPayments':
         return await TrustBank.listPayments({ status: payload.status, limit: payload.limit || 50 });
+      case 'fundFromSource': {
+        const { TrustAccounting } = this._deps();
+        if (!TrustAccounting) throw new Error('TrustAccountingEngine not available for GL funding');
+        const { accountId, sourceType, sourceAccountId, amount } = payload;
+        if (!accountId || !sourceType || !sourceAccountId || !amount) throw new Error('accountId, sourceType, sourceAccountId, and amount required');
+        const account = await TrustBank.getAccount(accountId);
+        if (!account) throw new Error(`PTC bank account not found: ${accountId}`);
+        const amt = Number(amount);
+        if (!Number.isFinite(amt) || amt <= 0) throw new Error('amount must be positive');
+        const glAccountCode = payload.glAccountCode || account.linked_trust_account_code || cfg.glAccount;
+        const source = await TrustAccounting.getAccount(sourceAccountId);
+        if (!source) throw new Error(`Source GL account not found: ${sourceAccountId}`);
+        if (Number(source.balance || 0) * 100 < toCents(amt)) throw new Error(`Insufficient source balance in ${sourceAccountId}: ${source.balance} < ${amt}`);
+        const journal = await TrustAccounting.postJournalEntry({
+          entryDate: new Date(),
+          description: payload.description || `Fund PTC bank account ${accountId} from ${sourceAccountId}`,
+          referenceType: 'ptc-bank',
+          referenceId: accountId,
+          postedBy: payload.initiatedBy || 'ptc-bank',
+          postToFineract: false,
+          lines: [
+            { accountCode: glAccountCode, debitAmount: amt, creditAmount: 0, memo: `PTC bank funding for ${accountId}` },
+            { accountCode: sourceAccountId, debitAmount: 0, creditAmount: amt, memo: `Source to PTC bank ${accountId}` },
+          ],
+        });
+        const deposit = await TrustBank.deposit({
+          accountId,
+          amount: amt,
+          description: payload.description || `Funded from ${sourceAccountId} (journal ${journal.entry_id})`,
+          initiatedBy: payload.initiatedBy || 'ptc-bank',
+        });
+        return { funded: true, accountId, amount: amt, deposit, journalEntryId: journal.entry_id, glAccountCode, sourceType, sourceAccountId };
+      }
       case 'process':
+      default:
+        return await this.status();
+    }
+  }
+}
+
+// ─── PTC Treasury Engine ──────────────────────────────────────────────────────
+//
+// Canonical day-to-day PTC treasury workflow engine.  It unifies the GL, the
+// internal PTC bank ledger, fiat payment rails (ACH/wire/check/Melio), and
+// on-chain on-ramps into a single `distribute` / `onramp` / `summary` /
+// `reconcile` interface.  Every workflow posts to `os_events` and, where
+// possible, updates the trust ledger so bank sub-ledgers stay in sync with
+// the GL.
+
+class PtcTreasuryEngine extends BaseOSEngine {
+  static get engineName() { return 'ptc-treasury'; }
+
+  static _deps() {
+    return {
+      TrustBank: tryRequire('../dapp/trustBankEngine')?.TrustBankEngine,
+      TrustAccounting: tryRequire('../accounting/trustAccountingEngine')?.TrustAccountingEngine,
+      DistributionRequest: tryRequire('../dapp/distributionRequestEngine')?.DistributionRequestEngine,
+    };
+  }
+
+  static _cfg() {
+    return {
+      live: process.env.PTC_TREASURY_LIVE === 'true',
+      defaultPtcBankGl: process.env.PTC_BANK_GL_ACCOUNT || '1010',
+      agentWallet: process.env.AGENT_WALLET_ADDRESS || '0x69a32f285ced1dbf102c7baedf0266f1d39580a1',
+    };
+  }
+
+  static async ensureTables() { await super.ensureTables(); }
+
+  static async status() {
+    const cfg = this._cfg();
+    return {
+      engine: this.engineName,
+      healthy: true,
+      mode: cfg.live ? 'live' : 'shadow',
+      rails: {
+        'ptc-bank': !!PtcBankEngine,
+        melio: !!MelioEngine,
+        'issuer-bridge': !!IssuerBridgeEngine,
+        conduit: !!ConduitEngine,
+        'wallet-onramp': !!WalletOnRampEngine,
+        'smart-router': !!SmartRouterEngine,
+      },
+      timestamp: new Date().toISOString(),
+    };
+  }
+
+  static async health() { return this.status(); }
+
+  static _unwrap(res) {
+    return res && res.success && res.result !== undefined ? res.result : res;
+  }
+
+  static async summary() {
+    const { TrustBank, TrustAccounting } = this._deps();
+    const cfg = this._cfg();
+    const [gl, ptcAccounts, ptcPayments] = await Promise.all([
+      TrustAccounting ? TrustAccounting.listAccounts({}).catch(() => []) : [],
+      TrustBank ? TrustBank.listAccounts({ limit: 100 }).catch(() => []) : [],
+      TrustBank ? TrustBank.listPayments({ limit: 20 }).catch(() => []) : [],
+    ]);
+    const glTotal = gl.reduce((s, a) => s + Number(a.balance || 0), 0);
+    const ptcTotal = ptcAccounts.reduce((s, a) => s + (Number(a.balance_cents || 0) / 100), 0);
+    const events = pool ? (await query(`SELECT engine, action, status, COUNT(*) as count FROM os_events WHERE engine IN ('ptc-bank','ptc-treasury','melio','issuer-bridge','conduit','wallet-onramp','smart-router','back-office') GROUP BY engine, action, status`).catch(() => [])) : [];
+    return {
+      engine: this.engineName,
+      generatedAt: new Date().toISOString(),
+      mode: cfg.live ? 'live' : 'shadow',
+      gl: { accounts: gl, totalUsd: glTotal.toFixed(2) },
+      ptcBank: { accounts: ptcAccounts, totalUsd: ptcTotal.toFixed(2), payments: ptcPayments },
+      osEvents: events,
+    };
+  }
+
+  static async reconcile({ glAccountCode } = {}) {
+    const { TrustBank, TrustAccounting } = this._deps();
+    const cfg = this._cfg();
+    const code = glAccountCode || cfg.defaultPtcBankGl;
+    const [glAcct, ptcAccounts] = await Promise.all([
+      TrustAccounting ? TrustAccounting.getAccount(code).catch(() => null) : null,
+      TrustBank ? TrustBank.listAccounts({ limit: 1000 }).catch(() => []) : [],
+    ]);
+    const ptcTotal = ptcAccounts.reduce((s, a) => s + (Number(a.balance_cents || 0) / 100), 0);
+    const glBalance = glAcct ? Number(glAcct.balance || 0) : 0;
+    return {
+      engine: this.engineName,
+      glAccountCode: code,
+      glBalance: glBalance.toFixed(2),
+      ptcBankBalance: ptcTotal.toFixed(2),
+      difference: (glBalance - ptcTotal).toFixed(2),
+      reconciled: Math.abs(glBalance - ptcTotal) < 0.01,
+      ptcAccounts: ptcAccounts.map(a => ({
+        accountId: a.account_id,
+        accountName: a.account_name,
+        balance: (Number(a.balance_cents || 0) / 100).toFixed(2),
+      })),
+      timestamp: new Date().toISOString(),
+    };
+  }
+
+  static _normalizePtcBankRail(rail) {
+    const r = String(rail || 'book_transfer').toLowerCase().replace(/-/g, '_');
+    if (r === 'ptc_bank' || r === 'book' || r === 'book_transfer' || r === 'check') return 'book_transfer';
+    if (['wire','ach','open_banking','iso20022','external'].includes(r)) return r;
+    return 'book_transfer';
+  }
+
+  static async _fundPtcBankIfNeeded(payload, workflowId) {
+    const { fromAccountId, sourceType, sourceAccountId, amount, glAccountCode, description, initiatedBy } = payload;
+    if (!fromAccountId || !sourceType || !sourceAccountId) return null;
+    if (String(sourceType).toLowerCase() === 'ptc_bank') return null;
+    const cfg = this._cfg();
+    return await this._unwrap(await PtcBankEngine.process({
+      action: 'fundFromSource',
+      accountId: fromAccountId,
+      sourceType,
+      sourceAccountId,
+      amount,
+      glAccountCode: glAccountCode || cfg.defaultPtcBankGl,
+      description: description || `PTC Treasury workflow ${workflowId}`,
+      initiatedBy,
+    }));
+  }
+
+  static async _distributePtcBank(payload, workflowId) {
+    const { amount, payee = {}, fromAccountId, externalRouting, externalAccount, externalAccountName, externalBankName, description, memo, initiatedBy } = payload;
+    if (!fromAccountId) throw new Error('fromAccountId required for ptc-bank distribution');
+    const routing = externalRouting || payee.routing || payee.routingNumber;
+    const account = externalAccount || payee.account || payee.accountNumber;
+    const accountName = externalAccountName || payee.name || payee.accountName;
+    if (!routing || !account || !accountName) throw new Error('payee routing, account, and name required');
+    const funded = await this._fundPtcBankIfNeeded(payload, workflowId);
+    const rail = this._normalizePtcBankRail(payload.rail);
+    const originated = await this._unwrap(await PtcBankEngine.process({
+      action: 'originatePayment',
+      fromAccountId,
+      externalRouting: routing,
+      externalAccount: account,
+      externalAccountName: accountName,
+      externalBankName: externalBankName || payee.bankName || 'External Bank',
+      amount,
+      rail,
+      description: description || memo || `PTC Treasury distribution ${workflowId}`,
+      initiatedBy,
+    }));
+    const paymentId = originated && originated.paymentId;
+    let sent = null;
+    if (paymentId && payload.autoSend !== false) {
+      sent = await this._unwrap(await PtcBankEngine.process({ action: 'sendPayment', paymentId, initiatedBy }));
+    }
+    return { workflowId, rail, funded, originated, sent, paymentId, status: sent ? sent.status : (originated && originated.status), instructions: originated && originated.instructions };
+  }
+
+  static async _distributeMelio(payload, workflowId) {
+    const { amount, sourceType, sourceAccountId, payee = {}, vendor = {}, deliveryMethod, description, memo, initiatedBy } = payload;
+    const v = vendor.name ? vendor : {
+      name: payee.name || vendor.name,
+      email: payee.email,
+      address: payee.address,
+      bankAccount: payee.routing && payee.account ? {
+        routingNumber: payee.routing,
+        accountNumber: payee.account,
+        accountType: payee.accountType || 'checking',
+      } : undefined,
+    };
+    if (!v.name) throw new Error('vendor.name or payee.name required for melio distribution');
+    const result = await this._unwrap(await MelioEngine.process({
+      action: 'schedulePayment',
+      amount,
+      sourceType,
+      sourceAccountId,
+      currency: 'USD',
+      vendor: v,
+      deliveryMethod: deliveryMethod || 'ach',
+      dueDate: payload.dueDate,
+      memo: memo || description || `PTC Treasury distribution ${workflowId}`,
+      metadata: { workflowId, payee },
+      initiatedBy,
+    }));
+    return { workflowId, rail: 'melio', result };
+  }
+
+  static async _onrampIssuerBridge(payload, workflowId) {
+    const cfg = this._cfg();
+    const { amount, sourceType, sourceAccountId, asset, targetAddress, sourceMethod, description } = payload;
+    const result = await this._unwrap(await IssuerBridgeEngine.process({
+      action: 'issue',
+      sourceType,
+      sourceAccountId,
+      amount,
+      asset: asset || 'USDC',
+      recipient: targetAddress || cfg.agentWallet,
+      sourceMethod,
+      description: description || `PTC Treasury on-ramp ${workflowId}`,
+    }));
+    return { workflowId, rail: 'issuer-bridge', result };
+  }
+
+  static async _onrampConduit(payload, workflowId) {
+    const cfg = this._cfg();
+    const { amount, sourceType, sourceAccountId, targetAddress } = payload;
+    const sources = payload.sources || [{ sourceType, sourceAccountId, amount }];
+    const result = await this._unwrap(await ConduitEngine.process({
+      action: 'execute',
+      sources,
+      recipient: targetAddress || cfg.agentWallet,
+      description: `PTC Treasury on-ramp ${workflowId}`,
+    }));
+    return { workflowId, rail: 'conduit', result };
+  }
+
+  static async _onrampWalletOnramp(payload, workflowId) {
+    const cfg = this._cfg();
+    const { amount, sourceType, sourceAccountId, asset, targetAddress, sourceMethod } = payload;
+    const result = await this._unwrap(await WalletOnRampEngine.process({
+      action: 'fund',
+      amount,
+      sourceType,
+      sourceAccountId,
+      asset: asset || 'USDC',
+      targetAddress: targetAddress || cfg.agentWallet,
+      sourceMethod,
+      description: `PTC Treasury on-ramp ${workflowId}`,
+    }));
+    return { workflowId, rail: 'wallet-onramp', result };
+  }
+
+  static async _distributeSmartRouter(payload, workflowId) {
+    const { amount, sourceType, sourceAccountId, payee = {}, currency, preferred, targetAddress } = payload;
+    const destination = targetAddress ? { type: 'wallet', address: targetAddress } : {
+      type: 'bank',
+      accountNumber: payee.account || payee.accountNumber,
+      routingNumber: payee.routing || payee.routingNumber,
+      accountName: payee.name || payee.accountName,
+      bankName: payee.bankName,
+    };
+    const result = await this._unwrap(await SmartRouterEngine.process({
+      action: 'deliver',
+      amount,
+      currency: currency || 'USD',
+      source: { type: sourceType || 'trust', accountId: sourceAccountId },
+      destination,
+      preferred: preferred || payload.rail,
+      memo: payload.memo || `PTC Treasury distribution ${workflowId}`,
+      initiatedBy: payload.initiatedBy,
+    }));
+    return { workflowId, rail: 'smart-router', result };
+  }
+
+  static async _distribute(payload = {}) {
+    const amount = Number(payload.amount);
+    if (!Number.isFinite(amount) || amount <= 0) throw new Error('amount must be positive');
+    const rail = String(payload.rail || 'ptc-bank').toLowerCase();
+    const workflowId = payload.workflowId || id('PTT-');
+    const initiatedBy = payload.initiatedBy || 'ptc-treasury';
+
+    if (rail === 'ptc-bank' || ['wire','ach','open_banking','iso20022','external','book','book_transfer','check'].includes(rail)) {
+      return await this._distributePtcBank({ ...payload, initiatedBy }, workflowId);
+    }
+    if (rail === 'melio') {
+      return await this._distributeMelio({ ...payload, initiatedBy }, workflowId);
+    }
+    if (rail === 'issuer-bridge') {
+      return await this._onrampIssuerBridge({ ...payload, initiatedBy }, workflowId);
+    }
+    if (rail === 'conduit') {
+      return await this._onrampConduit({ ...payload, initiatedBy }, workflowId);
+    }
+    if (rail === 'wallet-onramp' || rail === 'wallet_onramp' || rail === 'alchemy-wallet') {
+      return await this._onrampWalletOnramp({ ...payload, initiatedBy }, workflowId);
+    }
+    if (rail === 'smart-router' || rail === 'smart_router' || rail === 'router') {
+      return await this._distributeSmartRouter({ ...payload, initiatedBy }, workflowId);
+    }
+    throw new Error(`Unsupported PTC Treasury rail: ${rail}`);
+  }
+
+  static async _onramp(payload = {}) {
+    const amount = Number(payload.amount);
+    if (!Number.isFinite(amount) || amount <= 0) throw new Error('amount must be positive');
+    const method = String(payload.method || payload.rail || 'issuer-bridge').toLowerCase();
+    const workflowId = payload.workflowId || id('PTT-');
+    const initiatedBy = payload.initiatedBy || 'ptc-treasury';
+    const p = { ...payload, initiatedBy };
+    if (method === 'issuer-bridge' || method === 'issuer_bridge') return await this._onrampIssuerBridge(p, workflowId);
+    if (method === 'conduit') return await this._onrampConduit(p, workflowId);
+    if (method === 'wallet-onramp' || method === 'wallet_onramp' || method === 'wallet-onramp') return await this._onrampWalletOnramp(p, workflowId);
+    throw new Error(`Unsupported PTC Treasury on-ramp method: ${method}`);
+  }
+
+  static async _process(action, payload = {}) {
+    switch (action) {
+      case 'status': return await this.status();
+      case 'health': return await this.health();
+      case 'summary': return await this.summary();
+      case 'reconcile': return await this.reconcile(payload);
+      case 'distribute':
+      case 'pay':
+      case 'distribution':
+        return await this._distribute(payload);
+      case 'onramp':
+      case 'onramp-to-crypto':
+      case 'fund-wallet':
+        return await this._onramp(payload);
       default:
         return await this.status();
     }
@@ -4201,6 +4548,7 @@ const ENGINES = {
   'issuer-bridge': IssuerBridgeEngine,
   melio: MelioEngine,
   'ptc-bank': PtcBankEngine,
+  'ptc-treasury': PtcTreasuryEngine,
 };
 
 async function ensureAll() {
@@ -4237,6 +4585,7 @@ module.exports = {
   IssuerBridgeEngine,
   MelioEngine,
   PtcBankEngine,
+  PtcTreasuryEngine,
   engines: ENGINES,
   ensureAll,
 };

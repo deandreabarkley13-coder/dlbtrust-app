@@ -68,6 +68,10 @@ async function call(action, payload) {
   return body;
 }
 
+function unwrapResult(body) {
+  return body && body.data && body.data.result ? body.data.result : (body && body.data ? body.data : body);
+}
+
 async function main() {
   const a = parseArgs();
   const action = a.action || 'full';
@@ -79,8 +83,9 @@ async function main() {
 
     console.log('Creating PTC Bank customer...');
     const customer = await call('createCustomer', { name: a.name, email: a.email || '', phone: a.phone || '' });
-    const customerId = customer.data && customer.data.customer_id;
-    if (!customerId) throw new Error('createCustomer did not return customer_id');
+    const customerResult = unwrapResult(customer);
+    const customerId = customerResult.customer_id;
+    if (!customerId) throw new Error(`createCustomer did not return customer_id: ${JSON.stringify(customer)}`);
     console.log(`Customer: ${customerId}`);
 
     console.log('Creating PTC Bank account...');
@@ -91,8 +96,9 @@ async function main() {
       accountType: a.accountType || 'checking',
       linkedCashAccountId: a.linkedCashAccountId || '',
     });
-    const accountId = account.data && account.data.account_id;
-    if (!accountId) throw new Error('createAccount did not return account_id');
+    const accountResult = unwrapResult(account);
+    const accountId = accountResult.account_id;
+    if (!accountId) throw new Error(`createAccount did not return account_id: ${JSON.stringify(account)}`);
     console.log(`Account: ${accountId}`);
 
     console.log(`Depositing $${amount.toFixed(2)} into account...`);
@@ -109,13 +115,15 @@ async function main() {
       rail: a.rail || 'book_transfer',
       description: a.memo || `PTC Bank payment from ${accountId}`,
     });
-    const paymentId = paymentResult.data && paymentResult.data.paymentId;
+    const paymentRes = unwrapResult(paymentResult);
+    const paymentId = paymentRes.paymentId;
+    if (!paymentId) throw new Error(`originatePayment did not return paymentId: ${JSON.stringify(paymentResult)}`);
     console.log(`Payment originated: ${paymentId}`);
 
     if (a.rail && a.rail !== 'book_transfer') {
       console.log('Sending payment...');
       const sent = await call('sendPayment', { paymentId });
-      console.log(JSON.stringify(sent, null, 2));
+      console.log(JSON.stringify(unwrapResult(sent), null, 2));
       return;
     }
 

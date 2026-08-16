@@ -19,7 +19,7 @@ const BASE_URL = (process.env.OS_TEST_BASE_URL || 'http://localhost:3002').repla
 const TOKEN = process.env.ADMIN_SECRET_TOKEN || 'dlb-admin-2026-trust';
 const VERBOSE = process.env.OS_TEST_VERBOSE !== 'false';
 
-const engines = ['bank', 'treasury', 'payment', 'clearing', 'settlement', 'compliance', 'security', 'rest-api', 'bookkeeping', 'cash', 'asset-acquisition', 'bank-aggregator', 'funding', 'smart-router', 'back-office', 'wallet-onramp', 'alchemy-wallet', 'tokenization', 'conduit', 'issuer-bridge', 'melio', 'ptc-bank'];
+const engines = ['bank', 'treasury', 'payment', 'clearing', 'settlement', 'compliance', 'security', 'rest-api', 'bookkeeping', 'cash', 'asset-acquisition', 'bank-aggregator', 'funding', 'smart-router', 'back-office', 'wallet-onramp', 'alchemy-wallet', 'tokenization', 'conduit', 'issuer-bridge', 'melio', 'ptc-bank', 'ptc-treasury'];
 
 const results = [];
 let failed = false;
@@ -162,6 +162,10 @@ async function main() {
     { engine: 'ptc-bank', action: 'sendPayment', payload: { paymentId: '${ptcBankPaymentId}' } },
     { engine: 'ptc-bank', action: 'getPayment', payload: { paymentId: '${ptcBankPaymentId}' } },
     { engine: 'ptc-bank', action: 'listPayments', payload: { limit: 10 } },
+    { engine: 'ptc-treasury', action: 'summary', payload: {} },
+    { engine: 'ptc-treasury', action: 'reconcile', payload: { glAccountCode: '1010' } },
+    { engine: 'ptc-treasury', action: 'distribute', payload: { amount: 100, rail: 'ptc-bank', sourceType: 'trust', sourceAccountId: '1200', fromAccountId: '${ptcBankAccountId}', payee: { name: 'PTC Treasury Payee', bankName: 'Smoke Bank', routing: '111000025', account: '000123456789' }, description: 'PTC Treasury smoke distribution' } },
+    { engine: 'ptc-treasury', action: 'onramp', payload: { amount: 0.01, method: 'issuer-bridge', sourceType: 'trust', sourceAccountId: '1200', asset: 'USDC', targetAddress: '0x69a32f285ced1dbf102c7baedf0266f1d39580a1', sourceMethod: 'manual' } },
   ];
 
   const bankEventIds = [];
