@@ -3492,24 +3492,26 @@ class IssuerBridgeEngine extends BaseOSEngine {
     }
   }
 
-  static _buildInstructions(cfg, p, operationId, overrideMethod) {
+  static _buildInstructions(cfg, p, operationId, overrideMethod, reserved = false) {
     const method = overrideMethod || p.sourceMethod;
     const amount = Number(p.amount).toFixed(2);
+    const reservedText = reserved ? 'has been reserved' : 'will be reserved';
+    const opText = operationId ? `operationId '${operationId}'` : 'the returned operationId';
     if (method === 'manual') {
-      return `Send ${amount} ${p.asset} on Base mainnet to ${p.recipient} (token ${cfg.usdcAddress}). The fiat equivalent has been reserved from ${p.sourceType}:${p.sourceAccountId}. Once the deposit confirms, call /api/os/issuer-bridge/process with action 'confirm', operationId '${operationId}', and txHash.`;
+      return `Send ${amount} ${p.asset} on Base mainnet to ${p.recipient} (token ${cfg.usdcAddress}). The fiat equivalent ${reservedText} from ${p.sourceType}:${p.sourceAccountId}. Once the deposit confirms, call /api/os/issuer-bridge/process with action 'confirm', ${opText}, and txHash.`;
     }
     if (method === 'circle_mint') {
-      return `Use Circle Mint to transfer ${amount} USDC to ${p.recipient} on ${cfg.circleChain}. Operation ${operationId}.`;
+      return `Use Circle Mint to transfer ${amount} USDC to ${p.recipient} on ${cfg.circleChain}. Operation ${operationId || 'pending'}.`;
     }
     if (method === 'moonpay') {
-      return `Use MoonPay to buy ${amount} ${p.asset} on Base into ${p.recipient}. Operation ${operationId}.`;
+      return `Use MoonPay to buy ${amount} ${p.asset} on Base into ${p.recipient}. Operation ${operationId || 'pending'}.`;
     }
-    return `On-ramp ${amount} USD to ${p.asset} at ${p.recipient} via ${method}. Operation ${operationId}.`;
+    return `On-ramp ${amount} USD to ${p.asset} at ${p.recipient} via ${method}. Operation ${operationId || 'pending'}.`;
   }
 
   static async _issueManual(operationId, p) {
     const cfg = this._cfg();
-    return { status: 'awaiting_deposit', provider: 'manual', instructions: this._buildInstructions(cfg, p, operationId, 'manual') };
+    return { status: 'awaiting_deposit', provider: 'manual', instructions: this._buildInstructions(cfg, p, operationId, 'manual', true) };
   }
 
   static async _issueCircle(operationId, p) {
@@ -3565,7 +3567,7 @@ class IssuerBridgeEngine extends BaseOSEngine {
       sourceBalanceCents: sourceInfo.balanceCents,
       providerReady: provider.ready,
       providerIssues: provider.issues,
-      instructions: this._buildInstructions(cfg, p, null),
+      instructions: this._buildInstructions(cfg, p, null, null, false),
       status: 'quoted',
     };
   }
