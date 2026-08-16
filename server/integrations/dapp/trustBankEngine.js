@@ -306,6 +306,15 @@ class TrustBankEngine {
       return 'originated';
     }
 
+    function mapBankTransferStatus(s) {
+      if (s === 'completed' || s === 'settled') return 'completed';
+      if (s === 'initiated') return 'originated';
+      if (s === 'manual_pending' || s === 'needs_setup') return 'manual_pending';
+      if (s === 'failed') return 'failed';
+      if (s === 'cancelled') return 'cancelled';
+      return 'originated';
+    }
+
     try {
       if (payment.rail === 'wire' && WireOriginationEngine) {
         const payout = await WireOriginationEngine.createPayout({
@@ -350,7 +359,7 @@ class TrustBankEngine {
         });
         externalTxId = transfer.transfer_id;
         rawMessage = JSON.stringify(transfer);
-        status = transfer.status || 'originated';
+        status = mapBankTransferStatus(transfer.status);
       } else if (payment.rail === 'iso20022' && OpenBankingEngine) {
         const p = await OpenBankingEngine.createPayment({
           connector: 'generic_rest',
