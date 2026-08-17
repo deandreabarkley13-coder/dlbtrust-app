@@ -5130,7 +5130,8 @@ class ApacheApisixEngine extends BaseOSEngine {
       apiKey: process.env.APISIX_API_KEY || '',
       wirePath: process.env.APISIX_WIRE_PATH || '/ptc/wire',
       pushPath: process.env.APISIX_PUSH_PATH || '/ptc/push',
-      sourceName: process.env.PTC_BANK_NAME || process.env.TRUST_BANK_NAME || 'DLB Trust PTC Bank',
+      sourceName: process.env.APISIX_ODFI_NAME || process.env.PTC_BANK_NAME || process.env.TRUST_BANK_NAME || 'DLB Trust PTC Bank',
+      sourceBankName: process.env.APISIX_ODFI_BANK_NAME || process.env.PTC_BANK_NAME || process.env.TRUST_BANK_NAME || 'ODFI Bank',
       sourceRouting: process.env.APISIX_ODFI_ROUTING || process.env.PTC_BANK_ROUTING || process.env.TRUST_BANK_ROUTING || '',
       sourceAccount: process.env.APISIX_ODFI_ACCOUNT || process.env.PTC_BANK_SETTLEMENT_ACCOUNT || process.env.TRUST_BANK_ACCOUNT || '',
       allowHttp: process.env.APISIX_ALLOW_HTTP === 'true',
@@ -5236,7 +5237,7 @@ class ApacheApisixEngine extends BaseOSEngine {
         routingNumber: source?.routingNumber || source?.routing || cfg.sourceRouting,
         accountNumber: source?.accountNumber || source?.account || cfg.sourceAccount,
         name: source?.name || source?.holderName || cfg.sourceName,
-        bankName: source?.bankName || process.env.PTC_BANK_NAME || 'ODFI Bank',
+        bankName: source?.bankName || cfg.sourceBankName || 'ODFI Bank',
         accountType: source?.accountType || 'checking',
       },
       rdfi: {

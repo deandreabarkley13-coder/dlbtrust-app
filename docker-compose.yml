@@ -129,8 +129,10 @@ services:
     container_name: apache-ptc
     restart: unless-stopped
     environment:
-      APACHE_HTTP_API_KEY: ${APACHE_HTTP_API_KEY:-}
-      APACHE_WIRE_API_KEY: ${APACHE_WIRE_API_KEY:-}
+      # Default key is the APISIX gateway key if set, otherwise a local placeholder.
+      # Override APACHE_HTTP_API_KEY / APACHE_WIRE_API_KEY for production secrets.
+      APACHE_HTTP_API_KEY: ${APACHE_HTTP_API_KEY:-${APISIX_API_KEY:-ptc-default-key}}
+      APACHE_WIRE_API_KEY: ${APACHE_WIRE_API_KEY:-${APISIX_API_KEY:-ptc-default-key}}
     expose:
       - "80"
 

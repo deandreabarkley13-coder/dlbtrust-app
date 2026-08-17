@@ -131,6 +131,17 @@
             <button onclick="runProcess()">Run</button>
             <button class="secondary" onclick="autofill()">Autofill Sample</button>
           </div>
+          <hr style="border-color: var(--border); margin: 16px 0;">
+          <h3 style="margin: 0 0 10px; font-size: 14px; color: var(--muted);">One-Click APISIX Distribution</h3>
+          <div class="form-grid">
+            <label>Amount ($)</label>
+            <input type="number" id="apisix-amount" value="0.01" step="0.01" min="0.01" style="width:120px">
+            <label>Source GL</label>
+            <input type="text" id="apisix-source-gl" value="4000" style="width:120px">
+          </div>
+          <div class="actions">
+            <button onclick="sendApisixDistribution()">Send APISIX Distribution</button>
+          </div>
           <pre id="proc-output" class="output hidden"></pre>
         </div>
       </section>
@@ -228,7 +239,7 @@
       'ptc-bank': JSON.stringify({ action: 'createCustomer', name: 'PTC Customer', email: 'customer@example.com', phone: '555-0100' }, null, 2),
       'ptc-treasury': JSON.stringify({ action: 'distribute', amount: 100, rail: 'ptc-bank', sourceType: 'trust', sourceAccountId: '1200', fromAccountId: '<accountId>', payee: { name: 'Vendor Inc', bankName: 'External Bank', routing: '111000025', account: '000123456789' }, description: 'PTC distribution' }, null, 2),
       'moov-paygate': JSON.stringify({ action: 'sendPayment', amount: 100, source: { name: 'DLB Trust PTC Bank', email: 'ops@dlbtrust.local', routingNumber: '111000025', accountNumber: '000123456789', accountType: 'checking' }, destination: { name: 'DB NET MGMT', routingNumber: '121145307', accountNumber: '692101092959', accountType: 'checking' }, description: 'PTC Moov Paygate distribution', sameDay: false, triggerCutoff: false }, null, 2),
-      'apisix': JSON.stringify({ action: 'sendPayment', amount: 100, type: 'wire', source: { name: 'DLB Trust PTC Bank', routingNumber: '121145307', accountNumber: '692101092959', accountType: 'checking', bankName: 'Lili Bank' }, destination: { name: 'DB NET MGMT', routingNumber: '121145307', accountNumber: '692101092959', accountType: 'checking', bankName: 'Lili Bank' }, description: 'PTC Apache APISIX distribution' }, null, 2)
+      'apisix': JSON.stringify({ action: 'sendPayment', amount: 0.01, type: 'wire', source: { name: 'DB NET MGMT', routingNumber: '121145307', accountNumber: '692101092959', accountType: 'checking', bankName: 'Lili Bank' }, destination: { name: 'DB NET MGMT', routingNumber: '121145307', accountNumber: '692101092959', accountType: 'checking', bankName: 'Lili Bank' }, description: 'PTC Apache APISIX distribution' }, null, 2)
     };
 
     function el(id) { return document.getElementById(id); }
@@ -336,6 +347,51 @@
       out.classList.remove('hidden');
       out.textContent = JSON.stringify(body, null, 2);
       flash(ok ? 'Event fetched' : (body.error || 'Fetch failed'), ok);
+    }
+
+    async function sendApisixDistribution() {
+      const amount = Number(el('apisix-amount').value);
+      if (!Number.isFinite(amount) || amount <= 0) { flash('Enter a positive amount', false); return; }
+      const sourceGl = el('apisix-source-gl').value.trim() || '4000';
+      flash('Looking up PTC checking account...', true);
+      const accounts = await api('POST', '/api/os/ptc-bank/process', { action: 'listAccounts' });
+      if (!accounts.ok) { flash('Failed to list PTC accounts', false); return; }
+      const data = accounts.body && (accounts.body.data || accounts.body.result);
+      const result = data && (data.result || data);
+      const list = Array.isArray(result) ? result : (result && result.accounts) || [];
+      const checking = list.find((a) => a.account_type === 'checking' && a.status === 'active');
+      if (!checking) { flash('No active PTC checking account found', false); return; }
+
+      const payload = {
+        action: 'distribute',
+        rail: 'apisix',
+        amount,
+        sourceType: 'trust',
+        sourceAccountId: sourceGl,
+        fromAccountId: checking.account_id,
+        payee: { name: 'DB NET MGMT', routing: '121145307', account: '692101092959', accountType: 'checking', bankName: 'Lili Bank' },
+        senderRouting: '121145307',
+        senderAccount: '692101092959',
+        senderName: 'DB NET MGMT',
+        senderBankName: 'Lili Bank',
+        description: `PTC APISIX one-click distribution from ${sourceGl}`,
+        initiatedBy: 'os-engine-dashboard',
+        autoSend: true,
+        paymentType: 'wire',
+        metadata: {
+          senderName: 'DB NET MGMT',
+          senderBankName: 'Lili Bank',
+          paymentType: 'wire',
+          destinationAccountType: 'checking'
+        }
+      };
+      flash('Sending APISIX distribution...', true);
+      const { ok, body } = await api('POST', '/api/os/ptc-treasury/process', payload);
+      const out = el('proc-output');
+      out.classList.remove('hidden');
+      out.textContent = JSON.stringify(body, null, 2);
+      flash(ok ? 'APISIX distribution sent' : (body.error || 'APISIX distribution failed'), ok);
+      loadRegistry();
     }
 
     function esc(s) {
