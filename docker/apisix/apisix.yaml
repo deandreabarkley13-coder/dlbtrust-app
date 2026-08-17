@@ -1,0 +1,44 @@
+# Apache APISIX standalone configuration for the DLB Trust PTC payment gateway.
+# Mount at /usr/local/apisix/conf/apisix.yaml and set APISIX_STAND_ALONE=true.
+#
+# Routes:
+#   /ptc/wire  -> apache-ptc:80/wire.php (self-hosted wire API)
+#   /ptc/push  -> apache-ptc:80/push.php (self-hosted push-to-card API)
+#
+# The DLB Trust OS engine API is intentionally NOT exposed through the gateway in
+# this configuration; it remains reachable only through the application's own
+# port/admin token path.
+#
+# To start the gateway:
+#   docker compose up -d apache-ptc apisix
+
+apisix:
+  node_listen: 9080
+
+deployment:
+  role: data_plane
+  role_data_plane:
+    config_provider: yaml
+
+routes:
+  - id: 1
+    uri: /ptc/wire
+    upstream_id: 1
+    methods: [POST]
+    plugins:
+      proxy-rewrite:
+        uri: /wire.php
+
+  - id: 2
+    uri: /ptc/push
+    upstream_id: 1
+    methods: [POST]
+    plugins:
+      proxy-rewrite:
+        uri: /push.php
+
+upstreams:
+  - id: 1
+    nodes:
+      "apache-ptc:80": 1
+    type: roundrobin

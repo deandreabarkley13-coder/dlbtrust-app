@@ -1124,3 +1124,60 @@ Use `x-admin-token: dlb-admin-2026-trust` for all calls.
 - The dashboard `runProcess` builds the request as `{ ...payload, action }`, so the Action dropdown always overrides an `action` field in the payload; keep them consistent.
 - In shadow mode, `MoovPaygateEngine._createTransfer` returns `status: 'originated'`, not `completed`. `TrustBankEngine.sendPayment` preserves that status for `moov_paygate` rail payments, so `trust_bank_payments` will show `originated` until a real Paygate webhook/settlement advances it.
 - The CLI script uses `PtcTreasuryEngine.process` directly (not the HTTP API) and requires `PTC_BANK_LIVE`/`PTC_TREASURY_LIVE` env vars in the shell, or a `.env` file with those values.
+
+## Apache APISIX OS Engine (`devin/apisix-gateway` / PR #357)
+
+The `devin/apisix-gateway` branch adds `ApacheApisixEngine` (`apisix`) to `server/integrations/os/osEngine.js` and registers it at `/api/os/apisix/process`. It supports `status`, `health`, `sendPayment`, `sendWire`, `sendPush`, and `pushToCard` actions and is intended as a fiat payout rail for PTC treasury distributions. `PtcTreasuryEngine._normalizePtcBankRail` accepts `rail: 'apisix'` and routes it through `PtcBankEngine` (`fundFromSource` → `originatePayment` → `sendPayment`) then `TrustBankEngine.sendPayment` for the `apisix` rail. The CLI script is `server/scripts/sendPtcApacheApisixPayment.js`.
+
+### Startup and env
+
+- Start with the standard local Postgres + admin token env.
+- Set `APISIX_LIVE=false` (or leave it unset) for shadow/simulated mode. In shadow mode the engine skips live HTTP calls to `http://localhost:9080` and returns synthetic `APISIX-TX-*` transfer IDs with `status: 'originated'`.
+- For PTC-treasury distribution tests, set `PTC_BANK_LIVE=true`, `PTC_TREASURY_LIVE=true`, `PTC_BANK_NAME='DLB Trust PTC Bank'`, `PTC_BANK_ROUTING=121145307`, and `PTC_BANK_SETTLEMENT_ACCOUNT` to an active PTC checking account.
+- The server must call `osEngine.ensureAll()` on startup to create the `apisix` events table and schema.
+
+### End-to-end verification
+
+Use `x-admin-token: dlb-admin-2026-trust` for all API calls.
+
+1. `GET /api/os/apisix/status` → `success: true`, `data.healthy: true`, `data.mode: 'shadow'`.
+2. `POST /api/os/apisix/process` action `sendPayment` with source/destination `routingNumber`/`accountNumber` and `amount: 0.01`:
+   ```json
+   {
+     "action": "sendPayment",
+     "amount": 0.01,
+     "source": { "name": "PTC Smoke Origin", "routingNumber": "111000025", "accountNumber": "000123456789", "accountType": "checking", "customerType": "business" },
+     "destination": { "name": "DB NET MGMT", "routingNumber": "121145307", "accountNumber": "692101092959", "accountType": "checking", "customerType": "individual" },
+     "description": "Apache APISIX tiny shadow test",
+     "type": "wire"
+   }
+   ```
+   Expected: `success: true`, `data.result.transferId` starts with `APISIX-TX-`, `status: 'originated'`, `shadow: true`.
+3. CLI script:
+   ```bash
+   ADMIN_SECRET_TOKEN=dlb-admin-2026-trust \
+   PTC_BANK_LIVE=true PTC_TREASURY_LIVE=true \
+   PTC_BANK_NAME='DLB Trust PTC Bank' PTC_BANK_ROUTING=121145307 \
+   PTC_BANK_SETTLEMENT_ACCOUNT=<active-ptc-checking> \
+     node server/scripts/sendPtcApacheApisixPayment.js \
+     --amount 0.01 --sourceAccountId 4000
+   ```
+   Expected: exit `0`, `success: true`, a `TBP-` payment record with `rail = 'apisix'`, and an `APISIX-TX-*` `external_tx_id`. GL impact should be `1010` unchanged net, `1200` and `4000` each reduced by the amount (interest-income distribution flow).
+4. Operator dashboard at `/os-engine-dashboard.html`:
+   - Registry shows an `apisix` card with `healthy` badge and `mode: shadow`.
+   - `Process Action` engine dropdown contains `apisix`; action dropdown contains `status`, `health`, `sendPayment`, `sendWire`, `sendPush`.
+   - `ptc-treasury` → `distribute` with `rail: 'apisix'`, `sourceType: 'trust'`, `sourceAccountId: '4000'`, `autoSend: true`, and a payee object with `routing`/`account`/`name`/`bankName` successfully creates an `APISIX-TX-*` `externalTxId`.
+   - `Event Log` contains an `apisix` button and lists `apisix` events.
+5. `npm run lint` and `npm run typecheck` exit `0`.
+6. `node server/scripts/osEngineSmokeTest.js` should pass the `apisix` status and sendPayment steps. The expected failures remain `alchemy-wallet: send` and `tokenization: execute`.
+
+### Gateway config spot-check
+
+Run `grep -E '^\s+uri:' docker/apisix/apisix.yaml` and confirm only `/ptc/wire` and `/ptc/push` are exposed and no `/api/os/*` route exists.
+
+### What to watch for
+
+- In shadow mode `ApacheApisixEngine._sendPayment` now returns `status: 'completed'` (as of PR #357 fix). `TrustBankEngine.sendPayment` records a `bank_transfers` row with `rail: 'apisix'` and the same `external_tx_id` for `rail === 'apisix'`.
+- If `bank_transfers` inserts fail, verify `BankTransferEngine.ensureTables()` ran at startup (it drops and re-adds the `bank_transfers_rail_check` constraint to include `'apisix'`).
+- The Fly deploy `https://dlbtrust-app.fly.dev` often lags the local branch and may not show the `apisix` engine; if `GET /api/os/apisix/status` returns `404` and the dashboard registry omits `apisix`, Fly has not been deployed with this branch yet.
+- The dashboard `Run` button and payload textarea may not register scaled coordinate typing. Set `document.getElementById('proc-payload').value` and `proc-engine`/`proc-action` values via the browser console, then click `Run`.

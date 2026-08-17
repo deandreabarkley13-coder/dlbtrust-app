@@ -60,7 +60,7 @@ class BankTransferEngine {
         destination_cash_account_id TEXT,
         from_bank_account_id TEXT,
         to_bank_account_id TEXT,
-        rail TEXT NOT NULL DEFAULT 'web_payment' CHECK (rail IN ('web_payment','wire','ach','lili','iso20022','manual')),
+        rail TEXT NOT NULL DEFAULT 'web_payment' CHECK (rail IN ('web_payment','wire','ach','lili','iso20022','manual','apisix','moov_paygate','external')),
         status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending','initiated','completed','failed','cancelled','manual_pending')),
         external_tx_id TEXT,
         web_payment_id TEXT,
@@ -73,6 +73,11 @@ class BankTransferEngine {
       )
     `);
     await pool.query(`CREATE INDEX IF NOT EXISTS idx_bank_transfers_status ON bank_transfers(status)`);
+    // Expand rail enum on existing tables so new rails (e.g. apisix) can be recorded.
+    try {
+      await pool.query(`ALTER TABLE bank_transfers DROP CONSTRAINT IF EXISTS bank_transfers_rail_check`);
+      await pool.query(`ALTER TABLE bank_transfers ADD CONSTRAINT bank_transfers_rail_check CHECK (rail IN ('web_payment','wire','ach','lili','iso20022','manual','apisix','moov_paygate','external'))`);
+    } catch (e) { console.warn('[bank-transfer] rail constraint update:', e.message); }
   }
 
   static async createBankAccount({ name, bankName, routingNumber, accountNumber, accountType = 'checking', country = 'US', currency = 'USD', beneficiaryAddress, linkedCashAccountId, linkedIssuerAssetCode, source, metadata = {} } = {}) {

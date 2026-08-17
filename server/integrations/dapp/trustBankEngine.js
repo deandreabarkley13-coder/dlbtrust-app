@@ -11,7 +11,7 @@
 
 const pool = require('../bonds/pgPool');
 
-let CashEngine, TrustAccountingEngine, BankTransferEngine, WireOriginationEngine, WireEngine, OpenBankingEngine, ComplianceEngine, ExternalEndpointEngine, LiliBankEngine, MoovPaygateEngine;
+let CashEngine, TrustAccountingEngine, BankTransferEngine, WireOriginationEngine, WireEngine, OpenBankingEngine, ComplianceEngine, ExternalEndpointEngine, LiliBankEngine, MoovPaygateEngine, ApacheApisixEngine;
 function loadDeps() {
   try { ({ CashEngine } = require('../cash/cashEngine')); } catch (e) { CashEngine = null; }
   try { ({ TrustAccountingEngine } = require('../accounting/trustAccountingEngine')); } catch (e) { TrustAccountingEngine = null; }
@@ -23,6 +23,7 @@ function loadDeps() {
   try { ({ ExternalEndpointEngine } = require('./externalEndpointEngine')); } catch (e) { ExternalEndpointEngine = null; }
   try { ({ LiliBankEngine } = require('../payments/liliBankEngine')); } catch (e) { LiliBankEngine = null; }
   try { ({ MoovPaygateEngine } = require('../os/osEngine')); } catch (e) { MoovPaygateEngine = null; }
+  try { ({ ApacheApisixEngine } = require('../os/osEngine')); } catch (e) { ApacheApisixEngine = null; }
 }
 
 function generateId(prefix = 'TBA') {
@@ -91,7 +92,7 @@ class TrustBankEngine {
         external_bank_name TEXT,
         amount_cents BIGINT NOT NULL,
         currency TEXT NOT NULL DEFAULT 'USD',
-        rail TEXT NOT NULL CHECK (rail IN ('internal','wire','ach','open_banking','iso20022','book_transfer','external','lili','moov_paygate')),
+        rail TEXT NOT NULL CHECK (rail IN ('internal','wire','ach','open_banking','iso20022','book_transfer','external','lili','moov_paygate','apisix')),
         status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending','compliance_review','originated','manual_pending','completed','failed','cancelled')),
         raw_message TEXT,
         external_tx_id TEXT,
@@ -113,7 +114,7 @@ class TrustBankEngine {
     // Expand rail enum if older constraint exists
     try {
       await pool.query(`ALTER TABLE trust_bank_payments DROP CONSTRAINT IF EXISTS trust_bank_payments_rail_check`);
-      await pool.query(`ALTER TABLE trust_bank_payments ADD CONSTRAINT trust_bank_payments_rail_check CHECK (rail IN ('internal','wire','ach','open_banking','iso20022','book_transfer','external','lili','moov_paygate'))`);
+      await pool.query(`ALTER TABLE trust_bank_payments ADD CONSTRAINT trust_bank_payments_rail_check CHECK (rail IN ('internal','wire','ach','open_banking','iso20022','book_transfer','external','lili','moov_paygate','apisix'))`);
     } catch (e) { console.warn('[trust-bank] rail constraint update:', e.message); }
   }
 
@@ -525,6 +526,112 @@ class TrustBankEngine {
         externalTxId = moovResult && (moovResult.transferId || moovResult.transferID);
         rawMessage = JSON.stringify(moovResult);
         status = MoovPaygateEngine._mapStatus(moovResult && moovResult.status);
+      } else if (payment.rail === 'apisix' && ApacheApisixEngine) {
+        let meta = payment.metadata || {};
+        if (typeof meta === 'string') { try { meta = JSON.parse(meta); } catch { meta = {}; } }
+        const sourceRouting = meta.senderRouting || process.env.APISIX_ODFI_ROUTING || process.env.PTC_BANK_ROUTING || process.env.TRUST_BANK_ROUTING;
+        const sourceAccount = meta.senderAccount || process.env.APISIX_ODFI_ACCOUNT || process.env.PTC_BANK_SETTLEMENT_ACCOUNT || process.env.TRUST_BANK_ACCOUNT;
+        if (!sourceRouting || !sourceAccount) throw new Error('senderRouting and senderAccount required for apisix (set metadata or APISIX_ODFI_ROUTING/APISIX_ODFI_ACCOUNT)');
+
+        // Post interest-income GL before sending through the APISIX gateway so the books reflect the liability.
+        const isPtcInterest = meta.interestIncomeSource === '4000' || meta.paymentType === 'interest_payment' || (payment.description && /interest income/i.test(payment.description));
+        let glEntryId = null;
+        let glDebitCode = null;
+        let glCreditCode = null;
+        if (isPtcInterest && TrustAccountingEngine) {
+          glDebitCode = meta.glDebitAccountCode || meta.interestIncomeSource || '4000';
+          glCreditCode = meta.glCreditAccountCode || from.linked_trust_account_code || process.env.PTC_BANK_GL_ACCOUNT || '1010';
+          try {
+            const glRes = await TrustAccountingEngine.postJournalEntry({
+              entryDate: new Date(),
+              description: payment.description || `Apache APISIX distribution ${paymentId}`,
+              referenceType: 'ptc-bank-payment',
+              referenceId: paymentId,
+              postedBy: payment.initiated_by || 'apisix',
+              postToFineract: false,
+              lines: [
+                { accountCode: glDebitCode, debitAmount: payment.amount_cents / 100, creditAmount: 0, memo: `Apache APISIX interest distribution ${paymentId}` },
+                { accountCode: glCreditCode, debitAmount: 0, creditAmount: payment.amount_cents / 100, memo: `Settle PTC bank cash for ${paymentId}` },
+              ],
+            });
+            glEntryId = glRes && glRes.entryId;
+          } catch (glErr) {
+            throw new Error(`Apache APISIX GL entry failed: ${glErr.message}`);
+          }
+        }
+
+        let apiRes;
+        try {
+          apiRes = await ApacheApisixEngine.process({
+            action: 'sendPayment',
+            amount: payment.amount_cents / 100,
+            currency: payment.currency || 'USD',
+            type: meta.paymentType || 'wire',
+            source: {
+              name: meta.senderName || process.env.PTC_BANK_NAME || process.env.TRUST_BANK_NAME || 'DLB Trust PTC Bank',
+              routingNumber: sourceRouting,
+              accountNumber: sourceAccount,
+              accountType: meta.senderAccountType || 'checking',
+              bankName: meta.senderBankName || process.env.PTC_BANK_NAME || process.env.TRUST_BANK_NAME || 'ODFI Bank',
+            },
+            destination: {
+              name: payment.external_account_name || 'External Beneficiary',
+              routingNumber: payment.external_routing,
+              accountNumber: payment.external_account,
+              accountType: meta.destinationAccountType || 'checking',
+              bankName: payment.external_bank_name || 'RDFI Bank',
+            },
+            description: payment.description || `Trust bank payment ${paymentId}`,
+            paymentId,
+            reference: meta.reference || paymentId,
+          });
+        } catch (apiErr) {
+          if (glEntryId && TrustAccountingEngine && glDebitCode && glCreditCode) {
+            try {
+              await TrustAccountingEngine.postJournalEntry({
+                entryDate: new Date(),
+                description: `Reversal for failed Apache APISIX distribution ${paymentId}`,
+                referenceType: 'ptc-bank-payment',
+                referenceId: paymentId,
+                postedBy: payment.initiated_by || 'apisix',
+                postToFineract: false,
+                lines: [
+                  { accountCode: glCreditCode, debitAmount: payment.amount_cents / 100, creditAmount: 0, memo: `Reverse credit for failed ${paymentId}` },
+                  { accountCode: glDebitCode, debitAmount: 0, creditAmount: payment.amount_cents / 100, memo: `Reverse debit for failed ${paymentId}` },
+                ],
+              });
+            } catch (revErr) { console.error('[trust-bank] failed to reverse GL for failed apisix payment:', revErr.message); }
+          }
+          throw apiErr;
+        }
+        const apiResult = apiRes && apiRes.success && apiRes.result ? apiRes.result : apiRes;
+        externalTxId = apiResult && (apiResult.transferId || apiResult.txId || apiResult.referenceNumber);
+        rawMessage = JSON.stringify(apiResult);
+        if (apiResult && (apiResult.status === 'completed' || apiResult.status === 'settled')) status = 'completed';
+        else if (apiResult && apiResult.status) status = apiResult.status;
+        else status = 'originated';
+
+        if (BankTransferEngine) {
+          try {
+            const destinationBankAccount = await BankTransferEngine.createBankAccount({
+              name: payment.external_account_name || 'External Beneficiary',
+              bankName: payment.external_bank_name || 'RDFI Bank',
+              routingNumber: payment.external_routing,
+              accountNumber: payment.external_account,
+              accountType: meta.destinationAccountType || 'checking',
+              source: 'apisix',
+              metadata: { paymentId, rail: 'apisix' },
+            });
+            const bankTransferId = `BTO-${Date.now()}-${Math.random().toString(36).slice(2, 8).toUpperCase()}`;
+            await pool.query(
+              `INSERT INTO bank_transfers (transfer_id, direction, amount_cents, currency, source_cash_account_id, to_bank_account_id, rail, status, external_tx_id, memo, metadata)
+               VALUES ($1,'outbound',$2,'USD',$3,$4,'apisix',$5,$6,$7,$8)`,
+              [bankTransferId, payment.amount_cents, from.linked_cash_account_id || null, destinationBankAccount.account_id, status, externalTxId || bankTransferId, `Apache APISIX trust bank payment ${paymentId}`, JSON.stringify({ paymentId, source: { routingNumber: sourceRouting, accountNumber: sourceAccount, name: meta.senderName || process.env.PTC_BANK_NAME || process.env.TRUST_BANK_NAME || 'DLB Trust PTC Bank' }, destination: { name: payment.external_account_name, bankName: payment.external_bank_name, routingNumber: payment.external_routing, accountNumber: payment.external_account } })]
+            );
+            const composite = { ...(apiResult || {}), bankTransfer: { transfer_id: bankTransferId, status, rail: 'apisix' } };
+            rawMessage = JSON.stringify(composite);
+          } catch (btErr) { console.error('[trust-bank] failed to record bank_transfers for apisix:', btErr.message); }
+        }
       } else if (payment.rail === 'book_transfer') {
         // Internal book transfer to an external account (manual/clearing)
         status = 'originated';
