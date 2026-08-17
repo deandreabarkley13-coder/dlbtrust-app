@@ -8,6 +8,5 @@ coverage
 .vite
 dist
 tmp
-backups/*.db
-backups/*.sqlite
+backups/
 *.log
