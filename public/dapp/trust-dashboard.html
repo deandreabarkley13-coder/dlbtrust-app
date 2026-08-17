@@ -582,7 +582,7 @@
       const headers = { 'Content-Type': 'application/json', ...(opts.headers || {}) };
       headers[t.header] = t.value;
       const res = await fetch(path, { ...opts, headers });
-      if (res.status === 401) { lastErr = 401; continue; }
+      if (res.status === 401) { lastErr = 401; localStorage.removeItem(t.key); continue; }
       const text = await res.text();
       let data; try { data = JSON.parse(text); } catch { data = { error: text }; }
       if (!res.ok || !data.success) throw new Error(data.error || data.message || res.statusText);
@@ -627,6 +627,11 @@
       el('dashboard').classList.remove('hidden');
       el('logout-btn').classList.remove('hidden');
       const u = me && me.data && (me.data.dappUser || me.data.user);
+      // If we authenticated as a beneficiary, drop any stale admin token so later
+      // api() calls don't fire a failing admin request first.
+      if (me && me.data && me.data.dappUser && localStorage.getItem(ADMIN_KEY)) {
+        localStorage.removeItem(ADMIN_KEY);
+      }
       const roleLabel = u ? (u.role || 'trustee') : (isAdmin() ? 'operator' : 'trustee');
       const name = u ? (u.name || u.email || roleLabel) : (isAdmin() ? 'Operator' : 'Trustee');
       el('user-info').textContent = name + (roleLabel ? ' · ' + roleLabel : '');
