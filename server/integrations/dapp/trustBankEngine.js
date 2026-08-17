@@ -11,7 +11,7 @@
 
 const pool = require('../bonds/pgPool');
 
-let CashEngine, TrustAccountingEngine, BankTransferEngine, WireOriginationEngine, WireEngine, OpenBankingEngine, ComplianceEngine, ExternalEndpointEngine, LiliBankEngine;
+let CashEngine, TrustAccountingEngine, BankTransferEngine, WireOriginationEngine, WireEngine, OpenBankingEngine, ComplianceEngine, ExternalEndpointEngine, LiliBankEngine, MoovPaygateEngine;
 function loadDeps() {
   try { ({ CashEngine } = require('../cash/cashEngine')); } catch (e) { CashEngine = null; }
   try { ({ TrustAccountingEngine } = require('../accounting/trustAccountingEngine')); } catch (e) { TrustAccountingEngine = null; }
@@ -22,6 +22,7 @@ function loadDeps() {
   try { ({ ComplianceEngine } = require('../compliance/complianceEngine')); } catch (e) { ComplianceEngine = null; }
   try { ({ ExternalEndpointEngine } = require('./externalEndpointEngine')); } catch (e) { ExternalEndpointEngine = null; }
   try { ({ LiliBankEngine } = require('../payments/liliBankEngine')); } catch (e) { LiliBankEngine = null; }
+  try { ({ MoovPaygateEngine } = require('../os/osEngine')); } catch (e) { MoovPaygateEngine = null; }
 }
 
 function generateId(prefix = 'TBA') {
@@ -90,7 +91,7 @@ class TrustBankEngine {
         external_bank_name TEXT,
         amount_cents BIGINT NOT NULL,
         currency TEXT NOT NULL DEFAULT 'USD',
-        rail TEXT NOT NULL CHECK (rail IN ('internal','wire','ach','open_banking','iso20022','book_transfer','external','lili')),
+        rail TEXT NOT NULL CHECK (rail IN ('internal','wire','ach','open_banking','iso20022','book_transfer','external','lili','moov_paygate')),
         status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending','compliance_review','originated','manual_pending','completed','failed','cancelled')),
         raw_message TEXT,
         external_tx_id TEXT,
@@ -112,7 +113,7 @@ class TrustBankEngine {
     // Expand rail enum if older constraint exists
     try {
       await pool.query(`ALTER TABLE trust_bank_payments DROP CONSTRAINT IF EXISTS trust_bank_payments_rail_check`);
-      await pool.query(`ALTER TABLE trust_bank_payments ADD CONSTRAINT trust_bank_payments_rail_check CHECK (rail IN ('internal','wire','ach','open_banking','iso20022','book_transfer','external','lili'))`);
+      await pool.query(`ALTER TABLE trust_bank_payments ADD CONSTRAINT trust_bank_payments_rail_check CHECK (rail IN ('internal','wire','ach','open_banking','iso20022','book_transfer','external','lili','moov_paygate'))`);
     } catch (e) { console.warn('[trust-bank] rail constraint update:', e.message); }
   }
 
@@ -438,6 +439,62 @@ class TrustBankEngine {
         externalTxId = liliResult && (liliResult.external_tx_id || liliResult.payment_id);
         rawMessage = JSON.stringify(liliResult);
         status = liliResult && liliResult.status ? (liliResult.status === 'api_pending' ? 'originated' : (liliResult.status === 'completed' ? 'completed' : (liliResult.status === 'manual_pending' ? 'manual_pending' : liliResult.status))) : 'manual_pending';
+      } else if (payment.rail === 'moov_paygate' && MoovPaygateEngine) {
+        let meta = payment.metadata || {};
+        if (typeof meta === 'string') { try { meta = JSON.parse(meta); } catch { meta = {}; } }
+        const sourceRouting = meta.senderRouting || process.env.PTC_BANK_ROUTING || process.env.TRUST_BANK_ROUTING;
+        const sourceAccount = meta.senderAccount || process.env.PTC_BANK_SETTLEMENT_ACCOUNT || process.env.TRUST_BANK_ACCOUNT;
+        if (!sourceRouting || !sourceAccount) throw new Error('senderRouting and senderAccount required for moov_paygate (set metadata or PTC_BANK_ROUTING/PTC_BANK_SETTLEMENT_ACCOUNT)');
+        const moovRes = await MoovPaygateEngine.process({
+          action: 'sendPayment',
+          amount: payment.amount_cents / 100,
+          currency: payment.currency || 'USD',
+          source: {
+            name: process.env.PTC_BANK_NAME || process.env.TRUST_BANK_NAME || meta.senderName || 'DLB Trust PTC Bank',
+            email: meta.senderEmail || process.env.PTC_BANK_EMAIL,
+            routingNumber: sourceRouting,
+            accountNumber: sourceAccount,
+            accountType: meta.senderAccountType || 'checking',
+            holderName: meta.senderHolderName || process.env.PTC_BANK_NAME || process.env.TRUST_BANK_NAME || 'DLB Trust PTC Bank',
+            customerType: 'business',
+          },
+          destination: {
+            name: payment.external_account_name || 'External Beneficiary',
+            email: meta.recipientEmail || payment.recipient_email,
+            routingNumber: payment.external_routing,
+            accountNumber: payment.external_account,
+            accountType: meta.destinationAccountType || 'checking',
+            holderName: payment.external_account_name || 'External Beneficiary',
+            customerType: 'individual',
+          },
+          description: payment.description || `Trust bank payment ${paymentId}`,
+          sameDay: meta.sameDay === true || meta.sameDay === 'true',
+          triggerCutoff: meta.triggerCutoff !== false && meta.triggerCutoff !== 'false',
+          paymentId,
+        });
+        const moovResult = moovRes && moovRes.success && moovRes.result ? moovRes.result : moovRes;
+        externalTxId = moovResult && (moovResult.transferId || moovResult.transferID);
+        rawMessage = JSON.stringify(moovResult);
+        status = MoovPaygateEngine._mapStatus(moovResult && moovResult.status);
+
+        // Post GL impact for interest-income distributions: debit interest income, credit PTC bank cash.
+        const isPtcInterest = meta.interestIncomeSource === '4000' || meta.paymentType === 'interest_payment' || (payment.description && /interest income/i.test(payment.description));
+        if (isPtcInterest && TrustAccountingEngine) {
+          const debitCode = meta.glDebitAccountCode || meta.interestIncomeSource || '4000';
+          const creditCode = meta.glCreditAccountCode || from.linked_trust_account_code || process.env.PTC_BANK_GL_ACCOUNT || '1010';
+          await TrustAccountingEngine.postJournalEntry({
+            entryDate: new Date(),
+            description: payment.description || `Moov Paygate distribution ${paymentId}`,
+            referenceType: 'ptc-bank-payment',
+            referenceId: paymentId,
+            postedBy: payment.initiated_by || 'moov-paygate',
+            postToFineract: false,
+            lines: [
+              { accountCode: debitCode, debitAmount: payment.amount_cents / 100, creditAmount: 0, memo: `Moov Paygate interest distribution ${paymentId}` },
+              { accountCode: creditCode, debitAmount: 0, creditAmount: payment.amount_cents / 100, memo: `Settle PTC bank cash for ${paymentId}` },
+            ],
+          });
+        }
       } else if (payment.rail === 'book_transfer') {
         // Internal book transfer to an external account (manual/clearing)
         status = 'originated';

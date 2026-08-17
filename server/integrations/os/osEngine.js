@@ -4041,6 +4041,7 @@ class PtcBankEngine extends BaseOSEngine {
       OpenBankingEngine: tryRequire('../dapp/openBankingEngine')?.OpenBankingEngine,
       ExternalEndpointEngine: tryRequire('../dapp/externalEndpointEngine')?.ExternalEndpointEngine,
       LiliBankEngine: tryRequire('../payments/liliBankEngine')?.LiliBankEngine,
+      MoovPaygateEngine,
     };
   }
 
@@ -4077,6 +4078,7 @@ class PtcBankEngine extends BaseOSEngine {
         external: !!ExternalEndpointEngine,
         bookTransfer: true,
         lili: !!this._deps().LiliBankEngine,
+        'moov-paygate': !!this._deps().MoovPaygateEngine,
       },
       timestamp: new Date().toISOString(),
     };
@@ -4256,6 +4258,7 @@ class PtcTreasuryEngine extends BaseOSEngine {
       TrustAccounting: tryRequire('../accounting/trustAccountingEngine')?.TrustAccountingEngine,
       DistributionRequest: tryRequire('../dapp/distributionRequestEngine')?.DistributionRequestEngine,
       LiliBankEngine: tryRequire('../payments/liliBankEngine')?.LiliBankEngine,
+      MoovPaygateEngine,
     };
   }
 
@@ -4283,6 +4286,7 @@ class PtcTreasuryEngine extends BaseOSEngine {
         conduit: !!ConduitEngine,
         'wallet-onramp': !!WalletOnRampEngine,
         'smart-router': !!SmartRouterEngine,
+        'moov-paygate': !!this._deps().MoovPaygateEngine,
       },
       timestamp: new Date().toISOString(),
     };
@@ -4344,7 +4348,8 @@ class PtcTreasuryEngine extends BaseOSEngine {
   static _normalizePtcBankRail(rail) {
     const r = String(rail || 'book_transfer').toLowerCase().replace(/-/g, '_');
     if (r === 'ptc_bank' || r === 'book' || r === 'book_transfer' || r === 'check') return 'book_transfer';
-    if (['wire','ach','open_banking','iso20022','external','lili'].includes(r)) return r;
+    if (r === 'moov') return 'moov_paygate';
+    if (['wire','ach','open_banking','iso20022','external','lili','moov_paygate'].includes(r)) return r;
     return 'book_transfer';
   }
 
@@ -4523,7 +4528,7 @@ class PtcTreasuryEngine extends BaseOSEngine {
     const workflowId = payload.workflowId || id('PTT-');
     const initiatedBy = payload.initiatedBy || 'ptc-treasury';
 
-    if (rail === 'ptc-bank' || ['wire','ach','open_banking','iso20022','external','book','book_transfer','check','lili'].includes(rail)) {
+    if (rail === 'ptc-bank' || ['wire','ach','open_banking','iso20022','external','book','book_transfer','check','lili','moov_paygate','moov-paygate','moov'].includes(rail)) {
       return await this._distributePtcBank({ ...payload, initiatedBy }, workflowId);
     }
     if (rail === 'melio') {
@@ -5102,6 +5107,313 @@ class SettlementEndpointEngine extends BaseOSEngine {
   }
 }
 
+// ─── Moov Paygate Engine ───────────────────────────────────────────────────────
+//
+// Self-hosted Moov Paygate (Apache 2.0) integration. Calls a Paygate transfers
+// API and, when live, a Moov Customers service to create originator/receiver
+// customers and accounts. Supports ACH origination, transfer status, cutoff
+// triggering, and webhook status updates.
+
+class MoovPaygateEngine extends BaseOSEngine {
+  static get engineName() { return 'moov-paygate'; }
+
+  static _cfg() {
+    return {
+      live: process.env.MOOV_PAYGATE_LIVE === 'true',
+      paygateUrl: process.env.MOOV_PAYGATE_URL || 'http://localhost:8082',
+      adminUrl: process.env.MOOV_PAYGATE_ADMIN_URL || 'http://localhost:9092',
+      customersUrl: process.env.MOOV_CUSTOMERS_URL || 'http://localhost:8087',
+      organization: process.env.MOOV_PAYGATE_ORG || process.env.TRUST_NAME || 'dlbtrust',
+      apiKey: process.env.MOOV_PAYGATE_API_KEY || '',
+      originatorName: process.env.MOOV_PAYGATE_ORIGINATOR_NAME || process.env.PTC_BANK_NAME || process.env.TRUST_BANK_NAME || 'DLB Trust PTC Bank',
+      odfiRouting: process.env.MOOV_PAYGATE_ODFI_ROUTING || process.env.PTC_BANK_ROUTING || process.env.TRUST_BANK_ROUTING || '111000025',
+    };
+  }
+
+  static _headers() {
+    const cfg = this._cfg();
+    const headers = {
+      'Content-Type': 'application/json',
+      'X-Organization': cfg.organization,
+      'X-Request-ID': id('MOOV-'),
+    };
+    if (cfg.apiKey) headers['X-API-Key'] = cfg.apiKey;
+    return headers;
+  }
+
+  static async _http(method, url, body, timeoutMs = 30000) {
+    const options = { method, headers: this._headers() };
+    if (body !== undefined) options.body = JSON.stringify(body);
+    if (timeoutMs) options.signal = AbortSignal.timeout(timeoutMs);
+    const res = await fetch(url, options);
+    const text = await res.text();
+    let json = text;
+    try { if (text) json = JSON.parse(text); } catch { /* leave as text */ }
+    return { statusCode: res.status, ok: res.ok, headers: Object.fromEntries(res.headers.entries()), body: text, json };
+  }
+
+  static _url(base, path) {
+    return `${base.replace(/\/$/, '')}${path.startsWith('/') ? path : `/${path}`}`;
+  }
+
+  static _paygate(method, path, body) { return this._http(method, this._url(this._cfg().paygateUrl, path), body); }
+  static _admin(method, path, body) { return this._http(method, this._url(this._cfg().adminUrl, path), body); }
+  static _customers(method, path, body) { return this._http(method, this._url(this._cfg().customersUrl, path), body); }
+
+  static async ensureTables() {
+    await super.ensureTables();
+    if (!pool) return;
+    await query(`CREATE TABLE IF NOT EXISTS moov_paygate_parties (
+      id SERIAL PRIMARY KEY,
+      party_type TEXT NOT NULL,
+      name TEXT NOT NULL,
+      email TEXT,
+      routing TEXT NOT NULL,
+      account TEXT NOT NULL,
+      account_type TEXT NOT NULL DEFAULT 'checking',
+      holder_name TEXT,
+      customer_id TEXT,
+      account_id TEXT,
+      raw JSONB DEFAULT '{}',
+      created_at TIMESTAMPTZ DEFAULT NOW(),
+      updated_at TIMESTAMPTZ DEFAULT NOW()
+    )`);
+    await query(`CREATE INDEX IF NOT EXISTS idx_moov_parties_lookup ON moov_paygate_parties(party_type, routing, account, account_type, name)`);
+    await query(`CREATE TABLE IF NOT EXISTS moov_paygate_transfers (
+      id SERIAL PRIMARY KEY,
+      transfer_id TEXT UNIQUE,
+      payment_id TEXT,
+      amount_cents BIGINT NOT NULL,
+      currency TEXT NOT NULL DEFAULT 'USD',
+      source_routing TEXT,
+      source_account TEXT,
+      dest_routing TEXT,
+      dest_account TEXT,
+      status TEXT NOT NULL DEFAULT 'originated',
+      raw JSONB DEFAULT '{}',
+      created_at TIMESTAMPTZ DEFAULT NOW(),
+      updated_at TIMESTAMPTZ DEFAULT NOW()
+    )`);
+    await query(`CREATE INDEX IF NOT EXISTS idx_moov_transfers_payment ON moov_paygate_transfers(payment_id)`);
+    await query(`CREATE INDEX IF NOT EXISTS idx_moov_transfers_status ON moov_paygate_transfers(status)`);
+  }
+
+  static _mapStatus(s) {
+    const st = String(s || '').toLowerCase();
+    const completed = ['processed','completed','sent','settled'];
+    const failed = ['failed','canceled','cancelled','returned','reversed'];
+    if (completed.includes(st)) return 'completed';
+    if (failed.includes(st)) return 'failed';
+    return 'originated';
+  }
+
+  static async _findParty({ partyType, routing, account, accountType, name }) {
+    if (!pool) return null;
+    const res = await query(`SELECT * FROM moov_paygate_parties WHERE party_type = $1 AND routing = $2 AND account = $3 AND account_type = $4 AND name = $5 ORDER BY created_at DESC LIMIT 1`, [partyType, routing, account, accountType || 'checking', name]);
+    return res.rows[0] || null;
+  }
+
+  static async _saveParty({ partyType, name, email, routing, account, accountType, holderName, customerId, accountId, raw = {} }) {
+    if (!pool) return;
+    const existing = await this._findParty({ partyType, routing, account, accountType, name });
+    if (existing) {
+      await query(`UPDATE moov_paygate_parties SET customer_id = $1, account_id = $2, raw = $3, holder_name = $4, updated_at = NOW() WHERE id = $5`, [customerId, accountId, safeJson(raw), holderName || name, existing.id]);
+    } else {
+      await query(`INSERT INTO moov_paygate_parties (party_type, name, email, routing, account, account_type, holder_name, customer_id, account_id, raw) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`, [partyType, name, email, routing, account, accountType || 'checking', holderName || name, customerId, accountId, safeJson(raw)]);
+    }
+  }
+
+  static async _saveTransfer({ transferId, paymentId, amountCents, currency, sourceRouting, sourceAccount, destRouting, destAccount, status, raw = {} }) {
+    if (!pool) return;
+    await query(`INSERT INTO moov_paygate_transfers (transfer_id, payment_id, amount_cents, currency, source_routing, source_account, dest_routing, dest_account, status, raw) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) ON CONFLICT (transfer_id) DO UPDATE SET status = EXCLUDED.status, raw = EXCLUDED.raw, updated_at = NOW()`, [transferId, paymentId, amountCents, currency, sourceRouting, sourceAccount, destRouting, destAccount, status, safeJson(raw)]);
+  }
+
+  static async _getOrCreatePartyAccount(payload) {
+    const { partyType, name, email, routingNumber, accountNumber, accountType, holderName, customerType, customerId, accountId } = payload;
+    const cfg = this._cfg();
+    if (customerId && accountId) {
+      await this._saveParty({ partyType, name, email, routing: routingNumber, account: accountNumber, accountType: accountType || 'checking', holderName, customerId, accountId, raw: { provided: true } });
+      return { customerId, accountId };
+    }
+    if (!cfg.live) {
+      const fakeCustomerId = `MOOV-CUST-${Date.now()}-${Math.random().toString(36).slice(2, 8).toUpperCase()}`;
+      const fakeAccountId = `MOOV-ACCT-${Date.now()}-${Math.random().toString(36).slice(2, 8).toUpperCase()}`;
+      await this._saveParty({ partyType, name, email, routing: routingNumber, account: accountNumber, accountType: accountType || 'checking', holderName, customerId: fakeCustomerId, accountId: fakeAccountId, raw: { shadow: true } });
+      return { customerId: fakeCustomerId, accountId: fakeAccountId };
+    }
+    const parts = String(name).split(' ');
+    const firstName = parts[0] || name;
+    const lastName = parts.slice(1).join(' ') || name;
+    const custBody = {
+      firstName,
+      lastName,
+      email: email || `${partyType}@moov.local`,
+      type: customerType || 'individual',
+      phones: [{ number: '555-0100', type: 'Mobile' }],
+    };
+    const custRes = await this._customers('POST', '/customers', custBody);
+    if (!custRes.ok) throw new Error(`Paygate customer create failed: ${custRes.statusCode} ${custRes.body}`);
+    const newCustomerId = custRes.json && (custRes.json.customerID || custRes.json.id);
+    if (!newCustomerId) throw new Error('Paygate customer create did not return customerID');
+    try { await this._customers('PUT', `/customers/${newCustomerId}/status`, { status: 'Verified' }); } catch (e) { console.warn('[moov-paygate] customer status update skipped:', e.message); }
+    const acctBody = {
+      holderName: holderName || name,
+      accountNumber: String(accountNumber),
+      routingNumber: String(routingNumber),
+      type: accountType || 'checking',
+    };
+    const acctRes = await this._customers('POST', `/customers/${newCustomerId}/accounts`, acctBody);
+    if (!acctRes.ok) throw new Error(`Paygate account create failed: ${acctRes.statusCode} ${acctRes.body}`);
+    const newAccountId = acctRes.json && (acctRes.json.accountID || acctRes.json.id);
+    if (!newAccountId) throw new Error('Paygate account create did not return accountID');
+    try { await this._customers('PUT', `/customers/${newCustomerId}/accounts/${newAccountId}/status`, { status: 'Validated' }); } catch (e) { console.warn('[moov-paygate] account status update skipped:', e.message); }
+    await this._saveParty({ partyType, name, email, routing: routingNumber, account: accountNumber, accountType: accountType || 'checking', holderName, customerId: newCustomerId, accountId: newAccountId, raw: custRes.json });
+    return { customerId: newCustomerId, accountId: newAccountId };
+  }
+
+  static async _createTransfer(payload) {
+    const { amount, currency = 'USD', source, destination, description, sameDay = false, paymentId } = payload;
+    const amountCents = toCents(amount);
+    if (!source || !source.routingNumber || !source.accountNumber) throw new Error('source routingNumber and accountNumber required');
+    if (!destination || !destination.routingNumber || !destination.accountNumber) throw new Error('destination routingNumber and accountNumber required');
+    const cfg = this._cfg();
+    const src = await this._getOrCreatePartyAccount({ partyType: 'originator', customerType: 'business', ...source });
+    const dst = await this._getOrCreatePartyAccount({ partyType: 'receiver', customerType: 'individual', ...destination });
+    if (!cfg.live) {
+      const transferId = `MOOV-TX-${Date.now()}-${Math.random().toString(36).slice(2, 8).toUpperCase()}`;
+      await this._saveTransfer({ transferId, paymentId, amountCents, currency, sourceRouting: source.routingNumber, sourceAccount: source.accountNumber, destRouting: destination.routingNumber, destAccount: destination.accountNumber, status: 'originated', raw: { shadow: true, source: src, destination: dst, description, sameDay } });
+      return { transferId, status: 'originated', amount: { currency, value: amountCents }, source: { customerID: src.customerId, accountID: src.accountId }, destination: { customerID: dst.customerId, accountID: dst.accountId }, shadow: true, description, sameDay };
+    }
+    const body = {
+      amount: { currency, value: amountCents },
+      source: { customerID: src.customerId, accountID: src.accountId },
+      destination: { customerID: dst.customerId, accountID: dst.accountId },
+      description: description || 'PTC distribution',
+      sameDay: !!sameDay,
+    };
+    const res = await this._paygate('POST', '/transfers', body);
+    if (!res.ok) throw new Error(`Paygate transfer create failed: ${res.statusCode} ${res.body}`);
+    const transfer = res.json || {};
+    const transferId = transfer.transferID;
+    if (!transferId) throw new Error('Paygate transfer did not return transferID');
+    await this._saveTransfer({ transferId, paymentId, amountCents, currency, sourceRouting: source.routingNumber, sourceAccount: source.accountNumber, destRouting: destination.routingNumber, destAccount: destination.accountNumber, status: this._mapStatus(transfer.status), raw: transfer });
+    return { ...transfer, transferId, status: this._mapStatus(transfer.status) };
+  }
+
+  static async _getTransfer(transferId) {
+    if (!transferId) throw new Error('transferId required');
+    const cfg = this._cfg();
+    let transfer = null;
+    if (cfg.live) {
+      const res = await this._paygate('GET', `/transfers/${transferId}`);
+      if (!res.ok) throw new Error(`Paygate transfer get failed: ${res.statusCode} ${res.body}`);
+      transfer = res.json || {};
+      if (pool) {
+        await query(`UPDATE moov_paygate_transfers SET status = $1, raw = $2, updated_at = NOW() WHERE transfer_id = $3`, [this._mapStatus(transfer.status), safeJson(transfer), transferId]);
+      }
+    } else {
+      const res = await query(`SELECT * FROM moov_paygate_transfers WHERE transfer_id = $1`, [transferId]);
+      transfer = res.rows[0] || { transferId, status: 'originated' };
+    }
+    return { transferId, status: this._mapStatus(transfer.status || transfer.status), raw: transfer };
+  }
+
+  static async _cancelTransfer(transferId) {
+    if (!transferId) throw new Error('transferId required');
+    const cfg = this._cfg();
+    if (cfg.live) {
+      const res = await this._paygate('DELETE', `/transfers/${transferId}`);
+      if (!res.ok && res.statusCode !== 404) throw new Error(`Paygate transfer cancel failed: ${res.statusCode} ${res.body}`);
+    }
+    if (pool) await query(`UPDATE moov_paygate_transfers SET status = 'canceled', updated_at = NOW() WHERE transfer_id = $1 RETURNING *`, [transferId]);
+    return { transferId, status: 'canceled' };
+  }
+
+  static async _triggerCutoff() {
+    const cfg = this._cfg();
+    if (!cfg.live) return { triggered: false, shadow: true, message: 'Cutoff skipped in shadow mode' };
+    const res = await this._admin('PUT', '/trigger-cutoff');
+    if (!res.ok) throw new Error(`Paygate cutoff trigger failed: ${res.statusCode} ${res.body}`);
+    return { triggered: true, statusCode: res.statusCode, response: res.json };
+  }
+
+  static async _webhook(payload) {
+    const { transferId, transferID, status, transferStatus, event } = payload;
+    const txId = transferId || transferID;
+    if (!txId) return { note: 'no transferId in webhook' };
+    const newStatus = this._mapStatus(status || transferStatus || event);
+    if (pool) await query(`UPDATE moov_paygate_transfers SET status = $1, raw = $2, updated_at = NOW() WHERE transfer_id = $3`, [newStatus, safeJson(payload), txId]);
+    return { transferId: txId, status: newStatus };
+  }
+
+  static async status() {
+    const cfg = this._cfg();
+    let reachable = false;
+    let message = 'shadow/simulated';
+    if (cfg.live) {
+      try {
+        const r = await this._paygate('GET', '/ping');
+        reachable = r.ok && r.statusCode === 200;
+        message = reachable ? 'paygate reachable' : `paygate status ${r.statusCode}: ${r.body}`;
+      } catch (e) { message = e.message; }
+    }
+    return {
+      engine: this.engineName,
+      healthy: cfg.live ? reachable : true,
+      mode: cfg.live ? 'live' : 'shadow',
+      paygateUrl: cfg.paygateUrl,
+      customersUrl: cfg.customersUrl,
+      adminUrl: cfg.adminUrl,
+      organization: cfg.organization,
+      live: cfg.live,
+      reachable,
+      message,
+      timestamp: new Date().toISOString(),
+    };
+  }
+
+  static async health() { return this.status(); }
+
+  static async _sendPayment(payload) {
+    const { amount, source, destination, description, sameDay, triggerCutoff, paymentId, currency = 'USD' } = payload;
+    const cfg = this._cfg();
+    const created = await this._createTransfer({ amount, currency, source, destination, description, sameDay, paymentId });
+    const cutoffResult = (triggerCutoff !== false && cfg.live)
+      ? await this._triggerCutoff().catch(e => ({ triggered: false, error: e.message }))
+      : { triggered: false, shadow: !cfg.live };
+    return { ...created, cutoff: cutoffResult };
+  }
+
+  static async _process(action, payload = {}) {
+    switch (action) {
+      case 'status':
+      case 'health':
+        return await this.status();
+      case 'createCustomer':
+        return await this._getOrCreatePartyAccount({ partyType: 'originator', ...payload });
+      case 'createAccount':
+        return await this._getOrCreatePartyAccount({ partyType: 'receiver', ...payload });
+      case 'createTransfer':
+        return await this._createTransfer(payload);
+      case 'getTransfer':
+        return await this._getTransfer(payload.transferId || payload.transferID || payload.id);
+      case 'cancelTransfer':
+        return await this._cancelTransfer(payload.transferId || payload.transferID || payload.id);
+      case 'triggerCutoff':
+      case 'trigger-cutoff':
+        return await this._triggerCutoff();
+      case 'webhook':
+      case 'handleWebhook':
+        return await this._webhook(payload);
+      case 'sendPayment':
+        return await this._sendPayment(payload);
+      case 'noop':
+      default:
+        return await this.status();
+    }
+  }
+}
+
 const ENGINES = {
   bank: BankEngine,
   treasury: TreasuryEngine,
@@ -5127,6 +5439,7 @@ const ENGINES = {
   'ptc-bank': PtcBankEngine,
   'ptc-treasury': PtcTreasuryEngine,
   'settlement-endpoint': SettlementEndpointEngine,
+  'moov-paygate': MoovPaygateEngine,
 };
 
 async function ensureAll() {
@@ -5164,6 +5477,7 @@ module.exports = {
   MelioEngine,
   PtcBankEngine,
   PtcTreasuryEngine,
+  MoovPaygateEngine,
   SettlementEndpointEngine,
   engines: ENGINES,
   ensureAll,

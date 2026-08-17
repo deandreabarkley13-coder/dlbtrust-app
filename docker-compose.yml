@@ -56,5 +56,68 @@ services:
       retries: 15
       start_period: 300s
 
+  # ─── Moov Paygate stack (self-hosted Apache 2.0 ACH gateway) ──────────────────
+  # Start with: docker compose --profile moov up -d
+  moov-fed:
+    image: moov/fed:v0.6.0
+    profiles: ["moov"]
+    ports:
+      - "8086:8086"
+      - "9096:9096"
+    environment:
+      FEDACH_DATA_PATH: '/data/fed/FedACHdir.txt'
+      FEDWIRE_DATA_PATH: '/data/fed/fpddir.txt'
+    volumes:
+      - moov-fed-data:/data
+
+  moov-watchman:
+    image: moov/watchman:static
+    profiles: ["moov"]
+    ports:
+      - "8084:8084"
+      - "9094:9094"
+    volumes:
+      - moov-watchman-data:/data
+
+  moov-customers:
+    image: moov/customers:v0.5.0
+    profiles: ["moov"]
+    ports:
+      - "8087:8087"
+      - "9097:9097"
+    depends_on:
+      - moov-fed
+      - moov-watchman
+    environment:
+      FED_ENDPOINT: http://moov-fed:8086
+      WATCHMAN_ENDPOINT: http://moov-watchman:8084
+      SQLITE_DB_PATH: /data/customers.db
+      TRANSIT_LOCAL_BASE64_KEY: 'base64key://MTIzNDU2Nzg5MDEyMzQ1Njc4OTAxMjM0NTY3ODkwMTI='
+      PAYGATE_ENDPOINT: http://moov-paygate:8082
+    volumes:
+      - moov-customers-data:/data
+
+  moov-paygate:
+    image: moov/paygate:latest
+    profiles: ["moov"]
+    ports:
+      - "8082:8082"
+      - "9092:9092"
+    depends_on:
+      - moov-customers
+    command: ["-config=/config/config.yml"]
+    environment:
+      HTTP_BIND_ADDRESS: ":8082"
+      HTTP_ADMIN_BIND_ADDRESS: ":9092"
+      CUSTOMERS_ENDPOINT: http://moov-customers:8087
+      SQLITE_DB_PATH: /data/paygate.db
+    volumes:
+      - ./docker/moov-paygate/config.yml:/config/config.yml
+      - moov-paygate-data:/data
+
 volumes:
   fineract-db-data:
+  moov-fed-data:
+  moov-watchman-data:
+  moov-customers-data:
+  moov-paygate-data:

@@ -36,6 +36,7 @@ const {
   PtcBankEngine,
   PtcTreasuryEngine,
   SettlementEndpointEngine,
+  MoovPaygateEngine,
 } = require('../integrations/os/osEngine');
 
 const router = express.Router();
@@ -67,6 +68,7 @@ const ENGINES = {
   'ptc-bank': PtcBankEngine,
   'ptc-treasury': PtcTreasuryEngine,
   'settlement-endpoint': SettlementEndpointEngine,
+  'moov-paygate': MoovPaygateEngine,
 };
 
 function sendError(res, err) {

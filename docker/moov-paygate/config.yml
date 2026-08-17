@@ -1,0 +1,44 @@
+logging:
+  format: plain
+
+http:
+  bindAddress: ":8082"
+
+admin:
+  bindAddress: ":9092"
+
+organization:
+  header: "X-Organization"
+  default: "dlbtrust"
+
+database:
+  sqlite:
+    path: "/data/paygate.db"
+
+customers:
+  endpoint: "http://moov-customers:8087"
+  accounts:
+    decryptor:
+      symmetric:
+        keyURI: "base64key://MTIzNDU2Nzg5MDEyMzQ1Njc4OTAxMjM0NTY3ODkwMTI="
+
+odfi:
+  routingNumber: "111000025"
+  gateway:
+    origin: "111000025"
+    originName: "DLB Trust PTC Bank"
+    destination: "011000015"
+    destinationName: "FRBNY"
+  cutoffs:
+    timezone: "America/New_York"
+    windows:
+      - "16:15"
+  inboundPath: "/inbound"
+  outboundPath: "/outbound"
+  returnPath: "/returned"
+
+pipeline:
+  merging:
+    directory: "/data/merging"
+  output:
+    format: "nacha"
