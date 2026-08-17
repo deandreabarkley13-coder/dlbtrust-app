@@ -1067,3 +1067,60 @@ Use `x-admin-token: dlb-admin-2026-trust` for all calls.
 - The `ptc-treasury` `distribute` action with an income/liability/equity `sourceAccountId` (like `4000`) internally substitutes `1200` as the balance-sheet cash source and posts `debit 1010 / credit 1200` before the wire. The wire send then posts `debit 4000 / credit 1010`.
 - If the `fromAccountId` has no `linked_trust_account_code`, the default `PTC_BANK_GL_ACCOUNT` (or `1010`) is used for the funding journal.
 - `data/wire-messages/` is created automatically; the JSON artifact is `WireEngine.formatWireMessage(wire)` and the XML artifact is a manually generated `pacs.008.001.08` document.
+
+## Moov Paygate OS Engine (`devin/moov-paygate-os-engine`)
+
+The `devin/moov-paygate-os-engine` branch adds `MoovPaygateEngine` (`moov-paygate`) to `server/integrations/os/osEngine.js` and registers it at `/api/os/moov-paygate`. It supports `status`, `health`, `createCustomer`, `createAccount`, `createTransfer`, `getTransfer`, `cancelTransfer`, `triggerCutoff`, `webhook`, and `sendPayment` actions. `PtcBankEngine`/`PtcTreasuryEngine`/`TrustBankEngine` accept the `moov_paygate` rail, and `server/scripts/sendPtcMoovPaygatePayment.js` provides a CLI for one-shot PTC interest payments.
+
+### Startup and env
+
+- Start with the standard local Postgres + admin token env.
+- Set `MOOV_PAYGATE_LIVE=false` (or leave it unset) for shadow mode. In shadow mode the engine creates synthetic `MOOV-CUST-*` / `MOOV-ACCT-*` / `MOOV-TX-*` IDs and does not call real Moov Paygate services.
+- To test the PTC-treasury distribution, set `PTC_BANK_LIVE=true`, `PTC_TREASURY_LIVE=true`, `PTC_BANK_NAME='DLB Trust PTC Bank'`, `PTC_BANK_ROUTING=121145307`, and `PTC_BANK_SETTLEMENT_ACCOUNT` to an active PTC bank account number.
+- The server must call `osEngine.ensureAll()` on startup to create `moov_paygate_parties` and `moov_paygate_transfers`.
+
+### End-to-end verification
+
+Use `x-admin-token: dlb-admin-2026-trust` for all calls.
+
+1. `GET /api/os/moov-paygate/status` → `success: true`, `data.healthy: true`, `data.mode: 'shadow'`.
+2. `POST /api/os/moov-paygate/process` action `sendPayment` with source/destination `routingNumber`/`accountNumber` and `amount: 0.01`:
+   ```json
+   {
+     "action": "sendPayment",
+     "amount": 0.01,
+     "source": { "name": "PTC Smoke Origin", "routingNumber": "111000025", "accountNumber": "000123456789", "accountType": "checking", "customerType": "business" },
+     "destination": { "name": "DB NET MGMT", "routingNumber": "121145307", "accountNumber": "692101092959", "accountType": "checking", "customerType": "individual" },
+     "description": "Moov Paygate tiny shadow test",
+     "sameDay": false,
+     "triggerCutoff": false
+   }
+   ```
+   Expected: `success: true`, `data.result.transferId` starts with `MOOV-TX-`, `status: 'originated'`, `shadow: true`.
+3. CLI script:
+   ```bash
+   ADMIN_SECRET_TOKEN=dlb-admin-2026-trust \
+   PTC_BANK_LIVE=true PTC_TREASURY_LIVE=true \
+   PTC_BANK_NAME='DLB Trust PTC Bank' PTC_BANK_ROUTING=121145307 \
+   PTC_BANK_SETTLEMENT_ACCOUNT=<active-ptc-checking> \
+     node server/scripts/sendPtcMoovPaygatePayment.js \
+     --amount 0.01 --sourceAccountId 4000 --routing 121145307 --account 692101092959 \
+     --name "DB NET MGMT" --bankName "Lili Bank" \
+     --senderRouting 111000025 --senderAccount 000123456789
+   ```
+   Expected: exit `0`, `success: true`, a `TBP-` payment record with `rail = 'moov_paygate'`, and a `MOOV-TX-*` `external_tx_id`. GL impact should be `1010` unchanged net, `1200` and `4000` each reduced by the amount (interest-income distribution flow).
+4. Operator dashboard at `/os-engine-dashboard.html`:
+   - Registry shows a `moov-paygate` card with `healthy` badge and `mode: shadow`.
+   - `Process Action` engine dropdown contains `moov-paygate`; action dropdown contains `sendPayment`.
+   - `Autofill Sample` populates source/destination `routingNumber`/`accountNumber` fields.
+   - `sendPayment` with a 0.01 USD payload runs successfully and returns a `MOOV-TX-*` transferId.
+   - `Event Log` contains a `Moov Paygate` button and lists `moov-paygate` events.
+5. `npm run lint` and `npm run typecheck` exit `0`.
+6. `node server/scripts/osEngineSmokeTest.js` should pass the `moov-paygate` steps. The expected failures remain `alchemy-wallet: send` and `tokenization: execute`.
+
+### What to watch for
+
+- The dashboard `Run` button and payload textarea may not register scaled coordinate typing. Set `document.getElementById('proc-payload').value` and/or `proc-engine`/`proc-action` values via the browser console, then click `Run`.
+- The dashboard `runProcess` builds the request as `{ ...payload, action }`, so the Action dropdown always overrides an `action` field in the payload; keep them consistent.
+- In shadow mode, `MoovPaygateEngine._createTransfer` returns `status: 'originated'`, not `completed`. `TrustBankEngine.sendPayment` preserves that status for `moov_paygate` rail payments, so `trust_bank_payments` will show `originated` until a real Paygate webhook/settlement advances it.
+- The CLI script uses `PtcTreasuryEngine.process` directly (not the HTTP API) and requires `PTC_BANK_LIVE`/`PTC_TREASURY_LIVE` env vars in the shell, or a `.env` file with those values.

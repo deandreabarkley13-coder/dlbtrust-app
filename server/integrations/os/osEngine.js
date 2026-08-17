@@ -5127,7 +5127,34 @@ class MoovPaygateEngine extends BaseOSEngine {
       apiKey: process.env.MOOV_PAYGATE_API_KEY || '',
       originatorName: process.env.MOOV_PAYGATE_ORIGINATOR_NAME || process.env.PTC_BANK_NAME || process.env.TRUST_BANK_NAME || 'DLB Trust PTC Bank',
       odfiRouting: process.env.MOOV_PAYGATE_ODFI_ROUTING || process.env.PTC_BANK_ROUTING || process.env.TRUST_BANK_ROUTING || '111000025',
+      allowHttp: process.env.MOOV_PAYGATE_ALLOW_HTTP === 'true',
+      allowedHosts: (process.env.MOOV_PAYGATE_ALLOWED_HOSTS || '').split(',').map((h) => h.trim()).filter(Boolean),
+      webhookSecret: process.env.MOOV_PAYGATE_WEBHOOK_SECRET || '',
     };
+  }
+
+  static _validateUrl(urlString) {
+    const cfg = this._cfg();
+    let parsed;
+    try {
+      parsed = new URL(urlString);
+    } catch {
+      throw new Error(`Invalid Moov Paygate URL: ${urlString}`);
+    }
+    if (cfg.live && parsed.protocol === 'http:' && !cfg.allowHttp) {
+      throw new Error(`Moov Paygate live mode requires HTTPS unless MOOV_PAYGATE_ALLOW_HTTP=true: ${urlString}`);
+    }
+    if (cfg.allowedHosts && cfg.allowedHosts.length > 0) {
+      const host = parsed.hostname.toLowerCase();
+      const allowed = cfg.allowedHosts.some((h) => {
+        const pattern = h.toLowerCase();
+        if (pattern === host) return true;
+        if (pattern.startsWith('*.')) return host.endsWith(pattern.slice(2)) || host === pattern.slice(2);
+        return false;
+      });
+      if (!allowed) throw new Error(`Moov Paygate URL host not allowed: ${host}`);
+    }
+    return parsed;
   }
 
   static _headers() {
@@ -5142,6 +5169,7 @@ class MoovPaygateEngine extends BaseOSEngine {
   }
 
   static async _http(method, url, body, timeoutMs = 30000) {
+    this._validateUrl(url);
     const options = { method, headers: this._headers() };
     if (body !== undefined) options.body = JSON.stringify(body);
     if (timeoutMs) options.signal = AbortSignal.timeout(timeoutMs);
@@ -5213,6 +5241,12 @@ class MoovPaygateEngine extends BaseOSEngine {
     return res.rows[0] || null;
   }
 
+  static async _findPartyByAccount({ partyType, routing, account, accountType }) {
+    if (!pool) return null;
+    const res = await query(`SELECT * FROM moov_paygate_parties WHERE party_type = $1 AND routing = $2 AND account = $3 AND account_type = $4 ORDER BY created_at DESC LIMIT 1`, [partyType, routing, account, accountType || 'checking']);
+    return res.rows[0] || null;
+  }
+
   static async _saveParty({ partyType, name, email, routing, account, accountType, holderName, customerId, accountId, raw = {} }) {
     if (!pool) return;
     const existing = await this._findParty({ partyType, routing, account, accountType, name });
@@ -5231,6 +5265,13 @@ class MoovPaygateEngine extends BaseOSEngine {
   static async _getOrCreatePartyAccount(payload) {
     const { partyType, name, email, routingNumber, accountNumber, accountType, holderName, customerType, customerId, accountId } = payload;
     const cfg = this._cfg();
+    // Reuse an existing gateway party record when the routing/account matches.
+    const existing = await this._findParty({ partyType, routing: routingNumber, account: accountNumber, accountType: accountType || 'checking', name })
+      || await this._findPartyByAccount({ partyType, routing: routingNumber, account: accountNumber, accountType: accountType || 'checking' });
+    if (existing && existing.customer_id && existing.account_id) {
+      await this._saveParty({ partyType, name: name || existing.name, email: email || existing.email, routing: routingNumber, account: accountNumber, accountType: accountType || 'checking', holderName: holderName || existing.holder_name, customerId: existing.customer_id, accountId: existing.account_id, raw: { reused: true, previous: existing.raw } });
+      return { customerId: existing.customer_id, accountId: existing.account_id };
+    }
     if (customerId && accountId) {
       await this._saveParty({ partyType, name, email, routing: routingNumber, account: accountNumber, accountType: accountType || 'checking', holderName, customerId, accountId, raw: { provided: true } });
       return { customerId, accountId };
@@ -5338,10 +5379,23 @@ class MoovPaygateEngine extends BaseOSEngine {
   }
 
   static async _webhook(payload) {
-    const { transferId, transferID, status, transferStatus, event } = payload;
+    const cfg = this._cfg();
+    const { transferId, transferID, status, transferStatus, event, signature, headers } = payload;
     const txId = transferId || transferID;
     if (!txId) return { note: 'no transferId in webhook' };
-    const newStatus = this._mapStatus(status || transferStatus || event);
+    const rawStatus = status || transferStatus || event;
+    if (cfg.webhookSecret) {
+      const sig = signature || (headers && (headers['x-moov-signature'] || headers['X-Moov-Signature']));
+      if (!sig) throw new Error('Moov Paygate webhook signature required');
+      const message = `${txId}:${String(rawStatus)}`;
+      const expected = crypto.createHmac('sha256', cfg.webhookSecret).update(message).digest('hex');
+      const sigBuf = Buffer.from(String(sig));
+      const expBuf = Buffer.from(expected);
+      if (sigBuf.length !== expBuf.length || !crypto.timingSafeEqual(sigBuf, expBuf)) {
+        throw new Error('Moov Paygate webhook signature mismatch');
+      }
+    }
+    const newStatus = this._mapStatus(rawStatus);
     if (pool) await query(`UPDATE moov_paygate_transfers SET status = $1, raw = $2, updated_at = NOW() WHERE transfer_id = $3`, [newStatus, safeJson(payload), txId]);
     return { transferId: txId, status: newStatus };
   }

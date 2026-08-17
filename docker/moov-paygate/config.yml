@@ -20,7 +20,9 @@ customers:
   accounts:
     decryptor:
       symmetric:
-        keyURI: "base64key://MTIzNDU2Nzg5MDEyMzQ1Njc4OTAxMjM0NTY3ODkwMTI="
+        # The symmetric key is injected by docker-compose from MOOV_PAYGATE_SYMMETRIC_KEY.
+        # Never commit a real key here; generate one with scripts/generate-moov-symmetric-key.sh
+        keyURI: "base64key://__MOOV_PAYGATE_SYMMETRIC_KEY__"
 
 odfi:
   routingNumber: "111000025"

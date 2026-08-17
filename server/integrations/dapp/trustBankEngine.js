@@ -445,56 +445,86 @@ class TrustBankEngine {
         const sourceRouting = meta.senderRouting || process.env.PTC_BANK_ROUTING || process.env.TRUST_BANK_ROUTING;
         const sourceAccount = meta.senderAccount || process.env.PTC_BANK_SETTLEMENT_ACCOUNT || process.env.TRUST_BANK_ACCOUNT;
         if (!sourceRouting || !sourceAccount) throw new Error('senderRouting and senderAccount required for moov_paygate (set metadata or PTC_BANK_ROUTING/PTC_BANK_SETTLEMENT_ACCOUNT)');
-        const moovRes = await MoovPaygateEngine.process({
-          action: 'sendPayment',
-          amount: payment.amount_cents / 100,
-          currency: payment.currency || 'USD',
-          source: {
-            name: process.env.PTC_BANK_NAME || process.env.TRUST_BANK_NAME || meta.senderName || 'DLB Trust PTC Bank',
-            email: meta.senderEmail || process.env.PTC_BANK_EMAIL,
-            routingNumber: sourceRouting,
-            accountNumber: sourceAccount,
-            accountType: meta.senderAccountType || 'checking',
-            holderName: meta.senderHolderName || process.env.PTC_BANK_NAME || process.env.TRUST_BANK_NAME || 'DLB Trust PTC Bank',
-            customerType: 'business',
-          },
-          destination: {
-            name: payment.external_account_name || 'External Beneficiary',
-            email: meta.recipientEmail || payment.recipient_email,
-            routingNumber: payment.external_routing,
-            accountNumber: payment.external_account,
-            accountType: meta.destinationAccountType || 'checking',
-            holderName: payment.external_account_name || 'External Beneficiary',
-            customerType: 'individual',
-          },
-          description: payment.description || `Trust bank payment ${paymentId}`,
-          sameDay: meta.sameDay === true || meta.sameDay === 'true',
-          triggerCutoff: meta.triggerCutoff !== false && meta.triggerCutoff !== 'false',
-          paymentId,
-        });
+
+        // Post interest-income GL before sending to the gateway so the books reflect the liability.
+        const isPtcInterest = meta.interestIncomeSource === '4000' || meta.paymentType === 'interest_payment' || (payment.description && /interest income/i.test(payment.description));
+        let glEntryId = null;
+        let glDebitCode = null;
+        let glCreditCode = null;
+        if (isPtcInterest && TrustAccountingEngine) {
+          glDebitCode = meta.glDebitAccountCode || meta.interestIncomeSource || '4000';
+          glCreditCode = meta.glCreditAccountCode || from.linked_trust_account_code || process.env.PTC_BANK_GL_ACCOUNT || '1010';
+          try {
+            const glRes = await TrustAccountingEngine.postJournalEntry({
+              entryDate: new Date(),
+              description: payment.description || `Moov Paygate distribution ${paymentId}`,
+              referenceType: 'ptc-bank-payment',
+              referenceId: paymentId,
+              postedBy: payment.initiated_by || 'moov-paygate',
+              postToFineract: false,
+              lines: [
+                { accountCode: glDebitCode, debitAmount: payment.amount_cents / 100, creditAmount: 0, memo: `Moov Paygate interest distribution ${paymentId}` },
+                { accountCode: glCreditCode, debitAmount: 0, creditAmount: payment.amount_cents / 100, memo: `Settle PTC bank cash for ${paymentId}` },
+              ],
+            });
+            glEntryId = glRes && glRes.entryId;
+          } catch (glErr) {
+            throw new Error(`Moov Paygate GL entry failed: ${glErr.message}`);
+          }
+        }
+
+        let moovRes;
+        try {
+          moovRes = await MoovPaygateEngine.process({
+            action: 'sendPayment',
+            amount: payment.amount_cents / 100,
+            currency: payment.currency || 'USD',
+            source: {
+              name: meta.senderName || process.env.PTC_BANK_NAME || process.env.TRUST_BANK_NAME || 'DLB Trust PTC Bank',
+              email: meta.senderEmail || process.env.PTC_BANK_EMAIL,
+              routingNumber: sourceRouting,
+              accountNumber: sourceAccount,
+              accountType: meta.senderAccountType || 'checking',
+              holderName: meta.senderHolderName || process.env.PTC_BANK_NAME || process.env.TRUST_BANK_NAME || 'DLB Trust PTC Bank',
+              customerType: 'business',
+            },
+            destination: {
+              name: payment.external_account_name || 'External Beneficiary',
+              email: meta.recipientEmail || payment.recipient_email,
+              routingNumber: payment.external_routing,
+              accountNumber: payment.external_account,
+              accountType: meta.destinationAccountType || 'checking',
+              holderName: payment.external_account_name || 'External Beneficiary',
+              customerType: 'individual',
+            },
+            description: payment.description || `Trust bank payment ${paymentId}`,
+            sameDay: meta.sameDay === true || meta.sameDay === 'true',
+            triggerCutoff: meta.triggerCutoff !== false && meta.triggerCutoff !== 'false',
+            paymentId,
+          });
+        } catch (moovErr) {
+          if (glEntryId && TrustAccountingEngine && glDebitCode && glCreditCode) {
+            try {
+              await TrustAccountingEngine.postJournalEntry({
+                entryDate: new Date(),
+                description: `Reversal for failed Moov Paygate distribution ${paymentId}`,
+                referenceType: 'ptc-bank-payment',
+                referenceId: paymentId,
+                postedBy: payment.initiated_by || 'moov-paygate',
+                postToFineract: false,
+                lines: [
+                  { accountCode: glCreditCode, debitAmount: payment.amount_cents / 100, creditAmount: 0, memo: `Reverse credit for failed ${paymentId}` },
+                  { accountCode: glDebitCode, debitAmount: 0, creditAmount: payment.amount_cents / 100, memo: `Reverse debit for failed ${paymentId}` },
+                ],
+              });
+            } catch (revErr) { console.error('[trust-bank] failed to reverse GL for failed moov payment:', revErr.message); }
+          }
+          throw moovErr;
+        }
         const moovResult = moovRes && moovRes.success && moovRes.result ? moovRes.result : moovRes;
         externalTxId = moovResult && (moovResult.transferId || moovResult.transferID);
         rawMessage = JSON.stringify(moovResult);
         status = MoovPaygateEngine._mapStatus(moovResult && moovResult.status);
-
-        // Post GL impact for interest-income distributions: debit interest income, credit PTC bank cash.
-        const isPtcInterest = meta.interestIncomeSource === '4000' || meta.paymentType === 'interest_payment' || (payment.description && /interest income/i.test(payment.description));
-        if (isPtcInterest && TrustAccountingEngine) {
-          const debitCode = meta.glDebitAccountCode || meta.interestIncomeSource || '4000';
-          const creditCode = meta.glCreditAccountCode || from.linked_trust_account_code || process.env.PTC_BANK_GL_ACCOUNT || '1010';
-          await TrustAccountingEngine.postJournalEntry({
-            entryDate: new Date(),
-            description: payment.description || `Moov Paygate distribution ${paymentId}`,
-            referenceType: 'ptc-bank-payment',
-            referenceId: paymentId,
-            postedBy: payment.initiated_by || 'moov-paygate',
-            postToFineract: false,
-            lines: [
-              { accountCode: debitCode, debitAmount: payment.amount_cents / 100, creditAmount: 0, memo: `Moov Paygate interest distribution ${paymentId}` },
-              { accountCode: creditCode, debitAmount: 0, creditAmount: payment.amount_cents / 100, memo: `Settle PTC bank cash for ${paymentId}` },
-            ],
-          });
-        }
       } else if (payment.rail === 'book_transfer') {
         // Internal book transfer to an external account (manual/clearing)
         status = 'originated';

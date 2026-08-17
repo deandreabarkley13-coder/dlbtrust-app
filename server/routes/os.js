@@ -145,4 +145,14 @@ router.post('/:engine/process', adminAuth, writeRateLimiter(), getEngine, async 
   } catch (err) { sendError(res, err); }
 });
 
+// Public Moov Paygate webhook endpoint (HMAC verified by the engine).
+router.post('/moov-paygate/webhook', writeRateLimiter(), async (req, res) => {
+  try {
+    const payload = req.body || {};
+    const signature = req.get('x-moov-signature') || payload.signature;
+    const data = await MoovPaygateEngine.process({ ...payload, action: 'webhook', signature });
+    res.json({ success: true, data });
+  } catch (err) { sendError(res, err); }
+});
+
 module.exports = router;

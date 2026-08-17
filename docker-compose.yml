@@ -92,7 +92,7 @@ services:
       FED_ENDPOINT: http://moov-fed:8086
       WATCHMAN_ENDPOINT: http://moov-watchman:8084
       SQLITE_DB_PATH: /data/customers.db
-      TRANSIT_LOCAL_BASE64_KEY: 'base64key://MTIzNDU2Nzg5MDEyMzQ1Njc4OTAxMjM0NTY3ODkwMTI='
+      TRANSIT_LOCAL_BASE64_KEY: ${MOOV_PAYGATE_SYMMETRIC_KEY}
       PAYGATE_ENDPOINT: http://moov-paygate:8082
     volumes:
       - moov-customers-data:/data
@@ -105,7 +105,13 @@ services:
       - "9092:9092"
     depends_on:
       - moov-customers
-    command: ["-config=/config/config.yml"]
+    entrypoint: ["/bin/sh", "-c"]
+    command: |
+      set -e
+      KEY=$${MOOV_PAYGATE_SYMMETRIC_KEY}
+      if [ -z "$$KEY" ]; then echo "Missing MOOV_PAYGATE_SYMMETRIC_KEY" >&2; exit 1; fi
+      sed -e "s|__MOOV_PAYGATE_SYMMETRIC_KEY__|$${KEY}|g" /config/config.yml > /data/paygate.yml
+      exec /bin/paygate -config /data/paygate.yml
     environment:
       HTTP_BIND_ADDRESS: ":8082"
       HTTP_ADMIN_BIND_ADDRESS: ":9092"
