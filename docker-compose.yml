@@ -121,9 +121,41 @@ services:
       - ./docker/moov-paygate/config.yml:/config/config.yml
       - moov-paygate-data:/data
 
+  # ─── Apache PTC API — self-hosted PHP payment endpoints (push-to-card / wire) ──
+  apache-ptc:
+    build:
+      context: ./apache-ptc
+      dockerfile: Dockerfile
+    container_name: apache-ptc
+    restart: unless-stopped
+    environment:
+      APACHE_HTTP_API_KEY: ${APACHE_HTTP_API_KEY:-}
+      APACHE_WIRE_API_KEY: ${APACHE_WIRE_API_KEY:-}
+    expose:
+      - "80"
+
+  # ─── Apache APISIX — API gateway in front of the PTC API and OS engine routes ─
+  apisix:
+    image: apache/apisix:3.11.0-debian
+    container_name: apisix
+    restart: unless-stopped
+    depends_on:
+      - apache-ptc
+    environment:
+      APISIX_STAND_ALONE: "true"
+    ports:
+      - "${APISIX_HTTP_PORT:-9080}:9080"
+      - "${APISIX_ADMIN_PORT:-9180}:9180"
+    volumes:
+      - ./docker/apisix/apisix.yaml:/usr/local/apisix/conf/apisix.yaml:ro
+      - apisix-logs:/usr/local/apisix/logs
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
 volumes:
   fineract-db-data:
   moov-fed-data:
   moov-watchman-data:
   moov-customers-data:
   moov-paygate-data:
+  apisix-logs:

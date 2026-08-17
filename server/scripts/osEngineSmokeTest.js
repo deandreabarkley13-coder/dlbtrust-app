@@ -19,7 +19,7 @@ const BASE_URL = (process.env.OS_TEST_BASE_URL || 'http://localhost:3002').repla
 const TOKEN = process.env.ADMIN_SECRET_TOKEN || 'dlb-admin-2026-trust';
 const VERBOSE = process.env.OS_TEST_VERBOSE !== 'false';
 
-const engines = ['bank', 'treasury', 'payment', 'clearing', 'settlement', 'compliance', 'security', 'rest-api', 'bookkeeping', 'cash', 'asset-acquisition', 'bank-aggregator', 'funding', 'smart-router', 'back-office', 'wallet-onramp', 'alchemy-wallet', 'tokenization', 'conduit', 'issuer-bridge', 'melio', 'ptc-bank', 'ptc-treasury', 'settlement-endpoint', 'moov-paygate'];
+const engines = ['bank', 'treasury', 'payment', 'clearing', 'settlement', 'compliance', 'security', 'rest-api', 'bookkeeping', 'cash', 'asset-acquisition', 'bank-aggregator', 'funding', 'smart-router', 'back-office', 'wallet-onramp', 'alchemy-wallet', 'tokenization', 'conduit', 'issuer-bridge', 'melio', 'ptc-bank', 'ptc-treasury', 'settlement-endpoint', 'moov-paygate', 'apisix'];
 
 const results = [];
 let failed = false;
@@ -171,6 +171,8 @@ async function main() {
     { engine: 'settlement-endpoint', action: 'list', payload: { status: 'active' } },
     { engine: 'moov-paygate', action: 'status', payload: {} },
     { engine: 'moov-paygate', action: 'sendPayment', payload: { amount: 0.01, source: { name: 'PTC Smoke Origin', routingNumber: '111000025', accountNumber: '000123456789', accountType: 'checking' }, destination: { name: 'PTC Smoke Payee', routingNumber: '111000025', accountNumber: '000987654321', accountType: 'checking' }, description: 'Smoke moov payment', sameDay: false, triggerCutoff: false } },
+    { engine: 'apisix', action: 'status', payload: {} },
+    { engine: 'apisix', action: 'sendPayment', payload: { amount: 0.01, source: { name: 'PTC Smoke Origin', routingNumber: '111000025', accountNumber: '000123456789', accountType: 'checking' }, destination: { name: 'PTC Smoke Payee', routingNumber: '111000025', accountNumber: '000987654321', accountType: 'checking' }, description: 'Smoke APISIX payment', type: 'wire' } },
   ];
 
   const bankEventIds = [];

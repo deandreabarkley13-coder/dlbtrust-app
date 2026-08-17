@@ -4042,6 +4042,7 @@ class PtcBankEngine extends BaseOSEngine {
       ExternalEndpointEngine: tryRequire('../dapp/externalEndpointEngine')?.ExternalEndpointEngine,
       LiliBankEngine: tryRequire('../payments/liliBankEngine')?.LiliBankEngine,
       MoovPaygateEngine,
+      ApacheApisixEngine,
     };
   }
 
@@ -4079,6 +4080,7 @@ class PtcBankEngine extends BaseOSEngine {
         bookTransfer: true,
         lili: !!this._deps().LiliBankEngine,
         'moov-paygate': !!this._deps().MoovPaygateEngine,
+        apisix: !!this._deps().ApacheApisixEngine,
       },
       timestamp: new Date().toISOString(),
     };
@@ -4259,6 +4261,7 @@ class PtcTreasuryEngine extends BaseOSEngine {
       DistributionRequest: tryRequire('../dapp/distributionRequestEngine')?.DistributionRequestEngine,
       LiliBankEngine: tryRequire('../payments/liliBankEngine')?.LiliBankEngine,
       MoovPaygateEngine,
+      ApacheApisixEngine,
     };
   }
 
@@ -4287,6 +4290,7 @@ class PtcTreasuryEngine extends BaseOSEngine {
         'wallet-onramp': !!WalletOnRampEngine,
         'smart-router': !!SmartRouterEngine,
         'moov-paygate': !!this._deps().MoovPaygateEngine,
+        'apisix': !!this._deps().ApacheApisixEngine,
       },
       timestamp: new Date().toISOString(),
     };
@@ -4349,7 +4353,8 @@ class PtcTreasuryEngine extends BaseOSEngine {
     const r = String(rail || 'book_transfer').toLowerCase().replace(/-/g, '_');
     if (r === 'ptc_bank' || r === 'book' || r === 'book_transfer' || r === 'check') return 'book_transfer';
     if (r === 'moov') return 'moov_paygate';
-    if (['wire','ach','open_banking','iso20022','external','lili','moov_paygate'].includes(r)) return r;
+    if (r === 'apisix') return 'apisix';
+    if (['wire','ach','open_banking','iso20022','external','lili','moov_paygate','apisix'].includes(r)) return r;
     return 'book_transfer';
   }
 
@@ -4528,7 +4533,7 @@ class PtcTreasuryEngine extends BaseOSEngine {
     const workflowId = payload.workflowId || id('PTT-');
     const initiatedBy = payload.initiatedBy || 'ptc-treasury';
 
-    if (rail === 'ptc-bank' || ['wire','ach','open_banking','iso20022','external','book','book_transfer','check','lili','moov_paygate','moov-paygate','moov'].includes(rail)) {
+    if (rail === 'ptc-bank' || ['wire','ach','open_banking','iso20022','external','book','book_transfer','check','lili','moov_paygate','moov-paygate','moov','apisix'].includes(rail)) {
       return await this._distributePtcBank({ ...payload, initiatedBy }, workflowId);
     }
     if (rail === 'melio') {
@@ -5107,6 +5112,156 @@ class SettlementEndpointEngine extends BaseOSEngine {
   }
 }
 
+// ─── Apache APISIX Engine ──────────────────────────────────────────────────────
+//
+// Gateway layer for the self-hosted PTC payment API. APISIX sits in front of the
+// Apache PTC wire/push endpoints and the DLB Trust OS engine routes. This engine
+// originates fiat payments through the gateway, using configurable ODFI/RDFI
+// bank account details and an optional API key for gateway authentication.
+
+class ApacheApisixEngine extends BaseOSEngine {
+  static get engineName() { return 'apisix'; }
+
+  static _cfg() {
+    return {
+      live: process.env.APISIX_LIVE === 'true',
+      apiUrl: process.env.APISIX_API_URL || 'http://localhost:9080',
+      adminUrl: process.env.APISIX_ADMIN_URL || 'http://localhost:9180',
+      apiKey: process.env.APISIX_API_KEY || '',
+      wirePath: process.env.APISIX_WIRE_PATH || '/ptc/wire',
+      pushPath: process.env.APISIX_PUSH_PATH || '/ptc/push',
+      sourceName: process.env.PTC_BANK_NAME || process.env.TRUST_BANK_NAME || 'DLB Trust PTC Bank',
+      sourceRouting: process.env.APISIX_ODFI_ROUTING || process.env.PTC_BANK_ROUTING || process.env.TRUST_BANK_ROUTING || '',
+      sourceAccount: process.env.APISIX_ODFI_ACCOUNT || process.env.PTC_BANK_SETTLEMENT_ACCOUNT || process.env.TRUST_BANK_ACCOUNT || '',
+    };
+  }
+
+  static _headers() {
+    const cfg = this._cfg();
+    const headers = { 'Content-Type': 'application/json' };
+    if (cfg.apiKey) headers['X-API-Key'] = cfg.apiKey;
+    return headers;
+  }
+
+  static async _http(method, url, body, timeoutMs = 30000) {
+    const options = { method, headers: this._headers() };
+    if (body !== undefined) options.body = JSON.stringify(body);
+    if (timeoutMs) options.signal = AbortSignal.timeout(timeoutMs);
+    const res = await fetch(url, options);
+    const text = await res.text();
+    let json = text;
+    try { if (text) json = JSON.parse(text); } catch { /* leave as text */ }
+    return { statusCode: res.status, ok: res.ok, headers: Object.fromEntries(res.headers.entries()), body: text, json };
+  }
+
+  static async status() {
+    const cfg = this._cfg();
+    let reachable = false;
+    let message = 'shadow/simulated';
+    if (cfg.live) {
+      try {
+        const r = await this._http('GET', `${cfg.apiUrl.replace(/\/$/, '')}/apisix/prometheus/metrics`, undefined, 5000);
+        reachable = true;
+        message = `apisix reachable (http ${r.statusCode})`;
+      } catch (e) { message = e.message; }
+    }
+    return {
+      engine: this.engineName,
+      healthy: cfg.live ? reachable : true,
+      mode: cfg.live ? 'live' : 'shadow',
+      live: cfg.live,
+      apiUrl: cfg.apiUrl,
+      adminUrl: cfg.adminUrl,
+      reachable,
+      message,
+      timestamp: new Date().toISOString(),
+    };
+  }
+
+  static async health() { return this.status(); }
+
+  static _normalizeAmount(amount) {
+    const n = Number(amount);
+    if (!Number.isFinite(n) || n <= 0) throw new Error('amount must be positive');
+    return Math.round(n * 100);
+  }
+
+  static async _sendPayment(payload) {
+    const cfg = this._cfg();
+    const {
+      amount, currency = 'USD', type = 'wire', source, destination,
+      description, paymentId, reference, pushToCard,
+    } = payload;
+    const amountCents = this._normalizeAmount(amount);
+    const isPush = pushToCard === true || type === 'push';
+    const body = {
+      reference: reference || paymentId || `APISIX-${Date.now()}`,
+      amount: Number((amountCents / 100).toFixed(2)),
+      amount_cents: amountCents,
+      currency,
+      type: isPush ? 'push' : 'wire',
+      description: description || `Apache APISIX ${isPush ? 'push-to-card' : 'wire'}`,
+      odfi: {
+        routingNumber: source?.routingNumber || source?.routing || cfg.sourceRouting,
+        accountNumber: source?.accountNumber || source?.account || cfg.sourceAccount,
+        name: source?.name || source?.holderName || cfg.sourceName,
+        bankName: source?.bankName || process.env.PTC_BANK_NAME || 'ODFI Bank',
+        accountType: source?.accountType || 'checking',
+      },
+      rdfi: {
+        routingNumber: destination?.routingNumber || destination?.routing,
+        accountNumber: destination?.accountNumber || destination?.account,
+        name: destination?.name || destination?.holderName || 'External Beneficiary',
+        bankName: destination?.bankName || 'RDFI Bank',
+        accountType: destination?.accountType || 'checking',
+      },
+    };
+
+    if (isPush) {
+      body.cardholderName = source?.cardholderName || source?.name || '';
+      body.cardLast4 = source?.cardLast4 || destination?.cardLast4 || '';
+    }
+
+    if (!body.odfi.routingNumber || !body.odfi.accountNumber) {
+      throw new Error('ODFI routing and account number required for APISIX payment (set source or APISIX_ODFI_ROUTING/APISIX_ODFI_ACCOUNT)');
+    }
+    if (!body.rdfi.routingNumber || !body.rdfi.accountNumber) {
+      throw new Error('RDFI routing and account number required for APISIX payment (set destination)');
+    }
+
+    if (cfg.live) {
+      const path = isPush ? cfg.pushPath : cfg.wirePath;
+      const url = `${cfg.apiUrl.replace(/\/$/, '')}${path}`;
+      const result = await this._http('POST', url, body);
+      if (!result.ok) throw new Error(`APISIX payment failed: ${result.statusCode} ${result.body.slice(0, 200)}`);
+      const txId = result.json?.referenceNumber || result.json?.txId || result.json?.reference || `APISIX-TX-${Date.now()}`;
+      const rawStatus = result.json?.status || 'submitted';
+      const status = rawStatus === 'submitted' ? 'originated' : (['completed', 'settled', 'originated'].includes(rawStatus) ? rawStatus : 'originated');
+      return { transferId: txId, status, raw: result };
+    }
+
+    const txId = `APISIX-TX-${Date.now()}-${Math.random().toString(36).slice(2, 8).toUpperCase()}`;
+    return { transferId: txId, status: 'originated', shadow: true, body };
+  }
+
+  static async _process(action, payload = {}) {
+    switch (action) {
+      case 'status':
+      case 'health':
+        return await this.status();
+      case 'sendPayment':
+      case 'sendWire':
+      case 'createPayment':
+        return await this._sendPayment(payload);
+      case 'sendPush':
+      case 'pushToCard':
+        return await this._sendPayment({ ...payload, pushToCard: true });
+      default:
+        return await this.status();
+    }
+  }
+}
+
 // ─── Moov Paygate Engine ───────────────────────────────────────────────────────
 //
 // Self-hosted Moov Paygate (Apache 2.0) integration. Calls a Paygate transfers
@@ -5494,6 +5649,7 @@ const ENGINES = {
   'ptc-treasury': PtcTreasuryEngine,
   'settlement-endpoint': SettlementEndpointEngine,
   'moov-paygate': MoovPaygateEngine,
+  'apisix': ApacheApisixEngine,
 };
 
 async function ensureAll() {
@@ -5532,6 +5688,7 @@ module.exports = {
   PtcBankEngine,
   PtcTreasuryEngine,
   MoovPaygateEngine,
+  ApacheApisixEngine,
   SettlementEndpointEngine,
   engines: ENGINES,
   ensureAll,
