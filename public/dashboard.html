@@ -2415,11 +2415,8 @@
         opts.credentials = 'include';
         const r = await fetch(url, opts);
         if (r.status === 401 && jwtToken) {
-          if (url.includes('/api/auth/')) {
-            doLogout();
-            return { error: 'Session expired. Please log in again.' };
-          }
-          return { error: 'Insufficient permissions', status: 401 };
+          doLogout();
+          return { error: 'Session expired. Please log in again.' };
         }
         return await r.json();
       } catch (e) { return { error: e.message }; }

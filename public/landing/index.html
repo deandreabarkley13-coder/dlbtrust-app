@@ -252,6 +252,10 @@ function status(id, msg, isError=false){
   el.textContent=msg;
   el.className='status show '+(isError?'error':'success');
 }
+function fmt$(n){
+  if (n == null) return '—';
+  return '$' + Number(n).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+}
 async function api(path, opts){
   const res=await fetch('/api/dapp'+path,{...opts,headers:{'Content-Type':'application/json'}});
   const text=await res.text();
@@ -259,6 +263,22 @@ async function api(path, opts){
   if(!res.ok || !json.success) throw new Error(json.error || `HTTP ${res.status}`);
   return json;
 }
+async function loadTrustSnapshot(){
+  const el=document.getElementById('status-text');
+  try{
+    const res=await fetch('/api/health');
+    const data=await res.json();
+    const checks=data.checks||{};
+    const bondValue=(checks.bonds&&checks.bonds.totalValue)||0;
+    const cashCount=(checks.cashAccounts&&checks.cashAccounts.count)||0;
+    const trustCount=(checks.trustAccounts&&checks.trustAccounts.count)||0;
+    const statusText=data.status==='healthy'?'System healthy':'System degraded';
+    el.innerHTML = `<strong>${statusText}</strong> — Bond portfolio ${fmt$(bondValue)} across ${checks.bonds&&checks.bonds.count||0} active bonds; ${cashCount} cash accounts; ${trustCount} trust accounts.`;
+  }catch(e){
+    el.textContent='Live trust data temporarily unavailable. Please log in for full dashboard.';
+  }
+}
+document.addEventListener('DOMContentLoaded', loadTrustSnapshot);
 async function submitRequest(e){
   e.preventDefault();
   const body={
