@@ -578,6 +578,7 @@
     if (adminToken) opts.headers['x-admin-token'] = adminToken;
     else if (userToken) opts.headers['Authorization'] = 'Bearer ' + userToken;
     const res = await fetch(path, opts);
+    if (res.status === 401) { logout(); return {}; }
     const text = await res.text();
     let data; try { data = JSON.parse(text); } catch { data = { error: text }; }
     if (!res.ok || !data.success) throw new Error(data.error || data.message || res.statusText);
