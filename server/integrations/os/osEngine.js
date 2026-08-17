@@ -5133,6 +5133,8 @@ class ApacheApisixEngine extends BaseOSEngine {
       sourceName: process.env.PTC_BANK_NAME || process.env.TRUST_BANK_NAME || 'DLB Trust PTC Bank',
       sourceRouting: process.env.APISIX_ODFI_ROUTING || process.env.PTC_BANK_ROUTING || process.env.TRUST_BANK_ROUTING || '',
       sourceAccount: process.env.APISIX_ODFI_ACCOUNT || process.env.PTC_BANK_SETTLEMENT_ACCOUNT || process.env.TRUST_BANK_ACCOUNT || '',
+      allowHttp: process.env.APISIX_ALLOW_HTTP === 'true',
+      allowedHosts: (process.env.APISIX_ALLOWED_HOSTS || '').split(',').map((h) => h.trim()).filter(Boolean),
     };
   }
 
@@ -5143,7 +5145,32 @@ class ApacheApisixEngine extends BaseOSEngine {
     return headers;
   }
 
+  static _validateUrl(urlString) {
+    const cfg = this._cfg();
+    let parsed;
+    try {
+      parsed = new URL(urlString);
+    } catch {
+      throw new Error(`Invalid APISIX URL: ${urlString}`);
+    }
+    if (cfg.live && parsed.protocol === 'http:' && !cfg.allowHttp) {
+      throw new Error(`APISIX live mode requires HTTPS unless APISIX_ALLOW_HTTP=true: ${urlString}`);
+    }
+    if (cfg.allowedHosts && cfg.allowedHosts.length > 0) {
+      const host = parsed.hostname.toLowerCase();
+      const allowed = cfg.allowedHosts.some((h) => {
+        const pattern = h.toLowerCase();
+        if (pattern === host) return true;
+        if (pattern.startsWith('*.')) return host.endsWith(pattern.slice(2)) || host === pattern.slice(2);
+        return false;
+      });
+      if (!allowed) throw new Error(`APISIX URL host not allowed: ${host}`);
+    }
+    return parsed;
+  }
+
   static async _http(method, url, body, timeoutMs = 30000) {
+    this._validateUrl(url);
     const options = { method, headers: this._headers() };
     if (body !== undefined) options.body = JSON.stringify(body);
     if (timeoutMs) options.signal = AbortSignal.timeout(timeoutMs);
@@ -5154,15 +5181,19 @@ class ApacheApisixEngine extends BaseOSEngine {
     return { statusCode: res.status, ok: res.ok, headers: Object.fromEntries(res.headers.entries()), body: text, json };
   }
 
+  static _url(base, path) {
+    return `${base.replace(/\/$/, '')}${path.startsWith('/') ? path : `/${path}`}`;
+  }
+
   static async status() {
     const cfg = this._cfg();
     let reachable = false;
     let message = 'shadow/simulated';
     if (cfg.live) {
       try {
-        const r = await this._http('GET', `${cfg.apiUrl.replace(/\/$/, '')}/apisix/prometheus/metrics`, undefined, 5000);
-        reachable = true;
-        message = `apisix reachable (http ${r.statusCode})`;
+        const r = await this._http('GET', this._url(cfg.apiUrl, '/apisix/prometheus/metrics'), undefined, 5000);
+        reachable = r.ok && r.statusCode >= 200 && r.statusCode < 300;
+        message = reachable ? `apisix reachable (http ${r.statusCode})` : `apisix returned http ${r.statusCode}`;
       } catch (e) { message = e.message; }
     }
     return {
@@ -5231,7 +5262,7 @@ class ApacheApisixEngine extends BaseOSEngine {
 
     if (cfg.live) {
       const path = isPush ? cfg.pushPath : cfg.wirePath;
-      const url = `${cfg.apiUrl.replace(/\/$/, '')}${path}`;
+      const url = this._url(cfg.apiUrl, path);
       const result = await this._http('POST', url, body);
       if (!result.ok) throw new Error(`APISIX payment failed: ${result.statusCode} ${result.body.slice(0, 200)}`);
       const txId = result.json?.referenceNumber || result.json?.txId || result.json?.reference || `APISIX-TX-${Date.now()}`;
