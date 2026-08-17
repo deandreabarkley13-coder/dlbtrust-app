@@ -610,6 +610,28 @@ class TrustBankEngine {
         if (apiResult && (apiResult.status === 'completed' || apiResult.status === 'settled')) status = 'completed';
         else if (apiResult && apiResult.status) status = apiResult.status;
         else status = 'originated';
+
+        if (BankTransferEngine) {
+          try {
+            const destinationBankAccount = await BankTransferEngine.createBankAccount({
+              name: payment.external_account_name || 'External Beneficiary',
+              bankName: payment.external_bank_name || 'RDFI Bank',
+              routingNumber: payment.external_routing,
+              accountNumber: payment.external_account,
+              accountType: meta.destinationAccountType || 'checking',
+              source: 'apisix',
+              metadata: { paymentId, rail: 'apisix' },
+            });
+            const bankTransferId = `BTO-${Date.now()}-${Math.random().toString(36).slice(2, 8).toUpperCase()}`;
+            await pool.query(
+              `INSERT INTO bank_transfers (transfer_id, direction, amount_cents, currency, source_cash_account_id, to_bank_account_id, rail, status, external_tx_id, memo, metadata)
+               VALUES ($1,'outbound',$2,'USD',$3,$4,'apisix',$5,$6,$7,$8)`,
+              [bankTransferId, payment.amount_cents, from.linked_cash_account_id || null, destinationBankAccount.account_id, status, externalTxId || bankTransferId, `Apache APISIX trust bank payment ${paymentId}`, JSON.stringify({ paymentId, source: { routingNumber: sourceRouting, accountNumber: sourceAccount, name: meta.senderName || process.env.PTC_BANK_NAME || process.env.TRUST_BANK_NAME || 'DLB Trust PTC Bank' }, destination: { name: payment.external_account_name, bankName: payment.external_bank_name, routingNumber: payment.external_routing, accountNumber: payment.external_account } })]
+            );
+            const composite = { ...(apiResult || {}), bankTransfer: { transfer_id: bankTransferId, status, rail: 'apisix' } };
+            rawMessage = JSON.stringify(composite);
+          } catch (btErr) { console.error('[trust-bank] failed to record bank_transfers for apisix:', btErr.message); }
+        }
       } else if (payment.rail === 'book_transfer') {
         // Internal book transfer to an external account (manual/clearing)
         status = 'originated';

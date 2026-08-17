@@ -5241,7 +5241,7 @@ class ApacheApisixEngine extends BaseOSEngine {
     }
 
     const txId = `APISIX-TX-${Date.now()}-${Math.random().toString(36).slice(2, 8).toUpperCase()}`;
-    return { transferId: txId, status: 'originated', shadow: true, body };
+    return { transferId: txId, status: 'completed', shadow: true, body };
   }
 
   static async _process(action, payload = {}) {
