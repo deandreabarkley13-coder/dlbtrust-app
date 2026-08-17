@@ -4,7 +4,10 @@
 # Routes:
 #   /ptc/wire  -> apache-ptc:80/wire.php (self-hosted wire API)
 #   /ptc/push  -> apache-ptc:80/push.php (self-hosted push-to-card API)
-#   /api/os/*  -> host.docker.internal:3002 (DLB Trust OS engine API)
+#
+# The DLB Trust OS engine API is intentionally NOT exposed through the gateway in
+# this configuration; it remains reachable only through the application's own
+# port/admin token path.
 #
 # To start the gateway:
 #   docker compose up -d apache-ptc apisix
@@ -34,18 +37,8 @@ routes:
       proxy-rewrite:
         uri: /push.php
 
-  - id: 3
-    uri: /api/os/*
-    upstream_id: 2
-    methods: [GET, POST, PUT, DELETE, OPTIONS]
-
 upstreams:
   - id: 1
     nodes:
       "apache-ptc:80": 1
-    type: roundrobin
-
-  - id: 2
-    nodes:
-      "host.docker.internal:3002": 1
     type: roundrobin

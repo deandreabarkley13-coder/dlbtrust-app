@@ -5218,8 +5218,8 @@ class ApacheApisixEngine extends BaseOSEngine {
     };
 
     if (isPush) {
-      body.cardholderName = source?.cardholderName || source?.name || '';
-      body.cardLast4 = source?.cardLast4 || destination?.cardLast4 || '';
+      body.cardholderName = destination?.cardholderName || destination?.name || destination?.holderName || '';
+      body.cardLast4 = destination?.cardLast4 || source?.cardLast4 || '';
     }
 
     if (!body.odfi.routingNumber || !body.odfi.accountNumber) {
