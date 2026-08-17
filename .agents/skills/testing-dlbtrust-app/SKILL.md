@@ -1177,7 +1177,7 @@ Run `grep -E '^\s+uri:' docker/apisix/apisix.yaml` and confirm only `/ptc/wire` 
 
 ### What to watch for
 
-- In shadow mode `ApacheApisixEngine._sendPayment` returns `status: 'originated'`, not `completed`. `TrustBankEngine.sendPayment` preserves that value for `rail === 'apisix'`, so `trust_bank_payments.status` will be `'originated'` unless the engine is set to live (`APISIX_LIVE=true`) and the upstream settles with `completed`/`settled`.
-- The `apisix` rail writes `trust_bank_payments` and `trust_journal_lines` but does **not** create `bank_transfers` records; the `bank_transfers` table `rail` check constraint does not include `apisix`, so the engine cannot insert a row there.
+- In shadow mode `ApacheApisixEngine._sendPayment` now returns `status: 'completed'` (as of PR #357 fix). `TrustBankEngine.sendPayment` records a `bank_transfers` row with `rail: 'apisix'` and the same `external_tx_id` for `rail === 'apisix'`.
+- If `bank_transfers` inserts fail, verify `BankTransferEngine.ensureTables()` ran at startup (it drops and re-adds the `bank_transfers_rail_check` constraint to include `'apisix'`).
 - The Fly deploy `https://dlbtrust-app.fly.dev` often lags the local branch and may not show the `apisix` engine; if `GET /api/os/apisix/status` returns `404` and the dashboard registry omits `apisix`, Fly has not been deployed with this branch yet.
 - The dashboard `Run` button and payload textarea may not register scaled coordinate typing. Set `document.getElementById('proc-payload').value` and `proc-engine`/`proc-action` values via the browser console, then click `Run`.
