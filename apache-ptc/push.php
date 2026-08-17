@@ -17,7 +17,10 @@ foreach ($headers as $name => $value) {
     }
 }
 
-if ($expectedKey !== '' && $apiKey !== $expectedKey) {
+if ($expectedKey === '') {
+    fail(500, 'Push-to-card endpoint is not configured with an API key');
+}
+if ($apiKey !== $expectedKey) {
     fail(401, 'Invalid or missing x-api-key');
 }
 

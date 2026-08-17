@@ -138,8 +138,11 @@
             <input type="number" id="apisix-amount" value="0.01" step="0.01" min="0.01" style="width:120px">
             <label>Source GL</label>
             <input type="text" id="apisix-source-gl" value="4000" style="width:120px">
+            <label>From PTC Checking</label>
+            <select id="apisix-from-account" style="width:260px"></select>
           </div>
           <div class="actions">
+            <button class="secondary" onclick="loadApisixAccounts()">Refresh Accounts</button>
             <button onclick="sendApisixDistribution()">Send APISIX Distribution</button>
           </div>
           <pre id="proc-output" class="output hidden"></pre>
@@ -349,18 +352,49 @@
       flash(ok ? 'Event fetched' : (body.error || 'Fetch failed'), ok);
     }
 
+    async function loadApisixAccounts() {
+      const sourceGl = el('apisix-source-gl').value.trim() || '4000';
+      const select = el('apisix-from-account');
+      select.innerHTML = '<option value="">Loading...</option>';
+      try {
+        const res = await api('POST', '/api/os/ptc-bank/process', { action: 'listAccounts' });
+        if (!res.ok) {
+          select.innerHTML = '<option value="">Failed to load accounts</option>';
+          flash('Failed to list PTC accounts', false);
+          return;
+        }
+        const data = res.body && (res.body.data || res.body.result);
+        const result = data && (data.result || data);
+        const list = Array.isArray(result) ? result : (result && result.accounts) || [];
+        const candidates = list.filter((a) => a.account_type === 'checking' && a.status === 'active');
+        if (!candidates.length) { select.innerHTML = '<option value="">No active checking accounts</option>'; return; }
+        // Prefer a designated operating/master account linked to the source GL, then a
+        // positively identified operating account, then any funded checking account.
+        const preferred =
+          candidates.find((a) => a.linked_trust_account_code === sourceGl) ||
+          candidates.find((a) => /\b(operating|master|main|ptc bank)\b/i.test(a.account_name)) ||
+          candidates.find((a) => Number(a.balance_cents || 0) > 0) ||
+          candidates[0];
+        select.innerHTML = '';
+        candidates.forEach((a) => {
+          const opt = document.createElement('option');
+          opt.value = a.account_id;
+          opt.textContent = `${a.account_name} (${a.account_id}) — $${(Number(a.balance_cents || 0) / 100).toFixed(2)}`;
+          if (a.account_id === preferred.account_id) opt.selected = true;
+          select.appendChild(opt);
+        });
+      } catch (e) {
+        select.innerHTML = '<option value="">Failed to load accounts</option>';
+        flash('Failed to list PTC accounts', false);
+      }
+    }
+
     async function sendApisixDistribution() {
       const amount = Number(el('apisix-amount').value);
       if (!Number.isFinite(amount) || amount <= 0) { flash('Enter a positive amount', false); return; }
       const sourceGl = el('apisix-source-gl').value.trim() || '4000';
-      flash('Looking up PTC checking account...', true);
-      const accounts = await api('POST', '/api/os/ptc-bank/process', { action: 'listAccounts' });
-      if (!accounts.ok) { flash('Failed to list PTC accounts', false); return; }
-      const data = accounts.body && (accounts.body.data || accounts.body.result);
-      const result = data && (data.result || data);
-      const list = Array.isArray(result) ? result : (result && result.accounts) || [];
-      const checking = list.find((a) => a.account_type === 'checking' && a.status === 'active');
-      if (!checking) { flash('No active PTC checking account found', false); return; }
+      const fromAccountId = el('apisix-from-account').value;
+      if (!fromAccountId) { flash('Select a PTC checking account first (click Refresh Accounts)', false); return; }
 
       const payload = {
         action: 'distribute',
@@ -368,7 +402,7 @@
         amount,
         sourceType: 'trust',
         sourceAccountId: sourceGl,
-        fromAccountId: checking.account_id,
+        fromAccountId,
         payee: { name: 'DB NET MGMT', routing: '121145307', account: '692101092959', accountType: 'checking', bankName: 'Lili Bank' },
         senderRouting: '121145307',
         senderAccount: '692101092959',
@@ -406,10 +440,12 @@
     }
 
     el('proc-engine').addEventListener('change', updateActions);
+    el('apisix-source-gl').addEventListener('change', loadApisixAccounts);
     window.addEventListener('DOMContentLoaded', () => {
       const saved = localStorage.getItem('os-admin-token');
       if (saved) el('token').value = saved;
       loadRegistry();
+      loadApisixAccounts();
     });
   </script>
 </body>

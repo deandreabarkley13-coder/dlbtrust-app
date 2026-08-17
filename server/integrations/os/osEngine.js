@@ -5193,7 +5193,9 @@ class ApacheApisixEngine extends BaseOSEngine {
     if (cfg.live) {
       try {
         const r = await this._http('GET', this._url(cfg.apiUrl, '/apisix/prometheus/metrics'), undefined, 5000);
-        reachable = r.ok && r.statusCode >= 200 && r.statusCode < 300;
+        // Any non-5xx response means the gateway process is up and reachable;
+        // standalone data planes may return 404 for the metrics route.
+        reachable = r.statusCode < 500;
         message = reachable ? `apisix reachable (http ${r.statusCode})` : `apisix returned http ${r.statusCode}`;
       } catch (e) { message = e.message; }
     }
