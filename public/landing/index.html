@@ -267,7 +267,9 @@ async function loadTrustSnapshot(){
   const el=document.getElementById('status-text');
   try{
     const res=await fetch('/api/health');
+    if(!res.ok) throw new Error('Health check unavailable');
     const data=await res.json();
+    if(!data.checks) throw new Error('Health check unavailable');
     const checks=data.checks||{};
     const bondValue=(checks.bonds&&checks.bonds.totalValue)||0;
     const cashCount=(checks.cashAccounts&&checks.cashAccounts.count)||0;

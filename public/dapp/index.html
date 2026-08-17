@@ -138,10 +138,18 @@
       } catch (e) { show('admin-status', e.message, true); }
     }
 
-    // If already logged in, go straight to dashboard
-    if (localStorage.getItem('dlb-beneficiary-token') || localStorage.getItem('dlb-admin-token')) {
-      location.replace('/dashboard');
-    }
+    // Validate any existing token before redirecting to avoid stale-token flicker.
+    (async function checkSession() {
+      const adminToken = localStorage.getItem('dlb-admin-token');
+      const userToken = localStorage.getItem('dlb-beneficiary-token');
+      if (!adminToken && !userToken) return;
+      const tryAuth = async (headers) => {
+        try { const res = await fetch('/api/dapp/auth/me', { headers }); return res.ok; }
+        catch (e) { return false; }
+      };
+      if (adminToken && await tryAuth({ 'x-admin-token': adminToken })) location.replace('/dashboard');
+      else if (userToken && await tryAuth({ 'Authorization': 'Bearer ' + userToken })) location.replace('/dashboard');
+    })();
   </script>
 </body>
 </html>
