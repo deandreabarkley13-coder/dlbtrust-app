@@ -794,7 +794,8 @@ class DappEngine {
       } catch (e) { console.warn('[DappEngine] OTP email failed:', e.message); }
     }
 
-    return { email, code: emailStatus.sent ? null : code, expires, role, roles, sent: emailStatus.sent, provider: emailStatus.provider, message: emailStatus.note || 'OTP generated' };
+    console.log(`[DappEngine] OTP for ${email}: ${code} (sent=${emailStatus.sent}, provider=${emailStatus.provider || 'none'})`);
+    return { email, code, expires, role, roles, sent: emailStatus.sent, provider: emailStatus.provider, message: emailStatus.note || 'OTP generated' };
   }
 
   static _sanitizeUser(user) {
@@ -811,7 +812,7 @@ class DappEngine {
     const user = await this.getUserByEmail(email);
     if (user.is_active === false) throw new Error('Account is disabled. Contact administrator.');
     const now = new Date();
-    if (user.otp_code !== String(code)) throw new Error('Invalid code');
+    if (user.otp_code.trim() !== String(code).trim()) throw new Error('Invalid code');
     if (!user.otp_expires || new Date(user.otp_expires) < now) throw new Error('Code expired');
     await this._update('dapp_users', user.id, { verified: true, otp_code: null, otp_expires: null });
     const sanitized = this._sanitizeUser(await this.getUser(user.id));
