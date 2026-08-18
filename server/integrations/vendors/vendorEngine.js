@@ -24,7 +24,7 @@ try { billClient = require('../bill/billClient'); } catch (e) { billClient = nul
 try { EmailEngine = require('../dapp/emailEngine').EmailEngine; } catch (e) { EmailEngine = null; }
 
 const PAYMENT_STATUSES = ['pending_approval', 'approved', 'rejected', 'processing', 'executed', 'settled', 'failed', 'cancelled'];
-const PAYMENT_METHODS = ['ach', 'wire', 'bill', 'melio', 'auto'];
+const PAYMENT_METHODS = ['ach', 'wire', 'bill', 'melio', 'nickel', 'auto'];
 
 const ACCOUNT_CODES = {
   CASH: '1000',
@@ -69,7 +69,7 @@ class VendorEngine {
         bill_vendor_id      TEXT,
         -- Payment preferences
         payment_method      TEXT NOT NULL DEFAULT 'ach'
-                              CHECK (payment_method IN ('ach','wire','bill','melio','auto')),
+                              CHECK (payment_method IN ('ach','wire','bill','melio','nickel','auto')),
         payment_terms       TEXT DEFAULT 'net_30'
                               CHECK (payment_terms IN ('immediate','net_15','net_30','net_60','net_90')),
         auto_approve        BOOLEAN NOT NULL DEFAULT false,
@@ -98,7 +98,7 @@ class VendorEngine {
         amount              NUMERIC(18,2) NOT NULL,
         currency            TEXT NOT NULL DEFAULT 'USD',
         payment_method      TEXT NOT NULL DEFAULT 'ach'
-                              CHECK (payment_method IN ('ach','wire','bill','melio')),
+                              CHECK (payment_method IN ('ach','wire','bill','melio','nickel')),
         payment_type        TEXT NOT NULL DEFAULT 'vendor_payment'
                               CHECK (payment_type IN ('vendor_payment','fee_payment','legal_fee',
                                 'insurance_premium','regulatory_fee','trust_expense','other')),
@@ -170,14 +170,14 @@ class VendorEngine {
       ALTER TABLE vendors
         DROP CONSTRAINT IF EXISTS vendors_payment_method_check,
         ADD CONSTRAINT vendors_payment_method_check
-          CHECK (payment_method IN ('ach','wire','bill','melio','auto'))
+          CHECK (payment_method IN ('ach','wire','bill','melio','nickel','auto'))
     `);
 
     await pool.query(`
       ALTER TABLE vendor_payments
         DROP CONSTRAINT IF EXISTS vendor_payments_payment_method_check,
         ADD CONSTRAINT vendor_payments_payment_method_check
-          CHECK (payment_method IN ('ach','wire','bill','melio'))
+          CHECK (payment_method IN ('ach','wire','bill','melio','nickel'))
     `);
   }
 
@@ -321,7 +321,7 @@ class VendorEngine {
     if (vendor.status !== 'active') throw new Error('Vendor is not active');
 
     const method = data.payment_method || vendor.payment_method || 'ach';
-    if ((method === 'ach' || method === 'wire' || method === 'melio') && (!vendor.routing_number || !vendor.account_number)) {
+    if ((method === 'ach' || method === 'wire' || method === 'melio' || method === 'nickel') && (!vendor.routing_number || !vendor.account_number)) {
       throw new Error('Vendor has no bank details for ' + method + ' payment');
     }
 
@@ -402,12 +402,15 @@ class VendorEngine {
         case 'melio':
           executionRef = await VendorEngine._executeMelio(payment, vendor);
           break;
+        case 'nickel':
+          executionRef = await VendorEngine._executeNickel(payment, vendor);
+          break;
         default:
           throw new Error('Unknown payment method: ' + payment.payment_method);
       }
 
       let journalEntry = null;
-      if (payment.payment_method === 'melio') {
+      if (payment.payment_method === 'melio' || payment.payment_method === 'nickel') {
         // MelioEngine.exportPayment already posts the source -> payable reclass.
         if (executionRef.journal_entry_id) {
           journalEntry = { entry_id: executionRef.journal_entry_id };
@@ -457,8 +460,8 @@ class VendorEngine {
         paymentId,
         executionRef.ach_batch_id || null,
         executionRef.wire_id || null,
-        executionRef.bill_payment_id || executionRef.melio_export_id || null,
-        journalEntry ? (journalEntry.entry_id || journalEntry.id || null) : null,
+        executionRef.bill_payment_id || executionRef.melio_export_id || executionRef.nickel_payment_id || null,
+        executionRef.journal_entry_id || (journalEntry ? (journalEntry.entry_id || journalEntry.id || null) : null),
       ]);
 
       return {
@@ -579,6 +582,47 @@ class VendorEngine {
     };
   }
 
+  // ─── Nickel MCP Execution ────────────────────────────────────────────────
+
+  static async _executeNickel(payment, vendor) {
+    const { NickelMcpEngine } = require('../os/osEngine');
+    if (!NickelMcpEngine) throw new Error('NickelMcpEngine not available');
+
+    const processResult = await NickelMcpEngine.process({
+      action: 'submitInvoice',
+      amount: parseFloat(payment.amount),
+      sourceType: payment.source_type,
+      sourceAccountId: payment.source_account_code,
+      currency: 'USD',
+      vendor: {
+        name: vendor.vendor_name,
+        email: vendor.contact_email || '',
+        address: vendor.address || {},
+        bankAccount: {
+          accountNumber: vendor.account_number,
+          routingNumber: vendor.routing_number,
+          accountType: vendor.account_type || 'checking',
+          bankName: vendor.bank_name || '',
+        },
+      },
+      invoiceNumber: payment.invoice_number || `VPAY-${payment.payment_id}`,
+      dueDate: payment.due_date || new Date().toISOString().slice(0, 10),
+      memo: payment.description || `Vendor payment ${payment.payment_id}`,
+      notificationEmails: [
+        process.env.TRUST_ADMIN_EMAIL,
+        vendor.contact_email,
+      ].filter(Boolean),
+    });
+
+    const nickelResult = processResult.result || {};
+    return {
+      nickel_payment_id: nickelResult.id,
+      bill_payment_id: nickelResult.billPaymentId || nickelResult.id,
+      nickel_status: nickelResult.status,
+      journal_entry_id: nickelResult.journalEntryId || null,
+    };
+  }
+
   // ═══════════════════════════════════════════════════════════════════════════
   //  PAYMENT QUERIES
   // ═══════════════════════════════════════════════════════════════════════════
@@ -613,6 +657,14 @@ class VendorEngine {
   //  MELIO SYNC & SETTLEMENT
   // ═══════════════════════════════════════════════════════════════════════════
 
+  static async settlePayment(paymentId, { settlementReference = '', settledBy = 'system', settlementDate, buyerEmail, sellerEmail } = {}) {
+    const payment = await VendorEngine.getPayment(paymentId);
+    if (!payment) throw new Error('Payment not found: ' + paymentId);
+    if (payment.payment_method === 'melio') return VendorEngine.settleMelioPayment(paymentId, { settlementReference, settledBy, settlementDate, buyerEmail, sellerEmail });
+    if (payment.payment_method === 'nickel') return VendorEngine.settleNickelPayment(paymentId, { settlementReference, settledBy, settlementDate, buyerEmail, sellerEmail });
+    throw new Error(`No settle implementation for payment method: ${payment.payment_method}`);
+  }
+
   static async processPayment(paymentId, { approvedBy = 'system', executedBy = 'system' } = {}) {
     let payment = await VendorEngine.getPayment(paymentId);
     if (!payment) throw new Error('Payment not found: ' + paymentId);
@@ -631,6 +683,53 @@ class VendorEngine {
     }
 
     throw new Error('Payment cannot be processed from status: ' + payment.status);
+  }
+
+  static async settleNickelPayment(paymentId, { settlementReference = '', settledBy = 'system', settlementDate, buyerEmail, sellerEmail } = {}) {
+    const payment = await VendorEngine.getPayment(paymentId);
+    if (!payment) throw new Error('Payment not found: ' + paymentId);
+    if (payment.payment_method !== 'nickel') throw new Error('settleNickelPayment only applies to nickel payments');
+    if (payment.status === 'settled') return { payment_id: paymentId, status: 'settled', alreadySettled: true };
+    if (payment.status !== 'executed') throw new Error('Payment must be executed before settlement; current status: ' + payment.status);
+
+    const vendor = await VendorEngine.getVendor(payment.vendor_id);
+    if (!vendor) throw new Error('Vendor not found: ' + payment.vendor_id);
+
+    let nickelRecord = null;
+    if (payment.bill_payment_id) {
+      const { NickelMcpEngine } = require('../os/osEngine');
+      if (NickelMcpEngine) {
+        try { nickelRecord = await NickelMcpEngine.process({ action: 'settle', billPaymentId: payment.bill_payment_id }); } catch (e) { console.warn('[VendorEngine] nickel settlement lookup failed:', e.message); }
+      }
+    }
+
+    const update = await pool.query(`
+      UPDATE vendor_payments
+      SET status = 'settled', settled_at = NOW(), settlement_reference = $2, updated_at = NOW()
+      WHERE payment_id = $1
+      RETURNING *
+    `, [paymentId, settlementReference || payment.bill_payment_id || null]);
+
+    const journalEntryId = (nickelRecord && nickelRecord.result && (nickelRecord.result.settlementJournalEntryId || nickelRecord.result.journalEntryId)) || payment.journal_entry_id || null;
+
+    const notifications = await VendorEngine._sendSettlementNotifications({
+      payment: update.rows[0] || payment,
+      vendor,
+      csvPath: null,
+      settlementReference,
+      journalEntryId,
+      buyerEmail,
+      sellerEmail,
+    });
+
+    return {
+      payment_id: paymentId,
+      status: 'settled',
+      settlement_reference: settlementReference || payment.bill_payment_id || null,
+      settled_at: new Date().toISOString(),
+      journal_entry_id: journalEntryId,
+      notifications,
+    };
   }
 
   static async settleMelioPayment(paymentId, { settlementReference = '', settledBy = 'system', settlementDate, buyerEmail, sellerEmail } = {}) {

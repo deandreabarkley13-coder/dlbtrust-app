@@ -9,6 +9,7 @@
 
 var express = require('express');
 var router  = express.Router();
+var pool = require('../integrations/bonds/pgPool');
 var { VendorEngine } = require('../integrations/vendors/vendorEngine');
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -161,7 +162,7 @@ router.post('/payments/:paymentId/process', async function(req, res) {
 
 router.post('/payments/:paymentId/settle', async function(req, res) {
   try {
-    var result = await VendorEngine.settleMelioPayment(req.params.paymentId, {
+    var result = await VendorEngine.settlePayment(req.params.paymentId, {
       settlementReference: req.body.settlement_reference || req.body.reference,
       settledBy: req.body.settled_by || 'admin',
       settlementDate: req.body.settlement_date,
@@ -277,6 +278,98 @@ router.post('/payments/melio/submit-invoice', async function(req, res) {
     });
 
     res.json({ success: true, data: { vendor, initiated, processed } });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+router.post('/payments/nickel/submit-invoice', async function(req, res) {
+  try {
+    var vendorPayload = req.body.vendor || {};
+    var paymentPayload = req.body.payment || {};
+
+    if (!vendorPayload.vendor_name && !paymentPayload.vendor_id) {
+      return res.status(400).json({ success: false, error: 'vendor.vendor_name or payment.vendor_id required' });
+    }
+    if (!paymentPayload.amount || parseFloat(paymentPayload.amount) <= 0) {
+      return res.status(400).json({ success: false, error: 'payment.amount required' });
+    }
+
+    var vendor;
+    if (paymentPayload.vendor_id) {
+      vendor = await VendorEngine.getVendor(paymentPayload.vendor_id);
+      if (!vendor) return res.status(404).json({ success: false, error: 'Vendor not found' });
+    } else {
+      var existing = await VendorEngine.listVendors({ search: vendorPayload.vendor_name });
+      vendor = existing.find(function(v) { return v.vendor_name.toUpperCase() === vendorPayload.vendor_name.toUpperCase(); });
+      if (!vendor) {
+        vendor = await VendorEngine.createVendor({
+          vendor_name: vendorPayload.vendor_name,
+          vendor_type: vendorPayload.vendor_type || 'consultant',
+          contact_name: vendorPayload.contact_name || vendorPayload.vendor_name,
+          contact_email: vendorPayload.contact_email || null,
+          address: vendorPayload.address || null,
+          tax_id: vendorPayload.tax_id || null,
+          bank_name: vendorPayload.bank_name || null,
+          routing_number: vendorPayload.routing_number || null,
+          account_number: vendorPayload.account_number || null,
+          account_type: vendorPayload.account_type || 'checking',
+          payment_method: 'nickel',
+          auto_approve: true,
+          notes: vendorPayload.notes || null,
+        });
+      }
+    }
+
+    var initiated = await VendorEngine.initiatePayment({
+      vendor_id: vendor.vendor_id,
+      amount: parseFloat(paymentPayload.amount),
+      source_type: paymentPayload.source_type || 'trust',
+      source_account_code: paymentPayload.source_account_code || '4000',
+      payment_method: 'nickel',
+      payment_type: paymentPayload.payment_type || 'fee_payment',
+      description: paymentPayload.description || `Invoice from ${vendor.vendor_name}`,
+      invoice_number: paymentPayload.invoice_number || `INV-${Date.now()}`,
+      invoice_date: paymentPayload.invoice_date || new Date().toISOString().slice(0, 10),
+      due_date: paymentPayload.due_date || new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10),
+      initiated_by: req.body.initiated_by || 'nickel-submit-invoice',
+    });
+
+    var processed = await VendorEngine.processPayment(initiated.payment.payment_id, {
+      approvedBy: req.body.approved_by || 'nickel-submit-invoice',
+      executedBy: req.body.executed_by || 'nickel-submit-invoice',
+    });
+
+    res.json({ success: true, data: { vendor, initiated, processed } });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+router.post('/payments/nickel/confirm-settlement', async function(req, res) {
+  try {
+    if (!req.body.payment_id && !req.body.nickel_payment_id && !req.body.bill_payment_id) {
+      return res.status(400).json({ success: false, error: 'payment_id, nickel_payment_id, or bill_payment_id required' });
+    }
+    var paymentId = req.body.payment_id;
+    if (!paymentId && req.body.bill_payment_id) {
+      var matched = await pool.query(`SELECT payment_id FROM vendor_payments WHERE bill_payment_id = $1 AND payment_method = 'nickel' LIMIT 1`, [req.body.bill_payment_id]);
+      if (matched.rowCount === 0) throw new Error('No nickel vendor payment found for bill_payment_id ' + req.body.bill_payment_id);
+      paymentId = matched.rows[0].payment_id;
+    }
+    if (!paymentId && req.body.nickel_payment_id) {
+      var matched2 = await pool.query(`SELECT payment_id FROM vendor_payments WHERE bill_payment_id = $1 AND payment_method = 'nickel' LIMIT 1`, [req.body.nickel_payment_id]);
+      if (matched2.rowCount === 0) throw new Error('No nickel vendor payment found for nickel_payment_id ' + req.body.nickel_payment_id);
+      paymentId = matched2.rows[0].payment_id;
+    }
+    var result = await VendorEngine.settleNickelPayment(paymentId, {
+      settlementReference: req.body.settlement_reference || req.body.reference,
+      settledBy: req.body.settled_by || 'admin',
+      settlementDate: req.body.settlement_date,
+      buyerEmail: req.body.buyer_email,
+      sellerEmail: req.body.seller_email,
+    });
+    res.json({ success: true, data: result });
   } catch (err) {
     res.status(500).json({ success: false, error: err.message });
   }

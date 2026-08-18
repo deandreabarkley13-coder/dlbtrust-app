@@ -4228,6 +4228,7 @@ class PtcBankEngine extends BaseOSEngine {
       LiliBankEngine: tryRequire('../payments/liliBankEngine')?.LiliBankEngine,
       MoovPaygateEngine,
       ApacheApisixEngine,
+      NickelMcpEngine,
     };
   }
 
@@ -4266,6 +4267,7 @@ class PtcBankEngine extends BaseOSEngine {
         lili: !!this._deps().LiliBankEngine,
         'moov-paygate': !!this._deps().MoovPaygateEngine,
         apisix: !!this._deps().ApacheApisixEngine,
+        nickel: !!this._deps().NickelMcpEngine,
       },
       timestamp: new Date().toISOString(),
     };
@@ -4447,6 +4449,7 @@ class PtcTreasuryEngine extends BaseOSEngine {
       LiliBankEngine: tryRequire('../payments/liliBankEngine')?.LiliBankEngine,
       MoovPaygateEngine,
       ApacheApisixEngine,
+      NickelMcpEngine,
     };
   }
 
@@ -4476,6 +4479,7 @@ class PtcTreasuryEngine extends BaseOSEngine {
         'smart-router': !!SmartRouterEngine,
         'moov-paygate': !!this._deps().MoovPaygateEngine,
         'apisix': !!this._deps().ApacheApisixEngine,
+        nickel: !!this._deps().NickelMcpEngine,
       },
       timestamp: new Date().toISOString(),
     };
@@ -4645,6 +4649,37 @@ class PtcTreasuryEngine extends BaseOSEngine {
     return { workflowId, rail: 'melio', result };
   }
 
+  static async _distributeNickel(payload, workflowId) {
+    const { amount, sourceType, sourceAccountId, payee = {}, vendor = {}, description, memo, initiatedBy } = payload;
+    const v = vendor.name ? vendor : {
+      name: payee.name || vendor.name,
+      email: payee.email,
+      address: payee.address,
+      bankAccount: payee.routing && payee.account ? {
+        routingNumber: payee.routing,
+        accountNumber: payee.account,
+        accountType: payee.accountType || 'checking',
+        bankName: payee.bankName,
+      } : undefined,
+    };
+    if (!v.name) throw new Error('vendor.name or payee.name required for nickel distribution');
+    const result = await this._unwrap(await NickelMcpEngine.process({
+      action: 'submitInvoice',
+      amount,
+      sourceType,
+      sourceAccountId,
+      currency: 'USD',
+      vendor: v,
+      dueDate: payload.dueDate,
+      memo: memo || description || `PTC Treasury distribution ${workflowId}`,
+      metadata: { workflowId, payee },
+      initiatedBy,
+      autoSettle: payload.autoSettle,
+      merchantPaymentMethodId: payload.merchantPaymentMethodId,
+    }));
+    return { workflowId, rail: 'nickel', result };
+  }
+
   static async _onrampIssuerBridge(payload, workflowId) {
     const cfg = this._cfg();
     const { amount, sourceType, sourceAccountId, asset, targetAddress, sourceMethod, description } = payload;
@@ -4724,6 +4759,9 @@ class PtcTreasuryEngine extends BaseOSEngine {
     }
     if (rail === 'melio') {
       return await this._distributeMelio({ ...payload, initiatedBy }, workflowId);
+    }
+    if (rail === 'nickel') {
+      return await this._distributeNickel({ ...payload, initiatedBy }, workflowId);
     }
     if (rail === 'issuer-bridge') {
       return await this._onrampIssuerBridge({ ...payload, initiatedBy }, workflowId);
@@ -5482,6 +5520,859 @@ class ApacheApisixEngine extends BaseOSEngine {
   }
 }
 
+// ─── Nickel MCP/REST Engine ───────────────────────────────────────────────────────
+//
+// Vendor accounts-payable rail via Nickel (https://nickel.com). Uses the
+// Nickel REST API (https://rest.nickel.com) and optionally the MCP OAuth
+// handshake at https://mcp.nickel.com/mcp. When NICKEL_API_KEY is set the
+// engine calls the live API directly; otherwise it exchanges an OAuth code
+// for an access token and caches it in Postgres. Shadow mode runs a full
+// vendor/bill/bill-payment simulation without touching Nickel.
+
+class NickelMcpEngine extends BaseOSEngine {
+  static get engineName() { return 'nickel'; }
+
+  static _cfg() {
+    return {
+      live: process.env.NICKEL_LIVE === 'true',
+      shadow: process.env.NICKEL_SHADOW !== 'false',
+      mcpUrl: process.env.NICKEL_MCP_URL || 'https://mcp.nickel.com/mcp',
+      restUrl: process.env.NICKEL_REST_URL || 'https://rest.nickel.com',
+      apiKey: process.env.NICKEL_API_KEY || '',
+      clientId: process.env.NICKEL_CLIENT_ID || '',
+      clientSecret: process.env.NICKEL_CLIENT_SECRET || '',
+      redirectUri: process.env.NICKEL_OAUTH_REDIRECT_URI || 'http://localhost:3000/oauth/callback',
+      appUrl: process.env.APP_URL || 'http://localhost:3002',
+      payablesGlAccount: process.env.NICKEL_PAYABLES_GL_ACCOUNT || '2100',
+      settlementGlAccount: process.env.NICKEL_SETTLEMENT_GL_ACCOUNT || '1000',
+      defaultSourceType: process.env.NICKEL_SOURCE_TYPE || 'trust',
+      defaultSourceAccountId: process.env.NICKEL_SOURCE_ACCOUNT_ID || '4000',
+      notificationEmail: process.env.NICKEL_PAY_BILLS_EMAIL || process.env.TRUST_ADMIN_EMAIL || '',
+      webhookSecret: process.env.NICKEL_WEBHOOK_SECRET || '',
+      autoSettle: process.env.NICKEL_AUTO_SETTLE === 'true',
+      postPayableGl: process.env.NICKEL_POST_PAYABLE_GL !== 'false',
+    };
+  }
+
+  static async _deps() {
+    return {
+      TrustAccounting: tryRequire('../accounting/trustAccountingEngine')?.TrustAccountingEngine,
+      EmailEngine: tryRequire('../dapp/emailEngine')?.EmailEngine,
+    };
+  }
+
+  static async ensureTables() {
+    if (!pool) return;
+    await query(`
+      CREATE TABLE IF NOT EXISTS nickel_mcp_tokens (
+        provider TEXT PRIMARY KEY,
+        client_id TEXT,
+        access_token TEXT,
+        refresh_token TEXT,
+        token_type TEXT,
+        scope TEXT,
+        expires_at TIMESTAMPTZ,
+        metadata JSONB DEFAULT '{}',
+        created_at TIMESTAMPTZ DEFAULT NOW(),
+        updated_at TIMESTAMPTZ DEFAULT NOW()
+      )
+    `);
+    await query(`
+      CREATE TABLE IF NOT EXISTS nickel_mcp_oauth_states (
+        state TEXT PRIMARY KEY,
+        code_verifier TEXT NOT NULL,
+        redirect_uri TEXT NOT NULL,
+        created_at TIMESTAMPTZ DEFAULT NOW()
+      )
+    `);
+    await query(`
+      CREATE TABLE IF NOT EXISTS nickel_payments (
+        id TEXT PRIMARY KEY,
+        status TEXT NOT NULL DEFAULT 'pending',
+        vendor_id TEXT,
+        vendor_name TEXT,
+        bill_id TEXT,
+        bill_payment_id TEXT,
+        payment_method_id TEXT,
+        delivery_method_id TEXT,
+        amount_cents BIGINT NOT NULL,
+        currency TEXT NOT NULL DEFAULT 'USD',
+        source_account_id TEXT,
+        source_type TEXT,
+        payables_gl_account TEXT,
+        journal_entry_id TEXT,
+        settlement_journal_entry_id TEXT,
+        instructions JSONB DEFAULT '{}',
+        result JSONB DEFAULT '{}',
+        metadata JSONB DEFAULT '{}',
+        created_at TIMESTAMPTZ DEFAULT NOW(),
+        updated_at TIMESTAMPTZ DEFAULT NOW()
+      )
+    `);
+  }
+
+  // ─── OAuth helpers ─────────────────────────────────────────────────────────────
+
+  static _pkce() {
+    const verifier = crypto.randomBytes(32).toString('base64url');
+    const challenge = crypto.createHash('sha256').update(verifier).digest('base64url');
+    return { verifier, challenge };
+  }
+
+  static _url(base, path) {
+    return `${base.replace(/\/$/, '')}${path.startsWith('/') ? path : '/' + path}`;
+  }
+
+  static async _http(method, url, body, timeoutMs = 30000) {
+    const cfg = this._cfg();
+    const headers = { 'Content-Type': 'application/json' };
+    if (cfg.apiKey) {
+      headers.Authorization = `Bearer ${cfg.apiKey}`;
+    } else {
+      const token = await this._getToken();
+      if (token) headers.Authorization = `Bearer ${token}`;
+    }
+    const options = { method, headers };
+    if (body !== undefined) options.body = JSON.stringify(body);
+    if (timeoutMs) {
+      if (typeof AbortSignal !== 'undefined' && AbortSignal.timeout) {
+        options.signal = AbortSignal.timeout(timeoutMs);
+      }
+    }
+    const res = await fetch(url, options);
+    const text = await res.text();
+    let json = null;
+    try { json = text ? JSON.parse(text) : null; } catch { /* ignore */ }
+    return { statusCode: res.status, ok: res.ok, headers: Object.fromEntries(res.headers.entries()), body: text, json };
+  }
+
+  static async _getProtectedResourceMetadata() {
+    const cfg = this._cfg();
+    const url = this._url(cfg.mcpUrl, '/.well-known/oauth-protected-resource');
+    const r = await fetch(url);
+    if (!r.ok) throw new Error(`Nickel protected-resource metadata failed: ${r.status}`);
+    return r.json();
+  }
+
+  static async _getAuthorizationServerMetadata() {
+    const cfg = this._cfg();
+    const base = cfg.clientSecret ? 'https://api.nickelpayments.com' : (cfg.mcpUrl.replace('/mcp', '') || 'https://mcp.nickel.com');
+    const url = this._url(base, '/.well-known/oauth-authorization-server');
+    const r = await fetch(url);
+    if (!r.ok) throw new Error(`Nickel authorization-server metadata failed: ${r.status}`);
+    return r.json();
+  }
+
+  static async _saveClient(clientId, extra = {}) {
+    if (!pool) return;
+    await query(`
+      INSERT INTO nickel_mcp_tokens (provider, client_id, metadata, created_at, updated_at)
+      VALUES ('nickel', $1, $2::jsonb, NOW(), NOW())
+      ON CONFLICT (provider) DO UPDATE SET client_id = EXCLUDED.client_id,
+        metadata = COALESCE(nickel_mcp_tokens.metadata, '{}'::jsonb) || EXCLUDED.metadata,
+        updated_at = NOW()
+    `, [clientId, safeJson(extra)]);
+  }
+
+  static async _saveToken(data, clientId = '') {
+    if (!pool) return;
+    const expiresAt = data.expires_in ? new Date(Date.now() + data.expires_in * 1000) : null;
+    await query(`
+      INSERT INTO nickel_mcp_tokens (provider, client_id, access_token, refresh_token, expires_at, token_type, scope, metadata, created_at, updated_at)
+      VALUES ('nickel', $1, $2, $3, $4, $5, $6, $7::jsonb, NOW(), NOW())
+      ON CONFLICT (provider) DO UPDATE SET
+        client_id = COALESCE(EXCLUDED.client_id, nickel_mcp_tokens.client_id),
+        access_token = EXCLUDED.access_token,
+        refresh_token = COALESCE(EXCLUDED.refresh_token, nickel_mcp_tokens.refresh_token),
+        expires_at = EXCLUDED.expires_at,
+        token_type = EXCLUDED.token_type,
+        scope = EXCLUDED.scope,
+        metadata = COALESCE(nickel_mcp_tokens.metadata, '{}'::jsonb) || EXCLUDED.metadata,
+        updated_at = NOW()
+    `, [clientId || data.client_id || '', data.access_token, data.refresh_token || null, expiresAt, data.token_type || 'Bearer', data.scope || null, safeJson(data)]);
+  }
+
+  static async _getStoredClient() {
+    if (!pool) return null;
+    const r = await query(`SELECT client_id FROM nickel_mcp_tokens WHERE provider = 'nickel' LIMIT 1`);
+    return r.rows[0]?.client_id || null;
+  }
+
+  static async _hasToken() {
+    if (!pool) return false;
+    const r = await query(`SELECT access_token, expires_at FROM nickel_mcp_tokens WHERE provider = 'nickel' LIMIT 1`);
+    if (!r.rows.length) return false;
+    const { access_token, expires_at } = r.rows[0];
+    if (!access_token) return false;
+    if (expires_at && new Date(expires_at) <= new Date(Date.now() + 60000)) return false;
+    return true;
+  }
+
+  static async _getToken() {
+    const cfg = this._cfg();
+    if (cfg.apiKey) return cfg.apiKey;
+    if (!pool) throw new Error('Postgres pool not available for Nickel OAuth token storage');
+    const r = await query(`SELECT * FROM nickel_mcp_tokens WHERE provider = 'nickel' LIMIT 1`);
+    const row = r.rows[0];
+    if (!row || !row.access_token) {
+      throw new Error('Nickel not authenticated. Start OAuth via /api/finops/nickel/mcp/oauth/start or set NICKEL_API_KEY.');
+    }
+    if (row.expires_at && new Date(row.expires_at) <= new Date(Date.now() + 60000)) {
+      if (!row.refresh_token) throw new Error('Nickel access token expired and no refresh token is available');
+      return await this._refreshToken(row.refresh_token, row.client_id);
+    }
+    return row.access_token;
+  }
+
+  static async _refreshToken(refreshToken, clientId) {
+    const cfg = this._cfg();
+    const meta = await this._getAuthorizationServerMetadata();
+    const cid = cfg.clientId || clientId || (await this._getStoredClient());
+    const body = {
+      grant_type: 'refresh_token',
+      refresh_token: refreshToken,
+      client_id: cid,
+    };
+    if (cfg.clientSecret) body.client_secret = cfg.clientSecret;
+    const r = await fetch(meta.token_endpoint, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    const text = await r.text();
+    if (!r.ok) throw new Error(`Nickel refresh token failed: ${r.status} ${text.slice(0, 200)}`);
+    const data = JSON.parse(text);
+    await this._saveToken(data, cid);
+    return data.access_token;
+  }
+
+  static async _registerClient(redirectUri) {
+    const meta = await this._getAuthorizationServerMetadata();
+    if (!meta.registration_endpoint) throw new Error('Nickel authorization server does not expose a registration endpoint');
+    const body = {
+      client_name: 'DLB Trust PTC',
+      redirect_uris: [redirectUri],
+      grant_types: ['authorization_code', 'refresh_token'],
+      response_types: ['code'],
+      token_endpoint_auth_method: 'none',
+    };
+    const r = await fetch(meta.registration_endpoint, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    const text = await r.text();
+    if (!r.ok) throw new Error(`Nickel dynamic client registration failed: ${r.status} ${text.slice(0, 200)}`);
+    const data = JSON.parse(text);
+    if (!data.client_id) throw new Error('Nickel registration response missing client_id');
+    await this._saveClient(data.client_id, data);
+    return data;
+  }
+
+  static async startOAuth({ redirectUri } = {}) {
+    const cfg = this._cfg();
+    const redirect = redirectUri || `${cfg.appUrl}/api/finops/nickel/mcp/oauth/callback`;
+    const meta = await this._getAuthorizationServerMetadata();
+    let clientId = cfg.clientId || (await this._getStoredClient());
+    if (!clientId) {
+      const reg = await this._registerClient(redirect);
+      clientId = reg.client_id;
+    }
+    const pkce = this._pkce();
+    const state = `NIC-${Date.now()}-${crypto.randomBytes(4).toString('hex').toUpperCase()}`;
+    if (pool) {
+      await query(`
+        INSERT INTO nickel_mcp_oauth_states (state, code_verifier, redirect_uri)
+        VALUES ($1, $2, $3)
+        ON CONFLICT (state) DO NOTHING
+      `, [state, pkce.verifier, redirect]);
+    }
+    const params = new URLSearchParams({
+      response_type: 'code',
+      client_id: clientId,
+      redirect_uri: redirect,
+      scope: 'openid profile nickel_api',
+      state,
+      code_challenge: pkce.challenge,
+      code_challenge_method: 'S256',
+    });
+    return {
+      authorizeUrl: `${meta.authorization_endpoint}?${params.toString()}`,
+      state,
+      clientId,
+      redirectUri: redirect,
+    };
+  }
+
+  static async handleCallback(code, state) {
+    if (!pool) throw new Error('Postgres pool not available');
+    const row = (await query(`SELECT * FROM nickel_mcp_oauth_states WHERE state = $1`, [state])).rows[0];
+    if (!row) throw new Error('Invalid or expired Nickel OAuth state');
+    const cfg = this._cfg();
+    const clientId = cfg.clientId || (await this._getStoredClient());
+    if (!clientId) throw new Error('No Nickel client_id registered');
+    const meta = await this._getAuthorizationServerMetadata();
+    const body = {
+      grant_type: 'authorization_code',
+      code,
+      redirect_uri: row.redirect_uri,
+      client_id: clientId,
+      code_verifier: row.code_verifier,
+    };
+    if (cfg.clientSecret) body.client_secret = cfg.clientSecret;
+    const r = await fetch(meta.token_endpoint, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    const text = await r.text();
+    if (!r.ok) throw new Error(`Nickel token exchange failed: ${r.status} ${text.slice(0, 200)}`);
+    const data = JSON.parse(text);
+    await this._saveToken(data, clientId);
+    await query(`DELETE FROM nickel_mcp_oauth_states WHERE state = $1`, [state]);
+    return { success: true, token_type: data.token_type, expires_in: data.expires_in, scope: data.scope };
+  }
+
+  static async oauthStatus() {
+    if (!pool) return { configured: false };
+    const row = (await query(`SELECT client_id, access_token, expires_at FROM nickel_mcp_tokens WHERE provider = 'nickel' LIMIT 1`)).rows[0];
+    return {
+      configured: !!(row && row.access_token),
+      clientId: row && row.client_id,
+      expired: !!(row && row.expires_at && new Date(row.expires_at) <= new Date()),
+    };
+  }
+
+  // ─── REST API helpers ───────────────────────────────────────────────────────────
+
+  static _base() {
+    const cfg = this._cfg();
+    return cfg.restUrl.replace(/\/$/, '');
+  }
+
+  static _normalizeAddress(addr) {
+    if (!addr) return undefined;
+    if (typeof addr === 'string') return { street1: addr, country: 'US' };
+    const a = {
+      street1: addr.line1 || addr.street1 || addr.street || addr.address || '',
+      street2: addr.line2 || addr.street2 || '',
+      city: addr.city || '',
+      state: addr.state || '',
+      zip: addr.postalCode || addr.postal_code || addr.zip || '',
+      country: addr.country || 'US',
+    };
+    if (!a.street1) return undefined;
+    return a;
+  }
+
+  static async _listVendors(payload = {}) {
+    const cfg = this._cfg();
+    if (cfg.shadow) return { vendors: [{ id: 'vendor-shadow', name: payload.vendorName || 'Shadow Vendor' }] };
+    const q = payload.vendorName ? `?vendorName=${encodeURIComponent(payload.vendorName)}` : '';
+    const r = await this._http('GET', `${this._base()}/vendor${q}`);
+    if (!r.ok) throw new Error(`Nickel list vendors failed: ${r.statusCode} ${r.body.slice(0, 200)}`);
+    return r.json || { vendors: [] };
+  }
+
+  static async _createVendor(payload) {
+    const cfg = this._cfg();
+    if (cfg.shadow) return { id: `vendor-shadow-${Date.now()}`, name: payload.name };
+    const body = {
+      name: payload.name,
+      emails: payload.emails || [],
+      type: payload.type || 'BUSINESS',
+    };
+    if (body.emails.length) body.emails = [...new Set(body.emails)].filter(Boolean);
+    const addr = this._normalizeAddress(payload.address);
+    if (addr) body.address = addr;
+    const r = await this._http('POST', `${this._base()}/vendor`, body);
+    if (!r.ok) throw new Error(`Nickel create vendor failed: ${r.statusCode} ${r.body.slice(0, 200)}`);
+    return r.json || { id: 'unknown' };
+  }
+
+  static async _getVendor(vendorId) {
+    const cfg = this._cfg();
+    if (cfg.shadow) return { id: vendorId, name: 'Shadow Vendor', vendorDeliveryMethods: [{ id: `vdm-shadow-${Date.now()}`, type: 'ACH' }] };
+    const r = await this._http('GET', `${this._base()}/vendor/${encodeURIComponent(vendorId)}`);
+    if (!r.ok) throw new Error(`Nickel get vendor failed: ${r.statusCode} ${r.body.slice(0, 200)}`);
+    return r.json || {};
+  }
+
+  static async _updateVendorACHDeliveryMethod(vendorId, bankAccount) {
+    const cfg = this._cfg();
+    if (cfg.shadow) return { id: `vdm-shadow-${Date.now()}`, type: 'ACH', routingNumber: bankAccount.routingNumber, accountNumber: bankAccount.accountNumber };
+    const body = {
+      routingNumber: String(bankAccount.routingNumber || '').replace(/\D/g, ''),
+      accountNumber: String(bankAccount.accountNumber || '').replace(/\s/g, ''),
+      accountType: (bankAccount.accountType || 'checking').toUpperCase(),
+    };
+    const r = await this._http('PUT', `${this._base()}/vendor/${encodeURIComponent(vendorId)}/deliveryMethod/ach`, body);
+    if (!r.ok) throw new Error(`Nickel update vendor ACH failed: ${r.statusCode} ${r.body.slice(0, 200)}`);
+    return r.json || {};
+  }
+
+  static async _getOrCreateVendor(p) {
+    const cfg = this._cfg();
+    if (cfg.shadow) {
+      return {
+        id: `vendor-shadow-${Date.now()}`,
+        name: p.name,
+        vendorDeliveryMethods: [{ id: `vdm-shadow-${Date.now()}`, type: 'ACH' }],
+        shadow: true,
+      };
+    }
+    const existing = await this._listVendors({ vendorName: p.name });
+    const vendors = Array.isArray(existing.vendors) ? existing.vendors : (Array.isArray(existing) ? existing : []);
+    const match = vendors.find((v) => (v.name || '').toUpperCase() === (p.name || '').toUpperCase());
+    if (match && match.id) {
+      await this._updateVendorACHDeliveryMethod(match.id, p.bankAccount);
+      return await this._getVendor(match.id);
+    }
+    const created = await this._createVendor({ name: p.name, emails: p.emails, address: p.address, type: p.type });
+    if (created && created.id) {
+      await this._updateVendorACHDeliveryMethod(created.id, p.bankAccount);
+      return await this._getVendor(created.id);
+    }
+    throw new Error('Nickel vendor creation did not return a vendor id');
+  }
+
+  static async _createBill(payload) {
+    const cfg = this._cfg();
+    if (cfg.shadow) return { id: `bill-shadow-${Date.now()}`, ...payload };
+    const due = payload.dueDateEpochMillis ? new Date(payload.dueDateEpochMillis) : new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
+    const body = {
+      amountCents: payload.amountCents,
+      dueDateEpochMillis: due.getTime(),
+      vendorId: payload.vendorId,
+      reason: payload.reason || 'Vendor bill',
+    };
+    if (payload.billNumber) body.billNumber = payload.billNumber;
+    if (payload.s3Urls) body.s3Urls = payload.s3Urls;
+    const r = await this._http('POST', `${this._base()}/bill`, body);
+    if (!r.ok) throw new Error(`Nickel create bill failed: ${r.statusCode} ${r.body.slice(0, 200)}`);
+    return r.json || { id: 'unknown' };
+  }
+
+  static async _getBill(billId) {
+    if (this._cfg().shadow) return { id: billId, status: 'pending' };
+    const r = await this._http('GET', `${this._base()}/bill/${encodeURIComponent(billId)}`);
+    if (!r.ok) throw new Error(`Nickel get bill failed: ${r.statusCode} ${r.body.slice(0, 200)}`);
+    return r.json || {};
+  }
+
+  static async _listPaymentMethods() {
+    const cfg = this._cfg();
+    if (cfg.shadow) return [{ id: `pm-shadow-${Date.now()}`, type: 'ACH' }];
+    const r = await this._http('GET', `${this._base()}/billPaymentMethods`);
+    if (!r.ok) throw new Error(`Nickel list payment methods failed: ${r.statusCode} ${r.body.slice(0, 200)}`);
+    const json = r.json || {};
+    return Array.isArray(json.paymentMethods) ? json.paymentMethods : (Array.isArray(json) ? json : []);
+  }
+
+  static async _payBill(payload) {
+    const cfg = this._cfg();
+    if (cfg.shadow) return { billPayments: [{ id: `bp-shadow-${Date.now()}`, status: 'completed' }] };
+    const r = await this._http('POST', `${this._base()}/bill/pay`, payload);
+    if (!r.ok) throw new Error(`Nickel pay bill failed: ${r.statusCode} ${r.body.slice(0, 200)}`);
+    return r.json || {};
+  }
+
+  static async _getBillPayment(billPaymentId) {
+    const cfg = this._cfg();
+    if (cfg.shadow) return { id: billPaymentId, status: 'completed' };
+    const r = await this._http('GET', `${this._base()}/billPayment/${encodeURIComponent(billPaymentId)}`);
+    if (!r.ok) throw new Error(`Nickel get bill payment failed: ${r.statusCode} ${r.body.slice(0, 200)}`);
+    return r.json || {};
+  }
+
+  static async _createWebhook(payload) {
+    const cfg = this._cfg();
+    if (cfg.shadow) return { id: `wh-shadow-${Date.now()}`, url: payload.url, secret: cfg.webhookSecret || 'whsec_shadow' };
+    const r = await this._http('POST', `${this._base()}/webhook`, payload);
+    if (!r.ok) throw new Error(`Nickel create webhook failed: ${r.statusCode} ${r.body.slice(0, 200)}`);
+    return r.json || {};
+  }
+
+  // ─── Canonical invoice/pay flow ────────────────────────────────────────────────
+
+  static _payloadDefaults(payload) {
+    const cfg = this._cfg();
+    const amount = Number(payload.amount);
+    if (!Number.isFinite(amount) || amount <= 0) throw new Error('amount must be a positive number');
+    const vendorPayload = payload.vendor || {};
+    const payee = payload.payee || {};
+    const bankAccount = vendorPayload.bankAccount || (payee.routing || payee.routingNumber ? {
+      routingNumber: payee.routing || payee.routingNumber,
+      accountNumber: payee.account || payee.accountNumber,
+      accountType: payee.accountType || 'checking',
+      bankName: payee.bankName || payee.bank_name,
+    } : null) || {};
+    const name = vendorPayload.name || payee.name || payload.vendorName;
+    if (!name) throw new Error('vendor.name or payee.name is required');
+    const emails = vendorPayload.emails || (vendorPayload.email ? [vendorPayload.email] : []) || (payee.email ? [payee.email] : []);
+    const address = vendorPayload.address || payee.address || (payee.address ? payee.address : undefined);
+    const type = vendorPayload.type || 'BUSINESS';
+    const vendor = {
+      name,
+      emails,
+      address,
+      type,
+      bankAccount: {
+        routingNumber: bankAccount.routingNumber || bankAccount.routing || '',
+        accountNumber: bankAccount.accountNumber || bankAccount.account || '',
+        accountType: bankAccount.accountType || 'checking',
+        bankName: bankAccount.bankName || bankAccount.bank_name || payee.bankName || '',
+      },
+    };
+    if (!vendor.bankAccount.routingNumber || !vendor.bankAccount.accountNumber) {
+      throw new Error('vendor bank account routing and account numbers are required');
+    }
+    const due = payload.dueDate || payload.due || new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString();
+    const dueDate = new Date(due);
+    if (isNaN(dueDate.getTime())) throw new Error('invalid dueDate');
+    return {
+      amount,
+      amountCents: toCents(amount),
+      currency: String(payload.currency || 'USD').toUpperCase(),
+      sourceType: payload.sourceType || payload.source_type || cfg.defaultSourceType,
+      sourceAccountId: payload.sourceAccountId || payload.source_account_id || cfg.defaultSourceAccountId,
+      vendor,
+      billNumber: payload.invoiceNumber || payload.billNumber || `NIC-${Date.now()}`,
+      dueDate: dueDate.toISOString(),
+      dueDateMillis: dueDate.getTime(),
+      reason: payload.reason || payload.memo || payload.description || `Bill from ${name}`,
+      memo: payload.memo || payload.description || '',
+      s3Urls: payload.s3Urls || payload.s3_urls || [],
+      notificationEmails: payload.notificationEmails || payload.notification_emails || (cfg.notificationEmail ? [cfg.notificationEmail] : []),
+      merchantPaymentMethodId: payload.merchantPaymentMethodId || payload.merchant_payment_method_id,
+      autoSettle: payload.autoSettle !== undefined ? !!payload.autoSettle : cfg.autoSettle,
+    };
+  }
+
+  static _redactPayload(obj) {
+    if (!obj || typeof obj !== 'object') return obj;
+    const out = JSON.parse(JSON.stringify(obj, (k, v) => {
+      if (SENSITIVE_RE.test(k)) return '[REDACTED]';
+      return v;
+    }));
+    return out;
+  }
+
+  static async _recordPayment(record) {
+    if (!pool) return;
+    await query(`
+      INSERT INTO nickel_payments (
+        id, status, vendor_id, vendor_name, bill_id, bill_payment_id, payment_method_id, delivery_method_id,
+        amount_cents, currency, source_account_id, source_type, payables_gl_account, journal_entry_id,
+        settlement_journal_entry_id, instructions, result, metadata, created_at, updated_at
+      ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16::jsonb,$17::jsonb,$18::jsonb,NOW(),NOW())
+      ON CONFLICT (id) DO UPDATE SET
+        status = EXCLUDED.status, vendor_id = EXCLUDED.vendor_id, vendor_name = EXCLUDED.vendor_name,
+        bill_id = EXCLUDED.bill_id, bill_payment_id = EXCLUDED.bill_payment_id,
+        payment_method_id = EXCLUDED.payment_method_id, delivery_method_id = EXCLUDED.delivery_method_id,
+        amount_cents = EXCLUDED.amount_cents, currency = EXCLUDED.currency,
+        source_account_id = EXCLUDED.source_account_id, source_type = EXCLUDED.source_type,
+        payables_gl_account = EXCLUDED.payables_gl_account, journal_entry_id = EXCLUDED.journal_entry_id,
+        settlement_journal_entry_id = EXCLUDED.settlement_journal_entry_id,
+        instructions = EXCLUDED.instructions, result = EXCLUDED.result, metadata = EXCLUDED.metadata,
+        updated_at = NOW()
+    `, [
+      record.id, record.status, record.vendorId, record.vendorName, record.billId, record.billPaymentId,
+      record.paymentMethodId, record.deliveryMethodId, record.amountCents, record.currency,
+      record.sourceAccountId, record.sourceType, record.payablesGlAccount, record.journalEntryId,
+      record.settlementJournalEntryId, safeJson(record.instructions), safeJson(record.result), safeJson(record.metadata),
+    ]);
+  }
+
+  static async _recordToObject(record) {
+    return record;
+  }
+
+  static async _postPayableGL(record) {
+    const cfg = this._cfg();
+    const deps = await this._deps();
+    if (!deps.TrustAccounting) return;
+    let source;
+    try { source = await deps.TrustAccounting.getAccount(record.sourceAccountId); } catch { source = null; }
+    if (!source) {
+      record.result.glSkipped = true;
+      record.result.glNote = `source account ${record.sourceAccountId} not found`;
+      return;
+    }
+    const acctType = String(source.account_type || source.type || '').toLowerCase();
+    const isIncomeLike = ['income', 'revenue', 'liability', 'equity'].includes(acctType);
+    if (!isIncomeLike) {
+      record.result.glSkipped = true;
+      record.result.glNote = `source account type ${acctType} does not require payable reclassification`;
+      return;
+    }
+    const amt = (record.amountCents / 100).toFixed(2);
+    const journal = await deps.TrustAccounting.postJournalEntry({
+      entryDate: new Date().toISOString().slice(0, 10),
+      description: `Nickel payable from ${record.sourceAccountId} to ${record.vendorName}`,
+      referenceId: record.id,
+      lines: [
+        { accountCode: record.sourceAccountId, debitAmount: amt, creditAmount: 0, memo: `Nickel source reclass to payable ${record.id}` },
+        { accountCode: cfg.payablesGlAccount, debitAmount: 0, creditAmount: amt, memo: `Nickel payable for ${record.id}` },
+      ],
+    });
+    record.journalEntryId = journal.entry_id;
+    record.payablesGlAccount = cfg.payablesGlAccount;
+    record.result.glPosted = true;
+    record.result.payableGlAccount = cfg.payablesGlAccount;
+  }
+
+  static async _postSettlementGL(record) {
+    const cfg = this._cfg();
+    const deps = await this._deps();
+    if (!deps.TrustAccounting) {
+      record.result.settlementGlSkipped = true;
+      record.result.settlementGlNote = 'TrustAccounting not available';
+      return;
+    }
+    const amt = (record.amountCents / 100).toFixed(2);
+    const journal = await deps.TrustAccounting.postJournalEntry({
+      entryDate: new Date().toISOString().slice(0, 10),
+      description: `Nickel settlement to ${record.vendorName}`,
+      referenceId: record.id,
+      lines: [
+        { accountCode: cfg.payablesGlAccount, debitAmount: amt, creditAmount: 0, memo: `Settle payable for ${record.id}` },
+        { accountCode: cfg.settlementGlAccount, debitAmount: 0, creditAmount: amt, memo: `Cash out for Nickel ${record.id}` },
+      ],
+    });
+    record.settlementJournalEntryId = journal.entry_id;
+    record.result.settlementGlPosted = true;
+    record.result.settlementGlAccount = cfg.settlementGlAccount;
+  }
+
+  static async _sendSettlementNotifications(record, payload = {}) {
+    const cfg = this._cfg();
+    const deps = await this._deps();
+    const buyerEmail = payload.buyer_email || payload.buyerEmail || cfg.notificationEmail || process.env.TRUST_ADMIN_EMAIL;
+    const sellerEmail = payload.seller_email || payload.sellerEmail || (record.vendorEmails && record.vendorEmails[0]);
+    if (!deps.EmailEngine) return { notified: false, note: 'EmailEngine not available' };
+    if (!buyerEmail && !sellerEmail) return { notified: false, note: 'no buyer or seller email configured' };
+    const amt = (record.amountCents / 100).toFixed(2);
+    const subject = `Nickel payment ${record.billPaymentId || record.id} settled — $${amt} to ${record.vendorName}`;
+    const body = `A Nickel bill payment has settled.
+
+Payment ID: ${record.id}
+Bill Payment ID: ${record.billPaymentId || 'N/A'}
+Vendor: ${record.vendorName}
+Amount: $${amt} ${record.currency}
+Status: ${record.status}
+Source: ${record.sourceType} / ${record.sourceAccountId}
+${record.journalEntryId ? `Payable journal: ${record.journalEntryId}` : ''}
+${record.settlementJournalEntryId ? `Settlement journal: ${record.settlementJournalEntryId}` : ''}
+`;
+    const results = [];
+    if (buyerEmail) {
+      try { results.push(await deps.EmailEngine.send({ to: buyerEmail, subject, body })); } catch (e) { results.push({ to: buyerEmail, error: e.message }); }
+    }
+    if (sellerEmail) {
+      try { results.push(await deps.EmailEngine.send({ to: sellerEmail, subject, body })); } catch (e) { results.push({ to: sellerEmail, error: e.message }); }
+    }
+    return { notified: true, results };
+  }
+
+  static async _settlePayment(record, payload = {}) {
+    const cfg = this._cfg();
+    if (record.status === 'settled') return record;
+
+    if (!cfg.shadow && record.billPaymentId && record.status !== 'completed') {
+      const bp = await this._getBillPayment(record.billPaymentId);
+      record.status = bp.status || record.status;
+      if (!['completed', 'paid', 'settled'].includes(bp.status)) {
+        record.result.settlementPending = true;
+        record.result.settlementNote = `bill payment status is ${bp.status}`;
+        await this._recordPayment(record);
+        return record;
+      }
+    }
+
+    if (record.status !== 'completed' && !cfg.shadow) {
+      throw new Error(`Cannot settle incomplete payment: ${record.status}`);
+    }
+
+    if (cfg.postPayableGl && !record.journalEntryId) await this._postPayableGL(record);
+
+    if (!record.settlementJournalEntryId && record.journalEntryId) {
+      await this._postSettlementGL(record);
+    }
+
+    record.status = 'settled';
+    record.result.settledAt = new Date().toISOString();
+    record.result.settlementReference = payload.settlement_reference || payload.settlementReference || record.billPaymentId || record.id;
+    await this._recordPayment(record);
+    await this._sendSettlementNotifications(record, payload);
+    return record;
+  }
+
+  static async _submitInvoice(payload) {
+    const cfg = this._cfg();
+    const p = this._payloadDefaults(payload);
+    const record = {
+      id: id('NIC-'),
+      status: 'pending',
+      amountCents: p.amountCents,
+      currency: p.currency,
+      sourceAccountId: p.sourceAccountId,
+      sourceType: p.sourceType,
+      vendorName: p.vendor.name,
+      vendorEmails: p.vendor.emails,
+      payablesGlAccount: cfg.payablesGlAccount,
+      result: {},
+      instructions: this._redactPayload({ vendor: p.vendor, billNumber: p.billNumber, dueDate: p.dueDate, reason: p.reason, memo: p.memo }),
+      metadata: { payload: this._redactPayload(payload) },
+    };
+    try {
+      let vendor;
+      let bill;
+      let billPayment;
+      if (cfg.shadow) {
+        vendor = { id: `vendor-shadow-${Date.now()}`, name: p.vendor.name, vendorDeliveryMethods: [{ id: `vdm-shadow-${Date.now()}`, type: 'ACH' }] };
+        bill = { id: `bill-shadow-${Date.now()}`, amountDueInCents: p.amountCents };
+        billPayment = { id: `bp-shadow-${Date.now()}`, status: 'completed' };
+      } else {
+        vendor = await this._getOrCreateVendor(p.vendor);
+        const deliveryMethodId = (vendor.vendorDeliveryMethods || []).find((m) => m.type === 'ACH')?.id;
+        if (!deliveryMethodId) throw new Error('Vendor has no ACH delivery method');
+        record.vendorId = vendor.id;
+        record.deliveryMethodId = deliveryMethodId;
+        bill = await this._createBill({
+          amountCents: p.amountCents,
+          dueDateEpochMillis: p.dueDateMillis,
+          vendorId: vendor.id,
+          reason: p.reason,
+          billNumber: p.billNumber,
+          s3Urls: p.s3Urls,
+        });
+        record.billId = bill.id;
+        const methods = await this._listPaymentMethods();
+        if (!methods.length) throw new Error('No merchant payment methods configured in Nickel');
+        const merchantPaymentMethodId = p.merchantPaymentMethodId || methods[0].id;
+        record.paymentMethodId = merchantPaymentMethodId;
+        const payRes = await this._payBill({
+          payments: [{
+            billId: bill.id,
+            merchantPaymentMethodId,
+            notificationEmails: p.notificationEmails,
+            vendorId: vendor.id,
+            vendorDeliveryMethodId: deliveryMethodId,
+            vendorMemo: p.memo,
+          }],
+        });
+        if (payRes.json && Array.isArray(payRes.json.billErrors) && payRes.json.billErrors.length) {
+          throw new Error(`Nickel bill payment errors: ${JSON.stringify(payRes.json.billErrors)}`);
+        }
+        const payments = Array.isArray(payRes.json?.billPayments) ? payRes.json.billPayments : (Array.isArray(payRes.json?.payments) ? payRes.json.payments : []);
+        billPayment = payments[0];
+        if (!billPayment || !billPayment.id) throw new Error('Nickel did not return a bill payment');
+      }
+
+      record.vendorId = record.vendorId || vendor.id;
+      record.billId = record.billId || bill.id;
+      record.billPaymentId = billPayment.id;
+      record.status = ['completed', 'paid', 'settled'].includes(billPayment.status) ? 'completed' : (billPayment.status || 'processing');
+
+      if (cfg.postPayableGl) await this._postPayableGL(record);
+
+      if ((cfg.autoSettle || p.autoSettle) && record.status === 'completed') {
+        await this._settlePayment(record, payload);
+      } else {
+        await this._recordPayment(record);
+      }
+    } catch (err) {
+      record.status = 'failed';
+      record.result.error = err.message;
+      await this._recordPayment(record).catch(() => {});
+      throw err;
+    }
+    return record;
+  }
+
+  static async _settlePaymentById(payload) {
+    if (!pool) throw new Error('Postgres pool not available');
+    const key = payload.id || payload.billPaymentId || payload.paymentId;
+    if (!key) throw new Error('id, billPaymentId or paymentId required');
+    const row = (await query(`SELECT * FROM nickel_payments WHERE id = $1 OR bill_payment_id = $1`, [key])).rows[0];
+    if (!row) throw new Error(`Nickel payment record not found for ${key}`);
+    return await this._settlePayment(row, payload);
+  }
+
+  static async _webhook(payload) {
+    const cfg = this._cfg();
+    const signature = payload.signature || payload.headers?.['nickel-signature'] || payload.headers?.['Nickel-Signature'];
+    const body = payload.body || payload;
+    if (cfg.webhookSecret && signature) {
+      const expected = crypto.createHmac('sha256', cfg.webhookSecret).update(safeJson(body)).digest('hex');
+      if (signature !== expected) throw new Error('Nickel webhook signature mismatch');
+    }
+    const billPaymentId = payload.billPaymentId || payload.bill_payment_id || payload.id;
+    const status = payload.status || payload.billPaymentStatus;
+    if (!billPaymentId) return { received: true, note: 'no billPaymentId in webhook' };
+    if (!pool) return { received: true, billPaymentId };
+    const row = (await query(`SELECT * FROM nickel_payments WHERE bill_payment_id = $1`, [billPaymentId])).rows[0];
+    if (!row) return { received: true, billPaymentId, note: 'record not found' };
+    if (['completed', 'paid', 'settled'].includes(status) && row.status !== 'settled') {
+      return await this._settlePayment(row, payload);
+    }
+    return { received: true, billPaymentId, status: row.status };
+  }
+
+  // ─── Entry points ──────────────────────────────────────────────────────────────
+
+  static async status() {
+    const cfg = this._cfg();
+    const tokenConfigured = cfg.apiKey ? true : await this._hasToken().catch(() => false);
+    return {
+      engine: this.engineName,
+      healthy: true,
+      mode: cfg.shadow ? 'shadow' : (cfg.live ? 'live' : 'demo'),
+      mcpUrl: cfg.mcpUrl,
+      restUrl: cfg.restUrl,
+      tokenConfigured,
+      oauthConfigured: await this.oauthStatus().then((o) => o.configured).catch(() => false),
+    };
+  }
+
+  static async health() {
+    return this.status();
+  }
+
+  static async _process(action, payload = {}) {
+    switch (action) {
+      case 'status': return await this.status();
+      case 'health': return await this.health();
+      case 'oauthStatus': return await this.oauthStatus();
+      case 'startOAuth': return await this.startOAuth(payload);
+      case 'handleCallback':
+      case 'oauthCallback':
+        return await this.handleCallback(payload.code, payload.state);
+      case 'listVendors': return await this._listVendors(payload);
+      case 'createVendor': return await this._createVendor(payload);
+      case 'getVendor': return await this._getVendor(payload.vendorId || payload.id);
+      case 'updateVendorACH':
+      case 'updateVendorDeliveryMethod':
+        return await this._updateVendorACHDeliveryMethod(payload.vendorId || payload.id, payload.bankAccount || payload);
+      case 'createBill': return await this._createBill(payload);
+      case 'getBill': return await this._getBill(payload.billId || payload.id);
+      case 'listPaymentMethods': return await this._listPaymentMethods();
+      case 'payBill': return await this._payBill(payload);
+      case 'getBillPayment': return await this._getBillPayment(payload.billPaymentId || payload.id);
+      case 'createWebhook': return await this._createWebhook(payload);
+      case 'submitInvoice': return await this._submitInvoice(payload);
+      case 'settlePayment':
+      case 'settle':
+        return await this._settlePaymentById(payload);
+      case 'webhook':
+        return await this._webhook(payload);
+      default:
+        return await this.status();
+    }
+  }
+}
+
 // ─── Moov Paygate Engine ───────────────────────────────────────────────────────
 //
 // Self-hosted Moov Paygate (Apache 2.0) integration. Calls a Paygate transfers
@@ -5870,6 +6761,7 @@ const ENGINES = {
   'settlement-endpoint': SettlementEndpointEngine,
   'moov-paygate': MoovPaygateEngine,
   'apisix': ApacheApisixEngine,
+  nickel: NickelMcpEngine,
 };
 
 async function ensureAll() {
@@ -5909,6 +6801,7 @@ module.exports = {
   PtcTreasuryEngine,
   MoovPaygateEngine,
   ApacheApisixEngine,
+  NickelMcpEngine,
   SettlementEndpointEngine,
   engines: ENGINES,
   ensureAll,

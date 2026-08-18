@@ -7,7 +7,7 @@
  * bank, treasury, payment, clearing, settlement, compliance, security, rest-api,
  * bookkeeping, cash, asset-acquisition, bank-aggregator, funding, smart-router, back-office,
  * wallet-onramp, alchemy-wallet, issuer-bridge, conduit, tokenization, melio, ptc-bank,
- * ptc-treasury, settlement-endpoint, moov-paygate, and apisix.
+ * ptc-treasury, settlement-endpoint, moov-paygate, apisix, and nickel.
  */
 
 const express = require('express');
@@ -39,6 +39,7 @@ const {
   SettlementEndpointEngine,
   MoovPaygateEngine,
   ApacheApisixEngine,
+  NickelMcpEngine,
 } = require('../integrations/os/osEngine');
 
 const router = express.Router();
@@ -72,6 +73,7 @@ const ENGINES = {
   'settlement-endpoint': SettlementEndpointEngine,
   'moov-paygate': MoovPaygateEngine,
   apisix: ApacheApisixEngine,
+  nickel: NickelMcpEngine,
 };
 
 function sendError(res, err) {
@@ -154,6 +156,16 @@ router.post('/moov-paygate/webhook', writeRateLimiter(), async (req, res) => {
     const payload = req.body || {};
     const signature = req.get('x-moov-signature') || payload.signature;
     const data = await MoovPaygateEngine.process({ ...payload, action: 'webhook', signature });
+    res.json({ success: true, data });
+  } catch (err) { sendError(res, err); }
+});
+
+// Public Nickel webhook endpoint (HMAC verified by the engine).
+router.post('/nickel/webhook', writeRateLimiter(), async (req, res) => {
+  try {
+    const payload = req.body || {};
+    const signature = req.get('Nickel-Signature') || payload.signature;
+    const data = await NickelMcpEngine.process({ ...payload, action: 'webhook', signature, headers: req.headers });
     res.json({ success: true, data });
   } catch (err) { sendError(res, err); }
 });

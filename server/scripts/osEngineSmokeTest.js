@@ -19,7 +19,7 @@ const BASE_URL = (process.env.OS_TEST_BASE_URL || 'http://localhost:3002').repla
 const TOKEN = process.env.ADMIN_SECRET_TOKEN || 'dlb-admin-2026-trust';
 const VERBOSE = process.env.OS_TEST_VERBOSE !== 'false';
 
-const engines = ['bank', 'treasury', 'payment', 'clearing', 'settlement', 'compliance', 'security', 'rest-api', 'bookkeeping', 'cash', 'asset-acquisition', 'bank-aggregator', 'funding', 'smart-router', 'back-office', 'wallet-onramp', 'alchemy-wallet', 'tokenization', 'conduit', 'issuer-bridge', 'melio', 'ptc-bank', 'ptc-treasury', 'settlement-endpoint', 'moov-paygate', 'apisix'];
+const engines = ['bank', 'treasury', 'payment', 'clearing', 'settlement', 'compliance', 'security', 'rest-api', 'bookkeeping', 'cash', 'asset-acquisition', 'bank-aggregator', 'funding', 'smart-router', 'back-office', 'wallet-onramp', 'alchemy-wallet', 'tokenization', 'conduit', 'issuer-bridge', 'melio', 'nickel', 'ptc-bank', 'ptc-treasury', 'settlement-endpoint', 'moov-paygate', 'apisix'];
 
 const results = [];
 let failed = false;
@@ -153,6 +153,10 @@ async function main() {
     { engine: 'melio', action: 'listVendors', payload: {} },
     { engine: 'melio', action: 'schedulePayment', payload: { amount: 0.01, sourceType: 'trust', sourceAccountId: '1200', vendor: { name: 'Smoke Test Vendor' }, deliveryMethod: 'ach' } },
     { engine: 'melio', action: 'getPayment', payload: { id: 'melio-payment-shadow' } },
+    { engine: 'nickel', action: 'status', payload: {} },
+    { engine: 'nickel', action: 'listVendors', payload: {} },
+    { engine: 'nickel', action: 'submitInvoice', payload: { amount: 0.01, sourceType: 'trust', sourceAccountId: '4000', vendor: { name: 'Smoke Test Vendor', bankAccount: { accountNumber: '000123456789', routingNumber: '111000025', accountType: 'checking' } }, invoiceNumber: 'SMOKE-NIC-1' }, capture: 'billPaymentId' },
+    { engine: 'nickel', action: 'getBillPayment', payload: { id: '${billPaymentId}' } },
     { engine: 'ptc-bank', action: 'createCustomer', payload: { name: 'PTC Smoke Customer', email: 'smoke@example.com' }, capture: 'ptcBankCustomerId' },
     { engine: 'ptc-bank', action: 'createAccount', payload: { customerId: '${ptcBankCustomerId}', accountName: 'PTC Smoke Checking', accountType: 'checking' }, capture: 'ptcBankAccountId' },
     { engine: 'ptc-bank', action: 'deposit', payload: { accountId: '${ptcBankAccountId}', amount: 100, description: 'Smoke deposit' } },
@@ -210,6 +214,7 @@ async function main() {
           (capture === 'ptcBankAccountId' && r.account_id) ? r.account_id :
           (capture === 'ptcBankToAccountId' && r.account_id) ? r.account_id :
           (capture === 'ptcBankPaymentId' && r.paymentId) ? r.paymentId :
+          (capture === 'billPaymentId' && r.billPaymentId) ? r.billPaymentId :
           (capture === 'settlementEndpointId' && r.endpointId) ? r.endpointId :
           (capture === 'settlementEndpointId' && r.externalEndpointId) ? r.externalEndpointId :
           r[capture] || undefined;
