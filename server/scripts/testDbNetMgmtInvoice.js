@@ -16,10 +16,14 @@ const { VendorEngine } = require('../integrations/vendors/vendorEngine');
 
 function parseArgs(argv) {
   const args = {};
-  for (let i = 2; i < argv.length; i += 2) {
+  for (let i = 2; i < argv.length; i++) {
     const k = argv[i].replace(/^--/, '');
-    const v = argv[i + 1];
-    if (k && v !== undefined) args[k] = v;
+    if (argv[i + 1] && !argv[i + 1].startsWith('--')) {
+      args[k] = argv[i + 1];
+      i++;
+    } else {
+      args[k] = true;
+    }
   }
   return args;
 }
@@ -55,6 +59,7 @@ async function findOrCreateVendor() {
 }
 
 async function main() {
+  await VendorEngine.ensureTables();
   const a = parseArgs(process.argv);
   const amount = Number(a.amount || 0.01);
   if (!Number.isFinite(amount) || amount <= 0) {
@@ -114,7 +119,7 @@ async function main() {
   }
 }
 
-main().catch((err) => {
+main().then(() => process.exit(0)).catch((err) => {
   console.error(err.message);
   process.exit(1);
 });

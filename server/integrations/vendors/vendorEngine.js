@@ -146,6 +146,20 @@ class VendorEngine {
     `);
 
     await pool.query(`
+      CREATE TABLE IF NOT EXISTS cashflow_events (
+        id SERIAL PRIMARY KEY,
+        event_type TEXT NOT NULL,
+        category TEXT,
+        amount NUMERIC(20,2) NOT NULL,
+        direction TEXT NOT NULL CHECK (direction IN ('inflow','outflow','neutral')),
+        description TEXT,
+        event_date DATE,
+        metadata JSONB,
+        created_at TIMESTAMPTZ DEFAULT NOW()
+      )
+    `);
+
+    await pool.query(`
       ALTER TABLE vendor_payments
         DROP CONSTRAINT IF EXISTS vendor_payments_source_type_check,
         ADD CONSTRAINT vendor_payments_source_type_check

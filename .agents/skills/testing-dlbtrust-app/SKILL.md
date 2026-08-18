@@ -1181,3 +1181,66 @@ Run `grep -E '^\s+uri:' docker/apisix/apisix.yaml` and confirm only `/ptc/wire` 
 - If `bank_transfers` inserts fail, verify `BankTransferEngine.ensureTables()` ran at startup (it drops and re-adds the `bank_transfers_rail_check` constraint to include `'apisix'`).
 - The Fly deploy `https://dlbtrust-app.fly.dev` often lags the local branch and may not show the `apisix` engine; if `GET /api/os/apisix/status` returns `404` and the dashboard registry omits `apisix`, Fly has not been deployed with this branch yet.
 - The dashboard `Run` button and payload textarea may not register scaled coordinate typing. Set `document.getElementById('proc-payload').value` and `proc-engine`/`proc-action` values via the browser console, then click `Run`.
+
+## Melio Vendor Invoice / CSV Distribution (PR #361)
+
+The `devin/melio-vendor-invoice-1787071715` branch adds a vendor-payments → `MelioEngine.exportPayment` workflow. `VendorEngine` supports `payment_method: 'melio'`, `processPayment`, `settleMelioPayment`, and CSV/email notifications. `MelioEngine.exportPayment` (shadow mode, no `MELIO_API_KEY`) writes a CSV to `data/melio-exports/` and posts a source → `2100` Fees Payable GL journal entry. Settlement posts `2100` → `1000` Trust Cash and logs buyer/seller notification emails (or falls back to `sent: false, provider: 'log'` when SMTP/SendGrid is not configured). Dashboard sections: **One-Click Melio CSV Distribution**, **Melio Invoice Sync (DB NET MGMT)**, and **Settle Melio Payment**.
+
+### Startup and env
+
+```bash
+cd /home/ubuntu/repos/dlbtrust-app
+nohup env \
+  DATABASE_URL=postgres://dlbtrust:dlbtrust@localhost:5432/dlbtrust \
+  JWT_SECRET=<any-stable-secret> \
+  ADMIN_SECRET_TOKEN=dlb-admin-2026-trust \
+  MELIO_PAY_BILLS_EMAIL=deandrealavarbarkleytrust_935@invoicesmelio.com \
+  MELIO_PAYABLES_GL_ACCOUNT=2100 \
+  MELIO_POST_PAYABLE_GL=true \
+  PORT=3002 \
+  node server/server-3002.js > /tmp/server-3002-pr361.log 2>&1 &
+disown
+```
+
+### End-to-end verification
+
+1. Static checks:
+   ```bash
+   npm run lint
+   npm run typecheck
+   node server/scripts/osEngineSmokeTest.js
+   ```
+   Expected: lint/typecheck exit `0`; smoke test `115/117` passed (only `alchemy-wallet: send` and `tokenization: execute` fail).
+
+2. CLI invoice + settle:
+   ```bash
+   # IMPORTANT: `testDbNetMgmtInvoice.js` parseArgs treats every flag as a key/value pair,
+   # so pass `--process true --settle true` instead of bare `--process --settle`.
+   ADMIN_SECRET_TOKEN=dlb-admin-2026-trust \
+   MELIO_PAY_BILLS_EMAIL=deandrealavarbarkleytrust_935@invoicesmelio.com \
+     node server/scripts/testDbNetMgmtInvoice.js \
+     --amount 0.01 --sourceAccountId 4000 \
+     --process true --settle true \
+     --buyerEmail admin@example.com --sellerEmail vendor@example.com
+   ```
+   Expected: vendor DB NET MGMT created/found with routing `121145307`, account `692101092959`, bank `Lili Bank`, `accountType: 'checking'`; payment reaches `status: 'settled'`; `melio_export_id` starts with `MEL-`; CSV path under `data/melio-exports/`; export GL `4000` → `2100` and settlement GL `2100` → `1000`.
+
+3. CSV content check:
+   ```bash
+   ls -1 data/melio-exports/melio-export-MEL-*.csv | tail -1
+   cat data/melio-exports/melio-export-MEL-*.csv | tail -1
+   ```
+   Expected columns: `VendorName,Amount,InvoiceNumber,DueDate,BillDate,Memo,Email,Address,RoutingNumber,AccountNumber,AccountType,BankName`; `VendorName` = `DB NET MGMT`, `Amount` = `0.01`, `RoutingNumber` = `121145307`, `AccountNumber` = `692101092959`, `BankName` = `Lili Bank`, `AccountType` = `checking`, dates in `YYYY-MM-DD`.
+
+4. Dashboard (`/os-engine-dashboard.html`):
+   - Set admin token `dlb-admin-2026-trust`.
+   - **One-Click Melio CSV Distribution**: amount `0.01`, source GL `4000`, click **Send Melio CSV Distribution**. Response: `success: true`, `MEL-` export id, CSV path, `journalEntryId`.
+   - **Melio Invoice Sync (DB NET MGMT)**: amount `0.01`, source GL `4000`, buyer `admin@example.com`, seller `vendor@example.com`, click **Submit Invoice & Sync**. Response: vendor payment `VPAY-*`, `melio_export_id`, `csv_path`, `journal_entry_id`.
+   - **Settle Melio Payment**: paste the payment id, settlement ref, same buyer/seller emails, click **Settle & Notify**. Response: `status: 'settled'`, `journal_entry_id`, `csv_path`, `notifications` array (log fallback `sent: false`).
+
+### What to watch for
+
+- `testDbNetMgmtInvoice.js` does not parse bare boolean flags; use explicit truthy values (`--process true --settle true`) or call `VendorEngine.processPayment`/`settleMelioPayment` directly.
+- `settleMelioPayment` tries to insert a `cashflow_events` row; if the table does not exist it logs a non-fatal warning and continues.
+- The dashboard buttons may not respond to scaled-coordinate mouse clicks; invoke the underlying handlers via the browser console (`submitMelioInvoiceAndSync()` and `settleMelioPayment()`) and click **Set Token** first so the `x-admin-token` is set.
+- `EmailEngine` attachment support only sends attachments when a real SMTP/SendGrid provider is configured; the `log` provider returns `sent: false` with the notification metadata.
