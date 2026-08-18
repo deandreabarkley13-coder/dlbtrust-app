@@ -147,4 +147,139 @@ router.post('/payments/:paymentId/execute', async function(req, res) {
   }
 });
 
+router.post('/payments/:paymentId/process', async function(req, res) {
+  try {
+    var result = await VendorEngine.processPayment(req.params.paymentId, {
+      approvedBy: req.body.approved_by || 'admin',
+      executedBy: req.body.executed_by || 'admin',
+    });
+    res.json({ success: true, data: result });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+router.post('/payments/:paymentId/settle', async function(req, res) {
+  try {
+    var result = await VendorEngine.settleMelioPayment(req.params.paymentId, {
+      settlementReference: req.body.settlement_reference || req.body.reference,
+      settledBy: req.body.settled_by || 'admin',
+      settlementDate: req.body.settlement_date,
+      buyerEmail: req.body.buyer_email,
+      sellerEmail: req.body.seller_email,
+    });
+    res.json({ success: true, data: result });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+router.post('/payments/melio/sync', async function(req, res) {
+  try {
+    var results = await VendorEngine.syncMelioPayments({
+      autoApprove: req.body.auto_approve,
+      autoSettle: req.body.auto_settle,
+      max: req.body.max,
+      settlementReference: req.body.settlement_reference,
+      buyerEmail: req.body.buyer_email,
+      sellerEmail: req.body.seller_email,
+    });
+    res.json({ success: true, count: results.length, data: results });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+router.post('/payments/melio/confirm-settlement', async function(req, res) {
+  try {
+    if (!req.body.melio_export_id && !req.body.payment_id) {
+      return res.status(400).json({ success: false, error: 'melio_export_id or payment_id required' });
+    }
+    var result;
+    if (req.body.melio_export_id) {
+      result = await VendorEngine.settleByMelioExportId(req.body.melio_export_id, {
+        settlementReference: req.body.settlement_reference || req.body.reference,
+        settledBy: req.body.settled_by || 'admin',
+        settlementDate: req.body.settlement_date,
+        buyerEmail: req.body.buyer_email,
+        sellerEmail: req.body.seller_email,
+      });
+    } else {
+      result = await VendorEngine.settleMelioPayment(req.body.payment_id, {
+        settlementReference: req.body.settlement_reference || req.body.reference,
+        settledBy: req.body.settled_by || 'admin',
+        settlementDate: req.body.settlement_date,
+        buyerEmail: req.body.buyer_email,
+        sellerEmail: req.body.seller_email,
+      });
+    }
+    res.json({ success: true, data: result });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+router.post('/payments/melio/submit-invoice', async function(req, res) {
+  try {
+    var vendorPayload = req.body.vendor || {};
+    var paymentPayload = req.body.payment || {};
+
+    if (!vendorPayload.vendor_name && !paymentPayload.vendor_id) {
+      return res.status(400).json({ success: false, error: 'vendor.vendor_name or payment.vendor_id required' });
+    }
+    if (!paymentPayload.amount || parseFloat(paymentPayload.amount) <= 0) {
+      return res.status(400).json({ success: false, error: 'payment.amount required' });
+    }
+
+    var vendor;
+    if (paymentPayload.vendor_id) {
+      vendor = await VendorEngine.getVendor(paymentPayload.vendor_id);
+      if (!vendor) return res.status(404).json({ success: false, error: 'Vendor not found' });
+    } else {
+      var existing = await VendorEngine.listVendors({ search: vendorPayload.vendor_name });
+      vendor = existing.find(function(v) { return v.vendor_name.toUpperCase() === vendorPayload.vendor_name.toUpperCase(); });
+      if (!vendor) {
+        vendor = await VendorEngine.createVendor({
+          vendor_name: vendorPayload.vendor_name,
+          vendor_type: vendorPayload.vendor_type || 'consultant',
+          contact_name: vendorPayload.contact_name || vendorPayload.vendor_name,
+          contact_email: vendorPayload.contact_email || null,
+          address: vendorPayload.address || null,
+          tax_id: vendorPayload.tax_id || null,
+          bank_name: vendorPayload.bank_name || null,
+          routing_number: vendorPayload.routing_number || null,
+          account_number: vendorPayload.account_number || null,
+          account_type: vendorPayload.account_type || 'checking',
+          payment_method: 'melio',
+          auto_approve: true,
+          notes: vendorPayload.notes || null,
+        });
+      }
+    }
+
+    var initiated = await VendorEngine.initiatePayment({
+      vendor_id: vendor.vendor_id,
+      amount: parseFloat(paymentPayload.amount),
+      source_type: paymentPayload.source_type || 'trust',
+      source_account_code: paymentPayload.source_account_code || '1000',
+      payment_method: 'melio',
+      payment_type: paymentPayload.payment_type || 'trust_expense',
+      description: paymentPayload.description || `Invoice from ${vendor.vendor_name}`,
+      invoice_number: paymentPayload.invoice_number || `INV-${Date.now()}`,
+      invoice_date: paymentPayload.invoice_date || new Date().toISOString().slice(0, 10),
+      due_date: paymentPayload.due_date || new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10),
+      initiated_by: req.body.initiated_by || 'melio-submit-invoice',
+    });
+
+    var processed = await VendorEngine.processPayment(initiated.payment.payment_id, {
+      approvedBy: req.body.approved_by || 'melio-submit-invoice',
+      executedBy: req.body.executed_by || 'melio-submit-invoice',
+    });
+
+    res.json({ success: true, data: { vendor, initiated, processed } });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
 module.exports = router;

@@ -58,7 +58,7 @@ async function main() {
   const a = parseArgs(process.argv);
   const amount = Number(a.amount || 0.01);
   if (!Number.isFinite(amount) || amount <= 0) {
-    console.error('Usage: node server/scripts/testDbNetMgmtInvoice.js --amount <dollars> [--sourceAccountId 4000] [--invoiceNumber ...] [--description "Management fees"]');
+    console.error('Usage: node server/scripts/testDbNetMgmtInvoice.js --amount <dollars> [--sourceAccountId 4000] [--invoiceNumber ...] [--description "Management fees"] [--process] [--settle] [--buyerEmail ...] [--sellerEmail ...]');
     process.exit(1);
   }
 
@@ -89,12 +89,29 @@ async function main() {
   const paymentId = initiated.payment.payment_id;
   console.log(`Payment: ${paymentId}`);
 
-  console.log('Approving payment...');
-  await VendorEngine.approvePayment(paymentId, 'system');
+  if (a.process || a.settle) {
+    console.log('Processing payment (approve + export CSV)...');
+    const processed = await VendorEngine.processPayment(paymentId, { approvedBy: 'system', executedBy: 'system' });
+    console.log(JSON.stringify(processed, null, 2));
 
-  console.log('Executing Melio CSV export...');
-  const executed = await VendorEngine.executePayment(paymentId, 'system');
-  console.log(JSON.stringify(executed, null, 2));
+    if (a.settle) {
+      console.log('Settling payment and sending notifications...');
+      const settled = await VendorEngine.settleMelioPayment(paymentId, {
+        settlementReference: a.settlementReference || `MELIO-SETTLE-${Date.now()}`,
+        settledBy: 'system',
+        buyerEmail: a.buyerEmail || process.env.TRUST_ADMIN_EMAIL,
+        sellerEmail: a.sellerEmail || vendor.contact_email,
+      });
+      console.log(JSON.stringify(settled, null, 2));
+    }
+  } else {
+    console.log('Approving payment...');
+    await VendorEngine.approvePayment(paymentId, 'system');
+
+    console.log('Executing Melio CSV export...');
+    const executed = await VendorEngine.executePayment(paymentId, 'system');
+    console.log(JSON.stringify(executed, null, 2));
+  }
 }
 
 main().catch((err) => {

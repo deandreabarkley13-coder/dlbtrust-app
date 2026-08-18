@@ -157,6 +157,36 @@
           <div class="actions">
             <button onclick="sendMelioCsvDistribution()">Send Melio CSV Distribution</button>
           </div>
+          <hr style="border-color: var(--border); margin: 16px 0;">
+          <h3 style="margin: 0 0 10px; font-size: 14px; color: var(--muted);">Melio Invoice Sync (DB NET MGMT)</h3>
+          <div class="form-grid">
+            <label>Amount ($)</label>
+            <input type="number" id="melio-invoice-amount" value="0.01" step="0.01" min="0.01" style="width:120px">
+            <label>Source GL</label>
+            <input type="text" id="melio-invoice-source-gl" value="4000" style="width:120px">
+            <label>Buyer email</label>
+            <input type="email" id="melio-invoice-buyer-email" placeholder="PTC admin email" style="width:220px">
+            <label>Seller email</label>
+            <input type="email" id="melio-invoice-seller-email" placeholder="Vendor email" style="width:220px">
+          </div>
+          <div class="actions">
+            <button onclick="submitMelioInvoiceAndSync()">Submit Invoice & Sync</button>
+          </div>
+          <hr style="border-color: var(--border); margin: 16px 0;">
+          <h3 style="margin: 0 0 10px; font-size: 14px; color: var(--muted);">Settle Melio Payment</h3>
+          <div class="form-grid">
+            <label>Payment ID</label>
+            <input type="text" id="melio-settle-payment-id" placeholder="VPAY-..." style="width:220px">
+            <label>Settlement ref</label>
+            <input type="text" id="melio-settle-reference" placeholder="Melio confirmation #" style="width:220px">
+            <label>Buyer email</label>
+            <input type="email" id="melio-settle-buyer-email" placeholder="PTC admin email" style="width:220px">
+            <label>Seller email</label>
+            <input type="email" id="melio-settle-seller-email" placeholder="Vendor email" style="width:220px">
+          </div>
+          <div class="actions">
+            <button onclick="settleMelioPayment()">Settle & Notify</button>
+          </div>
         </div>
       </section>
 
@@ -466,6 +496,65 @@
       out.classList.remove('hidden');
       out.textContent = JSON.stringify(body, null, 2);
       flash(ok ? 'Melio CSV export generated' : (body.error || 'Melio CSV distribution failed'), ok);
+      loadRegistry();
+    }
+
+    async function submitMelioInvoiceAndSync() {
+      const amount = Number(el('melio-invoice-amount').value);
+      if (!Number.isFinite(amount) || amount <= 0) { flash('Enter a positive amount', false); return; }
+      const sourceGl = el('melio-invoice-source-gl').value.trim() || '4000';
+      const buyerEmail = el('melio-invoice-buyer-email').value.trim();
+      const sellerEmail = el('melio-invoice-seller-email').value.trim();
+
+      const payload = {
+        vendor: {
+          vendor_name: 'DB NET MGMT',
+          vendor_type: 'consultant',
+          contact_name: 'DB NET MGMT',
+          contact_email: 'deandrealavarbarkleytrust_935@invoicesmelio.com',
+          address: '133 E 3rd St Unit 441, New York, NY 10003',
+          tax_id: '',
+          bank_name: 'Lili Bank',
+          routing_number: '121145307',
+          account_number: '692101092959',
+          account_type: 'checking',
+        },
+        payment: {
+          amount,
+          source_type: 'trust',
+          source_account_code: sourceGl,
+          invoice_number: `DBNM-${Date.now()}`,
+          description: 'Management fees — DB NET MGMT',
+        },
+        buyer_email: buyerEmail,
+        seller_email: sellerEmail,
+      };
+      flash('Submitting invoice and syncing to Melio...', true);
+      const { ok, body } = await api('POST', '/api/vendors/payments/melio/submit-invoice', payload);
+      const out = el('proc-output');
+      out.classList.remove('hidden');
+      out.textContent = JSON.stringify(body, null, 2);
+      flash(ok ? 'Invoice submitted and Melio CSV exported' : (body.error || 'Invoice sync failed'), ok);
+      loadRegistry();
+    }
+
+    async function settleMelioPayment() {
+      const paymentId = el('melio-settle-payment-id').value.trim();
+      if (!paymentId) { flash('Payment ID is required', false); return; }
+      const reference = el('melio-settle-reference').value.trim();
+      const buyerEmail = el('melio-settle-buyer-email').value.trim();
+      const sellerEmail = el('melio-settle-seller-email').value.trim();
+
+      flash('Settling payment and sending notifications...', true);
+      const { ok, body } = await api('POST', `/api/vendors/payments/${paymentId}/settle`, {
+        settlement_reference: reference,
+        buyer_email: buyerEmail,
+        seller_email: sellerEmail,
+      });
+      const out = el('proc-output');
+      out.classList.remove('hidden');
+      out.textContent = JSON.stringify(body, null, 2);
+      flash(ok ? 'Payment settled and notifications sent' : (body.error || 'Settlement failed'), ok);
       loadRegistry();
     }
 

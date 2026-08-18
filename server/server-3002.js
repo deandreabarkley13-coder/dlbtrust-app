@@ -785,6 +785,23 @@ initializeDatabase().then(function() {
     }
   } catch(e) { console.warn('[operator-gas-tank] scheduler:', e.message); }
 
+  // Melio vendor-payment sync scheduler (approves/exports pending melio invoices).
+  // OFF unless MELIO_SYNC_SCHEDULE_MS is set. Set MELIO_SYNC_AUTO_APPROVE=true to auto-approve.
+  try {
+    var melioSyncMs = parseInt(process.env.MELIO_SYNC_SCHEDULE_MS || '0', 10);
+    if (melioSyncMs > 0) {
+      setInterval(function() {
+        var MelioVendorEngine = require(path.join(HD, 'server', 'integrations', 'vendors', 'vendorEngine')).VendorEngine;
+        MelioVendorEngine.syncMelioPayments().then(function(result) {
+          console.log('[melio-sync] tick completed:', result.length, 'payment(s)');
+        }).catch(function(err) {
+          console.warn('[melio-sync] tick failed:', err.message);
+        });
+      }, melioSyncMs);
+      console.log('[melio-sync] scheduler started every ' + melioSyncMs + 'ms');
+    }
+  } catch(e) { console.warn('[melio-sync] scheduler:', e.message); }
+
   // Record server start in transaction journal
   try {
     var journal = require(path.join(HD, 'server', 'integrations', 'backup', 'transactionJournal'));
