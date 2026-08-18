@@ -6,7 +6,7 @@
  */
 
 const pool = require('../bonds/pgPool');
-const { generateNACHAFile, parseNACHAFile, validateRouting, ODFI_ROUTING, ORIGINATOR_ID } = require('./nachaGenerator');
+const { generateNACHAFile, parseNACHAFile, validateRouting } = require('./nachaGenerator');
 const { AS2Client } = require('./as2Client');
 const { AS2Partners } = require('./as2Partners');
 const { OpenBankApi } = require('./openBankApi');
