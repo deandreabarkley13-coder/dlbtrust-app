@@ -12,6 +12,9 @@
  * when no email provider is configured.
  */
 
+const fs = require('fs');
+const path = require('path');
+
 let MessagingEngine;
 let nodemailer;
 try { MessagingEngine = require('../messaging/messagingEngine').MessagingEngine; } catch (e) { MessagingEngine = null; }
@@ -46,8 +49,34 @@ function getSmtpTransporter() {
 
 class EmailEngine {
 
-  static async send({ to, subject, body, html, from } = {}) {
+  static _buildAttachments(attachments) {
+    if (!Array.isArray(attachments)) return [];
+    return attachments.map((a, i) => {
+      const filename = a.filename || a.name || (a.path ? path.basename(a.path) : `attachment-${i}`);
+      const contentType = a.contentType || a.type || 'application/octet-stream';
+      let content = a.content;
+      if (a.path && fs.existsSync(a.path)) {
+        content = fs.readFileSync(a.path).toString('base64');
+      } else if (Buffer.isBuffer(content)) {
+        content = content.toString('base64');
+      } else if (typeof content !== 'string') {
+        content = '';
+      }
+      return { filename, content, contentType, disposition: 'attachment' };
+    }).filter(a => a.content || a.path);
+  }
+
+  static async send({ to, subject, body, html, from, attachments } = {}) {
     if (!to || !subject) throw new Error('to and subject required');
+    const sendGridAttachments = this._buildAttachments(attachments);
+    const smtpAttachments = (attachments || []).map((a, i) => {
+      const filename = a.filename || a.name || (a.path ? path.basename(a.path) : `attachment-${i}`);
+      const contentType = a.contentType || a.type || 'application/octet-stream';
+      if (a.path && fs.existsSync(a.path)) return { filename, path: a.path, contentType };
+      if (Buffer.isBuffer(a.content)) return { filename, content: a.content, contentType };
+      if (typeof a.content === 'string') return { filename, content: Buffer.from(a.content, 'base64'), contentType };
+      return null;
+    }).filter(Boolean);
 
     if (SENDGRID_KEY) {
       try {
@@ -60,6 +89,7 @@ class EmailEngine {
             ...(html ? [{ type: 'text/html', value: html }] : []),
           ],
         };
+        if (sendGridAttachments.length) payload.attachments = sendGridAttachments;
         const res = await fetch('https://api.sendgrid.com/v3/mail/send', {
           method: 'POST',
           headers: { Authorization: `Bearer ${SENDGRID_KEY}`, 'Content-Type': 'application/json' },
@@ -81,6 +111,7 @@ class EmailEngine {
           subject,
           text: body || '',
           html: html || undefined,
+          ...(smtpAttachments.length ? { attachments: smtpAttachments } : {}),
         });
         return { sent: true, provider: 'smtp', to, subject, messageId: info.messageId };
       } catch (e) {

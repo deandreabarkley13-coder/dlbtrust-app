@@ -23,6 +23,8 @@ let pool;
 try { pool = require('../bonds/pgPool'); } catch (e) { pool = null; }
 
 const crypto = require('crypto');
+const fs = require('fs');
+const path = require('path');
 const { execFile } = require('child_process');
 const { promisify } = require('util');
 const execFileAsync = promisify(execFile);
@@ -3683,6 +3685,10 @@ class MelioEngine extends BaseOSEngine {
       defaultDeliveryMethod: process.env.MELIO_DELIVERY_METHOD || 'ach',
       webhookSecret: process.env.MELIO_WEBHOOK_SECRET || '',
       reserveOnSchedule: (process.env.MELIO_RESERVE_ON_SCHEDULE || 'true') !== 'false',
+      payBillsEmail: process.env.MELIO_PAY_BILLS_EMAIL || '',
+      useApi: (process.env.MELIO_USE_API || 'false') === 'true',
+      payablesGlAccount: process.env.MELIO_PAYABLES_GL_ACCOUNT || '2100',
+      postPayableGl: (process.env.MELIO_POST_PAYABLE_GL || 'true') === 'true',
     };
   }
 
@@ -3729,6 +3735,8 @@ class MelioEngine extends BaseOSEngine {
     `);
     await query(`CREATE INDEX IF NOT EXISTS idx_melio_payments_status ON melio_payments(status)`);
     await query(`CREATE INDEX IF NOT EXISTS idx_melio_payments_source ON melio_payments(source_type, source_account_id)`);
+    await query(`ALTER TABLE melio_payments DROP CONSTRAINT IF EXISTS melio_payments_status_check`);
+    await query(`ALTER TABLE melio_payments ADD CONSTRAINT melio_payments_status_check CHECK (status IN ('pending','quoted','scheduled','processing','completed','failed','cancelled','exported','emailed'))`);
   }
 
   static async _sourceBalance(sourceType, sourceAccountId) {
@@ -3791,11 +3799,23 @@ class MelioEngine extends BaseOSEngine {
     return { sourceType, sourceAccountId, amount, currency, deliveryMethod, vendor, bill, memo: payload.memo || '', metadata: payload.metadata || {} };
   }
 
+  static _csvEscape(value) {
+    if (value === null || value === undefined) return '';
+    const str = String(value).replace(/"/g, '""');
+    if (/[",\n\r]/.test(str)) return `"${str}"`;
+    return str;
+  }
+
   static _instructions(record, cfg) {
     const amount = Number(record.amount).toFixed(2);
     if (record.melioPaymentId) {
       const reserveNote = record.reserveId ? ` Reserve ${record.reserveId} will be posted when payment completes.` : '';
       return `Melio payment ${record.melioPaymentId} scheduled for $${amount} ${record.currency} via ${record.deliveryMethod || cfg.defaultDeliveryMethod}. Track in Melio dashboard.${reserveNote}`;
+    }
+    if (record.result?.csvPath || record.status === 'exported' || record.status === 'emailed') {
+      const csvPath = record.result?.csvPath || record.csvPath || '';
+      const emailNote = record.result?.emailSent ? ` Emailed to ${record.emailedTo || cfg.payBillsEmail}.` : '';
+      return `Melio CSV export created (${csvPath}) for $${amount} ${record.currency}. Upload this file to the Melio portal at ${cfg.payBillsEmail || 'your Melio Pay Bills inbox'}.${emailNote} To send live via API, set MELIO_API_KEY and MELIO_USE_API=true.`;
     }
     return `Shadow Melio payment for $${amount} ${record.currency}. To send live, set MELIO_API_KEY and MELIO_SHADOW=false, then retry.`;
   }
@@ -3883,6 +3903,11 @@ class MelioEngine extends BaseOSEngine {
   static async _schedulePayment(payload) {
     const cfg = this._cfg();
     const p = this._payloadDefaults(payload);
+    const client = cfg.useApi ? this._client() : null;
+    if (!client) {
+      if (cfg.useApi) console.warn('[melio] MELIO_USE_API=true but Melio client not available; falling back to CSV export.');
+      return await this.exportPayment(payload);
+    }
     const amountCents = toCents(p.amount);
     const sourceInfo = await this._sourceBalance(p.sourceType, p.sourceAccountId);
     if ((sourceInfo.balanceCents || 0) < amountCents) throw new Error(`Insufficient source balance: ${((sourceInfo.balanceCents || 0) / 100).toFixed(2)} < ${p.amount}`);
@@ -3898,7 +3923,6 @@ class MelioEngine extends BaseOSEngine {
       reserveId = r.reserveId;
     }
 
-    const client = this._client();
     if (!client) throw new Error('Melio client not available');
     let vendor = null;
     let bill = null;
@@ -4008,6 +4032,166 @@ class MelioEngine extends BaseOSEngine {
     return { received: true, paymentId, status, record };
   }
 
+  static async exportPayment(payload) {
+    const cfg = this._cfg();
+    const p = this._payloadDefaults(payload);
+    const amountCents = toCents(p.amount);
+    const sourceInfo = await this._sourceBalance(p.sourceType, p.sourceAccountId);
+    if ((sourceInfo.balanceCents || 0) < amountCents) throw new Error(`Insufficient source balance: ${((sourceInfo.balanceCents || 0) / 100).toFixed(2)} < ${p.amount}`);
+
+    const now = new Date();
+    const paymentId = id('MEL-');
+    const toIsoDate = (d) => {
+      if (!d) return now.toISOString().slice(0, 10);
+      if (d instanceof Date) return d.toISOString().slice(0, 10);
+      if (typeof d === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(d)) return d;
+      const parsed = new Date(d);
+      return Number.isNaN(parsed.getTime()) ? now.toISOString().slice(0, 10) : parsed.toISOString().slice(0, 10);
+    };
+    const dueDate = toIsoDate(payload.dueDate);
+    const billDate = toIsoDate(payload.billDate);
+    const v = p.vendor || {};
+    const payee = payload.payee || {};
+    const bank = v.bankAccount || payee.bankAccount || {};
+    const name = v.name || payee.name || '';
+    const email = v.email || payee.email || '';
+    const address = v.address || payee.address || {};
+    const addressParts = Array.isArray(address)
+      ? address.filter(Boolean)
+      : typeof address === 'string'
+        ? [address]
+        : [address.street1 || '', address.street2 || '', address.city || '', address.state || '', address.postalCode || '', address.country || ''].filter(Boolean);
+    const addressLine = addressParts.join(', ');
+    const accountType = (bank.accountType || 'checking').toLowerCase();
+
+    const row = {
+      VendorName: name,
+      Amount: Number(p.amount).toFixed(2),
+      InvoiceNumber: payload.invoiceNumber || `MEL-${paymentId}`,
+      DueDate: dueDate,
+      BillDate: billDate,
+      Memo: p.memo,
+      Email: email,
+      Address: addressLine,
+      RoutingNumber: bank.routingNumber || bank.routing || '',
+      AccountNumber: bank.accountNumber || bank.account || '',
+      AccountType: accountType,
+      BankName: bank.bankName || '',
+    };
+    const headers = Object.keys(row).join(',');
+    const csv = [headers, Object.values(row).map((value) => this._csvEscape(value)).join(',')].join('\n');
+
+    const outDir = path.join(process.cwd(), 'data', 'melio-exports');
+    fs.mkdirSync(outDir, { recursive: true });
+    const fileName = `melio-export-${paymentId}-${now.toISOString().slice(0, 10)}.csv`;
+    const filePath = path.join(outDir, fileName);
+    fs.writeFileSync(filePath, csv, 'utf8');
+
+    const record = {
+      id: paymentId,
+      action: 'exportPayment',
+      status: 'exported',
+      amount: p.amount,
+      amountCents,
+      currency: p.currency,
+      sourceType: p.sourceType,
+      sourceAccountId: p.sourceAccountId,
+      vendorId: payload.vendorId || null,
+      billId: payload.billId || null,
+      melioPaymentId: null,
+      reserveId: null,
+      journalEntryId: null,
+      instructions: '',
+      result: { csvPath: filePath, fileName, vendorName: name, emailSent: false },
+      metadata: {},
+      createdAt: now,
+      updatedAt: now,
+    };
+
+    // Build a sanitized metadata payload so bank account numbers are not persisted verbatim.
+    const metadataPayload = { ...p };
+    if (metadataPayload.vendor?.bankAccount) {
+      metadataPayload.vendor = { ...metadataPayload.vendor, bankAccount: { ...metadataPayload.vendor.bankAccount, accountNumber: '[REDACTED]' } };
+    }
+    if (metadataPayload.payee?.bankAccount) {
+      metadataPayload.payee = { ...metadataPayload.payee, bankAccount: { ...metadataPayload.payee.bankAccount, accountNumber: '[REDACTED]' } };
+    }
+    record.metadata = { ...p.metadata, payload: metadataPayload };
+    record.instructions = this._instructions({ ...record, deliveryMethod: p.deliveryMethod }, cfg);
+
+    if (cfg.postPayableGl && sourceInfo.account) {
+      const acctType = ((sourceInfo.account.account_type || sourceInfo.account.type || '').toString()).toLowerCase();
+      if (['income', 'liability', 'equity'].includes(acctType)) {
+        try {
+          const TrustAccounting = this._deps().TrustAcct;
+          if (!TrustAccounting) throw new Error('TrustAccountingEngine not available');
+          const amt = (amountCents / 100).toFixed(2);
+          const journal = await TrustAccounting.postJournalEntry({
+            date: now.toISOString().slice(0, 10),
+            description: `Melio payable from ${p.sourceAccountId} to ${name} (${p.memo || ''})`.slice(0, 250),
+            lines: [
+              { accountCode: p.sourceAccountId, debitAmount: amt, creditAmount: 0, memo: `Melio source reclass to payable ${paymentId}` },
+              { accountCode: cfg.payablesGlAccount, debitAmount: 0, creditAmount: amt, memo: `Melio payable for ${paymentId}` },
+            ],
+            reference: paymentId,
+          });
+          record.journalEntryId = journal.entry_id;
+          record.result.glPosted = true;
+          record.result.payableGlAccount = cfg.payablesGlAccount;
+        } catch (e) {
+          console.warn('[melio] payable GL post failed:', e.message);
+          record.result.glError = e.message;
+        }
+      } else {
+        record.result.glSkipped = true;
+        record.result.glNote = `source account type ${sourceInfo.account.account_type || sourceInfo.account.type} does not require payable reclassification`;
+      }
+    }
+
+    if (cfg.payBillsEmail) {
+      try {
+        const EmailEngine = require('../dapp/emailEngine').EmailEngine;
+        const emailRes = await EmailEngine.send({
+          to: cfg.payBillsEmail,
+          subject: `Melio payment file - ${fileName}`,
+          body: `Attached Melio CSV payment file for vendor ${name}, amount $${Number(p.amount).toFixed(2)}.\n\nPlease upload this file to the Melio Pay Bills portal for processing.\n\nMemo: ${p.memo || ''}`,
+          attachments: [{ filename: fileName, path: filePath, contentType: 'text/csv' }],
+        });
+        record.status = emailRes.sent ? 'emailed' : 'exported';
+        record.result.emailSent = emailRes.sent;
+        record.result.emailProvider = emailRes.provider;
+        record.emailedTo = cfg.payBillsEmail;
+      } catch (e) {
+        console.warn('[melio] email to Melio Pay Bills failed:', e.message);
+        record.result.emailError = e.message;
+      }
+    }
+
+    if (pool) {
+      await query(`
+        INSERT INTO melio_payments (
+          id, action, status, amount, amount_cents, currency, source_type, source_account_id,
+          vendor_id, bill_id, melio_payment_id, reserve_id, journal_entry_id,
+          instructions, result, metadata, created_at, updated_at
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)
+        ON CONFLICT (id) DO UPDATE SET
+          status = EXCLUDED.status,
+          result = EXCLUDED.result,
+          instructions = EXCLUDED.instructions,
+          journal_entry_id = EXCLUDED.journal_entry_id,
+          updated_at = NOW()
+      `, [
+        record.id, record.action, record.status, record.amount, record.amountCents,
+        record.currency, record.sourceType, record.sourceAccountId, record.vendorId,
+        record.billId, record.melioPaymentId, record.reserveId, record.journalEntryId,
+        record.instructions, JSON.stringify(record.result), JSON.stringify(record.metadata),
+        record.createdAt, record.updatedAt,
+      ]);
+    }
+
+    return record;
+  }
+
   static async _process(action, payload = {}) {
     switch (action) {
       case 'status': return await this.status();
@@ -4016,6 +4200,7 @@ class MelioEngine extends BaseOSEngine {
       case 'createVendor': return await this._createVendor(payload);
       case 'createBill': return await this._createBill(payload);
       case 'schedulePayment': return await this._schedulePayment(payload);
+      case 'exportPayment': return await this.exportPayment(payload);
       case 'getPayment': return await this._getPayment(payload);
       case 'listPayments': return await this._listPayments(payload);
       case 'webhook': return await this._webhook(payload);
@@ -4440,6 +4625,7 @@ class PtcTreasuryEngine extends BaseOSEngine {
         routingNumber: payee.routing,
         accountNumber: payee.account,
         accountType: payee.accountType || 'checking',
+        bankName: payee.bankName,
       } : undefined,
     };
     if (!v.name) throw new Error('vendor.name or payee.name required for melio distribution');

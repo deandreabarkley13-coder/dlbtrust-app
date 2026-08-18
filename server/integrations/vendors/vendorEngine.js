@@ -21,7 +21,7 @@ try { WireEngine = require('../wire/wireEngine').WireEngine; } catch (e) { WireE
 try { billClient = require('../bill/billClient'); } catch (e) { billClient = null; }
 
 const PAYMENT_STATUSES = ['pending_approval', 'approved', 'rejected', 'processing', 'executed', 'settled', 'failed', 'cancelled'];
-const PAYMENT_METHODS = ['ach', 'wire', 'bill', 'auto'];
+const PAYMENT_METHODS = ['ach', 'wire', 'bill', 'melio', 'auto'];
 
 const ACCOUNT_CODES = {
   CASH: '1000',
@@ -66,7 +66,7 @@ class VendorEngine {
         bill_vendor_id      TEXT,
         -- Payment preferences
         payment_method      TEXT NOT NULL DEFAULT 'ach'
-                              CHECK (payment_method IN ('ach','wire','bill','auto')),
+                              CHECK (payment_method IN ('ach','wire','bill','melio','auto')),
         payment_terms       TEXT DEFAULT 'net_30'
                               CHECK (payment_terms IN ('immediate','net_15','net_30','net_60','net_90')),
         -- Status
@@ -94,7 +94,7 @@ class VendorEngine {
         amount              NUMERIC(18,2) NOT NULL,
         currency            TEXT NOT NULL DEFAULT 'USD',
         payment_method      TEXT NOT NULL DEFAULT 'ach'
-                              CHECK (payment_method IN ('ach','wire','bill')),
+                              CHECK (payment_method IN ('ach','wire','bill','melio')),
         payment_type        TEXT NOT NULL DEFAULT 'vendor_payment'
                               CHECK (payment_type IN ('vendor_payment','fee_payment','legal_fee',
                                 'insurance_premium','regulatory_fee','trust_expense','other')),
@@ -140,6 +140,20 @@ class VendorEngine {
         DROP CONSTRAINT IF EXISTS vendor_payments_source_type_check,
         ADD CONSTRAINT vendor_payments_source_type_check
           CHECK (source_type IN ('trust','sub_ledger','virtual_account'))
+    `);
+
+    await pool.query(`
+      ALTER TABLE vendors
+        DROP CONSTRAINT IF EXISTS vendors_payment_method_check,
+        ADD CONSTRAINT vendors_payment_method_check
+          CHECK (payment_method IN ('ach','wire','bill','melio','auto'))
+    `);
+
+    await pool.query(`
+      ALTER TABLE vendor_payments
+        DROP CONSTRAINT IF EXISTS vendor_payments_payment_method_check,
+        ADD CONSTRAINT vendor_payments_payment_method_check
+          CHECK (payment_method IN ('ach','wire','bill','melio'))
     `);
   }
 
@@ -282,11 +296,8 @@ class VendorEngine {
     if (vendor.status !== 'active') throw new Error('Vendor is not active');
 
     const method = data.payment_method || vendor.payment_method || 'ach';
-    if (method === 'ach' && (!vendor.routing_number || !vendor.account_number)) {
-      throw new Error('Vendor has no bank details for ACH payment');
-    }
-    if (method === 'wire' && (!vendor.routing_number || !vendor.account_number)) {
-      throw new Error('Vendor has no bank details for wire payment');
+    if ((method === 'ach' || method === 'wire' || method === 'melio') && (!vendor.routing_number || !vendor.account_number)) {
+      throw new Error('Vendor has no bank details for ' + method + ' payment');
     }
 
     const paymentId = VendorEngine.generatePaymentId();
@@ -363,43 +374,53 @@ class VendorEngine {
         case 'bill':
           executionRef = await VendorEngine._executeBILL(payment, vendor);
           break;
+        case 'melio':
+          executionRef = await VendorEngine._executeMelio(payment, vendor);
+          break;
         default:
           throw new Error('Unknown payment method: ' + payment.payment_method);
       }
 
-      // Post journal entry: DR Expense / CR Cash
       let journalEntry = null;
-      try {
-        const creditAccount = payment.payment_method === 'bill' ? ACCOUNT_CODES.BILL_CASH : ACCOUNT_CODES.CASH;
-        const debitAccount = payment.payment_type === 'fee_payment' ? ACCOUNT_CODES.FEES_PAYABLE
-          : payment.payment_type === 'trust_expense' ? ACCOUNT_CODES.EXPENSES
-          : ACCOUNT_CODES.EXPENSES;
+      if (payment.payment_method === 'melio') {
+        // MelioEngine.exportPayment already posts the source -> payable reclass.
+        if (executionRef.journal_entry_id) {
+          journalEntry = { entry_id: executionRef.journal_entry_id };
+        }
+      } else {
+        // Post journal entry: DR Expense / CR Cash
+        try {
+          const creditAccount = payment.payment_method === 'bill' ? ACCOUNT_CODES.BILL_CASH : ACCOUNT_CODES.CASH;
+          const debitAccount = payment.payment_type === 'fee_payment' ? ACCOUNT_CODES.FEES_PAYABLE
+            : payment.payment_type === 'trust_expense' ? ACCOUNT_CODES.EXPENSES
+            : ACCOUNT_CODES.EXPENSES;
 
-        journalEntry = await TrustAccountingEngine.postJournalEntry({
-          entryDate: new Date(),
-          description: `Vendor payment: ${vendor.vendor_name} — ${payment.description || payment.payment_type}`,
-          lines: [
-            { accountCode: debitAccount, debitAmount: parseFloat(payment.amount), creditAmount: 0,
-              memo: `${payment.payment_method.toUpperCase()} to ${vendor.vendor_name} (${paymentId})` },
-            { accountCode: creditAccount, debitAmount: 0, creditAmount: parseFloat(payment.amount),
-              memo: `Vendor payment outflow: ${paymentId}` },
-          ],
-          referenceType: 'vendor_payment',
-          referenceId: paymentId,
-          postedBy: executedBy || 'system',
-        });
-      } catch (err) {
-        console.warn('[VendorEngine] Journal entry failed:', err.message);
-      }
+          journalEntry = await TrustAccountingEngine.postJournalEntry({
+            entryDate: new Date(),
+            description: `Vendor payment: ${vendor.vendor_name} — ${payment.description || payment.payment_type}`,
+            lines: [
+              { accountCode: debitAccount, debitAmount: parseFloat(payment.amount), creditAmount: 0,
+                memo: `${payment.payment_method.toUpperCase()} to ${vendor.vendor_name} (${paymentId})` },
+              { accountCode: creditAccount, debitAmount: 0, creditAmount: parseFloat(payment.amount),
+                memo: `Vendor payment outflow: ${paymentId}` },
+            ],
+            referenceType: 'vendor_payment',
+            referenceId: paymentId,
+            postedBy: executedBy || 'system',
+          });
+        } catch (err) {
+          console.warn('[VendorEngine] Journal entry failed:', err.message);
+        }
 
-      // Record cashflow event
-      try {
-        await pool.query(`
-          INSERT INTO cashflow_events (event_type, category, amount, direction, description, event_date, created_at)
-          VALUES ('vendor_payment', 'operating', $1, 'outflow', $2, NOW(), NOW())
-        `, [parseFloat(payment.amount), `Vendor: ${vendor.vendor_name} — ${payment.description || paymentId}`]);
-      } catch (err) {
-        console.warn('[VendorEngine] Cashflow event failed:', err.message);
+        // Record cashflow event
+        try {
+          await pool.query(`
+            INSERT INTO cashflow_events (event_type, category, amount, direction, description, event_date, created_at)
+            VALUES ('vendor_payment', 'operating', $1, 'outflow', $2, NOW(), NOW())
+          `, [parseFloat(payment.amount), `Vendor: ${vendor.vendor_name} — ${payment.description || paymentId}`]);
+        } catch (err) {
+          console.warn('[VendorEngine] Cashflow event failed:', err.message);
+        }
       }
 
       // Mark as executed
@@ -411,7 +432,7 @@ class VendorEngine {
         paymentId,
         executionRef.ach_batch_id || null,
         executionRef.wire_id || null,
-        executionRef.bill_payment_id || null,
+        executionRef.bill_payment_id || executionRef.melio_export_id || null,
         journalEntry ? (journalEntry.entry_id || journalEntry.id || null) : null,
       ]);
 
@@ -494,6 +515,43 @@ class VendorEngine {
     });
 
     return { bill_payment_id: result.receivedPayId || result.id || 'recorded' };
+  }
+
+  // ─── Melio CSV Execution ─────────────────────────────────────────────────
+
+  static async _executeMelio(payment, vendor) {
+    let MelioEngine;
+    try { ({ MelioEngine } = require('../os/osEngine')); } catch (e) { MelioEngine = null; }
+    if (!MelioEngine) throw new Error('MelioEngine not available');
+
+    const result = await MelioEngine.exportPayment({
+      amount: parseFloat(payment.amount),
+      sourceType: payment.source_type,
+      sourceAccountId: payment.source_account_code,
+      vendor: {
+        name: vendor.vendor_name,
+        email: vendor.contact_email || '',
+        address: vendor.address || {},
+        bankAccount: {
+          accountNumber: vendor.account_number,
+          routingNumber: vendor.routing_number,
+          accountType: vendor.account_type || 'checking',
+          bankName: vendor.bank_name || '',
+        },
+      },
+      invoiceNumber: payment.invoice_number || `VPAY-${payment.payment_id}`,
+      dueDate: payment.due_date || new Date().toISOString().slice(0, 10),
+      billDate: payment.invoice_date || new Date().toISOString().slice(0, 10),
+      memo: payment.description || `Vendor payment ${payment.payment_id}`,
+    });
+
+    return {
+      melio_export_id: result.id,
+      bill_payment_id: result.id,
+      csv_path: result.result?.csvPath || null,
+      melio_status: result.status,
+      journal_entry_id: result.journalEntryId || null,
+    };
   }
 
   // ═══════════════════════════════════════════════════════════════════════════
