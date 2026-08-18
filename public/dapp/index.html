@@ -100,7 +100,8 @@
         if (!res.success) throw new Error(res.error || 'Failed to send PIN');
         el('pin-box').classList.remove('hidden');
         if (res.data && res.data.code) {
-          show('status', 'PIN: ' + res.data.code + ' (email not configured)', false);
+          const note = res.data.sent ? ' (also emailed to ' + email + ' if configured)' : ' (email not configured)';
+          show('status', 'PIN: ' + res.data.code + note, false);
           el('pin').value = res.data.code;
         } else {
           show('status', 'PIN sent to ' + email + '. Check your inbox.', false);

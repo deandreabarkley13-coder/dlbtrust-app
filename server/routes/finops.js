@@ -48,6 +48,7 @@ const { BarcodeDepositEngine } = require('../integrations/payments/barcodeDeposi
 const { WebPaymentRailEngine } = require('../integrations/payments/webPaymentRailEngine');
 const { LiliBankEngine } = require('../integrations/payments/liliBankEngine');
 const { LiliMcpEngine } = require('../integrations/payments/liliMcpEngine');
+const { NickelMcpEngine } = require('../integrations/os/osEngine');
 const { ComplianceEngine } = require('../integrations/compliance/complianceEngine');
 const { IssuerEngine } = require('../integrations/dapp/issuerEngine');
 const { BankTransferEngine } = require('../integrations/dapp/bankTransferEngine');
@@ -1672,6 +1673,31 @@ router.get('/lili/mcp/oauth/callback', async (req, res) => {
   } catch (err) {
     res.status(400).json({ success: false, error: err.message });
   }
+});
+
+// ─── Nickel MCP OAuth ─────────────────────────────────────────────────────────
+
+router.post('/nickel/mcp/oauth/start', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try {
+    const data = await NickelMcpEngine.startOAuth({ ...req.body });
+    res.json({ success: true, data });
+  } catch (err) { sendError(res, err); }
+});
+
+router.get('/nickel/mcp/oauth/callback', async (req, res) => {
+  try {
+    const { code, state, error, error_description } = req.query;
+    if (error) throw new Error(`OAuth error: ${error} ${error_description || ''}`);
+    if (!code || !state) throw new Error('Missing code or state');
+    const data = await NickelMcpEngine.handleCallback(code, state);
+    res.json({ success: true, data });
+  } catch (err) {
+    res.status(400).json({ success: false, error: err.message });
+  }
+});
+
+router.get('/nickel/mcp/status', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await NickelMcpEngine.oauthStatus() }); } catch (err) { sendError(res, err); }
 });
 
 // ─── Issuer Engine (trust custodian/issuer) ─────────────────────────────────

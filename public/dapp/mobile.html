@@ -231,7 +231,8 @@ async function sendCode() {
     const res = await api('/api/dapp/auth/send-code', { method: 'POST', body: JSON.stringify({ email }) });
     el('verify-box').classList.remove('hidden');
     if (res.data && res.data.code) {
-      show('Email provider not configured. Your PIN is: ' + res.data.code, false);
+      const note = res.data.sent ? ' (also emailed if configured)' : ' (email provider not configured)';
+      show('Your PIN is: ' + res.data.code + note, false);
     } else {
       show('PIN sent to ' + email + '. Check your inbox (and spam).', false);
     }
