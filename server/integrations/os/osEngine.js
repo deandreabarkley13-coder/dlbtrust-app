@@ -5537,6 +5537,7 @@ class NickelMcpEngine extends BaseOSEngine {
       live: process.env.NICKEL_LIVE === 'true',
       shadow: process.env.NICKEL_SHADOW !== 'false',
       mcpUrl: process.env.NICKEL_MCP_URL || 'https://mcp.nickel.com/mcp',
+      authServerUrl: process.env.NICKEL_AUTH_SERVER_URL || '',
       restUrl: process.env.NICKEL_REST_URL || 'https://rest.nickel.com',
       apiKey: process.env.NICKEL_API_KEY || '',
       clientId: process.env.NICKEL_CLIENT_ID || '',
@@ -5646,9 +5647,14 @@ class NickelMcpEngine extends BaseOSEngine {
     return { statusCode: res.status, ok: res.ok, headers: Object.fromEntries(res.headers.entries()), body: text, json };
   }
 
+  static _root(url) {
+    try { return new URL(url).origin; } catch { return url.replace(/\/mcp\/?$/, '').replace(/\/$/, ''); }
+  }
+
   static async _getProtectedResourceMetadata() {
     const cfg = this._cfg();
-    const url = this._url(cfg.mcpUrl, '/.well-known/oauth-protected-resource');
+    const base = this._root(cfg.mcpUrl);
+    const url = this._url(base, '/.well-known/oauth-protected-resource');
     const r = await fetch(url);
     if (!r.ok) throw new Error(`Nickel protected-resource metadata failed: ${r.status}`);
     return r.json();
@@ -5656,8 +5662,16 @@ class NickelMcpEngine extends BaseOSEngine {
 
   static async _getAuthorizationServerMetadata() {
     const cfg = this._cfg();
-    const base = cfg.clientSecret ? 'https://api.nickelpayments.com' : (cfg.mcpUrl.replace('/mcp', '') || 'https://mcp.nickel.com');
-    const url = this._url(base, '/.well-known/oauth-authorization-server');
+    if (cfg.authServerUrl) {
+      const url = this._url(cfg.authServerUrl, '/.well-known/oauth-authorization-server');
+      const r = await fetch(url);
+      if (!r.ok) throw new Error(`Nickel authorization-server metadata failed: ${r.status}`);
+      return r.json();
+    }
+    const protectedMeta = await this._getProtectedResourceMetadata();
+    const authServers = Array.isArray(protectedMeta.authorization_servers) ? protectedMeta.authorization_servers : [];
+    const authBase = authServers[0] || 'https://api.nickelpayments.com';
+    const url = this._url(authBase, '/.well-known/oauth-authorization-server');
     const r = await fetch(url);
     if (!r.ok) throw new Error(`Nickel authorization-server metadata failed: ${r.status}`);
     return r.json();
