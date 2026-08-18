@@ -11,11 +11,15 @@
  */
 
 const RECORD_LENGTH = 94;
-const ODFI_ROUTING = '241075470';
-const ODFI_ID = '24107547'; // first 8 digits
-const ORIGINATOR_NAME = 'DLB TRUST';
-const ORIGINATOR_ID = '1241075470'; // '1' + routing
-const COMPANY_NAME = 'DLB TRUST';
+const ODFI_ROUTING = process.env.NACHA_ODFI_ROUTING || process.env.PTC_BANK_ROUTING || process.env.TRUST_BANK_ROUTING || '241075470';
+const ODFI_ID = String(ODFI_ROUTING).substring(0, 8);
+const ORIGINATOR_NAME = process.env.NACHA_ORIGINATOR_NAME || process.env.PTC_BANK_NAME || process.env.TRUST_BANK_NAME || 'DLB TRUST';
+const ORIGINATOR_ID = (() => {
+  const custom = process.env.NACHA_ORIGINATOR_ID || process.env.PTC_BANK_SETTLEMENT_ACCOUNT || process.env.TRUST_BANK_ACCOUNT;
+  if (custom) return String(custom).replace(/\D/g, '').substring(0, 10).padStart(10, '0');
+  return '1' + ODFI_ROUTING;
+})();
+const COMPANY_NAME = process.env.NACHA_COMPANY_NAME || ORIGINATOR_NAME;
 
 function pad(str, len, fill = ' ', alignRight = false) {
   const s = String(str || '').substring(0, len);
@@ -72,8 +76,8 @@ function fileHeaderRecord(opts = {}) {
   rec += '094';                                  // pos 35-37: record size
   rec += '10';                                   // pos 38-39: blocking factor
   rec += '1';                                    // pos 40: format code
-  rec += pad(opts.immediateDestinationName || 'EATON FAMILY CU', 23); // pos 41-63
-  rec += pad(opts.immediateOriginName || ORIGINATOR_NAME, 23);        // pos 64-86
+  rec += pad(opts.immediateDestinationName || process.env.NACHA_IMMEDIATE_DESTINATION_NAME || 'EATON FAMILY CU', 23); // pos 41-63
+  rec += pad(opts.immediateOriginName || process.env.NACHA_IMMEDIATE_ORIGIN_NAME || ORIGINATOR_NAME, 23);        // pos 64-86
   rec += pad(opts.referenceCode || '', 8);       // pos 87-94
   return rec.padEnd(RECORD_LENGTH);
 }

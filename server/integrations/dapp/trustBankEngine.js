@@ -364,23 +364,77 @@ class TrustBankEngine {
           }
         }
       } else if ((payment.rail === 'ach' || payment.rail === 'open_banking') && BankTransferEngine) {
-        const bankAccount = await BankTransferEngine.createBankAccount({
-          name: payment.external_account_name || 'External Beneficiary',
-          bankName: payment.external_bank_name,
-          routingNumber: payment.external_routing,
-          accountNumber: payment.external_account,
-        });
-        const transfer = await BankTransferEngine.pushCredit({
-          sourceCashAccountId: from.linked_cash_account_id,
-          destinationBankAccountId: bankAccount.account_id,
-          amount: payment.amount_cents / 100,
-          rail: payment.rail === 'ach' ? 'ach' : 'web_payment',
-          memo: `Trust bank payment ${paymentId}`,
-          initiatedBy: payment.initiated_by,
-        });
-        externalTxId = transfer.transfer_id;
-        rawMessage = JSON.stringify(transfer);
-        status = mapBankTransferStatus(transfer.status);
+        let achMeta = payment.metadata || {};
+        if (typeof achMeta === 'string') { try { achMeta = JSON.parse(achMeta); } catch { achMeta = {}; } }
+        const isPtcInterest = achMeta.interestIncomeSource === '4000' || achMeta.paymentType === 'interest_payment' || (payment.description && /interest income/i.test(payment.description));
+        let glEntryId = null;
+        let glDebitCode = null;
+        let glCreditCode = null;
+        if (isPtcInterest && TrustAccountingEngine) {
+          glDebitCode = achMeta.glDebitAccountCode || achMeta.interestIncomeSource || '4000';
+          glCreditCode = achMeta.glCreditAccountCode || from.linked_trust_account_code || process.env.PTC_BANK_GL_ACCOUNT || '1010';
+          try {
+            const glRes = await TrustAccountingEngine.postJournalEntry({
+              entryDate: new Date(),
+              description: payment.description || `ACH distribution ${paymentId}`,
+              referenceType: 'ptc-bank-payment',
+              referenceId: paymentId,
+              postedBy: payment.initiated_by || 'ptc-bank',
+              postToFineract: false,
+              lines: [
+                { accountCode: glDebitCode, debitAmount: payment.amount_cents / 100, creditAmount: 0, memo: `ACH interest distribution ${paymentId}` },
+                { accountCode: glCreditCode, debitAmount: 0, creditAmount: payment.amount_cents / 100, memo: `Settle PTC bank cash for ${paymentId}` },
+              ],
+            });
+            glEntryId = glRes && glRes.entry_id;
+          } catch (glErr) {
+            console.warn(`[TrustBank] ACH GL posting failed for ${paymentId}:`, glErr.message);
+          }
+        }
+        let bankAccount;
+        let transfer;
+        try {
+          bankAccount = await BankTransferEngine.createBankAccount({
+            name: payment.external_account_name || 'External Beneficiary',
+            bankName: payment.external_bank_name,
+            routingNumber: payment.external_routing,
+            accountNumber: payment.external_account,
+          });
+          transfer = await BankTransferEngine.pushCredit({
+            sourceCashAccountId: from.linked_cash_account_id,
+            destinationBankAccountId: bankAccount.account_id,
+            amount: payment.amount_cents / 100,
+            rail: payment.rail === 'ach' ? 'ach' : 'web_payment',
+            memo: `Trust bank payment ${paymentId}`,
+            initiatedBy: payment.initiated_by,
+          });
+          if (payment.rail === 'ach') {
+            transfer = await BankTransferEngine.sendPushCredit(transfer.transfer_id);
+          }
+          externalTxId = transfer.transfer_id;
+          rawMessage = JSON.stringify(transfer);
+          status = mapBankTransferStatus(transfer.status);
+        } catch (achErr) {
+          if (glEntryId && TrustAccountingEngine && glDebitCode && glCreditCode) {
+            try {
+              await TrustAccountingEngine.postJournalEntry({
+                entryDate: new Date(),
+                description: `Reversal for failed ACH distribution ${paymentId}`,
+                referenceType: 'ptc-bank-payment',
+                referenceId: paymentId,
+                postedBy: payment.initiated_by || 'ptc-bank',
+                postToFineract: false,
+                lines: [
+                  { accountCode: glDebitCode, debitAmount: 0, creditAmount: payment.amount_cents / 100, memo: `Reverse ACH interest distribution ${paymentId}` },
+                  { accountCode: glCreditCode, debitAmount: payment.amount_cents / 100, creditAmount: 0, memo: `Reverse settle PTC bank cash for ${paymentId}` },
+                ],
+              });
+            } catch (revErr) {
+              console.warn(`[TrustBank] ACH GL reversal failed for ${paymentId}:`, revErr.message);
+            }
+          }
+          throw achErr;
+        }
       } else if (payment.rail === 'iso20022' && OpenBankingEngine) {
         const p = await OpenBankingEngine.createPayment({
           connector: 'generic_rest',
