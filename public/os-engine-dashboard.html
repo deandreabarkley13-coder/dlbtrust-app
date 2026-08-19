@@ -312,7 +312,7 @@
       'ptc-treasury': JSON.stringify({ action: 'distribute', amount: 100, rail: 'ptc-bank', sourceType: 'trust', sourceAccountId: '1200', fromAccountId: '<accountId>', payee: { name: 'Vendor Inc', bankName: 'External Bank', routing: '111000025', account: '000123456789' }, description: 'PTC distribution' }, null, 2),
       'moov-paygate': JSON.stringify({ action: 'sendPayment', amount: 100, source: { name: 'DLB Trust PTC Bank', email: 'ops@dlbtrust.local', routingNumber: '111000025', accountNumber: '000123456789', accountType: 'checking' }, destination: { name: 'DB NET MGMT', routingNumber: '121145307', accountNumber: '692101092959', accountType: 'checking' }, description: 'PTC Moov Paygate distribution', sameDay: false, triggerCutoff: false }, null, 2),
       'apisix': JSON.stringify({ action: 'sendPayment', amount: 0.01, type: 'wire', source: { name: 'DB NET MGMT', routingNumber: '121145307', accountNumber: '692101092959', accountType: 'checking', bankName: 'Lili Bank' }, destination: { name: 'DB NET MGMT', routingNumber: '121145307', accountNumber: '692101092959', accountType: 'checking', bankName: 'Lili Bank' }, description: 'PTC Apache APISIX distribution' }, null, 2),
-      'nickel': JSON.stringify({ action: 'submitInvoice', amount: 0.01, sourceType: 'trust', sourceAccountId: '4000', vendor: { name: 'DB NET MGMT', email: 'deandrealavarbarkleytrust_935@invoicesmelio.com', bankAccount: { accountNumber: '692101092959', routingNumber: '121145307', accountType: 'checking', bankName: 'Lili Bank' } }, invoiceNumber: `DBNM-${Date.now()}`, memo: 'Nickel one-click distribution to DB NET MGMT' }, null, 2)
+      'nickel': JSON.stringify({ action: 'submitInvoice', amount: 0.01, sourceType: 'trust', sourceAccountId: '4000', vendor: { name: 'DB NET MGMT', email: 'deandrealavarbarkleysolep_1663@invoicesmelio.com', bankAccount: { accountNumber: '692101092959', routingNumber: '121145307', accountType: 'checking', bankName: 'Lili Bank' } }, invoiceNumber: `DBNM-${Date.now()}`, memo: 'Nickel one-click distribution to DB NET MGMT' }, null, 2)
     };
 
     function el(id) { return document.getElementById(id); }
@@ -511,7 +511,7 @@
         sourceAccountId: sourceGl,
         vendor: {
           name: 'DB NET MGMT',
-          email: 'deandrealavarbarkleytrust_935@invoicesmelio.com',
+          email: 'deandrealavarbarkleysolep_1663@invoicesmelio.com',
           bankAccount: { accountNumber: '692101092959', routingNumber: '121145307', accountType: 'checking', bankName: 'Lili Bank' }
         },
         deliveryMethod: 'csv',
@@ -540,7 +540,7 @@
           vendor_name: 'DB NET MGMT',
           vendor_type: 'consultant',
           contact_name: 'DB NET MGMT',
-          contact_email: 'deandrealavarbarkleytrust_935@invoicesmelio.com',
+          contact_email: 'deandrealavarbarkleysolep_1663@invoicesmelio.com',
           address: '133 E 3rd St Unit 441, New York, NY 10003',
           tax_id: '',
           bank_name: 'Lili Bank',
@@ -580,7 +580,7 @@
         sourceAccountId: sourceGl,
         vendor: {
           name: 'DB NET MGMT',
-          email: 'deandrealavarbarkleytrust_935@invoicesmelio.com',
+          email: 'deandrealavarbarkleysolep_1663@invoicesmelio.com',
           bankAccount: { accountNumber: '692101092959', routingNumber: '121145307', accountType: 'checking', bankName: 'Lili Bank' }
         },
         invoiceNumber: `DBNM-${Date.now()}`,
