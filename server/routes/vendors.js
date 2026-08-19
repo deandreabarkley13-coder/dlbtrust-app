@@ -11,6 +11,7 @@ var express = require('express');
 var router  = express.Router();
 var pool = require('../integrations/bonds/pgPool');
 var { VendorEngine } = require('../integrations/vendors/vendorEngine');
+var { MelioEngine } = require('../integrations/os/osEngine');
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // DASHBOARD
@@ -172,6 +173,19 @@ router.post('/payments/:paymentId/settle', async function(req, res) {
     res.json({ success: true, data: result });
   } catch (err) {
     res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+router.post('/payments/melio/export-batch', async function(req, res) {
+  try {
+    var result = await MelioEngine.process({
+      ...req.body,
+      action: 'exportBatch',
+      payables: req.body.payables || req.body.items || req.body.rows,
+    });
+    res.json({ success: true, data: result });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message, invalidRows: err.invalidRows || undefined });
   }
 });
 

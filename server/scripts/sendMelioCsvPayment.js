@@ -29,13 +29,12 @@ async function main() {
   const a = parseArgs(process.argv);
   const amount = Number(a.amount || a.amt);
   if (!Number.isFinite(amount) || amount <= 0) {
-    console.error('Usage: node server/scripts/sendMelioCsvPayment.js --amount <dollars> [--sourceAccountId 4000] [--vendorName "DB NET MGMT"] [--vendorEmail <pay-bills-email>] [--routing 121145307] [--account 692101092959] [--bankName "Lili Bank"] [--accountType checking] [--dueDate YYYY-MM-DD] [--memo "..."]');
+    console.error('Usage: node server/scripts/sendMelioCsvPayment.js --amount <dollars> [--sourceAccountId 4000] [--vendorName "DB NET MGMT"] [--routing 121145307] [--account 692101092959] [--bankName "Lili Bank"] [--accountType checking] [--dueDate YYYY-MM-DD] [--memo "..."]');
     process.exit(1);
   }
 
   const sourceAccountId = a.sourceAccountId || '4000';
   const vendorName = a.vendorName || process.env.MELIO_VENDOR_NAME || 'DB NET MGMT';
-  const vendorEmail = a.vendorEmail || process.env.MELIO_PAY_BILLS_EMAIL || 'deandrealavarbarkleytrust_935@invoicesmelio.com';
   const routing = a.routing || process.env.MELIO_VENDOR_ROUTING || '121145307';
   const account = a.account || process.env.MELIO_VENDOR_ACCOUNT || '692101092959';
   const bankName = a.bankName || process.env.MELIO_VENDOR_BANK_NAME || 'Lili Bank';
@@ -51,7 +50,6 @@ async function main() {
     sourceAccountId,
     vendor: {
       name: vendorName,
-      email: vendorEmail,
       bankAccount: {
         routingNumber: routing,
         accountNumber: account,
