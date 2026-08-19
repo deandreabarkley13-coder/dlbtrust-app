@@ -2414,9 +2414,14 @@
       try {
         opts.credentials = 'include';
         const r = await fetch(url, opts);
-        if (r.status === 401 && jwtToken) {
-          doLogout();
-          return { error: 'Session expired. Please log in again.' };
+        if (r.status === 401) {
+          const body = await r.json().catch(() => ({}));
+          // Aggregator/admin endpoints ask for the x-admin-token; keep the session alive.
+          if (body.error && body.error.includes('x-admin-token')) {
+            return { error: body.error, status: 401 };
+          }
+          if (jwtToken) { doLogout(); }
+          return { error: 'Session expired. Please log in again.', status: 401 };
         }
         return await r.json();
       } catch (e) { return { error: e.message }; }
