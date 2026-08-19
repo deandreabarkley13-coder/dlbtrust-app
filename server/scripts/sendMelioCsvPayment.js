@@ -5,7 +5,7 @@
  * Originate a Melio CSV payment from the PTC ledger.
  *
  * Example:
- *   node server/scripts/sendMelioCsvPayment.js --amount 5.00 --sourceAccountId 4000
+ *   node server/scripts/sendMelioCsvPayment.js --amount 5.00 --sourceAccountId 4000 [--vendorEmail vendor@example.com]
  *
  * Defaults to DB NET MGMT at Lili Bank (121145307 / 692101092959).
  * Reads source GL balance from the trust accounting engine and falls back to
@@ -29,17 +29,17 @@ async function main() {
   const a = parseArgs(process.argv);
   const amount = Number(a.amount || a.amt);
   if (!Number.isFinite(amount) || amount <= 0) {
-    console.error('Usage: node server/scripts/sendMelioCsvPayment.js --amount <dollars> [--sourceAccountId 4000] [--vendorName "DB NET MGMT"] [--vendorEmail <pay-bills-email>] [--routing 121145307] [--account 692101092959] [--bankName "Lili Bank"] [--accountType checking] [--dueDate YYYY-MM-DD] [--memo "..."]');
+    console.error('Usage: node server/scripts/sendMelioCsvPayment.js --amount <dollars> [--sourceAccountId 4000] [--vendorName "DB NET MGMT"] [--vendorEmail "vendor@example.com"] [--routing 121145307] [--account 692101092959] [--bankName "Lili Bank"] [--accountType checking] [--dueDate YYYY-MM-DD] [--memo "..."]');
     process.exit(1);
   }
 
   const sourceAccountId = a.sourceAccountId || '4000';
   const vendorName = a.vendorName || process.env.MELIO_VENDOR_NAME || 'DB NET MGMT';
-  const vendorEmail = a.vendorEmail || process.env.MELIO_PAY_BILLS_EMAIL || 'deandrealavarbarkleytrust_935@invoicesmelio.com';
   const routing = a.routing || process.env.MELIO_VENDOR_ROUTING || '121145307';
   const account = a.account || process.env.MELIO_VENDOR_ACCOUNT || '692101092959';
   const bankName = a.bankName || process.env.MELIO_VENDOR_BANK_NAME || 'Lili Bank';
   const accountType = a.accountType || process.env.MELIO_VENDOR_ACCOUNT_TYPE || 'checking';
+  const vendorEmail = a.vendorEmail || '';
   const dueDate = a.dueDate || new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
   const memo = a.memo || `Melio CSV export from interest income ${sourceAccountId} to ${vendorName}`;
 
