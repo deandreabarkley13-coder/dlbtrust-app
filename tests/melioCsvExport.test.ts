@@ -53,6 +53,22 @@ describe('Melio bill spreadsheet CSV export', () => {
     }
   });
 
+  it('preserves invalid-row details through the engine action', async () => {
+    try {
+      await MelioEngine.process({
+        action: 'exportBatch',
+        payables: [
+          { amount: 5, vendor: { name: 'Missing Due Date' } },
+          { amount: 0, vendor: { name: 'Bad Amount' }, dueDate: '2026-02-01' },
+        ],
+      });
+      throw new Error('expected exportBatch to reject');
+    } catch (err) {
+      expect(err.invalidRows).toHaveLength(2);
+      expect(err.outcomes).toHaveLength(2);
+    }
+  });
+
   it('chunks a 301-row export at the 300-row boundary', () => {
     const now = new Date('2026-01-15T12:00:00.000Z');
     const entries = Array.from({ length: 301 }, (_, index) => MelioEngine._buildCsvRow({

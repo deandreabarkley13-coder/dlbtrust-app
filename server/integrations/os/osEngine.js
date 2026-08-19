@@ -146,6 +146,8 @@ class BaseOSEngine {
       await this._log(action, payload, { error: err.message }, 'failed').catch(() => {});
       const e = new Error(`${this.engineName}.${action} failed: ${err.message}`);
       e.status = err.status || 400;
+      if (err.invalidRows) e.invalidRows = err.invalidRows;
+      if (err.outcomes) e.outcomes = err.outcomes;
       throw e;
     }
   }
