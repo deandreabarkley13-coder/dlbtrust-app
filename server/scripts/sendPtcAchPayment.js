@@ -13,12 +13,12 @@
  *     --amount 5000 \
  *     --fromAccountId TBA-... \
  *     --sourceAccountId 4000 \
- *     --routing 121145307 \
- *     --account 692101092959 \
+ *     --routing YOUR_RDFI_ROUTING \
+ *     --account YOUR_RDFI_ACCOUNT \
  *     --name "DB NET MGMT" \
  *     --bankName "Lili Bank" \
- *     --odfiRouting 121145307 \
- *     --odfiAccount 692101092959 \
+ *     --odfiRouting YOUR_ODFI_ROUTING \
+ *     --odfiAccount YOUR_ODFI_ORIGINATOR_ID \
  *     --odfiName "DB NET MGMT" \
  *     --destinationName "Lili Bank"
  */
@@ -39,15 +39,62 @@ function parseArgs(argv) {
   return args;
 }
 
+function validateRouting(routing) {
+  if (!/^\d{9}$/.test(String(routing))) return false;
+  const d = String(routing).split('').map(Number);
+  const sum = 3 * d[0] + 7 * d[1] + d[2] + 3 * d[3] + 7 * d[4] + d[5] + 3 * d[6] + 7 * d[7] + d[8];
+  return sum % 10 === 0;
+}
+
 const args = parseArgs(process.argv);
 
-// Configure NACHA ODFI/originator from CLI or environment.
-process.env.NACHA_ODFI_ROUTING = args.odfiRouting || process.env.NACHA_ODFI_ROUTING || process.env.PTC_BANK_ROUTING || '121145307';
-process.env.NACHA_ORIGINATOR_ID = args.odfiAccount || process.env.NACHA_ORIGINATOR_ID || process.env.PTC_BANK_SETTLEMENT_ACCOUNT || process.env.NACHA_ODFI_ROUTING;
-process.env.NACHA_ORIGINATOR_NAME = args.odfiName || process.env.NACHA_ORIGINATOR_NAME || process.env.PTC_BANK_NAME || 'DB NET MGMT';
-process.env.NACHA_COMPANY_NAME = args.odfiName || process.env.NACHA_COMPANY_NAME || process.env.NACHA_ORIGINATOR_NAME;
-process.env.NACHA_IMMEDIATE_DESTINATION_NAME = args.destinationName || process.env.NACHA_IMMEDIATE_DESTINATION_NAME || 'Lili Bank';
-process.env.NACHA_IMMEDIATE_ORIGIN_NAME = args.odfiName || process.env.NACHA_IMMEDIATE_ORIGIN_NAME || process.env.NACHA_ORIGINATOR_NAME;
+// Required payee / ODFI data must be supplied explicitly; no real account/routing defaults.
+const amount = Number(args.amount || args.amt);
+if (!Number.isFinite(amount) || amount <= 0) {
+  throw new Error('--amount must be a positive number');
+}
+
+const routing = args.routing;
+if (!routing || !validateRouting(routing)) {
+  throw new Error('--routing is required and must be a valid 9-digit ABA routing number');
+}
+
+const account = args.account;
+if (!account) {
+  throw new Error('--account (RDFI account number) is required');
+}
+
+const name = args.name;
+if (!name) {
+  throw new Error('--name (payee name) is required');
+}
+
+const bankName = args.bankName;
+if (!bankName) {
+  throw new Error('--bankName (RDFI bank name) is required');
+}
+
+const sourceAccountId = args.sourceAccountId;
+if (!sourceAccountId) {
+  throw new Error('--sourceAccountId is required (e.g. 4000 for Interest Income)');
+}
+
+const odfiRouting = args.odfiRouting || routing;
+if (!validateRouting(odfiRouting)) {
+  throw new Error('--odfiRouting must be a valid 9-digit ABA routing number');
+}
+
+const odfiAccount = args.odfiAccount || account;
+const odfiName = args.odfiName || name;
+const destinationName = args.destinationName || bankName;
+
+// Configure NACHA ODFI/originator from CLI or environment only (no PTC_BANK_* fallbacks).
+process.env.NACHA_ODFI_ROUTING = odfiRouting;
+if (odfiAccount) process.env.NACHA_ORIGINATOR_ID = odfiAccount;
+if (odfiName) process.env.NACHA_ORIGINATOR_NAME = odfiName;
+if (odfiName) process.env.NACHA_COMPANY_NAME = odfiName;
+if (destinationName) process.env.NACHA_IMMEDIATE_DESTINATION_NAME = destinationName;
+if (odfiName) process.env.NACHA_IMMEDIATE_ORIGIN_NAME = odfiName;
 
 const fs = require('fs');
 const { PtcTreasuryEngine } = require('../integrations/os/osEngine');
@@ -66,11 +113,6 @@ async function findPtcCheckingAccount() {
 }
 
 async function main() {
-  const amount = Number(args.amount || args.amt || 5000);
-  if (!Number.isFinite(amount) || amount <= 0) {
-    throw new Error('amount must be a positive number');
-  }
-
   const fromAccount = args.fromAccountId
     ? await (async () => {
         const r = await pool.query(
@@ -82,21 +124,15 @@ async function main() {
       })()
     : await findPtcCheckingAccount();
 
-  const routing = args.routing || process.env.PTC_BANK_ROUTING || '121145307';
-  const account = args.account || '692101092959';
-  const name = args.name || 'DB NET MGMT';
-  const bankName = args.bankName || 'Lili Bank';
-  const sourceAccountId = args.sourceAccountId || '4000';
-  const sourceType = args.sourceType || 'trust';
-  const senderRouting = args.senderRouting || process.env.PTC_BANK_ROUTING || routing;
-  const senderAccount = args.senderAccount || process.env.PTC_BANK_SETTLEMENT_ACCOUNT || fromAccount.account_number;
+  const senderRouting = args.senderRouting || odfiRouting;
+  const senderAccount = args.senderAccount || fromAccount.account_number;
 
   const payload = {
     action: 'distribute',
     rail: 'ach',
     amount,
     fromAccountId: fromAccount.account_id,
-    sourceType,
+    sourceType: args.sourceType || 'trust',
     sourceAccountId,
     payee: {
       routing,

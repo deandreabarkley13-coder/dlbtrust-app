@@ -11,11 +11,16 @@
  */
 
 const RECORD_LENGTH = 94;
-const ODFI_ROUTING = process.env.NACHA_ODFI_ROUTING || process.env.PTC_BANK_ROUTING || process.env.TRUST_BANK_ROUTING || '241075470';
+
+// ODFI / originator identifiers are intentionally controlled by dedicated NACHA_*
+// environment variables only. They are NOT inherited from PTC_BANK_* / TRUST_BANK_*
+// wire or settlement settings because ACH file identity must match the bank
+// that actually originates the file.
+const ODFI_ROUTING = process.env.NACHA_ODFI_ROUTING || '241075470';
 const ODFI_ID = String(ODFI_ROUTING).substring(0, 8);
-const ORIGINATOR_NAME = process.env.NACHA_ORIGINATOR_NAME || process.env.PTC_BANK_NAME || process.env.TRUST_BANK_NAME || 'DLB TRUST';
+const ORIGINATOR_NAME = process.env.NACHA_ORIGINATOR_NAME || 'DLB TRUST';
 const ORIGINATOR_ID = (() => {
-  const custom = process.env.NACHA_ORIGINATOR_ID || process.env.PTC_BANK_SETTLEMENT_ACCOUNT || process.env.TRUST_BANK_ACCOUNT;
+  const custom = process.env.NACHA_ORIGINATOR_ID;
   if (custom) return String(custom).replace(/\D/g, '').substring(0, 10).padStart(10, '0');
   return '1' + ODFI_ROUTING;
 })();
@@ -76,7 +81,7 @@ function fileHeaderRecord(opts = {}) {
   rec += '094';                                  // pos 35-37: record size
   rec += '10';                                   // pos 38-39: blocking factor
   rec += '1';                                    // pos 40: format code
-  rec += pad(opts.immediateDestinationName || process.env.NACHA_IMMEDIATE_DESTINATION_NAME || 'EATON FAMILY CU', 23); // pos 41-63
+  rec += pad(opts.immediateDestinationName || process.env.NACHA_IMMEDIATE_DESTINATION_NAME || 'ACH DESTINATION', 23); // pos 41-63
   rec += pad(opts.immediateOriginName || process.env.NACHA_IMMEDIATE_ORIGIN_NAME || ORIGINATOR_NAME, 23);        // pos 64-86
   rec += pad(opts.referenceCode || '', 8);       // pos 87-94
   return rec.padEnd(RECORD_LENGTH);
@@ -186,6 +191,13 @@ function fileControlRecord(batchCount, blockCount, entryCount, entryHash, totalD
  * @returns {string} NACHA file content
  */
 function generateNACHAFile(opts = {}, batches = []) {
+  if (!validateRouting(ODFI_ROUTING)) {
+    throw new Error(`Invalid NACHA ODFI routing: ${ODFI_ROUTING}`);
+  }
+  if (opts.immediateDestination && !validateRouting(opts.immediateDestination)) {
+    throw new Error(`Invalid NACHA immediate destination routing: ${opts.immediateDestination}`);
+  }
+
   const lines = [];
   let totalEntryCount = 0;
   let totalEntryHash = 0;
