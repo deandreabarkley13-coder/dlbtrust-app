@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { createRequire } from 'module';
 import fs from 'fs';
 
@@ -66,6 +66,58 @@ describe('Melio bill spreadsheet CSV export', () => {
     } catch (err) {
       expect(err.invalidRows).toHaveLength(2);
       expect(err.outcomes).toHaveLength(2);
+    }
+  });
+
+  it('returns chunk paths and persists one record per batch payable', async () => {
+    const cfg = MelioEngine._cfg();
+    const cfgSpy = vi.spyOn(MelioEngine, '_cfg').mockReturnValue({
+      ...cfg,
+      payBillsEmail: '',
+      postPayableGl: false,
+    });
+    const balanceSpy = vi.spyOn(MelioEngine, '_sourceBalance').mockResolvedValue({
+      balanceCents: 10000,
+      account: null,
+    });
+    const records = [];
+    const recordSpy = vi.spyOn(MelioEngine, '_recordPayment').mockImplementation(async (record) => {
+      records.push(record);
+    });
+
+    try {
+      const result = await MelioEngine.exportBatch({
+        batchId: 'MEL-BATCH-TEST',
+        payables: [
+          {
+            paymentId: 'MEL-ROW-1',
+            amount: 5,
+            vendor: { name: 'First Vendor' },
+            dueDate: '2026-02-01',
+          },
+          {
+            paymentId: 'MEL-ROW-2',
+            amount: 7,
+            vendor: { name: 'Second Vendor' },
+            dueDate: '2026-02-02',
+          },
+        ],
+      });
+
+      expect(result.outcomes).toHaveLength(2);
+      expect(result.outcomes.map((outcome) => outcome.paymentId)).toEqual(['MEL-ROW-1', 'MEL-ROW-2']);
+      expect(result.outcomes.every((outcome) => outcome.status === 'exported')).toBe(true);
+      expect(result.outcomes[0].csvPath).toBe(result.outcomes[1].csvPath);
+      expect(records).toHaveLength(2);
+      expect(records[0].id).toBe('MEL-ROW-1');
+      expect(records[0].result.csvPath).toBe(result.outcomes[0].csvPath);
+      expect(records[0].metadata.batchId).toBe('MEL-BATCH-TEST');
+      expect(records[1].result.csvPath).toBe(result.outcomes[1].csvPath);
+      expect(records[1].metadata.batchId).toBe('MEL-BATCH-TEST');
+    } finally {
+      recordSpy.mockRestore();
+      balanceSpy.mockRestore();
+      cfgSpy.mockRestore();
     }
   });
 
