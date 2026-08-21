@@ -1298,11 +1298,11 @@
     html += '<div class="approval-item" style="margin-bottom:12px;">' +
       '<strong>Trustee signature of record</strong>' +
       (signatureOfRecord || []).map(function (record) {
-        const document = record.document || {};
+        const documentMetadata = record.document || {};
         return '<div style="font-size:12px;margin-top:6px;"><strong>' + record.role + ':</strong> ' + record.legalName +
-          ' <span class="muted">— ' + (document.title || 'Executed signature page') +
-          ', SHA-256 ' + (document.sha256 || '—') +
-          ', ' + (document.executionStatus || 'status unavailable') + '</span></div>';
+          ' <span class="muted">— ' + (documentMetadata.title || 'Executed signature page') +
+          ', SHA-256 ' + (documentMetadata.sha256 || '—') +
+          ', ' + (documentMetadata.executionStatus || 'status unavailable') + '</span></div>';
       }).join('') +
       '</div>';
     html += '<div style="margin-bottom:12px;"><strong>Pending proposals:</strong> ' + pendingCount + '</div>';

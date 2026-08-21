@@ -510,7 +510,14 @@ router.get('/consensus', operatorAuth, async (req, res) => {
 });
 
 router.get('/consensus/signature-of-record', operatorAuth, async (req, res) => {
-  try { res.json({ success: true, data: CanonicalConsensusEngine.getSignatureOfRecord() }); } catch (err) { sendError(res, err); }
+  try {
+    const data = CanonicalConsensusEngine.getSignatureOfRecord().map((record) => {
+      const documentMetadata = { ...(record.document || {}) };
+      delete documentMetadata.path;
+      return { ...record, document: documentMetadata };
+    });
+    res.json({ success: true, data });
+  } catch (err) { sendError(res, err); }
 });
 
 router.post('/consensus/proposals', operatorAuth, writeRateLimiter(), async (req, res) => {
