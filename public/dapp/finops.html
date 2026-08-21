@@ -265,11 +265,7 @@
       el('login-step-email').classList.add('hidden');
       el('login-step-code').classList.remove('hidden');
       el('login-code').value = '';
-      if (res.data && res.data.code) {
-        show('Email provider not active; PIN for testing: ' + res.data.code + '. Enter it above.', false, 'token-status');
-      } else {
-        show('PIN sent to ' + email + '. Check your inbox/spam and enter it below.', false, 'token-status');
-      }
+      show('Enter the PIN you received at ' + email + '. Check your inbox/spam.', false, 'token-status');
     } catch(e) { show(e.message, true, 'token-status'); }
   }
 

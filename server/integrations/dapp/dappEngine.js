@@ -787,14 +787,18 @@ class DappEngine {
     const expires = new Date(Date.now() + 10 * 60 * 1000).toISOString();
     await this._update('dapp_users', user.id, { otp_code: code, otp_expires: expires });
 
-    let emailStatus = { sent: false, note: 'No email provider configured; code returned in API' };
+    let emailStatus = { sent: false, note: 'No email provider configured' };
     if (EmailEngine) {
       try {
         emailStatus = await EmailEngine.sendOtp({ to: email, name: user.name || email, otp: code, action: 'login' });
       } catch (e) { console.warn('[DappEngine] OTP email failed:', e.message); }
     }
 
-    const showCodeInResponse = process.env.DAPP_OTP_ALWAYS_SHOW_CODE === 'true' || !emailStatus.sent;
+    const showCodeInResponse = process.env.NODE_ENV !== 'production'
+      && process.env.DAPP_OTP_ALWAYS_SHOW_CODE === 'true';
+    if (!emailStatus.sent && !showCodeInResponse) {
+      throw new Error("We couldn't deliver your PIN. Contact the administrator.");
+    }
     return { email, code: showCodeInResponse ? code : null, expires, role, roles, sent: emailStatus.sent, provider: emailStatus.provider, message: emailStatus.note || 'OTP generated' };
   }
 

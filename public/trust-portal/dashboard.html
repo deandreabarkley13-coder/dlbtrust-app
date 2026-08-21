@@ -447,7 +447,7 @@
         dashboard = res.data;
         renderOverview(dashboard);
         renderPortfolio(dashboard);
-        if (user && (user.roles || []).some(r => String(r).includes('trustee'))) renderTrustee(dashboard);
+        if (String(dashboard.viewerRole || '').toLowerCase().includes('trustee')) renderTrustee(dashboard);
         else renderBeneficiary(dashboard);
       } catch (e) { console.error('dashboard load failed', e); }
     }

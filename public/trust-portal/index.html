@@ -86,12 +86,8 @@
         const res = await api('/api/dapp/auth/send-code', { method: 'POST', body: JSON.stringify({ email }) });
         if (!res.success) throw new Error(res.error || 'Failed to send PIN');
         el('pin-box').classList.remove('hidden');
-        if (res.data && res.data.code) {
-          show('status', 'PIN: ' + res.data.code + ' (email not configured)', false);
-          el('pin').value = res.data.code;
-        } else {
-          show('status', 'PIN sent to ' + email + '. Check your inbox.', false);
-        }
+        el('pin').value = '';
+        show('status', 'Enter the PIN you received at ' + email + '.', false);
       } catch (e) {
         show('status', e.message, true);
       } finally { el('btn-send').disabled = false; }
@@ -107,7 +103,11 @@
         localStorage.setItem('dlb-beneficiary-token', res.data.token);
         if (res.data.email) localStorage.setItem('dlb-trust-email', res.data.email);
         show('status', 'Login successful. Redirecting…', false);
-        setTimeout(() => location.href = '/trust-portal/dashboard.html', 400);
+        const roles = res.data.roles || [res.data.role];
+        const destination = roles.some(r => String(r || '').toLowerCase().includes('trustee'))
+          ? '/dashboard'
+          : '/trust-portal/dashboard.html';
+        setTimeout(() => location.href = destination, 400);
       } catch (e) { show('status', e.message, true); }
     }
     if (localStorage.getItem('dlb-beneficiary-token')) {

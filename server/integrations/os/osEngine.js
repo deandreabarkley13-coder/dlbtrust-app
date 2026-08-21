@@ -3989,6 +3989,30 @@ class MelioEngine extends BaseOSEngine {
     return res.rows[0] || null;
   }
 
+  static async getExportFile(identifier) {
+    identifier = String(identifier || '');
+    if (!identifier || /[\\/]/.test(identifier) || identifier.includes('..')) {
+      const error = new Error('Invalid Melio export identifier');
+      error.status = 400;
+      throw error;
+    }
+    if (!pool) return null;
+    const res = await query(
+      `SELECT * FROM melio_payments
+       WHERE id = $1 OR melio_payment_id = $1 OR metadata->>'batchId' = $1
+       ORDER BY created_at ASC`,
+      [identifier]
+    );
+    if (!res.rows.length) return null;
+    const paths = new Set(res.rows.map((row) => row.result && row.result.csvPath).filter(Boolean));
+    if (paths.size > 1) {
+      const error = new Error('Batch has multiple CSV files; download by payment identifier');
+      error.status = 409;
+      throw error;
+    }
+    return res.rows[0];
+  }
+
   static async _reserveSource({ sourceType, sourceAccountId, amount, paymentId }) {
     const deps = this._deps();
     if (!deps.SourceOfFunds) throw new Error('SourceOfFundsAdapter not available');

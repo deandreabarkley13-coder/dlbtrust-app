@@ -1341,10 +1341,8 @@
         const res = await api('/api/dapp/auth/send-code', { method: 'POST', body: JSON.stringify({ email }), noToken: true });
         if (res.data.sent) {
           el('user-auth-status').textContent = `Check your email (${res.data.provider || 'provider'}) for the 6-digit code. Code sent to ${email}.`;
-        } else if (res.data.code) {
-          el('user-auth-status').innerHTML = `Email provider not configured. Your one-time code is: <b>${esc(res.data.code)}</b>. Set SENDGRID_API_KEY as a secret to enable email delivery.`;
         } else {
-          el('user-auth-status').textContent = 'Unable to deliver code. Contact the administrator to configure email/SMS delivery.';
+          el('user-auth-status').textContent = `Enter the PIN you received at ${email}.`;
         }
         el('user-auth-status').className = 'status success';
       } catch (e) { el('user-auth-status').textContent = e.message; el('user-auth-status').className = 'status error'; }

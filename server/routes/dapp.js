@@ -48,6 +48,18 @@ const operatorAuth = requireAuth({ role: 'operator' });
 const portalAuth = requireAuth({ role: 'viewer' });
 const adminAuth = requireAuth({ role: 'admin' });
 
+function isTrusteePortalUser(req) {
+  const user = req.user || {};
+  const roles = Array.isArray(user.roles) ? user.roles : [user.role];
+  return [user.role, ...roles].some((role) => String(role || '').toLowerCase().includes('trustee'))
+    || ['admin', 'operator'].includes(String(user.role || '').toLowerCase());
+}
+
+function trusteePortalOnly(req, res, next) {
+  if (!isTrusteePortalUser(req)) return res.status(403).json({ success: false, error: 'Trustee access required' });
+  next();
+}
+
 function sendError(res, err) {
   console.error('[dapp]', err);
   const message = err && (err.message || err.error || err.detail || err.title) ? (err.message || err.error || err.detail || err.title) : (typeof err === 'string' ? err : 'Unknown error');
@@ -914,11 +926,30 @@ function optionalAuth(req, res, next) {
 }
 
 router.get('/distribution-requests', portalAuth, async (req, res) => {
-  try { res.json({ success: true, data: await DistributionRequestEngine.listRequests({ status: req.query.status, beneficiaryEmail: req.query.beneficiaryEmail, limit: Number(req.query.limit) || 50 }) }); } catch (err) { sendError(res, err); }
+  try {
+    const trustee = isTrusteePortalUser(req);
+    const email = req.user && req.user.email;
+    if (!trustee && !email) throw new Error('Not authenticated');
+    res.json({
+      success: true,
+      data: await DistributionRequestEngine.listRequests({
+        status: req.query.status,
+        beneficiaryEmail: trustee ? req.query.beneficiaryEmail : email,
+        limit: Number(req.query.limit) || 50,
+      }),
+    });
+  } catch (err) { sendError(res, err); }
 });
 
 router.get('/distribution-requests/:id', portalAuth, async (req, res) => {
-  try { res.json({ success: true, data: await DistributionRequestEngine.getRequest(req.params.id) }); } catch (err) { sendError(res, err); }
+  try {
+    const request = await DistributionRequestEngine.getRequest(req.params.id);
+    if (!request) return res.status(404).json({ success: false, error: 'Request not found' });
+    if (!isTrusteePortalUser(req) && String(request.beneficiary_email || '').toLowerCase() !== String(req.user?.email || '').toLowerCase()) {
+      return res.status(403).json({ success: false, error: 'Access denied' });
+    }
+    res.json({ success: true, data: request });
+  } catch (err) { sendError(res, err); }
 });
 
 router.post('/distribution-requests', portalAuth, writeRateLimiter(), async (req, res) => {
@@ -1447,12 +1478,12 @@ router.post('/beneficiary/bitpay/pay', portalAuth, writeRateLimiter(), async (re
 router.get('/ptc/dashboard', portalAuth, async (req, res) => {
   try {
     const email = req.user && req.user.email;
-    const data = await PtcPortalEngine.getDashboard(email);
+    const data = await PtcPortalEngine.getDashboard(email, req.user?.role, req.user?.roles);
     res.json({ success: true, data });
   } catch (err) { sendError(res, err); }
 });
 
-router.get('/ptc/members', portalAuth, async (req, res) => {
+router.get('/ptc/members', portalAuth, trusteePortalOnly, async (req, res) => {
   try {
     res.json({ success: true, data: await PtcPortalEngine.listMembers() });
   } catch (err) { sendError(res, err); }
