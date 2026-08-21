@@ -213,10 +213,8 @@ router.get('/payments/melio/:identifier/download', operatorAuth, async function(
     var result = record.result || {};
     var filePath = result.csvPath;
     var fileName = result.fileName;
-    var exportDir = require('path').resolve(process.cwd(), 'data', 'melio-exports');
-    var resolvedPath = require('path').resolve(filePath || '');
-    var relativePath = require('path').relative(exportDir, resolvedPath);
-    if (!filePath || !fileName || !relativePath || relativePath.startsWith('..') || require('path').isAbsolute(relativePath) || require('path').basename(fileName) !== fileName) {
+    var resolvedPath = MelioEngine._resolveExportPath(filePath, fileName);
+    if (!resolvedPath) {
       return res.status(400).json({ success: false, error: 'Invalid Melio export file' });
     }
     var fs = require('fs');

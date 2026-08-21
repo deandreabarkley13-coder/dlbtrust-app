@@ -152,7 +152,7 @@
             <label>Amount ($)</label>
             <input type="number" id="melio-amount" value="0.01" step="0.01" min="0.01" style="width:120px">
             <label>Source GL</label>
-            <input type="text" id="melio-source-gl" value="4000" style="width:120px">
+            <input type="text" id="melio-source-gl" value="1000" style="width:120px">
           </div>
           <div class="actions">
             <button onclick="sendMelioCsvDistribution()">Send Melio CSV Distribution</button>
@@ -164,7 +164,7 @@
             <label>Amount ($)</label>
             <input type="number" id="melio-invoice-amount" value="0.01" step="0.01" min="0.01" style="width:120px">
             <label>Source GL</label>
-            <input type="text" id="melio-invoice-source-gl" value="4000" style="width:120px">
+            <input type="text" id="melio-invoice-source-gl" value="1000" style="width:120px">
             <label>Buyer email</label>
             <input type="email" id="melio-invoice-buyer-email" placeholder="PTC admin email" style="width:220px">
             <label>Seller email</label>
@@ -552,7 +552,7 @@
     async function sendMelioCsvDistribution() {
       const amount = Number(el('melio-amount').value);
       if (!Number.isFinite(amount) || amount <= 0) { flash('Enter a positive amount', false); return; }
-      const sourceGl = el('melio-source-gl').value.trim() || '4000';
+      const sourceGl = el('melio-source-gl').value.trim() || '1000';
 
       const payload = {
         action: 'distribute',
@@ -583,7 +583,7 @@
     async function submitMelioInvoiceAndSync() {
       const amount = Number(el('melio-invoice-amount').value);
       if (!Number.isFinite(amount) || amount <= 0) { flash('Enter a positive amount', false); return; }
-      const sourceGl = el('melio-invoice-source-gl').value.trim() || '4000';
+      const sourceGl = el('melio-invoice-source-gl').value.trim() || '1000';
       const buyerEmail = el('melio-invoice-buyer-email').value.trim();
       const sellerEmail = el('melio-invoice-seller-email').value.trim();
 

@@ -1,12 +1,107 @@
 import { describe, expect, it, vi } from 'vitest';
 import { createRequire } from 'module';
 import fs from 'fs';
+import path from 'path';
 
 const require = createRequire(import.meta.url);
 const { MelioEngine } = require('../server/integrations/os/osEngine');
 const { EmailEngine } = require('../server/integrations/dapp/emailEngine');
+const vendorsRouter = require('../server/routes/vendors');
+
+const markPaidRoute = vendorsRouter.stack.find(
+  (layer: any) => layer.route?.path === '/payments/melio/:identifier/mark-paid',
+);
+const markPaidHandler = markPaidRoute.route.stack[markPaidRoute.route.stack.length - 1].handle;
 
 describe('Melio bill spreadsheet CSV export', () => {
+  it('uses the cash funding default for Melio callers without changing other rail defaults', () => {
+    const dashboard = fs.readFileSync(path.resolve(process.cwd(), 'public/os-engine-dashboard.html'), 'utf8');
+    const vendorsRoutes = fs.readFileSync(path.resolve(process.cwd(), 'server/routes/vendors.js'), 'utf8');
+
+    expect(dashboard).toContain('id="melio-source-gl" value="1000"');
+    expect(dashboard).toContain('id="melio-invoice-source-gl" value="1000"');
+    expect(dashboard).toContain("el('melio-source-gl').value.trim() || '1000'");
+    expect(dashboard).toContain("el('melio-invoice-source-gl').value.trim() || '1000'");
+    expect(dashboard).toContain('id="apisix-source-gl" value="4000"');
+    expect(dashboard).toContain('id="nickel-source-gl" value="4000"');
+    expect(vendorsRoutes.match(/source_account_code: paymentPayload\.source_account_code \|\| '1000'/g) || []).toHaveLength(1);
+    expect(vendorsRoutes).toContain("source_account_code: paymentPayload.source_account_code || '4000'");
+  });
+
+  it('writes exports to the configured directory and validates downloads within it', () => {
+    const exportDir = fs.mkdtempSync(path.join(process.cwd(), 'data', 'melio-export-test-'));
+    const previousExportDir = process.env.MELIO_EXPORT_DIR;
+    process.env.MELIO_EXPORT_DIR = exportDir;
+
+    try {
+      const now = new Date('2026-01-15T12:00:00.000Z');
+      const entry = MelioEngine._buildCsvRow({
+        amount: 4.25,
+        vendor: { name: 'Configured Directory Vendor' },
+        dueDate: '2026-02-01',
+      }, 'MEL-CONFIGURED-DIR', now);
+      const file = MelioEngine._writeCsvFiles([entry], 'MEL-CONFIGURED-DIR', now)[0];
+
+      expect(path.dirname(file.filePath)).toBe(path.resolve(exportDir));
+      expect(fs.existsSync(file.filePath)).toBe(true);
+      expect(MelioEngine._resolveExportPath(file.filePath, file.fileName)).toBe(file.filePath);
+      expect(MelioEngine._resolveExportPath(path.join(exportDir, '..', 'outside.csv'), 'outside.csv')).toBeNull();
+      expect(MelioEngine._resolveExportPath(path.join(exportDir, file.fileName), '../outside.csv')).toBeNull();
+      expect(() => MelioEngine._validateExportIdentifier('../outside')).toThrow('Invalid Melio export identifier');
+    } finally {
+      if (previousExportDir === undefined) delete process.env.MELIO_EXPORT_DIR;
+      else process.env.MELIO_EXPORT_DIR = previousExportDir;
+      fs.rmSync(exportDir, { recursive: true, force: true });
+    }
+  });
+
+  it('returns 404 for unknown mark-paid identifiers and 400 for invalid ones', async () => {
+    const recordsSpy = vi.spyOn(MelioEngine, '_getRecordsByExportIdentifier').mockImplementation(async (identifier: string) => {
+      if (identifier === 'MEL--0000000000000-XXXXXX') return [];
+      MelioEngine._validateExportIdentifier(identifier);
+      return [];
+    });
+    const logSpy = vi.spyOn(MelioEngine, '_log').mockResolvedValue({ eventId: 'TEST-EVENT', status: 'failed', logged: false });
+
+    const invoke = async (identifier: string) => {
+      const response: any = {
+        status: vi.fn(function status(code: number) {
+          response.statusCode = code;
+          return response;
+        }),
+        json: vi.fn(function json(body: any) {
+          response.body = body;
+          return response;
+        }),
+      };
+      await markPaidHandler({ params: { identifier }, body: {} }, response);
+      return response;
+    };
+
+    try {
+      const unknown = await invoke('MEL--0000000000000-XXXXXX');
+      expect(unknown.status).toHaveBeenCalledWith(404);
+      expect(unknown.body).toMatchObject({
+        success: false,
+        error: 'melio.markPaid failed: Melio export not found: MEL--0000000000000-XXXXXX',
+      });
+
+      // Express normalizes a literal ../ path before routing, so it cannot
+      // reach this handler; encoded forms are decoded before it and stay JSON 400s.
+      for (const encoded of ['..%2F..%2Fetc%2Fpasswd', 'a%2Fb', 'a%5Cb']) {
+        const invalid = await invoke(decodeURIComponent(encoded));
+        expect(invalid.status).toHaveBeenCalledWith(400);
+        expect(invalid.body).toMatchObject({
+          success: false,
+          error: 'melio.markPaid failed: Invalid Melio export identifier',
+        });
+      }
+    } finally {
+      recordsSpy.mockRestore();
+      logSpy.mockRestore();
+    }
+  });
+
   it('emits the Melio headers, formats values, and omits bank details', () => {
     const now = new Date('2026-01-15T12:00:00.000Z');
     const entry = MelioEngine._buildCsvRow({
