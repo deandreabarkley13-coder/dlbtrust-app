@@ -452,4 +452,63 @@ describe('Melio bill spreadsheet CSV export', () => {
       cfgSpy.mockRestore();
     }
   });
+
+  it('handles a redelivered terminal webhook without repeating settlement or reserve finalization', async () => {
+    const cfg = MelioEngine._cfg();
+    const cfgSpy = vi.spyOn(MelioEngine, '_cfg').mockReturnValue({
+      ...cfg,
+      settlementGlAccount: '1000',
+      payablesGlAccount: '2100',
+      webhookSecret: '',
+    });
+    const deps = MelioEngine._deps();
+    const postJournalEntry = vi.fn().mockResolvedValue({ entry_id: 'JRN-WEBHOOK' });
+    const depsSpy = vi.spyOn(MelioEngine, '_deps').mockReturnValue({
+      ...deps,
+      TrustAcct: { postJournalEntry },
+    });
+    const reserveFinalizeSpy = vi.spyOn(MelioEngine, '_finalizeReserve').mockResolvedValue(undefined);
+    let persistedRecord = {
+      id: 'MEL-WEBHOOK',
+      action: 'exportPayment',
+      status: 'exported',
+      amount: 8.5,
+      amountCents: 850,
+      currency: 'USD',
+      sourceType: 'trust',
+      sourceAccountId: '4000',
+      reserve_id: 'RES-WEBHOOK',
+      result: { csvPath: 'data/melio-exports/webhook.csv' },
+    };
+    const recordSpy = vi.spyOn(MelioEngine, '_getPaymentRecord').mockImplementation(async () => persistedRecord);
+    const persistSpy = vi.spyOn(MelioEngine, '_recordPayment').mockImplementation(async (record) => {
+      persistedRecord = record;
+    });
+
+    try {
+      const first = await MelioEngine._webhook({ payment_id: 'MEL-WEBHOOK', status: 'completed' });
+      const second = await MelioEngine._webhook({ payment_id: 'MEL-WEBHOOK', status: 'completed' });
+
+      expect(first).toMatchObject({
+        received: true,
+        status: 'paid',
+        settlementJournalEntryId: 'JRN-WEBHOOK',
+      });
+      expect(second).toMatchObject({
+        received: true,
+        status: 'paid',
+        settlementJournalEntryId: 'JRN-WEBHOOK',
+      });
+      expect(postJournalEntry).toHaveBeenCalledTimes(1);
+      expect(reserveFinalizeSpy).toHaveBeenCalledTimes(1);
+      expect(persistedRecord.status).toBe('paid');
+      expect(persistedRecord.result.settlementJournalEntryId).toBe('JRN-WEBHOOK');
+    } finally {
+      persistSpy.mockRestore();
+      recordSpy.mockRestore();
+      reserveFinalizeSpy.mockRestore();
+      depsSpy.mockRestore();
+      cfgSpy.mockRestore();
+    }
+  });
 });
