@@ -509,6 +509,10 @@ router.get('/consensus', operatorAuth, async (req, res) => {
   try { res.json({ success: true, data: await CanonicalConsensusEngine.listProposals(req.query) }); } catch (err) { sendError(res, err); }
 });
 
+router.get('/consensus/signature-of-record', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: CanonicalConsensusEngine.getSignatureOfRecord() }); } catch (err) { sendError(res, err); }
+});
+
 router.post('/consensus/proposals', operatorAuth, writeRateLimiter(), async (req, res) => {
   try { res.status(201).json({ success: true, data: await CanonicalConsensusEngine.createProposal({ ...req.body, createdBy: getUserEmail(req) }) }); } catch (err) { sendError(res, err); }
 });

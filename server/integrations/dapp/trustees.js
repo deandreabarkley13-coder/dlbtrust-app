@@ -1,5 +1,7 @@
 'use strict';
 
+const path = require('path');
+
 /**
  * Shared trustee configuration for FinOps, Asset-Debt proofs, and
  * distribution/disbursement approvals.
@@ -29,6 +31,7 @@ const TRUSTEES = [
     email: process.env.TRUST_MAKER_EMAIL || 'barkley420lavar@gmail.com',
     phone: process.env.TRUST_MAKER_PHONE || '',
     address: process.env.TRUST_MAKER_ADDRESS || '',
+    signatureOfRecordLegalName: process.env.TRUST_MAKER_LEGAL_NAME || 'Malissa Ann Robinson',
   },
   {
     role: 'checker',
@@ -36,6 +39,7 @@ const TRUSTEES = [
     email: process.env.TRUST_CHECKER_EMAIL || 'dbarkley1130@gmail.com',
     phone: process.env.TRUST_CHECKER_PHONE || '',
     address: process.env.TRUST_CHECKER_ADDRESS || '',
+    signatureOfRecordLegalName: process.env.TRUST_CHECKER_LEGAL_NAME || 'DeAndrea Lavar Barkley',
   },
 ];
 
@@ -73,6 +77,36 @@ function validateTrustee(role, email) {
   return trustee;
 }
 
+function signatureDocumentPath() {
+  const configuredPath = process.env.TRUST_SIGNATURE_DOCUMENT_PATH;
+  return configuredPath
+    ? path.resolve(configuredPath)
+    : (process.env.NODE_ENV === 'production'
+      ? '/data/governance/Trustees_Signature_Page.pdf'
+      : path.join(process.cwd(), 'data', 'governance', 'Trustees_Signature_Page.pdf'));
+}
+
+function getTrusteeSignatureOfRecord(role) {
+  const trustee = getTrusteeByRole(role);
+  if (!trustee || !trustee.signatureOfRecordLegalName) return null;
+  return {
+    role: trustee.role,
+    legalName: trustee.signatureOfRecordLegalName,
+    document: {
+      title: 'Trustees Signature Page',
+      fileName: 'Trustees_Signature_Page.pdf',
+      sha256: '461ccddfb9f29fadae824d4905f74c18b24484f82877b8115cd871c1152ce4b4',
+      pageCount: 1,
+      path: signatureDocumentPath(),
+      executionStatus: 'executed',
+    },
+  };
+}
+
+function getSignatureOfRecord() {
+  return REQUIRED_ROLES.map(getTrusteeSignatureOfRecord);
+}
+
 module.exports = {
   TRUSTEES,
   REQUIRED_ROLES,
@@ -81,4 +115,7 @@ module.exports = {
   getTrusteeByRole,
   getTrusteeByEmail,
   validateTrustee,
+  signatureDocumentPath,
+  getTrusteeSignatureOfRecord,
+  getSignatureOfRecord,
 };

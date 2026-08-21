@@ -106,6 +106,7 @@ describe('canonical vendor bill consensus', () => {
       proposalId: 'PROPOSAL-TWO-ROLES',
       role: 'maker',
       approverEmail: maker.email,
+      signature: 'Malissa Ann Robinson',
     });
     expect(execute).not.toHaveBeenCalled();
 
@@ -113,6 +114,7 @@ describe('canonical vendor bill consensus', () => {
       proposalId: 'PROPOSAL-TWO-ROLES',
       role: 'checker',
       approverEmail: checker.email,
+      signature: 'DeAndrea Lavar Barkley',
     });
     expect(execute).toHaveBeenCalledWith('PROPOSAL-TWO-ROLES');
   });
