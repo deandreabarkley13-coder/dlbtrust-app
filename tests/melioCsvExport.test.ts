@@ -24,8 +24,8 @@ describe('Melio bill spreadsheet CSV export', () => {
     expect(dashboard).toContain("el('melio-invoice-source-gl').value.trim() || '1000'");
     expect(dashboard).toContain('id="apisix-source-gl" value="4000"');
     expect(dashboard).toContain('id="nickel-source-gl" value="4000"');
-    expect(vendorsRoutes.match(/source_account_code: paymentPayload\.source_account_code \|\| '1000'/g) || []).toHaveLength(2);
-    expect(vendorsRoutes).not.toContain("source_account_code: paymentPayload.source_account_code || '4000'");
+    expect(vendorsRoutes.match(/source_account_code: paymentPayload\.source_account_code \|\| '1000'/g) || []).toHaveLength(1);
+    expect(vendorsRoutes).toContain("source_account_code: paymentPayload.source_account_code || '4000'");
   });
 
   it('writes exports to the configured directory and validates downloads within it', () => {
