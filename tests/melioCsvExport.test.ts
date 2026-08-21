@@ -4,6 +4,7 @@ import fs from 'fs';
 
 const require = createRequire(import.meta.url);
 const { MelioEngine } = require('../server/integrations/os/osEngine');
+const { EmailEngine } = require('../server/integrations/dapp/emailEngine');
 
 describe('Melio bill spreadsheet CSV export', () => {
   it('emits the Melio headers, formats values, and omits bank details', () => {
@@ -112,9 +113,178 @@ describe('Melio bill spreadsheet CSV export', () => {
       expect(records[0].id).toBe('MEL-ROW-1');
       expect(records[0].result.csvPath).toBe(result.outcomes[0].csvPath);
       expect(records[0].metadata.batchId).toBe('MEL-BATCH-TEST');
+      expect(records[0].result.emailedTo).toBeUndefined();
+      expect(records[0].emailedTo).toBeUndefined();
       expect(records[1].result.csvPath).toBe(result.outcomes[1].csvPath);
       expect(records[1].metadata.batchId).toBe('MEL-BATCH-TEST');
     } finally {
+      recordSpy.mockRestore();
+      balanceSpy.mockRestore();
+      cfgSpy.mockRestore();
+    }
+  });
+
+  it('inherits top-level source values while preserving per-row overrides', async () => {
+    const cfg = MelioEngine._cfg();
+    const cfgSpy = vi.spyOn(MelioEngine, '_cfg').mockReturnValue({
+      ...cfg,
+      payBillsEmail: '',
+      postPayableGl: false,
+    });
+    const sourceCalls = [];
+    const balanceSpy = vi.spyOn(MelioEngine, '_sourceBalance').mockImplementation(async (sourceType, sourceAccountId) => {
+      sourceCalls.push([sourceType, sourceAccountId]);
+      return { balanceCents: 1200, account: null };
+    });
+    const recordSpy = vi.spyOn(MelioEngine, '_recordPayment').mockResolvedValue(undefined);
+
+    try {
+      const result = await MelioEngine.exportBatch({
+        source_type: 'trust',
+        source_account_id: '1200',
+        payables: [
+          {
+            paymentId: 'MEL-INHERITED',
+            amount: 5,
+            vendor: { name: 'Inherited Source Vendor' },
+            dueDate: '2026-02-01',
+          },
+          {
+            paymentId: 'MEL-OVERRIDE',
+            amount: 7,
+            source_type: 'cash',
+            source_account_id: 'CA-OVERRIDE',
+            vendor: { name: 'Override Source Vendor' },
+            dueDate: '2026-02-02',
+          },
+        ],
+      });
+
+      expect(sourceCalls).toEqual([
+        ['trust', '1200'],
+        ['cash', 'CA-OVERRIDE'],
+      ]);
+      expect(result.records.map((record) => [record.sourceType, record.sourceAccountId])).toEqual([
+        ['trust', '1200'],
+        ['cash', 'CA-OVERRIDE'],
+      ]);
+    } finally {
+      recordSpy.mockRestore();
+      balanceSpy.mockRestore();
+      cfgSpy.mockRestore();
+    }
+  });
+
+  it('names the source in insufficient-balance errors', async () => {
+    const cfg = MelioEngine._cfg();
+    const cfgSpy = vi.spyOn(MelioEngine, '_cfg').mockReturnValue({
+      ...cfg,
+      payBillsEmail: '',
+      postPayableGl: false,
+    });
+    const balanceSpy = vi.spyOn(MelioEngine, '_sourceBalance').mockResolvedValue({
+      balanceCents: 10000,
+      account: null,
+    });
+
+    try {
+      await expect(MelioEngine.exportBatch({
+        sourceType: 'trust',
+        sourceAccountId: 'TRUST-LOW',
+        payables: [{
+          paymentId: 'MEL-LOW-BALANCE',
+          amount: 101,
+          vendor: { name: 'Insufficient Vendor' },
+          dueDate: '2026-02-01',
+        }],
+      })).rejects.toThrow('Insufficient source balance for trust:TRUST-LOW: 100.00 < 101.00');
+    } finally {
+      balanceSpy.mockRestore();
+      cfgSpy.mockRestore();
+    }
+  });
+
+  it('persists emailedTo in result for a successful-ish email send', async () => {
+    const cfg = MelioEngine._cfg();
+    const cfgSpy = vi.spyOn(MelioEngine, '_cfg').mockReturnValue({
+      ...cfg,
+      payBillsEmail: 'payables@example.com',
+      postPayableGl: false,
+    });
+    const balanceSpy = vi.spyOn(MelioEngine, '_sourceBalance').mockResolvedValue({
+      balanceCents: 10000,
+      account: null,
+    });
+    const records = [];
+    const recordSpy = vi.spyOn(MelioEngine, '_recordPayment').mockImplementation(async (record) => {
+      records.push(record);
+    });
+    const sendSpy = vi.spyOn(EmailEngine, 'send').mockResolvedValue({
+      sent: true,
+      provider: 'test',
+    });
+
+    try {
+      await MelioEngine.exportBatch({
+        payables: [{
+          paymentId: 'MEL-EMAIL-SUCCESS',
+          amount: 5,
+          vendor: { name: 'Emailed Vendor' },
+          dueDate: '2026-02-01',
+        }],
+      });
+
+      expect(sendSpy).toHaveBeenCalledWith(expect.objectContaining({ to: 'payables@example.com' }));
+      expect(records[0].emailedTo).toBe('payables@example.com');
+      expect(records[0].result).toMatchObject({
+        emailSent: true,
+        emailProvider: 'test',
+        emailedTo: 'payables@example.com',
+      });
+    } finally {
+      sendSpy.mockRestore();
+      recordSpy.mockRestore();
+      balanceSpy.mockRestore();
+      cfgSpy.mockRestore();
+    }
+  });
+
+  it('persists emailedTo in result for the no-provider fallback', async () => {
+    const cfg = MelioEngine._cfg();
+    const cfgSpy = vi.spyOn(MelioEngine, '_cfg').mockReturnValue({
+      ...cfg,
+      payBillsEmail: 'payables@example.com',
+      postPayableGl: false,
+    });
+    const balanceSpy = vi.spyOn(MelioEngine, '_sourceBalance').mockResolvedValue({
+      balanceCents: 10000,
+      account: null,
+    });
+    const records = [];
+    const recordSpy = vi.spyOn(MelioEngine, '_recordPayment').mockImplementation(async (record) => {
+      records.push(record);
+    });
+    const sendSpy = vi.spyOn(EmailEngine, 'send');
+
+    try {
+      await MelioEngine.exportBatch({
+        payables: [{
+          paymentId: 'MEL-EMAIL-FALLBACK',
+          amount: 5,
+          vendor: { name: 'Fallback Vendor' },
+          dueDate: '2026-02-01',
+        }],
+      });
+
+      expect(sendSpy).toHaveBeenCalledWith(expect.objectContaining({ to: 'payables@example.com' }));
+      expect(records[0].emailedTo).toBe('payables@example.com');
+      expect(records[0].result).toMatchObject({
+        emailSent: false,
+        emailProvider: 'log',
+        emailedTo: 'payables@example.com',
+      });
+    } finally {
+      sendSpy.mockRestore();
       recordSpy.mockRestore();
       balanceSpy.mockRestore();
       cfgSpy.mockRestore();

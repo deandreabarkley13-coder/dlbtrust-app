@@ -4252,6 +4252,10 @@ class MelioEngine extends BaseOSEngine {
         ? `Attached Melio CSV payment file for vendor ${first.entry.vendorName}, amount $${Number(firstPayload.amount).toFixed(2)}.\n\nPlease upload this file to the Melio Pay Bills portal for processing.\n\nMemo: ${firstPayload.memo || ''}`
         : `Attached Melio CSV payment file containing ${chunk.length} bills.\n\nPlease upload this file to the Melio Pay Bills portal for processing.`;
       try {
+        chunk.forEach((item) => {
+          item.record.result.emailedTo = cfg.payBillsEmail;
+          item.record.emailedTo = cfg.payBillsEmail;
+        });
         const EmailEngine = require('../dapp/emailEngine').EmailEngine;
         const emailRes = await EmailEngine.send({
           to: cfg.payBillsEmail,
@@ -4263,7 +4267,6 @@ class MelioEngine extends BaseOSEngine {
           item.record.status = emailRes.sent ? 'emailed' : 'exported';
           item.record.result.emailSent = emailRes.sent;
           item.record.result.emailProvider = emailRes.provider;
-          item.record.emailedTo = cfg.payBillsEmail;
         });
       } catch (e) {
         console.warn('[melio] email to Melio Pay Bills failed:', e.message);
@@ -4280,7 +4283,7 @@ class MelioEngine extends BaseOSEngine {
     const p = this._payloadDefaults(payload);
     const amountCents = toCents(p.amount);
     const sourceInfo = await this._sourceBalance(p.sourceType, p.sourceAccountId);
-    if ((sourceInfo.balanceCents || 0) < amountCents) throw new Error(`Insufficient source balance: ${((sourceInfo.balanceCents || 0) / 100).toFixed(2)} < ${p.amount}`);
+    if ((sourceInfo.balanceCents || 0) < amountCents) throw new Error(`Insufficient source balance for ${p.sourceType}:${p.sourceAccountId}: ${((sourceInfo.balanceCents || 0) / 100).toFixed(2)} < ${p.amount}`);
 
     const now = new Date();
     const paymentId = id('MEL-');
@@ -4299,7 +4302,19 @@ class MelioEngine extends BaseOSEngine {
     const cfg = this._cfg();
     const now = new Date();
     const payables = payload.payables || payload.items || payload.rows;
-    const { entries, outcomes } = this._validateBatchRows(payables, now);
+    const inheritedSourceType = payload.sourceType || payload.source_type;
+    const inheritedSourceAccountId = payload.sourceAccountId || payload.source_account_id;
+    const payablesWithSources = Array.isArray(payables)
+      ? payables.map((payable) => {
+        const row = payable || {};
+        return {
+          ...row,
+          ...(row.sourceType || row.source_type ? {} : { sourceType: inheritedSourceType }),
+          ...(row.sourceAccountId || row.source_account_id ? {} : { sourceAccountId: inheritedSourceAccountId }),
+        };
+      })
+      : payables;
+    const { entries, outcomes } = this._validateBatchRows(payablesWithSources, now);
 
     const balances = new Map();
     const sourceInfos = new Map();
@@ -4315,7 +4330,7 @@ class MelioEngine extends BaseOSEngine {
       const sourceInfo = await this._sourceBalance(group.sourceType, group.sourceAccountId);
       sourceInfos.set(`${group.sourceType}:${group.sourceAccountId}`, sourceInfo);
       if ((sourceInfo.balanceCents || 0) < group.amountCents) {
-        throw new Error(`Insufficient source balance: ${((sourceInfo.balanceCents || 0) / 100).toFixed(2)} < ${(group.amountCents / 100).toFixed(2)}`);
+        throw new Error(`Insufficient source balance for ${group.sourceType}:${group.sourceAccountId}: ${((sourceInfo.balanceCents || 0) / 100).toFixed(2)} < ${(group.amountCents / 100).toFixed(2)}`);
       }
     }
 
