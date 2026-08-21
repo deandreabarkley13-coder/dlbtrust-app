@@ -1,12 +1,53 @@
 import { describe, expect, it, vi } from 'vitest';
 import { createRequire } from 'module';
 import fs from 'fs';
+import path from 'path';
 
 const require = createRequire(import.meta.url);
 const { MelioEngine } = require('../server/integrations/os/osEngine');
 const { EmailEngine } = require('../server/integrations/dapp/emailEngine');
 
 describe('Melio bill spreadsheet CSV export', () => {
+  it('uses the cash funding default for Melio callers without changing other rail defaults', () => {
+    const dashboard = fs.readFileSync(path.resolve(process.cwd(), 'public/os-engine-dashboard.html'), 'utf8');
+    const vendorsRoutes = fs.readFileSync(path.resolve(process.cwd(), 'server/routes/vendors.js'), 'utf8');
+
+    expect(dashboard).toContain('id="melio-source-gl" value="1000"');
+    expect(dashboard).toContain('id="melio-invoice-source-gl" value="1000"');
+    expect(dashboard).toContain("el('melio-source-gl').value.trim() || '1000'");
+    expect(dashboard).toContain("el('melio-invoice-source-gl').value.trim() || '1000'");
+    expect(dashboard).toContain('id="apisix-source-gl" value="4000"');
+    expect(dashboard).toContain('id="nickel-source-gl" value="4000"');
+    expect(vendorsRoutes).toContain("source_account_code: paymentPayload.source_account_code || '1000'");
+  });
+
+  it('writes exports to the configured directory and validates downloads within it', () => {
+    const exportDir = fs.mkdtempSync(path.join(process.cwd(), 'data', 'melio-export-test-'));
+    const previousExportDir = process.env.MELIO_EXPORT_DIR;
+    process.env.MELIO_EXPORT_DIR = exportDir;
+
+    try {
+      const now = new Date('2026-01-15T12:00:00.000Z');
+      const entry = MelioEngine._buildCsvRow({
+        amount: 4.25,
+        vendor: { name: 'Configured Directory Vendor' },
+        dueDate: '2026-02-01',
+      }, 'MEL-CONFIGURED-DIR', now);
+      const file = MelioEngine._writeCsvFiles([entry], 'MEL-CONFIGURED-DIR', now)[0];
+
+      expect(path.dirname(file.filePath)).toBe(path.resolve(exportDir));
+      expect(fs.existsSync(file.filePath)).toBe(true);
+      expect(MelioEngine._resolveExportPath(file.filePath, file.fileName)).toBe(file.filePath);
+      expect(MelioEngine._resolveExportPath(path.join(exportDir, '..', 'outside.csv'), 'outside.csv')).toBeNull();
+      expect(MelioEngine._resolveExportPath(path.join(exportDir, file.fileName), '../outside.csv')).toBeNull();
+      expect(() => MelioEngine._validateExportIdentifier('../outside')).toThrow('Invalid Melio export identifier');
+    } finally {
+      if (previousExportDir === undefined) delete process.env.MELIO_EXPORT_DIR;
+      else process.env.MELIO_EXPORT_DIR = previousExportDir;
+      fs.rmSync(exportDir, { recursive: true, force: true });
+    }
+  });
+
   it('emits the Melio headers, formats values, and omits bank details', () => {
     const now = new Date('2026-01-15T12:00:00.000Z');
     const entry = MelioEngine._buildCsvRow({

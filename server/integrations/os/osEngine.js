@@ -3692,6 +3692,7 @@ class MelioEngine extends BaseOSEngine {
       payablesGlAccount: process.env.MELIO_PAYABLES_GL_ACCOUNT || '2100',
       expenseGlAccount: process.env.MELIO_EXPENSE_GL_ACCOUNT || '5300',
       settlementGlAccount: process.env.MELIO_SETTLEMENT_GL_ACCOUNT || '1000',
+      exportDir: path.resolve(process.env.MELIO_EXPORT_DIR || path.join(process.cwd(), 'data', 'melio-exports')),
       postPayableGl: (process.env.MELIO_POST_PAYABLE_GL || 'true') === 'true',
       csvMaxRows: Math.min(300, Math.max(1, Number.parseInt(process.env.MELIO_CSV_MAX_ROWS || '300', 10) || 300)),
     };
@@ -3909,7 +3910,7 @@ class MelioEngine extends BaseOSEngine {
   }
 
   static _writeCsvFiles(rows, batchId, now = new Date()) {
-    const outDir = path.join(process.cwd(), 'data', 'melio-exports');
+    const outDir = this._exportDir();
     fs.mkdirSync(outDir, { recursive: true });
     const headers = this._csvHeaders().join(',');
     return this._chunkRows(rows).map((chunk, index, chunks) => {
@@ -3928,6 +3929,26 @@ class MelioEngine extends BaseOSEngine {
         paymentIds: chunk.map((entry) => entry.paymentId),
       };
     });
+  }
+
+  static _exportDir() {
+    const cfg = this._cfg();
+    return path.resolve(cfg.exportDir || process.env.MELIO_EXPORT_DIR || path.join(process.cwd(), 'data', 'melio-exports'));
+  }
+
+  static _resolveExportPath(filePath, fileName) {
+    const exportDir = this._exportDir();
+    const resolvedPath = path.resolve(filePath || '');
+    const relativePath = path.relative(exportDir, resolvedPath);
+    if (!filePath
+      || !fileName
+      || !relativePath
+      || relativePath.startsWith('..')
+      || path.isAbsolute(relativePath)
+      || path.basename(fileName) !== fileName) {
+      return null;
+    }
+    return resolvedPath;
   }
 
   static _validateBatchRows(payables, now = new Date()) {

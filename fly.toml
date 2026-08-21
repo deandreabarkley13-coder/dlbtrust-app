@@ -10,6 +10,7 @@ primary_region = 'iad'
   FINERACT_URL = 'http://dlbtrust-fineract.internal:8443/fineract-provider/api/v1'
   PAYMENT_HUB_MODE = 'disabled'
   PAYMENT_HUB_LIVE = 'false'
+  MELIO_EXPORT_DIR = '/data/melio-exports'
 
 [http_service]
   internal_port = 3002
