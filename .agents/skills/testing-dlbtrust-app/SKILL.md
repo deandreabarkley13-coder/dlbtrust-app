@@ -1194,7 +1194,7 @@ nohup env \
   DATABASE_URL=postgres://dlbtrust:dlbtrust@localhost:5432/dlbtrust \
   JWT_SECRET=<any-stable-secret> \
   ADMIN_SECRET_TOKEN=dlb-admin-2026-trust \
-  MELIO_PAY_BILLS_EMAIL=deandrealavarbarkleytrust_935@invoicesmelio.com \
+  MELIO_PAY_BILLS_EMAIL=deandrealavarbarkleysolep_1663@invoicesmelio.com \
   MELIO_PAYABLES_GL_ACCOUNT=2100 \
   MELIO_POST_PAYABLE_GL=true \
   PORT=3002 \
@@ -1217,7 +1217,7 @@ disown
    # IMPORTANT: `testDbNetMgmtInvoice.js` parseArgs treats every flag as a key/value pair,
    # so pass `--process true --settle true` instead of bare `--process --settle`.
    ADMIN_SECRET_TOKEN=dlb-admin-2026-trust \
-   MELIO_PAY_BILLS_EMAIL=deandrealavarbarkleytrust_935@invoicesmelio.com \
+   MELIO_PAY_BILLS_EMAIL=deandrealavarbarkleysolep_1663@invoicesmelio.com \
      node server/scripts/testDbNetMgmtInvoice.js \
      --amount 0.01 --sourceAccountId 4000 \
      --process true --settle true \

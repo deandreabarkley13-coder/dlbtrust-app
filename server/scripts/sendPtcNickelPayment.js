@@ -39,7 +39,7 @@ async function main() {
   const account = args.account || process.env.NICKEL_RDFI_ACCOUNT || '692101092959';
   const name = args.name || process.env.NICKEL_RDFI_NAME || 'DB NET MGMT';
   const bankName = args.bankName || process.env.NICKEL_RDFI_BANK_NAME || 'Lili Bank';
-  const vendorEmail = args.vendorEmail || process.env.NICKEL_PAY_BILLS_EMAIL || 'deandrealavarbarkleytrust_935@invoicesmelio.com';
+  const vendorEmail = args.vendorEmail || process.env.NICKEL_PAY_BILLS_EMAIL || 'deandrealavarbarkleysolep_1663@invoicesmelio.com';
   const sourceAccountId = args.sourceAccountId || process.env.NICKEL_SOURCE_ACCOUNT_ID || '4000';
   const sourceType = args.sourceType || process.env.NICKEL_SOURCE_TYPE || 'trust';
 
