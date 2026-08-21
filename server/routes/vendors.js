@@ -380,7 +380,7 @@ router.post('/payments/nickel/submit-invoice', async function(req, res) {
       vendor_id: vendor.vendor_id,
       amount: parseFloat(paymentPayload.amount),
       source_type: paymentPayload.source_type || 'trust',
-      source_account_code: paymentPayload.source_account_code || '4000',
+      source_account_code: paymentPayload.source_account_code || '1000',
       payment_method: 'nickel',
       payment_type: paymentPayload.payment_type || 'fee_payment',
       description: paymentPayload.description || `Invoice from ${vendor.vendor_name}`,

@@ -145,7 +145,7 @@ class BaseOSEngine {
     } catch (err) {
       await this._log(action, payload, { error: err.message }, 'failed').catch(() => {});
       const e = new Error(`${this.engineName}.${action} failed: ${err.message}`);
-      e.status = err.status || 400;
+      e.status = err.status !== undefined ? err.status : 400;
       if (err.invalidRows) e.invalidRows = err.invalidRows;
       if (err.outcomes) e.outcomes = err.outcomes;
       throw e;
@@ -4137,7 +4137,11 @@ class MelioEngine extends BaseOSEngine {
 
   static async _markPaidByIdentifier(identifier, payload = {}) {
     const rows = await this._getRecordsByExportIdentifier(identifier);
-    if (!rows.length) throw new Error(`Melio export not found: ${identifier}`);
+    if (!rows.length) {
+      const error = new Error(`Melio export not found: ${identifier}`);
+      error.status = 404;
+      throw error;
+    }
     const settled = [];
     for (const row of rows) settled.push(await this._markPaidRecord(row, payload));
     if (settled.length === 1) return settled[0];
