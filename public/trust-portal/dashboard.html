@@ -89,8 +89,8 @@
 
   <main class="main">
     <div class="tabs">
-      <div class="tab active" data-tab="overview" onclick="showTab('overview')">Overview</div>
-      <div class="tab" data-tab="portfolio" onclick="showTab('portfolio')">Portfolio</div>
+      <div class="tab hidden active" id="tab-overview" data-tab="overview" onclick="showTab('overview')">Overview</div>
+      <div class="tab hidden" id="tab-portfolio" data-tab="portfolio" onclick="showTab('portfolio')">Portfolio</div>
       <div class="tab hidden" id="tab-trustee" data-tab="trustee" onclick="showTab('trustee')">Trustee Actions</div>
       <div class="tab hidden" id="tab-treasury" data-tab="treasury" onclick="showTab('treasury')">Stripe Treasury</div>
       <div class="tab hidden" id="tab-compliance" data-tab="compliance" onclick="showTab('compliance')">Compliance</div>
@@ -99,7 +99,7 @@
       <div class="tab hidden" id="tab-beneficiary" data-tab="beneficiary" onclick="showTab('beneficiary')">Beneficiary</div>
     </div>
 
-    <div id="overview" class="tab-content">
+    <div id="overview" class="tab-content hidden">
       <div class="grid-4" id="sot-cards">
         <div class="card"><h3>Net Worth</h3><p class="value" id="sot-net">—</p><p class="sub" id="sot-net-sub">Source of truth</p></div>
         <div class="card"><h3>Principal</h3><p class="value" id="sot-principal">—</p><p class="sub">Bond / fixed-income reserves</p></div>
@@ -390,6 +390,7 @@
     const userEmail = localStorage.getItem('dlb-trust-email');
     let user = null;
     let dashboard = null;
+    let dashboardTrustee = false;
 
     if (!token) location.href = '/trust-portal/index.html';
 
@@ -430,14 +431,22 @@
       const isTrustee = roles.some(r => String(r).includes('trustee'));
       el('user-role').textContent = isTrustee ? 'Trustee' : 'Beneficiary';
       el('user-role').className = 'badge ' + (isTrustee ? 'trustee' : 'beneficiary');
-      if (isTrustee) {
-        el('tab-trustee').classList.remove('hidden');
-        el('tab-treasury').classList.remove('hidden');
-        el('tab-compliance').classList.remove('hidden');
-        el('tab-deposit-settlement').classList.remove('hidden');
-        el('tab-payments').classList.remove('hidden');
+    }
+
+    function configureDashboardViewer(viewerRole) {
+      dashboardTrustee = String(viewerRole || '').toLowerCase().includes('trustee')
+        || ['admin', 'operator'].includes(String(viewerRole || '').toLowerCase());
+      const trustTabs = ['tab-overview', 'tab-portfolio', 'tab-trustee', 'tab-treasury', 'tab-compliance', 'tab-deposit-settlement', 'tab-payments'];
+      const trustPanels = ['overview', 'portfolio'];
+      if (dashboardTrustee) {
+        trustTabs.forEach(id => el(id).classList.remove('hidden'));
+        el('tab-beneficiary').classList.add('hidden');
+        showTab('overview');
       } else {
+        trustTabs.forEach(id => el(id).classList.add('hidden'));
+        trustPanels.forEach(id => el(id).classList.add('hidden'));
         el('tab-beneficiary').classList.remove('hidden');
+        showTab('beneficiary');
       }
     }
 
@@ -445,10 +454,14 @@
       try {
         const res = await api('/api/dapp/ptc/dashboard');
         dashboard = res.data;
-        renderOverview(dashboard);
-        renderPortfolio(dashboard);
-        if (user && (user.roles || []).some(r => String(r).includes('trustee'))) renderTrustee(dashboard);
-        else renderBeneficiary(dashboard);
+        configureDashboardViewer(dashboard.viewerRole);
+        if (dashboardTrustee) {
+          renderOverview(dashboard);
+          renderPortfolio(dashboard);
+          renderTrustee(dashboard);
+        } else {
+          renderBeneficiary(dashboard);
+        }
       } catch (e) { console.error('dashboard load failed', e); }
     }
 
@@ -520,6 +533,9 @@
     }
 
     function showTab(name) {
+      if (!dashboardTrustee && ['overview', 'portfolio', 'trustee', 'treasury', 'compliance', 'deposit-settlement', 'payments'].includes(name)) {
+        name = 'beneficiary';
+      }
       document.querySelectorAll('.tab-content').forEach(c => c.classList.add('hidden'));
       document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
       el(name).classList.remove('hidden');

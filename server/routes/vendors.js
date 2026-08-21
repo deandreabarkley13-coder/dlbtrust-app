@@ -12,6 +12,8 @@ var router  = express.Router();
 var pool = require('../integrations/bonds/pgPool');
 var { VendorEngine } = require('../integrations/vendors/vendorEngine');
 var { MelioEngine } = require('../integrations/os/osEngine');
+var { requireAuth } = require('../integrations/auth/securityMiddleware');
+var operatorAuth = requireAuth({ role: 'operator' });
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // DASHBOARD
@@ -186,6 +188,32 @@ router.post('/payments/melio/export-batch', async function(req, res) {
     res.json({ success: true, data: result });
   } catch (err) {
     res.status(500).json({ success: false, error: err.message, invalidRows: err.invalidRows || undefined });
+  }
+});
+
+router.get('/payments/melio/:identifier/download', operatorAuth, async function(req, res) {
+  try {
+    var record = await MelioEngine.getExportFile(req.params.identifier);
+    if (!record) return res.status(404).json({ success: false, error: 'Melio export not found' });
+    var result = record.result || {};
+    var filePath = result.csvPath;
+    var fileName = result.fileName;
+    var exportDir = require('path').resolve(process.cwd(), 'data', 'melio-exports');
+    var resolvedPath = require('path').resolve(filePath || '');
+    var relativePath = require('path').relative(exportDir, resolvedPath);
+    if (!filePath || !fileName || !relativePath || relativePath.startsWith('..') || require('path').isAbsolute(relativePath) || require('path').basename(fileName) !== fileName) {
+      return res.status(400).json({ success: false, error: 'Invalid Melio export file' });
+    }
+    var fs = require('fs');
+    if (!fs.existsSync(resolvedPath)) return res.status(404).json({ success: false, error: 'Melio export file not found' });
+    res.type('text/csv');
+    res.attachment(fileName);
+    fs.createReadStream(resolvedPath).on('error', function(err) {
+      if (!res.headersSent) res.status(404).json({ success: false, error: err.message });
+      else res.destroy(err);
+    }).pipe(res);
+  } catch (err) {
+    res.status(err.status || 500).json({ success: false, error: err.message });
   }
 });
 

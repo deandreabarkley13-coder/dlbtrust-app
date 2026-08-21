@@ -242,16 +242,44 @@ class PtcPortalEngine {
     return { member, balances, distributions };
   }
 
-  static async getDashboard(email) {
+  static _isTrusteeRole(viewerRole, viewerRoles = []) {
+    const roles = Array.isArray(viewerRoles) ? viewerRoles : [viewerRoles];
+    return [viewerRole, ...roles].some((role) => String(role || '').toLowerCase().includes('trustee'))
+      || ['admin', 'operator'].includes(String(viewerRole || '').toLowerCase());
+  }
+
+  static _buildDashboardPayload({ viewerRole, viewerRoles, sourceOfTruth, members, pendingRequests, recentPayouts, myStatement }) {
+    if (!this._isTrusteeRole(viewerRole, viewerRoles)) {
+      return { viewerRole, pendingRequests, recentPayouts, myStatement };
+    }
+    return { viewerRole, sourceOfTruth, members, pendingRequests, recentPayouts, myStatement };
+  }
+
+  static async getDashboard(email, viewerRole, viewerRoles = []) {
     await this.ensureMembers();
     const me = email ? await this.getMemberByEmail(email) : null;
+    const roles = Array.isArray(viewerRoles) ? viewerRoles : [viewerRoles];
+    const resolvedRole = viewerRole || (roles.length ? roles[0] : null) || me?.role || 'beneficiary';
+    const isTrustee = this._isTrusteeRole(resolvedRole, roles);
+    if (!isTrustee) {
+      let myStatement = null;
+      if (me) myStatement = await this.getMemberStatement(me.member_id);
+      const memberId = me?.member_id;
+      const pendingRequests = memberId
+        ? (await query('SELECT r.*, m.name as member_name, m.email as member_email FROM ptc_requests r JOIN ptc_members m ON r.member_id = m.member_id WHERE r.member_id = $1 ORDER BY r.created_at DESC LIMIT 50', [memberId])).rows
+        : [];
+      const recentPayouts = memberId
+        ? (await query('SELECT p.*, m.name as member_name, m.email as member_email FROM ptc_payouts p JOIN ptc_members m ON p.member_id = m.member_id WHERE p.member_id = $1 ORDER BY p.created_at DESC LIMIT 20', [memberId])).rows
+        : [];
+      return this._buildDashboardPayload({ viewerRole: resolvedRole, viewerRoles: roles, pendingRequests, recentPayouts, myStatement });
+    }
     const sourceOfTruth = await this.getSourceOfTruth();
     const members = await this.listMembers();
     const pendingRequests = (await query("SELECT r.*, m.name as member_name, m.email as member_email FROM ptc_requests r JOIN ptc_members m ON r.member_id = m.member_id WHERE r.status = 'pending' OR r.status = 'approved' ORDER BY r.created_at DESC LIMIT 50")).rows;
     const recentPayouts = (await query('SELECT p.*, m.name as member_name, m.email as member_email FROM ptc_payouts p JOIN ptc_members m ON p.member_id = m.member_id ORDER BY p.created_at DESC LIMIT 20')).rows;
     let myStatement = null;
     if (me) myStatement = await this.getMemberStatement(me.member_id);
-    return { sourceOfTruth, members, pendingRequests, recentPayouts, myStatement };
+    return this._buildDashboardPayload({ viewerRole: resolvedRole, viewerRoles: roles, sourceOfTruth, members, pendingRequests, recentPayouts, myStatement });
   }
 
   static async requestDistribution({ email, amount, purpose, railPreference, recipientDetails }) {

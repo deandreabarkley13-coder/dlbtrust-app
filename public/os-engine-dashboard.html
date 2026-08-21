@@ -157,6 +157,7 @@
           <div class="actions">
             <button onclick="sendMelioCsvDistribution()">Send Melio CSV Distribution</button>
           </div>
+          <div id="melio-download-links" class="muted" style="margin-top:8px"></div>
           <hr style="border-color: var(--border); margin: 16px 0;">
           <h3 style="margin: 0 0 10px; font-size: 14px; color: var(--muted);">Melio Invoice Sync (DB NET MGMT)</h3>
           <div class="form-grid">
@@ -322,6 +323,48 @@
       f.className = 'flash ' + (ok ? 'success' : 'error');
       f.textContent = msg;
       setTimeout(() => { f.className = ''; f.textContent = ''; }, 5000);
+    }
+
+    function showMelioDownloadLinks(data) {
+      const links = el('melio-download-links');
+      if (!links) return;
+      const records = (data && data.records) || [];
+      const paymentId = data && (data.bill_payment_id || data.payment_id || data.id || data.result?.id);
+      const entries = records.length ? records : (paymentId ? [{ id: paymentId }] : []);
+      links.innerHTML = entries.map(r => r.id
+        ? `<button type="button" class="melio-download" data-export-id="${esc(r.id)}">Download ${esc(r.result?.fileName || r.fileName || r.id)}</button>`
+        : '').join('<br>');
+      links.querySelectorAll('.melio-download').forEach((button) => {
+        button.addEventListener('click', () => downloadMelioExport(button.dataset.exportId));
+      });
+    }
+
+    async function downloadMelioExport(identifier) {
+      try {
+        const response = await fetch(`/api/vendors/payments/melio/${encodeURIComponent(identifier)}/download`, {
+          headers: { 'x-admin-token': token() }
+        });
+        if (!response.ok) {
+          const body = await response.text();
+          let error;
+          try { error = JSON.parse(body).error; } catch {}
+          throw new Error(error || 'Melio export download failed');
+        }
+        const blob = await response.blob();
+        const disposition = response.headers.get('content-disposition') || '';
+        const match = disposition.match(/filename="([^"]+)"/i);
+        const fileName = match ? match[1] : `${identifier}.csv`;
+        const url = URL.createObjectURL(blob);
+        const link = document.createElement('a');
+        link.href = url;
+        link.download = fileName;
+        document.body.appendChild(link);
+        link.click();
+        link.remove();
+        URL.revokeObjectURL(url);
+      } catch (error) {
+        flash(error.message, false);
+      }
     }
 
     async function api(method, path, body) {
@@ -524,6 +567,7 @@
       const out = el('proc-output');
       out.classList.remove('hidden');
       out.textContent = JSON.stringify(body, null, 2);
+      showMelioDownloadLinks(body.data);
       flash(ok ? 'Melio CSV export generated' : (body.error || 'Melio CSV distribution failed'), ok);
       loadRegistry();
     }
@@ -563,6 +607,7 @@
       const out = el('proc-output');
       out.classList.remove('hidden');
       out.textContent = JSON.stringify(body, null, 2);
+      showMelioDownloadLinks(body.data && body.data.processed);
       flash(ok ? 'Invoice submitted and Melio CSV exported' : (body.error || 'Invoice sync failed'), ok);
       loadRegistry();
     }

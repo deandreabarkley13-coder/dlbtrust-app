@@ -616,6 +616,14 @@
     if (!token) { location.href = '/dapp'; return; }
     try {
       const me = await api('/api/dapp/auth/me');
+      const authenticatedUser = (me && me.data && (me.data.dappUser || me.data.user)) || {};
+      const authenticatedRoles = authenticatedUser.roles || [authenticatedUser.role];
+      const authenticatedTrustee = authenticatedRoles.some(r => String(r || '').toLowerCase().includes('trustee'))
+        || ['admin', 'operator'].includes(String(authenticatedUser.role || '').toLowerCase());
+      if (!authenticatedTrustee) {
+        location.replace('/trust-portal/dashboard.html');
+        return;
+      }
       el('token-card').classList.add('hidden');
       el('dashboard').classList.remove('hidden');
       el('logout-btn').classList.remove('hidden');
