@@ -39,19 +39,41 @@ class BondTrustReconciliation {
 
       await client.query('BEGIN');
 
-      // Trust accounting bond accounts mirror the BondEngine
-      await client.query(
-        `UPDATE trust_accounts SET balance = $1, updated_at = NOW() WHERE account_code = $2`,
-        [principal, '1100']
+      const journalBalances = await client.query(
+        `SELECT ta.account_code, ta.account_type, ta.balance AS stored_balance,
+                COALESCE(SUM(
+                  CASE WHEN je.entry_id IS NOT NULL AND ta.account_type IN ('asset', 'expense')
+                    THEN jl.debit_amount - jl.credit_amount
+                    WHEN je.entry_id IS NOT NULL THEN jl.credit_amount - jl.debit_amount
+                    ELSE 0
+                  END
+                ), 0) AS journal_balance
+         FROM trust_accounts ta
+         LEFT JOIN trust_journal_lines jl ON jl.account_code = ta.account_code
+         LEFT JOIN trust_journal_entries je ON je.entry_id = jl.entry_id AND je.status = 'posted'
+         WHERE ta.account_code = ANY($1::text[])
+         GROUP BY ta.account_code, ta.account_type, ta.balance`,
+        [['1100', '1200', '4000']]
       );
-      await client.query(
-        `UPDATE trust_accounts SET balance = $1, updated_at = NOW() WHERE account_code = $2`,
-        [accrued, '1200']
-      );
-      await client.query(
-        `UPDATE trust_accounts SET balance = $1, updated_at = NOW() WHERE account_code = $2`,
-        [totalInterestAccrued, '4000']
-      );
+      const bondBalances = { '1100': principal, '1200': accrued, '4000': totalInterestAccrued };
+      const trustAccountDrift = ['1100', '1200', '4000'].map((accountCode) => {
+        const row = journalBalances.rows.find((item) => item.account_code === accountCode) || {};
+        const journalBalance = Number(row.journal_balance || 0);
+        const bondBalance = bondBalances[accountCode];
+        const drift = bondBalance - journalBalance;
+        if (Math.abs(drift) > 0.005) {
+          console.warn(`[BondTrustReconciliation] ${accountCode} drift: BondEngine ${bondBalance.toFixed(2)} vs journal ${journalBalance.toFixed(2)} (${drift.toFixed(2)})`);
+        } else {
+          console.log(`[BondTrustReconciliation] ${accountCode} reconciled at ${journalBalance.toFixed(2)}`);
+        }
+        return {
+          account_code: accountCode,
+          bond_engine_balance: bondBalance,
+          journal_balance: journalBalance,
+          stored_balance: Number(row.stored_balance || 0),
+          drift,
+        };
+      });
 
       // Bond proceeds cash is already represented by the bond asset; zero to avoid double counting
       await client.query(
@@ -96,7 +118,8 @@ class BondTrustReconciliation {
         total_interest_accrued: totalInterestAccrued,
         total_principal_paid: totalPrincipalPaid,
         amortization_applied: amortized,
-        trust_accounts_synced: { '1100': principal, '1200': accrued, '4000': totalInterestAccrued },
+        trust_account_drift: trustAccountDrift,
+        trust_accounts_updated: false,
         cash_bond_proceeds_zeroed: 'CA-BOND-PROCEEDS',
       };
     } catch (err) {
