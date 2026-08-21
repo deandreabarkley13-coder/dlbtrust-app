@@ -21,6 +21,8 @@ try { OnOffRampEngine = require('./onOffRampEngine').OnOffRampEngine; } catch (e
 try { TrustMarketEngine = require('./trustMarketEngine').TrustMarketEngine; } catch (e) { /* optional */ }
 try { IntentRoutingEngine = require('./intentRoutingEngine').IntentRoutingEngine; } catch (e) { /* optional */ }
 try { ExternalWalletEngine = require('./externalWalletEngine').ExternalWalletEngine; } catch (e) { /* optional */ }
+let MelioEngine;
+try { MelioEngine = require('../os/osEngine').MelioEngine; } catch (e) { /* optional */ }
 
 function id(prefix = 'CC') { return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 8).toUpperCase()}`; }
 function safeJson(obj) { return JSON.stringify(obj, (k, v) => typeof v === 'bigint' ? String(v) : v); }
@@ -34,7 +36,76 @@ function defaultRequiredApprovals() {
   return Number.isFinite(n) && n > 0 ? n : 1;
 }
 
+function isVendorBill(categoryOrProposal) {
+  const category = typeof categoryOrProposal === 'string'
+    ? categoryOrProposal
+    : categoryOrProposal && categoryOrProposal.category;
+  return category === 'vendor_bill';
+}
+
 class CanonicalConsensusEngine {
+  static _requiredApprovals(categoryOrProposal, requested) {
+    const threshold = Number(requested) > 0 ? Number(requested) : defaultRequiredApprovals();
+    return isVendorBill(categoryOrProposal) ? Math.max(2, threshold) : threshold;
+  }
+
+  static _validateVendorBillPayload(payload = {}) {
+    if (!payload || typeof payload !== 'object' || Array.isArray(payload)) {
+      throw new Error('vendor_bill payload must be an object');
+    }
+    if (!MelioEngine) throw new Error('MelioEngine not available');
+
+    const batchField = ['payables', 'items', 'rows'].find((field) => payload[field] !== undefined);
+    if (batchField) {
+      if (!Array.isArray(payload[batchField]) || payload[batchField].length === 0) {
+        throw new Error('vendor_bill payables must be a non-empty array');
+      }
+      payload[batchField].forEach((bill, index) => {
+        try {
+          MelioEngine._buildCsvRow(bill || {}, `CONSENSUS-BILL-${index}`);
+        } catch (err) {
+          throw new Error(`vendor_bill payable ${index + 1} invalid: ${err.message}`);
+        }
+      });
+      return { batch: true, count: payload[batchField].length };
+    }
+
+    MelioEngine._buildCsvRow(payload, 'CONSENSUS-BILL');
+    return { batch: false, count: 1 };
+  }
+
+  static async _executeVendorBill(payload = {}) {
+    if (!MelioEngine) throw new Error('MelioEngine not available');
+    const batchField = ['payables', 'items', 'rows'].find((field) => payload[field] !== undefined);
+    if (batchField) {
+      const result = await MelioEngine.process({
+        action: 'exportBatch',
+        ...payload,
+        payables: payload[batchField],
+      });
+      const batch = result && result.result && result.result.batchId ? result.result : result;
+      return {
+        ...result,
+        exportIdentifier: batch.batchId,
+        fileNames: (batch.files || []).map((file) => file.fileName),
+        paymentIds: (batch.records || []).map((record) => record.id),
+        journalEntryIds: (batch.records || [])
+          .map((record) => record.journalEntryId)
+          .filter(Boolean),
+      };
+    }
+
+    const result = await MelioEngine.process({ action: 'exportPayment', ...payload });
+    const record = result && result.result && result.result.id ? result.result : result;
+    return {
+      ...result,
+      exportIdentifier: record.id,
+      paymentId: record.id,
+      fileName: record.result && record.result.fileName,
+      journalEntryId: record.journalEntryId || null,
+    };
+  }
+
   static async ensureTables() {
     await query(`
       CREATE TABLE IF NOT EXISTS canonical_proposals (
@@ -83,8 +154,11 @@ class CanonicalConsensusEngine {
     await this.ensureTables();
     if (!title) throw new Error('title is required');
     if (!category) throw new Error('category is required');
-    const roles = Array.isArray(requiredRoles) && requiredRoles.length ? requiredRoles : defaultRequiredRoles();
-    const threshold = Number(requiredApprovals) > 0 ? Number(requiredApprovals) : defaultRequiredApprovals();
+    if (isVendorBill(category)) this._validateVendorBillPayload(payload);
+    const roles = isVendorBill(category)
+      ? defaultRequiredRoles()
+      : (Array.isArray(requiredRoles) && requiredRoles.length ? requiredRoles : defaultRequiredRoles());
+    const threshold = this._requiredApprovals(category, requiredApprovals);
     const proposalId = id();
     await query(
       `INSERT INTO canonical_proposals (id, title, description, category, payload, required_roles, required_approvals, approvals, created_by)
@@ -132,8 +206,18 @@ class CanonicalConsensusEngine {
     for (const a of approvals) {
       if (a.status === 'approved' && a.role) unique.add(a.role.toLowerCase());
     }
-    const threshold = Number(proposal.required_approvals) || defaultRequiredApprovals();
+    const threshold = this._requiredApprovals(proposal, proposal.required_approvals);
+    if (isVendorBill(proposal)) {
+      return unique.has('maker') && unique.has('checker') && unique.size >= threshold;
+    }
     return unique.size >= threshold;
+  }
+
+  static async _saveApprovals(proposalId, approvals, status) {
+    await query(
+      `UPDATE canonical_proposals SET approvals = $1, status = $2, updated_at = NOW() WHERE id = $3`,
+      [safeJson(approvals), status, proposalId]
+    );
   }
 
   static async approveProposal({ proposalId, role, approverEmail, signature, signerName } = {}) {
@@ -143,6 +227,14 @@ class CanonicalConsensusEngine {
     if (proposal.status === 'rejected') throw new Error('Proposal was rejected');
 
     const approver = this.validateApprover(role, approverEmail);
+    if (isVendorBill(proposal)) {
+      if (!['maker', 'checker'].includes(approver.role)) {
+        throw new Error('vendor_bill approvals require maker and checker roles');
+      }
+      if (String(proposal.created_by || '').toLowerCase() === String(approver.email).toLowerCase()) {
+        throw new Error('The requester cannot approve a vendor_bill proposal');
+      }
+    }
     const approvals = proposal.approvals || [];
     const normalizedRole = approver.role;
     if (approvals.find(a => a.role === normalizedRole && a.status === 'approved')) {
@@ -161,10 +253,7 @@ class CanonicalConsensusEngine {
     const approved = this.isApproved({ ...proposal, approvals });
     const newStatus = approved ? 'approved' : proposal.status;
 
-    await query(
-      `UPDATE canonical_proposals SET approvals = $1, status = $2, updated_at = NOW() WHERE id = $3`,
-      [safeJson(approvals), newStatus, proposalId]
-    );
+    await this._saveApprovals(proposalId, approvals, newStatus);
 
     const updated = await this.getProposal(proposalId);
     if (updated.status === 'approved') {
@@ -196,6 +285,9 @@ class CanonicalConsensusEngine {
     await this.ensureTables();
     const proposal = await this.getProposal(proposalId);
     if (proposal.status !== 'approved' && proposal.status !== 'pending') throw new Error(`Proposal status ${proposal.status} cannot be executed`);
+    if (isVendorBill(proposal) && !this.isApproved(proposal)) {
+      throw new Error('vendor_bill requires maker and checker approvals before execution');
+    }
 
     try {
       const result = await this._execute(proposal);
@@ -289,6 +381,8 @@ class CanonicalConsensusEngine {
         if (!ProgrammableMoneyEngine) throw new Error('ProgrammableMoneyEngine not available');
         return ProgrammableMoneyEngine.activateFromProposal(payload && payload.programId);
       }
+      case 'vendor_bill':
+        return this._executeVendorBill(payload || {});
       case 'custom':
         return { status: 'approved', message: 'Custom proposal approved, no automatic execution configured', payload };
       default:
