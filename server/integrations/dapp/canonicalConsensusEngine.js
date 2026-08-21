@@ -62,6 +62,13 @@ function isPlaceholderSignature(value) {
   return /^(sig[-_]|placeholder\b|auto[- ]?generated\b)/i.test(String(value || '').trim());
 }
 
+function requireVendorIdentity(payload, context) {
+  const vendor = payload && payload.vendor;
+  if (!vendor || (!vendor.name && !payload.vendorId)) {
+    throw new Error(`${context} requires vendor.name or vendorId`);
+  }
+}
+
 class CanonicalConsensusEngine {
   static _requiredApprovals(categoryOrProposal, requested) {
     const threshold = Number(requested) > 0 ? Number(requested) : defaultRequiredApprovals();
@@ -81,6 +88,7 @@ class CanonicalConsensusEngine {
       }
       payload[batchField].forEach((bill, index) => {
         try {
+          requireVendorIdentity(bill, `vendor_bill payable ${index + 1}`);
           MelioEngine._buildCsvRow(bill || {}, `CONSENSUS-BILL-${index}`);
         } catch (err) {
           throw new Error(`vendor_bill payable ${index + 1} invalid: ${err.message}`);
@@ -89,6 +97,7 @@ class CanonicalConsensusEngine {
       return { batch: true, count: payload[batchField].length };
     }
 
+    requireVendorIdentity(payload, 'vendor_bill');
     MelioEngine._buildCsvRow(payload, 'CONSENSUS-BILL');
     return { batch: false, count: 1 };
   }

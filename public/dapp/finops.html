@@ -1386,6 +1386,7 @@
   }
 
   async function ccApprove(proposalId, btn) {
+    const originalLabel = btn ? btn.textContent : 'Approve as Maker/Checker';
     if (btn) { btn.disabled = true; btn.textContent = '…'; }
     try {
       const email = el('cc-email-' + proposalId).value.trim();
@@ -1405,7 +1406,7 @@
       await loadCanonicalConsensus();
       await loadAll();
     } catch(e) { ccStatus(e.message, true); }
-    finally { if (btn) { btn.disabled = false; btn.textContent = 'Approve as Maker/Checker'; } }
+    finally { if (btn) { btn.disabled = false; btn.textContent = originalLabel; } }
   }
 
   async function ccReject(proposalId, btn) {
