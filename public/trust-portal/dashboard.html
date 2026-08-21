@@ -525,10 +525,16 @@
       const stmt = d.myStatement || {};
       const balances = stmt.balances || [];
       const distributions = stmt.distributions || [];
+      const requests = d.pendingRequests || [];
+      const payouts = d.recentPayouts || [];
       let html = `<p class="muted">Support balance</p>`;
       html += balances.map(b => `<p class="value">${fmtMoney((b.balance_cents || 0) / 100)}</p><p class="sub">${b.form}${b.asset_code ? ' / ' + b.asset_code : ''}</p>`).join('') || '<p class="muted">No balance.</p>';
       html += `<h3 class="section-title" style="font-size:1rem">Recent Distributions</h3>`;
       html += distributions.length ? `<table><thead><tr><th>Date</th><th>Type</th><th>Amount</th></tr></thead><tbody>${distributions.map(x => `<tr><td>${new Date(x.created_at).toLocaleDateString()}</td><td>${x.type}</td><td>${fmtMoney((x.total_cents || x.amount_cents || 0) / 100)}</td></tr>`).join('')}</tbody></table>` : '<p class="muted">No distributions yet.</p>';
+      html += `<h3 class="section-title" style="font-size:1rem">Pending Requests</h3>`;
+      html += requests.length ? `<table><thead><tr><th>Date</th><th>Amount</th><th>Purpose</th><th>Rail</th><th>Status</th></tr></thead><tbody>${requests.map(r => `<tr><td>${new Date(r.created_at).toLocaleDateString()}</td><td>${fmtMoney((r.amount_cents || 0) / 100)}</td><td>${r.purpose || ''}</td><td>${r.rail_preference || ''}</td><td>${fmtStatus(r.status)}</td></tr>`).join('')}</tbody></table>` : '<p class="muted">No pending requests.</p>';
+      html += `<h3 class="section-title" style="font-size:1rem">Recent Payouts</h3>`;
+      html += payouts.length ? `<table><thead><tr><th>Date</th><th>Amount</th><th>Rail</th><th>Status</th><th>Reference</th></tr></thead><tbody>${payouts.map(p => `<tr><td>${new Date(p.created_at).toLocaleDateString()}</td><td>${fmtMoney((p.amount_cents || 0) / 100)}</td><td>${p.rail || ''}</td><td>${fmtStatus(p.status)}</td><td class="muted">${p.payout_id || ''}</td></tr>`).join('')}</tbody></table>` : '<p class="muted">No payouts yet.</p>';
       el('beneficiary-statement').innerHTML = html;
     }
 

@@ -329,7 +329,15 @@
       const links = el('melio-download-links');
       if (!links) return;
       const records = (data && data.records) || [];
-      const paymentId = data && (data.bill_payment_id || data.payment_id || data.id || data.result?.id);
+      const paymentId = data && (
+        data.bill_payment_id
+        || data.payment_id
+        || data.id
+        || data.result?.bill_payment_id
+        || data.result?.melio_export_id
+        || data.result?.id
+        || data.result?.result?.id
+      );
       const entries = records.length ? records : (paymentId ? [{ id: paymentId }] : []);
       links.innerHTML = entries.map(r => r.id
         ? `<button type="button" class="melio-download" data-export-id="${esc(r.id)}">Download ${esc(r.result?.fileName || r.fileName || r.id)}</button>`

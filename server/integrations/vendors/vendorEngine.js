@@ -755,21 +755,35 @@ class VendorEngine {
     const amount = parseFloat(payment.amount).toFixed(2);
     const settleDate = (settlementDate ? new Date(settlementDate) : new Date()).toISOString().slice(0, 10);
 
+    let melioSettlement = null;
+    if (MelioEngine && melioRecord) {
+      try {
+        melioSettlement = await MelioEngine._markPaidRecord(melioRecord, {
+          settlementReference,
+          settlementDate: settleDate,
+        });
+      } catch (err) {
+        console.warn('[VendorEngine] Melio settlement posting failed:', err.message);
+      }
+    }
+
     let journalEntry = null;
-    try {
-      journalEntry = await TrustAccountingEngine.postJournalEntry({
-        entryDate: settleDate,
-        description: `Melio settlement: ${vendor.vendor_name} — ${payment.invoice_number || payment.payment_id}`,
-        lines: [
-          { accountCode: payableAccount, debitAmount: amount, creditAmount: 0, memo: `Settle payable for ${payment.payment_id}` },
-          { accountCode: ACCOUNT_CODES.CASH, debitAmount: 0, creditAmount: amount, memo: `Cash out for Melio ${payment.payment_id}` },
-        ],
-        referenceType: 'vendor_payment_settlement',
-        referenceId: payment.payment_id,
-        postedBy: settledBy,
-      });
-    } catch (err) {
-      console.warn('[VendorEngine] settlement journal failed:', err.message);
+    if (!melioSettlement) {
+      try {
+        journalEntry = await TrustAccountingEngine.postJournalEntry({
+          entryDate: settleDate,
+          description: `Melio settlement: ${vendor.vendor_name} — ${payment.invoice_number || payment.payment_id}`,
+          lines: [
+            { accountCode: payableAccount, debitAmount: amount, creditAmount: 0, memo: `Settle payable for ${payment.payment_id}` },
+            { accountCode: ACCOUNT_CODES.CASH, debitAmount: 0, creditAmount: amount, memo: `Cash out for Melio ${payment.payment_id}` },
+          ],
+          referenceType: 'vendor_payment_settlement',
+          referenceId: payment.payment_id,
+          postedBy: settledBy,
+        });
+      } catch (err) {
+        console.warn('[VendorEngine] settlement journal failed:', err.message);
+      }
     }
 
     try {
@@ -781,7 +795,7 @@ class VendorEngine {
       console.warn('[VendorEngine] settlement cashflow event failed:', err.message);
     }
 
-    if (payment.bill_payment_id) {
+    if (payment.bill_payment_id && !melioSettlement) {
       try {
         await pool.query(`UPDATE melio_payments SET status = 'completed', updated_at = NOW() WHERE id = $1 OR melio_payment_id = $1`, [payment.bill_payment_id]);
       } catch (err) {
@@ -801,7 +815,8 @@ class VendorEngine {
       vendor,
       csvPath,
       settlementReference,
-      journalEntryId: journalEntry && journalEntry.entry_id ? journalEntry.entry_id : null,
+      journalEntryId: melioSettlement?.settlementJournalEntryId
+        || (journalEntry && journalEntry.entry_id ? journalEntry.entry_id : null),
       buyerEmail,
       sellerEmail,
     });
@@ -811,7 +826,8 @@ class VendorEngine {
       status: 'settled',
       settlement_reference: settlementReference || null,
       settled_at: new Date().toISOString(),
-      journal_entry_id: journalEntry && journalEntry.entry_id ? journalEntry.entry_id : null,
+      journal_entry_id: melioSettlement?.settlementJournalEntryId
+        || (journalEntry && journalEntry.entry_id ? journalEntry.entry_id : null),
       csv_path: csvPath,
       notifications,
     };

@@ -191,6 +191,21 @@ router.post('/payments/melio/export-batch', async function(req, res) {
   }
 });
 
+router.post('/payments/melio/:identifier/mark-paid', operatorAuth, async function(req, res) {
+  try {
+    var result = await MelioEngine.process({
+      action: 'markPaid',
+      identifier: req.params.identifier,
+      settlementReference: req.body.settlement_reference || req.body.reference,
+      settlementDate: req.body.settlement_date,
+      settlementGlAccount: req.body.settlement_gl_account,
+    });
+    res.json({ success: true, data: result });
+  } catch (err) {
+    res.status(err.status || 500).json({ success: false, error: err.message });
+  }
+});
+
 router.get('/payments/melio/:identifier/download', operatorAuth, async function(req, res) {
   try {
     var record = await MelioEngine.getExportFile(req.params.identifier);

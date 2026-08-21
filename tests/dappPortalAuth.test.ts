@@ -143,5 +143,18 @@ describe('dApp portal authentication and role scoping', () => {
     expect(source).toContain('configureDashboardViewer(dashboard.viewerRole)');
     expect(source).toContain('if (dashboardTrustee)');
     expect(source).toContain('showTab(\'beneficiary\')');
+    expect(source).toContain('const requests = d.pendingRequests || [];');
+    expect(source).toContain('const payouts = d.recentPayouts || [];');
+    expect(source).toContain('Pending Requests');
+    expect(source).toContain('Recent Payouts');
+  });
+
+  it('keeps Melio downloads available for PTC distribution responses and current mobile login copy', () => {
+    const dashboard = fs.readFileSync(path.resolve(testDirectory, '../public/os-engine-dashboard.html'), 'utf8');
+    const mobile = fs.readFileSync(path.resolve(testDirectory, '../public/dapp/mobile.html'), 'utf8');
+    expect(dashboard).toContain('data.result?.bill_payment_id');
+    expect(dashboard).toContain('data.result?.result?.id');
+    expect(mobile).toContain('Enter your email to receive a one-time PIN. No password required.');
+    expect(mobile).not.toContain('shown here if email is not configured');
   });
 });

@@ -306,4 +306,150 @@ describe('Melio bill spreadsheet CSV export', () => {
     expect(fs.readFileSync(files[0].filePath, 'utf8').split('\n')).toHaveLength(301);
     expect(fs.readFileSync(files[1].filePath, 'utf8').split('\n')).toHaveLength(2);
   });
+
+  it('accrues every export to expense and payables regardless of source account type', async () => {
+    const cfg = MelioEngine._cfg();
+    const cfgSpy = vi.spyOn(MelioEngine, '_cfg').mockReturnValue({
+      ...cfg,
+      payBillsEmail: '',
+      postPayableGl: true,
+      expenseGlAccount: '5300',
+      payablesGlAccount: '2100',
+    });
+    const deps = MelioEngine._deps();
+    const postJournalEntry = vi.fn().mockResolvedValue({ entry_id: 'JRN-ACCRUAL' });
+    const depsSpy = vi.spyOn(MelioEngine, '_deps').mockReturnValue({
+      ...deps,
+      TrustAcct: { postJournalEntry },
+    });
+    const balanceSpy = vi.spyOn(MelioEngine, '_sourceBalance').mockResolvedValue({
+      balanceCents: 10000,
+      account: { account_type: 'asset' },
+    });
+    const recordSpy = vi.spyOn(MelioEngine, '_recordPayment').mockResolvedValue(undefined);
+
+    try {
+      const result = await MelioEngine.exportPayment({
+        amount: 12.34,
+        sourceType: 'cash',
+        sourceAccountId: 'CA-OPERATING',
+        vendor: { name: 'Expense Vendor' },
+        dueDate: '2026-02-01',
+      });
+
+      expect(result.journalEntryId).toBe('JRN-ACCRUAL');
+      expect(result.result).toMatchObject({
+        glPosted: true,
+        expenseGlAccount: '5300',
+        payableGlAccount: '2100',
+      });
+      expect(postJournalEntry).toHaveBeenCalledWith(expect.objectContaining({
+        lines: [
+          expect.objectContaining({ accountCode: '5300', debitAmount: '12.34', creditAmount: 0 }),
+          expect.objectContaining({ accountCode: '2100', debitAmount: 0, creditAmount: '12.34' }),
+        ],
+      }));
+    } finally {
+      recordSpy.mockRestore();
+      balanceSpy.mockRestore();
+      depsSpy.mockRestore();
+      cfgSpy.mockRestore();
+    }
+  });
+
+  it('uses the per-payable expense account override', async () => {
+    const cfg = MelioEngine._cfg();
+    const cfgSpy = vi.spyOn(MelioEngine, '_cfg').mockReturnValue({
+      ...cfg,
+      payBillsEmail: '',
+      postPayableGl: true,
+      expenseGlAccount: '5300',
+      payablesGlAccount: '2100',
+    });
+    const deps = MelioEngine._deps();
+    const postJournalEntry = vi.fn().mockResolvedValue({ entry_id: 'JRN-LEGAL' });
+    const depsSpy = vi.spyOn(MelioEngine, '_deps').mockReturnValue({
+      ...deps,
+      TrustAcct: { postJournalEntry },
+    });
+    const balanceSpy = vi.spyOn(MelioEngine, '_sourceBalance').mockResolvedValue({
+      balanceCents: 10000,
+      account: { account_type: 'income' },
+    });
+    const recordSpy = vi.spyOn(MelioEngine, '_recordPayment').mockResolvedValue(undefined);
+
+    try {
+      const result = await MelioEngine.exportBatch({
+        sourceType: 'trust',
+        sourceAccountId: '4000',
+        payables: [{
+          paymentId: 'MEL-LEGAL',
+          amount: 25,
+          expenseGlAccount: '5200',
+          vendor: { name: 'Legal Vendor' },
+          dueDate: '2026-02-01',
+        }],
+      });
+
+      expect(result.records[0].result.expenseGlAccount).toBe('5200');
+      expect(postJournalEntry.mock.calls[0][0].lines[0].accountCode).toBe('5200');
+    } finally {
+      recordSpy.mockRestore();
+      balanceSpy.mockRestore();
+      depsSpy.mockRestore();
+      cfgSpy.mockRestore();
+    }
+  });
+
+  it('posts settlement once and reports the existing journal on repeat mark-paid calls', async () => {
+    const cfg = MelioEngine._cfg();
+    const cfgSpy = vi.spyOn(MelioEngine, '_cfg').mockReturnValue({
+      ...cfg,
+      settlementGlAccount: '1000',
+      payablesGlAccount: '2100',
+    });
+    const deps = MelioEngine._deps();
+    const postJournalEntry = vi.fn().mockResolvedValue({ entry_id: 'JRN-SETTLE' });
+    const depsSpy = vi.spyOn(MelioEngine, '_deps').mockReturnValue({
+      ...deps,
+      TrustAcct: { postJournalEntry },
+    });
+    const recordSpy = vi.spyOn(MelioEngine, '_recordPayment').mockResolvedValue(undefined);
+    const record = {
+      id: 'MEL-SETTLE',
+      action: 'exportPayment',
+      status: 'exported',
+      amount: 8.5,
+      amountCents: 850,
+      currency: 'USD',
+      sourceType: 'trust',
+      sourceAccountId: '4000',
+      result: { csvPath: 'data/melio-exports/test.csv' },
+    };
+
+    try {
+      const first = await MelioEngine._markPaidRecord(record, { settlementReference: 'BANK-1' });
+      const second = await MelioEngine._markPaidRecord(first, { settlementReference: 'BANK-1' });
+
+      expect(first.status).toBe('paid');
+      expect(first.result).toMatchObject({
+        settlementJournalEntryId: 'JRN-SETTLE',
+        settlementGlPosted: true,
+        settlementGlAccount: '1000',
+      });
+      expect(second.alreadySettled).toBe(true);
+      expect(second.result.settlementJournalEntryId).toBe('JRN-SETTLE');
+      expect(postJournalEntry).toHaveBeenCalledTimes(1);
+      expect(postJournalEntry).toHaveBeenCalledWith(expect.objectContaining({
+        lines: [
+          expect.objectContaining({ accountCode: '2100', debitAmount: '8.50', creditAmount: 0 }),
+          expect.objectContaining({ accountCode: '1000', debitAmount: 0, creditAmount: '8.50' }),
+        ],
+      }));
+    } finally {
+      recordSpy.mockRestore();
+      depsSpy.mockRestore();
+      cfgSpy.mockRestore();
+    }
+  });
 });
