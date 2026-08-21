@@ -32,6 +32,12 @@ function mockPendingApproval() {
   return vi.spyOn(CanonicalConsensusEngine, '_saveApprovals').mockResolvedValue(undefined);
 }
 
+function auditDocument(record: { document: Record<string, unknown> }) {
+  const metadata = { ...record.document };
+  delete metadata.path;
+  return metadata;
+}
+
 describe('trustee signature of record', () => {
   it('exposes confirmed legal names and executed document metadata without contents', () => {
     expect(getSignatureOfRecord()).toEqual([maker, checker]);
@@ -82,9 +88,10 @@ describe('trustee signature of record', () => {
       signature: '  MALISSA,   ANN ROBINSON. ',
       signatureOfRecord: {
         legalName: 'Malissa Ann Robinson',
-        document: maker.document,
+        document: auditDocument(maker),
       },
     });
+    expect(approval.signatureOfRecord.document).not.toHaveProperty('path');
     expect(approval.signatureOfRecord.signedAt).toBe(approval.approvedAt);
   });
 
@@ -100,8 +107,9 @@ describe('trustee signature of record', () => {
 
     expect(save.mock.calls[0][1][0].signatureOfRecord).toMatchObject({
       legalName: 'DeAndrea Lavar Barkley',
-      document: checker.document,
+      document: auditDocument(checker),
     });
+    expect(save.mock.calls[0][1][0].signatureOfRecord.document).not.toHaveProperty('path');
   });
 
   it('preserves placeholder signatures for non-vendor_bill approvals', async () => {

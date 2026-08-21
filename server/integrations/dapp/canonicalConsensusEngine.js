@@ -288,9 +288,11 @@ class CanonicalConsensusEngine {
       approvedAt,
     };
     if (signatureOfRecord) {
+      const auditDocument = { ...(signatureOfRecord.document || {}) };
+      delete auditDocument.path;
       approval.signatureOfRecord = {
         legalName: signatureOfRecord.legalName,
-        document: signatureOfRecord.document,
+        document: auditDocument,
         signedAt: approvedAt,
       };
     }
