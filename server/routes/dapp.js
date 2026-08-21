@@ -64,7 +64,8 @@ function sendError(res, err) {
   console.error('[dapp]', err);
   const message = err && (err.message || err.error || err.detail || err.title) ? (err.message || err.error || err.detail || err.title) : (typeof err === 'string' ? err : 'Unknown error');
   const safeRaw = typeof err === 'object' && err ? JSON.parse(JSON.stringify(err, (k, v) => typeof v === 'bigint' ? String(v) : v)) : undefined;
-  res.status(500).json({ success: false, error: message, raw: safeRaw });
+  const status = Number(err && (err.status || err.statusCode));
+  res.status(status >= 400 && status <= 599 ? status : 500).json({ success: false, error: message, raw: safeRaw });
 }
 
 // ─── Safe Wallets ─────────────────────────────────────────────────────────────

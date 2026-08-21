@@ -52,8 +52,13 @@ describe('dApp portal authentication and role scoping', () => {
     process.env.DAPP_OTP_ALWAYS_SHOW_CODE = 'true';
     process.env.NODE_ENV = 'production';
 
-    await expect(DappEngine.generateOtp('beneficiary@example.com'))
-      .rejects.toThrow("We couldn't deliver your PIN. Contact the administrator.");
+    try {
+      await DappEngine.generateOtp('beneficiary@example.com');
+      throw new Error('expected OTP delivery to fail closed');
+    } catch (error) {
+      expect(error.message).toBe("We couldn't deliver your PIN. Contact the administrator.");
+      expect(error.status).toBe(503);
+    }
 
     process.env.NODE_ENV = 'development';
     const result = await DappEngine.generateOtp('beneficiary@example.com');
@@ -129,5 +134,14 @@ describe('dApp portal authentication and role scoping', () => {
       expect(source).not.toContain('res.data && res.data.code');
       expect(source).not.toMatch(/(?:pin|login-code)\.value\s*=\s*res\.data\.code/);
     });
+  });
+
+  it('only exposes trust-wide dashboard panels to trustee viewers', () => {
+    const source = fs.readFileSync(path.resolve(testDirectory, '../public/trust-portal/dashboard.html'), 'utf8');
+    expect(source).toContain('id="tab-overview"');
+    expect(source).toContain('id="tab-portfolio"');
+    expect(source).toContain('configureDashboardViewer(dashboard.viewerRole)');
+    expect(source).toContain('if (dashboardTrustee)');
+    expect(source).toContain('showTab(\'beneficiary\')');
   });
 });

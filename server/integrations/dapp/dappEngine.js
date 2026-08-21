@@ -797,7 +797,9 @@ class DappEngine {
     const showCodeInResponse = process.env.NODE_ENV !== 'production'
       && process.env.DAPP_OTP_ALWAYS_SHOW_CODE === 'true';
     if (!emailStatus.sent && !showCodeInResponse) {
-      throw new Error("We couldn't deliver your PIN. Contact the administrator.");
+      const error = new Error("We couldn't deliver your PIN. Contact the administrator.");
+      error.status = 503;
+      throw error;
     }
     return { email, code: showCodeInResponse ? code : null, expires, role, roles, sent: emailStatus.sent, provider: emailStatus.provider, message: emailStatus.note || 'OTP generated' };
   }
