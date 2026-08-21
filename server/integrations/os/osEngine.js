@@ -4267,7 +4267,6 @@ class MelioEngine extends BaseOSEngine {
           item.record.status = emailRes.sent ? 'emailed' : 'exported';
           item.record.result.emailSent = emailRes.sent;
           item.record.result.emailProvider = emailRes.provider;
-          item.record.emailedTo = cfg.payBillsEmail;
         });
       } catch (e) {
         console.warn('[melio] email to Melio Pay Bills failed:', e.message);
@@ -4284,7 +4283,7 @@ class MelioEngine extends BaseOSEngine {
     const p = this._payloadDefaults(payload);
     const amountCents = toCents(p.amount);
     const sourceInfo = await this._sourceBalance(p.sourceType, p.sourceAccountId);
-    if ((sourceInfo.balanceCents || 0) < amountCents) throw new Error(`Insufficient source balance: ${((sourceInfo.balanceCents || 0) / 100).toFixed(2)} < ${p.amount}`);
+    if ((sourceInfo.balanceCents || 0) < amountCents) throw new Error(`Insufficient source balance for ${p.sourceType}:${p.sourceAccountId}: ${((sourceInfo.balanceCents || 0) / 100).toFixed(2)} < ${p.amount}`);
 
     const now = new Date();
     const paymentId = id('MEL-');
