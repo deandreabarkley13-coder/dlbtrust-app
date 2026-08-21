@@ -440,8 +440,8 @@
       const trustPanels = ['overview', 'portfolio'];
       if (dashboardTrustee) {
         trustTabs.forEach(id => el(id).classList.remove('hidden'));
-        trustPanels.forEach(id => el(id).classList.remove('hidden'));
         el('tab-beneficiary').classList.add('hidden');
+        showTab('overview');
       } else {
         trustTabs.forEach(id => el(id).classList.add('hidden'));
         trustPanels.forEach(id => el(id).classList.add('hidden'));
