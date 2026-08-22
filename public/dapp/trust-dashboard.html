@@ -698,7 +698,7 @@
   }
 
   async function approveRequest(id, role) {
-    const email = role === 'maker' ? 'annrobinson9800@yahoo.com' : 'dbnettrust@gmail.com';
+    const email = role === 'maker' ? 'malissa1130@gmail.com' : 'dbarkley1130@gmail.com';
     try {
       const res = await api(`/api/dapp/distribution-requests/${id}/approve`, { method: 'POST', body: JSON.stringify({ role, trusteeEmail: email }) });
       showStatus('dist-status', `Approved as ${role}. Status: ${res.data.status}`, false);

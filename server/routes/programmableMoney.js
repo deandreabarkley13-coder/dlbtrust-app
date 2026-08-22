@@ -11,7 +11,7 @@
 
 const express = require('express');
 const { ProgrammableMoneyEngine } = require('../integrations/dapp/programmableMoneyEngine');
-const { requireAuth, writeRateLimiter } = require('../integrations/auth/securityMiddleware');
+const { requireAuth, writeRateLimiter, bindAuthenticatedTrustee } = require('../integrations/auth/securityMiddleware');
 
 const router = express.Router();
 const operatorAuth = requireAuth({ role: 'operator' });
@@ -70,7 +70,7 @@ router.get('/programs/:id', operatorAuth, async (req, res) => {
 // ─── POST /api/programmable-money/programs/:id/approve ─────────────────────────
 router.post('/programs/:id/approve', operatorAuth, writeRateLimiter(), async (req, res) => {
   try {
-    const { role, approverEmail } = req.body || {};
+    const { role, approverEmail } = bindAuthenticatedTrustee(req, req.body, 'approverEmail');
     const result = await ProgrammableMoneyEngine.approveProgram({ programId: req.params.id, role, approverEmail });
     res.json({ success: true, data: result });
   } catch (err) { sendError(res, err); }

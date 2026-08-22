@@ -837,7 +837,7 @@
             </div>
             <div class="form-row">
               <div><label>Memo</label><input type="text" id="auto-memo" placeholder="One-click distribution" /></div>
-              <div style="flex:2"><label>Trustee Signatures JSON (optional)</label><input type="text" id="auto-signatures" placeholder='[{"role":"administration","trusteeEmail":"deandreabarkley13@gmail.com","signature":"0x..."},{"role":"distribution","trusteeEmail":"annrobinson9800@yahoo.com","signature":"0x..."}]' /></div>
+              <div style="flex:2"><label>Trustee Signatures JSON (optional)</label><input type="text" id="auto-signatures" placeholder='[{"role":"maker","trusteeEmail":"malissa1130@gmail.com","signature":"0x..."},{"role":"checker","trusteeEmail":"dbarkley1130@gmail.com","signature":"0x..."}]' /></div>
             </div>
             <div class="form-row">
               <label style="display:flex;align-items:center;gap:8px"><input type="checkbox" id="auto-hard-assets" checked /> Include hard assets/liabilities in proof</label>
@@ -2675,7 +2675,7 @@
           const actions = r.status === 'approved'
             ? `<button class="btn btn-sm" onclick="executeDistributionRequest('${esc(r.id)}')">Execute</button>`
             : r.status === 'requested' || r.status === 'under_review'
-              ? `<button class="btn btn-sm" onclick="approveDistributionRequest('${esc(r.id)}','maker','annrobinson9800@yahoo.com')">Maker Approve</button> <button class="btn btn-sm" onclick="approveDistributionRequest('${esc(r.id)}','checker','dbnettrust@gmail.com')">Checker Approve</button> <button class="btn btn-sm" onclick="rejectDistributionRequest('${esc(r.id)}')">Reject</button>`
+              ? `<button class="btn btn-sm" onclick="approveDistributionRequest('${esc(r.id)}','maker','malissa1130@gmail.com')">Maker Approve</button> <button class="btn btn-sm" onclick="approveDistributionRequest('${esc(r.id)}','checker','dbarkley1130@gmail.com')">Checker Approve</button> <button class="btn btn-sm" onclick="rejectDistributionRequest('${esc(r.id)}')">Reject</button>`
               : '';
           tr.innerHTML = `<td class="mono">${esc(r.id.slice(0,16))}…</td><td>${esc(r.type)}</td><td>${esc(r.beneficiary_name || r.beneficiary_email || '—')}</td><td>$${(r.amount_cents/100).toFixed(2)}</td><td><span class="tag ${r.status}">${esc(r.status)}</span></td><td>${proofCell}</td><td>${actions}</td>`;
           tb.appendChild(tr);
@@ -2685,7 +2685,7 @@
 
     window.approveDistributionRequest = async function(requestId, role, email) {
       try {
-        const trusteeEmail = email || (role === 'maker' ? 'annrobinson9800@yahoo.com' : 'dbnettrust@gmail.com');
+        const trusteeEmail = email || (role === 'maker' ? 'malissa1130@gmail.com' : 'dbarkley1130@gmail.com');
         const res = await api(`/api/dapp/distribution-requests/${encodeURIComponent(requestId)}/approve`, { method: 'POST', body: JSON.stringify({ role, trusteeEmail }) });
         showToast(`Request ${res.data.status}`, false);
         loadDistributionRequests();

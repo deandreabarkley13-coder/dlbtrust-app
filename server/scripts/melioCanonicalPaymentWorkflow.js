@@ -38,7 +38,7 @@
  *
  * Options:
  *   --baseUrl          Server base URL (default: $DLBTRUST_BASE_URL or http://localhost:3002)
- *   --makerEmail       Maker trustee email (default: $TRUST_MAKER_EMAIL or barkley420lavar@gmail.com)
+ *   --makerEmail       Maker trustee email (default: $TRUST_MAKER_EMAIL or malissa1130@gmail.com)
  *   --checkerEmail     Checker trustee email (default: $TRUST_CHECKER_EMAIL or dbarkley1130@gmail.com)
  *   --makerSignature   Maker legal-name signature (default: $TRUST_MAKER_SIGNATURE)
  *   --checkerSignature Checker legal-name signature (default: $TRUST_CHECKER_SIGNATURE)
@@ -100,7 +100,7 @@ async function main() {
 
   const sourceType = args.sourceType || 'trust';
   const sourceAccountId = args.sourceAccountId || process.env.MELIO_SOURCE_ACCOUNT_ID || '1000';
-  const makerEmail = args.makerEmail || process.env.TRUST_MAKER_EMAIL || 'barkley420lavar@gmail.com';
+  const makerEmail = args.makerEmail || process.env.TRUST_MAKER_EMAIL || 'malissa1130@gmail.com';
   const checkerEmail = args.checkerEmail || process.env.TRUST_CHECKER_EMAIL || 'dbarkley1130@gmail.com';
   const makerSignature = args.makerSignature || process.env.TRUST_MAKER_SIGNATURE || '';
   const checkerSignature = args.checkerSignature || process.env.TRUST_CHECKER_SIGNATURE || '';

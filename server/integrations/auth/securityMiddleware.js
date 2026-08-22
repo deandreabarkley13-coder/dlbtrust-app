@@ -278,6 +278,39 @@ function dappAuth(options = {}) {
   };
 }
 
+function bindAuthenticatedTrustee(req, payload = {}, emailField = 'approverEmail') {
+  const user = req.user || {};
+  if (!user.email || !Array.isArray(user.roles)) return { ...payload };
+
+  const roleMap = {
+    trustee_maker: 'maker',
+    trustee_checker: 'checker',
+    trustee_admin: 'maker',
+  };
+  const role = roleMap[String(user.role || '').toLowerCase()];
+  if (!role) {
+    const error = new Error('An active maker or checker role is required');
+    error.status = 403;
+    throw error;
+  }
+
+  const requestedRole = String(payload.role || '').toLowerCase();
+  if (requestedRole && requestedRole !== role) {
+    const error = new Error(`Authenticated ${role} trustee cannot act as ${requestedRole}`);
+    error.status = 403;
+    throw error;
+  }
+  if (
+    payload[emailField]
+    && String(payload[emailField]).toLowerCase() !== String(user.email).toLowerCase()
+  ) {
+    const error = new Error('Trustee approval email must match the authenticated user');
+    error.status = 403;
+    throw error;
+  }
+  return { ...payload, role, [emailField]: user.email };
+}
+
 // ─── CSRF Protection ──────────────────────────────────────────────────────────
 const csrfTokens = new Map();
 
@@ -406,6 +439,7 @@ module.exports = {
   sanitizeInput,
   requireAuth,
   dappAuth,
+  bindAuthenticatedTrustee,
   generateCsrfToken,
   verifyCsrf,
   requestLogger,

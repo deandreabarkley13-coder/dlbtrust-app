@@ -34,6 +34,7 @@ const { BitPayEngine } = require('../integrations/dapp/bitpayEngine');
 const { WalletFundingEngine } = require('../integrations/dapp/walletFundingEngine');
 const { MasterWalletEngine } = require('../integrations/dapp/masterWalletEngine');
 const { PtcPortalEngine } = require('../integrations/dapp/ptcPortalEngine');
+const { getTrusteeByRole } = require('../integrations/dapp/trustees');
 let BondEngine, LiveBondEngine;
 try { BondEngine = require('../integrations/bonds/bondEngine').BondEngine; } catch (e) { BondEngine = null; }
 try { LiveBondEngine = require('../integrations/bonds/liveEngine').LiveBondEngine; } catch (e) { LiveBondEngine = null; }
@@ -41,7 +42,7 @@ let BondTrustReconciliation;
 try { BondTrustReconciliation = require('../integrations/bonds/bondTrustReconciliation').BondTrustReconciliation; } catch (e) { BondTrustReconciliation = null; }
 let CustomerIdentificationEngine;
 try { ({ CustomerIdentificationEngine } = require('../integrations/compliance/customerIdentificationEngine')); } catch (e) { CustomerIdentificationEngine = null; }
-const { requireAuth, writeRateLimiter, authRateLimiter } = require('../integrations/auth/securityMiddleware');
+const { requireAuth, writeRateLimiter, authRateLimiter, bindAuthenticatedTrustee } = require('../integrations/auth/securityMiddleware');
 
 const router = express.Router();
 const operatorAuth = requireAuth({ role: 'operator' });
@@ -586,7 +587,7 @@ router.get('/finops-ai/tasks/:id', operatorAuth, async (req, res) => {
 
 router.post('/finops-ai/tasks/:id/approve', operatorAuth, writeRateLimiter(), async (req, res) => {
   try {
-    const { role, trusteeEmail, signature, signerName } = req.body;
+    const { role, trusteeEmail, signature, signerName } = bindAuthenticatedTrustee(req, req.body, 'trusteeEmail');
     const data = await FinOpsAgent.approveTask({ taskId: req.params.id, role, trusteeEmail, signature, signerName });
     res.json({ success: true, data });
   } catch (err) { sendError(res, err); }
@@ -594,7 +595,7 @@ router.post('/finops-ai/tasks/:id/approve', operatorAuth, writeRateLimiter(), as
 
 router.post('/finops-ai/tasks/:id/reject', operatorAuth, writeRateLimiter(), async (req, res) => {
   try {
-    const { role, trusteeEmail, reason } = req.body;
+    const { role, trusteeEmail, reason } = bindAuthenticatedTrustee(req, req.body, 'trusteeEmail');
     const data = await FinOpsAgent.rejectTask({ taskId: req.params.id, role, trusteeEmail, reason });
     res.json({ success: true, data });
   } catch (err) { sendError(res, err); }
@@ -958,11 +959,17 @@ router.post('/distribution-requests', portalAuth, writeRateLimiter(), async (req
 });
 
 router.post('/distribution-requests/:id/approve', operatorAuth, writeRateLimiter(), async (req, res) => {
-  try { res.json({ success: true, data: await DistributionRequestEngine.approveRequest({ requestId: req.params.id, ...req.body }) }); } catch (err) { sendError(res, err); }
+  try {
+    const approval = bindAuthenticatedTrustee(req, req.body, 'trusteeEmail');
+    res.json({ success: true, data: await DistributionRequestEngine.approveRequest({ requestId: req.params.id, ...approval }) });
+  } catch (err) { sendError(res, err); }
 });
 
 router.post('/distribution-requests/:id/reject', operatorAuth, writeRateLimiter(), async (req, res) => {
-  try { res.json({ success: true, data: await DistributionRequestEngine.rejectRequest({ requestId: req.params.id, ...req.body }) }); } catch (err) { sendError(res, err); }
+  try {
+    const rejection = bindAuthenticatedTrustee(req, req.body, 'trusteeEmail');
+    res.json({ success: true, data: await DistributionRequestEngine.rejectRequest({ requestId: req.params.id, ...rejection }) });
+  } catch (err) { sendError(res, err); }
 });
 
 router.post('/distribution-requests/:id/execute', operatorAuth, writeRateLimiter(), async (req, res) => {
@@ -1094,12 +1101,14 @@ router.post('/public/message', writeRateLimiter(), async (req, res) => {
     const { name, email, body } = req.body || {};
     if (!name || !email || !body) throw new Error('Name, email and message body are required');
     if (!MessagingEngine) throw new Error('Messaging engine unavailable');
+    const maker = getTrusteeByRole('maker');
+    const checker = getTrusteeByRole('checker');
     const thread = await MessagingEngine.notify({
       subject: `Landing page message from ${name}`,
       body: `From: ${name} <${email}>\n\n${body}`,
       participants: [
-        { name: 'Malissa Robinson', email: 'annrobinson9800@yahoo.com', role: 'trustee_maker' },
-        { name: 'Checker Trust', email: 'dbnettrust@gmail.com', role: 'trustee_checker' },
+        { name: maker.name, email: maker.email, role: 'trustee_maker' },
+        { name: checker.name, email: checker.email, role: 'trustee_checker' },
       ],
       sender: email,
       metadata: { source: 'landing', name, email },
@@ -1134,12 +1143,14 @@ router.post('/public/request', writeRateLimiter(), async (req, res) => {
     const destinationAddress = refreshed.wallet_address || beneficiaryWallet || beneficiaryEmail;
 
     // Ensure maker and checker portal users exist
-    const makerEmail = 'annrobinson9800@yahoo.com';
-    const checkerEmail = 'dbnettrust@gmail.com';
+    const makerTrustee = getTrusteeByRole('maker');
+    const checkerTrustee = getTrusteeByRole('checker');
+    const makerEmail = makerTrustee.email;
+    const checkerEmail = checkerTrustee.email;
     let maker = await DappEngine.getUserByEmail(makerEmail).catch(() => null);
     let checker = await DappEngine.getUserByEmail(checkerEmail).catch(() => null);
-    if (!maker) maker = await DappEngine.createUser({ email: makerEmail, name: 'Malissa Robinson', roles: ['trustee_maker', 'beneficiary'], activeRole: 'trustee_maker' });
-    if (!checker) checker = await DappEngine.createUser({ email: checkerEmail, name: 'Checker Trust', roles: ['trustee_checker', 'beneficiary'], activeRole: 'trustee_checker' });
+    if (!maker) maker = await DappEngine.createUser({ email: makerEmail, name: makerTrustee.name, roles: ['trustee_maker', 'beneficiary'], activeRole: 'trustee_maker' });
+    if (!checker) checker = await DappEngine.createUser({ email: checkerEmail, name: checkerTrustee.name, roles: ['trustee_checker', 'beneficiary'], activeRole: 'trustee_checker' });
 
     // Kick off the full automation pipeline: proof -> request -> sequential approval/execution
     // DistributionRequestEngine.createRequest emails the maker trustee with a one-time PIN.
@@ -1520,8 +1531,7 @@ router.post('/ptc/requests/:id/execute', portalAuth, writeRateLimiter(), async (
   try {
     const email = req.user && req.user.email;
     if (!email) throw new Error('Not authenticated');
-    const member = await PtcPortalEngine.getMemberByEmail(email);
-    if (!member || !String(member.type).includes('trustee')) throw new Error('Only trustees can execute payouts');
+    if (!PtcPortalEngine.getConfiguredTrusteeByEmail(email)) throw new Error('Only configured trustees can execute payouts');
     const { rail, recipientIdentifier, options } = req.body || {};
     const data = await PtcPortalEngine.executeRequest({ requestId: req.params.id, rail, recipientIdentifier, options, initiatedBy: email });
     res.json({ success: true, data });

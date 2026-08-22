@@ -21,14 +21,14 @@ const TRUSTEES = [
   {
     role: 'distribution',
     name: process.env.TRUST_DIST_NAME || 'Malissa Robinson',
-    email: process.env.TRUST_DIST_EMAIL || 'barkley420lavar@gmail.com',
+    email: process.env.TRUST_DIST_EMAIL || 'malissa1130@gmail.com',
     phone: process.env.TRUST_DIST_PHONE || '',
     address: process.env.TRUST_DIST_ADDRESS || '',
   },
   {
     role: 'maker',
     name: process.env.TRUST_MAKER_NAME || 'Malissa Robinson',
-    email: process.env.TRUST_MAKER_EMAIL || 'barkley420lavar@gmail.com',
+    email: process.env.TRUST_MAKER_EMAIL || 'malissa1130@gmail.com',
     phone: process.env.TRUST_MAKER_PHONE || '',
     address: process.env.TRUST_MAKER_ADDRESS || '',
     signatureOfRecordLegalName: process.env.TRUST_MAKER_LEGAL_NAME || 'Malissa Ann Robinson',
