@@ -10,7 +10,7 @@ const maker = getTrusteeByRole('maker');
 const checker = getTrusteeByRole('checker');
 
 const validBill = {
-  vendor_name: 'Canonical Vendor',
+  vendor: { name: 'Canonical Vendor' },
   amount: 125.5,
   due_date: '2026-02-15',
   invoice_number: 'INV-CANONICAL-1',
@@ -30,11 +30,16 @@ describe('canonical vendor bill consensus', () => {
     {
       label: 'missing vendor',
       payload: { vendor_name: '', amount: 125, due_date: '2026-02-15' },
-      message: 'Business name is required',
+      message: 'vendor_bill requires vendor.name or vendorId',
+    },
+    {
+      label: 'missing export vendor identity',
+      payload: { businessName: 'Canonical Vendor', amount: 125, due_date: '2026-02-15' },
+      message: 'vendor_bill requires vendor.name or vendorId',
     },
     {
       label: 'invalid amount',
-      payload: { vendor_name: 'Canonical Vendor', amount: 0, due_date: '2026-02-15' },
+      payload: { vendor: { name: 'Canonical Vendor' }, amount: 0, due_date: '2026-02-15' },
       message: 'amount must be positive',
     },
   ])('validates $label vendor bills when proposals are created', async ({ payload, message }) => {
@@ -46,6 +51,20 @@ describe('canonical vendor bill consensus', () => {
       payload,
       createdBy: 'maker@example.com',
     })).rejects.toThrow(message);
+  });
+
+  it('accepts a proper single-bill vendor identity during creation validation', () => {
+    expect(CanonicalConsensusEngine._validateVendorBillPayload(validBill))
+      .toEqual({ batch: false, count: 1 });
+  });
+
+  it('rejects a batch item missing the Melio export vendor identity', () => {
+    expect(() => CanonicalConsensusEngine._validateVendorBillPayload({
+      payables: [
+        { vendor: { name: 'Vendor One' }, amount: 10, due_date: '2026-02-01' },
+        { businessName: 'Vendor Two', amount: 20, due_date: '2026-02-02' },
+      ],
+    })).toThrow('vendor_bill payable 2 invalid: vendor_bill payable 2 requires vendor.name or vendorId');
   });
 
   it('clamps vendor bill approval thresholds to two', () => {
@@ -106,6 +125,7 @@ describe('canonical vendor bill consensus', () => {
       proposalId: 'PROPOSAL-TWO-ROLES',
       role: 'maker',
       approverEmail: maker.email,
+      signature: 'Malissa Ann Robinson',
     });
     expect(execute).not.toHaveBeenCalled();
 
@@ -113,6 +133,7 @@ describe('canonical vendor bill consensus', () => {
       proposalId: 'PROPOSAL-TWO-ROLES',
       role: 'checker',
       approverEmail: checker.email,
+      signature: 'DeAndrea Lavar Barkley',
     });
     expect(execute).toHaveBeenCalledWith('PROPOSAL-TWO-ROLES');
   });
@@ -179,8 +200,8 @@ describe('canonical vendor bill consensus', () => {
       source_type: 'trust',
       source_account_id: '1000',
       payables: [
-        { vendor_name: 'Vendor One', amount: 10, due_date: '2026-02-01' },
-        { vendor_name: 'Vendor Two', amount: 20, due_date: '2026-02-02' },
+        { vendor: { name: 'Vendor One' }, amount: 10, due_date: '2026-02-01' },
+        { vendor: { name: 'Vendor Two' }, amount: 20, due_date: '2026-02-02' },
       ],
     };
 

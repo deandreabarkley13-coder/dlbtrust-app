@@ -11,7 +11,14 @@
  */
 
 const { query } = require('../bonds/pgPool');
-const { TRUSTEES, normalizeRole, getTrusteeByRole, getTrusteeByEmail } = require('./trustees');
+const {
+  TRUSTEES,
+  normalizeRole,
+  getTrusteeByRole,
+  getTrusteeByEmail,
+  getTrusteeSignatureOfRecord,
+  getSignatureOfRecord,
+} = require('./trustees');
 
 let PtcStablecoinEngine, StablecoinDexEngine, ModuleP2PSwapEngine, OnOffRampEngine, TrustMarketEngine, IntentRoutingEngine, ExternalWalletEngine;
 try { PtcStablecoinEngine = require('./ptcStablecoinEngine').PtcStablecoinEngine; } catch (e) { /* optional */ }
@@ -43,6 +50,25 @@ function isVendorBill(categoryOrProposal) {
   return category === 'vendor_bill';
 }
 
+function normalizeSignature(value) {
+  return String(value || '')
+    .trim()
+    .replace(/[.,]/g, '')
+    .replace(/\s+/g, ' ')
+    .toLowerCase();
+}
+
+function isPlaceholderSignature(value) {
+  return /^(sig[-_]|placeholder\b|auto[- ]?generated\b)/i.test(String(value || '').trim());
+}
+
+function requireVendorIdentity(payload, context) {
+  const vendor = payload && payload.vendor;
+  if (!vendor || (!vendor.name && !payload.vendorId)) {
+    throw new Error(`${context} requires vendor.name or vendorId`);
+  }
+}
+
 class CanonicalConsensusEngine {
   static _requiredApprovals(categoryOrProposal, requested) {
     const threshold = Number(requested) > 0 ? Number(requested) : defaultRequiredApprovals();
@@ -62,6 +88,7 @@ class CanonicalConsensusEngine {
       }
       payload[batchField].forEach((bill, index) => {
         try {
+          requireVendorIdentity(bill, `vendor_bill payable ${index + 1}`);
           MelioEngine._buildCsvRow(bill || {}, `CONSENSUS-BILL-${index}`);
         } catch (err) {
           throw new Error(`vendor_bill payable ${index + 1} invalid: ${err.message}`);
@@ -70,6 +97,7 @@ class CanonicalConsensusEngine {
       return { batch: true, count: payload[batchField].length };
     }
 
+    requireVendorIdentity(payload, 'vendor_bill');
     MelioEngine._buildCsvRow(payload, 'CONSENSUS-BILL');
     return { batch: false, count: 1 };
   }
@@ -129,6 +157,10 @@ class CanonicalConsensusEngine {
 
   static normalizeRole(role) {
     return normalizeRole(role);
+  }
+
+  static getSignatureOfRecord() {
+    return getSignatureOfRecord();
   }
 
   static validateApprover(role, email) {
@@ -227,12 +259,26 @@ class CanonicalConsensusEngine {
     if (proposal.status === 'rejected') throw new Error('Proposal was rejected');
 
     const approver = this.validateApprover(role, approverEmail);
+    let signatureOfRecord;
     if (isVendorBill(proposal)) {
       if (!['maker', 'checker'].includes(approver.role)) {
         throw new Error('vendor_bill approvals require maker and checker roles');
       }
       if (String(proposal.created_by || '').toLowerCase() === String(approver.email).toLowerCase()) {
         throw new Error('The requester cannot approve a vendor_bill proposal');
+      }
+      if (typeof signature !== 'string' || !signature.trim()) {
+        throw new Error('A vendor_bill approval requires your full legal name signature');
+      }
+      if (isPlaceholderSignature(signature)) {
+        throw new Error('Generated or placeholder signatures are not accepted for vendor_bill approvals');
+      }
+      signatureOfRecord = getTrusteeSignatureOfRecord(approver.role);
+      if (
+        !signatureOfRecord
+        || normalizeSignature(signature) !== normalizeSignature(signatureOfRecord.legalName)
+      ) {
+        throw new Error(`Signature does not match the signature of record for ${approver.role}`);
       }
     }
     const approvals = proposal.approvals || [];
@@ -241,14 +287,25 @@ class CanonicalConsensusEngine {
       throw new Error(`Role ${normalizedRole} has already approved this proposal`);
     }
 
-    approvals.push({
+    const approvedAt = new Date().toISOString();
+    const approval = {
       role: normalizedRole,
       status: 'approved',
       email: approver.email,
       name: signerName || approver.name,
       signature: signature || `sig-${normalizedRole}-${Date.now()}`,
-      approvedAt: new Date().toISOString(),
-    });
+      approvedAt,
+    };
+    if (signatureOfRecord) {
+      const auditDocument = { ...(signatureOfRecord.document || {}) };
+      delete auditDocument.path;
+      approval.signatureOfRecord = {
+        legalName: signatureOfRecord.legalName,
+        document: auditDocument,
+        signedAt: approvedAt,
+      };
+    }
+    approvals.push(approval);
 
     const approved = this.isApproved({ ...proposal, approvals });
     const newStatus = approved ? 'approved' : proposal.status;

@@ -1292,14 +1292,24 @@
     loadCanonicalConsensus();
   }
 
-  function renderCanonicalConsensusPanel(proposals, pendingCount, message) {
-    let html = '<div class="muted" style="margin-bottom:12px;">Maker/Checker consensus layer for canonical ledger → token actions. A proposal becomes canonical when ' + (message || '1-of-2 (Maker or Checker)') + ' approves it.</div>';
+  function renderCanonicalConsensusPanel(proposals, pendingCount, message, signatureOfRecord) {
+    let html = '<div class="muted" style="margin-bottom:12px;">Maker/Checker consensus layer for canonical ledger → token actions. Standard proposals use ' + (message || '1-of-2 (Maker or Checker)') + '; vendor bills require both the maker and checker signatures.</div>';
     html += '<div id="consensus-status" class="status hidden"></div>';
+    html += '<div class="approval-item" style="margin-bottom:12px;">' +
+      '<strong>Trustee signature of record</strong>' +
+      (signatureOfRecord || []).map(function (record) {
+        const documentMetadata = record.document || {};
+        return '<div style="font-size:12px;margin-top:6px;"><strong>' + record.role + ':</strong> ' + record.legalName +
+          ' <span class="muted">— ' + (documentMetadata.title || 'Executed signature page') +
+          ', SHA-256 ' + (documentMetadata.sha256 || '—') +
+          ', ' + (documentMetadata.executionStatus || 'status unavailable') + '</span></div>';
+      }).join('') +
+      '</div>';
     html += '<div style="margin-bottom:12px;"><strong>Pending proposals:</strong> ' + pendingCount + '</div>';
     html += '<div style="margin:12px 0; border-top:1px solid var(--border); padding-top:12px;">' +
       '<h3 style="margin:0 0 10px; font-size:14px;">Create Proposal</h3>' +
       '<div class="token-bar"><input id="cc-title" placeholder="title" value="Mint DLB-PTCUSD from DLB-PRB" /></div>' +
-      '<div class="token-bar"><input id="cc-category" placeholder="category (ptc_mint, ptc_transfer, ptc_redeem, dex_swap, p2p_order, custom)" value="ptc_mint" /></div>' +
+      '<div class="token-bar"><input id="cc-category" placeholder="category (ptc_mint, vendor_bill, ptc_transfer, ptc_redeem, dex_swap, p2p_order, custom)" value="ptc_mint" /></div>' +
       '<div class="token-bar"><textarea id="cc-payload" placeholder="JSON payload" style="width:100%;min-height:80px;font-family:monospace;">{"moduleKey":"bond_portfolio","amount":"all","recipient":""}</textarea></div>' +
       '<div class="approval-actions"><button class="btn" onclick="ccCreate()">Propose</button></div>' +
       '</div>';
@@ -1317,11 +1327,16 @@
 
   function renderConsensusRow(p) {
     const approvals = (p.approvals || []).map(a => a.role + (a.status === 'approved' ? ' ✓' : ' ✗')).join(', ') || 'none';
+    const isVendorBill = p.category === 'vendor_bill';
     let actions = '';
     if (p.status === 'pending') {
       actions = '<div class="approval-actions">' +
         '<input type="text" placeholder="your email" id="cc-email-' + p.id + '" style="width:160px;margin-right:8px;" />' +
-        '<button class="btn" onclick="ccApprove(\'' + p.id + '\', this)">Approve as Maker/Checker</button>' +
+        (isVendorBill
+          ? '<select id="cc-role-' + p.id + '" style="margin-right:8px;"><option value="maker">Maker</option><option value="checker">Checker</option></select>' +
+            '<input type="text" required placeholder="type your full legal name as signed" id="cc-signature-' + p.id + '" style="width:240px;margin-right:8px;" />' +
+            '<button class="btn" onclick="ccApprove(\'' + p.id + '\', this)">Sign and approve</button>'
+          : '<button class="btn" onclick="ccApprove(\'' + p.id + '\', this)">Approve as Maker/Checker</button>') +
         '<button class="btn btn-danger" style="margin-left:8px;" onclick="ccReject(\'' + p.id + '\', this)">Reject</button>' +
         '</div>';
     } else if (p.status === 'approved' || p.status === 'failed') {
@@ -1331,6 +1346,7 @@
       '<div class="summary"><span class="badge">' + p.category + '</span> ' + p.title + ' <small class="muted">(' + p.status + ')</small></div>' +
       '<div class="muted" style="font-size:12px; margin:4px 0;">' + (p.description || '') + '</div>' +
       '<div style="font-size:12px;"><strong>Payload:</strong> <code>' + JSON.stringify(p.payload || {}).slice(0, 120) + '</code></div>' +
+      (isVendorBill ? '<div class="muted" style="font-size:12px;">Requires both the maker and checker signatures of record.</div>' : '') +
       '<div style="font-size:12px;"><strong>Approvals:</strong> ' + approvals + '</div>' +
       actions +
       '</div>';
@@ -1339,11 +1355,14 @@
   async function loadCanonicalConsensus() {
     const body = el('panel-body');
     try {
-      const res = await api('/api/finops/consensus');
-      const proposals = res.data || [];
+      const results = await Promise.all([
+        api('/api/finops/consensus'),
+        api('/api/finops/consensus/signature-of-record')
+      ]);
+      const proposals = results[0].data || [];
       const pending = proposals.filter(p => p.status === 'pending').length;
-      body.innerHTML = renderCanonicalConsensusPanel(proposals, pending, '1-of-2 Maker/Checker');
-    } catch(e) { body.innerHTML = '<div class="status err">' + e.message + '</div>' + renderCanonicalConsensusPanel([], 0, '1-of-2 Maker/Checker'); }
+      body.innerHTML = renderCanonicalConsensusPanel(proposals, pending, '1-of-2 Maker/Checker', results[1].data || []);
+    } catch(e) { body.innerHTML = '<div class="status err">' + e.message + '</div>' + renderCanonicalConsensusPanel([], 0, '1-of-2 Maker/Checker', []); }
   }
 
   function ccStatus(msg, isErr) {
@@ -1359,23 +1378,35 @@
       const category = el('cc-category').value.trim();
       const payloadText = el('cc-payload').value.trim();
       const payload = payloadText ? JSON.parse(payloadText) : {};
-      const res = await api('/api/finops/consensus/proposals', { method:'POST', body: JSON.stringify({ title, category, payload, requiredRoles: ['maker','checker'], requiredApprovals: 1 }) });
+      const requiredApprovals = category === 'vendor_bill' ? 2 : 1;
+      const res = await api('/api/finops/consensus/proposals', { method:'POST', body: JSON.stringify({ title, category, payload, requiredRoles: ['maker','checker'], requiredApprovals }) });
       ccStatus('Created proposal ' + res.data.id, false);
       await loadCanonicalConsensus();
     } catch(e) { ccStatus(e.message, true); }
   }
 
   async function ccApprove(proposalId, btn) {
+    const originalLabel = btn ? btn.textContent : 'Approve as Maker/Checker';
     if (btn) { btn.disabled = true; btn.textContent = '…'; }
     try {
       const email = el('cc-email-' + proposalId).value.trim();
       const role = 'maker'; // can be maker or checker; server validates by email
-      const res = await api('/api/finops/consensus/proposals/' + proposalId + '/approve', { method:'POST', body: JSON.stringify({ role, approverEmail: email }) });
+      const roleInput = el('cc-role-' + proposalId);
+      const signatureInput = el('cc-signature-' + proposalId);
+      const approvalRole = roleInput ? roleInput.value : role;
+      const signature = signatureInput ? signatureInput.value.trim() : '';
+      if (signatureInput && !signature) {
+        ccStatus('Type your full legal name as signed before approving.', true);
+        return;
+      }
+      const approval = { role: approvalRole, approverEmail: email };
+      if (signatureInput) approval.signature = signature;
+      const res = await api('/api/finops/consensus/proposals/' + proposalId + '/approve', { method:'POST', body: JSON.stringify(approval) });
       ccStatus('Approved: ' + (res.data.status || 'executed'), false);
       await loadCanonicalConsensus();
       await loadAll();
     } catch(e) { ccStatus(e.message, true); }
-    finally { if (btn) { btn.disabled = false; btn.textContent = 'Approve as Maker/Checker'; } }
+    finally { if (btn) { btn.disabled = false; btn.textContent = originalLabel; } }
   }
 
   async function ccReject(proposalId, btn) {
