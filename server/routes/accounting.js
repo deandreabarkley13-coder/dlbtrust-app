@@ -157,6 +157,31 @@ router.get('/reports/trial-balance', async (req, res) => {
   }
 });
 
+// ─── GET /api/accounting/reports/balances/download ────────────────────────────
+// Trial-balance account balances as a downloadable CSV file.
+router.get('/reports/balances/download', async (req, res) => {
+  try {
+    const tb = await TrustAccountingEngine.getTrialBalance({
+      asOfDate: req.query.asOfDate,
+    });
+    const headers = ['AccountCode', 'AccountName', 'AccountType', 'SubType', 'TotalDebits', 'TotalCredits', 'CurrentBalance'];
+    const escape = (value) => {
+      const s = value === null || value === undefined ? '' : String(value);
+      return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+    };
+    const rows = (tb.accounts || []).map((a) => [
+      a.account_code, a.account_name, a.account_type, a.sub_type,
+      a.total_debits, a.total_credits, a.current_balance,
+    ].map(escape).join(','));
+    const csv = [headers.join(','), ...rows].join('\n');
+    res.type('text/csv');
+    res.attachment(`ledger-balances-${tb.as_of_date || new Date().toISOString().slice(0, 10)}.csv`);
+    res.send(csv);
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
 // ─── GET /api/accounting/reports/balance-sheet ────────────────────────────────
 router.get('/reports/balance-sheet', async (req, res) => {
   try {
