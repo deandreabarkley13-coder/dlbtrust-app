@@ -3,7 +3,7 @@
 const { SafeEngine } = require('./safeEngine');
 const { getConfig } = require('./config');
 const { SourceOfFundsAdapter } = require('../stablecoin/sourceOfFundsAdapter');
-const { getTrusteeByEmail } = require('./trustees');
+const { getTrusteeByEmail, getTrusteeByRole } = require('./trustees');
 const { JWT_SECRET } = require('../auth/userAuth');
 
 let CashEngine, TrustAccountingEngine, BondEngine, FineractClient, CrmEngine, TaxEngine, DocumentEngine, SubLedgerEngine, EmailEngine;
@@ -754,15 +754,38 @@ class DappEngine {
   }
 
   static inferRoles(email) {
+    const lowerEmail = String(email || '').toLowerCase();
+    const maker = getTrusteeByRole('maker');
+    const checker = getTrusteeByRole('checker');
+    if (maker && String(maker.email).toLowerCase() === lowerEmail) return ['trustee_maker', 'beneficiary'];
+    if (checker && String(checker.email).toLowerCase() === lowerEmail) return ['trustee_checker', 'beneficiary'];
+
     const trustee = getTrusteeByEmail(email);
     if (trustee) {
       const lower = String(trustee.role).toLowerCase();
       if (lower === 'administration') return ['trustee_admin', 'beneficiary'];
-      if (lower === 'distribution' || lower === 'maker') return ['trustee_maker', 'beneficiary'];
-      if (lower === 'checker') return ['trustee_checker', 'beneficiary'];
-      return ['trustee', 'beneficiary'];
     }
     return ['beneficiary'];
+  }
+
+  static reconcileRoles(email, currentRoles = []) {
+    const managedRoles = new Set(['trustee_maker', 'trustee_checker', 'trustee_admin', 'trustee']);
+    const inferredRoles = this.inferRoles(email);
+    const retainedRoles = currentRoles.filter(role => !managedRoles.has(role));
+    return Array.from(new Set([...inferredRoles, ...retainedRoles]));
+  }
+
+  static reconciledUserState(user) {
+    const currentRoles = Array.isArray(user.roles)
+      ? user.roles
+      : (user.roles ? JSON.parse(user.roles) : [user.role || 'beneficiary']);
+    const inferredRoles = this.inferRoles(user.email);
+    const roles = this.reconcileRoles(user.email, currentRoles);
+    const currentPrimary = user.active_role || user.role;
+    const primaryRole = inferredRoles[0] !== 'beneficiary'
+      ? inferredRoles[0]
+      : (roles.includes(currentPrimary) ? currentPrimary : roles[0]);
+    return { roles, primaryRole };
   }
 
   static inferRole(email) {
@@ -776,12 +799,15 @@ class DappEngine {
     if (!user) {
       user = await this.createUser({ email, name: email.split('@')[0], role, roles });
     } else {
-      const existingRoles = Array.isArray(user.roles) ? user.roles : (user.roles ? JSON.parse(user.roles) : [user.role || 'beneficiary']);
-      const merged = Array.from(new Set([...existingRoles, ...roles]));
-      const primary = user.active_role || user.role || merged[0];
-      await this._update('dapp_users', user.id, { role: primary, roles: JSON.stringify(merged) });
-      user.role = primary;
-      user.roles = merged;
+      const state = this.reconciledUserState(user);
+      await this._update('dapp_users', user.id, {
+        role: state.primaryRole,
+        active_role: state.primaryRole,
+        roles: JSON.stringify(state.roles),
+      });
+      user.role = state.primaryRole;
+      user.active_role = state.primaryRole;
+      user.roles = state.roles;
     }
     const code = String(Math.floor(100000 + Math.random() * 900000));
     const expires = new Date(Date.now() + 10 * 60 * 1000).toISOString();
@@ -861,10 +887,11 @@ class DappEngine {
   }
 
   static async ensurePortalUsers() {
+    const maker = getTrusteeByRole('maker');
+    const checker = getTrusteeByRole('checker');
     const seeded = [
-      // Barkley Family Trust PTC: maker + checker trustees and 3 beneficiaries
-      { email: 'barkley420lavar@gmail.com', name: 'Malissa Robinson', roles: ['trustee_maker', 'beneficiary'], activeRole: 'trustee_maker' },
-      { email: 'dbarkley1130@gmail.com', name: 'DeAndrea Barkley', roles: ['trustee_checker', 'beneficiary'], activeRole: 'trustee_checker' },
+      { email: maker.email, name: maker.name, roles: ['trustee_maker', 'beneficiary'], activeRole: 'trustee_maker' },
+      { email: checker.email, name: checker.name, roles: ['trustee_checker', 'beneficiary'], activeRole: 'trustee_checker' },
       { email: 'deandreabarkley13@gmail.com', name: 'DeAndrea L Barkley', roles: ['beneficiary'], activeRole: 'beneficiary' },
       { email: 'annrobinson9800@yahoo.com', name: 'Malissa A Robinson', roles: ['beneficiary'], activeRole: 'beneficiary' },
       { email: 'robinsonjeremy22a@gmail.com', name: 'Jeremy N Robinson', roles: ['beneficiary'], activeRole: 'beneficiary' },
@@ -875,13 +902,32 @@ class DappEngine {
       if (!user) {
         user = await this.createUser({ email: s.email, name: s.name, roles: s.roles, activeRole: s.activeRole });
       } else {
-        const existingRoles = Array.isArray(user.roles) ? user.roles : (user.roles ? JSON.parse(user.roles) : [user.role || 'beneficiary']);
-        const merged = Array.from(new Set([...existingRoles, ...s.roles]));
-        const primary = s.activeRole || user.active_role || merged[0];
-        await this._update('dapp_users', user.id, { role: primary, active_role: primary, roles: JSON.stringify(merged), name: s.name });
+        const state = this.reconciledUserState(user);
+        await this._update('dapp_users', user.id, {
+          role: state.primaryRole,
+          active_role: state.primaryRole,
+          roles: JSON.stringify(state.roles),
+          name: s.name,
+        });
         user = await this.getUser(user.id);
       }
       results.push(this._sanitizeUser(user));
+    }
+
+    const users = await this.listUsers();
+    for (const user of users) {
+      const state = this.reconciledUserState(user);
+      if (
+        user.role !== state.primaryRole
+        || user.active_role !== state.primaryRole
+        || JSON.stringify(user.roles) !== JSON.stringify(state.roles)
+      ) {
+        await this._update('dapp_users', user.id, {
+          role: state.primaryRole,
+          active_role: state.primaryRole,
+          roles: JSON.stringify(state.roles),
+        });
+      }
     }
     return results;
   }

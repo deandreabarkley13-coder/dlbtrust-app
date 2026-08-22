@@ -10,6 +10,8 @@ const { DappEngine } = require('../server/integrations/dapp/dappEngine');
 const { EmailEngine } = require('../server/integrations/dapp/emailEngine');
 const { PtcPortalEngine } = require('../server/integrations/dapp/ptcPortalEngine');
 const { MelioEngine } = require('../server/integrations/os/osEngine');
+const { getTrusteeByRole } = require('../server/integrations/dapp/trustees');
+const { bindAuthenticatedTrustee } = require('../server/integrations/auth/securityMiddleware');
 
 const originalEnvironment = {
   NODE_ENV: process.env.NODE_ENV,
@@ -36,6 +38,102 @@ function mockOtpUser() {
 }
 
 describe('dApp portal authentication and role scoping', () => {
+  it('maps Malissa to the configured maker-trustee role', () => {
+    const maker = getTrusteeByRole('maker');
+
+    expect(maker.email).toBe('malissa1130@gmail.com');
+    expect(DappEngine.inferRoles(maker.email)).toEqual(['trustee_maker', 'beneficiary']);
+    expect(PtcPortalEngine.getConfiguredTrusteeByEmail(maker.email)).toMatchObject({
+      role: 'maker',
+      email: maker.email,
+    });
+    expect(PtcPortalEngine.getConfiguredTrusteeByEmail('barkley420lavar@gmail.com')).toBeNull();
+    expect(DappEngine.reconciledUserState({
+      email: 'barkley420lavar@gmail.com',
+      role: 'trustee_maker',
+      active_role: 'trustee_maker',
+      roles: ['trustee_maker', 'beneficiary'],
+    })).toEqual({
+      roles: ['beneficiary'],
+      primaryRole: 'beneficiary',
+    });
+  });
+
+  it('sends Malissa a delivery-gated PIN and persists maker-trustee access', async () => {
+    const maker = getTrusteeByRole('maker');
+    vi.spyOn(DappEngine, 'getUserByEmail').mockResolvedValue({
+      id: 'USER-MAKER',
+      email: maker.email,
+      name: maker.name,
+      role: 'beneficiary',
+      active_role: 'beneficiary',
+      roles: ['beneficiary'],
+    });
+    const update = vi.spyOn(DappEngine, '_update').mockResolvedValue(undefined);
+    vi.spyOn(EmailEngine, 'sendOtp').mockResolvedValue({ sent: true, provider: 'test' });
+
+    const result = await DappEngine.generateOtp(maker.email);
+
+    expect(result).toMatchObject({
+      email: maker.email,
+      role: 'trustee_maker',
+      roles: ['trustee_maker', 'beneficiary'],
+      sent: true,
+      code: null,
+    });
+    expect(update).toHaveBeenCalledWith('dapp_users', 'USER-MAKER', {
+      role: 'trustee_maker',
+      active_role: 'trustee_maker',
+      roles: JSON.stringify(['trustee_maker', 'beneficiary']),
+    });
+  });
+
+  it('issues a maker-trustee session only after Malissa verifies the PIN', async () => {
+    const maker = getTrusteeByRole('maker');
+    const user = {
+      id: 'USER-MAKER',
+      email: maker.email,
+      name: maker.name,
+      role: 'trustee_maker',
+      active_role: 'trustee_maker',
+      roles: ['trustee_maker', 'beneficiary'],
+      otp_code: '654321',
+      otp_expires: new Date(Date.now() + 60_000).toISOString(),
+    };
+    vi.spyOn(DappEngine, 'getUserByEmail').mockResolvedValue(user);
+    vi.spyOn(DappEngine, 'getUser').mockResolvedValue({ ...user });
+    vi.spyOn(DappEngine, '_update').mockResolvedValue(undefined);
+
+    const result = await DappEngine.verifyOtp({ email: maker.email, code: '654321' });
+
+    expect(result).toMatchObject({
+      email: maker.email,
+      role: 'trustee_maker',
+      roles: ['trustee_maker', 'beneficiary'],
+    });
+    expect(result.token).toBeTruthy();
+  });
+
+  it('binds approvals to the authenticated maker identity', () => {
+    const maker = getTrusteeByRole('maker');
+    const request = {
+      user: {
+        email: maker.email,
+        role: 'trustee_maker',
+        roles: ['trustee_maker', 'beneficiary'],
+      },
+    };
+
+    expect(bindAuthenticatedTrustee(request, {}, 'approverEmail')).toEqual({
+      role: 'maker',
+      approverEmail: maker.email,
+    });
+    expect(() => bindAuthenticatedTrustee(request, {
+      role: 'checker',
+      approverEmail: 'dbarkley1130@gmail.com',
+    }, 'approverEmail')).toThrow('Authenticated maker trustee cannot act as checker');
+  });
+
   it('does not expose an OTP when email delivery succeeds', async () => {
     mockOtpUser();
     vi.spyOn(EmailEngine, 'sendOtp').mockResolvedValue({ sent: true, provider: 'test' });

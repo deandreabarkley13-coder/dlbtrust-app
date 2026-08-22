@@ -5,11 +5,13 @@ const require = createRequire(import.meta.url);
 const { CanonicalConsensusEngine } = require('../server/integrations/dapp/canonicalConsensusEngine');
 const {
   getSignatureOfRecord,
+  getTrusteeByRole,
   getTrusteeSignatureOfRecord,
 } = require('../server/integrations/dapp/trustees');
 
 const maker = getTrusteeSignatureOfRecord('maker');
 const checker = getTrusteeSignatureOfRecord('checker');
+const makerEmail = getTrusteeByRole('maker').email;
 
 const proposal = {
   category: 'vendor_bill',
@@ -67,7 +69,7 @@ describe('trustee signature of record', () => {
     await expect(CanonicalConsensusEngine.approveProposal({
       proposalId: 'PROPOSAL-SIGNATURE',
       role: 'maker',
-      approverEmail: 'barkley420lavar@gmail.com',
+      approverEmail: makerEmail,
       signature,
     })).rejects.toThrow(message);
   });
@@ -78,7 +80,7 @@ describe('trustee signature of record', () => {
     await CanonicalConsensusEngine.approveProposal({
       proposalId: 'PROPOSAL-SIGNATURE',
       role: 'maker',
-      approverEmail: 'barkley420lavar@gmail.com',
+      approverEmail: makerEmail,
       signature: '  MALISSA,   ANN ROBINSON. ',
     });
 
@@ -127,7 +129,7 @@ describe('trustee signature of record', () => {
     await CanonicalConsensusEngine.approveProposal({
       proposalId: 'PROPOSAL-NON-VENDOR',
       role: 'maker',
-      approverEmail: 'barkley420lavar@gmail.com',
+      approverEmail: makerEmail,
     });
 
     expect(save.mock.calls[0][1][0].signature).toMatch(/^sig-maker-/);

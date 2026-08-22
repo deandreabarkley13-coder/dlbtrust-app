@@ -1,7 +1,7 @@
 'use strict';
 
 const express = require('express');
-const { requireAuth, writeRateLimiter } = require('../integrations/auth/securityMiddleware');
+const { requireAuth, writeRateLimiter, bindAuthenticatedTrustee } = require('../integrations/auth/securityMiddleware');
 const { FinOpsAgent } = require('../integrations/finops/finopsAgent');
 const { ModuleSmartAccountEngine } = require('../integrations/dapp/moduleSmartAccountEngine');
 const { ModuleP2PSwapEngine } = require('../integrations/dapp/moduleP2PSwapEngine');
@@ -81,7 +81,8 @@ const operatorAuth = requireAuth({ role: 'operator' });
 
 function sendError(res, err) {
   console.error('[finops]', err.message || err);
-  res.status(400).json({ success: false, error: err.message || 'FinOps error' });
+  const status = Number(err && (err.status || err.statusCode));
+  res.status(status >= 400 && status <= 599 ? status : 400).json({ success: false, error: err.message || 'FinOps error' });
 }
 
 function getUserId(req) {
@@ -529,11 +530,17 @@ router.get('/consensus/proposals/:id', operatorAuth, async (req, res) => {
 });
 
 router.post('/consensus/proposals/:id/approve', operatorAuth, writeRateLimiter(), async (req, res) => {
-  try { res.json({ success: true, data: await CanonicalConsensusEngine.approveProposal({ proposalId: req.params.id, ...req.body }) }); } catch (err) { sendError(res, err); }
+  try {
+    const approval = bindAuthenticatedTrustee(req, req.body, 'approverEmail');
+    res.json({ success: true, data: await CanonicalConsensusEngine.approveProposal({ proposalId: req.params.id, ...approval }) });
+  } catch (err) { sendError(res, err); }
 });
 
 router.post('/consensus/proposals/:id/reject', operatorAuth, writeRateLimiter(), async (req, res) => {
-  try { res.json({ success: true, data: await CanonicalConsensusEngine.rejectProposal({ proposalId: req.params.id, ...req.body }) }); } catch (err) { sendError(res, err); }
+  try {
+    const rejection = bindAuthenticatedTrustee(req, req.body, 'rejectorEmail');
+    res.json({ success: true, data: await CanonicalConsensusEngine.rejectProposal({ proposalId: req.params.id, ...rejection }) });
+  } catch (err) { sendError(res, err); }
 });
 
 router.post('/consensus/proposals/:id/execute', operatorAuth, writeRateLimiter(), async (req, res) => {
@@ -860,7 +867,10 @@ router.get('/ramps/requests', operatorAuth, async (req, res) => {
 });
 
 router.post('/ramps/requests/:id/approve', operatorAuth, writeRateLimiter(), async (req, res) => {
-  try { res.json({ success: true, data: await CanonicalConsensusEngine.approveProposal({ proposalId: req.params.id, ...req.body }) }); } catch (err) { sendError(res, err); }
+  try {
+    const approval = bindAuthenticatedTrustee(req, req.body, 'approverEmail');
+    res.json({ success: true, data: await CanonicalConsensusEngine.approveProposal({ proposalId: req.params.id, ...approval }) });
+  } catch (err) { sendError(res, err); }
 });
 
 router.post('/ramps/requests/:id/execute', operatorAuth, writeRateLimiter(), async (req, res) => {
@@ -895,7 +905,10 @@ router.get('/decentralized-ramps/requests', operatorAuth, async (req, res) => {
 });
 
 router.post('/decentralized-ramps/requests/:id/approve', operatorAuth, writeRateLimiter(), async (req, res) => {
-  try { res.json({ success: true, data: await CanonicalConsensusEngine.approveProposal({ proposalId: req.params.id, ...req.body }) }); } catch (err) { sendError(res, err); }
+  try {
+    const approval = bindAuthenticatedTrustee(req, req.body, 'approverEmail');
+    res.json({ success: true, data: await CanonicalConsensusEngine.approveProposal({ proposalId: req.params.id, ...approval }) });
+  } catch (err) { sendError(res, err); }
 });
 
 router.post('/decentralized-ramps/requests/:id/execute', operatorAuth, writeRateLimiter(), async (req, res) => {
@@ -1096,7 +1109,10 @@ router.post('/intents/requests', operatorAuth, writeRateLimiter(), async (req, r
 });
 
 router.post('/intents/requests/:id/approve', operatorAuth, writeRateLimiter(), async (req, res) => {
-  try { res.json({ success: true, data: await CanonicalConsensusEngine.approveProposal({ proposalId: req.params.id, ...req.body }) }); } catch (err) { sendError(res, err); }
+  try {
+    const approval = bindAuthenticatedTrustee(req, req.body, 'approverEmail');
+    res.json({ success: true, data: await CanonicalConsensusEngine.approveProposal({ proposalId: req.params.id, ...approval }) });
+  } catch (err) { sendError(res, err); }
 });
 
 router.post('/intents/requests/:id/execute', operatorAuth, writeRateLimiter(), async (req, res) => {
@@ -1136,7 +1152,10 @@ router.get('/external-wallets/swaps', operatorAuth, async (req, res) => {
 });
 
 router.post('/external-wallets/swaps/:id/approve', operatorAuth, writeRateLimiter(), async (req, res) => {
-  try { res.json({ success: true, data: await CanonicalConsensusEngine.approveProposal({ proposalId: req.params.id, ...req.body }) }); } catch (err) { sendError(res, err); }
+  try {
+    const approval = bindAuthenticatedTrustee(req, req.body, 'approverEmail');
+    res.json({ success: true, data: await CanonicalConsensusEngine.approveProposal({ proposalId: req.params.id, ...approval }) });
+  } catch (err) { sendError(res, err); }
 });
 
 router.post('/external-wallets/swaps/:id/execute', operatorAuth, writeRateLimiter(), async (req, res) => {

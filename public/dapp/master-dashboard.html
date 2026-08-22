@@ -374,7 +374,7 @@
           const approvals = esc((r.approvals || []).map(a => a.role).join(', ') || 'none');
           let action = '';
           if (r.status !== 'executed' && r.status !== 'rejected' && r.status !== 'failed') {
-            action = `<button class="btn btn-sm" onclick="approveAs('${esc(r.id)}','maker','annrobinson9800@yahoo.com')">Approve Maker</button> <button class="btn btn-sm btn-2" onclick="approveAs('${esc(r.id)}','checker','dbnettrust@gmail.com')">Approve Checker</button>`;
+            action = `<button class="btn btn-sm" onclick="approveAs('${esc(r.id)}','maker','malissa1130@gmail.com')">Approve Maker</button> <button class="btn btn-sm btn-2" onclick="approveAs('${esc(r.id)}','checker','dbarkley1130@gmail.com')">Approve Checker</button>`;
           }
           return `<tr><td>${esc(r.id.slice(-12))}</td><td>${esc(r.beneficiary_name || r.beneficiary_email)}</td><td>$${esc((r.amount_cents / 100).toFixed(2))}</td><td>${esc(r.status)}</td><td>${approvals}</td><td>${action}</td></tr>`;
         }).join('') || '<tr><td colspan="6">No requests yet.</td></tr>';

@@ -144,6 +144,7 @@
   const TOKEN_KEY = 'dlb-finops-token';
   const EMAIL_KEY = 'dlb-finops-email';
   const ADMIN_KEY = 'dlb-admin-token';
+  let currentUserRole = '';
   const el = id => document.getElementById(id);
   const modules = [
     { key:'core-banking', name:'Core Banking', desc:'Fineract GL, cash accounts, sub-ledgers', stat:'', endpoint:'/api/finops/source-of-funds' },
@@ -247,6 +248,7 @@
   }
 
   function setUserInfo(email, role) {
+    currentUserRole = role || '';
     el('logged-in-email').textContent = email + (role ? ' (' + role + ')' : '');
     el('user-role').textContent = role || '';
     el('user-role').style.display = role ? 'inline-block' : 'none';
@@ -254,6 +256,12 @@
 
   function isFinOpsRole(role) {
     return ['operator','trustee_maker','trustee_checker','trustee','admin','trustee_admin'].includes(role);
+  }
+
+  function activeConsensusRole() {
+    if (currentUserRole === 'trustee_maker' || currentUserRole === 'trustee_admin') return 'maker';
+    if (currentUserRole === 'trustee_checker') return 'checker';
+    return '';
   }
 
   async function sendPin() {
@@ -1328,15 +1336,16 @@
   function renderConsensusRow(p) {
     const approvals = (p.approvals || []).map(a => a.role + (a.status === 'approved' ? ' ✓' : ' ✗')).join(', ') || 'none';
     const isVendorBill = p.category === 'vendor_bill';
+    const signedInRole = activeConsensusRole();
     let actions = '';
     if (p.status === 'pending') {
       actions = '<div class="approval-actions">' +
-        '<input type="text" placeholder="your email" id="cc-email-' + p.id + '" style="width:160px;margin-right:8px;" />' +
+        (signedInRole ? '' : '<input type="text" placeholder="trustee email" id="cc-email-' + p.id + '" style="width:160px;margin-right:8px;" />') +
         (isVendorBill
-          ? '<select id="cc-role-' + p.id + '" style="margin-right:8px;"><option value="maker">Maker</option><option value="checker">Checker</option></select>' +
+          ? (signedInRole ? '' : '<select id="cc-role-' + p.id + '" style="margin-right:8px;"><option value="maker">Maker</option><option value="checker">Checker</option></select>') +
             '<input type="text" required placeholder="type your full legal name as signed" id="cc-signature-' + p.id + '" style="width:240px;margin-right:8px;" />' +
-            '<button class="btn" onclick="ccApprove(\'' + p.id + '\', this)">Sign and approve</button>'
-          : '<button class="btn" onclick="ccApprove(\'' + p.id + '\', this)">Approve as Maker/Checker</button>') +
+            '<button class="btn" onclick="ccApprove(\'' + p.id + '\', this)">Sign as ' + (signedInRole || 'selected trustee') + '</button>'
+          : '<button class="btn" onclick="ccApprove(\'' + p.id + '\', this)">Approve as ' + (signedInRole || 'Maker/Checker') + '</button>') +
         '<button class="btn btn-danger" style="margin-left:8px;" onclick="ccReject(\'' + p.id + '\', this)">Reject</button>' +
         '</div>';
     } else if (p.status === 'approved' || p.status === 'failed') {
@@ -1389,11 +1398,11 @@
     const originalLabel = btn ? btn.textContent : 'Approve as Maker/Checker';
     if (btn) { btn.disabled = true; btn.textContent = '…'; }
     try {
-      const email = el('cc-email-' + proposalId).value.trim();
-      const role = 'maker'; // can be maker or checker; server validates by email
+      const emailInput = el('cc-email-' + proposalId);
+      const email = emailInput ? emailInput.value.trim() : getEmail();
       const roleInput = el('cc-role-' + proposalId);
       const signatureInput = el('cc-signature-' + proposalId);
-      const approvalRole = roleInput ? roleInput.value : role;
+      const approvalRole = activeConsensusRole() || (roleInput ? roleInput.value : 'maker');
       const signature = signatureInput ? signatureInput.value.trim() : '';
       if (signatureInput && !signature) {
         ccStatus('Type your full legal name as signed before approving.', true);
@@ -1412,8 +1421,11 @@
   async function ccReject(proposalId, btn) {
     if (btn) { btn.disabled = true; btn.textContent = '…'; }
     try {
-      const email = el('cc-email-' + proposalId).value.trim();
-      const res = await api('/api/finops/consensus/proposals/' + proposalId + '/reject', { method:'POST', body: JSON.stringify({ role: 'maker', rejectorEmail: email }) });
+      const emailInput = el('cc-email-' + proposalId);
+      const email = emailInput ? emailInput.value.trim() : getEmail();
+      const roleInput = el('cc-role-' + proposalId);
+      const role = activeConsensusRole() || (roleInput ? roleInput.value : 'maker');
+      const res = await api('/api/finops/consensus/proposals/' + proposalId + '/reject', { method:'POST', body: JSON.stringify({ role, rejectorEmail: email }) });
       ccStatus('Rejected', false);
       await loadCanonicalConsensus();
     } catch(e) { ccStatus(e.message, true); }

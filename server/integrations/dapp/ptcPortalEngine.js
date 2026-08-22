@@ -10,6 +10,7 @@
 
 const pool = require('../bonds/pgPool');
 const { PrivateTrustCompanyEngine } = require('./privateTrustCompanyEngine');
+const { getTrusteeByRole } = require('./trustees');
 
 let TaxEngine, CrmEngine, CashEngine, WalletEngine, WireOriginationEngine, PushToCardEngine, PayoutCenterEngine, PaymentBlockchainEngine, VendorPaymentEngine, TrustAccountingEngine, StripeTreasuryEngine, CustomerIdentificationEngine;
 const CIP_REQUIRED_FOR_STRIPE = process.env.STRIPE_TREASURY_CIP_REQUIRED === 'true';
@@ -42,10 +43,13 @@ async function query(text, params) {
   return pool.query(text, params);
 }
 
+const makerTrustee = getTrusteeByRole('maker');
+const checkerTrustee = getTrusteeByRole('checker');
+
 const DEFAULT_MEMBERS = [
   // Trustees
-  { email: 'barkley420lavar@gmail.com', name: 'Malissa Robinson', type: 'trustee,beneficiary', role: 'maker', roles: ['trustee_maker', 'beneficiary'], allocation: 0, crmContactId: 'CRM-BEN-1782927155850' },
-  { email: 'dbarkley1130@gmail.com', name: 'DeAndrea Barkley', type: 'trustee,beneficiary', role: 'checker', roles: ['trustee_checker', 'beneficiary'], allocation: 0, crmContactId: 'CRM-BEN-1782927036064' },
+  { email: makerTrustee.email, name: makerTrustee.name, type: 'trustee,beneficiary', role: 'maker', roles: ['trustee_maker', 'beneficiary'], allocation: 0, crmContactId: 'CRM-BEN-1782927155850' },
+  { email: checkerTrustee.email, name: checkerTrustee.name, type: 'trustee,beneficiary', role: 'checker', roles: ['trustee_checker', 'beneficiary'], allocation: 0, crmContactId: 'CRM-BEN-1782927036064' },
   // Beneficiaries
   { email: 'deandreabarkley13@gmail.com', name: 'DeAndrea L Barkley', type: 'beneficiary', role: 'beneficiary', roles: ['beneficiary'], allocation: 34, crmContactId: 'CRM-BEN-1782927036064' },
   { email: 'annrobinson9800@yahoo.com', name: 'Malissa A Robinson', type: 'beneficiary', role: 'beneficiary', roles: ['beneficiary'], allocation: 33, crmContactId: 'CRM-BEN-1782927155850' },
@@ -165,7 +169,23 @@ class PtcPortalEngine {
       }
       results.push({ memberId, ...m });
     }
+    await query(`
+      UPDATE ptc_members
+      SET type = 'beneficiary',
+          role = 'beneficiary',
+          roles = '["beneficiary"]'::jsonb,
+          updated_at = NOW()
+      WHERE role IN ('maker', 'checker')
+        AND LOWER(email) NOT IN (LOWER($1), LOWER($2))
+    `, [makerTrustee.email, checkerTrustee.email]);
     return results;
+  }
+
+  static getConfiguredTrusteeByEmail(email) {
+    const lowerEmail = String(email || '').toLowerCase();
+    return [makerTrustee, checkerTrustee].find(
+      trustee => String(trustee.email).toLowerCase() === lowerEmail
+    ) || null;
   }
 
   static async ensureMemberAccounts(memberId, m, cashAccountId, trustAccountCode) {
@@ -299,8 +319,11 @@ class PtcPortalEngine {
 
   static async approveRequest({ requestId, email }) {
     if (!requestId || !email) throw new Error('requestId and email required');
+    const configuredTrustee = this.getConfiguredTrusteeByEmail(email);
+    if (!configuredTrustee) throw new Error('Only configured trustees can approve');
     const member = await this.getMemberByEmail(email);
     if (!member || !String(member.type).includes('trustee')) throw new Error('Only trustees can approve');
+    if (member.role !== configuredTrustee.role) throw new Error('Trustee role does not match the configured approval role');
     const req = (await query('SELECT * FROM ptc_requests WHERE request_id = $1', [requestId])).rows[0];
     if (!req) throw new Error('Request not found');
     if (req.status !== 'pending' && req.status !== 'approved') throw new Error(`Cannot approve request in status ${req.status}`);
