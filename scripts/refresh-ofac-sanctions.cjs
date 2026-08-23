@@ -1,0 +1,15 @@
+'use strict';
+
+require('dotenv').config();
+
+const { OfacSanctionsListEngine } = require('../server/integrations/compliance/ofacSanctionsListEngine');
+
+OfacSanctionsListEngine.refresh()
+  .then((status) => {
+    console.log(JSON.stringify(status, null, 2));
+    process.exit(status.ready ? 0 : 1);
+  })
+  .catch((error) => {
+    console.error(error.message);
+    process.exit(1);
+  });

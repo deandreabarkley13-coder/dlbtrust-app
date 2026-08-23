@@ -19,6 +19,7 @@ const {
   getTrusteeSignatureOfRecord,
   getSignatureOfRecord,
 } = require('./trustees');
+const { PaymentComplianceGate } = require('../compliance/paymentComplianceGate');
 
 let PtcStablecoinEngine, StablecoinDexEngine, ModuleP2PSwapEngine, OnOffRampEngine, TrustMarketEngine, IntentRoutingEngine, ExternalWalletEngine;
 try { PtcStablecoinEngine = require('./ptcStablecoinEngine').PtcStablecoinEngine; } catch (e) { /* optional */ }
@@ -79,6 +80,16 @@ class CanonicalConsensusEngine {
     if (!payload || typeof payload !== 'object' || Array.isArray(payload)) {
       throw new Error('vendor_bill payload must be an object');
     }
+    if (payload.vendorPaymentBillId) {
+      requireVendorIdentity(payload, 'vendor_bill');
+      if (!Number.isFinite(Number(payload.amount)) || Number(payload.amount) <= 0) {
+        throw new Error('vendor_bill amount must be positive');
+      }
+      if (!['bank_transfer', 'wire', 'ach', 'open_banking', 'web_payment'].includes(String(payload.rail || 'bank_transfer'))) {
+        throw new Error('vendor_bill rail is not supported');
+      }
+      return { batch: false, count: 1, direct: true };
+    }
     if (!MelioEngine) throw new Error('MelioEngine not available');
 
     const batchField = ['payables', 'items', 'rows'].find((field) => payload[field] !== undefined);
@@ -102,19 +113,56 @@ class CanonicalConsensusEngine {
     return { batch: false, count: 1 };
   }
 
-  static async _executeVendorBill(payload = {}) {
+  static async _executeVendorBill(payload = {}, proposalId) {
+    if (payload.vendorPaymentBillId) {
+      const { VendorPaymentEngine } = require('./vendorPaymentEngine');
+      return VendorPaymentEngine.payBill({
+        billId: payload.vendorPaymentBillId,
+        consensusProposalId: proposalId,
+        sourceCashAccountId: payload.sourceCashAccountId || payload.source_cash_account_id,
+        rail: payload.rail,
+        webPaymentAdapter: payload.webPaymentAdapter,
+        openBankingConnector: payload.openBankingConnector,
+        memo: payload.memo,
+        initiatedBy: 'canonical-consensus',
+      });
+    }
     if (!MelioEngine) throw new Error('MelioEngine not available');
     const batchField = ['payables', 'items', 'rows'].find((field) => payload[field] !== undefined);
     if (batchField) {
+      const screenedPayables = [];
+      const complianceScreeningIds = [];
+      for (const payable of payload[batchField]) {
+        const compliance = await PaymentComplianceGate.screenVendorPayment({
+          vendor: payable.vendor,
+          amount: payable.amount,
+          sourceAccountId: payable.sourceAccountId || payable.source_account_id
+            || payload.sourceAccountId || payload.source_account_id,
+          rail: 'melio',
+          action: 'export',
+          screenedBy: 'canonical-consensus',
+          reference: payable.invoiceNumber || payable.invoice_number,
+        });
+        complianceScreeningIds.push(compliance.screeningId);
+        screenedPayables.push({
+          ...payable,
+          metadata: {
+            ...(payable.metadata || {}),
+            complianceScreeningId: compliance.screeningId,
+          },
+        });
+      }
       const result = await MelioEngine.process({
         action: 'exportBatch',
         ...payload,
-        payables: payload[batchField],
+        payables: screenedPayables,
       });
       const batch = result && result.result && result.result.batchId ? result.result : result;
       return {
         ...result,
         exportIdentifier: batch.batchId,
+        paymentMode: 'manual_export',
+        complianceScreeningIds,
         fileNames: (batch.files || []).map((file) => file.fileName),
         paymentIds: (batch.records || []).map((record) => record.id),
         journalEntryIds: (batch.records || [])
@@ -123,11 +171,29 @@ class CanonicalConsensusEngine {
       };
     }
 
-    const result = await MelioEngine.process({ action: 'exportPayment', ...payload });
+    const compliance = await PaymentComplianceGate.screenVendorPayment({
+      vendor: payload.vendor,
+      amount: payload.amount,
+      sourceAccountId: payload.sourceAccountId || payload.source_account_id,
+      rail: 'melio',
+      action: 'export',
+      screenedBy: 'canonical-consensus',
+      reference: payload.invoiceNumber || payload.invoice_number,
+    });
+    const result = await MelioEngine.process({
+      action: 'exportPayment',
+      ...payload,
+      metadata: {
+        ...(payload.metadata || {}),
+        complianceScreeningId: compliance.screeningId,
+      },
+    });
     const record = result && result.result && result.result.id ? result.result : result;
     return {
       ...result,
       exportIdentifier: record.id,
+      paymentMode: 'manual_export',
+      complianceScreeningId: compliance.screeningId,
       paymentId: record.id,
       fileName: record.result && record.result.fileName,
       journalEntryId: record.journalEntryId || null,
@@ -439,7 +505,7 @@ class CanonicalConsensusEngine {
         return ProgrammableMoneyEngine.activateFromProposal(payload && payload.programId);
       }
       case 'vendor_bill':
-        return this._executeVendorBill(payload || {});
+        return this._executeVendorBill(payload || {}, proposal.id);
       case 'custom':
         return { status: 'approved', message: 'Custom proposal approved, no automatic execution configured', payload };
       default:

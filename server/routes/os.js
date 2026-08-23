@@ -45,6 +45,10 @@ const {
 const router = express.Router();
 const operatorAuth = requireAuth({ role: 'operator' });
 const adminAuth = requireAuth({ role: 'admin' });
+const APPROVAL_GATED_ACTIONS = {
+  melio: new Set(['schedulePayment', 'exportPayment', 'exportBatch', 'markPaid', 'settle']),
+  nickel: new Set(['payBill', 'submitInvoice', 'settlePayment', 'settle']),
+};
 
 const ENGINES = {
   bank: BankEngine,
@@ -145,6 +149,12 @@ router.get('/:engine/get/:eventId', operatorAuth, getEngine, async (req, res) =>
 router.post('/:engine/process', adminAuth, writeRateLimiter(), getEngine, async (req, res) => {
   try {
     const payload = req.body || {};
+    if (APPROVAL_GATED_ACTIONS[req.params.engine]?.has(payload.action)) {
+      return res.status(409).json({
+        success: false,
+        error: 'Vendor bill payments must use the authenticated maker-checker workflow',
+      });
+    }
     const data = await req.osEngine.process(payload);
     res.json({ success: true, data });
   } catch (err) { sendError(res, err); }

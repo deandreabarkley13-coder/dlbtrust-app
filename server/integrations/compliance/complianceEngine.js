@@ -13,6 +13,13 @@
 let pool;
 try { pool = require('../bonds/pgPool'); } catch (e) { pool = null; }
 
+let OfacSanctionsListEngine;
+try {
+  ({ OfacSanctionsListEngine } = require('./ofacSanctionsListEngine'));
+} catch (e) {
+  OfacSanctionsListEngine = null;
+}
+
 function generateId() {
   return `COMP-${Date.now()}-${Math.random().toString(36).slice(2, 8).toUpperCase()}`;
 }
@@ -25,10 +32,23 @@ const HIGH_RISK_COUNTRIES = new Set([
   'AF','BY','CF','CU','IR','IQ','KP','LY','MM','NI','RU','SO','SS','SD','SY','VE','YE','ZW'
 ]);
 
-const SANCTIONED_LIST = (process.env.COMPLIANCE_SANCTIONED_NAMES || '')
-  .split(',')
-  .map(s => s.trim().toLowerCase())
-  .filter(Boolean);
+function configuredSanctionedNames() {
+  return (process.env.COMPLIANCE_SANCTIONED_NAMES || '')
+    .split(',')
+    .map(s => s.trim().toLowerCase())
+    .filter(Boolean);
+}
+
+function providerName() {
+  return String(process.env.COMPLIANCE_PROVIDER || 'local').trim().toLowerCase();
+}
+
+function complianceUnavailable(message) {
+  const error = new Error(message);
+  error.status = 503;
+  error.code = 'COMPLIANCE_UNAVAILABLE';
+  return error;
+}
 
 class ComplianceEngine {
   static async ensureTables() {
@@ -63,6 +83,29 @@ class ComplianceEngine {
     `);
     await pool.query(`CREATE INDEX IF NOT EXISTS idx_compliance_status ON compliance_screenings(status)`);
     await pool.query(`CREATE INDEX IF NOT EXISTS idx_compliance_name ON compliance_screenings USING gin(to_tsvector('english', COALESCE(full_name,'') || ' ' || COALESCE(business_name,'')))`);
+    if (OfacSanctionsListEngine) await OfacSanctionsListEngine.ensureTables();
+  }
+
+  static async initialize() {
+    await this.ensureTables();
+    if (
+      OfacSanctionsListEngine
+      && providerName() === 'ofac'
+      && process.env.COMPLIANCE_OFAC_AUTO_REFRESH !== 'false'
+    ) {
+      await OfacSanctionsListEngine.refreshIfStale();
+      const intervalHours = Number.parseInt(
+        process.env.COMPLIANCE_OFAC_REFRESH_INTERVAL_HOURS || '12',
+        10
+      );
+      if (Number.isFinite(intervalHours) && intervalHours > 0 && !this._refreshTimer) {
+        this._refreshTimer = setInterval(() => {
+          OfacSanctionsListEngine.refreshIfStale()
+            .catch((error) => console.error('[compliance] OFAC refresh failed:', error.message));
+        }, intervalHours * 3600000);
+        if (typeof this._refreshTimer.unref === 'function') this._refreshTimer.unref();
+      }
+    }
   }
 
   static normalizeName(name) {
@@ -99,7 +142,7 @@ class ComplianceEngine {
     return dist <= Math.min(3, Math.floor(Math.max(a.length, b.length) * 0.2));
   }
 
-  static scoreScreening(data) {
+  static scoreScreening(data, sanctionsMatch) {
     const findings = [];
     let score = 0;
     const amountCents = toCents(data.amount);
@@ -117,13 +160,16 @@ class ComplianceEngine {
       findings.push({ rule: 'elevated_amount', message: 'Amount exceeds $100,000' });
     }
 
-    const nameToCheck = data.fullName || data.businessName || '';
-    for (const sanctioned of SANCTIONED_LIST) {
-      if (this.fuzzyNameMatch(nameToCheck, sanctioned)) {
-        score += 100;
-        findings.push({ rule: 'sanctions_match', message: `Name matches sanctioned entry: ${sanctioned}` });
-        break;
-      }
+    if (sanctionsMatch) {
+      const exact = Number(sanctionsMatch.similarity || 0) === 1;
+      score += exact ? 100 : 70;
+      findings.push({
+        rule: exact ? 'sanctions_exact_match' : 'sanctions_potential_match',
+        message: `${exact ? 'Exact' : 'Potential'} OFAC match: ${sanctionsMatch.name}`,
+        source: sanctionsMatch.sourceFile || 'configured-list',
+        entryUid: sanctionsMatch.entryUid || null,
+        similarity: sanctionsMatch.similarity || null,
+      });
     }
 
     if (!data.fullName && !data.businessName) {
@@ -153,6 +199,89 @@ class ComplianceEngine {
     return { score, level, status, findings };
   }
 
+  static async readiness() {
+    const provider = providerName();
+    const issues = [];
+    let providerStatus;
+    if (provider === 'ofac') {
+      if (!OfacSanctionsListEngine) {
+        providerStatus = {
+          ready: false,
+          provider,
+          entryCount: 0,
+          issues: ['OFAC sanctions list engine is not available'],
+        };
+      } else {
+        providerStatus = await OfacSanctionsListEngine.readiness();
+      }
+    } else if (provider === 'local') {
+      const entryCount = configuredSanctionedNames().length;
+      const productionUnsafe = process.env.NODE_ENV === 'production';
+      providerStatus = {
+        ready: !productionUnsafe && process.env.COMPLIANCE_ALLOW_LOCAL_SCREENING === 'true' && entryCount > 0,
+        provider,
+        source: 'COMPLIANCE_SANCTIONED_NAMES',
+        entryCount,
+        issues: [],
+      };
+      if (productionUnsafe) providerStatus.issues.push('Local sanctions screening cannot authorize production payments');
+      if (process.env.COMPLIANCE_ALLOW_LOCAL_SCREENING !== 'true') {
+        providerStatus.issues.push('COMPLIANCE_ALLOW_LOCAL_SCREENING is not enabled');
+      }
+      if (entryCount <= 0) providerStatus.issues.push('COMPLIANCE_SANCTIONED_NAMES is empty');
+    } else {
+      providerStatus = {
+        ready: false,
+        provider,
+        entryCount: 0,
+        issues: [`Unsupported compliance provider: ${provider}`],
+      };
+    }
+    issues.push(...(providerStatus.issues || []));
+    return {
+      ready: providerStatus.ready && issues.length === 0,
+      engineAvailable: true,
+      provider,
+      providerStatus,
+      sanctionedCount: providerStatus.entryCount || 0,
+      issues,
+      timestamp: new Date().toISOString(),
+    };
+  }
+
+  static async assertPaymentReady() {
+    const status = await this.readiness();
+    if (!status.ready) {
+      throw complianceUnavailable(
+        `Compliance provider is not ready: ${status.issues.join('; ') || 'unknown readiness failure'}`
+      );
+    }
+    return status;
+  }
+
+  static async _sanctionsMatch(name, provider) {
+    if (!name) return null;
+    if (provider === 'ofac') {
+      if (!OfacSanctionsListEngine) throw complianceUnavailable('OFAC sanctions list engine is not available');
+      const status = await OfacSanctionsListEngine.readiness();
+      if (!status.ready) {
+        throw complianceUnavailable(`OFAC sanctions list is not ready: ${status.issues.join('; ')}`);
+      }
+      return OfacSanctionsListEngine.screenName(name);
+    }
+    for (const sanctioned of configuredSanctionedNames()) {
+      if (this.fuzzyNameMatch(name, sanctioned)) {
+        return {
+          name: sanctioned,
+          entryUid: `configured:${sanctioned}`,
+          sourceFile: 'COMPLIANCE_SANCTIONED_NAMES',
+          similarity: this.normalizeName(name) === this.normalizeName(sanctioned) ? 1 : 0.9,
+        };
+      }
+    }
+    return null;
+  }
+
   static async screen({
     type = 'combined',
     entityType = 'individual',
@@ -167,29 +296,54 @@ class ComplianceEngine {
     country,
     dateOfBirth,
     amount,
-    provider = process.env.COMPLIANCE_PROVIDER || 'local',
+    provider = providerName(),
     screenedBy = 'system',
     notes,
   } = {}) {
     await this.ensureTables();
     const screeningId = generateId();
+    provider = String(provider || providerName()).toLowerCase();
+    const nameToCheck = fullName || businessName || '';
+    const sanctionsMatch = await this._sanctionsMatch(nameToCheck, provider);
     const result = this.scoreScreening({
       fullName, businessName, email, country, amount
-    });
+    }, sanctionsMatch);
+    const providerResponse = {
+      provider,
+      sanctionsMatch: sanctionsMatch
+        ? {
+          entryUid: sanctionsMatch.entryUid,
+          name: sanctionsMatch.name,
+          sourceFile: sanctionsMatch.sourceFile,
+          similarity: sanctionsMatch.similarity,
+          isAlias: sanctionsMatch.isAlias,
+        }
+        : null,
+    };
 
     if (!pool) {
-      return { screening_id: screeningId, ...result, provider, created_at: new Date().toISOString() };
+      return {
+        screening_id: screeningId,
+        status: result.status,
+        risk_score: result.score,
+        risk_level: result.level,
+        findings: result.findings,
+        provider,
+        provider_response: providerResponse,
+        created_at: new Date().toISOString(),
+      };
     }
 
     await pool.query(
       `INSERT INTO compliance_screenings
-         (screening_id, type, status, entity_type, full_name, business_name, email, phone, address, identification, bank_account, routing_number, country, date_of_birth, risk_score, risk_level, findings, provider, screened_by, notes)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20)`,
+         (screening_id, type, status, entity_type, full_name, business_name, email, phone, address, identification, bank_account, routing_number, country, date_of_birth, risk_score, risk_level, findings, provider, provider_response, screened_by, notes)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21)`,
       [screeningId, type, result.status, entityType, fullName || null, businessName || null, email || null, phone || null,
        address ? JSON.stringify(address) : null,
        identification ? JSON.stringify(identification) : null,
        bankAccount || null, routingNumber || null, country || null, dateOfBirth || null,
-       result.score, result.level, JSON.stringify(result.findings), provider, screenedBy, notes || null]
+       result.score, result.level, JSON.stringify(result.findings), provider,
+       JSON.stringify(providerResponse), screenedBy, notes || null]
     );
 
     return this.getScreening(screeningId);
@@ -232,7 +386,7 @@ class ComplianceEngine {
     return this.updateStatus(screeningId, { status: 'blocked', notes, reviewedBy });
   }
 
-  static async screenRecipientForPayout(recipient = {}, amount, sourceAccountId) {
+  static async screenRecipientForPayout(recipient = {}, amount, sourceAccountId, options = {}) {
     return this.screen({
       type: 'combined',
       entityType: recipient.businessName ? 'business' : 'individual',
@@ -245,15 +399,26 @@ class ComplianceEngine {
       routingNumber: recipient.routingNumber || recipient.routing,
       country: recipient.country || 'US',
       amount,
-      notes: `Source account: ${sourceAccountId || 'unknown'}`,
+      screenedBy: options.screenedBy || 'system',
+      notes: [
+        `Source account: ${sourceAccountId || 'unknown'}`,
+        options.notes,
+      ].filter(Boolean).join('; '),
     });
   }
 
   static mustPass(screening) {
-    if (!screening) throw new Error('Compliance screening required before payout');
-    if (screening.status === 'blocked') throw new Error(`Compliance blocked: risk level ${screening.risk_level}`);
-    if (screening.status === 'review') throw new Error(`Compliance review required: risk level ${screening.risk_level}`);
-    if (screening.status !== 'clear') throw new Error(`Compliance status is ${screening.status}`);
+    let message;
+    if (!screening) message = 'Compliance screening required before payout';
+    else if (screening.status === 'blocked') message = `Compliance blocked: risk level ${screening.risk_level}`;
+    else if (screening.status === 'review') message = `Compliance review required: risk level ${screening.risk_level}`;
+    else if (screening.status !== 'clear') message = `Compliance status is ${screening.status || 'missing'}`;
+    if (message) {
+      const error = new Error(message);
+      error.status = 422;
+      error.code = 'COMPLIANCE_GATE_BLOCKED';
+      throw error;
+    }
     return true;
   }
 }

@@ -11,7 +11,7 @@
 
 require('dotenv').config();
 const fs = require('fs');
-const { MelioEngine } = require('../integrations/os/osEngine');
+const { CanonicalConsensusEngine } = require('../integrations/dapp/canonicalConsensusEngine');
 
 function parseArgs(argv) {
   const args = {};
@@ -46,11 +46,16 @@ function readPayables(args) {
 async function main() {
   const args = parseArgs(process.argv);
   const payables = readPayables(args);
-  console.log(`Generating Melio CSV batch export for ${payables.length} payable(s)...`);
-  const response = await MelioEngine.process({
-    action: 'exportBatch',
-    payables,
-    batchId: args.batchId,
+  console.log(`Creating a maker-checker proposal for ${payables.length} payable(s)...`);
+  const response = await CanonicalConsensusEngine.createProposal({
+    title: args.title || 'Melio vendor bill batch',
+    description: args.description,
+    category: 'vendor_bill',
+    createdBy: args.createdBy || 'send-melio-csv-batch',
+    payload: {
+      payables,
+      batchId: args.batchId,
+    },
   });
   console.log(JSON.stringify(response, null, 2));
 }

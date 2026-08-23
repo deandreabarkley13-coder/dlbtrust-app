@@ -8,6 +8,7 @@
  */
 
 const pool = require('../bonds/pgPool');
+const { PaymentComplianceGate } = require('../compliance/paymentComplianceGate');
 
 let BankTransferEngine, OpenBankingEngine, WireOriginationEngine;
 function loadDeps() {
@@ -81,6 +82,8 @@ class VendorPaymentEngine {
     `);
     await pool.query(`CREATE INDEX IF NOT EXISTS idx_vendor_bills_status ON vendor_bills(status)`);
     await pool.query(`CREATE INDEX IF NOT EXISTS idx_vendor_payment_runs_status ON vendor_payment_runs(status)`);
+    await pool.query('ALTER TABLE vendor_bills ADD COLUMN IF NOT EXISTS compliance_screening_id TEXT');
+    await pool.query('ALTER TABLE vendor_payment_runs ADD COLUMN IF NOT EXISTS compliance_screening_id TEXT');
   }
 
   static async createVendor({ name, email, phone, accountNumber, routingNumber, bankName, accountType = 'checking', country = 'US', address, metadata } = {}) {
@@ -139,9 +142,49 @@ class VendorPaymentEngine {
     return result.rows;
   }
 
-  static async payBill({ billId, sourceCashAccountId, rail = 'bank_transfer', webPaymentAdapter = 'generic', openBankingConnector = 'generic_rest', memo, initiatedBy = 'system' } = {}) {
+  static async getBill(billId) {
+    await this.ensureTables();
+    const result = await pool.query('SELECT * FROM vendor_bills WHERE bill_id = $1', [billId]);
+    return result.rows[0] || null;
+  }
+
+  static async _assertConsensusApproval(billId, consensusProposalId) {
+    if (!consensusProposalId) {
+      throw new Error('Vendor bill payment requires an approved maker-checker proposal');
+    }
+    const result = await pool.query(
+      `SELECT category, status, payload, approvals
+       FROM canonical_proposals
+       WHERE id = $1`,
+      [consensusProposalId]
+    );
+    const proposal = result.rows[0];
+    if (!proposal || proposal.category !== 'vendor_bill' || proposal.status !== 'approved') {
+      throw new Error('Vendor bill payment requires an approved maker-checker proposal');
+    }
+    const payload = typeof proposal.payload === 'string'
+      ? JSON.parse(proposal.payload || '{}')
+      : (proposal.payload || {});
+    if (String(payload.vendorPaymentBillId || '') !== String(billId)) {
+      throw new Error('Maker-checker proposal does not authorize this vendor bill');
+    }
+    const approvals = Array.isArray(proposal.approvals)
+      ? proposal.approvals
+      : JSON.parse(proposal.approvals || '[]');
+    const roles = new Set(
+      approvals
+        .filter((approval) => approval.status === 'approved')
+        .map((approval) => String(approval.role || '').toLowerCase())
+    );
+    if (!roles.has('maker') || !roles.has('checker')) {
+      throw new Error('Vendor bill payment requires maker and checker approvals');
+    }
+  }
+
+  static async payBill({ billId, consensusProposalId, sourceCashAccountId, rail = 'bank_transfer', webPaymentAdapter = 'generic', openBankingConnector = 'generic_rest', memo, initiatedBy = 'system' } = {}) {
     if (!billId) throw new Error('billId required');
     await this.ensureTables();
+    await this._assertConsensusApproval(billId, consensusProposalId);
     const billRes = await pool.query(`SELECT * FROM vendor_bills WHERE bill_id = $1`, [billId]);
     const bill = billRes.rows[0];
     if (!bill) throw new Error(`Bill not found: ${billId}`);
@@ -149,6 +192,16 @@ class VendorPaymentEngine {
     if (bill.status === 'cancelled') throw new Error('Bill cancelled');
     const vendor = await this.getVendor(bill.vendor_id);
     if (!vendor) throw new Error(`Vendor not found: ${bill.vendor_id}`);
+
+    const compliance = await PaymentComplianceGate.screenVendorPayment({
+      vendor,
+      amount: bill.amount_cents / 100,
+      sourceAccountId: sourceCashAccountId,
+      rail,
+      action: 'execute',
+      screenedBy: initiatedBy,
+      reference: billId,
+    });
 
     const runId = generateId('VPAY');
     let transfer = null;
@@ -177,7 +230,7 @@ class VendorPaymentEngine {
     } else if (rail === 'wire' && WireOriginationEngine) {
       transfer = await WireOriginationEngine.createPayout({
         sourceType: 'cash',
-        sourceAccountId,
+        sourceAccountId: sourceCashAccountId,
         amount: bill.amount_cents / 100,
         beneficiaryName: vendor.name,
         beneficiaryRouting: vendor.routing_number,
@@ -203,15 +256,15 @@ class VendorPaymentEngine {
     }
 
     await pool.query(
-      `INSERT INTO vendor_payment_runs (run_id, bill_id, vendor_id, amount_cents, rail, source_cash_account_id, transfer_id, payment_id, status, memo, metadata)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
-      [runId, billId, bill.vendor_id, bill.amount_cents, rail, sourceCashAccountId || null, transfer ? (transfer.transfer_id || transfer.payout_id) : null, payment ? payment.paymentId : null, status, memo || bill.memo || `Vendor payment ${runId}`, JSON.stringify({ vendor, transfer, payment })]
+      `INSERT INTO vendor_payment_runs (run_id, bill_id, vendor_id, amount_cents, rail, source_cash_account_id, transfer_id, payment_id, status, memo, metadata, compliance_screening_id)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)`,
+      [runId, billId, bill.vendor_id, bill.amount_cents, rail, sourceCashAccountId || null, transfer ? (transfer.transfer_id || transfer.payout_id) : null, payment ? payment.paymentId : null, status, memo || bill.memo || `Vendor payment ${runId}`, JSON.stringify({ vendor, transfer, payment, compliance }), compliance.screeningId]
     );
 
-    await pool.query(`UPDATE vendor_bills SET status = $1, payment_id = $2, transfer_id = $3, updated_at = NOW() WHERE bill_id = $4`,
-      [status === 'completed' ? 'paid' : (status === 'failed' ? 'failed' : 'pending'), payment ? payment.paymentId : null, transfer ? (transfer.transfer_id || transfer.payout_id) : null, billId]);
+    await pool.query(`UPDATE vendor_bills SET status = $1, payment_id = $2, transfer_id = $3, compliance_screening_id = $4, updated_at = NOW() WHERE bill_id = $5`,
+      [status === 'completed' ? 'paid' : (status === 'failed' ? 'failed' : 'pending'), payment ? payment.paymentId : null, transfer ? (transfer.transfer_id || transfer.payout_id) : null, compliance.screeningId, billId]);
 
-    return { runId, billId, status, transfer, payment };
+    return { runId, billId, status, transfer, payment, compliance };
   }
 
   static async listPaymentRuns({ billId, vendorId, status, limit = 100 } = {}) {

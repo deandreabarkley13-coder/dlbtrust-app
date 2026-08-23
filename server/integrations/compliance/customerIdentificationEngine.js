@@ -110,7 +110,6 @@ class CustomerIdentificationEngine {
         country: address && address.country,
         dateOfBirth,
         amount: 0,
-        provider: idVerificationProvider || 'local',
         screenedBy,
         notes: `CIP record ${recordId}`,
       });
@@ -203,6 +202,9 @@ class CustomerIdentificationEngine {
     if (record.kyc_status === 'blocked') throw new Error(`CIP blocked: ${record.risk_level} (${record.risk_score})`);
     if (record.kyc_status === 'review') throw new Error(`CIP review required: ${record.risk_level} (${record.risk_score})`);
     if (record.kyc_status !== 'clear') throw new Error(`CIP status is ${record.kyc_status}`);
+    if (!record.id_verification_provider || !record.id_verification_reference) {
+      throw new Error('CIP identity verification provider and reference are required');
+    }
     return true;
   }
 

@@ -501,9 +501,17 @@ async function initializeDatabase() {
 
   try {
     var ComplianceEngine = require(path.join(HD, 'server', 'integrations', 'compliance', 'complianceEngine')).ComplianceEngine;
-    await ComplianceEngine.ensureTables();
-    console.log('[compliance] tables ensured');
-  } catch(e) { console.warn('[compliance] table init:', e.message); }
+    await ComplianceEngine.initialize();
+    var complianceReadiness = await ComplianceEngine.readiness();
+    console.log('[compliance] initialized:', JSON.stringify({
+      ready: complianceReadiness.ready,
+      provider: complianceReadiness.provider,
+      sanctionedCount: complianceReadiness.sanctionedCount,
+      issues: complianceReadiness.issues,
+    }));
+  } catch(e) {
+    console.warn('[compliance] initialization failed; payment execution will remain blocked:', e.message);
+  }
 
   try {
     var TrusteeAgent = require(path.join(HD, 'server', 'integrations', 'agents', 'trusteeAgent')).TrusteeAgent;

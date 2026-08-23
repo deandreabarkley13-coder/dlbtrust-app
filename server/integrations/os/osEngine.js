@@ -461,11 +461,26 @@ class ComplianceEngine extends BaseOSEngine {
 
   static async status() {
     const Compliance = tryRequire('../compliance/complianceEngine')?.ComplianceEngine;
+    if (Compliance) {
+      const readiness = await Compliance.readiness();
+      return {
+        engine: 'compliance',
+        healthy: readiness.ready,
+        mode: readiness.provider,
+        ready: readiness.ready,
+        sanctionedCount: readiness.sanctionedCount,
+        providerStatus: readiness.providerStatus,
+        issues: readiness.issues,
+        timestamp: new Date().toISOString(),
+      };
+    }
     return {
       engine: 'compliance',
-      healthy: true,
-      mode: Compliance ? 'ready' : 'shadow',
-      sanctionedCount: (process.env.COMPLIANCE_SANCTIONED_NAMES || '').split(',').filter(Boolean).length,
+      healthy: false,
+      mode: 'unavailable',
+      ready: false,
+      sanctionedCount: 0,
+      issues: ['ComplianceEngine not available'],
       timestamp: new Date().toISOString(),
     };
   }
@@ -3817,6 +3832,32 @@ class MelioEngine extends BaseOSEngine {
     };
   }
 
+  static async _compliancePayload(payload, action) {
+    const { PaymentComplianceGate } = require('../compliance/paymentComplianceGate');
+    const metadata = payload.metadata || {};
+    const existingScreeningId = metadata.complianceScreeningId || metadata.compliance_screening_id;
+    if (existingScreeningId) {
+      await PaymentComplianceGate.verifyRecordedScreening(existingScreeningId);
+      return payload;
+    }
+    const compliance = await PaymentComplianceGate.screenVendorPayment({
+      vendor: payload.vendor || payload.payee,
+      amount: payload.amount,
+      sourceAccountId: payload.sourceAccountId || payload.source_account_id,
+      rail: 'melio',
+      action,
+      screenedBy: payload.screenedBy || payload.screened_by || 'melio-engine',
+      reference: payload.billId || payload.bill_id || payload.invoiceNumber || payload.invoice_number,
+    });
+    return {
+      ...payload,
+      metadata: {
+        ...metadata,
+        complianceScreeningId: compliance.screeningId,
+      },
+    };
+  }
+
   static _csvEscape(value) {
     if (value === null || value === undefined) return '';
     const str = String(value).replace(/"/g, '""');
@@ -4084,6 +4125,13 @@ class MelioEngine extends BaseOSEngine {
     if (existingJournalId) {
       return { ...record, status: 'paid', settlementJournalEntryId: existingJournalId, alreadySettled: true };
     }
+    const { PaymentComplianceGate } = require('../compliance/paymentComplianceGate');
+    const recordMetadata = record.metadata || {};
+    await PaymentComplianceGate.verifyRecordedScreening(
+      recordMetadata.complianceScreeningId
+        || recordMetadata.compliance_screening_id
+        || recordMetadata.payload?.metadata?.complianceScreeningId
+    );
 
     const deps = this._deps();
     const TrustAccounting = deps.TrustAcct;
@@ -4204,6 +4252,7 @@ class MelioEngine extends BaseOSEngine {
 
   static async _schedulePayment(payload) {
     const cfg = this._cfg();
+    payload = await this._compliancePayload(payload, 'execute');
     const p = this._payloadDefaults(payload);
     const client = cfg.useApi ? this._client() : null;
     if (!client) {
@@ -4442,6 +4491,7 @@ class MelioEngine extends BaseOSEngine {
 
   static async exportPayment(payload) {
     const cfg = this._cfg();
+    payload = await this._compliancePayload(payload, 'export');
     const p = this._payloadDefaults(payload);
     const amountCents = toCents(p.amount);
     const sourceInfo = await this._sourceBalance(p.sourceType, p.sourceAccountId);
@@ -4476,7 +4526,10 @@ class MelioEngine extends BaseOSEngine {
         };
       })
       : payables;
-    const { entries, outcomes } = this._validateBatchRows(payablesWithSources, now);
+    const screenedPayables = Array.isArray(payablesWithSources)
+      ? await Promise.all(payablesWithSources.map((payable) => this._compliancePayload(payable, 'export')))
+      : payablesWithSources;
+    const { entries, outcomes } = this._validateBatchRows(screenedPayables, now);
 
     const balances = new Map();
     const sourceInfos = new Map();
@@ -6517,9 +6570,42 @@ ${record.settlementJournalEntryId ? `Settlement journal: ${record.settlementJour
     return { notified: true, results };
   }
 
+  static async _compliancePayload(payload, action = 'execute') {
+    const { PaymentComplianceGate } = require('../compliance/paymentComplianceGate');
+    const metadata = payload.metadata || {};
+    const existingScreeningId = metadata.complianceScreeningId || metadata.compliance_screening_id;
+    if (existingScreeningId) {
+      await PaymentComplianceGate.verifyRecordedScreening(existingScreeningId);
+      return payload;
+    }
+    const compliance = await PaymentComplianceGate.screenVendorPayment({
+      vendor: payload.vendor || payload.payee,
+      amount: payload.amount,
+      sourceAccountId: payload.sourceAccountId || payload.source_account_id,
+      rail: 'nickel',
+      action,
+      screenedBy: payload.screenedBy || payload.screened_by || 'nickel-engine',
+      reference: payload.invoiceNumber || payload.billNumber,
+    });
+    return {
+      ...payload,
+      metadata: {
+        ...metadata,
+        complianceScreeningId: compliance.screeningId,
+      },
+    };
+  }
+
   static async _settlePayment(record, payload = {}) {
     const cfg = this._cfg();
     if (record.status === 'settled') return record;
+    const { PaymentComplianceGate } = require('../compliance/paymentComplianceGate');
+    const recordMetadata = record.metadata || {};
+    await PaymentComplianceGate.verifyRecordedScreening(
+      recordMetadata.complianceScreeningId
+        || recordMetadata.compliance_screening_id
+        || recordMetadata.payload?.metadata?.complianceScreeningId
+    );
 
     if (!cfg.shadow && record.billPaymentId && record.status !== 'completed') {
       const bp = await this._getBillPayment(record.billPaymentId);
@@ -6552,6 +6638,7 @@ ${record.settlementJournalEntryId ? `Settlement journal: ${record.settlementJour
 
   static async _submitInvoice(payload) {
     const cfg = this._cfg();
+    payload = await this._compliancePayload(payload);
     const p = this._payloadDefaults(payload);
     const record = {
       id: id('NIC-'),
@@ -6565,7 +6652,10 @@ ${record.settlementJournalEntryId ? `Settlement journal: ${record.settlementJour
       payablesGlAccount: cfg.payablesGlAccount,
       result: {},
       instructions: this._redactPayload({ vendor: p.vendor, billNumber: p.billNumber, dueDate: p.dueDate, reason: p.reason, memo: p.memo }),
-      metadata: { payload: this._redactPayload(payload) },
+      metadata: {
+        complianceScreeningId: payload.metadata.complianceScreeningId,
+        payload: this._redactPayload(payload),
+      },
     };
     try {
       let vendor;
