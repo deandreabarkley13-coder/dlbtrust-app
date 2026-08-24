@@ -21,6 +21,8 @@ const originalEnvironment = {
 
 afterEach(() => {
   vi.restoreAllMocks();
+  OfacSanctionsListEngine._cache = null;
+  OfacSanctionsListEngine._cacheVersion = null;
   for (const [key, value] of Object.entries(originalEnvironment)) {
     if (value === undefined) delete process.env[key];
     else process.env[key] = value;
@@ -264,6 +266,72 @@ describe('OFAC sanctions readiness', () => {
     await expect(OfacSanctionsListEngine.refreshIfStale())
       .resolves.toMatchObject({ ready: true, entryCount: 5000 });
     expect(refresh).toHaveBeenCalledOnce();
+  });
+
+  it('reloads cached sanctions entries after an external refresh', async () => {
+    vi.spyOn(OfacSanctionsListEngine, 'ensureTables').mockResolvedValue(undefined);
+    let refreshedAt = new Date('2026-08-22T00:00:00.000Z');
+    let entries = [{
+      list_key: 'sdn-primary',
+      entry_uid: 'old',
+      name: 'OLD ENTRY',
+      normalized_name: 'old entry',
+      source_file: 'SDN.CSV',
+      is_alias: false,
+      alias_type: null,
+    }];
+    vi.spyOn(pool, 'query').mockImplementation(async (sql) => {
+      if (String(sql).includes('COUNT(*)::integer AS list_count')) {
+        return {
+          rows: [{
+            list_count: 4,
+            entry_count: 1,
+            oldest_refresh: refreshedAt,
+            newest_refresh: refreshedAt,
+          }],
+        };
+      }
+      if (String(sql).includes('FROM compliance_sanctions_entries')) {
+        return { rows: entries };
+      }
+      throw new Error(`Unexpected query: ${sql}`);
+    });
+
+    await expect(OfacSanctionsListEngine._loadCache())
+      .resolves.toEqual([expect.objectContaining({ entryUid: 'old' })]);
+
+    refreshedAt = new Date('2026-08-22T01:00:00.000Z');
+    entries = [{
+      ...entries[0],
+      entry_uid: 'new',
+      name: 'NEWLY SANCTIONED ENTITY',
+      normalized_name: 'newly sanctioned entity',
+    }];
+
+    await expect(OfacSanctionsListEngine._loadCache())
+      .resolves.toEqual([expect.objectContaining({ entryUid: 'new' })]);
+  });
+
+  it('flags longer legal names and reordered sanctioned names for review', () => {
+    expect(OfacSanctionsListEngine._similarity(
+      'sberbank of russia pjsc',
+      'sberbank',
+    )).toBeGreaterThanOrEqual(0.88);
+    expect(OfacSanctionsListEngine._similarity(
+      'russia sberbank pjsc',
+      'sberbank russia',
+    )).toBeGreaterThanOrEqual(0.88);
+    expect(OfacSanctionsListEngine._similarity(
+      'russia sberbank',
+      'sberbank russia',
+    )).toBe(0.96);
+  });
+
+  it('does not treat partial words as sanctioned-name containment', () => {
+    expect(OfacSanctionsListEngine._similarity(
+      'sberbanking technology services',
+      'sberbank',
+    )).toBeLessThan(0.88);
   });
 
   it('exposes authenticated readiness and refresh operations plus a refresh script', () => {
