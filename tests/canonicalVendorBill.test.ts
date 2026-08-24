@@ -4,6 +4,7 @@ import { createRequire } from 'module';
 const require = createRequire(import.meta.url);
 const { CanonicalConsensusEngine } = require('../server/integrations/dapp/canonicalConsensusEngine');
 const { MelioEngine } = require('../server/integrations/os/osEngine');
+const { PaymentComplianceGate } = require('../server/integrations/compliance/paymentComplianceGate');
 const { getTrusteeByRole } = require('../server/integrations/dapp/trustees');
 
 const maker = getTrusteeByRole('maker');
@@ -160,6 +161,10 @@ describe('canonical vendor bill consensus', () => {
   });
 
   it('executes after distinct maker and checker approvals and returns Melio identifiers', async () => {
+    vi.spyOn(PaymentComplianceGate, 'screenVendorPayment').mockResolvedValue({
+      screeningId: 'COMP-CANONICAL-1',
+      status: 'clear',
+    });
     const melioResult = {
       id: 'MEL-CANONICAL-1',
       status: 'exported',
@@ -173,9 +178,15 @@ describe('canonical vendor bill consensus', () => {
 
     const result = await CanonicalConsensusEngine._executeVendorBill(validBill);
 
-    expect(process).toHaveBeenCalledWith({ action: 'exportPayment', ...validBill });
+    expect(process).toHaveBeenCalledWith({
+      action: 'exportPayment',
+      ...validBill,
+      metadata: { complianceScreeningId: 'COMP-CANONICAL-1' },
+    });
     expect(result).toMatchObject({
       exportIdentifier: 'MEL-CANONICAL-1',
+      paymentMode: 'manual_export',
+      complianceScreeningId: 'COMP-CANONICAL-1',
       paymentId: 'MEL-CANONICAL-1',
       fileName: 'melio-export-MEL-CANONICAL-1.csv',
       journalEntryId: 'JE-CANONICAL-1',
@@ -184,6 +195,9 @@ describe('canonical vendor bill consensus', () => {
   });
 
   it('delegates multi-bill payloads to the Melio batch exporter', async () => {
+    vi.spyOn(PaymentComplianceGate, 'screenVendorPayment')
+      .mockResolvedValueOnce({ screeningId: 'COMP-BATCH-1', status: 'clear' })
+      .mockResolvedValueOnce({ screeningId: 'COMP-BATCH-2', status: 'clear' });
     const batch = {
       batchId: 'MEL-BATCH-CANONICAL',
       files: [{ fileName: 'melio-export-MEL-BATCH-CANONICAL.csv' }],
@@ -212,10 +226,15 @@ describe('canonical vendor bill consensus', () => {
     expect(process).toHaveBeenCalledWith({
       action: 'exportBatch',
       ...payload,
-      payables: payload.payables,
+      payables: [
+        { ...payload.payables[0], metadata: { complianceScreeningId: 'COMP-BATCH-1' } },
+        { ...payload.payables[1], metadata: { complianceScreeningId: 'COMP-BATCH-2' } },
+      ],
     });
     expect(result).toMatchObject({
       exportIdentifier: 'MEL-BATCH-CANONICAL',
+      paymentMode: 'manual_export',
+      complianceScreeningIds: ['COMP-BATCH-1', 'COMP-BATCH-2'],
       fileNames: ['melio-export-MEL-BATCH-CANONICAL.csv'],
       paymentIds: ['MEL-ROW-1', 'MEL-ROW-2'],
       journalEntryIds: ['JE-ROW-1', 'JE-ROW-2'],

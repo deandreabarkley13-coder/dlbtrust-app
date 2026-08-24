@@ -95,28 +95,9 @@ async function main() {
   console.log(`Payment: ${paymentId}`);
 
   if (a.process || a.settle) {
-    console.log('Processing payment (approve + export CSV)...');
-    const processed = await VendorEngine.processPayment(paymentId, { approvedBy: 'system', executedBy: 'system' });
-    console.log(JSON.stringify(processed, null, 2));
-
-    if (a.settle) {
-      console.log('Settling payment and sending notifications...');
-      const settled = await VendorEngine.settleMelioPayment(paymentId, {
-        settlementReference: a.settlementReference || `MELIO-SETTLE-${Date.now()}`,
-        settledBy: 'system',
-        buyerEmail: a.buyerEmail || process.env.TRUST_ADMIN_EMAIL,
-        sellerEmail: a.sellerEmail || vendor.contact_email,
-      });
-      console.log(JSON.stringify(settled, null, 2));
-    }
-  } else {
-    console.log('Approving payment...');
-    await VendorEngine.approvePayment(paymentId, 'system');
-
-    console.log('Executing Melio CSV export...');
-    const executed = await VendorEngine.executePayment(paymentId, 'system');
-    console.log(JSON.stringify(executed, null, 2));
+    throw new Error('This script cannot approve, execute, or settle payments; use the authenticated maker-checker workflow');
   }
+  console.log('Payment remains pending maker and checker approval.');
 }
 
 main().then(() => process.exit(0)).catch((err) => {

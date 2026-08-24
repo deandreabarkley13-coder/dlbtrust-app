@@ -15,6 +15,11 @@
 
 const pool = require('../bonds/pgPool');
 const { TrustAccountingEngine } = require('../accounting/trustAccountingEngine');
+const { PaymentComplianceGate } = require('../compliance/paymentComplianceGate');
+const {
+  getTrusteeByRole,
+  getTrusteeSignatureOfRecord,
+} = require('../dapp/trustees');
 let ACHEngine, WireEngine, billClient, EmailEngine;
 const fs = require('fs');
 const path = require('path');
@@ -34,6 +39,14 @@ const ACCOUNT_CODES = {
   FEES_PAYABLE: '2100',
   VENDOR_PAYABLE: '2000',
 };
+
+function normalizeSignature(value) {
+  return String(value || '')
+    .trim()
+    .replace(/[.,]/g, '')
+    .replace(/\s+/g, ' ')
+    .toLowerCase();
+}
 
 class VendorEngine {
 
@@ -142,8 +155,23 @@ class VendorEngine {
 
     await pool.query(`
       ALTER TABLE vendor_payments
-        ADD COLUMN IF NOT EXISTS settlement_reference TEXT
+        ADD COLUMN IF NOT EXISTS settlement_reference TEXT,
+        ADD COLUMN IF NOT EXISTS compliance_screening_id TEXT,
+        ADD COLUMN IF NOT EXISTS compliance_snapshot JSONB DEFAULT '{}'
     `);
+
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS vendor_payment_approvals (
+        id BIGSERIAL PRIMARY KEY,
+        payment_id TEXT NOT NULL,
+        role TEXT NOT NULL CHECK (role IN ('maker','checker')),
+        approver_email TEXT NOT NULL,
+        signature TEXT NOT NULL,
+        approved_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        UNIQUE (payment_id, role)
+      )
+    `);
+    await pool.query('CREATE INDEX IF NOT EXISTS idx_vendor_payment_approvals_payment ON vendor_payment_approvals(payment_id)');
 
     await pool.query(`
       CREATE TABLE IF NOT EXISTS cashflow_events (
@@ -349,13 +377,63 @@ class VendorEngine {
   //  PAYMENT APPROVAL
   // ═══════════════════════════════════════════════════════════════════════════
 
-  static async approvePayment(paymentId, approvedBy) {
-    const res = await pool.query(`
-      UPDATE vendor_payments SET status = 'approved', approved_by = $2, approved_at = NOW(), updated_at = NOW()
-      WHERE payment_id = $1 AND status = 'pending_approval' RETURNING *
-    `, [paymentId, approvedBy || 'admin']);
-    if (res.rowCount === 0) throw new Error('Payment not found or not pending approval');
-    return res.rows[0];
+  static async getPaymentApprovals(paymentId) {
+    const result = await pool.query(
+      `SELECT role, approver_email, signature, approved_at
+       FROM vendor_payment_approvals
+       WHERE payment_id = $1
+       ORDER BY approved_at`,
+      [paymentId]
+    );
+    return result.rows;
+  }
+
+  static async hasRequiredApprovals(paymentId) {
+    const approvals = await this.getPaymentApprovals(paymentId);
+    const roles = new Set(approvals.map((approval) => String(approval.role).toLowerCase()));
+    return roles.has('maker') && roles.has('checker');
+  }
+
+  static async approvePayment(paymentId, { role, approverEmail, signature } = {}) {
+    await this.ensureTables();
+    role = String(role || '').toLowerCase();
+    if (!['maker', 'checker'].includes(role)) {
+      throw new Error('Vendor payment approvals require maker or checker role');
+    }
+    const trustee = getTrusteeByRole(role);
+    if (!trustee || String(trustee.email).toLowerCase() !== String(approverEmail || '').toLowerCase()) {
+      throw new Error(`Vendor payment ${role} approval must use the canonical trustee identity`);
+    }
+    const signatureOfRecord = getTrusteeSignatureOfRecord(role);
+    if (!signature || !signatureOfRecord || normalizeSignature(signature) !== normalizeSignature(signatureOfRecord.legalName)) {
+      throw new Error(`Signature does not match the signature of record for ${role}`);
+    }
+
+    const payment = await this.getPayment(paymentId);
+    if (!payment || !['pending_approval', 'approved'].includes(payment.status)) {
+      throw new Error('Payment not found or not pending approval');
+    }
+    if (String(payment.initiated_by || '').toLowerCase() === String(approverEmail).toLowerCase()) {
+      throw new Error('The payment requester cannot approve the payment');
+    }
+
+    await pool.query(
+      `INSERT INTO vendor_payment_approvals (payment_id, role, approver_email, signature)
+       VALUES ($1,$2,$3,$4)
+       ON CONFLICT (payment_id, role) DO NOTHING`,
+      [paymentId, role, trustee.email, signature.trim()]
+    );
+    const approvals = await this.getPaymentApprovals(paymentId);
+    const roles = new Set(approvals.map((approval) => String(approval.role).toLowerCase()));
+    if (roles.has('maker') && roles.has('checker')) {
+      await pool.query(
+        `UPDATE vendor_payments
+         SET status = 'approved', approved_by = $2, approved_at = NOW(), updated_at = NOW()
+         WHERE payment_id = $1 AND status = 'pending_approval'`,
+        [paymentId, approvals.map((approval) => approval.approver_email).join(',')]
+      );
+    }
+    return this.getPayment(paymentId);
   }
 
   static async rejectPayment(paymentId, rejectedBy, reason) {
@@ -373,14 +451,34 @@ class VendorEngine {
   // ═══════════════════════════════════════════════════════════════════════════
 
   static async executePayment(paymentId, executedBy) {
+    await this.ensureTables();
     // Fetch payment + vendor
     const payRes = await pool.query(`SELECT * FROM vendor_payments WHERE payment_id = $1`, [paymentId]);
     if (payRes.rowCount === 0) throw new Error('Payment not found');
     const payment = payRes.rows[0];
     if (payment.status !== 'approved') throw new Error('Payment must be approved before execution');
+    if (!await this.hasRequiredApprovals(paymentId)) {
+      throw new Error('Vendor payment requires maker and checker approvals before execution');
+    }
 
     const vendor = await VendorEngine.getVendor(payment.vendor_id);
     if (!vendor) throw new Error('Vendor not found');
+
+    const compliance = await PaymentComplianceGate.screenVendorPayment({
+      vendor,
+      amount: parseFloat(payment.amount),
+      sourceAccountId: payment.source_account_code,
+      rail: payment.payment_method,
+      action: payment.payment_method === 'melio' ? 'export' : 'execute',
+      screenedBy: executedBy || 'system',
+      reference: paymentId,
+    });
+    await pool.query(
+      `UPDATE vendor_payments
+       SET compliance_screening_id = $2, compliance_snapshot = $3::jsonb, updated_at = NOW()
+       WHERE payment_id = $1`,
+      [paymentId, compliance.screeningId, JSON.stringify(compliance)]
+    );
 
     // Mark as processing
     await pool.query(`UPDATE vendor_payments SET status = 'processing', updated_at = NOW() WHERE payment_id = $1`, [paymentId]);
@@ -400,10 +498,10 @@ class VendorEngine {
           executionRef = await VendorEngine._executeBILL(payment, vendor);
           break;
         case 'melio':
-          executionRef = await VendorEngine._executeMelio(payment, vendor);
+          executionRef = await VendorEngine._executeMelio(payment, vendor, compliance);
           break;
         case 'nickel':
-          executionRef = await VendorEngine._executeNickel(payment, vendor);
+          executionRef = await VendorEngine._executeNickel(payment, vendor, compliance);
           break;
         default:
           throw new Error('Unknown payment method: ' + payment.payment_method);
@@ -468,8 +566,12 @@ class VendorEngine {
         payment_id: paymentId,
         status: 'executed',
         method: payment.payment_method,
+        payment_mode: payment.payment_method === 'melio'
+          ? 'manual_export'
+          : (process.env.VENDOR_PAYMENT_EXECUTION_MODE || 'configured'),
         amount: parseFloat(payment.amount),
         vendor: vendor.vendor_name,
+        compliance,
         ...executionRef,
         journal_entry: journalEntry ? (journalEntry.entry_id || journalEntry.id) : null,
       };
@@ -547,7 +649,7 @@ class VendorEngine {
 
   // ─── Melio CSV Execution ─────────────────────────────────────────────────
 
-  static async _executeMelio(payment, vendor) {
+  static async _executeMelio(payment, vendor, compliance) {
     let MelioEngine;
     try { ({ MelioEngine } = require('../os/osEngine')); } catch (e) { MelioEngine = null; }
     if (!MelioEngine) throw new Error('MelioEngine not available');
@@ -571,6 +673,9 @@ class VendorEngine {
       dueDate: payment.due_date || new Date().toISOString().slice(0, 10),
       billDate: payment.invoice_date || new Date().toISOString().slice(0, 10),
       memo: payment.description || `Vendor payment ${payment.payment_id}`,
+      metadata: {
+        complianceScreeningId: compliance.screeningId,
+      },
     });
 
     return {
@@ -584,7 +689,7 @@ class VendorEngine {
 
   // ─── Nickel MCP Execution ────────────────────────────────────────────────
 
-  static async _executeNickel(payment, vendor) {
+  static async _executeNickel(payment, vendor, compliance) {
     const { NickelMcpEngine } = require('../os/osEngine');
     if (!NickelMcpEngine) throw new Error('NickelMcpEngine not available');
 
@@ -612,6 +717,9 @@ class VendorEngine {
         process.env.TRUST_ADMIN_EMAIL,
         vendor.contact_email,
       ].filter(Boolean),
+      metadata: {
+        complianceScreeningId: compliance.screeningId,
+      },
     });
 
     const nickelResult = processResult.result || {};
@@ -650,7 +758,11 @@ class VendorEngine {
       FROM vendor_payments vp LEFT JOIN vendors v ON v.vendor_id = vp.vendor_id
       WHERE vp.payment_id = $1
     `, [paymentId]);
-    return res.rows[0] || null;
+    if (!res.rows[0]) return null;
+    return {
+      ...res.rows[0],
+      approvals: await this.getPaymentApprovals(paymentId),
+    };
   }
 
   // ═══════════════════════════════════════════════════════════════════════════
@@ -665,13 +777,12 @@ class VendorEngine {
     throw new Error(`No settle implementation for payment method: ${payment.payment_method}`);
   }
 
-  static async processPayment(paymentId, { approvedBy = 'system', executedBy = 'system' } = {}) {
-    let payment = await VendorEngine.getPayment(paymentId);
+  static async processPayment(paymentId, { executedBy = 'system' } = {}) {
+    const payment = await VendorEngine.getPayment(paymentId);
     if (!payment) throw new Error('Payment not found: ' + paymentId);
 
     if (payment.status === 'pending_approval') {
-      await VendorEngine.approvePayment(paymentId, approvedBy);
-      payment = await VendorEngine.getPayment(paymentId);
+      throw new Error('Vendor payment requires maker and checker approvals before processing');
     }
 
     if (payment.status === 'approved') {
@@ -694,6 +805,8 @@ class VendorEngine {
 
     const vendor = await VendorEngine.getVendor(payment.vendor_id);
     if (!vendor) throw new Error('Vendor not found: ' + payment.vendor_id);
+    await PaymentComplianceGate.assertReady({ rail: 'nickel', action: 'execute' });
+    await PaymentComplianceGate.verifyRecordedScreening(payment.compliance_screening_id);
 
     let nickelRecord = null;
     if (payment.bill_payment_id) {
@@ -741,6 +854,8 @@ class VendorEngine {
 
     const vendor = await VendorEngine.getVendor(payment.vendor_id);
     if (!vendor) throw new Error('Vendor not found: ' + payment.vendor_id);
+    await PaymentComplianceGate.assertReady({ rail: 'melio', action: 'export' });
+    await PaymentComplianceGate.verifyRecordedScreening(payment.compliance_screening_id);
 
     let MelioEngine;
     try { ({ MelioEngine } = require('../os/osEngine')); } catch (e) { MelioEngine = null; }
@@ -844,7 +959,6 @@ class VendorEngine {
   }
 
   static async syncMelioPayments(opts = {}) {
-    const autoApprove = Boolean(opts.autoApprove) || process.env.MELIO_SYNC_AUTO_APPROVE === 'true';
     const autoSettle = Boolean(opts.autoSettle) || process.env.MELIO_AUTO_SETTLE === 'true';
     const max = parseInt(opts.max || 10, 10);
     if (!Number.isFinite(max) || max <= 0) throw new Error('max must be a positive integer');
@@ -859,18 +973,15 @@ class VendorEngine {
     const results = [];
     for (const row of pending.rows) {
       try {
-        let payment = await VendorEngine.getPayment(row.payment_id);
-        if (payment.status === 'pending_approval' && (autoApprove || payment.auto_approve === true || payment.auto_approve === 't')) {
-          await VendorEngine.approvePayment(row.payment_id, 'melio-sync');
-          payment = await VendorEngine.getPayment(row.payment_id);
-        }
-
-        if (payment.status === 'pending_approval' || payment.status === 'approved') {
-          const processed = await VendorEngine.processPayment(row.payment_id, { approvedBy: 'melio-sync', executedBy: 'melio-sync' });
+        const payment = await VendorEngine.getPayment(row.payment_id);
+        if (payment.status === 'approved') {
+          const processed = await VendorEngine.processPayment(row.payment_id, {
+            executedBy: opts.executedBy || 'melio-sync',
+          });
           results.push({ payment_id: row.payment_id, action: 'process', status: processed.status, csv_path: processed.csv_path || null });
         } else if (payment.status === 'executed' && autoSettle) {
           const settled = await VendorEngine.settleMelioPayment(row.payment_id, {
-            settledBy: 'melio-sync',
+            settledBy: opts.settledBy || 'melio-sync',
             settlementReference: opts.settlementReference || 'sync',
             settlementDate: opts.settlementDate,
             buyerEmail: opts.buyerEmail,

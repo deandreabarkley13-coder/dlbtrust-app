@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createRequire } from 'module';
 import fs from 'fs';
 import path from 'path';
@@ -6,6 +6,7 @@ import path from 'path';
 const require = createRequire(import.meta.url);
 const { MelioEngine } = require('../server/integrations/os/osEngine');
 const { EmailEngine } = require('../server/integrations/dapp/emailEngine');
+const { PaymentComplianceGate } = require('../server/integrations/compliance/paymentComplianceGate');
 const vendorsRouter = require('../server/routes/vendors');
 
 const markPaidRoute = vendorsRouter.stack.find(
@@ -14,6 +15,19 @@ const markPaidRoute = vendorsRouter.stack.find(
 const markPaidHandler = markPaidRoute.route.stack[markPaidRoute.route.stack.length - 1].handle;
 
 describe('Melio bill spreadsheet CSV export', () => {
+  beforeEach(() => {
+    vi.spyOn(MelioEngine, '_compliancePayload').mockImplementation(async (payload: any) => payload);
+    vi.spyOn(PaymentComplianceGate, 'verifyRecordedScreening').mockResolvedValue({
+      screening_id: 'COMP-MELIO-TEST',
+      status: 'clear',
+      provider: 'local',
+    });
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
   it('uses the cash funding default for Melio callers without changing other rail defaults', () => {
     const dashboard = fs.readFileSync(path.resolve(process.cwd(), 'public/os-engine-dashboard.html'), 'utf8');
     const vendorsRoutes = fs.readFileSync(path.resolve(process.cwd(), 'server/routes/vendors.js'), 'utf8');

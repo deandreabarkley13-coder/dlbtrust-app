@@ -50,6 +50,8 @@ const { LiliBankEngine } = require('../integrations/payments/liliBankEngine');
 const { LiliMcpEngine } = require('../integrations/payments/liliMcpEngine');
 const { NickelMcpEngine } = require('../integrations/os/osEngine');
 const { ComplianceEngine } = require('../integrations/compliance/complianceEngine');
+const { PaymentComplianceGate } = require('../integrations/compliance/paymentComplianceGate');
+const { OfacSanctionsListEngine } = require('../integrations/compliance/ofacSanctionsListEngine');
 const { IssuerEngine } = require('../integrations/dapp/issuerEngine');
 const { BankTransferEngine } = require('../integrations/dapp/bankTransferEngine');
 const { VendorPaymentEngine } = require('../integrations/dapp/vendorPaymentEngine');
@@ -1633,6 +1635,23 @@ router.post('/lili/payments/:id/cancel', operatorAuth, writeRateLimiter(), async
 // Compliance Engine — KYC, AML, and sanctions screening
 // ═════════════════════════════════════════════════════════════════════════════
 
+router.get('/compliance/readiness', operatorAuth, async (req, res) => {
+  try {
+    const data = await PaymentComplianceGate.paymentReadiness({
+      rail: req.query.rail,
+      action: req.query.action || 'execute',
+    });
+    res.status(data.ready ? 200 : 503).json({ success: data.ready, data });
+  } catch (err) { sendError(res, err); }
+});
+
+router.post('/compliance/ofac/refresh', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try {
+    const data = await OfacSanctionsListEngine.refresh();
+    res.json({ success: data.ready, data });
+  } catch (err) { sendError(res, err); }
+});
+
 router.get('/compliance/screenings', operatorAuth, async (req, res) => {
   try { res.json({ success: true, data: await ComplianceEngine.list(req.query) }); } catch (err) { sendError(res, err); }
 });
@@ -1817,7 +1836,29 @@ router.get('/vendors/:id/bills', operatorAuth, async (req, res) => {
 });
 
 router.post('/vendor-bills/:id/pay', operatorAuth, async (req, res) => {
-  try { res.json({ success: true, data: await VendorPaymentEngine.payBill({ billId: req.params.id, ...req.body, initiatedBy: getUserEmail(req) }) }); } catch (err) { sendError(res, err); }
+  try {
+    const bill = await VendorPaymentEngine.getBill(req.params.id);
+    if (!bill) return res.status(404).json({ success: false, error: 'Vendor bill not found' });
+    const vendor = await VendorPaymentEngine.getVendor(bill.vendor_id);
+    if (!vendor) return res.status(404).json({ success: false, error: 'Vendor not found' });
+    const data = await CanonicalConsensusEngine.createProposal({
+      title: req.body.title || `Pay vendor bill ${bill.bill_id}`,
+      description: req.body.description || bill.memo,
+      category: 'vendor_bill',
+      createdBy: getUserEmail(req),
+      payload: {
+        vendorPaymentBillId: bill.bill_id,
+        amount: Number(bill.amount_cents) / 100,
+        vendor,
+        sourceCashAccountId: req.body.sourceCashAccountId || req.body.source_cash_account_id,
+        rail: req.body.rail || 'bank_transfer',
+        webPaymentAdapter: req.body.webPaymentAdapter || req.body.web_payment_adapter,
+        openBankingConnector: req.body.openBankingConnector || req.body.open_banking_connector,
+        memo: req.body.memo || bill.memo,
+      },
+    });
+    res.status(202).json({ success: true, data, requiresApprovals: ['maker', 'checker'] });
+  } catch (err) { sendError(res, err); }
 });
 
 router.get('/vendor-payments', operatorAuth, async (req, res) => {

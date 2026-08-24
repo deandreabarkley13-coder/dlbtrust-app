@@ -12,8 +12,30 @@ var router  = express.Router();
 var pool = require('../integrations/bonds/pgPool');
 var { VendorEngine } = require('../integrations/vendors/vendorEngine');
 var { MelioEngine } = require('../integrations/os/osEngine');
+var { CanonicalConsensusEngine } = require('../integrations/dapp/canonicalConsensusEngine');
 var { requireAuth } = require('../integrations/auth/securityMiddleware');
 var operatorAuth = requireAuth({ role: 'operator' });
+
+router.use(operatorAuth);
+
+function authenticatedActor(req) {
+  var user = req.user || {};
+  return user.email || user.username || user.userId || user.sub || 'authenticated-user';
+}
+
+function authenticatedTrustee(req) {
+  var user = req.user || {};
+  var activeRole = String(user.role || '').toLowerCase();
+  var role = activeRole === 'trustee_maker'
+    ? 'maker'
+    : (activeRole === 'trustee_checker' ? 'checker' : '');
+  if (!role || !user.email) {
+    var error = new Error('An authenticated maker or checker role is required');
+    error.status = 403;
+    throw error;
+  }
+  return { role: role, approverEmail: user.email };
+}
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // DASHBOARD
@@ -117,7 +139,10 @@ router.post('/payments/initiate', async function(req, res) {
   try {
     if (!req.body.vendor_id) return res.status(400).json({ success: false, error: 'vendor_id is required' });
     if (!req.body.amount || parseFloat(req.body.amount) <= 0) return res.status(400).json({ success: false, error: 'Valid amount is required' });
-    var result = await VendorEngine.initiatePayment(req.body);
+    var result = await VendorEngine.initiatePayment({
+      ...req.body,
+      initiated_by: authenticatedActor(req),
+    });
     res.json({ success: true, data: result });
   } catch (err) {
     res.status(500).json({ success: false, error: err.message });
@@ -126,16 +151,20 @@ router.post('/payments/initiate', async function(req, res) {
 
 router.post('/payments/:paymentId/approve', async function(req, res) {
   try {
-    var payment = await VendorEngine.approvePayment(req.params.paymentId, req.body.approved_by || 'admin');
+    var trustee = authenticatedTrustee(req);
+    var payment = await VendorEngine.approvePayment(req.params.paymentId, {
+      ...trustee,
+      signature: req.body.signature,
+    });
     res.json({ success: true, data: payment });
   } catch (err) {
-    res.status(500).json({ success: false, error: err.message });
+    res.status(err.status || 500).json({ success: false, error: err.message });
   }
 });
 
 router.post('/payments/:paymentId/reject', async function(req, res) {
   try {
-    var payment = await VendorEngine.rejectPayment(req.params.paymentId, req.body.rejected_by || 'admin', req.body.reason);
+    var payment = await VendorEngine.rejectPayment(req.params.paymentId, authenticatedActor(req), req.body.reason);
     res.json({ success: true, data: payment });
   } catch (err) {
     res.status(500).json({ success: false, error: err.message });
@@ -144,22 +173,21 @@ router.post('/payments/:paymentId/reject', async function(req, res) {
 
 router.post('/payments/:paymentId/execute', async function(req, res) {
   try {
-    var result = await VendorEngine.executePayment(req.params.paymentId, req.body.executed_by || 'admin');
+    var result = await VendorEngine.executePayment(req.params.paymentId, authenticatedActor(req));
     res.json({ success: true, data: result });
   } catch (err) {
-    res.status(500).json({ success: false, error: err.message });
+    res.status(err.status || 500).json({ success: false, error: err.message });
   }
 });
 
 router.post('/payments/:paymentId/process', async function(req, res) {
   try {
     var result = await VendorEngine.processPayment(req.params.paymentId, {
-      approvedBy: req.body.approved_by || 'admin',
-      executedBy: req.body.executed_by || 'admin',
+      executedBy: authenticatedActor(req),
     });
     res.json({ success: true, data: result });
   } catch (err) {
-    res.status(500).json({ success: false, error: err.message });
+    res.status(err.status || 500).json({ success: false, error: err.message });
   }
 });
 
@@ -167,7 +195,7 @@ router.post('/payments/:paymentId/settle', async function(req, res) {
   try {
     var result = await VendorEngine.settlePayment(req.params.paymentId, {
       settlementReference: req.body.settlement_reference || req.body.reference,
-      settledBy: req.body.settled_by || 'admin',
+      settledBy: authenticatedActor(req),
       settlementDate: req.body.settlement_date,
       buyerEmail: req.body.buyer_email,
       sellerEmail: req.body.seller_email,
@@ -180,14 +208,25 @@ router.post('/payments/:paymentId/settle', async function(req, res) {
 
 router.post('/payments/melio/export-batch', async function(req, res) {
   try {
-    var result = await MelioEngine.process({
-      ...req.body,
-      action: 'exportBatch',
-      payables: req.body.payables || req.body.items || req.body.rows,
+    var result = await CanonicalConsensusEngine.createProposal({
+      title: req.body.title || 'Melio vendor bill batch',
+      description: req.body.description,
+      category: 'vendor_bill',
+      createdBy: authenticatedActor(req),
+      payload: {
+        ...req.body,
+        action: undefined,
+        payables: req.body.payables || req.body.items || req.body.rows,
+      },
     });
-    res.json({ success: true, data: result });
+    res.status(202).json({
+      success: true,
+      data: result,
+      requiresApprovals: ['maker', 'checker'],
+      paymentMode: 'manual_export',
+    });
   } catch (err) {
-    res.status(500).json({ success: false, error: err.message, invalidRows: err.invalidRows || undefined });
+    res.status(err.status || 500).json({ success: false, error: err.message, invalidRows: err.invalidRows || undefined });
   }
 });
 
@@ -233,9 +272,10 @@ router.get('/payments/melio/:identifier/download', operatorAuth, async function(
 router.post('/payments/melio/sync', async function(req, res) {
   try {
     var results = await VendorEngine.syncMelioPayments({
-      autoApprove: req.body.auto_approve,
       autoSettle: req.body.auto_settle,
       max: req.body.max,
+      executedBy: authenticatedActor(req),
+      settledBy: authenticatedActor(req),
       settlementReference: req.body.settlement_reference,
       buyerEmail: req.body.buyer_email,
       sellerEmail: req.body.seller_email,
@@ -255,7 +295,7 @@ router.post('/payments/melio/confirm-settlement', async function(req, res) {
     if (req.body.melio_export_id) {
       result = await VendorEngine.settleByMelioExportId(req.body.melio_export_id, {
         settlementReference: req.body.settlement_reference || req.body.reference,
-        settledBy: req.body.settled_by || 'admin',
+        settledBy: authenticatedActor(req),
         settlementDate: req.body.settlement_date,
         buyerEmail: req.body.buyer_email,
         sellerEmail: req.body.seller_email,
@@ -263,7 +303,7 @@ router.post('/payments/melio/confirm-settlement', async function(req, res) {
     } else {
       result = await VendorEngine.settleMelioPayment(req.body.payment_id, {
         settlementReference: req.body.settlement_reference || req.body.reference,
-        settledBy: req.body.settled_by || 'admin',
+        settledBy: authenticatedActor(req),
         settlementDate: req.body.settlement_date,
         buyerEmail: req.body.buyer_email,
         sellerEmail: req.body.seller_email,
@@ -307,7 +347,7 @@ router.post('/payments/melio/submit-invoice', async function(req, res) {
           account_number: vendorPayload.account_number || null,
           account_type: vendorPayload.account_type || 'checking',
           payment_method: 'melio',
-          auto_approve: true,
+          auto_approve: false,
           notes: vendorPayload.notes || null,
         });
       }
@@ -324,15 +364,18 @@ router.post('/payments/melio/submit-invoice', async function(req, res) {
       invoice_number: paymentPayload.invoice_number || `INV-${Date.now()}`,
       invoice_date: paymentPayload.invoice_date || new Date().toISOString().slice(0, 10),
       due_date: paymentPayload.due_date || new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10),
-      initiated_by: req.body.initiated_by || 'melio-submit-invoice',
+      initiated_by: authenticatedActor(req),
     });
 
-    var processed = await VendorEngine.processPayment(initiated.payment.payment_id, {
-      approvedBy: req.body.approved_by || 'melio-submit-invoice',
-      executedBy: req.body.executed_by || 'melio-submit-invoice',
+    res.status(202).json({
+      success: true,
+      data: {
+        vendor,
+        initiated,
+        requiresApprovals: ['maker', 'checker'],
+        paymentMode: 'manual_export',
+      },
     });
-
-    res.json({ success: true, data: { vendor, initiated, processed } });
   } catch (err) {
     res.status(500).json({ success: false, error: err.message });
   }
@@ -370,7 +413,7 @@ router.post('/payments/nickel/submit-invoice', async function(req, res) {
           account_number: vendorPayload.account_number || null,
           account_type: vendorPayload.account_type || 'checking',
           payment_method: 'nickel',
-          auto_approve: true,
+          auto_approve: false,
           notes: vendorPayload.notes || null,
         });
       }
@@ -387,15 +430,17 @@ router.post('/payments/nickel/submit-invoice', async function(req, res) {
       invoice_number: paymentPayload.invoice_number || `INV-${Date.now()}`,
       invoice_date: paymentPayload.invoice_date || new Date().toISOString().slice(0, 10),
       due_date: paymentPayload.due_date || new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10),
-      initiated_by: req.body.initiated_by || 'nickel-submit-invoice',
+      initiated_by: authenticatedActor(req),
     });
 
-    var processed = await VendorEngine.processPayment(initiated.payment.payment_id, {
-      approvedBy: req.body.approved_by || 'nickel-submit-invoice',
-      executedBy: req.body.executed_by || 'nickel-submit-invoice',
+    res.status(202).json({
+      success: true,
+      data: {
+        vendor,
+        initiated,
+        requiresApprovals: ['maker', 'checker'],
+      },
     });
-
-    res.json({ success: true, data: { vendor, initiated, processed } });
   } catch (err) {
     res.status(500).json({ success: false, error: err.message });
   }
@@ -419,7 +464,7 @@ router.post('/payments/nickel/confirm-settlement', async function(req, res) {
     }
     var result = await VendorEngine.settleNickelPayment(paymentId, {
       settlementReference: req.body.settlement_reference || req.body.reference,
-      settledBy: req.body.settled_by || 'admin',
+      settledBy: authenticatedActor(req),
       settlementDate: req.body.settlement_date,
       buyerEmail: req.body.buyer_email,
       sellerEmail: req.body.seller_email,
