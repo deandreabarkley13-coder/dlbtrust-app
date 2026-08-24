@@ -80,6 +80,8 @@ function normalizeDigest(value) {
 class OfacSanctionsListEngine {
   static _cache = null;
 
+  static _cacheVersion = null;
+
   static async ensureTables() {
     if (!pool) return;
     await pool.query(`
@@ -245,6 +247,7 @@ class OfacSanctionsListEngine {
     }
 
     this._cache = downloads.flatMap((download) => download.entries);
+    this._cacheVersion = await this._databaseVersion();
     return this.readiness();
   }
 
@@ -297,10 +300,29 @@ class OfacSanctionsListEngine {
     return this.refresh();
   }
 
+  static async _databaseVersion() {
+    const result = await pool.query(
+      `SELECT COUNT(*)::integer AS list_count,
+              COALESCE(SUM(entry_count), 0)::bigint AS entry_count,
+              MIN(refreshed_at) AS oldest_refresh,
+              MAX(refreshed_at) AS newest_refresh
+       FROM compliance_sanctions_lists`
+    );
+    const row = result.rows[0] || {};
+    const timestamp = (value) => value ? new Date(value).toISOString() : null;
+    return JSON.stringify([
+      Number(row.list_count || 0),
+      String(row.entry_count || 0),
+      timestamp(row.oldest_refresh),
+      timestamp(row.newest_refresh),
+    ]);
+  }
+
   static async _loadCache() {
-    if (this._cache) return this._cache;
     if (!pool) return [];
     await this.ensureTables();
+    const databaseVersion = await this._databaseVersion();
+    if (this._cache && this._cacheVersion === databaseVersion) return this._cache;
     const result = await pool.query(
       `SELECT list_key, entry_uid, name, normalized_name, source_file, is_alias, alias_type
        FROM compliance_sanctions_entries`
@@ -314,16 +336,29 @@ class OfacSanctionsListEngine {
       isAlias: row.is_alias,
       aliasType: row.alias_type,
     }));
+    this._cacheVersion = databaseVersion;
     return this._cache;
   }
 
   static _similarity(input, target) {
     if (input === target) return 1;
     if (input.length < 8 || target.length < 8) return 0;
+    const inputTokens = input.split(' ');
+    const targetTokens = target.split(' ');
+    const tokenCounts = (tokens) => tokens.reduce((counts, token) => {
+      counts.set(token, (counts.get(token) || 0) + 1);
+      return counts;
+    }, new Map());
+    const containsTokens = (container, candidate) => {
+      const available = tokenCounts(container);
+      return Array.from(tokenCounts(candidate).entries())
+        .every(([token, count]) => (available.get(token) || 0) >= count);
+    };
+    if (containsTokens(inputTokens, targetTokens) || containsTokens(targetTokens, inputTokens)) {
+      return inputTokens.length === targetTokens.length ? 0.96 : 0.92;
+    }
+    if (Math.abs(input.length - target.length) > 3) return 0;
     const longer = Math.max(input.length, target.length);
-    const shorter = Math.min(input.length, target.length);
-    if ((input.includes(target) || target.includes(input)) && shorter / longer >= 0.8) return 0.92;
-    if (Math.abs(input.length - target.length) > 3 || input[0] !== target[0]) return 0;
     const previous = Array.from({ length: target.length + 1 }, (_, index) => index);
     for (let inputIndex = 1; inputIndex <= input.length; inputIndex += 1) {
       let diagonal = previous[0];
