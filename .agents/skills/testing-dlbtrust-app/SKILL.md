@@ -1244,3 +1244,71 @@ disown
 - `settleMelioPayment` tries to insert a `cashflow_events` row; if the table does not exist it logs a non-fatal warning and continues.
 - The dashboard buttons may not respond to scaled-coordinate mouse clicks; invoke the underlying handlers via the browser console (`submitMelioInvoiceAndSync()` and `settleMelioPayment()`) and click **Set Token** first so the `x-admin-token` is set.
 - `EmailEngine` attachment support only sends attachments when a real SMTP/SendGrid provider is configured; the `log` provider returns `sent: false` with the notification metadata.
+
+## Official OFAC sanctions screening (`server/integrations/compliance/ofacSanctionsListEngine.js`)
+
+Provider config for local testing (no external writes; OFAC downloads are read-only GETs):
+
+```bash
+setsid nohup env \
+  DATABASE_URL=postgres://dlbtrust:dlbtrust@localhost:5432/dlbtrust \
+  BOND_DB_NAME=dlbtrust JWT_SECRET=test-jwt-local \
+  ADMIN_SECRET_TOKEN=dlb-admin-2026-trust PORT=3002 \
+  NODE_ENV=development DAPP_OTP_ALWAYS_SHOW_CODE=true \
+  COMPLIANCE_PROVIDER=ofac COMPLIANCE_OFAC_AUTO_REFRESH=false \
+  VENDOR_PAYMENT_EXECUTION_MODE=test COMPLIANCE_ALLOW_TEST_PAYMENT_EXECUTION=true \
+  node server/server-3002.js > /tmp/srv.log 2>&1 < /dev/null & disown
+```
+
+Startup should log `[compliance] initialized: {"ready":true,"provider":"ofac","sanctionedCount":41034,"issues":[]}`
+(counts change as OFAC publishes; the four lists are SDN.CSV / ALT.CSV / CONS_PRIM.CSV / CONS_ALT.CSV).
+
+- Populate/refresh lists from a *separate* process: `npm run compliance:refresh-ofac`
+  (needs `DATABASE_URL`, `BOND_DB_NAME`, `COMPLIANCE_PROVIDER=ofac`). It writes both
+  `compliance_sanctions_entries` and `compliance_sanctions_lists`.
+- Readiness is observable at `GET /api/finops/compliance/readiness` with `x-admin-token: dlb-admin-2026-trust`
+  (expect `ready: true`, `provider: "ofac"`, `entryCount`, `issues: []`, per-list `refreshed_at`).
+- UI path for screening: FinOps (`/dapp/finops.html`) → **Compliance Engine** card → *New Screening*
+  → entity `Business`, Business name, Country `US`, Amount → **Screen**. The Screenings table shows
+  Risk `score (level)` / Status / Provider. Scoring: exact match → 100 `blocked`; potential match
+  (similarity 0.92 / 0.96) → 70 `review`; no match with name+country → 0 `clear`.
+
+### Testing the in-memory sanctions cache
+
+`OfacSanctionsListEngine._loadCache()` keys its cache on `_databaseVersion()`, which aggregates only
+`compliance_sanctions_lists` (list count, summed `entry_count`, oldest/newest `refreshed_at`). To
+prove cache invalidation without a restart:
+
+1. `DELETE FROM compliance_sanctions_entries WHERE normalized_name LIKE '%sberbank%';` then
+   `UPDATE compliance_sanctions_lists l SET entry_count = (SELECT COUNT(*) FROM compliance_sanctions_entries e WHERE e.list_key=l.list_key), refreshed_at=NOW();`
+2. Restart the server, screen `SBERBANK OF RUSSIA PJSC` in the UI → expect `clear (0)`.
+3. Leave the server running and run `npm run compliance:refresh-ofac` in another shell.
+4. Screen the same name again → expect `review (70)`. Staying `clear` means the cache is stale.
+
+Caveat to report if relevant: a process that rewrites *entries* without touching list metadata will
+still be served a stale cache. Always restore the DB with a real refresh after deliberate mutations.
+
+### Name-matching regression names (stable, real OFAC entries)
+
+| Input | Expectation |
+| --- | --- |
+| `SBERBANK OF RUSSIA PJSC` | `review (70)`, potential match `SBERBANK OF RUSSIA` (ALT.CSV `17018:54948`, sim 0.92) |
+| `RUSSIA SBERBANK PJSC` | `review (70)`, `PJSC SBERBANK` (ALT.CSV `17018:54949`, sim 0.92) |
+| `SBERBANK OF RUSSIA PUBLIC JOINT STOCK COMPANY` | `review (70)`, `PUBLIC JOINT STOCK COMPANY SBERBANK OF RUSSIA` (SDN.CSV `17018`, sim 0.96 — equal-token reorder) |
+| `PRENSA LATINA MEDIA GROUP` | `review (70)`, `PRENSA LATINA` (SDN.CSV `1702`) |
+| `INTERCONSULTING` | `clear (0)` — partial-word false-positive guard vs SDN `INTERCONSULT` |
+| `Northwind Trading Partners LLC` | `clear (0)` — unrelated control |
+
+Old-vs-new engine contrast is easy text evidence: copy the pre-change file out of git into the same
+directory (`git show <base>:server/integrations/compliance/ofacSanctionsListEngine.js > server/integrations/compliance/__ofacOldTmp.js`),
+require both `{ OfacSanctionsListEngine }` exports in one node script, call `screenName()` on each
+name, then delete the temp file.
+
+### OS payment-bypass gate (regression from #378)
+
+`POST /api/os/:engine/process` (route `server/routes/os.js`, **not** `/api/os/melio`) blocks
+approval-gated actions with HTTP 409 `Vendor bill payments must use the authenticated maker-checker workflow`:
+`melio`: `schedulePayment, exportPayment, exportBatch, markPaid, settle`;
+`nickel`: `payBill, submitInvoice, settlePayment, settle`. Nickel has no `createPayment` action; unsupported
+actions fall back to the engine status response, so use a listed gated action when testing the bypass guard.
+Unauthenticated calls return 401, as do unauthenticated `GET /api/vendors`.
