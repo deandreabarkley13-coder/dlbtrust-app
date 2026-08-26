@@ -14,7 +14,7 @@ set -euo pipefail
 
 FLY_APP="${FLY_APP:-dlbtrust-app}"
 FLYCTL="${FLYCTL_BIN:-flyctl}"
-PROJECT_ID="${NORTHFLANK_PROJECT_ID:-dlbt-erp}"
+PROJECT_ID="${NORTHFLANK_PROJECT_ID:-dlbtrust}"
 SERVICE_ID="${NORTHFLANK_SERVICE_ID:-dlbtrust-app}"
 
 WORK_DIR="$(mktemp -d)"
@@ -40,5 +40,14 @@ northflank exec service \
   --service "$SERVICE_ID" \
   --shell-cmd 'sh -c' \
   --cmd 'tar -xz -C / -f /tmp/data.tar.gz && rm /tmp/data.tar.gz && ls -la /data'
+
+# The volume mount hides the directories the Dockerfile creates, and Fly's /data
+# never held an export directory, so recreate the paths the app writes to.
+echo "ensuring /data layout"
+northflank exec service \
+  --project "$PROJECT_ID" \
+  --service "$SERVICE_ID" \
+  --shell-cmd 'sh -c' \
+  --cmd 'mkdir -p /data/melio-exports /data/governance /data/journal /data/backups /data/shutdown-state && ls /data'
 
 echo "done"

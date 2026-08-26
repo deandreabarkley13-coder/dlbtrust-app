@@ -3,18 +3,13 @@
   "description": "Treasury dashboard and payment API (server/server-3002.js)",
   "billing": {
     "deploymentPlan": "nf-compute-20",
-    "buildPlan": "nf-compute-200-4"
+    "buildPlan": "nf-compute-400-16"
   },
   "deployment": {
-    "type": "statefulSet",
+    "type": "deployment",
     "instances": 1,
     "docker": {
       "configType": "default"
-    },
-    "storage": {
-      "ephemeralStorage": {
-        "storageSize": 4096
-      }
     }
   },
   "buildSource": "git",
@@ -27,10 +22,7 @@
     "dockerfile": {
       "buildEngine": "buildkit",
       "dockerFilePath": "/Dockerfile",
-      "dockerWorkDir": "/",
-      "buildkit": {
-        "useCache": true
-      }
+      "dockerWorkDir": "/"
     }
   },
   "ports": [

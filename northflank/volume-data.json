@@ -7,8 +7,8 @@
   ],
   "spec": {
     "accessMode": "ReadWriteOnce",
-    "storageClassName": "ssd",
-    "storageSize": 5120
+    "storageClassName": "nvme",
+    "storageSize": 6144
   },
   "attachedObjects": [
     {

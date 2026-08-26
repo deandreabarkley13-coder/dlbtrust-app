@@ -7,16 +7,21 @@ Replaces the Fly.io deployment of `dlbtrust-app` (app `dlbtrust-app`, volume
 
 | Fly.io | Northflank |
 | --- | --- |
-| app `dlbtrust-app` (Dockerfile, port 3002) | project `dlbt-erp` (`us-east1`), combined service `dlbtrust-app` — `northflank/service-dlbtrust-app.json` |
+| app `dlbtrust-app` (Dockerfile, port 3002) | project `dlbtrust` (`us-east1`, team DLB-TRUST), combined service `dlbtrust-app` — `northflank/service-dlbtrust-app.json` |
 | Postgres app `dlbtrust-db` | PostgreSQL addon `dlbtrust-db` — `northflank/addon-postgres.json` |
 | volume `dlbtrust_data` mounted at `/data` | volume `dlbtrust-data` mounted at `/data` — `northflank/volume-data.json` |
 | `[env]` block in `fly.toml` | `runtimeEnvironment` in the service spec |
-| 131 `fly secrets` | secret group `dlbtrust-runtime` (`environment` scope, priority 10) |
+| 130 runtime variables | secret group `dlbtrust-runtime` (`environment` scope, priority 10, unrestricted) |
 | `.github/workflows/fly-deploy.yml` | `.github/workflows/northflank-deploy.yml` |
 
-The service is a `statefulSet` with one instance because the `/data` volume is
+The service runs a single `deployment` instance because the `/data` volume is
 `ReadWriteOnce` and holds Melio CSV exports, the executed Trustees Signature
-Page and the journal/shutdown state.
+Page and the journal/shutdown state. (`statefulSet`, the `ssd` storage class and
+build-plan-sized ephemeral storage are all feature-flagged off on this account —
+the specs use `deployment`, `nvme` and Northflank's default 1 GiB ephemeral
+storage instead, and `nvme` has a 6 GiB minimum.)
+
+The live service URL is `https://p01--dlbtrust-app--gcq8bn6c4zlp.code.run`.
 
 `FINERACT_URL` pointed at the Fly-internal Fineract app
 (`dlbtrust-fineract.internal`). Fineract is **not** part of this migration; the
@@ -40,35 +45,63 @@ without them:
 
 ```bash
 # 1. project, postgres addon, service, /data volume
-NORTHFLANK_API_TOKEN=... scripts/northflank/provision.sh   # project dlbt-erp already exists
+NORTHFLANK_API_TOKEN=... scripts/northflank/provision.sh
 
 # 2. runtime credentials (reads them out of the running Fly container —
 #    Fly secrets cannot be read back through the API). --dry-run lists the
 #    variable names without writing anything.
 FLY_API_TOKEN=... NORTHFLANK_API_TOKEN=... node scripts/northflank/migrate-fly-secrets.mjs
 
-# 3. ledger database (dump runs inside the Fly machine, restore over the
-#    addon's external TLS endpoint — enable external access on the addon first)
-FLY_API_TOKEN=... NORTHFLANK_API_TOKEN=... node scripts/northflank/migrate-postgres.mjs
+# 3. ledger database. The dump is taken through `flyctl proxy` with a local
+#    pg_dump >= the Fly server major version (the Fly image only ships client
+#    15 against a 17 server), then restored over the addon's external TLS
+#    endpoint. --manage-external-access enables external access for the restore
+#    and turns it back off afterwards.
+FLY_API_TOKEN=... NORTHFLANK_API_TOKEN=... PG_BIN_DIR=/usr/lib/postgresql/17/bin \
+  node scripts/northflank/migrate-postgres.mjs --manage-external-access
 
 # 4. /data contents: Melio exports, governance documents, journals
 FLY_API_TOKEN=... NORTHFLANK_API_TOKEN=... scripts/northflank/migrate-data-volume.sh
 ```
 
-`DATABASE_URL` is deliberately excluded from the secret migration: link the
-`dlbtrust-db` addon into the `dlbtrust-runtime` secret group and alias its
-connection URI to `DATABASE_URL`, so the app follows the addon if it is ever
-rotated or forked.
+`DATABASE_URL` is deliberately excluded from the secret migration. Instead the
+addon is linked into the `dlbtrust-runtime` secret group with its connection URI
+aliased, so the app follows the addon if it is ever rotated or forked:
+
+```bash
+curl -X PATCH "https://api.northflank.com/v1/projects/dlbtrust/secrets/dlbtrust-runtime" \
+  -H "Authorization: Bearer $NORTHFLANK_API_TOKEN" -H 'Content-Type: application/json' \
+  -d '{"addonDependencies":[{"addonId":"dlbtrust-db","keys":[{"keyName":"POSTGRES_URI","aliases":["DATABASE_URL"]}]}]}'
+```
+
+Two restore details are easy to miss:
+
+- The service creates its own tables at boot, so it must be scaled to zero (or
+  restored before its first deploy) — otherwise the rows it seeds collide with
+  the dump's primary keys. `migrate-postgres.mjs` drops and recreates `public`
+  for this reason.
+- The restore runs as the addon **admin** user, so ownership and schema
+  privileges have to be handed to the application user afterwards, or the app
+  aborts at boot with `no schema has been selected to create in` / `must be
+  owner of table ...`. The script does this at the end of the restore.
+
+Builds of a combined service can only be triggered from a commit SHA:
+`northflank start service build --input '{"sha": "<sha>"}'`, which is what the
+deploy workflow does.
 
 ## Melio workflow checks after cutover
 
 The Melio path is CSV-export based (`MELIO_USE_API=false`), so it depends on the
 database, `/data` and the GL configuration — all three of which move here.
 
-1. `GET /api/health` returns ok.
-2. `GET /api/vendors/payments/melio` lists the payment records migrated from Fly.
-3. `MELIO_EXPORT_DIR=/data/melio-exports` exists and still contains the previously
-   generated spreadsheets (verifies the volume copy).
+1. `GET /api/health` returns ok — it reports the migrated bond/cash/trust/user
+   counts, so it doubles as a database check.
+2. `GET /api/vendors/payments/melio` lists the payment records migrated from Fly
+   (operator auth required).
+3. `MELIO_EXPORT_DIR=/data/melio-exports` exists and is writable. Fly's `/data`
+   never contained an export directory, so the migration creates
+   `melio-exports`, `governance`, `journal`, `backups` and `shutdown-state`
+   after the volume copy.
 4. `TRUST_SIGNATURE_DOCUMENT_PATH` resolves, so maker/checker approvals of a
    `vendor_bill` proposal still execute.
 5. A canonical vendor bill proposal approved by maker + checker posts the accrual

@@ -21,7 +21,7 @@ jobs:
     name: Deploy to Northflank
     runs-on: ubuntu-latest
     env:
-      NORTHFLANK_PROJECT_ID: dlbt-erp
+      NORTHFLANK_PROJECT_ID: dlbtrust
       NORTHFLANK_SERVICE_ID: dlbtrust-app
     steps:
       - name: Checkout
