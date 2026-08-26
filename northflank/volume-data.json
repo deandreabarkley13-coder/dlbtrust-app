@@ -1,0 +1,19 @@
+{
+  "name": "dlbtrust-data",
+  "mounts": [
+    {
+      "containerMountPath": "/data"
+    }
+  ],
+  "spec": {
+    "accessMode": "ReadWriteOnce",
+    "storageClassName": "ssd",
+    "storageSize": 5120
+  },
+  "attachedObjects": [
+    {
+      "id": "dlbtrust-app",
+      "type": "service"
+    }
+  ]
+}

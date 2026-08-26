@@ -1,0 +1,13 @@
+{
+  "name": "dlbtrust-db",
+  "description": "PostgreSQL for the treasury ledger, vendor bills and Melio payment records",
+  "type": "postgresql",
+  "version": "16",
+  "tlsEnabled": true,
+  "externalAccessEnabled": false,
+  "billing": {
+    "deploymentPlan": "nf-compute-20",
+    "storage": 10240,
+    "replicas": 1
+  }
+}

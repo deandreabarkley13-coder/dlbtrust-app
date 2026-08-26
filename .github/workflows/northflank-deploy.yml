@@ -1,0 +1,44 @@
+name: Northflank Deploy
+
+# Builds and deploys dlbtrust-app on Northflank on every push to main.
+# Requires the repo secret NORTHFLANK_API_TOKEN.
+#
+# The Northflank service builds from git itself, so this workflow only triggers
+# the build and waits for it, which keeps deploy status visible in GitHub.
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch: {}
+
+concurrency:
+  group: northflank-deploy
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    name: Deploy to Northflank
+    runs-on: ubuntu-latest
+    env:
+      NORTHFLANK_PROJECT_ID: dlbtrust
+      NORTHFLANK_SERVICE_ID: dlbtrust-app
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Northflank CLI
+        run: npm install -g @northflank/cli@0.12.2
+
+      - name: Log in
+        run: northflank login -t "$NORTHFLANK_API_TOKEN" -n ci --override
+        env:
+          NORTHFLANK_API_TOKEN: ${{ secrets.NORTHFLANK_API_TOKEN }}
+
+      - name: Build and deploy commit
+        run: |
+          northflank start service build \
+            --project "$NORTHFLANK_PROJECT_ID" \
+            --service "$NORTHFLANK_SERVICE_ID" \
+            --input "{\"sha\": \"$GITHUB_SHA\"}" \
+            --output json
