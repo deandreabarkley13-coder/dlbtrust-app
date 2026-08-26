@@ -697,8 +697,16 @@
     } catch (e) { showStatus('dist-status', e.message, true); }
   }
 
+  let trusteeCache = null;
+  async function trusteeEmail(role) {
+    if (!trusteeCache) trusteeCache = (await api('/api/dapp/finops-ai/trustees')).data || [];
+    const trustee = trusteeCache.find(t => t.role === role);
+    if (!trustee) throw new Error('No trustee configured for role ' + role);
+    return trustee.email;
+  }
+
   async function approveRequest(id, role) {
-    const email = role === 'maker' ? 'malissa1130@gmail.com' : 'dbarkley1130@gmail.com';
+    const email = await trusteeEmail(role);
     try {
       const res = await api(`/api/dapp/distribution-requests/${id}/approve`, { method: 'POST', body: JSON.stringify({ role, trusteeEmail: email }) });
       showStatus('dist-status', `Approved as ${role}. Status: ${res.data.status}`, false);

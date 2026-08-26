@@ -52,6 +52,7 @@
     "PAYMENT_HUB_MODE": "disabled",
     "PAYMENT_HUB_LIVE": "false",
     "MELIO_EXPORT_DIR": "/data/melio-exports",
+    "TRUST_MAKER_EMAIL": "AnnRobinson1117@gmail.com",
     "TRUST_SIGNATURE_DOCUMENT_PATH": "/data/governance/Trustees_Signature_Page.pdf"
   }
 }

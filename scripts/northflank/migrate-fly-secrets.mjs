@@ -7,7 +7,10 @@
 // Values are never printed: only variable names are logged.
 //
 // Usage:
-//   FLY_API_TOKEN=... NORTHFLANK_API_TOKEN=... node scripts/northflank/migrate-fly-secrets.mjs [--dry-run]
+//   FLY_API_TOKEN=... NORTHFLANK_API_TOKEN=... node scripts/northflank/migrate-fly-secrets.mjs [--dry-run] [--set KEY=VALUE ...]
+//
+// --set applies an override on top of the Fly environment, for values that
+// intentionally differ between the two platforms (e.g. TRUST_MAKER_EMAIL).
 //
 // Env overrides: FLY_APP (dlbtrust-app), NORTHFLANK_PROJECT_ID (dlbtrust),
 // NORTHFLANK_SECRET_ID (dlbtrust-runtime).
@@ -15,6 +18,16 @@
 import { execFileSync } from 'node:child_process';
 
 const DRY_RUN = process.argv.includes('--dry-run');
+const OVERRIDES = Object.fromEntries(
+  process.argv
+    .flatMap((arg, index) => (arg === '--set' ? [process.argv[index + 1]] : []))
+    .filter(Boolean)
+    .map((pair) => {
+      const separator = pair.indexOf('=');
+      if (separator < 1) throw new Error(`--set expects KEY=VALUE, got "${pair}"`);
+      return [pair.slice(0, separator), pair.slice(separator + 1)];
+    }),
+);
 const FLY_APP = process.env.FLY_APP || 'dlbtrust-app';
 const PROJECT_ID = process.env.NORTHFLANK_PROJECT_ID || 'dlbtrust';
 const SECRET_ID = process.env.NORTHFLANK_SECRET_ID || 'dlbtrust-runtime';
@@ -93,7 +106,7 @@ async function main() {
     throw new Error('NORTHFLANK_API_TOKEN is required');
   }
 
-  const variables = filterVariables(readFlyEnvironment());
+  const variables = { ...filterVariables(readFlyEnvironment()), ...OVERRIDES };
   const names = Object.keys(variables).sort();
   if (names.length === 0) throw new Error('no variables read from the Fly machine');
   console.log(`carrying over ${names.length} variables:`);
@@ -104,7 +117,8 @@ async function main() {
     return;
   }
 
-  // PUT is upsert-by-id, so re-running the migration re-syncs the group.
+  // PATCH replaces the whole variable map of an existing group, so re-running
+  // the migration re-syncs the group against Fly; POST creates it the first time.
   const payload = {
     name: SECRET_ID,
     description: 'Runtime credentials migrated from Fly.io',
@@ -112,14 +126,14 @@ async function main() {
     priority: 10,
     secrets: { variables },
   };
-  const put = await nfRequest('PUT', `/v1/projects/${PROJECT_ID}/secrets/${SECRET_ID}`, payload);
-  if (put.ok) {
-    console.log(`\nwrote secret group ${SECRET_ID} (${put.status})`);
+  const patch = await nfRequest('PATCH', `/v1/projects/${PROJECT_ID}/secrets/${SECRET_ID}`, payload);
+  if (patch.ok) {
+    console.log(`\nwrote secret group ${SECRET_ID} (${patch.status})`);
     return;
   }
   const create = await nfRequest('POST', `/v1/projects/${PROJECT_ID}/secrets`, payload);
   if (!create.ok) {
-    throw new Error(`secret group write failed: PUT ${put.status} ${put.text}; POST ${create.status} ${create.text}`);
+    throw new Error(`secret group write failed: PATCH ${patch.status} ${patch.text}; POST ${create.status} ${create.text}`);
   }
   console.log(`\ncreated secret group ${SECRET_ID} (${create.status})`);
 }

@@ -50,7 +50,11 @@ NORTHFLANK_API_TOKEN=... scripts/northflank/provision.sh
 # 2. runtime credentials (reads them out of the running Fly container —
 #    Fly secrets cannot be read back through the API). --dry-run lists the
 #    variable names without writing anything.
-FLY_API_TOKEN=... NORTHFLANK_API_TOKEN=... node scripts/northflank/migrate-fly-secrets.mjs
+#    Values that intentionally differ from Fly are passed with --set, so a
+#    re-sync does not revert them (Fly releases are currently blocked by an
+#    overdue Fly invoice, so the maker trustee email only changes on Northflank).
+FLY_API_TOKEN=... NORTHFLANK_API_TOKEN=... node scripts/northflank/migrate-fly-secrets.mjs \
+  --set TRUST_MAKER_EMAIL=AnnRobinson1117@gmail.com
 
 # 3. ledger database. The dump is taken through `flyctl proxy` with a local
 #    pg_dump >= the Fly server major version (the Fly image only ships client

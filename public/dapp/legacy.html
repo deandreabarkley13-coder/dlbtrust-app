@@ -2675,7 +2675,7 @@
           const actions = r.status === 'approved'
             ? `<button class="btn btn-sm" onclick="executeDistributionRequest('${esc(r.id)}')">Execute</button>`
             : r.status === 'requested' || r.status === 'under_review'
-              ? `<button class="btn btn-sm" onclick="approveDistributionRequest('${esc(r.id)}','maker','malissa1130@gmail.com')">Maker Approve</button> <button class="btn btn-sm" onclick="approveDistributionRequest('${esc(r.id)}','checker','dbarkley1130@gmail.com')">Checker Approve</button> <button class="btn btn-sm" onclick="rejectDistributionRequest('${esc(r.id)}')">Reject</button>`
+              ? `<button class="btn btn-sm" onclick="approveDistributionRequest('${esc(r.id)}','maker')">Maker Approve</button> <button class="btn btn-sm" onclick="approveDistributionRequest('${esc(r.id)}','checker')">Checker Approve</button> <button class="btn btn-sm" onclick="rejectDistributionRequest('${esc(r.id)}')">Reject</button>`
               : '';
           tr.innerHTML = `<td class="mono">${esc(r.id.slice(0,16))}…</td><td>${esc(r.type)}</td><td>${esc(r.beneficiary_name || r.beneficiary_email || '—')}</td><td>$${(r.amount_cents/100).toFixed(2)}</td><td><span class="tag ${r.status}">${esc(r.status)}</span></td><td>${proofCell}</td><td>${actions}</td>`;
           tb.appendChild(tr);
@@ -2683,9 +2683,17 @@
       } catch (e) { showToast('Distribution requests error: ' + e.message, true); }
     };
 
+    let trusteeCache = null;
+    async function configuredTrusteeEmail(role) {
+      if (!trusteeCache) trusteeCache = (await api('/api/dapp/finops-ai/trustees')).data || [];
+      const trustee = trusteeCache.find(t => t.role === role);
+      if (!trustee) throw new Error('No trustee configured for role ' + role);
+      return trustee.email;
+    }
+
     window.approveDistributionRequest = async function(requestId, role, email) {
       try {
-        const trusteeEmail = email || (role === 'maker' ? 'malissa1130@gmail.com' : 'dbarkley1130@gmail.com');
+        const trusteeEmail = email || await configuredTrusteeEmail(role);
         const res = await api(`/api/dapp/distribution-requests/${encodeURIComponent(requestId)}/approve`, { method: 'POST', body: JSON.stringify({ role, trusteeEmail }) });
         showToast(`Request ${res.data.status}`, false);
         loadDistributionRequests();
