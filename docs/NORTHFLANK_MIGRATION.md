@@ -7,7 +7,7 @@ Replaces the Fly.io deployment of `dlbtrust-app` (app `dlbtrust-app`, volume
 
 | Fly.io | Northflank |
 | --- | --- |
-| app `dlbtrust-app` (Dockerfile, port 3002) | project `dlbtrust`, combined service `dlbtrust-app` — `northflank/service-dlbtrust-app.json` |
+| app `dlbtrust-app` (Dockerfile, port 3002) | project `dlbt-erp` (`us-east1`), combined service `dlbtrust-app` — `northflank/service-dlbtrust-app.json` |
 | Postgres app `dlbtrust-db` | PostgreSQL addon `dlbtrust-db` — `northflank/addon-postgres.json` |
 | volume `dlbtrust_data` mounted at `/data` | volume `dlbtrust-data` mounted at `/data` — `northflank/volume-data.json` |
 | `[env]` block in `fly.toml` | `runtimeEnvironment` in the service spec |
@@ -25,13 +25,22 @@ leave it unset before cutting DNS over.
 
 ## Order of operations
 
-Prerequisites: `NORTHFLANK_API_TOKEN` (project/service/secret/volume read+write),
-`FLY_API_TOKEN`, `npm i -g @northflank/cli`, and the GitHub repo linked to the
-Northflank account so the service can build from git.
+Prerequisites, all verified against the live account — provisioning fails
+without them:
+
+- `NORTHFLANK_API_TOKEN` (project/service/secret/volume read+write) and
+  `FLY_API_TOKEN`, plus `npm i -g @northflank/cli`.
+- A default payment method on the Northflank team. Without one every create call
+  returns `409 Please complete your account by adding a default payment method`,
+  including the free-tier-sized addon here.
+- GitHub linked under Northflank → Account/team settings → Version control, with
+  the app granted access to `deandreabarkley13-coder/dlbtrust-app`. A combined
+  service requires `vcsData`, and `northflank list vcs` must show the link —
+  this is an OAuth flow, so it cannot be done with an API token.
 
 ```bash
 # 1. project, postgres addon, service, /data volume
-NORTHFLANK_API_TOKEN=... scripts/northflank/provision.sh
+NORTHFLANK_API_TOKEN=... scripts/northflank/provision.sh   # project dlbt-erp already exists
 
 # 2. runtime credentials (reads them out of the running Fly container —
 #    Fly secrets cannot be read back through the API). --dry-run lists the

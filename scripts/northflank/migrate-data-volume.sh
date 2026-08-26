@@ -14,7 +14,7 @@ set -euo pipefail
 
 FLY_APP="${FLY_APP:-dlbtrust-app}"
 FLYCTL="${FLYCTL_BIN:-flyctl}"
-PROJECT_ID="${NORTHFLANK_PROJECT_ID:-dlbtrust}"
+PROJECT_ID="${NORTHFLANK_PROJECT_ID:-dlbt-erp}"
 SERVICE_ID="${NORTHFLANK_SERVICE_ID:-dlbtrust-app}"
 
 WORK_DIR="$(mktemp -d)"

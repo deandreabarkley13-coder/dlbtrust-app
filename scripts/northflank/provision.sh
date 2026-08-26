@@ -13,7 +13,7 @@ set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 SPEC_DIR="$REPO_ROOT/northflank"
-PROJECT_ID="${NORTHFLANK_PROJECT_ID:-dlbtrust}"
+PROJECT_ID="${NORTHFLANK_PROJECT_ID:-dlbt-erp}"
 SERVICE_ID="${NORTHFLANK_SERVICE_ID:-dlbtrust-app}"
 ADDON_ID="${NORTHFLANK_ADDON_ID:-dlbtrust-db}"
 VOLUME_ID="${NORTHFLANK_VOLUME_ID:-dlbtrust-data}"

@@ -16,7 +16,7 @@ import { execFileSync } from 'node:child_process';
 
 const DRY_RUN = process.argv.includes('--dry-run');
 const FLY_APP = process.env.FLY_APP || 'dlbtrust-app';
-const PROJECT_ID = process.env.NORTHFLANK_PROJECT_ID || 'dlbtrust';
+const PROJECT_ID = process.env.NORTHFLANK_PROJECT_ID || 'dlbt-erp';
 const SECRET_ID = process.env.NORTHFLANK_SECRET_ID || 'dlbtrust-runtime';
 const NF_API = process.env.NORTHFLANK_API_HOST || 'https://api.northflank.com';
 const FLYCTL = process.env.FLYCTL_BIN || 'flyctl';
