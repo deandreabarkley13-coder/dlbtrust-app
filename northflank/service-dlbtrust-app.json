@@ -1,0 +1,65 @@
+{
+  "name": "dlbtrust-app",
+  "description": "Treasury dashboard and payment API (server/server-3002.js)",
+  "billing": {
+    "deploymentPlan": "nf-compute-20",
+    "buildPlan": "nf-compute-200-4"
+  },
+  "deployment": {
+    "type": "statefulSet",
+    "instances": 1,
+    "docker": {
+      "configType": "default"
+    },
+    "storage": {
+      "ephemeralStorage": {
+        "storageSize": 4096
+      }
+    }
+  },
+  "buildSource": "git",
+  "vcsData": {
+    "projectUrl": "https://github.com/deandreabarkley13-coder/dlbtrust-app",
+    "projectType": "github",
+    "projectBranch": "main"
+  },
+  "buildSettings": {
+    "dockerfile": {
+      "buildEngine": "buildkit",
+      "dockerFilePath": "/Dockerfile",
+      "dockerWorkDir": "/",
+      "buildkit": {
+        "useCache": true
+      }
+    }
+  },
+  "ports": [
+    {
+      "name": "p01",
+      "internalPort": 3002,
+      "public": true,
+      "protocol": "HTTP"
+    }
+  ],
+  "healthChecks": [
+    {
+      "protocol": "HTTP",
+      "type": "readinessProbe",
+      "path": "/api/health",
+      "port": 3002,
+      "initialDelaySeconds": 20,
+      "periodSeconds": 30,
+      "timeoutSeconds": 10,
+      "failureThreshold": 5,
+      "successThreshold": 1
+    }
+  ],
+  "runtimeEnvironment": {
+    "PORT": "3002",
+    "NODE_ENV": "production",
+    "PAYMENT_HUB_MODE": "disabled",
+    "PAYMENT_HUB_LIVE": "false",
+    "MELIO_EXPORT_DIR": "/data/melio-exports",
+    "TRUST_SIGNATURE_DOCUMENT_PATH": "/data/governance/Trustees_Signature_Page.pdf"
+  }
+}
