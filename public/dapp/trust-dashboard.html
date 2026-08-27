@@ -576,9 +576,10 @@
     </div>
   </div>
 
+  <script src="/lib/portal-routing.js"></script>
   <script>
-  const ADMIN_KEY = 'dlb-admin-token';
-  const USER_KEY = 'dlb-beneficiary-token';
+  const ADMIN_KEY = PortalRouting.ADMIN_KEY;
+  const USER_KEY = PortalRouting.USER_KEY;
   const el = id => document.getElementById(id);
   const getToken = () => localStorage.getItem(ADMIN_KEY) || localStorage.getItem(USER_KEY) || '';
   const isAdmin = () => !!localStorage.getItem(ADMIN_KEY);
@@ -635,6 +636,22 @@
     if (key) switchTab(key);
   });
 
+  // The signed-in trustee's consensus role. Empty for operators/admins and
+  // trustee_admin, who are not bound to a single maker/checker seat.
+  const session = { email: '', role: '', consensusRole: '' };
+
+  function consensusRoleFrom(roles, role) {
+    const all = (Array.isArray(roles) ? roles : []).concat([role])
+      .map(r => String(r || '').toLowerCase());
+    if (all.includes('trustee_maker')) return 'maker';
+    if (all.includes('trustee_checker')) return 'checker';
+    return '';
+  }
+
+  function allowedConsensusRoles() {
+    return session.consensusRole ? [session.consensusRole] : ['maker', 'checker'];
+  }
+
   async function initDashboard() {
     const token = getToken();
     if (!token) { location.href = '/dapp'; return; }
@@ -642,12 +659,14 @@
       const me = await api('/api/dapp/auth/me');
       const authenticatedUser = (me && me.data && (me.data.dappUser || me.data.user)) || {};
       const authenticatedRoles = authenticatedUser.roles || [authenticatedUser.role];
-      const authenticatedTrustee = authenticatedRoles.some(r => String(r || '').toLowerCase().includes('trustee'))
-        || ['admin', 'operator'].includes(String(authenticatedUser.role || '').toLowerCase());
-      if (!authenticatedTrustee) {
-        location.replace('/trust-portal/dashboard.html');
+      const authenticatedRole = authenticatedUser.role || authenticatedUser.active_role;
+      if (!isAdmin() && !PortalRouting.isTrusteeRole(authenticatedRoles, authenticatedRole)) {
+        location.replace(PortalRouting.BENEFICIARY_HOME);
         return;
       }
+      session.email = authenticatedUser.email || '';
+      session.role = authenticatedRole || '';
+      session.consensusRole = consensusRoleFrom(authenticatedRoles, authenticatedRole);
       el('token-card').classList.add('hidden');
       el('dashboard').classList.remove('hidden');
       el('logout-btn').classList.remove('hidden');
@@ -690,8 +709,7 @@
         <div style="display:flex;justify-content:space-between;"><strong>${r.beneficiary_name || r.beneficiary_email}</strong><span class="badge ${r.status === 'approved' ? 'approved' : 'pending'}">${r.status}</span></div>
         <div class="muted" style="margin:6px 0;">${fmtUsd(r.amount_cents / 100)} — ${r.memo || ''}</div>
         <div style="display:flex;gap:8px;">
-          <button class="btn btn-sm" onclick="approveRequest('${r.id}', 'maker')">Approve as Maker</button>
-          <button class="btn btn-gold btn-sm" onclick="approveRequest('${r.id}', 'checker')">Approve as Checker</button>
+          ${allowedConsensusRoles().map(role => `<button class="btn ${role === 'checker' ? 'btn-gold ' : ''}btn-sm" onclick="approveRequest('${r.id}', '${role}')">Approve as ${role === 'checker' ? 'Checker' : 'Maker'}</button>`).join('')}
           <button class="btn btn-sec btn-sm" onclick="rejectRequest('${r.id}')">Reject</button>
           <button class="btn btn-sec btn-sm" onclick="executeRequest('${r.id}')">Execute</button>
         </div>
@@ -723,6 +741,7 @@
 
   let trusteeCache = null;
   async function trusteeEmail(role) {
+    if (session.email && session.consensusRole === role) return session.email;
     if (!trusteeCache) trusteeCache = (await api('/api/dapp/finops-ai/trustees')).data || [];
     const trustee = trusteeCache.find(t => t.role === role);
     if (!trustee) throw new Error('No trustee configured for role ' + role);
@@ -741,7 +760,8 @@
   async function rejectRequest(id) {
     const reason = prompt('Reason for rejection?') || 'Rejected from dashboard';
     try {
-      await api(`/api/dapp/distribution-requests/${id}/reject`, { method: 'POST', body: JSON.stringify({ trusteeEmail: 'deandreabarkley13@gmail.com', reason }) });
+      const email = session.email || await trusteeEmail(session.consensusRole || 'checker');
+      await api(`/api/dapp/distribution-requests/${id}/reject`, { method: 'POST', body: JSON.stringify({ trusteeEmail: email, reason }) });
       loadDistributions();
     } catch (e) { showStatus('dist-status', e.message, true); }
   }
@@ -768,9 +788,10 @@
       const invoice = r.invoiceNumber || r.invoice_number || '';
       return `<div style="font-size:.8rem;">• ${escapeHtml(vendor)} — ${fmtUsd(r.amount)}${invoice ? ' (invoice ' + escapeHtml(invoice) + ')' : ''}</div>`;
     }).join('');
-    const roleOptions = ['maker', 'checker']
+    const roleOptions = allowedConsensusRoles()
       .map(role => `<option value="${role}"${signed.includes(role) ? ' disabled' : ''}>${role}${signed.includes(role) ? ' (signed)' : ''}</option>`)
       .join('');
+    const alreadySigned = signed.includes(session.consensusRole);
     return `<div class="card" style="margin-bottom:12px;">
       <div style="display:flex;justify-content:space-between;gap:10px;">
         <strong>${escapeHtml(p.title || p.id)}</strong>
@@ -784,7 +805,7 @@
         <div class="form-group"><label>Your full legal name of record</label><input id="sig-name-${escapeHtml(p.id)}" placeholder="e.g. Malissa Ann Robinson" /></div>
       </div>
       <div style="display:flex;gap:8px;">
-        <button class="btn btn-gold btn-sm" onclick="signProposal('${escapeHtml(p.id)}', this)">Sign</button>
+        <button class="btn btn-gold btn-sm"${alreadySigned ? ' disabled' : ''} onclick="signProposal('${escapeHtml(p.id)}', this)">${alreadySigned ? 'Signed' : 'Sign'}</button>
         <button class="btn btn-sec btn-sm" onclick="rejectProposal('${escapeHtml(p.id)}', this)">Reject</button>
       </div>
     </div>`;

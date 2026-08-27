@@ -73,6 +73,7 @@
     <a href="/">← Back to public site</a>
   </div>
 
+  <script src="/lib/portal-routing.js"></script>
   <script>
     const el = id => document.getElementById(id);
     function show(id, msg, isErr) {
@@ -115,12 +116,9 @@
         const res = await api('/api/dapp/auth/verify', { method: 'POST', body: JSON.stringify({ email, code }) });
         if (!res.success || !res.data || !res.data.token) throw new Error(res.error || 'No token returned');
         localStorage.setItem('dlb-beneficiary-token', res.data.token);
-        if (res.data.user && res.data.user.email) localStorage.setItem('dlb-trust-email', res.data.user.email);
+        if (res.data.email) localStorage.setItem('dlb-trust-email', res.data.email);
         show('status', 'Login successful. Redirecting…', false);
-        const roles = res.data.roles || [res.data.role];
-        const destination = roles.some(r => String(r || '').toLowerCase().includes('trustee'))
-          ? '/dashboard'
-          : '/trust-portal/dashboard.html';
+        const destination = PortalRouting.homeForRoles(res.data.roles, res.data.role || res.data.active_role);
         setTimeout(() => location.href = destination, 400);
       } catch (e) { show('status', e.message, true); }
     }
@@ -138,10 +136,8 @@
       } catch (e) { show('admin-status', e.message, true); }
     }
 
-    // If already logged in, go straight to dashboard
-    if (localStorage.getItem('dlb-beneficiary-token') || localStorage.getItem('dlb-admin-token')) {
-      location.replace('/dashboard');
-    }
+    // If already logged in, go straight to the dashboard for the session's role
+    PortalRouting.resolveHome().then(home => { if (home) location.replace(home); });
   </script>
 </body>
 </html>

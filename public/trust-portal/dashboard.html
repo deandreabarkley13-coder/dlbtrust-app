@@ -384,6 +384,7 @@
     </div>
   </main>
 
+  <script src="/lib/portal-routing.js"></script>
   <script>
     const el = id => document.getElementById(id);
     const token = localStorage.getItem('dlb-beneficiary-token');
@@ -425,10 +426,15 @@
 
     async function loadMe() {
       const res = await api('/api/dapp/auth/me');
-      user = res.data.user || {};
+      user = res.data.dappUser || res.data.user || {};
       el('user-email').textContent = user.email || userEmail || '';
-      const roles = user.roles || [user.role] || ['beneficiary'];
-      const isTrustee = roles.some(r => String(r).includes('trustee'));
+      const roles = user.roles || [user.role || 'beneficiary'];
+      const isTrustee = PortalRouting.isTrusteeRole(roles, user.role || user.active_role);
+      // Trustees belong in the trustee dashboard; ?view=beneficiary keeps them here.
+      if (isTrustee && new URLSearchParams(location.search).get('view') !== 'beneficiary') {
+        location.replace(PortalRouting.TRUSTEE_HOME);
+        return;
+      }
       el('user-role').textContent = isTrustee ? 'Trustee' : 'Beneficiary';
       el('user-role').className = 'badge ' + (isTrustee ? 'trustee' : 'beneficiary');
     }
