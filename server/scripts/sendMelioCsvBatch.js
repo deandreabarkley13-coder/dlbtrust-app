@@ -35,11 +35,11 @@ function readPayables(args) {
   return [{
     amount,
     sourceType: args.sourceType || 'trust',
-    sourceAccountId: args.sourceAccountId || '4000',
+    sourceAccountId: args.sourceAccountId || '1000',
     vendor: { name: args.vendorName || process.env.MELIO_VENDOR_NAME || 'DB NET MGMT' },
     dueDate: args.dueDate || new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10),
     invoiceNumber: args.invoiceNumber,
-    memo: args.memo || `Melio CSV batch export from ${args.sourceAccountId || '4000'}`,
+    memo: args.memo || `Melio CSV batch export from ${args.sourceAccountId || '1000'}`,
   }];
 }
 

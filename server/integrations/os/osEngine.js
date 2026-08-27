@@ -4852,14 +4852,17 @@ class PtcBankEngine extends BaseOSEngine {
         if (!TrustAccounting) throw new Error('TrustAccountingEngine not available for GL funding');
         const { accountId, sourceType, sourceAccountId, amount } = payload;
         if (!accountId || !sourceType || !sourceAccountId || !amount) throw new Error('accountId, sourceType, sourceAccountId, and amount required');
+        if (String(sourceType).toLowerCase() !== 'trust') {
+          throw new Error(`PTC bank GL funding requires a trust source, received: ${sourceType}`);
+        }
         const account = await TrustBank.getAccount(accountId);
         if (!account) throw new Error(`PTC bank account not found: ${accountId}`);
         const amt = Number(amount);
         if (!Number.isFinite(amt) || amt <= 0) throw new Error('amount must be positive');
         const glAccountCode = payload.glAccountCode || account.linked_trust_account_code || cfg.glAccount;
-        const source = await TrustAccounting.getAccount(sourceAccountId);
-        if (!source) throw new Error(`Source GL account not found: ${sourceAccountId}`);
-        if (Number(source.balance || 0) * 100 < toCents(amt)) throw new Error(`Insufficient source balance in ${sourceAccountId}: ${source.balance} < ${amt}`);
+        await TrustAccounting.assertFundingAvailable(sourceAccountId, toCents(amt), {
+          purpose: 'PTC bank funding',
+        });
         const journal = await TrustAccounting.postJournalEntry({
           entryDate: new Date(),
           description: payload.description || `Fund PTC bank account ${accountId} from ${sourceAccountId}`,
@@ -5010,25 +5013,11 @@ class PtcTreasuryEngine extends BaseOSEngine {
     if (!fromAccountId || !sourceType || !sourceAccountId) return null;
     if (String(sourceType).toLowerCase() === 'ptc_bank') return null;
     const cfg = this._cfg();
-    const { TrustAccounting } = this._deps();
-    let fundSource = sourceAccountId;
-    let interestIncomeSource = null;
-    // If the requested source is an income/liability/equity account, use the accrued-interest
-    // GL as the balance-sheet cash source and charge the wire to the income account.
-    if (TrustAccounting) {
-      const src = await TrustAccounting.getAccount(sourceAccountId);
-      if (src && /^(income|revenue|liability|equity)$/i.test(src.account_type || '')) {
-        interestIncomeSource = sourceAccountId;
-        fundSource = '1200';
-        payload.paymentType = payload.paymentType || 'interest_payment';
-        payload._interestIncomeSource = interestIncomeSource;
-      }
-    }
     return await this._unwrap(await PtcBankEngine.process({
       action: 'fundFromSource',
       accountId: fromAccountId,
       sourceType,
-      sourceAccountId: fundSource,
+      sourceAccountId,
       amount,
       glAccountCode: glAccountCode || cfg.defaultPtcBankGl,
       description: description || `PTC Treasury workflow ${workflowId}`,
@@ -6010,7 +5999,7 @@ class NickelMcpEngine extends BaseOSEngine {
       payablesGlAccount: process.env.NICKEL_PAYABLES_GL_ACCOUNT || '2100',
       settlementGlAccount: process.env.NICKEL_SETTLEMENT_GL_ACCOUNT || '1000',
       defaultSourceType: process.env.NICKEL_SOURCE_TYPE || 'trust',
-      defaultSourceAccountId: process.env.NICKEL_SOURCE_ACCOUNT_ID || '4000',
+      defaultSourceAccountId: process.env.NICKEL_SOURCE_ACCOUNT_ID || '1000',
       notificationEmail: process.env.NICKEL_PAY_BILLS_EMAIL || process.env.TRUST_ADMIN_EMAIL || '',
       webhookSecret: process.env.NICKEL_WEBHOOK_SECRET || '',
       autoSettle: process.env.NICKEL_AUTO_SETTLE === 'true',

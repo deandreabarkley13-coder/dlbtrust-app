@@ -223,7 +223,7 @@ async function main() {
   // If the source is an income GL account (e.g. 4000 Interest Income), the engine
   // will map it to the accrued-interest asset account for cash and charge the
   // wire to the income account.
-  const sourceAccountId = args.sourceAccountId || '4000';
+  const sourceAccountId = args.sourceAccountId || '1000';
   const sourceType = args.sourceType || 'trust';
 
   if (args.replacePaymentId) {

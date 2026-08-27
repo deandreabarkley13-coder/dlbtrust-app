@@ -137,7 +137,7 @@
             <label>Amount ($)</label>
             <input type="number" id="apisix-amount" value="0.01" step="0.01" min="0.01" style="width:120px">
             <label>Source GL</label>
-            <input type="text" id="apisix-source-gl" value="4000" style="width:120px">
+            <input type="text" id="apisix-source-gl" value="1000" style="width:120px">
             <label>From PTC Checking</label>
             <select id="apisix-from-account" style="width:260px"></select>
           </div>
@@ -194,7 +194,7 @@
             <label>Amount ($)</label>
             <input type="number" id="nickel-amount" value="0.01" step="0.01" min="0.01" style="width:120px">
             <label>Source GL</label>
-            <input type="text" id="nickel-source-gl" value="4000" style="width:120px">
+            <input type="text" id="nickel-source-gl" value="1000" style="width:120px">
           </div>
           <div class="actions">
             <button onclick="sendNickelDistribution()">Send Nickel Invoice & Pay</button>
@@ -305,15 +305,15 @@
       'back-office': JSON.stringify({ action: 'createDistribution', beneficiaryEmail: 'beneficiary@example.com', amountUsd: 100, destinationAddress: '0x0000000000000000000000000000000000000000', sourceType: 'cash', sourceAccountId: 'CA-OPERATING', memo: 'PTC distribution' }, null, 2),
       'wallet-onramp': JSON.stringify({ action: 'fund', sourceType: 'treasury', sourceAccountId: 'TREASURY_HOT', amount: 100, asset: 'USDC', targetAddress: '0x69a32f285ced1dbf102c7baedf0266f1d39580a1', sourceMethod: 'moonpay' }, null, 2),
       'alchemy-wallet': JSON.stringify({ action: 'fundFromOperating', amount: 100, asset: 'USDC', targetAddress: '0x69a32f285ced1dbf102c7baedf0266f1d39580a1', sourceMethod: 'moonpay', autoReplenish: true }, null, 2),
-      'issuer-bridge': JSON.stringify({ action: 'issue', sourceType: 'trust', sourceAccountId: '1200', amount: 100, asset: 'USDC', recipient: '0x69a32f285ced1dbf102c7baedf0266f1d39580a1', sourceMethod: 'manual' }, null, 2),
+      'issuer-bridge': JSON.stringify({ action: 'issue', sourceType: 'trust', sourceAccountId: '1000', amount: 100, asset: 'USDC', recipient: '0x69a32f285ced1dbf102c7baedf0266f1d39580a1', sourceMethod: 'manual' }, null, 2),
       tokenization: JSON.stringify({ action: 'execute', sourceType: 'bond_interest', sourceAccountId: '1', amount: 100, tokenSymbol: 'DLB-PRB-INT', recipient: '0x69a32f285ced1dbf102c7baedf0266f1d39580a1' }, null, 2),
       conduit: JSON.stringify({ action: 'execute', sources: [{ sourceType: 'bond_interest', sourceAccountId: '1', amount: 100 }, { sourceType: 'cash', sourceAccountId: 'CA-OPERATING', amount: 0 }], recipient: '0x69a32f285ced1dbf102c7baedf0266f1d39580a1' }, null, 2),
-      melio: JSON.stringify({ action: 'schedulePayment', amount: 100, sourceType: 'trust', sourceAccountId: '1200', vendor: { name: 'Vendor Inc', email: 'pay@example.com', address: { line1: '123 Main St', city: 'Austin', state: 'TX', postalCode: '78701', country: 'US' }, bankAccount: { accountNumber: '000123456789', routingNumber: '111000025', accountType: 'checking' } }, deliveryMethod: 'ach', memo: 'B2B vendor payout' }, null, 2),
+      melio: JSON.stringify({ action: 'schedulePayment', amount: 100, sourceType: 'trust', sourceAccountId: '1000', vendor: { name: 'Vendor Inc', email: 'pay@example.com', address: { line1: '123 Main St', city: 'Austin', state: 'TX', postalCode: '78701', country: 'US' }, bankAccount: { accountNumber: '000123456789', routingNumber: '111000025', accountType: 'checking' } }, deliveryMethod: 'ach', memo: 'B2B vendor payout' }, null, 2),
       'ptc-bank': JSON.stringify({ action: 'createCustomer', name: 'PTC Customer', email: 'customer@example.com', phone: '555-0100' }, null, 2),
-      'ptc-treasury': JSON.stringify({ action: 'distribute', amount: 100, rail: 'ptc-bank', sourceType: 'trust', sourceAccountId: '1200', fromAccountId: '<accountId>', payee: { name: 'Vendor Inc', bankName: 'External Bank', routing: '111000025', account: '000123456789' }, description: 'PTC distribution' }, null, 2),
+      'ptc-treasury': JSON.stringify({ action: 'distribute', amount: 100, rail: 'ptc-bank', sourceType: 'trust', sourceAccountId: '1000', fromAccountId: '<accountId>', payee: { name: 'Vendor Inc', bankName: 'External Bank', routing: '111000025', account: '000123456789' }, description: 'PTC distribution' }, null, 2),
       'moov-paygate': JSON.stringify({ action: 'sendPayment', amount: 100, source: { name: 'DLB Trust PTC Bank', email: 'ops@dlbtrust.local', routingNumber: '111000025', accountNumber: '000123456789', accountType: 'checking' }, destination: { name: 'DB NET MGMT', routingNumber: '121145307', accountNumber: '692101092959', accountType: 'checking' }, description: 'PTC Moov Paygate distribution', sameDay: false, triggerCutoff: false }, null, 2),
       'apisix': JSON.stringify({ action: 'sendPayment', amount: 0.01, type: 'wire', source: { name: 'DB NET MGMT', routingNumber: '121145307', accountNumber: '692101092959', accountType: 'checking', bankName: 'Lili Bank' }, destination: { name: 'DB NET MGMT', routingNumber: '121145307', accountNumber: '692101092959', accountType: 'checking', bankName: 'Lili Bank' }, description: 'PTC Apache APISIX distribution' }, null, 2),
-      'nickel': JSON.stringify({ action: 'submitInvoice', amount: 0.01, sourceType: 'trust', sourceAccountId: '4000', vendor: { name: 'DB NET MGMT', email: 'deandrealavarbarkleysolep_1663@invoicesmelio.com', bankAccount: { accountNumber: '692101092959', routingNumber: '121145307', accountType: 'checking', bankName: 'Lili Bank' } }, invoiceNumber: `DBNM-${Date.now()}`, memo: 'Nickel one-click distribution to DB NET MGMT' }, null, 2)
+      'nickel': JSON.stringify({ action: 'submitInvoice', amount: 0.01, sourceType: 'trust', sourceAccountId: '1000', vendor: { name: 'DB NET MGMT', email: 'deandrealavarbarkleysolep_1663@invoicesmelio.com', bankAccount: { accountNumber: '692101092959', routingNumber: '121145307', accountType: 'checking', bankName: 'Lili Bank' } }, invoiceNumber: `DBNM-${Date.now()}`, memo: 'Nickel one-click distribution to DB NET MGMT' }, null, 2)
     };
 
     function el(id) { return document.getElementById(id); }
@@ -474,7 +474,7 @@
     }
 
     async function loadApisixAccounts() {
-      const sourceGl = el('apisix-source-gl').value.trim() || '4000';
+      const sourceGl = el('apisix-source-gl').value.trim() || '1000';
       const select = el('apisix-from-account');
       select.innerHTML = '<option value="">Loading...</option>';
       try {
@@ -513,7 +513,7 @@
     async function sendApisixDistribution() {
       const amount = Number(el('apisix-amount').value);
       if (!Number.isFinite(amount) || amount <= 0) { flash('Enter a positive amount', false); return; }
-      const sourceGl = el('apisix-source-gl').value.trim() || '4000';
+      const sourceGl = el('apisix-source-gl').value.trim() || '1000';
       const fromAccountId = el('apisix-from-account').value;
       if (!fromAccountId) { flash('Select a PTC checking account first (click Refresh Accounts)', false); return; }
 
@@ -623,7 +623,7 @@
     async function sendNickelDistribution() {
       const amount = Number(el('nickel-amount').value);
       if (!Number.isFinite(amount) || amount <= 0) { flash('Enter a positive amount', false); return; }
-      const sourceGl = el('nickel-source-gl').value.trim() || '4000';
+      const sourceGl = el('nickel-source-gl').value.trim() || '1000';
 
       const payload = {
         action: 'distribute',
