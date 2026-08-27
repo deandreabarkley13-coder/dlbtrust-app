@@ -278,3 +278,36 @@ describe('live trust activity sync', () => {
     expect(post).not.toHaveBeenCalled();
   });
 });
+
+describe('live bookkeeping summary', () => {
+  it('surfaces inactive synchronization modules as top-level warnings', async () => {
+    vi.spyOn(DataBridge, 'syncWiresToAccounting').mockResolvedValue({
+      posted: 0,
+      linksRepaired: 0,
+      failed: 0,
+    });
+    vi.spyOn(DataBridge, 'syncTrustActivityToAccounting').mockResolvedValue({
+      inactive: true,
+      message: 'Trust activity module not initialized',
+      posted: 0,
+      linksRepaired: 0,
+      failed: 0,
+    });
+    vi.spyOn(DataBridge, 'verifyWireSync').mockResolvedValue({
+      totalWiresWithoutJE: 0,
+      gaps: [],
+    });
+    vi.spyOn(DataBridge, 'getDataFlowStatus').mockResolvedValue({
+      syncHealth: 'healthy',
+    });
+
+    const result = await DataBridge.runLiveBookkeeping({ dryRun: true });
+
+    expect(result).toMatchObject({
+      mode: 'preview',
+      health: 'warning',
+      totalFailed: 0,
+      warnings: ['Trust activity module not initialized'],
+    });
+  });
+});

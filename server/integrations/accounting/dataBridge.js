@@ -1765,13 +1765,20 @@ class DataBridge {
       + (results.wireVerification.error ? 1 : 0)
       + (results.status.error ? 1 : 0)
       + (results.fineractPush && results.fineractPush.error ? 1 : 0);
+    var warnings = [];
+    if (results.wires.inactive) warnings.push(results.wires.message || 'Wire synchronization is inactive');
+    if (results.trustActivity.inactive) {
+      warnings.push(results.trustActivity.message || 'Trust activity synchronization is inactive');
+    }
 
     return {
       timestamp: new Date().toISOString(),
       mode: isDryRun ? 'preview' : 'live',
+      health: failed > 0 ? 'failed' : (warnings.length > 0 ? 'warning' : 'healthy'),
       durationMs: Date.now() - startTime,
       totalSynced: synced,
       totalFailed: failed,
+      warnings: warnings,
       results: results,
     };
   }
