@@ -67,7 +67,7 @@ async function main() {
   const senderName = args.senderName || process.env.APISIX_ODFI_NAME || name;
   const senderBankName = args.senderBankName || process.env.APISIX_ODFI_BANK_NAME || bankName;
 
-  const sourceAccountId = args.sourceAccountId || process.env.APISIX_SOURCE_GL || '4000';
+  const sourceAccountId = args.sourceAccountId || process.env.APISIX_SOURCE_GL || '1000';
   const sourceType = args.sourceType || 'trust';
 
   const payload = {
@@ -97,7 +97,6 @@ async function main() {
       destinationAccountType: args.destinationAccountType || 'checking',
       paymentType: args.paymentType || 'wire',
       reference: args.reference || `PTC-APISIX-${Date.now()}`,
-      interestIncomeSource: sourceAccountId === '4000' ? '4000' : undefined,
     },
   };
 

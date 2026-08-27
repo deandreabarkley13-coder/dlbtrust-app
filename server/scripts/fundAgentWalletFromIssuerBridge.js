@@ -20,7 +20,7 @@ const args = process.argv.slice(2).reduce((acc, val, i, arr) => {
 }, {});
 
 const amount = parseFloat(args.amount || process.argv.find((a) => !a.startsWith('--')) || 0);
-const sourceAccountId = args.sourceAccountId || '1200';
+const sourceAccountId = args.sourceAccountId || '1000';
 const sourceType = args.sourceType || 'trust';
 const recipient = args.recipient || process.env.AGENT_WALLET_ADDRESS || '0x69a32f285ced1dbf102c7baedf0266f1d39580a1';
 const sourceMethod = args.sourceMethod || (process.env.CIRCLE_MINT_API_KEY ? 'circle_mint' : 'manual');

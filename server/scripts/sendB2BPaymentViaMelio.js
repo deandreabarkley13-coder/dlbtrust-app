@@ -74,7 +74,7 @@ async function main() {
   const payload = {
     amount,
     sourceType: a.sourceType || 'trust',
-    sourceAccountId: a.sourceAccountId || '1200',
+    sourceAccountId: a.sourceAccountId || '1000',
     deliveryMethod: a.deliveryMethod || 'ach',
     memo: a.memo || `B2B payment from PTC`,
     vendor: {

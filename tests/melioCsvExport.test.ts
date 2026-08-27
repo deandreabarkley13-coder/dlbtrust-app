@@ -29,7 +29,7 @@ describe('Melio bill spreadsheet CSV export', () => {
     vi.restoreAllMocks();
   });
 
-  it('uses trust account 1000 as the canonical Melio funding default without changing other rail defaults', () => {
+  it('uses trust account 1000 as the canonical payment funding default', () => {
     const dashboard = fs.readFileSync(path.resolve(process.cwd(), 'public/os-engine-dashboard.html'), 'utf8');
     const vendorsRoutes = fs.readFileSync(path.resolve(process.cwd(), 'server/routes/vendors.js'), 'utf8');
     const config = MelioEngine._cfg();
@@ -43,10 +43,10 @@ describe('Melio bill spreadsheet CSV export', () => {
     expect(dashboard).toContain('id="melio-invoice-source-gl" value="1000"');
     expect(dashboard).toContain("el('melio-source-gl').value.trim() || '1000'");
     expect(dashboard).toContain("el('melio-invoice-source-gl').value.trim() || '1000'");
-    expect(dashboard).toContain('id="apisix-source-gl" value="4000"');
-    expect(dashboard).toContain('id="nickel-source-gl" value="4000"');
-    expect(vendorsRoutes.match(/source_account_code: paymentPayload\.source_account_code \|\| '1000'/g) || []).toHaveLength(1);
-    expect(vendorsRoutes).toContain("source_account_code: paymentPayload.source_account_code || '4000'");
+    expect(dashboard).toContain('id="apisix-source-gl" value="1000"');
+    expect(dashboard).toContain('id="nickel-source-gl" value="1000"');
+    expect(vendorsRoutes.match(/source_account_code: paymentPayload\.source_account_code \|\| '1000'/g) || []).toHaveLength(2);
+    expect(vendorsRoutes).not.toContain("source_account_code: paymentPayload.source_account_code || '4000'");
   });
 
   it('reserves outstanding CSV instructions against the canonical source position', async () => {

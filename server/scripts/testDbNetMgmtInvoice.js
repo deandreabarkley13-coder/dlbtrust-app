@@ -67,7 +67,7 @@ async function main() {
     process.exit(1);
   }
 
-  const sourceAccountId = a.sourceAccountId || '4000';
+  const sourceAccountId = a.sourceAccountId || '1000';
   const description = a.description || 'Management fees — DB NET MGMT';
   const invoiceNumber = a.invoiceNumber || `DBNM-MGMT-${Date.now()}`;
   const invoiceDate = a.invoiceDate || new Date().toISOString().slice(0, 10);

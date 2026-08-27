@@ -63,7 +63,7 @@ async function main() {
   const senderRouting = args.senderRouting || process.env.PTC_BANK_ROUTING || process.env.MOOV_PAYGATE_ODFI_ROUTING || routing;
   const senderAccount = args.senderAccount || process.env.PTC_BANK_SETTLEMENT_ACCOUNT || process.env.MOOV_PAYGATE_ORIGINATOR_ACCOUNT || fromAccount.account_number;
 
-  const sourceAccountId = args.sourceAccountId || process.env.MOOV_PAYGATE_SOURCE_GL || '4000';
+  const sourceAccountId = args.sourceAccountId || process.env.MOOV_PAYGATE_SOURCE_GL || '1000';
   const sourceType = args.sourceType || 'trust';
 
   const payload = {

@@ -5,6 +5,7 @@ const require = createRequire(import.meta.url);
 const { TrustAccountingEngine } = require('../server/integrations/accounting/trustAccountingEngine');
 const { SourceOfFundsAdapter } = require('../server/integrations/stablecoin/sourceOfFundsAdapter');
 const { ModuleFundingEngine } = require('../server/integrations/dapp/moduleFundingEngine');
+const { PtcBankEngine } = require('../server/integrations/os/osEngine');
 
 afterEach(() => {
   vi.restoreAllMocks();
@@ -152,5 +153,41 @@ describe('canonical source-of-funds delegation', () => {
         expect.objectContaining({ accountCode: '1000', debitAmount: 0, creditAmount: 25 }),
       ],
     }));
+  });
+});
+
+describe('PTC bank trust funding controls', () => {
+  it('validates the source through trust accounting before posting or depositing', async () => {
+    const assertFundingAvailable = vi.fn().mockRejectedValue(
+      new Error('Segregation of funds violation for trust:4000: income accounts cannot be used as payment funds')
+    );
+    const postJournalEntry = vi.fn();
+    const deposit = vi.fn();
+    vi.spyOn(PtcBankEngine, '_deps').mockReturnValue({
+      TrustBank: {
+        getAccount: vi.fn().mockResolvedValue({
+          account_id: 'PTC-1',
+          linked_trust_account_code: '1010',
+        }),
+        deposit,
+      },
+      TrustAccounting: {
+        assertFundingAvailable,
+        postJournalEntry,
+      },
+    });
+
+    await expect(PtcBankEngine._process('fundFromSource', {
+      accountId: 'PTC-1',
+      sourceType: 'trust',
+      sourceAccountId: '4000',
+      amount: 10,
+    })).rejects.toThrow('Segregation of funds violation for trust:4000');
+
+    expect(assertFundingAvailable).toHaveBeenCalledWith('4000', 1000, {
+      purpose: 'PTC bank funding',
+    });
+    expect(postJournalEntry).not.toHaveBeenCalled();
+    expect(deposit).not.toHaveBeenCalled();
   });
 });

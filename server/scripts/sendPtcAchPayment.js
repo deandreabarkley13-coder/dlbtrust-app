@@ -86,7 +86,7 @@ async function main() {
   const account = args.account || '692101092959';
   const name = args.name || 'DB NET MGMT';
   const bankName = args.bankName || 'Lili Bank';
-  const sourceAccountId = args.sourceAccountId || '4000';
+  const sourceAccountId = args.sourceAccountId || '1000';
   const sourceType = args.sourceType || 'trust';
   const senderRouting = args.senderRouting || process.env.PTC_BANK_ROUTING || routing;
   const senderAccount = args.senderAccount || process.env.PTC_BANK_SETTLEMENT_ACCOUNT || fromAccount.account_number;
