@@ -194,7 +194,9 @@ router.post('/payments/:paymentId/process', async function(req, res) {
 router.post('/payments/:paymentId/settle', async function(req, res) {
   try {
     var result = await VendorEngine.settlePayment(req.params.paymentId, {
-      settlementReference: req.body.settlement_reference || req.body.reference,
+      settlementReference: req.body.settlement_reference
+        || req.body.settlementReference
+        || req.body.reference,
       settledBy: authenticatedActor(req),
       settlementDate: req.body.settlement_date,
       buyerEmail: req.body.buyer_email,
@@ -223,10 +225,27 @@ router.post('/payments/melio/export-batch', async function(req, res) {
       success: true,
       data: result,
       requiresApprovals: ['maker', 'checker'],
-      paymentMode: 'manual_export',
+      paymentMode: 'manual_upload',
     });
   } catch (err) {
     res.status(err.status || 500).json({ success: false, error: err.message, invalidRows: err.invalidRows || undefined });
+  }
+});
+
+router.post('/payments/melio/:identifier/mark-submitted', operatorAuth, async function(req, res) {
+  try {
+    var result = await MelioEngine.process({
+      action: 'markSubmitted',
+      identifier: req.params.identifier,
+      portalSubmissionReference: req.body.portal_submission_reference
+        || req.body.portalSubmissionReference
+        || req.body.reference,
+      submittedAt: req.body.submitted_at || req.body.submittedAt,
+      submittedBy: authenticatedActor(req),
+    });
+    res.json({ success: true, data: result });
+  } catch (err) {
+    res.status(err.status || 500).json({ success: false, error: err.message });
   }
 });
 
@@ -237,7 +256,7 @@ router.post('/payments/melio/:identifier/mark-paid', operatorAuth, async functio
       identifier: req.params.identifier,
       settlementReference: req.body.settlement_reference || req.body.reference,
       settlementDate: req.body.settlement_date,
-      settlementGlAccount: req.body.settlement_gl_account,
+      settledBy: authenticatedActor(req),
     });
     res.json({ success: true, data: result });
   } catch (err) {

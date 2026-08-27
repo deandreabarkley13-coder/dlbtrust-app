@@ -11,6 +11,7 @@
 const express = require('express');
 const router = express.Router();
 const { WireEngine } = require('../integrations/wire/wireEngine');
+const { WireOriginationEngine } = require('../integrations/dapp/wireOriginationEngine');
 const { ApiCredentials } = require('../integrations/ach/apiCredentials');
 
 // ─── Auth Middleware (shared with ACH pipeline) ─────────────────────────────
@@ -114,7 +115,7 @@ router.get('/pending-approvals', requireAuth, async (req, res) => {
 // Approve a pending wire (checker action)
 router.post('/:id/approve', requireAuth, async (req, res) => {
   try {
-    const approvedBy = req.body.approvedBy || req.authUser || 'checker';
+    const approvedBy = req.authUser || 'checker';
     const wire = await WireEngine.approveWire(req.params.id, approvedBy);
     res.json({ success: true, data: wire });
   } catch (err) {
@@ -126,7 +127,7 @@ router.post('/:id/approve', requireAuth, async (req, res) => {
 // Reject a pending wire (checker action)
 router.post('/:id/reject', requireAuth, async (req, res) => {
   try {
-    const rejectedBy = req.body.rejectedBy || req.authUser || 'checker';
+    const rejectedBy = req.authUser || 'checker';
     const reason = req.body.reason;
     const wire = await WireEngine.rejectWire(req.params.id, rejectedBy, reason);
     res.json({ success: true, data: wire });
@@ -146,11 +147,32 @@ router.post('/:id/send', requireAuth, async (req, res) => {
   }
 });
 
+// ─── POST /api/wire/:id/confirm ────────────────────────────────────────────
+// Record authenticated provider acceptance/confirmation evidence
+router.post('/:id/confirm', requireAuth, async (req, res) => {
+  try {
+    const evidence = {
+      ...req.body,
+      confirmedBy: req.authUser || 'authenticated_operator',
+    };
+    const wire = await WireEngine.confirmWire(req.params.id, evidence);
+    await WireOriginationEngine.syncWireConfirmation(wire, evidence);
+    res.json({ success: true, data: wire });
+  } catch (err) {
+    res.status(400).json({ success: false, error: err.message });
+  }
+});
+
 // ─── POST /api/wire/:id/settle ─────────────────────────────────────────────
 // Settle a confirmed wire
 router.post('/:id/settle', requireAuth, async (req, res) => {
   try {
-    const wire = await WireEngine.settleWire(req.params.id);
+    const evidence = {
+      ...req.body,
+      settledBy: req.authUser || 'authenticated_operator',
+    };
+    const wire = await WireEngine.settleWire(req.params.id, evidence);
+    await WireOriginationEngine.syncWireSettlement(wire, evidence);
     res.json({ success: true, data: wire });
   } catch (err) {
     res.status(400).json({ success: false, error: err.message });
