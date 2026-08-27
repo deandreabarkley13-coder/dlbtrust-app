@@ -2937,10 +2937,10 @@
         const destination = prompt('Enter destination address for this expense payment:');
         if (!destination) return;
         const safeId = prompt('Enter Safe ID to pay from:');
-        const sourceType = prompt('Source type (treasury/cash/etc):') || 'treasury';
-        const sourceAccountId = prompt('Source account ID:') || 'TREASURY_HOT';
+        const sourceType = prompt('Source type (trust/treasury/cash/etc):') || 'trust';
+        const sourceAccountId = prompt('Source account ID:') || '1000';
         const res = await api(`/api/dapp/expenses/${encodeURIComponent(id)}/pay`, { method: 'POST', body: JSON.stringify({ destinationAddress: destination, safeId, sourceType, sourceAccountId }) });
-        showToast(`Expense paid: ${res.data.expense.request_id}`, false);
+        showToast(`Expense payment requested: ${res.data.expense.request_id}`, false);
         loadExpenses(); loadDistributionRequests();
       } catch (e) { showToast(e.message, true); }
     };

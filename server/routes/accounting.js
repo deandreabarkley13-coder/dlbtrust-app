@@ -12,6 +12,8 @@ const express = require('express');
 const router  = express.Router();
 const { TrustAccountingEngine } = require('../integrations/accounting/trustAccountingEngine');
 const { DataBridge } = require('../integrations/accounting/dataBridge');
+const { requireAuth, writeRateLimiter } = require('../integrations/auth/securityMiddleware');
+const adminAuth = requireAuth({ role: 'admin' });
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // DASHBOARD
@@ -343,6 +345,26 @@ router.post('/bridge/sync', async (req, res) => {
   }
 });
 
+// ─── POST /api/accounting/bridge/live ─────────────────────────────────────────
+router.post('/bridge/live', adminAuth, writeRateLimiter(), async (req, res) => {
+  try {
+    const dryRun = !req.body || req.body.dryRun !== false;
+    if (!dryRun && process.env.BOOKKEEPING_LIVE !== 'true') {
+      return res.status(403).json({
+        success: false,
+        error: 'Set BOOKKEEPING_LIVE=true before running live trust bookkeeping',
+      });
+    }
+    const result = await DataBridge.runLiveBookkeeping({
+      dryRun,
+      includeFineract: !req.body || req.body.includeFineract !== false,
+    });
+    res.json({ success: true, data: result });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
 // ─── POST /api/accounting/bridge/sync/bonds ───────────────────────────────────
 router.post('/bridge/sync/bonds', async (req, res) => {
   try {
@@ -367,6 +389,38 @@ router.post('/bridge/sync/ach', async (req, res) => {
 router.post('/bridge/sync/bill', async (req, res) => {
   try {
     const result = await DataBridge.syncBILLToAccounting();
+    res.json({ success: true, data: result });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// ─── POST /api/accounting/bridge/sync/wires ───────────────────────────────────
+router.post('/bridge/sync/wires', adminAuth, writeRateLimiter(), async (req, res) => {
+  try {
+    const dryRun = !req.body || req.body.dryRun !== false;
+    if (!dryRun && process.env.BOOKKEEPING_LIVE !== 'true') {
+      return res.status(403).json({ success: false, error: 'Set BOOKKEEPING_LIVE=true before posting wire journals' });
+    }
+    const result = await DataBridge.syncWiresToAccounting({
+      dryRun,
+    });
+    res.json({ success: true, data: result });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// ─── POST /api/accounting/bridge/sync/trust-activity ──────────────────────────
+router.post('/bridge/sync/trust-activity', adminAuth, writeRateLimiter(), async (req, res) => {
+  try {
+    const dryRun = !req.body || req.body.dryRun !== false;
+    if (!dryRun && process.env.BOOKKEEPING_LIVE !== 'true') {
+      return res.status(403).json({ success: false, error: 'Set BOOKKEEPING_LIVE=true before posting trust activity journals' });
+    }
+    const result = await DataBridge.syncTrustActivityToAccounting({
+      dryRun,
+    });
     res.json({ success: true, data: result });
   } catch (err) {
     res.status(500).json({ success: false, error: err.message });

@@ -77,7 +77,7 @@ class ExpenseManagementEngine {
           payer             TEXT,
           asset_liability_id TEXT REFERENCES asset_liability_records(id) ON DELETE SET NULL,
           description       TEXT,
-          status            TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending','approved','rejected','paid')),
+          status            TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending','approved','rejected','payment_pending','payment_failed','paid')),
           proof_id          TEXT,
           request_id        TEXT,
           payout_id         TEXT,
@@ -91,6 +91,8 @@ class ExpenseManagementEngine {
       `);
       await query(`CREATE INDEX IF NOT EXISTS idx_exp_status ON expense_records(status)`);
       await query(`CREATE INDEX IF NOT EXISTS idx_exp_al ON expense_records(asset_liability_id)`);
+      await query(`ALTER TABLE expense_records DROP CONSTRAINT IF EXISTS expense_records_status_check`);
+      await query(`ALTER TABLE expense_records ADD CONSTRAINT expense_records_status_check CHECK (status IN ('pending','approved','rejected','payment_pending','payment_failed','paid'))`);
     }, () => {});
   }
 
@@ -315,8 +317,8 @@ class ExpenseManagementEngine {
    * Pay an approved expense by creating a distribution/disbursement request.
    */
   static async payExpense(id, {
-    destinationAddress, safeId, sourceType = 'treasury', sourceAccountId = 'TREASURY_HOT',
-    proofId, createdBy,
+    destinationAddress, safeId, sourceType = 'trust', sourceAccountId = '1000',
+    proofId, createdBy, expenseAccountCode, accountingCreditAccountCode,
   }) {
     await this.ensureTables();
     let DistributionRequestEngine;
@@ -328,6 +330,9 @@ class ExpenseManagementEngine {
     if (!destinationAddress) throw new Error('destinationAddress required to pay expense');
 
     const amountUsd = (expense.amount_cents / 100).toFixed(2);
+    const debitAccountCode = expenseAccountCode
+      || expense.metadata?.expenseAccountCode
+      || this.getExpenseAccountCode(expense.expense_type);
     const request = await DistributionRequestEngine.createRequest({
       type: 'disbursement',
       requesterRole: 'trustee',
@@ -342,10 +347,32 @@ class ExpenseManagementEngine {
       proofId,
       memo: `Expense ${expense.id}: ${expense.description || expense.expense_type}`,
       createdBy,
+      metadata: {
+        expenseId: expense.id,
+        expenseAccountCode: debitAccountCode,
+        accountingCreditAccountCode: accountingCreditAccountCode || expense.metadata?.accountingCreditAccountCode || null,
+      },
     });
 
-    const updated = await this._update('expense_records', id, { status: 'paid', request_id: request.id, metadata: { ...expense.metadata, request } });
+    const updated = await this._update('expense_records', id, {
+      status: 'payment_pending',
+      request_id: request.id,
+      metadata: {
+        ...expense.metadata,
+        request,
+        expenseAccountCode: debitAccountCode,
+        paymentStatus: request.status,
+      },
+    });
     return { expense: this._rowToObject(updated, 'expense_records'), request };
+  }
+
+  static getExpenseAccountCode(expenseType) {
+    const type = String(expenseType || '').toLowerCase();
+    if (type.includes('management')) return '5000';
+    if (type.includes('trustee')) return '5100';
+    if (type.includes('legal') || type.includes('professional')) return '5200';
+    return '5300';
   }
 
   // ─── Totals / Dashboard ────────────────────────────────────────────────────
