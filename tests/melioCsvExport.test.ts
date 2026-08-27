@@ -49,6 +49,74 @@ describe('Melio bill spreadsheet CSV export', () => {
     expect(vendorsRoutes).toContain("source_account_code: paymentPayload.source_account_code || '4000'");
   });
 
+  it('maps canonical accounts to Melio settlement instruments without changing funding authority', () => {
+    const cfg = {
+      ...MelioEngine._cfg(),
+      defaultSourceType: 'trust',
+      defaultSourceAccountId: '1000',
+      defaultFundingSourceId: '',
+      fundingSourceField: 'payment_method_id',
+      fundingSourceMap: {
+        'trust:1000': {
+          id: 'melio-program-settlement',
+          field: 'funding_source_id',
+          type: 'partner_balance',
+        },
+      },
+    };
+
+    expect(MelioEngine._resolveFundingSource('trust', '1000', cfg)).toEqual({
+      id: 'melio-program-settlement',
+      field: 'funding_source_id',
+      type: 'partner_balance',
+      canonicalSourceType: 'trust',
+      canonicalSourceAccountId: '1000',
+    });
+    expect(MelioEngine._resolveFundingSource('trust', '1010', cfg)).toBeNull();
+  });
+
+  it('redacts vendor banking coordinates from stored payment metadata', () => {
+    expect(MelioEngine._sanitizePaymentPayload({
+      vendor: {
+        name: 'Settlement Vendor',
+        bankAccount: {
+          accountNumber: '1234567890',
+          routingNumber: '111000025',
+          accountType: 'checking',
+        },
+      },
+    })).toMatchObject({
+      vendor: {
+        bankAccount: {
+          accountNumber: '[REDACTED]',
+          routingNumber: '[REDACTED]',
+          accountType: 'checking',
+        },
+      },
+    });
+  });
+
+  it('classifies management, income, and principal flows to distinct canonical accounts', () => {
+    const cfg = MelioEngine._cfg();
+
+    expect(MelioEngine._accountingProfile({ accountingClass: 'management_fee' }, cfg)).toMatchObject({
+      debitGlAccount: '5000',
+      liabilityGlAccount: '2100',
+    });
+    expect(MelioEngine._accountingProfile({
+      accountingClass: 'beneficiary_income_distribution',
+    }, cfg)).toMatchObject({
+      debitGlAccount: '3100',
+      liabilityGlAccount: '2000',
+    });
+    expect(MelioEngine._accountingProfile({
+      accountingClass: 'beneficiary_principal_distribution',
+    }, cfg)).toMatchObject({
+      debitGlAccount: '3000',
+      liabilityGlAccount: '2000',
+    });
+  });
+
   it('reserves outstanding CSV instructions against the canonical source position', async () => {
     const getPosition = vi.fn().mockResolvedValue({
       sourceType: 'trust',
@@ -60,7 +128,9 @@ describe('Melio bill spreadsheet CSV export', () => {
       sourceOfTruth: 'trust_accounting',
     });
     vi.spyOn(MelioEngine, '_deps').mockReturnValue({ SourceOfFunds: { getPosition } });
-    vi.spyOn(pool, 'query').mockResolvedValue({ rows: [{ reserved_cents: '7500' }] });
+    const querySpy = vi.spyOn(pool, 'query').mockResolvedValue({
+      rows: [{ reserved_cents: '7500' }],
+    });
 
     const source = await MelioEngine._sourceBalance('trust', '1000');
 
@@ -76,6 +146,9 @@ describe('Melio bill spreadsheet CSV export', () => {
       sourceAvailableBalanceCents: 20000,
       reservedCents: 7500,
     });
+    expect(querySpy.mock.calls[0][0]).toContain(
+      "status NOT IN ('failed', 'cancelled', 'paid')",
+    );
   });
 
   it('rejects a segregated source before generating a payment file', async () => {
@@ -519,6 +592,226 @@ describe('Melio bill spreadsheet CSV export', () => {
     }
   });
 
+  it('schedules API payments against the mapped canonical settlement instrument', async () => {
+    const cfg = {
+      ...MelioEngine._cfg(),
+      useApi: true,
+      shadow: false,
+      apiKey: 'test-melio-api-key',
+      apiBaseUrlConfigured: true,
+      apiContractVerified: true,
+      defaultSourceType: 'trust',
+      defaultSourceAccountId: '1000',
+      defaultFundingSourceId: '',
+      fundingSourceField: 'payment_method_id',
+      postPayableGl: false,
+      fundingSourceMap: {
+        'trust:1000': {
+          id: 'melio-program-settlement',
+          field: 'funding_source_id',
+          type: 'partner_balance',
+        },
+      },
+    };
+    vi.spyOn(MelioEngine, '_cfg').mockReturnValue(cfg);
+    vi.spyOn(MelioEngine, '_sourceBalance').mockResolvedValue({
+      balanceCents: 20000,
+      ledgerBalanceCents: 25000,
+      reservedCents: 5000,
+      position: { sourceOfTruth: 'trust_accounting' },
+    });
+    vi.spyOn(MelioEngine, '_getPaymentRecord').mockResolvedValue(null);
+    const records: any[] = [];
+    vi.spyOn(MelioEngine, '_createPendingPayment').mockImplementation(async (record: any) => {
+      records.push(record);
+    });
+    vi.spyOn(MelioEngine, '_recordPayment').mockImplementation(async (record: any) => {
+      records.push(record);
+    });
+    const schedulePayment = vi.fn().mockResolvedValue({
+      id: 'melio-payment-1',
+      status: 'scheduled',
+    });
+    vi.spyOn(MelioEngine, '_client').mockReturnValue({
+      createVendor: vi.fn().mockResolvedValue({ id: 'melio-vendor-1' }),
+      createBill: vi.fn().mockResolvedValue({ id: 'melio-bill-1' }),
+      schedulePayment,
+    });
+
+    const result = await MelioEngine._schedulePayment({
+      amount: 12.5,
+      sourceType: 'trust',
+      sourceAccountId: '1000',
+      vendor: { name: 'Settlement Vendor' },
+      dueDate: '2026-02-01',
+    });
+
+    expect(schedulePayment).toHaveBeenCalledWith(expect.objectContaining({
+      vendor_id: 'melio-vendor-1',
+      bill_id: 'melio-bill-1',
+      amount: '12.5',
+      funding_source_id: 'melio-program-settlement',
+    }));
+    expect(records.map((record) => record.status)).toEqual(['pending', 'scheduled']);
+    expect(result).toMatchObject({
+      sourceType: 'trust',
+      sourceAccountId: '1000',
+      reserveId: null,
+      journalEntryId: null,
+      funding: {
+        authority: 'canonical_ledger',
+        sourceOfTruth: 'trust_accounting',
+        reservationStatus: 'active',
+        settlementInstrument: {
+          id: 'melio-program-settlement',
+          type: 'partner_balance',
+          canonicalSourceAccountId: '1000',
+        },
+      },
+    });
+  });
+
+  it('rejects live API scheduling without a mapped settlement instrument', async () => {
+    vi.spyOn(MelioEngine, '_cfg').mockReturnValue({
+      ...MelioEngine._cfg(),
+      useApi: true,
+      shadow: false,
+      apiKey: 'test-melio-api-key',
+      apiBaseUrlConfigured: true,
+      apiContractVerified: true,
+      defaultFundingSourceId: '',
+      fundingSourceMap: {},
+    });
+    vi.spyOn(MelioEngine, '_sourceBalance').mockResolvedValue({
+      balanceCents: 20000,
+      ledgerBalanceCents: 20000,
+      reservedCents: 0,
+      position: { sourceOfTruth: 'trust_accounting' },
+    });
+    const createVendor = vi.fn();
+    vi.spyOn(MelioEngine, '_client').mockReturnValue({
+      createVendor,
+      createBill: vi.fn(),
+      schedulePayment: vi.fn(),
+    });
+
+    await expect(MelioEngine._schedulePayment({
+      amount: 12.5,
+      sourceType: 'trust',
+      sourceAccountId: '1000',
+      vendor: { name: 'Settlement Vendor' },
+      dueDate: '2026-02-01',
+    })).rejects.toThrow(
+      'No Melio settlement instrument is mapped to trust:1000',
+    );
+    expect(createVendor).not.toHaveBeenCalled();
+  });
+
+  it('does not resubmit an existing canonical payment identifier', async () => {
+    vi.spyOn(MelioEngine, '_cfg').mockReturnValue({
+      ...MelioEngine._cfg(),
+      useApi: true,
+      shadow: false,
+      apiKey: 'test-melio-api-key',
+      apiBaseUrlConfigured: true,
+      apiContractVerified: true,
+      defaultFundingSourceId: 'melio-program-settlement',
+    });
+    vi.spyOn(MelioEngine, '_getPaymentRecord').mockResolvedValue({
+      id: 'MEL-CC-EXISTING',
+      status: 'scheduled',
+      melio_payment_id: 'melio-remote-existing',
+    });
+    const sourceBalance = vi.spyOn(MelioEngine, '_sourceBalance');
+    const schedulePayment = vi.fn();
+    vi.spyOn(MelioEngine, '_client').mockReturnValue({ schedulePayment });
+
+    await expect(MelioEngine._schedulePayment({
+      paymentId: 'MEL-CC-EXISTING',
+      amount: 12.5,
+      sourceType: 'trust',
+      sourceAccountId: '1000',
+      vendor: { name: 'Settlement Vendor' },
+      dueDate: '2026-02-01',
+    })).rejects.toThrow(
+      'Melio payment MEL-CC-EXISTING already exists with status scheduled',
+    );
+    expect(sourceBalance).not.toHaveBeenCalled();
+    expect(schedulePayment).not.toHaveBeenCalled();
+  });
+
+  it('fails live scheduling closed before contacting Melio when readiness is incomplete', async () => {
+    vi.spyOn(MelioEngine, '_cfg').mockReturnValue({
+      ...MelioEngine._cfg(),
+      useApi: true,
+      shadow: false,
+      apiKey: '',
+      apiBaseUrlConfigured: false,
+      apiContractVerified: false,
+      defaultFundingSourceId: 'melio-program-settlement',
+    });
+    const sourceBalance = vi.spyOn(MelioEngine, '_sourceBalance');
+    const client = vi.spyOn(MelioEngine, '_client');
+
+    await expect(MelioEngine._schedulePayment({
+      amount: 12.5,
+      sourceType: 'trust',
+      sourceAccountId: '1000',
+      vendor: { name: 'Settlement Vendor' },
+      dueDate: '2026-02-01',
+    })).rejects.toThrow(
+      'MELIO_API_KEY is required; MELIO_BASE_URL must be explicitly configured; '
+      + 'MELIO_API_CONTRACT_VERIFIED must be true',
+    );
+    expect(sourceBalance).not.toHaveBeenCalled();
+    expect(client).not.toHaveBeenCalled();
+  });
+
+  it('settles the canonical payment only after authenticated API polling reports completion', async () => {
+    vi.spyOn(MelioEngine, '_cfg').mockReturnValue({
+      ...MelioEngine._cfg(),
+      shadow: false,
+    });
+    const ready = vi.spyOn(MelioEngine, 'assertLiveApiReady').mockReturnValue({
+      id: 'melio-program-settlement',
+      field: 'payment_method_id',
+    });
+    vi.spyOn(MelioEngine, '_getPaymentRecord').mockResolvedValue({
+      id: 'MEL-CANONICAL-1',
+      source_type: 'trust',
+      source_account_id: '1000',
+      melio_payment_id: 'melio-remote-1',
+      status: 'scheduled',
+      result: {},
+    });
+    const getPayment = vi.fn().mockResolvedValue({
+      id: 'melio-remote-1',
+      status: 'completed',
+    });
+    vi.spyOn(MelioEngine, '_client').mockReturnValue({ getPayment });
+    const markPaid = vi.spyOn(MelioEngine, '_markPaidRecord').mockResolvedValue({
+      id: 'MEL-CANONICAL-1',
+      status: 'paid',
+      settlementJournalEntryId: 'JE-SETTLEMENT-1',
+    });
+
+    const result = await MelioEngine._getPayment({ paymentId: 'MEL-CANONICAL-1' });
+
+    expect(ready).toHaveBeenCalledWith('trust', '1000', expect.any(Object));
+    expect(getPayment).toHaveBeenCalledWith('melio-remote-1');
+    expect(markPaid).toHaveBeenCalledWith(expect.objectContaining({
+      id: 'MEL-CANONICAL-1',
+      status: 'completed',
+      result: {
+        remote: {
+          id: 'melio-remote-1',
+          status: 'completed',
+        },
+      },
+    }));
+    expect(result.status).toBe('paid');
+  });
+
   it('uses the per-payable expense account override', async () => {
     const cfg = MelioEngine._cfg();
     const cfgSpy = vi.spyOn(MelioEngine, '_cfg').mockReturnValue({
@@ -555,6 +848,62 @@ describe('Melio bill spreadsheet CSV export', () => {
 
       expect(result.records[0].result.expenseGlAccount).toBe('5200');
       expect(postJournalEntry.mock.calls[0][0].lines[0].accountCode).toBe('5200');
+    } finally {
+      recordSpy.mockRestore();
+      balanceSpy.mockRestore();
+      depsSpy.mockRestore();
+      cfgSpy.mockRestore();
+    }
+  });
+
+  it('posts beneficiary principal support through corpus and distributions payable', async () => {
+    const cfg = MelioEngine._cfg();
+    const cfgSpy = vi.spyOn(MelioEngine, '_cfg').mockReturnValue({
+      ...cfg,
+      payBillsEmail: '',
+      postPayableGl: true,
+    });
+    const deps = MelioEngine._deps();
+    const postJournalEntry = vi.fn().mockResolvedValue({ entry_id: 'JRN-PRINCIPAL' });
+    const depsSpy = vi.spyOn(MelioEngine, '_deps').mockReturnValue({
+      ...deps,
+      TrustAcct: { postJournalEntry },
+    });
+    const balanceSpy = vi.spyOn(MelioEngine, '_sourceBalance').mockResolvedValue({
+      balanceCents: 10000,
+      account: { account_type: 'asset' },
+    });
+    const recordSpy = vi.spyOn(MelioEngine, '_recordPayment').mockResolvedValue(undefined);
+
+    try {
+      const result = await MelioEngine.exportPayment({
+        amount: 25,
+        sourceType: 'trust',
+        sourceAccountId: '1000',
+        accountingClass: 'beneficiary_principal_distribution',
+        vendor: { name: 'DB NET MGMT' },
+        dueDate: '2026-02-01',
+      });
+
+      expect(result.result).toMatchObject({
+        accountingClass: 'beneficiary_principal_distribution',
+        debitGlAccount: '3000',
+        liabilityGlAccount: '2000',
+      });
+      expect(postJournalEntry).toHaveBeenCalledWith(expect.objectContaining({
+        lines: [
+          expect.objectContaining({
+            accountCode: '3000',
+            debitAmount: '25.00',
+            creditAmount: 0,
+          }),
+          expect.objectContaining({
+            accountCode: '2000',
+            debitAmount: 0,
+            creditAmount: '25.00',
+          }),
+        ],
+      }));
     } finally {
       recordSpy.mockRestore();
       balanceSpy.mockRestore();
@@ -618,5 +967,27 @@ describe('Melio bill spreadsheet CSV export', () => {
       depsSpy.mockRestore();
       cfgSpy.mockRestore();
     }
+  });
+
+  it('rejects settlement against an account other than the authorized canonical source', async () => {
+    const postJournalEntry = vi.fn();
+    vi.spyOn(MelioEngine, '_deps').mockReturnValue({
+      TrustAcct: { postJournalEntry },
+    });
+
+    await expect(MelioEngine._markPaidRecord({
+      id: 'MEL-SETTLEMENT-MISMATCH',
+      status: 'scheduled',
+      amount: 8.5,
+      sourceType: 'trust',
+      sourceAccountId: '1000',
+      metadata: { complianceScreeningId: 'COMP-MELIO-TEST' },
+      result: {},
+    }, {
+      settlementGlAccount: '1010',
+    })).rejects.toThrow(
+      'Melio settlement account 1010 does not match the authorized canonical source account 1000',
+    );
+    expect(postJournalEntry).not.toHaveBeenCalled();
   });
 });

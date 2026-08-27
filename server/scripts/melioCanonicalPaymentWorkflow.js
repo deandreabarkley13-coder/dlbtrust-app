@@ -2,23 +2,24 @@
 'use strict';
 
 /**
- * Canonical ledger → Melio payment-file workflow.
+ * Trust Company → DB NET MGMT canonical Melio workflow.
  *
  * End to end, this script:
  *   1. Downloads the ledger account balances CSV (trial balance) for the audit trail.
  *   2. Verifies the source ledger account covers the payment amount.
- *   3. Creates a canonical vendor_bill proposal (Maker/Checker consensus required).
- *   4. Records Maker and Checker approvals with legal-name signatures of record.
- *   5. Executes the proposal, generating the Melio CSV payment file and GL accrual.
- *   6. Downloads the Melio CSV payment file for manual upload to Melio.
+ *   3. Creates a classified canonical vendor_bill proposal.
+ *   4. Records authenticated Maker and Checker approvals.
+ *   5. Executes the proposal, posting the classified accrual.
+ *   6. Either submits the payment to Melio or downloads its manual-upload CSV.
  *
- * Manual step after running: in Melio, go to Bills tab → Import bills →
- * Import bills spreadsheet, upload the downloaded CSV, review and pay.
- * After paying in Melio, settle the ledger with:
- *   POST /api/vendors/payments/melio/:paymentId/mark-paid
+ * In manual_upload mode, upload the downloaded CSV in Melio and confirm
+ * settlement with POST /api/vendors/payments/melio/:paymentId/mark-paid.
+ * In live_api mode, poll getPayment until Melio confirms settlement.
  *
  * Usage:
  *   ADMIN_SECRET_TOKEN=... \
+ *   TRUST_MAKER_TOKEN=... \
+ *   TRUST_CHECKER_TOKEN=... \
  *   TRUST_MAKER_SIGNATURE="Malissa Ann Robinson" \
  *   TRUST_CHECKER_SIGNATURE="DeAndrea Lavar Barkley" \
  *   node server/scripts/melioCanonicalPaymentWorkflow.js \
@@ -27,21 +28,23 @@
  *     --sourceAccountId 1000 \
  *     --vendorName "DB NET MGMT" \
  *     --vendorEmail vendor@example.com \
- *     --routing 121145307 \
- *     --account 692101092959 \
+ *     --routing "$MELIO_VENDOR_ROUTING" \
+ *     --account "$MELIO_VENDOR_ACCOUNT" \
  *     --accountType checking \
  *     --bankName "Lili Bank" \
  *     --invoiceNumber INV-1001 \
  *     --dueDate 2026-09-01 \
- *     --memo "Trust expense bill" \
+ *     --accountingClass beneficiary_income_distribution \
+ *     --executionMode live_api \
+ *     --memo "Beneficiary support from trust income" \
  *     --outDir data/melio-workflow
  *
  * Options:
  *   --baseUrl          Server base URL (default: $DLBTRUST_BASE_URL or http://localhost:3002)
- *   --makerEmail       Maker trustee email (default: $TRUST_MAKER_EMAIL or malissa1130@gmail.com)
- *   --checkerEmail     Checker trustee email (default: $TRUST_CHECKER_EMAIL or deandreabarkley13@gmail.com)
  *   --makerSignature   Maker legal-name signature (default: $TRUST_MAKER_SIGNATURE)
  *   --checkerSignature Checker legal-name signature (default: $TRUST_CHECKER_SIGNATURE)
+ *   --accountingClass  management_fee|beneficiary_income_distribution|beneficiary_principal_distribution
+ *   --executionMode    live_api|manual_upload (default: manual_upload)
  */
 
 const fs = require('fs');
@@ -61,6 +64,8 @@ const args = (() => {
 
 const BASE_URL = (args.baseUrl || process.env.DLBTRUST_BASE_URL || 'http://localhost:3002').replace(/\/$/, '');
 const TOKEN = process.env.ADMIN_SECRET_TOKEN || '';
+const MAKER_TOKEN = process.env.TRUST_MAKER_TOKEN || '';
+const CHECKER_TOKEN = process.env.TRUST_CHECKER_TOKEN || '';
 
 function required(a, keys) {
   for (const k of keys) {
@@ -68,13 +73,13 @@ function required(a, keys) {
   }
 }
 
-async function api(method, route, body) {
+async function api(method, route, body, bearerToken = '') {
+  const headers = { 'Content-Type': 'application/json' };
+  if (bearerToken) headers.Authorization = `Bearer ${bearerToken}`;
+  else headers['x-admin-token'] = TOKEN;
   const res = await fetch(`${BASE_URL}${route}`, {
     method,
-    headers: {
-      'Content-Type': 'application/json',
-      'x-admin-token': TOKEN,
-    },
+    headers,
     body: body === undefined ? undefined : JSON.stringify(body),
   });
   const text = await res.text();
@@ -93,15 +98,24 @@ async function download(route, filePath) {
 
 async function main() {
   if (!TOKEN) throw new Error('ADMIN_SECRET_TOKEN environment variable is required');
-  required(args, ['amount', 'vendorName', 'routing', 'account']);
+  if (!MAKER_TOKEN || !CHECKER_TOKEN) {
+    throw new Error('TRUST_MAKER_TOKEN and TRUST_CHECKER_TOKEN are required for authenticated dual approval');
+  }
+  required(args, [
+    'amount',
+    'vendorName',
+    'routing',
+    'account',
+    'invoiceNumber',
+    'accountingClass',
+  ]);
 
   const amount = Number(args.amount);
   if (!amount || amount <= 0) throw new Error('--amount must be a positive number');
 
   const sourceType = args.sourceType || 'trust';
   const sourceAccountId = args.sourceAccountId || process.env.MELIO_SOURCE_ACCOUNT_ID || '1000';
-  const makerEmail = args.makerEmail || process.env.TRUST_MAKER_EMAIL || 'malissa1130@gmail.com';
-  const checkerEmail = args.checkerEmail || process.env.TRUST_CHECKER_EMAIL || 'deandreabarkley13@gmail.com';
+  const executionMode = args.executionMode || 'manual_upload';
   const makerSignature = args.makerSignature || process.env.TRUST_MAKER_SIGNATURE || '';
   const checkerSignature = args.checkerSignature || process.env.TRUST_CHECKER_SIGNATURE || '';
   if (!makerSignature || !checkerSignature) {
@@ -134,10 +148,12 @@ async function main() {
     amount,
     sourceType,
     sourceAccountId,
-    invoiceNumber: args.invoiceNumber || `INV-${Date.now()}`,
+    invoiceNumber: args.invoiceNumber,
     dueDate: args.dueDate || today,
     billDate: args.billDate || today,
     memo: args.memo || `Trust vendor bill ${today}`,
+    accountingClass: args.accountingClass,
+    executionMode,
     vendor: {
       name: args.vendorName,
       email: args.vendorEmail || '',
@@ -165,21 +181,17 @@ async function main() {
   const proposalId = proposalRes.data.id;
   console.log(`[3/6] Canonical vendor_bill proposal created: ${proposalId}`);
 
-  // 4. Maker and Checker approvals with legal-name signatures of record
+  // 4. Authenticated Maker and Checker approvals with signatures of record
   await api('POST', `/api/finops/consensus/proposals/${proposalId}/approve`, {
-    role: 'maker',
-    approverEmail: makerEmail,
     signature: makerSignature,
-  });
-  console.log(`[4/6] Maker approval recorded (${makerEmail})`);
+  }, MAKER_TOKEN);
+  console.log('[4/6] Authenticated Maker approval recorded');
   const checkerRes = await api('POST', `/api/finops/consensus/proposals/${proposalId}/approve`, {
-    role: 'checker',
-    approverEmail: checkerEmail,
     signature: checkerSignature,
-  });
-  console.log(`[4/6] Checker approval recorded (${checkerEmail})`);
+  }, CHECKER_TOKEN);
+  console.log('[4/6] Authenticated Checker approval recorded');
 
-  // 5. Execute the proposal → Melio CSV export + GL accrual
+  // 5. Execute the proposal → live Melio submission or CSV export + GL accrual
   // (the final approval auto-executes once the consensus threshold is met)
   let proposal = checkerRes.data;
   if (proposal.status !== 'executed') {
@@ -188,21 +200,28 @@ async function main() {
   const result = proposal.result || proposal;
   const paymentId = result.paymentId || result.exportIdentifier;
   if (!paymentId) throw new Error(`Execution succeeded but no payment id returned: ${JSON.stringify(proposal)}`);
-  console.log(`[5/6] Proposal executed. Melio payment: ${paymentId}${result.journalEntryId ? ` (journal ${result.journalEntryId})` : ''}`);
+  console.log(`[5/6] Proposal executed in ${result.paymentMode || executionMode} mode. Canonical payment: ${paymentId}${result.journalEntryId ? ` (journal ${result.journalEntryId})` : ''}`);
 
-  // 6. Download the Melio CSV payment file for manual upload
-  const melioCsvPath = path.join(outDir, result.fileName || `melio-export-${paymentId}-${today}.csv`);
-  await download(`/api/vendors/payments/melio/${encodeURIComponent(paymentId)}/download`, melioCsvPath);
-  console.log(`[6/6] Melio payment file downloaded: ${melioCsvPath}`);
-
-  console.log('');
-  console.log('Next steps:');
-  console.log('  1. In Melio, go to Bills tab → Import bills → Import bills spreadsheet.');
-  console.log(`  2. Upload ${melioCsvPath}, review the imported bill, and pay it.`);
-  console.log('  3. After Melio confirms payment, settle the ledger:');
-  console.log(`     curl -X POST ${BASE_URL}/api/vendors/payments/melio/${paymentId}/mark-paid \\`);
-  console.log("       -H 'x-admin-token: <ADMIN_SECRET_TOKEN>' -H 'Content-Type: application/json' \\");
-  console.log("       -d '{\"settlement_reference\": \"<melio-payment-reference>\"}'");
+  if ((result.paymentMode || executionMode) === 'live_api') {
+    console.log(`[6/6] Melio accepted payment: ${result.melioPaymentId || 'remote identifier pending'}`);
+    console.log('');
+    console.log('Poll the approved payment until Melio reports completed/sent/settled:');
+    console.log(`  curl -X POST ${BASE_URL}/api/os/melio/process \\`);
+    console.log("    -H 'x-admin-token: <ADMIN_SECRET_TOKEN>' -H 'Content-Type: application/json' \\");
+    console.log(`    -d '{"action":"getPayment","paymentId":"${paymentId}"}'`);
+  } else {
+    const melioCsvPath = path.join(outDir, result.fileName || `melio-export-${paymentId}-${today}.csv`);
+    await download(`/api/vendors/payments/melio/${encodeURIComponent(paymentId)}/download`, melioCsvPath);
+    console.log(`[6/6] Melio payment file downloaded: ${melioCsvPath}`);
+    console.log('');
+    console.log('Next steps:');
+    console.log('  1. In Melio, go to Bills tab → Import bills → Import bills spreadsheet.');
+    console.log(`  2. Upload ${melioCsvPath}, review the imported bill, and pay it.`);
+    console.log('  3. After Melio confirms payment, settle the ledger:');
+    console.log(`     curl -X POST ${BASE_URL}/api/vendors/payments/melio/${paymentId}/mark-paid \\`);
+    console.log("       -H 'x-admin-token: <ADMIN_SECRET_TOKEN>' -H 'Content-Type: application/json' \\");
+    console.log("       -d '{\"settlement_reference\": \"<melio-payment-reference>\"}'");
+  }
 }
 
 main().catch((err) => {

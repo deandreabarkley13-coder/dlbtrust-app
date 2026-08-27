@@ -17,6 +17,7 @@
     "lint": "eslint server/",
     "compliance:refresh-ofac": "node scripts/refresh-ofac-sanctions.cjs",
     "compliance:refresh-opensanctions": "node scripts/refresh-opensanctions.cjs",
+    "trust:melio-workflow": "node server/scripts/melioCanonicalPaymentWorkflow.js",
     "db:init": "tsx src/server/db/init.ts",
     "typecheck": "tsc --noEmit"
   },

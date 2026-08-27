@@ -21,6 +21,7 @@ const {
   getSignatureOfRecord,
 } = require('./trustees');
 const { PaymentComplianceGate } = require('../compliance/paymentComplianceGate');
+const paymentCrypto = require('../paymentHub/paymentCrypto');
 
 let PtcStablecoinEngine, StablecoinDexEngine, ModuleP2PSwapEngine, OnOffRampEngine, TrustMarketEngine, IntentRoutingEngine, ExternalWalletEngine;
 try { PtcStablecoinEngine = require('./ptcStablecoinEngine').PtcStablecoinEngine; } catch (e) { /* optional */ }
@@ -98,6 +99,82 @@ class CanonicalConsensusEngine {
     return isVendorBill(categoryOrProposal) ? Math.max(2, threshold) : threshold;
   }
 
+  static _vendorBillExecutionMode(payload = {}) {
+    const requested = String(
+      payload.executionMode
+      || payload.execution_mode
+      || 'manual_upload'
+    ).toLowerCase();
+    const mode = {
+      manual: 'manual_upload',
+      manual_export: 'manual_upload',
+      live: 'live_api',
+      api: 'live_api',
+    }[requested] || requested;
+    if (!['manual_upload', 'live_api'].includes(mode)) {
+      throw new Error('vendor_bill executionMode must be manual_upload or live_api');
+    }
+    return mode;
+  }
+
+  static _validateClassifiedVendorBill(payload, context) {
+    const invoiceNumber = payload.invoiceNumber || payload.invoice_number;
+    if (!String(invoiceNumber || '').trim()) {
+      throw new Error(`${context} requires an explicit invoiceNumber`);
+    }
+    const accountingClass = payload.accountingClass || payload.accounting_class;
+    if (!String(accountingClass || '').trim()) {
+      throw new Error(`${context} requires an explicit accountingClass`);
+    }
+    MelioEngine._accountingProfile(payload);
+  }
+
+  static _protectVendorBankDetails(payload = {}) {
+    const protectedPayload = JSON.parse(safeJson(payload));
+    const batchField = ['payables', 'items', 'rows'].find(
+      (field) => Array.isArray(protectedPayload[field])
+    );
+    const rows = batchField ? protectedPayload[batchField] : [protectedPayload];
+    for (const row of rows) {
+      const bankAccount = row?.vendor?.bankAccount || row?.vendor?.bank_account;
+      if (!bankAccount) continue;
+      for (const [plainKey, encryptedKey, last4Key] of [
+        ['accountNumber', 'accountNumberEncrypted', 'accountNumberLast4'],
+        ['account_number', 'accountNumberEncrypted', 'accountNumberLast4'],
+        ['routingNumber', 'routingNumberEncrypted', 'routingNumberLast4'],
+        ['routing_number', 'routingNumberEncrypted', 'routingNumberLast4'],
+      ]) {
+        if (!bankAccount[plainKey]) continue;
+        const value = String(bankAccount[plainKey]);
+        bankAccount[encryptedKey] = paymentCrypto.encrypt(value);
+        bankAccount[last4Key] = value.slice(-4);
+        delete bankAccount[plainKey];
+      }
+    }
+    return protectedPayload;
+  }
+
+  static _restoreVendorBankDetails(payload = {}) {
+    const restoredPayload = JSON.parse(safeJson(payload));
+    const batchField = ['payables', 'items', 'rows'].find(
+      (field) => Array.isArray(restoredPayload[field])
+    );
+    const rows = batchField ? restoredPayload[batchField] : [restoredPayload];
+    for (const row of rows) {
+      const bankAccount = row?.vendor?.bankAccount || row?.vendor?.bank_account;
+      if (!bankAccount) continue;
+      if (bankAccount.accountNumberEncrypted) {
+        bankAccount.accountNumber = paymentCrypto.decrypt(bankAccount.accountNumberEncrypted);
+      }
+      if (bankAccount.routingNumberEncrypted) {
+        bankAccount.routingNumber = paymentCrypto.decrypt(bankAccount.routingNumberEncrypted);
+      }
+      delete bankAccount.accountNumberEncrypted;
+      delete bankAccount.routingNumberEncrypted;
+    }
+    return restoredPayload;
+  }
+
   static _validateVendorBillPayload(payload = {}) {
     if (!payload || typeof payload !== 'object' || Array.isArray(payload)) {
       throw new Error('vendor_bill payload must be an object');
@@ -114,14 +191,19 @@ class CanonicalConsensusEngine {
     }
     if (!MelioEngine) throw new Error('MelioEngine not available');
 
+    const executionMode = this._vendorBillExecutionMode(payload);
     const batchField = ['payables', 'items', 'rows'].find((field) => payload[field] !== undefined);
     if (batchField) {
+      if (executionMode === 'live_api') {
+        throw new Error('live_api vendor_bill execution supports one approved payment at a time');
+      }
       if (!Array.isArray(payload[batchField]) || payload[batchField].length === 0) {
         throw new Error('vendor_bill payables must be a non-empty array');
       }
       payload[batchField].forEach((bill, index) => {
         try {
           requireVendorIdentity(bill, `vendor_bill payable ${index + 1}`);
+          this._validateClassifiedVendorBill(bill, `vendor_bill payable ${index + 1}`);
           MelioEngine._buildCsvRow(bill || {}, `CONSENSUS-BILL-${index}`);
         } catch (err) {
           throw new Error(`vendor_bill payable ${index + 1} invalid: ${err.message}`);
@@ -131,6 +213,7 @@ class CanonicalConsensusEngine {
     }
 
     requireVendorIdentity(payload, 'vendor_bill');
+    this._validateClassifiedVendorBill(payload, 'vendor_bill');
     MelioEngine._buildCsvRow(payload, 'CONSENSUS-BILL');
     return { batch: false, count: 1 };
   }
@@ -150,8 +233,12 @@ class CanonicalConsensusEngine {
       });
     }
     if (!MelioEngine) throw new Error('MelioEngine not available');
+    const executionMode = this._vendorBillExecutionMode(payload);
     const batchField = ['payables', 'items', 'rows'].find((field) => payload[field] !== undefined);
     if (batchField) {
+      if (executionMode === 'live_api') {
+        throw new Error('live_api vendor_bill execution supports one approved payment at a time');
+      }
       const screenedPayables = [];
       const complianceScreeningIds = [];
       for (const payable of payload[batchField]) {
@@ -183,7 +270,7 @@ class CanonicalConsensusEngine {
       return {
         ...result,
         exportIdentifier: batch.batchId,
-        paymentMode: 'manual_export',
+        paymentMode: 'manual_upload',
         complianceScreeningIds,
         fileNames: (batch.files || []).map((file) => file.fileName),
         paymentIds: (batch.records || []).map((record) => record.id),
@@ -193,30 +280,39 @@ class CanonicalConsensusEngine {
       };
     }
 
+    if (executionMode === 'live_api') {
+      MelioEngine.assertLiveApiReady(
+        payload.sourceType || payload.source_type,
+        payload.sourceAccountId || payload.source_account_id
+      );
+    }
     const compliance = await PaymentComplianceGate.screenVendorPayment({
       vendor: payload.vendor,
       amount: payload.amount,
       sourceAccountId: payload.sourceAccountId || payload.source_account_id,
       rail: 'melio',
-      action: 'export',
+      action: executionMode === 'live_api' ? 'execute' : 'export',
       screenedBy: 'canonical-consensus',
       reference: payload.invoiceNumber || payload.invoice_number,
     });
     const result = await MelioEngine.process({
-      action: 'exportPayment',
+      action: executionMode === 'live_api' ? 'schedulePayment' : 'exportPayment',
       ...payload,
+      ...(proposalId ? { paymentId: `MEL-${proposalId}` } : {}),
       metadata: {
         ...(payload.metadata || {}),
         complianceScreeningId: compliance.screeningId,
+        ...(proposalId ? { consensusProposalId: proposalId } : {}),
       },
     });
     const record = result && result.result && result.result.id ? result.result : result;
     return {
       ...result,
       exportIdentifier: record.id,
-      paymentMode: 'manual_export',
+      paymentMode: executionMode,
       complianceScreeningId: compliance.screeningId,
       paymentId: record.id,
+      melioPaymentId: record.melioPaymentId || null,
       fileName: record.result && record.result.fileName,
       journalEntryId: record.journalEntryId || null,
     };
@@ -275,6 +371,9 @@ class CanonicalConsensusEngine {
     if (!title) throw new Error('title is required');
     if (!category) throw new Error('category is required');
     if (isVendorBill(category)) this._validateVendorBillPayload(payload);
+    const storedPayload = isVendorBill(category)
+      ? this._protectVendorBankDetails(payload || {})
+      : (payload || {});
     const roles = isVendorBill(category)
       ? defaultRequiredRoles()
       : (Array.isArray(requiredRoles) && requiredRoles.length ? requiredRoles : defaultRequiredRoles());
@@ -283,7 +382,7 @@ class CanonicalConsensusEngine {
     await query(
       `INSERT INTO canonical_proposals (id, title, description, category, payload, required_roles, required_approvals, approvals, created_by)
        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
-      [proposalId, title, description || '', category, safeJson(payload || {}), safeJson(roles), threshold, safeJson([]), createdBy || '']
+      [proposalId, title, description || '', category, safeJson(storedPayload), safeJson(roles), threshold, safeJson([]), createdBy || '']
     );
     const proposal = await this.getProposal(proposalId);
     if (isVendorBill(category)) {
@@ -302,6 +401,13 @@ class CanonicalConsensusEngine {
   static async notifyApprovers(proposalOrId) {
     const proposal = typeof proposalOrId === 'string' ? await this.getProposal(proposalOrId) : proposalOrId;
     const summary = vendorBillSummary(proposal.payload);
+    const executionMode = this._vendorBillExecutionMode(proposal.payload);
+    const executionNotice = executionMode === 'live_api'
+      ? 'Both the maker and checker must sign before the payment is submitted to Melio for live B2B settlement.'
+      : 'Both the maker and checker must sign before the Melio CSV batch is exported.';
+    const signatureNotice = executionMode === 'live_api'
+      ? 'The final required signature authorizes immediate Melio submission after compliance and canonical funding checks.'
+      : 'No funds move when you sign. Signing authorizes only the manual Melio CSV export.';
     const portal = approvalPortalUrl();
     const notifications = [];
     for (const role of REQUIRED_ROLES) {
@@ -324,11 +430,11 @@ class CanonicalConsensusEngine {
         ...summary.lines,
         `Batch total: $${summary.total.toFixed(2)}`,
         '',
-        'Both the maker and the checker must sign before the Melio CSV batch is exported.',
+        executionNotice,
         `Sign with your full legal name of record: ${signatureOfRecord ? signatureOfRecord.legalName : trustee.name}`,
         portal ? `Approve here: ${portal}` : 'Approve from the FinOps consensus panel in the trust dashboard.',
         '',
-        'No funds move when you sign. Signing only authorizes the manual Melio CSV export.',
+        signatureNotice,
       ].filter(Boolean).join('\n');
       if (!EmailEngine) {
         notifications.push({ role, email: trustee.email, sent: false, note: 'EmailEngine not available' });
@@ -583,7 +689,7 @@ class CanonicalConsensusEngine {
         return ProgrammableMoneyEngine.activateFromProposal(payload && payload.programId);
       }
       case 'vendor_bill':
-        return this._executeVendorBill(payload || {}, proposal.id);
+        return this._executeVendorBill(this._restoreVendorBankDetails(payload || {}), proposal.id);
       case 'custom':
         return { status: 'approved', message: 'Custom proposal approved, no automatic execution configured', payload };
       default:
