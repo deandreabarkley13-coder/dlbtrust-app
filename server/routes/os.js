@@ -46,7 +46,14 @@ const router = express.Router();
 const operatorAuth = requireAuth({ role: 'operator' });
 const adminAuth = requireAuth({ role: 'admin' });
 const APPROVAL_GATED_ACTIONS = {
-  melio: new Set(['schedulePayment', 'exportPayment', 'exportBatch', 'markPaid', 'settle']),
+  melio: new Set([
+    'schedulePayment',
+    'exportPayment',
+    'exportBatch',
+    'markSubmitted',
+    'markPaid',
+    'settle',
+  ]),
   nickel: new Set(['payBill', 'submitInvoice', 'settlePayment', 'settle']),
 };
 

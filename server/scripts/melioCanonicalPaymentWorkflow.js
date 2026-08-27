@@ -10,11 +10,10 @@
  *   3. Creates a classified canonical vendor_bill proposal.
  *   4. Records authenticated Maker and Checker approvals.
  *   5. Executes the proposal, posting the classified accrual.
- *   6. Either submits the payment to Melio or downloads its manual-upload CSV.
+ *   6. Downloads the approved manual-upload CSV for the Melio Bills portal.
  *
- * In manual_upload mode, upload the downloaded CSV in Melio and confirm
- * settlement with POST /api/vendors/payments/melio/:paymentId/mark-paid.
- * In live_api mode, poll getPayment until Melio confirms settlement.
+ * After upload, record the portal payment reference with mark-submitted. Only
+ * use mark-paid after the portal reports the payment completed.
  *
  * Usage:
  *   ADMIN_SECRET_TOKEN=... \
@@ -35,7 +34,7 @@
  *     --invoiceNumber INV-1001 \
  *     --dueDate 2026-09-01 \
  *     --accountingClass beneficiary_income_distribution \
- *     --executionMode live_api \
+ *     --executionMode manual_upload \
  *     --memo "Beneficiary support from trust income" \
  *     --outDir data/melio-workflow
  *
@@ -44,7 +43,7 @@
  *   --makerSignature   Maker legal-name signature (default: $TRUST_MAKER_SIGNATURE)
  *   --checkerSignature Checker legal-name signature (default: $TRUST_CHECKER_SIGNATURE)
  *   --accountingClass  management_fee|beneficiary_income_distribution|beneficiary_principal_distribution
- *   --executionMode    live_api|manual_upload (default: manual_upload)
+ *   --executionMode    manual_upload (default)
  */
 
 const fs = require('fs');
@@ -211,13 +210,24 @@ async function main() {
     console.log(`    -d '{"action":"getPayment","paymentId":"${paymentId}"}'`);
   } else {
     const melioCsvPath = path.join(outDir, result.fileName || `melio-export-${paymentId}-${today}.csv`);
+    const portalFundingSource = result.funding?.portalFundingSource
+      || result.result?.portalFundingSource
+      || {};
+    const fundingLabel = portalFundingSource.label || 'the mapped trust funding source';
+    const fundingLast4 = portalFundingSource.accountLast4
+      ? ` ending ${portalFundingSource.accountLast4}`
+      : '';
     await download(`/api/vendors/payments/melio/${encodeURIComponent(paymentId)}/download`, melioCsvPath);
     console.log(`[6/6] Melio payment file downloaded: ${melioCsvPath}`);
     console.log('');
     console.log('Next steps:');
     console.log('  1. In Melio, go to Bills tab → Import bills → Import bills spreadsheet.');
-    console.log(`  2. Upload ${melioCsvPath}, review the imported bill, and pay it.`);
-    console.log('  3. After Melio confirms payment, settle the ledger:');
+    console.log(`  2. Upload ${melioCsvPath}, review the imported bill, and select ${fundingLabel}${fundingLast4}.`);
+    console.log('  3. Submit the payment, then record the portal payment reference:');
+    console.log(`     curl -X POST ${BASE_URL}/api/vendors/payments/melio/${paymentId}/mark-submitted \\`);
+    console.log("       -H 'x-admin-token: <ADMIN_SECRET_TOKEN>' -H 'Content-Type: application/json' \\");
+    console.log("       -d '{\"portal_submission_reference\": \"<melio-payment-reference>\"}'");
+    console.log('  4. After Melio reports the payment completed, settle the ledger:');
     console.log(`     curl -X POST ${BASE_URL}/api/vendors/payments/melio/${paymentId}/mark-paid \\`);
     console.log("       -H 'x-admin-token: <ADMIN_SECRET_TOKEN>' -H 'Content-Type: application/json' \\");
     console.log("       -d '{\"settlement_reference\": \"<melio-payment-reference>\"}'");

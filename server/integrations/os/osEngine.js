@@ -3719,16 +3719,16 @@ class IssuerBridgeEngine extends BaseOSEngine {
 class MelioEngine extends BaseOSEngine {
   static get engineName() { return 'melio'; }
 
-  static _parseFundingSourceMap(value) {
+  static _parseFundingSourceMap(value, setting = 'MELIO_FUNDING_SOURCE_MAP') {
     if (!value) return {};
     let parsed;
     try {
       parsed = JSON.parse(value);
     } catch {
-      throw new Error('MELIO_FUNDING_SOURCE_MAP must be a valid JSON object');
+      throw new Error(`${setting} must be a valid JSON object`);
     }
     if (!parsed || Array.isArray(parsed) || typeof parsed !== 'object') {
-      throw new Error('MELIO_FUNDING_SOURCE_MAP must be a valid JSON object');
+      throw new Error(`${setting} must be a valid JSON object`);
     }
     return parsed;
   }
@@ -3762,6 +3762,14 @@ class MelioEngine extends BaseOSEngine {
       fundingSourceMap: this._parseFundingSourceMap(process.env.MELIO_FUNDING_SOURCE_MAP),
       defaultFundingSourceId: process.env.MELIO_FUNDING_SOURCE_ID || '',
       fundingSourceField: this._fundingSourceField(process.env.MELIO_FUNDING_SOURCE_FIELD),
+      portalFundingSourceMap: this._parseFundingSourceMap(
+        process.env.MELIO_PORTAL_FUNDING_SOURCE_MAP,
+        'MELIO_PORTAL_FUNDING_SOURCE_MAP'
+      ),
+      defaultPortalFundingSourceLabel: process.env.MELIO_PORTAL_FUNDING_SOURCE_LABEL
+        || process.env.TRUST_NAME
+        || 'DLB Trust',
+      defaultPortalFundingSourceLast4: process.env.MELIO_PORTAL_FUNDING_SOURCE_LAST4 || '',
       webhookSecret: process.env.MELIO_WEBHOOK_SECRET || '',
       payBillsEmail: process.env.MELIO_PAY_BILLS_EMAIL || '',
       useApi: (process.env.MELIO_USE_API || 'false') === 'true',
@@ -3820,7 +3828,7 @@ class MelioEngine extends BaseOSEngine {
     await query(`CREATE INDEX IF NOT EXISTS idx_melio_payments_status ON melio_payments(status)`);
     await query(`CREATE INDEX IF NOT EXISTS idx_melio_payments_source ON melio_payments(source_type, source_account_id)`);
     await query(`ALTER TABLE melio_payments DROP CONSTRAINT IF EXISTS melio_payments_status_check`);
-    await query(`ALTER TABLE melio_payments ADD CONSTRAINT melio_payments_status_check CHECK (status IN ('pending','quoted','scheduled','processing','completed','failed','cancelled','exported','emailed','paid'))`);
+    await query(`ALTER TABLE melio_payments ADD CONSTRAINT melio_payments_status_check CHECK (status IN ('pending','quoted','scheduled','processing','completed','failed','cancelled','exported','emailed','submitted','paid'))`);
   }
 
   static async _sourceBalance(sourceType, sourceAccountId) {
@@ -3874,7 +3882,7 @@ class MelioEngine extends BaseOSEngine {
     let apiStatus = { reachable: false };
     const issues = [];
     if (!cfg.enabled) issues.push('MELIO_ENABLED is false');
-    if (!cfg.apiKey && !cfg.shadow) issues.push('MELIO_API_KEY not configured');
+    if (cfg.useApi && !cfg.apiKey && !cfg.shadow) issues.push('MELIO_API_KEY not configured');
     if (cfg.useApi && !cfg.shadow && !cfg.apiBaseUrlConfigured) {
       issues.push('MELIO_BASE_URL not explicitly configured');
     }
@@ -3882,6 +3890,11 @@ class MelioEngine extends BaseOSEngine {
       issues.push('MELIO_API_CONTRACT_VERIFIED is false');
     }
     const fundingSource = this._resolveFundingSource(
+      cfg.defaultSourceType,
+      cfg.defaultSourceAccountId,
+      cfg
+    );
+    const portalFundingSource = this._resolvePortalFundingSource(
       cfg.defaultSourceType,
       cfg.defaultSourceAccountId,
       cfg
@@ -3899,7 +3912,7 @@ class MelioEngine extends BaseOSEngine {
       engine: this.engineName,
       healthy: issues.length === 0,
       enabled: cfg.enabled,
-      mode: cfg.shadow ? 'shadow' : 'live',
+      mode: cfg.useApi ? (cfg.shadow ? 'shadow' : 'live_api') : 'manual_upload',
       sourceType: cfg.defaultSourceType,
       sourceAccountId: cfg.defaultSourceAccountId,
       sourceBalanceCents: sourceInfo.balanceCents,
@@ -3913,6 +3926,8 @@ class MelioEngine extends BaseOSEngine {
       segregationStatus: sourceInfo.position?.segregationStatus,
       segregationReason: sourceInfo.position?.segregationReason || sourceInfo.error || null,
       fundingSourceConfigured: Boolean(fundingSource),
+      portalFundingSourceConfigured: Boolean(portalFundingSource),
+      portalFundingSource,
       apiStatus,
       issues,
       timestamp: new Date().toISOString(),
@@ -4135,6 +4150,53 @@ class MelioEngine extends BaseOSEngine {
     };
   }
 
+  static _resolvePortalFundingSource(sourceType, sourceAccountId, cfg = this._cfg()) {
+    const normalizedType = String(sourceType || cfg.defaultSourceType).toLowerCase();
+    const normalizedAccountId = String(sourceAccountId || cfg.defaultSourceAccountId);
+    const keys = [`${normalizedType}:${normalizedAccountId}`, normalizedAccountId];
+    let configured = null;
+    for (const key of keys) {
+      if (Object.prototype.hasOwnProperty.call(cfg.portalFundingSourceMap || {}, key)) {
+        configured = cfg.portalFundingSourceMap[key];
+        break;
+      }
+    }
+    if (!configured
+      && normalizedType === String(cfg.defaultSourceType).toLowerCase()
+      && normalizedAccountId === String(cfg.defaultSourceAccountId)
+      && cfg.defaultPortalFundingSourceLabel) {
+      configured = {
+        label: cfg.defaultPortalFundingSourceLabel,
+        accountLast4: cfg.defaultPortalFundingSourceLast4,
+      };
+    }
+    if (!configured) return null;
+    const label = typeof configured === 'string'
+      ? configured
+      : configured.label || configured.name || configured.portalLabel;
+    if (!label) {
+      throw new Error(
+        `Melio portal funding mapping for `
+        + `${normalizedType}:${normalizedAccountId} is missing a label`
+      );
+    }
+    const accountLast4 = typeof configured === 'string'
+      ? ''
+      : String(configured.accountLast4 || configured.account_last4 || '').trim();
+    if (accountLast4 && !/^\d{4}$/.test(accountLast4)) {
+      throw new Error(
+        `Melio portal funding mapping for `
+        + `${normalizedType}:${normalizedAccountId} must use a 4-digit accountLast4`
+      );
+    }
+    return {
+      label: String(label),
+      accountLast4: accountLast4 || null,
+      canonicalSourceType: normalizedType,
+      canonicalSourceAccountId: normalizedAccountId,
+    };
+  }
+
   static assertLiveApiReady(sourceType, sourceAccountId, cfg = this._cfg()) {
     const issues = [];
     if (!cfg.enabled) issues.push('MELIO_ENABLED must be true');
@@ -4352,10 +4414,19 @@ class MelioEngine extends BaseOSEngine {
 
   static _instructions(record, cfg) {
     const amount = Number(record.amount).toFixed(2);
+    const portalFundingSource = record.funding?.portalFundingSource;
+    const portalLabel = portalFundingSource?.label || 'the mapped trust funding source';
+    const portalLast4 = portalFundingSource?.accountLast4
+      ? ` ending ${portalFundingSource.accountLast4}`
+      : '';
     if (record.status === 'paid') {
       const journal = record.result?.settlementJournalEntryId || record.settlementJournalEntryId || '';
       const settlementAccount = record.result?.settlementGlAccount || record.settlementGlAccount || cfg.settlementGlAccount;
       return `Melio payment marked paid for $${amount} ${record.currency}. Settlement journal${journal ? ` ${journal}` : ''} relieves ${cfg.payablesGlAccount} against ${settlementAccount}.`;
+    }
+    if (record.status === 'submitted') {
+      const reference = record.result?.portalSubmissionReference || record.portalSubmissionReference || '';
+      return `Melio Bills portal submission${reference ? ` ${reference}` : ''} is awaiting settlement for $${amount} ${record.currency}. Mark paid only after the portal reports completion.`;
     }
     if (record.melioPaymentId) {
       const canonicalSource = record.funding?.authority === 'canonical_ledger'
@@ -4366,9 +4437,9 @@ class MelioEngine extends BaseOSEngine {
     if (record.result?.csvPath || record.status === 'exported' || record.status === 'emailed') {
       const csvPath = record.result?.csvPath || record.csvPath || '';
       const emailNote = record.result?.emailSent ? ` Emailed to ${record.emailedTo || cfg.payBillsEmail}.` : '';
-      return `Melio CSV export created (${csvPath}) for $${amount} ${record.currency}. In Melio, go to Bills tab → Import bills → Import bills spreadsheet, then review the imported bills and pay them.${emailNote} To send live via API, set MELIO_API_KEY and MELIO_USE_API=true.`;
+      return `Melio CSV export created (${csvPath}) for $${amount} ${record.currency}. In the Melio Bills portal, import the spreadsheet, select ${portalLabel}${portalLast4}, review the bill, and submit it.${emailNote} Record the portal payment reference before marking it paid.`;
     }
-    return `Shadow Melio payment for $${amount} ${record.currency}. To send live, set MELIO_API_KEY and MELIO_SHADOW=false, then retry.`;
+    return `Melio payment preparation for $${amount} ${record.currency} is incomplete.`;
   }
 
   static async _recordPayment(record) {
@@ -4477,6 +4548,101 @@ class MelioEngine extends BaseOSEngine {
     return res.rows;
   }
 
+  static _portalReference(payload = {}) {
+    return String(
+      payload.portalSubmissionReference
+      || payload.portal_submission_reference
+      || payload.settlementReference
+      || payload.settlement_reference
+      || payload.reference
+      || ''
+    ).trim();
+  }
+
+  static async _markSubmittedRecord(record, payload = {}) {
+    const portalSubmissionReference = this._portalReference(payload);
+    if (!portalSubmissionReference) {
+      throw new Error('Melio portal submission reference is required');
+    }
+    const existingResult = typeof record.result === 'string'
+      ? JSON.parse(record.result || '{}')
+      : (record.result || {});
+    if (record.status === 'paid') return record;
+    if (record.status === 'submitted') {
+      const existingReference = existingResult.portalSubmissionReference;
+      if (existingReference && existingReference !== portalSubmissionReference) {
+        throw new Error('Melio payment is already linked to a different portal submission reference');
+      }
+      return { ...record, status: 'submitted', alreadySubmitted: true };
+    }
+    if (!['exported', 'emailed'].includes(record.status)) {
+      throw new Error(
+        `Melio payment must be exported before portal submission, current: ${record.status}`
+      );
+    }
+    const result = {
+      ...existingResult,
+      portalSubmissionReference,
+      submittedAt: payload.submittedAt || payload.submitted_at || new Date().toISOString(),
+      submittedBy: payload.submittedBy || payload.submitted_by || null,
+    };
+    const existingFunding = typeof record.funding === 'string'
+      ? JSON.parse(record.funding || '{}')
+      : (record.funding || {});
+    const funding = {
+      ...existingFunding,
+      reservationStatus: 'submitted_pending_settlement',
+    };
+    const updated = {
+      ...record,
+      status: 'submitted',
+      result,
+      funding,
+      portalSubmissionReference,
+    };
+    if (record.amountCents !== undefined && record.sourceType !== undefined) {
+      updated.instructions = this._instructions(updated, this._cfg());
+      await this._recordPayment(updated);
+    } else {
+      const paymentId = record.id || record.payment_id || record.melio_payment_id;
+      await query(
+        `UPDATE melio_payments
+         SET status = 'submitted', result = $1::jsonb, funding = $2::jsonb,
+             instructions = $3, updated_at = NOW()
+         WHERE id = $4 OR melio_payment_id = $4`,
+        [
+          safeJson(result),
+          safeJson(funding),
+          this._instructions(updated, this._cfg()),
+          paymentId,
+        ]
+      );
+    }
+    return updated;
+  }
+
+  static async _markSubmittedByIdentifier(identifier, payload = {}) {
+    const rows = await this._getRecordsByExportIdentifier(identifier);
+    if (!rows.length) {
+      const error = new Error(`Melio export not found: ${identifier}`);
+      error.status = 404;
+      throw error;
+    }
+    const submitted = [];
+    for (const row of rows) {
+      submitted.push(await this._markSubmittedRecord(row, payload));
+    }
+    if (submitted.length === 1) return submitted[0];
+    return {
+      identifier: String(identifier),
+      batchId: rows[0].metadata?.batchId || String(identifier),
+      status: 'submitted',
+      records: submitted,
+      submittedCount: submitted.filter((row) => !row.alreadySubmitted).length,
+      alreadySubmittedCount: submitted.filter((row) => row.alreadySubmitted).length,
+    };
+  }
+
   static async _markPaidRecord(record, payload = {}) {
     const existingResult = typeof record.result === 'string'
       ? JSON.parse(record.result || '{}')
@@ -4486,6 +4652,18 @@ class MelioEngine extends BaseOSEngine {
       || record.settlement_journal_entry_id;
     if (existingJournalId) {
       return { ...record, status: 'paid', settlementJournalEntryId: existingJournalId, alreadySettled: true };
+    }
+    const manualExport = record.action === 'exportPayment'
+      || record.action === 'exportBatch'
+      || existingResult.csvPath;
+    const settlementReference = this._portalReference(payload);
+    if (manualExport && record.status !== 'submitted') {
+      throw new Error(
+        `Melio portal payment must be submitted before settlement, current: ${record.status}`
+      );
+    }
+    if (manualExport && !settlementReference) {
+      throw new Error('Melio settlement reference is required');
     }
     const { PaymentComplianceGate } = require('../compliance/paymentComplianceGate');
     const recordMetadata = record.metadata || {};
@@ -4550,13 +4728,21 @@ class MelioEngine extends BaseOSEngine {
       settlementGlAccount: settlementAccount,
       accountingClass: accounting.accountingClass,
       liabilityGlAccount,
-      settlementReference: payload.settlementReference || payload.settlement_reference || null,
+      settlementReference: settlementReference || null,
+      settledBy: payload.settledBy || payload.settled_by || null,
       settledAt: new Date().toISOString(),
     };
+    const existingFunding = typeof record.funding === 'string'
+      ? JSON.parse(record.funding || '{}')
+      : (record.funding || {});
     const updated = {
       ...record,
       status: 'paid',
       result,
+      funding: {
+        ...existingFunding,
+        reservationStatus: 'settled',
+      },
       settlementJournalEntryId,
       settlementGlAccount: settlementAccount,
     };
@@ -4566,9 +4752,9 @@ class MelioEngine extends BaseOSEngine {
     } else if (pool && paymentId) {
       await query(
         `UPDATE melio_payments
-         SET status = 'paid', result = $1::jsonb, updated_at = NOW()
-         WHERE id = $2 OR melio_payment_id = $2`,
-        [safeJson(result), paymentId]
+         SET status = 'paid', result = $1::jsonb, funding = $2::jsonb, updated_at = NOW()
+         WHERE id = $3 OR melio_payment_id = $3`,
+        [safeJson(result), safeJson(updated.funding), paymentId]
       );
     }
     return updated;
@@ -4842,6 +5028,17 @@ class MelioEngine extends BaseOSEngine {
       const file = fileByPaymentId.get(entry.paymentId);
       const sourceInfo = sourceInfos.get(`${p.sourceType}:${p.sourceAccountId}`) || {};
       const sourcePosition = sourceInfo.position || {};
+      const portalFundingSource = this._resolvePortalFundingSource(
+        p.sourceType,
+        p.sourceAccountId,
+        cfg
+      );
+      if (!portalFundingSource) {
+        throw new Error(
+          `No Melio Bills portal funding source is mapped to `
+          + `${p.sourceType}:${p.sourceAccountId}`
+        );
+      }
       const record = {
         id: entry.paymentId,
         action: 'exportPayment',
@@ -4857,6 +5054,7 @@ class MelioEngine extends BaseOSEngine {
         reserveId: null,
         journalEntryId: null,
         funding: {
+          authority: 'canonical_ledger',
           sourceType: p.sourceType,
           sourceAccountId: p.sourceAccountId,
           sourceOfTruth: sourcePosition.sourceOfTruth || null,
@@ -4864,6 +5062,9 @@ class MelioEngine extends BaseOSEngine {
           reservedCents: sourceInfo.reservedCents || 0,
           availableBeforeExportCents: sourceInfo.balanceCents || 0,
           segregationStatus: sourcePosition.segregationStatus || 'available',
+          reservationStatus: 'active',
+          settlementMethod: 'manual_portal',
+          portalFundingSource,
         },
         instructions: '',
         result: {
@@ -4874,6 +5075,7 @@ class MelioEngine extends BaseOSEngine {
           sourceOfTruth: sourcePosition.sourceOfTruth || null,
           sourceType: p.sourceType,
           sourceAccountId: p.sourceAccountId,
+          portalFundingSource,
         },
         metadata: {},
         createdAt: now,
@@ -5045,6 +5247,11 @@ class MelioEngine extends BaseOSEngine {
       case 'schedulePayment': return await this._schedulePayment(payload);
       case 'exportPayment': return await this.exportPayment(payload);
       case 'exportBatch': return await this.exportBatch(payload);
+      case 'markSubmitted':
+        return await this._markSubmittedByIdentifier(
+          payload.identifier || payload.paymentId || payload.id || payload.batchId,
+          payload
+        );
       case 'markPaid':
       case 'settle':
         return await this._markPaidByIdentifier(payload.identifier || payload.paymentId || payload.id || payload.batchId, payload);

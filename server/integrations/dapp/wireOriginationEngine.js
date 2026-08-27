@@ -8,19 +8,12 @@
  * payout is explicitly converted to a stablecoin only when the caller opts in.
  */
 
-const fs = require('fs');
-const path = require('path');
-const https = require('https');
-const http = require('http');
-const { URL } = require('url');
-
 let pool;
 let CashEngine;
 let WireEngine;
 let ACHEngine;
 let SystemSettings;
 let PayoutCenterEngine;
-let { buildMtlsOptions } = { buildMtlsOptions: () => ({}) };
 
 try { pool = require('../bonds/pgPool'); } catch (e) { /* optional */ }
 try { ({ CashEngine } = require('../cash/cashEngine')); } catch (e) { /* optional */ }
@@ -28,7 +21,6 @@ try { ({ WireEngine } = require('../wire/wireEngine')); } catch (e) { /* optiona
 try { ({ ACHEngine } = require('../ach/achEngine')); } catch (e) { /* optional */ }
 try { ({ SystemSettings } = require('../ach/systemSettings')); } catch (e) { /* optional */ }
 try { ({ PayoutCenterEngine } = require('./payoutCenterEngine')); } catch (e) { /* optional */ }
-try { ({ buildMtlsOptions } = require('../ach/openBankApi')); } catch (e) { /* optional */ }
 
 const HOLD_ACCOUNTS = {
   wire: 'WIRE_ORIG_HOLD',
@@ -278,148 +270,56 @@ class WireOriginationEngine {
     }
   }
 
-  static _resolveApacheFallbackUrl() {
-    if (process.env.APACHE_WIRE_PUSH_URL) return process.env.APACHE_WIRE_PUSH_URL;
-    const pushUrl = process.env.APACHE_HTTP_PUSH_URL;
-    if (!pushUrl) return null;
-    try {
-      const u = new URL(pushUrl);
-      const segments = u.pathname.split('/').filter(Boolean);
-      const last = segments[segments.length - 1] || '';
-      if (last === 'push.php' || last.endsWith('.php')) {
-        segments[segments.length - 1] = 'wire.php';
-      } else {
-        segments.push('wire.php');
-      }
-      u.pathname = '/' + segments.join('/');
-      u.search = '';
-      return u.toString();
-    } catch (e) { return null; }
-  }
-
   static async _sendWire(row) {
-    if (!SystemSettings || !WireEngine) throw new Error('System settings / WireEngine not available');
-    let wireEndpoint = await SystemSettings.getWireEndpoint();
-    let bankAuth = await SystemSettings.getBankAuth();
+    if (!WireEngine) throw new Error('WireEngine not available');
+    if (!row.wire_id) throw new Error('No canonical wire record for payout');
 
-    // Fallback to a self-hosted Apache HTTP wire endpoint when no bank API is configured
-    let useApacheFallback = false;
-    if (!wireEndpoint || !bankAuth.apiKey) {
-      const apacheUrl = this._resolveApacheFallbackUrl();
-      const apacheKey = process.env.APACHE_WIRE_API_KEY || process.env.APACHE_HTTP_API_KEY || '';
-      if (apacheUrl) {
-        wireEndpoint = apacheUrl;
-        bankAuth = { authType: 'api_key', apiKey: apacheKey, apiSecret: '', useMtls: false };
-        useApacheFallback = true;
-      }
+    let wire = await WireEngine.getWire(row.wire_id);
+    if (!wire) throw new Error(`Wire not found: ${row.wire_id}`);
+    if (wire.status === 'pending_approval') {
+      if (!row.approved_by) throw new Error('Independent payout approval is required');
+      wire = await WireEngine.approveWire(row.wire_id, row.approved_by);
+    }
+    if (wire.status !== 'approved') {
+      throw new Error(`Wire cannot be transmitted from status ${wire.status}`);
     }
 
-    if (!wireEndpoint) {
-      await pool.query(`UPDATE wire_origination_payouts SET status = 'needs_setup', updated_at = NOW() WHERE payout_id = $1`, [row.payout_id]);
-      return this.getPayout(row.payout_id);
-    }
-
-    // Approve wire record if it exists
-    if (row.wire_id) {
-      try { await WireEngine.approveWire(row.wire_id, row.approved_by || 'wire-origination'); } catch (e) { /* may already be approved */ }
-    }
-
-    const imad = WireEngine.generateIMAD ? WireEngine.generateIMAD() : `IMAD-${Date.now()}`;
-    const omad = WireEngine.generateOMAD ? WireEngine.generateOMAD() : `OMAD-${Date.now()}`;
-    const fedRef = `FED-${Date.now()}`;
-    const confirmationNumber = `CNF-${row.payout_id}-${Date.now().toString(36).toUpperCase()}`;
-
-    const payload = JSON.stringify({
-      wire_id: row.wire_id,
-      type: 'fedwire',
-      amount_cents: row.amount_cents,
-      sender_routing: '091000019',
-      sender_account: 'DLB-TRUST-MAIN',
-      beneficiary_name: row.beneficiary_name,
-      beneficiary_routing: row.beneficiary_routing,
-      beneficiary_account: row.beneficiary_account,
-      beneficiary_bank: row.beneficiary_bank_name,
-      purpose: row.payment_type,
-      description: row.description,
-      imad,
-      omad,
-      fed_reference: fedRef,
-      submitted_at: new Date().toISOString(),
-    });
-
-    const parsed = new URL(wireEndpoint);
-    const lib = parsed.protocol === 'https:' ? https : http;
-    const reqHeaders = {
-      'Content-Type': 'application/json',
-      'Content-Length': Buffer.byteLength(payload),
-      'X-Request-ID': `WIRE-${row.payout_id}-${Date.now()}`,
-      'User-Agent': 'DLBTrust-Wire/1.0',
+    const sentWire = await WireEngine.sendWire(row.wire_id);
+    const meta = typeof row.metadata === 'string'
+      ? JSON.parse(row.metadata || '{}')
+      : (row.metadata || {});
+    const wireMetadata = typeof sentWire.metadata === 'string'
+      ? JSON.parse(sentWire.metadata || '{}')
+      : (sentWire.metadata || {});
+    const transmissionMetadata = {
+      ...meta,
+      externalProviderReference: wireMetadata.externalProviderReference || null,
+      transmittedAt: sentWire.sent_at || new Date().toISOString(),
+      settled_at: null,
     };
-    if (bankAuth.authType === 'bearer' && bankAuth.apiKey) reqHeaders.Authorization = 'Bearer ' + bankAuth.apiKey;
-    else if (bankAuth.authType === 'basic' && bankAuth.apiKey) reqHeaders.Authorization = 'Basic ' + Buffer.from(bankAuth.apiKey + ':' + (bankAuth.apiSecret || '')).toString('base64');
-    else if (bankAuth.authType === 'api_key' && bankAuth.apiKey) reqHeaders['X-API-Key'] = bankAuth.apiKey;
-
-    const mtlsOptions = buildMtlsOptions ? buildMtlsOptions(bankAuth) : {};
-
-    let responseBody = '';
-    let statusCode = 0;
     try {
-      statusCode = await new Promise((resolve, reject) => {
-        const req = lib.request({
-          hostname: parsed.hostname,
-          port: parsed.port || (parsed.protocol === 'https:' ? 443 : 80),
-          path: parsed.pathname,
-          method: 'POST',
-          headers: reqHeaders,
-          timeout: 60000,
-          ...mtlsOptions,
-        }, (res) => {
-          res.on('data', chunk => { responseBody += chunk; });
-          res.on('end', () => resolve(res.statusCode));
-        });
-        req.on('error', reject);
-        req.on('timeout', () => { req.destroy(); reject(new Error('Wire endpoint timeout')); });
-        req.write(payload);
-        req.end();
-      });
-    } catch (err) {
-      await pool.query(`UPDATE wire_origination_payouts SET status = 'failed', error_message = $2 WHERE payout_id = $1`, [row.payout_id, err.message]);
-      return this.getPayout(row.payout_id);
-    }
-
-    if (statusCode < 200 || statusCode >= 300) {
-      await pool.query(`UPDATE wire_origination_payouts SET status = 'failed', error_message = $2 WHERE payout_id = $1`, [row.payout_id, `Wire endpoint returned ${statusCode}: ${responseBody.slice(0, 200)}`]);
-      return this.getPayout(row.payout_id);
-    }
-
-    let externalReference = confirmationNumber;
-    try {
-      const parsedBody = JSON.parse(responseBody);
-      if (parsedBody.referenceNumber) externalReference = parsedBody.referenceNumber;
-    } catch (e) {}
-
-    // Update wire_transfers record (best effort)
-    if (row.wire_id) {
-      try {
-        await pool.query(
-          `UPDATE wire_transfers SET status = 'sent', imad = $2, omad = $3, fed_reference = $4, confirmation_number = $5, sent_at = NOW(), updated_at = NOW() WHERE wire_id = $1`,
-          [row.wire_id, imad, omad, fedRef, externalReference]
-        );
-      } catch (e) { console.warn('[WireOriginationEngine] wire_transfers update failed:', e.message); }
-    }
-
-    if (useApacheFallback) {
-      // Apache fallback only logs the payload; keep funds in hold until a real bank confirms settlement
-      const meta = typeof row.metadata === 'string' ? JSON.parse(row.metadata || '{}') : (row.metadata || {});
       await pool.query(
-        `UPDATE wire_origination_payouts SET status = 'sent', metadata = $2::jsonb, updated_at = NOW() WHERE payout_id = $1`,
-        [row.payout_id, JSON.stringify({ ...meta, externalReference, responseBody: responseBody.slice(0, 500), settled_at: null })]
+        `UPDATE wire_origination_payouts
+         SET status = 'sent', error_message = NULL, metadata = $2::jsonb, updated_at = NOW()
+         WHERE payout_id = $1`,
+        [row.payout_id, JSON.stringify(transmissionMetadata)]
       );
       return this.getPayout(row.payout_id);
+    } catch (err) {
+      console.warn(
+        `[WireOriginationEngine] Payout projection update failed for sent wire ${row.wire_id}:`,
+        err.message
+      );
+      return {
+        ...row,
+        status: 'originating',
+        metadata: {
+          ...transmissionMetadata,
+          projectionReconciliationRequired: true,
+          projectionError: err.message,
+        },
+      };
     }
-
-    await this._markSettled(row, { externalReference, responseBody: responseBody.slice(0, 1000) });
-    return this.getPayout(row.payout_id);
   }
 
   static async _sendACH(row) {
@@ -478,6 +378,82 @@ class WireOriginationEngine {
       [row.payout_id, JSON.stringify({ payoutCenterPaymentId: result.id, txHash: result.tx_hash })]
     );
     return this.getPayout(row.payout_id);
+  }
+
+  static async syncWireConfirmation(wire, evidence = {}) {
+    if (!wire?.wire_id) return null;
+    await this.ensureTables();
+    const result = await pool.query(
+      `UPDATE wire_origination_payouts
+       SET status = 'confirmed',
+           metadata = COALESCE(metadata, '{}'::jsonb) || $2::jsonb,
+           error_message = NULL, updated_at = NOW()
+       WHERE wire_id = $1 AND status IN ('originating','sent','confirmed')
+       RETURNING *`,
+      [
+        wire.wire_id,
+        JSON.stringify({
+          providerConfirmationReference: evidence.confirmationReference
+            || evidence.confirmation_reference
+            || null,
+          confirmedAt: evidence.confirmedAt || evidence.confirmed_at || new Date().toISOString(),
+        }),
+      ]
+    );
+    return result.rows[0] || null;
+  }
+
+  static async syncWireSettlement(wire, evidence = {}) {
+    if (!wire?.wire_id) return null;
+    await this.ensureTables();
+    const result = await pool.query(
+      `SELECT * FROM wire_origination_payouts WHERE wire_id = $1 LIMIT 1`,
+      [wire.wire_id]
+    );
+    const row = result.rows[0];
+    if (!row || row.status === 'settled') return row || null;
+
+    if (row.hold_movement_id && CashEngine) {
+      const movement = await pool.query(
+        `SELECT movement_id FROM cash_movements
+         WHERE reference_id = $1 AND reference_type = 'wire_origination_settled'
+         LIMIT 1`,
+        [row.payout_id]
+      );
+      if (!movement.rows.length) {
+        await CashEngine.transfer({
+          fromAccountId: HOLD_ACCOUNTS.wire,
+          toAccountId: SETTLED_ACCOUNTS.wire,
+          amountCents: Number(row.amount_cents),
+          movementType: 'transfer',
+          memo: `Settled wire payout ${row.payout_id}`,
+          referenceId: row.payout_id,
+          referenceType: 'wire_origination_settled',
+          initiatedBy: evidence.settledBy || 'authenticated_operator',
+        });
+      }
+    }
+
+    const meta = typeof row.metadata === 'string'
+      ? JSON.parse(row.metadata || '{}')
+      : (row.metadata || {});
+    const updated = await pool.query(
+      `UPDATE wire_origination_payouts
+       SET status = 'settled', metadata = $2::jsonb, error_message = NULL, updated_at = NOW()
+       WHERE payout_id = $1
+       RETURNING *`,
+      [
+        row.payout_id,
+        JSON.stringify({
+          ...meta,
+          providerSettlementReference: evidence.settlementReference
+            || evidence.settlement_reference
+            || null,
+          settled_at: evidence.settledAt || evidence.settled_at || new Date().toISOString(),
+        }),
+      ]
+    );
+    return updated.rows[0] || null;
   }
 
   static async _markSettled(row, extra = {}) {
@@ -545,9 +521,13 @@ class WireOriginationEngine {
     const adapters = this.getAdapters();
     if (SystemSettings) {
       const wireEndpoint = await SystemSettings.getWireEndpoint();
-      const bankAuth = await SystemSettings.getBankAuth();
-      const apacheUrl = this._resolveApacheFallbackUrl();
-      adapters.find(a => a.id === 'wire').ready = !!(wireEndpoint && bankAuth.apiKey) || !!apacheUrl;
+      const systemMode = await SystemSettings.getMode();
+      const productionConfig = await SystemSettings.getProductionPartnerConfig();
+      adapters.find(a => a.id === 'wire').ready = Boolean(
+        wireEndpoint
+        && systemMode === 'production'
+        && !productionConfig?.isBill
+      );
 
       let achReady = false;
       try {

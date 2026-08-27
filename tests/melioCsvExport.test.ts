@@ -10,6 +10,10 @@ const { PaymentComplianceGate } = require('../server/integrations/compliance/pay
 const pool = require('../server/integrations/bonds/pgPool');
 const vendorsRouter = require('../server/routes/vendors');
 
+const markSubmittedRoute = vendorsRouter.stack.find(
+  (layer: any) => layer.route?.path === '/payments/melio/:identifier/mark-submitted',
+);
+const markSubmittedHandler = markSubmittedRoute.route.stack[markSubmittedRoute.route.stack.length - 1].handle;
 const markPaidRoute = vendorsRouter.stack.find(
   (layer: any) => layer.route?.path === '/payments/melio/:identifier/mark-paid',
 );
@@ -73,6 +77,30 @@ describe('Melio bill spreadsheet CSV export', () => {
       canonicalSourceAccountId: '1000',
     });
     expect(MelioEngine._resolveFundingSource('trust', '1010', cfg)).toBeNull();
+  });
+
+  it('maps canonical accounts to non-sensitive manual portal funding labels', () => {
+    const cfg = {
+      ...MelioEngine._cfg(),
+      defaultSourceType: 'trust',
+      defaultSourceAccountId: '1000',
+      defaultPortalFundingSourceLabel: 'DLB Trust',
+      defaultPortalFundingSourceLast4: '',
+      portalFundingSourceMap: {
+        'trust:1000': {
+          label: 'Trust operating account',
+          accountLast4: '1234',
+        },
+      },
+    };
+
+    expect(MelioEngine._resolvePortalFundingSource('trust', '1000', cfg)).toEqual({
+      label: 'Trust operating account',
+      accountLast4: '1234',
+      canonicalSourceType: 'trust',
+      canonicalSourceAccountId: '1000',
+    });
+    expect(MelioEngine._resolvePortalFundingSource('trust', '1010', cfg)).toBeNull();
   });
 
   it('redacts vendor banking coordinates from stored payment metadata', () => {
@@ -242,6 +270,42 @@ describe('Melio bill spreadsheet CSV export', () => {
     }
   });
 
+  it('records manual portal submission references through the operator route', async () => {
+    const processSpy = vi.spyOn(MelioEngine, 'process').mockResolvedValue({
+      id: 'MEL-PORTAL-1',
+      status: 'submitted',
+    });
+    const response: any = {
+      json: vi.fn(function json(body: any) {
+        response.body = body;
+        return response;
+      }),
+      status: vi.fn(function status() {
+        return response;
+      }),
+    };
+
+    await markSubmittedHandler({
+      params: { identifier: 'MEL-PORTAL-1' },
+      body: {
+        portal_submission_reference: 'PORTAL-REF-1',
+      },
+      user: { email: 'operator@example.com' },
+    }, response);
+
+    expect(processSpy).toHaveBeenCalledWith({
+      action: 'markSubmitted',
+      identifier: 'MEL-PORTAL-1',
+      portalSubmissionReference: 'PORTAL-REF-1',
+      submittedAt: undefined,
+      submittedBy: 'operator@example.com',
+    });
+    expect(response.body).toMatchObject({
+      success: true,
+      data: { status: 'submitted' },
+    });
+  });
+
   it('emits the Melio headers, formats values, and omits bank details', () => {
     const now = new Date('2026-01-15T12:00:00.000Z');
     const entry = MelioEngine._buildCsvRow({
@@ -365,6 +429,10 @@ describe('Melio bill spreadsheet CSV export', () => {
       ...cfg,
       payBillsEmail: '',
       postPayableGl: false,
+      portalFundingSourceMap: {
+        'trust:1200': 'Trust receivables test source',
+        'cash:CA-OVERRIDE': 'Cash override test source',
+      },
     });
     const sourceCalls = [];
     const balanceSpy = vi.spyOn(MelioEngine, '_sourceBalance').mockImplementation(async (sourceType, sourceAccountId) => {
@@ -550,6 +618,9 @@ describe('Melio bill spreadsheet CSV export', () => {
       postPayableGl: true,
       expenseGlAccount: '5300',
       payablesGlAccount: '2100',
+      portalFundingSourceMap: {
+        'cash:CA-OPERATING': 'Cash operating test source',
+      },
     });
     const deps = MelioEngine._deps();
     const postJournalEntry = vi.fn().mockResolvedValue({ entry_id: 'JRN-ACCRUAL' });
@@ -820,6 +891,9 @@ describe('Melio bill spreadsheet CSV export', () => {
       postPayableGl: true,
       expenseGlAccount: '5300',
       payablesGlAccount: '2100',
+      portalFundingSourceMap: {
+        'trust:4000': 'Trust income test source',
+      },
     });
     const deps = MelioEngine._deps();
     const postJournalEntry = vi.fn().mockResolvedValue({ entry_id: 'JRN-LEGAL' });
@@ -930,13 +1004,16 @@ describe('Melio bill spreadsheet CSV export', () => {
     const record = {
       id: 'MEL-SETTLE',
       action: 'exportPayment',
-      status: 'exported',
+      status: 'submitted',
       amount: 8.5,
       amountCents: 850,
       currency: 'USD',
       sourceType: 'trust',
       sourceAccountId: '1000',
-      result: { csvPath: 'data/melio-exports/test.csv' },
+      result: {
+        csvPath: 'data/melio-exports/test.csv',
+        portalSubmissionReference: 'BANK-1',
+      },
     };
 
     try {
@@ -967,6 +1044,53 @@ describe('Melio bill spreadsheet CSV export', () => {
       depsSpy.mockRestore();
       cfgSpy.mockRestore();
     }
+  });
+
+  it('requires portal submission evidence before manual settlement', async () => {
+    const record = {
+      id: 'MEL-MANUAL-EVIDENCE',
+      action: 'exportPayment',
+      status: 'exported',
+      amount: 0.23,
+      amountCents: 23,
+      currency: 'USD',
+      sourceType: 'trust',
+      sourceAccountId: '1000',
+      funding: {
+        portalFundingSource: {
+          label: 'DLB Trust',
+          canonicalSourceType: 'trust',
+          canonicalSourceAccountId: '1000',
+        },
+      },
+      result: { csvPath: 'data/melio-exports/test.csv' },
+    };
+    vi.spyOn(MelioEngine, '_recordPayment').mockResolvedValue(undefined);
+
+    await expect(MelioEngine._markPaidRecord(record, {
+      settlementReference: 'BANK-23',
+    })).rejects.toThrow(
+      'Melio portal payment must be submitted before settlement, current: exported',
+    );
+    await expect(MelioEngine._markSubmittedRecord(record, {})).rejects.toThrow(
+      'Melio portal submission reference is required',
+    );
+
+    const submitted = await MelioEngine._markSubmittedRecord(record, {
+      portalSubmissionReference: 'BANK-23',
+      submittedBy: 'operator@example.com',
+    });
+
+    expect(submitted).toMatchObject({
+      status: 'submitted',
+      result: {
+        portalSubmissionReference: 'BANK-23',
+        submittedBy: 'operator@example.com',
+      },
+      funding: {
+        reservationStatus: 'submitted_pending_settlement',
+      },
+    });
   });
 
   it('rejects settlement against an account other than the authorized canonical source', async () => {
