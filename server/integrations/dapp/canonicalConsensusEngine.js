@@ -13,6 +13,7 @@
 const { query } = require('../bonds/pgPool');
 const {
   TRUSTEES,
+  REQUIRED_ROLES,
   normalizeRole,
   getTrusteeByRole,
   getTrusteeByEmail,
@@ -31,6 +32,8 @@ try { IntentRoutingEngine = require('./intentRoutingEngine').IntentRoutingEngine
 try { ExternalWalletEngine = require('./externalWalletEngine').ExternalWalletEngine; } catch (e) { /* optional */ }
 let MelioEngine;
 try { MelioEngine = require('../os/osEngine').MelioEngine; } catch (e) { /* optional */ }
+let EmailEngine;
+try { EmailEngine = require('./emailEngine').EmailEngine; } catch (e) { EmailEngine = null; }
 
 function id(prefix = 'CC') { return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 8).toUpperCase()}`; }
 function safeJson(obj) { return JSON.stringify(obj, (k, v) => typeof v === 'bigint' ? String(v) : v); }
@@ -61,6 +64,25 @@ function normalizeSignature(value) {
 
 function isPlaceholderSignature(value) {
   return /^(sig[-_]|placeholder\b|auto[- ]?generated\b)/i.test(String(value || '').trim());
+}
+
+function approvalPortalUrl() {
+  const base = process.env.APP_URL || process.env.DEPLOY_URL || '';
+  return base ? `${base.replace(/\/+$/, '')}/dapp/trust-dashboard.html#finops-consensus` : '';
+}
+
+function vendorBillSummary(payload = {}) {
+  const batchField = ['payables', 'items', 'rows'].find((field) => Array.isArray(payload[field]));
+  const rows = batchField ? payload[batchField] : [payload];
+  const lines = rows.map((row) => {
+    const vendor = (row.vendor && (row.vendor.name || row.vendor.vendor_name)) || row.businessName || row.vendorName || 'unknown vendor';
+    const amount = Number(row.amount);
+    const invoice = row.invoiceNumber || row.invoice_number || '';
+    const due = row.dueDate || row.due_date || '';
+    return `  - ${vendor}: $${Number.isFinite(amount) ? amount.toFixed(2) : row.amount}${invoice ? ` (invoice ${invoice})` : ''}${due ? `, due ${due}` : ''}`;
+  });
+  const total = rows.reduce((sum, row) => sum + (Number(row.amount) || 0), 0);
+  return { lines, total, count: rows.length };
 }
 
 function requireVendorIdentity(payload, context) {
@@ -264,10 +286,66 @@ class CanonicalConsensusEngine {
       [proposalId, title, description || '', category, safeJson(payload || {}), safeJson(roles), threshold, safeJson([]), createdBy || '']
     );
     const proposal = await this.getProposal(proposalId);
+    if (isVendorBill(category)) {
+      try {
+        await this.notifyApprovers(proposal);
+      } catch (err) {
+        console.warn('[consensus] approver notification failed:', err.message);
+      }
+    }
     if (autoExecute && this.isApproved(proposal)) {
       return this.executeProposal(proposalId);
     }
     return proposal;
+  }
+
+  static async notifyApprovers(proposalOrId) {
+    const proposal = typeof proposalOrId === 'string' ? await this.getProposal(proposalOrId) : proposalOrId;
+    const summary = vendorBillSummary(proposal.payload);
+    const portal = approvalPortalUrl();
+    const notifications = [];
+    for (const role of REQUIRED_ROLES) {
+      const trustee = getTrusteeByRole(role);
+      if (!trustee || !trustee.email) continue;
+      if (String(proposal.created_by || '').toLowerCase() === String(trustee.email).toLowerCase()) {
+        notifications.push({ role, email: trustee.email, sent: false, note: 'requester cannot approve this proposal' });
+        continue;
+      }
+      const signatureOfRecord = getTrusteeSignatureOfRecord(role);
+      const body = [
+        `${trustee.name},`,
+        '',
+        `A vendor bill batch is awaiting your ${role} signature.`,
+        '',
+        `Proposal: ${proposal.id}`,
+        `Title: ${proposal.title}`,
+        proposal.description ? `Description: ${proposal.description}` : '',
+        `Payables: ${summary.count}`,
+        ...summary.lines,
+        `Batch total: $${summary.total.toFixed(2)}`,
+        '',
+        'Both the maker and the checker must sign before the Melio CSV batch is exported.',
+        `Sign with your full legal name of record: ${signatureOfRecord ? signatureOfRecord.legalName : trustee.name}`,
+        portal ? `Approve here: ${portal}` : 'Approve from the FinOps consensus panel in the trust dashboard.',
+        '',
+        'No funds move when you sign. Signing only authorizes the manual Melio CSV export.',
+      ].filter(Boolean).join('\n');
+      if (!EmailEngine) {
+        notifications.push({ role, email: trustee.email, sent: false, note: 'EmailEngine not available' });
+        continue;
+      }
+      try {
+        const result = await EmailEngine.send({
+          to: trustee.email,
+          subject: `Signature required: vendor bill ${proposal.id}`,
+          body,
+        });
+        notifications.push({ role, email: trustee.email, sent: Boolean(result && result.sent), provider: result && result.provider });
+      } catch (err) {
+        notifications.push({ role, email: trustee.email, sent: false, note: err.message });
+      }
+    }
+    return { proposalId: proposal.id, notifications };
   }
 
   static async getProposal(proposalId) {

@@ -6,6 +6,7 @@ const { CanonicalConsensusEngine } = require('../server/integrations/dapp/canoni
 const { MelioEngine } = require('../server/integrations/os/osEngine');
 const { PaymentComplianceGate } = require('../server/integrations/compliance/paymentComplianceGate');
 const { getTrusteeByRole } = require('../server/integrations/dapp/trustees');
+const { EmailEngine } = require('../server/integrations/dapp/emailEngine');
 
 const maker = getTrusteeByRole('maker');
 const checker = getTrusteeByRole('checker');
@@ -239,6 +240,54 @@ describe('canonical vendor bill consensus', () => {
       paymentIds: ['MEL-ROW-1', 'MEL-ROW-2'],
       journalEntryIds: ['JE-ROW-1', 'JE-ROW-2'],
     });
+  });
+
+  it('emails both signers a vendor bill signature request', async () => {
+    const send = vi.spyOn(EmailEngine, 'send').mockResolvedValue({ sent: true, provider: 'smtp' });
+
+    const result = await CanonicalConsensusEngine.notifyApprovers({
+      id: 'CC-NOTIFY-1',
+      title: 'Melio vendor bill batch',
+      description: 'Operating expenses',
+      created_by: 'operator@example.com',
+      payload: { payables: [{ ...validBill, amount: 40 }, { ...validBill, amount: 60 }] },
+    });
+
+    expect(result.notifications.map((n: { role: string; email: string; sent: boolean }) => [n.role, n.email, n.sent]))
+      .toEqual([['maker', maker.email, true], ['checker', checker.email, true]]);
+    const makerCall = send.mock.calls[0][0];
+    expect(makerCall.subject).toContain('CC-NOTIFY-1');
+    expect(makerCall.body).toContain('Batch total: $100.00');
+    expect(makerCall.body).toContain('Malissa Ann Robinson');
+    expect(send.mock.calls[1][0].body).toContain('DeAndrea Lavar Barkley');
+  });
+
+  it('does not ask the requester to sign their own vendor bill', async () => {
+    const send = vi.spyOn(EmailEngine, 'send').mockResolvedValue({ sent: true, provider: 'smtp' });
+
+    const result = await CanonicalConsensusEngine.notifyApprovers({
+      id: 'CC-NOTIFY-2',
+      title: 'Melio vendor bill batch',
+      created_by: maker.email,
+      payload: validBill,
+    });
+
+    expect(result.notifications[0]).toMatchObject({ role: 'maker', sent: false });
+    expect(send).toHaveBeenCalledTimes(1);
+    expect(send.mock.calls[0][0].to).toBe(checker.email);
+  });
+
+  it('reports unsent signature requests instead of throwing', async () => {
+    vi.spyOn(EmailEngine, 'send').mockRejectedValue(new Error('smtp down'));
+
+    const result = await CanonicalConsensusEngine.notifyApprovers({
+      id: 'CC-NOTIFY-3',
+      title: 'Melio vendor bill batch',
+      created_by: 'operator@example.com',
+      payload: validBill,
+    });
+
+    expect(result.notifications.every((n: { sent: boolean; note?: string }) => n.sent === false && n.note === 'smtp down')).toBe(true);
   });
 
   it('counts only maker and checker as the two required vendor bill approvals', () => {
