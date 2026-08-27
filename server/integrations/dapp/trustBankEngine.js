@@ -398,11 +398,12 @@ class TrustBankEngine {
             });
             glEntryId = glRes && glRes.entry_id;
           } catch (glErr) {
-            console.warn(`[TrustBank] ACH GL posting failed for ${paymentId}:`, glErr.message);
+            throw new Error(`ACH GL entry failed: ${glErr.message}`);
           }
         }
         let bankAccount;
         let transfer;
+        let transmitErr = null;
         try {
           bankAccount = await BankTransferEngine.createBankAccount({
             name: payment.external_account_name || 'External Beneficiary',
@@ -419,11 +420,15 @@ class TrustBankEngine {
             initiatedBy: payment.initiated_by,
           });
           if (payment.rail === 'ach') {
-            transfer = await BankTransferEngine.sendPushCredit(transfer.transfer_id);
+            try {
+              transfer = await BankTransferEngine.sendPushCredit(transfer.transfer_id);
+            } catch (sendErr) {
+              transmitErr = sendErr;
+            }
           }
           externalTxId = transfer.transfer_id;
-          rawMessage = JSON.stringify(transfer);
-          status = mapBankTransferStatus(transfer.status);
+          rawMessage = JSON.stringify(transmitErr ? { transfer, transmitError: transmitErr.message } : transfer);
+          status = transmitErr ? 'manual_pending' : mapBankTransferStatus(transfer.status);
         } catch (achErr) {
           if (glEntryId && TrustAccountingEngine && glDebitCode && glCreditCode) {
             try {
