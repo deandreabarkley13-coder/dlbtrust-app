@@ -92,6 +92,7 @@
       <button class="active" data-tab="overview">Overview</button>
       <button data-tab="distributions">Distributions</button>
       <button data-tab="signatures">Bill Signatures</button>
+      <button data-tab="wires">Wire Approvals</button>
       <button data-tab="vendors">Vendor Payments</button>
       <button data-tab="payouts">Payouts</button>
       <button data-tab="holds">Hold Accounts</button>
@@ -193,6 +194,19 @@
           <div id="signature-of-record" class="muted" style="font-size:.8rem;margin-bottom:12px;">Loading…</div>
           <div id="sig-status" class="status"></div>
           <div id="sig-list" class="muted">Loading…</div>
+        </div>
+      </div>
+
+      <div id="tab-wires" class="tabs">
+        <div class="card">
+          <h2>Wire Approvals</h2>
+          <p class="muted">Wires initiated by the maker (including micro-deposit test wires) awaiting checker approval. Only the checker trustee can approve, and never a wire they initiated themselves.</p>
+          <div id="wire-status" class="status"></div>
+          <div id="wire-pending" class="muted">Loading…</div>
+        </div>
+        <div class="card">
+          <h2>Recent Wires</h2>
+          <div id="wire-recent" class="muted">Loading…</div>
         </div>
       </div>
 
@@ -615,6 +629,7 @@
     const btn = document.querySelector('.nav button[data-tab="' + key + '"]'); if (btn) btn.classList.add('active');
     if (key === 'distributions') loadDistributions();
     if (key === 'signatures') loadSignatures();
+    if (key === 'wires') loadWires();
     if (key === 'vendors') loadVendors();
     if (key === 'payouts') loadPayouts();
     if (key === 'holds') loadHolds();
@@ -771,6 +786,55 @@
       await api(`/api/dapp/distribution-requests/${id}/execute`, { method: 'POST', body: JSON.stringify({}) });
       loadDistributions(); loadOverview();
     } catch (e) { showStatus('dist-status', e.message, true); }
+  }
+
+  async function loadWires() {
+    try {
+      const [pending, recent] = await Promise.all([
+        api('/api/wire/pending-approvals'),
+        api('/api/wire/transfers?limit=20').catch(() => ({ data: [] })),
+      ]);
+      const canApprove = session.consensusRole !== 'maker';
+      el('wire-pending').innerHTML = (pending.data || []).length
+        ? (pending.data || []).map(w => {
+            const ownWire = session.email
+              && String(w.initiated_by || '').toLowerCase() === String(session.email).toLowerCase();
+            return `<div class="panel" style="margin-bottom:10px;">
+            <div style="display:flex;justify-content:space-between;gap:10px;"><strong>${escapeHtml(w.wire_id)}</strong><span class="badge pending">${escapeHtml(w.status)}</span></div>
+            <div class="muted" style="margin:6px 0;font-size:.82rem;">${fmtUsd(Number(w.amount_cents) / 100)} to ${escapeHtml(w.beneficiary_name || '')}${w.beneficiary_bank_name ? ' · ' + escapeHtml(w.beneficiary_bank_name) : ''}</div>
+            <div class="muted" style="font-size:.78rem;">${escapeHtml(w.description || w.purpose || '')} · initiated by ${escapeHtml(w.initiated_by || 'system')} on ${new Date(w.created_at).toLocaleString()}</div>
+            <div style="display:flex;gap:8px;margin-top:8px;">
+              <button class="btn btn-gold btn-sm"${canApprove && !ownWire ? '' : ' disabled'} onclick="approveWire('${escapeHtml(w.wire_id)}')">Approve</button>
+              <button class="btn btn-sec btn-sm"${canApprove && !ownWire ? '' : ' disabled'} onclick="rejectWire('${escapeHtml(w.wire_id)}')">Reject</button>
+            </div>
+            ${ownWire ? '<div class="muted" style="font-size:.75rem;margin-top:6px;">You initiated this wire — a second trustee must approve it.</div>' : ''}
+            ${canApprove ? '' : '<div class="muted" style="font-size:.75rem;margin-top:6px;">Checker approval required — the maker seat cannot approve wires.</div>'}
+          </div>`;
+          }).join('')
+        : '<p class="muted">No wires awaiting approval.</p>';
+      el('wire-recent').innerHTML = (recent.data || []).length
+        ? `<table class="table"><thead><tr><th>Wire</th><th>Beneficiary</th><th>Amount</th><th>Status</th><th>Created</th></tr></thead><tbody>${(recent.data || []).map(w => `<tr><td>${escapeHtml(w.wire_id)}</td><td>${escapeHtml(w.beneficiary_name || '')}</td><td>${fmtUsd(Number(w.amount_cents) / 100)}</td><td><span class="badge ${['settled', 'confirmed', 'approved', 'sent'].includes(w.status) ? 'approved' : w.status === 'rejected' || w.status === 'failed' ? 'rejected' : 'pending'}">${escapeHtml(w.status)}</span></td><td>${new Date(w.created_at).toLocaleString()}</td></tr>`).join('')}</tbody></table>`
+        : '<p class="muted">No wires yet.</p>';
+    } catch (e) {
+      el('wire-pending').innerHTML = '<p class="muted">' + escapeHtml(e.message) + '</p>';
+    }
+  }
+
+  async function approveWire(wireId) {
+    try {
+      const res = await api('/api/wire/' + encodeURIComponent(wireId) + '/approve', { method: 'POST', body: JSON.stringify({}) });
+      showStatus('wire-status', 'Approved ' + wireId + '. Status: ' + res.data.status, false);
+      loadWires();
+    } catch (e) { showStatus('wire-status', e.message, true); }
+  }
+
+  async function rejectWire(wireId) {
+    const reason = prompt('Reason for rejection?') || 'Rejected from trustee dashboard';
+    try {
+      await api('/api/wire/' + encodeURIComponent(wireId) + '/reject', { method: 'POST', body: JSON.stringify({ reason }) });
+      showStatus('wire-status', 'Rejected ' + wireId, false);
+      loadWires();
+    } catch (e) { showStatus('wire-status', e.message, true); }
   }
 
   const signatureState = { proposals: [], signatureOfRecord: [] };
