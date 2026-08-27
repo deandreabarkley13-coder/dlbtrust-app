@@ -374,16 +374,25 @@
           const approvals = esc((r.approvals || []).map(a => a.role).join(', ') || 'none');
           let action = '';
           if (r.status !== 'executed' && r.status !== 'rejected' && r.status !== 'failed') {
-            action = `<button class="btn btn-sm" onclick="approveAs('${esc(r.id)}','maker','malissa1130@gmail.com')">Approve Maker</button> <button class="btn btn-sm btn-2" onclick="approveAs('${esc(r.id)}','checker','dbarkley1130@gmail.com')">Approve Checker</button>`;
+            action = `<button class="btn btn-sm" onclick="approveAs('${esc(r.id)}','maker')">Approve Maker</button> <button class="btn btn-sm btn-2" onclick="approveAs('${esc(r.id)}','checker')">Approve Checker</button>`;
           }
           return `<tr><td>${esc(r.id.slice(-12))}</td><td>${esc(r.beneficiary_name || r.beneficiary_email)}</td><td>$${esc((r.amount_cents / 100).toFixed(2))}</td><td>${esc(r.status)}</td><td>${approvals}</td><td>${action}</td></tr>`;
         }).join('') || '<tr><td colspan="6">No requests yet.</td></tr>';
       } catch (e) { el('requests-list').innerHTML = '<tr><td colspan="6">' + esc(e.message) + '</td></tr>'; }
     }
 
+    let trusteeCache = null;
+    async function trusteeEmail(role) {
+      if (!trusteeCache) trusteeCache = await api('/finops-ai/trustees') || [];
+      const trustee = trusteeCache.find(t => t.role === role);
+      if (!trustee) throw new Error('No trustee configured for role ' + role);
+      return trustee.email;
+    }
+
     async function approveAs(id, role, email) {
       try {
-        const data = await api(`/distribution-requests/${id}/approve`, { method: 'POST', body: JSON.stringify({ role, trusteeEmail: email, signature: `sig-${role}-${Date.now()}` }) });
+        const trusteeAddress = email || await trusteeEmail(role);
+        const data = await api(`/distribution-requests/${id}/approve`, { method: 'POST', body: JSON.stringify({ role, trusteeEmail: trusteeAddress, signature: `sig-${role}-${Date.now()}` }) });
         show(JSON.stringify(data, null, 2), false, 'requests-result');
         await loadRequests(); await loadOverview(); await loadMasters();
       } catch (e) { show(e.message, true, 'requests-result'); }

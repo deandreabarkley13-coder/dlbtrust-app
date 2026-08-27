@@ -16,6 +16,7 @@
     "test:watch": "vitest",
     "lint": "eslint server/",
     "compliance:refresh-ofac": "node scripts/refresh-ofac-sanctions.cjs",
+    "compliance:refresh-opensanctions": "node scripts/refresh-opensanctions.cjs",
     "db:init": "tsx src/server/db/init.ts",
     "typecheck": "tsc --noEmit"
   },

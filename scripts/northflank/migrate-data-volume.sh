@@ -41,4 +41,13 @@ northflank exec service \
   --shell-cmd 'sh -c' \
   --cmd 'tar -xz -C / -f /tmp/data.tar.gz && rm /tmp/data.tar.gz && ls -la /data'
 
+# The volume mount hides the directories the Dockerfile creates, and Fly's /data
+# never held an export directory, so recreate the paths the app writes to.
+echo "ensuring /data layout"
+northflank exec service \
+  --project "$PROJECT_ID" \
+  --service "$SERVICE_ID" \
+  --shell-cmd 'sh -c' \
+  --cmd 'mkdir -p /data/melio-exports /data/governance /data/journal /data/backups /data/shutdown-state && ls /data'
+
 echo "done"
