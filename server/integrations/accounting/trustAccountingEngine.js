@@ -184,7 +184,7 @@ class TrustAccountingEngine {
   static async postJournalEntry({
     entryDate, description, lines,
     referenceType, referenceId, bondId,
-    postedBy, postToFineract,
+    postedBy, postToFineract, transactionClient,
   }) {
     if (!lines || lines.length < 2) {
       throw new Error('Journal entry requires at least 2 lines');
@@ -218,9 +218,13 @@ class TrustAccountingEngine {
     const entryId = 'JRN-' + Date.now() + '-'
       + Math.random().toString(36).slice(2, 8).toUpperCase();
 
-    const client = await pool.connect();
+    if (transactionClient && postToFineract) {
+      throw new Error('Fineract posting is not supported inside an external transaction');
+    }
+    const client = transactionClient || await pool.connect();
+    const ownsTransaction = !transactionClient;
     try {
-      await client.query('BEGIN');
+      if (ownsTransaction) await client.query('BEGIN');
 
       await client.query(
         `INSERT INTO trust_journal_entries
@@ -272,7 +276,7 @@ class TrustAccountingEngine {
         );
       }
 
-      await client.query('COMMIT');
+      if (ownsTransaction) await client.query('COMMIT');
 
       if (postToFineract) {
         try {
@@ -306,11 +310,12 @@ class TrustAccountingEngine {
         }
       }
 
-      const entry = await pool.query(
+      const queryClient = ownsTransaction ? pool : client;
+      const entry = await queryClient.query(
         `SELECT * FROM trust_journal_entries WHERE entry_id = $1`,
         [entryId]
       );
-      const entryLines = await pool.query(
+      const entryLines = await queryClient.query(
         `SELECT * FROM trust_journal_lines WHERE entry_id = $1 ORDER BY id`,
         [entryId]
       );
@@ -320,10 +325,10 @@ class TrustAccountingEngine {
         lines: entryLines.rows,
       };
     } catch (err) {
-      await client.query('ROLLBACK');
+      if (ownsTransaction) await client.query('ROLLBACK');
       throw err;
     } finally {
-      client.release();
+      if (ownsTransaction) client.release();
     }
   }
 

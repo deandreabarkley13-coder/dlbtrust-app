@@ -46,8 +46,9 @@ const WIRE_TYPE_CODES = {
 // Account codes (matching PaymentOrchestrator)
 const ACCOUNT_CODES = {
   CASH: '1000',
-  DISTRIBUTIONS: '5100',
-  EXPENSES: '5200',
+  DISTRIBUTIONS: '3100',
+  CORPUS: '3000',
+  EXPENSES: '5300',
   INTEREST_INCOME: '4100',
   ACCRUED_INTEREST: '1200',
 };
@@ -379,57 +380,8 @@ class WireEngine {
       let journalEntryId = null;
       if (wire.payment_type !== 'bill_deposit') {
         try {
-          const totalDollars = wire.amount_cents / 100;
-          let debitAccountCode;
-          let creditAccountCode = ACCOUNT_CODES.CASH;
-          let journalDescription;
-
-          switch (wire.payment_type) {
-            case 'trust_distribution':
-            case 'interest_payment':
-              debitAccountCode = ACCOUNT_CODES.DISTRIBUTIONS;
-              journalDescription = `Wire distribution: ${wire.description || wire.beneficiary_name}`;
-              break;
-            case 'vendor_payment':
-            case 'principal_return':
-            default:
-              debitAccountCode = ACCOUNT_CODES.EXPENSES;
-              journalDescription = `Wire payment: ${wire.description || wire.beneficiary_name}`;
-              break;
-          }
-
-          // Per-wire metadata overrides let specific flows (e.g. PTC interest) scope
-          // GL account choices without mutating the global ACCOUNT_CODES map.
-          let wireMetadata = wire.metadata || {};
-          if (typeof wireMetadata === 'string') {
-            try { wireMetadata = JSON.parse(wireMetadata); } catch { wireMetadata = {}; }
-          }
-          if (wireMetadata.glDebitAccountCode) debitAccountCode = wireMetadata.glDebitAccountCode;
-          if (wireMetadata.glCreditAccountCode) creditAccountCode = wireMetadata.glCreditAccountCode;
-
-          const journalEntry = await TrustAccountingEngine.postJournalEntry({
-            entryDate: new Date(),
-            description: journalDescription,
-            lines: [
-              {
-                accountCode: debitAccountCode,
-                debitAmount: totalDollars,
-                creditAmount: 0,
-                memo: `Wire ${wireId}: ${wire.description || wire.payment_type}`,
-              },
-              {
-                accountCode: creditAccountCode,
-                debitAmount: 0,
-                creditAmount: totalDollars,
-                memo: `Wire outflow: ${wireId}`,
-              },
-            ],
-            referenceType: 'wire_transfer',
-            referenceId: wireId,
-            postedBy: wire.initiated_by || 'system',
-          });
-
-          journalEntryId = journalEntry.entry_id;
+          const journalEntry = await WireEngine.postAccountingEntry(wire);
+          journalEntryId = journalEntry ? journalEntry.entry_id : null;
         } catch (glErr) {
           console.warn(`[WireEngine] GL posting failed for ${wireId} (wire still sent):`, glErr.message);
         }
@@ -596,6 +548,91 @@ class WireEngine {
     }
   }
 
+  static async postAccountingEntry(wireOrId, { postedBy } = {}) {
+    const wire = typeof wireOrId === 'string' ? await WireEngine.getWire(wireOrId) : wireOrId;
+    if (!wire) throw new Error(`Wire not found: ${wireOrId}`);
+    if (wire.payment_type === 'bill_deposit') return null;
+
+    const lockClient = await pool.connect();
+    try {
+      await lockClient.query('BEGIN');
+      await lockClient.query('SELECT pg_advisory_xact_lock(hashtext($1))', [`wire-accounting:${wire.wire_id}`]);
+
+      const existing = await lockClient.query(
+        `SELECT entry_id
+         FROM trust_journal_entries
+         WHERE reference_id = $1
+           AND reference_type IN ('wire_transfer', 'wire')
+           AND status = 'posted'
+         ORDER BY created_at ASC
+         LIMIT 1`,
+        [wire.wire_id]
+      );
+      if (existing.rows.length) {
+        await lockClient.query(
+          'UPDATE wire_transfers SET journal_entry_id = $2, updated_at = NOW() WHERE wire_id = $1',
+          [wire.wire_id, existing.rows[0].entry_id]
+        );
+        await lockClient.query('COMMIT');
+        return existing.rows[0];
+      }
+
+      const totalDollars = Number(wire.amount_cents) / 100;
+      let debitAccountCode = ACCOUNT_CODES.EXPENSES;
+      let journalDescription = `Wire payment: ${wire.description || wire.beneficiary_name}`;
+
+      if (wire.payment_type === 'trust_distribution' || wire.payment_type === 'interest_payment') {
+        debitAccountCode = ACCOUNT_CODES.DISTRIBUTIONS;
+        journalDescription = `Wire distribution: ${wire.description || wire.beneficiary_name}`;
+      } else if (wire.payment_type === 'principal_return') {
+        debitAccountCode = ACCOUNT_CODES.CORPUS;
+        journalDescription = `Wire principal return: ${wire.description || wire.beneficiary_name}`;
+      }
+
+      let wireMetadata = wire.metadata || {};
+      if (typeof wireMetadata === 'string') {
+        try { wireMetadata = JSON.parse(wireMetadata); } catch { wireMetadata = {}; }
+      }
+      if (wireMetadata.glDebitAccountCode) debitAccountCode = wireMetadata.glDebitAccountCode;
+      const creditAccountCode = wireMetadata.glCreditAccountCode || ACCOUNT_CODES.CASH;
+
+      const journalEntry = await TrustAccountingEngine.postJournalEntry({
+        entryDate: wire.sent_at || new Date(),
+        description: journalDescription,
+        lines: [
+          {
+            accountCode: debitAccountCode,
+            debitAmount: totalDollars,
+            creditAmount: 0,
+            memo: `Wire ${wire.wire_id}: ${wire.description || wire.payment_type}`,
+          },
+          {
+            accountCode: creditAccountCode,
+            debitAmount: 0,
+            creditAmount: totalDollars,
+            memo: `Wire outflow: ${wire.wire_id}`,
+          },
+        ],
+        referenceType: 'wire_transfer',
+        referenceId: wire.wire_id,
+        postedBy: postedBy || wire.initiated_by || 'system',
+        transactionClient: lockClient,
+      });
+
+      await lockClient.query(
+        'UPDATE wire_transfers SET journal_entry_id = $2, updated_at = NOW() WHERE wire_id = $1',
+        [wire.wire_id, journalEntry.entry_id]
+      );
+      await lockClient.query('COMMIT');
+      return journalEntry;
+    } catch (err) {
+      await lockClient.query('ROLLBACK').catch(() => {});
+      throw err;
+    } finally {
+      lockClient.release();
+    }
+  }
+
   // ─── Settle Wire ──────────────────────────────────────────────────────────
 
   static async settleWire(wireId) {
@@ -653,10 +690,30 @@ class WireEngine {
       [wireId, reason || 'Wire returned by beneficiary bank']
     );
 
-    // Reverse GL entry if one exists
-    if (wire.journal_entry_id) {
+    let journalEntryId = wire.journal_entry_id;
+    if (!journalEntryId) {
+      const existing = await pool.query(
+        `SELECT entry_id
+         FROM trust_journal_entries
+         WHERE reference_id = $1
+           AND reference_type IN ('wire_transfer', 'wire')
+           AND status = 'posted'
+         ORDER BY created_at ASC
+         LIMIT 1`,
+        [wireId]
+      );
+      journalEntryId = existing.rows[0] && existing.rows[0].entry_id;
+      if (journalEntryId) {
+        await pool.query(
+          'UPDATE wire_transfers SET journal_entry_id = $2, updated_at = NOW() WHERE wire_id = $1',
+          [wireId, journalEntryId]
+        );
+      }
+    }
+
+    if (journalEntryId) {
       try {
-        await TrustAccountingEngine.reverseJournalEntry(wire.journal_entry_id, {
+        await TrustAccountingEngine.reverseJournalEntry(journalEntryId, {
           postedBy: 'system',
         });
       } catch (revErr) {

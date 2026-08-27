@@ -326,6 +326,16 @@ class TrustBankEngine {
         const senderAccount = meta.senderAccount || process.env.PTC_BANK_SETTLEMENT_ACCOUNT || process.env.TRUST_BANK_ACCOUNT || from.account_number;
         const paymentType = meta.paymentType || (payment.description && /interest/i.test(payment.description) ? 'interest_payment' : 'trust_distribution');
         const isPtcInterest = meta.interestIncomeSource === '4000' || meta.paymentType === 'interest_payment' || (payment.description && /interest income/i.test(payment.description));
+        meta.glCreditAccountCode = meta.glCreditAccountCode
+          || from.linked_trust_account_code
+          || process.env.PTC_BANK_GL_ACCOUNT
+          || '1010';
+        if (!meta.glDebitAccountCode) {
+          if (isPtcInterest) meta.glDebitAccountCode = meta.interestIncomeSource || '4000';
+          else if (paymentType === 'principal_return') meta.glDebitAccountCode = '3000';
+          else if (paymentType === 'trust_distribution' || paymentType === 'interest_payment') meta.glDebitAccountCode = '3100';
+          else meta.glDebitAccountCode = '5300';
+        }
         if (isPtcInterest) {
           meta.glDebitAccountCode = meta.glDebitAccountCode || '4000';
           meta.glCreditAccountCode = meta.glCreditAccountCode || from.linked_trust_account_code || process.env.PTC_BANK_GL_ACCOUNT || '1010';

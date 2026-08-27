@@ -11,15 +11,16 @@
  * Usage:
  *   node server/scripts/sendPtcBankWire.js \
  *     --amount 5000 \
- *     --fromAccountId TBA-1786901946193-CM2PTE \
- *     --sourceAccountId 4000 \
- *     --routing 121145307 \
- *     --account 692101092959 \
- *     --name "DB NET MGMT" \
- *     --bankName "Lili Bank" \
- *     --senderRouting 121145307 \
- *     --senderAccount TBN-... \
- *     --requiresApproval false
+ *     --fromAccountId TBA-... \
+ *     --sourceAccountId 1010 \
+ *     --routing ROUTING_NUMBER \
+ *     --account ACCOUNT_NUMBER \
+ *     --name "Beneficiary Name" \
+ *     --bankName "Beneficiary Bank" \
+ *     --senderRouting SENDER_ROUTING \
+ *     --senderAccount SENDER_ACCOUNT \
+ *     --requiresApproval true \
+ *     --execute true
  */
 
 require('dotenv').config({ path: require('path').join(__dirname, '..', '..', '.env') });
@@ -29,6 +30,7 @@ const path = require('path');
 const { PtcTreasuryEngine } = require('../integrations/os/osEngine');
 const { WireEngine } = require('../integrations/wire/wireEngine');
 const { TrustAccountingEngine } = require('../integrations/accounting/trustAccountingEngine');
+const { DataBridge } = require('../integrations/accounting/dataBridge');
 const pool = require('../integrations/bonds/pgPool');
 
 function parseArgs(argv) {
@@ -45,9 +47,21 @@ function parseArgs(argv) {
   return args;
 }
 
+function redactSensitive(value) {
+  if (Array.isArray(value)) return value.map(redactSensitive);
+  if (!value || typeof value !== 'object') return value;
+  return Object.fromEntries(Object.entries(value).map(([key, item]) => {
+    if (/(account|routing|token|secret)/i.test(key) && item != null) {
+      const text = String(item);
+      return [key, text.length > 4 ? `***${text.slice(-4)}` : '***'];
+    }
+    return [key, redactSensitive(item)];
+  }));
+}
+
 async function findPtcCheckingAccount() {
   const res = await pool.query(
-    `SELECT account_id, account_number, balance_cents
+    `SELECT account_id, account_number, balance_cents, linked_trust_account_code
      FROM trust_bank_accounts
      WHERE status = 'active' AND account_name ILIKE '%checking%'
      ORDER BY balance_cents DESC, created_at DESC
@@ -197,7 +211,7 @@ async function exportWireArtifacts(wireId) {
 async function main() {
   const args = parseArgs(process.argv);
 
-  const amount = Number(args.amount || args.amt || 5000);
+  const amount = Number(args.amount || args.amt);
   if (!Number.isFinite(amount) || amount <= 0) {
     throw new Error('amount must be a positive number');
   }
@@ -205,7 +219,7 @@ async function main() {
   const fromAccount = args.fromAccountId
     ? await (async () => {
         const r = await pool.query(
-          'SELECT account_id, account_number, balance_cents FROM trust_bank_accounts WHERE account_id = $1',
+          'SELECT account_id, account_number, balance_cents, linked_trust_account_code FROM trust_bank_accounts WHERE account_id = $1',
           [args.fromAccountId]
         );
         if (!r.rows.length) throw new Error(`Account not found: ${args.fromAccountId}`);
@@ -213,17 +227,17 @@ async function main() {
       })()
     : await findPtcCheckingAccount();
 
-  const routing = args.routing || process.env.PTC_BANK_ROUTING || '121145307';
-  const account = args.account || '692101092959';
-  const name = args.name || 'DB NET MGMT';
-  const bankName = args.bankName || 'Lili Bank';
+  const routing = args.routing;
+  const account = args.account;
+  const name = args.name;
+  const bankName = args.bankName;
+  if (!routing || !account || !name || !bankName) {
+    throw new Error('routing, account, name, and bankName are required');
+  }
   const senderRouting = args.senderRouting || process.env.PTC_BANK_ROUTING || routing;
   const senderAccount = args.senderAccount || process.env.PTC_BANK_SETTLEMENT_ACCOUNT || fromAccount.account_number;
 
-  // If the source is an income GL account (e.g. 4000 Interest Income), the engine
-  // will map it to the accrued-interest asset account for cash and charge the
-  // wire to the income account.
-  const sourceAccountId = args.sourceAccountId || '4000';
+  const sourceAccountId = args.sourceAccountId || fromAccount.linked_trust_account_code || '1010';
   const sourceType = args.sourceType || 'trust';
 
   if (args.replacePaymentId) {
@@ -242,7 +256,7 @@ async function main() {
     console.log('Reversed prior payment:', reversals);
   }
 
-  const requiresApproval = args.requiresApproval === 'true' || false;
+  const requiresApproval = args.requiresApproval !== 'false';
 
   const payload = {
     action: 'distribute',
@@ -257,26 +271,32 @@ async function main() {
       name,
       bankName,
     },
-    description: args.description || `Wire from interest income to ${name}`,
+    description: args.description || `PTC bank wire to ${name}`,
     initiatedBy: args.initiatedBy || process.env.PTC_BANK_INITIATED_BY || 'ptc-bank-script',
-    autoSend: true,
+    autoSend: args.autoSend === 'true',
     senderRouting,
     senderAccount,
     requiresApproval,
   };
 
   console.log('Originating PTC bank wire with payload:');
-  console.log(JSON.stringify({ ...payload, payee: { ...payload.payee, account: '***' + String(payload.payee.account).slice(-4) } }, null, 2));
+  console.log(JSON.stringify(redactSensitive(payload), null, 2));
+
+  if (args.execute !== 'true') {
+    console.log('Preview only. Re-run with --execute true after reviewing the payload.');
+    return;
+  }
 
   const result = await PtcTreasuryEngine.process(payload);
   console.log('Result:');
-  console.log(JSON.stringify(result, null, 2));
+  console.log(JSON.stringify(redactSensitive(result), null, 2));
 
   if (result.success && (result.result?.sent?.wire_id || result.result?.sent?.externalTxId)) {
     const wireId = result.result.sent.wire_id || result.result.sent.externalTxId;
+    const accounting = await DataBridge.syncWiresToAccounting();
     const artifacts = await exportWireArtifacts(wireId);
     console.log('Wire artifacts exported:');
-    console.log(JSON.stringify(artifacts, null, 2));
+    console.log(JSON.stringify({ ...artifacts, accounting }, null, 2));
   } else {
     console.warn('Wire did not reach sent/completed status; no artifacts exported.');
     process.exitCode = 1;

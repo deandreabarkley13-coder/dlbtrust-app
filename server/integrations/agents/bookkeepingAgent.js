@@ -437,7 +437,7 @@ class BookkeepingAgent {
                 COALESCE(SUM(jl.debit_amount), 0) as total_debit
          FROM trust_journal_entries je
          LEFT JOIN trust_journal_lines jl ON jl.entry_id = je.entry_id
-         WHERE je.reference_type IN ('bill_deposit','ach_batch','wire')
+         WHERE je.reference_type IN ('bill_deposit','ach_batch','wire_transfer','wire')
            AND je.status = 'posted'
          GROUP BY je.entry_id, je.description, je.created_at, je.reference_id
          ORDER BY je.created_at DESC LIMIT 100`
@@ -588,7 +588,7 @@ class BookkeepingAgent {
         `SELECT wire_id, status, amount_cents, beneficiary_name,
                 description, created_at
          FROM wire_transfers
-         WHERE status IN ('sent','settled','completed')
+         WHERE status IN ('sent','confirmed','settled','completed')
          ORDER BY created_at DESC LIMIT 50`
       );
 
@@ -596,7 +596,7 @@ class BookkeepingAgent {
         var wire = wires.rows[i];
         var je = await pool.query(
           `SELECT entry_id FROM trust_journal_entries
-           WHERE reference_type = 'wire' AND reference_id = $1`,
+           WHERE reference_type IN ('wire_transfer', 'wire') AND reference_id = $1`,
           [wire.wire_id]
         );
 
@@ -695,32 +695,13 @@ class BookkeepingAgent {
     if (wire.rows.length === 0) throw new Error('Wire transfer not found: ' + wireId);
 
     var w = wire.rows[0];
-    var amount = (w.amount_cents || 0) / 100;
-    if (amount <= 0) throw new Error('Wire amount is zero');
-
-    var existing = await pool.query(
-      `SELECT entry_id FROM trust_journal_entries
-       WHERE reference_type = 'wire' AND reference_id = $1`,
-      [wireId]
-    );
-    if (existing.rows.length > 0) {
-      return { alreadyPosted: true, entryId: existing.rows[0].entry_id };
-    }
-
-    var { TrustAccountingEngine } = require('../accounting/trustAccountingEngine');
-    var entry = await TrustAccountingEngine.postJournalEntry({
-      entryDate: w.created_at || new Date(),
-      description: 'Wire transfer to ' + (w.beneficiary_name || 'beneficiary') + ': ' + (w.description || wireId),
-      lines: [
-        { accountCode: '5000', debitAmount: amount, creditAmount: 0, memo: 'Wire payment ' + wireId },
-        { accountCode: '1000', debitAmount: 0, creditAmount: amount, memo: 'Cash disbursed via wire' },
-      ],
-      referenceType: 'wire',
-      referenceId: wireId,
-      postedBy: 'bookkeeping_agent',
-    });
-
-    return { alreadyPosted: false, entryId: entry.entry_id, amount: amount };
+    var { WireEngine } = require('../wire/wireEngine');
+    var entry = await WireEngine.postAccountingEntry(w, { postedBy: 'bookkeeping_agent' });
+    return {
+      alreadyPosted: Boolean(w.journal_entry_id),
+      entryId: entry ? entry.entry_id : null,
+      amount: (w.amount_cents || 0) / 100,
+    };
   }
 
   /**
