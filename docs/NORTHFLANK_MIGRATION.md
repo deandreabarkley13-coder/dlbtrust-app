@@ -116,6 +116,42 @@ Keep `MELIO_USE_API=false` and no email provider configured while verifying — 
 live API call or a delivered mail creates real bills in the trust's Melio
 account.
 
+## Sanctions screening provider
+
+`COMPLIANCE_PROVIDER=local` can never authorize a production payment — the
+readiness check treats an operator-maintained name list as unsafe in
+`NODE_ENV=production`, so maker/checker approval of a vendor bill fails closed on
+`Payment compliance is not ready`. Production must run a real list provider:
+`ofac` (US Treasury SDN/consolidated files) or `opensanctions` (the
+[OpenSanctions](https://www.opensanctions.org/datasets/sanctions/) consolidated
+dataset, which includes OFAC plus EU/UN/UK and other regimes).
+
+The OpenSanctions engine streams `targets.simple.csv` from
+`data.opensanctions.org` into `compliance_sanctions_lists` /
+`compliance_sanctions_entries` (primary names and aliases as separate list keys)
+and screens names in PostgreSQL, since the dataset holds ~170k screenable names —
+far more than the process should cache. Configuration:
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `COMPLIANCE_PROVIDER` | `local` | Set to `opensanctions` to screen against the dataset |
+| `COMPLIANCE_OPENSANCTIONS_DATASET` | `sanctions` | Any OpenSanctions dataset publishing `targets.simple.csv` |
+| `COMPLIANCE_OPENSANCTIONS_MAX_AGE_HOURS` | `48` | Readiness fails when the ingest is older |
+| `COMPLIANCE_OPENSANCTIONS_MIN_TARGETS` | `5000` | Guards against a truncated download |
+| `COMPLIANCE_OPENSANCTIONS_AUTO_REFRESH` | enabled | Set `false` to disable the startup/interval refresh |
+| `COMPLIANCE_OPENSANCTIONS_REFRESH_INTERVAL_HOURS` | `12` | Background refresh cadence |
+| `COMPLIANCE_OPENSANCTIONS_API_KEY` | unset | Only needed for licensed/API-hosted datasets |
+
+Refresh out of band with `npm run compliance:refresh-opensanctions` or
+`POST /api/finops/compliance/opensanctions/refresh` (operator auth), and check
+`GET /api/finops/compliance/readiness`.
+
+Two limitations to keep in mind: names are matched after ASCII normalization, so
+non-Latin-script entries are not transliterated (same as the OFAC engine); and
+the bulk data is published under CC-BY-NC 4.0, so commercial production use of
+OpenSanctions data needs a license from OpenSanctions — `ofac` remains the
+license-free option.
+
 ## Cutover
 
 The Fly app keeps running until the Northflank service is verified. Once it is:

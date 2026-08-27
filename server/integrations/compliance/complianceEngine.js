@@ -20,6 +20,33 @@ try {
   OfacSanctionsListEngine = null;
 }
 
+let OpenSanctionsListEngine;
+try {
+  ({ OpenSanctionsListEngine } = require('./openSanctionsListEngine'));
+} catch (e) {
+  OpenSanctionsListEngine = null;
+}
+
+// Providers backed by a refreshable sanctions list stored in PostgreSQL.
+const LIST_PROVIDERS = {
+  ofac: {
+    label: 'OFAC',
+    engine: () => OfacSanctionsListEngine,
+    autoRefreshVariable: 'COMPLIANCE_OFAC_AUTO_REFRESH',
+    refreshIntervalVariable: 'COMPLIANCE_OFAC_REFRESH_INTERVAL_HOURS',
+  },
+  opensanctions: {
+    label: 'OpenSanctions',
+    engine: () => OpenSanctionsListEngine,
+    autoRefreshVariable: 'COMPLIANCE_OPENSANCTIONS_AUTO_REFRESH',
+    refreshIntervalVariable: 'COMPLIANCE_OPENSANCTIONS_REFRESH_INTERVAL_HOURS',
+  },
+};
+
+function listProvider(provider) {
+  return LIST_PROVIDERS[provider] || null;
+}
+
 function generateId() {
   return `COMP-${Date.now()}-${Math.random().toString(36).slice(2, 8).toUpperCase()}`;
 }
@@ -84,24 +111,23 @@ class ComplianceEngine {
     await pool.query(`CREATE INDEX IF NOT EXISTS idx_compliance_status ON compliance_screenings(status)`);
     await pool.query(`CREATE INDEX IF NOT EXISTS idx_compliance_name ON compliance_screenings USING gin(to_tsvector('english', COALESCE(full_name,'') || ' ' || COALESCE(business_name,'')))`);
     if (OfacSanctionsListEngine) await OfacSanctionsListEngine.ensureTables();
+    if (OpenSanctionsListEngine) await OpenSanctionsListEngine.ensureTables();
   }
 
   static async initialize() {
     await this.ensureTables();
-    if (
-      OfacSanctionsListEngine
-      && providerName() === 'ofac'
-      && process.env.COMPLIANCE_OFAC_AUTO_REFRESH !== 'false'
-    ) {
-      await OfacSanctionsListEngine.refreshIfStale();
+    const descriptor = listProvider(providerName());
+    const engine = descriptor && descriptor.engine();
+    if (engine && process.env[descriptor.autoRefreshVariable] !== 'false') {
+      await engine.refreshIfStale();
       const intervalHours = Number.parseInt(
-        process.env.COMPLIANCE_OFAC_REFRESH_INTERVAL_HOURS || '12',
+        process.env[descriptor.refreshIntervalVariable] || '12',
         10
       );
       if (Number.isFinite(intervalHours) && intervalHours > 0 && !this._refreshTimer) {
         this._refreshTimer = setInterval(() => {
-          OfacSanctionsListEngine.refreshIfStale()
-            .catch((error) => console.error('[compliance] OFAC refresh failed:', error.message));
+          engine.refreshIfStale()
+            .catch((error) => console.error(`[compliance] ${descriptor.label} refresh failed:`, error.message));
         }, intervalHours * 3600000);
         if (typeof this._refreshTimer.unref === 'function') this._refreshTimer.unref();
       }
@@ -165,7 +191,7 @@ class ComplianceEngine {
       score += exact ? 100 : 70;
       findings.push({
         rule: exact ? 'sanctions_exact_match' : 'sanctions_potential_match',
-        message: `${exact ? 'Exact' : 'Potential'} OFAC match: ${sanctionsMatch.name}`,
+        message: `${exact ? 'Exact' : 'Potential'} sanctions match: ${sanctionsMatch.name}`,
         source: sanctionsMatch.sourceFile || 'configured-list',
         entryUid: sanctionsMatch.entryUid || null,
         similarity: sanctionsMatch.similarity || null,
@@ -203,16 +229,18 @@ class ComplianceEngine {
     const provider = providerName();
     const issues = [];
     let providerStatus;
-    if (provider === 'ofac') {
-      if (!OfacSanctionsListEngine) {
+    const descriptor = listProvider(provider);
+    if (descriptor) {
+      const engine = descriptor.engine();
+      if (!engine) {
         providerStatus = {
           ready: false,
           provider,
           entryCount: 0,
-          issues: ['OFAC sanctions list engine is not available'],
+          issues: [`${descriptor.label} sanctions list engine is not available`],
         };
       } else {
-        providerStatus = await OfacSanctionsListEngine.readiness();
+        providerStatus = await engine.readiness();
       }
     } else if (provider === 'local') {
       const entryCount = configuredSanctionedNames().length;
@@ -261,13 +289,15 @@ class ComplianceEngine {
 
   static async _sanctionsMatch(name, provider) {
     if (!name) return null;
-    if (provider === 'ofac') {
-      if (!OfacSanctionsListEngine) throw complianceUnavailable('OFAC sanctions list engine is not available');
-      const status = await OfacSanctionsListEngine.readiness();
+    const descriptor = listProvider(provider);
+    if (descriptor) {
+      const engine = descriptor.engine();
+      if (!engine) throw complianceUnavailable(`${descriptor.label} sanctions list engine is not available`);
+      const status = await engine.readiness();
       if (!status.ready) {
-        throw complianceUnavailable(`OFAC sanctions list is not ready: ${status.issues.join('; ')}`);
+        throw complianceUnavailable(`${descriptor.label} sanctions list is not ready: ${status.issues.join('; ')}`);
       }
-      return OfacSanctionsListEngine.screenName(name);
+      return engine.screenName(name);
     }
     for (const sanctioned of configuredSanctionedNames()) {
       if (this.fuzzyNameMatch(name, sanctioned)) {

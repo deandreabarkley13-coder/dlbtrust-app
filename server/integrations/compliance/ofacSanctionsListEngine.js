@@ -3,6 +3,8 @@
 let pool;
 try { pool = require('../bonds/pgPool'); } catch (e) { pool = null; }
 
+const { normalizeName, nameSimilarity } = require('./nameMatching');
+
 const OFAC_HOST = 'https://sanctionslistservice.ofac.treas.gov';
 const OFAC_API = `${OFAC_HOST}/api/PublicationPreview`;
 const USER_AGENT = 'DLBTrust-Compliance/1.0';
@@ -12,14 +14,6 @@ const REQUIRED_FILES = [
   { key: 'consolidated-primary', catalog: 'ConsolidatedList', fileName: 'CONS_PRIM.CSV', nameIndex: 1, idIndexes: [0], primary: true, minimumEntries: 100 },
   { key: 'consolidated-alias', catalog: 'ConsolidatedList', fileName: 'CONS_ALT.CSV', nameIndex: 3, idIndexes: [0, 1], primary: false },
 ];
-
-function normalizeName(name) {
-  return String(name || '')
-    .toLowerCase()
-    .replace(/[^a-z0-9]/g, ' ')
-    .replace(/\s+/g, ' ')
-    .trim();
-}
 
 function parseCsvLine(line) {
   const values = [];
@@ -341,40 +335,7 @@ class OfacSanctionsListEngine {
   }
 
   static _similarity(input, target) {
-    if (input === target) return 1;
-    if (input.length < 8 || target.length < 8) return 0;
-    const inputTokens = input.split(' ');
-    const targetTokens = target.split(' ');
-    const tokenCounts = (tokens) => tokens.reduce((counts, token) => {
-      counts.set(token, (counts.get(token) || 0) + 1);
-      return counts;
-    }, new Map());
-    const containsTokens = (container, candidate) => {
-      const available = tokenCounts(container);
-      return Array.from(tokenCounts(candidate).entries())
-        .every(([token, count]) => (available.get(token) || 0) >= count);
-    };
-    if (containsTokens(inputTokens, targetTokens) || containsTokens(targetTokens, inputTokens)) {
-      return inputTokens.length === targetTokens.length ? 0.96 : 0.92;
-    }
-    if (Math.abs(input.length - target.length) > 3) return 0;
-    const longer = Math.max(input.length, target.length);
-    const previous = Array.from({ length: target.length + 1 }, (_, index) => index);
-    for (let inputIndex = 1; inputIndex <= input.length; inputIndex += 1) {
-      let diagonal = previous[0];
-      previous[0] = inputIndex;
-      for (let targetIndex = 1; targetIndex <= target.length; targetIndex += 1) {
-        const above = previous[targetIndex];
-        const cost = input[inputIndex - 1] === target[targetIndex - 1] ? 0 : 1;
-        previous[targetIndex] = Math.min(
-          previous[targetIndex] + 1,
-          previous[targetIndex - 1] + 1,
-          diagonal + cost
-        );
-        diagonal = above;
-      }
-    }
-    return 1 - (previous[target.length] / longer);
+    return nameSimilarity(input, target);
   }
 
   static async screenName(name) {

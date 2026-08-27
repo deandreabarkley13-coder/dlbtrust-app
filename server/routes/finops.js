@@ -52,6 +52,7 @@ const { NickelMcpEngine } = require('../integrations/os/osEngine');
 const { ComplianceEngine } = require('../integrations/compliance/complianceEngine');
 const { PaymentComplianceGate } = require('../integrations/compliance/paymentComplianceGate');
 const { OfacSanctionsListEngine } = require('../integrations/compliance/ofacSanctionsListEngine');
+const { OpenSanctionsListEngine } = require('../integrations/compliance/openSanctionsListEngine');
 const { IssuerEngine } = require('../integrations/dapp/issuerEngine');
 const { BankTransferEngine } = require('../integrations/dapp/bankTransferEngine');
 const { VendorPaymentEngine } = require('../integrations/dapp/vendorPaymentEngine');
@@ -1648,6 +1649,13 @@ router.get('/compliance/readiness', operatorAuth, async (req, res) => {
 router.post('/compliance/ofac/refresh', operatorAuth, writeRateLimiter(), async (req, res) => {
   try {
     const data = await OfacSanctionsListEngine.refresh();
+    res.json({ success: data.ready, data });
+  } catch (err) { sendError(res, err); }
+});
+
+router.post('/compliance/opensanctions/refresh', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try {
+    const data = await OpenSanctionsListEngine.refresh();
     res.json({ success: data.ready, data });
   } catch (err) { sendError(res, err); }
 });
