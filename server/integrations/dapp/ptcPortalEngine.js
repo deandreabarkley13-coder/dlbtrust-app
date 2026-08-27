@@ -54,7 +54,20 @@ const DEFAULT_MEMBERS = [
   { email: 'deandreabarkley13@gmail.com', name: 'DeAndrea L Barkley', type: 'beneficiary', role: 'beneficiary', roles: ['beneficiary'], allocation: 34, crmContactId: 'CRM-BEN-1782927036064' },
   { email: 'annrobinson9800@yahoo.com', name: 'Malissa A Robinson', type: 'beneficiary', role: 'beneficiary', roles: ['beneficiary'], allocation: 33, crmContactId: 'CRM-BEN-1782927155850' },
   { email: 'robinsonjeremy22a@gmail.com', name: 'Jeremy N Robinson', type: 'beneficiary', role: 'beneficiary', roles: ['beneficiary'], allocation: 33, crmContactId: 'CRM-BEN-1782927793173' },
-];
+].reduce((members, member) => {
+  const existing = members.find(item => item.email.toLowerCase() === member.email.toLowerCase());
+  if (!existing) {
+    members.push(member);
+    return members;
+  }
+  existing.roles = Array.from(new Set([...existing.roles, ...member.roles]));
+  existing.type = existing.roles.some(role => role.startsWith('trustee_'))
+    ? 'trustee,beneficiary'
+    : member.type;
+  existing.allocation = Math.max(existing.allocation, member.allocation);
+  existing.crmContactId = existing.crmContactId || member.crmContactId;
+  return members;
+}, []);
 
 class PtcPortalEngine {
   static async ensureTables() {

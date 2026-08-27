@@ -65,6 +65,16 @@ class ModuleFundingEngine {
     return labels[type] || type;
   }
 
+  static async _assertTrustAssetDestination(accountId) {
+    const account = await TrustAccountingEngine.getAccount(accountId);
+    if (!account) throw new Error(`Trust account not found: ${accountId}`);
+    if (account.is_active === false) throw new Error(`Trust destination account is inactive: ${accountId}`);
+    if (String(account.account_type || '').toLowerCase() !== 'asset') {
+      throw new Error(`Trust destination account must be an asset: ${accountId}`);
+    }
+    return account;
+  }
+
   /**
    * Internal transfer between two accounts.  For same-type accounts the
    * engine's native transfer/journal API is used.  Cross-type transfers are
@@ -129,6 +139,10 @@ class ModuleFundingEngine {
       case 'trust':
       case 'trust_account': {
         if (!TrustAccountingEngine) throw new Error('TrustAccountingEngine not available');
+        await TrustAccountingEngine.assertFundingAvailable(fromAccountId, amountCents, {
+          purpose: 'internal transfer',
+        });
+        await this._assertTrustAssetDestination(toAccountId);
         return TrustAccountingEngine.postJournalEntry({
           entryDate: new Date(),
           description: memo || `Internal transfer ${referenceId}`,
@@ -136,8 +150,8 @@ class ModuleFundingEngine {
           postedBy: 'module-funding-engine',
           postToFineract: false,
           lines: [
-            { accountCode: fromAccountId, debitAmount: amount, creditAmount: 0, memo: 'Transfer out' },
-            { accountCode: toAccountId, debitAmount: 0, creditAmount: amount, memo: 'Transfer in' },
+            { accountCode: toAccountId, debitAmount: amount, creditAmount: 0, memo: 'Transfer in' },
+            { accountCode: fromAccountId, debitAmount: 0, creditAmount: amount, memo: 'Transfer out' },
           ],
         });
       }
@@ -201,6 +215,7 @@ class ModuleFundingEngine {
       case 'trust':
       case 'trust_account': {
         if (!TrustAccountingEngine) throw new Error('TrustAccountingEngine not available');
+        await this._assertTrustAssetDestination(accountId);
         const assetAccount = stablecoinCfg.stablecoinAssetAccount || '1210';
         return TrustAccountingEngine.postJournalEntry({
           entryDate: new Date(),
@@ -208,8 +223,8 @@ class ModuleFundingEngine {
           referenceType: 'module_internal_transfer', referenceId,
           postedBy: 'module-funding-engine', postToFineract: false,
           lines: [
-            { accountCode: assetAccount, debitAmount: amount, creditAmount: 0, memo: 'Treasury backing to trust' },
-            { accountCode: accountId, debitAmount: 0, creditAmount: amount, memo: 'Credit from treasury' },
+            { accountCode: accountId, debitAmount: amount, creditAmount: 0, memo: 'Credit from treasury' },
+            { accountCode: assetAccount, debitAmount: 0, creditAmount: amount, memo: 'Treasury backing to trust' },
           ],
         });
       }

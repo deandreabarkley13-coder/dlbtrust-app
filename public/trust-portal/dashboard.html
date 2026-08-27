@@ -508,7 +508,7 @@
       const bonds = (d.sourceOfTruth && d.sourceOfTruth.bonds) || [];
       el('bonds-list').innerHTML = bonds.length ? `<table><thead><tr><th>Bond</th><th>Principal</th><th>Accrued Interest</th></tr></thead><tbody>${bonds.map(b => `<tr><td>${b.name || b.id}</td><td>${fmtMoney(b.principal || 0)}</td><td>${fmtMoney(b.accruedInterest || 0)}</td></tr>`).join('')}</tbody></table>` : '<p class="muted">No bond holdings.</p>';
       const accounts = (d.sourceOfTruth && d.sourceOfTruth.trustAccounts) || [];
-      el('accounts-list').innerHTML = accounts.length ? `<table><thead><tr><th>Account</th><th>Balance</th></tr></thead><tbody>${accounts.map(a => `<tr><td>${a.code}<br/><span class="muted">${a.name}</span></td><td>${fmtMoney(a.balance || 0)}</td></tr>`).join('')}</tbody></table>` : '<p class="muted">No trust accounts.</p>';
+      el('accounts-list').innerHTML = accounts.length ? `<table><thead><tr><th>Account</th><th>Type</th><th>Ledger Balance</th><th>Available Funds</th><th>Segregation</th></tr></thead><tbody>${accounts.map(a => `<tr><td>${a.code}<br/><span class="muted">${a.name}</span></td><td>${a.accountType || '—'}<br/><span class="muted">${a.subType || ''}</span></td><td>${fmtMoney(a.balance || 0)}</td><td>${fmtMoney(Number(a.availableBalanceCents || 0) / 100)}</td><td>${a.fundingEligible ? 'Available' : 'Restricted'}${a.segregationReason ? `<br/><span class="muted">${a.segregationReason}</span>` : ''}</td></tr>`).join('')}</tbody></table>` : '<p class="muted">No trust accounts.</p>';
 
       const tax = d.taxSnapshot || {};
       const rows = [

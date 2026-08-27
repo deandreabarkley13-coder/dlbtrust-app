@@ -7,6 +7,7 @@ const require = createRequire(import.meta.url);
 const { MelioEngine } = require('../server/integrations/os/osEngine');
 const { EmailEngine } = require('../server/integrations/dapp/emailEngine');
 const { PaymentComplianceGate } = require('../server/integrations/compliance/paymentComplianceGate');
+const pool = require('../server/integrations/bonds/pgPool');
 const vendorsRouter = require('../server/routes/vendors');
 
 const markPaidRoute = vendorsRouter.stack.find(
@@ -28,10 +29,16 @@ describe('Melio bill spreadsheet CSV export', () => {
     vi.restoreAllMocks();
   });
 
-  it('uses the cash funding default for Melio callers without changing other rail defaults', () => {
+  it('uses trust account 1000 as the canonical Melio funding default without changing other rail defaults', () => {
     const dashboard = fs.readFileSync(path.resolve(process.cwd(), 'public/os-engine-dashboard.html'), 'utf8');
     const vendorsRoutes = fs.readFileSync(path.resolve(process.cwd(), 'server/routes/vendors.js'), 'utf8');
+    const config = MelioEngine._cfg();
 
+    expect(config).toMatchObject({
+      defaultSourceType: 'trust',
+      defaultSourceAccountId: '1000',
+      allowedSourceAccounts: ['1000'],
+    });
     expect(dashboard).toContain('id="melio-source-gl" value="1000"');
     expect(dashboard).toContain('id="melio-invoice-source-gl" value="1000"');
     expect(dashboard).toContain("el('melio-source-gl').value.trim() || '1000'");
@@ -40,6 +47,52 @@ describe('Melio bill spreadsheet CSV export', () => {
     expect(dashboard).toContain('id="nickel-source-gl" value="4000"');
     expect(vendorsRoutes.match(/source_account_code: paymentPayload\.source_account_code \|\| '1000'/g) || []).toHaveLength(1);
     expect(vendorsRoutes).toContain("source_account_code: paymentPayload.source_account_code || '4000'");
+  });
+
+  it('reserves outstanding CSV instructions against the canonical source position', async () => {
+    const getPosition = vi.fn().mockResolvedValue({
+      sourceType: 'trust',
+      sourceAccountId: '1000',
+      currentBalanceCents: 25000,
+      availableBalanceCents: 20000,
+      fundingEligible: true,
+      segregationStatus: 'available',
+      sourceOfTruth: 'trust_accounting',
+    });
+    vi.spyOn(MelioEngine, '_deps').mockReturnValue({ SourceOfFunds: { getPosition } });
+    vi.spyOn(pool, 'query').mockResolvedValue({ rows: [{ reserved_cents: '7500' }] });
+
+    const source = await MelioEngine._sourceBalance('trust', '1000');
+
+    expect(getPosition).toHaveBeenCalledWith({
+      sourceType: 'trust',
+      sourceAccountId: '1000',
+      purpose: 'Melio B2B CSV payments',
+      allowedAccountIds: ['1000'],
+    });
+    expect(source).toMatchObject({
+      balanceCents: 12500,
+      ledgerBalanceCents: 25000,
+      sourceAvailableBalanceCents: 20000,
+      reservedCents: 7500,
+    });
+  });
+
+  it('rejects a segregated source before generating a payment file', async () => {
+    vi.spyOn(MelioEngine, '_deps').mockReturnValue({
+      SourceOfFunds: {
+        getPosition: vi.fn().mockResolvedValue({
+          fundingEligible: false,
+          segregationReason: 'account is segregated for a protected purpose',
+        }),
+      },
+    });
+    const query = vi.spyOn(pool, 'query');
+
+    await expect(MelioEngine._sourceBalance('trust', '1210')).rejects.toThrow(
+      'Segregation of funds violation for trust:1210: account is segregated for a protected purpose',
+    );
+    expect(query).not.toHaveBeenCalled();
   });
 
   it('writes exports to the configured directory and validates downloads within it', () => {
@@ -518,10 +571,11 @@ describe('Melio bill spreadsheet CSV export', () => {
       payablesGlAccount: '2100',
     });
     const deps = MelioEngine._deps();
+    const assertFundingAvailable = vi.fn().mockResolvedValue({});
     const postJournalEntry = vi.fn().mockResolvedValue({ entry_id: 'JRN-SETTLE' });
     const depsSpy = vi.spyOn(MelioEngine, '_deps').mockReturnValue({
       ...deps,
-      TrustAcct: { postJournalEntry },
+      TrustAcct: { assertFundingAvailable, postJournalEntry },
     });
     const recordSpy = vi.spyOn(MelioEngine, '_recordPayment').mockResolvedValue(undefined);
     const record = {
@@ -532,7 +586,7 @@ describe('Melio bill spreadsheet CSV export', () => {
       amountCents: 850,
       currency: 'USD',
       sourceType: 'trust',
-      sourceAccountId: '4000',
+      sourceAccountId: '1000',
       result: { csvPath: 'data/melio-exports/test.csv' },
     };
 
@@ -549,6 +603,10 @@ describe('Melio bill spreadsheet CSV export', () => {
       expect(second.alreadySettled).toBe(true);
       expect(second.result.settlementJournalEntryId).toBe('JRN-SETTLE');
       expect(postJournalEntry).toHaveBeenCalledTimes(1);
+      expect(assertFundingAvailable).toHaveBeenCalledWith('1000', 850, {
+        purpose: 'Melio settlement',
+        allowedAccountCodes: ['1000'],
+      });
       expect(postJournalEntry).toHaveBeenCalledWith(expect.objectContaining({
         lines: [
           expect.objectContaining({ accountCode: '2100', debitAmount: '8.50', creditAmount: 0 }),

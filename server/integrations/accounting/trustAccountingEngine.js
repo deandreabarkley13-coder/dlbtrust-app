@@ -14,6 +14,80 @@ const { FineractClient } = require('../fineract/fineractClient');
 
 class TrustAccountingEngine {
 
+  static _codes(value) {
+    if (Array.isArray(value)) return value.map(String).map(v => v.trim()).filter(Boolean);
+    return String(value || '').split(',').map(v => v.trim()).filter(Boolean);
+  }
+
+  static describeFundingPosition(account, { purpose = 'payment', allowedAccountCodes } = {}) {
+    if (!account) return null;
+    const accountCode = String(account.account_code);
+    const accountType = String(account.account_type || '').toLowerCase();
+    const subType = String(account.sub_type || '').toLowerCase();
+    const balanceCents = Math.round(Number(account.balance || 0) * 100);
+    const liquidSubTypes = this._codes(
+      process.env.TRUST_LIQUID_ASSET_SUBTYPES || 'cash,checking,operating,settlement'
+    ).map(v => v.toLowerCase());
+    const protectedAccountCodes = this._codes(
+      process.env.TRUST_SEGREGATED_ACCOUNT_CODES || '1210'
+    );
+    const allowedCodes = this._codes(allowedAccountCodes);
+
+    let fundingEligible = true;
+    let segregationReason = null;
+    if (account.is_active === false) {
+      fundingEligible = false;
+      segregationReason = 'account is inactive';
+    } else if (accountType !== 'asset') {
+      fundingEligible = false;
+      segregationReason = `${accountType || 'unknown'} accounts cannot be used as payment funds`;
+    } else if (!liquidSubTypes.includes(subType)) {
+      fundingEligible = false;
+      segregationReason = `${subType || 'unclassified'} assets are not liquid payment funds`;
+    } else if (protectedAccountCodes.includes(accountCode)) {
+      fundingEligible = false;
+      segregationReason = 'account is segregated for a protected purpose';
+    } else if (allowedCodes.length && !allowedCodes.includes(accountCode)) {
+      fundingEligible = false;
+      segregationReason = `account is not approved for ${purpose}`;
+    }
+
+    return {
+      ...account,
+      source_type: 'trust',
+      source_account_id: accountCode,
+      source_of_truth: 'trust_accounting',
+      balance_cents: balanceCents,
+      current_balance_cents: balanceCents,
+      available_balance_cents: fundingEligible ? Math.max(0, balanceCents) : 0,
+      funding_eligible: fundingEligible,
+      segregation_status: fundingEligible ? 'available' : 'restricted',
+      segregation_reason: segregationReason,
+      funding_purpose: purpose,
+    };
+  }
+
+  static async getFundingPosition(accountCode, options = {}) {
+    const account = await this.getAccount(accountCode);
+    return this.describeFundingPosition(account, options);
+  }
+
+  static async assertFundingAvailable(accountCode, amountCents, options = {}) {
+    const position = await this.getFundingPosition(accountCode, options);
+    if (!position) throw new Error(`Trust account not found: ${accountCode}`);
+    if (!position.funding_eligible) {
+      throw new Error(
+        `Segregation of funds violation for trust:${accountCode}: ${position.segregation_reason}`
+      );
+    }
+    if (Number(position.available_balance_cents || 0) < Number(amountCents || 0)) {
+      throw new Error(
+        `Insufficient trust balance in ${accountCode}: ${position.available_balance_cents || 0} < ${amountCents}`
+      );
+    }
+    return position;
+  }
+
   // ─── Chart of Accounts ────────────────────────────────────────────────────
 
   static async createAccount({
@@ -33,7 +107,7 @@ class TrustAccountingEngine {
         linkedFineractGl || null, description || null,
       ]
     );
-    return result.rows[0];
+    return this.describeFundingPosition(result.rows[0]);
   }
 
   static async getAccount(accountCode) {
@@ -41,7 +115,7 @@ class TrustAccountingEngine {
       `SELECT * FROM trust_accounts WHERE account_code = $1`,
       [accountCode]
     );
-    return result.rows[0] || null;
+    return result.rows[0] ? this.describeFundingPosition(result.rows[0]) : null;
   }
 
   static async listAccounts({ accountType, subType, isActive } = {}) {
@@ -60,7 +134,7 @@ class TrustAccountingEngine {
        ORDER BY account_code ASC`,
       params
     );
-    return result.rows;
+    return result.rows.map(account => this.describeFundingPosition(account));
   }
 
   static async updateAccount(accountCode, updates) {
@@ -102,7 +176,7 @@ class TrustAccountingEngine {
       params
     );
     if (result.rows.length === 0) throw new Error(`Account ${accountCode} not found`);
-    return result.rows[0];
+    return this.describeFundingPosition(result.rows[0]);
   }
 
   // ─── Journal Entries (Double-Entry) ───────────────────────────────────────

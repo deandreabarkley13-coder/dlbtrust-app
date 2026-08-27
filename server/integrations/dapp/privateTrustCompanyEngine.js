@@ -182,7 +182,19 @@ class PrivateTrustCompanyEngine {
           const bal = Number(a.balance || 0);
           if (code.startsWith('1100') || code.startsWith('1210')) result.principal += bal;
           if (code.startsWith('4000') || code.startsWith('4100')) result.interest += bal;
-          result.trustAccounts.push({ code, name: a.account_name, balance: bal });
+          result.trustAccounts.push({
+            code,
+            name: a.account_name,
+            accountType: a.account_type,
+            subType: a.sub_type,
+            balance: bal,
+            balanceCents: a.current_balance_cents,
+            availableBalanceCents: a.available_balance_cents,
+            fundingEligible: a.funding_eligible,
+            segregationStatus: a.segregation_status,
+            segregationReason: a.segregation_reason,
+            sourceOfTruth: a.source_of_truth,
+          });
         }
       }
     } catch (e) {}

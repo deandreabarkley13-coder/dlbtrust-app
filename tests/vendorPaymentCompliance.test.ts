@@ -61,8 +61,8 @@ describe('vendor route authorization', () => {
       },
       body: {
         role: 'checker',
-        approved_by: 'dbarkley1130@gmail.com',
-        approverEmail: 'dbarkley1130@gmail.com',
+        approved_by: 'deandreabarkley13@gmail.com',
+        approverEmail: 'deandreabarkley13@gmail.com',
         signature: 'Malissa Ann Robinson',
       },
     }, response);

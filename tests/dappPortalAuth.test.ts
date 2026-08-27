@@ -43,6 +43,24 @@ function mockOtpUser() {
 }
 
 describe('dApp portal authentication and role scoping', () => {
+  it('uses the configured checker identity as the authoritative checker trustee', () => {
+    const checker = getTrusteeByRole('checker');
+
+    expect(checker).toMatchObject({
+      email: 'deandreabarkley13@gmail.com',
+      signatureOfRecordLegalName: 'DeAndrea Lavar Barkley',
+    });
+    expect(DappEngine.inferRoles(checker.email)).toEqual(['trustee_checker', 'beneficiary']);
+    expect(PtcPortalEngine.getConfiguredTrusteeByEmail(checker.email)).toMatchObject({
+      role: 'checker',
+      email: checker.email,
+    });
+    expect(getTrusteeByEmail('dbarkley1130@gmail.com')).toMatchObject({
+      role: 'administration',
+      email: 'dbarkley1130@gmail.com',
+    });
+  });
+
   it('maps Malissa to the configured maker-trustee role', () => {
     const maker = getTrusteeByRole('maker');
 
@@ -153,7 +171,7 @@ describe('dApp portal authentication and role scoping', () => {
     });
     expect(() => bindAuthenticatedTrustee(request, {
       role: 'checker',
-      approverEmail: 'dbarkley1130@gmail.com',
+      approverEmail: 'deandreabarkley13@gmail.com',
     }, 'approverEmail')).toThrow('Authenticated maker trustee cannot act as checker');
   });
 

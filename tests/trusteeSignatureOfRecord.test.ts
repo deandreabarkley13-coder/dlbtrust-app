@@ -103,7 +103,7 @@ describe('trustee signature of record', () => {
     await CanonicalConsensusEngine.approveProposal({
       proposalId: 'PROPOSAL-SIGNATURE',
       role: 'checker',
-      approverEmail: 'dbarkley1130@gmail.com',
+      approverEmail: 'deandreabarkley13@gmail.com',
       signature: 'DeAndrea Lavar Barkley',
     });
 

@@ -184,7 +184,7 @@
           <div class="card" style="grid-column: 1 / -1;">
             <h2>Legacy Source-of-Funds Balances</h2>
             <p>Treasury, Cash, Trust Accounting, Bond/Fixed Income, Core Banking, CRM, Tax, and Document modules wired as stablecoin funding sources.</p>
-            <div class="table-wrap"><table id="sof-table"><thead><tr><th>Type</th><th>Name</th><th>ID</th><th>Balance</th><th>Currency</th></tr></thead><tbody></tbody></table></div>
+            <div class="table-wrap"><table id="sof-table"><thead><tr><th>Type</th><th>Name</th><th>ID</th><th>Ledger</th><th>Available</th><th>Currency</th><th>Segregation</th></tr></thead><tbody></tbody></table></div>
             <div class="actions"><button class="btn btn-sm" onclick="loadSourceBalances()">Refresh</button></div>
           </div>
         </div>
@@ -265,7 +265,7 @@
           <div class="card" style="grid-column: 1 / -1;">
             <h2>Core Modules Ledger View</h2>
             <p>Unified abstraction layer for Treasury, Cash, Trust Accounting, Bond / Fixed Income, Core Banking, Sub-Ledger, CRM, Tax, and Documents.</p>
-            <div id="core-modules-table-wrap" class="table-wrap"><table id="core-modules-table"><thead><tr><th>Module</th><th>Name</th><th>ID</th><th>Balance</th><th>Currency</th></tr></thead><tbody></tbody></table></div>
+            <div id="core-modules-table-wrap" class="table-wrap"><table id="core-modules-table"><thead><tr><th>Module</th><th>Name</th><th>ID</th><th>Ledger</th><th>Available</th><th>Currency</th><th>Segregation</th></tr></thead><tbody></tbody></table></div>
             <div class="actions"><button class="btn btn-sm" onclick="loadCoreModules()">Refresh</button></div>
           </div>
         </div>
@@ -837,7 +837,7 @@
             </div>
             <div class="form-row">
               <div><label>Memo</label><input type="text" id="auto-memo" placeholder="One-click distribution" /></div>
-              <div style="flex:2"><label>Trustee Signatures JSON (optional)</label><input type="text" id="auto-signatures" placeholder='[{"role":"maker","trusteeEmail":"malissa1130@gmail.com","signature":"0x..."},{"role":"checker","trusteeEmail":"dbarkley1130@gmail.com","signature":"0x..."}]' /></div>
+              <div style="flex:2"><label>Trustee Signatures JSON (optional)</label><input type="text" id="auto-signatures" placeholder='[{"role":"maker","trusteeEmail":"malissa1130@gmail.com","signature":"0x..."},{"role":"checker","trusteeEmail":"deandreabarkley13@gmail.com","signature":"0x..."}]' /></div>
             </div>
             <div class="form-row">
               <label style="display:flex;align-items:center;gap:8px"><input type="checkbox" id="auto-hard-assets" checked /> Include hard assets/liabilities in proof</label>
@@ -1492,7 +1492,7 @@
         const tb = el('sof-table').querySelector('tbody'); tb.innerHTML = '';
         res.data.forEach(b => {
           const tr = document.createElement('tr');
-          tr.innerHTML = `<td>${esc(b.type)}</td><td>${esc(b.name)}</td><td class="mono">${esc(b.id)}</td><td>${Number(b.balance_cents / 100).toFixed(2)}</td><td>${esc(b.currency)}</td>`;
+          tr.innerHTML = `<td>${esc(b.source_type || b.type)}</td><td>${esc(b.name)}</td><td class="mono">${esc(b.source_account_id || b.id)}</td><td>${Number((b.current_balance_cents ?? b.balance_cents ?? 0) / 100).toFixed(2)}</td><td>${Number((b.available_balance_cents ?? 0) / 100).toFixed(2)}</td><td>${esc(b.currency)}</td><td>${esc(b.segregation_status || 'restricted')}${b.segregation_reason ? '<br><small>' + esc(b.segregation_reason) + '</small>' : ''}</td>`;
           tb.appendChild(tr);
         });
       } catch (e) { showToast('Source of funds error: ' + e.message, true); }
@@ -1506,7 +1506,7 @@
           for (const g of res.data.groups) {
             for (const a of g.accounts || []) {
               const tr = document.createElement('tr');
-              tr.innerHTML = `<td><span class="tag">${esc(g.label)}</span></td><td>${esc(a.name)}</td><td class="mono">${esc(a.id)}</td><td>${Number(a.balance_cents / 100).toFixed(2)}</td><td>${esc(a.currency)}</td>`;
+              tr.innerHTML = `<td><span class="tag">${esc(g.label)}</span></td><td>${esc(a.name)}</td><td class="mono">${esc(a.source_account_id || a.id)}</td><td>${Number((a.current_balance_cents ?? a.balance_cents ?? 0) / 100).toFixed(2)}</td><td>${Number((a.available_balance_cents ?? 0) / 100).toFixed(2)}</td><td>${esc(a.currency)}</td><td>${esc(a.segregation_status || 'restricted')}${a.segregation_reason ? '<br><small>' + esc(a.segregation_reason) + '</small>' : ''}</td>`;
               tb.appendChild(tr);
             }
           }

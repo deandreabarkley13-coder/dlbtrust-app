@@ -40,12 +40,23 @@ router.get('/source-types', async (req, res) => {
 
 router.get('/sources/:type/:id/balance', operatorAuth, async (req, res) => {
   try {
-    const balance = await SourceOfFundsAdapter.getBalance({ sourceType: req.params.type, sourceAccountId: req.params.id });
+    const position = await SourceOfFundsAdapter.getPosition({
+      sourceType: req.params.type,
+      sourceAccountId: req.params.id,
+      purpose: 'stablecoin payment',
+    });
     let accruedInterestCents = 0;
     if ((req.params.type === 'bond' || req.params.type === 'fixed_income') && SourceOfFundsAdapter.getBondAccruedInterestCents) {
       accruedInterestCents = await SourceOfFundsAdapter.getBondAccruedInterestCents(req.params.id);
     }
-    res.json({ success: true, data: { sourceType: req.params.type, sourceAccountId: req.params.id, availableCents: balance, accruedInterestCents } });
+    res.json({
+      success: true,
+      data: {
+        ...position,
+        availableCents: position.availableBalanceCents,
+        accruedInterestCents,
+      },
+    });
   } catch (err) { sendError(res, err); }
 });
 
