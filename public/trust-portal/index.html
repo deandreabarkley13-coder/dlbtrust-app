@@ -62,6 +62,7 @@
   </div>
   <div class="hint">For trustees and approved beneficiaries only.</div>
 
+  <script src="/lib/portal-routing.js"></script>
   <script>
     const el = id => document.getElementById(id);
     function show(id, msg, isErr) {
@@ -103,16 +104,11 @@
         localStorage.setItem('dlb-beneficiary-token', res.data.token);
         if (res.data.email) localStorage.setItem('dlb-trust-email', res.data.email);
         show('status', 'Login successful. Redirecting…', false);
-        const roles = res.data.roles || [res.data.role];
-        const destination = roles.some(r => String(r || '').toLowerCase().includes('trustee'))
-          ? '/dashboard'
-          : '/trust-portal/dashboard.html';
+        const destination = PortalRouting.homeForRoles(res.data.roles, res.data.role || res.data.active_role);
         setTimeout(() => location.href = destination, 400);
       } catch (e) { show('status', e.message, true); }
     }
-    if (localStorage.getItem('dlb-beneficiary-token')) {
-      location.replace('/trust-portal/dashboard.html');
-    }
+    PortalRouting.resolveHome().then(home => { if (home) location.replace(home); });
   </script>
 </body>
 </html>
