@@ -3,7 +3,7 @@
 const { SafeEngine } = require('./safeEngine');
 const { getConfig } = require('./config');
 const { SourceOfFundsAdapter } = require('../stablecoin/sourceOfFundsAdapter');
-const { getTrusteeByEmail, getTrusteeByRole } = require('./trustees');
+const { getTrusteeByEmail, getTrusteeByRole, trusteeOwnsEmail } = require('./trustees');
 const { JWT_SECRET } = require('../auth/userAuth');
 
 let CashEngine, TrustAccountingEngine, BondEngine, FineractClient, CrmEngine, TaxEngine, DocumentEngine, SubLedgerEngine, EmailEngine;
@@ -754,11 +754,10 @@ class DappEngine {
   }
 
   static inferRoles(email) {
-    const lowerEmail = String(email || '').toLowerCase();
     const maker = getTrusteeByRole('maker');
     const checker = getTrusteeByRole('checker');
-    if (maker && String(maker.email).toLowerCase() === lowerEmail) return ['trustee_maker', 'beneficiary'];
-    if (checker && String(checker.email).toLowerCase() === lowerEmail) return ['trustee_checker', 'beneficiary'];
+    if (maker && trusteeOwnsEmail(maker, email)) return ['trustee_maker', 'beneficiary'];
+    if (checker && trusteeOwnsEmail(checker, email)) return ['trustee_checker', 'beneficiary'];
 
     const trustee = getTrusteeByEmail(email);
     if (trustee) {

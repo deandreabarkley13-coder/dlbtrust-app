@@ -103,8 +103,10 @@
         if (!res.success || !res.data || !res.data.token) throw new Error(res.error || 'No token returned');
         localStorage.setItem('dlb-beneficiary-token', res.data.token);
         if (res.data.email) localStorage.setItem('dlb-trust-email', res.data.email);
-        show('status', 'Login successful. Redirecting…', false);
-        const destination = PortalRouting.homeForRoles(res.data.roles, res.data.role || res.data.active_role);
+        const role = res.data.role || res.data.active_role || 'beneficiary';
+        const destination = PortalRouting.homeForRoles(res.data.roles, role);
+        const portal = destination === PortalRouting.TRUSTEE_HOME ? 'trustee dashboard' : 'beneficiary portal';
+        show('status', 'Signed in as ' + role + '. Opening the ' + portal + '…', false);
         setTimeout(() => location.href = destination, 400);
       } catch (e) { show('status', e.message, true); }
     }

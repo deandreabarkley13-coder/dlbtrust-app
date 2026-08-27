@@ -26,7 +26,11 @@
     return fetch('/api/dapp/auth/me', { headers: { Authorization: 'Bearer ' + token } })
       .then(function (res) { return res.json().then(function (body) { return { res: res, body: body }; }); })
       .then(function (out) {
-        if (!out.res.ok || !out.body || !out.body.success) return null;
+        if (!out.res.ok || !out.body || !out.body.success) {
+          // Drop a rejected token so the login page starts from a clean session.
+          if (out.res.status === 401 || out.res.status === 403) localStorage.removeItem(USER_KEY);
+          return null;
+        }
         var data = out.body.data || {};
         var user = data.dappUser || data.user || {};
         return homeForRoles(user.roles, user.role || user.active_role);

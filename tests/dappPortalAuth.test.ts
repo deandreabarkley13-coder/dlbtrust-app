@@ -10,7 +10,12 @@ const { DappEngine } = require('../server/integrations/dapp/dappEngine');
 const { EmailEngine } = require('../server/integrations/dapp/emailEngine');
 const { PtcPortalEngine } = require('../server/integrations/dapp/ptcPortalEngine');
 const { MelioEngine } = require('../server/integrations/os/osEngine');
-const { getTrusteeByRole } = require('../server/integrations/dapp/trustees');
+const {
+  getTrusteeByRole,
+  getTrusteeByEmail,
+  trusteeOwnsEmail,
+  validateTrustee,
+} = require('../server/integrations/dapp/trustees');
 const { bindAuthenticatedTrustee } = require('../server/integrations/auth/securityMiddleware');
 
 const originalEnvironment = {
@@ -57,6 +62,24 @@ describe('dApp portal authentication and role scoping', () => {
       roles: ['beneficiary'],
       primaryRole: 'beneficiary',
     });
+  });
+
+  it('grants the maker seat to configured alternate sign-in addresses', () => {
+    const maker = getTrusteeByRole('maker');
+    const original = maker.altEmails;
+    maker.altEmails = ['maker.alias@example.com'];
+
+    try {
+      expect(trusteeOwnsEmail(maker, 'Maker.Alias@example.com')).toBe(true);
+      expect(DappEngine.inferRoles('maker.alias@example.com')).toEqual(['trustee_maker', 'beneficiary']);
+      expect(getTrusteeByEmail('maker.alias@example.com')).toMatchObject({ role: 'maker' });
+      expect(validateTrustee('maker', 'maker.alias@example.com')).toMatchObject({ role: 'maker' });
+      expect(() => validateTrustee('checker', 'maker.alias@example.com'))
+        .toThrow('is not authorized for role checker');
+      expect(DappEngine.inferRoles('unlisted@example.com')).toEqual(['beneficiary']);
+    } finally {
+      maker.altEmails = original;
+    }
   });
 
   it('sends Malissa a delivery-gated PIN and persists maker-trustee access', async () => {
