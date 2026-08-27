@@ -39,9 +39,11 @@ var ACCOUNTS = {
   INTEREST_INCOME:   '4000',
   COUPON_INCOME:     '4100',
   FEE_INCOME:        '4200',
-  PAYMENT_EXPENSE:   '5000',
-  OPERATING_EXPENSE: '5100',
-  FEE_EXPENSE:       '5200',
+  MANAGEMENT_EXPENSE: '5000',
+  TRUSTEE_EXPENSE:   '5100',
+  LEGAL_EXPENSE:     '5200',
+  OPERATING_EXPENSE: '5300',
+  STABLECOIN_ASSET:  '1210',
 };
 
 class DataBridge {
@@ -575,9 +577,9 @@ class DataBridge {
               { accountCode: ACCOUNTS.CASH, debitAmount: 0, creditAmount: amount, memo: 'Cash transferred to BILL' },
             ];
           } else {
-            // Payment FROM BILL: DR Payment Expense / CR BILL Cash (1050)
+            // Payment FROM BILL: DR Operating Expense / CR BILL Cash (1050)
             lines = [
-              { accountCode: ACCOUNTS.PAYMENT_EXPENSE, debitAmount: amount, creditAmount: 0, memo: 'BILL payment ' + txn.transaction_id },
+              { accountCode: ACCOUNTS.OPERATING_EXPENSE, debitAmount: amount, creditAmount: 0, memo: 'BILL payment ' + txn.transaction_id },
               { accountCode: ACCOUNTS.BILL_CASH, debitAmount: 0, creditAmount: amount, memo: 'BILL payment sent' },
             ];
           }
@@ -893,7 +895,6 @@ class DataBridge {
    * Includes idempotency guard to prevent duplicate pushes.
    */
   static async pushToFineract() {
-    var { TrustAccountingEngine } = require('./trustAccountingEngine');
     var { FineractClient } = require('../fineract/fineractClient');
 
     var syncId = 'PUSH-GL-' + Date.now() + '-' + Math.random().toString(36).slice(2, 6).toUpperCase();
@@ -1039,23 +1040,138 @@ class DataBridge {
   }
 
   // ═══════════════════════════════════════════════════════════════════════════
-  //  WIRE → ACCOUNTING VERIFICATION
+  //  WIRE → ACCOUNTING SYNC
   // ═══════════════════════════════════════════════════════════════════════════
+
+  static async syncWiresToAccounting({ dryRun } = {}) {
+    var { WireEngine } = require('../wire/wireEngine');
+    var syncId = 'SYNC-WIRE-' + Date.now() + '-' + Math.random().toString(36).slice(2, 6).toUpperCase();
+    var synced = 0;
+    var linked = 0;
+    var skipped = 0;
+    var failed = 0;
+    var errors = [];
+
+    if (!await DataBridge._tableExists('wire_transfers')) {
+      return {
+        syncId: syncId,
+        dryRun: Boolean(dryRun),
+        posted: 0,
+        linksRepaired: 0,
+        skipped: 0,
+        failed: 0,
+        inactive: true,
+        message: 'Wire module not initialized',
+        errors: [],
+      };
+    }
+
+    try {
+      var candidates = await pool.query(`
+        SELECT wt.*
+        FROM wire_transfers wt
+        WHERE wt.status IN ('settled', 'confirmed', 'sent')
+          AND wt.payment_type != 'bill_deposit'
+          AND (
+            wt.journal_entry_id IS NULL
+            OR NOT EXISTS (
+              SELECT 1 FROM trust_journal_entries linked_je
+              WHERE linked_je.entry_id = wt.journal_entry_id
+                AND linked_je.status = 'posted'
+            )
+          )
+        ORDER BY wt.created_at ASC
+      `);
+
+      for (var i = 0; i < candidates.rows.length; i++) {
+        var wire = candidates.rows[i];
+        try {
+          var existing = await pool.query(
+            `SELECT entry_id
+             FROM trust_journal_entries
+             WHERE reference_id = $1
+               AND reference_type IN ('wire_transfer', 'wire')
+               AND status = 'posted'
+             ORDER BY created_at ASC
+             LIMIT 1`,
+            [wire.wire_id]
+          );
+
+          if (existing.rows.length) {
+            if (!dryRun) {
+              await pool.query(
+                'UPDATE wire_transfers SET journal_entry_id = $2, updated_at = NOW() WHERE wire_id = $1',
+                [wire.wire_id, existing.rows[0].entry_id]
+              );
+            }
+            linked++;
+            continue;
+          }
+
+          if (dryRun) {
+            synced++;
+            continue;
+          }
+
+          await WireEngine.postAccountingEntry(wire, { postedBy: 'data_bridge' });
+          synced++;
+        } catch (err) {
+          failed++;
+          errors.push({ wireId: wire.wire_id, error: err.message });
+        }
+      }
+      if (candidates.rows.length === 0) skipped++;
+    } catch (outerErr) {
+      failed++;
+      errors.push({ phase: 'query', error: outerErr.message });
+    }
+
+    if (!dryRun) {
+      await DataBridge._logSync(syncId, 'wire_to_accounting', 'wire', 'trust_accounting',
+        synced + linked, skipped, failed, errors);
+    }
+
+    return {
+      syncId: syncId,
+      dryRun: Boolean(dryRun),
+      posted: synced,
+      linksRepaired: linked,
+      skipped: skipped,
+      failed: failed,
+      errors: errors,
+    };
+  }
 
   /**
    * Verify wire transfers have corresponding trust journal entries.
-   * WireEngine already posts JEs, but this catches any that slipped through.
+   * Accepts the canonical wire_transfer reference and legacy wire references.
    */
-  static async verifyWireSync() {
+  static async verifyWireSync({ log } = {}) {
     var syncId = 'VERIFY-WIRE-' + Date.now() + '-' + Math.random().toString(36).slice(2, 6).toUpperCase();
     var gaps = [];
+
+    if (!await DataBridge._tableExists('wire_transfers')) {
+      return {
+        syncId: syncId,
+        totalWiresWithoutJE: 0,
+        inactive: true,
+        message: 'Wire module not initialized',
+        gaps: [],
+      };
+    }
 
     try {
       var unsynced = await pool.query(`
         SELECT wt.wire_id, wt.amount_cents, wt.status, wt.created_at
         FROM wire_transfers wt
         WHERE wt.status IN ('settled', 'confirmed', 'sent')
-          AND wt.journal_entry_id IS NULL
+          AND wt.payment_type != 'bill_deposit'
+          AND NOT EXISTS (
+            SELECT 1 FROM trust_journal_entries je
+            WHERE je.reference_id = wt.wire_id
+              AND je.reference_type IN ('wire_transfer', 'wire')
+              AND je.status = 'posted'
+          )
         ORDER BY wt.created_at ASC
       `);
 
@@ -1071,10 +1187,215 @@ class DataBridge {
       gaps.push({ type: 'error', error: err.message });
     }
 
-    await DataBridge._logSync(syncId, 'wire_verification', 'wire', 'trust_accounting',
-      0, 0, gaps.length, gaps);
+    if (log !== false) {
+      await DataBridge._logSync(syncId, 'wire_verification', 'wire', 'trust_accounting',
+        0, 0, gaps.length, gaps);
+    }
 
     return { syncId: syncId, totalWiresWithoutJE: gaps.length, gaps: gaps };
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  //  EXPENSES & DISTRIBUTIONS → ACCOUNTING SYNC
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  static async syncTrustActivityToAccounting({ dryRun } = {}) {
+    var { TrustAccountingEngine } = require('./trustAccountingEngine');
+    var syncId = 'SYNC-TRUST-ACTIVITY-' + Date.now() + '-' + Math.random().toString(36).slice(2, 6).toUpperCase();
+    var posted = 0;
+    var linked = 0;
+    var pending = 0;
+    var failed = 0;
+    var errors = [];
+
+    var requiredTables = ['dapp_distribution_requests', 'expense_records', 'dapp_payout_center'];
+    for (var tableIndex = 0; tableIndex < requiredTables.length; tableIndex++) {
+      if (!await DataBridge._tableExists(requiredTables[tableIndex])) {
+        return {
+          syncId: syncId,
+          dryRun: Boolean(dryRun),
+          posted: 0,
+          linksRepaired: 0,
+          pending: 0,
+          failed: 0,
+          inactive: true,
+          message: 'Trust activity module not initialized',
+          errors: [],
+        };
+      }
+    }
+
+    try {
+      var activity = await pool.query(`
+        SELECT dr.*,
+               er.id AS expense_id,
+               er.expense_type,
+               er.metadata AS expense_metadata,
+               pc.status AS payout_status,
+               pc.rail AS payout_rail
+        FROM dapp_distribution_requests dr
+        LEFT JOIN expense_records er
+          ON er.id = dr.metadata->>'expenseId'
+          OR (dr.metadata->>'expenseId' IS NULL AND er.request_id = dr.id)
+        LEFT JOIN dapp_payout_center pc ON pc.id = dr.payout_id
+        WHERE dr.status IN ('payout_created', 'executed', 'failed')
+        ORDER BY dr.created_at ASC
+      `);
+
+      for (var i = 0; i < activity.rows.length; i++) {
+        var request = activity.rows[i];
+        var requestMetadata = DataBridge._jsonObject(request.metadata);
+        var expenseMetadata = DataBridge._jsonObject(request.expense_metadata);
+        var effectiveStatus = request.status;
+        if (request.payout_status === 'completed') effectiveStatus = 'executed';
+        if (request.payout_status === 'failed') effectiveStatus = 'failed';
+
+        if (effectiveStatus !== 'executed') {
+          pending++;
+          if (!dryRun && request.expense_id) {
+            await pool.query(
+              `UPDATE expense_records
+               SET status = $2,
+                   metadata = COALESCE(metadata, '{}'::jsonb) || $3::jsonb,
+                   updated_at = NOW()
+               WHERE id = $1`,
+              [
+                request.expense_id,
+                effectiveStatus === 'failed' ? 'payment_failed' : 'payment_pending',
+                JSON.stringify({ paymentStatus: effectiveStatus, payoutStatus: request.payout_status || null }),
+              ]
+            );
+          }
+          if (!dryRun && effectiveStatus !== request.status) {
+            await pool.query(
+              'UPDATE dapp_distribution_requests SET status = $2, updated_at = NOW() WHERE id = $1',
+              [request.id, effectiveStatus]
+            );
+          }
+          continue;
+        }
+
+        var referenceType = request.expense_id ? 'expense_payment' : 'distribution_request';
+        var referenceId = request.expense_id || request.id;
+        var existing = await pool.query(
+          `SELECT entry_id
+           FROM trust_journal_entries
+           WHERE reference_type = $1
+             AND reference_id = $2
+             AND status = 'posted'
+           ORDER BY created_at ASC
+           LIMIT 1`,
+          [referenceType, referenceId]
+        );
+
+        var journalEntryId = existing.rows[0] ? existing.rows[0].entry_id : null;
+        if (!journalEntryId) {
+          var debitAccountCode = request.expense_id
+            ? (requestMetadata.expenseAccountCode || expenseMetadata.expenseAccountCode || ACCOUNTS.OPERATING_EXPENSE)
+            : (requestMetadata.distributionAccountCode || ACCOUNTS.RETAINED_EARNINGS);
+          var creditAccountCode = requestMetadata.accountingCreditAccountCode;
+          if (!creditAccountCode && ['trust', 'trust_account'].includes(String(request.source_type || '').toLowerCase())) {
+            var payoutRail = String(request.payout_rail || '').toLowerCase();
+            creditAccountCode = ['sit', 'sovereign', 'dex', 'stablecoin_dex', 'fund_rail', 'module'].includes(payoutRail)
+              ? ACCOUNTS.STABLECOIN_ASSET
+              : (request.source_account_id || ACCOUNTS.CASH);
+          }
+
+          if (!creditAccountCode) {
+            failed++;
+            errors.push({
+              requestId: request.id,
+              expenseId: request.expense_id || null,
+              error: 'accountingCreditAccountCode required for non-trust payout source',
+            });
+            continue;
+          }
+
+          if (dryRun) {
+            posted++;
+            continue;
+          }
+
+          var amount = Number(request.amount_cents) / 100;
+          var journalEntry = await TrustAccountingEngine.postJournalEntry({
+            entryDate: request.updated_at || new Date(),
+            description: request.expense_id
+              ? 'Expense payment — ' + (request.memo || request.expense_type || request.expense_id)
+              : 'Trust distribution — ' + (request.memo || request.id),
+            lines: [
+              {
+                accountCode: debitAccountCode,
+                debitAmount: amount,
+                creditAmount: 0,
+                memo: request.expense_id ? 'Expense ' + request.expense_id : 'Distribution ' + request.id,
+              },
+              {
+                accountCode: creditAccountCode,
+                debitAmount: 0,
+                creditAmount: amount,
+                memo: 'Settlement for request ' + request.id,
+              },
+            ],
+            referenceType: referenceType,
+            referenceId: referenceId,
+            postedBy: 'data_bridge',
+            postToFineract: false,
+          });
+          journalEntryId = journalEntry.entry_id;
+          posted++;
+        } else {
+          linked++;
+        }
+
+        if (!dryRun) {
+          await pool.query(
+            `UPDATE dapp_distribution_requests
+             SET status = 'executed',
+                 metadata = COALESCE(metadata, '{}'::jsonb) || $2::jsonb,
+                 updated_at = NOW()
+             WHERE id = $1`,
+            [request.id, JSON.stringify({ journalEntryId: journalEntryId, accountingStatus: 'posted' })]
+          );
+          if (request.expense_id) {
+            await pool.query(
+              `UPDATE expense_records
+               SET status = 'paid',
+                   payout_id = $2,
+                   metadata = COALESCE(metadata, '{}'::jsonb) || $3::jsonb,
+                   updated_at = NOW()
+               WHERE id = $1`,
+              [
+                request.expense_id,
+                request.payout_id,
+                JSON.stringify({
+                  journalEntryId: journalEntryId,
+                  paymentStatus: 'executed',
+                  payoutStatus: request.payout_status || 'completed',
+                }),
+              ]
+            );
+          }
+        }
+      }
+    } catch (outerErr) {
+      failed++;
+      errors.push({ phase: 'query', error: outerErr.message });
+    }
+
+    if (!dryRun) {
+      await DataBridge._logSync(syncId, 'trust_activity_to_accounting', 'expenses_distributions', 'trust_accounting',
+        posted + linked, pending, failed, errors);
+    }
+
+    return {
+      syncId: syncId,
+      dryRun: Boolean(dryRun),
+      posted: posted,
+      linksRepaired: linked,
+      pending: pending,
+      failed: failed,
+      errors: errors,
+    };
   }
 
   // ═══════════════════════════════════════════════════════════════════════════
@@ -1236,14 +1557,67 @@ class DataBridge {
 
     try {
       // Wire status
-      var wireCount = await pool.query(`SELECT COUNT(*) AS c, COUNT(CASE WHEN status IN ('settled','confirmed','sent') THEN 1 END) AS completed FROM wire_transfers`);
-      var wireNoJE = await pool.query(`SELECT COUNT(*) AS c FROM wire_transfers WHERE status IN ('settled','confirmed','sent') AND journal_entry_id IS NULL`);
-      status.modules.wire = {
-        totalTransfers: parseInt(wireCount.rows[0].c),
-        completedTransfers: parseInt(wireCount.rows[0].completed),
-        missingJournalEntries: parseInt(wireNoJE.rows[0].c),
-      };
+      if (!await DataBridge._tableExists('wire_transfers')) {
+        status.modules.wire = { active: false, message: 'Wire module not initialized' };
+      } else {
+        var wireCount = await pool.query(`SELECT COUNT(*) AS c, COUNT(CASE WHEN status IN ('settled','confirmed','sent') THEN 1 END) AS completed FROM wire_transfers`);
+        var wireNoJE = await pool.query(`
+          SELECT COUNT(*) AS c
+          FROM wire_transfers wt
+          WHERE wt.status IN ('settled','confirmed','sent')
+            AND wt.payment_type != 'bill_deposit'
+            AND NOT EXISTS (
+              SELECT 1 FROM trust_journal_entries je
+              WHERE je.reference_id = wt.wire_id
+                AND je.reference_type IN ('wire_transfer', 'wire')
+                AND je.status = 'posted'
+            )
+        `);
+        status.modules.wire = {
+          active: true,
+          totalTransfers: parseInt(wireCount.rows[0].c),
+          completedTransfers: parseInt(wireCount.rows[0].completed),
+          missingJournalEntries: parseInt(wireNoJE.rows[0].c),
+        };
+      }
     } catch (e) { status.modules.wire = { error: e.message }; }
+
+    try {
+      if (!await DataBridge._tableExists('dapp_distribution_requests')
+        || !await DataBridge._tableExists('expense_records')) {
+        status.modules.trust_activity = { active: false, message: 'Trust activity module not initialized' };
+      } else {
+        var distributionStats = await pool.query(`
+          SELECT COUNT(*) AS total,
+                 COUNT(CASE WHEN status = 'executed' THEN 1 END) AS executed,
+                 COUNT(CASE WHEN status = 'payout_created' THEN 1 END) AS pending,
+                 COUNT(CASE WHEN status = 'failed' THEN 1 END) AS failed
+          FROM dapp_distribution_requests
+        `);
+        var expenseStats = await pool.query(`
+          SELECT COUNT(*) AS total,
+                 COUNT(CASE WHEN status = 'paid' THEN 1 END) AS paid,
+                 COUNT(CASE WHEN status = 'payment_pending' THEN 1 END) AS payment_pending,
+                 COUNT(CASE WHEN status = 'payment_failed' THEN 1 END) AS payment_failed
+          FROM expense_records
+        `);
+        status.modules.trust_activity = {
+          active: true,
+          distributions: {
+            total: parseInt(distributionStats.rows[0].total),
+            executed: parseInt(distributionStats.rows[0].executed),
+            pending: parseInt(distributionStats.rows[0].pending),
+            failed: parseInt(distributionStats.rows[0].failed),
+          },
+          expenses: {
+            total: parseInt(expenseStats.rows[0].total),
+            paid: parseInt(expenseStats.rows[0].paid),
+            paymentPending: parseInt(expenseStats.rows[0].payment_pending),
+            paymentFailed: parseInt(expenseStats.rows[0].payment_failed),
+          },
+        };
+      }
+    } catch (e) { status.modules.trust_activity = { error: e.message }; }
 
     try {
       // Bond status
@@ -1331,8 +1705,76 @@ class DataBridge {
   }
 
   // ═══════════════════════════════════════════════════════════════════════════
-  //  FULL SYNC — RUN ALL SYNC OPERATIONS
+  //  LIVE BOOKKEEPING & FULL SYNC
   // ═══════════════════════════════════════════════════════════════════════════
+
+  static async runLiveBookkeeping({ dryRun, includeFineract } = {}) {
+    var startTime = Date.now();
+    var results = {};
+    var isDryRun = Boolean(dryRun);
+
+    if (!isDryRun) {
+      var { WireEngine } = require('../wire/wireEngine');
+      var { ExpenseManagementEngine } = require('./expenseManagementEngine');
+      var { DistributionRequestEngine } = require('../dapp/distributionRequestEngine');
+      var { PayoutCenterEngine } = require('../dapp/payoutCenterEngine');
+      await DataBridge.ensureTables();
+      await WireEngine.ensureTables();
+      await ExpenseManagementEngine.ensureTables();
+      await DistributionRequestEngine.ensureTables();
+      await PayoutCenterEngine.ensureTables();
+    }
+
+    try { results.wires = await DataBridge.syncWiresToAccounting({ dryRun: isDryRun }); }
+    catch (e) { results.wires = { error: e.message }; }
+
+    try { results.trustActivity = await DataBridge.syncTrustActivityToAccounting({ dryRun: isDryRun }); }
+    catch (e) { results.trustActivity = { error: e.message }; }
+
+    if (!isDryRun) {
+      try { results.bill = await DataBridge.syncBILLToAccounting(); }
+      catch (e) { results.bill = { error: e.message }; }
+    } else {
+      results.bill = { skipped: true, reason: 'BILL sync has no dry-run mode' };
+    }
+
+    try { results.wireVerification = await DataBridge.verifyWireSync({ log: !isDryRun }); }
+    catch (e) { results.wireVerification = { error: e.message }; }
+
+    if (!isDryRun && includeFineract !== false) {
+      try { results.fineractPush = await DataBridge.pushToFineract(); }
+      catch (e) { results.fineractPush = { error: e.message }; }
+    }
+
+    try { results.status = await DataBridge.getDataFlowStatus(); }
+    catch (e) { results.status = { error: e.message }; }
+
+    var synced = (results.wires.posted || 0)
+      + (results.wires.linksRepaired || 0)
+      + (results.trustActivity.posted || 0)
+      + (results.trustActivity.linksRepaired || 0)
+      + (results.bill.synced || 0)
+      + (results.fineractPush ? (results.fineractPush.synced || 0) : 0);
+    var failed = (results.wires.failed || 0)
+      + (results.trustActivity.failed || 0)
+      + (results.bill.failed || 0)
+      + (results.fineractPush ? (results.fineractPush.failed || 0) : 0)
+      + (results.wires.error ? 1 : 0)
+      + (results.trustActivity.error ? 1 : 0)
+      + (results.bill.error ? 1 : 0)
+      + (results.wireVerification.error ? 1 : 0)
+      + (results.status.error ? 1 : 0)
+      + (results.fineractPush && results.fineractPush.error ? 1 : 0);
+
+    return {
+      timestamp: new Date().toISOString(),
+      mode: isDryRun ? 'preview' : 'live',
+      durationMs: Date.now() - startTime,
+      totalSynced: synced,
+      totalFailed: failed,
+      results: results,
+    };
+  }
 
   /**
    * Execute all sync operations in sequence.
@@ -1362,7 +1804,14 @@ class DataBridge {
     try { results.bill = await DataBridge.syncBILLToAccounting(); }
     catch (e) { results.bill = { error: e.message }; }
 
-    // 4. Verify wire sync
+    // 4. Sync wires and trust activity
+    try { results.wireAccounting = await DataBridge.syncWiresToAccounting(); }
+    catch (e) { results.wireAccounting = { error: e.message }; }
+
+    try { results.trustActivity = await DataBridge.syncTrustActivityToAccounting(); }
+    catch (e) { results.trustActivity = { error: e.message }; }
+
+    // 4b. Verify wire sync
     try { results.wire = await DataBridge.verifyWireSync(); }
     catch (e) { results.wire = { error: e.message }; }
 
@@ -1449,11 +1898,14 @@ class DataBridge {
     var totalSynced = (results.openingBalances.synced || 0) + (results.bonds.synced || 0) + (results.ach.synced || 0) +
       (results.aggregator.synced || 0) +
       (results.bill.synced || 0) + (results.fineractPush.synced || 0) + (results.subLedgerSync.synced || 0) +
-      (results.electronicSettlements.synced || 0);
+      (results.electronicSettlements.synced || 0) + (results.wireAccounting.posted || 0) +
+      (results.wireAccounting.linksRepaired || 0) + (results.trustActivity.posted || 0) +
+      (results.trustActivity.linksRepaired || 0);
     var totalFailed = (results.openingBalances.failed || 0) + (results.bonds.failed || 0) + (results.ach.failed || 0) +
       (results.aggregator.failed || 0) +
       (results.bill.failed || 0) + (results.fineractPush.failed || 0) + ((results.subLedgerSync.errors || []).length || 0) +
-      (results.electronicSettlements.error ? 1 : 0);
+      (results.electronicSettlements.error ? 1 : 0) + (results.wireAccounting.failed || 0) +
+      (results.trustActivity.failed || 0);
 
     return {
       timestamp: new Date().toISOString(),
@@ -1569,6 +2021,21 @@ class DataBridge {
   // ═══════════════════════════════════════════════════════════════════════════
   //  HELPERS
   // ═══════════════════════════════════════════════════════════════════════════
+
+  static _jsonObject(value) {
+    if (!value) return {};
+    if (typeof value === 'object') return value;
+    try {
+      return JSON.parse(value);
+    } catch (e) {
+      return {};
+    }
+  }
+
+  static async _tableExists(tableName) {
+    var result = await pool.query('SELECT to_regclass($1) AS table_name', [tableName]);
+    return Boolean(result.rows[0] && result.rows[0].table_name);
+  }
 
   static async _ensureAccount(code, name, type, subType) {
     var exists = await pool.query('SELECT 1 FROM trust_accounts WHERE account_code = $1', [code]);

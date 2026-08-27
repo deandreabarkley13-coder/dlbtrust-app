@@ -678,11 +678,26 @@ class BookkeepingEngine extends BaseOSEngine {
     const BookkeepingAgent = tryRequire('../agents/bookkeepingAgent')?.BookkeepingAgent;
     const SubLedger = tryRequire('../accounting/subLedgerEngine')?.SubLedgerEngine;
     const TrustAccounting = tryRequire('../accounting/trustAccountingEngine')?.TrustAccountingEngine;
+    const DataBridge = tryRequire('../accounting/dataBridge')?.DataBridge;
+    let dataFlow = null;
+    if (DataBridge) {
+      try {
+        dataFlow = await DataBridge.getDataFlowStatus();
+      } catch (err) {
+        dataFlow = { error: err.message };
+      }
+    }
     return {
       engine: 'bookkeeping',
       healthy: true,
       mode: process.env.BOOKKEEPING_LIVE === 'true' ? 'live' : 'shadow',
-      integrations: { bookkeepingAgent: !!BookkeepingAgent, subLedger: !!SubLedger, trustAccounting: !!TrustAccounting },
+      integrations: {
+        bookkeepingAgent: !!BookkeepingAgent,
+        subLedger: !!SubLedger,
+        trustAccounting: !!TrustAccounting,
+        dataBridge: !!DataBridge,
+      },
+      dataFlow,
       timestamp: new Date().toISOString(),
     };
   }
@@ -691,8 +706,23 @@ class BookkeepingEngine extends BaseOSEngine {
     const BookkeepingAgent = tryRequire('../agents/bookkeepingAgent')?.BookkeepingAgent;
     const SubLedger = tryRequire('../accounting/subLedgerEngine')?.SubLedgerEngine;
     const AssetDebtProof = tryRequire('../accounting/assetDebtProofEngine')?.AssetDebtProofEngine;
+    const DataBridge = tryRequire('../accounting/dataBridge')?.DataBridge;
 
     switch (action) {
+      case 'previewLiveSync':
+      case 'preview-live-sync':
+        if (DataBridge) return await DataBridge.runLiveBookkeeping({ dryRun: true, includeFineract: false });
+        return { mode: 'shadow', note: 'DataBridge not available' };
+      case 'runLiveSync':
+      case 'run-live-sync':
+        if (process.env.BOOKKEEPING_LIVE !== 'true') {
+          return { mode: 'shadow', note: 'Set BOOKKEEPING_LIVE=true to post live trust bookkeeping entries' };
+        }
+        if (DataBridge) return await DataBridge.runLiveBookkeeping({
+          dryRun: false,
+          includeFineract: payload.includeFineract !== false,
+        });
+        return { mode: 'shadow', note: 'DataBridge not available' };
       case 'reverseTransaction':
       case 'reverse-transaction':
         if (BookkeepingAgent && payload.entryId) return await BookkeepingAgent.reverseTransaction(payload.entryId, { reason: payload.reason, approvedBy: payload.approvedBy });

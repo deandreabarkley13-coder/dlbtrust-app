@@ -191,6 +191,7 @@ class DistributionRequestEngine {
     sourceType,
     sourceAccountId,
     createdBy,
+    metadata = {},
   } = {}) {
     await this.ensureTables();
     if (!['distribution', 'disbursement'].includes(type)) throw new Error('type must be distribution or disbursement');
@@ -232,7 +233,7 @@ class DistributionRequestEngine {
       signatures: [],
       payout_id: null,
       tx_hash: null,
-      metadata: { requesterRole, createdBy },
+      metadata: { ...metadata, requesterRole, createdBy },
       created_by: createdBy || null,
     };
 
@@ -415,11 +416,11 @@ class DistributionRequestEngine {
     if (!PayoutCenterEngine) throw new Error('PayoutCenterEngine not available');
 
     const amountUsd = (Number(request.amount_cents) / 100).toFixed(2);
-    const sourceType = request.source_type || 'treasury';
-    const sourceAccountId = request.source_account_id || 'TREASURY_HOT';
+    const sourceType = request.source_type || 'trust';
+    const sourceAccountId = request.source_account_id || '1000';
 
     let payment;
-    let executeStatus = 'executed';
+    let executeStatus = 'payout_created';
     let executeError = null;
     try {
       payment = await PayoutCenterEngine.createPayment({
@@ -432,7 +433,14 @@ class DistributionRequestEngine {
         asset: 'SIT',
         description: request.memo || `${request.type} request ${request.id}`,
         rail: 'sit',
+        railOptions: {
+          ptc_request_id: request.id,
+          expense_id: request.metadata?.expenseId,
+          initiatedBy: request.created_by || 'distribution-request',
+        },
       });
+      if (payment.status === 'completed') executeStatus = 'executed';
+      if (payment.status === 'failed') executeStatus = 'failed';
     } catch (payErr) {
       console.warn('[DistributionRequestEngine] payment execution failed:', payErr.message);
       executeStatus = 'failed';
@@ -446,6 +454,32 @@ class DistributionRequestEngine {
       payout_id: payment && payment.id ? payment.id : null,
       metadata: { ...request.metadata, payment, executeError },
     });
+    if (request.metadata?.expenseId && pool) {
+      try {
+        await query(
+          `UPDATE expense_records
+           SET status = $2,
+               payout_id = $3,
+               metadata = COALESCE(metadata, '{}'::jsonb) || $4::jsonb,
+               updated_at = NOW()
+           WHERE id = $1`,
+          [
+            request.metadata.expenseId,
+            executeStatus === 'executed'
+              ? 'paid'
+              : (executeStatus === 'failed' ? 'payment_failed' : 'payment_pending'),
+            payment && payment.id ? payment.id : null,
+            JSON.stringify({
+              paymentStatus: executeStatus,
+              payoutStatus: payment && payment.status ? payment.status : null,
+              paymentError: executeError,
+            }),
+          ]
+        );
+      } catch (e) {
+        console.warn('[DistributionRequestEngine] expense status update failed:', e.message);
+      }
+    }
 
     try {
       if (MessagingEngine) {
