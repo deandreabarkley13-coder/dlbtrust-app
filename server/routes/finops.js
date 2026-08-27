@@ -546,6 +546,10 @@ router.post('/consensus/proposals/:id/reject', operatorAuth, writeRateLimiter(),
   } catch (err) { sendError(res, err); }
 });
 
+router.post('/consensus/proposals/:id/notify', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try { res.json({ success: true, data: await CanonicalConsensusEngine.notifyApprovers(req.params.id) }); } catch (err) { sendError(res, err); }
+});
+
 router.post('/consensus/proposals/:id/execute', operatorAuth, writeRateLimiter(), async (req, res) => {
   try { res.json({ success: true, data: await CanonicalConsensusEngine.executeProposal(req.params.id) }); } catch (err) { sendError(res, err); }
 });
