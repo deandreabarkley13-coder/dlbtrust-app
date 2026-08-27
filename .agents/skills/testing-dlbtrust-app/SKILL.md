@@ -1244,3 +1244,68 @@ disown
 - `settleMelioPayment` tries to insert a `cashflow_events` row; if the table does not exist it logs a non-fatal warning and continues.
 - The dashboard buttons may not respond to scaled-coordinate mouse clicks; invoke the underlying handlers via the browser console (`submitMelioInvoiceAndSync()` and `settleMelioPayment()`) and click **Set Token** first so the `x-admin-token` is set.
 - `EmailEngine` attachment support only sends attachments when a real SMTP/SendGrid provider is configured; the `log` provider returns `sent: false` with the notification metadata.
+
+## Canonical Melio funding + vendor_bill maker/checker (PR #393)
+
+Branch `devin/1787850979-canonical-melio-funding` makes the Melio vendor-bill path
+canonically funded from trust cash `1000` and requires an explicit `accountingClass`.
+
+### Startup and env (safe shadow)
+
+Start the local server with **no Melio env at all** so `MelioEngine` stays in shadow mode:
+`PORT=3002 ADMIN_SECRET_TOKEN=dlb-admin-2026-trust node server/server-3002.js`
+(no `MELIO_USE_API`, `MELIO_API_KEY`, `MELIO_BASE_URL`, `MELIO_API_CONTRACT_VERIFIED`,
+`MELIO_FUNDING_SOURCE_*`). Check with `GET /api/os/melio/status` (`x-admin-token`):
+expect `mode: "shadow"`, `sourceType: "trust"`, source account `1000`,
+`fundingEligible: true`, no API funding source.
+
+To test live-API fail-closed **without any external risk**, only ever point
+`MELIO_BASE_URL` at a local blackhole listener (e.g. `http://127.0.0.1:9099` with a tiny
+node http server that logs requests) and leave `MELIO_API_CONTRACT_VERIFIED` and the
+funding-source mapping unset. Assert the listener logged **zero** requests — the readiness
+guard runs before `_createPendingPayment`/`_postAccrual`, so a fail-closed run must produce
+no `melio_payments` row and no `trust_journal_entries`.
+
+### Prerequisites that are easy to miss
+
+- Seed trust cash `1000` (e.g. a journal debiting `1000` / crediting `3000`) or the CSV
+  export funding check fails.
+- `vendor_bill` proposals require **all** of: `accountingClass` (one of `operating_expense`,
+  `management_fee`, `beneficiary_income_distribution`, `beneficiary_principal_distribution`),
+  `invoiceNumber`, and `dueDate` (`Due date is required` otherwise). `live_api` mode accepts
+  only a single approved payment (a `payables` array is rejected).
+- The OS Engine dashboard's Melio sample cannot be executed directly: the action panel
+  returns `Vendor bill payments must use the authenticated maker-checker workflow`. That is
+  expected — use `/dapp/finops.html` → Canonical Consensus → Create Proposal instead.
+
+### Maker/checker signing via FinOps UI
+
+Set `localStorage['dlb-admin-token']` (admin token) so `requireAuth` yields
+`{username:'legacy-admin', role:'admin'}`; because `created_by` is `legacy-admin`, neither
+trustee is the requester and both signatures can be supplied from one browser session
+(note this in reports — it is NOT two independent sessions). Signatures of record
+(`server/integrations/dapp/trustees.js`): maker `malissa1130@gmail.com` /
+"Malissa Ann Robinson"; checker `deandreabarkley13@gmail.com` / "DeAndrea Lavar Barkley".
+A wrong legal name is rejected with `Signature does not match the signature of record`.
+The second signature auto-executes the proposal.
+
+### Verification SQL
+
+```sql
+select melio_payment_id, status, amount_cents, result->>'accountingClass',
+       result->>'debitGlAccount', result->>'liabilityGlAccount', result->>'csvPath'
+from melio_payments order by created_at desc limit 5;
+select e.entry_id, e.description, l.account_code, l.debit_amount, l.credit_amount
+from trust_journal_entries e join trust_journal_lines l on l.entry_id = e.entry_id
+order by e.created_at desc, l.id limit 8;
+select account_code, balance from trust_accounts
+where account_code in ('1000','2000','2100','3100','5000');
+```
+
+Class → GL mapping observed: `management_fee` → debit `5000` / credit `2100`;
+`beneficiary_income_distribution` → debit `3100` / credit `2000`. Export only accrues a
+payable, so trust cash `1000` must stay unchanged (settlement is a separate `mark-paid`).
+Note the columns are `debit_amount`/`credit_amount` and `trust_accounts.balance` — not
+`*_cents`. `canonical_proposals.payload` must store `accountNumberEncrypted`/
+`routingNumberEncrypted` (`enc:v1:` prefix) plus `*Last4` and no plaintext bank numbers,
+while the exported CSV round-trips the decrypted values.
