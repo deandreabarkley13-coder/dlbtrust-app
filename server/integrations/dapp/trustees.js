@@ -45,6 +45,36 @@ const TRUSTEES = [
 
 const REQUIRED_ROLES = ['maker', 'checker'];
 
+// Additional addresses a trustee may sign in from. The primary email above stays
+// the address of record for notifications and the signature page.
+function altEmails(value) {
+  return String(value || '')
+    .split(',')
+    .map(e => e.trim().toLowerCase())
+    .filter(Boolean);
+}
+
+TRUSTEES.forEach((trustee) => {
+  const envKey = {
+    administration: 'TRUST_ADMIN_ALT_EMAILS',
+    distribution: 'TRUST_DIST_ALT_EMAILS',
+    maker: 'TRUST_MAKER_ALT_EMAILS',
+    checker: 'TRUST_CHECKER_ALT_EMAILS',
+  }[trustee.role];
+  trustee.altEmails = envKey ? altEmails(process.env[envKey]) : [];
+});
+
+function trusteeEmails(trustee) {
+  return [String(trustee.email || '').toLowerCase()]
+    .concat(trustee.altEmails || [])
+    .filter(Boolean);
+}
+
+function trusteeOwnsEmail(trustee, email) {
+  const lower = String(email || '').toLowerCase();
+  return Boolean(lower) && trusteeEmails(trustee).includes(lower);
+}
+
 const ROLE_ALIASES = {
   administration: 'maker',
   distribution: 'checker',
@@ -65,13 +95,13 @@ function getTrusteeByRole(role) {
 
 function getTrusteeByEmail(email) {
   if (!email) return null;
-  return TRUSTEES.find(t => String(t.email).toLowerCase() === String(email).toLowerCase());
+  return TRUSTEES.find(t => trusteeOwnsEmail(t, email));
 }
 
 function validateTrustee(role, email) {
   const trustee = getTrusteeByRole(role);
   if (!trustee) throw new Error(`Unknown trustee role: ${role}`);
-  if (String(trustee.email).toLowerCase() !== String(email).toLowerCase()) {
+  if (!trusteeOwnsEmail(trustee, email)) {
     throw new Error(`Email ${email} is not authorized for role ${role}`);
   }
   return trustee;
@@ -114,6 +144,8 @@ module.exports = {
   normalizeRole,
   getTrusteeByRole,
   getTrusteeByEmail,
+  trusteeEmails,
+  trusteeOwnsEmail,
   validateTrustee,
   signatureDocumentPath,
   getTrusteeSignatureOfRecord,

@@ -661,7 +661,8 @@
       const authenticatedRoles = authenticatedUser.roles || [authenticatedUser.role];
       const authenticatedRole = authenticatedUser.role || authenticatedUser.active_role;
       if (!isAdmin() && !PortalRouting.isTrusteeRole(authenticatedRoles, authenticatedRole)) {
-        location.replace(PortalRouting.BENEFICIARY_HOME);
+        // Carry the reason so the beneficiary portal can explain the bounce.
+        location.replace(PortalRouting.BENEFICIARY_HOME + '?denied=trustee');
         return;
       }
       session.email = authenticatedUser.email || '';

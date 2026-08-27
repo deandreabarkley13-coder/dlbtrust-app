@@ -88,6 +88,7 @@
   </header>
 
   <main class="main">
+    <div id="role-notice" class="status err hidden" style="margin-bottom:1rem"></div>
     <div class="tabs">
       <div class="tab hidden active" id="tab-overview" data-tab="overview" onclick="showTab('overview')">Overview</div>
       <div class="tab hidden" id="tab-portfolio" data-tab="portfolio" onclick="showTab('portfolio')">Portfolio</div>
@@ -437,6 +438,21 @@
       }
       el('user-role').textContent = isTrustee ? 'Trustee' : 'Beneficiary';
       el('user-role').className = 'badge ' + (isTrustee ? 'trustee' : 'beneficiary');
+      showRoleNotice(user);
+    }
+
+    // Explains why a non-trustee account was sent back here from the trustee dashboard.
+    function showRoleNotice(currentUser) {
+      if (new URLSearchParams(location.search).get('denied') !== 'trustee') return;
+      const notice = el('role-notice');
+      const email = currentUser.email || userEmail || 'this account';
+      const role = currentUser.role || currentUser.active_role || 'beneficiary';
+      notice.textContent = 'The trustee dashboard requires a maker or checker role. '
+        + email + ' is signed in as ' + role
+        + ', so you are in the beneficiary portal. Sign in with your trustee email, '
+        + 'or ask an administrator to grant your address a trustee seat.';
+      notice.classList.remove('hidden');
+      notice.classList.add('show');
     }
 
     function configureDashboardViewer(viewerRole) {
