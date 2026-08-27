@@ -10,9 +10,24 @@
 
 const express = require('express');
 const router = express.Router();
+const jwt = require('jsonwebtoken');
 const { WireEngine } = require('../integrations/wire/wireEngine');
 const { WireOriginationEngine } = require('../integrations/dapp/wireOriginationEngine');
 const { ApiCredentials } = require('../integrations/ach/apiCredentials');
+const { JWT_SECRET } = require('../integrations/auth/userAuth');
+
+const TRUSTEE_ROLES = { trustee_maker: 'maker', trustee_checker: 'checker' };
+
+// Derive the maker/checker seat of a dApp portal session. trustee_admin holds
+// no single seat, so it approves with operator authority instead.
+function trusteeSeat(decoded) {
+  const roles = Array.isArray(decoded.roles) ? decoded.roles : [];
+  const candidates = [decoded.role, ...roles].map((r) => String(r || '').toLowerCase());
+  for (const candidate of candidates) {
+    if (TRUSTEE_ROLES[candidate]) return TRUSTEE_ROLES[candidate];
+  }
+  return candidates.includes('trustee_admin') || candidates.includes('admin') ? 'operator' : null;
+}
 
 // ─── Auth Middleware (shared with ACH pipeline) ─────────────────────────────
 const requireAuth = async (req, res, next) => {
@@ -38,6 +53,19 @@ const requireAuth = async (req, res, next) => {
         req.authMethod = 'api_key';
         req.apiCredential = cred;
         req.authUser = cred.label || 'api_user';
+        return next();
+      }
+    } catch (err) { /* fall through */ }
+
+    // dApp portal trustee session (maker/checker signed in to the trust dashboard)
+    try {
+      const decoded = jwt.verify(apiKey, JWT_SECRET);
+      const seat = decoded && decoded.email ? trusteeSeat(decoded) : null;
+      if (seat) {
+        req.authMethod = 'trustee_session';
+        req.authUser = decoded.email;
+        req.trusteeSeat = seat;
+        req.user = decoded;
         return next();
       }
     } catch (err) { /* fall through */ }
@@ -115,6 +143,9 @@ router.get('/pending-approvals', requireAuth, async (req, res) => {
 // Approve a pending wire (checker action)
 router.post('/:id/approve', requireAuth, async (req, res) => {
   try {
+    if (req.trusteeSeat === 'maker') {
+      return res.status(403).json({ success: false, error: 'Only the checker trustee can approve a wire' });
+    }
     const approvedBy = req.authUser || 'checker';
     const wire = await WireEngine.approveWire(req.params.id, approvedBy);
     res.json({ success: true, data: wire });
@@ -127,6 +158,9 @@ router.post('/:id/approve', requireAuth, async (req, res) => {
 // Reject a pending wire (checker action)
 router.post('/:id/reject', requireAuth, async (req, res) => {
   try {
+    if (req.trusteeSeat === 'maker') {
+      return res.status(403).json({ success: false, error: 'Only the checker trustee can reject a wire' });
+    }
     const rejectedBy = req.authUser || 'checker';
     const reason = req.body.reason;
     const wire = await WireEngine.rejectWire(req.params.id, rejectedBy, reason);
