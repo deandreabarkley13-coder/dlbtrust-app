@@ -665,7 +665,11 @@
   }
 
   function allowedConsensusRoles() {
-    return session.consensusRole ? [session.consensusRole] : ['maker', 'checker'];
+    if (session.consensusRole) return [session.consensusRole];
+    // The administration seat is an alias of the maker seat server-side, so
+    // offering "checker" here only produces a dual-control rejection.
+    if (String(session.role || '').toLowerCase() === 'trustee_admin') return ['maker'];
+    return ['maker', 'checker'];
   }
 
   async function initDashboard() {
