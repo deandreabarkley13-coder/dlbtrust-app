@@ -4426,7 +4426,7 @@ class MelioEngine extends BaseOSEngine {
     const remote = await client.getPayment(melioPaymentId);
     if (record && remote) {
       const status = remote.status || record.status;
-      if (['completed', 'sent', 'settled'].includes(status) && record.reserve_id && record.status !== 'completed') {
+      if (['completed', 'sent', 'settled'].includes(status) && record.reserve_id && !['completed', 'paid'].includes(record.status)) {
         try { await this._finalizeReserve(record.reserve_id, `melio:${remote.id || paymentId}`); } catch (e) { console.warn('[melio] finalize failed:', e.message); }
       }
       const updated = { ...record, status, result: { ...record.result, remote } };
@@ -4456,7 +4456,7 @@ class MelioEngine extends BaseOSEngine {
     if (!paymentId) return { received: true, note: 'no payment_id in webhook' };
     const record = await this._getPaymentRecord(paymentId) || await this._getPaymentRecord(payload.id);
     if (record && ['completed', 'sent', 'settled'].includes(status)) {
-      if (record.reserve_id && record.status !== 'completed') await this._finalizeReserve(record.reserve_id, `melio:${paymentId}`);
+      if (record.reserve_id && !['completed', 'paid'].includes(record.status)) await this._finalizeReserve(record.reserve_id, `melio:${paymentId}`);
       const updated = { ...record, status: 'completed', result: { ...record.result, webhook: payload } };
       const paid = await this._markPaidRecord(updated);
       return { received: true, paymentId, status: 'paid', settlementJournalEntryId: paid.settlementJournalEntryId, reservePosted: record.reserve_id || null };
