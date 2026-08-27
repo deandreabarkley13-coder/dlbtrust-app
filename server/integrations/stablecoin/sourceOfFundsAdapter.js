@@ -48,51 +48,181 @@ function toCents(amount) {
 class SourceOfFundsAdapter {
   static defaultSourceType() { return 'treasury'; }
 
-  static async getBalance({ sourceType, sourceAccountId }) {
+  static _position({
+    sourceType,
+    sourceAccountId,
+    name,
+    currency = 'USD',
+    balanceCents = 0,
+    availableBalanceCents = balanceCents,
+    fundingEligible = true,
+    segregationReason = null,
+    account = null,
+  }) {
+    const currentBalanceCents = Number(balanceCents || 0);
+    const normalizedAvailableBalanceCents = Math.min(
+      Math.max(0, currentBalanceCents),
+      Math.max(0, Number(availableBalanceCents || 0))
+    );
+    return {
+      sourceType,
+      sourceAccountId,
+      name: name || sourceAccountId,
+      currency,
+      balanceCents: currentBalanceCents,
+      currentBalanceCents,
+      availableBalanceCents: fundingEligible ? normalizedAvailableBalanceCents : 0,
+      fundingEligible,
+      segregationStatus: fundingEligible ? 'available' : 'restricted',
+      segregationReason,
+      sourceOfTruth: sourceType === 'trust' ? 'trust_accounting' : 'source_of_funds_adapter',
+      account,
+    };
+  }
+
+  static async getPosition({ sourceType, sourceAccountId, purpose = 'payment', allowedAccountIds } = {}) {
     sourceType = String(sourceType || 'treasury').toLowerCase();
+    const allowedIds = Array.isArray(allowedAccountIds)
+      ? allowedAccountIds.map(String)
+      : String(allowedAccountIds || '').split(',').map(v => v.trim()).filter(Boolean);
+    const isApproved = accountId => !allowedIds.length || allowedIds.includes(String(accountId));
     switch (sourceType) {
       case 'treasury': {
-        const pos = await TreasuryEngine.getPosition(sourceAccountId || DEFAULT_ACCOUNT).catch(() => null);
-        return pos ? pos.availableCents : 0;
+        const accountId = sourceAccountId || DEFAULT_ACCOUNT;
+        const pos = await TreasuryEngine.getPosition(accountId).catch(() => null);
+        const approved = isApproved(accountId);
+        return this._position({
+          sourceType: 'treasury',
+          sourceAccountId: accountId,
+          name: accountId,
+          currency: 'USDC',
+          balanceCents: pos ? pos.balanceCents : 0,
+          availableBalanceCents: pos ? pos.availableCents : 0,
+          fundingEligible: approved,
+          segregationReason: approved ? null : `account is not approved for ${purpose}`,
+          account: pos,
+        });
       }
       case 'cash': {
         if (!CashEngine) throw new Error('CashEngine not available');
         const acct = await CashEngine.getAccount(sourceAccountId);
-        return acct ? Number(acct.balance_cents || 0) : 0;
+        if (!acct) return this._position({ sourceType: 'cash', sourceAccountId, fundingEligible: false, segregationReason: 'account not found' });
+        const restrictedTypes = new Set(['bond_proceeds', 'reserve', 'escrow', 'fee', 'management_fee', 'clearing']);
+        const accountType = String(acct.account_type || '').toLowerCase();
+        const approved = isApproved(sourceAccountId);
+        const active = !acct.status || String(acct.status).toLowerCase() === 'active';
+        const fundingEligible = active && !restrictedTypes.has(accountType) && approved;
+        const segregationReason = !active
+          ? 'account is inactive'
+          : restrictedTypes.has(accountType)
+            ? `${accountType} cash is segregated`
+            : approved ? null : `account is not approved for ${purpose}`;
+        return this._position({
+          sourceType: 'cash',
+          sourceAccountId,
+          name: acct.account_name || sourceAccountId,
+          currency: acct.currency || 'USD',
+          balanceCents: Number(acct.balance_cents || 0),
+          fundingEligible,
+          segregationReason,
+          account: acct,
+        });
       }
       case 'trust':
       case 'trust_account': {
         if (!TrustAccountingEngine) throw new Error('TrustAccountingEngine not available');
-        const acct = await TrustAccountingEngine.getAccount(sourceAccountId);
-        return acct ? toCents(acct.balance || 0) : 0;
+        const acct = await TrustAccountingEngine.getFundingPosition(sourceAccountId, {
+          purpose,
+          allowedAccountCodes: allowedIds,
+        });
+        return this._position({
+          sourceType: 'trust',
+          sourceAccountId,
+          name: acct ? acct.account_name : sourceAccountId,
+          balanceCents: acct ? acct.current_balance_cents : 0,
+          availableBalanceCents: acct ? acct.available_balance_cents : 0,
+          fundingEligible: !!(acct && acct.funding_eligible),
+          segregationReason: acct ? acct.segregation_reason : 'account not found',
+          account: acct,
+        });
       }
       case 'bond':
       case 'fixed_income': {
         if (!BondEngine) throw new Error('BondEngine not available');
         const bond = await BondEngine.getBond(sourceAccountId);
-        if (!bond) return 0;
+        if (!bond) return this._position({ sourceType: 'bond', sourceAccountId, fundingEligible: false, segregationReason: 'bond not found' });
         // Only principal is available for funding because BondEngine.payPrincipal reduces principal only.
-        return Math.round(Number(bond.principal_balance || 0) * 100);
+        const balanceCents = Math.round(Number(bond.principal_balance || 0) * 100);
+        const approved = isApproved(sourceAccountId);
+        return this._position({
+          sourceType: 'bond',
+          sourceAccountId,
+          name: bond.bond_name,
+          balanceCents,
+          fundingEligible: approved,
+          segregationReason: approved ? null : `account is not approved for ${purpose}`,
+          account: bond,
+        });
       }
       case 'bond_interest': {
         if (!BondEngine || !LiveBondEngine) throw new Error('BondEngine/LiveBondEngine not available');
         const metrics = await LiveBondEngine.getBondLiveMetrics(sourceAccountId);
-        return Math.round((Number(metrics.accrued_interest_total || 0)) * 100);
+        const balanceCents = Math.round((Number(metrics.accrued_interest_total || 0)) * 100);
+        const approved = isApproved(sourceAccountId);
+        return this._position({
+          sourceType: 'bond_interest',
+          sourceAccountId,
+          name: metrics.bond_name,
+          balanceCents,
+          fundingEligible: approved,
+          segregationReason: approved ? null : `account is not approved for ${purpose}`,
+          account: metrics,
+        });
       }
       case 'fineract':
       case 'core_banking': {
         if (!FineractClient) throw new Error('FineractClient not available');
         const summary = await FineractClient.getAccountBalance(sourceAccountId);
-        return toCents(summary.accountBalance || summary.balance || 0);
+        const approved = isApproved(sourceAccountId);
+        return this._position({
+          sourceType: 'core_banking',
+          sourceAccountId,
+          name: summary.accountName || sourceAccountId,
+          currency: summary.currency?.code || 'USD',
+          balanceCents: toCents(summary.accountBalance || summary.balance || 0),
+          fundingEligible: approved,
+          segregationReason: approved ? null : `account is not approved for ${purpose}`,
+          account: summary,
+        });
       }
       case 'sub_ledger': {
         if (!SubLedgerEngine) throw new Error('SubLedgerEngine not available');
         const ledger = await SubLedgerEngine.getSubLedger(sourceAccountId);
-        return ledger ? toCents(ledger.balance || 0) : 0;
+        if (!ledger) return this._position({ sourceType: 'sub_ledger', sourceAccountId, fundingEligible: false, segregationReason: 'sub-ledger not found' });
+        const active = !ledger.status || String(ledger.status).toLowerCase() === 'active';
+        const approved = isApproved(sourceAccountId);
+        const fundingEligible = active && approved;
+        return this._position({
+          sourceType: 'sub_ledger',
+          sourceAccountId,
+          name: ledger.sub_account_name || sourceAccountId,
+          currency: ledger.currency || 'USD',
+          balanceCents: toCents(ledger.balance || 0),
+          fundingEligible,
+          segregationReason: !active
+            ? 'sub-ledger is inactive'
+            : approved ? null : `account is not approved for ${purpose}`,
+          account: ledger,
+        });
       }
       default:
-        return 0;
+        return this._position({ sourceType, sourceAccountId, fundingEligible: false, segregationReason: 'unsupported source type' });
     }
+  }
+
+  static async getBalance(options) {
+    const position = await this.getPosition(options);
+    return position.availableBalanceCents;
   }
 
   /**
@@ -130,9 +260,11 @@ class SourceOfFundsAdapter {
       }
       case 'cash': {
         if (!CashEngine) throw new Error('CashEngine not available');
-        const acct = await CashEngine.getAccount(sourceAccountId);
-        if (!acct) throw new Error(`Cash account not found: ${sourceAccountId}`);
-        if (Number(acct.balance_cents || 0) < amountCents) throw new Error(`Insufficient cash balance in ${sourceAccountId}`);
+        const position = await this.getPosition({ sourceType, sourceAccountId, purpose: 'stablecoin funding' });
+        if (!position.fundingEligible) {
+          throw new Error(`Segregation of funds violation for cash:${sourceAccountId}: ${position.segregationReason}`);
+        }
+        if (position.availableBalanceCents < amountCents) throw new Error(`Insufficient cash balance in ${sourceAccountId}`);
         const holdingAccount = cfg.cashHoldingAccount || 'STABLECOIN_CASH_HOLD';
         const holdingAcct = await CashEngine.getAccount(holdingAccount);
         if (!holdingAcct) {
@@ -158,10 +290,9 @@ class SourceOfFundsAdapter {
       case 'trust':
       case 'trust_account': {
         if (!TrustAccountingEngine) throw new Error('TrustAccountingEngine not available');
-        const acct = await TrustAccountingEngine.getAccount(sourceAccountId);
-        if (!acct) throw new Error(`Trust account not found: ${sourceAccountId}`);
-        const available = toCents(acct.balance || 0);
-        if (available < amountCents) throw new Error(`Insufficient trust account balance: ${available} < ${amountCents}`);
+        await TrustAccountingEngine.assertFundingAvailable(sourceAccountId, amountCents, {
+          purpose: 'stablecoin funding',
+        });
         const assetAccount = cfg.stablecoinAssetAccount || '1210';
         const journal = await TrustAccountingEngine.postJournalEntry({
           entryDate: new Date(),

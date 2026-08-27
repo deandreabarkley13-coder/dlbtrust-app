@@ -588,20 +588,50 @@ class DappEngine {
   static async listSourceBalances() {
     const balances = [];
     const push = (type, id, name, balance_cents, currency = 'USD', meta = {}) => {
-      balances.push({ type, id, name, balance_cents: Number(balance_cents) || 0, currency, ...meta });
+      const balanceCents = Number(balance_cents) || 0;
+      const fundingEligible = meta.funding_eligible !== false;
+      const availableBalanceCents = meta.available_balance_cents === undefined
+        ? (fundingEligible ? Math.max(0, balanceCents) : 0)
+        : Number(meta.available_balance_cents || 0);
+      balances.push({
+        type,
+        id,
+        name,
+        balance_cents: balanceCents,
+        currency,
+        source_type: type,
+        source_account_id: id,
+        source_of_truth: meta.source_of_truth || 'source_of_funds_adapter',
+        current_balance_cents: balanceCents,
+        available_balance_cents: availableBalanceCents,
+        funding_eligible: fundingEligible,
+        segregation_status: fundingEligible ? 'available' : 'restricted',
+        segregation_reason: meta.segregation_reason || null,
+        ...meta,
+      });
     };
 
     try {
-      const bal = await SourceOfFundsAdapter.getBalance({ sourceType: 'treasury' });
-      push('treasury', 'TREASURY_HOT', 'Treasury Hot', bal, 'USDC', { asset: 'USDC' });
+      const position = await SourceOfFundsAdapter.getPosition({ sourceType: 'treasury' });
+      push('treasury', position.sourceAccountId, position.name, position.currentBalanceCents, position.currency, {
+        asset: 'USDC',
+        available_balance_cents: position.availableBalanceCents,
+        funding_eligible: position.fundingEligible,
+        segregation_reason: position.segregationReason,
+      });
     } catch (e) { /* optional */ }
 
     try {
       if (CashEngine) {
         const accts = await CashEngine.listAccounts({ status: 'active' });
         for (const a of accts) {
-          const bal = await SourceOfFundsAdapter.getBalance({ sourceType: 'cash', sourceAccountId: a.account_id }).catch(() => 0);
-          push('cash', a.account_id, a.account_name || a.account_id, bal, a.currency || 'USD', { account_type: a.account_type });
+          const position = await SourceOfFundsAdapter.getPosition({ sourceType: 'cash', sourceAccountId: a.account_id }).catch(() => null);
+          push('cash', a.account_id, a.account_name || a.account_id, position ? position.currentBalanceCents : 0, a.currency || 'USD', {
+            account_type: a.account_type,
+            available_balance_cents: position ? position.availableBalanceCents : 0,
+            funding_eligible: !!(position && position.fundingEligible),
+            segregation_reason: position ? position.segregationReason : 'balance unavailable',
+          });
         }
       }
     } catch (e) { }
@@ -610,9 +640,17 @@ class DappEngine {
       if (TrustAccountingEngine) {
         const accts = await TrustAccountingEngine.listAccounts({ isActive: true });
         for (const a of accts) {
-          const bal = await SourceOfFundsAdapter.getBalance({ sourceType: 'trust', sourceAccountId: a.account_code }).catch(() => 0);
           const trustContactId = a.linked_cash_account ? a.linked_cash_account.replace(/^CA-/, '') : null;
-          push('trust', a.account_code, a.account_name || a.account_code, bal, 'USD', { account_type: a.account_type, sub_type: a.sub_type, contact_id: trustContactId });
+          push('trust', a.account_code, a.account_name || a.account_code, a.current_balance_cents, 'USD', {
+            account_type: a.account_type,
+            sub_type: a.sub_type,
+            contact_id: trustContactId,
+            source_of_truth: a.source_of_truth,
+            available_balance_cents: a.available_balance_cents,
+            funding_eligible: a.funding_eligible,
+            segregation_status: a.segregation_status,
+            segregation_reason: a.segregation_reason,
+          });
         }
       }
     } catch (e) { }
@@ -621,9 +659,16 @@ class DappEngine {
       if (BondEngine) {
         const bonds = await BondEngine.listBonds();
         for (const b of bonds) {
-          const bal = await SourceOfFundsAdapter.getBalance({ sourceType: 'bond', sourceAccountId: String(b.id) }).catch(() => 0);
+          const position = await SourceOfFundsAdapter.getPosition({ sourceType: 'bond', sourceAccountId: String(b.id) }).catch(() => null);
           const accruedCents = Math.round(Number(b.accrued_interest || 0) * 100);
-          push('bond', String(b.id), b.bond_name || b.isin || `Bond ${b.id}`, bal, b.currency || 'USD', { isin: b.isin, status: b.status, accrued_interest_cents: accruedCents });
+          push('bond', String(b.id), b.bond_name || b.isin || `Bond ${b.id}`, position ? position.currentBalanceCents : 0, b.currency || 'USD', {
+            isin: b.isin,
+            status: b.status,
+            accrued_interest_cents: accruedCents,
+            available_balance_cents: position ? position.availableBalanceCents : 0,
+            funding_eligible: !!(position && position.fundingEligible),
+            segregation_reason: position ? position.segregationReason : 'balance unavailable',
+          });
         }
       }
     } catch (e) { }
@@ -633,9 +678,13 @@ class DappEngine {
         const savings = await FineractClient.listSavingsAccounts({ limit: 100 });
         const page = savings.pageItems || [];
         for (const acct of page) {
-          const summary = await FineractClient.getAccountBalance(acct.id).catch(() => ({}));
-          const bal = (summary.accountBalance || summary.balance || 0) * 100;
-          push('core_banking', String(acct.id), acct.productName || acct.clientName || `Savings ${acct.id}`, bal, summary.currency?.code || 'USD', { clientId: acct.clientId });
+          const position = await SourceOfFundsAdapter.getPosition({ sourceType: 'core_banking', sourceAccountId: acct.id }).catch(() => null);
+          push('core_banking', String(acct.id), acct.productName || acct.clientName || `Savings ${acct.id}`, position ? position.currentBalanceCents : 0, position ? position.currency : 'USD', {
+            clientId: acct.clientId,
+            available_balance_cents: position ? position.availableBalanceCents : 0,
+            funding_eligible: !!(position && position.fundingEligible),
+            segregation_reason: position ? position.segregationReason : 'balance unavailable',
+          });
         }
       }
     } catch (e) { }
@@ -644,8 +693,15 @@ class DappEngine {
       if (SubLedgerEngine) {
         const ledgers = await SubLedgerEngine.listSubLedgers({ status: 'active' });
         for (const sl of ledgers) {
-          const bal = await SourceOfFundsAdapter.getBalance({ sourceType: 'sub_ledger', sourceAccountId: sl.sub_ledger_id }).catch(() => 0);
-          balances.push({ type: 'sub_ledger', id: sl.sub_ledger_id, name: `${sl.sub_account_name} (${sl.parent_account_code})`, balance_cents: Number(bal) || 0, currency: sl.currency || 'USD', contact_id: sl.contact_id, parent_account_code: sl.parent_account_code, sub_account_type: sl.sub_account_type });
+          const position = await SourceOfFundsAdapter.getPosition({ sourceType: 'sub_ledger', sourceAccountId: sl.sub_ledger_id }).catch(() => null);
+          push('sub_ledger', sl.sub_ledger_id, `${sl.sub_account_name} (${sl.parent_account_code})`, position ? position.currentBalanceCents : 0, sl.currency || 'USD', {
+            contact_id: sl.contact_id,
+            parent_account_code: sl.parent_account_code,
+            sub_account_type: sl.sub_account_type,
+            available_balance_cents: position ? position.availableBalanceCents : 0,
+            funding_eligible: !!(position && position.fundingEligible),
+            segregation_reason: position ? position.segregationReason : 'balance unavailable',
+          });
         }
       }
     } catch (e) { }
@@ -654,7 +710,13 @@ class DappEngine {
       if (CrmEngine) {
         const contacts = await CrmEngine.listContacts({ status: 'active' });
         for (const c of contacts) {
-          balances.push({ type: 'crm', id: c.contact_id, name: `${c.first_name || ''} ${c.last_name || ''}`.trim() || c.company || c.contact_id, balance_cents: 0, currency: 'USD', email: c.email, phone: c.phone, linked_wallet_id: c.linked_wallet_id });
+          push('crm', c.contact_id, `${c.first_name || ''} ${c.last_name || ''}`.trim() || c.company || c.contact_id, 0, 'USD', {
+            email: c.email,
+            phone: c.phone,
+            linked_wallet_id: c.linked_wallet_id,
+            funding_eligible: false,
+            segregation_reason: 'CRM contacts are not financial accounts',
+          });
         }
       }
     } catch (e) { }
@@ -662,14 +724,22 @@ class DappEngine {
     try {
       if (TaxEngine) {
         const dash = await TaxEngine.getDashboard();
-        push('tax', 'trust_tax_reserve', 'Tax Reserve / Distributions', Math.round((dash.total_distributions || dash.estimated_payments || 0) * 100), 'USD', { tax_year: dash.tax_year });
+        push('tax', 'trust_tax_reserve', 'Tax Reserve / Distributions', Math.round((dash.total_distributions || dash.estimated_payments || 0) * 100), 'USD', {
+          tax_year: dash.tax_year,
+          funding_eligible: false,
+          segregation_reason: 'tax reporting balances are not payment accounts',
+        });
       }
     } catch (e) { }
 
     try {
       if (DocumentEngine) {
         const stats = await DocumentEngine.getStats();
-        push('documents', 'document_vault', 'Document Vault', (stats.total_documents || 0), 'count', stats);
+        push('documents', 'document_vault', 'Document Vault', (stats.total_documents || 0), 'count', {
+          ...stats,
+          funding_eligible: false,
+          segregation_reason: 'document counts are not financial balances',
+        });
       }
     } catch (e) { }
 
@@ -894,7 +964,9 @@ class DappEngine {
       { email: 'deandreabarkley13@gmail.com', name: 'DeAndrea L Barkley', roles: ['beneficiary'], activeRole: 'beneficiary' },
       { email: 'annrobinson9800@yahoo.com', name: 'Malissa A Robinson', roles: ['beneficiary'], activeRole: 'beneficiary' },
       { email: 'robinsonjeremy22a@gmail.com', name: 'Jeremy N Robinson', roles: ['beneficiary'], activeRole: 'beneficiary' },
-    ];
+    ].filter((user, index, users) => (
+      users.findIndex(candidate => candidate.email.toLowerCase() === user.email.toLowerCase()) === index
+    ));
     const results = [];
     for (const s of seeded) {
       let user = await this.getUserByEmail(s.email).catch(() => null);

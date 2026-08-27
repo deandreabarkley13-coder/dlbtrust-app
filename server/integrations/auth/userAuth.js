@@ -111,6 +111,13 @@ class UserAuth {
           role: 'admin',
         });
         console.log('[auth] Trustee checker admin user created');
+      } else {
+        await pool.query(
+          `UPDATE auth_users
+           SET display_name = $1, email = $2, role = 'admin', is_active = true, updated_at = NOW()
+           WHERE id = $3`,
+          [checkerName, checkerEmail, existingChecker.rows[0].id]
+        );
       }
     } else if (checkerEmail) {
       console.log('[auth] Trustee checker admin user not seeded: set TRUST_CHECKER_ADMIN_PASSWORD to a value with at least 8 characters');

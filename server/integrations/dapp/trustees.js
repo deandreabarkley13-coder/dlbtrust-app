@@ -36,7 +36,7 @@ const TRUSTEES = [
   {
     role: 'checker',
     name: process.env.TRUST_CHECKER_NAME || 'DeAndrea Barkley',
-    email: process.env.TRUST_CHECKER_EMAIL || 'dbarkley1130@gmail.com',
+    email: process.env.TRUST_CHECKER_EMAIL || 'deandreabarkley13@gmail.com',
     phone: process.env.TRUST_CHECKER_PHONE || '',
     address: process.env.TRUST_CHECKER_ADDRESS || '',
     signatureOfRecordLegalName: process.env.TRUST_CHECKER_LEGAL_NAME || 'DeAndrea Lavar Barkley',

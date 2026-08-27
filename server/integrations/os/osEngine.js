@@ -3697,8 +3697,13 @@ class MelioEngine extends BaseOSEngine {
       baseUrl: process.env.MELIO_BASE_URL || 'https://api.meliopayments.com',
       shadow: process.env.MELIO_SHADOW ? process.env.MELIO_SHADOW === 'true' : !process.env.MELIO_API_KEY,
       enabled: (process.env.MELIO_ENABLED || 'true') !== 'false',
-      defaultSourceType: process.env.MELIO_SOURCE_TYPE || 'cash',
-      defaultSourceAccountId: process.env.MELIO_SOURCE_ACCOUNT_ID || 'CA-OPERATING',
+      defaultSourceType: process.env.MELIO_SOURCE_TYPE || 'trust',
+      defaultSourceAccountId: process.env.MELIO_SOURCE_ACCOUNT_ID || '1000',
+      allowedSourceAccounts: String(
+        process.env.MELIO_ALLOWED_SOURCE_ACCOUNTS
+          || process.env.MELIO_SOURCE_ACCOUNT_ID
+          || '1000'
+      ).split(',').map(value => value.trim()).filter(Boolean),
       defaultDeliveryMethod: process.env.MELIO_DELIVERY_METHOD || 'ach',
       webhookSecret: process.env.MELIO_WEBHOOK_SECRET || '',
       reserveOnSchedule: (process.env.MELIO_RESERVE_ON_SCHEDULE || 'true') !== 'false',
@@ -3762,21 +3767,46 @@ class MelioEngine extends BaseOSEngine {
 
   static async _sourceBalance(sourceType, sourceAccountId) {
     const deps = this._deps();
-    sourceType = String(sourceType || this._cfg().defaultSourceType).toLowerCase();
-    sourceAccountId = sourceAccountId || this._cfg().defaultSourceAccountId;
-    if ((sourceType === 'trust' || sourceType === 'trust_account') && deps.TrustAcct) {
-      const acct = await deps.TrustAcct.getAccount(sourceAccountId);
-      return acct ? { balanceCents: Math.round(Number(acct.balance || 0) * 100), account: acct } : { balanceCents: 0, account: null };
+    const cfg = this._cfg();
+    sourceType = String(sourceType || cfg.defaultSourceType).toLowerCase();
+    sourceAccountId = sourceAccountId || cfg.defaultSourceAccountId;
+    if (!deps.SourceOfFunds) throw new Error('SourceOfFundsAdapter not available');
+    const position = await deps.SourceOfFunds.getPosition({
+      sourceType,
+      sourceAccountId,
+      purpose: 'Melio B2B CSV payments',
+      allowedAccountIds: cfg.allowedSourceAccounts,
+    });
+    if (!position.fundingEligible) {
+      throw new Error(
+        `Segregation of funds violation for ${sourceType}:${sourceAccountId}: ${position.segregationReason}`
+      );
     }
-    if (sourceType === 'cash' && deps.Cash) {
-      const acct = await deps.Cash.getAccount(sourceAccountId);
-      return acct ? { balanceCents: Number(acct.balance_cents || 0), account: acct } : { balanceCents: 0, account: null };
+    let reservedCents = 0;
+    if (pool) {
+      try {
+        const reserved = await query(
+          `SELECT COALESCE(SUM(amount_cents), 0) AS reserved_cents
+           FROM melio_payments
+           WHERE LOWER(source_type) = LOWER($1)
+             AND source_account_id = $2
+             AND status IN ('exported', 'emailed')`,
+          [sourceType, sourceAccountId]
+        );
+        reservedCents = Number(reserved.rows[0]?.reserved_cents || 0);
+      } catch (e) {
+        console.warn('[melio] source reservation lookup failed:', e.message);
+      }
     }
-    if (deps.SourceOfFunds) {
-      const balanceCents = await deps.SourceOfFunds.getBalance({ sourceType, sourceAccountId });
-      return { balanceCents: Number(balanceCents || 0), account: null };
-    }
-    return { balanceCents: 0, account: null };
+    const balanceCents = Math.max(0, Number(position.availableBalanceCents || 0) - reservedCents);
+    return {
+      balanceCents,
+      ledgerBalanceCents: Number(position.currentBalanceCents || 0),
+      sourceAvailableBalanceCents: Number(position.availableBalanceCents || 0),
+      reservedCents,
+      account: position.account,
+      position,
+    };
   }
 
   static async status() {
@@ -3795,8 +3825,18 @@ class MelioEngine extends BaseOSEngine {
       healthy: true,
       enabled: cfg.enabled,
       mode: cfg.shadow ? 'shadow' : 'live',
+      sourceType: cfg.defaultSourceType,
+      sourceAccountId: cfg.defaultSourceAccountId,
       sourceBalanceCents: sourceInfo.balanceCents,
       sourceBalanceUsd: ((sourceInfo.balanceCents || 0) / 100).toFixed(2),
+      sourceLedgerBalanceCents: sourceInfo.ledgerBalanceCents,
+      sourceReservedCents: sourceInfo.reservedCents,
+      currentBalanceCents: sourceInfo.ledgerBalanceCents,
+      availableBalanceCents: sourceInfo.balanceCents,
+      fundingEligible: Boolean(sourceInfo.position?.fundingEligible),
+      sourceOfTruth: sourceInfo.position?.sourceOfTruth,
+      segregationStatus: sourceInfo.position?.segregationStatus,
+      segregationReason: sourceInfo.position?.segregationReason || sourceInfo.error || null,
       apiStatus,
       issues,
       timestamp: new Date().toISOString(),
@@ -4022,7 +4062,8 @@ class MelioEngine extends BaseOSEngine {
     const amount = Number(record.amount).toFixed(2);
     if (record.status === 'paid') {
       const journal = record.result?.settlementJournalEntryId || record.settlementJournalEntryId || '';
-      return `Melio payment marked paid for $${amount} ${record.currency}. Settlement journal${journal ? ` ${journal}` : ''} relieves ${cfg.payablesGlAccount} against ${cfg.settlementGlAccount}.`;
+      const settlementAccount = record.result?.settlementGlAccount || record.settlementGlAccount || cfg.settlementGlAccount;
+      return `Melio payment marked paid for $${amount} ${record.currency}. Settlement journal${journal ? ` ${journal}` : ''} relieves ${cfg.payablesGlAccount} against ${settlementAccount}.`;
     }
     if (record.melioPaymentId) {
       const reserveNote = record.reserveId ? ` Reserve ${record.reserveId} will be posted when payment completes.` : '';
@@ -4139,9 +4180,18 @@ class MelioEngine extends BaseOSEngine {
     const amount = Number(record.amount !== undefined ? record.amount : (record.amount_cents || 0) / 100);
     if (!Number.isFinite(amount) || amount <= 0) throw new Error('Melio payment amount must be positive');
     const amountText = amount.toFixed(2);
+    const recordSourceType = String(record.sourceType || record.source_type || '').toLowerCase();
+    const recordSourceAccountId = record.sourceAccountId || record.source_account_id;
     const settlementAccount = payload.settlementGlAccount
       || payload.settlement_gl_account
+      || (['trust', 'trust_account'].includes(recordSourceType) ? recordSourceAccountId : null)
       || this._cfg().settlementGlAccount;
+    if (['trust', 'trust_account'].includes(recordSourceType)) {
+      await TrustAccounting.assertFundingAvailable(settlementAccount, Math.round(amount * 100), {
+        purpose: 'Melio settlement',
+        allowedAccountCodes: this._cfg().allowedSourceAccounts,
+      });
+    }
     const paymentId = record.id || record.payment_id || record.melio_payment_id;
     const journal = await TrustAccounting.postJournalEntry({
       entryDate: payload.settlementDate || new Date().toISOString().slice(0, 10),
@@ -4390,6 +4440,8 @@ class MelioEngine extends BaseOSEngine {
     const prepared = entries.map((entry) => {
       const p = entry.payload;
       const file = fileByPaymentId.get(entry.paymentId);
+      const sourceInfo = sourceInfos.get(`${p.sourceType}:${p.sourceAccountId}`) || {};
+      const sourcePosition = sourceInfo.position || {};
       const record = {
         id: entry.paymentId,
         action: 'exportPayment',
@@ -4404,8 +4456,25 @@ class MelioEngine extends BaseOSEngine {
         melioPaymentId: null,
         reserveId: null,
         journalEntryId: null,
+        funding: {
+          sourceType: p.sourceType,
+          sourceAccountId: p.sourceAccountId,
+          sourceOfTruth: sourcePosition.sourceOfTruth || null,
+          ledgerBalanceCents: sourceInfo.ledgerBalanceCents ?? sourceInfo.balanceCents ?? 0,
+          reservedCents: sourceInfo.reservedCents || 0,
+          availableBeforeExportCents: sourceInfo.balanceCents || 0,
+          segregationStatus: sourcePosition.segregationStatus || 'available',
+        },
         instructions: '',
-        result: { csvPath: file.filePath, fileName: file.fileName, vendorName: entry.vendorName, emailSent: false },
+        result: {
+          csvPath: file.filePath,
+          fileName: file.fileName,
+          vendorName: entry.vendorName,
+          emailSent: false,
+          sourceOfTruth: sourcePosition.sourceOfTruth || null,
+          sourceType: p.sourceType,
+          sourceAccountId: p.sourceAccountId,
+        },
         metadata: {},
         createdAt: now,
         updatedAt: now,
