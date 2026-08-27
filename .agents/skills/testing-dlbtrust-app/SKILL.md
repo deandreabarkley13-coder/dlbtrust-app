@@ -1244,3 +1244,146 @@ disown
 - `settleMelioPayment` tries to insert a `cashflow_events` row; if the table does not exist it logs a non-fatal warning and continues.
 - The dashboard buttons may not respond to scaled-coordinate mouse clicks; invoke the underlying handlers via the browser console (`submitMelioInvoiceAndSync()` and `settleMelioPayment()`) and click **Set Token** first so the `x-admin-token` is set.
 - `EmailEngine` attachment support only sends attachments when a real SMTP/SendGrid provider is configured; the `log` provider returns `sent: false` with the notification metadata.
+
+## Trustee vendor-bill signing UI — "Bill Signatures" tab (`/dapp/trust-dashboard.html#signatures`)
+
+Maker/checker signing of `vendor_bill` canonical-consensus proposals happens on the **Bill Signatures**
+tab of the trust dashboard. Legacy signature-request emails link to `#finops-consensus`, which routes to
+the same tab.
+
+### Login for this tab
+
+The tab authenticates with the operator token in `localStorage`, key `dlb-admin-token`
+(`ADMIN_KEY` in `trust-dashboard.html`); `api()` sends it as the `x-admin-token` header. Locally the
+value is whatever `ADMIN_SECRET_TOKEN` was set to (e.g. `dlb-admin-2026-trust`). Use the `/dapp` login
+page's operator field rather than hand-crafting requests.
+
+Note: tab routing runs only in `initDashboard` on page load — there is no `hashchange` listener, so
+typing a new `#hash` in the address bar while the page is already open does **not** switch tabs.
+Reload after changing the hash when testing deep links.
+
+### Trustee identities / signature of record
+
+Defaults come from `server/integrations/dapp/trustees.js` (overridable via `TRUST_MAKER_EMAIL`,
+`TRUST_MAKER_LEGAL_NAME`, `TRUST_CHECKER_EMAIL`, `TRUST_CHECKER_LEGAL_NAME`):
+
+- maker: `TRUST_MAKER_EMAIL` (as of 2026-08 this is `AnnRobinson1117@gmail.com` locally **and** on the
+  Northflank deploy; the older default was `malissa1130@gmail.com`), display `Malissa Robinson`,
+  **signature of record** `Malissa Ann Robinson`
+- checker `dbarkley1130@gmail.com`, display `DeAndrea Barkley`, **signature of record** `DeAndrea Lavar Barkley`
+
+The signed name must equal the signature of record (display names are rejected), placeholder strings
+like `sig-maker-123` are rejected, and the proposal creator cannot approve their own vendor bill.
+Verify current values with `GET /api/dapp/finops-ai/trustees` before testing — these emails have been
+changed before.
+
+Under admin-token auth `bindAuthenticatedTrustee` (securityMiddleware.js) no-ops because `req.user.email`
+is undefined, so the role + email the UI sends are what the server uses — the role `<select>` genuinely
+drives which trustee signs.
+
+### Local prerequisites for a vendor-bill export to actually execute
+
+1. Compliance gate (`PaymentComplianceGate` → `ComplianceEngine.readiness()`) with provider `local` is
+   only ready when `NODE_ENV != production`, `COMPLIANCE_ALLOW_LOCAL_SCREENING=true`, and
+   `COMPLIANCE_SANCTIONED_NAMES` is non-empty. Start the server with e.g.
+   `COMPLIANCE_ALLOW_LOCAL_SCREENING=true COMPLIANCE_SANCTIONED_NAMES="ACME SANCTIONED CO,BLOCKED ENTITY LLC"`
+   (names deliberately unrelated to your test vendors). On a `NODE_ENV=production` deploy with provider
+   `local` this gate can **never** be ready — the checker signature will fail with
+   "Local sanctions screening cannot authorize production payments"; that needs a real provider
+   (`COMPLIANCE_PROVIDER=ofac`), not just the flag.
+2. Source of funds must be funded. `sourceType:'trust'/'1000'` is often $0.00 locally and execution
+   fails with "Insufficient source balance"; `sourceType:'cash'/'CA-BOND-PROCEEDS'` is funded.
+3. `MELIO_PAYABLES_GL_ACCOUNT=2100` for the export journal entry.
+4. Keep `MELIO_USE_API=false` — check `GET /api/os/melio/status` shows `mode: shadow`; the export is
+   CSV-only under `data/melio-exports/melio-export-MEL-*.csv`, no live rail.
+
+### Seeding a throwaway proposal
+
+The Bill Signatures tab has no create form, so seed via
+`POST /api/finops/consensus/proposals` with `category: 'vendor_bill'` and a payload containing a
+`payables` array (`{businessName, amount, invoiceNumber, dueDate}` per line) plus `sourceType` /
+`sourceAccountId`. The card shows one line per payable and `Total` = the **sum**.
+
+### Expected UI behaviour
+
+- Empty legal name → client-side red status `Type your full legal name of record before signing.`
+  and no API call (server-side wording would instead be "A vendor_bill approval requires your full
+  legal name signature").
+- Wrong name → `Signature does not match the signature of record for maker`.
+- Correct maker name → `Signed as maker. Proposal status: pending`, row re-renders with
+  `Signed: maker` and the maker option disabled (`maker (signed)`).
+- Correct checker name → `Signed as checker. Proposal status: executed`, card leaves the pending list,
+  and a `MEL-BATCH-*` CSV appears under `data/melio-exports/`.
+- **Reject** shows a native `confirm()`; Cancel is a true no-op, OK yields `Proposal rejected.` and the
+  proposal record becomes `status: rejected`.
+
+### Distributions tab approvals
+
+`Approve as Maker` / `Approve as Checker` must always surface a message in `dist-status` (an earlier bug
+put `await trusteeEmail(role)` outside the `try`, so failures were silent). Locally the checker approval
+commonly ends `Approved as checker. Status: failed` with
+`Compliance review required: risk level medium` in `metadata.executeError` when the destination is a raw
+`0x…` address — the payout engine rejecting the destination is expected locally; what matters is that a
+status message appears.
+
+## Role-based portal routing + trustee OTP login (`public/lib/portal-routing.js`)
+
+Shared routing helper `window.PortalRouting` is loaded by `public/dapp/index.html`,
+`public/dapp/trust-dashboard.html`, `public/trust-portal/index.html` and
+`public/trust-portal/dashboard.html`. Constants: `ADMIN_KEY='dlb-admin-token'`,
+`USER_KEY='dlb-beneficiary-token'`, `TRUSTEE_HOME='/dashboard'`,
+`BENEFICIARY_HOME='/trust-portal/dashboard.html'`.
+
+Route map worth remembering (`server/server-3002.js`): `/dashboard` → `public/dapp/trust-dashboard.html`
+(the **trustee** dashboard), `/treasury` → the legacy `public/dashboard.html` SPA, `/dapp` and
+`/trust-portal` → the two login pages.
+
+### Logging in as a trustee/beneficiary without email delivery
+
+Start the server with `DAPP_OTP_ALWAYS_SHOW_CODE=true` (only works when `NODE_ENV != production`), then
+on `/trust-portal` or `/dapp` enter the email, click **Send PIN**, and read the PIN from Postgres:
+
+```bash
+PGPASSWORD=dlbtrust psql -U dlbtrust -d dlbtrust -h localhost -t \
+  -c "select email, role, roles, otp_code from dapp_users where lower(email)='<email>';"
+```
+
+Each **Send PIN** overwrites `otp_code`, so always re-read it right before typing.
+
+### Roles are re-derived from config on every OTP send — biggest gotcha
+
+`DappEngine.inferRoles` (`server/integrations/dapp/dappEngine.js:756`) maps *only* the configured
+`TRUST_MAKER_EMAIL` → `['trustee_maker','beneficiary']` and `TRUST_CHECKER_EMAIL` →
+`['trustee_checker','beneficiary']`; every other address collapses to `['beneficiary']`.
+`generateOtp` and the startup seeding both rewrite `dapp_users.role/roles` from that inference, so
+**changing `TRUST_MAKER_EMAIL` silently demotes the previous maker account to beneficiary-only** and it
+can no longer reach `/dashboard` (it is bounced to the beneficiary portal by design).
+
+When someone reports "I can't see the trustee maker/checker dashboard", check the account first:
+`GET /api/dapp/users` and `GET /api/dapp/finops-ai/trustees` (both accept `x-admin-token`, read-only)
+show which emails currently hold `trustee_maker` / `trustee_checker`. Logging in with any other address
+is *expected* to land on the beneficiary portal.
+
+### Expected routing behaviour (verified end-to-end on 2026-08-27, main @ PR #386)
+
+- maker/checker OTP login from either `/trust-portal` or `/dapp` → `/dashboard`, `#user-info` shows
+  `<name> · trustee_maker|trustee_checker`.
+- with a live trustee session, `/trust-portal`, `/dapp` and `/trust-portal/dashboard.html` all redirect to
+  `/dashboard` (no ping-pong). `?view=beneficiary` keeps a trustee on the beneficiary portal.
+- beneficiary-only account → `/trust-portal/dashboard.html` with the `Beneficiary` badge; `/dashboard`
+  bounces back there.
+- invalid/expired `dlb-beneficiary-token`: `/trust-portal` and `/dapp` stay on the login form
+  (`resolveHome()` returns null and leaves the bad token in place), `/dashboard` clears it and goes to
+  `/dapp`, `/trust-portal/dashboard.html` goes to `/trust-portal/index.html`. No blank page, no loop.
+- RBAC: `consensusRoleFrom` limits the Bill Signatures "Sign as" `<select>` and the distribution
+  "Approve as …" buttons to the signed-in trustee's seat (operator/admin token sees both).
+
+### What to watch for
+
+- Uncaught `PortalRouting is not defined` would break the whole inline script of
+  `trust-dashboard.html` (it reads `PortalRouting.ADMIN_KEY` at top level) and show a permanently blank
+  dashboard — check `/lib/portal-routing.js` returns 200 on each page.
+- `trust-portal/dashboard.html` logs handled `Failed to fetch` / `Authentication required. Please log in.`
+  errors while it redirects away; these are benign, not the cause of a blank page.
+- To confirm a deploy actually has this code without logging in: `curl` the four pages and grep for
+  `portal-routing.js` / `homeForRoles` (the pages are served `no-store`, so no cache excuse).
