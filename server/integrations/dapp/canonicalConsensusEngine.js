@@ -68,7 +68,7 @@ function isPlaceholderSignature(value) {
 
 function approvalPortalUrl() {
   const base = process.env.APP_URL || process.env.DEPLOY_URL || '';
-  return base ? `${base.replace(/\/+$/, '')}/dapp/trust-dashboard.html#finops-consensus` : '';
+  return base ? `${base.replace(/\/+$/, '')}/dapp/trust-dashboard.html#signatures` : '';
 }
 
 function vendorBillSummary(payload = {}) {

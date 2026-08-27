@@ -91,6 +91,7 @@
     <nav class="nav" id="top-nav">
       <button class="active" data-tab="overview">Overview</button>
       <button data-tab="distributions">Distributions</button>
+      <button data-tab="signatures">Bill Signatures</button>
       <button data-tab="vendors">Vendor Payments</button>
       <button data-tab="payouts">Payouts</button>
       <button data-tab="holds">Hold Accounts</button>
@@ -182,6 +183,16 @@
         <div class="card">
           <h2>All Distribution Requests</h2>
           <div id="all-requests" class="muted">Loading…</div>
+        </div>
+      </div>
+
+      <div id="tab-signatures" class="tabs">
+        <div class="card">
+          <h2>Vendor Bill Signatures</h2>
+          <p class="muted">Maker/checker consensus proposals awaiting signature. Vendor bills need both trustees to sign with their full legal name of record before the Melio CSV batch is exported. Signing does not move funds.</p>
+          <div id="signature-of-record" class="muted" style="font-size:.8rem;margin-bottom:12px;">Loading…</div>
+          <div id="sig-status" class="status"></div>
+          <div id="sig-list" class="muted">Loading…</div>
         </div>
       </div>
 
@@ -602,6 +613,7 @@
     const tab = el('tab-' + key); if (tab) tab.classList.add('active');
     const btn = document.querySelector('.nav button[data-tab="' + key + '"]'); if (btn) btn.classList.add('active');
     if (key === 'distributions') loadDistributions();
+    if (key === 'signatures') loadSignatures();
     if (key === 'vendors') loadVendors();
     if (key === 'payouts') loadPayouts();
     if (key === 'holds') loadHolds();
@@ -633,7 +645,9 @@
       el('user-info').textContent = name + (roleLabel ? ' · ' + roleLabel : '');
       loadOverview();
       const params = new URLSearchParams(window.location.search);
-      if (params.get('tab') === 'rally') { switchTab('rally'); }
+      const requestedTab = params.get('tab') || window.location.hash.replace(/^#/, '');
+      if (requestedTab === 'rally') { switchTab('rally'); }
+      else if (requestedTab === 'signatures' || requestedTab === 'finops-consensus') { switchTab('signatures'); }
     } catch (e) { showStatus('token-status', e.message, true); }
   }
 
@@ -706,8 +720,8 @@
   }
 
   async function approveRequest(id, role) {
-    const email = await trusteeEmail(role);
     try {
+      const email = await trusteeEmail(role);
       const res = await api(`/api/dapp/distribution-requests/${id}/approve`, { method: 'POST', body: JSON.stringify({ role, trusteeEmail: email }) });
       showStatus('dist-status', `Approved as ${role}. Status: ${res.data.status}`, false);
       loadDistributions();
@@ -726,6 +740,106 @@
       await api(`/api/dapp/distribution-requests/${id}/execute`, { method: 'POST', body: JSON.stringify({}) });
       loadDistributions(); loadOverview();
     } catch (e) { showStatus('dist-status', e.message, true); }
+  }
+
+  const signatureState = { proposals: [], signatureOfRecord: [] };
+
+  function proposalTotal(payload) {
+    const field = ['payables', 'items', 'rows'].find(f => Array.isArray(payload[f]));
+    const rows = field ? payload[field] : [payload];
+    return { rows, total: rows.reduce((sum, r) => sum + (Number(r.amount) || 0), 0) };
+  }
+
+  function renderSignatureRow(p) {
+    const { rows, total } = proposalTotal(p.payload || {});
+    const signed = (p.approvals || []).filter(a => a.status === 'approved').map(a => a.role);
+    const lines = rows.map(r => {
+      const vendor = (r.vendor && (r.vendor.name || r.vendor.vendor_name)) || r.businessName || r.vendorName || 'vendor';
+      const invoice = r.invoiceNumber || r.invoice_number || '';
+      return `<div style="font-size:.8rem;">• ${escapeHtml(vendor)} — ${fmtUsd(r.amount)}${invoice ? ' (invoice ' + escapeHtml(invoice) + ')' : ''}</div>`;
+    }).join('');
+    const roleOptions = ['maker', 'checker']
+      .map(role => `<option value="${role}"${signed.includes(role) ? ' disabled' : ''}>${role}${signed.includes(role) ? ' (signed)' : ''}</option>`)
+      .join('');
+    return `<div class="card" style="margin-bottom:12px;">
+      <div style="display:flex;justify-content:space-between;gap:10px;">
+        <strong>${escapeHtml(p.title || p.id)}</strong>
+        <span class="badge ${p.status === 'pending' ? 'pending' : 'approved'}">${escapeHtml(p.status)}</span>
+      </div>
+      <div class="muted" style="font-size:.78rem;margin:4px 0;">${escapeHtml(p.id)} — ${escapeHtml(p.description || '')}</div>
+      ${lines}
+      <div style="font-size:.82rem;margin:6px 0;"><strong>Total:</strong> ${fmtUsd(total)} · <strong>Signed:</strong> ${signed.length ? escapeHtml(signed.join(', ')) : 'none'}</div>
+      <div class="form-row">
+        <div class="form-group"><label>Sign as</label><select id="sig-role-${escapeHtml(p.id)}">${roleOptions}</select></div>
+        <div class="form-group"><label>Your full legal name of record</label><input id="sig-name-${escapeHtml(p.id)}" placeholder="e.g. Malissa Ann Robinson" /></div>
+      </div>
+      <div style="display:flex;gap:8px;">
+        <button class="btn btn-gold btn-sm" onclick="signProposal('${escapeHtml(p.id)}', this)">Sign</button>
+        <button class="btn btn-sec btn-sm" onclick="rejectProposal('${escapeHtml(p.id)}', this)">Reject</button>
+      </div>
+    </div>`;
+  }
+
+  async function loadSignatures() {
+    try {
+      const [proposals, records] = await Promise.all([
+        api('/api/finops/consensus?limit=50'),
+        api('/api/finops/consensus/signature-of-record').catch(() => ({ data: [] })),
+      ]);
+      signatureState.proposals = (proposals.data || []).filter(p => p.status === 'pending');
+      signatureState.signatureOfRecord = records.data || [];
+      el('signature-of-record').innerHTML = signatureState.signatureOfRecord
+        .map(r => `<div><strong>${escapeHtml(r.role)}:</strong> ${escapeHtml(r.legalName)}</div>`).join('')
+        || 'No signature of record configured.';
+      el('sig-list').innerHTML = signatureState.proposals.length
+        ? signatureState.proposals.map(renderSignatureRow).join('')
+        : '<p class="muted">No proposals awaiting signature.</p>';
+    } catch (e) {
+      el('sig-list').innerHTML = '<p class="muted">' + escapeHtml(e.message) + '</p>';
+    }
+  }
+
+  async function signProposal(id, btn) {
+    const roleInput = el('sig-role-' + id);
+    const nameInput = el('sig-name-' + id);
+    const role = roleInput ? roleInput.value : 'maker';
+    const signature = nameInput ? nameInput.value.trim() : '';
+    if (!signature) { showStatus('sig-status', 'Type your full legal name of record before signing.', true); return; }
+    if (btn) { btn.disabled = true; btn.textContent = 'Signing…'; }
+    try {
+      const email = await trusteeEmail(role);
+      const res = await api(`/api/finops/consensus/proposals/${id}/approve`, {
+        method: 'POST',
+        body: JSON.stringify({ role, approverEmail: email, signature }),
+      });
+      showStatus('sig-status', `Signed as ${role}. Proposal status: ${res.data.status}`, false);
+      await loadSignatures();
+      loadOverview();
+    } catch (e) {
+      showStatus('sig-status', e.message, true);
+    } finally {
+      if (btn) { btn.disabled = false; btn.textContent = 'Sign'; }
+    }
+  }
+
+  async function rejectProposal(id, btn) {
+    const roleInput = el('sig-role-' + id);
+    const role = roleInput ? roleInput.value : 'maker';
+    if (!confirm('Reject this proposal? It cannot be signed afterwards.')) return;
+    if (btn) { btn.disabled = true; btn.textContent = 'Rejecting…'; }
+    try {
+      const email = await trusteeEmail(role);
+      await api(`/api/finops/consensus/proposals/${id}/reject`, {
+        method: 'POST',
+        body: JSON.stringify({ role, rejectorEmail: email }),
+      });
+      showStatus('sig-status', 'Proposal rejected.', false);
+      await loadSignatures();
+    } catch (e) {
+      showStatus('sig-status', e.message, true);
+    } finally {
+      if (btn) { btn.disabled = false; btn.textContent = 'Reject'; }
+    }
   }
 
   async function loadVendors() {
