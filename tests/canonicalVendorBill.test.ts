@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createRequire } from 'module';
+import { readFileSync } from 'fs';
 
 const require = createRequire(import.meta.url);
 const { CanonicalConsensusEngine } = require('../server/integrations/dapp/canonicalConsensusEngine');
@@ -20,6 +21,7 @@ const validBill = {
   memo: 'Approved operating expense',
   source_type: 'trust',
   source_account_id: '1000',
+  accountingClass: 'operating_expense',
   expenseGlAccount: '5300',
 };
 
@@ -28,6 +30,29 @@ afterEach(() => {
 });
 
 describe('canonical vendor bill consensus', () => {
+  it('requires authenticated dual approval and explicit classification in the canonical workflow', () => {
+    const workflow = readFileSync(
+      'server/scripts/melioCanonicalPaymentWorkflow.js',
+      'utf8',
+    );
+    const compatibilityWorkflow = readFileSync(
+      'server/scripts/sendB2BPaymentViaMelio.js',
+      'utf8',
+    );
+
+    expect(workflow).toContain('TRUST_MAKER_TOKEN');
+    expect(workflow).toContain('TRUST_CHECKER_TOKEN');
+    expect(workflow).toContain("'invoiceNumber'");
+    expect(workflow).toContain("'accountingClass'");
+    expect(workflow).toContain('accountingClass: args.accountingClass');
+    expect(workflow).toContain('executionMode,');
+    expect(workflow).toContain('}, MAKER_TOKEN)');
+    expect(workflow).toContain('}, CHECKER_TOKEN)');
+    expect(compatibilityWorkflow).toContain('melioCanonicalPaymentWorkflow.js');
+    expect(compatibilityWorkflow).toContain("'live_api'");
+    expect(compatibilityWorkflow).not.toContain('/api/os/melio/process');
+  });
+
   it.each([
     {
       label: 'missing vendor',
@@ -41,7 +66,13 @@ describe('canonical vendor bill consensus', () => {
     },
     {
       label: 'invalid amount',
-      payload: { vendor: { name: 'Canonical Vendor' }, amount: 0, due_date: '2026-02-15' },
+      payload: {
+        vendor: { name: 'Canonical Vendor' },
+        amount: 0,
+        due_date: '2026-02-15',
+        invoiceNumber: 'INV-INVALID-AMOUNT',
+        accountingClass: 'operating_expense',
+      },
       message: 'amount must be positive',
     },
   ])('validates $label vendor bills when proposals are created', async ({ payload, message }) => {
@@ -60,10 +91,68 @@ describe('canonical vendor bill consensus', () => {
       .toEqual({ batch: false, count: 1 });
   });
 
+  it('requires stable invoice and accounting classifications', () => {
+    expect(() => CanonicalConsensusEngine._validateVendorBillPayload({
+      ...validBill,
+      invoice_number: '',
+    })).toThrow('vendor_bill requires an explicit invoiceNumber');
+    expect(() => CanonicalConsensusEngine._validateVendorBillPayload({
+      ...validBill,
+      accountingClass: '',
+    })).toThrow('vendor_bill requires an explicit accountingClass');
+  });
+
+  it('encrypts vendor bank details before canonical proposal persistence', () => {
+    const previousKey = process.env.PAYMENT_DATA_ENCRYPTION_KEY;
+    process.env.PAYMENT_DATA_ENCRYPTION_KEY = '11'.repeat(32);
+    try {
+      const protectedPayload = CanonicalConsensusEngine._protectVendorBankDetails({
+        ...validBill,
+        vendor: {
+          name: 'Canonical Vendor',
+          bankAccount: {
+            accountNumber: '1234567890',
+            routingNumber: '111000025',
+            accountType: 'checking',
+          },
+        },
+      });
+
+      expect(protectedPayload.vendor.bankAccount).toMatchObject({
+        accountNumberLast4: '7890',
+        routingNumberLast4: '0025',
+        accountType: 'checking',
+      });
+      expect(protectedPayload.vendor.bankAccount.accountNumber).toBeUndefined();
+      expect(protectedPayload.vendor.bankAccount.routingNumber).toBeUndefined();
+      expect(protectedPayload.vendor.bankAccount.accountNumberEncrypted).toMatch(/^enc:v1:/);
+      expect(protectedPayload.vendor.bankAccount.routingNumberEncrypted).toMatch(/^enc:v1:/);
+
+      const restoredPayload = CanonicalConsensusEngine._restoreVendorBankDetails(protectedPayload);
+      expect(restoredPayload.vendor.bankAccount).toMatchObject({
+        accountNumber: '1234567890',
+        routingNumber: '111000025',
+        accountNumberLast4: '7890',
+        routingNumberLast4: '0025',
+      });
+      expect(restoredPayload.vendor.bankAccount.accountNumberEncrypted).toBeUndefined();
+      expect(restoredPayload.vendor.bankAccount.routingNumberEncrypted).toBeUndefined();
+    } finally {
+      if (previousKey === undefined) delete process.env.PAYMENT_DATA_ENCRYPTION_KEY;
+      else process.env.PAYMENT_DATA_ENCRYPTION_KEY = previousKey;
+    }
+  });
+
   it('rejects a batch item missing the Melio export vendor identity', () => {
     expect(() => CanonicalConsensusEngine._validateVendorBillPayload({
       payables: [
-        { vendor: { name: 'Vendor One' }, amount: 10, due_date: '2026-02-01' },
+        {
+          vendor: { name: 'Vendor One' },
+          amount: 10,
+          due_date: '2026-02-01',
+          invoiceNumber: 'INV-ONE',
+          accountingClass: 'operating_expense',
+        },
         { businessName: 'Vendor Two', amount: 20, due_date: '2026-02-02' },
       ],
     })).toThrow('vendor_bill payable 2 invalid: vendor_bill payable 2 requires vendor.name or vendorId');
@@ -186,13 +275,73 @@ describe('canonical vendor bill consensus', () => {
     });
     expect(result).toMatchObject({
       exportIdentifier: 'MEL-CANONICAL-1',
-      paymentMode: 'manual_export',
+      paymentMode: 'manual_upload',
       complianceScreeningId: 'COMP-CANONICAL-1',
       paymentId: 'MEL-CANONICAL-1',
       fileName: 'melio-export-MEL-CANONICAL-1.csv',
       journalEntryId: 'JE-CANONICAL-1',
     });
     expect(result.result.result.glPosted).toBe(true);
+  });
+
+  it('submits an approved single bill through the fail-closed live Melio API path', async () => {
+    vi.spyOn(PaymentComplianceGate, 'screenVendorPayment').mockResolvedValue({
+      screeningId: 'COMP-CANONICAL-LIVE',
+      status: 'clear',
+    });
+    const ready = vi.spyOn(MelioEngine, 'assertLiveApiReady').mockReturnValue({
+      id: 'melio-funding-1',
+      field: 'payment_method_id',
+    });
+    const process = vi.spyOn(MelioEngine, 'process').mockResolvedValue({
+      success: true,
+      result: {
+        id: 'MEL-CANONICAL-LIVE',
+        melioPaymentId: 'melio-remote-1',
+        status: 'scheduled',
+        journalEntryId: 'JE-CANONICAL-LIVE',
+        result: { accountingClass: 'management_fee' },
+      },
+    });
+    const payload = {
+      ...validBill,
+      executionMode: 'live_api',
+      accountingClass: 'management_fee',
+    };
+
+    const result = await CanonicalConsensusEngine._executeVendorBill(
+      payload,
+      'CC-1700000000000-ABC123',
+    );
+
+    expect(ready).toHaveBeenCalledWith('trust', '1000');
+    expect(process).toHaveBeenCalledWith({
+      action: 'schedulePayment',
+      ...payload,
+      paymentId: 'MEL-CC-1700000000000-ABC123',
+      metadata: {
+        complianceScreeningId: 'COMP-CANONICAL-LIVE',
+        consensusProposalId: 'CC-1700000000000-ABC123',
+      },
+    });
+    expect(result).toMatchObject({
+      paymentMode: 'live_api',
+      paymentId: 'MEL-CANONICAL-LIVE',
+      melioPaymentId: 'melio-remote-1',
+      complianceScreeningId: 'COMP-CANONICAL-LIVE',
+      journalEntryId: 'JE-CANONICAL-LIVE',
+    });
+  });
+
+  it('rejects unsupported or batch live execution modes before approval', () => {
+    expect(() => CanonicalConsensusEngine._validateVendorBillPayload({
+      ...validBill,
+      executionMode: 'unknown',
+    })).toThrow('vendor_bill executionMode must be manual_upload or live_api');
+    expect(() => CanonicalConsensusEngine._validateVendorBillPayload({
+      executionMode: 'live_api',
+      payables: [validBill],
+    })).toThrow('live_api vendor_bill execution supports one approved payment at a time');
   });
 
   it('delegates multi-bill payloads to the Melio batch exporter', async () => {
@@ -215,8 +364,20 @@ describe('canonical vendor bill consensus', () => {
       source_type: 'trust',
       source_account_id: '1000',
       payables: [
-        { vendor: { name: 'Vendor One' }, amount: 10, due_date: '2026-02-01' },
-        { vendor: { name: 'Vendor Two' }, amount: 20, due_date: '2026-02-02' },
+        {
+          vendor: { name: 'Vendor One' },
+          amount: 10,
+          due_date: '2026-02-01',
+          invoiceNumber: 'INV-ONE',
+          accountingClass: 'operating_expense',
+        },
+        {
+          vendor: { name: 'Vendor Two' },
+          amount: 20,
+          due_date: '2026-02-02',
+          invoiceNumber: 'INV-TWO',
+          accountingClass: 'operating_expense',
+        },
       ],
     };
 
@@ -234,7 +395,7 @@ describe('canonical vendor bill consensus', () => {
     });
     expect(result).toMatchObject({
       exportIdentifier: 'MEL-BATCH-CANONICAL',
-      paymentMode: 'manual_export',
+      paymentMode: 'manual_upload',
       complianceScreeningIds: ['COMP-BATCH-1', 'COMP-BATCH-2'],
       fileNames: ['melio-export-MEL-BATCH-CANONICAL.csv'],
       paymentIds: ['MEL-ROW-1', 'MEL-ROW-2'],

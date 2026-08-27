@@ -116,6 +116,37 @@ Keep `MELIO_USE_API=false` and no email provider configured while verifying — 
 live API call or a delivered mail creates real bills in the trust's Melio
 account.
 
+For partner API settlement, map each approved canonical cash account to the
+corresponding Melio settlement instrument with `MELIO_FUNDING_SOURCE_MAP` (or
+use `MELIO_FUNDING_SOURCE_ID` for the default account). The canonical account
+remains authoritative for availability, reservations and settlement journals;
+the mapped identifier only tells Melio which program instrument to debit.
+Live submission additionally requires `MELIO_USE_API=true`,
+`MELIO_SHADOW=false`, an explicit `MELIO_BASE_URL`, `MELIO_API_KEY`, and
+`MELIO_API_CONTRACT_VERIFIED=true`. Only set the verification flag after the
+resource paths, request fields, authentication and settlement statuses have
+been confirmed against the Trust Company's Melio partner contract.
+
+DB NET MGMT remains the management-company payee. Classify each approved
+instruction as `management_fee`, `beneficiary_income_distribution`, or
+`beneficiary_principal_distribution`; those post respectively through
+management expense, undistributed income, or corpus before settlement from the
+authorized trust cash account.
+
+Manual spreadsheet upload does not require Melio API credentials. Run
+`npm run trust:melio-workflow -- ...` with an explicit invoice number and
+accounting class. The workflow verifies canonical availability, collects
+authenticated maker/checker approvals, posts the classified accrual, and
+downloads the approved CSV for upload in Melio. Trustee JWTs are supplied at
+runtime as `TRUST_MAKER_TOKEN` and `TRUST_CHECKER_TOKEN`; do not store them in
+the repository.
+
+For a live, single-payment proposal, pass `--executionMode live_api`. The same
+authenticated maker/checker and compliance controls run before submission.
+Melio's remote payment identifier is stored with the canonical payment; polling
+`getPayment` finalizes the settlement journal only after Melio reports
+`completed`, `sent`, or `settled`.
+
 ## Sanctions screening provider
 
 `COMPLIANCE_PROVIDER=local` can never authorize a production payment — the

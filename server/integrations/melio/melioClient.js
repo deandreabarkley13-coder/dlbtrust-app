@@ -3,11 +3,9 @@
 /**
  * Generic Melio B2B Payments API client.
  *
- * Melio exposes a partner/enterprise REST API for vendors, bills, payment
- * methods, and scheduled payments. The exact endpoint shapes are not
- * consistently published, so this client uses the conventional /v1 prefix and
- * documented resource names (company, vendors, bills, payments) and is
- * designed to be tuned once real API keys/credentials are available.
+ * The resource paths below are placeholders for a Melio partner integration.
+ * Live use is blocked until they have been verified against the payer's
+ * contract and MELIO_API_CONTRACT_VERIFIED is enabled.
  *
  * In shadow mode (no MELIO_API_KEY or MELIO_SHADOW=true) all methods return
  * realistic mock responses so the OS engine and UI can be wired end-to-end.
