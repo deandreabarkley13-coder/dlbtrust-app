@@ -895,7 +895,9 @@ The `devin/moonpay-cli-onramp` branch adds `MelioEngine` (`melio`) to `server/in
 
 - Start with the standard local Postgres + admin token env.
 - No `MELIO_API_KEY` is needed; the engine runs in shadow/demo mode by default.
-- Trust account `1200` has sufficient balance for shadow `$100` test payments; cash sources can also be used.
+- Trust account `1000` (Trust Cash & Equivalents) is the only approved liquid Melio funding source and is the engine default. Accounts `1100`, `1200`, `1210`, `4000` and any non-liquid/non-asset GL are intentionally RESTRICTED and must not be used as payment sources (older examples in this file that use `1200`/`4000` are stale). If `1000` has a $0 balance locally, credit it via the trust accounting ledger before funding tests.
+- Canonical trust accounting now returns `current_balance_cents`, `available_balance_cents`, `funding_eligible`, `segregation_status`, and `segregation_reason`. `available = current - outstanding reservations`, so Melio `status` reports `sourceLedgerBalanceCents`, `sourceReservedCents`, `availableBalanceCents`, `sourceOfTruth: trust_accounting`.
+- These canonical fields are rendered in four UI surfaces worth checking together: `/dapp/finops.html` → **Trust Accounting** card, `/dapp/legacy.html` → **Source of Funds** and **Core Modules** tabs, and the trust portal Portfolio tab (see note below).
 - The server must call `osEngine.ensureAll()` on startup to create `melio_payments`. If the table is missing, restart the server.
 
 ### End-to-end verification
@@ -943,6 +945,10 @@ Use `x-admin-token: dlb-admin-2026-trust` for all calls.
 
 - The dashboard `Run` button and payload textarea may not register scaled coordinate typing. Set `document.getElementById('proc-payload').value` and/or `proc-engine`/`proc-action` values via the browser console, then click `Run`.
 - The dashboard `runProcess` builds the request as `{ action, ...payload }`, so if the payload itself contains an `action` field it will override the Action dropdown selection. Clear the payload to `{}` when testing `status` or `listVendors`.
+- The dashboard `Autofill Sample` payload for `melio` still uses `sourceAccountId: "1200"`, which is a restricted account; overwrite it with `1000` for happy-path tests.
+- `POST /api/os/melio/process` action `schedulePayment` from the operator dashboard is refused with `Vendor bill payments must use the authenticated maker-checker workflow`, so that path cannot demonstrate the segregation guard. To see the restricted-source rejection in the UI without side effects, use `/dapp/legacy.html` → **Source of Funds** → *Deposit from Source Ledger into Safe* with Source Type `Trust Accounting`, Source Account ID `1210`, amount `0.01`; the UI shows `Segregation of funds violation for trust:1210: account is segregated for a protected purpose` and creates no payment file.
+- Trust portal `/trust-portal/dashboard.html` redirects trustees to `/dashboard` (a different page that has no trust-accounts table). To view the canonical **Trust Accounts** table (Account / Type / Ledger Balance / Available Funds / Segregation) open `/trust-portal/dashboard.html?view=beneficiary` and click the **Portfolio** tab.
+- Local OTP: start with `DAPP_OTP_ALWAYS_SHOW_CODE=true`, or read the PIN from `dapp_users.otp_code` via psql when no SMTP provider is configured.
 - Shadow-mode `schedulePayment` returns `reserveId: null`; the `instructions` string will say `Reserve null will be posted when payment completes.` This is expected when no live Melio API key is configured.
 
 ## PTC Bank OS Engine (PR #351 ptc-bank update)
