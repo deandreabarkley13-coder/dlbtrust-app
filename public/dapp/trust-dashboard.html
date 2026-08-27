@@ -623,6 +623,18 @@
 
   document.querySelectorAll('.nav button').forEach(b => b.onclick = () => switchTab(b.dataset.tab));
 
+  function tabFromLocation() {
+    const params = new URLSearchParams(window.location.search);
+    const key = params.get('tab') || window.location.hash.replace(/^#/, '');
+    if (key === 'finops-consensus') return 'signatures';
+    return el('tab-' + key) ? key : '';
+  }
+
+  window.addEventListener('hashchange', () => {
+    const key = tabFromLocation();
+    if (key) switchTab(key);
+  });
+
   async function initDashboard() {
     const token = getToken();
     if (!token) { location.href = '/dapp'; return; }
@@ -644,10 +656,8 @@
       const name = u ? (u.name || u.email || roleLabel) : (isAdmin() ? 'Operator' : 'Trustee');
       el('user-info').textContent = name + (roleLabel ? ' · ' + roleLabel : '');
       loadOverview();
-      const params = new URLSearchParams(window.location.search);
-      const requestedTab = params.get('tab') || window.location.hash.replace(/^#/, '');
-      if (requestedTab === 'rally') { switchTab('rally'); }
-      else if (requestedTab === 'signatures' || requestedTab === 'finops-consensus') { switchTab('signatures'); }
+      const requestedTab = tabFromLocation();
+      if (requestedTab) switchTab(requestedTab);
     } catch (e) { showStatus('token-status', e.message, true); }
   }
 
