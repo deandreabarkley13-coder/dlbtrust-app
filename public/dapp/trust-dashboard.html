@@ -45,6 +45,7 @@
     .form-row { display:grid; grid-template-columns:1fr 1fr; gap:12px; }
     .btn { background:var(--primary); color:#fff; border:0; padding:10px 16px; border-radius:10px; cursor:pointer; font-size:.85rem; font-weight:600; }
     .btn:hover { background:var(--primary-hover); }
+    .btn:disabled, .btn:disabled:hover { opacity:.4; cursor:not-allowed; filter:grayscale(1); }
     .btn-gold { background:var(--gold); color:#0b0f17; }
     .btn-gold:hover { background:var(--gold-hover); }
     .btn-sec { background:var(--panel); color:var(--text); border:1px solid var(--border); }
@@ -799,13 +800,19 @@
         ? (pending.data || []).map(w => {
             const ownWire = session.email
               && String(w.initiated_by || '').toLowerCase() === String(session.email).toLowerCase();
+            const blockedReason = !canApprove
+              ? 'Checker approval required — the maker seat cannot approve wires.'
+              : ownWire ? 'You initiated this wire — a second trustee must approve it.' : '';
+            const blocked = blockedReason
+              ? ` disabled title="${escapeHtml(blockedReason)}"`
+              : '';
             return `<div class="panel" style="margin-bottom:10px;">
             <div style="display:flex;justify-content:space-between;gap:10px;"><strong>${escapeHtml(w.wire_id)}</strong><span class="badge pending">${escapeHtml(w.status)}</span></div>
             <div class="muted" style="margin:6px 0;font-size:.82rem;">${fmtUsd(Number(w.amount_cents) / 100)} to ${escapeHtml(w.beneficiary_name || '')}${w.beneficiary_bank_name ? ' · ' + escapeHtml(w.beneficiary_bank_name) : ''}</div>
             <div class="muted" style="font-size:.78rem;">${escapeHtml(w.description || w.purpose || '')} · initiated by ${escapeHtml(w.initiated_by || 'system')} on ${new Date(w.created_at).toLocaleString()}</div>
             <div style="display:flex;gap:8px;margin-top:8px;">
-              <button class="btn btn-gold btn-sm"${canApprove && !ownWire ? '' : ' disabled'} onclick="approveWire('${escapeHtml(w.wire_id)}')">Approve</button>
-              <button class="btn btn-sec btn-sm"${canApprove && !ownWire ? '' : ' disabled'} onclick="rejectWire('${escapeHtml(w.wire_id)}')">Reject</button>
+              <button class="btn btn-gold btn-sm"${blocked} onclick="approveWire('${escapeHtml(w.wire_id)}')">Approve</button>
+              <button class="btn btn-sec btn-sm"${blocked} onclick="rejectWire('${escapeHtml(w.wire_id)}')">Reject</button>
             </div>
             ${ownWire ? '<div class="muted" style="font-size:.75rem;margin-top:6px;">You initiated this wire — a second trustee must approve it.</div>' : ''}
             ${canApprove ? '' : '<div class="muted" style="font-size:.75rem;margin-top:6px;">Checker approval required — the maker seat cannot approve wires.</div>'}
