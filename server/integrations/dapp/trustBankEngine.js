@@ -178,9 +178,9 @@ class TrustBankEngine {
     return result.rows;
   }
 
-  static async _recordTransaction({ accountId, relatedAccountId, paymentId, amountCents, type, balanceAfter, description, metadata } = {}) {
+  static async _recordTransaction({ accountId, relatedAccountId, paymentId, amountCents, type, balanceAfter, description, metadata } = {}, executor = pool) {
     const txId = generateId('TBTX');
-    await pool.query(
+    await executor.query(
       `INSERT INTO trust_bank_transactions (transaction_id, account_id, related_account_id, payment_id, amount_cents, type, balance_after_cents, description, metadata)
        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
       [txId, accountId, relatedAccountId || null, paymentId || null, amountCents, type, balanceAfter, description || null, JSON.stringify(metadata || {})]
@@ -188,8 +188,8 @@ class TrustBankEngine {
     return txId;
   }
 
-  static async _updateBalance(accountId, deltaCents) {
-    const result = await pool.query(
+  static async _updateBalance(accountId, deltaCents, executor = pool) {
+    const result = await executor.query(
       `UPDATE trust_bank_accounts SET balance_cents = balance_cents + $2, updated_at = NOW() WHERE account_id = $1 RETURNING *`,
       [accountId, deltaCents]
     );
@@ -224,15 +224,15 @@ class TrustBankEngine {
     const client = await pool.connect();
     try {
       await client.query('BEGIN');
-      const fromUpdated = await this._updateBalance(fromAccountId, -cents);
-      const toUpdated = await this._updateBalance(toAccountId, cents);
+      const fromUpdated = await this._updateBalance(fromAccountId, -cents, client);
+      const toUpdated = await this._updateBalance(toAccountId, cents, client);
       await client.query(
         `INSERT INTO trust_bank_payments (payment_id, from_account_id, to_account_id, amount_cents, currency, rail, status, initiated_by)
          VALUES ($1, $2, $3, $4, 'USD', 'internal', 'completed', $5)`,
         [paymentId, fromAccountId, toAccountId, cents, initiatedBy]
       );
-      await this._recordTransaction({ accountId: fromAccountId, relatedAccountId: toAccountId, paymentId, amountCents: cents, type: 'debit', balanceAfter: fromUpdated.balance_cents, description: description || `Transfer to ${toAccountId}`, metadata: { initiatedBy } });
-      await this._recordTransaction({ accountId: toAccountId, relatedAccountId: fromAccountId, paymentId, amountCents: cents, type: 'credit', balanceAfter: toUpdated.balance_cents, description: description || `Transfer from ${fromAccountId}`, metadata: { initiatedBy } });
+      await this._recordTransaction({ accountId: fromAccountId, relatedAccountId: toAccountId, paymentId, amountCents: cents, type: 'debit', balanceAfter: fromUpdated.balance_cents, description: description || `Transfer to ${toAccountId}`, metadata: { initiatedBy } }, client);
+      await this._recordTransaction({ accountId: toAccountId, relatedAccountId: fromAccountId, paymentId, amountCents: cents, type: 'credit', balanceAfter: toUpdated.balance_cents, description: description || `Transfer from ${fromAccountId}`, metadata: { initiatedBy } }, client);
       await client.query('COMMIT');
       return { paymentId, from: fromUpdated, to: toUpdated, status: 'completed' };
     } catch (e) {
@@ -241,6 +241,178 @@ class TrustBankEngine {
     } finally {
       client.release();
     }
+  }
+
+  /**
+   * Dual-control threshold for internal distributions, in cents. Transfers at
+   * or above it need two distinct trustee signatures; below it a single
+   * authorized trustee may move funds. Default: every distribution is dual.
+   */
+  static _dualControlThresholdCents() {
+    const raw = process.env.TRUST_BANK_DUAL_CONTROL_THRESHOLD_CENTS;
+    const parsed = Number(raw);
+    return Number.isFinite(parsed) && parsed >= 0 ? Math.floor(parsed) : 0;
+  }
+
+  /**
+   * Propose an internal distribution between family sub-accounts. Nothing moves
+   * until the required signatures are collected — the proposal only reserves
+   * intent, so the balance check runs again at execution.
+   */
+  static async proposeInternalTransfer({ fromAccountId, toAccountId, amount, description, requestedBy } = {}) {
+    if (!requestedBy) throw new Error('requestedBy is required to propose a distribution');
+    if (!fromAccountId || !toAccountId || !amount) throw new Error('fromAccountId, toAccountId and amount required');
+    if (fromAccountId === toAccountId) throw new Error('from and to must differ');
+    await this.ensureTables();
+    const cents = toCents(amount);
+    if (cents <= 0) throw new Error('amount must be positive');
+    const from = await this.getAccount(fromAccountId);
+    const to = await this.getAccount(toAccountId);
+    if (!from || !to) throw new Error('Account not found');
+    if (from.status !== 'active') throw new Error(`Account ${fromAccountId} is ${from.status}`);
+    if (to.status !== 'active') throw new Error(`Account ${toAccountId} is ${to.status}`);
+    if (parseInt(from.balance_cents, 10) < cents) throw new Error(`Insufficient balance in ${fromAccountId}`);
+
+    const requiredSignatures = cents >= this._dualControlThresholdCents() ? 2 : 1;
+    const paymentId = generateId('TBP');
+    const metadata = { requiredSignatures, approvals: [], description: description || null };
+    await pool.query(
+      `INSERT INTO trust_bank_payments (payment_id, from_account_id, to_account_id, amount_cents, currency, rail, status, initiated_by, metadata)
+       VALUES ($1, $2, $3, $4, 'USD', 'internal', 'pending', $5, $6)`,
+      [paymentId, fromAccountId, toAccountId, cents, requestedBy, JSON.stringify(metadata)]
+    );
+    return { paymentId, status: 'pending', amount_cents: cents, requiredSignatures, approvals: [] };
+  }
+
+  static _paymentMetadata(payment) {
+    let metadata = payment.metadata || {};
+    if (typeof metadata === 'string') {
+      try { metadata = JSON.parse(metadata); } catch { metadata = {}; }
+    }
+    return metadata;
+  }
+
+  /**
+   * Sign a proposed internal distribution. Executes it atomically once the
+   * required number of distinct trustees have signed.
+   */
+  static async approveInternalTransfer(paymentId, approvedBy, { role = null } = {}) {
+    if (!approvedBy) throw new Error('approvedBy is required');
+    await this.ensureTables();
+    const result = await pool.query(`SELECT * FROM trust_bank_payments WHERE payment_id = $1`, [paymentId]);
+    const payment = result.rows[0];
+    if (!payment) throw new Error(`Payment not found: ${paymentId}`);
+    if (payment.rail !== 'internal') throw new Error(`${paymentId} is not an internal distribution`);
+    if (payment.status !== 'pending') throw new Error(`Payment already ${payment.status}`);
+
+    const metadata = this._paymentMetadata(payment);
+    const approvals = Array.isArray(metadata.approvals) ? metadata.approvals : [];
+    const signer = String(approvedBy).toLowerCase();
+    if (approvals.some((a) => String(a.approvedBy).toLowerCase() === signer)) {
+      throw new Error(`${approvedBy} has already signed ${paymentId}`);
+    }
+    // The requester may sign; dual control is satisfied by two distinct
+    // trustees, not by excluding whoever raised the distribution.
+    const requiredSignatures = Number(metadata.requiredSignatures) || 2;
+    approvals.push({ approvedBy, role, at: new Date().toISOString() });
+    metadata.approvals = approvals;
+    if (approvals.length < requiredSignatures) {
+      await pool.query(
+        `UPDATE trust_bank_payments SET metadata = $2, updated_at = NOW() WHERE payment_id = $1`,
+        [paymentId, JSON.stringify(metadata)]
+      );
+      return {
+        paymentId,
+        status: 'pending',
+        approvals,
+        requiredSignatures,
+        remainingSignatures: requiredSignatures - approvals.length,
+      };
+    }
+    return await this._settleInternalTransfer(payment, metadata);
+  }
+
+  static async rejectInternalTransfer(paymentId, rejectedBy, reason = null) {
+    if (!rejectedBy) throw new Error('rejectedBy is required');
+    await this.ensureTables();
+    const result = await pool.query(
+      `UPDATE trust_bank_payments SET status = 'cancelled', error_message = $2,
+       metadata = metadata || $3::jsonb, updated_at = NOW()
+       WHERE payment_id = $1 AND status = 'pending' AND rail = 'internal' RETURNING *`,
+      [paymentId, reason || 'Rejected by trustee', JSON.stringify({ rejectedBy, rejectedAt: new Date().toISOString() })]
+    );
+    if (!result.rows.length) throw new Error(`No pending internal distribution ${paymentId} to reject`);
+    return { paymentId, status: 'cancelled', rejectedBy };
+  }
+
+  /** Move the funds for a fully signed distribution, in one transaction. */
+  static async _settleInternalTransfer(payment, metadata) {
+    const cents = parseInt(payment.amount_cents, 10);
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN');
+      const locked = await client.query(
+        `SELECT balance_cents, status FROM trust_bank_accounts WHERE account_id = $1 FOR UPDATE`,
+        [payment.from_account_id]
+      );
+      const from = locked.rows[0];
+      if (!from) throw new Error('Source account missing');
+      if (from.status !== 'active') throw new Error(`Account ${payment.from_account_id} is ${from.status}`);
+      if (parseInt(from.balance_cents, 10) < cents) {
+        throw new Error(`Insufficient balance in ${payment.from_account_id}`);
+      }
+      const fromUpdated = await this._updateBalance(payment.from_account_id, -cents, client);
+      const toUpdated = await this._updateBalance(payment.to_account_id, cents, client);
+      await client.query(
+        `UPDATE trust_bank_payments SET status = 'completed', metadata = $2, updated_at = NOW()
+         WHERE payment_id = $1`,
+        [payment.payment_id, JSON.stringify(metadata)]
+      );
+      const description = metadata.description || null;
+      await this._recordTransaction({
+        accountId: payment.from_account_id,
+        relatedAccountId: payment.to_account_id,
+        paymentId: payment.payment_id,
+        amountCents: cents,
+        type: 'debit',
+        balanceAfter: fromUpdated.balance_cents,
+        description: description || `Distribution to ${payment.to_account_id}`,
+        metadata: { approvals: metadata.approvals, initiatedBy: payment.initiated_by },
+      }, client);
+      await this._recordTransaction({
+        accountId: payment.to_account_id,
+        relatedAccountId: payment.from_account_id,
+        paymentId: payment.payment_id,
+        amountCents: cents,
+        type: 'credit',
+        balanceAfter: toUpdated.balance_cents,
+        description: description || `Distribution from ${payment.from_account_id}`,
+        metadata: { approvals: metadata.approvals, initiatedBy: payment.initiated_by },
+      }, client);
+      await client.query('COMMIT');
+      return {
+        paymentId: payment.payment_id,
+        status: 'completed',
+        approvals: metadata.approvals,
+        from: fromUpdated,
+        to: toUpdated,
+      };
+    } catch (e) {
+      await client.query('ROLLBACK');
+      throw e;
+    } finally {
+      client.release();
+    }
+  }
+
+  static async listInternalApprovals({ status = 'pending', limit = 100 } = {}) {
+    await this.ensureTables();
+    const result = await pool.query(
+      `SELECT * FROM trust_bank_payments WHERE rail = 'internal' AND status = $1
+       ORDER BY created_at DESC LIMIT $2`,
+      [status, limit]
+    );
+    return result.rows.map((row) => ({ ...row, metadata: this._paymentMetadata(row) }));
   }
 
   static async originatePayment({ fromAccountId, externalRouting, externalAccount, externalAccountName, externalBankName, amount, rail = 'wire', currency = 'USD', description, initiatedBy = 'system', endpointId, metadata = {}, recipientEmail } = {}) {

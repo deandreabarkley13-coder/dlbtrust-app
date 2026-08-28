@@ -21,6 +21,7 @@ const http = require('http');
 const { URL } = require('url');
 const { TrustAccountingEngine } = require('../accounting/trustAccountingEngine');
 const { buildMtlsOptions } = require('../ach/openBankApi');
+const { PartnerBankRails } = require('../rails/partnerBankRails');
 
 // Wire transfer statuses
 const WIRE_STATUSES = [
@@ -409,7 +410,32 @@ class WireEngine {
     };
   }
 
+  static _wireInstruction(wire) {
+    const metadata = wire.metadata || {};
+    return {
+      reference: wire.wire_id,
+      amountCents: Number(wire.amount_cents),
+      currency: wire.currency || 'USD',
+      beneficiaryName: wire.beneficiary_name,
+      beneficiaryRouting: wire.beneficiary_routing,
+      beneficiaryAccount: wire.beneficiary_account,
+      description: wire.description || wire.purpose || wire.payment_type,
+      counterpartyId: metadata.partnerCounterpartyId || null,
+      externalAccountId: metadata.partnerExternalAccountId || null,
+    };
+  }
+
+  /** The exact partner bank request for an approved wire, without sending it. */
+  static async previewWireOrigination(wireId) {
+    const wire = await WireEngine.getWire(wireId);
+    if (!wire) throw new Error(`Wire not found: ${wireId}`);
+    return PartnerBankRails.prepare('wire', WireEngine._wireInstruction(wire));
+  }
+
   static async _transmitWire(wire, wireEndpoint, bankAuth = {}) {
+    if (PartnerBankRails.isConfigured()) {
+      return await PartnerBankRails.originate('wire', WireEngine._wireInstruction(wire));
+    }
     const wirePayload = JSON.stringify({
       client_reference: wire.wire_id,
       type: 'fedwire',
@@ -492,18 +518,27 @@ class WireEngine {
     try {
       const { SystemSettings } = require('../ach/systemSettings');
       const systemMode = await SystemSettings.getMode();
-      const wireEndpoint = await SystemSettings.getWireEndpoint();
       if (systemMode !== 'production') {
         throw new Error('Wire transmission requires production system mode');
       }
-      if (!wireEndpoint) {
-        throw new Error('Wire transmission endpoint is not configured');
+      const partnerBank = PartnerBankRails.isConfigured();
+      let wireEndpoint = null;
+      let bankAuth = {};
+      if (!partnerBank) {
+        wireEndpoint = await SystemSettings.getWireEndpoint();
+        if (!wireEndpoint) {
+          throw new Error(
+            'Wire transmission endpoint is not configured. Configure a partner bank'
+            + ' (PARTNER_BANK_PROVIDER/PARTNER_BANK_API_KEY/PARTNER_BANK_ACCOUNT_ID) or a'
+            + ' bank wire endpoint before sending.'
+          );
+        }
+        const productionConfig = await SystemSettings.getProductionPartnerConfig();
+        if (productionConfig?.isBill) {
+          throw new Error('BILL payment recording is not a wire transmission provider');
+        }
+        bankAuth = await SystemSettings.getBankAuth();
       }
-      const productionConfig = await SystemSettings.getProductionPartnerConfig();
-      if (productionConfig?.isBill) {
-        throw new Error('BILL payment recording is not a wire transmission provider');
-      }
-      const bankAuth = await SystemSettings.getBankAuth();
       const sending = await pool.query(
         `UPDATE wire_transfers SET status = 'sending', error_message = NULL,
          updated_at = NOW() WHERE wire_id = $1 AND status = 'approved'
