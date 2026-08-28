@@ -413,10 +413,6 @@ class CanonicalConsensusEngine {
     for (const role of REQUIRED_ROLES) {
       const trustee = getTrusteeByRole(role);
       if (!trustee || !trustee.email) continue;
-      if (String(proposal.created_by || '').toLowerCase() === String(trustee.email).toLowerCase()) {
-        notifications.push({ role, email: trustee.email, sent: false, note: 'requester cannot approve this proposal' });
-        continue;
-      }
       const signatureOfRecord = getTrusteeSignatureOfRecord(role);
       const body = [
         `${trustee.name},`,
@@ -514,8 +510,10 @@ class CanonicalConsensusEngine {
       if (!['maker', 'checker'].includes(approver.role)) {
         throw new Error('vendor_bill approvals require maker and checker roles');
       }
-      if (String(proposal.created_by || '').toLowerCase() === String(approver.email).toLowerCase()) {
-        throw new Error('The requester cannot approve a vendor_bill proposal');
+      const counterpartRole = approver.role === 'maker' ? 'checker' : 'maker';
+      const counterpart = getTrusteeByRole(counterpartRole);
+      if (counterpart && String(counterpart.email).toLowerCase() === String(approver.email).toLowerCase()) {
+        throw new Error('One trustee cannot hold both the maker and checker seats for a vendor_bill');
       }
       if (typeof signature !== 'string' || !signature.trim()) {
         throw new Error('A vendor_bill approval requires your full legal name signature');
@@ -535,6 +533,10 @@ class CanonicalConsensusEngine {
     const normalizedRole = approver.role;
     if (approvals.find(a => a.role === normalizedRole && a.status === 'approved')) {
       throw new Error(`Role ${normalizedRole} has already approved this proposal`);
+    }
+    if (approvals.find(a => a.status === 'approved'
+      && String(a.email || '').toLowerCase() === String(approver.email).toLowerCase())) {
+      throw new Error('A trustee cannot supply more than one signature on a proposal');
     }
 
     const approvedAt = new Date().toISOString();

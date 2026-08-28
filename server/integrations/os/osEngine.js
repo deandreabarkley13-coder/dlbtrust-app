@@ -3841,11 +3841,13 @@ class MelioEngine extends BaseOSEngine {
       sourceType,
       sourceAccountId,
       purpose: 'Melio B2B CSV payments',
-      allowedAccountIds: cfg.allowedSourceAccounts,
+      allowedAccountIds: this._allowedAccountIds(sourceType, cfg),
     });
     if (!position.fundingEligible) {
       throw new Error(
         `Segregation of funds violation for ${sourceType}:${sourceAccountId}: ${position.segregationReason}`
+        + `. Approve it with MELIO_ALLOWED_SOURCE_ACCOUNTS=${sourceType}:${sourceAccountId} and map it`
+        + ` in MELIO_PORTAL_FUNDING_SOURCE_MAP before funding Melio from this account.`
       );
     }
     let reservedCents = 0;
@@ -4148,6 +4150,29 @@ class MelioEngine extends BaseOSEngine {
       canonicalSourceType: normalizedType,
       canonicalSourceAccountId: normalizedAccountId,
     };
+  }
+
+  /**
+   * Account ids approved for a given canonical source type.
+   *
+   * MELIO_ALLOWED_SOURCE_ACCOUNTS entries may be scoped (`cash:CA-OPERATING`)
+   * or bare (`1000`); a bare id belongs to the default source type, so a cash
+   * account is only ever fundable when it is explicitly scoped.
+   */
+  static _allowedAccountIds(sourceType, cfg = this._cfg()) {
+    const normalizedType = String(sourceType || cfg.defaultSourceType).toLowerCase();
+    const defaultType = String(cfg.defaultSourceType).toLowerCase();
+    return (cfg.allowedSourceAccounts || []).reduce((ids, entry) => {
+      const separator = String(entry).indexOf(':');
+      if (separator === -1) {
+        if (normalizedType === defaultType) ids.push(String(entry));
+        return ids;
+      }
+      const scope = String(entry).slice(0, separator).trim().toLowerCase();
+      const accountId = String(entry).slice(separator + 1).trim();
+      if (accountId && scope === normalizedType) ids.push(accountId);
+      return ids;
+    }, []);
   }
 
   static _resolvePortalFundingSource(sourceType, sourceAccountId, cfg = this._cfg()) {
@@ -4741,7 +4766,7 @@ class MelioEngine extends BaseOSEngine {
     if (['trust', 'trust_account'].includes(recordSourceType)) {
       await TrustAccounting.assertFundingAvailable(settlementAccount, Math.round(amount * 100), {
         purpose: 'Melio settlement',
-        allowedAccountCodes: this._cfg().allowedSourceAccounts,
+        allowedAccountCodes: this._allowedAccountIds(recordSourceType),
       });
     }
     const paymentId = record.id || record.payment_id || record.melio_payment_id;

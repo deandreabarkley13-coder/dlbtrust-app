@@ -1093,6 +1093,18 @@ describe('Melio bill spreadsheet CSV export', () => {
     });
   });
 
+  it('scopes approved source accounts by source type', () => {
+    const cfg = {
+      defaultSourceType: 'trust',
+      defaultSourceAccountId: '1000',
+      allowedSourceAccounts: ['1000', 'cash:CA-OPERATING'],
+    } as any;
+
+    expect(MelioEngine._allowedAccountIds('trust', cfg)).toEqual(['1000']);
+    expect(MelioEngine._allowedAccountIds('cash', cfg)).toEqual(['CA-OPERATING']);
+    expect(MelioEngine._allowedAccountIds('treasury', cfg)).toEqual([]);
+  });
+
   it('exports a portal CSV instead of screening a live execution when the API is off', async () => {
     const exportPayment = vi.spyOn(MelioEngine, 'exportPayment').mockResolvedValue({ id: 'MEL-EXPORTED' } as any);
     const compliance = vi.spyOn(MelioEngine, '_compliancePayload');
