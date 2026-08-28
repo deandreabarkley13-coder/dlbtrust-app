@@ -4175,6 +4175,50 @@ class MelioEngine extends BaseOSEngine {
     }, []);
   }
 
+  static _payeeBankDetails(payload = {}) {
+    const vendor = payload.vendor || payload.payee || {};
+    const bank = vendor.bankAccount || vendor.bank_account || payload.bankAccount || vendor;
+    const digits = (value) => String(value || '').replace(/\D/g, '');
+    return {
+      routingNumber: digits(bank.routingNumber || bank.routing_number || bank.routing),
+      accountNumber: digits(bank.accountNumber || bank.account_number || bank.account),
+    };
+  }
+
+  // Melio debits the funding source and credits the payee, so an export whose
+  // funding source is backed by the payee's own bank account moves nothing —
+  // it debits the account it is supposed to credit.
+  static async _assertPayeeIsNotFundingSource(sourceType, sourceAccountId, payload = {}) {
+    const payee = this._payeeBankDetails(payload);
+    if (!payee.routingNumber || !payee.accountNumber || !pool) return null;
+    let rows = [];
+    try {
+      const result = await query(
+        `SELECT account_id, name, bank_name, routing_number, account_number
+         FROM bank_accounts
+         WHERE linked_cash_account_id IS NOT NULL
+           AND LOWER(linked_cash_account_id) = LOWER($1)`,
+        [String(sourceAccountId || '')]
+      );
+      rows = result.rows || [];
+    } catch (e) {
+      console.warn('[melio] funding source bank lookup failed:', e.message);
+      return null;
+    }
+    const digits = (value) => String(value || '').replace(/\D/g, '');
+    const conflict = rows.find((row) => digits(row.account_number) === payee.accountNumber
+      && (!digits(row.routing_number) || digits(row.routing_number) === payee.routingNumber));
+    if (!conflict) return null;
+    const error = new Error(
+      `Melio funding source ${sourceType}:${sourceAccountId} is backed by bank account `
+      + `${conflict.name || conflict.account_id} (...${payee.accountNumber.slice(-4)}), which is also the payee. `
+      + 'Melio debits the funding source and credits the payee, so this export would debit the account it '
+      + 'should credit. Fund the export from a source linked to a different bank account.'
+    );
+    error.status = 422;
+    throw error;
+  }
+
   static _resolvePortalFundingSource(sourceType, sourceAccountId, cfg = this._cfg()) {
     const normalizedType = String(sourceType || cfg.defaultSourceType).toLowerCase();
     const normalizedAccountId = String(sourceAccountId || cfg.defaultSourceAccountId);
@@ -4962,6 +5006,7 @@ class MelioEngine extends BaseOSEngine {
       error.status = 409;
       throw error;
     }
+    await this._assertPayeeIsNotFundingSource(p.sourceType, p.sourceAccountId, p);
     const sourceInfo = await this._sourceBalance(p.sourceType, p.sourceAccountId);
     if ((sourceInfo.balanceCents || 0) < amountCents) throw new Error(`Insufficient source balance: ${((sourceInfo.balanceCents || 0) / 100).toFixed(2)} < ${p.amount}`);
     let vendor = null;
@@ -5304,6 +5349,7 @@ class MelioEngine extends BaseOSEngine {
     payload = await this._compliancePayload(payload, 'export');
     const p = this._payloadDefaults(payload);
     const amountCents = toCents(p.amount);
+    await this._assertPayeeIsNotFundingSource(p.sourceType, p.sourceAccountId, p);
     const sourceInfo = await this._sourceBalance(p.sourceType, p.sourceAccountId);
     if ((sourceInfo.balanceCents || 0) < amountCents) throw new Error(`Insufficient source balance for ${p.sourceType}:${p.sourceAccountId}: ${((sourceInfo.balanceCents || 0) / 100).toFixed(2)} < ${p.amount}`);
 
@@ -5350,6 +5396,13 @@ class MelioEngine extends BaseOSEngine {
       const group = balances.get(key) || { sourceType, sourceAccountId, amountCents: 0 };
       group.amountCents += entry.amountCents;
       balances.set(key, group);
+    }
+    for (const entry of entries) {
+      await this._assertPayeeIsNotFundingSource(
+        entry.payload.sourceType,
+        entry.payload.sourceAccountId,
+        entry.payload
+      );
     }
     for (const group of balances.values()) {
       const sourceInfo = await this._sourceBalance(group.sourceType, group.sourceAccountId);

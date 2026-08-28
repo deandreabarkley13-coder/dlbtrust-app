@@ -102,6 +102,67 @@ describe('Melio portal invoice PDF', () => {
     expect(layer.route.stack.length).toBeGreaterThan(1);
   });
 
+  it('refuses an export whose funding source is the payee bank account', async () => {
+    vi.spyOn(MelioEngine, '_compliancePayload').mockImplementation(async (payload: any) => payload);
+    const querySpy = vi.spyOn(require('../server/integrations/bonds/pgPool'), 'query').mockResolvedValue({
+      rows: [{
+        account_id: 'BA-LILI',
+        name: 'Db Net Mgmt Lili',
+        routing_number: '091017138',
+        account_number: '692101092959',
+      }],
+    });
+
+    await expect(MelioEngine.exportPayment({
+      amount: 0.25,
+      sourceType: 'cash',
+      sourceAccountId: 'CA-OPERATING',
+      vendor: {
+        name: 'Db Net Mgmt LLC',
+        bankAccount: { routingNumber: '091017138', accountNumber: '692101092959' },
+      },
+    })).rejects.toThrow(/which is also the payee/);
+    expect(querySpy).toHaveBeenCalled();
+  });
+
+  it('allows an export when the funding source is a different bank account', async () => {
+    const exportDir = fs.mkdtempSync(path.join(process.cwd(), 'tmp-melio-guard-'));
+    vi.spyOn(MelioEngine, '_compliancePayload').mockImplementation(async (payload: any) => payload);
+    vi.spyOn(PaymentComplianceGate, 'verifyRecordedScreening').mockResolvedValue({
+      screening_id: 'COMP-MELIO-TEST',
+      status: 'clear',
+      provider: 'local',
+    });
+    vi.spyOn(MelioEngine, '_cfg').mockReturnValue({
+      ...MelioEngine._cfg(),
+      exportDir,
+      payBillsEmail: '',
+      postPayableGl: false,
+      portalFundingSourceMap: { 'cash:CA-OPERATING': 'DLB Trust' },
+    });
+    vi.spyOn(require('../server/integrations/bonds/pgPool'), 'query').mockResolvedValue({
+      rows: [{ account_id: 'BA-TRUST', name: 'Trust Operating', routing_number: '111000025', account_number: '555000111' }],
+    });
+    vi.spyOn(MelioEngine, '_sourceBalance').mockResolvedValue({ balanceCents: 100000 });
+    vi.spyOn(MelioEngine, '_recordPayment').mockResolvedValue(undefined);
+
+    try {
+      const record = await MelioEngine.exportPayment({
+        amount: 0.25,
+        sourceType: 'cash',
+        sourceAccountId: 'CA-OPERATING',
+        dueDate: '2026-09-04',
+        vendor: {
+          name: 'Db Net Mgmt LLC',
+          bankAccount: { routingNumber: '091017138', accountNumber: '692101092959' },
+        },
+      });
+      expect(record.result.invoicePdfFileName).toBeTruthy();
+    } finally {
+      fs.rmSync(exportDir, { recursive: true, force: true });
+    }
+  });
+
   it('backfills the invoice PDF for exports recorded before invoices existed', async () => {
     const exportDir = fs.mkdtempSync(path.join(process.cwd(), 'tmp-melio-backfill-'));
     vi.spyOn(MelioEngine, '_cfg').mockReturnValue({ ...MelioEngine._cfg(), exportDir });
