@@ -1093,6 +1093,47 @@ describe('Melio bill spreadsheet CSV export', () => {
     });
   });
 
+  it('exports a portal CSV instead of screening a live execution when the API is off', async () => {
+    const exportPayment = vi.spyOn(MelioEngine, 'exportPayment').mockResolvedValue({ id: 'MEL-EXPORTED' } as any);
+    const compliance = vi.spyOn(MelioEngine, '_compliancePayload');
+    vi.spyOn(MelioEngine, '_cfg').mockReturnValue({ useApi: false } as any);
+
+    const record = await MelioEngine._schedulePayment({ amount: 1, vendor: { name: 'DB NET MGMT' } });
+
+    expect(record).toMatchObject({ id: 'MEL-EXPORTED' });
+    expect(exportPayment).toHaveBeenCalledTimes(1);
+    expect(compliance).not.toHaveBeenCalledWith(expect.anything(), 'execute');
+  });
+
+  it('lists portal exports awaiting upload, submission and settlement', async () => {
+    const query = vi.spyOn(pool, 'query').mockResolvedValue({
+      rows: [{
+        id: 'MEL-1',
+        status: 'exported',
+        amount: '0.01',
+        currency: 'USD',
+        source_type: 'trust',
+        source_account_id: '1000',
+        bill_id: 'BILL-1',
+        result: { fileName: 'melio-export-MEL-1.csv', vendorName: 'DB NET MGMT', emailedTo: 'portal@invoicesmelio.com' },
+        metadata: {},
+        created_at: new Date(),
+        updated_at: new Date(),
+      }],
+    } as any);
+
+    const rows = await MelioEngine.listExports({});
+
+    expect(query.mock.calls[0][1][0]).toEqual(['exported', 'emailed', 'submitted', 'paid']);
+    expect(rows[0]).toMatchObject({
+      id: 'MEL-1',
+      status: 'exported',
+      amount: 0.01,
+      fileName: 'melio-export-MEL-1.csv',
+      emailedTo: 'portal@invoicesmelio.com',
+    });
+  });
+
   it('rejects settlement against an account other than the authorized canonical source', async () => {
     const postJournalEntry = vi.fn();
     vi.spyOn(MelioEngine, '_deps').mockReturnValue({

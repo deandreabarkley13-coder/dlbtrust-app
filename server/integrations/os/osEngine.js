@@ -4502,6 +4502,41 @@ class MelioEngine extends BaseOSEngine {
     return res.rows[0] || null;
   }
 
+  /**
+   * Portal work queue: CSV exports awaiting upload, submission or settlement.
+   */
+  static async listExports({ status, limit = 50 } = {}) {
+    if (!pool) return [];
+    const statuses = status
+      ? [String(status)]
+      : ['exported', 'emailed', 'submitted', 'paid'];
+    const res = await query(
+      `SELECT id, status, amount, currency, source_type, source_account_id, vendor_id,
+              bill_id, result, metadata, created_at, updated_at
+         FROM melio_payments
+        WHERE status = ANY($1::text[])
+        ORDER BY created_at DESC
+        LIMIT $2`,
+      [statuses, Math.min(Number(limit) || 50, 200)]
+    );
+    return res.rows.map((row) => ({
+      id: row.id,
+      status: row.status,
+      amount: Number(row.amount),
+      currency: row.currency,
+      vendorName: (row.result && row.result.vendorName) || null,
+      fileName: (row.result && row.result.fileName) || null,
+      emailedTo: (row.result && row.result.emailedTo) || null,
+      portalSubmissionReference: (row.result && row.result.portalSubmissionReference) || null,
+      settlementReference: (row.result && row.result.settlementReference) || null,
+      sourceType: row.source_type,
+      sourceAccountId: row.source_account_id,
+      billId: row.bill_id,
+      createdAt: row.created_at,
+      updatedAt: row.updated_at,
+    }));
+  }
+
   static async getExportFile(identifier) {
     identifier = String(identifier || '');
     if (!identifier || /[\\/]/.test(identifier) || identifier.includes('..')) {
@@ -4805,9 +4840,11 @@ class MelioEngine extends BaseOSEngine {
 
   static async _schedulePayment(payload) {
     const cfg = this._cfg();
+    // Without the API, scheduling a payment means producing a portal CSV, so it
+    // must be screened as an export rather than as a live execution.
+    if (!cfg.useApi) return await this.exportPayment(payload);
     payload = await this._compliancePayload(payload, 'execute');
     const p = this._payloadDefaults(payload);
-    if (!cfg.useApi) return await this.exportPayment(payload);
     const fundingSource = cfg.shadow
       ? this._resolveFundingSource(p.sourceType, p.sourceAccountId, cfg)
       : this.assertLiveApiReady(p.sourceType, p.sourceAccountId, cfg);
@@ -5255,6 +5292,7 @@ class MelioEngine extends BaseOSEngine {
       case 'markPaid':
       case 'settle':
         return await this._markPaidByIdentifier(payload.identifier || payload.paymentId || payload.id || payload.batchId, payload);
+      case 'listExports': return await this.listExports(payload);
       case 'getPayment': return await this._getPayment(payload);
       case 'listPayments': return await this._listPayments(payload);
       case 'webhook': return await this._webhook(payload);
