@@ -1905,6 +1905,54 @@ router.post('/trust-bank/accounts/:id/payments', operatorAuth, async (req, res) 
   try { res.status(201).json({ success: true, data: await TrustBankEngine.originatePayment({ fromAccountId: req.params.id, ...req.body }) }); } catch (err) { sendError(res, err); }
 });
 
+// The signed-in trustee, used as the actor of record on distributions.
+function sessionActor(req) {
+  const user = req.user || {};
+  return user.email || user.username || null;
+}
+
+// Internal family distributions run on maker/checker: propose, then sign.
+router.post('/trust-bank/accounts/:id/distributions', operatorAuth, async (req, res) => {
+  try {
+    const data = await TrustBankEngine.proposeInternalTransfer({
+      fromAccountId: req.params.id,
+      requestedBy: req.body.requestedBy || sessionActor(req),
+      ...req.body,
+    });
+    res.status(201).json({ success: true, data });
+  } catch (err) { sendError(res, err); }
+});
+
+router.get('/trust-bank/distributions', operatorAuth, async (req, res) => {
+  try {
+    res.json({
+      success: true,
+      data: await TrustBankEngine.listInternalApprovals({
+        status: req.query.status || 'pending',
+        limit: req.query.limit,
+      }),
+    });
+  } catch (err) { sendError(res, err); }
+});
+
+router.post('/trust-bank/distributions/:id/approve', operatorAuth, async (req, res) => {
+  try {
+    const approvedBy = req.body.approvedBy || sessionActor(req);
+    const data = await TrustBankEngine.approveInternalTransfer(req.params.id, approvedBy, {
+      role: req.body.role || null,
+    });
+    res.json({ success: true, data });
+  } catch (err) { sendError(res, err); }
+});
+
+router.post('/trust-bank/distributions/:id/reject', operatorAuth, async (req, res) => {
+  try {
+    const rejectedBy = req.body.rejectedBy || sessionActor(req);
+    const data = await TrustBankEngine.rejectInternalTransfer(req.params.id, rejectedBy, req.body.reason);
+    res.json({ success: true, data });
+  } catch (err) { sendError(res, err); }
+});
+
 router.post('/trust-bank/payments/:id/send', operatorAuth, async (req, res) => {
   try { res.json({ success: true, data: await TrustBankEngine.sendPayment(req.params.id) }); } catch (err) { sendError(res, err); }
 });

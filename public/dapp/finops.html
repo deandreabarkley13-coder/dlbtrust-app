@@ -4896,22 +4896,32 @@
     panel.classList.add('active');
     body.innerHTML = '<div class="muted">Loading…</div>';
     try {
-      const [customers, accounts, payments, endpoints] = await Promise.all([
+      const [customers, accounts, payments, endpoints, distributions] = await Promise.all([
         api('/api/finops/trust-bank/customers').catch(()=>null),
         api('/api/finops/trust-bank/accounts').catch(()=>null),
         api('/api/finops/trust-bank/payments?limit=20').catch(()=>null),
         api('/api/finops/external-endpoints?enabled=true').catch(()=>null),
+        api('/api/finops/trust-bank/distributions').catch(()=>null),
       ]);
-      body.innerHTML = renderTrustBankPanel(customers && customers.data, accounts && accounts.data, payments && payments.data, endpoints && endpoints.data);
+      body.innerHTML = renderTrustBankPanel(customers && customers.data, accounts && accounts.data, payments && payments.data, endpoints && endpoints.data, distributions && distributions.data);
     } catch(e) { body.innerHTML = '<div class="status err">' + e.message + '</div>'; }
   }
 
-  function renderTrustBankPanel(customers, accounts, payments, endpoints) {
+  function renderTrustBankPanel(customers, accounts, payments, endpoints, distributions) {
     const customerOptions = (customers || []).map(c => `<option value="${c.customer_id}">${c.name} (${c.kyc_status})</option>`).join('');
     const accountOptions = (accounts || []).map(a => `<option value="${a.account_id}">${a.account_name} - $${Number(a.balance_cents)/100}</option>`).join('');
     const endpointOptions = (endpoints || []).map(e => `<option value="${e.endpoint_id}">${e.name} (${e.protocol})</option>`).join('');
     const accountRows = (accounts || []).map(a => `<tr><td>${a.account_id}</td><td>${a.account_name}</td><td>${a.account_number}</td><td>$${Number(a.balance_cents)/100}</td><td>${a.status}</td></tr>`).join('') || '<tr><td colspan="5" class="muted">No accounts</td></tr>';
     const paymentRows = (payments || []).map(p => `<tr><td>${p.payment_id}</td><td>${p.rail}</td><td>$${Number(p.amount_cents)/100}</td><td><span class="badge ${p.status}">${p.status}</span></td><td>${p.external_tx_id || ''}</td></tr>`).join('') || '<tr><td colspan="5" class="muted">No payments</td></tr>';
+    const distributionRows = (distributions || []).map(d => {
+      const meta = d.metadata || {};
+      const signed = (meta.approvals || []).length;
+      const required = meta.requiredSignatures || 2;
+      const signers = (meta.approvals || []).map(a => a.approvedBy).join(', ');
+      return `<tr><td>${d.payment_id}</td><td>${d.from_account_id} → ${d.to_account_id}</td><td>$${Number(d.amount_cents)/100}</td><td title="${signers}">${signed}/${required}</td>`
+        + `<td><button class="btn" onclick="signTrustBankDistribution('${d.payment_id}','approve')">Sign</button> `
+        + `<button class="btn" onclick="signTrustBankDistribution('${d.payment_id}','reject')">Reject</button></td></tr>`;
+    }).join('') || '<tr><td colspan="5" class="muted">No distributions awaiting signature</td></tr>';
     return '<div style="display:flex; flex-direction:column; gap:12px;">' +
       '<div class="card" style="background:#0b1220;">' +
         '<h3>Open Customer</h3>' +
@@ -4938,6 +4948,15 @@
         '<select id="tb-pay-endpoint">' + endpointOptions + '</select></div>' +
         '<button class="btn" onclick="originateTrustBankPayment()">Originate Payment</button>' +
         '<div id="tb-pay-status" class="status hidden"></div>' +
+      '</div>' +
+      '<div class="card" style="background:#0b1220;">' +
+        '<h3>Family Distribution (maker/checker)</h3>' +
+        '<div class="muted">Internal transfer between family sub-accounts. Funds move only once the required trustees have signed.</div>' +
+        '<div class="token-bar"><select id="tb-dist-from">' + accountOptions + '</select><select id="tb-dist-to">' + accountOptions + '</select></div>' +
+        '<div class="token-bar"><input id="tb-dist-amount" type="number" step="0.01" style="flex:1" placeholder="Amount" /><input id="tb-dist-memo" style="flex:1" placeholder="Purpose" /></div>' +
+        '<button class="btn" onclick="proposeTrustBankDistribution()">Propose Distribution</button>' +
+        '<div id="tb-dist-status" class="status hidden"></div>' +
+        '<table class="table"><thead><tr><th>Distribution</th><th>From → To</th><th>Amount</th><th>Signatures</th><th></th></tr></thead><tbody>' + distributionRows + '</tbody></table>' +
       '</div>' +
       '<div class="card" style="background:#0b1220;">' +
         '<h3>Accounts</h3>' +
@@ -4992,6 +5011,33 @@
       show('Payment originated: ' + payId + ' status ' + send.data.status, false, 'tb-pay-status');
       openTrustBankPanel();
     } catch(e) { show(e.message, true, 'tb-pay-status'); }
+    status.classList.remove('hidden');
+  }
+
+  async function proposeTrustBankDistribution() {
+    const status = el('tb-dist-status');
+    status.classList.add('hidden');
+    try {
+      const res = await api('/api/finops/trust-bank/accounts/' + el('tb-dist-from').value + '/distributions', { method: 'POST', body: JSON.stringify({
+        toAccountId: el('tb-dist-to').value,
+        amount: Number(el('tb-dist-amount').value),
+        description: el('tb-dist-memo').value.trim() || undefined,
+      }) });
+      show('Proposed ' + res.data.paymentId + ' — needs ' + res.data.requiredSignatures + ' signature(s)', false, 'tb-dist-status');
+      openTrustBankPanel();
+    } catch(e) { show(e.message, true, 'tb-dist-status'); }
+    status.classList.remove('hidden');
+  }
+
+  async function signTrustBankDistribution(paymentId, action) {
+    const status = el('tb-dist-status');
+    status.classList.add('hidden');
+    try {
+      const body = action === 'reject' ? JSON.stringify({ reason: 'Rejected by trustee' }) : '{}';
+      const res = await api('/api/finops/trust-bank/distributions/' + paymentId + '/' + action, { method: 'POST', body });
+      show(paymentId + ': ' + res.data.status + (res.data.remainingSignatures ? ' — ' + res.data.remainingSignatures + ' signature(s) remaining' : ''), false, 'tb-dist-status');
+      openTrustBankPanel();
+    } catch(e) { show(e.message, true, 'tb-dist-status'); }
     status.classList.remove('hidden');
   }
 
