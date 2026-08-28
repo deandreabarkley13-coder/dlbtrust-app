@@ -4396,6 +4396,35 @@ class MelioEngine extends BaseOSEngine {
     return path.resolve(cfg.exportDir || process.env.MELIO_EXPORT_DIR || path.join(process.cwd(), 'data', 'melio-exports'));
   }
 
+  // The Melio portal accepts a document per bill, so every export also gets a
+  // printable invoice that carries the same figures as the CSV row.
+  static _writeInvoicePdf(entry, portalFundingSource, now = new Date()) {
+    const { buildInvoicePdf } = require('./melioInvoicePdf');
+    const outDir = this._exportDir();
+    fs.mkdirSync(outDir, { recursive: true });
+    const row = entry.row || {};
+    const fileName = `melio-invoice-${entry.paymentId}-${now.toISOString().slice(0, 10)}.pdf`;
+    const filePath = path.join(outDir, fileName);
+    const fundingLabel = portalFundingSource
+      ? [portalFundingSource.label, portalFundingSource.accountLast4 ? `ending ${portalFundingSource.accountLast4}` : '']
+        .filter(Boolean).join(' ')
+      : '';
+    fs.writeFileSync(filePath, buildInvoicePdf({
+      issuerName: process.env.TRUST_NAME || 'DLB Trust',
+      vendorName: row['Business name'] || entry.vendorName,
+      vendorBankName: entry.payload?.bankName || entry.payload?.vendor?.bank_name || '',
+      invoiceNumber: row['Invoice number'] || entry.paymentId,
+      invoiceDate: row['Invoice date'] || entry.invoiceDate,
+      dueDate: row['Due date'] || entry.dueDate,
+      amount: entry.amount,
+      currency: entry.payload?.currency || 'USD',
+      memo: row.Note || entry.memo,
+      paymentId: entry.paymentId,
+      portalFundingSource: fundingLabel,
+    }));
+    return { filePath, fileName };
+  }
+
   static _resolveExportPath(filePath, fileName) {
     const exportDir = this._exportDir();
     const resolvedPath = path.resolve(filePath || '');
@@ -4462,7 +4491,10 @@ class MelioEngine extends BaseOSEngine {
     if (record.result?.csvPath || record.status === 'exported' || record.status === 'emailed') {
       const csvPath = record.result?.csvPath || record.csvPath || '';
       const emailNote = record.result?.emailSent ? ` Emailed to ${record.emailedTo || cfg.payBillsEmail}.` : '';
-      return `Melio CSV export created (${csvPath}) for $${amount} ${record.currency}. In the Melio Bills portal, import the spreadsheet, select ${portalLabel}${portalLast4}, review the bill, and submit it.${emailNote} Record the portal payment reference before marking it paid.`;
+      const invoiceNote = record.result?.invoicePdfFileName
+        ? ` A portal-ready invoice PDF (${record.result.invoicePdfFileName}) accompanies the file for uploads that require a document.`
+        : '';
+      return `Melio CSV export created (${csvPath}) for $${amount} ${record.currency}. In the Melio Bills portal, import the spreadsheet, select ${portalLabel}${portalLast4}, review the bill, and submit it.${invoiceNote}${emailNote} Record the portal payment reference before marking it paid.`;
     }
     return `Melio payment preparation for $${amount} ${record.currency} is incomplete.`;
   }
@@ -4551,6 +4583,7 @@ class MelioEngine extends BaseOSEngine {
       currency: row.currency,
       vendorName: (row.result && row.result.vendorName) || null,
       fileName: (row.result && row.result.fileName) || null,
+      invoicePdfFileName: (row.result && row.result.invoicePdfFileName) || null,
       emailedTo: (row.result && row.result.emailedTo) || null,
       portalSubmissionReference: (row.result && row.result.portalSubmissionReference) || null,
       settlementReference: (row.result && row.result.settlementReference) || null,
@@ -4584,6 +4617,49 @@ class MelioEngine extends BaseOSEngine {
       throw error;
     }
     return res.rows[0];
+  }
+
+  // Serves (and backfills, for exports created before invoices existed) the
+  // portal-ready PDF for a single Melio export.
+  static async getInvoicePdfFile(identifier) {
+    const record = await this.getExportFile(identifier);
+    if (!record) return null;
+    const result = record.result || {};
+    const existing = this._resolveExportPath(result.invoicePdfPath, result.invoicePdfFileName);
+    if (existing && fs.existsSync(existing)) {
+      return { filePath: existing, fileName: result.invoicePdfFileName };
+    }
+    const payload = (record.metadata && record.metadata.payload) || {};
+    const createdAt = record.created_at ? new Date(record.created_at) : new Date();
+    const entry = this._buildCsvRow(
+      {
+        ...payload,
+        amount: Number(record.amount),
+        currency: record.currency,
+        vendorName: result.vendorName || payload.vendorName,
+        invoiceNumber: payload.invoiceNumber || record.bill_id || record.id,
+      },
+      record.id,
+      createdAt
+    );
+    const written = this._writeInvoicePdf(
+      { ...entry, paymentId: record.id },
+      result.portalFundingSource || this._resolvePortalFundingSource(record.source_type, record.source_account_id),
+      createdAt
+    );
+    if (pool) {
+      try {
+        await query(
+          `UPDATE melio_payments
+           SET result = COALESCE(result, '{}'::jsonb) || $2::jsonb, updated_at = NOW()
+           WHERE id = $1`,
+          [record.id, safeJson({ invoicePdfPath: written.filePath, invoicePdfFileName: written.fileName })]
+        );
+      } catch (e) {
+        console.warn('[melio] could not persist invoice PDF path:', e.message);
+      }
+    }
+    return written;
   }
 
   static _validateExportIdentifier(identifier) {
@@ -5101,6 +5177,7 @@ class MelioEngine extends BaseOSEngine {
           + `${p.sourceType}:${p.sourceAccountId}`
         );
       }
+      const invoicePdf = this._writeInvoicePdf(entry, portalFundingSource, now);
       const record = {
         id: entry.paymentId,
         action: 'exportPayment',
@@ -5132,6 +5209,8 @@ class MelioEngine extends BaseOSEngine {
         result: {
           csvPath: file.filePath,
           fileName: file.fileName,
+          invoicePdfPath: invoicePdf.filePath,
+          invoicePdfFileName: invoicePdf.fileName,
           vendorName: entry.vendorName,
           emailSent: false,
           sourceOfTruth: sourcePosition.sourceOfTruth || null,
@@ -5194,7 +5273,16 @@ class MelioEngine extends BaseOSEngine {
           to: cfg.payBillsEmail,
           subject: `Melio payment file - ${file.fileName}`,
           body,
-          attachments: [{ filename: file.fileName, path: file.filePath, contentType: 'text/csv' }],
+          attachments: [
+            { filename: file.fileName, path: file.filePath, contentType: 'text/csv' },
+            ...chunk
+              .filter((item) => item.record.result.invoicePdfPath)
+              .map((item) => ({
+                filename: item.record.result.invoicePdfFileName,
+                path: item.record.result.invoicePdfPath,
+                contentType: 'application/pdf',
+              })),
+          ],
         });
         chunk.forEach((item) => {
           item.record.status = emailRes.sent ? 'emailed' : 'exported';

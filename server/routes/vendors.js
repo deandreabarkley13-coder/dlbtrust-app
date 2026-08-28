@@ -297,6 +297,23 @@ router.get('/payments/melio/:identifier/download', operatorAuth, async function(
   }
 });
 
+router.get('/payments/melio/:identifier/invoice-pdf', operatorAuth, async function(req, res) {
+  try {
+    var file = await MelioEngine.getInvoicePdfFile(req.params.identifier);
+    if (!file) return res.status(404).json({ success: false, error: 'Melio export not found' });
+    var fs = require('fs');
+    if (!fs.existsSync(file.filePath)) return res.status(404).json({ success: false, error: 'Melio invoice file not found' });
+    res.type('application/pdf');
+    res.attachment(file.fileName);
+    fs.createReadStream(file.filePath).on('error', function(err) {
+      if (!res.headersSent) res.status(404).json({ success: false, error: err.message });
+      else res.destroy(err);
+    }).pipe(res);
+  } catch (err) {
+    res.status(err.status || 500).json({ success: false, error: err.message });
+  }
+});
+
 router.post('/payments/melio/sync', async function(req, res) {
   try {
     var results = await VendorEngine.syncMelioPayments({

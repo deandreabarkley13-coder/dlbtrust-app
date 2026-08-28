@@ -363,7 +363,10 @@
       if (!rows.length) { host.textContent = 'No Melio exports yet.'; return; }
       host.innerHTML = rows.map((r) => {
         const ref = r.portalSubmissionReference || r.settlementReference || '';
-        const actions = [`<button type="button" data-melio-action="download" data-id="${esc(r.id)}">Download CSV</button>`];
+        const actions = [
+          `<button type="button" data-melio-action="download" data-id="${esc(r.id)}">Download CSV</button>`,
+          `<button type="button" data-melio-action="invoice-pdf" data-id="${esc(r.id)}">Download invoice PDF</button>`,
+        ];
         if (r.status === 'exported' || r.status === 'emailed') {
           actions.push(`<button type="button" data-melio-action="mark-submitted" data-id="${esc(r.id)}">Mark submitted</button>`);
         }
@@ -385,6 +388,7 @@
 
     async function melioPortalAction(action, identifier) {
       if (action === 'download') return downloadMelioExport(identifier);
+      if (action === 'invoice-pdf') return downloadMelioExport(identifier, 'invoice-pdf', 'pdf');
       const reference = prompt('Melio portal payment reference for ' + identifier);
       if (!reference) return;
       const route = `/api/vendors/payments/melio/${encodeURIComponent(identifier)}/${action}`;
@@ -396,9 +400,9 @@
       loadMelioPortalQueue();
     }
 
-    async function downloadMelioExport(identifier) {
+    async function downloadMelioExport(identifier, route = 'download', extension = 'csv') {
       try {
-        const response = await fetch(`/api/vendors/payments/melio/${encodeURIComponent(identifier)}/download`, {
+        const response = await fetch(`/api/vendors/payments/melio/${encodeURIComponent(identifier)}/${route}`, {
           headers: { 'x-admin-token': token() }
         });
         if (!response.ok) {
@@ -410,7 +414,7 @@
         const blob = await response.blob();
         const disposition = response.headers.get('content-disposition') || '';
         const match = disposition.match(/filename="([^"]+)"/i);
-        const fileName = match ? match[1] : `${identifier}.csv`;
+        const fileName = match ? match[1] : `${identifier}.${extension}`;
         const url = URL.createObjectURL(blob);
         const link = document.createElement('a');
         link.href = url;
