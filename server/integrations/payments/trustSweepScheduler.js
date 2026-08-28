@@ -5,10 +5,10 @@
  *
  * On a fixed interval it moves accumulated cash out of a source GL account
  * (default main trust cash `1000`, credited by coupon/fixed-income receipts)
- * into the Eaton Family CU Trust Checking account via an on-us ACH credit
+ * into the trust checking account via an ACH credit
  * (`depositToTrustChecking`), booking the asset-reclass JE (DR 1010 / CR source)
  * and — when TRUST_BANK_AUTO_TRANSMIT is enabled — auto-delivering the NACHA
- * file to Eaton over SFTP. No operator involved.
+ * file to the configured bank over SFTP. No operator involved.
  *
  * Safety:
  *   - OFF by default. Must be explicitly enabled with TRUST_SWEEP_ENABLED=true,
@@ -201,7 +201,7 @@ async function runOnce(opts) {
       var deposit = await settlementEngine.depositToTrustChecking({
         amount: calc.available,
         source_account_code: sourceAccount,
-        description: opts.description || 'Scheduled fixed-income cash sweep to Eaton Trust Checking',
+        description: opts.description || 'Scheduled fixed-income cash sweep to Trust Checking',
         initiated_by: initiatedBy,
         transmit: opts.transmit,
       });

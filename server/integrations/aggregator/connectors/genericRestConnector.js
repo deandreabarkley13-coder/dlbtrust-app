@@ -472,7 +472,7 @@ module.exports = {
   genericRestConnector,
   getAccessToken,
   clearTokenCache,
-  // Exposed so provider-specific connectors (e.g. Eaton) can reuse the same
+  // Exposed so provider-specific connectors can reuse the same
   // hardened HTTP layer — OAuth2/mTLS auth, SSRF guard, timeouts — instead of
   // duplicating it.
   request,

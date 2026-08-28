@@ -741,7 +741,7 @@ initializeDatabase().then(function() {
     }
   } catch(e) { console.warn('[operational-utilities-scheduler]', e.message); }
 
-  // Start trust cash sweep (hands-off fixed-income cash → Eaton Trust Checking).
+  // Start trust cash sweep (hands-off fixed-income cash → Trust Checking).
   // OFF unless TRUST_SWEEP_ENABLED=true, since it moves money without a human.
   try {
     var trustSweepScheduler = require(path.join(HD, 'server', 'integrations', 'payments', 'trustSweepScheduler'));

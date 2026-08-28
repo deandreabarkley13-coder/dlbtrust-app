@@ -62,17 +62,6 @@ const BANK_REGISTRY = [
     settlement_mode: 'confirmation',
   },
   {
-    id: 'eaton-fcu',
-    name: 'Eaton Family Credit Union',
-    description: 'ODFI partner for trust distributions and disbursements.',
-    endpoint_template: 'https://api.eatonfcu.org/ach/files',
-    wire_endpoint_template: 'https://api.eatonfcu.org/wire/originate',
-    auth_type: 'bearer',
-    supports_ach: true,
-    supports_wire: true,
-    settlement_mode: 'webhook',
-  },
-  {
     id: 'column-bank',
     name: 'Column (Banking-as-a-Service)',
     description: 'Modern treasury API with direct Fed access for ACH and Wire.',

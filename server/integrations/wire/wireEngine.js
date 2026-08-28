@@ -89,7 +89,7 @@ class WireEngine {
 
         -- Sender (originator)
         sender_name           TEXT NOT NULL DEFAULT 'DLB Trust',
-        sender_routing        TEXT NOT NULL DEFAULT '241075470',
+        sender_routing        TEXT NOT NULL DEFAULT '',
         sender_account        TEXT NOT NULL DEFAULT '1000000001',
         sender_address        TEXT DEFAULT 'P.O. Box Trust Administration',
 
@@ -280,7 +280,7 @@ class WireEngine {
         wireId, initialStatus, amountCentsNum,
         wType, typeInfo.type, typeInfo.subtype,
         paymentType || 'trust_distribution', purpose || null, description || null,
-        senderName || 'DLB Trust', senderRouting || '241075470',
+        senderName || 'DLB Trust', senderRouting || process.env.TRUST_BANK_ROUTING || '',
         senderAccount || '1000000001', senderAddress || 'P.O. Box Trust Administration',
         beneficiaryName, beneficiaryRouting, beneficiaryAccount,
         beneficiaryBankName || null, beneficiaryAddress || null,

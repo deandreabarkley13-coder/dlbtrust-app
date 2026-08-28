@@ -3,12 +3,15 @@
 /**
  * Vendor Payments Engine
  *
- * Pay trust bills and vendor invoices directly in fiat, excluding Lili.
- * Supports wire, ACH, Open Banking/ISO 20022, and Web HTTPS rails.
+ * Pay trust bills and vendor invoices in fiat.
+ * The sanctioned B2B rail is `melio`: canonical platform → Melio → DB NET MGMT
+ * (Lili Bank). Direct wire/ACH/Open Banking rails remain available only when a
+ * bank endpoint is explicitly configured.
  */
 
 const pool = require('../bonds/pgPool');
 const { PaymentComplianceGate } = require('../compliance/paymentComplianceGate');
+const { getClient: getMelioClient } = require('../melio/melioClient');
 
 let BankTransferEngine, OpenBankingEngine, WireOriginationEngine;
 function loadDeps() {
@@ -69,7 +72,7 @@ class VendorPaymentEngine {
         vendor_id TEXT NOT NULL REFERENCES vendor_payees(vendor_id),
         amount_cents BIGINT NOT NULL,
         currency TEXT DEFAULT 'USD',
-        rail TEXT NOT NULL DEFAULT 'bank_transfer' CHECK (rail IN ('bank_transfer','wire','ach','open_banking','web_payment')),
+        rail TEXT NOT NULL DEFAULT 'melio' CHECK (rail IN ('melio','bank_transfer','wire','ach','open_banking','web_payment')),
         source_cash_account_id TEXT,
         transfer_id TEXT,
         payment_id TEXT,
@@ -84,6 +87,10 @@ class VendorPaymentEngine {
     await pool.query(`CREATE INDEX IF NOT EXISTS idx_vendor_payment_runs_status ON vendor_payment_runs(status)`);
     await pool.query('ALTER TABLE vendor_bills ADD COLUMN IF NOT EXISTS compliance_screening_id TEXT');
     await pool.query('ALTER TABLE vendor_payment_runs ADD COLUMN IF NOT EXISTS compliance_screening_id TEXT');
+    // Allow the Melio rail on databases created before it existed.
+    await pool.query('ALTER TABLE vendor_payment_runs DROP CONSTRAINT IF EXISTS vendor_payment_runs_rail_check');
+    await pool.query(`ALTER TABLE vendor_payment_runs ADD CONSTRAINT vendor_payment_runs_rail_check
+      CHECK (rail IN ('melio','bank_transfer','wire','ach','open_banking','web_payment'))`);
   }
 
   static async createVendor({ name, email, phone, accountNumber, routingNumber, bankName, accountType = 'checking', country = 'US', address, metadata } = {}) {
@@ -181,7 +188,7 @@ class VendorPaymentEngine {
     }
   }
 
-  static async payBill({ billId, consensusProposalId, sourceCashAccountId, rail = 'bank_transfer', webPaymentAdapter = 'generic', openBankingConnector = 'generic_rest', memo, initiatedBy = 'system' } = {}) {
+  static async payBill({ billId, consensusProposalId, sourceCashAccountId, rail = 'melio', webPaymentAdapter = 'generic', openBankingConnector = 'generic_rest', memo, initiatedBy = 'system' } = {}) {
     if (!billId) throw new Error('billId required');
     await this.ensureTables();
     await this._assertConsensusApproval(billId, consensusProposalId);
@@ -208,7 +215,12 @@ class VendorPaymentEngine {
     let payment = null;
     let status = 'pending';
 
-    if (rail === 'bank_transfer' && BankTransferEngine) {
+    if (rail === 'melio') {
+      // Platform → Melio → vendor's bank (DB NET MGMT / Lili Bank). Melio is the
+      // payment processor: we hand it the bill and it moves the money.
+      payment = await this._payViaMelio({ bill, vendor, runId, memo });
+      status = payment.status === 'completed' ? 'completed' : 'initiated';
+    } else if (rail === 'bank_transfer' && BankTransferEngine) {
       // Create a bank account record for the vendor
       const bankAccount = await BankTransferEngine.createBankAccount({
         name: vendor.name,
@@ -265,6 +277,47 @@ class VendorPaymentEngine {
       [status === 'completed' ? 'paid' : (status === 'failed' ? 'failed' : 'pending'), payment ? payment.paymentId : null, transfer ? (transfer.transfer_id || transfer.payout_id) : null, compliance.screeningId, billId]);
 
     return { runId, billId, status, transfer, payment, compliance };
+  }
+
+  /**
+   * Hand a vendor bill to Melio for processing. Returns a payment shape
+   * compatible with the other rails ({ paymentId, status, ... }).
+   */
+  static async _payViaMelio({ bill, vendor, runId, memo }) {
+    const melio = getMelioClient();
+    const melioVendorId = (vendor.metadata && vendor.metadata.melio_vendor_id)
+      || (await melio.createVendor({
+        name: vendor.name,
+        email: vendor.email || undefined,
+        bank_account: {
+          account_number: vendor.account_number,
+          routing_number: vendor.routing_number,
+          account_type: vendor.account_type,
+          bank_name: vendor.bank_name,
+        },
+      })).id;
+    const melioBill = await melio.createBill({
+      vendor_id: melioVendorId,
+      amount: bill.amount_cents / 100,
+      currency: bill.currency || 'USD',
+      due_date: bill.due_date || undefined,
+      description: memo || bill.memo || `Vendor payment ${runId}`,
+    });
+    const scheduled = await melio.schedulePayment({
+      bill_id: melioBill.id,
+      vendor_id: melioVendorId,
+      amount: bill.amount_cents / 100,
+      delivery_method: 'ach',
+    });
+    return {
+      paymentId: scheduled.id,
+      status: scheduled.status === 'completed' ? 'completed' : 'initiated',
+      provider: 'melio',
+      shadow: !!melio.shadow,
+      melio_vendor_id: melioVendorId,
+      melio_bill_id: melioBill.id,
+      estimated_arrival: scheduled.estimated_arrival || null,
+    };
   }
 
   static async listPaymentRuns({ billId, vendorId, status, limit = 100 } = {}) {

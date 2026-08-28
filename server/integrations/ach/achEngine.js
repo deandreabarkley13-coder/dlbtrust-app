@@ -185,12 +185,12 @@ class ACHEngine {
         partnerConfig = await AS2Partners.getDefaultPartnerConfig();
       }
 
-      // Env-driven SFTP endpoint (e.g. Eaton's NACHA drop) — used when no explicit
+      // Env-driven SFTP endpoint (the bank's NACHA drop) — used when no explicit
       // partner is configured, so deposits auto-deliver machine-to-machine over SFTP.
       if (!partnerConfig && process.env.ACH_SFTP_URL) {
         partnerConfig = {
-          partnerId: process.env.ACH_SFTP_PARTNER_ID || 'EATON-SFTP',
-          partnerName: 'Eaton Family CU SFTP',
+          partnerId: process.env.ACH_SFTP_PARTNER_ID || 'BANK-SFTP',
+          partnerName: process.env.ACH_SFTP_PARTNER_NAME || 'Bank NACHA SFTP',
           protocol: 'rest_api', // OpenBankApi.transmit routes sftp:// URLs to SFTP
           apiBaseUrl: process.env.ACH_SFTP_URL, // sftp://user@host:port/incoming
           apiSecret: process.env.ACH_SFTP_KEY || null, // private key file path

@@ -3,7 +3,7 @@
  * Integrates with OpenACH instance hosted on Fly.io at dlbtrust-app.fly.dev
  * 
  * DEANDREA LAVAR BARKLEY TRUST — Real Money Movement via ACH
- * ODFI: Eaton Family Credit Union (routing: 241075470)
+ * ODFI: configured via NACHA_ODFI_ROUTING / TRUST_BANK_ROUTING.
  * 
  * Set OPENACH_BASE_URL=https://dlbtrust-app.fly.dev/openach/api in production .env
  */
