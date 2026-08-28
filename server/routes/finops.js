@@ -1863,7 +1863,7 @@ router.post('/vendor-bills/:id/pay', operatorAuth, async (req, res) => {
         amount: Number(bill.amount_cents) / 100,
         vendor,
         sourceCashAccountId: req.body.sourceCashAccountId || req.body.source_cash_account_id,
-        rail: req.body.rail || 'bank_transfer',
+        rail: req.body.rail || 'melio',
         webPaymentAdapter: req.body.webPaymentAdapter || req.body.web_payment_adapter,
         openBankingConnector: req.body.openBankingConnector || req.body.open_banking_connector,
         memo: req.body.memo || bill.memo,
