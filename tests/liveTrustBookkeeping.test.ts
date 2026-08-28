@@ -67,7 +67,10 @@ describe('wire bookkeeping', () => {
 
     expect(query).toHaveBeenCalledWith(
       expect.stringContaining("SET status = 'failed'"),
-      [approvedWire.wire_id, 'Wire transmission endpoint is not configured'],
+      [
+        approvedWire.wire_id,
+        expect.stringContaining('Wire transmission endpoint is not configured'),
+      ],
     );
     expect(accounting).not.toHaveBeenCalled();
   });

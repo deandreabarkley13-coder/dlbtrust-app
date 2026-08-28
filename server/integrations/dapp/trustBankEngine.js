@@ -178,9 +178,9 @@ class TrustBankEngine {
     return result.rows;
   }
 
-  static async _recordTransaction({ accountId, relatedAccountId, paymentId, amountCents, type, balanceAfter, description, metadata } = {}) {
+  static async _recordTransaction({ accountId, relatedAccountId, paymentId, amountCents, type, balanceAfter, description, metadata } = {}, executor = pool) {
     const txId = generateId('TBTX');
-    await pool.query(
+    await executor.query(
       `INSERT INTO trust_bank_transactions (transaction_id, account_id, related_account_id, payment_id, amount_cents, type, balance_after_cents, description, metadata)
        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
       [txId, accountId, relatedAccountId || null, paymentId || null, amountCents, type, balanceAfter, description || null, JSON.stringify(metadata || {})]
@@ -188,8 +188,8 @@ class TrustBankEngine {
     return txId;
   }
 
-  static async _updateBalance(accountId, deltaCents) {
-    const result = await pool.query(
+  static async _updateBalance(accountId, deltaCents, executor = pool) {
+    const result = await executor.query(
       `UPDATE trust_bank_accounts SET balance_cents = balance_cents + $2, updated_at = NOW() WHERE account_id = $1 RETURNING *`,
       [accountId, deltaCents]
     );
@@ -224,15 +224,15 @@ class TrustBankEngine {
     const client = await pool.connect();
     try {
       await client.query('BEGIN');
-      const fromUpdated = await this._updateBalance(fromAccountId, -cents);
-      const toUpdated = await this._updateBalance(toAccountId, cents);
+      const fromUpdated = await this._updateBalance(fromAccountId, -cents, client);
+      const toUpdated = await this._updateBalance(toAccountId, cents, client);
       await client.query(
         `INSERT INTO trust_bank_payments (payment_id, from_account_id, to_account_id, amount_cents, currency, rail, status, initiated_by)
          VALUES ($1, $2, $3, $4, 'USD', 'internal', 'completed', $5)`,
         [paymentId, fromAccountId, toAccountId, cents, initiatedBy]
       );
-      await this._recordTransaction({ accountId: fromAccountId, relatedAccountId: toAccountId, paymentId, amountCents: cents, type: 'debit', balanceAfter: fromUpdated.balance_cents, description: description || `Transfer to ${toAccountId}`, metadata: { initiatedBy } });
-      await this._recordTransaction({ accountId: toAccountId, relatedAccountId: fromAccountId, paymentId, amountCents: cents, type: 'credit', balanceAfter: toUpdated.balance_cents, description: description || `Transfer from ${fromAccountId}`, metadata: { initiatedBy } });
+      await this._recordTransaction({ accountId: fromAccountId, relatedAccountId: toAccountId, paymentId, amountCents: cents, type: 'debit', balanceAfter: fromUpdated.balance_cents, description: description || `Transfer to ${toAccountId}`, metadata: { initiatedBy } }, client);
+      await this._recordTransaction({ accountId: toAccountId, relatedAccountId: fromAccountId, paymentId, amountCents: cents, type: 'credit', balanceAfter: toUpdated.balance_cents, description: description || `Transfer from ${fromAccountId}`, metadata: { initiatedBy } }, client);
       await client.query('COMMIT');
       return { paymentId, from: fromUpdated, to: toUpdated, status: 'completed' };
     } catch (e) {
