@@ -494,6 +494,12 @@ async function initializeDatabase() {
   } catch(e) { console.warn('[payment-processor] table init:', e.message); }
 
   try {
+    var KafkaEventBus = require(path.join(HD, 'server', 'integrations', 'events', 'kafkaEventBus')).KafkaEventBus;
+    await KafkaEventBus.ensureTables();
+    console.log('[events] outbox ensured;', KafkaEventBus.status().mode);
+  } catch(e) { console.warn('[events] table init:', e.message); }
+
+  try {
     var PaymentGatewayServerEngine = require(path.join(HD, 'server', 'integrations', 'payments', 'paymentGatewayServerEngine')).PaymentGatewayServerEngine;
     await PaymentGatewayServerEngine.ensureTables();
     console.log('[payment-gateway] tables ensured');

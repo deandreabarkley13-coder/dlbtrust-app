@@ -11,6 +11,21 @@
 
 const pool = require('../bonds/pgPool');
 
+let KafkaEventBus, EVENT_TOPICS;
+try {
+  ({ KafkaEventBus, TOPICS: EVENT_TOPICS } = require('../events/kafkaEventBus'));
+} catch { KafkaEventBus = null; }
+
+/** Event publishing never blocks a distribution; the ledger is authoritative. */
+async function emit(topic, payload, key) {
+  if (!KafkaEventBus || !topic) return;
+  try {
+    await KafkaEventBus.publish(topic, payload, { key });
+  } catch (e) {
+    console.warn('[trust-bank] event publish failed:', e.message);
+  }
+}
+
 let CashEngine, TrustAccountingEngine, BankTransferEngine, WireOriginationEngine, WireEngine, OpenBankingEngine, ComplianceEngine, ExternalEndpointEngine, LiliBankEngine, MoovPaygateEngine, ApacheApisixEngine;
 function loadDeps() {
   try { ({ CashEngine } = require('../cash/cashEngine')); } catch (e) { CashEngine = null; }
@@ -281,6 +296,14 @@ class TrustBankEngine {
        VALUES ($1, $2, $3, $4, 'USD', 'internal', 'pending', $5, $6)`,
       [paymentId, fromAccountId, toAccountId, cents, requestedBy, JSON.stringify(metadata)]
     );
+    await emit(EVENT_TOPICS && EVENT_TOPICS.distributionProposed, {
+      paymentId,
+      fromAccountId,
+      toAccountId,
+      amountCents: cents,
+      requiredSignatures,
+      requestedBy,
+    }, paymentId);
     return { paymentId, status: 'pending', amount_cents: cents, requiredSignatures, approvals: [] };
   }
 
@@ -321,6 +344,13 @@ class TrustBankEngine {
         `UPDATE trust_bank_payments SET metadata = $2, updated_at = NOW() WHERE payment_id = $1`,
         [paymentId, JSON.stringify(metadata)]
       );
+      await emit(EVENT_TOPICS && EVENT_TOPICS.distributionSigned, {
+        paymentId,
+        approvedBy,
+        role,
+        signatures: approvals.length,
+        requiredSignatures,
+      }, paymentId);
       return {
         paymentId,
         status: 'pending',
@@ -342,6 +372,9 @@ class TrustBankEngine {
       [paymentId, reason || 'Rejected by trustee', JSON.stringify({ rejectedBy, rejectedAt: new Date().toISOString() })]
     );
     if (!result.rows.length) throw new Error(`No pending internal distribution ${paymentId} to reject`);
+    await emit(EVENT_TOPICS && EVENT_TOPICS.paymentRejected, {
+      paymentId, rejectedBy, reason: reason || null, rail: 'internal',
+    }, paymentId);
     return { paymentId, status: 'cancelled', rejectedBy };
   }
 
@@ -390,6 +423,13 @@ class TrustBankEngine {
         metadata: { approvals: metadata.approvals, initiatedBy: payment.initiated_by },
       }, client);
       await client.query('COMMIT');
+      await emit(EVENT_TOPICS && EVENT_TOPICS.distributionSettled, {
+        paymentId: payment.payment_id,
+        fromAccountId: payment.from_account_id,
+        toAccountId: payment.to_account_id,
+        amountCents: cents,
+        approvals: metadata.approvals,
+      }, payment.payment_id);
       return {
         paymentId: payment.payment_id,
         status: 'completed',
