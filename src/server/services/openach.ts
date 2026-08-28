@@ -4,7 +4,7 @@
  * Connects to the OpenACH instance hosted on Fly.io
  * using the correct session-cookie REST API (not Bearer token).
  * 
- * ODFI: Eaton Family Credit Union (routing: 241075470)
+ * ODFI: configured via NACHA_ODFI_ROUTING / TRUST_BANK_ROUTING.
  * Originator: DEANDREA LAVAR BARKLEY TRUST
  * Originator Info ID: 0eb26e1d-5fcc-4978-a132-dd93c2655429
  */

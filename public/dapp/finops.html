@@ -4820,7 +4820,7 @@
     return '<div style="display:flex; flex-direction:column; gap:12px;">' +
       '<div class="card" style="background:#0b1220;">' +
         '<h3>Add Vendor / Payee</h3>' +
-        '<p class="muted">Store a vendor, merchant, or beneficiary for direct fiat payment. Lili is excluded; use wire, ACH, open banking, or web payment rails.</p>' +
+        '<p class="muted">Store a vendor, merchant, or beneficiary for fiat payment. Funds flow Platform → Melio → DB NET MGMT / Lili Bank; the direct wire, ACH and open banking rails require a configured bank endpoint.</p>' +
         '<div class="token-bar"><input id="vp-name" style="flex:1" placeholder="Vendor / payee name" /></div>' +
         '<div class="token-bar"><input id="vp-email" style="flex:1" placeholder="Email" /><input id="vp-phone" style="flex:1" placeholder="Phone" /></div>' +
         '<div class="token-bar"><input id="vp-bank" style="flex:1" placeholder="Bank name" /><input id="vp-routing" style="flex:1" placeholder="Routing number" /><input id="vp-account" style="flex:1" placeholder="Account number" /></div>' +
@@ -4833,7 +4833,7 @@
         '<div class="token-bar"><select id="vp-vendor">' + (vendors || []).map(v => `<option value="${v.vendor_id}">${v.name}</option>`).join('') + '</select></div>' +
         '<div class="token-bar"><input id="vp-bill-amount" type="number" style="flex:1" placeholder="Amount" /><input id="vp-bill-due" type="date" style="flex:1" placeholder="Due date" /></div>' +
         '<div class="token-bar"><input id="vp-bill-memo" style="flex:1" placeholder="Memo / invoice #" /></div>' +
-        '<div class="token-bar"><input id="vp-bill-source" style="flex:1" placeholder="Source cash account (e.g. CA-OPERATING)" /><select id="vp-bill-rail"><option value="bank_transfer">bank_transfer</option><option value="wire">wire</option><option value="open_banking">open_banking</option><option value="ach">ach</option></select></div>' +
+        '<div class="token-bar"><input id="vp-bill-source" style="flex:1" placeholder="Source cash account (e.g. CA-OPERATING)" /><select id="vp-bill-rail"><option value="melio">melio</option><option value="bank_transfer">bank_transfer</option><option value="wire">wire</option><option value="open_banking">open_banking</option><option value="ach">ach</option></select></div>' +
         '<button class="btn" onclick="createAndPayVendorBill()">Create & Pay Bill</button>' +
         '<div id="vp-bill-status" class="status hidden"></div>' +
       '</div>' +

@@ -54,7 +54,12 @@ class PaymentComplianceGate {
         const exportOnly = action === 'export';
         const providerIssues = [...(status.issues || [])];
         if (!status.enabled) providerIssues.push('Melio is disabled');
-        if (!exportOnly && status.mode !== 'live') providerIssues.push('Melio live execution is not enabled');
+        // MelioEngine reports 'live_api' when the verified API is in use;
+        // 'shadow' and 'manual_upload' are not live execution modes.
+        const liveMode = status.mode === 'live' || status.mode === 'live_api';
+        if (!exportOnly && !liveMode) {
+          providerIssues.push('Melio live execution is not enabled');
+        }
         if (!exportOnly && !(status.apiStatus && status.apiStatus.reachable)) {
           providerIssues.push('Melio API is not reachable');
         }
@@ -63,7 +68,7 @@ class PaymentComplianceGate {
           action,
           ready: providerIssues.length === 0,
           mode: exportOnly ? 'manual_export' : status.mode,
-          liveExecution: !exportOnly && status.mode === 'live',
+          liveExecution: !exportOnly && liveMode,
           apiReachable: !!(status.apiStatus && status.apiStatus.reachable),
           issues: providerIssues,
         };

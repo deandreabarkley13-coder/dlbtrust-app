@@ -435,10 +435,10 @@
           </div>
           <div class="form-row">
             <div class="form-group"><label>Beneficiary Name</label><input type="text" id="wire-beneficiary-name" placeholder="John Smith Trust"></div>
-            <div class="form-group"><label>Beneficiary Bank</label><input type="text" id="wire-beneficiary-bank" placeholder="Eaton Family Credit Union"></div>
+            <div class="form-group"><label>Beneficiary Bank</label><input type="text" id="wire-beneficiary-bank" placeholder="Lili Bank"></div>
           </div>
           <div class="form-row">
-            <div class="form-group"><label>Routing Number (ABA)</label><input type="text" id="wire-routing" placeholder="241075470" maxlength="9" pattern="\d{9}"></div>
+            <div class="form-group"><label>Routing Number (ABA)</label><input type="text" id="wire-routing" placeholder="Routing number" maxlength="9" pattern="\d{9}"></div>
             <div class="form-group"><label>Account Number</label><input type="text" id="wire-account" placeholder="123456789"></div>
           </div>
           <div class="form-row">
@@ -491,7 +491,7 @@
         <div id="add-partner-form" class="hidden mt-16">
           <div class="form-row">
             <div class="form-group"><label>Partner ID</label><input type="text" id="partner-id" placeholder="BANK-XYZ"></div>
-            <div class="form-group"><label>Partner Name</label><input type="text" id="partner-name" placeholder="Eaton Family CU"></div>
+            <div class="form-group"><label>Partner Name</label><input type="text" id="partner-name" placeholder="Bank NACHA SFTP"></div>
           </div>
           <div class="form-row">
             <div class="form-group"><label>Protocol</label><select id="partner-protocol"><option value="rest_api">REST API</option><option value="as2">AS2</option></select></div>
@@ -1781,7 +1781,7 @@
         <h2>OFX Institutions</h2>
         <p class="text-muted" style="font-size:12px;margin:-4px 0 10px;">Configure bank / FI endpoints. Keep mode <strong>simulate</strong> until credentials are verified.</p>
         <div class="form-row">
-          <div class="form-group"><label>Institution Name</label><input type="text" id="ofx-inst-name" placeholder="Eaton Family CU"></div>
+          <div class="form-group"><label>Institution Name</label><input type="text" id="ofx-inst-name" placeholder="Lili Bank"></div>
           <div class="form-group"><label>OFX Org</label><input type="text" id="ofx-inst-org" placeholder="DLB"></div>
           <div class="form-group"><label>FI ID</label><input type="text" id="ofx-inst-fid" placeholder="12345"></div>
         </div>
@@ -1791,7 +1791,7 @@
           <div class="form-group"><label>Password</label><input type="password" id="ofx-inst-pass" placeholder="online-banking-password"></div>
         </div>
         <div class="form-row">
-          <div class="form-group"><label>Bank ID (Routing/SWIFT)</label><input type="text" id="ofx-inst-bank" placeholder="241075470"></div>
+          <div class="form-group"><label>Bank ID (Routing/SWIFT)</label><input type="text" id="ofx-inst-bank" placeholder="Routing / SWIFT"></div>
           <div class="form-group"><label>Account ID</label><input type="text" id="ofx-inst-account" placeholder="account number"></div>
           <div class="form-group"><label>Account Type</label><select id="ofx-inst-type"><option value="CHECKING">CHECKING</option><option value="SAVINGS">SAVINGS</option><option value="MONEYMRKT">MONEYMRKT</option></select></div>
         </div>
@@ -1831,7 +1831,7 @@
         <div class="form-row">
           <div class="form-group"><label>Payee Name</label><input type="text" id="ofx-pay-payee" placeholder="Beneficiary LLC"></div>
           <div class="form-group"><label>Payee Account</label><input type="text" id="ofx-pay-account" placeholder="account number"></div>
-          <div class="form-group"><label>Payee Bank ID / Routing</label><input type="text" id="ofx-pay-bank" placeholder="241075470"></div>
+          <div class="form-group"><label>Payee Bank ID / Routing</label><input type="text" id="ofx-pay-bank" placeholder="Routing number"></div>
         </div>
         <div class="form-row">
           <div class="form-group"><label>Address Line 1</label><input type="text" id="ofx-pay-addr1" placeholder="123 Main St"></div>
@@ -2142,7 +2142,7 @@
         <div class="section-title">External Bank Endpoint</div>
         <p class="text-muted" style="font-size:12px;margin-bottom:12px;">Configure the receiving bank's HTTPS endpoint. In Production mode, all ACH and wire transmissions route here via the Open Bank REST API.</p>
         <div class="form-row">
-          <div class="form-group" style="flex:2"><label>Bank Name</label><input type="text" id="cfg-bank-name" placeholder="e.g. Eaton Family Credit Union"></div>
+          <div class="form-group" style="flex:2"><label>Bank Name</label><input type="text" id="cfg-bank-name" placeholder="e.g. Lili Bank"></div>
           <div class="form-group" style="flex:3"><label>ACH Endpoint URL</label><input type="text" id="cfg-bank-endpoint" placeholder="https://api.bank.com/ach/receive"></div>
         </div>
         <div class="form-row">
@@ -3100,7 +3100,7 @@
           <div class="card"><div class="card-title">Total Batches</div><div class="card-value">${s.total_batches || 0}</div><div class="card-sub">${s.pending_batches || 0} pending</div></div>
           <div class="card"><div class="card-title">Transmitted</div><div class="card-value">${s.transmitted_batches || 0}</div><div class="card-sub">Sent to bank</div></div>
           <div class="card"><div class="card-title">Total Disbursed</div><div class="card-value">${fmt(s.total_disbursed_dollars || 0)}</div><div class="card-sub">ACH payments</div></div>
-          <div class="card"><div class="card-title">ODFI</div><div class="card-value" style="font-size:14px">241075470</div><div class="card-sub">Eaton Family CU</div></div>
+          <div class="card"><div class="card-title">ODFI</div><div class="card-value" style="font-size:14px">${s.odfi_routing || 'Not configured'}</div><div class="card-sub">${s.odfi_name || 'Configured ODFI'}</div></div>
         `;
       } catch (e) {
         el('payment-summary-cards').innerHTML = '';

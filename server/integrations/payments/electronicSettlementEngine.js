@@ -78,15 +78,14 @@ var ACCOUNT_CODES = {
   DISTRIBUTIONS: '5100',
 };
 
-// Default ODFI/RDFI for on-us trust funding. Eaton Family CU is both the
-// originating and receiving institution for the trust checking account, so a
-// deposit is an on-us ACH credit. Routing matches the NACHA generator's ODFI.
-var EATON_ROUTING = '241075470';
+// ODFI/RDFI for trust funding is configuration-driven (TRUST_BANK_ROUTING).
+// There is no hardcoded institution: funds move Platform → Melio → DB NET MGMT
+// (Lili Bank), and any direct bank rail must be explicitly configured.
 
 /**
  * Resolve the debit/credit GL accounts for a settlement's journal entry.
  * `trust_deposit`/`internal_transfer` move cash into our own bank account
- * (Eaton Trust Checking) — an asset reclass (DR bank / CR source cash), not an
+ * (Trust Checking) — an asset reclass (DR bank / CR source cash), not an
  * expense. All other types keep the prior expense/distribution behavior.
  * Pure function (no I/O) so it is unit-testable without a database.
  */
@@ -1002,7 +1001,7 @@ async function executeACHPayment(opts) {
     }]
   );
 
-  // On-us transfer into our own bank account (Eaton trust checking) — computed
+  // On-us transfer into our own bank account (trust checking) — computed
   // once at function scope so both the JE branch and the BILL guard below see it.
   var isDeposit = opts.payment_type === 'trust_deposit' || opts.payment_type === 'internal_transfer';
 
@@ -1040,7 +1039,7 @@ async function executeACHPayment(opts) {
   }
 
   var billRef = null;
-  // On-us transfers into our own bank account (Eaton trust checking) must NOT be
+  // On-us transfers into our own bank account (trust checking) must NOT be
   // recorded as a BILL AR deposit — that would book a phantom inflow into the
   // BILL cash account and double-count the money. Only record real inbound
   // settlements in BILL.
@@ -1641,7 +1640,7 @@ async function completeMFASettlement(opts) {
 // ─── EXPORT ───────────────────────────────────────────────────────────────────
 
 /**
- * Ensure the Eaton Trust Checking GL account exists so deposit journal entries
+ * Ensure the Trust Checking GL account exists so deposit journal entries
  * post cleanly even if the chart-of-accounts migration hasn't been re-run.
  * Idempotent; safe to call before every deposit.
  */
@@ -1651,8 +1650,8 @@ async function ensureTrustCheckingAccount() {
       `INSERT INTO trust_accounts (account_code, account_name, account_type, sub_type, description)
        VALUES ($1, $2, 'asset', 'cash', $3)
        ON CONFLICT (account_code) DO NOTHING`,
-      [ACCOUNT_CODES.TRUST_CHECKING, 'Eaton Family CU Trust Checking',
-       'Eaton Family CU trust operating/checking account (ODFI/RDFI 241075470)']
+      [ACCOUNT_CODES.TRUST_CHECKING, process.env.TRUST_BANK_NAME || 'Trust Checking',
+       'Trust operating/checking account (institution configured via TRUST_BANK_* settings)']
     );
   } catch (e) {
     console.warn('[ElectronicSettlement] ensureTrustCheckingAccount skipped:', e.message);
@@ -1661,16 +1660,16 @@ async function ensureTrustCheckingAccount() {
 
 /**
  * Move funds from an internal ledger source (main GL cash or a sub-ledger) into
- * the Eaton Family CU Trust Checking account via an on-us ACH credit.
+ * the trust checking account via an ACH credit.
  *
- * Eaton is both ODFI and RDFI, so this originates a NACHA credit entry
- * (transaction code 22) to the trust checking account and books an asset-reclass
- * journal entry (DR Trust Checking / CR source cash). No P&L impact.
+ * This originates a NACHA credit entry (transaction code 22) to the trust
+ * checking account and books an asset-reclass journal entry (DR Trust Checking
+ * / CR source cash). No P&L impact.
  *
- * Destination is config-driven — never hardcode a real account number:
- *   TRUST_BANK_ROUTING  (default 241075470 = Eaton Family CU)
+ * Destination is config-driven — never hardcode a routing or account number:
+ *   TRUST_BANK_ROUTING  (required — the trust bank's routing number)
  *   TRUST_BANK_ACCOUNT  (required — the trust checking account number)
- *   TRUST_BANK_NAME     (default 'Eaton Family CU Trust Checking')
+ *   TRUST_BANK_NAME     (default 'Trust Checking')
  *
  * @param {Object} opts
  * @param {number} opts.amount            amount to deposit (dollars)
@@ -1684,11 +1683,14 @@ async function ensureTrustCheckingAccount() {
  */
 async function depositToTrustChecking(opts) {
   opts = opts || {};
-  var routing = process.env.TRUST_BANK_ROUTING || EATON_ROUTING;
+  var routing = process.env.TRUST_BANK_ROUTING;
   var account = opts.destination_account || process.env.TRUST_BANK_ACCOUNT;
-  var bankName = process.env.TRUST_BANK_NAME || 'Eaton Family CU Trust Checking';
+  var bankName = process.env.TRUST_BANK_NAME || 'Trust Checking';
   if (!account) {
     throw new Error('Trust checking destination not configured — set TRUST_BANK_ACCOUNT (or pass destination_account)');
+  }
+  if (!routing) {
+    throw new Error('Trust checking routing not configured — set TRUST_BANK_ROUTING');
   }
   await ensureTrustCheckingAccount();
   var result = await submitElectronicPayment({
@@ -1696,13 +1698,13 @@ async function depositToTrustChecking(opts) {
     payee_name: bankName,
     payee_routing: routing,
     payee_account: account,
-    payee_bank_name: 'Eaton Family CU',
+    payee_bank_name: bankName,
     force_method: 'ach',
     payment_type: 'trust_deposit',
     priority: opts.priority || 'standard',
     sub_ledger_id: opts.sub_ledger_id || null,
     source_account_code: opts.source_account_code || ACCOUNT_CODES.CASH,
-    description: opts.description || 'Deposit to Eaton Family CU Trust Checking',
+    description: opts.description || ('Deposit to ' + bankName),
     memo: opts.memo || null,
     initiated_by: opts.initiated_by || 'admin',
   });
@@ -1713,8 +1715,8 @@ async function depositToTrustChecking(opts) {
     result.trust_identity = TrustIdentity.summary();
   }
 
-  // Machine-to-machine delivery: auto-transmit the generated NACHA file to Eaton
-  // (over the env-configured SFTP endpoint / partner) with no human step, when
+  // Machine-to-machine delivery: auto-transmit the generated NACHA file to the
+  // configured SFTP endpoint / partner with no human step, when
   // enabled. Opt-in via TRUST_BANK_AUTO_TRANSMIT=true or opts.transmit === true.
   var autoTransmit = opts.transmit === true
     || (opts.transmit !== false && String(process.env.TRUST_BANK_AUTO_TRANSMIT || '').toLowerCase() === 'true');
@@ -1728,7 +1730,7 @@ async function depositToTrustChecking(opts) {
         message_id: tx && tx.message_id,
       };
     } catch (err) {
-      console.warn('[ElectronicSettlement] Eaton NACHA auto-transmit failed:', err.message);
+      console.warn('[ElectronicSettlement] NACHA auto-transmit failed:', err.message);
       result.transmission = { transmitted: false, error: err.message };
     }
   }

@@ -52,7 +52,7 @@ router.post('/submit', requireAdmin, async function(req, res) {
   }
 });
 
-// Deposit internal ledger funds into the Eaton Family CU Trust Checking account
+// Deposit internal ledger funds into the trust checking account
 // (on-us ACH credit: DR trust checking / CR source cash). Source is main GL cash
 // (source_account_code) or a sub-ledger (sub_ledger_id); destination comes from
 // TRUST_BANK_ACCOUNT / TRUST_BANK_ROUTING config.
@@ -66,7 +66,7 @@ router.post('/deposit-to-bank', requireAdmin, async function(req, res) {
 });
 
 // Trust cash sweep: move accumulated fixed-income cash from a source GL account
-// into Eaton Trust Checking on demand. Runs one sweep cycle (same logic as the
+// into Trust Checking on demand. Runs one sweep cycle (same logic as the
 // scheduled loop). Body accepts optional source_account_code, min_reserve,
 // min_amount, max_amount, description, transmit.
 var trustSweepScheduler = require('../integrations/payments/trustSweepScheduler');

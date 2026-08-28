@@ -502,7 +502,7 @@ class BankingAggregator {
 
   /**
    * Pull the status of a previously transmitted payment file (connectors that
-   * support file exchange, e.g. Eaton). Returns the connector's status shape.
+   * support file exchange). Returns the connector's status shape.
    */
   static async pullFileStatus(id, opts) {
     const conn = await BankingAggregator._getConnectionRaw(id);
