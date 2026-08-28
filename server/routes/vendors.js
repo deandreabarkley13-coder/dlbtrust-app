@@ -232,6 +232,15 @@ router.post('/payments/melio/export-batch', async function(req, res) {
   }
 });
 
+router.get('/payments/melio/exports', operatorAuth, async function(req, res) {
+  try {
+    var data = await MelioEngine.listExports({ status: req.query.status, limit: req.query.limit });
+    res.json({ success: true, count: data.length, data: data });
+  } catch (err) {
+    res.status(err.status || 500).json({ success: false, error: err.message });
+  }
+});
+
 router.post('/payments/melio/:identifier/mark-submitted', operatorAuth, async function(req, res) {
   try {
     var result = await MelioEngine.process({

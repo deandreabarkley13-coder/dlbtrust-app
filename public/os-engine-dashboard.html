@@ -159,6 +159,13 @@
           </div>
           <div id="melio-download-links" class="muted" style="margin-top:8px"></div>
           <hr style="border-color: var(--border); margin: 16px 0;">
+          <h3 style="margin: 0 0 10px; font-size: 14px; color: var(--muted);">Melio Bill Pay Portal Queue</h3>
+          <p class="muted" style="margin:0 0 8px">Canonical exports awaiting upload to the Melio Bills portal. Download the CSV, import it in Melio, then record the portal reference here. The ledger settles only on Mark paid.</p>
+          <div class="actions">
+            <button class="secondary" onclick="loadMelioPortalQueue()">Refresh Portal Queue</button>
+          </div>
+          <div id="melio-portal-queue" class="muted" style="margin-top:8px">Not loaded.</div>
+          <hr style="border-color: var(--border); margin: 16px 0;">
           <h3 style="margin: 0 0 10px; font-size: 14px; color: var(--muted);">Melio Invoice Sync (DB NET MGMT)</h3>
           <div class="form-grid">
             <label>Amount ($)</label>
@@ -345,6 +352,48 @@
       links.querySelectorAll('.melio-download').forEach((button) => {
         button.addEventListener('click', () => downloadMelioExport(button.dataset.exportId));
       });
+    }
+
+    async function loadMelioPortalQueue() {
+      const host = el('melio-portal-queue');
+      if (!host) return;
+      const { ok, body } = await api('GET', '/api/vendors/payments/melio/exports');
+      if (!ok) { host.textContent = body.error || 'Failed to load portal queue'; return; }
+      const rows = body.data || [];
+      if (!rows.length) { host.textContent = 'No Melio exports yet.'; return; }
+      host.innerHTML = rows.map((r) => {
+        const ref = r.portalSubmissionReference || r.settlementReference || '';
+        const actions = [`<button type="button" data-melio-action="download" data-id="${esc(r.id)}">Download CSV</button>`];
+        if (r.status === 'exported' || r.status === 'emailed') {
+          actions.push(`<button type="button" data-melio-action="mark-submitted" data-id="${esc(r.id)}">Mark submitted</button>`);
+        }
+        if (r.status === 'submitted') {
+          actions.push(`<button type="button" data-melio-action="mark-paid" data-id="${esc(r.id)}">Mark paid</button>`);
+        }
+        return `<div style="margin-bottom:8px">`
+          + `<strong>${esc(r.id)}</strong> — ${esc(r.status)} — $${Number(r.amount).toFixed(2)} ${esc(r.currency || 'USD')}`
+          + ` — ${esc(r.vendorName || 'vendor n/a')}`
+          + ` — source ${esc(r.sourceType || '')}:${esc(r.sourceAccountId || '')}`
+          + (r.emailedTo ? ` — emailed to ${esc(r.emailedTo)}` : '')
+          + (ref ? ` — ref ${esc(ref)}` : '')
+          + `<div class="actions">${actions.join(' ')}</div></div>`;
+      }).join('');
+      host.querySelectorAll('[data-melio-action]').forEach((button) => {
+        button.addEventListener('click', () => melioPortalAction(button.dataset.melioAction, button.dataset.id));
+      });
+    }
+
+    async function melioPortalAction(action, identifier) {
+      if (action === 'download') return downloadMelioExport(identifier);
+      const reference = prompt('Melio portal payment reference for ' + identifier);
+      if (!reference) return;
+      const route = `/api/vendors/payments/melio/${encodeURIComponent(identifier)}/${action}`;
+      const payload = action === 'mark-submitted'
+        ? { portal_submission_reference: reference }
+        : { settlement_reference: reference };
+      const { ok, body } = await api('POST', route, payload);
+      flash(ok ? `${identifier} ${action}` : (body.error || `${action} failed`), ok);
+      loadMelioPortalQueue();
     }
 
     async function downloadMelioExport(identifier) {

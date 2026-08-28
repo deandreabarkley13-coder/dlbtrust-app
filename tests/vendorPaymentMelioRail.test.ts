@@ -7,6 +7,7 @@ const { VendorPaymentEngine } = require('../server/integrations/dapp/vendorPayme
 const { PaymentComplianceGate } = require('../server/integrations/compliance/paymentComplianceGate');
 const { listConnectorTypes } = require('../server/integrations/aggregator/connectors');
 const { BANK_REGISTRY } = require('../server/integrations/ach/systemSettings');
+const { MelioEngine } = require('../server/integrations/os/osEngine');
 
 afterEach(() => {
   vi.restoreAllMocks();
@@ -48,10 +49,20 @@ function stubBillQueries() {
 }
 
 describe('Melio is the default B2B payment rail', () => {
-  it('routes a vendor bill through Melio without touching a bank endpoint', async () => {
+  it('exports a vendor bill to the Melio Bills portal without touching a bank endpoint', async () => {
     vi.spyOn(VendorPaymentEngine, 'ensureTables').mockResolvedValue(undefined);
     vi.spyOn(VendorPaymentEngine, '_assertConsensusApproval').mockResolvedValue(undefined);
-    vi.spyOn(PaymentComplianceGate, 'screenVendorPayment').mockResolvedValue({ screeningId: 'SCR-1' });
+    const screen = vi.spyOn(PaymentComplianceGate, 'screenVendorPayment')
+      .mockResolvedValue({ screeningId: 'SCR-1' });
+    const melio = vi.spyOn(MelioEngine, 'process').mockResolvedValue({
+      success: true,
+      result: {
+        id: 'MEL-1',
+        status: 'emailed',
+        emailedTo: 'payables@invoicesmelio.com',
+        result: { fileName: 'melio-MEL-1.csv' },
+      },
+    });
     const query = stubBillQueries();
 
     const result = await VendorPaymentEngine.payBill({
@@ -61,13 +72,45 @@ describe('Melio is the default B2B payment rail', () => {
     });
 
     expect(result.status).toBe('initiated');
-    expect(result.payment.provider).toBe('melio');
-    expect(result.payment.shadow).toBe(true);
+    expect(result.payment).toMatchObject({
+      provider: 'melio',
+      mode: 'manual_upload',
+      paymentId: 'MEL-1',
+      csv_file: 'melio-MEL-1.csv',
+      emailed_to: 'payables@invoicesmelio.com',
+    });
+    expect(melio.mock.calls[0][0]).toMatchObject({ action: 'exportPayment', billId: 'BILL-MELIO' });
+    // A CSV handed to the portal is an export, not a programmatic money movement.
+    expect(screen.mock.calls[0][0]).toMatchObject({ rail: 'melio', action: 'export' });
     expect(result.transfer).toBeNull();
     const railInsert = query.mock.calls.find(
       ([sql]: [string]) => /INSERT INTO vendor_payment_runs/.test(sql),
     );
     expect(railInsert?.[1]).toContain('melio');
+  });
+
+  it('schedules through the Melio API only when MELIO_USE_API is enabled', async () => {
+    vi.stubEnv('MELIO_USE_API', 'true');
+    vi.spyOn(VendorPaymentEngine, 'ensureTables').mockResolvedValue(undefined);
+    vi.spyOn(VendorPaymentEngine, '_assertConsensusApproval').mockResolvedValue(undefined);
+    const screen = vi.spyOn(PaymentComplianceGate, 'screenVendorPayment')
+      .mockResolvedValue({ screeningId: 'SCR-1' });
+    const melio = vi.spyOn(MelioEngine, 'process').mockResolvedValue({
+      success: true,
+      result: { id: 'MEL-2', status: 'scheduled' },
+    });
+    stubBillQueries();
+
+    const result = await VendorPaymentEngine.payBill({
+      billId: 'BILL-MELIO',
+      consensusProposalId: 'CC-APPROVED',
+      sourceCashAccountId: '1000',
+    });
+
+    expect(melio.mock.calls[0][0]).toMatchObject({ action: 'schedulePayment' });
+    expect(screen.mock.calls[0][0]).toMatchObject({ action: 'execute' });
+    expect(result.payment.mode).toBe('live_api');
+    vi.unstubAllEnvs();
   });
 });
 
