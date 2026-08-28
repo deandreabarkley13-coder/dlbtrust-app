@@ -5,19 +5,28 @@
  *
  * Pay trust bills and vendor invoices in fiat.
  * The sanctioned B2B rail is `melio`: canonical platform → Melio → DB NET MGMT
- * (Lili Bank). Direct wire/ACH/Open Banking rails remain available only when a
- * bank endpoint is explicitly configured.
+ * (Lili Bank). Melio runs in manual-upload mode by default, so a bill on the
+ * melio rail is exported as a Melio Bills CSV and delivered to the Melio Pay
+ * Bills portal address (MELIO_PAY_BILLS_EMAIL); the live Melio API is only used
+ * when MELIO_USE_API=true. Direct wire/ACH/Open Banking rails remain available
+ * only when a bank endpoint is explicitly configured.
  */
 
 const pool = require('../bonds/pgPool');
 const { PaymentComplianceGate } = require('../compliance/paymentComplianceGate');
-const { getClient: getMelioClient } = require('../melio/melioClient');
 
-let BankTransferEngine, OpenBankingEngine, WireOriginationEngine;
+let BankTransferEngine, OpenBankingEngine, WireOriginationEngine, MelioEngine;
 function loadDeps() {
   try { ({ BankTransferEngine } = require('./bankTransferEngine')); } catch (e) { BankTransferEngine = null; }
   try { ({ OpenBankingEngine } = require('./openBankingEngine')); } catch (e) { OpenBankingEngine = null; }
   try { ({ WireOriginationEngine } = require('./wireOriginationEngine')); } catch (e) { WireOriginationEngine = null; }
+  try { ({ MelioEngine } = require('../os/osEngine')); } catch (e) { MelioEngine = null; }
+}
+
+// Melio only moves money through its API when MELIO_USE_API is on; otherwise the
+// bill leaves the platform as a CSV uploaded to the Melio Bills portal.
+function melioUsesApi() {
+  return String(process.env.MELIO_USE_API || 'false') === 'true';
 }
 
 function generateId(prefix = 'VENDOR') {
@@ -200,12 +209,15 @@ class VendorPaymentEngine {
     const vendor = await this.getVendor(bill.vendor_id);
     if (!vendor) throw new Error(`Vendor not found: ${bill.vendor_id}`);
 
+    // A manual-upload Melio bill produces a CSV for the portal; no funds leave
+    // the platform programmatically, so it is screened as an export.
+    const complianceAction = rail === 'melio' && !melioUsesApi() ? 'export' : 'execute';
     const compliance = await PaymentComplianceGate.screenVendorPayment({
       vendor,
       amount: bill.amount_cents / 100,
       sourceAccountId: sourceCashAccountId,
       rail,
-      action: 'execute',
+      action: complianceAction,
       screenedBy: initiatedBy,
       reference: billId,
     });
@@ -218,7 +230,7 @@ class VendorPaymentEngine {
     if (rail === 'melio') {
       // Platform → Melio → vendor's bank (DB NET MGMT / Lili Bank). Melio is the
       // payment processor: we hand it the bill and it moves the money.
-      payment = await this._payViaMelio({ bill, vendor, runId, memo });
+      payment = await this._payViaMelio({ bill, vendor, runId, memo, sourceCashAccountId });
       status = payment.status === 'completed' ? 'completed' : 'initiated';
     } else if (rail === 'bank_transfer' && BankTransferEngine) {
       // Create a bank account record for the vendor
@@ -280,43 +292,54 @@ class VendorPaymentEngine {
   }
 
   /**
-   * Hand a vendor bill to Melio for processing. Returns a payment shape
-   * compatible with the other rails ({ paymentId, status, ... }).
+   * Hand a vendor bill to Melio. In the default manual-upload mode this writes a
+   * Melio Bills CSV and emails it to the Pay Bills portal address; with
+   * MELIO_USE_API=true it schedules the payment through the Melio API instead.
+   * Returns a payment shape compatible with the other rails.
    */
-  static async _payViaMelio({ bill, vendor, runId, memo }) {
-    const melio = getMelioClient();
-    const melioVendorId = (vendor.metadata && vendor.metadata.melio_vendor_id)
-      || (await melio.createVendor({
-        name: vendor.name,
-        email: vendor.email || undefined,
-        bank_account: {
-          account_number: vendor.account_number,
-          routing_number: vendor.routing_number,
-          account_type: vendor.account_type,
-          bank_name: vendor.bank_name,
-        },
-      })).id;
-    const melioBill = await melio.createBill({
-      vendor_id: melioVendorId,
+  static async _payViaMelio({ bill, vendor, runId, memo, sourceCashAccountId }) {
+    loadDeps();
+    if (!MelioEngine) throw new Error('MelioEngine not available');
+    const useApi = melioUsesApi();
+    const dueDate = bill.due_date
+      ? new Date(bill.due_date).toISOString().slice(0, 10)
+      : new Date().toISOString().slice(0, 10);
+    const payload = {
       amount: bill.amount_cents / 100,
       currency: bill.currency || 'USD',
-      due_date: bill.due_date || undefined,
-      description: memo || bill.memo || `Vendor payment ${runId}`,
-    });
-    const scheduled = await melio.schedulePayment({
-      bill_id: melioBill.id,
-      vendor_id: melioVendorId,
-      amount: bill.amount_cents / 100,
-      delivery_method: 'ach',
-    });
+      vendor: {
+        name: vendor.name,
+        email: vendor.email || undefined,
+        routingNumber: vendor.routing_number,
+        accountNumber: vendor.account_number,
+        accountType: vendor.account_type,
+        bankName: vendor.bank_name,
+      },
+      vendorId: vendor.vendor_id,
+      billId: bill.bill_id,
+      invoiceNumber: bill.bill_id,
+      dueDate,
+      memo: memo || bill.memo || `Vendor payment ${runId}`,
+      // Only override Melio's configured funding source when the caller named a
+      // cash account; the id is meaningless under Melio's default source type.
+      ...(sourceCashAccountId
+        ? { sourceType: 'cash', sourceAccountId: sourceCashAccountId }
+        : {}),
+    };
+    const record = useApi
+      ? await MelioEngine.process({ action: 'schedulePayment', ...payload })
+      : await MelioEngine.process({ action: 'exportPayment', ...payload });
+    const result = record.result || record;
     return {
-      paymentId: scheduled.id,
-      status: scheduled.status === 'completed' ? 'completed' : 'initiated',
+      paymentId: result.id,
+      // Exported/emailed CSVs are handed off, not settled: the bill only becomes
+      // paid once the portal payment is marked paid.
+      status: result.status === 'completed' ? 'completed' : 'initiated',
       provider: 'melio',
-      shadow: !!melio.shadow,
-      melio_vendor_id: melioVendorId,
-      melio_bill_id: melioBill.id,
-      estimated_arrival: scheduled.estimated_arrival || null,
+      mode: useApi ? 'live_api' : 'manual_upload',
+      melio_status: result.status,
+      csv_file: (result.result && result.result.fileName) || null,
+      emailed_to: result.emailedTo || (result.result && result.result.emailedTo) || null,
     };
   }
 
