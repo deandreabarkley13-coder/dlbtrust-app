@@ -11,6 +11,7 @@ interface FakeState {
   attestations: Row[];
   accounts: Row[];
   movements: Row[];
+  bonds: Row[];
 }
 
 /**
@@ -20,7 +21,7 @@ interface FakeState {
 function fakeDb(state: FakeState) {
   return vi.fn(async (sql: string, params: any[] = []) => {
     const text = String(sql).replace(/\s+/g, ' ').trim();
-    if (/^CREATE/i.test(text)) return { rows: [] };
+    if (/^(CREATE|ALTER)/i.test(text)) return { rows: [] };
 
     if (text.startsWith('INSERT INTO reserve_attestations')) {
       const row = {
@@ -34,6 +35,8 @@ function fakeDb(state: FakeState) {
         evidence_reference: params[7],
         attested_by: params[8],
         detail: params[9],
+        asset_class: params[10],
+        haircut_bps: params[11],
         observed_at: new Date().toISOString(),
       };
       state.attestations.push(row);
@@ -59,12 +62,34 @@ function fakeDb(state: FakeState) {
       return { rows: state.accounts.filter((a) => a.account_id === params[0]) };
     }
 
+    if (text.includes('FROM bonds')) {
+      return { rows: state.bonds.filter((b) => b.status === 'active') };
+    }
+
     if (text.includes('FROM cash_movements')) {
       return { rows: state.movements.filter((m) => m.to_account_id === params[0]) };
     }
 
     return { rows: [] };
   });
+}
+
+function bond(fields: Partial<Row>) {
+  return {
+    id: 1,
+    bond_name: 'DLB-PRB',
+    isin: null,
+    bond_identifier: null,
+    issuer: null,
+    placement_type: 'private',
+    face_value: '0.00',
+    coupon_rate: '0.02',
+    maturity_date: '2030-01-01',
+    status: 'active',
+    principal_balance: null,
+    accrued_interest: null,
+    ...fields,
+  };
 }
 
 function account(accountId: string, balanceCents: number) {
@@ -94,6 +119,8 @@ const ENV_KEYS = [
   'PARTNER_BANK_PROVIDER',
   'PARTNER_BANK_API_KEY',
   'PARTNER_BANK_ACCOUNT_ID',
+  'RESERVE_TRUST_ISSUER_NAMES',
+  'RESERVE_COLLATERAL_HAIRCUT_BPS',
 ];
 
 describe('core bank reserve engine', () => {
@@ -101,7 +128,7 @@ describe('core bank reserve engine', () => {
   let saved: Record<string, string | undefined>;
 
   beforeEach(() => {
-    state = { attestations: [], accounts: [], movements: [] };
+    state = { attestations: [], accounts: [], movements: [], bonds: [] };
     saved = {};
     for (const key of ENV_KEYS) {
       saved[key] = process.env[key];
@@ -259,6 +286,100 @@ describe('core bank reserve engine', () => {
       expect(trace.classification).toBe('mixed');
       expect(trace.externalDepositCents).toBe(500000);
       expect(trace.origins.some((o: Row) => o.funding === 'external_deposit')).toBe(true);
+    });
+  });
+
+  describe('fixed income portfolio', () => {
+    it('carries a self-issued, self-held bond at zero eligible collateral', async () => {
+      state.bonds.push(bond({
+        bond_name: 'DLB-PRB',
+        issuer: 'DeAndrea Lavar Barkley Trust',
+        face_value: '100000000.00',
+        principal_balance: '100000000.00',
+        accrued_interest: '250000.00',
+      }));
+
+      const portfolio = await ReserveEngine.portfolio();
+      expect(portfolio.positions[0].custodyStatus).toBe('self_issued_self_held');
+      expect(portfolio.carryingValueCents).toBe(10025000000);
+      expect(portfolio.selfIssuedCents).toBe(10025000000);
+      expect(portfolio.eligibleCollateralCents).toBe(0);
+    });
+
+    it('leaves a third-party bond ineligible until a custodian attests to it', async () => {
+      state.bonds.push(bond({
+        id: 2,
+        bond_name: 'US-TREAS-2030',
+        isin: 'US912810TM09',
+        issuer: 'United States Treasury',
+        principal_balance: '250000.00',
+      }));
+
+      const portfolio = await ReserveEngine.portfolio();
+      expect(portfolio.positions[0].selfIssued).toBe(false);
+      expect(portfolio.positions[0].custodyStatus).toBe('unattested');
+      expect(portfolio.eligibleCollateralCents).toBe(0);
+    });
+
+    it('counts an attested third-party position as collateral net of its haircut', async () => {
+      state.bonds.push(bond({
+        id: 2,
+        bond_name: 'US-TREAS-2030',
+        isin: 'US912810TM09',
+        issuer: 'United States Treasury',
+        principal_balance: '250000.00',
+      }));
+      await ReserveEngine.record({
+        sourceType: 'securities_custodian',
+        sourceKey: 'US912810TM09',
+        verification: 'statement',
+        balanceCents: 25000000,
+        evidenceReference: 'SCHWAB-STMT-2026-08',
+        attestedBy: 'DeAndrea Lavar Barkley',
+      });
+
+      const portfolio = await ReserveEngine.portfolio();
+      // 20% default haircut on a $250,000 position.
+      expect(portfolio.positions[0].custodyStatus).toBe('custodian_attested');
+      expect(portfolio.eligibleCollateralCents).toBe(20000000);
+    });
+
+    it('reports collateral separately from spendable reserve in coverage', async () => {
+      state.accounts.push(account('CA-OPERATING', 584259658));
+      state.bonds.push(bond({
+        id: 2,
+        bond_name: 'US-TREAS-2030',
+        isin: 'US912810TM09',
+        issuer: 'United States Treasury',
+        principal_balance: '250000.00',
+      }));
+      await ReserveEngine.record({
+        sourceType: 'securities_custodian',
+        sourceKey: 'US912810TM09',
+        verification: 'statement',
+        balanceCents: 25000000,
+        haircutBps: 0,
+        evidenceReference: 'SCHWAB-STMT-2026-08',
+        attestedBy: 'DeAndrea Lavar Barkley',
+      });
+
+      const coverage = await ReserveEngine.coverage();
+      expect(coverage.attestedReserveCents).toBe(0);
+      expect(coverage.spendableCents).toBe(0);
+      expect(coverage.pledgeableCollateralCents).toBe(25000000);
+      expect(coverage.status).toBe('unbacked');
+    });
+
+    it('refuses to book a securities custodian as spendable cash', async () => {
+      await expect(ReserveEngine.record({
+        sourceType: 'securities_custodian',
+        sourceKey: 'US912810TM09',
+        assetClass: 'cash',
+        verification: 'statement',
+        balanceCents: 25000000,
+        evidenceReference: 'SCHWAB-STMT-2026-08',
+        attestedBy: 'DeAndrea Lavar Barkley',
+      })).rejects.toThrow(/not spendable cash/);
     });
   });
 

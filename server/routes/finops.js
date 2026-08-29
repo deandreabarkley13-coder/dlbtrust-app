@@ -1021,6 +1021,26 @@ router.post('/reserve/attest', operatorAuth, writeRateLimiter(), async (req, res
   } catch (err) { sendError(res, err); }
 });
 
+// Bond portfolio read as collateral: what each position actually backs.
+router.get('/reserve/portfolio', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await ReserveEngine.portfolio() }); } catch (err) { sendError(res, err); }
+});
+
+// Records a securities custodian statement for a bond position as collateral.
+router.post('/reserve/attest-fixed-income', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try {
+    const actor = sessionActor(req);
+    const data = await ReserveEngine.record({
+      ...req.body,
+      sourceType: 'securities_custodian',
+      assetClass: 'fixed_income',
+      verification: 'statement',
+      attestedBy: req.body.attestedBy || actor,
+    });
+    res.status(201).json({ success: true, data });
+  } catch (err) { sendError(res, err); }
+});
+
 router.get('/reserve/provenance/:accountId', operatorAuth, async (req, res) => {
   try { res.json({ success: true, data: await ReserveEngine.provenance(req.params.accountId) }); } catch (err) { sendError(res, err); }
 });
