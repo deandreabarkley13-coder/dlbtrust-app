@@ -31,6 +31,7 @@ const { InternalMarketMakerEngine } = require('../integrations/dapp/internalMark
 const { ReserveVaultEngine } = require('../integrations/dapp/reserveVaultEngine');
 const { ReserveEngine } = require('../integrations/finops/reserveEngine');
 const { CustodyOsEngine } = require('../integrations/custody/custodyOsEngine');
+const { SeriesOsEngine } = require('../integrations/series/seriesOsEngine');
 const { TreasuryOnRampBridgeEngine } = require('../integrations/dapp/treasuryOnRampBridgeEngine');
 const { TrustMarketEngine } = require('../integrations/dapp/trustMarketEngine');
 const { IntentRoutingEngine } = require('../integrations/dapp/intentRoutingEngine');
@@ -1144,6 +1145,109 @@ router.post('/custody/sync-reserve', operatorAuth, writeRateLimiter(), async (re
     });
     res.json({ success: true, data });
   } catch (err) { sendError(res, err); }
+});
+
+// ═════════════════════════════════════════════════════════════════════════════
+// Series OS — master trust / series register, asset identification, ring fencing
+// ═════════════════════════════════════════════════════════════════════════════
+
+router.get('/series/status', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await SeriesOsEngine.status() }); } catch (err) { sendError(res, err); }
+});
+
+router.get('/series/statement', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await SeriesOsEngine.statement() }); } catch (err) { sendError(res, err); }
+});
+
+// Every asset the trust can point at, what it contributes, and where it is fenced.
+router.get('/series/assets', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await SeriesOsEngine.identify() }); } catch (err) { sendError(res, err); }
+});
+
+router.get('/series', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await SeriesOsEngine.listSeries() }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/series', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try {
+    const data = await SeriesOsEngine.openSeries({
+      ...req.body,
+      openedBy: (req.body && req.body.openedBy) || sessionActor(req),
+    });
+    res.status(201).json({ success: true, data });
+  } catch (err) { sendError(res, err); }
+});
+
+router.get('/series/:ref/balance-sheet', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await SeriesOsEngine.balanceSheet(req.params.ref) }); } catch (err) { sendError(res, err); }
+});
+
+router.get('/series/:ref/assets', operatorAuth, async (req, res) => {
+  try {
+    const data = await SeriesOsEngine.listAssignments({ seriesRef: req.params.ref });
+    res.json({ success: true, data });
+  } catch (err) { sendError(res, err); }
+});
+
+// Fencing an asset into a series is refused if another series already holds it.
+router.post('/series/:ref/assets', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try {
+    const data = await SeriesOsEngine.assignAsset({
+      ...req.body,
+      seriesRef: req.params.ref,
+      assignedBy: (req.body && req.body.assignedBy) || sessionActor(req),
+    });
+    res.status(201).json({ success: true, data });
+  } catch (err) { sendError(res, err); }
+});
+
+router.post('/series/assets/:assignmentId/release', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try {
+    const data = await SeriesOsEngine.releaseAsset(req.params.assignmentId, {
+      releasedBy: (req.body && req.body.releasedBy) || sessionActor(req),
+      reason: (req.body && req.body.reason) || null,
+    });
+    res.json({ success: true, data });
+  } catch (err) { sendError(res, err); }
+});
+
+router.get('/series/:ref/obligations', operatorAuth, async (req, res) => {
+  try {
+    const data = await SeriesOsEngine.listObligations({
+      seriesRef: req.params.ref,
+      status: req.query.status || null,
+    });
+    res.json({ success: true, data });
+  } catch (err) { sendError(res, err); }
+});
+
+router.post('/series/:ref/obligations', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try {
+    const data = await SeriesOsEngine.recordObligation({
+      ...req.body,
+      seriesRef: req.params.ref,
+      createdBy: (req.body && req.body.createdBy) || sessionActor(req),
+    });
+    res.status(201).json({ success: true, data });
+  } catch (err) { sendError(res, err); }
+});
+
+router.post('/series/obligations/:obligationId/settle', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try {
+    const data = await SeriesOsEngine.settleObligation(req.params.obligationId, {
+      status: (req.body && req.body.status) || 'settled',
+      settledBy: (req.body && req.body.settledBy) || sessionActor(req),
+    });
+    res.json({ success: true, data });
+  } catch (err) { sendError(res, err); }
+});
+
+router.get('/series-events', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await SeriesOsEngine.events({ limit: req.query.limit }) }); } catch (err) { sendError(res, err); }
+});
+
+router.get('/series-chain', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await SeriesOsEngine.verifyChain() }); } catch (err) { sendError(res, err); }
 });
 
 // ═════════════════════════════════════════════════════════════════════════════

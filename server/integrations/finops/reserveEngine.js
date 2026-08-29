@@ -715,7 +715,7 @@ class ReserveEngine {
    * larger than the attested external reserve throws instead of being sent to a
    * provider that would decline it or, worse, be recorded as settled.
    */
-  static async assertSpendable({ amountCents, rail = 'external', accountId = null } = {}) {
+  static async assertSpendable({ amountCents, rail = 'external', accountId = null, seriesId = null } = {}) {
     const cfg = this.config();
     const amount = cents(amountCents);
     if (!Number.isInteger(amount) || amount <= 0) {
@@ -754,7 +754,17 @@ class ReserveEngine {
       provenance: provenanceResult ? provenanceResult.classification : null,
     };
 
-    if (withinReserve) return decision;
+    // A payment charged to a series must also clear that series' ring fence:
+    // trust-wide reserve is necessary but not sufficient, because assets fenced
+    // into another series cannot answer for this one's obligation. Checked after
+    // the reserve so a trust with no backing at all reports that first.
+    if (withinReserve) {
+      const ringFence = seriesId ? await this._assertRingFence({ seriesId, amount, rail }) : null;
+      if (!ringFence) return decision;
+      return ringFence.warning
+        ? { ...decision, ringFence, warning: ringFence.warning }
+        : { ...decision, ringFence };
+    }
 
     const message = `Reserve shortfall: ${rail} origination of $${decision.amount} exceeds the`
       + ` $${cover.attestedReserve} held at an external custodian for the trust.`
@@ -768,6 +778,21 @@ class ReserveEngine {
       throw new ReserveShortfallError(message, decision);
     }
     return { ...decision, allowed: true, warning: message };
+  }
+
+  /**
+   * Delegate to the series engine. Loaded lazily because the series engine reads
+   * this one to identify assets, and a shortfall there is raised as its own
+   * error type rather than being flattened into a reserve shortfall.
+   */
+  static async _assertRingFence({ seriesId, amount, rail }) {
+    let SeriesOsEngine;
+    try {
+      ({ SeriesOsEngine } = require('../series/seriesOsEngine'));
+    } catch (e) {
+      return { checked: false, reason: 'Series OS engine unavailable' };
+    }
+    return SeriesOsEngine.assertSeriesSpendable({ seriesRef: seriesId, amountCents: amount, rail });
   }
 
   static async status() {

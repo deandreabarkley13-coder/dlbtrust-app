@@ -139,6 +139,7 @@ class PaymentProcessorServerEngine {
       amountCents,
       rail: `${processor}:${rail}`,
       accountId: source.accountId || source.account_id || null,
+      seriesId: source.seriesId || source.series_id || null,
     });
     if (decision && decision.warning) {
       console.warn('[processor] reserve check:', decision.warning);
