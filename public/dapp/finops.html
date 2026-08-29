@@ -172,6 +172,7 @@
     { key:'decentralized-ramps', name:'Decentralized Ramps', desc:'DEX, P2P, cross-chain, and fiat on/off-ramp aggregator', stat:'', endpoint:null, action:'openDecentralizedRampsPanel' },
     { key:'internal-market-maker', name:'Internal Market Maker', desc:'Tokenize reserves (interest income, bonds, fixed income) and seed deeper BondDex pools', stat:'', endpoint:null, action:'openInternalMarketMakerPanel' },
     { key:'core-reserve', name:'Core Bank Reserve', desc:'Attested external reserves and bond portfolio collateral behind ledger cash: coverage, custody verification, fixed income eligibility, and funding provenance', stat:'', endpoint:null, action:'openCoreReservePanel' },
+    { key:'custody-os', name:'Custody OS', desc:'Safekeeping accounts, positions, dual-signed custody receipts with chain of title, and the reserve attestations they produce', stat:'', endpoint:null, action:'openCustodyOsPanel' },
     { key:'reserve-vault', name:'Reserve Vault (CDP)', desc:'Tokenize ledger/module reserves into a vault stablecoin position and quote swaps to canonical assets', stat:'', endpoint:null, action:'openReserveVaultPanel' },
     { key:'treasury-on-ramp', name:'Treasury On-Ramp Bridge', desc:'Wire core-banking fiat to an on-ramp, receive DAI/USDC, and redeem internal tokens 1:1', stat:'', endpoint:null, action:'openTreasuryOnRampPanel' },
     { key:'dex-aggregator', name:'DEX Aggregator & V3', desc:'Multi-source DEX aggregator and Uniswap V3 canonical pair swaps', stat:'', endpoint:null, action:'openDexAggregatorPanel' },
@@ -2919,6 +2920,187 @@
       });
       html += '</table>';
       wrap.innerHTML = html;
+    } catch(e) { wrap.innerHTML = '<div class="status err">' + e.message + '</div>'; }
+  }
+
+  // ─── Custody OS panel ───────────────────────────────────────────────────────
+  function openCustodyOsPanel() {
+    const panel = el('module-panel');
+    const body = el('panel-body');
+    el('panel-title').textContent = 'Custody OS';
+    panel.classList.add('active');
+    body.innerHTML = '<div class="muted" style="margin-bottom:12px;">Every asset the trust claims gets a safekeeping record: where it is held, on what evidence, and which two trustees signed for it. A third-party custodian receipt flows through to the reserve; a self-custody receipt does not, because the trust attesting that it holds its own asset is an internal record.</div>' +
+      '<div class="approval-actions"><button class="btn" onclick="custodyLoad()">Refresh Statement</button><button class="btn" onclick="custodyChain()">Verify Chain of Title</button><button class="btn" onclick="custodySyncReserve()">Sync to Reserve</button></div>' +
+      '<div id="custody-statement" style="margin-top:8px;font-size:12px;"></div>' +
+      '<h3 style="font-size:14px;margin:16px 0 8px;">Open a Custody Account</h3>' +
+      '<div class="token-bar"><input id="cus-name" placeholder="account name" /><select id="cus-type"><option value="third_party">third_party</option><option value="self_custody">self_custody</option></select></div>' +
+      '<div class="token-bar"><input id="cus-custodian" placeholder="custodian name (third party only)" /><input id="cus-ref" placeholder="custodian account reference" /></div>' +
+      '<div class="approval-actions"><button class="btn" onclick="custodyOpenAccount()">Open Account</button></div>' +
+      '<div id="custody-account-status" style="margin-top:8px;"></div>' +
+      '<h3 style="font-size:14px;margin:16px 0 8px;">Record a Position</h3>' +
+      '<div class="token-bar"><input id="cpos-account" placeholder="custody account id" /><select id="cpos-class"><option value="cash">cash</option><option value="fixed_income">fixed_income</option><option value="digital_asset">digital_asset</option><option value="physical">physical</option></select></div>' +
+      '<div class="token-bar"><input id="cpos-ref" placeholder="instrument reference (ISIN / account label / address)" /><input id="cpos-value" placeholder="valuation (USD)" /></div>' +
+      '<div class="approval-actions"><button class="btn" onclick="custodyRecordPosition()">Record Position</button></div>' +
+      '<div id="custody-position-status" style="margin-top:8px;"></div>' +
+      '<h3 style="font-size:14px;margin:16px 0 8px;">Safekeeping Receipts</h3>' +
+      '<div class="token-bar"><input id="crc-position" placeholder="position id" /><select id="crc-action"><option value="safekeeping">safekeeping</option><option value="revaluation">revaluation</option><option value="release">release</option></select></div>' +
+      '<div class="token-bar"><input id="crc-evidence" placeholder="custodian statement / vault log / document id" /><input id="crc-value" placeholder="valuation (USD, blank keeps position value)" /></div>' +
+      '<div class="approval-actions"><button class="btn" onclick="custodyProposeReceipt()">Propose Receipt</button><button class="btn" onclick="custodyReceipts()">Load Receipts</button></div>' +
+      '<div id="custody-receipt-status" style="margin-top:8px;"></div>' +
+      '<div id="custody-receipts" style="margin-top:8px;font-size:12px;"></div>';
+    custodyLoad();
+    custodyReceipts();
+  }
+
+  async function custodyLoad() {
+    const wrap = el('custody-statement');
+    wrap.innerHTML = '<div class="muted">Loading custody statement…</div>';
+    try {
+      const r = await api('/api/finops/custody/statement');
+      if (!r.success) throw new Error(r.error || 'statement failed');
+      const d = r.data;
+      const cls = d.thirdPartyReceipted > 0 ? 'ok' : 'err';
+      let html = '<div class="status ' + cls + '">held $' + htmlEscape(d.held.toLocaleString()) +
+        ', third-party receipted $' + htmlEscape(d.thirdPartyReceipted.toLocaleString()) +
+        ', self custody $' + htmlEscape(d.selfCustody.toLocaleString()) +
+        ', unreceipted $' + htmlEscape(d.unreceipted.toLocaleString()) + '</div>';
+      html += '<div class="muted" style="margin:8px 0;">' + htmlEscape(d.note) + '</div>';
+      html += '<table class="small-table"><thead><tr><th>Custody Account</th><th>Type</th><th>Instrument</th><th>Class</th><th>Valuation</th><th>Control</th><th>External</th></tr></thead>';
+      (d.accounts || []).forEach(a => {
+        if (!(a.positions || []).length) {
+          html += '<tr><td>' + htmlEscape(a.accountName) + '</td><td>' + htmlEscape(a.custodyType) + '</td><td colspan="5" class="muted">no positions</td></tr>';
+          return;
+        }
+        a.positions.forEach(p => {
+          html += '<tr><td>' + htmlEscape(a.accountName) + (a.custodianName ? ' <span class="muted">(' + htmlEscape(a.custodianName) + ')</span>' : '') +
+            '</td><td>' + htmlEscape(a.custodyType) + '</td><td>' + htmlEscape(p.instrumentRef) + '</td><td>' + htmlEscape(p.assetClass) +
+            '</td><td>$' + htmlEscape(p.valuation.toLocaleString()) + '</td><td>' + htmlEscape(p.controlStatus) +
+            '</td><td>' + (p.verifiedExternally ? 'yes' : 'no') + '</td></tr>';
+        });
+      });
+      html += '</table>';
+      if (!(d.accounts || []).length) html += '<div class="muted">No custody account has been opened yet.</div>';
+      wrap.innerHTML = html;
+    } catch(e) { wrap.innerHTML = '<div class="status err">' + e.message + '</div>'; }
+  }
+
+  async function custodyChain() {
+    const wrap = el('custody-statement');
+    try {
+      const r = await api('/api/finops/custody/chain');
+      if (!r.success) throw new Error(r.error || 'chain verification failed');
+      const d = r.data;
+      wrap.innerHTML = '<div class="status ' + (d.intact ? 'ok' : 'err') + '">' + htmlEscape(String(d.events)) +
+        ' custody events — ' + htmlEscape(d.note) + '</div>' + wrap.innerHTML;
+    } catch(e) { wrap.innerHTML = '<div class="status err">' + e.message + '</div>'; }
+  }
+
+  async function custodySyncReserve() {
+    const wrap = el('custody-statement');
+    try {
+      const r = await api('/api/finops/custody/sync-reserve', { method: 'POST', body: '{}' });
+      if (!r.success) throw new Error(r.error || 'sync failed');
+      wrap.innerHTML = '<div class="status ok">Synced ' + htmlEscape(String(r.data.synced)) + ' receipted third-party position(s) to the reserve</div>' + wrap.innerHTML;
+    } catch(e) { wrap.innerHTML = '<div class="status err">' + e.message + '</div>'; }
+  }
+
+  async function custodyOpenAccount() {
+    const wrap = el('custody-account-status');
+    wrap.innerHTML = '<div class="muted">Opening…</div>';
+    try {
+      const body = {
+        accountName: el('cus-name').value,
+        custodyType: el('cus-type').value,
+        custodianName: el('cus-custodian').value || undefined,
+        custodianAccountRef: el('cus-ref').value || undefined,
+      };
+      const r = await api('/api/finops/custody/accounts', { method: 'POST', body: JSON.stringify(body) });
+      if (!r.success) throw new Error(r.error || 'open failed');
+      wrap.innerHTML = '<div class="status ok">Opened ' + htmlEscape(r.data.custody_account_id) + '</div>';
+      custodyLoad();
+    } catch(e) { wrap.innerHTML = '<div class="status err">' + e.message + '</div>'; }
+  }
+
+  async function custodyRecordPosition() {
+    const wrap = el('custody-position-status');
+    wrap.innerHTML = '<div class="muted">Recording…</div>';
+    try {
+      const body = {
+        custodyAccountId: el('cpos-account').value,
+        assetClass: el('cpos-class').value,
+        instrumentRef: el('cpos-ref').value,
+        valuationCents: Math.round(Number(el('cpos-value').value) * 100),
+      };
+      const r = await api('/api/finops/custody/positions', { method: 'POST', body: JSON.stringify(body) });
+      if (!r.success) throw new Error(r.error || 'record failed');
+      wrap.innerHTML = '<div class="status ok">Recorded ' + htmlEscape(r.data.position_id) + ' (unverified until receipted)</div>';
+      custodyLoad();
+    } catch(e) { wrap.innerHTML = '<div class="status err">' + e.message + '</div>'; }
+  }
+
+  async function custodyProposeReceipt() {
+    const wrap = el('custody-receipt-status');
+    wrap.innerHTML = '<div class="muted">Proposing…</div>';
+    try {
+      const value = el('crc-value').value;
+      const body = {
+        positionId: el('crc-position').value,
+        action: el('crc-action').value,
+        evidenceReference: el('crc-evidence').value,
+      };
+      if (value) body.valuationCents = Math.round(Number(value) * 100);
+      const r = await api('/api/finops/custody/receipts', { method: 'POST', body: JSON.stringify(body) });
+      if (!r.success) throw new Error(r.error || 'proposal failed');
+      wrap.innerHTML = '<div class="status ok">Proposed ' + htmlEscape(r.data.receipt_id) + ' — needs ' + htmlEscape(String(r.data.required_signatures)) + ' trustee signature(s)</div>';
+      custodyReceipts();
+    } catch(e) { wrap.innerHTML = '<div class="status err">' + e.message + '</div>'; }
+  }
+
+  async function custodyReceipts() {
+    const wrap = el('custody-receipts');
+    wrap.innerHTML = '<div class="muted">Loading receipts…</div>';
+    try {
+      const r = await api('/api/finops/custody/receipts');
+      if (!r.success) throw new Error(r.error || 'receipts failed');
+      let html = '<table class="small-table"><thead><tr><th>Receipt</th><th>Instrument</th><th>Action</th><th>Valuation</th><th>Evidence</th><th>Signatures</th><th>Status</th><th></th></tr></thead>';
+      (r.data || []).forEach(x => {
+        const signed = (x.signatures || []).map(s => s.signedBy).join(', ');
+        html += '<tr><td>' + htmlEscape(x.receipt_id) + '</td><td>' + htmlEscape(x.instrument_ref || '—') + '</td><td>' + htmlEscape(x.action) +
+          '</td><td>$' + htmlEscape((Number(x.valuation_cents || 0) / 100).toLocaleString()) + '</td><td>' + htmlEscape(x.evidence_reference) +
+          '</td><td>' + htmlEscape(signed || '—') + ' <span class="muted">of ' + htmlEscape(String(x.required_signatures)) + '</span></td><td>' + htmlEscape(x.status) +
+          '</td><td>' + (x.status === 'pending'
+            ? '<button class="btn" onclick="custodyCountersign(\'' + htmlEscape(x.receipt_id) + '\')">Countersign</button>'
+              + ' <button class="btn" onclick="custodyVoid(\'' + htmlEscape(x.receipt_id) + '\')">Void</button>'
+            : htmlEscape(x.reserve_note || '')) + '</td></tr>';
+      });
+      html += '</table>';
+      if (!(r.data || []).length) html += '<div class="muted">No custody receipt has been raised yet.</div>';
+      wrap.innerHTML = html;
+    } catch(e) { wrap.innerHTML = '<div class="status err">' + e.message + '</div>'; }
+  }
+
+  async function custodyCountersign(receiptId) {
+    const wrap = el('custody-receipt-status');
+    wrap.innerHTML = '<div class="muted">Signing…</div>';
+    try {
+      const r = await api('/api/finops/custody/receipts/' + encodeURIComponent(receiptId) + '/countersign', { method: 'POST', body: '{}' });
+      if (!r.success) throw new Error(r.error || 'countersign failed');
+      const d = r.data;
+      wrap.innerHTML = '<div class="status ok">' + htmlEscape(d.status) +
+        (d.remainingSignatures ? ' — ' + htmlEscape(String(d.remainingSignatures)) + ' signature(s) remaining' : '') +
+        (d.reserve && d.reserve.note ? ' — ' + htmlEscape(d.reserve.note) : '') + '</div>';
+      custodyReceipts();
+      custodyLoad();
+    } catch(e) { wrap.innerHTML = '<div class="status err">' + e.message + '</div>'; }
+  }
+
+  async function custodyVoid(receiptId) {
+    const wrap = el('custody-receipt-status');
+    try {
+      const r = await api('/api/finops/custody/receipts/' + encodeURIComponent(receiptId) + '/void', { method: 'POST', body: '{}' });
+      if (!r.success) throw new Error(r.error || 'void failed');
+      wrap.innerHTML = '<div class="status ok">Voided ' + htmlEscape(receiptId) + '</div>';
+      custodyReceipts();
     } catch(e) { wrap.innerHTML = '<div class="status err">' + e.message + '</div>'; }
   }
 

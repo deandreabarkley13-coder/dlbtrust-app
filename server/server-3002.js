@@ -506,6 +506,12 @@ async function initializeDatabase() {
   } catch(e) { console.warn('[reserve] table init:', e.message); }
 
   try {
+    var CustodyOsEngine = require(path.join(HD, 'server', 'integrations', 'custody', 'custodyOsEngine')).CustodyOsEngine;
+    await CustodyOsEngine.ensureTables();
+    console.log('[custody-os] tables ensured; signatures required =', CustodyOsEngine.config().requiredSignatures);
+  } catch(e) { console.warn('[custody-os] table init:', e.message); }
+
+  try {
     var PaymentGatewayServerEngine = require(path.join(HD, 'server', 'integrations', 'payments', 'paymentGatewayServerEngine')).PaymentGatewayServerEngine;
     await PaymentGatewayServerEngine.ensureTables();
     console.log('[payment-gateway] tables ensured');
