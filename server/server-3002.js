@@ -524,6 +524,12 @@ async function initializeDatabase() {
   } catch(e) { console.warn('[capital-transfer-os] table init:', e.message); }
 
   try {
+    var PrincipalIncomeEngine = require(path.join(HD, 'server', 'integrations', 'drawdown', 'principalIncomeEngine')).PrincipalIncomeEngine;
+    await PrincipalIncomeEngine.ensureTables();
+    console.log('[drawdown-os] tables ensured; principal allowance =', PrincipalIncomeEngine.config().principalRateBps, 'bps/yr');
+  } catch(e) { console.warn('[drawdown-os] table init:', e.message); }
+
+  try {
     var PaymentGatewayServerEngine = require(path.join(HD, 'server', 'integrations', 'payments', 'paymentGatewayServerEngine')).PaymentGatewayServerEngine;
     await PaymentGatewayServerEngine.ensureTables();
     console.log('[payment-gateway] tables ensured');

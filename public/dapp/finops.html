@@ -175,6 +175,7 @@
     { key:'custody-os', name:'Custody OS', desc:'Safekeeping accounts, positions, dual-signed custody receipts with chain of title, and the reserve attestations they produce', stat:'', endpoint:null, action:'openCustodyOsPanel' },
     { key:'series-os', name:'Master Trust / Series OS', desc:'Identify every reserve asset and ring-fence it into one series, so a beneficiary series can only draw on its own assets', stat:'', endpoint:null, action:'openSeriesOsPanel' },
     { key:'capital-transfer-os', name:'Capital Transfer OS', desc:'Convert reserve assets into spendable funds inside a series: sell or pledge collateral, redeem digital assets, sweep custodian cash, all under dual trustee control', stat:'', endpoint:null, action:'openCapitalTransferPanel' },
+    { key:'drawdown-os', name:'Principal & Income Drawdown OS', desc:'Trust accounting for drawdowns: allocate every receipt to principal or income, authorize what a beneficiary may draw against corpus, and fund it only from attested cash', stat:'', endpoint:null, action:'openDrawdownPanel' },
     { key:'reserve-vault', name:'Reserve Vault (CDP)', desc:'Tokenize ledger/module reserves into a vault stablecoin position and quote swaps to canonical assets', stat:'', endpoint:null, action:'openReserveVaultPanel' },
     { key:'treasury-on-ramp', name:'Treasury On-Ramp Bridge', desc:'Wire core-banking fiat to an on-ramp, receive DAI/USDC, and redeem internal tokens 1:1', stat:'', endpoint:null, action:'openTreasuryOnRampPanel' },
     { key:'dex-aggregator', name:'DEX Aggregator & V3', desc:'Multi-source DEX aggregator and Uniswap V3 canonical pair swaps', stat:'', endpoint:null, action:'openDexAggregatorPanel' },
@@ -3445,6 +3446,174 @@
       const d = r.data;
       wrap.innerHTML = '<div class="status ' + (d.intact ? 'ok' : 'err') + '">' + htmlEscape(String(d.events)) +
         ' capital transfer events — ' + htmlEscape(d.note) + '</div>' + wrap.innerHTML;
+    } catch(e) { wrap.innerHTML = '<div class="status err">' + e.message + '</div>'; }
+  }
+
+  // ─── Principal & Income Drawdown OS panel ───────────────────────────────────
+  function openDrawdownPanel() {
+    const panel = el('module-panel');
+    const body = el('panel-body');
+    el('panel-title').textContent = 'Principal & Income Drawdown OS';
+    panel.classList.add('active');
+    body.innerHTML = '<div class="muted" style="margin-bottom:12px;">A drawdown is an entitlement, not a balance. Every receipt is allocated to principal or income (accrued interest is recorded but never distributable, and neither is a coupon on an instrument the trust issued to itself). A drawdown runs proposed → two trustee signatures → authorized, and funding pays only what the series holds in attested cash — the rest stays visibly outstanding with the reason instead of presenting as money.</div>' +
+      '<div class="token-bar"><input id="dd-series" placeholder="series id or code" /><button class="btn" onclick="drawdownStatement()">Load Statement</button><button class="btn" onclick="drawdownChain()">Verify Drawdown Log</button></div>' +
+      '<div id="dd-statement" style="margin-top:8px;font-size:12px;"></div>' +
+      '<h3 style="font-size:14px;margin:16px 0 8px;">Post a Receipt or Disbursement</h3>' +
+      '<div class="token-bar"><select id="dd-source"><option value="contribution">contribution</option><option value="bond_maturity">bond_maturity</option><option value="capital_transfer">capital_transfer</option><option value="bond_coupon">bond_coupon</option><option value="interest">interest</option><option value="rent">rent</option><option value="business_receipt">business_receipt</option><option value="accrued_interest">accrued_interest</option><option value="trustee_fee">trustee_fee</option></select><select id="dd-entry-type"><option value="receipt">receipt</option><option value="disbursement">disbursement</option></select><select id="dd-basis"><option value="cash">cash</option><option value="accrual">accrual</option></select></div>' +
+      '<div class="token-bar"><input id="dd-entry-amount" placeholder="amount (USD)" /><input id="dd-entry-ref" placeholder="source reference (bond, account, transfer)" /><input id="dd-entry-evidence" placeholder="evidence reference (optional)" /></div>' +
+      '<div class="approval-actions"><button class="btn" onclick="drawdownEntry()">Post Entry</button></div>' +
+      '<div id="dd-entry-status" style="margin-top:8px;"></div>' +
+      '<h3 style="font-size:14px;margin:16px 0 8px;">Request a Drawdown</h3>' +
+      '<div class="token-bar"><select id="dd-allocation"><option value="principal">principal</option><option value="income">income</option></select><input id="dd-amount" placeholder="amount (USD)" /><input id="dd-purpose" placeholder="purpose (beneficiary support, trust expense)" /></div>' +
+      '<div class="token-bar"><input id="dd-beneficiary" placeholder="beneficiary (blank = the series beneficiary)" /><input id="dd-memo" placeholder="memo (optional)" /></div>' +
+      '<div class="approval-actions"><button class="btn" onclick="drawdownPropose()">Request Drawdown</button></div>' +
+      '<div id="dd-propose-status" style="margin-top:8px;"></div>' +
+      '<h3 style="font-size:14px;margin:16px 0 8px;">Fund an Authorized Drawdown</h3>' +
+      '<div class="token-bar"><input id="dd-id" placeholder="drawdown id" /><input id="dd-payment-ref" placeholder="payment reference (the rail or transfer that paid it)" /><input id="dd-fund-amount" placeholder="amount (USD, blank = outstanding)" /></div>' +
+      '<div class="approval-actions"><button class="btn" onclick="drawdownFund()">Fund Drawdown</button></div>' +
+      '<div id="dd-fund-status" style="margin-top:8px;"></div>';
+    drawdownStatement();
+  }
+
+  async function drawdownStatement() {
+    const wrap = el('dd-statement');
+    const seriesRef = el('dd-series').value;
+    if (!seriesRef) { wrap.innerHTML = '<div class="muted">Enter a series to load its principal and income statement.</div>'; return; }
+    wrap.innerHTML = '<div class="muted">Loading statement…</div>';
+    try {
+      const r = await api('/api/finops/drawdown/statement?seriesRef=' + encodeURIComponent(seriesRef));
+      if (!r.success) throw new Error(r.error || 'statement failed');
+      const d = r.data;
+      const ent = d.entitlement || {};
+      let html = '<div class="status ' + (Number(d.unfunded) > 0 ? 'err' : 'ok') + '">' + htmlEscape(d.seriesCode) +
+        ' — authorized $' + htmlEscape(Number(d.authorized).toLocaleString()) + ', funded $' + htmlEscape(Number(d.funded).toLocaleString()) +
+        ', unfunded $' + htmlEscape(Number(d.unfunded).toLocaleString()) + '</div>';
+      html += '<div class="muted" style="margin:8px 0;">' + htmlEscape(d.note) + '</div>';
+      html += '<table class="small-table"><thead><tr><th>Fund</th><th>Receipts</th><th>Disbursements</th><th>Distributable</th><th>Accrued (not distributable)</th></tr></thead>';
+      ['principal', 'income'].forEach(k => {
+        const f = d[k] || {};
+        html += '<tr><td>' + k + '</td><td>$' + htmlEscape(Number(f.receipts || 0).toLocaleString()) +
+          '</td><td>$' + htmlEscape(Number(f.disbursements || 0).toLocaleString()) +
+          '</td><td>$' + htmlEscape(Number(f.distributable || 0).toLocaleString()) +
+          '</td><td>$' + htmlEscape(Number(f.accrued || 0).toLocaleString()) + '</td></tr>';
+      });
+      html += '</table>';
+      html += '<h3 style="font-size:13px;margin:12px 0 6px;">Entitlement vs Fundable</h3>';
+      html += '<div class="muted" style="margin-bottom:6px;">Corpus $' + htmlEscape(Number(ent.corpus || 0).toLocaleString()) +
+        ' at ' + htmlEscape(String((ent.principalRateBps || 0) / 100)) + '% a year over ' + htmlEscape(String(ent.allowanceYears || 0)) +
+        ' allowance year(s); attested cash in this series $' + htmlEscape(Number(ent.seriesAvailable || 0).toLocaleString()) + '</div>';
+      html += '<table class="small-table"><thead><tr><th>Fund</th><th>Allowance</th><th>Committed</th><th>Remaining</th><th>Fundable Today</th><th>Unbacked</th></tr></thead>';
+      ['principal', 'income'].forEach(k => {
+        const e = ent[k] || {};
+        html += '<tr><td>' + k + '</td><td>$' + htmlEscape(Number(e.allowance || 0).toLocaleString()) +
+          '</td><td>$' + htmlEscape(Number(e.committed || 0).toLocaleString()) +
+          '</td><td>$' + htmlEscape(Number(e.remaining || 0).toLocaleString()) +
+          '</td><td>$' + htmlEscape(Number(e.fundable || 0).toLocaleString()) +
+          '</td><td>$' + htmlEscape(Number(e.unbacked || 0).toLocaleString()) + '</td></tr>';
+      });
+      html += '</table>';
+      const rows = d.drawdowns || [];
+      html += '<h3 style="font-size:13px;margin:12px 0 6px;">Drawdowns (' + htmlEscape(String(rows.length)) + ')</h3>';
+      html += '<table class="small-table"><thead><tr><th>Drawdown</th><th>Fund</th><th>Requested</th><th>Funded</th><th>Status</th><th>Signatures</th><th>Purpose</th><th></th></tr></thead>';
+      rows.forEach(t => {
+        let signatures = t.signatures || [];
+        if (typeof signatures === 'string') { try { signatures = JSON.parse(signatures); } catch(e) { signatures = []; } }
+        html += '<tr><td>' + htmlEscape(t.drawdown_id) + '</td><td>' + htmlEscape(t.allocation) +
+          '</td><td>$' + htmlEscape((Number(t.requested_cents) / 100).toLocaleString()) +
+          '</td><td>$' + htmlEscape((Number(t.funded_cents) / 100).toLocaleString()) +
+          '</td><td>' + htmlEscape(t.status) + '</td><td>' + htmlEscape(signatures.length + '/' + t.required_signatures) +
+          '</td><td>' + htmlEscape(t.purpose) + '</td><td>' + (t.status === 'proposed'
+            ? '<button class="btn" onclick="drawdownAuthorize(\'' + htmlEscape(t.drawdown_id) + '\')">Sign</button>'
+            : '') + '</td></tr>';
+        if (t.funding_note) html += '<tr><td colspan="8" class="muted">' + htmlEscape(t.funding_note) + '</td></tr>';
+      });
+      html += '</table>';
+      if (!rows.length) html += '<div class="muted">No drawdown has been requested against this series yet.</div>';
+      wrap.innerHTML = html;
+    } catch(e) { wrap.innerHTML = '<div class="status err">' + e.message + '</div>'; }
+  }
+
+  async function drawdownEntry() {
+    const wrap = el('dd-entry-status');
+    wrap.innerHTML = '<div class="muted">Posting entry…</div>';
+    try {
+      const amount = el('dd-entry-amount').value;
+      const body = {
+        seriesRef: el('dd-series').value,
+        sourceKind: el('dd-source').value,
+        entryType: el('dd-entry-type').value,
+        basis: el('dd-basis').value,
+        amountCents: amount ? Math.round(Number(amount) * 100) : undefined,
+        sourceRef: el('dd-entry-ref').value || undefined,
+        evidenceReference: el('dd-entry-evidence').value || undefined,
+      };
+      const r = await api('/api/finops/drawdown/entries', { method: 'POST', body: JSON.stringify(body) });
+      if (!r.success) throw new Error(r.error || 'entry failed');
+      const d = r.data;
+      wrap.innerHTML = '<div class="status ok">Posted ' + htmlEscape(d.entry_id) + ' to ' + htmlEscape(d.allocation) +
+        ' — ' + (d.distributable ? 'distributable' : htmlEscape('not distributable: ' + (d.non_distributable_reason || 'disbursement'))) + '</div>';
+      drawdownStatement();
+    } catch(e) { wrap.innerHTML = '<div class="status err">' + e.message + '</div>'; }
+  }
+
+  async function drawdownPropose() {
+    const wrap = el('dd-propose-status');
+    wrap.innerHTML = '<div class="muted">Requesting…</div>';
+    try {
+      const amount = el('dd-amount').value;
+      const body = {
+        seriesRef: el('dd-series').value,
+        allocation: el('dd-allocation').value,
+        amountCents: amount ? Math.round(Number(amount) * 100) : undefined,
+        purpose: el('dd-purpose').value,
+        beneficiaryRef: el('dd-beneficiary').value || undefined,
+        memo: el('dd-memo').value || undefined,
+      };
+      const r = await api('/api/finops/drawdown/drawdowns', { method: 'POST', body: JSON.stringify(body) });
+      if (!r.success) throw new Error(r.error || 'drawdown request failed');
+      wrap.innerHTML = '<div class="status ok">Requested ' + htmlEscape(r.data.drawdown_id) + ' — it needs ' +
+        htmlEscape(String(r.data.required_signatures)) + ' trustee signatures, and funding still depends on attested cash</div>';
+      drawdownStatement();
+    } catch(e) { wrap.innerHTML = '<div class="status err">' + e.message + '</div>'; }
+  }
+
+  async function drawdownAuthorize(drawdownId) {
+    const wrap = el('dd-fund-status');
+    try {
+      const r = await api('/api/finops/drawdown/drawdowns/' + encodeURIComponent(drawdownId) + '/authorize', { method: 'POST', body: '{}' });
+      if (!r.success) throw new Error(r.error || 'authorization failed');
+      wrap.innerHTML = '<div class="status ok">' + htmlEscape(drawdownId) + ' is ' + htmlEscape(r.data.status) +
+        ' — ' + htmlEscape(r.data.note || '') + '</div>';
+      drawdownStatement();
+    } catch(e) { wrap.innerHTML = '<div class="status err">' + e.message + '</div>'; }
+  }
+
+  async function drawdownFund() {
+    const wrap = el('dd-fund-status');
+    wrap.innerHTML = '<div class="muted">Funding from attested cash…</div>';
+    try {
+      const amount = el('dd-fund-amount').value;
+      const body = {
+        paymentReference: el('dd-payment-ref').value || undefined,
+        amountCents: amount ? Math.round(Number(amount) * 100) : undefined,
+      };
+      const r = await api('/api/finops/drawdown/drawdowns/' + encodeURIComponent(el('dd-id').value) + '/fund', { method: 'POST', body: JSON.stringify(body) });
+      if (!r.success) throw new Error(r.error || 'funding failed');
+      const d = r.data;
+      wrap.innerHTML = '<div class="status ' + (Number(d.fundedNow) > 0 ? 'ok' : 'err') + '">' + htmlEscape(d.drawdown_id) +
+        ' is ' + htmlEscape(d.status) + ' — ' + htmlEscape(d.note || d.funding_note || '') + '</div>';
+      drawdownStatement();
+    } catch(e) { wrap.innerHTML = '<div class="status err">' + e.message + '</div>'; }
+  }
+
+  async function drawdownChain() {
+    const wrap = el('dd-statement');
+    try {
+      const r = await api('/api/finops/drawdown-chain');
+      if (!r.success) throw new Error(r.error || 'chain verification failed');
+      const d = r.data;
+      wrap.innerHTML = '<div class="status ' + (d.intact ? 'ok' : 'err') + '">' + htmlEscape(String(d.events)) +
+        ' principal and income events — ' + htmlEscape(d.note) + '</div>' + wrap.innerHTML;
     } catch(e) { wrap.innerHTML = '<div class="status err">' + e.message + '</div>'; }
   }
 

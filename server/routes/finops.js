@@ -33,6 +33,7 @@ const { ReserveEngine } = require('../integrations/finops/reserveEngine');
 const { CustodyOsEngine } = require('../integrations/custody/custodyOsEngine');
 const { SeriesOsEngine } = require('../integrations/series/seriesOsEngine');
 const { CapitalTransferOsEngine } = require('../integrations/capital/capitalTransferOsEngine');
+const { PrincipalIncomeEngine } = require('../integrations/drawdown/principalIncomeEngine');
 const { TreasuryOnRampBridgeEngine } = require('../integrations/dapp/treasuryOnRampBridgeEngine');
 const { TrustMarketEngine } = require('../integrations/dapp/trustMarketEngine');
 const { IntentRoutingEngine } = require('../integrations/dapp/intentRoutingEngine');
@@ -1359,6 +1360,121 @@ router.get('/capital-events', operatorAuth, async (req, res) => {
 
 router.get('/capital-chain', operatorAuth, async (req, res) => {
   try { res.json({ success: true, data: await CapitalTransferOsEngine.verifyChain() }); } catch (err) { sendError(res, err); }
+});
+
+// ═════════════════════════════════════════════════════════════════════════════
+// Principal & Income Drawdown OS — entitlement against corpus vs funded cash
+// ═════════════════════════════════════════════════════════════════════════════
+
+router.get('/drawdown/status', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await PrincipalIncomeEngine.status() }); } catch (err) { sendError(res, err); }
+});
+
+// The fiduciary accounting for one series: principal and income, and every
+// drawdown with authorized stated separately from funded.
+router.get('/drawdown/statement', operatorAuth, async (req, res) => {
+  try {
+    res.json({ success: true, data: await PrincipalIncomeEngine.statement(req.query.seriesRef) });
+  } catch (err) { sendError(res, err); }
+});
+
+// What the series may draw, and how much of it could actually be paid today.
+router.get('/drawdown/entitlement', operatorAuth, async (req, res) => {
+  try {
+    res.json({ success: true, data: await PrincipalIncomeEngine.entitlement(req.query.seriesRef) });
+  } catch (err) { sendError(res, err); }
+});
+
+router.get('/drawdown/ledger', operatorAuth, async (req, res) => {
+  try {
+    const data = await PrincipalIncomeEngine.ledger({
+      seriesRef: req.query.seriesRef || null,
+      allocation: req.query.allocation || null,
+      limit: req.query.limit,
+    });
+    res.json({ success: true, data });
+  } catch (err) { sendError(res, err); }
+});
+
+router.post('/drawdown/entries', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try {
+    const data = await PrincipalIncomeEngine.recordEntry({
+      ...req.body,
+      recordedBy: (req.body && req.body.recordedBy) || sessionActor(req),
+    });
+    res.status(201).json({ success: true, data });
+  } catch (err) { sendError(res, err); }
+});
+
+router.get('/drawdown/drawdowns', operatorAuth, async (req, res) => {
+  try {
+    const data = await PrincipalIncomeEngine.list({
+      seriesRef: req.query.seriesRef || null,
+      status: req.query.status || null,
+      limit: req.query.limit,
+    });
+    res.json({ success: true, data });
+  } catch (err) { sendError(res, err); }
+});
+
+router.post('/drawdown/drawdowns', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try {
+    const data = await PrincipalIncomeEngine.propose({
+      ...req.body,
+      proposedBy: (req.body && req.body.proposedBy) || sessionActor(req),
+    });
+    res.status(201).json({ success: true, data });
+  } catch (err) { sendError(res, err); }
+});
+
+router.get('/drawdown/drawdowns/:drawdownId', operatorAuth, async (req, res) => {
+  try {
+    const data = await PrincipalIncomeEngine.get(req.params.drawdownId);
+    if (!data) return res.status(404).json({ success: false, error: 'Drawdown not found' });
+    res.json({ success: true, data });
+  } catch (err) { sendError(res, err); }
+});
+
+router.post('/drawdown/drawdowns/:drawdownId/authorize', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try {
+    const data = await PrincipalIncomeEngine.authorize(
+      req.params.drawdownId,
+      (req.body && req.body.signedBy) || sessionActor(req),
+      { role: (req.body && req.body.role) || null }
+    );
+    res.json({ success: true, data });
+  } catch (err) { sendError(res, err); }
+});
+
+// Funding is the step that moves money, so it pays only what the series has in
+// attested cash and leaves the rest outstanding with the reason.
+router.post('/drawdown/drawdowns/:drawdownId/fund', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try {
+    const data = await PrincipalIncomeEngine.fund(req.params.drawdownId, {
+      paymentReference: (req.body && req.body.paymentReference) || null,
+      amountCents: req.body && req.body.amountCents !== undefined ? req.body.amountCents : null,
+      fundedBy: (req.body && req.body.fundedBy) || sessionActor(req),
+    });
+    res.json({ success: true, data });
+  } catch (err) { sendError(res, err); }
+});
+
+router.post('/drawdown/drawdowns/:drawdownId/cancel', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try {
+    const data = await PrincipalIncomeEngine.cancel(req.params.drawdownId, {
+      reason: (req.body && req.body.reason) || null,
+      cancelledBy: (req.body && req.body.cancelledBy) || sessionActor(req),
+    });
+    res.json({ success: true, data });
+  } catch (err) { sendError(res, err); }
+});
+
+router.get('/drawdown-events', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await PrincipalIncomeEngine.events({ limit: req.query.limit }) }); } catch (err) { sendError(res, err); }
+});
+
+router.get('/drawdown-chain', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await PrincipalIncomeEngine.verifyChain() }); } catch (err) { sendError(res, err); }
 });
 
 // ═════════════════════════════════════════════════════════════════════════════
