@@ -30,6 +30,7 @@ const { DexAggregatorEngine } = require('../integrations/dapp/dexAggregatorEngin
 const { InternalMarketMakerEngine } = require('../integrations/dapp/internalMarketMakerEngine');
 const { ReserveVaultEngine } = require('../integrations/dapp/reserveVaultEngine');
 const { ReserveEngine } = require('../integrations/finops/reserveEngine');
+const { CustodyOsEngine } = require('../integrations/custody/custodyOsEngine');
 const { TreasuryOnRampBridgeEngine } = require('../integrations/dapp/treasuryOnRampBridgeEngine');
 const { TrustMarketEngine } = require('../integrations/dapp/trustMarketEngine');
 const { IntentRoutingEngine } = require('../integrations/dapp/intentRoutingEngine');
@@ -1043,6 +1044,106 @@ router.post('/reserve/attest-fixed-income', operatorAuth, writeRateLimiter(), as
 
 router.get('/reserve/provenance/:accountId', operatorAuth, async (req, res) => {
   try { res.json({ success: true, data: await ReserveEngine.provenance(req.params.accountId) }); } catch (err) { sendError(res, err); }
+});
+
+// ═════════════════════════════════════════════════════════════════════════════
+// Custody OS — safekeeping accounts, dual-signed receipts, chain of title
+// ═════════════════════════════════════════════════════════════════════════════
+
+router.get('/custody/status', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await CustodyOsEngine.status() }); } catch (err) { sendError(res, err); }
+});
+
+router.get('/custody/statement', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await CustodyOsEngine.statement() }); } catch (err) { sendError(res, err); }
+});
+
+router.get('/custody/accounts', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await CustodyOsEngine.listAccounts() }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/custody/accounts', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try {
+    const data = await CustodyOsEngine.openAccount({
+      ...req.body,
+      openedBy: req.body.openedBy || sessionActor(req),
+    });
+    res.status(201).json({ success: true, data });
+  } catch (err) { sendError(res, err); }
+});
+
+router.get('/custody/positions', operatorAuth, async (req, res) => {
+  try {
+    const data = await CustodyOsEngine.listPositions({ custodyAccountId: req.query.custodyAccountId || null });
+    res.json({ success: true, data });
+  } catch (err) { sendError(res, err); }
+});
+
+router.post('/custody/positions', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try {
+    const data = await CustodyOsEngine.recordPosition({
+      ...req.body,
+      recordedBy: req.body.recordedBy || sessionActor(req),
+    });
+    res.status(201).json({ success: true, data });
+  } catch (err) { sendError(res, err); }
+});
+
+router.get('/custody/receipts', operatorAuth, async (req, res) => {
+  try {
+    const data = await CustodyOsEngine.listReceipts({ status: req.query.status || null });
+    res.json({ success: true, data });
+  } catch (err) { sendError(res, err); }
+});
+
+// A receipt is a claim until a second distinct trustee countersigns it.
+router.post('/custody/receipts', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try {
+    const data = await CustodyOsEngine.proposeReceipt({
+      ...req.body,
+      proposedBy: req.body.proposedBy || sessionActor(req),
+    });
+    res.status(201).json({ success: true, data });
+  } catch (err) { sendError(res, err); }
+});
+
+router.post('/custody/receipts/:id/countersign', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try {
+    const data = await CustodyOsEngine.countersignReceipt(
+      req.params.id,
+      (req.body && req.body.signedBy) || sessionActor(req),
+      { role: (req.body && req.body.role) || null }
+    );
+    res.json({ success: true, data });
+  } catch (err) { sendError(res, err); }
+});
+
+router.post('/custody/receipts/:id/void', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try {
+    const data = await CustodyOsEngine.voidReceipt(
+      req.params.id,
+      (req.body && req.body.voidedBy) || sessionActor(req),
+      (req.body && req.body.reason) || null
+    );
+    res.json({ success: true, data });
+  } catch (err) { sendError(res, err); }
+});
+
+router.get('/custody/events', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await CustodyOsEngine.events({ limit: req.query.limit }) }); } catch (err) { sendError(res, err); }
+});
+
+router.get('/custody/chain', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await CustodyOsEngine.verifyChain() }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/custody/sync-reserve', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try {
+    const data = await CustodyOsEngine.syncReserve({
+      syncedBy: (req.body && req.body.syncedBy) || sessionActor(req),
+    });
+    res.json({ success: true, data });
+  } catch (err) { sendError(res, err); }
 });
 
 // ═════════════════════════════════════════════════════════════════════════════
