@@ -171,7 +171,7 @@
     { key:'ramps', name:'Ramp Center', desc:'Fiat on/off ramps and counterparty rail aggregator', stat:'', endpoint:null, action:'openRampsPanel' },
     { key:'decentralized-ramps', name:'Decentralized Ramps', desc:'DEX, P2P, cross-chain, and fiat on/off-ramp aggregator', stat:'', endpoint:null, action:'openDecentralizedRampsPanel' },
     { key:'internal-market-maker', name:'Internal Market Maker', desc:'Tokenize reserves (interest income, bonds, fixed income) and seed deeper BondDex pools', stat:'', endpoint:null, action:'openInternalMarketMakerPanel' },
-    { key:'core-reserve', name:'Core Bank Reserve', desc:'Attested external reserves behind ledger cash: coverage, custody verification, and funding provenance', stat:'', endpoint:null, action:'openCoreReservePanel' },
+    { key:'core-reserve', name:'Core Bank Reserve', desc:'Attested external reserves and bond portfolio collateral behind ledger cash: coverage, custody verification, fixed income eligibility, and funding provenance', stat:'', endpoint:null, action:'openCoreReservePanel' },
     { key:'reserve-vault', name:'Reserve Vault (CDP)', desc:'Tokenize ledger/module reserves into a vault stablecoin position and quote swaps to canonical assets', stat:'', endpoint:null, action:'openReserveVaultPanel' },
     { key:'treasury-on-ramp', name:'Treasury On-Ramp Bridge', desc:'Wire core-banking fiat to an on-ramp, receive DAI/USDC, and redeem internal tokens 1:1', stat:'', endpoint:null, action:'openTreasuryOnRampPanel' },
     { key:'dex-aggregator', name:'DEX Aggregator & V3', desc:'Multi-source DEX aggregator and Uniswap V3 canonical pair swaps', stat:'', endpoint:null, action:'openDexAggregatorPanel' },
@@ -2788,6 +2788,15 @@
       '<div class="token-bar"><input id="reserve-evidence" placeholder="statement id / document reference" /></div>' +
       '<div class="approval-actions"><button class="btn" onclick="reserveAttest()">Record Attestation</button></div>' +
       '<div id="reserve-attest-status" style="margin-top:8px;"></div>' +
+      '<h3 style="font-size:14px;margin:16px 0 8px;">Bond Portfolio &amp; Fixed Income</h3>' +
+      '<div class="muted" style="margin-bottom:8px;">A bond the trust issued and holds itself backs nothing. A third-party bond held at a securities custodian is carried as collateral net of a haircut, and stays separate from spendable reserve until it is pledged or sold.</div>' +
+      '<div class="approval-actions"><button class="btn" onclick="reservePortfolio()">Load Portfolio</button></div>' +
+      '<div id="reserve-portfolio" style="margin-top:8px;font-size:12px;"></div>' +
+      '<div class="token-bar"><input id="fi-source-key" placeholder="ISIN / bond identifier / bond name" /></div>' +
+      '<div class="token-bar"><input id="fi-amount" placeholder="custodian-stated market value (USD)" /><input id="fi-haircut" placeholder="haircut bps (default 2000)" /></div>' +
+      '<div class="token-bar"><input id="fi-evidence" placeholder="custodian statement id / document reference" /></div>' +
+      '<div class="approval-actions"><button class="btn" onclick="reserveAttestFixedIncome()">Record Custody Statement</button></div>' +
+      '<div id="fi-attest-status" style="margin-top:8px;"></div>' +
       '<h3 style="font-size:14px;margin:16px 0 8px;">Trace a Cash Account\'s Funding</h3>' +
       '<div class="token-bar"><input id="reserve-provenance-account" value="CA-OPERATING" placeholder="cash account id" /></div>' +
       '<div class="approval-actions"><button class="btn" onclick="reserveProvenance()">Trace</button></div>' +
@@ -2814,7 +2823,55 @@
       });
       html += '</table>';
       if (!(d.sources || []).length) html += '<div class="muted">No custody source has been verified yet.</div>';
+      if (d.fixedIncome) {
+        html += '<div class="muted" style="margin-top:8px;">Fixed income: carrying $' + htmlEscape(d.fixedIncome.carryingValue.toLocaleString()) +
+          ' across ' + htmlEscape(String(d.fixedIncome.positions)) + ' position(s), self-issued $' + htmlEscape(d.fixedIncome.selfIssued.toLocaleString()) +
+          ', eligible collateral $' + htmlEscape(d.pledgeableCollateral.toLocaleString()) + ' (not spendable until pledged or sold).</div>';
+      }
       wrap.innerHTML = html;
+    } catch(e) { wrap.innerHTML = '<div class="status err">' + e.message + '</div>'; }
+  }
+
+  async function reservePortfolio() {
+    const wrap = el('reserve-portfolio');
+    wrap.innerHTML = '<div class="muted">Loading portfolio…</div>';
+    try {
+      const r = await api('/api/finops/reserve/portfolio');
+      if (!r.success) throw new Error(r.error || 'portfolio failed');
+      const d = r.data;
+      const cls = d.eligibleCollateral > 0 ? 'ok' : 'err';
+      let html = '<div class="status ' + cls + '">carrying $' + htmlEscape(d.carryingValue.toLocaleString()) +
+        ', self-issued $' + htmlEscape(d.selfIssued.toLocaleString()) +
+        ', eligible collateral $' + htmlEscape(d.eligibleCollateral.toLocaleString()) + '</div>';
+      html += '<div class="muted" style="margin:8px 0;">' + htmlEscape(d.note) + '</div>';
+      html += '<table class="small-table"><thead><tr><th>Bond</th><th>Issuer</th><th>Carrying</th><th>Custody</th><th>Eligible</th><th>Detail</th></tr></thead>';
+      (d.positions || []).forEach(p => {
+        html += '<tr><td>' + htmlEscape(p.bondName) + '</td><td>' + htmlEscape(p.issuer || '—') + '</td><td>$' + htmlEscape(p.carryingValue.toLocaleString()) +
+          '</td><td>' + htmlEscape(p.custodyStatus.replace(/_/g, ' ')) + '</td><td>$' + htmlEscape(p.eligibleCollateral.toLocaleString()) +
+          '</td><td class="muted">' + htmlEscape(p.note) + '</td></tr>';
+      });
+      html += '</table>';
+      if (!(d.positions || []).length) html += '<div class="muted">No active bond positions.</div>';
+      wrap.innerHTML = html;
+    } catch(e) { wrap.innerHTML = '<div class="status err">' + e.message + '</div>'; }
+  }
+
+  async function reserveAttestFixedIncome() {
+    const wrap = el('fi-attest-status');
+    wrap.innerHTML = '<div class="muted">Recording…</div>';
+    try {
+      const haircut = el('fi-haircut').value;
+      const body = {
+        sourceKey: el('fi-source-key').value,
+        balanceCents: Math.round(Number(el('fi-amount').value) * 100),
+        evidenceReference: el('fi-evidence').value,
+      };
+      if (haircut) body.haircutBps = Number(haircut);
+      const r = await api('/api/finops/reserve/attest-fixed-income', { method: 'POST', body: JSON.stringify(body) });
+      if (!r.success) throw new Error(r.error || 'attestation failed');
+      wrap.innerHTML = '<div class="status ok">Recorded ' + htmlEscape(r.data.attestation_id) + '</div>';
+      reservePortfolio();
+      reserveLoad();
     } catch(e) { wrap.innerHTML = '<div class="status err">' + e.message + '</div>'; }
   }
 
