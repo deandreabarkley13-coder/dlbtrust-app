@@ -45,6 +45,9 @@ try { ({ CircleMintClient } = require('../stablecoin/circleMintClient')); } catc
 let PartnerBankRails;
 try { ({ PartnerBankRails } = require('../rails/partnerBankRails')); } catch (e) { PartnerBankRails = null; }
 
+let BondObligationEngine;
+try { ({ BondObligationEngine } = require('./bondObligationEngine')); } catch (e) { BondObligationEngine = null; }
+
 const SOURCE_TYPES = [
   'onchain_wallet',
   'circle_custody',
@@ -465,7 +468,8 @@ class ReserveEngine {
         ORDER BY b.id ASC`
     );
 
-    const positions = rows.rows.map((row) => {
+    const positions = [];
+    for (const row of rows.rows) {
       const carryingCents = cents(Number(row.principal_balance || row.face_value || 0) * 100)
         + cents(Number(row.accrued_interest || 0) * 100);
       const selfIssued = this._isSelfIssued(row.issuer, cfg.trustIssuers);
@@ -474,11 +478,27 @@ class ReserveEngine {
         .map((k) => String(k).toLowerCase());
       const attested = keys.map((k) => custody.get(k)).find(Boolean) || null;
 
+      // Who holds it decides which side of the balance sheet it lands on: a bond
+      // the trust issued to an outside holder is a liability, and the only corpus
+      // it contributed is whatever the subscription actually paid in.
+      const obligation = BondObligationEngine
+        ? await BondObligationEngine.assess({
+          bondId: row.id,
+          issuer: row.issuer,
+          carryingCents,
+          trustNames: cfg.trustIssuers,
+        }).catch(() => null)
+        : null;
+      const isTrustObligation = Boolean(obligation && obligation.classification === 'trust_obligation');
+
       let custodyStatus = 'unattested';
       let eligibleCents = 0;
       let note = 'No securities custodian has attested to holding this position.';
 
-      if (selfIssued) {
+      if (isTrustObligation) {
+        custodyStatus = 'trust_obligation';
+        note = obligation.note;
+      } else if (selfIssued) {
         custodyStatus = 'self_issued_self_held';
         note = 'Issued and held by the trust: asset and liability in the same instrument,'
           + ' so it backs no external obligation.';
@@ -494,7 +514,7 @@ class ReserveEngine {
           : 'The custodian attestation reports no holdable value.';
       }
 
-      return {
+      positions.push({
         bondId: row.id,
         bondName: row.bond_name,
         isin: row.isin,
@@ -506,23 +526,48 @@ class ReserveEngine {
         carryingValueCents: carryingCents,
         carryingValue: dollars(carryingCents),
         selfIssued,
+        selfHeld: obligation ? obligation.holderKind !== 'external' : selfIssued,
+        holderKind: obligation ? obligation.holderKind : 'unrecorded',
+        holders: obligation ? obligation.holders : [],
+        classification: obligation ? obligation.classification : null,
+        trustObligation: isTrustObligation,
+        obligationCents: obligation ? obligation.obligationCents : 0,
+        obligation: dollars(obligation ? obligation.obligationCents : 0),
+        contributedCorpusCents: obligation ? obligation.corpusCents : 0,
+        contributedCorpus: dollars(obligation ? obligation.corpusCents : 0),
+        unpaidSubscriptionCents: obligation ? obligation.unpaidSubscriptionCents : 0,
+        unpaidSubscription: dollars(obligation ? obligation.unpaidSubscriptionCents : 0),
         custodyStatus,
         eligibleCollateralCents: eligibleCents,
         eligibleCollateral: dollars(eligibleCents),
         note,
-      };
-    });
+      });
+    }
 
     const carryingCents = positions.reduce((s, p) => s + p.carryingValueCents, 0);
     const eligibleCents = positions.reduce((s, p) => s + p.eligibleCollateralCents, 0);
     const selfIssuedCents = positions
       .filter((p) => p.selfIssued)
       .reduce((s, p) => s + p.carryingValueCents, 0);
+    // A bond the trust issued to an outside holder is not a trust asset, so it
+    // is reported as an obligation and excluded from asset carrying value.
+    const obligationCents = positions.reduce((s, p) => s + p.obligationCents, 0);
+    const assetCarryingCents = carryingCents - obligationCents;
+    const contributedCorpusCents = positions.reduce((s, p) => s + p.contributedCorpusCents, 0);
+    const unpaidSubscriptionCents = positions.reduce((s, p) => s + p.unpaidSubscriptionCents, 0);
 
     return {
       positions,
       carryingValueCents: carryingCents,
       carryingValue: dollars(carryingCents),
+      assetCarryingValueCents: assetCarryingCents,
+      assetCarryingValue: dollars(assetCarryingCents),
+      trustObligationCents: obligationCents,
+      trustObligation: dollars(obligationCents),
+      contributedCorpusCents,
+      contributedCorpus: dollars(contributedCorpusCents),
+      unpaidSubscriptionCents,
+      unpaidSubscription: dollars(unpaidSubscriptionCents),
       selfIssuedCents,
       selfIssued: dollars(selfIssuedCents),
       eligibleCollateralCents: eligibleCents,
@@ -582,6 +627,10 @@ class ReserveEngine {
       totalBacking: dollars(reserveCents + collateralCents),
       fixedIncome: portfolio && {
         carryingValue: portfolio.carryingValue,
+        assetCarryingValue: portfolio.assetCarryingValue,
+        trustObligation: portfolio.trustObligation,
+        contributedCorpus: portfolio.contributedCorpus,
+        unpaidSubscription: portfolio.unpaidSubscription,
         selfIssued: portfolio.selfIssued,
         eligibleCollateral: portfolio.eligibleCollateral,
         positions: portfolio.positions.length,

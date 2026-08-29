@@ -34,6 +34,7 @@ const { CustodyOsEngine } = require('../integrations/custody/custodyOsEngine');
 const { SeriesOsEngine } = require('../integrations/series/seriesOsEngine');
 const { CapitalTransferOsEngine } = require('../integrations/capital/capitalTransferOsEngine');
 const { PrincipalIncomeEngine } = require('../integrations/drawdown/principalIncomeEngine');
+const { BondObligationEngine } = require('../integrations/finops/bondObligationEngine');
 const { TreasuryOnRampBridgeEngine } = require('../integrations/dapp/treasuryOnRampBridgeEngine');
 const { TrustMarketEngine } = require('../integrations/dapp/trustMarketEngine');
 const { IntentRoutingEngine } = require('../integrations/dapp/intentRoutingEngine');
@@ -1047,6 +1048,30 @@ router.post('/reserve/attest-fixed-income', operatorAuth, writeRateLimiter(), as
 
 router.get('/reserve/provenance/:accountId', operatorAuth, async (req, res) => {
   try { res.json({ success: true, data: await ReserveEngine.provenance(req.params.accountId) }); } catch (err) { sendError(res, err); }
+});
+
+// Who holds each bond, and whether it is a trust asset or a trust obligation.
+router.get('/bond-holders/:bondRef', operatorAuth, async (req, res) => {
+  try {
+    const data = await BondObligationEngine.obligationFor(
+      req.params.bondRef,
+      ReserveEngine.config().trustIssuers
+    );
+    if (!data) throw new Error(`Bond ${req.params.bondRef} not found`);
+    res.json({ success: true, data });
+  } catch (err) { sendError(res, err); }
+});
+
+// Declares the capacity a holder subscribed in: personal (the trust owes them)
+// or trust (the trust holds its own paper).
+router.post('/bond-holders/capacity', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try {
+    const data = await BondObligationEngine.declareCapacity({
+      ...req.body,
+      recordedBy: req.body.recordedBy || sessionActor(req),
+    });
+    res.status(201).json({ success: true, data });
+  } catch (err) { sendError(res, err); }
 });
 
 // ═════════════════════════════════════════════════════════════════════════════

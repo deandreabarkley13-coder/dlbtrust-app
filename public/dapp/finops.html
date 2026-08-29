@@ -2801,6 +2801,12 @@
       '<div class="token-bar"><input id="fi-evidence" placeholder="custodian statement id / document reference" /></div>' +
       '<div class="approval-actions"><button class="btn" onclick="reserveAttestFixedIncome()">Record Custody Statement</button></div>' +
       '<div id="fi-attest-status" style="margin-top:8px;"></div>' +
+      '<h3 style="font-size:14px;margin:16px 0 8px;">Holder Capacity</h3>' +
+      '<div class="muted" style="margin-bottom:8px;">A bond the trust issued is only its own paper while the trust holds it. Declaring a subscription personal makes the holder an outside creditor: the instrument becomes an obligation of the trust, its coupons become amounts the trust owes, and only the cash the subscription actually settled counts as corpus.</div>' +
+      '<div class="token-bar"><input id="hc-subscription" placeholder="subscription id (e.g. SUB-DLB-PRB-001)" /><select id="hc-capacity"><option value="personal">personal (holder owns it)</option><option value="trust">trust (trust holds its own paper)</option></select></div>' +
+      '<div class="token-bar"><input id="hc-administered" placeholder="administered by (e.g. PTC, as trustee and custodian)" /><input id="hc-evidence" placeholder="evidence reference (bond certificate / trust instrument)" /></div>' +
+      '<div class="approval-actions"><button class="btn" onclick="reserveDeclareCapacity()">Declare Capacity</button><button class="btn" onclick="reserveBondHolders()">Read Holders</button></div>' +
+      '<div id="hc-status" style="margin-top:8px;font-size:12px;"></div>' +
       '<h3 style="font-size:14px;margin:16px 0 8px;">Trace a Cash Account\'s Funding</h3>' +
       '<div class="token-bar"><input id="reserve-provenance-account" value="CA-OPERATING" placeholder="cash account id" /></div>' +
       '<div class="approval-actions"><button class="btn" onclick="reserveProvenance()">Trace</button></div>' +
@@ -2831,6 +2837,12 @@
         html += '<div class="muted" style="margin-top:8px;">Fixed income: carrying $' + htmlEscape(d.fixedIncome.carryingValue.toLocaleString()) +
           ' across ' + htmlEscape(String(d.fixedIncome.positions)) + ' position(s), self-issued $' + htmlEscape(d.fixedIncome.selfIssued.toLocaleString()) +
           ', eligible collateral $' + htmlEscape(d.pledgeableCollateral.toLocaleString()) + ' (not spendable until pledged or sold).</div>';
+        if (Number(d.fixedIncome.trustObligation) > 0) {
+          html += '<div class="muted">Of that, $' + htmlEscape(Number(d.fixedIncome.trustObligation).toLocaleString()) +
+            ' is owed by the trust to outside holders; $' + htmlEscape(Number(d.fixedIncome.contributedCorpus).toLocaleString()) +
+            ' of subscription cash was actually paid in and $' + htmlEscape(Number(d.fixedIncome.unpaidSubscription).toLocaleString()) +
+            ' remains an unpaid subscription receivable.</div>';
+        }
       }
       wrap.innerHTML = html;
     } catch(e) { wrap.innerHTML = '<div class="status err">' + e.message + '</div>'; }
@@ -2847,15 +2859,70 @@
       let html = '<div class="status ' + cls + '">carrying $' + htmlEscape(d.carryingValue.toLocaleString()) +
         ', self-issued $' + htmlEscape(d.selfIssued.toLocaleString()) +
         ', eligible collateral $' + htmlEscape(d.eligibleCollateral.toLocaleString()) + '</div>';
+      if (Number(d.trustObligation) > 0) {
+        html += '<div class="status err">owed to outside holders $' + htmlEscape(Number(d.trustObligation).toLocaleString()) +
+          ', trust-owned carrying value $' + htmlEscape(Number(d.assetCarryingValue).toLocaleString()) +
+          ', subscription cash actually paid in $' + htmlEscape(Number(d.contributedCorpus).toLocaleString()) +
+          ', unpaid subscription $' + htmlEscape(Number(d.unpaidSubscription).toLocaleString()) + '</div>';
+      }
       html += '<div class="muted" style="margin:8px 0;">' + htmlEscape(d.note) + '</div>';
-      html += '<table class="small-table"><thead><tr><th>Bond</th><th>Issuer</th><th>Carrying</th><th>Custody</th><th>Eligible</th><th>Detail</th></tr></thead>';
+      html += '<table class="small-table"><thead><tr><th>Bond</th><th>Issuer</th><th>Holder</th><th>Carrying</th><th>Owed by trust</th><th>Paid in</th><th>Custody</th><th>Eligible</th><th>Detail</th></tr></thead>';
       (d.positions || []).forEach(p => {
-        html += '<tr><td>' + htmlEscape(p.bondName) + '</td><td>' + htmlEscape(p.issuer || '—') + '</td><td>$' + htmlEscape(p.carryingValue.toLocaleString()) +
+        const holders = (p.holders || []).map(h => h.holderName + (h.capacity ? ' (' + h.capacity + ')' : '')).join(', ');
+        html += '<tr><td>' + htmlEscape(p.bondName) + '</td><td>' + htmlEscape(p.issuer || '—') + '</td><td>' + htmlEscape(holders || '—') +
+          '</td><td>$' + htmlEscape(p.carryingValue.toLocaleString()) +
+          '</td><td>$' + htmlEscape(Number(p.obligation || 0).toLocaleString()) +
+          '</td><td>$' + htmlEscape(Number(p.contributedCorpus || 0).toLocaleString()) +
           '</td><td>' + htmlEscape(p.custodyStatus.replace(/_/g, ' ')) + '</td><td>$' + htmlEscape(p.eligibleCollateral.toLocaleString()) +
           '</td><td class="muted">' + htmlEscape(p.note) + '</td></tr>';
       });
       html += '</table>';
       if (!(d.positions || []).length) html += '<div class="muted">No active bond positions.</div>';
+      wrap.innerHTML = html;
+    } catch(e) { wrap.innerHTML = '<div class="status err">' + e.message + '</div>'; }
+  }
+
+  async function reserveDeclareCapacity() {
+    const wrap = el('hc-status');
+    wrap.innerHTML = '<div class="muted">Recording…</div>';
+    try {
+      const r = await api('/api/finops/bond-holders/capacity', 'POST', {
+        subscriptionId: el('hc-subscription').value,
+        capacity: el('hc-capacity').value,
+        administeredBy: el('hc-administered').value || null,
+        evidenceReference: el('hc-evidence').value || null,
+      });
+      if (!r.success) throw new Error(r.error || 'declaration failed');
+      wrap.innerHTML = '<div class="status ok">' + htmlEscape(r.data.subscription_id) + ' held ' +
+        htmlEscape(r.data.capacity) + ' by ' + htmlEscape(r.data.holder_name || '—') + '</div>';
+      reservePortfolio();
+    } catch(e) { wrap.innerHTML = '<div class="status err">' + e.message + '</div>'; }
+  }
+
+  async function reserveBondHolders() {
+    const wrap = el('hc-status');
+    wrap.innerHTML = '<div class="muted">Loading…</div>';
+    try {
+      const ref = el('fi-source-key').value || 'DLB-PRB';
+      const r = await api('/api/finops/bond-holders/' + encodeURIComponent(ref));
+      if (!r.success) throw new Error(r.error || 'read failed');
+      const d = r.data;
+      let html = '<div class="status ' + (d.classification === 'trust_obligation' ? 'err' : 'ok') + '">' +
+        htmlEscape(ref) + ' — ' + htmlEscape(d.classification.replace(/_/g, ' ')) + '; owed $' +
+        htmlEscape(Number(d.obligation).toLocaleString()) + ', paid in $' + htmlEscape(Number(d.paidIn).toLocaleString()) +
+        ', unpaid subscription $' + htmlEscape(Number(d.unpaidSubscription).toLocaleString()) + '</div>';
+      html += '<div class="muted" style="margin:8px 0;">' + htmlEscape(d.note) + '</div>';
+      html += '<table class="small-table"><thead><tr><th>Subscription</th><th>Holder</th><th>Capacity</th><th>Administered by</th><th>Subscribed</th><th>Paid in</th><th>Unpaid</th></tr></thead>';
+      (d.holders || []).forEach(h => {
+        html += '<tr><td>' + htmlEscape(h.subscriptionId) + '</td><td>' + htmlEscape(h.holderName) +
+          '</td><td>' + htmlEscape(h.capacity) + (h.capacityDeclared ? ' (declared)' : ' (inferred)') +
+          '</td><td>' + htmlEscape(h.administeredBy || '—') +
+          '</td><td>$' + htmlEscape(Number(h.subscribedCents / 100).toLocaleString()) +
+          '</td><td>$' + htmlEscape(Number(h.paidIn).toLocaleString()) +
+          '</td><td>$' + htmlEscape(Number(h.unpaid).toLocaleString()) + '</td></tr>';
+      });
+      html += '</table>';
+      if (!(d.holders || []).length) html += '<div class="muted">No subscriptions recorded for this bond.</div>';
       wrap.innerHTML = html;
     } catch(e) { wrap.innerHTML = '<div class="status err">' + e.message + '</div>'; }
   }
@@ -3502,6 +3569,11 @@
       html += '<div class="muted" style="margin-bottom:6px;">Corpus $' + htmlEscape(Number(ent.corpus || 0).toLocaleString()) +
         ' at ' + htmlEscape(String((ent.principalRateBps || 0) / 100)) + '% a year over ' + htmlEscape(String(ent.allowanceYears || 0)) +
         ' allowance year(s); attested cash in this series $' + htmlEscape(Number(ent.seriesAvailable || 0).toLocaleString()) + '</div>';
+      if (Number(ent.obligationExcluded) > 0) {
+        html += '<div class="status err" style="margin-bottom:6px;">$' +
+          htmlEscape(Number(ent.obligationExcluded).toLocaleString()) +
+          ' of fenced bond value is excluded from corpus — ' + htmlEscape(ent.obligationNote || '') + '</div>';
+      }
       html += '<table class="small-table"><thead><tr><th>Fund</th><th>Allowance</th><th>Committed</th><th>Remaining</th><th>Fundable Today</th><th>Unbacked</th></tr></thead>';
       ['principal', 'income'].forEach(k => {
         const e = ent[k] || {};
