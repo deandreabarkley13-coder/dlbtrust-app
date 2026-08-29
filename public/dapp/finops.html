@@ -2886,11 +2886,14 @@
     const wrap = el('hc-status');
     wrap.innerHTML = '<div class="muted">Recording…</div>';
     try {
-      const r = await api('/api/finops/bond-holders/capacity', 'POST', {
-        subscriptionId: el('hc-subscription').value,
-        capacity: el('hc-capacity').value,
-        administeredBy: el('hc-administered').value || null,
-        evidenceReference: el('hc-evidence').value || null,
+      const r = await api('/api/finops/bond-holders/capacity', {
+        method: 'POST',
+        body: JSON.stringify({
+          subscriptionId: el('hc-subscription').value,
+          capacity: el('hc-capacity').value,
+          administeredBy: el('hc-administered').value || null,
+          evidenceReference: el('hc-evidence').value || null,
+        }),
       });
       if (!r.success) throw new Error(r.error || 'declaration failed');
       wrap.innerHTML = '<div class="status ok">' + htmlEscape(r.data.subscription_id) + ' held ' +
