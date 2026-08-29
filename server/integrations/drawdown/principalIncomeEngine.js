@@ -41,6 +41,11 @@ try { ({ ReserveEngine } = require('../finops/reserveEngine')); } catch (e) { Re
 let SeriesOsEngine;
 try { ({ SeriesOsEngine } = require('../series/seriesOsEngine')); } catch (e) { SeriesOsEngine = null; }
 
+let BondObligationEngine;
+try {
+  ({ BondObligationEngine } = require('../finops/bondObligationEngine'));
+} catch (e) { BondObligationEngine = null; }
+
 /** The two funds every trust receipt and disbursement belongs to. */
 const ALLOCATIONS = ['principal', 'income'];
 
@@ -302,11 +307,27 @@ class PrincipalIncomeEngine {
       reason = 'Accrued and not yet received: a receivable, not cash the trust can distribute';
       distributable = false;
     }
-    // A coupon on a bond the trust issued is the trust paying itself. Recording
-    // it is correct trust accounting; treating it as distributable income is not.
-    if (distributable && (kind === 'bond_coupon' || kind === 'bond_maturity')) {
-      const selfObligated = await this._isSelfObligated(sourceRef);
-      if (selfObligated) {
+    // A coupon on a bond the trust issued is never income to the trust. Which
+    // way it goes depends on who holds the instrument: held by the trust it is a
+    // round trip, held by someone else it is money going out the door, and an
+    // obligor cannot post its own coupon as a receipt at all.
+    if (kind === 'bond_coupon' || kind === 'bond_maturity') {
+      const position = await this._bondPosition(sourceRef);
+      if (position && position.classification === 'trust_obligation' && type === 'receipt') {
+        throw new DrawdownError(
+          `The trust is the obligor on ${sourceRef} and ${position.holders
+            .filter((h) => h.holderKind === 'external')
+            .map((h) => h.holderName).join(', ')} holds it, so a coupon or principal payment on it`
+          + ' is a disbursement the trust owes, not a receipt it can allocate to income',
+          {
+            sourceRef,
+            classification: position.classification,
+            recordAs: 'disbursement',
+            obligation: position.obligation,
+          }
+        );
+      }
+      if (distributable && position && position.classification === 'self_issued_self_held') {
         distributable = false;
         reason = 'The trust is both obligor and holder of this instrument, so the receipt is'
           + ' interest or principal it owes itself';
@@ -336,15 +357,43 @@ class PrincipalIncomeEngine {
     return rows.rows[0];
   }
 
-  static async _isSelfObligated(sourceRef) {
-    if (!ReserveEngine || !sourceRef) return false;
-    const portfolio = await ReserveEngine.portfolio().catch(() => null);
-    if (!portfolio) return false;
+  /**
+   * How a bond sits on the trust's books — an asset, an obligation to an outside
+   * holder, or an instrument it issued and holds itself. Read from the reserve
+   * portfolio, which already resolves the holder.
+   */
+  static async _bondPosition(sourceRef) {
+    if (!sourceRef) return null;
+    const portfolio = ReserveEngine ? await ReserveEngine.portfolio().catch(() => null) : null;
+    if (!portfolio) {
+      // No portfolio reader: classify the instrument directly so an obligation
+      // is still caught rather than silently treated as trust income.
+      if (!BondObligationEngine) return null;
+      const assessment = await BondObligationEngine
+        .obligationFor(sourceRef, ReserveEngine ? ReserveEngine.config().trustIssuers : [])
+        .catch(() => null);
+      return assessment && {
+        classification: assessment.classification,
+        holders: assessment.holders,
+        obligation: assessment.obligation,
+        contributedCorpusCents: cents(assessment.corpusCents),
+        carryingValueCents: cents(assessment.obligationCents),
+      };
+    }
     const ref = String(sourceRef).toLowerCase();
     const position = portfolio.positions.find((p) => [p.isin, p.bondIdentifier, p.bondName]
       .filter(Boolean)
       .some((k) => String(k).toLowerCase() === ref));
-    return Boolean(position && position.selfIssued);
+    if (!position) return null;
+    const classification = position.classification
+      || (position.selfIssued ? 'self_issued_self_held' : 'third_party_asset');
+    return {
+      classification,
+      holders: position.holders || [],
+      obligation: position.obligation || 0,
+      contributedCorpusCents: cents(position.contributedCorpusCents),
+      carryingValueCents: cents(position.carryingValueCents),
+    };
   }
 
   static async ledger({ seriesRef = null, allocation = null, limit = 200 } = {}) {
@@ -417,8 +466,20 @@ class PrincipalIncomeEngine {
     // series, whether or not they are attested — the instrument's allowance is
     // written against corpus, not against cash.
     const principalAssets = sheet.assets.filter((a) => a.assetKind === 'bond' || a.assetKind === 'cash_account');
-    const corpusCents = principalAssets.reduce((sum, a) => sum + cents(a.valueCents), 0)
-      + totals.principal.receiptsCents;
+    // …except a bond the trust issued to an outside holder, which is a liability.
+    // Its corpus contribution is only what the subscription actually paid in, so
+    // an unpaid $100,000,000 subscription adds nothing to the allowance base.
+    let corpusCents = totals.principal.receiptsCents;
+    let obligationExcludedCents = 0;
+    for (const asset of principalAssets) {
+      const position = asset.assetKind === 'bond' ? await this._bondPosition(asset.assetRef) : null;
+      if (position && position.classification === 'trust_obligation') {
+        corpusCents += position.contributedCorpusCents;
+        obligationExcludedCents += cents(asset.valueCents) - position.contributedCorpusCents;
+        continue;
+      }
+      corpusCents += cents(asset.valueCents);
+    }
     const allowanceYears = this._allowanceYears(cfg.principalStart);
     const principalAllowanceCents = Math.round((corpusCents * cfg.principalRateBps * allowanceYears) / 10000);
 
@@ -471,6 +532,8 @@ class PrincipalIncomeEngine {
       seriesCode: series.series_code,
       corpusCents,
       corpus: dollars(corpusCents),
+      obligationExcludedCents,
+      obligationExcluded: dollars(obligationExcludedCents),
       principalRateBps: cfg.principalRateBps,
       allowanceYears,
       seriesAvailableCents: fundableCents,
@@ -482,6 +545,11 @@ class PrincipalIncomeEngine {
         ? 'Entitlement can be funded up to the attested cash fenced into this series.'
         : 'The series holds an entitlement against corpus but no attested cash, so an authorized'
           + ' drawdown will stay unfunded until a capital transfer settles cash into it.',
+      obligationNote: obligationExcludedCents > 0
+        ? 'A bond fenced into this series is issued by the trust to an outside holder, so it is'
+          + ' an obligation rather than corpus: only the cash its subscription settled counts'
+          + ' toward the allowance, and its coupons are amounts the trust owes the holder.'
+        : null,
     };
   }
 

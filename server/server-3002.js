@@ -530,6 +530,12 @@ async function initializeDatabase() {
   } catch(e) { console.warn('[drawdown-os] table init:', e.message); }
 
   try {
+    var BondObligationEngine = require(path.join(HD, 'server', 'integrations', 'finops', 'bondObligationEngine')).BondObligationEngine;
+    await BondObligationEngine.ensureTables();
+    console.log('[bond-obligation] tables ensured');
+  } catch(e) { console.warn('[bond-obligation] table init:', e.message); }
+
+  try {
     var PaymentGatewayServerEngine = require(path.join(HD, 'server', 'integrations', 'payments', 'paymentGatewayServerEngine')).PaymentGatewayServerEngine;
     await PaymentGatewayServerEngine.ensureTables();
     console.log('[payment-gateway] tables ensured');
