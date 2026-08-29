@@ -518,6 +518,12 @@ async function initializeDatabase() {
   } catch(e) { console.warn('[series-os] table init:', e.message); }
 
   try {
+    var CapitalTransferOsEngine = require(path.join(HD, 'server', 'integrations', 'capital', 'capitalTransferOsEngine')).CapitalTransferOsEngine;
+    await CapitalTransferOsEngine.ensureTables();
+    console.log('[capital-transfer-os] tables ensured; automation =', CapitalTransferOsEngine.config().automation);
+  } catch(e) { console.warn('[capital-transfer-os] table init:', e.message); }
+
+  try {
     var PaymentGatewayServerEngine = require(path.join(HD, 'server', 'integrations', 'payments', 'paymentGatewayServerEngine')).PaymentGatewayServerEngine;
     await PaymentGatewayServerEngine.ensureTables();
     console.log('[payment-gateway] tables ensured');

@@ -174,6 +174,7 @@
     { key:'core-reserve', name:'Core Bank Reserve', desc:'Attested external reserves and bond portfolio collateral behind ledger cash: coverage, custody verification, fixed income eligibility, and funding provenance', stat:'', endpoint:null, action:'openCoreReservePanel' },
     { key:'custody-os', name:'Custody OS', desc:'Safekeeping accounts, positions, dual-signed custody receipts with chain of title, and the reserve attestations they produce', stat:'', endpoint:null, action:'openCustodyOsPanel' },
     { key:'series-os', name:'Master Trust / Series OS', desc:'Identify every reserve asset and ring-fence it into one series, so a beneficiary series can only draw on its own assets', stat:'', endpoint:null, action:'openSeriesOsPanel' },
+    { key:'capital-transfer-os', name:'Capital Transfer OS', desc:'Convert reserve assets into spendable funds inside a series: sell or pledge collateral, redeem digital assets, sweep custodian cash, all under dual trustee control', stat:'', endpoint:null, action:'openCapitalTransferPanel' },
     { key:'reserve-vault', name:'Reserve Vault (CDP)', desc:'Tokenize ledger/module reserves into a vault stablecoin position and quote swaps to canonical assets', stat:'', endpoint:null, action:'openReserveVaultPanel' },
     { key:'treasury-on-ramp', name:'Treasury On-Ramp Bridge', desc:'Wire core-banking fiat to an on-ramp, receive DAI/USDC, and redeem internal tokens 1:1', stat:'', endpoint:null, action:'openTreasuryOnRampPanel' },
     { key:'dex-aggregator', name:'DEX Aggregator & V3', desc:'Multi-source DEX aggregator and Uniswap V3 canonical pair swaps', stat:'', endpoint:null, action:'openDexAggregatorPanel' },
@@ -3253,6 +3254,197 @@
       if (!r.success) throw new Error(r.error || 'obligation failed');
       wrap.innerHTML = '<div class="status ok">Recorded ' + htmlEscape(r.data.obligation_id) + ' — it reduces the series available balance until settled</div>';
       seriesLoad();
+    } catch(e) { wrap.innerHTML = '<div class="status err">' + e.message + '</div>'; }
+  }
+
+  // ─── Capital Transfer OS panel ──────────────────────────────────────────────
+  function openCapitalTransferPanel() {
+    const panel = el('module-panel');
+    const body = el('panel-body');
+    el('panel-title').textContent = 'Capital Transfer OS';
+    panel.classList.add('active');
+    body.innerHTML = '<div class="muted" style="margin-bottom:12px;">Reserves become spendable funds by being converted: collateral is sold or pledged, digital assets are redeemed, custodian cash is swept, or a contributor funds the trust. Each transfer runs proposed → two trustee signatures → instructed to the counterparty → confirmed settlement, and only the confirmed step raises spendable funds — the proceeds are attested as cash and fenced straight into the series that raised them.</div>' +
+      '<div class="approval-actions"><button class="btn" onclick="capitalPlan()">Plan Conversions</button><button class="btn" onclick="capitalTransfers()">Refresh Pipeline</button><button class="btn" onclick="capitalAutomate(true)">Dry-Run Automation</button><button class="btn" onclick="capitalAutomate(false)">Run Automation</button><button class="btn" onclick="capitalChain()">Verify Transfer Log</button></div>' +
+      '<div class="token-bar"><input id="cap-plan-series" placeholder="series id or code (blank = whole master trust)" /><input id="cap-plan-target" placeholder="funding target (USD, blank = open obligations)" /></div>' +
+      '<div id="capital-plan" style="margin-top:8px;font-size:12px;"></div>' +
+      '<h3 style="font-size:14px;margin:16px 0 8px;">Propose a Transfer</h3>' +
+      '<div class="token-bar"><select id="cap-route"><option value="collateral_sale">collateral_sale</option><option value="collateral_pledge">collateral_pledge</option><option value="digital_asset_redemption">digital_asset_redemption</option><option value="custodian_cash_sweep">custodian_cash_sweep</option><option value="external_contribution">external_contribution</option></select><input id="cap-series" placeholder="target series id or code" /></div>' +
+      '<div class="token-bar"><select id="cap-kind"><option value="bond">bond</option><option value="reserve_attestation">reserve_attestation</option><option value="custody_position">custody_position</option><option value="cash_account">cash_account</option></select><input id="cap-ref" placeholder="source asset reference (blank for a contribution)" /></div>' +
+      '<div class="token-bar"><input id="cap-counterparty" placeholder="counterparty (custodian, lender, exchange, contributor)" /><input id="cap-amount" placeholder="amount (USD)" /></div>' +
+      '<div class="token-bar"><input id="cap-destination" placeholder="destination account the proceeds land in" /><input id="cap-memo" placeholder="memo (optional)" /></div>' +
+      '<div class="approval-actions"><button class="btn" onclick="capitalPropose()">Propose Transfer</button></div>' +
+      '<div id="capital-propose-status" style="margin-top:8px;"></div>' +
+      '<h3 style="font-size:14px;margin:16px 0 8px;">Instruct / Confirm Settlement</h3>' +
+      '<div class="token-bar"><input id="cap-tid" placeholder="transfer id" /><input id="cap-instruction" placeholder="instruction reference (custodian order, redemption id)" /></div>' +
+      '<div class="token-bar"><input id="cap-settlement" placeholder="settlement reference from the counterparty" /><input id="cap-evidence" placeholder="evidence reference (advice, receipt, statement)" /></div>' +
+      '<div class="token-bar"><input id="cap-settled" placeholder="settled amount (USD, blank = proposed amount)" /><input id="cap-confirm-destination" placeholder="destination account (blank = as proposed)" /></div>' +
+      '<div class="approval-actions"><button class="btn" onclick="capitalInstruct()">Record Instruction</button><button class="btn" onclick="capitalConfirm()">Confirm Settlement</button></div>' +
+      '<div id="capital-settle-status" style="margin-top:8px;"></div>' +
+      '<div id="capital-pipeline" style="margin-top:16px;font-size:12px;"></div>';
+    capitalPlan();
+    capitalTransfers();
+  }
+
+  async function capitalPlan() {
+    const wrap = el('capital-plan');
+    wrap.innerHTML = '<div class="muted">Planning conversions…</div>';
+    try {
+      const series = el('cap-plan-series').value;
+      const target = el('cap-plan-target').value;
+      const params = [];
+      if (series) params.push('seriesRef=' + encodeURIComponent(series));
+      if (target) params.push('targetCents=' + encodeURIComponent(String(Math.round(Number(target) * 100))));
+      const r = await api('/api/finops/capital/plan' + (params.length ? '?' + params.join('&') : ''));
+      if (!r.success) throw new Error(r.error || 'plan failed');
+      const d = r.data;
+      let html = '<div class="status ' + (d.coversGap ? 'ok' : 'err') + '">' + htmlEscape(d.seriesCode || d.masterTrust) +
+        ' — available $' + htmlEscape(d.available.toLocaleString()) + ', target $' + htmlEscape(d.target.toLocaleString()) +
+        ', gap $' + htmlEscape(d.gap.toLocaleString()) + ', convertible capacity $' + htmlEscape(d.capacity.toLocaleString()) + '</div>';
+      html += '<div class="muted" style="margin:8px 0;">' + htmlEscape(d.note) + '</div>';
+      if ((d.eligible || []).length) {
+        html += '<table class="small-table"><thead><tr><th>Asset</th><th>Contributes</th><th>Route</th><th>Basis</th><th>Expected Proceeds</th><th>Series</th></tr></thead>';
+        d.eligible.forEach(a => (a.routes || []).forEach(rt => {
+          html += '<tr><td>' + htmlEscape(a.label || a.assetRef) + '</td><td>' + htmlEscape(a.valueKind) +
+            '</td><td>' + htmlEscape(rt.route) + (rt.createsObligation ? ' <span class="muted">(creates obligation)</span>' : '') +
+            '</td><td>$' + htmlEscape(rt.basis.toLocaleString()) + '</td><td>$' + htmlEscape(rt.expectedProceeds.toLocaleString()) +
+            '</td><td>' + htmlEscape(a.seriesCode || 'commingled') + '</td></tr>';
+        }));
+        html += '</table>';
+      }
+      if ((d.ineligible || []).length) {
+        html += '<h3 style="font-size:13px;margin:12px 0 6px;">Not Convertible</h3><table class="small-table"><thead><tr><th>Asset</th><th>Value</th><th>Why Not</th></tr></thead>';
+        d.ineligible.forEach(a => {
+          html += '<tr><td>' + htmlEscape(a.label || a.assetRef) + '</td><td>$' + htmlEscape(a.value.toLocaleString()) +
+            '</td><td>' + htmlEscape(a.reason) + '</td></tr>';
+        });
+        html += '</table>';
+      }
+      wrap.innerHTML = html;
+    } catch(e) { wrap.innerHTML = '<div class="status err">' + e.message + '</div>'; }
+  }
+
+  async function capitalTransfers() {
+    const wrap = el('capital-pipeline');
+    wrap.innerHTML = '<div class="muted">Loading transfers…</div>';
+    try {
+      const r = await api('/api/finops/capital/transfers');
+      if (!r.success) throw new Error(r.error || 'transfers failed');
+      const rows = r.data || [];
+      let html = '<h3 style="font-size:14px;margin:0 0 8px;">Transfer Pipeline (' + htmlEscape(String(rows.length)) + ')</h3>';
+      html += '<table class="small-table"><thead><tr><th>Transfer</th><th>Route</th><th>Source</th><th>Amount</th><th>Status</th><th>Signatures</th><th>Counterparty</th><th></th></tr></thead>';
+      rows.forEach(t => {
+        let signatures = t.signatures || [];
+        if (typeof signatures === 'string') { try { signatures = JSON.parse(signatures); } catch(e) { signatures = []; } }
+        html += '<tr><td>' + htmlEscape(t.transfer_id) + '</td><td>' + htmlEscape(t.route) +
+          '</td><td>' + htmlEscape(t.source_label || '—') + '</td><td>$' + htmlEscape((Number(t.amount_cents) / 100).toLocaleString()) +
+          '</td><td>' + htmlEscape(t.status) + '</td><td>' + htmlEscape(signatures.length + '/' + t.required_signatures) +
+          '</td><td>' + htmlEscape(t.counterparty || '—') + '</td><td>' + (t.status === 'proposed'
+            ? '<button class="btn" onclick="capitalAuthorize(\'' + htmlEscape(t.transfer_id) + '\')">Sign</button>'
+            : '') + '</td></tr>';
+        if (t.settlement_note) html += '<tr><td colspan="8" class="muted">' + htmlEscape(t.settlement_note) + '</td></tr>';
+      });
+      html += '</table>';
+      if (!rows.length) html += '<div class="muted">No capital transfer has been raised yet.</div>';
+      wrap.innerHTML = html;
+    } catch(e) { wrap.innerHTML = '<div class="status err">' + e.message + '</div>'; }
+  }
+
+  async function capitalPropose() {
+    const wrap = el('capital-propose-status');
+    wrap.innerHTML = '<div class="muted">Proposing…</div>';
+    try {
+      const amount = el('cap-amount').value;
+      const body = {
+        route: el('cap-route').value,
+        seriesRef: el('cap-series').value,
+        assetKind: el('cap-ref').value ? el('cap-kind').value : undefined,
+        assetRef: el('cap-ref').value || undefined,
+        counterparty: el('cap-counterparty').value || undefined,
+        amountCents: amount ? Math.round(Number(amount) * 100) : undefined,
+        destinationRef: el('cap-destination').value || undefined,
+        memo: el('cap-memo').value || undefined,
+      };
+      const r = await api('/api/finops/capital/transfers', { method: 'POST', body: JSON.stringify(body) });
+      if (!r.success) throw new Error(r.error || 'proposal failed');
+      wrap.innerHTML = '<div class="status ok">Proposed ' + htmlEscape(r.data.transfer_id) + ' — it needs ' +
+        htmlEscape(String(r.data.required_signatures)) + ' trustee signatures before it can be instructed</div>';
+      capitalTransfers();
+    } catch(e) { wrap.innerHTML = '<div class="status err">' + e.message + '</div>'; }
+  }
+
+  async function capitalAuthorize(transferId) {
+    const wrap = el('capital-settle-status');
+    try {
+      const r = await api('/api/finops/capital/transfers/' + encodeURIComponent(transferId) + '/authorize', { method: 'POST', body: '{}' });
+      if (!r.success) throw new Error(r.error || 'authorization failed');
+      wrap.innerHTML = '<div class="status ok">' + htmlEscape(transferId) + ' is ' + htmlEscape(r.data.status) +
+        '; ' + htmlEscape(String(r.data.remainingSignatures)) + ' signature(s) still required</div>';
+      capitalTransfers();
+    } catch(e) { wrap.innerHTML = '<div class="status err">' + e.message + '</div>'; }
+  }
+
+  async function capitalInstruct() {
+    const wrap = el('capital-settle-status');
+    wrap.innerHTML = '<div class="muted">Recording instruction…</div>';
+    try {
+      const body = { instructionReference: el('cap-instruction').value };
+      const r = await api('/api/finops/capital/transfers/' + encodeURIComponent(el('cap-tid').value) + '/instruct', { method: 'POST', body: JSON.stringify(body) });
+      if (!r.success) throw new Error(r.error || 'instruction failed');
+      wrap.innerHTML = '<div class="status ok">Instructed ' + htmlEscape(r.data.transfer_id) + ' to ' + htmlEscape(r.data.counterparty || 'counterparty') + '</div>';
+      capitalTransfers();
+    } catch(e) { wrap.innerHTML = '<div class="status err">' + e.message + '</div>'; }
+  }
+
+  async function capitalConfirm() {
+    const wrap = el('capital-settle-status');
+    wrap.innerHTML = '<div class="muted">Confirming settlement…</div>';
+    try {
+      const settled = el('cap-settled').value;
+      const body = {
+        settlementReference: el('cap-settlement').value,
+        evidenceReference: el('cap-evidence').value,
+        settledCents: settled ? Math.round(Number(settled) * 100) : undefined,
+        destinationRef: el('cap-confirm-destination').value || undefined,
+      };
+      const r = await api('/api/finops/capital/transfers/' + encodeURIComponent(el('cap-tid').value) + '/confirm', { method: 'POST', body: JSON.stringify(body) });
+      if (!r.success) throw new Error(r.error || 'confirmation failed');
+      wrap.innerHTML = '<div class="status ok">Settled ' + htmlEscape(r.data.transfer_id) + ' — ' + htmlEscape((r.data.reserve && r.data.reserve.note) || '') + '</div>';
+      capitalTransfers();
+      capitalPlan();
+    } catch(e) { wrap.innerHTML = '<div class="status err">' + e.message + '</div>'; }
+  }
+
+  async function capitalAutomate(dryRun) {
+    const wrap = el('capital-plan');
+    wrap.innerHTML = '<div class="muted">Scanning series for funding gaps…</div>';
+    try {
+      const body = { seriesRef: el('cap-plan-series').value || undefined, dryRun: Boolean(dryRun) };
+      const r = await api('/api/finops/capital/automate', { method: 'POST', body: JSON.stringify(body) });
+      if (!r.success) throw new Error(r.error || 'automation failed');
+      const d = r.data;
+      let html = '<div class="status ' + ((d.proposed || []).length ? 'ok' : 'err') + '">Mode ' + htmlEscape(d.mode) +
+        ' — ' + htmlEscape(String((d.proposed || []).length)) + ' proposal(s) raised. ' + htmlEscape(d.note) + '</div>';
+      if ((d.skipped || []).length) {
+        html += '<table class="small-table"><thead><tr><th>Series</th><th>Asset</th><th>Skipped Because</th></tr></thead>';
+        d.skipped.forEach(s => {
+          html += '<tr><td>' + htmlEscape(s.seriesCode || '—') + '</td><td>' + htmlEscape(s.assetRef || '—') +
+            '</td><td>' + htmlEscape(s.reason) + '</td></tr>';
+        });
+        html += '</table>';
+      }
+      wrap.innerHTML = html;
+      capitalTransfers();
+    } catch(e) { wrap.innerHTML = '<div class="status err">' + e.message + '</div>'; }
+  }
+
+  async function capitalChain() {
+    const wrap = el('capital-plan');
+    try {
+      const r = await api('/api/finops/capital-chain');
+      if (!r.success) throw new Error(r.error || 'chain verification failed');
+      const d = r.data;
+      wrap.innerHTML = '<div class="status ' + (d.intact ? 'ok' : 'err') + '">' + htmlEscape(String(d.events)) +
+        ' capital transfer events — ' + htmlEscape(d.note) + '</div>' + wrap.innerHTML;
     } catch(e) { wrap.innerHTML = '<div class="status err">' + e.message + '</div>'; }
   }
 

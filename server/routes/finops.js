@@ -32,6 +32,7 @@ const { ReserveVaultEngine } = require('../integrations/dapp/reserveVaultEngine'
 const { ReserveEngine } = require('../integrations/finops/reserveEngine');
 const { CustodyOsEngine } = require('../integrations/custody/custodyOsEngine');
 const { SeriesOsEngine } = require('../integrations/series/seriesOsEngine');
+const { CapitalTransferOsEngine } = require('../integrations/capital/capitalTransferOsEngine');
 const { TreasuryOnRampBridgeEngine } = require('../integrations/dapp/treasuryOnRampBridgeEngine');
 const { TrustMarketEngine } = require('../integrations/dapp/trustMarketEngine');
 const { IntentRoutingEngine } = require('../integrations/dapp/intentRoutingEngine');
@@ -1248,6 +1249,116 @@ router.get('/series-events', operatorAuth, async (req, res) => {
 
 router.get('/series-chain', operatorAuth, async (req, res) => {
   try { res.json({ success: true, data: await SeriesOsEngine.verifyChain() }); } catch (err) { sendError(res, err); }
+});
+
+// ═════════════════════════════════════════════════════════════════════════════
+// Capital Transfer OS — convert reserve assets into spendable series capital
+// ═════════════════════════════════════════════════════════════════════════════
+
+router.get('/capital/status', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await CapitalTransferOsEngine.status() }); } catch (err) { sendError(res, err); }
+});
+
+// What could be raised, by route, and why the rest cannot be converted.
+router.get('/capital/plan', operatorAuth, async (req, res) => {
+  try {
+    const data = await CapitalTransferOsEngine.plan({
+      seriesRef: req.query.seriesRef || null,
+      targetCents: req.query.targetCents === undefined ? null : Number(req.query.targetCents),
+    });
+    res.json({ success: true, data });
+  } catch (err) { sendError(res, err); }
+});
+
+router.get('/capital/transfers', operatorAuth, async (req, res) => {
+  try {
+    const data = await CapitalTransferOsEngine.list({
+      seriesRef: req.query.seriesRef || null,
+      status: req.query.status || null,
+      limit: req.query.limit,
+    });
+    res.json({ success: true, data });
+  } catch (err) { sendError(res, err); }
+});
+
+router.post('/capital/transfers', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try {
+    const data = await CapitalTransferOsEngine.propose({
+      ...req.body,
+      proposedBy: (req.body && req.body.proposedBy) || sessionActor(req),
+    });
+    res.status(201).json({ success: true, data });
+  } catch (err) { sendError(res, err); }
+});
+
+router.get('/capital/transfers/:transferId', operatorAuth, async (req, res) => {
+  try {
+    const data = await CapitalTransferOsEngine.get(req.params.transferId);
+    if (!data) return res.status(404).json({ success: false, error: 'Capital transfer not found' });
+    res.json({ success: true, data });
+  } catch (err) { sendError(res, err); }
+});
+
+router.post('/capital/transfers/:transferId/authorize', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try {
+    const data = await CapitalTransferOsEngine.authorize(
+      req.params.transferId,
+      (req.body && req.body.signedBy) || sessionActor(req),
+      { role: (req.body && req.body.role) || null }
+    );
+    res.json({ success: true, data });
+  } catch (err) { sendError(res, err); }
+});
+
+router.post('/capital/transfers/:transferId/instruct', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try {
+    const data = await CapitalTransferOsEngine.instruct(req.params.transferId, {
+      ...req.body,
+      instructedBy: (req.body && req.body.instructedBy) || sessionActor(req),
+    });
+    res.json({ success: true, data });
+  } catch (err) { sendError(res, err); }
+});
+
+// Settlement: the only step that raises spendable funds, so it demands a
+// counterparty reference, evidence and an attesting officer.
+router.post('/capital/transfers/:transferId/confirm', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try {
+    const data = await CapitalTransferOsEngine.confirm(req.params.transferId, {
+      ...req.body,
+      confirmedBy: (req.body && req.body.confirmedBy) || sessionActor(req),
+    });
+    res.json({ success: true, data });
+  } catch (err) { sendError(res, err); }
+});
+
+router.post('/capital/transfers/:transferId/fail', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try {
+    const data = await CapitalTransferOsEngine.fail(req.params.transferId, {
+      reason: (req.body && req.body.reason) || null,
+      failedBy: (req.body && req.body.failedBy) || sessionActor(req),
+    });
+    res.json({ success: true, data });
+  } catch (err) { sendError(res, err); }
+});
+
+router.post('/capital/automate', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try {
+    const data = await CapitalTransferOsEngine.automate({
+      actor: (req.body && req.body.actor) || sessionActor(req),
+      seriesRef: (req.body && req.body.seriesRef) || null,
+      dryRun: Boolean(req.body && req.body.dryRun),
+    });
+    res.json({ success: true, data });
+  } catch (err) { sendError(res, err); }
+});
+
+router.get('/capital-events', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await CapitalTransferOsEngine.events({ limit: req.query.limit }) }); } catch (err) { sendError(res, err); }
+});
+
+router.get('/capital-chain', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await CapitalTransferOsEngine.verifyChain() }); } catch (err) { sendError(res, err); }
 });
 
 // ═════════════════════════════════════════════════════════════════════════════
