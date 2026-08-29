@@ -512,6 +512,12 @@ async function initializeDatabase() {
   } catch(e) { console.warn('[custody-os] table init:', e.message); }
 
   try {
+    var SeriesOsEngine = require(path.join(HD, 'server', 'integrations', 'series', 'seriesOsEngine')).SeriesOsEngine;
+    await SeriesOsEngine.ensureTables();
+    console.log('[series-os] tables ensured; ring fence =', SeriesOsEngine.config().enforcement);
+  } catch(e) { console.warn('[series-os] table init:', e.message); }
+
+  try {
     var PaymentGatewayServerEngine = require(path.join(HD, 'server', 'integrations', 'payments', 'paymentGatewayServerEngine')).PaymentGatewayServerEngine;
     await PaymentGatewayServerEngine.ensureTables();
     console.log('[payment-gateway] tables ensured');

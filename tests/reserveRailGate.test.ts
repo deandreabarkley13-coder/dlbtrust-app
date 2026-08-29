@@ -87,7 +87,7 @@ describe('external rails gated on attested reserves', () => {
       expect(originate).not.toHaveBeenCalled();
     });
 
-    it('checks the reserve against the wire amount and its funding account', async () => {
+    it('checks the reserve against the wire amount, funding account and series', async () => {
       const assertSpendable = vi.spyOn(ReserveEngine, 'assertSpendable')
         .mockResolvedValue({ allowed: true, shortfall: 0 } as any);
       vi.spyOn(PartnerBankRails, 'isConfigured').mockReturnValue(true);
@@ -99,6 +99,7 @@ describe('external rails gated on attested reserves', () => {
         amountCents: 250000,
         rail: 'wire',
         accountId: 'CA-OPERATING',
+        seriesId: null,
       });
     });
   });

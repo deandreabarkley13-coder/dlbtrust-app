@@ -440,6 +440,7 @@ class WireEngine {
       amountCents: Number(wire.amount_cents),
       rail: 'wire',
       accountId: metadata.sourceCashAccountId || metadata.fundingAccountId || null,
+      seriesId: metadata.seriesId || metadata.seriesCode || null,
     });
     if (decision && decision.warning) {
       console.warn('[wire] reserve check:', decision.warning);

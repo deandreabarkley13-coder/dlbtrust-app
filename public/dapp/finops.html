@@ -173,6 +173,7 @@
     { key:'internal-market-maker', name:'Internal Market Maker', desc:'Tokenize reserves (interest income, bonds, fixed income) and seed deeper BondDex pools', stat:'', endpoint:null, action:'openInternalMarketMakerPanel' },
     { key:'core-reserve', name:'Core Bank Reserve', desc:'Attested external reserves and bond portfolio collateral behind ledger cash: coverage, custody verification, fixed income eligibility, and funding provenance', stat:'', endpoint:null, action:'openCoreReservePanel' },
     { key:'custody-os', name:'Custody OS', desc:'Safekeeping accounts, positions, dual-signed custody receipts with chain of title, and the reserve attestations they produce', stat:'', endpoint:null, action:'openCustodyOsPanel' },
+    { key:'series-os', name:'Master Trust / Series OS', desc:'Identify every reserve asset and ring-fence it into one series, so a beneficiary series can only draw on its own assets', stat:'', endpoint:null, action:'openSeriesOsPanel' },
     { key:'reserve-vault', name:'Reserve Vault (CDP)', desc:'Tokenize ledger/module reserves into a vault stablecoin position and quote swaps to canonical assets', stat:'', endpoint:null, action:'openReserveVaultPanel' },
     { key:'treasury-on-ramp', name:'Treasury On-Ramp Bridge', desc:'Wire core-banking fiat to an on-ramp, receive DAI/USDC, and redeem internal tokens 1:1', stat:'', endpoint:null, action:'openTreasuryOnRampPanel' },
     { key:'dex-aggregator', name:'DEX Aggregator & V3', desc:'Multi-source DEX aggregator and Uniswap V3 canonical pair swaps', stat:'', endpoint:null, action:'openDexAggregatorPanel' },
@@ -3101,6 +3102,157 @@
       if (!r.success) throw new Error(r.error || 'void failed');
       wrap.innerHTML = '<div class="status ok">Voided ' + htmlEscape(receiptId) + '</div>';
       custodyReceipts();
+    } catch(e) { wrap.innerHTML = '<div class="status err">' + e.message + '</div>'; }
+  }
+
+  // ─── Master Trust / Series OS panel ─────────────────────────────────────────
+  function openSeriesOsPanel() {
+    const panel = el('module-panel');
+    const body = el('panel-body');
+    el('panel-title').textContent = 'Master Trust / Series OS';
+    panel.classList.add('active');
+    body.innerHTML = '<div class="muted" style="margin-bottom:12px;">Every asset the trust can point at is identified — what it is, how it was verified, and whether it is spendable cash, pledgeable collateral, evidence for another asset, or an internal ledger claim. Each identified asset is then fenced into exactly one series, and a series can only fund payments from its own assets net of its own obligations. Unassigned assets stay commingled at the master trust and fund no series.</div>' +
+      '<div class="approval-actions"><button class="btn" onclick="seriesLoad()">Refresh Statement</button><button class="btn" onclick="seriesAssets()">Identify Assets</button><button class="btn" onclick="seriesChain()">Verify Series Log</button></div>' +
+      '<div id="series-statement" style="margin-top:8px;font-size:12px;"></div>' +
+      '<h3 style="font-size:14px;margin:16px 0 8px;">Open a Series</h3>' +
+      '<div class="token-bar"><input id="ser-code" placeholder="series code (e.g. S-BEN-01)" /><input id="ser-name" placeholder="series name" /></div>' +
+      '<div class="token-bar"><select id="ser-purpose"><option value="beneficiary_support">beneficiary_support</option><option value="trust_operations">trust_operations</option><option value="reserve">reserve</option><option value="investment">investment</option><option value="insurance">insurance</option><option value="custody">custody</option></select><input id="ser-beneficiary" placeholder="beneficiary reference (required for beneficiary_support)" /></div>' +
+      '<div class="approval-actions"><button class="btn" onclick="seriesOpen()">Open Series</button></div>' +
+      '<div id="series-open-status" style="margin-top:8px;"></div>' +
+      '<h3 style="font-size:14px;margin:16px 0 8px;">Ring-Fence an Asset</h3>' +
+      '<div class="token-bar"><input id="sas-series" placeholder="series id or code" /><select id="sas-kind"><option value="reserve_attestation">reserve_attestation</option><option value="bond">bond</option><option value="custody_position">custody_position</option><option value="cash_account">cash_account</option></select></div>' +
+      '<div class="token-bar"><input id="sas-ref" placeholder="asset reference (as listed by Identify Assets)" /><input id="sas-evidence" placeholder="evidence reference (optional)" /></div>' +
+      '<div class="approval-actions"><button class="btn" onclick="seriesAssign()">Fence into Series</button></div>' +
+      '<div id="series-assign-status" style="margin-top:8px;"></div>' +
+      '<h3 style="font-size:14px;margin:16px 0 8px;">Record a Series Obligation</h3>' +
+      '<div class="token-bar"><input id="sob-series" placeholder="series id or code" /><input id="sob-type" placeholder="obligation type (e.g. beneficiary_distribution)" /></div>' +
+      '<div class="token-bar"><input id="sob-counterparty" placeholder="counterparty (optional)" /><input id="sob-amount" placeholder="amount (USD)" /></div>' +
+      '<div class="approval-actions"><button class="btn" onclick="seriesObligate()">Record Obligation</button></div>' +
+      '<div id="series-obligation-status" style="margin-top:8px;"></div>' +
+      '<div id="series-inventory" style="margin-top:16px;font-size:12px;"></div>';
+    seriesLoad();
+    seriesAssets();
+  }
+
+  async function seriesLoad() {
+    const wrap = el('series-statement');
+    wrap.innerHTML = '<div class="muted">Loading master trust statement…</div>';
+    try {
+      const r = await api('/api/finops/series/statement');
+      if (!r.success) throw new Error(r.error || 'statement failed');
+      const d = r.data;
+      let html = '<div class="status ' + (d.fencedSpendable > 0 ? 'ok' : 'err') + '">' + htmlEscape(d.masterTrust) +
+        ' — ' + htmlEscape(String(d.seriesCount)) + ' series, fenced spendable $' + htmlEscape(d.fencedSpendable.toLocaleString()) +
+        ', fenced collateral $' + htmlEscape(d.fencedCollateral.toLocaleString()) +
+        ', commingled spendable $' + htmlEscape(d.commingledSpendable.toLocaleString()) +
+        ' (ring fence: ' + htmlEscape(d.enforcement) + ')</div>';
+      html += '<div class="muted" style="margin:8px 0;">' + htmlEscape(d.note) + '</div>';
+      html += '<table class="small-table"><thead><tr><th>Series</th><th>Purpose</th><th>Beneficiary</th><th>Spendable</th><th>Collateral</th><th>Obligations</th><th>Available</th><th>Assets</th></tr></thead>';
+      (d.series || []).forEach(s => {
+        html += '<tr><td>' + htmlEscape(s.seriesCode) + ' <span class="muted">' + htmlEscape(s.seriesName) + '</span></td><td>' + htmlEscape(s.purpose) +
+          '</td><td>' + htmlEscape(s.beneficiaryRef || '—') + '</td><td>$' + htmlEscape(s.spendable.toLocaleString()) +
+          '</td><td>$' + htmlEscape(s.collateral.toLocaleString()) + '</td><td>$' + htmlEscape(s.openObligations.toLocaleString()) +
+          '</td><td>$' + htmlEscape(s.available.toLocaleString()) + '</td><td>' + htmlEscape(String((s.assets || []).length)) + '</td></tr>';
+      });
+      html += '</table>';
+      if (!(d.series || []).length) html += '<div class="muted">No series has been opened yet, so every asset is commingled at the master trust.</div>';
+      wrap.innerHTML = html;
+    } catch(e) { wrap.innerHTML = '<div class="status err">' + e.message + '</div>'; }
+  }
+
+  async function seriesAssets() {
+    const wrap = el('series-inventory');
+    wrap.innerHTML = '<div class="muted">Identifying reserve assets…</div>';
+    try {
+      const r = await api('/api/finops/series/assets');
+      if (!r.success) throw new Error(r.error || 'identification failed');
+      const d = r.data;
+      let html = '<h3 style="font-size:14px;margin:0 0 8px;">Identified Assets (' + htmlEscape(String(d.counts.assigned)) +
+        ' fenced, ' + htmlEscape(String(d.counts.unassigned)) + ' commingled)</h3>';
+      html += '<table class="small-table"><thead><tr><th>Kind</th><th>Reference</th><th>Identified As</th><th>Contributes</th><th>Value</th><th>Spendable</th><th>Collateral</th><th>Series</th><th></th></tr></thead>';
+      (d.assets || []).forEach(a => {
+        html += '<tr><td>' + htmlEscape(a.assetKind) + '</td><td>' + htmlEscape(a.assetRef) + '</td><td>' + htmlEscape(a.identification) +
+          '</td><td>' + htmlEscape(a.valueKind) + '</td><td>$' + htmlEscape(a.value.toLocaleString()) +
+          '</td><td>$' + htmlEscape(a.spendable.toLocaleString()) + '</td><td>$' + htmlEscape(a.collateral.toLocaleString()) +
+          '</td><td>' + htmlEscape(a.seriesCode || '—') + '</td><td>' + (a.assignmentId
+            ? '<button class="btn" onclick="seriesRelease(\'' + htmlEscape(a.assignmentId) + '\')">Release</button>'
+            : '') + '</td></tr>';
+      });
+      html += '</table>';
+      html += '<div class="muted" style="margin-top:8px;">' + htmlEscape(d.note) + '</div>';
+      wrap.innerHTML = html;
+    } catch(e) { wrap.innerHTML = '<div class="status err">' + e.message + '</div>'; }
+  }
+
+  async function seriesChain() {
+    const wrap = el('series-statement');
+    try {
+      const r = await api('/api/finops/series-chain');
+      if (!r.success) throw new Error(r.error || 'chain verification failed');
+      const d = r.data;
+      wrap.innerHTML = '<div class="status ' + (d.intact ? 'ok' : 'err') + '">' + htmlEscape(String(d.events)) +
+        ' series events — ' + htmlEscape(d.note) + '</div>' + wrap.innerHTML;
+    } catch(e) { wrap.innerHTML = '<div class="status err">' + e.message + '</div>'; }
+  }
+
+  async function seriesOpen() {
+    const wrap = el('series-open-status');
+    wrap.innerHTML = '<div class="muted">Opening…</div>';
+    try {
+      const body = {
+        seriesCode: el('ser-code').value,
+        seriesName: el('ser-name').value,
+        purpose: el('ser-purpose').value,
+        beneficiaryRef: el('ser-beneficiary').value || undefined,
+      };
+      const r = await api('/api/finops/series', { method: 'POST', body: JSON.stringify(body) });
+      if (!r.success) throw new Error(r.error || 'open failed');
+      wrap.innerHTML = '<div class="status ok">Opened ' + htmlEscape(r.data.series_id) + ' (' + htmlEscape(r.data.series_code) + ')</div>';
+      seriesLoad();
+    } catch(e) { wrap.innerHTML = '<div class="status err">' + e.message + '</div>'; }
+  }
+
+  async function seriesAssign() {
+    const wrap = el('series-assign-status');
+    wrap.innerHTML = '<div class="muted">Fencing…</div>';
+    try {
+      const body = {
+        assetKind: el('sas-kind').value,
+        assetRef: el('sas-ref').value,
+        evidenceReference: el('sas-evidence').value || undefined,
+      };
+      const r = await api('/api/finops/series/' + encodeURIComponent(el('sas-series').value) + '/assets', { method: 'POST', body: JSON.stringify(body) });
+      if (!r.success) throw new Error(r.error || 'assignment failed');
+      wrap.innerHTML = '<div class="status ok">Fenced ' + htmlEscape(r.data.asset_ref) + ' into ' + htmlEscape(r.data.series_code || r.data.series_id) + '</div>';
+      seriesLoad();
+      seriesAssets();
+    } catch(e) { wrap.innerHTML = '<div class="status err">' + e.message + '</div>'; }
+  }
+
+  async function seriesRelease(assignmentId) {
+    const wrap = el('series-assign-status');
+    try {
+      const r = await api('/api/finops/series/assets/' + encodeURIComponent(assignmentId) + '/release', { method: 'POST', body: JSON.stringify({ reason: 'released from series' }) });
+      if (!r.success) throw new Error(r.error || 'release failed');
+      wrap.innerHTML = '<div class="status ok">Released ' + htmlEscape(r.data.asset_ref) + '; it is commingled until fenced again</div>';
+      seriesLoad();
+      seriesAssets();
+    } catch(e) { wrap.innerHTML = '<div class="status err">' + e.message + '</div>'; }
+  }
+
+  async function seriesObligate() {
+    const wrap = el('series-obligation-status');
+    wrap.innerHTML = '<div class="muted">Recording…</div>';
+    try {
+      const body = {
+        obligationType: el('sob-type').value,
+        counterparty: el('sob-counterparty').value || undefined,
+        amountCents: Math.round(Number(el('sob-amount').value) * 100),
+      };
+      const r = await api('/api/finops/series/' + encodeURIComponent(el('sob-series').value) + '/obligations', { method: 'POST', body: JSON.stringify(body) });
+      if (!r.success) throw new Error(r.error || 'obligation failed');
+      wrap.innerHTML = '<div class="status ok">Recorded ' + htmlEscape(r.data.obligation_id) + ' — it reduces the series available balance until settled</div>';
+      seriesLoad();
     } catch(e) { wrap.innerHTML = '<div class="status err">' + e.message + '</div>'; }
   }
 
