@@ -29,6 +29,7 @@ const { UniswapV3Engine } = require('../integrations/dapp/uniswapV3Engine');
 const { DexAggregatorEngine } = require('../integrations/dapp/dexAggregatorEngine');
 const { InternalMarketMakerEngine } = require('../integrations/dapp/internalMarketMakerEngine');
 const { ReserveVaultEngine } = require('../integrations/dapp/reserveVaultEngine');
+const { ReserveEngine } = require('../integrations/finops/reserveEngine');
 const { TreasuryOnRampBridgeEngine } = require('../integrations/dapp/treasuryOnRampBridgeEngine');
 const { TrustMarketEngine } = require('../integrations/dapp/trustMarketEngine');
 const { IntentRoutingEngine } = require('../integrations/dapp/intentRoutingEngine');
@@ -984,6 +985,44 @@ router.post('/internal-market-maker/pools/:id/remove-liquidity', operatorAuth, w
 
 router.post('/internal-market-maker/pools/:id/accrue-yield', operatorAuth, async (req, res) => {
   try { res.json({ success: true, data: await InternalMarketMakerEngine.accrueYield({ poolAddress: req.params.id, apyBps: req.body.apyBps }) }); } catch (err) { sendError(res, err); }
+});
+
+// ═════════════════════════════════════════════════════════════════════════════
+// Core Bank Reserve Engine — attested external reserves behind ledger cash
+// ═════════════════════════════════════════════════════════════════════════════
+
+router.get('/reserve/status', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await ReserveEngine.status() }); } catch (err) { sendError(res, err); }
+});
+
+router.get('/reserve/coverage', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await ReserveEngine.coverage() }); } catch (err) { sendError(res, err); }
+});
+
+router.get('/reserve/attestations', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await ReserveEngine.latestAttestations() }); } catch (err) { sendError(res, err); }
+});
+
+// Reads every custody source we can query and records what it holds.
+router.post('/reserve/verify', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try { res.json({ success: true, data: await ReserveEngine.verifyLive() }); } catch (err) { sendError(res, err); }
+});
+
+// Records a custodian statement as a reserve; evidence and attester required.
+router.post('/reserve/attest', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try {
+    const actor = sessionActor(req);
+    const data = await ReserveEngine.record({
+      ...req.body,
+      verification: 'statement',
+      attestedBy: req.body.attestedBy || actor,
+    });
+    res.status(201).json({ success: true, data });
+  } catch (err) { sendError(res, err); }
+});
+
+router.get('/reserve/provenance/:accountId', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await ReserveEngine.provenance(req.params.accountId) }); } catch (err) { sendError(res, err); }
 });
 
 // ═════════════════════════════════════════════════════════════════════════════
