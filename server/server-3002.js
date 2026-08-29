@@ -500,6 +500,12 @@ async function initializeDatabase() {
   } catch(e) { console.warn('[events] table init:', e.message); }
 
   try {
+    var ReserveEngine = require(path.join(HD, 'server', 'integrations', 'finops', 'reserveEngine')).ReserveEngine;
+    await ReserveEngine.ensureTables();
+    console.log('[reserve] attestations ensured; enforcement =', ReserveEngine.config().enforcement);
+  } catch(e) { console.warn('[reserve] table init:', e.message); }
+
+  try {
     var PaymentGatewayServerEngine = require(path.join(HD, 'server', 'integrations', 'payments', 'paymentGatewayServerEngine')).PaymentGatewayServerEngine;
     await PaymentGatewayServerEngine.ensureTables();
     console.log('[payment-gateway] tables ensured');

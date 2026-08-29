@@ -23,6 +23,9 @@ const { TrustAccountingEngine } = require('../accounting/trustAccountingEngine')
 const { buildMtlsOptions } = require('../ach/openBankApi');
 const { PartnerBankRails } = require('../rails/partnerBankRails');
 
+let ReserveEngine;
+try { ({ ReserveEngine } = require('../finops/reserveEngine')); } catch (e) { ReserveEngine = null; }
+
 // Wire transfer statuses
 const WIRE_STATUSES = [
   'initiated',        // created by maker
@@ -425,6 +428,25 @@ class WireEngine {
     };
   }
 
+  /**
+   * A wire may only be transmitted against reserves the trust actually holds at
+   * an external custodian. Throws before anything reaches the bank otherwise.
+   */
+  static async _assertReserveBacked(wire) {
+    if (!ReserveEngine) return null;
+    let metadata = {};
+    try { metadata = typeof wire.metadata === 'string' ? JSON.parse(wire.metadata) : (wire.metadata || {}); } catch { metadata = {}; }
+    const decision = await ReserveEngine.assertSpendable({
+      amountCents: Number(wire.amount_cents),
+      rail: 'wire',
+      accountId: metadata.sourceCashAccountId || metadata.fundingAccountId || null,
+    });
+    if (decision && decision.warning) {
+      console.warn('[wire] reserve check:', decision.warning);
+    }
+    return decision;
+  }
+
   /** The exact partner bank request for an approved wire, without sending it. */
   static async previewWireOrigination(wireId) {
     const wire = await WireEngine.getWire(wireId);
@@ -433,6 +455,7 @@ class WireEngine {
   }
 
   static async _transmitWire(wire, wireEndpoint, bankAuth = {}) {
+    await WireEngine._assertReserveBacked(wire);
     if (PartnerBankRails.isConfigured()) {
       return await PartnerBankRails.originate('wire', WireEngine._wireInstruction(wire));
     }

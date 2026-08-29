@@ -39,6 +39,7 @@ let SkrillLinkEngine;
 let WebPaymentRailEngine;
 let CashEngine;
 let PaymentHubEngine;
+let ReserveEngine;
 
 function loadDeps() {
   try { ({ StripeTreasuryEngine } = require('./stripeTreasuryEngine')); } catch {}
@@ -51,6 +52,7 @@ function loadDeps() {
   try { ({ CashEngine } = require('../cash/cashEngine')); } catch {}
   try { ({ PaymentHubEngine } = require('../paymentHub/paymentHubEngine')); } catch {}
   try { ({ PDCflowEngine } = require('./pdcflowEngine')); } catch {}
+  try { ({ ReserveEngine } = require('../finops/reserveEngine')); } catch {}
   try {
     ({ KafkaEventBus, TOPICS: EVENT_TOPICS } = require('../events/kafkaEventBus'));
   } catch {}
@@ -67,6 +69,22 @@ async function emit(topic, payload, key) {
 }
 
 const TABLE = 'payment_processor_transactions';
+
+/**
+ * Processors that move value outside the trust's own books. These are the only
+ * ones that require reserve backing; internal clearing and book transfers do
+ * not leave the ledger.
+ */
+const EXTERNAL_PROCESSORS = [
+  'stripe_treasury',
+  'stripe_ach',
+  'stripe_wire',
+  'lili',
+  'lili_bank',
+  'skrill',
+  'pdcflow',
+  'payout_center',
+];
 
 class PaymentProcessorServerEngine {
   static async ensureTables() {
@@ -109,6 +127,23 @@ class PaymentProcessorServerEngine {
     if (r === 'payment_hub' || r === 'payment_intent') return 'payment_hub';
     if (r === 'pdcflow' || r === 'pdcflow_ach' || r === 'gateway_ach') return 'pdcflow';
     return 'payout_center';
+  }
+
+  /**
+   * An outbound rail can only send reserves held for the trust at an external
+   * custodian. In strict mode this throws before the provider is contacted.
+   */
+  static async _assertReserveBacked({ amountCents, rail, processor, source = {} }) {
+    if (!ReserveEngine) return null;
+    const decision = await ReserveEngine.assertSpendable({
+      amountCents,
+      rail: `${processor}:${rail}`,
+      accountId: source.accountId || source.account_id || null,
+    });
+    if (decision && decision.warning) {
+      console.warn('[processor] reserve check:', decision.warning);
+    }
+    return decision;
   }
 
   static async _insert(base) {
@@ -180,8 +215,17 @@ class PaymentProcessorServerEngine {
       initiatedBy: base.initiated_by,
     }, txId);
 
+    let reserveDecision = null;
     let result = { status: 'pending' };
     try {
+      if (base.direction === 'outbound' && EXTERNAL_PROCESSORS.includes(chosenProcessor) && !extras.dryRun) {
+        reserveDecision = await this._assertReserveBacked({
+          amountCents,
+          rail: chosenRail,
+          processor: chosenProcessor,
+          source,
+        });
+      }
       if (base.direction === 'inbound') {
         result = await this._processInbound({ amount, currency, rail: chosenRail, source, destination, reference, metadata, initiatedBy, extras, txId });
       } else {
@@ -220,7 +264,15 @@ class PaymentProcessorServerEngine {
         }
       }
     } catch (err) {
-      result = { status: 'failed', error: err.message, detail: err };
+      // A reserve shortfall fails the request before any provider call, so the
+      // row lands in failed rather than staying pending on an untransmitted row.
+      result = {
+        status: 'failed',
+        error: err.message,
+        code: err.code || null,
+        reserveBlocked: err.code === 'RESERVE_SHORTFALL',
+        detail: err.detail || err,
+      };
     }
 
     const status =
@@ -247,7 +299,7 @@ class PaymentProcessorServerEngine {
       error: result.error || null,
     }, txId);
 
-    return { processorTxId: txId, processor: chosenProcessor, rail: chosenRail, status, amount: (amountCents / 100).toFixed(2), currency: base.currency, externalReference: externalRef, result };
+    return { processorTxId: txId, processor: chosenProcessor, rail: chosenRail, status, amount: (amountCents / 100).toFixed(2), currency: base.currency, externalReference: externalRef, reserve: reserveDecision, result };
   }
 
   static async _processInbound({ amount, currency, rail, source, destination, reference, metadata, initiatedBy, extras, txId }) {
@@ -586,4 +638,4 @@ class PaymentProcessorServerEngine {
   }
 }
 
-module.exports = { PaymentProcessorServerEngine };
+module.exports = { PaymentProcessorServerEngine, EXTERNAL_PROCESSORS };

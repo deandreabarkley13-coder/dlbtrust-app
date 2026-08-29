@@ -171,6 +171,7 @@
     { key:'ramps', name:'Ramp Center', desc:'Fiat on/off ramps and counterparty rail aggregator', stat:'', endpoint:null, action:'openRampsPanel' },
     { key:'decentralized-ramps', name:'Decentralized Ramps', desc:'DEX, P2P, cross-chain, and fiat on/off-ramp aggregator', stat:'', endpoint:null, action:'openDecentralizedRampsPanel' },
     { key:'internal-market-maker', name:'Internal Market Maker', desc:'Tokenize reserves (interest income, bonds, fixed income) and seed deeper BondDex pools', stat:'', endpoint:null, action:'openInternalMarketMakerPanel' },
+    { key:'core-reserve', name:'Core Bank Reserve', desc:'Attested external reserves behind ledger cash: coverage, custody verification, and funding provenance', stat:'', endpoint:null, action:'openCoreReservePanel' },
     { key:'reserve-vault', name:'Reserve Vault (CDP)', desc:'Tokenize ledger/module reserves into a vault stablecoin position and quote swaps to canonical assets', stat:'', endpoint:null, action:'openReserveVaultPanel' },
     { key:'treasury-on-ramp', name:'Treasury On-Ramp Bridge', desc:'Wire core-banking fiat to an on-ramp, receive DAI/USDC, and redeem internal tokens 1:1', stat:'', endpoint:null, action:'openTreasuryOnRampPanel' },
     { key:'dex-aggregator', name:'DEX Aggregator & V3', desc:'Multi-source DEX aggregator and Uniswap V3 canonical pair swaps', stat:'', endpoint:null, action:'openDexAggregatorPanel' },
@@ -2767,6 +2768,99 @@
       });
       html += '</table>';
       if (!rows.length) html = '<div class="muted">No vault positions yet.</div>';
+      wrap.innerHTML = html;
+    } catch(e) { wrap.innerHTML = '<div class="status err">' + e.message + '</div>'; }
+  }
+
+  // ─── Core Bank Reserve panel ────────────────────────────────────────────────
+  function openCoreReservePanel() {
+    const panel = el('module-panel');
+    const body = el('panel-body');
+    el('panel-title').textContent = 'Core Bank Reserve';
+    panel.classList.add('active');
+    body.innerHTML = '<div class="muted" style="margin-bottom:12px;">Ledger cash is only transmittable to the extent the trust holds reserves at an external custodian. Balances created by internal postings are shown as unbacked and outbound rails refuse them.</div>' +
+      '<div class="approval-actions"><button class="btn" onclick="reserveLoad()">Refresh Coverage</button><button class="btn" onclick="reserveVerify()">Verify Custody Sources</button></div>' +
+      '<div id="reserve-coverage" style="margin-top:12px;font-size:12px;"></div>' +
+      '<h3 style="font-size:14px;margin:16px 0 8px;">Attest a Custodian Statement</h3>' +
+      '<div class="token-bar"><select id="reserve-source-type"><option value="depository_account">depository_account</option><option value="partner_bank">partner_bank</option><option value="custodian_statement">custodian_statement</option><option value="circle_custody">circle_custody</option></select></div>' +
+      '<div class="token-bar"><input id="reserve-source-key" placeholder="account label (e.g. Betterment Trust Checking)" /></div>' +
+      '<div class="token-bar"><input id="reserve-amount" placeholder="balance held (USD)" /></div>' +
+      '<div class="token-bar"><input id="reserve-evidence" placeholder="statement id / document reference" /></div>' +
+      '<div class="approval-actions"><button class="btn" onclick="reserveAttest()">Record Attestation</button></div>' +
+      '<div id="reserve-attest-status" style="margin-top:8px;"></div>' +
+      '<h3 style="font-size:14px;margin:16px 0 8px;">Trace a Cash Account\'s Funding</h3>' +
+      '<div class="token-bar"><input id="reserve-provenance-account" value="CA-OPERATING" placeholder="cash account id" /></div>' +
+      '<div class="approval-actions"><button class="btn" onclick="reserveProvenance()">Trace</button></div>' +
+      '<div id="reserve-provenance" style="margin-top:8px;font-size:12px;"></div>';
+    reserveLoad();
+  }
+
+  async function reserveLoad() {
+    const wrap = el('reserve-coverage');
+    wrap.innerHTML = '<div class="muted">Loading coverage…</div>';
+    try {
+      const r = await api('/api/finops/reserve/coverage');
+      if (!r.success) throw new Error(r.error || 'coverage failed');
+      const d = r.data;
+      const cls = d.status === 'fully_backed' ? 'ok' : 'err';
+      let html = '<div class="status ' + cls + '">' + htmlEscape(d.status.replace(/_/g, ' ')) +
+        ' — ledger cash $' + htmlEscape(d.ledgerCash.toLocaleString()) +
+        ', attested reserve $' + htmlEscape(d.attestedReserve.toLocaleString()) +
+        ', unbacked $' + htmlEscape(d.unbacked.toLocaleString()) + '</div>';
+      html += '<div class="muted" style="margin:8px 0;">' + htmlEscape(d.note) + '</div>';
+      html += '<table class="small-table"><thead><tr><th>Source</th><th>Key</th><th>Balance</th><th>Verification</th><th>Counted</th><th>Observed</th></tr></thead>';
+      (d.sources || []).forEach(s => {
+        html += '<tr><td>' + htmlEscape(s.sourceType) + '</td><td>' + htmlEscape(s.sourceKey) + '</td><td>$' + htmlEscape(s.balance) + '</td><td>' + htmlEscape(s.verification) + (s.unverifiedReason ? ' <span class="muted">(' + htmlEscape(s.unverifiedReason) + ')</span>' : '') + '</td><td>' + (s.counted ? 'yes' : 'no') + '</td><td>' + htmlEscape(String(s.observedAt || '').slice(0, 19)) + '</td></tr>';
+      });
+      html += '</table>';
+      if (!(d.sources || []).length) html += '<div class="muted">No custody source has been verified yet.</div>';
+      wrap.innerHTML = html;
+    } catch(e) { wrap.innerHTML = '<div class="status err">' + e.message + '</div>'; }
+  }
+
+  async function reserveVerify() {
+    const wrap = el('reserve-coverage');
+    wrap.innerHTML = '<div class="muted">Reading custody sources…</div>';
+    try {
+      const r = await api('/api/finops/reserve/verify', { method: 'POST', body: '{}' });
+      if (!r.success) throw new Error(r.error || 'verification failed');
+      reserveLoad();
+    } catch(e) { wrap.innerHTML = '<div class="status err">' + e.message + '</div>'; }
+  }
+
+  async function reserveAttest() {
+    const wrap = el('reserve-attest-status');
+    wrap.innerHTML = '<div class="muted">Recording…</div>';
+    try {
+      const body = {
+        sourceType: el('reserve-source-type').value,
+        sourceKey: el('reserve-source-key').value,
+        balanceCents: Math.round(Number(el('reserve-amount').value) * 100),
+        evidenceReference: el('reserve-evidence').value,
+      };
+      const r = await api('/api/finops/reserve/attest', { method: 'POST', body: JSON.stringify(body) });
+      if (!r.success) throw new Error(r.error || 'attestation failed');
+      wrap.innerHTML = '<div class="status ok">Recorded ' + htmlEscape(r.data.attestation_id) + '</div>';
+      reserveLoad();
+    } catch(e) { wrap.innerHTML = '<div class="status err">' + e.message + '</div>'; }
+  }
+
+  async function reserveProvenance() {
+    const wrap = el('reserve-provenance');
+    wrap.innerHTML = '<div class="muted">Tracing…</div>';
+    try {
+      const accountId = encodeURIComponent(el('reserve-provenance-account').value);
+      const r = await api('/api/finops/reserve/provenance/' + accountId);
+      if (!r.success) throw new Error(r.error || 'trace failed');
+      const d = r.data;
+      const cls = d.classification === 'externally_backed' ? 'ok' : 'err';
+      let html = '<div class="status ' + cls + '">' + htmlEscape(d.accountId) + ' — ' + htmlEscape(d.classification.replace(/_/g, ' ')) +
+        ' (balance $' + htmlEscape(d.balance.toLocaleString()) + ', external deposits $' + htmlEscape(d.externalDeposits.toLocaleString()) + ')</div>';
+      html += '<table class="small-table"><thead><tr><th>Account</th><th>Funding</th><th>Amount</th><th>Detail</th></tr></thead>';
+      (d.origins || []).forEach(o => {
+        html += '<tr><td>' + htmlEscape(o.accountId) + '</td><td>' + htmlEscape(o.funding) + '</td><td>' + (o.amount === undefined ? '' : '$' + htmlEscape(o.amount)) + '</td><td>' + htmlEscape(o.memo || o.referenceType || o.fromAccountId || o.note || '') + '</td></tr>';
+      });
+      html += '</table>';
       wrap.innerHTML = html;
     } catch(e) { wrap.innerHTML = '<div class="status err">' + e.message + '</div>'; }
   }
