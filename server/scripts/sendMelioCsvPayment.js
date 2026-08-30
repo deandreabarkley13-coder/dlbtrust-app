@@ -5,15 +5,19 @@
  * Originate a Melio CSV payment from the PTC ledger.
  *
  * Example:
- *   node server/scripts/sendMelioCsvPayment.js --amount 5.00 --sourceAccountId 4000 [--vendorEmail vendor@example.com]
+ *   node server/scripts/sendMelioCsvPayment.js --amount 5.00 [--vendorEmail vendor@example.com]
  *
- * Defaults to DB NET MGMT at Lili Bank (121145307 / 692101092959).
+ * Defaults to DB NET MGMT at Lili Bank (121145307 / 692101092959), funded from
+ * the Trust Operating Account as the clearing funding registry names it. Melio
+ * refuses every other source, so the default is read from the registry rather
+ * than written here where it could drift.
  * Reads source GL balance from the trust accounting engine and falls back to
  * CSV export when the Melio REST API is not configured.
  */
 
 require('dotenv').config();
 const { PtcTreasuryEngine } = require('../integrations/os/osEngine');
+const { FundingSourceRegistry } = require('../integrations/inhouseBank/clearing/fundingSourceRegistry');
 
 function parseArgs(argv) {
   const args = {};
@@ -28,12 +32,13 @@ function parseArgs(argv) {
 async function main() {
   const a = parseArgs(process.argv);
   const amount = Number(a.amount || a.amt);
+  const operatingAccount = FundingSourceRegistry.operatingAccountCode();
   if (!Number.isFinite(amount) || amount <= 0) {
-    console.error('Usage: node server/scripts/sendMelioCsvPayment.js --amount <dollars> [--sourceAccountId 4000] [--vendorName "DB NET MGMT"] [--vendorEmail "vendor@example.com"] [--routing 121145307] [--account 692101092959] [--bankName "Lili Bank"] [--accountType checking] [--dueDate YYYY-MM-DD] [--memo "..."]');
+    console.error(`Usage: node server/scripts/sendMelioCsvPayment.js --amount <dollars> [--sourceAccountId ${operatingAccount}] [--vendorName "DB NET MGMT"] [--vendorEmail "vendor@example.com"] [--routing 121145307] [--account 692101092959] [--bankName "Lili Bank"] [--accountType checking] [--dueDate YYYY-MM-DD] [--memo "..."]`);
     process.exit(1);
   }
 
-  const sourceAccountId = a.sourceAccountId || '4000';
+  const sourceAccountId = a.sourceAccountId || process.env.MELIO_SOURCE_ACCOUNT_ID || operatingAccount;
   const vendorName = a.vendorName || process.env.MELIO_VENDOR_NAME || 'DB NET MGMT';
   const routing = a.routing || process.env.MELIO_VENDOR_ROUTING || '121145307';
   const account = a.account || process.env.MELIO_VENDOR_ACCOUNT || '692101092959';
