@@ -314,6 +314,10 @@ class WalletEngine {
         next.allowed_rails, next.payee_allowlist, next.internal_only,
       ]
     );
+    // The router only reads the account's own restriction, so a rail control
+    // that lived solely on the wallet row would be advice nobody takes.
+    await VirtualAccountManager.setAllowedRails(wallet.vaId, parseJson(next.allowed_rails, null));
+
     await DualLedgerEngine.appendEvent({
       eventType: 'wallet.controls.changed',
       actor,
@@ -444,6 +448,7 @@ class WalletEngine {
     paymentPurpose = null,
     purposeCode = null,
     requestedSpeed = 'standard',
+    requestedRail = null,
     memo = null,
     actor = null,
   } = {}) {
@@ -459,6 +464,7 @@ class WalletEngine {
     const decision = await this.check(wallet.walletId, {
       amountCents: resolvedAmount,
       creditorAccountNumber: creditor.accountNumber || null,
+      rail: requestedRail,
     });
     if (!decision.allowed) {
       const [first] = decision.violations;
@@ -478,6 +484,7 @@ class WalletEngine {
         paymentPurpose,
         purposeCode,
         requestedSpeed,
+        requestedRail,
         remittanceInformation: memo,
       },
     });

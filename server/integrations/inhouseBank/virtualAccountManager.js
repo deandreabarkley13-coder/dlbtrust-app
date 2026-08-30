@@ -261,6 +261,20 @@ class VirtualAccountManager {
     return { ...publicAccount(rows.rows[0]), changedBy: actor };
   }
 
+  /**
+   * Restrict which rails this account may send over. Governance reads this on
+   * every submission, so it is the only rail restriction the router honours;
+   * anything held elsewhere is advisory.
+   */
+  static async setAllowedRails(ref, allowedRails) {
+    const account = await this.require(ref);
+    const rows = await pool.query(
+      `UPDATE ihb_virtual_accounts SET allowed_rails = $2, updated_at = NOW() WHERE va_id = $1 RETURNING *`,
+      [account.vaId, allowedRails && allowedRails.length ? JSON.stringify(allowedRails) : null]
+    );
+    return publicAccount(rows.rows[0]);
+  }
+
   // ── Balance movement ───────────────────────────────────────────────────────
 
   /**
