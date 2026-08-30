@@ -1,6 +1,6 @@
 {
   "name": "openach",
-  "description": "OpenACH origination platform (openach/Dockerfile) — the trust's ACH rail",
+  "description": "OpenACH origination platform (openach/Dockerfile): the trust's ACH rail",
   "deployment": {
     "type": "deployment",
     "instances": 1,
