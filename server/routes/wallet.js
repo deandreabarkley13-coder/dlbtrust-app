@@ -120,7 +120,7 @@ router.post('/me/check', walletAuth('wallet:read'), async (req, res) => {
     const data = await WalletEngine.check(req.wallet.walletId, {
       amountCents: req.body.amountCents,
       creditorAccountNumber: (req.body.creditor && req.body.creditor.accountNumber) || req.body.toAccount || null,
-      rail: req.body.rail || null,
+      rail: req.body.rail || req.body.requestedRail || null,
     });
     res.json({ success: true, data });
   } catch (err) { sendError(res, err); }
@@ -136,6 +136,7 @@ router.post('/me/payments', walletAuth('wallet:pay'), writeRateLimiter(), async 
       paymentPurpose: req.body.paymentPurpose || null,
       purposeCode: req.body.purposeCode || null,
       requestedSpeed: req.body.requestedSpeed || 'standard',
+      requestedRail: req.body.requestedRail || req.body.rail || null,
       memo: req.body.memo || null,
       actor: req.wallet.principal,
     });
@@ -146,7 +147,7 @@ router.post('/me/payments', walletAuth('wallet:pay'), writeRateLimiter(), async 
 router.post('/me/transfers', walletAuth('wallet:transfer'), writeRateLimiter(), async (req, res) => {
   try {
     const data = await WalletEngine.transfer(req.wallet.walletId, {
-      toRef: req.body.to || req.body.toWallet || req.body.handle,
+      toRef: req.body.to || req.body.toWallet || req.body.toRef || req.body.handle,
       idempotencyKey: req.headers['idempotency-key'] || req.body.idempotencyKey,
       amountCents: req.body.amountCents,
       amount: req.body.amount,
@@ -258,6 +259,13 @@ router.post('/credentials/:keyId/rotate', optionalSession, guard('accounts:manag
   try {
     res.json({ success: true, data: await WalletCredentials.rotate(req.params.keyId, { actor: req.ihb.principal }) });
   } catch (err) { sendError(res, err); }
+});
+
+// A client of a JSON API that mistypes a path should be told so in JSON. Without
+// this, an unmatched /api/wallet/* falls through to the SPA catch-all and the
+// caller gets the login page with a 200.
+router.use((req, res) => {
+  res.status(404).json({ success: false, error: `No wallet endpoint at ${req.method} /api/wallet${req.path}`, code: 'WALLET_NO_ROUTE' });
 });
 
 module.exports = router;

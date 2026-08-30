@@ -214,6 +214,25 @@ describe('family wallets', () => {
     expect(instruction.payload.paymentPurpose).toBe('Transfer to jr');
   });
 
+  it('pushes a rail restriction down to the account the router actually reads', async () => {
+    const setRails = vi.spyOn(VirtualAccountManager, 'setAllowedRails').mockResolvedValue({ ...ACCOUNT } as never);
+    const updated = await WalletEngine.setControls('dee', { allowedRails: ['fedwire'] }, { actor: 'trustee' });
+    expect(updated.controls.allowedRails).toEqual(['fedwire']);
+    expect(setRails).toHaveBeenCalledWith('VA-1', ['fedwire']);
+  });
+
+  it('refuses a payment on a rail the wallet may not use, and forwards the rail it may', async () => {
+    state.wallets[0].allowed_rails = JSON.stringify(['fedwire']);
+    const submit = vi.spyOn(InHouseBankEngine, 'submit').mockResolvedValue({ paymentId: 'IHB-3', replay: false } as never);
+    await expect(
+      WalletEngine.pay('dee', { idempotencyKey: 'k-5', amountCents: 1000, requestedRail: 'ach_standard', creditor: { name: 'Vendor' } })
+    ).rejects.toThrow(/may not send over ach_standard/);
+    expect(submit).not.toHaveBeenCalled();
+
+    await WalletEngine.pay('dee', { idempotencyKey: 'k-6', amountCents: 1000, requestedRail: 'fedwire', creditor: { name: 'Vendor' } });
+    expect((submit.mock.calls[0][0] as any).payload.requestedRail).toBe('fedwire');
+  });
+
   it('refuses a wallet paying itself', async () => {
     await expect(WalletEngine.transfer('dee', { toRef: 'dee', idempotencyKey: 'k-4', amountCents: 100 }))
       .rejects.toThrow(/cannot pay itself/);
