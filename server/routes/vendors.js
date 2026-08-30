@@ -402,7 +402,7 @@ router.post('/payments/melio/submit-invoice', async function(req, res) {
       vendor_id: vendor.vendor_id,
       amount: parseFloat(paymentPayload.amount),
       source_type: paymentPayload.source_type || 'trust',
-      source_account_code: paymentPayload.source_account_code || '1000',
+      source_account_code: paymentPayload.source_account_code || '1010',
       payment_method: 'melio',
       payment_type: paymentPayload.payment_type || 'trust_expense',
       description: paymentPayload.description || `Invoice from ${vendor.vendor_name}`,

@@ -88,12 +88,14 @@ function getFundingSourceConfig() {
     enforce: boolEnv('CLEARING_FUNDING_ENFORCE', true),
     requireBalance: boolEnv('CLEARING_FUNDING_REQUIRE_BALANCE', true),
 
-    // The Trust Operating Account, by its chart-of-accounts code. More than one
-    // code may be given because the trust's own chart is what decides: the
-    // schema documents 1010 as the operating/checking account, while a trust
-    // that never split checking out of 1000 operates from 1000. The first code
-    // that exists in the chart of accounts is the operating account.
-    operatingAccountCodes: list(text('CLEARING_FUNDING_OPERATING_ACCOUNT', '1010,1000')),
+    // The Trust Operating Account, by its chart-of-accounts code: 1010, Trust
+    // Checking, the account the trust bank actually holds — the same account
+    // the cash sweep deposits into (DR 1010) and PTC_BANK_GL_ACCOUNT draws
+    // from, so a payment funds itself from where the money already is. More
+    // than one code may be given for a trust that never split checking out of
+    // 1000; the first that exists in the chart of accounts is the operating
+    // account.
+    operatingAccountCodes: list(text('CLEARING_FUNDING_OPERATING_ACCOUNT', '1010')),
     // Accounts held elsewhere that are the same account of record — the cash
     // model's operating account is the operating account, not a second one.
     operatingAliases: list(text('CLEARING_FUNDING_OPERATING_ALIASES', 'cash:CA-OPERATING'))
@@ -271,6 +273,15 @@ const FundingSourceRegistry = {
   BENEFICIARY_TRUST,
 
   config: getFundingSourceConfig,
+
+  /**
+   * The chart-of-accounts code of the Trust Operating Account, for callers that
+   * need a default source account before they can resolve one — so no rail
+   * carries its own literal that can drift from the funding registry.
+   */
+  operatingAccountCode(config = null) {
+    return (config || getFundingSourceConfig()).operatingAccountCodes[0] || '1010';
+  },
 
   /** Every account this workflow is allowed to draw on, with its position. */
   async list() {
