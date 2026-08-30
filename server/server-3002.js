@@ -148,6 +148,9 @@ try { app.use('/api/open-agent-id', require(path.join(HD, 'server', 'routes', 'o
 // OS Engines — unified operating-system layer for bank, treasury, payment, clearing, settlement, compliance, security, REST API, bookkeeping, cash, asset-acquisition, bank-aggregator, funding, smart-router, and back-office
 try { app.use('/api/os', require(path.join(HD, 'server', 'routes', 'os'))); console.log('[os-engines] loaded'); } catch(e) { console.warn('[os-engines]', e.message); }
 
+// Payer OS — the trust as originator: credit pushes to registered settlement accounts, direct deposit payees and vendors
+try { app.use('/api/payer', require(path.join(HD, 'server', 'routes', 'payer'))); console.log('[payer-os] loaded'); } catch(e) { console.warn('[payer-os]', e.message); }
+
 // In-House Bank — PTC family bank orchestration: ingress/idempotency, governance, smart routing, dual ledger, ISO 20022, zero trust
 try { app.use('/api/inhouse-bank', require(path.join(HD, 'server', 'routes', 'inhouseBank'))); console.log('[inhouse-bank] loaded'); } catch(e) { console.warn('[inhouse-bank]', e.message); }
 try { app.use('/api/camel', require(path.join(HD, 'server', 'routes', 'camel'))); console.log('[camel] loaded'); } catch(e) { console.warn('[camel]', e.message); }
