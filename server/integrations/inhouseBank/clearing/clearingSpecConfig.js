@@ -14,8 +14,9 @@
  * automation reads from and writes to. Three properties are load-bearing:
  *
  *   • The rail → spec mapping is configuration, not a guess. A bank that
- *     ingests Fedwire tag files and a bank that ingests pacs.008 are told
- *     apart by `CLEARING_SPEC_RAIL_MAP`, not by inspecting the payload.
+ *     ingests the Fedwire ISO 20022 message set and a bank that ingests a
+ *     batched pacs.008 are told apart by `CLEARING_SPEC_RAIL_MAP`, not by
+ *     inspecting the payload.
  *   • Detection may only ever pick the *input* format. The output spec comes
  *     from this configuration, so a malformed or hostile input file cannot
  *     talk the trust into emitting a file some other bank would clear.
@@ -55,7 +56,10 @@ function parseRailMap(raw) {
   return map;
 }
 
-const DEFAULT_RAIL_MAP = 'fedwire=pacs.008.001.08,rtp=pacs.008.001.08,swift=pacs.008.001.08,ach=nacha-ccd';
+const DEFAULT_RAIL_MAP = 'fedwire=pacs.008.001.08-fedwire,rtp=pacs.008.001.08,swift=pacs.008.001.08,ach=nacha-ccd';
+
+const FEDWIRE_MARKET_PRACTICE_REGISTRY =
+  'www2.swift.com/mystandards/#/group/Federal_Reserve_Financial_Services/Fedwire_Funds_Service';
 
 function getClearingSpecConfig() {
   const intakeDir = path.resolve(
@@ -79,6 +83,19 @@ function getClearingSpecConfig() {
     receiverId: text('CLEARING_AUTOFORMAT_RECEIVER_ID', text('WIRE_DIRECT_SEND_RECEIVER_ID')),
     receiverRouting: text('CLEARING_AUTOFORMAT_RECEIVER_ROUTING', ''),
     receiverName: text('CLEARING_AUTOFORMAT_RECEIVER_NAME', text('TRUST_BANK_NAME', '')),
+
+    // Fedwire Funds Service ISO 20022 specifics. CTRC is the local instrument
+    // code for a core customer transfer — what the FAIM business function code
+    // CTR became — and SHAR is the charge bearer the service recommends unless
+    // another code applies. `BizSvc` is what marks a message as test traffic,
+    // so it is only emitted when it is set.
+    fedwire: {
+      localInstrument: text('CLEARING_FEDWIRE_LOCAL_INSTRUMENT', 'CTRC').toUpperCase(),
+      chargeBearer: text('CLEARING_FEDWIRE_CHARGE_BEARER', 'SHAR').toUpperCase(),
+      businessService: text('CLEARING_FEDWIRE_BUSINESS_SERVICE', ''),
+      marketPracticeRegistry: text('CLEARING_FEDWIRE_MARKET_PRACTICE_REGISTRY', FEDWIRE_MARKET_PRACTICE_REGISTRY),
+      marketPracticeId: text('CLEARING_FEDWIRE_MARKET_PRACTICE_ID', 'frb.fedwire.01'),
+    },
 
     // File conventions. The prefix and extension are what the bank's collector
     // matches on, so they are per-spec overridable through the spec registry.
@@ -130,7 +147,7 @@ function clearingSpecReadiness(specIds = []) {
     blockers.push(`CLEARING_AUTOFORMAT_DEFAULT_RAIL is ${config.defaultRail}, which CLEARING_SPEC_RAIL_MAP does not map to a spec`);
   }
   if (!config.senderRouting) {
-    warnings.push('No CLEARING_AUTOFORMAT_SENDER_ROUTING: NACHA output cannot be produced until the ODFI routing number is set.');
+    warnings.push('No CLEARING_AUTOFORMAT_SENDER_ROUTING: neither Fedwire ISO 20022 nor NACHA output can be produced until the trust bank routing number is set.');
   }
   if (!config.receiverId && !config.receiverRouting) {
     warnings.push('No receiver is configured: formatted files name no receiving bank in their header.');
@@ -146,6 +163,7 @@ function clearingSpecReadiness(specIds = []) {
     defaultRail: config.defaultRail,
     senderId: config.senderId,
     receiverId: config.receiverId || null,
+    fedwire: config.fedwire,
     intake: {
       inbox: config.inboxDir,
       outbox: config.outboxDir,

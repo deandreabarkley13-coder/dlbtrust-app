@@ -90,27 +90,36 @@ async function main() {
         deliver: has(args, 'send'),
       });
       const outDir = flag(args, 'out');
-      let writtenTo = null;
+      const writtenTo = [];
       if (outDir) {
         fs.mkdirSync(outDir, { recursive: true });
-        writtenTo = path.join(outDir, result.filename);
-        fs.writeFileSync(writtenTo, result.payload, 'utf8');
-        fs.writeFileSync(`${writtenTo}.manifest.json`, `${JSON.stringify(result.manifest, null, 2)}\n`, 'utf8');
+        for (const file of result.files) {
+          const target = path.join(outDir, file.filename);
+          fs.writeFileSync(target, file.payload, 'utf8');
+          fs.writeFileSync(`${target}.manifest.json`, `${JSON.stringify(file.manifest, null, 2)}\n`, 'utf8');
+          writtenTo.push(target);
+        }
       }
       print(result.delivered ? 'formatted and sent to the bank channel' : 'formatted (not sent)', {
         batchId: result.batchId,
-        filename: result.filename,
         detectedFormat: result.detection.format,
         detectionEvidence: result.detection.evidence,
         rail: `${result.rail} (${result.railSource})`,
         spec: `${result.spec} (${result.specSource})`,
         controls: result.controls,
-        signed: result.signed,
         archivePath: result.archivePath,
-        writtenTo,
-        delivery: result.delivery,
+        writtenTo: writtenTo.length ? writtenTo : null,
+        files: result.files.map(file => ({
+          filename: file.filename,
+          sequence: `${file.sequence} of ${file.of}`,
+          controls: file.controls,
+          signed: file.signed,
+          delivery: file.delivery,
+        })),
       });
-      if (has(args, 'print')) console.log(`\n${result.payload}`);
+      if (has(args, 'print')) {
+        for (const file of result.files) console.log(`\n${file.filename}\n${file.payload}`);
+      }
       return;
     }
     case 'intake': {

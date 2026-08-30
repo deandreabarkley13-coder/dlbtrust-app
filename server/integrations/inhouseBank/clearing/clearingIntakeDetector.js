@@ -315,7 +315,16 @@ function detectFormat(input) {
       return { format: 'pain.001', confidence: 'certain', evidence: 'the document root is CstmrCdtTrfInitn' };
     }
     if (/FIToFICstmrCdtTrf/i.test(trimmed)) {
-      return { format: 'pacs.008', confidence: 'certain', evidence: 'the document root is FIToFICstmrCdtTrf' };
+      // A Fedwire message wraps the same pacs.008 document in its envelope and
+      // business application header; the transactions parse identically.
+      const fedwire = /FedwireFunds(Incoming|Outgoing)/i.test(trimmed);
+      return {
+        format: 'pacs.008',
+        confidence: 'certain',
+        evidence: fedwire
+          ? 'a Fedwire Funds Service envelope carrying a FIToFICstmrCdtTrf document'
+          : 'the document root is FIToFICstmrCdtTrf',
+      };
     }
     throw new ClearingIntakeError(
       'The payload is XML but neither a pain.001 CustomerCreditTransferInitiation nor a pacs.008 FIToFICustomerCreditTransfer',

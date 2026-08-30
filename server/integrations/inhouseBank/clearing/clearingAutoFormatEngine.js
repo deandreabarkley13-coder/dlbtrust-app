@@ -24,6 +24,10 @@
  *     a manifest and an archive entry; it reaches a bank only when the caller
  *     asks for delivery *and* the Direct Send channel is itself ready, and it
  *     then travels over that channel's authenticated, signed transport.
+ *   • A spec decides how many files a batch becomes. Most specs batch every
+ *     instruction into one file; the Fedwire Funds Service carries one credit
+ *     transfer per ISO 20022 message, so a run there renders one message per
+ *     payment, each with its own digest, manifest and delivery.
  *   • Every run leaves evidence. The payload, its manifest and its detached
  *     signature are archived under the batch id before anything is transmitted,
  *     because the file is the instruction of record.
@@ -34,7 +38,7 @@ const fsp = require('fs/promises');
 const path = require('path');
 
 const { getClearingSpecConfig, clearingSpecReadiness } = require('./clearingSpecConfig');
-const { formatToSpec, listSpecs, specIds, ClearingSpecError } = require('./clearingSpecRegistry');
+const { formatToSpecFiles, listSpecs, specIds, ClearingSpecError } = require('./clearingSpecRegistry');
 const { normalize, detectFormat, ClearingIntakeError } = require('./clearingIntakeDetector');
 const { signClearingFile } = require('../wire/wireClearingFile');
 const { getDirectSendConfig, directSendReadiness } = require('../wire/wireDirectSendConfig');
@@ -69,6 +73,7 @@ function profileFrom(config, overrides = {}) {
     receiverName: overrides.receiverName || config.receiverName,
     entryDescription: overrides.entryDescription || null,
     currency: config.currency,
+    fedwire: { ...config.fedwire, ...(overrides.fedwire || {}) },
   };
 }
 
@@ -178,6 +183,16 @@ function buildManifest({ batchId, filename, formatted, instructions, detection, 
   };
 }
 
+/**
+ * A per-transaction spec turns one instruction set into several messages, so
+ * each file carries the sequence in its name; a batched spec keeps the plain
+ * one-file-per-batch name.
+ */
+function filenameFor({ config, rail, createdAt, batchId, formatted }) {
+  const suffix = formatted.of > 1 ? `-${String(formatted.sequence).padStart(3, '0')}` : '';
+  return `${config.filePrefix}-${rail.toUpperCase()}-${stamp(createdAt)}-${batchId.split('-').pop()}${suffix}${formatted.extension}`;
+}
+
 async function archive({ config, batchId, filename, formatted, manifest, signature }) {
   const dir = path.join(config.archiveDir, batchId);
   await fsp.mkdir(dir, { recursive: true });
@@ -224,12 +239,14 @@ const ClearingAutoFormatEngine = {
     const { instructions } = normalize(input, { format: detection.format });
     const railResolution = resolveRail(instructions, { requestedRail: rail, config });
     const specResolution = resolveSpec({ rail: railResolution.rail, requestedSpec: spec, config });
+    const perTransaction = Boolean((listSpecs().find(entry => entry.id === specResolution.specId) || {}).perTransaction);
     return {
       detection,
       rail: railResolution.rail,
       railSource: railResolution.source,
       spec: specResolution.specId,
       specSource: specResolution.source,
+      files: perTransaction ? instructions.length : 1,
       summary: summarise(instructions),
     };
   },
@@ -276,7 +293,9 @@ const ClearingAutoFormatEngine = {
 
     const id = batchId || newBatchId();
     const profile = profileFrom(config, profileOverrides);
-    const formatted = formatToSpec({
+    // One file for a batched spec, one message per payment for a spec the rail
+    // carries one transaction at a time — the Fedwire Funds Service.
+    const rendered = formatToSpecFiles({
       specId: specResolution.specId,
       instructions,
       batchId: id,
@@ -284,79 +303,116 @@ const ClearingAutoFormatEngine = {
       createdAt,
     });
 
-    const filename = `${config.filePrefix}-${railResolution.rail.toUpperCase()}-${stamp(createdAt)}-${id.split('-').pop()}${formatted.extension}`;
     const directSend = getDirectSendConfig();
-    const signature = signClearingFile(formatted.payload, directSend);
-    const manifest = buildManifest({
-      batchId: id,
-      filename,
-      formatted,
-      instructions,
-      detection,
-      rail: railResolution.rail,
-      signature,
-      profile,
-      source,
-    });
-    const archivePath = await archive({ config, batchId: id, filename, formatted, manifest, signature });
-
-    const result = {
-      batchId: id,
-      filename,
-      spec: formatted.specId,
-      specSource: specResolution.source,
-      rail: railResolution.rail,
-      railSource: railResolution.source,
-      detection,
-      contentType: formatted.contentType,
-      currency: formatted.currency,
-      controls: manifest.controls,
-      manifest,
-      archivePath,
-      signed: Boolean(signature),
-      actor: actor || null,
-      source: source || null,
-      delivered: false,
-      delivery: null,
-      payload: formatted.payload,
-    };
-
-    if (!deliver) return result;
-
-    const channel = directSendReadiness();
-    if (!channel.ready) {
+    const channel = deliver ? directSendReadiness() : null;
+    if (deliver && !channel.ready) {
       throw new ClearingAutoFormatError(
-        `The clearing channel is closed, so ${filename} was formatted and archived but not sent: ${channel.blockers.join('; ')}`,
+        `The clearing channel is closed, so batch ${id} was not sent: ${channel.blockers.join('; ')}`,
         'CLEARING_AUTOFORMAT_CHANNEL_CLOSED',
         409
       );
     }
-    if (directSend.requireSignature && !signature) {
-      throw new ClearingAutoFormatError(
-        `${filename} is unsigned and WIRE_DIRECT_SEND_REQUIRE_SIGNATURE is on`,
-        'CLEARING_AUTOFORMAT_UNSIGNED',
-        409
-      );
+
+    const files = [];
+    for (const formatted of rendered) {
+      const filename = filenameFor({ config, rail: railResolution.rail, createdAt, batchId: id, formatted });
+      const signature = signClearingFile(formatted.payload, directSend);
+      const manifest = buildManifest({
+        batchId: formatted.of > 1 ? `${id}-${String(formatted.sequence).padStart(3, '0')}` : id,
+        filename,
+        formatted,
+        instructions: formatted.instructions,
+        detection,
+        rail: railResolution.rail,
+        signature,
+        profile,
+        source,
+      });
+      const archivePath = await archive({ config, batchId: id, filename, formatted, manifest, signature });
+      files.push({
+        filename,
+        sequence: formatted.sequence,
+        of: formatted.of,
+        contentType: formatted.contentType,
+        payloadHash: formatted.payloadHash,
+        controls: manifest.controls,
+        manifest,
+        archivePath,
+        signed: Boolean(signature),
+        signature,
+        delivered: false,
+        delivery: null,
+        payload: formatted.payload,
+      });
     }
 
-    const receipt = await sendClearingFile({
-      file: {
-        batchId: id,
-        filename,
-        payload: formatted.payload,
-        payloadHash: formatted.payloadHash,
-        count: Number(formatted.controls.count || 0),
-        totalAmountCents: Number(formatted.controls.totalAmountCents || 0),
-        currency: formatted.currency,
+    const result = {
+      batchId: id,
+      spec: specResolution.specId,
+      specSource: specResolution.source,
+      rail: railResolution.rail,
+      railSource: railResolution.source,
+      detection,
+      currency: rendered[0].currency,
+      controls: {
+        files: files.length,
+        count: instructions.length,
+        totalAmountCents: instructions.reduce((sum, instruction) => sum + Number(instruction.amountCents || 0), 0),
       },
-      manifest,
-      signature,
-      // The file's own spec decides the content type; everything else about the
-      // channel — endpoint, certificates, drop directory — stays as configured.
-      config: { ...directSend, contentType: formatted.contentType },
-    });
+      files: files.map(({ signature, ...file }) => file),
+      archivePath: path.join(config.archiveDir, id),
+      actor: actor || null,
+      source: source || null,
+      delivered: false,
+    };
 
-    return { ...result, delivered: true, delivery: receipt };
+    if (!deliver) return result;
+
+    for (const file of files) {
+      if (directSend.requireSignature && !file.signed) {
+        throw new ClearingAutoFormatError(
+          `${file.filename} is unsigned and WIRE_DIRECT_SEND_REQUIRE_SIGNATURE is on`,
+          'CLEARING_AUTOFORMAT_UNSIGNED',
+          409
+        );
+      }
+      try {
+        const receipt = await sendClearingFile({
+          file: {
+            batchId: file.manifest.batchId,
+            filename: file.filename,
+            payload: file.payload,
+            payloadHash: file.payloadHash,
+            count: Number(file.controls.count || 0),
+            totalAmountCents: Number(file.controls.totalAmountCents || 0),
+            currency: rendered[0].currency,
+          },
+          manifest: file.manifest,
+          signature: file.signature,
+          // The file's own spec decides the content type; everything else about
+          // the channel — endpoint, certificates, drop directory — stays as
+          // configured.
+          config: { ...directSend, contentType: file.contentType },
+        });
+        file.delivered = true;
+        file.delivery = receipt;
+      } catch (error) {
+        // A batch the bank holds part of must not be retried wholesale, so a
+        // failure after anything has gone out is reported as ambiguous even
+        // when the transport itself was certain.
+        if (files.some(entry => entry.delivered)) {
+          error.ambiguous = true;
+          error.message = `${error.message} (${files.filter(entry => entry.delivered).length} of ${files.length} messages in batch ${id} were already sent)`;
+        }
+        throw error;
+      }
+    }
+
+    return {
+      ...result,
+      delivered: true,
+      files: files.map(({ signature, ...file }) => file),
+    };
   },
 
   /**
@@ -393,26 +449,30 @@ const ClearingAutoFormatEngine = {
           actor,
           deliver: shouldDeliver,
         });
-        await fsp.writeFile(path.join(config.outboxDir, result.filename), result.payload, 'utf8');
-        if (config.writeManifest) {
-          await fsp.writeFile(
-            path.join(config.outboxDir, `${result.filename}.manifest.json`),
-            `${JSON.stringify(result.manifest, null, 2)}\n`,
-            'utf8'
-          );
+        for (const file of result.files) {
+          await fsp.writeFile(path.join(config.outboxDir, file.filename), file.payload, 'utf8');
+          if (config.writeManifest) {
+            await fsp.writeFile(
+              path.join(config.outboxDir, `${file.filename}.manifest.json`),
+              `${JSON.stringify(file.manifest, null, 2)}\n`,
+              'utf8'
+            );
+          }
         }
         await fsp.rename(inputPath, path.join(config.processedDir, `${result.batchId}-${name}`));
         formatted.push({
           input: name,
           batchId: result.batchId,
-          filename: result.filename,
+          filenames: result.files.map(file => file.filename),
           spec: result.spec,
           rail: result.rail,
           detectedFormat: result.detection.format,
           count: result.controls.count,
           totalAmountCents: result.controls.totalAmountCents,
           delivered: result.delivered,
-          delivery: result.delivery ? { status: result.delivery.status, reference: result.delivery.reference } : null,
+          delivery: result.files
+            .filter(file => file.delivery)
+            .map(file => ({ filename: file.filename, status: file.delivery.status, reference: file.delivery.reference })),
         });
       } catch (error) {
         const reason = {
