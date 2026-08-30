@@ -1,20 +1,24 @@
 /**
  * OpenACH REST API Client
- * Integrates with OpenACH instance hosted on Fly.io at dlbtrust-app.fly.dev
- * 
+ *
+ * Talks to the OpenACH service the trust runs on Northflank
+ * (openach/Dockerfile, northflank/service-openach.json), which serves the api
+ * at <service-url>/api.
+ *
  * DEANDREA LAVAR BARKLEY TRUST — Real Money Movement via ACH
  * ODFI: configured via NACHA_ODFI_ROUTING / TRUST_BANK_ROUTING.
- * 
- * Set OPENACH_BASE_URL=https://dlbtrust-app.fly.dev/openach/api in production .env
+ *
+ * Set OPENACH_BASE_URL=https://<openach-service>.code.run/api in the runtime
+ * environment; there is no default host, so a misconfigured deployment cannot
+ * originate against someone else's instance.
  */
 
 const https = require('https');
 const http = require('http');
 const { URL } = require('url');
 
-// Default to Fly.io hosted OpenACH endpoint
-const OPENACH_BASE_URL = process.env.OPENACH_BASE_URL || 'https://dlbtrust-app.fly.dev/openach/api';
-const OPENACH_HOST_HEADER = process.env.OPENACH_HOST_HEADER || 'dlbtrust-app.fly.dev';
+const OPENACH_BASE_URL = process.env.OPENACH_BASE_URL || '';
+const OPENACH_HOST_HEADER = process.env.OPENACH_HOST_HEADER || '';
 const OPENACH_API_TOKEN = process.env.OPENACH_API_TOKEN;
 const OPENACH_API_KEY   = process.env.OPENACH_API_KEY;
 
@@ -24,7 +28,11 @@ const OPENACH_API_KEY   = process.env.OPENACH_API_KEY;
  */
 function openachRequest(endpoint, params = {}, sessionCookie = null) {
   return new Promise((resolve, reject) => {
-    const urlStr = `${OPENACH_BASE_URL}/${endpoint}`;
+    if (!OPENACH_BASE_URL) {
+      reject(new Error('OPENACH_BASE_URL must be set to the OpenACH service api base'));
+      return;
+    }
+    const urlStr = `${OPENACH_BASE_URL.replace(/\/$/, '')}/${endpoint}`;
     const parsed = new URL(urlStr);
 
     const body = new URLSearchParams(params).toString();
@@ -49,8 +57,9 @@ function openachRequest(endpoint, params = {}, sessionCookie = null) {
       path: parsed.pathname,
       method: 'POST',
       headers,
-      // Allow self-signed certs on local server
-      rejectUnauthorized: false,
+      // Northflank serves a real certificate; only a deployment that says so
+      // explicitly (a local container, a self-signed staging host) skips it.
+      rejectUnauthorized: process.env.OPENACH_ALLOW_INSECURE_TLS !== 'true',
     };
 
     const lib = parsed.protocol === 'https:' ? https : http;

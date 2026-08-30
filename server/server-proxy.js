@@ -9,8 +9,8 @@ const server = http.createServer(function(req, res) {
     const body = JSON.stringify({
       status: 'ok',
       service: 'ach',
-      openach_connected: true,
-      openach_url: 'https://dlbtrust-app.fly.dev/openach/',
+      openach_connected: !!process.env.OPENACH_BASE_URL,
+      openach_url: process.env.OPENACH_BASE_URL || null,
       timestamp: new Date().toISOString()
     });
     res.writeHead(200, { 'Content-Type': 'application/json' });

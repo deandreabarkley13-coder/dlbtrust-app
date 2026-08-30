@@ -34,7 +34,7 @@ check "Analytics API"     "curl -s http://localhost:3000/api/analytics/summary" 
 
 echo "--- OpenACH ---" | tee -a $LOG
 if [ -n "$OPENACH_API_TOKEN" ] && [ -n "$OPENACH_API_KEY" ]; then
-  check "OA connect"  "curl -s -X POST http://localhost/openach/api/connect -H 'Host: ach.dlbtrust.cloud' --data \"user_api_token=$OPENACH_API_TOKEN&user_api_key=$OPENACH_API_KEY\"" "success.*true"
+  check "OA connect"  "curl -s -X POST \"$OPENACH_BASE_URL/connect\" --data \"user_api_token=$OPENACH_API_TOKEN&user_api_key=$OPENACH_API_KEY\"" "success.*true"
 else
   echo "  ⏭  SKIP: OA connect (OPENACH_API_TOKEN / OPENACH_API_KEY unset)" | tee -a $LOG
 fi

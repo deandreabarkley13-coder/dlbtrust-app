@@ -1,0 +1,13 @@
+{
+  "name": "openach-db",
+  "description": "PostgreSQL backing the OpenACH origination platform (separate from the treasury ledger)",
+  "type": "postgresql",
+  "version": "16",
+  "tlsEnabled": true,
+  "externalAccessEnabled": false,
+  "billing": {
+    "deploymentPlan": "nf-compute-20",
+    "storage": 10240,
+    "replicas": 1
+  }
+}

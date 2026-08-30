@@ -9,7 +9,6 @@
 set -e
 REPO="https://raw.githubusercontent.com/deandreabarkley13-coder/dlbtrust-app/main"
 APP_VHOST="/var/www/vhosts/dlbtrust.cloud"
-ACH_VHOST="/var/www/vhosts/ach.dlbtrust.cloud"
 BLUE='\033[0;34m'; GREEN='\033[0;32m'; RED='\033[0;31m'; NC='\033[0m'
 
 step() { echo -e "\n${BLUE}[$1]${NC} $2"; }
@@ -38,17 +37,12 @@ curl -s "$REPO/server/apache-config/dlbtrust.cloud-vhost.conf" \
   -o $APP_VHOST/conf/vhost.conf
 ok "vhost.conf written"
 
-# ── STEP 3: Fix Apache vhost for ach.dlbtrust.cloud ─────────
-step "3/9" "Configuring Apache VirtualHost for ach.dlbtrust.cloud..."
-mkdir -p $ACH_VHOST/conf 2>/dev/null || true
-curl -s "$REPO/server/apache-config/ach.dlbtrust.cloud-vhost.conf" \
-  -o $ACH_VHOST/conf/vhost.conf 2>/dev/null || true
-ok "ach vhost.conf written"
+# OpenACH is no longer hosted here: it runs as the `openach` service in the
+# Northflank project (openach/Dockerfile), reached over OPENACH_BASE_URL.
 
 # ── STEP 4: Rebuild Apache config ───────────────────────────
 step "4/9" "Rebuilding Apache configuration via Plesk..."
 /usr/local/psa/admin/sbin/httpdmng --reconfigure-domain dlbtrust.cloud 2>/dev/null && ok "dlbtrust.cloud reconfigured" || err "httpdmng failed — manual reload needed"
-/usr/local/psa/admin/sbin/httpdmng --reconfigure-domain ach.dlbtrust.cloud 2>/dev/null && ok "ach.dlbtrust.cloud reconfigured" || true
 apache2ctl configtest 2>&1 | tail -2
 service apache2 reload && ok "Apache reloaded" || service apache2 restart && ok "Apache restarted"
 
@@ -58,16 +52,13 @@ certbot certificates 2>/dev/null | grep -A3 "dlbtrust.cloud" || echo "certbot no
 # Try renew if expired
 certbot renew --quiet 2>/dev/null && ok "Certs renewed" || ok "Certs up to date or manual renewal needed"
 
-# ── STEP 6: Start/restart OpenACH Docker ────────────────────
-step "6/9" "Starting OpenACH Docker container..."
-CONTAINER=$(docker ps -a --format "{{.Names}}" | grep -i openach | head -1)
-if [ -n "$CONTAINER" ]; then
-  docker start "$CONTAINER" 2>/dev/null || true
-  sleep 2
-  docker ps | grep openach && ok "OpenACH container running" || err "OpenACH container failed to start"
+# ── STEP 6: Check the OpenACH service ───────────────────────
+step "6/9" "Checking the OpenACH service..."
+if [ -n "$OPENACH_BASE_URL" ]; then
+  curl -s -o /dev/null -w "  HTTP %{http_code} from $OPENACH_BASE_URL\n" --max-time 10 \
+    -X POST "$OPENACH_BASE_URL/connect" || err "OpenACH unreachable"
 else
-  err "No OpenACH container found — check docker ps -a"
-  docker ps -a | head -10
+  err "OPENACH_BASE_URL is unset — point it at the Northflank openach service"
 fi
 
 # ── STEP 7: Check the OpenACH API credential ─────────────────
@@ -101,8 +92,9 @@ npm install --production 2>&1 | tail -3
 # Set .env — the api credential itself is provisioned separately, by
 # server/integrations/openach/server-side-setup.js, and never written from here.
 grep -q "OPENACH_BASE_URL" .env 2>/dev/null || cat >> .env << 'ENVEOF'
-OPENACH_BASE_URL=http://localhost/openach/api
-OPENACH_HOST_HEADER=ach.dlbtrust.cloud
+# api base of the Northflank openach service, e.g.
+# https://p01--openach--<project-hash>.code.run/api
+OPENACH_BASE_URL=
 PORT=3001
 ENVEOF
 grep -q "OPENACH_API_TOKEN" .env 2>/dev/null \
@@ -138,12 +130,11 @@ echo -n "  Node.js direct (port 3001): "
 curl -s http://localhost:3001/api/wallets | head -c 60 || echo "FAIL"
 
 echo -n "  OpenACH connect: "
-if [ -n "$OPENACH_API_TOKEN" ] && [ -n "$OPENACH_API_KEY" ]; then
-  curl -s -X POST http://localhost/openach/api/connect \
-    -H "Host: ach.dlbtrust.cloud" \
+if [ -n "$OPENACH_API_TOKEN" ] && [ -n "$OPENACH_API_KEY" ] && [ -n "$OPENACH_BASE_URL" ]; then
+  curl -s -X POST "$OPENACH_BASE_URL/connect" \
     --data "user_api_token=$OPENACH_API_TOKEN&user_api_key=$OPENACH_API_KEY" | head -c 100
 else
-  echo "SKIPPED (no credential in the environment)"
+  echo "SKIPPED (OPENACH_BASE_URL / credential not in the environment)"
 fi
 
 echo -n "  ACH health: "

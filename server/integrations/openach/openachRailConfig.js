@@ -48,7 +48,9 @@ function getOpenAchRailConfig() {
   return {
     enabled: boolEnv('OPENACH_RAIL_ENABLED', true),
     rails: rails.length ? rails : CARRIED_RAILS.slice(),
-    baseUrl: text('OPENACH_BASE_URL', 'https://dlbtrust-app.fly.dev/openach/api'),
+    // No default host: the rail must be pointed at the OpenACH service that the
+    // trust actually originates through (northflank/service-openach.json).
+    baseUrl: text('OPENACH_BASE_URL'),
     credentialsPresent: Boolean(text('OPENACH_API_TOKEN') && text('OPENACH_API_KEY')),
     paymentTypeIds: {
       // Same-day origination is a different payment type in OpenACH (its own
@@ -72,6 +74,7 @@ function openAchRailReadiness() {
   const config = getOpenAchRailConfig();
   const blockers = [];
   if (!config.enabled) blockers.push('OPENACH_RAIL_ENABLED is off: ACH dispatches stay with the operator');
+  if (!config.baseUrl) blockers.push('OPENACH_BASE_URL is unset: the rail has no OpenACH service to originate through');
   if (!config.credentialsPresent) blockers.push('OPENACH_API_TOKEN and OPENACH_API_KEY are unset: the rail cannot open an OpenACH session');
   const missingTypes = config.rails.filter(rail => !config.paymentTypeIds[rail]);
   if (missingTypes.length) {
