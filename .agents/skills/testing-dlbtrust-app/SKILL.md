@@ -24,6 +24,11 @@ nohup env \
   DATABASE_URL=postgres://dlbtrust:dlbtrust@localhost:5432/dlbtrust \
   JWT_SECRET=<any-stable-secret> \
   ADMIN_SECRET_TOKEN=dlb-admin-2026-trust \
+  STABLECOIN_ENABLED=true \
+  STABLECOIN_MODE=shadow \
+  STABLECOIN_NETWORK=testnet \
+  STABLECOIN_DISTRIBUTOR_SECRET=<valid-stellar-secret> \
+  STABLECOIN_DISTRIBUTOR_PUBLIC=<matching-public-key> \
   PORT=3002 \
   node server/server-3002.js > /tmp/server-3002.log 2>&1 &
 disown
@@ -42,9 +47,12 @@ disown
 ## UI navigation
 
 - Login via the overlay.
+- Use the left sidebar **Stablecoin Payments** nav item to switch to `#page-stablecoin`.
 - Use the left sidebar **OFX Clearing** nav item to switch to `#page-ofx`.
-- The page has cards for institutions, statement import, payment creation, and a payments table.
-- Submitting a payment in simulate mode updates the row to `accepted` and persists an XML `ofx_request` in Postgres.
+- The **Stablecoin Payments** page has cards for readiness, payment creation, source-balance checks, and a payments table.
+- The **OFX Clearing** page has cards for institutions, statement import, payment creation, and a payments table.
+- Submitting an OFX payment in simulate mode updates the row to `accepted` and persists an XML `ofx_request` in Postgres.
+- Creating a stablecoin payment with a non-treasury source (bond, cash, trust, fixed_income, fineract/core_banking) will sweep the source balance into treasury on approve, post the reserve on settle, and reduce the source balance by the payment total.
 
 ## Beneficiary Mobile PWA (`/dapp/mobile.html`)
 
@@ -64,6 +72,23 @@ disown
 ## Useful Postgres checks
 
 ```sql
+-- Stablecoin payments and reserves
+SELECT id, status, source_type, source_account_id, total_cents, reserve_id, tx_hash, source_ref
+FROM stablecoin_payments ORDER BY created_at DESC;
+
+SELECT account_id, balance_cents, hold_cents, available_cents
+FROM stablecoin_treasury_accounts WHERE account_id = 'TREASURY_HOT';
+
+SELECT reserve_id, status, tx_hash FROM stablecoin_reserves ORDER BY created_at DESC;
+
+-- Source balances
+SELECT b.id, b.bond_name, bb.principal_balance, bb.accrued_interest
+FROM bonds b JOIN bond_balances bb ON bb.bond_id = b.id WHERE b.id = 1;
+
+SELECT account_id, balance_cents FROM cash_accounts WHERE account_id = 'STABLECOIN_CASH_HOLD';
+SELECT account_code, balance FROM trust_accounts WHERE account_code = 'TRUST-SRC-TEST2';
+
+-- OFX
 SELECT id, status, ofx_request IS NOT NULL AS has_request
 FROM ofx_payments ORDER BY id DESC;
 
