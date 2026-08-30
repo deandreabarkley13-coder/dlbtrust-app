@@ -20,6 +20,7 @@
     "trust:melio-workflow": "node server/scripts/melioCanonicalPaymentWorkflow.js",
     "camel:bus": "node server/scripts/camelBus.js",
     "clearing:format": "node server/scripts/formatBankClearingFile.js",
+    "trust:fund-settlement": "node server/scripts/fundSettlementAccount.js",
     "db:init": "tsx src/server/db/init.ts",
     "typecheck": "tsc --noEmit"
   },

@@ -690,6 +690,8 @@ class WireEngine {
       } else if (wire.payment_type === 'principal_return') {
         debitAccountCode = ACCOUNT_CODES.CORPUS;
         journalDescription = `Wire principal return: ${wire.description || wire.beneficiary_name}`;
+      } else if (wire.payment_type === 'settlement_funding') {
+        journalDescription = `Wire settlement funding: ${wire.description || wire.beneficiary_name}`;
       }
 
       let wireMetadata = wire.metadata || {};
@@ -864,7 +866,11 @@ class WireEngine {
         JSON.stringify(settlementMetadata),
       ]
     );
-    if (updated.rows.length && wire.payment_type !== 'bill_deposit') {
+    // A settlement funding wire moves the trust's money between its own
+    // accounts: recording it as an outflow would report the cash as spent while
+    // it is still the trust's, and double-count it when the rail spends it.
+    const isInternalTransfer = wire.payment_type === 'settlement_funding';
+    if (updated.rows.length && wire.payment_type !== 'bill_deposit' && !isInternalTransfer) {
       try {
         await pool.query(
           `INSERT INTO cashflow_events
