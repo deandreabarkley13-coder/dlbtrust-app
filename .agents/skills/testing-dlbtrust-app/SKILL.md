@@ -829,6 +829,71 @@ Use `x-admin-token: dlb-admin-2026-trust` for all calls.
 - `ComplianceEngine.screen` may create a row with `status: 'review'` and `risk_score` when only `subject` is provided.
 - `npm run lint` may still show many pre-existing `no-unused-vars` warnings across other files, but the OS engine files should be clean.
 
+## Alchemy Base/Eth/Polygon/Arbitrum RPC wiring (PR #347)
+
+The `devin/alchemy-base-rpc` branch updates `server/integrations/dapp/config.js` to build an Alchemy RPC URL from `ALCHEMY_API_KEY` and `DAPP_CHAIN_ID`. `DAPP_RPC_URL` still takes precedence.
+
+### Env variables
+
+- `DAPP_CHAIN_ID` — `8453` for Base mainnet, `1` for Ethereum, `137` for Polygon, `42161` for Arbitrum.
+- `ALCHEMY_API_KEY` — optional; when set the computed `rpcUrl` becomes `https://<network>-mainnet.g.alchemy.com/v2/<key>`.
+- `DAPP_RPC_URL` — optional override that wins over the Alchemy URL.
+
+### Quick config checks (no network calls)
+
+```bash
+# Fallback for Base mainnet with no Alchemy key
+DAPP_CHAIN_ID=8453 node -e "const {getConfig}=require('./server/integrations/dapp/config'); console.log(JSON.stringify({chainId:getConfig().chainId, rpcUrl:getConfig().rpcUrl, usdcAddress:getConfig().usdcAddress, alchemyApiKey:getConfig().alchemyApiKey}, null, 2));"
+# Expected rpcUrl: https://mainnet.base.org
+
+# Fake Alchemy key should produce the Alchemy URL
+DAPP_CHAIN_ID=8453 ALCHEMY_API_KEY='fake-key-for-url-check' node -e "const {getConfig}=require('./server/integrations/dapp/config'); console.log(getConfig().rpcUrl);"
+# Expected: https://base-mainnet.g.alchemy.com/v2/fake-key-for-url-check
+
+# DAPP_RPC_URL override precedence
+DAPP_CHAIN_ID=8453 ALCHEMY_API_KEY='fake-key' DAPP_RPC_URL='https://override.example.com' node -e "const {getConfig}=require('./server/integrations/dapp/config'); console.log(getConfig().rpcUrl);"
+# Expected: https://override.example.com
+```
+
+### Live balance endpoint
+
+Start the server with `DAPP_CHAIN_ID=8453` (and no `ALCHEMY_API_KEY` to test the public Base fallback, or with a real `ALCHEMY_API_KEY` for live Alchemy). Auth with `x-admin-token: <ADMIN_SECRET_TOKEN>`.
+
+```bash
+curl -s -H 'x-admin-token: dlb-admin-2026-trust' \
+  'http://localhost:3002/api/dapp/wallet/balances?chain=evm&address=0x62EE94918C008849fDebe69651174334841E1ABd'
+```
+
+Expected response shape:
+
+```json
+{
+  "success": true,
+  "data": {
+    "chain": 8453,
+    "rpcUrl": "https://mainnet.base.org",
+    "address": "0x62ee94918c008849fdebe69651174334841e1abd",
+    "native": { "symbol": "ETH", "balance": "0" },
+    "usdc": { "symbol": "USDC", "tokenAddress": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913", "balance": "0" },
+    "dlbusd": null
+  }
+}
+```
+
+With an Alchemy key the live `rpcUrl` returned by the API is redacted to `/v2/[hidden]`; the `alchemyApiKey` field itself is **not** returned by the balance endpoint.
+
+### Static checks
+
+- `npm run lint` exits `0` (pre-existing warnings are expected).
+- `npm run typecheck` exits `0`.
+- `node server/scripts/osEngineSmokeTest.js` should pass against the running server (it uses `ADMIN_SECRET_TOKEN=dlb-admin-2026-trust` by default).
+
+### What to watch for
+
+- If `DAPP_RPC_URL` is also set, the Alchemy URL is ignored.
+- The wallet balance endpoint reaches the configured RPC, so a misconfigured `rpcUrl` or unsupported `DAPP_CHAIN_ID` will surface as a `viem` / RPC error instead of a URL mismatch.
+- Without a real `ALCHEMY_API_KEY` in secrets you can verify URL construction with a fake key but cannot make a live Alchemy balance call.
+
 ## Wallet On-Ramp OS Engine (PR #350)
 
 The `devin/wallet-onramp-sourceofunds` branch adds `WalletOnRampEngine` (`wallet-onramp`) and `AlchemyWalletEngine` (`alchemy-wallet`) to `server/integrations/os/osEngine.js` and exposes them through `/api/os` and `public/os-engine-dashboard.html`.
