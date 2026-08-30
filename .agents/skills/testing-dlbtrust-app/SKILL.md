@@ -1244,3 +1244,82 @@ disown
 - `settleMelioPayment` tries to insert a `cashflow_events` row; if the table does not exist it logs a non-fatal warning and continues.
 - The dashboard buttons may not respond to scaled-coordinate mouse clicks; invoke the underlying handlers via the browser console (`submitMelioInvoiceAndSync()` and `settleMelioPayment()`) and click **Set Token** first so the `x-admin-token` is set.
 - `EmailEngine` attachment support only sends attachments when a real SMTP/SendGrid provider is configured; the `log` provider returns `sent: false` with the notification metadata.
+
+## Camel family-bank integration context + OpenACH rail (PR #421, `server/integrations/camel`, `server/integrations/openach`)
+
+Backend-only feature: `/api/camel` and `/api/openach-rail` routers mounted in `server/server-3002.js`,
+Postgres tables `camel_exchanges` and `ihb_openach_dispatches`, CLI `node server/scripts/camelBus.js`.
+
+### Boot
+
+```bash
+setsid nohup env DATABASE_URL=postgres://dlbtrust:dlbtrust@localhost:5432/dlbtrust \
+  JWT_SECRET=dev-jwt-secret ADMIN_SECRET_TOKEN=dlb-admin-2026-trust \
+  PAYMENT_DATA_ENCRYPTION_KEY=$(openssl rand -hex 32) DAPP_OTP_ALWAYS_SHOW_CODE=true \
+  PORT=3002 node server/server-3002.js > /tmp/camel-server.log 2>&1 < /dev/null & disown
+grep -E '\[camel\]|\[openach-rail\]|running on port' /tmp/camel-server.log
+```
+Expect `[camel] loaded`, `[openach-rail] loaded`, `[camel] context driving every 60s`. Any
+`[camel] init:` line means table creation or flow install failed.
+
+### Auth on the new routers
+
+Both routers go through `ZeroTrustGateway`. Unauthenticated → HTTP 401
+`{"success":false,...,"code":"IHB_NO_CREDENTIAL"}` (never 500). The legacy admin token works and
+can be passed as a query param, which makes browser-visible evidence easy:
+`http://localhost:3002/api/camel/status?adminToken=dlb-admin-2026-trust`. `/api/camel/yaml`
+is served as a download (`content-disposition`); Chrome saves it to `~/Downloads/yaml` — open
+`file:///home/ubuntu/Downloads/yaml` to show the rendered Camel YAML on screen.
+
+`/api/openach-rail/health` legitimately returns **HTTP 503 with `ready:false`** when
+`OPENACH_API_TOKEN`/`OPENACH_API_KEY` and the ACH payment type ids are unset. That is
+fail-closed behaviour, not a crash — do not report it as a failure unless credentials are configured.
+
+### Signed inbox (`POST /api/camel/inbox/:routeId`)
+
+Fail-closed when `CAMEL_INBOUND_HMAC_SECRET` is unset: HTTP 503 `CAMEL_INBOX_CLOSED`. To prove
+signature verification actually works, run a **second** instance on another port with the secret set
+(`CAMEL_INBOUND_HMAC_SECRET=test-inbound-secret CAMEL_BUS_ENABLED=false PORT=3013`) against the same
+database, then:
+
+```bash
+B='{"paymentId":"SIGTEST","outcome":"settled"}'; TS=$(date +%s)
+SIG=$(printf '%s' "$TS.family-bank-advice.$B" | openssl dgst -sha256 -hmac 'test-inbound-secret' -hex | awk '{print $2}')
+curl -i -X POST -H 'content-type: application/json' -H "x-camel-timestamp: $TS" \
+     -H "x-camel-signature: $SIG" -H "x-camel-message-key: sig-$TS" -d "$B" \
+     http://localhost:3013/api/camel/inbox/family-bank-advice
+```
+Signed base string is `timestamp.routeId.rawBody`. Expect 401 `CAMEL_UNSIGNED` (no headers),
+401 `CAMEL_BAD_SIGNATURE`, 401 `CAMEL_STALE_SIGNATURE` (old timestamp), 202 for a valid signature.
+Remember to kill the extra instance afterwards — exchanges it creates show up in the main
+server's `/api/camel/status` because the database is shared.
+
+### Proving the engine mediates (not just that the router loaded)
+
+```bash
+T=dlb-admin-2026-trust; K=e2e-$(date +%s)
+curl -s -X POST -H "x-admin-token: $T" -H 'content-type: application/json' \
+  -d "{\"body\":{\"paymentId\":\"NOPE\"},\"messageKey\":\"$K\",\"deliver\":\"later\"}" \
+  http://localhost:3002/api/camel/routes/family-bank-advice/send
+curl -s -X POST -H "x-admin-token: $T" http://localhost:3002/api/camel/drive
+```
+Without `deliver:"later"` the exchange is processed synchronously inside the send call, so a
+`pending → drive → filtered` transition can only be observed with the deferred form. An advice with
+no `outcome` must end `filtered` with trace `transform(normalizeAdvice)` then
+`filter(adviceHasOutcome)` note `stopped here`. Re-sending the same `messageKey` must return
+`accepted:false` and must not create a second `camel_exchanges` row.
+
+### CLI
+
+```bash
+DATABASE_URL=postgres://dlbtrust:dlbtrust@localhost:5432/dlbtrust node server/scripts/camelBus.js status|routes|yaml|drive|dead-letters|openach-status
+```
+`routes` prints **10** family-bank routes (ingress, execute, dispatch, openach-dispatch,
+wire-dispatch, onus, manual-rail, openach-status, advice, file-batch) — PR descriptions may say 9.
+`status` from the CLI shows `running:false` because the scheduler lives in the server process, not the
+CLI; that is expected. Each command can take >10s to exit, so run them with a longer shell timeout.
+
+### Devin Secrets Needed
+
+- none for this flow locally; `OPENACH_API_TOKEN` / `OPENACH_API_KEY` (plus OpenACH ACH payment type
+  ids) would be required to test real ACH origination, and are intentionally absent.

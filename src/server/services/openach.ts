@@ -6,7 +6,8 @@
  * 
  * ODFI: configured via NACHA_ODFI_ROUTING / TRUST_BANK_ROUTING.
  * Originator: DEANDREA LAVAR BARKLEY TRUST
- * Originator Info ID: 0eb26e1d-5fcc-4978-a132-dd93c2655429
+ * Credentials and the originator behind them come from the environment
+ * (OPENACH_API_TOKEN / OPENACH_API_KEY), provisioned on the OpenACH host.
  */
 
 import https from 'https';

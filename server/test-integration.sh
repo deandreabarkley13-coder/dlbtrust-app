@@ -6,13 +6,19 @@ echo "=== dlbtrust.cloud Integration Test ==="
 echo "Time: $(date)"
 echo ""
 
+if [ -z "$OPENACH_API_TOKEN" ] || [ -z "$OPENACH_API_KEY" ]; then
+  echo "Set OPENACH_API_TOKEN and OPENACH_API_KEY before running (e.g. set -a; . .env; set +a)."
+  exit 1
+fi
+OPENACH_CREDS="user_api_token=$OPENACH_API_TOKEN&user_api_key=$OPENACH_API_KEY"
+
 echo "1. Wallets endpoint:"
 curl -s --max-time 10 https://dlbtrust.cloud/api/wallets | python3 -m json.tool 2>/dev/null | head -10 || echo "   FAILED or not JSON"
 echo ""
 
 echo "2. OpenACH API connect (external via HTTPS):"
 curl -s --max-time 10 -X POST https://ach.dlbtrust.cloud/openach/api/connect \
-  --data "user_api_token=3caee1c2-c218-4959-b6d2-21d4b2a1b42e&user_api_key=b74966cf-5276-4d8b-8650-5bd57dcee272" \
+  --data "$OPENACH_CREDS" \
   -c /tmp/oa_test_cookies.txt
 echo ""
 echo ""
@@ -20,7 +26,7 @@ echo ""
 echo "3. OpenACH API connect (via localhost HTTP — server-side test):"
 curl -s --max-time 10 -X POST http://localhost/openach/api/connect \
   -H "Host: ach.dlbtrust.cloud" \
-  --data "user_api_token=3caee1c2-c218-4959-b6d2-21d4b2a1b42e&user_api_key=b74966cf-5276-4d8b-8650-5bd57dcee272" \
+  --data "$OPENACH_CREDS" \
   -c /tmp/oa_test_cookies_local.txt
 echo ""
 echo ""
@@ -32,7 +38,7 @@ echo ""
 
 echo "5. Payment types (using session from step 2):"
 SESSION=$(curl -s --max-time 10 -X POST https://ach.dlbtrust.cloud/openach/api/connect \
-  --data "user_api_token=3caee1c2-c218-4959-b6d2-21d4b2a1b42e&user_api_key=b74966cf-5276-4d8b-8650-5bd57dcee272" \
+  --data "$OPENACH_CREDS" \
   2>/dev/null | python3 -c "import json,sys; d=json.load(sys.stdin); print(d.get('session_id',''))" 2>/dev/null)
 
 if [ -n "$SESSION" ]; then

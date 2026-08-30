@@ -70,18 +70,15 @@ else
   docker ps -a | head -10
 fi
 
-# ── STEP 7: Insert OpenACH API credentials ───────────────────
-step "7/9" "Inserting OpenACH API credentials..."
-CONTAINER=$(docker ps --format "{{.Names}}" | grep -i openach | head -1)
-if [ -n "$CONTAINER" ]; then
-  DB=$(docker exec "$CONTAINER" find /var/www/html -name "openach.db" 2>/dev/null | head -1)
-  DB=${DB:-"/var/www/html/protected/runtime/db/openach.db"}
-  docker exec "$CONTAINER" sqlite3 "$DB" \
-    "INSERT OR IGNORE INTO user_api (user_api_user_id, user_api_datetime, user_api_originator_info_id, user_api_token, user_api_key, user_api_status) VALUES ('4fc86059-2e7b-4732-b94f-e7c3715ee8d7', datetime('now'), '0eb26e1d-5fcc-4978-a132-dd93c2655429', '3caee1c2-c218-4959-b6d2-21d4b2a1b42e', 'b74966cf-5276-4d8b-8650-5bd57dcee272', 'enabled');"
-  VERIFY=$(docker exec "$CONTAINER" sqlite3 "$DB" "SELECT user_api_token FROM user_api WHERE user_api_token='3caee1c2-c218-4959-b6d2-21d4b2a1b42e';")
-  [ -n "$VERIFY" ] && ok "API credentials inserted: $VERIFY" || err "Insert may have failed"
+# ── STEP 7: Check the OpenACH API credential ─────────────────
+# Recovery does not mint credentials: provisioning one is an explicit operator
+# step (server/integrations/openach/server-side-setup.js) so that no token or key
+# ever lives in this script.
+step "7/9" "Checking OpenACH API credential..."
+if [ -n "$OPENACH_API_TOKEN" ] && [ -n "$OPENACH_API_KEY" ]; then
+  ok "OpenACH credential present in the environment"
 else
-  err "OpenACH container not running — skipping credential insert"
+  err "No OPENACH_API_TOKEN / OPENACH_API_KEY — run server/integrations/openach/server-side-setup.js"
 fi
 
 # ── STEP 8: Deploy app code + start Node.js ─────────────────
@@ -101,14 +98,15 @@ echo "  App dir: $APP_DIR / Entry: $ENTRY_FILE"
 git pull origin main 2>&1 | tail -3 || ok "git pull failed — using local files"
 npm install --production 2>&1 | tail -3
 
-# Set .env
-grep -q "OPENACH_API_TOKEN" .env 2>/dev/null || cat >> .env << 'ENVEOF'
+# Set .env — the api credential itself is provisioned separately, by
+# server/integrations/openach/server-side-setup.js, and never written from here.
+grep -q "OPENACH_BASE_URL" .env 2>/dev/null || cat >> .env << 'ENVEOF'
 OPENACH_BASE_URL=http://localhost/openach/api
 OPENACH_HOST_HEADER=ach.dlbtrust.cloud
-OPENACH_API_TOKEN=3caee1c2-c218-4959-b6d2-21d4b2a1b42e
-OPENACH_API_KEY=b74966cf-5276-4d8b-8650-5bd57dcee272
 PORT=3001
 ENVEOF
+grep -q "OPENACH_API_TOKEN" .env 2>/dev/null \
+  || ok "OPENACH_API_TOKEN not in .env — run server/integrations/openach/server-side-setup.js"
 ok ".env updated"
 
 # Patch app entry if needed
@@ -140,9 +138,13 @@ echo -n "  Node.js direct (port 3001): "
 curl -s http://localhost:3001/api/wallets | head -c 60 || echo "FAIL"
 
 echo -n "  OpenACH connect: "
-curl -s -X POST http://localhost/openach/api/connect \
-  -H "Host: ach.dlbtrust.cloud" \
-  --data "user_api_token=3caee1c2-c218-4959-b6d2-21d4b2a1b42e&user_api_key=b74666cf-5276-4d8b-8650-5bd57dcee272" | head -c 100
+if [ -n "$OPENACH_API_TOKEN" ] && [ -n "$OPENACH_API_KEY" ]; then
+  curl -s -X POST http://localhost/openach/api/connect \
+    -H "Host: ach.dlbtrust.cloud" \
+    --data "user_api_token=$OPENACH_API_TOKEN&user_api_key=$OPENACH_API_KEY" | head -c 100
+else
+  echo "SKIPPED (no credential in the environment)"
+fi
 
 echo -n "  ACH health: "
 curl -s http://localhost:3001/api/ach/health | head -c 100

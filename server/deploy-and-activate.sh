@@ -77,34 +77,19 @@ if ! grep -q "dotenv" "$ENTRY_FILE" 2>/dev/null; then
   echo "    Added dotenv.config() at top of $ENTRY_FILE"
 fi
 
-# Insert OpenACH API credentials into Docker container DB
+# OpenACH API credentials
+# Provisioning is a separate, explicit operator step so that no credential is
+# carried in this script: server-side-setup.js generates a pair, registers it in
+# the OpenACH database and prints the env lines to add.
 echo ""
-echo "[4] Activating OpenACH API credentials..."
+echo "[4] Checking OpenACH API credentials..."
 
-CONTAINER=$(docker ps --format "{{.Names}}" | grep -i openach | head -1)
-if [ -z "$CONTAINER" ]; then
-  echo "    ERROR: No OpenACH Docker container found"
-  docker ps
-  echo "    Skipping credential insertion..."
+if [ -n "$OPENACH_API_TOKEN" ] && [ -n "$OPENACH_API_KEY" ]; then
+  echo "    Using OPENACH_API_TOKEN / OPENACH_API_KEY from the environment"
 else
-  echo "    Container: $CONTAINER"
-
-  DB=$(docker exec "$CONTAINER" find /var/www/html -name "openach.db" 2>/dev/null | head -1)
-  DB=${DB:-"/var/www/html/protected/runtime/db/openach.db"}
-  echo "    Database: $DB"
-
-  SQL="INSERT OR IGNORE INTO user_api (user_api_user_id, user_api_datetime, user_api_originator_info_id, user_api_token, user_api_key, user_api_status) VALUES ('4fc86059-2e7b-4732-b94f-e7c3715ee8d7', datetime('now'), '0eb26e1d-5fcc-4978-a132-dd93c2655429', '3caee1c2-c218-4959-b6d2-21d4b2a1b42e', 'b74966cf-5276-4d8b-8650-5bd57dcee272', 'enabled');"
-
-  docker exec "$CONTAINER" sqlite3 "$DB" "$SQL"
-
-  VERIFY=$(docker exec "$CONTAINER" sqlite3 "$DB" \
-    "SELECT 'FOUND:' || user_api_token FROM user_api WHERE user_api_token='3caee1c2-c218-4959-b6d2-21d4b2a1b42e';")
-
-  if echo "$VERIFY" | grep -q "FOUND"; then
-    echo "    ✅ Credentials active: $VERIFY"
-  else
-    echo "    ❌ Credential insert may have failed. Output: $VERIFY"
-  fi
+  echo "    No OpenACH credential in the environment."
+  echo "    Provision one with:"
+  echo "      node $APP_DIR/server/integrations/openach/server-side-setup.js"
 fi
 
 # Update .env with OpenACH settings
@@ -130,18 +115,24 @@ add_env_var() {
 
 add_env_var "OPENACH_BASE_URL" "http://localhost/openach/api"
 add_env_var "OPENACH_HOST_HEADER" "ach.dlbtrust.cloud"
-add_env_var "OPENACH_API_TOKEN" "3caee1c2-c218-4959-b6d2-21d4b2a1b42e"
-add_env_var "OPENACH_API_KEY" "b74966cf-5276-4d8b-8650-5bd57dcee272"
+if [ -n "$OPENACH_API_TOKEN" ] && [ -n "$OPENACH_API_KEY" ]; then
+  add_env_var "OPENACH_API_TOKEN" "$OPENACH_API_TOKEN"
+  add_env_var "OPENACH_API_KEY" "$OPENACH_API_KEY"
+fi
 
 # Get payment type ID for Trust Dist
 echo ""
 echo "[6] Fetching Trust Dist payment type ID..."
-CONNECT=$(curl -s --max-time 8 \
-  -X POST "http://localhost/openach/api/connect" \
-  -H "Host: ach.dlbtrust.cloud" \
-  --data "user_api_token=3caee1c2-c218-4959-b6d2-21d4b2a1b42e&user_api_key=b74966cf-5276-4d8b-8650-5bd57dcee272" 2>/dev/null)
-
-echo "    Connect: $CONNECT"
+if [ -z "$OPENACH_API_TOKEN" ] || [ -z "$OPENACH_API_KEY" ]; then
+  echo "    Skipped: no OpenACH credential to authenticate with"
+  CONNECT=""
+else
+  CONNECT=$(curl -s --max-time 8 \
+    -X POST "http://localhost/openach/api/connect" \
+    -H "Host: ach.dlbtrust.cloud" \
+    --data "user_api_token=$OPENACH_API_TOKEN&user_api_key=$OPENACH_API_KEY" 2>/dev/null)
+  echo "    Connect: $CONNECT"
+fi
 
 SESSION=$(echo "$CONNECT" | grep -oP '"session_id"\s*:\s*"[^"]*"' | grep -oP '"[^"]*"$' | tr -d '"')
 if [ -n "$SESSION" ]; then
@@ -188,10 +179,14 @@ sleep 4
 echo ""
 echo "[8] Health checks..."
 echo -n "    OpenACH API:  "
-curl -s --max-time 8 \
-  -X POST "http://localhost/openach/api/connect" \
-  -H "Host: ach.dlbtrust.cloud" \
-  --data "user_api_token=3caee1c2-c218-4959-b6d2-21d4b2a1b42e&user_api_key=b74966cf-5276-4d8b-8650-5bd57dcee272" 2>/dev/null | grep -oP '"success":\s*(true|false)'
+if [ -n "$OPENACH_API_TOKEN" ] && [ -n "$OPENACH_API_KEY" ]; then
+  curl -s --max-time 8 \
+    -X POST "http://localhost/openach/api/connect" \
+    -H "Host: ach.dlbtrust.cloud" \
+    --data "user_api_token=$OPENACH_API_TOKEN&user_api_key=$OPENACH_API_KEY" 2>/dev/null | grep -oP '"success":\s*(true|false)'
+else
+  echo "skipped (no credential in the environment)"
+fi
 
 echo -n "    ACH endpoint: "
 curl -s --max-time 8 "http://localhost:3001/api/ach/health" 2>/dev/null | grep -oP '"openach_connected":\s*(true|false)' || \

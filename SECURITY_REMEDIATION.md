@@ -94,7 +94,16 @@ credential listed above must be considered **compromised** and be
 - Change the **IONOS account** password and enable MFA on that account.
 - **Revoke and regenerate** the OpenACH API token/key and review/remove any
   `user_api` rows that were injected (token `3caee1c2-…`, key `b74966cf-…`,
-  user id `4fc86059-…`, originator `0eb26e1d-…`).
+  user id `4fc86059-…`, originator `0eb26e1d-…`). On the OpenACH host:
+
+  ```bash
+  OPENACH_REVOKE_TOKEN=3caee1c2-… \
+    node server/integrations/openach/server-side-setup.js
+  ```
+
+  That generates a fresh token/key pair, registers it against the user and
+  originator read out of OpenACH, disables the superseded token, and prints the
+  environment lines to add. The pair is never written to a file in the repo.
 - Rotate any GitHub Actions repository secrets that may have been exposed or used
   (`SERVER_PASSWORD`, `SSH_PRIVATE_KEY`, `SSH_PUBLIC_KEY`); rotate `FLY_API_TOKEN`
   as a precaution.
