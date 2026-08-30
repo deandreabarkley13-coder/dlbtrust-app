@@ -21,6 +21,7 @@
     "camel:bus": "node server/scripts/camelBus.js",
     "clearing:format": "node server/scripts/formatBankClearingFile.js",
     "trust:fund-settlement": "node server/scripts/fundSettlementAccount.js",
+    "trust:payer": "node server/scripts/sendPayerCredit.js",
     "db:init": "tsx src/server/db/init.ts",
     "typecheck": "tsc --noEmit"
   },
