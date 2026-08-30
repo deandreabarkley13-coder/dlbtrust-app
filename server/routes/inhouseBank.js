@@ -23,6 +23,7 @@ const { WireHostToHostEngine } = require('../integrations/inhouseBank/wire/wireH
 const { WireDispatchLink } = require('../integrations/inhouseBank/wire/wireDispatchLink');
 const { WireDirectSendEngine } = require('../integrations/inhouseBank/wire/wireDirectSendEngine');
 const { ClearingAutoFormatEngine } = require('../integrations/inhouseBank/clearing/clearingAutoFormatEngine');
+const { SettlementFundingEngine } = require('../integrations/inhouseBank/settlementFundingEngine');
 
 const router = express.Router();
 
@@ -646,6 +647,96 @@ router.post('/wire/clearing-spec/intake', optionalSession, guard('payments:initi
       limit: req.body && req.body.limit ? req.body.limit : null,
       deliver: req.body && req.body.deliver !== undefined ? Boolean(req.body.deliver) : null,
     });
+    res.json({ success: true, data });
+  } catch (err) { sendError(res, err); }
+});
+
+// ── Settlement funding ───────────────────────────────────────────────────────
+//
+// The trust moving its own dollars from the book of record into a registered
+// settlement account, so a rail that debits that bank account has money to
+// spend. Reading a plan reserves nothing; making the wire needs
+// payments:initiate and approving it needs payments:approve, because the maker
+// may not be the checker. Settling posts to the ledger against the bank's own
+// reference, so it needs ledger:reconcile.
+
+router.get('/settlement-funding', optionalSession, guard('payments:read'), async (req, res) => {
+  try {
+    const readiness = await SettlementFundingEngine.readiness();
+    res.status(readiness.ready ? 200 : 503).json({ success: readiness.ready, data: readiness });
+  } catch (err) { sendError(res, err); }
+});
+
+router.get('/settlement-funding/wires', optionalSession, guard('payments:read'), async (req, res) => {
+  try {
+    const data = await SettlementFundingEngine.list({ status: req.query.status || null, limit: req.query.limit });
+    res.json({ success: true, data });
+  } catch (err) { sendError(res, err); }
+});
+
+router.post('/settlement-funding/plan', optionalSession, guard('payments:read'), async (req, res) => {
+  try {
+    const body = req.body || {};
+    const data = await SettlementFundingEngine.plan({
+      amountCents: body.amountCents,
+      destination: body.destination || null,
+      fundingSourceRef: body.fundingSource || null,
+    });
+    res.json({ success: true, data });
+  } catch (err) { sendError(res, err); }
+});
+
+router.post('/settlement-funding/wires', optionalSession, guard('payments:initiate'), writeRateLimiter(), async (req, res) => {
+  try {
+    const body = req.body || {};
+    const data = await SettlementFundingEngine.initiate({
+      amountCents: body.amountCents,
+      destination: body.destination || null,
+      fundingSourceRef: body.fundingSource || null,
+      initiatedBy: req.ihb.principal,
+      memo: body.memo || null,
+    });
+    res.status(201).json({ success: true, data });
+  } catch (err) { sendError(res, err); }
+});
+
+router.post('/settlement-funding/wires/:id/approve', optionalSession, guard('payments:approve'), writeRateLimiter(), async (req, res) => {
+  try {
+    const data = await SettlementFundingEngine.approve(req.params.id, req.ihb.principal);
+    res.json({ success: true, data });
+  } catch (err) { sendError(res, err); }
+});
+
+router.post('/settlement-funding/wires/:id/send', optionalSession, guard('payments:initiate'), writeRateLimiter(), async (req, res) => {
+  try {
+    const data = await SettlementFundingEngine.send(req.params.id);
+    res.json({ success: true, data });
+  } catch (err) { sendError(res, err); }
+});
+
+router.post('/settlement-funding/wires/:id/confirm', optionalSession, guard('ledger:reconcile'), writeRateLimiter(), async (req, res) => {
+  try {
+    const data = await SettlementFundingEngine.confirm(req.params.id, {
+      ...(req.body || {}),
+      confirmedBy: req.ihb.principal,
+    });
+    res.json({ success: true, data });
+  } catch (err) { sendError(res, err); }
+});
+
+router.post('/settlement-funding/wires/:id/settle', optionalSession, guard('ledger:reconcile'), writeRateLimiter(), async (req, res) => {
+  try {
+    const data = await SettlementFundingEngine.settle(req.params.id, {
+      ...(req.body || {}),
+      settledBy: req.ihb.principal,
+    });
+    res.json({ success: true, data });
+  } catch (err) { sendError(res, err); }
+});
+
+router.post('/settlement-funding/wires/:id/cancel', optionalSession, guard('payments:initiate'), writeRateLimiter(), async (req, res) => {
+  try {
+    const data = await SettlementFundingEngine.cancel(req.params.id, req.ihb.principal);
     res.json({ success: true, data });
   } catch (err) { sendError(res, err); }
 });
