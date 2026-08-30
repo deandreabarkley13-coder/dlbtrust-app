@@ -755,6 +755,13 @@ async function initializeDatabase() {
     console.log('[inhouse-bank] tables ensured');
   } catch(e) { console.warn('[inhouse-bank] table init:', e.message); }
 
+  // Direct host-to-host wire channel — idempotency vault, state log, advices, exceptions
+  try {
+    var WireHostToHostEngine = require(path.join(HD, 'server', 'integrations', 'inhouseBank', 'wire', 'wireHostToHostEngine')).WireHostToHostEngine;
+    await WireHostToHostEngine.ensureTables();
+    console.log('[wire-h2h] tables ensured');
+  } catch(e) { console.warn('[wire-h2h] table init:', e.message); }
+
   console.log('[startup] All database migrations complete');
 }
 
