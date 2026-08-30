@@ -88,8 +88,16 @@ function getFundingSourceConfig() {
     enforce: boolEnv('CLEARING_FUNDING_ENFORCE', true),
     requireBalance: boolEnv('CLEARING_FUNDING_REQUIRE_BALANCE', true),
 
-    // The Trust Operating Account, by its chart-of-accounts code.
-    operatingAccountCode: text('CLEARING_FUNDING_OPERATING_ACCOUNT', '1010'),
+    // The Trust Operating Account, by its chart-of-accounts code. More than one
+    // code may be given because the trust's own chart is what decides: the
+    // schema documents 1010 as the operating/checking account, while a trust
+    // that never split checking out of 1000 operates from 1000. The first code
+    // that exists in the chart of accounts is the operating account.
+    operatingAccountCodes: list(text('CLEARING_FUNDING_OPERATING_ACCOUNT', '1010,1000')),
+    // Accounts held elsewhere that are the same account of record — the cash
+    // model's operating account is the operating account, not a second one.
+    operatingAliases: list(text('CLEARING_FUNDING_OPERATING_ALIASES', 'cash:CA-OPERATING'))
+      .map(entry => entry.toLowerCase()),
     // The real account the bank debits. Every permitted funding source settles
     // through it; the source itself is an internal claim on it.
     settlementAccountNumber: text('CLEARING_FUNDING_SETTLEMENT_ACCOUNT', clearing.senderAccount),
@@ -209,15 +217,15 @@ function describeBeneficiary(ledger, config) {
 }
 
 async function operatingSource(config) {
-  const account = await TrustAccountingEngine.getAccount(config.operatingAccountCode);
-  if (!account) {
-    throw new FundingSourceError(
-      `The Trust Operating Account ${config.operatingAccountCode} is not in the chart of accounts; set CLEARING_FUNDING_OPERATING_ACCOUNT to the code the trust uses`,
-      'CLEARING_FUNDING_NO_OPERATING_ACCOUNT',
-      412
-    );
+  for (const code of config.operatingAccountCodes) {
+    const account = await TrustAccountingEngine.getAccount(code);
+    if (account) return describeOperating(account, config);
   }
-  return describeOperating(account, config);
+  throw new FundingSourceError(
+    `The Trust Operating Account is not in the chart of accounts (looked for ${config.operatingAccountCodes.join(', ')}); set CLEARING_FUNDING_OPERATING_ACCOUNT to the code the trust uses`,
+    'CLEARING_FUNDING_NO_OPERATING_ACCOUNT',
+    412
+  );
 }
 
 async function beneficiarySources(config) {
@@ -322,8 +330,11 @@ const FundingSourceRegistry = {
   async resolve(ref, { sources = null, config = null } = {}) {
     const settings = config || getFundingSourceConfig();
     const known = sources || (await this.list());
-    const parsed = parseRef(ref === null || ref === undefined || String(ref).trim() === '' ? settings.defaultSource : ref);
+    let parsed = parseRef(ref === null || ref === undefined || String(ref).trim() === '' ? settings.defaultSource : ref);
 
+    if (parsed.scope === 'unsupported' && settings.operatingAliases.includes(parsed.raw.toLowerCase())) {
+      parsed = { scope: TRUST_OPERATING, id: 'operating', raw: parsed.raw };
+    }
     if (parsed.scope === 'unsupported') {
       throw new FundingSourceError(
         `"${parsed.raw}" names a ${parsed.scopeLabel} account: payments clear out of the Trust Operating Account or a Beneficiary Trust Account only`,
@@ -375,6 +386,26 @@ const FundingSourceRegistry = {
       );
     }
     return resolved;
+  },
+
+  /**
+   * Resolve a canonical `sourceType` / `sourceAccountId` pair — how the vendor
+   * payment engines name an account — against the same two permitted classes.
+   * The scope carries the class, so a sub-ledger id is never matched against
+   * the chart of accounts, and a cash, bond or treasury account is refused
+   * unless it is a configured alias of the operating account.
+   */
+  async resolveCanonical({ sourceType, sourceAccountId } = {}, options = {}) {
+    const type = String(sourceType || '').trim().toLowerCase();
+    const id = String(sourceAccountId === null || sourceAccountId === undefined ? '' : sourceAccountId).trim();
+    if (!id) {
+      throw new FundingSourceError(
+        'No funding account was named, so the payment has no source of funds',
+        'CLEARING_FUNDING_SOURCE_UNKNOWN',
+        409
+      );
+    }
+    return this.resolve(`${type || 'trust'}:${id}`, options);
   },
 
   /** The debtor account an inbound file carries, when it is a permitted source. */

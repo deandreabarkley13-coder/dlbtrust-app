@@ -3831,17 +3831,39 @@ class MelioEngine extends BaseOSEngine {
     await query(`ALTER TABLE melio_payments ADD CONSTRAINT melio_payments_status_check CHECK (status IN ('pending','quoted','scheduled','processing','completed','failed','cancelled','exported','emailed','submitted','paid'))`);
   }
 
+  /**
+   * The trust funds Melio bills from the same two accounts it funds wires from:
+   * the Trust Operating Account or a named Beneficiary Trust Account. The
+   * clearing funding registry is the authority on which of the two an account
+   * is, so a cash, bond or treasury account cannot become a Melio funding
+   * source by being listed in MELIO_ALLOWED_SOURCE_ACCOUNTS alone. Melio's own
+   * rules still apply on top: the balance and reservations come from the
+   * canonical ledger position, and a portal instrument must be mapped.
+   */
+  static async _registryFundingSource(sourceType, sourceAccountId) {
+    const { FundingSourceRegistry } = require('../inhouseBank/clearing/fundingSourceRegistry');
+    return FundingSourceRegistry.resolveCanonical({ sourceType, sourceAccountId });
+  }
+
   static async _sourceBalance(sourceType, sourceAccountId) {
     const deps = this._deps();
     const cfg = this._cfg();
     sourceType = String(sourceType || cfg.defaultSourceType).toLowerCase();
     sourceAccountId = sourceAccountId || cfg.defaultSourceAccountId;
     if (!deps.SourceOfFunds) throw new Error('SourceOfFundsAdapter not available');
+    const fundingSource = await this._registryFundingSource(sourceType, sourceAccountId);
+    // Registry approval is approval: a beneficiary trust account does not also
+    // have to be enumerated in MELIO_ALLOWED_SOURCE_ACCOUNTS, which would mean
+    // an environment variable per beneficiary.
+    const allowedAccountIds = this._allowedAccountIds(sourceType, cfg);
+    if (!allowedAccountIds.includes(String(sourceAccountId))) {
+      allowedAccountIds.push(String(sourceAccountId));
+    }
     const position = await deps.SourceOfFunds.getPosition({
       sourceType,
       sourceAccountId,
       purpose: 'Melio B2B CSV payments',
-      allowedAccountIds: this._allowedAccountIds(sourceType, cfg),
+      allowedAccountIds,
     });
     if (!position.fundingEligible) {
       throw new Error(
@@ -3868,6 +3890,7 @@ class MelioEngine extends BaseOSEngine {
     }
     const balanceCents = Math.max(0, Number(position.availableBalanceCents || 0) - reservedCents);
     return {
+      fundingSource,
       balanceCents,
       ledgerBalanceCents: Number(position.currentBalanceCents || 0),
       sourceAvailableBalanceCents: Number(position.availableBalanceCents || 0),
@@ -4219,10 +4242,20 @@ class MelioEngine extends BaseOSEngine {
     throw error;
   }
 
-  static _resolvePortalFundingSource(sourceType, sourceAccountId, cfg = this._cfg()) {
+  /**
+   * Which instrument the operator selects in the Melio portal. A beneficiary
+   * trust account is a claim on the trust's own bank account rather than a bank
+   * account of its own, so it settles through the instrument mapped to the
+   * trust — Melio only offers instruments it actually holds — and the
+   * beneficiary is named on the bill instead.
+   */
+  static _resolvePortalFundingSource(sourceType, sourceAccountId, cfg = this._cfg(), fundingSource = null) {
     const normalizedType = String(sourceType || cfg.defaultSourceType).toLowerCase();
     const normalizedAccountId = String(sourceAccountId || cfg.defaultSourceAccountId);
     const keys = [`${normalizedType}:${normalizedAccountId}`, normalizedAccountId];
+    if (fundingSource && fundingSource.sourceType === 'beneficiary_trust') {
+      keys.push(`trust:${cfg.defaultSourceAccountId}`, String(cfg.defaultSourceAccountId));
+    }
     let configured = null;
     for (const key of keys) {
       if (Object.prototype.hasOwnProperty.call(cfg.portalFundingSourceMap || {}, key)) {
@@ -4230,10 +4263,10 @@ class MelioEngine extends BaseOSEngine {
         break;
       }
     }
-    if (!configured
-      && normalizedType === String(cfg.defaultSourceType).toLowerCase()
-      && normalizedAccountId === String(cfg.defaultSourceAccountId)
-      && cfg.defaultPortalFundingSourceLabel) {
+    const settlesThroughTrust = (normalizedType === String(cfg.defaultSourceType).toLowerCase()
+      && normalizedAccountId === String(cfg.defaultSourceAccountId))
+      || Boolean(fundingSource && fundingSource.sourceType === 'beneficiary_trust');
+    if (!configured && settlesThroughTrust && cfg.defaultPortalFundingSourceLabel) {
       configured = {
         label: cfg.defaultPortalFundingSourceLabel,
         accountLast4: cfg.defaultPortalFundingSourceLast4,
@@ -4538,9 +4571,25 @@ class MelioEngine extends BaseOSEngine {
       const invoiceNote = record.result?.invoicePdfFileName
         ? ` A portal-ready invoice PDF (${record.result.invoicePdfFileName}) accompanies the file for uploads that require a document.`
         : '';
-      return `Melio CSV export created (${csvPath}) for $${amount} ${record.currency}. In the Melio Bills portal, import the spreadsheet, select ${portalLabel}${portalLast4}, review the bill, and submit it.${invoiceNote}${emailNote} Record the portal payment reference before marking it paid.`;
+      const beneficiary = record.funding?.beneficiary?.name;
+      const fundingNote = beneficiary
+        ? ` The draw is on ${record.funding.fundingAccountName || 'the beneficiary trust account'} for the benefit of ${beneficiary}; Melio debits ${portalLabel}${portalLast4}.`
+        : '';
+      return `Melio CSV export created (${csvPath}) for $${amount} ${record.currency}. In the Melio Bills portal, import the spreadsheet, select ${portalLabel}${portalLast4}, review the bill, and submit it.${fundingNote}${invoiceNote}${emailNote} Record the portal payment reference before marking it paid.`;
     }
     return `Melio payment preparation for $${amount} ${record.currency} is incomplete.`;
+  }
+
+  /** The permitted funding class an export or payment was drawn on. */
+  static _registryFundingMetadata(fundingSource) {
+    if (!fundingSource) return {};
+    return {
+      fundingClass: fundingSource.sourceType,
+      fundingSourceKey: fundingSource.sourceKey,
+      fundingAccountName: fundingSource.accountName,
+      fundingSourceOfTruth: fundingSource.sourceOfTruth,
+      beneficiary: fundingSource.beneficiary || null,
+    };
   }
 
   static async _recordPayment(record) {
@@ -5022,6 +5071,7 @@ class MelioEngine extends BaseOSEngine {
       availableBeforeScheduleCents: sourceInfo.balanceCents || 0,
       settlementInstrument: fundingSource,
       reservationStatus: 'pending',
+      ...this._registryFundingMetadata(sourceInfo.fundingSource),
     };
     let accounting = null;
     const sanitizedPayload = this._sanitizePaymentPayload(p);
@@ -5211,10 +5261,12 @@ class MelioEngine extends BaseOSEngine {
       const file = fileByPaymentId.get(entry.paymentId);
       const sourceInfo = sourceInfos.get(`${p.sourceType}:${p.sourceAccountId}`) || {};
       const sourcePosition = sourceInfo.position || {};
+      const registrySource = sourceInfo.fundingSource || null;
       const portalFundingSource = this._resolvePortalFundingSource(
         p.sourceType,
         p.sourceAccountId,
-        cfg
+        cfg,
+        registrySource
       );
       if (!portalFundingSource) {
         throw new Error(
@@ -5249,6 +5301,7 @@ class MelioEngine extends BaseOSEngine {
           reservationStatus: 'active',
           settlementMethod: 'manual_portal',
           portalFundingSource,
+          ...this._registryFundingMetadata(registrySource),
         },
         instructions: '',
         result: {
