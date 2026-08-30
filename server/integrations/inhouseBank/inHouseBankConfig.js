@@ -166,6 +166,9 @@ function getConfig() {
     // Dual ledger
     mirrorToGeneralLedger: boolEnv('IHB_MIRROR_TO_GL', true),
     glClearingAccountCode: process.env.IHB_GL_CLEARING_ACCOUNT || '2050',
+    // What the bank owes its account holders: every deposit into a virtual
+    // account is cash the trust holds on someone else's behalf.
+    glDepositAccountCode: process.env.IHB_GL_DEPOSIT_ACCOUNT || '2060',
     glOutflowAccountCode: process.env.IHB_GL_OUTFLOW_ACCOUNT || '5200',
   };
 }

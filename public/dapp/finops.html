@@ -3340,6 +3340,16 @@
       '<div class="token-bar"><input id="ihb-va-owner" placeholder="owner reference (beneficiary or entity id)" /><input id="ihb-va-series" placeholder="series reference (optional)" /></div>' +
       '<div class="approval-actions"><button class="btn" onclick="ihbOpenAccount()">Open Account</button></div>' +
       '<div id="ihb-va-status" style="margin-top:8px;"></div>' +
+      '<h3 style="font-size:14px;margin:16px 0 8px;">Fund an Account</h3>' +
+      '<div class="muted" style="margin-bottom:6px;">A deposit lands in the settlement account and the bank owes it to the account holder, so both sides post to the trust GL. A withdrawal reverses it.</div>' +
+      '<div class="token-bar"><input id="ihb-fund-account" placeholder="virtual account number" /><input id="ihb-fund-amount" placeholder="amount (USD)" /><input id="ihb-fund-memo" placeholder="memo (optional)" /></div>' +
+      '<div class="approval-actions"><button class="btn" onclick="ihbFund(\'credit\')">Deposit</button><button class="btn" onclick="ihbFund(\'debit\')">Withdraw</button></div>' +
+      '<div id="ihb-fund-status" style="margin-top:8px;"></div>' +
+      '<h3 style="font-size:14px;margin:16px 0 8px;">Attest Rail Liquidity</h3>' +
+      '<div class="muted" style="margin-bottom:6px;">The router will not choose a rail that has no attested funding behind it, so a rail is unusable until the funding desk states what is available on it.</div>' +
+      '<div class="token-bar"><select id="ihb-liq-rail"><option value="ach_standard">ach_standard</option><option value="ach_same_day">ach_same_day</option><option value="rtp">rtp</option><option value="fedwire">fedwire</option><option value="stablecoin">stablecoin</option><option value="internal_book">internal_book</option></select><input id="ihb-liq-amount" placeholder="available funding (USD)" /><input id="ihb-liq-note" placeholder="attestation note (who states it, from what account)" /></div>' +
+      '<div class="approval-actions"><button class="btn" onclick="ihbAttestLiquidity()">Attest Liquidity</button><button class="btn" onclick="ihbMatrix()">Liquidity Matrix</button></div>' +
+      '<div id="ihb-liq-status" style="margin-top:8px;"></div>' +
       '<h3 style="font-size:14px;margin:16px 0 8px;">Initiate a Payment</h3>' +
       '<div class="token-bar"><input id="ihb-pay-debtor" placeholder="debtor virtual account number" /><input id="ihb-pay-amount" placeholder="amount (USD)" /></div>' +
       '<div class="token-bar"><input id="ihb-pay-creditor" placeholder="creditor name" /><input id="ihb-pay-account" placeholder="creditor account (a virtual account number stays on-us)" /></div>' +
@@ -3366,11 +3376,13 @@
         .map(x => htmlEscape(x.name) + ' ' + (x.availableCents === null ? 'unattested' : '$' + (x.availableCents / 100).toFixed(2)))
         .join(' · ');
       let html = '<div class="status ' + (d.readiness.ready ? 'ok' : 'err') + '">' + htmlEscape(d.bank.name) + ' (' + htmlEscape(d.bank.bic) + ') — ' + htmlEscape(d.readiness.note || (d.readiness.ready ? 'ready' : 'not ready')) + '</div>';
-      html += '<div style="margin-top:8px;">Virtual pool: $' + htmlEscape(d.virtualAccounts.virtualBalance) + ' across ' + d.virtualAccounts.accounts + ' account(s) — ' + htmlEscape(d.virtualAccounts.note) + '</div>';
+      html += '<div style="margin-top:8px;">Virtual pool: $' + htmlEscape(d.virtualAccounts.virtualBalance) + ' across ' + d.virtualAccounts.accounts + ' account(s)</div>';
+      html += '<div style="margin-top:4px;">Deposit liability ' + htmlEscape(d.virtualAccounts.depositAccountCode) + ': ' + htmlEscape(d.virtualAccounts.note) + '</div>';
+      html += '<div style="margin-top:4px;">Settlement account ' + htmlEscape(d.virtualAccounts.settlementAccountCode) + ': ' + htmlEscape(d.virtualAccounts.coverageNote || '') + '</div>';
       html += '<div style="margin-top:4px;">Awaiting approval: ' + d.payments.awaitingApproval + ' · In flight: ' + d.payments.inFlight + '</div>';
       html += '<div style="margin-top:4px;">Rail liquidity: ' + (rails || 'no rail has attested liquidity yet') + '</div>';
       html += '<div style="margin-top:4px;">Event log: ' + (d.eventChain.intact ? 'intact over ' + d.eventChain.events + ' event(s)' : 'BROKEN — ' + htmlEscape(d.eventChain.note || '')) + '</div>';
-      html += '<div style="margin-top:4px;">Ledgers: ' + (d.reconciliation.balanced ? 'virtual balances agree with postings' : 'BREAK — ' + htmlEscape(d.reconciliation.note || '')) + '</div>';
+      html += '<div style="margin-top:4px;">Sub-ledger: ' + (d.reconciliation.balanced ? 'every virtual balance agrees with its own postings' : 'BREAK — ' + htmlEscape(d.reconciliation.note || '')) + '</div>';
       wrap.innerHTML = html;
     } catch(e) { wrap.innerHTML = '<div class="status err">' + e.message + '</div>'; }
   }
@@ -3477,6 +3489,50 @@
   function ihbApprove() { return ihbAction('/approve', {}); }
   function ihbReject() { return ihbAction('/reject', {}); }
   function ihbConfirm(outcome) { return ihbAction('/confirm', { outcome: outcome, reference: el('ihb-act-reference').value || undefined }); }
+
+  async function ihbFund(direction) {
+    const wrap = el('ihb-fund-status');
+    wrap.innerHTML = '<div class="muted">Posting…</div>';
+    try {
+      const amount = Number(el('ihb-fund-amount').value);
+      if (!isFinite(amount) || amount <= 0) throw new Error('An amount in dollars is required');
+      const r = await api('/api/inhouse-bank/accounts/' + encodeURIComponent(el('ihb-fund-account').value) + '/fund', {
+        method: 'POST',
+        body: JSON.stringify({ amountCents: Math.round(amount * 100), direction: direction, memo: el('ihb-fund-memo').value || undefined }),
+      });
+      wrap.innerHTML = '<div class="status ok">' + htmlEscape(r.data.accountNumber) + ' is now $' + htmlEscape(r.data.balance) + ' ($' + htmlEscape(r.data.available) + ' available)</div>';
+      ihbAccounts();
+      ihbDashboard();
+    } catch(e) { wrap.innerHTML = '<div class="status err">' + e.message + '</div>'; }
+  }
+
+  async function ihbAttestLiquidity() {
+    const wrap = el('ihb-liq-status');
+    wrap.innerHTML = '<div class="muted">Recording the attestation…</div>';
+    try {
+      const amount = Number(el('ihb-liq-amount').value);
+      if (!isFinite(amount) || amount < 0) throw new Error('Available funding in dollars is required');
+      const r = await api('/api/inhouse-bank/routing/liquidity', {
+        method: 'POST',
+        body: JSON.stringify({ rail: el('ihb-liq-rail').value, availableCents: Math.round(amount * 100), note: el('ihb-liq-note').value || undefined }),
+      });
+      wrap.innerHTML = '<div class="status ok">' + htmlEscape(r.data.rail) + ' now has $' + (Number(r.data.available_cents) / 100).toFixed(2) + ' attested behind it</div>';
+      ihbDashboard();
+    } catch(e) { wrap.innerHTML = '<div class="status err">' + e.message + '</div>'; }
+  }
+
+  async function ihbMatrix() {
+    const wrap = el('ihb-detail');
+    wrap.innerHTML = '<div class="muted">Loading the liquidity matrix…</div>';
+    try {
+      const r = await api('/api/inhouse-bank/routing/matrix');
+      const rows = (r.data || []).map(x =>
+        '<tr><td>' + htmlEscape(x.name) + '</td><td>' + (x.enabled ? 'enabled' : 'disabled') + '</td><td>' + (x.availableCents === null ? 'n/a' : '$' + (x.availableCents / 100).toFixed(2)) + ' (' + htmlEscape(x.liquiditySource) + ')</td><td>$' + (x.costCents / 100).toFixed(2) + '</td><td>' + x.settlementMinutes + ' min</td><td>' + (x.cutoffPassed ? 'passed for today' : 'open') + '</td></tr>');
+      wrap.innerHTML = rows.length
+        ? '<table class="tbl"><tr><th>Rail</th><th>State</th><th>Funding</th><th>Cost</th><th>Settles in</th><th>Cutoff</th></tr>' + rows.join('') + '</table>'
+        : '<div class="muted">No rail is enabled.</div>';
+    } catch(e) { wrap.innerHTML = '<div class="status err">' + e.message + '</div>'; }
+  }
 
   async function ihbReconcile() {
     const wrap = el('ihb-detail');

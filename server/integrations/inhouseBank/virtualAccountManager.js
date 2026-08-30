@@ -12,9 +12,12 @@
  * Two rules hold the model together and are enforced here rather than by
  * convention:
  *
- *   • The sum of every virtual balance must equal the settlement account
- *     balance. `position()` states that sum and the drift against the real
- *     account, so a break is visible instead of inferred.
+ *   • The sum of every virtual balance must equal what the bank owes its
+ *     account holders in the trust GL. `position()` states that sum and the
+ *     drift against the deposit liability, so a break is visible instead of
+ *     inferred. The settlement account is reported next to it as coverage:
+ *     it also carries trust activity that has nothing to do with the bank, so
+ *     it is asked whether it *covers* the pool, not whether it equals it.
  *   • Available balance is balance − holds + overdraft, and a debit that would
  *     breach it is refused by the same UPDATE that would have applied it. Two
  *     concurrent debits therefore cannot both see the same funds.
@@ -394,15 +397,21 @@ class VirtualAccountManager {
     const virtualCents = Number(summary.balance_cents || 0);
 
     let settlementCents = null;
+    let depositLiabilityCents = null;
     try {
       const { TrustAccountingEngine } = require('../accounting/trustAccountingEngine');
-      const account = await TrustAccountingEngine.getAccount(config.settlementAccountCode);
-      if (account) settlementCents = Math.round(Number(account.balance || 0) * 100);
+      const [settlement, deposits] = await Promise.all([
+        TrustAccountingEngine.getAccount(config.settlementAccountCode),
+        TrustAccountingEngine.getAccount(config.glDepositAccountCode),
+      ]);
+      if (settlement) settlementCents = Math.round(Number(settlement.balance || 0) * 100);
+      if (deposits) depositLiabilityCents = Math.round(Number(deposits.balance || 0) * 100);
     } catch (err) {
       settlementCents = null;
     }
 
-    const driftCents = settlementCents === null ? null : settlementCents - virtualCents;
+    const driftCents = depositLiabilityCents === null ? null : depositLiabilityCents - virtualCents;
+    const coverageCents = settlementCents === null ? null : settlementCents - virtualCents;
     return {
       accounts: Number(summary.accounts || 0),
       virtualBalanceCents: virtualCents,
@@ -410,13 +419,22 @@ class VirtualAccountManager {
       heldCents: Number(summary.hold_cents || 0),
       settlementAccountCode: config.settlementAccountCode,
       settlementBalanceCents: settlementCents,
+      depositAccountCode: config.glDepositAccountCode,
+      depositLiabilityCents,
+      coverageCents,
+      covered: coverageCents === null ? null : coverageCents >= 0,
       driftCents,
       balanced: driftCents === 0,
-      note: settlementCents === null
-        ? 'The settlement account balance could not be read, so the virtual pool is unverified against the real account.'
+      note: depositLiabilityCents === null
+        ? 'The deposit liability could not be read, so the virtual pool is unverified against the trust GL.'
         : driftCents === 0
-          ? 'Virtual balances sum exactly to the settlement account: the pool is whole.'
-          : `Virtual balances differ from the settlement account by ${(driftCents / 100).toFixed(2)}; investigate before releasing further payments.`,
+          ? 'Virtual balances sum exactly to what the bank owes its account holders in the trust GL.'
+          : `Virtual balances differ from the deposit liability by ${(driftCents / 100).toFixed(2)}; a posting reached one ledger and not the other.`,
+      coverageNote: settlementCents === null
+        ? 'The settlement account balance could not be read, so pool coverage is unverified.'
+        : coverageCents >= 0
+          ? `The settlement account holds ${(coverageCents / 100).toFixed(2)} more than the virtual pool, so every virtual balance is backed by real cash.`
+          : `The settlement account is ${(Math.abs(coverageCents) / 100).toFixed(2)} short of the virtual pool; fund it before releasing further payments.`,
     };
   }
 }

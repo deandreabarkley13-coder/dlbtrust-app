@@ -103,7 +103,10 @@ class RoutingEngine {
     let pooledCents = null;
     try {
       const position = await VirtualAccountManager.position();
-      pooledCents = position.settlementBalanceCents === null ? position.virtualBalanceCents : position.settlementBalanceCents;
+      // What the bank can actually move is what it holds for its account
+      // holders, not whatever else happens to sit in the trust cash account.
+      pooledCents = [position.depositLiabilityCents, position.settlementBalanceCents, position.virtualBalanceCents]
+        .find(value => value !== null && value !== undefined);
     } catch (err) {
       pooledCents = null;
     }
