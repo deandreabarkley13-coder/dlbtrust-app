@@ -124,6 +124,27 @@ curl -s -X POST "$OPENACH_BASE_URL/connect" \
 curl -s "$APP_URL/api/openach-rail/health"
 ```
 
+## Rotating the `openach-db` credentials
+
+Northflank has no credential-reset endpoint for addons: the generated user and
+password live as long as the addon, so recreating the addon *is* the rotation.
+
+```bash
+NORTHFLANK_API_TOKEN=... PG_BIN_DIR=/usr/lib/postgresql/16/bin \
+  node scripts/northflank/rotate-openach-db.mjs [--dry-run]
+```
+
+It dumps the addon over a temporarily enabled external endpoint, deletes and
+recreates it from `northflank/addon-postgres-openach.json`, restores, refuses to
+continue unless every table's row count matches, hands ownership to the new
+application user, merges the new `DATABASE_URL` into `openach-runtime` and
+restarts the service. `OPENACH_ENCRYPTION_KEY` is left alone — rotating it would
+strand the encrypted columns in the restored data.
+
+The api token/key registered in step 4 survive (they are rows in the restored
+data), so the app needs no secret change. Delete the dump it leaves behind: it
+contains the trust's origination data.
+
 ## Local verification
 
 ```bash
