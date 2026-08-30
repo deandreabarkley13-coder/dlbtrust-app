@@ -37,12 +37,18 @@ account must have the GitHub repo linked.
 | Variable | Source |
 | --- | --- |
 | `DATABASE_URL` | link the `openach-db` addon into the service (`postgres://…`) |
-| `OPENACH_ENCRYPTION_KEY` | Northflank secret — 32+ random bytes, **never rotate once encrypted rows exist** |
+| `OPENACH_ENCRYPTION_KEY` | Northflank secret — exactly 16, 24 or 32 characters, **never rotate once encrypted rows exist** |
 | `OPENACH_VALIDATION_KEY` | Northflank secret — 32+ random bytes |
 
 ```bash
-openssl rand -hex 32   # one value per key
+openssl rand -hex 16   # OPENACH_ENCRYPTION_KEY (32 chars)
+openssl rand -hex 32   # OPENACH_VALIDATION_KEY
 ```
+
+The encryption key is handed to Yii's `CSecurityManager` as the raw rijndael
+key, so a longer value is rejected — not by the api, but by the first save of a
+record with an encrypted column (`Encryption key length can be 16,24,32`). The
+entrypoint now refuses to start on a wrong length instead.
 
 The entrypoint refuses to start without all three. On first boot it installs
 the upstream PostgreSQL schema and seed data, then applies `openach/migrations/*.sql`.
@@ -54,7 +60,7 @@ details:
 
 ```bash
 OPENACH_ADMIN_LOGIN=... OPENACH_ADMIN_PASSWORD=... OPENACH_ADMIN_EMAIL=... \
-OPENACH_ORIGINATOR_NAME='DEANDREA LAVAR BARKLEY TRUST' \
+OPENACH_ORIGINATOR_NAME='DLB TRUST' \
 OPENACH_ORIGINATOR_ID=... \
 OPENACH_ODFI_ROUTING=... \
 OPENACH_SETTLEMENT_ACCOUNT=... \
@@ -62,7 +68,11 @@ OPENACH_SETTLEMENT_ACCOUNT=... \
 ```
 
 It creates the user, originator, ODFI and settlement account and prints the
-payment types.
+payment types. `OPENACH_ORIGINATOR_NAME` is the ACH batch header company name
+and is capped at 16 characters, so the trust's full legal name does not fit.
+
+Outbound disbursements originate as ACH **credits**, so the payment type id the
+app is configured with must be the one OpenACH lists as `credit`.
 
 ## 4. Register the api credential
 
@@ -84,7 +94,14 @@ credential in the same run. Token and key are never written to the repo.
 
 ## 5. Point the app at the service
 
-On `dlbtrust-app` (Northflank secrets, not git):
+On `dlbtrust-app` (Northflank secrets, not git). Write them with
+`scripts/northflank/set-secrets.mjs` — a raw `PATCH` on a secret group replaces
+every variable in it:
+
+```bash
+NORTHFLANK_API_TOKEN=... node scripts/northflank/set-secrets.mjs \
+  --group dlbtrust-runtime OPENACH_BASE_URL=... OPENACH_API_TOKEN=...
+```
 
 ```
 OPENACH_BASE_URL=https://p01--openach--gcq8bn6c4zlp.code.run/api
