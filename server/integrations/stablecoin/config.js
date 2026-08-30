@@ -124,6 +124,16 @@ function getConfig() {
       if (n === 'previewnet') return 'https://previewnet.hashio.io/api';
       return 'https://testnet.hashio.io/api';
     })()),
+    // Distributor key custody (see walletSigner.js)
+    signerBackend: str('STABLECOIN_SIGNER', 'env').toLowerCase(),
+    signerTimeoutMs: int('STABLECOIN_SIGNER_TIMEOUT_MS', 15000, 1000, 120000),
+    allowEnvKeyOnMainnet: bool('STABLECOIN_ALLOW_ENV_KEY_MAINNET', false),
+    vaultAddr: str('VAULT_ADDR', ''),
+    vaultToken: str('VAULT_TOKEN', ''),
+    vaultTransitMount: str('VAULT_TRANSIT_MOUNT', 'transit'),
+    vaultKeyName: str('VAULT_TRANSIT_KEY', ''),
+    externalSignerUrl: str('STABLECOIN_SIGNER_URL', ''),
+    externalSignerToken: str('STABLECOIN_SIGNER_TOKEN', ''),
     // Source-of-funds mappings
     cashHoldingAccount: str('STABLECOIN_CASH_HOLDING_ACCOUNT', 'STABLECOIN_CASH_HOLD'),
     cashSettlementAccount: str('STABLECOIN_CASH_SETTLEMENT_ACCOUNT', ''),
@@ -138,7 +148,7 @@ function isProduction(cfg) {
 
 function redact(cfg) {
   const copy = { ...cfg };
-  ['issuerSecret', 'distributorSecret', 'magicSecretKey', 'wso2ClientSecret', 'fyStackApiSecret', 'circlePrivateKey', 'circleApiKey', 'circleEntitySecret', 'circleKitKey', 'circleMintApiKey', 'hederaOperatorKey'].forEach((k) => {
+  ['issuerSecret', 'distributorSecret', 'magicSecretKey', 'wso2ClientSecret', 'fyStackApiSecret', 'circlePrivateKey', 'circleApiKey', 'circleEntitySecret', 'circleKitKey', 'circleMintApiKey', 'hederaOperatorKey', 'vaultToken', 'externalSignerToken'].forEach((k) => {
     if (copy[k]) copy[k] = '***';
   });
   return copy;
