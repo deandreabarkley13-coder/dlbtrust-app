@@ -24,6 +24,11 @@ export NORTHFLANK_API_TOKEN=...        # org secret
 bash scripts/northflank/provision.sh   # idempotent; creates openach-db + openach
 ```
 
+Current deployment: service `openach`, url
+`https://p01--openach--gcq8bn6c4zlp.code.run` (api at `/api`), addon `openach-db`.
+The runtime configuration below lives in the project secret group
+`openach-runtime`, restricted to the `openach` service.
+
 The service builds `/openach/Dockerfile` from this repo, so the Northflank
 account must have the GitHub repo linked.
 
@@ -61,11 +66,13 @@ payment types.
 
 ## 4. Register the api credential
 
-Run from anywhere that can reach both `openach-db` and the service url:
+`openach-db` has external access disabled, so run this from inside the project —
+a shell on the `dlbtrust-app` service, which has node and `pg` — with the
+addon's `POSTGRES_URI` and the service url:
 
 ```bash
 OPENACH_DATABASE_URL=postgres://…openach-db… \
-OPENACH_BASE_URL=https://p01--openach--<project-hash>.code.run/api \
+OPENACH_BASE_URL=https://p01--openach--gcq8bn6c4zlp.code.run/api \
 OPENACH_API_TOKEN=<new token> OPENACH_API_KEY=<new key> \
   node server/integrations/openach/server-side-setup.js
 ```
@@ -80,7 +87,7 @@ credential in the same run. Token and key are never written to the repo.
 On `dlbtrust-app` (Northflank secrets, not git):
 
 ```
-OPENACH_BASE_URL=https://p01--openach--<project-hash>.code.run/api
+OPENACH_BASE_URL=https://p01--openach--gcq8bn6c4zlp.code.run/api
 OPENACH_API_TOKEN=…
 OPENACH_API_KEY=…
 OPENACH_PAYMENT_TYPE_ID=…             # standard ACH type from step 4
