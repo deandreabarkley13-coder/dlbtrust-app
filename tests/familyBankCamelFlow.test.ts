@@ -163,6 +163,7 @@ beforeEach(() => {
   vi.spyOn(KafkaEventBus, 'publish').mockResolvedValue(true as any);
   vi.spyOn(DualLedgerEngine, 'appendEvent').mockResolvedValue({} as any);
 
+  process.env.OPENACH_BASE_URL = 'https://openach.test/api';
   process.env.OPENACH_API_TOKEN = 'test-token';
   process.env.OPENACH_API_KEY = 'test-key';
   process.env.OPENACH_PAYMENT_TYPE_ID = 'PT-STANDARD';
@@ -176,6 +177,7 @@ beforeEach(() => {
 
 afterEach(() => {
   vi.restoreAllMocks();
+  delete process.env.OPENACH_BASE_URL;
   delete process.env.OPENACH_API_TOKEN;
   delete process.env.OPENACH_API_KEY;
   delete process.env.OPENACH_PAYMENT_TYPE_ID;

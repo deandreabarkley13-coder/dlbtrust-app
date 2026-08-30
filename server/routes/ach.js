@@ -2,7 +2,7 @@
  * ACH Disbursement Routes — dlbtrust.cloud Live Server
  * Mounts at: /api/ach
  * 
- * Integrates with self-hosted OpenACH at ach.dlbtrust.cloud
+ * Integrates with the self-hosted OpenACH service (OPENACH_BASE_URL)
  * Works with the existing wallet/transaction database model
  * 
  * ODFI: configured via NACHA_ODFI_ROUTING / TRUST_BANK_ROUTING.

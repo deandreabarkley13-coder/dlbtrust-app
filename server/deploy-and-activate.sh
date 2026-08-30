@@ -113,8 +113,11 @@ add_env_var() {
   fi
 }
 
-add_env_var "OPENACH_BASE_URL" "http://localhost/openach/api"
-add_env_var "OPENACH_HOST_HEADER" "ach.dlbtrust.cloud"
+if [ -n "$OPENACH_BASE_URL" ]; then
+  add_env_var "OPENACH_BASE_URL" "$OPENACH_BASE_URL"
+else
+  echo "    OPENACH_BASE_URL unset: point it at the Northflank openach service"
+fi
 if [ -n "$OPENACH_API_TOKEN" ] && [ -n "$OPENACH_API_KEY" ]; then
   add_env_var "OPENACH_API_TOKEN" "$OPENACH_API_TOKEN"
   add_env_var "OPENACH_API_KEY" "$OPENACH_API_KEY"
@@ -123,13 +126,12 @@ fi
 # Get payment type ID for Trust Dist
 echo ""
 echo "[6] Fetching Trust Dist payment type ID..."
-if [ -z "$OPENACH_API_TOKEN" ] || [ -z "$OPENACH_API_KEY" ]; then
-  echo "    Skipped: no OpenACH credential to authenticate with"
+if [ -z "$OPENACH_API_TOKEN" ] || [ -z "$OPENACH_API_KEY" ] || [ -z "$OPENACH_BASE_URL" ]; then
+  echo "    Skipped: no OpenACH service url / credential to authenticate with"
   CONNECT=""
 else
   CONNECT=$(curl -s --max-time 8 \
-    -X POST "http://localhost/openach/api/connect" \
-    -H "Host: ach.dlbtrust.cloud" \
+    -X POST "$OPENACH_BASE_URL/connect" \
     --data "user_api_token=$OPENACH_API_TOKEN&user_api_key=$OPENACH_API_KEY" 2>/dev/null)
   echo "    Connect: $CONNECT"
 fi
@@ -137,14 +139,12 @@ fi
 SESSION=$(echo "$CONNECT" | grep -oP '"session_id"\s*:\s*"[^"]*"' | grep -oP '"[^"]*"$' | tr -d '"')
 if [ -n "$SESSION" ]; then
   TYPES=$(curl -s --max-time 8 \
-    -X POST "http://localhost/openach/api/getPaymentTypes" \
-    -H "Host: ach.dlbtrust.cloud" \
+    -X POST "$OPENACH_BASE_URL/getPaymentTypes" \
     -H "Cookie: PHPSESSID=$SESSION" 2>/dev/null)
   echo "    Payment types: $TYPES"
   
   # Disconnect
-  curl -s --max-time 5 -X POST "http://localhost/openach/api/disconnect" \
-    -H "Host: ach.dlbtrust.cloud" \
+  curl -s --max-time 5 -X POST "$OPENACH_BASE_URL/disconnect" \
     -H "Cookie: PHPSESSID=$SESSION" > /dev/null 2>&1
   
   # Extract payment type ID
@@ -179,13 +179,12 @@ sleep 4
 echo ""
 echo "[8] Health checks..."
 echo -n "    OpenACH API:  "
-if [ -n "$OPENACH_API_TOKEN" ] && [ -n "$OPENACH_API_KEY" ]; then
+if [ -n "$OPENACH_API_TOKEN" ] && [ -n "$OPENACH_API_KEY" ] && [ -n "$OPENACH_BASE_URL" ]; then
   curl -s --max-time 8 \
-    -X POST "http://localhost/openach/api/connect" \
-    -H "Host: ach.dlbtrust.cloud" \
+    -X POST "$OPENACH_BASE_URL/connect" \
     --data "user_api_token=$OPENACH_API_TOKEN&user_api_key=$OPENACH_API_KEY" 2>/dev/null | grep -oP '"success":\s*(true|false)'
 else
-  echo "skipped (no credential in the environment)"
+  echo "skipped (no service url / credential in the environment)"
 fi
 
 echo -n "    ACH endpoint: "

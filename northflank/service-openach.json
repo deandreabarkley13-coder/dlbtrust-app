@@ -1,0 +1,35 @@
+{
+  "name": "openach",
+  "description": "OpenACH origination platform (openach/Dockerfile) — the trust's ACH rail",
+  "deployment": {
+    "type": "deployment",
+    "instances": 1,
+    "docker": {
+      "configType": "default"
+    }
+  },
+  "buildSource": "git",
+  "vcsData": {
+    "projectUrl": "https://github.com/deandreabarkley13-coder/dlbtrust-app",
+    "projectType": "github",
+    "projectBranch": "main"
+  },
+  "buildSettings": {
+    "dockerfile": {
+      "buildEngine": "buildkit",
+      "dockerFilePath": "/openach/Dockerfile",
+      "dockerWorkDir": "/openach"
+    }
+  },
+  "ports": [
+    {
+      "name": "p01",
+      "internalPort": 80,
+      "public": true,
+      "protocol": "HTTP"
+    }
+  ],
+  "billing": {
+    "deploymentPlan": "nf-compute-20"
+  }
+}

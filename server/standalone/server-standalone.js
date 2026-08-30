@@ -3,7 +3,9 @@
 // Uses only Node.js built-in modules
 
 var http = require('http');
+var https = require('https');
 var path = require('path');
+var url = require('url');
 var PORT = parseInt(process.env.PORT || '3003', 10);
 
 // ─── helpers ──────────────────────────────────────────────────
@@ -15,10 +17,16 @@ function json(res, code, obj) {
 
 // ─── ACH health route ─────────────────────────────────────────
 function achHealth(req, res) {
-  // Probe OpenACH via internal Apache
-  var opts = { host: '127.0.0.1', port: 80, path: '/openach/api/health_check',
-               headers: { Host: 'ach.dlbtrust.cloud' }, timeout: 4000 };
-  var probeReq = http.get(opts, function(probeRes) {
+  var baseUrl = process.env.OPENACH_BASE_URL;
+  if (!baseUrl) {
+    json(res, 200, { openach_connected: false, status: 'ok', note: 'OPENACH_BASE_URL is unset' });
+    return;
+  }
+  var parsed = url.parse(baseUrl.replace(/\/$/, '') + '/health_check');
+  var lib = parsed.protocol === 'https:' ? https : http;
+  var opts = { host: parsed.hostname, port: parsed.port || (parsed.protocol === 'https:' ? 443 : 80),
+               path: parsed.path, timeout: 4000 };
+  var probeReq = lib.get(opts, function(probeRes) {
     var d = '';
     probeRes.on('data', function(c) { d += c; });
     probeRes.on('end', function() {
@@ -26,7 +34,7 @@ function achHealth(req, res) {
     });
   });
   probeReq.on('error', function() {
-    json(res, 200, { openach_connected: true, status: 'ok', note: 'OpenACH on ach.dlbtrust.cloud' });
+    json(res, 200, { openach_connected: false, status: 'ok', note: 'OpenACH probe failed' });
   });
   probeReq.setTimeout(4000, function() {
     probeReq.destroy();

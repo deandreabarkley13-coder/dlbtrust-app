@@ -1,8 +1,9 @@
 /**
- * OpenACH Service — dlbtrust-app.fly.dev
- * 
- * Connects to the OpenACH instance hosted on Fly.io
- * using the correct session-cookie REST API (not Bearer token).
+ * OpenACH Service
+ *
+ * Connects to the OpenACH service the trust runs on Northflank
+ * (openach/Dockerfile) using the session-cookie REST API (not Bearer token).
+ * OPENACH_BASE_URL must name that service's api base; there is no default host.
  * 
  * ODFI: configured via NACHA_ODFI_ROUTING / TRUST_BANK_ROUTING.
  * Originator: DEANDREA LAVAR BARKLEY TRUST
@@ -14,7 +15,7 @@ import https from 'https';
 import http from 'http';
 import { URL } from 'url';
 
-const OPENACH_BASE_URL   = process.env.OPENACH_BASE_URL   || 'https://dlbtrust-app.fly.dev/openach/api';
+const OPENACH_BASE_URL   = process.env.OPENACH_BASE_URL   || '';
 const OPENACH_API_TOKEN  = process.env.OPENACH_API_TOKEN  || '';
 const OPENACH_API_KEY    = process.env.OPENACH_API_KEY    || '';
 const OPENACH_PAYMENT_TYPE_ID = process.env.OPENACH_PAYMENT_TYPE_ID || '';
@@ -72,7 +73,7 @@ function openachPost(endpoint: string, params: Record<string, string>, sessionCo
       path: parsed.pathname,
       method: 'POST',
       headers,
-      rejectUnauthorized: false,  // allow self-signed on local server
+      rejectUnauthorized: process.env.OPENACH_ALLOW_INSECURE_TLS !== 'true',
     };
 
     const lib = parsed.protocol === 'https:' ? https : http;

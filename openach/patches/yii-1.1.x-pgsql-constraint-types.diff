@@ -1,0 +1,29 @@
+Yii 1.1.x CPgsqlSchema::findConstraints unions pg_constraint.contype ("char") with
+text literals, which PostgreSQL >= 10 rejects with
+  ERROR:  UNION types "char" and text cannot be matched
+so every table's metadata lookup fails and the api returns a CDbException.
+Casting both sides to text keeps the query identical in meaning.
+
+--- a/framework/db/schema/pgsql/CPgsqlSchema.php	2020-12-02 16:53:51.000000000 +0000
++++ b/framework/db/schema/pgsql/CPgsqlSchema.php	2026-08-30 11:32:06.951722172 +0000
+@@ -239,7 +239,7 @@
+ 	SELECT
+ 		conname,
+ 		pg_catalog.pg_get_constraintdef(oid) AS consrc,
+-		contype,
++		contype::text AS contype,
+ 		conrelid AS relid,
+ 		NULL AS indkey
+ 	FROM
+@@ -251,9 +251,9 @@
+ 		pc.relname,
+ 		NULL,
+ 		CASE WHEN indisprimary THEN
+-				'p'
++				'p'::text
+ 		ELSE
+-				'u'
++				'u'::text
+ 		END,
+ 		pi.indrelid,
+ 		indkey
