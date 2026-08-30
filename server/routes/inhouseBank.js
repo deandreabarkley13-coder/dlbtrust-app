@@ -22,11 +22,14 @@ const { ZeroTrustGateway } = require('../integrations/inhouseBank/zeroTrustGatew
 const { WireHostToHostEngine } = require('../integrations/inhouseBank/wire/wireHostToHostEngine');
 const { WireDispatchLink } = require('../integrations/inhouseBank/wire/wireDispatchLink');
 const { WireDirectSendEngine } = require('../integrations/inhouseBank/wire/wireDirectSendEngine');
+const { ClearingAutoFormatEngine } = require('../integrations/inhouseBank/clearing/clearingAutoFormatEngine');
 
 const router = express.Router();
 
 // pain.001 arrives as XML, which the JSON body parser mounted on the app skips.
-router.use(express.text({ type: ['application/xml', 'text/xml'], limit: '4mb' }));
+// A data workflow handing over a CSV or a NACHA file is the same situation, so
+// the clearing-spec routes accept those media types as raw text too.
+router.use(express.text({ type: ['application/xml', 'text/xml', 'text/csv', 'text/plain'], limit: '8mb' }));
 
 const sessionAuth = requireAuth({ role: 'operator' });
 
@@ -542,6 +545,91 @@ router.post('/wire/direct-send/batches/:id/resolve-held', optionalSession, guard
 router.post('/wire/direct-send/reconcile', optionalSession, guard('ledger:reconcile'), writeRateLimiter(), async (req, res) => {
   try {
     res.json({ success: true, data: await WireDirectSendEngine.reconcile({ actor: req.ihb.principal }) });
+  } catch (err) { sendError(res, err); }
+});
+
+// ── Automatic clearing-spec formatting ───────────────────────────────────────
+//
+// The system-to-system join between the trust's data workflows and the bank's
+// clearing pipeline: hand over whatever a workflow produced — JSON, CSV,
+// pain.001, pacs.008, a NACHA file — and the engine detects it, lifts it into
+// canonical instructions and renders the spec that rail's bank ingests.
+//
+// `detect` only reads, so it needs payments:read. Formatting produces an
+// instruction file and may deliver it, so it needs payments:initiate, and the
+// payload bytes are returned only when the caller explicitly asks for them.
+
+/**
+ * A clearing input may arrive as raw bytes (XML, CSV, a NACHA file) or wrapped
+ * in a JSON envelope. Anything else in the JSON body is the request's own
+ * options, so an envelope-less JSON body is only treated as the payload when it
+ * actually carries payments.
+ */
+function clearingInputFrom(req) {
+  if (typeof req.body === 'string') return req.body;
+  const body = req.body || {};
+  if (body.input !== undefined) return body.input;
+  if (body.payload !== undefined) return body.payload;
+  if (Array.isArray(body.instructions) || Array.isArray(body.payments) || Array.isArray(body.items) || Array.isArray(body.rows)) {
+    return body;
+  }
+  if (Array.isArray(body)) return body;
+  const err = new Error('No payment data in the request: send the file as the request body, or a JSON envelope with an input, payload or instructions field');
+  err.code = 'CLEARING_AUTOFORMAT_NO_INPUT';
+  err.status = 400;
+  throw err;
+}
+
+function clearingOptionsFrom(req) {
+  const body = typeof req.body === 'string' ? {} : (req.body || {});
+  return {
+    format: body.format || req.query.format || null,
+    rail: body.rail || req.query.rail || null,
+    spec: body.spec || req.query.spec || null,
+  };
+}
+
+router.get('/wire/clearing-spec', optionalSession, guard('payments:read'), async (req, res) => {
+  try { res.json({ success: true, data: ClearingAutoFormatEngine.status() }); } catch (err) { sendError(res, err); }
+});
+
+router.get('/wire/clearing-spec/specs', optionalSession, guard('payments:read'), async (req, res) => {
+  try { res.json({ success: true, data: { specs: ClearingAutoFormatEngine.specs() } }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/wire/clearing-spec/detect', optionalSession, guard('payments:read'), async (req, res) => {
+  try {
+    const data = ClearingAutoFormatEngine.inspect({ input: clearingInputFrom(req), ...clearingOptionsFrom(req) });
+    res.json({ success: true, data });
+  } catch (err) { sendError(res, err); }
+});
+
+router.post('/wire/clearing-spec/format', optionalSession, guard('payments:initiate'), writeRateLimiter(), async (req, res) => {
+  try {
+    const body = typeof req.body === 'string' ? {} : (req.body || {});
+    const result = await ClearingAutoFormatEngine.format({
+      input: clearingInputFrom(req),
+      ...clearingOptionsFrom(req),
+      source: body.source || `api:${req.ihb.principal}`,
+      actor: req.ihb.principal,
+      deliver: body.deliver === true || req.query.deliver === 'true',
+      profile: body.profile || {},
+    });
+    const includePayload = body.includePayload === true || req.query.payload === 'true';
+    const data = includePayload ? result : { ...result, payload: undefined };
+    res.status(201).json({ success: true, data });
+  } catch (err) { sendError(res, err); }
+});
+
+router.post('/wire/clearing-spec/intake', optionalSession, guard('payments:initiate'), writeRateLimiter(), async (req, res) => {
+  try {
+    const data = await ClearingAutoFormatEngine.runIntakeCycle({
+      actor: req.ihb.principal,
+      trigger: 'operator',
+      limit: req.body && req.body.limit ? req.body.limit : null,
+      deliver: req.body && req.body.deliver !== undefined ? Boolean(req.body.deliver) : null,
+    });
+    res.json({ success: true, data });
   } catch (err) { sendError(res, err); }
 });
 
