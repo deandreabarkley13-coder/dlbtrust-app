@@ -23,7 +23,7 @@
  *   TRUST_CHECKER_SIGNATURE="DeAndrea Lavar Barkley" \
  *   node server/scripts/melioCanonicalPaymentWorkflow.js \
  *     --amount 100.00 \
- *     --fundingSource trust:1000 \
+ *     --fundingSource trust:1010 \
  *     --vendorName "DB NET MGMT" \
  *     --vendorEmail vendor@example.com \
  *     --routing "$MELIO_VENDOR_ROUTING" \
@@ -51,8 +51,11 @@
 
 const fs = require('fs');
 const path = require('path');
+const {
+  FundingSourceRegistry,
+} = require('../integrations/inhouseBank/clearing/fundingSourceRegistry');
 
-// trust:1000 / operating:1000 → the chart-of-accounts operating account;
+// trust:1010 / operating:1010 → the chart-of-accounts operating account;
 // beneficiary:SL-… → the sub-ledger the vendor payment engines call sub_ledger.
 function parseFundingSource(ref) {
   const raw = String(ref || '').trim();
@@ -143,7 +146,7 @@ async function main() {
   const sourceAccountId = funding.sourceAccountId
     || args.sourceAccountId
     || process.env.MELIO_SOURCE_ACCOUNT_ID
-    || '1000';
+    || FundingSourceRegistry.operatingAccountCode();
   const executionMode = args.executionMode || 'manual_upload';
   const makerSignature = args.makerSignature || process.env.TRUST_MAKER_SIGNATURE || '';
   const checkerSignature = args.checkerSignature || process.env.TRUST_CHECKER_SIGNATURE || '';

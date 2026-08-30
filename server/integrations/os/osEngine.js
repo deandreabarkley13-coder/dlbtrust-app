@@ -3743,7 +3743,18 @@ class MelioEngine extends BaseOSEngine {
     return field;
   }
 
+  /**
+   * The Trust Operating Account, as the clearing funding registry defines it.
+   * Melio does not keep its own idea of which account is operating: an env
+   * default that drifted from the registry would be refused at funding time.
+   */
+  static _operatingAccountCode() {
+    const { FundingSourceRegistry } = require('../inhouseBank/clearing/fundingSourceRegistry');
+    return FundingSourceRegistry.operatingAccountCode();
+  }
+
   static _cfg() {
+    const operatingAccount = this._operatingAccountCode();
     return {
       apiKey: process.env.MELIO_API_KEY || '',
       baseUrl: process.env.MELIO_BASE_URL || 'https://api.meliopayments.com',
@@ -3752,11 +3763,11 @@ class MelioEngine extends BaseOSEngine {
       shadow: process.env.MELIO_SHADOW ? process.env.MELIO_SHADOW === 'true' : !process.env.MELIO_API_KEY,
       enabled: (process.env.MELIO_ENABLED || 'true') !== 'false',
       defaultSourceType: process.env.MELIO_SOURCE_TYPE || 'trust',
-      defaultSourceAccountId: process.env.MELIO_SOURCE_ACCOUNT_ID || '1000',
+      defaultSourceAccountId: process.env.MELIO_SOURCE_ACCOUNT_ID || operatingAccount,
       allowedSourceAccounts: String(
         process.env.MELIO_ALLOWED_SOURCE_ACCOUNTS
           || process.env.MELIO_SOURCE_ACCOUNT_ID
-          || '1000'
+          || operatingAccount
       ).split(',').map(value => value.trim()).filter(Boolean),
       defaultDeliveryMethod: process.env.MELIO_DELIVERY_METHOD || 'ach',
       fundingSourceMap: this._parseFundingSourceMap(process.env.MELIO_FUNDING_SOURCE_MAP),
@@ -3779,7 +3790,7 @@ class MelioEngine extends BaseOSEngine {
       distributionsPayableGlAccount: process.env.MELIO_DISTRIBUTIONS_PAYABLE_GL_ACCOUNT || '2000',
       corpusGlAccount: process.env.MELIO_CORPUS_GL_ACCOUNT || '3000',
       undistributedIncomeGlAccount: process.env.MELIO_UNDISTRIBUTED_INCOME_GL_ACCOUNT || '3100',
-      settlementGlAccount: process.env.MELIO_SETTLEMENT_GL_ACCOUNT || '1000',
+      settlementGlAccount: process.env.MELIO_SETTLEMENT_GL_ACCOUNT || operatingAccount,
       exportDir: path.resolve(process.env.MELIO_EXPORT_DIR || path.join(process.cwd(), 'data', 'melio-exports')),
       postPayableGl: (process.env.MELIO_POST_PAYABLE_GL || 'true') === 'true',
       csvMaxRows: Math.min(300, Math.max(1, Number.parseInt(process.env.MELIO_CSV_MAX_ROWS || '300', 10) || 300)),

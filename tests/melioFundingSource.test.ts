@@ -7,8 +7,8 @@ const { TrustAccountingEngine } = require('../server/integrations/accounting/tru
 const { SubLedgerEngine } = require('../server/integrations/accounting/subLedgerEngine');
 
 const OPERATING_ACCOUNT = {
-  account_code: '1000',
-  account_name: 'Trust Cash & Equivalents',
+  account_code: '1010',
+  account_name: 'Trust Checking',
   balance_cents: 5000000,
   available_balance_cents: 5000000,
   funding_eligible: true,
@@ -53,7 +53,7 @@ describe('Melio funding sources', () => {
   const previousOperating = process.env.CLEARING_FUNDING_OPERATING_ACCOUNT;
 
   beforeEach(() => {
-    process.env.CLEARING_FUNDING_OPERATING_ACCOUNT = '1010,1000';
+    process.env.CLEARING_FUNDING_OPERATING_ACCOUNT = '1010';
   });
 
   afterEach(() => {
@@ -66,16 +66,16 @@ describe('Melio funding sources', () => {
     mockLedgers();
     const getPosition = mockPosition();
 
-    const source = await MelioEngine._sourceBalance('trust', '1000');
+    const source = await MelioEngine._sourceBalance('trust', '1010');
 
     expect(source.fundingSource).toMatchObject({
       sourceType: 'trust_operating',
-      sourceKey: 'trust:1000',
-      accountName: 'Trust Cash & Equivalents',
+      sourceKey: 'trust:1010',
+      accountName: 'Trust Checking',
     });
     expect(getPosition).toHaveBeenCalledWith(expect.objectContaining({
       sourceType: 'trust',
-      sourceAccountId: '1000',
+      sourceAccountId: '1010',
     }));
   });
 
@@ -102,7 +102,7 @@ describe('Melio funding sources', () => {
     mockPosition();
     vi.spyOn(MelioEngine, '_cfg').mockReturnValue({
       ...MelioEngine._cfg(),
-      allowedSourceAccounts: ['1000', 'bond:1100'],
+      allowedSourceAccounts: ['1010', 'bond:1100'],
     });
 
     await expect(MelioEngine._sourceBalance('bond', '1100')).rejects.toThrow(
@@ -136,14 +136,14 @@ describe('Melio funding sources', () => {
 
     expect(source.fundingSource).toMatchObject({
       sourceType: 'trust_operating',
-      sourceKey: 'trust:1000',
+      sourceKey: 'trust:1010',
     });
   });
 
   it('settles a beneficiary draw through the trust instrument Melio holds', async () => {
     const cfg = {
       ...MelioEngine._cfg(),
-      portalFundingSourceMap: { 'trust:1000': { label: 'DLB Trust', accountLast4: '4321' } },
+      portalFundingSourceMap: { 'trust:1010': { label: 'DLB Trust', accountLast4: '4321' } },
     };
 
     const portal = MelioEngine._resolvePortalFundingSource('sub_ledger', 'SL-JANE', cfg, {
@@ -159,12 +159,22 @@ describe('Melio funding sources', () => {
       ...MelioEngine._cfg(),
       portalFundingSourceMap: {},
       defaultPortalFundingSourceLabel: '',
-      defaultSourceAccountId: '1000',
+      defaultSourceAccountId: '1010',
     };
 
     expect(MelioEngine._resolvePortalFundingSource('sub_ledger', 'SL-JANE', cfg, {
       sourceType: 'beneficiary_trust',
     })).toBeNull();
+  });
+
+  it('follows the funding registry when a trust operates out of 1000 instead of 1010', async () => {
+    process.env.CLEARING_FUNDING_OPERATING_ACCOUNT = '1000';
+    mockLedgers([], { ...OPERATING_ACCOUNT, account_code: '1000', account_name: 'Trust Cash & Equivalents' });
+    mockPosition();
+
+    expect(MelioEngine._cfg().defaultSourceAccountId).toBe('1000');
+    const source = await MelioEngine._sourceBalance('trust', '1000');
+    expect(source.fundingSource).toMatchObject({ sourceKey: 'trust:1000' });
   });
 
   it('records the funding class and beneficiary on the payment', () => {

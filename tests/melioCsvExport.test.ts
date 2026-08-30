@@ -33,23 +33,24 @@ describe('Melio bill spreadsheet CSV export', () => {
     vi.restoreAllMocks();
   });
 
-  it('uses trust account 1000 as the canonical Melio funding default without changing other rail defaults', () => {
+  it('uses the trust operating account as the canonical Melio funding default without changing other rail defaults', () => {
     const dashboard = fs.readFileSync(path.resolve(process.cwd(), 'public/os-engine-dashboard.html'), 'utf8');
     const vendorsRoutes = fs.readFileSync(path.resolve(process.cwd(), 'server/routes/vendors.js'), 'utf8');
     const config = MelioEngine._cfg();
 
     expect(config).toMatchObject({
       defaultSourceType: 'trust',
-      defaultSourceAccountId: '1000',
-      allowedSourceAccounts: ['1000'],
+      defaultSourceAccountId: '1010',
+      allowedSourceAccounts: ['1010'],
+      settlementGlAccount: '1010',
     });
-    expect(dashboard).toContain('id="melio-source-gl" value="1000"');
-    expect(dashboard).toContain('id="melio-invoice-source-gl" value="1000"');
-    expect(dashboard).toContain("el('melio-source-gl').value.trim() || '1000'");
-    expect(dashboard).toContain("el('melio-invoice-source-gl').value.trim() || '1000'");
+    expect(dashboard).toContain('id="melio-source-gl" value="1010"');
+    expect(dashboard).toContain('id="melio-invoice-source-gl" value="1010"');
+    expect(dashboard).toContain("el('melio-source-gl').value.trim() || '1010'");
+    expect(dashboard).toContain("el('melio-invoice-source-gl').value.trim() || '1010'");
     expect(dashboard).toContain('id="apisix-source-gl" value="4000"');
     expect(dashboard).toContain('id="nickel-source-gl" value="4000"');
-    expect(vendorsRoutes.match(/source_account_code: paymentPayload\.source_account_code \|\| '1000'/g) || []).toHaveLength(1);
+    expect(vendorsRoutes.match(/source_account_code: paymentPayload\.source_account_code \|\| '1010'/g) || []).toHaveLength(1);
     expect(vendorsRoutes).toContain("source_account_code: paymentPayload.source_account_code || '4000'");
   });
 
@@ -148,7 +149,7 @@ describe('Melio bill spreadsheet CSV export', () => {
   it('reserves outstanding CSV instructions against the canonical source position', async () => {
     const getPosition = vi.fn().mockResolvedValue({
       sourceType: 'trust',
-      sourceAccountId: '1000',
+      sourceAccountId: '1010',
       currentBalanceCents: 25000,
       availableBalanceCents: 20000,
       fundingEligible: true,
@@ -158,8 +159,8 @@ describe('Melio bill spreadsheet CSV export', () => {
     vi.spyOn(MelioEngine, '_deps').mockReturnValue({ SourceOfFunds: { getPosition } });
     vi.spyOn(MelioEngine, '_registryFundingSource').mockResolvedValue({
       sourceType: 'trust_operating',
-      sourceKey: 'trust:1000',
-      accountName: 'Trust Cash & Equivalents',
+      sourceKey: 'trust:1010',
+      accountName: 'Trust Checking',
       sourceOfTruth: 'trust_accounting',
       beneficiary: null,
     });
@@ -167,13 +168,13 @@ describe('Melio bill spreadsheet CSV export', () => {
       rows: [{ reserved_cents: '7500' }],
     });
 
-    const source = await MelioEngine._sourceBalance('trust', '1000');
+    const source = await MelioEngine._sourceBalance('trust', '1010');
 
     expect(getPosition).toHaveBeenCalledWith({
       sourceType: 'trust',
-      sourceAccountId: '1000',
+      sourceAccountId: '1010',
       purpose: 'Melio B2B CSV payments',
-      allowedAccountIds: ['1000'],
+      allowedAccountIds: ['1010'],
     });
     expect(source).toMatchObject({
       balanceCents: 12500,
@@ -815,7 +816,7 @@ describe('Melio bill spreadsheet CSV export', () => {
       paymentId: 'MEL-CC-EXISTING',
       amount: 12.5,
       sourceType: 'trust',
-      sourceAccountId: '1000',
+      sourceAccountId: '1010',
       vendor: { name: 'Settlement Vendor' },
       dueDate: '2026-02-01',
     })).rejects.toThrow(
@@ -967,7 +968,7 @@ describe('Melio bill spreadsheet CSV export', () => {
       const result = await MelioEngine.exportPayment({
         amount: 25,
         sourceType: 'trust',
-        sourceAccountId: '1000',
+        sourceAccountId: '1010',
         accountingClass: 'beneficiary_principal_distribution',
         vendor: { name: 'DB NET MGMT' },
         dueDate: '2026-02-01',
@@ -1004,7 +1005,7 @@ describe('Melio bill spreadsheet CSV export', () => {
     const cfg = MelioEngine._cfg();
     const cfgSpy = vi.spyOn(MelioEngine, '_cfg').mockReturnValue({
       ...cfg,
-      settlementGlAccount: '1000',
+      settlementGlAccount: '1010',
       payablesGlAccount: '2100',
     });
     const deps = MelioEngine._deps();
@@ -1023,7 +1024,7 @@ describe('Melio bill spreadsheet CSV export', () => {
       amountCents: 850,
       currency: 'USD',
       sourceType: 'trust',
-      sourceAccountId: '1000',
+      sourceAccountId: '1010',
       result: {
         csvPath: 'data/melio-exports/test.csv',
         portalSubmissionReference: 'BANK-1',
@@ -1038,19 +1039,19 @@ describe('Melio bill spreadsheet CSV export', () => {
       expect(first.result).toMatchObject({
         settlementJournalEntryId: 'JRN-SETTLE',
         settlementGlPosted: true,
-        settlementGlAccount: '1000',
+        settlementGlAccount: '1010',
       });
       expect(second.alreadySettled).toBe(true);
       expect(second.result.settlementJournalEntryId).toBe('JRN-SETTLE');
       expect(postJournalEntry).toHaveBeenCalledTimes(1);
-      expect(assertFundingAvailable).toHaveBeenCalledWith('1000', 850, {
+      expect(assertFundingAvailable).toHaveBeenCalledWith('1010', 850, {
         purpose: 'Melio settlement',
-        allowedAccountCodes: ['1000'],
+        allowedAccountCodes: ['1010'],
       });
       expect(postJournalEntry).toHaveBeenCalledWith(expect.objectContaining({
         lines: [
           expect.objectContaining({ accountCode: '2100', debitAmount: '8.50', creditAmount: 0 }),
-          expect.objectContaining({ accountCode: '1000', debitAmount: 0, creditAmount: '8.50' }),
+          expect.objectContaining({ accountCode: '1010', debitAmount: 0, creditAmount: '8.50' }),
         ],
       }));
     } finally {
