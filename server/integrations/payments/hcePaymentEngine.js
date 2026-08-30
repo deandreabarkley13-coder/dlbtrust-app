@@ -565,9 +565,9 @@ async function processPayment(txnId, opts) {
   var merchantName = opts.merchant_name || txn.merchant_name;
   var merchantId = opts.merchant_id || txn.merchant_id;
 
-  // 4. Transmit payment externally via Electronic Settlement Engine (BILL PayBills)
-  //    This AWAITS the external transmission so we know if real funds moved.
-  //    Core banking is already debited (step 1+2). This step sends funds to the recipient.
+  // 4. Transmit payment externally via Electronic Settlement Engine.
+  //    Core banking is already debited (steps 1+2). This step sends real funds to the recipient.
+  //    Funding source: Core Banking sub-ledger/GL account. BILL is the transmission rail only.
   var settlementId = 'ESTL-HCE-' + Date.now().toString(36).toUpperCase() + '-' +
     crypto.randomBytes(2).toString('hex').toUpperCase();
   var billRef = null;
@@ -586,7 +586,7 @@ async function processPayment(txnId, opts) {
         source_account_code: txn.source_account_code || '1000',
         sub_ledger_id: txn.sub_ledger_id || null,
         priority: 'standard',
-        description: 'HCE contactless payment — ' + (merchantName || 'POS') + ' $' + amount.toFixed(2),
+        description: 'HCE payment from ' + (txn.sub_ledger_id || ('GL:' + (txn.source_account_code || '1000'))) + ' — ' + (merchantName || 'POS') + ' $' + amount.toFixed(2),
         memo: 'HCE Txn: ' + txnId,
         initiated_by: 'hce_payment_engine',
       });
@@ -600,7 +600,7 @@ async function processPayment(txnId, opts) {
     transmissionError = eslErr.message;
     if (eslErr.mfa_required) {
       transmissionStatus = 'mfa_required';
-      console.warn('[HCE] BILL MFA required — payment settled in core banking, external transmission pending MFA');
+      console.warn('[HCE] MFA required — payment settled in core banking, external transmission pending MFA');
     } else {
       transmissionStatus = 'failed';
       console.error('[HCE] External transmission failed: ' + eslErr.message + ' — payment settled in core banking only');
@@ -673,12 +673,12 @@ async function processPayment(txnId, opts) {
     status: transmissionStatus === 'transmitted' ? 'settled' : 'settled_local',
     payment_confirmed: transmissionStatus === 'transmitted',
     confirmation_message: transmissionStatus === 'transmitted'
-      ? 'Payment transmitted to recipient via BILL.com — funds processing (T+1)'
+      ? 'Payment of $' + amount.toFixed(2) + ' sent from core banking account ' + (txn.sub_ledger_id || ('GL:' + (txn.source_account_code || '1000'))) + ' — funds transmitted to ' + merchantName
       : transmissionStatus === 'mfa_required'
-        ? 'Payment settled in core banking. External transmission requires MFA verification.'
+        ? 'Core banking debited $' + amount.toFixed(2) + '. External transmission requires MFA — provide code to complete fund delivery.'
         : transmissionStatus === 'failed'
-          ? 'Payment settled in core banking. External transmission failed: ' + transmissionError
-          : 'Payment settled in core banking. External transmission pending.',
+          ? 'Core banking debited $' + amount.toFixed(2) + '. External transmission failed: ' + transmissionError
+          : 'Core banking debited $' + amount.toFixed(2) + '. External transmission pending.',
     issuer: 'DLB Trust HCE Payment System',
   };
 
@@ -1235,12 +1235,15 @@ async function processExternalQRPayment(parsedQR, opts) {
   if (status === 'authorized') {
     var receipt = await processPayment(txnId, { merchant_name: merchantName, qr_scan: true });
     return {
-      action: receipt.transmission_status === 'transmitted' ? 'settled' : 'settled_local',
+      action: receipt.status,
       provider: parsedQR.provider,
       recipient: parsedQR.data.recipient,
       txn_id: receipt.txn_id,
       authorization_code: receipt.authorization_code,
       amount: receipt.amount,
+      funding_source: fundingSource,
+      sub_ledger_id: subLedgerId,
+      source_account: sourceCode,
       journal_entry_id: receipt.journal_entry_id,
       settlement_id: receipt.settlement_id,
       bill_ref: receipt.bill_ref,
