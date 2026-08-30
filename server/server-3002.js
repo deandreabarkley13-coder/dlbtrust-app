@@ -792,6 +792,16 @@ async function initializeDatabase() {
     console.log('[wire-link] ' + (linkStart.started ? 'started every ' + linkStart.intervalSeconds + 's' : 'not started: ' + linkStart.reason));
   } catch(e) { console.warn('[wire-link] init:', e.message); }
 
+  // Payment data a workflow drops in the clearing intake inbox is detected and
+  // formatted into the spec its rail clears in, without anyone converting it.
+  try {
+    var ClearingAutoFormatEngine = require(path.join(HD, 'server', 'integrations', 'inhouseBank', 'clearing', 'clearingAutoFormatEngine')).ClearingAutoFormatEngine;
+    var intakeStart = ClearingAutoFormatEngine.startAutoIntake();
+    console.log('[clearing-intake] ' + (intakeStart.started
+      ? 'watching ' + intakeStart.inbox + ' every ' + intakeStart.intervalSeconds + 's'
+      : 'idle: ' + intakeStart.reason));
+  } catch(e) { console.warn('[clearing-intake] init:', e.message); }
+
   // The Camel context is the one place the family bank's channels converge, and
   // the OpenACH rail is the ACH last mile it hands payments to. Both keep their
   // own durable state, so their tables exist before anything can be mediated.
