@@ -94,6 +94,11 @@ const ALIASES = {
   country: ['country', 'countrycode', 'country_code', 'ctry'],
   debtorName: ['debtorname', 'debtor_name', 'originator', 'originatorname', 'originator_name', 'payername', 'payer_name'],
   debtorAccount: ['debtoraccount', 'debtor_account', 'sourceaccount', 'source_account', 'fromaccount', 'from_account', 'funding_account'],
+  // Which of the trust's permitted accounts the payment is drawn on. Named
+  // separately from the debtor account because it is a funding decision — the
+  // Trust Operating Account or one beneficiary's trust account — rather than a
+  // bank account number, and the two are resolved against the trust's ledgers.
+  fundingSource: ['fundingsource', 'funding_source', 'fundsource', 'fund_source', 'fundingaccount', 'fundedfrom', 'funded_from', 'drawnon', 'drawn_on', 'subledgerid', 'sub_ledger_id', 'subledger', 'sub_ledger', 'beneficiarytrustaccount', 'beneficiary_trust_account'],
   remittance: ['remittance', 'remittanceinformation', 'remittance_information', 'memo', 'description', 'note', 'invoice', 'invoicenumber', 'invoice_number', 'obi'],
   purposeCode: ['purposecode', 'purpose_code', 'purpose'],
   effectiveDate: ['effectivedate', 'effective_date', 'valuedate', 'value_date', 'settlementdate', 'settlement_date', 'executiondate', 'execution_date', 'duedate', 'due_date'],
@@ -145,6 +150,7 @@ function instructionFromRecord(record, index) {
       name: pick(flat, ALIASES.debtorName),
       accountNumber: pick(flat, ALIASES.debtorAccount),
     },
+    fundingSourceRef: pick(flat, ALIASES.fundingSource),
     creditor: {
       name: pick(flat, ALIASES.creditorName),
       accountNumber: pick(flat, ALIASES.creditorAccount),

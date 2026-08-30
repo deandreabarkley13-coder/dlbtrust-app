@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createRequire } from 'module';
 import fs from 'fs';
 import os from 'os';
@@ -21,6 +21,8 @@ const {
   resolveSpec,
 } = require('../server/integrations/inhouseBank/clearing/clearingAutoFormatEngine');
 const { parseRailMap, getClearingSpecConfig } = require('../server/integrations/inhouseBank/clearing/clearingSpecConfig');
+const { TrustAccountingEngine } = require('../server/integrations/accounting/trustAccountingEngine');
+const { SubLedgerEngine } = require('../server/integrations/accounting/subLedgerEngine');
 const { parseNACHAFile } = require('../server/integrations/ach/nachaGenerator');
 
 const VENDOR_CSV = [
@@ -412,9 +414,24 @@ describe('bank clearing spec automation — end to end and intake', () => {
     process.env.CLEARING_AUTOFORMAT_SENDER_ROUTING = '021000021';
     process.env.CLEARING_AUTOFORMAT_SENDER_ACCOUNT = '100200300';
     process.env.CLEARING_AUTOFORMAT_DELIVER = 'false';
+    // Every formatted file is drawn on a permitted funding source, so the
+    // trust's ledgers stand in with a funded Trust Operating Account.
+    vi.spyOn(TrustAccountingEngine, 'getAccount').mockResolvedValue(
+      TrustAccountingEngine.describeFundingPosition({
+        account_code: '1010',
+        account_name: 'Trust Checking',
+        account_type: 'asset',
+        sub_type: 'operating',
+        balance: '1000000.00',
+        is_active: true,
+      })
+    );
+    vi.spyOn(SubLedgerEngine, 'ensureTables').mockResolvedValue(undefined);
+    vi.spyOn(SubLedgerEngine, 'listSubLedgers').mockResolvedValue([]);
   });
 
   afterEach(() => {
+    vi.restoreAllMocks();
     process.env = { ...saved };
     fs.rmSync(workDir, { recursive: true, force: true });
   });
