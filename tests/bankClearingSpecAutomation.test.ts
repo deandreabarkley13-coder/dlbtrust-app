@@ -12,6 +12,7 @@ const {
 } = require('../server/integrations/inhouseBank/clearing/clearingIntakeDetector');
 const {
   formatToSpec,
+  formatToSpecFiles,
   specIds,
 } = require('../server/integrations/inhouseBank/clearing/clearingSpecRegistry');
 const {
@@ -52,6 +53,13 @@ const PROFILE = {
   receiverRouting: '021000021',
   receiverName: 'RECEIVING BANK',
   currency: 'USD',
+  fedwire: {
+    localInstrument: 'CTRC',
+    chargeBearer: 'SHAR',
+    businessService: '',
+    marketPracticeRegistry: 'www2.swift.com/mystandards',
+    marketPracticeId: 'frb.fedwire.01',
+  },
 };
 
 function instruction(overrides: Record<string, any> = {}) {
@@ -86,6 +94,9 @@ describe('bank clearing spec automation — inbound detection', () => {
       format: 'pacs.008',
       confidence: 'certain',
     });
+    // The Fedwire envelope wraps the same business message, so it parses as one.
+    expect(detectFormat('<FedwireFundsIncoming><Document><FIToFICstmrCdtTrf/></Document></FedwireFundsIncoming>'))
+      .toMatchObject({ format: 'pacs.008', evidence: expect.stringContaining('Fedwire Funds Service envelope') });
   });
 
   it('refuses payload it cannot identify rather than guessing a format', () => {
@@ -181,18 +192,88 @@ describe('bank clearing spec automation — rendering to spec', () => {
     expect(formatted.controls).toMatchObject({ count: 1, totalAmountCents: 125000, secCode: 'CCD' });
   });
 
-  it('renders the Fedwire tag format with amounts in whole cents', () => {
+  it('renders a Fedwire ISO 20022 message: service envelope, business application header and pacs.008', () => {
     const formatted = formatToSpec({
-      specId: 'fedwire-tag',
+      specId: 'pacs.008.001.08-fedwire',
       instructions: [instruction()],
       batchId: 'CLRFMT-TEST-4',
       profile: PROFILE,
       createdAt: new Date('2026-03-04T10:00:00Z'),
     });
-    expect(formatted.payload).toContain('{2000}000000125000');
-    expect(formatted.payload).toContain('{3400}021000021');
+
+    expect(formatted.extension).toBe('.xml');
+    expect(formatted.contentType).toBe('application/xml');
+    expect(formatted.payload).toContain('<FedwireFundsCustomerCreditTransfer>');
+    expect(formatted.payload).toContain('urn:iso:std:iso:20022:tech:xsd:head.001.001.03');
+    expect(formatted.payload).toContain('<MsgDefIdr>pacs.008.001.08</MsgDefIdr>');
+    expect(formatted.payload).toContain('urn:iso:std:iso:20022:tech:xsd:pacs.008.001.08');
+    // Fedwire settles through its own clearing system, with the local
+    // instrument code that replaced the FAIM business function code.
+    expect(formatted.payload).toContain('<SttlmMtd>CLRG</SttlmMtd><ClrSys><Cd>FDW</Cd></ClrSys>');
+    expect(formatted.payload).toContain('<Prtry>CTRC</Prtry>');
+    expect(formatted.payload).toContain('<ChrgBr>SHAR</ChrgBr>');
+    expect(formatted.payload).toContain('<IntrBkSttlmAmt Ccy="USD">1250.00</IntrBkSttlmAmt>');
+    expect(formatted.payload).toContain('<MmbId>021000021</MmbId>');
     expect(formatted.payload).toContain('ACME SUPPLY CO');
-    expect(formatted.extension).toBe('.fwr');
+    // No FAIM tag record survives anywhere in the message.
+    expect(formatted.payload).not.toMatch(/\{(1500|2000|3100|3320|3400|3600|4200|5000|6000)\}/);
+    // Fedwire will not carry a value message without a UUID v4 UETR.
+    expect(formatted.controls.uetr).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
+    expect(formatted.payload).toContain(`<UETR>${formatted.controls.uetr}</UETR>`);
+    expect(formatted.controls).toMatchObject({ count: 1, totalAmountCents: 125000 });
+    expect(formatted.payloadHash).toMatch(/^[a-f0-9]{64}$/);
+    // The message reads back as the payment it was rendered from.
+    const { instructions: roundTripped } = normalize(formatted.payload);
+    expect(roundTripped).toHaveLength(1);
+    expect(roundTripped[0]).toMatchObject({ amountCents: 125000, currency: 'USD' });
+  });
+
+  it('keeps a UETR the source data already carries rather than minting a second one', () => {
+    const uetr = 'b1c2d3e4-f5a6-4b7c-8d9e-0f1a2b3c4d5e';
+    const formatted = formatToSpec({
+      specId: 'pacs.008.001.08-fedwire',
+      instructions: [instruction({ uetr })],
+      batchId: 'CLRFMT-TEST-4A',
+      profile: PROFILE,
+    });
+    expect(formatted.controls.uetr).toBe(uetr);
+  });
+
+  it('splits a multi-payment batch into one Fedwire message per credit transfer', () => {
+    const files = formatToSpecFiles({
+      specId: 'pacs.008.001.08-fedwire',
+      instructions: [instruction(), instruction({ reference: 'REF-2', amountCents: 340055 })],
+      batchId: 'CLRFMT-TEST-4B',
+      profile: PROFILE,
+      createdAt: new Date('2026-03-04T10:00:00Z'),
+    });
+
+    expect(files).toHaveLength(2);
+    expect(files.map((file: any) => file.sequence)).toEqual([1, 2]);
+    for (const file of files) {
+      expect(file.payload).toContain('<NbOfTxs>1</NbOfTxs>');
+      expect(file.controls.count).toBe(1);
+    }
+    expect(files[0].controls.uetr).not.toBe(files[1].controls.uetr);
+    expect(files.map((file: any) => file.controls.totalAmountCents)).toEqual([125000, 340055]);
+    // A batched spec still renders one file holding every instruction.
+    expect(formatToSpecFiles({
+      specId: 'pacs.008.001.08',
+      instructions: [instruction(), instruction({ reference: 'REF-2' })],
+      batchId: 'CLRFMT-TEST-4C',
+      profile: PROFILE,
+    })).toHaveLength(1);
+  });
+
+  it('refuses to put two credit transfers in one Fedwire message', () => {
+    expect(() =>
+      formatToSpec({
+        specId: 'pacs.008.001.08-fedwire',
+        instructions: [instruction(), instruction({ reference: 'REF-2' })],
+        batchId: 'CLRFMT-TEST-4D',
+        profile: PROFILE,
+      })
+    ).toThrowError(/one credit transfer per message/);
   });
 
   it('rejects an instruction the bank would reject, naming the field, before rendering', () => {
@@ -290,7 +371,7 @@ describe('bank clearing spec automation — end to end and intake', () => {
 
   it('inspects without rendering or writing anything', () => {
     const inspected = ClearingAutoFormatEngine.inspect({ input: VENDOR_CSV });
-    expect(inspected).toMatchObject({ rail: 'fedwire', spec: 'pacs.008.001.08' });
+    expect(inspected).toMatchObject({ rail: 'fedwire', spec: 'pacs.008.001.08-fedwire', files: 2 });
     expect(inspected.summary).toMatchObject({ count: 2, totalAmountCents: 465055 });
     expect(fs.existsSync(path.join(workDir, 'archive'))).toBe(false);
   });
@@ -298,31 +379,45 @@ describe('bank clearing spec automation — end to end and intake', () => {
   it('formats a workflow CSV into the rail’s spec and archives the evidence', async () => {
     const result = await ClearingAutoFormatEngine.format({ input: VENDOR_CSV, source: 'test' });
     expect(result).toMatchObject({
-      spec: 'pacs.008.001.08',
+      spec: 'pacs.008.001.08-fedwire',
       rail: 'fedwire',
       specSource: 'CLEARING_SPEC_RAIL_MAP',
       delivered: false,
     });
-    expect(result.filename).toMatch(/^PTCFMT-FEDWIRE-\d+-[0-9A-F]+\.xml$/);
-    expect(fs.readFileSync(path.join(result.archivePath, result.filename), 'utf8')).toBe(result.payload);
-    const manifest = JSON.parse(
-      fs.readFileSync(path.join(result.archivePath, `${result.filename}.manifest.json`), 'utf8')
-    );
-    expect(manifest.controls.payloadSha256).toBe(result.controls.payloadSha256);
-    expect(manifest.items).toHaveLength(2);
+    // Two fedwire payments become two ISO 20022 messages, each archived with
+    // its own manifest and digest.
+    expect(result.controls).toMatchObject({ files: 2, count: 2, totalAmountCents: 465055 });
+    expect(result.files).toHaveLength(2);
+    for (const file of result.files) {
+      expect(file.filename).toMatch(/^PTCFMT-FEDWIRE-\d+-[0-9A-F]+-\d{3}\.xml$/);
+      expect(fs.readFileSync(path.join(file.archivePath, file.filename), 'utf8')).toBe(file.payload);
+      const manifest = JSON.parse(
+        fs.readFileSync(path.join(file.archivePath, `${file.filename}.manifest.json`), 'utf8')
+      );
+      expect(manifest.controls.payloadSha256).toBe(file.controls.payloadSha256);
+      expect(manifest.items).toHaveLength(1);
+    }
+    expect(result.files[0].payloadHash).not.toBe(result.files[1].payloadHash);
+  });
+
+  it('renders one batched file when the rail’s spec is a batched one', async () => {
+    const result = await ClearingAutoFormatEngine.format({ input: VENDOR_CSV, spec: 'pacs.008.001.08', source: 'test' });
+    expect(result.files).toHaveLength(1);
+    expect(result.files[0].payload).toContain('<NbOfTxs>2</NbOfTxs>');
   });
 
   it('follows the ACH rail to the NACHA spec when the source data names it', async () => {
     const result = await ClearingAutoFormatEngine.format({ input: PAYROLL_JSON, source: 'test' });
     expect(result).toMatchObject({ rail: 'ach', railSource: 'source data', spec: 'nacha-ccd' });
-    expect(result.filename.endsWith('.ach')).toBe(true);
+    expect(result.files).toHaveLength(1);
+    expect(result.files[0].filename.endsWith('.ach')).toBe(true);
   });
 
   it('cannot be talked into a different bank’s format by the payload it is given', async () => {
     // A pacs.008 arriving on the ACH rail still clears as the configured NACHA
     // spec: inbound bytes choose the parser, configuration chooses the output.
     const pacs = await ClearingAutoFormatEngine.format({ input: VENDOR_CSV, source: 'test' });
-    const rerouted = await ClearingAutoFormatEngine.format({ input: pacs.payload, rail: 'ach', source: 'test' });
+    const rerouted = await ClearingAutoFormatEngine.format({ input: pacs.files[0].payload, rail: 'ach', source: 'test' });
     expect(rerouted.detection.format).toBe('pacs.008');
     expect(rerouted.spec).toBe('nacha-ccd');
   });
@@ -337,7 +432,7 @@ describe('bank clearing spec automation — end to end and intake', () => {
     delete process.env.WIRE_DIRECT_SEND_URL;
     process.env.WIRE_DIRECT_SEND_ENABLED = 'false';
     await expect(ClearingAutoFormatEngine.format({ input: VENDOR_CSV, deliver: true }))
-      .rejects.toThrowError(/formatted and archived but not sent/);
+      .rejects.toThrowError(/The clearing channel is closed/);
   });
 
   it('refuses a file over the configured ceilings', async () => {
@@ -362,9 +457,11 @@ describe('bank clearing spec automation — end to end and intake', () => {
     expect(cycle.delivered).toBe(false);
 
     const outbox = fs.readdirSync(path.join(workDir, 'intake', 'outbox'));
-    expect(outbox.filter(name => name.endsWith('.xml'))).toHaveLength(1);
+    // The two fedwire payments clear as one ISO 20022 message each; the payroll
+    // file batches into a single NACHA file.
+    expect(outbox.filter(name => name.endsWith('.xml'))).toHaveLength(2);
     expect(outbox.filter(name => name.endsWith('.ach'))).toHaveLength(1);
-    expect(outbox.filter(name => name.endsWith('.manifest.json'))).toHaveLength(2);
+    expect(outbox.filter(name => name.endsWith('.manifest.json'))).toHaveLength(3);
 
     // Every input leaves the inbox, so a scheduled cycle never re-formats — and
     // never re-sends — a file it has already handled.
@@ -388,8 +485,10 @@ describe('bank clearing spec automation — end to end and intake', () => {
     const status = ClearingAutoFormatEngine.status();
     expect(status.ready).toBe(true);
     expect(status.specs.map((spec: any) => spec.id)).toEqual(
-      expect.arrayContaining(['pacs.008.001.08', 'fedwire-tag', 'nacha-ccd', 'nacha-ppd'])
+      expect.arrayContaining(['pacs.008.001.08', 'pacs.008.001.08-fedwire', 'nacha-ccd', 'nacha-ppd'])
     );
+    expect(status.specs.find((spec: any) => spec.id === 'pacs.008.001.08-fedwire').perTransaction).toBe(true);
     expect(status.railSpecs.ach).toBe('nacha-ccd');
+    expect(status.railSpecs.fedwire).toBe('pacs.008.001.08-fedwire');
   });
 });

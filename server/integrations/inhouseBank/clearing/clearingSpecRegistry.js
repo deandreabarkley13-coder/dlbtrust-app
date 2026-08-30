@@ -214,36 +214,109 @@ function renderNacha(secCode) {
   };
 }
 
-// ── Fedwire tag format (FAIM core tags) ──────────────────────────────────────
+// ── Fedwire Funds Service ISO 20022 (envelope + BAH + pacs.008) ──────────────
 
-function renderFedwireTag({ instructions, batchId, createdAt, profile }) {
+/**
+ * The Fedwire Funds Service ingests ISO 20022, not the retired FAIM tag format:
+ * a message envelope carrying a head.001.001.03 business application header and
+ * the pacs.008 business message, one credit transfer per message.
+ *
+ * Two Fedwire-specific requirements are enforced here rather than left to the
+ * bank to reject: the UETR, which must be a UUID v4 and is minted when the
+ * source data carries none, and the local instrument code, which is what tells
+ * the service which kind of transfer this is (CTRC where the FAIM business
+ * function code was CTR).
+ */
+function fedwireAgent(routingNumber) {
+  return `<FinInstnId><ClrSysMmbId><ClrSysId><Cd>USABA</Cd></ClrSysId><MmbId>${escapeXml(digits(routingNumber))}</MmbId></ClrSysMmbId></FinInstnId>`;
+}
+
+function uetrFor(instruction) {
+  const declared = String(instruction.uetr || '').trim();
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(declared)
+    ? declared.toLowerCase()
+    : crypto.randomUUID();
+}
+
+function renderFedwirePacs008({ instructions, batchId, createdAt, profile }) {
   const currency = singleCurrency(instructions, 'USD');
   if (currency !== 'USD') {
     throw new ClearingSpecError('Fedwire clears USD only', 'CLEARING_SPEC_CURRENCY_UNSUPPORTED', 409);
   }
+  if (instructions.length !== 1) {
+    throw new ClearingSpecError(
+      `The Fedwire Funds Service carries one credit transfer per message; this message holds ${instructions.length}`,
+      'CLEARING_SPEC_ONE_PER_MESSAGE',
+      409
+    );
+  }
+
+  const instruction = instructions[0];
+  const fedwire = profile.fedwire || {};
+  const creditor = instruction.creditor || {};
+  const debtor = instruction.debtor || {};
   const { count, totalAmountCents } = totals(instructions);
-  const day = `${createdAt.toISOString().slice(5, 7)}${createdAt.toISOString().slice(8, 10)}`;
+  const settlementDate = (instruction.effectiveDate ? new Date(instruction.effectiveDate) : createdAt)
+    .toISOString()
+    .slice(0, 10);
+  const value = (amount(instruction) / 100).toFixed(2);
+  const endToEndId = instruction.endToEndId || instruction.reference || batchId;
+  const uetr = uetrFor(instruction);
+  // The Fedwire receiver is the bank that holds the beneficiary account, unless
+  // a correspondent is configured to receive on the trust's behalf.
+  const receiverRouting = digits(profile.receiverRouting) || digits(creditor.routingNumber);
+  const debtorAccount = debtor.accountNumber || profile.senderAccount;
 
-  const messages = instructions.map((instruction, index) => {
-    const creditor = instruction.creditor || {};
-    const debtor = instruction.debtor || {};
-    const sequence = String(index + 1).padStart(6, '0');
-    const lines = [
-      `{1500}30{1510}1000{1520}${day}${ascii(profile.senderId, 8).replace(/ /g, '')}${sequence}`,
-      `{2000}${String(amount(instruction)).padStart(12, '0')}`,
-      `{3100}${digits(profile.senderRouting).padEnd(9, ' ')}${ascii(profile.senderName, 18)}`,
-      `{3320}${ascii(instruction.endToEndId || instruction.reference || `${batchId}-${index + 1}`, 16)}`,
-      `{3400}${digits(creditor.routingNumber).padEnd(9, ' ')}${ascii(creditor.bankName || profile.receiverName, 18)}`,
-      '{3600}CTR',
-      `{4200}D${ascii(creditor.accountNumber, 34)}*${ascii(creditor.name, 35)}*`,
-      `{5000}D${ascii(debtor.accountNumber || profile.senderAccount, 34)}*${ascii(debtor.name || profile.senderName, 35)}*`,
-    ];
-    if (instruction.remittanceInformation) lines.push(`{6000}${ascii(instruction.remittanceInformation, 140)}`);
-    return lines.join('\n');
-  });
+  const payload = `<?xml version="1.0" encoding="UTF-8"?>
+<FedwireFundsIncoming xmlns="urn:fedwirefunds:incoming:v001">
+  <FedwireFundsIncomingMessage>
+    <FedwireFundsCustomerCreditTransfer>
+      <AppHdr xmlns="urn:iso:std:iso:20022:tech:xsd:head.001.001.03">
+        <Fr><FIId><FinInstnId><ClrSysMmbId><MmbId>${escapeXml(digits(profile.senderRouting))}</MmbId></ClrSysMmbId></FinInstnId></FIId></Fr>
+        <To><FIId><FinInstnId><ClrSysMmbId><MmbId>${escapeXml(receiverRouting)}</MmbId></ClrSysMmbId></FinInstnId></FIId></To>
+        <BizMsgIdr>${escapeXml(batchId)}</BizMsgIdr>
+        <MsgDefIdr>pacs.008.001.08</MsgDefIdr>
+${fedwire.businessService ? `        <BizSvc>${escapeXml(fedwire.businessService)}</BizSvc>\n` : ''}        <MktPrctc>
+          <Regy>${escapeXml(fedwire.marketPracticeRegistry)}</Regy>
+          <Id>${escapeXml(fedwire.marketPracticeId)}</Id>
+        </MktPrctc>
+        <CreDt>${createdAt.toISOString()}</CreDt>
+      </AppHdr>
+      <Document xmlns="urn:iso:std:iso:20022:tech:xsd:pacs.008.001.08">
+        <FIToFICstmrCdtTrf>
+          <GrpHdr>
+            <MsgId>${escapeXml(batchId)}</MsgId>
+            <CreDtTm>${createdAt.toISOString()}</CreDtTm>
+            <NbOfTxs>1</NbOfTxs>
+            <SttlmInf><SttlmMtd>CLRG</SttlmMtd><ClrSys><Cd>FDW</Cd></ClrSys></SttlmInf>
+          </GrpHdr>
+          <CdtTrfTxInf>
+            <PmtId>
+              <InstrId>${escapeXml(batchId)}</InstrId>
+              <EndToEndId>${escapeXml(endToEndId)}</EndToEndId>
+              <UETR>${uetr}</UETR>
+            </PmtId>
+            <PmtTpInf><LclInstrm><Prtry>${escapeXml(fedwire.localInstrument)}</Prtry></LclInstrm></PmtTpInf>
+            <IntrBkSttlmAmt Ccy="${escapeXml(currency)}">${value}</IntrBkSttlmAmt>
+            <IntrBkSttlmDt>${settlementDate}</IntrBkSttlmDt>
+            <InstdAmt Ccy="${escapeXml(currency)}">${value}</InstdAmt>
+            <ChrgBr>${escapeXml(fedwire.chargeBearer)}</ChrgBr>
+            <InstgAgt>${fedwireAgent(profile.senderRouting)}</InstgAgt>
+            <InstdAgt>${fedwireAgent(receiverRouting)}</InstdAgt>
+            <Dbtr><Nm>${escapeXml(debtor.name || profile.senderName)}</Nm></Dbtr>
+${debtorAccount ? `            <DbtrAcct><Id><Othr><Id>${escapeXml(debtorAccount)}</Id></Othr></Id></DbtrAcct>\n` : ''}            <DbtrAgt>${fedwireAgent(profile.senderRouting)}</DbtrAgt>
+            <CdtrAgt>${fedwireAgent(creditor.routingNumber)}</CdtrAgt>
+            <Cdtr><Nm>${escapeXml(creditor.name)}</Nm>${creditor.country ? `<PstlAdr><Ctry>${escapeXml(creditor.country)}</Ctry></PstlAdr>` : ''}</Cdtr>
+            <CdtrAcct><Id><Othr><Id>${escapeXml(creditor.accountNumber)}</Id></Othr></Id></CdtrAcct>
+${instruction.purposeCode ? `            <Purp><Cd>${escapeXml(instruction.purposeCode)}</Cd></Purp>\n` : ''}${instruction.remittanceInformation ? `            <RmtInf><Ustrd>${escapeXml(instruction.remittanceInformation)}</Ustrd></RmtInf>\n` : ''}          </CdtTrfTxInf>
+        </FIToFICstmrCdtTrf>
+      </Document>
+    </FedwireFundsCustomerCreditTransfer>
+  </FedwireFundsIncomingMessage>
+</FedwireFundsIncoming>
+`;
 
-  const payload = `${messages.join('\n')}\n`;
-  return { payload, currency, controls: { count, totalAmountCents } };
+  return { payload, currency, controls: { count, totalAmountCents, uetr, endToEndId, localInstrument: fedwire.localInstrument } };
 }
 
 // ── Registry ─────────────────────────────────────────────────────────────────
@@ -285,30 +358,33 @@ const SPECS = [
     ]),
   },
   {
-    id: 'fedwire-tag',
-    label: 'Fedwire funds transfer tag format (FAIM core tags)',
-    format: 'tag',
-    extension: '.fwr',
-    contentType: 'text/plain',
+    id: 'pacs.008.001.08-fedwire',
+    label: 'Fedwire Funds Service ISO 20022 customer credit transfer (envelope + head.001.001.03 + pacs.008.001.08)',
+    format: 'xml',
+    extension: '.xml',
+    contentType: 'application/xml',
     rails: ['fedwire', 'wire'],
-    render: renderFedwireTag,
+    // The service carries one credit transfer per message, so an instruction
+    // set becomes one message per payment rather than one batched file.
+    perTransaction: true,
+    render: renderFedwirePacs008,
     validate: (instructions, profile) => requireFields(instructions, [
       AMOUNT_CHECK,
       CREDITOR_NAME_CHECK,
       {
         field: 'creditor.routingNumber',
         ok: instruction => validateRouting(digits(instruction.creditor && instruction.creditor.routingNumber)),
-        message: 'Fedwire routes on the receiving bank ABA, which must pass its check digit',
+        message: 'Fedwire routes on the beneficiary bank ABA, which must pass its check digit',
       },
       {
         field: 'creditor.accountNumber',
         ok: instruction => Boolean(instruction.creditor && instruction.creditor.accountNumber),
-        message: 'tag {4200} needs the beneficiary account number',
+        message: 'the creditor account element needs the beneficiary account number',
       },
       {
         field: 'profile.senderRouting',
         ok: () => validateRouting(digits(profile && profile.senderRouting)),
-        message: 'tag {3100} needs the trust bank ABA: set CLEARING_AUTOFORMAT_SENDER_ROUTING',
+        message: 'the business application header names the sending bank by ABA: set CLEARING_AUTOFORMAT_SENDER_ROUTING',
       },
     ]),
   },
@@ -357,13 +433,14 @@ function nachaChecks(instructions, profile) {
 }
 
 function listSpecs() {
-  return SPECS.map(({ id, label: name, format, extension, contentType, rails }) => ({
+  return SPECS.map(({ id, label: name, format, extension, contentType, rails, perTransaction }) => ({
     id,
     label: name,
     format,
     extension,
     contentType,
     rails: [...rails],
+    perTransaction: Boolean(perTransaction),
   }));
 }
 
@@ -418,9 +495,39 @@ function formatToSpec({ specId, instructions, batchId, profile, createdAt = new 
   };
 }
 
+/**
+ * The files one instruction set becomes in a spec. A batched spec renders one
+ * file holding every instruction; a per-transaction spec — the Fedwire Funds
+ * Service, which carries one credit transfer per message — renders one message
+ * per payment, each with its own digest, controls and instruction.
+ */
+function formatToSpecFiles({ specId, instructions, batchId, profile, createdAt = new Date() }) {
+  const spec = getSpec(specId);
+  if (!Array.isArray(instructions) || instructions.length === 0) {
+    throw new ClearingSpecError('A clearing file needs at least one instruction', 'CLEARING_SPEC_EMPTY', 409);
+  }
+  const groups = spec.perTransaction
+    ? instructions.map(instruction => [instruction])
+    : [instructions];
+
+  return groups.map((group, index) => ({
+    ...formatToSpec({
+      specId: spec.id,
+      instructions: group,
+      batchId: groups.length > 1 ? `${batchId}-${String(index + 1).padStart(3, '0')}` : batchId,
+      profile,
+      createdAt,
+    }),
+    sequence: index + 1,
+    of: groups.length,
+    instructions: group,
+  }));
+}
+
 module.exports = {
   ClearingSpecError,
   formatToSpec,
+  formatToSpecFiles,
   getSpec,
   listSpecs,
   specIds,

@@ -553,7 +553,10 @@ router.post('/wire/direct-send/reconcile', optionalSession, guard('ledger:reconc
 // The system-to-system join between the trust's data workflows and the bank's
 // clearing pipeline: hand over whatever a workflow produced — JSON, CSV,
 // pain.001, pacs.008, a NACHA file — and the engine detects it, lifts it into
-// canonical instructions and renders the spec that rail's bank ingests.
+// canonical instructions and renders the spec that rail's bank ingests. One
+// call can produce several files: the Fedwire Funds Service carries one credit
+// transfer per ISO 20022 message, so a multi-payment input becomes one message
+// per payment, each listed in `files`.
 //
 // `detect` only reads, so it needs payments:read. Formatting produces an
 // instruction file and may deliver it, so it needs payments:initiate, and the
@@ -616,7 +619,9 @@ router.post('/wire/clearing-spec/format', optionalSession, guard('payments:initi
       profile: body.profile || {},
     });
     const includePayload = body.includePayload === true || req.query.payload === 'true';
-    const data = includePayload ? result : { ...result, payload: undefined };
+    const data = includePayload
+      ? result
+      : { ...result, files: result.files.map(file => ({ ...file, payload: undefined })) };
     res.status(201).json({ success: true, data });
   } catch (err) { sendError(res, err); }
 });
