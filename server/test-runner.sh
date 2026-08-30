@@ -27,10 +27,10 @@ check "pm2 running"       "pm2 list"                       "online"
 check "Docker running"    "docker ps | grep openach"       "openach"
 
 echo "--- API Endpoints ---" | tee -a $LOG
-check "Wallets API"       "curl -s http://localhost:3000/api/wallets"   "wallet_id"
-check "Transactions API"  "curl -s http://localhost:3000/api/transactions" "type"
-check "ACH health"        "curl -s http://localhost:3000/api/ach/health"  "openach_connected"
-check "Analytics API"     "curl -s http://localhost:3000/api/analytics/summary" "total_corpus"
+check "Wallets API"       "curl -s http://localhost:3002/api/wallets"   "wallet_id"
+check "Transactions API"  "curl -s http://localhost:3002/api/transactions" "type"
+check "ACH health"        "curl -s http://localhost:3002/api/ach/health"  "openach_connected"
+check "Analytics API"     "curl -s http://localhost:3002/api/analytics/summary" "total_corpus"
 
 echo "--- OpenACH ---" | tee -a $LOG
 if [ -n "$OPENACH_API_TOKEN" ] && [ -n "$OPENACH_API_KEY" ]; then
