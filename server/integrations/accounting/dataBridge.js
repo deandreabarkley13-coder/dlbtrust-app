@@ -414,6 +414,136 @@ class DataBridge {
   // ═══════════════════════════════════════════════════════════════════════════
 
   /**
+   * Reconcile settled stablecoin payments against the trust GL.
+   *
+   * A trust-funded stablecoin payment produces two entries: funding
+   * (Dr backing asset / Cr source) and settlement (Dr settlement account /
+   * Cr backing asset).  This flags payments missing either entry and compares
+   * the payments that are funded but not yet settled — what the on-chain
+   * balance should still be holding — with the net stablecoin activity booked
+   * on the backing account.
+   *
+   * The comparison deliberately uses journal activity attributable to the
+   * stablecoin flow rather than the account balance: the backing account is
+   * shared with other modules (e.g. module funding transfers), whose postings
+   * would otherwise register as drift.
+   */
+  static async reconcileStablecoinSettlements() {
+    var syncId = 'RECON-SCP-' + Date.now() + '-' + Math.random().toString(36).slice(2, 6).toUpperCase();
+    var discrepancies = [];
+    var checked = 0;
+    var reconciled = 0;
+    var expectedBackingBalance = 0;
+    var backingBalance = 0;
+    var assetAccount = process.env.STABLECOIN_ASSET_ACCOUNT || '1210';
+
+    try {
+      var payments = await pool.query(`
+        SELECT p.id, p.status, p.amount_cents, p.total_cents, p.tx_hash, p.destination_wallet,
+               p.source_type, p.source_account_id,
+               (SELECT entry_id FROM trust_journal_entries je
+                 WHERE je.reference_type = 'stablecoin_payment' AND je.reference_id = p.id
+                   AND je.status = 'posted' LIMIT 1) AS funding_entry_id,
+               (SELECT entry_id FROM trust_journal_entries je
+                 WHERE je.reference_type = 'stablecoin_settlement' AND je.reference_id = p.id
+                   AND je.status = 'posted' LIMIT 1) AS settlement_entry_id
+        FROM stablecoin_payments p
+        WHERE p.source_type IN ('trust', 'trust_account')
+        ORDER BY p.created_at ASC
+      `);
+
+      for (var i = 0; i < payments.rows.length; i++) {
+        var p = payments.rows[i];
+        checked++;
+        var amount = parseInt(p.amount_cents, 10) / 100;
+        var missing = [];
+
+        if (['approved', 'settled'].indexOf(p.status) >= 0 && !p.funding_entry_id) missing.push('funding');
+        if (p.status === 'settled' && !p.settlement_entry_id) missing.push('settlement');
+
+        if (missing.length) {
+          var discId = 'DISC-SCP-' + p.id;
+          discrepancies.push({
+            discrepancyId: discId,
+            type: 'stablecoin_settlement_unposted',
+            paymentId: p.id,
+            status: p.status,
+            txHash: p.tx_hash,
+            missing: missing,
+            amount: amount,
+          });
+          // Keyed on the payment id so one unposted payment does not supersede another
+          await DataBridge._logDiscrepancy(discId, 'stablecoin_settlement_unposted', 'stablecoin_gateway',
+            'trust_accounting', p.id, amount, 0, amount, amount > 10000 ? 'critical' : 'high');
+        } else {
+          reconciled++;
+          await pool.query(`
+            UPDATE data_bridge_discrepancies
+            SET resolved = TRUE, resolved_at = NOW(), resolution = 'auto_resolved_posted'
+            WHERE discrepancy_type = 'stablecoin_settlement_unposted'
+              AND account_code = $1 AND resolved = FALSE
+          `, [p.id]);
+        }
+
+        // Funded but not yet disbursed: the backing asset should still carry the full funded total
+        if (p.status === 'approved' && p.funding_entry_id) {
+          expectedBackingBalance += parseInt(p.total_cents, 10) / 100;
+        }
+      }
+
+      var backing = await pool.query(`
+        SELECT COALESCE(SUM(l.debit_amount), 0) - COALESCE(SUM(l.credit_amount), 0) AS net
+        FROM trust_journal_lines l
+        JOIN trust_journal_entries je ON je.entry_id = l.entry_id
+        WHERE l.account_code = $1
+          AND je.status = 'posted'
+          AND je.reference_type IN ('stablecoin_payment', 'stablecoin_settlement')
+      `, [assetAccount]);
+      backingBalance = backing.rows.length ? parseFloat(backing.rows[0].net) : 0;
+
+      var drift = backingBalance - expectedBackingBalance;
+      if (Math.abs(drift) > 0.01) {
+        var driftId = 'DISC-SCP-BACKING-' + Date.now();
+        discrepancies.push({
+          discrepancyId: driftId,
+          type: 'stablecoin_backing_drift',
+          accountCode: assetAccount,
+          amountA: backingBalance,
+          amountB: expectedBackingBalance,
+          difference: drift,
+        });
+        await DataBridge._logDiscrepancy(driftId, 'stablecoin_backing_drift', 'trust_accounting',
+          'stablecoin_gateway', assetAccount, backingBalance, expectedBackingBalance, drift,
+          Math.abs(drift) > 10000 ? 'critical' : 'normal');
+      } else {
+        await pool.query(`
+          UPDATE data_bridge_discrepancies
+          SET resolved = TRUE, resolved_at = NOW(), resolution = 'auto_resolved_balanced'
+          WHERE discrepancy_type = 'stablecoin_backing_drift' AND resolved = FALSE
+        `);
+      }
+    } catch (err) {
+      discrepancies.push({ type: 'error', error: err.message });
+    }
+
+    await DataBridge._logSync(syncId, 'stablecoin_settlement_reconciliation', 'stablecoin_gateway',
+      'trust_accounting', checked, reconciled, checked - reconciled, discrepancies);
+
+    return {
+      syncId: syncId,
+      checked: checked,
+      reconciled: reconciled,
+      assetAccount: assetAccount,
+      basis: 'stablecoin_journal_activity',
+      backingBalance: backingBalance,
+      expectedBackingBalance: expectedBackingBalance,
+      difference: backingBalance - expectedBackingBalance,
+      isReconciled: discrepancies.length === 0,
+      discrepancies: discrepancies,
+    };
+  }
+
+  /**
    * Reconcile cash_accounts balances with trust_accounts cash balance.
    * Cash engine tracks balances independently — this detects drift.
    */
