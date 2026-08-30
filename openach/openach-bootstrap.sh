@@ -6,7 +6,7 @@
 #
 # Required:
 #   OPENACH_ADMIN_LOGIN, OPENACH_ADMIN_PASSWORD, OPENACH_ADMIN_EMAIL
-#   OPENACH_ORIGINATOR_NAME       legal name on the ACH company/batch header
+#   OPENACH_ORIGINATOR_NAME       company name on the ACH batch header (max 16)
 #   OPENACH_ORIGINATOR_ID         company identification (EIN, 10 chars)
 #   OPENACH_ODFI_ROUTING          9-digit routing number of the ODFI
 #   OPENACH_SETTLEMENT_ACCOUNT    settlement account number at the ODFI
@@ -32,6 +32,13 @@ require OPENACH_ADMIN_LOGIN OPENACH_ADMIN_PASSWORD OPENACH_ADMIN_EMAIL \
         OPENACH_ORIGINATOR_NAME OPENACH_ORIGINATOR_ID OPENACH_ODFI_ROUTING \
         OPENACH_SETTLEMENT_ACCOUNT
 
+# The company name field of a NACHA batch header is 16 characters, and OpenACH
+# validates the originator against that rather than truncating it.
+if [ "${#OPENACH_ORIGINATOR_NAME}" -gt 16 ]; then
+  echo "openach-bootstrap: OPENACH_ORIGINATOR_NAME must be 16 characters or fewer (got ${#OPENACH_ORIGINATOR_NAME})" >&2
+  exit 1
+fi
+
 DB_URL="${OPENACH_DATABASE_URL:-${DATABASE_URL:-}}"
 require DB_URL
 
@@ -55,7 +62,7 @@ if [ -z "$user_id" ]; then
     --user_password="$OPENACH_ADMIN_PASSWORD" \
     --user_email_address="$OPENACH_ADMIN_EMAIL" \
     --user_first_name="${OPENACH_ADMIN_FIRST_NAME:-DLB}" \
-    --user_last_name="${OPENACH_ADMIN_LAST_NAME:-Trust}" >/dev/null
+    --user_last_name="${OPENACH_ADMIN_LAST_NAME:-Trust}"
   user_id="$(sql "SELECT user_id FROM \"user\" WHERE user_login = '$OPENACH_ADMIN_LOGIN'")"
 fi
 [ -n "$user_id" ] || { echo "openach-bootstrap: user was not created" >&2; exit 1; }

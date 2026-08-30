@@ -24,6 +24,16 @@ if [ -z "${OPENACH_ENCRYPTION_KEY:-}" ] || [ -z "${OPENACH_VALIDATION_KEY:-}" ];
   echo "openach: OPENACH_ENCRYPTION_KEY and OPENACH_VALIDATION_KEY are required" >&2
   exit 1
 fi
+# Yii's CSecurityManager takes the key as the raw rijndael key, so any other
+# length only fails later, when a record with an encrypted column is saved.
+key_length="${#OPENACH_ENCRYPTION_KEY}"
+case "$key_length" in
+  16|24|32) ;;
+  *)
+    echo "openach: OPENACH_ENCRYPTION_KEY must be 16, 24 or 32 characters (got $key_length) — e.g. openssl rand -hex 16" >&2
+    exit 1
+    ;;
+esac
 
 # postgres://user:pass@host:port/dbname[?params]
 proto_removed="${DB_URL#*://}"
