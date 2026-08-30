@@ -46,6 +46,7 @@ const { DualLedgerEngine } = require('./dualLedgerEngine');
 const { VirtualAccountManager } = require('./virtualAccountManager');
 const { ZeroTrustGateway } = require('./zeroTrustGateway');
 const { Iso20022 } = require('./iso20022');
+const { TrustAccountingEngine } = require('../accounting/trustAccountingEngine');
 
 const OPEN_STATUSES = Object.freeze(['received', 'pending_approval', 'approved', 'dispatched']);
 
@@ -166,7 +167,31 @@ class InHouseBankEngine {
       DualLedgerEngine.ensureTables(),
       ZeroTrustGateway.ensureTables(),
     ]);
+    await this.ensureDepositAccount();
     return true;
+  }
+
+  /**
+   * Deposits into the family bank are money the trust holds for someone else,
+   * so they need a liability account to sit against. Create it once if the
+   * chart of accounts does not carry one yet.
+   */
+  static async ensureDepositAccount() {
+    const config = getConfig();
+    if (!config.mirrorToGeneralLedger) return null;
+    try {
+      const existing = await TrustAccountingEngine.getAccount(config.glDepositAccountCode);
+      if (existing) return existing;
+      return await TrustAccountingEngine.createAccount({
+        accountCode: config.glDepositAccountCode,
+        accountName: `${config.bankName} — Account Holder Deposits`,
+        accountType: 'liability',
+        description: 'Balances the in-house bank owes to its virtual account holders, held inside the trust settlement account.',
+      });
+    } catch (err) {
+      console.warn('[inhouse-bank] deposit liability account unavailable:', err.message);
+      return null;
+    }
   }
 
   static async get(id) {
@@ -544,10 +569,10 @@ class InHouseBankEngine {
   // ── Funding ────────────────────────────────────────────────────────────────
 
   /**
-   * Allocate value that already sits in the trust settlement account to a
-   * virtual account, or hand it back. This is a sub-ledger movement inside the
-   * bank, so it is deliberately not mirrored to the GL — the cash never moved
-   * and mirroring it would double count the same dollars.
+   * Take value into a virtual account, or hand it back out. The cash lands in
+   * the settlement account and the bank owes it to the account holder, so the
+   * GL mirror moves both sides: without it the virtual pool would drift away
+   * from the settlement account by every deposit ever made.
    */
   static async fund({ accountRef, amountCents, direction = 'credit', memo = null, actor = 'operator' } = {}) {
     await this.ensureTables();
@@ -558,9 +583,11 @@ class InHouseBankEngine {
     if (!['credit', 'debit'].includes(direction)) {
       throw new InHouseBankError('Funding direction must be credit or debit', 'IHB_BAD_DIRECTION', 400);
     }
+    const config = getConfig();
     const account = direction === 'credit'
       ? await VirtualAccountManager.credit({ ref: accountRef, amountCents: amount })
       : await VirtualAccountManager.debit({ ref: accountRef, amountCents: amount });
+    const dollars = amount / 100;
     await DualLedgerEngine.record({
       paymentId: null,
       vaId: account.vaId,
@@ -569,9 +596,18 @@ class InHouseBankEngine {
       amountCents: amount,
       balanceAfterCents: account.balanceCents,
       rail: 'internal_book',
-      memo: memo || `${direction === 'credit' ? 'Allocation to' : 'Withdrawal from'} ${account.name} against the settlement account`,
+      memo: memo || `${direction === 'credit' ? 'Deposit to' : 'Withdrawal from'} ${account.name} against the settlement account`,
       postedBy: actor,
-      glLines: null,
+      description: `In-house bank ${direction === 'credit' ? 'deposit to' : 'withdrawal from'} ${account.accountNumber}`,
+      glLines: direction === 'credit'
+        ? [
+          { accountCode: config.settlementAccountCode, debitAmount: dollars, creditAmount: 0 },
+          { accountCode: config.glDepositAccountCode, debitAmount: 0, creditAmount: dollars },
+        ]
+        : [
+          { accountCode: config.glDepositAccountCode, debitAmount: dollars, creditAmount: 0 },
+          { accountCode: config.settlementAccountCode, debitAmount: 0, creditAmount: dollars },
+        ],
     });
     await DualLedgerEngine.appendEvent({
       eventType: `account.${direction === 'credit' ? 'funded' : 'defunded'}`,
