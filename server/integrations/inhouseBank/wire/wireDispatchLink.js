@@ -21,6 +21,12 @@
  *   3. reconcile  at most once per reconcile interval, raise exceptions for
  *                 anything that has missed its SLA.
  *
+ * When Direct Send is configured to run automatically it takes the rails it
+ * clears off this link's hands: those dispatched payments go out batched in a
+ * clearing file pushed straight at the bank's pipeline, and the link only
+ * transmits individually what Direct Send does not claim. Both paths share the
+ * one idempotency vault, so a payment cannot be carried by both.
+ *
  * Nothing here can move money or invent an outcome. Transmission is guarded by
  * the idempotency vault (one file per payment, ever), settlement still comes
  * only from a bank advice through `InHouseBankEngine.confirm`, and a payment
@@ -32,6 +38,17 @@
 const pool = require('../../bonds/pgPool');
 const { getWireChannelConfig, wireChannelReadiness } = require('./wireHostToHostConfig');
 const { WireHostToHostEngine } = require('./wireHostToHostEngine');
+const { WireDirectSendEngine } = require('./wireDirectSendEngine');
+const { getDirectSendConfig } = require('./wireDirectSendConfig');
+
+/**
+ * Whether the automatic Direct Send clearing path owns this rail. When it does,
+ * the individual host-to-host file path leaves those payments alone.
+ */
+function directSendOwns(rail) {
+  const config = getDirectSendConfig();
+  return Boolean(config.enabled && config.autoSend && rail && config.rails.includes(rail));
+}
 
 function intEnv(name, fallback, { min = 1, max = Number.MAX_SAFE_INTEGER } = {}) {
   const value = Number(process.env[name]);
@@ -137,7 +154,28 @@ class WireDispatchLink {
       failed: [],
       advices: null,
       reconciliation: null,
+      directSend: null,
     };
+
+    // Direct Send first: it clears whole files, and anything it takes is no
+    // longer a candidate for an individual transmission below.
+    const directSendConfig = getDirectSendConfig();
+    if (directSendConfig.enabled && directSendConfig.autoSend) {
+      try {
+        const cleared = await WireDirectSendEngine.directSend({ actor, limit: limit || config.batchSize });
+        report.directSend = {
+          assembled: cleared.assembled,
+          sent: Boolean(cleared.sent),
+          reason: cleared.reason,
+          batchId: cleared.batch ? cleared.batch.batchId : null,
+          filename: cleared.batch ? cleared.batch.filename : null,
+          itemCount: cleared.batch ? cleared.batch.itemCount : 0,
+          skipped: cleared.skipped || [],
+        };
+      } catch (err) {
+        report.directSend = { assembled: false, sent: false, error: err.message, code: err.code || null };
+      }
+    }
 
     if (!channel.ready) {
       report.note = `The wire channel is not configured, so nothing was transmitted: ${channel.blockers.join('; ')}`;
@@ -146,7 +184,8 @@ class WireDispatchLink {
       return report;
     }
 
-    const candidates = await this.pending({ limit: limit || config.batchSize });
+    const candidates = (await this.pending({ limit: limit || config.batchSize }))
+      .filter(candidate => !directSendOwns(candidate.rail));
     report.candidates = candidates.length;
 
     for (const candidate of candidates) {
@@ -187,6 +226,11 @@ class WireDispatchLink {
       } catch (err) {
         report.reconciliation = { error: err.message };
       }
+      try {
+        report.directSendReconciliation = await WireDirectSendEngine.reconcile({ actor });
+      } catch (err) {
+        report.directSendReconciliation = { error: err.message };
+      }
     }
 
     report.finishedAt = new Date().toISOString();
@@ -203,12 +247,18 @@ class WireDispatchLink {
   static async kick(paymentId, { actor = 'wire-link' } = {}) {
     const config = getLinkConfig();
     if (!config.enabled || !config.transmitOnDispatch) return { attempted: false, reason: 'transmit-on-dispatch is off' };
-    if (!wireChannelReadiness().ready) return { attempted: false, reason: 'wire channel is not configured' };
     try {
       const [candidate] = (await this.pending({ limit: 100 })).filter(row => row.paymentId === paymentId);
       if (!candidate) return { attempted: false, reason: 'payment is not an untransmitted wire-rail dispatch' };
+      if (directSendOwns(candidate.rail)) {
+        // Direct Send clears this rail: the payment goes out in its own
+        // clearing file, pushed straight at the bank pipeline.
+        const cleared = await WireDirectSendEngine.directSend({ actor, paymentIds: [paymentId] });
+        return { attempted: true, channel: 'direct-send', ...cleared };
+      }
+      if (!wireChannelReadiness().ready) return { attempted: false, reason: 'wire channel is not configured' };
       const result = await WireHostToHostEngine.transmit(paymentId, { actor });
-      return { attempted: true, ...result };
+      return { attempted: true, channel: 'host-to-host', ...result };
     } catch (err) {
       await WireHostToHostEngine.raiseException({
         kind: 'transmission_blocked',
@@ -305,6 +355,7 @@ class WireDispatchLink {
       config,
       running: Boolean(this._timer),
       channel: wireChannelReadiness(),
+      directSend: WireDirectSendEngine.readiness(),
       awaitingTransmission: pending.length,
       pending: pending.slice(0, 25),
       lastRuns: runs.rows.map(row => ({
