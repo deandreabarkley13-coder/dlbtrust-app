@@ -176,6 +176,7 @@
     { key:'series-os', name:'Master Trust / Series OS', desc:'Identify every reserve asset and ring-fence it into one series, so a beneficiary series can only draw on its own assets', stat:'', endpoint:null, action:'openSeriesOsPanel' },
     { key:'capital-transfer-os', name:'Capital Transfer OS', desc:'Convert reserve assets into spendable funds inside a series: sell or pledge collateral, redeem digital assets, sweep custodian cash, all under dual trustee control', stat:'', endpoint:null, action:'openCapitalTransferPanel' },
     { key:'drawdown-os', name:'Principal & Income Drawdown OS', desc:'Trust accounting for drawdowns: allocate every receipt to principal or income, authorize what a beneficiary may draw against corpus, and fund it only from attested cash', stat:'', endpoint:null, action:'openDrawdownPanel' },
+    { key:'inhouse-bank', name:'PTC In-House Family Bank', desc:'One payment API for the family bank: idempotent ingress, policy and dual authorization, least-cost rail selection against the liquidity matrix, virtual accounts, ISO 20022, and a dual ledger that mirrors every posting to the trust GL', stat:'', endpoint:null, action:'openInHouseBankPanel' },
     { key:'reserve-vault', name:'Reserve Vault (CDP)', desc:'Tokenize ledger/module reserves into a vault stablecoin position and quote swaps to canonical assets', stat:'', endpoint:null, action:'openReserveVaultPanel' },
     { key:'treasury-on-ramp', name:'Treasury On-Ramp Bridge', desc:'Wire core-banking fiat to an on-ramp, receive DAI/USDC, and redeem internal tokens 1:1', stat:'', endpoint:null, action:'openTreasuryOnRampPanel' },
     { key:'dex-aggregator', name:'DEX Aggregator & V3', desc:'Multi-source DEX aggregator and Uniswap V3 canonical pair swaps', stat:'', endpoint:null, action:'openDexAggregatorPanel' },
@@ -3322,6 +3323,177 @@
       if (!r.success) throw new Error(r.error || 'obligation failed');
       wrap.innerHTML = '<div class="status ok">Recorded ' + htmlEscape(r.data.obligation_id) + ' — it reduces the series available balance until settled</div>';
       seriesLoad();
+    } catch(e) { wrap.innerHTML = '<div class="status err">' + e.message + '</div>'; }
+  }
+
+  // ─── PTC In-House Family Bank panel ─────────────────────────────────────────
+  function openInHouseBankPanel() {
+    const panel = el('module-panel');
+    const body = el('panel-body');
+    el('panel-title').textContent = 'PTC In-House Family Bank';
+    panel.classList.add('active');
+    body.innerHTML = '<div class="muted" style="margin-bottom:12px;">Every payment walks one pipeline: the instruction is canonicalized and its idempotency key reserved, policy decides allow / review / deny, the router picks the cheapest rail that still meets the requested speed out of the liquidity matrix, and the funds are held the moment the payment is admitted. An on-us transfer settles immediately against the pooled settlement account; an external payment stops at dispatched until the rail returns its own reference.</div>' +
+      '<div class="approval-actions"><button class="btn" onclick="ihbDashboard()">Refresh Bank</button><button class="btn" onclick="ihbAccounts()">Virtual Accounts</button><button class="btn" onclick="ihbPayments()">Payment Pipeline</button><button class="btn" onclick="ihbReconcile()">Reconcile Ledgers</button><button class="btn" onclick="ihbVerifyChain()">Verify Event Log</button></div>' +
+      '<div id="ihb-overview" style="margin-top:8px;font-size:12px;"></div>' +
+      '<h3 style="font-size:14px;margin:16px 0 8px;">Open a Virtual Account</h3>' +
+      '<div class="token-bar"><input id="ihb-va-name" placeholder="account name (e.g. DeAndrea Barkley — household)" /><select id="ihb-va-type"><option value="family_member">family_member</option><option value="entity">entity</option><option value="series">series</option><option value="expense">expense</option><option value="escrow">escrow</option><option value="reserve">reserve</option><option value="settlement">settlement</option></select></div>' +
+      '<div class="token-bar"><input id="ihb-va-owner" placeholder="owner reference (beneficiary or entity id)" /><input id="ihb-va-series" placeholder="series reference (optional)" /></div>' +
+      '<div class="approval-actions"><button class="btn" onclick="ihbOpenAccount()">Open Account</button></div>' +
+      '<div id="ihb-va-status" style="margin-top:8px;"></div>' +
+      '<h3 style="font-size:14px;margin:16px 0 8px;">Initiate a Payment</h3>' +
+      '<div class="token-bar"><input id="ihb-pay-debtor" placeholder="debtor virtual account number" /><input id="ihb-pay-amount" placeholder="amount (USD)" /></div>' +
+      '<div class="token-bar"><input id="ihb-pay-creditor" placeholder="creditor name" /><input id="ihb-pay-account" placeholder="creditor account (a virtual account number stays on-us)" /></div>' +
+      '<div class="token-bar"><input id="ihb-pay-routing" placeholder="creditor routing number (external only)" /><select id="ihb-pay-speed"><option value="standard">standard</option><option value="same_day">same_day</option><option value="express">express</option><option value="instant">instant</option></select></div>' +
+      '<div class="token-bar"><input id="ihb-pay-memo" placeholder="remittance information" /><input id="ihb-pay-key" placeholder="idempotency key (blank = generated)" /></div>' +
+      '<div class="approval-actions"><button class="btn" onclick="ihbQuote()">Quote Route (no payment)</button><button class="btn" onclick="ihbSubmit()">Submit Payment</button></div>' +
+      '<div id="ihb-pay-status" style="margin-top:8px;"></div>' +
+      '<h3 style="font-size:14px;margin:16px 0 8px;">Approve / Confirm</h3>' +
+      '<div class="token-bar"><input id="ihb-act-id" placeholder="payment id" /><input id="ihb-act-reference" placeholder="settlement reference from the rail" /></div>' +
+      '<div class="approval-actions"><button class="btn" onclick="ihbApprove()">Approve</button><button class="btn" onclick="ihbReject()">Reject</button><button class="btn" onclick="ihbConfirm(\'settled\')">Confirm Settled</button><button class="btn" onclick="ihbConfirm(\'returned\')">Record Return</button></div>' +
+      '<div id="ihb-act-status" style="margin-top:8px;"></div>' +
+      '<div id="ihb-detail" style="margin-top:16px;font-size:12px;"></div>';
+    ihbDashboard();
+    ihbPayments();
+  }
+
+  async function ihbDashboard() {
+    const wrap = el('ihb-overview');
+    wrap.innerHTML = '<div class="muted">Reading the bank…</div>';
+    try {
+      const r = await api('/api/inhouse-bank/dashboard');
+      const d = r.data;
+      const rails = (d.liquidityMatrix || []).filter(x => x.enabled)
+        .map(x => htmlEscape(x.name) + ' ' + (x.availableCents === null ? 'unattested' : '$' + (x.availableCents / 100).toFixed(2)))
+        .join(' · ');
+      let html = '<div class="status ' + (d.readiness.ready ? 'ok' : 'err') + '">' + htmlEscape(d.bank.name) + ' (' + htmlEscape(d.bank.bic) + ') — ' + htmlEscape(d.readiness.note || (d.readiness.ready ? 'ready' : 'not ready')) + '</div>';
+      html += '<div style="margin-top:8px;">Virtual pool: $' + htmlEscape(d.virtualAccounts.virtualBalance) + ' across ' + d.virtualAccounts.accounts + ' account(s) — ' + htmlEscape(d.virtualAccounts.note) + '</div>';
+      html += '<div style="margin-top:4px;">Awaiting approval: ' + d.payments.awaitingApproval + ' · In flight: ' + d.payments.inFlight + '</div>';
+      html += '<div style="margin-top:4px;">Rail liquidity: ' + (rails || 'no rail has attested liquidity yet') + '</div>';
+      html += '<div style="margin-top:4px;">Event log: ' + (d.eventChain.intact ? 'intact over ' + d.eventChain.events + ' event(s)' : 'BROKEN — ' + htmlEscape(d.eventChain.note || '')) + '</div>';
+      html += '<div style="margin-top:4px;">Ledgers: ' + (d.reconciliation.balanced ? 'virtual balances agree with postings' : 'BREAK — ' + htmlEscape(d.reconciliation.note || '')) + '</div>';
+      wrap.innerHTML = html;
+    } catch(e) { wrap.innerHTML = '<div class="status err">' + e.message + '</div>'; }
+  }
+
+  async function ihbAccounts() {
+    const wrap = el('ihb-detail');
+    wrap.innerHTML = '<div class="muted">Loading virtual accounts…</div>';
+    try {
+      const r = await api('/api/inhouse-bank/accounts');
+      const rows = (r.data || []).map(a =>
+        '<tr><td>' + htmlEscape(a.accountNumber) + '</td><td>' + htmlEscape(a.name) + '</td><td>' + htmlEscape(a.accountType) + '</td><td>' + htmlEscape(a.status) + '</td><td>$' + htmlEscape(a.balance) + '</td><td>$' + htmlEscape(a.available) + '</td></tr>');
+      wrap.innerHTML = rows.length
+        ? '<table class="tbl"><tr><th>Account</th><th>Name</th><th>Type</th><th>Status</th><th>Balance</th><th>Available</th></tr>' + rows.join('') + '</table>'
+        : '<div class="muted">No virtual account has been opened yet.</div>';
+    } catch(e) { wrap.innerHTML = '<div class="status err">' + e.message + '</div>'; }
+  }
+
+  async function ihbPayments() {
+    const wrap = el('ihb-detail');
+    wrap.innerHTML = '<div class="muted">Loading payments…</div>';
+    try {
+      const r = await api('/api/inhouse-bank/payments?limit=25');
+      const rows = (r.data || []).map(p =>
+        '<tr><td>' + htmlEscape(p.paymentId) + '</td><td>' + htmlEscape(p.status) + '</td><td>' + htmlEscape(p.rail || '—') + '</td><td>$' + htmlEscape(p.amount) + '</td><td>' + htmlEscape((p.creditor && p.creditor.name) || '—') + '</td><td>' + p.approvals.length + '/' + p.requiredApprovals + '</td></tr>');
+      wrap.innerHTML = rows.length
+        ? '<table class="tbl"><tr><th>Payment</th><th>Status</th><th>Rail</th><th>Amount</th><th>Creditor</th><th>Approvals</th></tr>' + rows.join('') + '</table>'
+        : '<div class="muted">No payment has been submitted yet.</div>';
+    } catch(e) { wrap.innerHTML = '<div class="status err">' + e.message + '</div>'; }
+  }
+
+  async function ihbOpenAccount() {
+    const wrap = el('ihb-va-status');
+    wrap.innerHTML = '<div class="muted">Opening…</div>';
+    try {
+      const r = await api('/api/inhouse-bank/accounts', { method: 'POST', body: JSON.stringify({
+        name: el('ihb-va-name').value,
+        accountType: el('ihb-va-type').value,
+        ownerRef: el('ihb-va-owner').value || undefined,
+        seriesRef: el('ihb-va-series').value || undefined,
+      }) });
+      wrap.innerHTML = '<div class="status ok">Opened ' + htmlEscape(r.data.accountNumber) + ' (' + htmlEscape(r.data.virtualIban) + ')</div>';
+      ihbAccounts();
+    } catch(e) { wrap.innerHTML = '<div class="status err">' + e.message + '</div>'; }
+  }
+
+  function ihbInstruction() {
+    return {
+      debtorAccount: el('ihb-pay-debtor').value,
+      amount: el('ihb-pay-amount').value,
+      requestedSpeed: el('ihb-pay-speed').value,
+      remittanceInformation: el('ihb-pay-memo').value || undefined,
+      creditor: {
+        name: el('ihb-pay-creditor').value,
+        accountNumber: el('ihb-pay-account').value || undefined,
+        routingNumber: el('ihb-pay-routing').value || undefined,
+      },
+    };
+  }
+
+  async function ihbQuote() {
+    const wrap = el('ihb-pay-status');
+    wrap.innerHTML = '<div class="muted">Quoting…</div>';
+    try {
+      const r = await api('/api/inhouse-bank/routing/quote', { method: 'POST', body: JSON.stringify(ihbInstruction()) });
+      const d = r.data;
+      let html = '<div class="status ' + (d.policy.decision === 'deny' ? 'err' : 'ok') + '">Policy: ' + htmlEscape(d.policy.decision) + ' — ' + htmlEscape(d.policy.note) + '</div>';
+      if (d.routing) html += '<div style="margin-top:6px;">Route: ' + htmlEscape(d.routing.railName) + ' — ' + htmlEscape(d.routing.note) + '</div>';
+      wrap.innerHTML = html;
+    } catch(e) { wrap.innerHTML = '<div class="status err">' + e.message + '</div>'; }
+  }
+
+  async function ihbSubmit() {
+    const wrap = el('ihb-pay-status');
+    wrap.innerHTML = '<div class="muted">Submitting…</div>';
+    try {
+      const key = el('ihb-pay-key').value || ('ihb-ui-' + Date.now() + '-' + Math.random().toString(16).slice(2, 10));
+      const r = await api('/api/inhouse-bank/payments', {
+        method: 'POST',
+        headers: { 'Idempotency-Key': key },
+        body: JSON.stringify(ihbInstruction()),
+      });
+      const p = r.data.payment;
+      const note = r.data.replay ? 'Replay of an earlier submission; nothing new was created.' : (r.data.routing ? r.data.routing.note : (r.data.policy ? r.data.policy.note : ''));
+      wrap.innerHTML = '<div class="status ' + (p.status === 'rejected' ? 'err' : 'ok') + '">' + htmlEscape(p.paymentId) + ' is ' + htmlEscape(p.status) + ' — ' + htmlEscape(note || '') + '</div>';
+      el('ihb-act-id').value = p.paymentId;
+      ihbPayments();
+      ihbDashboard();
+    } catch(e) { wrap.innerHTML = '<div class="status err">' + e.message + '</div>'; }
+  }
+
+  async function ihbAction(path, body) {
+    const wrap = el('ihb-act-status');
+    wrap.innerHTML = '<div class="muted">Working…</div>';
+    try {
+      const id = el('ihb-act-id').value;
+      if (!id) throw new Error('A payment id is required');
+      const r = await api('/api/inhouse-bank/payments/' + encodeURIComponent(id) + path, { method: 'POST', body: JSON.stringify(body || {}) });
+      wrap.innerHTML = '<div class="status ok">' + htmlEscape(r.data.paymentId) + ' is now ' + htmlEscape(r.data.status) + '</div>';
+      ihbPayments();
+      ihbDashboard();
+    } catch(e) { wrap.innerHTML = '<div class="status err">' + e.message + '</div>'; }
+  }
+
+  function ihbApprove() { return ihbAction('/approve', {}); }
+  function ihbReject() { return ihbAction('/reject', {}); }
+  function ihbConfirm(outcome) { return ihbAction('/confirm', { outcome: outcome, reference: el('ihb-act-reference').value || undefined }); }
+
+  async function ihbReconcile() {
+    const wrap = el('ihb-detail');
+    wrap.innerHTML = '<div class="muted">Reconciling…</div>';
+    try {
+      const r = await api('/api/inhouse-bank/ledger/reconcile');
+      wrap.innerHTML = '<div class="status ' + (r.data.balanced ? 'ok' : 'err') + '">' + htmlEscape(r.data.note) + '</div>' +
+        '<pre style="margin-top:8px;white-space:pre-wrap;">' + htmlEscape(JSON.stringify(r.data, null, 2)) + '</pre>';
+    } catch(e) { wrap.innerHTML = '<div class="status err">' + e.message + '</div>'; }
+  }
+
+  async function ihbVerifyChain() {
+    const wrap = el('ihb-detail');
+    wrap.innerHTML = '<div class="muted">Verifying the event log…</div>';
+    try {
+      const r = await api('/api/inhouse-bank/events/verify');
+      wrap.innerHTML = '<div class="status ' + (r.data.intact ? 'ok' : 'err') + '">' + htmlEscape(r.data.note || (r.data.intact ? 'intact' : 'broken')) + '</div>';
     } catch(e) { wrap.innerHTML = '<div class="status err">' + e.message + '</div>'; }
   }
 
