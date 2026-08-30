@@ -151,6 +151,9 @@ try { app.use('/api/os', require(path.join(HD, 'server', 'routes', 'os'))); cons
 // Payer OS — the trust as originator: credit pushes to registered settlement accounts, direct deposit payees and vendors
 try { app.use('/api/payer', require(path.join(HD, 'server', 'routes', 'payer'))); console.log('[payer-os] loaded'); } catch(e) { console.warn('[payer-os]', e.message); }
 
+// Wealth Back Office OS — one floor over treasury, core banking, bookkeeping, trust accounting, payouts, tax, fixed income, CRM, scheduling and messaging
+try { app.use('/api/wealth-os', require(path.join(HD, 'server', 'routes', 'wealthOs'))); console.log('[wealth-back-office] loaded'); } catch(e) { console.warn('[wealth-back-office]', e.message); }
+
 // In-House Bank — PTC family bank orchestration: ingress/idempotency, governance, smart routing, dual ledger, ISO 20022, zero trust
 try { app.use('/api/inhouse-bank', require(path.join(HD, 'server', 'routes', 'inhouseBank'))); console.log('[inhouse-bank] loaded'); } catch(e) { console.warn('[inhouse-bank]', e.message); }
 try { app.use('/api/camel', require(path.join(HD, 'server', 'routes', 'camel'))); console.log('[camel] loaded'); } catch(e) { console.warn('[camel]', e.message); }
