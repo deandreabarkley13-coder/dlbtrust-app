@@ -20,6 +20,11 @@
  *
  *   • Detection chooses the input parser, configuration chooses the output
  *     spec. Inbound bytes can never redirect a file at a different bank.
+ *   • The money comes from the Trust Operating Account or from the trust
+ *     account of one named beneficiary, and from nothing else. Which one is
+ *     resolved against the trust's own ledgers before anything is rendered, so
+ *     a column in an inbound file cannot draw a wire on bond proceeds, a
+ *     reserve or an escrow: see `fundingSourceRegistry`.
  *   • Formatting and sending are separate. A formatted file is bytes, a digest,
  *     a manifest and an archive entry; it reaches a bank only when the caller
  *     asks for delivery *and* the Direct Send channel is itself ready, and it
@@ -44,6 +49,7 @@ const path = require('path');
 const { getClearingSpecConfig, clearingSpecReadiness } = require('./clearingSpecConfig');
 const { formatToSpecFiles, listSpecs, specIds, ClearingSpecError } = require('./clearingSpecRegistry');
 const { normalize, detectFormat, ClearingIntakeError } = require('./clearingIntakeDetector');
+const { FundingSourceRegistry } = require('./fundingSourceRegistry');
 const { signClearingFile } = require('../wire/wireClearingFile');
 const { getDirectSendConfig, directSendReadiness } = require('../wire/wireDirectSendConfig');
 const { sendClearingFile } = require('../wire/wireDirectSendTransport');
@@ -156,7 +162,7 @@ function summarise(instructions) {
   };
 }
 
-function buildManifest({ batchId, filename, formatted, instructions, detection, rail, signature, profile, source }) {
+function buildManifest({ batchId, filename, formatted, instructions, detection, rail, signature, profile, source, funding }) {
   return {
     batchId,
     filename,
@@ -165,6 +171,9 @@ function buildManifest({ batchId, filename, formatted, instructions, detection, 
     rail,
     createdAt: formatted.createdAt,
     source: source || null,
+    // What the file is drawn on, kept with the file because the manifest is the
+    // audit record of a payment's funding as well as of its bytes.
+    funding: funding || null,
     detectedFormat: detection.format,
     detectionConfidence: detection.confidence,
     sender: profile.senderId,
@@ -183,6 +192,8 @@ function buildManifest({ batchId, filename, formatted, instructions, detection, 
       creditorName: (instruction.creditor && instruction.creditor.name) || null,
       creditorRouting: (instruction.creditor && (instruction.creditor.routingNumber || instruction.creditor.bic)) || null,
       direction: instruction.direction || 'credit',
+      fundingSource: instruction.fundingSource ? instruction.fundingSource.sourceKey : null,
+      fundingAccountName: instruction.fundingSource ? instruction.fundingSource.accountName : null,
     })),
   };
 }
@@ -232,6 +243,40 @@ const ClearingAutoFormatEngine = {
   },
 
   /**
+   * The accounts this workflow may draw on — the Trust Operating Account and
+   * each beneficiary's trust account — with the position the owning ledger
+   * reports for each.
+   */
+  async fundingSources() {
+    return {
+      ...(await FundingSourceRegistry.readiness()),
+      sources: await FundingSourceRegistry.list(),
+    };
+  },
+
+  /**
+   * `inspect` plus the funding decision: which account each instruction is
+   * drawn on and whether the money is there. Nothing is refused here — what
+   * `format` would refuse comes back as `funding.failures`, so a data workflow
+   * can check an export before it clears anything.
+   */
+  async plan({ input, format = null, rail = null, spec = null, fundingSource = null } = {}) {
+    const inspected = this.inspect({ input, format, rail, spec });
+    const { instructions } = normalize(input, { format: inspected.detection.format });
+    const funding = await FundingSourceRegistry.plan(instructions, { fundingSource });
+    return {
+      ...inspected,
+      funding: {
+        sources: funding.sources,
+        failures: funding.failures,
+        fundable: funding.failures.length === 0,
+        enforced: funding.enforced,
+        balanceEnforced: funding.balanceEnforced,
+      },
+    };
+  },
+
+  /**
    * Dry run: what arrived, what it says, and what the bank would be sent —
    * without rendering a file or touching the filesystem.
    */
@@ -270,6 +315,7 @@ const ClearingAutoFormatEngine = {
     source = null,
     actor = null,
     deliver = false,
+    fundingSource = null,
     profile: profileOverrides = {},
     batchId = null,
     createdAt = new Date(),
@@ -291,10 +337,23 @@ const ClearingAutoFormatEngine = {
       );
     }
 
-    const { detection, instructions } = normalize(input, { format });
-    const railResolution = resolveRail(instructions, { requestedRail: rail, config });
+    const { detection, instructions: parsed } = normalize(input, { format });
+    const railResolution = resolveRail(parsed, { requestedRail: rail, config });
     const specResolution = resolveSpec({ rail: railResolution.rail, requestedSpec: spec, config });
-    enforceLimits(instructions, config);
+    enforceLimits(parsed, config);
+
+    // Where the money comes from, decided before a single byte is rendered: the
+    // resolved account becomes each instruction's debtor, so the file the bank
+    // ingests names the account the trust actually draws on rather than a
+    // generic sender.
+    const funding = await FundingSourceRegistry.apply(parsed, { fundingSource });
+    const instructions = funding.instructions;
+    const fundingSummary = {
+      sources: funding.sources,
+      failures: funding.failures,
+      enforced: funding.enforced,
+      balanceEnforced: funding.balanceEnforced,
+    };
 
     const id = batchId || newBatchId();
     const profile = profileFrom(config, profileOverrides);
@@ -341,6 +400,7 @@ const ClearingAutoFormatEngine = {
         signature,
         profile,
         source,
+        funding: fundingSummary,
       });
       const archivePath = await archive({ config, batchId: id, filename, formatted, manifest, signature });
       files.push({
@@ -367,6 +427,7 @@ const ClearingAutoFormatEngine = {
       rail: railResolution.rail,
       railSource: railResolution.source,
       detection,
+      funding: fundingSummary,
       currency: rendered[0].currency,
       controls: {
         files: files.length,

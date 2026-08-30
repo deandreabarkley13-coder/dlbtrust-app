@@ -11,14 +11,22 @@
  *
  *   node server/scripts/formatBankClearingFile.js status
  *   node server/scripts/formatBankClearingFile.js specs
+ *   node server/scripts/formatBankClearingFile.js funding
  *   node server/scripts/formatBankClearingFile.js detect  <file|-> [--format csv]
  *   node server/scripts/formatBankClearingFile.js format  <file|-> [--rail fedwire] [--spec nacha-ccd]
+ *                                                          [--funding-source operating]
  *                                                          [--out DIR] [--print] [--send]
  *   node server/scripts/formatBankClearingFile.js intake  [--limit 25] [--send]
  *
  * `detect` reads and reports only: what arrived, what the bank would be sent,
- * and the control totals — it renders nothing and writes nothing, so it is how
- * to check a new workflow's export before it clears anything.
+ * the control totals, and which account each payment is drawn on — it renders
+ * nothing and writes nothing, so it is how to check a new workflow's export
+ * before it clears anything.
+ *
+ * `funding` lists the accounts a payment may be drawn on: the Trust Operating
+ * Account and each beneficiary's own trust account. `--funding-source` draws
+ * the whole file on one of them (`operating`, `beneficiary:SL-…`, a
+ * beneficiary's name) whatever the input's own columns say.
  *
  * `format` always archives the file, its manifest and its detached signature.
  * It reaches a bank only with `--send`, and then only over the Direct Send
@@ -69,12 +77,17 @@ async function main() {
       print('bank clearing specs', ClearingAutoFormatEngine.specs());
       return;
     }
+    case 'funding': {
+      print('permitted funding sources', await ClearingAutoFormatEngine.fundingSources());
+      return;
+    }
     case 'detect': {
-      print('detected', ClearingAutoFormatEngine.inspect({
+      print('detected', await ClearingAutoFormatEngine.plan({
         input: readInput(args[0]),
         format: flag(args, 'format'),
         rail: flag(args, 'rail'),
         spec: flag(args, 'spec'),
+        fundingSource: flag(args, 'funding-source'),
       }));
       return;
     }
@@ -85,6 +98,7 @@ async function main() {
         format: flag(args, 'format'),
         rail: flag(args, 'rail'),
         spec: flag(args, 'spec'),
+        fundingSource: flag(args, 'funding-source'),
         source,
         actor,
         deliver: has(args, 'send'),
@@ -106,6 +120,7 @@ async function main() {
         detectionEvidence: result.detection.evidence,
         rail: `${result.rail} (${result.railSource})`,
         spec: `${result.spec} (${result.specSource})`,
+        fundedFrom: result.funding.sources,
         controls: result.controls,
         archivePath: result.archivePath,
         writtenTo: writtenTo.length ? writtenTo : null,
@@ -134,7 +149,7 @@ async function main() {
       return;
     }
     default:
-      console.error('Usage: formatBankClearingFile.js <status|specs|detect|format|intake>');
+      console.error('Usage: formatBankClearingFile.js <status|specs|funding|detect|format|intake>');
       process.exitCode = 2;
   }
 }

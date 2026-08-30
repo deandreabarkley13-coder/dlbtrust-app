@@ -589,6 +589,8 @@ function clearingOptionsFrom(req) {
     format: body.format || req.query.format || null,
     rail: body.rail || req.query.rail || null,
     spec: body.spec || req.query.spec || null,
+    // One funding source for the whole file, overriding whatever its rows name.
+    fundingSource: body.fundingSource || req.query.fundingSource || null,
   };
 }
 
@@ -600,9 +602,19 @@ router.get('/wire/clearing-spec/specs', optionalSession, guard('payments:read'),
   try { res.json({ success: true, data: { specs: ClearingAutoFormatEngine.specs() } }); } catch (err) { sendError(res, err); }
 });
 
+// The accounts a cleared payment may be drawn on: the Trust Operating Account
+// and each beneficiary's own trust account, with the position the ledger that
+// owns each one reports. Read-only — resolving a funding source reserves
+// nothing.
+router.get('/wire/clearing-spec/funding-sources', optionalSession, guard('payments:read'), async (req, res) => {
+  try { res.json({ success: true, data: await ClearingAutoFormatEngine.fundingSources() }); } catch (err) { sendError(res, err); }
+});
+
 router.post('/wire/clearing-spec/detect', optionalSession, guard('payments:read'), async (req, res) => {
   try {
-    const data = ClearingAutoFormatEngine.inspect({ input: clearingInputFrom(req), ...clearingOptionsFrom(req) });
+    // `plan` is `inspect` plus the funding decision, so a workflow can see what
+    // each row would be drawn on, and what would be refused, before it clears.
+    const data = await ClearingAutoFormatEngine.plan({ input: clearingInputFrom(req), ...clearingOptionsFrom(req) });
     res.json({ success: true, data });
   } catch (err) { sendError(res, err); }
 });
