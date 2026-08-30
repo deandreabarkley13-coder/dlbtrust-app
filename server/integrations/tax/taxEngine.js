@@ -11,6 +11,9 @@
 
 'use strict';
 
+const fs = require('fs');
+const path = require('path');
+
 const pool = require('../bonds/pgPool');
 
 // 2024/2025 trust tax brackets (indexed annually by IRS)
@@ -26,6 +29,21 @@ const COMPLEX_TRUST_EXEMPTION = 100;
 const SIMPLE_TRUST_EXEMPTION = 300;
 
 class TaxEngine {
+
+  /**
+   * The tax desk's schema, applied from the migration that owns it. Every
+   * statement in that file is guarded, so a second run seeds nothing and drops
+   * nothing; the trust's own configuration rows are inserted ON CONFLICT DO
+   * NOTHING and an EIN already on file is left alone.
+   */
+  static async ensureTables() {
+    const migration = fs.readFileSync(
+      path.join(__dirname, '..', '..', 'scripts', 'migrate-tax-engine.sql'),
+      'utf8'
+    );
+    await pool.query(migration);
+    return true;
+  }
 
   // ─── Trust Configuration ──────────────────────────────────────────────────
 

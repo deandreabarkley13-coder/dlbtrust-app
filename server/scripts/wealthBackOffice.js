@@ -13,6 +13,7 @@
  *
  * Usage:
  *   node server/scripts/wealthBackOffice.js status
+ *   node server/scripts/wealthBackOffice.js init [--desk tax]
  *   node server/scripts/wealthBackOffice.js desks
  *   node server/scripts/wealthBackOffice.js desk --desk fixed_income [--limit 10]
  *   node server/scripts/wealthBackOffice.js position [--as-of 2026-08-31]
@@ -65,6 +66,17 @@ async function main() {
     const readiness = await WealthBackOfficeEngine.readiness();
     print('Wealth Back Office readiness:', readiness);
     if (!readiness.ready) process.exitCode = 2;
+    return;
+  }
+
+  if (command === 'init') {
+    const schema = await WealthBackOfficeEngine.initDesks({ desk: args.desk || null });
+    print('Desk storage:', schema);
+    if (!schema.ready) {
+      console.log('\nDesks still closed:');
+      schema.actions.forEach(action => console.log(`  ${action}`));
+      process.exitCode = 2;
+    }
     return;
   }
 
@@ -140,7 +152,7 @@ async function main() {
 
   throw new Error(
     `Unknown command "${command}".`
-    + ' Commands: status, desks, desk, position, runbook, queue, push, pushes, client'
+    + ' Commands: status, init, desks, desk, position, runbook, queue, push, pushes, client'
   );
 }
 

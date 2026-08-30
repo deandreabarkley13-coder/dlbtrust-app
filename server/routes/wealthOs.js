@@ -43,6 +43,13 @@ router.get('/desks', operatorAuth, async (req, res) => {
   } catch (err) { sendError(res, err); }
 });
 
+router.post('/init', adminAuth, writeRateLimiter(), async (req, res) => {
+  try {
+    const data = await WealthBackOfficeEngine.initDesks({ desk: (req.body || {}).desk || null });
+    res.status(data.ready ? 200 : 409).json({ success: data.ready, data });
+  } catch (err) { sendError(res, err); }
+});
+
 router.get('/desks/:desk', operatorAuth, async (req, res) => {
   try {
     const data = await WealthBackOfficeEngine.deskReport(req.params.desk, {
