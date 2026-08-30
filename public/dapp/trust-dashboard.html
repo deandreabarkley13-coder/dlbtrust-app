@@ -118,6 +118,11 @@
 
     <div id="dashboard" class="hidden">
       <div id="tab-overview" class="tabs active">
+        <div id="live-bar" style="display:flex;align-items:center;gap:10px;margin-bottom:12px;flex-wrap:wrap;">
+          <span class="badge" id="live-indicator">Live</span>
+          <span class="muted" id="live-status">Loading balances…</span>
+          <button class="btn btn-sec btn-sm" id="live-refresh-btn" onclick="refreshOverview()">Refresh now</button>
+        </div>
         <div class="grid" id="summary-grid">
           <div class="stat-card gold"><div class="label">Net Worth</div><div class="value" id="nw-value">—</div><div class="sub" id="nw-sub">across all ledgers</div></div>
           <div class="stat-card"><div class="label">Cash & Reserves</div><div class="value" id="cash-value">—</div><div class="sub" id="cash-sub">operating & reserve accounts</div></div>
@@ -628,6 +633,7 @@
     document.querySelectorAll('.nav button').forEach(b => b.classList.remove('active'));
     const tab = el('tab-' + key); if (tab) tab.classList.add('active');
     const btn = document.querySelector('.nav button[data-tab="' + key + '"]'); if (btn) btn.classList.add('active');
+    if (key === 'overview') loadOverview();
     if (key === 'distributions') loadDistributions();
     if (key === 'signatures') loadSignatures();
     if (key === 'wires') loadWires();
@@ -696,15 +702,65 @@
       const name = u ? (u.name || u.email || roleLabel) : (isAdmin() ? 'Operator' : 'Trustee');
       el('user-info').textContent = name + (roleLabel ? ' · ' + roleLabel : '');
       loadOverview();
+      startLiveRefresh();
       const requestedTab = tabFromLocation();
       if (requestedTab) switchTab(requestedTab);
     } catch (e) { showStatus('token-status', e.message, true); }
   }
 
-  async function loadOverview() {
+  // The overview reads a live aggregation of the underlying ledgers, so it is
+  // polled while a trustee is looking at it rather than rendered once.
+  const LIVE_REFRESH_MS = 20000;
+  const live = { timer: null, loading: false, error: '' };
+
+  function renderLiveStatus(s) {
+    const indicator = el('live-indicator');
+    const status = el('live-status');
+    if (!indicator || !status) return;
+    if (live.error) {
+      indicator.textContent = 'Stale';
+      indicator.className = 'badge rejected';
+      status.textContent = 'Could not refresh balances: ' + live.error;
+      return;
+    }
+    const errors = (s && s.syncErrors) || [];
+    indicator.textContent = errors.length ? 'Partial' : 'Live';
+    indicator.className = 'badge ' + (errors.length ? 'pending' : 'approved');
+    const asOf = s && s.asOf ? new Date(s.asOf) : new Date();
+    const parts = ['Balances as of ' + asOf.toLocaleTimeString(), 'auto-refresh every ' + Math.round(LIVE_REFRESH_MS / 1000) + 's'];
+    if (errors.length) parts.push(errors.length + ' source(s) failed to sync');
+    status.textContent = parts.join(' · ');
+  }
+
+  function startLiveRefresh() {
+    if (live.timer) clearInterval(live.timer);
+    live.timer = setInterval(() => {
+      if (document.hidden) return;
+      const overview = el('tab-overview');
+      if (!overview || !overview.classList.contains('active')) return;
+      loadOverview();
+    }, LIVE_REFRESH_MS);
+  }
+
+  // Forces every source to be re-read, ignoring the aggregator freshness window.
+  function refreshOverview() {
+    return loadOverview({ force: true });
+  }
+
+  document.addEventListener('visibilitychange', () => {
+    const dashboard = el('dashboard');
+    if (!document.hidden && dashboard && !dashboard.classList.contains('hidden')) loadOverview();
+  });
+
+  async function loadOverview({ force = false } = {}) {
+    if (live.loading) return;
+    live.loading = true;
+    const btn = el('live-refresh-btn');
+    if (btn) btn.disabled = true;
     try {
-      const summary = await api('/api/trust-ops/summary');
+      const summary = await api('/api/trust-ops/summary' + (force ? '?refresh=1' : ''));
       const s = summary.data || {};
+      live.error = '';
       el('nw-value').textContent = fmtUsd(s.netWorth);
       const sources = Object.entries(s.bySource || {}).map(([k,v]) => `${k}: ${fmtUsd(v.balance)}`).join(' | ');
       el('nw-sub').textContent = sources || 'across all ledgers';
@@ -717,7 +773,15 @@
       el('recent-requests').innerHTML = rows || '<p class="muted">No requests yet.</p>';
       const contacts = (s.contacts || []).slice(0, 10).map(u => `<div style="display:flex;justify-content:space-between;padding:6px 0;border-bottom:1px solid var(--border);font-size:.8rem;"><span>${u.name || u.email}</span><span class="badge">${u.role || 'beneficiary'}</span></div>`).join('');
       el('contacts-list').innerHTML = contacts || '<p class="muted">No contacts.</p>';
-    } catch (e) { console.error('overview', e); }
+      renderLiveStatus(s);
+    } catch (e) {
+      console.error('overview', e);
+      live.error = e.message || 'unknown error';
+      renderLiveStatus(null);
+    } finally {
+      live.loading = false;
+      if (btn) btn.disabled = false;
+    }
   }
 
   const state = { vendors: [], holds: [] };

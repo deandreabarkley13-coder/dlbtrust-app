@@ -35,6 +35,16 @@ function round2(n) {
   return Math.round((Number(n) || 0) * 100) / 100;
 }
 
+// Source types whose balances are derived from ledgers this process owns, so
+// they can be re-read on demand instead of waiting for an operator to sync.
+const INTERNAL_SOURCE_TYPES = ['cash', 'trust', 'issuer', 'virtual', 'trust_bank', 'wire', 'bank_transfer'];
+
+const DEFAULT_MAX_AGE_MS = Number(process.env.TRUST_AGGREGATOR_MAX_AGE_MS || 15000);
+
+// Collapses concurrent refreshes (dashboard polling, several trustees at once)
+// onto a single in-flight sync.
+let inFlightRefresh = null;
+
 class TrustAggregatorEngine {
   static async ensureTables() {
     loadDeps();
@@ -211,6 +221,48 @@ class TrustAggregatorEngine {
     return results;
   }
 
+  // Re-reads every internal source whose snapshot is older than maxAgeMs so
+  // callers see current ledger balances rather than the last operator sync.
+  static async refreshInternalSources({ maxAgeMs = DEFAULT_MAX_AGE_MS, force = false } = {}) {
+    if (inFlightRefresh) return inFlightRefresh;
+    inFlightRefresh = (async () => {
+      const errors = [];
+      try { await this.autoConnectInternalSources(); } catch (e) { errors.push({ connectionId: null, error: e.message }); }
+      let conns = [];
+      try { conns = await this.listConnections({}); } catch (e) { errors.push({ connectionId: null, error: e.message }); }
+      const cutoff = Date.now() - Math.max(0, Number(maxAgeMs) || 0);
+      const synced = [];
+      for (const conn of conns) {
+        if (!INTERNAL_SOURCE_TYPES.includes(conn.source_type)) continue;
+        const lastSync = conn.last_sync_at ? new Date(conn.last_sync_at).getTime() : 0;
+        if (!force && lastSync > cutoff) continue;
+        try {
+          await this.sync(conn.connection_id);
+          synced.push(conn.connection_id);
+        } catch (e) {
+          errors.push({ connectionId: conn.connection_id, error: e.message });
+        }
+      }
+      return { synced, errors };
+    })().finally(() => { inFlightRefresh = null; });
+    return inFlightRefresh;
+  }
+
+  static async getFreshness() {
+    await this.ensureTables();
+    const result = await pool.query(`
+      SELECT MAX(synced_at) AS as_of, MIN(synced_at) AS oldest FROM aggregator_balances
+    `);
+    const row = result.rows[0] || {};
+    const asOf = row.as_of ? new Date(row.as_of).toISOString() : null;
+    const oldest = row.oldest ? new Date(row.oldest).toISOString() : null;
+    return {
+      as_of: asOf,
+      oldest_synced_at: oldest,
+      age_seconds: asOf ? Math.max(0, Math.round((Date.now() - new Date(asOf).getTime()) / 1000)) : null,
+    };
+  }
+
   static async aggregateBalances() {
     await this.ensureTables();
     const result = await pool.query(`
@@ -249,10 +301,27 @@ class TrustAggregatorEngine {
     return result.rows;
   }
 
-  static async getNetWorth() {
+  static async getNetWorth({ live = false, maxAgeMs, force = false } = {}) {
+    let refresh = null;
+    if (live) {
+      refresh = await this.refreshInternalSources({
+        maxAgeMs: maxAgeMs === undefined ? DEFAULT_MAX_AGE_MS : maxAgeMs,
+        force,
+      });
+    }
     const agg = await this.aggregateBalances();
     const connections = await this.listConnections({});
-    return { total: agg.total, by_source: agg.by_source, connections: connections.length, balances: agg.balances };
+    const freshness = await this.getFreshness();
+    return {
+      total: agg.total,
+      by_source: agg.by_source,
+      connections: connections.length,
+      balances: agg.balances,
+      as_of: freshness.as_of,
+      age_seconds: freshness.age_seconds,
+      live: Boolean(live),
+      sync_errors: refresh ? refresh.errors : [],
+    };
   }
 
   static async autoConnectInternalSources() {
