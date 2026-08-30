@@ -24,6 +24,10 @@
  *     a manifest and an archive entry; it reaches a bank only when the caller
  *     asks for delivery *and* the Direct Send channel is itself ready, and it
  *     then travels over that channel's authenticated, signed transport.
+ *   • A spec that is a portal upload rather than a bank pipeline file — the
+ *     Melio bill import — is refused delivery outright. It is rendered and
+ *     archived like any other spec and then imported by a person, so the file a
+ *     data workflow produces and the payment a person approves stay distinct.
  *   • A spec decides how many files a batch becomes. Most specs batch every
  *     instruction into one file; the Fedwire Funds Service carries one credit
  *     transfer per ISO 20022 message, so a run there renders one message per
@@ -247,6 +251,7 @@ const ClearingAutoFormatEngine = {
       spec: specResolution.specId,
       specSource: specResolution.source,
       files: perTransaction ? instructions.length : 1,
+      portalUpload: Boolean((listSpecs().find(entry => entry.id === specResolution.specId) || {}).portalUpload),
       summary: summarise(instructions),
     };
   },
@@ -302,6 +307,15 @@ const ClearingAutoFormatEngine = {
       profile,
       createdAt,
     });
+
+    const portalUpload = Boolean((listSpecs().find(entry => entry.id === specResolution.specId) || {}).portalUpload);
+    if (deliver && portalUpload) {
+      throw new ClearingAutoFormatError(
+        `${specResolution.specId} is a portal upload, not a bank pipeline file: it is imported in the provider's portal, so it cannot be delivered over the clearing channel`,
+        'CLEARING_AUTOFORMAT_PORTAL_UPLOAD',
+        409
+      );
+    }
 
     const directSend = getDirectSendConfig();
     const channel = deliver ? directSendReadiness() : null;

@@ -319,6 +319,57 @@ ${instruction.purposeCode ? `            <Purp><Cd>${escapeXml(instruction.purpo
   return { payload, currency, controls: { count, totalAmountCents, uetr, endToEndId, localInstrument: fedwire.localInstrument } };
 }
 
+// ── Melio bill import (portal upload, not a bank pipeline) ───────────────────
+
+/**
+ * Melio originates the payment itself from the funding source configured in the
+ * account, so its import file carries the bill rather than the beneficiary's
+ * bank details: the vendor's payment method lives in the Melio account, not in
+ * this file. The columns are the ones the Bills importer expects, in order.
+ *
+ * This spec is a portal upload, so it is never eligible for Direct Send — a
+ * bank clearing pipeline would not know what to do with it, and Melio has no
+ * host-to-host channel. It is marked `portalUpload` for that reason.
+ */
+const MELIO_COLUMNS = ['Business name', 'Due date', 'Bill amount', 'Invoice number', 'Invoice date', 'Note'];
+
+function csvCell(value) {
+  const flat = String(value === null || value === undefined ? '' : value).replace(/"/g, '""');
+  return /[",\n\r]/.test(flat) ? `"${flat}"` : flat;
+}
+
+function isoDay(value) {
+  return value.toISOString().slice(0, 10);
+}
+
+function renderMelioCsv({ instructions, batchId, createdAt, profile }) {
+  const currency = singleCurrency(instructions, profile.currency);
+  if (currency !== 'USD') {
+    throw new ClearingSpecError('Melio pays USD bills only', 'CLEARING_SPEC_CURRENCY_UNSUPPORTED', 409);
+  }
+  const { count, totalAmountCents } = totals(instructions);
+  const invoiceDate = isoDay(createdAt);
+
+  const rows = instructions.map((instruction, index) => {
+    const creditor = instruction.creditor || {};
+    const dueDate = instruction.effectiveDate ? isoDay(new Date(instruction.effectiveDate)) : invoiceDate;
+    return [
+      creditor.name,
+      dueDate,
+      (amount(instruction) / 100).toFixed(2),
+      instruction.reference || instruction.endToEndId || `${batchId}-${index + 1}`,
+      invoiceDate,
+      instruction.remittanceInformation || '',
+    ].map(csvCell).join(',');
+  });
+
+  return {
+    payload: `${[MELIO_COLUMNS.join(','), ...rows].join('\n')}\n`,
+    currency,
+    controls: { count, totalAmountCents, columns: MELIO_COLUMNS.length },
+  };
+}
+
 // ── Registry ─────────────────────────────────────────────────────────────────
 
 const CREDITOR_NAME_CHECK = {
@@ -389,6 +440,26 @@ const SPECS = [
     ]),
   },
   {
+    id: 'melio-csv',
+    label: 'Melio bill import (portal upload; Melio originates the payment)',
+    format: 'csv',
+    extension: '.csv',
+    contentType: 'text/csv',
+    rails: ['melio'],
+    // Melio has no host-to-host channel: the file is imported in the Bills
+    // portal, where a person selects the funding source and submits.
+    portalUpload: true,
+    render: renderMelioCsv,
+    validate: instructions => requireFields(instructions, [
+      AMOUNT_CHECK,
+      {
+        field: 'creditor.name',
+        ok: instruction => Boolean(instruction.creditor && instruction.creditor.name),
+        message: 'the business name is how Melio matches the bill to a vendor, so it cannot be blank',
+      },
+    ]),
+  },
+  {
     id: 'nacha-ccd',
     label: 'NACHA CCD corporate credit or debit (94-character records)',
     format: 'fixed-width',
@@ -433,7 +504,7 @@ function nachaChecks(instructions, profile) {
 }
 
 function listSpecs() {
-  return SPECS.map(({ id, label: name, format, extension, contentType, rails, perTransaction }) => ({
+  return SPECS.map(({ id, label: name, format, extension, contentType, rails, perTransaction, portalUpload }) => ({
     id,
     label: name,
     format,
@@ -441,6 +512,7 @@ function listSpecs() {
     contentType,
     rails: [...rails],
     perTransaction: Boolean(perTransaction),
+    portalUpload: Boolean(portalUpload),
   }));
 }
 

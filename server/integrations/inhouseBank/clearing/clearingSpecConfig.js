@@ -56,7 +56,8 @@ function parseRailMap(raw) {
   return map;
 }
 
-const DEFAULT_RAIL_MAP = 'fedwire=pacs.008.001.08-fedwire,rtp=pacs.008.001.08,swift=pacs.008.001.08,ach=nacha-ccd';
+const DEFAULT_RAIL_MAP =
+  'fedwire=pacs.008.001.08-fedwire,rtp=pacs.008.001.08,swift=pacs.008.001.08,ach=nacha-ccd,melio=melio-csv';
 
 const FEDWIRE_MARKET_PRACTICE_REGISTRY =
   'www2.swift.com/mystandards/#/group/Federal_Reserve_Financial_Services/Fedwire_Funds_Service';
@@ -147,7 +148,7 @@ function clearingSpecReadiness(specIds = []) {
     blockers.push(`CLEARING_AUTOFORMAT_DEFAULT_RAIL is ${config.defaultRail}, which CLEARING_SPEC_RAIL_MAP does not map to a spec`);
   }
   if (!config.senderRouting) {
-    warnings.push('No CLEARING_AUTOFORMAT_SENDER_ROUTING: neither Fedwire ISO 20022 nor NACHA output can be produced until the trust bank routing number is set.');
+    warnings.push('No CLEARING_AUTOFORMAT_SENDER_ROUTING: neither Fedwire ISO 20022 nor NACHA output can be produced until the trust bank routing number is set. A portal-upload spec such as melio-csv does not need it.');
   }
   if (!config.receiverId && !config.receiverRouting) {
     warnings.push('No receiver is configured: formatted files name no receiving bank in their header.');
