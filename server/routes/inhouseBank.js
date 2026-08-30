@@ -20,6 +20,7 @@ const { RoutingEngine } = require('../integrations/inhouseBank/routingEngine');
 const { DualLedgerEngine } = require('../integrations/inhouseBank/dualLedgerEngine');
 const { ZeroTrustGateway } = require('../integrations/inhouseBank/zeroTrustGateway');
 const { WireHostToHostEngine } = require('../integrations/inhouseBank/wire/wireHostToHostEngine');
+const { WireDispatchLink } = require('../integrations/inhouseBank/wire/wireDispatchLink');
 
 const router = express.Router();
 
@@ -405,6 +406,34 @@ router.post('/wire/exceptions/:id/resolve', optionalSession, guard('ledger:recon
     const data = await WireHostToHostEngine.resolveException(req.params.id, {
       actor: req.ihb.principal,
       resolution: req.body.resolution,
+    });
+    res.json({ success: true, data });
+  } catch (err) { sendError(res, err); }
+});
+
+// ── Dispatch link ────────────────────────────────────────────────────────────
+//
+// The driver that carries dispatched payments to the bank host and reads the
+// bank's advices back. Its cycle is idempotent, so an operator may run one on
+// demand without waiting for, or interfering with, the scheduled one.
+
+router.get('/wire/link', optionalSession, guard('payments:read'), async (req, res) => {
+  try { res.json({ success: true, data: await WireDispatchLink.status() }); } catch (err) { sendError(res, err); }
+});
+
+router.get('/wire/link/pending', optionalSession, guard('payments:read'), async (req, res) => {
+  try {
+    res.json({ success: true, data: await WireDispatchLink.pending({ limit: req.query.limit }) });
+  } catch (err) { sendError(res, err); }
+});
+
+router.post('/wire/link/drive', optionalSession, guard('payments:initiate'), writeRateLimiter(), async (req, res) => {
+  try {
+    const data = await WireDispatchLink.driveOnce({
+      actor: req.ihb.principal,
+      trigger: 'operator',
+      limit: req.body.limit || null,
+      reconcile: req.body.reconcile === undefined ? null : Boolean(req.body.reconcile),
     });
     res.json({ success: true, data });
   } catch (err) { sendError(res, err); }

@@ -150,6 +150,7 @@ try { app.use('/api/os', require(path.join(HD, 'server', 'routes', 'os'))); cons
 
 // In-House Bank — PTC family bank orchestration: ingress/idempotency, governance, smart routing, dual ledger, ISO 20022, zero trust
 try { app.use('/api/inhouse-bank', require(path.join(HD, 'server', 'routes', 'inhouseBank'))); console.log('[inhouse-bank] loaded'); } catch(e) { console.warn('[inhouse-bank]', e.message); }
+try { app.use('/api/wallet', require(path.join(HD, 'server', 'routes', 'wallet'))); console.log('[wallet] loaded'); } catch(e) { console.warn('[wallet]', e.message); }
 
 // Settlement Endpoint — agent-to-agent discovery, handshake, and inbound payment
 (function() {
@@ -761,6 +762,24 @@ async function initializeDatabase() {
     await WireHostToHostEngine.ensureTables();
     console.log('[wire-h2h] tables ensured');
   } catch(e) { console.warn('[wire-h2h] table init:', e.message); }
+
+  // Family wallets — the BaaS layer over the bank's virtual accounts
+  try {
+    var WalletEngine = require(path.join(HD, 'server', 'integrations', 'inhouseBank', 'wallet', 'walletEngine')).WalletEngine;
+    var WalletCredentials = require(path.join(HD, 'server', 'integrations', 'inhouseBank', 'wallet', 'walletCredentials')).WalletCredentials;
+    await WalletEngine.ensureTables();
+    await WalletCredentials.ensureTables();
+    console.log('[wallet] tables ensured');
+  } catch(e) { console.warn('[wallet] table init:', e.message); }
+
+  // The dispatch link drives dispatched wires onto the bank host and reads the
+  // bank's advices back, so no payment waits on someone remembering to send it.
+  try {
+    var WireDispatchLink = require(path.join(HD, 'server', 'integrations', 'inhouseBank', 'wire', 'wireDispatchLink')).WireDispatchLink;
+    await WireDispatchLink.ensureTables();
+    var linkStart = WireDispatchLink.start();
+    console.log('[wire-link] ' + (linkStart.started ? 'started every ' + linkStart.intervalSeconds + 's' : 'not started: ' + linkStart.reason));
+  } catch(e) { console.warn('[wire-link] init:', e.message); }
 
   console.log('[startup] All database migrations complete');
 }

@@ -507,6 +507,17 @@ class InHouseBankEngine {
       actor,
       payload: { rail: payment.rail, feeCents: payment.feeCents, reason, isoMessage: RAILS[payment.rail].isoMessage },
     });
+
+    // Hand the wire to the bank host now rather than leaving it for an
+    // operator. The link refuses anything it does not carry, reports its own
+    // failures as wire exceptions, and cannot fail this call: the ledger has
+    // already moved, so a transmission problem is an operations problem.
+    try {
+      const { WireDispatchLink } = require('./wire/wireDispatchLink');
+      await WireDispatchLink.kick(id, { actor });
+    } catch (err) {
+      console.warn('[inhouse-bank] wire dispatch link unavailable:', err.message);
+    }
     return dispatched;
   }
 
