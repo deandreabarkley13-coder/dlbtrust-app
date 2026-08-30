@@ -21,6 +21,7 @@ const { DualLedgerEngine } = require('../integrations/inhouseBank/dualLedgerEngi
 const { ZeroTrustGateway } = require('../integrations/inhouseBank/zeroTrustGateway');
 const { WireHostToHostEngine } = require('../integrations/inhouseBank/wire/wireHostToHostEngine');
 const { WireDispatchLink } = require('../integrations/inhouseBank/wire/wireDispatchLink');
+const { WireDirectSendEngine } = require('../integrations/inhouseBank/wire/wireDirectSendEngine');
 
 const router = express.Router();
 
@@ -436,6 +437,111 @@ router.post('/wire/link/drive', optionalSession, guard('payments:initiate'), wri
       reconcile: req.body.reconcile === undefined ? null : Boolean(req.body.reconcile),
     });
     res.json({ success: true, data });
+  } catch (err) { sendError(res, err); }
+});
+
+// ── Direct Send clearing channel ─────────────────────────────────────────────
+//
+// The no-portal path: assemble a raw clearing file from dispatched wires and
+// push it at the bank's pipeline. Assembling claims payments in the wire vault
+// and sending moves money at the bank, so both need payments:initiate; a held
+// batch may only be determined by somebody who can reconcile the ledger.
+// Nothing here returns pipeline credentials or signing keys.
+
+router.get('/wire/direct-send', optionalSession, guard('payments:read'), async (req, res) => {
+  try { res.json({ success: true, data: await WireDirectSendEngine.dashboard() }); } catch (err) { sendError(res, err); }
+});
+
+router.get('/wire/direct-send/channel', optionalSession, guard('payments:read'), async (req, res) => {
+  try { res.json({ success: true, data: WireDirectSendEngine.readiness() }); } catch (err) { sendError(res, err); }
+});
+
+router.get('/wire/direct-send/pending', optionalSession, guard('payments:read'), async (req, res) => {
+  try {
+    res.json({ success: true, data: await WireDirectSendEngine.pending({ limit: req.query.limit }) });
+  } catch (err) { sendError(res, err); }
+});
+
+router.get('/wire/direct-send/batches', optionalSession, guard('payments:read'), async (req, res) => {
+  try {
+    const data = await WireDirectSendEngine.list({ state: req.query.state || null, limit: req.query.limit });
+    res.json({ success: true, data });
+  } catch (err) { sendError(res, err); }
+});
+
+router.get('/wire/direct-send/batches/:id', optionalSession, guard('payments:read'), async (req, res) => {
+  try {
+    const data = await WireDirectSendEngine.batch(req.params.id, { includePayload: req.query.payload === 'true' });
+    if (!data) return res.status(404).json({ success: false, error: `Clearing batch ${req.params.id} not found` });
+    res.json({ success: true, data });
+  } catch (err) { sendError(res, err); }
+});
+
+router.post('/wire/direct-send/assemble', optionalSession, guard('payments:initiate'), writeRateLimiter(), async (req, res) => {
+  try {
+    const data = await WireDirectSendEngine.assemble({
+      actor: req.ihb.principal,
+      limit: req.body.limit || null,
+      paymentIds: Array.isArray(req.body.paymentIds) ? req.body.paymentIds : null,
+    });
+    res.status(data.assembled ? 201 : 200).json({ success: true, data });
+  } catch (err) { sendError(res, err); }
+});
+
+router.post('/wire/direct-send/batches/:id/send', optionalSession, guard('payments:initiate'), writeRateLimiter(), async (req, res) => {
+  try {
+    const data = await WireDirectSendEngine.send(req.params.id, { actor: req.ihb.principal });
+    res.status(data.sent ? 201 : 200).json({ success: true, data });
+  } catch (err) { sendError(res, err); }
+});
+
+router.post('/wire/direct-send/send', optionalSession, guard('payments:initiate'), writeRateLimiter(), async (req, res) => {
+  try {
+    const data = await WireDirectSendEngine.directSend({
+      actor: req.ihb.principal,
+      limit: req.body.limit || null,
+      paymentIds: Array.isArray(req.body.paymentIds) ? req.body.paymentIds : null,
+    });
+    res.status(data.sent ? 201 : 200).json({ success: true, data });
+  } catch (err) { sendError(res, err); }
+});
+
+router.post('/wire/direct-send/batches/:id/acknowledge', optionalSession, guard('ledger:reconcile'), writeRateLimiter(), async (req, res) => {
+  try {
+    const data = await WireDirectSendEngine.acknowledge(req.params.id, {
+      actor: req.ihb.principal,
+      reference: req.body.reference || null,
+      acceptedCount: req.body.acceptedCount === undefined ? null : Number(req.body.acceptedCount),
+      totalAmountCents: req.body.totalAmountCents === undefined ? null : Number(req.body.totalAmountCents),
+    });
+    res.json({ success: true, data });
+  } catch (err) { sendError(res, err); }
+});
+
+router.post('/wire/direct-send/batches/:id/cancel', optionalSession, guard('payments:initiate'), writeRateLimiter(), async (req, res) => {
+  try {
+    const data = await WireDirectSendEngine.cancel(req.params.id, {
+      actor: req.ihb.principal,
+      reason: req.body.reason || 'cancelled by operator',
+    });
+    res.json({ success: true, data });
+  } catch (err) { sendError(res, err); }
+});
+
+router.post('/wire/direct-send/batches/:id/resolve-held', optionalSession, guard('ledger:reconcile'), writeRateLimiter(), async (req, res) => {
+  try {
+    const data = await WireDirectSendEngine.resolveHeld(req.params.id, {
+      actor: req.ihb.principal,
+      received: req.body.received,
+      note: req.body.note,
+    });
+    res.json({ success: true, data });
+  } catch (err) { sendError(res, err); }
+});
+
+router.post('/wire/direct-send/reconcile', optionalSession, guard('ledger:reconcile'), writeRateLimiter(), async (req, res) => {
+  try {
+    res.json({ success: true, data: await WireDirectSendEngine.reconcile({ actor: req.ihb.principal }) });
   } catch (err) { sendError(res, err); }
 });
 

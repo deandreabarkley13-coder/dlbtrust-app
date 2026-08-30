@@ -765,6 +765,15 @@ async function initializeDatabase() {
     console.log('[wire-h2h] tables ensured');
   } catch(e) { console.warn('[wire-h2h] table init:', e.message); }
 
+  // Direct Send — the no-portal clearing path: raw clearing files pushed at the
+  // bank's own pipeline, with the batch ledger that accounts for every one.
+  try {
+    var WireDirectSendEngine = require(path.join(HD, 'server', 'integrations', 'inhouseBank', 'wire', 'wireDirectSendEngine')).WireDirectSendEngine;
+    await WireDirectSendEngine.ensureTables();
+    var directSend = WireDirectSendEngine.readiness();
+    console.log('[wire-direct-send] tables ensured; mode ' + directSend.mode + (directSend.ready ? '' : ' (closed: ' + directSend.blockers.join('; ') + ')'));
+  } catch(e) { console.warn('[wire-direct-send] table init:', e.message); }
+
   // Family wallets — the BaaS layer over the bank's virtual accounts
   try {
     var WalletEngine = require(path.join(HD, 'server', 'integrations', 'inhouseBank', 'wallet', 'walletEngine')).WalletEngine;

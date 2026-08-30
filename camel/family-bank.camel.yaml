@@ -182,6 +182,27 @@ routes:
           # process(flagManualRail)
           # wireTap(trust.payment.transmitted)
   - route:
+      id: family-bank-wire-direct-send
+      description: "Clearing cutoff: batch the dispatched wires into one raw clearing file and Direct Send it to the bank pipeline."
+      from:
+        uri: "timer:wire-direct-send?period=900000"
+        steps:
+          - setHeader:
+              name: CamelHttpMethod
+              constant: POST
+          - setHeader:
+              name: X-Camel-Route
+              constant: family-bank-wire-direct-send
+          - bean:
+              ref: inboxSigner
+              method: sign
+          - to:
+              uri: "{{dlbtrust.baseUrl}}/api/camel/inbox/family-bank-wire-direct-send"
+          - log:
+              message: "family-bank-wire-direct-send mediated ${header.X-Camel-Message-Key}"
+          # process(directSendClearingFile)
+          # wireTap(trust.payment.transmitted)
+  - route:
       id: family-bank-openach-status
       description: "Poll OpenACH for the status of every originated entry and confirm what it reports."
       from:

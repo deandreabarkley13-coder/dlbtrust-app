@@ -128,6 +128,31 @@ function registerProcessors() {
     return result;
   });
 
+  /**
+   * The clearing cutoff. Direct Send assembles every dispatched wire that is
+   * still waiting into one raw clearing file and pushes it at the bank's
+   * pipeline. Nothing here decides an outcome: the file either cleared, was
+   * refused, or is held for an operator, and the engine records which.
+   */
+  CamelRouteEngine.registerProcessor('directSendClearingFile', async (context) => {
+    const { WireDirectSendEngine } = require('../inhouseBank/wire/wireDirectSendEngine');
+    const readiness = WireDirectSendEngine.readiness();
+    if (!readiness.ready) {
+      await DualLedgerEngine.appendEvent({
+        eventType: 'payment.origination_deferred',
+        actor: 'camel',
+        payload: { channel: 'direct-send', blockers: readiness.blockers },
+      }).catch(() => null);
+      return { sent: false, deferred: true, blockers: readiness.blockers };
+    }
+    const result = await WireDirectSendEngine.directSend({
+      actor: context.headers.principal || 'camel',
+      paymentIds: context.headers.paymentIds || null,
+    });
+    context.headers.batchId = result.batch ? result.batch.batchId : null;
+    return result;
+  });
+
   CamelRouteEngine.registerProcessor('pollOpenAchStatuses', async () => {
     return OpenAchRailEngine.pollStatuses({ actor: 'camel' });
   });
@@ -359,6 +384,16 @@ function registerRoutes() {
     idempotentKeyHeader: 'paymentId',
     steps: [
       { type: 'process', processor: 'flagManualRail', updatesBody: true },
+      { type: 'wireTap', topic: TOPICS.transmitted },
+    ],
+  });
+
+  CamelRouteEngine.register({
+    routeId: 'family-bank-wire-direct-send',
+    description: 'Clearing cutoff: batch the dispatched wires into one raw clearing file and Direct Send it to the bank pipeline.',
+    from: { uri: 'timer:wire-direct-send?period=900000', kind: 'timer' },
+    steps: [
+      { type: 'process', processor: 'directSendClearingFile', updatesBody: true, note: 'Direct Send clearing file' },
       { type: 'wireTap', topic: TOPICS.transmitted },
     ],
   });
