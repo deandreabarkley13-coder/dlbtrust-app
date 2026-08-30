@@ -711,22 +711,6 @@ router.post('/update-bank-account', requireAdmin, async function(req, res) {
   }
 });
 
-// ─── POST /api/bill/deposit ──────────────────────────────────────────────────
-// Deposit to BILL Cash Account with proper clearing (invoice-linked)
-router.post('/deposit', async function(req, res) {
-  try {
-    var billClient = require(path.join(__dirname, '../integrations/bill/billClient'));
-    var result = await billClient.depositToBillCash({
-      amount: parseFloat(req.body.amount),
-      method: req.body.method || 'ach',
-      memo: req.body.memo || req.body.description || 'Trust deposit',
-    });
-    res.json({ success: true, data: result });
-  } catch(err) {
-    res.status(400).json({ success: false, error: err.message });
-  }
-});
-
 // ─── GET /api/bill/deposit-status/:id ────────────────────────────────────────
 // Check if a deposit has cleared and posted in BILL
 router.get('/deposit-status/:id', async function(req, res) {
