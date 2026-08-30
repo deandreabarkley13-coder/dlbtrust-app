@@ -52,6 +52,7 @@ function backOffice({
   distributions = [DISTRIBUTION] as any[],
   existingPushes = [] as any[],
   inFlight = [] as any[],
+  melioExports = [] as any[],
   handoffInsertFails = false,
 } = {}) {
   const inserted: any[] = [];
@@ -62,6 +63,7 @@ function backOffice({
     if (/FROM vendor_payments/.test(text)) return { rows: payables } as any;
     if (/FROM dapp_distribution_requests/.test(text)) return { rows: distributions } as any;
     if (/FROM wealth_credit_pushes/.test(text)) return { rows: existingPushes } as any;
+    if (/FROM melio_payments/.test(text)) return { rows: melioExports } as any;
     if (/INSERT INTO wealth_credit_pushes/.test(text)) {
       if (handoffInsertFails) throw new Error('duplicate key value violates unique constraint');
       inserted.push(text);
@@ -401,6 +403,93 @@ describe('Wealth Back Office OS — one floor over the family bank', () => {
     it('will not open a thread with no subject or body', async () => {
       await expect(WealthBackOfficeEngine.postNote({ desk: 'payouts', subject: 'Missing body' }))
         .rejects.toThrowError(/subject and body are required/);
+    });
+  });
+
+  describe('the Melio CSV rail the back office does not originate', () => {
+    const daysAgo = (days: number) => new Date(Date.now() - days * 86_400_000).toISOString();
+
+    const EXPORT = {
+      id: 'MEL-1',
+      status: 'exported',
+      amount_cents: 250_000,
+      currency: 'USD',
+      created_at: daysAgo(0),
+      updated_at: daysAgo(0),
+      vendor_name: 'ACME PLUMBING LLC',
+      file_name: 'melio-MEL-1.csv',
+      portal_reference: null,
+    };
+
+    it('queues an open export as committed dollars nobody may push again, with the manual step named', async () => {
+      backOffice({ payables: [], distributions: [], melioExports: [EXPORT] });
+      const queue = await WealthBackOfficeEngine.creditQueue({});
+      const item = queue.items.find((row: any) => row.origin === 'melio_export');
+      expect(item).toMatchObject({ originId: 'MEL-1', pushable: false, amountCents: 250_000, desk: 'payouts' });
+      expect(item.blockers[0]).toMatch(/Import melio-MEL-1\.csv in the Melio Bills portal/);
+      expect(queue.totals.openCents).toBe(250_000);
+      expect(queue.totals.pushableCents).toBe(0);
+    });
+
+    it('refuses to credit an obligation the same dollars are already exported for', async () => {
+      backOffice({ distributions: [], melioExports: [EXPORT] });
+      const queue = await WealthBackOfficeEngine.creditQueue({ origin: 'vendor_payable' });
+      const payable = queue.items.find((row: any) => row.originId === 'VPAY-1');
+      expect(payable.pushable).toBe(false);
+      expect(payable.blockers.join(' ')).toMatch(/Melio CSV export MEL-1 \(exported\) already commits \$2,500\.00/);
+    });
+
+    it('leaves a second, different bill to the same vendor pushable', async () => {
+      backOffice({
+        distributions: [],
+        melioExports: [{ ...EXPORT, amount_cents: 90_000 }],
+      });
+      const queue = await WealthBackOfficeEngine.creditQueue({ origin: 'vendor_payable' });
+      const payable = queue.items.find((row: any) => row.originId === 'VPAY-1');
+      expect(payable.pushable).toBe(true);
+      expect(payable.blockers).toEqual([]);
+    });
+
+    it('ages each export against the step it is waiting on', async () => {
+      backOffice({
+        payables: [],
+        distributions: [],
+        melioExports: [
+          { ...EXPORT, updated_at: daysAgo(3) },
+          { ...EXPORT, id: 'MEL-2', status: 'submitted', portal_reference: 'MELIO-9911', updated_at: daysAgo(1) },
+        ],
+      });
+      const exports_ = await WealthBackOfficeEngine.melioExports({});
+      expect(exports_.totals).toMatchObject({ count: 2, staleCount: 1, openCents: 500_000 });
+      expect(exports_.items[0]).toMatchObject({ awaiting: 'awaiting_import', ageDays: 3, stale: true });
+      expect(exports_.items[1]).toMatchObject({ awaiting: 'awaiting_settlement', ageDays: 1, stale: false });
+      expect(exports_.items[1].nextStep).toMatch(/MELIO-9911 is awaiting settlement/);
+    });
+
+    it('reports nothing outstanding when the rail has never been used', async () => {
+      vi.spyOn(pool, 'query').mockImplementation(async (sql: any) => (
+        /to_regclass/.test(String(sql)) ? { rows: [{ oid: null }] } : { rows: [] }
+      ) as any);
+      const exports_ = await WealthBackOfficeEngine.melioExports({});
+      expect(exports_).toMatchObject({ items: [], totals: { count: 0, openCents: 0 } });
+    });
+
+    it('raises a break for an export that has sat unimported, and an action for one merely pending', async () => {
+      backOffice({
+        payables: [],
+        distributions: [],
+        melioExports: [
+          { ...EXPORT, updated_at: daysAgo(4) },
+          { ...EXPORT, id: 'MEL-3', status: 'submitted', portal_reference: 'MELIO-2', updated_at: daysAgo(1) },
+        ],
+      });
+      ledgerDesks();
+      const runbook = await WealthBackOfficeEngine.runbook({});
+      const payouts = runbook.findings.filter((finding: any) => finding.desk === 'payouts');
+      expect(payouts.find((finding: any) => finding.severity === 'break').finding)
+        .toMatch(/Melio export MEL-1 for \$2,500\.00 to ACME PLUMBING LLC has been awaiting import for 4 day\(s\)/);
+      expect(payouts.filter((finding: any) => finding.severity === 'action').map((finding: any) => finding.finding).join(' '))
+        .toMatch(/waiting to be imported in the Bills portal[\s\S]*awaiting settlement/);
     });
   });
 
