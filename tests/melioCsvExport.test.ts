@@ -156,6 +156,13 @@ describe('Melio bill spreadsheet CSV export', () => {
       sourceOfTruth: 'trust_accounting',
     });
     vi.spyOn(MelioEngine, '_deps').mockReturnValue({ SourceOfFunds: { getPosition } });
+    vi.spyOn(MelioEngine, '_registryFundingSource').mockResolvedValue({
+      sourceType: 'trust_operating',
+      sourceKey: 'trust:1000',
+      accountName: 'Trust Cash & Equivalents',
+      sourceOfTruth: 'trust_accounting',
+      beneficiary: null,
+    });
     const querySpy = vi.spyOn(pool, 'query').mockResolvedValue({
       rows: [{ reserved_cents: '7500' }],
     });
@@ -187,6 +194,13 @@ describe('Melio bill spreadsheet CSV export', () => {
           segregationReason: 'account is segregated for a protected purpose',
         }),
       },
+    });
+    vi.spyOn(MelioEngine, '_registryFundingSource').mockResolvedValue({
+      sourceType: 'trust_operating',
+      sourceKey: 'trust:1210',
+      accountName: 'Stablecoin Backing Asset',
+      sourceOfTruth: 'trust_accounting',
+      beneficiary: null,
     });
     const query = vi.spyOn(pool, 'query');
 

@@ -23,8 +23,7 @@
  *   TRUST_CHECKER_SIGNATURE="DeAndrea Lavar Barkley" \
  *   node server/scripts/melioCanonicalPaymentWorkflow.js \
  *     --amount 100.00 \
- *     --sourceType trust \
- *     --sourceAccountId 1000 \
+ *     --fundingSource trust:1000 \
  *     --vendorName "DB NET MGMT" \
  *     --vendorEmail vendor@example.com \
  *     --routing "$MELIO_VENDOR_ROUTING" \
@@ -44,10 +43,34 @@
  *   --checkerSignature Checker legal-name signature (default: $TRUST_CHECKER_SIGNATURE)
  *   --accountingClass  management_fee|beneficiary_income_distribution|beneficiary_principal_distribution
  *   --executionMode    manual_upload (default)
+ *   --fundingSource    trust:<account code> (Trust Operating Account) or
+ *                      beneficiary:<sub-ledger id> (Beneficiary Trust Account).
+ *                      A beneficiary draw still settles through the trust
+ *                      instrument selected in the Melio portal.
  */
 
 const fs = require('fs');
 const path = require('path');
+
+// trust:1000 / operating:1000 → the chart-of-accounts operating account;
+// beneficiary:SL-… → the sub-ledger the vendor payment engines call sub_ledger.
+function parseFundingSource(ref) {
+  const raw = String(ref || '').trim();
+  if (!raw) return {};
+  const [scope, ...rest] = raw.split(':');
+  const id = rest.join(':').trim();
+  const key = scope.trim().toLowerCase();
+  if (!id) throw new Error('--fundingSource must be trust:<account code> or beneficiary:<sub-ledger id>');
+  if (['trust', 'operating', 'trust_operating', 'gl'].includes(key)) {
+    return { sourceType: 'trust', sourceAccountId: id };
+  }
+  if (['beneficiary', 'beneficiary_trust', 'sub_ledger', 'subledger'].includes(key)) {
+    return { sourceType: 'sub_ledger', sourceAccountId: id };
+  }
+  throw new Error(
+    `--fundingSource ${raw} is neither the Trust Operating Account (trust:<code>) nor a Beneficiary Trust Account (beneficiary:<sub-ledger id>)`
+  );
+}
 
 const args = (() => {
   const argv = process.argv.slice(2);
@@ -112,8 +135,15 @@ async function main() {
   const amount = Number(args.amount);
   if (!amount || amount <= 0) throw new Error('--amount must be a positive number');
 
-  const sourceType = args.sourceType || 'trust';
-  const sourceAccountId = args.sourceAccountId || process.env.MELIO_SOURCE_ACCOUNT_ID || '1000';
+  // --fundingSource names one of the two accounts the trust pays from:
+  // trust:<code> for the Trust Operating Account, beneficiary:<sub-ledger>
+  // for a Beneficiary Trust Account.
+  const funding = parseFundingSource(args.fundingSource);
+  const sourceType = funding.sourceType || args.sourceType || 'trust';
+  const sourceAccountId = funding.sourceAccountId
+    || args.sourceAccountId
+    || process.env.MELIO_SOURCE_ACCOUNT_ID
+    || '1000';
   const executionMode = args.executionMode || 'manual_upload';
   const makerSignature = args.makerSignature || process.env.TRUST_MAKER_SIGNATURE || '';
   const checkerSignature = args.checkerSignature || process.env.TRUST_CHECKER_SIGNATURE || '';
@@ -130,9 +160,13 @@ async function main() {
   await download('/api/accounting/reports/balances/download', balancesPath);
   console.log(`[1/6] Ledger balances CSV downloaded: ${balancesPath}`);
 
-  // 2. Verify the source ledger account covers the payment
+  // 2. Verify the source ledger account covers the payment. Beneficiary trust
+  // accounts are sub-ledgers rather than chart-of-accounts codes, so only the
+  // server's funding registry can price them.
   const tb = await api('GET', '/api/accounting/reports/trial-balance');
-  const account = (tb.data.accounts || []).find((a) => String(a.account_code) === String(sourceAccountId));
+  const account = sourceType === 'sub_ledger'
+    ? null
+    : (tb.data.accounts || []).find((a) => String(a.account_code) === String(sourceAccountId));
   const balance = account ? Number(account.current_balance || 0) : null;
   if (balance === null) {
     console.warn(`[2/6] Account ${sourceAccountId} not found in trial balance; server will enforce the balance check`);
