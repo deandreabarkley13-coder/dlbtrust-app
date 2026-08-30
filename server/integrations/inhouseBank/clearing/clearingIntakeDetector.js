@@ -96,7 +96,7 @@ const ALIASES = {
   debtorAccount: ['debtoraccount', 'debtor_account', 'sourceaccount', 'source_account', 'fromaccount', 'from_account', 'funding_account'],
   remittance: ['remittance', 'remittanceinformation', 'remittance_information', 'memo', 'description', 'note', 'invoice', 'invoicenumber', 'invoice_number', 'obi'],
   purposeCode: ['purposecode', 'purpose_code', 'purpose'],
-  effectiveDate: ['effectivedate', 'effective_date', 'valuedate', 'value_date', 'settlementdate', 'settlement_date', 'executiondate', 'execution_date'],
+  effectiveDate: ['effectivedate', 'effective_date', 'valuedate', 'value_date', 'settlementdate', 'settlement_date', 'executiondate', 'execution_date', 'duedate', 'due_date'],
   secCode: ['seccode', 'sec_code', 'sec'],
 };
 
@@ -124,6 +124,7 @@ function normalizeRail(raw) {
   if (/rtp|instant|fednow/.test(value)) return 'rtp';
   if (/swift|international|cross.?border/.test(value)) return 'swift';
   if (/ach|nacha|eft/.test(value)) return 'ach';
+  if (/melio/.test(value)) return 'melio';
   return value;
 }
 

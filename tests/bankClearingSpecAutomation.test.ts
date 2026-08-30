@@ -29,6 +29,12 @@ const VENDOR_CSV = [
   'INV-1002,BLUE RIDGE LLC,021000021,9876543210,"3,400.55",INVOICE 1002,fedwire',
 ].join('\n');
 
+const MELIO_VENDOR_CSV = [
+  'reference,payee_name,amount,due_date,memo,rail',
+  'INV-2001,DB NET MGMT,5.00,2026-09-15,MANAGEMENT FEE,melio',
+  'INV-2002,"BLUE RIDGE, LLC",3400.55,2026-09-20,INVOICE 2002,melio',
+].join('\n');
+
 const PAYROLL_JSON = JSON.stringify({
   payments: [
     {
@@ -307,6 +313,50 @@ describe('bank clearing spec automation — rendering to spec', () => {
     ).toThrowError(/one currency per file/);
   });
 
+  it('renders the Melio bill import columns, which carry the bill and not the vendor’s bank', () => {
+    const formatted = formatToSpec({
+      specId: 'melio-csv',
+      instructions: [
+        instruction({ rail: 'melio', effectiveDate: new Date('2026-09-15T00:00:00Z') }),
+        instruction({ rail: 'melio', reference: 'REF-2', amountCents: 340055, creditor: { name: 'BLUE RIDGE, LLC' } }),
+      ],
+      batchId: 'CLRFMT-TEST-M1',
+      profile: PROFILE,
+      createdAt: new Date('2026-09-01T10:00:00Z'),
+    });
+
+    const lines = formatted.payload.trim().split('\n');
+    expect(lines[0]).toBe('Business name,Due date,Bill amount,Invoice number,Invoice date,Note');
+    expect(lines[1]).toBe('ACME SUPPLY CO,2026-09-15,1250.00,REF-1,2026-09-01,INVOICE 1001');
+    // A comma in a business name is quoted rather than breaking the column count.
+    expect(lines[2]).toBe('"BLUE RIDGE, LLC",2026-09-01,3400.55,REF-2,2026-09-01,INVOICE 1001');
+    expect(formatted).toMatchObject({ contentType: 'text/csv', extension: '.csv' });
+    expect(formatted.controls).toMatchObject({ count: 2, totalAmountCents: 465055 });
+    // Melio holds the vendor's payment method, so no routing number is required
+    // and none is disclosed in the file.
+    expect(formatted.payload).not.toContain('021000021');
+    expect(formatted.payload).not.toContain('1234567890');
+  });
+
+  it('still refuses a Melio bill it cannot name or price', () => {
+    expect(() =>
+      formatToSpec({
+        specId: 'melio-csv',
+        instructions: [instruction({ creditor: { name: null } })],
+        batchId: 'CLRFMT-TEST-M2',
+        profile: PROFILE,
+      })
+    ).toThrowError(/business name/);
+    expect(() =>
+      formatToSpec({
+        specId: 'melio-csv',
+        instructions: [instruction({ amountCents: 0 })],
+        batchId: 'CLRFMT-TEST-M3',
+        profile: PROFILE,
+      })
+    ).toThrowError(/positive whole number of cents/);
+  });
+
   it('refuses an empty file and an unknown spec', () => {
     expect(() => formatToSpec({ specId: 'pacs.008.001.08', instructions: [], batchId: 'B', profile: PROFILE }))
       .toThrowError(/at least one instruction/);
@@ -422,6 +472,33 @@ describe('bank clearing spec automation — end to end and intake', () => {
     expect(rerouted.spec).toBe('nacha-ccd');
   });
 
+  it('formats the Melio rail into a portal-ready bill import and refuses to transmit it', async () => {
+    const result = await ClearingAutoFormatEngine.format({ input: MELIO_VENDOR_CSV, source: 'test' });
+    expect(result).toMatchObject({ rail: 'melio', railSource: 'source data', spec: 'melio-csv', delivered: false });
+    expect(result.files).toHaveLength(1);
+
+    const file = result.files[0];
+    expect(file.filename).toMatch(/^PTCFMT-MELIO-\d+-[0-9A-F]+\.csv$/);
+    expect(file.payload.split('\n')[0]).toBe('Business name,Due date,Bill amount,Invoice number,Invoice date,Note');
+    expect(file.payload).toContain('DB NET MGMT,2026-09-15,5.00,INV-2001');
+    // The bill import is archived with the same evidence as a clearing file.
+    expect(fs.readFileSync(path.join(file.archivePath, file.filename), 'utf8')).toBe(file.payload);
+    expect(JSON.parse(fs.readFileSync(path.join(file.archivePath, `${file.filename}.manifest.json`), 'utf8')).controls.payloadSha256)
+      .toBe(file.payloadHash);
+
+    expect(ClearingAutoFormatEngine.inspect({ input: MELIO_VENDOR_CSV })).toMatchObject({
+      spec: 'melio-csv',
+      portalUpload: true,
+      files: 1,
+    });
+
+    // A person imports it in the Melio portal; the bank clearing channel is not
+    // a route it can take, ready or not.
+    process.env.WIRE_DIRECT_SEND_SIGNING_SECRET = 'test-secret';
+    await expect(ClearingAutoFormatEngine.format({ input: MELIO_VENDOR_CSV, deliver: true }))
+      .rejects.toThrowError(/portal upload/);
+  });
+
   it('refuses to format when the automation is switched off', async () => {
     process.env.CLEARING_AUTOFORMAT_ENABLED = 'false';
     await expect(ClearingAutoFormatEngine.format({ input: VENDOR_CSV })).rejects.toThrowError(/is off/);
@@ -485,8 +562,13 @@ describe('bank clearing spec automation — end to end and intake', () => {
     const status = ClearingAutoFormatEngine.status();
     expect(status.ready).toBe(true);
     expect(status.specs.map((spec: any) => spec.id)).toEqual(
-      expect.arrayContaining(['pacs.008.001.08', 'pacs.008.001.08-fedwire', 'nacha-ccd', 'nacha-ppd'])
+      expect.arrayContaining(['pacs.008.001.08', 'pacs.008.001.08-fedwire', 'nacha-ccd', 'nacha-ppd', 'melio-csv'])
     );
+    expect(status.specs.find((spec: any) => spec.id === 'melio-csv')).toMatchObject({
+      portalUpload: true,
+      rails: ['melio'],
+    });
+    expect(status.railSpecs.melio).toBe('melio-csv');
     expect(status.specs.find((spec: any) => spec.id === 'pacs.008.001.08-fedwire').perTransaction).toBe(true);
     expect(status.railSpecs.ach).toBe('nacha-ccd');
     expect(status.railSpecs.fedwire).toBe('pacs.008.001.08-fedwire');
