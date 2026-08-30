@@ -205,12 +205,30 @@ const DESK_SCHEMA = {
 // state still speaks for that obligation's dollars.
 const OPEN_PUSH_STATUSES = ['pending_approval', 'approved', 'sending', 'sent'];
 
+// A Melio CSV export commits the trust's cash from the moment the file exists:
+// anyone with portal access can import it, and the export already carries an
+// approved maker-checker proposal and a posted payable. Until it settles, those
+// dollars are spoken for on a rail the back office does not originate, so they
+// belong in the queue and out of the pushable set.
+const OPEN_MELIO_STATUSES = ['exported', 'emailed', 'submitted'];
+
+// How long an export may sit in one manual state before the delay is the
+// finding. Import is a same-day desk task; portal settlement takes ACH time.
+const MELIO_STALE_DAYS = { awaiting_import: 2, awaiting_settlement: 5 };
+
 function centsFromDollars(value) {
   return Math.round(Number(value || 0) * 100);
 }
 
 function dollars(cents) {
   return `$${(Number(cents || 0) / 100).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+}
+
+function daysSince(value) {
+  if (!value) return null;
+  const then = new Date(value);
+  if (Number.isNaN(then.getTime())) return null;
+  return Math.max(0, Math.floor((Date.now() - then.getTime()) / 86400000));
 }
 
 function isoDay(value) {
@@ -242,6 +260,7 @@ const WealthBackOfficeEngine = {
   DESK_SCHEMA,
   CREDIT_ORIGINS,
   OPEN_PUSH_STATUSES,
+  OPEN_MELIO_STATUSES,
   WealthBackOfficeError,
 
   async ensureTables() {
@@ -605,10 +624,14 @@ const WealthBackOfficeEngine = {
     const cap = Math.min(500, Math.max(1, Number(limit) || 100));
     const wanted = origin ? [this._describeOrigin(origin)] : Object.values(CREDIT_ORIGINS);
 
-    const items = [];
     const errors = [];
+    const melio = await attempt(() => this.melioExports({ limit: cap }));
+    if (!melio.ok) errors.push({ origin: 'melio_export', error: melio.error });
+    const openExports = melio.ok ? melio.data.items : [];
+
+    const items = [];
     for (const spec of wanted) {
-      const result = await attempt(() => this._queueFor(spec, cap));
+      const result = await attempt(() => this._queueFor(spec, cap, openExports));
       if (result.ok) items.push(...result.data);
       else errors.push({ origin: spec.origin, error: result.error });
     }
@@ -637,7 +660,25 @@ const WealthBackOfficeEngine = {
         }))
       : [];
 
-    const queue = [...items, ...openPushes].sort((a, b) => {
+    const melioItems = openExports.map(row => ({
+      origin: 'melio_export',
+      originId: row.exportId,
+      desk: 'payouts',
+      label: 'Melio CSV export',
+      disbursementType: 'melio_csv',
+      payeeKey: null,
+      counterparty: row.counterparty,
+      amountCents: row.amountCents,
+      amount: dollars(row.amountCents),
+      currency: row.currency,
+      dueDate: row.dueDate,
+      status: row.status,
+      pushable: false,
+      blockers: [row.nextStep],
+      disbursementId: null,
+    }));
+
+    const queue = [...items, ...openPushes, ...melioItems].sort((a, b) => {
       if (a.dueDate && b.dueDate) return a.dueDate < b.dueDate ? -1 : 1;
       if (a.dueDate) return -1;
       if (b.dueDate) return 1;
@@ -669,7 +710,81 @@ const WealthBackOfficeEngine = {
     return spec;
   },
 
-  async _queueFor(spec, limit) {
+  /**
+   * Every Melio CSV export the trust is still on the hook for, with the manual
+   * step each one is waiting on. The back office cannot import a file or settle
+   * a portal payment, so it reports the step rather than taking it.
+   */
+  async melioExports({ limit = 100 } = {}) {
+    const cap = Math.min(500, Math.max(1, Number(limit) || 100));
+    if (!(await tableExists('melio_payments'))) {
+      return { asOf: new Date().toISOString(), totals: { count: 0, openCents: 0, open: dollars(0), staleCount: 0 }, items: [] };
+    }
+    const rows = await pool.query(
+      `SELECT id, status, amount_cents, currency, created_at, updated_at,
+              COALESCE(result->>'vendorName', vendor_id) AS vendor_name,
+              result->>'fileName' AS file_name,
+              result->>'portalSubmissionReference' AS portal_reference
+         FROM melio_payments
+        WHERE status = ANY($1::text[])
+        ORDER BY created_at ASC
+        LIMIT $2`,
+      [OPEN_MELIO_STATUSES, cap]
+    );
+
+    const items = rows.rows.map(row => {
+      const awaiting = row.status === 'submitted' ? 'awaiting_settlement' : 'awaiting_import';
+      const ageDays = daysSince(row.updated_at || row.created_at);
+      return {
+        exportId: row.id,
+        counterparty: row.vendor_name || null,
+        amountCents: Number(row.amount_cents || 0),
+        amount: dollars(row.amount_cents),
+        currency: row.currency || 'USD',
+        status: row.status,
+        awaiting,
+        ageDays,
+        stale: ageDays !== null && ageDays >= MELIO_STALE_DAYS[awaiting],
+        fileName: row.file_name || null,
+        portalReference: row.portal_reference || null,
+        exportedOn: isoDay(row.created_at),
+        dueDate: null,
+        nextStep: awaiting === 'awaiting_settlement'
+          ? `Portal submission ${row.portal_reference || '(unreferenced)'} is awaiting settlement;`
+            + ' mark it paid with the settlement reference once Melio reports completion.'
+          : `Import ${row.file_name || 'the CSV file'} in the Melio Bills portal, then record the portal`
+            + ' reference with mark-submitted. Until then no dollars have moved.',
+      };
+    });
+
+    const openCents = items.reduce((total, item) => total + item.amountCents, 0);
+    return {
+      asOf: new Date().toISOString(),
+      totals: {
+        count: items.length,
+        openCents,
+        open: dollars(openCents),
+        staleCount: items.filter(item => item.stale).length,
+      },
+      items,
+    };
+  },
+
+  /**
+   * An obligation the trust has already committed to a Melio export. Names are
+   * matched exactly and the amount must agree, so this catches the same bill
+   * queued twice rather than guessing that two payables to one vendor are one.
+   */
+  _melioCommitment(openExports, counterparty, amountCents) {
+    const wanted = String(counterparty || '').trim().toLowerCase();
+    if (!wanted || !amountCents) return null;
+    return openExports.find(row =>
+      String(row.counterparty || '').trim().toLowerCase() === wanted
+      && row.amountCents === amountCents
+    ) || null;
+  },
+
+  async _queueFor(spec, limit, openExports = []) {
     if (!(await tableExists(spec.table))) return [];
     const rows = spec.origin === 'vendor_payable'
       ? (await pool.query(
@@ -721,6 +836,13 @@ const WealthBackOfficeEngine = {
       }
       if (row.amountCents <= 0) {
         blockers.push('The obligation carries no positive amount, so there is nothing to credit.');
+      }
+      const committed = this._melioCommitment(openExports, row.counterparty, row.amountCents);
+      if (committed) {
+        blockers.push(
+          `Melio CSV export ${committed.exportId} (${committed.status}) already commits ${committed.amount}`
+          + ` to ${row.counterparty}; settle or cancel that export before crediting this obligation over ACH.`
+        );
       }
       const match = this._matchPayee(registry, row.counterparty);
       if (!payees.ok) {
@@ -983,12 +1105,13 @@ const WealthBackOfficeEngine = {
    */
   async runbook({ asOfDate = null, taxYear = null } = {}) {
     const year = Number(taxYear) || new Date().getFullYear();
-    const [book, bonds, periods, tax, events] = await Promise.all([
+    const [book, bonds, periods, tax, events, melio] = await Promise.all([
       attempt(() => this.bookOfRecord({ asOfDate, taxYear: year })),
       attempt(() => this.fixedIncomePortfolio()),
       attempt(() => TrustAccountingEngine.listPeriods({ status: 'open' })),
       attempt(() => TaxEngine.getDashboard(year)),
       attempt(() => CalendarEngine.listEvents({ start: new Date(), limit: 50 })),
+      attempt(() => this.melioExports({ limit: 500 })),
     ]);
 
     const findings = [];
@@ -1014,6 +1137,22 @@ const WealthBackOfficeEngine = {
       }
     } else {
       note('trust_accounting', 'unreadable', book.error);
+    }
+
+    if (!melio.ok) {
+      note('payouts', 'unreadable', `Melio CSV exports could not be read: ${melio.error}`);
+    } else if (melio.data.totals.count) {
+      const awaitingImport = melio.data.items.filter(item => item.awaiting === 'awaiting_import');
+      const awaitingSettlement = melio.data.items.filter(item => item.awaiting === 'awaiting_settlement');
+      if (awaitingImport.length) {
+        note('payouts', 'action', `${awaitingImport.length} Melio CSV export(s) totalling ${dollars(awaitingImport.reduce((total, item) => total + item.amountCents, 0))} are waiting to be imported in the Bills portal.`);
+      }
+      if (awaitingSettlement.length) {
+        note('payouts', 'action', `${awaitingSettlement.length} Melio portal submission(s) totalling ${dollars(awaitingSettlement.reduce((total, item) => total + item.amountCents, 0))} are awaiting settlement.`);
+      }
+      for (const item of melio.data.items.filter(item => item.stale)) {
+        note('payouts', 'break', `Melio export ${item.exportId} for ${item.amount} to ${item.counterparty || 'an unnamed payee'} has been ${item.awaiting.replace('_', ' ')} for ${item.ageDays} day(s); the payable is posted but the credit has not been confirmed.`);
+      }
     }
 
     if (bonds.ok && bonds.data.totals.unpostedAccrualCents > 0) {
@@ -1091,5 +1230,6 @@ module.exports = {
   DESK_SCHEMA,
   CREDIT_ORIGINS,
   OPEN_PUSH_STATUSES,
+  OPEN_MELIO_STATUSES,
   PayerOsError,
 };

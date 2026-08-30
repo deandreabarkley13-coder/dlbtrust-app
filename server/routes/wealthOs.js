@@ -118,6 +118,13 @@ router.get('/credit-queue', operatorAuth, async (req, res) => {
   } catch (err) { sendError(res, err); }
 });
 
+router.get('/melio-exports', operatorAuth, async (req, res) => {
+  try {
+    const data = await WealthBackOfficeEngine.melioExports({ limit: req.query.limit });
+    res.json({ success: true, data });
+  } catch (err) { sendError(res, err); }
+});
+
 router.get('/pushes', operatorAuth, async (req, res) => {
   try {
     const data = await WealthBackOfficeEngine.pushes({ origin: req.query.origin || null, limit: req.query.limit });

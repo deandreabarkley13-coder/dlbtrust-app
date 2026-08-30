@@ -22,6 +22,7 @@
  *   node server/scripts/wealthBackOffice.js push --origin vendor_payable --id VPAY-… \
  *     --maker trustee-one@example.com [--payee acme] [--memo "August invoice"]
  *   node server/scripts/wealthBackOffice.js pushes [--limit 20]
+ *   node server/scripts/wealthBackOffice.js melio [--limit 50]
  *   node server/scripts/wealthBackOffice.js client --id CONTACT-…
  */
 
@@ -140,6 +141,19 @@ async function main() {
     return;
   }
 
+  if (command === 'melio') {
+    const exports_ = await WealthBackOfficeEngine.melioExports({ limit: args.limit });
+    print('Melio CSV exports still owed a manual step:', exports_);
+    if (exports_.items.length) {
+      console.log('\nNext step per export:');
+      exports_.items.forEach((item) => {
+        console.log(`  ${item.exportId} ${item.amount} ${item.counterparty || '(unnamed)'}${item.stale ? ` [STALE ${item.ageDays}d]` : ''}`);
+        console.log(`    ${item.nextStep}`);
+      });
+    }
+    return;
+  }
+
   if (command === 'pushes') {
     print('Handoffs to Payer OS:', await WealthBackOfficeEngine.pushes({ origin: args.origin || null, limit: args.limit }));
     return;
@@ -152,7 +166,7 @@ async function main() {
 
   throw new Error(
     `Unknown command "${command}".`
-    + ' Commands: status, init, desks, desk, position, runbook, queue, push, pushes, client'
+    + ' Commands: status, init, desks, desk, position, runbook, queue, melio, push, pushes, client'
   );
 }
 
