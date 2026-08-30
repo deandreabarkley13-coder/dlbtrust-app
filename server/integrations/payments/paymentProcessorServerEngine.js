@@ -29,6 +29,9 @@ function safeJson(obj) {
 
 let StripeTreasuryEngine;
 let ClearingApiEngine;
+let PDCflowEngine;
+let KafkaEventBus;
+let EVENT_TOPICS;
 let DepositAndSettlementEngine;
 let PayoutCenterEngine;
 let LiliBankEngine;
@@ -36,6 +39,7 @@ let SkrillLinkEngine;
 let WebPaymentRailEngine;
 let CashEngine;
 let PaymentHubEngine;
+let ReserveEngine;
 
 function loadDeps() {
   try { ({ StripeTreasuryEngine } = require('./stripeTreasuryEngine')); } catch {}
@@ -47,9 +51,40 @@ function loadDeps() {
   try { ({ WebPaymentRailEngine } = require('./webPaymentRailEngine')); } catch {}
   try { ({ CashEngine } = require('../cash/cashEngine')); } catch {}
   try { ({ PaymentHubEngine } = require('../paymentHub/paymentHubEngine')); } catch {}
+  try { ({ PDCflowEngine } = require('./pdcflowEngine')); } catch {}
+  try { ({ ReserveEngine } = require('../finops/reserveEngine')); } catch {}
+  try {
+    ({ KafkaEventBus, TOPICS: EVENT_TOPICS } = require('../events/kafkaEventBus'));
+  } catch {}
+}
+
+/** Publishing must never break a payment: the ledger row is authoritative. */
+async function emit(topic, payload, key) {
+  if (!KafkaEventBus || !topic) return;
+  try {
+    await KafkaEventBus.publish(topic, payload, { key });
+  } catch (e) {
+    console.warn('[processor] event publish failed:', e.message);
+  }
 }
 
 const TABLE = 'payment_processor_transactions';
+
+/**
+ * Processors that move value outside the trust's own books. These are the only
+ * ones that require reserve backing; internal clearing and book transfers do
+ * not leave the ledger.
+ */
+const EXTERNAL_PROCESSORS = [
+  'stripe_treasury',
+  'stripe_ach',
+  'stripe_wire',
+  'lili',
+  'lili_bank',
+  'skrill',
+  'pdcflow',
+  'payout_center',
+];
 
 class PaymentProcessorServerEngine {
   static async ensureTables() {
@@ -90,7 +125,26 @@ class PaymentProcessorServerEngine {
     if (r === 'web' || r === 'web_payment_rail' || r === 'https') return 'web_payment_rail';
     if (r === 'payout_center' || r === 'payout') return 'payout_center';
     if (r === 'payment_hub' || r === 'payment_intent') return 'payment_hub';
+    if (r === 'pdcflow' || r === 'pdcflow_ach' || r === 'gateway_ach') return 'pdcflow';
     return 'payout_center';
+  }
+
+  /**
+   * An outbound rail can only send reserves held for the trust at an external
+   * custodian. In strict mode this throws before the provider is contacted.
+   */
+  static async _assertReserveBacked({ amountCents, rail, processor, source = {} }) {
+    if (!ReserveEngine) return null;
+    const decision = await ReserveEngine.assertSpendable({
+      amountCents,
+      rail: `${processor}:${rail}`,
+      accountId: source.accountId || source.account_id || null,
+      seriesId: source.seriesId || source.series_id || null,
+    });
+    if (decision && decision.warning) {
+      console.warn('[processor] reserve check:', decision.warning);
+    }
+    return decision;
   }
 
   static async _insert(base) {
@@ -151,9 +205,28 @@ class PaymentProcessorServerEngine {
       initiated_by: initiatedBy || 'system',
     };
     await this._insert(base);
+    await emit(EVENT_TOPICS && EVENT_TOPICS.paymentRequested, {
+      paymentId: txId,
+      processor: chosenProcessor,
+      rail: chosenRail,
+      direction: base.direction,
+      amountCents,
+      currency: base.currency,
+      reference: reference || null,
+      initiatedBy: base.initiated_by,
+    }, txId);
 
+    let reserveDecision = null;
     let result = { status: 'pending' };
     try {
+      if (base.direction === 'outbound' && EXTERNAL_PROCESSORS.includes(chosenProcessor) && !extras.dryRun) {
+        reserveDecision = await this._assertReserveBacked({
+          amountCents,
+          rail: chosenRail,
+          processor: chosenProcessor,
+          source,
+        });
+      }
       if (base.direction === 'inbound') {
         result = await this._processInbound({ amount, currency, rail: chosenRail, source, destination, reference, metadata, initiatedBy, extras, txId });
       } else {
@@ -183,13 +256,24 @@ class PaymentProcessorServerEngine {
           case 'payment_hub':
             result = await this._processPaymentHub({ amount, currency, source, destination, reference, metadata, initiatedBy, extras, rail: chosenRail });
             break;
+          case 'pdcflow':
+            result = await this._processPdcflow({ amountCents, destination, reference, metadata, extras, txId });
+            break;
           case 'payout_center':
           default:
             result = await this._processPayoutCenter({ amount, currency, source, destination, rail: chosenRail, reference, metadata, initiatedBy });
         }
       }
     } catch (err) {
-      result = { status: 'failed', error: err.message, detail: err };
+      // A reserve shortfall fails the request before any provider call, so the
+      // row lands in failed rather than staying pending on an untransmitted row.
+      result = {
+        status: 'failed',
+        error: err.message,
+        code: err.code || null,
+        reserveBlocked: err.code === 'RESERVE_SHORTFALL',
+        detail: err.detail || err,
+      };
     }
 
     const status =
@@ -199,8 +283,24 @@ class PaymentProcessorServerEngine {
       'pending';
     const externalRef = result.externalReference || result.transactionId || result.tx_hash || result.payout_id || result.orderId || result.clearingId || result.payment_id || result.processorTxId || reference || null;
     await this._update(txId, { status, external_reference: externalRef, raw_response: safeJson(result) });
+    const outcomeTopic = EVENT_TOPICS && (
+      status === 'completed' ? EVENT_TOPICS.paymentSettled
+        : status === 'failed' ? EVENT_TOPICS.paymentFailed
+          : EVENT_TOPICS.paymentTransmitted
+    );
+    await emit(outcomeTopic, {
+      paymentId: txId,
+      processor: chosenProcessor,
+      rail: chosenRail,
+      direction: base.direction,
+      amountCents,
+      currency: base.currency,
+      status,
+      externalReference: externalRef,
+      error: result.error || null,
+    }, txId);
 
-    return { processorTxId: txId, processor: chosenProcessor, rail: chosenRail, status, amount: (amountCents / 100).toFixed(2), currency: base.currency, result };
+    return { processorTxId: txId, processor: chosenProcessor, rail: chosenRail, status, amount: (amountCents / 100).toFixed(2), currency: base.currency, externalReference: externalRef, reserve: reserveDecision, result };
   }
 
   static async _processInbound({ amount, currency, rail, source, destination, reference, metadata, initiatedBy, extras, txId }) {
@@ -367,6 +467,77 @@ class PaymentProcessorServerEngine {
     }, initiatedBy);
   }
 
+  /**
+   * PDCflow is the trust's own gateway/processor account: `outbound` becomes an
+   * ACH CREDIT to the beneficiary, `inbound` an ACH DEBIT pulling funds in.
+   */
+  static async _processPdcflow({ amountCents, destination, reference, metadata, extras, txId }) {
+    if (!PDCflowEngine) return { status: 'manual', instruction: 'PDCflow engine unavailable' };
+    if (!PDCflowEngine.isConfigured()) {
+      const st = PDCflowEngine.status();
+      return { status: 'manual', instruction: st.note, missingConfiguration: st.missingConfiguration };
+    }
+    const direction = String(extras.pdcflowDirection || destination.direction || 'credit').toLowerCase();
+    const instruction = {
+      reference: reference || txId,
+      amountCents,
+      counterpartyName: destination.accountHolderName || destination.recipientName || destination.name,
+      routingNumber: destination.routingNumber || destination.routing,
+      accountNumber: destination.accountNumber || destination.account,
+      accountType: destination.accountType || 'checking',
+      bankAccountToken: destination.bankAccountToken,
+      email: destination.email,
+      description: metadata.description || reference,
+      dateScheduled: extras.effectiveDate,
+    };
+    if (extras.dryRun) {
+      return { status: 'manual', instruction: 'Dry run', prepared: PDCflowEngine.prepareAch(direction, instruction) };
+    }
+    const accepted = await PDCflowEngine.originateAch(direction, instruction);
+    return {
+      // Acceptance is not settlement: PDCflow's postback moves this to completed.
+      status: accepted.settled ? 'completed' : 'pending',
+      externalReference: accepted.providerReference,
+      transactionId: accepted.providerReference,
+      result: accepted,
+    };
+  }
+
+  /**
+   * Apply a PDCflow postback. This is the settlement evidence for a PDCflow
+   * transaction: nothing here trusts the caller for an amount, only the status
+   * of an already-recorded transaction matched by its provider reference.
+   */
+  static async applyPdcflowPostback(body = {}) {
+    loadDeps();
+    if (!PDCflowEngine) throw new Error('PDCflow engine unavailable');
+    const outcome = PDCflowEngine.interpretPostback(body);
+    if (!outcome.providerReference) throw new Error('Postback did not include a transactionId');
+    if (!pg || !pg.query) return { matched: false, ...outcome };
+    const found = await pg.query(
+      `SELECT * FROM ${TABLE} WHERE processor = 'pdcflow' AND external_reference = $1 LIMIT 1`,
+      [outcome.providerReference]
+    );
+    const row = found.rows[0];
+    if (!row) return { matched: false, ...outcome };
+    const status = outcome.settled ? 'completed' : outcome.failed ? 'failed' : 'pending';
+    await this._update(row.processor_tx_id, { status, raw_response: safeJson(body) });
+    await emit(EVENT_TOPICS && (status === 'completed'
+      ? EVENT_TOPICS.paymentSettled
+      : status === 'failed' ? EVENT_TOPICS.paymentFailed : EVENT_TOPICS.paymentTransmitted), {
+      paymentId: row.processor_tx_id,
+      processor: 'pdcflow',
+      rail: row.rail,
+      direction: row.direction,
+      amountCents: Number(row.amount_cents),
+      currency: row.currency,
+      status,
+      externalReference: outcome.providerReference,
+      providerStatus: outcome.providerStatus,
+    }, row.processor_tx_id);
+    return { matched: true, processorTxId: row.processor_tx_id, status, ...outcome };
+  }
+
   static async getStatus(txId) {
     return this._find(txId);
   }
@@ -463,8 +634,9 @@ class PaymentProcessorServerEngine {
       { name: 'skrill', label: 'Skrill', available: !!SkrillLinkEngine, rails: ['skrill'] },
       { name: 'web_payment_rail', label: 'Web Payment Rail', available: !!WebPaymentRailEngine, rails: ['web','https'] },
       { name: 'payment_hub', label: 'Payment Hub', available: !!PaymentHubEngine, rails: ['payment_hub','ach','wire'] },
+      { name: 'pdcflow', label: 'PDCflow Gateway', available: !!(PDCflowEngine && PDCflowEngine.isConfigured()), rails: ['pdcflow','pdcflow_ach','gateway_ach'] },
     ];
   }
 }
 
-module.exports = { PaymentProcessorServerEngine };
+module.exports = { PaymentProcessorServerEngine, EXTERNAL_PROCESSORS };

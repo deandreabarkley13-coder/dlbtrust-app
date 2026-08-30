@@ -232,6 +232,15 @@ router.post('/payments/melio/export-batch', async function(req, res) {
   }
 });
 
+router.get('/payments/melio/exports', operatorAuth, async function(req, res) {
+  try {
+    var data = await MelioEngine.listExports({ status: req.query.status, limit: req.query.limit });
+    res.json({ success: true, count: data.length, data: data });
+  } catch (err) {
+    res.status(err.status || 500).json({ success: false, error: err.message });
+  }
+});
+
 router.post('/payments/melio/:identifier/mark-submitted', operatorAuth, async function(req, res) {
   try {
     var result = await MelioEngine.process({
@@ -280,6 +289,23 @@ router.get('/payments/melio/:identifier/download', operatorAuth, async function(
     res.type('text/csv');
     res.attachment(fileName);
     fs.createReadStream(resolvedPath).on('error', function(err) {
+      if (!res.headersSent) res.status(404).json({ success: false, error: err.message });
+      else res.destroy(err);
+    }).pipe(res);
+  } catch (err) {
+    res.status(err.status || 500).json({ success: false, error: err.message });
+  }
+});
+
+router.get('/payments/melio/:identifier/invoice-pdf', operatorAuth, async function(req, res) {
+  try {
+    var file = await MelioEngine.getInvoicePdfFile(req.params.identifier);
+    if (!file) return res.status(404).json({ success: false, error: 'Melio export not found' });
+    var fs = require('fs');
+    if (!fs.existsSync(file.filePath)) return res.status(404).json({ success: false, error: 'Melio invoice file not found' });
+    res.type('application/pdf');
+    res.attachment(file.fileName);
+    fs.createReadStream(file.filePath).on('error', function(err) {
       if (!res.headersSent) res.status(404).json({ success: false, error: err.message });
       else res.destroy(err);
     }).pipe(res);

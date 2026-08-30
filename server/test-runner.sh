@@ -33,7 +33,11 @@ check "ACH health"        "curl -s http://localhost:3000/api/ach/health"  "opena
 check "Analytics API"     "curl -s http://localhost:3000/api/analytics/summary" "total_corpus"
 
 echo "--- OpenACH ---" | tee -a $LOG
-check "OA connect"  "curl -s -X POST http://localhost/openach/api/connect -H 'Host: ach.dlbtrust.cloud' --data 'user_api_token=3caee1c2-c218-4959-b6d2-21d4b2a1b42e&user_api_key=b74966cf-5276-4d8b-8650-5bd57dcee272'" "success.*true"
+if [ -n "$OPENACH_API_TOKEN" ] && [ -n "$OPENACH_API_KEY" ]; then
+  check "OA connect"  "curl -s -X POST http://localhost/openach/api/connect -H 'Host: ach.dlbtrust.cloud' --data \"user_api_token=$OPENACH_API_TOKEN&user_api_key=$OPENACH_API_KEY\"" "success.*true"
+else
+  echo "  ⏭  SKIP: OA connect (OPENACH_API_TOKEN / OPENACH_API_KEY unset)" | tee -a $LOG
+fi
 
 echo "" | tee -a $LOG
 echo "Results: $PASS passed, $FAIL failed" | tee -a $LOG

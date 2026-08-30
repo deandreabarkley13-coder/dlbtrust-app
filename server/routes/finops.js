@@ -29,6 +29,12 @@ const { UniswapV3Engine } = require('../integrations/dapp/uniswapV3Engine');
 const { DexAggregatorEngine } = require('../integrations/dapp/dexAggregatorEngine');
 const { InternalMarketMakerEngine } = require('../integrations/dapp/internalMarketMakerEngine');
 const { ReserveVaultEngine } = require('../integrations/dapp/reserveVaultEngine');
+const { ReserveEngine } = require('../integrations/finops/reserveEngine');
+const { CustodyOsEngine } = require('../integrations/custody/custodyOsEngine');
+const { SeriesOsEngine } = require('../integrations/series/seriesOsEngine');
+const { CapitalTransferOsEngine } = require('../integrations/capital/capitalTransferOsEngine');
+const { PrincipalIncomeEngine } = require('../integrations/drawdown/principalIncomeEngine');
+const { BondObligationEngine } = require('../integrations/finops/bondObligationEngine');
 const { TreasuryOnRampBridgeEngine } = require('../integrations/dapp/treasuryOnRampBridgeEngine');
 const { TrustMarketEngine } = require('../integrations/dapp/trustMarketEngine');
 const { IntentRoutingEngine } = require('../integrations/dapp/intentRoutingEngine');
@@ -987,6 +993,516 @@ router.post('/internal-market-maker/pools/:id/accrue-yield', operatorAuth, async
 });
 
 // ═════════════════════════════════════════════════════════════════════════════
+// Core Bank Reserve Engine — attested external reserves behind ledger cash
+// ═════════════════════════════════════════════════════════════════════════════
+
+router.get('/reserve/status', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await ReserveEngine.status() }); } catch (err) { sendError(res, err); }
+});
+
+router.get('/reserve/coverage', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await ReserveEngine.coverage() }); } catch (err) { sendError(res, err); }
+});
+
+router.get('/reserve/attestations', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await ReserveEngine.latestAttestations() }); } catch (err) { sendError(res, err); }
+});
+
+// Reads every custody source we can query and records what it holds.
+router.post('/reserve/verify', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try { res.json({ success: true, data: await ReserveEngine.verifyLive() }); } catch (err) { sendError(res, err); }
+});
+
+// Records a custodian statement as a reserve; evidence and attester required.
+router.post('/reserve/attest', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try {
+    const actor = sessionActor(req);
+    const data = await ReserveEngine.record({
+      ...req.body,
+      verification: 'statement',
+      attestedBy: req.body.attestedBy || actor,
+    });
+    res.status(201).json({ success: true, data });
+  } catch (err) { sendError(res, err); }
+});
+
+// Bond portfolio read as collateral: what each position actually backs.
+router.get('/reserve/portfolio', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await ReserveEngine.portfolio() }); } catch (err) { sendError(res, err); }
+});
+
+// Records a securities custodian statement for a bond position as collateral.
+router.post('/reserve/attest-fixed-income', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try {
+    const actor = sessionActor(req);
+    const data = await ReserveEngine.record({
+      ...req.body,
+      sourceType: 'securities_custodian',
+      assetClass: 'fixed_income',
+      verification: 'statement',
+      attestedBy: req.body.attestedBy || actor,
+    });
+    res.status(201).json({ success: true, data });
+  } catch (err) { sendError(res, err); }
+});
+
+router.get('/reserve/provenance/:accountId', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await ReserveEngine.provenance(req.params.accountId) }); } catch (err) { sendError(res, err); }
+});
+
+// Who holds each bond, and whether it is a trust asset or a trust obligation.
+router.get('/bond-holders/:bondRef', operatorAuth, async (req, res) => {
+  try {
+    const data = await BondObligationEngine.obligationFor(
+      req.params.bondRef,
+      ReserveEngine.config().trustIssuers
+    );
+    if (!data) throw new Error(`Bond ${req.params.bondRef} not found`);
+    res.json({ success: true, data });
+  } catch (err) { sendError(res, err); }
+});
+
+// Declares the capacity a holder subscribed in: personal (the trust owes them)
+// or trust (the trust holds its own paper).
+router.post('/bond-holders/capacity', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try {
+    const data = await BondObligationEngine.declareCapacity({
+      ...req.body,
+      recordedBy: req.body.recordedBy || sessionActor(req),
+    });
+    res.status(201).json({ success: true, data });
+  } catch (err) { sendError(res, err); }
+});
+
+// ═════════════════════════════════════════════════════════════════════════════
+// Custody OS — safekeeping accounts, dual-signed receipts, chain of title
+// ═════════════════════════════════════════════════════════════════════════════
+
+router.get('/custody/status', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await CustodyOsEngine.status() }); } catch (err) { sendError(res, err); }
+});
+
+router.get('/custody/statement', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await CustodyOsEngine.statement() }); } catch (err) { sendError(res, err); }
+});
+
+router.get('/custody/accounts', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await CustodyOsEngine.listAccounts() }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/custody/accounts', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try {
+    const data = await CustodyOsEngine.openAccount({
+      ...req.body,
+      openedBy: req.body.openedBy || sessionActor(req),
+    });
+    res.status(201).json({ success: true, data });
+  } catch (err) { sendError(res, err); }
+});
+
+router.get('/custody/positions', operatorAuth, async (req, res) => {
+  try {
+    const data = await CustodyOsEngine.listPositions({ custodyAccountId: req.query.custodyAccountId || null });
+    res.json({ success: true, data });
+  } catch (err) { sendError(res, err); }
+});
+
+router.post('/custody/positions', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try {
+    const data = await CustodyOsEngine.recordPosition({
+      ...req.body,
+      recordedBy: req.body.recordedBy || sessionActor(req),
+    });
+    res.status(201).json({ success: true, data });
+  } catch (err) { sendError(res, err); }
+});
+
+router.get('/custody/receipts', operatorAuth, async (req, res) => {
+  try {
+    const data = await CustodyOsEngine.listReceipts({ status: req.query.status || null });
+    res.json({ success: true, data });
+  } catch (err) { sendError(res, err); }
+});
+
+// A receipt is a claim until a second distinct trustee countersigns it.
+router.post('/custody/receipts', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try {
+    const data = await CustodyOsEngine.proposeReceipt({
+      ...req.body,
+      proposedBy: req.body.proposedBy || sessionActor(req),
+    });
+    res.status(201).json({ success: true, data });
+  } catch (err) { sendError(res, err); }
+});
+
+router.post('/custody/receipts/:id/countersign', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try {
+    const data = await CustodyOsEngine.countersignReceipt(
+      req.params.id,
+      (req.body && req.body.signedBy) || sessionActor(req),
+      { role: (req.body && req.body.role) || null }
+    );
+    res.json({ success: true, data });
+  } catch (err) { sendError(res, err); }
+});
+
+router.post('/custody/receipts/:id/void', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try {
+    const data = await CustodyOsEngine.voidReceipt(
+      req.params.id,
+      (req.body && req.body.voidedBy) || sessionActor(req),
+      (req.body && req.body.reason) || null
+    );
+    res.json({ success: true, data });
+  } catch (err) { sendError(res, err); }
+});
+
+router.get('/custody/events', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await CustodyOsEngine.events({ limit: req.query.limit }) }); } catch (err) { sendError(res, err); }
+});
+
+router.get('/custody/chain', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await CustodyOsEngine.verifyChain() }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/custody/sync-reserve', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try {
+    const data = await CustodyOsEngine.syncReserve({
+      syncedBy: (req.body && req.body.syncedBy) || sessionActor(req),
+    });
+    res.json({ success: true, data });
+  } catch (err) { sendError(res, err); }
+});
+
+// ═════════════════════════════════════════════════════════════════════════════
+// Series OS — master trust / series register, asset identification, ring fencing
+// ═════════════════════════════════════════════════════════════════════════════
+
+router.get('/series/status', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await SeriesOsEngine.status() }); } catch (err) { sendError(res, err); }
+});
+
+router.get('/series/statement', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await SeriesOsEngine.statement() }); } catch (err) { sendError(res, err); }
+});
+
+// Every asset the trust can point at, what it contributes, and where it is fenced.
+router.get('/series/assets', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await SeriesOsEngine.identify() }); } catch (err) { sendError(res, err); }
+});
+
+router.get('/series', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await SeriesOsEngine.listSeries() }); } catch (err) { sendError(res, err); }
+});
+
+router.post('/series', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try {
+    const data = await SeriesOsEngine.openSeries({
+      ...req.body,
+      openedBy: (req.body && req.body.openedBy) || sessionActor(req),
+    });
+    res.status(201).json({ success: true, data });
+  } catch (err) { sendError(res, err); }
+});
+
+router.get('/series/:ref/balance-sheet', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await SeriesOsEngine.balanceSheet(req.params.ref) }); } catch (err) { sendError(res, err); }
+});
+
+router.get('/series/:ref/assets', operatorAuth, async (req, res) => {
+  try {
+    const data = await SeriesOsEngine.listAssignments({ seriesRef: req.params.ref });
+    res.json({ success: true, data });
+  } catch (err) { sendError(res, err); }
+});
+
+// Fencing an asset into a series is refused if another series already holds it.
+router.post('/series/:ref/assets', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try {
+    const data = await SeriesOsEngine.assignAsset({
+      ...req.body,
+      seriesRef: req.params.ref,
+      assignedBy: (req.body && req.body.assignedBy) || sessionActor(req),
+    });
+    res.status(201).json({ success: true, data });
+  } catch (err) { sendError(res, err); }
+});
+
+router.post('/series/assets/:assignmentId/release', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try {
+    const data = await SeriesOsEngine.releaseAsset(req.params.assignmentId, {
+      releasedBy: (req.body && req.body.releasedBy) || sessionActor(req),
+      reason: (req.body && req.body.reason) || null,
+    });
+    res.json({ success: true, data });
+  } catch (err) { sendError(res, err); }
+});
+
+router.get('/series/:ref/obligations', operatorAuth, async (req, res) => {
+  try {
+    const data = await SeriesOsEngine.listObligations({
+      seriesRef: req.params.ref,
+      status: req.query.status || null,
+    });
+    res.json({ success: true, data });
+  } catch (err) { sendError(res, err); }
+});
+
+router.post('/series/:ref/obligations', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try {
+    const data = await SeriesOsEngine.recordObligation({
+      ...req.body,
+      seriesRef: req.params.ref,
+      createdBy: (req.body && req.body.createdBy) || sessionActor(req),
+    });
+    res.status(201).json({ success: true, data });
+  } catch (err) { sendError(res, err); }
+});
+
+router.post('/series/obligations/:obligationId/settle', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try {
+    const data = await SeriesOsEngine.settleObligation(req.params.obligationId, {
+      status: (req.body && req.body.status) || 'settled',
+      settledBy: (req.body && req.body.settledBy) || sessionActor(req),
+    });
+    res.json({ success: true, data });
+  } catch (err) { sendError(res, err); }
+});
+
+router.get('/series-events', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await SeriesOsEngine.events({ limit: req.query.limit }) }); } catch (err) { sendError(res, err); }
+});
+
+router.get('/series-chain', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await SeriesOsEngine.verifyChain() }); } catch (err) { sendError(res, err); }
+});
+
+// ═════════════════════════════════════════════════════════════════════════════
+// Capital Transfer OS — convert reserve assets into spendable series capital
+// ═════════════════════════════════════════════════════════════════════════════
+
+router.get('/capital/status', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await CapitalTransferOsEngine.status() }); } catch (err) { sendError(res, err); }
+});
+
+// What could be raised, by route, and why the rest cannot be converted.
+router.get('/capital/plan', operatorAuth, async (req, res) => {
+  try {
+    const data = await CapitalTransferOsEngine.plan({
+      seriesRef: req.query.seriesRef || null,
+      targetCents: req.query.targetCents === undefined ? null : Number(req.query.targetCents),
+    });
+    res.json({ success: true, data });
+  } catch (err) { sendError(res, err); }
+});
+
+router.get('/capital/transfers', operatorAuth, async (req, res) => {
+  try {
+    const data = await CapitalTransferOsEngine.list({
+      seriesRef: req.query.seriesRef || null,
+      status: req.query.status || null,
+      limit: req.query.limit,
+    });
+    res.json({ success: true, data });
+  } catch (err) { sendError(res, err); }
+});
+
+router.post('/capital/transfers', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try {
+    const data = await CapitalTransferOsEngine.propose({
+      ...req.body,
+      proposedBy: (req.body && req.body.proposedBy) || sessionActor(req),
+    });
+    res.status(201).json({ success: true, data });
+  } catch (err) { sendError(res, err); }
+});
+
+router.get('/capital/transfers/:transferId', operatorAuth, async (req, res) => {
+  try {
+    const data = await CapitalTransferOsEngine.get(req.params.transferId);
+    if (!data) return res.status(404).json({ success: false, error: 'Capital transfer not found' });
+    res.json({ success: true, data });
+  } catch (err) { sendError(res, err); }
+});
+
+router.post('/capital/transfers/:transferId/authorize', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try {
+    const data = await CapitalTransferOsEngine.authorize(
+      req.params.transferId,
+      (req.body && req.body.signedBy) || sessionActor(req),
+      { role: (req.body && req.body.role) || null }
+    );
+    res.json({ success: true, data });
+  } catch (err) { sendError(res, err); }
+});
+
+router.post('/capital/transfers/:transferId/instruct', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try {
+    const data = await CapitalTransferOsEngine.instruct(req.params.transferId, {
+      ...req.body,
+      instructedBy: (req.body && req.body.instructedBy) || sessionActor(req),
+    });
+    res.json({ success: true, data });
+  } catch (err) { sendError(res, err); }
+});
+
+// Settlement: the only step that raises spendable funds, so it demands a
+// counterparty reference, evidence and an attesting officer.
+router.post('/capital/transfers/:transferId/confirm', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try {
+    const data = await CapitalTransferOsEngine.confirm(req.params.transferId, {
+      ...req.body,
+      confirmedBy: (req.body && req.body.confirmedBy) || sessionActor(req),
+    });
+    res.json({ success: true, data });
+  } catch (err) { sendError(res, err); }
+});
+
+router.post('/capital/transfers/:transferId/fail', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try {
+    const data = await CapitalTransferOsEngine.fail(req.params.transferId, {
+      reason: (req.body && req.body.reason) || null,
+      failedBy: (req.body && req.body.failedBy) || sessionActor(req),
+    });
+    res.json({ success: true, data });
+  } catch (err) { sendError(res, err); }
+});
+
+router.post('/capital/automate', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try {
+    const data = await CapitalTransferOsEngine.automate({
+      actor: (req.body && req.body.actor) || sessionActor(req),
+      seriesRef: (req.body && req.body.seriesRef) || null,
+      dryRun: Boolean(req.body && req.body.dryRun),
+    });
+    res.json({ success: true, data });
+  } catch (err) { sendError(res, err); }
+});
+
+router.get('/capital-events', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await CapitalTransferOsEngine.events({ limit: req.query.limit }) }); } catch (err) { sendError(res, err); }
+});
+
+router.get('/capital-chain', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await CapitalTransferOsEngine.verifyChain() }); } catch (err) { sendError(res, err); }
+});
+
+// ═════════════════════════════════════════════════════════════════════════════
+// Principal & Income Drawdown OS — entitlement against corpus vs funded cash
+// ═════════════════════════════════════════════════════════════════════════════
+
+router.get('/drawdown/status', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await PrincipalIncomeEngine.status() }); } catch (err) { sendError(res, err); }
+});
+
+// The fiduciary accounting for one series: principal and income, and every
+// drawdown with authorized stated separately from funded.
+router.get('/drawdown/statement', operatorAuth, async (req, res) => {
+  try {
+    res.json({ success: true, data: await PrincipalIncomeEngine.statement(req.query.seriesRef) });
+  } catch (err) { sendError(res, err); }
+});
+
+// What the series may draw, and how much of it could actually be paid today.
+router.get('/drawdown/entitlement', operatorAuth, async (req, res) => {
+  try {
+    res.json({ success: true, data: await PrincipalIncomeEngine.entitlement(req.query.seriesRef) });
+  } catch (err) { sendError(res, err); }
+});
+
+router.get('/drawdown/ledger', operatorAuth, async (req, res) => {
+  try {
+    const data = await PrincipalIncomeEngine.ledger({
+      seriesRef: req.query.seriesRef || null,
+      allocation: req.query.allocation || null,
+      limit: req.query.limit,
+    });
+    res.json({ success: true, data });
+  } catch (err) { sendError(res, err); }
+});
+
+router.post('/drawdown/entries', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try {
+    const data = await PrincipalIncomeEngine.recordEntry({
+      ...req.body,
+      recordedBy: (req.body && req.body.recordedBy) || sessionActor(req),
+    });
+    res.status(201).json({ success: true, data });
+  } catch (err) { sendError(res, err); }
+});
+
+router.get('/drawdown/drawdowns', operatorAuth, async (req, res) => {
+  try {
+    const data = await PrincipalIncomeEngine.list({
+      seriesRef: req.query.seriesRef || null,
+      status: req.query.status || null,
+      limit: req.query.limit,
+    });
+    res.json({ success: true, data });
+  } catch (err) { sendError(res, err); }
+});
+
+router.post('/drawdown/drawdowns', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try {
+    const data = await PrincipalIncomeEngine.propose({
+      ...req.body,
+      proposedBy: (req.body && req.body.proposedBy) || sessionActor(req),
+    });
+    res.status(201).json({ success: true, data });
+  } catch (err) { sendError(res, err); }
+});
+
+router.get('/drawdown/drawdowns/:drawdownId', operatorAuth, async (req, res) => {
+  try {
+    const data = await PrincipalIncomeEngine.get(req.params.drawdownId);
+    if (!data) return res.status(404).json({ success: false, error: 'Drawdown not found' });
+    res.json({ success: true, data });
+  } catch (err) { sendError(res, err); }
+});
+
+router.post('/drawdown/drawdowns/:drawdownId/authorize', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try {
+    const data = await PrincipalIncomeEngine.authorize(
+      req.params.drawdownId,
+      (req.body && req.body.signedBy) || sessionActor(req),
+      { role: (req.body && req.body.role) || null }
+    );
+    res.json({ success: true, data });
+  } catch (err) { sendError(res, err); }
+});
+
+// Funding is the step that moves money, so it pays only what the series has in
+// attested cash and leaves the rest outstanding with the reason.
+router.post('/drawdown/drawdowns/:drawdownId/fund', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try {
+    const data = await PrincipalIncomeEngine.fund(req.params.drawdownId, {
+      paymentReference: (req.body && req.body.paymentReference) || null,
+      amountCents: req.body && req.body.amountCents !== undefined ? req.body.amountCents : null,
+      fundedBy: (req.body && req.body.fundedBy) || sessionActor(req),
+    });
+    res.json({ success: true, data });
+  } catch (err) { sendError(res, err); }
+});
+
+router.post('/drawdown/drawdowns/:drawdownId/cancel', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try {
+    const data = await PrincipalIncomeEngine.cancel(req.params.drawdownId, {
+      reason: (req.body && req.body.reason) || null,
+      cancelledBy: (req.body && req.body.cancelledBy) || sessionActor(req),
+    });
+    res.json({ success: true, data });
+  } catch (err) { sendError(res, err); }
+});
+
+router.get('/drawdown-events', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await PrincipalIncomeEngine.events({ limit: req.query.limit }) }); } catch (err) { sendError(res, err); }
+});
+
+router.get('/drawdown-chain', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: await PrincipalIncomeEngine.verifyChain() }); } catch (err) { sendError(res, err); }
+});
+
+// ═════════════════════════════════════════════════════════════════════════════
 // Reserve Vault Engine (CDP) - tokenize reserves into a vault stablecoin
 // ═════════════════════════════════════════════════════════════════════════════
 
@@ -1863,7 +2379,7 @@ router.post('/vendor-bills/:id/pay', operatorAuth, async (req, res) => {
         amount: Number(bill.amount_cents) / 100,
         vendor,
         sourceCashAccountId: req.body.sourceCashAccountId || req.body.source_cash_account_id,
-        rail: req.body.rail || 'bank_transfer',
+        rail: req.body.rail || 'melio',
         webPaymentAdapter: req.body.webPaymentAdapter || req.body.web_payment_adapter,
         openBankingConnector: req.body.openBankingConnector || req.body.open_banking_connector,
         memo: req.body.memo || bill.memo,
@@ -1903,6 +2419,54 @@ router.post('/trust-bank/accounts/:id/deposit', operatorAuth, async (req, res) =
 
 router.post('/trust-bank/accounts/:id/payments', operatorAuth, async (req, res) => {
   try { res.status(201).json({ success: true, data: await TrustBankEngine.originatePayment({ fromAccountId: req.params.id, ...req.body }) }); } catch (err) { sendError(res, err); }
+});
+
+// The signed-in trustee, used as the actor of record on distributions.
+function sessionActor(req) {
+  const user = req.user || {};
+  return user.email || user.username || null;
+}
+
+// Internal family distributions run on maker/checker: propose, then sign.
+router.post('/trust-bank/accounts/:id/distributions', operatorAuth, async (req, res) => {
+  try {
+    const data = await TrustBankEngine.proposeInternalTransfer({
+      fromAccountId: req.params.id,
+      requestedBy: req.body.requestedBy || sessionActor(req),
+      ...req.body,
+    });
+    res.status(201).json({ success: true, data });
+  } catch (err) { sendError(res, err); }
+});
+
+router.get('/trust-bank/distributions', operatorAuth, async (req, res) => {
+  try {
+    res.json({
+      success: true,
+      data: await TrustBankEngine.listInternalApprovals({
+        status: req.query.status || 'pending',
+        limit: req.query.limit,
+      }),
+    });
+  } catch (err) { sendError(res, err); }
+});
+
+router.post('/trust-bank/distributions/:id/approve', operatorAuth, async (req, res) => {
+  try {
+    const approvedBy = req.body.approvedBy || sessionActor(req);
+    const data = await TrustBankEngine.approveInternalTransfer(req.params.id, approvedBy, {
+      role: req.body.role || null,
+    });
+    res.json({ success: true, data });
+  } catch (err) { sendError(res, err); }
+});
+
+router.post('/trust-bank/distributions/:id/reject', operatorAuth, async (req, res) => {
+  try {
+    const rejectedBy = req.body.rejectedBy || sessionActor(req);
+    const data = await TrustBankEngine.rejectInternalTransfer(req.params.id, rejectedBy, req.body.reason);
+    res.json({ success: true, data });
+  } catch (err) { sendError(res, err); }
 });
 
 router.post('/trust-bank/payments/:id/send', operatorAuth, async (req, res) => {

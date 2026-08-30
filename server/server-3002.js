@@ -148,6 +148,12 @@ try { app.use('/api/open-agent-id', require(path.join(HD, 'server', 'routes', 'o
 // OS Engines — unified operating-system layer for bank, treasury, payment, clearing, settlement, compliance, security, REST API, bookkeeping, cash, asset-acquisition, bank-aggregator, funding, smart-router, and back-office
 try { app.use('/api/os', require(path.join(HD, 'server', 'routes', 'os'))); console.log('[os-engines] loaded'); } catch(e) { console.warn('[os-engines]', e.message); }
 
+// In-House Bank — PTC family bank orchestration: ingress/idempotency, governance, smart routing, dual ledger, ISO 20022, zero trust
+try { app.use('/api/inhouse-bank', require(path.join(HD, 'server', 'routes', 'inhouseBank'))); console.log('[inhouse-bank] loaded'); } catch(e) { console.warn('[inhouse-bank]', e.message); }
+try { app.use('/api/camel', require(path.join(HD, 'server', 'routes', 'camel'))); console.log('[camel] loaded'); } catch(e) { console.warn('[camel]', e.message); }
+try { app.use('/api/openach-rail', require(path.join(HD, 'server', 'routes', 'openachRail'))); console.log('[openach-rail] loaded'); } catch(e) { console.warn('[openach-rail]', e.message); }
+try { app.use('/api/wallet', require(path.join(HD, 'server', 'routes', 'wallet'))); console.log('[wallet] loaded'); } catch(e) { console.warn('[wallet]', e.message); }
+
 // Settlement Endpoint — agent-to-agent discovery, handshake, and inbound payment
 (function() {
   let SettlementEndpointEngine;
@@ -494,6 +500,48 @@ async function initializeDatabase() {
   } catch(e) { console.warn('[payment-processor] table init:', e.message); }
 
   try {
+    var KafkaEventBus = require(path.join(HD, 'server', 'integrations', 'events', 'kafkaEventBus')).KafkaEventBus;
+    await KafkaEventBus.ensureTables();
+    console.log('[events] outbox ensured;', KafkaEventBus.status().mode);
+  } catch(e) { console.warn('[events] table init:', e.message); }
+
+  try {
+    var ReserveEngine = require(path.join(HD, 'server', 'integrations', 'finops', 'reserveEngine')).ReserveEngine;
+    await ReserveEngine.ensureTables();
+    console.log('[reserve] attestations ensured; enforcement =', ReserveEngine.config().enforcement);
+  } catch(e) { console.warn('[reserve] table init:', e.message); }
+
+  try {
+    var CustodyOsEngine = require(path.join(HD, 'server', 'integrations', 'custody', 'custodyOsEngine')).CustodyOsEngine;
+    await CustodyOsEngine.ensureTables();
+    console.log('[custody-os] tables ensured; signatures required =', CustodyOsEngine.config().requiredSignatures);
+  } catch(e) { console.warn('[custody-os] table init:', e.message); }
+
+  try {
+    var SeriesOsEngine = require(path.join(HD, 'server', 'integrations', 'series', 'seriesOsEngine')).SeriesOsEngine;
+    await SeriesOsEngine.ensureTables();
+    console.log('[series-os] tables ensured; ring fence =', SeriesOsEngine.config().enforcement);
+  } catch(e) { console.warn('[series-os] table init:', e.message); }
+
+  try {
+    var CapitalTransferOsEngine = require(path.join(HD, 'server', 'integrations', 'capital', 'capitalTransferOsEngine')).CapitalTransferOsEngine;
+    await CapitalTransferOsEngine.ensureTables();
+    console.log('[capital-transfer-os] tables ensured; automation =', CapitalTransferOsEngine.config().automation);
+  } catch(e) { console.warn('[capital-transfer-os] table init:', e.message); }
+
+  try {
+    var PrincipalIncomeEngine = require(path.join(HD, 'server', 'integrations', 'drawdown', 'principalIncomeEngine')).PrincipalIncomeEngine;
+    await PrincipalIncomeEngine.ensureTables();
+    console.log('[drawdown-os] tables ensured; principal allowance =', PrincipalIncomeEngine.config().principalRateBps, 'bps/yr');
+  } catch(e) { console.warn('[drawdown-os] table init:', e.message); }
+
+  try {
+    var BondObligationEngine = require(path.join(HD, 'server', 'integrations', 'finops', 'bondObligationEngine')).BondObligationEngine;
+    await BondObligationEngine.ensureTables();
+    console.log('[bond-obligation] tables ensured');
+  } catch(e) { console.warn('[bond-obligation] table init:', e.message); }
+
+  try {
     var PaymentGatewayServerEngine = require(path.join(HD, 'server', 'integrations', 'payments', 'paymentGatewayServerEngine')).PaymentGatewayServerEngine;
     await PaymentGatewayServerEngine.ensureTables();
     console.log('[payment-gateway] tables ensured');
@@ -703,6 +751,54 @@ async function initializeDatabase() {
     console.log('[os-engines] all tables ensured');
   } catch(e) { console.warn('[os-engines] table init:', e.message); }
 
+  // In-House Bank — virtual accounts, idempotency, policy, liquidity, dual ledger, zero-trust nonces
+  try {
+    var InHouseBankEngine = require(path.join(HD, 'server', 'integrations', 'inhouseBank', 'inHouseBankEngine')).InHouseBankEngine;
+    await InHouseBankEngine.ensureTables();
+    console.log('[inhouse-bank] tables ensured');
+  } catch(e) { console.warn('[inhouse-bank] table init:', e.message); }
+
+  // Direct host-to-host wire channel — idempotency vault, state log, advices, exceptions
+  try {
+    var WireHostToHostEngine = require(path.join(HD, 'server', 'integrations', 'inhouseBank', 'wire', 'wireHostToHostEngine')).WireHostToHostEngine;
+    await WireHostToHostEngine.ensureTables();
+    console.log('[wire-h2h] tables ensured');
+  } catch(e) { console.warn('[wire-h2h] table init:', e.message); }
+
+  // Family wallets — the BaaS layer over the bank's virtual accounts
+  try {
+    var WalletEngine = require(path.join(HD, 'server', 'integrations', 'inhouseBank', 'wallet', 'walletEngine')).WalletEngine;
+    var WalletCredentials = require(path.join(HD, 'server', 'integrations', 'inhouseBank', 'wallet', 'walletCredentials')).WalletCredentials;
+    await WalletEngine.ensureTables();
+    await WalletCredentials.ensureTables();
+    console.log('[wallet] tables ensured');
+  } catch(e) { console.warn('[wallet] table init:', e.message); }
+
+  // The dispatch link drives dispatched wires onto the bank host and reads the
+  // bank's advices back, so no payment waits on someone remembering to send it.
+  try {
+    var WireDispatchLink = require(path.join(HD, 'server', 'integrations', 'inhouseBank', 'wire', 'wireDispatchLink')).WireDispatchLink;
+    await WireDispatchLink.ensureTables();
+    var linkStart = WireDispatchLink.start();
+    console.log('[wire-link] ' + (linkStart.started ? 'started every ' + linkStart.intervalSeconds + 's' : 'not started: ' + linkStart.reason));
+  } catch(e) { console.warn('[wire-link] init:', e.message); }
+
+  // The Camel context is the one place the family bank's channels converge, and
+  // the OpenACH rail is the ACH last mile it hands payments to. Both keep their
+  // own durable state, so their tables exist before anything can be mediated.
+  try {
+    var CamelRouteEngine = require(path.join(HD, 'server', 'integrations', 'camel', 'camelRouteEngine')).CamelRouteEngine;
+    var OpenAchRailEngine = require(path.join(HD, 'server', 'integrations', 'openach', 'openachRailEngine')).OpenAchRailEngine;
+    var installFamilyBankFlow = require(path.join(HD, 'server', 'integrations', 'camel', 'familyBankFlow')).installFamilyBankFlow;
+    await CamelRouteEngine.ensureTables();
+    await OpenAchRailEngine.ensureTables();
+    installFamilyBankFlow();
+    var camelStart = CamelRouteEngine.start();
+    console.log('[camel] ' + (camelStart.started
+      ? 'context driving every ' + camelStart.intervalSeconds + 's'
+      : 'context idle: ' + camelStart.reason));
+  } catch(e) { console.warn('[camel] init:', e.message); }
+
   console.log('[startup] All database migrations complete');
 }
 
@@ -741,7 +837,7 @@ initializeDatabase().then(function() {
     }
   } catch(e) { console.warn('[operational-utilities-scheduler]', e.message); }
 
-  // Start trust cash sweep (hands-off fixed-income cash → Eaton Trust Checking).
+  // Start trust cash sweep (hands-off fixed-income cash → Trust Checking).
   // OFF unless TRUST_SWEEP_ENABLED=true, since it moves money without a human.
   try {
     var trustSweepScheduler = require(path.join(HD, 'server', 'integrations', 'payments', 'trustSweepScheduler'));

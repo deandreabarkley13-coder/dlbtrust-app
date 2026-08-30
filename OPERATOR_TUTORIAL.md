@@ -88,7 +88,7 @@ Database:  PostgreSQL (bonds, dApp, FinOps, calendar, messaging, documents)
 |--------|---------|--------------|
 | `documents` | `documentEngine.js`, `generationEngine.js`, `templateEngine.js` | Document vault, templates, generation, bond packages, statements, and receipts. |
 | `ofx` | `ofxEngine.js` | OFX statement import, institution management, and OFX-originated payments. |
-| `aggregator` | `bankingAggregator.js`, `scheduler`, connectors | Banking data aggregation with Eaton/generic/internal connectors, pull/push, webhooks, and returns. |
+| `aggregator` | `bankingAggregator.js`, `scheduler`, connectors | Banking data aggregation with generic/internal connectors, pull/push, webhooks, and returns. |
 | `backup` | `backupEngine.js`, `gracefulShutdown.js`, `transactionJournal.js`, `watchdog.js` | Backup, journal replay, and graceful shutdown resilience. |
 
 ### 3.5 AI, agents & collaboration

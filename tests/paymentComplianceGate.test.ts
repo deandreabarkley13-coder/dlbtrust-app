@@ -195,6 +195,29 @@ describe('payment compliance gate', () => {
       'Melio API is not reachable',
     ]));
   });
+
+  it('treats the verified Melio API mode (live_api) as live execution', async () => {
+    vi.spyOn(ComplianceEngine, 'readiness').mockResolvedValue({
+      ready: true,
+      provider: 'ofac',
+      issues: [],
+    });
+    vi.spyOn(MelioEngine, 'status').mockResolvedValue({
+      enabled: true,
+      mode: 'live_api',
+      apiStatus: { reachable: true },
+      issues: [],
+    });
+
+    const live = await PaymentComplianceGate.paymentReadiness({
+      rail: 'melio',
+      action: 'execute',
+    });
+
+    expect(live.ready).toBe(true);
+    expect(live.paymentProvider).toMatchObject({ mode: 'live_api', liveExecution: true });
+    expect(live.paymentProvider.issues).toEqual([]);
+  });
 });
 
 describe('OFAC sanctions readiness', () => {

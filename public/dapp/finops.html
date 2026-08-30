@@ -171,6 +171,12 @@
     { key:'ramps', name:'Ramp Center', desc:'Fiat on/off ramps and counterparty rail aggregator', stat:'', endpoint:null, action:'openRampsPanel' },
     { key:'decentralized-ramps', name:'Decentralized Ramps', desc:'DEX, P2P, cross-chain, and fiat on/off-ramp aggregator', stat:'', endpoint:null, action:'openDecentralizedRampsPanel' },
     { key:'internal-market-maker', name:'Internal Market Maker', desc:'Tokenize reserves (interest income, bonds, fixed income) and seed deeper BondDex pools', stat:'', endpoint:null, action:'openInternalMarketMakerPanel' },
+    { key:'core-reserve', name:'Core Bank Reserve', desc:'Attested external reserves and bond portfolio collateral behind ledger cash: coverage, custody verification, fixed income eligibility, and funding provenance', stat:'', endpoint:null, action:'openCoreReservePanel' },
+    { key:'custody-os', name:'Custody OS', desc:'Safekeeping accounts, positions, dual-signed custody receipts with chain of title, and the reserve attestations they produce', stat:'', endpoint:null, action:'openCustodyOsPanel' },
+    { key:'series-os', name:'Master Trust / Series OS', desc:'Identify every reserve asset and ring-fence it into one series, so a beneficiary series can only draw on its own assets', stat:'', endpoint:null, action:'openSeriesOsPanel' },
+    { key:'capital-transfer-os', name:'Capital Transfer OS', desc:'Convert reserve assets into spendable funds inside a series: sell or pledge collateral, redeem digital assets, sweep custodian cash, all under dual trustee control', stat:'', endpoint:null, action:'openCapitalTransferPanel' },
+    { key:'drawdown-os', name:'Principal & Income Drawdown OS', desc:'Trust accounting for drawdowns: allocate every receipt to principal or income, authorize what a beneficiary may draw against corpus, and fund it only from attested cash', stat:'', endpoint:null, action:'openDrawdownPanel' },
+    { key:'inhouse-bank', name:'PTC In-House Family Bank', desc:'One payment API for the family bank: idempotent ingress, policy and dual authorization, least-cost rail selection against the liquidity matrix, virtual accounts, ISO 20022, and a dual ledger that mirrors every posting to the trust GL', stat:'', endpoint:null, action:'openInHouseBankPanel' },
     { key:'reserve-vault', name:'Reserve Vault (CDP)', desc:'Tokenize ledger/module reserves into a vault stablecoin position and quote swaps to canonical assets', stat:'', endpoint:null, action:'openReserveVaultPanel' },
     { key:'treasury-on-ramp', name:'Treasury On-Ramp Bridge', desc:'Wire core-banking fiat to an on-ramp, receive DAI/USDC, and redeem internal tokens 1:1', stat:'', endpoint:null, action:'openTreasuryOnRampPanel' },
     { key:'dex-aggregator', name:'DEX Aggregator & V3', desc:'Multi-source DEX aggregator and Uniswap V3 canonical pair swaps', stat:'', endpoint:null, action:'openDexAggregatorPanel' },
@@ -2771,6 +2777,1146 @@
     } catch(e) { wrap.innerHTML = '<div class="status err">' + e.message + '</div>'; }
   }
 
+  // ─── Core Bank Reserve panel ────────────────────────────────────────────────
+  function openCoreReservePanel() {
+    const panel = el('module-panel');
+    const body = el('panel-body');
+    el('panel-title').textContent = 'Core Bank Reserve';
+    panel.classList.add('active');
+    body.innerHTML = '<div class="muted" style="margin-bottom:12px;">Ledger cash is only transmittable to the extent the trust holds reserves at an external custodian. Balances created by internal postings are shown as unbacked and outbound rails refuse them.</div>' +
+      '<div class="approval-actions"><button class="btn" onclick="reserveLoad()">Refresh Coverage</button><button class="btn" onclick="reserveVerify()">Verify Custody Sources</button></div>' +
+      '<div id="reserve-coverage" style="margin-top:12px;font-size:12px;"></div>' +
+      '<h3 style="font-size:14px;margin:16px 0 8px;">Attest a Custodian Statement</h3>' +
+      '<div class="token-bar"><select id="reserve-source-type"><option value="depository_account">depository_account</option><option value="partner_bank">partner_bank</option><option value="custodian_statement">custodian_statement</option><option value="circle_custody">circle_custody</option></select></div>' +
+      '<div class="token-bar"><input id="reserve-source-key" placeholder="account label (e.g. Betterment Trust Checking)" /></div>' +
+      '<div class="token-bar"><input id="reserve-amount" placeholder="balance held (USD)" /></div>' +
+      '<div class="token-bar"><input id="reserve-evidence" placeholder="statement id / document reference" /></div>' +
+      '<div class="approval-actions"><button class="btn" onclick="reserveAttest()">Record Attestation</button></div>' +
+      '<div id="reserve-attest-status" style="margin-top:8px;"></div>' +
+      '<h3 style="font-size:14px;margin:16px 0 8px;">Bond Portfolio &amp; Fixed Income</h3>' +
+      '<div class="muted" style="margin-bottom:8px;">A bond the trust issued and holds itself backs nothing. A third-party bond held at a securities custodian is carried as collateral net of a haircut, and stays separate from spendable reserve until it is pledged or sold.</div>' +
+      '<div class="approval-actions"><button class="btn" onclick="reservePortfolio()">Load Portfolio</button></div>' +
+      '<div id="reserve-portfolio" style="margin-top:8px;font-size:12px;"></div>' +
+      '<div class="token-bar"><input id="fi-source-key" placeholder="ISIN / bond identifier / bond name" /></div>' +
+      '<div class="token-bar"><input id="fi-amount" placeholder="custodian-stated market value (USD)" /><input id="fi-haircut" placeholder="haircut bps (default 2000)" /></div>' +
+      '<div class="token-bar"><input id="fi-evidence" placeholder="custodian statement id / document reference" /></div>' +
+      '<div class="approval-actions"><button class="btn" onclick="reserveAttestFixedIncome()">Record Custody Statement</button></div>' +
+      '<div id="fi-attest-status" style="margin-top:8px;"></div>' +
+      '<h3 style="font-size:14px;margin:16px 0 8px;">Holder Capacity</h3>' +
+      '<div class="muted" style="margin-bottom:8px;">A bond the trust issued is only its own paper while the trust holds it. Declaring a subscription personal makes the holder an outside creditor: the instrument becomes an obligation of the trust, its coupons become amounts the trust owes, and only the cash the subscription actually settled counts as corpus.</div>' +
+      '<div class="token-bar"><input id="hc-subscription" placeholder="subscription id (e.g. SUB-DLB-PRB-001)" /><select id="hc-capacity"><option value="personal">personal (holder owns it)</option><option value="trust">trust (trust holds its own paper)</option></select></div>' +
+      '<div class="token-bar"><input id="hc-administered" placeholder="administered by (e.g. PTC, as trustee and custodian)" /><input id="hc-evidence" placeholder="evidence reference (bond certificate / trust instrument)" /></div>' +
+      '<div class="approval-actions"><button class="btn" onclick="reserveDeclareCapacity()">Declare Capacity</button><button class="btn" onclick="reserveBondHolders()">Read Holders</button></div>' +
+      '<div id="hc-status" style="margin-top:8px;font-size:12px;"></div>' +
+      '<h3 style="font-size:14px;margin:16px 0 8px;">Trace a Cash Account\'s Funding</h3>' +
+      '<div class="token-bar"><input id="reserve-provenance-account" value="CA-OPERATING" placeholder="cash account id" /></div>' +
+      '<div class="approval-actions"><button class="btn" onclick="reserveProvenance()">Trace</button></div>' +
+      '<div id="reserve-provenance" style="margin-top:8px;font-size:12px;"></div>';
+    reserveLoad();
+  }
+
+  async function reserveLoad() {
+    const wrap = el('reserve-coverage');
+    wrap.innerHTML = '<div class="muted">Loading coverage…</div>';
+    try {
+      const r = await api('/api/finops/reserve/coverage');
+      if (!r.success) throw new Error(r.error || 'coverage failed');
+      const d = r.data;
+      const cls = d.status === 'fully_backed' ? 'ok' : 'err';
+      let html = '<div class="status ' + cls + '">' + htmlEscape(d.status.replace(/_/g, ' ')) +
+        ' — ledger cash $' + htmlEscape(d.ledgerCash.toLocaleString()) +
+        ', attested reserve $' + htmlEscape(d.attestedReserve.toLocaleString()) +
+        ', unbacked $' + htmlEscape(d.unbacked.toLocaleString()) + '</div>';
+      html += '<div class="muted" style="margin:8px 0;">' + htmlEscape(d.note) + '</div>';
+      html += '<table class="small-table"><thead><tr><th>Source</th><th>Key</th><th>Balance</th><th>Verification</th><th>Counted</th><th>Observed</th></tr></thead>';
+      (d.sources || []).forEach(s => {
+        html += '<tr><td>' + htmlEscape(s.sourceType) + '</td><td>' + htmlEscape(s.sourceKey) + '</td><td>$' + htmlEscape(s.balance) + '</td><td>' + htmlEscape(s.verification) + (s.unverifiedReason ? ' <span class="muted">(' + htmlEscape(s.unverifiedReason) + ')</span>' : '') + '</td><td>' + (s.counted ? 'yes' : 'no') + '</td><td>' + htmlEscape(String(s.observedAt || '').slice(0, 19)) + '</td></tr>';
+      });
+      html += '</table>';
+      if (!(d.sources || []).length) html += '<div class="muted">No custody source has been verified yet.</div>';
+      if (d.fixedIncome) {
+        html += '<div class="muted" style="margin-top:8px;">Fixed income: carrying $' + htmlEscape(d.fixedIncome.carryingValue.toLocaleString()) +
+          ' across ' + htmlEscape(String(d.fixedIncome.positions)) + ' position(s), self-issued $' + htmlEscape(d.fixedIncome.selfIssued.toLocaleString()) +
+          ', eligible collateral $' + htmlEscape(d.pledgeableCollateral.toLocaleString()) + ' (not spendable until pledged or sold).</div>';
+        if (Number(d.fixedIncome.trustObligation) > 0) {
+          html += '<div class="muted">Of that, $' + htmlEscape(Number(d.fixedIncome.trustObligation).toLocaleString()) +
+            ' is owed by the trust to outside holders; $' + htmlEscape(Number(d.fixedIncome.contributedCorpus).toLocaleString()) +
+            ' of subscription cash was actually paid in and $' + htmlEscape(Number(d.fixedIncome.unpaidSubscription).toLocaleString()) +
+            ' remains an unpaid subscription receivable.</div>';
+        }
+      }
+      wrap.innerHTML = html;
+    } catch(e) { wrap.innerHTML = '<div class="status err">' + e.message + '</div>'; }
+  }
+
+  async function reservePortfolio() {
+    const wrap = el('reserve-portfolio');
+    wrap.innerHTML = '<div class="muted">Loading portfolio…</div>';
+    try {
+      const r = await api('/api/finops/reserve/portfolio');
+      if (!r.success) throw new Error(r.error || 'portfolio failed');
+      const d = r.data;
+      const cls = d.eligibleCollateral > 0 ? 'ok' : 'err';
+      let html = '<div class="status ' + cls + '">carrying $' + htmlEscape(d.carryingValue.toLocaleString()) +
+        ', self-issued $' + htmlEscape(d.selfIssued.toLocaleString()) +
+        ', eligible collateral $' + htmlEscape(d.eligibleCollateral.toLocaleString()) + '</div>';
+      if (Number(d.trustObligation) > 0) {
+        html += '<div class="status err">owed to outside holders $' + htmlEscape(Number(d.trustObligation).toLocaleString()) +
+          ', trust-owned carrying value $' + htmlEscape(Number(d.assetCarryingValue).toLocaleString()) +
+          ', subscription cash actually paid in $' + htmlEscape(Number(d.contributedCorpus).toLocaleString()) +
+          ', unpaid subscription $' + htmlEscape(Number(d.unpaidSubscription).toLocaleString()) + '</div>';
+      }
+      html += '<div class="muted" style="margin:8px 0;">' + htmlEscape(d.note) + '</div>';
+      html += '<table class="small-table"><thead><tr><th>Bond</th><th>Issuer</th><th>Holder</th><th>Carrying</th><th>Owed by trust</th><th>Paid in</th><th>Custody</th><th>Eligible</th><th>Detail</th></tr></thead>';
+      (d.positions || []).forEach(p => {
+        const holders = (p.holders || []).map(h => h.holderName + (h.capacity ? ' (' + h.capacity + ')' : '')).join(', ');
+        html += '<tr><td>' + htmlEscape(p.bondName) + '</td><td>' + htmlEscape(p.issuer || '—') + '</td><td>' + htmlEscape(holders || '—') +
+          '</td><td>$' + htmlEscape(p.carryingValue.toLocaleString()) +
+          '</td><td>$' + htmlEscape(Number(p.obligation || 0).toLocaleString()) +
+          '</td><td>$' + htmlEscape(Number(p.contributedCorpus || 0).toLocaleString()) +
+          '</td><td>' + htmlEscape(p.custodyStatus.replace(/_/g, ' ')) + '</td><td>$' + htmlEscape(p.eligibleCollateral.toLocaleString()) +
+          '</td><td class="muted">' + htmlEscape(p.note) + '</td></tr>';
+      });
+      html += '</table>';
+      if (!(d.positions || []).length) html += '<div class="muted">No active bond positions.</div>';
+      wrap.innerHTML = html;
+    } catch(e) { wrap.innerHTML = '<div class="status err">' + e.message + '</div>'; }
+  }
+
+  async function reserveDeclareCapacity() {
+    const wrap = el('hc-status');
+    wrap.innerHTML = '<div class="muted">Recording…</div>';
+    try {
+      const r = await api('/api/finops/bond-holders/capacity', 'POST', {
+        subscriptionId: el('hc-subscription').value,
+        capacity: el('hc-capacity').value,
+        administeredBy: el('hc-administered').value || null,
+        evidenceReference: el('hc-evidence').value || null,
+      });
+      if (!r.success) throw new Error(r.error || 'declaration failed');
+      wrap.innerHTML = '<div class="status ok">' + htmlEscape(r.data.subscription_id) + ' held ' +
+        htmlEscape(r.data.capacity) + ' by ' + htmlEscape(r.data.holder_name || '—') + '</div>';
+      reservePortfolio();
+    } catch(e) { wrap.innerHTML = '<div class="status err">' + e.message + '</div>'; }
+  }
+
+  async function reserveBondHolders() {
+    const wrap = el('hc-status');
+    wrap.innerHTML = '<div class="muted">Loading…</div>';
+    try {
+      const ref = el('fi-source-key').value || 'DLB-PRB';
+      const r = await api('/api/finops/bond-holders/' + encodeURIComponent(ref));
+      if (!r.success) throw new Error(r.error || 'read failed');
+      const d = r.data;
+      let html = '<div class="status ' + (d.classification === 'trust_obligation' ? 'err' : 'ok') + '">' +
+        htmlEscape(ref) + ' — ' + htmlEscape(d.classification.replace(/_/g, ' ')) + '; owed $' +
+        htmlEscape(Number(d.obligation).toLocaleString()) + ', paid in $' + htmlEscape(Number(d.paidIn).toLocaleString()) +
+        ', unpaid subscription $' + htmlEscape(Number(d.unpaidSubscription).toLocaleString()) + '</div>';
+      html += '<div class="muted" style="margin:8px 0;">' + htmlEscape(d.note) + '</div>';
+      html += '<table class="small-table"><thead><tr><th>Subscription</th><th>Holder</th><th>Capacity</th><th>Administered by</th><th>Subscribed</th><th>Paid in</th><th>Unpaid</th></tr></thead>';
+      (d.holders || []).forEach(h => {
+        html += '<tr><td>' + htmlEscape(h.subscriptionId) + '</td><td>' + htmlEscape(h.holderName) +
+          '</td><td>' + htmlEscape(h.capacity) + (h.capacityDeclared ? ' (declared)' : ' (inferred)') +
+          '</td><td>' + htmlEscape(h.administeredBy || '—') +
+          '</td><td>$' + htmlEscape(Number(h.subscribedCents / 100).toLocaleString()) +
+          '</td><td>$' + htmlEscape(Number(h.paidIn).toLocaleString()) +
+          '</td><td>$' + htmlEscape(Number(h.unpaid).toLocaleString()) + '</td></tr>';
+      });
+      html += '</table>';
+      if (!(d.holders || []).length) html += '<div class="muted">No subscriptions recorded for this bond.</div>';
+      wrap.innerHTML = html;
+    } catch(e) { wrap.innerHTML = '<div class="status err">' + e.message + '</div>'; }
+  }
+
+  async function reserveAttestFixedIncome() {
+    const wrap = el('fi-attest-status');
+    wrap.innerHTML = '<div class="muted">Recording…</div>';
+    try {
+      const haircut = el('fi-haircut').value;
+      const body = {
+        sourceKey: el('fi-source-key').value,
+        balanceCents: Math.round(Number(el('fi-amount').value) * 100),
+        evidenceReference: el('fi-evidence').value,
+      };
+      if (haircut) body.haircutBps = Number(haircut);
+      const r = await api('/api/finops/reserve/attest-fixed-income', { method: 'POST', body: JSON.stringify(body) });
+      if (!r.success) throw new Error(r.error || 'attestation failed');
+      wrap.innerHTML = '<div class="status ok">Recorded ' + htmlEscape(r.data.attestation_id) + '</div>';
+      reservePortfolio();
+      reserveLoad();
+    } catch(e) { wrap.innerHTML = '<div class="status err">' + e.message + '</div>'; }
+  }
+
+  async function reserveVerify() {
+    const wrap = el('reserve-coverage');
+    wrap.innerHTML = '<div class="muted">Reading custody sources…</div>';
+    try {
+      const r = await api('/api/finops/reserve/verify', { method: 'POST', body: '{}' });
+      if (!r.success) throw new Error(r.error || 'verification failed');
+      reserveLoad();
+    } catch(e) { wrap.innerHTML = '<div class="status err">' + e.message + '</div>'; }
+  }
+
+  async function reserveAttest() {
+    const wrap = el('reserve-attest-status');
+    wrap.innerHTML = '<div class="muted">Recording…</div>';
+    try {
+      const body = {
+        sourceType: el('reserve-source-type').value,
+        sourceKey: el('reserve-source-key').value,
+        balanceCents: Math.round(Number(el('reserve-amount').value) * 100),
+        evidenceReference: el('reserve-evidence').value,
+      };
+      const r = await api('/api/finops/reserve/attest', { method: 'POST', body: JSON.stringify(body) });
+      if (!r.success) throw new Error(r.error || 'attestation failed');
+      wrap.innerHTML = '<div class="status ok">Recorded ' + htmlEscape(r.data.attestation_id) + '</div>';
+      reserveLoad();
+    } catch(e) { wrap.innerHTML = '<div class="status err">' + e.message + '</div>'; }
+  }
+
+  async function reserveProvenance() {
+    const wrap = el('reserve-provenance');
+    wrap.innerHTML = '<div class="muted">Tracing…</div>';
+    try {
+      const accountId = encodeURIComponent(el('reserve-provenance-account').value);
+      const r = await api('/api/finops/reserve/provenance/' + accountId);
+      if (!r.success) throw new Error(r.error || 'trace failed');
+      const d = r.data;
+      const cls = d.classification === 'externally_backed' ? 'ok' : 'err';
+      let html = '<div class="status ' + cls + '">' + htmlEscape(d.accountId) + ' — ' + htmlEscape(d.classification.replace(/_/g, ' ')) +
+        ' (balance $' + htmlEscape(d.balance.toLocaleString()) + ', external deposits $' + htmlEscape(d.externalDeposits.toLocaleString()) + ')</div>';
+      html += '<table class="small-table"><thead><tr><th>Account</th><th>Funding</th><th>Amount</th><th>Detail</th></tr></thead>';
+      (d.origins || []).forEach(o => {
+        html += '<tr><td>' + htmlEscape(o.accountId) + '</td><td>' + htmlEscape(o.funding) + '</td><td>' + (o.amount === undefined ? '' : '$' + htmlEscape(o.amount)) + '</td><td>' + htmlEscape(o.memo || o.referenceType || o.fromAccountId || o.note || '') + '</td></tr>';
+      });
+      html += '</table>';
+      wrap.innerHTML = html;
+    } catch(e) { wrap.innerHTML = '<div class="status err">' + e.message + '</div>'; }
+  }
+
+  // ─── Custody OS panel ───────────────────────────────────────────────────────
+  function openCustodyOsPanel() {
+    const panel = el('module-panel');
+    const body = el('panel-body');
+    el('panel-title').textContent = 'Custody OS';
+    panel.classList.add('active');
+    body.innerHTML = '<div class="muted" style="margin-bottom:12px;">Every asset the trust claims gets a safekeeping record: where it is held, on what evidence, and which two trustees signed for it. A third-party custodian receipt flows through to the reserve; a self-custody receipt does not, because the trust attesting that it holds its own asset is an internal record.</div>' +
+      '<div class="approval-actions"><button class="btn" onclick="custodyLoad()">Refresh Statement</button><button class="btn" onclick="custodyChain()">Verify Chain of Title</button><button class="btn" onclick="custodySyncReserve()">Sync to Reserve</button></div>' +
+      '<div id="custody-statement" style="margin-top:8px;font-size:12px;"></div>' +
+      '<h3 style="font-size:14px;margin:16px 0 8px;">Open a Custody Account</h3>' +
+      '<div class="token-bar"><input id="cus-name" placeholder="account name" /><select id="cus-type"><option value="third_party">third_party</option><option value="self_custody">self_custody</option></select></div>' +
+      '<div class="token-bar"><input id="cus-custodian" placeholder="custodian name (third party only)" /><input id="cus-ref" placeholder="custodian account reference" /></div>' +
+      '<div class="approval-actions"><button class="btn" onclick="custodyOpenAccount()">Open Account</button></div>' +
+      '<div id="custody-account-status" style="margin-top:8px;"></div>' +
+      '<h3 style="font-size:14px;margin:16px 0 8px;">Record a Position</h3>' +
+      '<div class="token-bar"><input id="cpos-account" placeholder="custody account id" /><select id="cpos-class"><option value="cash">cash</option><option value="fixed_income">fixed_income</option><option value="digital_asset">digital_asset</option><option value="physical">physical</option></select></div>' +
+      '<div class="token-bar"><input id="cpos-ref" placeholder="instrument reference (ISIN / account label / address)" /><input id="cpos-value" placeholder="valuation (USD)" /></div>' +
+      '<div class="approval-actions"><button class="btn" onclick="custodyRecordPosition()">Record Position</button></div>' +
+      '<div id="custody-position-status" style="margin-top:8px;"></div>' +
+      '<h3 style="font-size:14px;margin:16px 0 8px;">Safekeeping Receipts</h3>' +
+      '<div class="token-bar"><input id="crc-position" placeholder="position id" /><select id="crc-action"><option value="safekeeping">safekeeping</option><option value="revaluation">revaluation</option><option value="release">release</option></select></div>' +
+      '<div class="token-bar"><input id="crc-evidence" placeholder="custodian statement / vault log / document id" /><input id="crc-value" placeholder="valuation (USD, blank keeps position value)" /></div>' +
+      '<div class="approval-actions"><button class="btn" onclick="custodyProposeReceipt()">Propose Receipt</button><button class="btn" onclick="custodyReceipts()">Load Receipts</button></div>' +
+      '<div id="custody-receipt-status" style="margin-top:8px;"></div>' +
+      '<div id="custody-receipts" style="margin-top:8px;font-size:12px;"></div>';
+    custodyLoad();
+    custodyReceipts();
+  }
+
+  async function custodyLoad() {
+    const wrap = el('custody-statement');
+    wrap.innerHTML = '<div class="muted">Loading custody statement…</div>';
+    try {
+      const r = await api('/api/finops/custody/statement');
+      if (!r.success) throw new Error(r.error || 'statement failed');
+      const d = r.data;
+      const cls = d.thirdPartyReceipted > 0 ? 'ok' : 'err';
+      let html = '<div class="status ' + cls + '">held $' + htmlEscape(d.held.toLocaleString()) +
+        ', third-party receipted $' + htmlEscape(d.thirdPartyReceipted.toLocaleString()) +
+        ', self custody $' + htmlEscape(d.selfCustody.toLocaleString()) +
+        ', unreceipted $' + htmlEscape(d.unreceipted.toLocaleString()) + '</div>';
+      html += '<div class="muted" style="margin:8px 0;">' + htmlEscape(d.note) + '</div>';
+      html += '<table class="small-table"><thead><tr><th>Custody Account</th><th>Type</th><th>Instrument</th><th>Class</th><th>Valuation</th><th>Control</th><th>External</th></tr></thead>';
+      (d.accounts || []).forEach(a => {
+        if (!(a.positions || []).length) {
+          html += '<tr><td>' + htmlEscape(a.accountName) + '</td><td>' + htmlEscape(a.custodyType) + '</td><td colspan="5" class="muted">no positions</td></tr>';
+          return;
+        }
+        a.positions.forEach(p => {
+          html += '<tr><td>' + htmlEscape(a.accountName) + (a.custodianName ? ' <span class="muted">(' + htmlEscape(a.custodianName) + ')</span>' : '') +
+            '</td><td>' + htmlEscape(a.custodyType) + '</td><td>' + htmlEscape(p.instrumentRef) + '</td><td>' + htmlEscape(p.assetClass) +
+            '</td><td>$' + htmlEscape(p.valuation.toLocaleString()) + '</td><td>' + htmlEscape(p.controlStatus) +
+            '</td><td>' + (p.verifiedExternally ? 'yes' : 'no') + '</td></tr>';
+        });
+      });
+      html += '</table>';
+      if (!(d.accounts || []).length) html += '<div class="muted">No custody account has been opened yet.</div>';
+      wrap.innerHTML = html;
+    } catch(e) { wrap.innerHTML = '<div class="status err">' + e.message + '</div>'; }
+  }
+
+  async function custodyChain() {
+    const wrap = el('custody-statement');
+    try {
+      const r = await api('/api/finops/custody/chain');
+      if (!r.success) throw new Error(r.error || 'chain verification failed');
+      const d = r.data;
+      wrap.innerHTML = '<div class="status ' + (d.intact ? 'ok' : 'err') + '">' + htmlEscape(String(d.events)) +
+        ' custody events — ' + htmlEscape(d.note) + '</div>' + wrap.innerHTML;
+    } catch(e) { wrap.innerHTML = '<div class="status err">' + e.message + '</div>'; }
+  }
+
+  async function custodySyncReserve() {
+    const wrap = el('custody-statement');
+    try {
+      const r = await api('/api/finops/custody/sync-reserve', { method: 'POST', body: '{}' });
+      if (!r.success) throw new Error(r.error || 'sync failed');
+      wrap.innerHTML = '<div class="status ok">Synced ' + htmlEscape(String(r.data.synced)) + ' receipted third-party position(s) to the reserve</div>' + wrap.innerHTML;
+    } catch(e) { wrap.innerHTML = '<div class="status err">' + e.message + '</div>'; }
+  }
+
+  async function custodyOpenAccount() {
+    const wrap = el('custody-account-status');
+    wrap.innerHTML = '<div class="muted">Opening…</div>';
+    try {
+      const body = {
+        accountName: el('cus-name').value,
+        custodyType: el('cus-type').value,
+        custodianName: el('cus-custodian').value || undefined,
+        custodianAccountRef: el('cus-ref').value || undefined,
+      };
+      const r = await api('/api/finops/custody/accounts', { method: 'POST', body: JSON.stringify(body) });
+      if (!r.success) throw new Error(r.error || 'open failed');
+      wrap.innerHTML = '<div class="status ok">Opened ' + htmlEscape(r.data.custody_account_id) + '</div>';
+      custodyLoad();
+    } catch(e) { wrap.innerHTML = '<div class="status err">' + e.message + '</div>'; }
+  }
+
+  async function custodyRecordPosition() {
+    const wrap = el('custody-position-status');
+    wrap.innerHTML = '<div class="muted">Recording…</div>';
+    try {
+      const body = {
+        custodyAccountId: el('cpos-account').value,
+        assetClass: el('cpos-class').value,
+        instrumentRef: el('cpos-ref').value,
+        valuationCents: Math.round(Number(el('cpos-value').value) * 100),
+      };
+      const r = await api('/api/finops/custody/positions', { method: 'POST', body: JSON.stringify(body) });
+      if (!r.success) throw new Error(r.error || 'record failed');
+      wrap.innerHTML = '<div class="status ok">Recorded ' + htmlEscape(r.data.position_id) + ' (unverified until receipted)</div>';
+      custodyLoad();
+    } catch(e) { wrap.innerHTML = '<div class="status err">' + e.message + '</div>'; }
+  }
+
+  async function custodyProposeReceipt() {
+    const wrap = el('custody-receipt-status');
+    wrap.innerHTML = '<div class="muted">Proposing…</div>';
+    try {
+      const value = el('crc-value').value;
+      const body = {
+        positionId: el('crc-position').value,
+        action: el('crc-action').value,
+        evidenceReference: el('crc-evidence').value,
+      };
+      if (value) body.valuationCents = Math.round(Number(value) * 100);
+      const r = await api('/api/finops/custody/receipts', { method: 'POST', body: JSON.stringify(body) });
+      if (!r.success) throw new Error(r.error || 'proposal failed');
+      wrap.innerHTML = '<div class="status ok">Proposed ' + htmlEscape(r.data.receipt_id) + ' — needs ' + htmlEscape(String(r.data.required_signatures)) + ' trustee signature(s)</div>';
+      custodyReceipts();
+    } catch(e) { wrap.innerHTML = '<div class="status err">' + e.message + '</div>'; }
+  }
+
+  async function custodyReceipts() {
+    const wrap = el('custody-receipts');
+    wrap.innerHTML = '<div class="muted">Loading receipts…</div>';
+    try {
+      const r = await api('/api/finops/custody/receipts');
+      if (!r.success) throw new Error(r.error || 'receipts failed');
+      let html = '<table class="small-table"><thead><tr><th>Receipt</th><th>Instrument</th><th>Action</th><th>Valuation</th><th>Evidence</th><th>Signatures</th><th>Status</th><th></th></tr></thead>';
+      (r.data || []).forEach(x => {
+        const signed = (x.signatures || []).map(s => s.signedBy).join(', ');
+        html += '<tr><td>' + htmlEscape(x.receipt_id) + '</td><td>' + htmlEscape(x.instrument_ref || '—') + '</td><td>' + htmlEscape(x.action) +
+          '</td><td>$' + htmlEscape((Number(x.valuation_cents || 0) / 100).toLocaleString()) + '</td><td>' + htmlEscape(x.evidence_reference) +
+          '</td><td>' + htmlEscape(signed || '—') + ' <span class="muted">of ' + htmlEscape(String(x.required_signatures)) + '</span></td><td>' + htmlEscape(x.status) +
+          '</td><td>' + (x.status === 'pending'
+            ? '<button class="btn" onclick="custodyCountersign(\'' + htmlEscape(x.receipt_id) + '\')">Countersign</button>'
+              + ' <button class="btn" onclick="custodyVoid(\'' + htmlEscape(x.receipt_id) + '\')">Void</button>'
+            : htmlEscape(x.reserve_note || '')) + '</td></tr>';
+      });
+      html += '</table>';
+      if (!(r.data || []).length) html += '<div class="muted">No custody receipt has been raised yet.</div>';
+      wrap.innerHTML = html;
+    } catch(e) { wrap.innerHTML = '<div class="status err">' + e.message + '</div>'; }
+  }
+
+  async function custodyCountersign(receiptId) {
+    const wrap = el('custody-receipt-status');
+    wrap.innerHTML = '<div class="muted">Signing…</div>';
+    try {
+      const r = await api('/api/finops/custody/receipts/' + encodeURIComponent(receiptId) + '/countersign', { method: 'POST', body: '{}' });
+      if (!r.success) throw new Error(r.error || 'countersign failed');
+      const d = r.data;
+      wrap.innerHTML = '<div class="status ok">' + htmlEscape(d.status) +
+        (d.remainingSignatures ? ' — ' + htmlEscape(String(d.remainingSignatures)) + ' signature(s) remaining' : '') +
+        (d.reserve && d.reserve.note ? ' — ' + htmlEscape(d.reserve.note) : '') + '</div>';
+      custodyReceipts();
+      custodyLoad();
+    } catch(e) { wrap.innerHTML = '<div class="status err">' + e.message + '</div>'; }
+  }
+
+  async function custodyVoid(receiptId) {
+    const wrap = el('custody-receipt-status');
+    try {
+      const r = await api('/api/finops/custody/receipts/' + encodeURIComponent(receiptId) + '/void', { method: 'POST', body: '{}' });
+      if (!r.success) throw new Error(r.error || 'void failed');
+      wrap.innerHTML = '<div class="status ok">Voided ' + htmlEscape(receiptId) + '</div>';
+      custodyReceipts();
+    } catch(e) { wrap.innerHTML = '<div class="status err">' + e.message + '</div>'; }
+  }
+
+  // ─── Master Trust / Series OS panel ─────────────────────────────────────────
+  function openSeriesOsPanel() {
+    const panel = el('module-panel');
+    const body = el('panel-body');
+    el('panel-title').textContent = 'Master Trust / Series OS';
+    panel.classList.add('active');
+    body.innerHTML = '<div class="muted" style="margin-bottom:12px;">Every asset the trust can point at is identified — what it is, how it was verified, and whether it is spendable cash, pledgeable collateral, evidence for another asset, or an internal ledger claim. Each identified asset is then fenced into exactly one series, and a series can only fund payments from its own assets net of its own obligations. Unassigned assets stay commingled at the master trust and fund no series.</div>' +
+      '<div class="approval-actions"><button class="btn" onclick="seriesLoad()">Refresh Statement</button><button class="btn" onclick="seriesAssets()">Identify Assets</button><button class="btn" onclick="seriesChain()">Verify Series Log</button></div>' +
+      '<div id="series-statement" style="margin-top:8px;font-size:12px;"></div>' +
+      '<h3 style="font-size:14px;margin:16px 0 8px;">Open a Series</h3>' +
+      '<div class="token-bar"><input id="ser-code" placeholder="series code (e.g. S-BEN-01)" /><input id="ser-name" placeholder="series name" /></div>' +
+      '<div class="token-bar"><select id="ser-purpose"><option value="beneficiary_support">beneficiary_support</option><option value="trust_operations">trust_operations</option><option value="reserve">reserve</option><option value="investment">investment</option><option value="insurance">insurance</option><option value="custody">custody</option></select><input id="ser-beneficiary" placeholder="beneficiary reference (required for beneficiary_support)" /></div>' +
+      '<div class="approval-actions"><button class="btn" onclick="seriesOpen()">Open Series</button></div>' +
+      '<div id="series-open-status" style="margin-top:8px;"></div>' +
+      '<h3 style="font-size:14px;margin:16px 0 8px;">Ring-Fence an Asset</h3>' +
+      '<div class="token-bar"><input id="sas-series" placeholder="series id or code" /><select id="sas-kind"><option value="reserve_attestation">reserve_attestation</option><option value="bond">bond</option><option value="custody_position">custody_position</option><option value="cash_account">cash_account</option></select></div>' +
+      '<div class="token-bar"><input id="sas-ref" placeholder="asset reference (as listed by Identify Assets)" /><input id="sas-evidence" placeholder="evidence reference (optional)" /></div>' +
+      '<div class="approval-actions"><button class="btn" onclick="seriesAssign()">Fence into Series</button></div>' +
+      '<div id="series-assign-status" style="margin-top:8px;"></div>' +
+      '<h3 style="font-size:14px;margin:16px 0 8px;">Record a Series Obligation</h3>' +
+      '<div class="token-bar"><input id="sob-series" placeholder="series id or code" /><input id="sob-type" placeholder="obligation type (e.g. beneficiary_distribution)" /></div>' +
+      '<div class="token-bar"><input id="sob-counterparty" placeholder="counterparty (optional)" /><input id="sob-amount" placeholder="amount (USD)" /></div>' +
+      '<div class="approval-actions"><button class="btn" onclick="seriesObligate()">Record Obligation</button></div>' +
+      '<div id="series-obligation-status" style="margin-top:8px;"></div>' +
+      '<div id="series-inventory" style="margin-top:16px;font-size:12px;"></div>';
+    seriesLoad();
+    seriesAssets();
+  }
+
+  async function seriesLoad() {
+    const wrap = el('series-statement');
+    wrap.innerHTML = '<div class="muted">Loading master trust statement…</div>';
+    try {
+      const r = await api('/api/finops/series/statement');
+      if (!r.success) throw new Error(r.error || 'statement failed');
+      const d = r.data;
+      let html = '<div class="status ' + (d.fencedSpendable > 0 ? 'ok' : 'err') + '">' + htmlEscape(d.masterTrust) +
+        ' — ' + htmlEscape(String(d.seriesCount)) + ' series, fenced spendable $' + htmlEscape(d.fencedSpendable.toLocaleString()) +
+        ', fenced collateral $' + htmlEscape(d.fencedCollateral.toLocaleString()) +
+        ', commingled spendable $' + htmlEscape(d.commingledSpendable.toLocaleString()) +
+        ' (ring fence: ' + htmlEscape(d.enforcement) + ')</div>';
+      html += '<div class="muted" style="margin:8px 0;">' + htmlEscape(d.note) + '</div>';
+      html += '<table class="small-table"><thead><tr><th>Series</th><th>Purpose</th><th>Beneficiary</th><th>Spendable</th><th>Collateral</th><th>Obligations</th><th>Available</th><th>Assets</th></tr></thead>';
+      (d.series || []).forEach(s => {
+        html += '<tr><td>' + htmlEscape(s.seriesCode) + ' <span class="muted">' + htmlEscape(s.seriesName) + '</span></td><td>' + htmlEscape(s.purpose) +
+          '</td><td>' + htmlEscape(s.beneficiaryRef || '—') + '</td><td>$' + htmlEscape(s.spendable.toLocaleString()) +
+          '</td><td>$' + htmlEscape(s.collateral.toLocaleString()) + '</td><td>$' + htmlEscape(s.openObligations.toLocaleString()) +
+          '</td><td>$' + htmlEscape(s.available.toLocaleString()) + '</td><td>' + htmlEscape(String((s.assets || []).length)) + '</td></tr>';
+      });
+      html += '</table>';
+      if (!(d.series || []).length) html += '<div class="muted">No series has been opened yet, so every asset is commingled at the master trust.</div>';
+      wrap.innerHTML = html;
+    } catch(e) { wrap.innerHTML = '<div class="status err">' + e.message + '</div>'; }
+  }
+
+  async function seriesAssets() {
+    const wrap = el('series-inventory');
+    wrap.innerHTML = '<div class="muted">Identifying reserve assets…</div>';
+    try {
+      const r = await api('/api/finops/series/assets');
+      if (!r.success) throw new Error(r.error || 'identification failed');
+      const d = r.data;
+      let html = '<h3 style="font-size:14px;margin:0 0 8px;">Identified Assets (' + htmlEscape(String(d.counts.assigned)) +
+        ' fenced, ' + htmlEscape(String(d.counts.unassigned)) + ' commingled)</h3>';
+      html += '<table class="small-table"><thead><tr><th>Kind</th><th>Reference</th><th>Identified As</th><th>Contributes</th><th>Value</th><th>Spendable</th><th>Collateral</th><th>Series</th><th></th></tr></thead>';
+      (d.assets || []).forEach(a => {
+        html += '<tr><td>' + htmlEscape(a.assetKind) + '</td><td>' + htmlEscape(a.assetRef) + '</td><td>' + htmlEscape(a.identification) +
+          '</td><td>' + htmlEscape(a.valueKind) + '</td><td>$' + htmlEscape(a.value.toLocaleString()) +
+          '</td><td>$' + htmlEscape(a.spendable.toLocaleString()) + '</td><td>$' + htmlEscape(a.collateral.toLocaleString()) +
+          '</td><td>' + htmlEscape(a.seriesCode || '—') + '</td><td>' + (a.assignmentId
+            ? '<button class="btn" onclick="seriesRelease(\'' + htmlEscape(a.assignmentId) + '\')">Release</button>'
+            : '') + '</td></tr>';
+      });
+      html += '</table>';
+      html += '<div class="muted" style="margin-top:8px;">' + htmlEscape(d.note) + '</div>';
+      wrap.innerHTML = html;
+    } catch(e) { wrap.innerHTML = '<div class="status err">' + e.message + '</div>'; }
+  }
+
+  async function seriesChain() {
+    const wrap = el('series-statement');
+    try {
+      const r = await api('/api/finops/series-chain');
+      if (!r.success) throw new Error(r.error || 'chain verification failed');
+      const d = r.data;
+      wrap.innerHTML = '<div class="status ' + (d.intact ? 'ok' : 'err') + '">' + htmlEscape(String(d.events)) +
+        ' series events — ' + htmlEscape(d.note) + '</div>' + wrap.innerHTML;
+    } catch(e) { wrap.innerHTML = '<div class="status err">' + e.message + '</div>'; }
+  }
+
+  async function seriesOpen() {
+    const wrap = el('series-open-status');
+    wrap.innerHTML = '<div class="muted">Opening…</div>';
+    try {
+      const body = {
+        seriesCode: el('ser-code').value,
+        seriesName: el('ser-name').value,
+        purpose: el('ser-purpose').value,
+        beneficiaryRef: el('ser-beneficiary').value || undefined,
+      };
+      const r = await api('/api/finops/series', { method: 'POST', body: JSON.stringify(body) });
+      if (!r.success) throw new Error(r.error || 'open failed');
+      wrap.innerHTML = '<div class="status ok">Opened ' + htmlEscape(r.data.series_id) + ' (' + htmlEscape(r.data.series_code) + ')</div>';
+      seriesLoad();
+    } catch(e) { wrap.innerHTML = '<div class="status err">' + e.message + '</div>'; }
+  }
+
+  async function seriesAssign() {
+    const wrap = el('series-assign-status');
+    wrap.innerHTML = '<div class="muted">Fencing…</div>';
+    try {
+      const body = {
+        assetKind: el('sas-kind').value,
+        assetRef: el('sas-ref').value,
+        evidenceReference: el('sas-evidence').value || undefined,
+      };
+      const r = await api('/api/finops/series/' + encodeURIComponent(el('sas-series').value) + '/assets', { method: 'POST', body: JSON.stringify(body) });
+      if (!r.success) throw new Error(r.error || 'assignment failed');
+      wrap.innerHTML = '<div class="status ok">Fenced ' + htmlEscape(r.data.asset_ref) + ' into ' + htmlEscape(r.data.series_code || r.data.series_id) + '</div>';
+      seriesLoad();
+      seriesAssets();
+    } catch(e) { wrap.innerHTML = '<div class="status err">' + e.message + '</div>'; }
+  }
+
+  async function seriesRelease(assignmentId) {
+    const wrap = el('series-assign-status');
+    try {
+      const r = await api('/api/finops/series/assets/' + encodeURIComponent(assignmentId) + '/release', { method: 'POST', body: JSON.stringify({ reason: 'released from series' }) });
+      if (!r.success) throw new Error(r.error || 'release failed');
+      wrap.innerHTML = '<div class="status ok">Released ' + htmlEscape(r.data.asset_ref) + '; it is commingled until fenced again</div>';
+      seriesLoad();
+      seriesAssets();
+    } catch(e) { wrap.innerHTML = '<div class="status err">' + e.message + '</div>'; }
+  }
+
+  async function seriesObligate() {
+    const wrap = el('series-obligation-status');
+    wrap.innerHTML = '<div class="muted">Recording…</div>';
+    try {
+      const body = {
+        obligationType: el('sob-type').value,
+        counterparty: el('sob-counterparty').value || undefined,
+        amountCents: Math.round(Number(el('sob-amount').value) * 100),
+      };
+      const r = await api('/api/finops/series/' + encodeURIComponent(el('sob-series').value) + '/obligations', { method: 'POST', body: JSON.stringify(body) });
+      if (!r.success) throw new Error(r.error || 'obligation failed');
+      wrap.innerHTML = '<div class="status ok">Recorded ' + htmlEscape(r.data.obligation_id) + ' — it reduces the series available balance until settled</div>';
+      seriesLoad();
+    } catch(e) { wrap.innerHTML = '<div class="status err">' + e.message + '</div>'; }
+  }
+
+  // ─── PTC In-House Family Bank panel ─────────────────────────────────────────
+  function openInHouseBankPanel() {
+    const panel = el('module-panel');
+    const body = el('panel-body');
+    el('panel-title').textContent = 'PTC In-House Family Bank';
+    panel.classList.add('active');
+    body.innerHTML = '<div class="muted" style="margin-bottom:12px;">Every payment walks one pipeline: the instruction is canonicalized and its idempotency key reserved, policy decides allow / review / deny, the router picks the cheapest rail that still meets the requested speed out of the liquidity matrix, and the funds are held the moment the payment is admitted. An on-us transfer settles immediately against the pooled settlement account; an external payment stops at dispatched until the rail returns its own reference.</div>' +
+      '<div class="approval-actions"><button class="btn" onclick="ihbDashboard()">Refresh Bank</button><button class="btn" onclick="ihbAccounts()">Virtual Accounts</button><button class="btn" onclick="ihbPayments()">Payment Pipeline</button><button class="btn" onclick="ihbReconcile()">Reconcile Ledgers</button><button class="btn" onclick="ihbVerifyChain()">Verify Event Log</button></div>' +
+      '<div id="ihb-overview" style="margin-top:8px;font-size:12px;"></div>' +
+      '<h3 style="font-size:14px;margin:16px 0 8px;">Open a Virtual Account</h3>' +
+      '<div class="token-bar"><input id="ihb-va-name" placeholder="account name (e.g. DeAndrea Barkley — household)" /><select id="ihb-va-type"><option value="family_member">family_member</option><option value="entity">entity</option><option value="series">series</option><option value="expense">expense</option><option value="escrow">escrow</option><option value="reserve">reserve</option><option value="settlement">settlement</option></select></div>' +
+      '<div class="token-bar"><input id="ihb-va-owner" placeholder="owner reference (beneficiary or entity id)" /><input id="ihb-va-series" placeholder="series reference (optional)" /></div>' +
+      '<div class="approval-actions"><button class="btn" onclick="ihbOpenAccount()">Open Account</button></div>' +
+      '<div id="ihb-va-status" style="margin-top:8px;"></div>' +
+      '<h3 style="font-size:14px;margin:16px 0 8px;">Fund an Account</h3>' +
+      '<div class="muted" style="margin-bottom:6px;">A deposit lands in the settlement account and the bank owes it to the account holder, so both sides post to the trust GL. A withdrawal reverses it.</div>' +
+      '<div class="token-bar"><input id="ihb-fund-account" placeholder="virtual account number" /><input id="ihb-fund-amount" placeholder="amount (USD)" /><input id="ihb-fund-memo" placeholder="memo (optional)" /></div>' +
+      '<div class="approval-actions"><button class="btn" onclick="ihbFund(\'credit\')">Deposit</button><button class="btn" onclick="ihbFund(\'debit\')">Withdraw</button></div>' +
+      '<div id="ihb-fund-status" style="margin-top:8px;"></div>' +
+      '<h3 style="font-size:14px;margin:16px 0 8px;">Attest Rail Liquidity</h3>' +
+      '<div class="muted" style="margin-bottom:6px;">The router will not choose a rail that has no attested funding behind it, so a rail is unusable until the funding desk states what is available on it.</div>' +
+      '<div class="token-bar"><select id="ihb-liq-rail"><option value="ach_standard">ach_standard</option><option value="ach_same_day">ach_same_day</option><option value="rtp">rtp</option><option value="fedwire">fedwire</option><option value="stablecoin">stablecoin</option><option value="internal_book">internal_book</option></select><input id="ihb-liq-amount" placeholder="available funding (USD)" /><input id="ihb-liq-note" placeholder="attestation note (who states it, from what account)" /></div>' +
+      '<div class="approval-actions"><button class="btn" onclick="ihbAttestLiquidity()">Attest Liquidity</button><button class="btn" onclick="ihbMatrix()">Liquidity Matrix</button></div>' +
+      '<div id="ihb-liq-status" style="margin-top:8px;"></div>' +
+      '<h3 style="font-size:14px;margin:16px 0 8px;">Initiate a Payment</h3>' +
+      '<div class="token-bar"><input id="ihb-pay-debtor" placeholder="debtor virtual account number" /><input id="ihb-pay-amount" placeholder="amount (USD)" /></div>' +
+      '<div class="token-bar"><input id="ihb-pay-creditor" placeholder="creditor name" /><input id="ihb-pay-account" placeholder="creditor account (a virtual account number stays on-us)" /></div>' +
+      '<div class="token-bar"><input id="ihb-pay-routing" placeholder="creditor routing number (external only)" /><select id="ihb-pay-speed"><option value="standard">standard</option><option value="same_day">same_day</option><option value="express">express</option><option value="instant">instant</option></select></div>' +
+      '<div class="token-bar"><input id="ihb-pay-memo" placeholder="remittance information" /><input id="ihb-pay-key" placeholder="idempotency key (blank = generated)" /></div>' +
+      '<div class="approval-actions"><button class="btn" onclick="ihbQuote()">Quote Route (no payment)</button><button class="btn" onclick="ihbSubmit()">Submit Payment</button></div>' +
+      '<div id="ihb-pay-status" style="margin-top:8px;"></div>' +
+      '<h3 style="font-size:14px;margin:16px 0 8px;">Approve / Confirm</h3>' +
+      '<div class="token-bar"><input id="ihb-act-id" placeholder="payment id" /><input id="ihb-act-reference" placeholder="settlement reference from the rail" /></div>' +
+      '<div class="approval-actions"><button class="btn" onclick="ihbApprove()">Approve</button><button class="btn" onclick="ihbReject()">Reject</button><button class="btn" onclick="ihbConfirm(\'settled\')">Confirm Settled</button><button class="btn" onclick="ihbConfirm(\'returned\')">Record Return</button></div>' +
+      '<div id="ihb-act-status" style="margin-top:8px;"></div>' +
+      '<div id="ihb-detail" style="margin-top:16px;font-size:12px;"></div>';
+    ihbDashboard();
+    ihbPayments();
+  }
+
+  async function ihbDashboard() {
+    const wrap = el('ihb-overview');
+    wrap.innerHTML = '<div class="muted">Reading the bank…</div>';
+    try {
+      const r = await api('/api/inhouse-bank/dashboard');
+      const d = r.data;
+      const rails = (d.liquidityMatrix || []).filter(x => x.enabled)
+        .map(x => htmlEscape(x.name) + ' ' + (x.availableCents === null ? 'unattested' : '$' + (x.availableCents / 100).toFixed(2)))
+        .join(' · ');
+      let html = '<div class="status ' + (d.readiness.ready ? 'ok' : 'err') + '">' + htmlEscape(d.bank.name) + ' (' + htmlEscape(d.bank.bic) + ') — ' + htmlEscape(d.readiness.note || (d.readiness.ready ? 'ready' : 'not ready')) + '</div>';
+      html += '<div style="margin-top:8px;">Virtual pool: $' + htmlEscape(d.virtualAccounts.virtualBalance) + ' across ' + d.virtualAccounts.accounts + ' account(s)</div>';
+      html += '<div style="margin-top:4px;">Deposit liability ' + htmlEscape(d.virtualAccounts.depositAccountCode) + ': ' + htmlEscape(d.virtualAccounts.note) + '</div>';
+      html += '<div style="margin-top:4px;">Settlement account ' + htmlEscape(d.virtualAccounts.settlementAccountCode) + ': ' + htmlEscape(d.virtualAccounts.coverageNote || '') + '</div>';
+      html += '<div style="margin-top:4px;">Awaiting approval: ' + d.payments.awaitingApproval + ' · In flight: ' + d.payments.inFlight + '</div>';
+      html += '<div style="margin-top:4px;">Rail liquidity: ' + (rails || 'no rail has attested liquidity yet') + '</div>';
+      html += '<div style="margin-top:4px;">Event log: ' + (d.eventChain.intact ? 'intact over ' + d.eventChain.events + ' event(s)' : 'BROKEN — ' + htmlEscape(d.eventChain.note || '')) + '</div>';
+      html += '<div style="margin-top:4px;">Sub-ledger: ' + (d.reconciliation.balanced ? 'every virtual balance agrees with its own postings' : 'BREAK — ' + htmlEscape(d.reconciliation.note || '')) + '</div>';
+      wrap.innerHTML = html;
+    } catch(e) { wrap.innerHTML = '<div class="status err">' + e.message + '</div>'; }
+  }
+
+  async function ihbAccounts() {
+    const wrap = el('ihb-detail');
+    wrap.innerHTML = '<div class="muted">Loading virtual accounts…</div>';
+    try {
+      const r = await api('/api/inhouse-bank/accounts');
+      const rows = (r.data || []).map(a =>
+        '<tr><td>' + htmlEscape(a.accountNumber) + '</td><td>' + htmlEscape(a.name) + '</td><td>' + htmlEscape(a.accountType) + '</td><td>' + htmlEscape(a.status) + '</td><td>$' + htmlEscape(a.balance) + '</td><td>$' + htmlEscape(a.available) + '</td></tr>');
+      wrap.innerHTML = rows.length
+        ? '<table class="tbl"><tr><th>Account</th><th>Name</th><th>Type</th><th>Status</th><th>Balance</th><th>Available</th></tr>' + rows.join('') + '</table>'
+        : '<div class="muted">No virtual account has been opened yet.</div>';
+    } catch(e) { wrap.innerHTML = '<div class="status err">' + e.message + '</div>'; }
+  }
+
+  async function ihbPayments() {
+    const wrap = el('ihb-detail');
+    wrap.innerHTML = '<div class="muted">Loading payments…</div>';
+    try {
+      const r = await api('/api/inhouse-bank/payments?limit=25');
+      const rows = (r.data || []).map(p =>
+        '<tr><td>' + htmlEscape(p.paymentId) + '</td><td>' + htmlEscape(p.status) + '</td><td>' + htmlEscape(p.rail || '—') + '</td><td>$' + htmlEscape(p.amount) + '</td><td>' + htmlEscape((p.creditor && p.creditor.name) || '—') + '</td><td>' + p.approvals.length + '/' + p.requiredApprovals + '</td></tr>');
+      wrap.innerHTML = rows.length
+        ? '<table class="tbl"><tr><th>Payment</th><th>Status</th><th>Rail</th><th>Amount</th><th>Creditor</th><th>Approvals</th></tr>' + rows.join('') + '</table>'
+        : '<div class="muted">No payment has been submitted yet.</div>';
+    } catch(e) { wrap.innerHTML = '<div class="status err">' + e.message + '</div>'; }
+  }
+
+  async function ihbOpenAccount() {
+    const wrap = el('ihb-va-status');
+    wrap.innerHTML = '<div class="muted">Opening…</div>';
+    try {
+      const r = await api('/api/inhouse-bank/accounts', { method: 'POST', body: JSON.stringify({
+        name: el('ihb-va-name').value,
+        accountType: el('ihb-va-type').value,
+        ownerRef: el('ihb-va-owner').value || undefined,
+        seriesRef: el('ihb-va-series').value || undefined,
+      }) });
+      wrap.innerHTML = '<div class="status ok">Opened ' + htmlEscape(r.data.accountNumber) + ' (' + htmlEscape(r.data.virtualIban) + ')</div>';
+      ihbAccounts();
+    } catch(e) { wrap.innerHTML = '<div class="status err">' + e.message + '</div>'; }
+  }
+
+  function ihbInstruction() {
+    return {
+      debtorAccount: el('ihb-pay-debtor').value,
+      amount: el('ihb-pay-amount').value,
+      requestedSpeed: el('ihb-pay-speed').value,
+      remittanceInformation: el('ihb-pay-memo').value || undefined,
+      creditor: {
+        name: el('ihb-pay-creditor').value,
+        accountNumber: el('ihb-pay-account').value || undefined,
+        routingNumber: el('ihb-pay-routing').value || undefined,
+      },
+    };
+  }
+
+  async function ihbQuote() {
+    const wrap = el('ihb-pay-status');
+    wrap.innerHTML = '<div class="muted">Quoting…</div>';
+    try {
+      const r = await api('/api/inhouse-bank/routing/quote', { method: 'POST', body: JSON.stringify(ihbInstruction()) });
+      const d = r.data;
+      let html = '<div class="status ' + (d.policy.decision === 'deny' ? 'err' : 'ok') + '">Policy: ' + htmlEscape(d.policy.decision) + ' — ' + htmlEscape(d.policy.note) + '</div>';
+      if (d.routing) html += '<div style="margin-top:6px;">Route: ' + htmlEscape(d.routing.railName) + ' — ' + htmlEscape(d.routing.note) + '</div>';
+      wrap.innerHTML = html;
+    } catch(e) { wrap.innerHTML = '<div class="status err">' + e.message + '</div>'; }
+  }
+
+  async function ihbSubmit() {
+    const wrap = el('ihb-pay-status');
+    wrap.innerHTML = '<div class="muted">Submitting…</div>';
+    try {
+      const key = el('ihb-pay-key').value || ('ihb-ui-' + Date.now() + '-' + Math.random().toString(16).slice(2, 10));
+      const r = await api('/api/inhouse-bank/payments', {
+        method: 'POST',
+        headers: { 'Idempotency-Key': key },
+        body: JSON.stringify(ihbInstruction()),
+      });
+      const p = r.data.payment;
+      const note = r.data.replay ? 'Replay of an earlier submission; nothing new was created.' : (r.data.routing ? r.data.routing.note : (r.data.policy ? r.data.policy.note : ''));
+      wrap.innerHTML = '<div class="status ' + (p.status === 'rejected' ? 'err' : 'ok') + '">' + htmlEscape(p.paymentId) + ' is ' + htmlEscape(p.status) + ' — ' + htmlEscape(note || '') + '</div>';
+      el('ihb-act-id').value = p.paymentId;
+      ihbPayments();
+      ihbDashboard();
+    } catch(e) { wrap.innerHTML = '<div class="status err">' + e.message + '</div>'; }
+  }
+
+  async function ihbAction(path, body) {
+    const wrap = el('ihb-act-status');
+    wrap.innerHTML = '<div class="muted">Working…</div>';
+    try {
+      const id = el('ihb-act-id').value;
+      if (!id) throw new Error('A payment id is required');
+      const r = await api('/api/inhouse-bank/payments/' + encodeURIComponent(id) + path, { method: 'POST', body: JSON.stringify(body || {}) });
+      wrap.innerHTML = '<div class="status ok">' + htmlEscape(r.data.paymentId) + ' is now ' + htmlEscape(r.data.status) + '</div>';
+      ihbPayments();
+      ihbDashboard();
+    } catch(e) { wrap.innerHTML = '<div class="status err">' + e.message + '</div>'; }
+  }
+
+  function ihbApprove() { return ihbAction('/approve', {}); }
+  function ihbReject() { return ihbAction('/reject', {}); }
+  function ihbConfirm(outcome) { return ihbAction('/confirm', { outcome: outcome, reference: el('ihb-act-reference').value || undefined }); }
+
+  async function ihbFund(direction) {
+    const wrap = el('ihb-fund-status');
+    wrap.innerHTML = '<div class="muted">Posting…</div>';
+    try {
+      const amount = Number(el('ihb-fund-amount').value);
+      if (!isFinite(amount) || amount <= 0) throw new Error('An amount in dollars is required');
+      const r = await api('/api/inhouse-bank/accounts/' + encodeURIComponent(el('ihb-fund-account').value) + '/fund', {
+        method: 'POST',
+        body: JSON.stringify({ amountCents: Math.round(amount * 100), direction: direction, memo: el('ihb-fund-memo').value || undefined }),
+      });
+      wrap.innerHTML = '<div class="status ok">' + htmlEscape(r.data.accountNumber) + ' is now $' + htmlEscape(r.data.balance) + ' ($' + htmlEscape(r.data.available) + ' available)</div>';
+      ihbAccounts();
+      ihbDashboard();
+    } catch(e) { wrap.innerHTML = '<div class="status err">' + e.message + '</div>'; }
+  }
+
+  async function ihbAttestLiquidity() {
+    const wrap = el('ihb-liq-status');
+    wrap.innerHTML = '<div class="muted">Recording the attestation…</div>';
+    try {
+      const amount = Number(el('ihb-liq-amount').value);
+      if (!isFinite(amount) || amount < 0) throw new Error('Available funding in dollars is required');
+      const r = await api('/api/inhouse-bank/routing/liquidity', {
+        method: 'POST',
+        body: JSON.stringify({ rail: el('ihb-liq-rail').value, availableCents: Math.round(amount * 100), note: el('ihb-liq-note').value || undefined }),
+      });
+      wrap.innerHTML = '<div class="status ok">' + htmlEscape(r.data.rail) + ' now has $' + (Number(r.data.available_cents) / 100).toFixed(2) + ' attested behind it</div>';
+      ihbDashboard();
+    } catch(e) { wrap.innerHTML = '<div class="status err">' + e.message + '</div>'; }
+  }
+
+  async function ihbMatrix() {
+    const wrap = el('ihb-detail');
+    wrap.innerHTML = '<div class="muted">Loading the liquidity matrix…</div>';
+    try {
+      const r = await api('/api/inhouse-bank/routing/matrix');
+      const rows = (r.data || []).map(x =>
+        '<tr><td>' + htmlEscape(x.name) + '</td><td>' + (x.enabled ? 'enabled' : 'disabled') + '</td><td>' + (x.availableCents === null ? 'n/a' : '$' + (x.availableCents / 100).toFixed(2)) + ' (' + htmlEscape(x.liquiditySource) + ')</td><td>$' + (x.costCents / 100).toFixed(2) + '</td><td>' + x.settlementMinutes + ' min</td><td>' + (x.cutoffPassed ? 'passed for today' : 'open') + '</td></tr>');
+      wrap.innerHTML = rows.length
+        ? '<table class="tbl"><tr><th>Rail</th><th>State</th><th>Funding</th><th>Cost</th><th>Settles in</th><th>Cutoff</th></tr>' + rows.join('') + '</table>'
+        : '<div class="muted">No rail is enabled.</div>';
+    } catch(e) { wrap.innerHTML = '<div class="status err">' + e.message + '</div>'; }
+  }
+
+  async function ihbReconcile() {
+    const wrap = el('ihb-detail');
+    wrap.innerHTML = '<div class="muted">Reconciling…</div>';
+    try {
+      const r = await api('/api/inhouse-bank/ledger/reconcile');
+      wrap.innerHTML = '<div class="status ' + (r.data.balanced ? 'ok' : 'err') + '">' + htmlEscape(r.data.note) + '</div>' +
+        '<pre style="margin-top:8px;white-space:pre-wrap;">' + htmlEscape(JSON.stringify(r.data, null, 2)) + '</pre>';
+    } catch(e) { wrap.innerHTML = '<div class="status err">' + e.message + '</div>'; }
+  }
+
+  async function ihbVerifyChain() {
+    const wrap = el('ihb-detail');
+    wrap.innerHTML = '<div class="muted">Verifying the event log…</div>';
+    try {
+      const r = await api('/api/inhouse-bank/events/verify');
+      wrap.innerHTML = '<div class="status ' + (r.data.intact ? 'ok' : 'err') + '">' + htmlEscape(r.data.note || (r.data.intact ? 'intact' : 'broken')) + '</div>';
+    } catch(e) { wrap.innerHTML = '<div class="status err">' + e.message + '</div>'; }
+  }
+
+  // ─── Capital Transfer OS panel ──────────────────────────────────────────────
+  function openCapitalTransferPanel() {
+    const panel = el('module-panel');
+    const body = el('panel-body');
+    el('panel-title').textContent = 'Capital Transfer OS';
+    panel.classList.add('active');
+    body.innerHTML = '<div class="muted" style="margin-bottom:12px;">Reserves become spendable funds by being converted: collateral is sold or pledged, digital assets are redeemed, custodian cash is swept, or a contributor funds the trust. Each transfer runs proposed → two trustee signatures → instructed to the counterparty → confirmed settlement, and only the confirmed step raises spendable funds — the proceeds are attested as cash and fenced straight into the series that raised them.</div>' +
+      '<div class="approval-actions"><button class="btn" onclick="capitalPlan()">Plan Conversions</button><button class="btn" onclick="capitalTransfers()">Refresh Pipeline</button><button class="btn" onclick="capitalAutomate(true)">Dry-Run Automation</button><button class="btn" onclick="capitalAutomate(false)">Run Automation</button><button class="btn" onclick="capitalChain()">Verify Transfer Log</button></div>' +
+      '<div class="token-bar"><input id="cap-plan-series" placeholder="series id or code (blank = whole master trust)" /><input id="cap-plan-target" placeholder="funding target (USD, blank = open obligations)" /></div>' +
+      '<div id="capital-plan" style="margin-top:8px;font-size:12px;"></div>' +
+      '<h3 style="font-size:14px;margin:16px 0 8px;">Propose a Transfer</h3>' +
+      '<div class="token-bar"><select id="cap-route"><option value="collateral_sale">collateral_sale</option><option value="collateral_pledge">collateral_pledge</option><option value="digital_asset_redemption">digital_asset_redemption</option><option value="custodian_cash_sweep">custodian_cash_sweep</option><option value="external_contribution">external_contribution</option></select><input id="cap-series" placeholder="target series id or code" /></div>' +
+      '<div class="token-bar"><select id="cap-kind"><option value="bond">bond</option><option value="reserve_attestation">reserve_attestation</option><option value="custody_position">custody_position</option><option value="cash_account">cash_account</option></select><input id="cap-ref" placeholder="source asset reference (blank for a contribution)" /></div>' +
+      '<div class="token-bar"><input id="cap-counterparty" placeholder="counterparty (custodian, lender, exchange, contributor)" /><input id="cap-amount" placeholder="amount (USD)" /></div>' +
+      '<div class="token-bar"><input id="cap-destination" placeholder="destination account the proceeds land in" /><input id="cap-memo" placeholder="memo (optional)" /></div>' +
+      '<div class="approval-actions"><button class="btn" onclick="capitalPropose()">Propose Transfer</button></div>' +
+      '<div id="capital-propose-status" style="margin-top:8px;"></div>' +
+      '<h3 style="font-size:14px;margin:16px 0 8px;">Instruct / Confirm Settlement</h3>' +
+      '<div class="token-bar"><input id="cap-tid" placeholder="transfer id" /><input id="cap-instruction" placeholder="instruction reference (custodian order, redemption id)" /></div>' +
+      '<div class="token-bar"><input id="cap-settlement" placeholder="settlement reference from the counterparty" /><input id="cap-evidence" placeholder="evidence reference (advice, receipt, statement)" /></div>' +
+      '<div class="token-bar"><input id="cap-settled" placeholder="settled amount (USD, blank = proposed amount)" /><input id="cap-confirm-destination" placeholder="destination account (blank = as proposed)" /></div>' +
+      '<div class="approval-actions"><button class="btn" onclick="capitalInstruct()">Record Instruction</button><button class="btn" onclick="capitalConfirm()">Confirm Settlement</button></div>' +
+      '<div id="capital-settle-status" style="margin-top:8px;"></div>' +
+      '<div id="capital-pipeline" style="margin-top:16px;font-size:12px;"></div>';
+    capitalPlan();
+    capitalTransfers();
+  }
+
+  async function capitalPlan() {
+    const wrap = el('capital-plan');
+    wrap.innerHTML = '<div class="muted">Planning conversions…</div>';
+    try {
+      const series = el('cap-plan-series').value;
+      const target = el('cap-plan-target').value;
+      const params = [];
+      if (series) params.push('seriesRef=' + encodeURIComponent(series));
+      if (target) params.push('targetCents=' + encodeURIComponent(String(Math.round(Number(target) * 100))));
+      const r = await api('/api/finops/capital/plan' + (params.length ? '?' + params.join('&') : ''));
+      if (!r.success) throw new Error(r.error || 'plan failed');
+      const d = r.data;
+      let html = '<div class="status ' + (d.coversGap ? 'ok' : 'err') + '">' + htmlEscape(d.seriesCode || d.masterTrust) +
+        ' — available $' + htmlEscape(d.available.toLocaleString()) + ', target $' + htmlEscape(d.target.toLocaleString()) +
+        ', gap $' + htmlEscape(d.gap.toLocaleString()) + ', convertible capacity $' + htmlEscape(d.capacity.toLocaleString()) + '</div>';
+      html += '<div class="muted" style="margin:8px 0;">' + htmlEscape(d.note) + '</div>';
+      if ((d.eligible || []).length) {
+        html += '<table class="small-table"><thead><tr><th>Asset</th><th>Contributes</th><th>Route</th><th>Basis</th><th>Expected Proceeds</th><th>Series</th></tr></thead>';
+        d.eligible.forEach(a => (a.routes || []).forEach(rt => {
+          html += '<tr><td>' + htmlEscape(a.label || a.assetRef) + '</td><td>' + htmlEscape(a.valueKind) +
+            '</td><td>' + htmlEscape(rt.route) + (rt.createsObligation ? ' <span class="muted">(creates obligation)</span>' : '') +
+            '</td><td>$' + htmlEscape(rt.basis.toLocaleString()) + '</td><td>$' + htmlEscape(rt.expectedProceeds.toLocaleString()) +
+            '</td><td>' + htmlEscape(a.seriesCode || 'commingled') + '</td></tr>';
+        }));
+        html += '</table>';
+      }
+      if ((d.ineligible || []).length) {
+        html += '<h3 style="font-size:13px;margin:12px 0 6px;">Not Convertible</h3><table class="small-table"><thead><tr><th>Asset</th><th>Value</th><th>Why Not</th></tr></thead>';
+        d.ineligible.forEach(a => {
+          html += '<tr><td>' + htmlEscape(a.label || a.assetRef) + '</td><td>$' + htmlEscape(a.value.toLocaleString()) +
+            '</td><td>' + htmlEscape(a.reason) + '</td></tr>';
+        });
+        html += '</table>';
+      }
+      wrap.innerHTML = html;
+    } catch(e) { wrap.innerHTML = '<div class="status err">' + e.message + '</div>'; }
+  }
+
+  async function capitalTransfers() {
+    const wrap = el('capital-pipeline');
+    wrap.innerHTML = '<div class="muted">Loading transfers…</div>';
+    try {
+      const r = await api('/api/finops/capital/transfers');
+      if (!r.success) throw new Error(r.error || 'transfers failed');
+      const rows = r.data || [];
+      let html = '<h3 style="font-size:14px;margin:0 0 8px;">Transfer Pipeline (' + htmlEscape(String(rows.length)) + ')</h3>';
+      html += '<table class="small-table"><thead><tr><th>Transfer</th><th>Route</th><th>Source</th><th>Amount</th><th>Status</th><th>Signatures</th><th>Counterparty</th><th></th></tr></thead>';
+      rows.forEach(t => {
+        let signatures = t.signatures || [];
+        if (typeof signatures === 'string') { try { signatures = JSON.parse(signatures); } catch(e) { signatures = []; } }
+        html += '<tr><td>' + htmlEscape(t.transfer_id) + '</td><td>' + htmlEscape(t.route) +
+          '</td><td>' + htmlEscape(t.source_label || '—') + '</td><td>$' + htmlEscape((Number(t.amount_cents) / 100).toLocaleString()) +
+          '</td><td>' + htmlEscape(t.status) + '</td><td>' + htmlEscape(signatures.length + '/' + t.required_signatures) +
+          '</td><td>' + htmlEscape(t.counterparty || '—') + '</td><td>' + (t.status === 'proposed'
+            ? '<button class="btn" onclick="capitalAuthorize(\'' + htmlEscape(t.transfer_id) + '\')">Sign</button>'
+            : '') + '</td></tr>';
+        if (t.settlement_note) html += '<tr><td colspan="8" class="muted">' + htmlEscape(t.settlement_note) + '</td></tr>';
+      });
+      html += '</table>';
+      if (!rows.length) html += '<div class="muted">No capital transfer has been raised yet.</div>';
+      wrap.innerHTML = html;
+    } catch(e) { wrap.innerHTML = '<div class="status err">' + e.message + '</div>'; }
+  }
+
+  async function capitalPropose() {
+    const wrap = el('capital-propose-status');
+    wrap.innerHTML = '<div class="muted">Proposing…</div>';
+    try {
+      const amount = el('cap-amount').value;
+      const body = {
+        route: el('cap-route').value,
+        seriesRef: el('cap-series').value,
+        assetKind: el('cap-ref').value ? el('cap-kind').value : undefined,
+        assetRef: el('cap-ref').value || undefined,
+        counterparty: el('cap-counterparty').value || undefined,
+        amountCents: amount ? Math.round(Number(amount) * 100) : undefined,
+        destinationRef: el('cap-destination').value || undefined,
+        memo: el('cap-memo').value || undefined,
+      };
+      const r = await api('/api/finops/capital/transfers', { method: 'POST', body: JSON.stringify(body) });
+      if (!r.success) throw new Error(r.error || 'proposal failed');
+      wrap.innerHTML = '<div class="status ok">Proposed ' + htmlEscape(r.data.transfer_id) + ' — it needs ' +
+        htmlEscape(String(r.data.required_signatures)) + ' trustee signatures before it can be instructed</div>';
+      capitalTransfers();
+    } catch(e) { wrap.innerHTML = '<div class="status err">' + e.message + '</div>'; }
+  }
+
+  async function capitalAuthorize(transferId) {
+    const wrap = el('capital-settle-status');
+    try {
+      const r = await api('/api/finops/capital/transfers/' + encodeURIComponent(transferId) + '/authorize', { method: 'POST', body: '{}' });
+      if (!r.success) throw new Error(r.error || 'authorization failed');
+      wrap.innerHTML = '<div class="status ok">' + htmlEscape(transferId) + ' is ' + htmlEscape(r.data.status) +
+        '; ' + htmlEscape(String(r.data.remainingSignatures)) + ' signature(s) still required</div>';
+      capitalTransfers();
+    } catch(e) { wrap.innerHTML = '<div class="status err">' + e.message + '</div>'; }
+  }
+
+  async function capitalInstruct() {
+    const wrap = el('capital-settle-status');
+    wrap.innerHTML = '<div class="muted">Recording instruction…</div>';
+    try {
+      const body = { instructionReference: el('cap-instruction').value };
+      const r = await api('/api/finops/capital/transfers/' + encodeURIComponent(el('cap-tid').value) + '/instruct', { method: 'POST', body: JSON.stringify(body) });
+      if (!r.success) throw new Error(r.error || 'instruction failed');
+      wrap.innerHTML = '<div class="status ok">Instructed ' + htmlEscape(r.data.transfer_id) + ' to ' + htmlEscape(r.data.counterparty || 'counterparty') + '</div>';
+      capitalTransfers();
+    } catch(e) { wrap.innerHTML = '<div class="status err">' + e.message + '</div>'; }
+  }
+
+  async function capitalConfirm() {
+    const wrap = el('capital-settle-status');
+    wrap.innerHTML = '<div class="muted">Confirming settlement…</div>';
+    try {
+      const settled = el('cap-settled').value;
+      const body = {
+        settlementReference: el('cap-settlement').value,
+        evidenceReference: el('cap-evidence').value,
+        settledCents: settled ? Math.round(Number(settled) * 100) : undefined,
+        destinationRef: el('cap-confirm-destination').value || undefined,
+      };
+      const r = await api('/api/finops/capital/transfers/' + encodeURIComponent(el('cap-tid').value) + '/confirm', { method: 'POST', body: JSON.stringify(body) });
+      if (!r.success) throw new Error(r.error || 'confirmation failed');
+      wrap.innerHTML = '<div class="status ok">Settled ' + htmlEscape(r.data.transfer_id) + ' — ' + htmlEscape((r.data.reserve && r.data.reserve.note) || '') + '</div>';
+      capitalTransfers();
+      capitalPlan();
+    } catch(e) { wrap.innerHTML = '<div class="status err">' + e.message + '</div>'; }
+  }
+
+  async function capitalAutomate(dryRun) {
+    const wrap = el('capital-plan');
+    wrap.innerHTML = '<div class="muted">Scanning series for funding gaps…</div>';
+    try {
+      const body = { seriesRef: el('cap-plan-series').value || undefined, dryRun: Boolean(dryRun) };
+      const r = await api('/api/finops/capital/automate', { method: 'POST', body: JSON.stringify(body) });
+      if (!r.success) throw new Error(r.error || 'automation failed');
+      const d = r.data;
+      let html = '<div class="status ' + ((d.proposed || []).length ? 'ok' : 'err') + '">Mode ' + htmlEscape(d.mode) +
+        ' — ' + htmlEscape(String((d.proposed || []).length)) + ' proposal(s) raised. ' + htmlEscape(d.note) + '</div>';
+      if ((d.skipped || []).length) {
+        html += '<table class="small-table"><thead><tr><th>Series</th><th>Asset</th><th>Skipped Because</th></tr></thead>';
+        d.skipped.forEach(s => {
+          html += '<tr><td>' + htmlEscape(s.seriesCode || '—') + '</td><td>' + htmlEscape(s.assetRef || '—') +
+            '</td><td>' + htmlEscape(s.reason) + '</td></tr>';
+        });
+        html += '</table>';
+      }
+      wrap.innerHTML = html;
+      capitalTransfers();
+    } catch(e) { wrap.innerHTML = '<div class="status err">' + e.message + '</div>'; }
+  }
+
+  async function capitalChain() {
+    const wrap = el('capital-plan');
+    try {
+      const r = await api('/api/finops/capital-chain');
+      if (!r.success) throw new Error(r.error || 'chain verification failed');
+      const d = r.data;
+      wrap.innerHTML = '<div class="status ' + (d.intact ? 'ok' : 'err') + '">' + htmlEscape(String(d.events)) +
+        ' capital transfer events — ' + htmlEscape(d.note) + '</div>' + wrap.innerHTML;
+    } catch(e) { wrap.innerHTML = '<div class="status err">' + e.message + '</div>'; }
+  }
+
+  // ─── Principal & Income Drawdown OS panel ───────────────────────────────────
+  function openDrawdownPanel() {
+    const panel = el('module-panel');
+    const body = el('panel-body');
+    el('panel-title').textContent = 'Principal & Income Drawdown OS';
+    panel.classList.add('active');
+    body.innerHTML = '<div class="muted" style="margin-bottom:12px;">A drawdown is an entitlement, not a balance. Every receipt is allocated to principal or income (accrued interest is recorded but never distributable, and neither is a coupon on an instrument the trust issued to itself). A drawdown runs proposed → two trustee signatures → authorized, and funding pays only what the series holds in attested cash — the rest stays visibly outstanding with the reason instead of presenting as money.</div>' +
+      '<div class="token-bar"><input id="dd-series" placeholder="series id or code" /><button class="btn" onclick="drawdownStatement()">Load Statement</button><button class="btn" onclick="drawdownChain()">Verify Drawdown Log</button></div>' +
+      '<div id="dd-statement" style="margin-top:8px;font-size:12px;"></div>' +
+      '<h3 style="font-size:14px;margin:16px 0 8px;">Post a Receipt or Disbursement</h3>' +
+      '<div class="token-bar"><select id="dd-source"><option value="contribution">contribution</option><option value="bond_maturity">bond_maturity</option><option value="capital_transfer">capital_transfer</option><option value="bond_coupon">bond_coupon</option><option value="interest">interest</option><option value="rent">rent</option><option value="business_receipt">business_receipt</option><option value="accrued_interest">accrued_interest</option><option value="trustee_fee">trustee_fee</option></select><select id="dd-entry-type"><option value="receipt">receipt</option><option value="disbursement">disbursement</option></select><select id="dd-basis"><option value="cash">cash</option><option value="accrual">accrual</option></select></div>' +
+      '<div class="token-bar"><input id="dd-entry-amount" placeholder="amount (USD)" /><input id="dd-entry-ref" placeholder="source reference (bond, account, transfer)" /><input id="dd-entry-evidence" placeholder="evidence reference (optional)" /></div>' +
+      '<div class="approval-actions"><button class="btn" onclick="drawdownEntry()">Post Entry</button></div>' +
+      '<div id="dd-entry-status" style="margin-top:8px;"></div>' +
+      '<h3 style="font-size:14px;margin:16px 0 8px;">Request a Drawdown</h3>' +
+      '<div class="token-bar"><select id="dd-allocation"><option value="principal">principal</option><option value="income">income</option></select><input id="dd-amount" placeholder="amount (USD)" /><input id="dd-purpose" placeholder="purpose (beneficiary support, trust expense)" /></div>' +
+      '<div class="token-bar"><input id="dd-beneficiary" placeholder="beneficiary (blank = the series beneficiary)" /><input id="dd-memo" placeholder="memo (optional)" /></div>' +
+      '<div class="approval-actions"><button class="btn" onclick="drawdownPropose()">Request Drawdown</button></div>' +
+      '<div id="dd-propose-status" style="margin-top:8px;"></div>' +
+      '<h3 style="font-size:14px;margin:16px 0 8px;">Fund an Authorized Drawdown</h3>' +
+      '<div class="token-bar"><input id="dd-id" placeholder="drawdown id" /><input id="dd-payment-ref" placeholder="payment reference (the rail or transfer that paid it)" /><input id="dd-fund-amount" placeholder="amount (USD, blank = outstanding)" /></div>' +
+      '<div class="approval-actions"><button class="btn" onclick="drawdownFund()">Fund Drawdown</button></div>' +
+      '<div id="dd-fund-status" style="margin-top:8px;"></div>';
+    drawdownStatement();
+  }
+
+  async function drawdownStatement() {
+    const wrap = el('dd-statement');
+    const seriesRef = el('dd-series').value;
+    if (!seriesRef) { wrap.innerHTML = '<div class="muted">Enter a series to load its principal and income statement.</div>'; return; }
+    wrap.innerHTML = '<div class="muted">Loading statement…</div>';
+    try {
+      const r = await api('/api/finops/drawdown/statement?seriesRef=' + encodeURIComponent(seriesRef));
+      if (!r.success) throw new Error(r.error || 'statement failed');
+      const d = r.data;
+      const ent = d.entitlement || {};
+      let html = '<div class="status ' + (Number(d.unfunded) > 0 ? 'err' : 'ok') + '">' + htmlEscape(d.seriesCode) +
+        ' — authorized $' + htmlEscape(Number(d.authorized).toLocaleString()) + ', funded $' + htmlEscape(Number(d.funded).toLocaleString()) +
+        ', unfunded $' + htmlEscape(Number(d.unfunded).toLocaleString()) + '</div>';
+      html += '<div class="muted" style="margin:8px 0;">' + htmlEscape(d.note) + '</div>';
+      html += '<table class="small-table"><thead><tr><th>Fund</th><th>Receipts</th><th>Disbursements</th><th>Distributable</th><th>Accrued (not distributable)</th></tr></thead>';
+      ['principal', 'income'].forEach(k => {
+        const f = d[k] || {};
+        html += '<tr><td>' + k + '</td><td>$' + htmlEscape(Number(f.receipts || 0).toLocaleString()) +
+          '</td><td>$' + htmlEscape(Number(f.disbursements || 0).toLocaleString()) +
+          '</td><td>$' + htmlEscape(Number(f.distributable || 0).toLocaleString()) +
+          '</td><td>$' + htmlEscape(Number(f.accrued || 0).toLocaleString()) + '</td></tr>';
+      });
+      html += '</table>';
+      html += '<h3 style="font-size:13px;margin:12px 0 6px;">Entitlement vs Fundable</h3>';
+      html += '<div class="muted" style="margin-bottom:6px;">Corpus $' + htmlEscape(Number(ent.corpus || 0).toLocaleString()) +
+        ' at ' + htmlEscape(String((ent.principalRateBps || 0) / 100)) + '% a year over ' + htmlEscape(String(ent.allowanceYears || 0)) +
+        ' allowance year(s); attested cash in this series $' + htmlEscape(Number(ent.seriesAvailable || 0).toLocaleString()) + '</div>';
+      if (Number(ent.obligationExcluded) > 0) {
+        html += '<div class="status err" style="margin-bottom:6px;">$' +
+          htmlEscape(Number(ent.obligationExcluded).toLocaleString()) +
+          ' of fenced bond value is excluded from corpus — ' + htmlEscape(ent.obligationNote || '') + '</div>';
+      }
+      html += '<table class="small-table"><thead><tr><th>Fund</th><th>Allowance</th><th>Committed</th><th>Remaining</th><th>Fundable Today</th><th>Unbacked</th></tr></thead>';
+      ['principal', 'income'].forEach(k => {
+        const e = ent[k] || {};
+        html += '<tr><td>' + k + '</td><td>$' + htmlEscape(Number(e.allowance || 0).toLocaleString()) +
+          '</td><td>$' + htmlEscape(Number(e.committed || 0).toLocaleString()) +
+          '</td><td>$' + htmlEscape(Number(e.remaining || 0).toLocaleString()) +
+          '</td><td>$' + htmlEscape(Number(e.fundable || 0).toLocaleString()) +
+          '</td><td>$' + htmlEscape(Number(e.unbacked || 0).toLocaleString()) + '</td></tr>';
+      });
+      html += '</table>';
+      const rows = d.drawdowns || [];
+      html += '<h3 style="font-size:13px;margin:12px 0 6px;">Drawdowns (' + htmlEscape(String(rows.length)) + ')</h3>';
+      html += '<table class="small-table"><thead><tr><th>Drawdown</th><th>Fund</th><th>Requested</th><th>Funded</th><th>Status</th><th>Signatures</th><th>Purpose</th><th></th></tr></thead>';
+      rows.forEach(t => {
+        let signatures = t.signatures || [];
+        if (typeof signatures === 'string') { try { signatures = JSON.parse(signatures); } catch(e) { signatures = []; } }
+        html += '<tr><td>' + htmlEscape(t.drawdown_id) + '</td><td>' + htmlEscape(t.allocation) +
+          '</td><td>$' + htmlEscape((Number(t.requested_cents) / 100).toLocaleString()) +
+          '</td><td>$' + htmlEscape((Number(t.funded_cents) / 100).toLocaleString()) +
+          '</td><td>' + htmlEscape(t.status) + '</td><td>' + htmlEscape(signatures.length + '/' + t.required_signatures) +
+          '</td><td>' + htmlEscape(t.purpose) + '</td><td>' + (t.status === 'proposed'
+            ? '<button class="btn" onclick="drawdownAuthorize(\'' + htmlEscape(t.drawdown_id) + '\')">Sign</button>'
+            : '') + '</td></tr>';
+        if (t.funding_note) html += '<tr><td colspan="8" class="muted">' + htmlEscape(t.funding_note) + '</td></tr>';
+      });
+      html += '</table>';
+      if (!rows.length) html += '<div class="muted">No drawdown has been requested against this series yet.</div>';
+      wrap.innerHTML = html;
+    } catch(e) { wrap.innerHTML = '<div class="status err">' + e.message + '</div>'; }
+  }
+
+  async function drawdownEntry() {
+    const wrap = el('dd-entry-status');
+    wrap.innerHTML = '<div class="muted">Posting entry…</div>';
+    try {
+      const amount = el('dd-entry-amount').value;
+      const body = {
+        seriesRef: el('dd-series').value,
+        sourceKind: el('dd-source').value,
+        entryType: el('dd-entry-type').value,
+        basis: el('dd-basis').value,
+        amountCents: amount ? Math.round(Number(amount) * 100) : undefined,
+        sourceRef: el('dd-entry-ref').value || undefined,
+        evidenceReference: el('dd-entry-evidence').value || undefined,
+      };
+      const r = await api('/api/finops/drawdown/entries', { method: 'POST', body: JSON.stringify(body) });
+      if (!r.success) throw new Error(r.error || 'entry failed');
+      const d = r.data;
+      wrap.innerHTML = '<div class="status ok">Posted ' + htmlEscape(d.entry_id) + ' to ' + htmlEscape(d.allocation) +
+        ' — ' + (d.distributable ? 'distributable' : htmlEscape('not distributable: ' + (d.non_distributable_reason || 'disbursement'))) + '</div>';
+      drawdownStatement();
+    } catch(e) { wrap.innerHTML = '<div class="status err">' + e.message + '</div>'; }
+  }
+
+  async function drawdownPropose() {
+    const wrap = el('dd-propose-status');
+    wrap.innerHTML = '<div class="muted">Requesting…</div>';
+    try {
+      const amount = el('dd-amount').value;
+      const body = {
+        seriesRef: el('dd-series').value,
+        allocation: el('dd-allocation').value,
+        amountCents: amount ? Math.round(Number(amount) * 100) : undefined,
+        purpose: el('dd-purpose').value,
+        beneficiaryRef: el('dd-beneficiary').value || undefined,
+        memo: el('dd-memo').value || undefined,
+      };
+      const r = await api('/api/finops/drawdown/drawdowns', { method: 'POST', body: JSON.stringify(body) });
+      if (!r.success) throw new Error(r.error || 'drawdown request failed');
+      wrap.innerHTML = '<div class="status ok">Requested ' + htmlEscape(r.data.drawdown_id) + ' — it needs ' +
+        htmlEscape(String(r.data.required_signatures)) + ' trustee signatures, and funding still depends on attested cash</div>';
+      drawdownStatement();
+    } catch(e) { wrap.innerHTML = '<div class="status err">' + e.message + '</div>'; }
+  }
+
+  async function drawdownAuthorize(drawdownId) {
+    const wrap = el('dd-fund-status');
+    try {
+      const r = await api('/api/finops/drawdown/drawdowns/' + encodeURIComponent(drawdownId) + '/authorize', { method: 'POST', body: '{}' });
+      if (!r.success) throw new Error(r.error || 'authorization failed');
+      wrap.innerHTML = '<div class="status ok">' + htmlEscape(drawdownId) + ' is ' + htmlEscape(r.data.status) +
+        ' — ' + htmlEscape(r.data.note || '') + '</div>';
+      drawdownStatement();
+    } catch(e) { wrap.innerHTML = '<div class="status err">' + e.message + '</div>'; }
+  }
+
+  async function drawdownFund() {
+    const wrap = el('dd-fund-status');
+    wrap.innerHTML = '<div class="muted">Funding from attested cash…</div>';
+    try {
+      const amount = el('dd-fund-amount').value;
+      const body = {
+        paymentReference: el('dd-payment-ref').value || undefined,
+        amountCents: amount ? Math.round(Number(amount) * 100) : undefined,
+      };
+      const r = await api('/api/finops/drawdown/drawdowns/' + encodeURIComponent(el('dd-id').value) + '/fund', { method: 'POST', body: JSON.stringify(body) });
+      if (!r.success) throw new Error(r.error || 'funding failed');
+      const d = r.data;
+      wrap.innerHTML = '<div class="status ' + (Number(d.fundedNow) > 0 ? 'ok' : 'err') + '">' + htmlEscape(d.drawdown_id) +
+        ' is ' + htmlEscape(d.status) + ' — ' + htmlEscape(d.note || d.funding_note || '') + '</div>';
+      drawdownStatement();
+    } catch(e) { wrap.innerHTML = '<div class="status err">' + e.message + '</div>'; }
+  }
+
+  async function drawdownChain() {
+    const wrap = el('dd-statement');
+    try {
+      const r = await api('/api/finops/drawdown-chain');
+      if (!r.success) throw new Error(r.error || 'chain verification failed');
+      const d = r.data;
+      wrap.innerHTML = '<div class="status ' + (d.intact ? 'ok' : 'err') + '">' + htmlEscape(String(d.events)) +
+        ' principal and income events — ' + htmlEscape(d.note) + '</div>' + wrap.innerHTML;
+    } catch(e) { wrap.innerHTML = '<div class="status err">' + e.message + '</div>'; }
+  }
+
   // ─── Treasury On-Ramp Bridge panel ───────────────────────────────────────────────
   function openTreasuryOnRampPanel() {
     const panel = el('module-panel');
@@ -4820,7 +5966,7 @@
     return '<div style="display:flex; flex-direction:column; gap:12px;">' +
       '<div class="card" style="background:#0b1220;">' +
         '<h3>Add Vendor / Payee</h3>' +
-        '<p class="muted">Store a vendor, merchant, or beneficiary for direct fiat payment. Lili is excluded; use wire, ACH, open banking, or web payment rails.</p>' +
+        '<p class="muted">Store a vendor, merchant, or beneficiary for fiat payment. Funds flow Platform → Melio → DB NET MGMT / Lili Bank; the direct wire, ACH and open banking rails require a configured bank endpoint.</p>' +
         '<div class="token-bar"><input id="vp-name" style="flex:1" placeholder="Vendor / payee name" /></div>' +
         '<div class="token-bar"><input id="vp-email" style="flex:1" placeholder="Email" /><input id="vp-phone" style="flex:1" placeholder="Phone" /></div>' +
         '<div class="token-bar"><input id="vp-bank" style="flex:1" placeholder="Bank name" /><input id="vp-routing" style="flex:1" placeholder="Routing number" /><input id="vp-account" style="flex:1" placeholder="Account number" /></div>' +
@@ -4833,7 +5979,7 @@
         '<div class="token-bar"><select id="vp-vendor">' + (vendors || []).map(v => `<option value="${v.vendor_id}">${v.name}</option>`).join('') + '</select></div>' +
         '<div class="token-bar"><input id="vp-bill-amount" type="number" style="flex:1" placeholder="Amount" /><input id="vp-bill-due" type="date" style="flex:1" placeholder="Due date" /></div>' +
         '<div class="token-bar"><input id="vp-bill-memo" style="flex:1" placeholder="Memo / invoice #" /></div>' +
-        '<div class="token-bar"><input id="vp-bill-source" style="flex:1" placeholder="Source cash account (e.g. CA-OPERATING)" /><select id="vp-bill-rail"><option value="bank_transfer">bank_transfer</option><option value="wire">wire</option><option value="open_banking">open_banking</option><option value="ach">ach</option></select></div>' +
+        '<div class="token-bar"><input id="vp-bill-source" style="flex:1" placeholder="Source cash account (e.g. CA-OPERATING)" /><select id="vp-bill-rail"><option value="melio">melio</option><option value="bank_transfer">bank_transfer</option><option value="wire">wire</option><option value="open_banking">open_banking</option><option value="ach">ach</option></select></div>' +
         '<button class="btn" onclick="createAndPayVendorBill()">Create & Pay Bill</button>' +
         '<div id="vp-bill-status" class="status hidden"></div>' +
       '</div>' +
@@ -4896,22 +6042,32 @@
     panel.classList.add('active');
     body.innerHTML = '<div class="muted">Loading…</div>';
     try {
-      const [customers, accounts, payments, endpoints] = await Promise.all([
+      const [customers, accounts, payments, endpoints, distributions] = await Promise.all([
         api('/api/finops/trust-bank/customers').catch(()=>null),
         api('/api/finops/trust-bank/accounts').catch(()=>null),
         api('/api/finops/trust-bank/payments?limit=20').catch(()=>null),
         api('/api/finops/external-endpoints?enabled=true').catch(()=>null),
+        api('/api/finops/trust-bank/distributions').catch(()=>null),
       ]);
-      body.innerHTML = renderTrustBankPanel(customers && customers.data, accounts && accounts.data, payments && payments.data, endpoints && endpoints.data);
+      body.innerHTML = renderTrustBankPanel(customers && customers.data, accounts && accounts.data, payments && payments.data, endpoints && endpoints.data, distributions && distributions.data);
     } catch(e) { body.innerHTML = '<div class="status err">' + e.message + '</div>'; }
   }
 
-  function renderTrustBankPanel(customers, accounts, payments, endpoints) {
+  function renderTrustBankPanel(customers, accounts, payments, endpoints, distributions) {
     const customerOptions = (customers || []).map(c => `<option value="${c.customer_id}">${c.name} (${c.kyc_status})</option>`).join('');
     const accountOptions = (accounts || []).map(a => `<option value="${a.account_id}">${a.account_name} - $${Number(a.balance_cents)/100}</option>`).join('');
     const endpointOptions = (endpoints || []).map(e => `<option value="${e.endpoint_id}">${e.name} (${e.protocol})</option>`).join('');
     const accountRows = (accounts || []).map(a => `<tr><td>${a.account_id}</td><td>${a.account_name}</td><td>${a.account_number}</td><td>$${Number(a.balance_cents)/100}</td><td>${a.status}</td></tr>`).join('') || '<tr><td colspan="5" class="muted">No accounts</td></tr>';
     const paymentRows = (payments || []).map(p => `<tr><td>${p.payment_id}</td><td>${p.rail}</td><td>$${Number(p.amount_cents)/100}</td><td><span class="badge ${p.status}">${p.status}</span></td><td>${p.external_tx_id || ''}</td></tr>`).join('') || '<tr><td colspan="5" class="muted">No payments</td></tr>';
+    const distributionRows = (distributions || []).map(d => {
+      const meta = d.metadata || {};
+      const signed = (meta.approvals || []).length;
+      const required = meta.requiredSignatures || 2;
+      const signers = (meta.approvals || []).map(a => a.approvedBy).join(', ');
+      return `<tr><td>${d.payment_id}</td><td>${d.from_account_id} → ${d.to_account_id}</td><td>$${Number(d.amount_cents)/100}</td><td title="${signers}">${signed}/${required}</td>`
+        + `<td><button class="btn" onclick="signTrustBankDistribution('${d.payment_id}','approve')">Sign</button> `
+        + `<button class="btn" onclick="signTrustBankDistribution('${d.payment_id}','reject')">Reject</button></td></tr>`;
+    }).join('') || '<tr><td colspan="5" class="muted">No distributions awaiting signature</td></tr>';
     return '<div style="display:flex; flex-direction:column; gap:12px;">' +
       '<div class="card" style="background:#0b1220;">' +
         '<h3>Open Customer</h3>' +
@@ -4938,6 +6094,15 @@
         '<select id="tb-pay-endpoint">' + endpointOptions + '</select></div>' +
         '<button class="btn" onclick="originateTrustBankPayment()">Originate Payment</button>' +
         '<div id="tb-pay-status" class="status hidden"></div>' +
+      '</div>' +
+      '<div class="card" style="background:#0b1220;">' +
+        '<h3>Family Distribution (maker/checker)</h3>' +
+        '<div class="muted">Internal transfer between family sub-accounts. Funds move only once the required trustees have signed.</div>' +
+        '<div class="token-bar"><select id="tb-dist-from">' + accountOptions + '</select><select id="tb-dist-to">' + accountOptions + '</select></div>' +
+        '<div class="token-bar"><input id="tb-dist-amount" type="number" step="0.01" style="flex:1" placeholder="Amount" /><input id="tb-dist-memo" style="flex:1" placeholder="Purpose" /></div>' +
+        '<button class="btn" onclick="proposeTrustBankDistribution()">Propose Distribution</button>' +
+        '<div id="tb-dist-status" class="status hidden"></div>' +
+        '<table class="table"><thead><tr><th>Distribution</th><th>From → To</th><th>Amount</th><th>Signatures</th><th></th></tr></thead><tbody>' + distributionRows + '</tbody></table>' +
       '</div>' +
       '<div class="card" style="background:#0b1220;">' +
         '<h3>Accounts</h3>' +
@@ -4992,6 +6157,33 @@
       show('Payment originated: ' + payId + ' status ' + send.data.status, false, 'tb-pay-status');
       openTrustBankPanel();
     } catch(e) { show(e.message, true, 'tb-pay-status'); }
+    status.classList.remove('hidden');
+  }
+
+  async function proposeTrustBankDistribution() {
+    const status = el('tb-dist-status');
+    status.classList.add('hidden');
+    try {
+      const res = await api('/api/finops/trust-bank/accounts/' + el('tb-dist-from').value + '/distributions', { method: 'POST', body: JSON.stringify({
+        toAccountId: el('tb-dist-to').value,
+        amount: Number(el('tb-dist-amount').value),
+        description: el('tb-dist-memo').value.trim() || undefined,
+      }) });
+      show('Proposed ' + res.data.paymentId + ' — needs ' + res.data.requiredSignatures + ' signature(s)', false, 'tb-dist-status');
+      openTrustBankPanel();
+    } catch(e) { show(e.message, true, 'tb-dist-status'); }
+    status.classList.remove('hidden');
+  }
+
+  async function signTrustBankDistribution(paymentId, action) {
+    const status = el('tb-dist-status');
+    status.classList.add('hidden');
+    try {
+      const body = action === 'reject' ? JSON.stringify({ reason: 'Rejected by trustee' }) : '{}';
+      const res = await api('/api/finops/trust-bank/distributions/' + paymentId + '/' + action, { method: 'POST', body });
+      show(paymentId + ': ' + res.data.status + (res.data.remainingSignatures ? ' — ' + res.data.remainingSignatures + ' signature(s) remaining' : ''), false, 'tb-dist-status');
+      openTrustBankPanel();
+    } catch(e) { show(e.message, true, 'tb-dist-status'); }
     status.classList.remove('hidden');
   }
 

@@ -6,12 +6,12 @@
  * Generates ACH files in standard NACHA format (fixed-width 94-char records).
  * Supports CCD (corporate) and PPD (personal) SEC codes.
  *
- * ODFI: Eaton Family Credit Union (routing: 241075470)
+ * ODFI: configured via NACHA_ODFI_ROUTING / TRUST_BANK_ROUTING.
  * Originator: DEANDREA LAVAR BARKLEY TRUST
  */
 
 const RECORD_LENGTH = 94;
-const ODFI_ROUTING = process.env.NACHA_ODFI_ROUTING || process.env.PTC_BANK_ROUTING || process.env.TRUST_BANK_ROUTING || '241075470';
+const ODFI_ROUTING = process.env.NACHA_ODFI_ROUTING || process.env.PTC_BANK_ROUTING || process.env.TRUST_BANK_ROUTING || '';
 const ODFI_ID = String(ODFI_ROUTING).substring(0, 8);
 const ORIGINATOR_NAME = process.env.NACHA_ORIGINATOR_NAME || process.env.PTC_BANK_NAME || process.env.TRUST_BANK_NAME || 'DLB TRUST';
 const ORIGINATOR_ID = (() => {
@@ -20,6 +20,7 @@ const ORIGINATOR_ID = (() => {
   return '1' + ODFI_ROUTING;
 })();
 const COMPANY_NAME = process.env.NACHA_COMPANY_NAME || ORIGINATOR_NAME;
+const DESTINATION_NAME = process.env.NACHA_IMMEDIATE_DESTINATION_NAME || process.env.TRUST_BANK_NAME || '';
 
 function pad(str, len, fill = ' ', alignRight = false) {
   const s = String(str || '').substring(0, len);
@@ -76,7 +77,7 @@ function fileHeaderRecord(opts = {}) {
   rec += '094';                                  // pos 35-37: record size
   rec += '10';                                   // pos 38-39: blocking factor
   rec += '1';                                    // pos 40: format code
-  rec += pad(opts.immediateDestinationName || process.env.NACHA_IMMEDIATE_DESTINATION_NAME || 'EATON FAMILY CU', 23); // pos 41-63
+  rec += pad(opts.immediateDestinationName || DESTINATION_NAME, 23); // pos 41-63
   rec += pad(opts.immediateOriginName || process.env.NACHA_IMMEDIATE_ORIGIN_NAME || ORIGINATOR_NAME, 23);        // pos 64-86
   rec += pad(opts.referenceCode || '', 8);       // pos 87-94
   return rec.padEnd(RECORD_LENGTH);

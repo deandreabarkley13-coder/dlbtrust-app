@@ -164,22 +164,48 @@ describe('canonical vendor bill consensus', () => {
     expect(CanonicalConsensusEngine._requiredApprovals('custom', 1)).toBe(1);
   });
 
-  it('rejects the requester as a vendor bill approver', async () => {
+  it('rejects a second signature from a trustee who already signed', async () => {
     const proposal = {
       category: 'vendor_bill',
       status: 'pending',
       created_by: maker.email,
       required_approvals: 2,
-      approvals: [],
+      approvals: [{ role: 'maker', status: 'approved', email: checker.email }],
     };
     vi.spyOn(CanonicalConsensusEngine, 'ensureTables').mockResolvedValue(undefined);
     vi.spyOn(CanonicalConsensusEngine, 'getProposal').mockResolvedValue(proposal);
 
     await expect(CanonicalConsensusEngine.approveProposal({
-      proposalId: 'PROPOSAL-REQUESTER',
-      role: 'maker',
-      approverEmail: maker.email,
-    })).rejects.toThrow('The requester cannot approve a vendor_bill proposal');
+      proposalId: 'PROPOSAL-DOUBLE-SIGN',
+      role: 'checker',
+      approverEmail: checker.email,
+      signature: 'DeAndrea Lavar Barkley',
+    })).rejects.toThrow('A trustee cannot supply more than one signature on a proposal');
+  });
+
+  it('lets the requester sign their own role so a FinOps-raised bill can reach consensus', async () => {
+    const proposal = {
+      category: 'vendor_bill',
+      status: 'pending',
+      created_by: checker.email,
+      required_approvals: 2,
+      approvals: [{ role: 'maker', status: 'approved', email: maker.email }],
+    };
+    vi.spyOn(CanonicalConsensusEngine, 'ensureTables').mockResolvedValue(undefined);
+    vi.spyOn(CanonicalConsensusEngine, 'getProposal')
+      .mockResolvedValueOnce(proposal)
+      .mockResolvedValue({ ...proposal, status: 'approved' });
+    vi.spyOn(CanonicalConsensusEngine, '_saveApprovals').mockResolvedValue(undefined);
+    const execute = vi.spyOn(CanonicalConsensusEngine, 'executeProposal').mockResolvedValue({ executed: true });
+
+    await CanonicalConsensusEngine.approveProposal({
+      proposalId: 'PROPOSAL-REQUESTER-SIGNS',
+      role: 'checker',
+      approverEmail: checker.email,
+      signature: 'DeAndrea Lavar Barkley',
+    });
+
+    expect(execute).toHaveBeenCalledWith('PROPOSAL-REQUESTER-SIGNS');
   });
 
   it('does not auto-execute until maker and checker have both approved', async () => {
@@ -423,7 +449,7 @@ describe('canonical vendor bill consensus', () => {
     expect(send.mock.calls[1][0].body).toContain('DeAndrea Lavar Barkley');
   });
 
-  it('does not ask the requester to sign their own vendor bill', async () => {
+  it('asks both trustees to sign a bill the requester raised', async () => {
     const send = vi.spyOn(EmailEngine, 'send').mockResolvedValue({ sent: true, provider: 'smtp' });
 
     const result = await CanonicalConsensusEngine.notifyApprovers({
@@ -433,9 +459,9 @@ describe('canonical vendor bill consensus', () => {
       payload: validBill,
     });
 
-    expect(result.notifications[0]).toMatchObject({ role: 'maker', sent: false });
-    expect(send).toHaveBeenCalledTimes(1);
-    expect(send.mock.calls[0][0].to).toBe(checker.email);
+    expect(result.notifications.map((n: { role: string; sent: boolean }) => [n.role, n.sent]))
+      .toEqual([['maker', true], ['checker', true]]);
+    expect(send.mock.calls.map((call: any[]) => call[0].to)).toEqual([maker.email, checker.email]);
   });
 
   it('reports unsent signature requests instead of throwing', async () => {

@@ -33,7 +33,7 @@ class AS2Partners {
    * Register a new AS2 partner.
    *
    * @param {Object} opts
-   * @param {string} opts.partnerId - Unique identifier (e.g. "EATONFCU", "MERCHANT-A")
+   * @param {string} opts.partnerId - Unique identifier (e.g. "BANK-SFTP", "MERCHANT-A")
    * @param {string} opts.partnerName - Display name
    * @param {string} opts.partnerUrl - AS2 endpoint URL
    * @param {string} opts.partnerAs2Id - Bank/merchant AS2 identifier

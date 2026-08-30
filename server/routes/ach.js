@@ -5,7 +5,7 @@
  * Integrates with self-hosted OpenACH at ach.dlbtrust.cloud
  * Works with the existing wallet/transaction database model
  * 
- * ODFI: Eaton Family Credit Union (routing: 241075470)
+ * ODFI: configured via NACHA_ODFI_ROUTING / TRUST_BANK_ROUTING.
  * Originator: DEANDREA LAVAR BARKLEY TRUST
  */
 

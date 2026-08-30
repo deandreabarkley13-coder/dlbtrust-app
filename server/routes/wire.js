@@ -14,6 +14,7 @@ const jwt = require('jsonwebtoken');
 const { WireEngine } = require('../integrations/wire/wireEngine');
 const { WireOriginationEngine } = require('../integrations/dapp/wireOriginationEngine');
 const { ApiCredentials } = require('../integrations/ach/apiCredentials');
+const { PartnerBankRails } = require('../integrations/rails/partnerBankRails');
 const { JWT_SECRET } = require('../integrations/auth/userAuth');
 
 const TRUSTEE_ROLES = { trustee_maker: 'maker', trustee_checker: 'checker' };
@@ -85,6 +86,27 @@ router.get('/summary', async (req, res) => {
     res.json({ success: true, data: summary });
   } catch (err) {
     res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// ─── GET /api/wire/rails ───────────────────────────────────────────────────
+// Partner bank rail readiness (never exposes the API key)
+router.get('/rails', async (req, res) => {
+  try {
+    res.json({ success: true, data: PartnerBankRails.status() });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// ─── GET /api/wire/:id/origination-preview ─────────────────────────────────
+// The exact partner bank request for an approved wire, without transmitting it
+router.get('/:id/origination-preview', requireAuth, async (req, res) => {
+  try {
+    const preview = await WireEngine.previewWireOrigination(req.params.id);
+    res.json({ success: true, data: preview });
+  } catch (err) {
+    res.status(400).json({ success: false, error: err.message });
   }
 });
 

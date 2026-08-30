@@ -28,6 +28,8 @@ const { StripeTreasuryBatchEngine } = require('../integrations/payments/stripeTr
 const { DepositAndSettlementEngine } = require('../integrations/payments/depositAndSettlementEngine');
 const { ClearingApiEngine } = require('../integrations/payments/clearingApiEngine');
 const { PaymentProcessorServerEngine } = require('../integrations/payments/paymentProcessorServerEngine');
+const { PDCflowEngine } = require('../integrations/payments/pdcflowEngine');
+const { KafkaEventBus } = require('../integrations/events/kafkaEventBus');
 const { PaymentGatewayServerEngine } = require('../integrations/payments/paymentGatewayServerEngine');
 const { WalletEngine } = require('../integrations/dapp/walletEngine');
 const { BitPayEngine } = require('../integrations/dapp/bitpayEngine');
@@ -1727,6 +1729,53 @@ router.get('/payment-processor/list', operatorAuth, async (req, res) => {
 
 router.get('/payment-processor/status/:id', operatorAuth, async (req, res) => {
   try { res.json({ success: true, data: await PaymentProcessorServerEngine.getStatus(req.params.id) }); } catch (err) { sendError(res, err); }
+});
+
+// ─── PDCflow Gateway ──────────────────────────────────────────────────────────
+router.get('/pdcflow/status', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: PDCflowEngine.status() }); } catch (err) { sendError(res, err); }
+});
+
+// Dry run: builds the exact PDCflow request (account number redacted) and sends nothing.
+router.post('/pdcflow/prepare', operatorAuth, async (req, res) => {
+  try {
+    const direction = String(req.body.direction || 'credit').toLowerCase();
+    res.json({ success: true, data: PDCflowEngine.prepareAch(direction, req.body) });
+  } catch (err) { sendError(res, err); }
+});
+
+/**
+ * PDCflow postback. Authenticated by the shared value PDCflow echoes back in the
+ * Authorization header, which is why PDCFLOW_POSTBACK_AUTH must be configured
+ * before the URL is registered with them.
+ */
+router.post('/pdcflow/postback', async (req, res) => {
+  try {
+    const expected = process.env.PDCFLOW_POSTBACK_AUTH || '';
+    if (!expected) return res.status(503).json({ success: false, error: 'PDCflow postback not configured' });
+    if (req.get('Authorization') !== expected) {
+      return res.status(401).json({ success: false, error: 'Unauthorized postback' });
+    }
+    const data = await PaymentProcessorServerEngine.applyPdcflowPostback(req.body);
+    res.json({ success: true, data });
+  } catch (err) { sendError(res, err); }
+});
+
+// ─── Canonical event bus (Kafka) ──────────────────────────────────────────────
+router.get('/events/status', operatorAuth, async (req, res) => {
+  try { res.json({ success: true, data: KafkaEventBus.status() }); } catch (err) { sendError(res, err); }
+});
+
+router.get('/events/pending', operatorAuth, async (req, res) => {
+  try {
+    res.json({ success: true, data: await KafkaEventBus.pendingEvents({ limit: Number(req.query.limit) || 50 }) });
+  } catch (err) { sendError(res, err); }
+});
+
+router.post('/events/retry', operatorAuth, writeRateLimiter(), async (req, res) => {
+  try {
+    res.json({ success: true, data: await KafkaEventBus.retryFailed({ limit: Number(req.body.limit) || 50 }) });
+  } catch (err) { sendError(res, err); }
 });
 
 // ─── Payment Gateway Server Engine ────────────────────────────────────────────

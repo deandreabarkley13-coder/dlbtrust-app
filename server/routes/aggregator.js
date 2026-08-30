@@ -79,7 +79,7 @@ router.post('/connections/:id/push', requireAdmin, async (req, res) => {
   } catch (err) { fail(res, err); }
 });
 
-// ─── Payment-file exchange (connectors that support it, e.g. Eaton) ──────────
+// ─── Payment-file exchange (connectors that support it) ─────────────────────
 // Transmit a payment file: POST /connections/:id/push with body
 //   { kind: 'ach_file', ach_batch_id } or { kind: 'ach_file', content, filename }
 // Status + returns are separate pulls:
