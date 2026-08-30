@@ -19,6 +19,7 @@ const { GovernanceEngine } = require('../integrations/inhouseBank/governanceEngi
 const { RoutingEngine } = require('../integrations/inhouseBank/routingEngine');
 const { DualLedgerEngine } = require('../integrations/inhouseBank/dualLedgerEngine');
 const { ZeroTrustGateway } = require('../integrations/inhouseBank/zeroTrustGateway');
+const { WireHostToHostEngine } = require('../integrations/inhouseBank/wire/wireHostToHostEngine');
 
 const router = express.Router();
 
@@ -329,6 +330,84 @@ router.get('/events', optionalSession, guard('payments:read'), async (req, res) 
 
 router.get('/events/verify', optionalSession, guard('payments:read'), async (req, res) => {
   try { res.json({ success: true, data: await DualLedgerEngine.verifyChain() }); } catch (err) { sendError(res, err); }
+});
+
+// ── Direct host-to-host wire channel ─────────────────────────────────────────
+//
+// Transmission is scoped to payments:initiate rather than payments:read, and
+// advice ingestion and reconciliation to ledger:reconcile, because ingesting a
+// bank advice can settle or reverse a payment. Nothing here returns SFTP
+// credentials: `readiness` reports what is missing by name, never by value.
+
+router.get('/wire/channel', optionalSession, guard('payments:read'), async (req, res) => {
+  try { res.json({ success: true, data: WireHostToHostEngine.readiness() }); } catch (err) { sendError(res, err); }
+});
+
+router.get('/wire/dashboard', optionalSession, guard('payments:read'), async (req, res) => {
+  try { res.json({ success: true, data: await WireHostToHostEngine.dashboard() }); } catch (err) { sendError(res, err); }
+});
+
+router.get('/wire/transmissions', optionalSession, guard('payments:read'), async (req, res) => {
+  try {
+    const data = await WireHostToHostEngine.list({
+      state: req.query.state || null,
+      paymentId: req.query.paymentId || null,
+      limit: req.query.limit,
+    });
+    res.json({ success: true, data });
+  } catch (err) { sendError(res, err); }
+});
+
+router.get('/wire/transmissions/:id', optionalSession, guard('payments:read'), async (req, res) => {
+  try {
+    const data = await WireHostToHostEngine.transmission(req.params.id);
+    if (!data) return res.status(404).json({ success: false, error: `Wire transmission ${req.params.id} not found` });
+    res.json({ success: true, data });
+  } catch (err) { sendError(res, err); }
+});
+
+router.get('/wire/payments/:id/file', optionalSession, guard('payments:read'), async (req, res) => {
+  try {
+    const { filename, payload, payloadHash, remoteDir } = await WireHostToHostEngine.prepare(req.params.id);
+    res.json({ success: true, data: { filename, payloadHash, remoteDir, payload } });
+  } catch (err) { sendError(res, err); }
+});
+
+router.post('/wire/payments/:id/transmit', optionalSession, guard('payments:initiate'), writeRateLimiter(), async (req, res) => {
+  try {
+    const data = await WireHostToHostEngine.transmit(req.params.id, { actor: req.ihb.principal });
+    res.status(data.transmitted ? 201 : 200).json({ success: true, data });
+  } catch (err) { sendError(res, err); }
+});
+
+router.post('/wire/advices/ingest', optionalSession, guard('ledger:reconcile'), writeRateLimiter(), async (req, res) => {
+  try {
+    const data = await WireHostToHostEngine.ingestAdvices({ actor: req.ihb.principal, limit: req.body.limit });
+    res.json({ success: true, data });
+  } catch (err) { sendError(res, err); }
+});
+
+router.post('/wire/reconcile', optionalSession, guard('ledger:reconcile'), writeRateLimiter(), async (req, res) => {
+  try {
+    res.json({ success: true, data: await WireHostToHostEngine.reconcile({ actor: req.ihb.principal }) });
+  } catch (err) { sendError(res, err); }
+});
+
+router.get('/wire/exceptions', optionalSession, guard('payments:read'), async (req, res) => {
+  try {
+    const resolved = req.query.resolved === undefined ? false : req.query.resolved === 'true';
+    res.json({ success: true, data: await WireHostToHostEngine.exceptions({ resolved, limit: req.query.limit }) });
+  } catch (err) { sendError(res, err); }
+});
+
+router.post('/wire/exceptions/:id/resolve', optionalSession, guard('ledger:reconcile'), writeRateLimiter(), async (req, res) => {
+  try {
+    const data = await WireHostToHostEngine.resolveException(req.params.id, {
+      actor: req.ihb.principal,
+      resolution: req.body.resolution,
+    });
+    res.json({ success: true, data });
+  } catch (err) { sendError(res, err); }
 });
 
 module.exports = router;
