@@ -6801,6 +6801,8 @@ class NickelMcpEngine extends BaseOSEngine {
       live: process.env.NICKEL_LIVE === 'true',
       shadow: process.env.NICKEL_SHADOW !== 'false',
       mcpUrl: process.env.NICKEL_MCP_URL || 'https://mcp.nickel.com/mcp',
+      authServerUrl: process.env.NICKEL_AUTH_SERVER_URL || '',
+      oauthScope: process.env.NICKEL_OAUTH_SCOPE || 'mcp',
       restUrl: process.env.NICKEL_REST_URL || 'https://rest.nickel.com',
       apiKey: process.env.NICKEL_API_KEY || '',
       clientId: process.env.NICKEL_CLIENT_ID || '',
@@ -6910,9 +6912,43 @@ class NickelMcpEngine extends BaseOSEngine {
     return { statusCode: res.status, ok: res.ok, headers: Object.fromEntries(res.headers.entries()), body: text, json };
   }
 
+  static _root(url) {
+    try { return new URL(url).origin; } catch { return url.replace(/\/mcp\/?$/, '').replace(/\/$/, ''); }
+  }
+
+  static _allowedAuthHosts() {
+    return (process.env.NICKEL_ALLOWED_AUTH_HOSTS || '').split(',').map(h => h.trim()).filter(Boolean);
+  }
+
+  static _validateAuthServerUrl(urlString, label = 'authorization server') {
+    let u;
+    try { u = new URL(urlString); } catch {
+      throw new Error(`Invalid ${label} URL: ${urlString}`);
+    }
+    if (u.protocol !== 'https:') {
+      throw new Error(`Refusing non-HTTPS ${label} URL: ${urlString}`);
+    }
+    const host = u.hostname.toLowerCase();
+    const allowed = new Set([
+      'nickel.com',
+      'mcp.nickel.com',
+      'api.nickelpayments.com',
+      'app.nickel.com',
+      'rest.nickel.com',
+      'rest.staging.nickel.com',
+      ...this._allowedAuthHosts()
+    ]);
+    const isAllowed = Array.from(allowed).some(allowed => host === allowed || host.endsWith('.' + allowed));
+    if (!isAllowed) {
+      throw new Error(`Unauthorized ${label} host: ${host}`);
+    }
+    return `${u.origin}${u.pathname}`.replace(/\/$/, '');
+  }
+
   static async _getProtectedResourceMetadata() {
     const cfg = this._cfg();
-    const url = this._url(cfg.mcpUrl, '/.well-known/oauth-protected-resource');
+    const base = this._root(cfg.mcpUrl);
+    const url = this._url(base, '/.well-known/oauth-protected-resource');
     const r = await fetch(url);
     if (!r.ok) throw new Error(`Nickel protected-resource metadata failed: ${r.status}`);
     return r.json();
@@ -6920,8 +6956,34 @@ class NickelMcpEngine extends BaseOSEngine {
 
   static async _getAuthorizationServerMetadata() {
     const cfg = this._cfg();
-    const base = cfg.clientSecret ? 'https://api.nickelpayments.com' : (cfg.mcpUrl.replace('/mcp', '') || 'https://mcp.nickel.com');
-    const url = this._url(base, '/.well-known/oauth-authorization-server');
+    if (cfg.authServerUrl) {
+      const base = this._validateAuthServerUrl(cfg.authServerUrl, 'NICKEL_AUTH_SERVER_URL');
+      const url = this._url(base, '/.well-known/oauth-authorization-server');
+      const r = await fetch(url);
+      if (!r.ok) throw new Error(`Nickel authorization-server metadata failed: ${r.status}`);
+      return r.json();
+    }
+    // Confidential clients used to short-circuit to api.nickelpayments.com. Preserve
+    // that behavior as a fallback if protected-resource discovery is unreachable.
+    let protectedMeta = null;
+    let protectedError = null;
+    try {
+      protectedMeta = await this._getProtectedResourceMetadata();
+    } catch (e) {
+      protectedError = e;
+    }
+    let authBase = null;
+    if (protectedMeta && Array.isArray(protectedMeta.authorization_servers) && protectedMeta.authorization_servers[0]) {
+      authBase = this._validateAuthServerUrl(protectedMeta.authorization_servers[0], 'Nickel authorization_servers[0]');
+    } else if (cfg.clientSecret) {
+      authBase = 'https://api.nickelpayments.com';
+    } else if (protectedError) {
+      throw protectedError;
+    }
+    if (!authBase) {
+      throw new Error('Unable to determine Nickel authorization server');
+    }
+    const url = this._url(authBase, '/.well-known/oauth-authorization-server');
     const r = await fetch(url);
     if (!r.ok) throw new Error(`Nickel authorization-server metadata failed: ${r.status}`);
     return r.json();
@@ -7055,7 +7117,7 @@ class NickelMcpEngine extends BaseOSEngine {
       response_type: 'code',
       client_id: clientId,
       redirect_uri: redirect,
-      scope: 'openid profile nickel_api',
+      scope: cfg.oauthScope || 'mcp',
       state,
       code_challenge: pkce.challenge,
       code_challenge_method: 'S256',
