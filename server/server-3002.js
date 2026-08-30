@@ -148,6 +148,9 @@ try { app.use('/api/open-agent-id', require(path.join(HD, 'server', 'routes', 'o
 // OS Engines — unified operating-system layer for bank, treasury, payment, clearing, settlement, compliance, security, REST API, bookkeeping, cash, asset-acquisition, bank-aggregator, funding, smart-router, and back-office
 try { app.use('/api/os', require(path.join(HD, 'server', 'routes', 'os'))); console.log('[os-engines] loaded'); } catch(e) { console.warn('[os-engines]', e.message); }
 
+// In-House Bank — PTC family bank orchestration: ingress/idempotency, governance, smart routing, dual ledger, ISO 20022, zero trust
+try { app.use('/api/inhouse-bank', require(path.join(HD, 'server', 'routes', 'inhouseBank'))); console.log('[inhouse-bank] loaded'); } catch(e) { console.warn('[inhouse-bank]', e.message); }
+
 // Settlement Endpoint — agent-to-agent discovery, handshake, and inbound payment
 (function() {
   let SettlementEndpointEngine;
@@ -744,6 +747,13 @@ async function initializeDatabase() {
     await OSEngine.ensureAll();
     console.log('[os-engines] all tables ensured');
   } catch(e) { console.warn('[os-engines] table init:', e.message); }
+
+  // In-House Bank — virtual accounts, idempotency, policy, liquidity, dual ledger, zero-trust nonces
+  try {
+    var InHouseBankEngine = require(path.join(HD, 'server', 'integrations', 'inhouseBank', 'inHouseBankEngine')).InHouseBankEngine;
+    await InHouseBankEngine.ensureTables();
+    console.log('[inhouse-bank] tables ensured');
+  } catch(e) { console.warn('[inhouse-bank] table init:', e.message); }
 
   console.log('[startup] All database migrations complete');
 }
