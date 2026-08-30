@@ -322,6 +322,11 @@ class GenerationEngine {
 
   // ─── HTML Renderers ───────────────────────────────────────────────────────
 
+  static _esc(s) {
+    if (s == null) return '';
+    return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+  }
+
   static _fmt(n) {
     if (n == null) return '—';
     return '$' + Number(n).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
@@ -391,17 +396,18 @@ class GenerationEngine {
   static _renderBondStatement(data, fromDate, toDate) {
     const f = GenerationEngine._fmt;
     const b = data.bond;
-    const taxStatus = b.tax_exempt ? `Tax-Exempt (${b.tax_exempt_type || 'interest'})` : 'Taxable';
-    const bondTypeLabel = (b.bond_type || 'corporate').replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
+    const e = GenerationEngine._esc;
+    const taxStatus = b.tax_exempt ? `Tax-Exempt (${e(b.tax_exempt_type) || 'interest'})` : 'Taxable';
+    const bondTypeLabel = e((b.bond_type || 'corporate').replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase()));
     const placementLabel = (b.placement_type || 'public') === 'private' ? 'Private Placement' : 'Public Offering';
     let html = `<table><tbody>
-      <tr><td>Bond</td><td><strong>${b.bond_name}</strong></td></tr>
-      <tr><td>Bond Identifier</td><td>${b.bond_identifier || '—'}</td></tr>
-      <tr><td>ISIN</td><td>${b.isin || '—'}</td></tr>
+      <tr><td>Bond</td><td><strong>${e(b.bond_name)}</strong></td></tr>
+      <tr><td>Bond Identifier</td><td>${e(b.bond_identifier) || '—'}</td></tr>
+      <tr><td>ISIN</td><td>${e(b.isin) || '—'}</td></tr>
       <tr><td>Bond Type</td><td>${bondTypeLabel}</td></tr>
       <tr><td>Placement</td><td>${placementLabel}</td></tr>
       <tr><td>Tax Status</td><td>${taxStatus}</td></tr>
-      ${b.issuer ? `<tr><td>Issuer</td><td>${b.issuer}${b.issuer_state ? ' (' + b.issuer_state + ')' : ''}</td></tr>` : ''}
+      ${b.issuer ? `<tr><td>Issuer</td><td>${e(b.issuer)}${b.issuer_state ? ' (' + e(b.issuer_state) + ')' : ''}</td></tr>` : ''}
       <tr><td>Face Value</td><td>${f(b.face_value)}</td></tr>
       <tr><td>Coupon Rate</td><td>${(parseFloat(b.coupon_rate) * 100).toFixed(4)}%</td></tr>
       <tr><td>Issue Date</td><td>${b.issue_date}</td></tr>
@@ -417,7 +423,7 @@ class GenerationEngine {
       html += '<h2>Transactions</h2>';
       html += '<table><thead><tr><th>Date</th><th>Type</th><th>Amount</th><th>Balance</th><th>Description</th></tr></thead><tbody>';
       for (const t of txns) {
-        html += `<tr><td>${t.transaction_date}</td><td>${(t.transaction_type || '').replace(/_/g, ' ')}</td><td>${f(t.amount)}</td><td>${f(t.running_balance)}</td><td>${t.description || ''}</td></tr>`;
+        html += `<tr><td>${t.transaction_date}</td><td>${e((t.transaction_type || '').replace(/_/g, ' '))}</td><td>${f(t.amount)}</td><td>${f(t.running_balance)}</td><td>${e(t.description) || ''}</td></tr>`;
       }
       html += '</tbody></table>';
     }
