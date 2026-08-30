@@ -29,9 +29,15 @@ function loadEngines() {
 router.get('/summary', operatorAuth, async (req, res) => {
   try {
     loadEngines();
+    // Balances are live; a cached response is indistinguishable from stale data.
+    res.set('Cache-Control', 'no-store');
+    const force = req.query.refresh === '1' || req.query.refresh === 'true';
     const summary = {
       netWorth: 0,
       bySource: {},
+      asOf: null,
+      ageSeconds: null,
+      syncErrors: [],
       bondValue: 0,
       pendingApprovals: 0,
       distributions: [],
@@ -43,10 +49,18 @@ router.get('/summary', operatorAuth, async (req, res) => {
 
     if (TrustAggregatorEngine) {
       try {
-        const nw = await TrustAggregatorEngine.getNetWorth();
+        // Re-read the underlying ledgers instead of serving whatever the last
+        // operator-triggered aggregator sync happened to leave behind.
+        const nw = await TrustAggregatorEngine.getNetWorth({ live: true, force });
         summary.netWorth = nw.total || 0;
         summary.bySource = nw.by_source || {};
-      } catch (e) { console.warn('[trust-ops] net worth:', e.message); }
+        summary.asOf = nw.as_of || null;
+        summary.ageSeconds = nw.age_seconds;
+        summary.syncErrors = nw.sync_errors || [];
+      } catch (e) {
+        console.warn('[trust-ops] net worth:', e.message);
+        summary.syncErrors.push({ connectionId: null, error: e.message });
+      }
     }
 
     if (LiveBondEngine) {

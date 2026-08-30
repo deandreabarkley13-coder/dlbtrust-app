@@ -2564,7 +2564,11 @@ router.get('/aggregator/balances', operatorAuth, async (req, res) => {
 });
 
 router.get('/aggregator/net-worth', operatorAuth, async (req, res) => {
-  try { res.json({ success: true, data: await TrustAggregatorEngine.getNetWorth() }); } catch (err) { sendError(res, err); }
+  try {
+    const live = req.query.live !== '0' && req.query.live !== 'false';
+    const force = req.query.refresh === '1' || req.query.refresh === 'true';
+    res.json({ success: true, data: await TrustAggregatorEngine.getNetWorth({ live, force }) });
+  } catch (err) { sendError(res, err); }
 });
 
 router.get('/aggregator/transactions', operatorAuth, async (req, res) => {
