@@ -415,15 +415,24 @@ class TrustAccountingEngine {
   // ─── Financial Reports ────────────────────────────────────────────────────
 
   static async getTrialBalance({ asOfDate } = {}) {
-    let joinFilter = '';
+    let dateFilter = '';
     const params = [];
 
     if (asOfDate) {
-      joinFilter = 'AND je.entry_date <= $1 AND je.status = \'posted\'';
+      dateFilter = 'AND je.entry_date <= $1';
       params.push(asOfDate);
-    } else {
-      joinFilter = 'AND je.status = \'posted\'';
     }
+
+    // With an asOfDate the live running balance is not meaningful, so the
+    // balance is computed from the date-filtered journal lines instead.
+    const balanceExpr = asOfDate
+      ? `COALESCE(SUM(
+          CASE WHEN ta.account_type IN ('asset','expense')
+               THEN jl.debit_amount - jl.credit_amount
+               ELSE jl.credit_amount - jl.debit_amount
+          END
+        ), 0)`
+      : 'ta.balance';
 
     const result = await pool.query(`
       SELECT
@@ -433,11 +442,13 @@ class TrustAccountingEngine {
         ta.sub_type,
         COALESCE(SUM(jl.debit_amount), 0) AS total_debits,
         COALESCE(SUM(jl.credit_amount), 0) AS total_credits,
-        ta.balance AS current_balance
+        ${balanceExpr} AS current_balance
       FROM trust_accounts ta
-      LEFT JOIN trust_journal_lines jl ON jl.account_code = ta.account_code
-      LEFT JOIN trust_journal_entries je ON je.entry_id = jl.entry_id
-        ${joinFilter}
+      LEFT JOIN (
+        trust_journal_lines jl
+        JOIN trust_journal_entries je ON je.entry_id = jl.entry_id
+          AND je.status = 'posted' ${dateFilter}
+      ) ON jl.account_code = ta.account_code
       WHERE ta.is_active = TRUE
       GROUP BY ta.account_code, ta.account_name, ta.account_type, ta.sub_type, ta.balance
       ORDER BY ta.account_code
@@ -479,9 +490,11 @@ class TrustAccountingEngine {
           END
         ), 0) AS computed_balance
       FROM trust_accounts ta
-      LEFT JOIN trust_journal_lines jl ON jl.account_code = ta.account_code
-      LEFT JOIN trust_journal_entries je ON je.entry_id = jl.entry_id
-        AND je.status = 'posted' ${dateFilter}
+      LEFT JOIN (
+        trust_journal_lines jl
+        JOIN trust_journal_entries je ON je.entry_id = jl.entry_id
+          AND je.status = 'posted' ${dateFilter}
+      ) ON jl.account_code = ta.account_code
       WHERE ta.is_active = TRUE AND ta.account_type IN (${typeList})
       GROUP BY ta.account_code, ta.account_name, ta.account_type, ta.sub_type
       ORDER BY ta.account_code
