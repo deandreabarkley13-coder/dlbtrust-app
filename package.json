@@ -22,6 +22,7 @@
     "clearing:format": "node server/scripts/formatBankClearingFile.js",
     "trust:fund-settlement": "node server/scripts/fundSettlementAccount.js",
     "trust:payer": "node server/scripts/sendPayerCredit.js",
+    "trust:back-office": "node server/scripts/wealthBackOffice.js",
     "db:init": "tsx src/server/db/init.ts",
     "typecheck": "tsc --noEmit"
   },
