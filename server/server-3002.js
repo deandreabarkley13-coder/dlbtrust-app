@@ -150,6 +150,8 @@ try { app.use('/api/os', require(path.join(HD, 'server', 'routes', 'os'))); cons
 
 // In-House Bank — PTC family bank orchestration: ingress/idempotency, governance, smart routing, dual ledger, ISO 20022, zero trust
 try { app.use('/api/inhouse-bank', require(path.join(HD, 'server', 'routes', 'inhouseBank'))); console.log('[inhouse-bank] loaded'); } catch(e) { console.warn('[inhouse-bank]', e.message); }
+try { app.use('/api/camel', require(path.join(HD, 'server', 'routes', 'camel'))); console.log('[camel] loaded'); } catch(e) { console.warn('[camel]', e.message); }
+try { app.use('/api/openach-rail', require(path.join(HD, 'server', 'routes', 'openachRail'))); console.log('[openach-rail] loaded'); } catch(e) { console.warn('[openach-rail]', e.message); }
 try { app.use('/api/wallet', require(path.join(HD, 'server', 'routes', 'wallet'))); console.log('[wallet] loaded'); } catch(e) { console.warn('[wallet]', e.message); }
 
 // Settlement Endpoint — agent-to-agent discovery, handshake, and inbound payment
@@ -780,6 +782,22 @@ async function initializeDatabase() {
     var linkStart = WireDispatchLink.start();
     console.log('[wire-link] ' + (linkStart.started ? 'started every ' + linkStart.intervalSeconds + 's' : 'not started: ' + linkStart.reason));
   } catch(e) { console.warn('[wire-link] init:', e.message); }
+
+  // The Camel context is the one place the family bank's channels converge, and
+  // the OpenACH rail is the ACH last mile it hands payments to. Both keep their
+  // own durable state, so their tables exist before anything can be mediated.
+  try {
+    var CamelRouteEngine = require(path.join(HD, 'server', 'integrations', 'camel', 'camelRouteEngine')).CamelRouteEngine;
+    var OpenAchRailEngine = require(path.join(HD, 'server', 'integrations', 'openach', 'openachRailEngine')).OpenAchRailEngine;
+    var installFamilyBankFlow = require(path.join(HD, 'server', 'integrations', 'camel', 'familyBankFlow')).installFamilyBankFlow;
+    await CamelRouteEngine.ensureTables();
+    await OpenAchRailEngine.ensureTables();
+    installFamilyBankFlow();
+    var camelStart = CamelRouteEngine.start();
+    console.log('[camel] ' + (camelStart.started
+      ? 'context driving every ' + camelStart.intervalSeconds + 's'
+      : 'context idle: ' + camelStart.reason));
+  } catch(e) { console.warn('[camel] init:', e.message); }
 
   console.log('[startup] All database migrations complete');
 }

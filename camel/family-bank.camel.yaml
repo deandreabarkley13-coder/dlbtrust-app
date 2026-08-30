@@ -1,0 +1,269 @@
+# Apache Camel deployment for the PTC in-house family bank
+#
+# Generated from the registered routes of the application integration context
+# (ptc-family-bank) by server/integrations/camel/camelYaml.js. Do not edit by
+# hand: regenerate with `node server/scripts/camelBus.js yaml`.
+#
+# Required properties:
+#   dlbtrust.baseUrl  = https://host-of-this-application
+#   dlbtrust.inboxKey = the CAMEL_INBOUND_HMAC_SECRET of that application
+#
+# Each route consumes from its channel and posts the message to the signed
+# inbox. The application owns every ledger decision; Camel owns transport.
+
+- beans:
+    - name: inboxSigner
+      type: org.dlbtrust.camel.InboxSigner
+      properties:
+        secret: "{{dlbtrust.inboxKey}}"
+
+routes:
+  - route:
+      id: family-bank-ingress
+      description: "Any channel to a submitted in-house bank payment, then on to execution or governance."
+      from:
+        uri: "platform-http:/camel/family-bank-ingress"
+        steps:
+          - setHeader:
+              name: CamelHttpMethod
+              constant: POST
+          - setHeader:
+              name: X-Camel-Route
+              constant: family-bank-ingress
+          - setHeader:
+              name: X-Camel-Message-Key
+              simple: "${header.idempotencyKey}"
+          - bean:
+              ref: inboxSigner
+              method: sign
+          - to:
+              uri: "{{dlbtrust.baseUrl}}/api/camel/inbox/family-bank-ingress"
+          - log:
+              message: "family-bank-ingress mediated ${header.X-Camel-Message-Key}"
+          # process(submitPayment)
+          # wireTap(trust.payment.requested)
+          # choice: isDispatched | readyToExecute | awaitingApproval | isRefused
+  - route:
+      id: family-bank-execute
+      description: "Capture the hold, post the bank ledger and the GL, and hand the payment to its rail."
+      from:
+        uri: "platform-http:/camel/family-bank-execute"
+        steps:
+          - setHeader:
+              name: CamelHttpMethod
+              constant: POST
+          - setHeader:
+              name: X-Camel-Route
+              constant: family-bank-execute
+          - setHeader:
+              name: X-Camel-Message-Key
+              simple: "${header.paymentId}"
+          - bean:
+              ref: inboxSigner
+              method: sign
+          - to:
+              uri: "{{dlbtrust.baseUrl}}/api/camel/inbox/family-bank-execute"
+          - log:
+              message: "family-bank-execute mediated ${header.X-Camel-Message-Key}"
+          # process(executePayment)
+          # wireTap(trust.payment.approved)
+          # to(family-bank-dispatch)
+  - route:
+      id: family-bank-dispatch
+      description: "Choose the last mile for a dispatched payment: on-us, OpenACH, the wire host, or an operator."
+      from:
+        uri: "platform-http:/camel/family-bank-dispatch"
+        steps:
+          - setHeader:
+              name: CamelHttpMethod
+              constant: POST
+          - setHeader:
+              name: X-Camel-Route
+              constant: family-bank-dispatch
+          - bean:
+              ref: inboxSigner
+              method: sign
+          - to:
+              uri: "{{dlbtrust.baseUrl}}/api/camel/inbox/family-bank-dispatch"
+          - log:
+              message: "family-bank-dispatch mediated ${header.X-Camel-Message-Key}"
+          # choice: isInternal | isAchRail | isWireRail | otherwise
+  - route:
+      id: family-bank-openach-dispatch
+      description: "Originate a dispatched ACH payment at the ODFI through OpenACH, once and only once."
+      from:
+        uri: "platform-http:/camel/family-bank-openach-dispatch"
+        steps:
+          - setHeader:
+              name: CamelHttpMethod
+              constant: POST
+          - setHeader:
+              name: X-Camel-Route
+              constant: family-bank-openach-dispatch
+          - setHeader:
+              name: X-Camel-Message-Key
+              simple: "${header.paymentId}"
+          - bean:
+              ref: inboxSigner
+              method: sign
+          - to:
+              uri: "{{dlbtrust.baseUrl}}/api/camel/inbox/family-bank-openach-dispatch"
+          - log:
+              message: "family-bank-openach-dispatch mediated ${header.X-Camel-Message-Key}"
+          # process(originateOpenAch)
+          # wireTap(trust.payment.transmitted)
+  - route:
+      id: family-bank-wire-dispatch
+      description: "Hand a dispatched wire to the host-to-host channel."
+      from:
+        uri: "platform-http:/camel/family-bank-wire-dispatch"
+        steps:
+          - setHeader:
+              name: CamelHttpMethod
+              constant: POST
+          - setHeader:
+              name: X-Camel-Route
+              constant: family-bank-wire-dispatch
+          - setHeader:
+              name: X-Camel-Message-Key
+              simple: "${header.paymentId}"
+          - bean:
+              ref: inboxSigner
+              method: sign
+          - to:
+              uri: "{{dlbtrust.baseUrl}}/api/camel/inbox/family-bank-wire-dispatch"
+          - log:
+              message: "family-bank-wire-dispatch mediated ${header.X-Camel-Message-Key}"
+          # process(dispatchWire)
+          # wireTap(trust.payment.transmitted)
+  - route:
+      id: family-bank-onus
+      description: "An on-us book transfer is already settled; record that the flow finished."
+      from:
+        uri: "platform-http:/camel/family-bank-onus"
+        steps:
+          - setHeader:
+              name: CamelHttpMethod
+              constant: POST
+          - setHeader:
+              name: X-Camel-Route
+              constant: family-bank-onus
+          - bean:
+              ref: inboxSigner
+              method: sign
+          - to:
+              uri: "{{dlbtrust.baseUrl}}/api/camel/inbox/family-bank-onus"
+          - log:
+              message: "family-bank-onus mediated ${header.X-Camel-Message-Key}"
+          # process(noteOnUsSettlement)
+          # wireTap(trust.payment.settled)
+  - route:
+      id: family-bank-manual-rail
+      description: "A dispatched payment on a rail with no automated channel needs an operator."
+      from:
+        uri: "platform-http:/camel/family-bank-manual-rail"
+        steps:
+          - setHeader:
+              name: CamelHttpMethod
+              constant: POST
+          - setHeader:
+              name: X-Camel-Route
+              constant: family-bank-manual-rail
+          - setHeader:
+              name: X-Camel-Message-Key
+              simple: "${header.paymentId}"
+          - bean:
+              ref: inboxSigner
+              method: sign
+          - to:
+              uri: "{{dlbtrust.baseUrl}}/api/camel/inbox/family-bank-manual-rail"
+          - log:
+              message: "family-bank-manual-rail mediated ${header.X-Camel-Message-Key}"
+          # process(flagManualRail)
+          # wireTap(trust.payment.transmitted)
+  - route:
+      id: family-bank-openach-status
+      description: "Poll OpenACH for the status of every originated entry and confirm what it reports."
+      from:
+        uri: "timer:openach-status?period=300000"
+        steps:
+          - setHeader:
+              name: CamelHttpMethod
+              constant: POST
+          - setHeader:
+              name: X-Camel-Route
+              constant: family-bank-openach-status
+          - bean:
+              ref: inboxSigner
+              method: sign
+          - to:
+              uri: "{{dlbtrust.baseUrl}}/api/camel/inbox/family-bank-openach-status"
+          - log:
+              message: "family-bank-openach-status mediated ${header.X-Camel-Message-Key}"
+          # process(pollOpenAchStatuses)
+          # wireTap(trust.payment.settled)
+  - route:
+      id: family-bank-advice
+      description: "An inbound rail advice: the only path from dispatched to settled, returned or failed."
+      from:
+        uri: "platform-http:/api/camel/inbox/family-bank-advice"
+        steps:
+          - setHeader:
+              name: CamelHttpMethod
+              constant: POST
+          - setHeader:
+              name: X-Camel-Route
+              constant: family-bank-advice
+          - setHeader:
+              name: X-Camel-Message-Key
+              simple: "${header.adviceId}"
+          - bean:
+              ref: inboxSigner
+              method: sign
+          - to:
+              uri: "{{dlbtrust.baseUrl}}/api/camel/inbox/family-bank-advice"
+          - log:
+              message: "family-bank-advice mediated ${header.X-Camel-Message-Key}"
+          # transform(normalizeAdvice)
+          # filter(adviceHasOutcome)
+          # process(applyAdvice)
+          # wireTap(trust.payment.settled)
+  - route:
+      id: family-bank-file-batch
+      description: "One ERP or bank instruction file becomes one exchange per instruction."
+      from:
+        uri: "platform-http:/api/camel/inbox/family-bank-file-batch"
+        steps:
+          - setHeader:
+              name: CamelHttpMethod
+              constant: POST
+          - setHeader:
+              name: X-Camel-Route
+              constant: family-bank-file-batch
+          - setHeader:
+              name: X-Camel-Message-Key
+              simple: "${header.batchId}"
+          - bean:
+              ref: inboxSigner
+              method: sign
+          - to:
+              uri: "{{dlbtrust.baseUrl}}/api/camel/inbox/family-bank-file-batch"
+          - log:
+              message: "family-bank-file-batch mediated ${header.X-Camel-Message-Key}"
+          # split(instructionsInFile) -> family-bank-ingress
+  - route:
+      id: family-bank-bus-driver
+      description: "Drive pending exchanges in the application context, including redeliveries."
+      from:
+        uri: "timer:family-bank-bus?period=60000"
+        steps:
+          - setHeader:
+              name: CamelHttpMethod
+              constant: POST
+          - bean:
+              ref: inboxSigner
+              method: sign
+          - to:
+              uri: "{{dlbtrust.baseUrl}}/api/camel/drive"
+          - log:
+              message: "bus drive: ${body}"
