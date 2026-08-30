@@ -57,6 +57,8 @@ const { CalendarEngine } = require('../calendar/calendarEngine');
 const { MessagingEngine } = require('../messaging/messagingEngine');
 const { CorporateTreasuryEngine } = require('../finops/corporateTreasuryEngine');
 const { BankSyncEngine } = require('../finops/bankSyncEngine');
+const { VendorEngine } = require('../vendors/vendorEngine');
+const { DistributionRequestEngine } = require('../dapp/distributionRequestEngine');
 
 class WealthBackOfficeError extends Error {
   constructor(message, code = 'WEALTH_OS_ERROR', status = 409) {
@@ -168,6 +170,37 @@ const CREDIT_ORIGINS = {
   },
 };
 
+/**
+ * Which storage each desk needs before it can answer, and who owns it. Some
+ * desks own their schema through an engine that can create it on demand; others
+ * read tables that belong to a numbered migration and are applied by whoever
+ * runs migrations. The distinction matters operationally: `initDesks` can
+ * prepare the first kind and can only *report* the second, and a back office
+ * that cannot tell the difference tells an operator to "just restart it" when
+ * the real answer is "run this migration".
+ */
+const DESK_SCHEMA = {
+  treasury: { engines: [['corporate_treasury', () => CorporateTreasuryEngine.ensureTables()]], tables: ['corporate_treasury_accounts'] },
+  core_banking: { engines: [], tables: ['cash_accounts'], migration: 'migrate-postgres-full.sql' },
+  bookkeeping: { engines: [], tables: ['trust_accounts', 'trust_journal_entries', 'trust_journal_lines'], migration: 'migrate-docs-accounting.sql' },
+  trust_accounting: { engines: [], tables: ['trust_accounts', 'trust_periods'], migration: 'migrate-docs-accounting.sql' },
+  transactions: { engines: [], tables: ['cash_movements'], migration: 'migrate-postgres-full.sql' },
+  payouts: {
+    engines: [
+      ['payer_os', () => PayerOsEngine.ensureTables()],
+      ['vendor_payables', () => VendorEngine.ensureTables()],
+      ['beneficiary_distributions', () => DistributionRequestEngine.ensureTables()],
+      ['wealth_credit_pushes', () => WealthBackOfficeEngine.ensureTables()],
+    ],
+    tables: ['payer_disbursements', 'vendor_payments', 'dapp_distribution_requests', 'wealth_credit_pushes'],
+  },
+  tax: { engines: [['tax_engine', () => TaxEngine.ensureTables()]], tables: ['trust_config', 'tax_returns_1041', 'k1_schedules'] },
+  fixed_income: { engines: [], tables: ['bonds'], migration: 'migrate-postgres-full.sql' },
+  crm: { engines: [], tables: ['crm_contacts'], migration: 'migrate-postgres-full.sql' },
+  scheduling: { engines: [['calendar', () => CalendarEngine.ensureTables()]], tables: ['calendar_events'] },
+  messaging: { engines: [['messaging', () => MessagingEngine.ensureTables()]], tables: ['message_threads'] },
+};
+
 // A push that is recorded against an obligation and has not reached a terminal
 // state still speaks for that obligation's dollars.
 const OPEN_PUSH_STATUSES = ['pending_approval', 'approved', 'sending', 'sent'];
@@ -206,6 +239,7 @@ async function tableExists(table) {
 
 const WealthBackOfficeEngine = {
   DESKS,
+  DESK_SCHEMA,
   CREDIT_ORIGINS,
   OPEN_PUSH_STATUSES,
   WealthBackOfficeError,
@@ -235,6 +269,64 @@ const WealthBackOfficeEngine = {
          ON wealth_credit_pushes(origin, origin_id)`
     );
     return true;
+  },
+
+  /**
+   * Open the floor: create the storage every desk that owns its own schema
+   * needs, and state plainly which desks are still waiting on a migration
+   * somebody has to run. Nothing here drops or rewrites data — each preparer is
+   * the desk engine's own guarded `ensureTables` — so this is safe to run
+   * against a populated database and is idempotent by construction.
+   *
+   * A desk is only `ready` when every table it reads is actually present, so a
+   * preparer that succeeds while its tables are still missing is reported as
+   * unprepared rather than as success.
+   */
+  async initDesks({ desk = null } = {}) {
+    const wanted = desk ? [this.describeDesk(desk)] : Object.values(DESKS);
+    const results = [];
+
+    for (const spec of wanted) {
+      const schema = DESK_SCHEMA[spec.desk] || { engines: [], tables: [] };
+      const prepared = [];
+      const failures = [];
+      for (const [name, prepare] of schema.engines) {
+        const result = await attempt(prepare);
+        if (result.ok) prepared.push(name);
+        else failures.push({ engine: name, error: result.error });
+      }
+
+      const missing = [];
+      for (const table of schema.tables) {
+        const present = await attempt(() => tableExists(table));
+        if (!present.ok) failures.push({ engine: table, error: present.error });
+        else if (!present.data) missing.push(table);
+      }
+
+      results.push({
+        desk: spec.desk,
+        label: spec.label,
+        prepared,
+        ownsSchema: schema.engines.length > 0,
+        missingTables: missing,
+        failures,
+        ready: missing.length === 0 && failures.length === 0,
+        action: missing.length === 0
+          ? null
+          : schema.migration
+            ? `${missing.join(', ')} is owned by server/scripts/${schema.migration}; apply that migration to open this desk.`
+            : `${missing.join(', ')} is still missing after the desk engine prepared its own schema.`,
+      });
+    }
+
+    const notReady = results.filter(result => !result.ready);
+    return {
+      asOf: new Date().toISOString(),
+      ready: notReady.length === 0,
+      desks: results,
+      actions: notReady.map(result => `${result.label}: ${result.action || result.failures.map(failure => `${failure.engine}: ${failure.error}`).join('; ')}`),
+      note: 'Desks that own their schema were prepared in place; desks backed by a migration are reported, never migrated implicitly.',
+    };
   },
 
   /** The floor plan: which duties this engine can report on, and from where. */
@@ -958,6 +1050,7 @@ const WealthBackOfficeEngine = {
    * to know which of those two situations they are in.
    */
   async readiness() {
+    const schema = await attempt(() => this.initDesks({}));
     const desks = [];
     for (const spec of Object.values(DESKS)) {
       const result = await attempt(() => this.deskReport(spec.desk, { limit: 1 }));
@@ -981,6 +1074,7 @@ const WealthBackOfficeEngine = {
       desks,
       warnings: unreadable.map(desk => `${desk.label} is not fully readable: ${desk.issues.join('; ')}`),
       blockers,
+      schema: schema.ok ? schema.data : { ready: false, actions: [schema.error] },
       payerOs: payer.ok
         ? { ready: payer.data.ready, originates: payer.data.originates, fundingSource: payer.data.fundingSource }
         : null,
@@ -994,6 +1088,7 @@ module.exports = {
   WealthBackOfficeEngine,
   WealthBackOfficeError,
   DESKS,
+  DESK_SCHEMA,
   CREDIT_ORIGINS,
   OPEN_PUSH_STATUSES,
   PayerOsError,

@@ -404,6 +404,57 @@ describe('Wealth Back Office OS — one floor over the family bank', () => {
     });
   });
 
+  describe('opening the desks', () => {
+    /** Only these tables exist; `to_regclass` answers accordingly. */
+    function withTables(present: string[]) {
+      vi.spyOn(pool, 'query').mockImplementation(async (sql: any, params: any = []) => {
+        if (/to_regclass/.test(String(sql))) {
+          return { rows: [{ oid: present.includes(String(params[0])) ? String(params[0]) : null }] } as any;
+        }
+        return { rows: [] } as any;
+      });
+    }
+
+    it('prepares the desks that own their schema and leaves the rest to their migration', async () => {
+      withTables(['trust_config', 'tax_returns_1041', 'k1_schedules', 'calendar_events']);
+      const tax = vi.spyOn(TaxEngine, 'ensureTables').mockResolvedValue(true as any);
+      const calendar = vi.spyOn(CalendarEngine, 'ensureTables').mockResolvedValue(undefined as any);
+      vi.spyOn(CorporateTreasuryEngine, 'ensureTables').mockResolvedValue(undefined as any);
+      vi.spyOn(MessagingEngine, 'ensureTables').mockResolvedValue(undefined as any);
+      vi.spyOn(PayerOsEngine, 'ensureTables').mockResolvedValue(true as any);
+
+      const schema = await WealthBackOfficeEngine.initDesks({});
+      expect(tax).toHaveBeenCalled();
+      expect(calendar).toHaveBeenCalled();
+
+      const byDesk = new Map(schema.desks.map((desk: any) => [desk.desk, desk]));
+      expect(byDesk.get('tax')).toMatchObject({ ready: true, prepared: ['tax_engine'] });
+      expect(byDesk.get('crm')).toMatchObject({ ready: false, ownsSchema: false, missingTables: ['crm_contacts'] });
+      expect(byDesk.get('crm').action).toMatch(/migrate-postgres-full\.sql/);
+      expect(schema.ready).toBe(false);
+    });
+
+    it('reports a desk whose tables are still missing after its own engine ran, rather than calling it ready', async () => {
+      withTables([]);
+      vi.spyOn(CalendarEngine, 'ensureTables').mockResolvedValue(undefined as any);
+      const schema = await WealthBackOfficeEngine.initDesks({ desk: 'scheduling' });
+      expect(schema.desks).toHaveLength(1);
+      expect(schema.desks[0]).toMatchObject({ ready: false, prepared: ['calendar'], missingTables: ['calendar_events'] });
+      expect(schema.desks[0].action).toMatch(/still missing after the desk engine prepared its own schema/);
+    });
+
+    it('names the engine that could not prepare its own schema', async () => {
+      withTables(['corporate_treasury_accounts']);
+      vi.spyOn(CorporateTreasuryEngine, 'ensureTables').mockRejectedValue(new Error('permission denied for schema public'));
+      const schema = await WealthBackOfficeEngine.initDesks({ desk: 'treasury' });
+      expect(schema.desks[0]).toMatchObject({ ready: false, failures: [{ engine: 'corporate_treasury', error: 'permission denied for schema public' }] });
+    });
+
+    it('prepares nothing for a desk the family bank does not run', async () => {
+      await expect(WealthBackOfficeEngine.initDesks({ desk: 'crypto_prop_trading' })).rejects.toThrowError(/Unknown desk/);
+    });
+  });
+
   describe('readiness', () => {
     it('reports whether credits can leave separately from whether the desks can be read', async () => {
       backOffice();
