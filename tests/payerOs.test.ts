@@ -128,7 +128,7 @@ describe('Payer OS — the trust originating its own payments', () => {
   });
 
   describe('it pushes credits and nothing else', () => {
-    it('has no entry point for anything but the three credit pushes', async () => {
+    it('has no entry point for anything but the registered credit pushes', async () => {
       for (const attempt of ['ach_debit', 'collection', 'direct_debit', 'refund']) {
         await expect(
           PayerOsEngine.plan({ disbursementType: attempt, amountCents: 1000, payee: 'acme' })
@@ -464,7 +464,7 @@ describe('Payer OS — the trust originating its own payments', () => {
       expect(readiness.ready).toBe(false);
       expect(readiness.blockers.join(' ')).toMatch(/ACH credits cannot be originated/);
       expect(readiness.originates.map((entry: any) => entry.disbursementType)).toEqual([
-        'settlement_funding', 'direct_deposit', 'vendor_payout',
+        'settlement_funding', 'direct_deposit', 'vendor_payout', 'stablecoin_payout',
       ]);
       expect(readiness.originates.every((entry: any) => entry.direction === 'credit')).toBe(true);
       expect(readiness.fundingSource).toMatchObject({ sourceKey: 'trust:1010', spendable: '50000.00' });

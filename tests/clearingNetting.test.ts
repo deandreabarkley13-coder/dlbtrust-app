@@ -259,6 +259,27 @@ describe('netting', () => {
     expect(candidates.eligible[0].originId).toBe('VPAY-1');
   });
 
+  it('leaves a USDC payable out, since a cash-funded cycle cannot net tokens', async () => {
+    clearingStore({
+      queue: [
+        queueItem(),
+        queueItem({
+          originId: 'VPAY-9',
+          disbursementType: 'stablecoin_payout',
+          payeeKey: 'db-net-mgmt',
+          counterparty: 'DB NET MGMT',
+          amountCents: 34,
+        }),
+      ],
+    });
+
+    const candidates = await ClearingNettingEngine.candidates();
+
+    expect(candidates.eligible.map((item: any) => item.originId)).toEqual(['VPAY-1']);
+    expect(candidates.excluded[0]).toMatchObject({ originId: 'VPAY-9' });
+    expect(candidates.excluded[0].reason).toMatch(/Payable in USDC/);
+  });
+
   it('says so when a desk could not be read, so an incomplete set is not funded as if it were whole', async () => {
     clearingStore({ queueErrors: [{ origin: 'vendor_payable', error: 'relation does not exist' }] });
 

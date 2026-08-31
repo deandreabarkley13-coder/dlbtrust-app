@@ -214,6 +214,21 @@ class ClearingNettingEngineImpl {
         });
         continue;
       }
+      // A cycle reserves cash in the Trust Operating Account, and USDC is not
+      // cash in it. Netting a token payout here would reserve dollars the leg
+      // never spends and skip the on-chain position check, so a stablecoin
+      // obligation goes to Payer OS on its own instead.
+      if (item.disbursementType === 'stablecoin_payout') {
+        excluded.push({
+          origin: item.origin,
+          originId: item.originId,
+          counterparty: item.counterparty,
+          amount: item.amount,
+          reason: 'Payable in USDC, which a cash-funded cycle cannot net;'
+            + ' push it through Payer OS as a stablecoin payout.',
+        });
+        continue;
+      }
       eligible.push({
         origin: item.origin,
         originId: item.originId,
