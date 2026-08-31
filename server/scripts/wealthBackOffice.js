@@ -23,6 +23,7 @@
  *     --maker trustee-one@example.com [--payee acme] [--memo "August invoice"]
  *   node server/scripts/wealthBackOffice.js pushes [--limit 20]
  *   node server/scripts/wealthBackOffice.js melio [--limit 50]
+ *   node server/scripts/wealthBackOffice.js clearing [--limit 20]
  *   node server/scripts/wealthBackOffice.js client --id CONTACT-…
  */
 
@@ -154,6 +155,20 @@ async function main() {
     return;
   }
 
+  if (command === 'clearing') {
+    const { ClearingNettingEngine } = require('../integrations/os/clearingNettingEngine');
+    const [runbook, candidates] = await Promise.all([
+      ClearingNettingEngine.runbook({ limit: args.limit }),
+      ClearingNettingEngine.candidates({ limit: args.limit }),
+    ]);
+    print('Clearing desk:', { runbook, candidates: candidates.totals });
+    console.log(`\n${candidates.totals.obligationCount} obligation(s) would net to ${candidates.totals.legCount} leg(s)`
+      + ` — ${candidates.totals.creditsAvoided} credit(s) avoided, ${candidates.totals.net} to fund.`);
+    console.log('  open one with: node server/scripts/clearingCycle.js open --operator …');
+    if (runbook.breaks.length) process.exitCode = 2;
+    return;
+  }
+
   if (command === 'pushes') {
     print('Handoffs to Payer OS:', await WealthBackOfficeEngine.pushes({ origin: args.origin || null, limit: args.limit }));
     return;
@@ -166,7 +181,7 @@ async function main() {
 
   throw new Error(
     `Unknown command "${command}".`
-    + ' Commands: status, init, desks, desk, position, runbook, queue, melio, push, pushes, client'
+    + ' Commands: status, init, desks, desk, position, runbook, queue, melio, clearing, push, pushes, client'
   );
 }
 

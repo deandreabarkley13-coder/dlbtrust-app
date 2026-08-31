@@ -629,9 +629,15 @@ const WealthBackOfficeEngine = {
     if (!melio.ok) errors.push({ origin: 'melio_export', error: melio.error });
     const openExports = melio.ok ? melio.data.items : [];
 
+    // An obligation bound to a live clearing cycle is being netted with others
+    // into one credit; pushing it on its own here would pay it twice.
+    const claims = await attempt(() => this._clearingClaims());
+    if (!claims.ok) errors.push({ origin: 'clearing_cycle', error: claims.error });
+    const clearingClaims = claims.ok ? claims.data : new Map();
+
     const items = [];
     for (const spec of wanted) {
-      const result = await attempt(() => this._queueFor(spec, cap, openExports));
+      const result = await attempt(() => this._queueFor(spec, cap, openExports, clearingClaims));
       if (result.ok) items.push(...result.data);
       else errors.push({ origin: spec.origin, error: result.error });
     }
@@ -784,7 +790,17 @@ const WealthBackOfficeEngine = {
     ) || null;
   },
 
-  async _queueFor(spec, limit, openExports = []) {
+  /**
+   * Which obligations a live clearing cycle already owns. Required lazily for
+   * the same reason the runbook does: the netting engine reads this queue.
+   */
+  async _clearingClaims() {
+    const { ClearingNettingEngine } = require('./clearingNettingEngine');
+    await ClearingNettingEngine.ensureTables();
+    return ClearingNettingEngine._liveClaims();
+  },
+
+  async _queueFor(spec, limit, openExports = [], clearingClaims = new Map()) {
     if (!(await tableExists(spec.table))) return [];
     const rows = spec.origin === 'vendor_payable'
       ? (await pool.query(
@@ -836,6 +852,13 @@ const WealthBackOfficeEngine = {
       }
       if (row.amountCents <= 0) {
         blockers.push('The obligation carries no positive amount, so there is nothing to credit.');
+      }
+      const claim = clearingClaims.get(`${spec.origin}:${row.originId}`) || null;
+      if (claim) {
+        blockers.push(
+          `${row.originId} is bound to clearing cycle ${claim.cycle_id} (${claim.status});`
+          + ' it will be credited as part of that cycle\'s net leg, so it cannot be pushed on its own.'
+        );
       }
       const committed = this._melioCommitment(openExports, row.counterparty, row.amountCents);
       if (committed) {
@@ -1153,6 +1176,17 @@ const WealthBackOfficeEngine = {
       for (const item of melio.data.items.filter(item => item.stale)) {
         note('payouts', 'break', `Melio export ${item.exportId} for ${item.amount} to ${item.counterparty || 'an unnamed payee'} has been ${item.awaiting.replace('_', ' ')} for ${item.ageDays} day(s); the payable is posted but the credit has not been confirmed.`);
       }
+    }
+
+    // Clearing is required lazily: the netting engine reads this engine's queue,
+    // so importing it at module scope would make the cycle of requires depend on
+    // which of the two an entry point happened to load first.
+    const clearing = await attempt(() => require('./clearingNettingEngine').ClearingNettingEngine.runbook({ limit: 50 }));
+    if (!clearing.ok) {
+      note('payouts', 'unreadable', `Clearing cycles could not be read: ${clearing.error}`);
+    } else {
+      for (const action of clearing.data.actions) note('payouts', 'action', action);
+      for (const item of clearing.data.breaks) note('payouts', 'break', item);
     }
 
     if (bonds.ok && bonds.data.totals.unpostedAccrualCents > 0) {

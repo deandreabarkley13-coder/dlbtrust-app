@@ -14,6 +14,7 @@
 const express = require('express');
 const { requireAuth, writeRateLimiter } = require('../integrations/auth/securityMiddleware');
 const { WealthBackOfficeEngine } = require('../integrations/os/wealthBackOfficeEngine');
+const { ClearingNettingEngine } = require('../integrations/os/clearingNettingEngine');
 const { CrmEngine } = require('../integrations/crm/crmEngine');
 
 const router = express.Router();
@@ -121,6 +122,97 @@ router.get('/credit-queue', operatorAuth, async (req, res) => {
 router.get('/melio-exports', operatorAuth, async (req, res) => {
   try {
     const data = await WealthBackOfficeEngine.melioExports({ limit: req.query.limit });
+    res.json({ success: true, data });
+  } catch (err) { sendError(res, err); }
+});
+
+router.get('/clearing/candidates', operatorAuth, async (req, res) => {
+  try {
+    const data = await ClearingNettingEngine.candidates({
+      limit: req.query.limit,
+      valueDate: req.query.valueDate || null,
+    });
+    res.json({ success: true, data });
+  } catch (err) { sendError(res, err); }
+});
+
+router.get('/clearing/funding', operatorAuth, async (req, res) => {
+  try {
+    res.json({ success: true, data: await ClearingNettingEngine.funding() });
+  } catch (err) { sendError(res, err); }
+});
+
+router.get('/clearing/runbook', operatorAuth, async (req, res) => {
+  try {
+    res.json({ success: true, data: await ClearingNettingEngine.runbook({ limit: req.query.limit }) });
+  } catch (err) { sendError(res, err); }
+});
+
+router.get('/clearing/cycles', operatorAuth, async (req, res) => {
+  try {
+    const data = await ClearingNettingEngine.list({
+      status: req.query.status || null,
+      limit: req.query.limit,
+    });
+    res.json({ success: true, data });
+  } catch (err) { sendError(res, err); }
+});
+
+router.get('/clearing/cycles/:cycleId', operatorAuth, async (req, res) => {
+  try {
+    res.json({ success: true, data: await ClearingNettingEngine.cycle(req.params.cycleId) });
+  } catch (err) { sendError(res, err); }
+});
+
+router.post('/clearing/cycles', adminAuth, writeRateLimiter(), async (req, res) => {
+  try {
+    const body = req.body || {};
+    const data = await ClearingNettingEngine.openCycle({
+      openedBy: principal(req),
+      valueDate: body.valueDate || null,
+      limit: body.limit || 200,
+      currency: body.currency || 'USD',
+      origins: Array.isArray(body.origins) ? body.origins : null,
+      note: body.note || null,
+    });
+    res.status(201).json({ success: true, data });
+  } catch (err) { sendError(res, err); }
+});
+
+router.post('/clearing/cycles/:cycleId/fund', adminAuth, writeRateLimiter(), async (req, res) => {
+  try {
+    const data = await ClearingNettingEngine.fundCycle({
+      cycleId: req.params.cycleId,
+      fundedBy: principal(req),
+    });
+    res.json({ success: true, data });
+  } catch (err) { sendError(res, err); }
+});
+
+router.post('/clearing/cycles/:cycleId/settle', adminAuth, writeRateLimiter(), async (req, res) => {
+  try {
+    const data = await ClearingNettingEngine.settleCycle({
+      cycleId: req.params.cycleId,
+      initiatedBy: principal(req),
+      memo: (req.body || {}).memo || null,
+    });
+    res.json({ success: true, data });
+  } catch (err) { sendError(res, err); }
+});
+
+router.post('/clearing/cycles/:cycleId/reconcile', adminAuth, writeRateLimiter(), async (req, res) => {
+  try {
+    res.json({ success: true, data: await ClearingNettingEngine.reconcile(req.params.cycleId) });
+  } catch (err) { sendError(res, err); }
+});
+
+router.post('/clearing/cycles/:cycleId/cancel', adminAuth, writeRateLimiter(), async (req, res) => {
+  try {
+    const data = await ClearingNettingEngine.cancelCycle({
+      cycleId: req.params.cycleId,
+      cancelledBy: principal(req),
+      reason: (req.body || {}).reason || null,
+    });
     res.json({ success: true, data });
   } catch (err) { sendError(res, err); }
 });
