@@ -15,6 +15,7 @@ const express = require('express');
 const { requireAuth, writeRateLimiter } = require('../integrations/auth/securityMiddleware');
 const { WealthBackOfficeEngine } = require('../integrations/os/wealthBackOfficeEngine');
 const { ClearingNettingEngine } = require('../integrations/os/clearingNettingEngine');
+const { StablecoinTreasuryEngine } = require('../integrations/os/stablecoinTreasuryEngine');
 const { CrmEngine } = require('../integrations/crm/crmEngine');
 
 const router = express.Router();
@@ -236,6 +237,83 @@ router.post('/credit-queue/:origin/:originId/push', adminAuth, writeRateLimiter(
       initiatedBy: principal(req),
     });
     res.status(201).json({ success: true, data });
+  } catch (err) { sendError(res, err); }
+});
+
+/**
+ * Buying the USDC the payout rail spends. Reads are operator; every write is
+ * admin, rate limited, and stops short of the next step — a purchase reaches
+ * `funded` only once Horizon shows the tokens, never because Circle said so.
+ */
+
+router.get('/usdc-treasury', operatorAuth, async (req, res) => {
+  try {
+    res.json({ success: true, data: await StablecoinTreasuryEngine.position() });
+  } catch (err) { sendError(res, err); }
+});
+
+router.get('/usdc-treasury/wire-instructions', operatorAuth, async (req, res) => {
+  try {
+    res.json({ success: true, data: await StablecoinTreasuryEngine.wireInstructions() });
+  } catch (err) { sendError(res, err); }
+});
+
+router.get('/usdc-treasury/purchases', operatorAuth, async (req, res) => {
+  try {
+    const data = await StablecoinTreasuryEngine.list({
+      status: req.query.status || null,
+      limit: Number(req.query.limit) || 50,
+    });
+    res.json({ success: true, data });
+  } catch (err) { sendError(res, err); }
+});
+
+router.get('/usdc-treasury/purchases/:purchaseId', operatorAuth, async (req, res) => {
+  try {
+    res.json({ success: true, data: await StablecoinTreasuryEngine.get(req.params.purchaseId) });
+  } catch (err) { sendError(res, err); }
+});
+
+router.post('/usdc-treasury/purchases', adminAuth, writeRateLimiter(), async (req, res) => {
+  try {
+    const body = req.body || {};
+    const data = await StablecoinTreasuryEngine.initiate({
+      amountCents: body.amountCents === undefined ? null : Number(body.amountCents),
+      initiatedBy: principal(req),
+      memo: body.memo || null,
+    });
+    res.status(201).json({ success: true, data });
+  } catch (err) { sendError(res, err); }
+});
+
+router.post('/usdc-treasury/purchases/:purchaseId/approve', adminAuth, writeRateLimiter(), async (req, res) => {
+  try {
+    const data = await StablecoinTreasuryEngine.approve(req.params.purchaseId, principal(req));
+    res.json({ success: true, data });
+  } catch (err) { sendError(res, err); }
+});
+
+router.post('/usdc-treasury/purchases/:purchaseId/wire', adminAuth, writeRateLimiter(), async (req, res) => {
+  try {
+    const data = await StablecoinTreasuryEngine.recordWire(req.params.purchaseId, {
+      reference: (req.body || {}).reference,
+      sentBy: principal(req),
+    });
+    res.json({ success: true, data });
+  } catch (err) { sendError(res, err); }
+});
+
+router.post('/usdc-treasury/purchases/:purchaseId/transfer', adminAuth, writeRateLimiter(), async (req, res) => {
+  try {
+    const data = await StablecoinTreasuryEngine.transfer(req.params.purchaseId, { executedBy: principal(req) });
+    res.json({ success: true, data });
+  } catch (err) { sendError(res, err); }
+});
+
+router.post('/usdc-treasury/purchases/:purchaseId/confirm', adminAuth, writeRateLimiter(), async (req, res) => {
+  try {
+    const data = await StablecoinTreasuryEngine.confirm(req.params.purchaseId, { confirmedBy: principal(req) });
+    res.status(data.confirmed === false ? 409 : 200).json({ success: data.confirmed !== false, data });
   } catch (err) { sendError(res, err); }
 });
 
