@@ -54,6 +54,7 @@ function backOffice({
   inFlight = [] as any[],
   melioExports = [] as any[],
   clearingClaims = [] as any[],
+  wallets = [] as any[],
   handoffInsertFails = false,
 } = {}) {
   const inserted: any[] = [];
@@ -74,7 +75,9 @@ function backOffice({
     return { rows: [] } as any;
   });
   vi.spyOn(PayerOsEngine, 'list').mockResolvedValue(inFlight as any);
-  vi.spyOn(PayerOsEngine, 'payees').mockImplementation((type: any) => (PAYEES as any)[type] || []);
+  vi.spyOn(PayerOsEngine, 'payees').mockImplementation((type: any) => (
+    type === 'stablecoin_payout' ? wallets : ((PAYEES as any)[type] || [])
+  ));
   return { inserted };
 }
 
@@ -205,6 +208,35 @@ describe('Wealth Back Office OS — one floor over the family bank', () => {
       backOffice({ payables: [{ ...VENDOR_PAYABLE, vendor_name: 'ACME PLUMBING HOLDINGS LLC' }], distributions: [] });
       const queue = await WealthBackOfficeEngine.creditQueue({ origin: 'vendor_payable' });
       expect(queue.items[0].payeeKey).toBeNull();
+    });
+
+    it('routes a counterparty known only by wallet to a USDC payout', async () => {
+      backOffice({
+        payables: [{ ...VENDOR_PAYABLE, vendor_name: 'DB NET MGMT' }],
+        distributions: [],
+        wallets: [{ key: 'db-net-mgmt', purpose: 'stablecoin_payout', name: 'DB NET MGMT', glAccountCode: '5300' }],
+      });
+      const queue = await WealthBackOfficeEngine.creditQueue({ origin: 'vendor_payable' });
+      expect(queue.items[0]).toMatchObject({
+        payeeKey: 'db-net-mgmt',
+        disbursementType: 'stablecoin_payout',
+        pushable: true,
+      });
+    });
+
+    it('pays a bank account rather than a wallet when the counterparty has both', async () => {
+      backOffice({
+        distributions: [],
+        wallets: [{ key: 'acme', purpose: 'stablecoin_payout', name: 'ACME PLUMBING LLC', glAccountCode: '5300' }],
+      });
+      const queue = await WealthBackOfficeEngine.creditQueue({ origin: 'vendor_payable' });
+      expect(queue.items[0]).toMatchObject({ payeeKey: 'acme', disbursementType: 'vendor_payout' });
+    });
+
+    it('says a counterparty with neither an account nor a wallet cannot be credited', async () => {
+      backOffice({ payables: [{ ...VENDOR_PAYABLE, vendor_name: 'SOME OTHER COMPANY' }], distributions: [] });
+      const queue = await WealthBackOfficeEngine.creditQueue({ origin: 'vendor_payable' });
+      expect(queue.items[0].blockers[0]).toMatch(/or a USDC wallet in PAYER_OS_WALLETS/);
     });
 
     it('refuses an unknown origin rather than guessing which desk raised it', async () => {

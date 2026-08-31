@@ -6,18 +6,21 @@
  *
  * The trust is the payer here: the dollars leave an account the book of record
  * owns, over a channel the trust configured, to a party the trust registered in
- * advance. Three kinds of push exist and nothing else does — funding a
- * settlement account (by wire), a direct deposit to a person, and a vendor
- * payout (both ACH credits). There is no command that debits anyone.
+ * advance. Four kinds of push exist and nothing else does — funding a
+ * settlement account (by wire), a direct deposit to a person, a vendor payout
+ * (both ACH credits), and a USDC payout to a registered wallet. There is no
+ * command that debits anyone.
  *
- * Payees are named by key, never by routing and account number: the accounts
- * this may credit are the ones registered in PAYER_OS_PAYEES, and the
- * settlement accounts are the ones in SETTLEMENT_FUNDING_DESTINATIONS.
+ * Payees are named by key, never by routing and account number or by address:
+ * the accounts this may credit are the ones registered in PAYER_OS_PAYEES, the
+ * settlement accounts are the ones in SETTLEMENT_FUNDING_DESTINATIONS, and the
+ * wallets are the ones in PAYER_OS_WALLETS.
  *
  * Usage:
  *   node server/scripts/sendPayerCredit.js status
  *   node server/scripts/sendPayerCredit.js payees [--type vendor_payout]
  *   node server/scripts/sendPayerCredit.js plan --type vendor_payout --payee acme --amount 2500.00
+ *   node server/scripts/sendPayerCredit.js plan --type stablecoin_payout --payee db-net-mgmt --amount 0.34
  *   node server/scripts/sendPayerCredit.js initiate --type direct_deposit --payee jane-doe \
  *     --amount 1200.00 --maker trustee-one@example.com [--checker trustee-two@example.com] \
  *     [--memo "August distribution"] [--send]
@@ -30,7 +33,8 @@
  *
  * Nothing is originated unless `send` is run with --yes (or `initiate --send`
  * with a checker), and the ledger is posted only at `settle`, against the bank's
- * own reference. `plan`, `status` and `payees` change nothing.
+ * own reference — or, for a USDC payout, against a transaction the chain
+ * confirms paid that wallet that amount of Circle's USDC. `plan`, `status` and `payees` change nothing.
  */
 
 const { PayerOsEngine } = require('../integrations/os/payerOsEngine');

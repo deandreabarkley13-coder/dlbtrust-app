@@ -840,6 +840,8 @@ const WealthBackOfficeEngine = {
 
     const payees = await attempt(() => PayerOsEngine.payees(spec.disbursementType));
     const registry = payees.ok ? payees.data : [];
+    const wallets = await attempt(() => PayerOsEngine.payees('stablecoin_payout'));
+    const walletRegistry = wallets.ok ? wallets.data : [];
     const pushed = await this._pushesByOrigin(spec.origin, rows.map(row => row.originId));
 
     return rows.map(row => {
@@ -867,13 +869,21 @@ const WealthBackOfficeEngine = {
           + ` to ${row.counterparty}; settle or cancel that export before crediting this obligation over ACH.`
         );
       }
-      const match = this._matchPayee(registry, row.counterparty);
+      // A bank account wins when the counterparty has one. USDC is not dollars
+      // and a wallet is not a substitute the trust gets to choose silently, so
+      // the token rail is used only for a counterparty with no registered bank
+      // account — which, with no ODFI, is how anyone gets paid at all.
+      const bankPayee = this._matchPayee(registry, row.counterparty);
+      const wallet = bankPayee ? null : this._matchPayee(walletRegistry, row.counterparty);
+      const match = bankPayee || wallet;
+      const disbursementType = wallet ? 'stablecoin_payout' : spec.disbursementType;
       if (!payees.ok) {
         blockers.push(`Payer OS payees could not be read: ${payees.error}`);
       } else if (!match) {
         blockers.push(
           `${row.counterparty || 'the counterparty'} is not a registered ${spec.disbursementType} payee;`
-          + ' register the account in PAYER_OS_PAYEES before it can be credited.'
+          + ' register the account in PAYER_OS_PAYEES, or a USDC wallet in PAYER_OS_WALLETS,'
+          + ' before it can be credited.'
         );
       }
       return {
@@ -881,7 +891,7 @@ const WealthBackOfficeEngine = {
         originId: row.originId,
         desk: spec.desk,
         label: spec.label,
-        disbursementType: spec.disbursementType,
+        disbursementType,
         payeeKey: match ? match.key : null,
         counterparty: row.counterparty,
         amountCents: row.amountCents,
@@ -967,16 +977,19 @@ const WealthBackOfficeEngine = {
         409
       );
     }
+    // The queue decided the rail when it resolved the payee: a counterparty
+    // known only by wallet is a USDC payout, not an ACH credit with no account.
+    const disbursementType = item.disbursementType || spec.disbursementType;
     if (!resolvedPayee) {
       throw new WealthBackOfficeError(
-        `No registered ${spec.disbursementType} payee resolves for ${item.counterparty}`,
+        `No registered ${disbursementType} payee resolves for ${item.counterparty}`,
         'WEALTH_OS_NO_PAYEE',
         409
       );
     }
 
     const { disbursement, plan, wire } = await PayerOsEngine.initiate({
-      disbursementType: spec.disbursementType,
+      disbursementType,
       amountCents: item.amountCents,
       payee: resolvedPayee,
       fundingSourceRef,
@@ -994,7 +1007,7 @@ const WealthBackOfficeEngine = {
           spec.origin,
           item.originId,
           disbursement.disbursement_id,
-          spec.disbursementType,
+          disbursementType,
           resolvedPayee,
           item.amountCents,
           item.currency || 'USD',
@@ -1014,7 +1027,7 @@ const WealthBackOfficeEngine = {
     await MessagingEngine.notify({
       subject: `Credit push raised: ${item.counterparty} ${item.amount}`,
       body: `${spec.label} ${item.originId} was handed to Payer OS as ${disbursement.disbursement_id}`
-        + ` (${spec.disbursementType}, ${item.amount} to ${resolvedPayee}). It is pending a second trustee's approval.`,
+        + ` (${disbursementType}, ${item.amount} to ${resolvedPayee}). It is pending a second trustee's approval.`,
       participants: [initiatedBy],
       referenceType: 'wealth_credit_push',
       referenceId: disbursement.disbursement_id,

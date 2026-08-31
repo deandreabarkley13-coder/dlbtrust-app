@@ -55,6 +55,7 @@ const { PartnerBankRails } = require('../rails/partnerBankRails');
 const { FundingSourceRegistry, FundingSourceError } = require('../inhouseBank/clearing/fundingSourceRegistry');
 const { SettlementFundingEngine } = require('../inhouseBank/settlementFundingEngine');
 const { PaymentComplianceGate } = require('../compliance/paymentComplianceGate');
+const { StablecoinPayoutRail } = require('./stablecoinPayoutRail');
 
 /**
  * What the trust is allowed to push, and how. `rail` is not negotiable per
@@ -84,6 +85,14 @@ const DISBURSEMENT_TYPES = {
     entryDescription: 'VENDOR PAY',
     label: 'Payout to a business the trust owes',
     payeeSource: 'payer_os_payees',
+  },
+  // No bank is involved in this one, so the funding authority is not cash: it
+  // is the trust's USDC position, and the asset must be Circle's USDC.
+  stablecoin_payout: {
+    type: 'stablecoin_payout',
+    rail: 'stablecoin',
+    label: 'USDC payout to a registered wallet',
+    payeeSource: 'payer_os_wallets',
   },
 };
 
@@ -156,6 +165,9 @@ function getPayerOsConfig() {
     // refusal names the disbursement, rather than by the bank after the fact.
     maxAmountCents: Number(text('PAYER_OS_MAX_AMOUNT_CENTS', '0')) || 0,
     requireScreening: boolEnv('PAYER_OS_REQUIRE_SCREENING', true),
+    // Where USDC sits in the chart of accounts. A stablecoin payout relieves
+    // this asset, never the cash account a wire or an ACH credit draws on.
+    stablecoinAssetAccount: text('STABLECOIN_ASSET_ACCOUNT', '1210'),
     achEffectiveDateOffsetDays: Number(text('PAYER_OS_ACH_EFFECTIVE_OFFSET_DAYS', '1')) || 0,
   };
 }
@@ -259,7 +271,11 @@ function describePayee(key, raw, spec) {
 }
 
 function newId(spec) {
-  const prefix = spec.rail === 'wire' ? 'PAYSF' : (spec.type === 'direct_deposit' ? 'PAYDD' : 'PAYVP');
+  const prefix = spec.rail === 'wire'
+    ? 'PAYSF'
+    : spec.rail === 'stablecoin'
+      ? 'PAYUSDC'
+      : (spec.type === 'direct_deposit' ? 'PAYDD' : 'PAYVP');
   return `${prefix}-${Date.now()}-${crypto.randomBytes(3).toString('hex').toUpperCase()}`;
 }
 
@@ -362,13 +378,17 @@ const PayerOsEngine = {
       }));
     }
 
+    if (spec && spec.rail === 'stablecoin') {
+      return StablecoinPayoutRail.wallets();
+    }
+
     const ach = Object.entries(settings.payees)
       .map(([key, raw]) => describePayee(String(key).toLowerCase(), raw, null))
       .filter(payee => !spec || payee.purpose === spec.type)
       .map(payee => ({ ...payee, accountNumber: undefined }));
 
     if (spec) return ach;
-    return [...ach, ...this.payees('settlement_funding', settings)];
+    return [...ach, ...this.payees('settlement_funding', settings), ...StablecoinPayoutRail.wallets()];
   },
 
   payee(disbursementType, key, config = null) {
@@ -376,6 +396,9 @@ const PayerOsEngine = {
     const settings = config || getPayerOsConfig();
     if (spec.rail === 'wire') {
       return SettlementFundingEngine.destination(key);
+    }
+    if (spec.rail === 'stablecoin') {
+      return StablecoinPayoutRail.wallet(key);
     }
     const wanted = String(key || '').trim().toLowerCase();
     if (!wanted) {
@@ -420,6 +443,22 @@ const PayerOsEngine = {
   },
 
   /**
+   * USDC the trust has already promised out of its token position. It is kept
+   * apart from the cash figure because the two are different assets: a pending
+   * USDC payout does not reduce what Trust Operating can wire.
+   */
+  async stablecoinInFlightCents() {
+    await this.ensureTables();
+    const rows = await pool.query(
+      `SELECT COALESCE(SUM(amount_cents), 0) AS cents
+         FROM payer_disbursements
+        WHERE rail = 'stablecoin' AND status = ANY($1::text[])`,
+      [IN_FLIGHT_STATUSES]
+    );
+    return Number(rows.rows[0]?.cents || 0);
+  },
+
+  /**
    * What this push would draw on, who it credits, and whether the dollars are
    * there. Nothing is created and nothing is reserved: this is what an operator
    * sees before committing, and the same check `initiate` repeats.
@@ -441,6 +480,50 @@ const PayerOsEngine = {
         'PAYER_OS_AMOUNT_CEILING',
         409
       );
+    }
+
+    if (spec.rail === 'stablecoin') {
+      const wallet = StablecoinPayoutRail.wallet(payee);
+      const position = await StablecoinPayoutRail.position();
+      const inFlightCents = await this.stablecoinInFlightCents();
+      const spendableCents = Math.max(0, position.availableCents - inFlightCents);
+      return {
+        disbursementType: spec.type,
+        rail: 'stablecoin',
+        direction: 'credit',
+        amountCents: amount,
+        amount: dollars(amount),
+        currency: 'USD',
+        asset: position.asset,
+        issuer: position.issuer,
+        network: position.network,
+        source: {
+          // The token position, named the way the funding registry names an
+          // account, so callers do not have to special-case this rail.
+          sourceType: 'stablecoin_distributor',
+          sourceKey: `stablecoin:${position.address}`,
+          sourceId: config.stablecoinAssetAccount,
+          accountName: `${position.asset} at …${position.address.slice(-4)}`,
+          currency: 'USD',
+        },
+        payee: {
+          key: wallet.key,
+          label: wallet.label,
+          name: wallet.name,
+          routingNumber: null,
+          accountLast4: wallet.addressLast4,
+          glAccountCode: wallet.glAccountCode,
+        },
+        glDebitAccountCode: wallet.glAccountCode,
+        glCreditAccountCode: config.stablecoinAssetAccount,
+        availableCents: position.availableCents,
+        inFlightCents,
+        inFlight: dollars(inFlightCents),
+        spendableCents,
+        spendable: dollars(spendableCents),
+        shortfallCents: Math.max(0, amount - spendableCents),
+        funded: amount <= spendableCents,
+      };
     }
 
     if (spec.rail === 'wire') {
@@ -595,6 +678,30 @@ const PayerOsEngine = {
       return { disbursement: row, plan, wire };
     }
 
+    if (spec.rail === 'stablecoin') {
+      const wallet = this.payee(spec.type, plan.payee.key, config);
+      const walletScreening = config.requireScreening
+        ? await PaymentComplianceGate.screenVendorPayment({
+          vendor: { businessName: wallet.name, email: wallet.email, country: 'US' },
+          amount: Number(plan.amount),
+          sourceAccountId: plan.source.sourceId,
+          rail: 'stablecoin',
+          action: 'execute',
+          screenedBy: initiatedBy,
+          reference: `payer-os:${spec.type}:${wallet.key}`,
+        })
+        : null;
+      const row = await this._insert({
+        spec,
+        plan,
+        initiatedBy,
+        memo,
+        railReference: null,
+        screening: walletScreening,
+      });
+      return { disbursement: row, plan };
+    }
+
     const screening = config.requireScreening
       ? await PaymentComplianceGate.screenVendorPayment({
         vendor: {
@@ -682,6 +789,40 @@ const PayerOsEngine = {
         'PAYER_OS_INSUFFICIENT',
         409
       );
+    }
+
+    if (row.rail === 'stablecoin') {
+      if (metadata.screeningId) {
+        await PaymentComplianceGate.verifyRecordedScreening(metadata.screeningId);
+      } else if (getPayerOsConfig().requireScreening) {
+        throw new PayerOsError(
+          `${row.disbursement_id} carries no compliance screening, so it cannot be originated`,
+          'PAYER_OS_UNSCREENED',
+          409
+        );
+      }
+      const wallet = StablecoinPayoutRail.wallet(row.payee_key);
+      await this._update(disbursementId, { status: 'sending' }, 'sending');
+      let submission;
+      try {
+        submission = await StablecoinPayoutRail.submit({
+          wallet,
+          amountCents: Number(row.amount_cents),
+          memo: row.memo || null,
+        });
+      } catch (error) {
+        await this._update(disbursementId, {
+          status: 'failed',
+          failure_reason: error.message,
+        }, 'failed', null, { error: error.message });
+        throw error;
+      }
+      const updated = await this._update(disbursementId, {
+        status: 'sent',
+        sent_at: 'NOW()',
+        rail_reference: submission.reference,
+      }, 'sent', null, { reference: submission.reference, explorer: submission.explorer });
+      return { disbursement: updated, stablecoin: submission };
     }
 
     if (row.rail === 'wire') {
@@ -777,6 +918,23 @@ const PayerOsEngine = {
       );
     }
 
+    if (row.rail === 'stablecoin') {
+      // The chain is the evidence. A hash Horizon cannot confirm as a payment
+      // of this asset, amount and destination does not post a journal entry.
+      const confirmation = await StablecoinPayoutRail.verify({
+        reference,
+        wallet: StablecoinPayoutRail.wallet(row.payee_key),
+        amountCents: Number(row.amount_cents),
+      });
+      if (!confirmation.confirmed) {
+        throw new PayerOsError(
+          `${row.disbursement_id} is not settled on-chain: ${confirmation.reason}`,
+          'PAYER_OS_UNCONFIRMED',
+          409
+        );
+      }
+    }
+
     if (row.rail === 'wire') {
       const wire = await SettlementFundingEngine.settle(row.rail_reference, { ...evidence, reference });
       const updated = await this._update(disbursementId, {
@@ -803,7 +961,7 @@ const PayerOsEngine = {
           accountCode: row.gl_credit_account,
           debitAmount: 0,
           creditAmount: amount,
-          memo: `ACH credit outflow: ${row.disbursement_id}`,
+          memo: `${row.rail === 'stablecoin' ? 'USDC' : 'ACH'} credit outflow: ${row.disbursement_id}`,
         },
       ],
       referenceType: 'payer_disbursement',
@@ -811,7 +969,7 @@ const PayerOsEngine = {
       postedBy: evidence.settledBy || row.approved_by || row.initiated_by || 'system',
     });
 
-    if (row.rail_reference) {
+    if (row.rail === 'ach' && row.rail_reference) {
       await ACHEngine.settleBatch(row.rail_reference, {
         settlementDate: evidence.settlementDate || null,
       }).catch(() => null);
@@ -955,7 +1113,7 @@ const PayerOsEngine = {
       blockers.push(error.message);
     }
 
-    const achPayees = payees.filter(payee => payee.purpose !== 'settlement_funding');
+    const achPayees = payees.filter(payee => ['direct_deposit', 'vendor_payout'].includes(payee.purpose));
     if (config && !achPayees.length) {
       warnings.push(
         'No direct deposit or vendor payee is registered: set PAYER_OS_PAYEES to the accounts the trust may credit'
@@ -1008,6 +1166,19 @@ const PayerOsEngine = {
       );
     }
 
+    // Reported per rail rather than folded into `blockers`: the USDC rail is
+    // here precisely because the fiat channels are unavailable, so what one
+    // rail is missing must not read as the whole payer being unable to pay.
+    let stablecoinRail = null;
+    try {
+      stablecoinRail = await StablecoinPayoutRail.readiness();
+      if (!stablecoinRail.ready) {
+        warnings.push(`USDC payouts cannot be originated: ${stablecoinRail.issues.join(' ')}`);
+      }
+    } catch (error) {
+      warnings.push(`USDC payouts cannot be originated: ${error.message}`);
+    }
+
     let compliance = null;
     try {
       compliance = await PaymentComplianceGate.paymentReadiness({ rail: 'ach', action: 'execute' });
@@ -1036,6 +1207,7 @@ const PayerOsEngine = {
         glAccountCode: payee.glAccountCode,
       })),
       achChannel: ach,
+      stablecoinRail,
       odfi: { routingNumber: ODFI_ROUTING || null, originatorId: ODFI_ROUTING ? ORIGINATOR_ID : null },
       wireChannel: {
         ready: partnerBank.ready,
