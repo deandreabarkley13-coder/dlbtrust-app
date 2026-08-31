@@ -53,6 +53,7 @@ function backOffice({
   existingPushes = [] as any[],
   inFlight = [] as any[],
   melioExports = [] as any[],
+  clearingClaims = [] as any[],
   handoffInsertFails = false,
 } = {}) {
   const inserted: any[] = [];
@@ -64,6 +65,7 @@ function backOffice({
     if (/FROM dapp_distribution_requests/.test(text)) return { rows: distributions } as any;
     if (/FROM wealth_credit_pushes/.test(text)) return { rows: existingPushes } as any;
     if (/FROM melio_payments/.test(text)) return { rows: melioExports } as any;
+    if (/FROM clearing_cycle_items i/.test(text)) return { rows: clearingClaims } as any;
     if (/INSERT INTO wealth_credit_pushes/.test(text)) {
       if (handoffInsertFails) throw new Error('duplicate key value violates unique constraint');
       inserted.push(text);
@@ -151,6 +153,23 @@ describe('Wealth Back Office OS — one floor over the family bank', () => {
         expect(Object.keys(item)).not.toContain('accountNumber');
       }
     });
+  });
+
+  it('will not push an obligation a live clearing cycle is netting, so a netted bill is not also paid alone', async () => {
+    backOffice({
+      distributions: [],
+      clearingClaims: [{ origin: 'vendor_payable', origin_id: 'VPAY-1', cycle_id: 'CYC-20260830-AB12CD', status: 'netted' }],
+    });
+
+    const queue = await WealthBackOfficeEngine.creditQueue({});
+
+    expect(queue.items[0]).toMatchObject({ originId: 'VPAY-1', pushable: false });
+    expect(queue.items[0].blockers[0]).toMatch(/bound to clearing cycle CYC-20260830-AB12CD \(netted\)/);
+    await expect(WealthBackOfficeEngine.pushCredit({
+      origin: 'vendor_payable',
+      originId: 'VPAY-1',
+      initiatedBy: 'trustee-one@example.com',
+    })).rejects.toThrow(/bound to clearing cycle/);
   });
 
   it('lists a credit Payer OS already has in flight, and refuses to raise it again', async () => {
