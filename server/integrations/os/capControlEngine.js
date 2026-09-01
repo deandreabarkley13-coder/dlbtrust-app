@@ -22,11 +22,13 @@
  *                 principal that is already backing principal token. A bond
  *                 paid down lowers its own ceiling, which is the ordinary way a
  *                 token goes over cap without anyone minting.
- *   declared      DLBUSD and the module tokens reference no bond, so no bond
- *                 can govern them. They get an explicit ceiling the trust
- *                 declares in TOKEN_DECLARED_CEILINGS, and a token with no
- *                 declared ceiling cannot mint at all. Unbacked and unlimited
- *                 is the one combination that must not be reachable.
+ *   declared      A token that references no bond can only be governed by a
+ *                 number the trust declares in TOKEN_DECLARED_CEILINGS, and one
+ *                 with no declared ceiling cannot mint at all: unbacked and
+ *                 unlimited is the one combination that must not be reachable.
+ *                 The better answer is to stop being unbacked — attachBacking()
+ *                 puts DLBUSD and the module tokens on the bond, where they
+ *                 share its live capacity with everything else standing on it.
  *
  * Headroom is the ceiling minus what is issued minus what open issuance tickets
  * are holding, so two approvals in flight cannot both spend the same room.
@@ -460,6 +462,79 @@ const CapControlEngine = {
       headroomCents: Math.max(0, ceiling.totalCents - issued.totalCents - reserved.totalCents),
       tokens: tokens.rows,
     };
+  },
+
+  /**
+   * Whether a bond can take on a token that is not yet standing on it.
+   *
+   * Backing an existing token with a bond does not create supply, but it does
+   * bring that supply inside the bond's ceiling alongside everything already
+   * there. If the bond cannot carry the total, attaching it would manufacture a
+   * breach out of a bookkeeping act, so the arithmetic is returned in full.
+   */
+  async assessBacking({ tokenId, bondReference } = {}) {
+    const token = await this.token(tokenId);
+    const bond = await this.resolveBond(bondReference);
+    const ceiling = await this.bondCeiling(bond.id);
+    const alreadyOnBond = Number(token.bond_id) === Number(bond.id);
+    const issued = await this.issued(ceiling);
+    const reserved = await this.reserved(ceiling);
+
+    const tokenPrincipal = toCents(token.tokenized_principal);
+    const tokenInterest = toCents(token.tokenized_interest);
+    const tokenSupply = toCents(token.total_supply);
+    const addPrincipal = alreadyOnBond ? 0 : tokenPrincipal;
+    const addInterest = alreadyOnBond ? 0 : tokenInterest;
+    const addSupply = alreadyOnBond ? 0 : tokenSupply;
+
+    const breaches = [];
+    if (issued.principalCents + reserved.principalCents + addPrincipal > ceiling.principalCents) {
+      breaches.push(
+        `principal: ${money(issued.principalCents + reserved.principalCents + addPrincipal)} would stand on`
+        + ` ${money(ceiling.principalCents)} of outstanding principal`
+      );
+    }
+    if (issued.interestCents + reserved.interestCents + addInterest > ceiling.interestCents) {
+      breaches.push(
+        `interest: ${money(issued.interestCents + reserved.interestCents + addInterest)} would stand on`
+        + ` ${money(ceiling.interestCents)} of accrued interest`
+      );
+    }
+    if (issued.totalCents + reserved.totalCents + addSupply > ceiling.totalCents) {
+      breaches.push(
+        `total: ${money(issued.totalCents + reserved.totalCents + addSupply)} would stand on a bond backing`
+        + ` ${money(ceiling.totalCents)}`
+      );
+    }
+
+    return {
+      allowed: breaches.length === 0,
+      alreadyOnBond,
+      token: { id: token.id, symbol: token.token_symbol, supplyCents: tokenSupply },
+      bond: {
+        id: bond.id,
+        name: bond.bond_name,
+        identifier: bond.bond_identifier,
+        isin: bond.isin,
+      },
+      ceiling,
+      issued,
+      reserved,
+      breaches,
+    };
+  },
+
+  /** The gate for attaching a bond to a token that already has supply. */
+  async assertBackable({ tokenId, bondReference } = {}) {
+    const assessment = await this.assessBacking({ tokenId, bondReference });
+    if (!assessment.allowed) {
+      throw new CapControlError(
+        `${assessment.token.symbol || tokenId} cannot be backed by ${assessment.bond.name}:`
+        + ` ${assessment.breaches.join('; ')}`,
+        'CAP_CONTROL_BACKING_OVER_CEILING'
+      );
+    }
+    return assessment;
   },
 
   /** How far over its ceiling a token already is, and so how much must burn. */

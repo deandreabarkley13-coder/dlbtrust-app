@@ -8,6 +8,7 @@ const { IssuanceOsEngine } = require('../server/integrations/os/issuanceOsEngine
 const { MintExchangeOsEngine } = require('../server/integrations/os/mintExchangeOsEngine');
 const { BondTokenizationEngine } = require('../server/integrations/dapp/bondTokenizationEngine');
 const { BondEngine } = require('../server/integrations/bonds/bondEngine');
+const { TrustAccountingEngine } = require('../server/integrations/accounting/trustAccountingEngine');
 const pool = require('../server/integrations/bonds/pgPool');
 
 type Row = Record<string, any>;
@@ -138,6 +139,7 @@ function store({
         issuance_id: params[0], token_id: params[1], bond_id: params[2],
         principal_cents: params[3], interest_cents: params[4], status: 'pending_approval',
         holder_address: params[5], initiated_by: params[6], memo: params[7],
+        metadata: JSON.parse(params[8] || '{}'),
         approved_by: null, rejected_by: null, chain_reference: null,
       };
       issuances.push(row);
@@ -202,6 +204,11 @@ function store({
       return { rows: [row] };
     }
 
+    if (/UPDATE bond_tokens SET bond_id/.test(text)) {
+      const found = tokens.find(t => t.id === params[0]);
+      if (found) Object.assign(found, { bond_id: params[1], bond_name: params[2], metadata: JSON.parse(params[3]) });
+      return { rows: found ? [found] : [] };
+    }
     if (/UPDATE bond_tokens SET total_supply/.test(text)) {
       const found = tokens.find(t => t.id === params[3]);
       if (found) {
@@ -236,7 +243,13 @@ function store({
   ));
   vi.spyOn(BondTokenizationEngine, 'getConfig').mockReturnValue({ shadow: true } as any);
 
-  return { tokens, holders, issuances, movements, runs };
+  const journals: Row[] = [];
+  vi.spyOn(TrustAccountingEngine, 'postJournalEntry').mockImplementation((async (entry: Row) => {
+    journals.push(entry);
+    return { entry_id: `JRN-${journals.length}` };
+  }) as any);
+
+  return { tokens, holders, issuances, movements, runs, journals };
 }
 
 afterEach(() => {
@@ -335,6 +348,69 @@ describe('Cap Control: what the bond backs', () => {
     expect(summary.bond.id).toBe(7);
     expect(summary.ceiling.totalCents).toBe(100_500_000);
     expect(summary.tokens).toHaveLength(1);
+  });
+});
+
+describe('Cap Control: backing a token with the bond', () => {
+  const dlbusd = () => token({
+    id: 'BT-DLBUSD', bond_id: null, bond_name: null,
+    token_name: 'DLB USD', token_symbol: 'DLBUSD',
+    total_supply: 50_000, tokenized_principal: 50_000,
+  });
+
+  it('lets the bond carry a token whose supply fits beneath it', async () => {
+    store({ tokens: [token(), dlbusd()] });
+    const assessment = await CapControlEngine.assessBacking({
+      tokenId: 'BT-DLBUSD', bondReference: '19781443-DLB-PRB',
+    });
+    expect(assessment.allowed).toBe(true);
+    expect(assessment.alreadyOnBond).toBe(false);
+    expect(assessment.bond.id).toBe(7);
+  });
+
+  it('refuses backing that the bond could not carry', async () => {
+    store({ tokens: [token(), dlbusd()], bonds: [{ id: 7, bond_name: 'DLB-PRB', bond_identifier: '19781443-DLB-PRB', principal_balance: 1_000, accrued_interest: 0 }] });
+    await expect(CapControlEngine.assertBackable({
+      tokenId: 'BT-DLBUSD', bondReference: '19781443-DLB-PRB',
+    })).rejects.toThrow(/cannot be backed by DLB-PRB/);
+  });
+
+  it('counts the token already on the bond once, not twice', async () => {
+    store({ tokens: [token({ total_supply: 1_000_000, tokenized_principal: 1_000_000 })] });
+    const assessment = await CapControlEngine.assessBacking({
+      tokenId: 'BT-1', bondReference: '19781443-DLB-PRB',
+    });
+    expect(assessment.alreadyOnBond).toBe(true);
+    expect(assessment.allowed).toBe(true);
+  });
+
+  it('attaches the bond, so the ceiling comes from the ledger and is shared', async () => {
+    const state = store({ tokens: [token(), dlbusd()] });
+    const { BondTokenizationEngine } = require('../server/integrations/dapp/bondTokenizationEngine');
+    const attached = await BondTokenizationEngine.attachBacking({
+      tokenId: 'BT-DLBUSD', bondReference: '19781443-DLB-PRB', attachedBy: 'trustee-one',
+    });
+    expect(attached.token.bond_id).toBe(7);
+    expect(attached.token.metadata.backing).toMatchObject({ bondId: 7, attachedBy: 'trustee-one' });
+    expect(state.tokens[1].bond_id).toBe(7);
+
+    const headroom = await CapControlEngine.headroom('BT-DLBUSD');
+    expect(headroom.ceiling.totalCents).toBe(100_500_000);
+    expect(headroom.issued.totalCents).toBe(5_000_000);
+  });
+
+  it('will not move live supply from one bond onto another', async () => {
+    store({
+      tokens: [token({ total_supply: 1_000 })],
+      bonds: [
+        { id: 7, bond_name: 'DLB-PRB', bond_identifier: '19781443-DLB-PRB', principal_balance: 1_000_000, accrued_interest: 5_000 },
+        { id: 8, bond_name: 'DLB-SECOND', bond_identifier: 'DLB-SECOND', principal_balance: 1_000_000, accrued_interest: 0 },
+      ],
+    });
+    const { BondTokenizationEngine } = require('../server/integrations/dapp/bondTokenizationEngine');
+    await expect(BondTokenizationEngine.attachBacking({
+      tokenId: 'BT-1', bondReference: 'DLB-SECOND', attachedBy: 'trustee-one',
+    })).rejects.toThrow(/already backed by bond 7/);
   });
 });
 
@@ -586,6 +662,81 @@ describe('Mint & Exchange OS: the act', () => {
     expect(executed.obligation).toMatchObject({
       owedToHolder: '0xbeneficiary', amountCents: 100_000, settled: false,
     });
+  });
+
+  it('posts a claim to 2010 when a mint settles a named obligation', async () => {
+    const state = store();
+    const { issuance } = await IssuanceOsEngine.request({
+      tokenId: 'BT-1', principalCents: 1_000, holderAddress: '0xbeneficiary',
+      settlesObligation: 'DISB-77', initiatedBy: 'trustee-one',
+    });
+    await IssuanceOsEngine.approve(issuance.issuance_id, 'trustee-two');
+    const result = await MintExchangeOsEngine.mint({ issuanceId: issuance.issuance_id });
+
+    expect(result.posting.posted).toBe(true);
+    expect(state.journals[0].lines).toEqual([
+      expect.objectContaining({ accountCode: '2000', debitAmount: 10, creditAmount: 0 }),
+      expect.objectContaining({ accountCode: '2010', debitAmount: 0, creditAmount: 10 }),
+    ]);
+  });
+
+  it('posts nothing for token the trust mints to itself', async () => {
+    const state = store();
+    const { issuance } = await IssuanceOsEngine.request({
+      tokenId: 'BT-1', principalCents: 1_000, holderAddress: 'treasury',
+      settlesObligation: 'DISB-77', initiatedBy: 'trustee-one',
+    });
+    await IssuanceOsEngine.approve(issuance.issuance_id, 'trustee-two');
+    const result = await MintExchangeOsEngine.mint({ issuanceId: issuance.issuance_id });
+
+    expect(result.posting.posted).toBe(false);
+    expect(result.posting.reason).toMatch(/a claim on itself is not a liability/);
+    expect(state.journals).toHaveLength(0);
+  });
+
+  it('refuses to book a mint that names no obligation, and says so on the movement', async () => {
+    const state = store();
+    const ticket = await approvedTicket();
+    const result = await MintExchangeOsEngine.mint({ issuanceId: ticket.issuance_id });
+
+    expect(state.journals).toHaveLength(0);
+    expect(result.posting.reason).toMatch(/against no recorded obligation/);
+  });
+
+  it('moves an exchanged claim out of 2010 and into the payable Payer OS settles', async () => {
+    const state = store({
+      tokens: [token({ total_supply: 1_000, tokenized_principal: 1_000 })],
+      holders: [{ token_id: 'BT-1', holder_address: '0xbeneficiary', balance: 1_000 }],
+    });
+    const movement = await MintExchangeOsEngine.request({
+      kind: 'exchange', tokenId: 'BT-1', holderAddress: '0xbeneficiary',
+      principalCents: 100_000, initiatedBy: 'trustee-one',
+    });
+    await MintExchangeOsEngine.approve(movement.movement_id, 'trustee-two');
+    const executed = await MintExchangeOsEngine.execute(movement.movement_id);
+
+    expect(executed.posting.posted).toBe(true);
+    expect(state.journals[0].lines).toEqual([
+      expect.objectContaining({ accountCode: '2010', debitAmount: 1_000, creditAmount: 0 }),
+      expect.objectContaining({ accountCode: '2000', debitAmount: 0, creditAmount: 1_000 }),
+    ]);
+    expect(executed.obligation.settled).toBe(false);
+  });
+
+  it('books no write-off for a burn, and names the decision instead', async () => {
+    const state = store({
+      tokens: [token({ total_supply: 1_000, tokenized_principal: 1_000 })],
+      holders: [{ token_id: 'BT-1', holder_address: '0xbeneficiary', balance: 1_000 }],
+    });
+    const movement = await MintExchangeOsEngine.request({
+      kind: 'burn', tokenId: 'BT-1', holderAddress: '0xbeneficiary',
+      principalCents: 100_000, initiatedBy: 'trustee-one',
+    });
+    await MintExchangeOsEngine.approve(movement.movement_id, 'trustee-two');
+    const executed = await MintExchangeOsEngine.execute(movement.movement_id);
+
+    expect(state.journals).toHaveLength(0);
+    expect(executed.posting.reason).toMatch(/without payment: book the write-off deliberately/);
   });
 
   it('refuses a mint raised as a movement, because supply comes from a ticket', async () => {

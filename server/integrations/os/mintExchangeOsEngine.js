@@ -23,6 +23,14 @@
  *
  * Nothing is simulated. In live mode a mint or burn that the chain did not
  * accept is an error, not a record.
+ *
+ * The books follow the same rule. Token in a third party's hands is a claim on
+ * the corpus, so it sits in 2010 Token Claims Payable; token the trust holds
+ * itself is not a liability, because a claim on yourself is not a debt, and
+ * nothing is posted for it. An exchange moves the claim out of 2010 and into
+ * the payable Payer OS settles — the trust still owes the money, it just no
+ * longer owes it in token. Where an act has no honest entry, this engine posts
+ * nothing and says why rather than inventing one.
  */
 
 const crypto = require('crypto');
@@ -32,6 +40,25 @@ const { IntegrityControlEngine } = require('./integrityControlEngine');
 const { IssuanceOsEngine } = require('./issuanceOsEngine');
 
 const KINDS = ['mint', 'burn', 'exchange'];
+
+function text(name, fallback = '') {
+  const value = process.env[name];
+  return value === undefined || value === null ? fallback : String(value).trim();
+}
+
+function getConfig() {
+  return {
+    // 2010 Token Claims Payable: what the trust owes to holders of its token.
+    claimAccount: text('TOKEN_CLAIM_LIABILITY_ACCOUNT', '2010'),
+    // 2000 Distributions Payable: what it owes them in money instead.
+    obligationAccount: text('TOKEN_CLAIM_OBLIGATION_ACCOUNT', '2000'),
+    // Addresses that are the trust itself rather than a counterparty.
+    treasuryHolders: text('TOKEN_TREASURY_HOLDERS', 'treasury')
+      .split(',')
+      .map(entry => entry.trim().toLowerCase())
+      .filter(Boolean),
+  };
+}
 
 class MintExchangeError extends Error {
   constructor(message, code = 'MINT_EXCHANGE_ERROR', status = 409) {
@@ -102,9 +129,20 @@ const MintExchangeOsEngine = {
         CHECK (principal_cents + interest_cents > 0)
       )
     `);
+    await pool.query('ALTER TABLE token_movements ADD COLUMN IF NOT EXISTS journal_entry_id TEXT');
+    await pool.query('ALTER TABLE token_movements ADD COLUMN IF NOT EXISTS gl_unposted_reason TEXT');
     await pool.query('CREATE INDEX IF NOT EXISTS idx_token_movements_token ON token_movements (token_id)');
     await pool.query('CREATE INDEX IF NOT EXISTS idx_token_movements_status ON token_movements (status)');
     return true;
+  },
+
+  config: getConfig,
+
+  /** An address that is the trust itself holds no claim against the trust. */
+  isTreasuryHolder(holderAddress) {
+    const holder = String(holderAddress || '').trim().toLowerCase();
+    if (!holder) return false;
+    return getConfig().treasuryHolders.includes(holder);
   },
 
   /**
@@ -168,8 +206,21 @@ const MintExchangeOsEngine = {
     }
 
     await IssuanceOsEngine.consume(issuanceId, { chainReference: result.txHash || null });
-    const movement = await this._executed(movementId, { chainReference: result.txHash || null });
-    return { movement, issuance: await IssuanceOsEngine.require(issuanceId), result };
+    const posting = await this._postClaim({
+      kind: 'mint',
+      movementId,
+      tokenId: ticket.token_id,
+      holder,
+      amountCents: Number(ticket.principal_cents) + Number(ticket.interest_cents),
+      obligationReference: this._obligationReference(ticket),
+      postedBy: String(mintedBy || ticket.approved_by || ticket.initiated_by),
+    });
+    const movement = await this._executed(movementId, {
+      chainReference: result.txHash || null,
+      journalEntryId: posting.journalEntryId,
+      glUnpostedReason: posting.reason,
+    });
+    return { movement, issuance: await IssuanceOsEngine.require(issuanceId), result, posting };
   },
 
   /**
@@ -282,13 +333,25 @@ const MintExchangeOsEngine = {
       throw err;
     }
 
+    const posting = await this._postClaim({
+      kind: row.kind,
+      movementId,
+      tokenId: row.token_id,
+      holder: row.holder_address,
+      amountCents,
+      obligationReference: settlementReference,
+      postedBy: row.approved_by || row.initiated_by,
+    });
     const movement = await this._executed(movementId, {
       chainReference: result.txHash || null,
       settlementReference,
+      journalEntryId: posting.journalEntryId,
+      glUnpostedReason: posting.reason,
     });
     return {
       movement,
       result,
+      posting,
       // An exchange leaves the trust owing the holder. Saying so is the whole
       // point: the token is gone, and nothing here has paid for it.
       obligation: row.kind === 'exchange'
@@ -426,15 +489,96 @@ const MintExchangeOsEngine = {
     return balanceCents;
   },
 
-  async _executed(movementId, { chainReference = null, settlementReference = null } = {}) {
+  /** The obligation a mint settles, if the ticket named one. */
+  _obligationReference(ticket) {
+    const metadata = ticket.metadata && typeof ticket.metadata === 'object' ? ticket.metadata : {};
+    const named = metadata.settlesObligation || metadata.obligationReference || null;
+    return named ? String(named) : null;
+  },
+
+  /**
+   * Book the claim, where there is an honest entry to book.
+   *
+   * mint      to a third party in settlement of a named obligation: the trust
+   *           still owes the same money, now in token, so the payable moves
+   *           into 2010. Minted to the trust's own treasury, or to a holder
+   *           against no recorded obligation, nothing is posted — the first is
+   *           not a liability and the second has no second leg that is true.
+   * exchange  the holder gives the token back and is owed money for it: the
+   *           claim leaves 2010 and becomes a payable for Payer OS. Nothing
+   *           here has paid it.
+   * burn      destroying a holder's balance without paying them is a write-off,
+   *           and a write-off is a decision, not a side effect of remediation.
+   */
+  async _postClaim({ kind, movementId, tokenId, holder, amountCents, obligationReference, postedBy }) {
+    const cfg = getConfig();
+    const amount = toAmount(amountCents);
+    const treasury = this.isTreasuryHolder(holder);
+
+    let lines = null;
+    let description = null;
+    if (kind === 'mint') {
+      if (treasury) {
+        return { posted: false, journalEntryId: null, reason: `held by the trust (${holder}): a claim on itself is not a liability` };
+      }
+      if (!obligationReference) {
+        return {
+          posted: false,
+          journalEntryId: null,
+          reason: `issued to ${holder} against no recorded obligation:`
+            + ' name the payable it settles on the issuance before it can be booked',
+        };
+      }
+      description = `Token claim issued to ${holder} for ${obligationReference}`;
+      lines = [
+        { accountCode: cfg.obligationAccount, debitAmount: amount, creditAmount: 0, memo: `${obligationReference} settled in ${tokenId}` },
+        { accountCode: cfg.claimAccount, debitAmount: 0, creditAmount: amount, memo: `${movementId}: claim held by ${holder}` },
+      ];
+    } else if (kind === 'exchange') {
+      if (treasury) {
+        return { posted: false, journalEntryId: null, reason: `returned by the trust (${holder}): no claim existed to extinguish` };
+      }
+      description = `Token claim exchanged by ${holder}`;
+      lines = [
+        { accountCode: cfg.claimAccount, debitAmount: amount, creditAmount: 0, memo: `${movementId}: claim returned by ${holder}` },
+        { accountCode: cfg.obligationAccount, debitAmount: 0, creditAmount: amount, memo: `Owed to ${holder} in money; unpaid until Payer OS settles it` },
+      ];
+    } else {
+      return {
+        posted: false,
+        journalEntryId: null,
+        reason: treasury
+          ? `burned from the trust's own holding (${holder}): nothing was owed to anyone`
+          : `burned from ${holder} without payment: book the write-off deliberately`,
+      };
+    }
+
+    const { TrustAccountingEngine } = require('../accounting/trustAccountingEngine');
+    const entry = await TrustAccountingEngine.postJournalEntry({
+      entryDate: new Date(),
+      description,
+      lines,
+      referenceType: 'token_movement',
+      referenceId: movementId,
+      postedBy: postedBy || 'system',
+    });
+    return { posted: true, journalEntryId: entry.entry_id || entry.entryId || null, reason: null };
+  },
+
+  async _executed(movementId, {
+    chainReference = null, settlementReference = null,
+    journalEntryId = null, glUnpostedReason = null,
+  } = {}) {
     const updated = await pool.query(
       `UPDATE token_movements
           SET status = 'executed', executed_at = NOW(), updated_at = NOW(),
               chain_reference = COALESCE($2, chain_reference),
-              settlement_reference = COALESCE($3, settlement_reference)
+              settlement_reference = COALESCE($3, settlement_reference),
+              journal_entry_id = COALESCE($4, journal_entry_id),
+              gl_unposted_reason = $5
         WHERE movement_id = $1
         RETURNING *`,
-      [movementId, chainReference, settlementReference]
+      [movementId, chainReference, settlementReference, journalEntryId, glUnpostedReason]
     );
     return updated.rows[0];
   },

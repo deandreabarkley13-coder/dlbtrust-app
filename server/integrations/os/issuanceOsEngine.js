@@ -120,7 +120,7 @@ const IssuanceOsEngine = {
   /** Maker raises a ticket. Nothing is minted, but the headroom is now held. */
   async request({
     tokenId, principalCents = 0, interestCents = 0,
-    initiatedBy, holderAddress = null, memo = null,
+    initiatedBy, holderAddress = null, memo = null, settlesObligation = null,
   } = {}) {
     await this.ensureTables();
     const maker = String(initiatedBy || '').trim();
@@ -142,8 +142,8 @@ const IssuanceOsEngine = {
     const inserted = await pool.query(
       `INSERT INTO token_issuances
          (issuance_id, token_id, bond_id, principal_cents, interest_cents, status,
-          holder_address, initiated_by, memo)
-       VALUES ($1, $2, $3, $4, $5, 'pending_approval', $6, $7, $8)
+          holder_address, initiated_by, memo, metadata)
+       VALUES ($1, $2, $3, $4, $5, 'pending_approval', $6, $7, $8, $9::jsonb)
        RETURNING *`,
       [
         issuanceId,
@@ -154,6 +154,10 @@ const IssuanceOsEngine = {
         holderAddress,
         maker,
         memo,
+        // The payable a token claim settles. Without it the mint has no honest
+        // second leg, so the books record the claim as unposted rather than
+        // guessing which obligation it discharged.
+        JSON.stringify(settlesObligation ? { settlesObligation: String(settlesObligation) } : {}),
       ]
     );
     return { issuance: inserted.rows[0], assessment };

@@ -19,11 +19,14 @@
  *   node server/scripts/tokenControl.js bond --ref 19781443-DLB-PRB
  *   node server/scripts/tokenControl.js cap --token BT-…
  *   node server/scripts/tokenControl.js assess --token BT-… --principal 1000000 [--interest 0]
+ *   node server/scripts/tokenControl.js backing --token BT-… --ref 19781443-DLB-PRB
+ *   node server/scripts/tokenControl.js back --token BT-… --ref 19781443-DLB-PRB --by trustee@example.com
+ *   node server/scripts/tokenControl.js back-unbacked --ref 19781443-DLB-PRB --by trustee@example.com
  *   node server/scripts/tokenControl.js integrity [--token BT-…] [--record --by ops@example.com]
  *   node server/scripts/tokenControl.js issuances [--token BT-…] [--status approved]
  *   node server/scripts/tokenControl.js issuance-status --token BT-…
  *   node server/scripts/tokenControl.js issuance-request --token BT-… --principal 1000000 \
- *     [--interest 0] [--holder 0x…] --by trustee-one@example.com [--memo "…"]
+ *     [--interest 0] [--holder 0x…] --by trustee-one@example.com [--memo "…"] [--settles DISB-…]
  *   node server/scripts/tokenControl.js issuance-approve --id ISS-… --by trustee-two@example.com
  *   node server/scripts/tokenControl.js issuance-reject --id ISS-… --by trustee-two@example.com [--reason "…"]
  *   node server/scripts/tokenControl.js mint --issuance ISS-… --by trustee-two@example.com
@@ -136,6 +139,49 @@ async function main() {
     return;
   }
 
+  if (command === 'backing') {
+    const data = await CapControlEngine.assessBacking({
+      tokenId: requireFlag(args, 'token', 'a bond token id'),
+      bondReference: requireFlag(args, 'ref', 'a bond id, identifier, name or ISIN'),
+    });
+    print(data.allowed ? 'The bond can carry it:' : 'The bond cannot carry it:', data);
+    if (!data.allowed) process.exitCode = 2;
+    return;
+  }
+
+  if (command === 'back') {
+    const { BondTokenizationEngine } = require('../integrations/dapp/bondTokenizationEngine');
+    const data = await BondTokenizationEngine.attachBacking({
+      tokenId: requireFlag(args, 'token', 'a bond token id'),
+      bondReference: requireFlag(args, 'ref', 'a bond id, identifier, name or ISIN'),
+      attachedBy: requireFlag(args, 'by', 'the trustee backing it'),
+    });
+    print(`Backed by ${data.backing.bond.name} (row ${data.backing.bond.id}):`, data.token);
+    console.log('\nIts ceiling now comes from the bond, shared with every token standing on it.');
+    return;
+  }
+
+  if (command === 'back-unbacked') {
+    const { BondTokenizationEngine } = require('../integrations/dapp/bondTokenizationEngine');
+    const ref = requireFlag(args, 'ref', 'a bond id, identifier, name or ISIN');
+    const by = requireFlag(args, 'by', 'the trustee backing them');
+    const tokens = await BondTokenizationEngine.listTokens();
+    const unbacked = tokens.filter(t => t.bond_id === null || t.bond_id === undefined);
+    console.log(`\n${unbacked.length} unbacked token(s) to stand on ${ref}`);
+    for (const token of unbacked) {
+      try {
+        const done = await BondTokenizationEngine.attachBacking({
+          tokenId: token.id, bondReference: ref, attachedBy: by,
+        });
+        console.log(`  backed ${token.token_symbol || token.id} → bond ${done.backing.bond.id}`);
+      } catch (err) {
+        process.exitCode = 2;
+        console.log(`  REFUSED ${token.token_symbol || token.id}: ${err.message}`);
+      }
+    }
+    return;
+  }
+
   if (command === 'integrity') {
     const report = await IntegrityControlEngine.check({ tokenId: args.token || null });
     if (args.flags.has('record') || args.by) {
@@ -171,6 +217,7 @@ async function main() {
       interestCents: cents(args, 'interest'),
       holderAddress: args.holder || null,
       memo: args.memo || null,
+      settlesObligation: args.settles || null,
       initiatedBy: requireFlag(args, 'by', 'the trustee raising the issuance'),
     });
     print('Raised:', data.issuance);
@@ -274,7 +321,7 @@ async function main() {
   }
 
   throw new Error(
-    `Unknown command "${command}". Commands: cap-config, bond, cap, assess, integrity,`
+    `Unknown command "${command}". Commands: cap-config, bond, cap, assess, backing, back, back-unbacked, integrity,`
     + ' issuances, issuance-status, issuance-request, issuance-approve, issuance-reject,'
     + ' mint, burn-required, burn-request, exchange-request, movement-approve,'
     + ' movement-execute, movement-cancel, movements'

@@ -125,12 +125,30 @@ class BondTokenizationEngine {
     return { ready: issues.length === 0, mode: cfg.shadow ? 'shadow' : 'live', issues };
   }
 
+  /**
+   * The bond that stands behind a token nobody named one for.
+   *
+   * A token with no bond can only be governed by a number in config, and an
+   * unbacked token is a claim on nothing. TOKEN_DEFAULT_BACKING_BOND names the
+   * bond every new token stands on instead, so DLBUSD and the module tokens
+   * share one ledger-derived ceiling rather than each inventing their own.
+   */
+  static async defaultBackingBondId() {
+    const reference = str('TOKEN_DEFAULT_BACKING_BOND', '');
+    if (!reference) return null;
+    const { CapControlEngine } = require('../os/capControlEngine');
+    const bond = await CapControlEngine.resolveBond(reference);
+    return bond.id;
+  }
+
   static async createToken({ bondId, tokenName, tokenSymbol, tokenAddress, decimals = 6 } = {}) {
     await ensureTable();
+    const backingId = bondId || await this.defaultBackingBondId();
     let bond;
-    if (bondId && BondEngine) {
-      bond = await BondEngine.getBond(bondId);
+    if (backingId && BondEngine) {
+      bond = await BondEngine.getBond(backingId);
     }
+    bondId = backingId;
     const cfg = this.getConfig();
     const tokenId = id('BTOK');
     const record = {
@@ -193,6 +211,61 @@ class BondTokenizationEngine {
     const t = memory.tokens.get(tokenId);
     if (!t) throw new Error('Token not found');
     return t;
+  }
+
+  /**
+   * Put a bond behind a token that had none.
+   *
+   * DLBUSD and the module tokens were created without a bond, which left them
+   * governed by a number in configuration rather than by anything the trust
+   * owns. Attaching the bond moves them under its live ceiling, where they
+   * share capacity with every other token standing on it: the bond can back a
+   * hundred million dollars of claims in total, not a hundred million each.
+   *
+   * Backing creates no supply, so it is not an issuance — but it can only be
+   * done where the bond can actually carry what the token has already issued.
+   */
+  static async attachBacking({ tokenId, bondReference, attachedBy = null } = {}) {
+    await ensureTable();
+    const { CapControlEngine, CapControlError } = require('../os/capControlEngine');
+    const token = await this.getToken(tokenId);
+    const assessment = await CapControlEngine.assertBackable({ tokenId: token.id, bondReference });
+    if (
+      token.bond_id !== null && token.bond_id !== undefined
+      && Number(token.bond_id) !== Number(assessment.bond.id)
+    ) {
+      throw new CapControlError(
+        `${token.token_symbol || token.id} is already backed by bond ${token.bond_id};`
+        + ' moving live supply onto another bond would leave the first one backing nothing',
+        'CAP_CONTROL_ALREADY_BACKED'
+      );
+    }
+
+    const metadata = {
+      ...(token.metadata && typeof token.metadata === 'object' ? token.metadata : {}),
+      backing: {
+        bondId: assessment.bond.id,
+        bondReference: String(bondReference),
+        attachedBy: attachedBy ? String(attachedBy) : null,
+        attachedAt: new Date().toISOString(),
+      },
+    };
+
+    if (pool) {
+      const updated = await pool.query(
+        `UPDATE bond_tokens
+            SET bond_id = $2, bond_name = $3, metadata = $4::jsonb, updated_at = NOW()
+          WHERE id = $1
+          RETURNING *`,
+        [token.id, assessment.bond.id, assessment.bond.name, JSON.stringify(metadata)]
+      );
+      return { token: updated.rows[0], backing: assessment };
+    }
+    token.bond_id = assessment.bond.id;
+    token.bond_name = assessment.bond.name;
+    token.metadata = metadata;
+    memory.tokens.set(token.id, token);
+    return { token, backing: assessment };
   }
 
   /**

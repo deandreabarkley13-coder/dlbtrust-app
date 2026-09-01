@@ -75,6 +75,30 @@ router.post('/cap/tokens/:tokenId/assess', operatorAuth, writeRateLimiter(), asy
   } catch (err) { sendError(res, err); }
 });
 
+/** Would this bond carry a token that is not standing on it yet? */
+router.get('/cap/tokens/:tokenId/backing/:reference', operatorAuth, async (req, res) => {
+  try {
+    const data = await CapControlEngine.assessBacking({
+      tokenId: req.params.tokenId,
+      bondReference: req.params.reference,
+    });
+    res.json({ success: true, data });
+  } catch (err) { sendError(res, err); }
+});
+
+/** Put the bond behind the token, so its ceiling comes from the ledger. */
+router.post('/cap/tokens/:tokenId/backing', adminAuth, writeRateLimiter(), async (req, res) => {
+  try {
+    const { BondTokenizationEngine } = require('../integrations/dapp/bondTokenizationEngine');
+    const data = await BondTokenizationEngine.attachBacking({
+      tokenId: req.params.tokenId,
+      bondReference: (req.body || {}).bondReference,
+      attachedBy: principal(req),
+    });
+    res.status(201).json({ success: true, data });
+  } catch (err) { sendError(res, err); }
+});
+
 // ─── Integrity Control ──────────────────────────────────────────────────────
 
 router.get('/integrity', operatorAuth, async (req, res) => {
@@ -127,6 +151,7 @@ router.post('/issuances', operatorAuth, writeRateLimiter(), async (req, res) => 
       interestCents: body.interestCents || 0,
       holderAddress: body.holderAddress || null,
       memo: body.memo || null,
+      settlesObligation: body.settlesObligation || null,
       initiatedBy: principal(req),
     });
     res.status(201).json({ success: true, data });
