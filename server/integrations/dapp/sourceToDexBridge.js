@@ -82,6 +82,7 @@ class SourceToDexBridge {
     poolAddress,
     createPoolIfMissing = false,
     poolSeedAmount,
+    issuanceId = null,
   } = {}) {
     sourceType = String(sourceType || '').toLowerCase();
     if (!sourceType || !sourceAccountId || !amount) throw new Error('sourceType, sourceAccountId, and amount are required');
@@ -130,9 +131,8 @@ class SourceToDexBridge {
 
       // Mint the tokenized amount to the operator wallet
       const mint = await BondTokenizationEngine.mint({
-        tokenId: token.id,
-        principal: amountNum,
-        holderAddress: operatorAddress,
+        issuanceId,
+        expect: { tokenId: token.id, principalCents: amountCents, holderAddress: operatorAddress },
       });
 
       // Resolve pool address: explicit > auto-create > missing

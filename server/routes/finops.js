@@ -174,7 +174,9 @@ router.post('/module-accounts/:module/init', operatorAuth, writeRateLimiter(), a
 
 router.post('/module-accounts/:module/tokenize', operatorAuth, writeRateLimiter(), async (req, res) => {
   try {
-    const data = await ModuleSmartAccountEngine.tokenizeModule(req.params.module);
+    const data = await ModuleSmartAccountEngine.tokenizeModule(req.params.module, {
+      issuanceId: (req.body || {}).issuanceId || null,
+    });
     res.json({ success: true, data });
   } catch (err) { sendError(res, err); }
 });

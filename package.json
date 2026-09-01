@@ -23,6 +23,7 @@
     "trust:fund-settlement": "node server/scripts/fundSettlementAccount.js",
     "trust:payer": "node server/scripts/sendPayerCredit.js",
     "trust:back-office": "node server/scripts/wealthBackOffice.js",
+    "trust:token-control": "node server/scripts/tokenControl.js",
     "db:init": "tsx src/server/db/init.ts",
     "typecheck": "tsc --noEmit"
   },

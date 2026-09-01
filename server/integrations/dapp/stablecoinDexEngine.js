@@ -237,7 +237,7 @@ class StablecoinDexEngine {
     return { tokenIn: token.token_address, tokenOut, ...quote };
   }
 
-  static async createPool({ seedUsdcAmount = 0.2, seedDlbusdAmount = 0.2, targetAsset = 'USDC' } = {}) {
+  static async createPool({ seedUsdcAmount = 0.2, seedDlbusdAmount = 0.2, targetAsset = 'USDC', issuanceId = null } = {}) {
     const cfg = this.getConfig();
     if (!cfg.enabled) throw new Error('Stablecoin DEX not enabled');
     if (cfg.shadow) return { poolAddress: `shadow-pool-dlbusd-${Date.now()}`, mode: 'shadow' };
@@ -247,7 +247,14 @@ class StablecoinDexEngine {
     const decimalsOut = this.targetTokenDecimals(targetAsset);
 
     // First mint the seed DLBUSD to the operator wallet (no source debit; comes from treasury backing)
-    await BondTokenizationEngine.mint({ tokenId: token.id, principal: seedDlbusdAmount, holderAddress: cfg.operatorAddress });
+    await BondTokenizationEngine.mint({
+      issuanceId,
+      expect: {
+        tokenId: token.id,
+        principalCents: Math.round(Number(seedDlbusdAmount) * 100),
+        holderAddress: cfg.operatorAddress,
+      },
+    });
 
     // If seeding a WETH pool, wrap native ETH so the pool can pull WETH from the operator.
     if (tokenOut.toLowerCase() === (cfg.wethAddress || '').toLowerCase()) {
@@ -269,7 +276,7 @@ class StablecoinDexEngine {
     });
   }
 
-  static async mintFromSource({ sourceType, sourceAccountId, amount, targetAddress } = {}) {
+  static async mintFromSource({ sourceType, sourceAccountId, amount, targetAddress, issuanceId = null } = {}) {
     if (!sourceType || !sourceAccountId || !amount) throw new Error('sourceType, sourceAccountId, and amount are required');
     const amountNum = Number(amount);
     if (amountNum <= 0) throw new Error('amount must be positive');
@@ -290,9 +297,8 @@ class StablecoinDexEngine {
     let mint;
     try {
       mint = await BondTokenizationEngine.mint({
-        tokenId: token.id,
-        principal: amountNum,
-        holderAddress: holder,
+        issuanceId,
+        expect: { tokenId: token.id, principalCents: amountCents, holderAddress: holder },
       });
     } catch (mintErr) {
       // Rollback the source-engine debit if on-chain mint fails so funds are not stranded.

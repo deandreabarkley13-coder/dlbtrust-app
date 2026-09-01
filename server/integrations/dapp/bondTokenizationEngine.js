@@ -195,7 +195,23 @@ class BondTokenizationEngine {
     return t;
   }
 
-  static async mint({ tokenId, principal, interest, holderAddress } = {}) {
+  /**
+   * Minting is an authorised act, not an argument. The amount comes from an
+   * issuance ticket two trustees agreed to, checked against what the bond
+   * actually backs; calling this with a number is how $100m of token ends up
+   * standing on a bond worth less than that.
+   */
+  static async mint({ issuanceId, mintedBy = null } = {}) {
+    const { MintExchangeOsEngine } = require('../os/mintExchangeOsEngine');
+    return MintExchangeOsEngine.mint({ issuanceId, mintedBy });
+  }
+
+  /**
+   * The mint itself, once Cap Control, Integrity Control and Issuance OS have
+   * all agreed to it. Not a public entry point: it performs no checks of its
+   * own, which is exactly why only Mint & Exchange OS may call it.
+   */
+  static async applyMint({ tokenId, principal, interest, holderAddress } = {}) {
     await ensureTable();
     const token = await this.getToken(tokenId);
     if (token.status !== 'active') throw new Error('Token not active');
@@ -247,6 +263,100 @@ class BondTokenizationEngine {
     }
 
     return { token, minted: amount, principal: principalNum, interest: interestNum, holder: target, txHash };
+  }
+
+  /**
+   * The burn itself, once Mint & Exchange OS has an approved movement. Supply
+   * and the holder's balance fall together, so the register never accounts for
+   * token that no longer exists.
+   */
+  static async applyBurn({ tokenId, principal, interest, holderAddress } = {}) {
+    await ensureTable();
+    const token = await this.getToken(tokenId);
+    const principalNum = Number(principal) || 0;
+    const interestNum = Number(interest) || 0;
+    const amount = principalNum + interestNum;
+    if (amount <= 0) throw new Error('amount must be positive');
+    const target = holderAddress || 'treasury';
+
+    const supply = Number(token.total_supply || 0);
+    if (amount > supply) throw new Error(`cannot burn ${amount}: supply is ${supply}`);
+
+    const cfg = this.getConfig();
+    let txHash = null;
+    if (!cfg.shadow) {
+      if (!token.token_address || token.token_address.startsWith('shadow-')) throw new Error('token has no on-chain address');
+      // BondToken.burn spends the caller's own balance, so the contract can only
+      // retire token the operator wallet holds. Anyone else has to transfer it
+      // back first; burning their balance in the ledger alone would leave the
+      // chain and the books disagreeing, which is the thing this exists to stop.
+      const operator = getConfig().operatorAddress || '';
+      if (!operator || String(target).toLowerCase() !== String(operator).toLowerCase()) {
+        throw new Error(`on-chain burn is only possible from the operator wallet ${operator || '(unset)'}, not ${target}`);
+      }
+      const { wallet, publicClient, fees } = walletClient();
+      const abi = getBondTokenAbi();
+      const decimals = (token.metadata && token.metadata.decimals) ? token.metadata.decimals : 6;
+      const raw = viem.parseUnits(String(amount), decimals);
+      const hash = await wallet.writeContract({
+        address: token.token_address,
+        abi,
+        functionName: 'burn',
+        args: [raw],
+        ...fees,
+      });
+      const receipt = await publicClient.waitForTransactionReceipt({ hash, timeout: 120000 });
+      if (receipt.status !== 'success') throw new Error(`burn failed: ${receipt.transactionHash}`);
+      txHash = receipt.transactionHash;
+    }
+
+    token.total_supply = supply - amount;
+    token.tokenized_principal = Math.max(0, Number(token.tokenized_principal || 0) - principalNum);
+    token.tokenized_interest = Math.max(0, Number(token.tokenized_interest || 0) - interestNum);
+    token.updated_at = new Date().toISOString();
+
+    if (pool) {
+      // The holder is debited first: a supply reduction with no holding behind
+      // it is exactly the drift Integrity Control exists to catch.
+      const updated = await pool.query(
+        `UPDATE bond_token_holders SET balance = balance - $3, updated_at = NOW()
+          WHERE token_id = $1 AND holder_address = $2 AND balance >= $3
+          RETURNING balance`,
+        [tokenId, target, amount]
+      );
+      if (!updated.rows.length) throw new Error(`${target} does not hold ${amount} of ${tokenId}`);
+      await pool.query('UPDATE bond_tokens SET total_supply = $1, tokenized_principal = $2, tokenized_interest = $3, updated_at = NOW() WHERE id = $4', [token.total_supply, token.tokenized_principal, token.tokenized_interest, tokenId]);
+    } else {
+      const key = `${tokenId}:${target}`;
+      const h = memory.holdings.get(key);
+      if (!h || h.balance < amount) throw new Error(`${target} does not hold ${amount} of ${tokenId}`);
+      h.balance -= amount;
+      memory.holdings.set(key, h);
+      memory.tokens.set(tokenId, token);
+    }
+
+    return { token, burned: amount, principal: principalNum, interest: interestNum, holder: target, txHash };
+  }
+
+  /**
+   * What the contract itself says exists. Only meaningful in live mode against
+   * a deployed address; a shadow token has no contract to ask.
+   */
+  static async chainSupply(tokenId) {
+    const token = await this.getToken(tokenId);
+    if (!token.token_address || String(token.token_address).startsWith('shadow-')) {
+      throw new Error('token has no on-chain address');
+    }
+    const { publicClient } = walletClient();
+    const abi = getBondTokenAbi();
+    const decimals = (token.metadata && token.metadata.decimals) ? token.metadata.decimals : 6;
+    const raw = await publicClient.readContract({
+      address: token.token_address,
+      abi,
+      functionName: 'totalSupply',
+      args: [],
+    });
+    return Number(viem.formatUnits(raw, decimals));
   }
 
   static async getHoldings(tokenId) {
