@@ -448,7 +448,11 @@ const StablecoinPayoutRail = {
       return { confirmed: false, reason: `Transaction ${hash} carries no payment operation` };
     }
 
-    const wantedAddress = wallet ? str(wallet.address || wallet) : null;
+    // A registered wallet may arrive as the object or as its key, exactly as
+    // submit() accepts it. A key resolved as if it were an address matches
+    // nothing, so a real payment would read as unconfirmed.
+    const target = wallet && wallet.address ? wallet : (wallet ? this.wallet(wallet) : null);
+    const wantedAddress = target ? str(target.address) : null;
     const wantedUnits = amountCents === null ? null : centsToUnits(amountCents);
     const match = payments.find(payment => (
       payment.asset_code === cfg.assetCode

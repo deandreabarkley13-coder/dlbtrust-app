@@ -418,6 +418,17 @@ describe('Real USDC as a Payer OS rail', () => {
       expect(TrustAccountingEngine.postJournalEntry).not.toHaveBeenCalled();
     });
 
+    it('confirms a wallet given by key, since submit() takes one too', async () => {
+      horizon({ operations: [payment()] });
+      const confirmation = await StablecoinPayoutRail.verify({
+        reference: 'abc123',
+        wallet: 'db-net-mgmt',
+        amountCents: 34,
+      });
+      expect(confirmation.confirmed).toBe(true);
+      expect(confirmation.to).toBe(WALLET.address);
+    });
+
     it('refuses a transaction that carries no payment at all', async () => {
       horizon({ operations: [{ type: 'change_trust' }] });
       payerLedger({ row: sentRow() });
