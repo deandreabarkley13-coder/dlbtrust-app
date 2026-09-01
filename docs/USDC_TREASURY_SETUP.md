@@ -4,6 +4,23 @@ What it takes to buy real USDC and land it in the account Payer OS pays out of,
 in the order it has to happen. Steps 1–3 are account opening at a licensed
 venue and cannot be done by the software; steps 4 onward are.
 
+## 0. Which funding source
+
+Four, and they differ in who has an account where, not in what arrives. Every
+one of them ends the same way: the tokens are recognised in the ledger only
+once the distributor's Horizon balance actually rises.
+
+| `--source` | What you need | What the software does |
+| --- | --- | --- |
+| `circle_mint` | A Circle Mint business account (KYB) | Wire instructions, then originates the Circle-to-Stellar transfer |
+| `exchange` | An exchange account that withdraws USDC on Stellar | Sizes it, holds dual control, records the venue's references |
+| `onramp` | A MoonPay account with Stellar enabled | Issues a signed checkout; a human pays it |
+| `stellar_dex` | XLM already in the distributor | Signs the order-book swap itself |
+
+The honest constraint: only the first three add value. `stellar_dex` exchanges
+one asset the trust already owns for another, so it cannot be the first
+funding — with no XLM anywhere, there is nothing to swap from.
+
 ## 1. Circle Mint business account
 
 Circle Mint is the regulated USD↔USDC leg. Apply at
@@ -56,8 +73,35 @@ VENDOR_PAYMENT_EXECUTION_MODE=live
 ```
 
 `STABLECOIN_PURCHASE_TRANSIT_ACCOUNT` defaults to `1215` and holds dollars that
-have left the bank but have not yet arrived as tokens; it must exist in the
-chart of accounts.
+have left the bank but have not yet arrived as tokens.
+`STABLECOIN_XLM_ASSET_ACCOUNT` defaults to `1216` and holds the XLM an
+order-book swap gives up. Both must exist in the chart of accounts:
+
+```
+psql "$DATABASE_URL" -f server/scripts/migrate-stablecoin-funding-accounts.sql
+```
+
+For the on-ramp source, additionally:
+
+```
+STABLECOIN_ONRAMP_PROVIDER=moonpay
+MOONPAY_ENV=live                 # or sandbox
+MOONPAY_PUBLISHABLE_KEY=pk_live_…
+MOONPAY_SECRET_KEY=sk_live_…     # signs the checkout; secret store only
+MOONPAY_USDC_CURRENCY_CODE=usdc_xlm
+```
+
+MoonPay enables Stellar per partner, so confirm your account can sell
+`usdc_xlm` before relying on it. Coinbase Onramp is refused outright here: its
+documented USDC networks do not include Stellar, and delivering to a different
+chain would be real money this rail cannot see.
+
+For the swap source:
+
+```
+STABLECOIN_DEX_XLM_RESERVE=3       # XLM kept back for reserves and fees
+STABLECOIN_DEX_MAX_SLIPPAGE_BPS=200
+```
 
 ## 5. Buying
 
@@ -75,6 +119,32 @@ node server/scripts/buyStablecoin.js confirm  --id USDCBUY-…
 not this system. `confirm` posts the tokens into `1210` only once the
 distributor's own Horizon balance has risen by the amount; until then it
 returns "not yet" rather than a journal entry.
+
+The other three sources share `initiate` / `approve` / `confirm` and differ
+only in the middle:
+
+```
+# exchange: buy and withdraw on Stellar at your venue, then record it
+node server/scripts/buyStablecoin.js initiate   --amount 500 --maker … --source exchange
+node server/scripts/buyStablecoin.js wire       --id USDCBUY-… --reference <deposit ref>
+node server/scripts/buyStablecoin.js withdrawal --id USDCBUY-… --reference <withdrawal id or tx hash>
+
+# on-ramp: the checkout is signed here, paid by a human
+node server/scripts/buyStablecoin.js initiate   --amount 500 --maker … --source onramp
+node server/scripts/buyStablecoin.js checkout   --id USDCBUY-…
+node server/scripts/buyStablecoin.js withdrawal --id USDCBUY-… --reference <provider tx id>
+
+# order books: no venue, no fiat, spends the distributor's own XLM
+node server/scripts/buyStablecoin.js quote      --amount 500
+node server/scripts/buyStablecoin.js initiate   --amount 500 --maker … --source stellar_dex
+node server/scripts/buyStablecoin.js swap       --id USDCBUY-… --yes
+```
+
+`withdrawal` and `checkout` record intent, not arrival — a provider reporting
+"complete" is the provider's opinion, and only `confirm` reads Horizon. A swap
+is strict-receive and bounded by `sendMax`, so a thin order book fails the
+transaction instead of quietly costing more, and it refuses to spend the XLM
+held back for reserves and fees.
 
 Same lifecycle over HTTP under `/api/wealth-os/usdc-treasury`.
 

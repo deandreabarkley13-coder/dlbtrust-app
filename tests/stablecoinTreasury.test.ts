@@ -6,6 +6,7 @@ const { StablecoinTreasuryEngine } = require('../server/integrations/os/stableco
 const { StablecoinPayoutRail } = require('../server/integrations/os/stablecoinPayoutRail');
 const { PayerOsEngine } = require('../server/integrations/os/payerOsEngine');
 const { CircleMintClient } = require('../server/integrations/stablecoin/circleMintClient');
+const { StellarDexSwap } = require('../server/integrations/stablecoin/stellarDexSwap');
 const { TrustAccountingEngine } = require('../server/integrations/accounting/trustAccountingEngine');
 const { FundingSourceRegistry } = require('../server/integrations/inhouseBank/clearing/fundingSourceRegistry');
 const pool = require('../server/integrations/bonds/pgPool');
@@ -274,5 +275,153 @@ describe('Buying real USDC for the distributor', () => {
       purchaseLedger({ row: purchaseRow({ status: 'approved' }) });
       await expect(StablecoinTreasuryEngine.confirm('USDCBUY-1')).rejects.toThrow(/nothing in transit/);
     });
+  });
+
+  describe('funding without a Circle account', () => {
+    it('rejects a venue nobody implemented rather than defaulting to Circle', async () => {
+      position(0);
+      purchaseLedger();
+      await expect(StablecoinTreasuryEngine.plan({ amountCents: 50000, source: 'venmo' }))
+        .rejects.toThrow(/not a funding source/);
+    });
+
+    it('plans an exchange purchase as two legs no engine can perform', async () => {
+      position(0);
+      purchaseLedger();
+      const plan = await StablecoinTreasuryEngine.plan({ amountCents: 50000, source: 'exchange' });
+      expect(plan.legs.map((leg: any) => leg.automated)).toEqual([false, false]);
+      expect(plan.legs[1].description).toMatch(/Stellar/);
+    });
+
+    it('refuses to originate an exchange purchase at Circle, and says what to do instead', async () => {
+      purchaseLedger({ row: purchaseRow({ source: 'exchange', status: 'wire_sent' }) });
+      await expect(StablecoinTreasuryEngine.transfer('USDCBUY-1'))
+        .rejects.toThrow(/recordWithdrawal/);
+    });
+
+    it('records an exchange withdrawal as in transit, posting nothing', async () => {
+      position(0);
+      purchaseLedger({ row: purchaseRow({ source: 'exchange', status: 'wire_sent' }) });
+      const journal = vi.spyOn(TrustAccountingEngine, 'postJournalEntry').mockResolvedValue({ entry_id: 'JE-4' });
+
+      const updated = await StablecoinTreasuryEngine.recordWithdrawal('USDCBUY-1', { reference: 'WD-7781' });
+
+      expect(updated.updated).toContain('WD-7781');
+      expect(journal).not.toHaveBeenCalled();
+    });
+
+    it('will not record a withdrawal without the venue\'s reference', async () => {
+      purchaseLedger({ row: purchaseRow({ source: 'exchange', status: 'wire_sent' }) });
+      await expect(StablecoinTreasuryEngine.recordWithdrawal('USDCBUY-1', {}))
+        .rejects.toThrow(/withdrawal reference is required/);
+    });
+  });
+
+  describe('the hosted on-ramp', () => {
+    beforeEach(() => {
+      process.env.MOONPAY_PUBLISHABLE_KEY = 'pk_test_key';
+      process.env.MOONPAY_SECRET_KEY = 'sk_test_key';
+      process.env.STABLECOIN_ONRAMP_PROVIDER = 'moonpay';
+    });
+
+    it('signs a checkout that names the amount, the asset, the network and the distributor', async () => {
+      position(0);
+      purchaseLedger({ row: purchaseRow({ source: 'onramp', status: 'approved' }) });
+
+      const { checkout } = await StablecoinTreasuryEngine.checkout('USDCBUY-1');
+
+      expect(checkout.url).toContain('currencyCode=usdc_xlm');
+      expect(checkout.url).toContain(`walletAddress=${DISTRIBUTOR}`);
+      expect(checkout.url).toContain('quoteCurrencyAmount=500.00');
+      expect(checkout.url).toMatch(/&signature=/);
+      expect(checkout.network).toBe('stellar');
+    });
+
+    it('refuses a checkout no second trustee approved', async () => {
+      position(0);
+      purchaseLedger({ row: purchaseRow({ source: 'onramp', status: 'approved', approved_by: null }) });
+      await expect(StablecoinTreasuryEngine.checkout('USDCBUY-1')).rejects.toThrow(/second trustee/);
+    });
+
+    it('refuses Coinbase Onramp, which cannot deliver USDC on Stellar', async () => {
+      process.env.STABLECOIN_ONRAMP_PROVIDER = 'coinbase';
+      position(0);
+      purchaseLedger({ row: purchaseRow({ source: 'onramp', status: 'approved' }) });
+      await expect(StablecoinTreasuryEngine.checkout('USDCBUY-1')).rejects.toThrow(/not Stellar|cannot deliver/);
+    });
+
+    it('will not sign a checkout with no MoonPay secret, since MoonPay would reject it anyway', async () => {
+      delete process.env.MOONPAY_SECRET_KEY;
+      position(0);
+      purchaseLedger();
+      await expect(
+        StablecoinTreasuryEngine.initiate({ amountCents: 50000, initiatedBy: 'trustee-one@example.com', source: 'onramp' })
+      ).rejects.toThrow(/MOONPAY_SECRET_KEY/);
+    });
+  });
+
+  describe('the order-book swap', () => {
+    it('plans one automated leg that gives up XLM rather than cash', async () => {
+      position(0);
+      purchaseLedger();
+      vi.spyOn(StellarDexSwap, 'quote').mockResolvedValue({
+        sendAmount: '1234.5000000', sendMax: '1259.1900000', maxSlippageBps: 200,
+      });
+      const plan = await StablecoinTreasuryEngine.plan({ amountCents: 50000, source: 'stellar_dex' });
+      expect(plan.legs).toHaveLength(1);
+      expect(plan.legs[0].automated).toBe(true);
+      expect(plan.legs[0].posts).toMatch(/debit 1210 \/ credit 1216/);
+    });
+
+    it('has no wire to record, since no dollars leave the bank', async () => {
+      purchaseLedger({ row: purchaseRow({ source: 'stellar_dex', status: 'approved' }) });
+      await expect(StablecoinTreasuryEngine.recordWire('USDCBUY-1', { reference: 'FED-REF-9' }))
+        .rejects.toThrow(/no dollars leave the bank/);
+    });
+
+    it('signs the swap and records the hash, recognising nothing yet', async () => {
+      position(0);
+      purchaseLedger({ row: purchaseRow({ source: 'stellar_dex', status: 'approved' }) });
+      vi.spyOn(StellarDexSwap, 'swap').mockResolvedValue({
+        hash: 'abc123', quote: { sendMax: '1259.19', sendAmount: '1234.50', maxSlippageBps: 200 },
+      });
+      const journal = vi.spyOn(TrustAccountingEngine, 'postJournalEntry').mockResolvedValue({ entry_id: 'JE-5' });
+
+      const { swap } = await StablecoinTreasuryEngine.swap('USDCBUY-1');
+
+      expect(swap.hash).toBe('abc123');
+      expect(journal).not.toHaveBeenCalled();
+    });
+
+    it('refuses to swap a purchase no second trustee approved', async () => {
+      position(0);
+      purchaseLedger({ row: purchaseRow({ source: 'stellar_dex', status: 'approved', approved_by: null }) });
+      await expect(StablecoinTreasuryEngine.swap('USDCBUY-1')).rejects.toThrow(/second trustee/);
+    });
+
+    it('credits the XLM account, not USD in transit, once the tokens land', async () => {
+      position(50000);
+      purchaseLedger({
+        row: purchaseRow({ source: 'stellar_dex', status: 'in_transit', chain_reference: 'abc123', opening_balance: '0' }),
+      });
+      const journal = vi.spyOn(TrustAccountingEngine, 'postJournalEntry').mockResolvedValue({ entry_id: 'JE-6' });
+
+      await StablecoinTreasuryEngine.confirm('USDCBUY-1');
+
+      const lines = journal.mock.calls[0][0].lines;
+      expect(lines[0]).toMatchObject({ accountCode: '1210', debitAmount: 500 });
+      expect(lines[1]).toMatchObject({ accountCode: '1216', creditAmount: 500 });
+    });
+  });
+});
+
+describe('Swapping XLM for USDC on Stellar', () => {
+  afterEach(() => vi.restoreAllMocks());
+
+  it('will not swap more XLM than the distributor can spare after reserves', async () => {
+    vi.spyOn(StellarDexSwap, 'quote').mockResolvedValue({
+      affordable: false, sendMax: '1259.1900000', spendableXlm: '10.0000000', reserveXlm: 3,
+    });
+    await expect(StellarDexSwap.swap({ amountCents: 50000 })).rejects.toThrow(/only 10.0000000 is spendable/);
   });
 });
