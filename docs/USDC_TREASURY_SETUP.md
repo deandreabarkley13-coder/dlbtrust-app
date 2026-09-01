@@ -70,9 +70,49 @@ arguments, because a seed on a command line lands in shell history and in every
 balance of 1.6 XLM against one trustline is entirely reserve and sends nothing.
 
 What it cannot do is originate value. `sources` answers "can we fund this
-ourselves?" from Horizon, and while every key reads 0 the answer is no: XLM has
-to arrive from an exchange or another wallet first, to the distributor directly
-or to a funding account named by `sources`.
+ourselves?" from Horizon, and while every key reads 0 the answer is no: the
+trust holds no XLM to move.
+
+### Acquiring the first XLM: `trust:money-move`
+
+Buying XLM with dollars is the one leg no ledger can perform, because turning
+fiat into crypto is a regulated act performed by a venue. Money Movement OS
+automates everything after the venue holds dollars:
+
+```
+npm run trust:money-move -- readiness                        # venue + destination, and what is missing
+npm run trust:money-move -- plan     --amount 5              # the legs, and which are automated
+npm run trust:money-move -- initiate --amount 5 --maker trustee-one@…
+npm run trust:money-move -- approve  --id XLMBUY-… --checker trustee-two@…
+npm run trust:money-move -- deposit  --id XLMBUY-… --reference <ACH ref>
+npm run trust:money-move -- execute  --id XLMBUY-… --yes     # buys XLM, withdraws to the distributor
+npm run trust:money-move -- confirm  --id XLMBUY-…           # recognises what Horizon shows
+```
+
+`execute` withdrawing XLM to an address that does not exist is what *creates*
+the distributor account, so this is the whole bootstrap: after `confirm`, run
+`trustline --yes` and the rail is armed.
+
+What it needs from outside is one account: a venue that holds USD for the trust.
+The adapter is Coinbase Advanced Trade (`COINBASE_CDP_KEY_NAME`,
+`COINBASE_CDP_PRIVATE_KEY`), and API keys alone cannot buy — the account must
+hold dollars, deposited by ACH from the trust's bank account. `readiness` names
+whichever of those is missing, and `execute` refuses rather than pretending:
+a venue reporting INSUFFICIENT_FUND is reported as "the venue account holds no
+dollars", not as an error.
+
+Two things are deliberately not trusted. The venue's "sent" is a claim, so
+`confirm` reads the distributor on Horizon and posts only the increase it
+actually sees; and a Stellar destination that has never been funded may be
+refused by the venue, in which case the refusal is surfaced verbatim — the XLM
+bought is recorded against the acquisition so it is not lost track of.
+
+Accounting mirrors the USDC purchase, one asset earlier:
+
+```
+deposit at venue    debit  1215 USDC purchases in transit   credit 1010 Trust Operating
+XLM confirmed       debit  1216 XLM                         credit 1215
+```
 
 Until the address has received XLM from somewhere else, `status` reports the
 account as non-existent and no step is available: an account comes into being by

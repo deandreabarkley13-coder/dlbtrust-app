@@ -155,6 +155,7 @@ try { app.use('/api/payer', require(path.join(HD, 'server', 'routes', 'payer')))
 try { app.use('/api/wealth-os', require(path.join(HD, 'server', 'routes', 'wealthOs'))); console.log('[wealth-back-office] loaded'); } catch(e) { console.warn('[wealth-back-office]', e.message); }
 try { app.use('/api/token-control', require(path.join(HD, 'server', 'routes', 'tokenControl'))); console.log('[token-control] loaded'); } catch(e) { console.warn('[token-control]', e.message); }
 try { app.use('/api/attestation-os', require(path.join(HD, 'server', 'routes', 'attestationOs'))); console.log('[attestation-os] loaded'); } catch(e) { console.warn('[attestation-os]', e.message); }
+try { app.use('/api/money-movement-os', require(path.join(HD, 'server', 'routes', 'moneyMovementOs'))); console.log('[money-movement-os] loaded'); } catch(e) { console.warn('[money-movement-os]', e.message); }
 
 // In-House Bank — PTC family bank orchestration: ingress/idempotency, governance, smart routing, dual ledger, ISO 20022, zero trust
 try { app.use('/api/inhouse-bank', require(path.join(HD, 'server', 'routes', 'inhouseBank'))); console.log('[inhouse-bank] loaded'); } catch(e) { console.warn('[inhouse-bank]', e.message); }
