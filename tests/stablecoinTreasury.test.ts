@@ -340,8 +340,8 @@ describe('Buying real USDC for the distributor', () => {
 
   describe('the hosted on-ramp', () => {
     beforeEach(() => {
-      process.env.MOONPAY_PUBLISHABLE_KEY = 'pk_test_key';
-      process.env.MOONPAY_SECRET_KEY = 'sk_test_key';
+      process.env.MOONPAY_PUBLISHABLE_KEY = 'pk_live_key';
+      process.env.MOONPAY_SECRET_KEY = 'sk_live_key';
       process.env.STABLECOIN_ONRAMP_PROVIDER = 'moonpay';
       listing();
     });
@@ -381,6 +381,7 @@ describe('Buying real USDC for the distributor', () => {
 
     it('refuses a sandbox checkout for an asset MoonPay only sells in live mode', async () => {
       process.env.MOONPAY_ENV = 'sandbox';
+      process.env.MOONPAY_PUBLISHABLE_KEY = 'pk_test_key';
       position(0);
       purchaseLedger({ row: purchaseRow({ source: 'onramp', status: 'approved' }) });
       await expect(StablecoinTreasuryEngine.checkout('USDCBUY-1')).rejects.toThrow(/in test mode/);
@@ -390,6 +391,13 @@ describe('Buying real USDC for the distributor', () => {
       position(0);
       purchaseLedger({ row: purchaseRow({ source: 'onramp', status: 'approved', amount_cents: '34' }) });
       await expect(StablecoinTreasuryEngine.checkout('USDCBUY-1')).rejects.toThrow(/minimum/);
+    });
+
+    it('refuses a test key pointed at the live widget, which MoonPay would reject', async () => {
+      process.env.MOONPAY_PUBLISHABLE_KEY = 'pk_test_key';
+      position(0);
+      purchaseLedger({ row: purchaseRow({ source: 'onramp', status: 'approved' }) });
+      await expect(StablecoinTreasuryEngine.checkout('USDCBUY-1')).rejects.toThrow(/test key and MOONPAY_ENV is live/);
     });
 
     it('will not sign a checkout with no MoonPay secret, since MoonPay would reject it anyway', async () => {

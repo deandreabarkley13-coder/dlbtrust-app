@@ -83,6 +83,13 @@ class MoonPayOnramp {
     if (!this.cfg.secretKey) {
       issues.push('MOONPAY_SECRET_KEY is not set, and MoonPay refuses an unsigned wallet address');
     }
+    if (this.cfg.publishableKey) {
+      const test = this.cfg.publishableKey.startsWith('pk_test');
+      if (test !== this.cfg.sandbox) {
+        issues.push(`MOONPAY_PUBLISHABLE_KEY is a ${test ? 'test' : 'live'} key and MOONPAY_ENV is`
+          + ` ${this.cfg.sandbox ? 'sandbox' : 'live'}; MoonPay would reject the pair`);
+      }
+    }
     if (this.cfg.currencyCode !== MOONPAY_STELLAR_USDC) {
       issues.push(`MOONPAY_USDC_CURRENCY_CODE is ${this.cfg.currencyCode}, which is not USDC on Stellar`
         + ` (${MOONPAY_STELLAR_USDC})`);
