@@ -281,6 +281,7 @@ router.post('/usdc-treasury/purchases', adminAuth, writeRateLimiter(), async (re
       amountCents: body.amountCents === undefined ? null : Number(body.amountCents),
       initiatedBy: principal(req),
       memo: body.memo || null,
+      source: body.source || 'circle_mint',
     });
     res.status(201).json({ success: true, data });
   } catch (err) { sendError(res, err); }
@@ -303,9 +304,45 @@ router.post('/usdc-treasury/purchases/:purchaseId/wire', adminAuth, writeRateLim
   } catch (err) { sendError(res, err); }
 });
 
+router.get('/usdc-treasury/dex-quote', operatorAuth, async (req, res) => {
+  try {
+    const data = await StablecoinTreasuryEngine.dexQuote({ amountCents: Number(req.query.amountCents) });
+    res.json({ success: true, data });
+  } catch (err) { sendError(res, err); }
+});
+
+router.post('/usdc-treasury/purchases/:purchaseId/checkout', adminAuth, writeRateLimiter(), async (req, res) => {
+  try {
+    const body = req.body || {};
+    const data = await StablecoinTreasuryEngine.checkout(req.params.purchaseId, {
+      issuedBy: principal(req),
+      provider: body.provider || null,
+      redirectUrl: body.redirectUrl || null,
+    });
+    res.json({ success: true, data });
+  } catch (err) { sendError(res, err); }
+});
+
+router.post('/usdc-treasury/purchases/:purchaseId/swap', adminAuth, writeRateLimiter(), async (req, res) => {
+  try {
+    const data = await StablecoinTreasuryEngine.swap(req.params.purchaseId, { executedBy: principal(req) });
+    res.json({ success: true, data });
+  } catch (err) { sendError(res, err); }
+});
+
 router.post('/usdc-treasury/purchases/:purchaseId/transfer', adminAuth, writeRateLimiter(), async (req, res) => {
   try {
     const data = await StablecoinTreasuryEngine.transfer(req.params.purchaseId, { executedBy: principal(req) });
+    res.json({ success: true, data });
+  } catch (err) { sendError(res, err); }
+});
+
+router.post('/usdc-treasury/purchases/:purchaseId/withdrawal', adminAuth, writeRateLimiter(), async (req, res) => {
+  try {
+    const data = await StablecoinTreasuryEngine.recordWithdrawal(req.params.purchaseId, {
+      reference: (req.body || {}).reference,
+      executedBy: principal(req),
+    });
     res.json({ success: true, data });
   } catch (err) { sendError(res, err); }
 });

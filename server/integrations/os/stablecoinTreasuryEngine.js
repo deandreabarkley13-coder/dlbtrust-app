@@ -4,16 +4,30 @@
  * Buying the USDC the payout rail spends.
  *
  * Payer OS can only pay out what the distributor already holds, so something
- * has to put USDC there. That purchase has two legs, and only one of them is
- * an API call:
+ * has to put USDC there. That purchase has two legs, and buying USDC always
+ * means debiting dollars at a licensed venue, so which venue decides how much
+ * of it this engine can originate:
  *
- *   USD → Circle   A bank wire the trust pushes from Trust Operating. Circle
- *                  Mint does not pull from your bank, so this engine produces
- *                  the wire instructions and records the intent; the money
- *                  leaves when the bank sends it.
- *   Circle → chain A transfer this engine originates: it registers the
- *                  distributor as a verified recipient on Stellar and asks
- *                  Circle to send USDC there.
+ *   source 'circle_mint'  USD → Circle is a bank wire the trust pushes from
+ *                         Trust Operating (Circle Mint does not pull from your
+ *                         bank), and Circle → Stellar is a transfer this engine
+ *                         originates against the Circle API.
+ *   source 'exchange'     The desk buys USDC at an exchange with a linked bank
+ *                         account and withdraws it on Stellar. Both legs happen
+ *                         at the venue; this engine sizes the purchase, holds
+ *                         dual control, records the venue's references, and
+ *                         still refuses to recognise the tokens until Horizon
+ *                         shows them. It needs no Circle account, which is why
+ *                         it exists.
+ *   source 'onramp'       A hosted fiat on-ramp (MoonPay's `usdc_xlm`). This
+ *                         engine creates the checkout — exact amount, asset,
+ *                         network and destination, signed so none of them can be
+ *                         edited in the browser — and a human completes the
+ *                         payment under the provider's KYC.
+ *   source 'stellar_dex'  No venue and no fiat: the distributor swaps XLM it
+ *                         already holds for USDC on Stellar's order books, which
+ *                         this engine signs itself. It exchanges assets rather
+ *                         than adding any, so it cannot be the first funding.
  *
  * Rules, which are the payout rail's rules pointed the other way:
  *
@@ -28,8 +42,9 @@
  *   • Arrival is verified, not assumed. Circle reporting `complete` is Circle's
  *     opinion; the journal entry posts only once the distributor's own Horizon
  *     balance has actually risen by the funded amount.
- *   • Nothing is simulated. Without CIRCLE_MINT_API_KEY the engine refuses
- *     rather than pretending to buy.
+ *   • Nothing is simulated. A Circle purchase without CIRCLE_MINT_API_KEY
+ *     refuses rather than pretending to buy, and an exchange purchase records
+ *     only references a human can point at.
  *
  * Accounting, in the two legs' own terms:
  *
@@ -38,6 +53,11 @@
  *
  * so dollars are never quietly turned into tokens in one step, and money that
  * has left the bank but not yet arrived on-chain is visible as exactly that.
+ *
+ * A DEX swap has no fiat leg at all, so it is one entry against the XLM the
+ * trust gave up rather than against cash:
+ *
+ *   tokens arrived   debit  USDC (1210)                       credit XLM (1216)
  */
 
 const crypto = require('crypto');
@@ -47,12 +67,33 @@ const { TrustAccountingEngine } = require('../accounting/trustAccountingEngine')
 const { FundingSourceRegistry } = require('../inhouseBank/clearing/fundingSourceRegistry');
 const { StablecoinPayoutRail } = require('./stablecoinPayoutRail');
 const { PayerOsEngine } = require('./payerOsEngine');
+const { StellarDexSwap } = require('../stablecoin/stellarDexSwap');
+const { onrampProvider } = require('../stablecoin/onrampProvider');
 
 /** Circle's chain code for Stellar. Their default is ETH, which is not us. */
 const STELLAR_CHAIN = 'XLM';
 
 /** A purchase in one of these states is money the trust has already committed. */
-const OPEN_STATUSES = ['pending_approval', 'approved', 'wire_sent', 'transferring', 'in_transit'];
+const OPEN_STATUSES = [
+  'pending_approval', 'approved', 'checkout_issued', 'wire_sent', 'transferring', 'in_transit',
+];
+
+/**
+ * Where the tokens come from. Circle and the Stellar DEX are originated here;
+ * an exchange and an on-ramp are executed by a human at the venue.
+ */
+const SOURCES = ['circle_mint', 'exchange', 'onramp', 'stellar_dex'];
+
+/** Sources with no bank leg, so nothing to record as a wire. */
+const NO_FIAT_LEG_SOURCES = ['stellar_dex'];
+
+/** How the tokens got here, for the journal memo. */
+const DELIVERY_LABELS = {
+  circle_mint: 'Circle transfer',
+  exchange: 'Exchange withdrawal',
+  onramp: 'On-ramp delivery',
+  stellar_dex: 'Order-book swap',
+};
 
 class StablecoinTreasuryError extends Error {
   constructor(message, code = 'STABLECOIN_TREASURY_ERROR', status = 409) {
@@ -81,11 +122,36 @@ function getConfig() {
     // Where dollars sit between leaving the bank and arriving as tokens.
     inTransitAccount: text('STABLECOIN_PURCHASE_TRANSIT_ACCOUNT', '1215'),
     assetAccount: text('STABLECOIN_ASSET_ACCOUNT', '1210'),
+    // What a DEX swap gives up. A swap spends XLM, not dollars, so it must not
+    // relieve the USD transit account.
+    xlmAssetAccount: text('STABLECOIN_XLM_ASSET_ACCOUNT', '1216'),
   };
+}
+
+/** The venue a purchase names. Rows raised before the column default to Circle. */
+function sourceOf(row) {
+  return String((row && row.source) || 'circle_mint');
+}
+
+/** Which account the arriving USDC is credited against, per source. */
+function relievedAccount(source, cfg) {
+  return source === 'stellar_dex' ? cfg.xlmAssetAccount : cfg.inTransitAccount;
 }
 
 function money(cents) {
   return `$${(Number(cents) / 100).toFixed(2)}`;
+}
+
+function normalizeSource(source) {
+  const venue = String(source || 'circle_mint').trim().toLowerCase();
+  if (!SOURCES.includes(venue)) {
+    throw new StablecoinTreasuryError(
+      `${source} is not a funding source; use one of ${SOURCES.join(', ')}`,
+      'STABLECOIN_TREASURY_BAD_SOURCE',
+      400
+    );
+  }
+  return venue;
 }
 
 function newId() {
@@ -95,6 +161,7 @@ function newId() {
 const StablecoinTreasuryEngine = {
   StablecoinTreasuryError,
   STELLAR_CHAIN,
+  SOURCES,
   config: getConfig,
 
   async ensureTables() {
@@ -108,6 +175,9 @@ const StablecoinTreasuryEngine = {
         distributor_address  TEXT NOT NULL,
         funding_account_id   TEXT,
         funding_account_name TEXT,
+        source               TEXT NOT NULL DEFAULT 'circle_mint',
+        provider             TEXT,
+        provider_reference   TEXT,
         circle_recipient_id  TEXT,
         circle_transfer_id   TEXT,
         chain_reference      TEXT,
@@ -130,6 +200,14 @@ const StablecoinTreasuryEngine = {
       `CREATE INDEX IF NOT EXISTS idx_stablecoin_purchases_status
          ON stablecoin_purchases (status)`
     );
+    // Purchases predate the exchange source, and default to the venue they
+    // were raised against.
+    await pool.query(
+      `ALTER TABLE stablecoin_purchases
+         ADD COLUMN IF NOT EXISTS source TEXT NOT NULL DEFAULT 'circle_mint'`
+    );
+    await pool.query('ALTER TABLE stablecoin_purchases ADD COLUMN IF NOT EXISTS provider TEXT');
+    await pool.query('ALTER TABLE stablecoin_purchases ADD COLUMN IF NOT EXISTS provider_reference TEXT');
     return true;
   },
 
@@ -178,7 +256,19 @@ const StablecoinTreasuryEngine = {
       purchasing: money(purchasingCents),
       shortOfFloor: money(gapCents),
       circle: this.circleReadiness(),
+      exchange: this.exchangeReadiness(railPosition),
+      onramp: this.onrampReadiness(),
+      stellarDex: StellarDexSwap.readiness(),
     };
+  },
+
+  /** Whether a hosted on-ramp checkout could be signed for this network. */
+  onrampReadiness(provider = null) {
+    try {
+      return onrampProvider(provider).readiness();
+    } catch (err) {
+      return { provider: provider || null, ready: false, issues: [err.message] };
+    }
   },
 
   circleReadiness() {
@@ -187,6 +277,20 @@ const StablecoinTreasuryEngine = {
     if (!cfg.apiKey) issues.push('CIRCLE_MINT_API_KEY is not set');
     if (!cfg.wireBankAccountId) {
       issues.push('CIRCLE_MINT_WIRE_BANK_ACCOUNT_ID is not set, so wire instructions cannot be fetched');
+    }
+    return { ready: issues.length === 0, issues };
+  },
+
+  /**
+   * An exchange purchase needs no provider credentials here — the desk holds
+   * the exchange account — only somewhere for the tokens to land. Reading the
+   * position at all proves the distributor exists and holds the trustline,
+   * since the rail refuses to report one otherwise.
+   */
+  exchangeReadiness(railPosition = null) {
+    const issues = [];
+    if (!railPosition || !railPosition.address) {
+      issues.push('no distributor is configured, so there is nowhere to withdraw to');
     }
     return { ready: issues.length === 0, issues };
   },
@@ -227,8 +331,9 @@ const StablecoinTreasuryEngine = {
   },
 
   /** Size a purchase against the floor without committing anything. */
-  async plan({ amountCents = null } = {}) {
+  async plan({ amountCents = null, source = 'circle_mint' } = {}) {
     const cfg = getConfig();
+    const venue = normalizeSource(source);
     const operatingCode = FundingSourceRegistry.operatingAccountCode();
     const position = await this.position();
     const wanted = amountCents === null ? position.gapCents : Number(amountCents);
@@ -251,42 +356,118 @@ const StablecoinTreasuryEngine = {
         eligible: Boolean(funding.eligible),
       }
       : null;
+    const dexQuote = venue === 'stellar_dex'
+      ? await StellarDexSwap.quote({ amountCents: wanted }).catch(err => ({ error: err.message }))
+      : null;
+
     return {
       amountCents: wanted,
       amount: money(wanted),
       position,
       fundingAccount,
-      legs: [
-        {
-          leg: 'usd_to_circle',
-          automated: false,
-          description: `Wire ${money(wanted)} from Trust Operating to Circle Mint`,
-          posts: `debit ${cfg.inTransitAccount} / credit ${operatingCode}`,
-        },
-        {
-          leg: 'circle_to_chain',
-          automated: true,
-          description: `Circle sends ${money(wanted)} USDC to ${position.distributor} on Stellar ${position.network}`,
-          posts: `debit ${cfg.assetAccount} / credit ${cfg.inTransitAccount}, after Horizon confirms arrival`,
-        },
-      ],
+      source: venue,
+      dexQuote,
+      legs: this._legs(venue, wanted, position, cfg, operatingCode, dexQuote),
       circle: this.circleReadiness(),
+      exchange: this.exchangeReadiness(position.distributor ? { address: position.distributor, asset: position.asset } : null),
+      onramp: this.onrampReadiness(),
+      stellarDex: StellarDexSwap.readiness(),
     };
   },
 
+  /** What each source's legs are, and which of them a human has to perform. */
+  _legs(venue, wanted, position, cfg, operatingCode, dexQuote = null) {
+    if (venue === 'stellar_dex') {
+      const price = dexQuote && !dexQuote.error
+        ? ` at about ${dexQuote.sendAmount} XLM (max ${dexQuote.sendMax})`
+        : '';
+      return [
+        {
+          leg: 'xlm_to_usdc',
+          automated: true,
+          description: `Swap the distributor's XLM for ${money(wanted)} USDC on Stellar's order books${price}`,
+          posts: `debit ${cfg.assetAccount} / credit ${cfg.xlmAssetAccount}, after Horizon confirms arrival`,
+        },
+      ];
+    }
+    if (venue === 'onramp') {
+      return [
+        {
+          leg: 'onramp_checkout',
+          automated: false,
+          description: `Complete the signed on-ramp checkout for ${money(wanted)} of USDC on Stellar`
+            + ` to ${position.distributor}`,
+          posts: `debit ${cfg.inTransitAccount} / credit ${operatingCode}, once the payment is taken`,
+        },
+        {
+          leg: 'onramp_delivery',
+          automated: false,
+          description: `The provider delivers ${money(wanted)} USDC on Stellar`,
+          posts: `debit ${cfg.assetAccount} / credit ${cfg.inTransitAccount}, after Horizon confirms arrival`,
+        },
+      ];
+    }
+    if (venue === 'exchange') {
+      return [
+        {
+          leg: 'usd_to_exchange',
+          automated: false,
+          description: `Buy ${money(wanted)} of USDC at the exchange with USD from Trust Operating`,
+          posts: `debit ${cfg.inTransitAccount} / credit ${operatingCode}`,
+        },
+        {
+          leg: 'exchange_to_chain',
+          automated: false,
+          description: `Withdraw ${money(wanted)} USDC on the Stellar network to ${position.distributor}`,
+          posts: `debit ${cfg.assetAccount} / credit ${cfg.inTransitAccount}, after Horizon confirms arrival`,
+        },
+      ];
+    }
+    return [
+      {
+        leg: 'usd_to_circle',
+        automated: false,
+        description: `Wire ${money(wanted)} from Trust Operating to Circle Mint`,
+        posts: `debit ${cfg.inTransitAccount} / credit ${operatingCode}`,
+      },
+      {
+        leg: 'circle_to_chain',
+        automated: true,
+        description: `Circle sends ${money(wanted)} USDC to ${position.distributor} on Stellar ${position.network}`,
+        posts: `debit ${cfg.assetAccount} / credit ${cfg.inTransitAccount}, after Horizon confirms arrival`,
+      },
+    ];
+  },
+
+  /**
+   * Whether the venue this purchase names could actually perform it. Each
+   * source is asked its own question, and none of them is asked Circle's.
+   */
+  sourceReadiness(venue, plan = null) {
+    if (venue === 'exchange') {
+      return plan ? plan.exchange : this.exchangeReadiness();
+    }
+    if (venue === 'onramp') return this.onrampReadiness();
+    if (venue === 'stellar_dex') return StellarDexSwap.readiness();
+    return this.circleReadiness();
+  },
+
   /** Maker raises the purchase. Nothing is called at Circle yet. */
-  async initiate({ amountCents, initiatedBy, memo = null } = {}) {
+  async initiate({ amountCents, initiatedBy, memo = null, source = 'circle_mint' } = {}) {
     await this.ensureTables();
     const maker = String(initiatedBy || '').trim();
     if (!maker) {
       throw new StablecoinTreasuryError('initiatedBy is required', 'STABLECOIN_TREASURY_NO_MAKER', 400);
     }
-    const plan = await this.plan({ amountCents });
-    const readiness = this.circleReadiness();
+    const venue = normalizeSource(source);
+    const plan = await this.plan({ amountCents, source: venue });
+    const readiness = this.sourceReadiness(venue, plan);
     if (!readiness.ready) {
       throw new StablecoinTreasuryError(
-        `Circle Mint is not configured: ${readiness.issues.join(' ')}`,
-        'CIRCLE_NOT_CONFIGURED',
+        venue === 'circle_mint'
+          ? `Circle Mint is not configured: ${readiness.issues.join(' ')}`
+          : `${venue} cannot fund this purchase: ${readiness.issues.join('; ')}`,
+        venue === 'circle_mint' ? 'CIRCLE_NOT_CONFIGURED' : 'STABLECOIN_TREASURY_NOT_READY',
         503
       );
     }
@@ -295,8 +476,8 @@ const StablecoinTreasuryEngine = {
     const inserted = await pool.query(
       `INSERT INTO stablecoin_purchases
          (purchase_id, status, amount_cents, network, distributor_address,
-          funding_account_id, funding_account_name, initiated_by, memo)
-       VALUES ($1, 'pending_approval', $2, $3, $4, $5, $6, $7, $8)
+          funding_account_id, funding_account_name, initiated_by, memo, source)
+       VALUES ($1, 'pending_approval', $2, $3, $4, $5, $6, $7, $8, $9)
        RETURNING *`,
       [
         purchaseId,
@@ -307,6 +488,7 @@ const StablecoinTreasuryEngine = {
         plan.fundingAccount ? plan.fundingAccount.name : null,
         maker,
         memo,
+        venue,
       ]
     );
     return { purchase: inserted.rows[0], plan };
@@ -345,6 +527,13 @@ const StablecoinTreasuryEngine = {
   async recordWire(purchaseId, { reference, sentBy = null, sentAt = null } = {}) {
     const cfg = getConfig();
     const row = await this._require(purchaseId);
+    if (NO_FIAT_LEG_SOURCES.includes(sourceOf(row))) {
+      throw new StablecoinTreasuryError(
+        `${row.purchase_id} is a ${sourceOf(row)} purchase: no dollars leave the bank, so there is no wire to record`,
+        'STABLECOIN_TREASURY_WRONG_SOURCE',
+        400
+      );
+    }
     const wireReference = String(reference || '').trim();
     if (!wireReference) {
       throw new StablecoinTreasuryError(
@@ -353,29 +542,30 @@ const StablecoinTreasuryEngine = {
         400
       );
     }
-    if (row.status !== 'approved') {
+    if (!['approved', 'checkout_issued'].includes(row.status)) {
       throw new StablecoinTreasuryError(
         `${row.purchase_id} is ${row.status}; approve it before recording the funding wire`,
         'STABLECOIN_TREASURY_WRONG_STATE'
       );
     }
 
+    const venueName = { exchange: 'the exchange', onramp: 'the on-ramp provider' }[sourceOf(row)] || 'Circle Mint';
     const amount = Number(row.amount_cents) / 100;
     const journal = await TrustAccountingEngine.postJournalEntry({
       entryDate: sentAt || new Date(),
-      description: `USDC purchase ${row.purchase_id}: wire to Circle Mint`,
+      description: `USDC purchase ${row.purchase_id}: USD sent to ${venueName}`,
       lines: [
         {
           accountCode: cfg.inTransitAccount,
           debitAmount: amount,
           creditAmount: 0,
-          memo: `USD in transit to Circle Mint (${wireReference})`,
+          memo: `USD in transit to ${venueName} (${wireReference})`,
         },
         {
           accountCode: FundingSourceRegistry.operatingAccountCode(),
           debitAmount: 0,
           creditAmount: amount,
-          memo: `Wire to Circle Mint for ${row.purchase_id}`,
+          memo: `Funding ${venueName} for ${row.purchase_id}`,
         },
       ],
       referenceType: 'stablecoin_purchase',
@@ -397,6 +587,18 @@ const StablecoinTreasuryEngine = {
    */
   async transfer(purchaseId, { executedBy = null } = {}) {
     const row = await this._require(purchaseId);
+    if (sourceOf(row) !== 'circle_mint') {
+      const instead = {
+        exchange: 'withdraw the USDC on Stellar at the exchange and record it with recordWithdrawal',
+        onramp: 'complete the signed checkout, then record the delivery with recordWithdrawal',
+        stellar_dex: 'use swap, which signs the order-book trade from the distributor itself',
+      }[sourceOf(row)] || 'use the method that source is originated by';
+      throw new StablecoinTreasuryError(
+        `${row.purchase_id} is a ${sourceOf(row)} purchase, and Circle cannot originate it: ${instead}`,
+        'STABLECOIN_TREASURY_WRONG_SOURCE',
+        400
+      );
+    }
     if (!['wire_sent', 'approved'].includes(row.status)) {
       throw new StablecoinTreasuryError(
         `${row.purchase_id} is ${row.status} and cannot be transferred`,
@@ -411,13 +613,7 @@ const StablecoinTreasuryEngine = {
     }
 
     const before = await StablecoinPayoutRail.position();
-    if (before.address !== row.distributor_address) {
-      throw new StablecoinTreasuryError(
-        `${row.purchase_id} was raised for distributor ${row.distributor_address}, but the rail now points at`
-        + ` ${before.address}; funding the wrong account is not a rounding difference`,
-        'STABLECOIN_TREASURY_DISTRIBUTOR_CHANGED'
-      );
-    }
+    this._assertDistributor(row, before);
 
     const client = this.client();
     let recipientId = row.circle_recipient_id;
@@ -462,9 +658,192 @@ const StablecoinTreasuryEngine = {
   },
 
   /**
+   * Hand the operator a signed on-ramp checkout for exactly this purchase.
+   *
+   * The amount, the asset, the network and the destination are all inside the
+   * signature, so the browser cannot be talked into buying something else or
+   * delivering it somewhere else. Completing the payment is the human's job, and
+   * issuing the checkout is not evidence that they did.
+   */
+  async checkout(purchaseId, { issuedBy = null, provider = null, redirectUrl = null } = {}) {
+    const row = await this._require(purchaseId);
+    if (sourceOf(row) !== 'onramp') {
+      throw new StablecoinTreasuryError(
+        `${row.purchase_id} is a ${sourceOf(row)} purchase, not an on-ramp one`,
+        'STABLECOIN_TREASURY_WRONG_SOURCE',
+        400
+      );
+    }
+    if (!['approved', 'checkout_issued'].includes(row.status)) {
+      throw new StablecoinTreasuryError(
+        `${row.purchase_id} is ${row.status}; a second trustee approves before a checkout is issued`,
+        'STABLECOIN_TREASURY_WRONG_STATE'
+      );
+    }
+    if (!row.approved_by) {
+      throw new StablecoinTreasuryError(
+        `${row.purchase_id} has not been approved by a second trustee`,
+        'STABLECOIN_TREASURY_UNAPPROVED'
+      );
+    }
+
+    const before = await StablecoinPayoutRail.position();
+    this._assertDistributor(row, before);
+
+    const venue = onrampProvider(provider);
+    const listing = await venue.assertDeliverable({
+      address: row.distributor_address,
+      amountCents: Number(row.amount_cents),
+      issuer: before.issuer || null,
+    });
+    const session = venue.checkout({
+      address: row.distributor_address,
+      amountCents: Number(row.amount_cents),
+      externalTransactionId: row.purchase_id,
+      redirectUrl,
+    });
+
+    const purchase = await this._update(purchaseId, {
+      status: 'checkout_issued',
+      provider: venue.name,
+      metadata: JSON.stringify({
+        checkoutIssuedBy: issuedBy,
+        checkoutAsset: session.asset,
+        checkoutNetwork: session.network,
+        sandbox: session.sandbox === true,
+        providerIssuer: listing.issuer,
+      }),
+    });
+    return { purchase, checkout: session, listing };
+  },
+
+  /** What the provider says happened to this purchase. Not proof of arrival. */
+  async onrampStatus(purchaseId, { provider = null } = {}) {
+    const row = await this._require(purchaseId);
+    if (sourceOf(row) !== 'onramp') {
+      throw new StablecoinTreasuryError(
+        `${row.purchase_id} is a ${sourceOf(row)} purchase, not an on-ramp one`,
+        'STABLECOIN_TREASURY_WRONG_SOURCE',
+        400
+      );
+    }
+    const transactions = await onrampProvider(provider || row.provider).transactionsFor(row.purchase_id);
+    return { purchase: row, transactions, note: 'Provider status is not evidence of arrival; confirm reads Horizon' };
+  },
+
+  /**
+   * Swap the distributor's XLM for USDC on Stellar's order books.
+   *
+   * This is the one funding leg the trust originates itself, so it carries the
+   * same controls as a payout: a second trustee, the distributor the purchase
+   * was raised for, and a bounded price.
+   */
+  async swap(purchaseId, { executedBy = null } = {}) {
+    const row = await this._require(purchaseId);
+    if (sourceOf(row) !== 'stellar_dex') {
+      throw new StablecoinTreasuryError(
+        `${row.purchase_id} is a ${sourceOf(row)} purchase; only a stellar_dex purchase is swapped on-chain`,
+        'STABLECOIN_TREASURY_WRONG_SOURCE',
+        400
+      );
+    }
+    if (row.status !== 'approved') {
+      throw new StablecoinTreasuryError(
+        `${row.purchase_id} is ${row.status} and cannot be swapped`,
+        'STABLECOIN_TREASURY_WRONG_STATE'
+      );
+    }
+    if (!row.approved_by) {
+      throw new StablecoinTreasuryError(
+        `${row.purchase_id} has not been approved by a second trustee`,
+        'STABLECOIN_TREASURY_UNAPPROVED'
+      );
+    }
+
+    const before = await StablecoinPayoutRail.position();
+    this._assertDistributor(row, before);
+
+    const result = await StellarDexSwap.swap({ amountCents: Number(row.amount_cents) });
+    if (!result.hash) {
+      throw new StablecoinTreasuryError(
+        'Stellar returned no transaction hash, so nothing is recorded as swapped',
+        'STABLECOIN_TREASURY_NO_HASH',
+        502
+      );
+    }
+
+    const purchase = await this._update(purchaseId, {
+      status: 'in_transit',
+      chain_reference: result.hash,
+      opening_balance: String(before.availableCents),
+      metadata: JSON.stringify({
+        executedBy,
+        sendMaxXlm: result.quote.sendMax,
+        quotedXlm: result.quote.sendAmount,
+        maxSlippageBps: result.quote.maxSlippageBps,
+      }),
+    });
+    return { purchase, swap: result };
+  },
+
+  /** A quote for what an order-book swap would cost right now. Reads only. */
+  async dexQuote({ amountCents }) {
+    return StellarDexSwap.quote({ amountCents });
+  },
+
+  /**
+   * Record a delivery the desk arranged at a venue — an exchange withdrawal or
+   * a completed on-ramp checkout. This is bookkeeping of an intent, not
+   * evidence: the reference is whatever the venue gave the operator, and the
+   * tokens are still only recognised by `confirm`.
+   */
+  async recordWithdrawal(purchaseId, { reference, executedBy = null } = {}) {
+    const row = await this._require(purchaseId);
+    if (!['exchange', 'onramp'].includes(sourceOf(row))) {
+      throw new StablecoinTreasuryError(
+        `${row.purchase_id} is a ${sourceOf(row)} purchase, which this engine originates itself;`
+        + ` use ${sourceOf(row) === 'stellar_dex' ? 'swap' : 'transfer'}`,
+        'STABLECOIN_TREASURY_WRONG_SOURCE',
+        400
+      );
+    }
+    const withdrawalReference = String(reference || '').trim();
+    if (!withdrawalReference) {
+      throw new StablecoinTreasuryError(
+        'A withdrawal reference is required: the exchange\'s withdrawal id or the Stellar transaction hash',
+        'STABLECOIN_TREASURY_NO_REFERENCE',
+        400
+      );
+    }
+    if (!['wire_sent', 'approved', 'checkout_issued'].includes(row.status)) {
+      throw new StablecoinTreasuryError(
+        `${row.purchase_id} is ${row.status} and cannot be withdrawn against`,
+        'STABLECOIN_TREASURY_WRONG_STATE'
+      );
+    }
+    if (!row.approved_by) {
+      throw new StablecoinTreasuryError(
+        `${row.purchase_id} has not been approved by a second trustee`,
+        'STABLECOIN_TREASURY_UNAPPROVED'
+      );
+    }
+
+    const before = await StablecoinPayoutRail.position();
+    this._assertDistributor(row, before);
+
+    return this._update(purchaseId, {
+      status: 'in_transit',
+      chain_reference: withdrawalReference,
+      provider_reference: withdrawalReference,
+      opening_balance: String(before.availableCents),
+      metadata: JSON.stringify({ withdrawalReference, executedBy }),
+    });
+  },
+
+  /**
    * Confirm the tokens actually arrived, on Horizon, and only then post them
-   * into the USDC asset account. Circle saying `complete` is not the evidence:
-   * the distributor's own balance is.
+   * into the USDC asset account. Circle saying `complete` — or an operator
+   * saying they withdrew — is not the evidence: the distributor's balance is.
    */
   async confirm(purchaseId, { confirmedBy = null } = {}) {
     const cfg = getConfig();
@@ -485,7 +864,7 @@ const StablecoinTreasuryEngine = {
         purchase: row,
         confirmed: false,
         reason: `The distributor holds ${money(now.availableCents)}, up ${money(Math.max(0, arrivedCents))}`
-          + ` of the expected ${money(row.amount_cents)}; Circle transfers settle in minutes, so try again shortly`,
+          + ` of the expected ${money(row.amount_cents)}; try again once the venue has released it`,
       };
     }
 
@@ -501,10 +880,11 @@ const StablecoinTreasuryEngine = {
           memo: `USDC received at …${String(row.distributor_address).slice(-4)}`,
         },
         {
-          accountCode: cfg.inTransitAccount,
+          accountCode: relievedAccount(sourceOf(row), cfg),
           debitAmount: 0,
           creditAmount: amount,
-          memo: `Circle transfer ${row.circle_transfer_id} delivered`,
+          memo: `${DELIVERY_LABELS[sourceOf(row)] || 'Circle transfer'}`
+            + ` ${row.circle_transfer_id || row.chain_reference} delivered`,
         },
       ],
       referenceType: 'stablecoin_purchase',
@@ -516,7 +896,7 @@ const StablecoinTreasuryEngine = {
       status: 'funded',
       funded_at: 'NOW()',
       journal_entry_id: journal.entry_id,
-      chain_reference: row.circle_transfer_id,
+      chain_reference: row.circle_transfer_id || row.chain_reference,
     });
     return { purchase, confirmed: true, journalEntry: journal, position: now };
   },
@@ -537,6 +917,18 @@ const StablecoinTreasuryEngine = {
         [limit]
       );
     return rows.rows;
+  },
+
+  /** Funding the wrong account is not a rounding difference. */
+  _assertDistributor(row, position) {
+    if (position.address !== row.distributor_address) {
+      throw new StablecoinTreasuryError(
+        `${row.purchase_id} was raised for distributor ${row.distributor_address}, but the rail now points at`
+        + ` ${position.address}; funding the wrong account is not a rounding difference`,
+        'STABLECOIN_TREASURY_DISTRIBUTOR_CHANGED'
+      );
+    }
+    return true;
   },
 
   async _require(purchaseId) {

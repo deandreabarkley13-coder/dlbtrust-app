@@ -4,21 +4,26 @@
 /**
  * Buy the USDC the payout rail spends, under dual control.
  *
- * The purchase has two legs and only the second is an API call: the trust
- * wires USD to Circle Mint from Trust Operating, then Circle sends USDC to the
- * trust's own Stellar distributor. This script drives both, and posts the
- * ledger for the second only once the distributor's Horizon balance has
- * actually risen.
+ * How much of the purchase this script originates depends on where the tokens
+ * come from: Circle Mint (wire, then an API transfer), an exchange the desk
+ * holds (both legs at the venue), a hosted on-ramp (a signed checkout a human
+ * completes), or Stellar's own order books (a swap this script signs, spending
+ * XLM the distributor already holds). Every route recognises tokens only once
+ * the distributor's Horizon balance actually rises.
  *
  * Usage:
  *   node server/scripts/buyStablecoin.js status
  *   node server/scripts/buyStablecoin.js instructions
- *   node server/scripts/buyStablecoin.js plan      [--amount 500]
- *   node server/scripts/buyStablecoin.js initiate  --amount 500 --maker trustee-one@…
- *   node server/scripts/buyStablecoin.js approve   --id USDCBUY-… --checker trustee-two@…
- *   node server/scripts/buyStablecoin.js wire      --id USDCBUY-… --reference <bank wire ref>
- *   node server/scripts/buyStablecoin.js transfer  --id USDCBUY-… --yes
- *   node server/scripts/buyStablecoin.js confirm   --id USDCBUY-…
+ *   node server/scripts/buyStablecoin.js quote      [--amount 500]                  (order books)
+ *   node server/scripts/buyStablecoin.js plan       [--amount 500] [--source exchange|onramp|stellar_dex]
+ *   node server/scripts/buyStablecoin.js initiate   --amount 500 --maker trustee-one@… [--source …]
+ *   node server/scripts/buyStablecoin.js approve    --id USDCBUY-… --checker trustee-two@…
+ *   node server/scripts/buyStablecoin.js checkout   --id USDCBUY-…                   (on-ramp)
+ *   node server/scripts/buyStablecoin.js wire       --id USDCBUY-… --reference <bank wire / deposit ref>
+ *   node server/scripts/buyStablecoin.js transfer   --id USDCBUY-… --yes             (Circle Mint)
+ *   node server/scripts/buyStablecoin.js swap       --id USDCBUY-… --yes             (order books)
+ *   node server/scripts/buyStablecoin.js withdrawal --id USDCBUY-… --reference <withdrawal id or tx hash>
+ *   node server/scripts/buyStablecoin.js confirm    --id USDCBUY-…
  *   node server/scripts/buyStablecoin.js list
  *
  * `--amount` is dollars. With no amount, the purchase is sized to the gap
@@ -63,7 +68,9 @@ function showPurchase(purchase) {
   print('status', purchase.status);
   print('amount', `$${(Number(purchase.amount_cents) / 100).toFixed(2)}`);
   print('distributor', purchase.distributor_address);
+  print('source', purchase.source || 'circle_mint');
   if (purchase.circle_transfer_id) print('circle transfer', purchase.circle_transfer_id);
+  if (purchase.chain_reference) print('chain reference', purchase.chain_reference);
   if (purchase.wire_reference) print('wire reference', purchase.wire_reference);
   if (purchase.journal_entry_id) print('journal entry', purchase.journal_entry_id);
 }
@@ -89,6 +96,24 @@ async function main() {
       if (!(balances.available || []).length) print('available', 'nothing');
     } else {
       position.circle.issues.forEach(issue => print('blocked', issue));
+      console.log('\nExchange (--source exchange)');
+      if (position.exchange.ready) {
+        print('ready', 'buy and withdraw USDC on Stellar at your own exchange');
+      } else {
+        position.exchange.issues.forEach(issue => print('blocked', issue));
+      }
+      console.log('\nOn-ramp (--source onramp)');
+      if (position.onramp.ready) {
+        print('ready', `${position.onramp.provider} can be issued a signed checkout`);
+      } else {
+        position.onramp.issues.forEach(issue => print('blocked', issue));
+      }
+      console.log('\nStellar order books (--source stellar_dex)');
+      if (position.stellarDex.ready) {
+        print('ready', 'swaps XLM the distributor holds; it cannot add value, only exchange it');
+      } else {
+        position.stellarDex.issues.forEach(issue => print('blocked', issue));
+      }
     }
     console.log('');
     return;
@@ -102,13 +127,30 @@ async function main() {
     return;
   }
 
+  if (command === 'quote') {
+    const quote = await StablecoinTreasuryEngine.dexQuote({ amountCents: dollarsToCents(args.amount) });
+    console.log('');
+    print('buying', `${quote.destAmount} ${quote.asset}`);
+    print('costs about', `${quote.sendAmount} XLM`);
+    print('will not exceed', `${quote.sendMax} XLM (${quote.maxSlippageBps} bps)`);
+    print('distributor holds', `${quote.xlmBalance} XLM`);
+    print('spendable', `${quote.spendableXlm} XLM after ${quote.reserveXlm} reserved`);
+    print('affordable', quote.affordable ? 'yes' : 'no');
+    console.log('');
+    return;
+  }
+
   if (command === 'plan') {
-    const plan = await StablecoinTreasuryEngine.plan({ amountCents: dollarsToCents(args.amount) });
+    const plan = await StablecoinTreasuryEngine.plan({
+      amountCents: dollarsToCents(args.amount),
+      source: typeof args.source === 'string' ? args.source : 'circle_mint',
+    });
     console.log('');
     print('buying', plan.amount);
+    print('source', plan.source);
     print('funding account', plan.fundingAccount ? `${plan.fundingAccount.id} ${plan.fundingAccount.name}` : 'unresolved');
     plan.legs.forEach(leg => {
-      console.log(`\n  ${leg.leg} (${leg.automated ? 'automated' : 'manual bank wire'})`);
+      console.log(`\n  ${leg.leg} (${leg.automated ? 'automated' : 'done by an operator'})`);
       print('  does', leg.description);
       print('  posts', leg.posts);
     });
@@ -121,10 +163,11 @@ async function main() {
       amountCents: dollarsToCents(args.amount),
       initiatedBy: args.maker,
       memo: typeof args.memo === 'string' ? args.memo : null,
+      source: typeof args.source === 'string' ? args.source : 'circle_mint',
     });
     console.log('');
     showPurchase(purchase);
-    console.log('\n  A second trustee must approve before Circle is called.\n');
+    console.log('\n  A second trustee must approve before any money moves.\n');
     return;
   }
 
@@ -143,7 +186,37 @@ async function main() {
     });
     console.log('');
     showPurchase(purchase);
-    console.log('\n  Dollars are now in transit to Circle. Transfer once Circle shows the balance.\n');
+    console.log(
+      purchase.source === 'exchange'
+        ? '\n  Dollars are now in transit to the exchange. Record the withdrawal once you send the USDC.\n'
+        : '\n  Dollars are now in transit to Circle. Transfer once Circle shows the balance.\n'
+    );
+    return;
+  }
+
+  if (command === 'checkout') {
+    const { purchase, checkout } = await StablecoinTreasuryEngine.checkout(args.id, {
+      issuedBy: typeof args.by === 'string' ? args.by : null,
+      provider: typeof args.provider === 'string' ? args.provider : null,
+      redirectUrl: typeof args.redirect === 'string' ? args.redirect : null,
+    });
+    console.log('');
+    showPurchase(purchase);
+    print('provider', checkout.provider);
+    print('delivers', `${checkout.asset} on ${checkout.network} to ${checkout.destination}`);
+    console.log(`\n  Complete this checkout, then record the delivery:\n\n  ${checkout.url}\n`);
+    return;
+  }
+
+  if (command === 'swap') {
+    if (!args.yes) throw new Error('swap spends real XLM on Stellar\'s order books: pass --yes to confirm');
+    const { purchase, swap } = await StablecoinTreasuryEngine.swap(args.id, {
+      executedBy: typeof args.by === 'string' ? args.by : null,
+    });
+    console.log('');
+    showPurchase(purchase);
+    print('paid up to', `${swap.quote.sendMax} XLM`);
+    console.log('\n  Run confirm once Horizon shows the tokens; the ledger posts only then.\n');
     return;
   }
 
@@ -155,6 +228,17 @@ async function main() {
     console.log('');
     showPurchase(purchase);
     console.log('\n  Run confirm once Horizon shows the tokens; the ledger posts only then.\n');
+    return;
+  }
+
+  if (command === 'withdrawal') {
+    const purchase = await StablecoinTreasuryEngine.recordWithdrawal(args.id, {
+      reference: args.reference,
+      executedBy: typeof args.by === 'string' ? args.by : null,
+    });
+    console.log('');
+    showPurchase(purchase);
+    console.log('\n  Recorded, not recognised: run confirm once Horizon shows the tokens.\n');
     return;
   }
 
