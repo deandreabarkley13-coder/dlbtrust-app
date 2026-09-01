@@ -67,6 +67,27 @@ Every payee opens their own USDC trustline on their own account. Nobody else
 can do it for them, and a payment to an account without one fails on
 submission (`op_no_trust`).
 
+### Payees who share one account (muxed addresses)
+
+A muxed address (`M…`) is a base account plus a 64-bit subaccount id, so one
+funded account can serve many payees: none of them needs a Stellar account, an
+XLM reserve or a trustline of their own. It is routing, not custody — the base
+account holds the money and its owner can spend it — so it fits beneficiaries
+paid *through* an account the trust or a family member already controls, and not
+a payee who must hold their own funds.
+
+```
+npm run trust:muxed -- create --address G… --id 7   # build the address
+npm run trust:muxed -- parse  --address M…          # who actually gets paid
+npm run trust:muxed -- check  --address M… | G…     # base account exists? trustline?
+```
+
+Either kind of address can be registered in `PAYER_OS_WALLETS`. Settlement
+verification treats them differently on purpose: Horizon reports a muxed payment
+against the base account with `to_muxed_id` alongside, and a payment to the bare
+base account does **not** confirm a payout owed to a subaccount, because nothing
+in it says which payee was credited.
+
 ## 4. Configuration
 
 ```

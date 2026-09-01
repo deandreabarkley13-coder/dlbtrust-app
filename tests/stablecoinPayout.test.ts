@@ -241,7 +241,7 @@ describe('Real USDC as a Payer OS rail', () => {
 
     it('refuses a wallet with no valid address, no network or no GL account', () => {
       process.env.PAYER_OS_WALLETS = JSON.stringify({ w: { ...WALLET, address: '0xdeadbeef' } });
-      expect(() => StablecoinPayoutRail.wallet('w')).toThrow(/valid Stellar public key/);
+      expect(() => StablecoinPayoutRail.wallet('w')).toThrow(/valid Stellar address/);
       process.env.PAYER_OS_WALLETS = JSON.stringify({ w: { ...WALLET, network: '' } });
       expect(() => StablecoinPayoutRail.wallet('w')).toThrow(/needs network/);
       process.env.PAYER_OS_WALLETS = JSON.stringify({ w: { ...WALLET, glAccountCode: '' } });
