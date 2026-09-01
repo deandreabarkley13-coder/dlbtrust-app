@@ -55,6 +55,25 @@ npm run trust:stellar-mainnet -- trustline --yes
 npm run trust:stellar-mainnet -- preflight    # every gate before a purchase or a payout
 ```
 
+The system funds the account itself when it can:
+
+```
+npm run trust:stellar-mainnet -- sources          # every key the trust holds, and its mainnet XLM
+npm run trust:stellar-mainnet -- fund --yes       # create/top up the distributor from one of them
+```
+
+`fund` sends from `STELLAR_FUNDING_SECRET` (override with `--from-env NAME`) —
+`createAccount` if the distributor does not exist yet, a plain payment if it
+does. Secrets are read from named environment variables and never taken as
+arguments, because a seed on a command line lands in shell history and in every
+`ps` on the box. It refuses to spend into the source account's own reserve: a
+balance of 1.6 XLM against one trustline is entirely reserve and sends nothing.
+
+What it cannot do is originate value. `sources` answers "can we fund this
+ourselves?" from Horizon, and while every key reads 0 the answer is no: XLM has
+to arrive from an exchange or another wallet first, to the distributor directly
+or to a funding account named by `sources`.
+
 Until the address has received XLM from somewhere else, `status` reports the
 account as non-existent and no step is available: an account comes into being by
 being paid, which no script here can do. `trustline` refuses unless the network
