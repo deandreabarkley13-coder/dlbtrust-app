@@ -25,6 +25,8 @@ const { PartnerBankRails } = require('../rails/partnerBankRails');
 
 let ReserveEngine;
 try { ({ ReserveEngine } = require('../finops/reserveEngine')); } catch (e) { ReserveEngine = null; }
+let AttestationOsEngine;
+try { ({ AttestationOsEngine } = require('../os/attestationOsEngine')); } catch (e) { AttestationOsEngine = null; }
 
 // Wire transfer statuses
 const WIRE_STATUSES = [
@@ -431,17 +433,25 @@ class WireEngine {
   /**
    * A wire may only be transmitted against reserves the trust actually holds at
    * an external custodian. Throws before anything reaches the bank otherwise.
+   *
+   * Attestation OS answers first, because it adds the condition the reserve
+   * arithmetic cannot see: whether anyone has actually looked at the custodian
+   * lately. A balance observed last month is a memory. It then hands the sizing
+   * question to the reserve engine, so there is still one rule about how much.
    */
   static async _assertReserveBacked(wire) {
     if (!ReserveEngine) return null;
     let metadata = {};
     try { metadata = typeof wire.metadata === 'string' ? JSON.parse(wire.metadata) : (wire.metadata || {}); } catch { metadata = {}; }
-    const decision = await ReserveEngine.assertSpendable({
+    const request = {
       amountCents: Number(wire.amount_cents),
       rail: 'wire',
       accountId: metadata.sourceCashAccountId || metadata.fundingAccountId || null,
       seriesId: metadata.seriesId || metadata.seriesCode || null,
-    });
+    };
+    const decision = AttestationOsEngine
+      ? await AttestationOsEngine.assertLive({ ...request, domain: 'treasury' })
+      : await ReserveEngine.assertSpendable(request);
     if (decision && decision.warning) {
       console.warn('[wire] reserve check:', decision.warning);
     }

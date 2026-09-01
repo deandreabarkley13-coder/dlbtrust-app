@@ -24,6 +24,7 @@
     "trust:payer": "node server/scripts/sendPayerCredit.js",
     "trust:back-office": "node server/scripts/wealthBackOffice.js",
     "trust:token-control": "node server/scripts/tokenControl.js",
+    "trust:attest": "node server/scripts/attestationOs.js",
     "db:init": "tsx src/server/db/init.ts",
     "typecheck": "tsc --noEmit"
   },
