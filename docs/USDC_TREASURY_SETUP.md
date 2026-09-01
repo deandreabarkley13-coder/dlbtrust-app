@@ -46,11 +46,47 @@ The account needs ~2 XLM before it can hold anything (1 XLM base reserve, 0.5
 per trustline, plus fees), and a USDC trustline to Circle's mainnet issuer
 `GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN`.
 
+`trust:stellar-mainnet` does the parts that do not need money, and names the one
+that does:
+
+```
+npm run trust:stellar-mainnet -- status       # exists? XLM? trustline? balance?
+npm run trust:stellar-mainnet -- trustline --yes
+npm run trust:stellar-mainnet -- preflight    # every gate before a purchase or a payout
+```
+
+Until the address has received XLM from somewhere else, `status` reports the
+account as non-existent and no step is available: an account comes into being by
+being paid, which no script here can do. `trustline` refuses unless the network
+is mainnet, the issuer is Circle's, the seed signs for the configured address,
+and the account holds enough XLM for the reserve.
+
 ## 3. Recipients
 
 Every payee opens their own USDC trustline on their own account. Nobody else
 can do it for them, and a payment to an account without one fails on
 submission (`op_no_trust`).
+
+### Payees who share one account (muxed addresses)
+
+A muxed address (`M…`) is a base account plus a 64-bit subaccount id, so one
+funded account can serve many payees: none of them needs a Stellar account, an
+XLM reserve or a trustline of their own. It is routing, not custody — the base
+account holds the money and its owner can spend it — so it fits beneficiaries
+paid *through* an account the trust or a family member already controls, and not
+a payee who must hold their own funds.
+
+```
+npm run trust:muxed -- create --address G… --id 7   # build the address
+npm run trust:muxed -- parse  --address M…          # who actually gets paid
+npm run trust:muxed -- check  --address M… | G…     # base account exists? trustline?
+```
+
+Either kind of address can be registered in `PAYER_OS_WALLETS`. Settlement
+verification treats them differently on purpose: Horizon reports a muxed payment
+against the base account with `to_muxed_id` alongside, and a payment to the bare
+base account does **not** confirm a payout owed to a subaccount, because nothing
+in it says which payee was credited.
 
 ## 4. Configuration
 

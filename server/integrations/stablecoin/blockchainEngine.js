@@ -16,6 +16,7 @@ try {
 }
 
 const { getConfig, isProduction } = require('./config');
+const { describeAddress } = require('./muxedAccount');
 
 function centsToUnits(cents) {
   const value = Number(cents);
@@ -166,14 +167,9 @@ class BlockchainEngine {
   async ensureDestinationTrustline({ destination, destinationSecret }) {
     if (!sdk) throw new Error('Stellar SDK is not installed');
     if (!destination) throw new Error('destination public key is required');
-    let destKey;
-    try {
-      destKey = sdk.StrKey.isValidEd25519PublicKey(destination)
-        ? destination
-        : sdk.Keypair.fromPublicKey(destination).publicKey();
-    } catch (e) {
-      throw new Error('destination is not a valid Stellar public key');
-    }
+    // A muxed destination is routing, not an account: the reserve, the trustline
+    // and the balance all belong to the base account, so that is what is read.
+    const destKey = describeAddress(destination).baseAddress;
 
     let destAccount;
     try {
@@ -246,19 +242,12 @@ class BlockchainEngine {
 
     if (!sdk) throw new Error('Stellar SDK is not installed');
     if (!destination) throw new Error('destination public key is required');
-    let destKey;
-    try {
-      destKey = sdk.StrKey.isValidEd25519PublicKey(destination)
-        ? destination
-        : sdk.Keypair.fromPublicKey(destination).publicKey();
-    } catch (e) {
-      throw new Error('destination is not a valid Stellar public key');
-    }
+    const target = describeAddress(destination);
 
     const { kp, account } = await this._loadDistributor();
     await this._ensureTrustline(kp);
     await this._fundIfNeeded(kp);
-    await this.ensureDestinationTrustline({ destination: destKey, destinationSecret });
+    await this.ensureDestinationTrustline({ destination: target.baseAddress, destinationSecret });
 
     const amount = centsToUnits(amountCents);
     const builder = new sdk.TransactionBuilder(account, {
@@ -266,7 +255,9 @@ class BlockchainEngine {
       networkPassphrase: this.network,
     })
       .addOperation(sdk.Operation.payment({
-        destination: destKey,
+        // The full address, muxed id included: the id is what tells the holder
+        // of a shared account which of their payees this credit belongs to.
+        destination: target.address,
         asset: getAsset(cfg),
         amount,
       }))
@@ -292,6 +283,9 @@ class BlockchainEngine {
       latencyMs,
       explorer: `${explorerBase}/${res.hash}`,
       simulated: false,
+      destination: target.address,
+      destinationBase: target.baseAddress,
+      destinationMuxedId: target.muxedId,
     };
   }
 
