@@ -107,6 +107,39 @@ actually sees; and a Stellar destination that has never been funded may be
 refused by the venue, in which case the refusal is surfaced verbatim — the XLM
 bought is recorded against the acquisition so it is not lost track of.
 
+### The register of outside accounts: `trust:venues`
+
+Every rail here ends at somebody else's balance sheet, and each one used to
+report the same missing account as its own private "not configured". Venue
+Account OS holds them in one register — onboarding state, capabilities,
+credential presence, and what each actually holds:
+
+```
+npm run trust:venues -- providers                                    # what has an adapter, and what each needs
+npm run trust:venues -- register --provider coinbase --by <trustee>  # opens the file; the account can do nothing yet
+npm run trust:venues -- applied  --id VENUE-… --reference <case id>
+npm run trust:venues -- approved --id VENUE-… --by <second trustee> --evidence <approval email>
+npm run trust:venues -- probe    --id VENUE-…                        # asks the venue what it holds
+npm run trust:venues -- can      --capability buy_xlm [--funded]     # which account can do this today
+npm run trust:venues -- list
+```
+
+Three rules it holds to. Approval is a second trustee's act with an evidence
+reference, because "the venue approved us" is a claim about an institution the
+code cannot see. An account is only *funded* when a live probe read dollars, or
+a trustee attested a balance against a statement — never on assertion, and a
+reading older than `VENUE_BALANCE_FRESH_MINUTES` (default a day) counts as no
+reading. And credentials are reported as present or missing, never as values.
+
+Probed balances are written through `ReserveEngine.record`, so what a venue
+holds becomes reserve evidence that Attestation OS reports alongside every other
+custody balance rather than a number in a separate table.
+
+`trust:money-move -- readiness` consults the register when an account is
+registered, so it can say "onboarding is under_review" or "holds no confirmed
+dollars" instead of "not configured". With an empty register it falls back to
+the environment alone.
+
 Accounting mirrors the USDC purchase, one asset earlier:
 
 ```
