@@ -394,7 +394,12 @@ router.post('/bond-tokens', operatorAuth, writeRateLimiter(), async (req, res) =
 
 router.post('/bond-tokens/:id/mint', operatorAuth, writeRateLimiter(), async (req, res) => {
   try {
-    const data = await BondTokenizationEngine.mint({ tokenId: req.params.id, ...req.body });
+    const body = req.body || {};
+    const data = await BondTokenizationEngine.mint({
+      issuanceId: body.issuanceId,
+      mintedBy: body.mintedBy || null,
+      expect: { tokenId: req.params.id, ...(body.expect || {}) },
+    });
     res.status(201).json({ success: true, data });
   } catch (err) { sendError(res, err); }
 });

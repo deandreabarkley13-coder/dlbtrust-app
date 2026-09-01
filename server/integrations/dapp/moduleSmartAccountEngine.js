@@ -296,7 +296,7 @@ class ModuleSmartAccountEngine {
     return { safeAddress: mod.safe_address, deployed: true };
   }
 
-  static async tokenizeModule(moduleKey) {
+  static async tokenizeModule(moduleKey, { issuanceId = null } = {}) {
     const mod = await this.initializeModule(moduleKey);
     const cfg = this.getConfig();
     if (!cfg.privateKey) throw new Error('DAPP_PRIVATE_KEY not configured');
@@ -327,10 +327,13 @@ class ModuleSmartAccountEngine {
     const holderAddress = cfg.operatorAddress;
     if (mintAmount > 0) {
       await BondTokenizationEngine.mint({
-        tokenId: token.id,
-        principal,
-        interest,
-        holderAddress,
+        issuanceId,
+        expect: {
+          tokenId: token.id,
+          principalCents: Math.round(principal * 100),
+          interestCents: Math.round(interest * 100),
+          holderAddress,
+        },
       });
     }
 

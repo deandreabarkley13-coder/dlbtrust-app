@@ -23,10 +23,12 @@ const { query } = require('../server/integrations/bonds/pgPool');
 const viem = require('viem');
 const { privateKeyToAccount } = require('viem/accounts');
 const { mainnet, sepolia } = require('viem/chains');
+const { CapControlEngine } = require('../server/integrations/os/capControlEngine');
 
 const OLD_BOND_TOKEN = '0xe8dee80f97349f3f88c2ca0c21e7ff0df14c5c05';
-const BOND_ID = 1;
-const FACE_VALUE = 100_000_000;
+// The trust's own reference for the bond, resolved against the bond ledger at
+// run time rather than assumed to be a particular row.
+const BOND_REFERENCE = process.env.BOND_REFERENCE || '19781443-DLB-PRB';
 
 function clients(cfg) {
   const chain = cfg.chainId === 1 ? mainnet : sepolia;
@@ -85,23 +87,37 @@ async function main() {
   }
 
   // 2. Create and mint DLB-PRB.
+  const bond = await CapControlEngine.resolveBond(BOND_REFERENCE);
+  console.log(`Bond ${BOND_REFERENCE} is row ${bond.id} (${bond.bond_name})`);
+
   console.log('Deploying DLB-PRB token...');
   const prbToken = await BondTokenizationEngine.createToken({
-    bondId: BOND_ID,
+    bondId: bond.id,
     tokenName: 'DLB Private Placement Bond',
     tokenSymbol: 'DLB-PRB',
     decimals: 6,
   });
   console.log('DLB-PRB token address:', prbToken.token_address);
 
-  console.log('Minting', FACE_VALUE, 'DLB-PRB to operator...');
+  // The face value is no longer this script's to assert: an approved issuance
+  // ticket carries the amount two trustees agreed the bond backs.
+  const issuanceId = process.env.ISSUANCE_ID;
+  if (!issuanceId) {
+    throw new Error(
+      'ISSUANCE_ID is required: raise a ticket with '
+      + '`node server/scripts/tokenControl.js issuance-request --token ' + prbToken.id
+      + ' --principal <cents> --holder ' + operator + ' --by <trustee>`,'
+      + ' have a second trustee approve it, then re-run with ISSUANCE_ID set'
+    );
+  }
+  console.log('Minting DLB-PRB to operator against issuance', issuanceId, '...');
   const mint = await BondTokenizationEngine.mint({
-    tokenId: prbToken.id,
-    principal: FACE_VALUE,
-    interest: 0,
-    holderAddress: operator,
+    issuanceId,
+    mintedBy: process.env.MINTED_BY || null,
+    expect: { tokenId: prbToken.id, holderAddress: operator },
   });
-  console.log('Mint tx:', mint.txHash);
+  const mintedAmount = Number(mint.result.minted);
+  console.log('Minted', mintedAmount, 'DLB-PRB; tx:', mint.result.txHash);
 
   // 3. Add DLB-PRB as reserve token and deposit.
   console.log('Adding DLB-PRB as reserve token...');
@@ -183,8 +199,8 @@ async function main() {
       const metadata = typeof mod.metadata === 'string' ? JSON.parse(mod.metadata || '{}') : (mod.metadata || {});
       metadata.tokenSymbol = 'DLB-PRB';
       metadata.tokenName = 'DLB Private Placement Bond';
-      metadata.mintedAmount = FACE_VALUE;
-      metadata.balance = { amount: FACE_VALUE, balance: FACE_VALUE };
+      metadata.mintedAmount = mintedAmount;
+      metadata.balance = { amount: mintedAmount, balance: mintedAmount };
       await query(
         'UPDATE module_smart_accounts SET token_id = $1, token_address = $2, metadata = $3, updated_at = NOW() WHERE id = $4',
         [prbToken.id, prbToken.token_address, JSON.stringify(metadata), mod.id]
