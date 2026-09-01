@@ -691,6 +691,11 @@ const StablecoinTreasuryEngine = {
     this._assertDistributor(row, before);
 
     const venue = onrampProvider(provider);
+    const listing = await venue.assertDeliverable({
+      address: row.distributor_address,
+      amountCents: Number(row.amount_cents),
+      issuer: before.issuer || null,
+    });
     const session = venue.checkout({
       address: row.distributor_address,
       amountCents: Number(row.amount_cents),
@@ -706,9 +711,10 @@ const StablecoinTreasuryEngine = {
         checkoutAsset: session.asset,
         checkoutNetwork: session.network,
         sandbox: session.sandbox === true,
+        providerIssuer: listing.issuer,
       }),
     });
-    return { purchase, checkout: session };
+    return { purchase, checkout: session, listing };
   },
 
   /** What the provider says happened to this purchase. Not proof of arrival. */

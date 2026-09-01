@@ -92,7 +92,12 @@ MOONPAY_USDC_CURRENCY_CODE=usdc_xlm
 ```
 
 MoonPay enables Stellar per partner, so confirm your account can sell
-`usdc_xlm` before relying on it. Coinbase Onramp is refused outright here: its
+`usdc_xlm` before relying on it. Their listing for it is live-only
+(`supportsTestMode: false`), so `MOONPAY_ENV=sandbox` can rehearse the signing
+but never a delivery, and the checkout is refused rather than issued. Before
+sending anyone to pay, the checkout is checked against that listing — chain,
+issuer (MoonPay sells Circle's `GA5ZSEJ…`, and anything else would be
+unspendable here), address shape, and the $5 minimum. Coinbase Onramp is refused outright here: its
 documented USDC networks do not include Stellar, and delivering to a different
 chain would be real money this rail cannot see.
 

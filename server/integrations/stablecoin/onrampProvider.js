@@ -145,10 +145,10 @@ class MoonPayOnramp {
     };
   }
 
-  async _get(path) {
-    this._require();
+  async _get(path, { authenticated = true } = {}) {
+    if (authenticated) this._require();
     const res = await fetch(`${this.cfg.apiBaseUrl}${path}`, {
-      headers: { Authorization: `Api-Key ${this.cfg.secretKey}` },
+      headers: authenticated ? { Authorization: `Api-Key ${this.cfg.secretKey}` } : {},
     });
     const body = await res.text();
     let json;
@@ -161,6 +161,74 @@ class MoonPayOnramp {
       );
     }
     return json;
+  }
+
+  /** MoonPay's own listing for the configured currency. Needs no key. */
+  async currency() {
+    const list = await this._get('/v3/currencies', { authenticated: false });
+    const found = (Array.isArray(list) ? list : []).find(item => item && item.code === this.cfg.currencyCode);
+    if (!found) {
+      throw new OnrampError(
+        `MoonPay does not list ${this.cfg.currencyCode}`,
+        'ONRAMP_CURRENCY_UNAVAILABLE',
+        400
+      );
+    }
+    return found;
+  }
+
+  /**
+   * Ask MoonPay, before a human is sent to pay, whether this exact delivery is
+   * one it will make: the right chain, the pinned issuer, an address of the
+   * right shape, an amount inside its limits, and the asset actually sold in
+   * the environment configured. USDC on Stellar is live-only, so a sandbox key
+   * cannot rehearse it — better to say so than to sign a checkout that dies in
+   * the browser.
+   */
+  async assertDeliverable({ address, amountCents, issuer = null } = {}) {
+    const currency = await this.currency();
+    const metadata = currency.metadata || {};
+    const network = String(metadata.networkCode || '').toLowerCase();
+    const dollars = Number(amountCents) / 100;
+    const listedIssuer = String(metadata.contractAddress || '').split('-').pop();
+    const refuse = (message, code) => { throw new OnrampError(message, code, 400); };
+
+    if (currency.isSuspended) {
+      refuse(`MoonPay has suspended ${currency.code}`, 'ONRAMP_CURRENCY_SUSPENDED');
+    }
+    if (network !== 'stellar') {
+      refuse(`MoonPay delivers ${currency.code} on ${network || 'an unnamed chain'}, not Stellar`,
+        'ONRAMP_UNSUPPORTED_NETWORK');
+    }
+    if (issuer && listedIssuer && listedIssuer !== issuer) {
+      refuse(`MoonPay sells ${currency.code} issued by ${listedIssuer}, but the rail pays out ${issuer};`
+        + ' buying a different issuer\'s token would leave it unspendable',
+        'ONRAMP_ISSUER_MISMATCH');
+    }
+    if (this.cfg.sandbox ? currency.supportsTestMode === false : currency.supportsLiveMode === false) {
+      refuse(`MoonPay does not sell ${currency.code} in ${this.cfg.sandbox ? 'test' : 'live'} mode`,
+        'ONRAMP_MODE_UNSUPPORTED');
+    }
+    if (currency.addressRegex && !new RegExp(currency.addressRegex).test(String(address || ''))) {
+      refuse(`${address} is not an address MoonPay will deliver ${currency.code} to`,
+        'ONRAMP_BAD_DESTINATION');
+    }
+    if (currency.minBuyAmount && dollars < Number(currency.minBuyAmount)) {
+      refuse(`MoonPay's minimum for ${currency.code} is ${currency.minBuyAmount}, and this buys ${dollars}`,
+        'ONRAMP_AMOUNT_OUT_OF_RANGE');
+    }
+    if (currency.maxBuyAmount && dollars > Number(currency.maxBuyAmount)) {
+      refuse(`MoonPay's maximum for ${currency.code} is ${currency.maxBuyAmount}, and this buys ${dollars}`,
+        'ONRAMP_AMOUNT_OUT_OF_RANGE');
+    }
+
+    return {
+      currencyCode: currency.code,
+      network,
+      issuer: listedIssuer || null,
+      minBuyAmount: currency.minBuyAmount === undefined ? null : Number(currency.minBuyAmount),
+      maxBuyAmount: currency.maxBuyAmount === undefined ? null : Number(currency.maxBuyAmount),
+    };
   }
 
   /** What MoonPay says about the purchases raised for this purchase id. */
@@ -199,6 +267,10 @@ class CoinbaseOnramp {
       'ONRAMP_UNSUPPORTED_NETWORK',
       400
     );
+  }
+
+  async assertDeliverable() {
+    return this.checkout();
   }
 
   async transactionsFor() {

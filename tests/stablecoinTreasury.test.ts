@@ -7,6 +7,7 @@ const { StablecoinPayoutRail } = require('../server/integrations/os/stablecoinPa
 const { PayerOsEngine } = require('../server/integrations/os/payerOsEngine');
 const { CircleMintClient } = require('../server/integrations/stablecoin/circleMintClient');
 const { StellarDexSwap } = require('../server/integrations/stablecoin/stellarDexSwap');
+const { MoonPayOnramp } = require('../server/integrations/stablecoin/onrampProvider');
 const { TrustAccountingEngine } = require('../server/integrations/accounting/trustAccountingEngine');
 const { FundingSourceRegistry } = require('../server/integrations/inhouseBank/clearing/fundingSourceRegistry');
 const pool = require('../server/integrations/bonds/pgPool');
@@ -25,6 +26,26 @@ function position(availableCents = 0) {
     availableCents,
     readiness: { ready: true, issues: [] },
   });
+}
+
+/**
+ * MoonPay's public listing for Stellar USDC, shaped as their /v3/currencies
+ * entry: live-only, Circle's issuer in `contractAddress`, $5 floor.
+ */
+function listing(overrides: any = {}) {
+  const currency = {
+    code: 'usdc_xlm',
+    isSuspended: false,
+    supportsTestMode: false,
+    supportsLiveMode: true,
+    minBuyAmount: 5,
+    maxBuyAmount: 30000,
+    addressRegex: '^(G[A-D]{1}[A-Z2-7]{54}|M[A-D]{1}[A-Z2-7]{67})$',
+    metadata: { networkCode: 'stellar', contractAddress: `USDC-${CIRCLE_ISSUER}` },
+    ...overrides,
+  };
+  vi.spyOn(MoonPayOnramp.prototype, 'currency').mockResolvedValue(currency);
+  return currency;
 }
 
 function purchaseRow(overrides: any = {}) {
@@ -322,6 +343,7 @@ describe('Buying real USDC for the distributor', () => {
       process.env.MOONPAY_PUBLISHABLE_KEY = 'pk_test_key';
       process.env.MOONPAY_SECRET_KEY = 'sk_test_key';
       process.env.STABLECOIN_ONRAMP_PROVIDER = 'moonpay';
+      listing();
     });
 
     it('signs a checkout that names the amount, the asset, the network and the distributor', async () => {
@@ -348,6 +370,26 @@ describe('Buying real USDC for the distributor', () => {
       position(0);
       purchaseLedger({ row: purchaseRow({ source: 'onramp', status: 'approved' }) });
       await expect(StablecoinTreasuryEngine.checkout('USDCBUY-1')).rejects.toThrow(/not Stellar|cannot deliver/);
+    });
+
+    it('refuses a checkout for a token issued by anyone but the issuer the rail pays out', async () => {
+      listing({ metadata: { networkCode: 'stellar', contractAddress: 'USDC-GIMPOSTOR' } });
+      position(0);
+      purchaseLedger({ row: purchaseRow({ source: 'onramp', status: 'approved' }) });
+      await expect(StablecoinTreasuryEngine.checkout('USDCBUY-1')).rejects.toThrow(/unspendable/);
+    });
+
+    it('refuses a sandbox checkout for an asset MoonPay only sells in live mode', async () => {
+      process.env.MOONPAY_ENV = 'sandbox';
+      position(0);
+      purchaseLedger({ row: purchaseRow({ source: 'onramp', status: 'approved' }) });
+      await expect(StablecoinTreasuryEngine.checkout('USDCBUY-1')).rejects.toThrow(/in test mode/);
+    });
+
+    it('refuses an amount below the provider\u2019s own floor before sending anyone to pay', async () => {
+      position(0);
+      purchaseLedger({ row: purchaseRow({ source: 'onramp', status: 'approved', amount_cents: '34' }) });
+      await expect(StablecoinTreasuryEngine.checkout('USDCBUY-1')).rejects.toThrow(/minimum/);
     });
 
     it('will not sign a checkout with no MoonPay secret, since MoonPay would reject it anyway', async () => {
