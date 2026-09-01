@@ -213,7 +213,14 @@ function serveTrustPortalDashboard(req, res) {
   res.set('Expires', '0');
   res.sendFile(path.join(HD, 'public', 'trust-portal', 'dashboard.html'));
 }
+function serveLegal(page) {
+  return function(req, res) {
+    res.sendFile(path.join(HD, 'public', 'legal', `${page}.html`));
+  };
+}
 app.get('/', serveLanding);
+app.get('/privacy', serveLegal('privacy'));
+app.get('/terms', serveLegal('terms'));
 app.get('/dapp', serveDapp);
 app.get('/finops', serveFinops);
 app.get('/dashboard', serveTrustDashboard);
