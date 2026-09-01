@@ -33,6 +33,9 @@
  */
 
 const { getConfig } = require('../stablecoin/config');
+const {
+  isBaseAddress, isMuxedAddress, describeAddress, paymentCreditsAddress,
+} = require('../stablecoin/muxedAccount');
 const { BlockchainEngine } = require('../stablecoin/blockchainEngine');
 
 /**
@@ -67,9 +70,17 @@ function str(value) {
   return String(value === undefined || value === null ? '' : value).trim();
 }
 
-/** A Stellar public key, checked by shape so no SDK is needed to reject junk. */
+/**
+ * A payable Stellar destination: an account, or a muxed address routing to a
+ * subaccount within one. Checked by shape first so junk is rejected without
+ * decoding, then by checksum, since a mistyped address that still parses is
+ * how money reaches a stranger.
+ */
 function isStellarAddress(value) {
-  return /^G[A-Z2-7]{55}$/.test(str(value));
+  const address = str(value);
+  if (/^G[A-Z2-7]{55}$/.test(address)) return isBaseAddress(address);
+  if (/^M[A-Z2-7]{68}$/.test(address)) return isMuxedAddress(address);
+  return false;
 }
 
 /**
@@ -138,7 +149,7 @@ function describeWallet(key, raw, cfg) {
   }
   if (!isStellarAddress(address)) {
     throw new StablecoinRailError(
-      `Wallet "${key}" needs a valid Stellar public key as its address`,
+      `Wallet "${key}" needs a valid Stellar address: a G… account or an M… muxed address`,
       'STABLECOIN_BAD_WALLET',
       500
     );
@@ -173,6 +184,8 @@ function describeWallet(key, raw, cfg) {
     );
   }
 
+  const destination = describeAddress(address);
+
   return {
     key,
     purpose: 'stablecoin_payout',
@@ -180,6 +193,12 @@ function describeWallet(key, raw, cfg) {
     name,
     address,
     addressLast4: address.slice(-4),
+    // The account that actually holds the reserve, trustline and balance. For a
+    // muxed wallet it is shared, so it is the base account holder the trust is
+    // really paying — the id only says who to credit in *their* books.
+    baseAddress: destination.baseAddress,
+    muxed: destination.muxed,
+    muxedId: destination.muxedId,
     network,
     asset,
     memo: str(raw.memo) || null,
@@ -418,7 +437,13 @@ const StablecoinPayoutRail = {
       explorer: result.explorer || null,
       ledger: result.ledger || null,
       amount: result.amount,
-      wallet: { key: target.key, address: target.address, addressLast4: target.addressLast4 },
+      wallet: {
+        key: target.key,
+        address: target.address,
+        addressLast4: target.addressLast4,
+        baseAddress: target.baseAddress,
+        muxedId: target.muxedId,
+      },
     };
   },
 
@@ -448,12 +473,16 @@ const StablecoinPayoutRail = {
       return { confirmed: false, reason: `Transaction ${hash} carries no payment operation` };
     }
 
-    const wantedAddress = wallet ? str(wallet.address || wallet) : null;
+    const target = wallet && wallet.address ? wallet : (wallet ? this.wallet(wallet) : null);
+    const wantedAddress = target ? str(target.address) : null;
+    const wantedIsMuxed = wantedAddress ? isMuxedAddress(wantedAddress) : false;
     const wantedUnits = amountCents === null ? null : centsToUnits(amountCents);
     const match = payments.find(payment => (
       payment.asset_code === cfg.assetCode
       && payment.asset_issuer === cfg.issuerPublic
-      && (!wantedAddress || payment.to === wantedAddress)
+      // A muxed payment reads as `to` = the base account plus `to_muxed`, so
+      // comparing the address alone would call a real payment unconfirmed.
+      && (!wantedAddress || paymentCreditsAddress(payment, wantedAddress))
       // Compared as a number, not by cents: USDC carries seven decimals, and a
       // payment of 0.345 is not a payment of 0.34 that happens to round down.
       && (wantedUnits === null || Number(payment.amount) === Number(wantedUnits))
@@ -471,7 +500,9 @@ const StablecoinPayoutRail = {
       ledger: transaction.ledger,
       createdAt: transaction.created_at,
       amountCents: unitsToCents(match.amount),
-      to: match.to,
+      to: wantedIsMuxed ? wantedAddress : match.to,
+      toBase: match.to,
+      toMuxedId: match.to_muxed_id || null,
       asset: match.asset_code,
       issuer: match.asset_issuer,
     };
