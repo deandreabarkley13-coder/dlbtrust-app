@@ -48,6 +48,7 @@ const pool = require('../bonds/pgPool');
 const { TrustAccountingEngine } = require('../accounting/trustAccountingEngine');
 const { FundingSourceRegistry } = require('../inhouseBank/clearing/fundingSourceRegistry');
 const { StellarVenue, venues } = require('../stablecoin/stellarVenue');
+const { VenueAccountOsEngine } = require('./venueAccountOsEngine');
 const { getConfig: stablecoinConfig } = require('../stablecoin/config');
 const { XLM_FOR_TRUSTLINE, nativeBalance } = require('../stablecoin/accountFunding');
 
@@ -172,13 +173,30 @@ const MoneyMovementOsEngine = {
       issues.push(`no trading venue: ${venue.missing.join(', ')} unset`
         + ' — an account that holds USD is required to convert dollars into XLM');
     }
+    // The register knows things the environment cannot: whether the account
+    // behind those keys is approved, suspended, or holds any dollars. It only
+    // speaks when an account has been registered — an empty register means the
+    // trust is tracking venues by environment variable, which still works.
+    const venueAccount = await this._venueAccount();
+    if (venueAccount && venueAccount.issues.length) issues.push(...venueAccount.issues);
     return {
       network: cfg.network,
       destination,
       venues: list,
+      venueAccount: venueAccount ? venueAccount.account : null,
       ready: issues.length === 0,
       issues,
     };
+  },
+
+  /** The registered account that will perform the buy, if the register knows one. */
+  async _venueAccount() {
+    try {
+      const match = await VenueAccountOsEngine.forCapability('buy_xlm');
+      return match.candidates.length ? match : null;
+    } catch (e) {
+      return null;
+    }
   },
 
   /**

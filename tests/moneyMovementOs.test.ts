@@ -4,6 +4,7 @@ import { createRequire } from 'module';
 const require = createRequire(import.meta.url);
 const { MoneyMovementOsEngine } = require('../server/integrations/os/moneyMovementOsEngine');
 const { StellarVenue } = require('../server/integrations/stablecoin/stellarVenue');
+const { VenueAccountOsEngine } = require('../server/integrations/os/venueAccountOsEngine');
 const { TrustAccountingEngine } = require('../server/integrations/accounting/trustAccountingEngine');
 const { FundingSourceRegistry } = require('../server/integrations/inhouseBank/clearing/fundingSourceRegistry');
 const pool = require('../server/integrations/bonds/pgPool');
@@ -119,6 +120,28 @@ describe('Money Movement OS: turning dollars into the trust’s first XLM', () =
       const state = await MoneyMovementOsEngine.readiness();
       expect(state.ready).toBe(true);
       expect(state.destination.exists).toBe(false);
+    });
+
+    it('carries the venue register’s verdict when an account is registered', async () => {
+      horizon({ exists: false });
+      vi.spyOn(VenueAccountOsEngine, 'forCapability').mockResolvedValue({
+        capability: 'buy_xlm',
+        account: null,
+        candidates: [{ venueId: 'VENUE-COINBASE-1' }],
+        issues: ['Coinbase (VENUE-COINBASE-1): onboarding is under_review'],
+      });
+      const state = await MoneyMovementOsEngine.readiness();
+      expect(state.ready).toBe(false);
+      expect(state.issues.join(' ')).toMatch(/onboarding is under_review/);
+    });
+
+    it('stays on the environment alone while no account is registered', async () => {
+      horizon({ exists: false });
+      vi.spyOn(VenueAccountOsEngine, 'forCapability').mockResolvedValue({
+        capability: 'buy_xlm', account: null, candidates: [], issues: ['no venue account is registered'],
+      });
+      const state = await MoneyMovementOsEngine.readiness();
+      expect(state.ready).toBe(true);
     });
   });
 
