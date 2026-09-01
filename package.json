@@ -25,6 +25,8 @@
     "trust:back-office": "node server/scripts/wealthBackOffice.js",
     "trust:token-control": "node server/scripts/tokenControl.js",
     "trust:attest": "node server/scripts/attestationOs.js",
+    "trust:buy-usdc": "node server/scripts/buyStablecoin.js",
+    "trust:stellar-mainnet": "node server/scripts/stellarMainnetSetup.js",
     "db:init": "tsx src/server/db/init.ts",
     "typecheck": "tsc --noEmit"
   },

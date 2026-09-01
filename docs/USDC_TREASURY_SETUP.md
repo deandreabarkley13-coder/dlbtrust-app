@@ -46,6 +46,21 @@ The account needs ~2 XLM before it can hold anything (1 XLM base reserve, 0.5
 per trustline, plus fees), and a USDC trustline to Circle's mainnet issuer
 `GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN`.
 
+`trust:stellar-mainnet` does the parts that do not need money, and names the one
+that does:
+
+```
+npm run trust:stellar-mainnet -- status       # exists? XLM? trustline? balance?
+npm run trust:stellar-mainnet -- trustline --yes
+npm run trust:stellar-mainnet -- preflight    # every gate before a purchase or a payout
+```
+
+Until the address has received XLM from somewhere else, `status` reports the
+account as non-existent and no step is available: an account comes into being by
+being paid, which no script here can do. `trustline` refuses unless the network
+is mainnet, the issuer is Circle's, the seed signs for the configured address,
+and the account holds enough XLM for the reserve.
+
 ## 3. Recipients
 
 Every payee opens their own USDC trustline on their own account. Nobody else
