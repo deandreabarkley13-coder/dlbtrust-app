@@ -338,6 +338,14 @@ class DataBridge {
     var failed = 0;
     var errors = [];
 
+    // Depositories linked through Venue Depository OS book to their own cash
+    // account; anything unlinked falls back to 1000.
+    var glByAccount = new Map();
+    try {
+      var { VenueDepositoryOsEngine } = require('../os/venueDepositoryOsEngine');
+      glByAccount = await VenueDepositoryOsEngine.glAccountMap();
+    } catch (e) { /* no depository links */ }
+
     try {
       var txns = await pool.query(`
         SELECT t.id, t.connection_id, t.external_txn_id, t.external_account_id,
@@ -371,17 +379,18 @@ class DataBridge {
           var label = txn.connection_name || txn.connection_id;
           var description = 'Aggregator ' + (isCredit ? 'credit' : 'debit') + ' — ' + label +
             (txn.description ? ' (' + txn.description + ')' : '');
+          var cashAccount = glByAccount.get(txn.connection_id + '::' + txn.external_account_id) || ACCOUNTS.CASH;
 
           var lines;
           if (isCredit) {
             lines = [
-              { accountCode: ACCOUNTS.CASH, debitAmount: amount, creditAmount: 0, memo: 'Bank credit ' + txn.external_txn_id },
+              { accountCode: cashAccount, debitAmount: amount, creditAmount: 0, memo: 'Bank credit ' + txn.external_txn_id },
               { accountCode: ACCOUNTS.FEE_INCOME, debitAmount: 0, creditAmount: amount, memo: 'Aggregator income received' },
             ];
           } else {
             lines = [
               { accountCode: ACCOUNTS.PAYMENT_EXPENSE, debitAmount: amount, creditAmount: 0, memo: 'Bank debit ' + txn.external_txn_id },
-              { accountCode: ACCOUNTS.CASH, debitAmount: 0, creditAmount: amount, memo: 'Cash paid out (aggregator)' },
+              { accountCode: cashAccount, debitAmount: 0, creditAmount: amount, memo: 'Cash paid out (aggregator)' },
             ];
           }
 
@@ -515,6 +524,23 @@ class DataBridge {
       isReconciled: Math.abs(cashModuleTotal - trustCashBalance) < 0.01,
       discrepancies: discrepancies,
     };
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  //  VENUE DEPOSITORIES → TRUST ACCOUNTING RECONCILIATION
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  /**
+   * Compare each linked depository's aggregator balance with the GL cash
+   * account it books to. Venue Depository OS does the reading and logs the
+   * discrepancies; this is the DataBridge's seat for it in the full sync.
+   */
+  static async reconcileDepositories({ refresh } = {}) {
+    if (!await DataBridge._tableExists('venue_depository_links')) {
+      return { linked: 0, read: 0, comparisons: [], discrepancies: [], isReconciled: true, message: 'No depository is linked to an aggregator account' };
+    }
+    var { VenueDepositoryOsEngine } = require('../os/venueDepositoryOsEngine');
+    return VenueDepositoryOsEngine.reconcile({ refresh: Boolean(refresh) });
   }
 
   // ═══════════════════════════════════════════════════════════════════════════
@@ -1662,6 +1688,28 @@ class DataBridge {
     } catch (e) { status.modules.sub_ledgers = { error: e.message }; }
 
     try {
+      // Venue depositories: the trust's bank accounts read through the aggregator
+      if (!await DataBridge._tableExists('venue_depository_links')) {
+        status.modules.venue_depositories = { active: false, message: 'No depository is linked to an aggregator account' };
+      } else {
+        var { VenueDepositoryOsEngine: depositoryOs } = require('../os/venueDepositoryOsEngine');
+        var depositorySnapshot = await depositoryOs.snapshot();
+        var openDepositoryGaps = await pool.query(
+          `SELECT COUNT(*) AS c FROM data_bridge_discrepancies WHERE discrepancy_type = 'depository_balance_mismatch' AND resolved = FALSE`
+        );
+        status.modules.venue_depositories = {
+          active: true,
+          linked: depositorySnapshot.linked,
+          live: depositorySnapshot.live,
+          unlinked: depositorySnapshot.unlinked.length,
+          totalLiveCents: depositorySnapshot.totalLiveCents,
+          totalLiveBalance: depositorySnapshot.totalLiveCents / 100,
+          openDiscrepancies: parseInt(openDepositoryGaps.rows[0].c),
+        };
+      }
+    } catch (e) { status.modules.venue_depositories = { error: e.message }; }
+
+    try {
       // Discrepancies
       var discCount = await pool.query(`SELECT COUNT(*) AS total, COUNT(CASE WHEN resolved = FALSE THEN 1 END) AS unresolved FROM data_bridge_discrepancies`);
       status.totalDiscrepancies = parseInt(discCount.rows[0].total);
@@ -1825,6 +1873,10 @@ class DataBridge {
     // 5. Reconcile cash
     try { results.cash = await DataBridge.reconcileCashToAccounting(); }
     catch (e) { results.cash = { error: e.message }; }
+
+    // 5b. Reconcile linked depositories against the cash accounts they book to
+    try { results.venueDepositories = await DataBridge.reconcileDepositories(); }
+    catch (e) { results.venueDepositories = { error: e.message }; }
 
     // 6. Reconcile Fineract GL
     try { results.fineractGL = await DataBridge.reconcileFineractGL(); }

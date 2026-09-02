@@ -411,6 +411,7 @@ const VenueAccountOsEngine = {
 
   async _read(row) {
     const spec = PROVIDERS[row.provider] || {};
+    if (row.provider === 'depository') return this._readDepository(row);
     const creds = credentialState(row.provider);
     if (spec.dependency === 'coinbase-api' && !coinbaseApi) {
       return { verification: 'unverified', balanceCents: 0, reason: 'the coinbase-api dependency is not installed' };
@@ -480,6 +481,37 @@ const VenueAccountOsEngine = {
     } catch (e) {
       return { verification: 'unverified', balanceCents: 0, reason: `the venue balance read failed: ${e.message}` };
     }
+  },
+
+  /**
+   * A depository is read through the banking aggregator once Venue Depository
+   * OS has linked it to an aggregator account; unlinked, it can only be
+   * attested from a statement.
+   */
+  async _readDepository(row) {
+    const { VenueDepositoryOsEngine } = require('./venueDepositoryOsEngine');
+    const link = await VenueDepositoryOsEngine.get(row.venue_id);
+    if (!link) {
+      return {
+        verification: 'unverified',
+        balanceCents: 0,
+        reason: 'the depository is not linked to an aggregator account; link it, or attest the balance from a statement',
+      };
+    }
+    const reading = await VenueDepositoryOsEngine.read(row.venue_id);
+    return {
+      verification: reading.verification,
+      balanceCents: reading.balanceCents,
+      asset: reading.asset || 'USD',
+      reason: reading.reason || null,
+      detail: {
+        source: 'banking_aggregator',
+        connectionId: link.connection_id,
+        externalAccountId: link.external_account_id,
+        glAccountCode: link.gl_account_code,
+        observedAt: reading.observedAt || null,
+      },
+    };
   },
 
   async _readCircle() {
