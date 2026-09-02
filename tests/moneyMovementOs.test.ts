@@ -185,6 +185,41 @@ describe('Money Movement OS: turning dollars into the trust’s first XLM', () =
     });
   });
 
+  describe('live, not shadow', () => {
+    it('is live on Stellar public with the rail not simulating', () => {
+      process.env.STABLECOIN_MODE = 'mainnet';
+      const state = MoneyMovementOsEngine.liveness();
+      expect(state.live).toBe(true);
+      expect(state.horizonUrl).toBe('https://horizon.stellar.org');
+    });
+
+    it('refuses to buy real XLM for a rail that fabricates its settlements', async () => {
+      process.env.STABLECOIN_MODE = 'shadow';
+      expect(MoneyMovementOsEngine.liveness().issues.join(' ')).toMatch(/shadow/);
+      horizon({ exists: false });
+      ledger({ row: acquisitionRow() });
+      const quote = vi.spyOn(StellarVenue, 'quote');
+      await expect(MoneyMovementOsEngine.execute('XLMBUY-1')).rejects.toThrow(/not be a live transfer.*shadow/);
+      expect(quote).not.toHaveBeenCalled();
+    });
+
+    it('refuses a test ledger, because the venue withdraws on public only', async () => {
+      process.env.STABLECOIN_NETWORK = 'testnet';
+      const state = MoneyMovementOsEngine.liveness();
+      expect(state.live).toBe(false);
+      expect(state.issues.join(' ')).toMatch(/set it to mainnet/);
+      expect(state.issues.join(' ')).toMatch(/test ledger/);
+      const readiness = await MoneyMovementOsEngine.readiness().catch(() => null);
+      if (readiness) expect(readiness.ready).toBe(false);
+    });
+
+    it('refuses to confirm against a test ledger as well', async () => {
+      process.env.HORIZON_URL = 'https://horizon-testnet.stellar.org';
+      ledger({ row: acquisitionRow({ status: 'withdrawn', opening_balance: '0' }) });
+      await expect(MoneyMovementOsEngine.confirm('XLMBUY-1')).rejects.toThrow(/not be a live transfer/);
+    });
+  });
+
   describe('buying and withdrawing', () => {
     it('stops before spending when the venue account holds no dollars', async () => {
       horizon({ exists: false });

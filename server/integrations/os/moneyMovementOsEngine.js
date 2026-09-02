@@ -52,6 +52,10 @@ const { VenueAccountOsEngine } = require('./venueAccountOsEngine');
 const { getConfig: stablecoinConfig } = require('../stablecoin/config');
 const { XLM_FOR_TRUSTLINE, nativeBalance } = require('../stablecoin/accountFunding');
 
+/** The venue withdraws on Stellar's public network and nowhere else. */
+const LIVE_NETWORKS = ['mainnet', 'public'];
+const PUBLIC_HORIZON = 'https://horizon.stellar.org';
+
 /** An acquisition in one of these states is dollars the trust has committed. */
 const OPEN_STATUSES = ['pending_approval', 'approved', 'buying', 'withdrawn'];
 
@@ -88,6 +92,7 @@ const MoneyMovementOsEngine = {
       distributor: cfg.distributorPublic,
       horizonUrl: cfg.horizonUrl,
       network: cfg.network,
+      mode: cfg.mode,
       transitAccount: text('STABLECOIN_PURCHASE_TRANSIT_ACCOUNT', '1215'),
       xlmAssetAccount: text('STABLECOIN_XLM_ASSET_ACCOUNT', '1216'),
     };
@@ -124,6 +129,38 @@ const MoneyMovementOsEngine = {
       `CREATE INDEX IF NOT EXISTS idx_xlm_acquisitions_status ON xlm_acquisitions (status)`
     );
     return true;
+  },
+
+  /**
+   * Whether an execution here would move real value on the real network. The
+   * venue only withdraws on Stellar public, so a testnet Horizon would confirm
+   * against a ledger the XLM never reaches, and a shadow-mode rail would hand
+   * the XLM to engines that fabricate their settlements. Both are refused.
+   */
+  liveness() {
+    const cfg = this.config();
+    const issues = [];
+    if (cfg.mode === 'shadow') {
+      issues.push('STABLECOIN_MODE is shadow: the rail downstream simulates settlement, so real XLM is not acquired for it');
+    }
+    if (!LIVE_NETWORKS.includes(cfg.network)) {
+      issues.push(`STABLECOIN_NETWORK is ${cfg.network}: the venue withdraws on Stellar public only, so set it to mainnet`);
+    }
+    if (cfg.horizonUrl.includes('testnet') || cfg.horizonUrl.includes('friendbot')) {
+      issues.push(`HORIZON_URL ${cfg.horizonUrl} is a test ledger; a live acquisition confirms against ${PUBLIC_HORIZON}`);
+    }
+    return { live: issues.length === 0, mode: cfg.mode, network: cfg.network, horizonUrl: cfg.horizonUrl, issues };
+  },
+
+  _requireLive() {
+    const state = this.liveness();
+    if (!state.live) {
+      throw new MoneyMovementError(
+        `this would not be a live transfer: ${state.issues.join('; ')}`,
+        'MONEY_MOVEMENT_NOT_LIVE', 503
+      );
+    }
+    return state;
   },
 
   /**
@@ -166,7 +203,8 @@ const MoneyMovementOsEngine = {
     const list = venues();
     const venue = list[0];
     const destination = await this.destinationState().catch(err => ({ error: err.message }));
-    const issues = [];
+    const liveness = this.liveness();
+    const issues = [...liveness.issues];
     if (!cfg.distributor) issues.push('no destination: STABLECOIN_DISTRIBUTOR_PUBLIC is unset');
     if (!venue.installed) issues.push('the coinbase-api dependency is not installed');
     if (venue.missing.length) {
@@ -181,6 +219,8 @@ const MoneyMovementOsEngine = {
     if (venueAccount && venueAccount.issues.length) issues.push(...venueAccount.issues);
     return {
       network: cfg.network,
+      mode: cfg.mode,
+      live: liveness.live,
       destination,
       venues: list,
       venueAccount: venueAccount ? venueAccount.account : null,
@@ -372,6 +412,7 @@ const MoneyMovementOsEngine = {
         'MONEY_MOVEMENT_NO_CHECKER'
       );
     }
+    this._requireLive();
     const usd = Number(row.usd_cents) / 100;
     const before = await this.destinationState();
 
@@ -444,6 +485,7 @@ const MoneyMovementOsEngine = {
         'MONEY_MOVEMENT_WRONG_STATE'
       );
     }
+    this._requireLive();
     const now = await this.destinationState();
     if (!now.exists) {
       throw new MoneyMovementError(

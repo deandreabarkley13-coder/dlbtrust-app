@@ -11,6 +11,7 @@
  *
  * Usage:
  *   node server/scripts/moneyMovementOs.js readiness
+ *   node server/scripts/moneyMovementOs.js live                        # would an execution here be a real transfer?
  *   node server/scripts/moneyMovementOs.js plan     [--amount 5]
  *   node server/scripts/moneyMovementOs.js quote    --amount 5
  *   node server/scripts/moneyMovementOs.js initiate --amount 5 --maker trustee-one@…
@@ -18,10 +19,15 @@
  *   node server/scripts/moneyMovementOs.js deposit  --id XLMBUY-… --reference <ACH ref>
  *   node server/scripts/moneyMovementOs.js execute  --id XLMBUY-… --yes
  *   node server/scripts/moneyMovementOs.js confirm  --id XLMBUY-…
+ *   node server/scripts/moneyMovementOs.js run      --id XLMBUY-… --yes [--wait 600] [--by trustee@…]
  *   node server/scripts/moneyMovementOs.js list
  *
- * `--amount` is dollars. `execute` is the only command that spends money, and
- * it requires `--yes`.
+ * `--amount` is dollars. `execute` and `run` are the only commands that spend
+ * money, and both require `--yes`. `run` is execute followed by confirm: it
+ * buys, withdraws, then polls Horizon (up to `--wait` seconds, default 600)
+ * until the XLM lands and is booked. Every spending path refuses unless
+ * STABLECOIN_MODE is not shadow and the network is Stellar public — nothing
+ * here runs against a simulated rail or a test ledger.
  */
 
 const { MoneyMovementOsEngine } = require('../integrations/os/moneyMovementOsEngine');
@@ -59,8 +65,22 @@ function printDestination(destination) {
   if (destination.needsXlm) console.log(`  still needs    : ${destination.needsXlm} XLM for the reserve and a USDC trustline`);
 }
 
+function printLiveness(state) {
+  console.log(`Mode             : ${state.mode}`);
+  console.log(`Network          : ${state.network} (${state.horizonUrl})`);
+  console.log(`Live             : ${state.live ? 'yes — an execution here moves real value' : 'no'}`);
+  for (const issue of state.issues) console.log(`  - ${issue}`);
+}
+
+async function live() {
+  const state = MoneyMovementOsEngine.liveness();
+  printLiveness(state);
+  return state.live ? 0 : 2;
+}
+
 async function readiness() {
   const state = await MoneyMovementOsEngine.readiness();
+  console.log(`Mode             : ${state.mode}${state.live ? '' : ' (not live)'}`);
   console.log(`Network          : ${state.network}`);
   printDestination(state.destination);
   for (const venue of state.venues) {
@@ -154,6 +174,71 @@ async function confirm(args) {
   return 0;
 }
 
+function sleep(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+/** Execute, then keep asking Horizon until the XLM is there or time runs out. */
+async function run(args) {
+  if (!args.yes) {
+    console.log('This buys XLM with real dollars at the venue, withdraws it on-chain, and books what arrives.');
+    console.log('Re-run with --yes to proceed.');
+    return 1;
+  }
+  const liveness = MoneyMovementOsEngine.liveness();
+  printLiveness(liveness);
+  if (!liveness.live) {
+    console.log('\nRefusing: this would not be a live transfer.');
+    return 2;
+  }
+  const state = await MoneyMovementOsEngine.readiness();
+  if (!state.ready) {
+    console.log('\nNot ready:');
+    for (const issue of state.issues) console.log(`  - ${issue}`);
+    return 2;
+  }
+
+  const by = typeof args.by === 'string' ? args.by : null;
+  let row = await MoneyMovementOsEngine.get(args.id);
+  if (!row) throw new Error(`${args.id} is not an acquisition`);
+  if (row.status === 'approved') {
+    row = await MoneyMovementOsEngine.execute(args.id, { executedBy: by });
+    console.log(`\n${row.acquisition_id}: bought ${row.xlm_bought} XLM (order ${row.venue_order_id || 'n/a'})`);
+    console.log(`Withdrawal ${row.venue_withdrawal_id || 'n/a'} sent to ${row.destination}`);
+  } else if (row.status === 'withdrawn') {
+    console.log(`\n${row.acquisition_id} is already withdrawn; waiting for the ledger.`);
+  } else if (row.status === 'confirmed') {
+    console.log(`\n${row.acquisition_id} is already confirmed: ${row.xlm_confirmed} XLM (journal ${row.journal_entry_id})`);
+    return 0;
+  } else {
+    throw new Error(`${row.acquisition_id} is ${row.status}; only an approved acquisition can run`);
+  }
+
+  const waitSeconds = Math.max(0, Number(args.wait) || 600);
+  const deadline = Date.now() + waitSeconds * 1000;
+  const every = 15000;
+  let attempt = 0;
+  for (;;) {
+    attempt += 1;
+    try {
+      row = await MoneyMovementOsEngine.confirm(args.id, { confirmedBy: by });
+      console.log(`${row.acquisition_id}: ${row.xlm_confirmed} XLM confirmed at ${row.destination}`);
+      console.log(`Posted as journal ${row.journal_entry_id}`);
+      console.log('Next: npm run trust:stellar-mainnet -- trustline --yes');
+      return 0;
+    } catch (err) {
+      if (err.code !== 'MONEY_MOVEMENT_NOT_ARRIVED') throw err;
+      if (Date.now() >= deadline) {
+        console.log(`\nNot on the ledger after ${waitSeconds}s: ${err.message}`);
+        console.log(`The acquisition stays withdrawn. Confirm later: confirm --id ${args.id}`);
+        return 3;
+      }
+      console.log(`  [${attempt}] not yet: ${err.message}`);
+      await sleep(every);
+    }
+  }
+}
+
 async function list() {
   const rows = await MoneyMovementOsEngine.list({});
   if (!rows.length) {
@@ -167,7 +252,7 @@ async function list() {
   return 0;
 }
 
-const COMMANDS = { readiness, plan, quote, initiate, approve, deposit, execute, confirm, list };
+const COMMANDS = { readiness, live, plan, quote, initiate, approve, deposit, execute, confirm, run, list };
 
 async function main() {
   const args = parseArgs(process.argv.slice(2));

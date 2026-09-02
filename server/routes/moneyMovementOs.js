@@ -35,6 +35,13 @@ router.get('/readiness', operatorAuth, async (req, res) => {
   } catch (err) { sendError(res, err); }
 });
 
+/** Whether an execution here would be a real transfer on Stellar public, or refused. */
+router.get('/liveness', operatorAuth, async (req, res) => {
+  try {
+    res.json({ success: true, data: MoneyMovementOsEngine.liveness() });
+  } catch (err) { sendError(res, err); }
+});
+
 router.get('/plan', operatorAuth, async (req, res) => {
   try {
     const usdCents = Number(req.query.usdCents || 500);
