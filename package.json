@@ -28,6 +28,9 @@
     "trust:buy-usdc": "node server/scripts/buyStablecoin.js",
     "trust:stellar-mainnet": "node server/scripts/stellarMainnetSetup.js",
     "trust:muxed": "node server/scripts/stellarMuxed.js",
+    "trust:money-move": "node server/scripts/moneyMovementOs.js",
+    "trust:venues": "node server/scripts/venueAccountOs.js",
+    "trust:depositories": "node server/scripts/venueDepositoryOs.js",
     "db:init": "tsx src/server/db/init.ts",
     "typecheck": "tsc --noEmit"
   },

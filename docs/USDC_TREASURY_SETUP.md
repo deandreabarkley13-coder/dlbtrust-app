@@ -55,6 +55,98 @@ npm run trust:stellar-mainnet -- trustline --yes
 npm run trust:stellar-mainnet -- preflight    # every gate before a purchase or a payout
 ```
 
+The system funds the account itself when it can:
+
+```
+npm run trust:stellar-mainnet -- sources          # every key the trust holds, and its mainnet XLM
+npm run trust:stellar-mainnet -- fund --yes       # create/top up the distributor from one of them
+```
+
+`fund` sends from `STELLAR_FUNDING_SECRET` (override with `--from-env NAME`) —
+`createAccount` if the distributor does not exist yet, a plain payment if it
+does. Secrets are read from named environment variables and never taken as
+arguments, because a seed on a command line lands in shell history and in every
+`ps` on the box. It refuses to spend into the source account's own reserve: a
+balance of 1.6 XLM against one trustline is entirely reserve and sends nothing.
+
+What it cannot do is originate value. `sources` answers "can we fund this
+ourselves?" from Horizon, and while every key reads 0 the answer is no: the
+trust holds no XLM to move.
+
+### Acquiring the first XLM: `trust:money-move`
+
+Buying XLM with dollars is the one leg no ledger can perform, because turning
+fiat into crypto is a regulated act performed by a venue. Money Movement OS
+automates everything after the venue holds dollars:
+
+```
+npm run trust:money-move -- readiness                        # venue + destination, and what is missing
+npm run trust:money-move -- plan     --amount 5              # the legs, and which are automated
+npm run trust:money-move -- initiate --amount 5 --maker trustee-one@…
+npm run trust:money-move -- approve  --id XLMBUY-… --checker trustee-two@…
+npm run trust:money-move -- deposit  --id XLMBUY-… --reference <ACH ref>
+npm run trust:money-move -- execute  --id XLMBUY-… --yes     # buys XLM, withdraws to the distributor
+npm run trust:money-move -- confirm  --id XLMBUY-…           # recognises what Horizon shows
+```
+
+`execute` withdrawing XLM to an address that does not exist is what *creates*
+the distributor account, so this is the whole bootstrap: after `confirm`, run
+`trustline --yes` and the rail is armed.
+
+What it needs from outside is one account: a venue that holds USD for the trust.
+The adapter is Coinbase Advanced Trade (`COINBASE_CDP_KEY_NAME`,
+`COINBASE_CDP_PRIVATE_KEY`), and API keys alone cannot buy — the account must
+hold dollars, deposited by ACH from the trust's bank account. `readiness` names
+whichever of those is missing, and `execute` refuses rather than pretending:
+a venue reporting INSUFFICIENT_FUND is reported as "the venue account holds no
+dollars", not as an error.
+
+Two things are deliberately not trusted. The venue's "sent" is a claim, so
+`confirm` reads the distributor on Horizon and posts only the increase it
+actually sees; and a Stellar destination that has never been funded may be
+refused by the venue, in which case the refusal is surfaced verbatim — the XLM
+bought is recorded against the acquisition so it is not lost track of.
+
+### The register of outside accounts: `trust:venues`
+
+Every rail here ends at somebody else's balance sheet, and each one used to
+report the same missing account as its own private "not configured". Venue
+Account OS holds them in one register — onboarding state, capabilities,
+credential presence, and what each actually holds:
+
+```
+npm run trust:venues -- providers                                    # what has an adapter, and what each needs
+npm run trust:venues -- register --provider coinbase --by <trustee>  # opens the file; the account can do nothing yet
+npm run trust:venues -- applied  --id VENUE-… --reference <case id>
+npm run trust:venues -- approved --id VENUE-… --by <second trustee> --evidence <approval email>
+npm run trust:venues -- probe    --id VENUE-…                        # asks the venue what it holds
+npm run trust:venues -- can      --capability buy_xlm [--funded]     # which account can do this today
+npm run trust:venues -- list
+```
+
+Three rules it holds to. Approval is a second trustee's act with an evidence
+reference, because "the venue approved us" is a claim about an institution the
+code cannot see. An account is only *funded* when a live probe read dollars, or
+a trustee attested a balance against a statement — never on assertion, and a
+reading older than `VENUE_BALANCE_FRESH_MINUTES` (default a day) counts as no
+reading. And credentials are reported as present or missing, never as values.
+
+Probed balances are written through `ReserveEngine.record`, so what a venue
+holds becomes reserve evidence that Attestation OS reports alongside every other
+custody balance rather than a number in a separate table.
+
+`trust:money-move -- readiness` consults the register when an account is
+registered, so it can say "onboarding is under_review" or "holds no confirmed
+dollars" instead of "not configured". With an empty register it falls back to
+the environment alone.
+
+Accounting mirrors the USDC purchase, one asset earlier:
+
+```
+deposit at venue    debit  1215 USDC purchases in transit   credit 1010 Trust Operating
+XLM confirmed       debit  1216 XLM                         credit 1215
+```
+
 Until the address has received XLM from somewhere else, `status` reports the
 account as non-existent and no step is available: an account comes into being by
 being paid, which no script here can do. `trustline` refuses unless the network

@@ -14,15 +14,21 @@
  *              with no funds: ChangeTrust to Circle's mainnet USDC issuer.
  *   preflight  every gate between here and a purchase, and here and a payout,
  *              as a checklist with what to do about each.
+ *   sources    every Stellar key the trust holds, and what it holds on mainnet:
+ *              the question "can we fund this ourselves?", answered by Horizon.
+ *   fund       create (or top up) the distributor from one of those accounts.
  *
- * The account is created by *receiving* ~1.5 XLM, which no script can conjure;
- * `status` says so rather than pretending a step is available. Fund-and-forget
- * is the one thing this cannot automate.
+ * The account is created by *receiving* ~2 XLM, and `fund` can only forward XLM
+ * the trust already holds somewhere: if `sources` reports nothing spendable,
+ * value must come from outside, which no script can conjure. Every command
+ * refuses rather than pretending a step is available.
  *
  * Usage:
  *   node server/scripts/stellarMainnetSetup.js status
  *   node server/scripts/stellarMainnetSetup.js preflight
  *   node server/scripts/stellarMainnetSetup.js trustline --yes
+ *   node server/scripts/stellarMainnetSetup.js sources
+ *   node server/scripts/stellarMainnetSetup.js fund --yes [--from-env NAME] [--amount 2]
  *
  * Mainnet only, by refusal: a mainnet trustline opened against a testnet
  * configuration would trust the wrong issuer, and this is the step that decides
@@ -35,9 +41,19 @@ const {
 
 const { StablecoinPayoutRail, CIRCLE_USDC_ISSUERS } = require('../integrations/os/stablecoinPayoutRail');
 const { getConfig } = require('../integrations/stablecoin/config');
+const {
+  planFunding, spendableXlm, nativeBalance, XLM_FOR_TRUSTLINE,
+} = require('../integrations/stablecoin/accountFunding');
 
-/** Base reserve (1 XLM) + one subentry for the trustline (0.5) + fee headroom. */
-const XLM_FOR_TRUSTLINE = 2;
+/**
+ * Where a funding key may live. Secrets are named, never passed as arguments: a
+ * seed on a command line lands in shell history and in every `ps` on the box.
+ */
+const FUNDING_SECRET_ENVS = [
+  ['STELLAR_FUNDING_SECRET', 'a dedicated account for paying network fees'],
+  ['STABLECOIN_DISTRIBUTOR_SECRET', 'the distributor itself'],
+  ['STABLECOIN_ISSUER_SECRET', 'the issuer account, if the trust runs one'],
+];
 
 function parseArgs(argv) {
   const args = { _: [] };
@@ -248,6 +264,123 @@ async function preflight(ctx) {
   return 2;
 }
 
+/** A named secret, or null: an unset variable is a fact, not an error. */
+function loadFundingKey(envName) {
+  const secret = String(process.env[envName] || '').trim();
+  if (!secret) return null;
+  if (!secret.startsWith('S')) {
+    throw new Error(`${envName} is set but is not a Stellar secret seed (S…, 56 characters)`);
+  }
+  return Keypair.fromSecret(secret);
+}
+
+/**
+ * Every key the trust holds, and what mainnet says it has. This is the answer to
+ * "why can't the system send its own 2 XLM": it can, the moment one of these
+ * rows shows spendable XLM.
+ */
+async function sources(ctx) {
+  let spendableTotal = 0;
+  let found = 0;
+
+  for (const [envName, what] of FUNDING_SECRET_ENVS) {
+    const kp = loadFundingKey(envName);
+    if (!kp) {
+      console.log(`${envName.padEnd(32)}: unset — ${what}`);
+      continue;
+    }
+    found += 1;
+    // eslint-disable-next-line no-await-in-loop
+    const { exists, account } = await readAccount(ctx.server, kp.publicKey());
+    if (!exists) {
+      console.log(`${envName.padEnd(32)}: ${kp.publicKey().slice(0, 8)}… does not exist on mainnet`);
+      continue;
+    }
+    const spendable = spendableXlm(account);
+    spendableTotal += spendable;
+    console.log(
+      `${envName.padEnd(32)}: ${kp.publicKey().slice(0, 8)}… holds ${nativeBalance(account)} XLM,`
+      + ` ${spendable} spendable after reserve`
+    );
+  }
+
+  console.log(`\nSpendable on mainnet: ${Number(spendableTotal.toFixed(7))} XLM`);
+  if (spendableTotal >= XLM_FOR_TRUSTLINE) {
+    console.log('Enough to create the distributor: run `fund --yes`.');
+    return 0;
+  }
+  console.log(
+    `Not enough to create an account (${XLM_FOR_TRUSTLINE} XLM needed).`
+    + `\n${found ? 'The keys above hold no mainnet value' : 'No funding key is configured'}: XLM must arrive from`
+    + '\noutside — an exchange withdrawal or any Stellar wallet — to the distributor'
+    + '\ndirectly, or to an account named above.'
+  );
+  return 2;
+}
+
+/**
+ * Create the distributor from a funding account the trust holds, or top it up if
+ * it already exists. This is the step people assume a script cannot do: it can,
+ * given XLM anywhere inside the trust — and only then.
+ */
+async function fund(ctx, args) {
+  if (!ctx.address) throw new Error('STABLECOIN_DISTRIBUTOR_PUBLIC is not set: there is no account to fund');
+  if (!args.yes) {
+    console.log('Refusing without --yes: this spends real XLM. Run `sources` first to see what is available.');
+    return 1;
+  }
+
+  const envName = typeof args['from-env'] === 'string' ? args['from-env'] : 'STELLAR_FUNDING_SECRET';
+  const kp = loadFundingKey(envName);
+  if (!kp) {
+    throw new Error(
+      `${envName} is not set, so there is no key to send from.`
+      + ' Run `sources` to see which keys the trust holds.'
+    );
+  }
+  if (kp.publicKey() === ctx.address) {
+    throw new Error(
+      `${envName} signs for the distributor itself; an account cannot create or fund itself.`
+      + ' Name a different funding account with --from-env.'
+    );
+  }
+
+  const amount = args.amount === undefined ? XLM_FOR_TRUSTLINE : Number(args.amount);
+  const [funder, destination] = await Promise.all([
+    readAccount(ctx.server, kp.publicKey()),
+    readAccount(ctx.server, ctx.address),
+  ]);
+
+  const plan = planFunding({
+    source: funder.exists ? funder.account : null,
+    destinationExists: destination.exists,
+    amount,
+  });
+  if (!plan.ok) {
+    console.log(`Cannot fund ${ctx.address.slice(0, 8)}… from ${kp.publicKey().slice(0, 8)}…:`);
+    console.log(`  ${plan.reason}`);
+    return 2;
+  }
+
+  const operation = plan.operation === 'createAccount'
+    ? Operation.createAccount({ destination: ctx.address, startingBalance: plan.amount })
+    : Operation.payment({ destination: ctx.address, asset: Asset.native(), amount: plan.amount });
+
+  const tx = new TransactionBuilder(funder.account, {
+    fee: BASE_FEE,
+    networkPassphrase: Networks.PUBLIC,
+  }).addOperation(operation).setTimeout(90).build();
+  tx.sign(kp);
+  const result = await ctx.server.submitTransaction(tx);
+
+  console.log(
+    `${plan.operation === 'createAccount' ? 'Created' : 'Funded'} ${ctx.address}`
+    + ` with ${plan.amount} XLM from ${kp.publicKey()} (tx ${result.hash})`
+  );
+  console.log('Next: `trustline --yes` to trust Circle USDC. The account still holds no USDC.');
+  return 0;
+}
+
 async function main() {
   const args = parseArgs(process.argv.slice(2));
   const command = String(args._[0] || 'status').toLowerCase();
@@ -256,7 +389,9 @@ async function main() {
   if (command === 'status') return status(ctx);
   if (command === 'trustline') return trustline(ctx, args);
   if (command === 'preflight') return preflight(ctx);
-  throw new Error(`Unknown command "${command}". Use status, trustline or preflight.`);
+  if (command === 'sources') return sources(ctx);
+  if (command === 'fund') return fund(ctx, args);
+  throw new Error(`Unknown command "${command}". Use status, sources, fund, trustline or preflight.`);
 }
 
 main()
