@@ -1323,3 +1323,16 @@ CLI; that is expected. Each command can take >10s to exit, so run them with a lo
 
 - none for this flow locally; `OPENACH_API_TOKEN` / `OPENACH_API_KEY` (plus OpenACH ACH payment type
   ids) would be required to test real ACH origination, and are intentionally absent.
+
+## MFT OS engine (PR #459, `/api/mft-os`, backend-only)
+
+- Start with `MFT_SPOOL_DIR=/tmp/mft-spool MFT_ARCHIVE_DIR=/tmp/mft-archive` and `NODE_ENV` unset (spool transport is refused in production). Expect `[mft-os] loaded` and `[mft-os] tables ensured` in the log. Tables: `mft_channels`, `mft_files`, `mft_events`.
+- Spool layout mirrors the remote root: outbound `/tmp/mft-spool/default/payments/outbound/<filename>`, acks `/tmp/mft-spool/default/payments/ack/<filename>.ack` (first line = bank reference), processed responses move to `.../payments/archive`. Archive copy is `/tmp/mft-archive/default/<sha256>.ach`.
+- Four-eyes: the admin token principal is `legacy-admin`, so approving your own build returns 403 `MFT_FOUR_EYES`. For a second principal, create an API key (`x-api-key`, role operator). `api_credentials` lives in `server/scripts/migrate-ach.sql` and is NOT applied to the `dlbtrust` DB by the blueprint — apply lines ~279-300 of that file to `dlbtrust`, then:
+  ```bash
+  DATABASE_URL=postgres://dlbtrust:dlbtrust@localhost:5432/dlbtrust node -e "const {ApiCredentials}=require('./server/integrations/ach/apiCredentials');ApiCredentials.generate({label:'mft-approver'}).then(r=>{require('fs').writeFileSync('/tmp/k',r.api_key,{mode:0o600});process.exit(0)})"
+  ```
+  `generate()` returns snake_case (`api_key`), not `apiKey`.
+- Gotcha: `securityMiddleware.js` names API-key principals `'api-key-' + cred.name` but the column is `label`, so every API key shows up as `api-key-undefined` (`approvedBy`). Distinct keys are therefore indistinguishable for four-eyes purposes; use a JWT user if you need a named second principal.
+- Alternative to a second principal: restart with `MFT_REQUIRE_APPROVAL=false`; transmit then auto-approves as `policy:no-approval`.
+- Byte-identical rebuilds return `duplicateOf` on build and 409 `MFT_DUPLICATE` on transmit; `{force:true}` overrides. Second transmit of the same id returns `{transmitted:false, replay:true}`.

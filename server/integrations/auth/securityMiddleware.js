@@ -183,7 +183,7 @@ function requireAuth(options = {}) {
         try {
           const cred = await ApiCredentials.validate(apiKey);
           if (cred) {
-            req.user = { userId: 0, username: 'api-key-' + cred.name, role: 'operator' };
+            req.user = { userId: 0, username: 'api-key-' + cred.key_id, role: 'operator' };
             req.authMethod = 'api_key';
             req.apiCredential = cred;
             authenticated = true;
