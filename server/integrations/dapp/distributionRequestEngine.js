@@ -279,7 +279,7 @@ class DistributionRequestEngine {
           name: maker.name,
           otp: makerPin,
           action: 'approve',
-          actionUrl: `https://dlbtrust-app.fly.dev/dapp/request-approval.html?request=${request.id}&role=maker`,
+          actionUrl: `${process.env.APP_URL || 'https://p01--dlbtrust-app--gcq8bn6c4zlp.code.run'}/dapp/request-approval.html?request=${request.id}&role=maker`,
         });
       }
     } catch (e) { console.warn('[DistributionRequestEngine] maker email failed:', e.message); }
@@ -355,7 +355,7 @@ class DistributionRequestEngine {
             name: checker.name,
             otp: checkerPin,
             action: 'approve',
-            actionUrl: `https://dlbtrust-app.fly.dev/dapp/request-approval.html?request=${requestId}&role=checker`,
+            actionUrl: `${process.env.APP_URL || 'https://p01--dlbtrust-app--gcq8bn6c4zlp.code.run'}/dapp/request-approval.html?request=${requestId}&role=checker`,
           });
         }
       } catch (e) { console.warn('[DistributionRequestEngine] checker email failed:', e.message); }

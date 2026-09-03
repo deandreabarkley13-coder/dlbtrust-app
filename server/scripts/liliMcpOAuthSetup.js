@@ -19,7 +19,7 @@ const http = require('http');
 const { URL } = require('url');
 
 const ADMIN_TOKEN = process.env.ADMIN_TOKEN || 'dlb-admin-2026-trust';
-const API_BASE = process.env.API_BASE || 'https://dlbtrust-app.fly.dev';
+const API_BASE = process.env.API_BASE || process.env.APP_URL || 'https://p01--dlbtrust-app--gcq8bn6c4zlp.code.run';
 const PORT = process.env.PORT ? Number(process.env.PORT) : 0;
 
 function requestJson(method, urlPath, body = null) {

@@ -20,7 +20,7 @@ function getConfig() {
     apiKey: str('MOONPAY_API_KEY', ''),
     apiSecret: str('MOONPAY_API_SECRET', ''),
     widgetBase: str('MOONPAY_WIDGET_BASE', 'https://buy.moonpay.com'),
-    webhookBase: str('MOONPAY_WEBHOOK_BASE', 'https://dlbtrust-app.fly.dev/api/dapp/moonpay/webhook'),
+    webhookBase: str('MOONPAY_WEBHOOK_BASE', `${process.env.APP_URL || 'https://p01--dlbtrust-app--gcq8bn6c4zlp.code.run'}/api/dapp/moonpay/webhook`),
     operatorAddress,
     defaultCurrency: str('MOONPAY_DEFAULT_CURRENCY', 'eth'),
     defaultFiat: str('MOONPAY_DEFAULT_FIAT', 'usd'),

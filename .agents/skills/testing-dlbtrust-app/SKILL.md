@@ -1,6 +1,6 @@
 ---
 name: testing-dlbtrust-app
-description: How to end-to-end test the DLB Trust treasury dashboard, including stablecoin payments, Hedera Stablecoin Studio, the deployed fly.io instance, and OFX clearing.
+description: How to end-to-end test the DLB Trust treasury dashboard, including stablecoin payments, Hedera Stablecoin Studio, the deployed Northflank instance, and OFX clearing.
 ---
 
 # Testing DLB Trust (`dlbtrust-app`)
@@ -8,7 +8,7 @@ description: How to end-to-end test the DLB Trust treasury dashboard, including 
 ## URLs and credentials
 
 - Local: `http://localhost:3002` (entrypoint `server/server-3002.js`)
-- Deployed: `https://dlbtrust-app.fly.dev/`
+- Deployed: `https://p01--dlbtrust-app--gcq8bn6c4zlp.code.run/`
 - Dashboard login: `admin` / `dlb-admin-2026-trust`
 - Admin token header for API calls: `x-admin-token: dlb-admin-2026-trust`
 
@@ -48,10 +48,9 @@ disown
 
 ## Beneficiary Mobile PWA (`/dapp/mobile.html`)
 
-- If the Fly deploy is not live, start the local server connected to the live DB via a `flyctl proxy`:
+- If the Northflank deploy is not live, run the local server against the live DB: temporarily enable external access on the `dlbtrust-db` addon (`PATCH /v1/projects/dlbtrust/addons/dlbtrust-db {"externalAccessEnabled":true}` with `NORTHFLANK_API_TOKEN`), read `EXTERNAL_POSTGRES_URI` from `.../addons/dlbtrust-db/credentials`, and disable external access again afterwards:
   ```bash
-  flyctl proxy 15432:5432 -a dlbtrust-db &
-  env DATABASE_URL=postgres://dlbtrust_app:8r6uuonJw8Jv47a@localhost:15432/dlbtrust_app \
+  env DATABASE_URL="$EXTERNAL_POSTGRES_URI?sslmode=require" DB_SSL=true \
       JWT_SECRET=test ADMIN_SECRET_TOKEN=dlb-admin-2026-trust PORT=3002 \
       SOVEREIGN_TRUST_SHADOW=true node server/server-3002.js
   ```
@@ -82,7 +81,7 @@ SELECT fit_id, type, amount_cents, name, memo FROM ofx_transactions;
 - Verify with API:
   ```bash
   curl -s -H 'x-admin-token: dlb-admin-2026-trust' \
-    https://dlbtrust-app.fly.dev/api/stablecoin/payments/<id>
+    https://p01--dlbtrust-app--gcq8bn6c4zlp.code.run/api/stablecoin/payments/<id>
   ```
   Expected: `status: settled`, `tx_hash` starting with `shadow-`, `metadata.hederaTokenId` matching the created token.
 
@@ -147,7 +146,7 @@ SELECT fit_id, type, amount_cents, name, memo FROM ofx_transactions;
 - Create pool: `POST /api/dapp/dex/pools` with `{tokenA, tokenB, amountA, amountB, decimalsA, decimalsB}`; returns `poolAddress`, `txHash`. The engine deploys a `BondDex` contract, sorts tokens by address, approves both tokens, and seeds liquidity.
 - Quote: `POST /api/dapp/dex/quote` with `{tokenIn, amountIn, router: <poolAddress>}`; returns live `amountOut` computed from pool reserves.
 - Swap: `POST /api/dapp/dex/swap` with `{tokenIn, amountIn, router: <poolAddress>}`; returns live `txHash`.
-- If the operator wallet is low on Sepolia ETH, request a top-up or use the CDP EVM faucet (`ethereum-sepolia`) with `COINBASE_CDP_KEY_NAME` / `COINBASE_CDP_PRIVATE_KEY` Fly secrets.
+- If the operator wallet is low on Sepolia ETH, request a top-up or use the CDP EVM faucet (`ethereum-sepolia`) with `COINBASE_CDP_KEY_NAME` / `COINBASE_CDP_PRIVATE_KEY` runtime secrets.
 - Blockscout Sepolia explorer: `https://eth-sepolia.blockscout.com/tx/<txHash>`.
 
 ## Sovereign Trust Token (SIT) (local shadow mode)
@@ -185,15 +184,9 @@ SELECT fit_id, type, amount_cents, name, memo FROM ofx_transactions;
 - The dApp **Sovereign Trust** tab reads `GET /api/dapp/sovereign-trust/readiness` and calls `POST /api/dapp/sovereign-trust/deploy`, `POST /api/dapp/sovereign-trust/mint`, etc.
 - On mainnet (`SOVEREIGN_TRUST_SHADOW=false`, `DAPP_CHAIN_ID=1`), readiness initially reports `ready: false` with issues `SOVEREIGN_TOKEN_ADDRESS not set or shadow` / `SOVEREIGN_FORWARDER_ADDRESS not set or shadow` until the token and forwarder are deployed.
 - Deploy:
-  1. Confirm `fly.toml` contains `[build]` `dockerfile = "Dockerfile"` (without it `fly deploy` reports `app does not have a Dockerfile or buildpacks configured`).
-  2. From the repo root run `flyctl deploy --app dlbtrust-app --yes --local-only` (or omit `--local-only` if the remote builder picks up the Dockerfile).
-  3. `POST /api/dapp/sovereign-trust/deploy` with `x-admin-token: dlb-admin-2026-trust`. The server waits for receipts; it may take >120s. It returns `token` and `forwarder` mainnet addresses.
-  4. Set Fly secrets so readiness passes and the app knows the deployed contracts:
-     ```bash
-     flyctl secrets set --app dlbtrust-app \
-       SOVEREIGN_TOKEN_ADDRESS=<token-address> \
-       SOVEREIGN_FORWARDER_ADDRESS=<forwarder-address>
-     ```
+  1. Northflank builds `main` from git automatically (`.github/workflows/northflank-deploy.yml` only triggers/waits on the build). To build a specific commit: `northflank start service build --project dlbtrust --service dlbtrust-app --input '{"sha":"<sha>"}'`.
+  2. `POST /api/dapp/sovereign-trust/deploy` with `x-admin-token: dlb-admin-2026-trust`. The server waits for receipts; it may take >120s. It returns `token` and `forwarder` mainnet addresses.
+  3. Set the runtime secrets on the Northflank `dlbtrust-runtime` secret group (`node scripts/northflank/set-secrets.mjs --group dlbtrust-runtime SOVEREIGN_TOKEN_ADDRESS=<token-address> SOVEREIGN_FORWARDER_ADDRESS=<forwarder-address>`) so readiness passes and the app knows the deployed contracts.
 - Verify deploy:
   - `GET /api/dapp/sovereign-trust/readiness` should return `ready: true`, `mode: live`, `network: mainnet`, no issues, and the token/forwarder addresses.
   - `eth_getCode` for both addresses should return non-empty bytecode.
@@ -202,7 +195,7 @@ SELECT fit_id, type, amount_cents, name, memo FROM ofx_transactions;
     - Token deploy uses `gas: 5000000` and input length ~32KB (16KB deployed bytecode).
 - Optional live mint:
   - First ensure the destination address is whitelisted (`POST /api/dapp/sovereign-trust/whitelist` with `address` and `allowed: true`) because `whitelistEnabled` is `true`.
-  - First mint on a fresh deploy may fail with `Treasury account not found: SOVEREIGN_RESERVE` because `SOVEREIGN_RESERVE` does not exist in `stablecoin_treasury_accounts`. Create it by SSHing into the Fly machine and calling `TreasuryEngine.getOrCreateAccount('SOVEREIGN_RESERVE')`, or set `SOVEREIGN_RESERVE_ACCOUNT` to an existing account (e.g. `TREASURY_HOT`) before the deploy.
+  - First mint on a fresh deploy may fail with `Treasury account not found: SOVEREIGN_RESERVE` because `SOVEREIGN_RESERVE` does not exist in `stablecoin_treasury_accounts`. Create it by exec-ing into the Northflank service container and calling `TreasuryEngine.getOrCreateAccount('SOVEREIGN_RESERVE')`, or set `SOVEREIGN_RESERVE_ACCOUNT` to an existing account (e.g. `TREASURY_HOT`) before the deploy.
   - `POST /api/dapp/sovereign-trust/mint` with `sourceType: treasury`, `sourceAccountId: TREASURY_HOT`, `amount: 0.01`, and `to: <destination>`.
   - Verify balance with `GET /api/dapp/sovereign-trust/balance/<destination>` and on-chain with `eth_getBalance` of the token contract or `eth_call` `balanceOf(<destination>)`.
 - Operator wallet: `0x3e53028cf69949f3B961ce786Baf2D4D75166562`. Live deploy + whitelist + 0.01 SIT mint used ~0.0016 ETH at ~0.17 gwei effective gas price.
@@ -240,7 +233,7 @@ SELECT fit_id, type, amount_cents, name, memo FROM ofx_transactions;
 
 ## Master Dashboard, Fixed-Income Distribution, Public Requests, and Master Wallet Transfers (PR #243)
 
-- Open `https://dlbtrust-app.fly.dev/dapp/master-dashboard.html` directly; the dApp navigation may not load this page reliably from the landing tab bar.
+- Open `https://p01--dlbtrust-app--gcq8bn6c4zlp.code.run/dapp/master-dashboard.html` directly; the dApp navigation may not load this page reliably from the landing tab bar.
 - Enter the operator token `dlb-admin-2026-trust` and click **Save Token**. Most endpoints require `x-admin-token`.
 - **Masters tab:** `loadMasters()` calls `GET /api/dapp/master-wallets` and renders four cards: `principal`, `interest`, `operating`, `distribution`. Master wallet on-chain addresses are deterministic and known:
   - principal: `0xECCDF9A767799999320C5D4AFb513f11F1bA2f6e`
@@ -249,7 +242,7 @@ SELECT fit_id, type, amount_cents, name, memo FROM ofx_transactions;
   - distribution: `0x4eC020Dc4E9A846bCeffB97DB2a8E95fC9D02500`
 - **Ensure master wallets:** `ensureMasterWallets()` calls `POST /api/dapp/master-wallets/ensure` and seeds each wallet with `MASTER_WALLET_GAS_SEED` ETH. This is idempotent.
 - **Bond fixed-income distribution:** `distributeFixedIncome()` calls `POST /api/dapp/bonds/<bondId>/distribute-interest` with `{ amount, targetAsset: 'ETH' }`. As of the PR #243 build, `BondEngine.payInterest` adds the string `amount` to `total_interest_paid`, so decimal strings like `"5.00"` cause Postgres numeric parse errors. Calling the API directly with a JSON number (e.g. `5`) bypasses the UI bug but may still run into `WaitForTransactionReceiptTimeoutError` on mainnet.
-- **Public landing request** (`https://dlbtrust-app.fly.dev/`):
+- **Public landing request** (`https://p01--dlbtrust-app--gcq8bn6c4zlp.code.run/`):
   - Fill the Beneficiary Distribution Request form and submit. `submitRequest()` posts to `POST /api/dapp/public/request` and creates a beneficiary, maker, checker, and a run with a distribution request.
   - Maker trustee: `annrobinson9800@yahoo.com`. Checker trustee: `dbnettrust@gmail.com`.
   - In Master Dashboard **Requests**, `approveAs(id, 'maker', email)` and `approveAs(id, 'checker', email)` call `POST /api/dapp/distribution-requests/<id>/approve` with `{ role, trusteeEmail, signature: 'sig-<role>-<ts>' }`. Checker approval auto-executes.
@@ -283,7 +276,7 @@ SELECT fit_id, type, amount_cents, name, memo FROM ofx_transactions;
   - `GET /api/finops/peer-onramp/intents`
   - `GET /api/finops/peer-onramp/intents/:hash`
 - Target contract: `0x014025fDE093f8701d86e9f38e2C3a9b779cb5c7` on Base (`chainId: 8453`); default USDC: `0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913`.
-- Required secret on Fly: `PEER_API_KEY`.
+- Required runtime secret (Northflank `dlbtrust-runtime` group): `PEER_API_KEY`.
 - UI flow:
   1. Open `/dapp/finops.html`, save the operator token, click the **Peer On-Ramp** card (or `openPeerOnRampPanel()`).
   2. Enter platform (`cashapp`, `venmo`, `wise`, etc.), fiat currency (`USD`), and USDC amount (e.g. `10`).
@@ -294,13 +287,13 @@ SELECT fit_id, type, amount_cents, name, memo FROM ofx_transactions;
 
 ## PR #264 — Fixed-Income Reconcile + Crypto Conversion (`devin/convert-fixed-income`)
 
-- The Fly deploy may be on `main` and not contain the new script. Deploy the branch before testing: `flyctl deploy --app dlbtrust-app --yes --local-only` from `/home/ubuntu/repos/dlbtrust-app` (requires `secret:org:FLY_API_TOKEN`).
-- The relevant UI is `https://dlbtrust-app.fly.dev/dapp/master-dashboard.html`:
+- The Northflank deploy tracks `main` and may not contain the new script. Build the branch commit before testing: `northflank start service build --project dlbtrust --service dlbtrust-app --input '{"sha":"<sha>"}'` (requires `secret:org:NORTHFLANK_API_TOKEN`).
+- The relevant UI is `https://p01--dlbtrust-app--gcq8bn6c4zlp.code.run/dapp/master-dashboard.html`:
   - **Overview** shows aggregated fixed-income totals (all bonds).
   - **Bond / Fixed Income** tab shows the `DLB-PRB` card with principal, accrued interest, total current value, next coupon, and coupon per period.
   - **Master Wallets** tab shows the four master wallets; the Income Distribution Master lists `DAI`, `USDS`, `WETH`, and `DLBUSD` balances.
 - Tab buttons may not respond to mouse clicks; use `showTab('overview'|'masters'|'bonds'|'requests')` in the browser console to switch panels.
-- CLI conversion script: `node /app/server/scripts/convertFixedIncomeToCrypto.js DLB-PRB --target-asset=DAI --amount=0.01` (run via `flyctl ssh console -a dlbtrust-app -C '...'`):
+- CLI conversion script: `node /app/server/scripts/convertFixedIncomeToCrypto.js DLB-PRB --target-asset=DAI --amount=0.01` (run via `northflank exec service --project dlbtrust --service dlbtrust-app --cmd '...'`):
   - Uses `SourceOfFundsAdapter._fundSourceToTreasury({ sourceType: 'bond_interest', ... })` to debit bond accrued interest, then `StablecoinDexEngine.depositAndSwap` to mint DLBUSD, swap `DLBUSD -> WETH` on the BondDex pool, then `WETH -> DAI` on Uniswap V2.
   - Add `--dry-run` to get a two-leg quote without broadcasting; add `--reconcile` to also run `BondTrustReconciliation.sync` (updates `trust_accounts` 1100/1200/4000 and zeros `CA-BOND-PROCEEDS`).
   - A real conversion credits the Income Distribution Master internal ledger with `actualTargetAsset` and `amountOut`.
@@ -325,7 +318,7 @@ SELECT fit_id, type, amount_cents, name, memo FROM ofx_transactions;
   - `POST /api/finops/ptc-stablecoin/redeem`
   - `POST /api/finops/ptc-stablecoin/transfer`
   - `POST /api/finops/ptc-stablecoin/whitelist`
-- Expected live token/vault addresses are stored in `/data/ptc-stablecoin-state.json` on the Fly machine and returned by the `info()` method:
+- Expected live token/vault addresses are stored in `/data/ptc-stablecoin-state.json` on the Northflank `/data` volume and returned by the `info()` method:
   - Token `DLB-PTCUSD`: `0xb01e6280ffe6faac679a17b029df8e065e8d0002`
   - Vault: `0xc8b2f6909b50a43ac839e74c3d0e82ae060094d1`
 - Read-only verification:
@@ -333,8 +326,8 @@ SELECT fit_id, type, amount_cents, name, memo FROM ofx_transactions;
   2. Because `resumeSession()` only auto-runs `loadAll()` for JWT sessions, admin-token users may need to call `loadAll()` from the console to populate card stats.
   3. Confirm the **PTC Stablecoin** card shows a non-zero stat (e.g. `$211,187,497` from `totalSupply`).
   4. Click the card; the panel should show token, vault, total supply, owner, and reserve tokens (DLB-BOND, DLB-FIXED-INCOME, DLB-TREASURY, DLB-TRUST, DLB-CORE) with vault balances.
-  5. `curl -H 'x-admin-token: dlb-admin-2026-trust' https://dlbtrust-app.fly.dev/api/finops/ptc-stablecoin` should return `deployed: true`, matching token/vault, `totalSupply > 0`, and reserves.
-  6. `curl -H 'x-admin-token: dlb-admin-2026-trust' https://dlbtrust-app.fly.dev/api/finops/ptc-stablecoin/balance/<address>` returns the on-chain balance.
+  5. `curl -H 'x-admin-token: dlb-admin-2026-trust' https://p01--dlbtrust-app--gcq8bn6c4zlp.code.run/api/finops/ptc-stablecoin` should return `deployed: true`, matching token/vault, `totalSupply > 0`, and reserves.
+  6. `curl -H 'x-admin-token: dlb-admin-2026-trust' https://p01--dlbtrust-app--gcq8bn6c4zlp.code.run/api/finops/ptc-stablecoin/balance/<address>` returns the on-chain balance.
 - Write operations (deploy, deposit, transfer, redeem) require `DAPP_PRIVATE_KEY` and mainnet ETH; do not execute in read-only tests without confirming gas.
 
 ## Canonical Liquidity Engine (`/dapp/finops.html`)
@@ -401,7 +394,7 @@ SELECT fit_id, type, amount_cents, name, memo FROM ofx_transactions;
   - **Add / Remove Liquidity** — pool address, amountA, amountB.
   - **Swap / Quote** — pool address, tokenIn, amountIn, minOut/slippage, recipient.
 - Testing the quote (read-only):
-  - If `BOND_DEX_ADDRESS` is configured (env on Fly), use it as the pool address.
+  - If `BOND_DEX_ADDRESS` is configured (runtime env), use it as the pool address.
   - Example payload for the live BondDex pool (`0x6d81a71daa0aea908d57c31251db0013b2e41aea`):
     ```json
     {
@@ -520,7 +513,7 @@ SELECT fit_id, type, amount_cents, name, memo FROM ofx_transactions;
   - `POST /api/rally/payouts`, `GET /api/rally/payouts`.
   - `POST /api/rally/scan-qr`, `POST /api/rally/tap-pay`.
   - `GET /api/rally/requests`.
-- Authentication: dashboard uses `localStorage` key `dlb-admin-token` (`dlb-admin-2026-trust` on Fly), which is sent as `x-admin-token`.
+- Authentication: dashboard uses `localStorage` key `dlb-admin-token` (`dlb-admin-2026-trust` on the deployed instance), which is sent as `x-admin-token`.
 - Typical end-to-end flow:
   1. Create wallet: fills `rally-label`, `rally-email`, `rally-type`; call `createRallyWallet()`.
   2. Fund wallet: select wallet in `rally-fund-wallet`, amount in `rally-fund-amount`; call `fundRallyWallet()`.
@@ -591,7 +584,7 @@ SELECT fit_id, type, amount_cents, name, memo FROM ofx_transactions;
 - Live Visa Direct requires `VISA_DIRECT_API_KEY`, `VISA_DIRECT_SHARED_SECRET`, `VISA_DIRECT_URL`, and `VISA_DIRECT_LIVE=true`. Without them, `visa_direct` falls back to `manual_pending` with manual instructions.
 - Test flow:
   1. Select `apache_http` provider and `cash:CA-OPERATING` (or `ledger:4000`).
-  2. Fill cardholder name, last 4, amount, currency, optional memo. Leave `ptc-config` empty to use Fly secrets.
+  2. Fill cardholder name, last 4, amount, currency, optional memo. Leave `ptc-config` empty to use runtime secrets.
   3. Click **Create Push-to-Card** — a `pending` `push_to_card_payments` row is created.
   4. Click **Execute** on the row — funds are reserved (cash transferred to `PTC-HOLD` or a ledger JE posted to `PTC-HOLD`) and status becomes `submitted` with a `tx_id` from the Apache endpoint.
   5. `GET /api/finops/push-to-card/payments/:id` should show `status: 'submitted'`, non-null `tx_id`, and `raw_response` containing the Apache `pushUrl` and the endpoint's JSON response.
@@ -628,7 +621,7 @@ SELECT fit_id, type, amount_cents, name, memo FROM ofx_transactions;
   - `GET /api/finops/banksync/cached/banks`
   - `GET /api/finops/banksync/cached/accounts`
   - `GET /api/finops/banksync/cached/accounts/:id/transactions`
-- Required secret on Fly: `BANKSYNC_API_KEY`.
+- Required runtime secret (Northflank `dlbtrust-runtime` group): `BANKSYNC_API_KEY`.
 - UI IDs: workspace display `bs-whoami`, banks list `bs-banks`, accounts `bs-accounts`, transactions `bs-txs`, status `bs-status`.
 - Panel buttons: `loadBankSyncBanks()` fetches banks; `loadBankSyncTransactions()` fetches txns for the account id in `bs-account-id`.
 - `GET /api/finops/banksync/whoami` returns `{ success:true, data:{ workspaceId, workspaceName, authMethod, scopes, planTier }}` (the BankSync `{success, data}` envelope is unwrapped in `bankSyncEngine.banksyncRequest` and the route returns `data: raw.data || raw`). The UI `loadBankSyncWhoami()` reads `res.data.workspaceName` and should display the workspace name.
@@ -883,7 +876,7 @@ Use `x-admin-token: dlb-admin-2026-trust` for all calls.
 - `JWT_SECRET` and `ADMIN_SECRET_TOKEN` for stable auth.
 - `secret:org:HEDERA_OPERATOR_KEY` — only needed for live (non-shadow) Hedera tests.
 - `secret:org:DLBTRUST_API_KEY` — for programmatic API access if enabled.
-- `secret:org:FLY_API_TOKEN` — needed for `flyctl deploy` and `flyctl secrets set` against `dlbtrust-app`.
+- `secret:org:NORTHFLANK_API_TOKEN` — needed to trigger builds, run `scripts/northflank/set-secrets.mjs`, and toggle external access on the `dlbtrust-db` addon.
 - `TREASURY_PRIME_API_KEY_ID` / `TREASURY_PRIME_API_SECRET` — Treasury Prime sandbox Basic-auth credentials, required for any `/api/treasury-prime` live testing.
 - `ALCHEMY_API_KEY` — only needed to exercise the live Alchemy Base RPC balance call; the dashboard/engine still work in shadow/fallback mode without it.
 
@@ -1179,7 +1172,7 @@ Run `grep -E '^\s+uri:' docker/apisix/apisix.yaml` and confirm only `/ptc/wire` 
 
 - In shadow mode `ApacheApisixEngine._sendPayment` now returns `status: 'completed'` (as of PR #357 fix). `TrustBankEngine.sendPayment` records a `bank_transfers` row with `rail: 'apisix'` and the same `external_tx_id` for `rail === 'apisix'`.
 - If `bank_transfers` inserts fail, verify `BankTransferEngine.ensureTables()` ran at startup (it drops and re-adds the `bank_transfers_rail_check` constraint to include `'apisix'`).
-- The Fly deploy `https://dlbtrust-app.fly.dev` often lags the local branch and may not show the `apisix` engine; if `GET /api/os/apisix/status` returns `404` and the dashboard registry omits `apisix`, Fly has not been deployed with this branch yet.
+- The Northflank deploy `https://p01--dlbtrust-app--gcq8bn6c4zlp.code.run` often lags the local branch and may not show the `apisix` engine; if `GET /api/os/apisix/status` returns `404` and the dashboard registry omits `apisix`, Northflank has not been built with this branch yet.
 - The dashboard `Run` button and payload textarea may not register scaled coordinate typing. Set `document.getElementById('proc-payload').value` and `proc-engine`/`proc-action` values via the browser console, then click `Run`.
 
 ## Melio Vendor Invoice / CSV Distribution (PR #361)

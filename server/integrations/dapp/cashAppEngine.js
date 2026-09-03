@@ -256,7 +256,7 @@ class CashAppEngine {
    * The recipient opens the returned mobile_url / QR code in the Cash App app,
    * approves the grant, and the backend can then call createPayout with the grant_id.
    */
-  static async createPayoutRequest({ amount, currency = 'USD', channel = 'ONLINE', redirectUri = 'https://dlbtrust-app.fly.dev/cashapp/callback', referenceId, scopeId, accountReferenceId, note } = {}) {
+  static async createPayoutRequest({ amount, currency = 'USD', channel = 'ONLINE', redirectUri = `${process.env.APP_URL || 'https://p01--dlbtrust-app--gcq8bn6c4zlp.code.run'}/cashapp/callback`, referenceId, scopeId, accountReferenceId, note } = {}) {
     if (!this._payoutsConfigured()) throw new Error('Cash App Payouts not configured: set CASHAPP_PAYOUTS_ENABLED, CASHAPP_CLIENT_ID, CASHAPP_KEY_ID, CASHAPP_API_SECRET, CASHAPP_MERCHANT_ID');
     const cfg = this.getConfig();
     const idempotencyKey = `ca-preq-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
