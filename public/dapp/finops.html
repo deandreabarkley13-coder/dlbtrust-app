@@ -430,7 +430,11 @@
       if (corporateTreasury && corporateTreasury.data) {
         setStat('treasury', fmt(Number(corporateTreasury.data.totalCashCents || 0) / 100, 0));
       }
-      api('/api/finops/ptc-cma').then(r => { if (r && r.data) setStat('ptccma', fmt(Number(r.data.liquidCents || 0) / 100, 0)); }).catch(() => {});
+      const ptcCma = await api('/api/finops/ptc-cma').catch(() => null);
+      if (ptcCma && ptcCma.data) {
+        const liquid = Number(ptcCma.data.liquidCents || 0) / 100;
+        setStat('ptccma', fmt(liquid, liquid < 1000 ? 2 : 0));
+      }
       const balances = normalizeBalances(sof && sof.data);
       if (balances.length) {
         const cbTotal = balances.filter(b => b.type === 'cash' || b.type === 'core_banking').reduce((a,b)=>a+balanceDollars(b),0);
@@ -7238,7 +7242,7 @@
 
   // ── PTC Digital Cash Management Account ──────────────────────────────────
   let cmaSelectedId = null;
-  async function openPtcCmaPanel(cmaId) {
+  async function openPtcCmaPanel(cmaId, notice) {
     const panel = el('module-panel');
     const body = el('panel-body');
     el('panel-title').textContent = 'PTC Cash Management Account';
@@ -7251,6 +7255,7 @@
       const selected = accounts.find(a => a.cma_id === cmaSelectedId) || accounts[0] || null;
       const movements = selected ? (await api('/api/finops/ptc-cma/' + selected.cma_id + '/movements?limit=25').catch(()=>({data:[]}))).data : [];
       body.innerHTML = renderPtcCmaPanel(ov.data, selected, movements);
+      if (notice && notice.msg && el(notice.target || 'cma-status')) show(notice.msg, Boolean(notice.err), notice.target || 'cma-status');
     } catch(e) { body.innerHTML = '<div class="status err">' + e.message + '</div>'; }
   }
 
@@ -7292,17 +7297,20 @@
             `<select id="cma-pol-inst">${['mmf','t_bill','repo','term_deposit'].map(i => `<option value="${i}" ${i===pol.sweepInstrument?'selected':''}>${i}</option>`).join('')}</select><input id="cma-pol-yield" type="number" style="width:90px" value="${pol.sweepYieldBps}" placeholder="Yield bps" /></div>` +
             `<div class="token-bar"><label><input type="checkbox" id="cma-pol-auto" ${pol.autoRebalance ? 'checked' : ''}/> Auto-rebalance</label></div>` +
             `<button class="btn" onclick="cmaSavePolicy('${cma.cma_id}')">Save Policy</button>` +
+            '<div id="cma-pol-status" class="status hidden"></div>' +
           '</div>' +
           '<div class="card" style="background:#0b1220;">' +
             '<h3>Fund CMA (inbound)</h3>' +
             '<div class="token-bar"><select id="cma-fund-rail"><option value="wire">Incoming wire</option><option value="internal">Internal transfer</option></select><input id="cma-fund-amount" type="number" step="0.01" style="flex:1" placeholder="Amount USD" /><select id="cma-fund-ledger"><option value="operating">→ operating</option><option value="liquidity_reserve">→ liquidity reserve</option><option value="investment_sweep">→ investment sweep</option></select></div>' +
             '<div class="token-bar"><input id="cma-fund-ref" style="flex:1" placeholder="Bank reference / IMAD (leave blank to record an expected wire)" /><input id="cma-fund-reason" style="flex:1" placeholder="Reason" /></div>' +
             `<button class="btn" onclick="cmaFund('${cma.cma_id}')">Record Funding</button>` +
+            '<div id="cma-fund-status" class="status hidden"></div>' +
             '<h3 style="margin-top:12px">Disburse (outbound)</h3>' +
             '<div class="token-bar"><select id="cma-dis-rail"><option value="wire">Fedwire (WireEngine, approval-gated)</option><option value="ach_lili">ACH credit → DB Net Mgmt Lili (queued until ODFI)</option><option value="internal">Internal / ledger only</option></select><input id="cma-dis-amount" type="number" step="0.01" style="flex:1" placeholder="Amount USD" /></div>' +
             '<div class="token-bar"><input id="cma-dis-name" style="flex:1" placeholder="Beneficiary name (wire)" /><input id="cma-dis-routing" style="width:120px" placeholder="Routing (wire)" /><input id="cma-dis-account" style="flex:1" placeholder="Account (wire)" /><input id="cma-dis-bank" style="flex:1" placeholder="Bank name" /></div>' +
             '<div class="token-bar"><input id="cma-dis-reason" style="flex:1" placeholder="Purpose / memo" /></div>' +
             `<button class="btn" onclick="cmaDisburse('${cma.cma_id}')">Disburse</button>` +
+            '<div id="cma-dis-status" class="status hidden"></div>' +
             '<div class="muted" style="font-size:11px; margin-top:6px">Ledger is debited immediately; the movement stays <b>pending</b> until the rail (wire approval/settlement, ODFI transmission) confirms. Nothing here claims funds have moved.</div>' +
           '</div>' +
         '</div>' +
@@ -7351,12 +7359,12 @@
       const res = await api('/api/finops/ptc-cma/' + id + '/rebalance', { method: 'POST', body: JSON.stringify({ dryRun }) });
       const moves = dryRun ? res.data.plan.moves : res.data.moves;
       const txt = moves.length ? moves.map(m => `${m.fromLedger} → ${m.toLedger}: ${fmt(m.amountCents/100, 2)} (${m.reason})`).join('; ') : 'No moves needed — within policy';
-      show((dryRun ? 'Plan: ' : 'Executed: ') + txt, false, 'cma-status');
-      if (!dryRun) setTimeout(() => openPtcCmaPanel(id), 1200);
+      const msg = (dryRun ? 'Plan: ' : 'Executed: ') + txt;
+      if (dryRun) show(msg, false, 'cma-status'); else openPtcCmaPanel(id, { msg });
     } catch(e) { show(e.message, true, 'cma-status'); }
   }
   async function cmaSetStatus(id, status) {
-    try { await api('/api/finops/ptc-cma/' + id + '/status', { method: 'POST', body: JSON.stringify({ status }) }); openPtcCmaPanel(id); } catch(e) { show(e.message, true, 'cma-status'); }
+    try { await api('/api/finops/ptc-cma/' + id + '/status', { method: 'POST', body: JSON.stringify({ status }) }); openPtcCmaPanel(id, { msg: 'CMA is now ' + status }); } catch(e) { show(e.message, true, 'cma-status'); }
   }
   async function cmaSavePolicy(id) {
     try {
@@ -7365,8 +7373,8 @@
         reserveRatioBps: Number(el('cma-pol-reserve').value), minCoverageDays: Number(el('cma-pol-days').value),
         sweepInstrument: el('cma-pol-inst').value, sweepYieldBps: Number(el('cma-pol-yield').value), autoRebalance: el('cma-pol-auto').checked,
       }) });
-      openPtcCmaPanel(id);
-    } catch(e) { show(e.message, true, 'cma-status'); }
+      openPtcCmaPanel(id, { msg: 'Policy saved', target: 'cma-pol-status' });
+    } catch(e) { show(e.message, true, 'cma-pol-status'); }
   }
   async function cmaFund(id) {
     try {
@@ -7374,9 +7382,8 @@
         rail: el('cma-fund-rail').value, amount: Number(el('cma-fund-amount').value), toLedger: el('cma-fund-ledger').value,
         externalRef: el('cma-fund-ref').value.trim() || undefined, reason: el('cma-fund-reason').value.trim(),
       }) });
-      show('Funding ' + res.data.status + ': ' + fmt(res.data.amountUsd, 2), false, 'cma-status');
-      setTimeout(() => openPtcCmaPanel(id), 1200);
-    } catch(e) { show(e.message, true, 'cma-status'); }
+      openPtcCmaPanel(id, { msg: 'Funding ' + res.data.status + ': ' + fmt(res.data.amountUsd, 2), target: 'cma-fund-status' });
+    } catch(e) { show(e.message, true, 'cma-fund-status'); }
   }
   async function cmaDisburse(id) {
     try {
@@ -7384,9 +7391,8 @@
         rail: el('cma-dis-rail').value, amount: Number(el('cma-dis-amount').value), reason: el('cma-dis-reason').value.trim(), memo: el('cma-dis-reason').value.trim(),
         beneficiary: { name: el('cma-dis-name').value.trim(), routingNumber: el('cma-dis-routing').value.trim(), accountNumber: el('cma-dis-account').value.trim(), bankName: el('cma-dis-bank').value.trim() },
       }) });
-      show('Disbursement ' + res.data.status + ' via ' + res.data.rail + (res.data.externalRef ? ' — ref ' + res.data.externalRef : ''), false, 'cma-status');
-      setTimeout(() => openPtcCmaPanel(id), 1200);
-    } catch(e) { show(e.message, true, 'cma-status'); }
+      openPtcCmaPanel(id, { msg: 'Disbursement ' + res.data.status + ' via ' + res.data.rail + (res.data.externalRef ? ' — ref ' + res.data.externalRef : ''), target: 'cma-dis-status' });
+    } catch(e) { show(e.message, true, 'cma-dis-status'); }
   }
 
   async function createCorporateTreasuryAccount() {
