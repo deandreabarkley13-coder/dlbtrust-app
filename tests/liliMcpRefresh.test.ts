@@ -80,4 +80,31 @@ describe('Lili MCP — expired access tokens are refreshed and persisted', () =>
     await expect(listTools()).rejects.toThrow(/refresh failed: OAuth refresh failed: 400.*re-run the OAuth capture/);
     expect(settings.LILI_OAUTH_ACCESS_TOKEN).toBe('fresh-token');
   });
+
+  it('sends the resource indicator on refresh and exposes the last refresh error in the public status', async () => {
+    fetchMock
+      .mockResolvedValueOnce(response(401, ''))
+      .mockResolvedValueOnce(response(400, { error: 'token_request_failed' }));
+    await expect(listTools()).rejects.toThrow(/token_request_failed/);
+    expect(String(fetchMock.mock.calls[1][1].body)).toContain('resource=https%3A%2F%2Fmcp.lili.co%2F');
+    const status = await LiliMcpEngine.getPublicConfig();
+    expect(status.configured).toBe(true);
+    expect(status.lastRefreshError).toMatch(/token_request_failed/);
+  });
+
+  it('startOAuth({ reset: true }) forgets the stale client and tokens and re-registers with the new redirect', async () => {
+    fetchMock.mockResolvedValueOnce(response(201, { client_id: 'client-2' }));
+    const out = await LiliMcpEngine.startOAuth({ reset: true, redirectUri: 'http://localhost:4321/callback' });
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(fetchMock.mock.calls[0][0]).toBe('https://mcp.lili.test/oauth/register');
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body).redirect_uris).toEqual(['http://localhost:4321/callback']);
+    expect(settings.LILI_OAUTH_CLIENT_ID).toBe('client-2');
+    expect(settings.LILI_OAUTH_CLIENT_SECRET).toBe('');
+    expect(settings.LILI_OAUTH_ACCESS_TOKEN).toBe('');
+    expect(settings.LILI_OAUTH_REFRESH_TOKEN).toBe('');
+    expect(out.authUrl).toContain('client_id=client-2');
+    expect(out.authUrl).toContain('redirect_uri=http%3A%2F%2Flocalhost%3A4321%2Fcallback');
+    expect((await LiliMcpEngine.getPublicConfig()).configured).toBe(false);
+  });
 });

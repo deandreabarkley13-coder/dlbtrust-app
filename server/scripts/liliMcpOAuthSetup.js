@@ -13,6 +13,9 @@
  *
  * Usage:
  *   ADMIN_TOKEN=dlb-admin-2026-trust node server/scripts/liliMcpOAuthSetup.js
+ *   ADMIN_TOKEN=... node server/scripts/liliMcpOAuthSetup.js --reset   # forget the
+ *     registered client + tokens first (use after "OAuth refresh failed: 400")
+ *   PORT=3000 ...   # pin the loopback port (default: random)
  */
 
 const http = require('http');
@@ -21,6 +24,7 @@ const { URL } = require('url');
 const ADMIN_TOKEN = process.env.ADMIN_TOKEN || 'dlb-admin-2026-trust';
 const API_BASE = process.env.API_BASE || process.env.APP_URL || 'https://p01--dlbtrust-app--gcq8bn6c4zlp.code.run';
 const PORT = process.env.PORT ? Number(process.env.PORT) : 0;
+const RESET = process.argv.includes('--reset');
 
 function requestJson(method, urlPath, body = null) {
   return new Promise((resolve, reject) => {
@@ -90,6 +94,8 @@ async function main() {
       if (result.body && result.body.success) {
         res.end('<h1>Lili MCP connected</h1><p>You can close this tab.</p>');
         console.log('Success:', JSON.stringify(result.body, null, 2));
+        const tools = await requestJson('POST', '/api/finops/lili/mcp/tools');
+        console.log('tools/list:', JSON.stringify(tools.body, null, 2));
       } else {
         res.end(`<h1>Connection failed</h1><pre>${JSON.stringify(result.body)}</pre>`);
         console.error('Failed:', result.body);
@@ -107,8 +113,8 @@ async function main() {
   const actualPort = server.address().port;
   const redirectUri = `http://localhost:${actualPort}/callback`;
 
-  console.log('Starting Lili MCP OAuth capture on', redirectUri);
-  const start = await requestJson('POST', '/api/finops/lili/mcp/oauth/start', { redirectUri });
+  console.log('Starting Lili MCP OAuth capture on', redirectUri, RESET ? '(resetting stored client/tokens)' : '');
+  const start = await requestJson('POST', '/api/finops/lili/mcp/oauth/start', { redirectUri, reset: RESET });
   if (!start.body || !start.body.success) throw new Error(`oauth/start failed: ${JSON.stringify(start.body)}`);
 
   const authUrl = start.body.data.authUrl;

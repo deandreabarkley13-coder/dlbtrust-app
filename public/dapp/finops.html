@@ -5635,7 +5635,8 @@
       '<div class="card" style="background:#0b1220;">' +
         '<h3>Lili MCP (M2M)</h3>' +
         `<p class="muted">Status: ${mcp.configured ? '<span class="badge completed">configured</span>' : '<span class="badge manual_pending">not configured</span>'} ${mcp.hasAccessToken ? ' (token present)' : ' (no token)'}</p>` +
-        '<div class="token-bar"><button class="btn" onclick="startLiliMcpOAuth()" ' + (mcp.configured ? 'disabled' : '') + '>Connect Lili Account (OAuth)</button></div>' +
+        (mcp.lastRefreshError ? `<div class="status err">Token refresh failed: ${mcp.lastRefreshError}. Reconnect with <code>--reset</code>.</div>` : '') +
+        '<div class="token-bar"><button class="btn" onclick="startLiliMcpOAuth()">' + (mcp.configured ? 'Reconnect Lili Account (OAuth)' : 'Connect Lili Account (OAuth)') + '</button></div>' +
         '<div id="lili-oauth-url" class="hidden" style="font-size:11px;word-break:break-all;background:#050a14;padding:8px;border-radius:6px;margin-top:8px;"></div>' +
         '<div class="token-bar"><input id="lili-mcp-tool" style="flex:1" placeholder="Tool name (e.g. lili_get_account_summary)" /></div>' +
         '<div class="token-bar"><input id="lili-mcp-args" style="flex:1" placeholder="Args JSON (optional)" /></div>' +
@@ -5680,7 +5681,7 @@
     out.innerHTML = '<p class="muted">Lili MCP OAuth requires a <strong>localhost</strong> redirect capture. ' +
       'Download <code>server/scripts/liliMcpOAuthSetup.js</code>, set <code>ADMIN_TOKEN</code>, and run it on the machine where you will log in to Lili. ' +
       'It will print and open the authorization URL, capture the code on <code>http://localhost:&lt;port&gt;/callback</code>, and store the tokens in the app.</p>' +
-      '<pre style="font-size:11px;background:#050a14;padding:8px;border-radius:6px;margin-top:8px;">ADMIN_TOKEN=dlb-admin-2026-trust node server/scripts/liliMcpOAuthSetup.js</pre>';
+      '<pre style="font-size:11px;background:#050a14;padding:8px;border-radius:6px;margin-top:8px;">ADMIN_TOKEN=dlb-admin-2026-trust node server/scripts/liliMcpOAuthSetup.js\n# after "OAuth refresh failed" — forget the stale client + tokens and re-register:\nADMIN_TOKEN=dlb-admin-2026-trust node server/scripts/liliMcpOAuthSetup.js --reset</pre>';
     out.classList.remove('hidden');
   }
 
