@@ -62,7 +62,7 @@ const crypto = require('crypto');
 const fsp = require('fs/promises');
 const pool = require('../bonds/pgPool');
 const { generateNACHAFile, parseNACHAFile, validateRouting, ODFI_ROUTING, ORIGINATOR_ID, ORIGINATOR_NAME } = require('../ach/nachaGenerator');
-const { openWireTransport } = require('../inhouseBank/wire/wireTransport');
+const wireTransport = require('../inhouseBank/wire/wireTransport');
 
 const FILE_TYPES = {
   direct_deposit: {
@@ -352,7 +352,24 @@ function transportConfig(channel) {
     connectTimeoutMs: c.connectTimeoutMs || 30000,
     spoolDir: c.spoolDir,
     stagingSuffix: c.stagingSuffix || '.tmp',
+    identityId: c.identityId || '',
   };
+}
+
+/**
+ * The transport settings a session actually opens with. A channel bound to a
+ * machine identity authenticates with that identity's key, decrypted from the
+ * M2M keyring for the life of the session; no human credential is involved.
+ */
+async function sessionConfig(channel) {
+  const config = transportConfig(channel);
+  if (config.identityId && config.transport === 'sftp') {
+    const { M2mOsEngine } = require('./m2mOsEngine');
+    config.privateKey = await M2mOsEngine.privateKeyFor(config.identityId);
+    config.privateKeyPath = '';
+    config.password = '';
+  }
+  return config;
 }
 
 function channelReadiness(channel) {
@@ -363,7 +380,7 @@ function channelReadiness(channel) {
   if (transport === 'sftp') {
     if (!c.username) blockers.push('no SFTP username');
     if (!c.hostKeyFingerprint && !c.allowUnknownHostKey) blockers.push('bank host key is not pinned');
-    const hasSecret = ['passwordEnv', 'privateKeyEnv', 'privateKeyPathEnv'].some(k => c[k] && text(c[k]));
+    const hasSecret = Boolean(c.identityId) || ['passwordEnv', 'privateKeyEnv', 'privateKeyPathEnv'].some(k => c[k] && text(c[k]));
     if (!hasSecret) blockers.push('no SFTP credential is present in the environment');
   } else if (isProduction() && !c.allowSpoolInProduction) {
     blockers.push('channel has no bank host and spool transmission is not allowed in production');
@@ -618,6 +635,8 @@ const MftOsEngine = {
       archivePath: config.archivePath || env.archivePath,
       filePrefix: (config.filePrefix || env.filePrefix).replace(/[^A-Za-z0-9_-]/g, '').slice(0, 16) || 'DLBTRUST',
       stagingSuffix: config.stagingSuffix || env.stagingSuffix,
+      identityId: config.identityId || '',
+      signManifests: Boolean(config.signManifests),
     };
     const id = channelId || newId('MFTCH');
     const { rows } = await pool.query(
@@ -625,8 +644,18 @@ const MftOsEngine = {
        VALUES ($1, $2, $3, 'active', $4::jsonb, $5::jsonb, $6) RETURNING *`,
       [id, name, bankName, JSON.stringify(fileTypes), JSON.stringify(stored), createdBy]
     );
-    await this._event(null, id, 'channel_registered', createdBy, { transport: stored.host ? 'sftp' : 'spool' });
+    await this._event(null, id, 'channel_registered', createdBy, { transport: stored.host ? 'sftp' : 'spool', identityId: stored.identityId || null });
     return mapChannel(rows[0]);
+  },
+
+  /** Re-bind a channel to a machine identity (key rotation); nothing else about the channel changes. */
+  async bindIdentity(channelId, identityId, actor, { signManifests = null } = {}) {
+    const channel = await this.channel(channelId);
+    const config = { ...channel.config, identityId: identityId || '' };
+    if (signManifests !== null) config.signManifests = Boolean(signManifests);
+    await pool.query('UPDATE mft_channels SET config = $2::jsonb WHERE channel_id = $1', [channelId, JSON.stringify(config)]);
+    await this._event(null, channelId, 'channel_identity_bound', actor, { identityId: identityId || null, previous: channel.config.identityId || null });
+    return this.channel(channelId);
   },
 
   async channels() {
@@ -649,7 +678,7 @@ const MftOsEngine = {
   async transportFor(channelId) {
     const channel = await this.channel(channelId);
     return {
-      ...transportConfig(channel),
+      ...(await sessionConfig(channel)),
       outboundPath: channel.config.outboundPath,
       ackPath: channel.config.ackPath,
       returnPath: channel.config.returnPath,
@@ -946,12 +975,17 @@ const MftOsEngine = {
 
     const archivePath = await this._archive(channel, row);
     let remotePath;
-    const session = await openWireTransport(transportConfig(channel));
+    let manifestPath = null;
+    const session = await wireTransport.openWireTransport(await sessionConfig(channel));
     try {
       if (await session.exists(`${channel.config.outboundPath}/${row.filename}`)) {
         throw new MftError(`${row.filename} already exists on the bank host; refusing to overwrite`, 'MFT_REMOTE_EXISTS', 409);
       }
       remotePath = await session.put(channel.config.outboundPath, row.filename, row.content);
+      if (channel.config.identityId && channel.config.signManifests) {
+        const { M2mOsEngine } = require('./m2mOsEngine');
+        manifestPath = await M2mOsEngine.putManifest(session, channel, mapFile(row), remotePath);
+      }
     } catch (error) {
       await this._event(fileId, row.channel_id, 'transmit_failed', actor, { error: error.message });
       if (error instanceof MftError) throw error;
@@ -966,8 +1000,8 @@ const MftOsEngine = {
       transport: channel.readiness.transport,
       remote_path: remotePath,
       archive_path: archivePath,
-    }, 'transmitted', actor, { remotePath, transport: channel.readiness.transport, contentHash: row.content_hash, forced: Boolean(force && duplicate) });
-    return { transmitted: true, replay: false, file };
+    }, 'transmitted', actor, { remotePath, manifestPath, transport: channel.readiness.transport, contentHash: row.content_hash, forced: Boolean(force && duplicate), identityId: channel.config.identityId || null });
+    return { transmitted: true, replay: false, file, manifestPath };
   },
 
   /** A byte-for-byte copy under its hash, so what was sent can always be re-read. */
@@ -996,7 +1030,7 @@ const MftOsEngine = {
       throw new MftError(`Channel ${channelId} cannot be read: ${channel.readiness.blockers.join('; ')}`, 'MFT_CHANNEL_NOT_READY', 412);
     }
     const results = { channelId, acknowledged: [], rejected: [], returns: [], ignored: [] };
-    const session = await openWireTransport(transportConfig(channel));
+    const session = await wireTransport.openWireTransport(await sessionConfig(channel));
     try {
       for (const entry of await session.list(channel.config.ackPath)) {
         const m = /^(.+)\.(ack|rej)$/i.exec(entry.name);
@@ -1155,4 +1189,4 @@ const MftOsEngine = {
   },
 };
 
-module.exports = { MftOsEngine, MftError, FILE_TYPES, FORMATS, STATUSES, TRANSITIONS, getMftConfig, channelReadiness, normalizeEntry, parsePacs008, fileTypeForNacha, mask };
+module.exports = { MftOsEngine, MftError, FILE_TYPES, FORMATS, STATUSES, TRANSITIONS, getMftConfig, channelReadiness, sessionConfig, normalizeEntry, parsePacs008, fileTypeForNacha, mask };

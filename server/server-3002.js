@@ -158,6 +158,8 @@ try { app.use('/api/attestation-os', require(path.join(HD, 'server', 'routes', '
 
 // MFT OS — managed file transfer for bank payment files: direct deposit, vendor payments, clearing and settlement
 try { app.use('/api/mft-os', require(path.join(HD, 'server', 'routes', 'mftOs'))); console.log('[mft-os] loaded'); } catch(e) { console.warn('[mft-os]', e.message); }
+// M2M OS — machine identities, partner handshakes and the unattended delivery cycle for MFT channels
+try { app.use('/api/m2m-os', require(path.join(HD, 'server', 'routes', 'm2mOs'))); console.log('[m2m-os] loaded'); } catch(e) { console.warn('[m2m-os]', e.message); }
 
 // In-House Bank — PTC family bank orchestration: ingress/idempotency, governance, smart routing, dual ledger, ISO 20022, zero trust
 try { app.use('/api/inhouse-bank', require(path.join(HD, 'server', 'routes', 'inhouseBank'))); console.log('[inhouse-bank] loaded'); } catch(e) { console.warn('[inhouse-bank]', e.message); }
@@ -350,6 +352,13 @@ async function initializeDatabase() {
     await MftOsEngine.ensureTables();
     console.log('[mft-os] tables ensured');
   } catch(e) { console.warn('[mft-os] table init:', e.message); }
+
+  try {
+    var M2mOsEngine = require(path.join(HD, 'server', 'integrations', 'os', 'm2mOsEngine')).M2mOsEngine;
+    await M2mOsEngine.ensureTables();
+    var m2mEvery = M2mOsEngine.startScheduler();
+    console.log('[m2m-os] tables ensured' + (m2mEvery ? ', cycle every ' + m2mEvery + 'ms' : ', scheduler off (M2M_CYCLE_INTERVAL_MS=0)'));
+  } catch(e) { console.warn('[m2m-os] table init:', e.message); }
 
   try {
     var BondStatementEngine = require(path.join(HD, 'server', 'integrations', 'bonds', 'bondStatementEngine')).BondStatementEngine;
