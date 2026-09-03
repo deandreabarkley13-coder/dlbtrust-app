@@ -104,11 +104,14 @@ class LiliMcpEngine {
     const cfg = await this.getConfig();
     return {
       mcpUrl: cfg.mcpUrl,
+      oauthBaseUrl: cfg.oauthBaseUrl,
       mcpEnabled: cfg.mcpEnabled,
       configured: this.isConfigured(cfg),
+      hasClientId: Boolean(cfg.clientId),
       hasAccessToken: Boolean(cfg.accessToken),
       hasRefreshToken: Boolean(cfg.refreshToken),
       businessUserId: cfg.businessUserId,
+      lastRefreshError: this._lastRefreshError,
     };
   }
 
@@ -149,8 +152,26 @@ class LiliMcpEngine {
     try { return JSON.parse(text); } catch (e) { return { raw: text }; }
   }
 
-  static async startOAuth({ appName, redirectUri, state: providedState, resource } = {}) {
+  static _getResource(resource) {
+    return resource || process.env.LILI_OAUTH_RESOURCE || 'https://mcp.lili.co/';
+  }
+
+  /**
+   * Forget the registered client and any stored tokens. Use when the auth
+   * server no longer recognises the dynamic client (refresh -> 400
+   * token_request_failed) so the next startOAuth re-registers from scratch.
+   */
+  static async resetCredentials(updatedBy = 'system') {
+    for (const key of ['LILI_OAUTH_CLIENT_ID', 'LILI_OAUTH_CLIENT_SECRET', 'LILI_OAUTH_ACCESS_TOKEN', 'LILI_OAUTH_REFRESH_TOKEN']) {
+      await setSetting(key, '', updatedBy);
+    }
+    this._sessionId = null;
+    this._lastRefreshError = null;
+  }
+
+  static async startOAuth({ appName, redirectUri, state: providedState, resource, reset = false } = {}) {
     await this.ensureTables();
+    if (reset) await this.resetCredentials();
     let cfg = await this.getConfig();
     const redirect = redirectUri || this._getRedirectUri();
 
@@ -162,7 +183,7 @@ class LiliMcpEngine {
       clientSecret = reg.client_secret;
       if (!clientId) throw new Error('Lili client registration did not return client_id');
       await setSetting('LILI_OAUTH_CLIENT_ID', safeEncrypt(clientId));
-      await setSetting('LILI_OAUTH_CLIENT_SECRET', safeEncrypt(clientSecret));
+      await setSetting('LILI_OAUTH_CLIENT_SECRET', clientSecret ? safeEncrypt(clientSecret) : '');
       cfg = await this.getConfig();
     }
 
@@ -185,7 +206,7 @@ class LiliMcpEngine {
     authUrl.searchParams.append('state', state);
     authUrl.searchParams.append('code_challenge', challenge);
     authUrl.searchParams.append('code_challenge_method', 'S256');
-    authUrl.searchParams.append('resource', resource || process.env.LILI_OAUTH_RESOURCE || 'https://mcp.lili.co/');
+    authUrl.searchParams.append('resource', this._getResource(resource));
 
     return { authUrl: authUrl.toString(), state, redirectUri: redirect };
   }
@@ -227,6 +248,7 @@ class LiliMcpEngine {
     params.append('code', code);
     params.append('redirect_uri', redirectUri);
     params.append('code_verifier', codeVerifier);
+    params.append('resource', this._getResource());
     const res = await fetch(url, {
       method: 'POST',
       headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
@@ -262,6 +284,7 @@ class LiliMcpEngine {
     params.append('client_id', cfg.clientId);
     if (cfg.clientSecret) params.append('client_secret', cfg.clientSecret);
     params.append('refresh_token', cfg.refreshToken);
+    params.append('resource', this._getResource());
     const res = await fetch(url, {
       method: 'POST',
       headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
