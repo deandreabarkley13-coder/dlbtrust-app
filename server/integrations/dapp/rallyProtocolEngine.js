@@ -117,7 +117,7 @@ class RallyProtocolEngine {
       paymasterAddress: aaCfg.paymasterAddress || str('AA_PAYMASTER_ADDRESS', ''),
       tokenAddress: str('RALLY_TOKEN_ADDRESS', PtcStablecoinEngine ? '' : ''),
       hotWalletIndex: num('RALLY_HOT_WALLET_INDEX', 0),
-      baseUrl: str('RALLY_BASE_URL', 'https://dlbtrust-app.fly.dev'),
+      baseUrl: str('RALLY_BASE_URL', process.env.APP_URL || 'https://p01--dlbtrust-app--gcq8bn6c4zlp.code.run'),
       factory: str('AA_FACTORY', aaCfg.factory || '0x9406Cc6185a346906296840746125a0E44976454'),
       encryptionKey: str('RALLY_ENCRYPTION_KEY', privateKey),
     };

@@ -5,13 +5,13 @@
  *
  * Uses the BTCPay Greenfield API to create pull-payments + on-chain BTC payouts.
  * Requires environment variables:
- *   BTCPAY_URL           - Base URL of the BTCPay instance (e.g. https://dlbtrust-btcpay.fly.dev/)
+ *   BTCPAY_URL           - Base URL of the BTCPay instance (e.g. https://<btcpay-service>.code.run/)
  *   BTCPAY_API_KEY       - Server admin / store API key
  *   BTCPAY_STORE_ID      - Store under which payouts are created
  *   BTCPAY_WEBHOOK_SECRET - (optional) secret used to validate payout webhooks
  */
 
-const BTCPAY_URL = (process.env.BTCPAY_URL || 'https://dlbtrust-btcpay.fly.dev/').replace(/\/$/, '');
+const BTCPAY_URL = (process.env.BTCPAY_URL || '').replace(/\/$/, '');
 const BTCPAY_API_KEY = process.env.BTCPAY_API_KEY || '';
 const BTCPAY_STORE_ID = process.env.BTCPAY_STORE_ID || '';
 const BTCPAY_WEBHOOK_SECRET = process.env.BTCPAY_WEBHOOK_SECRET || '';

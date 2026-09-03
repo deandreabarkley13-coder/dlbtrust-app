@@ -92,7 +92,7 @@ async function spritzRequest(method, path, body, options = {}) {
   const headers = {
     'Content-Type': 'application/json',
     'User-Agent': 'dlbtrust-spritz-engine/1.0',
-    Origin: 'https://dlbtrust-app.fly.dev',
+    Origin: process.env.APP_URL || 'https://p01--dlbtrust-app--gcq8bn6c4zlp.code.run',
   };
   if (options.useUserJwt) {
     const token = await getIntegratorToken();

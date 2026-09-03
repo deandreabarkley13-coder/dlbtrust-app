@@ -185,10 +185,12 @@ license-free option.
 
 ## Cutover
 
-The Fly app keeps running until the Northflank service is verified. Once it is:
+Cutover is complete: Northflank is the only deployment target.
 
-1. Disable `.github/workflows/fly-deploy.yml` (delete it, or leave it on
-   `workflow_dispatch` only) so pushes to `main` no longer deploy to Fly.
-2. Move the custom domain / bookmark to the Northflank service URL.
-3. Scale the Fly app to zero (`fly scale count 0 -a dlbtrust-app`) rather than
-   destroying it, so the Fly volume remains available as a rollback for a while.
+1. `.github/workflows/fly-deploy.yml` and `fly.toml` have been removed; pushes
+   to `main` build on Northflank only.
+2. Application defaults (`APP_URL`, `AS2_MESSAGE_ID_DOMAIN`, CSP `connect-src`)
+   point at the Northflank service URL.
+3. The Fly app can be scaled to zero / destroyed at any time; the
+   `scripts/northflank/migrate-*.{mjs,sh}` scripts remain only as a record of
+   how the data was moved.

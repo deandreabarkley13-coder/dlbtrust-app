@@ -12,7 +12,7 @@
  * Usage:
  *   node server/scripts/osEngineSmokeTest.js
  *   ADMIN_SECRET_TOKEN=dlb-admin-2026-trust node server/scripts/osEngineSmokeTest.js
- *   OS_TEST_BASE_URL=https://dlbtrust-app.fly.dev ADMIN_SECRET_TOKEN=... node server/scripts/osEngineSmokeTest.js
+ *   OS_TEST_BASE_URL=https://p01--dlbtrust-app--gcq8bn6c4zlp.code.run ADMIN_SECRET_TOKEN=... node server/scripts/osEngineSmokeTest.js
  */
 
 const BASE_URL = (process.env.OS_TEST_BASE_URL || 'http://localhost:3002').replace(/\/$/, '');
