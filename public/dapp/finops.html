@@ -5604,20 +5604,47 @@
     panel.classList.add('active');
     body.innerHTML = '<div class="muted">Loading…</div>';
     try {
-      const [cfg, payments, mcp] = await Promise.all([
+      const [cfg, payments, mcp, dd, ddList] = await Promise.all([
         api('/api/finops/lili/config').catch(()=>null),
         api('/api/finops/lili/payments').catch(()=>null),
         api('/api/finops/lili/mcp/status').catch(()=>null),
+        api('/api/finops/lili/direct-deposits/status').catch(()=>null),
+        api('/api/finops/lili/direct-deposits').catch(()=>null),
       ]);
-      body.innerHTML = renderLiliBankPanel(cfg && cfg.data, payments && payments.data, mcp && mcp.data);
+      body.innerHTML = renderLiliBankPanel(cfg && cfg.data, payments && payments.data, mcp && mcp.data, dd && dd.data, ddList && ddList.data);
     } catch(e) { body.innerHTML = '<div class="status err">' + e.message + '</div>'; }
   }
 
-  function renderLiliBankPanel(config, items, mcpStatus) {
+  function renderLiliDirectDepositCard(dd, deposits) {
+    const s = dd || { destination: { configured: false }, odfi: { ready: false, channels: [] }, mcp: { configured: false }, counts: {} };
+    const dest = s.destination || {};
+    const badge = (ok, yes, no) => ok ? `<span class="badge completed">${yes}</span>` : `<span class="badge manual_pending">${no}</span>`;
+    const rows = (deposits || []).map(d => `<tr><td>${d.deposit_id}</td><td>$${Number(d.amount_usd || 0).toFixed(2)}</td><td>${d.sec_code}</td><td>${String(d.effective_date).slice(0,10)}</td><td>${d.ach_batch_id || ''}</td><td>${d.status}</td><td>${d.lili_transaction_id || d.error_message || ''}</td>` +
+      `<td>${d.status === 'awaiting_odfi' ? `<button class="btn" onclick="transmitLiliDirectDeposit('${d.deposit_id}')">Transmit</button> <button class="btn" onclick="cancelLiliDirectDeposit('${d.deposit_id}')">Cancel</button>` : ''}</td></tr>`).join('') ||
+      '<tr><td colspan="8" class="muted">No direct deposits yet</td></tr>';
+    return '<div class="card" style="background:#0b1220;">' +
+      '<h3>Direct Deposit into Lili (ACH credit)</h3>' +
+      `<p class="muted">${s.flow || 'Ledger → NACHA credit → ODFI → Lili → MCP reconciliation'}. Lili is a receiving bank only: the NACHA file is generated and journaled here, transmitted through the trust's ODFI channel, and reconciled when the credit shows on the Lili transaction feed.</p>` +
+      `<p class="muted">Destination: ${badge(dest.configured, (dest.accountName || 'Lili') + ' ' + (dest.accountNumberMasked || '') + ' / ' + (dest.routingNumber || ''), 'not set')} &nbsp; ODFI channel: ${badge(s.odfi && s.odfi.ready, (s.odfi.channels || []).join(', '), 'none configured — files queue as awaiting_odfi')} &nbsp; Lili MCP: ${badge(s.mcp && s.mcp.configured, 'connected', 'not connected')}</p>` +
+      '<div class="token-bar"><input id="lili-dd-routing" style="flex:1" placeholder="Lili routing number" /><input id="lili-dd-account" style="flex:1" placeholder="Lili account number" /><input id="lili-dd-name" style="flex:1" placeholder="Account name (DB NET MGMT LLC)" />' +
+      '<button class="btn" onclick="saveLiliDirectDepositDestination()">Save Destination</button><button class="btn" onclick="syncLiliDirectDepositDestination()">Pull from Lili MCP</button></div>' +
+      '<div class="token-bar"><input id="lili-dd-amount" type="number" step="0.01" style="flex:1" placeholder="Amount (USD)" />' +
+      '<select id="lili-dd-sec"><option value="PPD">PPD</option><option value="CCD">CCD</option></select>' +
+      '<input id="lili-dd-date" type="date" /><input id="lili-dd-memo" style="flex:1" placeholder="Memo (≤10 chars on NACHA)" />' +
+      '<select id="lili-dd-type"><option value="trust_distribution">trust_distribution</option><option value="vendor_payment">vendor_payment</option><option value="principal_return">principal_return</option></select>' +
+      '<button class="btn" onclick="createLiliDirectDeposit()">Generate NACHA Credit</button></div>' +
+      '<div class="token-bar"><button class="btn" onclick="transmitQueuedLiliDirectDeposits()">Transmit Queued</button><button class="btn" onclick="reconcileLiliDirectDeposits()">Reconcile via Lili MCP</button></div>' +
+      '<div id="lili-dd-status" class="status hidden"></div>' +
+      '<table class="table"><thead><tr><th>Deposit</th><th>Amount</th><th>SEC</th><th>Effective</th><th>ACH Batch</th><th>Status</th><th>Lili TX / Note</th><th></th></tr></thead><tbody>' + rows + '</tbody></table>' +
+    '</div>';
+  }
+
+  function renderLiliBankPanel(config, items, mcpStatus, ddStatus, ddList) {
     const cfgText = config ? `<pre>${JSON.stringify(config, null, 2)}</pre>` : '<p class="muted">No Lili config returned</p>';
     const mcp = mcpStatus || { configured: false, hasAccessToken: false };
     const rows = (items || []).map(p => `<tr><td>${p.payment_id}</td><td>$${Number(p.amount_cents || 0)/100} ${p.currency || ''}</td><td>${p.recipient_name || ''}</td><td>${p.recipient_bank || ''}</td><td>${p.status}</td><td>${p.external_tx_id || ''}</td></tr>`).join('') || '<tr><td colspan="6" class="muted">No Lili payments yet</td></tr>';
     return '<div style="display:flex; flex-direction:column; gap:12px;">' +
+      renderLiliDirectDepositCard(ddStatus, ddList) +
       '<div class="card" style="background:#0b1220;">' +
         '<h3>New Lili Payment</h3>' +
         '<p class="muted">Lili does not expose a public outbound payment API. This panel prepares a record and optionally POSTs to a configured LILI_PAYMENT_ENDPOINT or uses the Lili MCP for M2M Bill Pay. Without those, status becomes <em>manual_pending</em> and you complete it in the Lili app.</p>' +
@@ -5673,6 +5700,76 @@
       loadAll();
     } catch(e) { show(e.message, true, 'lili-create-status'); }
     status.classList.remove('hidden');
+  }
+
+  async function liliDirectDepositAction(fn) {
+    const status = el('lili-dd-status');
+    status.classList.add('hidden');
+    try {
+      const msg = await fn();
+      show(msg, false, 'lili-dd-status');
+      openLiliBankPanel();
+    } catch(e) { show(e.message, true, 'lili-dd-status'); }
+  }
+
+  function saveLiliDirectDepositDestination() {
+    return liliDirectDepositAction(async () => {
+      const body = { routingNumber: el('lili-dd-routing').value.trim(), accountNumber: el('lili-dd-account').value.trim(), accountName: el('lili-dd-name').value.trim() || undefined };
+      const res = await api('/api/finops/lili/direct-deposits/destination', { method: 'POST', body: JSON.stringify(body) });
+      return 'Destination saved: ' + res.data.accountName + ' ' + res.data.accountNumberMasked;
+    });
+  }
+
+  function syncLiliDirectDepositDestination() {
+    return liliDirectDepositAction(async () => {
+      const res = await api('/api/finops/lili/direct-deposits/destination/sync', { method: 'POST', body: '{}' });
+      if (res.data.synced) return 'Destination pulled from Lili: ' + res.data.accountNumberMasked;
+      if (res.data.routingNumber) el('lili-dd-routing').value = res.data.routingNumber;
+      throw new Error(res.data.reason + (res.data.routingNumber ? ' (routing ' + res.data.routingNumber + ' filled in)' : ''));
+    });
+  }
+
+  function createLiliDirectDeposit() {
+    return liliDirectDepositAction(async () => {
+      const body = {
+        amount: el('lili-dd-amount').value,
+        secCode: el('lili-dd-sec').value,
+        effectiveDate: el('lili-dd-date').value || undefined,
+        memo: el('lili-dd-memo').value.trim() || undefined,
+        paymentType: el('lili-dd-type').value,
+      };
+      const res = await api('/api/finops/lili/direct-deposits', { method: 'POST', body: JSON.stringify(body) });
+      loadAll();
+      return 'Direct deposit ' + res.data.deposit_id + ' → ACH batch ' + res.data.ach_batch_id + ' (' + res.data.status + ')';
+    });
+  }
+
+  function transmitLiliDirectDeposit(id) {
+    return liliDirectDepositAction(async () => {
+      const res = await api('/api/finops/lili/direct-deposits/' + encodeURIComponent(id) + '/transmit', { method: 'POST', body: '{}' });
+      return id + ' → ' + res.data.status;
+    });
+  }
+
+  function cancelLiliDirectDeposit(id) {
+    return liliDirectDepositAction(async () => {
+      await api('/api/finops/lili/direct-deposits/' + encodeURIComponent(id) + '/cancel', { method: 'POST', body: '{}' });
+      return id + ' cancelled';
+    });
+  }
+
+  function transmitQueuedLiliDirectDeposits() {
+    return liliDirectDepositAction(async () => {
+      const res = await api('/api/finops/lili/direct-deposits/transmit-queued', { method: 'POST', body: '{}' });
+      return res.data.skipped ? 'Skipped: ' + res.data.skipped : 'Transmitted ' + res.data.transmitted + ' deposit(s)';
+    });
+  }
+
+  function reconcileLiliDirectDeposits() {
+    return liliDirectDepositAction(async () => {
+      const res = await api('/api/finops/lili/direct-deposits/reconcile', { method: 'POST', body: '{}' });
+      return 'Reconciled ' + res.data.matched + ' matched, ' + res.data.unmatched + ' still open';
+    });
   }
 
   async function startLiliMcpOAuth() {
