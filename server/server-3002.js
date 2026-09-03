@@ -352,6 +352,12 @@ async function initializeDatabase() {
   } catch(e) { console.warn('[mft-os] table init:', e.message); }
 
   try {
+    var BondStatementEngine = require(path.join(HD, 'server', 'integrations', 'bonds', 'bondStatementEngine')).BondStatementEngine;
+    await BondStatementEngine.ensureSchema();
+    console.log('[bond-statement] schema ensured');
+  } catch(e) { console.warn('[bond-statement] schema init:', e.message); }
+
+  try {
     var WireOriginationEngine = require(path.join(HD, 'server', 'integrations', 'dapp', 'wireOriginationEngine')).WireOriginationEngine;
     await WireOriginationEngine.ensureTables();
     console.log('[wire-origination] tables ensured');

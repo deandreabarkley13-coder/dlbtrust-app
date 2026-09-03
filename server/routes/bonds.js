@@ -15,6 +15,10 @@ const router  = express.Router();
 const { BondEngine } = require('../integrations/bonds/bondEngine');
 const { LiveBondEngine } = require('../integrations/bonds/liveEngine');
 const { CouponService } = require('../integrations/bonds/couponService');
+const { BondStatementEngine } = require('../integrations/bonds/bondStatementEngine');
+const { requireAuth } = require('../integrations/auth/securityMiddleware');
+
+const operatorAuth = requireAuth({ role: 'operator' });
 const pool = require('../integrations/bonds/pgPool');
 const { FineractClient } = require('../integrations/fineract/fineractClient');
 
@@ -334,6 +338,49 @@ router.get('/:id/bondholders', async (req, res) => {
     res.json({ success: true, count: bondholders.length, data: bondholders });
   } catch (err) {
     res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// ─── GET /api/bonds/:id/statement ─────────────────────────────────────────────
+// Bond Financial Statement (statement of account + proof of venue), from the
+// ledger, reconciled to the coupon schedule. :id may be the bond id, statement
+// id, bond identifier or bond name. ?asOf=YYYY-MM-DD
+router.get('/:id/statement', async (req, res) => {
+  try {
+    const statement = await BondStatementEngine.buildStatement(req.params.id, { asOf: req.query.asOf || new Date() });
+    res.json({ success: true, data: statement });
+  } catch (err) {
+    const status = err.message.includes('not found') ? 404 : 500;
+    res.status(status).json({ success: false, error: err.message });
+  }
+});
+
+// ─── GET /api/bonds/:id/statement.pdf ─────────────────────────────────────────
+router.get('/:id/statement.pdf', async (req, res) => {
+  try {
+    const { pdf, filename } = await BondStatementEngine.renderPdf(req.params.id, { asOf: req.query.asOf || new Date() });
+    res.type('application/pdf');
+    res.setHeader('Content-Disposition', `${req.query.download === '1' ? 'attachment' : 'inline'}; filename="${filename}"`);
+    res.send(pdf);
+  } catch (err) {
+    const status = err.message.includes('not found') ? 404 : 500;
+    res.status(status).json({ success: false, error: err.message });
+  }
+});
+
+// ─── POST /api/bonds/:id/register-coupons ─────────────────────────────────────
+// Registers every elapsed coupon period through asOf on the bond ledger.
+// Idempotent: periods already on the ledger are skipped.
+router.post('/:id/register-coupons', operatorAuth, async (req, res) => {
+  try {
+    const result = await BondStatementEngine.registerCoupons(req.params.id, {
+      asOf: req.body.asOf || new Date(),
+      actor: req.user && req.user.username ? req.user.username : null,
+    });
+    res.json({ success: true, data: result });
+  } catch (err) {
+    const status = err.message.includes('not found') ? 404 : err.message.includes('Unsupported') ? 400 : 500;
+    res.status(status).json({ success: false, error: err.message });
   }
 });
 
